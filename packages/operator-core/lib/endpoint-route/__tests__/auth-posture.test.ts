@@ -187,6 +187,12 @@ const RULES: ReadonlyArray<{
       // requireAllowedOriginOr403 CSRF backstop. See admin/mode.ts's own
       // doc-comment.
       { method: 'POST', path: '/admin/mode/:verb', auth: VTL },
+      // The Accounts and Config tabs use the same cookie-less packaged-desktop
+      // HTTP fallback as Mode. Both handlers apply requireAllowedOriginOr403
+      // before dispatching their write verbs, so pin the same VTL posture here
+      // instead of letting the family-wide VT default manufacture drift.
+      { method: 'POST', path: '/admin/accounts/:verb', auth: VTL },
+      { method: 'POST', path: '/admin/config/:verb', auth: VTL },
       // The Goals tab's WRITE half posts from that same cookie-less loopback
       // webview as its /admin/mode/:verb sibling immediately above — which
       // admin/goals.ts is explicitly modelled on — so the same EI-338
