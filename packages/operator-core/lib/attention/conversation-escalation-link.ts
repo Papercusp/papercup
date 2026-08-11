@@ -49,6 +49,12 @@ export const ANSWERED_QUESTION_RESOLVER = 'system:conversation-answered';
  */
 export const ANSWERED_QUESTION_CHOICE = 'answered-in-conversation';
 
+/** Resolver identity stamped when an owner ask is replaced before answering. */
+export const SUPERSEDED_QUESTION_RESOLVER = 'system:conversation-superseded';
+
+/** Choice recorded when the old owner ask is retired by a replacement ask. */
+export const SUPERSEDED_QUESTION_CHOICE = 'superseded-in-conversation';
+
 /** The stamp to merge into an escalation's `meta` at ask time. */
 export function conversationLinkMeta(
   conversationId: string,

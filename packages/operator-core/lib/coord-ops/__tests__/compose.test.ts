@@ -67,6 +67,18 @@ describe('askOp', () => {
     expect(caps.sleep).not.toHaveBeenCalled(); // answered on the first read
   });
 
+  it('passes a superseded conversation id so a corrected owner ask remains a real gate', async () => {
+    const caps = { ...baseCaps(), readAnswer: vi.fn().mockResolvedValue({ answered: false, answer: null }) };
+    const a = askOp.argsSchema.parse({ question: 'the corrected question', supersedes_conversation_id: 'conv-old' });
+    await askOp.run(a, makeCtx(caps));
+    expect(caps.openThread).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'question',
+        supersedes_conversation_id: 'conv-old',
+      }),
+    );
+  });
+
   it('polls until the owner answers', async () => {
     const caps = {
       ...baseCaps(),

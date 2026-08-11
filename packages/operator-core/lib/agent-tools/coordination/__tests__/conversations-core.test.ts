@@ -50,6 +50,8 @@ import type {
   ConversationState,
   CreateConversationInput,
   ListConversationsOpts,
+  SupersedeStoreError,
+  SupersedeStoreResult,
 } from '../conversations-store';
 import {
   answerQuestionCore,
@@ -61,6 +63,7 @@ import {
   postReplyCore,
   promoteConversationCore,
   resolveConversationCore,
+  supersedeConversationCore,
   type CaptureFn,
   type ConversationDeps,
   type ConversationStoreLike,
@@ -99,9 +102,11 @@ class InMemoryConversationStore implements ConversationStoreLike {
       accepted_post_id: null,
       capture_target: null,
       promoted_issue_id: null,
+      superseded_by: null,
       created_ts: input.created_ts,
       updated_ts: input.created_ts,
       resolved_ts: null,
+      superseded_ts: null,
     };
     this.rows.set(input.id, row);
     return { ...row };
@@ -131,6 +136,27 @@ class InMemoryConversationStore implements ConversationStoreLike {
     row.state = state;
     row.updated_ts = opts.now_ts;
     row.resolved_ts = state === 'resolved' ? opts.now_ts : null;
+    if (state !== 'superseded') {
+      row.superseded_by = null;
+      row.superseded_ts = null;
+    }
+  }
+
+  async supersede(
+    id: string,
+    replacement: CreateConversationInput,
+    opts: { now_ts: string },
+  ): Promise<SupersedeStoreResult | SupersedeStoreError> {
+    const old = this.rows.get(id);
+    if (!old) return { error: 'not_found' };
+    if (old.state !== 'open') return { error: 'not_open', conversation: { ...old } };
+    const replacementRow = await this.create(replacement);
+    old.state = 'superseded';
+    old.superseded_by = replacementRow.id;
+    old.superseded_ts = opts.now_ts;
+    old.updated_ts = opts.now_ts;
+    old.resolved_ts = null;
+    return { conversation: { ...old }, replacement: replacementRow };
   }
 
   async setAcceptedAnswer(
@@ -315,6 +341,67 @@ describe('openConversationCore', () => {
     // The write went through despite the delivery failure.
     expect(await store.get(res.conversation.id)).not.toBeNull();
     expect(Object.keys(sinkBox.inbox)).toHaveLength(0);
+  });
+});
+
+describe('supersedeConversationCore', () => {
+  it('retires the old gate, points to an open replacement, and notifies old subscribers', async () => {
+    const old = await openConversationCore(deps, ident('asker'), {
+      kind: 'question',
+      body: 'Is the old build still deployed?',
+      title: 'Deployment check',
+      topics: ['release'],
+    });
+    await subs.subscribe({
+      subscriber_id: 'follower',
+      target_kind: 'object',
+      target_ref: objectToTargetRef({ kind: 'conversation', ref: old.conversation.id }),
+      created_ts: T0,
+    });
+    sinkBox.clear();
+
+    const result = await supersedeConversationCore(deps, ident('asker'), {
+      conversation_id: old.conversation.id,
+      reason: 'The build was promoted before the owner could answer.',
+      replacement: {
+        body: 'Is the newly promoted build deployed?',
+        topics: ['release', 'deploy'],
+      },
+    });
+
+    if ('error' in result) throw new Error(result.error);
+    expect(result.conversation.state).toBe('superseded');
+    expect(result.conversation.superseded_by).toBe(result.replacement.conversation.id);
+    expect(result.replacement.conversation.state).toBe('open');
+    expect(result.replacement.conversation.body).toBe('Is the newly promoted build deployed?');
+    expect((await store.list({ state: 'open' })).map((r) => r.id)).toEqual([result.replacement.conversation.id]);
+    expect((await tags.listTags({ kind: 'conversation', ref: result.replacement.conversation.id })).sort()).toEqual(['deploy', 'release']);
+    expect(sinkBox.inbox.follower?.[0]).toMatchObject({
+      notify_kind: 'conversation_superseded',
+      superseded_by: result.replacement.conversation.id,
+    });
+    expect(await postReplyCore(deps, ident('latecomer'), { conversation_id: old.conversation.id, body: 'stale reply' })).toEqual({
+      error: 'superseded',
+    });
+  });
+
+  it('rejects a second supersession and a blank replacement without changing the gate', async () => {
+    const old = await openConversationCore(deps, ident('asker'), { kind: 'question', body: 'original' });
+    expect(await supersedeConversationCore(deps, ident('asker'), {
+      conversation_id: old.conversation.id,
+      replacement: { body: 'corrected' },
+    })).not.toHaveProperty('error');
+    expect(await supersedeConversationCore(deps, ident('asker'), {
+      conversation_id: old.conversation.id,
+      replacement: { body: 'another correction' },
+    })).toEqual({ error: 'already_superseded' });
+
+    const fresh = await openConversationCore(deps, ident('asker'), { kind: 'question', body: 'fresh' });
+    expect(await supersedeConversationCore(deps, ident('asker'), {
+      conversation_id: fresh.conversation.id,
+      replacement: { body: '   ' },
+    })).toEqual({ error: 'invalid_replacement' });
+    expect((await store.get(fresh.conversation.id))?.state).toBe('open');
   });
 });
 

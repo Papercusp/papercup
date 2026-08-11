@@ -733,6 +733,7 @@ import './coordination/tools/conversations-join';
 import './coordination/tools/conversations-list';
 import './coordination/tools/conversations-get';
 import './coordination/tools/conversations-promote';
+import './coordination/tools/conversations-supersede';
 
 // Self-improvement loop — capture + triage + the resolve back-edge
 // (papercusp-self-improvement-loop-2026-06-04 Phase 1 + 2;

@@ -76,6 +76,8 @@ export interface CoordOpCaps {
     kind?: 'question' | 'discussion';
     topics?: string[];
     harness?: string;
+    /** Replace an open owner ask instead of creating a second live gate. */
+    supersedes_conversation_id?: string;
   }): Promise<{ thread_id: string; conversation_id: string }>;
 
   /** Post to a thread. Wraps `conversations.postReply` / `answerQuestion`. */

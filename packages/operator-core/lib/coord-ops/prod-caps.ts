@@ -25,6 +25,7 @@ import {
   openConversation,
   postReply,
   getConversation,
+  supersedeConversation,
 } from '../agent-tools/coordination/conversations.js';
 import { openEscalation } from '../agent-tools/coordination/escalations.js';
 import { sendMessage } from '../agent-tools/coordination/messages.js';
@@ -85,9 +86,25 @@ export function buildCoordOpCaps(base: CoordOpEnvBase): CoordOpCaps {
 
   const caps: CoordOpCaps = {
     async openThread(input) {
+      const body = input.body ?? input.title ?? 'Coordination thread';
+      if (input.supersedes_conversation_id) {
+        const r = await supersedeConversation(identity, {
+          conversation_id: input.supersedes_conversation_id,
+          replacement: {
+            kind: input.kind ?? 'discussion',
+            body,
+            title: input.title,
+            topics: input.topics,
+          },
+        });
+        if ('error' in r) {
+          throw new Error(`coord-op openThread: cannot supersede ${input.supersedes_conversation_id} (${r.error})`);
+        }
+        return { thread_id: r.replacement.thread_id, conversation_id: r.replacement.conversation.id };
+      }
       const r = await openConversation(identity, {
         kind: input.kind ?? 'discussion',
-        body: input.body ?? input.title ?? 'Coordination thread',
+        body,
         title: input.title,
         topics: input.topics,
         harness_slug: input.harness,

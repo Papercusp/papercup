@@ -21,8 +21,12 @@ import type { LifecycleState } from '@papercusp/coordination/capabilities';
 
 export type ConversationKind = 'question' | 'discussion';
 export type ConversationScope = 'operator' | 'harness';
-// Canonical lifecycle vocabulary (P-007) — one definition across all ObjectRefs.
-export type ConversationState = LifecycleState;
+// Canonical lifecycle vocabulary (P-007) plus the conversation-specific terminal
+// state used when an ask is retracted in favor of a replacement. The substrate's
+// generic LifecycleState intentionally stays unchanged; only conversations have
+// this extra state because a retracted question must be visible as such rather
+// than looking like an unresolved gate.
+export type ConversationState = LifecycleState | 'superseded';
 
 export const CONVERSATION_KINDS: readonly ConversationKind[] = ['question', 'discussion'];
 
@@ -39,10 +43,13 @@ export interface ConversationRow {
   accepted_post_id: number | null;
   capture_target: string | null;
   promoted_issue_id: string | null;
+  /** The replacement conversation when this ask was retracted. */
+  superseded_by: string | null;
   /** ISO-8601. */
   created_ts: string;
   updated_ts: string;
   resolved_ts: string | null;
+  superseded_ts: string | null;
 }
 
 export interface CreateConversationInput {
@@ -118,9 +125,11 @@ interface ConversationRowDb {
   accepted_post_id: string | number | null;
   capture_target: string | null;
   promoted_issue_id: string | null;
+  superseded_by: string | null;
   created_at: unknown;
   updated_at: unknown;
   resolved_at: unknown;
+  superseded_at: unknown;
 }
 
 function toRow(r: ConversationRowDb): ConversationRow {
@@ -137,14 +146,26 @@ function toRow(r: ConversationRowDb): ConversationRow {
     accepted_post_id: r.accepted_post_id == null ? null : Number(r.accepted_post_id),
     capture_target: r.capture_target,
     promoted_issue_id: r.promoted_issue_id,
+    superseded_by: r.superseded_by,
     created_ts: tsToIso(r.created_at),
     updated_ts: tsToIso(r.updated_at),
     resolved_ts: tsToIsoOrNull(r.resolved_at),
+    superseded_ts: tsToIsoOrNull(r.superseded_at),
   };
 }
 
 const SELECT_COLS = `id, kind, scope, harness_slug, asker_id, title, body, state,
-  accepted_answer, accepted_post_id, capture_target, promoted_issue_id, created_at, updated_at, resolved_at`;
+  accepted_answer, accepted_post_id, capture_target, promoted_issue_id, superseded_by,
+  created_at, updated_at, resolved_at, superseded_at`;
+
+export interface SupersedeStoreResult {
+  conversation: ConversationRow;
+  replacement: ConversationRow;
+}
+
+export type SupersedeStoreError =
+  | { error: 'not_found' }
+  | { error: 'not_open'; conversation: ConversationRow };
 
 /** The same column list QUALIFIED to the `c` alias, for the list query's LEFT JOIN
  *  against coord_threads. Required, not cosmetic: coord_threads also has `title`,
@@ -227,8 +248,65 @@ export class PgConversationStore {
       UPDATE harness_shared.coord_conversations
          SET state = ${state},
              updated_at = ${opts.now_ts},
-             resolved_at = ${state === 'resolved' ? opts.now_ts : null}
+             resolved_at = ${state === 'resolved' ? opts.now_ts : null},
+             superseded_by = CASE WHEN ${state} = 'superseded' THEN superseded_by ELSE NULL END,
+             superseded_at = CASE WHEN ${state} = 'superseded' THEN superseded_at ELSE NULL END
        WHERE workspace_id = ${this.ws} AND id = ${id}`;
+  }
+
+  /**
+   * Atomically retire an open conversation and insert its replacement. The
+   * replacement row is the durable gate; thread/tags/subscriptions are
+   * materialized by the workflow immediately after this row transaction.
+   * Locking the old row prevents two agents from superseding the same gate and
+   * leaving multiple live replacements.
+   */
+  async supersede(
+    id: string,
+    replacement: CreateConversationInput,
+    opts: { now_ts: string },
+  ): Promise<SupersedeStoreResult | SupersedeStoreError> {
+    await this.opts.ensureSchema();
+    const sql = this.opts.getSql();
+    return sql.begin(async (tx) => {
+      const oldRows = await tx<ConversationRowDb[]>`
+        SELECT ${tx.unsafe(SELECT_COLS)}
+          FROM harness_shared.coord_conversations
+         WHERE workspace_id = ${this.ws} AND id = ${id}
+         FOR UPDATE`;
+      const old = oldRows[0];
+      if (!old) return { error: 'not_found' as const };
+      if (old.state !== 'open') return { error: 'not_open' as const, conversation: toRow(old) };
+
+      await tx`
+        INSERT INTO harness_shared.coord_conversations
+          (workspace_id, id, kind, scope, harness_slug, asker_id, title, body, created_at, updated_at)
+        VALUES (${this.ws}, ${replacement.id}, ${replacement.kind}, ${replacement.scope},
+                ${replacement.harness_slug ?? null}, ${replacement.asker_id},
+                ${replacement.title ?? null}, ${replacement.body},
+                ${replacement.created_ts}, ${replacement.created_ts})`;
+      await tx`
+        UPDATE harness_shared.coord_conversations
+           SET state = 'superseded',
+               superseded_by = ${replacement.id},
+               superseded_at = ${opts.now_ts},
+               updated_at = ${opts.now_ts},
+               resolved_at = NULL
+         WHERE workspace_id = ${this.ws} AND id = ${id}`;
+
+      const updatedOldRows = await tx<ConversationRowDb[]>`
+        SELECT ${tx.unsafe(SELECT_COLS)}
+          FROM harness_shared.coord_conversations
+         WHERE workspace_id = ${this.ws} AND id = ${id}`;
+      const replacementRows = await tx<ConversationRowDb[]>`
+        SELECT ${tx.unsafe(SELECT_COLS)}
+          FROM harness_shared.coord_conversations
+         WHERE workspace_id = ${this.ws} AND id = ${replacement.id}`;
+      return {
+        conversation: toRow(updatedOldRows[0] ?? old),
+        replacement: toRow(replacementRows[0]!),
+      };
+    }) as Promise<SupersedeStoreResult | SupersedeStoreError>;
   }
 
   /** Record the accepted answer + where it was captured (D-004). */
@@ -333,18 +411,29 @@ export async function ensureConversationsTable(sql: Sql): Promise<void> {
       accepted_post_id bigint,
       capture_target   text,
       promoted_issue_id text,
+      superseded_by text,
       created_at       timestamptz NOT NULL DEFAULT now(),
       updated_at       timestamptz NOT NULL DEFAULT now(),
       resolved_at      timestamptz,
+      superseded_at    timestamptz,
       PRIMARY KEY (workspace_id, id),
       CONSTRAINT coord_conversations_kind_check  CHECK (kind  = ANY (ARRAY['question','discussion'])),
       CONSTRAINT coord_conversations_scope_check CHECK (scope = ANY (ARRAY['operator','harness'])),
-      CONSTRAINT coord_conversations_state_check CHECK (state = ANY (ARRAY['open','resolved','closed'])),
+      CONSTRAINT coord_conversations_state_check CHECK (state = ANY (ARRAY['open','resolved','closed','superseded'])),
       CONSTRAINT coord_conversations_scope_slug_check CHECK (
           (scope = 'harness'  AND harness_slug IS NOT NULL AND harness_slug <> '')
        OR (scope = 'operator' AND harness_slug IS NULL)
       )
     )`;
+  await sql`
+    ALTER TABLE harness_shared.coord_conversations
+      ADD COLUMN IF NOT EXISTS superseded_by text,
+      ADD COLUMN IF NOT EXISTS superseded_at timestamptz`;
+  await sql`ALTER TABLE harness_shared.coord_conversations DROP CONSTRAINT IF EXISTS coord_conversations_state_check`;
+  await sql`
+    ALTER TABLE harness_shared.coord_conversations
+      ADD CONSTRAINT coord_conversations_state_check
+      CHECK (state = ANY (ARRAY['open','resolved','closed','superseded']))`;
   await sql`
     CREATE INDEX IF NOT EXISTS coord_conversations_open_idx
       ON harness_shared.coord_conversations (workspace_id, kind, created_at DESC)

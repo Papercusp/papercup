@@ -101,6 +101,11 @@ export const askArgs = z.object({
   timeout_s: z.number().nonnegative().default(120),
   poll_ms: z.number().int().positive().default(2000),
   topics: z.array(z.string()).optional(),
+  /** Replace a stale/unanswerable owner gate while keeping the replacement a
+   *  real conversation and retiring the old gate durably. */
+  supersedes_conversation_id: z.string().min(1).optional().describe(
+    'When correcting an existing owner ask, pass its conversation_id so the old gate is retracted and this replacement is opened durably.',
+  ),
 });
 
 const askResult = z.object({
@@ -123,6 +128,7 @@ export const askOp: CoordOp<z.infer<typeof askArgs>, z.infer<typeof askResult>> 
       kind: 'question',
       topics: a.topics,
       harness: ctx.harnessSlug,
+      supersedes_conversation_id: a.supersedes_conversation_id,
     });
     // Land it in the human's inbox so the ask is actually seen. This is the
     // DECISION-tier leg of the ask (escalationToAttention: blocker/question →

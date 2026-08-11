@@ -133,6 +133,7 @@ import {
   postReplyCore,
   answerQuestionCore,
   resolveConversationCore,
+  supersedeConversationCore,
   promoteConversationCore,
   type ConversationDeps,
   type ConversationDetail,
@@ -145,6 +146,8 @@ import {
   type PromoteConversationResult,
   type ResolveInput,
   type ResolveResult,
+  type SupersedeConversationInput,
+  type SupersedeConversationResult,
 } from './conversations-core';
 import type { AgentIdentity } from './identity';
 import type { ConversationRow, ListConversationsOpts } from './conversations-store';
@@ -207,6 +210,8 @@ export type {
   PostResult,
   ResolveInput,
   ResolveResult,
+  SupersedeConversationInput,
+  SupersedeConversationResult,
 } from './conversations-core';
 
 export function openConversation(identity: AgentIdentity, input: OpenConversationInput): Promise<OpenConversationResult> {
@@ -218,14 +223,14 @@ export function openConversation(identity: AgentIdentity, input: OpenConversatio
 export function postReply(
   identity: AgentIdentity,
   input: { conversation_id: string; body: string; mentions?: string[] },
-): Promise<PostResult | { error: 'not_found' } | { error: 'resolved' } | { error: 'closed' }> {
+): Promise<PostResult | { error: 'not_found' } | { error: 'resolved' } | { error: 'closed' } | { error: 'superseded' }> {
   return withConversationsIdentityScope(identity, undefined, () => postReplyCore(deps, identity, input));
 }
 
 export function answerQuestion(
   identity: AgentIdentity,
   input: { conversation_id: string; body: string; mentions?: string[] },
-): Promise<PostResult | { error: 'not_found' } | { error: 'resolved' } | { error: 'closed' }> {
+): Promise<PostResult | { error: 'not_found' } | { error: 'resolved' } | { error: 'closed' } | { error: 'superseded' }> {
   return withConversationsIdentityScope(identity, undefined, () => answerQuestionCore(deps, identity, input));
 }
 
@@ -291,6 +296,48 @@ export async function resolveConversation(
   return result;
 }
 
+export async function supersedeConversation(
+  identity: AgentIdentity,
+  input: SupersedeConversationInput,
+): Promise<
+  | SupersedeConversationResult
+  | { error: 'not_found' }
+  | { error: 'already_superseded' }
+  | { error: 'already_terminal' }
+  | { error: 'invalid_replacement' }
+> {
+  const result = await withConversationsIdentityScope(identity, undefined, () =>
+    supersedeConversationCore(deps, identity, input),
+  );
+  if (!('error' in result)) {
+    // A coord:ask-owner has a Decision-tier escalation twin. Retiring the
+    // conversation must retire that twin too, or a retracted question remains
+    // a visible owner gate even though the replacement is the live question.
+    void (async () => {
+      const [{ selectEscalationsForConversation, SUPERSEDED_QUESTION_RESOLVER, SUPERSEDED_QUESTION_CHOICE }, { listEscalations, resolveEscalationsBatch }] =
+        await Promise.all([
+          import('../../attention/conversation-escalation-link.js'),
+          import('./escalations.js'),
+        ]);
+      const opens = await listEscalations({ status: 'open' });
+      const msgIds = selectEscalationsForConversation(
+        opens as unknown as { msg_id: string }[],
+        result.conversation.id,
+      );
+      if (msgIds.length === 0) return;
+      await resolveEscalationsBatch(
+        msgIds.map((msg_id) => ({
+          msg_id,
+          choice: SUPERSEDED_QUESTION_CHOICE,
+          resolver: SUPERSEDED_QUESTION_RESOLVER,
+          note: `superseded by conversation ${result.replacement.conversation.id}`,
+        })),
+      );
+    })().catch(() => {});
+  }
+  return result;
+}
+
 export function joinConversation(
   identity: AgentIdentity,
   input: { conversation_id: string; mode?: DeliveryMode; ttl_sec?: number },
@@ -329,6 +376,6 @@ export function getConversation(id: string, identity?: AgentIdentity): Promise<C
 export function promoteConversation(
   identity: AgentIdentity,
   input: PromoteConversationInput,
-): Promise<PromoteConversationResult | { error: 'not_found' } | { error: 'already_promoted' } | { error: 'promote_unavailable' }> {
+): Promise<PromoteConversationResult | { error: 'not_found' } | { error: 'already_promoted' } | { error: 'already_terminal' } | { error: 'promote_unavailable' }> {
   return withConversationsIdentityScope(identity, undefined, () => promoteConversationCore(deps, identity, input));
 }

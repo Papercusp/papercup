@@ -34,6 +34,8 @@ import type {
   ConversationState,
   CreateConversationInput,
   ListConversationsOpts,
+  SupersedeStoreError,
+  SupersedeStoreResult,
 } from './conversations-store';
 import type { CaptureResult, CaptureTarget } from './answer-capture';
 
@@ -43,6 +45,11 @@ export interface ConversationStoreLike {
   get(id: string): Promise<ConversationRow | null>;
   list(opts?: ListConversationsOpts): Promise<ConversationRow[]>;
   setState(id: string, state: ConversationState, opts: { now_ts: string }): Promise<void>;
+  supersede(
+    id: string,
+    replacement: CreateConversationInput,
+    opts: { now_ts: string },
+  ): Promise<SupersedeStoreResult | SupersedeStoreError>;
   setAcceptedAnswer(id: string, input: { answer: string; post_id?: number | null; capture_target?: string | null; now_ts: string }): Promise<void>;
   setPromoted(id: string, input: { issue_id: string; now_ts: string }): Promise<void>;
   touch(id: string, now_ts: string): Promise<void>;
@@ -180,27 +187,19 @@ export interface OpenConversationResult {
   direct_to: string[];
 }
 
-export async function openConversationCore(
+/** Materialize the shared thread/tag/subscription/fan-out half of an open.
+ * Supersession uses the same path after its row-level transaction has inserted
+ * the replacement, so the old gate can never remain open while the replacement
+ * is being created. */
+async function materializeOpenedConversation(
   deps: ConversationDeps,
   identity: AgentIdentity,
   input: OpenConversationInput,
+  conversation: ConversationRow,
 ): Promise<OpenConversationResult> {
   const now = deps.nowIso();
-  const id = deps.newId('conv');
-  // allow-scope-default: no harness ⇒ an operator-level conversation (the explicit top scope, not a workspace).
-  const scope: ConversationScope = input.harness_slug ? 'harness' : input.scope ?? 'operator';
-  const harness_slug = scope === 'harness' ? input.harness_slug ?? null : null;
-
-  const conversation = await deps.conversations.create({
-    id,
-    kind: input.kind,
-    scope,
-    harness_slug,
-    asker_id: identity.ownerId,
-    title: input.title ?? null,
-    body: input.body,
-    created_ts: now,
-  });
+  const id = conversation.id;
+  const harness_slug = conversation.harness_slug;
 
   const thread = await deps.threads.getOrCreateThread(convRef(id), {
     // Deterministic thread_id derived from the conversation id, so every machine
@@ -277,6 +276,118 @@ export async function openConversationCore(
   };
 }
 
+export async function openConversationCore(
+  deps: ConversationDeps,
+  identity: AgentIdentity,
+  input: OpenConversationInput,
+): Promise<OpenConversationResult> {
+  const now = deps.nowIso();
+  const id = deps.newId('conv');
+  // allow-scope-default: no harness ⇒ an operator-level conversation (the explicit top scope, not a workspace).
+  const scope: ConversationScope = input.harness_slug ? 'harness' : input.scope ?? 'operator';
+  const harness_slug = scope === 'harness' ? input.harness_slug ?? null : null;
+  const conversation = await deps.conversations.create({
+    id,
+    kind: input.kind,
+    scope,
+    harness_slug,
+    asker_id: identity.ownerId,
+    title: input.title ?? null,
+    body: input.body,
+    created_ts: now,
+  });
+  return materializeOpenedConversation(deps, identity, input, conversation);
+}
+
+// ── Supersede ───────────────────────────────────────────────────────────────
+
+export interface SupersedeConversationInput {
+  conversation_id: string;
+  replacement: {
+    body: string;
+    title?: string;
+    topics?: string[];
+    direct_to?: string[];
+    kind?: ConversationKind;
+  };
+  reason?: string;
+}
+
+export interface SupersedeConversationResult {
+  conversation: ConversationRow;
+  replacement: OpenConversationResult;
+  delivered: number;
+}
+
+export async function supersedeConversationCore(
+  deps: ConversationDeps,
+  identity: AgentIdentity,
+  input: SupersedeConversationInput,
+): Promise<
+  | SupersedeConversationResult
+  | { error: 'not_found' }
+  | { error: 'already_superseded' }
+  | { error: 'already_terminal' }
+  | { error: 'invalid_replacement' }
+> {
+  const old = await deps.conversations.get(input.conversation_id);
+  if (!old) return { error: 'not_found' };
+  if (old.state === 'superseded') return { error: 'already_superseded' };
+  if (old.state !== 'open') return { error: 'already_terminal' };
+  if (!input.replacement.body.trim()) return { error: 'invalid_replacement' };
+
+  const now = deps.nowIso();
+  const replacementInput: CreateConversationInput = {
+    id: deps.newId('conv'),
+    kind: input.replacement.kind ?? old.kind,
+    scope: old.scope,
+    harness_slug: old.harness_slug,
+    asker_id: identity.ownerId,
+    title: input.replacement.title ?? old.title,
+    body: input.replacement.body,
+    created_ts: now,
+  };
+  const swapped = await deps.conversations.supersede(old.id, replacementInput, { now_ts: now });
+  if ('error' in swapped) {
+    if (swapped.error === 'not_found') return swapped;
+    return swapped.conversation.state === 'superseded'
+      ? { error: 'already_superseded' }
+      : { error: 'already_terminal' };
+  }
+
+  const replacement = await materializeOpenedConversation(
+    deps,
+    identity,
+    {
+      kind: replacementInput.kind,
+      body: replacementInput.body,
+      title: replacementInput.title ?? undefined,
+      topics: input.replacement.topics,
+      scope: replacementInput.scope,
+      harness_slug: replacementInput.harness_slug ?? undefined,
+      direct_to: input.replacement.direct_to,
+    },
+    swapped.replacement,
+  );
+
+  const reason = input.reason?.trim() || 'The premise or requested answer changed.';
+  const ev: InjectEvent = {
+    from: identity.ownerId,
+    subject: `conversation:${old.id}`,
+    summary: `↩️ retracted ${old.kind} ${old.id}; replacement ${replacement.conversation.id}`,
+    body: `${reason} Replacement conversation: ${replacement.conversation.id}`,
+    notify_kind: 'conversation_superseded',
+    isResolution: true,
+    extra: {
+      superseded_by: replacement.conversation.id,
+      superseded_reason: reason,
+    },
+  };
+  const delivered = await fanout(deps, convRef(old.id), ev, identity.ownerId);
+  const updated = (await deps.conversations.get(old.id)) ?? swapped.conversation;
+  return { conversation: updated, replacement, delivered };
+}
+
 // ── Post / answer ────────────────────────────────────────────────────────────
 
 export interface PostResult {
@@ -290,7 +401,7 @@ async function appendPost(
   conversationId: string,
   body: string,
   opts: { isAnswer: boolean; mentions?: string[] },
-): Promise<PostResult | { error: 'not_found' } | { error: 'resolved' } | { error: 'closed' }> {
+): Promise<PostResult | { error: 'not_found' } | { error: 'resolved' } | { error: 'closed' } | { error: 'superseded' }> {
   const conv = await deps.conversations.get(conversationId);
   if (!conv) return { error: 'not_found' };
   // A terminal conversation no longer takes posts (P1-17): a resolved question
@@ -298,6 +409,7 @@ async function appendPost(
   // here would silently land a post nobody is watching the conversation for.
   if (conv.state === 'resolved') return { error: 'resolved' };
   if (conv.state === 'closed') return { error: 'closed' };
+  if (conv.state === 'superseded') return { error: 'superseded' };
   const now = deps.nowIso();
 
   // The durable write — get-or-create the conversation's thread, then append the
@@ -340,7 +452,7 @@ export function postReplyCore(
   deps: ConversationDeps,
   identity: AgentIdentity,
   input: { conversation_id: string; body: string; mentions?: string[] },
-): Promise<PostResult | { error: 'not_found' } | { error: 'resolved' } | { error: 'closed' }> {
+): Promise<PostResult | { error: 'not_found' } | { error: 'resolved' } | { error: 'closed' } | { error: 'superseded' }> {
   return appendPost(deps, identity, input.conversation_id, input.body, { isAnswer: false, mentions: input.mentions });
 }
 
@@ -348,7 +460,7 @@ export function answerQuestionCore(
   deps: ConversationDeps,
   identity: AgentIdentity,
   input: { conversation_id: string; body: string; mentions?: string[] },
-): Promise<PostResult | { error: 'not_found' } | { error: 'resolved' } | { error: 'closed' }> {
+): Promise<PostResult | { error: 'not_found' } | { error: 'resolved' } | { error: 'closed' } | { error: 'superseded' }> {
   return appendPost(deps, identity, input.conversation_id, input.body, { isAnswer: true, mentions: input.mentions });
 }
 
@@ -379,7 +491,7 @@ export async function resolveConversationCore(
   // corrupting the record the first resolver captured. The accepted answer is
   // immutable once set; a genuine correction is a fresh conversation, not a
   // re-resolve. (A promoted-closed conversation is likewise terminal.)
-  if (conv.state === 'resolved' || conv.state === 'closed') return { error: 'already_resolved' };
+  if (conv.state === 'resolved' || conv.state === 'closed' || conv.state === 'superseded') return { error: 'already_resolved' };
   const now = deps.nowIso();
 
   let answer = input.accepted_answer?.trim();
@@ -532,11 +644,12 @@ export async function promoteConversationCore(
   deps: ConversationDeps,
   identity: AgentIdentity,
   input: PromoteConversationInput,
-): Promise<PromoteConversationResult | { error: 'not_found' } | { error: 'already_promoted' } | { error: 'promote_unavailable' }> {
+): Promise<PromoteConversationResult | { error: 'not_found' } | { error: 'already_promoted' } | { error: 'already_terminal' } | { error: 'promote_unavailable' }> {
   if (!deps.promote) return { error: 'promote_unavailable' };
   const conv = await deps.conversations.get(input.conversation_id);
   if (!conv) return { error: 'not_found' };
   if (conv.promoted_issue_id) return { error: 'already_promoted' };
+  if (conv.state === 'superseded') return { error: 'already_terminal' };
   const now = deps.nowIso();
 
   // engineer_issues encodes the harness in its scope STRING ('operator' | 'harness:<slug>').
