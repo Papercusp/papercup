@@ -75,6 +75,11 @@ export interface CorestoreCutSpec {
    * (byte-identical to pre-P-004). See {@link CorestoreCutContext.sparse}.
    */
   readonly sparse?: boolean;
+  /**
+   * Release-only privacy projection. When true, cut a fresh filtered snapshot core
+   * instead of copying the private author-log bytes into the public seed.
+   */
+  readonly filtered?: boolean;
 }
 
 export interface HiveSeedCutInputs {
@@ -196,6 +201,7 @@ export async function cutHiveSeed(inputs: HiveSeedCutInputs): Promise<HiveSeedCu
       coreKeys: corestore.coreKeys,
       stagingDir,
       ...(corestore.sparse ? { sparse: true } : {}),
+      ...(corestore.filtered ? { filtered: true } : {}),
     });
     stores.push({ ...entry, source: { type: 'resource', path: CORESTORE_SUBDIR } });
     sizes.push({ kind: entry.kind, subdir: CORESTORE_SUBDIR, sizeBytes: entry.sizeBytes, encrypted: false });

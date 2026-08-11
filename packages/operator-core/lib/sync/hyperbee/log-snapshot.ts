@@ -109,6 +109,12 @@ export interface SnapshotPayload {
   chunkCount?: number;
 }
 
+/** Seed-only value projection applied while folding a private log into a public snapshot. */
+export type SnapshotValueTransform = (value: unknown, context: {
+  table: string;
+  hbKey: string;
+}) => unknown;
+
 /** True iff `op` is a snapshot op (reserved table tag). */
 export function isSnapshotOp(op: { table?: string } | null | undefined): boolean {
   return !!op && op.table === SNAPSHOT_TABLE_TAG;
@@ -196,9 +202,15 @@ export class SnapshotRowFolder {
    * they carry identity.
    */
   private readonly excludeTables: ReadonlySet<string>;
+  /** Optional seed-only projection; omitted callers remain byte-for-byte unchanged. */
+  private readonly transformValue?: SnapshotValueTransform;
 
-  constructor(opts?: { excludeTables?: Iterable<string> }) {
+  constructor(opts?: {
+    excludeTables?: Iterable<string>;
+    transformValue?: SnapshotValueTransform;
+  }) {
     this.excludeTables = new Set(opts?.excludeTables ?? []);
+    this.transformValue = opts?.transformValue;
   }
 
   /** Number of distinct keys folded so far — the real bound on peak retention. */
@@ -215,7 +227,13 @@ export class SnapshotRowFolder {
       if (payload && Array.isArray(payload.rows)) {
         for (const r of payload.rows) {
           if (this.excludeTables.has(r.table)) continue;
-          this.latest.set(`${r.table}::${r.hbKey}`, r);
+          const value = this.transformValue
+            ? this.transformValue(r.value, { table: r.table, hbKey: r.hbKey })
+            : r.value;
+          this.latest.set(
+            `${r.table}::${r.hbKey}`,
+            value === r.value ? r : { ...r, value },
+          );
         }
       }
       return;
@@ -223,10 +241,13 @@ export class SnapshotRowFolder {
     if (this.excludeTables.has(op.table)) return;
     const key = `${op.table}::${op.hbKey}`;
     if (op.type === 'put') {
+      const value = this.transformValue
+        ? this.transformValue(op.value, { table: op.table, hbKey: op.hbKey })
+        : op.value;
       this.latest.set(key, {
         table: op.table,
         hbKey: op.hbKey,
-        value: op.value,
+        value,
         ts: op.ts,
         schema_version: op.schema_version,
         ...(op.hlc ? { hlc: op.hlc } : {}),
@@ -735,6 +756,8 @@ export async function produceFilteredSnapshotIntoLog(
     now: number;
     schemaVersion: number;
     excludeTables?: Iterable<string>;
+    /** Optional seed-only value projection; never used by the live-log producer. */
+    transformValue?: SnapshotValueTransform;
     maxChunkBytes?: number;
   },
 ): Promise<ProduceSnapshotResult> {
@@ -752,7 +775,10 @@ export async function produceFilteredSnapshotIntoLog(
     return { appended: false, coversUpTo: targetLog.length, rowCount: 0, chunkCount: 0 };
   }
 
-  const folder = new SnapshotRowFolder({ excludeTables: opts.excludeTables });
+  const folder = new SnapshotRowFolder({
+    excludeTables: opts.excludeTables,
+    transformValue: opts.transformValue,
+  });
   await foldLogRangeInto(sourceLog, folder, 0, sourceLog.length);
 
   const rows = folder.finish({ now: opts.now });

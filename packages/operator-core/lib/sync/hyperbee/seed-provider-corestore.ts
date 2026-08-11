@@ -83,6 +83,25 @@ export interface MintedSeedCore {
 }
 
 /**
+ * Public seed content must not carry email-shaped identity values from private plan
+ * metadata or prose. This is deliberately shape-based: the release cutter cannot know
+ * every address a person has used, while a generic email is still private data. Binary /
+ * encrypted values are left untouched by the recursive projection below.
+ */
+const SEED_EMAIL_PATTERN = /[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,24}/g;
+
+export function redactSeedValue(value: unknown): unknown {
+  if (typeof value === 'string') return value.replace(SEED_EMAIL_PATTERN, '[email]');
+  if (value === null || typeof value !== 'object') return value;
+  if (value instanceof Uint8Array || value instanceof ArrayBuffer) return value;
+  if (Array.isArray(value)) return value.map((item) => redactSeedValue(item));
+
+  const out: Record<string, unknown> = {};
+  for (const [key, child] of Object.entries(value)) out[key] = redactSeedValue(child);
+  return out;
+}
+
+/**
  * Mint the seed's CONTENT core: one filtered snapshot of the owner's log, in a core
  * the owner never wrote (EI-20108164746219771).
  *
@@ -128,6 +147,7 @@ export async function mintFilteredSeedContentCore(inp: {
         now: inp.now ?? Date.now(),
         schemaVersion: CURRENT_SCHEMA_VERSION,
         excludeTables: inp.excludeTables ?? SEED_EXCLUDED_TABLES,
+        transformValue: redactSeedValue,
       });
       if (!produced.appended) {
         throw new Error(
@@ -207,6 +227,11 @@ export interface CorestoreCutContext {
    * the pre-P-004 behavior.
    */
   readonly sparse?: boolean;
+  /**
+   * Release-only privacy projection. The filtered snapshot is minted into a fresh
+   * read-only core so the live source log is never rewritten or made unreachable.
+   */
+  readonly filtered?: boolean;
 }
 
 /** Context for {@link createCorestoreSeedProvider}.restore (first-boot time). */
@@ -445,8 +470,50 @@ export function createCorestoreSeedProvider(): SeedProvider {
     kind: CORESTORE_SEED_KIND,
 
     async cut(ctx: SeedCutContext): Promise<SeedCutOutput> {
-      const { sourceStore, coreKeys, stagingDir, sparse } = ctx as unknown as CorestoreCutContext;
+      const { sourceStore, coreKeys, stagingDir, sparse, filtered } = ctx as unknown as CorestoreCutContext;
       await mkdir(stagingDir, { recursive: true });
+
+      if (filtered) {
+        const replica = new Corestore(stagingDir);
+        await replica.ready();
+        const filteredCoreKeys: string[] = [];
+        const coreLengths: Record<string, number> = {};
+        try {
+          for (const ownerKeyHex of coreKeys) {
+            const minted = await mintFilteredSeedContentCore({
+              sourceStore,
+              ownerKeyHex,
+              stagingStore: replica,
+            });
+            filteredCoreKeys.push(minted.keyHex);
+            coreLengths[minted.keyHex] = minted.length;
+            await assertShippedRangeCarriesNoExcludedTables({
+              store: replica,
+              keyHex: minted.keyHex,
+              from: 0,
+              len: minted.length,
+              excludeTables: SEED_EXCLUDED_TABLES,
+            });
+          }
+        } finally {
+          await replica.close();
+        }
+
+        const hash = await hashDir(stagingDir);
+        const sizeBytes = await dirSize(stagingDir);
+        const entry: SeedStoreEntry = {
+          kind: CORESTORE_SEED_KIND,
+          hash,
+          sizeBytes,
+          source: { type: 'resource', path: stagingDir },
+          // This is a complete current-state projection, not a source-log suffix. Do not
+          // label it sparse: a start index of 0 is honest here and must not trip the
+          // history-degradation guard as though a private prefix had been dropped.
+          meta: { coreKeys: filteredCoreKeys, coreLengths },
+        };
+        return { entry, payload: { path: stagingDir } };
+      }
+
       // P-004 — sparse: resolve each core's suffix start from the FULL source
       // (all blocks local, no replication for the scan) BEFORE downloading. The
       // reader seeds its cursor to the SAME index (findLatestCompleteSnapshot), so

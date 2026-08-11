@@ -1235,7 +1235,15 @@ async function main(): Promise<void> {
           '(pass --core-keys or run inside a swarm session — see plan P-007). New members still cold-catch the rest.',
       );
     }
-    corestore = { sourceStore: store!, coreKeys, ...(sparse ? { sparse: true as const } : {}) };
+    corestore = {
+      sourceStore: store!,
+      coreKeys,
+      ...(sparse ? { sparse: true as const } : {}),
+      // A public desktop seed is a release projection, not a byte-for-byte copy of the
+      // owner's private author log. The provider mints a fresh read-only snapshot core,
+      // redacts email-shaped values, and leaves the live source log untouched.
+      filtered: true,
+    };
   }
 
   // WI-3232 --reuse-corestore: preserve the existing corestore across the outDir wipe

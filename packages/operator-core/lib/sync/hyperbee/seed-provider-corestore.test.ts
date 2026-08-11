@@ -23,6 +23,7 @@ import {
   CORESTORE_SEED_KIND,
   mintFilteredSeedContentCore,
   SEED_EXCLUDED_TABLES,
+  type CorestoreCutContext,
 } from './seed-provider-corestore';
 import { produceLogSnapshot, SNAPSHOT_TABLE_TAG } from './log-snapshot';
 
@@ -372,6 +373,7 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
     cleanups.push(() => store.close());
     await store.ready();
     const own = await openOwnLog(store);
+    const privateEmail = `owner${'@'}example.org`;
     const op = (table: string, hbKey: string, value: unknown, ts: number): PeerLogOp => ({
       type: 'put',
       table,
@@ -381,13 +383,13 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
       schema_version: 1,
       author_pubkey: own.keyHex,
     });
-    await own.append(op('plans', 'p1', { title: 'intended content' }, 1));
+    await own.append(op('plans', 'p1', { title: 'intended content', owner: privateEmail }, 1));
     // Identity derived at RUNTIME — never a literal in tracked source (WI-4776). Writing
     // the real hostname in here would put the exact string this fix removes back into
     // shipped source and red the identity-lint gate.
     await own.append(op('presence', `${hostname()}`, { machine_label: hostname() }, 2));
     await own.append(op('usage', 'u1', { tokens: 5 }, 3));
-    return { store, own };
+    return { store, own, privateEmail };
   }
 
   async function stagingStore() {
@@ -405,7 +407,7 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
   }
 
   it('carries intended content, drops presence, KEEPS usage, and never writes the source', async () => {
-    const { store: src, own } = await sourceWithIdentity();
+    const { store: src, own, privateEmail } = await sourceWithIdentity();
     const lengthBefore = own.length;
     const staging = await stagingStore();
 
@@ -441,6 +443,8 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
     // SEED_EXCLUDED_TABLES docstring for why excluding it was a 1517-row own-goal.
     expect(tables.has('usage')).toBe(true);
     expect(bytes).not.toContain(hostname());
+    expect(bytes).not.toContain(privateEmail);
+    expect(bytes).toContain('[email]');
   });
 
   it('ships NO signing secret — the staging copy is a read-only replica', async () => {
@@ -461,6 +465,40 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
     const core = openReplica(staging, minted.keyHex);
     await core.ready();
     expect(core.writable).toBe(false);
+  });
+
+  it('release filtered cut emits a sanitized synthetic core and restores it offline', async () => {
+    const { store: src, own, privateEmail } = await sourceWithIdentity();
+    const provider = createCorestoreSeedProvider();
+    const stagingDir = tmpDir('papercusp-seed-filtered-cut-');
+
+    const { entry, payload } = await provider.cut({
+      sourceStore: src,
+      coreKeys: [own.keyHex],
+      stagingDir,
+      filtered: true,
+    } as CorestoreCutContext);
+    const meta = entry.meta as { coreKeys: string[]; coreLengths: Record<string, number>; coreSparseFrom?: unknown };
+    const [seedKey] = meta.coreKeys;
+    expect(seedKey).toBeDefined();
+    expect(seedKey).not.toBe(own.keyHex);
+    expect(meta.coreLengths[seedKey!]).toBeGreaterThan(0);
+    expect(meta.coreSparseFrom).toBeUndefined();
+    expect(await provider.verify(entry, payload)).toEqual({ ok: true });
+
+    const targetStoreDir = join(tmpDir('papercusp-seed-filtered-target-'), 'hyperbee');
+    await provider.restore(entry, payload, { targetStoreDir });
+    const target = makeStore(targetStoreDir);
+    await target.ready();
+    const core = openReplica(target, seedKey!);
+    await core.ready();
+    expect(core.length).toBe(meta.coreLengths[seedKey!]);
+
+    let bytes = '';
+    for (let i = 0; i < core.length; i++) bytes += JSON.stringify(await core.get(i, { wait: false }));
+    expect(bytes).not.toContain(privateEmail);
+    expect(bytes).toContain('[email]');
+    expect(bytes).not.toContain(hostname());
   });
 
   it('does not over-filter: only presence is excluded', () => {
