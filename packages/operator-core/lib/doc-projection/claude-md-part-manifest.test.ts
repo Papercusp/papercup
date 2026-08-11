@@ -6,7 +6,7 @@ import { fileURLToPath } from 'node:url';
 // @ts-expect-error — .mjs generator, no type declarations by design (it is a scripts/ tool).
 // Keep this import on ONE line: the directive suppresses the error TS reports on the module
 // specifier, so wrapping the clause moves that line and the directive reads as unused (TS2578).
-import { bootstrapExtent, buildManifest, extractParts, rangeBoundaryProblems } from '../../../../scripts/gen-claude-md-manifest.mjs';
+import { bootstrapExtent, buildManifest, extractParts, projectionSourceProblem, rangeBoundaryProblems } from '../../../../scripts/gen-claude-md-manifest.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, '../../../..');
@@ -184,6 +184,19 @@ describe('re-anchoring carries classification by CONTENT, not by line', () => {
     expect(problems).toEqual([]);
     expect(needsReview).toEqual([]);
     expect(departed).toEqual([]);
+  });
+
+  it('refuses to treat a post-projection client file as canonical source', () => {
+    const projected = '<!-- Projected from Postgres: harness_shared.harness_doc_parts (doc_id=claude-md, client=claude). -->\n\nrule one';
+    const prior = priorFor(projected);
+    const { manifest: rebuilt, problems } = buildManifest(projected, prior) as Reanchor;
+
+    expect(projectionSourceProblem(projected)).toMatch(/generated output/);
+    expect(problems).toHaveLength(1);
+    expect(problems[0]).toMatch(/Refusing to regenerate the manifest/);
+    // The derived parts may still be inspectable for diagnostics, but the CLI must refuse
+    // to write them; otherwise the missing prose rows are silently retired.
+    expect(rebuilt.summary.needsReview).toBe(0);
   });
 });
 
