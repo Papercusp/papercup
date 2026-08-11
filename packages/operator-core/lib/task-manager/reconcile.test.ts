@@ -236,6 +236,57 @@ describe('reconcile — residue (the no-escape signal)', () => {
     expect(r.unaccounted[0]!.scopeUnit).toBeNull();
   });
 
+  // ── EI-20185455308799001: the enrolment race ────────────────────────────────
+  //
+  // A managed `pc-*.scope` is minted BEFORE its fire-and-forget enrolment insert
+  // commits. A tick landing inside that window sees a scope no live row claims.
+  // Reporting it alarms on a process that is enrolling perfectly normally, which
+  // is what made the alert recur after every "unaccounted=0" verification.
+  //
+  // These four cases are deliberately paired: the first says the grace WORKS, and
+  // the other three say it is a grace and not a mute. Without the teeth cases,
+  // this change would be indistinguishable from silencing the alarm.
+  describe('enrolment-window grace', () => {
+    const GRACE = 60_000;
+
+    it('does NOT report a managed scope whose process is younger than the grace', () => {
+      const young = proc({ pid: 910, startedAtMs: NOW - 5_000 });
+      const r = reconcile([], [young], { now: NOW, graceMs: GRACE });
+      expect(r.unaccounted).toHaveLength(0);
+      // Recorded rather than dropped — "we saw it and it is too new to judge" is a
+      // different statement from "we saw nothing".
+      expect(r.tooYoung).toContain('aaa111');
+    });
+
+    it('TEETH: reports the SAME residue once it ages past the grace', () => {
+      const old = proc({ pid: 910, startedAtMs: NOW - (GRACE + 1_000) });
+      const r = reconcile([], [old], { now: NOW, graceMs: GRACE });
+      expect(r.unaccounted).toHaveLength(1);
+      expect(r.unaccounted[0]).toMatchObject({ scopeUnit: 'pc-aaa111.scope', pids: [910] });
+      expect(r.tooYoung).not.toContain('aaa111');
+    });
+
+    it('TEETH: reports residue whose age is UNKNOWN — an alarm that cannot measure must not assume innocence', () => {
+      const ageless = proc({ pid: 911, startedAtMs: null });
+      const r = reconcile([], [ageless], { now: NOW, graceMs: GRACE });
+      expect(r.unaccounted).toHaveLength(1);
+      expect(r.unaccounted[0]!.pids).toEqual([911]);
+    });
+
+    it('TEETH: the grace covers the enrolment race ONLY — a brand-new escape with no managed scope still reports at once', () => {
+      // No `pc-*` scope anywhere in the path: nothing ever minted a scope for this,
+      // so there is no pending insert it could be waiting on. Youth is irrelevant.
+      const escapee = proc({
+        pid: 912,
+        cgroupPath: `${OUR_SLICE}/papercusp-bash-job.slice`,
+        startedAtMs: NOW - 1_000,
+      });
+      const r = reconcile([], [escapee], { now: NOW, graceMs: GRACE });
+      expect(r.unaccounted).toHaveLength(1);
+      expect(r.unaccounted[0]!.scopeUnit).toBeNull();
+    });
+  });
+
   it('separates FOREIGN (outside our slice) from unaccounted — visibility, not control', () => {
     const r = reconcile(
       [],
