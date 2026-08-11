@@ -264,6 +264,14 @@ describe('ownerVisiblePromptText — what the OWNER sees in their chat pane (EI-
  *                                                     · # Kettle 21 · # Autonomous
  *                                                     loop check 15, 14d window)
  *
+ * A second agent censused the same population independently and agrees: 1,809 shown
+ * / ≥1,051 machine (58%), compaction preamble 368. Full table on WI-37953 — read it
+ * before adding a fourth shape here, so the next one added is the next BIGGEST one.
+ *
+ * The direct red evidence (WI-37953): calling the predicate on all three returns the
+ * text UNCHANGED — 247 / 29 / 186 chars, `isOwnerVisiblePrompt === true` for each.
+ * Nothing about these is hidden today; they are shown to the owner as their own words.
+ *
  * ⚠ WHY THESE ARE `it.fails` AND NOT PLAIN RED TESTS. The assertions below are the
  * real ones and they DO fail on today's predicate — the red run is recorded on
  * WI-37953. Committing them plain would red the green-checkpoint gate for the whole
