@@ -102,6 +102,9 @@ export interface ResolveNudgeRecipientOpts {
     workspaceId: string,
     ownerIds: readonly string[],
   ) => Promise<Map<string, ModeLike[]>>;
+  /** P-007 seam: the ACTIVE Blender-steward goal ids (see readBlenderGoalIds).
+   *  Injected in unit tests so tier 0 is assertable with no PG. */
+  readBlenderGoalIdsFn?: (workspaceId: string) => Promise<ReadonlySet<string>>;
   /** P-037 seam: is the Mug/Kettle tier still runnable? Defaults to the shared
    *  predicate in pot/started.ts (loaded dynamically so a partially-mocked
    *  './started' in a Scout test cannot strand this module at import time). */
@@ -186,23 +189,30 @@ async function readBlenderGoalIds(workspaceId: string): Promise<Set<string>> {
  * as a side effect of triage. Handing that to whichever su merely spoke most recently
  * interrupts an arbitrary busy peer, so prefer a session whose JOB it is:
  *
- *   0. GOAL-bound grader — carries GRADE *and* a goal subject (D-003's steward shape:
- *      GOAL mode owning the Blender loop with GRADE stacked for the health scorecard).
+ *   0. THE Blender steward — carries GRADE *and* is bound to one of the active Blender
+ *      goals (D-003's steward shape: GOAL mode owning the Blender loop with GRADE
+ *      stacked for the health scorecard).
  *   1. Any GRADE-mode session — grading is at least part of its declared posture.
  *   2. Everyone else — the pre-existing most-recently-active fallback, unchanged.
  *
- * Deliberately NOT keyed to a configured Blender-goal id. A goal-id pointer would be a
- * second source of truth for "which goal is the Blender one", and it would have to be
- * written somewhere before the goal exists — so an unset key would silently demote the
- * real steward to tier 2. Reading the posture the steward already declares needs no
- * config, and a plain grade-mode peer is still a strictly better recipient than a random
- * live su.
+ * Tier 0 tests the goal's IDENTITY, not merely that some goal is present: a grade-mode
+ * session bound to an unrelated goal is a worse recipient than the session actually
+ * running this loop, and a bare `goalIdFromModes(modes) !== null` ranks the two equally.
+ *
+ * The ids are DERIVED (a body-marker query — see readBlenderGoalIds), never configured,
+ * so nothing has to be written anywhere before the goal exists. The derivation fail-softs
+ * to an EMPTY set, which makes tier 0 merely unreachable rather than wrong: every
+ * grade-mode session then lands in tier 1, so an unresolvable goal costs one rung of
+ * preference instead of demoting the real steward to the recency fallback.
  */
-function stewardTier(modes: ModeLike[] | undefined): 0 | 1 | 2 {
+function stewardTier(
+  modes: ModeLike[] | undefined,
+  blenderGoalIds: ReadonlySet<string>,
+): 0 | 1 | 2 {
   if (!modes || modes.length === 0) return 2;
-  const grades = modes.some((m) => m.mode === GRADE_MODE);
-  if (!grades) return 2;
-  return goalIdFromModes(modes) !== null ? 0 : 1;
+  if (!modes.some((m) => m.mode === GRADE_MODE)) return 2;
+  const goalId = goalIdFromModes(modes);
+  return goalId !== null && blenderGoalIds.has(goalId) ? 0 : 1;
 }
 
 /** The registry id of the GRADE overlay (modes/registry.ts). */
@@ -336,17 +346,40 @@ export async function resolveNudgeRecipient(
     } catch {
       modesByOwner = new Map();
     }
+    // Resolve WHICH goals are the Blender ones only if some candidate could actually
+    // reach tier 0 (a grade-mode session carrying a goal). On the common path — nobody
+    // grading — this rung costs exactly the mode read it already paid, and the query is
+    // skipped entirely. Same fail-soft as the mode read: an empty set makes tier 0
+    // unreachable, never wrong.
+    let blenderGoalIds: ReadonlySet<string> = new Set<string>();
+    const someoneCouldBeSteward = liveSu.some((r) => {
+      const m = modesByOwner.get(r.ownerId);
+      return !!m && m.some((x) => x.mode === GRADE_MODE) && goalIdFromModes(m) !== null;
+    });
+    if (someoneCouldBeSteward) {
+      try {
+        blenderGoalIds = await (opts.readBlenderGoalIdsFn ?? readBlenderGoalIds)(opts.workspaceId);
+      } catch {
+        blenderGoalIds = new Set<string>();
+      }
+    }
+    // Tier each candidate ONCE: the comparator runs O(n log n) times and the winner is
+    // re-read below, so a memoised tier keeps the ranking and the `why` string derived
+    // from the same evaluation rather than two that could drift.
+    const tierByOwner = new Map(
+      liveSu.map((r) => [r.ownerId, stewardTier(modesByOwner.get(r.ownerId), blenderGoalIds)] as const),
+    );
     // Stable-by-tier: `sort` is stable in V8, so the recency order above is preserved
     // WITHIN each tier and an empty/failed mode read reproduces the prior behaviour
     // exactly (every row lands in tier 2).
     const ranked = [...liveSu].sort(
-      (a, b) => stewardTier(modesByOwner.get(a.ownerId)) - stewardTier(modesByOwner.get(b.ownerId)),
+      (a, b) => (tierByOwner.get(a.ownerId) ?? 2) - (tierByOwner.get(b.ownerId) ?? 2),
     );
     const chosen = ranked[0];
-    const tier = stewardTier(modesByOwner.get(chosen.ownerId));
+    const tier = tierByOwner.get(chosen.ownerId) ?? 2;
     const tierWhy =
       tier === 0
-        ? 'the goal-bound Blender steward (GRADE + a goal subject)'
+        ? 'the Blender steward (GRADE + the active Blender goal)'
         : tier === 1
           ? 'a live GRADE-mode su'
           : 'the most recently active su (no grading-posture session was live)';
