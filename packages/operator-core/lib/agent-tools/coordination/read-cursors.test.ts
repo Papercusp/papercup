@@ -14,6 +14,8 @@ import {
   configureReadCursorStore,
   resetReadCursorStore,
   ackAndAdvance,
+  ackAndRead,
+  stage,
   clearReadCursor,
 } from './read-cursors';
 
@@ -64,5 +66,75 @@ describe('read-cursors — ack-on-next-read (P-004)', () => {
     await clearReadCursor('su-1', 'fleet:monitor');
     const r = await ackAndAdvance('su-1', 'fleet:monitor', { a: 3 });
     expect(r).toEqual({ committed: null, baseline: true });
+  });
+});
+
+/**
+ * The SPLIT-PHASE half of the same protocol (D-006 step 1). A WINDOWED surface
+ * (coord:inbox) needs the committed floor BEFORE its query in order to bound it,
+ * and only learns `next` after — so it cannot use the fused ackAndAdvance.
+ * These assert the split preserves the property the fused form is trusted for.
+ */
+describe('read-cursors — split-phase ackAndRead + stage (D-006)', () => {
+  beforeEach(() => configureReadCursorStore(new InMemoryReadCursorStore()));
+  afterEach(() => resetReadCursorStore());
+
+  it('first ackAndRead for a surface is a BASELINE — deliver in full, never a silent empty delta', async () => {
+    expect(await ackAndRead('su-1', 'inbox')).toEqual({ committed: null, baseline: true });
+  });
+
+  it('a staged delivery is promoted by the NEXT ackAndRead (arrival is the ack)', async () => {
+    await ackAndRead('su-1', 'inbox'); // turn 1: baseline
+    await stage('su-1', 'inbox', { ts: 'T1' }); // ...delivered through T1
+    const turn2 = await ackAndRead('su-1', 'inbox');
+    expect(turn2).toEqual({ committed: { ts: 'T1' }, baseline: false });
+  });
+
+  it('AT-LEAST-ONCE: a turn that dies between ackAndRead and stage re-delivers from the SAME floor', async () => {
+    await ackAndRead('su-1', 'inbox');
+    await stage('su-1', 'inbox', { ts: 'T1' });
+    // Turn 2 promotes T1, then DIES before staging what it delivered.
+    expect((await ackAndRead('su-1', 'inbox')).committed).toEqual({ ts: 'T1' });
+    // Turn 3 must re-diff against T1 — never skip past the dead turn's content.
+    expect((await ackAndRead('su-1', 'inbox')).committed).toEqual({ ts: 'T1' });
+    // And once a turn survives to stage, the floor finally advances.
+    await stage('su-1', 'inbox', { ts: 'T2' });
+    expect((await ackAndRead('su-1', 'inbox')).committed).toEqual({ ts: 'T2' });
+  });
+
+  it('repeated ackAndRead never advances the floor on its own — only stage() can', async () => {
+    await ackAndRead('su-1', 'inbox');
+    await stage('su-1', 'inbox', { ts: 'T1' });
+    await ackAndRead('su-1', 'inbox');
+    for (let i = 0; i < 3; i++) {
+      expect((await ackAndRead('su-1', 'inbox')).committed).toEqual({ ts: 'T1' });
+    }
+  });
+
+  it('interoperates with the fused form on the same surface (one cursor, two call shapes)', async () => {
+    await ackAndRead('su-1', 'inbox');
+    await stage('su-1', 'inbox', { ts: 'T1' });
+    expect((await ackAndAdvance('su-1', 'inbox', { ts: 'T2' })).committed).toEqual({ ts: 'T1' });
+    expect((await ackAndRead('su-1', 'inbox')).committed).toEqual({ ts: 'T2' });
+  });
+
+  it('stage() on a never-read surface creates the row, and the next read promotes it', async () => {
+    // Guards the fresh-row INSERT branch of both statements (no prior row for
+    // this owner+surface). stage() must NOT itself set `committed` — a floor may
+    // only ever come from promoting something already delivered. If stage wrote
+    // committed directly, a brand-new agent would start ABOVE its own backlog:
+    // the EI-20190140825808810 failure shape, one layer down.
+    await stage('su-new', 'inbox', { ts: 'T1' });
+    expect(await ackAndRead('su-new', 'inbox')).toEqual({ committed: { ts: 'T1' }, baseline: false });
+    // ...and the promotion is not re-applied on the following read.
+    expect((await ackAndRead('su-new', 'inbox')).committed).toEqual({ ts: 'T1' });
+  });
+
+  it('cursors stay isolated per (owner, surface) under the split form', async () => {
+    await ackAndRead('su-1', 'inbox');
+    await stage('su-1', 'inbox', { ts: 'T1' });
+    expect((await ackAndRead('su-2', 'inbox')).baseline).toBe(true);
+    expect((await ackAndRead('su-1', 'plan-events')).baseline).toBe(true);
+    expect((await ackAndRead('su-1', 'inbox')).committed).toEqual({ ts: 'T1' });
   });
 });
