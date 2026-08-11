@@ -145,6 +145,42 @@ async function readAgentModes(
 }
 
 /**
+ * The stable marker identifying a Blender-steward GOAL: the integration plan's own slug,
+ * written into the goal body at creation. There is deliberately no metadata column to key
+ * off (`goals:start` exposes no metadata argument, and `agent_modes.subject` is documented
+ * as "generic and NOT a foreign key"), so the goal BODY is the marker surface both goals
+ * created for this loop already carry.
+ *
+ * A SET, not a single id, because more than one Blender goal can legitimately exist at
+ * once — one was filed at 23:04Z while a second `goals:propose` card was still open with
+ * the owner. Ranking every holder of a marked goal as the steward is the correct reading
+ * of "is this session running the Blender loop"; picking a winner between duplicate goals
+ * is the owner's call, not this resolver's.
+ */
+const BLENDER_GOAL_BODY_MARKER = 'blender-su-grade-integration-2026-08-11';
+
+/**
+ * The ACTIVE Blender-steward goal ids. Fail-soft to an EMPTY set: with no resolvable goal,
+ * tier 0 is simply unreachable and rung 2 degrades to the grade-mode preference — never to
+ * a wrong promotion, and never to a thrown nudge.
+ */
+async function readBlenderGoalIds(workspaceId: string): Promise<Set<string>> {
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { sql } = getOrgPg();
+    const rows = (await sql`
+      SELECT id FROM harness_shared.goals
+      WHERE workspace_id = ${workspaceId}
+        AND status = 'active'
+        AND body LIKE ${'%' + BLENDER_GOAL_BODY_MARKER + '%'}
+    `) as unknown as Array<{ id: string }>;
+    return new Set(rows.map((r) => r.id));
+  } catch {
+    return new Set();
+  }
+}
+
+/**
  * P-007 rung-2 preference tiers, best first. A Scout nudge asks someone to GRADE an
  * idea or REVIEW a draft — judgment duties that the retired Mug/Queen used to absorb
  * as a side effect of triage. Handing that to whichever su merely spoke most recently
