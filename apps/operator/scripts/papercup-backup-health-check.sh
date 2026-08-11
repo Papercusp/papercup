@@ -37,6 +37,9 @@
 #       directly instead of making the on-call rediscover it from a generic staleness alarm.
 #       db-backup.sh's own rm_tmp() now falls back to `sudo -n rm -rf` and should prevent
 #       this from ever recurring — this check is the independent verifier that it did.
+#   (d) POSTGRES DATA-VOLUME HEADROOM — the filesystem containing BACKUP_DB_DATA_DIR is
+#       at/above BACKUP_DISK_WARN_PCT. This catches a shared root volume approaching ENOSPC
+#       before PostgreSQL loses the ability to write WAL, locks, or its own data directory.
 #
 # CONVERGED 2026-07-12 (EI-10733): the backup path is now db-backup.sh (pg_dump -Fd -j,
 # per-DB, TOC-validated) — NOT the old pre-snapshot.sh `timeout 60 pg_dumpall | gzip`
@@ -81,6 +84,10 @@
 #   BACKUP_STALE_TMP_MAX_H (default 2) — a "*.tmp" pg_dump staging dir under
 #                                        BACKUP_DUMP_DIR/pg/ older than this ⇒ alarm
 #                                        (EI-18678678853631218 recurrence guard — see above)
+#   BACKUP_DB_DATA_DIR     (default /var/lib/postgresql/18/main) — a path on the PostgreSQL
+#                                        data filesystem whose usage should be monitored
+#   BACKUP_DISK_WARN_PCT   (default 90)  — usage percentage at/above which the PostgreSQL
+#                                        data-volume headroom alarm fires
 #   BACKUP_HOOK_LOG      (default $BACKUP_DUMP_DIR/db-backup.log) — db-backup.sh's run log
 #   OPERATOR_MCP_URL     (default http://127.0.0.1:3070/api/mcp?superuser=1)
 #   BACKUP_NO_FILE       (default 0)   — set 1 to skip EI filing (log-only / dry-run)
@@ -102,9 +109,9 @@ set -uo pipefail
 # and exit path are untouched — only the FILING is withheld, so a test still gets the truth.
 # BACKUP_ALERT_FORCE=1 files anyway, for the rare case a non-default threshold should.
 if [ -z "${BACKUP_ALERT_FORCE:-}" ] \
-   && { [ -n "${BACKUP_MAX_AGE_H+x}" ] || [ -n "${BACKUP_MAX_FAILS+x}" ] || [ -n "${BACKUP_STALE_TMP_MAX_H+x}" ]; } \
+   && { [ -n "${BACKUP_MAX_AGE_H+x}" ] || [ -n "${BACKUP_MAX_FAILS+x}" ] || [ -n "${BACKUP_STALE_TMP_MAX_H+x}" ] || [ -n "${BACKUP_DISK_WARN_PCT+x}" ]; } \
    && [ "${BACKUP_NO_FILE:-0}" != 1 ]; then
-  echo "[backup-health] ALARM SUPPRESSED: a threshold was overridden (BACKUP_MAX_AGE_H/BACKUP_MAX_FAILS/BACKUP_STALE_TMP_MAX_H) — that is a TEST run, not production. Forcing BACKUP_NO_FILE=1 (no EI will be filed). Set BACKUP_ALERT_FORCE=1 to file anyway." >&2
+  echo "[backup-health] ALARM SUPPRESSED: a threshold was overridden (BACKUP_MAX_AGE_H/BACKUP_MAX_FAILS/BACKUP_STALE_TMP_MAX_H/BACKUP_DISK_WARN_PCT) — that is a TEST run, not production. Forcing BACKUP_NO_FILE=1 (no EI will be filed). Set BACKUP_ALERT_FORCE=1 to file anyway." >&2
   BACKUP_NO_FILE=1
 fi
 
@@ -122,6 +129,8 @@ BACKUP_OPTIONAL_ARTIFACTS="${BACKUP_OPTIONAL_ARTIFACTS-$HOME/.papercusp-workspac
 BACKUP_MAX_AGE_H="${BACKUP_MAX_AGE_H:-6}"
 BACKUP_MAX_FAILS="${BACKUP_MAX_FAILS:-3}"
 BACKUP_STALE_TMP_MAX_H="${BACKUP_STALE_TMP_MAX_H:-2}"
+BACKUP_DB_DATA_DIR="${BACKUP_DB_DATA_DIR:-/var/lib/postgresql/18/main}"
+BACKUP_DISK_WARN_PCT="${BACKUP_DISK_WARN_PCT:-90}"
 BACKUP_HOOK_LOG="${BACKUP_HOOK_LOG:-$BACKUP_DUMP_DIR/db-backup.log}"
 OPERATOR_MCP_URL="${OPERATOR_MCP_URL:-http://127.0.0.1:3070/api/mcp?superuser=1}"
 BACKUP_NO_FILE="${BACKUP_NO_FILE:-0}"
@@ -171,6 +180,44 @@ file_ei() { # <title> <body> — best-effort curl-MCP; loud echo + journald are 
   fi
 }
 
+# ── (d) POSTGRES DATA-VOLUME HEADROOM ─────────────────────────────────────
+# `df -Pk TARGET` is portable across GNU/Linux and macOS. Parse the explicit
+# NN% field instead of assuming a fixed column: a mount path containing spaces
+# can shift the final field, while the percentage token remains unambiguous.
+check_db_disk_headroom() {
+  local df_line="" disk_pct="" red_marker=""
+  if [ -e "$BACKUP_DB_DATA_DIR" ]; then
+    df_line="$(df -Pk "$BACKUP_DB_DATA_DIR" 2>/dev/null | tail -n1)"
+    disk_pct="$(printf '%s' "$df_line" | awk '{for (i = 1; i <= NF; i++) if ($i ~ /^[0-9]+%$/) print $i}' | tr -d '%' | tail -n1)"
+  fi
+
+  if [ -z "$disk_pct" ]; then
+    log "SKIP disk-headroom probe: could not resolve usage% for '$BACKUP_DB_DATA_DIR' (path missing or df output unparseable)."
+    return 0
+  fi
+  if ! [[ "$disk_pct" =~ ^[0-9]+$ ]] || ! [[ "$BACKUP_DISK_WARN_PCT" =~ ^[0-9]+$ ]] || [ "$BACKUP_DISK_WARN_PCT" -gt 100 ] 2>/dev/null; then
+    log "SKIP disk-headroom probe: invalid usage/threshold (usage='$disk_pct', threshold='$BACKUP_DISK_WARN_PCT')."
+    return 0
+  fi
+
+  log "Postgres data-volume usage at $BACKUP_DB_DATA_DIR: ${disk_pct}% (warn threshold ${BACKUP_DISK_WARN_PCT}%)"
+  red_marker="$STATE_DIR/db-disk-red-ei-filed"
+  if [ "$disk_pct" -ge "$BACKUP_DISK_WARN_PCT" ]; then
+    local host
+    host="$(hostname 2>/dev/null || echo unknown-host)"
+    local title="Postgres data-volume disk usage ${disk_pct}% (>= ${BACKUP_DISK_WARN_PCT}% threshold) on ${host}"
+    local body="EI-20115751074601731 durable disk-headroom probe: the filesystem containing PostgreSQL data path '$BACKUP_DB_DATA_DIR' is ${disk_pct}% used (warn threshold ${BACKUP_DISK_WARN_PCT}%). A full shared root volume takes PostgreSQL down fleet-wide by preventing WAL, lock, and data-directory writes.\n\nACTION: inspect current filesystem consumers and free space before starting disk-heavy work. This probe is detection-only; it never deletes files or restarts PostgreSQL.\ndf output:\n${df_line}"
+    if [ "$(age_h "$red_marker")" -lt "$BACKUP_RED_REFILE_H" ]; then
+      log "RED already tracked (Postgres data volume, filed $(age_h "$red_marker")h ago < ${BACKUP_RED_REFILE_H}h) — skipping duplicate filing."
+    else
+      file_ei "$title" "$body"
+      mark_red "$red_marker"
+    fi
+  else
+    rm -f "$red_marker"
+  fi
+}
+
 # ── SELF-TEST: prove the alarm DISCRIMINATES (EI-10746) ────────────────────
 # The comment on mark_red() used to cite "the discrimination test below". There was no
 # test. Both bugs it would have caught were live. So: this is that test, and it asserts
@@ -195,6 +242,7 @@ if [ "${1:-}" = "--self-test" ]; then
     : > "$t/dump/pg/papercusp/toc.dat"; : > "$t/dump/pg/restart/toc.dat"
     if [ "$stale" = yes ]; then touch -d '10 hours ago' "$t/dump/pg/papercusp" "$t/dump/pg/restart"; fi
     env BACKUP_DUMP_DIR="$t/dump" BACKUP_STATE_DIR="$t/state" \
+        BACKUP_DB_DATA_DIR="$t/no-db-data" \
         BACKUP_HOOK_LOG="$t/no-such-log.log" \
         OPERATOR_MCP_URL="http://127.0.0.1:9/dead" \
         BACKUP_OPTIONAL_ARTIFACTS="" \
@@ -235,6 +283,7 @@ if [ "${1:-}" = "--self-test" ]; then
     : > "$t/dump/pg/papercusp/toc.dat"; : > "$t/dump/pg/restart/toc.dat"
     if [ "$stale" = yes ]; then touch -d '3 hours ago' "$t/dump/pg/papercusp.tmp"; fi
     env BACKUP_DUMP_DIR="$t/dump" BACKUP_STATE_DIR="$t/state" \
+        BACKUP_DB_DATA_DIR="$t/no-db-data" \
         BACKUP_HOOK_LOG="$t/no-such-log.log" \
         OPERATOR_MCP_URL="http://127.0.0.1:9/dead" \
         BACKUP_OPTIONAL_ARTIFACTS="" \
@@ -276,6 +325,7 @@ if [ "${1:-}" = "--self-test" ]; then
       stale)  : > "$opt"; touch -d '26 hours ago' "$opt" ;;
     esac
     env BACKUP_DUMP_DIR="$t/dump" BACKUP_STATE_DIR="$t/state" \
+        BACKUP_DB_DATA_DIR="$t/no-db-data" \
         BACKUP_HOOK_LOG="$t/no-such-log.log" \
         OPERATOR_MCP_URL="http://127.0.0.1:9/dead" \
         BACKUP_OPTIONAL_ARTIFACTS="$opt" \
@@ -298,9 +348,49 @@ if [ "${1:-}" = "--self-test" ]; then
   check_optional "optional artifact FRESH: green, no marker" \
         fresh  no
   printf '  ---- %d passed, %d failed (post optional-artifact block)\n' "$p" "$f"
+
+  # ── EI-20115751074601731 recurrence guard: PostgreSQL data-volume headroom ──
+  # Use a real temporary directory so the test exercises the portable `df -Pk`
+  # parser without depending on the host's current root-volume usage. Threshold
+  # overrides are explicitly forced for the RED leg; the alarm-safety guard above
+  # must still suppress a dry-run and leave no dedupe marker behind.
+  check_disk() {
+    local name="$1" path_mode="$2" want_marker="$3"; shift 3
+    rm -rf "${t:?}/state" "$t/dump/pg" "$t/db-data"
+    mkdir -p "$t/state" "$t/dump/pg/papercusp" "$t/dump/pg/restart"
+    [ "$path_mode" = present ] && mkdir -p "$t/db-data"
+    : > "$t/dump/pg/papercusp/toc.dat"; : > "$t/dump/pg/restart/toc.dat"
+    env BACKUP_DUMP_DIR="$t/dump" BACKUP_STATE_DIR="$t/state" \
+        BACKUP_DB_DATA_DIR="$t/db-data" \
+        BACKUP_HOOK_LOG="$t/no-such-log.log" \
+        OPERATOR_MCP_URL="http://127.0.0.1:9/dead" \
+        BACKUP_OPTIONAL_ARTIFACTS="" \
+        "$@" bash "$self" >/dev/null 2>&1
+    local got_marker=no
+    [ -f "$t/state/db-disk-red-ei-filed" ] && got_marker=yes
+    if [ "$got_marker" = "$want_marker" ]; then
+      printf '  ok    %s (marker=%s)\n' "$name" "$got_marker"; p=$((p+1))
+    else
+      printf '  FAIL  %s — wanted marker=%s, got marker=%s\n' "$name" "$want_marker" "$got_marker"; f=$((f+1))
+    fi
+  }
+  # 10. A threshold-forced red takes the filing path and writes its dedupe marker.
+  check_disk "Postgres data volume over threshold: marker set" \
+        present yes BACKUP_DISK_WARN_PCT=0 BACKUP_ALERT_FORCE=1
+  # 11. A dry-run red must not disarm the next real alarm.
+  check_disk "Postgres data volume red in dry-run: no marker" \
+        present no BACKUP_DISK_WARN_PCT=0 BACKUP_NO_FILE=1
+  # 12. A host without the native PostgreSQL path is skipped, not a false alarm.
+  check_disk "Postgres data path absent: probe skipped" \
+        missing no
+  printf '  ---- %d passed, %d failed (post disk-headroom block)\n' "$p" "$f"
   [ "$f" -eq 0 ] || exit 1
   exit 0
 fi
+
+# Check the PostgreSQL data filesystem before the artifact probes. A shared root
+# volume can take PostgreSQL down even while every backup artifact is still fresh.
+check_db_disk_headroom
 
 # ── (a) FRESHNESS — judge the ARTIFACT, not the log ────────────────────────
 # Deliberately artifact-based: a rotated/truncated hook.log must never make a dead
