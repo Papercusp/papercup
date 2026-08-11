@@ -77,19 +77,24 @@ describe('ModelActions — registration + shape', () => {
   it('is reachable through the BARREL, not just by importing this module directly', async () => {
     /*
      * The WI-6450 trap, and the one thing the rest of this file cannot catch:
-     * every other case here works because the side-effect import at the top of
+     * every other case here passes because the side-effect import at the TOP of
      * this file registers the axis. That proves the module registers ITSELF — it
      * says nothing about whether `lib/chat-actions/index.ts` imports it. If that
      * one line is missing or "tidied" away, the axis is tree-shaken out and the
      * pill never renders, while this whole suite stays green.
      *
-     * So: reset the registry, load ONLY the barrel, and require the axis to be
-     * there. This is the same registration path the real bar uses.
+     * ⚠ It has to be done in a FRESH module graph, and the obvious way is wrong:
+     * resetting the shared registry and re-importing the barrel proves nothing,
+     * because ES modules are cached — ModelActions' body would not re-run (this
+     * file already imported it), so the axis would read as MISSING even when the
+     * barrel imports it correctly. That false alarm also wipes the registry for
+     * every other case here. `vi.resetModules()` instead gives the barrel a new
+     * registry instance to populate, and leaves the shared one alone.
      */
-    const registry = await import('./registry');
-    registry._resetChatActionsForTests();
+    vi.resetModules();
+    const freshRegistry = await import('./registry');
     await import('./index');
-    expect(registry.listAllChatModeActionIds()).toContain('mode-model');
+    expect(freshRegistry.listAllChatModeActionIds()).toContain('mode-model');
   });
 });
 
