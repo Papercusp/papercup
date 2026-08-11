@@ -47,8 +47,11 @@ afterEach(() => {
 });
 
 describe('CTX — registration and shape (D-005)', () => {
-  it('registers one pill in the posture group', () => {
-    expect(axis().group).toBe('posture');
+  it('registers one pill in the CONFIG group, beside ACCT rather than the mode axes', () => {
+    // D-006: posture = the four mode axes (what stance the agent takes).
+    // CTX and ACCT are session configuration, not a stance, and the owner asked
+    // for these controls to be coherent rather than three unrelated affordances.
+    expect(axis().group).toBe('config');
     expect(axis().cap).toBe('CTX');
   });
 

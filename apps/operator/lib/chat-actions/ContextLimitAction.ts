@@ -111,7 +111,13 @@ export async function postCompactionLimit(agent: string, limit: number): Promise
 registerChatModeAction({
   id: 'mode-context-limit',
   cap: 'CTX',
-  group: 'posture',
+  /* 'config', NOT 'posture' — matching the ACCT pill (WI-6509, D-006). The
+     posture cluster is the four MODE axes (autonomy + overlays): what stance the
+     agent is taking. CTX and ACCT are not stances, they are session
+     configuration, and the owner asked for these controls to be built coherently
+     rather than as unrelated affordances. Grouping them together is what makes
+     the footer read as two clusters with a reason, instead of one bag. */
+  group: 'config',
   available: (ctx) => Boolean(ctx.sessionOwnerId),
   /* PURE + sync, like every other axis: the limit is already on the roster row
      this pill was rendered from, so the pill can never disagree with the `ctx N%`
