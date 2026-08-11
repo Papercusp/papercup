@@ -1851,7 +1851,17 @@ export function createInferenceGateway(deps: GatewayDeps) {
       for (const entry of effectiveEgressEntries(account)) {
         if (!entry.proxyUrl) continue;
         totalProxyEntries++;
-        if ((ipCooldownUntil.get(egressCacheKey(account.accountId, entry)) ?? 0) <= now) reachableProxyEntries++;
+        const key = egressCacheKey(account.accountId, entry);
+        const cooled = (ipCooldownUntil.get(key) ?? 0) > now;
+        // A cooldown EXPIRING is permission to RETRY, not evidence of health — and counting it as
+        // reachable made this alarm cancel itself (EI-18664933641195210). Measured 2026-08-11: 147
+        // "EGRESS ALARM" + 147 "pool RECOVERED" in 24h while all three proxies were hard-refused the
+        // whole time, so every recovery was FALSE and a 16-day outage read as routine flapping. An
+        // entry counts as reachable only once a real transport SUCCESS clears its fail streak
+        // (cleared alongside the cooldown at the success sites); an entry never yet tried has no
+        // streak and still counts reachable, so a fresh boot is unchanged.
+        const unprovenSinceFailure = (ipTransportFailStreak.get(key) ?? 0) > 0;
+        if (!cooled && !unprovenSinceFailure) reachableProxyEntries++;
       }
     }
     return {
