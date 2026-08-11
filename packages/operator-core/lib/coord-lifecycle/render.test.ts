@@ -47,6 +47,11 @@ describe('renderCompletion', () => {
     // only as wide as its fixture — keep every field of the record set here.
     verifiedHow: 'integration',
     filesChanged: ['packages/operator-core/lib/fleet/nursery.ts'],
+    coverage: {
+      population: ['index pages', 'species pages'],
+      checked: ['index pages', 'species pages'],
+      residue: ['none'],
+    },
     deploy: 'additive, loads next :3070 restart',
     deferred: [
       ':3070 restart pending',
@@ -75,12 +80,18 @@ describe('renderCompletion', () => {
     }
   });
 
-  it('PRESERVES whatLanded, migrations, tests, verifiedHow, filesChanged, deploy, coordNotes (D-006)', () => {
+  it('PRESERVES whatLanded, migrations, tests, verifiedHow, filesChanged, coverage, deploy, coordNotes (D-006)', () => {
     const { body } = renderCompletion(full);
     expect(body).toBeDefined();
     for (const w of full.whatLanded ?? []) expect(body).toContain(w);
     for (const m of full.migrations ?? []) expect(body).toContain(m);
     for (const f of full.filesChanged ?? []) expect(body).toContain(f);
+    for (const entry of full.coverage?.population ?? []) expect(body).toContain(entry);
+    for (const entry of full.coverage?.checked ?? []) expect(body).toContain(entry);
+    for (const entry of full.coverage?.residue ?? []) expect(body).toContain(entry);
+    expect(body).toContain('Coverage population:');
+    expect(body).toContain('Checked:');
+    expect(body).toContain('Residue:');
     expect(body).toContain('67 green tests');
     expect(body).toContain('integration'); // verifiedHow
     expect(body).toContain('additive, loads next :3070 restart');

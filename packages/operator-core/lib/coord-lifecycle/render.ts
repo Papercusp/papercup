@@ -20,6 +20,7 @@
 
 import type {
   ClaimRecord,
+  CompletionCoverage,
   CompletionRecord,
   FindingRecord,
   HandoffRecord,
@@ -45,6 +46,18 @@ function bullets(items: readonly string[] | undefined): string | null {
   return items.map((i) => `• ${i}`).join('\n');
 }
 
+/** Render the population accounting carried by a universal verification claim. */
+function renderCoverage(coverage: CompletionCoverage | undefined): string | null {
+  if (!coverage) return null;
+  return block(
+    `Coverage population:\n${bullets(coverage.population)}`,
+    coverage.checked?.length ? `Checked:\n${bullets(coverage.checked)}` : null,
+    coverage.notChecked?.length ? `Not checked:\n${bullets(coverage.notChecked)}` : null,
+    coverage.notApplicable?.length ? `Not applicable:\n${bullets(coverage.notApplicable)}` : null,
+    coverage.residue?.length ? `Residue:\n${bullets(coverage.residue)}` : null,
+  );
+}
+
 /** The coord:inbox headline budget — headers stay scannable. */
 const SUMMARY_MAX = 180;
 
@@ -65,6 +78,7 @@ function clip(s: string, max = SUMMARY_MAX): string {
  */
 export function renderCompletion(rec: CompletionRecord): RenderedNotification {
   const status = (rec.status || 'done').toUpperCase();
+  const coverage = rec.coverage ?? rec.verification?.coverage;
   // P-008 (borrow item 13) — the ANTI-TRUST signal, computed once. A completion
   // that records NEITHER `tests` NOR `verifiedHow` asserts only that its author
   // yielded; nothing about it was checked. The author is already nudged about
@@ -107,6 +121,7 @@ export function renderCompletion(rec: CompletionRecord): RenderedNotification {
     rec.filesChanged && rec.filesChanged.length > 0
       ? `Files changed (${rec.filesChanged.length}):\n${bullets(rec.filesChanged)}`
       : null,
+    renderCoverage(coverage),
     rec.tests ? `Tests: ${rec.tests}` : null,
     rec.verifiedHow ? `Verified how: ${rec.verifiedHow}` : null,
     // Stated plainly, and only when true — see `unverified` above.

@@ -64,7 +64,11 @@ vi.mock('../../harness-test-gate', () => ({
 }));
 
 import { z } from 'zod';
-import complete from './complete';
+import complete, {
+  claimsUniversalVerification,
+  hasEnumeratedVerificationCoverage,
+  isVerificationWorkItem,
+} from './complete';
 import { coerceCompletionShape, gatherFlatCompletion } from './completion-coerce';
 
 const ctx = { uiClientId: 'su-tester', isSuperuser: true, workspaceId: 'default' } as never;
@@ -1290,6 +1294,101 @@ describe('work_items:complete (keyed-array)', () => {
         },
       });
       expect(r.typeEvidenceWarning).toBeUndefined();
+    });
+  });
+
+  // ── WI-37960: universal verification claims require population accounting ────────────────
+  // A verification pass may say "every page" only when the completion carries an explicit
+  // population and accounts for every entry as checked, not checked, or not applicable, with
+  // residue stated. This is a narrow hard gate on the close: ordinary code completions that
+  // merely say "all tests passed" remain unaffected.
+  describe('WI-37960 — universal verification claims require enumerated coverage', () => {
+    const verificationItem = {
+      id: 'WI-verify',
+      kind: 'change',
+      family: 'issue',
+      state: 'open',
+      harness: 'papercup',
+      title: 'Independent verification pass — every page reachable, every stated fact traceable to its cited source, nothing invented',
+      summary: 'Verify the rendered surface against its sources.',
+    };
+    const universalCompletion = {
+      summary: 'Every stated fact on every page was checked against its cited source; nothing invented.',
+      verifiedHow: 'manual' as const,
+      testResult: 'manual source review completed',
+    };
+
+    it('rejects a universal verification close without enumerated coverage', async () => {
+      getWorkItem.mockResolvedValue(verificationItem);
+      const r = await one({ id: 'WI-verify', state: 'resolved', completion: universalCompletion });
+
+      expect(r.ok).toBe(false);
+      expect(r.verificationCoverageError).toMatch(/enumerated coverage/);
+      expect(r.stateError).toMatch(/population/);
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
+    it('accepts a universal verification close when every population entry has a status and residue', async () => {
+      getWorkItem.mockResolvedValue(verificationItem);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...verificationItem, state: 'resolved' }));
+      const completion = {
+        ...universalCompletion,
+        coverage: {
+          population: ['index pages', 'species pages'],
+          checked: ['index pages', 'species pages'],
+          residue: ['none'],
+        },
+      };
+      const r = await one({ id: 'WI-verify', state: 'resolved', completion });
+
+      expect(r.ok).toBe(true);
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+        'WI-verify',
+        'resolved',
+        expect.objectContaining({
+          completionEvidence: expect.objectContaining({
+            coverage: expect.objectContaining({ population: ['index pages', 'species pages'] }),
+          }),
+        }),
+      );
+    });
+
+    it('does not gate an ordinary code completion that merely says all tests passed', async () => {
+      const codeItem = {
+        ...item,
+        id: 'WI-code',
+        kind: 'change',
+        family: 'issue',
+        state: 'open',
+        title: 'Implement query fix',
+        summary: 'code change',
+      };
+      getWorkItem.mockResolvedValue(codeItem);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...codeItem, state: 'resolved' }));
+      const r = await one({
+        id: 'WI-code',
+        state: 'resolved',
+        completion: { summary: 'All tests passed.', verifiedHow: 'unit', testResult: '8 passed' },
+      });
+
+      expect(r.ok).toBe(true);
+      expect(r.verificationCoverageError).toBeUndefined();
+    });
+
+    it('keeps the helper contract explicit for verification markers and coverage accounting', () => {
+      expect(isVerificationWorkItem(verificationItem)).toBe(true);
+      expect(claimsUniversalVerification(universalCompletion)).toBe(true);
+      expect(
+        hasEnumeratedVerificationCoverage({
+          population: ['a', 'b'],
+          checked: ['a'],
+          notApplicable: ['b'],
+          residue: ['none'],
+        }),
+      ).toBe(true);
+      expect(
+        hasEnumeratedVerificationCoverage({ population: ['a', 'b'], checked: ['a'], residue: ['none'] }),
+      ).toBe(false);
     });
   });
 

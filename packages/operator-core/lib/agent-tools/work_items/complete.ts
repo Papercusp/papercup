@@ -61,6 +61,7 @@ import {
 import {
   CompletionRecordSchema,
   stripNulBytesDeep,
+  type CompletionCoverage,
   type CompletionRecord,
   type CompletionVerificationEvidence,
 } from '../../coord-lifecycle/records';
@@ -107,7 +108,7 @@ const completionSpec = z
     // but coerces to { summary: <string> } ONLY: testsRun/testResult/verifiedHow/addedTests/
     // filesChanged/whatLanded/deferred/migrations all come back EMPTY, silently. Pass an
     // object when you have any of those to report.
-    "Structured completion record: { summary, testsRun?, testResult?, verifiedHow?: 'unit'|'integration'|'live-drove-ui'|'manual'|'already-passing', addedTests?: boolean, filesChanged?: string[], whatLanded?: string[], deferred?: string[], migrations?: string[], coordNotes? }. " +
+    "Structured completion record: { summary, testsRun?, testResult?, verifiedHow?: 'unit'|'integration'|'live-drove-ui'|'manual'|'already-passing', addedTests?: boolean, filesChanged?: string[], whatLanded?: string[], deferred?: string[], migrations?: string[], coordNotes?, coverage?: { population: string[], checked?: string[], notChecked?: string[], notApplicable?: string[], residue: string[] } }. " +
       'A bare STRING is also accepted but is coerced to { summary: <string> } ONLY — every other field above comes back empty, not just unset. Pass the object form whenever you have tests/files/verification to report.',
   );
 
@@ -472,13 +473,76 @@ function completionEvidenceFromRecord(
   const testResult = rec.testResult ?? nested.testResult;
   const verifiedHow = rec.verifiedHow ?? nested.verifiedHow;
   const addedTests = rec.addedTests ?? nested.addedTests;
+  const coverage = rec.coverage ?? nested.coverage;
   const evidence: CompletionVerificationEvidence = {};
   if (filesChanged?.length) evidence.filesChanged = filesChanged;
   if (testsRun?.trim()) evidence.testsRun = testsRun;
   if (testResult?.trim()) evidence.testResult = testResult;
   if (verifiedHow) evidence.verifiedHow = verifiedHow;
   if (addedTests !== undefined) evidence.addedTests = addedTests;
+  if (coverage) evidence.coverage = coverage;
   return Object.keys(evidence).length > 0 ? evidence : undefined;
+}
+
+/** WI-37960: work whose title/metadata says it is a verification pass needs
+ * population-aware completion evidence when it makes a universal claim. */
+const VERIFICATION_ITEM_MARKER_RE =
+  /\b(?:verification|verify|verified|audit|accuracy[- ]check|fact[- ]check|source[- ]check|traceab(?:le|ility))\b/i;
+
+export function isVerificationWorkItem(item: {
+  kind?: unknown;
+  title?: unknown;
+  summary?: unknown;
+  payload?: unknown;
+}): boolean {
+  if (item.kind === 'task') return true;
+  const payload = item.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
+    ? (item.payload as Record<string, unknown>)
+    : {};
+  const markers = [payload.verificationKind, payload.workType, payload.category]
+    .filter((v): v is string => typeof v === 'string')
+    .join(' ');
+  return VERIFICATION_ITEM_MARKER_RE.test(`${item.title ?? ''}\n${item.summary ?? ''}\n${markers}`);
+}
+
+/** WI-37960: detect a totality claim about a verification surface, not ordinary
+ * prose such as "all tests passed" on a normal code change. */
+const UNIVERSAL_VERIFICATION_CLAIM_PATTERNS: readonly RegExp[] = [
+  /\b(?:every|each|all|entire|whole|100\s*%|site[- ]wide|fully|completely|nothing|zero)\b[\s\S]{0,120}\b(?:page|field|fact|claim|source|record|species|entry|item|surface|content|statement|tagline|render|invent|un(?:sourced|checked|verified)|unsupported|omitted|miss(?:ed|ing))/i,
+  /\b(?:all|every)\s+(?:pages?|fields?|facts?|claims?|sources?|records?|species|entries|taglines?|content)\b/i,
+  /\b(?:no|zero)\s+(?:invented|unsupported|unsourced|unverified|unchecked|missing|omitted|gaps?|exceptions?)\b/i,
+  /\b(?:site[- ]wide|complete(?:ly)?\s+(?:checked|verified|audited)|fully\s+(?:checked|verified|audited))\b/i,
+];
+
+export function claimsUniversalVerification(completion: CompletionRecord): boolean {
+  const prose = [
+    completion.title,
+    completion.summary,
+    completion.tests,
+    completion.testsRun,
+    completion.testResult,
+    completion.coordNotes,
+    ...(completion.whatLanded ?? []),
+    ...(completion.deferred ?? []),
+  ]
+    .filter((part): part is string => typeof part === 'string' && part.trim().length > 0)
+    .join('\n');
+  return UNIVERSAL_VERIFICATION_CLAIM_PATTERNS.some((pattern) => pattern.test(prose));
+}
+
+/**
+ * A valid coverage record accounts for every named population entry and states
+ * the residue explicitly. `residue: ['none']` is the explicit zero-residue
+ * form; omission is not silently treated as complete coverage.
+ */
+export function hasEnumeratedVerificationCoverage(coverage: CompletionCoverage | undefined): boolean {
+  if (!coverage?.population?.length || !coverage.residue?.length) return false;
+  const accountedFor = new Set([
+    ...(coverage.checked ?? []),
+    ...(coverage.notChecked ?? []),
+    ...(coverage.notApplicable ?? []),
+  ]);
+  return coverage.population.every((entry) => accountedFor.has(entry));
 }
 
 interface FinishPlanStamp {
@@ -804,6 +868,14 @@ async function completeOne(
   // usual record-and-warn discipline — see isBackedLiveDroveUiClaim's doc comment.
   const closeIntentRequested = Boolean(effectiveState) && CLOSE_INTENT_STATES.has(String(effectiveState).trim().toLowerCase());
   const completionEvidenceForGate = completionEvidenceFromRecord(it.completion);
+  const verificationCoverageGap =
+    closeIntentRequested &&
+    isVerificationWorkItem(existing) &&
+    claimsUniversalVerification(it.completion) &&
+    !hasEnumeratedVerificationCoverage(completionEvidenceForGate?.coverage);
+  const verificationCoverageError = verificationCoverageGap
+    ? `REJECTED — ${it.id} is a verification-shaped item making a universal coverage claim, but its completion has no valid enumerated coverage. Name the population, assign every entry to checked/notChecked/notApplicable, and state residue explicitly (use residue:['none'] when none). Re-open/keep the item open and re-send the completion with that coverage record; do not claim "every/all/nothing" from a partial pass.`
+    : undefined;
   // P-004: the whole decision, in one call. `completionEvidenceFromRecord` returning
   // `undefined` (no evidence fields supplied at all) and returning a PARTIAL object
   // (P-002 measured 4.2% of evidence-bearing rows carry no `verifiedHow`) both land
@@ -905,6 +977,8 @@ async function completeOne(
 
   if (assumptionsError) {
     stateError = `REJECTED — ${assumptionsError}`;
+  } else if (verificationCoverageError) {
+    stateError = verificationCoverageError;
   } else if (unbackedLiveDroveUiClose) {
     stateError =
       `REJECTED — this completion claims verifiedHow:'live-drove-ui' to close ${it.id} but cites no real ` +
@@ -1269,6 +1343,7 @@ async function completeOne(
     id: it.id,
     ...(stateFailure || finishFailure ? { error: stateFailure ?? finishFailure } : {}),
     ...(stateError ? { stateError } : {}),
+    ...(verificationCoverageError ? { verificationCoverageError } : {}),
     ...(stateWarning ? { stateWarning } : {}),
     // EI-18850142725126359 fix #4 — reported ONLY when the close actually LANDED.
     // The text is written in the future tense ("will red the next checkpoint"),
@@ -1335,7 +1410,7 @@ export default defineTool({
   description:
     "Finish one OR many work-items with a STRUCTURED completion record (whatLanded/migrations/tests/deferred) — the system renders + broadcasts it, never narrate in prose. A terminal `state` converges the whole finish: item state + plan-item + claim release + checkpoint cleanup. Omit `state` and `ok:true` does NOT mean closed — check `finish.complete`/`stateWarning` (see seeAlso for idempotency + batch-result semantics).",
   guidance: {
-    when: 'Finished work/plan-item(s). Fill the fields; do NOT also coord:send a prose summary — this emits it. To CLOSE pass a terminal top-level `state` (feature: \'passed\'|\'deprecated\'; issue: \'resolved\'|\'closed\'); other `completion.status` values record WITHOUT closing (issue status \'resolved\'|\'closed\' alone also closes, EI-12027). `verifiedHow` is a CLOSED ENUM, not free text — prose goes in testsRun/testResult. A CLOSE claiming `verifiedHow:\'live-drove-ui\'` is REJECTED unless testsRun/testResult/filesChanged cite a REAL artifact — the cited image is opened, and a blank or non-existent capture is refused (WI-5891, EI-18797014705631713). A `tauri-agent-tools check` run is accepted on its own. Duplicate? set `completion.duplicateOf` to the surviving id.',
+    when: 'Finished work/plan-item(s). Fill the fields; do NOT also coord:send a prose summary — this emits it. To CLOSE pass a terminal top-level `state` (feature: \'passed\'|\'deprecated\'; issue: \'resolved\'|\'closed\'); other `completion.status` values record WITHOUT closing (issue status \'resolved\'|\'closed\' alone also closes, EI-12027). `verifiedHow` is a CLOSED ENUM, not free text — prose goes in testsRun/testResult. A verification-shaped item making a universal claim (every/all/nothing) must include `coverage` with an enumerated population, a status for every entry, and explicit residue; otherwise the close is rejected (WI-37960). A CLOSE claiming `verifiedHow:\'live-drove-ui\'` is REJECTED unless testsRun/testResult/filesChanged cite a REAL artifact — the cited image is opened, and a blank or non-existent capture is refused (WI-5891, EI-18797014705631713). A `tauri-agent-tools check` run is accepted on its own. Duplicate? set `completion.duplicateOf` to the surviving id.',
     notWhen: 'For a contextual aside (a question, a design note), use coord:send. To change state without a completion record, use work_items:set_state.',
     chaining: 'work_items:claim → … → work_items:complete { id, state, completion }. On success, `finish.complete:true` proves state/plan/claim/checkpoint convergence and auto-emits to coord:inbox.',
     seeAlso: [
