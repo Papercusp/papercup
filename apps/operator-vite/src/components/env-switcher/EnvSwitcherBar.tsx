@@ -372,12 +372,17 @@ export function EnvSwitcherBar() {
                 : 'var(--fg, #e8e8e8)'
               : 'var(--fg-mute, #888)',
           textDecoration: off ? 'line-through' : undefined,
-          opacity: off ? 0.4 : op.reachable || active ? 1 : 0.45,
+          // Do not encode disabled/unreachable state by fading text. The old
+          // 0.4/0.45 opacity blended otherwise-valid foreground tokens down to
+          // 2.36:1–3.59:1 against the bar, failing WCAG AA. Line-through,
+          // muted colour, cursor, border, and the accessible label already
+          // carry the state without making the control unreadable.
+          opacity: 1,
           font: 'inherit',
         }}
       >
         {release ? '↩ release' : op.label}
-        {!release && <span style={{ fontSize: 10, opacity: 0.7 }}>:{op.port}</span>}
+        {!release && <span style={{ fontSize: 10 }}>:{op.port}</span>}
         {shortcutNum != null && (
           <span
             aria-hidden="true"
@@ -389,7 +394,7 @@ export function EnvSwitcherBar() {
               padding: '1px 3px',
               borderRadius: 3,
               border: '1px solid currentColor',
-              opacity: 0.5,
+              opacity: 1,
               fontWeight: 700,
             }}
           >
@@ -447,7 +452,6 @@ export function EnvSwitcherBar() {
           style={{
             color: 'var(--fg-mute, #888)',
             fontSize: 9.5,
-            opacity: 0.85,
             whiteSpace: 'nowrap',
             flexShrink: 0,
           }}

@@ -11,7 +11,7 @@ import { expectNoA11yViolations } from './_axe';
  *
  *   - Settings page renders all 5 TTS engines + 2 STT engines
  *   - STT spend widget appears (parallel of TTS)
- *   - Voice mode toggle button mounts on the harness shell
+ *   - Voice mode toggle button mounts on the current operator shell
  *   - Cap-knob inputs accept new values + persist via PUT
  *   - Engines context wiring fetches credentials + spend in parallel
  */
@@ -178,22 +178,19 @@ test.describe('voice settings', () => {
   });
 });
 
-test.describe('voice mode toggle on harness shell', () => {
+test.describe('voice mode toggle on operator shell', () => {
   test.beforeEach(async ({ page }) => {
     await page.addInitScript(() => {
       sessionStorage.setItem('oracle-tutorial-complete', 'true');
     });
   });
 
-  test('voice mode button stays dark by default (web operator chat is TESTING-gated)', async ({ page }) => {
-    // native-terminal-desktop D-011 / P-016: the desktop chat is the
-    // terminal-native pui panes, so the WEB operator chat sidebar — the
-    // VoiceButton's host — only mounts behind FLAGS.TESTING (default OFF).
-    // /harness is retired as a landing and redirects to /adv. Guard the
-    // gating: the app shell mounts WITHOUT the web voice toggle.
+  test('voice mode button mounts on the current operator shell', async ({ page }) => {
+    // /harness is a retired landing that redirects into the current shell.
+    // Voice is now a first-class shell control, so the release contract is
+    // that the labelled toggle remains visible after that redirect.
     await page.goto('/harness');
-    await expect(page.getByRole('complementary', { name: 'Swarm sidebar' })).toBeVisible();
-    await expect(page.getByRole('button', { name: /voice mode/i })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Voice mode' })).toBeVisible();
   });
 
   test('voice prefs API is reachable', async ({ page }) => {

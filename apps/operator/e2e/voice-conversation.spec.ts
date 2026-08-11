@@ -10,7 +10,7 @@ import { expectNoA11yViolations } from './_axe';
  * Per voice-mode.spec.ts: headless Chromium can't drive a real mic / STT / TTS
  * (no audio device, empty voice list, Voicemode services absent in CI), so the
  * AUTOMATED voice E2E covers the DETERMINISTIC surface only:
- *   - the web voice-mode button stays dark by default (TESTING-gated, D-011)
+ *   - the voice-mode button mounts on the current operator shell
  *   - the EL Conv AI session-token endpoint is auth-gated
  *   - the dual aria-live regions exist (the screen-reader mirror of TTS)
  *   - the shell is a11y-clean (no serious/critical axe violations) with the
@@ -31,15 +31,12 @@ test.describe('voice conversation surface (deterministic; real audio = agent-e2e
     });
   });
 
-  test('voice-mode button stays dark by default (web operator chat is TESTING-gated)', async ({ page }) => {
-    // native-terminal-desktop D-011 / P-016: the web operator chat sidebar —
-    // the VoiceButton's host — only mounts behind FLAGS.TESTING (default OFF);
-    // the desktop voice entry is the terminal-native pui surface. Guard the
-    // gating here; VoiceButton's operable/labelled behavior is covered by its
-    // component tests.
+  test('voice-mode button mounts on the current operator shell', async ({ page }) => {
+    // /harness redirects into the current operator shell. Voice is now a
+    // first-class shell control, and its labelled button is the stable public
+    // entry point for mouse, touch, and keyboard PTT behavior.
     await page.goto('/harness');
-    await expect(page.getByRole('complementary', { name: 'Swarm sidebar' })).toBeVisible();
-    await expect(page.getByRole('button', { name: /voice mode/i })).toHaveCount(0);
+    await expect(page.getByRole('button', { name: 'Voice mode' })).toBeVisible();
   });
 
   test('the EL Conv AI session-token endpoint is device-JWT gated (no anonymous mint)', async ({ page }) => {

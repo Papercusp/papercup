@@ -175,6 +175,22 @@ describe('EnvSwitcherBar', () => {
     expect(screen.getByTestId('env-btn-release')).toBeTruthy();
   });
 
+  it('keeps disabled and unreachable environment labels at full contrast', async () => {
+    mockFetch([
+      op({ id: 'dev', port: 3270, reachable: true, isSelf: true }),
+      op({ id: 'staging', port: 3170, reachable: true, enabled: false }),
+      op({ id: 'local', port: 3055, reachable: false }),
+    ]);
+    render(<EnvSwitcherBar />);
+    await screen.findByTestId('env-switcher-bar');
+
+    for (const id of ['env-btn-staging', 'env-btn-local']) {
+      const button = screen.getByTestId(id);
+      expect(button.style.opacity).toBe('1');
+      expect(button.querySelector('span')?.style.opacity).toBe('');
+    }
+  });
+
   it('switching to a reachable env navigates the webview to its origin, carrying the route', async () => {
     mockFetch([
       op({ id: 'dev', port: 3270, reachable: true, isSelf: true }),
