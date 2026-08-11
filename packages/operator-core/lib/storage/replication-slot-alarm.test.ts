@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import {
   detectSlotBreaches,
+  formatSlotEscalation,
   formatSlotBreachToast,
   runReplicationSlotAlarmOnce,
   inactiveCeilingBytes,
@@ -96,16 +97,44 @@ describe('formatSlotBreachToast', () => {
   });
 });
 
+describe('formatSlotEscalation', () => {
+  it('builds an urgent body from the critical slot reasons', () => {
+    const t = formatSlotEscalation([
+      slot('lost_one', 0, { active: true, walStatus: 'lost' }),
+    ].map((s) => ({ ...s, reason: 'wal-at-risk' as const, ceilingBytes: 0 })));
+    expect(t.title).toBe('Replication slot WAL critical');
+    expect(t.body).toContain('attention required now');
+    expect(t.body).toContain('lost_one');
+  });
+});
+
 describe('runReplicationSlotAlarmOnce', () => {
   it('emits exactly one toast when a slot breaches, and returns the breaches', async () => {
     const emitToast = vi.fn(async (_t: { level: string; message: string; description: string }) => {});
     const res = await runReplicationSlotAlarmOnce({
       fetchSlots: async () => [slot('dead_sub', 5, { active: false }), slot('ok', 1, { active: false })],
       emitToast,
+      escalate: async () => {},
+      recentlyEscalated: async () => false,
     });
     expect(res.checked).toBe(2);
     expect(res.breaches.map((b) => b.slotName)).toEqual(['dead_sub']);
     expect(emitToast).toHaveBeenCalledTimes(1);
+  });
+
+  it('escalates WAL-at-risk and inactive-retaining, but not active lagging', async () => {
+    const escalate = vi.fn(async (_t: { title: string; body: string }) => {});
+    await runReplicationSlotAlarmOnce({
+      fetchSlots: async () => [
+        slot('lost_one', 0, { active: true, walStatus: 'lost' }),
+        slot('lagging', 12, { active: true }),
+      ],
+      emitToast: async () => {},
+      escalate,
+      recentlyEscalated: async () => false,
+    });
+    expect(escalate).toHaveBeenCalledTimes(1);
+    expect(escalate.mock.calls[0][0].title).toBe('Replication slot WAL critical');
   });
 
   it('emits NO toast when every slot is safe (incl. the empty cluster)', async () => {

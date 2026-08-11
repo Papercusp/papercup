@@ -26,7 +26,11 @@ vi.mock('@papercusp/db-org', () => ({
   generated: { toastLogInHarnessShared: { id: 'id', createdAt: 'createdAt' } },
 }));
 
-import { initAgentGovernorObserver, _resetAgentGovernorObserver } from './agent-governor-observer';
+import {
+  initAgentGovernorObserver,
+  _resetAgentGovernorObserver,
+  GOVERNOR_ESCALATION_MIN_PAUSE_MS,
+} from './agent-governor-observer';
 import { getGovernor, resetGovernorRegistry } from '@papercusp/papercusp-shared/agent';
 
 const flush = () => new Promise<void>((r) => setTimeout(r, 0));
@@ -66,6 +70,16 @@ describe('agent-governor-observer (RB-009)', () => {
     getGovernor('openai', 'default').penalize({ retryAfterMs: 60_000 });
     await flush();
     expect(sendMessage).toHaveBeenCalledTimes(2);
+  });
+
+  it('escalates only a sustained pause on the shared attention rail', async () => {
+    const escalate = vi.fn(async (_t: { title: string; body: string }) => {});
+    initAgentGovernorObserver({ escalate, recentlyEscalated: async () => false });
+    getGovernor('anthropic', 'opus').penalize({ retryAfterMs: GOVERNOR_ESCALATION_MIN_PAUSE_MS + 1 });
+    await flush();
+    expect(escalate).toHaveBeenCalledWith(
+      expect.objectContaining({ title: 'Agent rate-limit pause sustained' }),
+    );
   });
 
   it('init is idempotent (no double-surfacing from a second init)', async () => {

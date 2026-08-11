@@ -33,12 +33,15 @@
  */
 import { generated, getOrgPg } from '@papercusp/db-org';
 import { desc, inArray } from 'drizzle-orm';
+import { escalateAlarm } from '../alarm-attention';
 import { notifySyncInvalidate } from '../sync-sse';
 import { isPgCategory, STORAGE_CATEGORIES } from './categories';
 import { computeStorageUsage, type StorageUsageRow } from './usage';
 
 const GIB = 1024 ** 3;
 const TOAST_RING_BUFFER = 2000;
+const STORAGE_GROWTH_ESCALATE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+const STORAGE_GROWTH_ESCALATION_TITLE = 'Storage growth critical';
 
 function envNum(name: string, fallback: number): number {
   const v = Number(process.env[name]);
@@ -70,6 +73,10 @@ export interface GrowthAlarmDeps {
    *  Feeds the UNDECLARED sweep below, which deliberately does NOT go through
    *  `computeStorageUsage` (that is category-derived — the blind spot). */
   listTableSizes?: () => Promise<TableSizeRow[]>;
+  /** Injectable for tests — defaults to the shared attention-notify rail. */
+  escalate?: (t: { title: string; body: string }) => Promise<void>;
+  /** Injectable for tests — the persistent cross-restart cooldown floor. */
+  recentlyEscalated?: () => Promise<boolean>;
 }
 
 /** One physical table's size, straight from the catalog — NOT category-derived. */
@@ -234,6 +241,20 @@ export function formatBreachToast(breaches: StorageBreach[]): { level: string; m
   };
 }
 
+/** Build the human-facing escalation for an explicit category ceiling breach. */
+export function formatGrowthEscalation(breaches: StorageBreach[]): { title: string; body: string } {
+  const worst = [...breaches].sort((a, b) => b.bytes - a.bytes)[0];
+  const action = worst.trimmable
+    ? 'Trim the category or investigate its retention path now.'
+    : 'Investigate the read-only/federated retention path now.';
+  return {
+    title: STORAGE_GROWTH_ESCALATION_TITLE,
+    body:
+      `${worst.label} (${worst.id}) is ${fmtGb(worst.bytes)} over its ${fmtGb(worst.ceilingBytes)} ceiling. ` +
+      `${action}`,
+  };
+}
+
 function fmtSize(bytes: number): string {
   return bytes >= GIB ? `${(bytes / GIB).toFixed(1)} GB` : `${Math.round(bytes / (1024 * 1024))} MB`;
 }
@@ -298,6 +319,8 @@ export async function runStorageGrowthAlarmOnce(
   const computeUsage = deps.computeUsage ?? (() => computeStorageUsage({ sizesOnly: true }));
   const emitToast = deps.emitToast ?? defaultEmitToast;
   const listTableSizes = deps.listTableSizes ?? defaultListTableSizes;
+  const escalate = deps.escalate;
+  const recentlyEscalated = deps.recentlyEscalated;
 
   let rows: StorageUsageRow[] = [];
   try {
@@ -314,6 +337,17 @@ export async function runStorageGrowthAlarmOnce(
     } catch (err) {
       console.warn(`[storage-growth-alarm] toast emit failed (non-fatal): ${(err as Error)?.message ?? String(err)}`);
     }
+    // A category ceiling is an explicit, actionable threshold. The separate
+    // undeclared-table leg remains warning-only: missing retention metadata is
+    // not proof that the table is already unhealthy.
+    await escalateAlarm(
+      {
+        ...formatGrowthEscalation(breaches),
+        cooldownMs: STORAGE_GROWTH_ESCALATE_COOLDOWN_MS,
+        source: 'storage-growth-alarm',
+      },
+      { notify: escalate, recentlyEscalated },
+    );
   }
 
   // ── The undeclared sweep (the leg detectBreaches structurally cannot cover) ──

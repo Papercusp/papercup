@@ -109,12 +109,28 @@ describe('runPollSuspectScanOnce', () => {
       emitToast,
       lastAlertedAt,
       now: () => 5_000_000,
+      escalate: async () => {},
+      recentlyEscalated: async () => false,
     });
     expect(result.checked).toBe(1);
     expect(result.alerted).toEqual([s]);
     expect(emitToast).toHaveBeenCalledTimes(1);
     expect(emitToast.mock.calls[0][0].description).toContain('activity:recent');
     expect(lastAlertedAt.get('activity:recent')).toBe(5_000_000);
+  });
+
+  it('escalates a fresh sustained detector result on the shared attention rail', async () => {
+    const s = suspect({ tool_name: 'activity:recent' });
+    const escalate = vi.fn(async (_t: { title: string; body: string }) => {});
+    await runPollSuspectScanOnce({
+      loadSuspects: async () => [s],
+      emitToast: async () => {},
+      lastAlertedAt: new Map(),
+      now: () => 5_000_000,
+      escalate,
+      recentlyEscalated: async () => false,
+    });
+    expect(escalate).toHaveBeenCalledWith(expect.objectContaining({ title: 'Poll-suspect detected' }));
   });
 
   it('does NOT toast when everything is within the dedupe window', async () => {
@@ -171,6 +187,8 @@ describe('runPollSuspectScanOnce', () => {
       },
       lastAlertedAt,
       now: () => 1,
+      escalate: async () => {},
+      recentlyEscalated: async () => false,
     });
     // The tick still reports what it FOUND (checked/alerted reflect detection,
     // not delivery) but never throws, and — critically — does not mark the

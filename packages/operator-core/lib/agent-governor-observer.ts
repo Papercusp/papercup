@@ -15,6 +15,7 @@
 import { onGovernorPause } from '@papercusp/papercusp-shared/agent';
 import { getOrgPg, generated } from '@papercusp/db-org';
 import { desc, inArray } from 'drizzle-orm';
+import { escalateAlarm } from './alarm-attention';
 import { sendMessage } from './agent-tools/coordination/messages';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 import { notifySyncInvalidate } from './sync-sse';
@@ -31,11 +32,24 @@ const GOVERNOR_IDENTITY: AgentIdentity = {
 // most once per bucket per window so we don't spam coord/toasts.
 const SURFACE_THROTTLE_MS = 30_000;
 const TOAST_RING_BUFFER = 2000;
+/** A brief provider pause is expected backpressure; a pause beyond 90s needs a
+ * human. This stays below the account-blind governor's ~2m re-probe cap, so the
+ * policy is reachable for the normal fleet-wide bucket. */
+export const GOVERNOR_ESCALATION_MIN_PAUSE_MS = 90_000;
+const GOVERNOR_ESCALATE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+const GOVERNOR_ESCALATION_TITLE = 'Agent rate-limit pause sustained';
 const lastSurfaced = new Map<string, number>();
 let initialized = false;
 
+export interface AgentGovernorObserverDeps {
+  /** Injectable for tests — defaults to the shared attention-notify rail. */
+  escalate?: (t: { title: string; body: string }) => Promise<void>;
+  /** Injectable for tests — the persistent cross-restart cooldown floor. */
+  recentlyEscalated?: () => Promise<boolean>;
+}
+
 /** Register the pause→coord+toast surfacing. Idempotent; call once at operator boot. */
-export function initAgentGovernorObserver(): void {
+export function initAgentGovernorObserver(deps: AgentGovernorObserverDeps = {}): void {
   if (initialized) return;
   initialized = true;
   onGovernorPause((ev) => {
@@ -46,13 +60,20 @@ export function initAgentGovernorObserver(): void {
     if (now - (lastSurfaced.get(ev.key) ?? 0) < SURFACE_THROTTLE_MS) return;
     lastSurfaced.set(ev.key, now);
     const untilIso = new Date(ev.pausedUntil).toISOString();
-    void surfacePause(ev.key, untilIso, ev.source).catch(() => {
+    const pauseDurationMs = Math.max(0, ev.pausedUntil - now);
+    void surfacePause(ev.key, untilIso, ev.source, pauseDurationMs, deps).catch(() => {
       /* observability is best-effort */
     });
   });
 }
 
-async function surfacePause(bucketKey: string, untilIso: string, source: string): Promise<void> {
+async function surfacePause(
+  bucketKey: string,
+  untilIso: string,
+  source: string,
+  pauseDurationMs: number,
+  deps: AgentGovernorObserverDeps,
+): Promise<void> {
   const summary = `⏳ agent rate-limit — bucket "${bucketKey}" paused until ${untilIso} (${source})`;
   // Coord broadcast (transition only), mirroring the service-health monitor.
   // Ambient category → default-excluded from coord:inbox (opt-in to see it).
@@ -85,6 +106,22 @@ async function surfacePause(bucketKey: string, untilIso: string, source: string)
     void notifySyncInvalidate('toastLog.recent', undefined).catch(() => {});
   } catch {
     /* PG not ready / write failed — best-effort */
+  }
+
+  // The coord transition remains the fast agent-facing signal. A human ping is
+  // reserved for a pause beyond the reachable 90-second threshold, so a brief
+  // 429/backpressure event does not train the owner to ignore this rail.
+  if (pauseDurationMs >= GOVERNOR_ESCALATION_MIN_PAUSE_MS) {
+    await escalateAlarm(
+      {
+        title: GOVERNOR_ESCALATION_TITLE,
+        body: `Rate-limit bucket "${bucketKey}" is paused until ${untilIso} (${source}), for at least five minutes. ` +
+          'Provider capacity is holding agent work; inspect account routing and governor state.',
+        cooldownMs: GOVERNOR_ESCALATE_COOLDOWN_MS,
+        source: 'agent-governor-observer',
+      },
+      { notify: deps.escalate, recentlyEscalated: deps.recentlyEscalated },
+    );
   }
 }
 

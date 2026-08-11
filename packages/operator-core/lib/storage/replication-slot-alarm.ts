@@ -28,10 +28,13 @@
  */
 import { generated, getOrgPg } from '@papercusp/db-org';
 import { desc, inArray } from 'drizzle-orm';
+import { escalateAlarm } from '../alarm-attention';
 import { notifySyncInvalidate } from '../sync-sse';
 
 const GIB = 1024 ** 3;
 const TOAST_RING_BUFFER = 2000;
+const REPLSLOT_ESCALATE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
+const REPLSLOT_ESCALATION_TITLE = 'Replication slot WAL critical';
 
 function envNum(name: string, fallback: number): number {
   const v = Number(process.env[name]);
@@ -134,11 +137,24 @@ export function formatSlotBreachToast(breaches: SlotBreach[]): {
   };
 }
 
+/** Build the human-facing escalation for WAL loss or an abandoned slot. */
+export function formatSlotEscalation(critical: SlotBreach[]): { title: string; body: string } {
+  const body = formatSlotBreachToast(critical).description;
+  return {
+    title: REPLSLOT_ESCALATION_TITLE,
+    body: `Replication-slot attention required now. ${body}`,
+  };
+}
+
 export interface SlotAlarmDeps {
   /** Injectable for tests — defaults to a read-only pg_replication_slots scan. */
   fetchSlots?: () => Promise<SlotRow[]>;
   /** Injectable for tests — defaults to a toast_log row + sync invalidate. */
   emitToast?: (t: { level: string; message: string; description: string }) => Promise<void>;
+  /** Injectable for tests — defaults to the shared attention-notify rail. */
+  escalate?: (t: { title: string; body: string }) => Promise<void>;
+  /** Injectable for tests — the persistent cross-restart cooldown floor. */
+  recentlyEscalated?: () => Promise<boolean>;
 }
 
 async function defaultFetchSlots(): Promise<SlotRow[]> {
@@ -208,6 +224,8 @@ export async function runReplicationSlotAlarmOnce(
 ): Promise<{ checked: number; breaches: SlotBreach[] }> {
   const fetchSlots = deps.fetchSlots ?? defaultFetchSlots;
   const emitToast = deps.emitToast ?? defaultEmitToast;
+  const escalate = deps.escalate;
+  const recentlyEscalated = deps.recentlyEscalated;
 
   let slots: SlotRow[] = [];
   try {
@@ -228,6 +246,20 @@ export async function runReplicationSlotAlarmOnce(
         `[replication-slot-alarm] toast emit failed (non-fatal): ${(err as Error)?.message ?? String(err)}`,
       );
     }
+  }
+  // An active subscriber that is merely lagging remains warning-only. WAL that
+  // is already at risk, or pinned by an inactive slot, is an actionable
+  // failure mode and reaches the human rail.
+  const critical = breaches.filter((b) => b.reason === 'wal-at-risk' || b.reason === 'inactive-retaining');
+  if (critical.length > 0) {
+    await escalateAlarm(
+      {
+        ...formatSlotEscalation(critical),
+        cooldownMs: REPLSLOT_ESCALATE_COOLDOWN_MS,
+        source: 'replication-slot-alarm',
+      },
+      { notify: escalate, recentlyEscalated },
+    );
   }
   return { checked: slots.length, breaches };
 }

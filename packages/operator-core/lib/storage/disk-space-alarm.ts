@@ -20,6 +20,7 @@ import { promisify } from 'node:util';
 import { statfs as statfsCb } from 'node:fs';
 import { generated, getOrgPg } from '@papercusp/db-org';
 import { desc, inArray } from 'drizzle-orm';
+import { escalateAlarm } from '../alarm-attention';
 import { notifySyncInvalidate } from '../sync-sse';
 import { workspacesRoot } from '../workspace-registry';
 
@@ -199,43 +200,6 @@ const ESCALATE_COOLDOWN_MS = 6 * 60 * 60 * 1000; // 6h
 
 const ESCALATION_TITLE = 'Disk critically low';
 
-/**
- * Cross-restart dedup floor: has a critical-disk escalation fired within the
- * cooldown, in THIS or a PRIOR operator process? Reads the persistent
- * `attention_notifications` rail that notifyAttention itself writes (the same
- * shape hive-owner-key-health uses against toast_log), so suppression survives
- * a restart rather than resetting with an in-memory flag.
- *
- * Fail-OPEN: any error returns false → the escalation proceeds. A missed
- * suppression costs one extra ping; failing closed could swallow the alert that
- * says the box is about to stop working.
- */
-async function defaultRecentlyEscalated(): Promise<boolean> {
-  try {
-    const { sql } = getOrgPg();
-    const cutoffIso = new Date(Date.now() - ESCALATE_COOLDOWN_MS).toISOString();
-    const rows = await sql/* sql */ `
-      select 1
-        from harness_shared.attention_notifications
-       where title = ${ESCALATION_TITLE}
-         and created_at > ${cutoffIso}::timestamptz
-       limit 1`;
-    return rows.length > 0;
-  } catch {
-    return false; // fail-open — never swallow a real "the disk is full" alert
-  }
-}
-
-async function defaultEscalate(t: { title: string; body: string }): Promise<void> {
-  const { notifyAttention } = await import('../attention-notify');
-  await notifyAttention({
-    kind: 'intervention',
-    title: t.title,
-    body: t.body,
-    importance: 'urgent',
-  });
-}
-
 /** Build the human-facing escalation body. Pure — unit-testable. */
 export function formatDiskEscalation(critical: DiskBreach[]): { title: string; body: string } {
   const worst = [...critical].sort((a, b) => a.freePct - b.freePct)[0];
@@ -308,8 +272,8 @@ export async function runDiskSpaceAlarmOnce(
 ): Promise<{ checked: number; breaches: DiskBreach[]; escalated: boolean }> {
   const sample = deps.sample ?? defaultSample;
   const emitToast = deps.emitToast ?? defaultEmitToast;
-  const escalate = deps.escalate ?? defaultEscalate;
-  const recentlyEscalated = deps.recentlyEscalated ?? defaultRecentlyEscalated;
+  const escalate = deps.escalate;
+  const recentlyEscalated = deps.recentlyEscalated;
 
   let snapshots: DiskSnapshot[] = [];
   try {
@@ -336,14 +300,15 @@ export async function runDiskSpaceAlarmOnce(
   let escalated = false;
   const critical = breaches.filter((b) => b.severity === 'critical');
   if (critical.length > 0) {
-    try {
-      if (!(await recentlyEscalated())) {
-        await escalate(formatDiskEscalation(critical));
-        escalated = true;
-      }
-    } catch (err) {
-      console.warn(`[disk-space-alarm] escalation failed (non-fatal): ${(err as Error)?.message ?? String(err)}`);
-    }
+    const request = formatDiskEscalation(critical);
+    escalated = await escalateAlarm(
+      {
+        ...request,
+        cooldownMs: ESCALATE_COOLDOWN_MS,
+        source: 'disk-space-alarm',
+      },
+      { notify: escalate, recentlyEscalated },
+    );
   }
   return { checked: snapshots.length, breaches, escalated };
 }

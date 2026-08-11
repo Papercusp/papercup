@@ -20,6 +20,7 @@
  */
 import { generated, getOrgPg } from '@papercusp/db-org';
 import { desc, inArray } from 'drizzle-orm';
+import { escalateAlarm } from './alarm-attention';
 import { notifySyncInvalidate } from './sync-sse';
 import { flagPollSuspects, telemetryRollup, type PollSuspect } from './dev-data';
 
@@ -27,6 +28,7 @@ const TOAST_RING_BUFFER = 2000;
 
 /** Re-alert window: a suspect already announced within this long stays quiet. */
 export const POLL_SUSPECT_ALERT_DEDUPE_MS = 24 * 3600_000;
+const POLL_SUSPECT_ESCALATION_TITLE = 'Poll-suspect detected';
 
 /** Rollup lookback for each scan tick — short enough to catch a fresh storm quickly,
  *  long enough that a single slow hour doesn't dilute a genuinely sustained rate. */
@@ -74,6 +76,16 @@ export function formatPollSuspectToast(suspects: PollSuspect[]): {
   };
 }
 
+/** Build the human-facing escalation for a fresh detector result. The detector
+ * already applies both sustained aggregate and per-caller thresholds; the
+ * explicit per-alarm policy here is one attention ping per 24 hours. */
+export function formatPollSuspectEscalation(suspects: PollSuspect[]): { title: string; body: string } {
+  return {
+    title: POLL_SUSPECT_ESCALATION_TITLE,
+    body: `A polling-shaped tool pattern needs remediation. ${formatPollSuspectToast(suspects).description}`,
+  };
+}
+
 async function defaultEmitToast(t: { level: string; message: string; description: string }): Promise<void> {
   const tl = generated.toastLogInHarnessShared;
   const { db } = getOrgPg();
@@ -108,6 +120,10 @@ export interface PollSuspectScanDeps {
   /** Injectable clock for tests. */
   now?: () => number;
   dedupeMs?: number;
+  /** Injectable for tests — defaults to the shared attention-notify rail. */
+  escalate?: (t: { title: string; body: string }) => Promise<void>;
+  /** Injectable for tests — the persistent cross-restart cooldown floor. */
+  recentlyEscalated?: () => Promise<boolean>;
 }
 
 /** Module-level dedup state for the production wiring (one process, one map — see
@@ -137,6 +153,8 @@ export async function runPollSuspectScanOnce(
   const lastAlertedAt = deps.lastAlertedAt ?? productionLastAlertedAt;
   const now = deps.now ?? Date.now;
   const dedupeMs = deps.dedupeMs ?? POLL_SUSPECT_ALERT_DEDUPE_MS;
+  const escalate = deps.escalate;
+  const recentlyEscalated = deps.recentlyEscalated;
 
   let suspects: PollSuspect[] = [];
   try {
@@ -159,6 +177,17 @@ export async function runPollSuspectScanOnce(
         `[poll-suspect-alarm] toast emit failed (non-fatal, retries next tick): ${err instanceof Error ? err.message : String(err)}`,
       );
     }
+    // The detector already requires a sustained two-axis polling shape. Keep
+    // its 24h announcement policy, but deliver it on the attention rail too so
+    // a closed UI cannot hide a persistent waste/cost regression.
+    await escalateAlarm(
+      {
+        ...formatPollSuspectEscalation(fresh),
+        cooldownMs: POLL_SUSPECT_ALERT_DEDUPE_MS,
+        source: 'poll-suspect-alarm',
+      },
+      { notify: escalate, recentlyEscalated },
+    );
   }
   return { checked: suspects.length, alerted: fresh };
 }

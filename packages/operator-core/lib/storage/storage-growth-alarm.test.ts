@@ -3,6 +3,7 @@ import {
   detectBreaches,
   detectUndeclaredGrowth,
   formatBreachToast,
+  formatGrowthEscalation,
   formatUndeclaredToast,
   runStorageGrowthAlarmOnce,
   categoryCeilingBytes,
@@ -71,6 +72,18 @@ describe('formatBreachToast', () => {
   });
 });
 
+describe('formatGrowthEscalation', () => {
+  it('names the largest explicit ceiling breach and gives an action', () => {
+    const t = formatGrowthEscalation([
+      { id: 'small', label: 'Small', bytes: 4 * GIB, ceilingBytes: 3 * GIB, trimmable: true },
+      { id: 'large', label: 'Large', bytes: 12 * GIB, ceilingBytes: 10 * GIB, trimmable: false },
+    ]);
+    expect(t.title).toBe('Storage growth critical');
+    expect(t.body).toContain('Large (large)');
+    expect(t.body).toContain('Investigate the read-only/federated retention path');
+  });
+});
+
 describe('runStorageGrowthAlarmOnce', () => {
   it('emits exactly one toast when a category breaches, and returns the breaches', async () => {
     const emitToast = vi.fn(async (_t: { level: string; message: string; description: string }) => {});
@@ -80,11 +93,26 @@ describe('runStorageGrowthAlarmOnce', () => {
       // Isolate the CATEGORY leg: the undeclared sweep is a second, independent
       // leg with its own tests below. Without this it would hit a live catalog.
       listTableSizes: async () => [],
+      escalate: async () => {},
+      recentlyEscalated: async () => false,
     });
     expect(res.checked).toBe(2);
     expect(res.breaches.map((b) => b.id)).toEqual(['decision-ledger']);
     expect(emitToast).toHaveBeenCalledTimes(1);
     expect(emitToast.mock.calls[0][0].level).toBe('warning');
+  });
+
+  it('escalates an explicit category ceiling breach once', async () => {
+    const escalate = vi.fn(async (_t: { title: string; body: string }) => {});
+    const res = await runStorageGrowthAlarmOnce({
+      computeUsage: async () => [pgRow('substrate-outbox', 4)],
+      emitToast: async () => {},
+      listTableSizes: async () => [],
+      escalate,
+      recentlyEscalated: async () => false,
+    });
+    expect(res.breaches).toHaveLength(1);
+    expect(escalate).toHaveBeenCalledWith(expect.objectContaining({ title: 'Storage growth critical' }));
   });
 
   it('emits NO toast when every category is under its ceiling', async () => {
