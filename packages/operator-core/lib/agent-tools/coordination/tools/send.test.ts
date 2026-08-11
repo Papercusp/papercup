@@ -22,7 +22,11 @@ vi.mock('../identity', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../identity')>()),
   resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me', workspaceId: 'ws1' })),
 }));
-vi.mock('../messages', () => ({ sendMessage: vi.fn(), getMessageById: vi.fn(async () => null) }));
+vi.mock('../messages', () => ({
+  sendMessage: vi.fn(),
+  getMessageById: vi.fn(async () => null),
+  getUnresolvedAudienceSelectors: vi.fn(() => []),
+}));
 vi.mock('../recipient-liveness', () => ({ describeMissedRecipients: vi.fn(async () => []) }));
 // EI-19965318428068990: keep the REAL `buildStagedWakeNote` (a pure fn of stagedTargets,
 // no I/O) via importOriginal — a bare factory replaces the whole module and leaves
@@ -98,7 +102,7 @@ vi.mock('../premise-resolve', async (importOriginal) => ({
   resolvePremiseStamps: vi.fn(async () => []),
 }));
 
-import { sendMessage, getMessageById } from '../messages';
+import { sendMessage, getMessageById, getUnresolvedAudienceSelectors } from '../messages';
 import { resolveRecipients, remoteSessionOwnerIds, remoteSessionsByOwnerId } from '../recipient-resolve';
 import { wakeRecipients, reportIdleRecipients } from '../inbox-wake';
 import { describeMissedRecipients } from '../recipient-liveness';
@@ -112,6 +116,7 @@ const premiseM = vi.mocked(resolvePremiseStamps);
 const basedOnM = vi.mocked(deriveBasedOn);
 const sendM = vi.mocked(sendMessage);
 const getByIdM = vi.mocked(getMessageById);
+const unresolvedAudienceM = vi.mocked(getUnresolvedAudienceSelectors);
 const resolveM = vi.mocked(resolveRecipients);
 const remoteIdsM = vi.mocked(remoteSessionOwnerIds);
 const remoteMapM = vi.mocked(remoteSessionsByOwnerId);
@@ -139,6 +144,7 @@ beforeEach(() => {
   n = 0;
   // each send mints a fresh msg_id; echo the resolved `to` back on the envelope
   sendM.mockImplementation(async (_id, opts: { to: string[] }) => ({ to: opts.to, msg_id: `m${++n}`, ts: `t${n}` }) as never);
+  unresolvedAudienceM.mockReturnValue([] as never);
   // recipients resolve 1:1 by default (no unknowns)
   resolveM.mockImplementation(async (to: readonly string[]) => ({ resolved: to, unknown: [], ambiguous: [] }) as never);
   // wake-on-reply flag ON by default; no original message by default
@@ -810,6 +816,28 @@ describe('coord:send zero-recipient audience (EI-6874)', () => {
     const b = await body({ to: ['@fleet:p2p-dist'], summary: 'status' });
     expect(b.results[0]).toMatchObject({ ok: true, recipients_resolved: 2 });
     expect(b.results[0].zero_recipients).toBeUndefined();
+  });
+
+  it('a partial audience miss is reported without hiding the valid recipient', async () => {
+    unresolvedAudienceM.mockReturnValueOnce(['@fleet-leader:owl-field-guide-goal-drain'] as never);
+    sendM.mockImplementationOnce(async () => ({ to: ['su-live'], msg_id: 'm1', ts: 't1' }) as never);
+    const b = await body({
+      to: ['@fleet-leader:owl-field-guide-goal-drain', 'su-live'],
+      summary: 'status',
+    });
+
+    expect(b.results[0]).toMatchObject({
+      ok: true,
+      to: ['su-live'],
+      recipients_resolved: 1,
+      unresolvedSelectors: ['@fleet-leader:owl-field-guide-goal-drain'],
+      unresolved_audience: {
+        selectors: ['@fleet-leader:owl-field-guide-goal-drain'],
+      },
+    });
+    expect(b.results[0].unresolved_audience.note).toMatch(
+      /named fleet may be absent|active member may be acting as leader|fleet:take-leadership/i,
+    );
   });
 
   it('a @topic: selector resolving to zero → ok:false zero_recipients with a catch-up hint (non-fleet)', async () => {

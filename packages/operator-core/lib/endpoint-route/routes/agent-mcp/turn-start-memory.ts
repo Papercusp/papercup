@@ -262,8 +262,46 @@ const turnStartMemory = defineTool({
         }
       })();
 
-      const [control, memory] = await Promise.all([controlPromise, memoryPromise]);
-      return Response.json({ ok: true, text: [control, memory].filter(Boolean).join('\n\n') });
+      // fleet-deltas-leader-primitives-2026-07-10 P-004 / D-004 ruling 3:
+      // ORIENTATION THAT ARRIVES. `coord:orient` is mandated in three separate
+      // places (the MCP initialize instructions, the su playbook, the
+      // S17-orient-bootstrap LLM assert) and 119 of 378 working owners (31.5%,
+      // 7d) still issue no coordination read of any kind — so the READ half
+      // rides this rail instead of being asked for. The WRITE half
+      // (declare-intent + lane claim) stays an explicit call, because it needs
+      // an agent-authored intent no server can synthesize.
+      //
+      // Runs CONCURRENTLY with control+memory: this endpoint is under a hard
+      // 2.5s wall in the hook, so a third section must not add serial latency.
+      // Flag-gated with a fail-OPEN default, and fail-soft internally, so the
+      // worst case is the pre-P-004 `[control, memory]` composition unchanged.
+      const orientationPromise = (async () => {
+        try {
+          const [{ getFlag }, { FLAGS }, { buildTurnStartOrientationBlock }] = await Promise.all([
+            import('@papercusp/flags'),
+            import('@papercusp/flags'),
+            import('../../../turn-start-orientation'),
+          ]);
+          const on = await getFlag(FLAGS.TURN_START_ORIENTATION, 'system').catch(() => true);
+          if (!on) return '';
+          return await buildTurnStartOrientationBlock({ ownerId: owner, workspaceId });
+        } catch {
+          return '';
+        }
+      })();
+
+      const [control, orientation, memory] = await Promise.all([
+        controlPromise,
+        orientationPromise,
+        memoryPromise,
+      ]);
+      // ORDER IS DELIBERATE: control (a mode/route transition governs everything
+      // after it) → orientation (what you hold and who is waiting on you) →
+      // memory (background recall). Most-binding first.
+      return Response.json({
+        ok: true,
+        text: [control, orientation, memory].filter(Boolean).join('\n\n'),
+      });
     } catch {
       return Response.json({ ok: true, text: '' });
     }
