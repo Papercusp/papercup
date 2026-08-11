@@ -231,6 +231,10 @@ describe('P-060.7 — D-005: observations never enter the work/triage lane', () 
 
     await captureImprovement({ title: 'a real friction worth fixing', kind: 'bug' }, deps);
 
+    // Asserted BEFORE the negative: `undefined?.lane` is also `not.toBe('observation')`, so
+    // without this the negative would pass just as happily on a capture that wrote no payload
+    // at all — a vacuous green exactly where the leak lives.
+    expect(payloads[0]).toBeDefined();
     expect(payloads[0]?.lane).not.toBe('observation');
   });
 });
