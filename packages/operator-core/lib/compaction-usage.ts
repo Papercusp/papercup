@@ -875,21 +875,12 @@ export async function resolveModelSpecForOwner(ownerId: string): Promise<string 
        ORDER BY started_at DESC
        LIMIT 1
     `;
-    const argv = rows[0]?.launch_argv;
-    if (Array.isArray(argv)) {
-      for (let i = 0; i < argv.length; i++) {
-        const a = argv[i];
-        if (typeof a !== 'string') continue;
-        if (a.startsWith('--model=')) {
-          const v = a.slice('--model='.length).trim();
-          if (v) return v;
-        }
-        if (a === '--model' && typeof argv[i + 1] === 'string') {
-          const v = (argv[i + 1] as string).trim();
-          if (v) return v;
-        }
-      }
-    }
+    // The argv parse itself lives in agent-config-constants (client-safe) so the
+    // chat MODEL control can reuse it against the argv the roster already carries,
+    // instead of growing a second copy of this loop (WI-6510).
+    const { modelSpecFromArgv } = await import('./agent-config-constants');
+    const fromArgv = modelSpecFromArgv(rows[0]?.launch_argv);
+    if (fromArgv) return fromArgv;
   } catch {
     /* best-effort — fall through to settings.json */
   }

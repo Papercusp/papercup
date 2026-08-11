@@ -691,7 +691,13 @@ export function mergeRosterEntries(
       // synthesized separately (pendingLaunchesToRosterEntries) into the roster's
       // `pending` tier, never `active` (D-006).
       display: null,
-      launchArgv: [],
+      // WI-6510: was hardcoded `[]` while the joined adv row carried the argv all
+      // along — the pending/starting tiers already pass `r.launchArgv ?? []`, so an
+      // ACTIVE agent was the one tier that lost it. Carrying it costs no extra query
+      // (the adv row is already joined by owner) and is what lets the chat MODEL pill
+      // report the spec its session was launched on from data the surface already
+      // holds, keeping `ChatModeAction.current()` pure and synchronous.
+      launchArgv: adv?.launchArgv ?? [],
       agentPaneKind: pane.kind,
       driveMode: pane.driveMode,
       // The agent's native claude session uuid (the `claude --resume <id>` /

@@ -156,6 +156,31 @@ export interface BuildEnvelopeOpts {
    * fork guard, rather than silently spawning something unreachable.
    */
   headless?: boolean;
+  /**
+   * Resume the session on a DIFFERENT model — psu `--model=<model>[:<effort>]`
+   * (WI-6510, the chat MODEL control).
+   *
+   * A full COMPOSED spec, effort included, because psu has no standalone effort
+   * flag: effort rides the spec (`composeLaunchModelSpec`). Passing a bare model
+   * beside a separate effort is the documented silent-drop bug — a `sonnet-5:high`
+   * fleet came up at xhigh on 2026-07-01 — so this is deliberately ONE field, not
+   * two, and callers compose before they get here.
+   *
+   * ⚠ NAMED `resumeModel`, NOT `model`, on purpose: `NativeConsoleOptions.model`
+   * already exists and is documented as an OMP fuzzy-match argument. Reusing that
+   * name would put two unrelated meanings on one field, distinguished only by
+   * which backend happened to be resolved.
+   *
+   * Only meaningful with `resumeSessionId`, and only for CLAUDE sessions — those
+   * are the ones routed through psu below. The codex/omp branch execs the bare
+   * interactive CLI, which takes no psu flag, so a spec there would be silently
+   * dropped; it is refused instead (same posture as the fork/headless guards).
+   *
+   * Context is PRESERVED: `psu --resume` honors `--model`/`--effort` like a fresh
+   * launch (psu-launcher `resumeArgsFor`, WI-3758), so this continues the SAME
+   * conversation on a different model rather than starting a new one.
+   */
+  resumeModel?: string;
 }
 
 // (kickoff-kind allowlist moved to @/lib/agent-kickoff/kickoff-kind in P-032,
@@ -432,6 +457,16 @@ export async function buildConsoleEnvelope(
         `cannot fork a ${bin} session: only claude sessions support --fork-session on the console resume path`,
       );
     }
+    // WI-6510: a model spec only reaches the CLI through psu, which is the claude
+    // branch below. codex/omp exec the bare interactive binary and would silently
+    // drop it — resuming on the OLD model while the UI reported the new one, which
+    // is plan D-002's silent no-op exactly. Refuse loudly instead (same posture as
+    // the fork/headless guards); the control gates itself on claude too.
+    if (opts.resumeModel && backend !== 'claude-code') {
+      throw new Error(
+        `cannot set a model on a ${bin} resume: only claude sessions resume through psu, which is what carries --model`,
+      );
+    }
     // "Resume in GUI" (resume-in-gui-button-2026-08-09): a HEADLESS resume is only
     // coherent when the resume routes through psu, which is the claude branch below.
     // codex/omp exec the bare interactive CLI — no coord presence, no injectable pty —
@@ -512,6 +547,11 @@ export async function buildConsoleEnvelope(
       // transcript into the isolation dir so psu's `--resume=<id>` finder locates
       // an ended session.
       const forkFlag = opts.fork ? ' --fork' : '';
+      // WI-6510: resume on a DIFFERENT model. psu honors --model on a resume exactly
+      // as on a fresh launch (resumeArgsFor, WI-3758), so the conversation carries.
+      // The spec is already composed (`<model>[:<effort>]`) — psu has no separate
+      // effort flag, and emitting one would be a silent no-op.
+      const modelFlag = opts.resumeModel ? ` --model=${shellSafeModelSpec(opts.resumeModel)}` : '';
       // resume-in-gui-button-2026-08-09: `--headless` keeps psu's managed pty ON with
       // non-TTY stdio (and implies --no-picker), which is what makes a windowless
       // resume still injectable — i.e. still something the HUD conversation composer
@@ -520,7 +560,7 @@ export async function buildConsoleEnvelope(
       // racing it (psu-launcher main(): headless at L7142, resume branch at L7161).
       // Appended LAST so a headed resume's greeting stays byte-identical to today's.
       const headlessFlag = opts.headless ? ' --headless' : '';
-      greetingCmd = `echo "${verb} plan-run ${id}…"; exec psu --resume=${id}${forkFlag}${headlessFlag}`;
+      greetingCmd = `echo "${verb} plan-run ${id}…"; exec psu --resume=${id}${forkFlag}${headlessFlag}${modelFlag}`;
     } else {
       // codex/omp: keep the bare interactive binary. The /login artifact is
       // claude-CLAUDE_CONFIG_DIR-specific; these backends authenticate from their
@@ -554,4 +594,27 @@ export function shellSafeId(id: string): string {
     throw new Error(`refusing to embed unsafe session id: ${id.slice(0, 32)}`);
   }
   return id;
+}
+
+/**
+ * Validate a `<model>[:<effort>]` spec before it is embedded in the resume
+ * greeting. Same reject-rather-than-escape posture as {@link shellSafeId}, and
+ * for the same reason: this string reaches a `bash -lc` command line.
+ *
+ * The alphabet is the one real specs use — `opus[1m]:high`, `sonnet[1m]`,
+ * `gpt-5.6-luna:high`, `claude-opus-5@default`. Note `[` and `]` are IN it (the
+ * 1m-window marker) and are shell GLOB characters, so the value is also
+ * single-quoted on the way out; validation alone would leave the greeting
+ * dependent on the surrounding quoting staying correct forever.
+ *
+ * Deliberately NOT `isValidModelSpec` — that one is documented as loose on the
+ * model id, which is right for a config field and wrong for a shell argument.
+ * Exported for unit testing.
+ */
+export function shellSafeModelSpec(spec: string): string {
+  const s = spec.trim();
+  if (!s || !/^[A-Za-z0-9._@:[\]-]+$/.test(s)) {
+    throw new Error(`refusing to embed unsafe model spec: ${spec.slice(0, 40)}`);
+  }
+  return `'${s}'`;
 }
