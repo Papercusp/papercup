@@ -126,7 +126,15 @@ function setStatusArgs(e: ToolInvocationEvent, status: string, why: string): Rec
     // dropping a hand-filed duplicate of an already-claimed implementer). No effect
     // on any other status — a genuine `done`/reopen/park flip is unaffected, and
     // set-status.ts's guard is a no-op unless `status === 'dropped'`.
-    ...(status === 'dropped' ? { onlyIfNoOtherOpenCoverage: true } : {}),
+    //
+    // EI-20129670928216719: `onlyIfNotCompleted` covers the case the line above CANNOT —
+    // the sibling that completed the plan item is itself `done`, i.e. terminal, so it is
+    // filtered out of the coverage scan and the item reads as uncovered. Without it,
+    // dropping a merely `relates`-linked follow-on silently downgraded an already-`done`
+    // plan item (live: fix-0014-platform-defects-2026-08-10#P-005, downgraded 67ms after
+    // WI-37872 was dropped, while its real completer WI-37735 sat `done`). The two guards
+    // are complementary, not redundant: open coverage vs. finished coverage.
+    ...(status === 'dropped' ? { onlyIfNoOtherOpenCoverage: true, onlyIfNotCompleted: true } : {}),
   };
 }
 

@@ -115,6 +115,12 @@ const argsSchema = z
       .describe(
         'Non-destructive DROP: when flipping an item to `dropped`, SKIP the flip (reported `skipped:"coverage_guard"`, ok:true) if ANOTHER non-terminal work-item is still linked to this plan item (via the `implements` conversion edge, the `relates` coverage edge, or the `payload.plan_item` stamp). Prevents dropping ONE work-item (e.g. a duplicate) from cascading `dropped` onto a plan item that another live work-item still covers (EI-19972048649686949). No effect on any status other than `dropped`. For AUTOMATED reflections (a work-item state change cascading onto its plan item); a human deliberately abandoning the item just omits it.',
       ),
+    onlyIfNotCompleted: z
+      .boolean()
+      .optional()
+      .describe(
+        'Non-destructive DROP: SKIP a `done` → `dropped` flip (reported `skipped:"completed_guard"`, ok:true) instead of downgrading finished work. Complements `onlyIfNotTerminal`, which by design permits terminal→terminal, and `onlyIfNoOtherOpenCoverage`, which only counts NON-terminal siblings and so cannot see the DONE work-item that actually completed the item (EI-20129670928216719). No effect on any status other than `dropped`. For AUTOMATED reflections; a human deliberately reclassifying finished work as abandoned just omits it.',
+      ),
   })
   .refine(
     (a) =>
@@ -138,6 +144,9 @@ interface StatusItem {
    *  this plan item — for automated reflections cascading a single work-item's drop. See
    *  the coverage guard below. */
   onlyIfNoOtherOpenCoverage?: boolean;
+  /** Skip (don't flip) a `done` →`dropped` flip — an automated cascade must never
+   *  downgrade finished work. See `completedGuardTrips`. */
+  onlyIfNotCompleted?: boolean;
 }
 
 /** Result payload — explicit so `withPlanLock`'s `T` is fixed by the
@@ -162,7 +171,10 @@ type SetStatusValue =
   /** `onlyIfNotTerminal` tripped: the item is already done/dropped and the caller
    *  asked for a non-destructive flip. Carries the CURRENT status so the caller can
    *  report what it left alone. Not an error — see the `terminal_guard` branch below. */
-  | { ok: false; code: 'terminal_guard'; currentStatus: string | null };
+  | { ok: false; code: 'terminal_guard'; currentStatus: string | null }
+  /** `onlyIfNotCompleted` tripped: the item is `done` and an automated cascade tried to
+   *  drop it. Not an error — see the `completed_guard` branch below. */
+  | { ok: false; code: 'completed_guard'; currentStatus: string | null };
 
 /**
  * Extract one item's `importance` from the plan body, glyph-agnostically,
@@ -294,6 +306,45 @@ export function terminalGuardTrips(opts: {
   if (!opts.onlyIfNotTerminal) return false;
   if (opts.currentStatus === null) return false;
   return isTerminalStatus(opts.currentStatus) && !isTerminalStatus(opts.nextStatus);
+}
+
+/**
+ * Should an AUTOMATED drop be SKIPPED because the plan item is already FINISHED?
+ *
+ * EI-20129670928216719. The invariant: a cascade must never downgrade `done` → `dropped`.
+ * A `done` plan item is shipped, verified work; the drop of SOME linked work-item is never
+ * evidence that it became abandoned.
+ *
+ * This is a THIRD guard because the case falls between the existing two, by each one's own
+ * contract — patching either in isolation is wrong:
+ *   - `terminalGuardTrips` deliberately permits terminal→terminal (see its docstring), and
+ *     that behaviour is PINNED by set-status.test.ts ('done'→'dropped' ⇒ false). Widening it
+ *     would break a deliberate, tested contract.
+ *   - the coverage guard counts only NON-terminal siblings, so the DONE work-item that
+ *     actually completed the plan item never registers as coverage.
+ *
+ * Observed live: dropping WI-37872 — a follow-on merely `relates`-linked to
+ * fix-0014-platform-defects-2026-08-10#P-005 — flipped that already-`done` item to
+ * `dropped` 67ms later. P-005's real completer, the sibling WI-37735, was `done` and so
+ * invisible to the coverage guard. The same asymmetry was already fixed for the sibling
+ * `plan-item-reflect:release` rule (EI-19295826179470465); this closes it for the drop path.
+ *
+ * SAFETY (why this can never fire on the item that triggered it): the reflect drop cascade
+ * only runs when the triggering work-item's state maps to `dropped` — `deprecated|closed|
+ * dropped`, never `done` (plan-items/reflect-rules.ts `reflectedStatus`). So the guard needs
+ * no self-exclusion, unlike the coverage guard.
+ *
+ * Pure + exported so the rule is unit-tested without the PG/lock path. Evaluated INSIDE the
+ * plan lock, where `currentStatus` is race-safe — the coverage guard's pre-lock read would
+ * not be. True ⇒ leave the item exactly as it is.
+ */
+export function completedGuardTrips(opts: {
+  onlyIfNotCompleted: boolean | undefined;
+  currentStatus: string | null;
+  nextStatus: string;
+}): boolean {
+  if (!opts.onlyIfNotCompleted) return false;
+  return opts.currentStatus === 'done' && opts.nextStatus === 'dropped';
 }
 
 /** The minimal claim shape the terminal-flip guard reads (a subset of PlanItemClaim). */
@@ -734,6 +785,19 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
       ) {
         return { newBody: null, value: { ok: false, code: 'terminal_guard', currentStatus: oldStatus } };
       }
+      // EI-20129670928216719: an automated cascade must never downgrade FINISHED work.
+      // Checked here, inside the lock, because it reads the PLAN ITEM's current status —
+      // the coverage guard's pre-lock read would race a concurrent flip. See
+      // `completedGuardTrips` for why neither existing guard covers this.
+      if (
+        completedGuardTrips({
+          onlyIfNotCompleted: it.onlyIfNotCompleted,
+          currentStatus: oldStatus,
+          nextStatus: it.status,
+        })
+      ) {
+        return { newBody: null, value: { ok: false, code: 'completed_guard', currentStatus: oldStatus } };
+      }
       // Read importance only on a transition INTO needs-human — the sole
       // case the push gate cares about — so routine flips skip the parse.
       const importance: Importance =
@@ -797,6 +861,20 @@ async function setStatusOne(it: StatusItem, ctx: UnifiedToolContext): Promise<Bu
         skipped: 'terminal_guard',
         currentStatus: result.value.currentStatus,
         reason: `left at \`${result.value.currentStatus}\` — already terminal, and this flip (\`${it.status}\`) would have un-finished it`,
+      };
+    }
+    // Same posture as the terminal guard: a deliberate NO-OP, reported ok:true with
+    // `skipped` so the automated reflection neither reads as broken nor gets retried.
+    if (result.value.code === 'completed_guard') {
+      return {
+        ok: true,
+        slug: it.slug,
+        itemId: it.itemId,
+        skipped: 'completed_guard',
+        currentStatus: result.value.currentStatus,
+        reason:
+          'left at `done` — finished work is never downgraded to `dropped` by an automated ' +
+          'cascade; the work-item being dropped is not the one that completed this item',
       };
     }
     return { ok: false, slug: it.slug, itemId: it.itemId, error: result.value.code };
@@ -1056,6 +1134,7 @@ export default defineTool({
           rationale: it.rationale ?? args.rationale,
           onlyIfNotTerminal: it.onlyIfNotTerminal ?? args.onlyIfNotTerminal,
           onlyIfNoOtherOpenCoverage: it.onlyIfNoOtherOpenCoverage ?? args.onlyIfNoOtherOpenCoverage,
+          onlyIfNotCompleted: it.onlyIfNotCompleted ?? args.onlyIfNotCompleted,
         }))
       : args.itemIds?.length
         ? args.itemIds.map((itemId) => ({
@@ -1067,6 +1146,7 @@ export default defineTool({
             rationale: args.rationale,
             onlyIfNotTerminal: args.onlyIfNotTerminal,
             onlyIfNoOtherOpenCoverage: args.onlyIfNoOtherOpenCoverage,
+            onlyIfNotCompleted: args.onlyIfNotCompleted,
           }))
         : [
             {
