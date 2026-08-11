@@ -18,7 +18,12 @@ import { chmodSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } 
 import { homedir, hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { openOwnLog, type PeerLogOp } from './peer-log';
-import { createCorestoreSeedProvider, CORESTORE_SEED_KIND } from './seed-provider-corestore';
+import {
+  createCorestoreSeedProvider,
+  CORESTORE_SEED_KIND,
+  mintFilteredSeedContentCore,
+  SEED_EXCLUDED_TABLES,
+} from './seed-provider-corestore';
 import { produceLogSnapshot, SNAPSHOT_TABLE_TAG } from './log-snapshot';
 
 const cleanups: Array<() => void | Promise<void>> = [];
@@ -344,5 +349,122 @@ describe('corestore seed provider', () => {
     );
     expect(res.ok).toBe(false);
     expect(res.reason).toMatch(/payload path missing/);
+  });
+});
+
+/**
+ * EI-20108164746219771 — the SERVER installer shipped the build box owner's identity,
+ * because the seed corestore is a slice of the owner's LIVE log and that log carries
+ * `presence` rows keyed `<github_user_id>/<machine_label>`.
+ *
+ * The fix makes the seed a PRODUCT rather than a slice: one filtered snapshot in a core
+ * the owner never wrote.
+ */
+describe('mintFilteredSeedContentCore — the seed carries content, not the owner', () => {
+  interface TestCore {
+    ready(): Promise<void>;
+    get(i: number, opts: { wait: boolean }): Promise<{ value?: { rows?: { table: string }[] } } | null>;
+    readonly writable: boolean;
+  }
+
+  async function sourceWithIdentity() {
+    const store = new Corestore(tmpDir('papercusp-seed-src-'));
+    cleanups.push(() => store.close());
+    await store.ready();
+    const own = await openOwnLog(store);
+    const op = (table: string, hbKey: string, value: unknown, ts: number): PeerLogOp => ({
+      type: 'put',
+      table,
+      hbKey,
+      value,
+      ts,
+      schema_version: 1,
+      author_pubkey: own.keyHex,
+    });
+    await own.append(op('plans', 'p1', { title: 'intended content' }, 1));
+    // Identity derived at RUNTIME — never a literal in tracked source (WI-4776). Writing
+    // the real hostname in here would put the exact string this fix removes back into
+    // shipped source and red the identity-lint gate.
+    await own.append(op('presence', `${hostname()}`, { machine_label: hostname() }, 2));
+    await own.append(op('usage', 'u1', { tokens: 5 }, 3));
+    return { store, own };
+  }
+
+  async function stagingStore() {
+    const store = new Corestore(tmpDir('papercusp-seed-staging-'));
+    cleanups.push(() => store.close());
+    await store.ready();
+    return store;
+  }
+
+  function openReplica(store: Corestore, keyHex: string): TestCore {
+    return store.get({
+      key: Buffer.from(keyHex, 'hex'),
+      valueEncoding: 'json',
+    }) as unknown as TestCore;
+  }
+
+  it('carries intended content, drops presence/usage, and never writes the source', async () => {
+    const { store: src, own } = await sourceWithIdentity();
+    const lengthBefore = own.length;
+    const staging = await stagingStore();
+
+    const minted = await mintFilteredSeedContentCore({
+      sourceStore: src,
+      ownerKeyHex: own.keyHex,
+      stagingStore: staging,
+    });
+
+    // Filtering the owner's live log in place would make historical rows unreachable
+    // for every live reader — the source must come back untouched.
+    expect(own.length).toBe(lengthBefore);
+    expect(minted.keyHex).not.toBe(own.keyHex);
+    expect(minted.length).toBeGreaterThan(0);
+
+    const core = openReplica(staging, minted.keyHex);
+    await core.ready();
+    const tables = new Set<string>();
+    let bytes = '';
+    for (let i = 0; i < minted.length; i++) {
+      const blk = await core.get(i, { wait: false });
+      bytes += JSON.stringify(blk);
+      for (const r of blk?.value?.rows ?? []) tables.add(r.table);
+    }
+
+    // CONTROL: the fixture really did contain the identity, so a no-op filter fails here.
+    expect(tables.size).toBeGreaterThan(0);
+    expect(tables.has('plans')).toBe(true);
+    expect(tables.has('presence')).toBe(false);
+    expect(tables.has('usage')).toBe(false);
+    expect(bytes).not.toContain(hostname());
+  });
+
+  it('ships NO signing secret — the staging copy is a read-only replica', async () => {
+    // This module's FIRST stated correctness property. Minting the core directly inside
+    // the staging store would make it writable there, and a writable hypercore's storage
+    // contains its signing secret — which then ships in the installer. A privacy fix that
+    // leaked a signing key would be strictly worse than the leak it removes, so the core
+    // is minted in a throwaway store and only its BLOCKS are replicated in.
+    const { store: src, own } = await sourceWithIdentity();
+    const staging = await stagingStore();
+
+    const minted = await mintFilteredSeedContentCore({
+      sourceStore: src,
+      ownerKeyHex: own.keyHex,
+      stagingStore: staging,
+    });
+
+    const core = openReplica(staging, minted.keyHex);
+    await core.ready();
+    expect(core.writable).toBe(false);
+  });
+
+  it('does not over-filter: hive-members stays in the seed', () => {
+    // The roster is identity-bearing but is REQUIRED content and owner-authorised.
+    // Widening the exclusion set to "anything carrying an id" would break seeding.
+    expect(SEED_EXCLUDED_TABLES).toContain('presence');
+    expect(SEED_EXCLUDED_TABLES).toContain('usage');
+    expect(SEED_EXCLUDED_TABLES).not.toContain('hive-members');
+    expect(SEED_EXCLUDED_TABLES).not.toContain('contributors');
   });
 });
