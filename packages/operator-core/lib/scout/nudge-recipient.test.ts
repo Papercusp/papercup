@@ -275,6 +275,32 @@ describe('deliverScoutNudge — the retirement gate, end to end (P-037)', () => 
     expect(sendMessage.mock.calls.filter((c) => toOf(c).includes('su-a'))).toHaveLength(1);
   });
 
+  it('a true pager persists the su message before explicitly waking that recipient', async () => {
+    getFlag.mockResolvedValue(false);
+    const r = await deliverScoutNudge({
+      workspaceId: WS,
+      mugOwner: null,
+      summary: 'Scout cycle ERROR STREAK',
+      source: 'scout-error-streak-alarm',
+      payload: { kind: 'scout-error-streak' },
+      wakeSu: true,
+    });
+
+    expect(r.kind).toBe('su');
+    expect(sendMessage.mock.calls.filter((c) => toOf(c).includes('su-a'))).toHaveLength(1);
+    expect(wakeRecipients).toHaveBeenCalledWith(
+      ['su-a'],
+      expect.objectContaining({
+        summary: 'Scout cycle ERROR STREAK',
+        source: 'scout-error-streak-alarm',
+        workspaceId: WS,
+      }),
+    );
+    expect(sendMessage.mock.invocationCallOrder[0]).toBeLessThan(
+      wakeRecipients.mock.invocationCallOrder[0] ?? Number.POSITIVE_INFINITY,
+    );
+  });
+
   // CALIBRATION — the identical fixture while the tier runs. Without it these
   // assertions would also pass if deliverScoutNudge had simply stopped doing anything.
   it('CALIBRATION: while the tier runs, the identical call DOES wake the Mug and park the slot', async () => {

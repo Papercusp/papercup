@@ -8,9 +8,21 @@ import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 const h = vi.hoisted(() => ({
   calls: [] as Array<{ text: string; values: unknown[] }>,
   rows: [] as Array<{ status: string; detail: unknown }>,
+  recentWatchdogFires: vi.fn().mockResolvedValue(0),
+  claimWatchdogFire: vi.fn().mockResolvedValue(true),
+  resolveMugOwner: vi.fn().mockResolvedValue(null),
+  deliverScoutNudge: vi.fn().mockResolvedValue({
+    kind: 'su',
+    ownerId: 'su-a',
+    ownerLabel: 'su-a',
+    why: 'test recipient',
+  }),
 }));
 
 vi.mock('@papercusp/db-org', () => ({
+  // The composed delivery path loads the real presence graph far enough to
+  // register this provider at module scope, even though its PG edge is mocked.
+  setAdminPoolStatementTimeoutProvider: vi.fn(),
   getOrgPg: () => ({
     sql: (strings: TemplateStringsArray, ...values: unknown[]) => {
       h.calls.push({ text: strings.join('?'), values });
@@ -19,6 +31,12 @@ vi.mock('@papercusp/db-org', () => ({
   }),
 }));
 vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' }));
+vi.mock('../pot/watchdog', () => ({
+  recentWatchdogFires: h.recentWatchdogFires,
+  claimWatchdogFire: h.claimWatchdogFire,
+  resolveMugOwner: h.resolveMugOwner,
+}));
+vi.mock('./nudge-recipient', () => ({ deliverScoutNudge: h.deliverScoutNudge }));
 
 import {
   isErrorStreak,
@@ -32,6 +50,19 @@ import {
 beforeEach(() => {
   h.calls.length = 0;
   h.rows = [];
+  h.recentWatchdogFires.mockClear();
+  h.recentWatchdogFires.mockResolvedValue(0);
+  h.claimWatchdogFire.mockClear();
+  h.claimWatchdogFire.mockResolvedValue(true);
+  h.resolveMugOwner.mockClear();
+  h.resolveMugOwner.mockResolvedValue(null);
+  h.deliverScoutNudge.mockClear();
+  h.deliverScoutNudge.mockResolvedValue({
+    kind: 'su',
+    ownerId: 'su-a',
+    ownerLabel: 'su-a',
+    why: 'test recipient',
+  });
 });
 
 afterEach(() => {
@@ -137,6 +168,30 @@ describe('checkAndFireErrorStreakAlarm — fail-soft shell', () => {
       // The mocked sql tag returns [] (no rows) → no streak → clean return;
       // also exercise the catch path via a workspace resolution that throws.
       await expect(checkAndFireErrorStreakAlarm({})).resolves.toBeUndefined();
+    } finally {
+      warn.mockRestore();
+    }
+  });
+
+  it('a claimed error-streak page uses the nudge ladder in wake-capable pager mode', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    h.rows = [
+      { status: 'error', detail: { error: 'transport dead' } },
+      { status: 'error', detail: { error: 'transport dead' } },
+      { status: 'error', detail: { error: 'transport dead' } },
+    ];
+
+    try {
+      await checkAndFireErrorStreakAlarm({ workspaceId: 'w', installSlug: 'papercusp' });
+
+      expect(warn).not.toHaveBeenCalled();
+      expect(h.claimWatchdogFire).toHaveBeenCalledTimes(1);
+      expect(h.deliverScoutNudge).toHaveBeenCalledWith(
+        expect.objectContaining({
+          source: 'scout-error-streak-alarm',
+          wakeSu: true,
+        }),
+      );
     } finally {
       warn.mockRestore();
     }

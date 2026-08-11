@@ -175,6 +175,9 @@ export async function checkAndFireErrorStreakAlarm(opts: {
       body: summary,
       harnessSlug: opts.installSlug ?? null,
       payload: { kind: 'scout-error-streak', threshold, errors },
+      // This alarm is a pager, not a quiet review nudge. The ladder persists the
+      // message first, then re-invokes the selected su so the page cannot sit unread.
+      wakeSu: true,
     });
 
     // The ladder picks WHO; urgency picks HOW LOUD (D-038). For the three watchdogs an

@@ -242,6 +242,9 @@ export interface DeliverScoutNudgeOpts {
   payload?: unknown;
   body?: string;
   harnessSlug?: string | null;
+  /** A true pager must re-invoke the selected su after the durable inbox write.
+   *  Quiet review/grade nudges leave this false and remain inject-only. */
+  wakeSu?: boolean;
 }
 
 /**
@@ -324,6 +327,21 @@ export async function deliverScoutNudge(
         },
       ),
     );
+
+    // `sendMessage` is deliberately inject-only. That is right for the ordinary
+    // review/grade nudges, but not for the error-streak PAGER: without this explicit
+    // opt-in the alarm can select a live su, persist a message, and still never start
+    // a turn for that recipient. Wake only after the durable write succeeds so a
+    // failed send cannot produce an empty wake.
+    if (recipient.kind === 'su' && opts.wakeSu) {
+      const { wakeRecipients } = await import('../agent-tools/coordination/inbox-wake');
+      await wakeRecipients([recipient.ownerId], {
+        summary: opts.summary,
+        payload: opts.payload,
+        source: opts.source,
+        workspaceId: opts.workspaceId,
+      });
+    }
   } catch (e) {
     console.warn(
       `[scout-nudge] ${recipient.kind} delivery failed (${opts.source}): ${e instanceof Error ? e.message : e}`,
