@@ -112,6 +112,27 @@ describe('vite-build-singleflight — build serialization (EI-9836)', () => {
     expect(secondRes.stdout()).toContain('second-done');
   }, 15_000);
 
+  it('captures a requested snapshot before releasing the lock to the next build', async () => {
+    tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
+    const first = launch({
+      VITE_BUILD_SNAPSHOT_DIR: join(tmp, 'snapshot'),
+      VITE_BUILD_CMD:
+        'mkdir -p "$PAPERCUSP_VITE_OUT_DIR"; echo FIRST > "$PAPERCUSP_VITE_OUT_DIR/index.html"; sleep 1; exit 0',
+    });
+    const firstRes = collect(first);
+    await sleep(200); // let the first build acquire the lock
+
+    const second = launch({
+      VITE_BUILD_CMD: 'mkdir -p "$PAPERCUSP_VITE_OUT_DIR"; echo SECOND > "$PAPERCUSP_VITE_OUT_DIR/index.html"; exit 0',
+    });
+    const secondRes = collect(second);
+
+    expect(await firstRes.exited).toBe(0);
+    expect(await secondRes.exited).toBe(0);
+    expect(readFileSync(join(tmp, 'snapshot', 'index.html'), 'utf8').trim()).toBe('FIRST');
+    expect(distIndex()).toBe('SECOND');
+  }, 15_000);
+
   it('a fresh lock is acquired uncontested and the command exit status propagates', async () => {
     tmp = mkdtempSync(join(tmpdir(), 'vbsf-'));
     const ok = launch({ VITE_BUILD_CMD: 'true' });

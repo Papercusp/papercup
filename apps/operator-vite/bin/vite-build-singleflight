@@ -90,6 +90,12 @@ STAGE="$OUT_ROOT/dist.next"
 PREV="$OUT_ROOT/dist.prev"
 FAILURE="$OUT_ROOT/.vite-build-failure.json"
 LOG="${VITE_BUILD_LOG:-$OUT_ROOT/.vite-build.log}"
+# Optional packaging handoff. When set, capture the completed bundle into this
+# separate directory BEFORE releasing the singleflight lock. A caller that
+# needs a stable artifact (the desktop sidecar builder) can then consume the
+# snapshot without racing the next Vite build that updates dist/.
+SNAPSHOT="${VITE_BUILD_SNAPSHOT_DIR:-}"
+SNAPSHOT_TMP="${SNAPSHOT:+$SNAPSHOT.tmp.$$}"
 
 # A retain-regime build never empties dist/ (vite.config: emptyOutDir:false), so
 # it is already crash-safe AND depends on the old chunks still being there.
@@ -134,7 +140,7 @@ exec 9>>"$LOCK"
 # — exactly what broke the mac release leg on the 2026-07-13 0.0.9 cut.
 LOCKDIR="$LOCK.lockdir"
 MKDIR_LOCK=""   # set to LOCKDIR only when WE created it, so the trap removes only our own
-trap 'rm -rf ${MKDIR_LOCK:+"$MKDIR_LOCK"} 2>/dev/null || true' EXIT
+trap 'rm -rf ${MKDIR_LOCK:+"$MKDIR_LOCK"} ${SNAPSHOT_TMP:+"$SNAPSHOT_TMP"} 2>/dev/null || true' EXIT
 took_lock=0
 if command -v flock >/dev/null 2>&1; then
   if flock -w "$WAIT_SECS" 9; then took_lock=1; fi
@@ -214,6 +220,19 @@ if [ "$RETAIN" -eq 0 ]; then
       "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$status" "$LOG" > "$FAILURE" 2>/dev/null || true
     echo "[vite-build-singleflight] build FAILED (exit $status) — dist/ left intact (EI-10539). Log: $LOG" >&2
   fi
+fi
+
+# Capture a packaging snapshot while fd 9 still holds the singleflight lock.
+# The lock release below happens as this process exits; taking the snapshot
+# here closes the gap where a second build could replace dist/ between the
+# successful build and a caller's copy step.
+if [ "$status" -eq 0 ] && [ -n "$SNAPSHOT" ] && [ -f "$DIST/index.html" ]; then
+  rm -rf "$SNAPSHOT_TMP"
+  mkdir -p "$(dirname "$SNAPSHOT")" "$SNAPSHOT_TMP"
+  cp -a "$DIST/." "$SNAPSHOT_TMP/"
+  rm -rf "$SNAPSHOT"
+  mv "$SNAPSHOT_TMP" "$SNAPSHOT"
+  echo "[vite-build-singleflight] captured stable bundle snapshot at $SNAPSHOT"
 fi
 
 # Best-effort: blank the pid record now that we're done. Cosmetic, not
