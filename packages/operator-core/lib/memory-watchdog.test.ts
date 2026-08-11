@@ -3,6 +3,7 @@ import {
   startMemoryWatchdog,
   resolveMemoryWatchdogLimitMb,
   MEMORY_WATCHDOG_LIMIT_MB_BACKGROUND,
+  MEMORY_WATCHDOG_LIMIT_MB_DESKTOP,
   MEMORY_WATCHDOG_LIMIT_MB_REQUEST,
   MEMORY_WATCHDOG_LIMIT_MB_STAGING,
 } from './memory-watchdog';
@@ -88,6 +89,28 @@ describe('startMemoryWatchdog', () => {
     vi.advanceTimersByTime(1000); // would trip → suppressed (never healthy)
     vi.advanceTimersByTime(250); // no flush-then-exit was ever scheduled
     expect(exitSpy).not.toHaveBeenCalled();
+    h.stop();
+  });
+
+  it('the desktop :3270 tier gives its observed born RSS headroom, then recycles growth past the tier', () => {
+    // The live desktop dev host measured ~10.6–11.6 GiB at boot. With the
+    // dedicated 16 GiB tier, its default 12 GiB warn line sees healthy headroom
+    // first, so the born-over-budget guard cannot permanently disarm recycling.
+    withRss(10_600);
+    const onTrip = vi.fn();
+    const h = startMemoryWatchdog({
+      intervalMs: 1000,
+      tripsToRecycle: 1,
+      rssLimitMb: MEMORY_WATCHDOG_LIMIT_MB_DESKTOP,
+      proactiveGcMb: 0,
+      onTrip,
+      log: vi.fn(),
+    });
+    vi.advanceTimersByTime(1000); // 10.6 GiB < 12 GiB warn line → healthy sample
+    withRss(17_000);
+    vi.advanceTimersByTime(1000); // growth past 16 GiB → recycle
+    expect(onTrip).toHaveBeenCalledTimes(1);
+    expect(onTrip.mock.calls[0][0]).toMatchObject({ rssLimitMb: MEMORY_WATCHDOG_LIMIT_MB_DESKTOP });
     h.stop();
   });
 
@@ -210,6 +233,11 @@ describe('resolveMemoryWatchdogLimitMb (EI-1613 — role-aware RSS default)', ()
     expect(MEMORY_WATCHDOG_LIMIT_MB_REQUEST).toBe(3200);
   });
 
+  it('the desktop dev operator (:3270, BG=0) gets the measured working-set tier', () => {
+    expect(resolveMemoryWatchdogLimitMb(req({ PAPERCUSP_HONO_PORT: '3270' }))).toBe(MEMORY_WATCHDOG_LIMIT_MB_DESKTOP);
+    expect(MEMORY_WATCHDOG_LIMIT_MB_DESKTOP).toBe(16384);
+  });
+
   it('a default operator host (no BG flag, not :3170) is a background primary → 12288', () => {
     expect(resolveMemoryWatchdogLimitMb({} as unknown as NodeJS.ProcessEnv)).toBe(12288);
   });
@@ -234,6 +262,12 @@ describe('resolveMemoryWatchdogLimitMb (EI-1613 — role-aware RSS default)', ()
       resolveMemoryWatchdogLimitMb(
         bg({ PAPERCUSP_HONO_PORT: '3170' }) as unknown as NodeJS.ProcessEnv,
       ),
+    ).toBe(MEMORY_WATCHDOG_LIMIT_MB_BACKGROUND);
+  });
+
+  it('BACKGROUND wins over the desktop port tier when :3270 explicitly enables background workers', () => {
+    expect(
+      resolveMemoryWatchdogLimitMb(bg({ PAPERCUSP_HONO_PORT: '3270' }) as unknown as NodeJS.ProcessEnv),
     ).toBe(MEMORY_WATCHDOG_LIMIT_MB_BACKGROUND);
   });
 

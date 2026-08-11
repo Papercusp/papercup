@@ -40,8 +40,10 @@ import { backgroundWorkersEnabled } from './background-workers';
  * and the host recycles in a loop — and pre-EI-1613 the exit-0 recycle left it
  * DEAD under `Restart=on-failure`, freezing the whole routine engine (EI-1613;
  * the same class the dev-api host hit in EI-127, patched there with a 12288
- * systemd drop-in). A true request-only worker (BG=0, e.g. the :3070 cluster
- * workers) does NOT boot the substrate and stays light, so 3200 fits it.
+ * systemd drop-in). A plain request-only worker (BG=0, e.g. the :3070 cluster
+ * workers) does NOT boot the substrate and stays light, so 3200 fits it. The
+ * desktop dev operator on :3270 is request-only but not plain: its measured
+ * born RSS is ~10.6–11.6 GiB, so it gets a dedicated desktop tier below.
  *
  * ⚠ EI-19484864948547581 (2026-08-09): the :3170 staging operator is BG=0 too,
  * but it is NOT "light" — measured born RSS ~5.5 GB (already 1.7× the 3200
@@ -52,6 +54,7 @@ import { backgroundWorkersEnabled } from './background-workers';
  * measured ~7.3 GB max — do not fold it back into REQUEST without re-measuring.
  */
 export const MEMORY_WATCHDOG_LIMIT_MB_REQUEST = 3200;
+export const MEMORY_WATCHDOG_LIMIT_MB_DESKTOP = 16384;
 export const MEMORY_WATCHDOG_LIMIT_MB_STAGING = 10240;
 export const MEMORY_WATCHDOG_LIMIT_MB_BACKGROUND = 12288;
 
@@ -63,21 +66,23 @@ export const MEMORY_WATCHDOG_LIMIT_MB_BACKGROUND = 12288;
  * durable fix for the 3200-too-low bug that was only ever papered over
  * per-box; EI-19484864948547581 extends the same principle to :3170).
  *
- * Checked in this order: BACKGROUND (boots the substrate) > STAGING (the
- * :3170 port specifically — request-only by design but demonstrably heavier
- * than a plain request worker) > REQUEST (everything else, e.g. the :3070
- * cluster workers).
+ * Checked in this order: BACKGROUND (boots the substrate) > DESKTOP (the
+ * :3270 port specifically — request-only by design but measured at ~10.6–11.6
+ * GiB born RSS) > STAGING (the :3170 port specifically — request-only by design
+ * but demonstrably heavier than a plain request worker) > REQUEST (everything
+ * else, e.g. the :3070 cluster workers).
  */
 export function resolveMemoryWatchdogLimitMb(env: NodeJS.ProcessEnv = process.env): number {
   const explicit = Number(env.PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB);
   if (Number.isFinite(explicit) && explicit > 0) return explicit;
   if (backgroundWorkersEnabled(env)) return MEMORY_WATCHDOG_LIMIT_MB_BACKGROUND;
+  if (env.PAPERCUSP_HONO_PORT === '3270') return MEMORY_WATCHDOG_LIMIT_MB_DESKTOP;
   if (env.PAPERCUSP_HONO_PORT === '3170') return MEMORY_WATCHDOG_LIMIT_MB_STAGING;
   return MEMORY_WATCHDOG_LIMIT_MB_REQUEST;
 }
 
 export interface MemoryWatchdogOpts {
-  /** RSS high-water mark in MiB. Crossing it for `tripsToRecycle` samples → recycle. Default 3200. */
+  /** RSS high-water mark in MiB. Crossing it for `tripsToRecycle` samples → recycle. Direct-call default 3200; host boot passes a role-aware value. */
   rssLimitMb?: number;
   /** Soft warn threshold in MiB — log a structured gauge line above this (observability). Default = 0.75 × rssLimitMb. */
   warnMb?: number;

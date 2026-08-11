@@ -381,14 +381,15 @@ function startRequestServers(): void {
   if (process.env.PAPERCUSP_MEMORY_WATCHDOG !== '0') {
     // Role-aware default (EI-1613, extended by EI-19484864948547581): the
     // dedicated BACKGROUND primary (the bg-host, BG=1) boots the substrate +
-    // DBOS recovery and needs a far higher limit (12288) than a request-only
-    // worker (3200). The old flat `|| 3200` default trips the bg-host within
-    // minutes → recycle loop / (pre-fix) stay dead → routine-engine freeze.
-    // The :3170 staging operator is also BG=0 but is NOT light (measured born
-    // RSS ~5.5 GB), so it gets its own 10240 tier rather than inheriting 3200
-    // and permanently suppressing its own recycle. Resolved in code so a
-    // FRESH box is correct without a box-local systemd drop-in; an explicit
-    // env still wins.
+    // DBOS recovery and needs a far higher limit (12288) than a plain
+    // request-only worker (3200). The old flat `|| 3200` default trips the
+    // bg-host within minutes → recycle loop / (pre-fix) stay dead → routine-
+    // engine freeze. The :3170 staging operator is also BG=0 but is NOT light
+    // (measured born RSS ~5.5 GB), so it gets its own 10240 tier; the desktop
+    // dev operator on :3270 is heavier still (measured ~10.6–11.6 GB born RSS)
+    // and gets its own 16384 tier rather than inheriting 3200 and permanently
+    // suppressing its own recycle. Resolved in code so a FRESH box is correct
+    // without a box-local systemd drop-in; an explicit env still wins.
     const limitMb = resolveMemoryWatchdogLimitMb(process.env);
     // Proactive GC (the ROOT bg-host-freeze fix): force a full GC in the safe band
     // (default 60% of the recycle limit) so the heap never reaches the multi-GB
