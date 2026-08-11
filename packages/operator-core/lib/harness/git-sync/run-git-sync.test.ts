@@ -591,7 +591,7 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
       });
     });
 
-    it('GAP-4: a submodule unreachable while ahead → errors + DEFERS the superproject (no broken gitlink)', () => {
+    it('GAP-4: a submodule unreachable while ahead → errors + defers the superproject PUSH (no broken gitlink) but still COMMITS it locally', () => {
       // dirty the submodule (→ ahead after its local commit) and the superproject
       writeFileSync(join(repo, 'libs/sub', 'sub-new.txt'), 'sub-v2\n');
       writeFileSync(join(repo, 'super-new.txt'), 'super-v2\n');
@@ -607,6 +607,15 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
           expect(out.pushed).not.toContain('superproject');
         }
         expect(git(superOrigin, 'log', '--format=%s', 'main')).not.toMatch(/auto-commit test/);
+
+        // EI-20182436053613562: the deferral is PUSH-ONLY. The superproject's own dirty
+        // file has no relationship to any submodule pointer, and a local commit publishes
+        // nothing, so it must still land. Gating the commit on this same condition is what
+        // let ONE permanently-failing submodule push (a GitHub 403 no retry can clear)
+        // freeze every agent's work in the shared tree for 12h — including untracked files
+        // that existed on no other disk.
+        expect(git(repo, 'log', '--format=%s', 'HEAD')).toMatch(/auto-commit test/);
+        expect(git(repo, 'status', '--porcelain', 'super-new.txt')).toBe('');
       });
     });
 });
@@ -661,7 +670,7 @@ describe('runGitSync (real git, two submodules) — GAP-1 continue-past-conflict
 
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 
-  it('a conflict in one submodule does NOT block the sibling push, and defers the superproject', () => {
+  it('a conflict in one submodule does NOT block the sibling push, and defers the superproject PUSH (but still commits it locally)', () => {
     // subA: a peer pushes a conflicting line to origin; local edits the SAME line → conflict
     const aOther = join(root, 'subAother');
     git(root, 'clone', subAOrigin, aOther);
@@ -695,8 +704,14 @@ describe('runGitSync (real git, two submodules) — GAP-1 continue-past-conflict
       // subA tree is clean (merge aborted) — local edit preserved
       expect(git(join(repo, 'libs/subA'), 'status', '--porcelain', '--untracked-files=no')).toBe('');
       expect(readFileSync(join(repo, 'libs/subA', 'subA.txt'), 'utf8')).toBe('LOCAL-EDIT\n');
+      // EI-20182436053613562: the DEFERRAL IS PUSH-ONLY — the superproject's own dirty
+      // file was still committed LOCALLY. Deferring the local commit too is what stranded
+      // every agent's work for 12h behind one unreconcilable submodule.
+      expect(git(repo, 'log', '--format=%s', 'HEAD')).toMatch(/auto-commit test/);
+      expect(git(repo, 'status', '--porcelain', 'super-new.txt')).toBe('');
     });
   });
+
 });
 
 describe('runGitSync — EI-18 oversized-blob guard', () => {

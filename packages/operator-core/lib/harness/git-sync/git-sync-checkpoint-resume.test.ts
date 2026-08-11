@@ -227,7 +227,7 @@ describe('WI-1416 checkpointed pipeline (real git, submodule)', () => {
     expect(revCount(superOrigin)).toBe(superCount);
   });
 
-  it('blocked submodules DEFER the superproject: its pointer-bump/push checkpoints are never minted', async () => {
+  it('blocked submodules defer the superproject PUSH: pointer-bump IS minted, the push checkpoint never is', async () => {
     // Dirty the submodule, then break its origin so its phase errors (GAP-4 shape).
     writeFileSync(join(repo, 'libs/sub', 'sub-work.txt'), 'sub work\n');
     writeFileSync(join(repo, 'super-work.txt'), 'super work\n');
@@ -236,8 +236,15 @@ describe('WI-1416 checkpointed pipeline (real git, submodule)', () => {
     const names: string[] = [];
     const out = await runGitSync('ckpt', { repoPath: repo, step: makeStepRunner({ names }) });
     expect(out.status).toBe('error');
-    expect(names).toEqual(['git-sync:submodules']); // superproject steps never ran
+    // EI-20182436053613562: the local commit ALWAYS runs, so its phase is a genuine
+    // completed step and is checkpointed as one — a crashed fire that resumes replays it
+    // instead of re-committing. Only the NETWORK half is withheld while a submodule is
+    // unreconciled, so `git-sync:push` is still never minted.
+    expect(names).toEqual(['git-sync:submodules', 'git-sync:pointer-bump']);
+    expect(names).not.toContain('git-sync:push');
     expect(git(superOrigin, 'log', '--format=%s', 'main')).not.toMatch(/auto-commit ckpt/);
+    // ...and the superproject's own work is safely committed locally rather than stranded.
+    expect(git(repo, 'log', '--format=%s', 'HEAD')).toMatch(/auto-commit ckpt/);
   });
 });
 

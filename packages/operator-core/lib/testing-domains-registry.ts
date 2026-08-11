@@ -1609,6 +1609,7 @@ defineTestDomain({
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/release-local-leg-reaper.selftest.sh'], label: 'release local-leg reaper' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/local-matrix-starvation.selftest.sh'], label: 'local-matrix starvation downgrade' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/rig-bank-logs.selftest.sh'], label: 'rig bank-logs' },
+        { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/local-matrix-bank.selftest.sh'], label: 'local-matrix teardown evidence banking (EI-18660101091813036)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/vm-run-env.selftest.sh'], label: 'vm_run guest-env delivery (WI-6176)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/seat-offer-diag.selftest.sh'], label: 'seat-offer b→a failure discriminator (WI-6179)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/b9-attestation-precondition.selftest.sh'], label: 'LEG4 attestation precondition + both-frames restore (WI-5064)' },

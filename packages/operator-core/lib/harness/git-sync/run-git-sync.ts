@@ -1343,34 +1343,51 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     return out;
   });
 
-  // Superproject last — ONLY when every submodule reconciled (else its bumped pointers
-  // would reference unpushed submodule commits). One unreconciled submodule defers it.
-  // (Oversized exclusions do NOT defer it: the submodule's commit — without the big
+  // Superproject last. An unreconciled submodule defers its PUSH — and ONLY its push.
+  // (Oversized exclusions defer nothing: the submodule's commit — without the big
   // file — IS on its origin, so the parent gitlink resolves fine.)
+  //
+  // EI-20182436053613562: the deferral used to gate the local COMMIT as well, which is
+  // strictly more than the invariant needs. Publishing a superproject commit whose
+  // gitlinks reference unpushed submodule commits is what breaks a fresh clone, so the
+  // PUSH must wait. A local commit publishes nothing, cannot strand a gitlink, and is
+  // what the release gate cuts its candidate from (it reads local `staging` and never
+  // fetches). Gating it too meant ONE permanently-failing submodule push — a GitHub 403
+  // that no retry can ever clear — froze every agent's ordinary, non-submodule work in
+  // the shared dirty tree indefinitely: measured at 12h and 24 dirty paths, including
+  // untracked files that existed on no other disk and were therefore not even
+  // recoverable from the reflog. This log line always SAID "deferring superproject
+  // push"; now the code does only that.
   const supr = emptyPhase();
   let superHeadSha: string | undefined;
-  const blocked = sub.conflicts.length > 0 || sub.errors.length > 0;
-  if (!blocked) {
-    // PHASE `git-sync:pointer-bump` — superproject stage + content-guard + commit
-    // (this commit is what bakes the bumped submodule pointers in).
-    const commitRes = await step('git-sync:pointer-bump', () =>
-      commitOneRepo(runGit, repo, { ...repoO, attribution: attributionMapForRepo(roster, '', repo) }));
-    let repoResult: RepoSyncResult;
-    if (commitRes.error) {
-      repoResult = { status: 'error', message: commitRes.error, oversized: commitRes.oversized, contentErrors: commitRes.contentErrors };
-    } else {
-      // PHASE `git-sync:push` — superproject fetch + merge + push (the network half).
-      const pushRes = await step('git-sync:push', async () => ({
-        ...(await reconcileAndPushOneRepo(runGit, repo, { ...repoO, defaultBranch: branch }, commitRes.committedLocal)),
-        headSha: await headSha(runGit, repo),
-      }));
-      superHeadSha = pushRes.headSha;
-      repoResult = { ...pushRes, oversized: commitRes.oversized, contentErrors: commitRes.contentErrors };
-    }
-    absorb(supr, 'superproject', repoResult);
+  const pushBlocked = sub.conflicts.length > 0 || sub.errors.length > 0;
+
+  // PHASE `git-sync:pointer-bump` — superproject stage + content-guard + commit (this
+  // commit is what bakes the bumped submodule pointers in). ALWAYS runs.
+  const commitRes = await step('git-sync:pointer-bump', () =>
+    commitOneRepo(runGit, repo, { ...repoO, attribution: attributionMapForRepo(roster, '', repo) }));
+  let repoResult: RepoSyncResult;
+  if (commitRes.error) {
+    repoResult = { status: 'error', message: commitRes.error, oversized: commitRes.oversized, contentErrors: commitRes.contentErrors };
+  } else if (pushBlocked) {
+    // Committed locally (or there was nothing to commit); the network half waits for a
+    // tick on which every submodule reconciled. Same shape reconcileAndPushOneRepo
+    // returns for its own committed-but-did-not-push case (the offline path).
+    superHeadSha = await headSha(runGit, repo);
+    repoResult = commitRes.committedLocal
+      ? { status: 'synced', pushed: false, merged: false, oversized: commitRes.oversized, contentErrors: commitRes.contentErrors }
+      : { status: 'nothing', oversized: commitRes.oversized, contentErrors: commitRes.contentErrors };
+    log(`[git-sync] ${sub.conflicts.length} conflict(s) + ${sub.errors.length} error(s) in submodules — superproject ${commitRes.committedLocal ? 'COMMITTED locally' : 'had nothing to commit'}, deferring only its push (${slug})`);
   } else {
-    log(`[git-sync] ${sub.conflicts.length} conflict(s) + ${sub.errors.length} error(s) in submodules — deferring superproject push (${slug})`);
+    // PHASE `git-sync:push` — superproject fetch + merge + push (the network half).
+    const pushRes = await step('git-sync:push', async () => ({
+      ...(await reconcileAndPushOneRepo(runGit, repo, { ...repoO, defaultBranch: branch }, commitRes.committedLocal)),
+      headSha: await headSha(runGit, repo),
+    }));
+    superHeadSha = pushRes.headSha;
+    repoResult = { ...pushRes, oversized: commitRes.oversized, contentErrors: commitRes.contentErrors };
   }
+  absorb(supr, 'superproject', repoResult);
 
   const conflicts = [...sub.conflicts, ...supr.conflicts];
   const errors = [...sub.errors, ...supr.errors];
