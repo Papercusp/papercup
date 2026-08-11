@@ -365,6 +365,70 @@ export function composeLaunchModelSpec(model?: string | null, effort?: string | 
   return `${base}:${e}`;
 }
 
+/**
+ * The `<model>[:<effort>]` spec a session was LAUNCHED on, read out of its
+ * recorded launch argv. Pure, synchronous, client-safe — which is the whole
+ * point (WI-6510).
+ *
+ * This loop was inline in `compaction-usage.resolveModelSpecForOwner`, whose
+ * source 1 is exactly this parse. That function is async and server-only (it
+ * hits Postgres, then the session config dir), so a renderer that needed the
+ * same answer had no way to reuse it and would have grown a second copy —
+ * precisely the three-disagreeing-composers history recorded above
+ * `composeLaunchModelSpec`. Extracted instead: `resolveModelSpecForOwner`
+ * calls this, and so does the chat MODEL control, which reads the argv the
+ * roster entry already carries (`RosterEntry.launchArgv`) rather than paying a
+ * fetch. That is what lets `ChatModeAction.current()` stay pure and sync as
+ * its contract requires.
+ *
+ * `unknown` in, because the argv arrives as a jsonb column: a non-array, or an
+ * array with non-string members, is data to survive rather than a type error
+ * to throw on.
+ *
+ * Returns null when no `--model` was recorded — which means "launched on the
+ * backend default", NOT "unknown model". Callers that must distinguish the two
+ * cannot do it from argv alone; `resolveModelSpecForOwner`'s settings.json
+ * fallback is the server-side second source.
+ */
+export function modelSpecFromArgv(argv: unknown): string | null {
+  if (!Array.isArray(argv)) return null;
+  for (let i = 0; i < argv.length; i++) {
+    const a = argv[i];
+    if (typeof a !== 'string') continue;
+    if (a.startsWith('--model=')) {
+      const v = a.slice('--model='.length).trim();
+      if (v) return v;
+    }
+    if (a === '--model' && typeof argv[i + 1] === 'string') {
+      const v = (argv[i + 1] as string).trim();
+      if (v) return v;
+    }
+  }
+  return null;
+}
+
+/**
+ * Split a `<model>[:<effort>]` spec back into its two parts for DISPLAY.
+ *
+ * The inverse of {@link composeLaunchModelSpec}, and deliberately as
+ * conservative: only a RECOGNIZED effort tail is split off, so a model id that
+ * merely contains a colon keeps its full name instead of losing its last
+ * segment to a wrong guess. `effort` is null when the spec carries none —
+ * meaning the backend default, not "unknown".
+ */
+export function splitModelSpec(spec?: string | null): { model: string | null; effort: string | null } {
+  const s = spec?.trim();
+  if (!s) return { model: null, effort: null };
+  const colon = s.lastIndexOf(':');
+  if (colon > 0) {
+    const tail = s.slice(colon + 1).toLowerCase();
+    if ((MODEL_EFFORT_LEVELS as readonly string[]).includes(tail)) {
+      return { model: s.slice(0, colon), effort: tail };
+    }
+  }
+  return { model: s, effort: null };
+}
+
 // ── psu launch option vocabularies (WI-6321) ────────────────────────────────
 // The client-safe twins of psu-launcher's own picker menus, so the GUI launcher
 // offers EXACTLY what `psu` offers. Held to the launcher value-for-value by the
