@@ -7,7 +7,12 @@
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { afterAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
+
+const advSessionRowsMock = vi.hoisted(() => vi.fn(async () => [] as unknown[]));
+vi.mock('@papercusp/db-org', () => ({
+  getOrgPg: () => ({ sql: advSessionRowsMock }),
+}));
 import {
   codexContextSnapshotFromRollout,
   estimateContextTokens,
@@ -15,9 +20,14 @@ import {
   fallbackTranscriptFresh,
   newestTranscriptUnderOwner,
   parseLaunchCompactionLimitArgv,
+  resolveSessionRef,
   resolveSessionRefReconciled,
   tokensFromFileSize,
 } from './compaction-usage';
+
+beforeEach(() => {
+  advSessionRowsMock.mockResolvedValue([]);
+});
 
 describe('estimateContextTokens (backend gating + degradation)', () => {
   it('returns null for a null sessionId', async () => {
@@ -42,6 +52,15 @@ describe('Codex rollout token_count telemetry (agent-managed-compaction D-011)',
   const dir = mkdtempSync(join(tmpdir(), 'compaction-codex-'));
   const rollout = join(dir, 'rollout.jsonl');
   afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('retains a Codex adv-session row with no native session_id and keys it by row id', async () => {
+    advSessionRowsMock.mockResolvedValue([{ id: 14795, agent: 'codex', session_id: null }]);
+    await expect(resolveSessionRef('su-codex')).resolves.toEqual({
+      agent: 'codex',
+      sessionId: null,
+      sessionKey: 14795,
+    });
+  });
 
   it('reads the newest valid last_token_usage and effective model window, never cumulative usage', async () => {
     const event = (tokens: number, total: number, window = 258_400) =>

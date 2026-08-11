@@ -279,14 +279,18 @@ export async function estimateContextTokens(
   }
 }
 
-/** Resolve a session's {agent, sessionId} from its coord ownerId via adv_sessions. */
+/** Resolve a session's backend reference from its coord ownerId via adv_sessions.
+ * Codex rows intentionally may not carry `session_id`: their rollout lookup is
+ * keyed by the adv-session numeric id, so excluding null native ids makes the
+ * entire Codex telemetry path dark. */
 export async function resolveSessionRef(ownerId: string): Promise<SessionRef | null> {
   try {
     const { getOrgPg } = await import('@papercusp/db-org');
     const rows = await getOrgPg().sql<{ id: number; agent: string | null; session_id: string | null }[]>`
       SELECT id, agent, session_id
         FROM harness_shared.adv_sessions
-       WHERE coord_owner_id = ${ownerId} AND session_id IS NOT NULL
+       WHERE coord_owner_id = ${ownerId}
+         AND (session_id IS NOT NULL OR agent = 'codex')
        ORDER BY started_at DESC
        LIMIT 1
     `;
