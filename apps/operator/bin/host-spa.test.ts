@@ -52,6 +52,19 @@ describe('SPA shell pre-hydration globals', () => {
     expect(body.indexOf('window.__PAPERCUSP_WS__=')).toBeLessThan(body.indexOf('</head>'));
   });
 
+  it('injects the isolated-Tauri marker when the verifier launch env is set', async () => {
+    process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED = '1';
+    try {
+      const res = await spaRoutes.request('/');
+      expect(res.status).toBe(200);
+      const body = await res.text();
+      expect(body).toContain('window.__PAPERCUSP_TAURI_ISOLATED__=true;');
+      expect(body.indexOf('window.__PAPERCUSP_TAURI_ISOLATED__=')).toBeLessThan(body.indexOf('</head>'));
+    } finally {
+      delete process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED;
+    }
+  });
+
   it('seeds resolved feature flags so gated UI does not flash defaults', async () => {
     setFlagOverridesForTest({ 'papercusp-testing': true });
     const res = await spaRoutes.request('/');

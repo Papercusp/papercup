@@ -132,6 +132,11 @@ function serveFile(absPath: string, status = 200, cacheControl?: string): Respon
  *     2026-05-27, D-001). The operator process is workspace-specific
  *     (HOME-remapped), so `activeWorkspaceId()` is the right source.
  *
+ *   - `window.__PAPERCUSP_TAURI_ISOLATED__` — a launch-time safety marker for
+ *     the opt-in headless verifier. It is injected from the sidecar env rather
+ *     than read from the URL because the SPA may redirect away from the
+ *     verifier's initial query before voice-mode initializes.
+ *
  *   - `window.__PAPERCUSP_FLAGS__` — the resolved feature-flag payload. The
  *     flags client (`libs/flags` client `readInitialPayload`) seeds its
  *     snapshot from this global, so flag-gated UI paints with the real flag
@@ -163,6 +168,9 @@ async function serveIndexHtmlWithWorkspace(indexPath: string, req: Request): Pro
     /* registry/url unreadable — fall back to 'default' */
   }
   const globals = [`window.__PAPERCUSP_WS__=${JSON.stringify(wsId)};`];
+  if (process.env.PAPERCUSP_VERIFY_TAURI_ISOLATED === '1') {
+    globals.push('window.__PAPERCUSP_TAURI_ISOLATED__=true;');
+  }
   // Pre-paint presentation preferences (theme, visual-effects). The boot
   // scripts in index.html read these synchronously BEFORE React mounts so the
   // page paints the user's saved theme + effects with no flash. PG is the

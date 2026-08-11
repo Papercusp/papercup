@@ -76,6 +76,7 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
     expect(src).toMatch(/XDG_DATA_HOME=\\"\$ISOLATED_WEBVIEW_DATA\\"/);
     expect(src).toMatch(/XDG_CACHE_HOME=\\"\$ISOLATED_WEBVIEW_CACHE\\"/);
     expect(src).toMatch(/XDG_CONFIG_HOME=\\"\$ISOLATED_WEBVIEW_CONFIG\\"/);
+    expect(src).toContain('PAPERCUSP_VERIFY_TAURI_ISOLATED=1');
     expect(src).toContain('dataDirectory');
     expect(src).toContain('verify-tauri-isolated=1');
     expect(src).toContain('ISOLATED_STORAGE_SENTINEL_KEY');

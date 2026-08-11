@@ -11,6 +11,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/coordination/tools/send.test.ts
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 
 // EI-20130618357432548: keep the REAL constants (notably ADMIN_COORD_UI_OWNER) via
 // importOriginal. A bare factory replaces the whole module, so send.ts's
@@ -1293,6 +1294,15 @@ describe('coord:send args schema (EI-7838: missing-summary must not be masked by
  */
 describe('coord:send structured-body gate (owner directive 2026-07-28 — the string body is refused)', () => {
   const sections = [{ text: 'the substance', forYouBecause: { relation: 'owns' as const, note: 'yours' } }];
+
+  it('publishes the exact couldNotDetermine entry shape in the body guidance', () => {
+    const schema = z.toJSONSchema(tool.args) as {
+      properties?: { body?: { description?: string } };
+    };
+    const bodyDescription = schema.properties?.body?.description ?? '';
+    expect(bodyDescription).toContain('couldNotDetermine: [{ what:');
+    expect(bodyDescription).toContain('note: "optional detail"');
+  });
 
   it('REFUSES a plain-string body, and the refusal TEACHES the array shape', () => {
     const r = tool.args.safeParse({ to: ['bee-1'], summary: 'hi', expects: 'none', body: 'just some prose' });

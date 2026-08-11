@@ -176,6 +176,9 @@ const STORAGE_KEY = 'papercusp.voice.config.v1';
 function isIsolatedTauriVerification(): boolean {
   if (typeof window === 'undefined') return false;
   try {
+    if ((window as Window & { __PAPERCUSP_TAURI_ISOLATED__?: boolean }).__PAPERCUSP_TAURI_ISOLATED__ === true) {
+      return true;
+    }
     return new URL(window.location.href).searchParams.get('verify-tauri-isolated') === '1';
   } catch {
     return false;

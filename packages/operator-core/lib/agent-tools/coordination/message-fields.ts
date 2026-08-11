@@ -816,6 +816,8 @@ export const messageBodyArg = z
       '[{ text: "..." }]. Use SEVERAL sections when the parts of your message have different ' +
       'dispositions — a concession, an experimental result, an explicitly-undetermined claim — ' +
       'each with its own `premises`, `forYouBecause`, `youMayNotKnow`, `couldNotDetermine`, ' +
+      '`youMayNotKnow: [{ ref: "WI-1234", provenance: "authored" }]`, or ' +
+      '`couldNotDetermine: [{ what: "the thing you tried to establish", note: "optional detail" }]`, ' +
       '`clarify`. The ENVELOPE fields (expects, blocking, why, basedOn) stay on the message and ' +
       'are refused on a section.',
   );
