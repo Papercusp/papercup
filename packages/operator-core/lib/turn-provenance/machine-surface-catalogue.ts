@@ -107,6 +107,25 @@ export const MACHINE_SURFACE_PATTERNS: readonly RegExp[] = [
   // The codex CLI's plugin preamble, same population and same authorship
   // (12 rows/14d at turn_idx=0).
   /^\s*<recommended_plugins>/,
+  // ── Migrated from `memory/human-turn-tail.ts` (P-005) ─────────────────────
+  // These three were caught by the MEMORY altitude's private list and by
+  // nothing else, so the owner's CHAT PANE rendered them as things the owner
+  // had said: 60 rows over the 20,000 most recent user turns, measured
+  // 2026-08-11 (35 skill-loader, 25 auto-heal). Each is machine-authored
+  // end-to-end and carries no owner text, which is what makes migrating them
+  // safe in BOTH directions rather than merely useful in one.
+  //
+  // Deliberately added HERE as head-anchored regexes and NOT to
+  // SYNTHETIC_MARKERS: that list is substring-matched across the head, so
+  // moving an anchored shape into it would WIDEN it into matching an owner who
+  // quotes the marker mid-sentence — the unrecoverable direction (D-002/D-003).
+  //
+  // Our own Stop-hook chain talking back into the turn.
+  /^\s*Stop hook feedback:/,
+  // The MCP transport auto-heal advisory (mcp-dark-watchdog).
+  /^\s*⚠\s*MCP transport auto-heal/,
+  // Claude Code's skill-loader preamble, e.g. "Base directory for this skill: …"
+  /^\s*Base directory for this skill:/,
 ];
 
 /*
@@ -178,7 +197,7 @@ export const CLASSIFY_HEAD_CHARS = 240;
  * FINDABLE (`WHERE turn_origin_classifier_version < CURRENT`) so a backfill
  * sweep can re-derive them. Leaving it unbumped is what makes them invisible.
  */
-export const MACHINE_SURFACE_CATALOGUE_VERSION = 2;
+export const MACHINE_SURFACE_CATALOGUE_VERSION = 3;
 
 /** Does this turn's head carry a CLI/subsystem synthetic-command wrapper? */
 export function hasSyntheticMarker(text: string): boolean {

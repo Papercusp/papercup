@@ -46,6 +46,7 @@
  * tail" option the owner rejected: there, a long turn evicts the human's words
  * by being long. Here it cannot.
  */
+import { isUnenrolledMachineSurface } from '../turn-provenance/machine-surface-catalogue';
 import { parseEnvelope, stripInjectedChrome } from '../turn-provenance/turn-provenance';
 
 /** D-046, literally: "the last 3 HUMAN turns". */
@@ -132,11 +133,34 @@ const UNENVELOPED_MACHINE_HEADS: readonly RegExp[] = [
  * treated as human (and then capped by `HUMAN_TAIL_ENTRY_CHARS`). Treating an
  * unrecognised turn as machine would drop real owner words, and losing the
  * human's signal is the defect P-006 exists to fix.
+ *
+ * ── Why the CATALOGUE call is here (P-005) ──────────────────────────────────
+ *
+ * `machine-surface-catalogue` is THE curated list, and its own header names
+ * this module as one of the private copies that should import from it. That
+ * migration was never done, so the catalogue reached the owner's chat pane and
+ * not this altitude — and every improvement to it (including the v2 bump)
+ * silently stopped at the seam. MEASURED 2026-08-11 over the 20,000 most recent
+ * user turns: 529 rows the catalogue recognises were classified HUMAN here, and
+ * they displaced real owner words in 4.9% of sessions' selected tails (4.2% of
+ * slots) — the single largest shape being the native compaction preamble, the
+ * exact row D-004 had already fixed one altitude up.
+ *
+ * The call is ADDITIVE, not a replacement: the private list below still holds
+ * shapes the catalogue does not (the `<system-reminder>`/`<local-command-stderr>`
+ * tags), and those are deliberately NOT migrated — the catalogue's synthetic
+ * markers are substring-matched across the head, so moving an anchored tag
+ * there would widen it into an owner who quotes the tag (D-002/D-003). Both
+ * lists are consulted; neither is authoritative alone, and
+ * `turn-provenance/owner-visibility-altitude-parity.test.ts` fails if the two
+ * altitudes drift apart again.
  */
 export function isHumanTurn(text: string): boolean {
   const t = (text ?? '').trim();
   if (!t) return false;
   if (parseEnvelope(t)) return false; // positive proof of machine origin
+  // THE one curated catalogue — never re-implement its shapes here (D-004).
+  if (isUnenrolledMachineSurface(t)) return false;
   return !UNENVELOPED_MACHINE_HEADS.some((re) => re.test(t));
 }
 
