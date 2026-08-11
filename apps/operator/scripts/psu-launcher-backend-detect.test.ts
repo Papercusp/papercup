@@ -23,9 +23,10 @@
  * Run: cd apps/operator && npx vitest run scripts/psu-launcher-backend-detect.test.ts
  */
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, writeFileSync, rmSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { wellKnownBackendBin } from './psu-launcher.mjs';
 
 /**
@@ -77,5 +78,36 @@ describe('wellKnownBackendBin — PATH-independent backend detection (WI-37920)'
     } finally {
       rmSync(empty, { recursive: true, force: true });
     }
+  });
+});
+
+/**
+ * P-001: the list is now SHARED with the operator-side PATH injection
+ * (`packages/operator-core/lib/backend-bin-resolve.mjs`, consumed by
+ * console-launcher when it builds the spawn env).
+ *
+ * Why a structural guard and not just the behavioural ones above: two copies of
+ * this list drift in the WORST direction. Detection keeps passing here — these
+ * very tests stay green — while the operator injects a different (or no)
+ * directory, so the window still cannot execute the backend. And it only
+ * reproduces inside a desktop-spawned terminal, which is precisely the env a unit
+ * test does not run in. Same one-definition reasoning as `su-tier-roles.mjs`
+ * (guarded the same way in su-role-addendum.test.ts).
+ */
+describe('psu-launcher does not keep its own copy of the install-location list (P-001)', () => {
+  const launcherSrc = readFileSync(
+    join(dirname(fileURLToPath(import.meta.url)), 'psu-launcher.mjs'),
+    'utf8',
+  );
+
+  it('imports the shared resolver instead of declaring a second list', () => {
+    expect(launcherSrc).toContain(
+      "from '../../../packages/operator-core/lib/backend-bin-resolve.mjs'",
+    );
+  });
+
+  it('has no re-declared per-agent path table', () => {
+    // The shape that WAS here: `const lists = { claude: [...], codex: [...] }`.
+    expect(launcherSrc).not.toMatch(/const\s+lists\s*=\s*\{[\s\S]{0,200}claude\s*:/);
   });
 });
