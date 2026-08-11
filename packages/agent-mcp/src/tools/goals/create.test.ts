@@ -241,6 +241,51 @@ describe('goals:create — stamping the caller\'s GOAL mode (the provenance mech
     const res = await call(ARGS(), CTX());
     expect(res.data).not.toBeNull();
     expect((res.data as { mode_subject_stamped: boolean }).mode_subject_stamped).toBe(false);
+    expect((res.data as { mode_subject_advisory?: unknown }).mode_subject_advisory).toBeUndefined();
+  });
+
+  it.each([
+    ['kill criterion', { killCriterion: 'no paying user after 2 weeks' }],
+    ['zero budget', { budgetCents: 0 }],
+    [
+      'tripwire',
+      {
+        tripwires: [
+          { metric: 'spend_usd', label: '$310 of $500', threshold: 500, current: 310, unit: 'usd' },
+        ],
+      },
+    ],
+  ])('returns a loud mode advisory when %s is supplied outside GOAL mode', async (_label, controls) => {
+    const res = await call(ARGS(controls), CTX());
+    const data = res.data as {
+      id: string;
+      mode_subject_stamped: boolean;
+      mode_subject_advisory?: {
+        code: string;
+        severity: string;
+        message: string;
+        next: Array<{ tool: string; args?: Record<string, unknown> }>;
+      };
+    };
+
+    expect(data.mode_subject_stamped).toBe(false);
+    expect(data.mode_subject_advisory).toMatchObject({
+      code: 'goal_mode_not_active',
+      severity: 'warning',
+    });
+    expect(data.mode_subject_advisory?.message).toMatch(/not in GOAL mode/i);
+    expect(data.mode_subject_advisory?.next.map((step) => step.tool)).toEqual(['goals:start', 'mode:set']);
+    expect(data.mode_subject_advisory?.next[1]?.args).toMatchObject({
+      mode: 'goal',
+      subject: data.id,
+    });
+  });
+
+  it('does not warn when the caller is already in GOAL mode', async () => {
+    callerInGoalMode = true;
+    const res = await call(ARGS({ budgetCents: 0 }), CTX());
+    expect((res.data as { mode_subject_stamped: boolean }).mode_subject_stamped).toBe(true);
+    expect((res.data as { mode_subject_advisory?: unknown }).mode_subject_advisory).toBeUndefined();
   });
 
   it('does not attempt the stamp at all when the transport carried no session id', async () => {
@@ -251,9 +296,12 @@ describe('goals:create — stamping the caller\'s GOAL mode (the provenance mech
 
   it('still creates the goal when the stamp throws — a decoration must never fail the write', async () => {
     modeUpdateThrows = true;
-    const res = await call(ARGS(), CTX());
+    const res = await call(ARGS({ killCriterion: 'no paying user after 2 weeks' }), CTX());
     expect(res.data).not.toBeNull();
     expect((res.data as { mode_subject_stamped: boolean }).mode_subject_stamped).toBe(false);
+    expect((res.data as { mode_subject_advisory?: { code: string } }).mode_subject_advisory?.code).toBe(
+      'goal_mode_not_active',
+    );
     expect(calls.some((c) => /INSERT INTO/.test(c.sql))).toBe(true);
   });
 });

@@ -40,14 +40,15 @@ export default defineTool({
     'Open a durable GOAL record (harness_shared.goals) — the weeks-long outcome a GOAL-mode agent owns, above the pot/plan/work-item stack. ' +
     '{ title, body?, killCriterion?, tripwires?, budgetCents?, parentId?, status? }. Returns the allocated id. ' +
     'A goal is NOT a pot: one goal spawns many projects, so the kill criterion and spend ceiling live HERE, not on any one pot. ' +
-    'Side effect: stamps your GOAL mode with this id, so everything you create next carries its provenance without you passing it.',
+    'If the caller already has an active GOAL-mode row, stamps its subject with this id so later creations carry provenance. ' +
+    'This tool does NOT enter GOAL mode; use goals:start for a new GOAL-mode owner or mode:set with mode:"goal" and subject:"<id>" for an existing session.',
   capability: 'goals:write',
   guidance: {
     when:
-      'Entering GOAL mode on a new outcome, or splitting an owned goal into a sub-goal (pass parentId). Record it BEFORE creating the pots/plans that pursue it, so the kill criterion and spend ceiling exist before the spending does.',
+      'Recording a goal that an already-running GOAL-mode session owns, or splitting an owned goal into a sub-goal (pass parentId). Record it BEFORE creating the pots/plans that pursue it, so the kill criterion and spend ceiling exist before the spending does.',
     notWhen:
-      'For a concrete unit of work use work_items:create; for a project use pot:create; for the plan of attack use plans:new. A goal is the INTENT those serve — if it has an obvious done-when-this-PR-merges, it is not a goal.',
-    chaining: 'goals:create → pot:create / plans:new per project → goals:update to record actuals, or status:"killed" when the kill criterion trips.',
+      'Do not use this as the mode-entry path for a new GOAL-mode agent — use goals:start, which creates the goal, enters GOAL mode, and spawns atomically. For a concrete unit of work use work_items:create; for a project use pot:create; for the plan of attack use plans:new. A goal is the INTENT those serve — if it has an obvious done-when-this-PR-merges, it is not a goal.',
+    chaining: 'goals:start for a new GOAL-mode owner, or goals:create → mode:set { mode:"goal", subject:"<id>" } for an existing session → pot:create / plans:new per project → goals:update to record actuals, or status:"killed" when the kill criterion trips.',
   },
   requirePrincipal: false,
   agentRoles: [...SU_WRITE_ROLES],
@@ -182,6 +183,38 @@ export default defineTool({
       }
     }
 
+    // EI-20185819124341317: `mode_subject_stamped:false` is intentionally not
+    // an error — humans and scripts may create a goal outside GOAL mode — but a
+    // caller that supplied GOAL-shaped controls is very likely about to proceed
+    // as though the mode transition happened. Make that mismatch impossible to
+    // miss while preserving the successful goal write and the compatibility
+    // boolean above. `budgetCents: 0` is still an explicit GOAL control, while
+    // an empty tripwire array carries no control and should stay quiet.
+    const goalIntentSupplied = Boolean(
+      criterionArg ||
+        args.budgetCents !== undefined ||
+        (args.tripwires?.length ?? 0) > 0,
+    );
+    const modeSubjectAdvisory = !modeSubjectStamped && goalIntentSupplied
+      ? {
+          code: 'goal_mode_not_active',
+          severity: 'warning',
+          message:
+            'The goal was created, but this session is not in GOAL mode, so subsequent projects will not be attributed to it automatically.',
+          next: [
+            {
+              tool: 'goals:start',
+              detail: 'For a new GOAL-mode owner, use goals:start so goal creation, mode entry, and spawn are atomic.',
+            },
+            {
+              tool: 'mode:set',
+              args: { mode: 'goal', subject: id, reason: 'Attribute this existing session to the goal just created.' },
+              detail: 'For this existing session, enter GOAL mode with the created goal as its subject before creating projects.',
+            },
+          ],
+        }
+      : undefined;
+
     return {
       data: {
         id,
@@ -198,6 +231,7 @@ export default defineTool({
         // it (mode:set { mode:'goal' }) before creating the projects, or the
         // work will not be attributable to this goal.
         mode_subject_stamped: modeSubjectStamped,
+        ...(modeSubjectAdvisory ? { mode_subject_advisory: modeSubjectAdvisory } : {}),
       },
     };
   },
