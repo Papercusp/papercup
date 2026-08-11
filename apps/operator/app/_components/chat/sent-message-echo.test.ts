@@ -111,6 +111,61 @@ describe('mergeSentEchoes', () => {
     expect(mergeSentEchoes(msgs, [echo({ text: 'hi' })])).not.toBe(msgs);
   });
 
+  /**
+   * EI-20130618357432548 — the guard this suite was missing, and the shape of the
+   * bug the owner reported.
+   *
+   * Every absorption case above pairs an echo with a transcript turn whose text is
+   * EXACTLY equal. The failure in the wild was the other shape: the message arrives
+   * EMBEDDED in a larger machine envelope (a wake-pump `[await-event] …` blob that
+   * quotes it), so absorption cannot fire — and the echo was then appended, landing
+   * BELOW a reply that came 48 seconds after the send.
+   *
+   * The absorb miss is acceptable (it degrades to a duplicate). Its POSITION is not:
+   * a message must never render below an answer to it.
+   */
+  it('a message quoted inside a larger envelope still renders in CHRONOLOGICAL order, not last', () => {
+    const envelope =
+      '⟦turn-origin:wake-pump nonce:abc123ef⟧ [await-event] coord:inbox-wake:su-1 fired — hi.';
+    const out = mergeSentEchoes(
+      [
+        turn('user', envelope, AT + 1_000),
+        turn('assistant', 'the reply, 48s after the send', AT + 48_000),
+      ],
+      [echo({ text: 'hi' })],
+    );
+    // Absorption legitimately misses (the texts are not equal) → a duplicate.
+    expect(out.filter((m) => m.role === 'user' && m.content === 'hi')).toHaveLength(1);
+    // …but it must NOT be last: the reply it preceded stays below it.
+    expect(out[out.length - 1].content).toBe('the reply, 48s after the send');
+  });
+
+  it('still APPENDS when nothing in the transcript is later — the ordinary waiting-for-a-reply case', () => {
+    const out = mergeSentEchoes(
+      [turn('assistant', 'earlier', AT - 60_000), turn('user', 'also earlier', AT - 30_000)],
+      [echo()],
+    );
+    expect(out[out.length - 1].content).toBe('go');
+  });
+
+  it('places an echo among several later messages at its own instant', () => {
+    const out = mergeSentEchoes(
+      [
+        turn('assistant', 'before', AT - 10_000),
+        turn('assistant', 'after-1', AT + 10_000),
+        turn('assistant', 'after-2', AT + 20_000),
+      ],
+      [echo()],
+    );
+    expect(out.map((m) => m.content)).toEqual(['before', 'go', 'after-1', 'after-2']);
+  });
+
+  it('never hoists an echo above an UNDATED turn — an unknown instant cannot prove it came later', () => {
+    // Byte-identical to the pre-fix append behavior for a feed with no timestamps.
+    const out = mergeSentEchoes([turn('assistant', 'undated')], [echo()]);
+    expect(out.map((m) => m.content)).toEqual(['undated', 'go']);
+  });
+
   it('orders multiple pending echoes oldest-first', () => {
     const out = mergeSentEchoes(
       [],

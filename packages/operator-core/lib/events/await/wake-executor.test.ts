@@ -230,6 +230,50 @@ describe('wakeTurnText', () => {
     expect(t.length).toBeLessThan(700);
   });
 
+  /**
+   * EI-20130618357432548 — the owner's chat-pane message is delivered AS the turn.
+   * Everything the wrapper adds (event key, delivery id, inbox-wake reconcile note)
+   * is correct for an agent/system wake and wrong here: the chat pane renders this
+   * transcript back to the OWNER, so the wrapper is what they read instead of their
+   * own message, and its text is what defeated the pane's echo absorption.
+   */
+  it('delivers an OWNER CHAT-PANE message as the turn itself — no [await-event] wrapper', () => {
+    const t = wakeTurnText(
+      work({
+        eventKey: 'coord:inbox-wake:su-abc',
+        summary: 'hi',
+        payload: { msg_id: 'm1', ownerChatTurn: true, ownerChatText: 'hi' },
+      }),
+    );
+    expect(t.startsWith('hi\n\n')).toBe(true);
+    expect(t).not.toContain('[await-event]');
+    expect(t).not.toContain('delivery #');
+    expect(t).not.toContain('NOTE (inbox-wake)');
+    // …and it tells the agent where its answer is actually read, which is what
+    // stopped the doomed coord reply + `human` hedge (EI-20130675657060052).
+    expect(t).toContain('⟦owner-chat⟧');
+  });
+
+  it('carries a LONG owner message in full — the wake summary is truncated, the payload is not', () => {
+    const long = 'please '.repeat(40).trim();
+    const t = wakeTurnText(
+      work({ summary: `${long.slice(0, 77)}…`, payload: { ownerChatTurn: true, ownerChatText: long } }),
+    );
+    expect(t.startsWith(long)).toBe(true);
+    expect(t).not.toContain('…');
+  });
+
+  it('leaves every ordinary wake BYTE-IDENTICAL — the owner path is opt-in via the marker', () => {
+    const plain = work({ payload: { msg_id: 'm1' } });
+    expect(wakeTurnText(plain)).toContain('[await-event]');
+    // A malformed marker must fall through to the ordinary wrapper, never produce
+    // an empty turn.
+    expect(wakeTurnText(work({ payload: { ownerChatTurn: true } }))).toContain('[await-event]');
+    expect(wakeTurnText(work({ payload: { ownerChatTurn: true, ownerChatText: '  ' } }))).toContain(
+      '[await-event]',
+    );
+  });
+
   it('marks a timeout wake loudly', () => {
     const t = wakeTurnText(work({ payload: { timeout: true } }));
     expect(t).toContain('TIMEOUT');
@@ -1396,6 +1440,40 @@ describe('executeWake — turn-provenance tagging (turn-provenance-owner-vs-agen
     expect(calls[0]).toMatchObject({ origin: 'coord-inject:owner' });
     const [, msg] = injectPsuHost.mock.calls[0] as unknown as [string, { data: string }];
     expect(msg.data).toMatch(/^⟦tagged:coord-inject:owner⟧\n/);
+  });
+
+  /**
+   * EI-20130618357432548 — SECURITY RAIL, not a cosmetic assertion.
+   *
+   * An owner CHAT-PANE turn is the same authority as an owner INBOX reply, so it
+   * mints the same existing origin. What matters is that it is still ENROLLED at
+   * all: delivering it unenveloped would classify it OWNER (interactive), and the
+   * UserPromptSubmit provenance hook auto-registers an AUTO/DRAIN mode grant on
+   * that branch and only that branch. `/api/admin/coord/send` admits a no-Origin
+   * loopback POST, so an unenrolled delivery would let any agent with a shell curl
+   * an owner-stamped directive — and a mode grant — into a peer's session. If this
+   * test is ever changed to expect no tag, that hole is what is being opened.
+   */
+  it('an owner CHAT-PANE wake is still ENROLLED, tagged coord-inject:owner — never delivered unenveloped', async () => {
+    const injectPsuHost = vi.fn(async () => true);
+    const { calls, tag } = spyTagger();
+    const out = await executeWake(
+      work({
+        wakeHandle: advHandle(),
+        payload: { msg_id: 'm1', ownerChatTurn: true, ownerChatText: 'hi' },
+      }),
+      deps({
+        findPsuHost: vi.fn(() => ({ sock: '/tmp/psu-pty/x.sock' })) as never,
+        injectPsuHost: injectPsuHost as never,
+        tagTurn: tag,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
+    expect(calls[0]).toMatchObject({ origin: 'coord-inject:owner' });
+    const [, msg] = injectPsuHost.mock.calls[0] as unknown as [string, { data: string }];
+    expect(msg.data).toMatch(/^⟦tagged:coord-inject:owner⟧\n/);
+    // The owner's own words are what follows the tag — not a wake wrapper.
+    expect(msg.data).toContain('\nhi\n\n⟦owner-chat⟧');
   });
 
   it('the COLD injection is tagged too (origin loop-fire wraps renderColdWakeInjection)', async () => {

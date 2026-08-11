@@ -14,6 +14,59 @@ describe('sessionTimelineToChatMessages', () => {
     ]);
   });
 
+  /**
+   * EI-20130618357432548 — this pane renders the transcript back TO the owner, so
+   * papercusp's own injection plumbing was being read as part of their
+   * conversation: the owner's "hi" appeared as a wall of wake-pump envelope.
+   */
+  describe('machine annotations the owner never typed', () => {
+    it('strips the turn-origin envelope from an injected prompt', () => {
+      const entries: TimelineEntry[] = [
+        { kind: 'prompt', text: '⟦turn-origin:wake-pump nonce:abc123ef⟧\ndo the thing', ts: 't1' },
+      ];
+      expect(sessionTimelineToChatMessages(entries)).toEqual([
+        { role: 'user', content: 'do the thing', id: 'prompt-0', ts: 't1' },
+      ]);
+    });
+
+    it('renders an owner chat-pane message as exactly what was typed', () => {
+      // The delivered shape: provenance envelope + the owner's text + the machine
+      // note addressed to the agent. Only the middle is the owner's.
+      const entries: TimelineEntry[] = [
+        {
+          kind: 'prompt',
+          text:
+            '⟦turn-origin:coord-inject:owner nonce:deadbeef⟧\nhi\n\n⟦owner-chat⟧ Your owner typed the ' +
+            'message above in their session chat pane, and that pane renders YOUR TRANSCRIPT…',
+          ts: 't1',
+        },
+      ];
+      expect(sessionTimelineToChatMessages(entries)).toEqual([
+        { role: 'user', content: 'hi', id: 'prompt-0', ts: 't1' },
+      ]);
+    });
+
+    it('keeps the wake BODY — only the envelope comes off, so nothing delivered vanishes', () => {
+      const entries: TimelineEntry[] = [
+        {
+          kind: 'prompt',
+          text: '⟦turn-origin:wake-pump nonce:abc123ef⟧\n[await-event] lock:grant:t-1 fired.',
+          ts: 't1',
+        },
+      ];
+      expect(sessionTimelineToChatMessages(entries)[0].content).toBe(
+        '[await-event] lock:grant:t-1 fired.',
+      );
+    });
+
+    it('drops a prompt that is NOTHING but annotations rather than rendering an empty bubble', () => {
+      const entries: TimelineEntry[] = [
+        { kind: 'prompt', text: '⟦turn-origin:wake-pump nonce:abc123ef⟧\n', ts: 't1' },
+      ];
+      expect(sessionTimelineToChatMessages(entries)).toEqual([]);
+    });
+  });
+
   it('drops a blank/whitespace-only prompt', () => {
     const entries: TimelineEntry[] = [{ kind: 'prompt', text: '   ', ts: 't1' }];
     expect(sessionTimelineToChatMessages(entries)).toEqual([]);

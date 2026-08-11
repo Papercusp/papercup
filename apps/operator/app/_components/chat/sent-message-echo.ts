@@ -181,20 +181,52 @@ export function mergeSentEchoes(messages: ChatMessage[], echoes: readonly SentEc
   }
   if (pending.length === 0) return messages;
 
-  return [
-    ...messages,
-    ...pending
-      .slice()
-      .sort((a, b) => a.atMs - b.atMs)
-      .map(
-        (e): ChatMessage => ({
-          role: 'user',
-          content: e.text,
-          id: e.id,
-          // Stamped like any other message (P-001), so a send you are waiting on
-          // carries the same "23:14 · just now" the rest of the transcript does.
-          ts: new Date(e.atMs).toISOString(),
-        }),
-      ),
-  ];
+  const rendered = pending
+    .slice()
+    .sort((a, b) => a.atMs - b.atMs)
+    .map(
+      (e): ChatMessage => ({
+        role: 'user',
+        content: e.text,
+        id: e.id,
+        // Stamped like any other message (P-001), so a send you are waiting on
+        // carries the same "23:14 · just now" the rest of the transcript does.
+        ts: new Date(e.atMs).toISOString(),
+      }),
+    );
+
+  // EI-20130618357432548: place an unabsorbed echo at its OWN INSTANT rather than
+  // at the end. Appending assumed an unabsorbed echo is always the newest thing in
+  // the conversation, and it is not:
+  //
+  //  - a coord:send to a LIVE agent is injected MID-TURN and never becomes a
+  //    transcript user turn at all (the suppression this module's header explains),
+  //    so its echo stays unabsorbed FOREVER while replies keep arriving after it;
+  //  - and any change to the injected turn's text defeats the exact-match absorb.
+  //
+  // Reported live: a message sent at 04:37:17 rendered BELOW the reply stamped
+  // 04:38:05 — 48s later. Inserting by timestamp makes a missed absorption degrade
+  // to a correctly-ordered duplicate instead of an out-of-order one.
+  //
+  // Deliberately NO clock slack here, unlike ECHO_ABSORB_SLACK_MS above. Slack is
+  // right for absorption (it only risks a duplicate); applying it to ORDERING would
+  // hoist the echo above messages that genuinely preceded it — trading a rare
+  // skew-window misplacement for a common one.
+  const out = messages.slice();
+  for (const echo of rendered) {
+    const atMs = Date.parse(echo.ts as string);
+    // First message that is demonstrably LATER. Undated messages are never an
+    // insertion point (an unknown instant cannot prove it comes after), which keeps
+    // an undated transcript byte-identical to the previous append behavior.
+    let at = out.length;
+    for (let i = 0; i < out.length; i += 1) {
+      const ts = out[i].ts ? Date.parse(out[i].ts as string) : Number.NaN;
+      if (!Number.isNaN(ts) && ts > atMs) {
+        at = i;
+        break;
+      }
+    }
+    out.splice(at, 0, echo);
+  }
+  return out;
 }
