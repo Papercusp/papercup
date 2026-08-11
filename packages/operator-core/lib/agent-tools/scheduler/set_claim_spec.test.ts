@@ -8,8 +8,26 @@
  * push-role trips it. These assertions pin that role-awareness.
  */
 import { describe, it, expect } from 'vitest';
-import { claimSpecInertWarning, claimSpecWakeabilityWarning, previewClaimSpecAdmission } from './set_claim_spec';
+import { z } from 'zod';
+import setClaimSpecTool, {
+  claimSpecInertWarning,
+  claimSpecWakeabilityWarning,
+  previewClaimSpecAdmission,
+} from './set_claim_spec';
 import type { ClaimSpec } from '../../scheduler/claim-spec';
+
+describe('published claim-spec guidance — WI-37997 severity ordering', () => {
+  it('advertises the safe ordinal severity_rank term and a critical-first issue example', () => {
+    const json = z.toJSONSchema(setClaimSpecTool.args as never) as {
+      properties?: Record<string, { description?: string }>;
+    };
+    const description = json.properties?.spec?.description ?? '';
+    expect(description).toContain('severity_rank');
+    expect(description).toContain('critical-first');
+    expect(description).toContain('{ expr:"severity_rank", dir:"desc" }');
+    expect(description).not.toContain('Filter on them instead');
+  });
+});
 
 describe('claimSpecInertWarning — inert-spec advisory role-awareness', () => {
   it('WARNS for coding-FACTORY push-pipeline roles (spec is genuinely inert)', () => {
