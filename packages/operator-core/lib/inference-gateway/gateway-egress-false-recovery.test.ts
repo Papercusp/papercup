@@ -27,7 +27,7 @@ type ActiveAccount = import('./gateway').ActiveAccount;
 type AccountPool = import('./gateway').AccountPool;
 const { RateLimitGovernor, resetGovernorRegistry } = await import('@papercusp/papercusp-shared/agent');
 
-let gw: { close: () => Promise<void>; listen: (p: number) => Promise<number> } | undefined;
+let gw: ReturnType<typeof createInferenceGateway> | undefined;
 let port = 0;
 
 afterEach(async () => {
@@ -64,7 +64,7 @@ test('[EI-18664933641195210] an EXPIRED cooldown is not a recovery — allDown s
     governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
     maxQueueWaitMs: 2000,
     log: (level: string, msg: string) => logs.push({ level, msg }),
-  }) as never;
+  });
   port = await gw!.listen(0);
 
   const pin = (id: string) =>
@@ -124,7 +124,7 @@ test('[EI-18664933641195210] a real transport SUCCESS does clear the alarm (the 
     governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
     maxQueueWaitMs: 2000,
     log: (level: string, msg: string) => logs.push({ level, msg }),
-  }) as never;
+  });
   port = await gw!.listen(0);
 
   const pin = (id: string) =>
