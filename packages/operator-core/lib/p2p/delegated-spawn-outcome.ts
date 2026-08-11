@@ -64,6 +64,9 @@ export type DelegatedSpawnVerdict =
   | 'honored-then-died'
   /** A member appeared, ran past the boot threshold, and has since ended. */
   | 'honored-completed'
+  /** The honoring host proved a tool-backed first turn under D-029. Current
+   * liveness may still be remote/unobservable, but boot is no longer unknown. */
+  | 'honored-first-turn-proven'
   /** The honoring host refused, and said why (a federated refusal receipt). */
   | 'refused'
   /** The honor window elapsed with no receipt and no member. Nobody picked it up. */
@@ -126,6 +129,9 @@ export interface DelegatedSpawnMemberFacts {
   fleetSlug: string;
   firstSeenMs: number;
   lastActiveMs: number;
+  /** First attributed tool invocation for this presence lifetime. Presence
+   * alone is not boot proof (D-029 / WI-35786). */
+  lastToolCallAtMs: number | null;
   sessionState: string;
 }
 
@@ -136,7 +142,7 @@ export interface DelegatedSpawnOutcome {
   /** Whether a member could be uniquely credited to THIS request. */
   attribution: 'unique' | 'ambiguous' | 'none';
   /** Members attributed to this request (may be empty). */
-  members: Array<{ ownerId: string; sessionState: string; lifetimeMs: number }>;
+  members: Array<{ ownerId: string; sessionState: string; lifetimeMs: number; firstTurnAtMs: number }>;
   /** Seats asked for minus members observed — positive means a shortfall. */
   shortfall: number;
   /** The refusal code, when the verdict is `refused`. */
@@ -196,31 +202,67 @@ export function classifyDelegatedSpawnOutcome(args: {
   }
 
   // EI-19333624101736074: the honoring host now federates a SUCCESS receipt too.
-  // It is direct evidence that the request was honored, and it survives the
-  // member-evidence blackout that makes a remote outcome unknowable — so it must
-  // be consulted BEFORE any inference from an absence of members. Its detail
-  // names the account the seat actually ran under, which is the first thing
-  // asked when a member is honored and then dies.
+  // Legacy receipts attest only that a process was launched. D-029 receipts are
+  // stronger: their detail carries the stable `first-turn check CONFIRMED`
+  // marker after a post-start tool invocation was observed. Keep the distinction
+  // explicit so mixed-version peers never turn a launch-only receipt into boot
+  // proof, while current peers do not get mislabeled "unverified" after proving
+  // the very first turn the release gate requires.
   const honoredReceipt = receipts
     .filter((r) => r.kind === 'honored')
     .sort((a, b) => a.tsMs - b.tsMs)[0];
+  const honoredReceiptProvesFirstTurn = /\bfirst-turn check CONFIRMED\b/i.test(honoredReceipt?.detail ?? '');
 
   // Presence rows carry no request id, so candidacy is "same fleet, appeared
   // after the request was published". That is a heuristic, and it is REPORTED
   // as one whenever another request could also claim these members.
   const candidates = members
-    .filter((m) => m.fleetSlug === request.fleetSlug && m.firstSeenMs >= request.requestedAtMs)
+    .filter(
+      (m) =>
+        m.fleetSlug === request.fleetSlug &&
+        m.firstSeenMs >= request.requestedAtMs &&
+        m.lastToolCallAtMs != null &&
+        m.lastToolCallAtMs >= Math.max(request.requestedAtMs, m.firstSeenMs),
+    )
     .map((m) => ({
       ownerId: m.ownerId,
       sessionState: m.sessionState,
       lifetimeMs: Math.max(0, m.lastActiveMs - m.firstSeenMs),
+      firstTurnAtMs: m.lastToolCallAtMs!,
     }));
 
   if (candidates.length === 0) {
+    // D-029: a current honored receipt is emitted only AFTER a fresh attributed
+    // tool invocation. That is direct cross-machine first-turn proof even when
+    // this requester cannot see the remote host's machine-local presence rows.
+    // The receipt also reports opened/requested counts; retain a conservative
+    // shortfall if an older/malformed detail somehow carries the marker without
+    // the count.
+    if (honoredReceipt && honoredReceiptProvesFirstTurn) {
+      const openedMatch = honoredReceipt.detail?.match(/\bopened\s+(\d+)\/(\d+)\b/i);
+      const opened = Math.min(
+        request.count,
+        openedMatch ? Math.max(0, Number.parseInt(openedMatch[1], 10)) : Math.min(1, request.count),
+      );
+      const shortfall = Math.max(0, request.count - opened);
+      return {
+        verdict: 'honored-first-turn-proven',
+        detail:
+          `the honoring host federated D-029 first-turn proof for this request: ${honoredReceipt.detail}. ` +
+          (args.memberEvidenceAvailable === false
+            ? 'This requester cannot observe the remote member\'s current machine-local presence, so current liveness is unknown; boot and one tool-backed turn are proven.'
+            : 'No currently qualifying member row remains on this host, but boot and one tool-backed turn are proven by the receipt.') +
+          (shortfall > 0 ? ` Asked for ${request.count} seat(s), but the receipt proves ${opened}.` : ''),
+        attribution: 'none',
+        members: [],
+        shortfall,
+        actionable: shortfall > 0,
+      };
+    }
     // A success receipt settles WHETHER it was honored even when nothing else
-    // crosses the wire — which is exactly the remote case. It does NOT settle
-    // whether the member booted (the receipt attests a launch), so this stays
-    // short of `honored-live`.
+    // crosses the wire — which is exactly the remote case. A LEGACY receipt that
+    // lacks D-029's proof marker does NOT settle whether the member booted, so it
+    // stays short of `honored-first-turn-proven` / `honored-live`.
     if (honoredReceipt) {
       return {
         verdict: 'honored-unverified',
@@ -297,7 +339,7 @@ export function classifyDelegatedSpawnOutcome(args: {
     return {
       verdict: 'honored-live',
       detail:
-        `${live.length} member(s) joined '${request.fleetSlug}' after the request and are ${live[0].sessionState}.` +
+        `${live.length} member(s) joined '${request.fleetSlug}' after the request, completed a tool-backed first turn, and are ${live[0].sessionState}.` +
         shortfallNote +
         caveat,
       attribution,

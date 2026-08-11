@@ -146,6 +146,7 @@ async function defaultLoadMembers(
       fleetSlug,
       firstSeenMs: r.startedAt.getTime(),
       lastActiveMs: r.heartbeatAt.getTime(),
+      lastToolCallAtMs: r.lastToolCallAt?.getTime() ?? null,
       sessionState: verdict.sessionState,
     });
   }

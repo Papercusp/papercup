@@ -28,14 +28,18 @@ const request = (over: Partial<Parameters<typeof classifyDelegatedSpawnOutcome>[
   ...over,
 });
 
-const member = (over: Partial<DelegatedSpawnMemberFacts> = {}): DelegatedSpawnMemberFacts => ({
-  ownerId: 'su-member-1',
-  fleetSlug: FLEET,
-  firstSeenMs: REQUESTED_AT + 30_000,
-  lastActiveMs: REQUESTED_AT + 30_000 + 10 * 60_000,
-  sessionState: 'live',
-  ...over,
-});
+const member = (over: Partial<DelegatedSpawnMemberFacts> = {}): DelegatedSpawnMemberFacts => {
+  const firstSeenMs = over.firstSeenMs ?? REQUESTED_AT + 30_000;
+  return {
+    ownerId: 'su-member-1',
+    fleetSlug: FLEET,
+    firstSeenMs,
+    lastActiveMs: REQUESTED_AT + 30_000 + 10 * 60_000,
+    lastToolCallAtMs: firstSeenMs + 1,
+    sessionState: 'live',
+    ...over,
+  };
+};
 
 describe('classifyDelegatedSpawnOutcome (EI-19333624101736074)', () => {
   it('THE LIVE WIN-RIG FAILURE ⇒ honored-then-died, the state that has no representation today', () => {
@@ -68,7 +72,7 @@ describe('classifyDelegatedSpawnOutcome (EI-19333624101736074)', () => {
       tsMs: REQUESTED_AT + 2_000,
     });
 
-    it('a REMOTE honor WITH a success receipt ⇒ honored-unverified, not indeterminate — the receipt settles that it was honored', () => {
+    it('a LEGACY remote success receipt without D-029 proof ⇒ honored-unverified', () => {
       const r = classifyDelegatedSpawnOutcome({
         request: request(),
         receipts: [honoredReceipt("honored: opened 1/1 member(s) for fleet 'fed-drill' with account='default'")],
@@ -86,6 +90,26 @@ describe('classifyDelegatedSpawnOutcome (EI-19333624101736074)', () => {
       // ...nor under-claim that nobody responded.
       expect(r.detail).not.toMatch(/nobody honored/i);
       expect(r.actionable).toBe(true);
+    });
+
+    it('a D-029 receipt with first-turn evidence ⇒ honored-first-turn-proven, not unverified', () => {
+      const r = classifyDelegatedSpawnOutcome({
+        request: request(),
+        receipts: [
+          honoredReceipt(
+            "honored: opened 1/1 member(s) for fleet 'fed-drill' with account='default'. Local first-turn check CONFIRMED the agent ran (member su-abc took a tool-backed turn).",
+          ),
+        ],
+        members: [],
+        nowMs: NOW_AFTER,
+        memberEvidenceAvailable: false,
+      });
+      expect(r.verdict).toBe('honored-first-turn-proven');
+      expect(r.shortfall).toBe(0);
+      expect(r.actionable).toBe(false);
+      expect(r.detail).toMatch(/D-029 first-turn proof/);
+      expect(r.detail).toMatch(/boot and one tool-backed turn are proven/);
+      expect(r.detail).toMatch(/current liveness is unknown/);
     });
 
     it('a success receipt with member evidence AVAILABLE but no member ⇒ honored-unverified pointing at a pre-presence death', () => {
@@ -181,6 +205,19 @@ describe('classifyDelegatedSpawnOutcome (EI-19333624101736074)', () => {
         nowMs: NOW_INSIDE,
       });
       expect(r.verdict).toBe('honored-live');
+    }
+  });
+
+  it('presence without a post-start tool invocation is never an honored member (D-029)', () => {
+    for (const lastToolCallAtMs of [null, REQUESTED_AT + 29_999]) {
+      const r = classifyDelegatedSpawnOutcome({
+        request: request(),
+        receipts: [],
+        members: [member({ lastToolCallAtMs })],
+        nowMs: NOW_INSIDE,
+      });
+      expect(r.verdict).toBe('pending');
+      expect(r.members).toEqual([]);
     }
   });
 

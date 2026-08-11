@@ -181,6 +181,22 @@ describe('resolveDelegatedSpawnOutcome (WI-7042)', () => {
     expect(r!.outcome.detail).toContain('account default');
   });
 
+  it('a D-029 honored receipt yields first-turn-proven even with zero remote member evidence', async () => {
+    const r = await resolveDelegatedSpawnOutcome(
+      { workspaceId: WS, potSlug: POT, offerId: REQ_ID },
+      deps({
+        listReceipts: vi.fn(async () => [
+          receipt({
+            detail:
+              "honored: opened 1/1 member(s) for fleet 'fed-drill'. Local first-turn check CONFIRMED the agent ran (tool-backed turn).",
+          }),
+        ]),
+      }),
+    );
+    expect(r!.outcome.verdict).toBe('honored-first-turn-proven');
+    expect(r!.outcome.actionable).toBe(false);
+  });
+
   it('a refusal receipt is reported as refused, with its code', async () => {
     const r = await resolveDelegatedSpawnOutcome(
       { workspaceId: WS, potSlug: POT, offerId: REQ_ID },
@@ -212,6 +228,7 @@ describe('resolveDelegatedSpawnOutcome (WI-7042)', () => {
           fleetSlug: FLEET,
           firstSeenMs: REQUESTED_AT + 1_000,
           lastActiveMs: REQUESTED_AT + 9_000,
+          lastToolCallAtMs: REQUESTED_AT + 2_000,
           sessionState: 'live',
         },
       ]),
