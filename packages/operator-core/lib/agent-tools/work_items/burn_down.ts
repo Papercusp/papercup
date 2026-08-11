@@ -24,6 +24,7 @@ import { classifyTerminalOwner } from '../../completion-audit';
 import { resolveSelfRef } from '../coordination/self-marker';
 import { buildP2pLaneFence } from '../../scheduler/p2p-lane-fence';
 import { matchesClaimSpecFilter, claimSpecSubjectFromWorkItem } from '../../scheduler/claim-spec-match';
+import { shapeBurnDown } from './burn_down-shape';
 
 /**
  * P-011 (fleet-lead-instrumentation-audit-2026-08-09) — what a lane fence removed
@@ -273,6 +274,8 @@ export interface CohortAuditResult {
   missing: number;
   reopenRecommended: number;
   rows: CohortAuditRow[];
+  /** Added by the payload-tier shaper when a fixed cohort is too large to inline. */
+  truncated?: boolean;
 }
 
 export function buildCohortAudit(requestedIds: readonly string[], items: readonly WorkItem[]): CohortAuditResult {
@@ -804,6 +807,15 @@ export default defineTool({
         })
         .optional(),
       deltaByPartitions: z.boolean().optional(),
+      authority: z.object({
+        counted: z.number(),
+        committed: z.number(),
+        validated: z.number(),
+        proposed: z.number(),
+        pendingHuman: z.number(),
+        invalid: z.number(),
+        legacy: z.number(),
+      }),
     }),
     inFlight: z.array(rowSchema),
     parked: z.array(rowSchema.extend({
@@ -819,6 +831,18 @@ export default defineTool({
       parked: z.number(),
       unclaimed: z.number(),
     }),
+    presentation: z
+      .object({
+        tier: z.enum(['trimmed', 'standard']),
+        rowCap: z.number(),
+        note: z.string(),
+        rows: z.object({
+          inFlight: z.object({ shown: z.number(), total: z.number(), truncated: z.boolean() }),
+          parked: z.object({ shown: z.number(), total: z.number(), truncated: z.boolean() }),
+          unclaimed: z.object({ shown: z.number(), total: z.number(), truncated: z.boolean() }),
+        }),
+      })
+      .optional(),
     closedSince: z
       .object({
         rows: z.array(
@@ -878,9 +902,14 @@ export default defineTool({
           reopenRecommended: z.boolean(),
           recommendation: z.string().nullable(),
         })),
+        truncated: z.boolean().optional(),
       })
       .optional(),
   }),
+  shape: {
+    standard: (data, context) => shapeBurnDown(data, 'standard', context.args),
+    trimmed: (data, context) => shapeBurnDown(data, 'trimmed', context.args),
+  },
   async handler(args, ctx) {
     const requestedIds = args.ids ? [...new Set(args.ids)] : null;
     const [items, presence] = await Promise.all([

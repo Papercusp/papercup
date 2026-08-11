@@ -24,6 +24,7 @@ import {
   liveOwnersFromPresence,
   applyLaneFence,
 } from './burn_down';
+import { shapeBurnDown } from './burn_down-shape';
 import { P2P_LANE_EXCLUSION_TERMS, P2P_LANE_REJECTED_ANTI_TERMS } from '../../scheduler/p2p-lane-fence';
 
 const mockListWorkItems = vi.mocked(listWorkItems);
@@ -389,6 +390,40 @@ describe('work_items:burn_down', () => {
       harness: 'papercusp',
       counts: { total: 1, terminal: 0, inFlight: 1, parked: 0, unclaimed: 0 },
     });
+  });
+
+  it('payload-tier shaping keeps a large census schema-valid and never inserts a string into row arrays', () => {
+    const result = buildBurnDownResult(
+      Array.from({ length: 2000 }, (_, index) =>
+        item({
+          id: `WI-live-${index}`,
+          title: `long title ${'x'.repeat(240)}`,
+          assignee: `su-${index}`,
+          takenAt: '2026-08-11T20:00:00.000Z',
+          updatedAt: '2026-08-11T20:00:00.000Z',
+        }),
+      ),
+      new Set(),
+      { harness: 'papercusp', since: '2026-08-11T18:48:00.000Z', rowLimit: 2000 },
+    );
+    const shaped = shapeBurnDown(result, 'trimmed', { limit: 2000 }) as Record<string, unknown>;
+    const parsed = (tool as unknown as {
+      result: { safeParse: (value: unknown) => { success: boolean; error?: unknown } };
+    }).result.safeParse(shaped);
+
+    expect(parsed.success).toBe(true);
+    expect(JSON.stringify(shaped).length).toBeLessThan(30_000);
+    expect(shaped.counts).toEqual(expect.objectContaining({ inFlight: 2000 }));
+    expect(shaped.inFlight).toHaveLength(10);
+    expect((shaped.inFlight as unknown[]).every((row) => row && typeof row === 'object')).toBe(true);
+    expect((shaped.inFlight as unknown[]).some((row) => typeof row === 'string')).toBe(false);
+    expect(shaped.presentation).toEqual(expect.objectContaining({
+      tier: 'trimmed',
+      rowCap: 10,
+      rows: expect.objectContaining({
+        inFlight: { shown: 10, total: 2000, truncated: true },
+      }),
+    }));
   });
 
   // ---------------------------------------------------------------------------
