@@ -97,10 +97,15 @@ vi.mock('../../carry-respawn', async () => {
   return { ...actual, buildOwnerRespawnLaunchSpec: (...a: unknown[]) => buildOwnerRespawnLaunchSpec(...a) };
 });
 // The effective-window resolve is a live PG/session read — pin it to the
-// fallback path so tests stay hermetic (the fallback constant is 200k).
+// fallback path by default so tests stay hermetic (the fallback constant is 200k).
+const contextWindowForOwner = vi.hoisted(() => vi.fn(async () => null as number | null));
 vi.mock('../../compaction-usage', async () => {
   const actual = await vi.importActual<typeof import('../../compaction-usage')>('../../compaction-usage');
-  return { ...actual, resolveModelSpecForOwner: async () => null };
+  return {
+    ...actual,
+    resolveModelSpecForOwner: async () => null,
+    estimateContextWindowForOwner: contextWindowForOwner,
+  };
 });
 
 const tool = (await import('./request-compaction')).default;
@@ -154,6 +159,7 @@ beforeEach(() => {
   readPriorRespawnOutcome.mockResolvedValue({ outcome: 'none' });
   buildCarryBrief.mockResolvedValue(emptyBrief);
   buildOwnerRespawnLaunchSpec.mockResolvedValue(closedSpec);
+  contextWindowForOwner.mockResolvedValue(null);
   provDir = mkdtempSync(join(tmpdir(), 'reqcomp-prov-'));
   process.env.PAPERCUSP_TURN_PROVENANCE_DIR = provDir;
 });
@@ -297,6 +303,16 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
         effectiveWindowTokens: 200_000,
         buildOpts: expect.objectContaining({ boundaryDeliberate: true }),
       }),
+    );
+  });
+
+  it('uses Codex rollout effective-window telemetry when available', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    contextWindowForOwner.mockResolvedValue(258_400);
+    await call({ focus: 'x' });
+    expect(buildOwnerRespawnLaunchSpec).toHaveBeenCalledWith(
+      'su-caller',
+      expect.objectContaining({ effectiveWindowTokens: 258_400 }),
     );
   });
 

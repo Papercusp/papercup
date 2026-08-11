@@ -16,6 +16,7 @@ import { join } from 'node:path';
 
 const {
   estimateMock,
+  contextWindowMock,
   specMock,
   setEstimateMock,
   setLimitMock,
@@ -30,15 +31,17 @@ const {
   findTranscriptMock,
   newestTranscriptMock,
   buildOwnerRespawnMock,
+  resolveSelfSessionMock,
   writePresenceMock,
 } = vi.hoisted(() => ({
   estimateMock: vi.fn(),
+  contextWindowMock: vi.fn(async (_owner: string) => null as number | null),
   specMock: vi.fn(),
   setEstimateMock: vi.fn(async () => {}),
   setLimitMock: vi.fn(async () => {}),
   deathMock: vi.fn(async (_owner: string) => false),
   resolveSessionRefMock: vi.fn(
-    async (_owner: string) => null as null | { agent: string | null; sessionId: string | null },
+    async (_owner: string) => null as null | { agent: string | null; sessionId: string | null; sessionKey?: number | null },
   ),
   // P-005 per-member-declarative-launch-specs: an EXPLICIT psu --compaction-limit
   // on the recorded launch argv. Default null (no override) keeps every existing
@@ -59,10 +62,12 @@ const {
     budgetChars: 32_000,
     openOwnerQuestion: { crossesOpenOwnerMessage: false },
   })),
+  resolveSelfSessionMock: vi.fn(async () => null as null | { filePath: string; sourceKind: string }),
   writePresenceMock: vi.fn(async () => {}),
 }));
 vi.mock('../compaction-usage', () => ({
   estimateContextTokensForOwner: estimateMock,
+  estimateContextWindowForOwner: contextWindowMock,
   resolveModelSpecForOwner: specMock,
   detectContextDeathForOwner: deathMock,
   resolveSessionRef: resolveSessionRefMock,
@@ -101,6 +106,9 @@ vi.mock('../claude-sessions', () => ({
 }));
 vi.mock('../carry-respawn', () => ({
   buildOwnerRespawnLaunchSpec: buildOwnerRespawnMock,
+}));
+vi.mock('../search/self-session', () => ({
+  resolveSelfSession: resolveSelfSessionMock,
 }));
 // The spawn-record honor leg lazily imports the tier menu — pin a small one so
 // the test never reads the real workspace agent-config.
@@ -180,6 +188,7 @@ function fakeSql(opts: {
 beforeEach(() => {
   vi.clearAllMocks();
   estimateMock.mockResolvedValue(null);
+  contextWindowMock.mockResolvedValue(null);
   specMock.mockResolvedValue(null);
   setEstimateMock.mockResolvedValue(undefined);
   setLimitMock.mockResolvedValue(undefined);
@@ -205,6 +214,7 @@ beforeEach(() => {
     budgetChars: 32_000,
     openOwnerQuestion: { crossesOpenOwnerMessage: false },
   });
+  resolveSelfSessionMock.mockResolvedValue(null);
   resetCarryRespawnForTests();
   resetForceCompactedForTests();
   resetNoHostWarnedForTests(); // EI-9982 no-live-host diagnostic dedup
@@ -407,6 +417,41 @@ describe('deterministic carry-respawn cutover (P-018)', () => {
       systemPromptAddendum: 'deterministic carry',
       ownerId: 'hot',
     });
+  });
+
+  it('re-limits from Codex effective-window telemetry and queues a Codex carry-respawn', async () => {
+    estimateMock.mockResolvedValue(215_000);
+    contextWindowMock.mockResolvedValue(258_400);
+    specMock.mockResolvedValue('gpt-5.6-sol:max');
+    getFlagMock.mockResolvedValue(true);
+    resolveSessionRefMock.mockResolvedValue({ agent: 'codex', sessionId: 'rollout-1', sessionKey: 14795 });
+    resolveSelfSessionMock.mockResolvedValue({
+      filePath: '/tmp/codex-rollout.jsonl',
+      sourceKind: 'codex',
+    });
+    findLiveHostMock.mockReturnValue({ sock: '/tmp/hot.sock', caps: ['carry-respawn'] });
+    hostSupportsMock.mockReturnValue(true);
+
+    const out = await checkCompactionCompliance(
+      fakeSql({
+        seeded: [{ ...seeded[0]!, compaction_limit: 400_000 }],
+      }),
+    );
+
+    expect(setLimitMock).toHaveBeenCalledWith('hot', 207_000);
+    expect(out.relimited).toContainEqual({ owner: 'hot', from: 400_000, to: 207_000 });
+    expect(out.overLimit).toEqual(['hot']);
+    expect(out.carryRespawned).toEqual(['hot']);
+    expect(buildOwnerRespawnMock).toHaveBeenCalledWith(
+      'hot',
+      expect.objectContaining({
+        effectiveWindowTokens: 258_400,
+        buildOpts: expect.objectContaining({
+          transcriptPath: '/tmp/codex-rollout.jsonl',
+          transcriptSourceKind: 'codex',
+        }),
+      }),
+    );
   });
 
   it('is byte-identical to the prior grace-band behavior while the cutover flag is OFF', async () => {
@@ -974,10 +1019,8 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
     expect(out.bootConfigAlerts).toEqual([]); // never reached the dark-telemetry counter
   });
 
-  it('does NOT flag an OMP/Codex session — its null estimate is BY DESIGN, not blindness (WI-2910)', async () => {
-    // OMP self-compacts natively and Codex has no compaction, so estimateContextTokensForOwner
-    // returns null for those agents by design. The watchdog must NOT raise a dark-telemetry
-    // alarm for them (they cannot silently overflow); only genuinely-blind Claude sessions do.
+  it('does NOT flag an OMP session — its null estimate is BY DESIGN, not blindness (WI-2910)', async () => {
+    // OMP self-compacts natively, so its null estimate remains intentional.
     const ompSeeded = [{ owner_id: 'omp-sess', owner_label: 'su · omp-sess', compaction_limit: 300_000 }];
     estimateMock.mockResolvedValue(null);
     resolveSessionRefMock.mockResolvedValue({ agent: 'omp', sessionId: 's-omp' });
@@ -986,15 +1029,20 @@ describe('boot self-assert: dark telemetry (agent-managed-compaction P-018)', ()
     for (let i = 0; i < 5; i++) last = await checkCompactionCompliance(fakeSql({ seeded: ompSeeded }));
     expect(last!.bootConfigAlerts).toEqual([]); // never flagged despite 5 consecutive null sweeps
     expect(openEscalationMock).not.toHaveBeenCalled();
-
-    // A codex session is likewise exempt.
-    resolveSessionRefMock.mockResolvedValue({ agent: 'codex', sessionId: 's-codex' });
-    const codexSeeded = [{ owner_id: 'codex-sess', owner_label: 'su · codex-sess', compaction_limit: 300_000 }];
-    for (let i = 0; i < 4; i++) last = await checkCompactionCompliance(fakeSql({ seeded: codexSeeded }));
-    expect(last!.bootConfigAlerts).toEqual([]);
-    expect(openEscalationMock).not.toHaveBeenCalled();
-
     resolveSessionRefMock.mockResolvedValue(null); // reset default for any later tests
+  });
+
+  it('flags a Codex session whose rollout telemetry stays dark now that native compaction is disabled (D-011)', async () => {
+    estimateMock.mockResolvedValue(null);
+    resolveSessionRefMock.mockResolvedValue({ agent: 'codex', sessionId: 's-codex', sessionKey: 42 });
+    const codexSeeded = [{ owner_id: 'codex-sess', owner_label: 'su · codex-sess', compaction_limit: 207_000 }];
+    openEscalationMock.mockClear();
+    let last;
+    for (let i = 0; i < 3; i++) last = await checkCompactionCompliance(fakeSql({ seeded: codexSeeded }));
+    expect(last!.bootConfigAlerts).toEqual([
+      { owner: 'codex-sess', kind: 'dark-telemetry', detail: '3 null sweeps' },
+    ]);
+    expect(openEscalationMock).toHaveBeenCalledTimes(1);
   });
 
   it('does NOT flag a SYNTHETIC principal (mcp-call / UI-client) — a null adv_sessions ref means it is not a launched session, not a blind one (WI-2917)', async () => {

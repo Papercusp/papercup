@@ -31,7 +31,7 @@ import { findLiveHost, injectIntoHost, hostSupports } from '../../events/await/p
 import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
 import { buildOwnerRespawnLaunchSpec } from '../../carry-respawn';
-import { resolveModelSpecForOwner } from '../../compaction-usage';
+import { estimateContextWindowForOwner, resolveModelSpecForOwner } from '../../compaction-usage';
 import { modelWindowForSpec } from '../../agent-config-constants';
 import {
   staleCheckpointWarnings,
@@ -290,8 +290,13 @@ export default defineTool({
     // error, never a blind cut) — the agent retries after addressing it.
     let effectiveWindowTokens = FALLBACK_EFFECTIVE_WINDOW_TOKENS;
     try {
-      const spec = await resolveModelSpecForOwner(identity.ownerId);
-      if (spec) effectiveWindowTokens = modelWindowForSpec(spec);
+      const observedWindow = await estimateContextWindowForOwner(identity.ownerId);
+      if (observedWindow != null) {
+        effectiveWindowTokens = observedWindow;
+      } else {
+        const spec = await resolveModelSpecForOwner(identity.ownerId);
+        if (spec) effectiveWindowTokens = modelWindowForSpec(spec);
+      }
     } catch { /* conservative fallback stands */ }
     const spec = await buildOwnerRespawnLaunchSpec(identity.ownerId, {
       effectiveWindowTokens,

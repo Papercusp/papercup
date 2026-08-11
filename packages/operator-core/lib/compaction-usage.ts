@@ -102,7 +102,7 @@ export function codexContextSnapshotFromRollout(pathStr: string): CodexContextSn
   }
 }
 
-interface EstimateContextDeps {
+export interface EstimateContextDeps {
   findCodexRollout?: typeof findCodexRolloutPath;
 }
 

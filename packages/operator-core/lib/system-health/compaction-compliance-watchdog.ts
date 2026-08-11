@@ -573,11 +573,22 @@ async function maybeCarryRespawn(
     // EI-13477: reconciled — a same-pid self-relaunch's dead native id must not
     // be read as this owner's live transcript when deciding whether to respawn.
     const ref = await resolveSessionRefReconciled(ownerId);
-    if (!ref || (ref.agent != null && ref.agent !== 'claude')) return false;
-    const { findSessionTranscript, newestTranscriptUnderOwner } = await import('../claude-sessions');
-    const transcriptPath =
-      (ref.sessionId ? await findSessionTranscript(ref.sessionId, { owner: ownerId }) : null) ??
-      newestTranscriptUnderOwner(ownerId);
+    if (!ref || ref.agent === 'omp') return false;
+    let transcriptPath: string | null = null;
+    let transcriptSourceKind: 'claude' | 'codex' = 'claude';
+    if (ref.agent === 'codex') {
+      const { resolveSelfSession } = await import('../search/self-session');
+      const self = await resolveSelfSession(ownerId);
+      if (self?.sourceKind === 'codex') {
+        transcriptPath = self.filePath;
+        transcriptSourceKind = 'codex';
+      }
+    } else {
+      const { findSessionTranscript, newestTranscriptUnderOwner } = await import('../claude-sessions');
+      transcriptPath =
+        (ref.sessionId ? await findSessionTranscript(ref.sessionId, { owner: ownerId }) : null) ??
+        newestTranscriptUnderOwner(ownerId);
+    }
     if (!transcriptPath) return false;
 
     const { buildOwnerRespawnLaunchSpec } = await import('../carry-respawn');
@@ -587,7 +598,7 @@ async function maybeCarryRespawn(
         workspaceId,
         ownerLabel,
         transcriptPath,
-        transcriptSourceKind: 'claude',
+        transcriptSourceKind,
         // Clean/idle-gated (deliberate ⇒ the P-010 refuse-once gate applies) but
         // NOT self-requested: the session never ran its flush discipline, and the
         // rendered continuation must not claim "state was flushed" (the
@@ -613,8 +624,8 @@ async function maybeCarryRespawn(
     if (ok) {
       console.warn(
         `[compaction-watchdog] CARRY-RESPAWN queued for ${ownerLabel} (${ownerId}) at the soft ` +
-          `threshold — fresh Claude successor will inherit the deterministic carry; native ` +
-          `auto-compact is disabled only on that successor (P-018).`,
+          `threshold — fresh ${transcriptSourceKind} successor will inherit the deterministic carry ` +
+          `(P-018/D-011).`,
       );
     }
     return ok;
@@ -703,11 +714,22 @@ async function maybeForceRespawn(
     }
     // EI-13477: reconciled, same reasoning as maybeCarryRespawn above.
     const ref = await resolveSessionRefReconciled(ownerId);
-    if (ref && ref.agent != null && ref.agent !== 'claude') return false;
-    const { findSessionTranscript, newestTranscriptUnderOwner } = await import('../claude-sessions');
-    const transcriptPath =
-      (ref?.sessionId ? await findSessionTranscript(ref.sessionId, { owner: ownerId }) : null) ??
-      newestTranscriptUnderOwner(ownerId);
+    if (ref?.agent === 'omp') return false;
+    let transcriptPath: string | null = null;
+    let transcriptSourceKind: 'claude' | 'codex' = 'claude';
+    if (ref?.agent === 'codex') {
+      const { resolveSelfSession } = await import('../search/self-session');
+      const self = await resolveSelfSession(ownerId);
+      if (self?.sourceKind === 'codex') {
+        transcriptPath = self.filePath;
+        transcriptSourceKind = 'codex';
+      }
+    } else {
+      const { findSessionTranscript, newestTranscriptUnderOwner } = await import('../claude-sessions');
+      transcriptPath =
+        (ref?.sessionId ? await findSessionTranscript(ref.sessionId, { owner: ownerId }) : null) ??
+        newestTranscriptUnderOwner(ownerId);
+    }
     const { buildOwnerRespawnLaunchSpec } = await import('../carry-respawn');
     const spec = transcriptPath
       ? await buildOwnerRespawnLaunchSpec(ownerId, {
@@ -716,7 +738,7 @@ async function maybeForceRespawn(
             workspaceId,
             ownerLabel,
             transcriptPath,
-            transcriptSourceKind: 'claude',
+            transcriptSourceKind,
             // A forced cut is NOT the clean deliberate boundary the polite rung
             // waits for — mark it so the carry producers treat the tail as
             // potentially mid-thought.
