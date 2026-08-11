@@ -80,6 +80,12 @@ export default defineTool({
   },
   capability: "work_items:read",
   requirePrincipal: false,
+  // EI-20187955452832561: this handler never reads ctx.tx. It performs its own
+  // work-item/checkpoint/coordination reads (and can enrich a bulk request) via
+  // their dedicated accessors, so retaining the host's ambient workspace
+  // transaction across that await-heavy work pins an org-app pool slot for the
+  // whole read and starves unrelated coordination calls under fleet load.
+  skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES],
   args: z
     .object({

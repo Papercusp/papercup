@@ -54,6 +54,12 @@ const env = async (x: unknown) => {
 };
 const one = async (x: unknown) => (await env(x)).results[0];
 
+it('opts out of the ambient workspace transaction because the handler never reads ctx.tx', () => {
+  // Keeping this assertion beside the handler's existing wiring tests prevents
+  // a future projection change from reintroducing a long-lived app-pool hold.
+  expect((get as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+});
+
 beforeEach(() => {
   getWorkItem.mockReset();
   getWorkItemDetail.mockReset();
