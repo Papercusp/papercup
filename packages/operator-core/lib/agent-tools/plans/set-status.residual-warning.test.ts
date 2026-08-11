@@ -113,6 +113,18 @@ describe('plans:set-status residual-coverage guard (EI-18655063958515097)', () =
     expect(b.results[0].residualWarning).toMatch(/work_items:create/);
   });
 
+  it('does not warn when a completed investigation records a discovered defect as a filed finding', async () => {
+    lockReturnsMutatorValue(new Set(['P-001']));
+    const b = await body({
+      slug: 'plan-a',
+      item: 'P-001',
+      status: 'done',
+      rationale:
+        'VERDICT: the row predates the cascade; diagnosed the issue and recorded the decision; residual defect filed as WI-37856.',
+    });
+    expect(b.results[0].residualWarning).toBeUndefined();
+  });
+
   it('no warning on a clean close with no coverage and no residual language', async () => {
     lockReturnsMutatorValue(new Set(['P-001']));
     const b = await body({ slug: 'plan-a', item: 'P-001', status: 'done', note: 'all green, shipped' });

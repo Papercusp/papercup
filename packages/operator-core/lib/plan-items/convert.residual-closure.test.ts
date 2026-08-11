@@ -24,6 +24,14 @@ describe('looksLikeResidualClosure', () => {
     expect(looksLikeResidualClosure('')).toBe(false);
   });
 
+  it('does NOT treat a completed investigation that filed a discovered defect as residual scope', () => {
+    expect(
+      looksLikeResidualClosure(
+        'VERDICT: the row predates the cascade; diagnosed the issue and recorded the decision; residual defect filed as WI-37856.',
+      ),
+    ).toBe(false);
+  });
+
   it('is case-insensitive', () => {
     expect(looksLikeResidualClosure('SPLIT OFF the remaining work')).toBe(true);
     expect(looksLikeResidualClosure('Residual scope tracked separately')).toBe(true);

@@ -304,12 +304,22 @@ export async function findCoverageWorkItems(
 /**
  * Heuristic (EI-18655063958515097): does this closing note/rationale text read like
  * an unmet acceptance criterion was split off into a follow-up, rather than the item
- * being genuinely fully done? Mirrors the same intentionally-permissive-false-positive
- * design as `codeSmellsLikeCode` (work_items/create.ts) — a false positive here is
- * harmless (an advisory nudge the closer can ignore); a false negative silently lets
- * the exact bug this guards recur. Pure so it's unit-testable without the lock/PG path.
+ * being genuinely fully done? A completed investigation can mention a "residual
+ * defect" while recording that the defect was discovered and filed; that is a finding,
+ * not unfinished scope, so keep that explicit verdict out of the residual path. Pure so
+ * it's unit-testable without the lock/PG path.
  */
 export function looksLikeResidualClosure(text: string): boolean {
+  const discoveryVerdict =
+    /\b(?:verdict|investigat\w*|diagnos\w*|discover(?:ed|y)?|found|confirmed|predates?)\b/i.test(text) &&
+    /\b(?:defect|bug|issue)\b/i.test(text) &&
+    /\b(?:filed|created|opened|tracked)\b/i.test(text);
+  const explicitUnmetAcceptance =
+    /\b(?:acceptance|criteri\w*|ask|scope|work)\b[^.\n]{0,120}\b(?:not met|unmet|deferred|split(?:[- ]?off)?|left (?:open|unresolved|unmet))\b/i.test(
+      text,
+    );
+  if (discoveryVerdict && !explicitUnmetAcceptance) return false;
+
   return /\b(split[- ]?off|carved[- ]?off|residual|deferred|not (?:fully |entirely )?met|partial(?:ly)? (?:done|complete|addressed)|left (?:open|unresolved|unmet)|unmet acceptance|acceptance (?:criteri\w*|ask)\b[^.]*(?:not met|unmet))\b/i.test(
     text,
   );
