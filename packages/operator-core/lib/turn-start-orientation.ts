@@ -102,9 +102,15 @@ export function isEmptyOrientation(state: OrientationState): boolean {
 /**
  * PURE: the compact fingerprint this turn's orientation is diffed against.
  *
- * Held items carry their STATUS, not just their id, so a work-item moving
- * wip→blocked re-emits the block. Keep this small — it is stored per agent per
- * turn, and its only job is to answer "same as last time?".
+ * The held-item key is `id:status`, so this fingerprint CAN re-emit on a
+ * wip→blocked move — but ⚠ v1 DOES NOT: `defaultOrientationDeps.held` populates
+ * `{ id }` only (see the note at its definition — `CarryBriefHeldItem` has no
+ * `status` field), so in v1 every status collapses to `''` and only a CLAIM or
+ * RELEASE re-emits. The `:status` half is the seam a status-carrying source
+ * drops into, not a description of current behaviour — do not cite it as one.
+ *
+ * Keep this small — it is stored per agent per turn, and its only job is to
+ * answer "same as last time?".
  */
 export function fingerprintOrientation(state: OrientationState): CursorState {
   return {
