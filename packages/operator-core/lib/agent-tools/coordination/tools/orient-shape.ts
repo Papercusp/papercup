@@ -228,10 +228,27 @@ function projectOrient(d: Record<string, unknown>, c: Caps, tier: TierName): Rec
   out.me = trimMe(d.me, c.meChars);
 
   if (Array.isArray(d.claimable)) {
-    const total = d.claimable.length;
+    const delivered = d.claimable.length;
     out.claimable = d.claimable.slice(0, c.claimable).map((r) => projectClaimable(r, c.title));
-    if (total > c.claimable) {
-      out.claimableTruncated = { total, shown: c.claimable, more: 'work_items:list (or payloadTier:"full")' };
+    const shown = Math.min(delivered, c.claimable);
+    // EI-20113865649946366 — the claimable list is cut TWICE and only the handler can
+    // measure the first cut, so this rung must not overwrite what it was told.
+    //
+    // `d.claimable.length` is the length of the list the handler HANDED DOWN, already
+    // bounded by its own `claimableLimit`. Publishing that as `total` is precisely how
+    // orient reported `total: 20` while the oracle's authoritative count was ~1677 —
+    // a bounded measurement rendered as a population, which is worse than silence
+    // because a confident number does not invite a re-read.
+    //
+    // The handler emits `claimableTruncated` IFF its own fetch was incomplete, so its
+    // ABSENCE is itself informative: the handed-down list is the whole lane, and
+    // `delivered` is then a genuine total. Hence the two branches.
+    const upstream = d.claimableTruncated as Record<string, unknown> | undefined;
+    if (upstream && typeof upstream === 'object') {
+      // Carry the authoritative facts; only re-state what THIS rung changed.
+      out.claimableTruncated = { ...upstream, shown };
+    } else if (delivered > c.claimable) {
+      out.claimableTruncated = { total: delivered, shown, more: 'work_items:list (or payloadTier:"full")' };
     }
   }
 
@@ -279,17 +296,52 @@ function projectOrient(d: Record<string, unknown>, c: Caps, tier: TierName): Rec
   }
 
   const memory = d.memory as
-    | { query?: unknown; hits?: unknown[]; degraded?: unknown; degradedReason?: unknown; withheld?: unknown; filteredLowScore?: unknown; withheldBudget?: unknown; note?: unknown }
+    | { query?: unknown; hits?: unknown[]; degraded?: unknown; degradedReason?: unknown; withheld?: unknown; filteredLowScore?: unknown; withheldBudget?: unknown; note?: unknown; bodiesTruncated?: unknown }
     | null
     | undefined;
   if (memory && typeof memory === 'object' && Array.isArray(memory.hits)) {
+    const shapedHits = memory.hits.slice(0, c.memory).map((h) => {
+      if (!h || typeof h !== 'object') return h;
+      const r = h as Record<string, unknown>;
+      // EI-20113865649946366: `cap` appends a bare '…', which is not a disclosure — it
+      // names no fetch path and is indistinguishable from an ellipsis in the text
+      // itself. If THIS rung is what cut the body, raise the same structural flag the
+      // handler raises, so a clipped body is never delivered unmarked at either layer.
+      const clippedHere = typeof r.memory === 'string' && r.memory.length > c.memoryText;
+      return {
+        ...r,
+        memory: cap(r.memory, c.memoryText),
+        ...(clippedHere ? { truncated: true as const } : {}),
+      };
+    });
+    // Recomputed over the hits ACTUALLY delivered by this rung, because both the
+    // population and the clipping change here: the handler's count was taken over its
+    // own admitted set at its own cap. Carrying its number through unchanged would
+    // under-report exactly when this rung clipped more — and a disclosure that is wrong
+    // in the unsafe direction is worse than none.
+    const clippedDelivered = shapedHits.reduce<number>(
+      (n, h) => n + (h && typeof h === 'object' && (h as Record<string, unknown>).truncated === true ? 1 : 0),
+      0,
+    );
+    const upstreamBodies = memory.bodiesTruncated as Record<string, unknown> | undefined;
     out.memory = {
       query: memory.query,
-      hits: memory.hits.slice(0, c.memory).map((h) => {
-        if (!h || typeof h !== 'object') return h;
-        const r = h as Record<string, unknown>;
-        return { ...r, memory: cap(r.memory, c.memoryText) };
-      }),
+      hits: shapedHits,
+      // EI-9031 class: a loud marker the handler raised must survive this rung. Rebuilt
+      // rather than spread, so `cap` and `hits` stay the only things this rung restates.
+      ...(clippedDelivered > 0
+        ? {
+            bodiesTruncated: {
+              ...(upstreamBodies && typeof upstreamBodies === 'object' ? upstreamBodies : {}),
+              hits: clippedDelivered,
+              cap: Math.min(c.memoryText, typeof upstreamBodies?.cap === 'number' ? upstreamBodies.cap : c.memoryText),
+              more:
+                typeof upstreamBodies?.more === 'string'
+                  ? upstreamBodies.more
+                  : 'memory:search { query } for the full body',
+            },
+          }
+        : {}),
       ...(memory.hits.length > c.memory ? { hitsTruncated: { total: memory.hits.length, shown: c.memory, more: 'memory:search' } } : {}),
       // EI-9031: carry the LOUD scalar markers through tier-shaping — a trimmed/
       // standard session (a fleet member — the exact case this ticket reports) must

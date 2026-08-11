@@ -359,6 +359,18 @@ export interface OrientResult {
     authorityRefs?: unknown;
     runArgs?: unknown;
   }> | null;
+  /** EI-20113865649946366: this fold exists to close an AWARENESS gap ("I didn't know a
+   *  recipe existed"), so a silent drop defeats its own purpose. No authoritative total
+   *  exists — recipes:search was itself called with a limit — hence `truncatedByLimit`
+   *  rather than a fabricated count. `titlesClipped` covers the separate per-title cut. */
+  recipesTruncated?: {
+    shown: number;
+    truncatedByLimit?: true;
+    limit?: number;
+    titlesClipped?: number;
+    titleCap?: number;
+    more: string;
+  };
   /** Whether the optional coord:declare-intent succeeded (present only when
    *  `intent` was passed; false = the caller lacked coord:write). */
   intentDeclared?: boolean;
@@ -413,6 +425,10 @@ export interface OrientResult {
     announcedBy: string;
     expires_ts: string | null;
   }>;
+  /** EI-20113865649946366: gates visible to this caller that the fold did not show.
+   *  Load-bearing rather than cosmetic — an undisclosed drop here means the agent
+   *  never learns a gate key exists, so it parks on the wrong event or on none. */
+  announcedGatesTruncated?: { shown: number; total: number; more: string };
   /** A fleet LEADER's per-member health brief (fleet:leader-brief) — folded automatically
    *  on a MONITOR tick when the caller resolves (via their launch-env fleet membership)
    *  to a fleet leader: the lever that collapses "monitor orient + a separate
@@ -1618,14 +1634,34 @@ export async function composeOrient(
             runArgs?: unknown;
           }> }
         | undefined;
-      result.recipes = (rec?.recipes ?? []).slice(0, recLimit).map((r) => ({
+      // EI-20113865649946366: two independent cuts here, both previously silent —
+      // the LIST (bounded by recLimit, which is also what the search was asked for, so
+      // a full page is evidence of more) and each TITLE (RECIPE_TITLE_CAP). This fold
+      // exists to close an AWARENESS gap, so a silently-dropped recipe defeats its own
+      // purpose: the agent concludes no recipe exists and hand-rolls the loop anyway.
+      const recipeRows = rec?.recipes ?? [];
+      let recipeTitlesClipped = 0;
+      result.recipes = recipeRows.slice(0, recLimit).map((r) => ({
         id: r.id,
-        title: typeof r.title === 'string' ? r.title.slice(0, RECIPE_TITLE_CAP) : undefined,
+        title:
+          typeof r.title === 'string'
+            ? (r.title.length > RECIPE_TITLE_CAP ? (recipeTitlesClipped++, `${r.title.slice(0, RECIPE_TITLE_CAP - 1)}…`) : r.title)
+            : undefined,
         runCount: r.runCount,
         similarity: r.similarity,
         ...(r.authorityRefs && typeof r.authorityRefs === 'object' ? { authorityRefs: r.authorityRefs } : {}),
         ...(r.runArgs && typeof r.runArgs === 'object' ? { runArgs: r.runArgs } : {}),
       }));
+      // No authoritative total is available here (recipes:search was itself asked for
+      // `recLimit`), so this reports the bound honestly rather than inventing a count.
+      if (recipeRows.length >= recLimit || recipeTitlesClipped > 0) {
+        result.recipesTruncated = {
+          shown: Math.min(recipeRows.length, recLimit),
+          ...(recipeRows.length >= recLimit ? { truncatedByLimit: true as const, limit: recLimit } : {}),
+          ...(recipeTitlesClipped > 0 ? { titlesClipped: recipeTitlesClipped, titleCap: RECIPE_TITLE_CAP } : {}),
+          more: 'recipes:search { query, limit } for more matches; recipes:get { id } for a full recipe',
+        };
+      }
     } catch {
       result.recipes = null;
     }
