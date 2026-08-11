@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+import type { PreLaunchExclusion } from '../release-checkpoint-launch';
 
 const mocks = vi.hoisted(() => {
   class FakeWorkflowQueue {
@@ -26,7 +27,7 @@ vi.mock('@dbos-inc/dbos-sdk', () => ({
 
 import { runCheckpointEligibilityWait } from './checkpoint-eligibility-workflow';
 
-const REFUSAL = {
+const REFUSAL: PreLaunchExclusion = {
   refuse: true,
   proceedReason: null,
   candidate: 'aaaaaaaaaaaa',
@@ -34,7 +35,7 @@ const REFUSAL = {
   quietCutSec: 240,
   blockedPaths: [{ path: 'mine.ts', commits: ['bbb1111'], eligibleInSec: 120 }],
   waitSec: 120,
-} as never;
+};
 
 describe('checkpoint eligibility waiter', () => {
   it('rechecks after the durable delay and emits inconclusive when the path is still excluded', async () => {
