@@ -503,6 +503,7 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
     expect(seedKey).not.toBe(own.keyHex);
     expect(meta.coreLengths[seedKey!]).toBeGreaterThan(0);
     expect(meta.coreSparseFrom).toBeUndefined();
+    expect(readdirSync(join(stagingDir, 'db')).filter((file) => /^\d+\.log$/.test(file))).toEqual([]);
     expect(await provider.verify(entry, payload)).toEqual({ ok: true });
 
     const targetStoreDir = join(tmpDir('papercusp-seed-filtered-target-'), 'hyperbee');
