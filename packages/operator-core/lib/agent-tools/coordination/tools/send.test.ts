@@ -12,7 +12,16 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me', workspaceId: 'ws1' })) }));
+// EI-20130618357432548: keep the REAL constants (notably ADMIN_COORD_UI_OWNER) via
+// importOriginal. A bare factory replaces the whole module, so send.ts's
+// `ADMIN_COORD_UI_OWNER` import resolves to a vitest getter that THROWS on first access —
+// which is every test reaching the wake path, not just owner-chat ones. `../identity` is a
+// zero-import leaf of plain constants, so spreading the real module costs nothing and, unlike
+// hardcoding 'pc-admin-coord-ui' here, cannot drift from the source or strand the NEXT export.
+vi.mock('../identity', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../identity')>()),
+  resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me', workspaceId: 'ws1' })),
+}));
 vi.mock('../messages', () => ({ sendMessage: vi.fn(), getMessageById: vi.fn(async () => null) }));
 vi.mock('../recipient-liveness', () => ({ describeMissedRecipients: vi.fn(async () => []) }));
 // EI-19965318428068990: keep the REAL `buildStagedWakeNote` (a pure fn of stagedTargets,
