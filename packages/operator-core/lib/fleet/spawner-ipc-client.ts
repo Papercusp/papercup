@@ -96,6 +96,11 @@ export class SpawnerIpcClient {
 
       this.socket = net.createConnection(this.socketPath, () => {
         this.connected = true;
+        // Keep the persistent connection available for a long-lived host, but
+        // do not let it keep a short-lived diagnostic process alive after its
+        // last RPC completes. The owner-side shutdown hook still closes it
+        // when the host exits.
+        this.socket?.unref();
         if (this.connectResolve) this.connectResolve();
       });
 

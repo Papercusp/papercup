@@ -12,7 +12,7 @@
  * spawns, so this module is byte-irrelevant there.
  */
 
-import { ChildProcess } from 'node:child_process';
+import { ChildProcess, execFileSync } from 'node:child_process';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -36,6 +36,7 @@ import { managedSpawn } from '../task-manager/managed-spawn';
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 
 let sidecarProcess: ChildProcess | null = null;
+let sidecarScopeUnit: string | null = null;
 let sidecarReady = false;
 const readyWaiters: (() => void)[] = [];
 
@@ -272,6 +273,7 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
     },
   );
   sidecarProcess = managed.child;
+  sidecarScopeUnit = managed.scopeUnit;
   // Warn ONCE per process, not per spawn. Scope support is probed once and cached,
   // so this condition is constant for the process lifetime — repeating it on every
   // lazy spawn and every crash-respawn (up to 5 in 5 minutes) would bury the one
@@ -359,6 +361,7 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
 
     child.on('error', (err) => {
       sidecarProcess = null;
+      sidecarScopeUnit = null;
       sidecarReady = false;
       reject(err);
     });
@@ -371,6 +374,7 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
         console.warn(`[spawner-sidecar] died (${msg})`);
       }
       sidecarProcess = null;
+      sidecarScopeUnit = null;
       sidecarReady = false;
       scheduleRespawn(resolvedSocket);
     });
@@ -410,8 +414,22 @@ export async function stopSpawnerSidecar(): Promise<void> {
     respawnTimer = null;
   }
   const proc = sidecarProcess;
+  const scopeUnit = sidecarScopeUnit;
+  // `managedSpawn` returns the systemd-run client when confined; signalling
+  // that client alone can leave the payload alive in its sibling scope. The
+  // scope unit is generated and returned by our own managed spawn, so this is
+  // the cgroup-safe identity-preserving kill path. It is synchronous on
+  // purpose: the exit hook below has no async turn left to await.
+  if (scopeUnit) {
+    try {
+      execFileSync('systemctl', ['--user', 'kill', '--signal=SIGTERM', scopeUnit], { stdio: 'ignore' });
+    } catch {
+      /* best effort; the client signal below remains the unconfined fallback */
+    }
+  }
   await gracefulStopChild(proc, { timeoutMs: 5000, kill: (sig) => proc.kill(sig) });
   sidecarProcess = null;
+  sidecarScopeUnit = null;
   sidecarReady = false;
 }
 
@@ -442,6 +460,7 @@ export function _resetSpawnerSidecarSpawnStateForTests(): void {
   }
   respawnAttempts = [];
   sidecarProcess = null;
+  sidecarScopeUnit = null;
   sidecarReady = false;
   readyWaiters.length = 0;
   // Must be cleared with the rest: an attempt left in flight by a prior test

@@ -110,8 +110,27 @@ export function runSpawnerSidecarServer(): void {
   // requestId → AbortController for the in-flight spawn it owns, so `spawn:cancel`
   // can stop it. Keyed by the client's per-request JSON-RPC id (single-client v1).
   const controllers = new Map<number | string, AbortController>();
+  // Keep the client sockets so shutdown can destroy a persistent IPC connection
+  // before `server.close()`. Without this, net.Server waits forever for the
+  // parent-side client to close and the sidecar/socket survive the host exit.
+  const clients = new Set<net.Socket>();
+
+  const unlinkSocket = (): void => {
+    try {
+      if (fs.existsSync(socketPath)) fs.unlinkSync(socketPath);
+    } catch {
+      /* best effort — the process is exiting regardless */
+    }
+  };
+
+  // `process.exit()` and fatal paths bypass the async signal handler below;
+  // the synchronous exit hook is the last chance to remove this pid's stale
+  // Unix socket (SIGKILL is the only path no handler can cover).
+  process.on('exit', unlinkSocket);
 
   const server = net.createServer((socket: net.Socket) => {
+    clients.add(socket);
+    socket.once('close', () => clients.delete(socket));
     const write = (obj: object): void => {
       socket.write(JSON.stringify(obj) + '\n');
     };
@@ -221,10 +240,17 @@ export function runSpawnerSidecarServer(): void {
     process.exit(1);
   });
 
+  let shuttingDown = false;
   const shutdown = (signal: string): void => {
+    if (shuttingDown) return;
+    shuttingDown = true;
     console.log(`[spawner-sidecar] ${signal} received, shutting down gracefully`);
     for (const controller of controllers.values()) controller.abort();
-    server.close(() => process.exit(0));
+    for (const client of clients) client.destroy();
+    server.close(() => {
+      unlinkSocket();
+      process.exit(0);
+    });
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));

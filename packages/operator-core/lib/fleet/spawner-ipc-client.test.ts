@@ -10,7 +10,7 @@
  *      `onOutputActivity` callbacks, keyed by `params.requestId`, with no bleed
  *      between two concurrent in-flight requests.
  */
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as net from 'node:net';
 import * as os from 'node:os';
 import * as path from 'node:path';
@@ -88,6 +88,16 @@ afterEach(async () => {
 });
 
 describe('SpawnerIpcClient — id-correlated request/response', () => {
+  it('unrefs the persistent socket so it cannot keep a short-lived host alive', async () => {
+    const unref = vi.spyOn(net.Socket.prototype, 'unref');
+    try {
+      await client.call('echo', { value: 'unref' });
+      expect(unref).toHaveBeenCalled();
+    } finally {
+      unref.mockRestore();
+    }
+  });
+
   it('resolves concurrent calls to their OWN results even when replies arrive out of order', async () => {
     // The first call is delayed so the second completes first — only correct id
     // correlation gives each its own value.
