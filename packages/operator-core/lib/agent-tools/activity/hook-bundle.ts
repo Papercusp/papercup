@@ -101,14 +101,14 @@ async function currentGeneration(): Promise<string> {
 
 const defaultDeps: ActivityHookBundleDeps = {
   generation: currentGeneration,
-  // A missing baseline must never turn a post-tool fold into a full-history
-  // inbox dump. turn_start establishes the cursor; until then the inbox
-  // surface is an explicit empty snapshot while display can still hydrate.
+  // A missing durable baseline is an intentional full inbox baseline: the
+  // server must not inherit the old client hook's `now` seed and skip mail.
+  // Once a floor exists, keep the windowed read bounded by that server-owned
+  // cursor.
   inbox: async (sinceTs, ctx) => {
-    if (!sinceTs) return { entries: [], injection: '', summary: { newest_ts: null } };
     return parseToolPayload(
       await inboxTool.handler(
-        { since_ts: sinceTs } as Parameters<typeof inboxTool.handler>[0],
+        (sinceTs ? { since_ts: sinceTs } : {}) as Parameters<typeof inboxTool.handler>[0],
         ctx,
       ),
     );
