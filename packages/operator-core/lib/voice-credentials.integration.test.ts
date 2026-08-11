@@ -10,8 +10,10 @@
  *
  * P-012 of plan voice-production-test-coverage-2026-06-01.
  */
+import { readFileSync } from 'node:fs';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
+import { scanForSecrets } from './sync/pot-git/secrets-guard';
 
 const h = vi.hoisted(() => ({ sql: null as unknown as import('postgres').Sql }));
 
@@ -64,13 +66,19 @@ beforeEach(async () => {
 });
 
 describe('voice-credentials — encrypted round-trip', () => {
+  it('keeps synthetic credential literals safe for the release secret scanner', () => {
+    const path = 'packages/operator-core/lib/voice-credentials.integration.test.ts';
+    const content = readFileSync(new URL('./voice-credentials.integration.test.ts', import.meta.url), 'utf8');
+    expect(scanForSecrets([{ path, content }])).toEqual([]);
+  });
+
   it('writes then reads back the ElevenLabs key', async () => {
     await writeElevenLabsKey('sk_eleven_abcdef');
     expect(await readElevenLabsKey()).toBe('sk_eleven_abcdef');
   });
 
   it('stores ciphertext at rest — the plaintext key never appears in the row', async () => {
-    const SECRET = 'sk_plaintext_supersecret_9999';
+    const SECRET = 'sk_plaintext_placeholder_9999';
     await writeElevenLabsKey(SECRET);
     const raw = await db.sql`
       SELECT payload::text AS payload, encode(payload_ct, 'escape') AS ct_text, payload_ct
