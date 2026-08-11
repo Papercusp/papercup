@@ -2009,12 +2009,18 @@ export function createInferenceGateway(deps: GatewayDeps) {
       entries.map(async (account) => {
         const id = account.accountId;
         const now = Date.now();
-        if (!account.egress?.proxyUrl || proxyEgressDisabled) return; // only proxy routes flap; box-direct is the fallback everything shares
+        // Resolve the proxy route from the EFFECTIVE POOL, not the legacy singular `account.egress`
+        // (EI-18664933641195210). Reading `account.egress?.proxyUrl` here early-returned for every
+        // pool-configured account — so this prober never ran, and the DEAD-PROXY watchdog it feeds went
+        // silent from 2026-06-30 through a 16-day, three-proxy outage. `effectiveEgressEntries` also
+        // applies the kill-switch, so the explicit `proxyEgressDisabled` check is subsumed.
+        const proxyEntry = effectiveEgressEntries(account).find((e) => e.proxyUrl);
+        if (!proxyEntry) return; // only proxy routes flap; box-direct is the fallback everything shares
         if ((egressPauseUntil.get(id) ?? 0) > now) return; // circuit already open — half-open prober owns recovery
         if (egressProbePending.has(id)) return;
         if (now - (lastEgressOkAt.get(id) ?? 0) < proactiveEgressProbeMs) return; // recent real traffic proved it
         try {
-          const probe = await doProbeEgress({ id, egress: account.egress } as ClaudeAccount, { timeoutMs: EGRESS_PROBE_HTTP_TIMEOUT_MS });
+          const probe = await doProbeEgress({ id, egress: proxyEntry } as ClaudeAccount, { timeoutMs: EGRESS_PROBE_HTTP_TIMEOUT_MS });
           if (probe.exitIp) {
             proactiveProbeFailStreak.delete(id);
             lastEgressOkAt.set(id, Date.now());

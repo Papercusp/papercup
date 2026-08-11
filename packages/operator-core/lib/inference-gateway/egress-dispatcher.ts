@@ -19,7 +19,7 @@
  * it should adopt this helper so the two never drift (coordinated with the B-HOT-2 dispatcher-close
  * work). Until then, keep the two IN LOCKSTEP by hand — this module is the canonical version.
  */
-import type { AccountEgress, ClaudeAccount } from '../deployment/account-pool';
+import { egressEntries, type AccountEgress, type ClaudeAccount } from '../deployment/account-pool';
 
 type UndiciDispatcher = import('undici').Dispatcher;
 type UndiciModule = typeof import('undici');
@@ -65,9 +65,9 @@ export function egressIsSupportedProxy(proxyUrl: string | undefined): boolean {
  * verdict but never touched the configured proxy (EI-18664933641195210).
  */
 export function resolveAccountEgress(account: ClaudeAccount): AccountEgress | undefined {
-  const pool = account.egressPool;
-  if (pool && pool.length > 0) return pool[0];
-  return account.egress;
+  // Delegates to the canonical pool resolver rather than re-deriving it — a second copy of this rule is
+  // exactly the divergence that caused the bug above.
+  return egressEntries(account)[0];
 }
 
 /** A stable per-account dispatcher cache key (matches the gateway's `accountId|proxyUrl|localAddress`).
