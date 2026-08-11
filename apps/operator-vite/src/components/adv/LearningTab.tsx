@@ -91,7 +91,6 @@ import { FrontierPanel } from "./FrontierPanel";
 import { SignalsPanel } from "./SignalsPanel";
 import { AnalyzePanel } from "./AnalyzePanel";
 import KnowledgePackCandidates from "./KnowledgePackCandidates";
-import { MugWakeEfficiencyPanel } from "./MugWakeEfficiencyPanel";
 import { ExperimentsPanel } from "./ExperimentsPanel";
 import { Tooltip } from "@/app/harness/Tooltip";
 import { Popover } from "@/app/harness/Popover";
@@ -144,7 +143,6 @@ const LVIEWS = [
   "benchmark",
   "orchestration",
   "bakeoff",
-  "wake-efficiency",
   "ekg",
   "red-queen",
   "experiments",
@@ -199,8 +197,6 @@ function viewDescriptions(t: ReturnType<typeof useLexicon>): Record<LView, strin
     orchestration: `${t("pot")}-eval scoring trends — is orchestration quality improving over time?`,
     bakeoff:
       "Comparative scoring across competing framework setups on the same tasks.",
-    "wake-efficiency":
-      "Are agent wakes doing useful work — wake cost versus yield.",
     ekg: "The learning loop's vital signs over time, at a glance.",
     "red-queen":
       "Adversarial-pressure tracking — is quality keeping pace as the environment hardens?",
@@ -236,7 +232,6 @@ const VERIFY_VIEWS: ReadonlyArray<{ id: LView; label: string; icon: typeof Eye }
   // says what the numbers are, not what they measure over.
   { id: "orchestration", label: "Pot scoring", icon: GitBranch },
   { id: "bakeoff", label: "Framework bake-off", icon: Repeat2 },
-  { id: "wake-efficiency", label: "Wake efficiency", icon: Hourglass },
   { id: "ekg", label: "EKG", icon: Activity },
   { id: "red-queen", label: "Red Queen", icon: Radar },
   { id: "experiments", label: "Experiments", icon: Beaker },
@@ -351,10 +346,9 @@ export { LVIEWS as LEARNING_VIEWS };
  * `catalog`/`views` are injectable ONLY so the guard test can prove the
  * detector reds on the real pre-fix catalog rather than on a synthetic one —
  * production callers pass nothing. Deliberately checks the UNFILTERED catalog:
- * a flag-gated view (see {@link TESTING_ONLY_VIEWS} and
- * {@link MUG_KETTLE_VIEWS}, both folded together by {@link hiddenViews}) is
- * hidden on purpose and still reachable when its flag is on, which is not this
- * defect.
+ * a flag-gated view (see {@link TESTING_ONLY_VIEWS}, folded in by
+ * {@link hiddenViews}) is hidden on purpose and still reachable when its flag
+ * is on, which is not this defect.
  */
 export function orphanedLearningViews(
   catalog: typeof STAGES = STAGES,
@@ -389,23 +383,18 @@ export function orphanedLearningViews(
  *  flag-ON path is byte-identical to what shipped before the gate. */
 const TESTING_ONLY_VIEWS: ReadonlySet<LView> = new Set<LView>(["gym"]);
 
-/** Views hidden while the Mug/Kettle tier is retired (FLAGS.MUG_KETTLE_SYSTEM,
- *  DEFAULT OFF — retire-mug-kettle-su-only-2026-08-09 P-012 / D-020).
+/* The `wake-efficiency` view (MugWakeEfficiencyPanel) used to be hidden here
+ * behind FLAGS.MUG_KETTLE_SYSTEM. It is now DELETED outright — the Mug/Kettle
+ * tier is retired (D-074), so the pane could only ever render an empty
+ * live-Mug read for a system that cannot run
+ * (retire-mug-kettle-su-only-2026-08-09 P-059 / D-076). The panel itself is in
+ * `_retired/mug-kettle-deciders/`.
  *
- *  `wake-efficiency` is MugWakeEfficiencyPanel, whose own header calls it "the
- *  ad-hoc LIVE-Mug read": it renders `learning.mugWakeEfficiency`, the live
- *  Mug's per-wake cache-hit ratio and turns/wake. With the tier retired there
- *  are no wakes, so the view is a permanently empty pane for a system that
- *  cannot run.
- *
- *  ⚠ Deliberately NOT here, though a filename scan would sweep both in (D-020):
- *  `red-queen` and `frontier`. RedQueenPanel is the SELF-HEALING drill — "Red
- *  Queen" is the evolutionary arms-race term, not the Mug — and
- *  packages/operator-core/lib/red-queen/ has zero references to wakeMug,
- *  getPotStarted, pot/wake or kettle; FrontierPanel renders the learning-loop
- *  lane grid. Both belong to the learning system D-001 keeps INTACT, and hiding
- *  them with the Mug would be a regression, not a retirement. */
-const MUG_KETTLE_VIEWS: ReadonlySet<LView> = new Set<LView>(["wake-efficiency"]);
+ * ⚠ `red-queen` and `frontier` were deliberately NEVER part of that set, though
+ * a filename scan would sweep both in (D-020): RedQueenPanel is the
+ * SELF-HEALING drill — "Red Queen" is the evolutionary arms-race term, not the
+ * Mug — and FrontierPanel renders the learning-loop lane grid. Both belong to
+ * the learning system D-001 keeps INTACT. Do not retire them with the tier. */
 
 /** The one rule both the nav filter and the render degradation read.
  *
@@ -413,15 +402,14 @@ const MUG_KETTLE_VIEWS: ReadonlySet<LView> = new Set<LView>(["wake-efficiency"])
  *  {@link orphanedLearningViews} exists to catch between LVIEWS and STAGES, one
  *  level down. A view hidden from the nav but still rendered by a stale
  *  `?lview=` is not a smaller bug than the reverse. */
-function hiddenViews(testingOn: boolean, mugKettleOn: boolean): ReadonlySet<LView> {
+function hiddenViews(testingOn: boolean): ReadonlySet<LView> {
   const hidden = new Set<LView>();
   if (!testingOn) for (const v of TESTING_ONLY_VIEWS) hidden.add(v);
-  if (!mugKettleOn) for (const v of MUG_KETTLE_VIEWS) hidden.add(v);
   return hidden;
 }
 
-function visibleStages(testingOn: boolean, mugKettleOn: boolean): typeof STAGES {
-  const hidden = hiddenViews(testingOn, mugKettleOn);
+function visibleStages(testingOn: boolean): typeof STAGES {
+  const hidden = hiddenViews(testingOn);
   if (hidden.size === 0) return STAGES;
   return STAGES.map((stage) => ({
     ...stage,
@@ -581,18 +569,14 @@ export default function LearningTab() {
   // param left in the URL when the flag is turned off — lands on the default
   // view instead of rendering a pane the tab no longer offers.
   const testingOn = useFlag(FLAGS.TESTING);
-  // Same treatment for the Mug/Kettle tier (see MUG_KETTLE_VIEWS): a stale
-  // `?lview=wake-efficiency` must land on the default rather than render the
-  // live-Mug read for a tier that cannot run.
-  const mugKettleOn = useFlag(FLAGS.MUG_KETTLE_SYSTEM);
-  const stages = useMemo(
-    () => visibleStages(testingOn, mugKettleOn),
-    [testingOn, mugKettleOn],
-  );
+  // A stale `?lview=wake-efficiency` (the deleted Mug/Kettle view, D-076) is no
+  // longer a hidden-but-known id — it is simply not in LVIEWS, so the
+  // membership test below rejects it into the default view.
+  const stages = useMemo(() => visibleStages(testingOn), [testingOn]);
   const requestedView: LView = (LVIEWS as readonly string[]).includes(lview)
     ? (lview as LView)
     : "improvements";
-  const view: LView = hiddenViews(testingOn, mugKettleOn).has(requestedView)
+  const view: LView = hiddenViews(testingOn).has(requestedView)
     ? "improvements"
     : requestedView;
 
@@ -1039,10 +1023,6 @@ function LearningViewContent({
   if (view === "bakeoff") {
     return <BakeoffTrendView onStatus={reportViewStatus} active={active} />;
   }
-  if (view === "wake-efficiency")
-    return (
-      <MugWakeEfficiencyPanel onStatus={reportViewStatus} active={active} />
-    );
   if (view === "ekg")
     return <EkgPanel onStatus={reportViewStatus} active={active} />;
   if (view === "red-queen")
