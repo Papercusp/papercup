@@ -1192,8 +1192,11 @@ async function sendOne(
       // `msg.summary`: the composer truncates the summary to 80 chars.
       payload: {
         msg_id: env.msg_id,
+        // Pass the RAW body: the GUI wrapper has already rewritten the owner's
+        // string into a section array by the time it reaches here, so the helper
+        // normalises both shapes rather than this call site guessing one.
         ...(identity.ownerId === ADMIN_COORD_UI_OWNER
-          ? ownerChatWakePayloadFields(typeof msg.body === 'string' ? msg.body : '')
+          ? ownerChatWakePayloadFields(msg.body)
           : {}),
       },
     });

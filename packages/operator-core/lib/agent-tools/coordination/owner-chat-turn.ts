@@ -97,15 +97,51 @@ export const OWNER_CHAT_TURN_NOTE =
   'reply addressed to it fails with recipients_gone, and mirroring it to `human` puts your answer in ' +
   'the Inbox rather than the chat they are looking at. Zero coord sends are needed to answer this.';
 
+/**
+ * The owner's typed text out of a coord message body, whichever shape it is in.
+ *
+ * ⚠ THE SHAPE IS NOT THE ONE THE GUI POSTS. The chat composer sends `body` as a
+ * plain string, but it never reaches the send tool that way: the GUI wrapper
+ * (`applyOwnerMessageDefaults` in `owner-message.ts`) rewrites it to a SECTION
+ * ARRAY — `[{ text, forYouBecause }]` — before dispatch, because agent-authored
+ * coord messages require that shape. So the send path sees an array, and a
+ * `typeof body === 'string'` guard at the call site silently yields "" for every
+ * real owner message: the marker is never stamped, the wake falls back to the
+ * generic envelope, and NOTHING fails loudly. That is exactly how this shipped
+ * broken the first time — the unit tests covered the string shape only, stayed
+ * green, and the live send still delivered the old blob. Both shapes are pinned
+ * in the suite now.
+ *
+ * Normalising HERE rather than at the call site is the point: a caller that has
+ * to ask "is this a string or sections?" is a caller that can get it wrong.
+ */
+export function ownerChatTextFromBody(body: unknown): string {
+  if (typeof body === 'string') return body.trim();
+  if (Array.isArray(body)) {
+    return body
+      .map((section) => {
+        if (!section || typeof section !== 'object') return '';
+        const text = (section as Record<string, unknown>).text;
+        return typeof text === 'string' ? text : '';
+      })
+      .filter((t) => t.trim().length > 0)
+      .join('\n\n')
+      .trim();
+  }
+  return '';
+}
+
 /** The wake-payload fields that turn an ordinary coord wake into an owner-chat
- *  turn. Spread into the payload by the send path; `text` must be the owner's
- *  message verbatim. Returns nothing to spread when `text` is empty, so a
- *  body-less send degrades to the ordinary wake shape rather than delivering an
- *  empty turn. */
-export function ownerChatWakePayloadFields(text: string): Record<string, unknown> {
-  const trimmed = typeof text === 'string' ? text.trim() : '';
-  if (!trimmed) return {};
-  return { [OWNER_CHAT_TURN_MARKER]: true, [OWNER_CHAT_TEXT_FIELD]: trimmed };
+ *  turn. Spread into the payload by the send path.
+ *
+ *  Takes the RAW body — string or section array, see {@link ownerChatTextFromBody}
+ *  — so the call site never has to know which it got. Returns nothing to spread
+ *  when there is no text, so a body-less send degrades to the ordinary wake shape
+ *  rather than delivering an empty turn. */
+export function ownerChatWakePayloadFields(body: unknown): Record<string, unknown> {
+  const text = ownerChatTextFromBody(body);
+  if (!text) return {};
+  return { [OWNER_CHAT_TURN_MARKER]: true, [OWNER_CHAT_TEXT_FIELD]: text };
 }
 
 /**

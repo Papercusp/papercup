@@ -23,6 +23,29 @@ import {
 } from './owner-chat-turn';
 
 describe('ownerChatWakePayloadFields', () => {
+  /**
+   * THE REGRESSION THAT SHIPPED BROKEN ONCE. The composer posts `body` as a
+   * string, but `applyOwnerMessageDefaults` rewrites it to `[{ text, forYouBecause }]`
+   * before the send tool ever sees it. The first cut of this guarded the call site
+   * with `typeof body === 'string'`, so every REAL owner message normalised to ""
+   * and the marker was never stamped — unit tests green, live delivery unchanged.
+   * The section-array case below is the one that matters; the string case is the
+   * one that used to be the only one tested.
+   */
+  it('reads the SECTION-ARRAY shape the GUI wrapper actually produces', () => {
+    const guiBody = [{ text: 'hi', forYouBecause: { relation: 'other', note: 'addressed you' } }];
+    expect(ownerChatWakePayloadFields(guiBody)).toEqual({
+      [OWNER_CHAT_TURN_MARKER]: true,
+      [OWNER_CHAT_TEXT_FIELD]: 'hi',
+    });
+  });
+
+  it('joins multiple sections rather than dropping all but the first', () => {
+    expect(
+      ownerChatWakePayloadFields([{ text: 'first' }, { text: 'second' }])[OWNER_CHAT_TEXT_FIELD],
+    ).toBe('first\n\nsecond');
+  });
+
   it('carries the owner text VERBATIM — the summary is truncated at 80 chars, so it cannot be the source', () => {
     const long = 'x'.repeat(200);
     expect(ownerChatWakePayloadFields(long)).toEqual({
@@ -34,6 +57,11 @@ describe('ownerChatWakePayloadFields', () => {
   it('degrades to the ORDINARY wake shape for an empty body rather than delivering an empty turn', () => {
     expect(ownerChatWakePayloadFields('')).toEqual({});
     expect(ownerChatWakePayloadFields('   \n ')).toEqual({});
+    expect(ownerChatWakePayloadFields([])).toEqual({});
+    expect(ownerChatWakePayloadFields([{ forYouBecause: {} }])).toEqual({});
+    // Nothing else is a body — a malformed shape must degrade, never throw.
+    expect(ownerChatWakePayloadFields(undefined)).toEqual({});
+    expect(ownerChatWakePayloadFields({ text: 'not a section array' })).toEqual({});
   });
 });
 

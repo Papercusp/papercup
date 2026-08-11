@@ -29,6 +29,30 @@ describe('sessionTimelineToChatMessages', () => {
       ]);
     });
 
+    /**
+     * NOT a hand-written approximation — these are the exact bytes a live parked
+     * session received on 2026-08-11 through the real
+     * send → wake → pty path (:3170), captured from the delivered turn. Pinning
+     * the real wire format keeps this honest if the envelope or the note ever
+     * changes shape: the earlier cut of this feature passed hand-written fixtures
+     * while the live path was still broken.
+     */
+    it('renders the REAL delivered owner-chat turn as exactly what the owner typed', () => {
+      const delivered =
+        '⟦turn-origin:coord-inject:owner nonce:fa2f7c5a6200e4ad⟧\n' +
+        'take 2: does this arrive as my own turn?\n\n' +
+        '⟦owner-chat⟧ Your owner typed the message above in their session chat pane, and that pane ' +
+        'renders YOUR TRANSCRIPT — so answer in THIS TURN, in your ordinary response, and they will ' +
+        'see it. Do NOT coord:send a reply: the sender id is a UI pseudo-agent with no live session, ' +
+        'so a reply addressed to it fails with recipients_gone, and mirroring it to `human` puts your ' +
+        'answer in the Inbox rather than the chat they are looking at. Zero coord sends are needed to ' +
+        'answer this.';
+      const entries: TimelineEntry[] = [{ kind: 'prompt', text: delivered, ts: 't1' }];
+      expect(sessionTimelineToChatMessages(entries)).toEqual([
+        { role: 'user', content: 'take 2: does this arrive as my own turn?', id: 'prompt-0', ts: 't1' },
+      ]);
+    });
+
     it('renders an owner chat-pane message as exactly what was typed', () => {
       // The delivered shape: provenance envelope + the owner's text + the machine
       // note addressed to the agent. Only the middle is the owner's.
