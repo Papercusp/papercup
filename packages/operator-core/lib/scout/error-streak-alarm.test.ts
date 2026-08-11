@@ -19,10 +19,10 @@ const h = vi.hoisted(() => ({
   }),
 }));
 
-vi.mock('@papercusp/db-org', () => ({
-  // The composed delivery path loads the real presence graph far enough to
-  // register this provider at module scope, even though its PG edge is mocked.
-  setAdminPoolStatementTimeoutProvider: vi.fn(),
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  // The composed delivery path loads the real presence graph. Preserve the
+  // package's non-I/O exports while replacing only this suite's PG edge.
+  ...(await importOriginal<Record<string, unknown>>()),
   getOrgPg: () => ({
     sql: (strings: TemplateStringsArray, ...values: unknown[]) => {
       h.calls.push({ text: strings.join('?'), values });
