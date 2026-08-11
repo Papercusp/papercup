@@ -22,7 +22,7 @@ import { resolveModelSpecForOwner } from '../../compaction-usage';
 import { clampCompactionLimit, selfSetCeilingForSpec } from '../../agent-config-constants';
 import { classifyFleetControlInvoker } from '../fleet_registry/fleet-auth';
 import { resolveFleetCaller } from '../fleet_registry/_shared';
-import type { ResolveIdentityCtx } from '../coordination/identity';
+import { ADMIN_COORD_UI_OWNER, type ResolveIdentityCtx } from '../coordination/identity';
 
 export interface CrossSessionLimitResult {
   ok: boolean;
@@ -32,7 +32,7 @@ export interface CrossSessionLimitResult {
   compactionLimit?: number | null;
   /** The ceiling used to validate the request (the TARGET's spec + role). */
   cap?: number;
-  /** Legacy diagnostic field retained for compatibility with older callers. */
+  /** Legacy diagnostic field retained for compatibility with older callers; runtime writes no longer emit it. */
   clamped?: boolean;
   requested?: number;
   /** The target's fleet (null when the target is in no fleet). */
@@ -78,11 +78,29 @@ export async function setCompactionLimitForOwner(
   } catch {
     paneKind = classifyAgentPane({ role: null, ownerId: callerId }).kind;
   }
-  const invokedAs = classifyFleetControlInvoker({
-    callerOwnerId: callerId,
-    leaderOwnerId: fleet?.leaderOwnerId ?? null,
-    paneKind,
-  });
+  // The admin chat UI is OWNER authority, exactly as it already is for mode:set
+  // (hud-chat-owner-controls-2026-08-11 P-003). Without this the CTX control in
+  // the chat footer could never write: the route synthesizes the identity
+  // `pc-admin-coord-ui`, which carries no presence row and no `su-` prefix, so
+  // classifyAgentPane lands it on `cup` and classifyFleetControlInvoker returns
+  // null — every set refused as not_authorized, from the owner's own local UI.
+  //
+  // Granting it here rather than widening classifyAgentPane is deliberate: this
+  // is the SAME allowance mode:set makes at its own tool layer
+  // (`ident.ownerId === ADMIN_COORD_UI_OWNER` → callerIsOwnerAuthority, pinned by
+  // mode/set.test.ts), and it is not a client-suppliable flag — it is reachable
+  // only through the CSRF-gated, loopback-trusted /api/admin/* routes. Widening
+  // the shared pane classifier instead would hand this authority to every caller
+  // of every fleet-control verb, which is a much larger claim than the one the
+  // chat footer needs.
+  const invokedAs =
+    callerId === ADMIN_COORD_UI_OWNER
+      ? ('owner' as const)
+      : classifyFleetControlInvoker({
+          callerOwnerId: callerId,
+          leaderOwnerId: fleet?.leaderOwnerId ?? null,
+          paneKind,
+        });
   if (!invokedAs) {
     return {
       ok: false,
@@ -122,6 +140,20 @@ export async function setCompactionLimitForOwner(
     };
   }
   const applied = clampCompactionLimit(limit, spec, { fleetMember, selfSet: true });
+  if (applied !== limit) {
+    return {
+      ok: false,
+      targetOwnerId,
+      cap,
+      fleet: fleetSlug,
+      targetRole,
+      invokedAs,
+      requested: limit,
+      error: 'limit_out_of_range',
+      message: `requested compaction limit ${limit} is outside the allowed range; no change was made`,
+      note: 'The requested limit was not written because it would require clamping.',
+    };
+  }
   await setCompactionLimit(targetOwnerId, applied);
   const after = await getPresence(targetOwnerId).catch(() => null);
   const persisted = after?.compactionLimit ?? null;
@@ -134,13 +166,6 @@ export async function setCompactionLimitForOwner(
     fleet: fleetSlug,
     targetRole,
     invokedAs,
-    ...(applied !== limit
-      ? {
-          clamped: true,
-          requested: limit,
-          note: `requested limit clamped to the target's ${fleetMember ? 'fleet-member ' : ''}model-derived ceiling (${spec ?? 'unresolvable spec → fleet-default [1m]'})`,
-        }
-      : {}),
     ...(persisted == null
       ? { note: `no live presence row for ${targetOwnerId} — limit not persisted (it may have ended)` }
       : {}),
