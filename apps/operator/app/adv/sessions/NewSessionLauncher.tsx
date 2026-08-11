@@ -29,7 +29,7 @@ import { toast } from 'sonner';
 import { Button } from '@/app/harness/Button';
 import { Combobox, type ComboboxEntry, type ComboboxOption } from '@/app/harness/Combobox';
 import { useLexicon } from '@/lib/useLexicon';
-import { launchAgent } from '@papercusp/operator-core/lib/launch-agent';
+import { launchAgent, OWNER_LAUNCH_HEADLESS } from '@papercusp/operator-core/lib/launch-agent';
 import type { SuAgent } from '@papercusp/operator-core/lib/su-agents';
 // WI-6300: the canonical model/effort vocabulary psu itself launches with. This
 // module is deliberately client-safe (no node/server imports) — see its header —
@@ -530,6 +530,10 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
         // session launched in DRAIN is ALREADY in DRAIN on turn 1 — no one has
         // to type it, and it survives compaction.
         mode: mode === MODE_SELECT_NONE ? null : mode,
+        // WI-37871 — NO console window, unconditionally. See
+        // OWNER_LAUNCH_HEADLESS for the directive and why this is a flat
+        // constant rather than a toggle or a per-circumstance branch.
+        headless: OWNER_LAUNCH_HEADLESS,
       });
       if (result.ok && result.warning) {
         // EI-18696184925888288: launch-su's spawn call succeeded but the

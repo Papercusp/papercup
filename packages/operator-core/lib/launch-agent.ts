@@ -14,6 +14,38 @@
 import type { LaunchOpts } from './native-console';
 import type { SuAgent, SuContextSize } from './su-agents';
 
+/**
+ * The two OWNER-FACING "start something new" surfaces launch with NO window.
+ *
+ * [owner 2026-08-11, interactive, verbatim]: "okay it worked but it opened
+ * the console too, it should launch the agent headlessly" — then, asked whether
+ * this should be always-headless or a choice: **"Always headless. same for new
+ * goal"**.
+ *
+ * So this is a flat product rule, not a preference: the HUD's "+ New session"
+ * (NewSessionLauncher) and "+ Start a goal" (GoalComposer → goals:start) both
+ * send it unconditionally. The owner EXPLICITLY REJECTED both alternatives that
+ * were offered — a headed/headless toggle, and headless-only-when-the-chat-opens
+ * — so do not reintroduce either as a "flexible" improvement. The owner drives
+ * these sessions through the HUD chat, which works on a headless session
+ * precisely because psu's `--headless` keeps the managed pty (and therefore
+ * injection) ON; the terminal window was never the interaction surface.
+ *
+ * It is a NAMED CONSTANT rather than a `headless: true` literal at each call
+ * site so the rule is single-sourced and greppable: two literals in two
+ * components drift the moment one of them is refactored, and the failure is
+ * silent (a window reappears, and nothing fails).
+ *
+ * ⚠ DELIBERATELY NOT the default of `launchAgent`/`launch-su`. Other surfaces
+ * launch a terminal ON PURPOSE and their whole point is the window —
+ * AgentInspectorModal's "Resume in terminal", the harness DetailPanel's
+ * open-in-terminal, and FleetLaunchRow's owner-approved headed/headless picker.
+ * `launchAgent` also sends `headless: opts.headless ?? false` explicitly, so a
+ * route-level default flip would be inert for every one of them anyway. Scope
+ * this to the surfaces the directive names.
+ */
+export const OWNER_LAUNCH_HEADLESS = true;
+
 export interface LaunchAgentOpts extends LaunchOpts {
   /** Which backend to launch. Omitted → the configured backend
    *  (/settings/agent, resolved server-side by launch-su). */

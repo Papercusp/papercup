@@ -17,6 +17,12 @@
  * renders "none declared" lines rather than a fabricated $0.00), so the client
  * and server now agree.
  */
+// The only import this otherwise dependency-free module takes, and a cheap one:
+// launch-agent.ts's runtime surface is one boolean const plus a function (its
+// own imports are `import type`), so pinning the headless rule to the SAME
+// constant NewSessionLauncher uses costs nothing and keeps the two owner-facing
+// launch surfaces from drifting apart.
+import { OWNER_LAUNCH_HEADLESS } from '@papercusp/operator-core/lib/launch-agent';
 
 /** What the form collects, before it becomes tool args. */
 export interface GoalComposerDraft {
@@ -121,6 +127,12 @@ export type GoalStartResult =
  * `error`, which is why the failure path reads `content[0].text` too: treating
  * a rolled-back launch as an unparseable response would tell the owner nothing
  * about what went wrong.
+ *
+ * WI-37871 — the goal's agent is spawned HEADLESS, always. The flag rides here
+ * rather than in `GoalStartArgs` on purpose: it is a fixed property of THIS
+ * transport (the owner-facing composer), not a field of the draft the form
+ * collects, so it cannot be surfaced as an option by accident and every caller
+ * of this function gets it. See OWNER_LAUNCH_HEADLESS for the directive.
  */
 export async function postGoalStart(
   args: GoalStartArgs,
@@ -139,7 +151,7 @@ export async function postGoalStart(
     const r = await doFetch(`/api/agent-tools/goals/start?${qs.toString()}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', 'x-papercusp-workspace': opts.workspaceId },
-      body: JSON.stringify({ ...args, harness: opts.harnessSlug }),
+      body: JSON.stringify({ ...args, harness: opts.harnessSlug, headless: OWNER_LAUNCH_HEADLESS }),
     });
     httpOk = r.ok;
     status = r.status;
