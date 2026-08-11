@@ -326,11 +326,11 @@ describe('coord:send handler (bulk keyed-array)', () => {
       to: ['ghost-bee'],
       summary: 'survey will re-place',
       wake: 'optimistic',
-      backstop: 'queen-survey re-dispatches',
+      backstop: 'test delivery sweep re-dispatches',
     });
     expect(b.results[0].wake).toMatchObject({ mode: 'optimistic', woken: 0 });
     expect(b.results[0].wake.recipient_absent).toBeUndefined();
-    expect(b.results[0].wake.note).toMatch(/declared backstop|queen-survey/i);
+    expect(b.results[0].wake.note).toMatch(/declared backstop/i);
   });
 
   it('FF#3: a miss forces the missed addressee\'s FRESH sessionState into the result', async () => {
@@ -1280,6 +1280,28 @@ describe('coord:send args schema (EI-7838: missing-summary must not be masked by
   it('a valid items:[…] payload (no top-level to/summary) still parses cleanly', () => {
     const r = tool.args.safeParse({ items: [{ to: ['bee-1'], summary: 'hi', expects: 'none' }] });
     expect(r.success).toBe(true);
+  });
+});
+
+describe('coord:send optimistic-wake guidance after Mug/Kettle retirement', () => {
+  it('does not advertise the retired Mug survey as a backstop', () => {
+    // `coord:send` wraps its object schema in z.preprocess, so the model-facing
+    // field descriptions live on the ZodPipe's `out` object, not `args.shape`.
+    const argsOut = (tool.args as unknown as { out: { shape: Record<string, { description?: string }> } }).out;
+    const wakeDescription = argsOut.shape.wake?.description ?? '';
+    const backstopDescription = argsOut.shape.backstop?.description ?? '';
+    const guidance = [
+      tool.description,
+      tool.guidance?.when,
+      tool.guidance?.notWhen,
+      wakeDescription,
+      backstopDescription,
+    ]
+      .filter(Boolean)
+      .join('\n');
+
+    expect(guidance).not.toMatch(/Mug survey|queen-survey/i);
+    expect(guidance).toMatch(/verified.*backstop/i);
   });
 });
 

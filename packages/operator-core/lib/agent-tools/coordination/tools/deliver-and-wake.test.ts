@@ -402,7 +402,7 @@ describe('coord:send', () => {
     const res = await coordSend.handler(
       // Backstop declared → optimistic miss is SILENT (no recipient_absent).
       // Without a backstop the code now reports the miss loudly (recipient_absent:true).
-      parse(coordSend, { to: ['su-bee-1'], summary: 'fyi', expects: 'none', wake: 'optimistic', backstop: 'queen-survey re-dispatches' }),
+      parse(coordSend, { to: ['su-bee-1'], summary: 'fyi', expects: 'none', wake: 'optimistic', backstop: 'test delivery sweep re-dispatches' }),
       ctx,
     );
     const { wake } = send1(res);

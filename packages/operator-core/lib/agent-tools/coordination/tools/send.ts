@@ -157,10 +157,10 @@ interface SendMsg {
    *  zero or exactly one shared Hive (already resolves unambiguously), or when
    *  ctx already carries a harness scope (pipeline roles — unaffected). */
   hive?: string;
-  /** FF#1: name the DURABLE BACKSTOP that will re-dispatch a wake:'optimistic' miss
-   *  (e.g. 'queen-survey re-dispatches'). Optimistic is silent-on-miss ONLY when a
-   *  backstop is declared; WITHOUT one, an optimistic miss is reported as loudly as a
-   *  required miss (recipient_absent) — silence must be consciously claimed. */
+  /** FF#1: name the DURABLE BACKSTOP that has been verified to re-dispatch a
+   *  wake:'optimistic' miss. Optimistic is silent-on-miss ONLY when a backstop is
+   *  declared; WITHOUT one, an optimistic miss is reported as loudly as a required
+   *  miss (recipient_absent) — silence must be consciously claimed. */
   backstop?: string;
   /** fleet-scoped-broadcast-default: consciously claim a HIVE-WIDE broadcast. A
    *  fleeted sender's bare `['*']` is auto-scoped to `@fleet:<slug>`; set allHive:true
@@ -217,7 +217,7 @@ const wakeArg = z
   })
   .optional()
   .describe(
-    "Wake a SLEEPING addressee NOW, not just inject. 'required' = the wake MUST land: a clean miss (no awake/watching session, none paused) returns recipient_absent:true — a loud miss to handle, not a silent ok. 'optimistic' = best-effort, SAFE ONLY when a durable backstop re-dispatches a miss (e.g. the Mug survey) — and you must NAME that backstop via the `backstop` arg. WITHOUT a declared backstop an optimistic miss is now reported as loudly as a required miss (recipient_absent + the missed agents' fresh sessionState), so you can't silently hand work to a dead agent. For a one-off transfer to a specific agent, prefer 'required' (verify woken≥1) or coord:handoff. Don't stop at woken alone: a target in manual wake-mode STAGES the wake (queued for owner review, NOT delivered) and also reports woken:0, the same scalar as a dead miss — read `wakeOutcome` ('delivered'/'partial-staged'/'staged-manual-mode'/'missed') to tell them apart. Omit = plain inject. Legacy boolean: true → 'required', false → no wake. Targeted to the addressees only — never a broadcast ('*'/'human' are skipped).",
+    "Wake a SLEEPING addressee NOW, not just inject. 'required' = the wake MUST land: a clean miss (no awake/watching session, none paused) returns recipient_absent:true — a loud miss to handle, not a silent ok. 'optimistic' = best-effort, SAFE ONLY when the caller has verified a durable backstop will re-dispatch a miss — and you must NAME that backstop via the `backstop` arg. WITHOUT a declared backstop an optimistic miss is now reported as loudly as a required miss (recipient_absent + the missed agents' fresh sessionState), so you can't silently hand work to a dead agent. For a one-off transfer to a specific agent, prefer 'required' (verify woken≥1) or coord:handoff. Don't stop at woken alone: a target in manual wake-mode STAGES the wake (queued for owner review, NOT delivered) and also reports woken:0, the same scalar as a dead miss — read `wakeOutcome` ('delivered'/'partial-staged'/'staged-manual-mode'/'missed') to tell them apart. Omit = plain inject. Legacy boolean: true → 'required', false → no wake. Targeted to the addressees only — never a broadcast ('*'/'human' are skipped).",
   );
 
 const wakeOnReplyArg = z
@@ -295,7 +295,7 @@ const backstopArg = z
   .min(1)
   .optional()
   .describe(
-    "FF#1: name the DURABLE BACKSTOP that re-dispatches a wake:'optimistic' miss (e.g. 'queen-survey re-dispatches'). Optimistic stays silent-on-miss ONLY when you declare one; WITHOUT a backstop an optimistic miss is reported as loudly as a required miss (recipient_absent). Do NOT pass a fake backstop to silence the warning — that re-creates the dead-drop trap. No effect on wake:'required' / inject.",
+    "FF#1: name the DURABLE BACKSTOP you verified will re-dispatch a wake:'optimistic' miss. Optimistic stays silent-on-miss ONLY when you declare one; WITHOUT a backstop an optimistic miss is reported as loudly as a required miss (recipient_absent). Do NOT pass a fake or assumed backstop to silence the warning — that re-creates the dead-drop trap. No effect on wake:'required' / inject.",
   );
 
 const scopeArg = z
