@@ -23,7 +23,6 @@ import {
   CORESTORE_SEED_KIND,
   mintFilteredSeedContentCore,
   SEED_EXCLUDED_TABLES,
-  type CorestoreCutContext,
 } from './seed-provider-corestore';
 import { produceLogSnapshot, SNAPSHOT_TABLE_TAG } from './log-snapshot';
 
@@ -363,6 +362,7 @@ describe('corestore seed provider', () => {
  */
 describe('mintFilteredSeedContentCore — the seed carries content, not the owner', () => {
   interface TestCore {
+    readonly length: number;
     ready(): Promise<void>;
     get(i: number, opts: { wait: boolean }): Promise<{ value?: { rows?: { table: string }[] } } | null>;
     readonly writable: boolean;
@@ -477,7 +477,7 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
       coreKeys: [own.keyHex],
       stagingDir,
       filtered: true,
-    } as CorestoreCutContext);
+    } as unknown as Parameters<typeof provider.cut>[0]);
     const meta = entry.meta as { coreKeys: string[]; coreLengths: Record<string, number>; coreSparseFrom?: unknown };
     const [seedKey] = meta.coreKeys;
     expect(seedKey).toBeDefined();
