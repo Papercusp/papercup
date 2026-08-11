@@ -879,6 +879,11 @@ import './rubrics/propose';
 // the whole-document propose replace (rubric-system-improvements-2026-07-12 P-003).
 import './rubrics/amend';
 import './rubrics/ratify';
+// rubrics:set-history-reset — declare the CONTRACT-GENERATION boundary (D-015): the
+// instant before which gradings measured a contract that has since been rewritten, so
+// the trend stops blending them. Separate from propose because it must NOT demote a
+// ratified rubric.
+import './rubrics/set-history-reset';
 // rubrics:trend — the qualitative health TREND of a rubric (per-criterion rating
 // time-series + direction over the Overwatch scorecards; P-010).
 import './rubrics/trend';

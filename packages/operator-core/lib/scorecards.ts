@@ -980,6 +980,20 @@ export interface RubricTrend {
    * what actually fed the series.
    */
   supersededExcluded: number;
+  /**
+   * How many scorecards were EXCLUDED as pre-dating the rubric's declared
+   * contract-generation boundary (`Rubric.historyResetAt`, goal-mode-rubric-v2 D-015) —
+   * gradings of a contract that has since been rewritten.
+   *
+   * Reported for the same reason supersededExcluded is: an exclusion nobody can see is
+   * only a tidier version of the blend it replaced. A reader who sees the count drop
+   * from 5 to 0 must be able to tell "this rubric was rewritten and its old gradings
+   * retired" from "nobody has graded this in the window".
+   *
+   * 0 for every rubric that has never declared a boundary, which is all of them by
+   * default — this can only ever remove samples an author explicitly retired.
+   */
+  preContractResetExcluded: number;
 }
 
 export interface ScorecardTrendFilter {
@@ -1032,17 +1046,42 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
     // WI-6124: no includeLinks — the trend is a pure roll-up of ratings + createdAt and
     // never reads `linkedItems`, so it takes the default and skips the join.
   });
+  // Scale-aware numeric projection for mean10 (one rubric per trend → one resolve).
+  // Resolved BEFORE the exclusions below because the contract-generation boundary is
+  // declared on the rubric.
+  const trendRubric = await getRubric(filter.rubricRef);
+
+  // D-015: drop gradings filed BEFORE the rubric's declared contract-generation
+  // boundary. They rated a materially different contract, so they are not comparable
+  // with post-rewrite ones — and dropping keys cannot express it, because the cases
+  // that matter share a key: a question that NARROWED under a kept key (goal-mode-e2e
+  // `dedup-before-creating`, D-009) and a kept key whose drill could not measure at all
+  // (`child-execution-proven`, 5/5 unknown, D-012).
+  //
+  // Absent a declared boundary this is a no-op — every rubric that never rewrote its
+  // contract trends exactly as before.
+  const resetAtMs = trendRubric?.historyResetAt ? Date.parse(trendRubric.historyResetAt) : NaN;
+  const inGeneration = Number.isFinite(resetAtMs)
+    ? rows.filter((r) => Date.parse(r.createdAt) >= resetAtMs)
+    : rows;
+  const preContractResetExcluded = rows.length - inGeneration.length;
+
   // P-010: drop scorecards a later filing REVISED. A correction used to enter the
   // series as an extra sample, so re-grading moved the trend twice — once for the
   // reading now known to be wrong, again for the right one. One rel-filtered in-edge
   // query (NOT the heavy issuesOutLinksMany join the trend deliberately skips).
-  const supersededIds = await issuesSupersededByRevision(rows.map((r) => r.issueId));
-  const live = supersededIds.size ? rows.filter((r) => !supersededIds.has(r.issueId)) : rows;
+  //
+  // Applied to `inGeneration`, not `rows`: a pre-boundary scorecard that was ALSO
+  // superseded must count once, in one bucket. Counting it in both would make the two
+  // exclusion figures sum past the number actually excluded — the same
+  // invisible-arithmetic failure these counts exist to prevent.
+  const supersededIds = await issuesSupersededByRevision(inGeneration.map((r) => r.issueId));
+  const live = supersededIds.size
+    ? inGeneration.filter((r) => !supersededIds.has(r.issueId))
+    : inGeneration;
   // listScorecards is newest-first; the series wants chronological (oldest→newest).
   const chrono = [...live].reverse();
 
-  // Scale-aware numeric projection for mean10 (one rubric per trend → one resolve).
-  const trendRubric = await getRubric(filter.rubricRef);
   const scoreOverrides = scoreOverridesForScale(trendRubric?.ratingScale);
   const declaredCriterionKeys = trendRubric
     ? new Set(trendRubric.criteria.map((c) => c.key))
@@ -1097,7 +1136,8 @@ export async function scorecardTrend(filter: ScorecardTrendFilter): Promise<Rubr
     rubricRef: filter.rubricRef,
     ...(filter.sourceHive ? { sourceHive: filter.sourceHive } : {}),
     scorecardCount: live.length,
-    supersededExcluded: rows.length - live.length,
+    supersededExcluded: inGeneration.length - live.length,
+    preContractResetExcluded,
     window: {
       ...(filter.since ? { since: filter.since } : {}),
       ...(chrono.length ? { from: chrono[0].createdAt, to: chrono[chrono.length - 1].createdAt } : {}),

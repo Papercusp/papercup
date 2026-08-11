@@ -44,7 +44,7 @@ vi.mock('@papercusp/db-org', async () => {
 
 const { builtInCriterionKeysForRubric, listScorecards, scorecardTrend } = await import('./scorecards');
 const { createIssue, issueRef, linkIssue } = await import('./issues-engineer');
-const { proposeRubric } = await import('./rubrics');
+const { proposeRubric, setRubricHistoryReset } = await import('./rubrics');
 const { OBSERVATION_TOPIC } = await import('./harness/improvements/read-items');
 const { resolveLocalRubric } = await import('./cupboard/rubric-store');
 const { createOrgTestDb } = await import('../test/_org-test-db');
@@ -70,6 +70,16 @@ const CRITERIA = [
 // trend reports an "improvement" that is purely an artifact of the correction.
 const RUBRIC_SUPERSEDE = 'test-supersession';
 const SUPERSEDE_KEY = 'grading-honesty';
+// ── D-015 contract-generation fixture. Deliberately SEPARATE from RUBRIC_SUPERSEDE so
+// the boundary test cannot pass on a rubric whose samples another test already thinned.
+const RUBRIC_RESET = 'test-contract-reset';
+const RESET_KEY = 'contract-honesty';
+const RESET_BOUNDARY = '2026-06-18T12:00:00.000Z';
+const reset: { oldSuperseded: string; oldReviser: string; current: string } = {
+  oldSuperseded: '',
+  oldReviser: '',
+  current: '',
+};
 const supersede: { original: string; correction: string; independent: string } = {
   original: '', correction: '', independent: '',
 };
@@ -170,6 +180,33 @@ describe('listScorecards (P-013) — real PG', () => {
       id: 'supersede-independent', rubricRef: RUBRIC_SUPERSEDE, sourceHive: 'papercusp', createdAt: '2026-06-19T12:00:00.000Z',
       ratings: { [SUPERSEDE_KEY]: { rating: 'healthy', evidence: 'a genuinely separate later observation' } },
     });
+
+    // ── D-015 contract-generation fixture. Seeded WITHOUT a declared boundary, and
+    //    WITH the `revises` edge already in place, so the test can read the same trend
+    //    before and after declaring the boundary. The overlap is the point: one sample
+    //    is BOTH pre-boundary AND superseded, which is the case where two independent
+    //    exclusion paths can double-count the same row.
+    await proposeRubric({
+      rubricId: RUBRIC_RESET,
+      characteristic: 'hive-coordination',
+      title: 'Test contract reset',
+      criteria: [{ key: RESET_KEY, title: 'Contract honesty', model: 'grades measure the live contract', method: 'compare to contract', driftMarkers: 'gradings of a rewritten contract' }],
+      status: 'active',
+      by: 'su-test',
+    });
+    reset.oldSuperseded = await fileScorecard(db, {
+      id: 'reset-old-superseded', rubricRef: RUBRIC_RESET, sourceHive: 'papercusp', createdAt: '2026-06-18T10:00:00.000Z',
+      ratings: { [RESET_KEY]: { rating: 'broken', evidence: 'PRE-REWRITE, and later corrected — excluded by BOTH paths' } },
+    });
+    reset.oldReviser = await fileScorecard(db, {
+      id: 'reset-old-reviser', rubricRef: RUBRIC_RESET, sourceHive: 'papercusp', createdAt: '2026-06-18T11:00:00.000Z',
+      ratings: { [RESET_KEY]: { rating: 'healthy', evidence: 'PRE-REWRITE correction of the above' } },
+    });
+    reset.current = await fileScorecard(db, {
+      id: 'reset-current', rubricRef: RUBRIC_RESET, sourceHive: 'papercusp', createdAt: '2026-06-18T13:00:00.000Z',
+      ratings: { [RESET_KEY]: { rating: 'healthy', evidence: 'POST-REWRITE — the only sample that grades the live contract' } },
+    });
+    await linkIssue(reset.oldReviser, issueRef(reset.oldSuperseded), 'revises', 'su-test');
   }, 120_000);
 
   afterAll(async () => {
@@ -180,10 +217,14 @@ describe('listScorecards (P-013) — real PG', () => {
     const rows = await listScorecards({});
     const ids = rows.map((r) => r.rubricRef);
     // complete + partial + generic + unknown-rubric + the 3 supersession fixtures
-    // (06-19); free-text excluded. NOTE listScorecards is the raw READ surface and
-    // is deliberately supersession-blind — the exclusion belongs to the TREND, so
-    // all 3 appear here even after the `revises` edge is filed.
-    expect(rows.length).toBe(7);
+    // (06-19) + the 3 contract-reset fixtures (06-18); free-text excluded. NOTE
+    // listScorecards is the raw READ surface and is deliberately supersession-blind —
+    // the exclusion belongs to the TREND, so all 3 appear here even after the `revises`
+    // edge is filed. The SAME holds for the D-015 contract-generation boundary: it is a
+    // TREND-level exclusion, so a retired-contract grading is still readable here. That
+    // is deliberate — the raw read is how you audit what was excluded and why, which an
+    // exclusion applied at the read surface would make impossible.
+    expect(rows.length).toBe(10);
     expect(ids.every((r) => typeof r === 'string' && r.length > 0)).toBe(true);
     // created_at DESC: complete(12:00) > generic(11:00) > partial(10:00) > unknown(09:00)
     expect(rows.map((r) => r.createdAt)).toEqual([
@@ -194,6 +235,9 @@ describe('listScorecards (P-013) — real PG', () => {
       '2026-06-19T12:00:00.000Z',
       '2026-06-19T11:00:00.000Z',
       '2026-06-19T10:00:00.000Z',
+      '2026-06-18T13:00:00.000Z',
+      '2026-06-18T11:00:00.000Z',
+      '2026-06-18T10:00:00.000Z',
     ]);
   });
 
@@ -366,5 +410,53 @@ describe('listScorecards (P-013) — real PG', () => {
     // Only the REVISED one drops — a correction chain must not take its own corrections with it.
     expect(after.criteria.find((c) => c.criterion === SUPERSEDE_KEY)!.latest)
       .toEqual({ rating: 'healthy', at: '2026-06-19T12:00:00.000Z' });
+  });
+
+  // ── D-015: gradings of a REWRITTEN contract must not blend into the live trend.
+  //
+  // The before/after is the falsifier, same as P-010's: asserting that the post-boundary
+  // trend reads 'healthy' proves nothing on its own, because the fixture's newest sample
+  // is healthy anyway. What proves the exclusion is load-bearing is that the criterion's
+  // SAMPLE COUNT and DIRECTION change when the boundary is declared, and that they change
+  // by exactly the samples that pre-date it.
+  it('scorecardTrend: a declared contract-generation boundary excludes pre-rewrite gradings, and the two exclusion paths never double-count (D-015)', async () => {
+    const before = await scorecardTrend({ rubricRef: RUBRIC_RESET, sourceHive: 'papercusp', includeSeries: true });
+    // No boundary declared yet, so this is the OLD behaviour: pre-rewrite gradings feed
+    // the series, and the only thing thinning it is the revises edge.
+    expect(before.preContractResetExcluded).toBe(0); // honest at zero, not absent — a rubric that never rewrote its contract is unaffected
+    expect(before.supersededExcluded).toBe(1);
+    expect(before.scorecardCount).toBe(2);
+    const beforeCriterion = before.criteria.find((c) => c.criterion === RESET_KEY)!;
+    expect(beforeCriterion.count).toBe(2);
+    expect(beforeCriterion.first).toEqual({ rating: 'healthy', at: '2026-06-18T11:00:00.000Z' }); // ← a PRE-rewrite grading anchoring the series
+
+    const updated = await setRubricHistoryReset(RUBRIC_RESET, RESET_BOUNDARY, 'su-test');
+    expect(updated?.historyResetAt).toBe(RESET_BOUNDARY);
+    // The boundary is governance state, NOT content: declaring it must not demote a
+    // ratified rubric (which a propose would). This is the assertion that fails if
+    // anyone later reroutes this through amendRubric.
+    expect(updated?.status).toBe('active');
+
+    const afterReset = await scorecardTrend({ rubricRef: RUBRIC_RESET, sourceHive: 'papercusp', includeSeries: true });
+    expect(afterReset.preContractResetExcluded).toBe(2); // both pre-rewrite gradings, said out loud
+    expect(afterReset.scorecardCount).toBe(1); // only the sample that grades the LIVE contract
+    const afterCriterion = afterReset.criteria.find((c) => c.criterion === RESET_KEY)!;
+    expect(afterCriterion.count).toBe(1);
+    expect(afterCriterion.first).toEqual({ rating: 'healthy', at: '2026-06-18T13:00:00.000Z' });
+    // The retired gradings stop anchoring the reported window too — a window still
+    // reaching back into the old contract would reintroduce the blend in the one field
+    // a reader uses to judge how current the trend is.
+    expect(afterReset.window).toEqual({ from: '2026-06-18T13:00:00.000Z', to: '2026-06-18T13:00:00.000Z' });
+
+    // THE DOUBLE-COUNT GUARD. `reset.oldSuperseded` qualifies for BOTH exclusions: it
+    // pre-dates the boundary AND a later filing revises it. It must be counted ONCE.
+    // supersededExcluded is measured against the post-boundary set, so it reads 0 here —
+    // not because nothing was superseded, but because the only superseded row had already
+    // left the population. Measuring it against the raw rows instead would report 1 here
+    // and make the two figures sum to 3 exclusions out of 3 rows, with 1 row still in the
+    // series: arithmetic that cannot be true, in the exact fields that exist to make the
+    // thinning legible.
+    expect(afterReset.supersededExcluded).toBe(0);
+    expect(afterReset.preContractResetExcluded + afterReset.supersededExcluded).toBe(3 - afterReset.scorecardCount);
   });
 });

@@ -219,6 +219,18 @@ export const rubricTemplateDataSchema = z
           'ACTIVE releaseGating rubric has no COMPLETE scorecard within its threshold window — a release ' +
           'bar nobody is grading is a silent gate, not a green one',
       ),
+    historyResetAt: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'CONTRACT-GENERATION BOUNDARY (goal-mode-rubric-v2 D-015): ISO instant before which gradings ' +
+          'against this rubric measured a materially DIFFERENT contract, so scorecardTrend excludes them ' +
+          '(reported as preContractResetExcluded, never silently). Set via setRubricHistoryReset, NOT a ' +
+          'propose — a propose is a whole-document replace that would demote a ratified rubric. Needed ' +
+          'because the cases that break comparability share a criterion KEY: a question that narrowed ' +
+          'under a kept key, or a kept key whose drill could not measure at all',
+      ),
     description: z
       .string()
       .optional()

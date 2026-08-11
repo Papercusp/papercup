@@ -107,6 +107,30 @@ export interface Rubric {
   /** This rubric GATES a release verdict (EI-12149) — the rubric-staleness watchdog
    *  alerts when an ACTIVE releaseGating rubric goes ungraded past its threshold. */
   releaseGating?: boolean;
+  /**
+   * CONTRACT-GENERATION BOUNDARY (goal-mode-rubric-v2-2026-08-10 D-015). ISO instant
+   * before which gradings against this rubric measured a MATERIALLY DIFFERENT contract,
+   * and are therefore excluded from `scorecardTrend` by default.
+   *
+   * WHY A DECLARED BOUNDARY AND NOT THE `version` COLUMN: rubric plans already carry a
+   * version that bumps on EVERY propose, so it cannot distinguish a prose fix from a
+   * clause-by-clause rewrite. Keying exclusion off it would orphan perfectly comparable
+   * history on every typo. Only the author of the rewrite knows where the semantic edge
+   * falls, so the edge is declared rather than inferred.
+   *
+   * WHY NOT per-scorecard `revises` edges: that rel means "this filing CORRECTS that
+   * one". A post-rewrite scorecard does not correct a pre-rewrite one — it grades a
+   * different run against a different contract. Reusing it would make scorecardCount
+   * read as if someone had re-graded the same subject: wrong semantics, right-looking
+   * number.
+   *
+   * MEASURED CASE: goal-mode-e2e v1 and v2 share 13 criterion keys, but v1's
+   * `dedup-before-creating` also graded a container judgment v2 re-homed under a new key
+   * (D-009), and v1's `child-execution-proven` drill could not measure at all (5/5
+   * unknown, D-012). Same key, different question / dead instrument — neither is
+   * expressible by dropping keys, which is what the trend already does.
+   */
+  historyResetAt?: string | null;
   status: RubricStatus;
   createdBy: string | null;
   proposedBy: string | null;
@@ -250,6 +274,7 @@ export function planRowToRubric(row: RubricPlanRow): Rubric | null {
     ratingScale: d.ratingScale,
     methodRef: d.methodRef ?? null,
     ...(d.releaseGating !== undefined ? { releaseGating: d.releaseGating } : {}),
+    ...(typeof d.historyResetAt === 'string' ? { historyResetAt: d.historyResetAt } : {}),
     status,
     createdBy: row.owner ?? null,
     proposedBy: d.proposedBy ?? row.owner ?? null,
@@ -395,6 +420,10 @@ function buildSeedProposeInput(
     // automatic content sync.
     status: upgrading?.status ?? 'active',
     ...(upgrading?.releaseGating !== undefined ? { releaseGating: upgrading.releaseGating } : {}),
+    // D-015: a declared contract-generation boundary is governance state, not content —
+    // a content sync that silently dropped it would re-blend a retired contract's
+    // gradings into the live trend, which is exactly what declaring it prevented.
+    ...(upgrading?.historyResetAt ? { historyResetAt: upgrading.historyResetAt } : {}),
     ...(upgrading?.ratifiedBy ? { ratifiedBy: upgrading.ratifiedBy } : {}),
     seedContentHash: computeSeedContentHash(r),
   };
@@ -505,6 +534,9 @@ export interface ProposeRubricInput {
   /** Mark this rubric release-gating (EI-12149) — the staleness watchdog then alerts
    *  when it goes ungraded past its threshold while active. */
   releaseGating?: boolean;
+  /** Contract-generation boundary (D-015) — see Rubric.historyResetAt. Normally set via
+   *  setRubricHistoryReset() rather than here, because a propose demotes to 'proposed'. */
+  historyResetAt?: string;
   /** Who is proposing (ownerId). Recorded as the plan owner. */
   by?: string;
   /**
@@ -793,6 +825,7 @@ function buildRubricTemplateData(input: ProposeRubricInput): unknown {
     ratingScale: input.ratingScale ?? [...DEFAULT_RATING_SCALE],
     ...(input.methodRef ? { methodRef: input.methodRef } : {}),
     ...(input.releaseGating !== undefined ? { releaseGating: input.releaseGating } : {}),
+    ...(input.historyResetAt !== undefined ? { historyResetAt: input.historyResetAt } : {}),
     ...(input.description !== undefined ? { description: input.description } : {}),
     // EI-10751 provenance: the proposer of record is whoever authored THIS revision —
     // the plan owner column stays the original creator and never tracks a re-propose.
@@ -1163,6 +1196,70 @@ export async function ratifyRubric(rubricId: string, by?: string): Promise<Rubri
   );
   if (result.kind === 'busy') {
     throw new Error(`ratifyRubric: plan '${rubricId}' is being written by another caller`);
+  }
+  return getRubric(rubricId);
+}
+
+/**
+ * Declare the CONTRACT-GENERATION BOUNDARY on a rubric (D-015) — gradings filed before
+ * `at` measured a materially different contract and drop out of `scorecardTrend`.
+ *
+ * WHY THIS IS NOT `amendRubric`, which is the obvious place to put it. `amendRubric` is
+ * `proposeRubric(applyRubricAmendment(...))`, and a propose is a whole-document replace
+ * that resets status to 'proposed' and drops `ratifiedBy` — a fresh revision needs a
+ * fresh ratification, correctly, because its CONTENT changed. Declaring where an old
+ * contract ended changes NO criterion: routing it through propose would demote a live
+ * ratified instrument, and (worse) invite whoever needed the boundary to skip declaring
+ * it rather than trigger a re-ratification mid-grading. So this takes the same shape
+ * ratifyRubric already uses for governance state — a targeted, audited, locked
+ * template_data merge patch that preserves status, criteria and provenance.
+ *
+ * THE JUDGEMENT IS DELIBERATELY THE AUTHOR'S. Nothing can infer where a contract's
+ * semantic edge falls: the `version` column bumps on every propose (typo and rewrite
+ * alike), and the criterion key set is unchanged for exactly the cases that matter most
+ * — a kept key whose question narrowed, or whose instrument was broken. Both were
+ * measured on goal-mode-e2e (D-009, D-012).
+ *
+ * Passing an `at` in the FUTURE is legal and load-bearing: a rewrite lands before its
+ * first post-rewrite grading, so the boundary is normally the ratification instant of
+ * the new revision.
+ */
+export async function setRubricHistoryReset(
+  rubricId: string,
+  at: string,
+  by?: string,
+): Promise<Rubric | null> {
+  const existing = await getRubric(rubricId);
+  if (!existing) return null;
+  const parsed = Date.parse(at);
+  if (!Number.isFinite(parsed)) {
+    throw new Error(
+      `invalid_args: setRubricHistoryReset: '${at}' is not a parseable ISO instant — the boundary is compared against scorecard createdAt, so an unparseable value would silently exclude nothing`,
+    );
+  }
+  const iso = new Date(parsed).toISOString();
+  const scope = await resolveRubricWriteScope(rubricId);
+  const rawData = await readRawRubricTemplateData(rubricId);
+  if (!rawData) return null;
+  const result = await withPlanLock<boolean>(
+    null,
+    {
+      slug: rubricId,
+      intent: `rubrics:set-history-reset ${rubricId}`,
+      ...scope,
+      afterWrite: rubricRevisionAfterWrite(rubricId, by, `rubrics:set-history-reset → ${iso}`),
+    },
+    async (current) => {
+      if (current === null) return { newBody: null, value: false };
+      return {
+        newBody: bumpUpdatedDate(current),
+        value: true,
+        templateData: { data: { ...rawData, historyResetAt: iso } },
+      };
+    },
+  );
+  if (result.kind === 'busy') {
+    throw new Error(`setRubricHistoryReset: plan '${rubricId}' is being written by another caller`);
   }
   return getRubric(rubricId);
 }
