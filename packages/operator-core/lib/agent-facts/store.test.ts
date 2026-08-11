@@ -10,6 +10,8 @@ import { InvalidInputError } from '@papercusp/tooldef';
 import {
   assertFact,
   parseFactSourceProvenance,
+  parseFactMeasurement,
+  FACT_VOLATILE_MAX_TTL_SEC,
   renderFactSrc,
   renderFactsFold,
   resolveFactScopeRef,
@@ -236,6 +238,62 @@ describe('renderFactsFold', () => {
     );
     expect(out).toContain('[role:mug ⊸fleet:backend]');
     expect(out).toContain('src msg:m-1 ✓ "origin words"');
+  });
+
+  it('EI-20191740437408337: renders a moving measurement as an explicit snapshot', () => {
+    const out = renderFactsFold(
+      [
+        fact({
+          measurement: { subjectVolatile: true, measuredAt: '2026-08-11T20:50:00.000Z' },
+        }),
+      ],
+      Date.parse('2026-08-11T20:50:00.000Z'),
+    );
+    expect(out).toContain('SNAPSHOT');
+    expect(out).toContain('subject may still be changing');
+    expect(out).toContain('re-measure before acting');
+    expect(out).toContain('2026-08-11T20:50:00.000Z');
+  });
+});
+
+describe('volatile measurement validation (EI-20191740437408337)', () => {
+  const failSql = (() => {
+    throw new Error('SQL SHOULD NOT BE REACHED — snapshot validation must refuse before any write');
+  }) as unknown as Sql;
+
+  it('requires measuredAt when subjectVolatile is true', async () => {
+    await expect(
+      assertFact(
+        { scope: 'workspace', key: 'moving', body: 'currently 4 open', createdBy: 'su-test', subjectVolatile: true },
+        failSql,
+      ),
+    ).rejects.toThrow(/requires measuredAt/);
+  });
+
+  it('refuses a long TTL instead of leaving a moving snapshot durable', async () => {
+    await expect(
+      assertFact(
+        {
+          scope: 'workspace',
+          key: 'moving',
+          body: 'currently 4 open',
+          createdBy: 'su-test',
+          subjectVolatile: true,
+          measuredAt: '2026-08-11T20:50:00.000Z',
+          ttlSec: FACT_VOLATILE_MAX_TTL_SEC + 1,
+        },
+        failSql,
+      ),
+    ).rejects.toThrow(/15 minutes/);
+  });
+
+  it('parses only the complete, marked measurement shape', () => {
+    expect(parseFactMeasurement({ subjectVolatile: true, measuredAt: '2026-08-11T20:50:00Z' })).toEqual({
+      subjectVolatile: true,
+      measuredAt: '2026-08-11T20:50:00.000Z',
+    });
+    expect(parseFactMeasurement({ measuredAt: '2026-08-11T20:50:00Z' })).toBeNull();
+    expect(parseFactMeasurement({ subjectVolatile: true, measuredAt: 'not-a-date' })).toBeNull();
   });
 });
 

@@ -53,6 +53,10 @@ function fakeStoredFact(input: AssertFactInput): AgentFact {
     // Echo the caller's tier rather than hardcoding null: this stand-in models
     // the persisted row, so it should reflect whatever the assert was given.
     confidence: input.confidence ?? null,
+    measurement:
+      input.subjectVolatile === true && input.measuredAt
+        ? { subjectVolatile: true, measuredAt: new Date(input.measuredAt).toISOString() }
+        : null,
     // P-008 (b): echoed from the input for the same reason `confidence` is —
     // this stand-in models the PERSISTED row, and the assert handler's
     // dependency disclosure reads `fact.dependsOn` back to decide what it
@@ -144,5 +148,28 @@ describe('facts:assert — pre-write truncation refusal (EI-18685042986450096)',
     const description = assertTool.args.shape.acceptTruncation.description ?? '';
     expect(description).toMatch(/REFUSED/);
     expect(description).toMatch(/never/i);
+  });
+
+  it('marks a volatile measurement in the stored fact and response', async () => {
+    const measuredAt = '2026-08-11T20:50:00.000Z';
+    const result = await assertTool.handler(
+      {
+        scope: 'owner',
+        scopeRef: 'su-test',
+        key: 'k-snapshot',
+        body: 'currently 29 supported rows',
+        subjectVolatile: true,
+        measuredAt,
+      } as never,
+      ctx,
+    );
+    expect(assertFactSpy).toHaveBeenCalledTimes(1);
+    expect(assertFactSpy.mock.calls[0][0]).toMatchObject({
+      subjectVolatile: true,
+      measuredAt,
+    });
+    const payload = payloadOf(result);
+    expect(payload.fact).toMatchObject({ measurement: { subjectVolatile: true, measuredAt } });
+    expect(payload.snapshotWarning).toMatchObject({ measuredAt });
   });
 });

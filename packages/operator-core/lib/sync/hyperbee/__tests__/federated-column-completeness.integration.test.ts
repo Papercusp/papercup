@@ -312,7 +312,8 @@ const NOT_FEDERATED: Record<string, Record<string, string>> = {
   },
   agent_facts: {
     // F1-4/P-012 (mig 461/462): the federated subset is scope/scope_ref/key/body/
-    // source_ref/expires_at/retracted_at/created_by (toAgentFactValue). Timestamps
+    // source_ref/expires_at/retracted_at/created_by plus content metadata such
+    // as audience/provenance/confidence/measurement (toAgentFactValue). Timestamps
     // are machine-local; source_hive is deliberately receiver-stamped from the
     // admitted log identity (never trusted from a sender-claimed value).
     created_at: 'machine-local row timestamp',

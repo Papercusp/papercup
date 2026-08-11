@@ -49,6 +49,8 @@ export interface AgentFactWireRow {
    *  jsonb, passed through like gym's outcome_record). Sender-attested — same
    *  trust level as body. OPTIONAL on the wire — pre-574 history ops lack it. */
   source_provenance?: Record<string, unknown> | null;
+  /** mig 795: moving-subject snapshot metadata. Optional so pre-795 ops remain valid. */
+  measurement?: Record<string, unknown> | null;
   /** mig 671 (WI-6052): evidence-strength tier ('verified'|'provisional'|
    *  'suspected'). CONTENT, same as audience_scope/source_provenance — a
    *  receiving peer must see the sender's own stated confidence, never
@@ -91,6 +93,13 @@ export function isAgentFactWireRow(input: unknown): input is AgentFactWireRow {
     (typeof r.source_provenance !== 'object' || Array.isArray(r.source_provenance))
   )
     return false;
+  if (r.measurement !== undefined) {
+    if (r.measurement !== null && (typeof r.measurement !== 'object' || Array.isArray(r.measurement))) return false;
+    if (r.measurement !== null) {
+      const m = r.measurement as Record<string, unknown>;
+      if (m.subjectVolatile !== true || typeof m.measuredAt !== 'string' || !m.measuredAt) return false;
+    }
+  }
   // mig 671 (WI-6052) — optional (pre-671 history ops omit it), but when
   // present must be a recognized string tier or the op is malformed (never
   // trust an arbitrary sender-supplied value into the confidence dimension).
@@ -164,18 +173,19 @@ async function writeToPg(
   // postgres-js-jsonb-binding agent-insight); NULL passes through the casts.
   const audienceScope = row.audience_scope ?? null;
   const sourceProvenance = row.source_provenance != null ? JSON.stringify(row.source_provenance) : null;
+  const measurement = row.measurement != null ? JSON.stringify(row.measurement) : null;
   const confidence = row.confidence ?? null;
   await sql`
     INSERT INTO harness_shared.agent_facts
       (workspace_id, harness_slug, scope, scope_ref, key, body, source_ref,
        created_by, expires_at, retracted_at, shareable,
-       author_pubkey, origin, fed_ts, source_hive, audience_scope, source_provenance, confidence)
+       author_pubkey, origin, fed_ts, source_hive, audience_scope, source_provenance, measurement, confidence)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.scope}, ${row.scope_ref},
        ${row.key}, ${row.body}, ${row.source_ref}, ${row.created_by},
        ${row.expires_at}::timestamptz, ${row.retracted_at}::timestamptz, true,
        ${authorPubkey}, ${origin}, ${fedTs}, ${sourceHive},
-       ${audienceScope}, ${sourceProvenance}::text::jsonb, ${confidence})
+       ${audienceScope}, ${sourceProvenance}::text::jsonb, ${measurement}::text::jsonb, ${confidence})
     -- ⚠ P-008 (a) / migration 689: the identity index is now PARTIAL
     -- (agent_facts_identity_current ... WHERE superseded_at IS NULL), and an
     -- ON CONFLICT inference spec that omits the predicate matches NO index —
@@ -200,6 +210,7 @@ async function writeToPg(
       fed_ts        = EXCLUDED.fed_ts,
       audience_scope    = EXCLUDED.audience_scope,
       source_provenance = EXCLUDED.source_provenance,
+      measurement       = EXCLUDED.measurement,
       confidence        = EXCLUDED.confidence,
       updated_at    = now()
     WHERE harness_shared.fed_order_key(NULL, EXCLUDED.fed_ts)

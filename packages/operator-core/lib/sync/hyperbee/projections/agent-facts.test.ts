@@ -50,6 +50,10 @@ describe('decodeValue — defensive on every field', () => {
     expect(decodeValue(row({ scope: 'galaxy' as never }))).toBeNull();
     expect(decodeValue(row({ body: 'x'.repeat(501) }))).toBeNull();
     expect(decodeValue({ ...row(), key: undefined as never })).toBeNull();
+    expect(decodeValue(row({ measurement: { subjectVolatile: false, measuredAt: '2026-08-11T20:50:00Z' } }))).toBeNull();
+    expect(
+      decodeValue(row({ measurement: { subjectVolatile: true, measuredAt: '2026-08-11T20:50:00Z' } })),
+    ).not.toBeNull();
   });
 });
 
@@ -67,14 +71,18 @@ describe('writeToPg — H6 source partitioning', () => {
 
   it('a REMOTE op lands in its receiver-stamped source partition', async () => {
     const { sql, calls } = fakeSql();
-    await buildAgentFactsProjection(opts(sql)).writeToPg(row(), {
-      authorPubkey: 'stamped-source-log-key',
-      origin: 'remote',
-    } as never);
+    await buildAgentFactsProjection(opts(sql)).writeToPg(
+      row({ measurement: { subjectVolatile: true, measuredAt: '2026-08-11T20:50:00Z' } }),
+      {
+        authorPubkey: 'stamped-source-log-key',
+        origin: 'remote',
+      } as never,
+    );
     expect(calls.length).toBe(1);
     // source_hive (the partition) must be the RECEIVER-stamped author key.
     expect(calls[0]).toContain('stamped-source-log-key');
     expect(calls[0]).toContain('remote');
+    expect(calls[0].some((v) => typeof v === 'string' && v.includes('subjectVolatile'))).toBe(true);
   });
 
   it('a LOCAL echo keeps the NULL (local) partition', async () => {

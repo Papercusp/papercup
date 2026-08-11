@@ -33,6 +33,9 @@ const EMITTERS: Record<FactMarkerField, { input: Partial<FoldedFact>; changed?: 
   changed: { input: {}, changed: true },
   enforcement: { input: { kind: 'convention' as never, enforcement: { tier: 'gate' } as never } },
   cite: { input: { kind: 'convention' as never } },
+  measurement: {
+    input: { measurement: { subjectVolatile: true, measuredAt: '2026-08-11T20:50:00.000Z' } },
+  },
 };
 
 describe('projectFactRow — marker round-trip completeness (EI-19390161700979033)', () => {

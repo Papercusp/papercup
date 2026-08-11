@@ -502,6 +502,7 @@ describe('outboxRowToLocalWriteOp — agent_facts (F1-4/P-012 federation)', () =
       retracted_at: null,
       created_by: 'su-int',
       shareable: true,
+      measurement: { subjectVolatile: true, measuredAt: '2026-08-01T00:00:00.000Z' },
       source_hive: null,
       origin: 'local',
     },
@@ -528,6 +529,7 @@ describe('outboxRowToLocalWriteOp — agent_facts (F1-4/P-012 federation)', () =
     expect(v.expires_at).toBe('2026-08-01T00:00:00.000Z'); // ISO preserved
     expect(v.retracted_at).toBeNull();
     expect(v.created_by).toBe('su-int');
+    expect(v.measurement).toEqual({ subjectVolatile: true, measuredAt: '2026-08-01T00:00:00.000Z' });
   });
 
   it('a workspace-scoped fact (null scope_ref) still validates', () => {

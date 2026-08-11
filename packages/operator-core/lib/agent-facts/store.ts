@@ -1654,7 +1654,7 @@ export async function foldFacts(
              -- is stored but never surfaced cannot stop re-derivation — the reader would
              -- see "nobody could determine this" with no way to act on it, which is the
              -- half-finish this modality exists to prevent.
-             confidence, kind, depends_on, claim, enforcement, settled_by, created_by, updated_at::text, expires_at::text,
+             confidence, measurement, kind, depends_on, claim, enforcement, settled_by, created_by, updated_at::text, expires_at::text,
              -- P-008 (c): the cell version, so the fold can mark what changed since
              -- the reader's cursor without a second query.
              fed_hlc
@@ -1803,7 +1803,7 @@ export async function listConventionFacts(
   const refs = (opts.scopeRefs ?? []).map((r) => r.trim()).filter(Boolean);
   const rows = await sql<AgentFactRow[]>`
     SELECT id, scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
-           confidence, kind, depends_on, claim, enforcement, created_by, updated_at::text, expires_at::text
+           confidence, measurement, kind, depends_on, claim, enforcement, created_by, updated_at::text, expires_at::text
       FROM harness_shared.agent_facts
      WHERE workspace_id = ${ws} AND kind = 'convention'
        AND superseded_at IS NULL AND retracted_at IS NULL AND expires_at > now()
@@ -1873,7 +1873,7 @@ export async function factVersions(
   const rows = await sql<AgentFactRow[]>`
     SELECT id, superseded_at::text, supersedes_id,
            scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
-           confidence, kind, depends_on, claim, enforcement, settled_by, created_by, updated_at::text, expires_at::text
+           confidence, measurement, kind, depends_on, claim, enforcement, settled_by, created_by, updated_at::text, expires_at::text
       FROM harness_shared.agent_facts
      WHERE workspace_id = ${ws} AND scope = ${args.scope}
        AND coalesce(scope_ref,'') = ${ref} AND key = ${key}
@@ -2043,6 +2043,9 @@ export function renderFactsFold(facts: readonly AgentFact[], now: number = Date.
     // those values as the only remaining check on this layer.
     const tier = f.kind === 'convention' && f.enforcement ? ` · ${renderEnforcement(f.enforcement)}` : '';
     const badge = f.kind ? `⟦${KIND_BADGE[f.kind]}${tier}⟧ ` : '';
+    const snapshot = f.measurement?.subjectVolatile
+      ? `⟦SNAPSHOT — subject may still be changing; measured at ${f.measurement.measuredAt}; re-measure before acting⟧ `
+      : '';
     // A convention is the modality meant to be CITED at the point of action
     // (P-018), so it — and only it — carries its citable ref inline. Putting one
     // on every fact would inflate every orient to make the other modalities
@@ -2054,7 +2057,7 @@ export function renderFactsFold(facts: readonly AgentFact[], now: number = Date.
     // judged by its values"). Without it the fold says only "nobody could
     // determine this", which reads as an invitation to go determine it.
     const settles = f.kind === 'undecidable' && f.settledBy ? ` — SETTLED BY: ${f.settledBy}` : '';
-    return `• [${scope}${aud}] ${badge}${f.body}${settles} (expires ~${days}d${src}${cite})`;
+    return `• [${scope}${aud}] ${badge}${snapshot}${f.body}${settles} (expires ~${days}d${src}${cite})`;
   });
   return `### Standing facts (deterministic — assert via facts:assert, retract when stale)\n${lines.join('\n')}`;
 }
@@ -2068,6 +2071,8 @@ interface AgentFactRow {
   audience_scope: string | null;
   source_provenance: unknown;
   confidence: string | null;
+  /** EI-20191740437408337 — migration 795. */
+  measurement?: unknown;
   /** P-008 (b) — migration 690. */
   kind?: string | null;
   depends_on?: unknown;
@@ -2136,6 +2141,9 @@ function rowToFact(r: AgentFactRow): AgentFact {
     // WI-6052: now persisted — mig 671 added the `confidence` column and the
     // INSERT/RETURNING/SELECT above all carry it round-trip.
     confidence: parseFactConfidence(r.confidence),
+    // EI-20191740437408337: a malformed measurement is dropped rather than
+    // allowing an unmarked timestamp to look like a safe snapshot.
+    measurement: parseFactMeasurement(r.measurement),
     // P-008 (b), migration 690. `dependsOn` normalizes to [] rather than null so
     // every consumer can iterate without a null guard — the absence of
     // dependencies and an empty set mean the same thing to a reader ("this fact

@@ -26,6 +26,7 @@ import {
   foldFacts,
   factVersions,
   FACTS_PER_SCOPE_CAP,
+  FACT_VOLATILE_MAX_TTL_SEC,
   listLapsedWallFacts,
   listConventionFacts,
   factCitationRef,
@@ -118,6 +119,9 @@ beforeAll(async () => {
     // ⚠ This entry was MISSING until 2026-08-02, which red-pinned the whole file after
     // migration 730 landed — the exact drift EI-18808675015292160's audit exists to name.
     '730-agent-facts-undecidable-kind.sql',
+    // EI-20191740437408337: durable moving-subject snapshot metadata. Keep
+    // this fixture list aligned with the live agent_facts migration set.
+    '795-agent-facts-volatile-measurements.sql',
   ];
   // EI-18808675015292160: applies the list (EI-6887 strip semantics unchanged)
   // but AUDITS it first against the real sql/ dir — so the "list DRIFTED from the
@@ -1127,6 +1131,49 @@ describe('confidence (evidence-strength tier, mig 671 / WI-6052)', () => {
           (workspace_id, scope, scope_ref, key, body, created_by, expires_at, confidence)
         VALUES (${WS}, 'harness', 'papercusp', 'conf-forged', 'b', 'peer', now() + interval '1 day', 'omniscient')`,
     ).rejects.toThrow(/agent_facts_confidence_check|violates check constraint/i);
+  });
+});
+
+// EI-20191740437408337: a measurement of a changing artifact is not a settled
+// property. The metadata must survive the real SQL round-trip, and the store
+// must impose the short TTL even when the caller omits ttlSec.
+describe('volatile measurements (migration 795)', () => {
+  const SEL = [{ scope: 'harness' as const, scopeRef: 'papercusp' }];
+  const base = {
+    scope: 'harness' as const,
+    scopeRef: 'papercusp',
+    body: 'currently 29 supported rows',
+    createdBy: 'su-int',
+    workspaceId: WS,
+  };
+  const measuredAt = '2026-08-11T20:50:00.000Z';
+
+  it('measurement metadata round-trips and defaults the TTL to 15 minutes', async () => {
+    await assertFact({ ...base, key: 'volatile-rt', subjectVolatile: true, measuredAt }, db.sql);
+    const [f] = await foldFacts(SEL, { workspaceId: WS }, db.sql);
+    expect(f.measurement).toEqual({ subjectVolatile: true, measuredAt });
+    const [row] = await db.sql<{ ttl_seconds: number }[]>`
+      SELECT EXTRACT(EPOCH FROM (expires_at - created_at))::float AS ttl_seconds
+        FROM harness_shared.agent_facts
+       WHERE workspace_id = ${WS} AND key = 'volatile-rt' AND superseded_at IS NULL`;
+    expect(row.ttl_seconds).toBeLessThanOrEqual(FACT_VOLATILE_MAX_TTL_SEC + 1);
+  });
+
+  it('a re-assert without the marker clears the prior snapshot metadata', async () => {
+    await assertFact({ ...base, key: 'volatile-clear', subjectVolatile: true, measuredAt }, db.sql);
+    await assertFact({ ...base, key: 'volatile-clear', body: 'the invariant is stable' }, db.sql);
+    const [f] = await foldFacts(SEL, { workspaceId: WS }, db.sql);
+    expect(f.measurement).toBeNull();
+  });
+
+  it('malformed stored metadata is fail-soft and never renders as a snapshot', async () => {
+    await db.sql`
+      INSERT INTO harness_shared.agent_facts
+        (workspace_id, scope, scope_ref, key, body, created_by, expires_at, measurement)
+      VALUES (${WS}, 'harness', 'papercusp', 'volatile-forged', 'b', 'peer', now() + interval '1 day',
+              '{"subjectVolatile":true,"measuredAt":"not-a-date"}'::jsonb)`;
+    const [f] = await foldFacts(SEL, { workspaceId: WS }, db.sql);
+    expect(f.measurement).toBeNull();
   });
 });
 

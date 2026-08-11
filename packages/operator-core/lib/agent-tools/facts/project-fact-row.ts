@@ -31,7 +31,7 @@
  * present/true, so an ordinary fold stays byte-identical to what it was before any of
  * these markers existed. That is what keeps the fold cheap for the common case.
  */
-import { renderFactSrc, factCitationRef, type AgentFact } from '../../agent-facts/store';
+import { renderFactSrc, factCitationRef, type AgentFact, type FactMeasurement } from '../../agent-facts/store';
 import type { FactDependencyStaleness } from './dependency-staleness';
 import type { FactContestMark } from './contested-fold';
 
@@ -51,6 +51,7 @@ export const FACT_MARKER_FIELDS = [
   'changed',
   'enforcement',
   'cite',
+  'measurement',
 ] as const;
 
 export type FactMarkerField = (typeof FACT_MARKER_FIELDS)[number];
@@ -76,6 +77,7 @@ export interface ProjectedFactRow {
   changed?: true;
   enforcement?: unknown;
   cite?: string;
+  measurement?: FactMeasurement;
 }
 
 /**
@@ -94,6 +96,9 @@ export function projectFactRow(f: FoldedFact, opts: { changed?: boolean } = {}):
     // renders LOUDLY (`✗unverified`); free-text anchors pass through as before.
     src: renderFactSrc(f) || null,
     ...(f.audienceScope ? { aud: f.audienceScope } : {}),
+    // EI-20191740437408337: the fold must carry the structured snapshot marker
+    // alongside the human-readable renderer's warning.
+    ...(f.measurement ? { measurement: f.measurement } : {}),
     ...(f.sourceStale ? { stale: f.sourceStale } : {}),
     // P-008 (b): kept DISTINCT from `stale` above. `stale` is a hint (the anchoring
     // work-item closed); `dependsStale` is a mechanical verdict on a dependency the

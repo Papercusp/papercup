@@ -61,5 +61,7 @@ describe('fact measurement detector — moving numbers get an advisory', () => {
     expect(notWhen).toMatch(/invariant conclusion/i);
     expect(notWhen).toMatch(/remeasure/i);
     expect(notWhen).toMatch(/historical/i);
+    expect(assertTool.args.shape.subjectVolatile.description).toMatch(/SNAPSHOT|15 minutes/);
+    expect(assertTool.args.shape.measuredAt.description).toMatch(/ISO timestamp|subjectVolatile/);
   });
 });

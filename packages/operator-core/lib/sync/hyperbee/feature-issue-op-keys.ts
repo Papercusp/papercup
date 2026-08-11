@@ -932,6 +932,13 @@ function toAgentFactValue(row: Record<string, unknown>): AgentFactWireRow {
       row.source_provenance && typeof row.source_provenance === 'object' && !Array.isArray(row.source_provenance)
         ? (row.source_provenance as Record<string, unknown>)
         : null,
+    // mig 795 (EI-20191740437408337): a moving-subject snapshot is CONTENT,
+    // not receiver-local provenance. Carry it so the peer's fold keeps the
+    // explicit SNAPSHOT warning and short-lived semantics.
+    measurement:
+      row.measurement && typeof row.measurement === 'object' && !Array.isArray(row.measurement)
+        ? (row.measurement as Record<string, unknown>)
+        : null,
     // mig 671 (WI-6052): evidence-strength tier — CONTENT, same pass-through
     // pattern as audience_scope/source_provenance above.
     confidence: strOrNull(row.confidence),

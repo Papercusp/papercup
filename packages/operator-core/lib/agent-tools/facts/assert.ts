@@ -28,6 +28,7 @@ import {
   DEAD_END_KEY_PREFIX,
   WALL_KEY_PREFIX,
   WALL_DEFAULT_TTL_SEC,
+  FACT_VOLATILE_MAX_TTL_SEC,
   type FactDependency,
   type FactSourceProvenance,
 } from '../../agent-facts/store';
@@ -132,7 +133,7 @@ export default defineTool({
     when:
       'You reached a durable CONCLUSION that should shape future turns — yours or your role\'s: "X is owner-residue, exclude it", "plan Y stalls on Z", "this harness\'s tests need Docker". Scope it as narrowly as true: workspace (global), role (all queens/bees/…), owner (just you), harness, or work_item.',
     notWhen:
-      `Ephemeral status (use coord), in-flight task progress (work_items:checkpoint), long-form knowledge (agent-insights doc), fuzzy background worth semantic recall (memory:remember). Not a dumping ground — ${FACT_BODY_MAX_CHARS}-char cap, per-scope cap ${FACTS_PER_SCOPE_CAP}, TTL mandatory. A fact is not a live measurement: do not pin changing counts or statuses as if they stay current; write the invariant conclusion plus a pointer to the live source/tool and how to remeasure at use time. If a number is intentionally historical, label it historical.`,
+      `Ephemeral status (use coord), in-flight task progress (work_items:checkpoint), long-form knowledge (agent-insights doc), fuzzy background worth semantic recall (memory:remember). Not a dumping ground — ${FACT_BODY_MAX_CHARS}-char cap, per-scope cap ${FACTS_PER_SCOPE_CAP}, TTL mandatory. A fact is not a live measurement: do not pin changing counts or statuses as if they stay current; write the invariant conclusion plus a pointer to the live source/tool and how to remeasure at use time. If you must preserve a moving snapshot, pass subjectVolatile:true with the sample's measuredAt timestamp; the fold will mark it SNAPSHOT and cap its TTL at 15 minutes. If a number is intentionally historical, label it historical.`,
     chaining:
       'facts:list { scope } to see what already stands (re-assert refreshes rather than duplicating); facts:retract when a fact stops being true — a stale fact folded verbatim is worse than none.',
     seeAlso: ['facts:retract', 'facts:list', 'memory:remember (fuzzy background instead)'],
@@ -180,6 +181,19 @@ export default defineTool({
       .optional()
       .describe(
         "Evidence strength (WI-6052): 'verified' (you confirmed it directly / it's replicated), 'provisional' (a single run / one data point — plausible but unreplicated), or 'suspected' (a hunch / a peer's hedge relayed second-hand). Omit = legacy/unset, renders unbadged, ordinary TTL. Setting 'provisional'/'suspected' shortens the default TTL so a hedge can't quietly calcify into settled fact. Never write a peer's provisional evidence at higher confidence than they stated it.",
+      ),
+    subjectVolatile: z
+      .boolean()
+      .optional()
+      .describe(
+        'Mark the asserted values as a snapshot of a subject that may still be changing. Requires measuredAt; the fold renders an explicit SNAPSHOT marker and the TTL is limited to 15 minutes.',
+      ),
+    measuredAt: z
+      .string()
+      .max(80)
+      .optional()
+      .describe(
+        'ISO timestamp at which a subjectVolatile snapshot was sampled. Required with subjectVolatile:true and refused by the store otherwise.',
       ),
     kind: z
       .enum(FACT_KINDS)
@@ -373,6 +387,8 @@ export default defineTool({
       audienceScope: args.audienceScope ?? null,
       sourceProvenance,
       confidence: args.confidence ?? null,
+      subjectVolatile: args.subjectVolatile === true,
+      measuredAt: args.measuredAt ?? null,
       kind: args.kind ?? null,
       settledBy: safeSettledBy ?? null,
       ...(dependsOn.length > 0 ? { dependsOn } : {}),
@@ -553,6 +569,16 @@ export default defineTool({
             ...(truncation ? { truncated: truncation } : {}),
             ...(dependencyWarning ? { dependenciesUnresolved: dependencyWarning } : {}),
             ...(measurementWarning ? { measurementWarning } : {}),
+            ...(fact.measurement?.subjectVolatile
+              ? {
+                  snapshotWarning: {
+                    note:
+                      'This fact is a SNAPSHOT of a subject that may still be changing. The fold marks it explicitly; ' +
+                      `its TTL is bounded to ${FACT_VOLATILE_MAX_TTL_SEC} seconds (15 minutes). Re-measure before acting.`,
+                    measuredAt: fact.measurement.measuredAt,
+                  },
+                }
+              : {}),
             ...(keyContested ? { keyContested } : {}),
             ...provenanceFields,
           }),

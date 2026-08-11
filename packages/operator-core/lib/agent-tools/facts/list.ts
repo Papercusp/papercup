@@ -68,6 +68,9 @@ export function projectFact(
     // WI-6052: confidence is now persisted — surface it same as audienceScope
     // (omitted when unset, matching the legacy/unbadged shape).
     ...(f.confidence ? { confidence: f.confidence } : {}),
+    // EI-20191740437408337: never hide the fact that a value is a moving
+    // snapshot; this metadata stays visible even when the body is excerpted.
+    ...(f.measurement ? { measurement: f.measurement } : {}),
     // P-008 (b): kind/claim follow the same omitted-when-unset convention. `kind`
     // absent means "not declared", which is a real and distinct state from
     // 'conclusion' — see FACT_KINDS on why it is never backfilled.
