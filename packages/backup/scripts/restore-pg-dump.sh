@@ -196,20 +196,48 @@ echo "==> importing (this can take a while for a large dump)..."
 IMPORT_LOG="$(mktemp)"
 trap 'rm -f "$IMPORT_LOG"' EXIT
 
-if ! decompress \
-    | sed -e '/^\\restrict /d' -e '/^\\unrestrict /d' \
-    | "${PSQL_IMPORT[@]}" -v ON_ERROR_STOP=0 -f - >"$IMPORT_LOG" 2>&1; then
-  echo "ERROR: import pipeline reported a non-zero exit." >&2
-  tail -n 50 "$IMPORT_LOG" >&2
-  exit 4
+if [[ "$DUMP_FORMAT" == "plain" ]]; then
+  if ! decompress \
+      | sed -e '/^\\restrict /d' -e '/^\\unrestrict /d' \
+      | "${PSQL_IMPORT[@]}" -v ON_ERROR_STOP=0 -f - >"$IMPORT_LOG" 2>&1; then
+    echo "ERROR: import pipeline reported a non-zero exit." >&2
+    tail -n 50 "$IMPORT_LOG" >&2
+    exit 4
+  fi
+else
+  # pg_restore path (directory / custom archives).
+  #
+  # NOT --exit-on-error: like the psql leg, a schema-and-data restore of our
+  # own dump routinely emits a handful of benign ordering/ownership errors, and
+  # aborting on the first one would leave a HALF-restored database that looks
+  # like a failure of the backup rather than of the restore. Errors are counted
+  # and surfaced below instead.
+  #
+  # --no-owner / --no-acl are NOT passed: the roles in this dump exist on the
+  # cluster we restore into, so a faithful restore keeps ownership. Add them
+  # yourself when restoring onto a cluster that lacks those roles.
+  RESTORE_JOBS="${RESTORE_JOBS:-8}"
+  echo "    pg_restore --format=$DUMP_FORMAT --jobs=$RESTORE_JOBS"
+  if ! "${PG_RESTORE_IMPORT[@]}" \
+      --format="$DUMP_FORMAT" \
+      --jobs="$RESTORE_JOBS" \
+      --verbose \
+      "$DUMP_PATH" >"$IMPORT_LOG" 2>&1; then
+    # pg_restore exits non-zero when it ignored errors, which is the common
+    # benign case above — so a non-zero exit alone is not a failure verdict.
+    # Only a restore that produced NO objects is fatal, and the key-table
+    # verification below is what decides that.
+    echo "==> pg_restore exited non-zero (errors were ignored, not fatal by" \
+         "itself) — the key-table + content verification below is the verdict."
+  fi
 fi
 
-REAL_ERRORS="$(grep -c '^psql:.*ERROR:' "$IMPORT_LOG" || true)"
+REAL_ERRORS="$(grep -cE '^(psql:.*ERROR:|pg_restore: error:)' "$IMPORT_LOG" || true)"
 if [[ "$REAL_ERRORS" -gt 0 ]]; then
   echo "==> import finished with $REAL_ERRORS ERROR line(s) (see below) — a few" \
        "index/extension-ordering errors on a schema-and-data dump are common" \
        "and non-fatal; eyeball them, don't assume clean:"
-  grep '^psql:.*ERROR:' "$IMPORT_LOG" | head -20
+  grep -E '^(psql:.*ERROR:|pg_restore: error:)' "$IMPORT_LOG" | head -20
 else
   echo "==> import finished with 0 ERROR lines."
 fi
@@ -223,7 +251,7 @@ fi
 # got created, so nothing vector-typed exists), so fail loudly.
 echo "==> verifying key tables..."
 PRESENT_COUNT=0
-for T in work_items harness_plans engineer_issues; do
+for T in work_items harness_plans engineer_issues harness_docs; do
   COUNT="$("${PSQL_IMPORT[@]}" -tAc \
     "SELECT count(*) FROM harness_shared.$T" 2>&1)" && {
     echo "   $T: $COUNT rows"
@@ -239,6 +267,39 @@ if [[ "$PRESENT_COUNT" -eq 0 ]]; then
   echo "       vector-typed exists). Check the import log above for CREATE" >&2
   echo "       EXTENSION errors; the importing role likely lacks superuser." >&2
   exit 5
+fi
+
+# ---------------------------------------------------------------------------
+# CONTENT INTEGRITY — a row count is not evidence the PROSE survived.
+#
+# The doc corpus is PG-canonical (WI-37835): for `content_mode='composed'` docs
+# the assembled prose in `harness_docs.content` is the artifact a restore has
+# to bring back, and the `.mdx` files in git are its projection. A restore that
+# recreates 980 rows with EVERY `content` NULL is total loss of the thing we
+# are backing up — and the table-exists check above reports that as success,
+# because the table does exist and it does have rows.
+#
+# So judge the payload, not the row. This is the same class as a status column
+# that describes a job rather than its hooks: an instrument that cannot report
+# the failure you care about is not evidence against it.
+# ---------------------------------------------------------------------------
+DOC_STATS="$("${PSQL_IMPORT[@]}" -tAc \
+  "SELECT count(*) || '|' || count(content) FROM harness_shared.harness_docs" 2>/dev/null || true)"
+
+if [[ -z "$DOC_STATS" || "$DOC_STATS" != *"|"* ]]; then
+  echo "==> harness_docs not present in this dump — skipping the content check." \
+       "(Expected for a dump predating the PG doc corpus; NOT expected for a" \
+       "current papercusp dump.)"
+else
+  DOC_TOTAL="${DOC_STATS%%|*}"
+  DOC_WITH_CONTENT="${DOC_STATS##*|}"
+  echo "   harness_docs: $DOC_TOTAL rows, $DOC_WITH_CONTENT with non-NULL content"
+  if [[ "$DOC_TOTAL" -gt 0 && "$DOC_WITH_CONTENT" -eq 0 ]]; then
+    echo "ERROR: the doc corpus restored as $DOC_TOTAL rows with ZERO non-NULL" >&2
+    echo "       content — the rows came back but the PROSE did not. This is" >&2
+    echo "       silent data loss that a row count reports as success." >&2
+    exit 5
+  fi
 fi
 
 echo "==> done. Restored into database '$TARGET_DB'. Diff/promote manually —" \
