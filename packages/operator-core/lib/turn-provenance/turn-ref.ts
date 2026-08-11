@@ -27,6 +27,7 @@ import {
   type ResolveSelfSessionOptions,
 } from '../search/self-session';
 import { parseEnvelope } from './turn-provenance';
+import { hasMachineSurfaceMarker, hasSyntheticMarker } from './machine-surface-catalogue';
 
 /* ------------------------------------------------------------------ */
 /* Ref format                                                          */
@@ -133,63 +134,15 @@ export interface RecordedTurnClass {
   origin: string | null;
 }
 
-/** Harness-synthetic user entries that are NOT owner words — local slash-command
- *  plumbing the TUI records as user turns. Superset of the relay-provenance list
- *  — keep additions here so both consumers share them. */
-const SYNTHETIC_MARKERS = [
-  '<local-command-caveat>',
-  '<local-command-stdout>',
-  '<command-name>',
-  '<command-message>',
-];
+/* The curated un-enrollable machine-surface catalogue this module used to hold
+ * privately now lives in ./machine-surface-catalogue.ts — see the import at the
+ * top of this file. It moved because the OWNER'S CHAT PANE faces the same
+ * population and could not reach a module-private `const`, so it fell through
+ * to SHOW and rendered CLI plumbing as the owner's own words
+ * (EI-20135573616431912, plan owner-visibility-provenance P-003). Behaviour
+ * here is unchanged; the list simply has one home now instead of one home and
+ * three divergent copies. */
 
-/**
- * CLI/subsystem machine surfaces recorded as user turns with NO enrollable
- * envelope (no injector wrote one, so no ledger row could ever vouch for them)
- * that the owner nonetheless never types. Empirically drawn from real psu
- * transcripts (deterministic-context-carry P-018 hardening pass): each is a
- * fixed, self-identifying marker, and biasing a marker-bearing turn toward
- * NOT-owner is the SAFE direction — a false OWNER stamp is the exact failure
- * this protocol exists to kill (D-002 / EI-9904 / the WI-3532
- * manufactured-directive class).
- *
- * Deliberately BROADER than the live classifier's `detectMachineSurface`
- * (turn-provenance.ts), which mirrors the bash UserPromptSubmit hook
- * byte-for-byte and (as of EI-18112745557098348) covers the SYSTEM-NOTIFICATION
- * banner AND the bare `<task-notification>` tag. This post-hoc transcript pass
- * feeds the carry-doc continuation (P-010), where those two plus a
- * `[Request interrupted by user]` marker or a self-issued `/compact` misread
- * as an "open owner message" would hand a successor a machine string as its
- * actual first prompt. Keep the SYSTEM-NOTIFICATION + task-notification +
- * compaction-continuation shapes in lockstep with turn-provenance.ts; the
- * rest are transcript-only by design.
- *
- * Tested against the turn HEAD (bounds an incidental mid-body quote from
- * tripping a marker); each pattern carries its own anchor.
- */
-const MACHINE_SURFACE_PATTERNS: readonly RegExp[] = [
-  // Claude's background-task completion banner (self-labels "NOT USER INPUT").
-  /\[\s*SYSTEM NOTIFICATION\b[^\]]*\bNOT USER INPUT\b[^\]]*\]/i,
-  // Native auto-compaction continuation summary (unenrollable — no injector).
-  /^\s*This session is being continued from a previous conversation/,
-  // Task/subagent completion notification (Task-tool subsystem), e.g.
-  //   <task-notification> <task-id>…</task-id> <summary>…</summary>
-  /^\s*<task-notification\b/,
-  // The TUI's own interrupt marker (also "…for tool use") — a system string,
-  // signalling owner action but never itself an owner directive.
-  /^\s*\[Request interrupted by user/i,
-  // A machine-issued self-compaction command self-declares its provenance
-  // (COMPACT_PROVENANCE_MARKER, request-compaction.ts) — it rides just after
-  // the `/compact ` slash prefix, so this pattern is not head-anchored.
-  /⟦\s*machine-issued self-compaction/i,
-  // The compaction UI status line captured verbatim as a turn.
-  /✻\s*Conversation compacted|●\s*Compaction is queued/i,
-];
-
-/** How much of the turn the machine-surface + synthetic scans inspect. Wide
- *  enough to clear a `/compact ` slash prefix before the machine-issued marker,
- *  bounded so a long owner message can't trip a marker on a mid-body quote. */
-const CLASSIFY_HEAD_CHARS = 240;
 
 /**
  * Classify a RECORDED user turn's text owner-vs-agent. Mirrors the live
@@ -203,13 +156,11 @@ const CLASSIFY_HEAD_CHARS = 240;
 export function classifyRecordedTurn(text: string): RecordedTurnClass {
   const env = parseEnvelope(text);
   if (env) return { verdict: 'agent-injected', origin: env.origin };
-  const head = (text ?? '').slice(0, CLASSIFY_HEAD_CHARS);
-  if (SYNTHETIC_MARKERS.some((m) => head.includes(m))) {
-    return { verdict: 'synthetic', origin: null };
-  }
-  if (MACHINE_SURFACE_PATTERNS.some((re) => re.test(head))) {
-    return { verdict: 'machine-surface', origin: null };
-  }
+  const t = text ?? '';
+  // Both predicates apply the head bound themselves — see
+  // CLASSIFY_HEAD_CHARS in ./machine-surface-catalogue.
+  if (hasSyntheticMarker(t)) return { verdict: 'synthetic', origin: null };
+  if (hasMachineSurfaceMarker(t)) return { verdict: 'machine-surface', origin: null };
   return { verdict: 'owner-typed', origin: null };
 }
 

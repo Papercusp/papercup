@@ -53,16 +53,24 @@
  * the admin route's authentication first — the seam is the weak link, not the
  * envelope.
  *
- * ── Zero imports, on purpose ─────────────────────────────────────────────────
+ * ── Leaf-only imports, on purpose ────────────────────────────────────────────
  *
  * `wake-executor` → `inbox-wake` → `engine` → `wake-executor` is a real import
  * cycle (it is why `wake-executor.ts` hand-duplicates `COORD_INBOX_WAKE_PREFIX`
- * rather than importing it). This module is a leaf with NO imports, so the send
- * path, the wake executor and the browser-side chat pane can all share ONE
- * definition of the marker and the delimiters instead of three copies drifting
- * apart. It is also why it is safe to import from client code across the
+ * rather than importing it). This module is a leaf, so the send path, the wake
+ * executor and the browser-side chat pane can all share ONE definition of the
+ * marker and the delimiters instead of three copies drifting apart. It is also
+ * why it is safe to import from client code across the
  * `@papercusp/operator-core/lib/...` seam.
+ *
+ * The ONE import here (`turn-provenance/machine-surface-catalogue`) does not
+ * weaken that: it is itself a zero-import leaf of pure data and pure functions,
+ * so it adds no cycle and nothing Node-only to the client bundle. It is imported
+ * rather than copied deliberately — see {@link ownerVisiblePromptText}. Adding
+ * an import of anything that is NOT such a leaf breaks this module's contract.
  */
+
+import { isUnenrolledMachineSurface } from '../../turn-provenance/machine-surface-catalogue';
 
 /** Payload flag `wakeTurnText` reads to choose the owner-chat turn shape.
  *  Mirrors the `INBOX_OWNER_REPLY_MARKER` convention in `inbox-reply.ts`. */
@@ -255,7 +263,34 @@ const UNENVELOPED_WAKE_RE = /^\[await-event\]\s+\S+\s+fired(?:\s|[.!?])/;
  *   - envelope present, any other origin                  → machine-injected     → HIDE
  *   - no envelope, Stop-hook wall                         → harness coaching     → HIDE
  *   - no envelope, `[await-event] <key> fired …`          → legacy wake         → HIDE
+ *   - no envelope, curated un-enrollable machine surface  → the CLI's own text  → HIDE
  *   - no envelope, anything else                          → typed by the human   → SHOW
+ *
+ * ⚠ THE ALLOW-LIST BRANCH IS NEARLY INERT — the fallthrough is where the leak is.
+ * Measured over 7 days: `coord-inject:owner` (the only origin the allow-list
+ * SHOWS) matched ONE row, against 1,809 that reached the un-enveloped branch. So
+ * ~99.9% of what the owner sees is decided by the last two rules, not the first
+ * two. That is why the curated-catalogue rule is load-bearing and the ordering
+ * above is not merely documentation.
+ *
+ * THE CURATED RULE IS A CALL, NOT A COPY (plan P-003 / D-004). Some machine text
+ * has no envelope because no papercusp injector authored it — the CLI did, so
+ * there is no seam to enrol and no ledger row could ever vouch for it. That
+ * population was ALREADY catalogued in `turn-provenance/machine-surface-catalogue`;
+ * it was simply module-private, so this filter could not call it and fell through
+ * to SHOW. 487 of the 1,051 machine rows above — including the single largest
+ * shape, the 368-row compaction preamble — matched a pattern that already existed
+ * and was unreachable. **The defect was a missing call, not a missing pattern**,
+ * and the fix is to import the one list rather than grow a fifth private copy
+ * beside the four this repo already has (D-004; the same lesson
+ * `memory/human-turn-tail.ts` records).
+ *
+ * ⛔ Do NOT add shapes here. New patterns go in the catalogue, where every
+ * consumer gets them at once. And note what the catalogue deliberately CANNOT
+ * separate: an injected role prompt opening `# Mug — …` from an owner's `# my
+ * notes`. A matcher aggressive enough for that starts hiding the owner's own
+ * words — the unrecoverable direction (D-002/D-003). That residue is fixed by
+ * stamping provenance AT INGEST (P-004), never by a better matcher here.
  *
  * This is a RENDER filter only. Nothing is deleted: the full turn stays in the
  * transcript stores and in every audit/session-search path. The narrower reading
@@ -271,6 +306,9 @@ export function ownerVisiblePromptText(text: string): string {
   if (origin !== undefined) return origin === OWNER_CHAT_TURN_ORIGIN ? stripMachineTurnAnnotations(text) : '';
   const trimmed = text.trimStart();
   if (trimmed.startsWith(HOOK_FEEDBACK_PREFIX) || UNENVELOPED_WAKE_RE.test(trimmed)) return '';
+  // The curated catalogue — head-bounded inside the predicate, so an owner
+  // QUOTING one of these shapes mid-sentence keeps their turn.
+  if (isUnenrolledMachineSurface(trimmed)) return '';
   return stripMachineTurnAnnotations(text);
 }
 
