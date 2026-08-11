@@ -469,6 +469,27 @@ describe('P-505 authority epoch grant policy (real bare repo)', () => {
     expect(await readStaging(repo, successor.pubkeyBase64)).toBe(lastStaging);
   });
 
+  it('blocks a tokenless crash grant when no observed member staging can prove its publish base', async () => {
+    const repo = await freshRepo();
+    const deadAuthority = device();
+    const successor = device();
+
+    const grant = await deriveIntegratorGrant({
+      repoPath: repo,
+      selfDevicePubkeyBase64: successor.pubkeyBase64,
+      memberDevicePubkeysBase64: [deadAuthority.pubkeyBase64, successor.pubkeyBase64],
+      priorIntegrator: { epoch: 2, seq: 6 },
+      bridgeWatermark: { epoch: 5, seq: 8 },
+    });
+    expect(grant).toMatchObject({
+      ready: false,
+      basis: 'blocked-crash-reconciliation',
+      grantedFrom: 'epoch:5',
+    });
+    expect(grant.detail).toContain('no observed member staging');
+    expect(await readStaging(repo, successor.pubkeyBase64)).toBeNull();
+  });
+
   it('reconciles every clean ancestry-maximal staging before a tokenless crash grant', async () => {
     const repo = await freshRepo();
     const deadA = device();

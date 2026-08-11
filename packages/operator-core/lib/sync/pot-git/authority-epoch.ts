@@ -232,32 +232,39 @@ export async function deriveIntegratorGrant(input: DeriveIntegratorGrantInput): 
 
   // Crash takeover: seed from the ancestry-maximal observed staging so our
   // first publish fast-forwards receivers from the dead authority's last one.
-  let seedDetail = 'no observed staging to seed from';
   const max = await resolveMaxObservedStaging(input.repoPath, input.memberDevicePubkeysBase64, runGit);
-  if (max) {
-    const seeded = await seedOwnStagingFF(input.repoPath, input.selfDevicePubkeyBase64, max.sha, runGit);
-    if (seeded === 'diverged' || max.diverged) {
-      const reconciliation = await integrateMemberHeads(
-        input.repoPath,
-        input.selfDevicePubkeyBase64,
-        max.maximal,
-        { runGit },
-      );
-      if (reconciliation.skippedConflicts.length > 0) {
-        return {
-          ready: false,
-          basis: 'blocked-crash-reconciliation',
-          grantedFrom: crashEvidence ? `epoch:${crashEvidence.epoch}` : undefined,
-          detail:
-            `AUTHORITY TAKEOVER BLOCKED: ${reconciliation.skippedConflicts.length} ancestry-maximal ` +
-            `staging head(s) conflict with the successor base`,
-        };
-      }
-    }
-    seedDetail =
-      `base ${seeded} (max observed staging ${max.sha.slice(0, 12)}` +
-      `${max.diverged ? ', reconciled divergent namespace maxima' : ''})`;
+  if (!max) {
+    return {
+      ready: false,
+      basis: 'blocked-crash-reconciliation',
+      grantedFrom: crashEvidence ? `epoch:${crashEvidence.epoch}` : undefined,
+      detail:
+        `AUTHORITY TAKEOVER BLOCKED: accepted bridge watermark grants epoch ${target}, but no ` +
+        `observed member staging exists to prove a descendant publish base`,
+    };
   }
+  const seeded = await seedOwnStagingFF(input.repoPath, input.selfDevicePubkeyBase64, max.sha, runGit);
+  if (seeded === 'diverged' || max.diverged) {
+    const reconciliation = await integrateMemberHeads(
+      input.repoPath,
+      input.selfDevicePubkeyBase64,
+      max.maximal,
+      { runGit },
+    );
+    if (reconciliation.skippedConflicts.length > 0) {
+      return {
+        ready: false,
+        basis: 'blocked-crash-reconciliation',
+        grantedFrom: crashEvidence ? `epoch:${crashEvidence.epoch}` : undefined,
+        detail:
+          `AUTHORITY TAKEOVER BLOCKED: ${reconciliation.skippedConflicts.length} ancestry-maximal ` +
+          `staging head(s) conflict with the successor base`,
+      };
+    }
+  }
+  const seedDetail =
+    `base ${seeded} (max observed staging ${max.sha.slice(0, 12)}` +
+    `${max.diverged ? ', reconciled divergent namespace maxima' : ''})`;
   return {
     ready: true,
     epoch: target,
