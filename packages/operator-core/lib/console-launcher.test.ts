@@ -176,6 +176,91 @@ describe('buildConsoleEnvelope resume greeting permission posture (owner-hit 202
     ).rejects.toThrow(/only claude sessions support --fork-session/);
   });
 
+  // WI-6510 (hud-chat-owner-controls-2026-08-11 P-002): the chat footer's MODEL
+  // pill resumes a session onto a DIFFERENT model. These guard the seam D-007
+  // named as the whole risk — a model change that appears to apply and does not.
+  it('resumeModel emits psu --model, QUOTED (the spec alphabet contains shell globs)', async () => {
+    process.env.AGENT_CMD = 'claude';
+    delete process.env.AGENT_BACKEND;
+    const envelope = await buildConsoleEnvelope({
+      workspaceId: 'default',
+      slug: null,
+      operatorBaseUrl: 'http://localhost:3070',
+      resumeSessionId: '3f2a1b6c-9d8e-4f0a-b1c2-d3e4f5a6b7c8',
+      resumeModel: 'opus[1m]:high',
+      skipMcpJson: true,
+    });
+    // Single-quoted, because `[`/`]` are real shell globs and the `[1m]` window
+    // marker is load-bearing — an unquoted spec would glob-expand or vanish.
+    expect(envelope.greetingCmd).toContain(`--model='opus[1m]:high'`);
+    // The COMPOSED spec travels as one token. psu has no --effort flag and drops
+    // unrecognized flags silently, so splitting it here is the silent no-op.
+    expect(envelope.greetingCmd).not.toContain('--effort');
+  });
+
+  it('fork + resumeModel COMPOSE — the exact shape the MODEL pill posts', async () => {
+    process.env.AGENT_CMD = 'claude';
+    delete process.env.AGENT_BACKEND;
+    const envelope = await buildConsoleEnvelope({
+      workspaceId: 'default',
+      slug: null,
+      operatorBaseUrl: 'http://localhost:3070',
+      resumeSessionId: '3f2a1b6c-9d8e-4f0a-b1c2-d3e4f5a6b7c8',
+      fork: true,
+      resumeModel: 'sonnet[1m]',
+      skipMcpJson: true,
+    });
+    // The pill always forks: the popup is attached to a LIVE session, and psu
+    // threads both flags through one argv (psu-launcher.mjs:1197).
+    expect(envelope.greetingCmd).toContain('--fork');
+    expect(envelope.greetingCmd).toContain(`--model='sonnet[1m]'`);
+  });
+
+  it('a resume WITHOUT resumeModel emits no --model (guard against a stray re-point)', async () => {
+    process.env.AGENT_CMD = 'claude';
+    delete process.env.AGENT_BACKEND;
+    const envelope = await buildConsoleEnvelope({
+      workspaceId: 'default',
+      slug: null,
+      operatorBaseUrl: 'http://localhost:3070',
+      resumeSessionId: '3f2a1b6c-9d8e-4f0a-b1c2-d3e4f5a6b7c8',
+      skipMcpJson: true,
+    });
+    expect(envelope.greetingCmd).not.toContain('--model');
+  });
+
+  it('REFUSES a model on a non-claude resume rather than dropping it silently', async () => {
+    process.env.AGENT_CMD = 'omp';
+    delete process.env.AGENT_BACKEND;
+    // omp/codex exec the bare binary, so the flag would never reach the CLI — the
+    // session would resume on the OLD model while the UI reported the new one.
+    await expect(
+      buildConsoleEnvelope({
+        workspaceId: 'default',
+        slug: null,
+        operatorBaseUrl: 'http://localhost:3070',
+        resumeSessionId: 'abc-123',
+        resumeModel: 'opus[1m]:high',
+        skipMcpJson: true,
+      }),
+    ).rejects.toThrow(/only claude sessions resume through psu/);
+  });
+
+  it('REFUSES a spec carrying shell metacharacters instead of escaping it', async () => {
+    process.env.AGENT_CMD = 'claude';
+    delete process.env.AGENT_BACKEND;
+    await expect(
+      buildConsoleEnvelope({
+        workspaceId: 'default',
+        slug: null,
+        operatorBaseUrl: 'http://localhost:3070',
+        resumeSessionId: '3f2a1b6c-9d8e-4f0a-b1c2-d3e4f5a6b7c8',
+        resumeModel: 'sonnet; rm -rf /',
+        skipMcpJson: true,
+      }),
+    ).rejects.toThrow(/unsafe model spec/);
+  });
+
   // resume-in-gui-button-2026-08-09 — "Resume in GUI": the same in-place resume, minus
   // the terminal window, because the human will talk to it in the HUD conversation
   // popup instead. `--headless` is the load-bearing part: it is what keeps psu's

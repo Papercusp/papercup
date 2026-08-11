@@ -73,6 +73,24 @@ describe('ModelActions — registration + shape', () => {
     expect(a.group).toBe('config');
     expect(a.searchable).toBe(true);
   });
+
+  it('is reachable through the BARREL, not just by importing this module directly', async () => {
+    /*
+     * The WI-6450 trap, and the one thing the rest of this file cannot catch:
+     * every other case here works because the side-effect import at the top of
+     * this file registers the axis. That proves the module registers ITSELF — it
+     * says nothing about whether `lib/chat-actions/index.ts` imports it. If that
+     * one line is missing or "tidied" away, the axis is tree-shaken out and the
+     * pill never renders, while this whole suite stays green.
+     *
+     * So: reset the registry, load ONLY the barrel, and require the axis to be
+     * there. This is the same registration path the real bar uses.
+     */
+    const registry = await import('./registry');
+    registry._resetChatActionsForTests();
+    await import('./index');
+    expect(registry.listAllChatModeActionIds()).toContain('mode-model');
+  });
 });
 
 describe('availability — the two absences are not the same (D-005 §5)', () => {
@@ -82,12 +100,21 @@ describe('availability — the two absences are not the same (D-005 §5)', () =>
     expect(axis().available(ctxWith(undefined))).toBe(false);
   });
 
-  it('DOES render a pill when the argv is known but names no model', () => {
-    // Known-and-empty is a positive fact ("backend default"), not an absence —
-    // this is the case a `?? []` default would silently manufacture.
-    expect(readModelSpec(ctxWith([]))).toBeNull();
-    expect(axis().available(ctxWith([]))).toBe(true);
-    expect(axis().current(ctxWith([])).on).toBe(false);
+  it('renders NO pill for an EMPTY argv — no launch record is not "no model"', () => {
+    // adv-roster's active tier is `launchArgv: adv?.launchArgv ?? []`, so a
+    // session with no adv_sessions row arrives as []. Every real launch record
+    // is non-empty (argv[0] is the binary), so [] is evidence of nothing —
+    // reporting "default" here would describe a launch we never saw.
+    expect(readModelSpec(ctxWith([]))).toBeUndefined();
+    expect(axis().available(ctxWith([]))).toBe(false);
+  });
+
+  it('DOES render a pill for a real launch record that names no model', () => {
+    const argv = ['psu', '--no-picker', '--agent=claude', '--auto'];
+    expect(readModelSpec(ctxWith(argv))).toBeNull();
+    expect(axis().available(ctxWith(argv))).toBe(true);
+    expect(axis().current(ctxWith(argv)).on).toBe(false);
+    expect(axis().current(ctxWith(argv)).value).toBe('default');
   });
 
   it('is unavailable on a non-claude backend, where the flag would be refused', () => {

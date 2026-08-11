@@ -73,6 +73,19 @@ const MODEL_DEFAULT = '__backend-default';
 export function readModelSpec(ctx: SessionActionCtx): string | null | undefined {
   const argv = (ctx as { launchArgv?: unknown }).launchArgv;
   if (argv === undefined) return undefined;
+  /*
+   * An EMPTY argv is UNKNOWN, not "no --model".
+   *
+   * It looks like the third case — argv read, no model named — but it is not,
+   * and the difference is visible in the writer: adv-roster's active tier is
+   * `launchArgv: adv?.launchArgv ?? []`, so a session with NO adv_sessions row
+   * at all (launch-su's terminal path records none) arrives here as `[]`. Every
+   * session that DOES have a launch record has a non-empty argv — the binary is
+   * always argv[0]. So an empty array carries no evidence about the model, and
+   * rendering it as "default" would state a fact about a launch we never saw
+   * (D-005 §5). No pill instead.
+   */
+  if (Array.isArray(argv) && argv.length === 0) return undefined;
   return modelSpecFromArgv(argv);
 }
 
