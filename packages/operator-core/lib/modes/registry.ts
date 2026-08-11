@@ -318,8 +318,13 @@ A WRITTEN KILL CRITERION PER POT AT CREATION TIME — record it on the link
 (goals:attach-pot { killCriterion }), not only in prose, so the goal's page can
 show it; and prefer TRIPWIRES (goals:create/update { tripwires }) for anything
 countable, because a criterion written as a sentence is a promise nobody
-re-checks while "$310 of $500" is a readout. Plus declared expected spend and
-reported actuals — goals:update { spentCents } as they land, and
+re-checks while "$310 of $500" is a readout. SPEND ACCOUNTING HAS A HARD
+BOUNDARY — use goals:pots { goalId } for measured child-fleet spend when
+comparing it with the goal record's declared ceiling. No reliable per-session
+attribution source is exposed for the GOAL agent's interactive session, so do
+not invent spentCents. goals:update { spentCents } accepts an owner-supplied
+measured snapshot only; it is not an automatic read of this session. Report the
+source's measured scope and flag the attribution gap in the owner report.
 goals:update { status: 'killed' } the moment the criterion trips. An agent that
 only ever creates is a ratchet; closing is the half that stops it.
 OWNER-WALLED ACTIONS, NAMED — app-store submission, payment/Stripe setup, domain

@@ -210,11 +210,13 @@ export async function deriveIntegratorGrant(input: DeriveIntegratorGrantInput): 
           `(epoch ${best.token.epoch}) could not establish a descendant staging base (${adoption.reason})`,
       };
     }
-    const seeded = adoption.ok
-      ? adoption.adopted
-        ? `staging seeded at ${adoption.staging.slice(0, 12)}`
-        : `own staging kept (at/ahead of token)`
-      : `base NOT seeded (${adoption.reason}) — keeping own base, epoch still fenced`;
+    // `adoption.ok` is guaranteed true here — the `!adoption.ok` branch above returns
+    // 'blocked-token-adoption'. The old `adoption.ok ? … : …` ternary therefore narrowed its
+    // else-branch to `never`, and reading `.reason` off it was a typecheck error rather than a
+    // fallback that could ever run.
+    const seeded = adoption.adopted
+      ? `staging seeded at ${adoption.staging.slice(0, 12)}`
+      : `own staging kept (at/ahead of token)`;
     return {
       ready: true,
       epoch: target,

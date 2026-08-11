@@ -431,6 +431,17 @@ describe('GOAL mode', () => {
     expect(goal!.contract).toContain('goals:get');
   });
 
+  it('reports only measurable fleet spend and never invents interactive-session actuals', () => {
+    const c = goal!.contract;
+    expect(c).toContain('SPEND ACCOUNTING HAS A HARD');
+    expect(c).toContain('goals:pots { goalId }');
+    expect(c).toMatch(/measured child-fleet spend/i);
+    expect(c).toMatch(/no reliable per-session\s+attribution source/i);
+    expect(c).toMatch(/do not invent spentCents/i);
+    expect(c).toMatch(/owner-supplied\s+measured snapshot only/i);
+    expect(c).not.toContain('Plus declared expected spend and reported actuals');
+  });
+
   it('carries the standing owner-report cadence (P-008 of the plan)', () => {
     expect(goal!.contract).toContain('coord:escalate');
   });

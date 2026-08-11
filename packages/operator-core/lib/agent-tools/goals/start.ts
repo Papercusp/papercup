@@ -95,8 +95,8 @@ export function buildGoalKickoffBrief(opts: {
   /* Both constraints are OPTIONAL at creation since 2026-08-09 (see the args
      schema). When one is absent the brief SAYS SO rather than omitting the
      line: a missing CEILING line reads to the agent as "no budget discipline
-     was mentioned", whereas "none declared" plus the standing instruction to
-     report actuals keeps the discipline without inventing a number the owner
+     was mentioned", whereas "none declared" plus the spend-visibility
+     boundary keeps the discipline without inventing a number the owner
      never gave. Never render `$0.00` or an empty criterion here — a fabricated
      constraint is worse than an acknowledged absent one. */
   const kill = opts.killCriterion?.trim();
@@ -104,6 +104,8 @@ export function buildGoalKickoffBrief(opts: {
     opts.budgetCents == null
       ? null
       : `$${(opts.budgetCents / 100).toFixed(2)}`;
+  const spendVisibility =
+    'SPEND VISIBILITY — use `goals:pots { goalId }` for measured child-fleet spend. No reliable interactive-session attribution source is exposed; do not invent per-session actuals.';
   const writtenAt = (opts.writtenAt ?? new Date()).toISOString().replace(/\.\d{3}Z$/, 'Z');
   return [
     `You are in GOAL mode on goal \`${opts.goalId}\`, started by the owner at ${writtenAt}`,
@@ -115,8 +117,9 @@ export function buildGoalKickoffBrief(opts: {
       ? `KILL THIS IF — ${kill}`
       : 'KILL THIS IF — none declared. Propose a stopping condition in your kickoff question.',
     ceiling
-      ? `CEILING — ${ceiling} declared. Report actuals against it; do not quietly exceed it.`
-      : 'CEILING — none declared. Report actuals anyway, and flag before any large spend.',
+      ? `CEILING — ${ceiling} declared. Do not quietly exceed it.`
+      : 'CEILING — none declared. Flag before any large spend.',
+    spendVisibility,
     '',
     'Your mode contract governs how to run this, including the mandatory kickoff question.',
     'It arrives in your orient, under `modes[].contract`. If it is NOT there you are not',

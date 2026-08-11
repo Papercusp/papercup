@@ -137,11 +137,11 @@ export const detachPot = defineTool({
 export const listGoalPots = defineTool({
   name: 'goals:pots',
   description:
-    'The pots a goal is pursued through, main owner first, with its spend rolled up: { goalId, sinceMs?, spend? }.',
+    'The pots a goal is pursued through, main owner first, with measured child-fleet spend rolled up (not interactive-session attribution): { goalId, sinceMs?, spend? }.',
   capability: 'goals:read',
   guidance: {
     when:
-      'Reporting on a goal, or deciding where to put the next unit of effort. Read this BEFORE creating another pot — the portfolio pass GOAL mode mandates is exactly this call plus goals:list.',
+      'Reporting on a goal, reading measured child-fleet spend, or deciding where to put the next unit of effort. Read this BEFORE creating another pot — the portfolio pass GOAL mode mandates is exactly this call plus goals:list. It does not provide reliable per-session attribution for the interactive GOAL agent.',
     chaining: 'goals:list → goals:pots → pot:status per pot.',
   },
   // Principal-gated like its sibling reads (goals:list / goals:get) — the

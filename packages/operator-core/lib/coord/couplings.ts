@@ -35,6 +35,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
+import { RECORDED_LIVE_MAX_AGE_MS } from '../adv-sessions';
 
 /** The literal every agent argument accepts for "me" (the repo-wide convention —
  *  `sessions:read { session:'self' }`, `sessions:digest { owner:'self' }`). */
@@ -176,6 +177,12 @@ export interface CoupledPeer {
 
 export const COUPLING_REASON_MAX = 500;
 
+/** Keep the coupling read's session-log fallback aligned with the authoritative
+ * recorded-live roster leg (adv_sessions, ended_at IS NULL + a zombie-age bound).
+ * A session that has not self-registered presence is still a live peer, while an
+ * ancient unreaped row is not evidence that the owner still exists. */
+const RECORDED_LIVE_MAX_AGE_SEC = Math.max(1, Math.round(RECORDED_LIVE_MAX_AGE_MS / 1000));
+
 /**
  * Normalize an unordered pair. Returns null for a self-pair — an agent coupled to
  * itself is not a relation, and it is the ONE refusal in an otherwise
@@ -259,9 +266,15 @@ async function upsertCoupling(opts: {
 
 /**
  * Every LIVE (unexpired) declared edge touching an agent, from either side of the
- * pair. Includes suppressions — a caller resolving the union needs both, and a
- * caller listing an agent's couplings should see that a pair was deliberately
- * decoupled rather than silently reading it as absent.
+ * pair. A coupled edge is only relevant while both members still exist: the
+ * ephemeral coord_presence row is positive liveness evidence (the retention reaper
+ * removes it only after the owner is ended), and a live adv_sessions row covers the
+ * recorded-but-not-yet-registered launch window. This is a READ-TIME retirement,
+ * so dead edges stop costing every projection without deleting their audit rows.
+ *
+ * Suppressions intentionally bypass the member-liveness check. D-061 R4 requires a
+ * decouple to remain a durable mask even after a member exits; dropping the mask
+ * would let a later derivation resurrect the pair if that owner id is reused.
  */
 export async function listCouplingsFor(ownerId: string, workspaceId?: string): Promise<CouplingEdge[]> {
   const id = ownerId.trim();
@@ -269,13 +282,47 @@ export async function listCouplingsFor(ownerId: string, workspaceId?: string): P
   const ws = workspaceId ?? activeWorkspaceId();
   const { sql } = getOrgPg();
   const rows = await sql<CouplingRow[]>`
-    SELECT agent_a, agent_b, state, declared_by, reason,
+    WITH live_owner AS (
+      -- coord_presence is the retained live-roster projection. Do not add a
+      -- heartbeat-age predicate here: an old heartbeat with a standing wake can
+      -- still be a parked, dispatchable session, and the presence reaper is the
+      -- authority that distinguishes that case from an ended owner.
+      SELECT cp.workspace_id, cp.owner_id
+        FROM harness_shared.coord_presence cp
+      UNION
+      -- Presence is self-registered, so the session log is the authoritative
+      -- fallback during the launch/first-heartbeat window. Keep the same 12h
+      -- zombie bound as listRecordedLiveSessions.
+      SELECT s.workspace_id, s.coord_owner_id
+        FROM harness_shared.adv_sessions s
+       WHERE s.coord_owner_id IS NOT NULL
+         AND s.ended_at IS NULL
+         AND s.started_at > clock_timestamp() - make_interval(secs => ${RECORDED_LIVE_MAX_AGE_SEC})
+    )
+    SELECT c.agent_a, c.agent_b, c.state, c.declared_by, c.reason,
            created_at::text, updated_at::text, expires_at::text
-      FROM harness_shared.agent_couplings
-     WHERE workspace_id = ${ws}
-       AND (agent_a = ${id} OR agent_b = ${id})
-       AND (expires_at IS NULL OR expires_at > clock_timestamp())
-     ORDER BY updated_at DESC
+      FROM harness_shared.agent_couplings c
+     WHERE c.workspace_id = ${ws}
+       AND (c.agent_a = ${id} OR c.agent_b = ${id})
+       AND (c.expires_at IS NULL OR c.expires_at > clock_timestamp())
+       AND (
+         c.state = 'suppressed'
+         OR (
+           EXISTS (
+             SELECT 1
+               FROM live_owner l
+              WHERE l.workspace_id = c.workspace_id
+                AND l.owner_id = c.agent_a
+           )
+           AND EXISTS (
+             SELECT 1
+               FROM live_owner l
+              WHERE l.workspace_id = c.workspace_id
+                AND l.owner_id = c.agent_b
+           )
+         )
+       )
+     ORDER BY c.updated_at DESC
   `;
   return rows.map(rowToEdge);
 }

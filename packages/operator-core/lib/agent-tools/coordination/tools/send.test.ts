@@ -129,6 +129,10 @@ const body = async (args: unknown) => (((await tool.handler(args as never, {} as
 const bodyWithCtx = async (args: unknown, ctx: unknown) =>
   (((await tool.handler(args as never, ctx as never)) as Out).data);
 
+it('opts out of the ambient workspace transaction because the handler never reads ctx.tx', () => {
+  expect((tool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+});
+
 let n = 0;
 beforeEach(() => {
   vi.clearAllMocks();

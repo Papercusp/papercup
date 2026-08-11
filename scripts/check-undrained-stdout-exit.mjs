@@ -175,6 +175,20 @@ function resolvesToStaticString(node, depth = 0) {
   if (!node || depth > 8) return false;
   if (ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node) || ts.isTemplateExpression(node)) return true;
   if (ts.isParenthesizedExpression(node)) return resolvesToStaticString(node.expression, depth + 1);
+  // `cond ? '…' : null` — a GUARDED one-line notice, which is how an optional
+  // diagnostic is written. Static iff both branches are (nullish counts: it cannot grow).
+  if (ts.isConditionalExpression(node)) {
+    const branchOk = (b) => isNullish(b) || resolvesToStaticString(b, depth + 1);
+    return branchOk(node.whenTrue) && branchOk(node.whenFalse);
+  }
+  // `notice(x)` where `notice` is a MODULE-LOCAL function whose every return is a
+  // literal/template — the "bounded diagnostic behind a helper" shape. Without this,
+  // hoisting a one-line message into a named helper makes it read exactly like an
+  // accumulated buffer, which is a false positive on the most idiomatic shape there is.
+  if (ts.isCallExpression(node) && ts.isIdentifier(node.expression)) {
+    const fn = findModuleFunction(ownerSourceFile(node), node.expression.text);
+    return fn ? functionReturnsOnlyStatic(fn, depth + 1) : false;
+  }
   // `'a' + 'b'` — static iff both sides are.
   if (ts.isBinaryExpression(node) && node.operatorToken.kind === ts.SyntaxKind.PlusToken) {
     return resolvesToStaticString(node.left, depth + 1) && resolvesToStaticString(node.right, depth + 1);

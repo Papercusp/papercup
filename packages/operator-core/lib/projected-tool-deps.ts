@@ -128,12 +128,18 @@ async function readQuotaStateImpl(
         workspaceId,
       ]);
       return await tx.unsafe(
+        // ('ok','refused') — NOT just 'ok'. A 'refused' row is a call that
+        // dispatched and RAN (handler, gates, often a dedup index search) and then
+        // returned isError. It was historically written as 'ok' and so has always
+        // counted toward quota; splitting the status out (EI-20184794555427363)
+        // must not quietly make refusals free, or a caller could spin refused calls
+        // without limit. 'replayed' stays excluded — that one performs no work.
         `SELECT count(*)::int AS n FROM harness_shared.tool_invocations
           WHERE workspace_id = $1
             AND tool_name = $2
             AND role = $3
             AND window_key = $4
-            AND status = 'ok'`,
+            AND status IN ('ok', 'refused')`,
         [workspaceId, toolName, ctx.role ?? "", windowKey],
       );
     });
@@ -162,6 +168,17 @@ interface RecordInvocationInput {
     | "role-not-allowed"
     | "timeout"
     | "invalid-input"
+    /**
+     * EI-20184794555427363: the call dispatched cleanly and the handler then
+     * self-reported failure by returning `isError: true` (a business-level
+     * refusal), rather than throwing. Previously recorded as plain `ok`, which
+     * made a refusal unfalsifiable from the ledger. See the fuller note on the
+     * generic dispatcher's own status union (tooldef/src/dispatch-types.ts).
+     *
+     * UNLIKE `replayed`, this is NOT quota-neutral: the handler really ran. The
+     * quota reader below counts ('ok','refused') for exactly that reason.
+     */
+    | "refused"
     /**
      * WI-6792: the call was served from the idempotency-key replay store — the
      * tool never ran. Written by the MCP handler's replay branch, which returns

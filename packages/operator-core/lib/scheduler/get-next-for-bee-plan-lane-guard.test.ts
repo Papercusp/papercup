@@ -57,6 +57,7 @@ vi.mock('./claim-spec-match', async (importOriginal) => ({
 }));
 
 import { getNextForBee } from './claim-spec-store';
+import { buildP2pLaneFence } from './p2p-lane-fence';
 
 function claimResult(id: string) {
   return {
@@ -175,6 +176,48 @@ describe('getNextForBee — plan-item-lane guard retry loop', () => {
     expect(res?.specSource).toBe('default');
     expect(getNextWorkItemMock).toHaveBeenCalledTimes(1);
     expect(releaseWorkItemMock).not.toHaveBeenCalled();
+  });
+
+  it('applies the shared p2p fence only to default-source pulls (EI-20185650623647293)', async () => {
+    getNextWorkItemMock.mockResolvedValueOnce(claimResult('F-default'));
+    planItemLaneBlockReasonMock.mockResolvedValueOnce(null);
+
+    const defaultResult = await getNextForBee({ cupId: 'me', harness: 'papercusp', ignoreStoredSpec: true });
+
+    expect(defaultResult?.specSource).toBe('default');
+    const effectiveDefault = getNextWorkItemMock.mock.calls[0]?.[0] as {
+      view?: { filter?: unknown };
+    };
+    expect(effectiveDefault.view?.filter).toEqual(buildP2pLaneFence());
+  });
+
+  it('leaves an explicitly authored bee spec unchanged', async () => {
+    const authoredFilter = { field: 'kind' as const, op: 'in' as const, value: ['bug'] };
+    sqlMock.mockResolvedValueOnce([
+      {
+        spec: {
+          specVersion: '1.0',
+          specId: 'authored-bug-lane',
+          revision: 4,
+          view: { filter: authoredFilter },
+          rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+        },
+        revision: 4,
+        updated_by: 'leader',
+        updated_at: new Date().toISOString(),
+        harness_slug: null,
+      },
+    ]);
+    getNextWorkItemMock.mockResolvedValueOnce(claimResult('F-authored'));
+    planItemLaneBlockReasonMock.mockResolvedValueOnce(null);
+
+    const authoredResult = await getNextForBee({ cupId: 'me', harness: 'papercusp' });
+
+    expect(authoredResult?.specSource).toBe('cup');
+    const effectiveAuthored = getNextWorkItemMock.mock.calls[0]?.[0] as {
+      view?: { filter?: unknown };
+    };
+    expect(effectiveAuthored.view?.filter).toEqual(authoredFilter);
   });
 
   it('releases a blocked plan-linked claim and serves the next clear one', async () => {

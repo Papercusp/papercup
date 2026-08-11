@@ -15,6 +15,7 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { DEFAULT_CLAIM_SPEC, validateClaimSpec, isIdOnlySelector, type ClaimSpec } from './claim-spec';
+import { buildP2pLaneFence } from './p2p-lane-fence';
 import { getNextWorkItem, type GetNextResult } from './get-next';
 import { releaseWorkItem, type OrgSql } from '../work-items';
 import { planItemLaneBlockReason } from './plan-item-lane-guard';
@@ -564,9 +565,15 @@ export async function getNextForBee(args: {
     });
     return null;
   }
-  const record = args.ignoreStoredSpec
+  const resolvedPullRecord = args.ignoreStoredSpec
     ? { source: 'default' as const, spec: DEFAULT_CLAIM_SPEC }
     : resolvedRecord;
+
+  // EI-20185650623647293: a missing spec used to send every self-puller through the
+  // unbounded default backlog, whose deterministic oldest-first head was often another
+  // fleet's p2p/federation work. Apply the shared fence only to the default-source
+  // effective pull; an explicitly authored bee/fleet spec remains authoritative.
+  const record = effectiveClaimSpecRecord(resolvedPullRecord);
 
   // EI-11796: one active/held lane is the fail-closed default. The limit is
   // intentionally read from the resolved spec, not from prompt compliance:
@@ -758,6 +765,29 @@ export interface ClaimSpecRecord {
    * transition — no marker, and ordinary solo DEFAULT_CLAIM_SPEC pulls resume.
    */
   fleetSlug?: string;
+}
+
+/**
+ * Apply the safety boundary for an unscoped self-pull without mutating the shared
+ * DEFAULT_CLAIM_SPEC object. Explicit per-bee and inherited fleet specs remain the
+ * authored source of truth; a p2p fleet opts into that lane by authoring its own spec.
+ *
+ * Keep the baseline spec id/revision unchanged so claim provenance still identifies
+ * the historical default ordering, while the effective filter prevents a spec-less
+ * single-box caller from repeatedly drawing the p2p/federation lane (EI-201856...).
+ */
+function effectiveClaimSpecRecord(record: ClaimSpecRecord): ClaimSpecRecord {
+  if (record.source !== 'default') return record;
+  return {
+    ...record,
+    spec: {
+      ...record.spec,
+      view: {
+        ...record.spec.view,
+        filter: buildP2pLaneFence(),
+      },
+    },
+  };
 }
 
 /**

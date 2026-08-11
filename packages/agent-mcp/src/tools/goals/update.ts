@@ -4,11 +4,13 @@
  * The other half of P-009's "wire the dead table". Creating a goal record is
  * only half a ratchet-guard: GOAL mode's contract says an agent that only ever
  * CREATES is a ratchet, so the goal must also be closable — `status: 'killed'`
- * when the kill criterion trips, `'achieved'` when it is met — and its ACTUAL
- * spend must be reportable against the ceiling declared at creation.
+ * when the kill criterion trips, `'achieved'` when it is met — and a verified
+ * measured spend snapshot may be recorded against the ceiling declared at
+ * creation. This tool cannot infer the interactive session's own spend.
  *
  * Partial by construction: every field is optional and an omitted field is left
- * alone, so reporting actuals never silently clears a kill criterion.
+ * alone, so recording a measured spend snapshot never silently clears a kill
+ * criterion.
  */
 
 import { z } from 'zod';
@@ -32,6 +34,7 @@ export default defineTool({
   name: 'goals:update',
   description:
     'Move a GOAL record\'s standing state (harness_shared.goals): { id, status?, title?, body?, killCriterion?, budgetCents?, spentCents?, parentId?, launchSettings? }. ' +
+    'spentCents is an owner-supplied measured snapshot, not an automatic read of this interactive session. ' +
     'Partial — an omitted field is left untouched. Use status:"killed" when the written kill criterion trips and "achieved" when the outcome is met; ' +
     'a goal that is only ever created and never closed is the ratchet GOAL mode exists to prevent. ' +
     'status FANS OUT, in both directions: "paused"|"killed"|"achieved" gates placement on the projects this goal OWNS and disarms the engine loops of sessions attributed to it; ' +
@@ -39,11 +42,11 @@ export default defineTool({
   capability: 'goals:write',
   guidance: {
     when:
-      'Reporting actual spend against a goal\'s declared ceiling, revising its statement or kill criterion, or CLOSING it (achieved / killed). Under GOAL mode this is the standing-cadence write that keeps the owner report honest.',
+      'Recording a verified measured child-fleet spend snapshot against a goal\'s declared ceiling, revising its statement or kill criterion, or CLOSING it (achieved / killed). Under GOAL mode this is the standing-cadence write that keeps the owner report honest.',
     notWhen:
-      'For per-project progress use the pot/plan/work-item beneath the goal — this row carries the goal-level state only. To read current state first, goals:get { id, detail:"full" }.',
+      'For per-pot progress or measured spend use goals:pots { goalId } and the pot/plan/work-item beneath the goal — this row carries the goal-level state only. Do not invent interactive-session cost. To read current state first, goals:get { id, detail:"full" }.',
     chaining:
-      'goals:get → goals:update. Pausing/killing winds the projects down FOR you (placement gate + loop disarm); ' +
+      'goals:get → goals:pots → goals:update only when writing a verified measured snapshot. Pausing/killing winds the projects down FOR you (placement gate + loop disarm); ' +
       'a degraded result means burn continues — chase it with fleet:assignments / loop:status on the reported projects.',
     returns:
       '`stop` carries the fan-out report and is NOT symmetric — check its `status` before reading it. ' +
@@ -70,7 +73,12 @@ export default defineTool({
         'refresh the structured kill criterion — this is how a tripwire\'s `current` advances ("$310 of $500"). Pass null to drop them back to prose-only. Omit to leave untouched.',
       ),
     budgetCents: z.number().int().nonnegative().optional().describe('revise the declared ceiling'),
-    spentCents: z.number().int().nonnegative().optional().describe('actuals to date, recorded in metadata alongside the ceiling'),
+    spentCents: z
+      .number()
+      .int()
+      .nonnegative()
+      .optional()
+      .describe('owner-supplied measured spend snapshot, recorded in metadata; do not derive interactive-session cost'),
     parentId: z.string().min(1).nullable().optional().describe('re-parent, or null to detach'),
     launchSettings: goalLaunchSettingsSchema
       .nullable()

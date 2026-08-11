@@ -269,7 +269,7 @@ describe('the pre-pin this tool depends on', () => {
 });
 
 describe('the kickoff brief', () => {
-  it('states the outcome, the kill criterion and the ceiling in dollars', () => {
+  it('states the outcome, the kill criterion, the ceiling and spend visibility boundary', () => {
     const brief = buildGoalKickoffBrief({
       goalId: 'ship-paid-app-3f9a1c',
       title: 'Ship a paid app',
@@ -280,6 +280,18 @@ describe('the kickoff brief', () => {
     expect(brief).toContain('OUTCOME — Ship a paid app');
     expect(brief).toContain('KILL THIS IF — no paying user by day 30');
     expect(brief).toContain('$500.00');
+    expect(brief).toContain('SPEND VISIBILITY');
+    expect(brief).toContain('goals:pots { goalId }');
+    expect(brief).toContain('measured child-fleet spend');
+    expect(brief).toContain('do not invent per-session actuals');
+    expect(brief).not.toContain('Report actuals against it');
+  });
+
+  it('does not demand unavailable actuals when no ceiling is declared', () => {
+    const brief = buildGoalKickoffBrief({ goalId: 'g-1', title: 't' });
+    expect(brief).toContain('CEILING — none declared. Flag before any large spend.');
+    expect(brief).toContain('goals:pots { goalId }');
+    expect(brief).not.toContain('Report actuals anyway');
   });
 
   it('does not restate the mode contract (which arrives with the mode)', () => {

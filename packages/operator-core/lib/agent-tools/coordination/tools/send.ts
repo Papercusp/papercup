@@ -1533,6 +1533,11 @@ export default defineTool({
   capability: 'coord:write',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
+  // EI-20186059075216845: coord:send persists through the coordination/admin
+  // seams and never reads ctx.tx. Do not hold an org-app transaction open while
+  // roster, federation, and wake delivery work runs; under fleet concurrency
+  // that pins every app-pool slot until the 45s acquisition deadline expires.
+  skipWorkspaceTx: true,
   // EI-7838: this cross-field "need {to,summary} (or items)" check used to live in
   // a trailing `.refine()` on the object below. Zod only RUNS a `.refine()` /
   // `.superRefine()` after the base object schema parses EVERY field successfully —

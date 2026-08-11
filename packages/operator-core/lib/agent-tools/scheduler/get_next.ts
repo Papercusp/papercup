@@ -786,13 +786,13 @@ export default defineTool({
       }
     }
     // EI-8579: a self-puller with NEITHER a per-bee NOR an inherited fleet spec resolves to
-    // DEFAULT_CLAIM_SPEC (plain oldest-first) — it can silently draw owner-deferred work
-    // (a paused/de-scoped category) a curated spec would have excluded. Advisory only (the
-    // claim already happened): nudge the caller to set its own spec, same non-blocking
-    // posture as set_claim_spec's EI-6079 wakeability warning.
+    // DEFAULT_CLAIM_SPEC with its built-in p2p/federation safety fence. It can still draw
+    // owner-deferred work (a paused/de-scoped category) that a curated spec would exclude.
+    // Advisory only (the claim already happened): nudge the caller to set its own spec,
+    // same non-blocking posture as set_claim_spec's EI-6079 wakeability warning.
     const warning =
       res && res.specSource === 'default'
-        ? 'You have no per-bee or fleet claim spec — this claim used plain oldest-first DEFAULT_CLAIM_SPEC, which can hand you owner-deferred work (e.g. a paused/de-scoped category). Consider scheduler:set_claim_spec {cupId: you} to scope your own pulls.'
+        ? 'You have no per-bee or fleet claim spec — this claim used DEFAULT_CLAIM_SPEC with the built-in p2p/federation safety fence, but it can still hand you owner-deferred work (e.g. a paused/de-scoped category). Consider scheduler:set_claim_spec {cupId: you} to scope your own pulls.'
         : undefined;
     // EI-8809 (routing-gate hint at dispatch): most items are already stamped
     // payload.routingHint at creation (work_items:create / plans:promote); this is
