@@ -419,8 +419,11 @@ describe('preflightBackendLaunch — check the env the WINDOW gets, not the oper
     try {
       const pre = preflightBackendLaunch('omp', {}, { home: empty, env: { USERPROFILE: empty }, platform: 'win32' });
       if (pre.ok) throw new Error('expected a failure');
+      // The two mechanisms an operator has to know to act on this at all: the
+      // desktop-session env swap, and the non-interactive rc-file early-return.
       expect(pre.diagnosis).toMatch(/does not inherit the operator's environment/);
-      expect(pre.diagnosis).toMatch(/NON-INTERACTIVE/);
+      expect(pre.diagnosis).toMatch(/non-interactive/i);
+      expect(pre.diagnosis).toMatch(/bashrc/);
     } finally {
       rmSync(empty, { recursive: true, force: true });
     }
