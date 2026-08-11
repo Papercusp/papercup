@@ -106,6 +106,7 @@ import { resolveHiveEpochCrypto } from '@papercusp/operator-core/lib/sync/hyperb
 import { drainOutboxOnce, DRAIN_PASS_TIMEOUT_MS } from '@papercusp/operator-core/lib/sync/hyperbee/outbox-drain';
 import { openOwnLog, type OwnLog } from '@papercusp/operator-core/lib/sync/hyperbee/peer-log';
 import { produceLogSnapshot } from '@papercusp/operator-core/lib/sync/hyperbee/log-snapshot';
+import { SEED_EXCLUDED_TABLES } from '@papercusp/operator-core/lib/sync/hyperbee/seed-excluded-tables';
 import {
   findLiveOperatorHoldingHive,
   waitForLiveOperatorHoldingHive,
@@ -402,7 +403,16 @@ export async function refreshCorestoreStateForSeed(inp: {
   // A full cut ships every block, so it needs no fresh snapshot. (seed-history-trim-2026-07-07 P-004.)
   if (inp.sparse) {
     const produce = inp.produceSnapshotImpl ?? produceLogSnapshot;
-    const snap = await produce(ownLog, { now: Date.now(), schemaVersion: CURRENT_SCHEMA_VERSION });
+    // EI-20108164746219771 — same exclusion the LIVE operator applies in
+    // servicePendingHeadSnapshot (boot.ts). This is the QUIESCED path (we hold the store
+    // writable and append the snapshot ourselves); the no-outage path goes through the
+    // head-snapshot route instead. Both append the snapshot a sparse cut ships, so both
+    // must filter or the leak returns on whichever path is taken.
+    const snap = await produce(ownLog, {
+      now: Date.now(),
+      schemaVersion: CURRENT_SCHEMA_VERSION,
+      excludeTables: SEED_EXCLUDED_TABLES,
+    });
     warn(
       `[cut-seed] sparse: appended fresh head snapshot ` +
         `(appended=${snap.appended} coversUpTo=${snap.coversUpTo} chunks=${snap.chunkCount} rows=${snap.rowCount}).`,

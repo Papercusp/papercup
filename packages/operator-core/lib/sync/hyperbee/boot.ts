@@ -88,6 +88,7 @@ import {
 import { startBootstrapProgressPoller } from './bootstrap-progress-poller';
 import { recordBootEvent, type BootHistoryKind } from './boot-history';
 import { resolveSeedLogKeys } from './seed-log-admission';
+import { SEED_EXCLUDED_TABLES } from './seed-excluded-tables';
 import type Corestore from 'corestore';
 import {
   bindingResolvesHiveHomeProjection,
@@ -2862,6 +2863,24 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       const snap = await produceLogSnapshot(ownLog, {
         now: Date.now(),
         schemaVersion: CURRENT_SCHEMA_VERSION,
+        // EI-20108164746219771 — the SERVER installer shipped the build box's machine
+        // label. This snapshot is the one a no-outage release cut ships: the cutter opens
+        // READ-ONLY (we hold the write lock), asks for this via the head-snapshot route,
+        // and then ships `[coreSparseFrom, len)` — a span that IS this snapshot's chunks.
+        // Filtering here is therefore what keeps `presence` out of every published seed.
+        //
+        // POLICY, NOT A PARAMETER — deliberately not plumbed through the route. The route
+        // is `auth: 'loopback'` and documents the release cut as its only caller, so a
+        // caller-supplied table list would buy nothing and hand any loopback process the
+        // ability to drop arbitrary tables out of the owner's LIVE own log.
+        //
+        // ⚠ IT DOES MUTATE THE LIVE LOG, and that is the cost to understand before adding
+        // a table: readers fold FORWARD from the newest complete snapshot, so a row
+        // omitted here is unreachable for anyone seeding from it. For `presence` that
+        // self-heals within one 30s keep-alive (presence-announce.ts DEFAULT_REFRESH_MS);
+        // for a table with real history it would be silent data loss. See
+        // ./seed-excluded-tables.
+        excludeTables: SEED_EXCLUDED_TABLES,
       });
       if (snap.appended) lastSnapshotCoversUpTo = snap.coversUpTo;
 

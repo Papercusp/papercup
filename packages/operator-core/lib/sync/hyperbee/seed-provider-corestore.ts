@@ -63,32 +63,14 @@ import {
 export const CORESTORE_SEED_KIND = 'corestore';
 
 /**
- * Tables cut OUT of the shipped seed (EI-20108164746219771).
- *
- * `presence` is heartbeat state keyed `<github_user_id>/<machine_label>`, carrying the
- * build box's machine label into every published SERVER installer. It is RUNTIME state
- * regenerated within seconds, so dropping it costs a joiner nothing.
- *
- * ⚠ `usage` IS DELIBERATELY **NOT** HERE, and an earlier revision of this constant had
- * it — wrongly. The first census reported "usage=3 identity-bearing", but that probe
- * matched FIELD NAMES (a key literally called `device_pubkey`), not the owner's identity.
- * Re-measured against the release gate's OWN denylist, `usage` carries ZERO identity
- * values. It is also `contributor_usage_events`: an append-only, federated ledger that
- * is the source of truth for tier-C contributor stats. Excluding it would have discarded
- * 1517 legitimate ledger rows to remove nothing.
- * ⚠ DELIBERATELY NOT `hive-members` (the membership ROSTER — required, owner-authorised)
- * and NOT `NEVER_RATE_LIMITED_TABLE_TAGS` (it also holds contributors / hive-members /
- * hive-settings, all of which the seed REQUIRES).
- *
- * ⛔ TABLE-LEVEL EXCLUSION IS NOT THE WHOLE FIX. The same corrected census found identity
- * inside two tables that CANNOT be dropped because they are required content:
- *   hive-members  → value paths `github_username`, `device_attestations[].device_label`
- *   hive-policy   → value path `policy_json`
- * Those need a field-level decision (scrub the device label; the owner's handle in the
- * roster is plausibly intended and owner-authorised), NOT another entry here. Tracked on
- * the item — do not "finish" this fix by widening this list.
+ * The seed's table-exclusion policy. DEFINED in `./seed-excluded-tables` (a
+ * dependency-free module) and re-exported here, because `boot.ts` — the live operator
+ * that appends the head snapshot a no-outage cut actually ships — needs the same list
+ * and must not take a runtime dependency on this module to get it. Read that file for
+ * the policy and its ⛔ caveats before changing what is excluded.
  */
-export const SEED_EXCLUDED_TABLES: readonly string[] = ['presence'];
+export { SEED_EXCLUDED_TABLES } from './seed-excluded-tables';
+import { SEED_EXCLUDED_TABLES } from './seed-excluded-tables';
 
 /** What {@link mintFilteredSeedContentCore} produced, for the manifest. */
 export interface MintedSeedCore {
@@ -308,6 +290,71 @@ async function downloadCoreRange(store: Corestore, keyHex: string, from = 0): Pr
   return len;
 }
 
+/**
+ * Refuse to ship a suffix that still carries an excluded table (EI-20108164746219771).
+ *
+ * ── WHY FILTERING THE SNAPSHOT IS NOT SUFFICIENT ON ITS OWN ──
+ * The head snapshot is filtered (boot.ts / cut-seed-cli.ts), but what SHIPS is
+ * `[coreSparseFrom, len)` where `len` is the core length at the cutter's read-only OPEN —
+ * which happens strictly AFTER the operator appends that snapshot. The live operator
+ * re-announces `presence` on a 30s keep-alive (presence-announce.ts DEFAULT_REFRESH_MS),
+ * so a heartbeat landing in that gap appends a RAW op inside the shipped span and the
+ * leak returns. The shipped seed measured rawOps=0, but that is a race won, not a race
+ * removed: filtering alone makes the fix PROBABILISTIC.
+ *
+ * So this asserts the property directly, on the blocks that actually landed in staging
+ * rather than on the intent that produced them. Reading the replica (not the source) is
+ * the point — it is the artifact that ships.
+ *
+ * THROWS rather than warns. A refused cut is recoverable in minutes; a published
+ * installer carrying the build box's identity is not, and the last one took three weeks
+ * to notice. The artifact-level identity gate (`audit-release-bundle.py`) remains the
+ * backstop; this is the earlier, cheaper failure that names the exact block.
+ */
+async function assertShippedRangeCarriesNoExcludedTables(inp: {
+  readonly store: Corestore;
+  readonly keyHex: string;
+  readonly from: number;
+  readonly len: number;
+  readonly excludeTables: readonly string[];
+}): Promise<void> {
+  const excluded = new Set(inp.excludeTables);
+  if (excluded.size === 0) return;
+  const core = inp.store.get({
+    key: Buffer.from(inp.keyHex, 'hex'),
+    valueEncoding: 'json',
+  }) as unknown as ReadableCore;
+  await core.ready();
+  const offenders: string[] = [];
+  for (let i = Math.max(0, inp.from); i < inp.len; i++) {
+    const op = (await core.get(i, { wait: true })) as PeerLogOp | null;
+    if (!op) continue;
+    if (isSnapshotOp(op)) {
+      // A snapshot block carries the rows themselves — the case that matters, since the
+      // shipped suffix is normally ENTIRELY snapshot chunks.
+      const payload = op.value as { rows?: Array<{ table?: string; hbKey?: string }> } | undefined;
+      for (const r of payload?.rows ?? []) {
+        if (r?.table && excluded.has(r.table)) offenders.push(`block ${i} snapshot row ${r.table}`);
+      }
+      continue;
+    }
+    if (op.table && excluded.has(op.table)) offenders.push(`block ${i} raw op ${op.table}`);
+  }
+  if (offenders.length) {
+    const shown = offenders.slice(0, 5).join('; ');
+    throw new Error(
+      `[seed:corestore] REFUSING TO CUT: the shipped suffix [${inp.from}, ${inp.len}) of ` +
+        `${inp.keyHex.slice(0, 12)}… still carries ${offenders.length} row(s) from an excluded ` +
+        `table (${shown}${offenders.length > 5 ? '; …' : ''}). Excluded: ${[...excluded].join(', ')}. ` +
+        'This is the EI-20108164746219771 identity leak. A RAW-op offender means an op was ' +
+        'appended between the filtered head snapshot and this cut\'s read-only open (presence ' +
+        're-announces every 30s) — re-cut to pick up a fresher snapshot. A SNAPSHOT-ROW offender ' +
+        'means the head snapshot was produced WITHOUT the exclusion: check that the operator ' +
+        'servicing /api/internal/substrate/head-snapshot is running a build that filters it.',
+    );
+  }
+}
+
 /** Adapt a corestore core (read via replication from the FULL source) to the
  *  {@link AdmittedLog} shape `findLatestCompleteSnapshot` scans. */
 function coreAsAdmittedLog(core: ReadableCore, keyHex: string): AdmittedLog {
@@ -420,7 +467,20 @@ export function createCorestoreSeedProvider(): SeedProvider {
       const coreLengths: Record<string, number> = {};
       try {
         for (const keyHex of coreKeys) {
-          coreLengths[keyHex] = await downloadCoreRange(replica, keyHex, coreSparseFrom[keyHex] ?? 0);
+          const from = coreSparseFrom[keyHex] ?? 0;
+          const len = await downloadCoreRange(replica, keyHex, from);
+          coreLengths[keyHex] = len;
+          // EI-20108164746219771 — verify the bytes that actually landed, before they are
+          // hashed into a seed entry. Filtering the head snapshot is necessary but not
+          // sufficient (see this function's note: a presence keep-alive can land a raw op
+          // inside the shipped span after the snapshot was taken).
+          await assertShippedRangeCarriesNoExcludedTables({
+            store: replica,
+            keyHex,
+            from,
+            len,
+            excludeTables: SEED_EXCLUDED_TABLES,
+          });
         }
       } finally {
         teardown();
