@@ -26,6 +26,7 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { appendFileSync, closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
@@ -905,6 +906,74 @@ export function buildCheckpointSystemdArgv(
   ];
 }
 
+/**
+ * The request handed to the durable eligibility waiter. Keep this serializable: it is
+ * persisted as DBOS workflow input when `waitForEligibility:true` is used.
+ */
+export interface CheckpointEligibilityWaitRequest {
+  paths: string[];
+  waitSec: number;
+  pendingId: string;
+  root?: string;
+  force?: boolean;
+  replaceStale?: boolean;
+}
+
+/** The immediate receipt returned while the durable waiter sleeps/rechecks. */
+export interface CheckpointEligibilityWaitReceipt {
+  pendingId: string;
+  workflowId: string;
+  completionEvents: string[];
+}
+
+type CheckpointEligibilityWaitRunner = (
+  request: CheckpointEligibilityWaitRequest,
+) => Promise<CheckpointEligibilityWaitReceipt>;
+
+let checkpointEligibilityWaitRunner: CheckpointEligibilityWaitRunner | null = null;
+
+/** Install the DBOS-backed runner without pulling the DBOS SDK into request handlers. */
+export function setCheckpointEligibilityWaitRunner(
+  runner: CheckpointEligibilityWaitRunner | null,
+): void {
+  checkpointEligibilityWaitRunner = runner;
+}
+
+/** Whether the host has installed the crash-resumable wait path. */
+export function checkpointEligibilityWaitEnabled(): boolean {
+  return checkpointEligibilityWaitRunner !== null;
+}
+
+/** Enqueue a wait and return before the quiet-cut interval can exhaust MCP transport time. */
+export async function scheduleCheckpointEligibilityWait(
+  request: CheckpointEligibilityWaitRequest,
+): Promise<CheckpointEligibilityWaitReceipt> {
+  if (!checkpointEligibilityWaitRunner) {
+    throw new Error('durable checkpoint eligibility waiter is not installed');
+  }
+  return checkpointEligibilityWaitRunner(request);
+}
+
+/**
+ * Stable idempotency key for retries of a timed-out MCP call. A retry describing the same
+ * quiet-cut candidate and paths must resume the same waiter rather than enqueueing a second
+ * future gate run. The candidate/tip pair is part of the preflight observation, not a clock.
+ */
+export function checkpointEligibilityPendingId(input: {
+  root?: string;
+  candidate: string | null;
+  tip: string | null;
+  paths: string[];
+}): string {
+  const canonical = JSON.stringify({
+    root: input.root ?? null,
+    candidate: input.candidate ?? null,
+    tip: input.tip ?? null,
+    paths: [...new Set(input.paths.map((p) => String(p).trim()).filter(Boolean))].sort(),
+  });
+  return createHash('sha256').update(canonical).digest('hex').slice(0, 24);
+}
+
 export interface LaunchCheckpointOpts {
   /** Integration tree root (default integrationRoot()). */
   root?: string;
@@ -1212,7 +1281,7 @@ export function renderPreLaunchRefusal(v: PreLaunchExclusion): string {
     'content-comparison heuristic, and the files are COMMITTED (nothing for git-sync to do). A suite fired now ' +
     `would spend ~55 min judging an older version of your declared files, and its red would not be evidence ` +
     'about your change. Nothing was spawned, so nothing was wasted and the gate slot is still free.\n' +
-    `TWO EXITS: waitForEligibility:true — sleep ~${v.waitSec}s (until those commits age into the quiet window) ` +
+    `TWO EXITS: waitForEligibility:true — enqueue a durable waiter for ~${v.waitSec}s (until those commits age into the quiet window) ` +
     'and then launch, which is what a caller in this position almost always wants; or force:true — launch now ' +
     'and judge the older candidate anyway (correct when you need ANY fresh verdict more than a verdict on these ' +
     'files, e.g. greening a red gate that is blocking the fleet).'
@@ -1367,8 +1436,22 @@ export function recordCheckpointDisplacement(
  *  operator-core, not the reverse), so the tiny pure sanitizer is duplicated here exactly like
  *  agent-tools/release/trace.ts already does for the identical reason. Keep in sync by hand;
  *  it is a one-line sanitizer that changes essentially never. */
-function checkpointPipelineName(root: string): string {
+export function checkpointPipelineName(root: string): string {
   return (path.basename(path.resolve(root)).replace(/[^a-zA-Z0-9_-]/g, '-') || 'default').slice(0, 64);
+}
+
+/**
+ * The terminal event families a detached checkpoint can produce for this root. Keep this
+ * alongside the pipeline-name sanitizer so request receipts and `checkpoint:await` use the
+ * exact same scoped keys as the green-checkpoint producer.
+ */
+export function checkpointEligibilityCompletionEvents(root: string): string[] {
+  const pipeline = checkpointPipelineName(root);
+  return [
+    `release:green:${pipeline}`,
+    `green-checkpoint:red:${pipeline}`,
+    `green-checkpoint:inconclusive:${pipeline}`,
+  ];
 }
 
 /**

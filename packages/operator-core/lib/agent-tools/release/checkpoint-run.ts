@@ -29,11 +29,15 @@ import {
   assessPreLaunchExclusion,
   CANDIDATE_RERESOLVE_WINDOW_SEC,
   checkpointCandidateContainment,
+  checkpointEligibilityPendingId,
   classifyReplaceRequest,
   launchDetachedCheckpoint,
   renderPreLaunchRefusal,
   REPLACE_STALE_MIN_AGE_SEC,
+  scheduleCheckpointEligibilityWait,
+  type CheckpointEligibilityWaitReceipt,
 } from '../../release-checkpoint-launch';
+import { integrationRoot } from '../../release-deploy-launch';
 import { attributeRetriageToRun, describeRefireBudget, readInFlightRetriage } from '../../release/in-flight-retriage';
 import { caveat, describeRefusal, isRefusedAnswer, refuseAnswer, withFieldReliability } from '../../field-reliability';
 import { applyPendingMigrationsNow } from '../../db-boot-migrate';
@@ -137,7 +141,7 @@ export default defineTool({
       .boolean()
       .optional()
       .describe(
-        'EI-20025784115349280: when the pre-launch check would refuse with would_exclude_declared_paths, SLEEP until the commits carrying your declared paths age into the quiet-cut window (wait_sec in that refusal, always ≤300s), then launch — instead of returning. Usually what you want after "I just fixed the reds": it trades a bounded wait for a verdict that actually judges your files. The call blocks for that long; the gate slot stays FREE meanwhile, which is the whole gain over firing first. Ignored unless the refusal would fire.',
+        'EI-20025784115349280: when the pre-launch check would refuse with would_exclude_declared_paths, enqueue a durable waiter that rechecks after the commits carrying your declared paths age into the quiet-cut window (wait_sec in that refusal, always ≤300s), then launches — instead of returning. The reply is immediate with pending_id, workflow_id, and completion_events for checkpoint:await; the MCP call never sleeps across the transport deadline. Ignored unless the refusal would fire.',
       ),
     // EI-20031402866608444: ACCEPTED, not ignored. This arg used to be undeclared, and the schema
     // is additionalProperties:false, so passing it was an `invalid_input` that launched NOTHING —
@@ -302,8 +306,42 @@ export default defineTool({
     // preLaunchExclusion key above. (The "metadata MERGES" note in the comment above is about
     // handler keys merging with TRANSPORT keys at finalize, a different axis.) Omitted entirely
     // when absent, so `metadata_json ? 'fireReason'` cleanly separates calls that gave one.
+    let waitReceipt: CheckpointEligibilityWaitReceipt | null = null;
+    if (preflight.refuse && args.waitForEligibility) {
+      try {
+        const root = integrationRoot();
+        waitReceipt = await scheduleCheckpointEligibilityWait({
+          paths: args.paths ?? [],
+          waitSec: preflight.waitSec ?? 0,
+          pendingId: checkpointEligibilityPendingId({
+            root,
+            candidate: preflight.candidate,
+            tip: preflight.tip,
+            paths: args.paths ?? [],
+          }),
+          root,
+          force: args.force,
+          replaceStale: args.replaceStale,
+        });
+      } catch (error) {
+        // DBOS is deliberately fail-closed here. A request-side fallback to setTimeout would
+        // recreate the transport timeout this path exists to prevent, while launching anyway
+        // would violate the caller's explicit request to judge its declared files.
+        ctx.log?.(
+          `[release:checkpoint-run] durable eligibility wait unavailable: ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
     ctx.metadata?.({
-      preLaunchExclusion: preflight.refuse ? (args.waitForEligibility ? 'waited' : 'refused') : 'passed',
+      preLaunchExclusion: preflight.refuse
+        ? waitReceipt
+          ? 'scheduled'
+          : args.waitForEligibility
+            ? 'wait-unavailable'
+            : 'refused'
+        : 'passed',
       ...(args.reason != null ? { fireReason: clampText(args.reason, LIMITS.SHORT_TITLE) } : {}),
       ...(preflight.refuse
         ? {
@@ -314,6 +352,12 @@ export default defineTool({
               path: b.path,
               eligibleInSec: b.eligibleInSec,
             })),
+            ...(waitReceipt
+              ? {
+                  preLaunchWaitPendingId: waitReceipt.pendingId,
+                  preLaunchWaitWorkflowId: waitReceipt.workflowId,
+                }
+              : {}),
           }
         : { preLaunchProceedReason: preflight.proceedReason }),
     });
@@ -338,12 +382,53 @@ export default defineTool({
           ],
         };
       }
-      // The caller chose to wait. Sleeping HERE — before the spawn — is the whole point: the
-      // gate's serial slot stays free for the duration, which is exactly what firing first and
-      // discovering the exclusion afterwards cannot give back. +2s crosses the quiet-window
-      // boundary rather than landing exactly on it (the cut is an age test at second
-      // granularity, so an exact-boundary wake can still round the wrong way).
-      await new Promise((r) => setTimeout(r, (preflight.waitSec! + 2) * 1000));
+      if (!waitReceipt) {
+        return {
+          content: [
+            {
+              type: 'text',
+              text: JSON.stringify({
+                ok: false,
+                launched: false,
+                reason: 'wait_for_eligibility_unavailable',
+                candidate: preflight.candidate,
+                tip: preflight.tip,
+                quiet_cut_sec: preflight.quietCutSec,
+                wait_sec: preflight.waitSec,
+                blocked_paths: preflight.blockedPaths,
+                note:
+                  `${renderPreLaunchRefusal(preflight)} ` +
+                  'A durable eligibility waiter is not installed on this host, so no MCP sleep was attempted and nothing was spawned; retry after DBOS is available or use force:true.',
+              }),
+            },
+          ],
+        };
+      }
+      return {
+        content: [
+          {
+            type: 'text',
+            text: JSON.stringify({
+              ok: true,
+              launched: false,
+              pending: true,
+              reason: 'waiting_for_eligibility',
+              pending_id: waitReceipt.pendingId,
+              workflow_id: waitReceipt.workflowId,
+              completion_events: waitReceipt.completionEvents,
+              candidate: preflight.candidate,
+              tip: preflight.tip,
+              quiet_cut_sec: preflight.quietCutSec,
+              wait_sec: preflight.waitSec,
+              blocked_paths: preflight.blockedPaths,
+              note:
+                `NOT launched yet — durable eligibility waiter ${waitReceipt.workflowId} will ` +
+                `recheck after ~${preflight.waitSec ?? 0}s and launch only if the declared paths are eligible. ` +
+                'Use checkpoint:await with one of completion_events for the detached verdict.',
+            }),
+          },
+        ],
+      };
     }
     const result = await launchDetachedCheckpoint({ force: args.force, replaceStale: args.replaceStale });
     // WI-6962: the host could not be asked whether a run is in flight, so we refused rather

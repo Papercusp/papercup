@@ -318,8 +318,14 @@ export async function startDbos(): Promise<void> {
     await import('./plan-markdown-render-workflow');
   }
 
+  // EI-20196041413229589: register the release:checkpoint-run eligibility waiter before
+  // DBOS.launch, then install its request-side enqueue seam only after the runtime is live.
+  // This keeps waitForEligibility transport-safe without making DBOS a request-handler import.
+  const { wireCheckpointEligibilityWait } = await import('./checkpoint-eligibility-workflow');
+
   await DBOS.launch();
   G.__papercuspDbosStarted = true;
+  wireCheckpointEligibilityWait();
   console.log(
     `[dbos] launched (schema=dbos, source=${source}, appVersion=${PINNED_APP_VERSION})`,
   );

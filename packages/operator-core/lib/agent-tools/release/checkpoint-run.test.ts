@@ -1020,6 +1020,68 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
     expect(b.reason).toBeUndefined();
   });
 
+  it('waitForEligibility returns a durable receipt without sleeping or spawning in the request', async () => {
+    const scheduleSpy = vi.fn(async () => ({
+      pendingId: 'pending-1',
+      workflowId: 'checkpoint-eligibility:pending-1',
+      completionEvents: [
+        'release:green:papercusp',
+        'green-checkpoint:red:papercusp',
+        'green-checkpoint:inconclusive:papercusp',
+      ],
+    }));
+    const launchSpy = mockLaunch({
+      assessPreLaunchExclusion: vi.fn(async () => REFUSAL),
+      scheduleCheckpointEligibilityWait: scheduleSpy,
+    });
+    const { default: tool } = await import('./checkpoint-run');
+    const started = Date.now();
+    const b = parse((await tool.handler({ paths: [MINE], waitForEligibility: true }, MAKE_CTX())) as never);
+
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(scheduleSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        paths: [MINE],
+        waitSec: 120,
+        pendingId: expect.any(String),
+      }),
+    );
+    expect(launchSpy).not.toHaveBeenCalled();
+    expect(b).toMatchObject({
+      ok: true,
+      launched: false,
+      pending: true,
+      reason: 'waiting_for_eligibility',
+      pending_id: 'pending-1',
+      workflow_id: 'checkpoint-eligibility:pending-1',
+      completion_events: ['release:green:papercusp', 'green-checkpoint:red:papercusp', 'green-checkpoint:inconclusive:papercusp'],
+    });
+    expect(String(b.note)).toMatch(/durable eligibility waiter/);
+  });
+
+  it('waitForEligibility fails closed when the durable runner is unavailable, without a request-side sleep', async () => {
+    const scheduleSpy = vi.fn(async () => {
+      throw new Error('DBOS is not installed');
+    });
+    const launchSpy = mockLaunch({
+      assessPreLaunchExclusion: vi.fn(async () => REFUSAL),
+      scheduleCheckpointEligibilityWait: scheduleSpy,
+    });
+    const { default: tool } = await import('./checkpoint-run');
+    const started = Date.now();
+    const b = parse((await tool.handler({ paths: [MINE], waitForEligibility: true }, MAKE_CTX())) as never);
+
+    expect(Date.now() - started).toBeLessThan(1000);
+    expect(scheduleSpy).toHaveBeenCalledTimes(1);
+    expect(launchSpy).not.toHaveBeenCalled();
+    expect(b).toMatchObject({
+      ok: false,
+      launched: false,
+      reason: 'wait_for_eligibility_unavailable',
+    });
+    expect(String(b.note)).toMatch(/no MCP sleep was attempted/);
+  });
+
   /**
    * WI-37618. The refusal above is returned to the CALLER and stored nowhere else:
    * `tool_invocations` keeps only transport metadata and `output_ref` is a reference, not a
