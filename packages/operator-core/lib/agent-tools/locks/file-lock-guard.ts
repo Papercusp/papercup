@@ -153,7 +153,15 @@ export async function guardFileLock<T>(
     // concurrent fleet edits raced); a few backoff retries ride out the dip.
     acquired = await acquireWithContentionRetry(() =>
       inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
-        tryAcquire(tx, { coordinationDomain, owner: ownerId, ownerLabel, paths, intent: spec.intent, ttlSec }),
+        tryAcquire(tx, {
+          coordinationDomain,
+          owner: ownerId,
+          ownerLabel,
+          paths,
+          intent: spec.intent,
+          ttlSec,
+          automatic: true,
+        }),
         { paths },
       ));
   } catch (err) {

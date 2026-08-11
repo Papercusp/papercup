@@ -232,6 +232,7 @@ export default defineTool({
           paths,
           intent: args.intent,
           ttlSec,
+          automatic: args.intent.startsWith('PreToolUse:'),
         }),
         { paths },
       );
@@ -266,6 +267,7 @@ export default defineTool({
                 paths,
                 intent: args.intent,
                 ttlSec,
+                automatic: args.intent.startsWith('PreToolUse:'),
                 coordinationDomain,
               } satisfies FileLockAcquireParams,
               decode: (raw) => decodeRemoteAcquire(raw, paths, ttlSec),

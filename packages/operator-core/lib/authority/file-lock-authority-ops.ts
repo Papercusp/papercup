@@ -39,6 +39,9 @@ export interface FileLockAcquireParams {
   paths: string[];
   intent: string;
   ttlSec: number;
+  /** Internal automatic-guard acquire; never refresh an overlapping
+   * deliberate same-owner claim. */
+  automatic?: boolean;
   /** Optional bounded wait, mirroring locks:acquire. */
   waitMaxSec?: number;
   /**
@@ -202,6 +205,7 @@ export function buildFileLockAuthorityHandlers(
         paths: p.paths,
         intent: p.intent,
         ttlSec,
+        automatic: p.automatic,
         waitMaxSec: p.waitMaxSec,
         coordinationDomain: p.coordinationDomain,
       });

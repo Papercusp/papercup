@@ -228,8 +228,9 @@ describe('tryAcquire', () => {
         owner: 'a',
         ownerLabel: 'A',
         paths: ['held.ts'],
-        intent: 'automatic refresh',
+        intent: 'PreToolUse:Edit',
         ttlSec: 60,
+        automatic: true,
       }),
     );
     expect(refresh).toMatchObject({ ok: true, newly_held: [] });
@@ -240,8 +241,9 @@ describe('tryAcquire', () => {
         owner: 'a',
         ownerLabel: 'A',
         paths: ['held.ts', 'new.ts'],
-        intent: 'automatic extension',
+        intent: 'PreToolUse:Edit',
         ttlSec: 60,
+        automatic: true,
       }),
     );
     expect(extension).toMatchObject({ ok: true, newly_held: ['new.ts'] });
