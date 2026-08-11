@@ -223,6 +223,15 @@ const TURN_ORIGIN_CAPTURE_RE = /^\s*⟦turn-origin:([A-Za-z0-9:._@-]+) nonce:[a-
 const HOOK_FEEDBACK_PREFIX = 'Stop hook feedback:';
 
 /**
+ * Legacy wake rows can predate the delivery-seam provenance envelope (or come
+ * from a pre-envelope client transcript). They are still machine-authored, but
+ * their durable text is all the owner-facing readers have. Keep this protocol
+ * prefix as the narrow compatibility rail; new wakes are enrolled by
+ * wake-executor before they reach a session.
+ */
+const UNENVELOPED_WAKE_RE = /^\[await-event\]\s+\S+\s+fired(?:\s|[.!?])/;
+
+/**
  * What a `user`-role transcript turn should show in the OWNER'S CHAT PANE —
  * `''` when the turn is machine-authored and belongs to no conversation.
  *
@@ -245,6 +254,7 @@ const HOOK_FEEDBACK_PREFIX = 'Stop hook feedback:';
  *   - envelope present, origin === OWNER_CHAT_TURN_ORIGIN → the human authored it → SHOW
  *   - envelope present, any other origin                  → machine-injected     → HIDE
  *   - no envelope, Stop-hook wall                         → harness coaching     → HIDE
+ *   - no envelope, `[await-event] <key> fired …`          → legacy wake         → HIDE
  *   - no envelope, anything else                          → typed by the human   → SHOW
  *
  * This is a RENDER filter only. Nothing is deleted: the full turn stays in the
@@ -259,6 +269,51 @@ export function ownerVisiblePromptText(text: string): string {
   if (!text) return '';
   const origin = text.match(TURN_ORIGIN_CAPTURE_RE)?.[1];
   if (origin !== undefined) return origin === OWNER_CHAT_TURN_ORIGIN ? stripMachineTurnAnnotations(text) : '';
-  if (text.trimStart().startsWith(HOOK_FEEDBACK_PREFIX)) return '';
+  const trimmed = text.trimStart();
+  if (trimmed.startsWith(HOOK_FEEDBACK_PREFIX) || UNENVELOPED_WAKE_RE.test(trimmed)) return '';
   return stripMachineTurnAnnotations(text);
+}
+
+/**
+ * How much of a user turn's LEADING text is enough to decide owner-visibility.
+ *
+ * Every branch of {@link ownerVisiblePromptText} keys on a LEADING marker — the
+ * `⟦turn-origin:… nonce:…⟧` envelope (~40-120 chars) or the
+ * `Stop hook feedback:` prefix (19), or the legacy
+ * `[await-event] <key> fired` prefix — so a bounded head of the turn decides the
+ * verdict identically to the whole thing. That matters because the second
+ * consumer of this predicate is a SEARCH path (WI-37883) that hydrates metadata
+ * for a page of hits: pulling whole transcript turns there to answer a
+ * yes/no question would move megabytes per keystroke.
+ *
+ * 512 is ~4× the longest envelope, which leaves room for the marker to grow
+ * without anyone having to remember this constant exists.
+ *
+ * ⚠ THE ONE DIVERGENCE, and its direction is deliberate. A turn whose head is
+ * unmarked but whose FULL text strips to empty reads VISIBLE from the prefix and
+ * EMPTY from the whole. That fails toward SHOWING the turn — which is the safe
+ * side on both surfaces: the dangerous failure this predicate exists to prevent
+ * is hiding something the human actually wrote (see OWNER_CHAT_TURN_ORIGIN's
+ * note), never keeping one machine row too many.
+ */
+export const OWNER_VISIBILITY_DECIDING_PREFIX_CHARS = 512;
+
+/**
+ * Would this `user`-role turn appear in the owner's chat pane at all?
+ *
+ * The boolean form of {@link ownerVisiblePromptText}, for callers that need the
+ * VERDICT rather than the display text — today the owner-facing transcript
+ * search, which must not offer the owner a hit inside text the pane hides
+ * (WI-37883: the excerpt leaks machine plumbing, and the deep-link into it
+ * cannot anchor because the target message was never rendered).
+ *
+ * Deriving it from the same function rather than re-stating the rule is the
+ * whole point: a second copy of the allow-list is exactly the drift the parent
+ * fix (EI-20135573616431912) was shaped to make impossible.
+ *
+ * Safe on a bounded head of the turn — see
+ * {@link OWNER_VISIBILITY_DECIDING_PREFIX_CHARS}. PURE → unit-tested.
+ */
+export function isOwnerVisiblePrompt(text: string): boolean {
+  return ownerVisiblePromptText(text) !== '';
 }

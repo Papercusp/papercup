@@ -13,6 +13,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import {
+  isOwnerVisiblePrompt,
   OWNER_CHAT_NOTE_TAG,
   OWNER_CHAT_TEXT_FIELD,
   OWNER_CHAT_TURN_MARKER,
@@ -20,6 +21,7 @@ import {
   ownerChatWakePayloadFields,
   ownerVisiblePromptText,
   OWNER_CHAT_TURN_ORIGIN,
+  OWNER_VISIBILITY_DECIDING_PREFIX_CHARS,
   readOwnerChatTurnText,
   stripMachineTurnAnnotations,
 } from './owner-chat-turn';
@@ -191,6 +193,19 @@ describe('ownerVisiblePromptText — what the OWNER sees in their chat pane (EI-
     expect(ownerVisiblePromptText(real)).toBe('');
   });
 
+  it('HIDES a legacy envelope-less wake delivery from session_turns', () => {
+    // Verbatim shape measured in the live corpus: old wake rows begin directly
+    // with the canonical await-event prefix because they predate seam tagging.
+    const real =
+      '[await-event] coord:inbox-wake:su-4bab8522 fired — rate limit recovered on avis.';
+    expect(ownerVisiblePromptText(real)).toBe('');
+  });
+
+  it('keeps an owner turn that merely mentions the await-event label', () => {
+    const typed = '[await-event] is the protocol name I am investigating';
+    expect(ownerVisiblePromptText(typed)).toBe(typed);
+  });
+
   it('HIDES a Stop-hook coaching wall — it is harness→agent, recorded as a user turn only because that is the injection channel', () => {
     const real =
       'Stop hook feedback:\nThis turn ends by handing the next move back to the owner WITHOUT asking ' +
@@ -226,5 +241,74 @@ describe('ownerVisiblePromptText — what the OWNER sees in their chat pane (EI-
     // A deny-list would leak a wake kind nobody has invented yet; keying on
     // provenance means the default for "enveloped but not owner-authored" is HIDE.
     expect(ownerVisiblePromptText('⟦turn-origin:some-future-kind nonce:0123456789ab⟧\nmachine noise')).toBe('');
+  });
+});
+
+/**
+ * WI-37883 — the boolean form, and the property the SEARCH path depends on.
+ *
+ * The chat pane calls `ownerVisiblePromptText` with the whole turn because it is
+ * about to render the result. The transcript search only needs the VERDICT, for a
+ * page of hits at a time, so it hydrates a bounded head instead of whole
+ * transcripts. These tests pin the two things that makes safe: the boolean agrees
+ * with the text function, and the verdict is decided by the head.
+ */
+describe('isOwnerVisiblePrompt', () => {
+  const OWNER_ENVELOPE = `⟦turn-origin:${OWNER_CHAT_TURN_ORIGIN} nonce:deadbeefcafe1234⟧\n`;
+  const MACHINE_ENVELOPE = '⟦turn-origin:loop-fire nonce:095d0a31d74f617e⟧\n';
+
+  it('agrees with ownerVisiblePromptText on every branch of the allow-list', () => {
+    // Derived from it rather than re-stating the rule — this asserts the
+    // derivation, so a future edit to one cannot quietly disagree with the other.
+    for (const text of [
+      '',
+      'plain typed message',
+      `${OWNER_ENVELOPE}hi`,
+      `${MACHINE_ENVELOPE}🔁 Loop wake (every ~300s)`,
+      '⟦turn-origin:wake-pump nonce:0123456789ab⟧\n[await-event] coord:inbox-wake fired',
+      '⟦turn-origin:some-future-kind nonce:0123456789ab⟧\nmachine noise',
+      'Stop hook feedback:\nThis turn ends by handing the next move back to the owner',
+    ]) {
+      expect(isOwnerVisiblePrompt(text)).toBe(ownerVisiblePromptText(text) !== '');
+    }
+  });
+
+  it('HIDES a machine wake and SHOWS the owner\'s own turn', () => {
+    expect(isOwnerVisiblePrompt(`${MACHINE_ENVELOPE}loop wake`)).toBe(false);
+    expect(isOwnerVisiblePrompt(`${OWNER_ENVELOPE}hi`)).toBe(true);
+    expect(isOwnerVisiblePrompt('hi')).toBe(true);
+  });
+
+  it('PREFIX-SAFE: the verdict off a truncated head matches the verdict off the whole turn', () => {
+    /* The property the search path rests on. Every branch keys on a LEADING
+       marker, so hydrating `left(text, N)` must not change the answer — which is
+       what lets the route decide visibility without pulling whole transcripts
+       through a per-keystroke query. A 4KB body is far past the bound. */
+    const body = 'x'.repeat(4096);
+    for (const whole of [
+      `${MACHINE_ENVELOPE}${body}`,
+      `${OWNER_ENVELOPE}${body}`,
+      `Stop hook feedback:\n${body}`,
+      body,
+    ]) {
+      const head = whole.slice(0, OWNER_VISIBILITY_DECIDING_PREFIX_CHARS);
+      expect(isOwnerVisiblePrompt(head)).toBe(isOwnerVisiblePrompt(whole));
+    }
+  });
+
+  it('the bound is comfortably longer than the envelope that has to fit inside it', () => {
+    /* The one way prefix-safety breaks is a marker that no longer fits: a
+       truncated envelope stops matching and reads as unmarked prose, i.e. as the
+       OWNER'S — the leak direction. Asserted as headroom, not as an exact width,
+       so the envelope can grow without this test dictating the constant. */
+    expect(OWNER_VISIBILITY_DECIDING_PREFIX_CHARS).toBeGreaterThan(MACHINE_ENVELOPE.length * 3);
+  });
+
+  it('fails toward SHOWING when the head is unmarked (the safe direction)', () => {
+    /* The documented divergence: a turn whose head carries no marker but whose
+       full text strips to empty reads visible from the head. Keeping one machine
+       row is recoverable; hiding something the human wrote is the failure this
+       whole predicate exists to prevent. */
+    expect(isOwnerVisiblePrompt('a genuinely typed message')).toBe(true);
   });
 });

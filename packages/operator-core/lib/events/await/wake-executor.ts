@@ -96,7 +96,11 @@ import {
 } from '../../carry-note';
 import { renderLoopChecksBlock, renderLoopWallsBlock } from '../../harness/routines/loop-fire';
 import { getLoopStatus, countAgentToolCallsInWindow } from '../../harness/routines/loop';
-import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
+import {
+  formatEnvelope,
+  mintNonce,
+  tagTurnForInjection,
+} from '../../turn-provenance/turn-provenance';
 import { isInboxOwnerReplyPayload } from '../../agent-tools/coordination/inbox-reply';
 import {
   readOwnerChatTurnText,
@@ -633,27 +637,32 @@ export function applyInjectionDoor(d: DeliveryWork, text: string): string {
  * UNVERIFIED at the hook — visible, never a dropped wake).
  */
 function tagWakeText(d: DeliveryWork, text: string, tag: typeof tagTurnForInjection): string {
+  const origin = readColdLoopMarker(d.payload)
+    ? 'loop-fire'
+    : // EI-20130618357432548: an owner CHAT-PANE turn is the same authority as an
+      // owner INBOX reply — both are authored by the authenticated human through an
+      // admin-only surface — so it mints the SAME existing distinguished origin
+      // rather than a new one. Deliberately still ENROLLED: delivering it
+      // unenveloped would classify it OWNER (interactive), and the admin route
+      // accepts a no-Origin localhost POST, so that would let any agent curl an
+      // owner-stamped turn (and thus an auto-registered mode grant) into a peer's
+      // session. See owner-chat-turn.ts's SECURITY note.
+      // EI-20135573616431912: the SHARED constant, not a literal — the owner's
+      // chat pane hides every user turn whose origin is not this exact string,
+      // so a drift between here and that filter would silently VANISH the
+      // owner's own messages from their conversation.
+      isInboxOwnerReplyPayload(d.payload) || readOwnerChatTurnText(d.payload)
+      ? OWNER_CHAT_TURN_ORIGIN
+      : 'wake-pump';
   try {
-    const origin = readColdLoopMarker(d.payload)
-      ? 'loop-fire'
-      : // EI-20130618357432548: an owner CHAT-PANE turn is the same authority as an
-        // owner INBOX reply — both are authored by the authenticated human through an
-        // admin-only surface — so it mints the SAME existing distinguished origin
-        // rather than a new one. Deliberately still ENROLLED: delivering it
-        // unenveloped would classify it OWNER (interactive), and the admin route
-        // accepts a no-Origin localhost POST, so that would let any agent curl an
-        // owner-stamped turn (and thus an auto-registered mode grant) into a peer's
-        // session. See owner-chat-turn.ts's SECURITY note.
-        // EI-20135573616431912: the SHARED constant, not a literal — the owner's
-        // chat pane hides every user turn whose origin is not this exact string,
-        // so a drift between here and that filter would silently VANISH the
-        // owner's own messages from their conversation.
-        isInboxOwnerReplyPayload(d.payload) || readOwnerChatTurnText(d.payload)
-        ? OWNER_CHAT_TURN_ORIGIN
-        : 'wake-pump';
     return tag({ sid: d.subscriberId, origin, text }).taggedText;
   } catch {
-    return text; // provenance must never break a wake
+    // The wake itself is fail-soft, but returning it without an envelope turns a
+    // machine prompt into affirmative owner speech in every transcript reader.
+    // Keep delivery moving with a syntactically valid, unverified envelope; the
+    // prompt hook can classify it as unverified (there is no ledger row), while
+    // owner-visible readers still fail closed on the non-owner origin.
+    return `${formatEnvelope(origin, mintNonce())}\n${text}`;
   }
 }
 

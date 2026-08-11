@@ -1513,7 +1513,7 @@ describe('executeWake — turn-provenance tagging (turn-provenance-owner-vs-agen
     expect(msg.body).toContain('[await-event]');
   });
 
-  it('a tagger that throws never breaks the wake — untagged text still delivers', async () => {
+  it('a tagger that throws never breaks the wake — an unverified envelope still delivers', async () => {
     const injectPsuHost = vi.fn(async () => true);
     const out = await executeWake(
       work({ wakeHandle: advHandle() }),
@@ -1527,8 +1527,7 @@ describe('executeWake — turn-provenance tagging (turn-provenance-owner-vs-agen
     );
     expect(out).toEqual({ kind: 'delivered', channel: 'psu-socket-inject' });
     const [, msg] = injectPsuHost.mock.calls[0] as unknown as [string, { data: string }];
-    expect(msg.data).toContain('[await-event]');
-    expect(msg.data).not.toContain('⟦');
+    expect(msg.data).toMatch(/^⟦turn-origin:wake-pump nonce:[a-f0-9]{16}⟧\n\[await-event\]/);
   });
 });
 
