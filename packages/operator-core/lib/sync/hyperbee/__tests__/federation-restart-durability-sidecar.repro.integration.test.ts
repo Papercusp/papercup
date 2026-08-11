@@ -86,10 +86,14 @@ import {
   FILL_WORKSPACE_ID_DDL,
   HARNESS_ISSUES_CONSOLIDATED_FED_DDL,
 } from '../../../../test/_work-items-schema';
-import { _resetForTests as resetDbOrgPools } from '@papercusp/db-org';
+import {
+  _resetForTests as resetDbOrgPools,
+  _resetStoreIdentityForTests,
+} from '@papercusp/db-org';
 // eslint-disable-next-line import/no-relative-packages -- clears the env-URL cache the pool resolver memoizes
 import { _resetUrlCacheForTests } from '../../../../../../libs/papercusp/libs/db/src/connection';
 import { _resetHarnessAdminUrlCacheForTests } from '../../../embedded-pg-discovery';
+import { _resetLongLivedAdminPoolsForTests } from '../../../long-lived-admin-pool';
 import { createOrgTestDb, type OrgTestDb } from '../../../../test/_org-test-db';
 import { mutateHarnessRegistry } from '../../../harness-registry';
 import { _clearHiveMemberDeviceSetCacheForTest } from '../hive-member-identity-set';
@@ -179,6 +183,11 @@ afterEach(async () => {
       // best-effort — a thrown assertion must not leak a swarm/dir/db
     }
   }
+  // Every case routes the process-level merge-cursor store at a fresh OrgTestDb.
+  // Do not carry that module-scoped pool into the next case: target rotation is
+  // intentional test isolation, not the production endpoint-move path under test.
+  _resetLongLivedAdminPoolsForTests();
+  _resetStoreIdentityForTests();
   _resetCacheForTests();
   _resetBootHistoryForTests();
 });
