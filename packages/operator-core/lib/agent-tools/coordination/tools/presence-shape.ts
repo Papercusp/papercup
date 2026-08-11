@@ -10,7 +10,11 @@
  * Contract (D-004): uniform keys per tier (TOON tabular), a visible
  * `(truncated)` notice row on a cut, `summary` kept verbatim (it is the
  * counts contract readers are told to trust — and the result-aware seeAlso
- * reads summary.byState.ended).
+ * reads summary.byState.ended). A cut also gets an early, machine-readable
+ * `activeTruncated` disclosure. The row sentinel is useful to a human reading
+ * the table, but it is at the tail of `active[]` and can be lost when the
+ * result door clips a large payload; the top-level disclosure must therefore
+ * precede the roster in the serialized object.
  */
 
 export const PRESENCE_TIER_CAPS = {
@@ -78,8 +82,9 @@ export function shapeCoordPresence(data: unknown, tier: PresenceTier): unknown {
     };
   };
 
+  const truncated = d.active.length > c.rows;
   const rows = d.active.slice(0, c.rows).map(project);
-  if (d.active.length > c.rows) {
+  if (truncated) {
     rows.push({
       ...project({}),
       ownerId: "(truncated)",
@@ -99,6 +104,23 @@ export function shapeCoordPresence(data: unknown, tier: PresenceTier): unknown {
       })
     : undefined;
 
-  // Keep the small top-level fields (as_of/scope/summary/self) verbatim.
-  return { ...d, active: rows, ...(expanded ? { expanded } : {}) };
+  // Keep the small top-level fields (as_of/scope/summary/self) verbatim. Put
+  // this disclosure BEFORE the roster so it survives a result-door clip that
+  // cuts through the long `active[]` value. `censusCount` is measured from the
+  // complete snapshot presented to this shaper, never from the capped output.
+  const activeTruncated = truncated
+    ? {
+        shown: c.rows,
+        censusCount: d.active.length,
+        truncatedByLimit: true as const,
+        limit: c.rows,
+        more: 'coord:presence { owner } for a targeted liveness lookup; payloadTier:"full" for the complete roster',
+      }
+    : undefined;
+  return {
+    ...(activeTruncated ? { activeTruncated } : {}),
+    ...d,
+    active: rows,
+    ...(expanded ? { expanded } : {}),
+  };
 }

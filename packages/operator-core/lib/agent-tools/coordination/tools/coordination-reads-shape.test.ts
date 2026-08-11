@@ -91,6 +91,7 @@ describe("shapeCoordPresence (P-022)", () => {
     // summary + self survive verbatim (counts contract / seeAlso input)
     expect(out.summary).toBe(snapshot.summary);
     expect(out.self).toBe("su-0000");
+    expect(out).not.toHaveProperty("activeTruncated");
     // standard adds the wider lane
     const std = shapeCoordPresence(snapshot, "standard") as {
       active: Record<string, unknown>[];
@@ -104,12 +105,32 @@ describe("shapeCoordPresence (P-022)", () => {
     const cap = PRESENCE_TIER_CAPS.trimmed.rows;
     const big = {
       ...snapshot,
+      summary: { ...snapshot.summary, active: cap + 5 },
       active: Array.from({ length: cap + 5 }, (_, i) => rosterRow(i)),
     };
     const out = shapeCoordPresence(big, "trimmed") as {
       active: Record<string, unknown>[];
+      activeTruncated: {
+        shown: number;
+        censusCount: number;
+        truncatedByLimit: boolean;
+        limit: number;
+        more: string;
+      };
     };
     expect(out.active).toHaveLength(cap + 1);
+    expect(out.activeTruncated).toEqual({
+      shown: cap,
+      censusCount: cap + 5,
+      truncatedByLimit: true,
+      limit: cap,
+      more: expect.stringContaining('coord:presence { owner }'),
+    });
+    // The disclosure is serialized before the long roster, so it is not hidden
+    // behind the result-door's tail clipping.
+    expect(Object.keys(out).indexOf("activeTruncated")).toBeLessThan(
+      Object.keys(out).indexOf("active"),
+    );
     const notice = out.active.at(-1)!;
     expect(notice.ownerId).toBe("(truncated)");
     expect(notice.intent).toContain('payloadTier:"full"');
