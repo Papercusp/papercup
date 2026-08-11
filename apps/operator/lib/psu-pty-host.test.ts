@@ -23,6 +23,7 @@ import {
   fleetOscFromEnv,
   turnSubmitCrDelayForAgent,
   makeIdleGate,
+  makeOwnerComposerGate,
   makeActivityTracker,
   makeAgentBusyGate,
   makeCarryRearmController,
@@ -851,6 +852,37 @@ describe('makeIdleGate (P-013 mid-keystroke safety)', () => {
     const r = await g.waitIdle();
     expect(r.deferred).toBe(true);
     expect(r.reason).toBe('idle-cap');
+  });
+});
+
+describe('makeOwnerComposerGate (EI-20199370837439455 staged-input safety)', () => {
+  it('keeps quiet owner text pending until an explicit submit or cancel', () => {
+    const g = makeOwnerComposerGate({ capMs: 100 });
+    g.observe('put yourself on auto mode');
+    expect(g.hasPending()).toBe(true);
+    expect(g.pendingLength()).toBeGreaterThan(0);
+
+    g.observe('\b'.repeat(30));
+    expect(g.hasPending()).toBe(false);
+
+    g.observe('continue');
+    g.observe('\u0015'); // Ctrl-U: kill the current line.
+    expect(g.hasPending()).toBe(false);
+  });
+
+  it('unblocks a gated wake when the owner submits the staged line', async () => {
+    const g = makeOwnerComposerGate({ capMs: 1000 });
+    g.observe('owner text');
+    const waiting = g.waitClear();
+    g.observe('\r');
+    await expect(waiting).resolves.toEqual({ deferred: false });
+    expect(g.hasPending()).toBe(false);
+  });
+
+  it('bounds a parked owner line instead of wedging the host forever', async () => {
+    const g = makeOwnerComposerGate({ capMs: 20 });
+    g.observe('owner text');
+    await expect(g.waitClear()).resolves.toEqual({ deferred: true, reason: 'owner-input-cap' });
   });
 });
 

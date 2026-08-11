@@ -502,13 +502,90 @@ describe('psu-pty-host idle gate defers a turn while busy, submits once idle (C2
       await sleep(400);
       expect(captured()).not.toContain('ECHO:');
 
-      // Stop typing; after idleMs + margin of quiet, the gate releases and the
-      // turn is written (CR-submitted), flushing the buffered line. The buffered
-      // keystrokes prefix it (xxx…gated-wake) — what matters is that a CR-flushed
-      // echoed line carrying the wake's data appears only AFTER the idle window.
+      // Stop typing, then explicitly submit the owner line. Idle is not enough:
+      // the composer gate must wait for this CR instead of appending the wake to
+      // the quiet-but-unsubmitted x* line.
       typing = false;
-      await sleep(idleMs + 900);
-      expect(captured()).toMatch(/ECHO:x*gated-wake/);
+      await sleep(idleMs + 100);
+      type('\r');
+      expect(await waitForOutput(captured, 'ECHO:x', 3000)).toBe(true);
+      expect(await waitForOutput(captured, 'ECHO:gated-wake', 3000)).toBe(true);
+
+      const code = await done;
+      expect(code).toBe(0);
+      expect(exitCode).toBe(0);
+      expect(existsSync(sock)).toBe(false);
+      expect(existsSync(meta)).toBe(false);
+    },
+    20_000,
+  );
+});
+
+describe('psu-pty-host owner composer gate (EI-20199370837439455)', () => {
+  it(
+    'never appends a loop-fire envelope to a quiet, unsubmitted owner line',
+    async () => {
+      const ownerId = uniqueOwner('COMPOSER');
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      const { captured, type, io } = bridgedIo();
+
+      let exitCode: number | null = null;
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', echoChildCode(6000)],
+        cwd: '/tmp',
+        env: {
+          ...hermeticEnv(),
+          PAPERCUSP_AGENT: 'claude',
+          PAPERCUSP_SID: ownerId,
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_IDLE_MS: '120',
+          PAPERCUSP_PSU_PTY_IDLE_CAP_MS: '350',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '80',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '10',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLLS: '1',
+        },
+        ownerId,
+        advSessionId: 9998,
+        io,
+        bridgeTty: true,
+        onExit: (c: number) => {
+          exitCode = c;
+        },
+      });
+
+      const host = await waitForHost(ownerId);
+      expect(host).not.toBeNull();
+
+      // This is the production failure shape: the owner has stopped typing, but
+      // has not pressed Enter, when the machine wake reaches the PTY.
+      type('owner goal');
+      await sleep(200);
+      const first = await injectIntoHost(host!.sock, {
+        mode: 'turn',
+        data: '⟦turn-origin:loop-fire nonce:first⟧\n[await-event] loop wake',
+      });
+      expect(first).toBe(true);
+      await sleep(900);
+      expect(captured()).not.toContain('ECHO:⟦turn-origin:loop-fire');
+      expect(captured()).not.toContain('ECHO:owner goal⟦turn-origin:loop-fire');
+
+      // Submitting the owner line is safe; the deferred wake was deliberately
+      // left for the next natural turn rather than appended to it.
+      type('\r');
+      await sleep(400);
+      expect(captured()).toContain('ECHO:owner goal');
+
+      const second = await injectIntoHost(host!.sock, {
+        mode: 'turn',
+        data: '⟦turn-origin:loop-fire nonce:second⟧\n[await-event] loop wake',
+      });
+      expect(second).toBe(true);
+      await sleep(700);
+      const output = captured();
+      expect(output).toContain('ECHO:⟦turn-origin:loop-fire nonce:second⟧');
+      expect(output).not.toContain('ECHO:owner goal⟦turn-origin:loop-fire');
 
       const code = await done;
       expect(code).toBe(0);

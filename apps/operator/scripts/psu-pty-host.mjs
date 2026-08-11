@@ -647,6 +647,94 @@ export function makeIdleGate({ idleMs = DEFAULT_IDLE_MS, capMs = DEFAULT_IDLE_WA
 }
 
 /**
+ * Track a bridged owner's line-editor state separately from keystroke activity.
+ * The idle gate only knows that typing stopped; it cannot tell whether the
+ * owner pressed Enter. Injecting a wake into a quiet-but-unsubmitted line
+ * appends the machine envelope after owner text, so provenance is then
+ * misclassified as owner-typed and the TUI receives a corrupted turn.
+ *
+ * Escape sequences are ignored as terminal editing controls. The conservative
+ * fallback is to keep a line pending until an explicit submit/cancel arrives;
+ * a false defer is safe, while appending machine bytes to owner text is not.
+ */
+export function makeOwnerComposerGate({ capMs = DEFAULT_IDLE_WAIT_CAP_MS } = {}) {
+  let pending = false;
+  let lineLength = 0;
+  let inEscape = false;
+  const waiters = new Set();
+
+  const setPending = (next) => {
+    pending = next;
+    if (!pending) {
+      for (const resolve of waiters) resolve({ deferred: false });
+      waiters.clear();
+    }
+  };
+
+  const observe = (data) => {
+    const text = Buffer.isBuffer(data) ? data.toString('utf8') : String(data ?? '');
+    for (let i = 0; i < text.length; i += 1) {
+      const code = text.charCodeAt(i);
+      if (inEscape) {
+        // CSI/SS3 and other terminal escape sequences end at a final byte.
+        if (code >= 0x40 && code <= 0x7e) inEscape = false;
+        continue;
+      }
+      if (code === 0x1b) {
+        inEscape = true;
+        continue;
+      }
+      if (code === 0x0d || code === 0x0a || code === 0x03 || code === 0x15) {
+        // Enter/newline submits; Ctrl-C and Ctrl-U cancel the current line.
+        lineLength = 0;
+        setPending(false);
+        continue;
+      }
+      if (code === 0x08 || code === 0x7f) {
+        lineLength = Math.max(0, lineLength - 1);
+        setPending(lineLength > 0);
+        continue;
+      }
+      if (code === 0x09 || code >= 0x20) {
+        lineLength += 1;
+        setPending(true);
+      }
+    }
+  };
+
+  return {
+    observe,
+    hasPending() {
+      return pending;
+    },
+    pendingLength() {
+      return lineLength;
+    },
+    markSubmitted() {
+      lineLength = 0;
+      inEscape = false;
+      setPending(false);
+    },
+    /** Wait for an owner submit/cancel, bounded so a parked line cannot wedge a host. */
+    waitClear() {
+      if (!pending) return Promise.resolve({ deferred: false });
+      return new Promise((resolve) => {
+        let settled = false;
+        const finish = (result) => {
+          if (settled) return;
+          settled = true;
+          clearTimeout(timer);
+          waiters.delete(finish);
+          resolve(result);
+        };
+        const timer = setTimeout(() => finish({ deferred: true, reason: 'owner-input-cap' }), capMs);
+        waiters.add(finish);
+      });
+    },
+  };
+}
+
+/**
  * Session activity tracker (agent-liveness-heartbeat-hardening-2026-06-12
  * P-006): the OUTPUT-side sibling of makeIdleGate. The pty stream is a true
  * mid-turn signal — a generating agent repaints its TUI constantly — so
@@ -2364,6 +2452,14 @@ export function hostThroughPty(o) {
   if (typeof activityTimer.unref === 'function') activityTimer.unref();
 
   const idleGate = makeIdleGate();
+  // A quiet terminal line can still contain unsubmitted owner text. Keep that
+  // state separate from the mid-keystroke clock so a wake never appends its
+  // provenance envelope to a staged human line.
+  const ownerComposerGate = makeOwnerComposerGate({
+    capMs: positiveNumber(env.PAPERCUSP_PSU_PTY_IDLE_CAP_MS, DEFAULT_IDLE_WAIT_CAP_MS),
+  });
+  let machineTurnActive = false;
+  let queuedOwnerInput = [];
   // Mid-turn inject gate (coord-wake-mid-turn-2026-06-30): reads the SAME
   // lastOutputAt the activity tracker records on every `child.onData` below, so a
   // wake `turn` is held until the agent is back at its prompt (output quiescent)
@@ -2905,12 +3001,41 @@ export function hostThroughPty(o) {
       // immediately (mid-turn), and osc writes the display, not the input line.
       const releaseInject = msg.gated ? await injectMutex.acquire() : null;
       let deferMutexRelease = false;
+      const deferForOwnerInput = (reason) => {
+        const extra = {
+          mode: msg.mode,
+          reason,
+          pendingLength: ownerComposerGate.pendingLength(),
+        };
+        appendHostEvent(ownerId, 'turn-deferred-for-owner-input', extra);
+        try {
+          process.stderr.write(
+            `psu-pty-host: ${msg.mode} DEFERRED for ${ownerId} (${reason}) — ` +
+              'owner has an unsubmitted input line; left in inbox for the next natural turn\n',
+          );
+        } catch {
+          /* diagnostic only */
+        }
+        // P-001a: a deferred waiter must release its coalesce slot; a later wake
+        // must be able to start a fresh delivery after the owner submits/cancels.
+        if (coalesceKey != null) turnCoalescer.claim(coalesceKey);
+        return { ok: false, reason: 'deferred-owner-input' };
+      };
       try {
         if (msg.gated) {
           // (1) Human keystroke gate (P-013): don't corrupt a line the user is
           // mid-typing. Only meaningful when there IS a bridged terminal a human
           // could be typing into.
-          if (bridgeTty) await idleGate.waitIdle();
+          if (bridgeTty) {
+            const idle = await idleGate.waitIdle();
+            if (idle.deferred) return deferForOwnerInput(idle.reason || 'idle-cap');
+            // Idle is not submission. If the owner paused with text still in
+            // the composer, wait for Enter/Ctrl-C/Ctrl-U, bounded like idle.
+            if (ownerComposerGate.hasPending()) {
+              const clear = await ownerComposerGate.waitClear();
+              if (clear.deferred) return deferForOwnerInput(clear.reason || 'owner-input-cap');
+            }
+          }
           // (2) Agent mid-turn gate (coord-wake-mid-turn-2026-06-30 /
           // clean-boundary-only-kill WI-1818, D-006): don't write a wake `turn`
           // into a TUI that is still generating (wedges it, needs ESC), and —
@@ -3007,6 +3132,12 @@ export function hostThroughPty(o) {
             // later arrivals must start a fresh cycle, never fold into a dead one.
             if (coalesceKey != null) turnCoalescer.claim(coalesceKey);
             return { ok: false, reason: 'deferred-busy-gate' };
+          }
+          // The agent gate above yields to the event loop. Re-check immediately
+          // before the write in case the owner began composing during that wait.
+          if (ownerComposerGate.hasPending()) {
+            const clear = await ownerComposerGate.waitClear();
+            if (clear.deferred) return deferForOwnerInput(clear.reason || 'owner-input-cap');
           }
         }
         // WI-5510: STALE-FIRE GUARD. Once a message has passed every gate above
@@ -3199,6 +3330,19 @@ export function hostThroughPty(o) {
         // visible window — so a fleet:join recolors the LIVE window. Every other
         // mode targets the agent's stdin (a wake turn / a force-interrupt byte).
         const sink = msg.mode === 'osc' ? stdout : child;
+        // Hold owner keystrokes that arrive during the deliberate text→CR
+        // submit gap. Without this small delivery lease, a human can start a
+        // new line after the envelope is written but before its CR, recreating
+        // the same interleaving this composer gate prevents at the front door.
+        const machineTurn = bridgeTty && (msg.mode === 'turn' || msg.mode === 'reset');
+        if (machineTurn) {
+          if (ownerComposerGate.hasPending()) {
+            const clear = await ownerComposerGate.waitClear();
+            if (clear.deferred) return deferForOwnerInput(clear.reason || 'owner-input-cap');
+          }
+          machineTurnActive = true;
+          queuedOwnerInput = [];
+        }
         // P-001a: claim the coalesce slot at delivery — later same-key arrivals
         // start a fresh cycle (they'll gate on the turn this write starts). The
         // claimed newest text replaces this waiter's own, annotated with the count.
@@ -3211,9 +3355,28 @@ export function hostThroughPty(o) {
         // a separate keystroke after a settle (controlWrites). A one-shot text+CR
         // burst is swallowed by the TUI's paste detector — the turn never submits
         // and the human has to press Enter.
-        for (const step of controlWritesForAgent(deliver, env.PAPERCUSP_AGENT, env)) {
-          if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
-          sink.write(step.data);
+        let machineTurnSubmitted = false;
+        try {
+          for (const step of controlWritesForAgent(deliver, env.PAPERCUSP_AGENT, env)) {
+            if (step.delayMs > 0) await new Promise((r) => setTimeout(r, step.delayMs));
+            sink.write(step.data);
+          }
+          machineTurnSubmitted = machineTurn;
+        } finally {
+          if (machineTurn) {
+            machineTurnActive = false;
+            const ownerInput = queuedOwnerInput;
+            queuedOwnerInput = [];
+            if (machineTurnSubmitted) ownerComposerGate.markSubmitted();
+            for (const input of ownerInput) {
+              ownerComposerGate.observe(input);
+              try {
+                child.write(input);
+              } catch {
+                /* child exit is handled by the normal host cleanup path */
+              }
+            }
+          }
         }
         // WI-2930: a turn/reset submit targets the agent's stdin and must be
         // verified like the compact writes above (raw = control bytes and osc =
@@ -3419,8 +3582,18 @@ export function hostThroughPty(o) {
     // bridgeTty so only a genuine interactive TTY (never a headless piped session)
     // reports. Socket-injected agent wakes bypass stdin, so they never reach here.
     if (bridgeTty) reportOwnerHumanTurn();
+    const input = d.toString('utf8');
+    if (bridgeTty) {
+      if (machineTurnActive) {
+        // The machine turn owns the current text→CR gap. Replay these bytes only
+        // after its submit so owner input starts on the next terminal line.
+        queuedOwnerInput.push(input);
+        return;
+      }
+      ownerComposerGate.observe(input);
+    }
     try {
-      child.write(d.toString('utf8'));
+      child.write(input);
     } catch {
       /* ignore */
     }

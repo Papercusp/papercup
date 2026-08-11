@@ -127,6 +127,23 @@ export function makeIdleGate({ idleMs, capMs, now }?: {
         reason: string;
     }>;
 };
+/** Track quiet-but-unsubmitted owner input separately from keystroke activity. */
+export function makeOwnerComposerGate({ capMs }?: {
+    capMs?: number | undefined;
+}): {
+    observe(data: any): void;
+    hasPending(): boolean;
+    pendingLength(): number;
+    markSubmitted(): void;
+    /** Wait for an owner submit/cancel, bounded by capMs. */
+    waitClear(): Promise<{
+        deferred: boolean;
+        reason?: undefined;
+    } | {
+        deferred: boolean;
+        reason: string;
+    }>;
+};
 /**
  * Session activity tracker (agent-liveness-heartbeat-hardening-2026-06-12
  * P-006): the OUTPUT-side sibling of makeIdleGate. The pty stream is a true
