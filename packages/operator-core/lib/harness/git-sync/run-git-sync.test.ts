@@ -24,6 +24,8 @@ import {
   isIndexLockFailure,
   isTransientStatFailure,
   clearStaleIndexLock,
+  GIT_SYNC_BOT_EMAIL,
+  GIT_SYNC_BOT_NAME,
   type RunGit,
 } from './run-git-sync';
 import type { ContentDetector } from '../../content-lint/registry';
@@ -46,6 +48,14 @@ function configUser(repo: string): void {
   git(repo, 'config', 'user.name', 'git-sync test');
   git(repo, 'config', 'commit.gpgsign', 'false');
 }
+
+describe('git-sync commit identity', () => {
+  it('uses a verified GitHub no-reply email for automated pushes', () => {
+    expect(GIT_SYNC_BOT_NAME).toBe('papercusp-git-sync');
+    expect(GIT_SYNC_BOT_EMAIL).toBe('papercupai@users.noreply.github.com');
+    expect(GIT_SYNC_BOT_EMAIL).not.toMatch(/@papercusp\.local$/);
+  });
+});
 
 describe('runGitSync (real git, no submodule)', () => {
   let root: string;

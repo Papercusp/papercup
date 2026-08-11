@@ -83,7 +83,13 @@ const GIT_NETWORK_SUBCOMMANDS = new Set(['fetch', 'push', 'pull', 'ls-remote', '
  * pairs when reading past them for the timeout/network classification above).
  */
 export const GIT_SYNC_BOT_NAME = 'papercusp-git-sync';
-export const GIT_SYNC_BOT_EMAIL = 'git-sync@papercusp.local';
+/**
+ * GitHub rejects pushes whose commit author email is not verified on the
+ * authenticated account. Keep the bot name for attribution, but use the
+ * papercupai no-reply identity already used by the repository's publishing
+ * path so automated superproject pushes are accepted.
+ */
+export const GIT_SYNC_BOT_EMAIL = 'papercupai@users.noreply.github.com';
 const GIT_SYNC_IDENTITY_ARGS = ['-c', `user.name=${GIT_SYNC_BOT_NAME}`, '-c', `user.email=${GIT_SYNC_BOT_EMAIL}`];
 
 /** The git SUBCOMMAND in an argv — skipping leading global flags AND the separate
