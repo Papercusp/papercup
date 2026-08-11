@@ -44,7 +44,7 @@ import { LEARNING_VIEWS } from "./LearningTab";
  * on the tab (learning.improvements 320,607B + learning.hive 230,147B, ~71% of
  * its ~778KB) — the initial coverage was the high-value end and the remaining
  * 12 were the long tail, which is why "12 of 16" alone overstated the gap at
- * filing time. All 16 are covered now.
+ * filing time. All surviving views are covered now.
  *
  * ## Why a source scan rather than a render probe
  *
@@ -81,13 +81,21 @@ const SCAN_ROOTS = [
  *  ObservationsPanel and the wrapped multi-line call in LearningTab. */
 const SETTLE_CALL = /useInteractionSettle\(\s*PERF_INTERACTIONS\.learningViewSwitch\b/g;
 
-/** Today's reality, measured 2026-08-03 (post WI-7263 fix: all 16 views now
- *  have a settle point — SignalsPanel, RubricsPanel, GymView, ApiaryView,
- *  HiveEvalTrendView, BakeoffTrendView, MugWakeEfficiencyPanel, EkgPanel,
- *  RedQueenPanel, ExperimentsPanel, FrontierPanel and ThroughputView joined
- *  the original 4). Both numbers are BASELINES: changing either without
- *  updating this file is the thing the guard exists to catch. */
-const KNOWN_SETTLE_CALL_SITES = 16;
+/** Today's reality, measured 2026-08-03 (post WI-7263 fix: every view has a
+ *  settle point — SignalsPanel, RubricsPanel, GymView, ApiaryView,
+ *  HiveEvalTrendView, BakeoffTrendView, EkgPanel, RedQueenPanel,
+ *  ExperimentsPanel, FrontierPanel and ThroughputView joined the original 4).
+ *  Both numbers are BASELINES: changing either without updating this file is
+ *  the thing the guard exists to catch.
+ *
+ *  ⬇ 16 → 15 on 2026-08-11: the `wake-efficiency` view was DELETED with the
+ *  Mug/Kettle tier (retire-mug-kettle-su-only-2026-08-09 P-059 / D-076) and
+ *  MugWakeEfficiencyPanel moved to `_retired/`, which is outside SCAN_ROOTS.
+ *  BOTH sides of the ratchet moved by one — LEARNING_VIEWS lost a member and
+ *  the scan lost a call site — so `unmeasured` is still 0. That is the
+ *  "retires none without shrinking the baseline" branch working as designed:
+ *  a deliberate shrink, not a silently-lost settle point. */
+const KNOWN_SETTLE_CALL_SITES = 15;
 const KNOWN_UNMEASURED_VIEWS = 0;
 
 function tsxFilesUnder(root: string): string[] {

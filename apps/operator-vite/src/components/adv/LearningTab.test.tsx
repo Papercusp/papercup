@@ -593,19 +593,13 @@ import { FLAGS, FLAG_DEFAULTS } from "@papercusp/flags";
  *  MODULE-level store, so any suite that arms it must disarm it or the flag
  *  leaks into every later test in the file; the top-level beforeEach disarms.
  *
- *  ⚠ MUG_KETTLE_SYSTEM is pinned ON in the baseline, deliberately. It derives
- *  DEFAULT OFF (a DARK_FLAGS 'cutover' entry — retire-mug-kettle-su-only-
- *  2026-08-09), so seeding straight from FLAG_DEFAULTS retires the tier under
- *  every test in this file and hides the `wake-efficiency` view. That does not
- *  read as a gate working: it reads as "Wake efficiency" vanishing from the
- *  Verify tab row, so a test whose subject is the ROW COMPOSITION starts
- *  asserting the retirement instead (D-020's quiet vi.mock trap, and exactly
- *  how this suite failed when the gate landed). This file describes the rail
- *  with the tier available; the gate's own OFF behaviour is covered by the
- *  "Mug/Kettle tier gate" block below, which turns it off explicitly. */
+ *  (MUG_KETTLE_SYSTEM used to be pinned ON here so that seeding from
+ *  FLAG_DEFAULTS would not silently hide the `wake-efficiency` view under every
+ *  test in the file. That view is DELETED as of P-059 / D-076, so the flag no
+ *  longer changes anything this file renders and the pin is gone with it.) */
 const setTestingFlag = (on: boolean) =>
   setFlagPayload({
-    flags: { ...FLAG_DEFAULTS, [FLAGS.MUG_KETTLE_SYSTEM]: true, [FLAGS.TESTING]: on },
+    flags: { ...FLAG_DEFAULTS, [FLAGS.TESTING]: on },
     evaluatedAt: Date.now(),
     source: "override",
   });
@@ -823,53 +817,41 @@ describe("LearningTab — Improvements view (default)", () => {
     });
   });
 
-  /** The Mug/Kettle tier gate (retire-mug-kettle-su-only-2026-08-09 P-012 /
-   *  D-020). `wake-efficiency` is the live-Mug read, so it goes dark with the
-   *  tier; the drill panels beside it explicitly DO NOT, and that half is the
-   *  half worth pinning. */
-  describe("Mug/Kettle tier gating (FLAGS.MUG_KETTLE_SYSTEM)", () => {
-    // setTestingFlag pins the tier ON (see its comment), so this suite's ambient
-    // state is tier-available and every case here opts OUT explicitly.
-    const setMugKettleFlag = (on: boolean) =>
-      setFlagPayload({
-        flags: { ...FLAG_DEFAULTS, [FLAGS.MUG_KETTLE_SYSTEM]: on },
-        evaluatedAt: Date.now(),
-        source: "override",
-      });
-
-    afterEach(() => {
-      setTestingFlag(false);
-    });
-
-    // `?lview=benchmark` selects the VERIFY stage, which is the row Wake
-    // efficiency lives on. Without it the view-tab strip on screen belongs to
-    // Improve, every queryByRole below returns null whatever the flag says, and
-    // the gate looks proven while nothing was measured — the vacuous pass the
+  /** The Mug/Kettle tier RETIREMENT (retire-mug-kettle-su-only-2026-08-09
+   *  P-059 / D-076, superseding the P-012 / D-020 flag gate).
+   *
+   *  `wake-efficiency` was the live-Mug read. It is no longer flag-hidden — it
+   *  is DELETED, so there is no flag to toggle and no calibration control to
+   *  write for one. Two things still need pinning, and they are the two a
+   *  deletion is most likely to get wrong: a stale deep-link must still land
+   *  somewhere sane, and the drill panels beside it must NOT have gone with
+   *  it. */
+  describe("Mug/Kettle tier retirement (wake-efficiency deleted)", () => {
+    // `?lview=benchmark` selects the VERIFY stage — the row Wake efficiency
+    // used to live on. Without it the view-tab strip on screen belongs to
+    // Improve, every queryByRole below returns null no matter what, and the
+    // check looks proven while nothing was measured — the vacuous pass the
     // calibration control caught when these were first written.
     const renderVerifyRow = () => {
       nuqsState.lview = "benchmark";
       render(<LearningTab />);
     };
 
-    it("hides the Wake efficiency view while the tier is retired", () => {
-      setMugKettleFlag(false);
+    it("no longer offers the Wake efficiency view at all", () => {
       renderVerifyRow();
       expect(screen.queryByRole("tab", { name: "Wake efficiency" })).toBeNull();
       // The row itself is on screen — otherwise the assertion above is vacuous.
       expect(screen.getByRole("tab", { name: "EKG" })).toBeTruthy();
     });
 
-    // The calibration control for the case above: without it, a wrong tab NAME
-    // or an unrendered row would make queryByRole return null for the wrong
-    // reason and the gate would look proven while doing nothing.
-    it("shows Wake efficiency again when the testing flag is on", () => {
-      setMugKettleFlag(true);
-      renderVerifyRow();
-      expect(screen.getByRole("tab", { name: "Wake efficiency" })).toBeTruthy();
-    });
-
+    /** The observable SURVIVES the deletion; its MECHANISM does not, and that
+     *  is exactly why this test is re-pointed rather than deleted with the
+     *  view. While `wake-efficiency` existed it was a KNOWN id that
+     *  `hiddenViews` hid, and the redirect came from the flag gate. Now it is
+     *  not in LVIEWS at all, so the membership test in LearningTab rejects it
+     *  into the default. Real bookmarks and old links exist, so the landing
+     *  behaviour must not regress just because the path to it changed. */
     it("redirects a stale ?lview=wake-efficiency deep-link to the default view", () => {
-      setMugKettleFlag(false);
       nuqsState.lview = "wake-efficiency";
       render(<LearningTab />);
       expect(screen.queryByRole("tab", { name: "Wake efficiency" })).toBeNull();
@@ -889,15 +871,16 @@ describe("LearningTab — Improvements view (default)", () => {
      *  learning-loop lane grid. Both belong to the learning system D-001 keeps
      *  INTACT.
      *
-     *  Hiding them would be a REGRESSION that looks like progress, and nothing
-     *  else in the suite would notice: the tab simply stops being offered. */
-    it("does NOT hide the Red Queen or Frontier views — they are the learning system, not the Mug (D-020)", () => {
-      setMugKettleFlag(false);
+     *  Retiring them would be a REGRESSION that looks like progress, and
+     *  nothing else in the suite would notice: the tab simply stops being
+     *  offered. The risk is HIGHER now than under the flag gate — a deletion
+     *  pass sweeping "the Mug files" has no flag to flip back. */
+    it("does NOT retire the Red Queen or Frontier views — they are the learning system, not the Mug (D-020)", () => {
       renderVerifyRow();
       expect(screen.getByRole("tab", { name: "Red Queen" })).toBeTruthy();
       expect(screen.getByRole("tab", { name: "Frontier" })).toBeTruthy();
-      // ...in the same render in which the Mug view IS gone, so this cannot pass
-      // by the gate simply never having engaged.
+      // ...in the same render in which the Mug view IS gone, so this cannot
+      // pass by the retirement simply never having landed.
       expect(screen.queryByRole("tab", { name: "Wake efficiency" })).toBeNull();
     });
   });
@@ -1513,7 +1496,10 @@ describe("LearningTab — Benchmark view", () => {
     expect(
       screen.getByRole("tab", { name: "Framework bake-off" }),
     ).toBeTruthy();
-    expect(screen.getByRole("tab", { name: "Wake efficiency" })).toBeTruthy();
+    // "Wake efficiency" was promoted here too, and is deliberately NOT asserted
+    // any more: the view was DELETED with the Mug/Kettle tier (P-059 / D-076).
+    // Do not "restore" this line — the retirement is pinned by the
+    // "Mug/Kettle tier retirement" block above.
     expect(screen.getByRole("tab", { name: "EKG" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Red Queen" })).toBeTruthy();
     expect(screen.getByRole("tab", { name: "Experiments" })).toBeTruthy();
