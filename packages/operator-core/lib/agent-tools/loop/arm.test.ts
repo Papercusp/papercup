@@ -62,6 +62,11 @@ vi.mock('../../work-items', () => ({
   classifyClaimFailure: vi.fn(() => ({ reason: 'gated', holder: null })),
   getWorkItem: vi.fn(async () => null),
 }));
+// EI-20123870155538062: loop:arm shares the by-id fleet-scope admission seam with
+// work_items:claim. Keep the arm tests DB-free while pinning the ordering contract.
+vi.mock('../../scheduler/fleet-scope-admission', () => ({
+  admitWorkItemForFleetTarget: vi.fn(async () => ({ allowed: true, scoped: false })),
+}));
 vi.mock('../../events/await/inbox-wake-arm', () => ({ armInboxWake: vi.fn(async () => undefined) }));
 // EI-19447204017443244: the arm-time live-wake-await lookup behind the cap message.
 // Defaults to EMPTY so every pre-existing handler test keeps its exact prior wording.
@@ -102,6 +107,7 @@ import {
   readActiveLoopFacts,
 } from '../../harness/routines/loop';
 import { claimWorkItem, classifyClaimFailure, getWorkItem } from '../../work-items';
+import { admitWorkItemForFleetTarget } from '../../scheduler/fleet-scope-admission';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
 import { probeWakeReachability } from '../../events/await/wake-reachability';
 import { findLiveHost } from '../../events/await/psu-pty-discovery';
@@ -115,6 +121,7 @@ const priorLoopM = vi.mocked(readActiveLoopFacts);
 const claimM = vi.mocked(claimWorkItem);
 const classifyM = vi.mocked(classifyClaimFailure);
 const getWiM = vi.mocked(getWorkItem);
+const admitM = vi.mocked(admitWorkItemForFleetTarget);
 const armWakeM = vi.mocked(armInboxWake);
 const probeM = vi.mocked(probeWakeReachability);
 const findHostM = vi.mocked(findLiveHost);
@@ -139,6 +146,7 @@ beforeEach(() => {
   claimM.mockResolvedValue(null as never);
   classifyM.mockReturnValue({ reason: 'gated', holder: null } as never);
   getWiM.mockResolvedValue(null as never);
+  admitM.mockResolvedValue({ allowed: true, scoped: false } as never);
   // EI-18221784742583615: default no prior loop ⇒ no overwrite note (every existing test).
   priorLoopM.mockResolvedValue(null as never);
   // EI-19447204017443244: default no live wake-awaits (the 'none' rendering).
@@ -199,6 +207,37 @@ describe('loop:arm — WI-5345: mode reaches materializeLoop + the response (pre
 
 describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm time', () => {
   const claimedRow = { id: 'X', assignee: 'su-caller-own-id' };
+
+  it('EI-20123870155538062: refuses an out-of-spec auto-claim before mutation, but still arms the loop', async () => {
+    admitM.mockResolvedValue({
+      allowed: false,
+      scoped: true,
+      code: 'fleet_scope_violation',
+      reason: "work-item WI-OUT does not match fleet spec 'fleet-x@rev7'",
+      scope: {} as never,
+    } as never);
+
+    const b = body(await call({ workItem: 'WI-OUT' }));
+
+    expect(admitM).toHaveBeenCalledWith({
+      target: 'su-caller-own-id',
+      workItemId: 'WI-OUT',
+      harness: 'papercusp',
+      workspaceId: 'ws-1',
+    });
+    expect(claimM).not.toHaveBeenCalled();
+    expect(b).toMatchObject({
+      ok: true,
+      loop: { workItem: null },
+      workItemClaim: {
+        id: 'WI-OUT',
+        claimed: false,
+        reason: 'fleet_scope_violation',
+        hint: "work-item WI-OUT does not match fleet spec 'fleet-x@rev7'",
+      },
+    });
+    expect(b.note).toContain('fleet admission gate refused');
+  });
 
   it('claims an EXPLICIT workItem for the loop owner (any carry) and names it in the wake prompt', async () => {
     claimM.mockResolvedValue(claimedRow as never);

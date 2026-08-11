@@ -429,7 +429,7 @@ export default defineTool({
       .max(120)
       .optional()
       .describe(
-        'The WI-/EI-/F- work-item this loop is DRIVING. It is auto-CLAIMED for the loop owner at arm time (WI-2429), so the item is HELD from wake 1 — the per-item work_items:checkpoint death-resilience net engages and a successor/reclaimer inherits it if the session dies. Safe: the claim never steals a live peer\'s item (a conflict is reported, not forced). If omitted on a COLD loop, a single WI-/EI-/F- id mentioned in `goal` is auto-detected and claimed the same way.',
+        'The WI-/EI-/F- work-item this loop is DRIVING. The loop attempts to auto-CLAIM it for the loop owner at arm time (WI-2429), subject to the same fleet-scope admission as work_items:claim; an out-of-scope binding is refused while the loop itself remains armed. When admitted, the item is HELD from wake 1 — the per-item work_items:checkpoint death-resilience net engages and a successor/reclaimer inherits it if the session dies. Safe: the claim never steals a live peer\'s item (a conflict is reported, not forced). If omitted on a COLD loop, a single WI-/EI-/F- id mentioned in `goal` is auto-detected and attempted the same way.',
       ),
     carry: z
       .enum(['warm', 'cold'])
@@ -714,25 +714,47 @@ export default defineTool({
     let claimedWorkItem: string | null = null;
     let workItemClaim:
       | { id: string; claimed: true }
-      | { id: string; claimed: false; reason: string; holder?: string }
+      | { id: string; claimed: false; reason: string; holder?: string; hint?: string }
       | null = null;
     if (drivenCandidate) {
       try {
-        const wi = await claimWorkItem(drivenCandidate, ownerId, { harness });
-        if (wi) {
-          claimedWorkItem = drivenCandidate;
-          workItemClaim = { id: drivenCandidate, claimed: true };
+        // EI-20123870155538062: the direct loop auto-claim is still a claim door. Route it
+        // through the same fleet-scope admission used by work_items:claim before calling the
+        // lower-level compare-and-claim primitive. Otherwise a member can bind an out-of-spec
+        // item to its loop even though the authoritative by-id claim tool refuses it.
+        const { admitWorkItemForFleetTarget } = await import('../../scheduler/fleet-scope-admission');
+        const admission = await admitWorkItemForFleetTarget({
+          target: ownerId,
+          workItemId: drivenCandidate,
+          harness,
+          workspaceId,
+        });
+        if (!admission.allowed) {
+          // The loop itself is useful even when its optional death-resilience anchor is out of
+          // scope; skip only the binding and surface the exact admission reason to the caller.
+          workItemClaim = {
+            id: drivenCandidate,
+            claimed: false,
+            reason: admission.code,
+            hint: admission.reason,
+          };
         } else {
-          // claimWorkItem returns a bare null for three outcomes — re-read + classify
-          // for an accurate, actionable note (mirrors work_items:claim's claimOne).
-          const current = await getWorkItem(drivenCandidate, harness);
-          const failure = classifyClaimFailure(current, ownerId);
-          workItemClaim =
-            failure.reason === 'conflict'
-              ? { id: drivenCandidate, claimed: false, reason: 'claim_conflict', holder: failure.holder }
-              : failure.reason === 'not_found'
-                ? { id: drivenCandidate, claimed: false, reason: 'not_found' }
-                : { id: drivenCandidate, claimed: false, reason: 'not_claimable' };
+          const wi = await claimWorkItem(drivenCandidate, ownerId, { harness });
+          if (wi) {
+            claimedWorkItem = drivenCandidate;
+            workItemClaim = { id: drivenCandidate, claimed: true };
+          } else {
+            // claimWorkItem returns a bare null for three outcomes — re-read + classify
+            // for an accurate, actionable note (mirrors work_items:claim's claimOne).
+            const current = await getWorkItem(drivenCandidate, harness);
+            const failure = classifyClaimFailure(current, ownerId);
+            workItemClaim =
+              failure.reason === 'conflict'
+                ? { id: drivenCandidate, claimed: false, reason: 'claim_conflict', holder: failure.holder }
+                : failure.reason === 'not_found'
+                  ? { id: drivenCandidate, claimed: false, reason: 'not_found' }
+                  : { id: drivenCandidate, claimed: false, reason: 'not_claimable' };
+          }
         }
       } catch (e) {
         workItemClaim = {
@@ -849,6 +871,8 @@ export default defineTool({
         ? ` 📌 Auto-claimed work-item ${workItemClaim.id} for this loop — held from wake 1; refresh its work_items:checkpoint each wake (your death-resilience anchor: a successor inherits it if this session dies).`
         : workItemClaim.reason === 'claim_conflict'
           ? ` ⚠ Did NOT auto-claim ${workItemClaim.id} — already held by ${workItemClaim.holder}. Coordinate with them (coord:send); the loop is armed regardless.`
+          : workItemClaim.reason.startsWith('fleet_')
+            ? ` ⚠ Did NOT auto-claim ${workItemClaim.id} — the fleet admission gate refused this loop binding (${workItemClaim.reason}). ${workItemClaim.hint ?? 'Coordinate with the fleet leader before changing scope.'} The loop is armed regardless.`
           : ` ⚠ Did NOT auto-claim ${workItemClaim.id} (${workItemClaim.reason}); the loop is armed regardless — claim it yourself if this loop drives it.`
       : '';
     // EI-18221784742583615: put the overwrite comparison right after the base note so it
