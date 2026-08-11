@@ -68,8 +68,14 @@ import {
    the shapes here is what keeps "is this query an id?" from drifting between
    the instant client pass and the server pass, which would show up as the board
    and the transcript results disagreeing about whether an id matched anything.
-   Safe in a browser bundle: adv-session-search's only imports are type-only, so
-   it erases to a pure module. */
+   Safe in a browser bundle: adv-session-search is pure TS with no server-only
+   dependencies. Its one runtime import (WI-37883) is
+   `agent-tools/coordination/owner-chat-turn`, a deliberate ZERO-IMPORT leaf —
+   documented as such in its own header and kept that way precisely so client
+   code can share it. Everything else it imports is type-only and erases.
+   ⚠ Keep it that way: a value import of anything that reaches node:fs/node:path
+   from this module white-screens the whole route, which is the recurring
+   ":3055 route error" class, not a build warning. */
 import {
   matchSessionIdField,
   parseSessionIdQuery,
