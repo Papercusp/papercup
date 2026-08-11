@@ -1,0 +1,40 @@
+{
+  "rubricId": "plan-class-investigation",
+  "title": "Plan class: investigation (shared acceptance invariants)",
+  "characteristic": "plan-acceptance",
+  "description": "The CLASS rubric investigation-only plans' acceptance rubrics reference (acceptance-rubrics-on-every-plan-2026-08-11 D-006/D-009 — it may stand ALONE, with zero bespoke criteria, for a pure investigation). An investigation is done when its findings are durable, verified at the writer, and turned into addressable decisions. Graded at plan completion by a NON-implementer.",
+  "methodRef": null,
+  "ratingScale": ["pass", "partial", "fail", "unknown"],
+  "version": "0.1.0",
+  "source": "first-party",
+  "criteria": [
+    {
+      "key": "findings-durable",
+      "title": "Findings recorded durably, with evidence",
+      "model": "Findings live on a durable surface (plan / work-item / insights doc) with their evidence attached — not only in a transcript that scrolls away or compacts.",
+      "method": "Locate each headline finding on its durable surface; confirm the evidence (queries, outputs, refs) rides with it.",
+      "driftMarkers": "Conclusions that exist only in chat; evidence summarized away to adjectives."
+    },
+    {
+      "key": "writer-read",
+      "title": "Every reported number verified at its WRITER",
+      "model": "Each metric/count/status the investigation reports was verified against the code that WRITES it — units, scale, and semantics — never inferred from a single artifact's name.",
+      "method": "Sample the report's load-bearing numbers; for each, find the writer the record cites (file/line or query) and confirm the stated semantics.",
+      "driftMarkers": "A suspiciously round rate (0%/99.9%); an absence proven by one grep; a damning conclusion from an unread column."
+    },
+    {
+      "key": "decision-recorded",
+      "title": "The resulting ruling is addressable",
+      "model": "What the investigation SETTLED is a plan Decision (or a filed, owned work-item) that others can re-read as authority — not a paraphrase in a message.",
+      "method": "Find the D-NNN / WI-NNN carrying the ruling; confirm it states the ruling and its grounds.",
+      "driftMarkers": "The same dispute reopening in the next lane because the ruling lived in coord chatter."
+    },
+    {
+      "key": "follow-ups-filed",
+      "title": "Actionable discoveries filed, none dropped",
+      "model": "Every actionable discovery made along the way — bugs, frictions, workarounds — was filed at the moment of discovery (improvements:capture / work-items); nothing rides only in prose.",
+      "method": "Read the investigation's record for mentioned-but-unfiled discoveries; spot-check that named frictions have filed items.",
+      "driftMarkers": "'We should also fix…' sentences with no item behind them; workarounds performed silently."
+    }
+  ]
+}

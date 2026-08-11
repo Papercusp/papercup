@@ -1,0 +1,10 @@
+{
+  "ref": "plan-class-migration",
+  "id": "plan-class-migration",
+  "title": "Plan class: migration (shared acceptance invariants)",
+  "description": "Class rubric for schema/data-migration plans' acceptance rubrics (4 criteria, pass/partial/fail/unknown): allocator-numbered + runner-applied, consumers/fixtures updated, integrity proven with a prior snapshot, reversal path stated before arming.",
+  "category": "plan-acceptance",
+  "scope": "rubric",
+  "version": "0.1.0",
+  "source": "first-party"
+}
