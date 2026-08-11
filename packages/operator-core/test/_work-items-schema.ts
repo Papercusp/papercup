@@ -497,11 +497,11 @@ export const WORK_ITEM_DEPS_DDL = `
                             WHERE bf.item_kind <> ALL (ARRAY['bug','change','task'])
                               AND bf.workspace_id = p_workspace
                               AND (bf.harness_slug || '#' || bf.feature_id) = d.blocker_ref
-                              AND bf.status NOT IN ('passed','deprecated'))
+                              AND bf.status NOT IN ('passed','deprecated','done','dropped'))
                    OR EXISTS (SELECT 1 FROM harness_shared.work_items bi
                             WHERE bi.item_kind = ANY (ARRAY['bug','change','task'])
                               AND bi.workspace_id = p_workspace AND bi.feature_id = d.blocker_ref
-                              AND bi.status NOT IN ('resolved','closed')) )
+                              AND bi.status NOT IN ('resolved','closed','done','dropped')) )
       );
   $WIB$;
   CREATE OR REPLACE FUNCTION harness_shared.sync_work_item_blocked(p_ws text, p_harness text, p_feature text)
@@ -548,8 +548,11 @@ export const WORK_ITEM_DEPS_DDL = `
   $WSS$;
   DROP TRIGGER IF EXISTS wir_status_sync_dependents_trg ON harness_shared.work_items;
   CREATE TRIGGER wir_status_sync_dependents_trg AFTER UPDATE OF status ON harness_shared.work_items
-      FOR EACH ROW WHEN ((OLD.status IN ('passed','deprecated','resolved','closed'))
-        IS DISTINCT FROM (NEW.status IN ('passed','deprecated','resolved','closed')))
+      -- Keep the fixture in parity with migration 640: setIssueState canonicalizes
+      -- legacy resolved/closed requests to unified done/dropped before updating the
+      -- base table, and those canonical terminal flips must refresh dependents too.
+      FOR EACH ROW WHEN ((OLD.status IN ('passed','deprecated','resolved','closed','done','dropped'))
+        IS DISTINCT FROM (NEW.status IN ('passed','deprecated','resolved','closed','done','dropped')))
       EXECUTE FUNCTION harness_shared.wir_status_sync_dependents();
   CREATE OR REPLACE FUNCTION harness_shared.wir_insert_sync_own() RETURNS trigger LANGUAGE plpgsql AS $WIS$
   BEGIN

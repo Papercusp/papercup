@@ -130,11 +130,13 @@ describe('engineer_issues federation capture trigger (real PG, mig 197)', () => 
     await db.sql`INSERT INTO harness_shared.hives (workspace_id, home_slug, public_key, keychain_id, created_at)
       VALUES (${WS}, ${homeSlug}, ${pk}, ${'kc-' + homeSlug}, 0)`;
   }
-  async function insertIssue(over: { issue_id?: string; scope?: string; title?: string; origin?: string; workspace_id?: string } = {}) {
+  async function insertIssue(
+    over: { issue_id?: string; scope?: string; title?: string; state?: 'open' | 'resolved' | 'closed'; origin?: string; workspace_id?: string } = {},
+  ) {
     await db.sql`INSERT INTO harness_shared.engineer_issues
-      (workspace_id, issue_id, scope, title, origin)
+      (workspace_id, issue_id, scope, title, state, origin)
       VALUES (${over.workspace_id ?? WS}, ${over.issue_id ?? 'EI-1'}, ${over.scope ?? 'operator'},
-              ${over.title ?? 'a work item'}, ${over.origin ?? 'local'})`;
+              ${over.title ?? 'a work item'}, ${over.state ?? 'open'}, ${over.origin ?? 'local'})`;
   }
 
   it('a harness-scoped local INSERT enqueues one put keyed by issue_id, scoped to <slug>; reshape builds an engineer-issues op', async () => {
@@ -198,10 +200,13 @@ describe('engineer_issues federation capture trigger (real PG, mig 197)', () => 
   });
 
   it('a federated-field UPDATE (state) enqueues a put', async () => {
-    await insertIssue({ issue_id: 'EI-50', scope: 'harness:papercup' });
+    // This migration's legacy table CHECK only accepts open|resolved|closed. Seed
+    // a terminal legacy value, then move back to open so the test exercises a
+    // federated state change without depending on post-unification wip.
+    await insertIssue({ issue_id: 'EI-50', scope: 'harness:papercup', state: 'closed' });
     await db.sql`DELETE FROM harness_shared.substrate_outbox`;
     await db.sql`UPDATE harness_shared.engineer_issues
-      SET state = 'wip', origin = 'local'
+      SET state = 'open', origin = 'local'
       WHERE workspace_id = ${WS} AND issue_id = 'EI-50'`;
     const rows = await outbox();
     expect(rows).toHaveLength(1);

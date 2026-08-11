@@ -160,7 +160,8 @@ describe('change-feed production readers (real PG)', () => {
     expect(byId.get('plan:plan-done')).toMatchObject({
       kind: 'plan-run',
       title: 'Plan completed: A finished plan',
-      harness: 'papercup',
+      // Migration 656 canonicalizes retired papercup plan rows on insert.
+      harness: 'papercusp',
       ref: 'plan:plan-done',
     });
   });
