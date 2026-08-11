@@ -853,6 +853,39 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(miss.excludedBreakdownSummary).toMatch(/SPEC ITSELF is the problem/);
     });
 
+    it('EI-20186990913643457: reports successful exhaustion when every status-floor-free match is terminal', () => {
+      const miss = fleetScopedMiss(issueScope, [], {
+        issueBreakdown: zeroMatchBreakdown,
+        terminalExhaustion: { matchedByFilter: 2, terminalMatchedByFilter: 2 },
+      });
+
+      expect(miss.reason).toBe('spec_exhausted');
+      expect(miss.reason).not.toBe('spec_matches_nothing');
+      expect(miss.windDown).toBe(true);
+      expect(miss.error).toMatch(/SPEC EXHAUSTED/);
+      expect(miss.error).toMatch(/successful drain/);
+      expect(miss.error).not.toMatch(/ESCALATE/);
+      expect(miss.advice).toMatch(/LANE COMPLETE/);
+      expect(miss.advice).toMatch(/Do NOT escalate, widen, or re-author/);
+      expect(miss.excludedBreakdownSummary).toMatch(/all 2 are terminal/);
+      expect((miss as { terminalExhaustion?: unknown }).terminalExhaustion).toEqual({
+        matchedByFilter: 2,
+        terminalMatchedByFilter: 2,
+      });
+    });
+
+    it('keeps the spec-authoring verdict when the status-floor-free matches are mixed terminal and active', () => {
+      const miss = fleetScopedMiss(issueScope, [], {
+        issueBreakdown: zeroMatchBreakdown,
+        terminalExhaustion: { matchedByFilter: 2, terminalMatchedByFilter: 1 },
+      });
+
+      expect(miss.reason).toBe('spec_matches_nothing');
+      expect(miss.error).toMatch(/SPEC MATCHES NOTHING/);
+      expect(miss.error).toMatch(/ESCALATE to your fleet leader NOW/);
+      expect(miss.advice).toMatch(/spec_matches_nothing/);
+    });
+
     it('is mutually exclusive with the divergent (claim-path bug) case by construction', () => {
       // divergent requires claimable > 0, which cannot coexist with matchedByFilter === 0
       // (claimable is a subset of matchedByFilter) — assert the miss never claims both.

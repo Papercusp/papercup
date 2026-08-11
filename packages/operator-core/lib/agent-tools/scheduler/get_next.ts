@@ -41,6 +41,7 @@ import {
   diagnoseFleetScopeCooldownMiss,
   diagnoseFleetScopeIssueFloorMiss,
   diagnoseFleetScopeFeatureFamilyMatch,
+  diagnoseFleetScopeTerminalExhaustion,
 } from '../../scheduler/fleet-scope-admission';
 
 /**
@@ -709,6 +710,7 @@ export default defineTool({
     // see diagnoseFleetScopeFeatureFamilyMatch's doc comment. Left null for every other miss
     // shape (zero extra cost on the common paths).
     let featureFamilyMatched: number | null = null;
+    let terminalExhaustion: import('../../scheduler/fleet-scope-admission').FleetScopeTerminalExhaustion | null = null;
     if (!res && reconciliation.scope) {
       issueBreakdown = await diagnoseFleetScopeIssueFloorMiss({
         scope: reconciliation.scope,
@@ -754,13 +756,20 @@ export default defineTool({
         // STRUCTURALLY blind to the feature family (bug/change/task only). Check tier-1
         // before letting this certify a false `spec_matches_nothing` (e.g. a plan-scoped
         // spec whose promoted items are feature-family, per D-009).
-        featureFamilyMatched = await diagnoseFleetScopeFeatureFamilyMatch({
-          scope: reconciliation.scope,
-          harness: args.harness,
-          workspaceId: ident.workspaceId,
-          states: args.states,
-          rigAvailable: args.rigAvailable,
-        });
+        [featureFamilyMatched, terminalExhaustion] = await Promise.all([
+          diagnoseFleetScopeFeatureFamilyMatch({
+            scope: reconciliation.scope,
+            harness: args.harness,
+            workspaceId: ident.workspaceId,
+            states: args.states,
+            rigAvailable: args.rigAvailable,
+          }),
+          diagnoseFleetScopeTerminalExhaustion({
+            scope: reconciliation.scope,
+            harness: args.harness,
+            workspaceId: ident.workspaceId,
+          }),
+        ]);
         if (featureFamilyMatched && featureFamilyMatched > 0) {
           // A genuine tier-1 candidate exists even though the claim (which just queried
           // this exact table) missed moments ago — retry once, same shape as the
@@ -1024,6 +1033,10 @@ export default defineTool({
     // on a retry) or when the miss isn't fleet-scoped/is an invalid-harness miss.
     const featureFamilyMatchedForMiss =
       !res && reconciliation.scope && !invalidHarnessKnownSlugs ? featureFamilyMatched : null;
+    // EI-20186990913643457: same suppression as the other miss annotations — terminal
+    // exhaustion only describes an actual fleet-scoped miss under a valid harness.
+    const terminalExhaustionForMiss =
+      !res && reconciliation.scope && !invalidHarnessKnownSlugs ? terminalExhaustion : null;
     return {
       content: [
         {
@@ -1090,6 +1103,7 @@ export default defineTool({
                       cooldownDiag,
                       issueBreakdown: issueBreakdownForMiss,
                       featureFamilyMatched: featureFamilyMatchedForMiss,
+                      terminalExhaustion: terminalExhaustionForMiss,
                       divergenceRecheck,
                       harness: args.harness,
                     })

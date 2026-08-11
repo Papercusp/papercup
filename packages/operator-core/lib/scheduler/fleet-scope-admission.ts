@@ -839,6 +839,78 @@ export async function diagnoseFleetScopeIssueFloorMiss(args: {
   }
 }
 
+/**
+ * EI-20186990913643457: count the rows a fleet spec matches WITHOUT applying the
+ * claimable-state floor, and count how many of those rows are terminal.
+ *
+ * `diagnoseFleetScopeIssueFloorMiss` intentionally scopes its aggregate to the rows a
+ * self-selector could claim (`states: ['open']` by default). That is the right input for
+ * floor attribution, but it makes an all-terminal id tranche look identical to a typo: the
+ * terminal rows disappear before `matchedByFilter` is counted, so `fleetScopedMiss` emits the
+ * leader-alerting `spec_matches_nothing` verdict after a successful drain. This companion read
+ * asks the same compiled filter against the unified work-item base with no status floor. The
+ * caller only treats it as exhaustion when every matching row is terminal; a mix of terminal and
+ * non-terminal rows therefore keeps the existing zero-match diagnosis honest.
+ *
+ * The query covers both families with the same workspace split as their claim paths: issue rows
+ * include the operator-scope alias, while feature/generic rows use the resolved claim workspace.
+ * It is annotation-only and fails soft like the other fleet miss diagnostics.
+ */
+export interface FleetScopeTerminalExhaustion {
+  matchedByFilter: number;
+  terminalMatchedByFilter: number;
+}
+
+export async function diagnoseFleetScopeTerminalExhaustion(args: {
+  scope: FleetScopeContext;
+  harness: string;
+  workspaceId?: string | null;
+}): Promise<FleetScopeTerminalExhaustion | null> {
+  try {
+    const ws = resolveClaimSpecWorkspace(args.workspaceId);
+    if (!ws) return null;
+    const spec = args.scope.record.spec;
+    const { sql } = getOrgPg();
+    const [{ SETTLED_WORK_ITEM_STATES }, { issuesScopeWorkspace }, { compileFilter }] = await Promise.all([
+      import('../work-items'),
+      import('../issues-engineer'),
+      import('./get-next'),
+    ]);
+    const issueWs = issuesScopeWorkspace();
+    const operatorScopeSlug = `operator:${issueWs}`;
+    const issueKinds = [...ISSUE_FAMILY_KINDS];
+    const filter = compileFilter(sql, spec.view.filter);
+    const rows = await sql<{ matched: number; terminal: number }[]>`
+      SELECT
+        count(*) FILTER (WHERE ${filter})::int AS matched,
+        count(*) FILTER (
+          WHERE ${filter}
+            AND wi.status = ANY(${[...SETTLED_WORK_ITEM_STATES]}::text[])
+        )::int AS terminal
+        FROM harness_shared.work_items wi
+       WHERE (
+         (
+           wi.item_kind = ANY(${issueKinds}::text[])
+           AND wi.workspace_id = ${issueWs}
+           AND (wi.harness_slug = ${args.harness} OR wi.harness_slug = ${operatorScopeSlug})
+         )
+         OR (
+           wi.item_kind <> ALL(${issueKinds}::text[])
+           AND wi.workspace_id = ${ws}
+           AND wi.harness_slug = ${args.harness}
+         )
+       )`;
+    const matchedByFilter = rows[0]?.matched ?? 0;
+    if (matchedByFilter === 0) return null;
+    return {
+      matchedByFilter,
+      terminalMatchedByFilter: rows[0]?.terminal ?? 0,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export function fleetScopedMiss(
   scope: FleetScopeContext,
   quarantinedIds: string[] = [],
@@ -878,8 +950,14 @@ export function fleetScopedMiss(
      * issue-family breakdown is merely blind to the feature family — so it suppresses the
      * false `spec_matches_nothing` verdict below in favor of an honest, non-drain report.
      * `null`/`undefined`/`0` ⇒ no change from the pre-existing issue-family-only behavior.
-     */
+    */
     featureFamilyMatched?: number | null;
+    /**
+     * EI-20186990913643457: status-floor-free match counts for the spec. A positive count is
+     * only an exhaustion verdict when every matching row is terminal; a partial terminal count
+     * must not suppress the existing zero-match/spec-authoring diagnosis.
+     */
+    terminalExhaustion?: FleetScopeTerminalExhaustion | null;
     /**
      * WI-5947: the caller's verdict on a would-be claim/read divergence, after re-asking the
      * CLAIM path (the only oracle that can settle it). `'confirmed-twice'` — two claim attempts
@@ -969,6 +1047,19 @@ export function fleetScopedMiss(
   // with `specEmpty` by construction (both require the same `matchedByFilter === 0` base).
   const featureFamilyMiss =
     !paused && breakdown != null && breakdown.matchedByFilter === 0 && !!(opts?.featureFamilyMatched && opts.featureFamilyMatched > 0);
+  // EI-20186990913643457: terminal rows leave the claimable-state universe before the issue
+  // breakdown counts `matchedByFilter`, so an all-terminal tranche otherwise looks like a stale
+  // or typo'd spec. Only call it exhausted when the status-floor-free read proves that EVERY
+  // matching row is terminal. A mixed terminal/non-terminal set remains a genuine zero-match
+  // diagnosis (or a family blind spot), never a false success-shaped drain.
+  const specExhausted =
+    !paused &&
+    !featureFamilyMiss &&
+    breakdown != null &&
+    breakdown.matchedByFilter === 0 &&
+    opts?.terminalExhaustion != null &&
+    opts.terminalExhaustion.matchedByFilter > 0 &&
+    opts.terminalExhaustion.terminalMatchedByFilter === opts.terminalExhaustion.matchedByFilter;
   // EI-19393442073558754: a spec whose filter references `plan`/`plan_item` and is NOT
   // itself restricted to issue-family kinds can genuinely, correctly admit ONLY
   // feature-family rows for long stretches (D-009: a plan-promoted item is feature-family
@@ -989,9 +1080,9 @@ export function fleetScopedMiss(
   const specIssueOnly = specIsIssueFamilyOnly(scope.record.spec);
   const specPlanScoped = !specIssueOnly && specHasPlanPredicate(scope.record.spec);
   const nonIssueSpecEmpty =
-    !paused && breakdown != null && breakdown.matchedByFilter === 0 && !featureFamilyMiss && specPlanScoped;
+    !paused && breakdown != null && breakdown.matchedByFilter === 0 && !featureFamilyMiss && !specExhausted && specPlanScoped;
   const specEmpty =
-    !paused && breakdown != null && breakdown.matchedByFilter === 0 && !featureFamilyMiss && !specPlanScoped;
+    !paused && breakdown != null && breakdown.matchedByFilter === 0 && !featureFamilyMiss && !specExhausted && !specPlanScoped;
   // EI-18741523426513509: the spec's filter DID match real rows, but every one is presently
   // excluded by a TRANSIENT claim floor (an uncleared plan-lane blocker, a peer's claim-hold,
   // needs-human, a federation-detector gate, …) — the pool is legitimately, honestly empty
@@ -1075,6 +1166,11 @@ export function fleetScopedMiss(
             'nothing — it only means "nothing in the issue family". This is NOT a drained lane and NOT a spec-authoring ' +
             'problem: it is either a transient race (pull again) or a genuine claim-path defect in the tier-1 (feature-family) ' +
             'narrowing. windDown is deliberately NOT set: do not stand down, and do not re-author the claim spec on this alone.'
+        : specExhausted
+          ? `SPEC EXHAUSTED (EI-20186990913643457): claim spec ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}'s ` +
+            `view.filter matched ${opts!.terminalExhaustion!.matchedByFilter} row(s) without the claimable-state floor, and all ` +
+            `${opts!.terminalExhaustion!.terminalMatchedByFilter} matching row(s) are terminal. This is a successful drain, not a ` +
+            'spec-authoring problem: the lane is complete, so stand down and do not re-author or escalate the spec.'
         : nonIssueSpecEmpty
           ? `ORDINARY DRAIN, NOT A SPEC-AUTHORING PROBLEM (EI-19393442073558754): claim spec ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)}'s ` +
             'view.filter references a plan/plan-item and is not restricted to issue-family kinds — a plan-scoped spec routinely and ' +
@@ -1136,6 +1232,9 @@ export function fleetScopedMiss(
     // EI-18663622382734446: named, top-level reason so a caller (or a leader reading a
     // relayed report) can branch on this WITHOUT digging into excludedBreakdown.matchedByFilter.
     // Absent for every other miss shape — this is deliberately the loud, rare case.
+    ...(specExhausted
+      ? { reason: 'spec_exhausted' as const, terminalExhaustion: opts?.terminalExhaustion }
+      : {}),
     ...(specEmpty ? { reason: 'spec_matches_nothing' as const } : {}),
     // WI-7151 (EI-19318364531323846): named, top-level reason for the issue-family-diagnosis
     // blind spot — a caller (or a leader reading a relayed report) can branch on this WITHOUT
@@ -1171,6 +1270,10 @@ export function fleetScopedMiss(
             ? "Your spec's filter matches 0 issue-family row(s), but the spec is not restricted to issue-family kinds, so this is " +
               'EXPECTED BY CONSTRUCTION (e.g. a plan-scoped spec whose plan\'s items are feature-family) — NOT evidence the spec ' +
               'itself is broken. See the top-level error/advice for whether the feature-family pool was also confirmed empty.'
+            : specExhausted
+            ? `Your spec's status-floor-free filter read matched ${opts!.terminalExhaustion!.matchedByFilter} row(s), and all ` +
+              `${opts!.terminalExhaustion!.terminalMatchedByFilter} are terminal — the fleet completed its scoped tranche; this is ` +
+              'ordinary successful exhaustion, not a spec-authoring failure.'
             : specEmpty
             ? "Your spec's filter matches 0 issue-family row(s) at all — there is nothing for any floor to exclude. " +
               'The SPEC ITSELF is the problem (an over-narrow filter, a stale id allowlist, wrong plan/kind scoping), not the pool.'
@@ -1220,6 +1323,10 @@ export function fleetScopedMiss(
             'still misses after a couple more pulls, report it to your fleet leader as a possible claim-path defect in the tier-1 ' +
             '(feature-family) narrowing — quoting `reason: "issue_family_diagnosis_blind_spot"` and `featureFamilyMatched` — rather ' +
             'than a spec-authoring problem (do NOT quote spec_matches_nothing; that has the opposite remedy). Do NOT stand down.'
+          : specExhausted
+          ? 'LANE COMPLETE: the status-floor-free check found only terminal rows for this spec (reason: "spec_exhausted"). ' +
+            'Checkpoint any final progress, release remaining lane resources, call loop:end, and report the successful drain to your ' +
+            'fleet leader. Do NOT escalate, widen, or re-author the claim spec.'
           : nonIssueSpecEmpty
           ? 'Do NOT escalate this as a spec-authoring problem, and do NOT re-author the claim spec (EI-19393442073558754): your ' +
             'spec is not restricted to issue-family kinds, so an issue-family `matchedByFilter: 0` is expected by construction, ' +
