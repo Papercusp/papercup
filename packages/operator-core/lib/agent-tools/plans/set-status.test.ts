@@ -9,6 +9,7 @@ import {
   releaseTodoClaim,
   terminalFlipConflict,
   terminalGuardTrips,
+  completedGuardTrips,
   planSyncWorkItemState,
   type HolderInfo,
 } from './set-status';
@@ -449,5 +450,49 @@ describe('terminalGuardTrips — never move a finished item off terminal', () =>
 
   it('is inert when the item does not exist yet (no current status to protect)', () => {
     expect(terminalGuardTrips({ onlyIfNotTerminal: true, currentStatus: null, nextStatus: 'todo' })).toBe(false);
+  });
+});
+
+// EI-20129670928216719 — the gap BETWEEN the two guards above and the coverage guard.
+// `terminalGuardTrips` deliberately permits terminal→terminal (pinned by the
+// 'ALLOWS terminal → terminal' case above), and the coverage guard counts only NON-terminal
+// siblings — so the DONE work-item that actually completed a plan item is invisible to it.
+// Result: dropping a merely `relates`-linked follow-on silently downgraded an already-`done`
+// plan item. Live case: fix-0014-platform-defects-2026-08-10#P-005, flipped done→dropped 67ms
+// after WI-37872 was dropped, while its real completer WI-37735 sat `done`.
+describe('completedGuardTrips — an automated cascade never downgrades finished work', () => {
+  it('SKIPS done → dropped when the caller asked for the guard (the P-005 regression)', () => {
+    expect(completedGuardTrips({ onlyIfNotCompleted: true, currentStatus: 'done', nextStatus: 'dropped' })).toBe(true);
+  });
+
+  // The complement of terminalGuardTrips' own contract: that guard owns terminal→NON-terminal,
+  // this one owns done→dropped. Neither should widen into the other's territory.
+  it('leaves every other transition to the other guards', () => {
+    for (const nextStatus of ['todo', 'wip', 'blocked', 'needs-human', 'done']) {
+      expect(
+        completedGuardTrips({ onlyIfNotCompleted: true, currentStatus: 'done', nextStatus }),
+        `done → ${nextStatus}`,
+      ).toBe(false);
+    }
+    // A genuine abandonment of unfinished work must still cascade through.
+    for (const currentStatus of ['todo', 'wip', 'blocked', 'needs-human', 'dropped']) {
+      expect(
+        completedGuardTrips({ onlyIfNotCompleted: true, currentStatus, nextStatus: 'dropped' }),
+        `${currentStatus} → dropped`,
+      ).toBe(false);
+    }
+  });
+
+  // OPT-IN, exactly like terminalGuardTrips: a human deliberately reclassifying finished work
+  // as abandoned omits the flag. If this ever inverts, that reclassification silently no-ops.
+  it('is inert without the flag — a deliberate human reclassification is untouched', () => {
+    expect(completedGuardTrips({ onlyIfNotCompleted: undefined, currentStatus: 'done', nextStatus: 'dropped' })).toBe(
+      false,
+    );
+    expect(completedGuardTrips({ onlyIfNotCompleted: false, currentStatus: 'done', nextStatus: 'dropped' })).toBe(false);
+  });
+
+  it('is inert when the item does not exist yet (no current status to protect)', () => {
+    expect(completedGuardTrips({ onlyIfNotCompleted: true, currentStatus: null, nextStatus: 'dropped' })).toBe(false);
   });
 });
