@@ -797,7 +797,10 @@ const OP_CHAT_SIDEBAR_CSS = `
   margin-left: 2px;
   border-radius: 999px;
   background: var(--bad, #f87171);
-  color: #fff;
+  /* EI-20188337255817233: --bad is a light rose in the frost theme
+     (#fb7185), so white at 9px only reaches 2.69:1. The deepest surface
+     token stays dark in every theme and clears the 4.5:1 body-text floor. */
+  color: var(--bg-deepest, #02060c);
   font-size: 9px;
   font-weight: 750;
   line-height: 15px;
@@ -815,7 +818,7 @@ const OP_CHAT_SIDEBAR_CSS = `
   padding: 0 4px;
   border-radius: 999px;
   background: var(--bad, #f87171);
-  color: #fff;
+  color: var(--bg-deepest, #02060c);
   font-size: 9px;
   font-weight: 750;
   line-height: 15px;

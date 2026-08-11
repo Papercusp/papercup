@@ -528,6 +528,25 @@ describe('body-shift commutation contract with the LeftSidebar rail (WI-4725)', 
     expect(narrowGapIdx).toBeGreaterThanOrEqual(0);
     expect(narrowGapIdx).toBeGreaterThan(unconditionalGapIdx);
   });
+
+  it('keeps plans and collapsed-rail badges readable against the light rose danger fill (EI-20188337255817233)', async () => {
+    render(<OperatorChatSidebar />);
+    await waitFor(() => {
+      expect(document.body.classList.contains('has-op-chat')).toBe(true);
+    });
+    const css = Array.from(document.querySelectorAll('style'))
+      .map((s) => s.textContent ?? '')
+      .join('\n');
+    const plansBadgeRule = css.match(/\.op-chat-inbox-badge\s*\{[^}]*\}/)?.[0] ?? '';
+    const railBadgeRule = css.match(/\.op-chat-expand-rail \.op-chat-rail-badge\s*\{[^}]*\}/)?.[0] ?? '';
+
+    expect(plansBadgeRule).toContain('background: var(--bad, #f87171)');
+    expect(plansBadgeRule).toContain('color: var(--bg-deepest, #02060c)');
+    expect(plansBadgeRule).not.toContain('color: #fff');
+    expect(railBadgeRule).toContain('background: var(--bad, #f87171)');
+    expect(railBadgeRule).toContain('color: var(--bg-deepest, #02060c)');
+    expect(railBadgeRule).not.toContain('color: #fff');
+  });
 });
 
 describe('OperatorChatSidebar collapse behavior', () => {
