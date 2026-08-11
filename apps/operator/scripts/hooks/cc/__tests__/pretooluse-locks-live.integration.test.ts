@@ -178,6 +178,10 @@ beforeAll(() => {
 
   hookEnvB = {
     HOME: home,
+    // Do not inherit the real runner CODEX_HOME: the hook's diagnostic
+    // lockOwnerSid deliberately outranks PAPERCUSP_SID, and would make this
+    // throwaway hook acquire as the test runner rather than OWNER_B.
+    CODEX_HOME: join(home, 'codex-home'),
     PAPERCUSP_OPERATOR_URL: BASE,
     PAPERCUSP_LOCKS_CACHE_DIR: cache,
     PAPERCUSP_WORKSPACE_ROOT: ws,
