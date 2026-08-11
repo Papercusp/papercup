@@ -248,7 +248,7 @@ describe("cc PostToolUse locks-release hook — operator-independent paths", () 
 
 // ── PostToolUse activity-report hook ───────────────────────────────────
 // Operator-independent paths only: the psu-session + install gates, the
-// fail-open contract, and the first-run cursor seed. Since EI-11405
+// fail-open contract, and the first-run cursor behavior. Since EI-11405
 // (coordination-hook-rpc-fanout-collapse-2026-07-16) this hook ALSO carries
 // the delta-aware coord fold that used to be the separate posttooluse-coord-
 // inbox.sh hook (now deleted) — it is therefore SYNCHRONOUS (it must read the
@@ -320,17 +320,14 @@ describe("cc PostToolUse activity-report hook — operator-independent paths", (
     expect(r.stdout).toBe("");
   });
 
-  it("first run seeds the hook_bundle cursor BEFORE the request — even with operator unreachable", () => {
+  it("first run does not create a local inbox-floor cursor when the operator is unreachable", () => {
     const sid = "sid-first";
     const cur = join(cache, `activity-hook-bundle-${sid}.json`);
     if (fs.existsSync(cur)) fs.rmSync(cur);
     const r = runActivity({ PAPERCUSP_SID: sid });
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe(""); // seeds only; never injects on first run
-    expect(fs.existsSync(cur)).toBe(true);
-    const seeded = JSON.parse(fs.readFileSync(cur, "utf8"));
-    expect(seeded.generation).toBeNull();
-    expect(typeof seeded.since_ts).toBe("string");
+    expect(r.stdout).toBe(""); // fail-open; no usable bundle means no cursor write
+    expect(fs.existsSync(cur)).toBe(false);
   });
 
   it("subsequent run + operator unreachable → FAIL-OPEN, cursor left untouched", () => {

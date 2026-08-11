@@ -4,14 +4,14 @@
  * -collapse-2026-07-16, WI-4654).
  *
  * cc-hooks.test.ts covers the operator-INDEPENDENT paths (psu-session gate, install
- * gate, first-run cursor seed, fail-open on an unreachable operator). This suite
+ * gate, first-run generation cursor behavior, fail-open on an unreachable operator). This suite
  * closes the remaining cell with a STUB operator (the same in-process HTTP stub
  * pattern as pretooluse-locks-decision.test.ts — async `spawn`, never `spawnSync`,
  * so the stub can actually answer): the exact GUARD the bug asked for —
  *
  *   - a CHANGED generation folds the coord:inbox injection into ONE PostToolUse
- *     additionalContext output, and persists the cursor (generation advances to the
- *     server's new value; since_ts advances to the fold's newest entry ts);
+ *     additionalContext output, and persists only the generation; the server owns
+ *     the inbox floor so a first call cannot seed itself past unread mail;
  *   - the VERY NEXT call forwards that persisted generation back to the server
  *     unchanged — which is what makes an UNCHANGED generation return no `surfaces`
  *     at all (server-side O(1), already unit-tested in hook-bundle.test.ts) — and the
@@ -104,14 +104,14 @@ async function run(
   return { status, stdout: stdout.trim() };
 }
 
-function cursorFor(sid: string): { generation: string | null; since_ts: string | null } | null {
+function cursorFor(sid: string): { generation?: string | null; since_ts?: string | null } | null {
   const p = join(cache, `activity-hook-bundle-${sid}.json`);
   if (!fs.existsSync(p)) return null;
   return JSON.parse(fs.readFileSync(p, 'utf8'));
 }
 
 describe('cc PostToolUse activity-report hook — hook_bundle fold (stub operator)', () => {
-  it('first call: seeds the cursor BEFORE the request, no injection even when the bundle answers changed', async () => {
+  it('first call: sends only a generation cursor and preserves a pre-session inbox injection', async () => {
     const sid = 'sid-seed';
     nextResult = {
       ok: true,
@@ -121,24 +121,34 @@ describe('cc PostToolUse activity-report hook — hook_bundle fold (stub operato
         generation: 'host-a:1',
         changed: true,
         complete: true,
-        surfaces: { inbox: { entries: [], injection: '', summary: { newest_ts: null } } },
+        surfaces: {
+          inbox: {
+            entries: [{ ts: '2026-07-16T00:01:00Z', msg_id: 'm0' }],
+            injection: '[coord+1] pre-session peer mail',
+            summary: { newest_ts: '2026-07-16T00:01:00Z' },
+          },
+        },
       },
     };
     const r = await run(sid);
     expect(r.status).toBe(0);
-    expect(r.stdout).toBe(''); // empty injection on the seeded (since_ts=now) window → nothing to show
-    expect(lastRequest?.body.params.arguments.hook_bundle).toMatchObject({ generation: null });
+    expect(JSON.parse(r.stdout)).toMatchObject({
+      hookSpecificOutput: {
+        hookEventName: 'PostToolUse',
+        additionalContext: '[coord+1] pre-session peer mail',
+      },
+    });
+    expect(lastRequest?.body.params.arguments.hook_bundle).toEqual({ generation: null });
     const cur = cursorFor(sid);
-    expect(cur?.generation).toBe('host-a:1'); // complete:true → generation persisted
-    expect(typeof cur?.since_ts).toBe('string');
+    expect(cur).toEqual({ generation: 'host-a:1' }); // complete:true → generation persisted
   });
 
-  it('changed generation with a real message: injects it, advances generation AND since_ts', async () => {
+  it('changed generation with a real message: injects it and advances generation only', async () => {
     const sid = 'sid-changed';
     // Seed a cursor as if a prior call already ran (skips the "first call" branch).
     fs.writeFileSync(
       join(cache, `activity-hook-bundle-${sid}.json`),
-      JSON.stringify({ generation: 'host-a:1', since_ts: '2026-07-16T00:00:00Z' }),
+      JSON.stringify({ generation: 'host-a:1' }),
     );
     nextResult = {
       ok: true,
@@ -162,19 +172,16 @@ describe('cc PostToolUse activity-report hook — hook_bundle fold (stub operato
     expect(JSON.parse(r.stdout)).toMatchObject({
       hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: '[coord+1] peer: hi' },
     });
-    expect(lastRequest?.body.params.arguments.hook_bundle).toMatchObject({
-      generation: 'host-a:1',
-      since_ts: '2026-07-16T00:00:00Z',
-    });
+    expect(lastRequest?.body.params.arguments.hook_bundle).toEqual({ generation: 'host-a:1' });
     const cur = cursorFor(sid);
-    expect(cur).toMatchObject({ generation: 'host-a:2', since_ts: '2026-07-16T01:00:00Z' });
+    expect(cur).toEqual({ generation: 'host-a:2' });
   });
 
   it('THE GUARD: an unchanged generation (no new coord deltas) is forwarded back untouched and injects nothing', async () => {
     const sid = 'sid-quiet';
     fs.writeFileSync(
       join(cache, `activity-hook-bundle-${sid}.json`),
-      JSON.stringify({ generation: 'host-a:2', since_ts: '2026-07-16T01:00:00Z' }),
+      JSON.stringify({ generation: 'host-a:2' }),
     );
     // The server's real behavior on a matching generation: no `surfaces` at all
     // (hook-bundle.test.ts already pins this server-side; here we pin the CLIENT
@@ -193,19 +200,16 @@ describe('cc PostToolUse activity-report hook — hook_bundle fold (stub operato
     expect(r.status).toBe(0);
     expect(r.stdout).toBe(''); // O(1): nothing folded, nothing injected
     expect(requestCount).toBe(1); // exactly ONE round trip for this tool call — the whole point of the fix
-    expect(lastRequest?.body.params.arguments.hook_bundle).toMatchObject({
-      generation: 'host-a:2',
-      since_ts: '2026-07-16T01:00:00Z',
-    });
+    expect(lastRequest?.body.params.arguments.hook_bundle).toEqual({ generation: 'host-a:2' });
     const cur = cursorFor(sid);
-    expect(cur).toMatchObject({ generation: 'host-a:2', since_ts: '2026-07-16T01:00:00Z' }); // untouched
+    expect(cur).toEqual({ generation: 'host-a:2' }); // untouched
   });
 
   it('quiet fold with an empty inbox still surfaces the P-015 context gauge', async () => {
     const sid = 'sid-gauge';
     fs.writeFileSync(
       join(cache, `activity-hook-bundle-${sid}.json`),
-      JSON.stringify({ generation: 'host-a:2', since_ts: '2026-07-16T01:00:00Z' }),
+      JSON.stringify({ generation: 'host-a:2' }),
     );
     nextResult = {
       ok: true,
@@ -225,14 +229,14 @@ describe('cc PostToolUse activity-report hook — hook_bundle fold (stub operato
       hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext: '⚠ context 82%' },
     });
     const cur = cursorFor(sid);
-    expect(cur?.generation).toBe('host-a:3');
+    expect(cur).toEqual({ generation: 'host-a:3' });
   });
 
   it('an INCOMPLETE fold (partial hydrate failure) resets generation to null so the next call retries fully', async () => {
     const sid = 'sid-incomplete';
     fs.writeFileSync(
       join(cache, `activity-hook-bundle-${sid}.json`),
-      JSON.stringify({ generation: 'host-a:2', since_ts: '2026-07-16T01:00:00Z' }),
+      JSON.stringify({ generation: 'host-a:2' }),
     );
     nextResult = {
       ok: true,
@@ -250,20 +254,20 @@ describe('cc PostToolUse activity-report hook — hook_bundle fold (stub operato
     const r = await run(sid);
     expect(r.status).toBe(0);
     const cur = cursorFor(sid);
-    expect(cur?.generation).toBeNull(); // never advance on an incomplete hydrate
+    expect(cur).toEqual({ generation: null }); // never advance on an incomplete hydrate
   });
 
   it('a response with no usable hook_bundle (server predates the fold) never advances the cursor', async () => {
     const sid = 'sid-nobundle';
     fs.writeFileSync(
       join(cache, `activity-hook-bundle-${sid}.json`),
-      JSON.stringify({ generation: 'host-a:2', since_ts: '2026-07-16T01:00:00Z' }),
+      JSON.stringify({ generation: 'host-a:2' }),
     );
     nextResult = { ok: true, id: 6 }; // no hook_bundle field at all
     const r = await run(sid);
     expect(r.status).toBe(0);
     expect(r.stdout).toBe('');
     const cur = cursorFor(sid);
-    expect(cur).toMatchObject({ generation: 'host-a:2', since_ts: '2026-07-16T01:00:00Z' }); // held, not clobbered
+    expect(cur).toEqual({ generation: 'host-a:2' }); // held, not clobbered
   });
 });
