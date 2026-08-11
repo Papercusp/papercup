@@ -58,7 +58,11 @@ import {
 import { homedir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
-import { codexGatewayConfigToml, tomlEscape } from '@papercusp/orchestrator/codex-gateway-config';
+import {
+  codexGatewayConfigToml,
+  codexManagedFeaturesToml,
+  tomlEscape,
+} from '@papercusp/orchestrator/codex-gateway-config';
 import { readCodexLockRuntimeVerdict, type CodexLockRuntimeVerdict } from './codex-lock-runtime';
 import { lintInstructionText, type InstructionLintReport, type InstructionRuntimeContext } from './instruction-lint';
 
@@ -107,6 +111,10 @@ const CODEX_LOCK_MATCHER = 'apply_patch|Edit|Write';
  *    `memory_tool` is now a deprecated legacy alias that prints a boot warning
  *    (`codex doctor`: "legacy alias memory_tool -> memories"). We write the modern
  *    `memories` key — verified valid under `codex --strict-config` on 0.142.5.
+ *  - `[features] remote_compaction_v2 = false` — Codex 0.147 enables native
+ *    remote compaction by default. Papercusp owns the semantic stopping point,
+ *    carry note, and session restart, so a native cut would bypass the durable
+ *    handoff and must not race the managed path (agent-managed-compaction D-011).
  *
  * Must precede any `[table]` (TOML top-level keys before tables); the `[mcp_servers]`
  * table each writer appends comes after.
@@ -115,9 +123,7 @@ const CODEX_ISOLATION_PREAMBLE = [
   '# psu prompt isolation (P-004 / D-001): no cwd AGENTS.md read; native memory off.',
   'project_doc_max_bytes = 0',
   '',
-  '[features]',
-  'memories = false',
-  '',
+  ...codexManagedFeaturesToml(),
 ].join('\n');
 
 const CODEX_LOCK_GUIDANCE_RE =

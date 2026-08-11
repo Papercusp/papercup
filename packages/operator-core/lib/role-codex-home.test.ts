@@ -101,6 +101,7 @@ describe('writeRoleCodexHome', () => {
     // codex 0.142 renamed the memory_tool flag to `memories` (legacy alias warns).
     expect(toml).toContain('project_doc_max_bytes = 0');
     expect(toml).toContain('memories = false');
+    expect(toml).toContain('remote_compaction_v2 = false');
     expect(toml).not.toContain('memory_tool');
     // tui-status-parity 2026-07-05: hook owns the title (see the su-home test).
     expect(toml).toContain('[tui]\nterminal_title = []');
@@ -355,6 +356,7 @@ describe('writeSuCodexHome', () => {
     expect(toml).toContain('project_doc_max_bytes = 0');
     expect(toml).toContain('[features]');
     expect(toml).toContain('memories = false');
+    expect(toml).toContain('remote_compaction_v2 = false');
     expect(toml).not.toContain('memory_tool');
     // tui-status-parity 2026-07-05: the objective-title hook owns the terminal
     // title — an EMPTY terminal_title item list stops codex's own OSC-0 writes
