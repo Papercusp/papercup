@@ -44,13 +44,11 @@ describe('classifyCoverage', () => {
     expect(classifyCoverage([link(true, 'free'), link(false, 'free')], false)).toBe('unclaimed');
   });
 
-  // P-005 (trap-guards-followups-2026-08-01). These three used to roll up to
-  // 'unclaimed' — the same band as 'free' — which is documented as "nobody on it".
-  // But dead/stalled/reserved all mean a claim row EXISTS with a holder on it, and
-  // so does the work-item ledger's `assignee`. Collapsing them made plans:items
-  // read `working:'unclaimed'` beside a named assignee, which looks like one of the
-  // two surfaces lagging or lying. It is neither: coverage is liveness-aware and the
-  // ledger column is not (an assignee outlives its holder). Keep them SEPARATE.
+  // P-005 (trap-guards-followups-2026-08-01). A claim row can outlive its holder,
+  // and so can the work-item ledger's `assignee`. Keep the reclaimable
+  // dead/reserved band separate from the live-but-stalled band: a stalled holder
+  // has a claim but no item-scoped progress, so plans:items must invite coordination,
+  // not reclaim.
   it('held-not-live — open links whose holder is gone or liveness is unknown (RECLAIMABLE)', () => {
     expect(classifyCoverage([link(false, 'dead')], false)).toBe('held-not-live');
     expect(classifyCoverage([link(false, 'reserved')], false)).toBe('held-not-live');
