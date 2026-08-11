@@ -45,6 +45,10 @@ export interface ReadCursorStore {
    *  previous delivery), persist `next` as the new pending, and return the
    *  post-promotion committed to diff against. */
   ackAndAdvance(ownerId: string, surface: string, next: CursorState): Promise<AckResult>;
+  /** Phase 1 ALONE — see the module-level {@link ackAndRead}. */
+  ackAndRead(ownerId: string, surface: string): Promise<AckResult>;
+  /** Phase 2 ALONE — see the module-level {@link stage}. */
+  stage(ownerId: string, surface: string, next: CursorState): Promise<void>;
   /** Drop a surface's cursor (e.g. a schema change invalidates fingerprints). */
   clear(ownerId: string, surface: string): Promise<void>;
 }
@@ -89,6 +93,43 @@ class PgReadCursorStore implements ReadCursorStore {
     return { committed, baseline: committed === null };
   }
 
+  async ackAndRead(ownerId: string, surface: string): Promise<AckResult> {
+    const { sql } = getOrgPg();
+    const ws = coordScopeWorkspace();
+    // Phase 1 only: promote pending→committed and CLEAR pending. Same single
+    // statement / single-writer invariant as ackAndAdvance; the only difference is
+    // that no new pending is installed, because the caller cannot know it yet.
+    const rows = await sql<Array<{ committed: CursorState | null }>>`
+      INSERT INTO harness_shared.coord_read_cursors
+             (workspace_id, owner_id, surface, committed, pending, pending_at, updated_at)
+      VALUES (${ws}, ${ownerId}, ${surface}, NULL, NULL, now(), now())
+      ON CONFLICT (workspace_id, owner_id, surface) DO UPDATE
+         SET committed  = COALESCE(harness_shared.coord_read_cursors.pending,
+                                   harness_shared.coord_read_cursors.committed),
+             pending    = NULL,
+             updated_at = now()
+      RETURNING committed
+    `;
+    const committed = rows[0]?.committed ?? null;
+    return { committed, baseline: committed === null };
+  }
+
+  async stage(ownerId: string, surface: string, next: CursorState): Promise<void> {
+    const { sql } = getOrgPg();
+    const ws = coordScopeWorkspace();
+    // WI-7092 / EI-607: bind as JSON.stringify(...)::jsonb, never sql.json(...) —
+    // see the note in ackAndAdvance above; lint:no-sql-json guards the class.
+    await sql`
+      INSERT INTO harness_shared.coord_read_cursors
+             (workspace_id, owner_id, surface, committed, pending, pending_at, updated_at)
+      VALUES (${ws}, ${ownerId}, ${surface}, NULL, ${JSON.stringify(next)}::jsonb, now(), now())
+      ON CONFLICT (workspace_id, owner_id, surface) DO UPDATE
+         SET pending    = EXCLUDED.pending,
+             pending_at = now(),
+             updated_at = now()
+    `;
+  }
+
   async clear(ownerId: string, surface: string): Promise<void> {
     const { sql } = getOrgPg();
     const ws = coordScopeWorkspace();
@@ -107,6 +148,18 @@ export class InMemoryReadCursorStore implements ReadCursorStore {
     const committed = row.pending ?? row.committed;
     this.rows.set(key, { committed, pending: next });
     return { committed, baseline: committed === null };
+  }
+  async ackAndRead(ownerId: string, surface: string): Promise<AckResult> {
+    const key = `${ownerId}\0${surface}`;
+    const row = this.rows.get(key) ?? { committed: null, pending: null };
+    const committed = row.pending ?? row.committed;
+    this.rows.set(key, { committed, pending: null });
+    return { committed, baseline: committed === null };
+  }
+  async stage(ownerId: string, surface: string, next: CursorState): Promise<void> {
+    const key = `${ownerId}\0${surface}`;
+    const row = this.rows.get(key) ?? { committed: null, pending: null };
+    this.rows.set(key, { committed: row.committed, pending: next });
   }
   async clear(ownerId: string, surface: string): Promise<void> {
     this.rows.delete(`${ownerId}\0${surface}`);
@@ -132,6 +185,41 @@ export async function ackAndAdvance(
   next: CursorState,
 ): Promise<AckResult> {
   return store.ackAndAdvance(ownerId, surface, next);
+}
+
+/**
+ * PHASE 1 of the two-phase protocol, ALONE: promote pending→committed (the ack
+ * for the previous delivery) and return the post-promotion committed to diff
+ * against, WITHOUT installing a new pending. Pair with {@link stage}.
+ *
+ * WHY THIS EXISTS SEPARATELY FROM `ackAndAdvance`. That function fuses both
+ * phases into one round-trip, which requires the caller to know `next` BEFORE
+ * the read — true for a snapshot surface (fetch the whole roster, fingerprint
+ * it, then ack) but NOT for a WINDOWED one. `coord:inbox` needs the committed
+ * floor to BOUND its query — the bound is worth 11.6ms against 220ms
+ * (inbox.ts's measured window note) — so the floor must be in hand before the
+ * read, and `next` (the newest ts actually delivered) is only knowable after it.
+ * Fusing them there would mean reading unbounded to learn the bound.
+ *
+ * AT-LEAST-ONCE IS PRESERVED, and the death window is the point. A turn that
+ * dies between `ackAndRead` and `stage` leaves pending NULL and committed at
+ * the PREVIOUS delivery's high-water mark, so the next call promotes nothing
+ * and re-delivers from that same floor — the content of the dead call is
+ * re-sent, never skipped. Identical recovery contract to `ackAndAdvance`; only
+ * the window in which a crash costs a re-delivery differs.
+ */
+export async function ackAndRead(ownerId: string, surface: string): Promise<AckResult> {
+  return store.ackAndRead(ownerId, surface);
+}
+
+/**
+ * PHASE 2, ALONE: install `next` as pending — call it AFTER the delivery it
+ * describes has been assembled for the caller. Its promotion to committed is
+ * deferred to the NEXT `ackAndRead`/`ackAndAdvance`, which is what makes the
+ * delivery at-least-once rather than at-most-once. See {@link ackAndRead}.
+ */
+export async function stage(ownerId: string, surface: string, next: CursorState): Promise<void> {
+  return store.stage(ownerId, surface, next);
 }
 
 /** Drop a surface's cursor for an owner. */
