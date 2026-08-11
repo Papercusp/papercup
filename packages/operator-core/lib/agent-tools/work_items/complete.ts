@@ -514,7 +514,17 @@ const UNIVERSAL_VERIFICATION_CLAIM_PATTERNS: readonly RegExp[] = [
   /\b(?:site[- ]wide|complete(?:ly)?\s+(?:checked|verified|audited)|fully\s+(?:checked|verified|audited))\b/i,
 ];
 
-export function claimsUniversalVerification(completion: CompletionRecord): boolean {
+export function claimsUniversalVerification(completion: {
+  title?: unknown;
+  summary?: unknown;
+  tests?: unknown;
+  testsRun?: unknown;
+  testResult?: unknown;
+  coordNotes?: unknown;
+  whatLanded?: unknown;
+  deferred?: unknown;
+}): boolean {
+  const list = (value: unknown): unknown[] => (Array.isArray(value) ? value : []);
   const prose = [
     completion.title,
     completion.summary,
@@ -522,8 +532,8 @@ export function claimsUniversalVerification(completion: CompletionRecord): boole
     completion.testsRun,
     completion.testResult,
     completion.coordNotes,
-    ...(completion.whatLanded ?? []),
-    ...(completion.deferred ?? []),
+    ...list(completion.whatLanded),
+    ...list(completion.deferred),
   ]
     .filter((part): part is string => typeof part === 'string' && part.trim().length > 0)
     .join('\n');
