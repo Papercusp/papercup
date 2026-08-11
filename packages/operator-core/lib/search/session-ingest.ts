@@ -51,6 +51,8 @@ import { getOrgPg } from '@papercusp/db-org';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 import { cooperativeYield } from '../event-loop-lag-monitor';
+import { classifyRecordedTurn } from '../turn-provenance/turn-ref';
+import { MACHINE_SURFACE_CATALOGUE_VERSION } from '../turn-provenance/machine-surface-catalogue';
 import {
   addResultBytes,
   addToolUse,
@@ -764,6 +766,11 @@ interface TurnRow {
   cwd: string | null;
   speaker: string;
   text: string;
+  /** Provenance, stamped at insert by `stampTurnProvenance` — never by the
+   *  adapters. Optional on the way in, always set on the way out. */
+  turn_origin?: string | null;
+  turn_origin_verdict?: string | null;
+  turn_origin_classifier_version?: number | null;
 }
 
 async function listCandidateFiles(
@@ -989,8 +996,50 @@ async function writeUsageRollup(
   `;
 }
 
+/**
+ * Stamp owner-vs-machine provenance onto a row, in place.
+ *
+ * WHY HERE AND NOT IN THE ADAPTERS. This is the single choke point every
+ * adapter's rows funnel through, so stamping here covers claude/omp/codex/
+ * agent_chat by construction — a new adapter cannot forget to do it, which is
+ * the failure mode that produced four divergent private classifiers in the
+ * first place (plan owner-visibility-provenance-2026-08-11 D-013).
+ *
+ * WHY ONLY `user` TURNS GET CLASSIFIED. `classifyRecordedTurn` answers "is this
+ * recorded USER turn owner-typed", and it reaches `owner-typed` as the RESIDUAL
+ * — no rule matched. Assistant turns never carry an envelope and never match a
+ * machine-surface pattern, so applying it unguarded would stamp `owner-typed`
+ * on every one of them (25,198 in a measured 3-day window would have
+ * qualified). They get the explicit `not-user-turn` verdict instead, which is
+ * also what keeps NULL meaning exactly one thing — see below.
+ *
+ * NULL vs 'unknown' IS LOAD-BEARING. Every row written here gets a non-NULL
+ * verdict AND version, so a NULL verdict means precisely "ingested before this
+ * feature, never classified" and nothing else. 'unknown' is reserved for
+ * classified-but-undeterminable. Collapsing the two re-creates the
+ * EI-13472/WI-37419 failure — a real owner directive that simply is not
+ * turn-stamped being read as fabricated — with database authority behind it.
+ */
+export function stampTurnProvenance(row: TurnRow): void {
+  row.turn_origin_classifier_version = MACHINE_SURFACE_CATALOGUE_VERSION;
+
+  if (row.speaker !== 'user') {
+    row.turn_origin = null;
+    row.turn_origin_verdict = 'not-user-turn';
+    return;
+  }
+
+  // Head-anchored by construction: the classifier and its predicates apply
+  // their own CLASSIFY_HEAD_CHARS bound, so passing the full text cannot widen
+  // the match onto an owner's mid-body quote of an envelope.
+  const { verdict, origin } = classifyRecordedTurn(row.text);
+  row.turn_origin = origin;
+  row.turn_origin_verdict = verdict;
+}
+
 async function insertTurns(sql: Sql, rows: TurnRow[]): Promise<number> {
   if (!rows.length) return 0;
+  for (const row of rows) stampTurnProvenance(row);
   // ON CONFLICT DO NOTHING: idempotent re-ingest (e.g. a reset offset) can
   // never duplicate — the PK is (workspace_id, source_kind, session_id, turn_idx).
   const r = await sql`
@@ -998,6 +1047,7 @@ async function insertTurns(sql: Sql, rows: TurnRow[]): Promise<number> {
       rows as unknown as Record<string, unknown>[],
       'workspace_id', 'source_kind', 'session_id', 'turn_idx', 'ts',
       'owner', 'harness_slug', 'cwd', 'speaker', 'text',
+      'turn_origin', 'turn_origin_verdict', 'turn_origin_classifier_version',
     )}
     ON CONFLICT DO NOTHING
   `;

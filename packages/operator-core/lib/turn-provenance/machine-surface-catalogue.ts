@@ -121,6 +121,29 @@ export const SYNTHETIC_MARKERS: readonly string[] = [
  */
 export const CLASSIFY_HEAD_CHARS = 240;
 
+/**
+ * Revision of THIS catalogue, stamped alongside every persisted verdict
+ * (`session_turns.turn_origin_classifier_version`; plan
+ * owner-visibility-provenance-2026-08-11 D-013).
+ *
+ * BUMP THIS whenever the patterns, markers, or head bound above change in a way
+ * that could change a verdict — adding a pattern always can.
+ *
+ * WHY A PERSISTED VERDICT NEEDS A VERSION AT ALL. `classifyRecordedTurn`
+ * returns `owner-typed` as the RESIDUAL — "none of the rules above matched" —
+ * not as a positive identification of the owner. So a verdict stored at ingest
+ * was computed against this catalogue AS IT WAS THAT MINUTE, and every pattern
+ * added later leaves already-ingested rows stamped `owner-typed` forever. That
+ * is not a cosmetic staleness: it is precisely the defect this plan exists to
+ * kill (machine turns rendered as the owner's own words, EI-20135573616431912),
+ * re-created one layer down with database authority behind it.
+ *
+ * Bumping the number does not fix those rows by itself — it makes them
+ * FINDABLE (`WHERE turn_origin_classifier_version < CURRENT`) so a backfill
+ * sweep can re-derive them. Leaving it unbumped is what makes them invisible.
+ */
+export const MACHINE_SURFACE_CATALOGUE_VERSION = 1;
+
 /** Does this turn's head carry a CLI/subsystem synthetic-command wrapper? */
 export function hasSyntheticMarker(text: string): boolean {
   if (!text) return false;
