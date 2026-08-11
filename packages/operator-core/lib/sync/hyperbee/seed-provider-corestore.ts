@@ -51,7 +51,7 @@ import type {
 } from '@papercusp/seed-bundle';
 import { tmpdir } from 'node:os';
 import { openNamedLog, type PeerLogOp } from './peer-log';
-import { produceFilteredSnapshotIntoLog } from './log-snapshot';
+import { isSnapshotOp, produceFilteredSnapshotIntoLog } from './log-snapshot';
 import { CURRENT_SCHEMA_VERSION } from './schema-version';
 import {
   findLatestCompleteSnapshotDetailed,

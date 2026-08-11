@@ -482,3 +482,118 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
     expect(SEED_EXCLUDED_TABLES).not.toContain('contributors');
   });
 });
+
+/**
+ * EI-20108164746219771 — the cut must REFUSE a suffix that still carries an excluded
+ * table, rather than hash it into a seed entry.
+ *
+ * The two failing cases below are the whole reason this guard exists: filtering the head
+ * snapshot is necessary but NOT sufficient, and each case fails in a way the filter alone
+ * cannot see. Both are written as real cuts over real corestores — the guard reads the
+ * blocks that landed in STAGING, so a test that stubbed the read would not exercise it.
+ */
+describe('shipped-suffix guard — the cut refuses to ship an excluded table', () => {
+  const cleanups: Array<() => void> = [];
+  afterEach(() => {
+    while (cleanups.length) cleanups.pop()!();
+  });
+  function tmpDir2(prefix: string): string {
+    const d = mkdtempSync(join(tmpdir(), prefix));
+    cleanups.push(() => rmSync(d, { recursive: true, force: true }));
+    return d;
+  }
+  function presenceOp(i: number): PeerLogOp {
+    // The real shape: identity lives in the KEY, which is why the table is dropped
+    // wholesale rather than redacted (see the constant's docstring).
+    return {
+      type: 'put',
+      table: 'presence',
+      hbKey: `1567022/main-server-${hostname()}`,
+      value: { machine_label: hostname() },
+      ts: 500 + i,
+      schema_version: 1,
+      author_pubkey: 'ownerdev',
+    };
+  }
+
+  it('THROWS when the head snapshot was produced WITHOUT the exclusion (operator on an older build)', async () => {
+    const dir = tmpDir2('seed-guard-unfiltered-');
+    const store = makeStore(dir);
+    await store.ready();
+    const log = await openOwnLog(store);
+    for (let i = 0; i < 4; i++) await log.append(op(i));
+    await log.append(presenceOp(0));
+    // NO excludeTables — exactly what a live operator running a pre-fix build produces.
+    const snap = await produceLogSnapshot(log, { now: 1000, schemaVersion: 1 });
+    expect(snap.appended).toBe(true);
+
+    const provider = createCorestoreSeedProvider();
+    await expect(
+      provider.cut({
+        sourceStore: store,
+        coreKeys: [log.keyHex],
+        stagingDir: tmpDir2('seed-guard-unfiltered-stage-'),
+        sparse: true,
+      }),
+    ).rejects.toThrow(/REFUSING TO CUT[\s\S]*snapshot row presence/);
+  });
+
+  it('THROWS on a RAW presence op appended AFTER the filtered snapshot (the 30s keep-alive race)', async () => {
+    // THE CASE FILTERING ALONE CANNOT FIX. What ships is [coreSparseFrom, len), and `len`
+    // is read at the cutter's open — strictly after the operator appended the snapshot.
+    // presence re-announces every 30s, so a heartbeat lands inside the shipped span.
+    const dir = tmpDir2('seed-guard-race-');
+    const store = makeStore(dir);
+    await store.ready();
+    const log = await openOwnLog(store);
+    for (let i = 0; i < 4; i++) await log.append(op(i));
+    const snap = await produceLogSnapshot(log, {
+      now: 1000,
+      schemaVersion: 1,
+      excludeTables: SEED_EXCLUDED_TABLES,
+    });
+    expect(snap.appended).toBe(true);
+    await log.append(presenceOp(1)); // the keep-alive, landing after the snapshot
+
+    const provider = createCorestoreSeedProvider();
+    await expect(
+      provider.cut({
+        sourceStore: store,
+        coreKeys: [log.keyHex],
+        stagingDir: tmpDir2('seed-guard-race-stage-'),
+        sparse: true,
+      }),
+    ).rejects.toThrow(/REFUSING TO CUT[\s\S]*raw op presence/);
+  });
+
+  it('ACCEPTS a filtered snapshot with no post-snapshot presence (the guard is not vacuous)', async () => {
+    // The positive control. Without it, the two throws above would also pass if the guard
+    // rejected EVERY cut — which is the failure mode that makes a guard worthless.
+    const dir = tmpDir2('seed-guard-clean-');
+    const store = makeStore(dir);
+    await store.ready();
+    const log = await openOwnLog(store);
+    for (let i = 0; i < 4; i++) await log.append(op(i));
+    await log.append(presenceOp(2)); // present in the log, and must NOT reach the seed
+    const snap = await produceLogSnapshot(log, {
+      now: 1000,
+      schemaVersion: 1,
+      excludeTables: SEED_EXCLUDED_TABLES,
+    });
+    expect(snap.appended).toBe(true);
+
+    const provider = createCorestoreSeedProvider();
+    const stage = tmpDir2('seed-guard-clean-stage-');
+    const { entry } = await provider.cut({
+      sourceStore: store,
+      coreKeys: [log.keyHex],
+      stagingDir: stage,
+      sparse: true,
+    });
+    expect(entry.kind).toBe('corestore');
+    // And the shipped span really is the filtered snapshot, not an accidental empty range.
+    const meta = entry.meta as { coreSparseFrom?: Record<string, number>; coreLengths: Record<string, number> };
+    expect(meta.coreSparseFrom?.[log.keyHex]).toBe(snap.coversUpTo);
+    expect(meta.coreLengths[log.keyHex]).toBeGreaterThan(snap.coversUpTo);
+  });
+});
