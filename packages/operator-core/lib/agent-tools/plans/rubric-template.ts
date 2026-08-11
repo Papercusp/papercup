@@ -285,6 +285,17 @@ export const rubricTemplateDataSchema = z
           'ACTIVE releaseGating rubric has no COMPLETE scorecard within its threshold window — a release ' +
           'bar nobody is grading is a silent gate, not a green one',
       ),
+    stalenessWatched: z
+      .boolean()
+      .optional()
+      .describe(
+        'this rubric must keep being GRADED, without gating a release (blender-su-grade-integration-2026-08-11 ' +
+          'P-011). The staleness watchdog watches releaseGating OR stalenessWatched rubrics. These are two ' +
+          'different questions that shared one flag: "does a stale verdict block a ship?" vs "is anyone still ' +
+          'grading this?" — so an ongoing HEALTH rubric had to either masquerade as a release bar (inheriting ' +
+          'the machine-instrument contract it does not need, and blocking releases it should not) or go ' +
+          'unwatched, which made a dead health loop indistinguishable from a healthy one',
+      ),
     historyResetAt: z
       .string()
       .min(1)
@@ -388,6 +399,14 @@ export const rubricTemplateDataSchema = z
           path: ['releaseGating'],
           message:
             'releaseGating is standard-kind only — an acceptance rubric is one-shot and watchdog-exempt (plan D-008); a release bar must be a standard rubric',
+        });
+      }
+      if (d.stalenessWatched) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['stalenessWatched'],
+          message:
+            'stalenessWatched is standard-kind only — an acceptance rubric is one-shot and watchdog-exempt (plan D-008), so "is anyone still grading this?" is not a question about it',
         });
       }
     }

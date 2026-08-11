@@ -2,6 +2,20 @@
  * ready-plan-autostart.ts — the Queen↔Scout feedback-loop MISSING CONSUMER of
  * `ready` (WI-1574, 2026-07-02).
  *
+ * ⚠ WHO RATIFIES, POST-RETIREMENT (blender-su-grade-integration-2026-08-11 P-012/D-008).
+ * "Ratifying IS the approval signal" — the premise this whole sweep rests on — named the
+ * QUEEN as the ratifier. She is retired, which briefly left that premise with nobody
+ * behind it: a `ready` flip still auto-promotes items into the claimable pool with no
+ * second gate, but nothing said who may perform the flip.
+ *
+ * The named approver is now the Blender STEWARD (the GOAL holder), BOUNDED: it may
+ * ratify only drafts promoting ≤3 open items, with nothing in the dangerous set
+ * (irreversible migration / outward-facing publish/send / fleet-autonomy escalation /
+ * auth/security / kill-switch), and never a draft whose idea it filed itself. Anything
+ * larger or riskier escalates to the owner instead of being ratified. The decompose-wake
+ * below (`source='scout-ready-decompose'`) likewise now targets the nudge ladder rather
+ * than a Queen lookup. Read every "Queen" below as "the ratifying steward".
+ *
  * THE DEAD END (root cause this closes): the review loop's terminal state is
  * `ready` ("Queen promotes to greenlight") — but NOTHING ever consumed `ready`.
  * Evidence at time of writing: scout_routed_ideas rail='plan' had 6 routes, all

@@ -2,6 +2,18 @@
  * draft-review-watchdog.ts — the Queen↔Scout feedback-loop ANTI-STARVATION backstop
  * (queen-scout-feedback-loop-2026-06-20 D-003 #2, hardening).
  *
+ * ⚠ RECIPIENT, POST-RETIREMENT (blender-su-grade-integration-2026-08-11 P-012): every
+ * "the Queen" below is HISTORICAL. The Queen is retired
+ * (retire-mug-kettle-su-only-2026-08-09); drafts are now reviewed and disposed by the
+ * Blender STEWARD — a GOAL-mode su holding the Blender goal — reached through the nudge
+ * ladder (nudge-recipient.ts), not by a role lookup.
+ *
+ * The starvation ARGUMENT below survives the rename intact, and is worth reading on its
+ * own terms: it is about a consumer that only acts when IDLE while placement always
+ * wins, which is a property of the scheduling relationship, not of the Queen. A steward
+ * with its own self-paced loop can starve the same way, which is why this backstop is
+ * still live rather than retired alongside the role that named it.
+ *
  * THE STARVATION (the root cause this closes): the Scout produces draft plans on a
  * friction-OR-idle cadence (the bp-singleton-scout-0 blueprint, every 30m) and pings
  * the Queen via a DURABLE coord message with NO forced wake (queen-notify.ts:

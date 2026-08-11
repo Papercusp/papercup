@@ -2,6 +2,22 @@
  * ungraded-filings-watchdog.ts — the su-ideate GRADING backstop
  * (su-ideate-learning-substrate-2026-07-10 P-006).
  *
+ * ⚠ RECIPIENT, POST-RETIREMENT (blender-su-grade-integration-2026-08-11 P-012): the
+ * prose below says "the Mug" throughout because that WAS the recipient when this was
+ * written. The Mug/Kettle tier is retired. Delivery now goes through the nudge LADDER
+ * (`deliverScoutNudge` → nudge-recipient.ts), whose rung 2 prefers the Blender steward
+ * (a GRADE-mode su bound to the active Blender goal) over a merely-recent one. Read
+ * every "nudge the Mug" below as "nudge the ladder's chosen recipient"; the deciders,
+ * deadlines and debounce semantics are unchanged. The Mug-shaped NAMES that survive in
+ * the API (`shouldNudgeMug`) are historical, not a claim about who gets the nudge.
+ *
+ * ⚠ "UNGRADED" HERE IS ONE SPECIFIC POPULATION, not a general count: origin='su-ideate'
+ * AND non-terminal AND at/after the D-013 epoch floor. Three surfaces once published
+ * 15 / 1,103 / "1,082 su filings" for "ungraded" on the same day, each correct about a
+ * different population. For a CENSUS use `readUngradedBreakdown` (ungraded-scope.ts) —
+ * this module's own query is a row SELECTION (its own ORDER/LIMIT/batch cap), which is
+ * why it is a sanctioned exception to that module's single-definition guard.
+ *
  * THE STARVATION (the gap this closes): su sessions now ORIGINATE feature ideas
  * (improvements:capture kind:'feature' → origin='su-ideate' rows on the routed-idea
  * ledger), and the whole learning substrate — grader-feedback priming, per-lens

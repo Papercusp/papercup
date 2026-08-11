@@ -36,7 +36,7 @@
  * predicate appears outside this module.
  */
 
-import type { Sql } from '@papercusp/db-org';
+import type { Sql } from 'postgres';
 
 /** The producers that file into `harness_shared.scout_routed_ideas`. */
 export type UngradedOrigin = 'su-ideate' | 'scout' | 'drill';
