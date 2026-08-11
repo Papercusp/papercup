@@ -565,8 +565,8 @@ export async function getNextForBee(args: {
     });
     return null;
   }
-  const resolvedPullRecord = args.ignoreStoredSpec
-    ? { source: 'default' as const, spec: DEFAULT_CLAIM_SPEC }
+  const resolvedPullRecord: ClaimSpecRecord = args.ignoreStoredSpec
+    ? { source: 'default', spec: DEFAULT_CLAIM_SPEC, revision: null, updatedBy: null, updatedAt: null }
     : resolvedRecord;
 
   // EI-20185650623647293: a missing spec used to send every self-puller through the
