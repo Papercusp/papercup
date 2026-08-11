@@ -4351,6 +4351,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       const shardSeed = routing.ownerId || routing.pinned?.accountId || cli.accountId;
       const cached = rewriteOpenAiCacheBody(bodyBuf, {
         cacheKey: shardedCacheKey('psu', shardSeed, codexCacheShards()),
+        injectRetention: false,
       });
       bodyBuf = cached.body;
       if (cached.stats) recordCachePolicy('codex', cached.stats);

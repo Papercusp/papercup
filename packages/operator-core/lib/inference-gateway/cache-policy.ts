@@ -346,12 +346,17 @@ export interface OpenAiCacheStats {
  */
 export function applyOpenAiCachePolicy(
   body: Record<string, unknown>,
-  opts: { cacheKey?: string } = {},
+  opts: { cacheKey?: string; injectRetention?: boolean } = {},
 ): OpenAiCacheStats {
   const generation = openAiCacheGeneration(body.model);
   const stats: OpenAiCacheStats = { changed: false, generation, retentionSet: false, ttlSet: false, cacheKeySet: false };
 
-  if (generation === 'legacy') {
+  // The public OpenAI API accepts the generation-specific retention controls below. The
+  // ChatGPT-subscription backend does not; its gateway caller disables only this injection
+  // while retaining prompt_cache_key affinity and response-side usage telemetry.
+  if (opts.injectRetention === false) {
+    // Provider-native caching has no request-side retention control on this transport.
+  } else if (generation === 'legacy') {
     // Writes are free on this family — extended retention is strictly beneficial.
     if (body.prompt_cache_retention === undefined) {
       body.prompt_cache_retention = '24h';
@@ -403,7 +408,7 @@ export function shardedCacheKey(variant: string, sessionId: string, shards: numb
 /** Buffer-level wrapper for the OpenAI path. Same no-op-safety contract as the Anthropic one. */
 export function rewriteOpenAiCacheBody(
   bodyBuf: Buffer,
-  opts: { cacheKey?: string } = {},
+  opts: { cacheKey?: string; injectRetention?: boolean } = {},
 ): { body: Buffer; stats: OpenAiCacheStats | null } {
   if (!bodyBuf.length) return { body: bodyBuf, stats: null };
   try {

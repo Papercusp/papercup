@@ -346,6 +346,15 @@ describe('applyOpenAiCachePolicy (P-005/P-008)', () => {
     expect(s.cacheKeySet).toBe(false);
   });
 
+  it('can omit provider-unsupported retention controls while keeping cache-key affinity', () => {
+    const body: Record<string, unknown> = { model: 'gpt-5.6-terra' };
+    const s = applyOpenAiCachePolicy(body, { cacheKey: 'psu-1', injectRetention: false });
+    expect(body.prompt_cache_options).toBeUndefined();
+    expect(body.prompt_cache_retention).toBeUndefined();
+    expect(body.prompt_cache_key).toBe('psu-1');
+    expect(s).toMatchObject({ changed: true, ttlSet: false, retentionSet: false, cacheKeySet: true });
+  });
+
   it('is idempotent', () => {
     const body: Record<string, unknown> = { model: 'gpt-5.6' };
     applyOpenAiCachePolicy(body, { cacheKey: 'k-0' });

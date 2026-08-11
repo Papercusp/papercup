@@ -441,7 +441,11 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
           : rawBody instanceof Uint8Array
             ? Buffer.from(rawBody).toString('utf8')
             : '';
-        expect(Array.isArray((JSON.parse(bodyText) as { input?: unknown }).input)).toBe(true);
+        const forwardedBody = JSON.parse(bodyText) as Record<string, unknown>;
+        expect(Array.isArray(forwardedBody.input)).toBe(true);
+        expect(forwardedBody.prompt_cache_options).toBeUndefined();
+        expect(forwardedBody.prompt_cache_retention).toBeUndefined();
+        expect(forwardedBody.prompt_cache_key).toMatch(/^psu-/);
         routed.push(account);
         if (account === 'chatgpt-a') {
           if (failure === 'transport') throw new Error('subscription transport unavailable');
