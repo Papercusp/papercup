@@ -243,6 +243,16 @@ peer who received a wrong paraphrase has no way back to the source. A decision i
 
 This is not a paperwork nicety — it changes outcomes. 
 
+## Every plan ships with a graded acceptance rubric
+
+**Every plan ships with a GRADED acceptance rubric — authored AFTER implementation, before the plan is marked shipped** (acceptance-rubrics-on-every-plan-2026-08-11; flag `ACCEPTANCE_RUBRIC_COMPLETION_GATE`, default ON). `plans:set-plan-status → 'shipped'` (and its `done` alias) REFUSES without one. Once your implementation is verified:
+
+1. `rubrics:propose { kind:'acceptance', subjectPlan:'<plan-slug>', classRef:'plan-class-feature-ship'|'plan-class-bugfix'|'plan-class-migration'|'plan-class-investigation', criteria:[3–7 OUTCOME criteria tracing to the plan's goal + Decisions — never a restatement of the diff] }` — it activates immediately (no ratification) and stays hidden from the standard rubrics library reads (`kind` filter). An investigation-only plan may pass `criteria: []` with `classRef:'plan-class-investigation'`.
+2. A NON-implementer grades it: `scorecards:emit { rubricRef, ratings }` with concrete evidence per rating — grader ≠ rubric author; a self-grade never satisfies the gate.
+3. Ship. The acceptance rubric is auto-retired with its plan.
+
+Do NOT author the rubric at plan-creation time and do NOT maintain it during implementation — it does not exist until the work is done (owner-ruled: post-implementation authoring is better informed and wastes no tokens on drifted designs). Rubric-template plans and scheduled template instances are exempt.
+
 ## Branch discipline: the shared tree stays on `staging`; `main` is automation-only
 
 - The canonical shared checkout (the repo root you are working in) **always has
