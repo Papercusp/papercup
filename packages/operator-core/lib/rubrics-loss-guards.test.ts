@@ -42,6 +42,7 @@ const crit = (over: Partial<RubricCriterion> & { key: string }): RubricCriterion
 const rubric = (criteria: RubricCriterion[], over: Partial<Rubric> = {}): Rubric => ({
   rubricId: 'su-agent-behavior',
   workspaceId: 'default',
+  kind: 'standard',
   characteristic: 'su-behavior',
   title: 'SU agent behavior',
   description: 'test fixture',

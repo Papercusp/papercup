@@ -13,13 +13,14 @@ import {
   rubricCriterionSchema,
   rubricCriterionWindowSchema,
   resolveCriterionWindow,
+  rubricKindOf,
   DEFAULT_CRITERION_WINDOW_MS,
   RUBRIC_TEMPLATE,
   RUBRIC_TEMPLATE_NAME,
   type RubricTemplateData,
 } from './rubric-template';
 import { getPlanTemplate, isKnownPlanTemplate, validateTemplateData } from './template-registry';
-import type { RubricCriterion } from '../../rubrics';
+import type { RubricCriterion, ProposeRubricCriterion } from '../../rubrics';
 
 // The brief's minimal rubric: characteristic + criteria[{key,title,model,method,driftMarkers}] + ratingScale.
 const minimalCriterion = {
@@ -186,11 +187,24 @@ describe('self-registration', () => {
 });
 
 describe('shape parity with the v1 Rubric', () => {
-  it('a parsed criterion is assignable to RubricCriterion (compile-time pin)', () => {
+  // Kind-aware since acceptance-rubrics-on-every-plan-2026-08-11: the SCHEMA-level
+  // criterion type allows acceptance-kind criteria to omit model/method/driftMarkers, so
+  // the compile-time pin targets ProposeRubricCriterion (the write-path input shape) and
+  // the FULL standard element schema pins against RubricCriterion directly. Runtime
+  // presence for standard-kind criteria is enforced by the per-kind superRefine (tested
+  // in the per-kind describe below).
+  it('a parsed criterion is assignable to ProposeRubricCriterion; the full element schema pins RubricCriterion', () => {
     const data: RubricTemplateData = rubricTemplateDataSchema.parse(minimalData);
-    // If the schema's criterion shape ever drifts from RubricCriterion, this fails tsc.
-    const criterion: RubricCriterion = data.criteria[0];
+    const criterion: ProposeRubricCriterion = data.criteria[0];
     expect(criterion.key).toBe('placement-health');
+    // Full-element pin: if rubricCriterionSchema's shape ever drifts from the v1
+    // RubricCriterion, this fails tsc.
+    const full: RubricCriterion = rubricCriterionSchema.parse(minimalCriterion);
+    expect(full.model).toBe(minimalCriterion.model);
+    // Standard-kind runtime guarantee: the prose fields survived the parse.
+    expect(criterion.model).toBeTruthy();
+    expect(criterion.method).toBeTruthy();
+    expect(criterion.driftMarkers).toBeTruthy();
   });
 
   it('a parsed criterion WITH a window stays assignable (EI-12146 parity pin)', () => {
@@ -198,7 +212,7 @@ describe('shape parity with the v1 Rubric', () => {
       ...minimalData,
       criteria: [{ ...minimalCriterion, window: { kind: 'post-watermark', watermarkRef: 'bg-host-restart' } }],
     });
-    const criterion: RubricCriterion = data.criteria[0];
+    const criterion: ProposeRubricCriterion = data.criteria[0];
     expect(criterion.window?.kind).toBe('post-watermark');
   });
 });

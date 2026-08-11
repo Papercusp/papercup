@@ -152,6 +152,13 @@ export function deriveCouplingsFromRoster(
   // a caller outside its own roster is a scope question, not a coupling question.
   if (!selfRow) return [];
 
+  // ⚠ EARLY-RETURN THROUGH THE CENSUS'S OWN COUNTER, ON PURPOSE — do not inline
+  // this back into the loop guard. Routing both through `awaitsBindingInputs`
+  // makes "the census recorded 0 inputs" and "this leg could not emit" the SAME
+  // fact rather than two facts that agree until someone edits one of them
+  // (EI-20088486454213771). See that helper for the defect it repairs.
+  if (awaitsBindingInputs(self, rows) === 0) return [];
+
   const myAwait = cleanId(selfRow.awaitingEventKey);
 
   const out: DerivedCoupling[] = [];

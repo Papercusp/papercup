@@ -134,6 +134,7 @@ describe('evaluateScorecardInstrumentContract (rubric/instrument contract)', () 
   const rubric = (over: Partial<Rubric> = {}): Rubric => ({
     rubricId: 'release-r',
     workspaceId: 'default',
+    kind: 'standard',
     characteristic: 'release',
     title: 'Release',
     description: '',
