@@ -9,7 +9,10 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import { vi } from 'vitest';
 
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: () => Promise.resolve([]) }) }));
+const { dbRows } = vi.hoisted(() => ({ dbRows: { current: [] as unknown[] } }));
+vi.mock('@papercusp/db-org', () => ({
+  getOrgPg: () => ({ sql: () => Promise.resolve(dbRows.current) }),
+}));
 vi.mock('../pot/started', () => ({
   listBlenderMaintenanceScopes: vi.fn(),
   listBlenderMaintenanceWorkspaceIds: vi.fn(() => []),
@@ -18,7 +21,7 @@ const { wakeMug } = vi.hoisted(() => ({ wakeMug: vi.fn().mockResolvedValue(undef
 vi.mock('../pot/placement-watchdog', () => ({ resolveMugOwner: vi.fn(), wakeMug }));
 vi.mock('../pot/watchdog', () => ({ recentWatchdogFires: vi.fn(), recordFire: vi.fn() }));
 
-import { listBlenderMaintenanceScopes } from '../pot/started';
+import { listBlenderMaintenanceScopes, listBlenderMaintenanceWorkspaceIds } from '../pot/started';
 import {
   selectUngradedFilings,
   shouldNudgeMug,
@@ -33,6 +36,12 @@ import {
 
 const DAY = 86_400_000;
 const NOW = 100 * DAY;
+
+afterEach(() => {
+  dbRows.current = [];
+  vi.mocked(listBlenderMaintenanceScopes).mockReset();
+  vi.mocked(listBlenderMaintenanceWorkspaceIds).mockReset().mockReturnValue([]);
+});
 
 function filing(ideaId: string, ageDays: number): SuUngradedCandidate {
   return { ideaId, title: null, routedRef: `wi:${ideaId}`, routedAtMs: NOW - ageDays * DAY };
@@ -185,6 +194,26 @@ describe('suIdeateUngradedStaleSec tunable', () => {
 });
 
 describe('suIdeateUngradedSweep observability', () => {
+  it('returns a live error invariant when eligible backlog exists but no Blender scope is evaluated', async () => {
+    vi.mocked(listBlenderMaintenanceScopes).mockResolvedValueOnce([]);
+    vi.mocked(listBlenderMaintenanceWorkspaceIds).mockReturnValueOnce(['ws-1']);
+    dbRows.current = [{ c: 3 }];
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const result = await suIdeateUngradedSweep({ now: SU_IDEATE_UNGRADED_EPOCH_MS + 30 * DAY });
+
+    expect(result).toEqual([
+      expect.objectContaining({
+        outcome: 'error',
+        evaluatedWorkspaceCount: 0,
+        evaluatedScopeCount: 0,
+        eligibleBacklogCount: 3,
+      }),
+    ]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('no registered Blender scopes'));
+    warn.mockRestore();
+  });
+
   it('returns a synthetic error result when the outer infrastructure read fails', async () => {
     vi.mocked(listBlenderMaintenanceScopes).mockRejectedValueOnce(new Error('scope registry unavailable'));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
