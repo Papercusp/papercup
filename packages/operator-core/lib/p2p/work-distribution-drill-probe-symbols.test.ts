@@ -135,4 +135,28 @@ describe.skipIf(!scriptExists)('work-distribution-drill wiring census — probe 
     // check above could be passing merely because the search itself is broken.
     expect(existsAsCode('listOffers'), 'listOffers not found as code — the source search is broken').toBe(true);
   });
+
+  it('requires the work-intake routine to be active before SPAWN or RESULTS can pass', () => {
+    const script = readFileSync(DRILL, 'utf8');
+    const spawnStart = script.indexOf('# SPAWN —');
+    const resultsStart = script.indexOf('# RESULTS —', spawnStart);
+    const meteringStart = script.indexOf('# METERING —', resultsStart);
+
+    expect(spawnStart, 'SPAWN census section missing').toBeGreaterThanOrEqual(0);
+    expect(resultsStart, 'RESULTS census section missing').toBeGreaterThan(spawnStart);
+    expect(meteringStart, 'METERING census section missing').toBeGreaterThan(resultsStart);
+
+    const spawn = script.slice(spawnStart, resultsStart);
+    const results = script.slice(resultsStart, meteringStart);
+
+    expect(spawn).toMatch(
+      /elif routine_active 'p2p-work-intake'; then\s+ok "SPAWN wired:/,
+    );
+    expect(spawn).toMatch(
+      /elif routine_seeded 'p2p-work-intake'; then\s+skipp "SPAWN — DETECTED: p2p-work-intake is seeded but inactive:/,
+    );
+    expect(results).toMatch(
+      /if routine_active 'p2p-work-intake' && bundle_has 'runForeignGitSyncTick'; then\s+ok "RESULTS wired:/,
+    );
+  });
 });
