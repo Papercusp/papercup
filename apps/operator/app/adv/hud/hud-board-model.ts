@@ -175,6 +175,23 @@ export interface HudRosterEntry {
    * pin is invisible to this layer.
    */
   accountPin?: { account: string; hard: boolean } | null;
+  /**
+   * The session's recorded launch arguments (adv-roster's `launchArgv`) — what
+   * the chat footer's MODEL pill parses its current `<model>[:<effort>]` spec
+   * out of (hud-chat-owner-controls-2026-08-11 P-002).
+   *
+   * OPTIONAL for the same reason as `accountPin` above: an older operator's
+   * payload predates it, and the pill treats ABSENT as unknown and omits itself
+   * rather than claiming a model it cannot source (D-005 §5). Do NOT default it
+   * to `[]` anywhere on the way here — an empty array is the positive claim
+   * "launched with no --model", which the pill renders as "default".
+   *
+   * Two shapes travel in this field and `modelSpecFromArgv` reads both: raw
+   * tokens (["psu", "--model=…"]) from a psu/fleet launch, and
+   * [terminal, greetingCmd] from a console launch, where the flag is embedded in
+   * the recorded shell command.
+   */
+  launchArgv?: string[];
   openAwait: HudOpenAwait | null;
   thinking: boolean;
   /** The adv_sessions `display` hint. Optional — only the launch-record tiers

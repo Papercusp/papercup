@@ -1332,6 +1332,17 @@ export default function SessionChatModal({
             // is deliberately NOT collapsed to null: the axis reads it as
             // "unknown" and omits the pill, where null means "no dynamic pin".
             accountPin: actionRosterEntry?.accountPin,
+            // P-002: the MODEL pill parses its current spec out of the session's
+            // own launch argv, off the SAME roster row — the effective value the
+            // session actually launched with, never a predicted one (D-009 §B).
+            //
+            // NOT `?? []`. The two absences differ and the axis reads them
+            // differently: `undefined` (no roster row yet, or an older payload)
+            // means UNKNOWN and omits the pill, while an EMPTY array is a
+            // positive claim that the argv carries no --model, which the pill
+            // renders as "default". Defaulting here would make a session whose
+            // row has not arrived assert it is on the backend default.
+            launchArgv: actionRosterEntry?.launchArgv,
           }
         : null,
     [sessionOwnerId, ownerLabel, actionRosterEntry, resolved],
