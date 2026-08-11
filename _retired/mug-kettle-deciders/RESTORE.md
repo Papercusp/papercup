@@ -103,6 +103,57 @@ test sibling committed anyway, red-pinning the gate ~6h), and its test's fixture
 **fictional `lib/…` paths**, not the real `lib/pot/…` one. Both are prose/synthetic strings
 with no resolvable import, so neither breaks and neither needs restoring.
 
+### `MugWakeEfficiencyPanel` — the UI leg (P-059, 2026-08-11)
+
+Retired: `MugWakeEfficiencyPanel.tsx` + `MugWakeEfficiencyPanel.test.tsx`, from
+`apps/operator-vite/src/components/adv/`. **First non-`operator-core` module in this
+directory** — the layout rule is unchanged (mirror the original repo path), it simply now
+has an `apps/` branch as well as `packages/`.
+
+⚠ **This was a FEATURE DELETION, not a file move**, and that is the thing a restorer must
+understand: the `wake-efficiency` Learning view is GONE, not flag-hidden. Restoring the panel
+file alone gives you a component nothing routes to. Governing decision: **D-076**.
+
+| importer | symbol | what happened |
+|---|---|---|
+| `adv/LearningTab.tsx` | `MugWakeEfficiencyPanel` | The import AND the whole `wake-efficiency` view were deleted: its `LVIEWS` member, its description-map entry, its `STAGES` nav entry (`Hourglass` icon — the import STAYS, still used at another site), and the render branch. |
+
+Also removed with it, and each needs deliberate re-creation on a restore:
+
+- **`MUG_KETTLE_VIEWS`** and the whole `mugKettleOn` leg of `LearningTab`. The set held that
+  ONE view, so deleting it emptied the set, which made `hiddenViews`'s
+  `if (!mugKettleOn) for (const v of MUG_KETTLE_VIEWS)` provably inert for every value of the
+  flag. `hiddenViews(testingOn, mugKettleOn)` → `hiddenViews(testingOn)` and
+  `visibleStages` likewise, with the `useFlag(FLAGS.MUG_KETTLE_SYSTEM)` read dropped from the
+  component. **`FLAGS.MUG_KETTLE_SYSTEM` itself is untouched** — `adv/AdvNowRunning.tsx` still
+  reads it; only LearningTab's use of it is gone.
+- The **`MUG_KETTLE_SYSTEM: true` pin** in the `setTestingFlag` helpers of
+  `LearningTab.test.tsx` and `LearningTab.lens-guard.test.tsx`. Those pins existed solely so
+  that seeding from `FLAG_DEFAULTS` would not silently hide this view under every test in the
+  file; with the view deleted they gated nothing.
+- The **`"wake-efficiency"` member of `WORKSPACE_VIEWS`** in `LearningTab.lens-guard.test.tsx`.
+- The gate suite `describe("Mug/Kettle tier gating (FLAGS.MUG_KETTLE_SYSTEM)")` was rewritten
+  as `describe("Mug/Kettle tier retirement (wake-efficiency deleted)")`. Its flag-toggle cases
+  died with the flag leg; its D-020 case (Red Queen / Frontier are NOT the Mug) and its
+  stale-deep-link case both SURVIVE — see the warning below.
+
+⚠ **`packages/operator-core/lib/pot/mug-wake-efficiency.ts` STAYS LIVE — do not retire it
+with the panel.** The panel imported only its TYPE. The lib has three live non-tier consumers:
+`system-health/compute.ts:412`, `sync-resolver/index.ts:4798`, and
+`agent-tools/pot/mug_efficiency.ts`. This is the third live/tier split on this plan where a
+shared name implied a shared verdict; assume nothing from the filename.
+
+⚠ **The stale-deep-link behaviour survives by a DIFFERENT mechanism.** While the view existed,
+`?lview=wake-efficiency` was a *known* id that `hiddenViews` hid, so the redirect came from the
+flag gate. It is now simply absent from `LVIEWS`, so LearningTab's membership test rejects it
+into the default view. Same observable, different path — the test was re-pointed, deliberately
+NOT deleted, because real bookmarks and old links exist.
+
+📉 **`learning-view-settle-coverage.guard.test.ts` baseline: 16 → 15.** BOTH sides of that
+ratchet moved by one — `LEARNING_VIEWS` lost a member and the source scan lost a call site
+(the panel had a `useInteractionSettle` point and `_retired/` is outside `SCAN_ROOTS`) — so
+`unmeasured` stayed 0. Restoring the panel must move it back to 16, or the guard reds.
+
 <!-- Later P-059 slices append rows here. Keep the "why it retired" column
      evidence-bearing (importer count at retirement), not just a restatement
      of the file name. -->
