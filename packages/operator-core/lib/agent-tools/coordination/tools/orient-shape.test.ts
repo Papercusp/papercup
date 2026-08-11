@@ -166,7 +166,7 @@ describe('shapeOrient trimmed', () => {
       coverage: Array.from({ length: 37 }, (_, i) => ({ plan: `plan-${i}`, item: `P-${i}`, level: 'full' })),
     };
 
-    const out = shapeOrient({ ok: true, me, claimable: [], inbox: { summary: {}, recent: [] } }, 'trimmed') as Record<string, any>;
+    const out = shapeOrient({ ...fixture(), me }, 'trimmed') as Record<string, any>;
     const shapedMe = out.me as Record<string, any>;
 
     // This was the production failure: the nested raw object made orient 64KB+

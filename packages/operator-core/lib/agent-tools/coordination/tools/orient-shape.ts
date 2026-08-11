@@ -223,7 +223,17 @@ function projectCoverageCollision(row: unknown, textCap: number): unknown {
  */
 function projectAssignmentObject(me: unknown, tier: TierName): unknown {
   if (!me || typeof me !== 'object' || !Array.isArray((me as { agents?: unknown }).agents)) return me;
-  const shaped = shapeFleetAssignments(me, tier);
+  const raw = me as Record<string, unknown>;
+  const rawAgents = raw.agents as unknown[];
+  // Prioritize before the canonical shaper's own 40/80-row slice. Otherwise a
+  // dead or self row near the tail can be discarded before this nested orient
+  // projection gets the chance to apply its intervention-first ordering.
+  const prioritizedRaw = [...rawAgents].sort((a, b) => {
+    const aSelf = (a as Record<string, unknown> | null)?.isSelf === true ? -10 : 0;
+    const bSelf = (b as Record<string, unknown> | null)?.isSelf === true ? -10 : 0;
+    return aSelf + briefMemberRank(a) - (bSelf + briefMemberRank(b));
+  });
+  const shaped = shapeFleetAssignments({ ...raw, agents: prioritizedRaw }, tier);
   if (!shaped || typeof shaped !== 'object' || !Array.isArray((shaped as { agents?: unknown }).agents)) return shaped;
 
   const d = shaped as Record<string, unknown>;
@@ -231,8 +241,9 @@ function projectAssignmentObject(me: unknown, tier: TierName): unknown {
   const caps = tier === 'trimmed'
     ? { agents: 6, alerts: 4, collisions: 4, text: 180, coverage: 12 }
     : { agents: 12, alerts: 8, collisions: 8, text: 260, coverage: 24 };
-  const sourceAgents = d.agents.filter(
-    (agent) => (agent as Record<string, unknown> | null)?.agentId !== '(truncated)',
+  const assignmentAgents = (d.agents as unknown[]);
+  const sourceAgents = assignmentAgents.filter(
+    (agent: unknown) => (agent as Record<string, unknown> | null)?.agentId !== '(truncated)',
   );
   const rankedAgents = [...sourceAgents].sort((a, b) => {
     const aSelf = (a as Record<string, unknown> | null)?.isSelf === true ? -10 : 0;
@@ -242,7 +253,8 @@ function projectAssignmentObject(me: unknown, tier: TierName): unknown {
   const agents = rankedAgents.slice(0, caps.agents);
   const out: Record<string, unknown> = { ...d, agents };
 
-  const totalAgents = typeof summary.agents === 'number' ? summary.agents : sourceAgents.length;
+  const reportedAgents = typeof summary.agents === 'number' ? summary.agents : 0;
+  const totalAgents = Math.max(reportedAgents, rawAgents.length, sourceAgents.length);
   if (totalAgents > agents.length) {
     out.agents_truncated = true;
     out.agents_returned = agents.length;
@@ -251,7 +263,11 @@ function projectAssignmentObject(me: unknown, tier: TierName): unknown {
 
   const projectAlerts = (key: 'orphaned' | 'stalled', totalKey: 'orphaned_claims' | 'stalled_claims') => {
     const rows = Array.isArray(d[key]) ? d[key] : [];
-    const total = typeof summary[totalKey] === 'number' ? summary[totalKey] : rows.length;
+    // A mismatched summary must not make a non-empty list look fully delivered:
+    // use the larger observed population, while still preferring the canonical
+    // summary when it is the authoritative (usually much larger) count.
+    const reportedTotal = typeof summary[totalKey] === 'number' ? summary[totalKey] : 0;
+    const total = Math.max(reportedTotal, rows.length);
     out[key] = rows.slice(0, caps.alerts).map((row) => projectAssignmentAlert(row, caps.text));
     if (total > Math.min(rows.length, caps.alerts)) {
       out[`${key}_note`] = `nested orient ${key} showing ${Math.min(rows.length, caps.alerts)} of ${total}; use fleet:assignments for the full list`;
