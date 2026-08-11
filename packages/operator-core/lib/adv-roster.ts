@@ -691,12 +691,17 @@ export function mergeRosterEntries(
       // synthesized separately (pendingLaunchesToRosterEntries) into the roster's
       // `pending` tier, never `active` (D-006).
       display: null,
-      // WI-6510: was hardcoded `[]` while the joined adv row carried the argv all
-      // along — the pending/starting tiers already pass `r.launchArgv ?? []`, so an
-      // ACTIVE agent was the one tier that lost it. Carrying it costs no extra query
-      // (the adv row is already joined by owner) and is what lets the chat MODEL pill
-      // report the spec its session was launched on from data the surface already
-      // holds, keeping `ChatModeAction.current()` pure and synchronous.
+      // WI-6510: lets the chat MODEL pill report the spec its session was launched
+      // on from data the surface already holds, keeping `ChatModeAction.current()`
+      // pure and synchronous — no extra query (the adv row is already joined by
+      // owner).
+      //
+      // ⚠ CORRECTION (verified live 2026-08-11): this comment previously claimed the
+      // joined adv row "carried the argv all along" and that only this line dropped
+      // it. That was FALSE. `advSessionsByCoordOwner` did not SELECT `launch_argv`
+      // at all, so `adv.launchArgv` was always null here and this line always
+      // produced `[]` — the pill never rendered for any live agent. The real fix
+      // was adding the column to that query; both halves are required.
       launchArgv: adv?.launchArgv ?? [],
       agentPaneKind: pane.kind,
       driveMode: pane.driveMode,
