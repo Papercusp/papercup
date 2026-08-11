@@ -171,6 +171,14 @@ describe('pot:pause (P-005 / D-005 / P-013)', () => {
     expect(setDefaultWakeMode).toHaveBeenCalledWith('manual');
   });
 
+  it('preserves an owner-selected existing manual mode when stageAllWakes is omitted', async () => {
+    getDefaultWakeMode.mockResolvedValue('manual');
+    const out = await call(potPause as never, { harness: 'my-pot' });
+    expect(out.wakeMode).toBe('manual');
+    expect(out.wakeModeNote).toMatch(/preserved at manual/);
+    expect(setDefaultWakeMode).not.toHaveBeenCalled();
+  });
+
   it('per-pot: keeps the workspace Mug loop running when ANOTHER pot is still started', async () => {
     anyPotPlacementStarted.mockResolvedValue(true); // a sibling pot remains started
     const out = await call(potPause as never, { harness: 'my-pot' });
