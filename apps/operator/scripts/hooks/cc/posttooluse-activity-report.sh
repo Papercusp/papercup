@@ -27,7 +27,7 @@
 #
 # WHY THE FOLD PATH IS SYNCHRONOUS (EI-11405 — was fire-and-forget-detached):
 # the server's `activity:report` tool accepts an optional `hook_bundle` cursor
-# (`{generation, since_ts}`) and, ONLY when the coordination generation has
+# (`{generation}`) and, ONLY when the coordination generation has
 # actually advanced since our last call, folds a fresh coord:inbox snapshot
 # into the SAME response (packages/operator-core/lib/agent-tools/activity/
 # hook-bundle.ts). That is the fix for the RPC fanout this hook + the now-
@@ -40,16 +40,11 @@
 # HTTP_TIMEOUT below so a slow/wedged operator degrades to "no injection this
 # call" rather than stalling the agent's turn.
 #
-# Per-owner CURSOR (generation + since_ts) persists in
+# Per-owner CURSOR (generation only) persists in
 # $PAPERCUSP_LOCKS_CACHE_DIR/activity-hook-bundle-<owner>.json — the same
 # cache dir + per-owner-file convention the old coord-inbox hook used for its
-# `coord-cursor-<owner>.json`. FIRST run this session: seed since_ts to "now"
-# (existing inbox backlog is already shown at session start) and generation to
-# null; the resulting bundle's inbox surface is then empty by construction
-# (hook-bundle.ts never dumps history for a since_ts with nothing after it),
-# so nothing is injected, but the returned generation is captured for the
-# NEXT call — exactly one "seed" round trip, matching the old hook's contract
-# (never inject on the very first tool call of a session).
+# `coord-cursor-<owner>.json`. The server owns the inbox floor now; the client
+# sends only the generation, so a first call cannot seed itself past unread mail.
 #
 # Scope guard: runs ONLY in a psu session (PAPERCUSP_SID set + su-token present),
 # exactly like the deleted coord-inbox hook. A plain `claude`/`codex` elsewhere has no
@@ -93,7 +88,7 @@ AGENT="${PAPERCUSP_AGENT:-}"
 # must never affect a tool.
 report() {
   python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$PAPERCUSP_SID" "$AGENT" "$CACHE_DIR" "$COORD_FOLD" <<'PYEOF'
-import json, os, re, sys, time, urllib.request, urllib.parse
+import json, os, re, sys, urllib.request, urllib.parse
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
 raw, operator_url, token, owner, agent, cache_dir, coord_fold_flag = sys.argv[1:8]
@@ -172,7 +167,6 @@ else:
 # ── delta-aware coordination fold (EI-11405) — only when COORD_FOLD is on ──
 # Cursor is keyed by PAPERCUSP_SID (per-launch), so a fresh session never
 # re-shows old mail and never inherits a stale generation from a prior host.
-since_ts = None
 
 if coord_fold:
     def cursor_path():
@@ -184,38 +178,24 @@ if coord_fold:
             with open(cursor_path()) as f:
                 v = json.load(f)
             gen = v.get('generation')
-            since = v.get('since_ts')
-            return (
-                gen if isinstance(gen, str) and gen else None,
-                since if isinstance(since, str) and since else None,
-            )
+            return gen if isinstance(gen, str) and gen else None
         except Exception:
-            return (None, None)
+            return None
 
-    def write_cursor(gen, since):
+    def write_cursor(gen):
         try:
             p = cursor_path()
             tmp = p + '.tmp-' + str(os.getpid())
             with open(tmp, 'w') as f:
-                f.write(json.dumps({'generation': gen, 'since_ts': since}))
+                f.write(json.dumps({'generation': gen}))
             os.replace(tmp, p)
         except Exception:
             pass
 
-    def now_iso():
-        return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
-
-    generation, since_ts = read_cursor()
-    if since_ts is None:
-        # FIRST run this session: seed since_ts to now (the session-start read
-        # already showed the existing backlog) and persist immediately so a crash
-        # mid-request never re-seeds (and never replays history) on retry.
-        since_ts = now_iso()
-        write_cursor(generation, since_ts)
+    generation = read_cursor()
 
     args['hook_bundle'] = {
         'generation': generation,
-        'since_ts': since_ts,
     }
 
 body = json.dumps({
@@ -285,7 +265,6 @@ if not isinstance(new_generation, str) or not new_generation:
 complete = bundle.get('complete') is True
 changed = bundle.get('changed') is True
 
-next_since = since_ts
 out_text = None
 
 if changed:
@@ -293,10 +272,6 @@ if changed:
     inbox = surfaces.get('inbox') if isinstance(surfaces, dict) else None
     if isinstance(inbox, dict):
         summ = inbox.get('summary') if isinstance(inbox.get('summary'), dict) else {}
-        newest = summ.get('newest_ts')
-        if isinstance(newest, str) and newest:
-            next_since = newest
-
         injection = inbox.get('injection')
         if isinstance(injection, str) and injection.strip():
             out_text = injection
@@ -313,7 +288,7 @@ if changed:
 # Only a COMPLETE fold advances the generation — an incomplete one (partial
 # hydrate failure) must retry the FULL hydrate next call, mirroring the OMP
 # consumer (consumeActivityHookBundle: `bundle.complete ? bundle.generation : null`).
-write_cursor(new_generation if complete else None, next_since)
+write_cursor(new_generation if complete else None)
 
 if not out_text:
     sys.exit(0)

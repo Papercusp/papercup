@@ -17,8 +17,16 @@ import { getOrgPg } from '@papercusp/db-org';
 import inboxTool from '../coordination/tools/inbox';
 import glanceTool from '../coordination/tools/glance';
 import { coordScopeWorkspace } from '../coordination/log';
+import {
+  ackAndRead as ackReadCursor,
+  stage as stageReadCursor,
+  type AckResult,
+  type CursorState,
+} from '../coordination/read-cursors';
+import { pickUnreadCursor, readWatermark as readCoordWatermark } from '../coordination/watermarks';
 
 export const ACTIVITY_HOOK_BUNDLE_SCHEMA = 'activity-hook-bundle-v1';
+export const INBOX_CURSOR_SURFACE = 'inbox';
 const HOST_EPOCH = `${process.pid.toString(36)}-${Date.now().toString(36)}`;
 
 export interface ActivityHookBundleRequest {
@@ -56,6 +64,14 @@ export interface ActivityHookBundleDeps {
   generation: () => Promise<string>;
   inbox: (sinceTs: string | null | undefined, ctx: ToolContext) => Promise<Record<string, unknown> | null>;
   glance: (ctx: ToolContext) => Promise<Record<string, unknown> | null>;
+  /** Server-owned two-phase cursor for the windowed inbox surface. */
+  readInboxCursor: (ownerId: string) => Promise<AckResult>;
+  stageInboxCursor: (ownerId: string, next: CursorState) => Promise<void>;
+  /** Legacy watermark bridge used only until the server cursor has a committed floor. */
+  readWatermark: (ownerId: string) => Promise<{
+    messages_since_ts?: string | null;
+    messages_shown_ts?: string | null;
+  }>;
   now: () => Date;
 }
 
@@ -104,8 +120,47 @@ const defaultDeps: ActivityHookBundleDeps = {
         ctx as Parameters<typeof glanceTool.handler>[1],
       ),
     ),
+  readInboxCursor: (ownerId) => ackReadCursor(ownerId, INBOX_CURSOR_SURFACE),
+  stageInboxCursor: (ownerId, next) => stageReadCursor(ownerId, INBOX_CURSOR_SURFACE, next),
+  readWatermark: (ownerId) => readCoordWatermark(ownerId),
   now: () => new Date(),
 };
+
+function nonEmptyTimestamp(value: unknown): string | null {
+  return typeof value === 'string' && value.length > 0 ? value : null;
+}
+
+/**
+ * Choose the first-call inbox floor during migration from the old client file
+ * cursor to the server cursor.
+ *
+ * A client timestamp is only a hint: when the durable watermark is absent we
+ * must read a full baseline, because a client can have seeded itself to `now`
+ * without ever showing the backlog. When a durable floor exists, an older
+ * client hint is safe (it may duplicate) but a newer one is never allowed to
+ * skip past the durable receipt.
+ */
+export function guardedLegacyInboxFloor(
+  clientSinceTs: string | null | undefined,
+  durableSinceTs: string | null,
+): string | null {
+  if (!durableSinceTs) return null;
+  const client = nonEmptyTimestamp(clientSinceTs);
+  if (!client || client <= durableSinceTs) return client ?? durableSinceTs;
+  return durableSinceTs;
+}
+
+function committedInboxFloor(cursor: AckResult): string | null {
+  if (cursor.baseline) return null;
+  const value = cursor.committed?.since_ts;
+  return nonEmptyTimestamp(value);
+}
+
+function inboxNewestTimestamp(inbox: Record<string, unknown> | null): string | null {
+  const summary = inbox?.summary;
+  if (!summary || typeof summary !== 'object' || Array.isArray(summary)) return null;
+  return nonEmptyTimestamp((summary as Record<string, unknown>).newest_ts);
+}
 
 /**
  * Return a stamped bundle.  Matching generations intentionally return no
@@ -119,7 +174,13 @@ export async function buildActivityHookBundle(
   ctx: ToolContext,
   deps: ActivityHookBundleDeps = defaultDeps,
 ): Promise<ActivityHookBundle> {
-  const generation = await deps.generation();
+  // ACK the previous delivery before deciding whether this heartbeat is quiet.
+  // The call itself is the ACK; if the prior turn died, its pending floor is
+  // promoted and the next changed heartbeat re-reads from that floor.
+  const [generation, inboxCursor] = await Promise.all([
+    deps.generation(),
+    deps.readInboxCursor(ownerId),
+  ]);
   const changed = request.force_resync === true || request.generation !== generation;
   const base: Omit<ActivityHookBundle, 'complete' | 'surfaces'> = {
     schemaVersion: ACTIVITY_HOOK_BUNDLE_SCHEMA,
@@ -138,11 +199,35 @@ export async function buildActivityHookBundle(
   };
   if (!changed) return { ...base, complete: true };
 
+  const legacyWatermark = await deps.readWatermark(ownerId).catch(() => null);
+  const durableLegacyFloor = legacyWatermark
+    ? pickUnreadCursor(legacyWatermark.messages_since_ts, legacyWatermark.messages_shown_ts)
+    : null;
+  // Once the server cursor has a committed state, it is authoritative and the
+  // client request is ignored. On the migration baseline, use the legacy
+  // receipt but never let a client-supplied `since_ts` move it forward.
+  const sinceTs = inboxCursor.baseline
+    ? guardedLegacyInboxFloor(request.since_ts, durableLegacyFloor)
+    : committedInboxFloor(inboxCursor);
+
   const [inbox, glance] = await Promise.all([
-    deps.inbox(request.since_ts, ctx).catch(() => null),
+    deps.inbox(sinceTs, ctx).catch(() => null),
     deps.glance(ctx).catch(() => null),
   ]);
-  const complete = inbox !== null && glance !== null;
+  let complete = inbox !== null && glance !== null;
+  if (complete) {
+    // Do not advance the server cursor until both replacement surfaces were
+    // assembled. A stage failure is an incomplete fold: the client retains its
+    // generation and the next heartbeat re-delivers from the same committed
+    // floor, preserving at-least-once delivery.
+    try {
+      await deps.stageInboxCursor(ownerId, {
+        since_ts: inboxNewestTimestamp(inbox) ?? sinceTs,
+      });
+    } catch {
+      complete = false;
+    }
+  }
   return {
     ...base,
     complete,
