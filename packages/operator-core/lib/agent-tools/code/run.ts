@@ -74,6 +74,13 @@ export default defineTool({
   // code:run is as powerful as the shell capability — it can call any of the agent's write tools.
   capability: 'capability:bash',
   requirePrincipal: false,
+  // EI-20191260319468035: the orchestration handler itself never reads ctx.tx. Holding the
+  // host's workspace transaction open around the whole script made a write through an inner
+  // tool invisible to the next dev:pg_query call, which intentionally reads on a separate
+  // lossless connection. The inner dispatcher establishes one short transaction per scoped
+  // tool call instead, so each committed write is visible to the next call and a long script
+  // cannot retain an idle transaction for its whole runtime.
+  skipWorkspaceTx: true,
   // ALL ROLES (owner directive 2026-06-25): code:run is open to every built-in role — not just
   // SU_ROLES + bee, which was the prior gate. Rationale: the grant is privilege-PRESERVING. The
   // facade is role-scoped (handler below: `roleScopedToolNames(all, ctx.role, …)`), so a role's
@@ -330,8 +337,12 @@ export default defineTool({
  * when the effective workspace for THIS call is unchanged from the ctx
  * already bound (the common case — every non-superuser caller, and any
  * superuser call without a per-call `workspace` override), the outer
- * code:run dispatch already bound `ctx.tx`/`ctx.principal` correctly, so we
- * dispatch under the SAME ctx unchanged — no extra transaction per call.
+ * code:run dispatch may already have bound `ctx.tx`/`ctx.principal` correctly, so we
+ * dispatch under the SAME ctx unchanged — no extra transaction per call. The production
+ * code:run tool opts out of that outer transaction because its handler does not read `ctx.tx`;
+ * when the fast-path binding is absent, this function creates the same short-lived per-call
+ * workspace transaction as the direct MCP dispatcher. That commit boundary is load-bearing:
+ * a later inner read must see an earlier inner write, including a `dev:pg_query` verification.
  */
 export const bindInnerDispatch: WrapDispatch = async (tool, _toolName, args, ctx, next) => {
   const spawnCtxLike = {
@@ -399,19 +410,36 @@ export const bindInnerDispatch: WrapDispatch = async (tool, _toolName, args, ctx
     return runWithWorkspaceIfConcrete(effectiveWs, () => next(callCtx));
   }
 
-  if (effectiveWs === spawnCtxLike.workspaceId) {
+  if (effectiveWs === spawnCtxLike.workspaceId && ctx.tx != null) {
     // Already correctly bound by the outer code:run dispatch (module workspace/tx/
-    // principal unchanged) — reuse baseCtx as-is (contextTier already forced above).
+    // principal unchanged) — reuse baseCtx as-is (contextTier already forced above). The
+    // production code:run handler opts out of its outer workspace transaction, so a missing
+    // tx deliberately falls through to the per-inner-call binding below.
     return next(baseCtx);
   }
 
-  // EI-30 hop fired: an unscoped superuser passed a concrete per-call
-  // `workspace` that differs from the outer ctx. Re-derive the binding for
-  // THIS call exactly as a direct (non-batch) MCP call would.
+  // Re-derive the binding for THIS call exactly as a direct (non-batch) MCP call would. This
+  // covers both EI-30's unscoped-superuser workspace hop and code:run's per-inner-call
+  // transaction boundary after the outer handler opts out of its ambient tx.
   const callSpawnCtx = { ...spawnCtxLike, workspaceId: effectiveWs };
   if (!dispatchNeedsTx(callSpawnCtx)) {
     return runWithWorkspaceIfConcrete(effectiveWs, () => next({ ...baseCtx, workspaceId: effectiveWs }));
   }
+
+  // Mirror the direct dispatcher for tools that explicitly opt out of holding a workspace
+  // transaction while their handler runs (typically a long child-process wait). We still use a
+  // short transaction to synthesize the principal, then invoke the handler without ctx.tx.
+  if (tool.skipWorkspaceTx === true) {
+    return runWithWorkspaceIfConcrete(effectiveWs, () =>
+      withWorkspace(effectiveWs, async (tx) => {
+        const principal = await synthesizeDispatchPrincipal(tx, callSpawnCtx);
+        return next({ ...baseCtx, workspaceId: effectiveWs, tx: undefined, principal });
+      }),
+    );
+  }
+
+  // A scoped inner call gets its own transaction. Besides matching direct MCP dispatch, this
+  // is the commit boundary that makes a write visible to the next inner read in the same script.
   return runWithWorkspaceIfConcrete(effectiveWs, () =>
     withWorkspace(effectiveWs, async (tx) => {
       const callCtx: UnifiedToolContext = {
