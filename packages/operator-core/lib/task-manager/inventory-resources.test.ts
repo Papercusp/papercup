@@ -6,11 +6,32 @@ import {
   cpuBusyPercent,
   emptyResourceTotals,
   foldResourceTotals,
+  projectLiveProcess,
   type TaskResourceTotals,
 } from './inventory';
+import type { ScannedProcess } from './reconcile';
 
 const row = (rssBytes: number | null, cpuUsec: number | null) => ({ rssBytes, cpuUsec });
 const NOW = 1_785_740_000_000;
+
+describe('public process projection', () => {
+  it('redacts credential-bearing argv before it reaches a task-manager client', () => {
+    const row: ScannedProcess = {
+      pid: 42,
+      cmdline: 'worker.ts --api-key=opaque-value-123 Authorization: Bearer another-opaque-value',
+      cgroupPath: '/papercusp.slice/pc-task.scope',
+      processIdentity: 'linux:boot:42',
+      owned: true,
+      scope: 'owned',
+      exemptReason: null,
+    };
+
+    const projected = projectLiveProcess(row);
+    expect(projected.cmdline).toContain('--api-key=[redacted]');
+    expect(projected.cmdline).toContain('Authorization: Bearer [redacted]');
+    expect(projected.cmdline).not.toContain('opaque-value');
+  });
+});
 
 describe('foldResourceTotals (WI-7371)', () => {
   it('sums both metrics and stamps the sample time', () => {

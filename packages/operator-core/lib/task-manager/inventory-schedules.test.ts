@@ -21,6 +21,14 @@ const row = (over: Partial<Parameters<typeof projectScheduleRows>[0][number]> = 
 });
 
 describe('projectScheduleRows (P-019)', () => {
+  it('redacts credential-bearing schedule errors before they reach the task-manager UI', () => {
+    const [projected] = projectScheduleRows([
+      row({ lastError: 'request failed with API_KEY=opaque-value-123' }),
+    ]);
+    expect(projected!.lastError).toContain('API_KEY=[redacted]');
+    expect(projected!.lastError).not.toContain('opaque-value');
+  });
+
   it('preserves armed:false as DISARMED and armed:undefined as UNKNOWN', () => {
     // The load-bearing case. `armed` is `true | false | null`, where null means NOT
     // APPLICABLE OR UNREACHABLE — not "off" (WI-6447). A `|| null` here would collapse

@@ -20,7 +20,9 @@ import { listTasks } from './store';
 import { reconcileTick } from './reconcile-tick';
 import { defaultForeignSignature } from './scan';
 import type { ExemptReason, ProcessScope } from './scope-class';
+import type { ScannedProcess } from './reconcile';
 import { REPO_ROOT } from '../agent-tools/docs/_repo-paths';
+import { redactSensitiveText } from '../sensitive-text';
 
 // The PURE, dependency-free slice of this model lives in the CLIENT-SAFE `./inventory-shared`
 // (WI-8191). A `'use client'` hook value-importing `cpuBusyPercent` from HERE dragged this
@@ -207,6 +209,24 @@ function scopeRank(scope: ProcessScope): number {
   return scope === 'abandoned-window' ? 2 : 3;
 }
 
+function safeDisplayText(text: string, maxChars: number): string {
+  // Redact BEFORE capping so a secret crossing the boundary cannot be partially
+  // preserved in a client payload.
+  return redactSensitiveText(text).slice(0, maxChars);
+}
+
+/** Pure projection for a `/proc` row crossing into a task-manager client. */
+export function projectLiveProcess(p: ScannedProcess): LiveProcessRow {
+  return {
+    pid: p.pid,
+    cmdline: p.cmdline ? safeDisplayText(p.cmdline, 300) : null,
+    cgroupPath: p.cgroupPath,
+    owned: p.owned,
+    scope: p.scope,
+    exemptReason: p.exemptReason,
+  };
+}
+
 /**
  * SHARED TTL memo for the live scan (owner-directed 2026-08-02).
  *
@@ -333,7 +353,7 @@ export function projectScheduleRows(
       armed: r.armed ?? null,
       lastFire: r.lastFire ?? null,
       nextFire: r.nextFire ?? null,
-      lastError: r.lastError ?? null,
+      lastError: r.lastError ? safeDisplayText(r.lastError, 300) : null,
       // Strict `=== true`, so a missing/odd `detail` can never read as federated. The
       // whole point of the flag is that it licenses trusting armed/lastFire.
       federated: r.detail?.federated === true,
@@ -361,7 +381,7 @@ async function runScheduleScan(): Promise<ScheduleScanResult> {
     return {
       schedules: [],
       scheduleSummary: { total: 0, bySource: {}, byTier: {} },
-      scheduleError: (e as Error).message.slice(0, 300),
+      scheduleError: safeDisplayText((e as Error).message, 300),
     };
   }
 }
@@ -390,12 +410,12 @@ async function runLiveScan(): Promise<LiveScanResult> {
       live: {
         ...tick.summary,
         degraded: tick.degraded,
-        degradedReason: tick.degradedReason,
+        degradedReason: tick.degradedReason ? safeDisplayText(tick.degradedReason, 300) : undefined,
         scan: tick.scan,
         unaccounted: tick.result.unaccounted.map((g) => ({
           cgroupPath: g.cgroupPath,
           pids: g.pids,
-          sample: g.sampleCmdline.slice(0, 200),
+          sample: safeDisplayText(g.sampleCmdline, 200),
         })),
       },
       // Owned first (enrolled lineage), then the genuine escapes, then the
@@ -412,17 +432,10 @@ async function runLiveScan(): Promise<LiveScanResult> {
         .slice()
         .sort((a, b) => scopeRank(a.scope) - scopeRank(b.scope) || a.pid - b.pid)
         .slice(0, MAX_LIVE_PROCESS_ROWS)
-        .map((p) => ({
-          pid: p.pid,
-          cmdline: p.cmdline ? p.cmdline.slice(0, 300) : null,
-          cgroupPath: p.cgroupPath,
-          owned: p.owned,
-          scope: p.scope,
-          exemptReason: p.exemptReason,
-        })),
+        .map(projectLiveProcess),
     };
   } catch (e) {
-    return { live: { error: (e as Error).message.slice(0, 300) }, liveProcesses: [] };
+    return { live: { error: safeDisplayText((e as Error).message, 300) }, liveProcesses: [] };
   }
 }
 
@@ -467,7 +480,7 @@ export async function getTaskInventory(opts: TaskInventoryOptions = {}): Promise
       parentTaskId: r.parentTaskId ?? null,
       rootTaskId: r.rootTaskId,
       class: r.class,
-      title: r.title,
+      title: safeDisplayText(r.title, 300),
       state: r.state,
       launchedBy: r.launchedBy,
       workItemId: r.workItemId ?? null,
@@ -483,8 +496,8 @@ export async function getTaskInventory(opts: TaskInventoryOptions = {}): Promise
       memoryMaxBytes: r.memoryMaxBytes ?? null,
       deadlineAt: r.deadlineAt ?? null,
       exitCode: r.exitCode ?? null,
-      exitReason: r.exitReason ?? null,
-      logPath: r.logPath ?? null,
+      exitReason: r.exitReason ? safeDisplayText(r.exitReason, 500) : null,
+      logPath: r.logPath ? safeDisplayText(r.logPath, 500) : null,
     }));
 
   // WI-7371: the totals run over their OWN unfiltered fetch, NOT `mappedRows`. `rows`

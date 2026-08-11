@@ -64,6 +64,10 @@ import { getSubstitutionRows } from '../bash-substitution/registry';
 import type { SubstitutionRow } from '../bash-substitution/match';
 import { activeWorkspaceId } from '../workspace-registry';
 import { pinModuleState } from '@papercusp/module-singleton';
+import { redactKeyDirectedSecrets, redactSelfIdentifyingSecrets } from '../sensitive-text';
+
+// Backward-compatible export for the session-part security tests and archive readers.
+export { redactKeyDirectedSecrets as redactPartSecrets } from '../sensitive-text';
 
 /** How far back a source file's mtime may be and still get ingested. */
 const INGEST_WINDOW_DAYS = 45;
@@ -187,58 +191,6 @@ export interface IngestStats {
   skipped?: string;
 }
 
-/** Common credential shapes scrubbed at ingest (defense-in-depth — transcripts
- * can contain pasted secrets; the INDEX must not become a secret store). */
-const SECRET_RE =
-  /\b(sk-[A-Za-z0-9_-]{16,}|ghp_[A-Za-z0-9]{20,}|github_pat_[A-Za-z0-9_]{20,}|xox[baprs]-[A-Za-z0-9-]{10,}|AKIA[0-9A-Z]{16}|eyJ[A-Za-z0-9_-]{40,}\.[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,})\b/g;
-
-/**
- * P-004 (session-turn-storage-2026-07-28): the SECOND scrubber pass, applied
- * on top of SECRET_RE to every stored part.
- *
- * SECRET_RE matches *self-identifying* token shapes — a `ghp_…` is a secret
- * wherever it appears. That was sufficient while the store held only human/
- * model PROSE. It is NOT sufficient for tool inputs and tool results, which
- * are the new content in session_turn_parts: those carry raw file contents,
- * `env` dumps, curl invocations and config blobs, where the secret is an
- * arbitrary opaque string identified only by the KEY NEXT TO IT
- * (`API_KEY=<40 random chars>`) or by the header it rides in
- * (`Authorization: Bearer <opaque>`). No token-shape regex can see those.
- *
- * So this pass is key-directed rather than value-directed, and it is
- * deliberately applied ONLY to parts: running it over session_turns' prose
- * would redact ordinary sentences containing the word "password".
- *
- * Capture-group 1 is the KEY/PREFIX and is preserved, so a reader still sees
- * WHICH credential was elided — `AWS_SECRET_ACCESS_KEY=[redacted]` is far more
- * useful for debugging than a blank.
- */
-const PART_SECRET_RE = new RegExp(
-  [
-    // KEY=value / "key": "value" / key: value — the assignment family.
-    // The key must LOOK like a credential name; the value is anything opaque.
-    String.raw`((?:secret|token|password|passwd|pwd|api[_-]?key|apikey|access[_-]?key|private[_-]?key|client[_-]?secret|auth[_-]?token|bearer|credential)s?["'\s]*[:=]\s*["']?)([^\s"',;&)}\]]{8,})`,
-    // Authorization / Proxy-Authorization headers (scheme kept, value elided).
-    String.raw`((?:authorization|proxy-authorization)["'\s]*[:=]\s*["']?(?:bearer|basic|token)\s+)([^\s"',;&)}\]]{8,})`,
-    // PEM private-key blocks — elide the whole body, keep the banner.
-    String.raw`(-----BEGIN [A-Z ]*PRIVATE KEY-----)([\s\S]*?)(?=-----END)`,
-  ].join('|'),
-  'gi',
-);
-
-/** Apply PART_SECRET_RE, preserving whichever key/prefix group matched.
- *  Exported for the P-004 redaction test. */
-export function redactPartSecrets(s: string): string {
-  return s.replace(PART_SECRET_RE, (_m, ...groups) => {
-    // groups is [k1, v1, k2, v2, k3, v3, offset, string] — pick the key group
-    // of whichever alternative fired (the even indices, 0-based).
-    for (let i = 0; i < 6; i += 2) {
-      if (typeof groups[i] === 'string') return `${groups[i]}[redacted]`;
-    }
-    return '[redacted]';
-  });
-}
-
 /** Injected boilerplate prefixes that would pollute recall — not real speech. */
 const BOILERPLATE_PREFIXES = [
   '<system-reminder',
@@ -257,7 +209,7 @@ export function cleanTurnText(raw: string): string | null {
   const t = raw.trim();
   if (t.length < MIN_TEXT_LEN) return null;
   for (const p of BOILERPLATE_PREFIXES) if (t.startsWith(p)) return null;
-  return t.slice(0, TEXT_CAP).replace(SECRET_RE, '[redacted]');
+  return redactSelfIdentifyingSecrets(t.slice(0, TEXT_CAP));
 }
 
 /**
@@ -271,7 +223,7 @@ export function cleanTurnText(raw: string): string | null {
  * half-preserved, and cap after so the stored bytes stay bounded.
  */
 export function cleanPartText(raw: string): string {
-  const redacted = redactPartSecrets(raw.replace(SECRET_RE, '[redacted]'));
+  const redacted = redactKeyDirectedSecrets(redactSelfIdentifyingSecrets(raw));
   return redacted.length > PART_TEXT_CAP
     ? `${redacted.slice(0, PART_TEXT_CAP)}… [truncated ${redacted.length - PART_TEXT_CAP} chars]`
     : redacted;
