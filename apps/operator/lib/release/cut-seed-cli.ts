@@ -83,6 +83,15 @@
 import { resolve, join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { existsSync } from 'node:fs';
+import { hostname } from 'node:os';
+import { spawnSync } from 'node:child_process';
+import {
+  DEFAULT_NEUTRAL_BUILD_HOSTNAME,
+  SEED_UTS_MARKER_ENV,
+  buildBwrapArgv,
+  findExecutableOnPath,
+  planHostnameNeutralization,
+} from './seed-hostname-neutralization.js';
 import { rm, readFile, writeFile, rename, cp, readdir } from 'node:fs/promises';
 import Corestore from 'corestore';
 import type postgres from 'postgres';
@@ -1045,6 +1054,50 @@ async function main(): Promise<void> {
         'sparse start may fall outside the reader scan window and the cut can silently ship FULL. ' +
         'Drop --skip-corestore-refresh for a real sparse cut.',
     );
+  }
+
+  // EI-20040763522089574 — the ONE chokepoint that keeps the build box's hostname out of
+  // the seed. Every leg cuts through here (release-local.sh, ensure-release-seed.sh,
+  // build-windows-cross.sh, mac-vm-build.sh, mac-vm-verify-build.sh), which is exactly
+  // why it lives here and not in those five scripts: a sixth caller added later would
+  // silently reintroduce the leak, and two of those five are mac-vm-* scripts already
+  // known to be unable to emit a failing verdict (D-009).
+  //
+  // Placed AFTER arg parsing (we need `wantCorestore`) but BEFORE any work, so the
+  // re-exec never duplicates a backfill/drain. See ./seed-hostname-neutralization.ts for
+  // the mechanism and the measurements.
+  {
+    const neutralHostname = process.env.PAPERCUSP_SEED_BUILD_HOSTNAME || DEFAULT_NEUTRAL_BUILD_HOSTNAME;
+    const plan = planHostnameNeutralization({
+      wantCorestore,
+      platform: process.platform,
+      markerSet: process.env[SEED_UTS_MARKER_ENV] === '1',
+      currentHostname: hostname(),
+      neutralHostname,
+      bwrapPath: findExecutableOnPath('bwrap'),
+    });
+    if (plan.kind === 'refuse') throw new Error(plan.message);
+    if (plan.kind === 're-exec') {
+      console.warn(
+        `[cut-seed] re-exec under bwrap with a neutral UTS hostname ('${plan.neutralHostname}') so RocksDB ` +
+          'does not stamp this box into every SST it writes (EI-20040763522089574).',
+      );
+      const res = spawnSync(
+        plan.bwrapPath,
+        buildBwrapArgv({
+          bwrapPath: plan.bwrapPath,
+          neutralHostname: plan.neutralHostname,
+          execPath: process.execPath,
+          argv: process.argv.slice(1),
+        }),
+        { stdio: 'inherit', env: { ...process.env, [SEED_UTS_MARKER_ENV]: '1' } },
+      );
+      // Fail CLOSED on a broken re-exec: a seed cut that "succeeded" because the sandbox
+      // never ran is the silent-degrade this whole guard exists to prevent.
+      if (res.error) throw new Error(`[cut-seed] bwrap re-exec failed to start: ${res.error.message}`);
+      if (res.signal) throw new Error(`[cut-seed] bwrap re-exec died on signal ${res.signal}`);
+      process.exit(res.status ?? 1);
+    }
   }
 
   if (reuseCorestoreDir && args['no-corestore'] === true) {
