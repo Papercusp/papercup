@@ -131,7 +131,7 @@ describe('loop surface round-trip (real PG)', () => {
     // the ~98% of turns that produce no journal row. The fix unions in session_turns'
     // assistant turns; this test pins BOTH halves: the new coverage, and the WI-6951
     // exclusion it must not undo.
-    await sql`TRUNCATE harness_shared.session_turns`;
+    await sql`TRUNCATE harness_shared.session_turns CASCADE`;
     await sql`TRUNCATE harness_shared.session_turn_journal`;
     await sql`DELETE FROM harness_shared.agent_activity WHERE owner_id = ${OWNER}`;
     await materializeLoop({
@@ -190,7 +190,7 @@ describe('loop surface round-trip (real PG)', () => {
     // (EI-19316779460752535), so the journal leg is also silent. Before this fix, BOTH legs
     // of last_turn_at were empty for this (dominant) population despite the session
     // genuinely, continuously producing real turns.
-    await sql`TRUNCATE harness_shared.session_turns`;
+    await sql`TRUNCATE harness_shared.session_turns CASCADE`;
     await sql`TRUNCATE harness_shared.session_turn_journal`;
     await sql`DELETE FROM harness_shared.agent_activity WHERE owner_id = ${OWNER}`;
     await materializeLoop({ workspaceId: WS, harnessSlug: HARNESS, ownerId: OWNER, intervalSec: 60, kickoff: 'k', sql });
@@ -524,6 +524,10 @@ describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001, re
     const r = await rawRow(MEMBER_OWNER);
     expect(r!.payload_template!.kickoff).toContain(PLAN_SLUG);
     expect(r!.payload_template!.kickoff).toContain(FLEET_SLUG);
+    expect(r!.payload_template!.goal).toBe(
+      `Drive plan \`${PLAN_SLUG}\` per your member role in fleet \`${FLEET_SLUG}\` (coord:orient to pull your lane).`,
+    );
+    expect((await getLoopStatus(MEMBER_OWNER, { sql }))!.goal).toBe(r!.payload_template!.goal);
   });
 
   it('is idempotent: calling it again against the now-active loop reports already-armed and does NOT mutate the row', async () => {
@@ -612,5 +616,23 @@ describe('autoArmFleetMemberLoop (kickoff-prompt-absorption-2026-07-17 P-001, re
     });
     expect(res.armed).toBe(true);
     expect((await getLoopStatus(OTHER, { sql }))!.active).toBe(true);
+
+    const expectedGoal =
+      `Drive plan \`${PLAN_SLUG}\` per your member role in fleet \`${FLEET_SLUG}\` (coord:orient to pull your lane).`;
+    expect((await rawRow(OTHER))!.payload_template!.goal).toBe(expectedGoal);
+
+    // A member retune/reset can omit goal while changing cadence and kickoff. The
+    // durable mission must survive that lower-level re-arm path as well.
+    await materializeLoop({
+      workspaceId: WS,
+      harnessSlug: HARNESS,
+      ownerId: OTHER,
+      intervalSec: 120,
+      kickoff: 'member reset retained goal',
+      sql,
+    });
+    const retained = await rawRow(OTHER);
+    expect(retained!.payload_template).toMatchObject({ kickoff: 'member reset retained goal', goal: expectedGoal });
+    expect((await getLoopStatus(OTHER, { sql }))!.goal).toBe(expectedGoal);
   });
 });

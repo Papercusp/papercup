@@ -366,10 +366,11 @@ export async function materializeLoop(
   const name = loopRoutineName(input.ownerId);
   const desiredId = loopRoutineId(input.harnessSlug, input.ownerId);
   const triggerConfigStr = JSON.stringify({});
-  const payloadTemplateStr = JSON.stringify(payloadTemplate);
   const nextFireAtStr = nextFireAt.toISOString();
-  const existing = await sql<Array<{ id: string; install_slug: string; active: boolean }>>`
-    SELECT id, install_slug, active
+  const existing = await sql<
+    Array<{ id: string; install_slug: string; active: boolean; payload_template: Record<string, unknown> | null }>
+  >`
+    SELECT id, install_slug, active, payload_template
       FROM harness_shared.routines
      WHERE workspace_id = ${workspaceId}
        AND name = ${name}
@@ -378,6 +379,15 @@ export async function materializeLoop(
      ORDER BY (install_slug = ${input.harnessSlug}) DESC, active DESC, updated_at DESC
      FOR UPDATE
   `;
+  // EI-20194544581627100: a retune/reset may intentionally omit the goal while
+  // changing cadence or kickoff. Keep the durable mission instead of replacing
+  // payload_template with a row whose goal is silently null. An explicit non-empty
+  // goal still wins above; only a goal-omitting call inherits the prior one.
+  if (!goalText && input.goal == null && existing.length > 0) {
+    const priorGoal = existing[0]?.payload_template?.goal;
+    if (typeof priorGoal === 'string' && priorGoal.trim()) payloadTemplate.goal = priorGoal.trim();
+  }
+  const payloadTemplateStr = JSON.stringify(payloadTemplate);
 
   let row: { id: string; name: string; nextFireAt: Date | null; targetRole: string };
   if (existing.length > 0) {
@@ -1522,6 +1532,9 @@ export async function autoArmFleetMemberLoop(opts: {
       ownerId: opts.ownerId,
       intervalSec,
       kickoff,
+      // EI-20194544581627100: auto-arm derives the member mission above; persist
+      // it structurally so loop:status and cold resets can recover the goal.
+      goal,
       sql: opts.sql,
     });
     // Wake-reachability is INTRINSIC to arming a loop (mirrors loop:arm's own
