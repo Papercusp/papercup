@@ -49,6 +49,7 @@ import { getPlanRow, planItemsForRow, type PlanIndexDecision } from '../agent-to
 import { resolveEffectiveStatusForItems } from '@papercusp/plan-parser';
 import {
   activeExternalBlockers,
+  readExternalBlockers,
   updateExternalBlockerHistory,
   type ExternalBlockerCapability,
 } from '../external-blockers';
@@ -453,6 +454,25 @@ export async function reconcileLinkedWorkItemsForCompletedPlanItems(
 const PLAN_LANE_BLOCKER_KIND = 'gate' as const;
 const PLAN_LANE_SYNC_ACTOR = 'system:plan-item-lane-sync';
 
+/**
+ * WI-37914: the payload key recording the state a work-item held BEFORE this sync
+ * parked it, so the un-park restores what was actually there instead of flattening
+ * every item to the family's claimable default (an item parked while `wip` must not
+ * silently reopen as unclaimed work).
+ */
+const PLAN_LANE_PARKED_FROM_KEY = 'planLaneParkedFrom';
+
+/** The stashed pre-park state, or null. Defensive — payload is federated JSON. */
+export function readPlanLaneParkedFrom(payload: unknown): string | null {
+  if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return null;
+  const v = (payload as Record<string, unknown>)[PLAN_LANE_PARKED_FROM_KEY];
+  return typeof v === 'string' && v.trim() ? v.trim() : null;
+}
+
+/** Work-item states that mean "somebody is holding this" — restored only when the
+ *  holder is still on it (see {@link restoreStateAfterUngate}). */
+const IN_PROGRESS_WORK_ITEM_STATES = new Set(['wip', 'in_progress', 'in-progress', 'validating']);
+
 /** The synthetic external-blocker ref that marks a lane-parked work-item. */
 export function planLaneBlockerRef(planSlug: string, itemId: string): string {
   return `plan-lane:${planItemRef(planSlug, itemId)}`;
@@ -500,8 +520,38 @@ export type PlanLaneSyncStatus = 'blocked' | 'needs-human' | 'actionable';
 
 export type LaneGateOp =
   | { op: 'gate'; capability: ExternalBlockerCapability }
-  | { op: 'ungate' }
+  /** `via` says WHICH un-park this is: the normal one (our blocker is still active),
+   *  or the WI-37914 repair of a park whose blocker was cleared without its state
+   *  being restored — the two differ only in whether a blocker write is still owed. */
+  | { op: 'ungate'; via: 'active-lane-blocker' | 'stale-park-repair' }
   | { op: 'noop'; reason: 'terminal' | 'in-flight' | 'already-gated' | 'no-lane-blocker' };
+
+/**
+ * WI-37914: the state an un-parked work-item is restored TO — pure, so the
+ * "never silently reopen claimed work" invariant is testable without PG.
+ *
+ * Prefers the state stashed at park time; falls back to the family's claimable
+ * default (`todo` for a feature, `open` for an issue) when there is nothing usable
+ * to restore — which is also the path every item parked BEFORE this fix takes,
+ * since none of them carry a stash.
+ *
+ * An in-progress stash (`wip`/`validating`) is only honoured while an assignee is
+ * still on the row: the holder can be reaped while the item sits parked, and
+ * restoring `wip` with nobody on it recreates the orphaned-claim state the stale-
+ * claim reaper then has to clean up again.
+ */
+export function restoreStateAfterUngate(
+  wi: Pick<WorkItem, 'state' | 'family' | 'payload' | 'assignee'>,
+): string {
+  const fallback = wi.family === 'feature' ? 'todo' : 'open';
+  const parkedFrom = readPlanLaneParkedFrom(wi.payload);
+  if (!parkedFrom) return fallback;
+  const normalized = parkedFrom.toLowerCase();
+  // Never restore INTO a gated or settled state — that is the park we are lifting.
+  if (normalized === 'blocked' || normalized === 'needs-human' || isSettledWorkItemState(parkedFrom)) return fallback;
+  if (IN_PROGRESS_WORK_ITEM_STATES.has(normalized) && !wi.assignee) return fallback;
+  return parkedFrom;
+}
 
 /**
  * PURE decision (no I/O): what the lane sync should do to ONE linked work-item,
@@ -528,7 +578,33 @@ export function decideLaneGate(
     (b) => b.kind === PLAN_LANE_BLOCKER_KIND && b.ref === laneRef,
   );
   if (laneStatus === 'actionable') {
-    return hasLaneBlocker ? { op: 'ungate' } : { op: 'noop', reason: 'no-lane-blocker' };
+    if (hasLaneBlocker) return { op: 'ungate', via: 'active-lane-blocker' };
+    // WI-37914 REPAIR PATH. The un-park used to clear the blocker and stop there,
+    // leaving `state:'blocked'` behind — and because the check above keys on an
+    // ACTIVE blocker, the very next sweep read the item as "not parked by us" and
+    // walked past it. The contradiction was therefore permanent: every claim spec
+    // filters `states:['open']`, so the item was invisible to `work_items:claimable`
+    // and `scheduler:get_next` while the plan reported it unblocked, and a whole
+    // fleet sat idle beside work it could not see (measured live on
+    // hud-chat-release-audit, 3 members, 2026-08-11).
+    //
+    // Heal it from the CLEARED history rather than from `state` alone: a `blocked`
+    // row whose plan-lane blocker WE cleared, with no other active blocker left, is
+    // a park we failed to lift. An item blocked for any other reason still has no
+    // cleared lane record of ours and is left alone — the same provenance rule the
+    // active path uses, read one status over.
+    const ourClearedPark = readExternalBlockers(wi.payload).some(
+      (b) =>
+        b.kind === PLAN_LANE_BLOCKER_KIND &&
+        b.ref === laneRef &&
+        b.status === 'cleared' &&
+        b.clearedBy === PLAN_LANE_SYNC_ACTOR,
+    );
+    const stranded = wi.state.trim().toLowerCase() === 'blocked' && ourClearedPark;
+    if (stranded && activeExternalBlockers(wi.payload).length === 0) {
+      return { op: 'ungate', via: 'stale-park-repair' };
+    }
+    return { op: 'noop', reason: 'no-lane-blocker' };
   }
   // Gate intent (blocked / needs-human).
   if (wi.lastProgressAt && wi.assignee) return { op: 'noop', reason: 'in-flight' };
@@ -569,32 +645,48 @@ async function applyLaneGateToWorkItem(
         { kind: PLAN_LANE_BLOCKER_KIND, capability: decision.capability, ref: laneRef, summary },
         PLAN_LANE_SYNC_ACTOR,
       );
-      await mergeWorkItemPayload(wi.id, { externalBlockers: blockers }, { harness });
-      // Park out of self-select — feature → native `blocked`; issue → open + claim hold
-      // (setWorkItemStateWithAliasInfo applies the family-correct exclusion floor).
+      // WI-37914: stash the pre-park state IN THE SAME merge as the blocker record, so
+      // the un-park can restore what was actually here. Both families store `blocked`
+      // natively post-unify (work-item-status-full-unify P-003) — the issue family ALSO
+      // picks up setWorkItemStateWithAliasInfo's auto claim-hold, so the un-park owes a
+      // state restore AND a hold release, not just the hold.
+      await mergeWorkItemPayload(
+        wi.id,
+        { externalBlockers: blockers, [PLAN_LANE_PARKED_FROM_KEY]: wi.state },
+        { harness },
+      );
       await setWorkItemStateWithAliasInfo(wi.id, 'blocked', { harness, by: PLAN_LANE_SYNC_ACTOR });
       return 'gated';
     }
     // Un-gate: clear OUR lane blocker; restore to claimable ONLY when no OTHER
     // active blocker remains (the exact rule work_items:set_blocker uses, so an
     // independently-blocked item stays parked).
-    const { blockers } = updateExternalBlockerHistory(
+    const { blockers, changed } = updateExternalBlockerHistory(
       wi.payload,
       { kind: PLAN_LANE_BLOCKER_KIND, ref: laneRef, clear: true },
       PLAN_LANE_SYNC_ACTOR,
     );
-    await mergeWorkItemPayload(wi.id, { externalBlockers: blockers }, { harness });
+    // On the WI-37914 repair path the blocker is ALREADY cleared, so this is a no-op
+    // clear (changed:false) and the only thing still owed is the state restore below.
+    if (changed) await mergeWorkItemPayload(wi.id, { externalBlockers: blockers }, { harness });
     const stillActive = blockers.filter((b) => b.status === 'active');
     if (stillActive.length === 0) {
-      if (wi.family === 'feature') {
-        await setWorkItemStateWithAliasInfo(wi.id, 'todo', { harness, by: PLAN_LANE_SYNC_ACTOR });
-      } else {
+      // WI-37914: BOTH halves of the park have to come off, in this order. Clearing
+      // the claim hold alone left `state:'blocked'` behind, and every fleet claim spec
+      // filters `states:['open']` — so the item read as unblocked on the plan while
+      // staying structurally invisible to `scheduler:get_next`, stranding the lane.
+      const restored = restoreStateAfterUngate(wi);
+      await setWorkItemStateWithAliasInfo(wi.id, restored, { harness, by: PLAN_LANE_SYNC_ACTOR });
+      if (wi.family !== 'feature') {
         await setWorkItemClaimHold(wi.id, false, {
           harness,
           by: PLAN_LANE_SYNC_ACTOR,
           reason: `plan lane ${laneItem.planSlug}#${laneItem.itemId} cleared`,
         });
       }
+      // Drop the stash — it describes a park that no longer exists, and leaving it
+      // would let a LATER un-park restore a state from the wrong era.
+      await mergeWorkItemPayload(wi.id, { [PLAN_LANE_PARKED_FROM_KEY]: null }, { harness });
     }
     return 'ungated';
   } catch {

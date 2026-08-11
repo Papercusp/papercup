@@ -17,7 +17,12 @@
  */
 import { describe, expect, it } from 'vitest';
 import { updateExternalBlockerHistory } from '../external-blockers';
-import { decideLaneGate, planLaneBlockerRef, type PlanLaneSyncStatus } from './reconcile-linked-work-items';
+import {
+  decideLaneGate,
+  planLaneBlockerRef,
+  restoreStateAfterUngate,
+  type PlanLaneSyncStatus,
+} from './reconcile-linked-work-items';
 
 const REF = planLaneBlockerRef('desktop-auto-update-operational-2026-07-09', 'P-007');
 
@@ -100,7 +105,7 @@ describe('decideLaneGate — GATE (plan lane blocked/needs-human) [EI-14699]', (
 describe('decideLaneGate — UN-GATE (plan lane actionable again) [EI-14699]', () => {
   it('restores a work-item THIS sync parked (its plan-lane blocker is present)', () => {
     const d = decideLaneGate(wi({ state: 'blocked', payload: parkedPayload() }), 'actionable', REF);
-    expect(d).toEqual({ op: 'ungate' });
+    expect(d).toEqual({ op: 'ungate', via: 'active-lane-blocker' });
   });
 
   it('does NOT un-park an item blocked for some OTHER reason (no plan-lane blocker → left alone)', () => {
@@ -126,6 +131,100 @@ describe('decideLaneGate — UN-GATE (plan lane actionable again) [EI-14699]', (
     const otherRef = planLaneBlockerRef('some-other-plan', 'P-999');
     const d = decideLaneGate(wi({ state: 'blocked', payload: parkedPayload(otherRef) }), 'actionable', REF);
     expect(d).toEqual({ op: 'noop', reason: 'no-lane-blocker' });
+  });
+});
+
+/**
+ * WI-37914 — the half-applied un-park. The un-gate leg cleared the blocker and
+ * released the claim hold but never restored `state`, so the item sat `blocked`
+ * while the plan reported it unblocked. Every fleet claim spec filters
+ * `states:['open']`, so the row was structurally invisible to
+ * `work_items:claimable` / `scheduler:get_next` and the lane stranded silently —
+ * measured live on fleet hud-chat-release-audit (3 members idle, 2026-08-11).
+ *
+ * The permanence came from the decision above keying un-park on an ACTIVE blocker:
+ * once cleared, every later sweep read the row as "not parked by us" and walked
+ * past it. These cover the repair path that heals it from the CLEARED history.
+ */
+describe('decideLaneGate — stranded-park REPAIR [WI-37914]', () => {
+  /** A payload whose plan-lane park WE created and WE already cleared — the exact
+   *  shape the old un-gate leg left behind. */
+  function clearedParkPayload(ref = REF, actor = 'system:plan-item-lane-sync'): unknown {
+    const parked = updateExternalBlockerHistory(
+      {},
+      { kind: 'gate', capability: 'live-dependency', ref, summary: 'parked' },
+      'system:plan-item-lane-sync',
+    );
+    const { blockers } = updateExternalBlockerHistory(
+      { externalBlockers: parked.blockers },
+      { kind: 'gate', ref, clear: true },
+      actor,
+    );
+    return { externalBlockers: blockers };
+  }
+
+  it('heals a `blocked` row whose lane blocker we already cleared — the stranding fix', () => {
+    const d = decideLaneGate(wi({ state: 'blocked', payload: clearedParkPayload() }), 'actionable', REF);
+    expect(d).toEqual({ op: 'ungate', via: 'stale-park-repair' });
+  });
+
+  it('leaves a row alone when ANOTHER blocker is still active (repair never clobbers a real park)', () => {
+    const cleared = clearedParkPayload() as { externalBlockers: unknown };
+    const { blockers } = updateExternalBlockerHistory(
+      cleared,
+      { kind: 'runtime', capability: 'credential', ref: 'vault:prod-key', summary: 'needs a credential' },
+      'someone-else',
+    );
+    const d = decideLaneGate(wi({ state: 'blocked', payload: { externalBlockers: blockers } }), 'actionable', REF);
+    expect(d).toEqual({ op: 'noop', reason: 'no-lane-blocker' });
+  });
+
+  it('does NOT claim a park cleared by someone else — provenance still gates the repair', () => {
+    const d = decideLaneGate(
+      wi({ state: 'blocked', payload: clearedParkPayload(REF, 'some-other-actor') }),
+      'actionable',
+      REF,
+    );
+    expect(d).toEqual({ op: 'noop', reason: 'no-lane-blocker' });
+  });
+
+  it('does NOT touch a row that is not `blocked` (a cleared park with a healthy state is settled business)', () => {
+    const d = decideLaneGate(wi({ state: 'open', payload: clearedParkPayload() }), 'actionable', REF);
+    expect(d).toEqual({ op: 'noop', reason: 'no-lane-blocker' });
+  });
+});
+
+describe('restoreStateAfterUngate — what an un-park restores TO [WI-37914]', () => {
+  function row(over: Partial<Parameters<typeof restoreStateAfterUngate>[0]> = {}) {
+    return { state: 'blocked', family: 'issue', payload: {}, assignee: null, ...over } as Parameters<
+      typeof restoreStateAfterUngate
+    >[0];
+  }
+
+  it('falls back to the family claimable default when nothing was stashed', () => {
+    // Every item parked BEFORE this fix takes this path — none carries a stash.
+    expect(restoreStateAfterUngate(row({ family: 'issue' }))).toBe('open');
+    expect(restoreStateAfterUngate(row({ family: 'feature' }))).toBe('todo');
+  });
+
+  it('restores the stashed pre-park state rather than flattening it', () => {
+    expect(restoreStateAfterUngate(row({ payload: { planLaneParkedFrom: 'failing' } }))).toBe('failing');
+  });
+
+  it('keeps a still-held `wip` claim instead of silently reopening it', () => {
+    const held = row({ payload: { planLaneParkedFrom: 'wip' }, assignee: 'su-abc123' });
+    expect(restoreStateAfterUngate(held)).toBe('wip');
+  });
+
+  it('does NOT restore `wip` once the holder is gone — that would recreate an orphaned claim', () => {
+    const abandoned = row({ payload: { planLaneParkedFrom: 'wip' }, assignee: null });
+    expect(restoreStateAfterUngate(abandoned)).toBe('open');
+  });
+
+  it('never restores INTO a gated or settled state — that is the park being lifted', () => {
+    for (const stashed of ['blocked', 'needs-human', 'resolved', 'closed']) {
+      expect(restoreStateAfterUngate(row({ payload: { planLaneParkedFrom: stashed } }))).toBe('open');
+    }
   });
 });
 
