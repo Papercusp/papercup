@@ -66,11 +66,26 @@ describe('reconcilePsuHostLiveness (WI-4755)', () => {
     expect(agent.alive).toBe(false);
   });
 
+  it('does not let a stale directed-wake activity row keep a hostless member live', () => {
+    const agent = baseAgent({ sessionState: 'live' });
+    reconcilePsuHostLiveness([agent], new Map([['su-1', 'su']]), () => null);
+    expect(agent.sessionState).toBe('ended');
+    expect(agent.alive).toBe(false);
+  });
+
   it('preserves nursery cups without a psu host', () => {
     const agent = baseAgent({ sessionState: 'parked' });
     reconcilePsuHostLiveness([agent], new Map([['su-1', 'cup']]), () => null);
     expect(agent.sessionState).toBe('parked');
     expect(agent.alive).toBe(true);
+  });
+
+  it('keeps a no-host ghost out of the leader census after reconciliation', () => {
+    const agent = baseAgent({ agentId: 'su-ghost', sessionState: 'live' });
+    reconcilePsuHostLiveness([agent], new Map([['su-ghost', 'su']]), () => null);
+    const { rows, census } = selectLeaderBriefMembers([agent], 'p2p-git');
+    expect(rows).toEqual([]);
+    expect(census).toMatchObject({ candidates: 1, counted: 0, withheld: 1 });
   });
 });
 

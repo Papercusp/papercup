@@ -1990,21 +1990,28 @@ export default defineTool({
     } catch {
       /* best-effort: leadership bookkeeping must NEVER fail the health brief */
     }
-    const { rows: grouped, census: memberCensus } = selectLeaderBriefMembers(
-      rosterEntries,
-      fleet,
-      args.include_stale,
-    );
-    await reconcileWakeability(grouped).catch(() => {});
+    // Reconcile liveness BEFORE selecting the population. A stale directed
+    // wake can make a dead owner look `live` through recent agent_activity;
+    // selecting first would bake that ghost into the census even after the
+    // authoritative psu-host check marks the row ended.
+    await reconcileWakeability(rosterEntries).catch(() => {});
     // Missing host is a liveness signal only for known visible members. Keep
     // this best-effort so absent roles never reinterpret bootstrapping/remote
     // rows as desktop deaths.
     try {
       const presence = await listPresence({ workspaceId });
-      reconcilePsuHostLiveness(grouped, new Map(presence.map((p) => [p.ownerId, p.agentRole] as const)));
+      reconcilePsuHostLiveness(
+        rosterEntries,
+        new Map(presence.map((p) => [p.ownerId, p.agentRole] as const)),
+      );
     } catch {
       /* host reconciliation never blocks the health brief */
     }
+    const { rows: grouped, census: memberCensus } = selectLeaderBriefMembers(
+      rosterEntries,
+      fleet,
+      args.include_stale,
+    );
     await decorateParkedOn(grouped).catch(() => {});
     // EI-18732218464905145: collapse a composed-await park (root + leaf sentinels)
     // into ONE structured entry before projection — best-effort, never blocks.

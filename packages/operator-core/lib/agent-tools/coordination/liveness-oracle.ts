@@ -299,6 +299,13 @@ export async function resolveSessionStates(
  * privately (reconcilePsuHostLiveness), now exported from the oracle so any
  * surface whose cohort is known-psu-hosted applies the SAME rule. Mutates in
  * place and returns the list.
+ *
+ * `liveTurn` is derived from recent agent_activity, not from the host process
+ * itself. A stale directed wake can therefore leave a dead owner looking
+ * `live` after its psu host has exited. For a known non-cup cohort, the local
+ * psu host is the stronger authority for both `live` and `parked`; `recorded`
+ * remains exempt because it is the session-log authority for a session that has
+ * not yet registered an inbox-wake await.
  */
 export function applyPsuHostAuthority<
   T extends { agentId: string; sessionState?: SessionState | null; alive?: boolean },
@@ -310,7 +317,10 @@ export function applyPsuHostAuthority<
   for (const agent of agents) {
     const role = agentRoles.get(agent.agentId);
     if (role == null || role === 'cup') continue;
-    if (agent.sessionState === 'parked' && findHostFn(agent.agentId) == null) {
+    if (
+      (agent.sessionState === 'live' || agent.sessionState === 'parked') &&
+      findHostFn(agent.agentId) == null
+    ) {
       agent.sessionState = 'ended';
       if ('alive' in agent) agent.alive = false;
     }

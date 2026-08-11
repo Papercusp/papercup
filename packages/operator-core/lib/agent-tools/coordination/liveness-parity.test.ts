@@ -287,7 +287,7 @@ describe('cross-surface liveness parity (P-001)', () => {
     expect(v.confirmLiveness).toBe(true);
   });
 
-  it('applyPsuHostAuthority (leader-brief P-005 leg): parked + no live host ⇒ ended, cups exempt', () => {
+  it('applyPsuHostAuthority (leader-brief P-005 leg): live/parked + no live host ⇒ ended, cups exempt', () => {
     const agents = [
       { agentId: 'su-parked-nohost', sessionState: 'parked' as SessionState, alive: true },
       { agentId: 'cup-parked-nohost', sessionState: 'parked' as SessionState, alive: true },
@@ -302,6 +302,7 @@ describe('cross-surface liveness parity (P-001)', () => {
     expect(agents[0].sessionState).toBe('ended');
     expect(agents[0].alive).toBe(false);
     expect(agents[1].sessionState).toBe('parked'); // nursery-governed, never host-probed
-    expect(agents[2].sessionState).toBe('live'); // only `parked` is reconciled
+    expect(agents[2].sessionState).toBe('ended'); // recent activity cannot outvote a missing host
+    expect(agents[2].alive).toBe(false);
   });
 });
