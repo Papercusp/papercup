@@ -6425,8 +6425,8 @@ export async function commentWorkItem(
   return post;
 }
 
-/** The mutable fields a work-item field-edit can touch (mirrors issues:update's
- *  fields — the issue family is the only one with directly-editable metadata). */
+/** The mutable fields a work-item field-edit can touch. Goal attribution is shared by
+ * both families; the remaining metadata fields are issue-family-only. */
 export interface UpdateWorkItemPatch {
   title?: string;
   body?: string;
@@ -6434,18 +6434,54 @@ export interface UpdateWorkItemPatch {
   kind?: IssueKind;
   foundDuring?: string | null;
   linkedFeatureId?: string | null;
+  /** WI-37892 — adopt this existing item into a goal's drain lane, or clear with null. */
+  goal?: string | null;
   /** EI-8497: bypass the fat-finger body-shrink guard (see updateIssue) — pass true
    *  when a large reduction in body length is genuinely intended. */
   confirmShrink?: boolean;
 }
 
+/** Persist the shared goal attribution directly on the base table. The issue-family
+ * compat view already exposes goal_id for reads, but its INSTEAD OF UPDATE trigger
+ * intentionally preserves that column; writing through the view would therefore report
+ * success while leaving the goal unchanged. This helper uses the row family's canonical
+ * workspace and is deliberately limited to the one shared field. */
+async function updateWorkItemGoal(id: string, wi: WorkItem, goal: string | null): Promise<WorkItem | null> {
+  const { sql } = getOrgPg();
+  const workspace = wi.family === 'issue' ? issuesScopeWorkspace() : activeWorkspaceId();
+  const rows = await sql<{ feature_id: string }[]>`
+    UPDATE harness_shared.work_items
+       SET goal_id = ${goal}, updated_ts = ${Date.now()}
+     WHERE workspace_id = ${workspace}
+       AND feature_id = ${id}
+       AND ${
+         wi.family === 'issue'
+           ? sql`item_kind = ${wi.kind}`
+           : sql`harness_slug = ${wi.harness}`
+       }
+     RETURNING feature_id`;
+  if (!rows[0]) return null;
+  return getWorkItem(id, wi.family === 'feature' ? wi.harness ?? undefined : undefined);
+}
+
+function hasIssueFieldPatch(patch: UpdateWorkItemPatch): boolean {
+  return (
+    patch.title !== undefined ||
+    patch.body !== undefined ||
+    patch.severity !== undefined ||
+    patch.kind !== undefined ||
+    patch.foundDuring !== undefined ||
+    patch.linkedFeatureId !== undefined
+  );
+}
+
 /**
  * Field-edit a work-item's mutable metadata (title / body / severity / kind /
- * found-during / linked-feature). Replaces the retired issues:update onto the
+ * found-during / linked-feature / goal). Replaces the retired issues:update onto the
  * unified work_items surface. Dispatches by family:
  *   - issue-family (bug | change | task) → engineer-issues updateIssue (notifies subs).
- *   - feature-family (feature | research-task | chunk) → unsupported: a feature's
- *     fields are owned by the pipeline (scoper/architect), not a direct edit.
+ *   - feature-family (feature | research-task | chunk) → goal-only updates are supported;
+ *     other fields remain owned by the pipeline (scoper/architect), not direct edits.
  * Returns the refreshed WorkItem on success, or a typed reason on failure — including
  * `body_shrink_guard` (EI-8497) when the edit would replace a substantial existing
  * body with something far shorter and the caller didn't pass `confirmShrink`.
@@ -6462,7 +6498,13 @@ export async function updateWorkItem(
 > {
   const wi = await getWorkItem(id, opts.harness);
   if (!wi) return { ok: false, reason: 'not_found' };
-  if (wi.family !== 'issue') return { ok: false, reason: 'unsupported_family' };
+  // Goal attribution is the one shared field that can be edited on a feature-family
+  // item. Keep every other feature metadata edit on the existing pipeline-owned path.
+  if (wi.family !== 'issue') {
+    if (hasIssueFieldPatch(patch) || patch.goal === undefined) return { ok: false, reason: 'unsupported_family' };
+    const updated = await updateWorkItemGoal(id, wi, patch.goal);
+    return updated ? { ok: true, item: updated } : { ok: false, reason: 'not_found' };
+  }
   // EI-14948: a federated (origin='remote') issue-family row is owned by its authoring
   // peer's core — the engineer_issues view's INSTEAD OF trigger (516/521) deliberately
   // no-ops a local UPDATE against it and reports 0 rows affected (RETURN NULL) so the
@@ -6482,10 +6524,19 @@ export async function updateWorkItem(
     if (healed) wi.origin = 'local';
   }
   if (wi.origin === 'remote') return { ok: false, reason: 'remote_origin_not_editable' };
-  const issue = await updateIssue(id, { ...patch, by });
+  // `goal` is written against the base table after the issue-family metadata update:
+  // the compat view's trigger deliberately does not carry NEW.goal_id, so including it
+  // in the view patch would be a silent no-op. Destructuring also keeps the issue writer's
+  // patch contract honest and makes this separation compile-time visible.
+  const { goal, ...issuePatch } = patch;
+  const issue = await updateIssue(id, { ...issuePatch, by });
   if (issue === null) return { ok: false, reason: 'not_found' };
   if ('shrinkGuardTripped' in issue) {
     return { ok: false, reason: 'body_shrink_guard', existingLength: issue.existingLength, newLength: issue.newLength };
+  }
+  if (goal !== undefined) {
+    const updated = await updateWorkItemGoal(id, wi, goal);
+    return updated ? { ok: true, item: updated } : { ok: false, reason: 'not_found' };
   }
   const refreshed = await getWorkItem(id, opts.harness);
   return refreshed ? { ok: true, item: refreshed } : { ok: false, reason: 'not_found' };

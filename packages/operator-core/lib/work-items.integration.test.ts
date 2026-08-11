@@ -1573,6 +1573,28 @@ describe('unified work_items surface (real PG)', () => {
     expect((await db.sql`SELECT state FROM harness_shared.engineer_issues WHERE issue_id=${bug.id}`)[0].state).toBe('done');
   });
 
+  it('updateWorkItem adopts and clears goal attribution for both families (WI-37892)', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'existing bug', harness: 'papercup', createdBy: 'agA' });
+    const feature = await wi.createWorkItem({ kind: 'feature', title: 'existing feature', harness: 'papercup', createdBy: 'agA' });
+
+    const bugAdopted = await wi.updateWorkItem(bug.id, { goal: 'goal-existing' }, 'agA', { harness: 'papercup' });
+    expect(bugAdopted).toMatchObject({ ok: true, item: { id: bug.id, goalId: 'goal-existing' } });
+    const featureAdopted = await wi.updateWorkItem(feature.id, { goal: 'goal-existing' }, 'agA', { harness: 'papercup' });
+    expect(featureAdopted).toMatchObject({ ok: true, item: { id: feature.id, goalId: 'goal-existing' } });
+
+    const stored = await db.sql<{ feature_id: string; goal_id: string | null }[]>`
+      SELECT feature_id, goal_id FROM harness_shared.work_items
+       WHERE feature_id IN (${bug.id}, ${feature.id}) ORDER BY feature_id`;
+    expect(stored).toEqual([
+      { feature_id: bug.id, goal_id: 'goal-existing' },
+      { feature_id: feature.id, goal_id: 'goal-existing' },
+    ]);
+
+    const cleared = await wi.updateWorkItem(bug.id, { goal: null }, 'agA', { harness: 'papercup' });
+    expect(cleared).toMatchObject({ ok: true, item: { id: bug.id, goalId: null } });
+    expect((await db.sql`SELECT goal_id FROM harness_shared.work_items WHERE feature_id = ${bug.id}`)[0].goal_id).toBeNull();
+  });
+
   it('claim/release dispatch: feature → taken_by; issue → assignee', async () => {
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });

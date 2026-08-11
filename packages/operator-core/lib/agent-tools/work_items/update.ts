@@ -1,6 +1,6 @@
 /**
  * work_items:update — edit one OR many work-items' mutable fields (title / body /
- * severity / kind / found-during / linked feature). The unified replacement for the
+ * severity / kind / found-during / linked feature / goal). The unified replacement for the
  * retired issues:update. Subscribers are notified. State → work_items:set_state;
  * structural decisions → work_items:amend; tags → work_items:tag; comments →
  * work_items:comment.
@@ -86,6 +86,15 @@ const FIELDS = {
   // z.toJSONSchema for the entire catalog — see limits.ts.)
   foundDuring: softText(LIMITS.LABEL).nullable().optional(),
   linkedFeatureId: z.string().max(80).nullable().optional(),
+  // WI-37892: a goal is a shared work-item field, not issue-family metadata. Passing a
+  // goal adopts an existing item into that goal's drain lane; null clears the edge.
+  goal: z
+    .string()
+    .min(1)
+    .max(200)
+    .nullable()
+    .optional()
+    .describe('goal id to adopt this work-item into, or null to clear its goal attribution'),
   confirmShrink: z
     .boolean()
     .optional()
@@ -170,9 +179,9 @@ export default defineTool({
   name: 'work_items:update',
   profile: 'engineer',
   description:
-    "Edit one OR many work-items' title / body / severity / kind / found-during / linked feature / needsTwoMachineRig / needsHuman. Notifies subscribers. Single: { id, …fields }. Many heterogeneous: items:[{ id, …fields }]. Returns { ok, results:[{ ok, id, item? | error }], counts } — correlate by id; a not-found item never fails the rest. Field-edit is issue-family only (bug/change/task); a feature-family item edits via its pipeline. A `body` edit that would drastically shrink a substantial existing body is rejected unless confirmShrink:true (EI-8497 fat-finger guard). `needsTwoMachineRig:true/false` sets/clears payload.needs_2_machine_rig, which excludes/re-admits the item from single-box scheduler:get_next/claim_next self-select (WI-2796). `needsHuman:true/false` sets/clears payload.needsHuman, the issue-family human-review gate. (State → work_items:set_state; structural decisions → work_items:amend; tags → work_items:tag; comments → work_items:comment.)",
+    "Edit one OR many work-items' title / body / severity / kind / found-during / linked feature / goal / needsTwoMachineRig / needsHuman. Notifies subscribers. Single: { id, …fields }. Many heterogeneous: items:[{ id, …fields }]. Returns { ok, results:[{ ok, id, item? | error }], counts } — correlate by id; a not-found item never fails the rest. Goal is family-agnostic: pass a goal id to adopt an existing item into that goal's drain lane, or null to clear it. Other field edits are issue-family only (bug/change/task); a feature-family item edits via its pipeline. A `body` edit that would drastically shrink a substantial existing body is rejected unless confirmShrink:true (EI-8497 fat-finger guard). `needsTwoMachineRig:true/false` sets/clears payload.needs_2_machine_rig, which excludes/re-admits the item from single-box scheduler:get_next/claim_next self-select (WI-2796). `needsHuman:true/false` sets/clears payload.needsHuman, the issue-family human-review gate. (State → work_items:set_state; structural decisions → work_items:amend; tags → work_items:tag; comments → work_items:comment.)",
   guidance: {
-    when: 'Refine work-item(s) you or someone else filed — clarify the title/body, re-rate severity, correct a mislabeled kind (bug↔change — the kind picks the auto-implement lane, so keep it honest), or attach the feature that will fix it. Edit several at once via items:[…].',
+    when: 'Refine work-item(s) you or someone else filed — clarify the title/body, re-rate severity, correct a mislabeled kind (bug↔change — the kind picks the auto-implement lane, so keep it honest), attach a fixing feature, or adopt/clear a goal attribution. Edit several at once via items:[…].',
     notWhen: 'Changing lifecycle state (work_items:set_state), recording a structural decision like split/drop (work_items:amend), adding a note (work_items:comment), or routing to a topic (work_items:tag).',
     chaining: 'work_items:get → work_items:update { id, …fields }.',
   },
@@ -190,7 +199,7 @@ export default defineTool({
         .max(200)
         .optional()
         .describe(
-          'update many work-items at once — each { id, …fields }. A top-level field (title/body/severity/kind/foundDuring/linkedFeatureId/harness) is the DEFAULT applied to every item that omits its own (EI-7639) — pass it once instead of repeating it per item.',
+          'update many work-items at once — each { id, …fields }. A top-level field (title/body/severity/kind/foundDuring/linkedFeatureId/goal/harness) is the DEFAULT applied to every item that omits its own (EI-7639) — pass it once instead of repeating it per item.',
         ),
       harness: z.string().max(80).optional().describe('default harness for the inline id / items that omit one'),
     })
@@ -208,7 +217,7 @@ export default defineTool({
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
     // EI-7639: a top-level field-edit (title/body/severity/kind/foundDuring/
-    // linkedFeatureId/harness) is the DEFAULT for every item in items:[] that
+    // linkedFeatureId/goal/harness) is the DEFAULT for every item in items:[] that
     // omits its own — previously it was silently dropped in the batch form (the
     // per-item value was used even when `undefined`, so a top-level `kind` with
     // items:[{id}, …] applied NO kind change while still reporting ok:true and
@@ -229,6 +238,7 @@ export default defineTool({
             LIMITS.LABEL,
           ),
           linkedFeatureId: it.linkedFeatureId !== undefined ? it.linkedFeatureId : args.linkedFeatureId,
+          goal: it.goal !== undefined ? it.goal : args.goal,
           confirmShrink: it.confirmShrink ?? args.confirmShrink,
           needsTwoMachineRig: it.needsTwoMachineRig !== undefined ? it.needsTwoMachineRig : args.needsTwoMachineRig,
           // WI-5689: needsHuman was declared in the zod schema + documented, but never
@@ -248,6 +258,7 @@ export default defineTool({
             kind: args.kind,
             foundDuring: clampText(args.foundDuring, LIMITS.LABEL),
             linkedFeatureId: args.linkedFeatureId,
+            goal: args.goal,
             confirmShrink: args.confirmShrink,
             needsTwoMachineRig: args.needsTwoMachineRig,
             needsHuman: args.needsHuman, // WI-5689
@@ -266,6 +277,7 @@ export default defineTool({
             kind: it.kind,
             foundDuring: it.foundDuring,
             linkedFeatureId: it.linkedFeatureId,
+            goal: it.goal,
             confirmShrink: it.confirmShrink,
           },
           ident.ownerId,

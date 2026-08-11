@@ -43,6 +43,25 @@ describe('work_items:update handler (bulk keyed-array)', () => {
     expect(b.results[0]).toMatchObject({ ok: true, id: 'EI-1', item: { id: 'EI-1', title: 'new' } });
   });
 
+  it('passes a goal attribution through for an existing item', async () => {
+    updM.mockResolvedValue({ ok: true, item: { id: 'EI-1', goalId: 'goal-a' } } as never);
+    const b = await body({ id: 'EI-1', goal: 'goal-a' });
+    expect(updM).toHaveBeenCalledWith(
+      'EI-1',
+      expect.objectContaining({ goal: 'goal-a' }),
+      'me',
+      expect.any(Object),
+    );
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'EI-1', item: { goalId: 'goal-a' } });
+  });
+
+  it('fans out the top-level goal default while preserving a per-item clear', async () => {
+    updM.mockImplementation(async (id: string) => ({ ok: true, item: { id } }) as never);
+    await body({ goal: 'goal-a', items: [{ id: 'EI-1' }, { id: 'EI-2', goal: null }] });
+    expect(updM).toHaveBeenNthCalledWith(1, 'EI-1', expect.objectContaining({ goal: 'goal-a' }), 'me', expect.any(Object));
+    expect(updM).toHaveBeenNthCalledWith(2, 'EI-2', expect.objectContaining({ goal: null }), 'me', expect.any(Object));
+  });
+
   it('items:[…] heterogeneous fan-out preserves order + per-item harness', async () => {
     updM.mockImplementation(async (id: string) => ({ ok: true, item: { id } }) as never);
     const b = await body({ items: [{ id: 'EI-1', title: 'a', harness: 'h1' }, { id: 'EI-2', body: 'b' }] });
@@ -439,6 +458,8 @@ describe('work_items:update args schema — rejects lifecycle-state footguns (EI
   it('still ACCEPTS a valid field-only patch (no false positive)', () => {
     expect(tool.args.safeParse({ id: 'EI-1', title: 'new', severity: 'major' }).success).toBe(true);
     expect(tool.args.safeParse({ items: [{ id: 'EI-1', body: 'b', kind: 'change' }] }).success).toBe(true);
+    expect(tool.args.safeParse({ id: 'EI-1', goal: 'goal-a' }).success).toBe(true);
+    expect(tool.args.safeParse({ id: 'EI-1', goal: null }).success).toBe(true);
   });
 
   it('still enforces id-or-items', () => {
