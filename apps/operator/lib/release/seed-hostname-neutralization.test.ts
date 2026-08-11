@@ -10,6 +10,7 @@ import {
   DEFAULT_NEUTRAL_BUILD_HOSTNAME,
   SEED_UTS_MARKER_ENV,
   buildBwrapArgv,
+  buildNeutralizedChildEnv,
   findExecutableOnPath,
   planHostnameNeutralization,
 } from './seed-hostname-neutralization.js';
@@ -157,6 +158,36 @@ describe('seed hostname neutralization (EI-20040763522089574)', () => {
         },
       });
       expect(probed).toEqual(['/usr/bin/bwrap']);
+    });
+  });
+
+  describe('buildNeutralizedChildEnv', () => {
+    const KEY = 'PAPERCUSP_SEED_REAL_HOSTNAME';
+
+    it('hands the REAL hostname down, because the child can no longer resolve it', () => {
+      // Spread the real ProcessEnv: it carries the required readonly NODE_ENV, and a child
+      // that inherits a hand-built env missing it is a different bug entirely.
+      const env = buildNeutralizedChildEnv({
+        env: { ...process.env, PAPERCUSP_TEST_MARKER: 'kept', [KEY]: undefined },
+        realHostname: 'zqx-workstation-77',
+        realHostnameEnvKey: KEY,
+      });
+      expect(env[KEY]).toBe('zqx-workstation-77');
+      expect(env[SEED_UTS_MARKER_ENV]).toBe('1');
+      expect(env.PAPERCUSP_TEST_MARKER).toBe('kept');
+    });
+
+    it('PRESERVES an already-handed-down hostname instead of relabelling with the sandbox name', () => {
+      // The regression this pins: a nested invocation resolving `hostname()` INSIDE the
+      // namespace would overwrite the real name with the neutral one, and the staged-seed
+      // guard would then scan for a string that is in every SST by design — reporting a
+      // leaking seed clean while looking like it worked.
+      const env = buildNeutralizedChildEnv({
+        env: { ...process.env, [KEY]: 'zqx-workstation-77' },
+        realHostname: DEFAULT_NEUTRAL_BUILD_HOSTNAME,
+        realHostnameEnvKey: KEY,
+      });
+      expect(env[KEY]).toBe('zqx-workstation-77');
     });
   });
 });

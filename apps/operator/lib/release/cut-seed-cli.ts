@@ -91,7 +91,9 @@ import {
   buildBwrapArgv,
   findExecutableOnPath,
   planHostnameNeutralization,
+  buildNeutralizedChildEnv,
 } from './seed-hostname-neutralization.js';
+import { assertStagedSeedCarriesNoIdentity, SEED_REAL_HOSTNAME_ENV } from './seed-identity-guard.js';
 import { rm, readFile, writeFile, rename, cp, readdir } from 'node:fs/promises';
 import Corestore from 'corestore';
 import type postgres from 'postgres';
@@ -1092,7 +1094,17 @@ async function main(): Promise<void> {
           execArgv: process.execArgv,
           argv: process.argv.slice(1),
         }),
-        { stdio: 'inherit', env: { ...process.env, [SEED_UTS_MARKER_ENV]: '1' } },
+        {
+          stdio: 'inherit',
+          // Composed by a pure, tested function — the child's env is as load-bearing as its
+          // argv (see buildNeutralizedChildEnv): the marker stops the re-exec recursing, and
+          // the real hostname is the only way the child can still know what it must NOT ship.
+          env: buildNeutralizedChildEnv({
+            env: process.env,
+            realHostname: hostname(),
+            realHostnameEnvKey: SEED_REAL_HOSTNAME_ENV,
+          }),
+        },
       );
       // Fail CLOSED on a broken re-exec: a seed cut that "succeeded" because the sandbox
       // never ran is the silent-degrade this whole guard exists to prevent.
@@ -1273,6 +1285,17 @@ async function main(): Promise<void> {
         if (f === 'LOG' || f.startsWith('LOG.old')) await rm(join(seedDbDir, f), { force: true });
       }
     }
+
+    // EI-20108164746219771 step 4. Judge the STAGED BYTES for the build box's identity —
+    // after the graft and after the LOG sweep, i.e. exactly what the installer will carry.
+    // Mechanism-agnostic on purpose: the two known leaks (presence ROWS, RocksDB's
+    // host.identity SST property) arrived by unrelated routes and each fix is blind to the
+    // other, so this asks the bytes rather than trusting any one filter. See
+    // ./seed-identity-guard.ts for why it does NOT shell out to audit-release-bundle.py.
+    await assertStagedSeedCarriesNoIdentity({
+      dir: outDir,
+      neutralHostname: process.env.PAPERCUSP_SEED_BUILD_HOSTNAME || DEFAULT_NEUTRAL_BUILD_HOSTNAME,
+    });
 
     // WI-3232 --emit-epoch-key: write the bundled key so the pot decrypts OFFLINE.
     if (emitEpochKey) {

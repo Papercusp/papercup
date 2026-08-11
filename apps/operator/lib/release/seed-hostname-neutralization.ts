@@ -186,6 +186,37 @@ export function planHostnameNeutralization(inp: {
  * network and PG behave IDENTICALLY inside and out. `--unshare-uts` is the ONLY namespace
  * unshared — notably NOT `--unshare-net`, or the cut could not reach PG or the operator.
  */
+/**
+ * The env the re-exec'd child runs with. A pure function for the same reason
+ * {@link planHostnameNeutralization} is one: the interesting part is the DECISION, and a
+ * spawn is not a testable unit.
+ *
+ * Two variables, both load-bearing in OPPOSITE directions:
+ *  • the UTS marker stops the child re-exec'ing forever;
+ *  • the real hostname is the only way the child can still know what it must NOT ship.
+ *    Inside the namespace `gethostname()` answers with the neutral label, so a child that
+ *    resolved the hostname itself would scan the staged seed for the wrong string and call
+ *    a leaking seed clean. MEASURED: `bwrap --unshare-uts --hostname papercusp-build` leaves
+ *    the environment intact while `hostname` reports the neutral name, so the variable
+ *    crosses the boundary the hostname cannot.
+ *
+ * An already-set real hostname is PRESERVED rather than overwritten: a nested invocation
+ * must not relabel itself with the sandbox's own name.
+ */
+export function buildNeutralizedChildEnv(inp: {
+  readonly env: NodeJS.ProcessEnv;
+  readonly realHostname: string;
+  readonly realHostnameEnvKey: string;
+}): NodeJS.ProcessEnv {
+  // Built by mutation on a copy rather than as one object literal: `ProcessEnv` carries a
+  // REQUIRED readonly NODE_ENV (next/types/global.d.ts), which a literal cannot satisfy
+  // without a cast — and a cast here would be hiding the one property the child must inherit.
+  const next: NodeJS.ProcessEnv = { ...inp.env };
+  next[SEED_UTS_MARKER_ENV] = '1';
+  next[inp.realHostnameEnvKey] = inp.env[inp.realHostnameEnvKey] || inp.realHostname;
+  return next;
+}
+
 export function buildBwrapArgv(inp: {
   readonly bwrapPath: string;
   readonly neutralHostname: string;
