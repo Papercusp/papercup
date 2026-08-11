@@ -1325,6 +1325,13 @@ export default function SessionChatModal({
             // the surface cannot disagree about what is set — and it costs no
             // fetch, which is what lets `current()` stay pure and synchronous.
             modes: actionRosterEntry?.modes ?? [],
+            // P-003: the ACCOUNT pill's current value, from the SAME roster row
+            // — which is what lets its `current()` stay pure and synchronous
+            // rather than putting a gateway:owner_report fetch on every popup
+            // open. `undefined` (an older operator's payload has no such field)
+            // is deliberately NOT collapsed to null: the axis reads it as
+            // "unknown" and omits the pill, where null means "no dynamic pin".
+            accountPin: actionRosterEntry?.accountPin,
           }
         : null,
     [sessionOwnerId, ownerLabel, actionRosterEntry, resolved],

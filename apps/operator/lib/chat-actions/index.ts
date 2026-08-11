@@ -61,3 +61,14 @@ export type {
 // exists, it just is not a second button.
 import './PostureActions';
 import './SessionActions';
+// CTX — the context-runway pill (WI-6507). Registration happens through this
+// side-effect import; WI-6450 is the standing reminder of what a missing line
+// here costs (the whole bar once shipped DEAD because nothing imported this
+// barrel), so do not "tidy" these into anything lazier.
+import './ContextLimitAction';
+// The ACCOUNT pill (WI-6509 / hud-chat-owner-controls-2026-08-11 P-003). This
+// line is not optional bookkeeping: registration happens by SIDE EFFECT, so an
+// axis module nothing imports is tree-shaken out and the pill simply never
+// appears — the WI-6450 failure, which looked like a broken bar rather than a
+// missing import.
+import './AccountAction';

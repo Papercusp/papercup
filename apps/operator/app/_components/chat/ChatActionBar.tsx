@@ -384,7 +384,11 @@ export function ChatActionBar({ ctx }: { ctx: ChatActionContext }): ReactNode {
                 label: o.label,
                 detail: o.hint,
                 keywords: o.hint ? [o.hint] : undefined,
-                disabled: isPlaceholder(o.id),
+                /* Two different un-pickables, both refused here: the transient
+                   loading placeholder, and D-006 §A's PERMANENT "present but
+                   not settable from this surface" row (the axis declares it —
+                   see ChatModeOption.disabled). */
+                disabled: isPlaceholder(o.id) || o.disabled === true,
               }))}
               testId={`chat-mode-${mode.id}`}
               triggerData={{ 'data-on': state.on ? 'true' : 'false' }}
@@ -411,7 +415,8 @@ export function ChatActionBar({ ctx }: { ctx: ChatActionContext }): ReactNode {
             }}
             options={resolvedOptions.map((o) => ({
               value: o.id,
-              disabled: isPlaceholder(o.id),
+              // Same two un-pickables as the searchable menu above.
+              disabled: isPlaceholder(o.id) || o.disabled === true,
               label: o.hint ? (
                 <span className="pc-ctl-mode-opt">
                   <span className="pc-ctl-mode-opt__label">{o.label}</span>

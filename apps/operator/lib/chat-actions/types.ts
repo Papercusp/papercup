@@ -119,6 +119,22 @@ export interface ChatModeOption {
   label: string;
   /** One-line explanation, shown under the label in the chooser. */
   hint?: string;
+  /**
+   * Render the row but refuse the pick — "present, correct, and not settable
+   * from here" (hud-chat-owner-controls-2026-08-11 D-006 §A).
+   *
+   * This is a THIRD state, not loading and not error, and it exists because
+   * OMITTING such a row is the worse lie. The forcing case: the ACCOUNT axis's
+   * "default system account" is a value the owner named explicitly, yet a
+   * `--account=default` session bypasses the inference gateway entirely and
+   * cannot be re-pinned live — it must be respawned. Dropping the row would say
+   * the option does not exist; offering it live would say a click applies it.
+   * Neither is true, and neither resolves with time, so this must not be
+   * modelled as a transient state.
+   *
+   * Say WHY in `hint` — a disabled row with no reason is just a dead end.
+   */
+  disabled?: boolean;
 }
 
 /** What a mode axis is set to right now. */
