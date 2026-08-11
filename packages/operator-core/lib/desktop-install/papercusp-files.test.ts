@@ -16,7 +16,12 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import * as fs from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
-import { resolveShimNode, ensureBundledNodeLinked, ensureGhLinked } from './papercusp-files';
+import {
+  resolveShimNode,
+  ensureBundledNodeLinked,
+  ensureGhLinked,
+  ensureAgentClisLinked,
+} from './papercusp-files';
 
 let tmp: string;
 let origExecPath: string;
@@ -250,5 +255,97 @@ describe('ensureGhLinked', () => {
     expect(await ensureGhLinked(home, binDir)).toBe(false); // no source this run — leave it alone
     const dest = path.join(binDir, 'gh');
     expect(await fs.realpath(dest)).toBe(await fs.realpath(bundled)); // still the old, still-valid link
+  });
+});
+
+/**
+ * WI-37920 / P-006 — the INSTALLER half of "a backend that IS installed cannot be
+ * launched, but only from inside a desktop-spawned terminal".
+ *
+ * `~/.papercusp/bin` is prepended to every spawned terminal's PATH, so a shim
+ * there is what makes `psu --agent=X` work when the window's own PATH is the
+ * desktop session's. Two gaps, both measured 2026-08-11:
+ *   • `omp` was not in the loop at all — a bun-installed omp never got a shim.
+ *   • the search list was hand-rolled here and did not include `~/.bun/bin`,
+ *     which is where `bun add -g` puts things and which `~/.bashrc` adds to PATH
+ *     BELOW its "if not running interactively, return" early-exit.
+ * The fix routes both through `backendSearchDirs` — one list, three consumers
+ * (this installer, psu's detection, the operator's spawn-PATH injection).
+ */
+describe('ensureAgentClisLinked (WI-37920 / P-006)', () => {
+  it('links a BUN-installed omp — the install location the hand-rolled list missed', async () => {
+    const home = path.join(tmp, 'home');
+    const binDir = path.join(home, '.papercusp', 'bin');
+    await fs.mkdir(binDir, { recursive: true });
+    const src = path.join(home, '.bun', 'bin', 'omp');
+    await touch(src);
+
+    const linked = await ensureAgentClisLinked(home, binDir);
+
+    expect(
+      linked,
+      'a bun-installed omp must get a ~/.papercusp/bin shim — otherwise psu inside a ' +
+        'desktop terminal reports "the omp backend (`omp`) is not installed" while the ' +
+        "same binary works in the user's interactive shell.",
+    ).toContain('omp');
+    expect(await fs.realpath(path.join(binDir, 'omp'))).toBe(await fs.realpath(src));
+  });
+
+  it.each([
+    ['claude', path.join('.local', 'bin')],
+    ['codex', path.join('.npm-global', 'bin')],
+    ['omp', path.join('.cargo', 'bin')],
+  ])('links %s found under ~/%s', async (agent, relDir) => {
+    const home = path.join(tmp, 'home');
+    const binDir = path.join(home, '.papercusp', 'bin');
+    await fs.mkdir(binDir, { recursive: true });
+    const src = path.join(home, relDir, agent);
+    await touch(src);
+
+    expect(await ensureAgentClisLinked(home, binDir)).toContain(agent);
+    expect(await fs.realpath(path.join(binDir, agent))).toBe(await fs.realpath(src));
+  });
+
+  it('never links binDir to ITSELF (binDir is in the shared search list)', async () => {
+    // Sharing one list means ~/.papercusp/bin is now among the search dirs. Without
+    // the self-link guard a dest could resolve to itself.
+    const home = path.join(tmp, 'home');
+    const binDir = path.join(home, '.papercusp', 'bin');
+    await fs.mkdir(binDir, { recursive: true });
+    const linked = await ensureAgentClisLinked(home, binDir);
+    for (const agent of linked) {
+      const dest = path.join(binDir, agent);
+      expect(await fs.realpath(dest)).not.toBe(dest);
+    }
+  });
+
+  it('is idempotent — an existing shim is left exactly as it is', async () => {
+    const home = path.join(tmp, 'home');
+    const binDir = path.join(home, '.papercusp', 'bin');
+    await fs.mkdir(binDir, { recursive: true });
+    const first = path.join(home, '.bun', 'bin', 'omp');
+    await touch(first);
+    await ensureAgentClisLinked(home, binDir);
+
+    // A second install location appears; the established shim must not be re-pointed.
+    await touch(path.join(home, '.local', 'bin', 'omp'));
+    expect(await ensureAgentClisLinked(home, binDir)).not.toContain('omp');
+    expect(await fs.realpath(path.join(binDir, 'omp'))).toBe(await fs.realpath(first));
+  });
+
+  it('does NOT shim the shebang interpreter (bun) into the PREPENDED dir', async () => {
+    // ~/.papercusp/bin outranks the user's own PATH, so a `bun` shim here would
+    // shadow the user's bun for every command they run — worse than the bug being
+    // fixed. The interpreter is handled by the spawn-time PATH APPEND instead
+    // (console-spawn's buildPathExport), which cannot shadow anything.
+    const home = path.join(tmp, 'home');
+    const binDir = path.join(home, '.papercusp', 'bin');
+    await fs.mkdir(binDir, { recursive: true });
+    await touch(path.join(home, '.bun', 'bin', 'omp'));
+    await touch(path.join(home, '.bun', 'bin', 'bun'));
+
+    await ensureAgentClisLinked(home, binDir);
+
+    await expect(fs.access(path.join(binDir, 'bun'))).rejects.toThrow();
   });
 });
