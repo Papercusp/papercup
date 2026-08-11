@@ -197,6 +197,7 @@ vi.mock('@papercusp/db-org', async (importOriginal) => ({
 // exactly as production's register-system-actions side-effect import does.
 import './git-sync-action';
 import {
+  fireGitSyncNow,
   isResolverInFlight,
   acquireWithContentionRetry,
   formatOwnHeadPublishedLine,
@@ -348,18 +349,24 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
 
   it('stamps the breadcrumb even on an ineligible (skipped) tick — a gate-stalled fire is still visible', async () => {
     registryProjects = []; // no registry entry → no_path skip
-    const result = await action(ctx);
-    expect(result).toEqual({ status: 'skipped', reason: 'no_path' });
+    await action(ctx);
     expect(fireBreadcrumbs()).toEqual([{ fire_started_at: expect.any(Number) }]);
+    expect(routinePatches()[0]).toMatchObject({ last_status: 'skipped', last_skip_reason: 'no_path' });
   });
 
   it('a COMPLETED tick resets reaped_count to 0 (recordOutcome) — the reaper counter reads as CONSECUTIVE reaps', async () => {
     runGitSyncMock.mockResolvedValue(syncedOutcome);
 
-    const result = await action(ctx);
+    await action(ctx);
+    expect(routinePatches()[0]).toMatchObject({ last_status: 'synced', reaped_count: 0 });
+  });
+
+  it('returns the typed pipeline outcome to the on-demand fire seam', async () => {
+    runGitSyncMock.mockResolvedValue(syncedOutcome);
+
+    const result = await fireGitSyncNow(ctx.installSlug, ctx.workspaceId);
 
     expect(result).toMatchObject({ status: 'synced', headSha: syncedOutcome.headSha, pushed: syncedOutcome.pushed });
-    expect(routinePatches()[0]).toMatchObject({ last_status: 'synced', reaped_count: 0 });
   });
 });
 

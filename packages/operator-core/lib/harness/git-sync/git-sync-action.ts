@@ -3805,4 +3805,15 @@ export async function fireGitSyncNow(installSlug: string, workspaceId: string): 
 // WI-1416: ownSteps — the handler checkpoints its OWN DBOS sub-steps, so the routine
 // engine must run it at the WORKFLOW layer (nested inside the engine's single step,
 // DBOS.runStep silently degrades to a plain call and nothing checkpoints).
-registerSystemAction('git-sync', handleGitSync, { ownSteps: true });
+// The routine engine only consumes its documented SystemActionResult hook
+// (durable child spawns); the typed pipeline outcome is for on-demand callers
+// such as git-sync:run, which invoke fireGitSyncNow directly. Keep the cron
+// registration's contract explicit instead of leaking the action-specific
+// result through the generic registry type.
+registerSystemAction(
+  'git-sync',
+  async (ctx: SystemActionCtx): Promise<void> => {
+    await handleGitSync(ctx);
+  },
+  { ownSteps: true },
+);
