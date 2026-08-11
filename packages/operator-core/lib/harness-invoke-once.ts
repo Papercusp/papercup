@@ -282,7 +282,6 @@ export function applyRoleModel(baseCmd: string, role: string, overrideSpec?: str
     model = trimmed.slice(0, lastColon);
     effort = trimmed.slice(lastColon + 1);
   }
-  const codexEffort = effort === 'max' ? 'xhigh' : effort;
   // Strip any existing model/effort flags, then append the role's. Codex does
   // not have a `--effort` flag; its reasoning effort is a config override.
   let cmd = baseCmd
@@ -302,7 +301,7 @@ export function applyRoleModel(baseCmd: string, role: string, overrideSpec?: str
   cmd = `${cmd} --model ${cliModel}`;
   if (effort) {
     cmd = isCodex
-      ? `${cmd} -c model_reasoning_effort="${codexEffort}"`
+      ? `${cmd} -c model_reasoning_effort="${effort}"`
       : `${cmd} --effort ${effort}`;
   }
   return cmd;

@@ -178,8 +178,8 @@ export function parseArgs(argv: any): {
  *     else (a bare id, or a non-effort `:` segment like bedrock's `…-v2:0`)
  *     passes through verbatim.
  *   - codex: `-m` wants a BARE model id; reasoning effort is a CONFIG override
- *     (`-c model_reasoning_effort="high"`, `max` clamped to codex's `xhigh` —
- *     mirrors applyRoleModel in harness-invoke-once.ts). A verbatim suffixed
+ *     (`-c model_reasoning_effort="high"`, preserving every recognized level,
+ *     including `max`, exactly as requested). A verbatim suffixed
  *     spec would set an unknown MODEL and silently drop the effort — the same
  *     effort-drop class the claude branch fixed (2026-07-01), found for codex
  *     launching the backlog-clearance fleet (2026-07-03).

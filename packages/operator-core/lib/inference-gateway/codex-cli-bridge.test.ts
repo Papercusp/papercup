@@ -38,8 +38,8 @@ describe('parseBridgeModel', () => {
     expect(parseBridgeModel('gpt-5.4:high')).toEqual({ id: 'gpt-5.4', effort: 'high' });
     expect(parseBridgeModel('gpt-5.4:xhigh')).toEqual({ id: 'gpt-5.4', effort: 'xhigh' });
   });
-  it('maps the Papercusp `max` tier to codex xhigh', () => {
-    expect(parseBridgeModel('gpt-5.4:max')).toEqual({ id: 'gpt-5.4', effort: 'xhigh' });
+  it('preserves the owner-requested Codex max effort', () => {
+    expect(parseBridgeModel('gpt-5.4:max')).toEqual({ id: 'gpt-5.4', effort: 'max' });
   });
   it('maps the chatgpt:<n> alias (with and without effort)', () => {
     expect(parseBridgeModel('chatgpt:5.4')).toEqual({ id: 'gpt-5.4', effort: 'medium' });

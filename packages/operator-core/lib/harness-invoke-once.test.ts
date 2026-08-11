@@ -242,7 +242,7 @@ describe('applyRoleModel — per-role model override', () => {
       'codex exec --model gpt-5.5 -c model_reasoning_effort="high"',
     );
     expect(applyRoleModel('codex exec -m gpt-5.4', 'worker')).toBe(
-      'codex exec --model gpt-5.5 -c model_reasoning_effort="xhigh"',
+      'codex exec --model gpt-5.5 -c model_reasoning_effort="max"',
     );
   });
 

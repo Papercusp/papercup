@@ -50,13 +50,14 @@ export function parseCodexCliRef(ref: string): string | null {
   return raw.startsWith('~/') ? `${os.homedir()}${raw.slice(1)}` : raw;
 }
 
-const CODEX_EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh']);
+const CODEX_EFFORTS = new Set(['minimal', 'low', 'medium', 'high', 'xhigh', 'max']);
 
 /**
  * Normalize a request-body model spec to the bare id + reasoning effort the
  * codex CLI takes. Accepts `[provider/]<id>[:effort]` plus Papercusp's
  * user-facing `chatgpt:<n>` alias (mirrors the orchestrator's
- * `normalizeModelForBackend`); Papercusp's `max` tier maps to codex `xhigh`.
+ * `normalizeModelForBackend`). Every recognized effort, including `max`, is
+ * preserved exactly so the bridge cannot silently weaken an owner request.
  * No/unknown effort suffix → `medium` (codex's own default).
  */
 export function parseBridgeModel(model: string | undefined): { id: string; effort: string } {
@@ -69,9 +70,8 @@ export function parseBridgeModel(model: string | undefined): { id: string; effor
   const colon = m.lastIndexOf(':');
   if (colon > 0) {
     const suffix = m.slice(colon + 1).trim().toLowerCase();
-    const mapped = suffix === 'max' ? 'xhigh' : suffix;
-    if (CODEX_EFFORTS.has(mapped)) {
-      effort = mapped;
+    if (CODEX_EFFORTS.has(suffix)) {
+      effort = suffix;
       m = m.slice(0, colon);
     }
   }
