@@ -84,6 +84,22 @@ export const RELATIONS_SOURCE = 'packages/operator-core/lib/coord/couplings.ts';
 /** The census key written by coord/derived-signal-census.ts. Must match it. */
 export const CENSUS_KEY = 'derivedSignals';
 
+/**
+ * The census schema version this probe can INTERPRET. Must equal
+ * DERIVED_SIGNAL_CENSUS_VERSION in coord/derived-signal-census.ts — pinned by a
+ * test, because the two live in different languages and cannot import each other.
+ *
+ * WHY A VERSION FILTER AND NOT JUST A WINDOW. `inputs` was REDEFINED in v2 (pool
+ * -> binding input), and `inputRuns` below is what separates `starved` from
+ * `armed-silent`. A 14-day window spanning that change therefore mixes two
+ * incompatible measurements of the one field the verdict turns on, and produces a
+ * confident verdict from an average of the two. Older rows are EXCLUDED and
+ * COUNTED, never quietly folded in: a shrunken evidence base has to be visible,
+ * since it is the difference between "we looked and it was dead" and "we have not
+ * measured it yet under this instrument".
+ */
+export const CENSUS_VERSION = 2;
+
 /** Days of history each relation is judged over. */
 export const WINDOW_DAYS = 14;
 
@@ -263,7 +279,17 @@ const MEANING = {
 
 export function formatReport(rows, roll, now, ctx = {}) {
   const out = [`\nDERIVED-SIGNAL FIRING PROBE — is each derived relation alive in production? (P-007 / D-088)\n`];
-  out.push(`  window: ${WINDOW_DAYS}d · census rows: ${ctx.censusRows ?? 0} · source: ${RELATIONS_SOURCE}\n`);
+  out.push(`  window: ${WINDOW_DAYS}d · census rows: ${ctx.censusRows ?? 0} (v${CENSUS_VERSION}) · source: ${RELATIONS_SOURCE}\n`);
+  if (ctx.staleVersionRows) {
+    // Say this out loud rather than reporting a quietly smaller number: during the
+    // changeover the excluded rows are the MAJORITY, and a reader who does not know
+    // that will read a thin post-bump window as "the signal went quiet".
+    out.push(
+      `  ⚠ ${ctx.staleVersionRows} row(s) in this window are from an OLDER census instrument (not v${CENSUS_VERSION}) and are\n` +
+        `    excluded — they measured \`inputs\` differently, so folding them in would average two instruments.\n` +
+        `    Expected while the bump rolls out; the window refills at the current version.\n`,
+    );
+  }
   for (const r of rows) {
     const bar = `${r.edges} edges · armed ${r.armedRuns}/${r.runs} runs · input ${r.inputRuns}`;
     out.push(`  ${MARK[r.verdict] ?? '?'} ${String(r.relation).padEnd(18)} ${String(bar).padEnd(44)} ${r.verdict}`);
@@ -326,15 +352,24 @@ async function main() {
   const now = new Date();
   let observed = new Map();
   let censusRows = 0;
+  let staleVersionRows = 0;
   try {
+    // Compared as TEXT, deliberately: an ::int cast would ERROR on a malformed `v`
+    // and take the whole probe down, where a text mismatch simply excludes the row —
+    // which is the correct handling for a census this probe cannot interpret.
     const [t] = await sql.unsafe(
-      `SELECT count(*)::int AS total
+      `SELECT count(*)::int AS total,
+              count(*) FILTER (WHERE metadata_json -> $2 ->> 'v' = $3)::int AS at_version
          FROM harness_shared.tool_invocations
         WHERE invoked_at > now() - ($1 || ' days')::interval
           AND metadata_json ? $2`,
-      [String(WINDOW_DAYS), CENSUS_KEY],
+      [String(WINDOW_DAYS), CENSUS_KEY, String(CENSUS_VERSION)],
     );
-    censusRows = t?.total ?? 0;
+    // The evidence floor counts only rows this probe can INTERPRET. Counting all of
+    // them would let stale-instrument rows satisfy MIN_CENSUS_ROWS_TO_FAIL and let a
+    // verdict fail on evidence it never actually read.
+    censusRows = t?.at_version ?? 0;
+    staleVersionRows = Math.max(0, (t?.total ?? 0) - censusRows);
 
     const agg = await sql.unsafe(
       `SELECT rel.key AS relation,
@@ -346,8 +381,9 @@ async function main() {
               LATERAL jsonb_each(ti.metadata_json -> $2 -> 'relations') AS rel
         WHERE ti.invoked_at > now() - ($1 || ' days')::interval
           AND ti.metadata_json ? $2
+          AND ti.metadata_json -> $2 ->> 'v' = $3
         GROUP BY 1`,
-      [String(WINDOW_DAYS), CENSUS_KEY],
+      [String(WINDOW_DAYS), CENSUS_KEY, String(CENSUS_VERSION)],
     );
     observed = new Map(agg.map((r) => [r.relation, r]));
   } finally {
@@ -372,7 +408,7 @@ async function main() {
   });
 
   const roll = rollupFirings(rows, now, censusRows);
-  console.log(formatReport(rows, roll, now, { censusRows }));
+  console.log(formatReport(rows, roll, now, { censusRows, staleVersionRows }));
   if (roll.failing.length > 0) process.exitCode = 1;
 }
 

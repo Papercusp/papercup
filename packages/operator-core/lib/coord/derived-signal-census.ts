@@ -60,9 +60,30 @@
  */
 import { DERIVED_COUPLING_RELATIONS, type DerivedCoupling, type DerivedCouplingRelation } from './couplings';
 
-/** Schema tag on the emitted record, so a reader can tell a census apart from any
- *  other metadata and a future shape change is detectable rather than silent. */
-export const DERIVED_SIGNAL_CENSUS_VERSION = 1;
+/**
+ * Schema tag on the emitted record, so a reader can tell a census apart from any
+ * other metadata and a future shape change is detectable rather than silent.
+ *
+ * ⚠ BUMP THIS WHEN A FIELD'S MEANING CHANGES, not only when a field is added or
+ * removed. A rename reds something; a redefinition reds nothing, which is exactly
+ * why it is the case this tag has to catch.
+ *
+ * v2 (2026-08-11, coupling-signal-liveness-and-lifecycle-2026-08-11 P-001/P-007):
+ * `inputs` changed from the CANDIDATE POOL a leg would have examined to the
+ * BINDING input that actually decides whether it can emit. Same field, same type,
+ * opposite reading of the same run — a short-circuited derivation reported ~1023
+ * under v1 and reports 0 under v2. Nothing about a v1 row's SHAPE reveals that, so
+ * a window spanning the change silently averages two different measurements, and
+ * `check-derived-signal-firings.mjs` derives `starved` vs `armed-silent` from
+ * precisely this field. The probe therefore judges rows AT THE CURRENT VERSION
+ * ONLY (its `CENSUS_VERSION` must equal this) and reports older rows as excluded
+ * rather than folding them in.
+ *
+ * This bump is also what makes "re-read the census under the corrected instrument"
+ * (WI-38032) an executable instruction instead of an inference from deploy times:
+ * the corrected window is `v = 2`, readable straight off the row.
+ */
+export const DERIVED_SIGNAL_CENSUS_VERSION = 2;
 
 /** The key this census is published under inside `tool_invocations.metadata_json`. */
 export const DERIVED_SIGNAL_CENSUS_KEY = 'derivedSignals';

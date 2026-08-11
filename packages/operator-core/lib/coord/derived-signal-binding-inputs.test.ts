@@ -34,10 +34,14 @@
 // prettier-ignore
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore — pure JS gate script, no .d.ts; imported for its predicate only. Kept on ONE line: @ts-ignore suppresses only the line that follows it, so a multi-line import leaves the module specifier unguarded and TS7016 reds the build.
-import { judgeSignalFiring } from '../../../../scripts/check-derived-signal-firings.mjs';
+import { CENSUS_VERSION, judgeSignalFiring } from '../../../../scripts/check-derived-signal-firings.mjs';
 import { describe, expect, it } from 'vitest';
 import { deriveCouplings } from './coupling-derivation';
-import { DERIVED_SIGNAL_CENSUS_KEY, type DerivedSignalCensus } from './derived-signal-census';
+import {
+  DERIVED_SIGNAL_CENSUS_KEY,
+  DERIVED_SIGNAL_CENSUS_VERSION,
+  type DerivedSignalCensus,
+} from './derived-signal-census';
 
 const SELF = 'owner-self';
 
@@ -188,5 +192,28 @@ describe('the census key stays the one the probe reads', () => {
     // a renamed key leaves the census writing rows the probe never sees, which
     // presents as every relation reading `no-data` rather than as an error.
     expect(DERIVED_SIGNAL_CENSUS_KEY).toBe('derivedSignals');
+  });
+
+  /**
+   * The writer and the probe are in different languages and cannot import each
+   * other's constants, so this pin is the only thing holding them together.
+   *
+   * It guards the failure the `v` tag exists for and did NOT catch on its own
+   * first outing: P-001 REDEFINED `inputs` (candidate pool -> binding input) and
+   * left the version at 1, so 279 rows carrying two different meanings of the
+   * field became indistinguishable. A redefinition reds nothing by itself — that
+   * is exactly why the version has to move with it, and why the probe filters on
+   * it rather than trusting the 14-day window.
+   */
+  it('the probe interprets exactly the version the census writes', () => {
+    expect(CENSUS_VERSION).toBe(DERIVED_SIGNAL_CENSUS_VERSION);
+  });
+
+  it('CONTROL: the pin is a real comparison, not two references to one constant', () => {
+    // Without this, the assertion above would still pass if someone "fixed" a
+    // future mismatch by importing the same constant twice — which would pin the
+    // two files to each other in name only.
+    expect(DERIVED_SIGNAL_CENSUS_VERSION).toBe(2);
+    expect(CENSUS_VERSION).toBe(2);
   });
 });
