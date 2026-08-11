@@ -11,6 +11,7 @@ import { describe, it, expect, vi } from 'vitest';
 import {
   BUDGET,
   HARD_CAP,
+  ALLOW_OVER_BUDGET,
   promptWeight,
   budgetViolations,
   formatViolations,
@@ -65,9 +66,28 @@ describe('budgetViolations (the two-tier gate, mirrored)', () => {
     expect(v).toMatchObject({ hardCap: false, grandfathered: false, cutAtLeast: 44 });
   });
 
-  it('flags an over-hard-cap tool with the cut measured to the HARD CAP, not the budget', () => {
+  // EI-20186539588704262: the cut is measured to the tool's BINDING ceiling, which
+  // for a non-grandfathered tool is BUDGET — not HARD_CAP. Measuring to HARD_CAP
+  // under-reported the trim by exactly (HARD_CAP - BUDGET) chars, so an agent that
+  // followed the number literally landed at 1600 and was STILL over budget, i.e.
+  // still red. The two cases below pin both ceilings so neither can regress.
+  it('flags an over-hard-cap tool with the cut measured to its BINDING ceiling (BUDGET)', () => {
     const v = budgetViolations(weights).find((x) => x.name === 'over-cap')!;
-    expect(v).toMatchObject({ hardCap: true, cutAtLeast: 106 });
+    expect(v).toMatchObject({
+      hardCap: true,
+      grandfathered: false,
+      cutAtLeast: HARD_CAP + 106 - BUDGET,
+    });
+  });
+
+  it('measures a GRANDFATHERED tool to the HARD CAP — the only ceiling it must clear', () => {
+    ALLOW_OVER_BUDGET.add('over-cap');
+    try {
+      const v = budgetViolations(weights).find((x) => x.name === 'over-cap')!;
+      expect(v).toMatchObject({ hardCap: true, grandfathered: true, cutAtLeast: 106 });
+    } finally {
+      ALLOW_OVER_BUDGET.delete('over-cap');
+    }
   });
 
   it('a tool exactly at budget and a tiny tool are not violations', () => {
@@ -86,8 +106,19 @@ describe('formatViolations (self-serve — names the delta to trim, EI-10966 #2)
     const msg = formatViolations(budgetViolations([{ name: 'loop:checkpoint', weight: 1706 }]));
     expect(msg).toContain('loop:checkpoint');
     expect(msg).toContain('1706');
-    expect(msg).toContain('cut ≥106');
-    expect(msg).toContain(`${HARD_CAP}-char HARD CAP`);
+    expect(msg).toContain(`cut ≥${1706 - BUDGET}`);
+    expect(msg).toContain(`${BUDGET}-char budget`);
+  });
+
+  it('names the HARD CAP as the limit for a grandfathered tool', () => {
+    ALLOW_OVER_BUDGET.add('loop:checkpoint');
+    try {
+      const msg = formatViolations(budgetViolations([{ name: 'loop:checkpoint', weight: 1706 }]));
+      expect(msg).toContain(`cut ≥${1706 - HARD_CAP}`);
+      expect(msg).toContain(`${HARD_CAP}-char HARD CAP`);
+    } finally {
+      ALLOW_OVER_BUDGET.delete('loop:checkpoint');
+    }
   });
 
   it('is empty for no violations', () => {
