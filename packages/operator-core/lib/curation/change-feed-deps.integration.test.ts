@@ -170,11 +170,11 @@ describe('change-feed production readers (real PG)', () => {
 
     // The open issue resolves → the next regeneration includes it.
     await sql`
-      UPDATE harness_shared.engineer_issues
-         SET state = 'resolved',
+      UPDATE harness_shared.work_items
+         SET status = 'resolved',
              terminal_owner = 'bee-3',
              terminal_completion_ref = 'closed in PR #3'
-       WHERE workspace_id = ${WS} AND issue_id = 'EI-7'`;
+       WHERE workspace_id = ${WS} AND feature_id = 'EI-7' AND item_kind = 'bug'`;
     let ids = (await gatherCompletions(buildChangeFeedReaders())).map((e) => e.id);
     expect(ids).toContain('wi:EI-7');
 

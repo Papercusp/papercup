@@ -156,7 +156,7 @@ describe('claimNextWorkItem readiness — issue blocker (P-005, F2 cross-family 
     await blockByIssue('F-blocked', 'EI-1');
     expect(await wi.claimNextWorkItem({ harness: H, assignee: 'w1' })).toBeNull();
 
-    await db.sql`UPDATE harness_shared.engineer_issues SET state='resolved' WHERE issue_id='EI-1'`;
+    await wi.setWorkItemState('EI-1', 'resolved', { by: 'integration-test', completionRef: 'readiness' });
     expect((await wi.claimNextWorkItem({ harness: H, assignee: 'w1' }))?.id).toBe('F-blocked');
   });
 
@@ -211,7 +211,7 @@ describe('claimNextWorkItem readiness — edges from the PRODUCTION writer gate 
     await depsStore.syncWorkItemDepEdges(H, 'WI-blocked', ['WI-blocker']);
     expect(await wi.claimNextWorkItem({ harness: H, assignee: 'w1' })).toBeNull();
 
-    await db.sql`UPDATE harness_shared.engineer_issues SET state='resolved' WHERE issue_id='WI-blocker'`;
+    await wi.setWorkItemState('WI-blocker', 'resolved', { by: 'integration-test', completionRef: 'readiness' });
     expect((await wi.claimNextWorkItem({ harness: H, assignee: 'w1' }))?.id).toBe('WI-blocked');
   });
 

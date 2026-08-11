@@ -26,6 +26,7 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
+import { setIssueState } from '../issues-engineer';
 import { parseRepeatedToolErrorKey } from './improvements/watchdog-key-migration';
 
 /**
@@ -185,14 +186,13 @@ export function makePgStructuralVerifierDeps(
 
     async resolveItem(workspaceId: string, issueId: string, note: string): Promise<void> {
       const { sql } = getPg();
-      // Primary lifecycle = the top-level `state` column (what improvements:digest /
-      // issues:list read). Also reflect into payload.ideaLifecycle.state when present, so
-      // the lifecycle projection stays consistent. Append the note to `body` for audit.
-      // Guarded `state = 'open'` so a concurrent manual resolve never double-writes.
-      await sql`
+      // First append the verifier's durable explanation and lifecycle projection, guarded
+      // to the OPEN row. The terminal state itself MUST go through setIssueState: migration
+      // 797 makes the engineer_issues compatibility-view trigger refuse direct lifecycle
+      // flips, and setIssueState supplies the owner + completion reference gate.
+      const changed = await sql<{ issue_id: string }[]>`
         UPDATE harness_shared.engineer_issues
-        SET state = 'resolved',
-            body = body || ${'\n\n' + note},
+        SET body = body || ${'\n\n' + note},
             payload = CASE
               WHEN payload ? 'ideaLifecycle'
                 THEN jsonb_set(payload, '{ideaLifecycle,state}', '"resolved"'::jsonb)
@@ -200,7 +200,13 @@ export function makePgStructuralVerifierDeps(
             END,
             updated_at = NOW()
         WHERE workspace_id = ${workspaceId} AND issue_id = ${issueId} AND state = 'open'
+        RETURNING issue_id
       `;
+      if (!changed[0]) return;
+      const resolved = await setIssueState(issueId, 'resolved', 'structural-error-verifier', note);
+      if (!resolved) {
+        throw new Error(`structural-error-verifier: lifecycle write was not applied for ${workspaceId}/${issueId}`);
+      }
     },
   };
 }

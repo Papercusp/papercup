@@ -286,6 +286,15 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
       v_slug := CASE WHEN COALESCE(NEW.scope,'operator') LIKE 'harness:%' THEN substr(NEW.scope,9) ELSE 'operator:' || COALESCE(NULLIF(NEW.workspace_id,''),'default') END;
     END IF;
     v_ei := jsonb_strip_nulls(jsonb_build_object('scope',NEW.scope,'severity',NEW.severity,'source',NEW.source,'found_during',NEW.found_during,'linked_feature_id',NEW.linked_feature_id,'created_by',NEW.created_by,'assigned_by',NEW.assigned_by,'signal_origin',NEW.signal_origin));
+    -- EI-20092514168581881: lifecycle transitions belong to setIssueState /
+    -- work_items:set_state, which applies the completion-integrity gate. Keep this
+    -- hand-rolled fixture aligned with migration 797's live compatibility trigger.
+    IF TG_OP = 'UPDATE'
+       AND NEW.state IN ('resolved', 'closed', 'done', 'dropped')
+       AND COALESCE(OLD.state, '') NOT IN ('resolved', 'closed', 'done', 'dropped')
+    THEN
+      RAISE EXCEPTION 'engineer_issues terminal transition refused — use setIssueState/work_items:set_state or work_items:complete (issue %) ', NEW.issue_id;
+    END IF;
     IF TG_OP = 'INSERT' THEN
       -- agent-protocol-authority-semantics-2026-07-26 P-004 (migration 679): authority
       -- must be enumerated HERE too. This view is NOT auto-updatable — it writes through

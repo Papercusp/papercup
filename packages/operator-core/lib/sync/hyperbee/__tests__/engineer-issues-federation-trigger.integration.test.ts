@@ -200,7 +200,8 @@ describe('engineer_issues federation capture trigger (real PG, mig 197)', () => 
   it('a federated-field UPDATE (state) enqueues a put', async () => {
     await insertIssue({ issue_id: 'EI-50', scope: 'harness:papercup' });
     await db.sql`DELETE FROM harness_shared.substrate_outbox`;
-    await db.sql`UPDATE harness_shared.engineer_issues SET state = 'resolved', origin = 'local'
+    await db.sql`UPDATE harness_shared.engineer_issues
+      SET state = 'wip', origin = 'local'
       WHERE workspace_id = ${WS} AND issue_id = 'EI-50'`;
     const rows = await outbox();
     expect(rows).toHaveLength(1);

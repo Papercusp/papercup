@@ -1993,12 +1993,19 @@ export async function setIssueState(
   // lock_timeout so a stall now fails fast with a typed OrgTxnTimeoutError instead
   // — which the caller (work_items:complete/set_state) already catches and reports
   // as `stateError` (the completion record is never lost, EI-24).
+  //
+  // EI-20092514168581881 / migration 797: terminal issue transitions deliberately
+  // update the unified `work_items` BASE table here, not the `engineer_issues`
+  // compatibility view. The view is now a field-edit/read surface whose trigger
+  // refuses lifecycle transitions; keeping the gate above this direct base write
+  // preserves both genuine completion evidence and trusted skipCompletionGate
+  // system paths without adding a trigger bypass.
   const rows = await boundedOrgTxn(async (tx) => {
-    return isTerminal
-      ? await tx<IssueRowDb[]>`
-        UPDATE harness_shared.engineer_issues
-           SET state = ${state}, origin = 'local', updated_at = now(),
-               assignee = NULL, assigned_at = NULL,
+    if (isTerminal) {
+      const updated = await tx<{ feature_id: string }[]>`
+        UPDATE harness_shared.work_items
+           SET status = ${state}, origin = 'local', updated_ts = (extract(epoch FROM now()) * 1000)::bigint,
+               taken_by = NULL, taken_at = NULL,
                -- WI-6218: PRESERVE an existing completion record on a skipCompletionGate
                -- write. Those paths (watchdog auto-close, system sweep, restore) are
                -- documented as "not completions at all" and are deliberately exempt from the
@@ -2010,6 +2017,10 @@ export async function setIssueState(
                -- credit — the same reasoning that already forbids it writing a
                -- terminal_completion_ref (WI-1404). Preserve-when-present, so a fresh row
                -- keeps today's behaviour and no restore/sweep caller changes.
+               last_released_by = CASE WHEN taken_by IS NOT NULL AND taken_by <> ''
+                                       THEN taken_by ELSE last_released_by END,
+               last_released_at = CASE WHEN taken_by IS NOT NULL AND taken_by <> ''
+                                       THEN now() ELSE last_released_at END,
                terminal_owner = CASE WHEN ${Boolean(opts.skipCompletionGate)}
                                        THEN COALESCE(NULLIF(terminal_owner, ''), ${by ?? null})
                                      ELSE ${by ?? null} END,
@@ -2026,12 +2037,24 @@ export async function setIssueState(
                               THEN payload
                               ELSE jsonb_strip_nulls(COALESCE(payload, '{}'::jsonb) || ${evidencePayloadJson}::text::jsonb)
                          END
-         WHERE workspace_id = ${ws} AND issue_id = ${id}
-        RETURNING ${tx.unsafe(ISSUE_COLS)}`
-      : await tx<IssueRowDb[]>`
-        UPDATE harness_shared.engineer_issues SET state = ${state}, origin = 'local', updated_at = now()
-         WHERE workspace_id = ${ws} AND issue_id = ${id}
-        RETURNING ${tx.unsafe(ISSUE_COLS)}`;
+         WHERE workspace_id = ${ws} AND feature_id = ${id}
+           AND item_kind IN ('bug', 'change', 'task')
+           AND origin <> 'remote'
+        RETURNING feature_id`;
+      if (updated.length === 0) return [] as IssueRowDb[];
+      // Read through the view after the base write so the mapper receives the same
+      // stable issue-family shape as every other issue read, without invoking its
+      // lifecycle-rejecting INSTEAD OF UPDATE trigger.
+      return await tx<IssueRowDb[]>`
+        SELECT ${tx.unsafe(ISSUE_COLS)}
+          FROM harness_shared.engineer_issues
+         WHERE workspace_id = ${ws} AND issue_id = ${id} AND origin <> 'remote'
+         ORDER BY updated_at DESC NULLS LAST`;
+    }
+    return await tx<IssueRowDb[]>`
+      UPDATE harness_shared.engineer_issues SET state = ${state}, origin = 'local', updated_at = now()
+       WHERE workspace_id = ${ws} AND issue_id = ${id}
+      RETURNING ${tx.unsafe(ISSUE_COLS)}`;
   });
   if (!rows[0]) return null;
   const issue = toIssue(rows[0]);
