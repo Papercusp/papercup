@@ -147,6 +147,14 @@ const RANK = { INV: 100, REC: 200, PTR: 300, EXP: 900, INS: 1000 };
  * longer in the file are inert, and are reported as `departed` rather than quietly dropped.
  */
 const CLASSIFIED = {
+  // 2026-08-11, EI-20110999835069827 — the mutation-probe tier table and recipe are
+  // operative guidance, not corpus-only evidence. Keep the classification durable by
+  // content hash so a later projection/load cannot silently hide the promised remedy.
+  aba95162c5517792: 'INV', // tier table
+  '1b0502dc916158cf': 'INV', // mutation-probe overview
+  a15204c8f6cc5d8e: 'INV', // mutation-probe invocation
+  '1fc7000761ea9ac8': 'INV', // exit-code semantics
+  '65289b5b559eff0d': 'INV', // tier-3 sweep pause
   // 2026-08-10, WI-37636 — a peer anchored three gate-forensics greps on a field only a real
   // machine line carries, so vitest test NAMES stop matching them as impostors. All three code
   // blocks and both new warnings sit inside the L1085-1183 [INS] band and inherit prose from the

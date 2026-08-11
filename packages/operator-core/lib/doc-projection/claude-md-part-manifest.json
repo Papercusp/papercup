@@ -11,12 +11,12 @@
  "summary": {
   "byKind": {
    "invariant": {
-    "parts": 101,
-    "chars": 64941
+    "parts": 106,
+    "chars": 66742
    },
    "prose": {
-    "parts": 137,
-    "chars": 92488
+    "parts": 132,
+    "chars": 90687
    },
    "pointer": {
     "parts": 7,
@@ -27,7 +27,7 @@
     "chars": 3734
    }
   },
-  "projectedChars": 71477,
+  "projectedChars": 73278,
   "totalParts": 253,
   "needsReview": 0
  },
@@ -3772,10 +3772,12 @@
   {
    "partKey": "proving-a-guard-is-falsifiab-your-subject-how-to",
    "ordinal": 236,
-   "kind": "prose",
-   "clientScope": [],
+   "kind": "invariant",
+   "clientScope": [
+    "all"
+   ],
    "targetSection": "Proving a guard is falsifiable — never mutate the shared tree to do it",
-   "projectRank": 1000,
+   "projectRank": 100,
    "expiring": false,
    "blockSha": "aba95162c5517792",
    "chars": 777,
@@ -3787,10 +3789,12 @@
   {
    "partKey": "proving-a-guard-is-falsifiab-scriptsmutation-pro",
    "ordinal": 237,
-   "kind": "prose",
-   "clientScope": [],
+   "kind": "invariant",
+   "clientScope": [
+    "all"
+   ],
    "targetSection": "Proving a guard is falsifiable — never mutate the shared tree to do it",
-   "projectRank": 1000,
+   "projectRank": 100,
    "expiring": false,
    "blockSha": "1b0502dc916158cf",
    "chars": 352,
@@ -3802,10 +3806,12 @@
   {
    "partKey": "proving-a-guard-is-falsifiab-bash-2",
    "ordinal": 238,
-   "kind": "prose",
-   "clientScope": [],
+   "kind": "invariant",
+   "clientScope": [
+    "all"
+   ],
    "targetSection": "Proving a guard is falsifiable — never mutate the shared tree to do it",
-   "projectRank": 1000,
+   "projectRank": 100,
    "expiring": false,
    "blockSha": "a15204c8f6cc5d8e",
    "chars": 236,
@@ -3817,10 +3823,12 @@
   {
    "partKey": "proving-a-guard-is-falsifiab-exit-codes-0-mutant",
    "ordinal": 239,
-   "kind": "prose",
-   "clientScope": [],
+   "kind": "invariant",
+   "clientScope": [
+    "all"
+   ],
    "targetSection": "Proving a guard is falsifiable — never mutate the shared tree to do it",
-   "projectRank": 1000,
+   "projectRank": 100,
    "expiring": false,
    "blockSha": "1fc7000761ea9ac8",
    "chars": 305,
@@ -3832,10 +3840,12 @@
   {
    "partKey": "proving-a-guard-is-falsifiab-for-tier-3-pause-th",
    "ordinal": 240,
-   "kind": "prose",
-   "clientScope": [],
+   "kind": "invariant",
+   "clientScope": [
+    "all"
+   ],
    "targetSection": "Proving a guard is falsifiable — never mutate the shared tree to do it",
-   "projectRank": 1000,
+   "projectRank": 100,
    "expiring": false,
    "blockSha": "65289b5b559eff0d",
    "chars": 131,

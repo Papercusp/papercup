@@ -4,7 +4,7 @@ import { createHash } from 'node:crypto';
 // multi-line import the TS7016 lands on the module-specifier line at the bottom — so the
 // directive goes unused (TS2578) AND the real error still fires (EI-19389216343173748).
 // @ts-expect-error — .mjs script, no type declarations by design (it is a scripts/ tool).
-import { assemble, budgetMatrix, CHARS_PER_TOKEN_KNOWN_MODEL, CHARS_PER_TOKEN_UNKNOWN_MODEL, cutOrder, lastProjectionShaFor, MAX_SPILL_ENTRIES, MEMORY_WARN_FLOOR_CHARS, memoryWarningThreshold, overwriteVerdict, partTargetsClient, PREAMBLE, projectClient, projectionRecord, readOrder, sourceShaSeed, SPILL_SECTION, verifyBodiesPresent } from '../../../../scripts/project-doc-parts.mjs';
+import { assemble, budgetMatrix, CHARS_PER_TOKEN_KNOWN_MODEL, CHARS_PER_TOKEN_UNKNOWN_MODEL, cutOrder, danglingProjectionWarnings, lastProjectionShaFor, MAX_SPILL_ENTRIES, MEMORY_WARN_FLOOR_CHARS, memoryWarningThreshold, overwriteVerdict, partTargetsClient, PREAMBLE, projectClient, projectionRecord, readOrder, sourceShaSeed, SPILL_SECTION, verifyBodiesPresent } from '../../../../scripts/project-doc-parts.mjs';
 
 /**
  * P-005 — projecting `harness_doc_parts` into the per-client files.
@@ -129,6 +129,32 @@ describe('composition', () => {
     const parts = [part({ body: 'kept rule' }), part({ body: 'lost rule' })];
     const corrupted = assemble([parts[0]]);
     expect(verifyBodiesPresent(corrupted, parts)).toEqual([parts[1].part_key]);
+  });
+});
+
+describe('dangling projection warnings', () => {
+  it('warns when a colon-terminated emitted part has no payload in its section', () => {
+    const warnings = danglingProjectionWarnings([
+      part({ ordinal: 1, target_section: 'Alpha', body: 'Pick the lowest tier that fits:' }),
+      part({ ordinal: 2, target_section: 'Beta', body: 'next section' }),
+    ]);
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('p-');
+    expect(warnings[0]).toContain("ends with ':'");
+  });
+
+  it('stays quiet when the following emitted part remains in the same section', () => {
+    expect(danglingProjectionWarnings([
+      part({ ordinal: 1, target_section: 'Alpha', body: 'Pick the lowest tier that fits:  ' }),
+      part({ ordinal: 2, target_section: 'Alpha', body: 'the tier table' }),
+    ])).toEqual([]);
+  });
+
+  it('is exposed by projectClient after budget cuts choose the emitted rows', () => {
+    const out = projectClient([
+      part({ ordinal: 1, target_section: 'Alpha', body: 'Pick the lowest tier that fits:' }),
+    ], { ...CLIENT, budget: 100_000 });
+    expect(out.warnings).toHaveLength(1);
   });
 });
 

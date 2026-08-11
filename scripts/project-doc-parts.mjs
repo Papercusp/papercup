@@ -340,7 +340,7 @@ export function projectClient(allParts, { client, docId, file, reader, budget, b
 
   let text = assemble(mine, { banner: head });
   if (text.length <= budget) {
-    return { text, kept: mine, dropped: [], budget, overBudget: false };
+    return { text, kept: mine, dropped: [], warnings: danglingProjectionWarnings(mine), budget, overBudget: false };
   }
 
   const candidates = [...mine].sort(cutOrder);
@@ -352,7 +352,15 @@ export function projectClient(allParts, { client, docId, file, reader, budget, b
     const spill = spillBlock([...dropped].sort(readOrder), { budget, docId, client });
     text = assemble(kept, { banner: head, spill });
     if (text.length <= budget) {
-      return { text, kept, dropped: [...dropped].sort(readOrder), budget, overBudget: false };
+      const keptInOrder = kept.sort(readOrder);
+      return {
+        text,
+        kept: keptInOrder,
+        dropped: [...dropped].sort(readOrder),
+        warnings: danglingProjectionWarnings(keptInOrder),
+        budget,
+        overBudget: false,
+      };
     }
   }
 
@@ -378,6 +386,31 @@ export function verifyBodiesPresent(text, kept) {
   const missing = [];
   for (const p of kept) if (!text.includes(p.body)) missing.push(p.part_key);
   return missing;
+}
+
+/**
+ * Warn when projection leaves an imperative-looking part dangling at the end of its section.
+ *
+ * A colon-terminated part is commonly a promise that its next part supplies the payload (for
+ * example, a table or a recipe). If the next emitted row changes section — or does not exist —
+ * the reader sees the promise and none of the promised content. This is deliberately a warning,
+ * not a failed projection: a short section can end in a colon for a legitimate reason, but the
+ * shape must be visible at build time instead of silently disappearing.
+ */
+export function danglingProjectionWarnings(parts) {
+  const ordered = [...parts].sort(readOrder);
+  const warnings = [];
+  for (let i = 0; i < ordered.length; i++) {
+    const current = ordered[i];
+    if (!current.body.trimEnd().endsWith(':')) continue;
+    const next = ordered[i + 1];
+    if (next && next.target_section === current.target_section) continue;
+    warnings.push(
+      `${current.part_key}: emitted part ends with ':' with no following emitted part in section ` +
+        `${JSON.stringify(current.target_section)}`,
+    );
+  }
+  return warnings;
 }
 
 /**
@@ -665,6 +698,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
       if (out.dropped.length) {
         console.log(`    ⚠ cut: ${out.dropped.map((d) => d.part_key).slice(0, 8).join(', ')}${out.dropped.length > 8 ? ` (+${out.dropped.length - 8})` : ''}`);
       }
+      for (const warning of out.warnings) console.warn(`    ⚠ projection warning: ${warning}`);
 
       // A symlink has no content of its own to protect — retiring it destroys nothing,
       // because its target is the OTHER client's file, which is written separately.
