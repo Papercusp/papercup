@@ -1844,9 +1844,11 @@ const handler = createMcpHandler(
           }
           // scoped-superuser-workspace-clamp (P-008, security half): a scoped session
           // may NOT use the harness:'all'/'*' GLOBAL escape — resolvePlanScope maps it
-          // to PAPERCUSP_WORKSPACE_ID/papercup, a cross-scope read. Reject it; the
-          // session names a concrete harness in scope. (The nicer "re-resolve 'all' to
-          // the active workspace's plans" is F-A1 in workspace-data-isolation-leaks.)
+          // to PAPERCUSP_WORKSPACE_ID/papercup, a cross-scope read. Re-resolve only
+          // the two workspace-safe operations that have an in-workspace meaning:
+          // plans:list reads this workspace's plans, and loop:arm resolves this
+          // workspace's formal home pot before materializing its concrete routine.
+          // Every other tool still rejects the global escape.
           if (scopedSuperuserClamp) {
             const ah =
               args && typeof args === 'object' && typeof (args as Record<string, unknown>).harness === 'string'
@@ -1854,21 +1856,23 @@ const handler = createMcpHandler(
                 : '';
             if (ah === 'all' || ah === '*') {
               // F-A1 (leaks D-4 / clamp D-002): for a WORKSPACE-scoped session
-              // (ctx.harnessSlug '*', not pinned to a hive), harness:'all'/'*' on the
-              // plans LIST read must mean "THIS workspace's plans" — NOT the
-              // PAPERCUSP_WORKSPACE_ID papercup global (a cross-scope read). RE-RESOLVE
-              // it to a workspace-wide read of the session's OWN workspace: drop the
-              // wildcard harness + set workspaceWide, so list.ts reads
-              // activeWorkspaceId() plans only (the dispatch tx is pinned to
-              // ctx.workspaceId → it cannot cross out; the resolvePlanScope global
-              // escape is never reached). Scoped narrowly: only plans:list, only the
-              // workspace tier — a HIVE-pinned session's 'all' MUST fall through to the
-              // hive-tier reject below (it cannot see sibling-hive plans), and any
-              // OTHER tool's 'all'/'*' has no safe in-workspace meaning → REJECTED.
-              if (toolName === 'plans:list' && spawnRes.ctx.harnessSlug === '*' && args && typeof args === 'object') {
+              // (ctx.harnessSlug '*', not pinned to a hive), harness:'all'/'*' on
+              // plans:list means "THIS workspace's plans" and loop:arm means
+              // "this workspace's formal home pot" — never the global
+              // PAPERCUSP_WORKSPACE_ID/papercup escape. Drop the wildcard before
+              // dispatch; each handler then applies its own concrete workspace
+              // resolution. Scoped narrowly: only these tools, only the workspace
+              // tier — a HIVE-pinned session's global scope still rejects, and any
+              // OTHER tool's 'all'/'*' has no safe in-workspace meaning.
+              if (
+                (toolName === 'plans:list' || toolName === 'loop:arm') &&
+                spawnRes.ctx.harnessSlug === '*' &&
+                args &&
+                typeof args === 'object'
+              ) {
                 const rest = { ...(args as Record<string, unknown>) };
                 delete rest.harness;
-                args = { ...rest, workspaceWide: true };
+                args = toolName === 'plans:list' ? { ...rest, workspaceWide: true } : rest;
               } else {
                 return {
                   isError: true,

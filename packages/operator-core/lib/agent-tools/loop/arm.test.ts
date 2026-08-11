@@ -44,6 +44,7 @@ vi.mock('../coordination/identity', () => ({
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-1') }));
 vi.mock('../../pot/wake', () => ({ resolvePotHomeSlug: vi.fn(() => 'papercusp') }));
+vi.mock('../pot/_resolve', () => ({ resolveHomePotSlug: vi.fn(async () => 'papercusp') }));
 vi.mock('../../harness/routines/loop', () => ({
   LOOP_INTERVAL_FLOOR_SEC: 60,
   buildLoopWakePrompt: vi.fn(() => 'kickoff-prompt'),
@@ -104,6 +105,7 @@ import { claimWorkItem, classifyClaimFailure, getWorkItem } from '../../work-ite
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
 import { probeWakeReachability } from '../../events/await/wake-reachability';
 import { findLiveHost } from '../../events/await/psu-pty-discovery';
+import { resolveHomePotSlug } from '../pot/_resolve';
 import { decideDefaultCarry, computeLoopOverwriteNote, resolveBlockedBackoff } from './arm';
 
 const materializeM = vi.mocked(materializeLoop);
@@ -116,6 +118,7 @@ const getWiM = vi.mocked(getWorkItem);
 const armWakeM = vi.mocked(armInboxWake);
 const probeM = vi.mocked(probeWakeReachability);
 const findHostM = vi.mocked(findLiveHost);
+const homePotM = vi.mocked(resolveHomePotSlug);
 const wakeAwaitsM = vi.mocked((await import('../../events/await/store')).listWakeAwaitsForSubscriber);
 // EI-19966210024116714: hoisted to module scope — `await import` is illegal inside a
 // (non-async) describe callback, and this file's describes are synchronous.
@@ -140,6 +143,7 @@ beforeEach(() => {
   priorLoopM.mockResolvedValue(null as never);
   // EI-19447204017443244: default no live wake-awaits (the 'none' rendering).
   wakeAwaitsM.mockResolvedValue([] as never);
+  homePotM.mockResolvedValue('papercusp');
 });
 
 describe('loop:arm — WI-1471 ownerId override', () => {
@@ -265,9 +269,24 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
   it('fails loud with no_harness when neither args.harness nor ctx.harnessSlug nor a home hive resolves', async () => {
     const { resolvePotHomeSlug } = await import('../../pot/wake');
     vi.mocked(resolvePotHomeSlug).mockReturnValueOnce(null as never);
+    homePotM.mockResolvedValueOnce(null);
     const out = await tool.handler({ intervalSec: 120, goal: 'g' } as never, {} as never) as Out;
     const b = body(out);
     expect(b).toMatchObject({ ok: false, error: 'no_harness' });
+  });
+
+  it('EI-20185529721601434: resolves a workspace-scoped wildcard session to its formal home pot', async () => {
+    const { resolvePotHomeSlug } = await import('../../pot/wake');
+    vi.mocked(resolvePotHomeSlug).mockReturnValue(null as never);
+    homePotM.mockResolvedValueOnce('workspace-home');
+    const out = await tool.handler(
+      { intervalSec: 120, goal: 'g' } as never,
+      { harnessSlug: '*', workspaceId: 'ws-1' } as never,
+    ) as Out;
+    const b = body(out);
+    expect(homePotM).toHaveBeenCalledWith('ws-1');
+    expect(b).toMatchObject({ ok: true, loop: { harness: 'workspace-home' } });
+    expect(buildPromptM).toHaveBeenCalledWith(expect.objectContaining({ harness: 'workspace-home' }));
   });
 
   // EI-7734 regression: every superuser/operator-scope session sets ctx.harnessSlug='*'

@@ -1089,6 +1089,19 @@ describe('scoped-superuser-workspace-clamp', () => {
     expect(textOf(res)).not.toContain('harness_forbidden');
   });
 
+  it('flag ON / F-A1: harness:\'all\' on loop:arm is re-resolved to the workspace home pot', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool(
+      'loop:arm',
+      { harness: 'all', intervalSec: 60, goal: 'transport gating probe' },
+      scoped('ws-test'),
+    );
+    // The handler may be disabled or have no formal home in this mocked workspace;
+    // the transport contract under test is that it receives the call instead of
+    // rejecting the documented workspace-global scope at the clamp.
+    expect(textOf(res)).not.toContain('harness_forbidden');
+  });
+
   it('flag ON / F-A1: the re-resolution is plans:list-ONLY — harness:\'all\' on ANOTHER plans verb (plans:get) still rejects', async () => {
     h.scopedClampFlag.value = true;
     const res = await callTool('plans:get', { harness: 'all', slug: 'x' }, scoped('ws-test'));

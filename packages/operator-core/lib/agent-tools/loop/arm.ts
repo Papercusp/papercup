@@ -26,6 +26,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { resolvePotHomeSlug } from '../../pot/wake';
+import { resolveHomePotSlug } from '../pot/_resolve';
 import { isParkedNextFire } from '@papercusp/db-org';
 import {
   materializeLoop,
@@ -415,7 +416,9 @@ export default defineTool({
       .string()
       .max(120)
       .optional()
-      .describe('Harness the loop is scoped to / namespaced under (default: your session harness).'),
+      .describe(
+        'Harness the loop is scoped to / namespaced under. Omit it (or use the workspace-global all/* scope) to resolve the workspace home pot; otherwise defaults to your concrete session harness.',
+      ),
     wakePrompt: softText(4000)
       .optional()
       .describe(
@@ -514,7 +517,31 @@ export default defineTool({
     // iteration's work_item. Same class of bug as the 2026-07-01 `pot:wake` 404
     // (installSlug='*') that resolvePotHomeSlug's '*'-skip was written to prevent —
     // this call site just wasn't routed through it.
-    const harness = resolvePotHomeSlug(args.harness, ctx.harnessSlug);
+    // Workspace-scoped operator sessions carry the '*' sentinel rather than a
+    // concrete harness. A durable loop cannot be installed under that sentinel:
+    // every wake must carry a real harness for coord:orient/scheduler:get_next.
+    // Resolve the workspace's formal home pot in that case, so callers do not
+    // have to discover and repeat a concrete slug (EI-20185529721601434). Keep
+    // the synchronous resolver as a fallback for legacy env-only sessions and
+    // explicit concrete selectors.
+    const isConcreteHarness = (value?: string | null): boolean => {
+      const trimmed = value?.trim().toLowerCase();
+      return Boolean(trimmed && trimmed !== '*' && trimmed !== 'all');
+    };
+    const onlyWorkspaceScope = !isConcreteHarness(args.harness) && !isConcreteHarness(ctx.harnessSlug);
+    let harness: string | null = null;
+    if (onlyWorkspaceScope) {
+      try {
+        const home = await resolveHomePotSlug(workspaceId);
+        harness = resolvePotHomeSlug(home, undefined);
+      } catch {
+        // Home-pot discovery is a convenience for workspace-scoped callers. If
+        // the registry is temporarily unreadable, preserve the older env/ctx
+        // fallback and let the existing no_harness response explain the gap.
+        harness = null;
+      }
+    }
+    harness ??= resolvePotHomeSlug(args.harness, ctx.harnessSlug);
     if (!harness) {
       return {
         content: [

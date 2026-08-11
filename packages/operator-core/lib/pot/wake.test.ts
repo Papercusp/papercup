@@ -165,16 +165,20 @@ describe('resolvePotHomeSlug', () => {
     delete process.env.PAPERCUSP_POT_HOME_SLUG;
   });
 
-  it('treats a wildcard "*" as NOT a concrete pot home — skips it so the chain falls through (2026-07-01 404 fix)', () => {
+  it('treats wildcard "*" and global "all" as NOT concrete pot homes — skips them so the chain falls through (2026-07-01 404 fix)', () => {
     delete process.env.PAPERCUSP_POT_HOME_SLUG;
-    // '*' at any level is skipped — before this fix it fired the launch with installSlug '*' → 404 "unknown project".
+    // Global sentinels at any level are skipped — before this fix '*' fired the launch with installSlug '*' → 404 "unknown project".
     expect(resolvePotHomeSlug('*')).toBe(null);
     expect(resolvePotHomeSlug(undefined, '*')).toBe(null);
     expect(resolvePotHomeSlug('  *  ', undefined)).toBe(null);
+    expect(resolvePotHomeSlug('all')).toBe(null);
+    expect(resolvePotHomeSlug(undefined, 'ALL')).toBe(null);
     // An explicit/ctx '*' falls THROUGH to a real slug lower in the chain rather than 404-ing.
     expect(resolvePotHomeSlug('*', 'papercusp')).toBe('papercusp');
+    expect(resolvePotHomeSlug('all', 'papercusp')).toBe('papercusp');
     process.env.PAPERCUSP_POT_HOME_SLUG = 'papercusp';
     expect(resolvePotHomeSlug(undefined, '*')).toBe('papercusp');
+    expect(resolvePotHomeSlug(undefined, 'all')).toBe('papercusp');
     delete process.env.PAPERCUSP_POT_HOME_SLUG;
   });
 });

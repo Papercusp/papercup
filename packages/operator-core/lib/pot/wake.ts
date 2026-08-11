@@ -590,13 +590,13 @@ export async function recordPotWake(workspaceId?: string): Promise<void> {
  *  env default. The pot is workspace-level but the invoke route is
  *  harness-scoped, so a home slug must be named somewhere. */
 export function resolvePotHomeSlug(explicit?: string | null, ctxSlug?: string | null): string | null {
-  // '*' (wildcard / all-harnesses scope) is NOT a concrete pot home — SKIP it at each level so the chain falls
+  // '*' / 'all' (wildcard / all-harnesses scope) are NOT concrete pot homes — SKIP them at each level so the chain falls
   // through to a real slug (env home) or null, instead of firing the pot launch with installSlug '*', which the
   // invoke route's resolveProject can't find → HTTP 404 "unknown project" (2026-07-01: an operator-scoped
   // `pot:wake` with no explicit harness inherited ctx.harnessSlug='*' and 404'd instead of resolving/erroring).
   const concrete = (s?: string | null): string | undefined => {
     const t = s?.trim();
-    return t && t !== '*' ? t : undefined;
+    return t && t !== '*' && t.toLowerCase() !== 'all' ? t : undefined;
   };
   const slug = concrete(explicit) ?? concrete(ctxSlug) ?? concrete(process.env.PAPERCUSP_POT_HOME_SLUG) ?? null;
   return slug ? canonicalHarnessSlug(slug) : null;
