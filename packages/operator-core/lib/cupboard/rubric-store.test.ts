@@ -334,6 +334,10 @@ describe('the REAL bundled first-party set (in-repo rubrics/)', () => {
       'experiment-instance-quality',
       'experiment-replay-quality',
       'fleet-execution-health',
+      'plan-class-bugfix',
+      'plan-class-feature-ship',
+      'plan-class-investigation',
+      'plan-class-migration',
       'pot-coordination-health',
       'su-agent-behavior',
     ]);
