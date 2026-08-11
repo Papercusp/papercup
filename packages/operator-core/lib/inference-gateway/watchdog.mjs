@@ -62,6 +62,8 @@ let unreachableSince = 0;
 let lastRestart = 0;
 const restartTimes = []; // epoch ms of recent restarts (rolling 1h window for the circuit breaker)
 const deadProxyLastAlert = new Map(); // accountId -> epoch ms last DEAD-PROXY alert (per-account anti-spam debounce)
+let egressPoolDownLastAlert = 0; // epoch ms of the last EGRESS-POOL-DOWN alert (same debounce window)
+let egressPoolWasDown = false; // edge-trigger latch, so a standing outage logs once rather than every poll
 
 let logDirEnsured = false;
 const log = (m) => {
@@ -226,6 +228,27 @@ async function poll() {
     }
   } catch (e) {
     log(`dead-proxy check error (non-fatal): ${e.message}`);
+  }
+
+  // Pool-wide EGRESS-DOWN alert (EI-18664933641195210). Same always-on-observability contract as the
+  // per-account check above: durable log only, never touches the restart path, isolated in try/catch,
+  // and debounced on the same REALERT window. Edge-logged — it fires on the transition INTO the outage
+  // and on recovery, so a standing outage does not re-spam the durable log.
+  try {
+    const down = egressPoolDownAlert(s);
+    if (down && now - egressPoolDownLastAlert >= DEADPROXY_REALERT_MS) {
+      egressPoolDownLastAlert = now;
+      egressPoolWasDown = true;
+      log(
+        `EGRESS-POOL-DOWN: all ${down.totalProxyEntries} proxy egress entries are unreachable — every proxy-egress account has failed over to the box's bare IP. Rotation HIDES this from the per-account DEAD-PROXY check (the request still succeeds via box-direct), so this is the only signal that fires. Restore/replace the egress proxies.`,
+      );
+    } else if (!down && egressPoolWasDown) {
+      egressPoolWasDown = false;
+      egressPoolDownLastAlert = 0; // a real recovery re-arms the alert immediately
+      log('EGRESS-POOL-RECOVERED: at least one proxy egress entry is reachable again (proven by a real transport success).');
+    }
+  } catch (e) {
+    log(`egress-pool-down check error (non-fatal): ${e.message}`);
   }
 }
 

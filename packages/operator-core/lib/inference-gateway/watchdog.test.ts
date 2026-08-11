@@ -9,8 +9,11 @@ let deadProxyAlerts: (
   s: unknown,
   opts?: { minAttempts?: number; rateThreshold?: number },
 ) => Array<{ accountId: string; rate: number; attempts: number; fails: number }>;
+let egressPoolDownAlert: (
+  s: unknown,
+) => { totalProxyEntries: number; reachableProxyEntries: number } | null;
 beforeAll(async () => {
-  ({ externalStallReason, deadProxyAlerts } = await import('./watchdog.mjs'));
+  ({ externalStallReason, deadProxyAlerts, egressPoolDownAlert } = await import('./watchdog.mjs'));
 });
 
 /**
@@ -120,5 +123,52 @@ describe('gateway watchdog — deadProxyAlerts (proactive dead-proxy detection)'
     expect(deadProxyAlerts(undefined)).toEqual([]);
     expect(deadProxyAlerts({})).toEqual([]);
     expect(deadProxyAlerts({ egressFailRateByAccount: { x: 0.9 } })).toEqual([]); // no attempts map → 0 attempts → filtered
+  });
+});
+
+/**
+ * EI-18664933641195210: the pool-wide egress-down signal. `deadProxyAlerts` above keys on the PER-ACCOUNT
+ * fail rate, which rotation structurally hides — an account whose pool is [deadProxy, {}] rotates onto
+ * box-direct and the request SUCCEEDS, so its account rate stays near zero while its proxy is 100% dead.
+ * Measured: a 16-day three-proxy outage produced ZERO DEAD-PROXY lines for exactly this reason.
+ */
+describe('gateway watchdog — egressPoolDownAlert (pool-wide egress outage)', () => {
+  const health = (h: unknown) => ({ egressProxyHealth: h });
+
+  it('fires when every configured proxy entry is unreachable', () => {
+    expect(egressPoolDownAlert(health({ totalProxyEntries: 4, reachableProxyEntries: 0, allDown: true, configured: true })))
+      .toEqual({ totalProxyEntries: 4, reachableProxyEntries: 0 });
+  });
+
+  it('stays silent while ANY proxy entry is still reachable', () => {
+    expect(egressPoolDownAlert(health({ totalProxyEntries: 4, reachableProxyEntries: 1, allDown: false, configured: true }))).toBeNull();
+  });
+
+  it('stays silent when no proxy egress is configured at all (EI-19962845612125031)', () => {
+    // configured:false means there is no proxy PATH to be down — allDown is vacuously false, and alerting
+    // here would page on a box-direct-only deployment that is working exactly as intended.
+    expect(egressPoolDownAlert(health({ totalProxyEntries: 0, reachableProxyEntries: 0, allDown: false, configured: false }))).toBeNull();
+    // ...and must not fire even if a malformed payload claims allDown while reporting no proxy path.
+    expect(egressPoolDownAlert(health({ totalProxyEntries: 0, reachableProxyEntries: 0, allDown: true, configured: false }))).toBeNull();
+  });
+
+  it('would have caught the outage the per-account check missed (the regression this exists for)', () => {
+    // The live 2026-08-11 shape: rotation kept every ACCOUNT's fail rate under the 50%/20-attempt floor,
+    // so deadProxyAlerts saw nothing — while all 4 proxy entries were cooled and unproven.
+    const live = {
+      egressFailRateByAccount: { aviynw: 0.12, aviynw3: 0.1, 'avistorewolf.com': 0.14, aviynw10: 0.09 },
+      egressAttemptsByAccount: { aviynw: 80, aviynw3: 80, 'avistorewolf.com': 80, aviynw10: 80 },
+      egressFailsByAccount: { aviynw: 10, aviynw3: 8, 'avistorewolf.com': 11, aviynw10: 7 },
+      egressProxyHealth: { totalProxyEntries: 4, reachableProxyEntries: 0, allDown: true, configured: true },
+    };
+    expect(deadProxyAlerts(live), 'per-account rates are all under the floor — this is the blind spot').toEqual([]);
+    expect(egressPoolDownAlert(live), 'the pool-wide signal still fires').toEqual({ totalProxyEntries: 4, reachableProxyEntries: 0 });
+  });
+
+  it('is robust to a missing / partial / undefined /stats payload', () => {
+    expect(egressPoolDownAlert(undefined)).toBeNull();
+    expect(egressPoolDownAlert({})).toBeNull();
+    expect(egressPoolDownAlert(health(undefined))).toBeNull();
+    expect(egressPoolDownAlert(health({ allDown: true }))).toBeNull(); // no `configured` → not a judgeable proxy path
   });
 });
