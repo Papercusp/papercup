@@ -915,9 +915,9 @@ describe('fleet:launch-on-plan handler — member baseline wiring', () => {
   });
 
   // Regression safety: a genuine (short, single-line) path that just happens not to
-  // exist must still be treated as a path and still report the old read error —
-  // the fix must not swallow real path-read failures.
-  it('a short single-line nonexistent PATH is still treated as a path and reports the old read error', async () => {
+  // exist must still be treated as a path and must refuse before any irreversible
+  // terminal spawn — the fix must not swallow real path-read failures.
+  it('a short single-line nonexistent PATH refuses before opening any terminal', async () => {
     spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 123 });
     const res = await tool.handler(
       {
@@ -929,10 +929,10 @@ describe('fleet:launch-on-plan handler — member baseline wiring', () => {
       } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
-    expect(payload.ok).toBe(true);
-    expect(payload.briefReadError).toMatch(/Could not read launchContext/);
-    expect(payload.opened).toHaveLength(1);
+    expect((res as any).isError).toBe(true);
+    expect((res as any).content[0].text).toMatch(/Could not read launchContext/);
+    expect((res as any).content[0].text).toMatch(/No members were opened/);
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
   });
 });
 
@@ -1062,7 +1062,7 @@ describe('fleet:launch-on-plan handler — EI-8985 per-member launch-context bri
     expect(composed2).not.toContain('UI polish pass');
   });
 
-  it('a per-member unreadable file falls that ONE member back to the shared brief, without failing the launch', async () => {
+  it('a per-member unreadable file refuses before opening any terminal', async () => {
     let call = 0;
     spawnConsoleMock.mockImplementation(() => ({ status: 'ok', terminal: `term-${++call}`, pid: 100 + call }));
     const res = await tool.handler(
@@ -1075,14 +1075,28 @@ describe('fleet:launch-on-plan handler — EI-8985 per-member launch-context bri
       } as never,
       {} as never,
     );
-    const payload = JSON.parse((res as any).content[0].text);
-    expect(payload.ok).toBe(true);
-    expect(payload.opened).toHaveLength(2);
-    expect(payload.briefReadError).toMatch(/member 1:.*could not read/);
-    // member 2's own brief still landed uncorrupted.
-    const fs = require('node:fs');
-    const composed2 = fs.readFileSync(payload.perMemberLaunchContextPaths[1], 'utf8');
-    expect(composed2).toContain('UI polish pass');
+    expect((res as any).isError).toBe(true);
+    expect((res as any).content[0].text).toMatch(/member 1:.*could not read/);
+    expect((res as any).content[0].text).toMatch(/No members were opened/);
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
+  });
+
+  it('a members[i].launchContext path is preflighted and refuses before opening any terminal', async () => {
+    spawnConsoleMock.mockReturnValue({ status: 'ok', terminal: 'term-1', pid: 101 });
+    const res = await tool.handler(
+      {
+        name: 'Declarative Brief Fleet',
+        plan: 'my-plan',
+        harness: 'papercusp',
+        count: 1,
+        members: [{ launchContext: `${tmpDir}/does-not-exist.md` }],
+      } as never,
+      {} as never,
+    );
+    expect((res as any).isError).toBe(true);
+    expect((res as any).content[0].text).toMatch(/members\[0\]\.launchContext/);
+    expect((res as any).content[0].text).toMatch(/No members were opened/);
+    expect(spawnConsoleMock).not.toHaveBeenCalled();
   });
 });
 

@@ -2053,8 +2053,19 @@ export default defineTool({
     // BASELINE + (optionally) the leader's per-fleet brief below it. Written to the
     // workspace's launch-context dir (NON-repo — never the staging tree, which
     // git-sync would try to commit) and passed to psu as each member's appended
-    // system prompt. Resilient: any read/write failure falls back to the raw
-    // launchContext so a launch never dies on a context-compose hiccup.
+    // system prompt. An unreadable caller-supplied path is a preflight failure:
+    // launching members with a materially different brief is worse than refusing
+    // before any irreversible terminal spawn. Compose/write failures still fall
+    // back to the raw launchContext because those do not make the supplied path
+    // unreadable.
+    const refuseUnreadableLaunchContext = async (message: string) => {
+      try {
+        await releaseFleetLaunchSlot({ workspaceId, fleetSlug, at: slot.at });
+      } catch {
+        /* the guard self-heals when the window elapses */
+      }
+      return err(`${message} No members were opened.`);
+    };
     let effectiveLaunchContext = args.launchContext?.trim() || undefined;
     let memberLaunchContextPath: string | null = null;
     let baselineApplied = false;
@@ -2072,7 +2083,9 @@ export default defineTool({
           try {
             sharedBriefText = readFileSync(effectiveLaunchContext, 'utf8');
           } catch (e: any) {
-            briefReadError = `Could not read launchContext \`${effectiveLaunchContext}\` (${e?.message ?? e}) — members got the baseline only.`;
+            return refuseUnreadableLaunchContext(
+              `Could not read launchContext \`${effectiveLaunchContext}\` (${e?.message ?? e}) — refusing the launch to avoid briefing members with the baseline only.`,
+            );
           }
         }
       }
@@ -2100,9 +2113,9 @@ export default defineTool({
     // Each member gets its OWN composed file (baseline + that member's brief, falling
     // back to the shared brief above when its entry is missing/unset) — this is the
     // knob whose absence used to force a hand-rolled fleet:create + capability:terminal
-    // launch (EI-5835 / su.md D). Resilient: a per-member read/compose/write failure
-    // for ONE member falls that member back to the shared `effectiveLaunchContext`
-    // (never blocks the whole launch); every failure is collected + surfaced.
+    // launch (EI-5835 / su.md D). An unreadable per-member path refuses the whole
+    // launch before any terminal opens; compose/write failures for ONE member still
+    // fall that member back to the shared `effectiveLaunchContext` and are surfaced.
     const perMemberBriefsRaw = args.perMemberLaunchContext;
     // P-002: `members[i].brief` (inline TEXT) and `members[i].launchContext` (a path)
     // are the declarative twins of perMemberLaunchContext, so any of the three arms
@@ -2118,6 +2131,7 @@ export default defineTool({
     const perMemberComposeActive = Boolean(perMemberBriefsRaw?.length) || anyMemberBrief || anyMemberCarry;
     const perMemberLaunchContextPaths: (string | null)[] | null = perMemberComposeActive ? [] : null;
     const perMemberReadErrors: string[] = [];
+    const perMemberReadFailures: string[] = [];
     let memberLaunchContextPathForIndex: (i: number) => string | undefined = () => effectiveLaunchContext;
     // EI-18862608742257943: every brief text a member actually receives, collected so the
     // kickoff-vs-claim-spec check below (after this block) can scan ALL of them for a named
@@ -2141,9 +2155,10 @@ export default defineTool({
           try {
             ownBriefText = readFileSync(ownPath, 'utf8');
           } catch (e: any) {
-            perMemberReadErrors.push(
-              `member ${i + 1}: could not read perMemberLaunchContext[${i}] \`${ownPath}\` (${e?.message ?? e}) — fell back to the shared brief.`,
-            );
+            const readFailure =
+              `member ${i + 1}: could not read perMemberLaunchContext[${i}] \`${ownPath}\` (${e?.message ?? e})`;
+            perMemberReadErrors.push(`${readFailure} — refusing the launch.`);
+            perMemberReadFailures.push(readFailure);
           }
         }
         const briefText = ownBriefText ?? sharedBriefText;
@@ -2177,6 +2192,33 @@ export default defineTool({
       briefReadError = briefReadError
         ? `${briefReadError}\n${perMemberReadErrors.join('\n')}`
         : perMemberReadErrors.join('\n');
+    }
+    if (perMemberReadFailures.length) {
+      return refuseUnreadableLaunchContext(
+        `${perMemberReadFailures.join('\n')} — refusing the launch because every supplied brief path must be readable before spawning.`,
+      );
+    }
+
+    // `members[i].launchContext` is the per-member path form of the same option.
+    // It is passed directly to psu (unlike members[i].brief, which is composed here),
+    // so validate every effective path before any leader/member terminal can open.
+    const memberLaunchContextReadFailures: string[] = [];
+    const memberSpecsForPreflight = args.members ?? [];
+    for (let i = 0; i < Math.min(openCount, memberSpecsForPreflight.length); i++) {
+      const ownLaunchContext = memberSpecsForPreflight[i]?.launchContext?.trim();
+      if (!ownLaunchContext || looksLikeInlineLaunchContextText(ownLaunchContext)) continue;
+      try {
+        readFileSync(ownLaunchContext, 'utf8');
+      } catch (e: any) {
+        memberLaunchContextReadFailures.push(
+          `member ${i + 1}: could not read members[${i}].launchContext \`${ownLaunchContext}\` (${e?.message ?? e})`,
+        );
+      }
+    }
+    if (memberLaunchContextReadFailures.length) {
+      return refuseUnreadableLaunchContext(
+        `${memberLaunchContextReadFailures.join('\n')} — refusing the launch because every supplied brief path must be readable before spawning.`,
+      );
     }
 
     // EI-18862608742257943: does the claim spec THIS launch is about to apply actually
