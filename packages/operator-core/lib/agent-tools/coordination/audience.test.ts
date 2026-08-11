@@ -5,6 +5,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   expandAudience,
+  expandAudienceDetailed,
   hasAudienceSelector,
   objectSelector,
   type ActivePresence,
@@ -161,6 +162,16 @@ describe('expandAudience', () => {
   it('@fleet-leader with no leader set resolves to no one', async () => {
     const r = makeResolvers({ fleets: { backend: ['alice'] } });
     expect(await expandAudience(['@fleet-leader:backend'], r)).toEqual([]);
+  });
+
+  it('detailed expansion preserves an unresolved selector beside valid recipients', async () => {
+    const r = makeResolvers({ fleets: { backend: ['alice'] } });
+    await expect(
+      expandAudienceDetailed(['@fleet-leader:backend', 'alice'], r),
+    ).resolves.toEqual({
+      resolved: ['alice'],
+      unresolvedSelectors: ['@fleet-leader:backend'],
+    });
   });
 
   it('@fleet and @fleet-leader compose with other selectors and dedup', async () => {

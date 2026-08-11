@@ -56,7 +56,14 @@ vi.mock('../federation-scope', async (importOriginal) => {
 });
 
 import { configureCoordLog, resetCoordLog, coordLog } from '../log';
-import { appendAck, readInbox, readOutbox, readThread, sendMessage } from '../messages';
+import {
+  appendAck,
+  getUnresolvedAudienceSelectors,
+  readInbox,
+  readOutbox,
+  readThread,
+  sendMessage,
+} from '../messages';
 import type { AgentIdentity } from '../identity';
 
 function fakeIdentity(ownerId: string): AgentIdentity {
@@ -196,6 +203,7 @@ describe('sendMessage zero-recipient — selector that expands to nobody (P2-15)
     // @plan:no-such-plan has no subscribers and no active presence (mocked
     // resolvers) → expandAudience returns [] → envelope.to is [].
     const sent = await sendMessage(A, { to: ['@plan:no-such-plan'], summary: 'orphan' });
+    expect(getUnresolvedAudienceSelectors(sent)).toEqual(['@plan:no-such-plan']);
 
     // The envelope is delivered to NOBODY (to:[]) — and crucially NOT collapsed
     // to ['*']: a typo'd/empty audience must never fan out to everyone (audience
@@ -213,6 +221,7 @@ describe('sendMessage zero-recipient — selector that expands to nobody (P2-15)
     const persisted = rawLines.find((l) => l.msg_id === sent.msg_id);
     expect(persisted).toBeDefined();
     expect(persisted?.to).toEqual([]);
+    expect(persisted).not.toHaveProperty('unresolvedSelectors');
 
     // No inbox delivery anywhere — no concrete owner was addressed.
     expect(await readInbox('B')).toEqual([]);
