@@ -396,7 +396,7 @@ describe('kickoffPositionalArgs (EI-5503 plan auto-kickoff)', () => {
   it('is empty when --no-kickoff opts out', () => {
     const res = { kickoffPrompt: KICK, planSlug: 'p' };
     const args = parseArgs(['--no-picker', '--agent=claude', '--harness=x', '--plan=p', '--no-kickoff']);
-    expect(args.kickoff).toBe(false);
+    expect((args as { kickoff?: boolean }).kickoff).toBe(false);
     expect(kickoffPositionalArgs(res, args)).toEqual([]);
   });
   it('is empty when the server supplied no kickoff (no plan bound)', () => {
@@ -405,7 +405,7 @@ describe('kickoffPositionalArgs (EI-5503 plan auto-kickoff)', () => {
     expect(kickoffPositionalArgs({}, args)).toEqual([]);
   });
   it('default parse has no kickoff key (so the gate treats it as enabled)', () => {
-    expect(parseArgs([]).kickoff).toBeUndefined();
+    expect((parseArgs([]) as { kickoff?: boolean }).kickoff).toBeUndefined();
   });
 
   // Free-form --kickoff (the general, plan-independent first-turn seam used by the
@@ -434,7 +434,10 @@ describe('resolveKickoffText (PAPERCUSP_KICKOFF_PROMPT env fallback)', () => {
   it('falls back to PAPERCUSP_KICKOFF_PROMPT when no --kickoff flag was parsed', () => {
     const args = parseArgs(['--no-picker', '--agent=claude', '--label=docs-tutor']);
     expect(args.kickoffPromptText).toBeNull();
-    const env = { PAPERCUSP_KICKOFF_PROMPT: "what's a pot?\nline two" };
+    const env: NodeJS.ProcessEnv = {
+      NODE_ENV: 'test',
+      PAPERCUSP_KICKOFF_PROMPT: "what's a pot?\nline two",
+    };
     expect(resolveKickoffText(args, env)).toBe("what's a pot?\nline two");
     // and it actually seeds the first turn once threaded through kickoffPositionalArgs
     expect(kickoffPositionalArgs({}, { ...args, kickoffPromptText: resolveKickoffText(args, env) })).toEqual([
@@ -443,11 +446,13 @@ describe('resolveKickoffText (PAPERCUSP_KICKOFF_PROMPT env fallback)', () => {
   });
   it('an explicit --kickoff flag wins over the env var', () => {
     const args = parseArgs(['--no-picker', '--agent=claude', '--kickoff=flag wins']);
-    expect(resolveKickoffText(args, { PAPERCUSP_KICKOFF_PROMPT: 'env loses' })).toBe('flag wins');
+    expect(resolveKickoffText(args, { NODE_ENV: 'test', PAPERCUSP_KICKOFF_PROMPT: 'env loses' })).toBe(
+      'flag wins',
+    );
   });
   it('returns null when neither the flag nor the env var is set', () => {
     const args = parseArgs(['--no-picker', '--agent=claude']);
-    expect(resolveKickoffText(args, {})).toBeNull();
+    expect(resolveKickoffText(args, { NODE_ENV: 'test' })).toBeNull();
   });
 });
 
@@ -458,33 +463,35 @@ describe('resolveKickoffText (PAPERCUSP_KICKOFF_PROMPT env fallback)', () => {
 describe('resumeKickoffText (P-011: the first turn of a scripted resume/fork)', () => {
   it('takes the --kickoff flag on a scripted resume', () => {
     const args = parseArgs(['--no-picker', '--resume=sid-1', '--account=default', '--kickoff=carry on']);
-    expect(resumeKickoffText(args, {})).toBe('carry on');
+    expect(resumeKickoffText(args, { NODE_ENV: 'test' })).toBe('carry on');
   });
 
   it('takes the spawn-safe PAPERCUSP_KICKOFF_PROMPT env when no flag was passed', () => {
     const args = parseArgs(['--no-picker', '--resume=sid-1']);
-    expect(resumeKickoffText(args, { PAPERCUSP_KICKOFF_PROMPT: 'multi\nline brief' })).toBe('multi\nline brief');
+    expect(
+      resumeKickoffText(args, { NODE_ENV: 'test', PAPERCUSP_KICKOFF_PROMPT: 'multi\nline brief' }),
+    ).toBe('multi\nline brief');
   });
 
   it('does NOT seed an interactive (picker) resume — a human opens at an empty prompt', () => {
     const args = parseArgs(['--resume=sid-1', '--kickoff=q']);
-    expect(resumeKickoffText(args, {})).toBeNull();
+    expect(resumeKickoffText(args, { NODE_ENV: 'test' })).toBeNull();
   });
 
   it('honors --no-kickoff', () => {
     const args = parseArgs(['--no-picker', '--resume=sid-1', '--kickoff=q', '--no-kickoff']);
-    expect(resumeKickoffText(args, {})).toBeNull();
+    expect(resumeKickoffText(args, { NODE_ENV: 'test' })).toBeNull();
   });
 
   it('is null when nothing asked for a kickoff (a resume opens idle, as before)', () => {
-    expect(resumeKickoffText(parseArgs(['--no-picker', '--resume=sid-1']), {})).toBeNull();
+    expect(resumeKickoffText(parseArgs(['--no-picker', '--resume=sid-1']), { NODE_ENV: 'test' })).toBeNull();
   });
 
   it('never falls back to a server plan kickoff — a resume does no bootstrap POST', () => {
     // kickoffPositionalArgs' res.kickoffPrompt leg must not leak into the resume path.
     const planKickoff = 'Begin: advance this plan';
     const args = parseArgs(['--no-picker', '--resume=sid-1']);
-    expect(resumeKickoffText(args, {})).toBeNull();
+    expect(resumeKickoffText(args, { NODE_ENV: 'test' })).toBeNull();
     expect(kickoffPositionalArgs({ kickoffPrompt: planKickoff, planSlug: 'p' }, args)).toEqual([planKickoff]);
   });
 });
