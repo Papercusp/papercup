@@ -12,7 +12,7 @@
  * egress actually routes through the new IP.
  */
 import type { AccountEgress, ClaudeAccount } from '../deployment/account-pool';
-import { buildEgressDispatcher } from './egress-dispatcher';
+import { buildEgressDispatcher, resolveAccountEgress } from './egress-dispatcher';
 
 type UndiciModule = typeof import('undici');
 
@@ -161,8 +161,12 @@ export async function fetchExitIp(
 /** Probe ONE account's egress: exit IP + reputation + ASN. Read-only, no live-gateway change. */
 export async function probeEgress(account: ClaudeAccount, deps: ProbeDeps = {}): Promise<EgressProbe> {
   const fetchImpl = deps.fetchImpl ?? fetch;
-  const hasEgress = !!(account.egress && (account.egress.proxyUrl || account.egress.localAddress));
-  const { exitIp, ignoredProxyUrl, error } = await fetchExitIp(account.egress, deps);
+  // Resolve through the SAME selector the gateway routes on — `account.egress` alone skips `egressPool`
+  // entirely, which reports a pool-configured account as having no egress and then probes the box-default
+  // IP instead of its configured proxy (EI-18664933641195210).
+  const egress = resolveAccountEgress(account);
+  const hasEgress = !!(egress && (egress.proxyUrl || egress.localAddress));
+  const { exitIp, ignoredProxyUrl, error } = await fetchExitIp(egress, deps);
   let reputation: IpReputation | null = null;
   if (exitIp) {
     const lookup = deps.reputationLookup ?? defaultReputationLookup;
@@ -170,7 +174,7 @@ export async function probeEgress(account: ClaudeAccount, deps: ProbeDeps = {}):
   }
   return {
     accountId: account.id,
-    egress: account.egress,
+    egress,
     hasEgress,
     exitIp,
     reputation,
