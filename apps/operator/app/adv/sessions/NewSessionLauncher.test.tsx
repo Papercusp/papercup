@@ -647,7 +647,9 @@ describe('NewSessionLauncher', () => {
     it('every row is renderable — a blank label would be an unpickable row', () => {
       for (const o of buildModeOptions()) {
         expect(o.label.trim().length).toBeGreaterThan(0);
-        expect((o.detail ?? '').trim().length).toBeGreaterThan(0);
+        const detail = o.detail;
+        expect(typeof detail).toBe('string');
+        expect((typeof detail === 'string' ? detail : '').trim().length).toBeGreaterThan(0);
       }
     });
   });

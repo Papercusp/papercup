@@ -76,7 +76,7 @@ function plan(slug: string, over: Partial<PlanListRow> = {}): PlanListRow {
     nextAction: undefined,
     // Empty so the HarnessPill (a Radix Tooltip needing a provider) is skipped.
     harness: '',
-    startStatus: null,
+    startStatus: undefined,
     priority: undefined,
     maxImportance: undefined,
     ...over,
