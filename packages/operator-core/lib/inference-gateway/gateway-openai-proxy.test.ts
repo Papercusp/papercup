@@ -19,6 +19,8 @@ import http from 'node:http';
 import {
   createInferenceGateway,
   ACCOUNT_HEADER,
+  ACCOUNT_PIN_HEADER,
+  PIN_YIELDED_HEADER,
   ROUTED_ACCOUNT_HEADER,
   type ActiveAccount,
 } from './gateway';
@@ -256,6 +258,51 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
     const s = (await (await ask('/stats')).json()) as { codex: { failovers: number; upstream429: number } };
     expect(s.codex.failovers).toBeGreaterThanOrEqual(1);
     expect(s.codex.upstream429).toBeGreaterThanOrEqual(1);
+  });
+
+  it('a SOFT account pin yields only after its account is throttled and reports the structured divergence', async () => {
+    await bootCodex(byBearer);
+    const res = await postResponses(
+      { model: 'gpt-x', input: 'hi' },
+      { [ACCOUNT_HEADER]: 'cdx-1' },
+    );
+    expect(res.status).toBe(200);
+    expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('cdx-2');
+    expect(res.headers.get(PIN_YIELDED_HEADER)).toBe('cdx-1->cdx-2');
+  });
+
+  it('a HARD account pin never fails over, even when a sibling could serve', async () => {
+    await bootCodex(byBearer);
+    const res = await postResponses(
+      { model: 'gpt-x', input: 'hi' },
+      { [ACCOUNT_HEADER]: 'cdx-1', [ACCOUNT_PIN_HEADER]: 'hard' },
+    );
+    expect(res.status).toBe(429);
+    expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('cdx-1');
+    expect(res.headers.get(PIN_YIELDED_HEADER)).toBeNull();
+  });
+
+  it('Codex throttles shrink only the Codex admission controller, never Claude admission', async () => {
+    await bootCodex(
+      (_req, res) => {
+        res.writeHead(429, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ error: { type: 'rate_limit', message: 'over' } }));
+      },
+      [codexAcct('cdx-solo')],
+      { concurrency: 8, codexConcurrency: 4, aimd: { floor: 1, decreaseThreshold: 1, increaseEvery: 100 } },
+    );
+    expect((await postResponses({ model: 'gpt-x', input: 'hi' })).status).toBe(429);
+    const stats = (await (await ask('/stats')).json()) as {
+      admission: { maxConcurrent: number };
+      codexAdmission: { maxConcurrent: number };
+      aimd: { effective: number; cap: number };
+      codexAimd: { effective: number; cap: number; decreases: number };
+    };
+    expect(stats.aimd).toMatchObject({ effective: 8, cap: 8 });
+    expect(stats.admission.maxConcurrent).toBe(8);
+    expect(stats.codexAimd.decreases).toBeGreaterThan(0);
+    expect(stats.codexAimd.effective).toBeLessThan(stats.codexAimd.cap);
+    expect(stats.codexAdmission.maxConcurrent).toBe(stats.codexAimd.effective);
   });
 
   it('a SINGLE-account codex pool with a persistent 429 FORWARDS the 429 (no rotate target → no hang/loop)', async () => {

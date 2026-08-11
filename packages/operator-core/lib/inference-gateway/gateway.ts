@@ -4148,14 +4148,6 @@ export function createInferenceGateway(deps: GatewayDeps) {
       sendJson(res, 400, { type: 'error', error: { type: 'invalid_request_error', message: 'inference-gateway: codex-cli bridge needs a JSON /v1/responses body' }, gateway: true });
       return;
     }
-    if (cachePolicyEnabled && bodyBuf.length) {
-      const shardSeed = routing.ownerId || routing.pinned?.accountId || cli.accountId;
-      const cached = rewriteOpenAiCacheBody(bodyBuf, {
-        cacheKey: shardedCacheKey('psu', shardSeed, codexCacheShards()),
-      });
-      bodyBuf = cached.body;
-      if (cached.stats) recordCachePolicy('codex', cached.stats);
-    }
     if (body.stream === true) {
       sendJson(res, 400, { type: 'error', error: { type: 'invalid_request_error', message: 'inference-gateway: the codex-cli (ChatGPT subscription) bridge is non-streaming — send stream:false' }, gateway: true });
       return;
@@ -4217,6 +4209,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
       try { req.destroy(); } catch { /* already torn down */ }
       if (!res.headersSent) sendJson(res, 503, { type: 'error', error: { type: 'overloaded_error', message: 'inference-gateway: codex request body read stalled; retry shortly' }, gateway: true });
       return;
+    }
+    if (cachePolicyEnabled && bodyBuf.length) {
+      const shardSeed = routing.ownerId || routing.pinned?.accountId || cli.accountId;
+      const cached = rewriteOpenAiCacheBody(bodyBuf, {
+        cacheKey: shardedCacheKey('psu', shardSeed, codexCacheShards()),
+      });
+      bodyBuf = cached.body;
+      if (cached.stats) recordCachePolicy('codex', cached.stats);
     }
     // Non-streaming (scout/judge) → exec bridge, byte-identical to flag-OFF. Only stream:true
     // (the fleet CLI agents) takes the OAuth proxy path below.

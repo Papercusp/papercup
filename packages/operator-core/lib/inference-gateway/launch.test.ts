@@ -183,6 +183,36 @@ test('Codex account pool can hot-reload from empty to live without a gateway res
   assert.equal(up.lastAuth(), 'Bearer codex-token');
 });
 
+test('two ChatGPT subscription accounts populate a real health pool and hot-reload without a restart', async () => {
+  const up = await startUpstream();
+  const claudeDb = [{ accountId: 'claude-main', credentialRef: 'token:/claude', source: 'pool' as const }];
+  let codexDb = [
+    { accountId: 'chatgpt-a', credentialRef: 'codex-cli:/tmp/chatgpt-a', source: 'pool' as const },
+    { accountId: 'chatgpt-b', credentialRef: 'codex-cli:/tmp/chatgpt-b', source: 'pool' as const },
+  ];
+  svc = await startGatewayService({
+    port: 0,
+    upstreamBase: up.base,
+    log: () => {},
+    resolveAccounts: async (_ws, provider) => (provider === 'codex' ? codexDb : claudeDb),
+    makeResolver: (_ref, id) => ({ kind: 'token', current: async () => `${id}-tok`, invalidate: () => {} }),
+    observePool: () => () => {},
+    poolReloadIntervalMs: 0,
+  });
+  const base = `http://127.0.0.1:${svc.port}`;
+  const before = (await (await fetch(`${base}/stats`)).json()) as { codexHealthyAccounts: number };
+  assert.equal(before.codexHealthyAccounts, 2, 'both ChatGPT accounts are live routing capacity, not an unverified list count');
+
+  codexDb = [
+    { accountId: 'chatgpt-b', credentialRef: 'codex-cli:/tmp/chatgpt-b', source: 'pool' as const },
+    { accountId: 'chatgpt-c', credentialRef: 'codex-cli:/tmp/chatgpt-c', source: 'pool' as const },
+  ];
+  const changed = await svc.reloadPool();
+  assert.equal(changed.changed, true);
+  const after = (await (await fetch(`${base}/stats`)).json()) as { codexHealthyAccounts: number };
+  assert.equal(after.codexHealthyAccounts, 2, 'the subscription pool swaps atomically and preserves healthy capacity');
+});
+
 // ── Backlog #7: launch.ts hot-reload + composition deeper edges (continuation; su-7f3e0376) ──
 
 test('startGatewayService throws when the initial account pool resolves empty (fail-fast)', async () => {
