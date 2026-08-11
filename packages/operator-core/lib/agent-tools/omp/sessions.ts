@@ -22,6 +22,19 @@ const RefShape = {
   filePath: z.string().min(1).optional(),
 } as const;
 
+/**
+ * The OMP hook includes its working directory when it links an ADV session.
+ * Keep that payload contract next to the tool schema so hook-side contract
+ * tests can validate the exact emitted shape against the server's parser.
+ */
+export const ompSessionsLinkArgsSchema = z.object({
+  op: z.literal('link'),
+  advSessionId: z.number().int().positive(),
+  sessionId: z.string().min(1),
+  filePath: z.string().min(1).optional(),
+  cwd: z.string().min(1).optional(),
+}).strict();
+
 export default defineTool({
   name: 'omp:sessions',
   profile: 'engineer',
@@ -66,12 +79,7 @@ export default defineTool({
       op: z.literal('state'),
       ...RefShape,
     }),
-    z.object({
-      op: z.literal('link'),
-      advSessionId: z.number().int().positive(),
-      sessionId: z.string().min(1),
-      filePath: z.string().min(1).optional(),
-    }),
+    ompSessionsLinkArgsSchema,
   ]),
   async handler(args) {
     if (args.op === 'list') {

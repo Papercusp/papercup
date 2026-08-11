@@ -17,6 +17,8 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { ompSessionsLinkArgsSchema } from '@papercusp/operator-core/lib/agent-tools/omp/sessions';
+
 import {
   buildActivityArgs,
   consumeActivityHookBundle,
@@ -3703,6 +3705,7 @@ describe('linkAdvSessionFromContext — ADV row linkage', () => {
         },
       },
     ]);
+    expect(ompSessionsLinkArgsSchema.safeParse(calls[0]?.args).success).toBe(true);
   });
 
   it('does nothing without a launcher-provided ADV session id', async () => {
@@ -3742,6 +3745,41 @@ describe('linkAdvSessionFromContext — ADV row linkage', () => {
               content: [
                 { type: 'text', text: '{"ok":false,"result":"conflict","error":"adv_session_already_linked_to_different_omp_session"}' },
               ],
+            },
+          }),
+      } as Response;
+    }) as unknown as typeof fetch;
+
+    const first = await linkAdvSessionFromContext({
+      sessionManager: { getSessionId: () => '019ab123' },
+    });
+    const second = await linkAdvSessionFromContext({
+      sessionManager: { getSessionId: () => '019ab123' },
+    });
+
+    expect(first).toBe(false);
+    expect(second).toBe(false);
+    expect(linkCalls).toBe(1);
+  });
+
+  it('stops retrying once the ADV link tool reports a deterministic schema error', async () => {
+    process.env.PAPERCUSP_BUNDLE_URL = 'http://operator.test';
+    process.env.PAPERCUSP_ADV_SESSION_ID = '42';
+    let linkCalls = 0;
+    global.fetch = (async (_url: unknown, init?: { body?: string }) => {
+      const body = JSON.parse(init?.body ?? '{}') as {
+        params?: { name?: string };
+      };
+      if (body.params?.name === 'omp:sessions') linkCalls += 1;
+      return {
+        ok: true,
+        text: async () =>
+          JSON.stringify({
+            jsonrpc: '2.0',
+            id: 1,
+            result: {
+              isError: true,
+              content: [{ type: 'text', text: 'invalid_args: Unrecognized key: "futureField"' }],
             },
           }),
       } as Response;

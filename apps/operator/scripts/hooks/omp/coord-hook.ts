@@ -217,7 +217,7 @@ export function summarisePlanEvents(events: InboxEntry[]): PlanEventSummary[] {
 // ── HTTP plumbing (operator MCP transport) ───────────────────────────
 
 interface JsonRpcResp {
-  result?: { content?: Array<{ type: string; text?: string }> };
+  result?: { isError?: boolean; content?: Array<{ type: string; text?: string }> };
   error?: { code: number; message: string };
 }
 
@@ -245,7 +245,7 @@ interface JsonRpcResp {
  * (see _mcp-handler.ts).
  */
 let _hookOwnerId: string | null = null;
-type AdvSessionLinkState = 'pending' | 'linked' | 'conflict';
+type AdvSessionLinkState = 'pending' | 'linked' | 'conflict' | 'failed';
 let _advSessionLinkState: AdvSessionLinkState = 'pending';
 export function hookOwnerId(): string {
   if (_hookOwnerId === null) {
@@ -310,6 +310,9 @@ export async function callMcpTool(
     sessionId?: string;
     workspace?: string;
     timeoutMs?: number;
+    /** Preserve a structured error for callers that can distinguish a
+     * deterministic schema/argument failure from a transient transport miss. */
+    preserveErrors?: boolean;
     /** Optional JSON-RPC `params._meta` (token-efficient-tool-result-formats P-005). Pass
      *  `{ format: 'json' }` to force a tool whose result is TOON-encoded by default (tabular
      *  results like tools:find's hits[]) back to JSON so the JSON.parse(content) path below can
@@ -400,10 +403,20 @@ export async function callMcpTool(
     const dataLine = text.split('\n').find((l) => l.startsWith('data:'));
     const payload = dataLine !== undefined ? dataLine.slice(5).trim() : text;
     const parsed = JSON.parse(payload) as JsonRpcResp;
-    if (parsed.error) return null;
+    if (parsed.error) {
+      return env.preserveErrors
+        ? { ok: false, error: 'mcp_rpc_error', code: parsed.error.code, message: parsed.error.message }
+        : null;
+    }
     const content = parsed.result?.content?.[0]?.text;
     if (typeof content !== 'string') return null;
-    return JSON.parse(content);
+    try {
+      return JSON.parse(content);
+    } catch {
+      return env.preserveErrors && parsed.result?.isError === true
+        ? { ok: false, error: 'mcp_tool_error', message: content }
+        : null;
+    }
   } catch {
     return null;
   } finally {
@@ -535,14 +548,26 @@ function currentSessionLinkFromContext(ctx: unknown): {
 
 export async function linkAdvSessionFromContext(ctx: unknown): Promise<boolean> {
   if (_advSessionLinkState === 'linked') return true;
-  if (_advSessionLinkState === 'conflict') return false;
+  if (_advSessionLinkState === 'conflict' || _advSessionLinkState === 'failed') return false;
   const link = currentSessionLinkFromContext(ctx);
   if (!link) return false;
-  const result = await callMcpTool('omp:sessions', { op: 'link', ...link }) as
-    | { ok?: boolean; result?: string }
+  const result = await callMcpTool('omp:sessions', { op: 'link', ...link }, { preserveErrors: true }) as
+    | { ok?: boolean; code?: number; error?: string; message?: string; result?: string }
     | null;
   if (result?.result === 'conflict') {
     _advSessionLinkState = 'conflict';
+    return false;
+  }
+  // A structured tool/RPC error is deterministic for this payload. Latch it
+  // so a schema mismatch cannot turn every subsequent hook invocation into an
+  // identical retry storm. Transport failures remain null and retryable.
+  const error = result?.error;
+  const deterministicError =
+    (error === 'mcp_tool_error' && /invalid[_ ]args|unrecognized key|validation/i.test(result?.message ?? '')) ||
+    (error === 'mcp_rpc_error' && (result?.code === -32602 || /invalid[_ ]args|unrecognized key|validation/i.test(result?.message ?? ''))) ||
+    (typeof error === 'string' && error.length > 0 && error !== 'mcp_tool_error' && error !== 'mcp_rpc_error');
+  if (deterministicError) {
+    _advSessionLinkState = 'failed';
     return false;
   }
   const linked = result?.ok === true &&
