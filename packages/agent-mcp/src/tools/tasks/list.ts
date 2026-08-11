@@ -2,18 +2,24 @@
  * List tasks across the workspace, optionally filtered by status, goal,
  * or harness. Summary returns id + title + status; full returns the row.
  *
- * Typed via `schemaOf(harness_features_consolidated).select` — response
+ * Typed via `createSelectSchema(harness_features_consolidated)` — response
  * row shape matches the column definition; no hand-typed Record.
+ *
+ * NOT `schemaOf`: that relation is a VIEW, and `schemaOf` is constrained to
+ * `Table` (insert/update are meaningless for a view). drizzle-zod's
+ * `createSelectSchema` carries the View overload; `schemaOf(view)` was a
+ * TS2345 no gate counted, because agent-mcp declares no `typecheck` script
+ * and so sits in lint:tsc:workspaces's report-only set. See WI-38031.
  */
 
 import { drizzle } from 'drizzle-orm/postgres-js';
 import { and, desc, eq } from 'drizzle-orm';
 import { z } from 'zod';
-import { generated, schemaOf } from '@papercusp/db-org';
+import { generated, createSelectSchema } from '@papercusp/db-org';
 import { defineTool } from '@papercusp/tooldef';
 
 const features = generated.harnessFeaturesConsolidatedInHarnessShared;
-const FeatureSelect = schemaOf(features).select;
+const FeatureSelect = createSelectSchema(features);
 type FeatureRow = z.infer<typeof FeatureSelect>;
 
 export default defineTool({
