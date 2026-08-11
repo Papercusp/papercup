@@ -202,6 +202,17 @@ export function normalizePair(a: string, b: string): { agentA: string; agentB: s
  * the natural "actually, do couple them after all" and needs no separate verb.
  *
  * Deliberately unauthorized: no check that the caller is a member of the pair.
+ *
+ * `ttlSec` DEFAULTS TO NONE, and that is a decision — D-006
+ * (coupling-signal-liveness-and-lifecycle-2026-08-11 P-006), not an accident of the
+ * original migration. Do not give it a default without reversing D-006 first. A
+ * clock-based expiry fails SILENTLY here: it makes two live agents stop seeing each
+ * other with nothing raised, which is the same confident-wrong-answer class that
+ * plan was written to remove. Retirement is CAUSE-based instead — listCouplingsFor
+ * drops an edge as soon as either member stops resolving live — and for a declared
+ * edge the only other party who knows the work is over is the declarer, which is
+ * what `coord:decouple` is for. An explicit ttlSec remains fully supported for the
+ * genuinely bounded "couple us while we share this file" case.
  */
 export async function declareCoupling(opts: {
   agentA: string;
