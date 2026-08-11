@@ -23,6 +23,8 @@ function base(patch: Partial<Pick<ScheduledWatchdogStatus, 'config' | 'scheduler
       lastWorkflowStatus: 'SUCCESS',
       lastError: null,
       internalErrorCount: 0,
+      lastResultCount: null,
+      lastNudgedCount: null,
       ...patch.scheduler,
     },
     eligibility: {
@@ -84,8 +86,40 @@ describe('classifyScheduledWatchdogStatus', () => {
     ).toMatchObject({
       ok: false,
       effectiveState: 'eligible-no-fire',
-      nextVerb: { name: 'coord:presence', args: { harness: 'pot' } },
+      nextVerb: {
+        name: 'mode:set',
+        args: { mode: 'grade', enabled: true },
+      },
     });
+  });
+
+  it('reports a successful zero-evaluation sweep as degraded and routes to SU GRADE', () => {
+    const result = classifyScheduledWatchdogStatus(
+      base({
+        scheduler: {
+          lastExecutionAt: '2026-07-18T00:01:00.000Z',
+          lastResultCount: 0,
+          lastNudgedCount: 0,
+        } as never,
+        eligibility: {
+          pendingCount: 13,
+          eligibleCount: 13,
+          oldestRoutedAt: '2026-07-11T00:00:00.000Z',
+          firstEligibleAt: '2026-07-18T00:00:00.000Z',
+        } as never,
+      }),
+    );
+
+    expect(result).toMatchObject({
+      ok: false,
+      effectiveState: 'eligible-sweep-empty',
+      nextVerb: {
+        name: 'mode:set',
+        args: { mode: 'grade', enabled: true },
+      },
+    });
+    expect(result.summary).toContain('zero scopes');
+    expect(result.nextVerb?.reason).toContain('blender:grade-idea');
   });
 
   it('is healthy-fired when no eligible rows remain after a recorded fire', () => {
@@ -111,6 +145,9 @@ describe('classifyScheduledWatchdogStatus', () => {
               json: {
                 ranAtMs: nowMs - 1_000,
                 errorCount: 0,
+                resultCount: 0,
+                nudgedCount: 0,
+                results: [],
                 config: {
                   enabled: true,
                   effectiveThresholdSec: 172_800,
@@ -154,6 +191,8 @@ describe('classifyScheduledWatchdogStatus', () => {
         rawOverride: '172800',
       });
       expect(status.eligibility.firstEligibleAt).toBe(new Date(oldestMs + 172_800_000).toISOString());
+      expect(status.scheduler).toMatchObject({ lastResultCount: 0, lastNudgedCount: 0 });
+      expect(status).toMatchObject({ ok: false, effectiveState: 'eligible-sweep-empty' });
       const eligibilityCall = calls.find((call) => call.text.includes('FROM harness_shared.scout_routed_ideas'));
       expect(eligibilityCall?.values[0]).toBe(nowMs - 172_800_000);
     } finally {

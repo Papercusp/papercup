@@ -21,6 +21,10 @@ export interface WatchdogSchedulerStatus {
   lastWorkflowStatus: string | null;
   lastError: string | null;
   internalErrorCount: number;
+  /** Persisted DBOS return value: scopes with at least one stale filing. */
+  lastResultCount: number | null;
+  /** Persisted DBOS return value: scopes that delivered a grading nudge. */
+  lastNudgedCount: number | null;
 }
 
 export interface WatchdogEligibilityStatus {
@@ -42,6 +46,7 @@ export type WatchdogEffectiveState =
   | 'scheduler-unobserved'
   | 'scheduler-error'
   | 'eligible-awaiting-sweep'
+  | 'eligible-sweep-empty'
   | 'eligible-no-fire'
   | 'healthy-fired'
   | 'healthy-idle';
@@ -69,7 +74,7 @@ function timeMs(value: string | null): number | null {
 export function classifyScheduledWatchdogStatus(
   status: Omit<ScheduledWatchdogStatus, 'ok' | 'effectiveState' | 'summary' | 'nextVerb'>,
 ): Pick<ScheduledWatchdogStatus, 'ok' | 'effectiveState' | 'summary' | 'nextVerb'> {
-  const { config, scheduler, eligibility, fire, scope } = status;
+  const { config, scheduler, eligibility, fire } = status;
   if (!config.enabled) {
     return {
       ok: true,
@@ -106,15 +111,39 @@ export function classifyScheduledWatchdogStatus(
     const fireMs = timeMs(fire.lastFireAt);
     const sweptAfterEligibility = executionMs != null && firstEligibleMs != null && executionMs >= firstEligibleMs;
     const firedAfterEligibility = fireMs != null && firstEligibleMs != null && fireMs >= firstEligibleMs;
+    if (sweptAfterEligibility && scheduler.lastResultCount === 0) {
+      return {
+        ok: false,
+        effectiveState: 'eligible-sweep-empty',
+        summary:
+          `${eligibility.eligibleCount} eligible filing(s) remained after a successful sweep that evaluated ` +
+          'zero scopes; the grading backstop made no progress.',
+        nextVerb: {
+          name: 'mode:set',
+          args: {
+            mode: 'grade',
+            enabled: true,
+            reason: 'watchdog:status found eligible su-ideate filings after a zero-evaluation sweep; grade them through the SU GRADE path.',
+          },
+          reason:
+            'The Mug grading path is retired. Enter SU GRADE mode and process the eligible filings with blender:grade-idea.',
+        },
+      };
+    }
     if (sweptAfterEligibility && !firedAfterEligibility) {
       return {
         ok: false,
         effectiveState: 'eligible-no-fire',
         summary: `${eligibility.eligibleCount} eligible filing(s) were present before a successful sweep, but no matching fire was recorded.`,
         nextVerb: {
-          name: 'coord:presence',
-          args: { harness: scope.harnessSlug },
-          reason: 'Verify that a live Mug recipient exists; the sweep cannot fire a grading nudge without one.',
+          name: 'mode:set',
+          args: {
+            mode: 'grade',
+            enabled: true,
+            reason: 'watchdog:status found eligible su-ideate filings with no matching nudge; grade them through the SU GRADE path.',
+          },
+          reason:
+            'The Mug grading path is retired. Enter SU GRADE mode and process the eligible filings with blender:grade-idea.',
         },
       };
     }
@@ -198,6 +227,8 @@ function parsePersistedConfig(value: unknown): SuIdeateUngradedConfig | undefine
 function parseRunSummary(output: string | null): {
   ranAtMs?: number;
   errorCount?: number;
+  resultCount?: number;
+  nudgedCount?: number;
   config?: SuIdeateUngradedConfig;
 } {
   if (!output) return {};
@@ -215,15 +246,40 @@ function parseRunSummary(output: string | null): {
         ? envelope.json
         : decoded;
     if (!payload || typeof payload !== 'object' || Array.isArray(payload)) return {};
-    const parsed = payload as { ranAtMs?: unknown; errorCount?: unknown; config?: unknown };
+    const parsed = payload as {
+      ranAtMs?: unknown;
+      errorCount?: unknown;
+      resultCount?: unknown;
+      nudgedCount?: unknown;
+      results?: unknown;
+      config?: unknown;
+    };
+    const persistedResults = Array.isArray(parsed.results) ? parsed.results : null;
+    const resultCount = nonNegativeCount(parsed.resultCount) ?? (persistedResults ? persistedResults.length : undefined);
+    const nudgedCount =
+      nonNegativeCount(parsed.nudgedCount) ??
+      (persistedResults
+        ? persistedResults.filter(
+            (result) =>
+              result && typeof result === 'object' && !Array.isArray(result) && (result as { outcome?: unknown }).outcome === 'nudged',
+          ).length
+        : undefined);
     return {
       ranAtMs: Number.isFinite(Number(parsed.ranAtMs)) ? Number(parsed.ranAtMs) : undefined,
       errorCount: Number.isFinite(Number(parsed.errorCount)) ? Number(parsed.errorCount) : undefined,
+      resultCount,
+      nudgedCount,
       config: parsePersistedConfig(parsed.config),
     };
   } catch {
     return {};
   }
+}
+
+function nonNegativeCount(value: unknown): number | undefined {
+  if (value == null || (typeof value !== 'number' && typeof value !== 'string')) return undefined;
+  const count = Number(value);
+  return Number.isInteger(count) && count >= 0 ? count : undefined;
 }
 
 export async function readScheduledWatchdogStatus(args: {
@@ -299,6 +355,8 @@ export async function readScheduledWatchdogStatus(args: {
       lastWorkflowStatus: schedulerRow?.workflow_status ?? null,
       lastError: schedulerRow?.operation_error ?? schedulerRow?.workflow_error ?? null,
       internalErrorCount: Math.max(0, Number(runSummary.errorCount ?? 0)),
+      lastResultCount: runSummary.resultCount ?? null,
+      lastNudgedCount: runSummary.nudgedCount ?? null,
     },
     eligibility: {
       pendingCount: Number(eligibilityRows[0]?.pending_count ?? 0),
