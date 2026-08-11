@@ -95,6 +95,27 @@ describe('capPreservingOperativeDetailed — discloses what it withheld', () => 
     expect(text).toContain('NEVER deploy on a red gate');
   });
 
+  it('pays for the inline notice OUT OF the budget — an excerpt is never longer than its source', () => {
+    // The regression this caught on its first run: the notice was appended PAST
+    // the cap, so a 684-char checkpoint rendered as a 737-char "excerpt". A
+    // disclosure that blows the budget is the other failure direction of this
+    // whole thread — trim too little and the payload is rejected outright.
+    const body = `${'a'.repeat(600)} ⛔ NEVER deploy on a red gate.`;
+    const withNotice = capPreservingOperative(body, 500, {
+      inlineNotice: true,
+      more: "work_items:get { id: 'WI-37110' }",
+    });
+    expect(withNotice.length).toBeLessThan(body.length);
+
+    // The budget identity: head + notice fits inside `max`. (The operative
+    // addendum is separately bounded and deliberately sits outside it.)
+    const t = capPreservingOperativeDetailed(body, 500, {
+      inlineNotice: true,
+      more: "work_items:get { id: 'WI-37110' }",
+    }).truncation!;
+    expect(t.keptChars + renderWithheldNotice(t).length + 1).toBeLessThanOrEqual(500);
+  });
+
   it('renders large numbers readably (a bare 24310 invites a misread as 2431)', () => {
     const notice = renderWithheldNotice({
       keptChars: 1_200,

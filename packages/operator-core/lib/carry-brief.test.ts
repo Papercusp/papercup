@@ -552,7 +552,15 @@ describe('renderCarryBriefColdExtras — the cold-anchor sections after the note
     const out = renderCarryBriefColdExtras(brief);
     const ckptLine = out.split('\n').find((l) => l.includes('checkpoint: yyy'))!;
     expect(ckptLine.length).toBeLessThan(600);
-    expect(ckptLine.endsWith('…')).toBe(true);
+    // The cut is still marked with '…', but the line no longer ENDS there: it
+    // now closes with the withheld-chars notice naming how much was dropped and
+    // the call that returns it. A bare trailing '…' told the reader a cut
+    // happened without telling them how much they were missing or how to get
+    // it — on the one surface (a cold successor's whole resume state) where
+    // that matters most. Strictly more disclosure, paid for inside the budget
+    // asserted on the line above.
+    expect(ckptLine).toContain('…');
+    expect(ckptLine).toMatch(/chars withheld — full text: work_items:get \{ id: 'WI-1' \}⟩$/);
     expect(out).toContain('(no checkpoint written — read the item via work_items:get before acting)');
   });
 
