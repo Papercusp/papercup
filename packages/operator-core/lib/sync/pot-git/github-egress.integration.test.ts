@@ -259,6 +259,8 @@ describe('github-egress (P-001: canonical refs → GitHub, FF-only, secrets-gate
     });
     expect(r.ok).toBe(false);
     expect(r.errors.length).toBeGreaterThan(0);
+    expect(r.remoteErrors).toHaveLength(1);
+    expect(r.remoteErrors[0]?.transient).toBe(false);
     expect(r.pushed).toEqual([]);
   });
 });

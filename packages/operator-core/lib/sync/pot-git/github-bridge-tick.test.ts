@@ -50,6 +50,7 @@ const cleanEgress = (over: Partial<EgressResult> = {}): EgressResult => ({
   exemptedFindings: [],
   tagsPushed: [],
   tagsRejected: [],
+  remoteErrors: [],
   errors: [],
   ...over,
 });
@@ -175,6 +176,25 @@ describe('runGithubBridgeTick — composition', () => {
     ]);
     expect(out.verdict.action).toBe('clear');
     expect(recorded).toHaveLength(1); // clean pass still records (clears) the escalation
+  });
+
+  it('egress transport failure records an escalation instead of clearing divergence', async () => {
+    const { input, recorded } = bridgeInput(
+      {},
+      {
+        egress: async () =>
+          cleanEgress({
+            pushed: [],
+            remoteErrors: [{ message: 'push refs/heads/staging: 403 email verification required', transient: false }],
+            errors: ['push refs/heads/staging: remote rejected with 403'],
+          }),
+      },
+    );
+    const out = await runGithubBridgeTick(input);
+    expect(out.verdict.action).toBe('escalate');
+    expect(out.verdict.needsOwner).toBe(true);
+    expect(out.verdict.signals.map((s) => s.kind)).toContain('bridge-egress-unreachable');
+    expect(recorded.at(-1)?.action).toBe('escalate');
   });
 
   it('fork wins over upstream write (D-007b preserved)', async () => {

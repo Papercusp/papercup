@@ -27,6 +27,9 @@
  *   - `egress-secret-block` — the secrets gate refused to publish a ref
  *     (nothing left the machine). Lever: scrub + re-egress. Folded here for
  *     visibility because the bridge tick already composes the same results.
+ *   - `bridge-egress-unreachable` — the egress transport could not contact or
+ *     publish to GitHub. Without this signal, a push 403 is only an error
+ *     string and the otherwise-empty residue reads as `clear`.
  *
  * Pure classification over the mechanism results; a thin injected-sql writer
  * pair for the escalation row (house seam — unit-hermetic, integration-real).
@@ -52,6 +55,7 @@ export type DivergenceSignal =
       errors: string[];
     }
   | { kind: 'egress-secret-block'; remoteRef: string; findings: number; overflow: boolean }
+  | { kind: 'bridge-egress-unreachable'; errors: string[]; transient: boolean }
   /**
    * Ingress failed for EVERY requested branch — the remote itself is
    * unreachable (repo not found / auth refused / network), not a per-branch
@@ -118,7 +122,7 @@ export interface DivergenceVerdict {
 /** Fold the mechanism results into divergence signals. Pure; all inputs optional
  *  (the bridge tick may run egress-only or ingress-only phases). */
 export function collectDivergenceSignals(results: {
-  egress?: Pick<EgressResult, 'rejectedNonFF' | 'blockedSecrets'> | null;
+  egress?: Pick<EgressResult, 'rejectedNonFF' | 'blockedSecrets'> & Partial<Pick<EgressResult, 'remoteErrors'>> | null;
   ingress?: Pick<IngressResult, 'nonFF'> | null;
   /** Admission verdicts for newly-ingressed heads, keyed by the judged head. */
   admissions?: Array<{ head: string; result: Pick<AdmissionResult, 'admit' | 'basis' | 'blockedAuthors' | 'errors'> }>;
@@ -161,6 +165,14 @@ export function collectDivergenceSignals(results: {
   for (const b of results.egress?.blockedSecrets ?? []) {
     signals.push({ kind: 'egress-secret-block', remoteRef: b.remoteRef, findings: b.findings.length, overflow: b.overflow });
   }
+  const egressRemoteErrors = results.egress?.remoteErrors ?? [];
+  if (egressRemoteErrors.length > 0) {
+    signals.push({
+      kind: 'bridge-egress-unreachable',
+      errors: egressRemoteErrors.map((e) => e.message),
+      transient: egressRemoteErrors.every((e) => e.transient),
+    });
+  }
   for (const n of results.ingress?.nonFF ?? []) {
     signals.push({ kind: 'ingress-non-ff', branch: n.branch, local: n.local, remote: n.remote });
   }
@@ -190,7 +202,8 @@ export function classifyDivergence(signals: DivergenceSignal[]): DivergenceVerdi
     (s) =>
       s.kind === 'ingress-non-ff' ||
       s.kind === 'admission-blocked' ||
-      (s.kind === 'bridge-remote-unreachable' && !s.transient),
+      (s.kind === 'bridge-remote-unreachable' && !s.transient) ||
+      (s.kind === 'bridge-egress-unreachable' && !s.transient),
   );
   const counts = new Map<DivergenceSignal['kind'], number>();
   for (const s of signals) counts.set(s.kind, (counts.get(s.kind) ?? 0) + 1);
@@ -220,6 +233,17 @@ export function classifyDivergence(signals: DivergenceSignal[]): DivergenceVerdi
   if (unreachable.some((s) => s.transient))
     parts.push(
       'the git transport could not even be SPAWNED for ANY branch this tick (e.g. right after a process restart — an env/PATH hiccup, not a remote URL or credential problem) — likely transient; no owner action needed unless it persists across ticks',
+    );
+  const egressUnreachable = signals.filter(
+    (s): s is Extract<DivergenceSignal, { kind: 'bridge-egress-unreachable' }> => s.kind === 'bridge-egress-unreachable',
+  );
+  if (egressUnreachable.some((s) => !s.transient))
+    parts.push(
+      'the GitHub egress transport could not contact or publish to the remote (for example, a rejected push) — origin is frozen at the last confirmed egress; fix the remote account/credential or destination before expecting off-box progress',
+    );
+  if (egressUnreachable.some((s) => s.transient))
+    parts.push(
+      'the egress git transport could not be SPAWNED this tick — likely transient; no owner action needed unless it persists across ticks',
     );
   if (c('egress-canonical-missing') > 0)
     parts.push(

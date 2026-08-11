@@ -77,6 +77,42 @@ describe('collectDivergenceSignals — folds the mechanism residues', () => {
     expect(verdict.detail).toMatch(/transient/i);
   });
 
+  it('an egress transport failure is not a clear pass (WI-37949)', () => {
+    const signals = collectDivergenceSignals({
+      egress: {
+        rejectedNonFF: [],
+        blockedSecrets: [],
+        remoteErrors: [{ message: 'push refs/heads/staging: 403 email verification required', transient: false }],
+      },
+    });
+    expect(signals).toEqual([
+      {
+        kind: 'bridge-egress-unreachable',
+        errors: ['push refs/heads/staging: 403 email verification required'],
+        transient: false,
+      },
+    ]);
+    const verdict = classifyDivergence(signals);
+    expect(verdict.action).toBe('escalate');
+    expect(verdict.needsOwner).toBe(true);
+    expect(verdict.detail).toMatch(/egress transport/i);
+  });
+
+  it('an egress spawn failure escalates without an owner lever', () => {
+    const verdict = classifyDivergence(
+      collectDivergenceSignals({
+        egress: {
+          rejectedNonFF: [],
+          blockedSecrets: [],
+          remoteErrors: [{ message: 'push refs/heads/staging: spawn git ENOENT', transient: true }],
+        },
+      }),
+    );
+    expect(verdict.action).toBe('escalate');
+    expect(verdict.needsOwner).toBe(false);
+    expect(verdict.detail).toMatch(/could not be SPAWNED/i);
+  });
+
   it('admitted heads (baseline/clean) are non-events; empty/absent inputs yield no signals', () => {
     expect(
       collectDivergenceSignals({

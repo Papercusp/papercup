@@ -161,6 +161,14 @@ export interface EgressSecretBlock {
   advancedTo?: string | null;
 }
 
+/** A failure in the remote transport, distinct from local scan errors and
+ * policy outcomes such as non-FF or secret blocks. */
+export interface EgressRemoteError {
+  message: string;
+  /** `defaultRunGit`'s code -1 means the process never reached the remote. */
+  transient: boolean;
+}
+
 export interface EgressResult {
   ok: boolean;
   pushed: EgressPushed[];
@@ -175,6 +183,8 @@ export interface EgressResult {
   exemptedFindings: SecretFinding[];
   tagsPushed: string[];
   tagsRejected: { name: string; reason: string }[];
+  /** Remote transport failures that must not be folded into a clear verdict. */
+  remoteErrors: EgressRemoteError[];
   errors: string[];
 }
 
@@ -186,9 +196,9 @@ async function lsRemote(
   remoteUrl: string,
   ref: string,
   runGit: RunGit,
-): Promise<{ sha: string | null } | { error: string }> {
+): Promise<{ sha: string | null } | { error: string; transient: boolean }> {
   const r = await runGit(['ls-remote', remoteUrl, ref], repoPath);
-  if (r.code !== 0) return { error: r.stderr.trim() || `ls-remote exited ${r.code}` };
+  if (r.code !== 0) return { error: r.stderr.trim() || `ls-remote exited ${r.code}`, transient: r.code === -1 };
   const line = r.stdout.split('\n').find((l) => l.trim());
   if (!line) return { sha: null };
   const sha = line.trim().split(/\s+/)[0];
@@ -438,6 +448,7 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
     blockedSecrets: [],
     tagsPushed: [],
     tagsRejected: [],
+    remoteErrors: [],
     errors: [],
   };
 
@@ -446,7 +457,9 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
     const remote = await lsRemote(input.repoPath, input.remoteUrl, spec.remoteRef, runGit);
     if ('error' in remote) {
       res.ok = false;
-      res.errors.push(`ls-remote ${spec.remoteRef}: ${remote.error}`);
+      const message = `ls-remote ${spec.remoteRef}: ${remote.error}`;
+      res.remoteErrors.push({ message, transient: remote.transient });
+      res.errors.push(message);
       continue;
     }
     const remoteSha = remote.sha;
@@ -470,6 +483,12 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
           { timeoutMs: NETWORK_RUN_GIT_TIMEOUT_MS },
         );
         if (f.code !== 0 || !(await haveObject(input.repoPath, remoteSha, runGit))) {
+          if (f.code !== 0) {
+            res.remoteErrors.push({
+              message: `fetch ${spec.remoteRef}: ${f.stderr.trim() || `exited ${f.code}`}`,
+              transient: f.code === -1,
+            });
+          }
           // Can't establish ancestry → fail CLOSED as a non-FF (never push blind).
           res.rejectedNonFF.push({
             remoteRef: spec.remoteRef,
@@ -559,7 +578,9 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
       });
     } else {
       res.ok = false;
-      res.errors.push(`push ${spec.remoteRef}: ${push.stderr.trim() || `exited ${push.code}`}`);
+      const message = `push ${spec.remoteRef}: ${push.stderr.trim() || `exited ${push.code}`}`;
+      res.remoteErrors.push({ message, transient: push.code === -1 });
+      res.errors.push(message);
     }
   }
 
@@ -570,7 +591,9 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
     const remote = await lsRemote(input.repoPath, input.remoteUrl, tagRef, runGit);
     if ('error' in remote) {
       res.ok = false;
-      res.errors.push(`ls-remote ${tagRef}: ${remote.error}`);
+      const message = `ls-remote ${tagRef}: ${remote.error}`;
+      res.remoteErrors.push({ message, transient: remote.transient });
+      res.errors.push(message);
       continue;
     }
     if (remote.sha === tag.sha) {
@@ -587,7 +610,11 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
       { timeoutMs: NETWORK_RUN_GIT_TIMEOUT_MS },
     );
     if (push.code === 0) res.tagsPushed.push(tag.name);
-    else res.tagsRejected.push({ name: tag.name, reason: push.stderr.trim().split('\n')[0] ?? `exited ${push.code}` });
+    else {
+      const message = `push ${tagRef}: ${push.stderr.trim() || `exited ${push.code}`}`;
+      res.tagsRejected.push({ name: tag.name, reason: message.split('\n')[0] ?? message });
+      res.remoteErrors.push({ message, transient: push.code === -1 });
+    }
   }
 
   return res;
