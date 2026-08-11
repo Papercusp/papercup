@@ -313,11 +313,9 @@ export default defineTool({
     'Single: { id, checkpoint? }. Many: items:[{ id, checkpoint?, harness? }]. ' +
     'Your transcript does NOT carry across a task boundary / re-spawn; the checkpoint is your continuity, ' +
     "re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; `append:true` joins instead. " +
-    'Returns { ok, results:[{ ok, id, harness, cleared, length, contentHash, verified, storedHead, by | error }], counts }. ' +
-    'Writes are verify-read (checkpoint_verify_failed on a miss); a plain replace shrinking a substantial checkpoint ' +
-    '>50%, or an append with a disagreeing pre-read, is BLOCKED (`shrink_blocked` / `append_base_unreadable` — ' +
-    'the refusal includes `errorCode` + structured `recovery` args: `append:true` to preserve prior content, or ' +
-    '`append:false, confirmShrink:true` only for an intentional full replacement). Refuses a peer-held item (`not_holder`).',
+    'Writes are verify-read. A plain replace shrinking a substantial checkpoint >50%, or an append with a ' +
+    'disagreeing pre-read, is BLOCKED; the refusal is self-explaining (`errorCode` + structured `recovery` args). ' +
+    'Refuses a peer-held item (`not_holder`).',
   guidance: {
     when:
       'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your ' +
@@ -330,6 +328,11 @@ export default defineTool({
       'Call before work_items:complete / on yield; blank clears a stale note. For a concise successor addendum to a ' +
       'detailed prior note, pass append:true. For an intentional full replacement, include confirmShrink:true. ' +
       'Doubles as a liveness pulse — a claim held through long local-only tool use can go presence-stale and be reclaimed.',
+    returns:
+      'Returns { ok, results:[{ ok, id, harness, cleared, length, contentHash, verified, storedHead, by | error }], counts }. ' +
+      'A blocked write carries `errorCode` (`shrink_blocked` / `append_base_unreadable`) plus structured `recovery` args: ' +
+      '`append:true` to preserve prior content, or `append:false, confirmShrink:true` for an intentional full replacement. ' +
+      'A verify-read miss is `checkpoint_verify_failed`.',
   },
   capability: 'work_items:write',
   requirePrincipal: false,

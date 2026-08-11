@@ -158,20 +158,11 @@ const defaultFire: DeciderFireFn = ({ installSlug, workspaceId, role, kickoff })
   // harness_shared.autoloop_state, so consecutive_errors feeds the fire gate —
   // a repeatedly-failing decider backs off instead of re-firing at full cadence.
   void recordFire(installSlug, role, 'firing', 'attempt').catch(() => {});
-  // queen-memory-hybrid L2 (MUG_WARM_SESSION, default OFF): try delivering a
-  // queen wake WARM (wake-executor resume of her tracked session) before the
-  // cold /invoke spawn. Fail-soft + flag-gated inside the attempt; delivered ⇒
-  // skip the spawn (the resumed session IS this wake); not ⇒ today's path,
-  // byte-identical. Mode+reason stamped for the A/B.
-  void (async () => {
-    const { mugWarmWakeAttempt } = await import('../pot/mug-warm-session');
-    const attempt = await mugWarmWakeAttempt({ installSlug, workspaceId, role, ...(kickoff ? { kickoff } : {}) });
-    if (attempt.decision) {
-      void recordFire(installSlug, role, `wake-mode: ${attempt.decision.mode} — ${attempt.decision.reason}`, attempt.delivered ? 'ok' : 'attempt').catch(() => {});
-    }
-    if (attempt.delivered) return; // warm-delivered — no cold spawn
-    void coldFire();
-  })().catch(() => void coldFire());
+  // The queen-memory-hybrid L2 warm-wake attempt (pot/mug-warm-session) was RETIRED
+  // with the Mug tier — retire-mug-kettle-su-only-2026-08-09 P-059. It only ever acted
+  // for role 'mug'/'brain', which the retired tier no longer spawns, and its documented
+  // fall-through was this exact cold spawn, so the surviving path is unchanged.
+  void coldFire();
   return;
 
   function coldFire(): void {
