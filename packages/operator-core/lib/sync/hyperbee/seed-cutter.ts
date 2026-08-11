@@ -80,6 +80,8 @@ export interface CorestoreCutSpec {
    * instead of copying the private author-log bytes into the public seed.
    */
   readonly filtered?: boolean;
+  /** Identity literals emitted by the desktop release audit for the projection scrub. */
+  readonly redactValues?: readonly string[];
 }
 
 export interface HiveSeedCutInputs {
@@ -202,6 +204,7 @@ export async function cutHiveSeed(inputs: HiveSeedCutInputs): Promise<HiveSeedCu
       stagingDir,
       ...(corestore.sparse ? { sparse: true } : {}),
       ...(corestore.filtered ? { filtered: true } : {}),
+      ...(corestore.redactValues ? { redactValues: corestore.redactValues } : {}),
     });
     stores.push({ ...entry, source: { type: 'resource', path: CORESTORE_SUBDIR } });
     sizes.push({ kind: entry.kind, subdir: CORESTORE_SUBDIR, sizeBytes: entry.sizeBytes, encrypted: false });

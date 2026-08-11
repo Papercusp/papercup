@@ -375,6 +375,7 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
     await store.ready();
     const own = await openOwnLog(store);
     const privateEmail = `owner${'@'}example.org`;
+    const privateHandle = ['avi', 'ynw'].join('');
     const op = (table: string, hbKey: string, value: unknown, ts: number): PeerLogOp => ({
       type: 'put',
       table,
@@ -384,13 +385,13 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
       schema_version: 1,
       author_pubkey: own.keyHex,
     });
-    await own.append(op('plans', 'p1', { title: 'intended content', owner: privateEmail }, 1));
+    await own.append(op('plans', 'p1', { title: 'intended content', owner: privateEmail, handle: privateHandle }, 1));
     // Identity derived at RUNTIME — never a literal in tracked source (WI-4776). Writing
     // the real hostname in here would put the exact string this fix removes back into
     // shipped source and red the identity-lint gate.
     await own.append(op('presence', `${hostname()}`, { machine_label: hostname(), machine_user: userInfo().username }, 2));
     await own.append(op('usage', 'u1', { tokens: 5 }, 3));
-    return { store, own, privateEmail };
+    return { store, own, privateEmail, privateHandle };
   }
 
   async function stagingStore() {
@@ -426,7 +427,7 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
   });
 
   it('carries intended content, drops presence, KEEPS usage, and never writes the source', async () => {
-    const { store: src, own, privateEmail } = await sourceWithIdentity();
+    const { store: src, own, privateEmail, privateHandle } = await sourceWithIdentity();
     const lengthBefore = own.length;
     const staging = await stagingStore();
 
@@ -434,6 +435,7 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
       sourceStore: src,
       ownerKeyHex: own.keyHex,
       stagingStore: staging,
+      redactValues: [privateHandle],
     });
 
     // Filtering the owner's live log in place would make historical rows unreachable
@@ -466,6 +468,7 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
       expect(bytes).not.toContain(userInfo().username);
     }
     expect(bytes).not.toContain(privateEmail);
+    expect(bytes).not.toContain(privateHandle);
     expect(bytes).toContain('[email]');
   });
 
@@ -490,7 +493,7 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
   });
 
   it('release filtered cut emits a sanitized synthetic core and restores it offline', async () => {
-    const { store: src, own, privateEmail } = await sourceWithIdentity();
+    const { store: src, own, privateEmail, privateHandle } = await sourceWithIdentity();
     const provider = createCorestoreSeedProvider();
     const stagingDir = tmpDir('papercusp-seed-filtered-cut-');
 
@@ -499,6 +502,7 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
       coreKeys: [own.keyHex],
       stagingDir,
       filtered: true,
+      redactValues: [privateHandle],
     } as unknown as Parameters<typeof provider.cut>[0]);
     const meta = entry.meta as { coreKeys: string[]; coreLengths: Record<string, number>; coreSparseFrom?: unknown };
     const [seedKey] = meta.coreKeys;
@@ -520,6 +524,7 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
     let bytes = '';
     for (let i = 0; i < core.length; i++) bytes += JSON.stringify(await core.get(i, { wait: false }));
     expect(bytes).not.toContain(privateEmail);
+    expect(bytes).not.toContain(privateHandle);
     expect(bytes).toContain('[email]');
     expect(bytes).not.toContain(hostname());
   });

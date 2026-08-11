@@ -133,6 +133,24 @@ import type { BootedHarnessHandle, LocalWriteOp } from '@papercusp/operator-core
 const DEFAULT_HIVE = 'papercusp';
 const DEFAULT_ORIGIN = 'https://github.com/Papercusp/papercup';
 
+/** Keep the seed projection's scrub list in lockstep with the final desktop audit. */
+function releaseSeedRedactionValues(root: string): readonly string[] {
+  const audit = join(root, 'papercusp-desktop', 'bin', 'audit-release-bundle.py');
+  const result = spawnSync('python3', [audit, '--identity-literals'], {
+    encoding: 'utf8',
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+  if (result.status !== 0) {
+    const detail = typeof result.stderr === 'string' ? result.stderr.trim() : '';
+    throw new Error(`[cut-seed] could not resolve release identity literals from ${audit}${detail ? `: ${detail}` : ''}`);
+  }
+  const output = typeof result.stdout === 'string' ? result.stdout : result.stdout?.toString('utf8') ?? '';
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.split('\t', 1)[0]?.trim())
+    .filter((value): value is string => !!value && value.length >= 3);
+}
+
 export interface PickGitEncryptionInput {
   /** --encrypt-key-hex / PAPERCUSP_SEED_KEY_HEX — an EXPLICIT fixture/manual key. */
   readonly keyHex?: string;
@@ -1243,6 +1261,7 @@ async function main(): Promise<void> {
       // owner's private author log. The provider mints a fresh read-only snapshot core,
       // redacts email-shaped values, and leaves the live source log untouched.
       filtered: true,
+      redactValues: releaseSeedRedactionValues(root),
     };
   }
 

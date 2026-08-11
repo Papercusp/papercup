@@ -36,6 +36,7 @@
  */
 
 import Corestore from 'corestore';
+import { execFileSync } from 'node:child_process';
 import { mkdir, mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, relative } from 'node:path';
@@ -83,17 +84,31 @@ export interface MintedSeedCore {
 }
 
 /**
- * Public seed content must not carry email-shaped identity values from private plan
- * metadata or prose. This is deliberately shape-based: the release cutter cannot know
- * every address a person has used, while a generic email is still private data. Opaque
- * binary / encrypted values are left untouched; valid UTF-8 JSON values are projected too,
- * because the corestore JSON boundary can surface encoded JSON as bytes.
+ * Public seed content must not carry identity values from private plan metadata or prose.
+ * The release cutter supplies the same literal set as the desktop release audit (including
+ * known-sensitive cross-box aliases); direct callers fall back to this box's runtime values.
+ * Opaque binary / encrypted values are left untouched; valid UTF-8 JSON values are projected
+ * too, because the corestore JSON boundary can surface encoded JSON as bytes.
  */
 const SEED_EMAIL_PATTERN = /[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,24}/g;
 
 const SEED_REAL_HOSTNAME_ENV = 'PAPERCUSP_SEED_REAL_HOSTNAME';
 const IMPERSONAL_USERS = new Set(['root', 'runner', 'build', 'ubuntu']);
+const IMPERSONAL_HOMES = new Set(['/root', '/', '/home']);
 const IMPERSONAL_HOST_PREFIXES = ['runner', 'ci-', 'localhost'];
+
+function gitConfig(key: string): string | undefined {
+  try {
+    const value = execFileSync('git', ['config', '--get', key], {
+      encoding: 'utf8',
+      timeout: 5_000,
+      stdio: ['ignore', 'pipe', 'ignore'],
+    }).trim();
+    return value || undefined;
+  } catch {
+    return undefined;
+  }
+}
 
 /** Build-box identity values are not content and must not survive a public projection. */
 function seedBuildIdentityLiterals(): readonly string[] {
@@ -104,17 +119,45 @@ function seedBuildIdentityLiterals(): readonly string[] {
   } catch {
     username = undefined;
   }
-  return [...new Set([realHostname, username].filter((value): value is string => {
-    if (!value || value.length < 3) return false;
-    if (value === username && IMPERSONAL_USERS.has(value)) return false;
-    if (value === realHostname && IMPERSONAL_HOST_PREFIXES.some((prefix) => value.startsWith(prefix))) return false;
-    return true;
-  }))];
+  let home: string | undefined;
+  try {
+    home = process.env.HOME || undefined;
+  } catch {
+    home = undefined;
+  }
+  const values = [
+    realHostname && !IMPERSONAL_HOST_PREFIXES.some((prefix) => realHostname.startsWith(prefix)) ? realHostname : undefined,
+    username && !IMPERSONAL_USERS.has(username) ? username : undefined,
+    home && !IMPERSONAL_HOMES.has(home) ? home : undefined,
+    gitConfig('user.name'),
+    gitConfig('user.email'),
+  ];
+  return [...new Set(values.filter((value): value is string => !!value && value.length >= 3))];
 }
 
 const SEED_BUILD_IDENTITY_LITERALS = seedBuildIdentityLiterals();
 
-function redactEncodedJson(value: Uint8Array | ArrayBuffer): unknown {
+function needsWordBoundary(literal: string): boolean {
+  return literal.length < 6 && /^[a-zA-Z0-9]+$/.test(literal);
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+function redactString(value: string, literals: readonly string[]): string {
+  let redacted = value.replace(SEED_EMAIL_PATTERN, '[email]');
+  for (const literal of literals) {
+    if (needsWordBoundary(literal)) {
+      redacted = redacted.replace(new RegExp(`\\b${escapeRegExp(literal)}\\b`, 'g'), '[build-identity]');
+    } else {
+      redacted = redacted.split(literal).join('[build-identity]');
+    }
+  }
+  return redacted;
+}
+
+function redactEncodedJson(value: Uint8Array | ArrayBuffer, literals: readonly string[]): unknown {
   const bytes = value instanceof ArrayBuffer ? new Uint8Array(value) : value;
   let text: string;
   try {
@@ -130,24 +173,22 @@ function redactEncodedJson(value: Uint8Array | ArrayBuffer): unknown {
     return value;
   }
 
-  const redacted = redactSeedValue(decoded);
+  const redacted = redactSeedValue(decoded, literals);
   // Preserve the original bytes when no sensitive value was found. This keeps opaque
   // and already-sanitized encoded values byte-for-byte unchanged.
   return redacted === decoded ? value : redacted;
 }
 
-export function redactSeedValue(value: unknown): unknown {
+export function redactSeedValue(value: unknown, literals: readonly string[] = SEED_BUILD_IDENTITY_LITERALS): unknown {
   if (typeof value === 'string') {
-    let redacted = value.replace(SEED_EMAIL_PATTERN, '[email]');
-    for (const literal of SEED_BUILD_IDENTITY_LITERALS) redacted = redacted.split(literal).join('[build-identity]');
-    return redacted;
+    return redactString(value, literals);
   }
   if (value === null || typeof value !== 'object') return value;
-  if (value instanceof Uint8Array || value instanceof ArrayBuffer) return redactEncodedJson(value);
+  if (value instanceof Uint8Array || value instanceof ArrayBuffer) return redactEncodedJson(value, literals);
   if (Array.isArray(value)) {
     let changed = false;
     const out = value.map((item) => {
-      const redacted = redactSeedValue(item);
+      const redacted = redactSeedValue(item, literals);
       changed ||= redacted !== item;
       return redacted;
     });
@@ -157,7 +198,7 @@ export function redactSeedValue(value: unknown): unknown {
   const out: Record<string, unknown> = {};
   let changed = false;
   for (const [key, child] of Object.entries(value)) {
-    const redacted = redactSeedValue(child);
+    const redacted = redactSeedValue(child, literals);
     changed ||= redacted !== child;
     out[key] = redacted;
   }
@@ -191,6 +232,8 @@ export async function mintFilteredSeedContentCore(inp: {
   readonly stagingStore: Corestore;
   readonly excludeTables?: readonly string[];
   readonly now?: number;
+  /** Release audit literals; omitted direct callers use the current box's runtime set. */
+  readonly redactValues?: readonly string[];
 }): Promise<MintedSeedCore> {
   const sourceCore = inp.sourceStore.get({
     key: Buffer.from(inp.ownerKeyHex, 'hex'),
@@ -210,7 +253,7 @@ export async function mintFilteredSeedContentCore(inp: {
         now: inp.now ?? Date.now(),
         schemaVersion: CURRENT_SCHEMA_VERSION,
         excludeTables: inp.excludeTables ?? SEED_EXCLUDED_TABLES,
-        transformValue: redactSeedValue,
+        transformValue: (value) => redactSeedValue(value, inp.redactValues),
       });
       if (!produced.appended) {
         throw new Error(
@@ -533,7 +576,7 @@ export function createCorestoreSeedProvider(): SeedProvider {
     kind: CORESTORE_SEED_KIND,
 
     async cut(ctx: SeedCutContext): Promise<SeedCutOutput> {
-      const { sourceStore, coreKeys, stagingDir, sparse, filtered } = ctx as unknown as CorestoreCutContext;
+      const { sourceStore, coreKeys, stagingDir, sparse, filtered, redactValues } = ctx as unknown as CorestoreCutContext;
       await mkdir(stagingDir, { recursive: true });
 
       if (filtered) {
@@ -547,6 +590,7 @@ export function createCorestoreSeedProvider(): SeedProvider {
               sourceStore,
               ownerKeyHex,
               stagingStore: replica,
+              redactValues,
             });
             filteredCoreKeys.push(minted.keyHex);
             coreLengths[minted.keyHex] = minted.length;
