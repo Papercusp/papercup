@@ -157,10 +157,52 @@ if [[ -n "$TARGET_URL" ]]; then
   IMPORT_URL="$BASE_URL/$TARGET_DB"
   PSQL_IMPORT=(psql "$IMPORT_URL")
   PG_RESTORE_IMPORT=(pg_restore -d "$IMPORT_URL")
+  # Same binary + same OS user as the import, minus the connection — used to
+  # prove the archive is READABLE before we commit to anything.
+  PG_RESTORE_PROBE=(pg_restore)
 else
   PSQL_SUPER=(sudo -u postgres psql)
   PSQL_IMPORT=(sudo -u postgres psql -d "$TARGET_DB")
   PG_RESTORE_IMPORT=(sudo -u postgres pg_restore -d "$TARGET_DB")
+  PG_RESTORE_PROBE=(sudo -u postgres pg_restore)
+fi
+
+# ---------------------------------------------------------------------------
+# PREFLIGHT: can the user that will RUN pg_restore actually READ the archive?
+#
+# Not hypothetical — this is the failure that motivated the check (WI-37835,
+# measured 2026-08-11). The hourly host backup chowns its -Fd output to the
+# BACKUP user at 0700 so kopia can ship it off-box, which left the archive
+# unreadable by `postgres` — the only superuser path on this cluster, hence the
+# user that restores it. The restore then failed with
+#   pg_restore: error: could not open input file ".../toc.dat": Permission denied
+# AFTER creating the database, and because pg_restore continues past errors it
+# surfaced as ONE error line amid the usual ordering noise. Nothing was
+# restored, yet by exit code and log shape it resembled a mostly-fine run.
+#
+# Note which object is at fault: the archive's FILES were already 0664. It was
+# the DIRECTORY's missing group-traverse bit, which is why the symptom names a
+# file. Probing with the real command prefix sidesteps having to reason about
+# that at all — it simply asks the question the import will ask.
+# ---------------------------------------------------------------------------
+if [[ "$DUMP_FORMAT" != "plain" ]]; then
+  if ! "${PG_RESTORE_PROBE[@]}" --list "$DUMP_PATH" >/dev/null 2>&1; then
+    echo "ERROR: the archive at '$DUMP_PATH' is NOT READABLE by the user that" >&2
+    echo "       would run the import (${PG_RESTORE_PROBE[*]})." >&2
+    echo "" >&2
+    echo "       This is a permissions problem, not a corrupt dump — check the" >&2
+    echo "       DIRECTORY's traverse bit, not just the files inside it:" >&2
+    echo "         stat -c '%A %U:%G %n' '$DUMP_PATH'" >&2
+    echo "" >&2
+    echo "       For a host dump restored as postgres, group-read is enough:" >&2
+    echo "         sudo chown -R <owner>:postgres '$DUMP_PATH'" >&2
+    echo "         sudo chmod -R u=rwX,g=rX,o= '$DUMP_PATH'" >&2
+    echo "" >&2
+    echo "       Refusing to start: an unreadable archive restores NOTHING while" >&2
+    echo "       still looking like a run that merely logged a few errors." >&2
+    exit 1
+  fi
+  echo "==> preflight: archive is readable by ${PG_RESTORE_PROBE[*]}"
 fi
 
 echo "==> target database: $TARGET_DB"
