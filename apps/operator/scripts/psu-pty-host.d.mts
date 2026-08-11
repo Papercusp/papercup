@@ -127,22 +127,26 @@ export function makeIdleGate({ idleMs, capMs, now }?: {
         reason: string;
     }>;
 };
-/** Track quiet-but-unsubmitted owner input separately from keystroke activity. */
+/**
+ * Track a bridged owner's line-editor state separately from keystroke activity.
+ * The idle gate only knows that typing stopped; it cannot tell whether the
+ * owner pressed Enter. Injecting a wake into a quiet-but-unsubmitted line
+ * appends the machine envelope after owner text, so provenance is then
+ * misclassified as owner-typed and the TUI receives a corrupted turn.
+ *
+ * Escape sequences are ignored as terminal editing controls. The conservative
+ * fallback is to keep a line pending until an explicit submit/cancel arrives;
+ * a false defer is safe, while appending machine bytes to owner text is not.
+ */
 export function makeOwnerComposerGate({ capMs }?: {
     capMs?: number | undefined;
 }): {
-    observe(data: any): void;
+    observe: (data: any) => void;
     hasPending(): boolean;
     pendingLength(): number;
     markSubmitted(): void;
-    /** Wait for an owner submit/cancel, bounded by capMs. */
-    waitClear(): Promise<{
-        deferred: boolean;
-        reason?: undefined;
-    } | {
-        deferred: boolean;
-        reason: string;
-    }>;
+    /** Wait for an owner submit/cancel, bounded so a parked line cannot wedge a host. */
+    waitClear(): Promise<any>;
 };
 /**
  * Session activity tracker (agent-liveness-heartbeat-hardening-2026-06-12
