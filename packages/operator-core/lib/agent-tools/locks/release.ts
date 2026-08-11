@@ -12,6 +12,7 @@ import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { readIdentity } from './identity';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
+import { acquireWithContentionRetry } from './contention-retry';
 import { tryRelease, releaseAllResourcesForOwner } from './su-lock-store';
 import { notifyPlanLockChange } from './notify-lock-change';
 import { broadcastResourceBackUp } from './resource-broadcast';
@@ -120,23 +121,25 @@ export default defineTool({
         notifyPlanLockChange(released ?? []);
       };
       try {
-        const routed = await routeFileLockOp<Awaited<ReturnType<typeof tryRelease>>>(
-          coordinationDomain,
-          {
-            local: localRelease,
-            remote: {
-              kind: FILE_LOCK_OP_KINDS.release,
-              payload: {
-                owner: ownerId,
-                lockId,
-                paths: args.paths,
-                allMine,
-                coordinationDomain,
-                publishedSha: args.published_sha ?? null,
-              } satisfies FileLockReleaseParams,
-              decode: (raw) => ({ released: (raw as { released?: string[] }).released ?? [] }),
+        const routed = await acquireWithContentionRetry(() =>
+          routeFileLockOp<Awaited<ReturnType<typeof tryRelease>>>(
+            coordinationDomain,
+            {
+              local: localRelease,
+              remote: {
+                kind: FILE_LOCK_OP_KINDS.release,
+                payload: {
+                  owner: ownerId,
+                  lockId,
+                  paths: args.paths,
+                  allMine,
+                  coordinationDomain,
+                  publishedSha: args.published_sha ?? null,
+                } satisfies FileLockReleaseParams,
+                decode: (raw) => ({ released: (raw as { released?: string[] }).released ?? [] }),
+              },
             },
-          },
+          ),
         );
         onFileLocksReleased(routed.value.released);
         // WI-1550 (P-015): a LOCALLY-decided release (we are the authority, or
@@ -159,7 +162,7 @@ export default defineTool({
         // Routing-layer fault before a scope was resolved — degrade to the raw
         // local release (pre-cutover behavior). No lock-event emitted here, same
         // rationale as the acquire-side fallback in acquire.ts.
-        const local = await localRelease();
+        const local = await acquireWithContentionRetry(localRelease);
         onFileLocksReleased(local.released);
         return local;
       }

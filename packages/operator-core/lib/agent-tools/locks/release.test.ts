@@ -85,6 +85,46 @@ describe('locks:release handler', () => {
     expect(b).toMatchObject({ ok: false });
     expect(String(b.error)).toMatch(/either all_mine=true or selected/);
   });
+
+  it('retries a transient workspace contention before returning the release result', async () => {
+    vi.useFakeTimers();
+    try {
+      const contended = { name: 'WorkspaceContendedError', pgCode: '55P03' };
+      routeM
+        .mockRejectedValueOnce(contended)
+        .mockResolvedValueOnce({ value: { ok: true, released: ['a.ts'] }, via: 'local-authority', scope: 'harness-x' } as never);
+
+      const pending = call({ lock_id: '11111111-1111-1111-1111-111111111111' });
+      await vi.runAllTimersAsync();
+      const b = body(await pending);
+
+      expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+      expect(routeM).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('retries the local fallback when routing fails and the release transaction is transiently contended', async () => {
+    vi.useFakeTimers();
+    try {
+      const contended = { name: 'WorkspaceContendedError', pgCode: '57014' };
+      routeM.mockRejectedValue(new Error('authority route unavailable'));
+      const tryReleaseM = vi.mocked((await import('./su-lock-store')).tryRelease);
+      tryReleaseM
+        .mockRejectedValueOnce(contended)
+        .mockResolvedValue({ released: ['a.ts'] } as never);
+
+      const pending = call({ lock_id: '11111111-1111-1111-1111-111111111111' });
+      await vi.runAllTimersAsync();
+      const b = body(await pending);
+
+      expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+      expect(tryReleaseM).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
 });
 
 describe('locks:release — WI-1550 P-015 lock-event emission on a LOCALLY-decided release', () => {

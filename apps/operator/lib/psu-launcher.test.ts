@@ -82,6 +82,7 @@ import {
   nativeSessionIdFromLaunchArgs,
   mintRecycleArgs,
   mintCarryRespawnArgs,
+  stripKickoffPositional,
   claudeStoreHasSession,
   sessionHasTranscript,
   sessionIsResumable,
@@ -3708,6 +3709,100 @@ describe('mintRecycleArgs — personaFile swap (stale-prompt-render-in-live-sess
     );
     expect(args).toEqual(['claude', '--session-id', FRESH, '--append-system-prompt-file', carry]);
     expect(args).not.toContain(NEW_RENDER);
+  });
+});
+
+describe('kickoff positional is dropped on respawn (WI-37939)', () => {
+  const UUID = '0123abcd-1234-5678-9abc-def012345678';
+  const FRESH = 'ffffabcd-1234-5678-9abc-def012345678';
+  const mintId = () => FRESH;
+  // The REAL kickoff recovered from su-12b70e95's persisted argv (args[12]) — a
+  // fleet-kickoff minted 2026-08-10T16:57:23Z and still being re-delivered 26.6h
+  // later, which is how this bug was found.
+  const KICKOFF =
+    '⟦turn-origin:fleet-kickoff nonce:2299b27f74c65c6b⟧\n' +
+    'You are in GOAL mode on goal `make-a-website-displaying-images-of-pandas-aa0205`, which the owner just started.';
+
+  it('drops the tagged kickoff positional, so the successor does not re-open on it', () => {
+    // THE bug: the copy loop's bare `out.push(a)` carried the launch prompt through
+    // every respawn, so each fresh child re-exec'd claude with the ORIGINAL kickoff
+    // still on argv and opened on it as turn 1 — 26.6h stale, asserting a GOAL-mode
+    // contract the session never held, for an already-achieved goal.
+    const { args } = mintRecycleArgs(
+      ['claude', '--session-id', UUID, '--disallowedTools=Task,Agent,Workflow', KICKOFF],
+      { mintId, agent: 'claude' },
+    );
+    expect(args).toEqual(['claude', '--session-id', FRESH, '--disallowedTools=Task,Agent,Workflow']);
+    expect(args.some((a: string) => a.includes('turn-origin'))).toBe(false);
+  });
+
+  it('drops an UNTAGGED kickoff behind an inline --key=value (tagKickoffProvenance is fail-soft)', () => {
+    // tagKickoffProvenance returns the text UNTAGGED on any error, so the envelope
+    // cannot be the only signal. An inline `--key=value` owns no following token,
+    // which makes what follows it a provable positional.
+    const { args } = mintRecycleArgs(
+      ['claude', '--session-id', UUID, '--disallowedTools=Task', 'start by working plan foo'],
+      { mintId, agent: 'claude' },
+    );
+    expect(args).toEqual(['claude', '--session-id', FRESH, '--disallowedTools=Task']);
+  });
+
+  it('NEVER eats a flag VALUE — the safety invariant that outranks the fix', () => {
+    // Wrongly stripping a value launches the successor with a broken flag, which is
+    // strictly worse than the staleness being fixed. A trailing token owned by a
+    // value-taking flag must survive untouched.
+    for (const tail of [
+      ['--permission-mode', 'bypassPermissions'],
+      ['--system-prompt-file', '/home/u/.papercusp/launch-context/session-14710.md'],
+      ['--settings', '{"env":{"ANTHROPIC_BASE_URL":"http://127.0.0.1:9073"}}'],
+      ['--add-dir', '/some/dir'],
+    ]) {
+      const { args } = mintRecycleArgs(['claude', '--session-id', UUID, ...tail], {
+        mintId,
+        agent: 'claude',
+      });
+      expect(args).toEqual(['claude', '--session-id', FRESH, ...tail]);
+    }
+  });
+
+  it('leaves an argv that never had a kickoff completely alone', () => {
+    const src = ['claude', '--session-id', UUID, '--dangerously-skip-permissions'];
+    const { args } = mintRecycleArgs(src, { mintId, agent: 'claude' });
+    expect(args).toEqual(['claude', '--session-id', FRESH, '--dangerously-skip-permissions']);
+  });
+
+  it('is idempotent — a second respawn of an already-stripped argv is a no-op', () => {
+    // Respawn chains are long-lived (this session respawned 6+ times in 27h); the
+    // strip must not drift the argv further on each hop.
+    const first = mintRecycleArgs(
+      ['claude', '--session-id', UUID, '--disallowedTools=Task', KICKOFF],
+      { mintId, agent: 'claude' },
+    ).args;
+    const second = mintRecycleArgs(first, { mintId, agent: 'claude' }).args;
+    expect(second).toEqual(first);
+  });
+
+  it('carry-respawn drops it too, and still ends on the carry document', () => {
+    // mintCarryRespawnArgs delegates to mintRecycleArgs, so BOTH respawn modes get
+    // the fix from one code path (same shape as the P-002 persona swap above).
+    const { args } = mintCarryRespawnArgs(
+      ['claude', '--session-id', UUID, '--disallowedTools=Task', KICKOFF],
+      { systemPromptAddendum: '# carry doc', ownerId: 'su-wi37939-test', mintId, agent: 'claude' },
+    );
+    expect(args.some((a: string) => a.includes('turn-origin'))).toBe(false);
+    expect(args[args.length - 2]).toBe('--append-system-prompt-file');
+  });
+
+  it('stripKickoffPositional: falsifiable on the exact token classes it decides between', () => {
+    // A guard that has never failed is untested — pin BOTH verdicts, not just the
+    // strip, so a future loosening that eats values fails here.
+    expect(stripKickoffPositional(['claude', '--a=b', KICKOFF])).toEqual(['claude', '--a=b']);
+    expect(stripKickoffPositional(['claude', '--a=b', 'positional'])).toEqual(['claude', '--a=b']);
+    // Value-taking flag → the token is a VALUE, not a positional: untouched.
+    expect(stripKickoffPositional(['claude', '--flag', 'value'])).toEqual(['claude', '--flag', 'value']);
+    // No trailing positional at all.
+    expect(stripKickoffPositional(['claude', '--x'])).toEqual(['claude', '--x']);
+    expect(stripKickoffPositional([])).toEqual([]);
   });
 });
 
