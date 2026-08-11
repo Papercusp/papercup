@@ -46,6 +46,40 @@ describe('machine-surface catalogue — predicates', () => {
     expect(hasSyntheticMarker('<local-command-stdout>ok</local-command-stdout>')).toBe(true);
   });
 
+  /* ── V-002 / D-015: the codex launch prompt. ─────────────────────────────
+     Verbatim head of a real row (session 019ff297…, 2026-08-11T20:51Z). This
+     one is CLI-authored: papercusp writes CODEX_HOME/AGENTS.md but the CLI
+     composes the wrapper, so there is no seam to prefix an envelope onto and
+     no whole-turn hash either side can compute. Hence a pattern, not an
+     enrolment — the reasoning is recorded beside the entries in the source. */
+  it('HIDES the codex AGENTS.md launch prompt (the su persona rendered as the owner)', () => {
+    const LAUNCH_PROMPT =
+      '# AGENTS.md instructions\n\n<INSTRUCTIONS>\n' +
+      '# Superuser engineer-collaborator (su) — domain-neutral base persona\n\n' +
+      '> The DOMAIN-NEUTRAL su role: a superuser engineer working alongside the people who\n' +
+      '> run this workspace.';
+    expect(isUnenrolledMachineSurface(LAUNCH_PROMPT)).toBe(true);
+  });
+
+  it('HIDES the codex plugin preamble (same population, same authorship)', () => {
+    expect(
+      isUnenrolledMachineSurface(
+        '<recommended_plugins>\nHere is a list of plugins that are available but not installed.',
+      ),
+    ).toBe(true);
+  });
+
+  it('KEEPS an owner ASKING about their AGENTS.md — the rail for the two entries above', () => {
+    expect(
+      isUnenrolledMachineSurface('why does my AGENTS.md instructions block show up as my own turn?'),
+    ).toBe(false);
+    expect(
+      isUnenrolledMachineSurface(
+        'the pane opens with "# AGENTS.md instructions" and I never typed it — where does that come from?',
+      ),
+    ).toBe(false);
+  });
+
   /* ── The direction that must NEVER regress. ──────────────────────────────
      Hiding a machine row too few is recoverable; hiding something the human
      actually wrote is not. Every case below is an owner TALKING ABOUT a machine
