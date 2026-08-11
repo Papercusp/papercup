@@ -805,6 +805,15 @@ export function renderCarryBriefColdExtras(
     );
   }
   if (brief.heldItems.length > 0) {
+    // The excerpt must SAY it is an excerpt. This is the cold successor's entire
+    // resume state, rendered as prose with no sibling field to carry a structured
+    // marker — so the withheld-chars notice goes inline, naming the call that
+    // returns the rest. A bare `…` here reads as a complete checkpoint.
+    const excerptCheckpoint = (h: { id: string; checkpoint: string | null }): string =>
+      capPreservingOperative(h.checkpoint!, COLD_CHECKPOINT_CAP, {
+        inlineNotice: true,
+        more: `work_items:get { id: '${h.id}' }`,
+      });
     const lines = brief.heldItems.map((h) => {
       const title = h.title ? ` — ${cap(h.title, COLD_TITLE_CAP)}` : '';
       let ckpt: string;
@@ -825,8 +834,8 @@ export function renderCarryBriefColdExtras(
             `${fmtClock(sessionActivityMs!)} (more happened after this was written; it may be flat-out wrong — ` +
             `verify via sessions:search { session:'self', mode:'verbatim' } and the actual files/state before ` +
             `trusting it, never treat it as "nothing done" or "work undone" at face value): ` +
-            `${capPreservingOperative(h.checkpoint, COLD_CHECKPOINT_CAP)}`
-          : `\n    checkpoint: ${capPreservingOperative(h.checkpoint, COLD_CHECKPOINT_CAP)}`;
+            `${excerptCheckpoint(h)}`
+          : `\n    checkpoint: ${excerptCheckpoint(h)}`;
       }
       return `  • ${h.id}${title}${ckpt}`;
     });
@@ -841,7 +850,13 @@ export function renderCarryBriefColdExtras(
   if (brief.facts.length > 0) {
     // Same fix as the held-item checkpoint above — a fact body can carry a
     // later imperative/supersession clause past the excerpt cut too.
-    const lines = brief.facts.map((f) => `  • ${f.key}: ${capPreservingOperative(f.body, COLD_FACT_BODY_CAP)}`);
+    const lines = brief.facts.map(
+      (f) =>
+        `  • ${f.key}: ${capPreservingOperative(f.body, COLD_FACT_BODY_CAP, {
+          inlineNotice: true,
+          more: `facts:list { key: '${f.key}' }`,
+        })}`,
+    );
     sections.push(
       `Your standing facts (owner-scoped; folded into every orient until retracted — walls/commitments live here):\n${lines.join('\n')}`,
     );

@@ -76,6 +76,49 @@ export interface ExtractOperativeClausesOptions {
   maxClauses?: number;
 }
 
+export interface CapPreservingOperativeOptions extends ExtractOperativeClausesOptions {
+  /**
+   * The concrete call that returns the UNTRUNCATED text (e.g.
+   * `work_items:get { id: 'WI-1234' }`). Carried into the structured
+   * `truncation` marker, and — when `inlineNotice` is set — rendered into the
+   * excerpt itself. Omit only when the caller genuinely has no fetch path.
+   */
+  more?: string;
+  /**
+   * Render the withheld-chars notice INTO the returned string. For prose/markdown
+   * surfaces (the cold carry brief), where there is no sibling field to put a
+   * structured marker in. Structured (JSON) callers should leave this off and
+   * emit the returned `truncation` object instead, so the disclosure is machine
+   * -readable and the excerpt stays byte-identical to the pre-disclosure shape.
+   */
+  inlineNotice?: boolean;
+}
+
+/**
+ * What an excerpt withheld, and how to get it back. Mirrors the disclosure
+ * convention every sibling fold in `coord:orient` already follows
+ * (`factsTruncated` / `claimableTruncated` / `recentTruncated` /
+ * `bodiesTruncated`: a total, a shown-count, and a `more` fetch verb).
+ */
+export interface CapPreservingOperativeTruncation {
+  /** Chars of the ORIGINAL body carried in the excerpt's head slice. */
+  keptChars: number;
+  /** Length of the original body. */
+  totalChars: number;
+  /** Chars of the original body NOT delivered (`totalChars - keptChars`). */
+  withheldChars: number;
+  /** Operative/supersession clauses rescued from PAST the cut and appended. */
+  operativeClausesKept: number;
+  /** The concrete call that returns the untruncated text, when the caller supplied one. */
+  more?: string;
+}
+
+export interface CapPreservingOperativeResult {
+  text: string;
+  /** Present ONLY when the body was actually truncated — absent ⇒ `text` is complete. */
+  truncation?: CapPreservingOperativeTruncation;
+}
+
 /**
  * Pull the operative/supersession clauses out of `body` that are not already
  * visible in `head`. Returns clauses that begin AT the marker (not the whole
@@ -121,15 +164,88 @@ export function extractOperativeClauses(
  * the cut discard an operative/supersession clause: any such clause found
  * past the cut is appended verbatim after a `⚠ OPERATIVE:` marker. Shared
  * excerpt shape for any carry surface that truncates long verbatim text.
+ *
+ * ⚠ This returns the excerpt STRING only, so a caller using it alone cannot
+ * tell its reader HOW MUCH was withheld or how to fetch the rest — a bare `…`
+ * is exactly the silent-loss shape that `coord:orient`'s sibling folds were
+ * fixed not to emit (EI-20113865649946366). Prefer
+ * `capPreservingOperativeDetailed`, which returns the same text plus a
+ * structured `truncation` marker; this wrapper stays for callers that have
+ * genuinely nowhere to put one.
  */
 export function capPreservingOperative(
   s: string,
   max: number,
-  opts?: ExtractOperativeClausesOptions,
+  opts?: CapPreservingOperativeOptions,
 ): string {
+  return capPreservingOperativeDetailed(s, max, opts).text;
+}
+
+/**
+ * `capPreservingOperative` + the disclosure a reader needs to act on the gap:
+ * how many chars were withheld, out of how many, and the call that returns
+ * them.
+ *
+ * Why this exists: a truncated carry surface that says nothing about being
+ * truncated is indistinguishable from a complete one, so a successor reads a
+ * partial checkpoint as the whole story. That is the owner-reported failure
+ * behind this thread ("agents missing details they needed in an orient in a
+ * new epoch"), and it is the same defect class already fixed for orient's
+ * claimable slice, `rubrics:get` (13 of 25 criteria under a header asserting
+ * completeness, EI-19965559011729712) and `work_items:get`'s `_shapeNote`.
+ *
+ * The excerpt text is byte-identical to the pre-disclosure shape unless the
+ * caller opts into `inlineNotice`, so adopting this is safe for a JSON payload
+ * that would rather carry the marker as its own field.
+ */
+export function capPreservingOperativeDetailed(
+  s: string,
+  max: number,
+  opts?: CapPreservingOperativeOptions,
+): CapPreservingOperativeResult {
   const t = s.trim();
-  if (t.length <= max) return t;
-  const head = t.slice(0, Math.max(0, max - 1));
+  if (t.length <= max) return { text: t };
+
+  // An inline notice is part of the excerpt's BUDGET, not an addition to it.
+  // Appending it past `max` is how a disclosure fix becomes an over-budget
+  // regression — measured here: it produced an "excerpt" 737 chars long for a
+  // 684-char checkpoint, i.e. longer than the thing it was excerpting. Reserve
+  // the room up front instead, using the widest the notice could render
+  // (withheld is at most total, and `keptChars` never appears in it), so the
+  // reservation never under-shoots and the head shrinks by exactly what the
+  // disclosure costs.
+  const reserved = opts?.inlineNotice
+    ? renderWithheldNotice({
+        keptChars: 0,
+        totalChars: t.length,
+        withheldChars: t.length,
+        operativeClausesKept: 0,
+        ...(opts.more ? { more: opts.more } : {}),
+      }).length + 1
+    : 0;
+
+  const head = t.slice(0, Math.max(0, max - 1 - reserved));
   const operative = extractOperativeClauses(t, head, opts);
-  return operative.length ? `${head}… ⚠ OPERATIVE: ${operative.join(' ')}` : `${head}…`;
+  const truncation: CapPreservingOperativeTruncation = {
+    keptChars: head.length,
+    totalChars: t.length,
+    withheldChars: t.length - head.length,
+    operativeClausesKept: operative.length,
+    ...(opts?.more ? { more: opts.more } : {}),
+  };
+  let text = operative.length ? `${head}… ⚠ OPERATIVE: ${operative.join(' ')}` : `${head}…`;
+  if (opts?.inlineNotice) text += ` ${renderWithheldNotice(truncation)}`;
+  return { text, truncation };
+}
+
+/**
+ * The human-readable form of a `truncation` marker, for prose surfaces that
+ * have no sibling field. Kept next to the type so the two cannot drift.
+ */
+export function renderWithheldNotice(t: CapPreservingOperativeTruncation): string {
+  const n = (v: number) => v.toLocaleString('en-US');
+  return (
+    `⟨excerpt: ${n(t.withheldChars)} of ${n(t.totalChars)} chars withheld` +
+    `${t.more ? ` — full text: ${t.more}` : ''}⟩`
+  );
 }

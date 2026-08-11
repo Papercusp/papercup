@@ -1,4 +1,7 @@
-import { capPreservingOperative } from '../../operative-clause';
+import {
+  capPreservingOperativeDetailed,
+  type CapPreservingOperativeTruncation,
+} from '../../operative-clause';
 
 /**
  * Post-compaction recovery fold for coord:orient
@@ -45,7 +48,21 @@ export interface CompactionRecovery {
    *  item's description (capped) so the post-compaction agent doesn't re-fetch it
    *  via work_items:get — measured at 43% of post-compaction orients
    *  (compaction-fold-audit-2026-07-06). */
-  checkpoints?: Array<{ id: string; title?: string; body?: string; checkpoint: string | null }>;
+  checkpoints?: Array<{
+    id: string;
+    title?: string;
+    body?: string;
+    checkpoint: string | null;
+    /** What the `checkpoint` excerpt withheld + how to fetch it. Present ONLY
+     *  when the checkpoint was actually truncated, so its absence means "you
+     *  are reading the whole thing". Without this the excerpt's bare `…` is
+     *  indistinguishable from a complete checkpoint to the one reader who can
+     *  least afford the confusion: a just-compacted successor whose entire
+     *  resume state is this field. */
+    checkpointTruncated?: CapPreservingOperativeTruncation;
+    /** Same disclosure for the item description excerpt (capped at BODY_CAP). */
+    bodyTruncated?: CapPreservingOperativeTruncation;
+  }>;
   /** compaction-continuity-hardening P-004: presence/fleet/claims that changed
    *  AFTER the summary was written (the transcript's compact_boundary time) —
    *  the summary's view of anything listed here is guaranteed stale. Present
@@ -139,10 +156,7 @@ export async function buildCompactionRecovery(
     const { readHeldWorkItems } = await import('../../carry-brief');
     const held = await readHeldWorkItems(ownerId, workspaceId, { limit: MAX_HELD_ITEMS });
     if (held.length) {
-      recovery.checkpoints = held.map((h) => ({
-        id: h.id,
-        ...(h.title ? { title: h.title.slice(0, 120) } : {}),
-        ...(h.body ? { body: h.body.slice(0, BODY_CAP) } : {}),
+      recovery.checkpoints = held.map((h) => {
         // EI-19952485326105760: a plain head-only slice here reproduces the SAME
         // defect the carry-brief held-item render already fixed — append-style
         // checkpoints write the newest, most-operative content LAST, so a bare
@@ -151,8 +165,30 @@ export async function buildCompactionRecovery(
         // the carry-brief fix landed. Share the same preservation helper so the
         // post-compaction recovery fold and the cold carry-brief render can never
         // diverge on this again.
-        checkpoint: h.checkpoint ? capPreservingOperative(h.checkpoint, CHECKPOINT_CAP) : null,
-      }));
+        //
+        // ...and preserving the operative clause is only HALF the fix: the
+        // excerpt still has to SAY it is an excerpt. Every sibling fold in this
+        // same orient payload already discloses its own trim with a count and a
+        // fetch verb (factsTruncated / claimableTruncated / recentTruncated /
+        // bodiesTruncated); these two fields were the holdout, on the one path
+        // where the reader is a cold successor whose whole resume state is what
+        // it can see here. Hence the `*Truncated` siblings below.
+        const fetch = `work_items:get { id: '${h.id}' }`;
+        const ckpt = h.checkpoint
+          ? capPreservingOperativeDetailed(h.checkpoint, CHECKPOINT_CAP, { more: fetch })
+          : null;
+        const body = h.body
+          ? capPreservingOperativeDetailed(h.body, BODY_CAP, { more: fetch })
+          : null;
+        return {
+          id: h.id,
+          ...(h.title ? { title: h.title.slice(0, 120) } : {}),
+          ...(body ? { body: body.text } : {}),
+          ...(body?.truncation ? { bodyTruncated: body.truncation } : {}),
+          checkpoint: ckpt ? ckpt.text : null,
+          ...(ckpt?.truncation ? { checkpointTruncated: ckpt.truncation } : {}),
+        };
+      });
     }
   } catch { /* best-effort */ }
 
