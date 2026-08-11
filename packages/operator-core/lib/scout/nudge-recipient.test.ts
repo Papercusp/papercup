@@ -168,9 +168,91 @@ describe('resolveNudgeRecipient — the ladder', () => {
         'su-steward': [{ mode: 'grade' }, { mode: 'goal', subject: 'goal-blender-1' }],
         'su-other-grader': [{ mode: 'grade' }],
       }),
+      readBlenderGoalIdsFn: async () => new Set(['goal-blender-1']),
     });
     expect(r).toMatchObject({ kind: 'su', ownerId: 'su-steward' });
-    expect((r as { why: string }).why).toContain('goal-bound');
+    expect((r as { why: string }).why).toContain('Blender steward');
+  });
+
+  /**
+   * THE distinction the goal-agnostic predecessor could not make. Both candidates are
+   * grade-mode AND goal-bound, so a bare `goalIdFromModes(modes) !== null` tiers them
+   * IDENTICALLY and the more recently active one wins on recency — routing the Blender
+   * loop's nudge to a session grading someone else's goal. Tier 0 must test the goal's
+   * identity, so the steward wins here despite being the STALER of the two.
+   */
+  it('P-007 tier 0 is goal-SPECIFIC: a grader bound to an unrelated goal does not outrank the Blender steward', async () => {
+    const r = await resolveNudgeRecipient({
+      workspaceId: WS,
+      mugOwner: null,
+      listPresenceFn: listing(
+        row('su-steward', { lastActiveAt: '2026-08-09T00:00:00.000Z' }),
+        row('su-other-goal', { lastActiveAt: '2026-08-09T09:00:00.000Z' }),
+      ),
+      resolveSessionStatesFn: states({ 'su-steward': 'live', 'su-other-goal': 'live' }),
+      mugKettleSystemEnabledFn: tierOff,
+      readAgentModesFn: modes({
+        'su-steward': [{ mode: 'grade' }, { mode: 'goal', subject: 'goal-blender-1' }],
+        'su-other-goal': [{ mode: 'grade' }, { mode: 'goal', subject: 'goal-something-else' }],
+      }),
+      readBlenderGoalIdsFn: async () => new Set(['goal-blender-1']),
+    });
+    expect(r).toMatchObject({ kind: 'su', ownerId: 'su-steward' });
+    expect((r as { why: string }).why).toContain('Blender steward');
+  });
+
+  /**
+   * FAIL-SOFT for the goal read, and the reason it is safe to add a second query to this
+   * path: an unresolvable goal set makes tier 0 merely UNREACHABLE, not wrong. The
+   * grade-mode preference still holds (the grader beats the fresher non-grader) — the
+   * nudge degrades by exactly one rung rather than falling all the way to recency.
+   */
+  it('P-007: an unreadable goals table degrades tier 0 to the GRADE-mode preference, not to recency', async () => {
+    const r = await resolveNudgeRecipient({
+      workspaceId: WS,
+      mugOwner: null,
+      listPresenceFn: listing(
+        row('su-steward', { lastActiveAt: '2026-08-09T00:00:00.000Z' }),
+        row('su-busy', { lastActiveAt: '2026-08-09T09:00:00.000Z' }),
+      ),
+      resolveSessionStatesFn: states({ 'su-steward': 'live', 'su-busy': 'live' }),
+      mugKettleSystemEnabledFn: tierOff,
+      readAgentModesFn: modes({
+        'su-steward': [{ mode: 'grade' }, { mode: 'goal', subject: 'goal-blender-1' }],
+        'su-busy': [],
+      }),
+      readBlenderGoalIdsFn: async () => {
+        throw new Error('goals unreadable');
+      },
+    });
+    expect(r).toMatchObject({ kind: 'su', ownerId: 'su-steward' });
+    expect((r as { why: string }).why).toContain('GRADE-mode');
+  });
+
+  /**
+   * The goal query is SKIPPED when no candidate could reach tier 0 anyway. Asserted
+   * because it is a COST claim about the common path (nobody grading), and a cost claim
+   * nothing falsifies is the kind that quietly stops being true.
+   */
+  it('P-007: the goal read is skipped entirely when no candidate is a goal-bound grader', async () => {
+    let goalReads = 0;
+    const r = await resolveNudgeRecipient({
+      workspaceId: WS,
+      mugOwner: null,
+      listPresenceFn: listing(
+        row('su-stale', { lastActiveAt: '2026-08-09T00:00:00.000Z' }),
+        row('su-fresh', { lastActiveAt: '2026-08-09T09:00:00.000Z' }),
+      ),
+      resolveSessionStatesFn: states({ 'su-stale': 'live', 'su-fresh': 'live' }),
+      mugKettleSystemEnabledFn: tierOff,
+      readAgentModesFn: modes({ 'su-fresh': [{ mode: 'grade' }] }),
+      readBlenderGoalIdsFn: async () => {
+        goalReads += 1;
+        return new Set<string>();
+      },
+    });
+    expect(goalReads).toBe(0);
+    expect(r).toMatchObject({ kind: 'su', ownerId: 'su-fresh' });
   });
 
   /**
