@@ -2085,16 +2085,23 @@ export function agentInvalidForRole(agent: any): boolean;
 export function whichBin(bin: any, { platform }?: {
     platform?: NodeJS.Platform | undefined;
 }): string | null;
-/** Well-known install locations per backend (mirrors preflight-binaries) — for a
- *  bin the setup flow just installed that PATH hasn't picked up yet. Abs path or
- *  null. Exported for tests. */
-export function wellKnownBackendBin(agent: any, { home, env }?: {
-    home?: string | undefined;
-    env?: NodeJS.ProcessEnv | undefined;
-}): any;
+/**
+ * Well-known install locations per backend — for a bin the setup flow just
+ * installed that PATH hasn't picked up yet, or (the WI-37920 case) a bin PATH
+ * will NEVER pick up because this process is a login-but-non-interactive shell
+ * spawned by a desktop terminal. Abs path or null. Exported for tests.
+ *
+ * The LIST itself lives in `packages/operator-core/lib/backend-bin-resolve.mjs`,
+ * shared with the operator-side PATH injection (console-launcher). Two copies
+ * would drift in the worst direction: detection succeeds here while the operator
+ * injects a different (or no) dir, so the window still cannot execute the bin —
+ * and it only reproduces inside a desktop terminal. Same one-definition reasoning
+ * as `su-tier-roles.mjs`.
+ */
+export function wellKnownBackendBin(agent: any, opts?: {}): string | null;
 /** Detect a backend bin: PATH first, then well-known. `{ path, onPath } | null`. */
 export function detectBackendBin(agent: any): {
-    path: any;
+    path: string;
     onPath: boolean;
 } | null;
 /**

@@ -27,3 +27,17 @@ export function deadProxyAlerts(stats: any, { minAttempts, rateThreshold }?: {
     attempts: number;
     fails: number;
 }[];
+/** Pool-wide EGRESS-DOWN alert (EI-18664933641195210) — the entry-level signal `deadProxyAlerts` above
+ *  structurally cannot see. That one keys on the PER-ACCOUNT fail rate, but an account whose pool is
+ *  [deadProxy, {}] ROTATES onto box-direct and the request then SUCCEEDS, so its account-level rate stays
+ *  far below the 50% floor while its proxy is 100% dead. That is why a 16-day, three-proxy outage produced
+ *  zero DEAD-PROXY lines: rotation masked it at exactly the granularity this detector reads.
+ *
+ *  `egressProxyHealth.allDown` is computed per ENTRY off the same cooldown map routing uses, and (since
+ *  EI-18664933641195210) no longer self-clears when a cooldown merely EXPIRES — so it stays true for as
+ *  long as the outage lasts instead of flapping. `configured:false` means there is no proxy path to judge
+ *  at all and must NOT alert (EI-19962845612125031). Pure (no I/O) so a unit test can drive it. */
+export function egressPoolDownAlert(stats: any): {
+    totalProxyEntries: number;
+    reachableProxyEntries: number;
+} | null;
