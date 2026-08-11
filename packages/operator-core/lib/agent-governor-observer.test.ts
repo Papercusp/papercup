@@ -89,4 +89,28 @@ describe('agent-governor-observer (RB-009)', () => {
     await flush();
     expect(sendMessage).toHaveBeenCalledTimes(1);
   });
+
+  it('reset removes the old listener before a reinitialization (injected policy stays current)', async () => {
+    const oldEscalate = vi.fn(async () => {});
+    const currentEscalate = vi.fn(async () => {});
+
+    initAgentGovernorObserver({
+      escalate: oldEscalate,
+      recentlyEscalated: async () => false,
+    });
+    _resetAgentGovernorObserver();
+    initAgentGovernorObserver({
+      escalate: currentEscalate,
+      recentlyEscalated: async () => false,
+    });
+
+    getGovernor('anthropic', 'opus').penalize({
+      retryAfterMs: GOVERNOR_ESCALATION_MIN_PAUSE_MS + 1,
+    });
+    await flush();
+    await flush();
+
+    expect(oldEscalate).not.toHaveBeenCalled();
+    expect(currentEscalate).toHaveBeenCalledTimes(1);
+  });
 });

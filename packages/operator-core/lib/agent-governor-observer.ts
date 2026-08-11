@@ -40,6 +40,7 @@ const GOVERNOR_ESCALATE_COOLDOWN_MS = 6 * 60 * 60 * 1000;
 const GOVERNOR_ESCALATION_TITLE = 'Agent rate-limit pause sustained';
 const lastSurfaced = new Map<string, number>();
 let initialized = false;
+let unsubscribePause: (() => void) | undefined;
 
 export interface AgentGovernorObserverDeps {
   /** Injectable for tests — defaults to the shared attention-notify rail. */
@@ -52,7 +53,7 @@ export interface AgentGovernorObserverDeps {
 export function initAgentGovernorObserver(deps: AgentGovernorObserverDeps = {}): void {
   if (initialized) return;
   initialized = true;
-  onGovernorPause((ev) => {
+  unsubscribePause = onGovernorPause((ev) => {
     // A transport pause (egress-proxy circuit) is not a rate-limit — surfacing "rate-limited — paused"
     // for a flaky proxy is misleading noise. The egress circuit has its own observability.
     if (ev.source === 'transport') return;
@@ -115,7 +116,7 @@ async function surfacePause(
     await escalateAlarm(
       {
         title: GOVERNOR_ESCALATION_TITLE,
-        body: `Rate-limit bucket "${bucketKey}" is paused until ${untilIso} (${source}), for at least five minutes. ` +
+        body: `Rate-limit bucket "${bucketKey}" is paused until ${untilIso} (${source}), for at least 90 seconds. ` +
           'Provider capacity is holding agent work; inspect account routing and governor state.',
         cooldownMs: GOVERNOR_ESCALATE_COOLDOWN_MS,
         source: 'agent-governor-observer',
@@ -127,6 +128,8 @@ async function surfacePause(
 
 /** Test-only — reset the throttle + init flag. */
 export function _resetAgentGovernorObserver(): void {
+  unsubscribePause?.();
+  unsubscribePause = undefined;
   initialized = false;
   lastSurfaced.clear();
 }
