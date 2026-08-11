@@ -794,7 +794,8 @@ export const SCOUT_TICK_INSTALL_SLUG = '@singleton';
 
 /**
  * Build the two production reader scopes in one pure helper. The split is load-bearing:
- * workspace Scout cadence ticks AND Scout-origin routed ideas live under `@singleton`,
+ * workspace Scout cadence ticks AND Scout-origin routed ideas live under the writer's
+ * resolved install slug (falling back to `@singleton` for workspace-less/legacy callers),
  * while su-ideate rows remain scoped to their originating harness. Using a member harness
  * for the cadence ledger manufactured missing-row failures: the singleton ticks claimed
  * routes that the same read had filtered out (WI-4733).
@@ -824,7 +825,10 @@ export function programSuccessReadScopes(opts: BuildProgramSuccessOptions = {}):
   return {
     cadence: {
       ...shared,
-      harnessSlug: SCOUT_TICK_INSTALL_SLUG,
+      // The routed-idea writer uses the same workspace-brain scope as the tick writer when
+      // WORKSPACE_COORDINATION is ON. Keep both reads on the resolved writer slug; otherwise
+      // the ticks can claim routes that this read filtered out (EI-20186985232612345).
+      harnessSlug: tickInstallSlug,
       origin: 'scout',
       tickInstallSlug,
       tickSinceMs,

@@ -47,12 +47,20 @@ describe('resolveScoutTickInstallSlug — mirrors scheduler.ts recordTick exactl
 });
 
 describe('programSuccessReadScopes — resolvedTickInstallSlug wiring (EI-19329929546171597)', () => {
-  it('cadence.tickInstallSlug follows the resolved slug when the caller supplies one', () => {
-    const scopes = programSuccessReadScopes({ nowMs: Date.now(), resolvedTickInstallSlug: 'papercusp-workspace' });
+  it('uses the resolved writer slug for BOTH ticks and routed ideas under workspace coordination', async () => {
+    isWorkspaceCoordinationOnMock.mockResolvedValue(true);
+    const resolved = await resolveScoutTickInstallSlug('papercusp-workspace');
+    const scopes = programSuccessReadScopes({
+      workspaceId: 'papercusp-workspace',
+      harnessSlug: 'papercusp',
+      nowMs: Date.now(),
+      resolvedTickInstallSlug: resolved,
+    });
     expect(scopes.cadence.tickInstallSlug).toBe('papercusp-workspace');
-    // The routed-idea read scope (harnessSlug) is a DIFFERENT knob — deliberately untouched by
-    // this fix (see the module doc comment: the split is load-bearing, WI-4733).
-    expect(scopes.cadence.harnessSlug).toBe(SCOUT_TICK_INSTALL_SLUG);
+    expect(scopes.cadence.harnessSlug).toBe('papercusp-workspace');
+    // su-ideate remains a per-harness partition; only the Scout-origin cadence partition
+    // follows the workspace-brain writer key.
+    expect(scopes.suIdeate.harnessSlug).toBe('papercusp');
   });
 
   it('falls back to the legacy constant when no resolved slug is supplied — byte-identical pre-fix behavior for existing callers', () => {

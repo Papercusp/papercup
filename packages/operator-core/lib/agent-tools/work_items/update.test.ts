@@ -14,12 +14,14 @@ vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn(() => (
 vi.mock('../../work-items', () => ({
   updateWorkItem: vi.fn(),
   mergeWorkItemPayload: vi.fn(),
+  linkWorkItem: vi.fn(),
   explainIssueClaimFloors: vi.fn(),
 }));
 
-import { updateWorkItem, mergeWorkItemPayload, explainIssueClaimFloors } from '../../work-items';
+import { updateWorkItem, mergeWorkItemPayload, linkWorkItem, explainIssueClaimFloors } from '../../work-items';
 const updM = vi.mocked(updateWorkItem);
 const mergeM = vi.mocked(mergeWorkItemPayload);
+const linkM = vi.mocked(linkWorkItem);
 const floorsM = vi.mocked(explainIssueClaimFloors);
 const tool = (await import('./update')).default;
 
@@ -53,6 +55,53 @@ describe('work_items:update handler (bulk keyed-array)', () => {
       expect.any(Object),
     );
     expect(b.results[0]).toMatchObject({ ok: true, id: 'EI-1', item: { goalId: 'goal-a' } });
+  });
+
+  it('backfills payload.plan_item and its coverage edge for an existing item', async () => {
+    updM.mockResolvedValue({ ok: true, item: { id: 'EI-1', harness: 'papercusp' } } as never);
+    mergeM.mockResolvedValue({
+      id: 'EI-1',
+      harness: 'papercusp',
+      payload: { plan_item: { plan_slug: 'plan-a', item_id: 'P-004', harness_slug: 'papercusp' } },
+    } as never);
+    const b = await body({
+      id: 'EI-1',
+      plan_item: { slug: 'plan-a', item: 'P-004' },
+      harness: 'papercusp',
+    });
+    expect(mergeM).toHaveBeenCalledWith(
+      'EI-1',
+      { plan_item: { plan_slug: 'plan-a', item_id: 'P-004', harness_slug: 'papercusp' } },
+      { harness: 'papercusp' },
+    );
+    expect(linkM).toHaveBeenCalledWith(
+      'EI-1',
+      { kind: 'plan_item', ref: 'plan-a#P-004' },
+      'relates',
+      { harness: 'papercusp', by: 'me' },
+    );
+    expect(b.results[0]).toMatchObject({ ok: true, item: { payload: { plan_item: expect.any(Object) } } });
+  });
+
+  it('applies plan_item to a feature-family item instead of refusing the family-agnostic stamp', async () => {
+    updM.mockResolvedValue({ ok: false, reason: 'unsupported_family' } as never);
+    mergeM.mockResolvedValue({
+      id: 'F-1',
+      payload: { plan_item: { plan_slug: 'plan-a', item_id: 'P-002', harness_slug: 'papercusp' } },
+    } as never);
+    const b = await body({ id: 'F-1', harness: 'papercusp', plan_item: { slug: 'plan-a', item: 'P-002' } });
+    expect(mergeM).toHaveBeenCalledWith(
+      'F-1',
+      { plan_item: { plan_slug: 'plan-a', item_id: 'P-002', harness_slug: 'papercusp' } },
+      { harness: 'papercusp' },
+    );
+    expect(linkM).toHaveBeenCalledWith(
+      'F-1',
+      { kind: 'plan_item', ref: 'plan-a#P-002' },
+      'relates',
+      { harness: 'papercusp', by: 'me' },
+    );
+    expect(b.results[0]).toMatchObject({ ok: true, id: 'F-1' });
   });
 
   it('fans out the top-level goal default while preserving a per-item clear', async () => {
@@ -460,6 +509,7 @@ describe('work_items:update args schema — rejects lifecycle-state footguns (EI
     expect(tool.args.safeParse({ items: [{ id: 'EI-1', body: 'b', kind: 'change' }] }).success).toBe(true);
     expect(tool.args.safeParse({ id: 'EI-1', goal: 'goal-a' }).success).toBe(true);
     expect(tool.args.safeParse({ id: 'EI-1', goal: null }).success).toBe(true);
+    expect(tool.args.safeParse({ id: 'EI-1', plan_item: { slug: 'plan-a', item: 'P-001' } }).success).toBe(true);
   });
 
   it('still enforces id-or-items', () => {

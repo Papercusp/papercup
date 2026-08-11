@@ -1,6 +1,6 @@
 /**
  * work_items:update — edit one OR many work-items' mutable fields (title / body /
- * severity / kind / found-during / linked feature / goal). The unified replacement for the
+ * severity / kind / found-during / linked feature / goal / plan item). The unified replacement for the
  * retired issues:update. Subscribers are notified. State → work_items:set_state;
  * structural decisions → work_items:amend; tags → work_items:tag; comments →
  * work_items:comment.
@@ -19,7 +19,8 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { clampText, hardText, softText, LIMITS } from '../limits';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { updateWorkItem, mergeWorkItemPayload, explainIssueClaimFloors } from '../../work-items';
+import { planItemRef, PLAN_ITEM_KIND } from '../../issue-blocks-merge';
+import { updateWorkItem, mergeWorkItemPayload, explainIssueClaimFloors, linkWorkItem } from '../../work-items';
 import { runBulk, bulkContent } from '../_bulk';
 import { rejectBodySummaryConflict, resolveBodyAlias } from './_body-alias';
 import { unresolvedRefsInBody, unresolvedRefsWarning } from './unresolved-refs';
@@ -37,6 +38,40 @@ const PAYLOAD_FLAG_KEYS = {
 } as const;
 
 type PayloadFlagArgs = { needsTwoMachineRig?: boolean; needsHuman?: boolean };
+
+type PlanItemArg = { slug: string; item: string };
+
+/** Convert the public plan_item shape into the durable payload stamp read by claim specs. */
+function planItemPayloadPatch(planItem: PlanItemArg | undefined, harness: string | undefined): Record<string, unknown> {
+  if (!planItem || !harness) return {};
+  return {
+    plan_item: {
+      plan_slug: planItem.slug,
+      item_id: planItem.item,
+      harness_slug: harness,
+    },
+  };
+}
+
+/** Keep an update's plan-item coverage semantics aligned with work_items:create. */
+async function linkPlanItemCoverage(
+  id: string,
+  planItem: PlanItemArg | undefined,
+  harness: string | undefined,
+  by: string,
+): Promise<void> {
+  if (!planItem) return;
+  try {
+    await linkWorkItem(
+      id,
+      { kind: PLAN_ITEM_KIND, ref: planItemRef(planItem.slug, planItem.item) },
+      'relates',
+      { harness, by },
+    );
+  } catch {
+    // The payload stamp is the claim-admission source of truth; coverage is best-effort.
+  }
+}
 
 /** The payload patch for whichever admission flags this caller actually requested. */
 function payloadFlagPatch(it: PayloadFlagArgs): Record<string, unknown> {
@@ -95,6 +130,12 @@ const FIELDS = {
     .nullable()
     .optional()
     .describe('goal id to adopt this work-item into, or null to clear its goal attribution'),
+  plan_item: z
+    .object({ slug: z.string().min(1), item: z.string().min(1) })
+    .optional()
+    .describe(
+      'plan item this existing work-item implements (for example { slug:"my-plan", item:"P-003" }); stamps payload.plan_item so plan-scoped fleet lanes can admit it and writes the same coverage edge as work_items:create',
+    ),
   confirmShrink: z
     .boolean()
     .optional()
@@ -179,9 +220,9 @@ export default defineTool({
   name: 'work_items:update',
   profile: 'engineer',
   description:
-    "Edit one OR many work-items' title/body/severity/kind/found-during/linked feature/goal/needsTwoMachineRig/needsHuman; notifies subscribers. Single: { id, …fields }; many: items:[{ id, …fields }]. Returns per-item { ok, id, item? | error }; missing items do not fail the batch. Goal is family-agnostic: pass an id to adopt into a goal drain lane, or null to clear. Other field edits are issue-family-only (bug/change/task); features remain pipeline-owned. Body shrink is rejected unless confirmShrink:true (EI-8497). needsTwoMachineRig toggles payload.needs_2_machine_rig and self-select eligibility (WI-2796); needsHuman toggles the issue review gate. (State → work_items:set_state; structural decisions → work_items:amend; tags → work_items:tag; comments → work_items:comment.)",
+    "Edit one OR many work-items' title/body/severity/kind/found-during/linked feature/goal/plan_item/needsTwoMachineRig/needsHuman; notifies subscribers. Single: { id, …fields }; many: items:[{ id, …fields }]. Returns per-item { ok, id, item? | error }; missing items do not fail the batch. Goal and plan_item are family-agnostic: pass an id to adopt it into a goal drain lane or plan-scoped fleet lane (plan_item is { slug, item }), or null to clear the goal. Other field edits are issue-family-only (bug/change/task); features remain pipeline-owned. Body shrink is rejected unless confirmShrink:true (EI-8497). needsTwoMachineRig toggles payload.needs_2_machine_rig and self-select eligibility (WI-2796); needsHuman toggles the issue review gate. (State → work_items:set_state; structural decisions → work_items:amend; tags → work_items:tag; comments → work_items:comment.)",
   guidance: {
-    when: 'Refine filed work-items: clarify text, re-rate severity, correct kind (bug↔change controls lane), attach a feature, or adopt/clear a goal. Batch via items:[…].',
+    when: 'Refine filed work-items: clarify text, re-rate severity, correct kind (bug↔change controls lane), attach a feature, adopt/clear a goal, or backfill plan_item provenance for a plan-scoped lane. Batch via items:[…].',
     notWhen: 'Use set_state for lifecycle, amend for structural decisions, comment for notes, or tag for topics.',
     chaining: 'work_items:get → work_items:update { id, …fields }.',
   },
@@ -199,7 +240,7 @@ export default defineTool({
         .max(200)
         .optional()
         .describe(
-          'update many work-items at once — each { id, …fields }. A top-level field (title/body/severity/kind/foundDuring/linkedFeatureId/goal/harness) is the DEFAULT applied to every item that omits its own (EI-7639) — pass it once instead of repeating it per item.',
+          'update many work-items at once — each { id, …fields }. A top-level field (title/body/severity/kind/foundDuring/linkedFeatureId/goal/plan_item/harness) is the DEFAULT applied to every item that omits its own (EI-7639) — pass it once instead of repeating it per item.',
         ),
       harness: z.string().max(80).optional().describe('default harness for the inline id / items that omit one'),
     })
@@ -239,6 +280,7 @@ export default defineTool({
           ),
           linkedFeatureId: it.linkedFeatureId !== undefined ? it.linkedFeatureId : args.linkedFeatureId,
           goal: it.goal !== undefined ? it.goal : args.goal,
+          plan_item: it.plan_item !== undefined ? it.plan_item : args.plan_item,
           confirmShrink: it.confirmShrink ?? args.confirmShrink,
           needsTwoMachineRig: it.needsTwoMachineRig !== undefined ? it.needsTwoMachineRig : args.needsTwoMachineRig,
           // WI-5689: needsHuman was declared in the zod schema + documented, but never
@@ -259,6 +301,7 @@ export default defineTool({
             foundDuring: clampText(args.foundDuring, LIMITS.LABEL),
             linkedFeatureId: args.linkedFeatureId,
             goal: args.goal,
+            plan_item: args.plan_item,
             confirmShrink: args.confirmShrink,
             needsTwoMachineRig: args.needsTwoMachineRig,
             needsHuman: args.needsHuman, // WI-5689
@@ -303,6 +346,16 @@ export default defineTool({
             const merged = await mergeWorkItemPayload(it.id, { needsHuman: it.needsHuman }, { harness: it.harness });
             if (merged) item = merged;
           }
+          // EI-20189734665644353: an existing item needs a member-writable plan stamp before
+          // a plan-scoped fleet claim spec can admit it. Keep the public update shape aligned
+          // with work_items:create { plan_item } and preserve the coverage edge as well.
+          const planHarness = item.harness ?? it.harness ?? ctx.harnessSlug ?? undefined;
+          const planPatch = planItemPayloadPatch(it.plan_item, planHarness);
+          if (Object.keys(planPatch).length > 0) {
+            const merged = await mergeWorkItemPayload(it.id, planPatch, { harness: it.harness });
+            if (merged) item = merged;
+          }
+          await linkPlanItemCoverage(it.id, it.plan_item, planHarness, ident.ownerId);
           // EI-19919820196426791: raising severity to critical/major is a silent no-op on
           // claimability when the item sits in a lane the claim path structurally never
           // serves (payload.lane='observation') or is routed to a human
@@ -386,10 +439,19 @@ export default defineTool({
         // forever — WI-3500 (8 placements) + WI-3496 (6) burned 14 spawns on work no single box can
         // finish, and `state=blocked` was the only (coarse, un-re-admittable) mitigation available.
         if (res.reason === 'unsupported_family') {
-          const flagPatch = payloadFlagPatch(it);
+          const flagPatch = {
+            ...payloadFlagPatch(it),
+            ...planItemPayloadPatch(it.plan_item, it.harness ?? ctx.harnessSlug ?? undefined),
+          };
           if (Object.keys(flagPatch).length > 0) {
             const merged = await mergeWorkItemPayload(it.id, flagPatch, { harness: it.harness });
             if (merged) {
+              await linkPlanItemCoverage(
+                it.id,
+                it.plan_item,
+                it.harness ?? ctx.harnessSlug ?? undefined,
+                ident.ownerId,
+              );
               // A column edit requested ALONGSIDE the flag genuinely IS pipeline-owned: apply the
               // admission flag (it is family-agnostic) but still report that half honestly, rather
               // than claiming the whole patch landed.
