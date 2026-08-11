@@ -438,7 +438,8 @@ describe('GOAL mode', () => {
     expect(c).toMatch(/measured child-fleet spend/i);
     expect(c).toMatch(/no reliable per-session\s+attribution source/i);
     expect(c).toMatch(/do\s+not invent\s+spentCents/i);
-    expect(c).toMatch(/owner-supplied\s+measured snapshot only/i);
+    expect(c).toMatch(/exactly matches the measured goals:pots rollup/i);
+    expect(c).toMatch(/missing, partial, or mismatched\s+measurements are refused/i);
     expect(c).not.toContain('Plus declared expected spend and reported actuals');
   });
 

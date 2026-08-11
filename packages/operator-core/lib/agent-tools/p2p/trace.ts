@@ -22,9 +22,9 @@ export default defineTool({
   name: 'p2p:trace',
   profile: 'engineer',
   description:
-    "Assemble the cross-machine P2P timeline for a pot, optionally one offer: federated receipts from both sides plus local refused-op counters. `kind`: `refusal` is a refused action (with refusalCode/missing); `excused-breach` is a preemption interruption excluded from reliability signals; `honored` is success, not failure. D-029 `honored` proves a post-start tool-backed first turn and yields `honored-first-turn-proven`; legacy launch-only receipts are `honored-unverified`. An `honored` receipt is not ambiguous or failed; older peers may lack the kind (EI-19333624101736074). For delegated spawns with `offerId`, `spawnRequestOutcome` is synthesized; `memberEvidenceAvailable:false` makes `indeterminate` mean unknowable here, never nobody honored it.",
+    "Assemble a pot or offer's cross-machine P2P timeline: both sides' federated receipts plus local refused-op counters. `refusal` names a refused action; `excused-breach` is a preemption excluded from reliability; `honored` is success. D-029 `honored-first-turn-proven` includes a tool-backed first turn; legacy launch-only success is `honored-unverified`. For delegated spawns, `memberEvidenceAvailable:false` means an `indeterminate` outcome is unknowable here, not unhonored.",
   guidance: {
-    when: 'Debug a refused or silent cross-peer offer/wake/spawn: pass the pot and optional offerId to see both sides\' receipts by event time plus unauthenticated-refusal counters; receipts name the exact missing capability/budget.',
+    when: 'Debug a refused or silent cross-peer offer/wake/spawn; receipts name the missing capability or budget.',
     notWhen: 'For grant state, use grants/checkP2pCapability; for coord history, use coord:feed/coord:catch-up. This is an event timeline.',
     chaining: 'p2p:trace → fix the named gap → retry.',
     seeAlso: ['audit:list (the local audit rows the receipts also land in)'],

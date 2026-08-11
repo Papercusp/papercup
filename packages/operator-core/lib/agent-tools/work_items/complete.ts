@@ -1465,16 +1465,15 @@ export default defineTool({
   description:
     "Finish one or many work-items with structured completion evidence (whatLanded/migrations/tests/deferred); the system renders and broadcasts it. A terminal top-level `state` converges item, plan-item, claim, and checkpoint. Terminal closes require `assumptions`: pass `\"none\"` or an array of `facts:assert` keys. Omitting `state` records but does not close; check `finish.complete`/`stateWarning`.",
   guidance: {
-    when: 'After verified work, fill `completion` and pass a terminal top-level `state` to close (`feature`: `passed`/`deprecated`; `issue`: `resolved`/`closed`) plus `assumptions`: `\"none\"` or `facts:assert` keys. Other `completion.status` values record without closing. `verifiedHow` is an enum; put prose in `testsRun`/`testResult`. Universal claims (`every`/`all`/`nothing`) require enumerated `coverage` with status for each entry and residue. `verifiedHow:\'live-drove-ui\'` closes only with a real artifact cited in `testsRun`/`testResult`/`filesChanged`; `tauri-agent-tools check` alone qualifies. Set `completion.duplicateOf` for duplicates.',
+    when: 'After verified work, pass `completion`, terminal `state`, and `assumptions` (`\"none\"` or `facts:assert` keys). `verifiedHow` is an enum; evidence prose belongs in `testsRun`/`testResult`. Universal claims need enumerated `coverage`. Live-UI closes require a real cited artifact. Set `completion.duplicateOf` for duplicates.',
     notWhen: 'Use coord:send for contextual notes, or work_items:set_state to change state without completion evidence; do not send a separate completion summary.',
     chaining: 'work_items:claim → work_items:complete { id, state, assumptions, completion }; success with `finish.complete:true` confirms state/plan/claim/checkpoint convergence and emits to coord.',
     seeAlso: [
       'work_items:set_state (change state without recording a completion)',
       'coord:send (a note/question that is not a completion)',
       'improvements:capture (file the friction the reflect step surfaced)',
-      "The `finish` receipt is idempotent — ok:false means a leg did not converge; re-call the SAME completion to resume it.",
-      "Single-item call ({id,completion}): top-level `ok` IS this item's own outcome (EI-14676) — ok:false means it did NOT converge. Explicit `items:[…]` batch: top-level `ok:true` only means the batch ran — check each result's own `ok` + `counts.failed`.",
-      'EI-7746: items run sequentially — if the CALL itself times out mid-batch, already-processed items are already committed but you never see their results. Re-check via work_items:get before assuming failure; a blind retry of the SAME items+state is safe (re-applying an already-terminal state is a no-op, never trips the reopen/force guard).',
+      'Finish is idempotent: after a timeout, re-check with work_items:get or retry the same completion.',
+      'For batches, inspect each result and counts.failed; top-level ok only means the batch ran.',
     ],
   },
   capability: 'work_items:write',
