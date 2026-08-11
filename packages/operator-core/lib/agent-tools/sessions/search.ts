@@ -52,7 +52,7 @@ export default defineTool({
     mode: z.enum(['hybrid', 'verbatim']).optional().describe('hybrid (default): BM25+embeddings by meaning. verbatim: exact case-insensitive substring — the quote finder.'),
     include_coord: z.boolean().optional().describe('Also search coord messages (what agents said TO EACH OTHER), not just session transcripts. Default false.'),
     harness_slug: z.string().optional(),
-    limit: z.number().int().min(1).max(10).optional().describe('Max hits (default 5).'),
+    limit: z.number().int().min(1).max(20).optional().describe('Max hits (default 5, max 20).'),
     context: z.number().int().min(0).max(5).optional().describe('Turns hydrated on EACH side of a hit (default 2).'),
     cursor: z.string().min(1).max(512).optional().describe('Opaque nextCursor from a prior sessions:search call with the same query and filters.'),
     ...searchFilterArgs,

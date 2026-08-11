@@ -48,6 +48,10 @@ vi.mock('../search/embedder', () => ({
 
 const tool = (await import('./search')).default;
 
+const argsSchema = tool.args as {
+  safeParse: (value: unknown) => { success: boolean };
+};
+
 interface ParsedResult {
   ok: boolean;
   mode: string;
@@ -68,6 +72,13 @@ function callTool(args: Record<string, unknown>, tx: unknown) {
     }
   ).handler(args, { workspaceId: 'default', tx });
 }
+
+describe('sessions:search limit contract', () => {
+  it('accepts a bounded page of 20 hits and rejects values above the advertised ceiling', () => {
+    expect(argsSchema.safeParse({ query: 'needle', limit: 20 }).success).toBe(true);
+    expect(argsSchema.safeParse({ query: 'needle', limit: 21 }).success).toBe(false);
+  });
+});
 
 describe('sessions:search EI-18877285731929394 — verbatim 0-hit hint', () => {
   it('adds a fallback hint when verbatim mode finds nothing (the false-negative trap)', async () => {

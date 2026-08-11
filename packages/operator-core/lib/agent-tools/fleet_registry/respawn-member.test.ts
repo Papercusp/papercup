@@ -5,6 +5,7 @@
  * safety (never double-run a lane), the two DIFFERENT delegate result shapes (kill → { data:{counts} },
  * launch → text + isError), the declarative MemberSpec handed to the relaunch, and — WI-6936 — the
  * post-launch roster verification that stops a spawned-but-dead CLI reporting as a live member.
+ * EI-20184677448862558 also covers the idempotent already-dead/not_found kill precondition.
  * No real kill/launch ever runs.
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
@@ -101,6 +102,20 @@ describe('fleet:respawn-member (P-008)', () => {
     const p = parse(res);
     expect(p).toMatchObject({ ok: false, error: 'kill_failed' });
     expect(launchHandler).not.toHaveBeenCalled();
+  });
+
+  it('relaunches when the known member is already dead and kill returns not_found', async () => {
+    killHandler.mockResolvedValue({
+      data: {
+        ok: true,
+        results: [{ ok: false, target: MEMBER, code: 'not_found', error: 'already dead' }],
+        counts: { ok: 0, failed: 1 },
+      },
+    });
+    const res = await tool.handler({ member: MEMBER, model: 'sonnet:high' } as never, {} as never);
+    const p = parse(res);
+    expect(p).toMatchObject({ ok: true, verified: true, drainOutcome: 'already-dead' });
+    expect(launchHandler).toHaveBeenCalledTimes(1);
   });
 
   it('reports the down-a-member failure when the relaunch fails after a successful kill', async () => {

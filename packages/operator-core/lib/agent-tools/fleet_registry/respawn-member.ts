@@ -97,12 +97,19 @@ export async function awaitReplacementMember(opts: {
 
 /** fleet:kill returns the bulk envelope `{ data: { ok, results, counts } }` — success is
  *  zero failed items (top-level `ok` only means the batch ran). */
-function killOutcome(res: unknown): { ok: boolean; data: Record<string, unknown> } {
+function killOutcome(res: unknown): { ok: boolean; alreadyGone: boolean; data: Record<string, unknown> } {
   const data = ((res as { data?: unknown }).data ?? {}) as Record<string, unknown>;
   const counts = data.counts as { failed?: number } | undefined;
-  const results = data.results as { ok?: boolean }[] | undefined;
+  const results = data.results as { ok?: boolean; code?: string; error?: string }[] | undefined;
   const failed = counts?.failed ?? results?.filter((r) => r.ok === false).length ?? 0;
-  return { ok: failed === 0, data };
+  // `resolveFleetMemberTarget` already proved this owner belongs to the fleet. If fleet:kill
+  // then reports its host as absent, the requested drain is already satisfied: there is no old
+  // process left that could race the replacement. Treat only the structured not_found result as
+  // this idempotent already-dead case; every other kill failure must still abort the relaunch.
+  const alreadyGone = failed > 0 && Boolean(results?.length) && results!.every(
+    (r) => r.ok === false && (r.code === 'not_found' || r.error === 'not_found'),
+  );
+  return { ok: failed === 0, alreadyGone, data };
 }
 
 /** capability:launch-agent returns human-readable TEXT + an `isError` flag (not JSON) —
@@ -214,7 +221,7 @@ export default defineTool({
         ctx,
       ),
     );
-    if (!kill.ok) {
+    if (!kill.ok && !kill.alreadyGone) {
       return json({ ok: false, error: 'kill_failed', fleet: slug, member: memberOwnerId, killed: kill.data, message: 'could not drain the old member — NOT launching a replacement (would double-run the lane).' }, true);
     }
 
@@ -254,6 +261,7 @@ export default defineTool({
           oldMember: memberOwnerId,
           invokedAs,
           changed: changedFields,
+          drainOutcome: kill.alreadyGone ? 'already-dead' : 'killed',
           killed: kill.data,
           launched: launch.text,
           verified: false,
@@ -275,6 +283,7 @@ export default defineTool({
         oldMember: memberOwnerId,
         invokedAs,
         changed: changedFields,
+        drainOutcome: kill.alreadyGone ? 'already-dead' : 'killed',
         killed: kill.data,
         launched: launch.text,
         verified: false,
@@ -296,6 +305,7 @@ export default defineTool({
         oldMember: memberOwnerId,
         invokedAs,
         changed: changedFields,
+        drainOutcome: kill.alreadyGone ? 'already-dead' : 'killed',
         killed: kill.data,
         launched: launch.text,
         verified: verify.verified,
