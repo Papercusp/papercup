@@ -31,6 +31,7 @@ import {
   beginSyncEnrolment,
   completeSyncEnrolment,
   finishSyncEnrolment,
+  syncEnrolmentScopePath,
 } from '../../task-manager/enroll-sync';
 import { warmScopeProbe } from '../../task-manager/managed-spawn';
 import type { CgroupCpuSample } from './cgroup-cpu';
@@ -570,6 +571,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
   // the scope name can go into the argv; the ledger WRITES happen afterwards,
   // fire-and-forget, and can never block or fail this spawn (see enroll-sync.ts).
   const enrolment = beginSyncEnrolment({ class: 'bash-job', runtimeMaxSec: Math.ceil(effectiveTimeoutMs / 1000) });
+  const scopeCgroupPath = syncEnrolmentScopePath(enrolment, 'bash-job');
 
   // EI-16635: background:true — this job is a run_in_background spawn, meant to
   // outlive this call, so the sandbox path (when enabled) must not die-with-parent.
@@ -676,7 +678,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
       state: 'exited',
       exitCode: null,
       exitReason: `spawn error: ${err instanceof Error ? err.message : String(err)}`,
-    });
+    }, { scopeCgroupPath });
   });
   child.on('close', (code) => {
     if (job.status === 'running') job.status = code === 0 ? 'completed' : 'failed';
@@ -694,7 +696,7 @@ export function startBackground(opts: RunOptions, timeoutMs: number): BashJob {
       state: job.status === 'timed_out' ? 'timed_out' : job.status === 'killed' ? 'killed' : 'exited',
       exitCode: code,
       exitReason: job.status === 'timed_out' ? `exceeded ${effectiveTimeoutMs}ms timeout` : null,
-    });
+    }, { scopeCgroupPath });
   });
 
   return job;
