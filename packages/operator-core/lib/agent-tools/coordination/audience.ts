@@ -88,6 +88,12 @@ export interface AudienceResolvers {
 
 export type AudienceMode = 'scoped' | 'broadcast';
 
+/** The expanded audience plus selectors that resolved to no recipients. */
+export interface AudienceExpansion {
+  resolved: string[];
+  unresolvedSelectors: string[];
+}
+
 const SELECTOR_PREFIX = '@';
 
 /** True if any entry is an audience selector (so a send must run expandAudience). */
@@ -113,7 +119,22 @@ export async function expandAudience(
   resolvers: AudienceResolvers,
   mode: AudienceMode = 'scoped',
 ): Promise<string[]> {
+  return (await expandAudienceDetailed(to, resolvers, mode)).resolved;
+}
+
+/**
+ * Expand an audience while retaining the selectors that matched no recipients.
+ * The plain `expandAudience` API intentionally remains resolution-only for
+ * existing callers; send paths that need to tell a partial delivery from a
+ * complete one use this diagnostic sibling.
+ */
+export async function expandAudienceDetailed(
+  to: readonly string[],
+  resolvers: AudienceResolvers,
+  mode: AudienceMode = 'scoped',
+): Promise<AudienceExpansion> {
   const out = new Set<string>();
+  const unresolved = new Set<string>();
   let presence: ActivePresence[] | null = null;
   const presenceOnce = async (): Promise<ActivePresence[]> =>
     (presence ??= await resolvers.listActivePresence());
@@ -127,9 +148,11 @@ export async function expandAudience(
       out.add('*');
       continue;
     }
-    for (const id of await resolveSelector(t, resolvers, presenceOnce)) out.add(id);
+    const resolved = await resolveSelector(t, resolvers, presenceOnce);
+    if (resolved.length === 0) unresolved.add(t);
+    for (const id of resolved) out.add(id);
   }
-  return [...out];
+  return { resolved: [...out], unresolvedSelectors: [...unresolved] };
 }
 
 async function resolveSelector(

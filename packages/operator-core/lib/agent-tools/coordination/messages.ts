@@ -20,7 +20,7 @@ import {
   type InboxOptions,
 } from '@papercusp/coordination/core';
 import { coordLog, coordWorkspaceId, coordSql, coordHasPgFastPath } from './log';
-import { hasAudienceSelector, expandAudience } from './audience';
+import { expandAudienceDetailed, hasAudienceSelector } from './audience';
 import { hostAudienceResolvers, audienceMode, deriveAudienceKey } from './audience-host';
 import { deliverFleetDigests } from './fleet-delivery';
 import { slotSelectorsIn, parseSlotSelector } from './slot-selector';
@@ -46,6 +46,16 @@ import { shouldDerivePlanSlug, derivePlanSlug, PLAN_SLUG_DERIVED_PROVENANCE } fr
 import { noteIntentDeclared } from '../../agent-state-stamp';
 
 export type { InboxOptions };
+
+// Audience diagnostics are for the immediate coord:send result only. Keep them
+// out of CoordEnvelope so they cannot become durable wire fields or change the
+// inbox/federation shape; the envelope object returned by sendMessage is the
+// short-lived hand-off to the tool layer.
+const unresolvedAudienceByEnvelope = new WeakMap<object, readonly string[]>();
+
+export function getUnresolvedAudienceSelectors(env: CoordEnvelope): readonly string[] {
+  return unresolvedAudienceByEnvelope.get(env) ?? [];
+}
 
 /** Options for sendMessage / generalised coord append. */
 export interface SendOptions {
@@ -162,9 +172,13 @@ export async function sendMessage(
   const liveAddrs = slots.length
     ? [...opts.to.filter((t) => parseSlotSelector(t) === null), ...liveRoleOwners]
     : opts.to;
-  const toExpanded = hasAudienceSelector(liveAddrs)
-    ? await expandAudience(liveAddrs, hostAudienceResolvers, audienceMode())
-    : liveAddrs;
+  let toExpanded: string[] = liveAddrs;
+  let unresolvedAudienceSelectors: string[] = [];
+  if (hasAudienceSelector(liveAddrs)) {
+    const expansion = await expandAudienceDetailed(liveAddrs, hostAudienceResolvers, audienceMode());
+    toExpanded = expansion.resolved;
+    unresolvedAudienceSelectors = expansion.unresolvedSelectors;
+  }
   // owner-2026-06-17: resolve short ownerId PREFIXES to full ids so inbox delivery
   // + any inbox-wake hit the right recipient. Best-effort + fail-soft; an
   // all-selector/broadcast `to` skips the roster read entirely.
@@ -405,6 +419,7 @@ export async function sendMessage(
   if (opts.to.some((t) => t.startsWith('@fleet:'))) {
     await deliverFleetDigests(opts.to, env, to).catch(() => {});
   }
+  unresolvedAudienceByEnvelope.set(env, unresolvedAudienceSelectors);
   return env;
 }
 
