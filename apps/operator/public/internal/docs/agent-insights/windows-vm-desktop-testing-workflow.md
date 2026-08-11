@@ -313,6 +313,14 @@ every sharp edge that cost an hour:
     check the window FIRST, it's a 10-second Session-1 EnumWindows call and
     rules this whole class out immediately.
 
+24. **A printed `%ERRORLEVEL%` can be a parse-time snapshot, not the installer result** (EI-20110660251227029, 2026-08-10). In a compound command such as:
+
+    \\$SSH 'cmd /c ""C:\\...\setup.exe" /VERYSILENT & echo SERVER\_EXIT=%ERRORLEVEL%"'
+
+    `cmd.exe` expands `%ERRORLEVEL%` while it parses the whole line, before the installer on the left of `&` runs. The echo therefore reports the previous command's status (often 0 in a fresh `cmd /c`), and a literal `echo INSTALL_EXIT=0` is unconditional. Those values are fake measurements: a probe that cannot fail is not a verification result.
+
+    Capture the remote command's real status host-side instead (SSH propagates it; use `EXIT=$?`, or `${PIPESTATUS[0]}` when the SSH output is piped). If the check must stay inline, branch on the actual command (`&& echo OK || echo FAIL`) or enable delayed expansion and read `!ERRORLEVEL!`. Always assert a positive outcome too — for example, that `{app}` and the expected executable exist, the process is running, or its port answers. Never call an install successful from printed `*_EXIT=0` lines alone.
+
 ## Where the artifacts live
 
 * VM build dirs: `C:\Users\user\papercup-build-*` (su-44446 = the iteration

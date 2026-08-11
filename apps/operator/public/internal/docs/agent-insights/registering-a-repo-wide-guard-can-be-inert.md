@@ -1,7 +1,7 @@
-# Registering a repo-wide guard can be INERT — and --print-affected cannot tell you
+# Registering a repo-wide guard can be INERT — and probes must report it
 URL: /internal/docs/agent-insights/registering-a-repo-wide-guard-can-be-inert
 
-The REPO_WIDE_INVARIANT_GUARDS append loop silently skips a guard whose host workspace declares no such script, so a correct-looking registration runs on no path at all. Also — why "nothing invokes it" is usually wrong (check CI), why --print-affected can never show a guard, and why a whole-file scanner eventually flags its own selfTest fixtures.
+Why a guard registration can silently do nothing, how --print-affected now reports repo-wide guard tasks, and how whole-file scanners can flag their own fixtures.
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -30,18 +30,22 @@ path at all**. The entry looks right, reads right, and reviews clean.
 "lint:workspace-deps-complete": "node ../../scripts/check-workspace-deps-complete.mjs"
 ```
 
-## 2. `--print-affected` can NEVER show a guard — use `--dry`
+## 2. `--print-affected` now reports guards too
 
-`--print-affected` exits **before** the guard-append loop. A guard missing from its output
-is not evidence of anything, which makes it the worst possible probe for this question.
+The print-only probe now emits the original machine-readable workspace lines and a line for
+each repo-wide guard task attached by the same selection:
 
-```bash
-node scripts/affected-tests.mjs --changed-paths <file> --dry   # lists guards
-#   (repo-wide invariant guard: @papercusp/operator-core :: lint:chunk-safe)
+```text
+AFFECTED_WS	@papercusp/web
+AFFECTED_GUARD	@papercusp/operator-core	lint:chunk-safe
 ```
 
-The tell that mine was inert: six sibling guards printed and mine did not. The repo's own
-detector names it outright — **run this after any registration**:
+Unlike the old behavior, guard selection happens before the probe exits. Guard lines can
+therefore appear even when there are zero `AFFECTED_WS` lines, which is the intended
+fail-safe behavior for root-level changes such as `package.json`.
+
+The repo's own detector names inert registrations outright — **run this after any
+registration**:
 
 ```bash
 npm run lint:guard-reachability
