@@ -14,7 +14,8 @@
 //   --dry           print what would run, don't run
 //
 // Diagnostics:
-//   --print-affected                  print `AFFECTED_WS\t<name>` per affected workspace, then exit
+//   --print-affected                  print `AFFECTED_WS\t<name>` and matching
+//                                      `AFFECTED_GUARD\t<workspace>\t<script>` lines, then exit
 //   --changed-paths a/b.ts,c/d.mjs    derive the affected set from these paths instead of a git diff
 //
 //   Together they answer "which suites would a change to THESE files run?" —
@@ -145,7 +146,8 @@ const dry = has('--dry') || has('--dry-run');
 // P-016 (release-pipeline-resilience-2026-06-09 D-010): range + print-only mode for the
 // green-checkpoint's longest-green-PREFIX salvage. With --range-from/--range-to, the
 // changed-file set is the two-dot diff of that commit range (NOT the working tree), and
-// --print-affected emits one `AFFECTED_WS\t<name>` line per affected workspace and exits
+// --print-affected emits one `AFFECTED_WS\t<name>` line per affected workspace plus one
+// `AFFECTED_GUARD\t<workspace>\t<script>` line per attached repo-wide guard, then exits
 // WITHOUT running any tests — a cheap git+graph affected-set probe per candidate prefix.
 const rangeFrom = arg('--range-from', null);
 const rangeTo = arg('--range-to', null);
@@ -1097,13 +1099,9 @@ for (const ws of wsByDir.values()) {
 }
 
 // P-016 (D-010): print-only affected-set probe for the green-checkpoint longest-green-
-// prefix salvage. Emit one machine-parseable `AFFECTED_WS\t<name>` line per affected
-// workspace and exit BEFORE any test run / EL-suite auto-trigger. affectedWorkspaces()
-// is a hoisted function declaration, so it is callable here.
-if (printAffected) {
-  for (const ws of affectedWorkspaces()) outSync(`AFFECTED_WS\t${ws.name}`);
-  process.exit(0);
-}
+// prefix salvage. The machine-readable lines are emitted AFTER the repo-wide guard
+// selection below, so this probe reports the same guard tasks that a real run would
+// attach. It still exits before any test task runs.
 
 function affectedWorkspaces() {
   if (runAll) return [...wsByDir.values()];
@@ -1304,6 +1302,7 @@ for (const ws of affected) {
 // favour of the host suite if it NAMES the in-suite ratchet that re-runs it, and that
 // file must really exec it. A guard that declares nothing attaches unconditionally —
 // the fail-safe direction, since the narrow tasks are sub-second by design.
+const selectedInvariantGuards = [];
 for (const guard of REPO_WIDE_INVARIANT_GUARDS) {
   const ws = wsByName.get(guard.workspace);
   if (!ws?.scripts?.[guard.script]) continue;
@@ -1315,8 +1314,17 @@ for (const guard of REPO_WIDE_INVARIANT_GUARDS) {
   // invariant inside it.
   if (guard.hostSuiteRatchet && tasks.some((t) => t.ws.name === ws.name && t.script === 'test')) continue;
   if (!invariantGuardChangedPaths().some((f) => guard.appliesTo(f))) continue;
-  outSync(`(repo-wide invariant guard: ${ws.name} :: ${guard.script})`);
+  selectedInvariantGuards.push({ workspace: ws.name, script: guard.script });
+  if (!printAffected) outSync(`(repo-wide invariant guard: ${ws.name} :: ${guard.script})`);
   tasks.push({ ws, script: guard.script, notCheckedIsNonGating: Boolean(guard.notCheckedIsNonGating) });
+}
+
+if (printAffected) {
+  for (const ws of affected) outSync(`AFFECTED_WS\t${ws.name}`);
+  for (const guard of selectedInvariantGuards) {
+    outSync(`AFFECTED_GUARD\t${guard.workspace}\t${guard.script}`);
+  }
+  process.exit(0);
 }
 
 if (!tasks.length) {

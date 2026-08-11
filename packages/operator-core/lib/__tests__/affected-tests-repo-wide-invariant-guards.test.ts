@@ -108,6 +108,22 @@ function dryTasks(changedPaths: string): string {
   return out;
 }
 
+/**
+ * Run the print-only probe through the real CLI. This must stay separate from
+ * `dryTasks`: `--dry` prints human task descriptions, while `--print-affected`
+ * is the machine-readable surface used by release-prefix tooling.
+ */
+function printAffected(changedPaths: string): string {
+  const res = spawnSync(
+    process.execPath,
+    [AFFECTED_TESTS, '--changed-paths', changedPaths, '--print-affected'],
+    { cwd: REPO_ROOT, encoding: 'utf8', timeout: 120_000 },
+  );
+  expect(res.error, `CLI failed to spawn: ${res.error?.message}`).toBeUndefined();
+  expect(res.status, `print-only probe failed:\n${res.stderr ?? ''}`).toBe(0);
+  return `${res.stdout ?? ''}${res.stderr ?? ''}`;
+}
+
 describe('affected-tests: repo-wide invariant guards (EI-19388389386110890)', () => {
   it('attaches the chunk-safe guard for a TS change OUTSIDE its host workspace', () => {
     const out = dryTasks(OUTSIDE_TS_PATH);
@@ -946,5 +962,30 @@ describe('repo-wide guards survive a change that maps to ZERO workspaces (EI-194
       'Could not read a task count from AFFECTED_TESTS_RESULT — the probe cannot conclude ' +
         'anything about whether guards attached.',
     ).toBeGreaterThan(0);
+  });
+});
+
+describe('affected-tests: --print-affected includes repo-wide guards (EI-20099180021812549)', () => {
+  it('keeps AFFECTED_WS lines and emits machine-readable AFFECTED_GUARD lines', () => {
+    const out = printAffected('apps/operator/app/adv/hud/GoalSessionsRail.tsx');
+    const lines = out.split('\n').filter(Boolean);
+
+    expect(lines.filter((line) => line.startsWith('AFFECTED_WS\t'))).toEqual([
+      'AFFECTED_WS\t@papercusp/web',
+    ]);
+    expect(lines).toContain('AFFECTED_GUARD\t@papercusp/operator-core\tlint:chunk-safe');
+    expect(out).not.toContain('AFFECTED_TESTS_RESULT');
+    expect(out).not.toContain('(repo-wide invariant guard:');
+  });
+
+  it('reports guards even when the changed path maps to zero workspaces', () => {
+    const out = printAffected('package.json');
+    const lines = out.split('\n').filter(Boolean);
+
+    expect(lines.filter((line) => line.startsWith('AFFECTED_WS\t'))).toEqual([]);
+    expect(lines).toContain(
+      'AFFECTED_GUARD\t@papercusp/operator-core\tlint:guard-reachability',
+    );
+    expect(out).not.toContain('AFFECTED_TESTS_RESULT');
   });
 });

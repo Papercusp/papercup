@@ -679,6 +679,11 @@ so "green" can mean "nothing ran". To see what your change actually selects, ask
 node scripts/affected-tests.mjs --changed-paths scripts/lint-tsc.mjs,libs/flags/src/types.ts --print-affected
 ```
 
+The print-only probe emits `AFFECTED_WS\t<workspace>` for selected workspaces and
+`AFFECTED_GUARD\t<workspace>\t<script>` for repo-wide invariant guards attached by the
+same run. Guard lines may appear even when there are zero `AFFECTED_WS` lines; that is
+the intended fail-safe behavior for root-level changes.
+
 ⚠⚠ **`lint:tsc` typechecks `packages/operator-core` ONLY** — it is a single
 `tsc -p packages/operator-core/tsconfig.json` (`scripts/lint-tsc.mjs`). 
 
