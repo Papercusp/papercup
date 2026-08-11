@@ -679,11 +679,13 @@ describe('ownerVisiblePage', () => {
     expect(page.hits.map((h) => h.turnIdx)).toEqual([2, 4, 5, 6]);
   });
 
-  it('NEVER reorders — the surviving head keeps its rank order', () => {
-    /* Over-fetching is additive by construction: candidates arrive BEHIND the
-       existing page head (rerankPageHead scores only its first
-       RERANK_MAX_CANDIDATES whatever the limit), so a bigger pool can fill an
-       empty slot but must never demote a hit that was already on the page. */
+  it('preserves the caller\'s order — THIS function never promotes or demotes', () => {
+    /* Scoped deliberately to the pure function. It does NOT assert that the
+       PAGE is invariant under a bigger pool: it is not — over-fetching deepens
+       each RRF leg and measurably reorders the fused pool upstream of here
+       (measured at rank 0, see ownerVisiblePage's header). Naming this test for
+       the guarantee the pipeline actually has, rather than the one that reads
+       better, is the WI-37910 lesson applied to my own test. */
     const pool = [owner(1), machine(2), owner(3), owner(4)];
     expect(ownerVisiblePage(pool, 3, 4).hits.map((h) => h.turnIdx)).toEqual([1, 3, 4]);
     expect(ownerVisiblePage(pool.slice(0, 2), 3, 4).hits.map((h) => h.turnIdx)).toEqual([1]);

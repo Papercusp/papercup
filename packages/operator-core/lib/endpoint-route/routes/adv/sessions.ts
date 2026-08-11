@@ -706,7 +706,15 @@ const searchTranscripts = defineTool({
       // (an empty owners filter would otherwise mean "no narrowing" = unscoped).
       if (planOwners.length === 0) {
         return new Response(
-          JSON.stringify({ ok: true, query: q, plan: planScope, totalHits: 0, sessions: [] }),
+          /* `hiddenMachineHits` is present on EVERY 200 from this route, zeroed
+             here rather than omitted: an absent field and a "nothing was
+             hidden" field are the same value to a client, so omitting it would
+             make "the filter hid nothing" indistinguishable from "this build
+             does not report it". */
+          JSON.stringify({
+            ok: true, query: q, plan: planScope, totalHits: 0,
+            hiddenMachineHits: { count: 0, truncatedByLimit: false }, sessions: [],
+          }),
           { status: 200, headers: JSON_HEADERS },
         );
       }
@@ -906,10 +914,14 @@ const searchTranscripts = defineTool({
     signal.throwIfAborted();
     /* ⚠ `candidateBudget`, NOT `hitLimit` — the pool must survive the
        owner-visibility filter below, which cannot backfill a slot from a page
-       that was already cut to size. This does NOT change the top of the page:
-       rerankPageHead scores `hits.slice(0, RERANK_MAX_CANDIDATES)` whatever
-       the limit and appends the remainder in retrieval order, so a bigger
-       limit only lets candidates through BEHIND the existing head. */
+       that was already cut to size.
+
+       This stage is order-stable under a bigger limit (rerankPageHead scores
+       `hits.slice(0, RERANK_MAX_CANDIDATES)` whatever the limit, then appends
+       the remainder), but RETRIEVAL above is not: over-fetching deepens each
+       RRF leg and measurably reorders the fused pool this reranks. See
+       `ownerVisiblePage`'s header — the accepted trade, and the wrong claim it
+       replaced. */
     const ordered = await rerankPageHead(q, results, Math.max(hitLimit, candidateBudget));
     mark('rerank');
 

@@ -559,11 +559,27 @@ export interface OwnerVisiblePage<T> {
  * permanently empty slot — measured at a mean 32.8% of the page, up to 100%.
  * Filtering first and slicing second spends a candidate instead.
  *
- * ⚠ THIS DOES NOT REORDER, and must not. `rerankPageHead` scores only
- * `hits.slice(0, RERANK_MAX_CANDIDATES)` and appends the remainder in retrieval
- * order, so a LARGER pool leaves the head of the page byte-identical and merely
- * adds candidates behind it. Over-fetching is therefore purely additive: it can
- * fill an empty slot but can never demote a hit that was already on the page.
+ * THIS FUNCTION is order-preserving: `filter` then `slice` keeps the caller's
+ * relative order, so nothing here can promote or demote a hit.
+ *
+ * ⚠ THAT IS NOT THE SAME AS "over-fetching cannot change the page", and the
+ * difference is measured, not theoretical. I first wrote here that a bigger
+ * pool leaves the page head byte-identical, reasoning that `rerankPageHead`
+ * scores only `hits.slice(0, RERANK_MAX_CANDIDATES)` whatever the limit. The
+ * rerank stage does behave that way; RETRIEVAL does not. Asking the engine for
+ * a deeper pool changes RRF FUSION DEPTH — a document that was in only one
+ * leg's top-30 can appear in the other leg's ranks 31-90 and pick up a second
+ * reciprocal-rank contribution — so the fused order the reranker is handed is
+ * itself different. Measured on the live route, same build, back-to-back, with
+ * a same-call-twice determinism control passing: `recipients_gone`, `rerank`
+ * and `green checkpoint` all diverge at RANK 0 between a 30- and a 50-candidate
+ * pool.
+ *
+ * That reordering is ACCEPTED, not incidental: deeper fusion is better-informed
+ * fusion, and it is the same trade `rerankCandidateCount` already makes for
+ * Stage B. It is written down because the tempting claim — "purely additive, it
+ * can only fill empty slots" — is false, and a load-bearing comment asserting a
+ * guarantee the code does not have is its own defect class (WI-37910).
  *
  * PURE → unit-tested.
  */
