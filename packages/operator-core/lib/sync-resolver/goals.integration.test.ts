@@ -36,6 +36,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import postgres, { type Sql } from 'postgres';
 import { createFreshTestDb, type MigratedTestDb } from '@papercusp/test-config/pg';
+import { GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
 
 const here = dirname(fileURLToPath(import.meta.url));
 const REPO = join(here, '..', '..', '..', '..');
@@ -124,16 +125,22 @@ beforeEach(async () => {
 });
 
 async function goal(
-  over: { killCriterion?: string | null; tripwires?: unknown; launchSettings?: unknown } = {},
+  over: {
+    killCriterion?: string | null;
+    tripwires?: unknown;
+    launchSettings?: unknown;
+    metadata?: Record<string, unknown> | null;
+  } = {},
 ): Promise<void> {
   await sql`
     INSERT INTO harness_shared.goals (id, workspace_id, install_slug, title, body, status,
                                       budget_cents, kill_criterion, tripwires, launch_settings,
-                                      created_at, updated_at)
+                                      metadata, created_at, updated_at)
     VALUES (${GOAL}, ${WS}, 'papercusp', 'Ship the thing', 'body', 'active', 50000,
             ${over.killCriterion === undefined ? 'Stop at day 30' : over.killCriterion},
             ${sql.json((over.tripwires ?? []) as never)},
             ${over.launchSettings === undefined ? null : sql.json(over.launchSettings as never)},
+            ${over.metadata === undefined ? null : sql.json(over.metadata as never)},
             now(), now())
   `;
 }
@@ -292,6 +299,24 @@ describe('goals.* resolvers against real SQL', () => {
     expect(cut.goals).toHaveLength(0);
     expect(cut.totalGoals).toBe(1);
     expect(cut.truncatedByLimit).toBe(true);
+  });
+
+  it('does not expose a legacy hand-entered spend snapshot as measured', async () => {
+    const { resolveGoalsList } = await import('./goals');
+    await goal({ metadata: { spentCents: 302 } });
+
+    const out = await resolveGoalsList({ workspaceId: WS });
+    expect(out.goals[0]?.spentCents).toBeNull();
+  });
+
+  it('exposes a spend snapshot only when its goal-pot provenance is present', async () => {
+    const { resolveGoalsList } = await import('./goals');
+    await goal({
+      metadata: { spentCents: 302, spentCentsSource: GOAL_SPEND_SNAPSHOT_SOURCE },
+    });
+
+    const out = await resolveGoalsList({ workspaceId: WS });
+    expect(out.goals[0]?.spentCents).toBe(302);
   });
 
   it('resolveGoalDetail RUNS and returns every section the detail view reads', async () => {

@@ -5,8 +5,9 @@
  * only half a ratchet-guard: GOAL mode's contract says an agent that only ever
  * CREATES is a ratchet, so the goal must also be closable — `status: 'killed'`
  * when the kill criterion trips, `'achieved'` when it is met — and a verified
- * measured spend snapshot may be recorded against the ceiling declared at
- * creation. This tool cannot infer the interactive session's own spend.
+ * measured child-fleet spend snapshot may be recorded against the ceiling
+ * declared at creation. This tool cannot infer the interactive session's own
+ * spend.
  *
  * Partial by construction: every field is optional and an omitted field is left
  * alone, so recording a measured spend snapshot never silently clears a kill
@@ -15,6 +16,8 @@
 
 import { z } from 'zod';
 import { defineTool } from '@papercusp/tooldef';
+import { GOAL_SPEND_SNAPSHOT_SOURCE, goalSpend } from '@papercusp/db-org';
+import type { Sql } from 'postgres';
 import { killCriterionProblem } from '@papercusp/operator-core/lib/goals/kill-criterion';
 import {
   goalLaunchSettingsSchema,
@@ -40,12 +43,12 @@ export default defineTool({
   capability: 'goals:write',
   guidance: {
     when:
-      'Recording a verified measured child-fleet spend snapshot against a goal\'s declared ceiling, revising its statement or kill criterion, or CLOSING it (achieved / killed). Under GOAL mode this is the standing-cadence write that keeps the owner report honest.',
+      'Recording a verified child-fleet spend snapshot against a goal\'s declared ceiling, revising its statement or kill criterion, or CLOSING it (achieved / killed). A spend snapshot is accepted only when it exactly matches the measured goals:pots rollup.',
     notWhen:
       'For per-pot progress or measured spend use goals:pots { goalId } and the pot/plan/work-item beneath the goal — this row carries the goal-level state only. Do not invent interactive-session cost. To read current state first, goals:get { id, detail:"full" }.',
     chaining:
       'goals:get → goals:pots → goals:update only when writing a verified measured snapshot. Pausing/killing winds the projects down FOR you (placement gate + loop disarm); ' +
-      'a degraded result means burn continues — chase it with fleet:assignments / loop:status on the reported projects.',
+      'a degraded spend result means no snapshot was written and the tripwire remains unmeasured — chase it with goals:pots, then fleet:assignments / loop:status on the reported projects.',
     returns:
       '`stop` carries the fan-out report and is NOT symmetric — check its `status` before reading it. ' +
       'STOP arm (paused/killed/achieved): `potsStopped`, `potsSkippedContributing`, `loopsStopped`, and ⚠ `unattributedActiveLoops` — active loops in this goal\'s own pots that could NOT be attributed to it and are STILL RUNNING. ' +
@@ -76,7 +79,9 @@ export default defineTool({
       .int()
       .nonnegative()
       .optional()
-      .describe('owner-supplied measured spend snapshot, recorded in metadata; do not derive interactive-session cost'),
+      .describe(
+        'cents from the all-time measured child-fleet goals:pots rollup; the handler rejects missing, partial, or mismatched measurements and never derives interactive-session cost',
+      ),
     parentId: z.string().min(1).nullable().optional().describe('re-parent, or null to detach'),
     launchSettings: goalLaunchSettingsSchema
       .nullable()
@@ -132,6 +137,51 @@ export default defineTool({
     }
     const prev = existing[0]!;
 
+    /* SPEND PROVENANCE (EI-20188678636377696).
+       `spentCents` used to be an owner-entered number. That made a guess
+       indistinguishable from a measurement and let a decorative ceiling read
+       as enforced. The only currently honest source is the existing measured
+       child-fleet rollup behind goals:pots. Read it in this transaction, reject
+       an incomplete rollup, and compare the caller's number to the source
+       before touching the goal row. The interactive GOAL session deliberately
+       remains outside this figure: provider billing is not attributable there. */
+    let measuredSpendCents: number | undefined;
+    if (args.spentCents !== undefined) {
+      const workspaceId = await resolveGoalWorkspace({
+        tx: ctx.tx,
+        workspaceId: ctx.principal?.workspaceId,
+      });
+      if (!workspaceId) {
+        return {
+          data: null,
+          degraded: true,
+          degradedReasons: [
+            `spentCents refused for goal ${args.id}: no concrete workspace is available to read the measured goals:pots rollup`,
+          ],
+        };
+      }
+      const spend = await goalSpend(ctx.tx as Sql, { workspaceId, goalId: args.id });
+      if (!spend.measured || !Number.isFinite(spend.costUsd)) {
+        return {
+          data: null,
+          degraded: true,
+          degradedReasons: [
+            `spentCents refused for goal ${args.id}: goals:pots has no complete priced measurement (samples=${spend.samples}, priced=${spend.pricedSamples}, unpriced=${spend.unpricedSamples}); the spend tripwire remains unmeasured`,
+          ],
+        };
+      }
+      measuredSpendCents = Math.round(spend.costUsd * 100);
+      if (args.spentCents !== measuredSpendCents) {
+        return {
+          data: null,
+          degraded: true,
+          degradedReasons: [
+            `spentCents refused for goal ${args.id}: supplied ${args.spentCents} does not match the measured goals:pots rollup (${measuredSpendCents} cents); the spend tripwire remains unmeasured`,
+          ],
+        };
+      }
+    }
+
     // Merge rather than replace: reporting spend must not clear the kill
     // criterion recorded at creation, and vice versa.
     //
@@ -141,7 +191,10 @@ export default defineTool({
     // back to it when the column is empty rather than silently blanking the one
     // field the owner most needs to see.
     const metadata: Record<string, unknown> = { ...(prev.metadata ?? {}) };
-    if (args.spentCents !== undefined) metadata.spentCents = args.spentCents;
+    if (measuredSpendCents !== undefined) {
+      metadata.spentCents = measuredSpendCents;
+      metadata.spentCentsSource = GOAL_SPEND_SNAPSHOT_SOURCE;
+    }
     const legacyCriterion =
       typeof metadata.killCriterion === 'string' ? (metadata.killCriterion as string) : null;
     // Having migrated it into the column, drop the metadata copy: two sources

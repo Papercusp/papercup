@@ -37,6 +37,8 @@
 // the annotation fails to typecheck outright. Every other `sql.begin` in this
 // package leaves it inferred for the same reason.
 
+import { GOAL_SPEND_SNAPSHOT_SOURCE } from '@papercusp/db-org';
+
 export interface GoalTripwire {
   metric: string;
   label: string;
@@ -237,7 +239,10 @@ function iso(v: string | Date | null): string | null {
 function toSummary(r: RawGoal): GoalSummaryRow {
   const metadata = r.metadata ?? {};
   const spentCents =
-    typeof metadata.spentCents === 'number' ? (metadata.spentCents as number) : null;
+    metadata.spentCentsSource === GOAL_SPEND_SNAPSHOT_SOURCE &&
+    typeof metadata.spentCents === 'number'
+      ? (metadata.spentCents as number)
+      : null;
   return {
     id: r.id,
     title: r.title,

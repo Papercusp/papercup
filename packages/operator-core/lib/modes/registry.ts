@@ -322,9 +322,12 @@ re-checks while "$310 of $500" is a readout. SPEND ACCOUNTING HAS A HARD
 BOUNDARY — use goals:pots { goalId } for measured child-fleet spend when
 comparing it with the goal record's declared ceiling. No reliable per-session
 attribution source is exposed for the GOAL agent's interactive session, so do
-not invent spentCents. goals:update { spentCents } accepts an owner-supplied
-measured snapshot only; it is not an automatic read of this session. Report the
-source's measured scope and flag the attribution gap in the owner report.
+not invent spentCents. goals:update { spentCents } accepts a value only when it
+exactly matches the measured goals:pots rollup; missing, partial, or mismatched
+measurements are refused and remain visibly unmeasured. The snapshot is marked
+with its source, so a legacy hand-entered value cannot masquerade as measured.
+Report the source's measured scope and flag the attribution gap in the owner
+report.
 goals:update { status: 'killed' } the moment the criterion trips. An agent that
 only ever creates is a ratchet; closing is the half that stops it.
 OWNER-WALLED ACTIONS, NAMED — app-store submission, payment/Stripe setup, domain

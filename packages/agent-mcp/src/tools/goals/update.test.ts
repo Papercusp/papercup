@@ -17,11 +17,18 @@ import { setGoalTransitionExecutor, type GoalStopReport } from './stop-seam';
 type Call = { sql: string; params: unknown[] };
 let calls: Call[] = [];
 let existingRow: Record<string, unknown> | null = null;
+let spendRows: Array<Record<string, string | null>> = [];
 
 function makeTx() {
   return (strings: TemplateStringsArray, ...params: unknown[]) => {
     const sql = strings.join('?');
     calls.push({ sql, params });
+    if (/SELECT NULLIF\(current_setting\('app\.workspace_id'/.test(sql)) {
+      return Promise.resolve([{ ws: 'papercusp-workspace' }]);
+    }
+    if (/FROM harness_shared\.agent_usage_samples s/.test(sql)) {
+      return Promise.resolve(spendRows);
+    }
     if (/^\s*SELECT/.test(sql)) {
       return Promise.resolve(existingRow ? [existingRow] : []);
     }
@@ -66,13 +73,65 @@ beforeEach(() => {
     tripwires: null,
     metadata: {},
   };
+  // The authoritative fixture is $12.34, so every accepted snapshot must be
+  // exactly 1234 cents. Tests that use an unpriced/empty rollup override this.
+  spendRows = [
+    {
+      harness_slug: 'child-pot',
+      cost: '12.34',
+      samples: '1',
+      priced_samples: '1',
+      unpriced_samples: '0',
+    },
+  ];
 });
 
 describe('goals:update — partial writes preserve untouched state', () => {
   it('reporting spend does NOT clear the kill criterion', async () => {
     await tool.handler(tool.args.parse({ id: 'g1', spentCents: 1234 }) as never, CTX() as never);
     expect(writtenCriterion()).toBe('no paying user after 2 weeks');
-    expect(writtenMetadata()).toEqual({ spentCents: 1234 });
+    expect(writtenMetadata()).toEqual({ spentCents: 1234, spentCentsSource: 'goal-pots-rollup' });
+  });
+
+  it('refuses a snapshot when the rollup has no priced samples', async () => {
+    spendRows = [];
+    const res = (await tool.handler(
+      tool.args.parse({ id: 'g1', spentCents: 0 }) as never,
+      CTX() as never,
+    )) as { data: unknown; degraded?: boolean; degradedReasons?: string[] };
+    expect(res.data).toBeNull();
+    expect(res.degraded).toBe(true);
+    expect(res.degradedReasons?.join(' ')).toContain('tripwire remains unmeasured');
+    expect(calls.some((c) => /UPDATE harness_shared\.goals/.test(c.sql))).toBe(false);
+  });
+
+  it('refuses a snapshot when any rollup sample is unpriced', async () => {
+    spendRows = [
+      {
+        harness_slug: 'child-pot',
+        cost: '12.34',
+        samples: '2',
+        priced_samples: '1',
+        unpriced_samples: '1',
+      },
+    ];
+    const res = (await tool.handler(
+      tool.args.parse({ id: 'g1', spentCents: 1234 }) as never,
+      CTX() as never,
+    )) as { data: unknown; degraded?: boolean; degradedReasons?: string[] };
+    expect(res.data).toBeNull();
+    expect(res.degradedReasons?.join(' ')).toContain('unpriced=1');
+    expect(calls.some((c) => /UPDATE harness_shared\.goals/.test(c.sql))).toBe(false);
+  });
+
+  it('refuses a caller value that does not match the measured rollup', async () => {
+    const res = (await tool.handler(
+      tool.args.parse({ id: 'g1', spentCents: 1235 }) as never,
+      CTX() as never,
+    )) as { data: unknown; degraded?: boolean; degradedReasons?: string[] };
+    expect(res.data).toBeNull();
+    expect(res.degradedReasons?.join(' ')).toContain('does not match');
+    expect(calls.some((c) => /UPDATE harness_shared\.goals/.test(c.sql))).toBe(false);
   });
 
   it('revising the kill criterion does NOT clear previously reported spend', async () => {
@@ -96,8 +155,12 @@ describe('goals:update — partial writes preserve untouched state', () => {
 
   it('leaves unrelated metadata keys alone (merge, not replace)', async () => {
     existingRow!.metadata = { ownerNote: 'keep me' };
-    await tool.handler(tool.args.parse({ id: 'g1', spentCents: 7 }) as never, CTX() as never);
-    expect(writtenMetadata()).toEqual({ ownerNote: 'keep me', spentCents: 7 });
+    await tool.handler(tool.args.parse({ id: 'g1', spentCents: 1234 }) as never, CTX() as never);
+    expect(writtenMetadata()).toEqual({
+      ownerNote: 'keep me',
+      spentCents: 1234,
+      spentCentsSource: 'goal-pots-rollup',
+    });
   });
 
   /**
@@ -109,10 +172,13 @@ describe('goals:update — partial writes preserve untouched state', () => {
   it('migrates a legacy metadata.killCriterion into the column, and drops the stale copy', async () => {
     existingRow!.kill_criterion = null;
     existingRow!.metadata = { killCriterion: 'legacy prose', spentCents: 12 };
-    await tool.handler(tool.args.parse({ id: 'g1', spentCents: 13 }) as never, CTX() as never);
+    await tool.handler(tool.args.parse({ id: 'g1', spentCents: 1234 }) as never, CTX() as never);
     expect(writtenCriterion()).toBe('legacy prose');
     // Exactly one source of truth afterwards — the stale key is gone.
-    expect(writtenMetadata()).toEqual({ spentCents: 13 });
+    expect(writtenMetadata()).toEqual({
+      spentCents: 1234,
+      spentCentsSource: 'goal-pots-rollup',
+    });
   });
 
   it('an explicit criterion beats the legacy metadata copy', async () => {
@@ -139,7 +205,7 @@ describe('goals:update — tripwires', () => {
 
   it('leaves existing tripwires untouched when the arg is omitted', async () => {
     existingRow!.tripwires = TRIPWIRES;
-    await tool.handler(tool.args.parse({ id: 'g1', spentCents: 5 }) as never, CTX() as never);
+    await tool.handler(tool.args.parse({ id: 'g1', spentCents: 1234 }) as never, CTX() as never);
     expect(JSON.stringify(updateCall().params)).toContain('spend_usd');
   });
 
@@ -230,7 +296,7 @@ describe('goals:update — per-goal launch settings', () => {
     // The whole tool is partial-by-construction; a settings write on every
     // unrelated update would clear a ceiling by reporting spend.
     return tool
-      .handler(tool.args.parse({ id: 'g1', spentCents: 5 }) as never, CTX() as never)
+      .handler(tool.args.parse({ id: 'g1', spentCents: 1234 }) as never, CTX() as never)
       .then(() => {
         expect(settingsWrite()).toBeUndefined();
       });
