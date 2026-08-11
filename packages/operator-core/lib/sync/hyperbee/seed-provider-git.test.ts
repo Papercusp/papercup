@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createGitSeedProvider, GIT_SEED_KIND } from './seed-provider-git';
 import { generateSeedKey } from '@papercusp/seed-bundle';
+import { runGitSync } from '../../harness/git-sync/run-git-sync';
 
 const exec = promisify(execFile);
 const cleanups: string[] = [];
@@ -144,9 +145,25 @@ describe('git seed provider', () => {
 
     writeFileSync(join(superSrc, 'top.txt'), 'top v3');
     await g(superSrc, ['commit', '-aqm', 'top v3']);
-    await g(target, ['fetch', '-q', superSrc, 'main']);
-    await g(target, ['reset', '-q', '--hard', 'FETCH_HEAD']);
+    // Production no longer relies on an out-of-band hard reset. The first
+    // git-sync recognizes the provider's synthetic root + retained snapshot ref,
+    // converts every seeded submodule first, then adopts the real super history.
+    await g(target, ['remote', 'set-url', 'origin', superSrc]);
+    const syncLogs: string[] = [];
+    const synced = await runGitSync('seed-depth-restore', {
+      repoPath: target,
+      config: { branch: 'main', push: false },
+      // The production bootstrap registers the restored embedded clone as a
+      // submodule before git-sync. Pin the same discovery result at this pure
+      // provider seam so both synthetic histories are converted in order.
+      submodulePaths: ['vendor/sub'],
+      log: (m) => syncLogs.push(m),
+    });
+    expect(synced.status).toBe('synced');
     expect(readFileSync(join(target, 'top.txt'), 'utf8')).toBe('top v3');
+    expect(await g(target, ['status', '--short'])).toBe('');
+    expect(Number(await g(target, ['rev-list', '--count', 'HEAD']))).toBeGreaterThan(1);
+    expect(syncLogs.filter((m) => m.includes('converted installer seed snapshot'))).toHaveLength(2);
   });
 
   it('encrypts the seed at rest; restores with the key; fails without/with a wrong key', async () => {

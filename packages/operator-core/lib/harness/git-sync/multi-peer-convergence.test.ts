@@ -527,4 +527,59 @@ describe('P-005: a force-pushed history rewrite is ABSORBED or LOUDLY errors —
       await rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
     }
   }, 60_000);
+
+  it('a verified installer seed root replays post-restore work onto the real origin instead of wedging as unrelated history', async () => {
+    const tmpRoot = await mkdtemp(join(tmpdir(), 'mpc-'));
+    try {
+      const { bare, works } = await makeSharedOrigin(tmpRoot, 'seed-transplant', ['seeded', 'upstream']);
+      const [seeded, upstream] = works;
+
+      // Model the depth=1 seed provider exactly: one synthetic ROOT commit, local
+      // branch renamed to main, and the bundle clone's remote-tracking snapshot ref
+      // retained after origin is repointed to the real repository.
+      await git(['checkout', '--orphan', 'seed-snapshot'], seeded);
+      await git(['rm', '-rf', '.'], seeded);
+      await writeFile(join(seeded, 'shared.txt'), 'seed\n');
+      await git(['add', '-A'], seeded);
+      await git(['commit', '--no-verify', '-m', 'papercusp seed snapshot HEAD'], seeded);
+      const seedRoot = await headOf(seeded);
+      await git(['branch', '-M', 'main'], seeded);
+      await git(['update-ref', 'refs/remotes/origin/papercusp-seed-snapshot-test', seedRoot], seeded);
+
+      // GitHub advances after the installer snapshot, while the restored checkout
+      // also receives local work before its first successful sync.
+      await writeFile(join(upstream, 'upstream.txt'), 'from upstream\n');
+      await git(['add', '-A'], upstream);
+      await git(['commit', '--no-verify', '-m', 'upstream after seed'], upstream);
+      await git(['push', '--no-verify', 'origin', 'main'], upstream);
+      await writeFile(join(seeded, 'local.txt'), 'post-restore local work\n');
+
+      const logs: string[] = [];
+      const out = await runGitSync('seed-transplant', {
+        runGit: testRunGit,
+        repoPath: seeded,
+        config: { branch: 'main' },
+        log: (m) => logs.push(m),
+      });
+
+      expect(out.status).toBe('synced');
+      expect(await headOf(seeded)).toBe(await originTip(bare));
+      const files = await filesAt(bare);
+      expect(files).toContain('upstream.txt');
+      expect(files).toContain('local.txt');
+      expect(await shx(['merge-base', '--is-ancestor', seedRoot, 'HEAD'], seeded)).toMatchObject({ code: 1 });
+
+      const recoveryRefs = await git(
+        ['for-each-ref', '--format=%(refname)', 'refs/papercusp/seed-recovery/'],
+        seeded,
+      );
+      expect(recoveryRefs).toMatch(/^refs\/papercusp\/seed-recovery\/[0-9a-f]{40,64}$/);
+      expect(await git(['show', `${recoveryRefs}:local.txt`], seeded)).toBe('post-restore local work');
+      expect(
+        logs.some((m) => m.includes('converted installer seed snapshot') && m.includes('replayed 1 post-restore commit')),
+      ).toBe(true);
+    } finally {
+      await rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
+    }
+  }, 60_000);
 });

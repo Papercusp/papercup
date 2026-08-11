@@ -399,6 +399,112 @@ const conflictedFiles = async (runGit: RunGit, repo: string): Promise<string[]> 
   return r.code === 0 ? r.stdout.trim().split('\n').filter(Boolean) : [];
 };
 
+type SeedSnapshotTransplant =
+  | { status: 'not-seed' }
+  | { status: 'transplanted'; backupRef: string; replayedCommits: number }
+  | { status: 'error'; message: string };
+
+/**
+ * WI-37969 / WI-6824: a depth=1 installer seed is intentionally a synthetic,
+ * one-commit ROOT history. After restore, `origin` is repointed at the real
+ * repository, so the first fetch necessarily produces two unrelated histories.
+ * Treating that as an ordinary merge wedges every seeded install before its P2P
+ * legs (`fatal: refusing to merge unrelated histories`).
+ *
+ * The seed provider's contract has always been "restore offline, then replace the
+ * snapshot with the fetched delta" (its integration test previously did a manual
+ * `reset --hard FETCH_HEAD`). This is the production-safe form of that conversion:
+ *
+ *  - require BOTH the exact synthetic-root subject and the bundle clone's retained
+ *    `origin/papercusp-seed-snapshot-*` ref pointing at that root; an arbitrary
+ *    unrelated-history rewrite therefore stays a loud error;
+ *  - create a recovery ref before changing history;
+ *  - with no post-restore commits, adopt the fetched branch exactly;
+ *  - otherwise rebase every post-restore commit onto the fetched branch, preserving
+ *    local work. A conflict aborts cleanly and leaves the recovery ref + old branch
+ *    intact; it never falls through to `--allow-unrelated-histories`.
+ */
+async function transplantInstallerSeedSnapshot(
+  runGit: RunGit,
+  repo: string,
+  remoteRef: string,
+  remote: string,
+  log: (m: string) => void,
+): Promise<SeedSnapshotTransplant> {
+  const roots = await runGit(['rev-list', '--max-parents=0', 'HEAD'], repo);
+  const rootShas = roots.code === 0 ? roots.stdout.trim().split('\n').filter(Boolean) : [];
+  if (rootShas.length !== 1) return { status: 'not-seed' };
+  const seedRoot = rootShas[0];
+
+  const subject = await runGit(['show', '-s', '--format=%s', seedRoot], repo);
+  if (subject.code !== 0 || !/^papercusp seed snapshot (?:HEAD|[0-9a-f]{7,64})$/.test(subject.stdout.trim())) {
+    return { status: 'not-seed' };
+  }
+
+  const snapshotRefs = await runGit(
+    ['for-each-ref', '--format=%(objectname)', `refs/remotes/${remote}/papercusp-seed-snapshot-*`],
+    repo,
+  );
+  if (snapshotRefs.code !== 0 || !snapshotRefs.stdout.split('\n').some((sha) => sha.trim() === seedRoot)) {
+    return { status: 'not-seed' };
+  }
+
+  const head = await runGit(['rev-parse', '--verify', 'HEAD'], repo);
+  if (head.code !== 0 || !head.stdout.trim()) {
+    return { status: 'error', message: 'seed snapshot transplant could not resolve HEAD' };
+  }
+  const originalHead = head.stdout.trim();
+  const count = await runGit(['rev-list', '--count', `${seedRoot}..HEAD`], repo);
+  if (count.code !== 0) {
+    return {
+      status: 'error',
+      message: `seed snapshot transplant could not enumerate post-restore commits: ${count.stderr.trim() || count.stdout.trim()}`,
+    };
+  }
+  const replayedCommits = Number.parseInt(count.stdout.trim(), 10) || 0;
+  const backupRef = `refs/papercusp/seed-recovery/${originalHead}`;
+  const backup = await runGit(['update-ref', backupRef, originalHead], repo);
+  if (backup.code !== 0) {
+    return {
+      status: 'error',
+      message: `seed snapshot transplant could not create recovery ref ${backupRef}: ${backup.stderr.trim() || backup.stdout.trim()}`,
+    };
+  }
+
+  if (replayedCommits === 0) {
+    const adopt = await runGit(['reset', '--hard', remoteRef], repo);
+    if (adopt.code !== 0) {
+      return {
+        status: 'error',
+        message: `seed snapshot transplant could not adopt ${remoteRef} (recovery ref ${backupRef}): ${adopt.stderr.trim() || adopt.stdout.trim()}`,
+      };
+    }
+  } else {
+    const replay = await runGit(['rebase', '--rebase-merges', '--onto', remoteRef, seedRoot], repo);
+    if (replay.code !== 0) {
+      const replayOut = `${replay.stdout}\n${replay.stderr}`.trim();
+      await runGit(['rebase', '--abort'], repo);
+      return {
+        status: 'error',
+        message: `seed snapshot transplant could not replay ${replayedCommits} post-restore commit(s) onto ${remoteRef} (aborted clean; recovery ref ${backupRef}): ${replayOut.slice(0, 300)}`,
+      };
+    }
+  }
+
+  const related = await runGit(['merge-base', '--is-ancestor', remoteRef, 'HEAD'], repo);
+  if (related.code !== 0) {
+    return {
+      status: 'error',
+      message: `seed snapshot transplant did not produce a descendant of ${remoteRef} (recovery ref ${backupRef})`,
+    };
+  }
+  log(
+    `[git-sync] ${repo}: converted installer seed snapshot ${seedRoot.slice(0, 12)} to ${remoteRef}; ` +
+      `${replayedCommits === 0 ? 'no post-restore commits' : `replayed ${replayedCommits} post-restore commit(s)`}; recovery ref ${backupRef}`,
+  );
+  return { status: 'transplanted', backupRef, replayedCommits };
+}
+
 /** WI-6824: a merge that fails with ZERO conflicted paths is classified `error`, and that
  *  message is the ONLY record of it — git-sync NULLs `last_error` on the next healthy tick,
  *  so an INTERMITTENT failure leaves nothing to correlate against afterwards (a fault that
@@ -1142,6 +1248,15 @@ async function reconcileAndPushOneRepo(
     return committedLocal ? { status: 'synced', pushed: false, merged: false } : { status: 'nothing' };
   }
 
+  const remoteRef = `${remote}/${branch}`;
+  let seedTransplanted = false;
+  const base = await runGit(['merge-base', 'HEAD', remoteRef], repoPath);
+  if (base.code !== 0) {
+    const seed = await transplantInstallerSeedSnapshot(runGit, repoPath, remoteRef, remote, o.log);
+    if (seed.status === 'error') return { status: 'error', message: seed.message };
+    seedTransplanted = seed.status === 'transplanted';
+  }
+
   // WI-5111: a non-fast-forward merge creates its own commit under the box's git
   // identity too — same bot-identity override as the commit calls above, so a
   // merge commit git-sync makes is never misattributed to the owner either.
@@ -1162,7 +1277,7 @@ async function reconcileAndPushOneRepo(
     }
     return { status: 'conflict', conflictedFiles: conflicted };
   }
-  let mergedNew = !/Already up to date/i.test(merge.stdout);
+  let mergedNew = seedTransplanted || !/Already up to date/i.test(merge.stdout);
 
   let pushed = false;
   if (doPush) {
