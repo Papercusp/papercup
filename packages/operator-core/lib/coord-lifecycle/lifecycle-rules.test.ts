@@ -129,6 +129,7 @@ describe('emits: completion (on work_items:complete — the P0 emits field end-t
         data: {
           ok: true,
           workItem: { id: 'F-1', family: 'feature', harness: 'demo' },
+          fleetSlug: 'push-not-poll',
           completion: {
             workItem: 'F-1',
             summary: 'all phases done',
@@ -150,8 +151,9 @@ describe('emits: completion (on work_items:complete — the P0 emits field end-t
     // D-006: the deferred-set survives into the emitted body.
     expect(String(a?.args.body)).toContain('live smoke pending');
     expect(a?.args.plan_slug).toBe('some-plan');
-    // Scoped to the plan's watchers + the completed item's object subscribers — NOT ['*'].
+    // Scoped to the fleet leader + plan watchers + object subscribers — NOT ['*'].
     expect(a?.args.to).toEqual([
+      '@fleet-leader:push-not-poll',
       '@plan:some-plan',
       objectSelector(workItemObjectRef({ family: 'feature', harness: 'demo', id: 'F-1' })),
     ]);
