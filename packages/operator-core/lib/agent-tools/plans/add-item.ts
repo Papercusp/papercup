@@ -152,13 +152,29 @@ function formatPadded(n: number): string {
   return n.toString().padStart(3, '0');
 }
 
+// Matches the `## Decisions` heading (optionally numbered, "## 5. Decisions")
+// but not a suffixed variant such as "## Decisions (settled)". Item labels in
+// this section are intentionally reserved even when they are prose references:
+// a decision can name a not-yet-materialized P-NNN, and allocating that same
+// label later makes status/coordination text ambiguous.
+const DECISIONS_HEADING_RE = /^##\s+(?:\d+(?:\.\d+)?\.\s+)?Decisions\s*$/m;
+
+function findDecisionsSectionBody(maskedBody: string): string | null {
+  const headingMatch = DECISIONS_HEADING_RE.exec(maskedBody);
+  if (!headingMatch) return null;
+  const after = headingMatch.index + headingMatch[0].length;
+  const restAfter = maskedBody.slice(after);
+  const nextHeadingMatch = /^##\s/m.exec(restAfter);
+  return nextHeadingMatch ? restAfter.slice(0, nextHeadingMatch.index) : restAfter;
+}
+
+const DECISION_ITEM_REF_RE = /\bP-(\d{3,})\b/g;
+
 /**
- * Allocate the next P-NNN considering ONLY real parsed items.
- *
- * Scanning raw bytes would catch P-NNN tokens inside prose, fenced
- * code-block examples, or template comments — none of which are real
- * items. Using `parsePlan` keeps allocation stable against documents
- * that happen to mention `P-001` in an example sentence.
+ * Allocate the next P-NNN considering real parsed items AND labels used in the
+ * Decisions prose. The scan is limited to the Decisions section and masks
+ * fenced examples, so ordinary prose elsewhere (or a worked example) cannot
+ * consume the plan's item-number space.
  */
 export function allocateNextItemId(body: string): string {
   const parsed = parsePlanLazy(body);
@@ -167,6 +183,13 @@ export function allocateNextItemId(body: string): string {
     const m = /^P-(\d+)$/.exec(it.id);
     if (m) {
       const n = parseInt(m[1] ?? '0', 10);
+      if (n > max) max = n;
+    }
+  }
+  const decisionsBody = findDecisionsSectionBody(maskFences(body));
+  if (decisionsBody) {
+    for (const match of decisionsBody.matchAll(DECISION_ITEM_REF_RE)) {
+      const n = parseInt(match[1] ?? '0', 10);
       if (n > max) max = n;
     }
   }

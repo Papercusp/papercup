@@ -499,6 +499,19 @@ describe('item id allocation + append', () => {
     expect(allocateNextItemId(BASE)).toBe('P-004');
   });
 
+  it('reserves a P-NNN mentioned in Decisions prose before allocating a new item', () => {
+    const doc = BASE.replace('Decision text.', 'Decision text names P-004 as the cursor store.');
+    expect(allocateNextItemId(doc)).toBe('P-005');
+  });
+
+  it('ignores P-NNN examples in fences and prose outside Decisions', () => {
+    const doc = BASE.replace('**Next:** old next', '**Next:** the example label is P-999').replace(
+      'Decision text.',
+      'Decision text.\n\n```md\nP-999 is only a worked example.\n```',
+    );
+    expect(allocateNextItemId(doc)).toBe('P-004');
+  });
+
   it('appends to existing phase', () => {
     const itemLine = buildItemLine('P-004', 'Fourth item', ['P-002']);
     const { newBody, createdPhase } = appendItemToBody(BASE, 'Phase 1 — Tooling', itemLine);
