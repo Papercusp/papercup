@@ -18,6 +18,7 @@ import { join } from 'node:path';
 let TMP_HOME: string;
 let origHome: string | undefined;
 let origIdentityDir: string | undefined;
+let origSeedRealHostname: string | undefined;
 let execFileCalls = 0;
 
 beforeEach(() => {
@@ -25,8 +26,10 @@ beforeEach(() => {
   TMP_HOME = mkdtempSync(join(tmpdir(), 'pc-keychain-'));
   origHome = process.env.HOME;
   origIdentityDir = process.env.PAPERCUSP_IDENTITY_DIR;
+  origSeedRealHostname = process.env.PAPERCUSP_SEED_REAL_HOSTNAME;
   process.env.HOME = TMP_HOME; // os.homedir() honors $HOME on POSIX -> default identity dir = $HOME/.papercusp/identity
   delete process.env.PAPERCUSP_IDENTITY_DIR;
+  delete process.env.PAPERCUSP_SEED_REAL_HOSTNAME;
   // Make the OS keychain CLIs look uninstalled so both tiers fall through to the file backend.
   execFileCalls = 0;
   vi.doMock('node:child_process', () => ({
@@ -42,6 +45,8 @@ afterEach(() => {
   else process.env.HOME = origHome;
   if (origIdentityDir === undefined) delete process.env.PAPERCUSP_IDENTITY_DIR;
   else process.env.PAPERCUSP_IDENTITY_DIR = origIdentityDir;
+  if (origSeedRealHostname === undefined) delete process.env.PAPERCUSP_SEED_REAL_HOSTNAME;
+  else process.env.PAPERCUSP_SEED_REAL_HOSTNAME = origSeedRealHostname;
   vi.doUnmock('node:child_process');
   try {
     rmSync(TMP_HOME, { recursive: true, force: true });
@@ -158,6 +163,28 @@ describe('keychain (encrypted-file fallback)', () => {
     } finally {
       rmSync(customIdentityDir, { recursive: true, force: true });
     }
+  });
+
+  it('uses the real hostname handed across the seed cutter UTS namespace', async () => {
+    const { keychainStore, keychainLoad } = await loadKeychain();
+    const id = 'seed:uts-hostname';
+    const der = Buffer.from('seed-uts-hostname-key-material');
+
+    // The parent encrypts with the real hostname; the bwrap child reports the
+    // neutral label but receives the real one through this release-only env.
+    process.env.PAPERCUSP_SEED_REAL_HOSTNAME = 'seed-real-host-77';
+    await keychainStore(id, der);
+
+    // A child that used getHostname() would silently use the neutral label and
+    // fail to decrypt. This negative control proves the override is load-bearing.
+    process.env.PAPERCUSP_SEED_REAL_HOSTNAME = 'papercusp-build';
+    const wrongHost = await keychainLoad(id);
+    expect(wrongHost.kind).toBe('error');
+    if (wrongHost.kind === 'error') expect(wrongHost.error.kind).toBe('decryption_failed');
+
+    process.env.PAPERCUSP_SEED_REAL_HOSTNAME = 'seed-real-host-77';
+    const loaded = await keychainLoad(id);
+    expect(loaded).toEqual({ kind: 'ok', value: der });
   });
 
   // WI-2018: keychainDelete must remove the file copy from EVERY dir fileLoad reads

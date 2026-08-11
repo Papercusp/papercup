@@ -317,7 +317,13 @@ function identityReadDirs(): string[] {
 }
 
 async function deriveMachineKey(salt: Buffer): Promise<Buffer> {
-  const machineSecret = [getHostname(), userInfo().username, 'papercusp-v1'].join(':');
+  // The release seed cutter re-execs under bwrap with a neutral UTS hostname so
+  // RocksDB cannot publish this box's name.  Its child still needs to decrypt
+  // the owner's fallback keychain entry, which was encrypted with the REAL
+  // hostname before the namespace switch.  The cutter hands that value down in
+  // this narrowly named env var; ordinary callers keep the OS hostname path.
+  const machineHostname = process.env.PAPERCUSP_SEED_REAL_HOSTNAME || getHostname();
+  const machineSecret = [machineHostname, userInfo().username, 'papercusp-v1'].join(':');
   return pbkdf2Async(machineSecret, salt, PBKDF2_ITERATIONS, KEY_LEN, 'sha512');
 }
 
