@@ -38,6 +38,7 @@ const deploy = (over: Partial<DevDeployState> = {}): DevDeployState =>
 const snap = (over: {
   gate?: Partial<GitPipelineSnapshot['gate']>;
   deploy?: Partial<DevDeployState>;
+  gitSync?: Partial<GitPipelineSnapshot['gitSync']>;
   openConflict?: GitPipelineSnapshot['openConflict'];
 } = {}): GitPipelineSnapshot =>
   ({
@@ -54,6 +55,19 @@ const snap = (over: {
       lastFixerCandidate: null,
       flakyWorkspaces: [],
       ...over.gate,
+    },
+    gitSync: {
+      lastStatus: 'synced',
+      lastSyncedAtMs: 1,
+      consecutiveErrorTicks: 0,
+      headSha: null,
+      lastPushed: [],
+      lastMerged: [],
+      lastConflicts: [],
+      lastErrors: [],
+      pushMode: 'push',
+      ownHeadPublish: null,
+      ...over.gitSync,
     },
     deploy: deploy(over.deploy),
     openConflict: over.openConflict ?? null,
@@ -242,6 +256,77 @@ describe('computeWhyChain (EI-7349)', () => {
       );
       expect(res.stages[1].status).toBe('ok');
       expect(res.stages[1].reason).toContain('normal');
+    });
+
+    it('WI-37998: a caught-up bridged member does not reinterpret designed origin divergence as a stuck push', async () => {
+      const res = await computeWhyChain(
+        deps({
+          snap: snap({
+            deploy: { stagingAheadOfOrigin: 132, greenPinBehindStaging: 0, deployedBehindGreenPin: 0 },
+            gitSync: {
+              pushMode: 'commit-only:bridged',
+              ownHeadPublish: {
+                refused: null,
+                backlogRemains: false,
+                publishedSha: 'abcdef123456',
+                sha: 'abcdef123456',
+              },
+            },
+          }),
+        }),
+      );
+
+      expect(res.stages[1].status).toBe('ok');
+      expect(res.stages[1].reason).not.toContain('NOT backed up');
+      expect(res.stages[1].reason).not.toContain('stuck push');
+    });
+
+    it('WI-37998: a bridged publish refusal stays actionable without prescribing git-sync as the pusher', async () => {
+      const res = await computeWhyChain(
+        deps({
+          snap: snap({
+            deploy: { stagingAheadOfOrigin: 132 },
+            gitSync: {
+              pushMode: 'commit-only:bridged',
+              ownHeadPublish: {
+                refused: 'secrets',
+                backlogRemains: null,
+                publishedSha: null,
+                sha: 'abcdef123456',
+              },
+            },
+          }),
+        }),
+      );
+
+      expect(res.stages[1]).toMatchObject({ status: 'degraded', nextVerb: 'dev:pipeline_position' });
+      expect(res.stages[1].reason).toContain('REFUSING');
+      expect(res.stages[1].reason).toContain('git-sync:run cannot fix');
+      expect(res.stages[1].reason).not.toContain('stuck push');
+    });
+
+    it('WI-37998: an undrained bridged publish backlog is degraded on its real leg', async () => {
+      const res = await computeWhyChain(
+        deps({
+          snap: snap({
+            deploy: { stagingAheadOfOrigin: 132 },
+            gitSync: {
+              pushMode: 'commit-only:bridged',
+              ownHeadPublish: {
+                refused: null,
+                backlogRemains: true,
+                publishedSha: '11111111aaaa',
+                sha: '22222222bbbb',
+              },
+            },
+          }),
+        }),
+      );
+
+      expect(res.stages[1]).toMatchObject({ status: 'degraded', nextVerb: 'dev:pipeline_position' });
+      expect(res.stages[1].reason).toContain('undrained backlog');
+      expect(res.stages[1].reason).toContain('11111111 trails 22222222');
+      expect(res.stages[1].reason).toContain('git-sync:run cannot drain');
     });
   });
 

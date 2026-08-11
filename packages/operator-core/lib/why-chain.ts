@@ -16,6 +16,7 @@
  * mutates any of the systems it reads.
  */
 import { gitPipelineSnapshot, type GitPipelineSnapshot } from './git-pipeline-stats';
+import { isCommitOnlyMember } from './git-pipeline-position';
 import { accountStatus, type AccountStatusRow } from './deployment/account-pool-store';
 import { runtimeDiagnostic, type RuntimeDiagnostic } from './runtime-diagnostic';
 
@@ -436,6 +437,41 @@ function gateStage(snap: GitPipelineSnapshot, failingFiles: string[]): WhyChainS
  */
 function deployStage(snap: GitPipelineSnapshot): WhyChainStage {
   const d = snap.deploy;
+  // WI-37998: origin/staging divergence means opposite things on the two supported
+  // git topologies. A pushing member owns that ref and a gap is a stuck push. A
+  // commit-only bridged member never pushes it at all; its durability signal is the
+  // p2p own-head-publish leg. dev:pipeline_position has enforced this distinction
+  // since EI-18812945811758018, but dev:why re-derived the old unconditional rule
+  // below and repeatedly sent agents to git-sync:run — a lever that cannot move the
+  // bridged leg. Reuse the same mode predicate and only make the bridge's own fault
+  // signals actionable here.
+  const gitSync = snap.gitSync;
+  const commitOnly = isCommitOnlyMember({ pushMode: gitSync?.pushMode ?? null });
+  const ownHeadPublish = commitOnly ? (gitSync?.ownHeadPublish ?? null) : null;
+  if (commitOnly && ownHeadPublish?.refused) {
+    return {
+      stage: 'deploy',
+      status: 'degraded',
+      reason:
+        `the commit-only bridge publish leg is REFUSING origin publication (${ownHeadPublish.refused}); ` +
+        'raw origin/staging divergence is expected on this member and git-sync:run cannot fix this refusal',
+      nextVerb: 'dev:pipeline_position',
+    };
+  }
+  if (commitOnly && ownHeadPublish?.backlogRemains === true) {
+    const trail =
+      ownHeadPublish.publishedSha && ownHeadPublish.sha
+        ? ` (published ${ownHeadPublish.publishedSha.slice(0, 8)} trails ${ownHeadPublish.sha.slice(0, 8)})`
+        : '';
+    return {
+      stage: 'deploy',
+      status: 'degraded',
+      reason:
+        `the commit-only bridge publish leg has an undrained backlog${trail}; ` +
+        'raw origin/staging divergence is expected on this member and git-sync:run cannot drain this leg',
+      nextVerb: 'dev:pipeline_position',
+    };
+  }
   // EI-19341938682536275: the UNPUSHED leg is checked FIRST and independently of the local
   // gate/deploy pipeline below (which never touches origin at all) — a "DEPLOY: ok" verdict
   // about what's live on :3070 says nothing about whether the work is backed up off this box.
@@ -443,7 +479,7 @@ function deployStage(snap: GitPipelineSnapshot): WhyChainStage {
   // SAME tick, so this sits at 0 in healthy operation; nonzero here is NEVER "normal buffer" —
   // it means pushing itself is stuck. This is the exact "DEPLOY: ok … 99 commits … normal" gloss
   // that read green through a 6h origin-freeze while ~82 commits existed only on one box's disk.
-  if (d.stagingAheadOfOrigin != null && d.stagingAheadOfOrigin > 0) {
+  if (!commitOnly && d.stagingAheadOfOrigin != null && d.stagingAheadOfOrigin > 0) {
     return {
       stage: 'deploy',
       status: 'degraded',
