@@ -652,6 +652,24 @@ export const COMPACTION_LIMIT_DEFAULT_1M_CAP = 400_000;
  */
 export const COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP = 200_000;
 
+/** Derive a safe seeded soft limit from a LIVE effective model window. This is
+ * the backend-neutral twin of the spec-based resolver below and is load-bearing
+ * for Codex, whose rollout reports 258400 after applying the CLI's 95% effective
+ * window to the installed 272k model record. The role cap still wins: fleet
+ * members stay at 200k even when the model window could safely allow more. */
+export function defaultCompactionLimitForWindow(
+  window: number,
+  opts?: { fleetMember?: boolean },
+): number {
+  const roleCap = opts?.fleetMember
+    ? COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP
+    : COMPACTION_LIMIT_DEFAULT_1M_CAP;
+  const finiteWindow = Number.isFinite(window) && window > 0 ? Math.floor(window) : MODEL_WINDOW_DEFAULT;
+  const raw = (finiteWindow - COMPACTION_WINDOW_MARGIN_TOKENS) / COMPACTION_OVERSHOOT_FACTOR;
+  const derived = Math.floor(raw / 1000) * 1000;
+  return Math.max(MIN_COMPACTION_LIMIT_TOKENS, Math.min(roleCap, derived));
+}
+
 /**
  * The model-derived default soft compaction limit for a spec — and the CEILING
  * a user/agent-set limit is clamped to (context-trimming-tiers D-001):
@@ -682,13 +700,9 @@ export function defaultCompactionLimitForSpec(
   opts?: { fleetMember?: boolean },
 ): number {
   if (spec == null || spec.trim() === '' || spec.includes('[1m]')) {
-    return opts?.fleetMember
-      ? COMPACTION_LIMIT_DEFAULT_1M_FLEET_MEMBER_CAP
-      : COMPACTION_LIMIT_DEFAULT_1M_CAP;
+    return defaultCompactionLimitForWindow(MODEL_WINDOW_1M, opts);
   }
-  const window = modelWindowForSpec(spec);
-  const raw = (window - COMPACTION_WINDOW_MARGIN_TOKENS) / COMPACTION_OVERSHOOT_FACTOR;
-  return Math.floor(raw / 1000) * 1000;
+  return defaultCompactionLimitForWindow(modelWindowForSpec(spec), opts);
 }
 
 /**

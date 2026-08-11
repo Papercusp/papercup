@@ -3,19 +3,19 @@
  * agent-managed-compaction-2026-07-01 (P-007 / P-009).
  *
  * Resolves a session's transcript from its coord ownerId (via adv_sessions) and
- * estimates current context tokens as transcript-bytes/4 — a cheap, monotonic
- * "how full am I" gauge (fs.stat only, no content read). Runs OFF the per-turn hot
+ * estimates current context tokens. Claude uses transcript bytes/4; Codex uses
+ * the exact latest `token_count.info.last_token_usage.total_tokens` from its
+ * rollout JSONL. Runs OFF the per-turn hot
  * path: the compaction-compliance watchdog calls it on a cadence and caches the
  * result on coord_presence.context_tokens; the inbox usage signal reads that cached
  * value. Degrades to null (never throws) when a transcript can't be resolved.
  *
- * v1 targets Claude (interactive AND spawned — adv_sessions maps both). OMP
- * self-compacts natively and Codex has no compaction, so both return null for now
- * (a follow-up can add OMP via OmpSessionUsage).
+ * OMP self-compacts natively and remains intentionally unmeasured here.
  */
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { findSessionTranscript, papercuspSessionClaudeBase, newestTranscriptUnderOwner } from './claude-sessions';
+import { findCodexRolloutPath } from './session-transcript-resolvers';
 
 // P-016 fallback resolver — RELOCATED to claude-sessions.ts (2026-07-04, WI-2680) so
 // the agents-roster live-thinking pane + stream share the SAME resume-rotation
@@ -28,6 +28,95 @@ export interface SessionRef {
   agent: string | null;
   /** The backend session id (Claude UUID / OMP thread / codex rollout). */
   sessionId: string | null;
+  /** adv_sessions numeric key; Codex homes are keyed by this value rather than
+   *  by the rollout UUID stored in sessionId. */
+  sessionKey?: number | null;
+}
+
+export interface CodexContextSnapshot {
+  /** Current request context plus its just-produced output. */
+  tokens: number;
+  /** Codex's effective model window (272k × 95% = 258400 on gpt-5.6). */
+  modelContextWindow: number | null;
+}
+
+/** One bounded tail read is enough: Codex writes a token_count event after each
+ * model response, so the newest valid event is the authoritative current gauge.
+ * A native compaction/reset is reflected by the next event's lower
+ * last_token_usage; cumulative total_token_usage is deliberately ignored. */
+const CODEX_TOKEN_TAIL_BYTES = 1024 * 1024;
+
+export function codexContextSnapshotFromRollout(pathStr: string): CodexContextSnapshot | null {
+  try {
+    const size = fs.statSync(pathStr).size;
+    const start = Math.max(0, size - CODEX_TOKEN_TAIL_BYTES);
+    const fd = fs.openSync(pathStr, 'r');
+    let text: string;
+    try {
+      const buf = Buffer.alloc(size - start);
+      fs.readSync(fd, buf, 0, buf.length, start);
+      text = buf.toString('utf8');
+    } finally {
+      fs.closeSync(fd);
+    }
+    const lines = text.split('\n');
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const line = lines[i]?.trim();
+      if (!line) continue;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(line);
+      } catch {
+        continue; // the bounded tail can begin mid-line
+      }
+      const evt = parsed as {
+        type?: string;
+        payload?: {
+          type?: string;
+          info?: {
+            last_token_usage?: {
+              input_tokens?: number;
+              output_tokens?: number;
+              total_tokens?: number;
+            } | null;
+            model_context_window?: number;
+          } | null;
+        };
+      };
+      if (evt.type !== 'event_msg' || evt.payload?.type !== 'token_count') continue;
+      const usage = evt.payload.info?.last_token_usage;
+      if (!usage) continue; // rate-limit-only update
+      const total = Number(usage.total_tokens);
+      const fallback = Number(usage.input_tokens ?? 0) + Number(usage.output_tokens ?? 0);
+      const tokens = Number.isFinite(total) && total >= 0 ? total : fallback;
+      if (!Number.isFinite(tokens) || tokens < 0) continue;
+      const rawWindow = Number(evt.payload.info?.model_context_window);
+      return {
+        tokens: Math.floor(tokens),
+        modelContextWindow: Number.isFinite(rawWindow) && rawWindow > 0 ? Math.floor(rawWindow) : null,
+      };
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+interface EstimateContextDeps {
+  findCodexRollout?: typeof findCodexRolloutPath;
+}
+
+async function codexSnapshotForRef(
+  ref: SessionRef,
+  deps: EstimateContextDeps = {},
+): Promise<CodexContextSnapshot | null> {
+  if (ref.agent !== 'codex' || ref.sessionKey == null) return null;
+  try {
+    const rollout = await (deps.findCodexRollout ?? findCodexRolloutPath)(ref.sessionKey);
+    return rollout ? codexContextSnapshotFromRollout(rollout) : null;
+  } catch {
+    return null;
+  }
 }
 
 /** The raw JSONL key Claude writes on a compaction-summary entry. Text that
@@ -166,11 +255,17 @@ export function tokensFromFileSize(pathStr: string): number | null {
 
 /**
  * Estimate a session's current context tokens from a resolved SessionRef.
- * Claude (+ unknown) → transcript bytes/4; OMP/Codex → null in v1.
+ * Claude (+ unknown) → transcript bytes/4; Codex → exact rollout token_count;
+ * OMP → null by design.
  */
-export async function estimateContextTokens(ref: SessionRef, owner?: string | null): Promise<number | null> {
+export async function estimateContextTokens(
+  ref: SessionRef,
+  owner?: string | null,
+  deps: EstimateContextDeps = {},
+): Promise<number | null> {
+  if (ref.agent === 'omp') return null;
+  if (ref.agent === 'codex') return (await codexSnapshotForRef(ref, deps))?.tokens ?? null;
   if (!ref.sessionId) return null;
-  if (ref.agent === 'omp' || ref.agent === 'codex') return null;
   try {
     // Pass the coord `owner` hint: an interactive/spawned session's transcript lives under
     // ~/.papercusp/session-claude/<owner>/projects, so the hint takes findSessionTranscript's
@@ -188,15 +283,15 @@ export async function estimateContextTokens(ref: SessionRef, owner?: string | nu
 export async function resolveSessionRef(ownerId: string): Promise<SessionRef | null> {
   try {
     const { getOrgPg } = await import('@papercusp/db-org');
-    const rows = await getOrgPg().sql<{ agent: string | null; session_id: string | null }[]>`
-      SELECT agent, session_id
+    const rows = await getOrgPg().sql<{ id: number; agent: string | null; session_id: string | null }[]>`
+      SELECT id, agent, session_id
         FROM harness_shared.adv_sessions
        WHERE coord_owner_id = ${ownerId} AND session_id IS NOT NULL
        ORDER BY started_at DESC
        LIMIT 1
     `;
     if (!rows.length) return null;
-    return { agent: rows[0].agent, sessionId: rows[0].session_id };
+    return { agent: rows[0].agent, sessionId: rows[0].session_id, sessionKey: rows[0].id };
   } catch {
     return null;
   }
@@ -237,7 +332,8 @@ export function fallbackTranscriptFresh(p: string, nowMs = Date.now()): boolean 
  * carry-respawn successor to its dead predecessor's frozen transcript (an idle
  * successor has no jsonl until its first turn); a genuinely-missing estimate
  * degrades to null, which the watchdog's dark-telemetry grace handles without a
- * cut. OMP/Codex keep the null-by-design gate (no jsonl transcript). Cohorts whose
+ * cut. OMP keeps the null-by-design gate. Codex resolves its per-session rollout
+ * through the adv-session key. Cohorts whose
  * transcript lives outside the owner root entirely are covered by the mechanical
  * `autoCompactWindow` cap (P-014), not this estimate.
  */
@@ -250,6 +346,17 @@ export async function estimateContextTokensForOwner(ownerId: string): Promise<nu
   const alt = newestTranscriptUnderOwner(ownerId);
   if (!alt || !fallbackTranscriptFresh(alt)) return null;
   return tokensFromFileSize(alt);
+}
+
+/** Exact effective window reported by the current Codex rollout. Null for
+ * Claude/OMP or before Codex's first token_count event. */
+export async function estimateContextWindowForOwner(
+  ownerId: string,
+  deps: EstimateContextDeps = {},
+): Promise<number | null> {
+  const ref = await resolveSessionRefReconciled(ownerId);
+  if (!ref || ref.agent !== 'codex') return null;
+  return (await codexSnapshotForRef(ref, deps))?.modelContextWindow ?? null;
 }
 
 /**

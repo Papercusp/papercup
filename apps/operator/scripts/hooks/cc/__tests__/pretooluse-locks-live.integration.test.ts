@@ -15,10 +15,10 @@
  *   3. B queues with wake_on_grant:true (the coordinate-instead-of-spin
  *      protocol the deny reason instructs);
  *   4. A releases → the grant cascade hands the lock to B;
- *   5. B's hook re-run now ALLOWS (exit 0, no stdout) and caches the
- *      lock_id under <tool_use_id>.lock — allow-on-grant;
- *   6. the matching PostToolUse hook releases via the cache, leaving the
- *      path free (A can immediately re-acquire).
+ *   5. B's hook re-run now ALLOWS (exit 0, no stdout) without caching a
+ *      release token, because the queued lock is already held by B;
+ *   6. the matching PostToolUse hook is a no-op for that preexisting hold,
+ *      so B must explicitly release it before A can re-acquire.
  *
  * Live-gated like su-locks-http-mcp.integration.test.ts: skips when no
  * operator answers. All paths are run-id namespaced; everything acquired
@@ -261,12 +261,13 @@ describeLive('lock-hook live rung (coord-e2e P-008)', () => {
     expect(r.ok).not.toBe(true); // busy — queued, not granted
   });
 
-  it('A releases → grant cascade → B re-runs the hook and is ALLOWED with the lock_id cached', async () => {
+  it('A releases → grant cascade → B re-runs the hook and is ALLOWED without caching a preexisting lock', async () => {
     const rel = await callTool(OWNER_A, 'locks:release', { lock_id: lockIdA });
     expect(rel.ok).toBe(true);
 
-    // The cascade grants B's queued waiter; the hook's acquire as B then
-    // resolves same-owner (refresh / grant pickup) → ok. Allow up to ~8s.
+    // The cascade grants B's queued waiter; the hook's automatic acquire as B
+    // resolves the already-held lock → ok without claiming ownership of it.
+    // Allow up to ~8s for the grant cascade.
     let allowed = false;
     let lastStdout = '';
     for (let i = 0; i < 8 && !allowed; i++) {
@@ -283,13 +284,14 @@ describeLive('lock-hook live rung (coord-e2e P-008)', () => {
     }
     expect(allowed, `hook still denying: ${lastStdout.slice(0, 300)}`).toBe(true);
 
-    // Allow-on-grant cached the lock_id for the matching PostToolUse.
+    // The lock was granted by B's explicit queued acquire, so the automatic
+    // hook must not cache a release token for it.
     const cacheFile = join(cache, `${TOOL_USE_ID}.lock`);
-    expect(fs.existsSync(cacheFile)).toBe(true);
-    expect(fs.readFileSync(cacheFile, 'utf8').trim().length).toBeGreaterThan(0);
+    expect(fs.existsSync(cacheFile)).toBe(false);
+    expect(fs.existsSync(join(cache, `${TOOL_USE_ID}.paths`))).toBe(false);
   });
 
-  it('the matching PostToolUse hook releases via the cache — path free for A again', async () => {
+  it('the matching PostToolUse hook preserves the preexisting hold until B explicitly releases it', async () => {
     const r = await runHook(POST_HOOK, {
       tool_name: 'Edit',
       tool_input: { file_path: editedAbsPath },
@@ -299,7 +301,18 @@ describeLive('lock-hook live rung (coord-e2e P-008)', () => {
     }, hookEnvB);
     expect(r.code).toBe(0);
 
-    // The release went through if A can immediately re-acquire (no queue).
+    // There was no hook-owned cache entry, so PostToolUse must not release B's
+    // preexisting queued lock. A remains blocked until B explicitly releases it.
+    const stillHeld = await callTool(OWNER_A, 'locks:acquire', {
+      paths: [REL_PATH],
+      intent: `live-rung A must remain blocked ${RUN_ID}`,
+      ttl_sec: 60,
+    });
+    expect(stillHeld.ok).not.toBe(true);
+
+    await callTool(OWNER_B, 'locks:release', { all_mine: true });
+
+    // After B's deliberate release, the path is free and A can re-acquire.
     const again = await callTool(OWNER_A, 'locks:acquire', {
       paths: [REL_PATH],
       intent: `live-rung A reacquire ${RUN_ID}`,
@@ -310,11 +323,9 @@ describeLive('lock-hook live rung (coord-e2e P-008)', () => {
   });
 
   // EI-63: the explicit multi-file lock survives a hook-driven edit + release
-  // on ONE of its paths. Reproduces the exact reported mechanism: B holds an
-  // EXPLICIT locks:acquire over two paths; editing one of them through the
-  // normal hook flow reuses that same lock_id (su-lock-store.ts's same-owner
-  // reuse); the fix scopes PostToolUse's release to just the edited path via
-  // the cached sidecar, so the OTHER path must remain held afterward.
+  // on ONE of its paths. B holds an explicit locks:acquire over two paths;
+  // the automatic hook overlaps one of them, but does not claim either path
+  // as hook-owned. PostToolUse therefore cannot dissolve B's deliberate set.
   it('EI-63: an explicit multi-file lock is NOT dissolved by a hook-driven edit+release on just one of its paths', async () => {
     const relKeep = `e2e-hook-live/${RUN_ID}/multi-keep.ts`;
     const relEdit = `e2e-hook-live/${RUN_ID}/multi-edit.ts`;
@@ -336,8 +347,7 @@ describeLive('lock-hook live rung (coord-e2e P-008)', () => {
     const toolUseId = `tu-ei63-${RUN_ID}`;
 
     // The normal per-edit hook flow on ONE of the two paths (B already holds
-    // it) — expect ALLOW, and the server should reuse the SAME lock_id (the
-    // condition that makes the bug possible).
+    // it) — expect ALLOW without a release cache entry.
     const preRes = await runHook(PRE_HOOK, {
       tool_name: 'Edit',
       tool_input: { file_path: absEdit },
@@ -347,8 +357,8 @@ describeLive('lock-hook live rung (coord-e2e P-008)', () => {
     }, hookEnvB);
     expect(preRes.code).toBe(0);
     expect(preRes.stdout).toBe(''); // allow — same owner already holds it
-    const cachedLockId = fs.readFileSync(join(cache, `${toolUseId}.lock`), 'utf8').trim();
-    expect(cachedLockId).toBe(explicitLockId); // confirms the reuse this bug depends on
+    expect(fs.existsSync(join(cache, `${toolUseId}.lock`))).toBe(false);
+    expect(fs.existsSync(join(cache, `${toolUseId}.paths`))).toBe(false);
 
     // The matching PostToolUse fires (as it would right after the edit).
     const postRes = await runHook(POST_HOOK, {
@@ -360,14 +370,20 @@ describeLive('lock-hook live rung (coord-e2e P-008)', () => {
     }, hookEnvB);
     expect(postRes.code).toBe(0);
 
-    // The OTHER path must STILL be held by B — a different owner (A) trying
-    // to acquire it now must be refused (busy), not silently succeed.
+    // BOTH paths must STILL be held by B — a different owner (A) trying to
+    // acquire either path must be refused (busy), not silently succeed.
     const intruder = await callTool(OWNER_A, 'locks:acquire', {
       paths: [relKeep],
       intent: `EI-63 intruder attempt ${RUN_ID}`,
       ttl_sec: 60,
     });
     expect(intruder.ok, 'the untouched path in the explicit multi-file lock was silently released').not.toBe(true);
+    const editedIntruder = await callTool(OWNER_A, 'locks:acquire', {
+      paths: [relEdit],
+      intent: `EI-63 edited-path intruder attempt ${RUN_ID}`,
+      ttl_sec: 60,
+    });
+    expect(editedIntruder.ok, 'the edited path in the explicit multi-file lock was silently released').not.toBe(true);
 
     // Cleanup: B releases its remaining explicit hold.
     await callTool(OWNER_B, 'locks:release', { lock_id: explicitLockId });

@@ -20,6 +20,7 @@ import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-reg
 import {
   detectContextDeathForOwner,
   estimateContextTokensForOwner,
+  estimateContextWindowForOwner,
   resolveLaunchCompactionLimitForOwner,
   resolveModelSpecForOwner,
   resolveSessionRefReconciled,
@@ -31,6 +32,7 @@ import {
   COMPACTION_WINDOW_MARGIN_TOKENS,
   clampCompactionLimit,
   defaultCompactionLimitForSpec,
+  defaultCompactionLimitForWindow,
   MODEL_WINDOW_1M,
   modelWindowForSpec,
   type ModelTier,
@@ -1069,21 +1071,21 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
         nullEstimateStreak.set(r.owner_id, streak);
         if (streak >= DARK_TELEMETRY_MAX_NULL_SWEEPS) {
           // A null estimate is a FALSE POSITIVE for two owner classes — neither is a blind
-          // Claude session, so neither may raise a dark-telemetry alarm:
-          //   (1) OMP (self-compacts natively) / Codex (no compaction): estimateContextTokensForOwner
-          //       returns null for those agents BY DESIGN (compaction-usage.ts) — WI-2910.
+          // managed session, so neither may raise a dark-telemetry alarm:
+          //   (1) OMP self-compacts natively, so estimateContextTokensForOwner returns
+          //       null for it BY DESIGN. Codex is deliberately NOT exempt: D-011 disables
+          //       its native compaction, so a missing rollout estimate is now genuinely dark.
           //   (2) a SYNTHETIC principal that is not a launched agent session at all — an MCP-call
           //       principal (`mcp-call-<pid>`), a bare-UUID UI client, etc. It has NO adv_sessions
           //       row, so resolveSessionRef returns null; with no session/transcript to compact a
           //       null estimate is meaningless, not "blind" — WI-2917. (These get a compaction_limit
           //       seeded by the pass above purely because they carry a live presence heartbeat.)
-          // A REAL Claude session whose transcript merely won't resolve DOES have an adv_sessions
-          // row (ref non-null, agent 'claude'/unknown), so it still escalates below — the
-          // 836k-overflow signal this detector exists for is preserved.
+          // A REAL Claude or Codex session whose transcript merely won't resolve DOES have an
+          // adv_sessions row, so it still escalates below — the overflow signal is preserved.
           // EI-13477: reconciled — see resolveLiveTranscriptPath for why the raw
           // ref can under/over-classify an owner across a same-pid relaunch.
           const ref = await resolveSessionRefReconciled(r.owner_id);
-          if (!ref || ref.agent === 'omp' || ref.agent === 'codex') {
+          if (!ref || ref.agent === 'omp') {
             nullEstimateStreak.delete(r.owner_id); // by-design / synthetic null — don't accumulate a streak
             continue;
           }
@@ -1099,6 +1101,30 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
         continue;
       }
       nullEstimateStreak.delete(r.owner_id); // estimate resolved — clear the dark-telemetry streak
+      // D-011: Codex reports its EFFECTIVE window in every token_count event
+      // (258400 for a 272k model at 95%). A stale/unknown-spec seed can be 400k,
+      // which means the warning and carry cut would literally be scheduled after
+      // the hard wall. Lower only — a deliberate smaller override remains intact.
+      let liveWindow: number | null = null;
+      try {
+        liveWindow = await estimateContextWindowForOwner(r.owner_id);
+        if (liveWindow != null) {
+          const fleetMember = r.fleet_slug != null && r.fleet_role !== 'leader';
+          const safeLimit = defaultCompactionLimitForWindow(liveWindow, { fleetMember });
+          if (r.compaction_limit > safeLimit) {
+            await setCompactionLimit(r.owner_id, safeLimit);
+            out.relimited.push({ owner: r.owner_id, from: r.compaction_limit, to: safeLimit });
+            console.warn(
+              `[compaction-watchdog] re-limited ${r.owner_label} (${r.owner_id}): ` +
+                `${r.compaction_limit} → ${safeLimit} tokens from the live effective ` +
+                `${liveWindow}-token model window (Codex D-011).`,
+            );
+            r.compaction_limit = safeLimit;
+          }
+        }
+      } catch {
+        /* best-effort; the estimator's dark-telemetry path remains the guard */
+      }
       // EI-10434 sanity clamp — discard + re-sample BEFORE this reading can drive
       // anything (cache, gauge, over-limit warn, or force-compact). See the
       // IMPLAUSIBLE_READING_* constants above for the full rationale.
@@ -1156,7 +1182,7 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
         }
         // Resolve the live effective window once for BOTH the P-018 soft cut and
         // the P-012 hard backstop. A contradicted resolution is never trusted.
-        let window = await resolveWindowForOwner(sql, r.owner_id, tierMenu);
+        let window = liveWindow ?? (await resolveWindowForOwner(sql, r.owner_id, tierMenu));
         if (window != null && est >= window * WINDOW_CONTRADICTED_FACTOR) {
           console.warn(
             `[compaction-watchdog] ${r.owner_label} (${r.owner_id}): resolved window ${window} is ` +

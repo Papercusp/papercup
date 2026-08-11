@@ -7,6 +7,7 @@ import {
   modelWindowForSpec,
   isDefault1mModelSpec,
   defaultCompactionLimitForSpec,
+  defaultCompactionLimitForWindow,
   selfSetCeilingForSpec,
   clampCompactionLimit,
   MIN_COMPACTION_LIMIT_TOKENS,
@@ -156,6 +157,21 @@ describe('defaultCompactionLimitForSpec (keys on the [1m] MARKER only)', () => {
     expect(defaultCompactionLimitForSpec('   ')).toBe(400_000);
     expect(defaultCompactionLimitForSpec(null, { fleetMember: true })).toBe(200_000);
     expect(defaultCompactionLimitForSpec('', { fleetMember: true })).toBe(200_000);
+  });
+});
+
+describe('defaultCompactionLimitForWindow (live backend window)', () => {
+  it('clamps Codex gpt-5.6 effective 258400 window to a 207k leader soft limit', () => {
+    expect(defaultCompactionLimitForWindow(258_400)).toBe(207_000);
+  });
+
+  it('keeps a Codex fleet member at the leaner 200k role cap', () => {
+    expect(defaultCompactionLimitForWindow(258_400, { fleetMember: true })).toBe(200_000);
+  });
+
+  it('preserves the established 1M and 200k derivations', () => {
+    expect(defaultCompactionLimitForWindow(1_000_000)).toBe(400_000);
+    expect(defaultCompactionLimitForWindow(200_000)).toBe(158_000);
   });
 });
 

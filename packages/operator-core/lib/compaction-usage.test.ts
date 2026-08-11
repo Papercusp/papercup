@@ -9,7 +9,9 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
 import {
+  codexContextSnapshotFromRollout,
   estimateContextTokens,
+  estimateContextWindowForOwner,
   fallbackTranscriptFresh,
   newestTranscriptUnderOwner,
   parseLaunchCompactionLimitArgv,
@@ -26,13 +28,86 @@ describe('estimateContextTokens (backend gating + degradation)', () => {
     expect(await estimateContextTokens({ agent: 'omp', sessionId: 'omp-thread-123' })).toBeNull();
   });
 
-  it('returns null for Codex (no compaction)', async () => {
+  it('returns null for Codex before its adv-session key/rollout resolves', async () => {
     expect(await estimateContextTokens({ agent: 'codex', sessionId: 'codex-rollout-123' })).toBeNull();
   });
 
   it('returns null for an unresolvable Claude session (no transcript on disk)', async () => {
     const est = await estimateContextTokens({ agent: 'claude', sessionId: 'nonexistent-session-9999' });
     expect(est).toBeNull();
+  });
+});
+
+describe('Codex rollout token_count telemetry (agent-managed-compaction D-011)', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'compaction-codex-'));
+  const rollout = join(dir, 'rollout.jsonl');
+  afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+  it('reads the newest valid last_token_usage and effective model window, never cumulative usage', async () => {
+    const event = (tokens: number, total: number, window = 258_400) =>
+      JSON.stringify({
+        type: 'event_msg',
+        payload: {
+          type: 'token_count',
+          info: {
+            total_token_usage: { total_tokens: total },
+            last_token_usage: { input_tokens: tokens - 100, output_tokens: 100, total_tokens: tokens },
+            model_context_window: window,
+          },
+        },
+      });
+    writeFileSync(rollout, `${event(120_000, 9_000_000)}\n${event(156_981, 126_734_214)}\n`);
+
+    expect(codexContextSnapshotFromRollout(rollout)).toEqual({
+      tokens: 156_981,
+      modelContextWindow: 258_400,
+    });
+    expect(
+      await estimateContextTokens(
+        { agent: 'codex', sessionId: 'rollout-id', sessionKey: 14795 },
+        null,
+        { findCodexRollout: async () => rollout },
+      ),
+    ).toBe(156_981);
+  });
+
+  it('skips a trailing rate-limit-only event and falls back to input+output when total_tokens is absent', () => {
+    writeFileSync(
+      rollout,
+      [
+        JSON.stringify({
+          type: 'event_msg',
+          payload: {
+            type: 'token_count',
+            info: {
+              last_token_usage: { input_tokens: 40_000, output_tokens: 321 },
+              model_context_window: 258_400,
+            },
+          },
+        }),
+        JSON.stringify({ type: 'event_msg', payload: { type: 'token_count', info: null } }),
+      ].join('\n') + '\n',
+    );
+    expect(codexContextSnapshotFromRollout(rollout)).toEqual({
+      tokens: 40_321,
+      modelContextWindow: 258_400,
+    });
+  });
+
+  it('exposes the rollout window for the watchdog limit clamp', async () => {
+    writeFileSync(
+      rollout,
+      JSON.stringify({
+        type: 'event_msg',
+        payload: {
+          type: 'token_count',
+          info: { last_token_usage: { total_tokens: 80_000 }, model_context_window: 258_400 },
+        },
+      }) + '\n',
+    );
+    // The owner resolver is integration-covered; the per-ref parser above pins
+    // the exact window. A non-Codex/unresolvable owner remains fail-soft.
+    expect(await estimateContextWindowForOwner('definitely-missing-owner')).toBeNull();
   });
 });
 
