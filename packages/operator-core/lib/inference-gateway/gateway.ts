@@ -680,6 +680,11 @@ export interface GatewayDeps {
    *  `x-papercusp-account` pin to one of these ids, or the FALLBACK when no bearer pool exists /
    *  the bearer pool has no available account. */
   codexCliAccounts?: () => CodexCliAccount[];
+  /** Routing/health twin of `codexCliAccounts`. The entries carry the same account ids and egress
+   *  bindings, but no credential material; the OAuth proxy resolves credentials from each account's
+   *  CODEX_HOME only after selection. Keeping subscription accounts in a real AccountPool gives them
+   *  the same round-robin, pin, exhaustion, readmit, and hot-reload semantics as bearer accounts. */
+  codexCliPool?: AccountPool;
   /** Test seam: the codex-CLI completion runner (default runCodexCliCompletion). */
   codexCliRun?: (opts: CodexCliRunOpts) => Promise<CodexCliRunResult>;
   /** codex-gateway-oauth-proxy-2026-07-04 (WI-2198): when true, a codex-cli account serves a
@@ -979,6 +984,9 @@ export interface GatewayStats {
   /** AIMD admission-concurrency state (B-GW-1): effective vs cap/floor + lifetime decrease/increase
    *  counts — the dashboard's adaptive-throttle signal (a climbing `decreases` = a sustained storm). */
   aimd: AimdSnapshot;
+  /** ChatGPT/Codex has an independent adaptive controller. A Codex throttle must never shrink the
+   *  Claude queue (and a Claude success must never prematurely recover Codex admission). */
+  codexAimd?: AimdSnapshot;
   /** Serviceable-count clamp state (2026-07-09 advisory-clamp directive). `recommendation` is what the
    *  clamp WOULD cap live admission to (null = unbounded/not yet computed); `applied` is what admission
    *  actually is after `mode` is honored; `overridden` is true when a recommendation exists and was NOT
@@ -1467,6 +1475,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
   const codexConcurrency = Math.max(1, Math.floor(deps.codexConcurrency ?? DEFAULT_CODEX_CONCURRENCY));
   // ChatGPT-subscription bridge (codex-cli-bridge.ts): CLI-served codex accounts + the runner.
   const codexCliAccounts = () => deps.codexCliAccounts?.() ?? [];
+  const codexCliPool = deps.codexCliPool;
   const codexCliRun = deps.codexCliRun ?? runCodexCliCompletion;
   // WI-2198: when ON, a codex-cli account STREAMS /v1/responses via the OAuth reverse-proxy.
   const codexOAuthProxyEnabled = deps.codexOAuthProxy === true;
@@ -1537,6 +1546,28 @@ export function createInferenceGateway(deps: GatewayDeps) {
     onChange: (eff) => {
       applyAdmissionCap(eff);
       log('warn', `inference-gateway: AIMD admission concurrency → ${eff}/${concurrency} (effective/cap)`);
+    },
+  });
+  const applyCodexAdmissionCap = (eff: number): void => {
+    const capped = Math.max(1, Math.min(codexConcurrency, eff));
+    codexQueue.setMaxConcurrent(capped);
+    if (tiered) {
+      const shedCaps = shedTierCaps(baseTierCaps, codexConcurrency - capped);
+      for (const [t, cap] of Object.entries(shedCaps)) codexQueue.setTierCap(Number(t), cap);
+    }
+  };
+  // Codex has a separate upstream and a separately-sized queue. Feeding its 429s/successes into the
+  // Claude controller used to shrink/recover the WRONG queue, leaving Codex admission unchanged while
+  // perturbing Claude traffic. Keep the policy identical but the feedback loops independent.
+  const codexAimd = new AimdConcurrencyController({
+    cap: codexConcurrency,
+    floor: Math.min(codexConcurrency, deps.aimd?.floor ?? DEFAULT_AIMD_FLOOR),
+    decreaseFactor: deps.aimd?.decreaseFactor,
+    decreaseThreshold: deps.aimd?.decreaseThreshold ?? DEFAULT_AIMD_DECREASE_THRESHOLD,
+    increaseEvery: deps.aimd?.increaseEvery ?? DEFAULT_AIMD_INCREASE_EVERY,
+    onChange: (eff) => {
+      applyCodexAdmissionCap(eff);
+      log('warn', `inference-gateway: Codex AIMD admission concurrency → ${eff}/${codexConcurrency} (effective/cap)`);
     },
   });
 
@@ -2388,6 +2419,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       maxQueued,
       concurrencyCap: concurrency,
       aimd: aimd.snapshot(),
+      codexAimd: codexAimd.snapshot(),
       failovers,
       upstreamErrors,
       egressCircuitOpens,
@@ -2415,7 +2447,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
         failStreakByAccount: Object.fromEntries(proactiveProbeFailStreak),
       },
       codex: { requests: codexRequests, upstream429: codexUpstream429, failovers: codexFailovers, errors: codexUpstreamErrors },
-      codexHealthyAccounts: (deps.codexPool?.healthyCount ? deps.codexPool.healthyCount() : 0) + codexCliAccounts().length,
+      codexHealthyAccounts:
+        (deps.codexPool?.healthyCount ? deps.codexPool.healthyCount() : 0) +
+        (codexCliPool?.healthyCount ? codexCliPool.healthyCount() : codexCliAccounts().length),
       beeFacing503: { egressExhausted: beeEgressExhausted, tokenStall: beeTokenStall },
       // EI-535 (gateway-healthz-stale-latch fix): `snap.unified` freezes at its last-observed value once
       // traffic goes idle — no new upstream response means recordHeaders never runs again to update it.
@@ -4114,6 +4148,14 @@ export function createInferenceGateway(deps: GatewayDeps) {
       sendJson(res, 400, { type: 'error', error: { type: 'invalid_request_error', message: 'inference-gateway: codex-cli bridge needs a JSON /v1/responses body' }, gateway: true });
       return;
     }
+    if (cachePolicyEnabled && bodyBuf.length) {
+      const shardSeed = routing.ownerId || routing.pinned?.accountId || cli.accountId;
+      const cached = rewriteOpenAiCacheBody(bodyBuf, {
+        cacheKey: shardedCacheKey('psu', shardSeed, codexCacheShards()),
+      });
+      bodyBuf = cached.body;
+      if (cached.stats) recordCachePolicy('codex', cached.stats);
+    }
     if (body.stream === true) {
       sendJson(res, 400, { type: 'error', error: { type: 'invalid_request_error', message: 'inference-gateway: the codex-cli (ChatGPT subscription) bridge is non-streaming — send stream:false' }, gateway: true });
       return;
@@ -4161,7 +4203,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
    *  A NON-streaming request (the in-process scout/judge callers) is handed to the exec
    *  bridge unchanged, so only the streaming FLEET path is new. Runs inside the codex
    *  admission slot (same accounting as the bearer path). */
-  async function serveCodexOAuthProxy(req: http.IncomingMessage, res: http.ServerResponse, cli: CodexCliAccount, url: string) {
+  async function serveCodexOAuthProxy(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    cli: CodexCliAccount,
+    url: string,
+    routing: { hardPin: boolean; pinned: CodexCliAccount | null; ownerId?: string },
+  ) {
     let bodyBuf: Buffer;
     try {
       bodyBuf = await withDeadline(readBody(req), requestCeilingMs, `codex-oauth readBody '${cli.accountId}'`);
@@ -4182,6 +4230,18 @@ export function createInferenceGateway(deps: GatewayDeps) {
     }
     totalRequests++;
     codexRequests++;
+    recordOwnerOutcome(routing.ownerId, 'request');
+
+    const rotateCli = (resetAt: number): boolean => {
+      if (routing.hardPin || !codexCliPool) return false;
+      const next = codexCliPool.onExhausted(cli.accountId, resetAt);
+      if (!next || next.accountId === cli.accountId) return false;
+      const nextCli = codexCliAccounts().find((a) => a.accountId === next.accountId);
+      if (!nextCli) return false;
+      codexFailovers++;
+      cli = nextCli;
+      return true;
+    };
 
     const reqAbort = new AbortController();
     const abortRequest = (reason: string) => { if (!reqAbort.signal.aborted) reqAbort.abort(new Error(reason)); };
@@ -4198,16 +4258,6 @@ export function createInferenceGateway(deps: GatewayDeps) {
     ceilingTimer.unref?.();
 
     try {
-      let auth: CodexAuth;
-      try {
-        auth = await withDeadline(resolveCodexAccessToken(cli.home), tokenTimeoutMs, `codex oauth token '${cli.accountId}'`);
-      } catch (e) {
-        codexUpstreamErrors++;
-        log('error', `inference-gateway: codex OAuth token resolve failed on '${cli.accountId}': ${(e as Error).message}`);
-        if (!res.headersSent) sendJson(res, 503, { type: 'error', error: { type: 'overloaded_error', message: `inference-gateway: codex OAuth token unavailable for '${cli.accountId}'` }, gateway: true }, { 'retry-after': '5', [ROUTED_ACCOUNT_HEADER]: cli.accountId });
-        return;
-      }
-
       // Base headers from the codex CLI request, minus hop-by-hop/auth/host (STRIP_REQUEST).
       const baseHeaders: Record<string, string> = {};
       for (const [k, v] of Object.entries(req.headers)) {
@@ -4215,10 +4265,31 @@ export function createInferenceGateway(deps: GatewayDeps) {
         baseHeaders[k] = Array.isArray(v) ? v.join(', ') : v;
       }
       const upstreamUrl = codexBackendUrl(url);
+      let auth: CodexAuth | undefined;
+      let authAccount = '';
+      let refreshedAccount = '';
 
-      // One attempt; a 401 triggers a single token refresh + retry (the token expired between
-      // the proactive check and the call, or was rotated by a peer).
-      for (let attempt = 0; attempt < 2; attempt++) {
+      // The request body is buffered, so every retry is clean. A soft pin may yield only after its
+      // account is unserviceable; a hard pin never calls rotateCli. OAuth resolution, refresh,
+      // transport, 429, and retryable 5xx failures all share this bounded failover ladder.
+      for (let attempt = 0; attempt < INTERNAL_RETRY_MAX_ATTEMPTS; attempt++) {
+        const canRetry = attempt < INTERNAL_RETRY_MAX_ATTEMPTS - 1;
+        if (!auth || authAccount !== cli.accountId) {
+          try {
+            auth = await withDeadline(resolveCodexAccessToken(cli.home), tokenTimeoutMs, `codex oauth token '${cli.accountId}'`);
+            authAccount = cli.accountId;
+          } catch (e) {
+            codexUpstreamErrors++;
+            recordOwnerOutcome(routing.ownerId, 'upstream_error', { account: cli.accountId, detail: 'oauth-token-resolve' });
+            log('error', `inference-gateway: codex OAuth token resolve failed on '${cli.accountId}': ${(e as Error).message}`);
+            if (canRetry && rotateCli(Date.now() + bare429FailoverBackoffMs)) {
+              auth = undefined;
+              continue;
+            }
+            if (!res.headersSent) sendJson(res, 503, { type: 'error', error: { type: 'overloaded_error', message: `inference-gateway: codex OAuth token unavailable for '${cli.accountId}'` }, gateway: true }, { 'retry-after': '5', [ROUTED_ACCOUNT_HEADER]: cli.accountId });
+            return;
+          }
+        }
         const ac = new AbortController();
         const onAbort = () => ac.abort(reqAbort.signal.reason instanceof Error ? reqAbort.signal.reason : new Error('codex request aborted'));
         if (reqAbort.signal.aborted) onAbort();
@@ -4229,38 +4300,96 @@ export function createInferenceGateway(deps: GatewayDeps) {
         const detach = () => { reqAbort.signal.removeEventListener('abort', onAbort); clearStall(); };
 
         const headers = buildCodexUpstreamHeaders({ base: baseHeaders, accessToken: auth.accessToken, accountId: auth.accountId });
+        const activeCli: ActiveAccount = {
+          accountId: cli.accountId,
+          token: async () => auth!.accessToken,
+          egress: cli.egress,
+          egressPool: cli.egressPool,
+        };
+        const pickedEgress = pickEgress(activeCli, Date.now());
         let up: Response;
         try {
+          const init: FetchInit = { method: req.method ?? 'POST', headers, body: new Uint8Array(bodyBuf), signal: ac.signal };
+          const dispatcher = await dispatcherFor(activeCli, pickedEgress.entry);
+          if (dispatcher) init.dispatcher = dispatcher;
+          egressAttemptsByAccount.set(cli.accountId, (egressAttemptsByAccount.get(cli.accountId) ?? 0) + 1);
           armStall(upstreamStreamHeadersTimeoutMs); // SHORT TTFB — this is always a stream
-          up = await doFetch(upstreamUrl, { method: req.method ?? 'POST', headers, body: new Uint8Array(bodyBuf), signal: ac.signal } as RequestInit);
+          up = await doFetch(upstreamUrl, init as RequestInit);
           armStall(upstreamBodyIdleTimeoutMs);
         } catch (e) {
           detach();
           codexUpstreamErrors++;
+          egressFailsByAccount.set(cli.accountId, (egressFailsByAccount.get(cli.accountId) ?? 0) + 1);
+          coolIp(pickedEgress.key, IP_TRANSPORT_COOLDOWN_MS);
+          recordOwnerOutcome(routing.ownerId, 'upstream_error', { account: cli.accountId, detail: 'oauth-transport' });
+          if (canRetry && (siblingEgressAvailable(activeCli, Date.now(), pickedEgress.key) || rotateCli(Date.now() + bare429FailoverBackoffMs))) {
+            if (authAccount !== cli.accountId) auth = undefined;
+            continue;
+          }
           if (!res.headersSent) sendJson(res, 502, { type: 'error', error: { type: 'api_error', message: `inference-gateway: codex OAuth upstream failed: ${(e as Error).message}` }, gateway: true }, { [ROUTED_ACCOUNT_HEADER]: cli.accountId });
           else res.destroy();
           return;
         }
 
         // 401 → refresh the token ONCE and retry (before any bytes are written).
-        if (up.status === 401 && attempt === 0) {
+        if (up.status === 401 && refreshedAccount !== cli.accountId) {
           detach();
           try { await up.body?.cancel(); } catch { /* drain */ }
           try {
             auth = await withDeadline(refreshCodexToken(cli.home, auth), tokenTimeoutMs, `codex oauth refresh '${cli.accountId}'`);
+            authAccount = cli.accountId;
+            refreshedAccount = cli.accountId;
             continue;
           } catch (e) {
             codexUpstreamErrors++;
             log('error', `inference-gateway: codex OAuth refresh failed on '${cli.accountId}': ${(e as Error).message}`);
+            if (canRetry && rotateCli(Date.now() + bare429FailoverBackoffMs)) {
+              auth = undefined;
+              continue;
+            }
             if (!res.headersSent) sendJson(res, 502, { type: 'error', error: { type: 'api_error', message: `inference-gateway: codex OAuth token refresh failed: ${(e as Error).message}` }, gateway: true }, { [ROUTED_ACCOUNT_HEADER]: cli.accountId });
             return;
           }
         }
-        if (up.status === 429) codexUpstream429++;
-        else if (up.ok) aimd.recordSuccess();
+        if (up.status === 429) {
+          codexUpstream429++;
+          codexAimd.recordThrottle();
+          recordOwnerOutcome(routing.ownerId, 'upstream_429', { account: cli.accountId, status: 429 });
+          if (canRetry) {
+            const reset = parseRateReset(headersToObject(up.headers));
+            detach();
+            try { await up.body?.cancel(); } catch { /* drain */ }
+            coolIp(pickedEgress.key, Math.min(reset.retryAfterMs ?? bare429FailoverBackoffMs, IP_COOLDOWN_MAX_MS));
+            if (siblingEgressAvailable(activeCli, Date.now(), pickedEgress.key) || rotateCli(reset.resetAt ?? Date.now() + bare429FailoverBackoffMs)) {
+              if (authAccount !== cli.accountId) auth = undefined;
+              continue;
+            }
+          }
+        } else if (up.status >= 500 && canRetry) {
+          detach();
+          try { await up.body?.cancel(); } catch { /* drain */ }
+          if (rotateCli(Date.now() + bare429FailoverBackoffMs)) {
+            auth = undefined;
+            continue;
+          }
+        } else if (up.ok) {
+          codexAimd.recordSuccess();
+          lastEgressOkAt.set(cli.accountId, Date.now());
+          ipTransportFailStreak.delete(pickedEgress.key);
+        }
 
         const outHeaders: Record<string, string> = { [ROUTED_ACCOUNT_HEADER]: cli.accountId };
         up.headers.forEach((v, k) => { if (!STRIP_RESPONSE.has(k.toLowerCase())) outHeaders[k] = v; });
+        if (routing.pinned && !routing.hardPin && routing.pinned.accountId !== cli.accountId) {
+          outHeaders[PIN_YIELDED_HEADER] = `${routing.pinned.accountId}->${cli.accountId}`;
+          recordOwnerOutcome(routing.ownerId, 'pin_yield', { account: cli.accountId, detail: outHeaders[PIN_YIELDED_HEADER] });
+        }
+        recordRoute(routing.ownerId, cli.accountId, 'codex');
+        recordOwnerOutcome(
+          routing.ownerId,
+          up.status < 400 ? 'ok' : up.status === 429 ? 'upstream_429' : 'upstream_error',
+          { account: cli.accountId, status: up.status },
+        );
         res.writeHead(up.status, outHeaders);
         if (!up.body) { detach(); res.end(); return; }
         const nodeStream = Readable.fromWeb(up.body as Parameters<typeof Readable.fromWeb>[0]);
@@ -4287,19 +4416,26 @@ export function createInferenceGateway(deps: GatewayDeps) {
 
   async function proxyOpenAi(req: http.IncomingMessage, res: http.ServerResponse, url: string) {
     const adapter = providerAdapters.codex;
-    const wantAccount = (req.headers[ACCOUNT_HEADER] as string | undefined)?.trim();
+    const wantOwner = (req.headers[OWNER_HEADER] as string | undefined)?.trim() || undefined;
+    const wantAccountHeader = (req.headers[ACCOUNT_HEADER] as string | undefined)?.trim();
+    const dynPin = wantOwner ? ownerPinMap.get(wantOwner) : undefined;
+    const wantAccount = dynPin?.accountId ?? wantAccountHeader;
     // ChatGPT-subscription bridge resolution (codex-cli-bridge.ts): an explicit pin to a
     // CLI account wins; otherwise the CLI list is the FALLBACK when there is no bearer
     // pool at all, or the bearer pool momentarily resolves no available account. Bearer
     // accounts keep priority when both exist (cheaper per call, streams supported).
     const cliList = codexCliAccounts();
-    let cli: CodexCliAccount | null = wantAccount ? (cliList.find((a) => a.accountId === wantAccount) ?? null) : null;
+    const pinnedCli = wantAccount ? (cliList.find((a) => a.accountId === wantAccount) ?? null) : null;
+    let cli: CodexCliAccount | null = pinnedCli;
+    let pinnedBearer: ActiveAccount | null = null;
     // Definite-assignment assertion: every path below either assigns `active`, serves via
     // the CLI bridge and returns, or 503s and returns.
     let active!: ActiveAccount;
     if (!cli) {
       if (!adapter.pool || !adapter.upstreamBase) {
-        cli = cliList[0] ?? null;
+        let selectedId: string | undefined;
+        try { selectedId = codexCliPool?.active().accountId; } catch { /* unavailable pool; fall back to list */ }
+        cli = (selectedId ? cliList.find((a) => a.accountId === selectedId) : undefined) ?? cliList[0] ?? null;
         if (!cli) {
           req.resume();
           sendJson(res, 503, { type: 'error', error: { type: 'api_error', message: adapter.unavailableMessage ?? 'inference-gateway: Codex provider unavailable' }, gateway: true });
@@ -4307,10 +4443,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
         }
       } else {
         try {
-          const pinned = (wantAccount && adapter.pool.select?.(wantAccount)) || null;
-          active = pinned ?? adapter.pool.active();
+          pinnedBearer = (wantAccount && adapter.pool.select?.(wantAccount)) || null;
+          active = pinnedBearer ?? adapter.pool.active();
         } catch (e) {
-          cli = cliList[0] ?? null;
+          let selectedId: string | undefined;
+          try { selectedId = codexCliPool?.active().accountId; } catch { /* unavailable pool; fall back to list */ }
+          cli = (selectedId ? cliList.find((a) => a.accountId === selectedId) : undefined) ?? cliList[0] ?? null;
           if (!cli) {
             req.resume();
             sendJson(res, 503, { type: 'error', error: { type: 'api_error', message: (e as Error).message || adapter.unavailableMessage || 'inference-gateway: Codex provider unavailable' }, gateway: true });
@@ -4327,10 +4465,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
       return;
     }
     if (cli) {
-      if (codexOAuthProxyEnabled) await serveCodexOAuthProxy(req, res, cli, url);
+      const hardPin =
+        pinnedCli !== null &&
+        (dynPin ? dynPin.hard : (req.headers[ACCOUNT_PIN_HEADER] as string | undefined)?.trim().toLowerCase() === 'hard');
+      if (codexOAuthProxyEnabled) await serveCodexOAuthProxy(req, res, cli, url, { hardPin, pinned: pinnedCli, ownerId: wantOwner });
       else await serveCodexCliBridge(req, res, cli);
       return;
     }
+    const hardPin =
+      pinnedBearer !== null &&
+      (dynPin ? dynPin.hard : (req.headers[ACCOUNT_PIN_HEADER] as string | undefined)?.trim().toLowerCase() === 'hard');
 
     // Stable request abort for the Codex proxy. Scout times out its in-process
     // `/v1/responses` call at the caller, but the gateway must also stop the
@@ -4407,6 +4551,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const headersStallMs = isStream ? upstreamStreamHeadersTimeoutMs : upstreamHeadersTimeoutMs;
     totalRequests++;
     codexRequests++;
+    recordOwnerOutcome(wantOwner, 'request');
     res.setTimeout(downstreamIdleMs, () => res.destroy());
 
     // Single stall timer — the headers TTFB, then re-armed per body chunk as the body-idle deadline (mirrors
@@ -4426,6 +4571,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // the body is buffered (bodyBuf) so each attempt re-sends cleanly. The retry only runs BEFORE headers are
     // written; once we stream a response we commit to it.
     const rotateCodex = (resetAt: number): boolean => {
+      if (hardPin) return false;
       const next = adapter.pool!.onExhausted(active.accountId, resetAt);
       if (next && next.accountId !== active.accountId) {
         codexFailovers++;
@@ -4511,6 +4657,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // 429 → ROTATE + retry (route around) rather than forwarding the throttle to the bee.
       if (up.status === 429) {
         codexUpstream429++;
+        codexAimd.recordThrottle();
         if (canRetry) {
           const reset = parseRateReset(headersToObject(up.headers));
           if (rotateCodex(reset.resetAt ?? Date.now() + bare429FailoverBackoffMs)) {
@@ -4522,7 +4669,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         }
         // no rotate target / out of attempts → fall through and forward the 429 (the bee's CLI retries)
       } else if (up.ok) {
-        aimd.recordSuccess();
+        codexAimd.recordSuccess();
       }
 
       const outHeaders: Record<string, string> = { [ROUTED_ACCOUNT_HEADER]: active.accountId };
