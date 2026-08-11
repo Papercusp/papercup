@@ -61,6 +61,11 @@ import { activeWorkspaceId } from "../../../workspace-registry";
 import { cachedRead, type CachedReadCtx } from "../../../cache";
 import { fetchUnansweredDirected } from "../unanswered-directed";
 import { authoredFieldsMarker } from "../message-fields";
+import {
+  DEFAULT_INBOX_LIMIT,
+  INBOX_ENTRY_BUDGET,
+  INBOX_TIER_DEFAULTS,
+} from "./inbox-content-bounds";
 
 /**
  * SWR backstop for the coord:inbox derive (cache-expensive-tool-reads-2026-06-22 P-008).
@@ -118,8 +123,6 @@ const COORD_KINDS = [
 // is unchanged.
 export { excludeIntentDeclares, isAmbientBroadcast, coalesceRepeatedBroadcasts };
 
-const DEFAULT_INBOX_LIMIT = 50;
-
 /** EI-13159: per-recipient cap passed to fetchUnansweredDirected for the
  *  `unanswered_only` filter — much larger than the fleet-health display cap
  *  (UNANSWERED_NEWEST_CAP=3) since a single-recipient inbox read wants EVERY
@@ -135,12 +138,6 @@ const UNANSWERED_FILTER_CAP = 200;
  *  MCP transport and silently break them), and the hooks call WITHOUT ctx_tier
  *  so they always read full-tier defaults. The `injection` block is already
  *  server-clipped by coord-schema and stays verbatim on every tier. */
-const INBOX_TIER_DEFAULTS = {
-  trimmed: { limit: 15, bodyChars: 250 },
-  standard: { limit: 30, bodyChars: 400 },
-  full: { limit: DEFAULT_INBOX_LIMIT, bodyChars: 600 },
-} as const;
-
 /** Bound the COMBINED `text` across one entry's `sections[]` to a single shared
  *  `maxChars` budget, preserving every other section key. Returns null when there
  *  is nothing to do (not an array, or already within budget) so the caller can
@@ -961,7 +958,6 @@ export default defineTool({
     // A raw ToolResult bypasses generic applyPayloadTier, so the framework
     // threads the explicit override separately from the ambient session tier;
     // only that explicit `full` request disables this local field cap.
-    const INBOX_ENTRY_BUDGET = 15_000;
     const effectiveCap =
       args.max_body_chars !== undefined
         ? args.max_body_chars

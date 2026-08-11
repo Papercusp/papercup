@@ -81,6 +81,7 @@ import {
 import { deriveBasedOn } from '../based-on';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
+import { senderBodyDeliveryDiagnostics } from './inbox-content-bounds';
 
 /** Settle window between an endTurn ESC and the following wake (coord-end-turn D-003): lets each recipient's
  *  CLI finish ending the dead turn + re-arm its `coord:inbox-wake:<owner>` watch before the wake fires, so
@@ -896,13 +897,15 @@ async function sendOne(
   // never mistakes it for a hive-wide Queen directive. Resolved by the caller only
   // for broadcasts; a directed 1:1 send is left unstamped (no noise).
   if (cueAuthority) extra[CUE_AUTHORITY_FIELD] = cueAuthority;
+  const bodyText = sections.length ? sectionsToText(sections) : undefined;
+  const bodyDelivery = senderBodyDeliveryDiagnostics(bodyText);
   const env = await sendMessage(identity, {
     to: toSend,
     summary: msg.summary,
     // The TEXT projection of the sections. `env.body` stays a plain string so
     // coord:inbox / coord:read / the [coord+N] injection / coord:thread / the
     // pui pane are unchanged; the structure rides `extra.sections` beside it.
-    body: sections.length ? sectionsToText(sections) : undefined,
+    body: bodyText,
     files: msg.files,
     plan_slug: msg.plan_slug,
     related_msg_id: msg.related_msg_id,
@@ -1426,6 +1429,25 @@ async function sendOne(
     // P-003: who the `@fleet:` audience did NOT reach, and why — so a partial delivery
     // is legible rather than reading as a complete one.
     ...(fleetOmitted ? { fleet_omitted: fleetOmitted } : {}),
+    // WI-37972: the durable coord row keeps the full body, but a normal
+    // recipient `coord:inbox` read may clip it before the recipient can act.
+    // Surface the same authored-vs-visible accounting on the SENDER result so
+    // `ok:true`/`wakeOutcome:'delivered'` cannot be mistaken for "the whole
+    // decision text was readable". The one-entry cap is the documented maximum
+    // for a default full-tier inbox read; a crowded page can use the smaller
+    // `bodyCrowdedPageCap`. The full text remains addressable via coord:read.
+    ...(bodyDelivery
+      ? {
+          bodyTruncated: bodyDelivery.bodyTruncated,
+          bodyMayBeTruncated: bodyDelivery.bodyMayBeTruncated,
+          bodyAuthoredChars: bodyDelivery.bodyAuthoredChars,
+          bodyFullChars: bodyDelivery.bodyFullChars,
+          bodyDeliveredChars: bodyDelivery.bodyDeliveredChars,
+          bodyDeliveryCap: bodyDelivery.bodyDeliveryCap,
+          bodyCrowdedPageCap: bodyDelivery.bodyCrowdedPageCap,
+          ...(bodyDelivery.bodyMayBeTruncated ? { bodyReadRef: { msg_id: env.msg_id } } : {}),
+        }
+      : {}),
     // EI-18145: the reply was recorded (satisfying unanswered-directed /
     // delivery-ladder for `related_msg_id`) even though this addressee no
     // longer resolves in the roster — their session ended, so no wake was

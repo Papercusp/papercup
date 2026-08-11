@@ -165,6 +165,46 @@ describe('coord:send handler (bulk keyed-array)', () => {
     expect(sendM).toHaveBeenCalledTimes(1);
   });
 
+  it('WI-37972: reports sender-visible body clipping instead of a misleading clean delivery', async () => {
+    const longBody = 'x'.repeat(2_260);
+    const b = await body({
+      to: ['bee-1'],
+      summary: 'decision with branches',
+      expects: 'action',
+      body: [{ text: longBody, forYouBecause: { relation: 'other', note: 'the recipient owns the next step' } }],
+    });
+    expect(b.results[0]).toMatchObject({
+      ok: true,
+      bodyTruncated: true,
+      bodyMayBeTruncated: true,
+      bodyAuthoredChars: 2_260,
+      bodyFullChars: 2_260,
+      bodyDeliveredChars: 600,
+      bodyDeliveryCap: 600,
+      bodyCrowdedPageCap: 300,
+      bodyReadRef: { msg_id: 'm1' },
+    });
+  });
+
+  it('WI-37972: keeps short bodies explicitly intact', async () => {
+    const b = await body({
+      to: ['bee-1'],
+      summary: 'short decision',
+      expects: 'action',
+      body: [{ text: 'do the next step', forYouBecause: { relation: 'other', note: 'you own it' } }],
+    });
+    expect(b.results[0]).toMatchObject({
+      bodyTruncated: false,
+      bodyMayBeTruncated: false,
+      bodyAuthoredChars: 16,
+      bodyFullChars: 16,
+      bodyDeliveredChars: 16,
+      bodyDeliveryCap: 600,
+      bodyCrowdedPageCap: 300,
+    });
+    expect(b.results[0].bodyReadRef).toBeUndefined();
+  });
+
   it('one message to MANY recipients stays the single form (to:[…])', async () => {
     const b = await body({ to: ['bee-1', 'bee-2'], summary: 'broadcast-ish' });
     expect(b.counts).toEqual({ ok: 1, failed: 0 });
