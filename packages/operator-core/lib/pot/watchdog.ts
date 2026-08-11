@@ -178,17 +178,16 @@ export interface PotDemand {
  *  raise time via the P-002 event subscription; the watchdog needs only the
  *  STANDING demand a forgotten wake would strand.
  *
- *  STOPPED hives' backlog is NOT demand (owner model 2026-07-01: the start/stop
- *  popup is the Mug's scope control): waking her for work the survey's
- *  stop-list then withholds is pure wake-noise. A stop-list, not an allow-list —
- *  standalone/unhived work still counts. Fail-open (a split read error ⇒
- *  workspace-wide counts, today's behavior). */
+ *  COUNTS ARE WORKSPACE-WIDE. Until P-059 this subtracted STOPPED hives'
+ *  backlog via `computePotPlacementSplit` (owner model 2026-07-01: the
+ *  start/stop popup was the Mug's scope control). That stop-list was a
+ *  tier concept and retired with the Mug/Kettle system — there is no longer
+ *  a started/stopped partition to consult. The subtraction is simply gone,
+ *  which lands on the branch this function ALREADY took whenever the split
+ *  read failed (documented then as "fail-open ⇒ workspace-wide counts"), so
+ *  the surviving behaviour is one this path was always specified to produce. */
 export async function potDemandCheck(workspaceId: string): Promise<PotDemand> {
   const { sql } = getOrgPg();
-  const stopped = await import('./mug-brief-launch')
-    .then(({ computePotPlacementSplit }) => computePotPlacementSplit(workspaceId))
-    .then((s) => s.stopped)
-    .catch(() => [] as string[]);
   const rows = await sql<Array<{ todo_items: number; started_plans: number }>>`
     SELECT
       -- work-item-status-full-unify (2026-07-19, migration 638): feature-family status
@@ -197,11 +196,9 @@ export async function potDemandCheck(workspaceId: string): Promise<PotDemand> {
       -- under-counted standing feature-family demand to ~0 (same root cause as
       -- survey.ts's fetchFrontierRows, EI-18690462961089460).
       (SELECT count(*) FROM harness_shared.harness_features_consolidated
-        WHERE workspace_id = ${workspaceId} AND status = 'open'
-        ${stopped.length > 0 ? sql`AND harness_slug != ALL(${stopped})` : sql``})::int AS todo_items,
+        WHERE workspace_id = ${workspaceId} AND status = 'open')::int AS todo_items,
       (SELECT count(*) FROM harness_shared.harness_plans
-        WHERE workspace_id = ${workspaceId} AND op_status = 'started'
-        ${stopped.length > 0 ? sql`AND harness_slug != ALL(${stopped})` : sql``})::int AS started_plans
+        WHERE workspace_id = ${workspaceId} AND op_status = 'started')::int AS started_plans
   `;
   const todoItems = Number(rows[0]?.todo_items ?? 0);
   const startedPlans = Number(rows[0]?.started_plans ?? 0);

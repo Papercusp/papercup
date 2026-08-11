@@ -168,10 +168,9 @@ vi.mock('@papercusp/flags/server', async (importActual) => ({
 // retired launch path exits before computing a brief.
 const listStartedHivesMock = vi.fn(async () => [{ workspaceId: 'default', installSlug: 'papercup' }]);
 vi.mock('../../pot/started', () => ({ listStartedHives: (...a: unknown[]) => listStartedHivesMock(...(a as [])) }));
-const computeQueenWakeBriefMock = vi.fn(async (): Promise<string | null> => '## QUEEN WAKE BRIEF\n- frontier: wi-1');
-vi.mock('../../pot/mug-brief-launch', () => ({
-  computeQueenWakeBrief: (...a: unknown[]) => computeQueenWakeBriefMock(...(a as [])),
-}));
+// P-059: the sibling `pot/mug-brief-launch` stub is gone with the module. It was
+// already inert — it mocked `computeQueenWakeBrief`, which the module stopped
+// exporting at the queen→mug rename, so the mock backed no real import.
 vi.mock('../../device-harnesses', () => ({
   listHarnessesFor: vi.fn(async () => [
     {
@@ -324,7 +323,6 @@ beforeEach(() => {
   // P-002 brain-brief defaults: one started hive + a brief string. Tests that
   // exercise the no-brief / no-hive branches override per-call.
   listStartedHivesMock.mockResolvedValue([{ workspaceId: 'default', installSlug: 'papercup' }]);
-  computeQueenWakeBriefMock.mockResolvedValue('## QUEEN WAKE BRIEF\n- frontier: wi-1');
 });
 
 describe('bootstrap-su', () => {
@@ -669,11 +667,15 @@ describe('bootstrap-su', () => {
     expect(getBrainSessionMock).not.toHaveBeenCalled();
   });
 
-  it('P-002: a non-brain launch never computes a brief even with the flag ON', async () => {
+  it('P-002: a non-brain launch succeeds with the flag ON (and computes no brief)', async () => {
     getFlagMock.mockResolvedValue(true);
     const res = await callPost({ agent: 'claude', harness_slug: 'papercup', plan_slug: null });
     expect(res.status).toBe(200);
-    expect(computeQueenWakeBriefMock).not.toHaveBeenCalled();
+    // The "computes no brief" half is STRUCTURAL since P-059 retired the brief
+    // builder — there is no longer a function this path could call. The former
+    // `not.toHaveBeenCalled()` guard is dropped rather than rewritten: it named
+    // a symbol the module had already stopped exporting, so it passed whether or
+    // not the route behaved.
   });
 
   it('rejects an unknown agent kind', async () => {

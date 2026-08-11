@@ -82,16 +82,16 @@ describe('installedAwareLaunchResolver (D-007 / WI-1146)', () => {
   });
 });
 
-// queen-brief-cache-assembly B-03: stub the Queen wake-brief builder so the
-// queen-launch path is deterministic (no real survey/PG) and the injection is
-// assertable. Arrow-deref so the hoisted vi.mock factory sees the const.
-const computeQueenWakeBrief = vi.fn(
-  async (_ws: string, _slug: string, _opts?: { wokeBy?: string }) => 'QUEEN-BRIEF::floor+carrynote',
-);
-vi.mock('../pot/mug-brief-launch', () => ({
-  computeQueenWakeBrief: (...a: unknown[]) =>
-    computeQueenWakeBrief(...(a as [string, string, { wokeBy?: string }?])),
-}));
+// P-059: the `pot/mug-brief-launch` stub that used to sit here is gone with the
+// module. It had already decayed into a no-op before deletion — it mocked
+// `computeQueenWakeBrief`, a name the module stopped exporting when queen→mug
+// renamed it, so nothing ever imported the mocked symbol and the paired
+// `not.toHaveBeenCalled()` assertions were vacuously true.
+//
+// The property those assertions protected (WI-682: no launch path computes a
+// wake brief — the route owns that, not this launcher) now holds STRUCTURALLY:
+// there is no brief builder left to call. What remains testable is the
+// observable half, `bodyExtra.queenBrief`, which the assertions below keep.
 
 // queen-steering-panel GAP-2: stub the owner-steering + agent-config reads the
 // queen own-model resolution does, so the launch path is deterministic (no PG /
@@ -132,8 +132,6 @@ afterEach(() => {
   setLaunchBlueprintFire(null);
   setLaunchBlueprintResolver(null);
   resetLaunchBlueprintTriggerMap();
-  computeQueenWakeBrief.mockClear();
-  computeQueenWakeBrief.mockResolvedValue('QUEEN-BRIEF::floor+carrynote');
   getOwnerSteering.mockClear();
   readAgentConfig.mockClear();
   resolveWorkspaceForHarnessSlug.mockClear();
@@ -409,10 +407,11 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
     expect(fired).toHaveLength(1);
     expect(fired[0]).toMatchObject({ blueprintId: 'coding', role: 'mug' });
     expect(fired[0].timeoutMs).toBe(QUEEN_INVOKE_TIMEOUT_MS);
-    // WI-682: the Queen wake brief is computed at the /invoke ROUTE (spawn.ts),
-    // NOT by this launcher — EI-995's durable seam bypassed a launcher-side
-    // compute, so the launcher must not own it. No launch path computes here.
-    expect(computeQueenWakeBrief).not.toHaveBeenCalled();
+    // WI-682: the wake brief was computed at the /invoke ROUTE (spawn.ts), NOT
+    // by this launcher — EI-995's durable seam bypassed a launcher-side compute,
+    // so the launcher must not own it. P-059 retired the builder outright, so
+    // "no launch path computes here" is now structural; what stays assertable is
+    // that the launcher emits no queenBrief of its own.
     expect(fired[0].bodyExtra?.queenBrief).toBeUndefined();
   });
 
@@ -422,7 +421,6 @@ describe('launch-blueprint primitive (unify-agent-launches-as-blueprints P0)', (
       fired.push(input);
     });
     await fireLaunchBlueprint('coding', { ...opts, kickoff: 'wake', bodyExtra: { queenBrief: 'PRECOMPUTED' } });
-    expect(computeQueenWakeBrief).not.toHaveBeenCalled();
     expect(fired[0].bodyExtra?.queenBrief).toBe('PRECOMPUTED');
   });
 

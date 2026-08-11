@@ -3059,11 +3059,11 @@ async function runSystemHealthTickUncached(ws: string): Promise<SystemHealth> {
   // on the same tick — the pane stays SSE-live without a second aggregation. Safe
   // no-op when no overwatch pane is subscribed.
   await notifySyncInvalidate('overwatch.snapshot', undefined).catch(() => {});
-  // The chat sidebar's pot-status panel (operator-chat-sidebar-revival P-018)
-  // reads the Mug-brief floor projection; the same tick is its ambient heartbeat
-  // (one aggregation cadence, N consumers). Safe no-op when no sidebar panel is
-  // subscribed.
-  await notifySyncInvalidate('mugBrief.floorView', undefined).catch(() => {});
+  // P-059: the sibling `mugBrief.floorView` invalidation is gone with the query
+  // itself — its client (the chat sidebar's pot-status panel) was stripped by
+  // WI-37654 and the Mug brief it projected retired with the tier. Invalidating
+  // an unregistered key is a silent no-op, so leaving this call would have cost
+  // nothing visible and told the next reader the query still exists.
   return health;
 }
 

@@ -607,11 +607,15 @@ const invoke = defineTool({
     // blocks the wake, she falls back to the survey tools. invoke.ts hands it to
     // buildPrompt({ queenBrief }) → a <system-reminder> in the volatile tail
     // (D-006). Distinct from MUG_BRIEF (the kickoff / Queen→bee overlay).
-    let queenWakeBrief = typeof (body as any)?.queenBrief === 'string' ? ((body as any).queenBrief as string) : '';
-    if (canonicalRole === 'mug' && !queenWakeBrief.trim()) {
-      const { computeMugWakeBrief } = await import('../../../pot/mug-brief-launch');
-      queenWakeBrief = (await computeMugWakeBrief(activeWorkspaceId(), project.slug, { wokeBy: kickoff })) ?? '';
-    }
+    // P-059: the `canonicalRole === 'mug'` leg that COMPUTED this brief
+    // (`computeMugWakeBrief`, pot/mug-brief-launch) retired with the Mug/Kettle
+    // system — there is no Mug to wake, so there is nothing to compute. The
+    // CHANNEL survives and is still live: a caller may pre-supply
+    // body.queenBrief (fireLaunchBlueprint's bodyExtra does), it rides through
+    // to env.MUG_WAKE_BRIEF, and the orchestrator reads that env var in
+    // invoke.ts to build the <system-reminder> tail block (D-006). Only the
+    // now-unreachable auto-compute is gone.
+    const queenWakeBrief = typeof (body as any)?.queenBrief === 'string' ? ((body as any).queenBrief as string) : '';
     if (queenWakeBrief.trim()) env.MUG_WAKE_BRIEF = queenWakeBrief;
     // BENCH-SCOPED, FAIL-CLOSED OPUS PIN (P-033 Fix 2). A per-invocation model spec threaded by
     // fireLaunchBlueprint (bodyExtra.spawnModel) for a BENCH-hive Queen wake → PAPERCUSP_SPAWN_MODEL,

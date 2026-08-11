@@ -171,7 +171,7 @@ const UNDECLARED_BASELINE: readonly string[] = [
   'learning.hiveThroughput', 'learning.improvements', 'learning.knowledge', 'learning.mugWakeEfficiency',
   'learning.observations', 'learning.observations.counts', 'learning.redQueen',
   'learning.releaseReadiness', 'learning.retain', 'learning.scout', 'learning.scoutDrafts',
-  'mugBrief.floorView', 'network.board', 'network.federationStatus', 'network.fleet.wakes',
+  'network.board', 'network.federationStatus', 'network.fleet.wakes',
   'network.hive.asks', 'network.hive.beacons', 'network.hive.wakes', 'network.hiveDirectory', 'notes.list',
   'operatorBudget.byWorkspace', 'operatorConfig.byWorkspace', 'operatorConversations.current',
   'operatorPreferences.byWorkspace', 'operatorReports.latest', 'operatorStandingApprovals.byWorkspace',

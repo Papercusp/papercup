@@ -54,15 +54,15 @@ vi.mock('../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('.
     (markAdvSessionEnded as (...args: unknown[]) => unknown)(...a),
 }));
 
-// WI-682: the Queen wake brief is computed at THIS route (the one chokepoint every
-// wake path traverses — EI-995's durable seam bypassed the old launcher-side
-// compute). Default null = compute degraded → the EI-506 kickoff fallback applies;
-// per-test overrides return a brief to assert the computed path.
-const computeMugWakeBrief = vi.fn(async (): Promise<string | null> => null);
-vi.mock('../../pot/mug-brief-launch', () => ({
-  computeMugWakeBrief: (...a: unknown[]) =>
-    (computeMugWakeBrief as (...args: unknown[]) => unknown)(...a),
-}));
+// P-059: the `pot/mug-brief-launch` stub is gone with the module. WI-682 put a
+// wake-brief COMPUTE at this route (the one chokepoint every wake path traverses,
+// after EI-995's durable seam bypassed the launcher-side compute); the Mug/Kettle
+// retirement removed the thing being briefed, so the compute went with it.
+//
+// The route still THREADS a caller-supplied body.queenBrief → MUG_WAKE_BRIEF, and
+// the tests for that survive below. The two tests that drove the compute itself
+// are deleted rather than rewritten — with no builder left they could only have
+// asserted a mock calling itself.
 vi.mock('../../superuser-token', () => ({ SUPERUSER_TOKEN_PATH: '/fake/su-token' }));
 vi.mock('../../plugin-host-runtime', () => ({
   firePluginLifecycle: vi.fn(),
@@ -97,7 +97,17 @@ vi.mock('@papercusp/db-org', async (orig) => {
   const actual = await orig<typeof import('@papercusp/db-org')>();
   return {
     ...actual,
-    getOrgPg: vi.fn(() => ({ sql: {} })),
+    // `sql` must be CALLABLE: it is used as a tagged template (sql`SELECT …`).
+    // This stub was `{}` — an object no tagged-template call can ever satisfy —
+    // so every incidental DB read on a fire-and-forget path (the pot-watchdog
+    // turn-end arm, which this file does not assert on) threw "sql is not a
+    // function" and logged a console.warn. `vitest-fail-on-console` fails a test
+    // on that warn, so the file's greenness depended on the rejection landing
+    // AFTER the assertions finished — a race, not a pass. P-059 removed one
+    // `await import()` from potDemandCheck, the chain settled a tick earlier,
+    // and the latent warn moved inside the window. Returning [] makes the stub
+    // honest (an empty DB) and removes the race in both directions.
+    getOrgPg: vi.fn(() => ({ sql: async () => [] })),
     listUnconsumedEvents: vi.fn(async () => []),
     consumeEvents: vi.fn(async () => {}),
   };
@@ -201,9 +211,6 @@ beforeEach(() => {
   launchRun.mockResolvedValue({ ok: true, logPath: '/log/run.out' });
   resolveSpawnBackendModel.mockReturnValue({ backend: 'omp', model: '' });
   spawnMock.mockImplementation(() => makeFakeChild(0));
-  // clearAllMocks below clears CALLS but not resolved values — re-pin the
-  // documented null default so one test's mockResolvedValue can't leak forward.
-  computeMugWakeBrief.mockResolvedValue(null);
 });
 afterEach(() => {
   vi.clearAllMocks();
@@ -382,39 +389,19 @@ describe('POST /harness/:slug/invoke (P-031)', () => {
     const arg = buildInvokeOnce.mock.calls[0]?.[0] as { extraEnv?: Record<string, string> } | undefined;
     expect(arg?.extraEnv ?? {}).not.toHaveProperty('MUG_BRIEF');
     expect(arg?.extraEnv).toMatchObject({ MUG_WAKE_BRIEF: expect.stringContaining('Woke by') });
-    // WI-682: a pre-supplied body.queenBrief is respected verbatim — no recompute.
-    expect(computeMugWakeBrief).not.toHaveBeenCalled();
   });
 
-  // WI-682: the route is the ONE chokepoint every Queen wake path traverses
-  // (durable spawn, direct fire, manual /invoke) — when the body carries no brief,
-  // the route computes it (which also drains the @role:queen parked mailbox).
-  // EI-995's durable seam bypassed the old launcher-side compute, so a scheduled
-  // Queen woke briefless with her nudges stranded — this pins the route-side seam.
-  it('WI-682: computes the Queen wake brief at the route when the body has none', async () => {
-    computeMugWakeBrief.mockResolvedValue('## Your wake brief\n**Woke by:** timer\n### Frontier');
-    const res = await appWith(invoke).request('/harness/papercup/invoke?role=queen', post({ kickoff: 'timer' }));
-    expect(res.status).toBe(200);
-    expect(computeMugWakeBrief).toHaveBeenCalledWith(expect.any(String), 'papercup', { wokeBy: 'timer' });
-    const arg = buildInvokeOnce.mock.calls[0]?.[0] as { extraEnv?: Record<string, string> } | undefined;
-    expect(arg?.extraEnv).toMatchObject({ MUG_WAKE_BRIEF: expect.stringContaining('Woke by') });
-    expect(arg?.extraEnv ?? {}).not.toHaveProperty('MUG_BRIEF'); // EI-506 suppression applies to the computed brief too
-  });
-
-  it('WI-682: a non-queen invoke never computes a Queen wake brief', async () => {
-    const res = await appWith(invoke).request('/harness/papercup/invoke?role=worker', post({ kickoff: 'go' }));
-    expect(res.status).toBe(200);
-    expect(computeMugWakeBrief).not.toHaveBeenCalled();
-  });
-
-  // EI-506 fallback: if the wake brief is absent (best-effort compute failed — the
-  // computeMugWakeBrief mock defaults to null here), the kickoff is still threaded
-  // as MUG_BRIEF so the queen isn't left with no idea why she woke (preserves the
+  // EI-506 fallback: with no brief on the body, the kickoff is still threaded as
+  // MUG_BRIEF so the wake isn't left with no idea why it fired (preserves the
   // P-071 "why you woke" signal).
-  it('EI-506: keeps MUG_BRIEF for a queen wake whose brief compute degrades to null', async () => {
+  //
+  // P-059 note: this used to arrive here via a route-side compute that degraded to
+  // null. The compute is gone, so the branch is now reached directly — an absent
+  // body.queenBrief IS the empty case. The OBSERVABLE contract asserted below is
+  // byte-identical either way, which is why the test survives the deletion intact.
+  it('EI-506: keeps MUG_BRIEF for a queen wake that carries no wake brief', async () => {
     const res = await appWith(invoke).request('/harness/papercup/invoke?role=queen', post({ kickoff: 'timer' }));
     expect(res.status).toBe(200);
-    expect(computeMugWakeBrief).toHaveBeenCalledTimes(1); // it tried — the route-side seam is live
     const arg = buildInvokeOnce.mock.calls[0]?.[0] as { extraEnv?: Record<string, string> } | undefined;
     expect(arg?.extraEnv).toMatchObject({ MUG_BRIEF: 'timer' });
     expect(arg?.extraEnv ?? {}).not.toHaveProperty('MUG_WAKE_BRIEF');

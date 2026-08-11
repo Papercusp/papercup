@@ -60,3 +60,13 @@ convention.
   proving the HUD covers ownerless asks too). The data layer
   (`use-inbox-pending.ts`) stays live — the HUD board consumes it directly.
   Restore: `inbox-pane/RESTORE.md`.
+- `mug-kettle-deciders/` — the Mug/Kettle/Cup tier's DECIDERS (placement, wake
+  efficiency, transcript caps, survey/ranking). Being retired 2026-08-11 by
+  `retire-mug-kettle-su-only-2026-08-09` P-059 (D-059 scopes it, D-060 rules which
+  consumers are tier vs. live, D-075 picks this destination). su + GOAL mode are
+  now the only way to drive the app. ⚠ **IN PROGRESS — landing in slices** (each
+  slice leaves the tree importable, because git-sync sweeps the whole tree on a
+  schedule and would commit a half-finished move). Files mirror their original repo
+  paths under this directory. Restore: `mug-kettle-deciders/RESTORE.md`.
+  Note: the tier's UI tabs are **gated, not moved** — see the `mug-kettle-rail-tabs`
+  entry above.

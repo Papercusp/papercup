@@ -4075,30 +4075,19 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
     },
   },
 
-  // ── mugBrief.floorView — the chat sidebar's pot-status panel (P-018) ──
+  // ── mugBrief.floorView — REMOVED (P-059) ──
   //
-  // (operator-chat-sidebar-revival-2026-07-13 P-018, mockup variant A.) A compact
-  // client-safe projection of the SAME floor the Mug is briefed with every wake —
-  // cups roster, ranked ready frontier (capped), placement-watchdog counts, open
-  // escalations, and the active owner steering. `computeMugBriefFloorView` reuses
-  // the Mug brief's own scope resolution + gather functions (reuse-first — never a
-  // parallel data path), so the panel shows the Mug's honest filtered world.
-  // Invalidated alongside `overwatch.snapshot` on each system-health tick (the
-  // ambient heartbeat); the sidebar additionally fetches it only while the panel
-  // is expanded, with client staleTime pacing.
-  'mugBrief.floorView': {
-    resolve: async () => {
-      const [{ computeMugBriefFloorView }, { activeWorkspaceId }, { resolvePotHomeSlug }] =
-        await Promise.all([
-          import('../pot/mug-brief-launch'),
-          import('../workspace-registry'),
-          import('../pot/wake'),
-        ]);
-      const ws = activeWorkspaceId();
-      const potSlug = resolvePotHomeSlug() ?? ws;
-      return [await computeMugBriefFloorView(ws, potSlug)];
-    },
-  },
+  // Was a client-safe projection of the floor the Mug was briefed with on every
+  // wake, for the chat sidebar's pot-status panel
+  // (operator-chat-sidebar-revival-2026-07-13 P-018). Its CLIENT was removed
+  // first (WI-37654 stripped the pane), leaving a resolver nothing read; the
+  // Mug/Kettle retirement then removed the brief it projected. Both halves are
+  // gone, so the query is gone with them.
+  //
+  // `PotHealthPane.test.tsx` guards this: it asserts the pane's query set does
+  // NOT contain 'mugBrief.floorView' (alongside the overwatch pair) — "the
+  // retired tier's briefs must not come back". Do not reintroduce this key
+  // without reading that test first.
 
   // ── learning.gym — the Learning tab's Gym view (operator-learning-tab P-006) ──
   //
