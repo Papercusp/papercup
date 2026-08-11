@@ -28,6 +28,7 @@
  */
 import { spawn as nodeSpawn } from 'node:child_process';
 import * as os from 'node:os';
+import type { AccountEgress } from '../deployment/account-pool';
 
 /** credentialRef scheme marking a ChatGPT-subscription codex account:
  *  `codex-cli:<CODEX_HOME>` (e.g. `codex-cli:~/.codex`). The path is the
@@ -38,6 +39,10 @@ export interface CodexCliAccount {
   accountId: string;
   /** CODEX_HOME dir holding the subscription auth.json. */
   home: string;
+  /** Same per-account egress bindings supported by bearer/Claude accounts. OAuth remains resolved
+   *  from `home`; these fields only select the outbound network path. */
+  egress?: AccountEgress;
+  egressPool?: AccountEgress[];
 }
 
 /** `codex-cli:<home>` → expanded home path, or null when `ref` is not a

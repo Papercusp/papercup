@@ -486,6 +486,22 @@ function createOptionalFailoverPool(
     readmit(accountId) {
       inner?.readmit?.(accountId);
     },
+    healthyCount(extra) {
+      return inner?.healthyCount?.(extra) ?? 0;
+    },
+    size() {
+      return inner?.size?.() ?? 0;
+    },
+    peek() {
+      if (!inner) throw unavailable();
+      return inner.peek?.() ?? inner.active();
+    },
+    entries() {
+      return inner?.entries?.() ?? [];
+    },
+    msSinceReadmit(accountId, nowMs) {
+      return inner?.msSinceReadmit?.(accountId, nowMs);
+    },
     reload(next) {
       if (next.length === 0) {
         inner = null;
@@ -597,8 +613,16 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
   const cliAccountsOf = (accts: ResolvedAccount[]): CodexCliAccount[] =>
     accts.flatMap((a) => {
       const home = parseCodexCliRef(a.credentialRef);
-      return home ? [{ accountId: a.accountId, home }] : [];
+      return home ? [{ accountId: a.accountId, home, egress: a.egress, egressPool: a.egressPool }] : [];
     });
+  const buildCliEntries = (accts: ResolvedAccount[]): ActiveAccount[] =>
+    cliAccountsOf(accts).map((a) => ({
+      accountId: a.accountId,
+      // Selection/health only: the OAuth proxy resolves the real token from a.home after routing.
+      token: async () => '',
+      egress: a.egress,
+      egressPool: a.egressPool,
+    }));
   const buildBearerEntries = (accts: ResolvedAccount[]) =>
     accts
       .filter((a) => !a.credentialRef.startsWith(CODEX_CLI_REF_PREFIX))
@@ -607,6 +631,7 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
         return { accountId: a.accountId, token: () => resolver.current(), invalidateToken: () => resolver.invalidate(), egress: a.egress, egressPool: a.egressPool };
       });
   const codexPool = createOptionalFailoverPool(buildBearerEntries(codexAccounts), { log });
+  const codexCliPool = createOptionalFailoverPool(buildCliEntries(codexAccounts), { log });
   {
     const cli0 = cliAccountsOf(codexAccounts);
     if (cli0.length) {
@@ -692,6 +717,7 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
   const gateway = createInferenceGateway({
     pool,
     codexPool,
+    codexCliPool,
     codexOAuthProxy,
     // Getter (not a snapshot) so a reloadPool() that adds/removes a codex-cli account
     // applies to the very next /v1/responses request without a gateway restart.
@@ -794,6 +820,7 @@ export async function startGatewayService(opts: GatewayServiceOptions = {}): Pro
     if (codexPool.reload) {
       codexPool.reload(buildBearerEntries(nextCodex));
     }
+    codexCliPool.reload?.(buildCliEntries(nextCodex));
     accounts = next;
     codexAccounts = nextCodex;
     resolvers = built.resolvers;

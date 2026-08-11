@@ -4587,6 +4587,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         token = await withDeadline(active.token(), tokenTimeoutMs, `codex token '${active.accountId}'`);
       } catch (e) {
         codexUpstreamErrors++;
+        recordOwnerOutcome(wantOwner, 'upstream_error', { account: active.accountId, detail: 'bearer-token-resolve' });
         log('error', `inference-gateway: Codex token read failed on '${active.accountId}': ${(e as Error).message}`);
         if (canRetry && rotateCodex(Date.now() + bare429FailoverBackoffMs)) continue;
         if (!res.headersSent) {
@@ -4638,6 +4639,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         detachDownstreamAbort();
         clearStall();
         codexUpstreamErrors++;
+        recordOwnerOutcome(wantOwner, 'upstream_error', { account: active.accountId, detail: 'bearer-transport' });
         active.invalidateToken?.();
         // Transport failure (dead/hanging proxy or network) → route around to another Codex account + retry.
         if (canRetry && rotateCodex(Date.now() + bare429FailoverBackoffMs)) continue;
@@ -4658,6 +4660,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       if (up.status === 429) {
         codexUpstream429++;
         codexAimd.recordThrottle();
+        recordOwnerOutcome(wantOwner, 'upstream_429', { account: active.accountId, status: 429 });
         if (canRetry) {
           const reset = parseRateReset(headersToObject(up.headers));
           if (rotateCodex(reset.resetAt ?? Date.now() + bare429FailoverBackoffMs)) {
@@ -4676,6 +4679,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
       up.headers.forEach((v, k) => {
         if (!STRIP_RESPONSE.has(k.toLowerCase())) outHeaders[k] = v;
       });
+      if (pinnedBearer && !hardPin && active.accountId !== pinnedBearer.accountId) {
+        outHeaders[PIN_YIELDED_HEADER] = `${pinnedBearer.accountId}->${active.accountId}`;
+        recordOwnerOutcome(wantOwner, 'pin_yield', { account: active.accountId, detail: outHeaders[PIN_YIELDED_HEADER] });
+      }
+      recordRoute(wantOwner, active.accountId, 'codex');
+      recordOwnerOutcome(
+        wantOwner,
+        up.status < 400 ? 'ok' : up.status === 429 ? 'upstream_429' : 'upstream_error',
+        { account: active.accountId, status: up.status },
+      );
       res.writeHead(up.status, outHeaders);
       if (!up.body) {
         detachDownstreamAbort();
