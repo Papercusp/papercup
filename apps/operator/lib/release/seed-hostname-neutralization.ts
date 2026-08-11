@@ -181,6 +181,19 @@ export function buildBwrapArgv(inp: {
   readonly bwrapPath: string;
   readonly neutralHostname: string;
   readonly execPath: string;
+  /**
+   * `process.execArgv` — the node flags the CURRENT process was started with.
+   *
+   * ⚠ LOAD-BEARING, and omitting it is a silent, total break rather than a degradation.
+   * This CLI runs under tsx, whose loader arrives ONLY via these flags:
+   *   ["--require", ".../tsx/dist/preflight.cjs", "--import", ".../tsx/dist/loader.mjs"]
+   * Drop them and the child is plain node, which strips TypeScript types but does NOT
+   * resolve this repo's `./x.js` → `./x.ts` import convention — so the re-exec dies at
+   * module resolution with ERR_MODULE_NOT_FOUND before any cut work begins. Caught by an
+   * integration run; no unit test on the parent process can see it, because the parent
+   * always has its own loader already applied.
+   */
+  readonly execArgv: readonly string[];
   readonly argv: readonly string[];
 }): readonly string[] {
   return [
@@ -191,6 +204,7 @@ export function buildBwrapArgv(inp: {
     '--hostname',
     inp.neutralHostname,
     inp.execPath,
+    ...inp.execArgv,
     ...inp.argv,
   ];
 }

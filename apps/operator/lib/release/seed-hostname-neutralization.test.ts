@@ -98,11 +98,31 @@ describe('seed hostname neutralization (EI-20040763522089574)', () => {
   });
 
   describe('buildBwrapArgv', () => {
+    it('PRESERVES execArgv — dropping the tsx loader breaks the child outright', () => {
+      // REGRESSION. The first cut of this shipped without execArgv and died at
+      // ERR_MODULE_NOT_FOUND: plain node strips TS types but does NOT resolve this
+      // repo's `./x.js` -> `./x.ts` convention, so the child never reached any cut
+      // logic. Only an integration run caught it — the parent process always has its
+      // own loader applied, so no test ON the parent can see the omission.
+      const loader = ['--require', '/repo/node_modules/tsx/dist/preflight.cjs', '--import', 'file:///repo/node_modules/tsx/dist/loader.mjs'];
+      const argv = buildBwrapArgv({
+        bwrapPath: '/usr/bin/bwrap',
+        neutralHostname: NEUTRAL,
+        execPath: '/usr/bin/node',
+        execArgv: loader,
+        argv: ['/repo/cut-seed-cli.ts', '--out', '/seed'],
+      });
+      // The loader flags must sit BETWEEN the interpreter and the script, or node
+      // treats them as script arguments and the loader silently never engages.
+      expect(argv.slice(6)).toEqual(['/usr/bin/node', ...loader, '/repo/cut-seed-cli.ts', '--out', '/seed']);
+    });
+
     it('unshares UTS ONLY, keeps the filesystem, and never unshares the network', () => {
       const argv = buildBwrapArgv({
         bwrapPath: '/usr/bin/bwrap',
         neutralHostname: NEUTRAL,
         execPath: '/usr/bin/node',
+        execArgv: [],
         argv: ['/repo/cut-seed-cli.ts', '--out', '/seed'],
       });
       expect(argv.slice(0, 6)).toEqual(['--dev-bind', '/', '/', '--unshare-uts', '--hostname', NEUTRAL]);

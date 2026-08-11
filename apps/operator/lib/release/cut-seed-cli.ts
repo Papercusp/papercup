@@ -1088,6 +1088,8 @@ async function main(): Promise<void> {
           bwrapPath: plan.bwrapPath,
           neutralHostname: plan.neutralHostname,
           execPath: process.execPath,
+          // process.execArgv carries the tsx loader flags — see buildBwrapArgv's note.
+          execArgv: process.execArgv,
           argv: process.argv.slice(1),
         }),
         { stdio: 'inherit', env: { ...process.env, [SEED_UTS_MARKER_ENV]: '1' } },
