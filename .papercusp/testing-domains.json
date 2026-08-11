@@ -1624,6 +1624,14 @@
               "kind": "shell",
               "cmd": "bash",
               "args": [
+                "papercusp-desktop/bin/lib/local-matrix-bank.selftest.sh"
+              ],
+              "label": "local-matrix teardown evidence banking (EI-18660101091813036)"
+            },
+            {
+              "kind": "shell",
+              "cmd": "bash",
+              "args": [
                 "papercusp-desktop/bin/lib/vm-run-env.selftest.sh"
               ],
               "label": "vm_run guest-env delivery (WI-6176)"

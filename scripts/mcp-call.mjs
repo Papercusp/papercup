@@ -107,9 +107,18 @@ async function main() {
   // with --workspace or PAPERCUSP_WORKSPACE.
   qs.set('workspace', flags.workspace ?? process.env.PAPERCUSP_WORKSPACE ?? 'papercusp-workspace');
   if (flags.harness) qs.set('harness', flags.harness);
-  const url = `http://localhost:${process.env.PAPERCUSP_HONO_PORT ?? 3070}/api/mcp?${qs}`;
+  // EI-20182275617587040: PAPERCUSP_HONO_PORT can OUTLIVE the process it described
+  // (e.g. a per-session operator that has since died), and a bare fetch at a port with
+  // no listener dies as an unactionable `fetch failed`. That is worst precisely HERE:
+  // this script IS the documented recovery path for a dropped MCP client, so when it
+  // inherits the same stale port, the primary and its fallback fail together and the
+  // symptom reads as "the server is down" while the server is answering in ~4ms.
+  // So: try the configured port, then the canonical one, and say exactly what happened.
+  const CANONICAL_PORT = 3070;
+  const configuredPort = process.env.PAPERCUSP_HONO_PORT ?? String(CANONICAL_PORT);
+  const candidatePorts = [...new Set([String(configuredPort), String(CANONICAL_PORT)])];
 
-  const res = await fetch(url, {
+  const init = {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
@@ -117,7 +126,39 @@ async function main() {
       authorization: `Bearer ${tok}`,
     },
     body: JSON.stringify({ jsonrpc: '2.0', id: REQUEST_ID, method: 'tools/call', params: { name: tool, arguments: args } }),
-  });
+  };
+
+  let res;
+  const attempts = [];
+  for (const port of candidatePorts) {
+    try {
+      res = await fetch(`http://localhost:${port}/api/mcp?${qs}`, init);
+      if (port !== String(configuredPort)) {
+        console.error(
+          `mcp-call: WARNING — nothing was listening on PAPERCUSP_HONO_PORT=${configuredPort}; ` +
+            `reached the operator on the canonical port ${port} instead. Your environment's port is ` +
+            `STALE: export PAPERCUSP_HONO_PORT=${port} (or unset it), or every other tool deriving ` +
+            `its URL from that variable will keep failing the same way.`,
+        );
+      }
+      break;
+    } catch (err) {
+      attempts.push(`${port} (${err?.cause?.code ?? err?.message ?? 'unknown error'})`);
+    }
+  }
+
+  if (!res) {
+    console.error(
+      `mcp-call: could not reach the operator MCP endpoint. Tried port(s): ${attempts.join(', ')}.\n` +
+        `  Nothing is listening there — but a HEALTHY operator on a DIFFERENT port is the common\n` +
+        `  case, so do not read this as a dead server. Find the live port:\n` +
+        `    ss -ltn | grep -E ':(3070|3170)'   # then: PAPERCUSP_HONO_PORT=<live port> re-run\n` +
+        `  Confirm the server is actually fine with:\n` +
+        `    curl -s -o /dev/null -w '%{http_code}\\n' http://127.0.0.1:3070/api/health\n` +
+        `  See EI-20182275617587040 / agent-insights/mcp-client-drop-curl-recovery.`,
+    );
+    process.exit(4);
+  }
   const raw = await res.text();
   if (flags.raw) { process.stdout.write(raw); return; }
   const out = parseSse(raw, REQUEST_ID);
