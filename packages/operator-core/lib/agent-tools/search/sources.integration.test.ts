@@ -220,6 +220,14 @@ async function setupSchema(s: postgres.Sql): Promise<void> {
       ingested_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
       text_embedding public.vector(384),
       text_embedding_mode TEXT,
+      -- Migration 794 (plan owner-visibility-provenance P-004): provenance
+      -- stamped at ingest. Present here because this fixture tracks the real
+      -- schema — session-ingest's INSERT names these columns, so a fixture
+      -- without them reds on an unrelated agent hours later
+      -- (EI-19359711978838614).
+      turn_origin TEXT,
+      turn_origin_verdict TEXT,
+      turn_origin_classifier_version INTEGER,
       PRIMARY KEY (workspace_id, source_kind, session_id, turn_idx)
     );
   `);

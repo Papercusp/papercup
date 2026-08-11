@@ -97,7 +97,43 @@ export const MACHINE_SURFACE_PATTERNS: readonly RegExp[] = [
   /⟦\s*machine-issued self-compaction/i,
   // The compaction UI status line captured verbatim as a turn.
   /✻\s*Conversation compacted|●\s*Compaction is queued/i,
+  // The codex CLI's own rendering of CODEX_HOME/AGENTS.md as the session's
+  // FIRST user turn (35 rows/14d, still minting — measured 2026-08-11 on
+  // turn_idx=0). Papercusp WRITES that AGENTS.md (bootstrap-role mints a
+  // per-session CODEX_HOME) but does NOT author this turn: the CLI composes
+  // the wrapper, so there is no seam to prefix an envelope onto — see the
+  // "why this is a pattern and not an enrolment" note below.
+  /^\s*# AGENTS\.md instructions\s*\n+<INSTRUCTIONS>/,
+  // The codex CLI's plugin preamble, same population and same authorship
+  // (12 rows/14d at turn_idx=0).
+  /^\s*<recommended_plugins>/,
 ];
+
+/*
+ * WHY THE TWO ENTRIES ABOVE ARE PATTERNS AND NOT INJECTOR ENROLMENTS
+ * (plan owner-visibility-provenance-2026-08-11, V-002 / D-015).
+ *
+ * D-015 ruled "enrol the su launch prompt". Enrolment turned out to be
+ * structurally impossible on this path, for two independent reasons — recorded
+ * here so the next agent does not re-attempt it:
+ *
+ *   1. NO HEAD TO ANCHOR. The recorded turn begins `# AGENTS.md instructions`,
+ *      emitted by the CLI. An envelope folded into the AGENTS.md content lands
+ *      INSIDE the `<INSTRUCTIONS>` wrapper, and `parseEnvelope` deliberately
+ *      refuses a mid-text envelope ("quoted/relayed content must not classify
+ *      the turn"). Prefixing would therefore not classify anything.
+ *   2. NO HASH TO MATCH. The `cli-schedule-wakeup` precedent (a hash-only
+ *      ledger row, matched by classify()'s no-envelope branch) needs the exact
+ *      payload sha of the WHOLE turn. Papercusp never sees the wrapped form,
+ *      and ingest truncates the row at 8000 chars, so the hash cannot be
+ *      computed on either side.
+ *
+ * That is what makes these the SAME class as the native compaction preamble
+ * already listed above: CLI-authored, structurally separable, un-enrollable.
+ * It is NOT a licence to close the role-prompt shapes the same way — nothing
+ * separates `# Mug — pot placement decider` from an owner's `# my notes`
+ * (D-002/D-003), and that residue is P-004's.
+ */
 
 /**
  * Slash-command and local-command wrappers the CLI records as `user` turns.
@@ -142,7 +178,7 @@ export const CLASSIFY_HEAD_CHARS = 240;
  * FINDABLE (`WHERE turn_origin_classifier_version < CURRENT`) so a backfill
  * sweep can re-derive them. Leaving it unbumped is what makes them invisible.
  */
-export const MACHINE_SURFACE_CATALOGUE_VERSION = 1;
+export const MACHINE_SURFACE_CATALOGUE_VERSION = 2;
 
 /** Does this turn's head carry a CLI/subsystem synthetic-command wrapper? */
 export function hasSyntheticMarker(text: string): boolean {
