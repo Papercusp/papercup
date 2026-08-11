@@ -510,6 +510,32 @@ describe('NewSessionLauncher', () => {
       expect(h.launchAgent).toHaveBeenCalledWith(expect.objectContaining({ account: 'default' }));
     });
 
+    it('ALWAYS launches HEADLESS — no console window, with no toggle to get one', async () => {
+      // WI-37871 [owner 2026-08-11, interactive]: "Always headless. same for new
+      // goal". Asserting the literal `true` rather than OWNER_LAUNCH_HEADLESS on
+      // purpose: comparing the value against itself would pass however the
+      // constant is defined, which is exactly the assertion that cannot fail.
+      // The import is un-mocked (see the vi.mock above), so this reds if anyone
+      // flips the constant, drops the field, or makes it conditional.
+      render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
+      fireEvent.click(screen.getByRole('button', { name: '+ New session' }));
+      await waitFor(() => expect(h.launchAgent).toHaveBeenCalledTimes(1));
+      expect(h.launchAgent).toHaveBeenCalledWith(expect.objectContaining({ headless: true }));
+    });
+
+    it('offers the owner NO headed/headless control — the rejected toggle must not come back', () => {
+      // The owner was offered a toggle and picked always-headless instead. A
+      // reintroduced picker would satisfy the assertion above (it can still
+      // default to headless) while breaking the actual directive, so pin the
+      // ABSENCE too. Scoped to this launcher — FleetLaunchRow's headed/headless
+      // picker is a separate, owner-approved surface and stays.
+      render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
+      const labels = screen
+        .getAllByRole('combobox')
+        .map((el) => el.getAttribute('aria-label') ?? '');
+      expect(labels.some((l) => /headless|headed|window|terminal|console/i.test(l))).toBe(false);
+    });
+
     it('sends no fleet and no context-size override by default (unchanged launch)', async () => {
       render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
       fireEvent.click(screen.getByRole('button', { name: '+ New session' }));

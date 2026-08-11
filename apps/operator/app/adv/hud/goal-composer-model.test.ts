@@ -165,6 +165,25 @@ describe('postGoalStart', () => {
     expect(JSON.parse(String(init.body))).toMatchObject({ harness: 'papercusp', budgetCents: 1 });
   });
 
+  it('ALWAYS asks goals:start for a HEADLESS agent — no console window', async () => {
+    // WI-37871 [owner 2026-08-11, interactive]: "Always headless. same for new
+    // goal" — the goal composer is the "same for new goal" half.
+    //
+    // The literal `true`, not OWNER_LAUNCH_HEADLESS: asserting the constant
+    // against itself passes however it is defined. This module imports the real
+    // constant, so flipping it reds here.
+    //
+    // It must ride the POST BODY, not just the draft: `headless` is deliberately
+    // NOT a GoalStartArgs field, so a test that only checked the args object
+    // would pass while the wire carried nothing and the server defaulted to a
+    // window.
+    const fetchImpl = fetchReturning(envelope({ id: 'g-1' }));
+    await postGoalStart({ title: 't' }, { ...opts, fetchImpl });
+    const [, init] = (fetchImpl as unknown as { mock: { calls: [string, RequestInit][] } }).mock
+      .calls[0];
+    expect(JSON.parse(String(init.body))).toMatchObject({ headless: true });
+  });
+
   it('surfaces a REFUSAL\'s prose, which is what names the rollback', async () => {
     // isError + prose in the content slot. Read as "unparseable" this would
     // tell the owner nothing about whether a half-started goal is now sitting
