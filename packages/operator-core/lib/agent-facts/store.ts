@@ -180,6 +180,12 @@ export const FACT_BODY_MAX_CHARS = 1200;
  *  mirrors RELAY_RENDER_CHARS; a fold can carry 12+ facts, so quotes stay short). */
 export const FACT_PROVENANCE_QUOTE_CHARS = 160;
 export const FACT_DEFAULT_TTL_SEC = 7 * 24 * 3600;
+/**
+ * A volatile measurement is a snapshot, not a standing property. An explicit
+ * longer TTL is refused at the write boundary rather than silently preserving
+ * the incident's multi-day stale-claim window.
+ */
+export const FACT_VOLATILE_MAX_TTL_SEC = 15 * 60;
 /** EI-18681964809855890: a 'provisional' fact (one unreplicated run) defaults
  *  to a much shorter TTL than a plain/'verified' conclusion — "stale
  *  certainty is worse than stale doubt" (the owner's framing). Overridable
@@ -269,6 +275,17 @@ export interface FactSourceProvenance {
   /** When !verified: why (not_found / resolve_error / …) — rendered LOUDLY. */
   error?: string;
   verifiedAt: string;
+}
+
+/**
+ * EI-20191740437408337: assert-time metadata for a measurement whose subject
+ * may still be changing. The pair is kept together so a timestamp cannot be
+ * mistaken for a durable conclusion without the volatility declaration.
+ */
+export interface FactMeasurement {
+  subjectVolatile: true;
+  /** ISO timestamp at which the moving subject was sampled. */
+  measuredAt: string;
 }
 
 /**
@@ -369,6 +386,8 @@ export interface AgentFact {
   /** EI-18681964809855890: evidence-strength; null = unset (legacy/default,
    *  renders unbadged — see {@link renderFactsFold}). */
   confidence: FactConfidence | null;
+  /** EI-20191740437408337: assert-time snapshot metadata; absent on legacy rows. */
+  measurement?: FactMeasurement | null;
   /** P-008 (b) / D-019: the claim MODALITY (see {@link FactKind}); null = not
    *  declared (every pre-migration-690 row). Distinct from `scope`. */
   kind: FactKind | null;
@@ -553,6 +572,14 @@ export interface AssertFactInput {
   /** EI-18681964809855890: evidence-strength (see {@link FactConfidence}).
    *  Omitted/null = unset — legacy shape, unbadged in folds, ordinary TTL. */
   confidence?: FactConfidence | null;
+  /**
+   * EI-20191740437408337: declare that the asserted values were sampled from a
+   * subject that may still be changing. Requires `measuredAt`; the stored fact
+   * is rendered as a SNAPSHOT and is bounded to a short TTL.
+   */
+  subjectVolatile?: boolean;
+  /** ISO timestamp at which a volatile subject was sampled. */
+  measuredAt?: string | null;
   /** P-008 (b) / D-019: the claim modality. Omitted/null = not declared. */
   kind?: FactKind | null;
   /**
@@ -813,6 +840,27 @@ export function parseFactSourceProvenance(raw: unknown): FactSourceProvenance | 
 }
 
 /**
+ * Defensive read of the volatile-measurement jsonb round-trip. A malformed or
+ * legacy value must never make a fold fail, and an unmarked timestamp must not
+ * be presented as a snapshot marker.
+ */
+export function parseFactMeasurement(raw: unknown): FactMeasurement | null {
+  if (typeof raw === 'string') {
+    try {
+      raw = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+  }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  const m = raw as Record<string, unknown>;
+  if (m.subjectVolatile !== true || typeof m.measuredAt !== 'string' || !m.measuredAt.trim()) return null;
+  const measuredMs = Date.parse(m.measuredAt);
+  if (!Number.isFinite(measuredMs)) return null;
+  return { subjectVolatile: true, measuredAt: new Date(measuredMs).toISOString() };
+}
+
+/**
  * P-008 (b): defensive read of the `depends_on` jsonb round-trip. Same contract
  * and same reasons as {@link parseFactSourceProvenance}: absent / malformed /
  * wrong-shaped entries are DROPPED rather than thrown on, and both the
@@ -1025,6 +1073,35 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   if (!key) throw new InvalidInputError('facts:assert — key required (stable slug)');
   const body = clampFactBody(input.body);
   if (!body) throw new InvalidInputError('facts:assert — body required');
+  const subjectVolatile = input.subjectVolatile === true;
+  const measuredAtInput = input.measuredAt?.trim() || null;
+  if (subjectVolatile && !measuredAtInput) {
+    throw new InvalidInputError(
+      'facts:assert — subjectVolatile:true requires measuredAt (the ISO timestamp of the sample)',
+    );
+  }
+  if (!subjectVolatile && measuredAtInput) {
+    throw new InvalidInputError(
+      'facts:assert — measuredAt is only meaningful with subjectVolatile:true; mark the subject volatile or omit the timestamp',
+    );
+  }
+  let measurement: FactMeasurement | null = null;
+  if (measuredAtInput) {
+    const measuredAtMs = Date.parse(measuredAtInput);
+    if (!Number.isFinite(measuredAtMs)) {
+      throw new InvalidInputError(`facts:assert — measuredAt must be a valid ISO timestamp (got '${measuredAtInput}')`);
+    }
+    if (measuredAtMs > Date.now() + 60_000) {
+      throw new InvalidInputError('facts:assert — measuredAt cannot be more than 60 seconds in the future');
+    }
+    measurement = { subjectVolatile: true, measuredAt: new Date(measuredAtMs).toISOString() };
+  }
+  if (subjectVolatile && input.ttlSec != null && input.ttlSec > FACT_VOLATILE_MAX_TTL_SEC) {
+    throw new InvalidInputError(
+      `facts:assert — a volatile measurement must use ttlSec <= ${FACT_VOLATILE_MAX_TTL_SEC} seconds (15 minutes); ` +
+        `the requested ${input.ttlSec}-second TTL would leave a moving snapshot in the standing-facts fold too long`,
+    );
+  }
   const sql = sqlOf(inject);
   const ws = input.workspaceId ?? activeWorkspaceId();
   // F1-4 / WI-1564: a SHAREABLE fact MUST land in a real federating partition.
@@ -1044,8 +1121,9 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // EI-18681964809855890: an explicit ttlSec always wins; otherwise a
   // provisional/suspected confidence tier shortens the default (see
   // defaultTtlSecForConfidence) before falling back to FACT_DEFAULT_TTL_SEC.
-  const ttl =
-    input.ttlSec && input.ttlSec > 0
+  const ttl = subjectVolatile
+    ? (input.ttlSec && input.ttlSec > 0 ? input.ttlSec : FACT_VOLATILE_MAX_TTL_SEC)
+    : input.ttlSec && input.ttlSec > 0
       ? input.ttlSec
       : (defaultTtlSecForConfidence(input.confidence) ?? FACT_DEFAULT_TTL_SEC);
   const confidence = input.confidence ?? null;
@@ -1121,7 +1199,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
     )
     INSERT INTO harness_shared.agent_facts
       (workspace_id, harness_slug, scope, scope_ref, key, body, source_ref, created_by, expires_at, shareable,
-       audience_scope, source_provenance, confidence, supersedes_id, kind, depends_on, claim,
+       audience_scope, source_provenance, confidence, measurement, supersedes_id, kind, depends_on, claim,
        enforcement, settled_by)
     VALUES
       (${ws},
@@ -1135,6 +1213,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
        ${audienceScope},
        ${input.sourceProvenance ? JSON.stringify(input.sourceProvenance) : null}::text::jsonb,
        ${confidence},
+       ${measurement ? JSON.stringify(measurement) : null}::text::jsonb,
        (SELECT id FROM superseded),
        ${kind},
        ${dependsOn ? JSON.stringify(dependsOn) : null}::text::jsonb,
@@ -1143,7 +1222,7 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
        ${settledBy})
     RETURNING id, superseded_at::text, supersedes_id,
               scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
-              confidence, kind, depends_on, claim, enforcement, settled_by, created_by, updated_at::text, expires_at::text`;
+              confidence, measurement, kind, depends_on, claim, enforcement, settled_by, created_by, updated_at::text, expires_at::text`;
   // Cap enforcement — evict the LOWEST-RANKED live incumbents past the cap for
   // this (scope, ref); the ranking is the ORDER BY below, NOT oldest-updated.
   // LOCAL partition only (H6): the local writer's cap must never
