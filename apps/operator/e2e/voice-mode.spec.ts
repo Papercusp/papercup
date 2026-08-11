@@ -32,6 +32,12 @@ test.describe('voice settings', () => {
   async function awaitVoiceSettingsLoaded(page: import('@playwright/test').Page) {
     await page.goto('/settings/voice');
     await expect(page.getByText('Loading your voice settings')).toBeHidden({ timeout: 60_000 });
+    // A negative loading-state assertion can pass before this route has
+    // mounted at all (the shell's settings panel may still be blank while its
+    // standing SSE streams consume the HTTP/1.1 socket budget). Require a
+    // positive, voice-page-specific anchor so downstream widget assertions
+    // cannot mistake "not rendered yet" for a product regression.
+    await expect(page.getByRole('combobox', { name: 'Full-agent engine' })).toBeVisible({ timeout: 60_000 });
   }
 
   test('renders all 5 TTS engines + 2 STT engines', async ({ page }) => {
