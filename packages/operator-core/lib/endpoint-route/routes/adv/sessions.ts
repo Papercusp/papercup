@@ -778,7 +778,12 @@ const searchTranscripts = defineTool({
         import('../../../workspace-registry'),
         import('@papercusp/db-org'),
       ]);
-    const { groupHitsBySession, classifySessionGroups, buildActiveEntryMatchFilter } = await import('../../../adv-session-search');
+    const {
+      groupHitsBySession, classifySessionGroups, buildActiveEntryMatchFilter,
+      // WI-37883 — the owner-visibility filter and the amount of turn text it
+      // needs, taken from ONE module so the SQL below cannot under-hydrate it.
+      filterOwnerVisibleTurnHits, OWNER_VISIBILITY_DECIDING_PREFIX_CHARS,
+    } = await import('../../../adv-session-search');
     const { advSessionsByTranscriptHandles } = await import('../../../adv-sessions');
 
     const sources = SEARCH_SOURCES.filter((s) => s.name === 'session_turn');
@@ -887,6 +892,12 @@ const searchTranscripts = defineTool({
       excerpt: string; highlight: string; score: number;
       matchedBy?: MatchProvenance; lexicalScore?: number; semanticScore?: number;
       ts?: string | null; speaker?: string | null; owner?: string | null;
+      // WI-37883 — hydrated below, read only by filterOwnerVisibleTurnHits and
+      // then STRIPPED before the rollup (`groups` is serialized hit-for-hit).
+      textHead?: string | null;
+      // WI-37909 — full user-turn text used to locate the marked match inside
+      // the rendered owner span; also stripped before serialization.
+      fullText?: string | null;
     }> = [];
     // ⚠ `ordered`, NOT `results` — post-Stage-B the ARRAY ORDER is the relevance
     // order and `score` is only the retrieval score it was reranked out of.
@@ -914,6 +925,13 @@ const searchTranscripts = defineTool({
     // Hydrate per-turn metadata (ts/speaker/owner) — ts anchors the deep-link
     // into the transcript viewer; owner matches claude isolation transcripts to
     // their roster agent. One batched unnest join, never per-hit queries.
+    //
+    // WI-37883 adds a bounded HEAD of the turn text to the same join, for the
+    // whole-turn owner-visibility filter. WI-37909 additionally hydrates the
+    // full text only for user turns: owner-chat notes are trailing and may lie
+    // beyond the deciding prefix, so the search filter must compare the marked
+    // match with the exact rendered span. Both fields are internal and stripped
+    // before serialization. See OWNER_VISIBILITY_DECIDING_PREFIX_CHARS.
     signal.throwIfAborted(); // watchdog fired mid-search → stop, don't hydrate
     if (turnHits.length > 0) {
       try {
@@ -921,9 +939,11 @@ const searchTranscripts = defineTool({
         const sids = turnHits.map((h) => h.sessionId);
         const idxs = turnHits.map((h) => h.turnIdx);
         const metaRows = await sql<
-          Array<{ source_kind: string; session_id: string; turn_idx: number; ts: string | null; speaker: string | null; owner: string | null }>
+          Array<{ source_kind: string; session_id: string; turn_idx: number; ts: string | null; speaker: string | null; owner: string | null; text_head: string | null; full_text: string | null }>
         >`
-          SELECT st.source_kind, st.session_id, st.turn_idx, st.ts::text AS ts, st.speaker, st.owner
+          SELECT st.source_kind, st.session_id, st.turn_idx, st.ts::text AS ts, st.speaker, st.owner,
+                 left(st.text, ${OWNER_VISIBILITY_DECIDING_PREFIX_CHARS}) AS text_head,
+                 CASE WHEN st.speaker = 'user' THEN st.text ELSE NULL END AS full_text
             FROM harness_shared.session_turns st
             JOIN unnest(${kinds}::text[], ${sids}::text[], ${idxs}::int[]) AS t(k, s, i)
               ON st.source_kind = t.k AND st.session_id = t.s AND st.turn_idx = t.i
@@ -931,7 +951,13 @@ const searchTranscripts = defineTool({
         const metaByKey = new Map(metaRows.map((m) => [`${m.source_kind}:${m.session_id}:${m.turn_idx}`, m]));
         for (const h of turnHits) {
           const m = metaByKey.get(`${h.sourceKind}:${h.sessionId}:${h.turnIdx}`);
-          if (m) { h.ts = m.ts; h.speaker = m.speaker; h.owner = m.owner; }
+          if (m) {
+            h.ts = m.ts;
+            h.speaker = m.speaker;
+            h.owner = m.owner;
+            h.textHead = m.text_head;
+            h.fullText = m.full_text;
+          }
         }
       } catch (err) {
         if (signal.aborted) throw err; // abort outranks the bonus-metadata degradation
@@ -940,7 +966,33 @@ const searchTranscripts = defineTool({
     }
     mark('metadataHydration');
 
-    const groups = groupHitsBySession(turnHits);
+    /* WI-37883: drop hits inside turns the owner's chat pane hides.
+       This route is OWNER-FACING on both its consumers (the HUD board and the
+       plan popup's Sessions tab), and EI-20135573616431912 established that a
+       machine-authored `user` turn is not part of the owner's conversation. An
+       unfiltered search re-leaks it as an excerpt AND offers a deep-link that
+       cannot anchor, because the target message is no longer rendered.
+
+       `?includeMachineTurns=1` opts out — for debugging a wake or a hook wall,
+       where the plumbing IS the thing you are looking for. Not wired to any UI;
+       an engineer reaching for it knows what they are asking for. The AGENT
+       search path (`sessions:search`) is a different entry point entirely and
+       is untouched: agents legitimately search their own machine turns.
+
+       Filtering HERE, before the rollup, is what makes `totalHits` and the
+       session groups agree — a session whose only matches were machine turns
+       must not appear at all, rather than appear with nothing to show. */
+    const visibleHits = (url.searchParams.get('includeMachineTurns') === '1'
+      ? turnHits
+      : filterOwnerVisibleTurnHits(turnHits)
+    )
+      /* STRIP the head once the verdict is taken. `groups` is serialized to the
+         client hit-for-hit, so leaving it on would ship the machine text this
+         filter exists to keep off the wire — and would do it on the
+         `?includeMachineTurns=1` path too, where the hits are kept. It is an
+         INPUT to a server-side decision, never part of the answer. */
+      .map(({ textHead: _textHead, fullText: _fullText, ...hit }) => hit);
+    const groups = groupHitsBySession(visibleHits);
     // Await the t0-started roster (usually already settled — it ran concurrent
     // with the search) + the hit-dependent session-row hydration.
     const [{ active }, sessionRows, idRows] = await Promise.all([
@@ -994,7 +1046,13 @@ const searchTranscripts = defineTool({
         // session has that id" instead of the generic "no matches in any
         // session", which reads as a search failure rather than an answer.
         idToken: idToken ?? undefined,
-        totalHits: turnHits.length,
+        /* WI-37883: the RETURNED hits, not the retrieved ones. Counting
+           `turnHits` here would report matches the response does not contain —
+           the client renders "N hits" beside a list that is missing the
+           owner-invisible ones, which reads as a rendering bug rather than as
+           the filter working. A count must describe what was actually handed
+           over. */
+        totalHits: visibleHits.length,
         sessions,
         _stageTimingsMs: stageTimingsMs,
       }),

@@ -15,6 +15,24 @@
 import type { MatchProvenance, RecencyRank } from '@papercusp/search';
 import type { RosterEntry } from './adv-roster';
 import type { AdvSessionRow } from './adv-sessions';
+/* The ONE runtime import in this module, and chosen for that reason (WI-37883).
+   `owner-chat-turn` is a deliberate zero-import leaf — see its header — kept
+   that way precisely so the send path, the wake executor and browser-side chat
+   code can share one definition of the owner-visibility rule. Importing the
+   predicate here rather than re-stating it is what keeps the search filter and
+   the chat pane from ever disagreeing about which turns the owner can see.
+   HudView.tsx imports this module into the browser bundle; the leaf comes with
+   it and costs nothing, since it has no dependencies of its own. */
+import {
+  isOwnerVisiblePrompt,
+  ownerVisiblePromptText,
+} from './agent-tools/coordination/owner-chat-turn';
+
+/* Re-exported so the route gets the FILTER and the amount of text the filter
+   needs from ONE module. They are one contract: hydrate less than this and the
+   predicate silently starts reading truncated envelopes as unmarked prose,
+   which fails toward showing machine turns — the exact leak being closed. */
+export { OWNER_VISIBILITY_DECIDING_PREFIX_CHARS } from './agent-tools/coordination/owner-chat-turn';
 
 /**
  * Parse the route's recency query params into the engine's RecencyRank —
@@ -124,6 +142,23 @@ export interface TranscriptTurnHit {
   ts?: string | null;
   speaker?: string | null;
   owner?: string | null;
+  /**
+   * A bounded HEAD of the matched turn's raw text — enough to decide whether
+   * the owner's chat pane renders this turn at all (WI-37883), never the whole
+   * turn.
+   *
+   * Hydrated alongside `speaker` by the route, and read ONLY by
+   * {@link filterOwnerVisibleTurnHits}. Optional because the hydration is
+   * fail-soft: a hit that never got metadata carries neither, and both readers
+   * treat that as "no claim" rather than as a verdict.
+   */
+  textHead?: string | null;
+  /**
+   * The full raw text for a user turn, hydrated only while deciding whether a
+   * matched fragment falls inside the owner's rendered span (WI-37909). This
+   * is an internal filter input and is stripped before the response is sent.
+   */
+  fullText?: string | null;
 }
 
 // ── ID search (WI-37204) ────────────────────────────────────────────────────
@@ -365,6 +400,78 @@ export function mergeIdMatches<
   });
   const claimed = new Set(merged.map(keyOf));
   return [...merged, ...textResults.filter((r) => !claimed.has(keyOf(r)))];
+}
+
+/**
+ * Drop hits the OWNER'S CHAT PANE would never render — machine-authored
+ * `user`-role turns (WI-37883). Pure.
+ *
+ * ── Why a search route filters on a DISPLAY rule ─────────────────────────────
+ *
+ * EI-20135573616431912 (owner-reported) fixed the chat pane: a `user`-role turn
+ * is shown only when its turn-origin envelope says the HUMAN authored it, so
+ * wake blobs, loop-fire instructions and Stop-hook coaching walls stopped
+ * appearing as things the owner had apparently said. This route searches the
+ * SAME `session_turns` rows and was left unfiltered, which leaks the identical
+ * defect one surface over, twice:
+ *
+ *   1. the machine turn's text is rendered back to the owner as a search
+ *      EXCERPT / `<mark>` highlight — the reported bug verbatim, just in a
+ *      results list instead of a conversation; and
+ *   2. clicking that hit cannot anchor. `SessionChatModal`'s `focusIndex`
+ *      corroborates the deep-link by requiring the focused message to CONTAIN
+ *      the search term, and the matched text is no longer rendered — so the
+ *      corroboration fails, the text fallback finds nothing either, and the
+ *      pane silently opens at the tail.
+ *
+ * ── Why it is a post-filter and not an engine predicate ──────────────────────
+ *
+ * MEASURED over 3 days of `session_turns` before choosing: 38,760 assistant
+ * turns (92.3%) vs 3,247 user turns (7.7%), of which 1,747 are machine-authored
+ * — so this drops ~4% of the searchable corpus, not half of it. (The
+ * intuition-trap is real: machine turns ARE 54% of USER-role rows, which is the
+ * number the parent fix turned on, and reading that as 54% of the SEARCH corpus
+ * argues for an engine-level predicate that duplicates the rule in SQL and can
+ * drift from it.) At 4% a post-filter cannot meaningfully starve a page, and
+ * reusing the one shared predicate is worth more than the recovered hits.
+ *
+ * Two queries do skew high — boilerplate that only exists inside wake blobs
+ * ("loop wake", "coord:orient") — and for those, every dropped hit is one the
+ * owner could not have opened anyway.
+ *
+ * ── Fails OPEN, deliberately ─────────────────────────────────────────────────
+ *
+ * A hit with no hydrated `textHead` (the route's metadata join is fail-soft) is
+ * KEPT. So is every `assistant` turn, which the pane renders unconditionally.
+ * The dangerous direction here is hiding something the human wrote, exactly as
+ * in `ownerVisiblePromptText`'s own note — never keeping one machine row too
+ * many.
+ */
+export function filterOwnerVisibleTurnHits<T extends TranscriptTurnHit>(
+  hits: readonly T[],
+): T[] {
+  return hits.filter((h) => {
+    if (h.speaker !== 'user') return true;
+    if (typeof h.textHead !== 'string' || h.textHead === '') return true;
+    if (!isOwnerVisiblePrompt(h.textHead)) return false;
+
+    /* WI-37909 — an owner-chat turn is visible as a whole, but its trailing
+       `⟦owner-chat⟧` note is stripped before rendering. The old whole-turn
+       predicate therefore kept a hit whose `<mark>` was entirely inside that
+       hidden note. Compare the headline's actual marked fragments with the
+       rendered span. A semantic-only hit has no lexical mark to locate, so it
+       remains fail-open: dropping a semantically relevant owner turn would be
+       worse than retaining one hit whose match location cannot be proven. */
+    if (typeof h.fullText !== 'string' || h.fullText === '') return true;
+    const visibleText = ownerVisiblePromptText(h.fullText);
+    if (visibleText === '') return false;
+    const markedTerms = [...h.highlight.matchAll(/<mark\b[^>]*>([\s\S]*?)<\/mark>/gi)]
+      .map((match) => match[1].replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim().toLocaleLowerCase())
+      .filter(Boolean);
+    if (markedTerms.length === 0) return true;
+    const normalizedVisible = visibleText.replace(/\s+/g, ' ').trim().toLocaleLowerCase();
+    return markedTerms.some((term) => normalizedVisible.includes(term));
+  });
 }
 
 /**

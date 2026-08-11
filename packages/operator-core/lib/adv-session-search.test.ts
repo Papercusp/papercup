@@ -7,6 +7,7 @@ import {
   buildActiveEntryMatchFilter,
   buildIdMatchResults,
   classifySessionGroups,
+  filterOwnerVisibleTurnHits,
   DEFAULT_FRESH_WINDOW_H,
   DEFAULT_HALF_LIFE_H,
   DEFAULT_WEIGHT,
@@ -519,5 +520,130 @@ describe('mergeIdMatches (WI-37204)', () => {
       [res({ sourceKind: 'omp', sessionId: 'x' })],
     );
     expect(merged).toHaveLength(2);
+  });
+});
+
+/**
+ * WI-37883 — the owner-facing search must not offer a hit inside a turn the
+ * owner's chat pane hides.
+ *
+ * EI-20135573616431912 fixed the PANE; this route searched the same rows and
+ * leaked the same machine text back as excerpts, plus a deep-link that cannot
+ * anchor (the target message is no longer rendered, so SessionChatModal's
+ * corroboration rejects it and the pane silently opens at the tail).
+ */
+describe('filterOwnerVisibleTurnHits', () => {
+  const hit = (over: Partial<Parameters<typeof filterOwnerVisibleTurnHits>[0][number]> = {}) => ({
+    sourceKind: 'claude',
+    sessionId: 's1',
+    turnIdx: 1,
+    excerpt: 'x',
+    highlight: 'x',
+    score: 1,
+    ...over,
+  });
+
+  it('DROPS a machine-authored user turn — the excerpt leak and the dead deep-link', () => {
+    const kept = filterOwnerVisibleTurnHits([
+      hit({ speaker: 'user', textHead: '⟦turn-origin:loop-fire nonce:095d0a31d74f617e⟧\n🔁 Loop wake' }),
+    ]);
+    expect(kept).toEqual([]);
+  });
+
+  it('KEEPS the owner\'s own turn — both shapes they can arrive in', () => {
+    const kept = filterOwnerVisibleTurnHits([
+      // Typed in the TUI: no envelope at all.
+      hit({ turnIdx: 1, speaker: 'user', textHead: 'why did that agent go on to say all this?' }),
+      // Typed in the HUD chat pane: enveloped, but owner-authored.
+      hit({ turnIdx: 2, speaker: 'user', textHead: '⟦turn-origin:coord-inject:owner nonce:deadbeefcafe1234⟧\nhi' }),
+    ]);
+    expect(kept.map((h) => h.turnIdx)).toEqual([1, 2]);
+  });
+
+  it('KEEPS every assistant turn without consulting the text at all', () => {
+    /* The pane renders assistant turns unconditionally, so their content is
+       irrelevant here — including text that would LOOK machine-authored if the
+       filter were applied by marker instead of by speaker. An agent quoting a
+       wake envelope back in its own answer is ordinary, and hiding it would make
+       the agent's own words unsearchable. */
+    const kept = filterOwnerVisibleTurnHits([
+      hit({ speaker: 'assistant', textHead: '⟦turn-origin:loop-fire nonce:095d0a31d74f617e⟧ — as you can see' }),
+    ]);
+    expect(kept).toHaveLength(1);
+  });
+
+  it('FAILS OPEN when the metadata join gave us nothing', () => {
+    /* The route hydrates speaker+textHead in a try/catch that deliberately never
+       fails the search. A hit that came back bare must stay in the results: the
+       recoverable error is showing one machine row, and the unrecoverable one is
+       a search that silently drops the owner's own words because a metadata query
+       timed out. */
+    expect(filterOwnerVisibleTurnHits([hit({ speaker: 'user' })])).toHaveLength(1);
+    expect(filterOwnerVisibleTurnHits([hit({ speaker: 'user', textHead: null })])).toHaveLength(1);
+    expect(filterOwnerVisibleTurnHits([hit({ speaker: 'user', textHead: '' })])).toHaveLength(1);
+    expect(filterOwnerVisibleTurnHits([hit({ textHead: 'anything' })])).toHaveLength(1);
+  });
+
+  it('PRESERVES the caller\'s relevance order', () => {
+    /* Same property groupHitsBySession is documented to protect: post-Stage-B the
+       ARRAY ORDER is the rerank's verdict, so a filter must remove without
+       reordering. */
+    const kept = filterOwnerVisibleTurnHits([
+      hit({ turnIdx: 5, speaker: 'user', textHead: 'owner text' }),
+      hit({ turnIdx: 6, speaker: 'user', textHead: '⟦turn-origin:wake-pump nonce:0123456789ab⟧\nblob' }),
+      hit({ turnIdx: 7, speaker: 'assistant', textHead: 'reply' }),
+    ]);
+    expect(kept.map((h) => h.turnIdx)).toEqual([5, 7]);
+  });
+
+  it('hides a Stop-hook coaching wall — the shape the owner actually reported', () => {
+    const kept = filterOwnerVisibleTurnHits([
+      hit({ speaker: 'user', textHead: 'Stop hook feedback:\nThis turn ends by handing the next move back to the owner' }),
+    ]);
+    expect(kept).toEqual([]);
+  });
+
+  it('DROPS a hit whose marked term exists only in the stripped owner-chat note', () => {
+    const fullText =
+      'take 2: does this arrive as my own turn?\n\n' +
+      '⟦owner-chat⟧ machine-only recipients_gone plumbing';
+    const kept = filterOwnerVisibleTurnHits([
+      hit({
+        speaker: 'user',
+        textHead: fullText.slice(0, 512),
+        fullText,
+        highlight: 'machine-only <mark>recipients_gone</mark> plumbing',
+      }),
+    ]);
+    expect(kept).toEqual([]);
+  });
+
+  it('KEEPS an owner-chat hit when the marked term is in the rendered owner text', () => {
+    const fullText =
+      'search this transcript for recipients_gone\n\n' +
+      '⟦owner-chat⟧ the note repeats recipients_gone but is hidden';
+    const kept = filterOwnerVisibleTurnHits([
+      hit({
+        speaker: 'user',
+        textHead: fullText.slice(0, 512),
+        fullText,
+        highlight: 'search this transcript for <mark>recipients_gone</mark>',
+      }),
+    ]);
+    expect(kept).toHaveLength(1);
+  });
+
+  it('fails open for a semantic hit with no lexical mark', () => {
+    const fullText = 'owner-authored context\n\n⟦owner-chat⟧ hidden machine note';
+    const kept = filterOwnerVisibleTurnHits([
+      hit({
+        speaker: 'user',
+        textHead: fullText.slice(0, 512),
+        fullText,
+        highlight: 'owner-authored context',
+        matchedBy: 'semantic',
+      }),
+    ]);
+    expect(kept).toHaveLength(1);
   });
 });
