@@ -249,12 +249,45 @@ function sharedLocksPhrase(shared: readonly string[]): string {
  * NEVER WIDENS: it emits only ownerIds already present in `held`, which the
  * caller's own presence read produced, restricted to its own coordination domain.
  */
+/**
+ * THE BINDING INPUT OF THE `holds-a-lock-on` LEG — peers whose holds this run
+ * could actually have overlapped, which is ZERO whenever the caller holds no
+ * files of its own.
+ *
+ * Same defect and same repair as {@link awaitsBindingInputs}, which carries the
+ * full rationale. Two distinct ways the old `held.size` misreported:
+ *
+ *   · the caller holding NOTHING short-circuits before the loop, yet every
+ *     peer's map entry was still counted as an examined input;
+ *   · `held` contains the CALLER's own entry, so a run where only the caller
+ *     held locks reported `inputs: 1` — an examined-and-rejected reading of a
+ *     comparison that had no candidate in it at all.
+ */
+export function heldFilesBindingInputs(
+  selfOwnerId: string,
+  held: ReadonlyMap<string, readonly string[]>,
+): number {
+  const self = cleanId(selfOwnerId);
+  if (!self) return 0;
+  // The caller's own holds are what every comparison is made AGAINST; with none,
+  // the run is decided before any peer is examined.
+  if (fileSet(held.get(self) ?? []).size === 0) return 0;
+  let peers = 0;
+  for (const [rawId] of held) {
+    const id = cleanId(rawId);
+    if (id && id !== self) peers += 1;
+  }
+  return peers;
+}
+
 export function deriveCouplingsFromHeldFiles(
   selfOwnerId: string,
   held: ReadonlyMap<string, readonly string[]>,
 ): DerivedCoupling[] {
   const self = cleanId(selfOwnerId);
   if (!self) return [];
+  // Early-return through the census's own counter — see `awaitsBindingInputs`.
+  if (heldFilesBindingInputs(self, held) === 0) return [];
   const mine = fileSet(held.get(self) ?? []);
   if (mine.size === 0) return [];
 
@@ -520,8 +553,13 @@ export async function deriveCouplings(
       sources.observe(
         censusDerivedSignals(
           {
-            roster: { armed: true, inputs: Math.max(0, inRoster.size - (inRoster.has(self) ? 1 : 0)) },
-            heldFiles: { armed: !!sources.heldFiles, inputs: held.size },
+            // ⚠ `inputs` IS THE BINDING INPUT, NOT THE CANDIDATE POOL — via the same
+            // helper each leg early-returns on, so a censused 0 and an unemittable
+            // run are one fact (EI-20088486454213771). A pool count here republishes
+            // the defect: it makes a short-circuited run read `armed-silent`
+            // (evaluated, found nothing) when the honest verdict is `starved`.
+            roster: { armed: true, inputs: awaitsBindingInputs(self, rows) },
+            heldFiles: { armed: !!sources.heldFiles, inputs: heldFilesBindingInputs(self, held) },
             planEdges: { armed: !!sources.planEdges, inputs: edges.length },
             recentPartners: { armed: !!sources.recentPartners, inputs: partners.length },
           },
