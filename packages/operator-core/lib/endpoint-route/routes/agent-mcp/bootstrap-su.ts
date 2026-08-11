@@ -27,7 +27,6 @@ import { activeWorkspaceId, isKnownWorkspace, readRegistry } from '../../../work
 import { buildConsoleEnvelope } from '../../../console-launcher';
 import { PrincipalCheckError, requirePrincipal } from '../../../auth/require-principal';
 import {
-  DISPLAY_TERMINAL_LAUNCH,
   NATIVE_SESSION_ID_RE,
   adoptStartingTerminalLaunch,
   markAdvSessionEnded,
@@ -47,6 +46,7 @@ import {
   type SuLaunchSpecRecord,
 } from '../../../su-persona-render';
 import { getOrgPg } from '@papercusp/db-org';
+import { classifyPrePinnedOwnerRows, describePrePinnedConflicts } from './pre-pinned-owner-rows';
 import { isSuAgent, type SuAgent } from '../../../su-agents';
 import { launchContextDir, launchContextPathFor } from '../../../su-launch-context';
 import { buildLaunchSpec } from '../../../role-launch-spec';
@@ -1553,13 +1553,24 @@ const post = defineTool({
       // running session, or a starting row that already registered) is the
       // split-identity case WI-5002/EI-13277 added this guard for, and is still
       // refused loudly.
-      const precursors = live.filter(
-        (r) => r.display === DISPLAY_TERMINAL_LAUNCH && !r.has_session,
-      );
-      const conflicts = live.filter((r) => !precursors.includes(r));
+      //
+      // Classified by VALUE in a single pass (classifyPrePinnedOwnerRows) rather
+      // than by re-identifying rows across two traversals of the query result — see
+      // that module for why the previous filter/includes shape was a latent
+      // reclassify-every-precursor-as-a-conflict bug rather than a style question.
+      const { precursors, conflicts } = classifyPrePinnedOwnerRows(live);
       if (conflicts.length > 0) {
+        // Carry WHY each live row failed the precursor test. This refusal is
+        // launch-blocking and reaches the owner (psu prints it; since WI-37841 it
+        // lands in ~/.papercusp/psu-launch-logs/<owner>.log), and naming only an id
+        // cost a full forensic session on WI-37858 — by the time the row was read
+        // back it satisfied the predicate, leaving no way to tell a genuine
+        // split-identity conflict from a misclassified precursor.
         return jsonRes(
-          { status: 'error', error: `owner_id ${requestedSid} is already bound to live adv session ${conflicts[0].id} — pre-pinned owners must be fresh` },
+          {
+            status: 'error',
+            error: `owner_id ${requestedSid} is already bound to live adv session ${conflicts[0].id} — pre-pinned owners must be fresh [live rows: ${describePrePinnedConflicts(conflicts)}]`,
+          },
           409,
         );
       }
