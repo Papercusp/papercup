@@ -322,6 +322,10 @@ export interface SignalAccumulatorSweepResult {
   workspaceId: string;
   installSlug: string;
   outcome: 'swept' | 'skipped' | 'error';
+  /** Coverage of the registry-backed Blender population evaluated by this tick. */
+  evaluatedWorkspaceCount: number;
+  evaluatedScopeCount: number;
+  eligibleBacklogCount: number;
   /** Weighted score of the freshly recounted lanes (diagnostics). */
   score: number;
   reason: string;
@@ -351,8 +355,13 @@ export async function scoutSignalAccumulatorSweep(
   lastSweepAtMs = now;
   try {
     const scopes = await listBlenderMaintenanceScopes();
-    if (scopes.length === 0) return results;
+    if (scopes.length === 0) {
+      console.warn('[signal-accumulator] ALERT: no registered Blender scopes evaluated');
+      return results;
+    }
     const { sql } = getOrgPg();
+    const evaluatedWorkspaceCount = new Set(scopes.map(({ workspaceId }) => workspaceId)).size;
+    const evaluatedScopeCount = scopes.length;
     for (const { workspaceId, installSlug } of scopes) {
       try {
         // WORKSPACE-WIDE last-ran (installSlugs: [] = no slug filter): the tick
@@ -367,10 +376,14 @@ export async function scoutSignalAccumulatorSweep(
         const counts = await readLaneCounts(sql, workspaceId, watermark);
         await upsertAccumulatorRows(sql, workspaceId, installSlug, watermark, counts);
         const score = weightedSignalScore(Object.fromEntries(counts.map((c) => [c.lane, c.newCount])));
+        const eligibleBacklogCount = counts.reduce((total, count) => total + count.newCount, 0);
         results.push({
           workspaceId,
           installSlug,
           outcome: 'swept',
+          evaluatedWorkspaceCount,
+          evaluatedScopeCount,
+          eligibleBacklogCount,
           score,
           reason: counts.map((c) => `${c.lane}=${c.newCount}`).join(' '),
         });
@@ -379,6 +392,9 @@ export async function scoutSignalAccumulatorSweep(
           workspaceId,
           installSlug,
           outcome: 'error',
+          evaluatedWorkspaceCount,
+          evaluatedScopeCount,
+          eligibleBacklogCount: 0,
           score: 0,
           reason: e instanceof Error ? e.message : String(e),
         });

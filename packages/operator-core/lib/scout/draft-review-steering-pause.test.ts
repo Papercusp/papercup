@@ -125,9 +125,12 @@ describe('scout-draft-review vs owner steering pauseNewWork (P-013)', () => {
 describe('scout-draft-review suppressors that DO apply (controls)', () => {
   it('does not wake a pot that is not started (pot:pause clears hive_started)', async () => {
     listBlenderMaintenanceScopes.mockResolvedValue([]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const results = await scoutDraftReviewSweep();
     expect(wakeMug).not.toHaveBeenCalled();
     expect(results).toEqual([]);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('no registered Blender scopes'));
+    warn.mockRestore();
   });
 
   it('does not wake when the per-hive debounce declines the fire', async () => {

@@ -136,11 +136,14 @@ describe('scoutSignalAccumulatorSweep — fail-soft shell', () => {
   it('no registered Blender scopes ⇒ no results, and the throttle withholds the next tick', async () => {
     const { listBlenderMaintenanceScopes } = await import('../pot/started');
     vi.mocked(listBlenderMaintenanceScopes).mockResolvedValue([]);
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     await expect(scoutSignalAccumulatorSweep({ now: NOW })).resolves.toEqual([]);
     expect(vi.mocked(listBlenderMaintenanceScopes)).toHaveBeenCalledTimes(1);
     // 30s later (a routinesTick) the throttle withholds — no second scope listing.
     await expect(scoutSignalAccumulatorSweep({ now: NOW + 30_000 })).resolves.toEqual([]);
     expect(vi.mocked(listBlenderMaintenanceScopes)).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('no registered Blender scopes'));
+    warn.mockRestore();
   });
 
   it('never throws when the pot listing fails (fail-soft)', async () => {

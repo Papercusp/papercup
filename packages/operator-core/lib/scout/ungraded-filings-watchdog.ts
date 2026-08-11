@@ -183,6 +183,10 @@ export interface SuUngradedSweepResult {
   workspaceId: string;
   installSlug: string;
   outcome: 'nudged' | 'skipped' | 'error';
+  /** Coverage of the registry-backed Blender population evaluated by this tick. */
+  evaluatedWorkspaceCount: number;
+  evaluatedScopeCount: number;
+  eligibleBacklogCount: number;
   staleCount: number;
   reason: string;
 }
@@ -248,8 +252,13 @@ export async function suIdeateUngradedSweep(opts: { now?: number } = {}): Promis
   if (staleSec <= 0) return results; // kill switch
   try {
     const scopes = await listBlenderMaintenanceScopes();
-    if (scopes.length === 0) return results;
+    if (scopes.length === 0) {
+      console.warn('[su-ideate-ungraded] ALERT: no registered Blender scopes evaluated');
+      return results;
+    }
     const { sql } = getOrgPg();
+    const evaluatedWorkspaceCount = new Set(scopes.map(({ workspaceId }) => workspaceId)).size;
+    const evaluatedScopeCount = scopes.length;
     const now = opts.now ?? Date.now();
     const thresholdMs = staleSec * 1_000;
     const days = Math.max(1, Math.round(staleSec / 86_400));
@@ -264,7 +273,16 @@ export async function suIdeateUngradedSweep(opts: { now?: number } = {}): Promis
         const alreadyFiredRecently =
           (await recentWatchdogFires(workspaceId, installSlug, windowHours, 'su-ideate-ungraded')) > 0;
         if (!shouldNudgeMug({ staleCount: stale.length, alreadyFiredRecently })) {
-          results.push({ workspaceId, installSlug, outcome: 'skipped', staleCount: stale.length, reason: 'debounced' });
+          results.push({
+            workspaceId,
+            installSlug,
+            outcome: 'skipped',
+            evaluatedWorkspaceCount,
+            evaluatedScopeCount,
+            eligibleBacklogCount: candidates.length,
+            staleCount: stale.length,
+            reason: 'debounced',
+          });
           continue;
         }
         const reason =
@@ -275,17 +293,38 @@ export async function suIdeateUngradedSweep(opts: { now?: number } = {}): Promis
         // this exact reason has repeated) BEFORE nudging — only the winner nudges.
         const claimed = await claimWatchdogFire({ workspaceId, installSlug, source: 'su-ideate-ungraded', windowHours, reason, wakeAt: null });
         if (!claimed) {
-          results.push({ workspaceId, installSlug, outcome: 'skipped', staleCount: stale.length, reason: 'debounced (raced or backed off)' });
+          results.push({
+            workspaceId,
+            installSlug,
+            outcome: 'skipped',
+            evaluatedWorkspaceCount,
+            evaluatedScopeCount,
+            eligibleBacklogCount: candidates.length,
+            staleCount: stale.length,
+            reason: 'debounced (raced or backed off)',
+          });
           continue;
         }
         const mugOwner = await resolveMugOwner(sql, workspaceId, installSlug);
         await fireGradingNudge(workspaceId, mugOwner, stale, staleSec, installSlug);
-        results.push({ workspaceId, installSlug, outcome: 'nudged', staleCount: stale.length, reason });
+        results.push({
+          workspaceId,
+          installSlug,
+          outcome: 'nudged',
+          evaluatedWorkspaceCount,
+          evaluatedScopeCount,
+          eligibleBacklogCount: candidates.length,
+          staleCount: stale.length,
+          reason,
+        });
       } catch (e) {
         results.push({
           workspaceId,
           installSlug,
           outcome: 'error',
+          evaluatedWorkspaceCount,
+          evaluatedScopeCount,
+          eligibleBacklogCount: 0,
           staleCount: 0,
           reason: e instanceof Error ? e.message : String(e),
         });
@@ -298,7 +337,16 @@ export async function suIdeateUngradedSweep(opts: { now?: number } = {}): Promis
     // infrastructure failure observable in this DBOS step's durable output.
     // Before this, scope discovery/getOrgPg failures collapsed to [], which was
     // indistinguishable from a healthy sweep with no eligible filings.
-    results.push({ workspaceId: '*', installSlug: '*', outcome: 'error', staleCount: 0, reason });
+    results.push({
+      workspaceId: '*',
+      installSlug: '*',
+      outcome: 'error',
+      evaluatedWorkspaceCount: 0,
+      evaluatedScopeCount: 0,
+      eligibleBacklogCount: 0,
+      staleCount: 0,
+      reason,
+    });
   }
   return results;
 }

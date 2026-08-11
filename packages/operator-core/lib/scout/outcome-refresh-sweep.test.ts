@@ -82,7 +82,17 @@ describe('scoutOutcomeRefreshSweep — orchestration (injected deps, no PG)', ()
     const d = deps();
     const results = await scoutOutcomeRefreshSweep(d);
     expect(results).toEqual([
-      { workspaceId: 'ws1', installSlug: 'papercusp', outcome: 'refreshed', stalePendingCount: 0, alerted: false, reason: 'refreshed, no stale-pending' },
+      {
+        workspaceId: 'ws1',
+        installSlug: 'papercusp',
+        outcome: 'refreshed',
+        evaluatedWorkspaceCount: 1,
+        evaluatedScopeCount: 1,
+        eligibleBacklogCount: 0,
+        stalePendingCount: 0,
+        alerted: false,
+        reason: 'refreshed, no stale-pending',
+      },
     ]);
     expect(d.refreshScoutOutcomes).toHaveBeenCalledWith({ workspaceId: 'ws1', harnessSlug: 'papercusp' });
     expect(d.recordFire).not.toHaveBeenCalled();

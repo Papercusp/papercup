@@ -152,6 +152,10 @@ export interface ScoutDraftReviewResult {
   workspaceId: string;
   installSlug: string;
   outcome: 'nudged' | 'skipped' | 'error';
+  /** Coverage of the registry-backed Blender population evaluated by this tick. */
+  evaluatedWorkspaceCount: number;
+  evaluatedScopeCount: number;
+  eligibleBacklogCount: number;
   staleCount: number;
   reason: string;
 }
@@ -244,8 +248,13 @@ export async function scoutDraftReviewSweep(opts: { now?: number } = {}): Promis
   if (staleSec <= 0) return results; // kill switch
   try {
     const scopes = await listBlenderMaintenanceScopes();
-    if (scopes.length === 0) return results;
+    if (scopes.length === 0) {
+      console.warn('[scout-draft-review] ALERT: no registered Blender scopes evaluated');
+      return results;
+    }
     const { sql } = getOrgPg();
+    const evaluatedWorkspaceCount = new Set(scopes.map(({ workspaceId }) => workspaceId)).size;
+    const evaluatedScopeCount = scopes.length;
     const now = opts.now ?? Date.now();
     const thresholdMs = staleSec * 1_000;
     const windowHours = Math.max(1, Math.round(staleSec / 3_600));
@@ -282,18 +291,39 @@ export async function scoutDraftReviewSweep(opts: { now?: number } = {}): Promis
           windowHours,
         });
         if (!claimed) {
-          results.push({ workspaceId, installSlug, outcome: 'skipped', staleCount: stale.length, reason: 'debounced' });
+          results.push({
+            workspaceId,
+            installSlug,
+            outcome: 'skipped',
+            evaluatedWorkspaceCount,
+            evaluatedScopeCount,
+            eligibleBacklogCount: candidates.length,
+            staleCount: stale.length,
+            reason: 'debounced',
+          });
           continue;
         }
 
         const queenOwner = await resolveMugOwner(sql, workspaceId, installSlug);
         await fireReviewWake(workspaceId, queenOwner, stale, staleSec, installSlug, now);
-        results.push({ workspaceId, installSlug, outcome: 'nudged', staleCount: stale.length, reason });
+        results.push({
+          workspaceId,
+          installSlug,
+          outcome: 'nudged',
+          evaluatedWorkspaceCount,
+          evaluatedScopeCount,
+          eligibleBacklogCount: candidates.length,
+          staleCount: stale.length,
+          reason,
+        });
       } catch (e) {
         results.push({
           workspaceId,
           installSlug,
           outcome: 'error',
+          evaluatedWorkspaceCount,
+          evaluatedScopeCount,
+          eligibleBacklogCount: 0,
           staleCount: 0,
           reason: e instanceof Error ? e.message : String(e),
         });

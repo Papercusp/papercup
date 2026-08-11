@@ -86,6 +86,10 @@ export interface OutcomeRefreshSweepResult {
   workspaceId: string;
   installSlug: string;
   outcome: 'refreshed' | 'error';
+  /** Coverage of the registry-backed Blender population evaluated by this tick. */
+  evaluatedWorkspaceCount: number;
+  evaluatedScopeCount: number;
+  eligibleBacklogCount: number;
   stalePendingCount: number;
   alerted: boolean;
   reason: string;
@@ -141,7 +145,12 @@ export async function scoutOutcomeRefreshSweep(
 
   try {
     const scopes = await (deps.listBlenderMaintenanceScopes ?? listBlenderMaintenanceScopes)();
-    if (scopes.length === 0) return results;
+    if (scopes.length === 0) {
+      console.warn('[scout-outcome-refresh] ALERT: no registered Blender scopes evaluated');
+      return results;
+    }
+    const evaluatedWorkspaceCount = new Set(scopes.map(({ workspaceId }) => workspaceId)).size;
+    const evaluatedScopeCount = scopes.length;
     const seenWorkspaces = new Set<string>();
     for (const { workspaceId, installSlug } of scopes) {
       if (seenWorkspaces.has(workspaceId)) continue;
@@ -193,6 +202,9 @@ export async function scoutOutcomeRefreshSweep(
           workspaceId,
           installSlug,
           outcome: 'refreshed',
+          evaluatedWorkspaceCount,
+          evaluatedScopeCount,
+          eligibleBacklogCount: stalePendingCount,
           stalePendingCount,
           alerted,
           reason:
@@ -205,6 +217,9 @@ export async function scoutOutcomeRefreshSweep(
           workspaceId,
           installSlug,
           outcome: 'error',
+          evaluatedWorkspaceCount,
+          evaluatedScopeCount,
+          eligibleBacklogCount: 0,
           stalePendingCount: 0,
           alerted: false,
           reason: e instanceof Error ? e.message : String(e),

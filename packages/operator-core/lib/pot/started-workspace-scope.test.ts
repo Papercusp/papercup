@@ -28,6 +28,7 @@ const h = vi.hoisted(() => ({
   // registry reports. anyPotPlacementStarted now intersects the started rows with
   // this, so a stale started-row for an UNREGISTERED slug can't pin the loop alive.
   registeredPots: [] as string[],
+  registeredProjects: [] as Array<{ slug: string; harness_kind?: string; ephemeral_foreign?: boolean }>,
 }));
 
 // A fake tagged-template SQL that reads/writes h.kv by statement text + bound key.
@@ -83,7 +84,7 @@ vi.mock('../workspace-brain-scope', async (importActual) => {
 // kind:'hive' project (the only field the intersection reads).
 vi.mock('../harness-registry', () => ({
   loadHarnessRegistry: vi.fn(async () => ({
-    projects: h.registeredPots.map((slug) => ({ slug, harness_kind: 'hive' })),
+    projects: h.registeredProjects,
   })),
   isEphemeralForeignProject: (p: { ephemeral_foreign?: boolean }) => p.ephemeral_foreign === true,
 }));
@@ -106,6 +107,7 @@ beforeEach(() => {
   h.kv.clear();
   h.upserts.length = 0;
   h.registeredPots = ['papercusp', 'pot-a', 'pot-b', 'pot-x', 'other-ws'];
+  h.registeredProjects = h.registeredPots.map((slug) => ({ slug, harness_kind: 'hive' }));
   h.backgroundWorkspaceIds.mockReset().mockReturnValue([WS]);
   h.isWorkspaceCoordinationOn.mockReset().mockResolvedValue(false);
   delete process.env.PAPERCUSP_POT_HOME_SLUG;
@@ -194,17 +196,11 @@ describe('listBlenderMaintenanceScopes — retained Blender population', () => {
 
   it('keeps workspace tags and excludes non-Hive and ephemeral registry entries', async () => {
     h.backgroundWorkspaceIds.mockReturnValue([WS, 'other-ws']);
-    const reg = await import('../harness-registry');
-    vi.mocked(reg.loadHarnessRegistry).mockImplementation(async (workspaceId?: string) => ({
-      projects:
-        workspaceId === WS
-          ? [
-              { slug: 'same-slug', harness_kind: 'hive' },
-              { slug: 'member-repo', harness_kind: 'coding' },
-              { slug: 'foreign', harness_kind: 'hive', ephemeral_foreign: true },
-            ]
-          : [{ slug: 'same-slug', harness_kind: 'hive' }],
-    }));
+    h.registeredProjects = [
+      { slug: 'same-slug', harness_kind: 'hive' },
+      { slug: 'member-repo', harness_kind: 'coding' },
+      { slug: 'foreign', harness_kind: 'hive', ephemeral_foreign: true },
+    ];
 
     expect(await listBlenderMaintenanceScopes()).toEqual([
       { workspaceId: WS, installSlug: 'same-slug' },
@@ -320,6 +316,7 @@ describe('anyPotPlacementStarted — the papercup-idle gate for pot:pause (WI-13
   // keeps running for the other started hives.
   it('true when another REGISTERED pot remains started → keep the workspace loop running', async () => {
     h.registeredPots = ['forms', 'sheets'];
+    h.registeredProjects = h.registeredPots.map((slug) => ({ slug, harness_kind: 'hive' }));
     h.kv.set(`hive_started:${WS}:forms`, 'true');
     h.kv.set(`hive_started:${WS}:sheets`, 'true');
     // Stopping `forms` — `sheets` is still started AND registered.
@@ -332,6 +329,7 @@ describe('anyPotPlacementStarted — the papercup-idle gate for pot:pause (WI-13
   // watchdog re-arms the wake ~30s later; the declare_wake paused-gate never trips).
   it('false when the only other started row is a STALE UNREGISTERED slug → idle the loop', async () => {
     h.registeredPots = ['forms']; // `sheets` was dissolved/never-registered
+    h.registeredProjects = h.registeredPots.map((slug) => ({ slug, harness_kind: 'hive' }));
     h.kv.set(`hive_started:${WS}:forms`, 'true');
     h.kv.set(`hive_started:${WS}:sheets`, 'true'); // stale leftover row
     // Stopping `forms` — `sheets` is started in the KV but is NOT a registered pot.
