@@ -8,6 +8,10 @@ import {
   buildIdMatchResults,
   classifySessionGroups,
   filterOwnerVisibleTurnHits,
+  ownerVisiblePage,
+  ownerVisibleCandidateCount,
+  OWNER_VISIBILITY_SEARCH_OVERFETCH,
+  OWNER_VISIBILITY_SEARCH_MAX_CANDIDATES,
   DEFAULT_FRESH_WINDOW_H,
   DEFAULT_HALF_LIFE_H,
   DEFAULT_WEIGHT,
@@ -645,5 +649,107 @@ describe('filterOwnerVisibleTurnHits', () => {
       }),
     ]);
     expect(kept).toHaveLength(1);
+  });
+});
+
+/**
+ * WI-37912 — the filter above must spend a CANDIDATE, not a result slot.
+ *
+ * The defect it fixes was an ORDERING one: the route cut to the page and then
+ * filtered, so every machine turn in the top-N was a permanently empty slot.
+ * Measured through the live route (18 queries, limit=30): a mean 9.8 of 30
+ * slots lost, and `Stop hook feedback` returned ZERO of 30.
+ *
+ * These are the two halves of the fix — refill what can be refilled, and SAY SO
+ * when it cannot be.
+ */
+describe('ownerVisiblePage', () => {
+  /** A machine-authored user turn: dropped by the filter. */
+  const machine = (turnIdx: number) =>
+    hit({ turnIdx, speaker: 'user', textHead: '⟦turn-origin:loop-fire nonce:095d0a31d74f617e⟧\n🔁 Loop wake' });
+  /** An owner turn: kept. */
+  const owner = (turnIdx: number) => hit({ turnIdx, speaker: 'user', textHead: `owner question ${turnIdx}` });
+
+  it('REFILLS the page from the pool instead of returning empty slots', () => {
+    /* The regression this pins, stated as the two orderings. A page-then-filter
+       cut of the first 4 yields 2 hits; filter-then-cut yields the full 4. */
+    const pool = [machine(1), owner(2), machine(3), owner(4), owner(5), owner(6), machine(7), owner(8)];
+    expect(filterOwnerVisibleTurnHits(pool.slice(0, 4))).toHaveLength(2); // the OLD order
+    const page = ownerVisiblePage(pool, 4, 8);
+    expect(page.hits.map((h) => h.turnIdx)).toEqual([2, 4, 5, 6]);
+  });
+
+  it('NEVER reorders — the surviving head keeps its rank order', () => {
+    /* Over-fetching is additive by construction: candidates arrive BEHIND the
+       existing page head (rerankPageHead scores only its first
+       RERANK_MAX_CANDIDATES whatever the limit), so a bigger pool can fill an
+       empty slot but must never demote a hit that was already on the page. */
+    const pool = [owner(1), machine(2), owner(3), owner(4)];
+    expect(ownerVisiblePage(pool, 3, 4).hits.map((h) => h.turnIdx)).toEqual([1, 3, 4]);
+    expect(ownerVisiblePage(pool.slice(0, 2), 3, 4).hits.map((h) => h.turnIdx)).toEqual([1]);
+  });
+
+  it('never exceeds the page size however deep the pool is', () => {
+    const pool = Array.from({ length: 40 }, (_, i) => owner(i));
+    expect(ownerVisiblePage(pool, 30, 90).hits).toHaveLength(30);
+  });
+
+  it('reports what it hid, as a TOTAL when the pool was not exhausted', () => {
+    /* budget 8, pool 5 → retrieval ran out before the budget did, so every
+       machine turn that exists for this query was retrieved and counted. */
+    const page = ownerVisiblePage([machine(1), owner(2), machine(3), owner(4), owner(5)], 30, 8);
+    expect(page.hidden).toEqual({ count: 2, truncatedByLimit: false });
+  });
+
+  it('marks the hidden count as a FLOOR when the candidate pool was saturated', () => {
+    /* The failure this marker exists to stop: a count taken over a capped fetch
+       is indistinguishable from a real total, so a client would render "2
+       hidden" for a query with hundreds. The marker travels WITH the count —
+       inside the same object — precisely so it cannot be read without it. */
+    const page = ownerVisiblePage([machine(1), owner(2), machine(3)], 30, 3);
+    expect(page.hidden).toEqual({ count: 2, truncatedByLimit: true });
+  });
+
+  it('hides nothing, and claims nothing, for an all-visible pool', () => {
+    const page = ownerVisiblePage([owner(1), owner(2)], 30, 90);
+    expect(page.hidden).toEqual({ count: 0, truncatedByLimit: false });
+  });
+
+  it('a 100%-machine pool yields an empty page that SAYS it is empty', () => {
+    /* `Stop hook feedback` — measured 30/30 dropped. No over-fetch factor fixes
+       this one, and that is not a sizing failure: the matches genuinely are
+       machine text. The page is honestly short and the count explains why. */
+    const page = ownerVisiblePage([machine(1), machine(2), machine(3)], 30, 3);
+    expect(page.hits).toEqual([]);
+    expect(page.hidden.count).toBe(3);
+    expect(page.hidden.truncatedByLimit).toBe(true);
+  });
+});
+
+describe('ownerVisibleCandidateCount', () => {
+  it('over-fetches the page so the filter spends candidates', () => {
+    expect(ownerVisibleCandidateCount(30)).toBe(30 * OWNER_VISIBILITY_SEARCH_OVERFETCH);
+    expect(ownerVisibleCandidateCount(10)).toBe(10 * OWNER_VISIBILITY_SEARCH_OVERFETCH);
+  });
+
+  it('NEVER under-fetches — an over-fetch that returns less than the page is a page-size bug', () => {
+    for (const limit of [1, 5, 30, 50, 200, 1000]) {
+      expect(ownerVisibleCandidateCount(limit)).toBeGreaterThanOrEqual(limit);
+    }
+  });
+
+  it('caps the pool, because the binding cost is per-candidate text hydration', () => {
+    expect(ownerVisibleCandidateCount(1000)).toBe(1000); // the floor above wins
+    expect(ownerVisibleCandidateCount(100)).toBe(OWNER_VISIBILITY_SEARCH_MAX_CANDIDATES);
+    expect(ownerVisibleCandidateCount(50)).toBeLessThanOrEqual(OWNER_VISIBILITY_SEARCH_MAX_CANDIDATES);
+  });
+
+  it('sizes the factor against the MEASURED drop rate, not a round number', () => {
+    /* Mean measured page loss was 32.8% and the median 25%; the factor has to
+       refill a page at that rate with margin. Pinned as the property, not the
+       literal, so the constant can be re-sized from a new measurement without
+       this test dictating it — but it cannot silently fall back to 1 (no
+       over-fetch at all), which is the regression. */
+    expect(OWNER_VISIBILITY_SEARCH_OVERFETCH).toBeGreaterThanOrEqual(2);
   });
 });
