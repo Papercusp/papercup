@@ -1794,6 +1794,17 @@ export const FLAGS = {
   // omitting "unchanged" content there risks an agent acting on stale
   // knowledge; see plan decision D-007 for the full reasoning.
   ORIENT_FULL_DELTA: "papercusp-orient-full-delta",
+  // fleet-deltas-leader-primitives-2026-07-10 P-004 / D-004 ruling 3: the
+  // turn-start ORIENTATION fold. Orientation's READ half rides the injection
+  // rail that already fires every turn, so an agent is oriented whether or not
+  // it issues a read — measured 2026-08-11, 119 of 378 working owners (31.5%)
+  // issued NO coordination read of any kind in 7d, and the mid-turn injection
+  // path's floor-seeding assumes a session-start read that those never perform
+  // (EI-20190140825808810). DEFAULT ON (alpha flags-default-on): the fold is
+  // additive, budget-capped, delta'd against a server-side cursor, and
+  // fail-soft — OFF ⇒ the endpoint returns exactly its pre-P-004 [control,
+  // memory] composition, byte-identical.
+  TURN_START_ORIENTATION: "papercusp-turn-start-orientation",
   // queen-bee-spawn-reclaim-relaunch-2026-06-22 (EI-85 restart-kills): the boot
   // spawn-admission reconcile RE-LAUNCHES a reclaimed queen/bee whose durable
   // work-item is non-terminal, instead of marking it `failed` and losing the work.
