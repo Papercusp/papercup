@@ -13,8 +13,8 @@
   here disagrees with the part manifest. That is the drift alarm: this file, the
   manifest and the rows are three artifacts derived from one CLAUDE.md snapshot,
   and regenerating any one of them alone silently desynchronises the set.
-  corpus-parts: 285
-  corpus-blocks: 250
+  corpus-parts: 286
+  corpus-blocks: 251
   source-sha256: 77afdc4a46a5af9d0b5e7f604c6e2e1e592d51bef791b59633d4f00d1af8db2b
 -->
 
@@ -447,6 +447,16 @@ Two mechanisms make this cheap in practice:
 - **When relaying a ruling over coord**, name the decision id (`<planSlug>#D-NNN`) rather than
   only paraphrasing it, so the recipient can re-read the authoritative body
   (`plans:get { slug, heading:'Decisions' }`) instead of trusting your summary.
+
+## Every plan ships with a graded acceptance rubric
+
+**Every plan ships with a GRADED acceptance rubric — authored AFTER implementation, before the plan is marked shipped** (acceptance-rubrics-on-every-plan-2026-08-11; flag `ACCEPTANCE_RUBRIC_COMPLETION_GATE`, default ON). `plans:set-plan-status → 'shipped'` (and its `done` alias) REFUSES without one. Once your implementation is verified:
+
+1. `rubrics:propose { kind:'acceptance', subjectPlan:'<plan-slug>', classRef:'plan-class-feature-ship'|'plan-class-bugfix'|'plan-class-migration'|'plan-class-investigation', criteria:[3–7 OUTCOME criteria tracing to the plan's goal + Decisions — never a restatement of the diff] }` — it activates immediately (no ratification) and stays hidden from the standard rubrics library reads (`kind` filter). An investigation-only plan may pass `criteria: []` with `classRef:'plan-class-investigation'`.
+2. A NON-implementer grades it: `scorecards:emit { rubricRef, ratings }` with concrete evidence per rating — grader ≠ rubric author; a self-grade never satisfies the gate.
+3. Ship. The acceptance rubric is auto-retired with its plan.
+
+Do NOT author the rubric at plan-creation time and do NOT maintain it during implementation — it does not exist until the work is done (owner-ruled: post-implementation authoring is better informed and wastes no tokens on drifted designs). Rubric-template plans and scheduled template instances are exempt.
 
 ## Branch discipline: the shared tree stays on `staging`; `main` is automation-only
 
@@ -1841,6 +1851,11 @@ so "green" can mean "nothing ran". To see what your change actually selects, ask
 ```bash
 node scripts/affected-tests.mjs --changed-paths scripts/lint-tsc.mjs,libs/flags/src/types.ts --print-affected
 ```
+
+The print-only probe emits `AFFECTED_WS\t<workspace>` for selected workspaces and
+`AFFECTED_GUARD\t<workspace>\t<script>` for repo-wide invariant guards attached by the
+same run. Guard lines may appear even when there are zero `AFFECTED_WS` lines; that is
+the intended fail-safe behavior for root-level changes.
 
 A git-based probe cannot answer that question on this tree: git-sync sweeps the WHOLE
 tree, so no real commit is ever scoped to just your paths, and `changedFiles()` also
