@@ -84,6 +84,46 @@ export const ROUTINE_FIRE_QUEUES = [routinesQueue.name, routinesCriticalQueue.na
 /** Hard ceiling on one routine fire — the dedup-ID release valve (exported for tests). */
 export const ROUTINE_FIRE_TIMEOUT_MS = 2 * 60 * 60_000;
 
+type BlenderSweepCoverageResult = {
+  workspaceId: string;
+  evaluatedWorkspaceCount: number;
+  evaluatedScopeCount: number;
+  eligibleBacklogCount: number;
+};
+
+/** Persist the retained Blender sweep's coverage alongside its DBOS output.
+ * An empty `results` array is otherwise indistinguishable from a healthy
+ * empty run, a throttle skip, or a retired-started-bit no-op. Signal counts
+ * are workspace-wide and repeated once per Hive scope, so that sweep gets a
+ * workspace de-duplication while the other watchdogs retain per-scope counts. */
+function summarizeBlenderSweepCoverage(
+  results: readonly BlenderSweepCoverageResult[],
+  opts: { dedupeWorkspace?: boolean } = {},
+): {
+  evaluatedWorkspaceCount: number;
+  evaluatedScopeCount: number;
+  eligibleBacklogCount: number;
+} {
+  const evaluatedWorkspaceCount = results[0]?.evaluatedWorkspaceCount ?? 0;
+  const evaluatedScopeCount = results[0]?.evaluatedScopeCount ?? 0;
+  if (!opts.dedupeWorkspace) {
+    return {
+      evaluatedWorkspaceCount,
+      evaluatedScopeCount,
+      eligibleBacklogCount: results.reduce((total, result) => total + result.eligibleBacklogCount, 0),
+    };
+  }
+  const byWorkspace = new Map<string, number>();
+  for (const result of results) {
+    if (!byWorkspace.has(result.workspaceId)) byWorkspace.set(result.workspaceId, result.eligibleBacklogCount);
+  }
+  return {
+    evaluatedWorkspaceCount,
+    evaluatedScopeCount,
+    eligibleBacklogCount: [...byWorkspace.values()].reduce((total, count) => total + count, 0),
+  };
+}
+
 /**
  * One durable fire of a routine: dispatch by target inside the routine's
  * workspace scope. A workflow (not just a step) so a crash mid-fire resumes; the
@@ -594,6 +634,15 @@ async function routinesTickImpl(): Promise<void> {
           console.warn(`[scout-draft-review] ${res.outcome}: ${res.installSlug} — ${res.reason}`);
         }
       }
+      const coverage = summarizeBlenderSweepCoverage(results);
+      return {
+        ranAtMs: Date.now(),
+        resultCount: results.length,
+        errorCount: results.filter((res) => res.outcome === 'error').length,
+        nudgedCount: results.filter((res) => res.outcome === 'nudged').length,
+        ...coverage,
+        results: results.slice(0, 25),
+      };
     },
     { name: 'scout-draft-review-sweep' },
   );
@@ -626,6 +675,7 @@ async function routinesTickImpl(): Promise<void> {
         resultCount: results.length,
         errorCount: results.filter((res) => res.outcome === 'error').length,
         nudgedCount: results.filter((res) => res.outcome === 'nudged').length,
+        ...summarizeBlenderSweepCoverage(results),
         config,
         results: results.slice(0, 25),
       };
@@ -651,6 +701,13 @@ async function routinesTickImpl(): Promise<void> {
           console.warn(`[signal-accumulator] error: ${res.installSlug} — ${res.reason}`);
         }
       }
+      return {
+        ranAtMs: Date.now(),
+        resultCount: results.length,
+        errorCount: results.filter((res) => res.outcome === 'error').length,
+        ...summarizeBlenderSweepCoverage(results, { dedupeWorkspace: true }),
+        results: results.slice(0, 25),
+      };
     },
     { name: 'scout-signal-accumulator-sweep' },
   );
@@ -701,6 +758,14 @@ async function routinesTickImpl(): Promise<void> {
           console.warn(`[scout-outcome-refresh] ${res.outcome}: ${res.workspaceId} — ${res.reason}`);
         }
       }
+      return {
+        ranAtMs: Date.now(),
+        resultCount: results.length,
+        errorCount: results.filter((res) => res.outcome === 'error').length,
+        alertedCount: results.filter((res) => res.alerted).length,
+        ...summarizeBlenderSweepCoverage(results),
+        results: results.slice(0, 25),
+      };
     },
     { name: 'scout-outcome-refresh-sweep' },
   );

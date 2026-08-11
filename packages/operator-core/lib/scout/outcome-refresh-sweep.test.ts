@@ -7,7 +7,10 @@
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
 
-vi.mock('../pot/started', () => ({ listBlenderMaintenanceScopes: vi.fn(async () => []) }));
+vi.mock('../pot/started', () => ({
+  listBlenderMaintenanceScopes: vi.fn(async () => []),
+  listBlenderMaintenanceWorkspaceIds: vi.fn(() => []),
+}));
 vi.mock('./routed-ledger', () => ({
   refreshScoutOutcomes: vi.fn(async () => ({ total: 0, byLens: {}, ranked: [] })),
   countStalePendingIdeas: vi.fn(async () => 0),

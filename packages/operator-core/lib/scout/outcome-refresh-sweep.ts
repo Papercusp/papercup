@@ -37,7 +37,10 @@
  * fail-soft throughout (a sweep must never fail the routines tick it rides),
  * env-tunable kill switches, injectable deps for DB-free unit tests.
  */
-import { listBlenderMaintenanceScopes } from '../pot/started';
+import {
+  listBlenderMaintenanceScopes,
+  listBlenderMaintenanceWorkspaceIds,
+} from '../pot/started';
 import { refreshScoutOutcomes, countStalePendingIdeas } from './routed-ledger';
 import { recentWatchdogFires, recordFire } from '../pot/watchdog';
 import { openEscalation } from '../agent-tools/coordination/escalations';
@@ -115,6 +118,7 @@ const SCOUT_OUTCOME_STALE_IDENTITY: AgentIdentity = {
 /** Injectable seams so the sweep's orchestration is testable without PG. */
 export interface OutcomeRefreshSweepDeps {
   listBlenderMaintenanceScopes?: typeof listBlenderMaintenanceScopes;
+  listBlenderMaintenanceWorkspaceIds?: typeof listBlenderMaintenanceWorkspaceIds;
   refreshScoutOutcomes?: typeof refreshScoutOutcomes;
   countStalePendingIdeas?: typeof countStalePendingIdeas;
   recentWatchdogFires?: typeof recentWatchdogFires;
@@ -146,7 +150,41 @@ export async function scoutOutcomeRefreshSweep(
   try {
     const scopes = await (deps.listBlenderMaintenanceScopes ?? listBlenderMaintenanceScopes)();
     if (scopes.length === 0) {
-      console.warn('[scout-outcome-refresh] ALERT: no registered Blender scopes evaluated');
+      // A retired started-bit population can be empty while the retained
+      // Blender ledger still has stale work. Probe workspace-wide pending rows
+      // so an empty scope list is an alert only when it hides eligible work.
+      let stalePendingCount = 0;
+      if (thresholdSec > 0) {
+        const workspaceIds =
+          typeof (deps.listBlenderMaintenanceWorkspaceIds ?? listBlenderMaintenanceWorkspaceIds) === 'function'
+            ? (deps.listBlenderMaintenanceWorkspaceIds ?? listBlenderMaintenanceWorkspaceIds)()
+            : [];
+        for (const workspaceId of workspaceIds) {
+          stalePendingCount += await (deps.countStalePendingIdeas ?? countStalePendingIdeas)({
+            workspaceId,
+            staleBeforeMs: now - thresholdSec * 1_000,
+          });
+        }
+      }
+      if (stalePendingCount > 0) {
+        const reason =
+          `${stalePendingCount} eligible stale-pending routed idea(s) found, but no registered ` +
+          'Blender scopes were evaluated';
+        console.warn(`[scout-outcome-refresh] ALERT: ${reason}`);
+        return [
+          {
+            workspaceId: '*',
+            installSlug: '*',
+            outcome: 'error',
+            evaluatedWorkspaceCount: 0,
+            evaluatedScopeCount: 0,
+            eligibleBacklogCount: stalePendingCount,
+            stalePendingCount,
+            alerted: false,
+            reason,
+          },
+        ];
+      }
       return results;
     }
     const evaluatedWorkspaceCount = new Set(scopes.map(({ workspaceId }) => workspaceId)).size;

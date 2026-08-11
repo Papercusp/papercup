@@ -40,7 +40,10 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
-import { listBlenderMaintenanceScopes } from '../pot/started';
+import {
+  listBlenderMaintenanceScopes,
+  listBlenderMaintenanceWorkspaceIds,
+} from '../pot/started';
 import { resolveMugOwner } from '../pot/placement-watchdog';
 import { deliverScoutNudge } from './nudge-recipient';
 import { claimWatchdogFire } from '../pot/watchdog';
@@ -113,6 +116,10 @@ interface DraftRow {
   updated_at_ms: string | number | null;
 }
 
+interface DraftBacklogCountRow {
+  c: number | string | null;
+}
+
 /** Read this hive's scout-routed DRAFT candidates (no time filter — the pure decider
  *  applies the threshold). Scout-origin is read from the plan's own frontmatter
  *  (`origin: scout`), which both scout rails write. `planWorkspaceId` MUST be the hive's
@@ -148,6 +155,21 @@ export async function readScoutDraftCandidates(
   }));
 }
 
+/** Count stale Scout-originated drafts across a workspace when no registered
+ * Hive scope exists. This is a coverage probe only; normal processing still
+ * uses the Hive-home slug-aware reader above. */
+async function countStaleScoutDraftBacklog(sql: Sql, workspaceId: string, staleBeforeMs: number): Promise<number> {
+  const rows = await sql<DraftBacklogCountRow[]>`
+    SELECT count(*)::int AS c
+      FROM harness_shared.harness_plans
+     WHERE workspace_id = ${workspaceId}
+       AND status = 'draft'
+       AND archived = false
+       AND updated_at <= to_timestamp(${staleBeforeMs} / 1000.0)
+       AND content LIKE ${'%\norigin: scout\n%'}`;
+  return Math.max(0, Number(rows[0]?.c ?? 0));
+}
+
 export interface ScoutDraftReviewResult {
   workspaceId: string;
   installSlug: string;
@@ -155,6 +177,7 @@ export interface ScoutDraftReviewResult {
   /** Coverage of the registry-backed Blender population evaluated by this tick. */
   evaluatedWorkspaceCount: number;
   evaluatedScopeCount: number;
+  /** Number of stale drafts eligible for this backstop's action. */
   eligibleBacklogCount: number;
   staleCount: number;
   reason: string;
@@ -249,7 +272,36 @@ export async function scoutDraftReviewSweep(opts: { now?: number } = {}): Promis
   try {
     const scopes = await listBlenderMaintenanceScopes();
     if (scopes.length === 0) {
-      console.warn('[scout-draft-review] ALERT: no registered Blender scopes evaluated');
+      const workspaceIds =
+        typeof listBlenderMaintenanceWorkspaceIds === 'function'
+          ? listBlenderMaintenanceWorkspaceIds()
+          : [];
+      if (workspaceIds.length === 0) return results;
+      const { sql } = getOrgPg();
+      const now = opts.now ?? Date.now();
+      const staleBeforeMs = now - staleSec * 1_000;
+      let eligibleBacklogCount = 0;
+      for (const workspaceId of workspaceIds) {
+        eligibleBacklogCount += await countStaleScoutDraftBacklog(sql, workspaceId, staleBeforeMs);
+      }
+      if (eligibleBacklogCount > 0) {
+        const reason =
+          `${eligibleBacklogCount} eligible stale Scout draft(s) found in ${workspaceIds.length} workspace(s), ` +
+          'but no registered Blender scopes were evaluated';
+        console.warn(`[scout-draft-review] ALERT: ${reason}`);
+        return [
+          {
+            workspaceId: '*',
+            installSlug: '*',
+            outcome: 'error',
+            evaluatedWorkspaceCount: 0,
+            evaluatedScopeCount: 0,
+            eligibleBacklogCount,
+            staleCount: eligibleBacklogCount,
+            reason,
+          },
+        ];
+      }
       return results;
     }
     const { sql } = getOrgPg();
@@ -297,7 +349,7 @@ export async function scoutDraftReviewSweep(opts: { now?: number } = {}): Promis
             outcome: 'skipped',
             evaluatedWorkspaceCount,
             evaluatedScopeCount,
-            eligibleBacklogCount: candidates.length,
+            eligibleBacklogCount: stale.length,
             staleCount: stale.length,
             reason: 'debounced',
           });
@@ -312,7 +364,7 @@ export async function scoutDraftReviewSweep(opts: { now?: number } = {}): Promis
           outcome: 'nudged',
           evaluatedWorkspaceCount,
           evaluatedScopeCount,
-          eligibleBacklogCount: candidates.length,
+          eligibleBacklogCount: stale.length,
           staleCount: stale.length,
           reason,
         });

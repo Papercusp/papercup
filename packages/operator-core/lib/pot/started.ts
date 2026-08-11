@@ -264,6 +264,15 @@ export async function listStartedPots(): Promise<Array<{ workspaceId: string; in
   return readStartedRows();
 }
 
+/** The workspace population that a retained Blender maintenance sweep must
+ * inspect, even when the registry currently has no Hive rows. This is kept
+ * separate from {@link listBlenderMaintenanceScopes} so a zero-scope sweep
+ * can still query for eligible backlog and raise a coverage alarm instead of
+ * treating an empty result as a healthy no-op. */
+export function listBlenderMaintenanceWorkspaceIds(): string[] {
+  return [...new Set(backgroundWorkspaceIds().filter((workspaceId) => workspaceId && workspaceId !== '*'))];
+}
+
 /**
  * The retained Blender/Scout maintenance population: every registered Hive in
  * every workspace this background process is responsible for. This deliberately
@@ -280,8 +289,7 @@ export async function listBlenderMaintenanceScopes(): Promise<
 > {
   const scopes: Array<{ workspaceId: string; installSlug: string }> = [];
   const seen = new Set<string>();
-  for (const workspaceId of backgroundWorkspaceIds()) {
-    if (!workspaceId || workspaceId === '*') continue;
+  for (const workspaceId of listBlenderMaintenanceWorkspaceIds()) {
     const registry = await loadHarnessRegistry(workspaceId);
     for (const project of registry.projects) {
       if (project.harness_kind !== 'hive' || isEphemeralForeignProject(project)) continue;

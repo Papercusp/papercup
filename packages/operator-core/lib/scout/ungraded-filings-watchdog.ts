@@ -39,7 +39,10 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
-import { listBlenderMaintenanceScopes } from '../pot/started';
+import {
+  listBlenderMaintenanceScopes,
+  listBlenderMaintenanceWorkspaceIds,
+} from '../pot/started';
 import { resolveMugOwner } from '../pot/placement-watchdog';
 import { deliverScoutNudge } from './nudge-recipient';
 import { claimWatchdogFire, recentWatchdogFires } from '../pot/watchdog';
@@ -148,6 +151,10 @@ interface UngradedRow {
   routed_at: string | number | null;
 }
 
+interface UngradedBacklogCountRow {
+  c: number | string | null;
+}
+
 /** Read this pot's ungraded su-ideate candidates (epoch-floored in SQL for
  *  cheapness; the pure decider re-applies it plus the threshold + cap). Unlike the
  *  draft watchdog's harness_plans read there is no workspace subtlety here: the
@@ -179,6 +186,26 @@ export async function readUngradedSuFilings(
   }));
 }
 
+/** Count stale su-ideate filings across a workspace when no registered Hive
+ * scope exists. This is a coverage probe only; normal processing remains
+ * harness-slug scoped so each nudge keeps the correct ledger identity. */
+async function countStaleUngradedBacklog(
+  sql: Sql,
+  workspaceId: string,
+  staleBeforeMs: number,
+): Promise<number> {
+  const rows = await sql<UngradedBacklogCountRow[]>`
+    SELECT count(*)::int AS c
+      FROM harness_shared.scout_routed_ideas
+     WHERE workspace_id = ${workspaceId}
+       AND origin = 'su-ideate'
+       AND human_grade IS NULL
+       AND (outcome IS NULL OR outcome = 'pending')
+       AND routed_at >= ${SU_IDEATE_UNGRADED_EPOCH_MS}
+       AND routed_at <= ${staleBeforeMs}`;
+  return Math.max(0, Number(rows[0]?.c ?? 0));
+}
+
 export interface SuUngradedSweepResult {
   workspaceId: string;
   installSlug: string;
@@ -186,6 +213,7 @@ export interface SuUngradedSweepResult {
   /** Coverage of the registry-backed Blender population evaluated by this tick. */
   evaluatedWorkspaceCount: number;
   evaluatedScopeCount: number;
+  /** Number of stale filings eligible for this backstop's action. */
   eligibleBacklogCount: number;
   staleCount: number;
   reason: string;
@@ -253,7 +281,36 @@ export async function suIdeateUngradedSweep(opts: { now?: number } = {}): Promis
   try {
     const scopes = await listBlenderMaintenanceScopes();
     if (scopes.length === 0) {
-      console.warn('[su-ideate-ungraded] ALERT: no registered Blender scopes evaluated');
+      const workspaceIds =
+        typeof listBlenderMaintenanceWorkspaceIds === 'function'
+          ? listBlenderMaintenanceWorkspaceIds()
+          : [];
+      if (workspaceIds.length === 0) return results;
+      const { sql } = getOrgPg();
+      const now = opts.now ?? Date.now();
+      const staleBeforeMs = now - staleSec * 1_000;
+      let eligibleBacklogCount = 0;
+      for (const workspaceId of workspaceIds) {
+        eligibleBacklogCount += await countStaleUngradedBacklog(sql, workspaceId, staleBeforeMs);
+      }
+      if (eligibleBacklogCount > 0) {
+        const reason =
+          `${eligibleBacklogCount} eligible stale su-ideate filing(s) found in ${workspaceIds.length} workspace(s), ` +
+          'but no registered Blender scopes were evaluated';
+        console.warn(`[su-ideate-ungraded] ALERT: ${reason}`);
+        return [
+          {
+            workspaceId: '*',
+            installSlug: '*',
+            outcome: 'error',
+            evaluatedWorkspaceCount: 0,
+            evaluatedScopeCount: 0,
+            eligibleBacklogCount,
+            staleCount: eligibleBacklogCount,
+            reason,
+          },
+        ];
+      }
       return results;
     }
     const { sql } = getOrgPg();
@@ -279,7 +336,7 @@ export async function suIdeateUngradedSweep(opts: { now?: number } = {}): Promis
             outcome: 'skipped',
             evaluatedWorkspaceCount,
             evaluatedScopeCount,
-            eligibleBacklogCount: candidates.length,
+            eligibleBacklogCount: stale.length,
             staleCount: stale.length,
             reason: 'debounced',
           });
@@ -299,7 +356,7 @@ export async function suIdeateUngradedSweep(opts: { now?: number } = {}): Promis
             outcome: 'skipped',
             evaluatedWorkspaceCount,
             evaluatedScopeCount,
-            eligibleBacklogCount: candidates.length,
+            eligibleBacklogCount: stale.length,
             staleCount: stale.length,
             reason: 'debounced (raced or backed off)',
           });
@@ -313,7 +370,7 @@ export async function suIdeateUngradedSweep(opts: { now?: number } = {}): Promis
           outcome: 'nudged',
           evaluatedWorkspaceCount,
           evaluatedScopeCount,
-          eligibleBacklogCount: candidates.length,
+          eligibleBacklogCount: stale.length,
           staleCount: stale.length,
           reason,
         });

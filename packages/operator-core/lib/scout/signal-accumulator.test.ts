@@ -10,7 +10,10 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: () => Promise.resolve([]) }) }));
-vi.mock('../pot/started', () => ({ listBlenderMaintenanceScopes: vi.fn(async () => []) }));
+vi.mock('../pot/started', () => ({
+  listBlenderMaintenanceScopes: vi.fn(async () => []),
+  listBlenderMaintenanceWorkspaceIds: vi.fn(() => []),
+}));
 vi.mock('./tick-ledger', () => ({ readLastRanTickAtMs: vi.fn(async () => null) }));
 
 import {
@@ -133,7 +136,7 @@ describe('scoutSignalAccumulatorSweep — fail-soft shell', () => {
     expect(vi.mocked(listBlenderMaintenanceScopes)).not.toHaveBeenCalled();
   });
 
-  it('no registered Blender scopes ⇒ no results, and the throttle withholds the next tick', async () => {
+  it('no registered Blender scopes and no eligible signal ⇒ quiet, and the throttle withholds the next tick', async () => {
     const { listBlenderMaintenanceScopes } = await import('../pot/started');
     vi.mocked(listBlenderMaintenanceScopes).mockResolvedValue([]);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -142,7 +145,7 @@ describe('scoutSignalAccumulatorSweep — fail-soft shell', () => {
     // 30s later (a routinesTick) the throttle withholds — no second scope listing.
     await expect(scoutSignalAccumulatorSweep({ now: NOW + 30_000 })).resolves.toEqual([]);
     expect(vi.mocked(listBlenderMaintenanceScopes)).toHaveBeenCalledTimes(1);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('no registered Blender scopes'));
+    expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
   });
 

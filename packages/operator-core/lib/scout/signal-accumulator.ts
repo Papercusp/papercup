@@ -48,7 +48,7 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
-import { listBlenderMaintenanceScopes } from '../pot/started';
+import { listBlenderMaintenanceScopes, listBlenderMaintenanceWorkspaceIds } from '../pot/started';
 import { readLastRanTickAtMs } from './tick-ledger';
 
 // ── lanes ─────────────────────────────────────────────────────────────────────
@@ -356,7 +356,42 @@ export async function scoutSignalAccumulatorSweep(
   try {
     const scopes = await listBlenderMaintenanceScopes();
     if (scopes.length === 0) {
-      console.warn('[signal-accumulator] ALERT: no registered Blender scopes evaluated');
+      // A registry outage/empty registry must not turn retained signal into a
+      // silent success. Probe the same workspace population without requiring a
+      // Hive row, and emit a durable error-shaped result only when work exists.
+      const workspaceIds =
+        typeof listBlenderMaintenanceWorkspaceIds === 'function'
+          ? listBlenderMaintenanceWorkspaceIds()
+          : [];
+      if (workspaceIds.length === 0) return results;
+      const { sql } = getOrgPg();
+      let eligibleBacklogCount = 0;
+      let score = 0;
+      for (const workspaceId of workspaceIds) {
+        const lastRanAtMs = await readLastRanTickAtMs({ installSlugs: [], workspaceId }).catch(() => null);
+        const watermark = new Date(effectiveWatermarkMs(lastRanAtMs, now, lookbackSec));
+        const counts = await readLaneCounts(sql, workspaceId, watermark);
+        eligibleBacklogCount += counts.reduce((total, count) => total + count.newCount, 0);
+        score += weightedSignalScore(Object.fromEntries(counts.map((c) => [c.lane, c.newCount])));
+      }
+      if (eligibleBacklogCount > 0) {
+        const reason =
+          `${eligibleBacklogCount} eligible signal(s) found in ${workspaceIds.length} workspace(s), ` +
+          'but no registered Blender scopes were evaluated';
+        console.warn(`[signal-accumulator] ALERT: ${reason}`);
+        return [
+          {
+            workspaceId: '*',
+            installSlug: '*',
+            outcome: 'error',
+            evaluatedWorkspaceCount: 0,
+            evaluatedScopeCount: 0,
+            eligibleBacklogCount,
+            score,
+            reason,
+          },
+        ];
+      }
       return results;
     }
     const { sql } = getOrgPg();

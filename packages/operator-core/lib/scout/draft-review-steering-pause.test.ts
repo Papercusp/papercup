@@ -33,9 +33,18 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const HOUR = 3_600_000;
 
-const { listBlenderMaintenanceScopes, wakeMug, resolveMugOwner, claimWatchdogFire, routineStorageSlug, draftRows } =
+const {
+  listBlenderMaintenanceScopes,
+  listBlenderMaintenanceWorkspaceIds,
+  wakeMug,
+  resolveMugOwner,
+  claimWatchdogFire,
+  routineStorageSlug,
+  draftRows,
+} =
   vi.hoisted(() => ({
     listBlenderMaintenanceScopes: vi.fn(),
+    listBlenderMaintenanceWorkspaceIds: vi.fn(() => []),
     wakeMug: vi.fn().mockResolvedValue(undefined),
     resolveMugOwner: vi.fn(),
     claimWatchdogFire: vi.fn(),
@@ -46,7 +55,7 @@ const { listBlenderMaintenanceScopes, wakeMug, resolveMugOwner, claimWatchdogFir
 vi.mock('@papercusp/db-org', () => ({
   getOrgPg: () => ({ sql: () => Promise.resolve(draftRows.current) }),
 }));
-vi.mock('../pot/started', () => ({ listBlenderMaintenanceScopes }));
+vi.mock('../pot/started', () => ({ listBlenderMaintenanceScopes, listBlenderMaintenanceWorkspaceIds }));
 vi.mock('../pot/placement-watchdog', () => ({ resolveMugOwner, wakeMug }));
 vi.mock('../pot/watchdog', () => ({ claimWatchdogFire }));
 vi.mock('../pot-membership', () => ({ routineStorageSlug }));
@@ -123,13 +132,13 @@ describe('scout-draft-review vs owner steering pauseNewWork (P-013)', () => {
  * are what make the "fires while paused" assertions meaningful.
  */
 describe('scout-draft-review suppressors that DO apply (controls)', () => {
-  it('does not wake a pot that is not started (pot:pause clears hive_started)', async () => {
+  it('does not wake when no registered scope has eligible backlog', async () => {
     listBlenderMaintenanceScopes.mockResolvedValue([]);
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const results = await scoutDraftReviewSweep();
     expect(wakeMug).not.toHaveBeenCalled();
     expect(results).toEqual([]);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('no registered Blender scopes'));
+    expect(warn).not.toHaveBeenCalled();
     warn.mockRestore();
   });
 
