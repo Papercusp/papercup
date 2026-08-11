@@ -185,13 +185,30 @@ export function expandOccurrences(
         const d = new Date(iso);
         if (Number.isFinite(d.getTime())) set.exdate(d);
       }
+      // `limit` MUST be enforced by rrule's stopping iterator, never by slicing the
+      // result: `between()` materializes EVERY occurrence in the range before it
+      // returns, so a post-hoc `.slice(0, limit)` bounds the ARRAY while leaving the
+      // WORK unbounded — cost stays linear in the range, not in `limit`. Returning
+      // false halts expansion at the source (CallbackIterResult.add: true pushes and
+      // continues, false stops WITHOUT pushing, so `len < limit` yields exactly
+      // `limit`). Measured on the live FREQ=MINUTELY;INTERVAL=15 schedule: a 50y
+      // window cost 10.2s sliced vs 4.9ms bounded. That 48-92s main-thread block is
+      // what the event-loop sentinel SIGKILLed papercup-bg-host for, 181 times, and
+      // bg-host is the git-sync/routines primary — so this starved the whole fleet's
+      // commit path (WI-37716).
+      const stopAtLimit = (_d: Date, len: number): boolean => len < limit;
       const tzid = normTzid(cfg.tzid);
       if (tzid) {
         // Expand in the zone: bounds IN (real→floating), each occurrence OUT (floating→real).
-        const occ = set.between(realToFloating(rangeStart, tzid), realToFloating(rangeEnd, tzid), true);
-        return occ.slice(0, limit).map((d) => floatingToReal(d, tzid));
+        const occ = set.between(
+          realToFloating(rangeStart, tzid),
+          realToFloating(rangeEnd, tzid),
+          true,
+          stopAtLimit,
+        );
+        return occ.map((d) => floatingToReal(d, tzid));
       }
-      return set.between(rangeStart, rangeEnd, true).slice(0, limit); // inclusive bounds
+      return set.between(rangeStart, rangeEnd, true, stopAtLimit); // inclusive bounds
     } catch {
       return [];
     }

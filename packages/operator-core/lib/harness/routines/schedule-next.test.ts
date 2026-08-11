@@ -5,6 +5,7 @@
  * asserting exact wall-clock instants, so they pass regardless of the runner tz.
  */
 import { describe, it, expect } from 'vitest';
+import { createRequire } from 'node:module';
 import { computeNextFire, computeNextFireFromRrule, expandOccurrences, validateRrule, frequencyWarning, type ScheduleTrigger } from './schedule-next';
 
 const DAY = 24 * 60 * 60 * 1000;
@@ -186,6 +187,94 @@ describe('expandOccurrences (calendar-window expansion)', () => {
     const end = new Date('2026-06-20T00:00:00.000Z'); // ~14400 minutes
     const occ = expandOccurrences(cfg, start, end, 50);
     expect(occ).toHaveLength(50);
+  });
+});
+
+/**
+ * WI-37716 — `limit` must bound the WORK, not just the returned array.
+ *
+ * The test directly above (`caps ... at limit`) asserts only `toHaveLength`, which
+ * passes whether expansion stops at `limit` or materializes the entire range and
+ * then slices. That is how the defect shipped: `between()` expanded every
+ * occurrence in the window before `.slice(0, limit)` threw them away, so cost was
+ * linear in the RANGE. On the live `FREQ=MINUTELY;INTERVAL=15` schedule that blocked
+ * bg-host's main thread 48-92s; the event-loop sentinel SIGKILLed the host 181 times,
+ * and bg-host is the git-sync/routines primary, so the fleet's commit path stalled
+ * (main fell 141 commits behind staging).
+ *
+ * These assert a COST property, so they need an instrument that can actually fail —
+ * hence the resident pre-fix reference below. Without that calibration a green result
+ * would be indistinguishable from "the machine is fast today".
+ */
+describe('expandOccurrences — cost is bounded by `limit`, not by range width (WI-37716)', () => {
+  // The real schedule that triggered the outage: 96 fires/day, no dtstart, no expiry.
+  // With `dtstart` absent rrule anchors the series at construction time ("now"), so a
+  // window must extend FORWARD of now to contain anything — hence `start = now` here,
+  // and a separately anchored fixture below for the date-exact correctness assertions.
+  const LIVE: ScheduleTrigger = { rrule: 'FREQ=MINUTELY;INTERVAL=15' };
+  const ANCHORED: ScheduleTrigger = { ...LIVE, dtstart: '2026-01-01T00:00:00.000Z' };
+  const LIMIT = 500;
+  const start = new Date();
+  const wideEnd = new Date(start.getTime() + Math.round(20 * 365.25 * DAY)); // 20 years
+  // 20y unbounded measured ~3800ms, bounded ~4ms. A 400ms line sits ~10x under the
+  // broken path and ~100x over the fixed one, so load noise cannot flip the verdict.
+  const BUDGET_MS = 400;
+
+  const elapsedMs = (fn: () => unknown): number => {
+    const t0 = performance.now();
+    fn();
+    return performance.now() - t0;
+  };
+
+  // NEGATIVE CONTROL — the pre-fix shape, resident on purpose (never wired into
+  // src). It is what the instrument must report as SLOW; if this ever comes in
+  // under budget the guard below has stopped proving anything and the threshold,
+  // not the code, is what needs revisiting.
+  const expandSlicingAfterExpansion = (cfg: ScheduleTrigger, s: Date, e: Date, limit: number): Date[] => {
+    const { RRule, RRuleSet } = createRequire(import.meta.url)('rrule') as typeof import('rrule');
+    const opts = RRule.parseString(cfg.rrule!);
+    // Mirror the real dtstart handling — a control that anchors the series
+    // differently from the implementation is not a control.
+    const dt = cfg.dtstart ? new Date(cfg.dtstart) : undefined;
+    if (dt && Number.isFinite(dt.getTime())) opts.dtstart = dt;
+    const set = new RRuleSet();
+    set.rrule(new RRule(opts));
+    return set.between(s, e, true).slice(0, limit);
+  };
+
+  it('CALIBRATION: the pre-fix slice-after-expansion shape blows the budget on the same window', () => {
+    const ms = elapsedMs(() => expandSlicingAfterExpansion(LIVE, start, wideEnd, LIMIT));
+    expect(ms).toBeGreaterThan(BUDGET_MS);
+  }, 60_000);
+
+  it('bounded expansion stays under budget across a 20-year window', () => {
+    const ms = elapsedMs(() => expandOccurrences(LIVE, start, wideEnd, LIMIT));
+    expect(ms).toBeLessThan(BUDGET_MS);
+  }, 60_000);
+
+  it('the tzid branch is bounded too (it is a separate expansion path)', () => {
+    const zoned: ScheduleTrigger = { ...LIVE, tzid: 'America/New_York' };
+    const ms = elapsedMs(() => expandOccurrences(zoned, start, wideEnd, LIMIT));
+    expect(ms).toBeLessThan(BUDGET_MS);
+  }, 60_000);
+
+  it('stopping early returns exactly `limit` occurrences, identical to slicing', () => {
+    // Correctness: the iterator must not skip, reorder, or drop the boundary item —
+    // over a NARROW window both shapes are cheap, so they are directly comparable.
+    const anchor = new Date(ANCHORED.dtstart!);
+    const narrowEnd = new Date(anchor.getTime() + 30 * DAY);
+    const bounded = expandOccurrences(ANCHORED, anchor, narrowEnd, LIMIT);
+    const sliced = expandSlicingAfterExpansion(ANCHORED, anchor, narrowEnd, LIMIT);
+    expect(bounded).toHaveLength(LIMIT);
+    expect(bounded.map((d) => d.toISOString())).toEqual(sliced.map((d) => d.toISOString()));
+  });
+
+  it('returns everything when the range holds fewer occurrences than `limit`', () => {
+    const anchor = new Date(ANCHORED.dtstart!);
+    const shortEnd = new Date(anchor.getTime() + 2 * 60 * 60 * 1000); // 2h => 9 fires inclusive
+    const occ = expandOccurrences(ANCHORED, anchor, shortEnd, LIMIT);
+    expect(occ.length).toBeGreaterThan(0);
+    expect(occ.length).toBeLessThan(LIMIT);
   });
 });
 
