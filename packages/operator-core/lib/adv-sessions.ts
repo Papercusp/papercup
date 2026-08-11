@@ -1216,6 +1216,19 @@ export async function updateAdvSessionPortStatus(
  * per launch, so collisions are not expected; the guard is belt-and-suspenders).
  * adv-sessions-live-roster P-002.
  */
+/**
+ * The ACTIVE roster tier's adv rows, keyed by coord owner.
+ *
+ * ⚠ `launch_argv` MUST stay in this SELECT (WI-6510). It is declared OPTIONAL on
+ * `AdvSessionDbRow` ("only the pending-launch query SELECTs it"), so dropping it
+ * from the column list does NOT fail typecheck: `mapAdvSessionRow` maps the
+ * missing column to `null`, the roster's `adv?.launchArgv ?? []` turns that into
+ * an empty argv, and every live agent silently reports "no model recorded" while
+ * the DB row holds the full spec. Verified live 2026-08-11: the chat MODEL pill
+ * vanished entirely for a session launched with `--model=sonnet[1m]:high`, with
+ * unit tests and typecheck both green — the fixtures set the field by hand, so
+ * only a live drive could see it.
+ */
 export async function advSessionsByCoordOwner(limit = 500): Promise<Map<string, AdvSessionRow>> {
   const out = new Map<string, AdvSessionRow>();
   try {
@@ -1223,6 +1236,8 @@ export async function advSessionsByCoordOwner(limit = 500): Promise<Map<string, 
     const rows = await sql<
       Array<{
         id: number;
+        /** See the docblock: omitting this maps to null, not a type error. */
+        launch_argv?: string[] | null;
         workspace_id: string;
         plan_slug: string | null;
         agent: string | null;
@@ -1243,7 +1258,8 @@ export async function advSessionsByCoordOwner(limit = 500): Promise<Map<string, 
       }>
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, launch_argv,
+             started_at, ended_at, exit_code, ended_by
         FROM harness_shared.adv_sessions
        WHERE coord_owner_id IS NOT NULL
        ORDER BY started_at DESC
