@@ -25,6 +25,7 @@ import {
   type FleetSignal,
 } from './salience-policy';
 import { gatherFleetSignals, type FleetReaders } from './fleet-signals';
+import { projectOwnerFacing } from './owner-facing-text';
 import type { SurfacedEntry, OpenRecoverableEntry } from './curation-log';
 import type { ReportBlock, ReportItem } from '@papercusp/chat-protocol';
 
@@ -121,7 +122,16 @@ const KIND_STATUS: Record<string, string> = {
 /** The signal's rendered BODY — everything after the marker and before the
  *  drill-in ref (label + harness + requested + title + detail + aging). Shared
  *  by the text line (formatSignalLine) and the card row (signalToReportItem) so
- *  the two renditions never drift and no field is dropped (D-006). */
+ *  the two renditions never drift and no field is dropped (D-006).
+ *
+ *  ⚠ This is also the OWNER-FACING projection seam (WI-37946). Producers compose
+ *  `title`/`detail` as a precise ENGINEERING record — full agent UUIDs,
+ *  `system:*` actor names, repo-relative source paths — and are right to. The
+ *  owner sees the same string as a notification, so `projectOwnerFacing` runs
+ *  once here, where BOTH renditions pass through, rather than in either renderer
+ *  (which would drift) or in each producer (which would cost the record).
+ *  The drill-in `ref` is deliberately NOT projected — the raw ids stay one click
+ *  away, so curation still never hides (D-005). */
 function signalBody(c: ClassifiedSignal, now: () => number = Date.now): string {
   const { signal } = c;
   const label = KIND_LABEL[signal.kind] ?? signal.kind;
@@ -131,7 +141,7 @@ function signalBody(c: ClassifiedSignal, now: () => number = Date.now): string {
   if (signal.detail) body += ` · ${signal.detail}`;
   const aging = agingAnnotation(signal, now());
   if (aging) body += ` · ${aging}`;
-  return body;
+  return projectOwnerFacing(body);
 }
 
 /** Format ONE always-surface signal into a calm line, with the drill-in ref
