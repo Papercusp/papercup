@@ -533,7 +533,7 @@ export default defineTool({
     if (onlyWorkspaceScope) {
       try {
         const home = await resolveHomePotSlug(workspaceId);
-        harness = resolvePotHomeSlug(home, undefined);
+        if (home) harness = resolvePotHomeSlug(home, undefined);
       } catch {
         // Home-pot discovery is a convenience for workspace-scoped callers. If
         // the registry is temporarily unreadable, preserve the older env/ctx

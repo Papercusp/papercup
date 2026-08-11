@@ -277,8 +277,8 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
 
   it('EI-20185529721601434: resolves a workspace-scoped wildcard session to its formal home pot', async () => {
     const { resolvePotHomeSlug } = await import('../../pot/wake');
-    vi.mocked(resolvePotHomeSlug).mockReturnValue(null as never);
     homePotM.mockResolvedValueOnce('workspace-home');
+    vi.mocked(resolvePotHomeSlug).mockReturnValueOnce('workspace-home' as never);
     const out = await tool.handler(
       { intervalSec: 120, goal: 'g' } as never,
       { harnessSlug: '*', workspaceId: 'ws-1' } as never,
@@ -299,6 +299,9 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
   // (which skips '*' at each level) rather than `??`-chaining ctx.harnessSlug in first.
   it('EI-7734: routes ctx.harnessSlug through resolvePotHomeSlug\'s \'*\'-skip instead of short-circuiting a raw ?? chain on it', async () => {
     const { resolvePotHomeSlug } = await import('../../pot/wake');
+    // Exercise the synchronous fallback path explicitly; normal workspace-scoped
+    // calls resolve the formal home pot first (EI-20185529721601434).
+    homePotM.mockResolvedValueOnce(null);
     vi.mocked(resolvePotHomeSlug).mockReturnValueOnce('papercusp' as never);
     const out = await tool.handler({ intervalSec: 120, goal: 'g' } as never, { harnessSlug: '*' } as never) as Out;
     const b = body(out);
