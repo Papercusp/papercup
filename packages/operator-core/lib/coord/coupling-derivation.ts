@@ -129,6 +129,52 @@ function fileSet(v: unknown): Set<string> {
  * over hand-built fixtures cannot distinguish "field is wrong" from "field is
  * real but always empty" — both pass. Only a check against the PRODUCER can.
  */
+/**
+ * THE BINDING INPUT OF THE `awaits` LEG — how many peers this run could actually
+ * have matched, which is ZERO whenever the caller is not itself awaiting anything.
+ *
+ * ── WHY THIS EXISTS (EI-20088486454213771) ──────────────────────────────────
+ *
+ * The census used to report this leg's `inputs` as the PEER ROW COUNT, while the
+ * computation is decided by a SELF-side field before the peer loop begins:
+ * `myAwait` empty ⇒ zero edges however many peers there are. So a short-circuited
+ * run published "armed, 1023 inputs, 0 edges", which reads unambiguously as *we
+ * compared 1023 candidates and rejected them all* — a predicate-bug signature.
+ * That exact number sent three separate readings hunting a phantom bug in correct
+ * code before each was refuted by reading the writer.
+ *
+ * The verdict vocabulary in `check-derived-signal-firings.mjs` could ALREADY tell
+ * the two cases apart — `starved` (consulted, input empty: nothing was evaluated)
+ * versus `armed-silent` (had input, emitted nothing: a true negative). It was
+ * simply being fed a number that made a starved run look armed-silent. So the
+ * repair is to count the input that BINDS, not to add a verdict.
+ *
+ * GENERAL RULE THIS INSTANTIATES: a metric that counts the candidates a
+ * computation WOULD have examined, without recording whether it examined any,
+ * cannot distinguish a true negative from a skipped evaluation — and a reader
+ * resolves that ambiguity toward the alarming reading every time.
+ */
+export function awaitsBindingInputs(selfOwnerId: string, rows: readonly unknown[]): number {
+  const self = cleanId(selfOwnerId);
+  if (!self) return 0;
+  let myAwait = '';
+  const peers = new Set<string>();
+  for (const raw of rows) {
+    const row = (raw ?? {}) as DerivationRow;
+    const id = cleanId(row.ownerId);
+    if (!id) continue;
+    if (id === self) {
+      // First self row wins, matching the derivation's own `selfRow ??=`.
+      if (!myAwait) myAwait = cleanId(row.awaitingEventKey);
+      continue;
+    }
+    peers.add(id);
+  }
+  // The self-side precondition decides the run BEFORE any peer is examined, so an
+  // empty key means nothing was measured — not that every peer was rejected.
+  return myAwait ? peers.size : 0;
+}
+
 export function deriveCouplingsFromRoster(
   selfOwnerId: string,
   rows: readonly unknown[],
