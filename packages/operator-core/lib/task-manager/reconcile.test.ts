@@ -47,6 +47,17 @@ describe('scopeUnitOf', () => {
     expect(scopeUnitOf(proc({ pid: 1 }))).toBe('pc-aaa111.scope');
   });
 
+  it('extracts the nearest managed scope ancestor from a nested child cgroup', () => {
+    expect(
+      scopeUnitOf(
+        proc({
+          pid: 1,
+          cgroupPath: `${OUR_SLICE}/papercusp-bash-job.slice/pc-aaa111.scope/papercusp-deb-build-123.scope`,
+        }),
+      ),
+    ).toBe('pc-aaa111.scope');
+  });
+
   it('is null for a process that is merely inside our slice', () => {
     expect(scopeUnitOf(proc({ pid: 1, cgroupPath: `${OUR_SLICE}/papercusp-bash-job.slice` }))).toBeNull();
   });
@@ -61,6 +72,27 @@ describe('reconcile — alive matching', () => {
     );
     expect(r.alive).toHaveLength(1);
     expect(r.alive[0]).toMatchObject({ taskId: 'aaa111', pid: 100, pidsSeen: 3, matchedBy: 'scope' });
+    expect(r.stranded).toHaveLength(0);
+    expect(r.unaccounted).toHaveLength(0);
+  });
+
+  it('keeps descendant cgroups attached to their managed parent scope', () => {
+    const r = reconcile(
+      [row({ taskId: 'aaa111', scopeUnit: 'pc-aaa111.scope' })],
+      [
+        proc({ pid: 100 }),
+        proc({
+          pid: 231,
+          cgroupPath: `${OUR_SLICE}/papercusp-bash-job.slice/pc-aaa111.scope/papercusp-deb-build-123.scope`,
+        }),
+        proc({
+          pid: 232,
+          cgroupPath: `${OUR_SLICE}/papercusp-bash-job.slice/pc-aaa111.scope/papercusp-deb-build-123.scope/worker`,
+        }),
+      ],
+      { now: NOW },
+    );
+    expect(r.alive[0]).toMatchObject({ taskId: 'aaa111', pidsSeen: 3, matchedBy: 'scope' });
     expect(r.stranded).toHaveLength(0);
     expect(r.unaccounted).toHaveLength(0);
   });
@@ -182,6 +214,16 @@ describe('reconcile — residue (the no-escape signal)', () => {
       pids: [900, 901],
     });
     expect(r.foreign).toHaveLength(0);
+  });
+
+  it('attributes unmanaged residue in a nested child cgroup to its managed parent scope', () => {
+    const nested = proc({
+      pid: 902,
+      cgroupPath: `${OUR_SLICE}/papercusp-bash-job.slice/pc-aaa111.scope/papercusp-deb-build-123.scope`,
+    });
+    const r = reconcile([], [nested], { now: NOW });
+    expect(r.unaccounted).toHaveLength(1);
+    expect(r.unaccounted[0]).toMatchObject({ scopeUnit: 'pc-aaa111.scope', pids: [902] });
   });
 
   it('flags a bypass that is in our slice but NOT in any pc- scope', () => {

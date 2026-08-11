@@ -43,6 +43,9 @@ const spec = { class: 'bash-job' as const, title: 't', argv: ['echo'], launchedB
 beforeEach(() => {
   vi.clearAllMocks();
   scopeSupportKnown.mockReturnValue({ ok: true });
+  registerTask.mockResolvedValue({});
+  markSpawned.mockResolvedValue({});
+  closeTask.mockResolvedValue({});
 });
 
 describe('with the task manager OFF', () => {
@@ -167,6 +170,23 @@ describe('with the task manager ON', () => {
     completeSyncEnrolment(e, spec as never, 4242);
     await vi.waitFor(() => expect(registerTask).toHaveBeenCalledTimes(1));
     await vi.waitFor(() => expect(markSpawned).toHaveBeenCalledTimes(1));
+  });
+
+  it('logs a bounded diagnostic when fire-and-forget enrolment fails, while remaining fail-open', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    registerTask.mockRejectedValueOnce(new Error('database unavailable'));
+    const e = beginSyncEnrolment({ class: 'bash-job' });
+
+    completeSyncEnrolment(e, spec as never, 4242);
+
+    await vi.waitFor(() => expect(warn).toHaveBeenCalledTimes(1));
+    expect(warn).toHaveBeenCalledWith(
+      expect.stringContaining(
+        `[task-manager] sync enrollment failed for task ${e.taskId}: database unavailable`,
+      ),
+    );
+    expect(markSpawned).not.toHaveBeenCalled();
+    warn.mockRestore();
   });
 
   it('closes the row on finish', () => {

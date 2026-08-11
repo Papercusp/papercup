@@ -185,15 +185,21 @@ function pushAbsent(
 
 const DEFAULT_GRACE_MS = 60_000;
 
-function lastSegment(cgroupPath: string): string {
-  const parts = cgroupPath.split('/').filter(Boolean);
-  return parts[parts.length - 1] ?? '';
-}
-
-/** The scope unit a scanned process sits in, if it is one of ours. */
+/**
+ * The nearest managed scope a scanned process sits in, if it is one of ours.
+ *
+ * A task may create child cgroups for its own cleanup or resource accounting.
+ * The kernel reports the leaf path, so inspecting only the last segment turns
+ * every such child into apparent residue even though a `pc-*.scope` ancestor
+ * still owns it. Search leaf-to-root so the nearest managed ancestor wins.
+ */
 export function scopeUnitOf(proc: ScannedProcess): string | null {
-  const seg = lastSegment(proc.cgroupPath);
-  return taskIdFromScopeUnit(seg) ? seg : null;
+  const parts = proc.cgroupPath.split('/').filter(Boolean);
+  for (let i = parts.length - 1; i >= 0; i -= 1) {
+    const segment = parts[i]!;
+    if (taskIdFromScopeUnit(segment)) return segment;
+  }
+  return null;
 }
 
 function groupResidue(procs: ScannedProcess[]): ResidueGroup[] {

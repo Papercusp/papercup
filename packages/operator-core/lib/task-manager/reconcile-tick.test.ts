@@ -200,25 +200,23 @@ describe('reconcileTick — happy path', () => {
     expect(notify).not.toHaveBeenCalled();
   });
 
-  it('distinguishes a never-registered process from a scope that OUTLIVED its row (WI-37509)', async () => {
-    // These are two different faults needing two different investigations. Reporting
-    // both as "no managedSpawn registered" sent every reader off to audit spawn sites
-    // for an un-enrolled call, which is not where the survivors came from — and is why
-    // a permanently-firing fleet alarm went undiagnosed. A `pc-<taskId>.scope` name can
-    // only have been minted BY managedSpawn, so the scope unit is a free discriminator.
+  it('distinguishes an unmanaged cgroup from a managed scope with no live row (WI-37509)', async () => {
+    // A managed scope name proves provenance, not whether its fire-and-forget
+    // ledger insert ever succeeded. The notification must stick to present-tense
+    // evidence instead of inventing registration history from the scope name.
     const sent: { summary: string }[] = [];
     await reconcileTick({
       listLive: async () => [],
       scan: () =>
         scanResult([
-          // Genuinely un-enrolled: nothing of ours ever named this cgroup.
+          // No managed task scope owns this cgroup.
           proc({
             pid: 99,
             cgroupPath: `${OURS}/papercusp-bash-job.slice`,
             processIdentity: 'linux:b:99',
             cmdline: 'rogue',
           }),
-          // Registered by managedSpawn, then its row was closed underneath it.
+          // Managed provenance, but no live ledger row in this scan.
           proc({
             pid: 100,
             cgroupPath: `${OURS}/pc-ddd444.scope`,
@@ -233,8 +231,8 @@ describe('reconcileTick — happy path', () => {
     });
 
     expect(sent).toHaveLength(1);
-    expect(sent[0]!.summary).toMatch(/1 that no managedSpawn registered/);
-    expect(sent[0]!.summary).toMatch(/1 whose scope OUTLIVED its ledger row/);
+    expect(sent[0]!.summary).toMatch(/1 outside any managed task scope/);
+    expect(sent[0]!.summary).toMatch(/1 in managed scope\(s\) with no live ledger row/);
   });
 
   it('keeps a closed scope attached to its ORIGINAL task id rather than forking a phantom', async () => {

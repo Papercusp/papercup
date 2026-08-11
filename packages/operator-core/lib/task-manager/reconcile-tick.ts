@@ -262,19 +262,19 @@ async function maybeNotify(
   const parts: string[] = [];
   if (ctx.degraded) parts.push(`scan DEGRADED — ${ctx.degradedReason}`);
   if (ctx.summary.unaccounted > 0) {
-    // WI-37509: these are two different faults with two different investigations, and
-    // reporting both as "no managedSpawn registered" sent every reader to audit spawn
-    // sites for an un-enrolled call — which is not where the survivors came from. A
-    // `pc-<taskId>.scope` name can ONLY have been minted by managedSpawn, so the scope
-    // unit is a free, local discriminator: it parses ⇒ the task WAS registered and its
-    // row was closed while the payload kept running.
-    const orphanedScopes = ctx.result.unaccounted.filter(
+    // A `pc-<taskId>.scope` proves managed provenance, but not ledger history:
+    // synchronous spawn seams mint the scope before their fire-and-forget insert.
+    // Describe only what this scan proves — whether residue is under a managed
+    // scope and whether that scope currently has a live ledger row.
+    const managedScopesWithoutLiveRow = ctx.result.unaccounted.filter(
       (g) => g.scopeUnit && taskIdFromScopeUnit(g.scopeUnit),
     ).length;
-    const neverRegistered = ctx.summary.unaccounted - orphanedScopes;
+    const outsideManagedScope = ctx.summary.unaccounted - managedScopesWithoutLiveRow;
     const why: string[] = [];
-    if (neverRegistered > 0) why.push(`${neverRegistered} that no managedSpawn registered`);
-    if (orphanedScopes > 0) why.push(`${orphanedScopes} whose scope OUTLIVED its ledger row`);
+    if (outsideManagedScope > 0) why.push(`${outsideManagedScope} outside any managed task scope`);
+    if (managedScopesWithoutLiveRow > 0) {
+      why.push(`${managedScopesWithoutLiveRow} in managed scope(s) with no live ledger row`);
+    }
     parts.push(
       `${ctx.summary.unaccounted} unaccounted cgroup(s) holding ${ctx.summary.unaccountedPids} process(es) — ` +
         `${why.join('; ')}`,

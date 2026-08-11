@@ -17,8 +17,9 @@
  * The failure mode is deliberately one-directional: if the ledger write fails or
  * lags, the job still runs and the reconciler still SEES it (it is inside our
  * cgroup slice), where it surfaces as `unaccounted` — visible, attributed late,
- * never lost. The reverse — a job that cannot start because the ledger is down —
- * would be the task manager causing the outages it exists to diagnose.
+ * never lost. The write failure is also logged at this seam so the later residue
+ * has an attributable cause. The reverse — a job that cannot start because the
+ * ledger is down — would be the task manager causing the outages it diagnoses.
  */
 
 import { readProcessIdentity } from '../process-identity';
@@ -166,10 +167,15 @@ export function completeSyncEnrolment(
       confined: enrolment.confined,
       unconfinedReason: enrolment.unconfinedReason,
     });
-  })().catch(() => {
-    // Swallowed on purpose — see the header. A lost enrolment degrades to an
-    // `unaccounted` row on the next reconcile, which is exactly the alarm that
-    // classification exists to raise.
+  })().catch((error: unknown) => {
+    // Fail open — see the header — but never fail silently. The reconciler can
+    // identify the scope later; this line preserves the causal error that made
+    // the live process unaccounted in the first place.
+    const reason = error instanceof Error ? error.message : String(error);
+    console.warn(
+      `[task-manager] sync enrollment failed for task ${enrolment.taskId}: ${reason.slice(0, 500)} — ` +
+        'process continues unledgered and will surface as unaccounted',
+    );
   });
 }
 
