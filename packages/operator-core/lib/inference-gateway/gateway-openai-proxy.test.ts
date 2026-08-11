@@ -402,6 +402,100 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
   });
 });
 
+describe('proxyOpenAi — health and self-heal control-plane parity', () => {
+  it('surfaces Codex admission/health in live config, includes ChatGPT egress, and readmits a paused Codex account', async () => {
+    openaiUpstream = await startUpstream(ok);
+    const codexPool = createFailoverPool([
+      { ...codexAcct('cdx-1'), egress: { proxyUrl: 'http://127.0.0.1:19001' } },
+      codexAcct('cdx-2'),
+    ]);
+    codexPool.onExhausted('cdx-1', Date.now() + 60_000);
+    gw = createInferenceGateway({
+      accountId: 'claude-acct',
+      upstreamBase: openaiUpstream.base,
+      openaiUpstreamBase: openaiUpstream.base,
+      codexPool,
+      token: async () => 'claude-tok',
+      governorFor: () => new RateLimitGovernor({ maxConcurrent: 20 }),
+      proactiveEgressProbeMs: 0,
+      selfHeal: { enabled: false },
+    });
+    port = await gw.listen(0);
+
+    const before = gw.stats();
+    expect(before.codexHealthyAccounts).toBe(1);
+    expect(before.egressProxyHealth).toMatchObject({ configured: true, totalProxyEntries: 1, reachableProxyEntries: 1 });
+    expect(before.edgeThrottleByAccount).toHaveProperty('cdx-1');
+
+    const config = (await (await ask('/admin/config')).json()) as {
+      codexAdmission?: { maxConcurrent: number };
+      codexAimd?: { cap: number };
+      codexHealthyAccounts?: number;
+    };
+    expect(config.codexAdmission?.maxConcurrent).toBeGreaterThan(0);
+    expect(config.codexAimd?.cap).toBeGreaterThan(0);
+    expect(config.codexHealthyAccounts).toBe(1);
+
+    const readmit = await ask('/admin/readmit?provider=codex&account=cdx-1', { method: 'POST' });
+    expect(readmit.status).toBe(200);
+    expect(await readmit.json()).toMatchObject({ ok: true, provider: 'codex', readmitted: ['cdx-1'], healthyAccounts: 2 });
+    expect(gw.stats().codexHealthyAccounts).toBe(2);
+  });
+
+  it('tracks and reclaims a wedged Codex slot against the Codex cap without waiting for Claude saturation', async () => {
+    let attempts = 0;
+    let firstUpstreamStarted!: () => void;
+    const upstreamStarted = new Promise<void>((resolve) => { firstUpstreamStarted = resolve; });
+    await bootCodex(
+      () => { /* fetchImpl below is the upstream seam */ },
+      [codexAcct('cdx-solo')],
+      {
+        codexConcurrency: 1,
+        concurrency: 8,
+        selfHeal: { enabled: true, freezeMs: 40, pollMs: 10 },
+        requestCeilingMs: 5_000,
+        upstreamHeadersTimeoutMs: 5_000,
+        fetchImpl: (async (_url: RequestInfo | URL, init?: RequestInit) => {
+          attempts++;
+          if (attempts > 1) {
+            return new Response(JSON.stringify({ ok: true, attempt: attempts }), {
+              status: 200,
+              headers: { 'content-type': 'application/json' },
+            });
+          }
+          firstUpstreamStarted();
+          return await new Promise<Response>((_resolve, reject) => {
+            const signal = init?.signal as AbortSignal | undefined;
+            const abort = () => reject(new Error('first Codex upstream aborted'));
+            if (signal?.aborted) abort();
+            else signal?.addEventListener('abort', abort, { once: true });
+          });
+        }) as typeof fetch,
+      },
+    );
+
+    const wedged = postResponses({ model: 'gpt-x', input: 'hold', stream: true }).catch((e) => e);
+    await upstreamStarted;
+    expect(gw.stats()).toMatchObject({
+      inFlight: 1,
+      inFlightTracked: 1,
+      admission: { running: 0, maxConcurrent: 8 },
+      codexAdmission: { running: 1, maxConcurrent: 1 },
+    });
+
+    const queued = postResponses({ model: 'gpt-x', input: 'must be released', stream: true });
+    const served = await queued;
+    expect(served.status).toBe(200);
+    expect(await served.json()).toMatchObject({ ok: true, attempt: 2 });
+    await wedged;
+    await vi.waitFor(() => {
+      expect(gw.stats().selfHealReclaims).toBeGreaterThanOrEqual(1);
+      expect(gw.stats().inFlight).toBe(0);
+      expect(gw.stats().inFlightTracked).toBe(0);
+    });
+  });
+});
+
 describe('proxyOpenAi — route isolation from the Claude proxy', () => {
   it('/v1/responses hits the OpenAI upstream with codex creds; /v1/messages hits the Claude upstream with claude creds', async () => {
     openaiUpstream = await startUpstream((_req, res) => {

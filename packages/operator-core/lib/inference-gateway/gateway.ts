@@ -1807,6 +1807,34 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const entries = egressEntries(account);
     return proxyEgressDisabled ? entries.filter((e) => !e.proxyUrl) : entries;
   };
+  /** All credential pools that share this gateway's transport/health plane. Keep the pool objects
+   *  distinct (a deployment may intentionally reuse one pool for two provider adapters), and keep
+   *  account ids distinct so shared observability never double-counts a credential. */
+  const providerPools = (): AccountPool[] => {
+    const out: AccountPool[] = [];
+    for (const candidate of [pool, deps.codexPool, codexCliPool]) {
+      if (candidate && !out.includes(candidate)) out.push(candidate);
+    }
+    return out;
+  };
+  const providerAccounts = (claudeFallback: ActiveAccount): ActiveAccount[] => {
+    const byId = new Map<string, ActiveAccount>();
+    for (const providerPool of providerPools()) {
+      const entries = providerPool.entries?.()
+        ?? (providerPool.peek ? [providerPool.peek()] : providerPool === pool ? [claudeFallback] : []);
+      for (const account of entries) byId.set(account.accountId, account);
+    }
+    return [...byId.values()];
+  };
+  const readmitProviderAccount = (accountId: string): void => {
+    for (const providerPool of providerPools()) {
+      const entries = providerPool.entries?.();
+      const belongs = entries
+        ? entries.some((entry) => entry.accountId === accountId)
+        : providerPool.peek?.().accountId === accountId || providerPool === pool;
+      if (belongs) providerPool.readmit?.(accountId);
+    }
+  };
   /**
    * EI-18791887279744938 (defect B) — pool-wide egress-PROXY reachability. Deliberately computed from the
    * SAME `ipCooldownUntil` map `pickEgress` reads, so this can never diverge from what routing actually
@@ -1819,7 +1847,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const now = Date.now();
     let totalProxyEntries = 0;
     let reachableProxyEntries = 0;
-    for (const account of pool.entries?.() ?? [fallback]) {
+    for (const account of providerAccounts(fallback)) {
       for (const entry of effectiveEgressEntries(account)) {
         if (!entry.proxyUrl) continue;
         totalProxyEntries++;
@@ -1923,7 +1951,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               egressReopenCount.delete(account.accountId);
               egressLastOpenAt.delete(account.accountId);
               gov?.liftTransportPause(egressPauseUntil.get(account.accountId) ?? pausedUntil); // C3: lift the LIVE pause (an escalated reopen extends it past the captured value); no-op if a real 429 superseded it (undefined when the PROACTIVE prober opened the circuit — it never penalized a governor)
-              pool.readmit?.(account.accountId); // rejoin the round-robin
+              readmitProviderAccount(account.accountId); // rejoin the owning provider pool's round-robin
               egressPauseUntil.delete(account.accountId);
               readmitted = true;
               log('warn', `inference-gateway: egress probe for '${account.accountId}' RECOVERED (exit ${probe.exitIp}) after ${probeSuccessStreak} stable probes — readmitted`);
@@ -1960,7 +1988,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
 
   // PROACTIVE EGRESS PROBING (gateway-rayobyte-hardening P-002): the reactive circuit above only opens
   // AFTER two live requests have burned on a dead proxy (each costing a caller a transport error / stall
-  // absorb). This background loop probes each pool account's PROXY egress while it is IDLE — an account
+  // absorb). This background loop probes every Claude, bearer-Codex, and ChatGPT-subscription account's
+  // PROXY egress while it is IDLE — an account
   // that served real traffic within the last tick already proved its route (`lastEgressOkAt`), and an
   // account whose circuit is already open is the half-open prober's job. Two consecutive proactive
   // failures open the egress circuit exactly like the reactive path (pause + half-open recovery probe),
@@ -1972,8 +2001,9 @@ export function createInferenceGateway(deps: GatewayDeps) {
   let proactiveProbeLastTickAt = 0;
   let proactiveProbeOpens = 0;
   async function proactiveEgressProbeTick(): Promise<void> {
-    const entries = pool.entries?.();
-    if (!entries?.length) return;
+    const claudeFallback = pool.peek ? pool.peek() : pool.active();
+    const entries = providerAccounts(claudeFallback);
+    if (!entries.length) return;
     proactiveProbeLastTickAt = Date.now();
     await Promise.allSettled(
       entries.map(async (account) => {
@@ -2010,7 +2040,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     );
   }
   const proactiveProbeHandle =
-    proactiveEgressProbeMs > 0 && pool.entries
+    proactiveEgressProbeMs > 0 && providerPools().some((providerPool) => !!providerPool.entries)
       ? managedSetInterval('inference-gateway:proactive-egress-probe', proactiveEgressProbeMs, proactiveEgressProbeTick, {
           category: 'health-probe',
         })
@@ -2361,11 +2391,12 @@ export function createInferenceGateway(deps: GatewayDeps) {
     };
   }
 
-  // Self-heal in-flight registry (EI-2086): every request currently holding an admission slot, keyed by
+  // Self-heal in-flight registry (EI-2086): every Claude or Codex request currently holding an admission slot, keyed by
   // a per-request id, carrying its start time + stream flag + an abort hook (the same force-terminate
   // path as the hard-ceiling backstop). The sweeper reclaims the oldest stuck slot from here.
   interface InFlightEntry {
     id: number;
+    provider: 'claude' | 'codex';
     startedAt: number;
     isStream: boolean;
     reclaimed: boolean; // set when the self-heal valve aborts it → the finally skips the drain-clock bump
@@ -2373,10 +2404,10 @@ export function createInferenceGateway(deps: GatewayDeps) {
   }
   const inFlightReg = new Map<number, InFlightEntry>();
   let reqSeq = 0;
-  // The TRUE drain signal: epoch ms of the last NATURAL completion (a real upstream settle, NOT a
-  // self-heal abort). `msSinceLastDrain` = now - lastDrainAt is what the valve keys on, so a wedge we
-  // are actively reclaiming stays "stalled" until a request genuinely completes or saturation eases.
-  let lastDrainAt = Date.now();
+  // Per-provider TRUE drain signals: epoch ms of the last NATURAL completion (a real upstream settle,
+  // NOT a self-heal abort). Keeping the clocks separate prevents a busy healthy provider from masking
+  // a wedge in the other provider's independently capped admission queue.
+  const lastDrainAt: Record<'claude' | 'codex', number> = { claude: Date.now(), codex: Date.now() };
 
   function stats(): GatewayStats {
     // Reflect the active account's opus bucket (the fleet's class) for the headline unified window.
@@ -2425,7 +2456,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       ? { engaged: smoothRpm, byAccount: smoothingByAccount }
       : undefined;
     const edgeThrottleByAccount: NonNullable<GatewayStats['edgeThrottleByAccount']> = {};
-    for (const account of pool.entries?.() ?? [active]) {
+    for (const account of providerAccounts(active)) {
       const entries = effectiveEgressEntries(account);
       const cooled = entries.filter((entry) => (ipCooldownUntil.get(egressCacheKey(account.accountId, entry)) ?? 0) > now);
       const cooldownUntil = Math.max(
@@ -2447,8 +2478,8 @@ export function createInferenceGateway(deps: GatewayDeps) {
       totalRequests,
       // P-002: the live breakpoint-layout measurement (see recordCachePolicy).
       cachePolicy: { enabled: cachePolicyEnabled, toolsBreakpoint: cacheToolsBreakpointEnabled, splitBoundary: cacheSplitBoundaryEnabled, ...cachePolicyStats },
-      inFlight: admission.running,
-      queueDepth: admission.queued,
+      inFlight: admission.running + codexAdmission.running,
+      queueDepth: admission.queued + codexAdmission.queued,
       healthyAccounts,
       // EI-19303809952284205: the durable side-paths' health. Computed fresh on every read (pure), so
       // /healthz, /stats and /admin/stats can never disagree about whether the gateway still has a DB.
@@ -3187,6 +3218,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const reqId = ++reqSeq;
     inFlightReg.set(reqId, {
       id: reqId,
+      provider: 'claude',
       startedAt: Date.now(),
       isStream,
       reclaimed: false,
@@ -4167,7 +4199,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         // A NATURAL completion (not a self-heal abort) refreshes the drain clock — proof the gateway is
         // draining, which keeps the valve dormant. A reclaimed request deliberately does NOT, so an
         // actively-reclaimed wedge stays "stalled" and the next tick frees another slot.
-        if (!entry.reclaimed) lastDrainAt = Date.now();
+        if (!entry.reclaimed) lastDrainAt.claude = Date.now();
       }
       release();
     }
@@ -5283,7 +5315,38 @@ export function createInferenceGateway(deps: GatewayDeps) {
     const providerId = providerForGatewayRequest(url, req.headers, providerAdapters, isCodexCliAccountId).id;
     const handler = providerId === 'codex' ? proxyOpenAi : proxy;
     const admissionQueue = providerId === 'codex' ? codexQueue : queue;
-    admissionQueue.run(pri, () => handler(req, res, url), tier !== undefined ? { tier } : undefined).catch((e) => {
+    // Claude registers itself after parsing its request and acquiring its per-account governor. Codex has
+    // no equivalent inner registration point, so wrap the whole admitted handler here. The shared self-heal
+    // valve can now reclaim a wedged ChatGPT OAuth/bearer/CLI request instead of seeing an untracked held slot.
+    const runHandler = providerId === 'codex'
+      ? async () => {
+          const reqId = ++reqSeq;
+          inFlightReg.set(reqId, {
+            id: reqId,
+            provider: 'codex',
+            startedAt: Date.now(),
+            isStream: url.startsWith('/v1/responses'),
+            reclaimed: false,
+            abort: () => {
+              // Destroying either side triggers proxyOpenAi's existing request-aborted/response-close
+              // listeners, which abort the current upstream fetch. Do not attach an Error here: an
+              // IncomingMessage with no error listener would turn a recovery action into an uncaught event.
+              try { req.destroy(); } catch { /* already torn down */ }
+              try { res.destroy(); } catch { /* already torn down */ }
+            },
+          });
+          try {
+            await handler(req, res, url);
+          } finally {
+            const entry = inFlightReg.get(reqId);
+            if (entry) {
+              inFlightReg.delete(reqId);
+              if (!entry.reclaimed) lastDrainAt.codex = Date.now();
+            }
+          }
+        }
+      : () => handler(req, res, url);
+    admissionQueue.run(pri, runHandler, tier !== undefined ? { tier } : undefined).catch((e) => {
       // Load-shed (queue at maxQueued): a retryable 429 + retry-after, NOT a crash — this is the
       // backpressure that keeps the gateway responsive + self-recovering under a sustained throttle
       // instead of growing an unbounded backlog until it wedges.
@@ -5298,7 +5361,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
           sendJson(
             res,
             429,
-            { type: 'error', error: { type: 'rate_limit_error', message: `inference-gateway: backlog full (${queue.snapshot().queued} waiting); shedding load, retry shortly` }, gateway: true },
+            { type: 'error', error: { type: 'rate_limit_error', message: `inference-gateway: backlog full (${admissionQueue.snapshot().queued} waiting); shedding load, retry shortly` }, gateway: true },
             { 'retry-after': String(LOADSHED_RETRY_AFTER_SEC), connection: 'close' },
           );
         }
@@ -5333,20 +5396,39 @@ export function createInferenceGateway(deps: GatewayDeps) {
   if (selfHealEnabled) {
     selfHealTimer = setInterval(() => {
       try {
-        // Read queue.snapshot() directly (NOT stats(), which advances the pool round-robin cursor).
-        const admission = queue.snapshot();
-        const running = admission.running; // held Claude admission slots (the queue's own counter)
+        // Read both queue snapshots directly (NOT stats(), which performs broader health work).
+        const claudeAdmission = queue.snapshot();
+        const codexAdmission = codexQueue.snapshot();
+        const now = Date.now();
+        const providerStates = [
+          { provider: 'claude' as const, admission: claudeAdmission },
+          { provider: 'codex' as const, admission: codexAdmission },
+        ];
+        // Evaluate each provider against its OWN cap and drain clock. Aggregating caps would hide a wedged
+        // four-slot Codex queue behind a healthy 24-slot Claude queue; sharing one drain clock would let
+        // active Claude completions indefinitely mask a frozen ChatGPT stream.
+        const reclaimable = providerStates
+          .map((state) => ({
+            ...state,
+            decision: evaluateSelfHeal(
+              {
+                inFlight: state.admission.running,
+                queueDepth: state.admission.queued,
+                maxConcurrent: state.admission.maxConcurrent,
+                msSinceLastDrain: now - lastDrainAt[state.provider],
+              },
+              selfHealFreezeMs,
+            ),
+          }))
+          .filter((state) => state.decision.reclaim)
+          .sort((a, b) => b.admission.queued - a.admission.queued);
+        const running = claudeAdmission.running + codexAdmission.running;
+        const maxConcurrent = claudeAdmission.maxConcurrent + codexAdmission.maxConcurrent;
         const tracked = inFlightReg.size; // requests registered live in the self-heal registry
-        const decision = evaluateSelfHeal(
-          {
-            inFlight: running,
-            queueDepth: admission.queued,
-            maxConcurrent: admission.maxConcurrent,
-            msSinceLastDrain: Date.now() - lastDrainAt,
-          },
-          selfHealFreezeMs,
-        );
-        const target = decision.reclaim ? pickReclaimTarget([...inFlightReg.values()]) : null;
+        const selected = reclaimable[0];
+        const target = selected
+          ? pickReclaimTarget([...inFlightReg.values()].filter((entry) => entry.provider === selected.provider))
+          : null;
 
         // ── P-005/W3 slot-leak RECURRENCE GUARD (D-001) ─────────────────────────────────────────────
         // Cross-check the two INDEPENDENT in-flight accountings that must move together: the queue's held-
@@ -5357,7 +5439,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         const reconcileViolation = classifySlotReconcile({
           running,
           tracked,
-          wantsReclaim: decision.reclaim,
+          wantsReclaim: reclaimable.length > 0,
           hasReclaimTarget: !!target,
         });
         if (reconcileViolation) {
@@ -5370,7 +5452,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
               slotReconcileLogged = true; // log ONCE per contiguous streak (never a log storm)
               log(
                 'error',
-                `inference-gateway: SLOT-RECONCILE mismatch (${reconcileViolation}) — held=${running} tracked=${tracked} maxConcurrent=${admission.maxConcurrent} msSinceDrain=${Math.round((Date.now() - lastDrainAt) / 1000)}s: a leaked admission slot the self-heal valve cannot reclaim (mismatch #${slotReconcileMismatch})`,
+                `inference-gateway: SLOT-RECONCILE mismatch (${reconcileViolation}) — held=${running} tracked=${tracked} maxConcurrent=${maxConcurrent} maxMsSinceDrain=${Math.round(Math.max(now - lastDrainAt.claude, now - lastDrainAt.codex) / 1000)}s: a leaked admission slot the self-heal valve cannot reclaim (mismatch #${slotReconcileMismatch})`,
               );
             }
           }
@@ -5380,13 +5462,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
         }
         // ────────────────────────────────────────────────────────────────────────────────────────────
 
-        if (!decision.reclaim) return;
+        if (!selected) return;
         if (!target) return; // saturated per the counters but the registry is momentarily empty — skip
         target.reclaimed = true;
         selfHealReclaims++;
         log(
           'error',
-          `inference-gateway: SELF-HEAL release valve — ${decision.reason} (slot #${target.id}, held ${Math.round((Date.now() - target.startedAt) / 1000)}s, stream=${target.isStream}; reclaim #${selfHealReclaims})`,
+          `inference-gateway: SELF-HEAL release valve — ${selected.provider}: ${selected.decision.reason} (slot #${target.id}, held ${Math.round((Date.now() - target.startedAt) / 1000)}s, stream=${target.isStream}; reclaim #${selfHealReclaims})`,
         );
         target.abort('inference-gateway self-heal: reclaiming wedged slot to pre-empt watchdog restart');
       } catch (e) {
