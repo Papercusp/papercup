@@ -74,6 +74,12 @@ const states = (m: Record<string, string>) =>
 const tierOn = async () => true;
 const tierOff = async () => false;
 
+/** P-007 seam: the agent_modes read, as a fixture keyed by owner id. */
+const modes = (m: Record<string, Array<{ mode: string; subject?: string | null }>>) =>
+  vi.fn(async () => new Map(Object.entries(m)));
+/** No modes for anyone — the pre-P-007 world, where rung 2 is pure recency. */
+const noModes = vi.fn(async () => new Map());
+
 describe('resolveNudgeRecipient — the ladder', () => {
   it('rung 1: a live Mug wins, and no su is consulted', async () => {
     const r = await resolveNudgeRecipient({
@@ -103,6 +109,114 @@ describe('resolveNudgeRecipient — the ladder', () => {
       mugKettleSystemEnabledFn: tierOff,
     });
     expect(r.kind).toBe('su');
+  });
+
+  /**
+   * P-007 (blender-su-grade-integration-2026-08-11, D-003). The CALIBRATION case for the
+   * whole tier block: with no modes on anyone, rung 2 must still pick purely by recency.
+   * Without this, the tier tests below could pass while the ordering was broken in a way
+   * that merely happened to favour the fixture's first row.
+   */
+  it('P-007 rung 2 tier 2 (calibration): with no grading posture anywhere, the most recently ACTIVE su still wins', async () => {
+    const r = await resolveNudgeRecipient({
+      workspaceId: WS,
+      mugOwner: null,
+      listPresenceFn: listing(
+        row('su-stale', { lastActiveAt: '2026-08-09T00:00:00.000Z' }),
+        row('su-fresh', { lastActiveAt: '2026-08-09T09:00:00.000Z' }),
+      ),
+      resolveSessionStatesFn: states({ 'su-stale': 'live', 'su-fresh': 'live' }),
+      mugKettleSystemEnabledFn: tierOff,
+      readAgentModesFn: noModes,
+    });
+    expect(r).toMatchObject({ kind: 'su', ownerId: 'su-fresh' });
+    expect((r as { why: string }).why).toContain('most recently active');
+  });
+
+  it('P-007 rung 2 tier 1: a GRADE-mode su beats a more recently active peer with no grading posture', async () => {
+    const r = await resolveNudgeRecipient({
+      workspaceId: WS,
+      mugOwner: null,
+      listPresenceFn: listing(
+        row('su-grader', { lastActiveAt: '2026-08-09T00:00:00.000Z' }),
+        row('su-busy', { lastActiveAt: '2026-08-09T09:00:00.000Z' }),
+      ),
+      resolveSessionStatesFn: states({ 'su-grader': 'live', 'su-busy': 'live' }),
+      mugKettleSystemEnabledFn: tierOff,
+      readAgentModesFn: modes({ 'su-grader': [{ mode: 'grade' }] }),
+    });
+    expect(r).toMatchObject({ kind: 'su', ownerId: 'su-grader' });
+    expect((r as { why: string }).why).toContain('GRADE-mode');
+  });
+
+  /**
+   * The steward shape D-003 mandates: GOAL mode owning the Blender loop with GRADE
+   * stacked. It must outrank a bare grade-mode peer, or a Scout nudge lands on an su
+   * grading some unrelated rubric while the loop's actual owner sits idle.
+   */
+  it('P-007 rung 2 tier 0: the GOAL-bound steward outranks a bare GRADE-mode su', async () => {
+    const r = await resolveNudgeRecipient({
+      workspaceId: WS,
+      mugOwner: null,
+      listPresenceFn: listing(
+        row('su-steward', { lastActiveAt: '2026-08-09T00:00:00.000Z' }),
+        row('su-other-grader', { lastActiveAt: '2026-08-09T09:00:00.000Z' }),
+      ),
+      resolveSessionStatesFn: states({ 'su-steward': 'live', 'su-other-grader': 'live' }),
+      mugKettleSystemEnabledFn: tierOff,
+      readAgentModesFn: modes({
+        'su-steward': [{ mode: 'grade' }, { mode: 'goal', subject: 'goal-blender-1' }],
+        'su-other-grader': [{ mode: 'grade' }],
+      }),
+    });
+    expect(r).toMatchObject({ kind: 'su', ownerId: 'su-steward' });
+    expect((r as { why: string }).why).toContain('goal-bound');
+  });
+
+  /**
+   * A GOAL-mode row with a NULL subject is a session that entered GOAL mode but has not
+   * filed its goal yet (goal-session.ts documents this as the only state that has ever
+   * actually existed live). It is not a steward, so it must not be promoted over a real
+   * grader — the same asymmetry `goalIdFromModes` encodes, asserted at THIS call site.
+   */
+  it('P-007: GOAL mode with no subject is NOT a steward — it does not outrank a grade-mode su', async () => {
+    const r = await resolveNudgeRecipient({
+      workspaceId: WS,
+      mugOwner: null,
+      listPresenceFn: listing(
+        row('su-goal-unfiled', { lastActiveAt: '2026-08-09T09:00:00.000Z' }),
+        row('su-grader', { lastActiveAt: '2026-08-09T00:00:00.000Z' }),
+      ),
+      resolveSessionStatesFn: states({ 'su-goal-unfiled': 'live', 'su-grader': 'live' }),
+      mugKettleSystemEnabledFn: tierOff,
+      readAgentModesFn: modes({
+        'su-goal-unfiled': [{ mode: 'goal', subject: null }],
+        'su-grader': [{ mode: 'grade' }],
+      }),
+    });
+    expect(r).toMatchObject({ kind: 'su', ownerId: 'su-grader' });
+  });
+
+  /**
+   * FAIL-SOFT, the property that keeps P-007 from being a new way to lose a nudge: an
+   * unreadable agent_modes table must degrade rung 2 to its prior recency behaviour,
+   * never throw and never drop the delivery.
+   */
+  it('P-007: an unreadable mode table degrades to recency instead of failing the nudge', async () => {
+    const r = await resolveNudgeRecipient({
+      workspaceId: WS,
+      mugOwner: null,
+      listPresenceFn: listing(
+        row('su-stale', { lastActiveAt: '2026-08-09T00:00:00.000Z' }),
+        row('su-fresh', { lastActiveAt: '2026-08-09T09:00:00.000Z' }),
+      ),
+      resolveSessionStatesFn: states({ 'su-stale': 'live', 'su-fresh': 'live' }),
+      mugKettleSystemEnabledFn: tierOff,
+      readAgentModesFn: async () => {
+        throw new Error('agent_modes unreadable');
+      },
+    });
+    expect(r).toMatchObject({ kind: 'su', ownerId: 'su-fresh' });
   });
 
   it('rung 1 FAILS CLOSED: an unreadable tier flag routes to the su, never to the Mug', async () => {

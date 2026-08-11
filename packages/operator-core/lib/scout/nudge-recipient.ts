@@ -45,6 +45,7 @@
  * heartbeat would reintroduce the same silent dead-end one layer down.
  */
 
+import { goalIdFromModes, type ModeLike } from '../modes/goal-session';
 import type { PresenceRecord } from '../agent-tools/coordination/presence';
 import type { listPresence } from '../agent-tools/coordination/presence';
 import type { resolveSessionStates } from '../agent-tools/coordination/liveness-oracle';
@@ -94,11 +95,82 @@ export interface ResolveNudgeRecipientOpts {
   /** DI seams for unit tests. */
   listPresenceFn?: typeof listPresence;
   resolveSessionStatesFn?: typeof resolveSessionStates;
+  /** P-007 seam: read the registered modes for a set of su owner ids. Defaults to
+   *  the `harness_shared.agent_modes` read below; injected in unit tests so rung 2's
+   *  ordering is assertable with no PG. */
+  readAgentModesFn?: (
+    workspaceId: string,
+    ownerIds: readonly string[],
+  ) => Promise<Map<string, ModeLike[]>>;
   /** P-037 seam: is the Mug/Kettle tier still runnable? Defaults to the shared
    *  predicate in pot/started.ts (loaded dynamically so a partially-mocked
    *  './started' in a Scout test cannot strand this module at import time). */
   mugKettleSystemEnabledFn?: () => Promise<boolean>;
 }
+
+/**
+ * P-007 (blender-su-grade-integration-2026-08-11, D-003): the modes a candidate su
+ * carries, read from `harness_shared.agent_modes` — the SAME row `goalIdFromModes`
+ * derives a goal session from, never a second notion of "who is the steward".
+ *
+ * Fail-soft to an EMPTY map on any error: an unreadable mode table must degrade rung 2
+ * to its prior most-recently-active behaviour, never strand the nudge. That is the same
+ * discipline `tierRunnable` applies one rung up — a watchdog whose job is to not go
+ * quiet cannot die reading a preference signal.
+ */
+async function readAgentModes(
+  workspaceId: string,
+  ownerIds: readonly string[],
+): Promise<Map<string, ModeLike[]>> {
+  const out = new Map<string, ModeLike[]>();
+  if (ownerIds.length === 0) return out;
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { sql } = getOrgPg();
+    const rows = (await sql`
+      SELECT owner_id, mode, subject
+      FROM harness_shared.agent_modes
+      WHERE workspace_id = ${workspaceId}
+        AND owner_id = ANY(${ownerIds as string[]})
+    `) as unknown as Array<{ owner_id: string; mode: string; subject: string | null }>;
+    for (const r of rows) {
+      const list = out.get(r.owner_id) ?? [];
+      list.push({ mode: r.mode, subject: r.subject });
+      out.set(r.owner_id, list);
+    }
+  } catch {
+    return new Map();
+  }
+  return out;
+}
+
+/**
+ * P-007 rung-2 preference tiers, best first. A Scout nudge asks someone to GRADE an
+ * idea or REVIEW a draft — judgment duties that the retired Mug/Queen used to absorb
+ * as a side effect of triage. Handing that to whichever su merely spoke most recently
+ * interrupts an arbitrary busy peer, so prefer a session whose JOB it is:
+ *
+ *   0. GOAL-bound grader — carries GRADE *and* a goal subject (D-003's steward shape:
+ *      GOAL mode owning the Blender loop with GRADE stacked for the health scorecard).
+ *   1. Any GRADE-mode session — grading is at least part of its declared posture.
+ *   2. Everyone else — the pre-existing most-recently-active fallback, unchanged.
+ *
+ * Deliberately NOT keyed to a configured Blender-goal id. A goal-id pointer would be a
+ * second source of truth for "which goal is the Blender one", and it would have to be
+ * written somewhere before the goal exists — so an unset key would silently demote the
+ * real steward to tier 2. Reading the posture the steward already declares needs no
+ * config, and a plain grade-mode peer is still a strictly better recipient than a random
+ * live su.
+ */
+function stewardTier(modes: ModeLike[] | undefined): 0 | 1 | 2 {
+  if (!modes || modes.length === 0) return 2;
+  const grades = modes.some((m) => m.mode === GRADE_MODE);
+  if (!grades) return 2;
+  return goalIdFromModes(modes) !== null ? 0 : 1;
+}
+
+/** The registry id of the GRADE overlay (modes/registry.ts). */
+const GRADE_MODE = 'grade';
 
 /**
  * P-037: is the Mug tier still runnable? Fail-CLOSED to `false` — an unreadable
@@ -206,20 +278,48 @@ export async function resolveNudgeRecipient(
     };
   }
 
-  // 2 — a live su, preferring the most recently ACTIVE (not the most recent heartbeat:
-  //     the keepalive bumps that on a session doing nothing).
+  // 2 — a live su, preferring the STEWARD (a session whose declared posture is grading;
+  //     see stewardTier) and, within a tier, the most recently ACTIVE (not the most
+  //     recent heartbeat: the keepalive bumps that on a session doing nothing).
   const liveSu = suRows
     .filter((r) => deliverable(r.ownerId))
     .sort((a, b) => (b.lastActiveAt ?? b.heartbeatAt ?? '').localeCompare(a.lastActiveAt ?? a.heartbeatAt ?? ''));
 
   if (liveSu.length > 0) {
-    const chosen = liveSu[0];
+    // Read modes ONLY for the already-deliverable candidates — a bounded read, and one
+    // that cannot change WHO is eligible, only the order among the eligible.
+    // The try/catch is around the CALL, not just inside the default reader: an injected
+    // seam (or a dynamic import) can throw too, and rung 2 must degrade to recency rather
+    // than lose the nudge to a preference signal that is only ever an optimisation.
+    let modesByOwner: Map<string, ModeLike[]>;
+    try {
+      modesByOwner = await (opts.readAgentModesFn ?? readAgentModes)(
+        opts.workspaceId,
+        liveSu.map((r) => r.ownerId),
+      );
+    } catch {
+      modesByOwner = new Map();
+    }
+    // Stable-by-tier: `sort` is stable in V8, so the recency order above is preserved
+    // WITHIN each tier and an empty/failed mode read reproduces the prior behaviour
+    // exactly (every row lands in tier 2).
+    const ranked = [...liveSu].sort(
+      (a, b) => stewardTier(modesByOwner.get(a.ownerId)) - stewardTier(modesByOwner.get(b.ownerId)),
+    );
+    const chosen = ranked[0];
+    const tier = stewardTier(modesByOwner.get(chosen.ownerId));
+    const tierWhy =
+      tier === 0
+        ? 'the goal-bound Blender steward (GRADE + a goal subject)'
+        : tier === 1
+          ? 'a live GRADE-mode su'
+          : 'the most recently active su (no grading-posture session was live)';
     return {
       kind: 'su',
       ownerId: chosen.ownerId,
       ownerLabel: chosen.ownerLabel,
       why:
-        `no deliverable Mug; routed to su ${chosen.ownerLabel} ` +
+        `no deliverable Mug; routed to ${tierWhy} ${chosen.ownerLabel} ` +
         `(${verdicts.get(chosen.ownerId)?.sessionState}, ${liveSu.length} su candidate(s))`,
     };
   }
