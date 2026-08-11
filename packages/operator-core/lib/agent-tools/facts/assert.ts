@@ -37,6 +37,7 @@ import { resolveScopeRefAlias } from './scope-ctx';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
 import { noteAssumptionAsserted } from '../../agent-state-stamp';
 import { neutralizeToolCallTags } from '../../text-safety';
+import { factMeasurementHint } from '../../fact-measurement-detector';
 
 /**
  * EI-10952: the disclosure for a truncated body. Returns undefined on the clean
@@ -131,7 +132,7 @@ export default defineTool({
     when:
       'You reached a durable CONCLUSION that should shape future turns — yours or your role\'s: "X is owner-residue, exclude it", "plan Y stalls on Z", "this harness\'s tests need Docker". Scope it as narrowly as true: workspace (global), role (all queens/bees/…), owner (just you), harness, or work_item.',
     notWhen:
-      `Ephemeral status (use coord), in-flight task progress (work_items:checkpoint), long-form knowledge (agent-insights doc), fuzzy background worth semantic recall (memory:remember). Not a dumping ground — ${FACT_BODY_MAX_CHARS}-char cap, per-scope cap ${FACTS_PER_SCOPE_CAP}, TTL mandatory.`,
+      `Ephemeral status (use coord), in-flight task progress (work_items:checkpoint), long-form knowledge (agent-insights doc), fuzzy background worth semantic recall (memory:remember). Not a dumping ground — ${FACT_BODY_MAX_CHARS}-char cap, per-scope cap ${FACTS_PER_SCOPE_CAP}, TTL mandatory. A fact is not a live measurement: do not pin changing counts or statuses as if they stay current; write the invariant conclusion plus a pointer to the live source/tool and how to remeasure at use time. If a number is intentionally historical, label it historical.`,
     chaining:
       'facts:list { scope } to see what already stands (re-assert refreshes rather than duplicating); facts:retract when a fact stops being true — a stale fact folded verbatim is worse than none.',
     seeAlso: ['facts:retract', 'facts:list', 'memory:remember (fuzzy background instead)'],
@@ -299,6 +300,10 @@ export default defineTool({
         : args.slot === 'wall'
           ? normalizeWallSlot(args.key, safeBody)
           : { key: args.key, body: safeBody };
+    // EI-20191817484694278: a durable fact can carry a moving count/status and
+    // age into a confident lie. Detect the shape at the write boundary so the
+    // author can tighten it immediately; this is advisory and fail-soft.
+    const measurementWarning = factMeasurementHint(slotted.body);
     // EI-18685042986450096 (owner-flagged): the old behavior wrote the
     // clipped body UNCONDITIONALLY and only disclosed the loss AFTER the write
     // (truncationField below) — silently dropping the OPERATIVE clause 3x,
@@ -547,6 +552,7 @@ export default defineTool({
               : {}),
             ...(truncation ? { truncated: truncation } : {}),
             ...(dependencyWarning ? { dependenciesUnresolved: dependencyWarning } : {}),
+            ...(measurementWarning ? { measurementWarning } : {}),
             ...(keyContested ? { keyContested } : {}),
             ...provenanceFields,
           }),
