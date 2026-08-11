@@ -75,6 +75,10 @@ export interface FileLockAcquireResult {
   expiresTs?: string;
   /** paths that were busy when ok=false. */
   busy?: Array<{ path: string; owner: string }>;
+  /** Paths newly acquired by this call. Same-owner refreshes can return a
+   * subset (or an empty list), so automatic guards never release a
+   * deliberate lock that merely overlaps their edit. */
+  newlyHeld?: string[];
   /** G-0 (P-033) sha-token stamp on a grant: the prior holder's published head
    *  (`requiredSha`) + the expiry-reclaim warning (`unsyncedRisk`). The acquirer
    *  checks requiredSha against its local staging / parked heads via

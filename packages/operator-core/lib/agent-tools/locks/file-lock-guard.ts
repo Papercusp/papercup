@@ -174,6 +174,12 @@ export async function guardFileLock<T>(
   }
 
   const lockId = acquired.lock_id;
+  // A same-owner acquire can refresh an existing deliberate lock. Release
+  // only the paths this invocation newly acquired; otherwise an automatic
+  // guard would tear down the caller's longer-lived lock in its finally.
+  // Older in-process callers/tests omit the additive field, so retain the
+  // historical all-path fallback for those callers.
+  const releasePaths = acquired.newly_held ?? paths;
   // P-025: push the ACQUIRE to the plan lock banner. Emitted after the txn has
   // committed, never inside it — a notify fired mid-transaction can be observed
   // before the row it announces is visible. No-ops for non-plan paths.
@@ -182,19 +188,21 @@ export async function guardFileLock<T>(
     const result = await run();
     return { acquired: true, result };
   } finally {
-    // Release like the PostToolUse hook does — by lock_id, owner-checked.
-    await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
-      tryRelease(tx, { coordinationDomain, owner: ownerId, lockId, paths }),
-      { paths },
-    ).catch((err) => {
-      ctx.log?.(`[file-lock] release faulted (lock frees at TTL): ${err instanceof Error ? err.message : String(err)}`);
-    });
-    // P-025: and the RELEASE. This is the emit the bus's 90s first-wins dedupe
-    // would swallow on the default window (D-042) — acquire and release share
-    // one (name, args) key — which is why notifyPlanLockChange passes a short
-    // per-call window. Emitted even when the release faulted above: the lock
-    // then frees at TTL and the banner still needs to stop showing it.
-    notifyPlanLockChange(paths);
+    if (releasePaths.length > 0) {
+      // Release like the PostToolUse hook does — by lock_id, owner-checked.
+      await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
+        tryRelease(tx, { coordinationDomain, owner: ownerId, lockId, paths: releasePaths }),
+        { paths: releasePaths },
+      ).catch((err) => {
+        ctx.log?.(`[file-lock] release faulted (lock frees at TTL): ${err instanceof Error ? err.message : String(err)}`);
+      });
+      // P-025: and the RELEASE. This is the emit the bus's 90s first-wins dedupe
+      // would swallow on the default window (D-042) — acquire and release share
+      // one (name, args) key — which is why notifyPlanLockChange passes a short
+      // per-call window. Emitted even when the release faulted above: the lock
+      // then frees at TTL and the banner still needs to stop showing it.
+      notifyPlanLockChange(releasePaths);
+    }
   }
 }
 

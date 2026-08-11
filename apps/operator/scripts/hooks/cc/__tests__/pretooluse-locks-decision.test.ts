@@ -137,6 +137,24 @@ describe('cc PreToolUse hook — operator decision rendering (stub operator)', (
     expect(JSON.parse(fs.readFileSync(pathsCache, 'utf8'))).toEqual(['sub/grant.ts']);
   });
 
+  it('already-held grant → allow without caching a PostToolUse release token', async () => {
+    // This is the manual locks:acquire → automatic PreToolUse collision:
+    // the server reuses the deliberate lock_id but reports no newly-acquired
+    // paths, so PostToolUse must not release the deliberate hold.
+    nextInner = { ok: true, lock_id: 'manual-lock', newly_held: [] };
+    const r = await run(editOf('sub/already-held.ts', 'tu-already-held'));
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+    expect(fs.existsSync(join(cache, 'tu-already-held.lock'))).toBe(false);
+    expect(fs.existsSync(join(cache, 'tu-already-held.paths'))).toBe(false);
+    const decision = JSON.parse(fs.readFileSync(join(cache, 'last-decision.json'), 'utf8'));
+    expect(decision).toMatchObject({
+      decision: 'already-held',
+      release_paths: [],
+      lock_id: 'manual-lock',
+    });
+  });
+
   it('coordinates an absolute HOME config edit through the reserved external lock key', async () => {
     const configFile = join(home, '.config', 'mimeapps.list');
     fs.mkdirSync(join(home, '.config'), { recursive: true });

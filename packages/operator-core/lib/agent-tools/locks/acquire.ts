@@ -338,7 +338,16 @@ export default defineTool({
           ts: Date.now(),
         });
       }
-      return ok(ownerId, ownerLabel, first.lock_id, first.expires_ts, first.held, undefined, shaToken);
+      return ok(
+        ownerId,
+        ownerLabel,
+        first.lock_id,
+        first.expires_ts,
+        first.held,
+        undefined,
+        shaToken,
+        first.newly_held,
+      );
     }
 
     // ── wake_on_grant: queue + sleep instead of block/poll ──────────────
@@ -797,6 +806,7 @@ function ok(
   // hive-git grade helpers), unsyncedRisk = the prior grant expired without a
   // release. Present on fast-path grants of hive-scoped file locks.
   shaToken?: ShaTokenGrant,
+  newlyHeld?: string[],
 ) {
   return {
     content: [
@@ -811,6 +821,7 @@ function ok(
           owner_label: ownerLabel,
           expires_ts: expires.toISOString(),
           held,
+          ...(newlyHeld !== undefined ? { newly_held: newlyHeld } : {}),
           ...(waitedSec !== undefined ? { waited_sec: waitedSec } : {}),
           ...(shaToken
             ? { sha_token: { required_sha: shaToken.requiredSha, unsynced_risk: shaToken.unsyncedRisk } }
@@ -917,6 +928,7 @@ function decodeRemoteAcquire(
       lock_id: r.lockId ?? '',
       expires_ts: r.expiresTs ? new Date(r.expiresTs) : new Date(Date.now() + ttlSec * 1000),
       held: paths,
+      newly_held: r.newlyHeld ?? paths,
       // G-0 (P-033): the AUTHORITY's sha-token stamp rides the remote grant.
       ...(r.shaToken ? { sha_token: r.shaToken } : {}),
     };

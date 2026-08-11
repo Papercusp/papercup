@@ -73,6 +73,21 @@ describe('guardFileLock', () => {
     expect(h.tryRelease).toHaveBeenCalledOnce();
   });
 
+  it('does not release a deliberate same-owner hold when no paths were newly acquired', async () => {
+    h.tryAcquire.mockResolvedValue({
+      ok: true,
+      lock_id: 'manual-lock',
+      expires_ts: new Date(),
+      held: ['foo.ts'],
+      newly_held: [],
+    });
+    const run = vi.fn().mockResolvedValue('RESULT');
+    const out = await guardFileLock(ctx, ['foo.ts'], { intent: 'capability:write' }, run);
+    expect(out).toEqual({ acquired: true, result: 'RESULT' });
+    expect(run).toHaveBeenCalledOnce();
+    expect(h.tryRelease).not.toHaveBeenCalled();
+  });
+
   it('does NOT run the body on contention', async () => {
     h.tryAcquire.mockResolvedValue({
       ok: false,

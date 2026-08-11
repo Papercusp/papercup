@@ -96,7 +96,12 @@ export function adaptSuLockStore(): FileLockCoordinator {
         { paths: p.paths },
       );
       if (r.ok) {
-        return { ok: true, lockId: r.lock_id, expiresTs: r.expires_ts.toISOString() };
+        return {
+          ok: true,
+          lockId: r.lock_id,
+          expiresTs: r.expires_ts.toISOString(),
+          newlyHeld: r.newly_held,
+        };
       }
       return { ok: false, busy: r.busy.map((b) => ({ path: b.path, owner: b.owner })) };
     },

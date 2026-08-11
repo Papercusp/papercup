@@ -208,6 +208,49 @@ describe('tryAcquire', () => {
     if (r.ok) expect(r.held).toEqual(['a.ts', 'b.ts', 'c.ts']);
   });
 
+  it('reports only paths newly acquired by a same-owner refresh', async () => {
+    const ws = nextWs();
+    const first = await inWorkspaceTxn(ws, 'a', (tx) =>
+      tryAcquire(tx, {
+        coordinationDomain: ws,
+        owner: 'a',
+        ownerLabel: 'A',
+        paths: ['held.ts'],
+        intent: 'deliberate hold',
+        ttlSec: 60,
+      }),
+    );
+    if (!first.ok) throw new Error('initial acquire should succeed');
+
+    const refresh = await inWorkspaceTxn(ws, 'a', (tx) =>
+      tryAcquire(tx, {
+        coordinationDomain: ws,
+        owner: 'a',
+        ownerLabel: 'A',
+        paths: ['held.ts'],
+        intent: 'automatic refresh',
+        ttlSec: 60,
+      }),
+    );
+    expect(refresh).toMatchObject({ ok: true, newly_held: [] });
+
+    const extension = await inWorkspaceTxn(ws, 'a', (tx) =>
+      tryAcquire(tx, {
+        coordinationDomain: ws,
+        owner: 'a',
+        ownerLabel: 'A',
+        paths: ['held.ts', 'new.ts'],
+        intent: 'automatic extension',
+        ttlSec: 60,
+      }),
+    );
+    expect(extension).toMatchObject({ ok: true, newly_held: ['new.ts'] });
+
+    await inWorkspaceTxn(ws, 'a', (tx) =>
+      tryRelease(tx, { coordinationDomain: ws, owner: 'a', allMine: true }),
+    );
+  });
+
   it('returns busy + no partial state when one path is held', async () => {
     const ws = nextWs();
     await inWorkspaceTxn(ws, 'a', (tx) =>

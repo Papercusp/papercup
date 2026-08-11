@@ -863,8 +863,8 @@ def _locks_acquire_once():
 
 
 def _grant(granted):
-    """Cache the lock_id (+ the SPECIFIC paths this acquire covered) for the
-    matching PostToolUse release, then allow.
+    """Cache the lock_id (+ only newly acquired paths) for the matching
+    PostToolUse release, then allow.
 
     EI-63: when the calling owner already holds one of these paths under a
     distinct EXPLICIT lock_id (a deliberate multi-file locks:acquire held
@@ -876,24 +876,34 @@ def _grant(granted):
     touched. Caching the paths here lets PostToolUse scope its release to
     exactly this edit's path(s), which is a no-op regression for the common
     case (a fresh, non-shared lock_id covers exactly these paths anyway) and
-    the actual fix for the shared-lock_id case."""
+    the actual fix for the shared-lock_id case. The server now returns
+    ``newly_held``; an empty list means this automatic edit was covered by an
+    existing deliberate hold, so it must not create a release token at all."""
     lock_id = granted.get('lock_id')
+    newly_held = granted.get('newly_held')
+    if isinstance(newly_held, list):
+        release_paths = [p for p in newly_held if isinstance(p, str) and p]
+    else:
+        # Older operators do not send the additive field. Preserve their
+        # existing behavior rather than silently allowing an untracked edit.
+        release_paths = repo_relative[:50]
     decision = {
         'ts': now_iso(),
-        'decision': 'granted',
+        'decision': 'already-held' if isinstance(newly_held, list) and not release_paths else 'granted',
         'owner': owner,
         'tool': tool_name,
         'paths': repo_relative[:50],
+        'release_paths': release_paths,
         'lock_id': lock_id,
     }
     write_marker('last-decision.json', decision)
     write_marker(owner_marker_name('decision'), decision)
-    if lock_id and tool_use_id:
+    if lock_id and tool_use_id and release_paths:
         try:
             with open(os.path.join(cache_dir, tool_use_id + '.lock'), 'w') as f:
                 f.write(lock_id)
             with open(os.path.join(cache_dir, tool_use_id + '.paths'), 'w') as f:
-                json.dump(repo_relative, f)
+                json.dump(release_paths, f)
         except Exception:
             pass
     _clear_transient_streak()
