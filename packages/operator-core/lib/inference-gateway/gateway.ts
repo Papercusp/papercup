@@ -62,6 +62,7 @@ import {
 import {
   buildCodexUpstreamHeaders,
   codexBackendUrl,
+  normalizeCodexChatGptResponsesBody,
   refreshCodexToken,
   resolveCodexAccessToken,
   type CodexAuth,
@@ -4345,6 +4346,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       if (!res.headersSent) sendJson(res, 503, { type: 'error', error: { type: 'overloaded_error', message: 'inference-gateway: codex request body read stalled; retry shortly' }, gateway: true });
       return;
     }
+    if (bodyBuf.length) bodyBuf = normalizeCodexChatGptResponsesBody(bodyBuf).body;
     if (cachePolicyEnabled && bodyBuf.length) {
       const shardSeed = routing.ownerId || routing.pinned?.accountId || cli.accountId;
       const cached = rewriteOpenAiCacheBody(bodyBuf, {

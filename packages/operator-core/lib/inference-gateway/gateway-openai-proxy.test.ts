@@ -436,7 +436,11 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
       const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
         const account = new Headers(init?.headers).get('chatgpt-account-id') ?? '';
         const rawBody = init?.body;
-        const bodyText = typeof rawBody === 'string' ? rawBody : Buffer.isBuffer(rawBody) ? rawBody.toString('utf8') : '';
+        const bodyText = typeof rawBody === 'string'
+          ? rawBody
+          : rawBody instanceof Uint8Array
+            ? Buffer.from(rawBody).toString('utf8')
+            : '';
         expect(Array.isArray((JSON.parse(bodyText) as { input?: unknown }).input)).toBe(true);
         routed.push(account);
         if (account === 'chatgpt-a') {
