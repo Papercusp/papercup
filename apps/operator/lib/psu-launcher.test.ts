@@ -4302,17 +4302,11 @@ describe('WI-3758 — psu --resume model select + last-active model', () => {
     }
   });
 
-  it('WI-37890: lowers only the broken Vertex Gemini 3.1 Pro high-effort spec', () => {
-    expect(normalizeOmpModelSpec('google-vertex/gemini-3.1-pro-preview:high')).toBe(
-      'google-vertex/gemini-3.1-pro-preview:low',
-    );
-    expect(modelArgsFor('omp', 'google-vertex/gemini-3.1-pro-preview:high')).toEqual([
-      '--model',
-      'google-vertex/gemini-3.1-pro-preview:low',
-    ]);
-    expect(ompModelCompatibilityNotice('google-vertex/gemini-3.1-pro-preview:high')).toMatch(
-      /using google-vertex\/gemini-3\.1-pro-preview:low/,
-    );
+  it('WI-37890: refuses the broken Vertex Gemini 3.1 Pro high-effort spec without lowering it', () => {
+    const exactHigh = 'google-vertex/gemini-3.1-pro-preview:high';
+    expect(() => normalizeOmpModelSpec(exactHigh)).toThrow(/Refusing to silently lower the requested effort/);
+    expect(() => modelArgsFor('omp', exactHigh)).toThrow(/choose :low explicitly/);
+    expect(() => ompModelCompatibilityNotice(exactHigh)).toThrow(/empty STOP responses/);
 
     // Other providers, efforts, and models are not implicated by the controlled repro.
     expect(normalizeOmpModelSpec('google-vertex/gemini-3.1-pro-preview:low')).toBe(

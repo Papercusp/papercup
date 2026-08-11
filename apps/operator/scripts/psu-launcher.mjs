@@ -635,31 +635,37 @@ export function parseArgs(argv) {
  *     effort-drop class the claude branch fixed (2026-07-01), found for codex
  *     launching the backlog-clearance fleet (2026-07-03).
  *   - omp: understands the `<model>[:<effort>]` spec natively. One provider/model
- *     exception is normalized below: Vertex Gemini 3.1 Pro currently returns a
- *     deterministic empty STOP stream at `:high`, so psu lowers only that exact
- *     broken combination to `:low` with a launch-time warning.
+ *     exception is refused below: Vertex Gemini 3.1 Pro currently returns a
+ *     deterministic empty STOP stream at `:high`. Psu must not silently lower an
+ *     explicitly requested effort level, so that exact combination fails before spawn.
  */
 const OMP_GEMINI_31_PRO_HIGH_RE = /^google-vertex\/gemini-3\.1-pro-preview:high$/i;
 
 /**
- * Work around a provider-specific OMP failure without changing the user's OMP
+ * Guard a provider-specific OMP failure without changing the user's OMP
  * installation or other model/effort selections. The controlled reproduction
  * for WI-37890 showed `google-vertex/gemini-3.1-pro-preview:high` emits only a
  * `STOP` with no content and retries until exhaustion, while the same request
- * at `:low` completes and can call tools. Keep this exact and reversible: an
- * unrelated Vertex model, provider, or effort must remain byte-identical.
+ * at `:low` completes and can call tools. D-011 forbids treating an implicit
+ * high-to-low downgrade as terminal: refuse the unsupported exact path and make
+ * the caller choose a lower effort explicitly. Keep the guard exact and reversible;
+ * an unrelated Vertex model, provider, or effort remains byte-identical.
  * Pure + exported for regression tests.
  */
 export function normalizeOmpModelSpec(model) {
-  if (typeof model !== 'string' || !OMP_GEMINI_31_PRO_HIGH_RE.test(model)) return model;
-  return model.replace(/:high$/i, ':low');
+  if (typeof model === 'string' && OMP_GEMINI_31_PRO_HIGH_RE.test(model)) {
+    throw new Error(
+      `OMP cannot launch ${model}: this exact high-effort path returns deterministic empty STOP responses. ` +
+      'Refusing to silently lower the requested effort; choose :low explicitly or use a client/provider whose :high path is supported.',
+    );
+  }
+  return model;
 }
 
-/** Human-facing notice for the narrow WI-37890 compatibility fallback. */
+/** Compatibility notices are reserved for non-semantic adjustments; WI-37890 now fails loud. */
 export function ompModelCompatibilityNotice(model) {
-  const normalized = normalizeOmpModelSpec(model);
-  if (normalized === model) return null;
-  return `psu: OMP compatibility fallback — ${model} returns deterministic empty STOP responses at high effort; using ${normalized}.`;
+  normalizeOmpModelSpec(model);
+  return null;
 }
 
 export function modelArgsFor(agent, model) {

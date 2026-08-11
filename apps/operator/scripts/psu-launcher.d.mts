@@ -166,17 +166,19 @@ export function parseArgs(argv: any): {
     headless: boolean;
 };
 /**
- * Work around a provider-specific OMP failure without changing the user's OMP
+ * Guard a provider-specific OMP failure without changing the user's OMP
  * installation or other model/effort selections. The controlled reproduction
  * for WI-37890 showed `google-vertex/gemini-3.1-pro-preview:high` emits only a
  * `STOP` with no content and retries until exhaustion, while the same request
- * at `:low` completes and can call tools. Keep this exact and reversible: an
- * unrelated Vertex model, provider, or effort must remain byte-identical.
+ * at `:low` completes and can call tools. D-011 forbids treating an implicit
+ * high-to-low downgrade as terminal: refuse the unsupported exact path and make
+ * the caller choose a lower effort explicitly. Keep the guard exact and reversible;
+ * an unrelated Vertex model, provider, or effort remains byte-identical.
  * Pure + exported for regression tests.
  */
 export function normalizeOmpModelSpec(model: any): any;
-/** Human-facing notice for the narrow WI-37890 compatibility fallback. */
-export function ompModelCompatibilityNotice(model: any): string | null;
+/** Compatibility notices are reserved for non-semantic adjustments; WI-37890 now fails loud. */
+export function ompModelCompatibilityNotice(model: any): null;
 export function modelArgsFor(agent: any, model: any): any[];
 /**
  * Extra args to pass THROUGH a `*-su` wrapper to the underlying CLI (the
