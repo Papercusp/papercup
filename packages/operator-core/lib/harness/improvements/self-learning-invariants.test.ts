@@ -180,6 +180,59 @@ describe('P-060.7 — D-005: observations never enter the work/triage lane', () 
     const res = await captureImprovement({ title: 'a recurring observation', kind: 'change', lane: 'observation' }, d);
     expect(res.created).toBe(true);
   });
+
+  /**
+   * EI-17036 — THE ONE FIELD THE WHOLE FLOOR RESTS ON.
+   *
+   * `observationLaneExclusionSql` (work-items.ts) is exactly `wi.lane IS DISTINCT FROM
+   * 'observation'`, and `lane` is `GENERATED ALWAYS AS (payload ->> 'lane') STORED`
+   * (migration 721). So D-005's "never enters the work queue" is carried by ONE payload
+   * key — `payload.lane` — and by nothing else.
+   *
+   * In particular it does NOT key on `payload.observation`. A row carrying a full
+   * observation (rubricRef, ratings, evidence) but no `lane` key reads `lane = NULL`, and
+   * `NULL IS DISTINCT FROM 'observation'` is TRUE, so the floor INCLUDES it and
+   * `scheduler:get_next` serves a scorecard as claimable work. That is not hypothetical:
+   * 38 such rows existed (17 of them open, filed 2026-07-13..07-25 by a writer that has
+   * since been fixed), and one — EI-17036, a `pot-coordination-health` scorecard — was
+   * handed to an agent as work. Migration 793 backfilled them.
+   *
+   * The tests above pin the TOPIC and the KIND, which is what keeps an observation away
+   * from the digest and the auto-implement tier. Neither of those is what the claim floor
+   * reads, so neither would have caught the leak. This pins the field that actually does.
+   */
+  it('a lane:observation capture STAMPS payload.lane — the only field the D-005 claim floor reads', async () => {
+    const payloads: Array<Record<string, unknown> | undefined> = [];
+    const deps: CaptureDeps = {
+      searchIssues: async () => [],
+      createIssue: async (input) => {
+        payloads.push(input.payload as Record<string, unknown> | undefined);
+        return issue({ id: 'EI-OBS', title: input.title, kind: 'change' });
+      },
+    };
+
+    await captureImprovement({ title: 'a sensor reading', kind: 'change', lane: 'observation' }, deps);
+
+    // The exact string the floor compares against — not merely "some lane was set".
+    expect(payloads[0]?.lane).toBe('observation');
+  });
+
+  it('an improvement capture does NOT stamp the observation lane — the floor must not swallow real work', async () => {
+    // The opposite direction, and the dangerous one: over-stamping would hide genuine
+    // claimable improvements from every agent, silently and with no error anywhere.
+    const payloads: Array<Record<string, unknown> | undefined> = [];
+    const deps: CaptureDeps = {
+      searchIssues: async () => [],
+      createIssue: async (input) => {
+        payloads.push(input.payload as Record<string, unknown> | undefined);
+        return issue({ id: 'EI-IMP', title: input.title, kind: 'bug' });
+      },
+    };
+
+    await captureImprovement({ title: 'a real friction worth fixing', kind: 'bug' }, deps);
+
+    expect(payloads[0]?.lane).not.toBe('observation');
+  });
 });
 
 // ── 2. the matcher dedups across rephrasings ─────────────────────────────────
