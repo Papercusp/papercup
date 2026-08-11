@@ -5,6 +5,7 @@ import { useQueryState, parseAsBoolean, parseAsString, parseAsStringEnum } from 
 import { useSyncQuery } from '@papercusp/sync';
 import { fmtCpuPct, resourceTitle, useResourceTotals } from './use-resource-totals';
 import type {
+  LiveProcessRow,
   ScheduleTaskRow,
   ScheduleTaskSummary,
   TaskResourceTotals,
@@ -52,8 +53,8 @@ import KillTaskControl, { KillOutcomeProvider, useKillOutcomeHoist } from './Kil
  *
  * What this shows that no process table can: WHO launched each task, for which
  * work-item, under what budget, and what it is costing right now. The `unaccounted`
- * bucket at the top is the no-escape signal — processes inside our cgroup slice
- * that no chokepoint registered.
+ * bucket at the top is the no-escape signal — processes with no live ledger row.
+ * Its cgroup provenance is preserved so the pane never invents registration history.
  */
 
 type Row = {
@@ -96,7 +97,12 @@ type Live = {
   error?: string;
 };
 
-type LiveProcess = { pid: number; cmdline: string | null; cgroupPath: string; owned: boolean };
+/** Optional discriminants keep an older operator payload fail-loud: absent scope is
+ * treated as unaccounted, never silently flattened into an exemption. */
+type LiveProcess = Omit<LiveProcessRow, 'scope' | 'exemptReason'> & {
+  scope?: LiveProcessRow['scope'];
+  exemptReason?: LiveProcessRow['exemptReason'];
+};
 
 type Payload = {
   enabled: boolean;
@@ -129,6 +135,67 @@ type Payload = {
  *  whole claim is that it is a task manager, not a process manager. */
 export const TASK_KINDS = ['all', 'running', 'recurring'] as const;
 export type TaskKind = (typeof TASK_KINDS)[number];
+
+export type ProcessBucket = 'managed' | 'unaccounted' | 'abandoned-window' | 'exempt';
+
+/** The scan's provenance rendered as four non-overlapping public states. */
+export function processBucket(p: Pick<LiveProcess, 'owned' | 'scope'>): ProcessBucket {
+  if (p.owned) return 'managed';
+  if (p.scope === 'abandoned-window') return 'abandoned-window';
+  if (p.scope === 'exempt') return 'exempt';
+  // Explicit `unaccounted` and an older payload with no discriminant both fail
+  // toward visibility. Unknown must never be presented as deliberately exempt.
+  return 'unaccounted';
+}
+
+export function countProcessBuckets(rows: readonly LiveProcess[]): Record<ProcessBucket, number> {
+  const counts: Record<ProcessBucket, number> = {
+    managed: 0,
+    unaccounted: 0,
+    'abandoned-window': 0,
+    exempt: 0,
+  };
+  for (const row of rows) counts[processBucket(row)] += 1;
+  return counts;
+}
+
+function processProvenance(p: LiveProcess): {
+  glyph: string;
+  label: string;
+  detail: string;
+  color: string;
+} {
+  switch (processBucket(p)) {
+    case 'managed':
+      return {
+        glyph: '●',
+        label: 'managed lineage',
+        detail: 'inside the managed cgroup slice',
+        color: 'var(--good, #4ade80)',
+      };
+    case 'abandoned-window':
+      return {
+        glyph: '◍',
+        label: 'window closed',
+        detail: 'started from a terminal window that is no longer present',
+        color: 'var(--warn)',
+      };
+    case 'exempt':
+      return {
+        glyph: '◌',
+        label: 'out of scope',
+        detail: 'an allowed external lifetime; not a confirmed task escape',
+        color: 'var(--muted, #888)',
+      };
+    case 'unaccounted':
+      return {
+        glyph: '○',
+        label: 'unaccounted',
+        detail: 'no managed task scope and no allowed external lifetime',
+        color: 'var(--bad)',
+      };
+  }
+}
 
 /** `node …/foo/bar.ts --flag` → `bar.ts` — the part a human scans for. Pure. */
 export function shortCmd(cmdline: string | null): string {
@@ -305,16 +372,19 @@ const PROC_COLUMNS: TableColumn<LiveProcess>[] = [
     key: 'owned',
     header: '',
     headerStyle: head,
-    // A dot, not a word: this column repeats on every row and the label belongs in
-    // the section header, not 400 times down the page.
-    render: (p) => (
-      <span
-        title={p.owned ? 'enrolled — inside our slice, attributable' : 'unenrolled — visible but not attributable'}
-        style={{ color: p.owned ? 'var(--good, #4ade80)' : 'var(--muted, #888)' }}
-      >
-        {p.owned ? '●' : '○'}
-      </span>
-    ),
+    // A glyph, not a repeated word; its accessible name carries the exact state.
+    render: (p) => {
+      const provenance = processProvenance(p);
+      return (
+        <span
+          aria-label={provenance.label}
+          title={`${provenance.label} — ${provenance.detail}`}
+          style={{ color: provenance.color }}
+        >
+          {provenance.glyph}
+        </span>
+      );
+    },
     cellStyle: cell,
   },
   { key: 'pid', header: 'pid', headerStyle: head, render: (p) => p.pid, cellStyle: cell },
@@ -467,6 +537,7 @@ export default function TasksClient(): ReactElement {
 
   const live = data?.live ?? null;
   const liveProcs = useMemo(() => data?.liveProcesses ?? [], [data]);
+  const liveProcessBuckets = useMemo(() => countProcessBuckets(liveProcs), [liveProcs]);
   // `undefined` (server did not ship the key) and `[]` (it did, and there are none) are
   // different answers — see the Payload comment. Only the second may render an empty
   // table; the first renders nothing at all.
@@ -550,7 +621,11 @@ export default function TasksClient(): ReactElement {
       {unaccountedGroups.length > 0 && (
         <div style={{ marginBottom: 16, border: '1px solid var(--bad)', borderRadius: 4 }}>
           <div style={{ ...cell, fontWeight: 600, color: 'var(--bad)', borderBottom: 'none' }}>
-            {unaccountedGroups.length} unaccounted cgroup(s) — running inside our slice with no ledger row
+            {unaccountedGroups.length} unaccounted cgroup(s) — running with no live ledger row
+          </div>
+          <div style={{ ...cell, opacity: 0.8 }}>
+            The cgroup path shows whether a managed scope exists. This can be a lost enrolment write or descendants
+            that outlived their row; the scan does not prove which.
           </div>
           {unaccountedGroups.slice(0, 8).map((g) => (
             <div key={g.cgroupPath} style={{ ...cell, opacity: 0.85 }}>
@@ -687,14 +762,14 @@ export default function TasksClient(): ReactElement {
           <div style={{ ...mono, fontSize: 13, marginBottom: 6 }}>
             Running now · {liveProcs.length} process(es)
             <span style={{ opacity: 0.65 }}>
-              {' '}
-              · {liveProcs.filter((p) => p.owned).length} enrolled · {liveProcs.filter((p) => !p.owned).length}{' '}
-              unenrolled
+              {' '}· {liveProcessBuckets.managed} managed lineage · {liveProcessBuckets.unaccounted} unaccounted ·{' '}
+              {liveProcessBuckets['abandoned-window']} window closed · {liveProcessBuckets.exempt} out of scope
             </span>
           </div>
           <p style={{ opacity: 0.65, fontSize: 12, maxWidth: 780, marginBottom: 8, lineHeight: 1.45 }}>
-            Enrolled processes carry provenance (they appear in the ledger above). Unenrolled ones are real and
-            running, but were started outside a chokepoint — so we can see them, not attribute them.
+            Managed-lineage processes run inside our owned slice. Unaccounted means the scanner found neither a
+            managed task scope nor an allowed external lifetime. Window-closed and out-of-scope rows are shown for
+            completeness; neither is automatically a task escape.
           </p>
           <div style={{ overflowX: 'auto' }}>
             <Table

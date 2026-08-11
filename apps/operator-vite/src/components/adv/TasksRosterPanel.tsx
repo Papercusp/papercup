@@ -13,10 +13,9 @@
  *   LEDGER rows   — enrolled tasks, with the provenance a process table cannot
  *                   give: who launched it, for which work-item, under what budget.
  *   SCANNED rows  — `liveProcesses`, every process actually running (WI-6475).
- *                   An `owned:false` row is inside our signature but was never
- *                   enrolled by a chokepoint; it renders in the unenrolled style
- *                   because that gap is the point, not an implementation detail
- *                   to hide. P-009 is what shrinks this group toward empty.
+ *                   `scope` separates a genuine unaccounted process from an
+ *                   allowed external lifetime or a closed terminal window. Only
+ *                   the first is rendered as a chokepoint gap.
  *
  * Merging them would imply a provenance the scanned rows do not have. Separating
  * them makes "every Papercusp process is visible here" true today, while keeping
@@ -349,7 +348,10 @@ export default function TasksRosterPanel({ active }: { active: boolean }) {
       {orphans.length > 0 && (
         <div className="pc-tasks-roster__alarm" data-testid="tasks-unaccounted">
           <strong>{orphans.length} unaccounted cgroup{orphans.length === 1 ? '' : 's'}</strong>
-          <span>Running inside our slice with no ledger row — something spawned outside a chokepoint.</span>
+          <span>
+            Running with no live ledger row. The cgroup path distinguishes a managed scope from a process outside
+            every task scope; inspect that provenance before attributing the cause.
+          </span>
         </div>
       )}
 

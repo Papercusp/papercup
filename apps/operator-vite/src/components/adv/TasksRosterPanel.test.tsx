@@ -300,7 +300,10 @@ describe('<TasksRosterPanel>', () => {
       live: { scan: { processes: 400 }, unaccounted: [{ cgroupPath: '/x', pids: [9], sample: 's' }] },
     });
     render(<TasksRosterPanel active />);
-    expect(screen.getByTestId('tasks-unaccounted').textContent).toContain('1 unaccounted cgroup');
+    const alarm = screen.getByTestId('tasks-unaccounted').textContent ?? '';
+    expect(alarm).toContain('1 unaccounted cgroup');
+    expect(alarm).toContain('no live ledger row');
+    expect(alarm).not.toContain('spawned outside a chokepoint');
   });
 
   it('surfaces a degraded scan rather than silently showing a stale ledger', () => {

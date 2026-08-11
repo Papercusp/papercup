@@ -1,5 +1,15 @@
 import { describe, it, expect } from 'vitest';
-import { fmtBytes, fmtCpu, fmtAge, stateColor, fmtArmed, armedColor, TASK_KINDS } from './TasksClient';
+import {
+  armedColor,
+  countProcessBuckets,
+  fmtAge,
+  fmtArmed,
+  fmtBytes,
+  fmtCpu,
+  processBucket,
+  stateColor,
+  TASK_KINDS,
+} from './TasksClient';
 
 describe('fmtBytes', () => {
   it('scales through the units', () => {
@@ -119,5 +129,34 @@ describe('TASK_KINDS', () => {
     // The pane's claim is that it is a task manager, not a process manager — so
     // `recurring` must be reachable, and `all` is what makes that the default posture.
     expect([...TASK_KINDS]).toEqual(['all', 'running', 'recurring']);
+  });
+});
+
+describe('process provenance', () => {
+  it('keeps managed, unaccounted, closed-window, and exempt lifetimes distinct', () => {
+    expect(processBucket({ owned: true, scope: 'owned' })).toBe('managed');
+    expect(processBucket({ owned: false, scope: 'unaccounted' })).toBe('unaccounted');
+    expect(processBucket({ owned: false, scope: 'abandoned-window' })).toBe('abandoned-window');
+    expect(processBucket({ owned: false, scope: 'exempt' })).toBe('exempt');
+  });
+
+  it('fails an older payload with no scope discriminant toward visibility', () => {
+    expect(processBucket({ owned: false, scope: undefined })).toBe('unaccounted');
+  });
+
+  it('counts each public classification without flattening every non-owned row into a gap', () => {
+    const rows = [
+      { pid: 1, cmdline: 'a', cgroupPath: '/a', owned: true, scope: 'owned', exemptReason: null },
+      { pid: 2, cmdline: 'b', cgroupPath: '/b', owned: false, scope: 'unaccounted', exemptReason: null },
+      { pid: 3, cmdline: 'c', cgroupPath: '/c', owned: false, scope: 'abandoned-window', exemptReason: null },
+      { pid: 4, cmdline: 'd', cgroupPath: '/d', owned: false, scope: 'exempt', exemptReason: 'human-terminal' },
+    ] as const;
+
+    expect(countProcessBuckets(rows)).toEqual({
+      managed: 1,
+      unaccounted: 1,
+      'abandoned-window': 1,
+      exempt: 1,
+    });
   });
 });
