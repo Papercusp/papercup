@@ -269,3 +269,117 @@ describe("citedFacts survives the shaper (EI-19465127338264010)", () => {
     expect(out.results[0].citedFacts).toBeDefined();
   });
 });
+
+/**
+ * EI-20106094931898818 / EI-20190481053365787 — the SAME whitelist-drop class as
+ * the block above, one whitelist over: `projectWorkItem`, not `projectRow`.
+ *
+ * `detail:true` folds the coord substrate onto the workItem (work-items.ts:1156
+ * returns `{ ...wi, topics, posts, links }`) and all three were dropped with
+ * nothing added to `dropped` — so a detail read whose ONLY loss was the comment
+ * thread emitted no `_shapeNote` at all. A caller who explicitly asked for
+ * comments and got neither comments nor a marker reads "this item has none".
+ * That has already produced a false report here.
+ */
+describe("detail:true — content out, evidence-of-content IN", () => {
+  const detailRow = (id = "WI-1", posts = 7) => ({
+    ok: true,
+    id,
+    workItem: {
+      id,
+      state: "open",
+      title: "a title",
+      topics: ["coord-dx", "git-sync"],
+      posts: Array.from({ length: posts }, (_, i) => ({ post_id: i, body: "B".repeat(600) })),
+      links: [{ rel: "blocks", dst: { kind: "work_item", ref: "WI-2" } }],
+    },
+    checkpoint: "short",
+  });
+  const emptyDetail = () => ({
+    ok: true,
+    id: "WI-1",
+    workItem: { id: "WI-1", state: "open", topics: [], posts: [], links: [] },
+    checkpoint: "short",
+  });
+  const wi = (e: Envelope, i = 0) => e.results[i].workItem as Record<string, unknown>;
+
+  it("discloses the COUNT of every dropped detail array, per row and in _shapeNote", () => {
+    const out = shapeWorkItemsGet(envelope([detailRow()]), "trimmed") as Envelope;
+
+    // The content is still dropped — that shaping decision stands.
+    expect(wi(out).posts).toBeUndefined();
+    expect(wi(out).topics).toBeUndefined();
+    expect(wi(out).links).toBeUndefined();
+    // But nobody can now conclude "this item has no comments" from the shape.
+    expect(wi(out).detailOmitted).toEqual({ posts: 7, topics: 2, links: 1 });
+    expect(out._shapeNote?.dropped).toEqual(
+      expect.arrayContaining(["workItem.posts", "workItem.topics", "workItem.links"]),
+    );
+  });
+
+  it("EMPTY arrays are a real answer — no marker, and no _shapeNote at all", () => {
+    // THE PROPERTY THAT MAKES THE MARKER WORTH ANYTHING: its absence is a
+    // positive claim of completeness. A marker on `posts: []` would report
+    // "comments were withheld" about an item that genuinely has none.
+    const out = shapeWorkItemsGet(envelope([emptyDetail()]), "trimmed") as Envelope;
+    expect(wi(out).detailOmitted).toBeUndefined();
+    expect(out._shapeNote).toBeUndefined();
+  });
+
+  it("a detail:false read (fields absent entirely) carries no marker either", () => {
+    const out = shapeWorkItemsGet(
+      envelope([{ ok: true, id: "WI-1", workItem: { id: "WI-1", state: "open" }, checkpoint: "short" }]),
+      "trimmed",
+    ) as Envelope;
+    expect(wi(out).detailOmitted).toBeUndefined();
+  });
+
+  it("attributes the counts to the RIGHT row — payload-level _shapeNote cannot", () => {
+    const out = shapeWorkItemsGet(
+      envelope([emptyDetail(), detailRow("WI-loud", 3)]),
+      "trimmed",
+    ) as Envelope;
+    expect(wi(out, 0).detailOmitted).toBeUndefined();
+    expect(wi(out, 1).detailOmitted).toMatchObject({ posts: 3 });
+  });
+
+  it("stays under the hard ceiling on a 100-row detail read, with ONE label per field", () => {
+    const out = shapeWorkItemsGet(
+      envelope(Array.from({ length: 100 }, (_, i) => detailRow(`WI-${i}`, 20))),
+      "trimmed",
+    ) as Envelope;
+
+    expect(JSON.stringify(out).length).toBeLessThan(PAYLOAD_TIER_HARD_CEILING_CHARS);
+    expect(out.results).toHaveLength(100);
+    // Pins the label design: interpolating the count into the `dropped` label
+    // would emit up to 100 distinct strings here, spending the budget this
+    // shaper exists to protect. The count belongs per row instead.
+    expect(out._shapeNote?.dropped.filter((d) => d === "workItem.posts")).toHaveLength(1);
+  });
+
+  it("CONTROL: a DEFENSIVE always-emit implementation fails the completeness property", () => {
+    // Kept PERMANENTLY. `noteDroppedDetail` is valuable only because it stays
+    // silent on an empty array. If someone later "hardens" it to always emit,
+    // this suite must go red rather than quietly accept a marker that means
+    // nothing. Modelling the wrong implementation here proves the assertion in
+    // the empty-array test is the one that catches it, and that the passing
+    // tests above are not passing vacuously.
+    const defensive = (w: Record<string, unknown>) => {
+      const omitted: Record<string, number> = {};
+      for (const f of ["posts", "topics", "links"] as const) {
+        omitted[f] = Array.isArray(w[f]) ? (w[f] as unknown[]).length : 0;
+      }
+      return omitted; // always emits — the bug
+    };
+
+    const empty = emptyDetail();
+    expect(defensive(empty.workItem)).toEqual({ posts: 0, topics: 0, links: 0 });
+    // The REAL implementation says nothing on that same input.
+    const out = shapeWorkItemsGet(envelope([empty]), "trimmed") as Envelope;
+    expect(wi(out).detailOmitted).toBeUndefined();
+    // Calibration: and it DOES speak when there is something to disclose, so
+    // "says nothing" is not simply broken.
+    const loud = shapeWorkItemsGet(envelope([detailRow()]), "trimmed") as Envelope;
+    expect(wi(loud).detailOmitted).toMatchObject({ posts: 7 });
+  });
+});

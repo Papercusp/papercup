@@ -24,6 +24,10 @@
  *   3. `workItem.summary` / `workItem.payload` / `lifecycle` events are the bulk,
  *      and are what a trimmed tier should spend its budget on instead. Dropped or
  *      capped, ALWAYS with a `_shapeNote` saying so (D-004: no silent caps).
+ *   4. The `detail:true` coord substrate (`workItem.topics/posts/links`) is
+ *      dropped, but its COUNTS are disclosed — see `noteDroppedDetail`. Content
+ *      out, evidence-of-content in: a reader must never conclude "no comments"
+ *      from a shaping decision.
  *
  * SELF-LIMITING, not hand-tuned. `ids` accepts up to 100, and hand-picked
  * per-field caps that look fine for one row silently blow the 30k
@@ -97,10 +101,55 @@ function clip(value: unknown, max: number): unknown {
   return `${value.slice(0, max)}…[TRUNCATED +${value.length - max} chars — re-read with payloadTier:'full']`;
 }
 
+/**
+ * EI-20106094931898818 / EI-20190481053365787. `detail:true` folds the coord
+ * substrate ONTO the workItem — `getWorkItemDetail` returns
+ * `{ ...wi, topics, posts, links }` (work-items.ts:1156) — and the allow-list
+ * below drops all three, because they are simply absent from its literal.
+ *
+ * That drop was SILENT, which on this field is the worst-shaped lie available:
+ * a caller who passed `detail:true` and sees no `posts` key reads it as "this
+ * item has no comments" and acts on it. That misreading has already happened
+ * here — a finding WAS on an item, as an unread comment, and got reported as
+ * never filed. `_shapeNote` is emitted only when `dropped` is non-empty, so
+ * before this a detail read whose ONLY loss was the thread produced no marker
+ * at all, and absence of the marker is a positive claim of completeness.
+ *
+ * The COUNTS are therefore disclosed even though the content is not. The
+ * recovery CALL stays once in `_shapeNote.next` instead of per row: repeating
+ * it across 100 rows would spend the budget this shaper exists to protect
+ * (D-012). A count is ~30 chars.
+ *
+ * Only a NON-EMPTY array is disclosed. An empty `posts: []` is a real answer
+ * ("no comments"), and a defensively-emitted marker on it would destroy the one
+ * property that makes the marker worth anything.
+ *
+ * The numbers are what was PRESENT ON THE ROW before shaping — deliberately not
+ * described as the thread total, which this shaper cannot see.
+ */
+function noteDroppedDetail(w: Row, dropped: Set<string>): Record<string, number> | null {
+  const omitted: Record<string, number> = {};
+  for (const field of ["posts", "topics", "links"] as const) {
+    const value = w[field];
+    if (Array.isArray(value) && value.length > 0) {
+      omitted[field] = value.length;
+      // The LABEL carries no count, deliberately. `dropped` is a payload-level
+      // Set shared by every row, so an interpolated count would emit up to one
+      // distinct string PER ROW on a bulk read — noise, and budget spent on the
+      // very thing this shaper protects. The count lives per row in
+      // `detailOmitted`; the label matches the countless convention used by
+      // `workItem.summary` / `lifecycle.events` / `citedFacts.cited`.
+      dropped.add(`workItem.${field}`);
+    }
+  }
+  return Object.keys(omitted).length > 0 ? omitted : null;
+}
+
 /** Identity + lifecycle facts about the item; never the summary/payload blob. */
-function projectWorkItem(raw: unknown, caps: FieldCaps): unknown {
+function projectWorkItem(raw: unknown, caps: FieldCaps, dropped: Set<string>): unknown {
   if (!raw || typeof raw !== "object") return raw ?? null;
   const w = raw as Row;
+  const detailOmitted = noteDroppedDetail(w, dropped);
   return {
     id: w.id ?? null,
     kind: w.kind ?? null,
@@ -117,6 +166,10 @@ function projectWorkItem(raw: unknown, caps: FieldCaps): unknown {
     updatedAt: w.updatedAt ?? null,
     closedAt: w.closedAt ?? null,
     ...(caps.summary > 0 ? { summary: clip(w.summary, caps.summary) } : {}),
+    // Per-row attribution: `dropped` is payload-level, so across 100 rows it
+    // cannot say WHICH item has the 7 unread comments. Mirrors the existing
+    // `citedTruncated` / `eventsTruncated` convention in this file.
+    ...(detailOmitted ? { detailOmitted } : {}),
   };
 }
 
@@ -201,7 +254,7 @@ function projectRow(r: Row, caps: FieldCaps, checkpointChars: number, dropped: S
   return {
     ok: r.ok ?? true,
     id: r.id ?? null,
-    workItem: projectWorkItem(r.workItem, caps),
+    workItem: projectWorkItem(r.workItem, caps, dropped),
     // THE payload of this tool. Degraded only after everything above was already
     // dropped, and never without the loud in-band marker.
     checkpoint: clip(checkpoint, checkpointChars),
