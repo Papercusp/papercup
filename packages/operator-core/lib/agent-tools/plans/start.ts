@@ -61,9 +61,9 @@ const argsSchema = z.object({
 export default defineTool({
   name: 'plans:start',
   description:
-    "Approve a plan and promote its items into work-items. Starting IS the approval signal — a draft plan is auto-advanced to 'ready'. Re-starting is a no-op. While papercusp-mug-kettle-system is OFF the retired op_status axis is not written.",
+    "Approve a plan and start its item-promotion path. Starting IS the approval signal — a draft plan is auto-advanced to 'ready'. Re-starting is a no-op. While papercusp-mug-kettle-system is OFF the retired op_status axis is not written.",
   guidance: {
-    when: 'An agent is asked to begin work on a specific plan — this promotes its items into work-items.',
+    when: 'An agent is asked to begin work on a specific plan — this starts its item-promotion path into work-items.',
     notWhen:
       'The plan is already started. Use plans:pause to suspend, plans:set-run-status for run lifecycle.',
     chaining: 'plans:list to find the slug, then plans:start { slug }.',
@@ -287,7 +287,7 @@ export default defineTool({
             : {
                 opStatusRetired: true as const,
                 message:
-                  'Plan approved and its items promoted. The operational started axis is RETIRED ' +
+                  'Plan approved. Item promotion runs asynchronously; verify claimable work-items before launching a fleet. The operational started axis is RETIRED ' +
                   '(papercusp-mug-kettle-system is OFF, the delivered state), so op_status was not ' +
                   'written — su agents self-select these items via scheduler:get_next instead of ' +
                   'waiting for a dispatcher. Flip the flag ON in /admin/features to restore it.',

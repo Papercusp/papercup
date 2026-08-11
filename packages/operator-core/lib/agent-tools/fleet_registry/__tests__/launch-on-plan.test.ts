@@ -1944,6 +1944,30 @@ describe('fleet:launch-on-plan handler — plan→work-item promotion failsafe (
     expect(payload.promotionFailsafe).toMatchObject({ ran: true, promoted: 0, skipped: 5 });
   });
 
+  it('explains a zero-promotion spec-triad refusal instead of implying the lane is fed', async () => {
+    promotePlanItemsMock.mockResolvedValue({
+      promoted: 0,
+      skipped: 5,
+      specTriadBlocked: true,
+      specTriadMissing: ['requirements', 'design'],
+      specTriadWorkItem: 'EI-TRIAD-1',
+    });
+    const res = await tool.handler(
+      { name: 'Missing Triad', plan: 'my-plan', harness: 'papercusp', count: 1 } as never,
+      {} as never,
+    );
+    const payload = JSON.parse((res as any).content[0].text);
+    expect(payload.message).toMatch(/0 of 5 open plan items.*spec triad.*Nothing is claimable yet/i);
+    expect(payload.message).toContain('requirements, design');
+    expect(payload.message).toContain('EI-TRIAD-1');
+    expect(payload.promotionFailsafe).toMatchObject({
+      ran: true,
+      promoted: 0,
+      skipped: 5,
+      specTriadBlocked: true,
+    });
+  });
+
   it('never blocks the launch when promotion throws (best-effort)', async () => {
     promotePlanItemsMock.mockRejectedValue(new Error('promotion boom'));
     const res = await tool.handler(

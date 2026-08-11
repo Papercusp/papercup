@@ -101,6 +101,35 @@ import { resolveGoalLaunch } from '../../goal-launch-settings';
 // keeping the heavy promotion graph out of this module's load path — the type is erased.
 import type { PromotePlanResult } from '../../plan-workitem-promotion-run';
 
+/**
+ * Keep the promotion failsafe's prose aligned with its machine-readable result.
+ * A zero-promoted result is normally an idempotent no-op, but the spec-triad
+ * refusal is different: the open items are not covered and the lane is empty.
+ */
+function promotionFailsafeWarning(
+  planSlug: string,
+  result: (PromotePlanResult & { ran: boolean }) | null,
+): string | null {
+  if (!result?.ran) return null;
+  if (result.promoted > 0) {
+    return `⚠ plans:start had not promoted this plan — the launch FAILSAFE auto-promoted ${result.promoted} plan item${result.promoted === 1 ? '' : 's'} to claimable work-items. Run plans:start yourself BEFORE launching next time.`;
+  }
+  if (result.flagOff) {
+    return `⚠ plan→work-item promotion is dark (flag off) so the launch failsafe promoted nothing. If plans:start was not run, members' scheduler:get_next will find nothing and idle — ensure claimable work-items exist for plan \`${planSlug}\`.`;
+  }
+  if (result.specTriadBlocked && result.skipped > 0) {
+    const missing = result.specTriadMissing?.join(', ') || 'required sections';
+    const remedy = result.specTriadWorkItem
+      ? ` Claim ${result.specTriadWorkItem} to fill them, then rerun plans:start.`
+      : ' Write the missing sections, then rerun plans:start.';
+    return `⚠ plan→work-item promotion produced 0 of ${result.skipped} open plan item${result.skipped === 1 ? '' : 's'} — blocked by the spec triad (missing: ${missing}). Nothing is claimable yet.${remedy}`;
+  }
+  if (result.skipped === 0) {
+    return `⚠ plan \`${planSlug}\` has no open items to promote — members may find nothing to claim. Confirm the plan has items (plans:items) and was started.`;
+  }
+  return null;
+}
+
 /** Opening more than this many desktop windows in one call is heavy + almost always
  *  a mistake — mirrors capability:terminal's MAX_TERMINALS.
  *
@@ -1833,11 +1862,8 @@ export default defineTool({
 
       const placedTotal = remotePlacements.reduce((s, p) => s + p.count, 0);
       const lines: string[] = [];
-      if (promotionFailsafe?.ran && promotionFailsafe.promoted > 0) {
-        lines.push(
-          `⚠ plans:start had not promoted this plan — the launch FAILSAFE auto-promoted ${promotionFailsafe.promoted} plan item${promotionFailsafe.promoted === 1 ? '' : 's'} to claimable work-items. Run plans:start yourself BEFORE launching next time.`,
-        );
-      }
+      const promotionWarning = promotionFailsafeWarning(planSlug!, promotionFailsafe);
+      if (promotionWarning) lines.push(promotionWarning);
       lines.push(
         remotePlacements.length
           ? `Published ${placedTotal} REMOTE member placement${placedTotal === 1 ? '' : 's'} for fleet \`${fleetSlug}\` on plan \`${planSlug}\` across ${remotePlacements.length} machine${remotePlacements.length === 1 ? '' : 's'}${liveMembers > 0 ? ` (deficit top-up: ${liveMembers} already live of the ${count} requested)` : ''}:`
@@ -2587,22 +2613,11 @@ export default defineTool({
     // Surface the capacity note when it CLAMPED (a real concurrency limit) OR when the
     // weekly-token-budget is merely tight (utilizationTight — advisory; members still launch).
     if (capacityClamp && (capacityClamp.clamped || capacityClamp.utilizationTight)) lines.push(capacityClamp.reason);
-    // #3 failsafe report: tell the leader if the launch had to backstop a missing plans:start.
-    if (promotionFailsafe?.ran) {
-      if (promotionFailsafe.promoted > 0) {
-        lines.push(
-          `⚠ plans:start had not promoted this plan — the launch FAILSAFE auto-promoted ${promotionFailsafe.promoted} plan item${promotionFailsafe.promoted === 1 ? '' : 's'} to claimable work-items, so the fleet is NOT launching onto an empty backlog. Run plans:start yourself BEFORE launching next time (it also gives the Mug/orchestrator plan-started visibility, which this failsafe does not).`,
-        );
-      } else if (promotionFailsafe.flagOff) {
-        lines.push(
-          `⚠ plan→work-item promotion is dark (flag off) so the launch failsafe promoted nothing. If plans:start was not run, members' scheduler:get_next will find nothing and idle — ensure claimable work-items exist for plan \`${planSlug}\`.`,
-        );
-      } else if (promotionFailsafe.skipped === 0) {
-        lines.push(
-          `⚠ plan \`${planSlug}\` has no open items to promote — members may find nothing to claim. Confirm the plan has items (plans:items) and was started.`,
-        );
-      }
-    }
+    // #3 failsafe report: tell the leader if the launch had to backstop a missing
+    // plans:start, or if promotion was refused by the spec-triad gate. The latter
+    // is not an idempotent no-op: the lane is empty and the remedy is actionable.
+    const promotionWarning = promotionFailsafeWarning(planSlug!, promotionFailsafe);
+    if (promotionWarning) lines.push(promotionWarning);
     // P-010: surface the pool-effect so the leader sees whether the lane is actually fed
     // (matched > 0) — the counter-signal to the silent-starvation shape the guard refuses.
     // EI-19276371141300541: this now also fires for a fresh plan-only lane (no claimKinds), so

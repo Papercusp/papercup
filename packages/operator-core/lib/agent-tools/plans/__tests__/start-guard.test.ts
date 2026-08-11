@@ -208,6 +208,10 @@ describe('plans:start — the retired op_status axis (P-047)', () => {
     // Reporting `status:'started'` on a row that carries nothing is the WI-5825
     // "announced a start that never happened" bug wearing a flag.
     expect(res.data.results[0]).toMatchObject({ ok: true, status: null, opStatusRetired: true });
+    // Promotion is fire-and-forget and may be refused by the spec-triad gate;
+    // this response must not claim items were promoted when it cannot know that.
+    expect(res.data.results[0].message).toContain('verify claimable work-items');
+    expect(res.data.results[0].message).not.toMatch(/items promoted/i);
     // transitioned MUST stay false, or the `plan started` demand event fires at
     // the retired Queen for a transition that did not occur. This is the trap in
     // the retired branch: prev_op_status mirrors the CURRENT value there, so a
