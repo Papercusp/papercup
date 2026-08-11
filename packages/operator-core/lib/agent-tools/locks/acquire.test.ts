@@ -86,6 +86,10 @@ beforeEach(() => {
 });
 
 describe('locks:acquire — outcome branches', () => {
+  it('opts out of the ambient workspace transaction because the handler owns its DB scopes', () => {
+    expect((tool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+
   it('guidance describes managed Codex hook support plus explicit-lock fallback', () => {
     const guidance = `${tool.guidance?.when ?? ''}\n${tool.guidance?.notWhen ?? ''}`;
     expect(guidance).toMatch(/managed Codex\/Claude\/OMP homes hook apply_patch\/Edit\/Write/);

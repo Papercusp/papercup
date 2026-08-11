@@ -111,6 +111,11 @@ export default defineTool({
   // + unsubscribe + progress-emit work that runs after wait_until.
   timeoutSec: MAX_WAIT_SEC + 30,
   requirePrincipal: false,
+  // EI-20189550491880126: the handler never reads ctx.tx. It performs its own
+  // inWorkspaceTxn work and may await authority/listener paths, so retaining
+  // the host ambient workspace transaction would pin an org-app pool slot for
+  // the whole acquire and make unrelated lock calls time out under fleet load.
+  skipWorkspaceTx: true,
   agentRoles: [...AGENT_ROLES],
   args: z.object({
     paths: z.array(z.string().min(1)).max(50).optional().describe('repo-relative POSIX file paths (no ./, .., backslashes, or absolute paths)'),
