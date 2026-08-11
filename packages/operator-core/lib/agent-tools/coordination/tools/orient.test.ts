@@ -2242,3 +2242,179 @@ describe('EI-20013545515660920 laneClaim — a failed lane claim is never silent
     });
   });
 });
+
+/**
+ * EI-20113865649946366 — every trim orient does to ITSELF must announce itself AND
+ * name a fetch path. Owner criterion (2026-08-10): a DISCLOSED trim is fine; a SILENT
+ * one is the bug, because the agent cannot tell "this is all there is" from "this is
+ * the first N" — and orient is the once-per-session bootstrap where that costs most.
+ *
+ * EVERY case below is asserted in BOTH directions: the marker appears when something
+ * was genuinely cut, and is ABSENT when nothing was. The absence half is the half that
+ * matters — a one-directional suite passes just as happily on a fold that hardcodes
+ * `truncated: true`, which would train agents to ignore the marker entirely.
+ */
+describe('EI-20113865649946366: orient discloses its own trims (two-directional)', () => {
+  describe('claimable', () => {
+    it('reports the ORACLE\'s authoritative total — not the limit-bounded row count', async () => {
+      // The defect this pins: orient sliced rows to `claimableLimit` and published the
+      // resulting LENGTH as the total, so a bounded 20 read as "there are 20" while the
+      // oracle's own count was ~1677. The oracle returns that count in the SAME response
+      // the rows come from; `unwrapRows` was discarding it.
+      const { call } = fakeCall({
+        ...CORE,
+        'work_items:claimable': () => ({
+          claimable: [{ id: 'EI-1', state: 'open' }, { id: 'EI-2', state: 'open' }],
+          claimableCount: 1677,
+        }),
+        'work_items:list': () => [],
+      });
+      const r = await composeOrient({ harness: 'h', claimableLimit: 2 }, call, 'me');
+      expect(r.claimableTruncated).toBeDefined();
+      expect(r.claimableTruncated?.total).toBe(1677);
+      expect(r.claimableTruncated?.shown).toBe(2);
+      // The whole point: the total must NOT be the row count. If a future refactor
+      // re-derives it from `claimable.length`, this is what fails.
+      expect(r.claimableTruncated?.total).not.toBe(r.claimable.length);
+      expect(r.claimableTruncated?.more).toMatch(/work_items:claimable/);
+      // Scope is stated, so the number can't be read as "everything claimable".
+      expect(r.claimableTruncated?.totalScope).toMatch(/issue-family/);
+    });
+
+    it('ABSENT when the oracle says the delivered rows are the whole lane', async () => {
+      const { call } = fakeCall({
+        ...CORE,
+        'work_items:claimable': () => ({
+          claimable: [{ id: 'EI-1', state: 'open' }, { id: 'EI-2', state: 'open' }],
+          claimableCount: 2,
+        }),
+        'work_items:list': () => [],
+      });
+      const r = await composeOrient({ harness: 'h', claimableLimit: 20 }, call, 'me');
+      expect(r.claimable).toHaveLength(2);
+      expect(r.claimableTruncated).toBeUndefined();
+    });
+
+    it('no oracle (no harness) + a FULL page ⇒ truncatedByLimit, and NEVER a fabricated total', async () => {
+      // The fallback leg cannot know the population. Asking for N and getting N back is
+      // evidence that more exist; it is not a count of them. Publishing `shown` as a
+      // total here would be the very defect above, one layer down.
+      const { call } = fakeCall({
+        ...CORE,
+        'work_items:list': () => [{ id: 'WI-1', state: 'todo' }, { id: 'WI-2', state: 'todo' }],
+      });
+      const r = await composeOrient({ claimableLimit: 2 }, call, 'me');
+      expect(r.claimableTruncated?.truncatedByLimit).toBe(true);
+      expect(r.claimableTruncated?.limit).toBe(2);
+      expect(r.claimableTruncated?.total).toBeUndefined();
+    });
+
+    it('ABSENT on the no-oracle leg when the page came back short', async () => {
+      const { call } = fakeCall({
+        ...CORE,
+        'work_items:list': () => [{ id: 'WI-1', state: 'todo' }],
+      });
+      const r = await composeOrient({ claimableLimit: 20 }, call, 'me');
+      expect(r.claimableTruncated).toBeUndefined();
+    });
+  });
+
+  describe('memory hit bodies', () => {
+    const longBody = 'x'.repeat(500); // > MEMORY_TEXT_CAP (200)
+
+    it('marks a clipped hit and says how much is missing', async () => {
+      const { call } = fakeCall({
+        ...CORE,
+        'memory:search': () => ({ ok: true, results: [{ id: 'mem1', memory: longBody, score: 0.9 }] }),
+        'coord:declare-intent': () => ({ ok: true }),
+      });
+      const r = await composeOrient({ intent: 'recall something' }, call, 'me');
+      const hit = r.memory?.hits[0];
+      expect(hit?.truncated).toBe(true);
+      expect(hit?.fullChars).toBe(500);
+      expect(hit?.memory?.length).toBe(200);
+      // Fold-level: a count of clipped bodies + the verb that returns them. Distinct
+      // from `note`, which says the RECALL is non-exhaustive — a different claim from
+      // "the facts you WERE given are themselves cut".
+      expect(r.memory?.bodiesTruncated?.hits).toBe(1);
+      expect(r.memory?.bodiesTruncated?.cap).toBe(200);
+      expect(r.memory?.bodiesTruncated?.more).toMatch(/memory:search/);
+    });
+
+    it('ABSENT when every delivered body fits under the cap', async () => {
+      const { call } = fakeCall({
+        ...CORE,
+        'memory:search': () => ({ ok: true, results: [{ id: 'mem1', memory: 'short fact', score: 0.9 }] }),
+        'coord:declare-intent': () => ({ ok: true }),
+      });
+      const r = await composeOrient({ intent: 'recall something' }, call, 'me');
+      expect(r.memory?.hits[0]?.truncated).toBeUndefined();
+      expect(r.memory?.hits[0]?.fullChars).toBeUndefined();
+      expect(r.memory?.bodiesTruncated).toBeUndefined();
+    });
+  });
+
+  describe('recipes', () => {
+    it('discloses a full page and a clipped title', async () => {
+      const { call } = fakeCall({
+        ...CORE,
+        'memory:search': () => ({ ok: true, results: [] }),
+        'coord:declare-intent': () => ({ ok: true }),
+        'recipes:search': () => ({
+          ok: true,
+          recipes: [{ id: 'r1', title: 'T'.repeat(300), runCount: 1, similarity: 0.9 }],
+        }),
+      });
+      const r = await composeOrient({ intent: 'batch some tools', recipesLimit: 1 }, call, 'me');
+      expect(r.recipesTruncated?.truncatedByLimit).toBe(true);
+      expect(r.recipesTruncated?.titlesClipped).toBe(1);
+      expect(r.recipesTruncated?.more).toMatch(/recipes:search/);
+    });
+
+    it('ABSENT when the page is short and every title fits', async () => {
+      const { call } = fakeCall({
+        ...CORE,
+        'memory:search': () => ({ ok: true, results: [] }),
+        'coord:declare-intent': () => ({ ok: true }),
+        'recipes:search': () => ({ ok: true, recipes: [{ id: 'r1', title: 'short', runCount: 1, similarity: 0.9 }] }),
+      });
+      const r = await composeOrient({ intent: 'batch some tools', recipesLimit: 10 }, call, 'me');
+      expect(r.recipes).toHaveLength(1);
+      expect(r.recipesTruncated).toBeUndefined();
+    });
+  });
+
+  describe('announcedGates', () => {
+    // The load-bearing one. This fold is HOW an agent discovers which gate key to park
+    // on, so a gate dropped past the fold is not cosmetic: the agent never learns the
+    // key exists and parks on the wrong event — or on nothing — and waits forever.
+    const gate = (i: number) => ({
+      eventKey: `gate:${i}`,
+      note: null,
+      scopeKind: null,
+      scopeRef: null,
+      subscriberId: 'su-leader',
+      expiresTs: null,
+    });
+
+    it('discloses the count when more gates are visible than the fold shows', async () => {
+      listActiveAnnouncementsMock.mockResolvedValue(Array.from({ length: 12 }, (_, i) => gate(i)));
+      const { call } = fakeCall({ ...CORE });
+      const r = await composeOrient({ harness: 'h' }, call, 'me');
+      expect(r.announcedGates).toHaveLength(8);
+      expect(r.announcedGatesTruncated).toEqual({
+        shown: 8,
+        total: 12,
+        more: expect.stringContaining('events:catalog'),
+      });
+    });
+
+    it('ABSENT when every visible gate fits in the fold', async () => {
+      listActiveAnnouncementsMock.mockResolvedValue(Array.from({ length: 3 }, (_, i) => gate(i)));
+      const { call } = fakeCall({ ...CORE });
+      const r = await composeOrient({ harness: 'h' }, call, 'me');
+      expect(r.announcedGates).toHaveLength(3);
+      expect(r.announcedGatesTruncated).toBeUndefined();
+    });
+  });
+});
