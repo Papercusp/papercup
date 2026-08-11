@@ -24,11 +24,25 @@
 
 import { readProcessIdentity } from '../process-identity';
 import { buildTaskScopeArgv } from '../systemd-scope';
-import { nodeCgroupFs, readProcessCgroupPath, type CgroupFs } from './cgroup-read';
+import {
+  absCgroupDir,
+  nodeCgroupFs,
+  readCgroupProcs,
+  readProcessCgroupPath,
+  sampleCgroup,
+  type CgroupFs,
+} from './cgroup-read';
 import { taskManagerEnabledSync } from './enabled';
 import { scopeSupportKnown } from './managed-spawn';
 import { closeTask, markSpawned, registerTask } from './store';
-import { newTaskId, scopeUnitForTask, sliceForClass, type TaskSpec } from './types';
+import {
+  deriveUserManagerRoot,
+  newTaskId,
+  scopeCgroupRelPath,
+  scopeUnitForTask,
+  sliceForClass,
+  type TaskSpec,
+} from './types';
 
 /**
  * WHY a task ended up unconfined. `null` when it is confined.
@@ -183,7 +197,42 @@ export function completeSyncEnrolment(
 export function finishSyncEnrolment(
   enrolment: SyncEnrolment,
   outcome: { state: 'exited' | 'killed' | 'timed_out'; exitCode?: number | null; exitReason?: string | null },
+  opts: { scopeCgroupPath?: string | null; fs?: CgroupFs } = {},
 ): void {
   if (!enrolment.enrolled) return;
+  // `systemd-run --scope` forks the payload away from the client process. A
+  // synchronous spawn seam cannot await the ledger insert, so its client exit
+  // handler must not close the row while the scope still holds the real work;
+  // doing so turns the live scope into `unaccounted` and removes the safe
+  // taskId/scope cleanup handle. This mirrors managedSpawn's WI-37509 guard.
+  if (enrolment.confined && opts.scopeCgroupPath && scopeHasProcesses(opts.scopeCgroupPath, opts.fs ?? nodeCgroupFs)) {
+    console.warn(
+      `[task-manager] sync-enrolled task ${enrolment.taskId}: the systemd-run client exited ` +
+        'but its scope still holds processes — leaving the row live for the reconciler to close (WI-37509).',
+    );
+    return;
+  }
   void closeTask(enrolment.taskId, outcome).catch(() => {});
+}
+
+/** True only on a positive cgroup read; an unreadable/empty scope may close normally. */
+function scopeHasProcesses(scopeCgroupPath: string, fs: CgroupFs): boolean {
+  const abs = absCgroupDir(scopeCgroupPath);
+  if (readCgroupProcs(abs, fs).length > 0) return true;
+  const pidsCurrent = sampleCgroup(abs, fs).pidsCurrent;
+  return pidsCurrent != null && pidsCurrent > 0;
+}
+
+/** Derive a confined sync task's cgroup path without reading the forked client pid. */
+export function syncEnrolmentScopePath(
+  enrolment: SyncEnrolment,
+  taskClass: TaskSpec['class'],
+  fs: CgroupFs = nodeCgroupFs,
+): string | null {
+  if (!enrolment.confined || !enrolment.scopeUnit) return null;
+  return scopeCgroupRelPath(
+    deriveUserManagerRoot(readProcessCgroupPath(process.pid, fs)),
+    taskClass,
+    enrolment.scopeUnit,
+  );
 }

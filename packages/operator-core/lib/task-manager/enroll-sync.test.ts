@@ -17,6 +17,9 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const m = vi.hoisted(() => ({
   taskManagerEnabledSync: vi.fn<() => boolean>(),
   scopeSupportKnown: vi.fn<() => { ok: boolean; reason?: string } | null>(),
+  absCgroupDir: vi.fn((relative: string) => `/sys/fs/cgroup${relative}`),
+  readCgroupProcs: vi.fn<(_abs: string, _fs: unknown) => number[]>(() => []),
+  sampleCgroup: vi.fn<(_abs: string, _fs: unknown) => { pidsCurrent: number | null }>(() => ({ pidsCurrent: null })),
   registerTask: vi.fn(async (..._a: unknown[]) => ({})),
   markSpawned: vi.fn(async (..._a: unknown[]) => ({})),
   closeTask: vi.fn(async (..._a: unknown[]) => ({})),
@@ -33,16 +36,26 @@ vi.mock('./store', () => ({
 vi.mock('../process-identity', () => ({ readProcessIdentity: () => 'linux:boot:1' }));
 vi.mock('./cgroup-read', () => ({
   nodeCgroupFs: {},
-  readProcessCgroupPath: () => '/sys/fs/cgroup/x',
+  absCgroupDir: (...a: unknown[]) => m.absCgroupDir(...(a as [string])),
+  readCgroupProcs: (...a: unknown[]) => m.readCgroupProcs(...(a as [string, unknown])),
+  sampleCgroup: (...a: unknown[]) => m.sampleCgroup(...(a as [string, unknown])),
+  readProcessCgroupPath: () => '/user.slice/user-1000.slice/user@1000.service/papercup-dev-api.service',
 }));
 
-import { beginSyncEnrolment, completeSyncEnrolment, finishSyncEnrolment } from './enroll-sync';
+import {
+  beginSyncEnrolment,
+  completeSyncEnrolment,
+  finishSyncEnrolment,
+  syncEnrolmentScopePath,
+} from './enroll-sync';
 
 const spec = { class: 'bash-job' as const, title: 't', argv: ['echo'], launchedBy: { kind: 'agent' as const, id: 'a' } };
 
 beforeEach(() => {
   vi.clearAllMocks();
   scopeSupportKnown.mockReturnValue({ ok: true });
+  m.readCgroupProcs.mockReturnValue([]);
+  m.sampleCgroup.mockReturnValue({ pidsCurrent: null });
   registerTask.mockResolvedValue({});
   markSpawned.mockResolvedValue({});
   closeTask.mockResolvedValue({});
@@ -193,6 +206,30 @@ describe('with the task manager ON', () => {
     const e = beginSyncEnrolment({ class: 'bash-job' });
     finishSyncEnrolment(e, { state: 'exited', exitCode: 0 });
     expect(closeTask).toHaveBeenCalledWith(e.taskId, { state: 'exited', exitCode: 0 });
+  });
+
+  it('leaves a live row when the confined client exits before its scope payload', () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const e = beginSyncEnrolment({ class: 'bash-job' });
+    m.readCgroupProcs.mockReturnValue([4242]);
+
+    finishSyncEnrolment(
+      e,
+      { state: 'exited', exitCode: null, exitReason: 'client signal' },
+      { scopeCgroupPath: '/user.slice/papercusp.slice/pc-test.scope' },
+    );
+
+    expect(closeTask).not.toHaveBeenCalled();
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('scope still holds processes'));
+    warn.mockRestore();
+  });
+
+  it('derives a confined scope path from the operator cgroup, never the client pid', () => {
+    const e = beginSyncEnrolment({ class: 'bash-job' });
+    expect(syncEnrolmentScopePath(e, 'bash-job')).toBe(
+      '/user.slice/user-1000.slice/user@1000.service/papercusp.slice/papercusp-bash.slice/papercusp-bash-job.slice/' +
+        `${e.scopeUnit}`,
+    );
   });
 });
 
