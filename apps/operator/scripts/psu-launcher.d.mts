@@ -166,25 +166,17 @@ export function parseArgs(argv: any): {
     headless: boolean;
 };
 /**
- * Map a psu model spec (`<model>[:<effort>]`) onto ONE backend's native model
- * flags. Shared by the fresh-launch wrapper path (suWrapperExtraArgs) and the
- * resume path (resumeArgsFor — WI-3758 `psu --resume … --model`). Pure —
- * exported for tests.
- *
- *   - claude: the CLI takes effort as its OWN flag — a verbatim suffixed spec
- *     sets the model and silently DROPS the effort, so the session falls back
- *     to the box's saved default (how a sonnet-5:high fleet came up at xhigh,
- *     2026-07-01). Split a recognized effort tail into `--effort`; anything
- *     else (a bare id, or a non-effort `:` segment like bedrock's `…-v2:0`)
- *     passes through verbatim.
- *   - codex: `-m` wants a BARE model id; reasoning effort is a CONFIG override
- *     (`-c model_reasoning_effort="high"`, preserving every recognized level,
- *     including `max`, exactly as requested). A verbatim suffixed
- *     spec would set an unknown MODEL and silently drop the effort — the same
- *     effort-drop class the claude branch fixed (2026-07-01), found for codex
- *     launching the backlog-clearance fleet (2026-07-03).
- *   - omp: understands the `<model>[:<effort>]` spec natively → verbatim.
+ * Work around a provider-specific OMP failure without changing the user's OMP
+ * installation or other model/effort selections. The controlled reproduction
+ * for WI-37890 showed `google-vertex/gemini-3.1-pro-preview:high` emits only a
+ * `STOP` with no content and retries until exhaustion, while the same request
+ * at `:low` completes and can call tools. Keep this exact and reversible: an
+ * unrelated Vertex model, provider, or effort must remain byte-identical.
+ * Pure + exported for regression tests.
  */
+export function normalizeOmpModelSpec(model: any): any;
+/** Human-facing notice for the narrow WI-37890 compatibility fallback. */
+export function ompModelCompatibilityNotice(model: any): string | null;
 export function modelArgsFor(agent: any, model: any): any[];
 /**
  * Extra args to pass THROUGH a `*-su` wrapper to the underlying CLI (the
