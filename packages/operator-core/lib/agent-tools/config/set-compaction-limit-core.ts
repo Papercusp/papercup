@@ -8,9 +8,11 @@
  *
  * Auth reuses control-core's `classifyFleetControlInvoker` (one auth model, not a
  * fork): the caller must be the recorded leader of the fleet the TARGET belongs to,
- * the queen (mug|kettle pane), or the owner (su pane). The limit is clamped to the
- * TARGET's model-spec + fleet-role ceiling (a member's 300k [1m] cap, a leader's
- * 400k) — NEVER the caller's, since the caller and target can differ in both.
+ * the queen (mug|kettle pane), or the owner (su pane). The limit is accepted only
+ * within the TARGET's model-spec + fleet-role ceiling — NEVER the caller's, since
+ * the caller and target can differ in both. Over-ceiling requests are rejected
+ * before the write, so a successful response cannot describe a value different
+ * from the request.
  */
 import { classifyAgentPane } from '@papercusp/agent-mcp';
 import { getFleet } from '../../agent-fleets-store';
@@ -28,9 +30,9 @@ export interface CrossSessionLimitResult {
   targetOwnerId: string;
   /** The limit now stored for the target (null when no presence row persisted it). */
   compactionLimit?: number | null;
-  /** The clamp ceiling used (the TARGET's spec + role default). */
+  /** The ceiling used to validate the request (the TARGET's spec + role). */
   cap?: number;
-  /** True + requested/note when the requested limit was clamped down to the cap. */
+  /** Legacy diagnostic field retained for compatibility with older callers. */
   clamped?: boolean;
   requested?: number;
   /** The target's fleet (null when the target is in no fleet). */
@@ -45,9 +47,10 @@ export interface CrossSessionLimitResult {
 }
 
 /**
- * Set `targetOwnerId`'s soft compaction limit to `limit` (clamped to the target's
- * ceiling), authorized as the target's fleet leader / queen / owner. Best-effort on
- * the read-backs; the setCompactionLimit write is the authoritative effect.
+ * Set `targetOwnerId`'s soft compaction limit to `limit`, authorized as the target's
+ * fleet leader / queen / owner. Requests above the target's ceiling are rejected
+ * before the write. Best-effort on the read-backs; the setCompactionLimit write is
+ * the authoritative effect for accepted requests.
  */
 export async function setCompactionLimitForOwner(
   ctx: ResolveIdentityCtx,
@@ -95,15 +98,29 @@ export async function setCompactionLimitForOwner(
     };
   }
 
-  // 3. Clamp to the TARGET's model-spec + role ceiling (a member's leaner [1m] cap when
-  //    the target is a non-leader fleet member), then persist.
+  // 3. Validate against the TARGET's model-spec + role ceiling (a member's leaner
+  //    [1m] cap when the target is a non-leader fleet member) before persisting.
   const spec = await resolveModelSpecForOwner(targetOwnerId).catch(() => null);
   const fleetMember = targetRole != null && targetRole !== 'leader';
-  // This verb IS the deliberate self-set path, so it clamps to the self-set ceiling
+  // This verb IS the deliberate self-set path, so it validates against the self-set ceiling
   // (825k on a [1m] window) rather than the SEEDED default (400k) — the two were one
   // number until 2026-08-08, which made "raise it for wide-context work" impossible to
   // actually do. Seeding is untouched; a fleet member still gets its role cap.
   const cap = selfSetCeilingForSpec(spec, { fleetMember });
+  if (limit > cap) {
+    return {
+      ok: false,
+      targetOwnerId,
+      cap,
+      fleet: fleetSlug,
+      targetRole,
+      invokedAs,
+      requested: limit,
+      error: 'limit_exceeds_cap',
+      message: `requested compaction limit ${limit} exceeds the target's model-derived ceiling ${cap}; no change was made`,
+      note: 'The requested limit was not written because it exceeds the target session\'s current model-derived ceiling.',
+    };
+  }
   const applied = clampCompactionLimit(limit, spec, { fleetMember, selfSet: true });
   await setCompactionLimit(targetOwnerId, applied);
   const after = await getPresence(targetOwnerId).catch(() => null);

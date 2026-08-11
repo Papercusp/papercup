@@ -8,12 +8,14 @@
  * reach a stopping point and call `session:request_compaction`. Persisted per
  * session on `coord_presence.compaction_limit` (keyed by the session owner id).
  *
- * Clamped against the caller's model window (context-trimming-tiers D-001):
- * `limit × 1.2 ≤ window − margin` — the spec resolves best-effort via
+ * Runtime writes are accepted only when the requested value is within the
+ * caller's model-derived ceiling (context-trimming-tiers D-001):
+ * `limit × 1.2 ≤ window − margin`. The spec resolves best-effort via
  * resolveModelSpecForOwner (launch argv → session settings.json). An
- * UNRESOLVABLE spec clamps to the fleet-default [1m] ceiling (400k), NOT the old
- * conservative 200k → 158k (WI-3383): on this opus[1m]-default fleet a genuine
- * small-window model is always explicitly specced, so an unknown is a 1M session.
+ * unresolvable spec uses the fleet-default [1m] ceiling (825k for a self-set),
+ * and an over-ceiling request is rejected so `ok:true` always means the
+ * requested value was the value written. Lower-level seed/setup paths still
+ * use the clamp helper directly.
  */
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
@@ -50,14 +52,14 @@ export default defineTool({
       .min(20_000)
       .max(900_000)
       .describe(
-        'Soft compaction limit in tokens. Clamped so limit × 1.2 stays under the target session\'s model window minus margin (the ~20% overshoot allowance); overshooting the SOFT limit is safe but wasteful.',
+        'Soft compaction limit in tokens. Requests above the target session\'s model-and-role ceiling return ok:false with the ceiling and make no write; in-range requests persist verbatim.',
       ),
     ownerId: z
       .string()
       .min(1)
       .optional()
       .describe(
-        "P-006: the TARGET session to set (default: yourself). Setting ANOTHER session requires you to be the recorded leader of ITS fleet (or the queen / owner) — the limit is clamped to THAT session's model + fleet-role ceiling, not yours. Use to set a member's limit directly instead of asking it to.",
+        "P-006: the TARGET session to set (default: yourself). Setting ANOTHER session requires you to be the recorded leader of ITS fleet (or the queen / owner) — requests above THAT session's model + fleet-role ceiling are rejected with no write. Use to set a member's limit directly instead of asking it to.",
       ),
   }),
   async handler(args, ctx) {
@@ -80,6 +82,19 @@ export default defineTool({
     // fleet's default spec: every request above 400k silently clamped back to it.
     // Seeding still uses defaultCompactionLimitForSpec, so fleet-wide cost is unchanged.
     const cap = selfSetCeilingForSpec(spec);
+    if (args.limit > cap) {
+      return {
+        data: {
+          ok: false,
+          ownerId: identity.ownerId,
+          requested: args.limit,
+          cap,
+          error: 'limit_exceeds_cap',
+          message: `requested compaction limit ${args.limit} exceeds the model-derived ceiling ${cap}; no change was made`,
+          note: 'The requested limit was not written because it exceeds the current model-derived ceiling.',
+        },
+      };
+    }
     const applied = clampCompactionLimit(args.limit, spec, { selfSet: true });
     await setCompactionLimit(identity.ownerId, applied);
     const presence = await getPresence(identity.ownerId);

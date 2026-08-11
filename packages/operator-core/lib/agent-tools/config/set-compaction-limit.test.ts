@@ -48,18 +48,19 @@ beforeEach(() => {
   }));
 });
 
-describe('config:set-compaction-limit clamp', () => {
-  it('an unresolvable spec clamps to the 825k [1m] self-set ceiling, not 158k: 900k → 825k, flagged (WI-3383)', async () => {
+describe('config:set-compaction-limit runtime validation', () => {
+  it('an unresolvable spec rejects a request above the 825k [1m] self-set ceiling, without writing a clamp (WI-3383)', async () => {
     specMock.mockResolvedValue(null);
     const out = (await tool.handler({ limit: 900_000 }, {} as never)) as ToolOut;
-    // Still the WI-3383 property: an unknown spec is an opus[1m] session, so it must
-    // NOT fall back to the haiku-sized 158k. Only the ceiling moved (400k → 825k),
-    // because a self-set is now bounded by the window, not by the SEEDED default.
-    expect(setLimitMock).toHaveBeenCalledWith('su-test', SELF_SET_1M_CEILING);
-    expect(out.data.clamped).toBe(true);
+    // Still the WI-3383 property: an unknown spec is an opus[1m] session, so the
+    // reported ceiling must NOT fall back to the haiku-sized 158k. The runtime
+    // setter rejects instead of storing a different value under ok:true.
+    expect(setLimitMock).not.toHaveBeenCalled();
+    expect(out.data.ok).toBe(false);
+    expect(out.data.error).toBe('limit_exceeds_cap');
     expect(out.data.requested).toBe(900_000);
     expect(out.data.cap).toBe(SELF_SET_1M_CEILING);
-    expect(out.data.compactionLimit).toBe(SELF_SET_1M_CEILING);
+    expect(out.data.compactionLimit).toBeUndefined();
   });
 
   it('a [1m] spec allows an ask ABOVE the 400k seeded default: 700k persists verbatim', async () => {
@@ -69,6 +70,7 @@ describe('config:set-compaction-limit clamp', () => {
     // under the OLD clamp too, so it could not detect the defect at all.
     const out = (await tool.handler({ limit: 700_000 }, {} as never)) as ToolOut;
     expect(setLimitMock).toHaveBeenCalledWith('su-test', 700_000);
+    expect(out.data.ok).toBe(true);
     expect(out.data.clamped).toBeUndefined();
     expect(out.data.compactionLimit).toBe(700_000);
   });

@@ -3,8 +3,8 @@
  * settings WITHOUT a respawn (per-member-declarative-launch-specs P-007, D-003). The three
  * no-respawn levers, bundled behind a single member-targeted call so the leader does not have
  * to fan out three separate tools:
- *   • compactionLimit → the P-006 cross-session setter (setCompactionLimitForOwner), clamped to
- *     the MEMBER's spec + fleet-role ceiling.
+ *   • compactionLimit → the P-006 cross-session setter (setCompactionLimitForOwner), rejected
+ *     when above the MEMBER's spec + fleet-role ceiling (no clamped write).
  *   • claimSpec       → the member's versioned claim spec (scheduler:set_claim_spec's cupId path)
  *     — validated, then stored under the member's own cupId so its next scheduler:get_next applies
  *     it. For the write-time pool-collapse guard use scheduler:set_claim_spec directly.
@@ -27,7 +27,7 @@ import { json, ROUTING_LADDER } from './_shared';
 export default defineTool({
   name: 'fleet:reconfigure-member',
   description:
-    "Reconfigure ONE live fleet member's RUNTIME settings WITHOUT a respawn (as its leader/queen/owner): `compactionLimit` (clamped to the member's own spec+role ceiling), `claimSpec` (its versioned claim spec — validated, applied on its next scheduler:get_next), and/or `brief` (a next-wake message it reads on its next orient). `fleet` defaults to the one fleet you lead. For BOOT-BAKED settings (model/effort/account/carry/contextSize/agent) use fleet:respawn-member instead.",
+    "Reconfigure ONE live fleet member's RUNTIME settings WITHOUT a respawn (as its leader/queen/owner): `compactionLimit` (rejected above the member's own spec+role ceiling; no clamped write), `claimSpec` (its versioned claim spec — validated, applied on its next scheduler:get_next), and/or `brief` (a next-wake message it reads on its next orient). `fleet` defaults to the one fleet you lead. For BOOT-BAKED settings (model/effort/account/carry/contextSize/agent) use fleet:respawn-member instead.",
   guidance: {
     when: 'Adjust a member you lead in place — retune its compaction window, re-steer its claim lane, or stage a next-wake brief — without the cost of a respawn. Pass just the fields you want to change.',
     notWhen:
@@ -61,7 +61,7 @@ export default defineTool({
         .min(20_000)
         .max(900_000)
         .optional()
-        .describe("New soft compaction limit (tokens) for the member — clamped to ITS model+fleet-role ceiling (a member's leaner [1m] cap), not yours."),
+        .describe("New soft compaction limit (tokens) for the member — rejected with ok:false when above ITS model+fleet-role ceiling (a member's leaner [1m] cap), not yours; no clamped write is made."),
       claimSpec: z
         .record(z.string(), z.unknown())
         .optional()
@@ -92,7 +92,8 @@ export default defineTool({
     const applied: Record<string, unknown> = {};
 
     if (args.compactionLimit != null) {
-      // Reuse the P-006 cross-session setter (clamps to the MEMBER's spec+role ceiling).
+      // Reuse the P-006 cross-session setter (rejects requests above the MEMBER's
+      // spec+role ceiling before writing).
       applied.compactionLimit = await setCompactionLimitForOwner(ctx, memberOwnerId, args.compactionLimit);
     }
 

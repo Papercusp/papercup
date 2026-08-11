@@ -105,6 +105,19 @@ describe('fleet:reconfigure-member (P-007)', () => {
     expect(setClaimSpec).not.toHaveBeenCalled();
   });
 
+  it('propagates a compaction-limit cap refusal as an overall failure', async () => {
+    setCompactionLimitForOwner.mockResolvedValueOnce({
+      ok: false,
+      error: 'limit_exceeds_cap',
+      requested: 500_000,
+      cap: 200_000,
+    });
+    const res = await tool.handler({ member: MEMBER, compactionLimit: 500_000 } as never, {} as never);
+    const p = parse(res);
+    expect(p).toMatchObject({ ok: false, fleet: SLUG, member: MEMBER, invokedAs: 'leader' });
+    expect(p.applied.compactionLimit).toMatchObject({ ok: false, error: 'limit_exceeds_cap', cap: 200_000 });
+  });
+
   it('refuses a caller who is neither the fleet leader nor a queen/owner pane', async () => {
     getFleet.mockResolvedValue({ fleetSlug: SLUG, leaderOwnerId: 'su-someone-else' });
     listFleetsLedBy.mockResolvedValue([]); // not leading; must pass explicit fleet
