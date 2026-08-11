@@ -165,8 +165,8 @@ import './pot/wake';
 import './pot/status';
 // queen-brief-cache B-06 / P-010 — the Queen's per-wake efficiency read surface:
 import './pot/mug_efficiency';
-// queen-autonomous-execution B-08 — the Queen's plan-aware placement survey:
-import './pot/survey';
+// (pot:survey — the Queen's plan-aware placement survey — RETIRED to
+// _retired/mug-kettle-deciders/ by retire-mug-kettle-su-only-2026-08-09 P-059/D-080.)
 import './pot/start';
 import './pot/pause';
 // queen-steering-panel-2026-06-15 B-01 — owner steering controls for the Queen
