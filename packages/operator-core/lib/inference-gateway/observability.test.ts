@@ -64,6 +64,40 @@ test('projectHeadroom — maps the unified window + queue into the read-model', 
   assert.deepEqual(h.byPriority, [{ priority: 100, count: 1 }, { priority: 0, count: 4 }]);
 });
 
+test('projectHeadroom — Codex scope uses Codex admission and health, not Claude readings', () => {
+  const stats = baseStats({
+    // This is the measured failure shape: stale Claude state says there is no healthy account.
+    healthyAccounts: 0,
+    admission: { running: 24, queued: 40, maxConcurrent: 24, byPriority: [{ priority: 0, count: 40 }] },
+    codexHealthyAccounts: 1,
+    codexAdmission: {
+      running: 1,
+      queued: 2,
+      maxConcurrent: 4,
+      byPriority: [{ priority: 0, count: 2 }],
+      byTier: [{ tier: 3, cap: 4, inFlight: 1, queued: 2 }],
+      tier1Reserve: 1,
+    },
+    unified: { window: '7d', utilization: 1, resetAt: 9_999_999, rejected: true },
+    pausedUntil: 9_999_999,
+  });
+
+  const h = projectHeadroom(stats, 1_000_000, { provider: 'codex' });
+  assert.equal(h.provider, 'codex');
+  assert.equal(h.accountId, undefined, 'the Claude active account must not be labeled as Codex');
+  assert.equal(h.healthyAccounts, 1);
+  assert.equal(h.inFlight, 1);
+  assert.equal(h.queueDepth, 2);
+  assert.deepEqual(h.byPriority, [{ priority: 0, count: 2 }]);
+  assert.deepEqual(h.priorityTiers, {
+    healthyAccounts: 1,
+    tier1Reserve: 1,
+    tiers: [{ tier: 3, cap: 4, inFlight: 1, queued: 2 }],
+  });
+  assert.equal(h.rejected, undefined, 'Claude unified rejection must not reject a Codex scope');
+  assert.equal(h.paused, undefined, 'Claude pause must not pause a Codex scope');
+});
+
 test('projectHeadroom — derives process uptime from processStartedAt for mixed-version stats readers', () => {
   const now = 1_000_000;
   const h = projectHeadroom(baseStats({ processStartedAt: now - 5_000 }), now);

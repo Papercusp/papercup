@@ -24,12 +24,61 @@ import {
   type EdgeThrottleSnapshotEntry,
 } from '../../fleet/capacity-dispatch';
 import { activeWorkspaceId } from '../../workspace-registry';
+import type { AccountProvider } from '../../deployment/account-pool';
+import type { AccountStatusRow } from '../../deployment/account-pool-store';
 
 // Re-exported so existing importers (tests, the queen-brief gather) can reach the read-model via either path.
 export { buildCapacityReport, type CapacityReport } from '../../fleet/capacity-dispatch';
 
-/** The provider bee/cup work routes to — the one `dispatchBudget` is measured for (EI-12282). */
-const BEE_PROVIDER = 'claude';
+/** The legacy/default provider for bee/cup placement (EI-12282). */
+const BEE_PROVIDER: AccountProvider = 'claude';
+
+/** Infer a provider only from model families with an unambiguous wire backend. */
+function providerForModel(model: string | undefined): AccountProvider | undefined {
+  const normalized = model?.trim().toLowerCase();
+  if (!normalized) return undefined;
+  if (/^(?:gpt(?:-|$)|o\d|codex(?:-|$)|openai(?:-|$))/.test(normalized)) return 'codex';
+  return 'claude';
+}
+
+interface CapacityScopeArgs {
+  provider?: AccountProvider;
+  model?: string;
+  account?: string;
+}
+
+interface ResolvedCapacityScope {
+  provider: AccountProvider;
+  modelProvider?: AccountProvider;
+  accountRows?: AccountStatusRow[];
+  accountFound?: boolean;
+}
+
+/** Resolve the requested backend before reading either gateway or account-pool capacity. */
+async function resolveCapacityScope(args: CapacityScopeArgs): Promise<ResolvedCapacityScope> {
+  const modelProvider = providerForModel(args.model);
+  let accountRows: AccountStatusRow[] | undefined;
+  let accountProvider: AccountProvider | undefined;
+
+  // An account pin is itself enough to select a provider. Reuse this read below so an account-only
+  // Codex request cannot fall through to the legacy Claude default (the incident's failure shape).
+  if (args.account && !args.provider && !modelProvider) {
+    try {
+      const { accountStatus } = await import('../../deployment/account-pool-store');
+      accountRows = await accountStatus(activeWorkspaceId());
+      accountProvider = accountRows.find((row) => row.id === args.account)?.provider;
+    } catch {
+      // Keep the scope explicit but unknown; the later availability read remains fail-safe.
+    }
+  }
+
+  return {
+    provider: args.provider ?? modelProvider ?? accountProvider ?? BEE_PROVIDER,
+    modelProvider,
+    accountRows,
+    accountFound: args.account ? accountRows?.some((row) => row.id === args.account) : undefined,
+  };
+}
 
 /**
  * EI-18683773458136367: process-local memory of the LAST read's per-account edge-throttle state, so
@@ -42,18 +91,24 @@ const BEE_PROVIDER = 'claude';
 const lastEdgeThrottleSnapshot = new Map<string, EdgeThrottleSnapshotEntry>();
 
 /**
- * Best-effort snapshot of REAL account-pool availability for the bee provider (accounts:status), used to
+ * Best-effort snapshot of REAL account-pool availability for one provider (accounts:status), used to
  * cross-check the gateway's queue-slot dispatchBudget. Returns undefined on any read failure (fail-safe —
  * a missing cross-check leaves the report byte-identical to before this fix).
  *
  * Exported (WI-37161) so `fleet:leader-brief` can build the SAME `CapacityReport` this tool reports —
  * reuse-first: the alternative was leader-brief forking its own account-pool-availability read.
  */
-export async function readBeeProviderAvailability(): Promise<AccountPoolAvailability | undefined> {
+export async function readProviderAvailability(
+  provider: AccountProvider,
+  accountId?: string,
+  preloadedRows?: AccountStatusRow[],
+): Promise<AccountPoolAvailability | undefined> {
   try {
     const ws = activeWorkspaceId();
     const { accountStatus } = await import('../../deployment/account-pool-store');
-    const rows = (await accountStatus(ws)).filter((r) => r.provider === BEE_PROVIDER);
+    const rows = (preloadedRows ?? (await accountStatus(ws))).filter(
+      (r) => r.provider === provider && (!accountId || r.id === accountId),
+    );
     if (rows.length === 0) return undefined;
 
     // EI-19932168784507536: raw pool-health (accountStatus above) is blind to the owner's
@@ -98,7 +153,7 @@ export async function readBeeProviderAvailability(): Promise<AccountPoolAvailabi
     for (const [id, v] of nextSnapshot) lastEdgeThrottleSnapshot.set(`${snapshotPrefix}${id}`, v);
 
     return {
-      provider: BEE_PROVIDER,
+      provider,
       total: rows.length,
       // Excludes accounts the owner's session override forbids routing to — an account can be
       // pool-healthy AND forbidden, and admission (spawn-env.ts) refuses that route regardless.
@@ -157,22 +212,52 @@ export async function readBeeProviderAvailability(): Promise<AccountPoolAvailabi
   }
 }
 
+/** Backwards-compatible Claude read for the leader brief and existing callers. */
+export async function readBeeProviderAvailability(accountId?: string): Promise<AccountPoolAvailability | undefined> {
+  return readProviderAvailability(BEE_PROVIDER, accountId);
+}
+
 export default defineTool({
   name: 'fleet:capacity',
   description:
-    'Read live inference-pool capacity for placement decisions (the gateway /stats oracle): the bee-tier dispatchBudget (spare slots = cap − inFlight − queued), per-tier caps, pool utilization / paused / queue depth, healthyAccounts, and the reserved tier-1 floor. Cross-checks dispatchBudget against REAL account-pool availability and sets `poolExhausted:true` (with factor 0) when the pool has zero usable accounts despite spare queue slots — heed that flag before spawning. Also sets `degraded:true` when accounts ARE usable but every usable one is `sustainedlyLimited` (repeated rate-governor penalties) — not exhausted, but not "abundant" either; place conservatively. Pass `headroom` (a proposed fresh-spawn count) to get it clamped to spare capacity. Returns {ok, ...CapacityReport}. Gateway-unreachable ⇒ a fail-safe no-clamp report.',
+    'Read live inference-pool capacity for an explicit provider/model/account scope (the gateway /stats oracle): dispatchBudget (spare slots = cap − inFlight − queued), per-tier caps, pool utilization / paused / queue depth, healthyAccounts, and the reserved tier-1 floor. The legacy default is Claude; pass `provider:"codex"`, `model:"gpt-5.6-luna"`, or a Codex `account` to read the Codex backend. Cross-checks dispatchBudget against REAL account-pool availability and sets `poolExhausted:true` (with factor 0) only for the selected provider. An unmeasured or contradictory scope returns `verdict:"unknown"` instead of borrowing another provider\'s data. Pass `headroom` (a proposed fresh-spawn count) to get it clamped to spare capacity. Returns {ok, verdict, scope, ...CapacityReport}. Gateway-unreachable ⇒ a fail-safe no-clamp report.',
   guidance: {
-    when: 'Before a placement round, to size how many FRESH cups to spawn: place up to dispatchBudget when scarce (top-ranked first), broadly when abundant. Re-read each cycle — capacity moves.',
+    when: 'Before a placement round, to size how many FRESH members to spawn: select the provider/model/account scope, then place up to dispatchBudget when scarce (top-ranked first), broadly when abundant. Re-read each cycle — capacity moves.',
     notWhen: 'Inspecting the gateway pool config / confirming a hot-reload — that is gateway:status. Editing the pool — accounts:* + gateway:reload.',
-    chaining: 'fleet:capacity { headroom: <cups you want to place> } → fleet:place_batch (which ALSO clamps automatically under MUG_CAPACITY_DISPATCH; this tool lets you reason about it first).',
+    chaining: 'fleet:capacity { provider: "codex", model: "gpt-5.6-luna", headroom: <members you want to place> } → fleet:place_batch (which ALSO clamps automatically under MUG_CAPACITY_DISPATCH; this tool lets you reason about it first).',
   },
   capability: 'harness:read',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
     headroom: z.number().int().min(0).max(10000).optional().describe('A proposed fresh-spawn count to clamp to spare capacity.'),
+    provider: z.enum(['claude', 'codex']).optional().describe('Inference provider to inspect; defaults to Claude for backward compatibility.'),
+    model: z.string().min(1).max(120).optional().describe('Requested model family; gpt/o/codex models select the Codex backend when provider is omitted.'),
+    account: z.string().min(1).max(200).optional().describe('Optional pinned account id. An account-only request resolves its provider from accounts:status.'),
   }),
   async handler(args) {
+    const scope = await resolveCapacityScope(args);
+    const scopePayload = {
+      provider: scope.provider,
+      model: args.model ?? null,
+      account: args.account ?? null,
+    };
+    const modelProviderMismatch = !!args.provider && !!scope.modelProvider && args.provider !== scope.modelProvider;
+    const accountOnlyScopeUnknown =
+      !!args.account && !args.provider && !scope.modelProvider && scope.accountFound !== true;
+    if (modelProviderMismatch || accountOnlyScopeUnknown) {
+      const reason = modelProviderMismatch
+        ? `model '${args.model}' belongs to provider '${scope.modelProvider}', not '${scope.provider}'`
+        : `account '${args.account}' has no measured provider row`;
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({ ok: true, verdict: 'unknown', provider: scope.provider, model: args.model ?? null, account: args.account ?? null, scope: scopePayload, reason }),
+          },
+        ],
+      };
+    }
     let clampArmed = false;
     try {
       const [{ FLAGS }, { getFlag }] = await Promise.all([import('@papercusp/flags'), import('@papercusp/flags/server')]);
@@ -180,14 +265,28 @@ export default defineTool({
     } catch {
       /* flags unavailable → report clampArmed:false (best-effort) */
     }
-    const hr = await fetchGatewayHeadroom({ timeoutMs: 1500 });
+    const hr = await fetchGatewayHeadroom({ timeoutMs: 1500, provider: scope.provider });
     const tierMap = parsePriorityTierMap(process.env.GATEWAY_PRIORITY_MAP);
     // EI-12282: cross-check the gateway's queue-slot dispatchBudget against REAL account-pool availability
-    // (accounts:status). The gateway's own `healthyAccounts` can be split-brain-stale and report spare bee
-    // slots while every claude account is usage-walled/edge-throttled — a false-green that kills fresh cups
-    // on their first inference call. Best-effort: any read failure ⇒ skip the cross-check (fail-safe).
-    const accountAvailability = await readBeeProviderAvailability();
+    // (accounts:status) for the SAME provider/account scope. The gateway's own healthyAccounts can be
+    // split-brain-stale; a cross-provider read is never a valid reason to reject a launch.
+    const accountAvailability = await readProviderAvailability(scope.provider, args.account, scope.accountRows);
     const report = buildCapacityReport(hr, { clampArmed, headroom: args.headroom, tierMap, accountAvailability });
-    return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, ...report }) }] };
+    return {
+      content: [
+        {
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: true,
+            verdict: accountAvailability ? 'measured' : 'unknown',
+            provider: scope.provider,
+            model: args.model ?? null,
+            account: args.account ?? null,
+            scope: scopePayload,
+            ...report,
+          }),
+        },
+      ],
+    };
   },
 });

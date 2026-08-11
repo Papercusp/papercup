@@ -14,6 +14,8 @@ import type { RawGatewayStats } from './gateway-wedge';
 import type { LocalBackend, LocalBackendCandidate } from './local-backend-pool';
 
 export interface GatewayHeadroom {
+  /** Provider whose admission/account fields were projected from /stats. */
+  provider?: 'claude' | 'codex';
   reachable: boolean;
   accountId?: string;
   /** Epoch ms when the gateway process started, when the live /stats payload is new enough to expose it. */
@@ -68,10 +70,30 @@ export interface GatewayHeadroom {
 }
 
 /** Project a raw gateway /stats payload into the normalized headroom read-model. */
-export function projectHeadroom(stats: GatewayStats, now = Date.now()): GatewayHeadroom {
-  const u = stats.unified;
+export function projectHeadroom(
+  stats: GatewayStats,
+  now = Date.now(),
+  opts: { provider?: 'claude' | 'codex' } = {},
+): GatewayHeadroom {
+  const provider = opts.provider ?? 'claude';
+  // /stats carries independent admission and account-health signals for Claude and Codex. Never
+  // project Claude's headline into a Codex read: that was the false "pool exhausted" verdict that
+  // blocked a healthy ChatGPT-subscription launch (EI-20183190844096359).
+  const admission = provider === 'codex' ? stats.codexAdmission : stats.admission;
+  const healthyAccounts = provider === 'codex' ? stats.codexHealthyAccounts : stats.healthyAccounts;
+  const priorityTiers =
+    provider === 'codex'
+      ? admission?.byTier && healthyAccounts !== undefined
+        ? {
+            healthyAccounts,
+            tier1Reserve: admission.tier1Reserve ?? 0,
+            tiers: admission.byTier,
+          }
+        : undefined
+      : stats.priorityTiers;
+  const u = provider === 'claude' ? stats.unified : undefined;
   // P-005: surface the bound account's smoothing pace (the /stats `smoothing.byAccount[accountId]` entry).
-  const sm = stats.smoothing?.byAccount?.[stats.accountId];
+  const sm = provider === 'claude' ? stats.smoothing?.byAccount?.[stats.accountId] : undefined;
   const processStartedAt = Number.isFinite(stats.processStartedAt) ? stats.processStartedAt : undefined;
   const processUptimeMs = Number.isFinite(stats.processUptimeMs)
     ? stats.processUptimeMs
@@ -79,8 +101,10 @@ export function projectHeadroom(stats: GatewayStats, now = Date.now()): GatewayH
       ? Math.max(0, now - processStartedAt)
       : undefined;
   return {
+    provider,
     reachable: true,
-    accountId: stats.accountId,
+    // stats.accountId is the Claude pool's active account; do not label it as Codex capacity.
+    accountId: provider === 'claude' ? stats.accountId : undefined,
     processStartedAt,
     processUptimeMs,
     window: u?.window,
@@ -88,17 +112,17 @@ export function projectHeadroom(stats: GatewayStats, now = Date.now()): GatewayH
     utilizationPct: u ? Math.round(u.utilization * 100) : undefined,
     rejected: u?.rejected,
     resetInSec: u?.resetAt ? Math.max(0, Math.round((u.resetAt - now) / 1000)) : undefined,
-    pausedUntil: stats.pausedUntil,
-    paused: stats.pausedUntil > now,
-    inFlight: stats.inFlight,
-    queueDepth: stats.queueDepth,
-    healthyAccounts: Number.isFinite(stats.healthyAccounts) ? stats.healthyAccounts : undefined,
-    byPriority: stats.admission?.byPriority,
-    priorityTiers: stats.priorityTiers,
-    totalRequests: stats.totalRequests,
-    upstream429: stats.upstream429,
-    queued429: stats.queued429,
-    smoothingEngaged: stats.smoothing?.engaged,
+    pausedUntil: provider === 'claude' ? stats.pausedUntil : undefined,
+    paused: provider === 'claude' ? stats.pausedUntil > now : undefined,
+    inFlight: admission?.running,
+    queueDepth: admission?.queued,
+    healthyAccounts: Number.isFinite(healthyAccounts) ? healthyAccounts : undefined,
+    byPriority: admission?.byPriority,
+    priorityTiers,
+    totalRequests: provider === 'codex' ? stats.codex?.requests : stats.totalRequests,
+    upstream429: provider === 'codex' ? stats.codex?.upstream429 : stats.upstream429,
+    queued429: provider === 'claude' ? stats.queued429 : undefined,
+    smoothingEngaged: provider === 'claude' ? stats.smoothing?.engaged : undefined,
     smoothRpm: sm?.smoothRpm,
     effectivePaceMs: sm?.effectivePaceMs,
     effRpm: sm?.effRpm,
@@ -110,7 +134,7 @@ export function projectHeadroom(stats: GatewayStats, now = Date.now()): GatewayH
  * service is down (never throws) so `/admin` can render "gateway offline" rather than 500.
  */
 export async function fetchGatewayHeadroom(
-  opts: { port?: number; fetchImpl?: typeof fetch; timeoutMs?: number } = {},
+  opts: { port?: number; fetchImpl?: typeof fetch; timeoutMs?: number; provider?: 'claude' | 'codex' } = {},
 ): Promise<GatewayHeadroom> {
   const port = opts.port ?? gatewayPort();
   const doFetch = opts.fetchImpl ?? fetch;
@@ -120,7 +144,7 @@ export async function fetchGatewayHeadroom(
     const res = await doFetch(`http://127.0.0.1:${port}/stats`, { signal: ctrl.signal });
     if (!res.ok) return { reachable: false, error: `gateway /stats ${res.status}` };
     const stats = (await res.json()) as GatewayStats;
-    return projectHeadroom(stats);
+    return projectHeadroom(stats, Date.now(), { provider: opts.provider });
   } catch (e) {
     return { reachable: false, error: (e as Error).message };
   } finally {

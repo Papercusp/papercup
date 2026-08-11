@@ -240,3 +240,67 @@ test('EI-19932168784507536: the full fleet:capacity report surfaces overrideExcl
   );
   headroomSpy.mockRestore();
 });
+
+test('EI-20183190844096359: Codex capacity ignores stale Claude walls and reports the requested scope', async () => {
+  const capacityMod = await import('./capacity');
+  const observability = await import('../../inference-gateway/observability');
+  const headroomSpy = vi.spyOn(observability, 'fetchGatewayHeadroom').mockResolvedValueOnce({
+    provider: 'codex',
+    reachable: true,
+    priorityTiers: {
+      healthyAccounts: 1,
+      tier1Reserve: 1,
+      tiers: [{ tier: 3, cap: 4, inFlight: 1, queued: 0 }],
+    },
+    healthyAccounts: 1,
+    inFlight: 1,
+    queueDepth: 0,
+  });
+  mockAccountStatus.mockResolvedValueOnce([
+    // The stale Claude rows from the incident must not participate in a Codex read.
+    acctRow('claude-walled', { available: false, usageWalled: true, readingStatus: 'stale' }),
+    acctRow('chatgpt-sub-cli', { provider: 'codex', available: true, usageWalled: false, readingStatus: 'fresh' }),
+  ]);
+
+  const res = (await capacityMod.default.handler(
+    { provider: 'codex', model: 'gpt-5.6-luna', headroom: 3 } as never,
+    { role: 'su' } as never,
+  )) as { content: { text: string }[] };
+  const body = JSON.parse(res.content[0]!.text);
+
+  assert.equal(body.ok, true);
+  assert.equal(body.verdict, 'measured');
+  assert.deepEqual(body.scope, { provider: 'codex', model: 'gpt-5.6-luna', account: null });
+  assert.equal(body.usableAccounts, 1);
+  assert.equal(body.poolExhausted, false);
+  assert.equal(body.healthyAccounts, 1);
+  assert.equal(headroomSpy.mock.calls[0]?.[0]?.provider, 'codex');
+  headroomSpy.mockRestore();
+});
+
+test('fleet:capacity account-only scope resolves a Codex account instead of defaulting to Claude', async () => {
+  const capacityMod = await import('./capacity');
+  const observability = await import('../../inference-gateway/observability');
+  const headroomSpy = vi.spyOn(observability, 'fetchGatewayHeadroom').mockResolvedValueOnce({
+    provider: 'codex',
+    reachable: true,
+    priorityTiers: {
+      healthyAccounts: 1,
+      tier1Reserve: 1,
+      tiers: [{ tier: 3, cap: 4, inFlight: 0, queued: 0 }],
+    },
+  });
+  mockAccountStatus.mockResolvedValueOnce([
+    acctRow('chatgpt-sub-cli', { provider: 'codex', available: true, readingStatus: 'fresh' }),
+  ]);
+
+  const res = (await capacityMod.default.handler({ account: 'chatgpt-sub-cli' } as never, { role: 'su' } as never)) as {
+    content: { text: string }[];
+  };
+  const body = JSON.parse(res.content[0]!.text);
+  assert.equal(body.verdict, 'measured');
+  assert.equal(body.scope.provider, 'codex');
+  assert.equal(body.usableAccounts, 1);
+  assert.equal(headroomSpy.mock.calls[0]?.[0]?.provider, 'codex');
+  headroomSpy.mockRestore();
+});
