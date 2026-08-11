@@ -7335,6 +7335,16 @@ export function wellKnownBackendBin(agent, { home = homedir(), env = process.env
     omp: [
       join(home, '.local/bin/omp'),
       join(home, '.papercusp/bin/omp'),
+      // WI-37920: omp is commonly installed by BUN (`bun add -g`), which puts it in
+      // ~/.bun/bin — a dir added to PATH by ~/.bashrc, BELOW the standard "if not
+      // running interactively, don't do anything" early-return. Every desktop spawn
+      // runs `bash -lc` (login, NON-interactive), and gnome-terminal additionally
+      // hands the command to a long-lived gnome-terminal-server over D-Bus that
+      // replaces the operator's env with the desktop session's. Both effects strip
+      // ~/.bun/bin, so the PATH leg of detectBackendBin() misses and psu aborts with
+      // "the omp backend is not installed" in a window where `omp` demonstrably works
+      // for the human. Listing the bun dir here makes detection PATH-independent.
+      join(home, '.bun/bin/omp'),
       join(winHome, '.papercusp', 'bin', 'omp.exe'),
     ],
   };
