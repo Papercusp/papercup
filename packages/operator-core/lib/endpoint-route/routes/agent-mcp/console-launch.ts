@@ -196,6 +196,19 @@ const post = defineTool({
       // resumeSessionId, and claude-only — the envelope refuses the rest (codex/omp
       // resumes exec the bare CLI, so headless they would be unreachable).
       headless?: boolean;
+      // WI-6510 (hud-chat-owner-controls-2026-08-11 P-002): resume this session
+      // on a DIFFERENT model/effort spec. Only meaningful with resumeSessionId,
+      // and claude-only — the envelope throws for the rest, because codex/omp
+      // resumes exec the bare CLI and would silently drop the flag (D-002's
+      // silent no-op, which is the failure this whole control exists to avoid).
+      //
+      // The value is the COMPOSED `<model>[:<effort>]` spec, never a separate
+      // effort field: psu has no `--effort` flag, so effort rides the model spec
+      // and psu's own resume path splits the tail per backend
+      // (psu-launcher.mjs:1197 → modelArgsFor). Composing at that seam is the one
+      // form every backend honours; re-emitting our own flags here would drop
+      // effort silently AND pass every test (D-007).
+      resumeModel?: string | null;
       // /adv plumbing: tag this session with the plan it was
       // launched from so /adv/sessions can group + display.
       planSlug?: string | null;
@@ -225,6 +238,12 @@ const post = defineTool({
         // (the GUI button is the sole caller); the envelope throws for a non-claude
         // backend, which the catch below turns into a 400 with that reason.
         headless: body.headless ?? false,
+        // WI-6510. Same shape as `headless` above: only ever set alongside
+        // resumeSessionId (the footer MODEL pill is the sole caller), and the
+        // envelope throws for a non-claude backend — which the catch below turns
+        // into a 400 carrying that reason, so a refused model change SAYS SO
+        // instead of launching a session that quietly kept the old model.
+        resumeModel: body.resumeModel ?? undefined,
         runPsu: body.runPsu ?? false,
       });
     } catch (e: any) {

@@ -72,3 +72,9 @@ import './ContextLimitAction';
 // appears — the WI-6450 failure, which looked like a broken bar rather than a
 // missing import.
 import './AccountAction';
+// The MODEL pill (WI-6510 / hud-chat-owner-controls-2026-08-11 P-002). Same
+// side-effect registration as the two above, and the same WI-6450 consequence if
+// this line is ever "tidied" away: the axis module would be tree-shaken out and
+// the pill would simply never render — which looks like a broken bar rather than
+// a missing import.
+import './ModelActions';

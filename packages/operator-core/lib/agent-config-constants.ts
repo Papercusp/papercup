@@ -392,19 +392,57 @@ export function composeLaunchModelSpec(model?: string | null, effort?: string | 
  */
 export function modelSpecFromArgv(argv: unknown): string | null {
   if (!Array.isArray(argv)) return null;
+  // PASS 1 — argv as TOKENS. The shape every psu/fleet launch records:
+  // ["psu", "--no-picker", "--model=sonnet[1m]:high", …]. Authoritative, so it
+  // runs first and its answer is never second-guessed by pass 2.
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (typeof a !== 'string') continue;
     if (a.startsWith('--model=')) {
       const v = a.slice('--model='.length).trim();
-      if (v) return v;
+      if (v) return unquoteArgValue(v);
     }
     if (a === '--model' && typeof argv[i + 1] === 'string') {
       const v = (argv[i + 1] as string).trim();
+      if (v) return unquoteArgValue(v);
+    }
+  }
+  // PASS 2 — argv as a recorded SHELL COMMAND. `adv_sessions.launch_argv` has a
+  // SECOND shape, and it is the one this control's own writes produce: the
+  // console-launch route records `[terminal, greetingCmd]` (console-launch.ts),
+  // so the whole command lands in ONE element —
+  //   ["gnome-terminal", "echo \"resuming …\"; exec psu --resume=<id> --model='opus[1m]:high'"]
+  // — where `--model=` is embedded in a string rather than being a token of its
+  // own. Verified against live rows, not assumed.
+  //
+  // Without this pass the failure is a CONTROL THAT LIES rather than one that
+  // breaks: the fork launches on the right model, the new session records this
+  // shape, and the pill then reads null and reports "default" — the session is
+  // on opus and the UI says otherwise (D-002/D-009 §B). It also silently
+  // mis-sized `resolveModelSpecForOwner`'s compaction budget for every
+  // console-resumed session, which shares this parser.
+  //
+  // The value may be QUOTED, because the greeting is shell text and the emitter
+  // single-quotes it (console-launcher's `shellSafeModelSpec`).
+  for (const a of argv) {
+    if (typeof a !== 'string') continue;
+    const m = /--model[=\s]+('[^']*'|"[^"]*"|[^\s;'"]+)/.exec(a);
+    if (m) {
+      const v = unquoteArgValue(m[1].trim());
       if (v) return v;
     }
   }
   return null;
+}
+
+/** Strip one layer of matching shell quotes from a recorded argument value.
+ *  A launch argv is sometimes raw tokens and sometimes recorded shell text, so a
+ *  value can arrive already quoted; the spec itself never contains quotes. */
+function unquoteArgValue(v: string): string {
+  if (v.length >= 2 && ((v[0] === "'" && v.endsWith("'")) || (v[0] === '"' && v.endsWith('"')))) {
+    return v.slice(1, -1);
+  }
+  return v;
 }
 
 /**
