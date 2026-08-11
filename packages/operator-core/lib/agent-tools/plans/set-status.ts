@@ -76,6 +76,7 @@ const itemSpec = z.object({
   rationale: z.string().optional().describe('per-item revision rationale (else the batch `rationale`)'),
   onlyIfNotTerminal: z.boolean().optional(),
   onlyIfNoOtherOpenCoverage: z.boolean().optional(),
+  onlyIfNotCompleted: z.boolean().optional(),
 });
 
 const argsSchema = z

@@ -127,6 +127,14 @@ describe('plan-item-reflect:complete', () => {
     expect(renderArgs(rule, deprecated)).toMatchObject({ item: 'P-007', status: 'dropped' });
   });
 
+  // The `complete` rule shares setStatusArgs with `set-state`, so it inherits the same drop
+  // guards — pinned here so a future refactor of one path cannot silently strip the other.
+  it('EI-20129670928216719: a → dropped completion also renders onlyIfNotCompleted', () => {
+    const rule = ruleById('work_items:complete', 'plan-item-reflect:complete');
+    const closed = evt('work_items:complete', { ...stamped('closed'), completion: { summary: 'closed out' } });
+    expect(renderArgs(rule, closed)).toMatchObject({ status: 'dropped', onlyIfNotCompleted: true });
+  });
+
   it('EI-19972048649686949: a → dropped completion renders onlyIfNoOtherOpenCoverage so it never cascades onto a plan item still covered by a sibling work-item', () => {
     const rule = ruleById('work_items:complete', 'plan-item-reflect:complete');
     const closed = evt('work_items:complete', stamped('closed', { completion: { summary: 's' } }));
@@ -179,6 +187,35 @@ describe('plan-item-reflect:set-state', () => {
 
     const blocked = evt('work_items:set_state', stamped('blocked'));
     expect(renderArgs(rule, blocked)).not.toHaveProperty('onlyIfNoOtherOpenCoverage');
+  });
+
+  // EI-20129670928216719. The drop cascade carries TWO complementary guards, and the second
+  // exists because the first CANNOT see it: onlyIfNoOtherOpenCoverage counts only NON-terminal
+  // siblings, so the `done` work-item that actually completed the plan item is filtered out and
+  // the item reads as uncovered. Live case: dropping WI-37872 (merely `relates`-linked) flipped
+  // fix-0014-platform-defects-2026-08-10#P-005 from done → dropped 67ms later, while its real
+  // completer WI-37735 sat `done`. The release rule had been hardened against exactly this
+  // reasoning (EI-19295826179470465); the drop path had not — this pins that it now is.
+  it('EI-20129670928216719: renders onlyIfNotCompleted alongside the coverage guard on a → dropped flip only', () => {
+    const rule = ruleById('work_items:set_state', 'plan-item-reflect:set-state');
+
+    // Every work-item state that maps to `dropped` must carry BOTH guards — a gap in any one
+    // of them re-opens the regression for that state alone.
+    for (const state of ['deprecated', 'closed', 'dropped']) {
+      expect(renderArgs(rule, evt('work_items:set_state', stamped(state))), state).toMatchObject({
+        status: 'dropped',
+        onlyIfNoOtherOpenCoverage: true,
+        onlyIfNotCompleted: true,
+      });
+    }
+
+    // Never on a non-drop flip: the guard is scoped to `dropped`, and a genuine done/reopen/park
+    // reflection must stay unguarded or it would silently no-op.
+    for (const state of ['resolved', 'done', 'passed', 'open', 'todo', 'blocked']) {
+      expect(renderArgs(rule, evt('work_items:set_state', stamped(state))), state).not.toHaveProperty(
+        'onlyIfNotCompleted',
+      );
+    }
   });
 
   it('does NOT fire on an in-flight (unmapped) state', () => {

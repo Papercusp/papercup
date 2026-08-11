@@ -159,3 +159,86 @@ describe('plans:set-status coverage guard (EI-19972048649686949)', () => {
     warnSpy.mockRestore();
   });
 });
+
+/**
+ * The completed guard (EI-20129670928216719) — the case that falls BETWEEN the coverage guard
+ * above and `onlyIfNotTerminal`, by each one's own contract:
+ *   - the coverage guard filters out terminal siblings, so the `done` work-item that actually
+ *     COMPLETED the plan item never registers as coverage → the item reads as uncovered;
+ *   - `terminalGuardTrips` deliberately permits terminal→terminal (done→dropped), pinned by
+ *     set-status.test.ts.
+ * So an automated cascade downgraded finished work. Live: dropping WI-37872 (merely
+ * `relates`-linked) flipped fix-0014-platform-defects-2026-08-10#P-005 done→dropped 67ms
+ * later, while its real completer WI-37735 sat `done`.
+ *
+ * Shares this file's lock-mocking harness. NOTE the guards run at different depths: the
+ * coverage guard short-circuits BEFORE the plan lock, this one runs INSIDE it (it reads the
+ * plan item's current status, which is only race-safe under the lock).
+ */
+describe('plans:set-status completed guard (EI-20129670928216719)', () => {
+  /** The exact P-005 shape: a `done` plan item, its real completer `done`, the item being
+   *  dropped merely linked. No OPEN coverage exists — which is precisely why the older guard
+   *  cannot save it. */
+  // Typed to the mock's real signature rather than cast — an `as never` here would defeat the
+  // one check vi.mocked() gives us, and would go stale invisibly if that signature ever gains
+  // a required field (lint:mock-cast-escape).
+  const p005Links: Array<{ id: string; state: string }> = [
+    { id: 'WI-37735', state: 'done' },
+    { id: 'WI-37872', state: 'dropped' },
+  ];
+
+  it('SKIPS a done → dropped cascade — finished work is never downgraded', async () => {
+    reconcileMocks.findAllLinkedWorkItems.mockResolvedValue(p005Links);
+    lockReturnsMutatorValue(new Set(['P-005']), 'done');
+    const b = await body({
+      slug: 'fix-0014-platform-defects-2026-08-10',
+      item: 'P-005',
+      status: 'dropped',
+      onlyIfNoOtherOpenCoverage: true,
+      onlyIfNotCompleted: true,
+    });
+    expect(b.results[0].ok).toBe(true); // a deliberate no-op, never a hard error
+    expect(b.results[0].skipped).toBe('completed_guard');
+    expect(b.results[0].currentStatus).toBe('done');
+    expect(b.results[0].reason).toMatch(/done/);
+  });
+
+  /**
+   * FALSIFIABILITY — this is the test that gives the one above its meaning. It runs the SAME
+   * scenario carrying ONLY the pre-existing coverage flag, and asserts the downgrade still
+   * happens. If someone "simplifies" the new guard away, the test above goes green-by-vacuity
+   * unless this one pins that the old configuration genuinely does NOT protect the item.
+   * (Proving it this way costs no tree mutation — see CLAUDE.md on why a mutate-and-restore
+   * probe is unsafe here: git-sync can commit the mutant mid-run.)
+   */
+  it('reproduces the regression WITHOUT the flag — the coverage guard alone does not protect a done item', async () => {
+    reconcileMocks.findAllLinkedWorkItems.mockResolvedValue(p005Links);
+    lockReturnsMutatorValue(new Set(['P-005']), 'done');
+    const b = await body({
+      slug: 'fix-0014-platform-defects-2026-08-10',
+      item: 'P-005',
+      status: 'dropped',
+      onlyIfNoOtherOpenCoverage: true, // the guard that was ALREADY there
+      // onlyIfNotCompleted deliberately omitted — this is the pre-fix behaviour
+    });
+    expect(b.results[0].ok).toBe(true);
+    expect(b.results[0].skipped).toBeUndefined();
+    expect(b.results[0].newStatus).toBe('dropped'); // ← the silent downgrade this bug is about
+  });
+
+  // OPT-IN, like every other guard here: a human deliberately reclassifying finished work as
+  // abandoned omits the flag and must still be able to.
+  it('leaves a genuine drop of UNFINISHED work alone even with the flag set', async () => {
+    reconcileMocks.findAllLinkedWorkItems.mockResolvedValue([]);
+    lockReturnsMutatorValue(new Set(['P-012']), 'wip');
+    const b = await body({
+      slug: 'demo-plan',
+      item: 'P-012',
+      status: 'dropped',
+      onlyIfNotCompleted: true,
+    });
+    expect(b.results[0].ok).toBe(true);
+    expect(b.results[0].skipped).toBeUndefined();
+    expect(b.results[0].newStatus).toBe('dropped');
+  });
+});
