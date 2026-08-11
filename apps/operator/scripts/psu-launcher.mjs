@@ -38,6 +38,15 @@ import {
 // su-role-addendum.ts. Plain .mjs so this bare-node script and the tsx/bundled
 // operator import the SAME definition — a second copy here would drift silently.
 import { SU_TIER_ROLES } from '../../../packages/operator-core/lib/su-tier-roles.mjs';
+// WI-37920: ONE definition of where a backend CLI can live + how to reach it,
+// shared with the operator's spawn-env injection (console-launcher). See that
+// file's header for why detection and execution are two separate layers.
+import {
+  wellKnownBackendBin as sharedWellKnownBackendBin,
+  readShebangInterpreter,
+  resolveOnPath,
+  resolveInWellKnownDirs,
+} from '../../../packages/operator-core/lib/backend-bin-resolve.mjs';
 // WI-37841: the ONE derivation of a launch's boot-log path, shared with
 // launch-su.ts (which points the keep-window-open receipt at the same file) and
 // with the reader that surfaces its tail on the failed-launch banner. Plain .mjs
@@ -7376,46 +7385,21 @@ export function whichBin(bin, { platform = process.platform } = {}) {
   }
 }
 
-/** Well-known install locations per backend (mirrors preflight-binaries) — for a
- *  bin the setup flow just installed that PATH hasn't picked up yet. Abs path or
- *  null. Exported for tests. */
+/**
+ * Well-known install locations per backend — for a bin the setup flow just
+ * installed that PATH hasn't picked up yet, or (the WI-37920 case) a bin PATH
+ * will NEVER pick up because this process is a login-but-non-interactive shell
+ * spawned by a desktop terminal. Abs path or null. Exported for tests.
+ *
+ * The LIST itself lives in `packages/operator-core/lib/backend-bin-resolve.mjs`,
+ * shared with the operator-side PATH injection (console-launcher). Two copies
+ * would drift in the worst direction: detection succeeds here while the operator
+ * injects a different (or no) dir, so the window still cannot execute the bin —
+ * and it only reproduces inside a desktop terminal. Same one-definition reasoning
+ * as `su-tier-roles.mjs`.
+ */
 export function wellKnownBackendBin(agent, { home = homedir(), env = process.env } = {}) {
-  const winHome = env.USERPROFILE || home;
-  const lists = {
-    claude: [
-      join(home, '.local/bin/claude'),
-      join(home, '.papercusp/runtime/node_modules/.bin/claude'),
-      join(home, '.claude/bin/claude'),
-    ],
-    codex: [
-      join(home, '.papercusp/runtime/node_modules/.bin/codex'),
-      join(home, '.local/bin/codex'),
-      join(home, '.npm-global/bin/codex'),
-    ],
-    omp: [
-      join(home, '.local/bin/omp'),
-      join(home, '.papercusp/bin/omp'),
-      // WI-37920: omp is commonly installed by BUN (`bun add -g`), which puts it in
-      // ~/.bun/bin — a dir added to PATH by ~/.bashrc, BELOW the standard "if not
-      // running interactively, don't do anything" early-return. Every desktop spawn
-      // runs `bash -lc` (login, NON-interactive), and gnome-terminal additionally
-      // hands the command to a long-lived gnome-terminal-server over D-Bus that
-      // replaces the operator's env with the desktop session's. Both effects strip
-      // ~/.bun/bin, so the PATH leg of detectBackendBin() misses and psu aborts with
-      // "the omp backend is not installed" in a window where `omp` demonstrably works
-      // for the human. Listing the bun dir here makes detection PATH-independent.
-      join(home, '.bun/bin/omp'),
-      join(winHome, '.papercusp', 'bin', 'omp.exe'),
-    ],
-  };
-  for (const p of lists[agent] ?? []) {
-    try {
-      if (existsSync(p)) return p;
-    } catch {
-      /* ignore */
-    }
-  }
-  return null;
+  return sharedWellKnownBackendBin(agent, { home, env });
 }
 
 /** Detect a backend bin: PATH first, then well-known. `{ path, onPath } | null`. */
@@ -7427,11 +7411,27 @@ export function detectBackendBin(agent) {
 }
 
 /** Prepend a bin's dir to THIS process's PATH so the bare-name launch (runWrapper
- *  inherits process.env) resolves a just-installed backend not yet on PATH. */
+ *  inherits process.env) resolves a just-installed backend not yet on PATH.
+ *
+ *  WI-37920: ALSO prepend the dir of the bin's shebang INTERPRETER. `omp` ships as
+ *  `#!/usr/bin/env bun`, so making `omp` resolvable is worthless if `bun` is not —
+ *  the exec succeeds at the kernel layer and dies in `env`. Detection-only fixes
+ *  pass their tests and still leave a dead window; this is the execution half. */
 function ensureDirOnPath(binPath) {
-  const dir = dirname(binPath);
-  const parts = String(process.env.PATH ?? '').split(delimiter);
-  if (!parts.includes(dir)) process.env.PATH = dir + delimiter + (process.env.PATH ?? '');
+  const dirs = [dirname(binPath)];
+  try {
+    const interpreter = readShebangInterpreter(binPath);
+    if (interpreter) {
+      const resolved = resolveOnPath(interpreter) ?? resolveInWellKnownDirs(interpreter);
+      if (resolved) dirs.push(dirname(resolved));
+    }
+  } catch {
+    /* a shebang we cannot read is not a reason to skip the bin's own dir */
+  }
+  for (const dir of dirs) {
+    const parts = String(process.env.PATH ?? '').split(delimiter);
+    if (!parts.includes(dir)) process.env.PATH = dir + delimiter + (process.env.PATH ?? '');
+  }
 }
 
 /** Spawn an installer SpawnSpec inheriting this terminal (installs are interactive). */
