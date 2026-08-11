@@ -6,7 +6,7 @@
  * the full text of ONE specific oversized finding. The 2026-07-12 p2p-ship
  * incident: a 2615-char root-cause report rendered truncated at ~550 chars;
  * the reader needed 2 extra fetch calls (including `payloadTier:'full'`,
- * which does not affect per-entry body truncation at all) and still never
+ * which did not affect per-entry body truncation at the time) and still never
  * saw the full body via coord — it only became readable once the sender
  * ALSO copied it onto a work-item's summary.
  *
@@ -33,9 +33,9 @@ import { COORD_ROLES } from '../roles';
 export default defineTool({
   name: 'coord:read',
   description:
-    "Fetch ONE coord message's FULL, untruncated body by `msg_id` — the cheap fix for a finding that rendered truncated in coord:inbox (its default ~600-char per-entry render cap). Returns { ok, found, msg_id, message } where `message` is the complete envelope (from/to/ts/kind/summary/body/files/…) with no truncation applied. `found:false` when no message with that id exists (never throws). Prefer checkpointing a substantive finding onto its work-item instead of relying on this — coord:read is the recovery path for a body that already went out oversized, not a substitute for the write-side discipline.",
+    "Fetch ONE coord message's FULL, untruncated body by `msg_id` — the cheap fix for a finding that rendered truncated in coord:inbox (its default ~600-char per-entry render cap). A fresh coord:inbox call with `payloadTier:'full'` now also restores raw entry content, but this direct lookup is the cheapest recovery path for one known message. Returns { ok, found, msg_id, message } where `message` is the complete envelope (from/to/ts/kind/summary/body/files/…) with no truncation applied. `found:false` when no message with that id exists (never throws). Prefer checkpointing a substantive finding onto its work-item instead of relying on this — coord:read is the recovery path for a body that already went out oversized, not a substitute for the write-side discipline.",
   guidance: {
-    when: 'A coord:inbox / coord:feed entry rendered with `body_truncated:true` (or you were told "see coord msg <id>") and you need its exact full text — one cheap lookup by msg_id instead of a since_ts poll or a payloadTier:"full" retry (payloadTier does not affect per-entry body truncation).',
+    when: 'A coord:inbox / coord:feed entry rendered with `body_truncated:true` (or you were told "see coord msg <id>") and you need its exact full text — one cheap lookup by msg_id instead of a since_ts poll; a fresh coord:inbox call with payloadTier:"full" also restores raw entry content, but reads a window.',
     notWhen: 'For the whole conversation around a message (replies/acks/resolutions) — use coord:thread. For a fresh inbox sweep — use coord:inbox. Before SENDING a long finding — write it onto the work-item (work_items:checkpoint / a comment) and send only a 1-line pointer; do not rely on the recipient coord:read-ing it back.',
   },
   capability: 'coord:read',

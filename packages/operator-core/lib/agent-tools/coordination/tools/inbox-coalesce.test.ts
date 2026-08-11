@@ -65,15 +65,22 @@ vi.mock("../../../cache", () => ({
 
 import tool, { coalesceRepeatedBroadcasts } from "./inbox";
 
-const ctx = (ownerId = "owner-a"): never =>
-  ({ ownerId, workspaceId: "ws", metadata: vi.fn(), log: vi.fn(), progress: vi.fn() }) as never;
+type InboxContextOverrides = {
+  contextTier?: "trimmed" | "standard" | "full";
+  payloadTierOverride?: "trimmed" | "standard" | "full";
+};
+const ctx = (ownerId = "owner-a", over: InboxContextOverrides = {}): never =>
+  ({ ownerId, workspaceId: "ws", metadata: vi.fn(), log: vi.fn(), progress: vi.fn(), ...over }) as never;
 
 type InboxOut = {
   entries: Array<Record<string, unknown>>;
   summary: Record<string, unknown>;
 };
-const callInbox = async (args: Record<string, unknown> = {}): Promise<InboxOut> => {
-  const res = (await tool.handler(args as never, ctx())) as {
+const callInbox = async (
+  args: Record<string, unknown> = {},
+  over: InboxContextOverrides = {},
+): Promise<InboxOut> => {
+  const res = (await tool.handler(args as never, ctx("owner-a", over))) as {
     content: Array<{ text: string }>;
   };
   return JSON.parse(res.content[0]!.text) as InboxOut;
@@ -342,5 +349,31 @@ describe("coord:inbox handler (default raw-entry budget)", () => {
     expect(explicit.entries).toHaveLength(50);
     expect(explicit.entries[0]!.summary_truncated).toBe(true);
     expect(String(explicit.entries[0]!.summary).length).toBe(800);
+  });
+
+  it("honors an explicit full payload tier for raw entry content", async () => {
+    const body = `operative constraint ${"x".repeat(1400)}`;
+    M.readInbox.mockImplementation(async () => [
+      {
+        ts: at(1),
+        msg_id: "full-1",
+        from: "peer",
+        to: ["owner-a"],
+        kind: "message",
+        summary: "short summary",
+        body,
+      },
+    ]);
+
+    const ambientTrimmed = await callInbox({}, { contextTier: "trimmed" });
+    expect(String(ambientTrimmed.entries[0]!.body).length).toBe(250);
+    expect(ambientTrimmed.entries[0]!.body_truncated).toBe(true);
+
+    const explicitFull = await callInbox({}, {
+      contextTier: "trimmed",
+      payloadTierOverride: "full",
+    });
+    expect(explicitFull.entries[0]!.body).toBe(body);
+    expect(explicitFull.entries[0]!.body_truncated).toBeUndefined();
   });
 });

@@ -128,7 +128,8 @@ const UNANSWERED_FILTER_CAP = 200;
 
 /** context-trimming-tiers P-012: a trimmed/standard session gets TIGHTER
  *  DEFAULTS (fewer entries, shorter bodies) — explicit `limit`/`max_body_chars`
- *  args always win. coord:inbox deliberately keeps its hand-rolled JSON
+ *  args always win. An explicit per-call `payloadTier:'full'` also restores
+ *  uncapped entry fields (subject to the transport result door). coord:inbox deliberately keeps its hand-rolled JSON
  *  ToolResult instead of a `{data}` + shape conversion: the cc/omp PostToolUse
  *  hooks `json.loads` the text body (a `{data}` response could serve TOON on the
  *  MCP transport and silently break them), and the hooks call WITHOUT ctx_tier
@@ -460,7 +461,7 @@ export default defineTool({
       .min(0)
       .optional()
       .describe(
-        "Truncate each entry's body to this many chars in the result (default dynamically budgets to roughly 15KB across entries) so a default read never overflows the agent result cap; truncated entries carry body_truncated:true and the full body is reachable via coord:thread. 0 = no truncation.",
+        "Truncate each entry's body/summary/sections text to this many chars in the result (default dynamically budgets to roughly 15KB across entries) so a default read never overflows the agent result cap; truncated entries carry *_truncated:true and the full body is reachable via coord:read { msg_id } (or coord:thread). 0 = no truncation. An explicit payloadTier:'full' request also disables this field-level cap unless max_body_chars is supplied.",
       ),
     unanswered_only: z
       .boolean()
@@ -471,8 +472,12 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
-    const sessionTier = (ctx as { contextTier?: keyof typeof INBOX_TIER_DEFAULTS })
-      .contextTier;
+    const inboxContext = ctx as {
+      contextTier?: keyof typeof INBOX_TIER_DEFAULTS;
+      payloadTierOverride?: keyof typeof INBOX_TIER_DEFAULTS;
+    };
+    const sessionTier = inboxContext.contextTier;
+    const explicitFullRequest = inboxContext.payloadTierOverride === "full";
     const tierDefaults =
       (sessionTier && INBOX_TIER_DEFAULTS[sessionTier]) ??
       INBOX_TIER_DEFAULTS.full;
@@ -953,10 +958,15 @@ export default defineTool({
     // bounded at ANY limit; at the default 50-row read this now caps fields at 300 chars.
     // context-trimming-tiers P-012: the per-entry default cap follows the
     // session tier (250/400/600); an explicit max_body_chars still wins.
+    // A raw ToolResult bypasses generic applyPayloadTier, so the framework
+    // threads the explicit override separately from the ambient session tier;
+    // only that explicit `full` request disables this local field cap.
     const INBOX_ENTRY_BUDGET = 15_000;
     const effectiveCap =
       args.max_body_chars !== undefined
         ? args.max_body_chars
+        : explicitFullRequest
+          ? 0
         : entries.length > 0
           ? Math.min(
               tierDefaults.bodyChars,
