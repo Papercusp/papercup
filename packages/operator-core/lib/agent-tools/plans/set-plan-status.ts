@@ -30,6 +30,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { emitDeprecateLearnings, type DeprecateLearnings } from '../../harness/improvements/deprecate-learnings';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
 import { evaluatePlanAcceptanceGate } from '../../plan-acceptance-gate';
+import { retireAcceptanceRubricForPlan } from '../../rubrics';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 
 /** Canonical settable plan-level lifecycle targets — what we WRITE. */
@@ -278,6 +279,16 @@ export default defineTool({
           }
         }
 
+        // Lifecycle tidy-up (acceptance-rubrics-on-every-plan-2026-08-11 P-005): the
+        // acceptance rubric archives WITH its shipped subject plan. Best-effort — the
+        // helper never throws and a busy lock is simply skipped (the rubric stays
+        // resolvable by id either way).
+        let acceptanceRubricRetired: string | null = null;
+        if (status === 'shipped' && result.value.changed) {
+          const id = resolveAgentIdentity(ctx);
+          acceptanceRubricRetired = await retireAcceptanceRubricForPlan(slug, id.ownerId);
+        }
+
         let learningsObservation:
           | { emitted: true; created: boolean; issueId?: string }
           | { emitted: false; error: string }
@@ -314,6 +325,7 @@ export default defineTool({
           filePath: result.filePath,
           ...(mappedFrom ? { mappedFrom } : {}),
           ...(learningsObservation ? { learningsObservation } : {}),
+          ...(acceptanceRubricRetired ? { acceptanceRubricRetired } : {}),
           revision: result.value.changed && rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
         };
       },

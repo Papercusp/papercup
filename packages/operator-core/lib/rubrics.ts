@@ -1397,6 +1397,40 @@ export async function ratifyRubric(rubricId: string, by?: string): Promise<Rubri
 }
 
 /**
+ * Retire the acceptance rubric of a completed plan (acceptance-rubrics-on-every-plan-
+ * 2026-08-11 P-005 lifecycle: an acceptance rubric archives WITH its subject plan —
+ * one-shot, never a lingering library entry). Best-effort BY DESIGN: returns the retired
+ * rubricId, or null when there is nothing to do (no rubric / already retired / write
+ * busy) or on any failure — a ship must never be failed by its lifecycle tidy-up.
+ */
+export async function retireAcceptanceRubricForPlan(planSlug: string, by?: string): Promise<string | null> {
+  try {
+    const rubric = await getAcceptanceRubricForPlan(planSlug);
+    if (!rubric || rubric.status === 'retired') return null;
+    const scope = await resolveRubricWriteScope(rubric.rubricId);
+    const result = await withPlanLock<boolean>(
+      null,
+      {
+        slug: rubric.rubricId,
+        intent: `acceptance-rubric retire (subject plan '${planSlug}' shipped)`,
+        ...scope,
+        afterWrite: rubricRevisionAfterWrite(rubric.rubricId, by, 'acceptance rubric retired with its shipped subject plan'),
+      },
+      async (current) => {
+        if (current === null) return { newBody: null, value: false };
+        const flipped = setPlanFrontmatterStatus(current, 'superseded');
+        if (flipped === null) return { newBody: null, value: false };
+        return { newBody: bumpUpdatedDate(flipped), value: true };
+      },
+    );
+    if (result.kind === 'busy') return null;
+    return result.value ? rubric.rubricId : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
  * Declare the CONTRACT-GENERATION BOUNDARY on a rubric (D-015) — gradings filed before
  * `at` measured a materially different contract and drop out of `scorecardTrend`.
  *
