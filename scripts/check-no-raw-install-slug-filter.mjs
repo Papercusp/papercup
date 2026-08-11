@@ -127,12 +127,9 @@ export const ALLOWLIST = new Set([
   'packages/operator-core/lib/system-health/liveness-alarm.ts',
   'packages/operator-core/lib/overwatch/snapshot.ts',
 
-  // Same autoloop_state verdict. This file was INVISIBLE to the guard until the
-  // predicate was widened to member expressions (it spells the filter
-  // `${args.installSlug}`) — see usesRawInstallSlugFilter's note. Audited on
-  // discovery rather than grandfathered: the single site at :87 reads
-  // autoloop_state.consecutive_errors, the relation settled above.
-  'packages/operator-core/lib/pot/mug-warm-session.ts',
+  // (pot/mug-warm-session.ts held the same autoloop_state verdict here until it was
+  // RETIRED to root `_retired/` with the Mug tier — retire-mug-kettle-su-only-2026-08-09
+  // P-059. The guard does not scan `_retired/`, so the entry became dead and was removed.)
 
   // ── RELATION VERDICT: harness_shared.scout_routed_ideas is NOT re-homed ──────────
   // WI-6978, audited 2026-08-02. Four independent legs:
