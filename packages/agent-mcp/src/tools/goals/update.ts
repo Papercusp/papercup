@@ -34,9 +34,7 @@ export default defineTool({
   name: 'goals:update',
   description:
     'Move a GOAL record\'s standing state (harness_shared.goals): { id, status?, title?, body?, killCriterion?, budgetCents?, spentCents?, parentId?, launchSettings? }. ' +
-    'spentCents is an owner-supplied measured snapshot, not an automatic read of this interactive session. ' +
-    'Partial — an omitted field is left untouched. Use status:"killed" when the written kill criterion trips and "achieved" when the outcome is met; ' +
-    'a goal that is only ever created and never closed is the ratchet GOAL mode exists to prevent. ' +
+    'Partial — an omitted field is left untouched. Use status:"killed" when the written kill criterion trips and "achieved" when the outcome is met. ' +
     'status FANS OUT, in both directions: "paused"|"killed"|"achieved" gates placement on the projects this goal OWNS and disarms the engine loops of sessions attributed to it; ' +
     '"active" re-opens placement on those same projects (nothing else can — the pause is marked deliberate so no watchdog undoes it). Read `stop` and `degraded` either way.',
   capability: 'goals:write',
