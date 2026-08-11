@@ -159,11 +159,19 @@ describe('locks:acquire — outcome branches', () => {
       // agent" with a fabricated holder. The pre-fix code returned a bare busy:[],
       // which the hook then printed under a "file(s) held by another agent:" header
       // with zero holders.
-      expect(b).toMatchObject({ ok: false, reason: 'workspace_contended', transient: true, busy: [] });
+      expect(b).toMatchObject({
+        ok: false,
+        reason: 'workspace_contended',
+        transient: true,
+        holder: 'unknown',
+        busy: [],
+      });
       // The advice steers to a plain RETRY and explicitly AWAY from wake_on_grant
       // (there is no holder to wait on).
       expect(String(b.advice)).toMatch(/retry/i);
       expect(String(b.advice)).toMatch(/do NOT queue wake_on_grant/i);
+      expect(String(b.advice)).toMatch(/holder identity is unknown/i);
+      expect(String(b.advice)).not.toMatch(/NO holder|starved PG pool/i);
       // EI-13189: contention is retried (LOCK_CONTENTION_BACKOFFS_MS = 3 backoffs,
       // i.e. 4 attempts) before degrading to workspace_contended — not surfaced on
       // the very first timeout.

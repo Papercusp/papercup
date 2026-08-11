@@ -901,11 +901,11 @@ def _grant(granted):
 
 
 def _is_transient(res):
-    """EI-9478: `workspace_contended` = the server's per-workspace advisory-lock
-    wait timed out — a TRANSIENT serialization miss (commonly THIS session's own
-    parallel edits racing each other, or a starved PG pool), with NO holder.
-    Older servers surfaced the same condition as ok:false with NO reason and an
-    EMPTY busy list — treat that shape as transient too, never as a foreign hold."""
+    """EI-9478: `workspace_contended` = an advisory-lock serialization
+    timeout whose holder identity is UNKNOWN. It does not prove that no
+    agent holds the requested paths. Older servers surfaced the same
+    condition as ok:false with NO reason and an EMPTY busy list — treat that
+    shape as transient too, never as a foreign hold."""
     return res.get('reason') == 'workspace_contended' or (
         not res.get('reason') and not (res.get('busy') or []))
 
@@ -916,13 +916,11 @@ def _is_transient(res):
 # AND the server's own acquireWithContentionRetry) and failed repeatedly. A
 # genuine parallel-edit race self-heals in 1-2 attempts (see the 'heals on
 # retry' test below); a run of consecutive failures for one owner instead
-# points at something that does not clear on its own — most often a starved
-# PG connection pool (measured: 83.2% saturation, no blocking query) — where
-# "just retry" burns a full agent turn per attempt for no benefit. Track a
-# per-owner streak across separate hook invocations (each Edit call is a
-# fresh subprocess, so in-process state can't see across attempts) and, once
-# it crosses a threshold, stop suggesting blind retry and say what is
-# actually true: check pool health before continuing to hammer the acquire.
+# points at a condition that has not self-healed. Track a per-owner streak
+# across separate hook invocations (each Edit call is a fresh subprocess, so
+# in-process state can't see across attempts) and, once it crosses a threshold,
+# stop suggesting blind retry while preserving the only truthful fact: the
+# advisory timeout did not identify its holder.
 TRANSIENT_STREAK_ESCALATE_AT = 3
 
 
@@ -955,45 +953,6 @@ def _clear_transient_streak():
         pass
 
 
-def _pg_health_snapshot():
-    """Best-effort `dev:pg_health` read for the escalated message ONLY — never
-    on the hot/common path. A cheap read-only query (dev-data.ts: connection
-    counts off pg_stat_activity), but still an extra round-trip, so this is
-    called only once we already know we're about to deny with a turn-costing
-    message; any failure here must never block or delay the deny itself."""
-    try:
-        body = json.dumps({
-            'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-            'params': {'name': 'dev:pg_health', 'arguments': {}},
-        }).encode()
-        req2 = urllib.request.Request(
-            operator_url.rstrip('/') + '/api/mcp?superuser=1&format=json&client='
-            + urllib.parse.quote(owner, safe=''),
-            data=body,
-            headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
-                     'Accept': 'application/json, text/event-stream'},
-            method='POST',
-        )
-        resp = _opener.open(req2, timeout=4)
-        raw = resp.read().decode('utf-8', errors='replace')
-        for line in raw.splitlines():
-            line = line.strip()
-            if line.startswith('data:'):
-                line = line[5:].strip()
-            if not line or line.startswith('event:'):
-                continue
-            cand = json.loads(line)
-            if isinstance(cand, dict) and 'result' in cand:
-                for item in (cand['result'].get('content') or []):
-                    if item.get('type') == 'text':
-                        data = json.loads(item['text']).get('data')
-                        if isinstance(data, dict):
-                            return data
-    except Exception:
-        pass
-    return None
-
-
 inner = _locks_acquire_once()
 # We reached the operator and got a usable answer → enforcement healthy.
 mark_success()
@@ -1017,33 +976,20 @@ if _is_transient(inner):
 if _is_transient(inner):
     _streak = _bump_transient_streak()
     if _streak >= TRANSIENT_STREAK_ESCALATE_AT:
-        _health = _pg_health_snapshot()
-        if _health:
-            _health_line = (
-                f"Live PG health: {_health.get('serverWideConnections')}/"
-                f"{_health.get('maxConnections')} connections "
-                f"({_health.get('saturationPct')}% saturated)."
-            )
-        else:
-            _health_line = 'PG health could not be read just now.'
         deny(
             f'locks: PERSISTENT transient contention — attempt #{_streak} in a row for '
-            'this session with NO holder ever named. A genuine race with your own '
-            'parallel edit normally self-heals within 1-2 attempts; this many '
-            'consecutive failures instead points at something that will not clear on '
-            'its own — most often a starved PG connection pool, not lock contention. '
-            f'{_health_line} Retrying THIS instant is unlikely to help — if the pool is '
-            'saturated, pivot to non-DB work for a bit (or check dev:pg_health / '
-            'dev:pg_active_queries yourself) before retrying, rather than spending '
-            'another turn on an immediate re-attempt. Still no holder to wait for, so '
-            'do NOT queue wake_on_grant.'
+            'this session. The advisory-lock timeout did not identify a holder; '
+            'that is unknown, not evidence that the requested files are unheld. '
+            'Stop immediately repeating this same acquire and inspect the lock '
+            'service state or pivot to another task. Do NOT queue wake_on_grant '
+            'for a timeout that produced no holder or waiter ticket.'
         )
     deny(
         'locks: transient contention — the lock service could not serialize this '
-        'acquire in time (per-workspace advisory-lock timeout; commonly concurrent '
-        'edits from YOUR OWN session, or a starved DB pool). NO other agent holds '
-        'these file(s). Simply RETRY this same edit — do NOT queue wake_on_grant '
-        '(there is no holder to wait for).'
+        'acquire in time (advisory-lock timeout; holder identity is unknown). '
+        'This does not prove the requested files are unheld. Simply RETRY this '
+        'same edit — do NOT queue wake_on_grant for this timeout because no '
+        'holder or waiter ticket was returned.'
     )
 
 # Busy (or another refusal) → deny with a reason the agent can act on.

@@ -98,6 +98,7 @@ export default defineTool({
             paths: args.paths,
             allMine,
           }),
+          { paths: args.paths },
         );
 
       /**

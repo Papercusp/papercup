@@ -1,12 +1,12 @@
 /**
  * su-locks-contention — plan harness-test-coverage-for-launch P-015.
  *
- * `inWorkspaceTxn` serializes every mutating locks:* op per workspace via a
- * `pg_advisory_xact_lock`, under a 5s `lock_timeout` / `statement_timeout`. The
- * defensive contract: when a second op on the SAME workspace can't get the lock
- * in time (a slow/stuck holder), it must surface a STRUCTURED result — a typed
- * `WorkspaceContendedError` that `locks:acquire` turns into `{ok:false}` — never
- * a raw postgres error to the agent.
+ * `inWorkspaceTxn` keeps global mutating work serialized per workspace, while
+ * file-lock operations use a shared workspace gate plus per-path
+ * `pg_advisory_xact_lock` keys. The defensive contract: when a second global
+ * op on the SAME workspace can't get the lock in time (a slow/stuck holder),
+ * it must surface a STRUCTURED result — a typed `WorkspaceContendedError`
+ * that `locks:acquire` turns into `{ok:false}` — never a raw postgres error.
  *
  * This drives real same-workspace contention: a holder grabs the advisory lock
  * and parks the transaction idle-in-transaction (awaiting a JS gate — no SQL
@@ -84,6 +84,52 @@ describe('su-locks inWorkspaceTxn contention (P-015)', async () => {
         release();
         await holder;
       }
+    },
+    30_000,
+  );
+
+  it.skipIf(!live)(
+    'distinct file paths overlap while a same-path/global operation still serializes',
+    async () => {
+      await ensureBootstrap();
+      const domain = `p015-paths-${randomUUID()}`;
+
+      let release!: () => void;
+      const gate = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      let firstStarted!: () => void;
+      const firstReady = new Promise<void>((resolve) => {
+        firstStarted = resolve;
+      });
+      let secondStarted!: () => void;
+      const secondReady = new Promise<void>((resolve) => {
+        secondStarted = resolve;
+      });
+
+      const first = inWorkspaceTxn(domain, 'owner-a', async () => {
+        firstStarted();
+        await gate;
+        return 'a';
+      }, { paths: ['src/a.ts'] });
+      await firstReady;
+
+      const second = inWorkspaceTxn(domain, 'owner-b', async () => {
+        secondStarted();
+        return 'b';
+      }, { paths: ['src/b.ts'] });
+
+      try {
+        await Promise.race([
+          secondReady,
+          new Promise<never>((_, reject) => setTimeout(() => reject(new Error('distinct path was serialized')), 1_500)),
+        ]);
+      } finally {
+        release();
+      }
+
+      await expect(first).resolves.toBe('a');
+      await expect(second).resolves.toBe('b');
     },
     30_000,
   );

@@ -233,6 +233,7 @@ export default defineTool({
           intent: args.intent,
           ttlSec,
         }),
+        { paths },
       );
 
     let first: Awaited<ReturnType<typeof tryAcquire>> & { sha_token?: ShaTokenGrant };
@@ -358,6 +359,7 @@ export default defineTool({
           maxWaitSec: WAKE_QUEUE_WINDOW_SEC,
           pendingEdit,
         }),
+        { paths },
       );
       if (!inserted.ok) {
         return {
@@ -482,6 +484,7 @@ export default defineTool({
             ttlSec,
             maxWaitSec,
           }),
+          { paths },
         );
       let inserted: Awaited<ReturnType<typeof insertOnce>>;
       try {
@@ -718,7 +721,7 @@ export default defineTool({
             return { won: true as const, lockId: r.lock_id, expires: r.expires_ts, held: r.held };
           }
           return { won: false as const, busy: r.busy };
-        });
+        }, { paths });
       } catch (err: unknown) {
         if (!isTransientPgConnectionError(err)) throw err;
         return waitConnectionUnstable(ticketId);
@@ -824,9 +827,9 @@ function errorResult(error: string) {
   };
 }
 
-/** EI-9478: the advisory-lock (per-workspace serialization) wait timed out —
- * a TRANSIENT service-side condition, not a foreign hold. Distinct `reason`
- * so no reader can render it as "held by another agent". */
+/** EI-9478: the advisory-lock wait timed out before the service could identify
+ * a holder. Distinct `reason` plus an explicit unknown holder keeps readers
+ * from rendering the timeout as either a foreign hold or proof of no hold. */
 function workspaceContended() {
   return {
     content: [
@@ -836,9 +839,10 @@ function workspaceContended() {
           ok: false,
           reason: 'workspace_contended',
           transient: true,
+          holder: 'unknown',
           busy: [],
           advice:
-            'The lock service could not serialize this call in time (per-workspace advisory-lock timeout — concurrent lock ops in this workspace, often your OWN parallel edits, or a starved PG pool). NO holder blocks you: do NOT queue wake_on_grant; retry the operation after a short pause.',
+            'The lock service could not serialize this call in time (advisory-lock timeout). Holder identity is unknown; this does not prove the requested files are unheld. Do NOT queue wake_on_grant for this timeout because no holder or waiter ticket was returned; retry the operation with backoff or inspect the lock-service state.',
         }),
       },
     ],

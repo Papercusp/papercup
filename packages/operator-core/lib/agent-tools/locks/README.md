@@ -7,8 +7,8 @@ Cross-process file claim coordination for engineer-collaborator agents
 
 ## Phase 1 ships (this commit)
 
-Cooperative no-wait surface — 5 verbs, advisory-lock-per-workspace
-serialization, FIFO-ordered grant cascade for future waiters, identity
+Cooperative no-wait surface — 5 verbs, shared workspace gating plus
+deterministic per-path advisory locks, FIFO-ordered grant cascade for future waiters, identity
 via `?client=` URL param.
 
 | Tool | What it does |
@@ -71,7 +71,10 @@ inWorkspaceTxn(workspaceId, ownerId, async (tx) => {
   // SET LOCAL application_name = 'papercusp-su:' || ownerId
   // SET LOCAL lock_timeout = '5s'
   // SET LOCAL statement_timeout = '5s'  (per-op override in handler)
-  // SELECT pg_advisory_xact_lock(101, hashtext('su:' || workspaceId))
+  // Path-scoped file claims take the shared workspace gate plus one
+  // pg_advisory_xact_lock(101, hashtext('su:' || workspaceId || ':' || path))
+  // per canonical path, sorted for multi-path deadlock safety. Global
+  // operations keep pg_advisory_xact_lock(101, hashtext('su:' || workspaceId)).
   // ...tool body runs serialized within this workspace...
 });
 ```

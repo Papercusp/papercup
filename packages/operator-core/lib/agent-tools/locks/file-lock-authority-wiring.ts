@@ -93,6 +93,7 @@ export function adaptSuLockStore(): FileLockCoordinator {
           intent: p.intent,
           ttlSec: p.ttlSec,
         }),
+        { paths: p.paths },
       );
       if (r.ok) {
         return { ok: true, lockId: r.lock_id, expiresTs: r.expires_ts.toISOString() };
@@ -109,6 +110,7 @@ export function adaptSuLockStore(): FileLockCoordinator {
           paths: p.paths,
           allMine: p.allMine,
         }),
+        { paths: p.paths },
       );
       return { ok: true, released: r.released };
     },

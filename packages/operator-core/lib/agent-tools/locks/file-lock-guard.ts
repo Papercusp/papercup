@@ -154,6 +154,7 @@ export async function guardFileLock<T>(
     acquired = await acquireWithContentionRetry(() =>
       inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
         tryAcquire(tx, { coordinationDomain, owner: ownerId, ownerLabel, paths, intent: spec.intent, ttlSec }),
+        { paths },
       ));
   } catch (err) {
     // FAIL-OPEN: a lock-infra fault must never wedge a fleet agent's edit
@@ -184,6 +185,7 @@ export async function guardFileLock<T>(
     // Release like the PostToolUse hook does — by lock_id, owner-checked.
     await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
       tryRelease(tx, { coordinationDomain, owner: ownerId, lockId }),
+      { paths },
     ).catch((err) => {
       ctx.log?.(`[file-lock] release faulted (lock frees at TTL): ${err instanceof Error ? err.message : String(err)}`);
     });

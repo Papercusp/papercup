@@ -32,10 +32,6 @@ let nextInner: unknown = { ok: true, lock_id: 'stub-lock' };
  * contended on attempt 1, ok on attempt 2). When null/empty the static `nextInner`
  * is used for every call, so existing tests are unaffected. */
 let nextInnerSeq: unknown[] | null = null;
-/** EI-19324697909459657: the `dev:pg_health` payload the stub returns when the
- * hook's escalation path calls it (a SEPARATE tool from `locks:acquire`, routed
- * by `params.name` below — `nextInner`/`nextInnerSeq` never apply to it). */
-let nextPgHealth: unknown = { serverWideConnections: 421, maxConnections: 512, saturationPct: 82.2 };
 /** Optionally frame the response as text/event-stream (the hook parses both). */
 let useSse = false;
 let lastRequest: { url: string; body: Record<string, any> } | null = null;
@@ -61,14 +57,7 @@ beforeAll(async () => {
     req.on('data', (d) => (body += d));
     req.on('end', () => {
       lastRequest = { url: req.url ?? '', body: JSON.parse(body) as Record<string, any> };
-      // dev:pg_health is a DISTINCT tool the escalation path calls, routed by
-      // name so it never consumes a `nextInner`/`nextInnerSeq` slot meant for
-      // locks:acquire (and vice versa) — the real handler shape wraps a plain
-      // object return as `{ data: <result> }` in the text content.
-      const isPgHealth = lastRequest.body?.params?.name === 'dev:pg_health';
-      const payload = isPgHealth
-        ? { data: nextPgHealth }
-        : nextInnerSeq && nextInnerSeq.length ? nextInnerSeq.shift() : nextInner;
+      const payload = nextInnerSeq && nextInnerSeq.length ? nextInnerSeq.shift() : nextInner;
       const rpc = {
         jsonrpc: '2.0',
         id: 1,
@@ -95,7 +84,6 @@ afterAll(async () => {
 afterEach(() => {
   nextInner = { ok: true, lock_id: 'stub-lock' };
   nextInnerSeq = null;
-  nextPgHealth = { serverWideConnections: 421, maxConnections: 512, saturationPct: 82.2 };
   useSse = false;
   lastRequest = null;
 });
@@ -572,9 +560,8 @@ describe('cc PreToolUse hook — operator decision rendering (stub operator)', (
   });
 
   // ── EI-9478: transient workspace-contention must never be rendered as a foreign hold ──
-  // The server's per-workspace advisory-lock wait can time out (commonly THIS
-  // session's own parallel edits racing each other, or a starved PG pool). That
-  // is a TRANSIENT serialization miss with NO holder. Before the fix, acquire.ts
+  // The server's advisory-lock wait can time out without identifying a holder.
+  // That is a TRANSIENT serialization miss with UNKNOWN holder identity. Before the fix, acquire.ts
   // returned a bare busy:[], which this hook printed under a "file(s) held by
   // another agent:" header with zero holders — a fabricated attribution that
   // could strand a half-applied multi-edit batch. The hook must instead retry
@@ -590,6 +577,8 @@ describe('cc PreToolUse hook — operator decision rendering (stub operator)', (
     expect(reason).toMatch(/transient contention/i);
     expect(reason).toMatch(/RETRY this same edit/i);
     expect(reason).toMatch(/do NOT queue wake_on_grant/i);
+    expect(reason).toMatch(/holder identity is unknown/i);
+    expect(reason).not.toMatch(/starved|PG pool|NO other agent holds/i);
     // The fabricated-holder wording must NOT appear for a zero-holder condition.
     expect(reason).not.toContain('held by another agent');
     // Nothing was granted, so nothing is cached to release.
@@ -628,12 +617,9 @@ describe('cc PreToolUse hook — operator decision rendering (stub operator)', (
 // ── EI-19324697909459657: "Simply RETRY" is wrong advice once retrying has ──
 // already demonstrably failed repeatedly for one owner. A one-off race with
 // your own parallel edit self-heals in 1-2 attempts (see the 'heals on retry'
-// test above); a run of CONSECUTIVE transient denials for the SAME owner
-// instead points at something that will not clear on its own (measured in the
-// field: 83.2% PG connection saturation, no blocking query — a starved pool,
-// not lock contention). Past a streak threshold the hook must stop telling the
-// agent to blindly retry and instead say what is actually going on, backed by
-// a live dev:pg_health read where possible.
+// test above); a run of CONSECUTIVE transient denials for the SAME owner must
+// stop telling the agent to blindly retry. The only verified fact is that the
+// advisory timeout still did not identify a holder.
 describe('EI-19324697909459657: persistent-transient escalation', () => {
   beforeAll(() => {
     // Every test in the OUTER describe above shares owner 's' (editOf's fixed
@@ -651,9 +637,8 @@ describe('EI-19324697909459657: persistent-transient escalation', () => {
     }
   });
 
-  it('attempts 1-2 still use the plain "Simply RETRY" wording; attempt 3 escalates with the streak count + a live PG health read, and drops the blind-retry advice', async () => {
+  it('attempts 1-2 still use the plain "Simply RETRY" wording; attempt 3 escalates with the streak count and preserves unknown-holder semantics', async () => {
     nextInner = { ok: false, reason: 'workspace_contended', transient: true, busy: [] };
-    nextPgHealth = { serverWideConnections: 421, maxConnections: 512, saturationPct: 82.2 };
 
     for (const id of ['tu-streak-1', 'tu-streak-2']) {
       const r = await run(editOf('sub/streak.ts', id));
@@ -669,28 +654,24 @@ describe('EI-19324697909459657: persistent-transient escalation', () => {
     expect(reason).toMatch(/PERSISTENT transient contention/i);
     expect(reason).toMatch(/attempt #3/i);
     expect(reason).not.toMatch(/Simply RETRY this same edit/i);
-    // The live pg_health numbers the stub supplied must actually be relayed.
-    expect(reason).toContain('421/512');
-    expect(reason).toContain('82.2%');
-    // Still no holder — never mis-instruct into a wake_on_grant queue-wait.
+    expect(reason).toMatch(/holder.*unknown/i);
+    expect(reason).not.toMatch(/starved|PG health|saturated|pivot to non-DB/i);
     expect(reason).toMatch(/do NOT queue wake_on_grant/i);
     expect(fs.existsSync(join(cache, 'tu-streak-3.lock'))).toBe(false);
   });
 
-  it('a dev:pg_health read failure degrades gracefully — the escalated message still lands, minus hard numbers', async () => {
+  it('does not make an unrelated PG-health claim when escalating an unknown-holder timeout', async () => {
     nextInner = { ok: false, reason: 'workspace_contended', transient: true, busy: [] };
-    // Malformed/unreadable pg_health payload (e.g. the tool itself errored) —
-    // the stub still answers on the route, just with a shape that isn't a dict.
-    nextPgHealth = null;
 
-    for (const id of ['tu-streak-nohealth-1', 'tu-streak-nohealth-2']) {
-      await run(editOf('sub/streak-nohealth.ts', id));
+    for (const id of ['tu-streak-neutral-1', 'tu-streak-neutral-2']) {
+      await run(editOf('sub/streak-neutral.ts', id));
     }
-    const r3 = await run(editOf('sub/streak-nohealth.ts', 'tu-streak-nohealth-3'));
+    const r3 = await run(editOf('sub/streak-neutral.ts', 'tu-streak-neutral-3'));
     const out3 = JSON.parse(r3.stdout);
     const reason: string = out3.hookSpecificOutput.permissionDecisionReason;
     expect(reason).toMatch(/PERSISTENT transient contention/i);
-    expect(reason).toMatch(/PG health could not be read/i);
+    expect(reason).toMatch(/holder.*unknown/i);
+    expect(reason).not.toMatch(/PG health|starved|saturated/i);
   });
 
   it('a grant resets the streak — a later transient run starts back at the base wording', async () => {

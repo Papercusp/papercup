@@ -162,6 +162,7 @@ async function defaultReleaseLock(g: GrantedPendingEdit): Promise<void> {
       lockId: g.granted_lock_id,
       paths: g.paths,
     }),
+    { paths: g.paths },
   );
 }
 
