@@ -381,9 +381,18 @@ export function OperatorChat({
   const renderReport = useCallback(
     (msg: ChatMessage): ReactNode | null => {
       if (!curatorCardsOn || !msg.report) return null;
-      return <ReportBlockCard report={msg.report} onDrillIn={onDrillIn} canDrillIn={canDrillIn} />;
+      return (
+        <ReportBlockCard
+          report={msg.report}
+          onDrillIn={onDrillIn}
+          canDrillIn={canDrillIn}
+          harnessSlug={harnessSlug}
+          planSlug={msg.planSlug}
+          onWorkRefActivate={handleWorkRefActivate}
+        />
+      );
     },
-    [curatorCardsOn, onDrillIn, canDrillIn],
+    [curatorCardsOn, onDrillIn, canDrillIn, harnessSlug, handleWorkRefActivate],
   );
 
   return (

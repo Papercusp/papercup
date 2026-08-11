@@ -13,6 +13,17 @@ import { cleanup, render, screen, fireEvent } from '@testing-library/react';
 
 afterEach(() => cleanup());
 
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: () => ({
+    data: [],
+    loading: false,
+    fetching: false,
+    transport: 'sse' as const,
+    invalidate: () => {},
+    error: null,
+  }),
+}));
+
 import { ReportBlockCard } from './ReportBlockCard';
 import type { ReportBlock } from '@papercusp/chat-protocol';
 
@@ -80,6 +91,23 @@ describe('ReportBlockCard', () => {
     expect(btn).toBeTruthy();
     fireEvent.click(btn);
     expect(onDrillIn).toHaveBeenCalledWith('escalation:e1');
+  });
+
+  it('renders item markdown instead of exposing the producer syntax', () => {
+    const { container } = render(<ReportBlockCard report={curatorCard} />);
+    const itemText = container.querySelector('.report-block-item-text');
+    expect(itemText?.querySelector('strong')?.textContent).toBe('Blocked');
+    expect(itemText?.textContent).toContain('Blocked');
+    expect(itemText?.textContent).not.toContain('**');
+  });
+
+  it('uses the existing work-ref markdown plugin and hydrated pill renderer', () => {
+    const refReport: ReportBlock = {
+      plans: [{ title: 'Refs', items: [{ text: 'See WI-37945 and P-003', status: 'wip' }] }],
+    };
+    render(<ReportBlockCard report={refReport} harnessSlug="papercusp" planSlug="nonp2p-bug-drain-2026-08-08" />);
+    expect(screen.getByLabelText('WI-37945')).toBeTruthy();
+    expect(screen.getByLabelText('P-003')).toBeTruthy();
   });
 
   it('renders NO drill-in for a row without a ref (only the ref row gets a button)', () => {
