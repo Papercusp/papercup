@@ -212,7 +212,7 @@ function projectCohortAudit(value: unknown, cap: number, titleCap: number, reaso
   if (!source) return undefined;
   const rawRows = Array.isArray(source.rows) ? source.rows : [];
   const rows = rawRows
-    .map((value) => {
+    .map((value): JsonObject | null => {
       const row = object(value);
       if (!row || typeof row.id !== 'string') return null;
       const bucket = ['terminal', 'parked', 'in-flight', 'unclaimed', 'missing'].includes(String(row.bucket))

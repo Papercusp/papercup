@@ -907,8 +907,8 @@ export default defineTool({
       .optional(),
   }),
   shape: {
-    standard: (data, context) => shapeBurnDown(data, 'standard', context.args),
-    trimmed: (data, context) => shapeBurnDown(data, 'trimmed', context.args),
+    standard: (data, context) => shapeBurnDown(data, 'standard', context.args as { limit?: unknown; ids?: unknown }),
+    trimmed: (data, context) => shapeBurnDown(data, 'trimmed', context.args as { limit?: unknown; ids?: unknown }),
   },
   async handler(args, ctx) {
     const requestedIds = args.ids ? [...new Set(args.ids)] : null;
