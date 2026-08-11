@@ -33,8 +33,11 @@
  * exact, and a 45s-stale "someone's on it" only ever errs toward not double-starting.
  *
  * "Actively worked" ≡ activity progressing|alive (claimed by a LIVE holder). A
- * stalled/dead claim is RECLAIMABLE and deliberately does NOT count as covered —
- * the same truth fleet:assignments enforces (agent-activity-liveness-truth).
+ * stalled/dead claim is deliberately NOT counted as covered — the former keeps
+ * the no-progress signal visible without treating a live holder as gone. The
+ * stalled case has its own `held-stalled` band; only a confirmed dead/unknown
+ * holder reads `held-not-live`, so a reader is never invited to reclaim a live
+ * holder's work from a missing checkpoint alone.
  *
  * COVERAGE IS LIVENESS-AWARE; THE WORK-ITEM LEDGER'S `assignee` IS NOT. That is
  * the one thing to know before comparing the two surfaces (P-005,
@@ -49,7 +52,8 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
-import { listFleetAssignments, deriveActivity } from './fleet/assignments';
+import { listFleetAssignments, deriveActivity, type FleetAssignmentRow } from './fleet/assignments';
+import { resolveSessionStates, type SessionState } from './agent-tools/coordination/liveness-oracle';
 import { planItemRef, PLAN_ITEM_KIND } from './issue-blocks-merge';
 import { ISSUE_FAMILY_KINDS } from './work-items';
 import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
@@ -92,8 +96,9 @@ function isLiveActivity(a: ItemActivity): boolean {
 
 /**
  * A claim EXISTS on the item but its holder is not live — `dead` (holder confirmed
- * gone), `stalled` (no progress in the window), or `reserved` (holder liveness
- * unknown). The complement of `free` among the non-live activities.
+ * gone) or `reserved` (holder liveness unknown). `stalled` gets its own band:
+ * the fleet view says the holder is alive but has not emitted item progress, and
+ * that is an ask/coordinate signal, not a reclaim signal.
  *
  * This is the distinction P-005 (trap-guards-followups-2026-08-01) exists to make
  * visible. Coverage collapsed all of these into `unclaimed`/`none`, which are
@@ -105,7 +110,12 @@ function isLiveActivity(a: ItemActivity): boolean {
  * directly, so the reclaimable case is legible instead of inferred.
  */
 function isHeldButNotLive(a: ItemActivity | null | undefined): boolean {
-  return a != null && a !== 'free' && !isLiveActivity(a);
+  return a != null && a !== 'free' && a !== 'stalled' && !isLiveActivity(a);
+}
+
+/** A holder is alive but its item-scoped progress signal is stale/missing. */
+function isHeldStalled(a: ItemActivity | null | undefined): boolean {
+  return a === 'stalled';
 }
 
 /**
@@ -152,7 +162,8 @@ export const STAMP_ONLY_REL = 'plan_item_stamp';
 export const COVERAGE_LEVELS = [
   'none', // no link and no claim of any kind → genuinely unworked, nobody ever took it
   'unclaimed', // links exist, all open, and NO link/claim has a holder at all (filed, never taken)
-  'held-not-live', // a holder IS recorded (link or direct claim) but none is live → RECLAIMABLE
+  'held-not-live', // a holder is dead/unknown (link or direct claim) → RECLAIMABLE
+  'held-stalled', // a holder is alive but has no item progress → ASK/coordinate; never auto-reclaim
   'partial', // some linked work is live-held (or a direct claim) but not all open links are
   'full', // every non-terminal linked work-item is live-held (or a bare direct claim)
   'complete', // ≥1 link and EVERY linked work-item is terminal (the work is done)
@@ -166,7 +177,7 @@ export interface CoverageWorkLink {
   rel: string;
   /** The linked work-item is in a terminal (done) state. */
   terminal: boolean;
-  /** Live activity from the fleet view ('free' when no live claim row). */
+  /** Activity from the fleet view ('free' when no claim row exists). */
   activity: ItemActivity;
   /** Holder ownerId when live-held (progressing|alive), else null. */
   holder: string | null;
@@ -197,7 +208,7 @@ export interface PlanItemCoverage {
 
 /**
  * Pure coverage classifier (unit-testable, no I/O). `links` carry each linked
- * work-item's terminal flag + live activity; `directlyClaimed` is whether a LIVE
+ * work-item's terminal flag + activity; `directlyClaimed` is whether a LIVE
  * plan-item claim sits on the item. See {@link CoverageLevel} for the bands.
  *
  * `directActivity` is the DIRECT plan-item claim's raw activity (null when no
@@ -205,7 +216,8 @@ export interface PlanItemCoverage {
  * flag is already narrowed to LIVE holders by the caller — so a dead/stalled
  * direct claim arrives here as `directlyClaimed:false`, indistinguishable from
  * "no claim" without this argument. Optional so existing callers keep compiling;
- * omitting it only costs the held-not-live/none distinction for direct claims.
+ * omitting it only costs the held-not-live/held-stalled/none distinction for
+ * direct claims.
  */
 export function classifyCoverage(
   links: Pick<CoverageWorkLink, 'terminal' | 'activity'>[],
@@ -216,6 +228,7 @@ export function classifyCoverage(
     if (directlyClaimed) return 'full';
     // A direct claim whose holder died does NOT read as "genuinely unworked": the
     // claim row survives its holder, and so does the work-item ledger's assignee.
+    if (isHeldStalled(directActivity)) return 'held-stalled';
     return isHeldButNotLive(directActivity) ? 'held-not-live' : 'none';
   }
   const nonTerminal = links.filter((l) => !l.terminal);
@@ -225,6 +238,9 @@ export function classifyCoverage(
   if (!anyLive) {
     // Nothing live — but is that "never taken" or "taken by someone who is gone"?
     // Both are pickable; only the second explains a non-null ledger assignee.
+    if (isHeldStalled(directActivity) || nonTerminal.some((l) => isHeldStalled(l.activity))) {
+      return 'held-stalled';
+    }
     return isHeldButNotLive(directActivity) || nonTerminal.some((l) => isHeldButNotLive(l.activity))
       ? 'held-not-live'
       : 'unclaimed';
