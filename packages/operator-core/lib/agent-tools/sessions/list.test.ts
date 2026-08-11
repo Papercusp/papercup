@@ -11,6 +11,13 @@
  * must all resolve the same session id"), with OWNER-INDEPENDENT counts so the row
  * matches what search/timeline see.
  *
+ * WI-37867 (owner-reported: "chat window opens but stays empty") extends that
+ * fallback from owner:'self' to ANY named owner, resolved via harness_shared.
+ * adv_sessions — which carries session_id from the instant of launch, whereas
+ * session_turns cannot see a session that has produced no turns. The HUD chat
+ * popup resolves a peer agent's ownerId through this tool, so the 'self' scoping
+ * meant a brand-new session resolved to null and the popup rendered blank.
+ *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/sessions/list.test.ts
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
@@ -135,15 +142,64 @@ describe('sessions:list EI-11403 active-session fallback', () => {
     expect(parsed.count).toBe(1);
   });
 
-  it("scopes the fallback to owner:self — never runs for another agent's owner", async () => {
+  /* WI-37867 DELIBERATELY REVERSES the previous assertion here.
+   *
+   * This slot used to hold "scopes the fallback to owner:self — never runs for
+   * another agent's owner", which pinned the restriction that CAUSED the bug: the
+   * HUD conversation popup resolves an arbitrary agent's ownerId through this
+   * tool, so scoping the fallback to 'self' meant a brand-new session (zero
+   * indexed turns) resolved to null, the popup built no stream URL, and the chat
+   * window rendered silently blank. The old test is not merely obsolete — it
+   * asserted the defect. It is replaced, not deleted, so the reversal is legible.
+   *
+   * What that test was legitimately protecting — never fabricating a row, and not
+   * paying for a fallback with nothing to find — is kept below.
+   */
+  it('surfaces a NAMED owner\'s live session that has produced ZERO indexed turns (WI-37867)', async () => {
+    resolveSelfSession.mockResolvedValue(null); // no pty/discovery record for a peer
     const { parsed, txCalls } = await run(
       { owner: 'su-other' },
-      [[]], // main query → zero rows
+      [
+        [], // main owner-filtered query → zero rows (no turns indexed yet)
+        [{ agent: 'claude', session_id: 'sess-brand-new' }], // adv_sessions: live from launch
+        [{ turns: 0, prompt_count: 0, harness_slug: null, cwd: null, first_ts: null, last_ts: null }],
+      ],
     );
 
-    expect(resolveSelfSession).not.toHaveBeenCalled();
-    expect(txCalls).toBe(1); // main query only
+    expect(txCalls).toBe(3); // main + adv_sessions lookup + owner-independent aggregate
+    const row = parsed.sessions.find((s) => s.session_id === 'sess-brand-new');
+    expect(row).toBeDefined();
+    expect(row!.active).toBe(true);
+    expect(row!.source_kind).toBe('claude');
+    expect(row!.turns).toBe(0); // zero turns is the POINT — not a reason to omit the row
+    expect(parsed.count).toBe(1);
+  });
+
+  it('does NOT fabricate a row when the owner has no live session at all', async () => {
+    resolveSelfSession.mockResolvedValue(null);
+    const { parsed, txCalls } = await run(
+      { owner: 'su-nobody' },
+      [
+        [], // main query → zero rows
+        [], // adv_sessions → no live session
+      ],
+    );
+
+    expect(txCalls).toBe(2); // main + adv lookup; no aggregate, nothing to aggregate
     expect(parsed.sessions).toHaveLength(0);
     expect(parsed.count).toBe(0);
+  });
+
+  it('ignores an adv_sessions row whose agent is not a known source kind', async () => {
+    resolveSelfSession.mockResolvedValue(null);
+    const { parsed } = await run(
+      { owner: 'su-weird' },
+      [
+        [],
+        [{ agent: 'not-a-real-client', session_id: 'sess-x' }],
+      ],
+    );
+
+    expect(parsed.sessions).toHaveLength(0); // no lens for that kind — omit, don't guess
   });
 });
