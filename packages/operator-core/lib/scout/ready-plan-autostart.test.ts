@@ -16,13 +16,17 @@ vi.mock('../plan-workitem-promotion-run', () => ({
 // never reaches the real flag store, and so "omitting deps still consults the
 // gate" is assertable rather than assumed.
 const axisEnabledMock = vi.fn<() => Promise<boolean>>();
+const maintenanceScopesMock = vi.fn<
+  () => Promise<Array<{ workspaceId: string; installSlug: string }>>
+>();
 vi.mock('../pot/started', () => ({
   mugKettleSystemEnabled: () => axisEnabledMock(),
-  listStartedPots: async () => [],
+  listBlenderMaintenanceScopes: () => maintenanceScopesMock(),
 }));
 
 import {
   partitionReadyCandidates,
+  scoutReadyAutostartSweep,
   scoutReadyAutostartEnabled,
   startReadyScoutPlan,
   type ScoutReadyCandidate,
@@ -66,6 +70,16 @@ describe('scoutReadyAutostartEnabled (kill switch)', () => {
     expect(scoutReadyAutostartEnabled()).toBe(true);
     process.env.PAPERCUSP_SCOUT_READY_AUTOSTART = '0';
     expect(scoutReadyAutostartEnabled()).toBe(false);
+  });
+});
+
+describe('scoutReadyAutostartSweep population', () => {
+  it('consults registered Blender scopes rather than the retired started-pot bit', async () => {
+    maintenanceScopesMock.mockReset().mockResolvedValueOnce([]);
+
+    await expect(scoutReadyAutostartSweep()).resolves.toEqual([]);
+
+    expect(maintenanceScopesMock).toHaveBeenCalledTimes(1);
   });
 });
 

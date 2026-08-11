@@ -66,7 +66,7 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
-import { listStartedPots, mugKettleSystemEnabled } from '../pot/started';
+import { listBlenderMaintenanceScopes, mugKettleSystemEnabled } from '../pot/started';
 import { resolveMugOwner } from '../pot/placement-watchdog';
 import { deliverScoutNudge } from './nudge-recipient';
 import { claimWatchdogFire, recentWatchdogFires } from '../pot/watchdog';
@@ -292,7 +292,7 @@ async function fireDecomposeWake(
 }
 
 /**
- * The ready-plan autostart sweep. For each STARTED hive: auto-start every ratified
+ * The ready-plan autostart sweep. For each registered Blender Hive: auto-start every ratified
  * (ready, never-started) scout plan that has open items — promoting its items into
  * work_items under the hive's own workspace — and fire a debounced decompose-wake
  * for ratified plans with no items. Never throws. DEFAULT-SAFE: nothing ready ⇒
@@ -302,14 +302,14 @@ export async function scoutReadyAutostartSweep(): Promise<ScoutReadyAutostartRes
   const results: ScoutReadyAutostartResult[] = [];
   if (!scoutReadyAutostartEnabled()) return results;
   try {
-    const started = await listStartedPots();
-    if (started.length === 0) return results;
+    const scopes = await listBlenderMaintenanceScopes();
+    if (scopes.length === 0) return results;
     // P-070: resolve the retirement gate ONCE per sweep, not once per plan — the
     // flag cannot meaningfully change inside a single 30s tick, and the per-plan
     // read would be N PostHog/flag reads for one answer.
     const axisLive = await mugKettleSystemEnabled();
     const { sql } = getOrgPg();
-    for (const { workspaceId, installSlug } of started) {
+    for (const { workspaceId, installSlug } of scopes) {
       try {
         // WI-6978: plans are stored under the Pot/Hive HOME, not a member harness's
         // own slug — resolve once here rather than in each helper, so the read and the
