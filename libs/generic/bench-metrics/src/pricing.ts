@@ -58,6 +58,7 @@ export interface PriceTable {
 export const PRICE_TABLE_V1: PriceTable = {
   version: 'price-table-v1',
   prices: {
+    'claude-opus-5': price(5, 25),
     'claude-opus-4-8': price(5, 25),
     'claude-opus-4-7': price(5, 25),
     'claude-opus-4-6': price(5, 25),
