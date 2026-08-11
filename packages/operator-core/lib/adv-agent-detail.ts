@@ -14,6 +14,7 @@
  */
 
 import { readAckedMsgIds, readInvolvingOwner } from './agent-tools/coordination/messages';
+import { ownerVisiblePromptText } from './agent-tools/coordination/owner-chat-turn';
 import { readWatermark, pickUnreadCursor } from './agent-tools/coordination/watermarks';
 import { lastInboxReadAtBatch } from './agent-tools/coordination/inbox-read-freshness';
 import { listHandoffs, type HandoffWithAcceptance } from './agent-tools/coordination/handoffs';
@@ -1797,22 +1798,6 @@ const PUSHED_REF_TITLE_MAX_CHARS = 110;
  *  sync payload (40 × 800 ≈ 32KB worst case). */
 export const PUSHED_REF_DETAIL_MAX_CHARS = 800;
 
-/**
- * Strip a leading turn-provenance envelope (`⟦turn-origin:… nonce:…⟧`) from a
- * transcript turn. PURE.
- *
- * Two reasons, and the second is not cosmetic: the envelope is machine
- * bookkeeping that says nothing about what the session was DOING, and it
- * carries a `nonce` — rendering it as a row's human-readable title would put an
- * internal auth token on screen as the label. Returns the remainder, or the
- * original when stripping would leave nothing (an envelope-only turn is still
- * better than a blank row).
- */
-export function stripTurnEnvelope(text: string): string {
-  const stripped = text.replace(/^\s*⟦[^⟧]*⟧\s*/u, '');
-  return stripped.trim() ? stripped : text;
-}
-
 /** Collapse whitespace and cut to `max`, appending an ellipsis only when the cut
  *  actually removed something. PURE. */
 export function oneLineClamp(text: string, max: number): string {
@@ -1959,18 +1944,28 @@ export async function resolvePushedRefTitles(
          for THREE QUARTERS of this corpus: measured 2026-08-09, 487 of 645
          sessions open with a machine `⟦turn-origin:…⟧` wake envelope, so the
          naive read titled them `⟦turn-origin:loop-fire nonce:…⟧` — a nonce, in
-         the UI, as the human-readable label. `(text LIKE '⟦%')` sorts false
-         before true in PG, so this takes the earliest turn that is NOT an
-         envelope and falls back to the earliest one that is, in a single pass.
-         (`session_briefs.intent` would have been the better source and was
-         measured first: `native_session_id` matched 0 of 40 real refs, so that
-         join is dead — recorded here so nobody rebuilds it.) */
+         the UI, as the human-readable label. Rank the same leading markers as
+         `ownerVisiblePromptText` after genuine owner turns, so the selected row
+         is owner-visible whenever one exists. The JS filter remains the final
+         authority; this SQL ranking only avoids selecting a hidden row when a
+         visible one exists later in the transcript. (`session_briefs.intent`
+         would have been the better source and was measured first:
+         `native_session_id` matched 0 of 40 real refs, so that join is dead —
+         recorded here so nobody rebuilds it.) */
       ? tx<{ session_id: string; text: string | null }[]>`
           SELECT DISTINCT ON (session_id) session_id, text
             FROM harness_shared.session_turns
            WHERE session_id = ANY(${sessionIds}::text[])
              AND speaker = 'user'
-           ORDER BY session_id, (text LIKE '⟦%') ASC, turn_idx ASC
+           ORDER BY session_id,
+             CASE
+               WHEN text IS NULL OR btrim(text) = '' THEN 1
+               WHEN text ~ '^[[:space:]]*⟦turn-origin:coord-inject:owner nonce:[a-f0-9]{8,64}⟧' THEN 0
+               WHEN text ~ '^[[:space:]]*⟦turn-origin:[A-Za-z0-9:._@-]+ nonce:[a-f0-9]{8,64}⟧' THEN 1
+               WHEN btrim(text) LIKE 'Stop hook feedback:%' THEN 1
+               ELSE 0
+             END,
+             turn_idx ASC
         `
       : Promise.resolve([] as never[]),
   ]);
@@ -1994,11 +1989,24 @@ export async function resolvePushedRefTitles(
   for (const s of sessRows as unknown as { session_id: string; text: string | null }[]) {
     const ref = sessionRefBySessionId.get(s.session_id);
     if (!ref || !s.text) continue;
-    // The session's first CONTENTFUL user turn is the closest thing a
+    // The session's first OWNER-VISIBLE user turn is the closest thing a
     // transcript has to a title. Not the matched turn: the ledger records the
     // ref, never which turn matched (D-085's per-ref attribution limit), so
-    // claiming otherwise would be an invented precision.
-    const res = resolutionFromBody(stripTurnEnvelope(s.text), '↳');
+    // claiming otherwise would be an invented precision. Keep this predicate
+    // on the shared allow-list: stripping an envelope is not enough because it
+    // returns the machine wake body, and hook walls have no envelope at all.
+    const visibleText = ownerVisiblePromptText(s.text);
+    if (!visibleText) {
+      // All-machine sessions still have a meaningful dossier row, but exposing
+      // their first wake would leak private supervision text. A neutral label
+      // is honest about why there is no owner-authored title.
+      out.set(`corpus:${ref}`, {
+        title: 'machine-driven session',
+        detail: 'No owner-authored user turn was found in this session.',
+      });
+      continue;
+    }
+    const res = resolutionFromBody(visibleText, '↳');
     if (res) out.set(`corpus:${ref}`, res);
   }
   return out;

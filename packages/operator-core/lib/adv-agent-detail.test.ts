@@ -88,7 +88,6 @@ const {
   applyPushedRefTitles,
   resolutionFromBody,
   resolvePushedRefTitles,
-  stripTurnEnvelope,
 } = await import('./adv-agent-detail');
 
 // The funnel's OWN stage vocabulary. Asserting the shaper's `why` against this
@@ -1501,22 +1500,6 @@ describe('applyPushedRefTitles', () => {
   });
 });
 
-describe('stripTurnEnvelope', () => {
-  it('removes a turn-provenance envelope, NONCE INCLUDED', () => {
-    // Measured 2026-08-09: 487 of 645 sessions open with one of these, so the
-    // naive "first user turn" title rendered a nonce as the row's label.
-    expect(
-      stripTurnEnvelope('⟦turn-origin:loop-fire nonce:c0807fa7c608db84⟧\n❄️ COLD LOOP WAKE (fire #117)'),
-    ).toBe('❄️ COLD LOOP WAKE (fire #117)');
-    expect(stripTurnEnvelope('a plain human turn')).toBe('a plain human turn');
-  });
-
-  it('keeps an envelope-ONLY turn rather than emptying the row', () => {
-    const only = '⟦turn-origin:wake-pump nonce:abc⟧';
-    expect(stripTurnEnvelope(only)).toBe(only);
-  });
-});
-
 describe('resolutionFromBody', () => {
   it('takes the first NON-EMPTY line as the title', () => {
     const res = resolutionFromBody('\n\nThe real first line\nand more below');
@@ -1576,6 +1559,42 @@ describe('resolvePushedRefTitles', () => {
     expect(out.get('corpus:WI-7005')?.detail).toContain('bug · open');
     expect(out.get('corpus:claude:abc12345-0000-0000-0000-000000000000')?.title).toContain('For our public release');
     expect(out.get('memory:0f8c1d2e-3b4a-4c5d-8e9f-0a1b2c3d4e5f')?.title).toBe('Papercusp host map');
+  });
+
+  it('uses the owner-visibility allow-list and neutralizes all-machine sessions', async () => {
+    const ownerSession = 'a0ce0000-0000-0000-0000-000000000000';
+    const machineSession = 'bace0000-0000-0000-0000-000000000000';
+    const hookSession = 'c0de0000-0000-0000-0000-000000000000';
+    const sessionRefs: PushedContextRef[] = [
+      { ref: `claude:${ownerSession}`, kind: 'corpus', port: 'p', at: 'a', epoch: 0 },
+      { ref: `claude:${machineSession}`, kind: 'corpus', port: 'p', at: 'a', epoch: 0 },
+      { ref: `claude:${hookSession}`, kind: 'corpus', port: 'p', at: 'a', epoch: 0 },
+    ];
+    const { tag, seen } = fakeTag({
+      session_turns: [
+        {
+          session_id: ownerSession,
+          text: '⟦turn-origin:coord-inject:owner nonce:abcdef12⟧\nI asked for this title.\n\n⟦owner-chat⟧ machine note',
+        },
+        {
+          session_id: machineSession,
+          text: '⟦turn-origin:loop-fire nonce:abcdef12⟧\nAUTO mode wake instructions',
+        },
+        { session_id: hookSession, text: '  Stop hook feedback: retry the command' },
+      ],
+    });
+
+    const out = await resolvePushedRefTitles(tag, sessionRefs);
+    expect(out.get(`corpus:claude:${ownerSession}`)?.title).toBe('↳ I asked for this title.');
+    expect(out.get(`corpus:claude:${ownerSession}`)?.detail).not.toContain('machine note');
+    expect(out.get(`corpus:claude:${machineSession}`)?.title).toBe('machine-driven session');
+    expect(out.get(`corpus:claude:${machineSession}`)?.detail).not.toContain('AUTO mode');
+    expect(out.get(`corpus:claude:${hookSession}`)?.title).toBe('machine-driven session');
+
+    const sessionQuery = seen.find((sql) => sql.includes('session_turns'));
+    expect(sessionQuery).toContain('ORDER BY session_id');
+    expect(sessionQuery).toContain('turn-origin:coord-inject:owner');
+    expect(sessionQuery).toContain('Stop hook feedback:');
   });
 
   it('asks NOTHING when there is nothing of that class to ask about', async () => {
