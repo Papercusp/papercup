@@ -889,10 +889,20 @@ export interface ScoutHealth {
   } | null;
   /** Routed-idea grading loop (scout_routed_ideas, migration 234): is anyone
    *  closing the feedback loop on routed ideas? Informational only; null = read
-   *  unavailable. `ungraded` is the all-time open grading backlog, not windowed. */
+   *  unavailable.
+   *
+   *  P-010: there is deliberately NO field called `ungraded`. That name meant three
+   *  different populations on three surfaces (15 / 1,103 / "1,082 su filings" — the
+   *  last a scout count wearing an su label). Read `actionable` for the drainable
+   *  backlog and `allUngraded` only WITH its label; see scout/ungraded-scope.ts. */
   grading: {
     gradedInWindow: number;
-    ungraded: number;
+    /** Ungraded + artifact still open + at/after the D-013 epoch floor, all origins. */
+    actionable: number;
+    /** The same, split by producer — su-ideate and scout drain differently. */
+    actionableByOrigin: Record<string, number>;
+    /** Every ungraded row, any origin/outcome/age. Never render this unlabelled. */
+    allUngraded: number;
   } | null;
   /**
    * Learning-loop authorship provenance divergence (WI-6338): how far apart the

@@ -2387,12 +2387,28 @@ async function collectScout(ctx: HealthCtx): Promise<HealthPanel<ScoutHealth>> {
     let grading: ScoutHealth['grading'] = null;
     try {
       const { sql } = getOrgPg();
-      const rows = await sql<Array<{ graded: number; ungraded: number }>>`
-        SELECT (count(*) FILTER (WHERE graded_at IS NOT NULL AND graded_at > now() - interval '24 hours'))::int AS graded,
-               (count(*) FILTER (WHERE human_grade IS NULL))::int AS ungraded
+      // P-010: this surface used to publish a bare `ungraded` counted with NO origin,
+      // terminality or epoch filter — 1,103 against an actionable backlog of 15. It now
+      // reads the ONE definition (scout/ungraded-scope.ts), which cannot hand back an
+      // unlabelled scalar.
+      const [{ readUngradedBreakdown }, { suIdeateUngradedConfig }] = await Promise.all([
+        import('../scout/ungraded-scope'),
+        import('../scout/ungraded-filings-watchdog'),
+      ]);
+      const rows = await sql<Array<{ graded: number }>>`
+        SELECT (count(*) FILTER (WHERE graded_at IS NOT NULL AND graded_at > now() - interval '24 hours'))::int AS graded
           FROM harness_shared.scout_routed_ideas
          WHERE workspace_id = ${ctx.ws}`;
-      grading = { gradedInWindow: rows[0]?.graded ?? 0, ungraded: rows[0]?.ungraded ?? 0 };
+      const breakdown = await readUngradedBreakdown(sql, {
+        workspaceId: ctx.ws,
+        epochMs: suIdeateUngradedConfig().epochMs,
+      });
+      grading = {
+        gradedInWindow: rows[0]?.graded ?? 0,
+        actionable: breakdown.actionable,
+        actionableByOrigin: breakdown.actionableByOrigin,
+        allUngraded: breakdown.allUngraded,
+      };
     } catch { /* grading read unavailable */ }
     // WI-6338: the recurrence guard — compute + surface the three-record
     // authorship divergence so it can never again drift to ~50% unnoticed.
@@ -2446,7 +2462,13 @@ async function collectScout(ctx: HealthCtx): Promise<HealthPanel<ScoutHealth>> {
           ? [m('su passes 24h', data.suIdeate.passesInWindow), m('su filed 24h', data.suIdeate.ideasFiled)]
           : []),
         ...(data.grading
-          ? [m('graded 24h', data.grading.gradedInWindow), m('ungraded', data.grading.ungraded)]
+          ? [
+              m('graded 24h', data.grading.gradedInWindow),
+              // P-010: labelled on purpose. "ungraded 1103" read as a grading crisis
+              // when the drainable backlog was 15; the rest is the deliberately-excluded
+              // pre-epoch scout corpus. The label is the fix.
+              m('ungraded (actionable)', data.grading.actionable),
+            ]
           : []),
         // WI-6338: same omit-not-zero contract as the two legs above.
         ...(data.provenanceDivergence
