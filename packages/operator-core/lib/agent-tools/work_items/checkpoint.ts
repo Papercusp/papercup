@@ -60,7 +60,9 @@
  * setWorkItemCheckpointWithPrior's locked transaction, before the DELETE/INSERT) —
  * pass `append: true` to join instead (the item's own convention here — every real
  * checkpoint on a long-running ticket already separates dated sections with `---`),
- * or `confirmShrink: true` when a genuine replace is intended.
+ * or `confirmShrink: true` when a genuine replace is intended. The blocked result
+ * carries both recovery shapes as structured data, so a successor does not have
+ * to infer the retry from prose after a context boundary.
  *
  * EI-18132462898750489: NO ownership guard existed — any agent could checkpoint (or
  * CLEAR) an item it does not hold, silently overwriting the actual assignee's
@@ -314,7 +316,8 @@ export default defineTool({
     'Returns { ok, results:[{ ok, id, harness, cleared, length, contentHash, verified, storedHead, by | error }], counts }. ' +
     'Writes are verify-read (checkpoint_verify_failed on a miss); a plain replace shrinking a substantial checkpoint ' +
     '>50%, or an append with a disagreeing pre-read, is BLOCKED (`shrink_blocked` / `append_base_unreadable` — ' +
-    'pass `confirmShrink:true` to bypass). Refuses a peer-held item (`not_holder`).',
+    'the refusal includes `errorCode` + structured `recovery` args: `append:true` to preserve prior content, or ' +
+    '`append:false, confirmShrink:true` only for an intentional full replacement). Refuses a peer-held item (`not_holder`).',
   guidance: {
     when:
       'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your ' +
@@ -324,8 +327,9 @@ export default defineTool({
       'Mid-task scratch the live transcript already holds; never dump file contents or tool output. Not an edit ' +
       'channel: use work_items:update for the body, work_items:comment for a note. Not for a peer\'s item — claim it, or comment instead.',
     chaining:
-      'Call before work_items:complete / on yield; blank clears a stale note. Doubles as a liveness pulse — a ' +
-      'claim held through long local-only tool use can go presence-stale and be reclaimed.',
+      'Call before work_items:complete / on yield; blank clears a stale note. For a concise successor addendum to a ' +
+      'detailed prior note, pass append:true. For an intentional full replacement, include confirmShrink:true. ' +
+      'Doubles as a liveness pulse — a claim held through long local-only tool use can go presence-stale and be reclaimed.',
   },
   capability: 'work_items:write',
   requirePrincipal: false,
@@ -684,7 +688,29 @@ export default defineTool({
           // guard's message, or a caller-supplied reason in a test double) keeps the
           // original `shrink_blocked — ` prefix unchanged.
           const hasOwnCode = /^[a-z][a-z0-9_]*\s+—\s/.test(blockedReason);
-          return { ok: false as const, id: it.id, error: hasOwnCode ? blockedReason : `shrink_blocked — ${blockedReason}` };
+          const errorCode = hasOwnCode ? blockedReason.split(' — ', 1)[0] : 'shrink_blocked';
+          return {
+            ok: false as const,
+            id: it.id,
+            error: hasOwnCode ? blockedReason : `shrink_blocked — ${blockedReason}`,
+            errorCode,
+            // EI-20185430154274838: the guard is correct, but an error string alone
+            // makes the normal successor-note recovery shape discoverable only after
+            // a failed call and a second read of prose. Keep both choices explicit:
+            // append preserves the detailed prior; confirmShrink is the deliberate
+            // full-replacement escape hatch. `append:false` is included on replace
+            // because this option also serves append_base_unreadable failures.
+            recovery: {
+              append: {
+                args: { append: true },
+                description: 'Join this submitted checkpoint onto the existing note and preserve its prior content.',
+              },
+              replace: {
+                args: { append: false, confirmShrink: true },
+                description: 'Replace the prior note only when this checkpoint contains the complete intended body.',
+              },
+            },
+          };
         }
         // agent-activity-liveness-truth P-001 (D-001/D-004): a non-clear checkpoint write
         // is REAL item-scoped progress — credit it so the item reads as `progressing`, not

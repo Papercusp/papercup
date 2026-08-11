@@ -697,6 +697,13 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(r.ok).toBe(false);
       expect(r.error).toContain('shrink_blocked');
       expect(r.error).toContain('19348');
+      expect(r).toMatchObject({
+        errorCode: 'shrink_blocked',
+        recovery: {
+          append: { args: { append: true } },
+          replace: { args: { append: false, confirmShrink: true } },
+        },
+      });
       // Blocked ⇒ no read-after-write verification and no progress-anchor bump attempt.
       expect(getWorkItemCheckpoint).not.toHaveBeenCalled();
     });
@@ -760,6 +767,13 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         expect(r.error).toContain('append_base_unreadable');
         expect(r.error).toContain('10671');
         expect(r.error).not.toContain('shrink_blocked');
+        expect(r).toMatchObject({
+          errorCode: 'append_base_unreadable',
+          recovery: {
+            append: { args: { append: true } },
+            replace: { args: { append: false, confirmShrink: true } },
+          },
+        });
       });
 
       it('confirmShrink:true forces the append through even when the pre-read disagreed with the authoritative prior', async () => {
