@@ -3,6 +3,7 @@
  * Each stage composes the existing sync-backed panels; `?lview=` remains the
  * canonical deep-link state and `?lhive=` scopes the hive-aware views.
  */
+import { useWindowVirtualizer } from "@tanstack/react-virtual";
 import {
   useCallback,
   useEffect,
@@ -2153,44 +2154,41 @@ function WindowedImprovementList({
   lsel: string | null;
   ctx: LoopRowContext;
 }) {
-  const { page, rest } = useMemo(() => {
-    const head = rows.slice(0, IMPROVEMENTS_PAGE);
-    const tail = rows.slice(IMPROVEMENTS_PAGE);
-    if (!lsel) return { page: head, rest: tail };
-    const selectedInTail = tail.find((row) => row.item?.id === lsel);
-    if (!selectedInTail) return { page: head, rest: tail };
-    return {
-      page: [selectedInTail, ...head],
-      rest: tail.filter((row) => row.item?.id !== lsel),
-    };
-  }, [rows, lsel]);
+  const virtualizer = useWindowVirtualizer({
+    count: rows.length,
+    estimateSize: () => 140,
+    overscan: 5,
+  });
+
   return (
-    <>
-      <ul className="pc-learning__list">
-        {page.map((row) => (
+    <ul 
+      className="pc-learning__list" 
+      style={{
+        position: 'relative',
+        height: `${virtualizer.getTotalSize()}px`,
+        width: '100%',
+      }}
+    >
+      {virtualizer.getVirtualItems().map((virtualItem) => {
+        const row = rows[virtualItem.index];
+        return (
           <LoopRowView
             key={row.key}
             row={row}
             ctx={ctx}
             selected={isSelectedRow(row, lsel)}
+            measureRef={virtualizer.measureElement}
+            style={{
+              position: 'absolute',
+              top: 0,
+              left: 0,
+              width: '100%',
+              transform: `translateY(${virtualItem.start}px)`,
+            }}
           />
-        ))}
-      </ul>
-      {rest.length > 0 ? (
-        <LearningDisclosure label="Earlier items" count={rest.length}>
-          <ul className="pc-learning__list">
-            {rest.map((row) => (
-              <LoopRowView
-                key={row.key}
-                row={row}
-                ctx={ctx}
-                selected={isSelectedRow(row, lsel)}
-              />
-            ))}
-          </ul>
-        </LearningDisclosure>
-      ) : null}
-    </>
+        );
+      })}
+    </ul>
   );
 }
 
@@ -2384,6 +2382,12 @@ function LoopRowView({
       ref.current?.scrollIntoView({ block: "center", behavior: "smooth" });
   }, [selected]);
 
+  const combinedRef = useCallback((el) => {
+    ref.current = el;
+    if (typeof measureRef === 'function') measureRef(el);
+    else if (measureRef) measureRef.current = el;
+  }, [measureRef]);
+
   // The leading id: the work item when there is one (it is the thing you act
   // on), otherwise the rail the idea went to.
   const leadLabel = item ? item.id : (meta?.label ?? "idea");
@@ -2392,7 +2396,8 @@ function LoopRowView({
 
   return (
     <li
-      ref={ref}
+      ref={combinedRef}
+      style={style}
       className={`pc-learning__row${selected ? " pc-learning__row--selected" : ""}`}
       // No row-level `title`: it used to carry `tierReason` ("… → human
       // review"), which now contradicts the stage chip's own tooltip. The chip
