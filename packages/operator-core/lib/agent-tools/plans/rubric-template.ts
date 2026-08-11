@@ -23,6 +23,29 @@ import { registerPlanTemplate, type PlanTemplate } from './template-registry';
 /** The template TYPE name — a rubric-template plan's `template:` frontmatter/column. */
 export const RUBRIC_TEMPLATE_NAME = 'rubric';
 
+// ─── rubric KIND (acceptance-rubrics-on-every-plan-2026-08-11) ───────────────────────
+// Two populations share the rubric machinery but have opposite lifecycles:
+//   'standard'   = the reusable shared-standards library entry (the ONLY kind that
+//                  existed before this plan — an absent `kind` means 'standard', so every
+//                  pre-existing rubric is unchanged). Queen-ratified, staleness-watched,
+//                  surfaced by the default rubrics:list/search library reads.
+//   'acceptance' = a ONE-SHOT per-plan definition-of-done, linked to its subject plan via
+//                  `subjectPlan`. Authored AFTER implementation, before the plan may be
+//                  marked done/shipped (plan D-007); graded by a NON-implementer through
+//                  the same grading path standards use (D-010); needs no ratification and
+//                  is exempt from the staleness watchdog (D-008); hidden from the default
+//                  library reads so the learning surfaces stay reusable-standards-only.
+
+/** The rubric kinds. Absent = 'standard' (every pre-kind rubric). */
+export const RUBRIC_KINDS = ['standard', 'acceptance'] as const;
+export type RubricKind = (typeof RUBRIC_KINDS)[number];
+
+/** Resolve a template_data's effective kind — absent/unknown maps to 'standard' so every
+ *  pre-kind rubric keeps its original semantics. Use THIS, never a raw `data.kind` read. */
+export function rubricKindOf(data: { kind?: string | null } | null | undefined): RubricKind {
+  return data?.kind === 'acceptance' ? 'acceptance' : 'standard';
+}
+
 // ─── structured criterion grading-window (rubric-system-hardening-2026-07-14 P-001) ──
 // EI-12146: the grading window used to live ONLY in criterion prose ("<5% post-watermark
 // per the runbook") while the deployed instrument hardcoded its own (48h rolling) — on
@@ -183,6 +206,21 @@ export const rubricCriterionSchema = z
   .strict();
 
 /**
+ * The acceptance-kind criterion: the SAME field vocabulary as a standard criterion (so
+ * the grading path — ratings keyed by `key` against the rating scale — is identical,
+ * D-010) but with the heavyweight prose fields OPTIONAL (plan D-007's light profile:
+ * an acceptance criterion is authored post-implementation and must trace to the plan's
+ * goal + Decisions; model/method/drift prose is welcome, never required). Standard-kind
+ * rubrics still require the full fields — enforced by the per-kind superRefine below,
+ * NOT by this element schema, so one criteria array serves both kinds.
+ */
+export const acceptanceRubricCriterionSchema = rubricCriterionSchema.partial({
+  model: true,
+  method: true,
+  driftMarkers: true,
+});
+
+/**
  * The `rubric` template's structured data (the `template_data` jsonb). EXACTLY the
  * brief's fields — characteristic, criteria:[{key,title,model,method,driftMarkers}],
  * ratingScale — plus the optional methodRef + description the v1 Rubric also surfaces
@@ -193,14 +231,42 @@ export const rubricCriterionSchema = z
  */
 export const rubricTemplateDataSchema = z
   .object({
+    kind: z
+      .enum(RUBRIC_KINDS)
+      .optional()
+      .describe(
+        "'standard' (the default when absent — every pre-kind rubric) = a reusable shared-standards " +
+          "library entry; 'acceptance' = a one-shot per-plan definition-of-done linked via subjectPlan, " +
+          'hidden from the default library reads / watchdog / ratification queue (acceptance-rubrics-on-every-plan-2026-08-11)',
+      ),
+    subjectPlan: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        "acceptance-kind only: the slug of the plan this rubric is the definition-of-done FOR. " +
+          "Required when kind='acceptance'; refused on a standard rubric",
+      ),
+    classRef: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'acceptance-kind only: rubricId of the standard-kind CLASS rubric this acceptance rubric builds on ' +
+          '(feature-ship / bugfix / migration / investigation) — it carries the shared invariants so bespoke ' +
+          'criteria stay short. With classRef an acceptance rubric may carry ZERO bespoke criteria (plan D-009)',
+      ),
     characteristic: z
       .string()
       .min(1)
       .describe('umbrella domain, e.g. "hive-coordination" — Blender\'s digest groups by this'),
     criteria: z
-      .array(rubricCriterionSchema)
-      .min(1)
-      .describe('the per-characteristic gradeable criteria (a structured observation grades each)'),
+      .array(acceptanceRubricCriterionSchema)
+      .describe(
+        'the gradeable criteria (a structured observation grades each). Standard kind: >=1 required, each ' +
+          'with full model/method/driftMarkers (the per-kind superRefine enforces it). Acceptance kind: ' +
+          'may be empty ONLY with a classRef (plan D-009); model/method/driftMarkers optional per criterion',
+      ),
     ratingScale: z
       .array(z.string().min(1))
       .min(1)
