@@ -26,9 +26,16 @@ import {
   type ComposedParkEntry,
   type DecoratedAgent,
 } from './leader-brief';
+import leaderBriefTool from './leader-brief';
 import { VERDICT_SPEAKING_FRESH_MS } from './assignments';
 
 const NOW = Date.parse('2026-07-10T12:00:00.000Z');
+
+describe('fleet:leader-brief — ambient workspace transaction safety (EI-20192040030675541)', () => {
+  it('opts out because the supervision read never uses ctx.tx', () => {
+    expect((leaderBriefTool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+});
 
 /** decorateComposedParkedOn mutates its input in place, adding an optional
  *  `parkedOnResolved` — test fixtures declare it explicitly so the mutated

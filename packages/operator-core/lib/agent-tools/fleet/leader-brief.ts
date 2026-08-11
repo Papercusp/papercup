@@ -1877,6 +1877,12 @@ export default defineTool({
   },
   capability: 'work_items:read',
   requirePrincipal: false,
+  // EI-20192040030675541: this supervision read owns its individual
+  // workspace-scoped reads and never touches ctx.tx. Keeping the dispatcher's
+  // ambient transaction open across the roster/decorations/diagnostic awaits
+  // pins an org-app pool slot and can leave the leader blind behind the 45s
+  // acquisition deadline when the fleet is saturated.
+  skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES],
   args: z.object({
     fleet: z
