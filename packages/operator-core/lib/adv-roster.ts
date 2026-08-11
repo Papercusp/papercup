@@ -59,6 +59,8 @@ import {
   type WakeMode,
 } from './agent-tools/coordination/wake-mode';
 import { countAllPendingWakes } from './agent-tools/coordination/pending-wakes';
+import { getOwnerPinsMap, type OwnerPin } from './deployment/account-owner-pins';
+import { activeWorkspaceId } from './workspace-registry';
 
 export type { AgentClaim, OrphanedClaimSummary };
 
@@ -307,6 +309,26 @@ export interface RosterEntry {
   /** The session's SOFT compaction limit in tokens. null ⇒ the per-model default
    *  applies, so a pressure percentage cannot be computed from this row alone. */
   compactionLimit: number | null;
+  /**
+   * The DURABLE dynamic account pin in force for this agent (`accounts:pin` →
+   * `harness_shared.operator_owner_pins`), or null when it carries none
+   * (hud-chat-owner-controls-2026-08-11 P-003 / D-009 §D).
+   *
+   * Sourced onto the row DELIBERATELY rather than fetched by the reader: the
+   * chat footer's ACCOUNT pill reads its current value through
+   * `ChatModeAction.current()`, which is required to be pure and synchronous
+   * (chat-actions/types.ts) so the pill can never disagree with the rest of the
+   * surface it was rendered from. The authoritative live read
+   * (`gateway:owner_report`) is a per-agent fetch and would put a gateway round
+   * trip on every popup open; this is ONE workspace-level row read for the
+   * whole roster, in the same batch as every other join.
+   *
+   * ⚠ null means "NOT DYNAMICALLY PINNED", which is NOT the same as "routed
+   * through the pool default". A session launched `--account=<id>` carries a
+   * STATIC spawn pin this row cannot see, and a `--account=default` session
+   * bypasses the gateway entirely. Read this as the dynamic-pin layer only.
+   */
+  accountPin: { account: string; hard: boolean } | null;
   /** When the CURRENT `intent` STRING was declared. Distinct from lastActiveAt,
    *  which also moves on activity that never touches the intent text — the pair
    *  is what separates "genuinely busy" from "stuck repeating itself", i.e. the
@@ -573,6 +595,10 @@ export function mergeRosterEntries(
      *  missing an owner) degrades to sessionState null, which every reader
      *  must treat as "unknown", never as "not live". */
     verdictByOwner?: Map<string, { sessionState: SessionState; heartbeatFresh: boolean }>;
+    /** P-003: the workspace's dynamic account pins, keyed by ownerId. Absent
+     *  degrades every entry to `accountPin: null` — "no dynamic pin", which is
+     *  what an unpinned agent reads as anyway. */
+    accountPinByOwner?: Map<string, { account: string; hard: boolean }>;
   } = {},
 ): RosterEntry[] {
   return presence.map((p) => {
@@ -687,6 +713,7 @@ export function mergeRosterEntries(
       // rendering unknown as 0% would read as "plenty of room left".
       contextTokens: p.contextTokens ?? null,
       compactionLimit: p.compactionLimit ?? null,
+      accountPin: extra.accountPinByOwner?.get(p.ownerId) ?? null,
       intentDeclaredAt: p.intentDeclaredAt ?? null,
       openAwait: extra.awaitByOwner?.get(p.ownerId) ?? null,
       runId: runInfoByOwner.get(p.ownerId)?.runId ?? null,
@@ -773,6 +800,8 @@ export function pendingLaunchesToRosterEntries(
       // and nothing to be blocked on.
       contextTokens: null,
       compactionLimit: null,
+      // A launch that has not come online has no owner id in the pin store yet.
+      accountPin: null,
       intentDeclaredAt: null,
       openAwait: null,
       // Not yet running → no thinking stream.
@@ -893,6 +922,7 @@ export function startingLaunchesToRosterEntries(
       fleetRole: null,
       contextTokens: null,
       compactionLimit: null,
+      accountPin: null,
       intentDeclaredAt: null,
       openAwait: null,
       runId: null,
@@ -1314,7 +1344,7 @@ export async function mergeRosterWithAssignments(
   }
   // #3: per-owner fleet label + the fleet's accent color, for the pui roster grouping —
   // and the official standing-modes read (EI-7626), both batched, in parallel.
-  const [fleetInfoByOwner, modesByOwner, awaitByOwner, verdictByOwner] = await Promise.all([
+  const [fleetInfoByOwner, modesByOwner, awaitByOwner, verdictByOwner, accountPinByOwner] = await Promise.all([
     resolveFleetInfoByOwner(presence),
     agentModesByOwner(presence),
     // adv-hud P-001: the open-await join (HUD's Blocked column). Batched here
@@ -1345,6 +1375,16 @@ export async function mergeRosterWithAssignments(
         agentRole: p.agentRole ?? null,
       })),
     ).catch(() => new Map()),
+    // P-003 (hud-chat-owner-controls): the workspace's dynamic account pins, so
+    // the chat footer's ACCOUNT pill can read its current value synchronously
+    // off the row it already rendered from (D-005 §6 / D-009 §D) instead of a
+    // per-agent gateway:owner_report fetch on every popup open. ONE
+    // single-row read for the WHOLE roster, batched here beside the other
+    // joins rather than awaited after — a serial hop would add to the
+    // roster-merge baseline every caller pays. Fail-soft: an empty map means
+    // every entry reads `accountPin: null`, which is what an unpinned agent
+    // reads anyway.
+    getOwnerPinsMap(workspaceId ?? activeWorkspaceId()).catch(() => new Map<string, OwnerPin>()),
   ]);
   const entries = mergeRosterEntries(
     presence,
@@ -1360,7 +1400,7 @@ export async function mergeRosterWithAssignments(
     runInfoByOwner,
     loopArmedOwners,
     modesByOwner,
-    { awaitByOwner, sessionBriefHarness, verdictByOwner },
+    { awaitByOwner, sessionBriefHarness, verdictByOwner, accountPinByOwner },
   );
   const active = enrichPidLiveness(entries, os.hostname());
   // Stamp local agents with this machine's label (federated rows already carry their

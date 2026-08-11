@@ -163,6 +163,18 @@ export interface HudRosterEntry {
   fleetRole: string | null;
   contextTokens: number | null;
   compactionLimit: number | null;
+  /**
+   * The DURABLE dynamic account pin in force for this session (adv-roster's
+   * `accountPin`) — what the chat footer's ACCOUNT pill reports and sets
+   * (hud-chat-owner-controls-2026-08-11 P-003).
+   *
+   * OPTIONAL for the same reason as `sessionState`: a payload from an older
+   * operator, or a mid-deploy SSE push, predates the field. Absent means the
+   * roster could not tell us, `null` means NOT DYNAMICALLY PINNED — and neither
+   * means "routed through the pool default", since a static `--account=` spawn
+   * pin is invisible to this layer.
+   */
+  accountPin?: { account: string; hard: boolean } | null;
   openAwait: HudOpenAwait | null;
   thinking: boolean;
   /** The adv_sessions `display` hint. Optional — only the launch-record tiers
