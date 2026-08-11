@@ -219,6 +219,43 @@ describe('setAcceptedAnswer', () => {
   });
 });
 
+describe('supersede — row transaction', () => {
+  it('inserts the replacement and retires the old gate in one store operation', async () => {
+    await store.create(input('old-gate', { title: 'old title' }));
+    const result = await store.supersede(
+      'old-gate',
+      input('new-gate', { title: 'new title', body: 'corrected body', asker_id: 'agB', created_ts: T1 }),
+      { now_ts: T1 },
+    );
+    if ('error' in result) throw new Error(result.error);
+
+    expect(result.conversation).toMatchObject({
+      id: 'old-gate',
+      state: 'superseded',
+      superseded_by: 'new-gate',
+      superseded_ts: T1,
+      resolved_ts: null,
+    });
+    expect(result.replacement).toMatchObject({
+      id: 'new-gate',
+      state: 'open',
+      title: 'new title',
+      body: 'corrected body',
+      asker_id: 'agB',
+    });
+    expect((await store.list({ state: 'open' })).map((r) => r.id)).toEqual(['new-gate']);
+  });
+
+  it('does not create a second replacement after the old gate is terminal', async () => {
+    await store.create(input('old-gate'));
+    const first = await store.supersede('old-gate', input('new-gate'), { now_ts: T1 });
+    if ('error' in first) throw new Error(first.error);
+    const second = await store.supersede('old-gate', input('newer-gate'), { now_ts: T2 });
+    expect(second).toMatchObject({ error: 'not_open', conversation: { superseded_by: 'new-gate' } });
+    expect(await store.get('newer-gate')).toBeNull();
+  });
+});
+
 describe('setPromoted', () => {
   it('records the issue id, closes the conversation, bumps updated_at — and PRESERVES resolved_at', async () => {
     await store.create(input('p1'));
