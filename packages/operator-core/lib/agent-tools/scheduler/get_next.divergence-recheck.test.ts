@@ -24,6 +24,7 @@ import { beforeEach, describe, it, expect, vi } from 'vitest';
 
 const getNextForBeeM = vi.hoisted(() => vi.fn());
 const issueFloorMissM = vi.hoisted(() => vi.fn());
+const terminalExhaustionM = vi.hoisted(() => vi.fn());
 const fleetScopedMissM = vi.hoisted(() => vi.fn());
 const cooldownMissM = vi.hoisted(() => vi.fn());
 
@@ -48,6 +49,7 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   readFleetPauseState: vi.fn(async () => ({ paused: false, reason: null })),
   diagnoseFleetScopeCooldownMiss: cooldownMissM,
   diagnoseFleetScopeIssueFloorMiss: issueFloorMissM,
+  diagnoseFleetScopeTerminalExhaustion: terminalExhaustionM,
   // WI-7151: only ever reached when a breakdown reports matchedByFilter===0 — none of this
   // file's fixtures do (survivors/drained are both 22), so this is a defensive stub only.
   diagnoseFleetScopeFeatureFamilyMatch: vi.fn(async () => null),
@@ -73,7 +75,7 @@ async function call() {
 /** The opts object the tool handed to fleetScopedMiss (the verdict inputs under test). */
 function missOpts() {
   return fleetScopedMissM.mock.calls[0]?.[2] as
-    | { divergenceRecheck?: string; issueBreakdown?: unknown }
+    | { divergenceRecheck?: string; issueBreakdown?: unknown; terminalExhaustion?: unknown }
     | undefined;
 }
 
@@ -81,6 +83,7 @@ describe('WI-5947 — scheduler:get_next re-confirms a would-be divergence befor
   beforeEach(() => {
     vi.clearAllMocks();
     cooldownMissM.mockResolvedValue(null);
+    terminalExhaustionM.mockResolvedValue(null);
     fleetScopedMissM.mockReturnValue({ ok: false, error: 'miss', windDown: false });
   });
 
@@ -133,6 +136,22 @@ describe('WI-5947 — scheduler:get_next re-confirms a would-be divergence befor
     expect(getNextForBeeM).toHaveBeenCalledTimes(1);
     expect(issueFloorMissM).toHaveBeenCalledTimes(1);
     expect(missOpts()?.divergenceRecheck).toBeUndefined();
+  });
+
+  it('passes a status-floor-free all-terminal match to the miss verdict without retrying', async () => {
+    // Terminal rows are absent from the claimable-state breakdown, so this second diagnostic is
+    // the only signal that distinguishes a completed id-pinned tranche from a stale spec.
+    const zeroMatches = { matchedByFilter: 0, claimable: 0, excluded: {} as never };
+    getNextForBeeM.mockResolvedValue(null);
+    issueFloorMissM.mockResolvedValue(zeroMatches);
+    terminalExhaustionM.mockResolvedValue({ matchedByFilter: 2, terminalMatchedByFilter: 2 });
+
+    const res = await call();
+
+    expect(res.ok).toBe(false);
+    expect(getNextForBeeM).toHaveBeenCalledTimes(1);
+    expect(terminalExhaustionM).toHaveBeenCalledTimes(1);
+    expect(missOpts()?.terminalExhaustion).toEqual({ matchedByFilter: 2, terminalMatchedByFilter: 2 });
   });
 
   it('does not retry on a successful first claim (the hot path is untouched)', async () => {

@@ -27,6 +27,7 @@ vi.mock('../workspace-registry', async () => {
 });
 
 const { explainIssueClaimFloors } = await import('../work-items');
+const { diagnoseFleetScopeTerminalExhaustion } = await import('./fleet-scope-admission');
 
 const H = 'papercup';
 const WS = 'default';
@@ -176,5 +177,47 @@ describe('WI-4413 — explainIssueClaimFloors names the floor that actually refu
     const [open] = await explainIssueClaimFloors(H, ['WI-9301'], { states: ['open'] });
     expect(failingOnly).toMatchObject({ admissible: false, refusedBy: 'not-claimable-status' });
     expect(open).toMatchObject({ admissible: true, refusedBy: null });
+  });
+
+  it('distinguishes an all-terminal id tranche from a mixed terminal/non-terminal tranche', async () => {
+    const makeScope = (ids: string[]) =>
+      ({
+        ownerId: 'su-member',
+        fleetSlug: 'drain-fleet',
+        fleetRole: 'member',
+        workspaceId: WS,
+        record: {
+          source: 'fleet',
+          revision: 1,
+          updatedBy: 'leader',
+          updatedAt: 'now',
+          spec: {
+            specVersion: '1.0',
+            specId: 'id-drain',
+            revision: 2,
+            view: { filter: { field: 'id', op: 'in', value: ids } },
+            rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+            states: ['open'],
+          },
+        },
+      }) as never;
+
+    await seedIssue('WI-terminal', null, 'done');
+    await expect(
+      diagnoseFleetScopeTerminalExhaustion({
+        scope: makeScope(['WI-terminal']),
+        harness: H,
+        workspaceId: WS,
+      }),
+    ).resolves.toEqual({ matchedByFilter: 1, terminalMatchedByFilter: 1 });
+
+    await seedIssue('WI-active', null, 'open');
+    await expect(
+      diagnoseFleetScopeTerminalExhaustion({
+        scope: makeScope(['WI-terminal', 'WI-active']),
+        harness: H,
+        workspaceId: WS,
+      }),
+    ).resolves.toEqual({ matchedByFilter: 2, terminalMatchedByFilter: 1 });
   });
 });
