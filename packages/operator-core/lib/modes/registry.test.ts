@@ -437,7 +437,7 @@ describe('GOAL mode', () => {
     expect(c).toContain('goals:pots { goalId }');
     expect(c).toMatch(/measured child-fleet spend/i);
     expect(c).toMatch(/no reliable per-session\s+attribution source/i);
-    expect(c).toMatch(/do not invent spentCents/i);
+    expect(c).toMatch(/do\s+not invent\s+spentCents/i);
     expect(c).toMatch(/owner-supplied\s+measured snapshot only/i);
     expect(c).not.toContain('Plus declared expected spend and reported actuals');
   });
