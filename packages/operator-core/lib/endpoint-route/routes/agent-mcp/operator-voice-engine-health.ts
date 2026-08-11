@@ -14,7 +14,7 @@
  * never throws.
  */
 import { defineTool } from '@papercusp/agent-mcp';
-import { readElevenLabsKey, readOpenAiKey, readCartesiaKey } from '../../../voice-credentials';
+import { inspectElevenLabsApiKey, readElevenLabsKey, readOpenAiKey, readCartesiaKey } from '../../../voice-credentials';
 import { probeKokoroHealth, probeVoicemodeHealth } from './operator-voice-proxy-helpers';
 import { isKokoroLocalProvisioned } from '../../../voice-node/kokoro-local';
 import { getLocalVoiceProvisionStatus } from '../../../voice-node/local-voice-provision';
@@ -29,10 +29,11 @@ export default defineTool({
       probeVoicemodeHealth(),
       isKokoroLocalProvisioned().catch(() => false),
       getLocalVoiceProvisionStatus().catch(() => null),
-      readElevenLabsKey().then((k) => !!k).catch(() => false),
+      readElevenLabsKey().catch(() => null),
       readOpenAiKey().then((k) => !!k).catch(() => false),
       readCartesiaKey().then((k) => !!k).catch(() => false),
     ]);
+    const elevenLabsStatus = inspectElevenLabsApiKey(elKey);
     const whisperProvisioned = !!(provision?.whisperBinary.done && provision?.whisperModel.done);
     return Response.json({
       // Local engines: usable RIGHT NOW — an HTTP server answering, or a provisioned local
@@ -47,8 +48,11 @@ export default defineTool({
         whisperProvisioned,
         installer: provision,
       },
-      // Cloud engines: key CONFIGURED (reachability is only tested on explicit "Test connection").
-      elevenlabs: elKey,
+      // Cloud engines: local key shape is healthy; reachability is only tested on explicit
+      // "Test connection". Invalid legacy keys remain visible as unhealthy.
+      elevenlabs: elevenLabsStatus.healthy,
+      elevenlabsConfigured: elevenLabsStatus.configured,
+      elevenlabsError: elevenLabsStatus.error,
       openai: oaKey,
       cartesia: caKey,
       probedAt: Date.now(),

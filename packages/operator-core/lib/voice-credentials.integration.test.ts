@@ -65,12 +65,12 @@ beforeEach(async () => {
 
 describe('voice-credentials — encrypted round-trip', () => {
   it('writes then reads back the ElevenLabs key', async () => {
-    await writeElevenLabsKey('sk-eleven-abcdef');
-    expect(await readElevenLabsKey()).toBe('sk-eleven-abcdef');
+    await writeElevenLabsKey('sk_eleven_abcdef');
+    expect(await readElevenLabsKey()).toBe('sk_eleven_abcdef');
   });
 
   it('stores ciphertext at rest — the plaintext key never appears in the row', async () => {
-    const SECRET = 'sk-plaintext-supersecret-9999';
+    const SECRET = 'sk_plaintext_supersecret_9999';
     await writeElevenLabsKey(SECRET);
     const raw = await db.sql`
       SELECT payload::text AS payload, encode(payload_ct, 'escape') AS ct_text, payload_ct
@@ -85,16 +85,16 @@ describe('voice-credentials — encrypted round-trip', () => {
   });
 
   it('keeps providers independent (multiple keys coexist)', async () => {
-    await writeElevenLabsKey('el-key');
+    await writeElevenLabsKey('sk_eleven_key');
     await writeOpenAiKey('oa-key');
     await writeDeepgramKey('dg-key');
-    expect(await readElevenLabsKey()).toBe('el-key');
+    expect(await readElevenLabsKey()).toBe('sk_eleven_key');
     expect(await readOpenAiKey()).toBe('oa-key');
     expect(await readDeepgramKey()).toBe('dg-key');
   });
 
   it('writing null deletes one provider key without disturbing others', async () => {
-    await writeElevenLabsKey('el-key');
+    await writeElevenLabsKey('sk_eleven_key');
     await writeOpenAiKey('oa-key');
     await writeElevenLabsKey(null);
     expect(await readElevenLabsKey()).toBeNull();

@@ -14,6 +14,7 @@ import {
   readPicovoiceKey,
   writePicovoiceKey,
   maskKey,
+  inspectElevenLabsApiKey,
 } from '../../../voice-credentials';
 import { defineTool } from '@papercusp/agent-mcp';
 
@@ -23,8 +24,14 @@ async function snapshot() {
   const c = await readCartesiaKey();
   const d = await readDeepgramKey();
   const p = await readPicovoiceKey();
+  const eStatus = inspectElevenLabsApiKey(e);
   return {
-    elevenlabs: { apiKey: maskKey(e), configured: !!e },
+    elevenlabs: {
+      apiKey: maskKey(e),
+      configured: eStatus.healthy,
+      healthy: eStatus.healthy,
+      error: eStatus.error,
+    },
     openai:     { apiKey: maskKey(o), configured: !!o },
     cartesia:   { apiKey: maskKey(c), configured: !!c },
     deepgram:   { apiKey: maskKey(d), configured: !!d },
@@ -59,7 +66,16 @@ const put = defineTool({
       if (!(field in body)) return null;
       const v = body[field];
       if (v === null) { await write(null); return null; }
-      if (typeof v === 'string' && v.length > 0) { await write(v); return null; }
+      if (typeof v === 'string' && v.length > 0) {
+        if (field === 'elevenlabsApiKey') {
+          const status = inspectElevenLabsApiKey(v);
+          if (!status.healthy) {
+            return Response.json({ ok: false, error: 'invalid_elevenlabs_api_key', detail: status.error }, { status: 400 });
+          }
+        }
+        await write(v);
+        return null;
+      }
       return new Response(`${field} must be string or null`, { status: 400 });
     };
     for (const [field, writer] of [

@@ -5,13 +5,25 @@
  * proxy fixes that. These pin the mapping + the never-throw contract.
  */
 import { describe, it, expect, vi } from 'vitest';
-import { fetchElevenLabsVoices } from './elevenlabs';
+import { fetchElevenLabsVoices, testElevenLabsConnection } from './elevenlabs';
 
 function stubFetch(impl: () => Promise<Response>) {
   vi.stubGlobal('fetch', vi.fn(impl));
 }
 
 describe('fetchElevenLabsVoices', () => {
+  it('does not send an API key ID to ElevenLabs', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    try {
+      const result = await testElevenLabsConnection('api_key_id_123');
+      expect(result).toMatchObject({ ok: false, error: expect.stringMatching(/begin with sk_/) });
+      expect(fetchMock).not.toHaveBeenCalled();
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('maps voice_id→id + name, carries a labels.language when present', async () => {
     stubFetch(async () => new Response(JSON.stringify({
       voices: [
@@ -56,7 +68,7 @@ describe('fetchElevenLabsVoices', () => {
       ],
     }), { status: 200 }));
     try {
-      expect(await fetchElevenLabsVoices('k')).toEqual([{ id: 'ok', name: 'Good' }]);
+      expect(await fetchElevenLabsVoices('sk_key')).toEqual([{ id: 'ok', name: 'Good' }]);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -65,7 +77,7 @@ describe('fetchElevenLabsVoices', () => {
   it('returns [] (never throws) on a non-ok status', async () => {
     stubFetch(async () => new Response('', { status: 401 }));
     try {
-      expect(await fetchElevenLabsVoices('k')).toEqual([]);
+      expect(await fetchElevenLabsVoices('sk_key')).toEqual([]);
     } finally {
       vi.unstubAllGlobals();
     }
@@ -74,7 +86,7 @@ describe('fetchElevenLabsVoices', () => {
   it('returns [] (never throws) when ElevenLabs is unreachable', async () => {
     stubFetch(async () => { throw new Error('ENOTFOUND'); });
     try {
-      expect(await fetchElevenLabsVoices('k')).toEqual([]);
+      expect(await fetchElevenLabsVoices('sk_key')).toEqual([]);
     } finally {
       vi.unstubAllGlobals();
     }

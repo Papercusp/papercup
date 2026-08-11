@@ -11,6 +11,8 @@
  * endpoint, which also returns subscription tier + character usage for display.
  */
 
+import { inspectElevenLabsApiKey } from '../voice-credentials';
+
 const BASE = 'https://api.elevenlabs.io/v1';
 
 /** Connection-test helper used by /settings/voice. Returns subscription tier on success. */
@@ -18,6 +20,10 @@ export async function testElevenLabsConnection(apiKey: string): Promise<
   | { ok: true; tier: string; characterCount: number; characterLimit: number; email: string | null }
   | { ok: false; error: string }
 > {
+  const keyStatus = inspectElevenLabsApiKey(apiKey);
+  if (!keyStatus.healthy) {
+    return { ok: false, error: keyStatus.error ?? 'ElevenLabs API key is not configured.' };
+  }
   try {
     const r = await fetch(`${BASE}/user`, {
       headers: { 'xi-api-key': apiKey },
@@ -48,6 +54,7 @@ export interface ElevenLabsVoiceSummary { id: string; name: string; lang?: strin
  * fall back to its default list without a hard failure.
  */
 export async function fetchElevenLabsVoices(apiKey: string): Promise<ElevenLabsVoiceSummary[]> {
+  if (!inspectElevenLabsApiKey(apiKey).healthy) return [];
   try {
     const r = await fetch(`${BASE}/voices`, {
       headers: { 'xi-api-key': apiKey },

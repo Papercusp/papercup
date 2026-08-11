@@ -23,6 +23,30 @@ interface CredentialsPayload {
   picovoice?: { apiKey: string };
 }
 
+export interface ElevenLabsApiKeyStatus {
+  configured: boolean;
+  healthy: boolean;
+  error: string | null;
+}
+
+const INVALID_ELEVENLABS_KEY_ERROR =
+  'ElevenLabs API keys must begin with sk_; an API key ID cannot authenticate.';
+
+/** Validate the local key shape before persisting or sending it to ElevenLabs. */
+export function inspectElevenLabsApiKey(value: unknown): ElevenLabsApiKeyStatus {
+  if (typeof value !== 'string' || value.trim().length === 0) {
+    return { configured: false, healthy: false, error: null };
+  }
+  if (!value.trim().startsWith('sk_') || value.trim().length <= 3) {
+    return { configured: true, healthy: false, error: INVALID_ELEVENLABS_KEY_ERROR };
+  }
+  return { configured: true, healthy: true, error: null };
+}
+
+export function isValidElevenLabsApiKey(value: unknown): boolean {
+  return inspectElevenLabsApiKey(value).healthy;
+}
+
 async function readAll(): Promise<CredentialsPayload> {
   const raw = await readOperatorState<CredentialsPayload>('operator_voice_credentials');
   return raw && typeof raw === 'object' ? raw : {};
@@ -47,7 +71,11 @@ export async function readElevenLabsKey(): Promise<string | null> {
 export async function writeElevenLabsKey(apiKey: string | null): Promise<void> {
   const all = await readAll();
   if (apiKey === null) delete all.elevenlabs;
-  else all.elevenlabs = { ...all.elevenlabs, apiKey };
+  else {
+    const status = inspectElevenLabsApiKey(apiKey);
+    if (!status.healthy) throw new Error(status.error ?? 'Invalid ElevenLabs API key.');
+    all.elevenlabs = { ...all.elevenlabs, apiKey: apiKey.trim() };
+  }
   await writeAll(all);
 }
 
@@ -94,4 +122,3 @@ export async function writePicovoiceKey(apiKey: string | null): Promise<void> {
   else all.picovoice = { ...all.picovoice, apiKey };
   await writeAll(all);
 }
-
