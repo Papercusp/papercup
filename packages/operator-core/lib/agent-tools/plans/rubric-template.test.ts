@@ -186,6 +186,57 @@ describe('self-registration', () => {
   });
 });
 
+// ─── per-kind validation profile (acceptance-rubrics-on-every-plan-2026-08-11 P-001) ──
+describe('rubric kind (standard | acceptance)', () => {
+  const issues = (d: unknown): string => {
+    const r = rubricTemplateDataSchema.safeParse(d);
+    return r.success ? '' : r.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
+  };
+
+  it('rubricKindOf: absent/unknown maps to standard; acceptance maps to acceptance', () => {
+    expect(rubricKindOf(undefined)).toBe('standard');
+    expect(rubricKindOf({})).toBe('standard');
+    expect(rubricKindOf({ kind: null })).toBe('standard');
+    expect(rubricKindOf({ kind: 'acceptance' })).toBe('acceptance');
+  });
+
+  it('standard (absent kind): refuses subjectPlan / classRef / light criteria', () => {
+    expect(issues({ ...minimalData, subjectPlan: 'some-plan' })).toContain('subjectPlan is acceptance-kind only');
+    expect(issues({ ...minimalData, classRef: 'feature-ship' })).toContain('classRef is acceptance-kind only');
+    expect(
+      issues({ ...minimalData, criteria: [{ key: 'light', title: 'Light' }] }),
+    ).toContain("standard-kind criterion 'light' requires model");
+  });
+
+  it('acceptance: requires subjectPlan; light criteria are valid', () => {
+    expect(issues({ ...minimalData, kind: 'acceptance' })).toContain('requires subjectPlan');
+    const ok = rubricTemplateDataSchema.safeParse({
+      characteristic: 'plan-acceptance',
+      kind: 'acceptance',
+      subjectPlan: 'some-plan-2026-08-11',
+      criteria: [{ key: 'gate-rerun', title: 'The gate re-runs without a manual poke' }],
+      ratingScale: ['pass', 'fail', 'unknown'],
+    });
+    expect(ok.success).toBe(true);
+    if (ok.success) expect(rubricKindOf(ok.data)).toBe('acceptance');
+  });
+
+  it('acceptance: zero criteria valid ONLY with classRef (D-009); releaseGating refused', () => {
+    const base = {
+      characteristic: 'plan-acceptance',
+      kind: 'acceptance',
+      subjectPlan: 'some-plan-2026-08-11',
+      criteria: [],
+      ratingScale: ['pass', 'fail', 'unknown'],
+    };
+    expect(issues(base)).toContain('bespoke criteria OR a classRef');
+    expect(rubricTemplateDataSchema.safeParse({ ...base, classRef: 'investigation' }).success).toBe(true);
+    expect(
+      issues({ ...base, classRef: 'investigation', releaseGating: true }),
+    ).toContain('releaseGating is standard-kind only');
+  });
+});
+
 describe('shape parity with the v1 Rubric', () => {
   // Kind-aware since acceptance-rubrics-on-every-plan-2026-08-11: the SCHEMA-level
   // criterion type allows acceptance-kind criteria to omit model/method/driftMarkers, so
