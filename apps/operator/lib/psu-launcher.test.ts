@@ -89,6 +89,8 @@ import {
   lastActiveModelFor,
   resumeSessionLineageLabel,
   modelArgsFor,
+  normalizeOmpModelSpec,
+  ompModelCompatibilityNotice,
   reportSessionEnded,
   reportSessionResumed,
   reportSessionRespawned,
@@ -3330,11 +3332,10 @@ describe('suWrapperExtraArgs (P-032 omp-parity passthrough)', () => {
 
   // Same effort-drop class for codex (found 2026-07-03 launching the backlog-clearance
   // codex fleet): codex's `-m` wants a bare id; effort is the config override
-  // `-c model_reasoning_effort="…"` with `max` clamped to codex's `xhigh` (mirrors
-  // applyRoleModel in harness-invoke-once.ts).
+  // `-c model_reasoning_effort="…"`, preserving the owner-requested level.
   it('codex: splits a recognized `<model>:<effort>` spec into -m + -c model_reasoning_effort', () => {
     expect(suWrapperExtraArgs('codex', { model: 'gpt-5.5:high' })).toEqual(['-m', 'gpt-5.5', '-c', 'model_reasoning_effort="high"']);
-    expect(suWrapperExtraArgs('codex', { model: 'gpt-5.5:max' })).toEqual(['-m', 'gpt-5.5', '-c', 'model_reasoning_effort="xhigh"']);
+    expect(suWrapperExtraArgs('codex', { model: 'gpt-5.5:max' })).toEqual(['-m', 'gpt-5.5', '-c', 'model_reasoning_effort="max"']);
     // bare id stays bare; a non-effort `:` segment passes through verbatim.
     expect(suWrapperExtraArgs('codex', { model: 'gpt-5.5' })).toEqual(['-m', 'gpt-5.5']);
     expect(suWrapperExtraArgs('codex', { model: 'weird:0' })).toEqual(['-m', 'weird:0']);
@@ -4180,8 +4181,8 @@ describe('WI-3758 — psu --resume model select + last-active model', () => {
     expect(modelArgsFor('claude', 'claude-sonnet-5:high')).toEqual(['--model', 'claude-sonnet-5', '--effort', 'high']);
     // …but a non-effort ':' segment (bedrock version) passes through verbatim.
     expect(modelArgsFor('claude', 'anthropic.claude-3-5-sonnet-v2:0')).toEqual(['--model', 'anthropic.claude-3-5-sonnet-v2:0']);
-    // codex: bare -m + config-override effort, max clamped to xhigh.
-    expect(modelArgsFor('codex', 'gpt-5.5:max')).toEqual(['-m', 'gpt-5.5', '-c', 'model_reasoning_effort="xhigh"']);
+    // codex: bare -m + config-override effort, preserving max verbatim.
+    expect(modelArgsFor('codex', 'gpt-5.5:max')).toEqual(['-m', 'gpt-5.5', '-c', 'model_reasoning_effort="max"']);
     expect(modelArgsFor('codex', 'gpt-5.5')).toEqual(['-m', 'gpt-5.5']);
     // omp understands the suffixed spec natively.
     expect(modelArgsFor('omp', 'opus:high')).toEqual(['--model', 'opus:high']);
@@ -4190,6 +4191,31 @@ describe('WI-3758 — psu --resume model select + last-active model', () => {
     for (const [agent, spec] of [['claude', 'fable:high'], ['codex', 'gpt-5.5:max'], ['omp', 'opus:low']] as const) {
       expect(suWrapperExtraArgs(agent, { model: spec })).toEqual(modelArgsFor(agent, spec));
     }
+  });
+
+  it('WI-37890: lowers only the broken Vertex Gemini 3.1 Pro high-effort spec', () => {
+    expect(normalizeOmpModelSpec('google-vertex/gemini-3.1-pro-preview:high')).toBe(
+      'google-vertex/gemini-3.1-pro-preview:low',
+    );
+    expect(modelArgsFor('omp', 'google-vertex/gemini-3.1-pro-preview:high')).toEqual([
+      '--model',
+      'google-vertex/gemini-3.1-pro-preview:low',
+    ]);
+    expect(ompModelCompatibilityNotice('google-vertex/gemini-3.1-pro-preview:high')).toMatch(
+      /using google-vertex\/gemini-3\.1-pro-preview:low/,
+    );
+
+    // Other providers, efforts, and models are not implicated by the controlled repro.
+    expect(normalizeOmpModelSpec('google-vertex/gemini-3.1-pro-preview:low')).toBe(
+      'google-vertex/gemini-3.1-pro-preview:low',
+    );
+    expect(normalizeOmpModelSpec('google-generative-ai/gemini-3.1-pro-preview:high')).toBe(
+      'google-generative-ai/gemini-3.1-pro-preview:high',
+    );
+    expect(normalizeOmpModelSpec('google-vertex/gemini-3.0-pro:high')).toBe(
+      'google-vertex/gemini-3.0-pro:high',
+    );
+    expect(ompModelCompatibilityNotice('opus:high')).toBeNull();
   });
 
   it('resumeArgsFor threads a model into each backend resume — codex flags BEFORE the subcommand', () => {

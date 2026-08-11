@@ -629,25 +629,51 @@ export function parseArgs(argv) {
  *     else (a bare id, or a non-effort `:` segment like bedrock's `…-v2:0`)
  *     passes through verbatim.
  *   - codex: `-m` wants a BARE model id; reasoning effort is a CONFIG override
- *     (`-c model_reasoning_effort="high"`, `max` clamped to codex's `xhigh` —
- *     mirrors applyRoleModel in harness-invoke-once.ts). A verbatim suffixed
+ *     (`-c model_reasoning_effort="high"`, preserving every recognized level,
+ *     including `max`, exactly as requested). A verbatim suffixed
  *     spec would set an unknown MODEL and silently drop the effort — the same
  *     effort-drop class the claude branch fixed (2026-07-01), found for codex
  *     launching the backlog-clearance fleet (2026-07-03).
- *   - omp: understands the `<model>[:<effort>]` spec natively → verbatim.
+ *   - omp: understands the `<model>[:<effort>]` spec natively. One provider/model
+ *     exception is normalized below: Vertex Gemini 3.1 Pro currently returns a
+ *     deterministic empty STOP stream at `:high`, so psu lowers only that exact
+ *     broken combination to `:low` with a launch-time warning.
  */
+const OMP_GEMINI_31_PRO_HIGH_RE = /^google-vertex\/gemini-3\.1-pro-preview:high$/i;
+
+/**
+ * Work around a provider-specific OMP failure without changing the user's OMP
+ * installation or other model/effort selections. The controlled reproduction
+ * for WI-37890 showed `google-vertex/gemini-3.1-pro-preview:high` emits only a
+ * `STOP` with no content and retries until exhaustion, while the same request
+ * at `:low` completes and can call tools. Keep this exact and reversible: an
+ * unrelated Vertex model, provider, or effort must remain byte-identical.
+ * Pure + exported for regression tests.
+ */
+export function normalizeOmpModelSpec(model) {
+  if (typeof model !== 'string' || !OMP_GEMINI_31_PRO_HIGH_RE.test(model)) return model;
+  return model.replace(/:high$/i, ':low');
+}
+
+/** Human-facing notice for the narrow WI-37890 compatibility fallback. */
+export function ompModelCompatibilityNotice(model) {
+  const normalized = normalizeOmpModelSpec(model);
+  if (normalized === model) return null;
+  return `psu: OMP compatibility fallback — ${model} returns deterministic empty STOP responses at high effort; using ${normalized}.`;
+}
+
 export function modelArgsFor(agent, model) {
   if (!model) return [];
-  const m = /^(.+):(low|medium|high|xhigh|max)$/.exec(model);
+  const effectiveModel = agent === 'omp' ? normalizeOmpModelSpec(model) : model;
+  const m = /^(.+):(low|medium|high|xhigh|max)$/.exec(effectiveModel);
   if (agent === 'codex') {
     if (m) {
-      const codexEffort = m[2] === 'max' ? 'xhigh' : m[2];
-      return ['-m', m[1], '-c', `model_reasoning_effort="${codexEffort}"`];
+      return ['-m', m[1], '-c', `model_reasoning_effort="${m[2]}"`];
     }
     return ['-m', model];
   }
   if (agent === 'claude' && m) return ['--model', m[1], '--effort', m[2]];
-  return ['--model', model];
+  return ['--model', effectiveModel];
 }
 
 /**
@@ -5980,6 +6006,10 @@ async function launchResume(session, { brain = false, fork = false, passthrough 
   let resumeModel = model;
   if (session.agent === 'omp') {
     resumeModel = applyOmpResumeAccountRoute({ session, env, accountRoute: accountEnv, model });
+    const requestedResumeModel = resumeModel;
+    resumeModel = normalizeOmpModelSpec(requestedResumeModel);
+    const resumeModelNotice = ompModelCompatibilityNotice(requestedResumeModel);
+    if (resumeModelNotice) console.error(resumeModelNotice);
   }
   if (session.agent === 'codex' && env.CODEX_HOME) {
     applyCodexGatewayRoute(env.CODEX_HOME, {
@@ -7124,9 +7154,12 @@ async function roleFlow(args, role, rolesMeta) {
   // resume use. claude/codex role hooks are user-level / baked into the codex home.
   const roleCoordExt = join(homedir(), '.papercusp', 'papercusp-coord.ts');
   const roleCoordExtPath = res.agent === 'omp' && existsSync(roleCoordExt) ? roleCoordExt : undefined;
-  const roleModel = res.agent === 'omp'
+  const requestedRoleModel = res.agent === 'omp'
     ? (res.envelopeEnv?.PAPERCUSP_OMP_MODEL_SELECTOR || args.model)
     : args.model;
+  const roleModel = res.agent === 'omp' ? normalizeOmpModelSpec(requestedRoleModel) : requestedRoleModel;
+  const roleModelNotice = res.agent === 'omp' ? ompModelCompatibilityNotice(requestedRoleModel) : null;
+  if (roleModelNotice) console.error(roleModelNotice);
   // Launch preflight (context-trimming-tiers P-016/P-018): persona-append
   // assertion + window guard — fail loud BEFORE spawning a doomed session.
   try {
@@ -7623,9 +7656,12 @@ async function launchFreshSu(selections, args, { brain = false } = {}) {
     // picker) opts THIS su launch back in. See suLaunchArgs / NO_SUBAGENTS_DENY_FLAG.
     allowSubagents: args.allowSubagents,
   });
-  const launchModel = res.agent === 'omp'
+  const requestedLaunchModel = res.agent === 'omp'
     ? (res.envelopeEnv?.PAPERCUSP_OMP_MODEL_SELECTOR || args.model)
     : args.model;
+  const launchModel = res.agent === 'omp' ? normalizeOmpModelSpec(requestedLaunchModel) : requestedLaunchModel;
+  const launchModelNotice = res.agent === 'omp' ? ompModelCompatibilityNotice(requestedLaunchModel) : null;
+  if (launchModelNotice) console.error(launchModelNotice);
   // model/resume passthrough (raw-CLI flags: claude/omp --model/-r, codex -m/resume).
   const extra = suWrapperExtraArgs(res.agent, { model: launchModel, resumeSession: args.resumeSession });
   if (args.addDir?.length && res.agent === 'omp') {
