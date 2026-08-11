@@ -1051,7 +1051,7 @@ async function completeOne(
             // The inline shorthand commonly omits `harness`; the fetched work-item is
             // still the authoritative scope for this durable hold (as it is for
             // assumption resolution below). Never write an unscoped hold in that case.
-            harness: it.harness ?? existing.harness,
+            harness: it.harness ?? existing.harness ?? undefined,
             parkedBy: ident.ownerId,
             parkedReason: 'terminal completion refused by the linked plan-item gate',
           });
