@@ -25,6 +25,7 @@ import {
   decodeSpawnPathDirs,
   encodeSpawnPathDirs,
   executableNames,
+  preflightBackendLaunch,
   readShebangInterpreter,
   resolveBackendLaunch,
   resolveOnPath,
@@ -315,6 +316,114 @@ describe('encode/decodeSpawnPathDirs', () => {
   it('treats an absent value as no dirs', () => {
     expect(decodeSpawnPathDirs(undefined)).toEqual([]);
     expect(decodeSpawnPathDirs('')).toEqual([]);
+  });
+});
+
+// ── P-002: the preflight, and the false-negative trap it exists to dodge ─────
+describe('preflightBackendLaunch — check the env the WINDOW gets, not the operator\'s', () => {
+  const envWith = (dirs: string[]) => ({ PAPERCUSP_BACKEND_PATH_DIRS: dirs.join(delimiter) });
+
+  it('IGNORES the operator PATH — a probe that inherits it is the false negative', () => {
+    // THE TRAP THIS CASE PINS. A check run from the operator (process.env.PATH, a
+    // `which`, a capability:bash probe) inherits the environment that does NOT
+    // have the defect, so it reports green while the window dies. Here the backend
+    // sits on the OPERATOR's PATH and is injected NOWHERE — the preflight must
+    // still fail, because the window would never see it.
+    const ohome = mkdtempSync(join(tmpdir(), 'preflight-operator-path-'));
+    try {
+      const dir = join(ohome, 'operator-only/bin');
+      mkdirSync(dir, { recursive: true });
+      writeFileSync(join(dir, 'omp'), '#!/bin/sh\n', { mode: 0o755 });
+
+      const pre = preflightBackendLaunch('omp', {}, { home: ohome, env: { PATH: dir }, platform: 'linux' });
+
+      expect(pre.ok, 'a backend visible only on the OPERATOR PATH must NOT pass the preflight').toBe(false);
+      if (pre.ok) return;
+      expect(pre.reason).toBe('resolved-but-not-injected');
+      expect(pre.diagnosis, 'a defect in OUR injection must not be reported to the user as a missing install').toMatch(
+        /OUR bug|not a missing install/i,
+      );
+      expect(pre.foundOffPath).toBe(join(dir, 'omp'));
+    } finally {
+      rmSync(ohome, { recursive: true, force: true });
+    }
+  });
+
+  it('passes when the injected dirs alone can resolve the backend AND its interpreter', () => {
+    const ihome = mkdtempSync(join(tmpdir(), 'preflight-ok-'));
+    try {
+      const bunDir = join(ihome, '.bun/bin');
+      const interpDir = join(ihome, 'interp');
+      mkdirSync(bunDir, { recursive: true });
+      mkdirSync(interpDir, { recursive: true });
+      writeFileSync(join(bunDir, 'omp'), '#!/usr/bin/env bun\n', { mode: 0o755 });
+      writeFileSync(join(interpDir, 'bun'), '#!/bin/sh\n', { mode: 0o755 });
+
+      const pre = preflightBackendLaunch('omp', envWith([bunDir, interpDir]), {
+        home: ihome,
+        env: { PATH: '' },
+        platform: 'linux',
+      });
+      expect(pre.ok).toBe(true);
+      if (!pre.ok) return;
+      expect(pre.interpreter).toBe('bun');
+    } finally {
+      rmSync(ihome, { recursive: true, force: true });
+    }
+  });
+
+  it('FAILS when the bin resolves but its shebang interpreter does not', () => {
+    // The half-fix that ships green: `omp` is findable, and the window still dies
+    // inside `env`. A detection-only preflight calls this a pass.
+    const ihome = mkdtempSync(join(tmpdir(), 'preflight-interp-'));
+    try {
+      const bunDir = join(ihome, '.bun/bin');
+      mkdirSync(bunDir, { recursive: true });
+      writeFileSync(join(bunDir, 'omp'), '#!/usr/bin/env nowhere-bun\n', { mode: 0o755 });
+
+      const pre = preflightBackendLaunch('omp', envWith([bunDir]), {
+        home: ihome,
+        env: { PATH: '' },
+        platform: 'linux',
+      });
+      expect(pre.ok).toBe(false);
+      if (pre.ok) return;
+      expect(pre.reason).toBe('interpreter-unreachable');
+      expect(pre.diagnosis).toMatch(/interpreter/i);
+      expect(pre.diagnosis, 'the diagnosis must say the failure happens in `env`, not at the command').toMatch(
+        /inside `env`/,
+      );
+    } finally {
+      rmSync(ihome, { recursive: true, force: true });
+    }
+  });
+
+  it('reports a genuinely-absent backend as not-installed, with what it probed', () => {
+    const empty = mkdtempSync(join(tmpdir(), 'preflight-missing-'));
+    try {
+      const pre = preflightBackendLaunch('omp', {}, { home: empty, env: { USERPROFILE: empty }, platform: 'win32' });
+      expect(pre.ok).toBe(false);
+      if (pre.ok) return;
+      expect(pre.reason).toBe('not-installed');
+      expect(pre.diagnosis).toMatch(/papercusp setup/);
+      expect(pre.diagnosis, 'the diagnosis must list what it searched so the answer is checkable').toMatch(
+        /probed|guaranteed/i,
+      );
+    } finally {
+      rmSync(empty, { recursive: true, force: true });
+    }
+  });
+
+  it('explains WHY the spawned env differs, so the reader can act on it', () => {
+    const empty = mkdtempSync(join(tmpdir(), 'preflight-why-'));
+    try {
+      const pre = preflightBackendLaunch('omp', {}, { home: empty, env: { USERPROFILE: empty }, platform: 'win32' });
+      if (pre.ok) throw new Error('expected a failure');
+      expect(pre.diagnosis).toMatch(/does not inherit the operator's environment/);
+      expect(pre.diagnosis).toMatch(/NON-INTERACTIVE/);
+    } finally {
+      rmSync(empty, { recursive: true, force: true });
+    }
   });
 });
 

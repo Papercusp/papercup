@@ -26,6 +26,36 @@ import { composeLaunchModelSpec, MIN_COMPACTION_LIMIT_TOKENS } from './agent-con
 const PSU_TOKEN = /(^|[\s&;|(])psu(\s)/;
 
 /**
+ * Is this terminal command actually an AGENT LAUNCH wearing a command's clothes?
+ * (P-004 — the wrong-door guard.)
+ *
+ * WHY THE DOOR MATTERS, and why this is not pedantry: `capability:terminal` is the
+ * arbitrary-COMMAND door and hardcodes `preferProcessPerWindow: true`, which
+ * resolves to xterm. `capability:launch-agent` uses `preferProcessPerWindow:
+ * isResume`, so a fresh launch gets the owner's normal emulator. Both doors share
+ * ONE spawn path — the divergence is emulator POLICY, not mechanism — but a
+ * launch through the wrong door lands in a different window manager, skips the
+ * backend preflight (P-002) and the started-verification (P-003), and is exactly
+ * how the owner's two failed omp launches happened.
+ *
+ * DELIBERATELY NARROW. `psu --help`, `psu --version`, `psu-sentinel`, and any
+ * `psu` mention inside a longer word are NOT launches and must keep working — a
+ * guard that over-refuses teaches agents to route around it, which is worse than
+ * no guard. The positive test is a `psu` COMMAND TOKEN (the same boundary rule
+ * every injector uses) that is not one of the informational flags.
+ */
+export function classifyAgentLaunchCommand(command: string): {
+  isAgentLaunch: boolean;
+  mode: 'fresh' | 'resume' | null;
+} {
+  if (!PSU_TOKEN.test(command ?? '')) return { isAgentLaunch: false, mode: null };
+  // Informational invocations print and exit — no agent, no window to supervise.
+  if (/(^|\s)--(help|version)(\s|$|=)/.test(command)) return { isAgentLaunch: false, mode: null };
+  const resume = /(^|\s)--(resume|fork)(=|\s|$)/.test(command);
+  return { isAgentLaunch: true, mode: resume ? 'resume' : 'fresh' };
+}
+
+/**
  * named-su-agent-fleets / EI-5835: when the caller passes an explicit `fleet`, a
  * `psu …` launch inside a terminal command should JOIN that fleet — not merely
  * inherit its colour. The `fleet` arg alone is COLOUR-ONLY (it tints the window);
@@ -848,6 +878,230 @@ export async function injectKickoffAfterResume(
       };
     }
     await sleep(pollMs);
+  }
+}
+
+// ─── FRESH-launch verification (P-003 / D-004) ───────────────────────────────
+
+/**
+ * Tool names that are STATUSLINE / harness machinery, not the agent taking a turn.
+ *
+ * This list is the whole reason fresh-launch verification is possible. A DEAD
+ * launch emits these too — the measured acceptance case (adv_session 14842) fired
+ * `activity:report` at +3.6s and `coord:glance` at +3.7s and then never did
+ * anything again, for the hour until the reaper closed it. Counting raw tool calls
+ * therefore cannot separate a booted-and-working agent from a booted-and-dead one;
+ * counting calls OUTSIDE this set can.
+ */
+export const LAUNCH_STATUSLINE_TOOLS: readonly string[] = ['activity:report', 'coord:glance'];
+
+/** How long to watch a fresh launch before returning a verdict. */
+export const FRESH_VERIFY_TIMEOUT_MS = 25_000;
+/**
+ * A session whose LAST signal of any kind is older than this, at the end of the
+ * window, has gone silent. Measured basis: across 24h, a session that never made a
+ * real call had its last statusline beat at a median of 4.9s after launch, while a
+ * live session keeps beating for hours. 12s sits well clear of the dud median
+ * without reaching into a live session's beat interval.
+ */
+export const FRESH_VERIFY_SILENCE_MS = 12_000;
+
+export interface FreshLaunchSessionProbe {
+  advSessionId: number;
+  ownerId: string | null;
+  /** Tool calls NOT in {@link LAUNCH_STATUSLINE_TOOLS} — proof of a real turn. */
+  realCalls: number;
+  /** ms since this session's most recent signal of ANY kind (null = never any). */
+  msSinceLastSignal: number | null;
+  /** A live coord_presence row exists for its owner. */
+  hasPresence: boolean;
+}
+
+export interface FreshLaunchVerdict {
+  /**
+   * THREE-STATE, never a boolean — see D-004. `true` = observed real agent
+   * activity. `false` = observed SILENCE (the 14842 shape) and reported loudly.
+   * `null` = UNVERIFIED: still beating at the window's edge but no turn yet, which
+   * is the HONEST answer for most healthy launches inside any bounded window.
+   */
+  agentStarted: boolean | null;
+  waitedMs: number;
+  sessions: FreshLaunchSessionProbe[];
+  /** Operator-facing sentence for the tool's own output. */
+  note: string;
+}
+
+/**
+ * Did the agents this call just launched actually START?
+ *
+ * ⚠ WHY THIS IS NOT THE OBVIOUS "poll ~20s for the adv_sessions row" CHECK. Three
+ * things were measured before writing it (D-004), and each killed a simpler design:
+ *
+ *  1. The ROW is not evidence. 14842 has a row, a coord_owner_id and a session_id,
+ *     and never did anything.
+ *  2. A coord_presence row is not a 20s signal — observed lag from launch ranged
+ *     7s to 7371s, and presence rows are REAPED, so absence is ambiguous BOTH ways.
+ *  3. A 20s boolean would be WRONG FOR MOST HEALTHY LAUNCHES: first real tool call
+ *     was p50 31s, p90 417s. Returning `false` there would make this a false-alarm
+ *     generator, which is itself a defect — the exact failure a verification check
+ *     is supposed to prevent, with the sign flipped.
+ *
+ * So the positive signal is real activity (fast when it happens), and the NEGATIVE
+ * signal is SILENCE — the boot beats stopped — which is precisely what distinguishes
+ * the dud. Anything else is honestly reported as unverified.
+ *
+ * `probe` is injectable so this unit-tests without PG.
+ */
+export async function verifyFreshLaunchStarted(
+  {
+    workspaceId,
+    launcherOwnerId,
+    since,
+    expected,
+  }: { workspaceId: string; launcherOwnerId: string; since: number; expected: number },
+  {
+    timeoutMs = FRESH_VERIFY_TIMEOUT_MS,
+    pollMs = 2_000,
+    silenceMs = FRESH_VERIFY_SILENCE_MS,
+    probe = probeFreshLaunchSessions,
+    sleep = (ms: number) => new Promise<void>((r) => setTimeout(r, ms)),
+  }: {
+    timeoutMs?: number;
+    pollMs?: number;
+    silenceMs?: number;
+    probe?: typeof probeFreshLaunchSessions;
+    sleep?: (ms: number) => Promise<void>;
+  } = {},
+): Promise<FreshLaunchVerdict> {
+  const begun = Date.now();
+  let sessions: FreshLaunchSessionProbe[] = [];
+  for (;;) {
+    sessions = await probe({ workspaceId, launcherOwnerId, since });
+    // POSITIVE signal — return as soon as it lands, so a healthy launch pays
+    // almost nothing and only a suspect one waits out the window.
+    if (sessions.length >= expected && sessions.every((s) => s.realCalls > 0 || s.hasPresence)) {
+      return {
+        agentStarted: true,
+        waitedMs: Date.now() - begun,
+        sessions,
+        note: `✓ ${sessions.length} agent${sessions.length > 1 ? 's' : ''} verified running (took a real turn).`,
+      };
+    }
+    if (Date.now() - begun + pollMs > timeoutMs) break;
+    await sleep(pollMs);
+  }
+
+  const waitedMs = Date.now() - begun;
+  const secs = Math.round(waitedMs / 1000);
+
+  if (sessions.length === 0) {
+    return {
+      agentStarted: false,
+      waitedMs,
+      sessions,
+      note:
+        `✗ AGENT DID NOT START — no session registered within ${secs}s. The terminal spawned, but ` +
+        `nothing ever reported in: psu died before reaching the operator (a backend it could not ` +
+        `execute, a boot refusal, a bad account/model spec). Check the terminal window — it is left ` +
+        `open on the failure by design.`,
+    };
+  }
+
+  // NEGATIVE signal: booted, beat, then went silent. This is the 14842 shape.
+  const silent = sessions.filter(
+    (s) => s.realCalls === 0 && !s.hasPresence && s.msSinceLastSignal != null && s.msSinceLastSignal >= silenceMs,
+  );
+  if (silent.length > 0 && silent.length === sessions.length) {
+    return {
+      agentStarted: false,
+      waitedMs,
+      sessions,
+      note:
+        `✗ AGENT DID NOT START — ${silent.length} session${silent.length > 1 ? 's' : ''} registered and ` +
+        `emitted only the launch statusline calls, then went SILENT (no signal for ` +
+        `${Math.round((silent[0].msSinceLastSignal ?? 0) / 1000)}s, no turn taken, no presence). ` +
+        `That is a booted CLI that never reached its first turn — the "reports Launched, never ` +
+        `actually starts" failure. Do NOT assume it is working: check the terminal window, then ` +
+        `relaunch. Sessions: ${silent.map((s) => s.advSessionId).join(', ')}.`,
+    };
+  }
+
+  // Honest third state. A healthy launch commonly lands here, so it must not read
+  // as either success or failure.
+  return {
+    agentStarted: null,
+    waitedMs,
+    sessions,
+    note:
+      `⏳ launch UNVERIFIED after ${secs}s — ${sessions.length} session${sessions.length > 1 ? 's' : ''} ` +
+      `registered and ${sessions.length > 1 ? 'are' : 'is'} still signalling, but had not taken a first ` +
+      `turn yet. That is NORMAL (first turn is p50 ~31s), not a failure. Confirm with coord:presence ` +
+      `in a minute; if it is still idle then, it did not start.`,
+  };
+}
+
+/**
+ * The PG half of {@link verifyFreshLaunchStarted}: which sessions did THIS call
+ * launch, and what has each one done?
+ *
+ * Correlation is `--launched-by=<caller>` in `launch_argv` (the injector puts it
+ * on every psu command this door builds) plus `first_seen_at >= since`. That pairs
+ * a row to the call that caused it without needing psu to hand an id back.
+ */
+export async function probeFreshLaunchSessions({
+  workspaceId,
+  launcherOwnerId,
+  since,
+}: {
+  workspaceId: string;
+  launcherOwnerId: string;
+  since: number;
+}): Promise<FreshLaunchSessionProbe[]> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<
+      Array<{
+        id: string | number;
+        coord_owner_id: string | null;
+        real_calls: string | number;
+        ms_since_last_signal: string | number | null;
+        has_presence: boolean;
+      }>
+    >`
+      SELECT s.id,
+             s.coord_owner_id,
+             COALESCE((SELECT count(*) FROM harness_shared.tool_invocations t
+                        WHERE t.workspace_id = ${workspaceId}
+                          AND t.coord_owner_id = s.coord_owner_id
+                          AND NOT (t.tool_name = ANY (${LAUNCH_STATUSLINE_TOOLS as string[]}))), 0) AS real_calls,
+             (SELECT EXTRACT(EPOCH FROM (now() - max(t.invoked_at))) * 1000
+                FROM harness_shared.tool_invocations t
+               WHERE t.workspace_id = ${workspaceId}
+                 AND t.coord_owner_id = s.coord_owner_id) AS ms_since_last_signal,
+             EXISTS (SELECT 1 FROM harness_shared.coord_presence p
+                      WHERE p.workspace_id = ${workspaceId}
+                        AND p.owner_id = s.coord_owner_id) AS has_presence
+        FROM harness_shared.adv_sessions s
+       WHERE s.workspace_id = ${workspaceId}
+         AND s.first_seen_at >= to_timestamp(${Math.floor(since / 1000)})
+         AND s.launch_argv::text LIKE ${`%--launched-by=${launcherOwnerId}%`}
+       ORDER BY s.first_seen_at ASC
+       LIMIT 50`;
+    return rows.map((r) => ({
+      advSessionId: Number(r.id),
+      ownerId: r.coord_owner_id,
+      realCalls: Number(r.real_calls ?? 0),
+      msSinceLastSignal: r.ms_since_last_signal == null ? null : Number(r.ms_since_last_signal),
+      hasPresence: Boolean(r.has_presence),
+    }));
+  } catch (e) {
+    // ⚠ THROW, never `return []`. An empty list means "nothing registered", which
+    // this verifier reads as agentStarted:FALSE — so swallowing a DB fault here
+    // would report a perfectly healthy launch as dead, on the strength of an error
+    // in our own probe. That is the same manufacture-a-failure defect the whole
+    // check exists to prevent. The caller turns a throw into `null` (unverified),
+    // which is the only honest verdict when the instrument is broken.
+    throw new Error(`fresh-launch probe failed: ${(e as Error)?.message ?? e}`);
   }
 }
 

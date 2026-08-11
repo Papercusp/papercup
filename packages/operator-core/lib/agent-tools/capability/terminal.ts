@@ -36,7 +36,12 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { buildConsoleEnvelope } from '../../console-launcher';
 import { spawnConsole } from '../../console-spawn';
-import { injectAccountArg, injectFleetArg, injectLaunchedByArg } from '../../agent-launch-core';
+import {
+  classifyAgentLaunchCommand,
+  injectAccountArg,
+  injectFleetArg,
+  injectLaunchedByArg,
+} from '../../agent-launch-core';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { fleetSlugFromName, getFleetScheme } from '../../agent-fleets-store';
 import { fetchPresenceFleet } from '../coordination/presence-fleet';
@@ -212,6 +217,37 @@ export default defineTool({
       desktopEnvResolvedVia: 'operator-env' | 'active-seat' | 'socket-scan' | 'caller-override' | null;
     }> = [];
     const failed: Array<{ command: string; error: string; code: number }> = [];
+
+    // ── P-004: WRONG-DOOR guard ──────────────────────────────────────────────
+    //
+    // Refuse BEFORE any window opens (not per-item inside the spawn fan-out), so a
+    // mixed batch never leaves half its terminals up. This door hardcodes
+    // preferProcessPerWindow:true → xterm, skips the backend preflight (P-002) and
+    // the agent-started verification (P-003); an agent launched through it is
+    // unsupervised and lands in the wrong emulator. That is how the owner's two
+    // omp launches failed.
+    const misrouted = items
+      .map((item, i) => ({ i, item, cls: classifyAgentLaunchCommand(item.command) }))
+      .filter((x) => x.cls.isAgentLaunch);
+    if (misrouted.length > 0) {
+      const first = misrouted[0];
+      return err(
+        `Wrong door: that is an agent launch, not a command.\n\n` +
+          `  ${first.item.command}\n\n` +
+          `capability:terminal is the arbitrary-COMMAND door. It forces a process-per-window ` +
+          `emulator (xterm) rather than your normal one, and it does NOT preflight the backend ` +
+          `CLI or verify the agent actually started — so a launch through here can report success ` +
+          `with a dead window, which is exactly the failure WI-37920 documents.\n\n` +
+          `Use capability:launch-agent instead:\n` +
+          (first.cls.mode === 'resume'
+            ? `  capability:launch-agent { resume: { agentId: '<agent>' }, brief: '<their next turn>' }\n`
+            : `  capability:launch-agent { brief: '<the agent's first turn>', agent: '<claude|codex|omp>' }\n`) +
+          `For N agents on a plan, fleet:launch-on-plan { name, plan, count }.\n\n` +
+          (misrouted.length > 1 ? `(${misrouted.length} of ${items.length} commands are agent launches.)\n` : '') +
+          `Genuinely need a non-launch \`psu\` invocation here (\`psu --help\`, \`psu --version\`)? ` +
+          `Those are not refused — only an actual agent launch is.`,
+      );
+    }
 
     let fleetInjected = false;
     let launchedByInjected = false;

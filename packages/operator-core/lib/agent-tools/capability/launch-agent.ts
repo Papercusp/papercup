@@ -52,10 +52,14 @@ import {
   memberSpecSchema,
   recordAgentLaunchResult,
   resolveResumeTarget,
+  verifyFreshLaunchStarted,
   verifyResumeStarted,
   type FleetMemberDefaults,
+  type FreshLaunchVerdict,
   type MemberSpec,
 } from '../../agent-launch-core';
+// WI-37920 / P-002: check the backend in the env the WINDOW gets, not ours.
+import { preflightBackendLaunch } from '../../backend-bin-resolve.mjs';
 import { describeSessionEndTime } from '../../adv-sessions';
 import type { ColorScheme } from '../../console-color-schemes';
 
@@ -389,6 +393,29 @@ export default defineTool({
         : flatBase;
       return foldMemberSpec(withRole, memberSpecs[i]);
     });
+    // ── P-002: preflight the backend in the env the WINDOW will receive ───────
+    //
+    // Not the operator's env — that is the whole trap. A probe run from here
+    // (process.env.PATH, a `which`, a capability:bash call) inherits the
+    // OPERATOR's environment, which is precisely the environment that does NOT
+    // have the defect; it reports green while the window dies. preflightBackendLaunch
+    // searches ONLY the dirs we inject, so a pass means the window works no matter
+    // what PATH it inherits, and a fail aborts HERE with a diagnosis instead of
+    // opening a doomed terminal that reports "Launched".
+    //
+    // Fresh launches only: a resume/fork runs under the CLI its session was
+    // recorded on, which this call does not choose.
+    if (!isResume) {
+      const preflighted = new Set<string>();
+      for (const folded of foldedConfigs) {
+        const agentName = folded.agent ?? 'claude';
+        if (preflighted.has(agentName)) continue;
+        preflighted.add(agentName);
+        const pre = preflightBackendLaunch(agentName, base.env);
+        if (!pre.ok) return err(pre.diagnosis);
+      }
+    }
+
     const memberCommands: string[] = [];
     for (let i = 0; i < count; i++) {
       const folded = foldedConfigs[i];
@@ -464,6 +491,9 @@ export default defineTool({
     // gnome-terminal exit-2 the docs-agent hit). psu reads it for BOTH paths — the fresh
     // CLI positional prompt, and the pty-injected first turn of a resume/fork. A member's
     // own `brief` overrides the shared one for that agent's first turn.
+    // P-003: the correlation floor for verifyFreshLaunchStarted — only sessions
+    // that registered AFTER this instant can belong to this call.
+    const spawnStartedAt = Date.now();
     const results = await Promise.all(
       memberCommands.map((cmd, i) => {
         const memberBrief = (memberSpecs[i]?.brief?.trim() || args.brief) ?? undefined;
@@ -514,6 +544,35 @@ export default defineTool({
             `archived off-disk, or \`claude --resume\` found nothing and the terminal exited). Do NOT assume it is running: ` +
             `check the terminal window; if it exited, rematerialize the archived transcript ` +
             `(POST /api/adv/sessions/rematerialize) or relaunch FRESH with a context-seeded brief.`,
+        );
+      }
+    }
+
+    // ── P-003: kill the false "Launched" for a FRESH launch ──────────────────
+    //
+    // A clean spawn is not proof an agent is running — the 4th recurrence of this
+    // class (EI-11543, WI-4752, EI-18696184925888288, and the measured acceptance
+    // case adv_session 14842, which registered a row, fired its two launch
+    // statusline calls, and then did nothing for the hour until the reaper closed
+    // it, while the tool had already reported success).
+    //
+    // The verdict is THREE-state (D-004) and that is load-bearing: first real turn
+    // is p50 ~31s, so a boolean at this timeout would report most HEALTHY launches
+    // as failures. `null` says "still booting" honestly; only observed SILENCE is
+    // reported as a failure, and only that sets isError.
+    let freshVerdict: FreshLaunchVerdict | null = null;
+    if (!isResume && callerOwnerId && opened.length > 0) {
+      try {
+        freshVerdict = await verifyFreshLaunchStarted(
+          { workspaceId, launcherOwnerId: callerOwnerId, since: spawnStartedAt, expected: opened.length },
+        );
+        notes.push(freshVerdict.note);
+      } catch (e) {
+        // The instrument broke. Say THAT — never let a probe fault masquerade as
+        // a launch failure (or, worse, as success).
+        notes.push(
+          `⏳ launch verification could not run (${(e as Error)?.message ?? e}) — the agents may be ` +
+            `fine; this says nothing either way. Confirm with coord:presence.`,
         );
       }
     }
@@ -573,12 +632,19 @@ export default defineTool({
         mode: isResume ? (fork ? 'fork' : 'resume') : 'fresh',
         resumedOwnerId: resumeOwnerId,
         ...(resumeVerifyFailed ? { resumeVerified: false } : {}),
+        ...(freshVerdict ? { agentStarted: freshVerdict.agentStarted } : {}),
       },
     });
 
     return {
       content: [{ type: 'text' as const, text: lines.join('\n') }],
-      ...(opened.length === 0 || resumeVerifyFailed ? { isError: true as const } : {}),
+      // Only an OBSERVED failure is an error. `agentStarted === null` (unverified —
+      // still booting) must NOT set isError: most healthy launches land there
+      // inside this window (D-004), and flagging them would make the tool cry wolf
+      // on its own success path.
+      ...(opened.length === 0 || resumeVerifyFailed || freshVerdict?.agentStarted === false
+        ? { isError: true as const }
+        : {}),
     };
   },
 });
