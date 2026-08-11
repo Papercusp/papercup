@@ -1375,8 +1375,15 @@ async function completeOne(
   // "just closed" reliably means "likely holds nothing else right now". False positives
   // (the rare member juggling >1 claim) cost nothing — scheduler:get_next is a cheap,
   // idempotent no-op when the caller already holds enough work.
+  // The same resolved membership drives BOTH the caller nudge and the intrinsic
+  // completion emit's fleet-leader audience. Keeping one value on the result means
+  // the pure emits renderer never has to re-derive mutable coordination state, and
+  // a successful completion becomes the fleet report instead of requiring a second
+  // hand-authored coord:send (EI-20194762143976862).
+  const completionFleetSlug =
+    closeLanded && !stateError && !finishFailed ? deriveFleetMembership().fleetSlug : null;
   const fleetRepullNudge =
-    closeLanded && !stateError && !finishFailed && deriveFleetMembership().fleetSlug != null
+    completionFleetSlug != null
       ? `${it.id} is CLOSED. If you hold no other claim right now, do NOT settle — call scheduler:get_next immediately to pull the next unit before ending this turn (EI-19312103118112942: completing is the midpoint of a wake, not the end).`
       : undefined;
 
@@ -1449,6 +1456,7 @@ async function completeOne(
     ...(stampedAuthority
       ? { completionAuthority: stampedAuthority, countsTowardBurnDown: countsTowardBurnDown(stampedAuthority, true) }
       : {}),
+    ...(completionFleetSlug ? { fleetSlug: completionFleetSlug } : {}),
     ...(duplicateOfWarning ? { duplicateOfWarning } : {}),
     ...(fleetRepullNudge ? { fleetRepullNudge } : {}),
     workItem,
@@ -1463,11 +1471,11 @@ export default defineTool({
   name: 'work_items:complete',
   profile: 'engineer',
   description:
-    "Finish one or many work-items with structured completion evidence (whatLanded/migrations/tests/deferred); the system renders and broadcasts it. A terminal top-level `state` converges item, plan-item, claim, and checkpoint. Terminal closes require `assumptions`: pass `\"none\"` or an array of `facts:assert` keys. Omitting `state` records but does not close; check `finish.complete`/`stateWarning`.",
+    "Complete one or many work-items with structured evidence; the system renders and broadcasts it. Pass terminal `state` plus `assumptions` (`\"none\"` or facts:assert keys) to converge item, plan-item, claim, and checkpoint; without `state`, it only records. Check `finish.complete`/`stateWarning`.",
   guidance: {
-    when: 'After verified work, pass `completion`, terminal `state`, and `assumptions` (`\"none\"` or `facts:assert` keys). `verifiedHow` is an enum; evidence prose belongs in `testsRun`/`testResult`. Universal claims need enumerated `coverage`. Live-UI closes require a real cited artifact. Set `completion.duplicateOf` for duplicates.',
-    notWhen: 'Use coord:send for contextual notes, or work_items:set_state to change state without completion evidence; do not send a separate completion summary.',
-    chaining: 'work_items:claim → work_items:complete { id, state, assumptions, completion }; success with `finish.complete:true` confirms state/plan/claim/checkpoint convergence and emits to coord.',
+    when: 'After verification, pass `completion`, terminal `state`, and `assumptions` (`\"none\"` or fact keys). Use enum `verifiedHow`; put evidence in `testsRun`/`testResult`. Universal claims need `coverage`; live-UI closes need a cited artifact. Set `completion.duplicateOf` for duplicates.',
+    notWhen: 'Use coord:send for notes or work_items:set_state without completion evidence; do not send a separate summary.',
+    chaining: 'work_items:claim → work_items:complete { id, state, assumptions, completion }; `finish.complete:true` confirms convergence and emits to coord.',
     seeAlso: [
       'work_items:set_state (change state without recording a completion)',
       'coord:send (a note/question that is not a completion)',
@@ -1509,12 +1517,17 @@ export default defineTool({
         const data = e.result.data as {
           completion: CompletionRecord;
           workItem?: { family?: 'feature' | 'issue'; harness?: string | null; id?: string };
+          fleetSlug?: string | null;
         };
         const rec = data.completion;
         const { summary, body } = renderCompletion(rec);
-        // Scope to watchers (coord-emit-subscription-scoping-2026-06-05): peers on
-        // the completed item's plan + the item's own object subscribers.
+        // Scope to watchers (coord-emit-subscription-scoping-2026-06-05): the
+        // completing member's CURRENT fleet leader, peers on the completed item's
+        // plan, and the item's own object subscribers. The leader selector is the
+        // missing member-reporting seam: work_items:complete already renders the
+        // whole structured record, so a second manual coord:send is duplication.
         const to: string[] = [];
+        if (data.fleetSlug) to.push(`@fleet-leader:${data.fleetSlug}`);
         if (rec.planSlug) to.push(`@plan:${rec.planSlug}`);
         const wi = data.workItem;
         if (wi?.family && wi.id) {

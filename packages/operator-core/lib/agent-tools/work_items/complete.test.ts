@@ -72,12 +72,19 @@ import complete, {
   isVerificationWorkItem,
 } from './complete';
 import { coerceCompletionShape, gatherFlatCompletion } from './completion-coerce';
+import { BUDGET, promptWeight } from '../tool-guidance-budget';
 
 const ctx = { uiClientId: 'su-tester', isSuperuser: true, workspaceId: 'default' } as never;
 
 describe('work_items:complete — ambient workspace transaction safety (EI-20194230704550984)', () => {
   it('opts out because completion owns its workspace-scoped ledger operations', () => {
     expect((complete as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+});
+
+describe('work_items:complete — prompt budget (EI-20189722405308981)', () => {
+  it('stays within the shared guidance budget', () => {
+    expect(promptWeight(complete as Parameters<typeof promptWeight>[0])).toBeLessThanOrEqual(BUDGET);
   });
 });
 
@@ -551,6 +558,7 @@ describe('work_items:complete (keyed-array)', () => {
       setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...issue, state: 'resolved' }));
       const r = await one({ id: 'WI-1', state: 'resolved', completion: { summary: 'done', tests: '5 green' } });
       expect(r.ok).toBe(true);
+      expect(r.fleetSlug).toBe('nonp2p-bug-drain-0801');
       expect(r.fleetRepullNudge).toMatch(/scheduler:get_next/);
       expect(r.fleetRepullNudge).toMatch(/WI-1/);
     });
@@ -562,6 +570,7 @@ describe('work_items:complete (keyed-array)', () => {
       setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...issue, state: 'resolved' }));
       const r = await one({ id: 'WI-1', state: 'resolved', completion: { summary: 'done', tests: '5 green' } });
       expect(r.ok).toBe(true);
+      expect(r.fleetSlug).toBeUndefined();
       expect(r.fleetRepullNudge).toBeUndefined();
     });
 
@@ -578,6 +587,7 @@ describe('work_items:complete (keyed-array)', () => {
       setWorkItemStateWithAliasInfo.mockRejectedValue(new Error('held by a peer'));
       const r = await one({ id: 'WI-1', state: 'resolved', completion: { summary: 'done', tests: '5 green' } });
       expect(r.ok).toBe(false);
+      expect(r.fleetSlug).toBeUndefined();
       expect(r.fleetRepullNudge).toBeUndefined();
     });
   });
