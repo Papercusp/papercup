@@ -72,6 +72,48 @@ export function deriveSpecDeltaWarnings(reading: ClaimSpecDeltaReading): string[
   return warnings;
 }
 
+/**
+ * Render the human-facing summary from the exact count fields, while refusing to turn an
+ * internally inconsistent reading into a reassuring "NO CHANGE". The row lists are deliberately
+ * capped, so a short list is expected when its side is marked truncated; an uncapped list whose
+ * length disagrees with its exact count is an enumeration failure and must be named as such.
+ */
+export function deriveSpecDeltaNote(reading: ClaimSpecDeltaReading): string {
+  const net = reading.proposedClaimable - reading.currentClaimable;
+  const countFieldsAgree =
+    reading.currentClaimable === reading.retained + reading.newlyExcludedCount &&
+    reading.proposedClaimable === reading.retained + reading.newlyAdmittedCount &&
+    net === reading.newlyAdmittedCount - reading.newlyExcludedCount;
+  const rowListsAgree =
+    (reading.truncated.newlyExcluded || reading.newlyExcluded.length === reading.newlyExcludedCount) &&
+    (reading.truncated.newlyAdmitted || reading.newlyAdmitted.length === reading.newlyAdmittedCount);
+  const signedNet = net > 0 ? `+${net}` : String(net);
+
+  let summary: string;
+  if (!countFieldsAgree || !rowListsAgree) {
+    summary =
+      `INCONSISTENT DELTA: exact counts report ${reading.currentClaimable} → ${reading.proposedClaimable} ` +
+      `claimable (net ${signedNet}), ${reading.newlyExcludedCount} item(s) DROPPED and ` +
+      `${reading.newlyAdmittedCount} PICKED UP, but the row lists enumerate ${reading.newlyExcluded.length} ` +
+      `dropped and ${reading.newlyAdmitted.length} picked-up item(s)` +
+      (reading.truncated.newlyExcluded || reading.truncated.newlyAdmitted ? ' (one or both lists are truncated)' : '') +
+      '. Treat this reading as a change, not a no-op; the changed item(s) could not be fully enumerated. ';
+  } else if (net === 0 && reading.newlyExcludedCount === 0 && reading.newlyAdmittedCount === 0) {
+    summary = 'NO CHANGE: the proposed spec admits exactly the same items as the current one. ';
+  } else {
+    summary =
+      `${reading.newlyExcludedCount} item(s) would be DROPPED, ${reading.newlyAdmittedCount} PICKED UP ` +
+      `(net ${signedNet}). `;
+  }
+
+  return (
+    summary +
+    'Counts are exact; the row lists are capped by `limit` (see `truncated`). Both sides were read ' +
+    'in ONE snapshot, so nothing here is an artifact of a peer claiming mid-read. READ-ONLY — write ' +
+    'it with scheduler:set_claim_spec.'
+  );
+}
+
 export default defineTool({
   name: 'scheduler:preview_spec_delta',
   profile: 'engineer',
@@ -174,7 +216,6 @@ export default defineTool({
     );
 
     const net = reading.proposedClaimable - reading.currentClaimable;
-    const unchanged = reading.newlyExcludedCount === 0 && reading.newlyAdmittedCount === 0;
     const warnings = deriveSpecDeltaWarnings(reading);
 
     return {
@@ -204,13 +245,7 @@ export default defineTool({
         newlyAdmitted: reading.newlyAdmitted,
         truncated: reading.truncated,
         ...(warnings.length > 0 ? { warnings } : {}),
-        note:
-          (unchanged
-            ? 'NO CHANGE: the proposed spec admits exactly the same items as the current one. '
-            : `${reading.newlyExcludedCount} item(s) would be DROPPED, ${reading.newlyAdmittedCount} PICKED UP. `) +
-          'Counts are exact; the row lists are capped by `limit` (see `truncated`). Both sides were read ' +
-          'in ONE snapshot, so nothing here is an artifact of a peer claiming mid-read. READ-ONLY — write ' +
-          'it with scheduler:set_claim_spec.',
+        note: deriveSpecDeltaNote(reading),
       },
     };
   },

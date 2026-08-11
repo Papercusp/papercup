@@ -25,8 +25,13 @@
  * Run: cd packages/operator-core && npx vitest run lib/scheduler/claim-spec-delta.test.ts
  */
 import { describe, expect, it } from 'vitest';
-import { readClaimSpecDelta, projectDeltaRow, type ClaimSpecDeltaSqlRow } from './get-next';
-import { deriveSpecDeltaWarnings } from '../agent-tools/scheduler/preview_spec_delta';
+import {
+  readClaimSpecDelta,
+  projectDeltaRow,
+  type ClaimSpecDeltaReading,
+  type ClaimSpecDeltaSqlRow,
+} from './get-next';
+import { deriveSpecDeltaNote, deriveSpecDeltaWarnings } from '../agent-tools/scheduler/preview_spec_delta';
 import { DEFAULT_CLAIM_SPEC } from './claim-spec';
 
 type Log = string[];
@@ -291,5 +296,31 @@ describe('deriveSpecDeltaWarnings — the judgments a leader must not miss', () 
       }),
     );
     expect(w.join(' ')).not.toMatch(/never 'todo'/);
+  });
+});
+
+describe('deriveSpecDeltaNote — never hide a count/list contradiction', () => {
+  const baseReading = (): ClaimSpecDeltaReading => ({
+    currentClaimable: 1,
+    proposedClaimable: 1,
+    retained: 1,
+    newlyExcludedCount: 0,
+    newlyAdmittedCount: 0,
+    newlyExcluded: [],
+    newlyAdmitted: [],
+    truncated: { newlyExcluded: false, newlyAdmitted: false },
+  });
+
+  it('does not say NO CHANGE when the exact totals show net +1 but the lists are empty', () => {
+    const note = deriveSpecDeltaNote({ ...baseReading(), proposedClaimable: 2 });
+
+    expect(note).not.toContain('NO CHANGE');
+    expect(note).toContain('INCONSISTENT DELTA');
+    expect(note).toContain('net +1');
+    expect(note).toContain('could not be fully enumerated');
+  });
+
+  it('keeps the no-op wording for a coherent zero delta', () => {
+    expect(deriveSpecDeltaNote(baseReading())).toContain('NO CHANGE');
   });
 });
