@@ -6,7 +6,7 @@ import {
   DEFAULT_REVISION_MODEL,
   type ScoutReviseDeps,
 } from './revise';
-import type { QueenFeedbackItem } from './scheduler';
+import type { ScoutRevisionRequest } from './scheduler';
 import { withPlanLock as realWithPlanLock } from '../agent-tools/plans/with-plan-lock';
 
 /** A fake withPlanLock over an in-memory plan store (no PG). */
@@ -28,7 +28,7 @@ function fakePlanStore(initial: Record<string, string | null>) {
 const planBody = (slug: string, marker = 'original') =>
   `---\ntitle: A draft\nslug: ${slug}\nstatus: draft\norigin: scout\ncreated: 2026-06-20\nupdated: 2026-06-20\n---\n\n# A draft\n\n## Now\n\n**State:** ${marker}\n\n## Background\n\nx\n\n## Decisions\n`;
 
-const fb = (planSlug: string, body = 'tighten the Now block'): QueenFeedbackItem => ({
+const fb = (planSlug: string, body = 'tighten the Now block'): ScoutRevisionRequest => ({
   planSlug,
   body,
   fromOwnerId: 'queen-owner-1',

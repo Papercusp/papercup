@@ -250,7 +250,7 @@ async function withArchiveResolveTimeout<T>(promise: Promise<T>, timeoutMs: numb
  * creator + the per-cycle archive, runs one budgeted cycle, then flushes any
  * buffered scout seeds to the archive (P-012).
  */
-export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, workspaceId, budget, cycleId, scoutConfig, queenFeedback, signal, deadlineMs, onPhase }) => {
+export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, workspaceId, budget, cycleId, scoutConfig, revisionRequests, signal, deadlineMs, onPhase }) => {
   onPhase?.('runner-bootstrap');
   // FB-16 PARITY (the gym's `gym-cycle-inprocess-llm-bypasses-gateway` insight, applied to
   // Scout): Scout's IN-PROCESS ideator/critic/recombine llmCalls are anthropic-direct and
@@ -376,14 +376,14 @@ export const productionScoutRunner: ScoutCycleRunner = async ({ harnessSlug, wor
     },
   };
 
-  // P-001: a queen-feedback tick runs a TARGETED revision of the Queen's draft(s)
+  // A revision-request tick runs a TARGETED revision of the reviewer's draft(s)
   // — NOT a fresh ideation cycle (which would route NEW plans, starving the loop).
   // Same gateway-routed llmCall (FB-16 parity above applies). Pings the Queen back
   // per draft so she re-reviews (D-001 step 3). Returns a cycle-shaped result the
   // scheduler ledgers + acks (the scheduler only acks on a non-throwing return).
-  if (queenFeedback && queenFeedback.length > 0) {
+  if (revisionRequests && revisionRequests.length > 0) {
     onPhase?.('ideate');
-    const result = await runScoutRevisionCycle(queenFeedback, {
+    const result = await runScoutRevisionCycle(revisionRequests, {
       llmCall,
       planWorkspaceId: DEFAULT_WORKSPACE_ID,
       harnessSlug,

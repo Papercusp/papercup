@@ -3,9 +3,9 @@
  * ({@link shouldRunScoutCycle}) consumes — idle capacity + accumulated friction.
  *
  * These are the production sources behind {@link ScoutCadenceState}:
- *  - **idle capacity** — derived from the running fleet vs a configured capacity:
- *    idleRatio = clamp(1 - running/capacity, 0, 1). Mirrors the fleet spawn
- *    governor's running-count query (fleet/operator-spawn countRunning).
+ *  - **idle capacity** — derived from fresh su/fleet coordination presence vs a
+ *    configured capacity: idleRatio = clamp(1 - live/capacity, 0, 1). Retired
+ *    nursery `spawned_agents` rows are deliberately not an input.
  *  - **friction** — the OPEN idea-queue backlog (the self-improvement loop's
  *    captured-but-unaddressed items). A growing backlog IS the colony's
  *    accumulated friction (the plan's "what keeps being deferred"); reusing
@@ -15,9 +15,9 @@
  * ratio) takes injected deps so it's unit-tested without PG.
  */
 
-import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from '../workspace-registry';
 import { readImprovementItems } from '../harness/improvements/read-items';
+import { listPresence, PRESENCE_STALE_MS } from '../agent-tools/coordination/presence';
 
 /** Default fleet capacity for the idle ratio (override: PAPERCUSP_SCOUT_FLEET_CAPACITY). */
 export function scoutFleetCapacity(): number {
@@ -25,32 +25,58 @@ export function scoutFleetCapacity(): number {
   return Number.isFinite(n) && n > 0 ? n : 12;
 }
 
-/** Count currently-running fleet agents (running|restarting) for the workspace. */
-export async function countRunningAgents(workspaceId: string): Promise<number> {
-  const { sql } = getOrgPg();
-  const rows = await sql<{ n: string }[]>`
-    SELECT count(*)::text AS n FROM harness_shared.spawned_agents
-     WHERE workspace_id = ${workspaceId} AND status IN ('running', 'restarting')`;
-  return Number(rows[0]?.n ?? 0);
+export interface LivePresenceRow {
+  ownerId: string;
+  heartbeatAt: string;
+}
+
+export interface LiveAgentCountDeps {
+  listPresence: (opts: { workspaceId: string }) => Promise<LivePresenceRow[]>;
+  now: () => number;
+  staleMs: number;
+}
+
+const defaultLiveAgentCountDeps: LiveAgentCountDeps = {
+  listPresence,
+  now: Date.now,
+  staleMs: PRESENCE_STALE_MS,
+};
+
+/**
+ * Count distinct live su/fleet members from the coordination roster. A row is
+ * live only while its heartbeat is inside the canonical presence window; stale,
+ * invalid, and duplicate rows do not consume creative capacity.
+ */
+export async function countLiveAgents(
+  workspaceId: string,
+  deps: LiveAgentCountDeps = defaultLiveAgentCountDeps,
+): Promise<number> {
+  const now = deps.now();
+  const live = new Set<string>();
+  for (const row of await deps.listPresence({ workspaceId })) {
+    const heartbeatMs = new Date(row.heartbeatAt).getTime();
+    if (Number.isFinite(heartbeatMs) && now - heartbeatMs < deps.staleMs) live.add(row.ownerId);
+  }
+  return live.size;
 }
 
 export interface IdleRatioDeps {
-  countRunning: (workspaceId: string) => Promise<number>;
+  countLive: (workspaceId: string) => Promise<number>;
 }
 
 /**
  * Fleet idle ratio in [0,1]: 1 = fully idle (no agents running), 0 = at/over the
- * configured capacity. Pure math over the injected running-count (production uses
- * {@link countRunningAgents}).
+ * configured capacity. Pure math over the injected live-agent count (production
+ * uses {@link countLiveAgents}).
  */
 export async function readHiveIdleRatio(
   opts: { workspaceId?: string; capacity?: number } = {},
-  deps: IdleRatioDeps = { countRunning: countRunningAgents },
+  deps: IdleRatioDeps = { countLive: countLiveAgents },
 ): Promise<number> {
   const ws = opts.workspaceId ?? activeWorkspaceId();
   const capacity = opts.capacity && opts.capacity > 0 ? opts.capacity : scoutFleetCapacity();
-  const running = await deps.countRunning(ws);
-  return clamp01(1 - running / capacity);
+  const live = await deps.countLive(ws);
+  return clamp01(1 - live / capacity);
 }
 
 export interface FrictionDeps {

@@ -20,14 +20,14 @@
  */
 
 export type ScoutCadenceReason =
-  /** A pending Queen revision request (queen-scout-feedback-loop-2026-06-20,
-   *  D-001/D-003) — fires the cycle OUT-OF-CADENCE, ahead of everything else and
-   *  past the min-interval floor, so the Queen's feedback on a routed draft is
+  /** A pending steward/reviewer revision request — fires the cycle
+   *  OUT-OF-CADENCE, ahead of everything else and past the min-interval floor,
+   *  so feedback on a routed draft is
    *  iterated immediately and PREEMPTS a fresh-ideation cycle (D-003 #4). The
    *  runaway bound is the per-cycle Scout budget + the autoloop fire-gate, NOT
    *  the cadence floor (D-002). Set from the scheduler's cycle-start coord:inbox
-   *  read via {@link ScoutCadenceState.queenWakePending} (P-001/P-002). */
-  | 'queen-feedback'
+   *  read via {@link ScoutCadenceState.revisionRequestPending}. */
+  | 'revision-request'
   /** Accumulated friction crossed the threshold — the colony is stuck, leap now. */
   | 'friction-triggered'
   /** Scout's prior routed ideas are ALL resolved (none pending) — the idea
@@ -44,7 +44,7 @@ export type ScoutCadenceReason =
   | 'min-interval'
   /** Withheld (VOLUME MODE): ZERO new signal since the last cycle — a fresh
    *  cycle would re-digest a byte-identical corpus into dedup declines (the
-   *  stale-repetition churn volume firing exists to kill). Only a Queen
+   *  stale-repetition churn volume firing exists to kill). Only an explicit
    *  revision request bypasses this (explicit external signal). */
   | 'no-signal'
   /** Withheld: no trigger met and the heartbeat ceiling hasn't elapsed. */
@@ -88,14 +88,14 @@ export interface ScoutCadenceState {
   routedIdeaTotal?: number;
   pendingIdeaCount?: number;
   /**
-   * A Queen revision request is waiting for this Scout (the scheduler read one at
+   * A steward/reviewer revision request is waiting for this Scout (the scheduler read one at
    * cycle-start from coord:inbox addressed to `scout:<hive>` — P-001). When true the
-   * gate fires `queen-feedback` immediately, ahead of every other trigger AND past
+   * gate fires `revision-request` immediately, ahead of every other trigger AND past
    * the min-interval floor (out-of-cadence), so a routed-draft revision iterates
    * now and preempts fresh ideation (queen-scout-feedback-loop D-001/D-003 #4).
    * Optional (pure-gate default false) — omit when there is no feedback channel.
    */
-  queenWakePending?: boolean;
+  revisionRequestPending?: boolean;
   /**
    * The autoloop fire-clock (`autoloop_state.last_fired_at`, epoch ms) the
    * scheduler's single-flight CAS claims against (EI-304). DECOUPLED from
@@ -113,7 +113,7 @@ export interface ScoutCadenceState {
    * {@link weightedSignalScore} over the signal-accumulator's per-lane counts
    * (scout/signal-accumulator.ts). Supplying a finite number switches the gate
    * to volume-based firing: score ≥ {@link ScoutCadenceOptions.signalScoreThreshold}
-   * fires `signal-volume`; score ≤ 0 withholds EVERYTHING except a Queen
+   * fires `signal-volume`; score ≤ 0 withholds EVERYTHING except an explicit
    * revision request (`no-signal` — a stale corpus never fires); the normal
    * floor drops to {@link ScoutCadenceOptions.minVolumeIntervalSec} (burst
    * coalescing). Omit (the pure-gate default, the SCOUT_VOLUME_CADENCE kill
@@ -200,22 +200,22 @@ export function shouldRunScoutCycle(
     state.lastRunAtMs == null ? Number.POSITIVE_INFINITY : (state.nowMs - state.lastRunAtMs) / 1000;
   const frictionTriggered = state.frictionSignals >= frictionThreshold;
 
-  // 0. Queen feedback PREEMPTS everything (queen-scout-feedback-loop D-001/D-003).
-  //    A pending Queen revision request fires the cycle OUT-OF-CADENCE — ahead of
-  //    friction and PAST the min-interval floor — so the Queen's feedback on a
+  // 0. Revision requests PREEMPT everything.
+  //    A pending steward/reviewer request fires the cycle OUT-OF-CADENCE — ahead of
+  //    friction and PAST the min-interval floor — so feedback on a
   //    routed draft is iterated immediately and never waits behind (or is starved
   //    by) fresh ideation (D-003 #4). This is the deliberate floor BYPASS: the
   //    revision loop's runaway bound is the per-cycle Scout budget + the autoloop
   //    fire-gate (D-002), not the cadence interval. Disabled (the pure-gate
-  //    default) when the scheduler supplies no `queenWakePending`.
-  if (state.queenWakePending === true) {
-    return { fire: true, reason: 'queen-feedback' };
+  //    default) when the scheduler supplies no `revisionRequestPending`.
+  if (state.revisionRequestPending === true) {
+    return { fire: true, reason: 'revision-request' };
   }
 
   // 0.5. VOLUME MODE zero-signal veto (WI-4318): the corpus is byte-identical
   //      to the last cycle — friction, drain, idle and heartbeat are ALL
   //      withheld (a cycle over an unchanged corpus only regenerates dedup
-  //      declines). Only the Queen's explicit revision request (above) fires.
+  //      declines). Only an explicit revision request (above) fires.
   if (volumeMode && signalScore <= 0) {
     return { fire: false, reason: 'no-signal' };
   }

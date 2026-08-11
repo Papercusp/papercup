@@ -10,7 +10,7 @@
  * `harness_plans` upsert bumps version + records the revision). The runner then
  * pings the Queen back so she re-reviews (D-001 step 3 / D-003 #1).
  *
- * Why a SEPARATE path (not the normal ideation cycle): a queen-feedback tick must
+ * Why a SEPARATE path (not the normal ideation cycle): a revision-request tick must
  * NOT ideate fresh drafts — that would route NEW plans instead of revising the one
  * the Queen is iterating on (and would starve the loop). The revision is a
  * deterministic plan edit + one focused LLM rewrite, so it lives here, pure over an
@@ -27,7 +27,7 @@ import { withPlanLock as realWithPlanLock } from '../agent-tools/plans/with-plan
 import { SCOUT_FEEDBACK_LOOP_GUIDANCE } from './feedback-loop-prompt';
 import type { ScoutLlmCall } from './types';
 import type { ScoutCycleLike } from './scheduler';
-import type { QueenFeedbackItem } from './scheduler';
+import type { ScoutRevisionRequest } from './scheduler';
 import { DEFAULT_SCOUT_REVISION_MODEL } from './models';
 
 /** Default model for the revision rewrite — the synthesis-tier model the recombine
@@ -144,7 +144,7 @@ export function looksLikePlanMarkdown(md: string, slug: string): boolean {
  * progress returns normally so the scheduler acks the consumed feedback.
  */
 export async function runScoutRevisionCycle(
-  feedback: readonly QueenFeedbackItem[],
+  feedback: readonly ScoutRevisionRequest[],
   deps: ScoutReviseDeps,
 ): Promise<ScoutRevisionResult> {
   const withPlanLock = deps.withPlanLock ?? realWithPlanLock;

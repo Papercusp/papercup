@@ -14,7 +14,7 @@ import {
   type ScoutTickDeps,
   type ScoutCycleLike,
   type ScoutRoutedRecord,
-  type QueenFeedbackItem,
+  type ScoutRevisionRequest,
 } from './scheduler';
 import type { ScoutTickRecord } from './tick-ledger';
 import type { ScoutCadenceState } from './cadence';
@@ -769,20 +769,20 @@ describe('runScoutTick — double-fire / overlapping ticks (scout-loop-test-plan
     expect(typeof deps.claimFire).toBe('function');
   });
 
-  it('production wiring includes the queen-feedback channel (buildScoutTickDeps)', async () => {
+  it('production wiring includes the revision-request channel (buildScoutTickDeps)', async () => {
     const deps = buildScoutTickDeps({
       harnessSlug: 'papercusp',
       runCycle: async () => ({ provenance: [] }),
       readIdleRatio: async () => 1,
       readFrictionSignals: async () => 0,
     });
-    expect(typeof deps.readQueenFeedback).toBe('function');
-    expect(typeof deps.ackQueenFeedback).toBe('function');
+    expect(typeof deps.readRevisionRequests).toBe('function');
+    expect(typeof deps.ackRevisionRequests).toBe('function');
   });
 });
 
-describe('runScoutTick — Queen→Scout feedback (P-001)', () => {
-  const item = (planSlug: string): QueenFeedbackItem => ({
+describe('runScoutTick — steward/reviewer→Scout revision requests', () => {
+  const item = (planSlug: string): ScoutRevisionRequest => ({
     planSlug,
     body: 'tighten the Now block',
     fromOwnerId: 'q-1',
@@ -791,18 +791,18 @@ describe('runScoutTick — Queen→Scout feedback (P-001)', () => {
   });
 
   function depsWithFeedback(opts: {
-    feedback: QueenFeedbackItem[];
+    feedback: ScoutRevisionRequest[];
     idleRatio?: number;
     lastRunAtMs?: number | null;
     runCycle?: ScoutTickDeps['runCycle'];
     readThrows?: boolean;
   }): {
     deps: ScoutTickDeps;
-    seen: { threaded?: QueenFeedbackItem[]; acked: QueenFeedbackItem[][]; cycleRan: boolean };
+    seen: { threaded?: ScoutRevisionRequest[]; acked: ScoutRevisionRequest[][]; cycleRan: boolean };
   } {
     const seen = {
-      threaded: undefined as QueenFeedbackItem[] | undefined,
-      acked: [] as QueenFeedbackItem[][],
+      threaded: undefined as ScoutRevisionRequest[] | undefined,
+      acked: [] as ScoutRevisionRequest[][],
       cycleRan: false,
     };
     const deps: ScoutTickDeps = {
@@ -813,18 +813,18 @@ describe('runScoutTick — Queen→Scout feedback (P-001)', () => {
         lastRunAtMs: 'lastRunAtMs' in opts ? (opts.lastRunAtMs ?? null) : NOW - 60_000,
         nowMs: NOW,
       }),
-      readQueenFeedback: async () => {
+      readRevisionRequests: async () => {
         if (opts.readThrows) throw new Error('coord down');
         return opts.feedback;
       },
-      ackQueenFeedback: async (items) => {
+      ackRevisionRequests: async (items) => {
         seen.acked.push(items);
       },
       runCycle:
         opts.runCycle ??
-        (async ({ queenFeedback }) => {
+        (async ({ revisionRequests }) => {
           seen.cycleRan = true;
-          seen.threaded = queenFeedback;
+          seen.threaded = revisionRequests;
           return { provenance: [], costUsd: 0.2 };
         }),
       persistRouted: async () => {},
@@ -839,7 +839,7 @@ describe('runScoutTick — Queen→Scout feedback (P-001)', () => {
     const { deps, seen } = depsWithFeedback({ feedback: fb, lastRunAtMs: NOW - 60_000 });
     const r = await runScoutTick(deps, { cadence: { minIntervalSec: 3600 } });
     expect(r.fired).toBe(true);
-    expect(r.reason).toBe('queen-feedback');
+    expect(r.reason).toBe('revision-request');
     expect(seen.cycleRan).toBe(true);
     expect(seen.threaded).toEqual(fb);
     expect(seen.acked).toEqual([fb]); // acked exactly once, on success
@@ -863,12 +863,12 @@ describe('runScoutTick — Queen→Scout feedback (P-001)', () => {
     const { deps, seen } = depsWithFeedback({ feedback: [], idleRatio: 1, lastRunAtMs: null });
     const r = await runScoutTick(deps);
     expect(r.fired).toBe(true);
-    expect(r.reason).toBe('idle-capacity'); // NOT queen-feedback
-    expect(seen.threaded).toBeUndefined(); // ctx.queenFeedback not passed when empty
+    expect(r.reason).toBe('idle-capacity'); // NOT revision-request
+    expect(seen.threaded).toBeUndefined(); // ctx.revisionRequests not passed when empty
     expect(seen.acked).toEqual([]);
   });
 
-  it('a throwing readQueenFeedback is swallowed — falls back to normal cadence', async () => {
+  it('a throwing readRevisionRequests is swallowed — falls back to normal cadence', async () => {
     const { deps } = depsWithFeedback({
       feedback: [item('x-2026-06-20')],
       readThrows: true,
@@ -880,7 +880,7 @@ describe('runScoutTick — Queen→Scout feedback (P-001)', () => {
     expect(r.reason).toBe('min-interval');
   });
 
-  it('records queen-feedback in the tick observability row', async () => {
+  it('records revision-request in the tick observability row', async () => {
     const fb = [item('scout-c-2026-06-20')];
     const ticks: import('./tick-ledger').ScoutTickRecord[] = [];
     const { deps } = depsWithFeedback({ feedback: fb });
@@ -889,8 +889,8 @@ describe('runScoutTick — Queen→Scout feedback (P-001)', () => {
     };
     await runScoutTick(deps, { cadence: { minIntervalSec: 3600 } });
     const ran = ticks.find((t) => t.status === 'ran');
-    expect(ran?.detail?.reason).toBe('queen-feedback');
-    expect(ran?.detail?.queenFeedbackCount).toBe(1);
+    expect(ran?.detail?.reason).toBe('revision-request');
+    expect(ran?.detail?.revisionRequestCount).toBe(1);
   });
 });
 

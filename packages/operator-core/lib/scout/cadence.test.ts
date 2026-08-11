@@ -205,30 +205,30 @@ describe('shouldRunScoutCycle — clock edges (scout-loop-test-plan P-005)', () 
   });
 });
 
-describe('queen-feedback bypass (P-002 — queen-scout-feedback-loop)', () => {
-  it('fires queen-feedback out-of-cadence, PAST the min-interval floor', () => {
-    // Just-ran (1m ago) → the normal floor would withhold; queen feedback overrides.
-    const v = shouldRunScoutCycle(state({ queenWakePending: true, lastRunAtMs: minutesAgo(1), idleRatio: 0 }));
-    expect(v).toEqual({ fire: true, reason: 'queen-feedback' });
+describe('revision-request bypass', () => {
+  it('fires revision-request out-of-cadence, PAST the min-interval floor', () => {
+    // Just-ran (1m ago) → the normal floor would withhold; a revision request overrides.
+    const v = shouldRunScoutCycle(state({ revisionRequestPending: true, lastRunAtMs: minutesAgo(1), idleRatio: 0 }));
+    expect(v).toEqual({ fire: true, reason: 'revision-request' });
   });
 
   it('PREEMPTS friction (D-003 #4 — revision before fresh ideation)', () => {
     const v = shouldRunScoutCycle(
-      state({ queenWakePending: true, frictionSignals: 9, idleRatio: 1, lastRunAtMs: minutesAgo(0.1) }),
+      state({ revisionRequestPending: true, frictionSignals: 9, idleRatio: 1, lastRunAtMs: minutesAgo(0.1) }),
     );
-    expect(v).toEqual({ fire: true, reason: 'queen-feedback' });
+    expect(v).toEqual({ fire: true, reason: 'revision-request' });
   });
 
   it('fires even when never run', () => {
-    const v = shouldRunScoutCycle(state({ queenWakePending: true, lastRunAtMs: null }));
-    expect(v).toEqual({ fire: true, reason: 'queen-feedback' });
+    const v = shouldRunScoutCycle(state({ revisionRequestPending: true, lastRunAtMs: null }));
+    expect(v).toEqual({ fire: true, reason: 'revision-request' });
   });
 
-  it('is inert (pure-gate default) when queenWakePending is absent/false — cadence unchanged', () => {
+  it('is inert (pure-gate default) when revisionRequestPending is absent/false — cadence unchanged', () => {
     // Same withholding state as the min-interval test, but without the flag.
     expect(shouldRunScoutCycle(state({ idleRatio: 1, lastRunAtMs: minutesAgo(10) })).reason).toBe('min-interval');
     expect(
-      shouldRunScoutCycle(state({ queenWakePending: false, idleRatio: 1, lastRunAtMs: minutesAgo(10) })).reason,
+      shouldRunScoutCycle(state({ revisionRequestPending: false, idleRatio: 1, lastRunAtMs: minutesAgo(10) })).reason,
     ).toBe('min-interval');
   });
 });
@@ -237,7 +237,7 @@ describe('VOLUME MODE — signalScore supplied (blender-self-learning-2026-07-12
   // In every case below the accumulator score is a finite number, which is the
   // scheduler's "flag ON + accumulator populated" shape.
 
-  it('score 0 withholds EVERYTHING except queen-feedback (a stale corpus never fires)', () => {
+  it('score 0 withholds EVERYTHING except revision-request (a stale corpus never fires)', () => {
     // Idle + past every floor + drained + past heartbeat — all vetoed at score 0.
     const v = shouldRunScoutCycle(
       state({
@@ -252,11 +252,11 @@ describe('VOLUME MODE — signalScore supplied (blender-self-learning-2026-07-12
     expect(v).toEqual({ fire: false, reason: 'no-signal' });
   });
 
-  it('queen-feedback BYPASSES the zero-signal veto (explicit external signal)', () => {
+  it('revision-request BYPASSES the zero-signal veto (explicit external signal)', () => {
     const v = shouldRunScoutCycle(
-      state({ signalScore: 0, queenWakePending: true, lastRunAtMs: minutesAgo(1) }),
+      state({ signalScore: 0, revisionRequestPending: true, lastRunAtMs: minutesAgo(1) }),
     );
-    expect(v).toEqual({ fire: true, reason: 'queen-feedback' });
+    expect(v).toEqual({ fire: true, reason: 'revision-request' });
   });
 
   it('score ≥ threshold fires signal-volume once the volume floor elapses', () => {

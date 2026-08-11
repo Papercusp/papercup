@@ -34,7 +34,7 @@ import {
   type ScoutCycleLike,
   type ScoutTickDeps,
   type ScoutTickResult,
-  type QueenFeedbackItem,
+  type ScoutRevisionRequest,
 } from './scheduler';
 import type { ScoutTickRecord } from './tick-ledger';
 import type { ScoutCyclePhase } from './cycle';
@@ -55,11 +55,11 @@ export type ScoutCycleRunner = (ctx: {
    *  domain-generic-hive-architecture-2026-06-18). Omitted ⇒ the runner uses
    *  DEFAULT_SCOUT_CONFIG (behavior-neutral). */
   scoutConfig?: ScoutConfig;
-  /** Pending Queen→Scout revision requests this tick (queen-scout-feedback-loop P-001).
+  /** Pending steward/reviewer→Scout revision requests this tick.
    *  Present only when the scheduler's cycle-start coord:inbox read found plan-keyed
    *  feedback for `scout:<hive>`; the runner then targets a REVISION of those draft
    *  plans (register-scout-action.ts) instead of fresh ideation. */
-  queenFeedback?: QueenFeedbackItem[];
+  revisionRequests?: ScoutRevisionRequest[];
   signal?: AbortSignal;
   /**
    * WI-4475 — absolute epoch-ms deadline the scheduler will kill this cycle at. `signal` says
@@ -101,14 +101,14 @@ export const productionDepsBuilder: ScoutTickDepsBuilder = (input, runCycle) => 
   return buildScoutTickDeps({
     harnessSlug: input.installSlug,
     workspaceId: input.workspaceId,
-    runCycle: ({ budget, cycleId, queenFeedback, signal, deadlineMs, onPhase }) =>
+    runCycle: ({ budget, cycleId, revisionRequests, signal, deadlineMs, onPhase }) =>
       runCycle({
         harnessSlug: input.installSlug,
         workspaceId: input.workspaceId,
         budget,
         cycleId,
         scoutConfig,
-        ...(queenFeedback ? { queenFeedback } : {}),
+        ...(revisionRequests ? { revisionRequests } : {}),
         ...(signal ? { signal } : {}),
         // WI-4644 recurrence (2026-07-14): this bridge used to drop the absolute
         // deadline that runScoutTick calculated. The production runner therefore

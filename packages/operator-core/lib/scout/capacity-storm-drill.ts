@@ -173,9 +173,9 @@ async function countForeignOriginTicksPg(workspaceId: string, cycleIds: string[]
   return Number(rows[0]?.leaks ?? 0);
 }
 
-/** A cadence state that fires unconditionally (queen-feedback preempts every gate). */
+/** A cadence state that fires unconditionally (revision requests preempt every gate). */
 function firingCadenceState(nowMs: number): ScoutCadenceState {
-  return { idleRatio: 1, frictionSignals: 0, lastRunAtMs: null, nowMs, queenWakePending: true };
+  return { idleRatio: 1, frictionSignals: 0, lastRunAtMs: null, nowMs, revisionRequestPending: true };
 }
 
 /**
