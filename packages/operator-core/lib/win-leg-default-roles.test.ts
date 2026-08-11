@@ -48,6 +48,10 @@ function repoRoot(): string {
 const ROOT = repoRoot();
 const winLeg = readFileSync(join(ROOT, 'papercusp-desktop', 'bin', 'build-windows-cross.sh'), 'utf8');
 const releaseLocal = readFileSync(join(ROOT, 'papercusp-desktop', 'bin', 'release-local.sh'), 'utf8');
+const innoSpanHelper = readFileSync(
+  join(ROOT, 'papercusp-desktop', 'bin', 'lib', 'inno-spanned-server.sh'),
+  'utf8',
+);
 
 describe('WI-5600: the Windows leg builds gui+server by DEFAULT (never a dead gui-only cut)', () => {
   it('build-windows-cross.sh defaults PAPERCUSP_BUILD_ROLES to include server (not gui-only)', () => {
@@ -91,24 +95,30 @@ describe('WI-5600: the spanned Windows Server is normalized to a single publisha
   // must zip the span into ONE download the release page can offer. Without this,
   // every default Windows cut re-hides the Server from the page (the WI-5600
   // symptom) even though the by-default build now produces it.
-  it('release-local.sh zips the spanned Server set (stub + *.bin slices) into a -setup.zip', () => {
-    // stores (no compression: -0) the stub + its slices into one archive.
-    expect(releaseLocal).toMatch(/zip -0 -j[^\n]*_win_srv_zip[\s\S]{0,120}_win_srv_stub[\s\S]{0,120}_win_srv_slices/);
-    // detection is structural: a Server stub WITH sibling -setup-N.bin disks.
-    expect(releaseLocal).toMatch(/_win_srv_slices=\(\s*"\$_win_srv_base"-\*\.bin\s*\)/);
-    expect(releaseLocal).toMatch(/\$\{#_win_srv_slices\[@\]\} > 0/);
+  it('release-local.sh delegates spanned Server normalization to the shared helper', () => {
+    expect(releaseLocal).toContain('source "$HERE/lib/inno-spanned-server.sh"');
+    expect(releaseLocal).toContain('papercusp_normalize_spanned_server "$_win_inno_dir" "$VERSION"');
+    // The shared implementation stores (no compression: -0) the stub + slices.
+    expect(innoSpanHelper).toMatch(
+      /zip -0 -j\s+"\$PAPERCUSP_SPANNED_SERVER_ZIP"[\s\S]{0,160}"\$PAPERCUSP_SPANNED_SERVER_STUB"[\s\S]{0,160}"\$\{PAPERCUSP_SPANNED_SERVER_SLICES\[@\]\}"/,
+    );
+    // Detection remains structural: a Server stub WITH sibling -setup-N.bin disks.
+    expect(innoSpanHelper).toMatch(/PAPERCUSP_SPANNED_SERVER_SLICES=\(\s*"\$base"-\*\.bin\s*\)/);
+    expect(innoSpanHelper).toMatch(/\(\( \$\{#PAPERCUSP_SPANNED_SERVER_SLICES\[@\]\} > 0 \)\)/);
   });
 
   it('swaps the raw stub+slices OUT of ARTIFACTS and the single zip IN', () => {
     // The published set is the one zip, not the ~5 GB of raw disks the page can't use.
-    expect(releaseLocal).toMatch(/ARTIFACTS=\(\s*"\$\{_win_kept\[@\]\}"\s*"\$_win_srv_zip"\s*\)/);
+    expect(releaseLocal).toMatch(
+      /ARTIFACTS=\(\s*"\$\{_win_kept\[@\]\}"\s*"\$PAPERCUSP_SPANNED_SERVER_ZIP"\s*\)/,
+    );
   });
 
   it('is fall-back-safe: a zip failure leaves the raw artifacts (no cut regression)', () => {
     // Guarded on `command -v zip` and the zip exit + a non-empty result; the else
     // branch warns and leaves ARTIFACTS untouched, so a missing/failed zip degrades
     // to today's behavior (record-release skips the stub) rather than failing the cut.
-    expect(releaseLocal).toMatch(/command -v zip/);
+    expect(innoSpanHelper).toMatch(/command -v zip/);
     expect(releaseLocal).toMatch(/could not zip the spanned Server set/);
   });
 });

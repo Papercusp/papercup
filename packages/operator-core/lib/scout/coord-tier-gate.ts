@@ -117,7 +117,6 @@ export const MIN_TIER_EXEMPTION_REASON = 24;
 export const UNTIERED_BASELINE: ReadonlySet<string> = new Set([
   'coord:ack',
   'coord:ask',
-  'coord:ask-owner',
   'coord:await-inbox',
   'coord:conditions',
   'coord:deliberate',
