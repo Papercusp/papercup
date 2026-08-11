@@ -531,31 +531,95 @@ export interface ListRubricsFilter {
   status?: RubricStatus;
   characteristic?: string;
   limit?: number;
+  /**
+   * Kind scope (acceptance-rubrics-on-every-plan-2026-08-11). DEFAULT 'standard': the
+   * library reads (and everything downstream of them — the learning surfaces, the
+   * ratification queue, the staleness watchdog) see only reusable standards. Pass
+   * 'acceptance' or 'any' to opt into per-plan acceptance rubrics explicitly.
+   */
+  kind?: RubricKindFilter;
 }
 
 /** List rubrics (active first, then proposed, then retired), optionally filtered by
- *  status / characteristic. Reads rubric-template plans (P-006/P-007). */
+ *  status / characteristic. Reads rubric-template plans (P-006/P-007). Standard-kind
+ *  only unless `kind` opts in (see ListRubricsFilter.kind). */
 export async function listRubrics(filter: ListRubricsFilter = {}): Promise<Rubric[]> {
-  let rubrics = await loadAllRubrics();
+  let rubrics = await loadAllRubrics(filter.kind ?? 'standard');
   if (filter.status) rubrics = rubrics.filter((r) => r.status === filter.status);
   if (filter.characteristic) rubrics = rubrics.filter((r) => r.characteristic === filter.characteristic);
   return sortRubrics(rubrics).slice(0, Math.min(filter.limit ?? 100, 500));
 }
 
-/** Fetch one rubric in full by its slug id. Returns null when no rubric carries that id. */
+/** Fetch one rubric in full by its slug id — ANY kind: an explicit id is an explicit
+ *  opt-in, so the shared grading path resolves acceptance rubrics through the same seam
+ *  standards use (plan D-010). Returns null when no rubric carries that id. */
 export async function getRubric(rubricId: string): Promise<Rubric | null> {
-  return (await loadAllRubrics()).find((r) => r.rubricId === rubricId) ?? null;
+  const std = (await loadAllRubrics()).find((r) => r.rubricId === rubricId);
+  if (std) return std;
+  // Not in the standard library — a direct id-addressed lookup of any kind (acceptance
+  // rubrics are hidden from the library scan, never from an explicit id).
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<RubricPlanRow[]>`
+      SELECT plan_slug, workspace_id, harness_slug, title, status, created, updated, updated_at,
+             owner, archived, template_data
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${rubricsScopeWorkspace()}
+         AND template = ${RUBRIC_TEMPLATE_NAME}
+         AND template_slug IS NULL
+         AND plan_slug = ${rubricId}
+       LIMIT 1`;
+    // Client-side slug guard: keeps behavior identical under mocked-sql test fixtures
+    // that return the full row set for any query.
+    const row = rows.find((r) => r.plan_slug === rubricId);
+    return row ? planRowToRubric(row) : null;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * The acceptance rubric FOR a plan (acceptance-rubrics-on-every-plan-2026-08-11): the
+ * most recently updated valid acceptance-kind rubric whose subjectPlan names `planSlug`.
+ * The read behind the completion gate and the plans:get surfacing. Never throws.
+ */
+export async function getAcceptanceRubricForPlan(planSlug: string): Promise<Rubric | null> {
+  try {
+    const { sql } = getOrgPg();
+    const rows = await sql<RubricPlanRow[]>`
+      SELECT plan_slug, workspace_id, harness_slug, title, status, created, updated, updated_at,
+             owner, archived, template_data
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${rubricsScopeWorkspace()}
+         AND template = ${RUBRIC_TEMPLATE_NAME}
+         AND template_slug IS NULL
+         AND template_data->>'kind' = 'acceptance'
+         AND template_data->>'subjectPlan' = ${planSlug}
+       ORDER BY updated_at DESC
+       LIMIT 5`;
+    const mapped = rows
+      .map(planRowToRubric)
+      .filter((r): r is Rubric => r !== null && r.kind === 'acceptance' && r.subjectPlan === planSlug);
+    return mapped[0] ?? null;
+  } catch {
+    return null;
+  }
 }
 
 /**
  * Search rubrics by id / characteristic / title / description. Case-insensitive,
  * all-tokens-must-match (websearch's AND semantics). At this scale (tens of rubrics) an
- * in-process scan over the rubric-template plans is as fast as a table FTS.
+ * in-process scan over the rubric-template plans is as fast as a table FTS. Standard-kind
+ * only unless `kind` opts in.
  */
-export async function searchRubrics(query: string, limit = 50): Promise<Rubric[]> {
+export async function searchRubrics(
+  query: string,
+  limit = 50,
+  kind: RubricKindFilter = 'standard',
+): Promise<Rubric[]> {
   const tokens = query.toLowerCase().split(/\s+/).filter(Boolean);
   if (tokens.length === 0) return [];
-  const matched = (await loadAllRubrics()).filter((r) => {
+  const matched = (await loadAllRubrics(kind)).filter((r) => {
     const hay = `${r.rubricId} ${r.characteristic} ${r.title} ${r.description}`.toLowerCase();
     return tokens.every((t) => hay.includes(t));
   });
@@ -564,12 +628,29 @@ export async function searchRubrics(query: string, limit = 50): Promise<Rubric[]
 
 // ─── writes: author / ratify a rubric-template plan (P-007 Stage 2) ──────────────────
 
+/** A propose-input criterion: the v1 shape with the heavyweight prose fields optional,
+ *  so acceptance-kind proposals may author light criteria (the per-kind schema refuses
+ *  a STANDARD rubric whose criteria omit them — nothing is silently loosened). */
+export type ProposeRubricCriterion = Omit<RubricCriterion, 'model' | 'method' | 'driftMarkers'> &
+  Partial<Pick<RubricCriterion, 'model' | 'method' | 'driftMarkers'>>;
+
 export interface ProposeRubricInput {
   rubricId: string;
+  /**
+   * The rubric's kind (acceptance-rubrics-on-every-plan-2026-08-11). Default 'standard'.
+   * 'acceptance' additionally requires subjectPlan (validated to EXIST — a dangling link
+   * would never gate anything), defaults status → 'active' (acceptance rubrics are not
+   * ratified, plan D-008), and allows empty criteria when classRef is set (D-009).
+   */
+  kind?: RubricKind;
+  /** acceptance-kind only: the plan this rubric is the definition-of-done FOR. */
+  subjectPlan?: string;
+  /** acceptance-kind only: the standard-kind class rubric it builds on (validated to exist). */
+  classRef?: string;
   characteristic: string;
   title: string;
   description?: string;
-  criteria: RubricCriterion[];
+  criteria: ProposeRubricCriterion[];
   ratingScale?: string[];
   methodRef?: string;
   /** Mark this rubric release-gating (EI-12149) — the staleness watchdog then alerts
@@ -650,8 +731,8 @@ export const METHOD_SHRINK_GUARD_MIN_CHARS = 200;
 /** A criterion's full procedure text: method + replication drill combined. Comparing
  *  the COMBINED text (D-002) means moving a drill between the two fields is never a
  *  violation — only genuine text loss is. */
-function criterionProcedureText(c: Pick<RubricCriterion, 'method'> & { replication?: string }): string {
-  return `${c.method}${c.replication ? `\n${c.replication}` : ''}`;
+function criterionProcedureText(c: { method?: string; replication?: string }): string {
+  return `${c.method ?? ''}${c.replication ? `\n${c.replication}` : ''}`;
 }
 
 /**
@@ -751,10 +832,10 @@ export interface RubricCompleteness {
 
 /** Backward-compatible instrument binding: structured field first, then legacy token. */
 export function effectiveCriterionInstrumentKey(
-  criterion: Pick<RubricCriterion, 'model' | 'instrumentKey'>,
+  criterion: { model?: string; instrumentKey?: string },
 ): string | null {
   if (criterion.instrumentKey?.trim()) return criterion.instrumentKey.trim();
-  const match = /\[instrumentKey:\s*([a-z0-9-]+|none)\]\s*$/.exec(criterion.model);
+  const match = /\[instrumentKey:\s*([a-z0-9-]+|none)\]\s*$/.exec(criterion.model ?? '');
   return match?.[1] ?? null;
 }
 
@@ -767,7 +848,9 @@ export interface RubricInstrumentContract {
 
 /** Pure one-criterion↔one-instrument contract used by writes, ratification, and grading. */
 export function rubricInstrumentContract(
-  rubric: Pick<Rubric, 'releaseGating' | 'criteria'>,
+  // Accepts the propose-input criterion shape too (model optional on acceptance-kind
+  // criteria) — the contract only reads key + the effective instrument binding.
+  rubric: { releaseGating?: boolean; criteria: ProposeRubricCriterion[] },
 ): RubricInstrumentContract {
   const bindings = Object.fromEntries(
     rubric.criteria.map((criterion) => [criterion.key, effectiveCriterionInstrumentKey(criterion)]),
@@ -861,6 +944,12 @@ function buildRubricTemplateData(input: ProposeRubricInput): unknown {
     );
   }
   const data = {
+    // Kind + acceptance links (acceptance-rubrics-on-every-plan-2026-08-11) — the schema's
+    // per-kind superRefine validates the combination (subjectPlan/classRef acceptance-only,
+    // standard criteria fully-specified, …).
+    ...(input.kind ? { kind: input.kind } : {}),
+    ...(input.subjectPlan ? { subjectPlan: input.subjectPlan } : {}),
+    ...(input.classRef ? { classRef: input.classRef } : {}),
     characteristic: input.characteristic,
     criteria: input.criteria,
     ratingScale: input.ratingScale ?? [...DEFAULT_RATING_SCALE],
@@ -886,6 +975,53 @@ function buildRubricTemplateData(input: ProposeRubricInput): unknown {
     throw new Error(`proposeRubric: invalid rubric data for '${input.rubricId}': ${issues}`);
   }
   return parsed.data;
+}
+
+/**
+ * Acceptance-kind link guards (acceptance-rubrics-on-every-plan-2026-08-11 P-003), run
+ * BEFORE any write: the completion gate keys off subjectPlan, so a dangling link is a
+ * rubric that never gates anything — refused loudly, never persisted.
+ */
+async function assertAcceptanceLinksResolve(input: ProposeRubricInput): Promise<void> {
+  const subjectPlan = input.subjectPlan;
+  if (!subjectPlan) return; // schema already refuses acceptance without subjectPlan
+  const { sql } = getOrgPg();
+  const subj = await sql<{ plan_slug: string; template: string | null }[]>`
+    SELECT plan_slug, template
+      FROM harness_shared.harness_plans
+     WHERE workspace_id = ${rubricsScopeWorkspace()}
+       AND plan_slug = ${subjectPlan}
+     LIMIT 1`;
+  const subjRow = subj.find((r) => r.plan_slug === subjectPlan);
+  if (!subjRow) {
+    throw new Error(
+      `invalid_args: proposeRubric: acceptance rubric '${input.rubricId}' names subjectPlan '${subjectPlan}', ` +
+        'but no such plan exists in this workspace — the completion gate keys off this link, so a dangling ' +
+        'subjectPlan would never gate anything. Fix the slug (or create the plan first).',
+    );
+  }
+  if (subjRow.template === RUBRIC_TEMPLATE_NAME) {
+    throw new Error(
+      `invalid_args: proposeRubric: subjectPlan '${subjectPlan}' is itself a rubric-template plan — ` +
+        'rubrics do not get acceptance rubrics (infinite regress); point subjectPlan at the WORK plan.',
+    );
+  }
+  if (input.classRef) {
+    const cls = await getRubric(input.classRef);
+    if (!cls) {
+      throw new Error(
+        `invalid_args: proposeRubric: acceptance rubric '${input.rubricId}' references classRef '${input.classRef}', ` +
+          'but no rubric carries that id — rubrics:list the standard library and pick the class rubric ' +
+          '(feature-ship / bugfix / migration / investigation) this plan belongs to.',
+      );
+    }
+    if (cls.kind !== 'standard') {
+      throw new Error(
+        `invalid_args: proposeRubric: classRef '${input.classRef}' is an ${cls.kind}-kind rubric — a class ` +
+          'reference must point at a STANDARD-kind rubric (the reusable class carrying the shared invariants).',
+      );
+    }
+  }
 }
 
 /** The `template: rubric` plan body (frontmatter + Now + Background + Decisions). The
@@ -1025,11 +1161,17 @@ function rubricRevisionAfterWrite(
  * template_data can never lag the body and there is no skip branch to no-op through.
  */
 export async function proposeRubric(input: ProposeRubricInput): Promise<Rubric> {
-  const rubricStatus: RubricStatus = input.status ?? 'proposed';
+  const kind = input.kind ?? 'standard';
+  // Acceptance rubrics are never ratified (plan D-008): they activate on propose and are
+  // judged at plan completion by a NON-implementer grading them, not by a Queen ratify.
+  const rubricStatus: RubricStatus = input.status ?? (kind === 'acceptance' ? 'active' : 'proposed');
   const planStatus = rubricStatusToPlanStatus(rubricStatus);
   // Validate FIRST (fail-loud) before any write, so a malformed rubric never persists a
   // half-state (a body with no/invalid template_data).
   const templateData = buildRubricTemplateData(input);
+  // Acceptance links must RESOLVE before anything persists (plan P-003): a dangling
+  // subjectPlan would never gate anything, silently.
+  if (kind === 'acceptance') await assertAcceptanceLinksResolve(input);
   // WI-4287 loss-guard: propose is a whole-document replace — refuse to silently drop
   // stored criteria or gut their testing procedures (see assertNoSilentRubricLoss).
   assertNoSilentRubricLoss(await getRubric(input.rubricId), input);
@@ -1123,6 +1265,12 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
 
   return {
     rubricId: stored.rubricId,
+    // Kind + acceptance links round-trip (acceptance-rubrics-on-every-plan-2026-08-11):
+    // dropping them from an amendment would flip an acceptance rubric to standard and
+    // orphan its subjectPlan link — the WI-4287 loss class, on identity fields.
+    ...(stored.kind !== 'standard' ? { kind: stored.kind } : {}),
+    ...(stored.subjectPlan ? { subjectPlan: stored.subjectPlan } : {}),
+    ...(stored.classRef ? { classRef: stored.classRef } : {}),
     characteristic: stored.characteristic,
     title: stored.title,
     description: stored.description,
@@ -1192,6 +1340,13 @@ async function readRawRubricTemplateData(rubricId: string): Promise<Record<strin
 export async function ratifyRubric(rubricId: string, by?: string): Promise<Rubric | null> {
   const existing = await getRubric(rubricId);
   if (!existing) return null;
+  if (existing.kind === 'acceptance') {
+    throw new Error(
+      `invalid_args: ratifyRubric: '${rubricId}' is an acceptance-kind rubric (the definition-of-done for plan ` +
+        `'${existing.subjectPlan ?? '?'}') — acceptance rubrics are never ratified (acceptance-rubrics-on-every-plan ` +
+        'D-008): they activate on propose, and their judgment is a NON-implementer grading them at plan completion.',
+    );
+  }
   const completeness = rubricCompleteness(existing);
   if (
     existing.releaseGating &&
