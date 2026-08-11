@@ -51,7 +51,7 @@ const STRING_FIELDS = [
 ] as const;
 const BOOL_FIELDS = ['addedTests'] as const;
 /** Every completion-record field name — used to recognise a FLAT completion. */
-export const COMPLETION_FIELDS: readonly string[] = [...ARRAY_FIELDS, ...STRING_FIELDS, ...BOOL_FIELDS, 'verification'];
+export const COMPLETION_FIELDS: readonly string[] = [...ARRAY_FIELDS, ...STRING_FIELDS, ...BOOL_FIELDS, 'verification', 'coverage'];
 
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   return typeof v === 'object' && v !== null && !Array.isArray(v);

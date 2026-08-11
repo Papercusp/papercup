@@ -52,6 +52,25 @@ export const CompletionVerifiedHowSchema = z
       'NOT free text (put prose in `testsRun` / `testResult`).',
   );
 
+/**
+ * WI-37960: coverage evidence for a verification-shaped completion.
+ *
+ * A universal claim ("every page", "all facts", "nothing invented") is not
+ * auditable from a sentence alone. The population must be enumerated, each
+ * entry must be assigned a checked/not-checked/not-applicable status, and the
+ * residue must be explicit (use `residue: ['none']` when there is none).
+ * The completion gate performs the cross-field accounting check; this schema
+ * keeps the durable shape typed and shared by both completion aliases.
+ */
+export const CompletionCoverageSchema = z.object({
+  population: z.array(z.string().min(1)).min(1),
+  checked: z.array(z.string().min(1)).optional(),
+  notChecked: z.array(z.string().min(1)).optional(),
+  notApplicable: z.array(z.string().min(1)).optional(),
+  residue: z.array(z.string().min(1)).optional(),
+});
+export type CompletionCoverage = z.infer<typeof CompletionCoverageSchema>;
+
 export const CompletionVerificationEvidenceSchema = z.object({
   /** Files/modules changed, for audit queries without reading completion prose. */
   filesChanged: z.array(z.string().min(1)).optional(),
@@ -67,8 +86,10 @@ export const CompletionVerificationEvidenceSchema = z.object({
     .optional()
     .describe(
       'A boolean FLAG — did this completion add or change tests? true/false, NOT a description of ' +
-        'what was added (put that prose in `testsRun` / `testResult`).',
+      'what was added (put that prose in `testsRun` / `testResult`).',
     ),
+  /** Enumerated population + per-entry status for universal verification claims (WI-37960). */
+  coverage: CompletionCoverageSchema.optional(),
   /**
    * EI-19319623239777505: the caller's free-text `completion.summary`, carried alongside
    * the structured fields it sits next to. Before this field existed, `summary` was NEVER
@@ -322,6 +343,8 @@ export const CompletionRecordSchema = z.object({
   tests: z.string().min(1).optional(),
   /** Queryable verification evidence; aliases below keep legacy callers cheap. */
   verification: CompletionVerificationEvidenceSchema.optional(),
+  /** Top-level alias for the structured verification coverage record (WI-37960). */
+  coverage: CompletionCoverageSchema.optional(),
   filesChanged: z.array(z.string().min(1)).optional(),
   testsRun: z.string().min(1).optional(),
   testResult: z.string().min(1).optional(),
