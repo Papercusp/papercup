@@ -52,6 +52,77 @@ describe('subnet24 — the /24 block of an IPv4', () => {
   });
 });
 
+/**
+ * EI-18664933641195210 — the probe MUST resolve egress the way the gateway routes: `egressPool` head
+ * first, legacy singular `egress` as fallback. Reading `account.egress` alone made every pool-configured
+ * account report `hasEgress:false` AND probe the box-default IP instead of its configured proxy — an
+ * answer indistinguishable from a measured "this account has no egress / shares the box IP", which is
+ * how four agents read a dead-proxy diagnosis off an instrument that never dialled a proxy.
+ *
+ * `proxyArgs` is the falsifier that prose cannot fake: it records the URL a ProxyAgent was actually
+ * constructed with, so an empty array means the probe went direct.
+ */
+function fakeUndici() {
+  const proxyArgs: string[] = [];
+  const mod = {
+    ProxyAgent: class {
+      constructor(public url: string) { proxyArgs.push(url); }
+    },
+    Socks5ProxyAgent: class { constructor(public url: string) {} },
+    Agent: class { constructor(public opts: unknown) {} },
+  };
+  return { importUndici: async () => mod as never, proxyArgs };
+}
+
+/** An account carrying the gateway's rotation pool rather than the legacy singular `egress`. */
+const poolAcct = (id: string, pool: { proxyUrl?: string; localAddress?: string }[], legacy?: { proxyUrl?: string }): ClaudeAccount =>
+  ({ id, egress: legacy, egressPool: pool } as unknown as ClaudeAccount);
+
+describe('probeEgress — egressPool resolution (EI-18664933641195210)', () => {
+  it('reports hasEgress=true and DIALS the pool head for a pool-configured account', async () => {
+    const u = fakeUndici();
+    const probe = await probeEgress(poolAcct('a', [{ proxyUrl: 'http://199.182.115.224:3128' }, {}]), {
+      fetchImpl: queuedFetch(['203.0.113.9']),
+      reputationLookup: repByIp({ '203.0.113.9': { asn: 'AS64500' } }),
+      importUndici: u.importUndici,
+    });
+    expect(probe.hasEgress).toBe(true);
+    // The probe went THROUGH the configured proxy, not direct. Empty ⇒ it silently used the box IP.
+    expect(u.proxyArgs).toEqual(['http://199.182.115.224:3128']);
+    expect(probe.egress).toEqual({ proxyUrl: 'http://199.182.115.224:3128' });
+  });
+
+  it('prefers the pool head over a legacy singular egress (the gateway routes on the pool)', async () => {
+    const u = fakeUndici();
+    const probe = await probeEgress(
+      poolAcct('a', [{ proxyUrl: 'http://pool-head:3128' }, {}], { proxyUrl: 'http://legacy:3128' }),
+      { fetchImpl: queuedFetch(['203.0.113.10']), reputationLookup: repByIp({}), importUndici: u.importUndici },
+    );
+    expect(u.proxyArgs).toEqual(['http://pool-head:3128']);
+    expect(probe.egress).toEqual({ proxyUrl: 'http://pool-head:3128' });
+  });
+
+  it('falls back to the legacy singular egress when the pool is absent or empty', async () => {
+    const u = fakeUndici();
+    const probe = await probeEgress(poolAcct('a', [], { proxyUrl: 'http://legacy:3128' }), {
+      fetchImpl: queuedFetch(['203.0.113.11']), reputationLookup: repByIp({}), importUndici: u.importUndici,
+    });
+    expect(probe.hasEgress).toBe(true);
+    expect(u.proxyArgs).toEqual(['http://legacy:3128']);
+  });
+
+  it('still reports hasEgress=false when the pool head is the box-default `{}` entry', async () => {
+    const u = fakeUndici();
+    const probe = await probeEgress(poolAcct('a', [{}, { proxyUrl: 'http://second:3128' }]), {
+      fetchImpl: queuedFetch(['203.0.113.12']), reputationLookup: repByIp({}), importUndici: u.importUndici,
+    });
+    // An empty head genuinely IS the box-default IP — this must stay false, or the alarm in (b) would
+    // read "configured" for an account that really does exit bare.
+    expect(probe.hasEgress).toBe(false);
+    expect(u.proxyArgs).toEqual([]);
+  });
+});
+
 describe('probeEgress — one account', () => {
   it('reports hasEgress=false for the default egress and resolves exit IP + reputation + asn', async () => {
     const probe = await probeEgress(acct('a'), {
