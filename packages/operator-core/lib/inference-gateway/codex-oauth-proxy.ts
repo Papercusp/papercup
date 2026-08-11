@@ -134,6 +134,34 @@ export function codexBackendUrl(incomingUrl: string): string {
   return `${CODEX_CHATGPT_BACKEND_BASE}${stripped}`;
 }
 
+/**
+ * Normalize the public Responses API's `input: string` shorthand for the proprietary
+ * ChatGPT subscription backend, which accepts only the canonical input-item LIST.
+ *
+ * The public API defines a string as one user text message, so the expansion is
+ * semantics-preserving. Array input is returned byte-identically, as are malformed or
+ * non-object bodies. This belongs at the ChatGPT OAuth seam (not the bearer OpenAI path):
+ * api.openai.com already accepts the shorthand, while chatgpt.com rejects it with
+ * `400 Input must be a list`.
+ */
+export function normalizeCodexChatGptResponsesBody(
+  bodyBuf: Buffer,
+): { body: Buffer; inputNormalized: boolean } {
+  if (!bodyBuf.length) return { body: bodyBuf, inputNormalized: false };
+  try {
+    const parsed = JSON.parse(bodyBuf.toString('utf8')) as unknown;
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+      return { body: bodyBuf, inputNormalized: false };
+    }
+    const body = parsed as Record<string, unknown>;
+    if (typeof body.input !== 'string') return { body: bodyBuf, inputNormalized: false };
+    body.input = [{ role: 'user', content: [{ type: 'input_text', text: body.input }] }];
+    return { body: Buffer.from(JSON.stringify(body), 'utf8'), inputNormalized: true };
+  } catch {
+    return { body: bodyBuf, inputNormalized: false };
+  }
+}
+
 /** Build the upstream request headers: start from the codex CLI's incoming headers
  *  (minus hop-by-hop / auth / host, which the caller strips), then inject the
  *  ChatGPT-subscription OAuth bearer + account + originator. Session/thread ids the

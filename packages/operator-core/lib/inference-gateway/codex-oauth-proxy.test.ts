@@ -16,6 +16,7 @@ import {
   accessTokenExpired,
   buildCodexUpstreamHeaders,
   codexBackendUrl,
+  normalizeCodexChatGptResponsesBody,
   jwtExpMs,
   readCodexAuth,
   refreshCodexToken,
@@ -76,6 +77,29 @@ describe('codexBackendUrl', () => {
   it('rewrites /v1/responses onto the chatgpt backend base, preserving the query', () => {
     expect(codexBackendUrl('/v1/responses')).toBe('https://chatgpt.com/backend-api/codex/responses');
     expect(codexBackendUrl('/v1/responses?stream=true')).toBe('https://chatgpt.com/backend-api/codex/responses?stream=true');
+  });
+});
+
+describe('normalizeCodexChatGptResponsesBody', () => {
+  it('expands public input:string into the canonical one-user-message list', () => {
+    const result = normalizeCodexChatGptResponsesBody(Buffer.from(JSON.stringify({
+      model: 'gpt-5.6-terra',
+      input: 'hello',
+      stream: true,
+    })));
+    expect(result.inputNormalized).toBe(true);
+    expect(JSON.parse(result.body.toString('utf8'))).toEqual({
+      model: 'gpt-5.6-terra',
+      input: [{ role: 'user', content: [{ type: 'input_text', text: 'hello' }] }],
+      stream: true,
+    });
+  });
+
+  it('keeps list input and malformed JSON byte-identical', () => {
+    const list = Buffer.from(JSON.stringify({ input: [{ role: 'user', content: [] }] }));
+    expect(normalizeCodexChatGptResponsesBody(list)).toEqual({ body: list, inputNormalized: false });
+    const malformed = Buffer.from('{oops');
+    expect(normalizeCodexChatGptResponsesBody(malformed)).toEqual({ body: malformed, inputNormalized: false });
   });
 });
 
