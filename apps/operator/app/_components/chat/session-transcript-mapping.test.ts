@@ -20,13 +20,20 @@ describe('sessionTimelineToChatMessages', () => {
    * conversation: the owner's "hi" appeared as a wall of wake-pump envelope.
    */
   describe('machine annotations the owner never typed', () => {
-    it('strips the turn-origin envelope from an injected prompt', () => {
+    it('HIDES a machine-injected prompt entirely — it is not the owner speaking', () => {
+      // REVERSAL, same day, on the owner's evidence (EI-20135573616431912). The
+      // first cut of this feature stripped the ENVELOPE and kept the BODY, on the
+      // reasoning that hiding delivered content is worse than showing plumbing.
+      // That was wrong for THIS surface: the body is machine text addressed to the
+      // AGENT, and the pane renders user-role turns as the OWNER's own messages —
+      // so wake blobs and Stop-hook walls appeared in the owner's chat as things
+      // they had apparently said, reported as "I said hi and it replied with all this".
+      // Measured: machine turns are the MAJORITY of this pane's user-role rows
+      // (1756 envelopes + 44 hook walls vs 1540 genuine, 3-day window).
       const entries: TimelineEntry[] = [
         { kind: 'prompt', text: '⟦turn-origin:wake-pump nonce:abc123ef⟧\ndo the thing', ts: 't1' },
       ];
-      expect(sessionTimelineToChatMessages(entries)).toEqual([
-        { role: 'user', content: 'do the thing', id: 'prompt-0', ts: 't1' },
-      ]);
+      expect(sessionTimelineToChatMessages(entries)).toEqual([]);
     });
 
     /**
@@ -70,7 +77,13 @@ describe('sessionTimelineToChatMessages', () => {
       ]);
     });
 
-    it('keeps the wake BODY — only the envelope comes off, so nothing delivered vanishes', () => {
+    it('HIDES the wake body too — it was delivered to the AGENT, and this pane is the OWNER conversation', () => {
+      // Supersedes this file's earlier "keeps the wake BODY … so nothing delivered
+      // vanishes" assertion. The premise was that hiding delivered content is the
+      // worse failure. It still is — for the AGENT. But nothing is deleted here:
+      // this is a RENDER filter, the turn remains in the transcript stores and in
+      // every audit / session-search path. What changed is only WHOSE conversation
+      // this pane claims to be showing.
       const entries: TimelineEntry[] = [
         {
           kind: 'prompt',
@@ -78,9 +91,7 @@ describe('sessionTimelineToChatMessages', () => {
           ts: 't1',
         },
       ];
-      expect(sessionTimelineToChatMessages(entries)[0].content).toBe(
-        '[await-event] lock:grant:t-1 fired.',
-      );
+      expect(sessionTimelineToChatMessages(entries)).toEqual([]);
     });
 
     it('drops a prompt that is NOTHING but annotations rather than rendering an empty bubble', () => {
