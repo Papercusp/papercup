@@ -307,14 +307,21 @@ describe('ownerVisiblePromptText — UN-ENVELOPED machine text walks through the
     'You are the Mug of this Pot: the placement and priority decider for the cup\n' +
     'fleet. Each wake is fresh. Re-derive state from durable substrate, act, record.';
 
-  it.fails('HIDES the CLI compaction preamble (367 rows/7d — the biggest single leak)', () => {
+  /* CLOSED by V-003 (P-003): the un-enveloped branch now routes through the ONE
+     curated list in `turn-provenance/machine-surface-catalogue.ts`. These two flipped
+     from `it.fails` to `it` — which is exactly the mechanism the header describes. */
+  it('HIDES the CLI compaction preamble (367 rows/7d — the biggest single leak)', () => {
     expect(ownerVisiblePromptText(COMPACTION_PREAMBLE)).toBe('');
   });
 
-  it.fails('HIDES `[Request interrupted by user]` (107 rows/7d — the harness narrating the owner)', () => {
+  it('HIDES `[Request interrupted by user]` (107 rows/7d — the harness narrating the owner)', () => {
     expect(ownerVisiblePromptText(REQUEST_INTERRUPTED)).toBe('');
   });
 
+  /* STILL OPEN, deliberately. Nothing structurally separates '# Mug — pot placement
+     decider' from an owner's own '# my notes', so closing this one display-side needs
+     exactly the matcher D-002/D-003 forbid. It is P-004's (provenance at ingest) —
+     do NOT close it by adding a pattern. The census below stays red with it. */
   it.fails('HIDES an injected role prompt (86 rows/14d — a persona doc attributed to the owner)', () => {
     expect(ownerVisiblePromptText(INJECTED_ROLE_PROMPT)).toBe('');
   });
