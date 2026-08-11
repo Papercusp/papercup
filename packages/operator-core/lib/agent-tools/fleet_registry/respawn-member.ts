@@ -96,7 +96,8 @@ export async function awaitReplacementMember(opts: {
 }
 
 /** fleet:kill returns the bulk envelope `{ data: { ok, results, counts } }` — success is
- *  zero failed items (top-level `ok` only means the batch ran). */
+ * zero failed items (top-level `ok` only means the batch ran). A structured not_found for the
+ * already-resolved fleet member is the idempotent already-dead precondition, not a hard failure. */
 function killOutcome(res: unknown): { ok: boolean; alreadyGone: boolean; data: Record<string, unknown> } {
   const data = ((res as { data?: unknown }).data ?? {}) as Record<string, unknown>;
   const counts = data.counts as { failed?: number } | undefined;
