@@ -220,11 +220,24 @@ function getCore(store: Corestore, opts: { name: string } | { key: Buffer }): Co
  * absent. boot.ts (the real production merge-loop boot path) is the one
  * caller that passes it.
  */
-export async function openOwnLog(
+/**
+ * Open a WRITABLE log by corestore NAME.
+ *
+ * `openOwnLog` is this with the name `'peer-log'`. Factored out for the seed cut
+ * (EI-20108164746219771), which mints a SEPARATE synthetic core to hold one filtered
+ * snapshot so the shipped seed stops being a slice of the owner's private log — see
+ * `produceFilteredSnapshotIntoLog`. A distinct name yields a distinct keypair from the
+ * same store, which is exactly what "ship a product, not a slice" needs.
+ *
+ * The fork guard is OPT-IN and callers other than the own log should leave it off: it
+ * watches for a forked OWN log, which is meaningless for a single-use synthetic core.
+ */
+export async function openNamedLog(
   store: Corestore,
+  name: string,
   forkGuard?: { workspaceId: string; harnessSlug: string },
 ): Promise<OwnLog> {
-  const core = getCore(store, { name: 'peer-log' });
+  const core = getCore(store, { name });
   await core.ready();
   const keyHex = core.key.toString('hex');
 
@@ -266,6 +279,20 @@ export async function openOwnLog(
       return keyHex;
     },
   };
+}
+
+/**
+ * Open THE own log — the single-writer peer log this machine appends to.
+ *
+ * Thin alias over `openNamedLog` pinning the canonical `'peer-log'` name, so the
+ * name lives in exactly one place and a caller cannot reach the own log by spelling
+ * the string themselves.
+ */
+export async function openOwnLog(
+  store: Corestore,
+  forkGuard?: { workspaceId: string; harnessSlug: string },
+): Promise<OwnLog> {
+  return openNamedLog(store, 'peer-log', forkGuard);
 }
 
 /**
