@@ -23,9 +23,12 @@ import { expect, test } from './_egress';
  * whisper's real API changed. This spec speaks a known sentence and demands to
  * hear it back, through the browser, end to end.
  *
- * Requires the local voice services (kokoro :8880, whisper :2022). When they are
- * unreachable the whole describe SKIPS rather than fails, so CI stays green
- * without a GPU. Run against a server that serves the voice API routes, e.g.:
+ * Requires the local voice services (kokoro :8880, whisper :2022). By default,
+ * an unavailable service skips the describe so ordinary CI stays green without
+ * local model services. Release acceptance MUST set
+ * `PAPERCUSP_REQUIRE_LIVE_VOICE=1`, which turns that skip into a collection
+ * failure so a dead or starved local engine cannot produce a false-green gate.
+ * Run against a server that serves the voice API routes, e.g.:
  *
  *   OPERATOR_E2E_REUSE_SERVER=1 OPERATOR_E2E_BASE_URL=http://127.0.0.1:3170 \
  *     npx playwright test e2e/voice-live-e2e.spec.ts
@@ -66,10 +69,55 @@ function prepareLiveFixtures(): boolean {
 }
 
 const live = prepareLiveFixtures();
+const requireLive = process.env.PAPERCUSP_REQUIRE_LIVE_VOICE === '1';
+
+if (requireLive && !live) {
+  throw new Error(
+    `PAPERCUSP_REQUIRE_LIVE_VOICE=1 but the live voice fixtures could not be prepared ` +
+    `(Kokoro: ${KOKORO_URL}, Voicemode: ${VOICEMODE_URL})`,
+  );
+}
 
 /** Lowercase, strip punctuation, collapse whitespace — STT formatting isn't under test. */
 const norm = (s: string): string =>
   s.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').replace(/\s+/g, ' ').trim();
+
+/**
+ * The live workspace may intentionally run a full-agent engine, which disables
+ * the split STT/TTS controls. Pin the local pair for assertions that exercise
+ * those controls, then restore every shared preference even when the test
+ * fails. The workspace header mirrors the SPA's own resolution rule.
+ */
+async function withLocalEnginePrefs<T>(
+  page: import('@playwright/test').Page,
+  run: () => Promise<T>,
+): Promise<T> {
+  const prefsUrl = '/api/agent-mcp/operator-voice-prefs';
+  const indexHtml = await (await page.request.get('/settings/voice')).text();
+  const workspace = /__PAPERCUSP_WS__\s*=\s*["']([^"']+)["']/.exec(indexHtml)?.[1] ?? 'default';
+  const headers = { 'x-papercusp-workspace': workspace };
+  const beforeResponse = await page.request.get(prefsUrl, { headers });
+  if (!beforeResponse.ok()) throw new Error(`prefs GET failed: ${beforeResponse.status()}`);
+  const before = await beforeResponse.json() as {
+    fullAgentEngine?: string;
+    sttEngine?: string;
+    ttsEngine?: string;
+  };
+  const put = async (data: Record<string, string>) => {
+    const response = await page.request.put(prefsUrl, { headers, data });
+    if (!response.ok()) throw new Error(`prefs PUT failed: ${response.status()}`);
+  };
+  await put({ fullAgentEngine: 'off', sttEngine: 'voicemode', ttsEngine: 'kokoro' });
+  try {
+    return await run();
+  } finally {
+    await put({
+      fullAgentEngine: before.fullAgentEngine ?? 'off',
+      sttEngine: before.sttEngine ?? 'voicemode',
+      ttsEngine: before.ttsEngine ?? 'kokoro',
+    });
+  }
+}
 
 // Must be top-level: `launchOptions` forces a new worker, so Playwright forbids
 // it inside a describe group. Chrome plays FAKE_MIC_WAV into getUserMedia.
@@ -179,38 +227,44 @@ test.use({
   });
 
   test('settings UI exposes all 5 TTS engines and the local defaults are selected', async ({ page }) => {
-    await page.goto('/settings/voice');
-    await expect(page.getByText('Loading your voice settings')).toBeHidden({ timeout: 60_000 });
+    await withLocalEnginePrefs(page, async () => {
+      await page.goto('/settings/voice');
+      await expect(page.getByText('Loading your voice settings')).toBeHidden({ timeout: 60_000 });
+      await expect(page.getByRole('combobox', { name: 'Full-agent engine' })).toBeVisible({ timeout: 60_000 });
 
-    const tts = page.getByRole('combobox', { name: 'TTS engine' });
-    await expect(tts).toBeEnabled({ timeout: 20_000 });
-    await expect(tts).toContainText('Kokoro');
-    await expect(page.getByRole('combobox', { name: 'STT engine' })).toContainText('Voicemode');
+      const tts = page.getByRole('combobox', { name: 'TTS engine' });
+      await expect(tts).toBeEnabled({ timeout: 20_000 });
+      await expect(tts).toContainText('Kokoro');
+      await expect(page.getByRole('combobox', { name: 'STT engine' })).toContainText('Voicemode');
 
-    await tts.click();
-    for (const name of [/Kokoro/, /Browser/, /ElevenLabs/, /OpenAI/, /Cartesia/]) {
-      await expect(page.getByRole('option', { name })).toBeVisible();
-    }
-    await page.keyboard.press('Escape');
+      await tts.click();
+      for (const name of [/Kokoro/, /Browser/, /ElevenLabs/, /OpenAI/, /Cartesia/]) {
+        await expect(page.getByRole('option', { name })).toBeVisible();
+      }
+      await page.keyboard.press('Escape');
+    });
   });
 
   test('the UI preview button really synthesizes through the local engine', async ({ page }) => {
-    await page.goto('/settings/voice');
-    await expect(page.getByText('Loading your voice settings')).toBeHidden({ timeout: 60_000 });
+    await withLocalEnginePrefs(page, async () => {
+      await page.goto('/settings/voice');
+      await expect(page.getByText('Loading your voice settings')).toBeHidden({ timeout: 60_000 });
+      await expect(page.getByRole('combobox', { name: 'Full-agent engine' })).toBeVisible({ timeout: 60_000 });
 
-    const preview = page.getByRole('button', { name: /Preview kokoro/i });
-    await expect(preview).toBeVisible({ timeout: 20_000 });
+      const preview = page.getByRole('button', { name: /Preview kokoro/i });
+      await expect(preview).toBeEnabled({ timeout: 20_000 });
 
-    const [response] = await Promise.all([
-      page.waitForResponse((r) => r.url().includes('/operator-tts-preview'), { timeout: 45_000 }),
-      preview.click(),
-    ]);
-    expect(response.status()).toBe(200);
-    expect(response.headers()['content-type']).toBe('audio/wav');
-    // Assert the SIZE via content-length, not `response.body()`. The preview is
-    // played by an <audio> element, so Chrome streams it as a media resource and
-    // Playwright cannot buffer the body — `body()` comes back empty (0 bytes)
-    // even though the route really did return ~50KB of WAV.
-    expect(Number(response.headers()['content-length'])).toBeGreaterThan(10_000);
+      const [response] = await Promise.all([
+        page.waitForResponse((r) => r.url().includes('/operator-tts-preview'), { timeout: 45_000 }),
+        preview.click(),
+      ]);
+      expect(response.status()).toBe(200);
+      expect(response.headers()['content-type']).toBe('audio/wav');
+      // Assert the SIZE via content-length, not `response.body()`. The preview is
+      // played by an <audio> element, so Chrome streams it as a media resource and
+      // Playwright cannot buffer the body — `body()` comes back empty (0 bytes)
+      // even though the route really did return ~50KB of WAV.
+      expect(Number(response.headers()['content-length'])).toBeGreaterThan(10_000);
+    });
   });
 });
