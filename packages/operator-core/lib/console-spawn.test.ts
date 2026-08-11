@@ -12,7 +12,7 @@ import { EventEmitter } from 'node:events';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { delimiter, join } from 'node:path';
 import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
 import {
   buildConsoleOneliner,
@@ -882,6 +882,46 @@ describe('buildConsoleOneliner', () => {
       APPEARANCE,
     );
     expect(out).toContain("export PATH='/home/u/.papercusp/bin':'/bundle/scripts':${PATH}");
+  });
+
+  // WI-37920 / P-001 — the operator-resolved backend dirs.
+  describe('backend PATH dirs (WI-37920 / P-001)', () => {
+    it('APPENDS them after ${PATH} — never ahead of the user\'s own PATH', () => {
+      const out = buildConsoleOneliner(
+        '/x',
+        {
+          PAPERCUSP_BIN_DIR: '/home/u/.papercusp/bin',
+          PAPERCUSP_BACKEND_PATH_DIRS: `/home/u/.bun/bin${delimiter}/opt/homebrew/bin`,
+        },
+        'true',
+        APPEARANCE,
+      );
+      // Order is the whole point: papercusp's own shims win, the USER's PATH wins
+      // over our injected fallbacks, and the fallbacks only decide what would
+      // otherwise be unresolvable. Prepending would silently re-point a user's
+      // claude/node/bun at whatever the operator happened to resolve.
+      expect(out).toContain(
+        "export PATH='/home/u/.papercusp/bin':${PATH}:'/home/u/.bun/bin':'/opt/homebrew/bin'",
+      );
+    });
+
+    it('emits a PATH export from the backend dirs ALONE (no papercusp dirs set)', () => {
+      const out = buildConsoleOneliner('/x', { PAPERCUSP_BACKEND_PATH_DIRS: '/home/u/.bun/bin' }, 'true', APPEARANCE);
+      expect(out).toContain("export PATH=${PATH}:'/home/u/.bun/bin'");
+    });
+
+    it('is byte-identical to the pre-fix line when the key is absent', () => {
+      // The regression guard for every launch that resolves nothing: a box with no
+      // extra backend dirs must produce exactly the old prelude.
+      const before = buildConsoleOneliner('/x', { PAPERCUSP_BIN_DIR: '/b' }, 'true', APPEARANCE);
+      expect(before).toContain('export PATH=\'/b\':${PATH} &&');
+      expect(before).not.toContain('PAPERCUSP_BACKEND_PATH_DIRS');
+    });
+
+    it('shell-escapes a dir containing a quote', () => {
+      const out = buildConsoleOneliner('/x', { PAPERCUSP_BACKEND_PATH_DIRS: "/home/o'brien/.bun/bin" }, 'true', APPEARANCE);
+      expect(out).toContain(`'/home/o'\\''brien/.bun/bin'`);
+    });
   });
 
   it('emits the OSC window-title prelude', () => {

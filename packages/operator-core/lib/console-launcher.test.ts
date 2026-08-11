@@ -8,6 +8,11 @@ import { join } from 'node:path';
 
 import { afterEach, describe, expect, it } from 'vitest';
 import { shellSafeId, buildSuperuserMcpUrl, buildConsoleEnvelope } from './console-launcher';
+import {
+  SPAWN_PATH_DIRS_ENV,
+  decodeSpawnPathDirs,
+  resolveSpawnPathDirs,
+} from './backend-bin-resolve.mjs';
 
 describe('shellSafeId', () => {
   it('accepts a UUID-shaped id', () => {
@@ -40,6 +45,44 @@ describe('buildSuperuserMcpUrl (scoped-superuser-workspace-clamp D-004)', () => 
   it('allWorkspaces: bakes the UNSCOPED wildcard (the only door past the clamp)', () => {
     const url = new URL(buildSuperuserMcpUrl('http://localhost:3070', 'generic-test', true));
     expect(url.searchParams.get('workspace')).toBe('*');
+  });
+});
+
+describe('buildConsoleEnvelope backend PATH dirs (WI-37920 / P-001)', () => {
+  // A desktop-spawned terminal does not inherit the operator's env, so the
+  // BACKEND CLI psu has to exec (claude/codex/omp — and, via its shebang, bun)
+  // must be resolved HERE, where the full env exists, and carried as data.
+  // Skipped only on a box where no backend is installed at all: there is then
+  // genuinely nothing to inject and an assertion would be about the box.
+  const expected = resolveSpawnPathDirs().dirs;
+
+  it.skipIf(expected.length === 0)(
+    'carries the operator-resolved dirs in the envelope env, so the window can execute the backend',
+    async () => {
+      const envelope = await buildConsoleEnvelope({
+        workspaceId: 'default',
+        slug: null,
+        operatorBaseUrl: 'http://localhost:3070',
+        skipMcpJson: true,
+      });
+
+      // The WIRING is the subject: drop the resolve block from buildConsoleEnvelope
+      // and this fails, which is the regression that would silently return every
+      // desktop launch to "the omp backend is not installed".
+      expect(decodeSpawnPathDirs(envelope.env[SPAWN_PATH_DIRS_ENV])).toEqual(expected);
+    },
+  );
+
+  it.skipIf(expected.length === 0)('encodes only directories that actually exist', async () => {
+    const envelope = await buildConsoleEnvelope({
+      workspaceId: 'default',
+      slug: null,
+      operatorBaseUrl: 'http://localhost:3070',
+      skipMcpJson: true,
+    });
+    for (const dir of decodeSpawnPathDirs(envelope.env[SPAWN_PATH_DIRS_ENV])) {
+      expect(existsSync(dir), `${dir} was injected into a spawned PATH but does not exist`).toBe(true);
+    }
   });
 });
 

@@ -24,6 +24,9 @@ import { filterInstallSources, describeRefusals } from './install-source-guard';
 // Single definition, shared with the pot-git ext:: transport (EI-20078551747038927).
 // Re-exported below so existing importers of this module keep resolving it here.
 import { resolveBundledNode } from '../bundled-node';
+// WI-37920 / P-006: the ONE list of where a backend CLI can live, shared with
+// psu's own detection and the operator's spawn-PATH injection.
+import { BACKEND_AGENTS, backendSearchDirs } from '../backend-bin-resolve.mjs';
 export { resolveBundledNode };
 import {
   readInstallStamp,
@@ -1563,21 +1566,34 @@ async function firstExisting(candidates: string[]): Promise<string | null> {
 /**
  * psu execs the chosen agent CLI BY NAME, expecting it on PATH — but a GUI
  * app's operator child rarely inherits the user's login PATH, so a `claude` /
- * `codex` installed under `~/.local/bin` (etc.) is invisible and `psu → claude`
- * exits immediately ("can't launch the agent"). `~/.papercusp/bin` IS on psu's
- * PATH (ensureBinOnPath), so symlink any agent CLI we find there. Best-effort +
- * idempotent. (`omp`/`gh` ship bundled in the sidecar; a CLI absent everywhere
- * is the WI-681 install gap, surfaced separately — not something we can link.)
+ * `codex` / `omp` installed under `~/.local/bin` (etc.) is invisible and
+ * `psu → claude` exits immediately ("can't launch the agent"). `~/.papercusp/bin`
+ * IS on psu's PATH (ensureBinOnPath), so symlink any agent CLI we find there.
+ * Best-effort + idempotent. (`gh` ships bundled in the sidecar; a CLI absent
+ * everywhere is the WI-681 install gap, surfaced separately — not linkable.)
+ *
+ * WI-37920 / P-006 — two changes, both from the same measured failure:
+ *
+ *  • `omp` was NOT in this loop, so a bun-installed omp never got a shim. That
+ *    is the installer-layer half of the defect whose spawn-layer half was
+ *    "psu: the omp backend (`omp`) is not installed" inside a desktop terminal.
+ *  • The search list was hand-rolled here and missed `~/.bun/bin` (and nvm, and
+ *    volta, and Linux brew). It now comes from `backendSearchDirs`, the ONE
+ *    definition shared with psu's detection and with the operator's spawn-PATH
+ *    injection — three consumers, one list, so a new install location is added
+ *    in exactly one place.
+ *
+ * ⚠ What this deliberately does NOT link: the shebang INTERPRETER (`omp` is
+ * `#!/usr/bin/env bun`). `~/.papercusp/bin` is PREPENDED to a spawned PATH, so a
+ * `bun` shim here would outrank the user's own `bun` for every command they run
+ * — a far worse bug than the one being fixed. The interpreter is handled by the
+ * spawn-time PATH APPEND instead (console-spawn's buildPathExport), which cannot
+ * shadow anything the user already has.
  */
-async function ensureAgentClisLinked(home: string, binDir: string): Promise<string[]> {
+export async function ensureAgentClisLinked(home: string, binDir: string): Promise<string[]> {
   const linked: string[] = [];
-  const searchDirs = [
-    path.join(home, '.local', 'bin'),
-    '/usr/local/bin',
-    '/opt/homebrew/bin',
-    path.join(home, '.cargo', 'bin'),
-  ];
-  for (const agent of ['claude', 'codex']) {
+  const searchDirs = backendSearchDirs({ home });
+  for (const agent of BACKEND_AGENTS) {
     const dest = path.join(binDir, agent);
     try {
       await fs.access(dest);
@@ -1586,6 +1602,9 @@ async function ensureAgentClisLinked(home: string, binDir: string): Promise<stri
       /* not there yet — try to link it */
     }
     for (const dir of searchDirs) {
+      // Never link a dir to itself: binDir (~/.papercusp/bin) is IN the shared
+      // search list, so without this a missing dest could resolve to the dest.
+      if (dir === binDir) continue;
       const src = path.join(dir, agent);
       try {
         await fs.access(src);
