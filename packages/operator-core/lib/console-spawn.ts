@@ -297,6 +297,48 @@ function formatWindowTitle(opts: AppearanceOpts): string {
  * The sentinel file lets the Rust/Tauri side detect when the user's shell exits
  * (the terminal launcher's own pid exits in ~1s, so we fingerprint via the fs).
  */
+/**
+ * The `export PATH=…` line of the launcher prelude — the whole reason a spawned
+ * window can run `psu`, and (WI-37920 / P-001) the backend CLI psu then has to
+ * exec. Returns null when there is nothing to add.
+ *
+ * TWO HALVES, ordered DIFFERENTLY on purpose:
+ *
+ *  • PREPENDED — `PAPERCUSP_BIN_DIR` (the writable psu/ptool shims) then
+ *    `PAPERCUSP_SCRIPTS_DIR` (bundled scripts). These are papercusp's OWN
+ *    commands; a user shim must win over a same-named bundled script, and both
+ *    must win over anything else called `papercup` on the box.
+ *  • APPENDED — the backend-CLI dirs the OPERATOR resolved
+ *    ({@link SPAWN_PATH_DIRS_ENV}, filled by `buildConsoleEnvelope` because only
+ *    the operator process has the full environment; this window does not — see
+ *    backend-bin-resolve.mjs for why a desktop-spawned terminal loses
+ *    ~/.bun/bin, nvm, brew and friends).
+ *
+ * The append is deliberate and is the load-bearing distinction. Injecting these
+ * is a SAFETY NET for an env that cannot see them — not a claim that the
+ * operator's copy of a tool should beat the one the user put on their own PATH.
+ * Prepending would silently re-point a user's `claude`/`node`/`bun` at whatever
+ * the operator happened to resolve: a worse bug than the one being fixed, and an
+ * invisible one.
+ *
+ * Exported + pure (env in, string out) so the produced line can be EXECUTED in a
+ * test under a stripped environment. That matters more than it looks: the
+ * original defect had a green detection test and a dead terminal, because
+ * `omp` is `#!/usr/bin/env bun` and nothing tested that the emitted PATH made
+ * `bun` reachable too.
+ */
+export function buildPathExport(env: Record<string, string>): string | null {
+  const pathPrepend = [env.PAPERCUSP_BIN_DIR, env.PAPERCUSP_SCRIPTS_DIR].filter(Boolean) as string[];
+  const pathAppend = decodeSpawnPathDirs(env[SPAWN_PATH_DIRS_ENV]);
+  if (!pathPrepend.length && !pathAppend.length) return null;
+  const segments = [
+    ...pathPrepend.map((d) => shellEscape(d)),
+    '${PATH}',
+    ...pathAppend.map((d) => shellEscape(d)),
+  ];
+  return `export PATH=${segments.join(':')}`;
+}
+
 export function buildConsoleOneliner(
   cwd: string,
   env: Record<string, string>,
@@ -315,28 +357,8 @@ export function buildConsoleOneliner(
   bootReceiptPath?: string | null,
 ): string {
   const envExports: string[] = [];
-  // Prepend the writable shim dir (psu/ptool, ~/.papercusp/bin) AND the bundled
-  // scripts dir to PATH so the in-app terminal can run papercup/psu/ptool. Bin
-  // dir first so a user shim wins over a same-named bundled script.
-  const pathPrepend = [env.PAPERCUSP_BIN_DIR, env.PAPERCUSP_SCRIPTS_DIR].filter(Boolean) as string[];
-  // WI-37920 / P-001: the backend-CLI dirs the OPERATOR resolved (it has the full
-  // env; this window does not — see backend-bin-resolve.mjs for why a
-  // desktop-spawned terminal loses ~/.bun/bin, nvm, brew and friends).
-  //
-  // APPENDED, never prepended, and that is deliberate: injecting them is a
-  // SAFETY NET for an env that cannot see them, not a claim that the operator's
-  // copy of a tool should beat the one the user put on their own PATH. Prepending
-  // would silently re-point a user's `claude`/`node` at whatever the operator
-  // happened to resolve — a much worse bug than the one being fixed, and invisible.
-  const pathAppend = decodeSpawnPathDirs(env[SPAWN_PATH_DIRS_ENV]);
-  if (pathPrepend.length || pathAppend.length) {
-    const segments = [
-      ...pathPrepend.map((d) => shellEscape(d)),
-      '${PATH}',
-      ...pathAppend.map((d) => shellEscape(d)),
-    ];
-    envExports.push(`export PATH=${segments.join(':')}`);
-  }
+  const pathExport = buildPathExport(env);
+  if (pathExport) envExports.push(pathExport);
   for (const [k, v] of Object.entries(env)) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) continue;
     envExports.push(`export ${k}=${shellEscape(v)}`);
