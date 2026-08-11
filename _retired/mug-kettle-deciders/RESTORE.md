@@ -55,6 +55,29 @@ a name the module stopped exporting at the queen→mug rename, so their paired
 `not.toHaveBeenCalled()` assertions were **vacuously true** and would have passed however
 the routes behaved. Do not restore them as evidence of anything.
 
+### `mug-warm-session` (P-059 slice 3)
+
+Retired: `mug-warm-session.ts` + `mug-warm-session.test.ts`. **1 live importer at retirement.**
+
+| importer | symbol | what happened |
+|---|---|---|
+| `blueprint/blueprint-run-action.ts` | `mugWarmWakeAttempt` | The warm-wake wrapper around `defaultFire`'s cold `/invoke` spawn was deleted; the body now calls `coldFire()` directly. The wrapper's own documented fall-through WAS this cold spawn ("not ⇒ today's path, byte-identical"), and the attempt only ever acted for `role === 'mug' \|\| 'brain'` — roles the retired tier no longer spawns. |
+
+Also removed with it:
+
+- **`FLAGS.MUG_WARM_SESSION`** (`papercusp-queen-warm-session`) — deleted from
+  `libs/flags/src/types.ts`. `mug-warm-session.ts` was its ONLY reader, so after the move it
+  gated nothing. Restoring the module therefore requires re-adding the flag key.
+- Its **ALLOWLIST entry** in `scripts/check-no-raw-install-slug-filter.mjs` (the
+  `autoloop_state` relation verdict). That guard skips `_retired/`, so the entry was dead.
+
+⚠ **The flag was DEFAULT ON, not dark** — graduated 2026-07-02 by owner flip directive. Do
+not restore this module believing the path was dormant: `blueprint-run-action.ts`'s own
+call-site comment claimed "MUG_WARM_SESSION, default OFF" and was **stale by five weeks**
+(recorded as D-077). What made the deletion safe was the retired *tier* (no `mug`/`brain`
+role is spawned), NOT the flag being off. If the Mug tier is ever restored, this module's
+warm path becomes live again the moment the flag key exists.
+
 <!-- Later P-059 slices append rows here. Keep the "why it retired" column
      evidence-bearing (importer count at retirement), not just a restatement
      of the file name. -->

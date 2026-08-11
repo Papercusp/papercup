@@ -1574,15 +1574,11 @@ export const FLAGS = {
   // very fleet's claimable backlog carries WI-4137..WI-4141 each stamped with a `plan_item` ref
   // back to their source plan item). OFF ⇒ no promotion (the reversible fallback).
   PLAN_WORKITEM_PROMOTION: "papercusp-plan-workitem-promotion",
-  // queen-memory-hybrid-2026-07-02 L2 (owner-approved hybrid): queen wakes prefer the
-  // wake-executor liveness ladder (inject-if-live / claude --resume-if-exited — the
-  // proven B-LOOP-3 machinery) over a cold invoke-once spawn, giving the Queen a WARM
-  // session with managed compaction; deterministic REBIRTH (boot-id change / age>24h /
-  // anomaly) falls through to the cold spawn (today's behavior, byte-identical).
-  // DEFAULT ON (graduated 2026-07-02, owner flip directive after the attended A/B
-  // verify — not in DARK_FLAGS): queen wakes prefer the warm resume with deterministic
-  // rebirth.
-  MUG_WARM_SESSION: "papercusp-queen-warm-session",
+  // (MUG_WARM_SESSION / "papercusp-queen-warm-session" — the queen-memory-hybrid L2 warm-wake
+  // flag — was DELETED with the Mug tier: retire-mug-kettle-su-only-2026-08-09 P-059. Its sole
+  // reader, pot/mug-warm-session.ts, is retired to root `_retired/`, so the flag gated nothing.
+  // It was default-ON, which is why it had to go rather than linger: a live flag that gates no
+  // code reads as a working feature to anyone who greps for it.)
   // work-queue-completeness-2026-06-21 Phase A (unified-work-item-ledger): ENFORCEMENT —
   // every plan-item claim auto-mints a tracked work-item. When ON, the three bare-claim
   // bypass paths (plan_items:claim, coord:declare-intent { items }, plans:set-status → wip
