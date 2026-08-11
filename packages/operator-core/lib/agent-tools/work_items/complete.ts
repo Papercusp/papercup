@@ -1488,6 +1488,11 @@ export default defineTool({
   // plans:set-status. Inert except in the dispatch abort-race branch (dispatch-stack.ts).
   idempotent: true,
   requirePrincipal: false,
+  // EI-20194230704550984: completion owns its workspace-scoped reads/writes and
+  // does not use ctx.tx. Keeping the dispatcher's ambient transaction open while
+  // the completion ledger and finish legs await can exhaust the org-app pool and
+  // strand an otherwise verified completion behind the 45s acquisition deadline.
+  skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES],
   // INTRINSIC emission (D-002/D-004): a completion always auto-broadcasts its
   // structured record as a coord notification. The desugar registers this as an

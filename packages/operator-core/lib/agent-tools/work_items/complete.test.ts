@@ -74,6 +74,13 @@ import complete, {
 import { coerceCompletionShape, gatherFlatCompletion } from './completion-coerce';
 
 const ctx = { uiClientId: 'su-tester', isSuperuser: true, workspaceId: 'default' } as never;
+
+describe('work_items:complete — ambient workspace transaction safety (EI-20194230704550984)', () => {
+  it('opts out because completion owns its workspace-scoped ledger operations', () => {
+    expect((complete as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+});
+
 /**
  * P-017 (b) gate #2 / D-050: `assumptions` is now REQUIRED on every commitment-class
  * call. These ~100 tests are about completion semantics, not about the new gate, so the
