@@ -35,17 +35,16 @@ export default defineTool({
   name: 'pot:add-member',
   profile: 'engineer',
   description:
-    "Wire an existing harness in as a MEMBER of a local pot (sets its hive_slug so its work federates within the pot and surfaces in the Mug's member-scoped pot:survey). Registry edit only — never moves the harness folder or run data; best-effort seeds the member's git-sync routine. Idempotent (re-adding is a no-op success). Use this to remediate a member-less pot whose Mug surveys workspace-wide and escalates out-of-scope debris.",
+    "Wire an existing harness in as a MEMBER of a local pot (sets its hive_slug so its work federates within the pot). Registry edit only — never moves the harness folder or run data; best-effort seeds the member's git-sync routine. Idempotent (re-adding is a no-op success). Use this to remediate a member-less pot, whose pot-scoped reads fall back to a workspace-wide scope that sweeps in out-of-scope debris.",
   guidance: {
-    when: "A pot has no members so pot:survey falls back to workspace-wide scope (frontier empty / Mug-unresolvable escalations) — wire the real harness in. Also the producer for shared-pot federation membership.",
+    when: "A pot has no members, so pot-scoped reads fall back to workspace-wide scope and sweep in other harnesses' debris — wire the real harness in. Also the producer for shared-pot federation membership.",
     notWhen:
       'Adding a person/device to a pot (that is admission, a separate concern). Removing a member (re-point via the registry / pot:leave for a joined remote pot). Nesting a pot home as a member (rejected — pots compose as peers).',
     chaining:
-      'pot:list / pot:get to find the pot home + the member slug → pot:add-member → pot:start (or pot:wake) so the Mug surveys the now-scoped frontier → pot:survey to confirm members[] is non-empty + scope is pot-local.',
+      'pot:list / pot:get to find the pot home + the member slug → pot:add-member → pot:get to confirm members[] is non-empty.',
     seeAlso: [
       'pot:ban_member (remove a member)',
       'pot:membership_pending (approve a self-requested join instead of adding directly)',
-      'pot:survey (confirm the scoped frontier after adding)',
     ],
   },
   capability: 'harness:write',

@@ -196,7 +196,11 @@ const MENTION_NOT_CALL_ALLOWLIST = new Set<string>([
   // described/peer-routed actions in the generic base persona, not the coding-Queen's own
   // declared call set (her deps wire her concrete tools); left undeclared by design.
   'coding/mug/db:next-migration',
-  'coding/mug/pot:survey',
+  // ('coding/mug/pot:survey' removed by retire-mug-kettle-su-only-2026-08-09 P-059/D-080:
+  //  the tool retired to _retired/, which is outside buildToolCatalog()'s scan roots, so the
+  //  prompt's mention is no longer catalog-confirmed and the entry became stale. The stale-
+  //  allowlist guard at the bottom of this file is what catches this — restoring the tool
+  //  must restore this entry too, or that guard reds the other way.)
   'coding/mug/plans:promote',
   'coding/mug/plans:set-plan-status',
   // The Scout-routed draft review section names the rubric-ratify verb in the shared

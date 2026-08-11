@@ -42,7 +42,7 @@ export default defineTool({
     notWhen:
       'To READ or render the whole policy use autonomy:policy_get. To CHANGE a ceiling use autonomy:policy_set (owner-authority). This tool DECIDES one action; it never mutates.',
     chaining:
-      'pot:survey / improvements:digest → autonomy:decide per item → place/auto-handle the `auto` ones, route the `gated` ones to the owner Queue. Kettle: per anomaly suggestedAction → autonomy:decide → perform the `auto` ones, coord:escalate the `gated` ones.',
+      'improvements:digest → autonomy:decide per item → place/auto-handle the `auto` ones, route the `gated` ones to the owner Queue. Kettle: per anomaly suggestedAction → autonomy:decide → perform the `auto` ones, coord:escalate the `gated` ones.',
     seeAlso: [
       'autonomy:record_disposition (log what you did after deciding)',
       'autonomy:policy_get (the ceilings that gate auto-handling)',

@@ -1,6 +1,10 @@
 /**
- * THE TOOL GATE — the nine mug/kettle/cup tools that refuse while the tier is
+ * THE TOOL GATE — the mug/kettle/cup tools that refuse while the tier is
  * retired (retire-mug-kettle-su-only-2026-08-09 P-010, D-017, D-048).
+ *
+ * (No population COUNT is stated here on purpose: P-059 retires these tools one
+ * slice at a time, so any number written in this prose is wrong by the next
+ * slice. `GATED` below is the population; D-080 governs how it shrinks.)
  *
  * TWO POPULATIONS, gated for DIFFERENT reasons — do not collapse them:
  *   • ACTUATORS (D-017, 5) — they INITIATE or SUSTAIN autonomous tier work, so
@@ -167,6 +171,17 @@ describe('P-010 tool gate: the shared refusal', () => {
  * `hive_paused` and tells the caller "pot:start resumes autonomous wakes" —
  * pointing at a tool D-017 gates, so a retired tier sent the caller to a dead
  * route without ever naming the flag. Pause and retirement are different states.
+ *
+ * ⚠ THIS LIST SHRINKS AS P-059 DELETES TIER CODE, and that is CORRECT (D-080).
+ * A row asserts two things: the gate refuses the tool, and — the CALIBRATION
+ * case — flipping the flag back ON restores it. Deleting a tool's file removes
+ * the SECOND property on purpose: once the module is in `_retired/` and
+ * unregistered from agent-tools/index.ts, flag-ON no longer brings it back. So
+ * a retired tool's row is not "coverage lost", it is a row whose SUBJECT
+ * retired, and keeping it would assert a reversibility the system no longer
+ * honours. The restore contract MOVES from the flag to
+ * `_retired/mug-kettle-deciders/RESTORE.md`, which records every row removed
+ * here so that a restore re-adds it. Removed so far: pot:survey (P-059).
  */
 const GATED: Array<{ name: string; load: () => Promise<{ default: unknown }>; args: Record<string, unknown> }> = [
   // D-017 actuators — the refusal is harm-prevention.
@@ -180,9 +195,26 @@ const GATED: Array<{ name: string; load: () => Promise<{ default: unknown }>; ar
   // answers would misreport a retired tier as a healthy idle one.
   { name: 'pot:set-steering', load: () => import('./pot/set_steering'), args: { pot: 'papercusp', pauseNewWork: true } },
   { name: 'pot:declare-wake', load: () => import('./pot/declare_wake'), args: { harness: 'papercusp', inSeconds: 60 } },
-  { name: 'pot:survey', load: () => import('./pot/survey'), args: { harness: 'papercusp' } },
+  // (pot:survey retired here by P-059/D-080 — see the note above this list.)
   { name: 'pot:mug_efficiency', load: () => import('./pot/mug_efficiency'), args: { harness: 'papercusp' } },
 ];
+
+/**
+ * ANTI-VACUITY (D-080). `describe.each([])` registers NO tests and passes
+ * silently, and the EXCLUDED suites below keep this file non-empty so
+ * `passWithNoTests` never fires either — so an emptied GATED list would look
+ * exactly like a green gate. This plan has already been bitten twice by a
+ * vacuous-pass guard, and P-059 removes rows from this list one slice at a
+ * time, which is precisely the process that walks it toward zero.
+ *
+ * Asserted while the list is still long, not when it is nearly empty: if the
+ * LAST gated tool retires, this fails, and D-080 says the answer is to REPLACE
+ * this suite with a guard that the gate module itself is unreachable — never to
+ * delete it.
+ */
+it('D-080: the GATED population is non-empty (a drained list would pass vacuously)', () => {
+  expect(GATED.length).toBeGreaterThan(0);
+});
 
 describe.each(GATED)('P-010 tool gate: $name', ({ name, load, args }) => {
   it('tier RETIRED: refuses, and performs NO write', async () => {

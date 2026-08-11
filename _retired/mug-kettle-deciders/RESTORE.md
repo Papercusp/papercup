@@ -154,6 +154,48 @@ ratchet moved by one — `LEARNING_VIEWS` lost a member and the source scan lost
 (the panel had a `useInteractionSettle` point and `_retired/` is outside `SCAN_ROOTS`) — so
 `unmeasured` stayed 0. Restoring the panel must move it back to 16, or the guard reds.
 
+### `pot:survey` — the tool, its shaper, its own tests (P-059 slice 6, 2026-08-11)
+
+**FIRST retirement of a GATED tool, so it is the precedent D-080 sets.** Four files moved to
+`packages/operator-core/lib/agent-tools/pot/` under this dir:
+
+| file | why it retired (measured at retirement) |
+|---|---|
+| `survey.ts` | the `pot:survey` TOOL. Gated at `:39` (`refuseIfMugKettleRetired`) ⇒ genuinely dead. Live importers: **none** — only its own two tests below. |
+| `survey-shape.ts` | its payload-tier shaper. Importers at retirement: `survey.ts` + one test. Its ONLY production consumer was the retiring tool, so D-080 retires it too rather than leave dead code with a green test proving the dead code works. |
+| `survey-claim-order-check.test.ts` | tests the tool. |
+| `survey-workspace-scope.test.ts` | tests the tool. |
+
+⚠ **`packages/operator-core/lib/pot/survey.ts` is a DIFFERENT FILE and is LIVE — do not
+confuse them.** That one is the placement LIBRARY (`surveyPot`, `filterReadyFrontier`,
+`resolvePotMembership`, …) with ~10 live importers, kept by **D-078**. The retired file is
+the `agent-tools/` TOOL that imported *from* it. Both are named `survey.ts`; the tests are
+even named alike (`survey-workspace-scope.test.ts` exists in BOTH trees — only the
+`agent-tools/pot/` one retired).
+
+**Three live-tree edits go with it — a restore must undo ALL of them:**
+
+1. `agent-tools/index.ts` — the registration site. `import './pot/survey';` (was `:169`)
+   replaced by a comment. **A restore that returns the file but not this line silently
+   restores nothing**: the barrel is how the tool registers, and a bare side-effecting
+   import leaves no other trace.
+2. `agent-tools/mug-kettle-tool-gate.test.ts` — the `{ name: 'pot:survey', … }` row removed
+   from `GATED`. **This is the D-080 contract in action.** The row asserted two things: the
+   gate refuses the tool, AND (the calibration case) flag-ON restores it. Deletion removes
+   the second property deliberately — flipping `papercusp-mug-kettle-system` back ON does
+   NOT bring a retired, unregistered module back — so the row would assert a reversibility
+   the system no longer honours. **The restore contract for that reversibility is now THIS
+   FILE.** Restoring the tool must re-add its GATED row, or the gate coverage is silently
+   lost. Same file: a `GATED.length > 0` anti-vacuity test was added (`describe.each([])`
+   passes silently, and the EXCLUDED suites keep the file non-empty so `passWithNoTests`
+   never fires either), and the header's hardcoded "nine tools" count was removed because it
+   drifts on every slice.
+3. `agent-tools/recall-reads-shape.test.ts` — narrowed, **not deleted** (D-080: a shared test
+   keeps its surviving subjects). Its `describe("shapePotSurvey (P-024)")` block and the
+   `ranked()` helper feeding it were removed along with the `./pot/survey-shape` import; the
+   `shapeMemoryHit` half is untouched. Restoring `survey-shape.ts` must restore that block —
+   `git log -- <this file>` recovers it verbatim.
+
 <!-- Later P-059 slices append rows here. Keep the "why it retired" column
      evidence-bearing (importer count at retirement), not just a restatement
      of the file name. -->
