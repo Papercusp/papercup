@@ -32,6 +32,7 @@ function rubric(overrides: Partial<Rubric> = {}): Rubric {
   return {
     rubricId: 'test-rubric',
     workspaceId: 'ws',
+    kind: 'standard',
     characteristic: 'test',
     title: 'Test rubric',
     description: '',
