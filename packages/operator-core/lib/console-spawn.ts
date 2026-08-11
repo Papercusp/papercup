@@ -47,6 +47,10 @@ import { join } from 'node:path';
 
 import type { ConsoleEnvelope } from './console-launcher';
 import type { ColorScheme } from './console-color-schemes';
+// WI-37920 / P-001: plain-ESM shared module — psu-launcher.mjs (bare `node`,
+// cannot import TypeScript) imports the SAME definitions, so detection and
+// injection can never drift apart. See backend-bin-resolve.mjs's header.
+import { SPAWN_PATH_DIRS_ENV, decodeSpawnPathDirs } from './backend-bin-resolve.mjs';
 import { isWindowsDesktopHost } from './windows-desktop-windows';
 import { requestDesktopConsoleLaunch } from './console-launch-bridge';
 // task-manager P-009 follow-up: the HEADLESS path enrols (see
@@ -315,8 +319,23 @@ export function buildConsoleOneliner(
   // scripts dir to PATH so the in-app terminal can run papercup/psu/ptool. Bin
   // dir first so a user shim wins over a same-named bundled script.
   const pathPrepend = [env.PAPERCUSP_BIN_DIR, env.PAPERCUSP_SCRIPTS_DIR].filter(Boolean) as string[];
-  if (pathPrepend.length) {
-    envExports.push(`export PATH=${pathPrepend.map((d) => shellEscape(d)).join(':')}:\${PATH}`);
+  // WI-37920 / P-001: the backend-CLI dirs the OPERATOR resolved (it has the full
+  // env; this window does not — see backend-bin-resolve.mjs for why a
+  // desktop-spawned terminal loses ~/.bun/bin, nvm, brew and friends).
+  //
+  // APPENDED, never prepended, and that is deliberate: injecting them is a
+  // SAFETY NET for an env that cannot see them, not a claim that the operator's
+  // copy of a tool should beat the one the user put on their own PATH. Prepending
+  // would silently re-point a user's `claude`/`node` at whatever the operator
+  // happened to resolve — a much worse bug than the one being fixed, and invisible.
+  const pathAppend = decodeSpawnPathDirs(env[SPAWN_PATH_DIRS_ENV]);
+  if (pathPrepend.length || pathAppend.length) {
+    const segments = [
+      ...pathPrepend.map((d) => shellEscape(d)),
+      '${PATH}',
+      ...pathAppend.map((d) => shellEscape(d)),
+    ];
+    envExports.push(`export PATH=${segments.join(':')}`);
   }
   for (const [k, v] of Object.entries(env)) {
     if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(k)) continue;

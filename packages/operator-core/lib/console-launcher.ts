@@ -25,6 +25,13 @@ import { resolveBackend } from '@papercusp/papercusp-shared/agent';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
 
+// WI-37920 / P-001: plain-ESM shared module (psu-launcher.mjs imports the same
+// one from bare `node`) — see backend-bin-resolve.mjs's header for why.
+import {
+  SPAWN_PATH_DIRS_ENV,
+  encodeSpawnPathDirs,
+  resolveSpawnPathDirs,
+} from './backend-bin-resolve.mjs';
 import { papercuspPathForWorkspace } from './papercusp-root';
 // EI-10938: resolve the workspace's home CHECKOUT for a no-slug launch.
 import { detectPapercupRoot, hasPapercupMarkers } from './harness/register-papercusp';
@@ -358,6 +365,30 @@ export async function buildConsoleEnvelope(
   // it so the spawner can prepend it to PATH — that's what makes `psu` runnable
   // from the in-app terminal (psu-in-desktop-builds-2026-06-23 A2b).
   env.PAPERCUSP_BIN_DIR = join(homedir(), '.papercusp', 'bin');
+
+  // WI-37920 / P-001 — make the spawned window's env SELF-SUFFICIENT.
+  //
+  // `psu` being on PATH is not enough: psu then has to find the backend CLI
+  // (`claude`/`codex`/`omp`) and RUN it, and a desktop-spawned terminal has
+  // neither the operator's PATH nor an interactive shell's rc-file additions. The
+  // measured failure: `omp` lives in ~/.bun/bin, a dir added by ~/.bashrc BELOW
+  // its "if not running interactively, return" early-exit — and gnome-terminal
+  // hands the command to a D-Bus server running under the DESKTOP session's env
+  // anyway. Result: `psu: the omp backend (`omp`) is not installed` in a window
+  // where `omp` demonstrably works for the human.
+  //
+  // Resolve HERE, where the operator's full environment is available, and carry
+  // the answer as data. That is what makes this correct for every emulator (the
+  // client-server ones run the command under a foreign env, the process-per-window
+  // ones inherit ours) and every OS, without modelling any of them — and it fixes
+  // the shebang layer for free, because the resolver also resolves `#!/usr/bin/env
+  // bun`'s interpreter. Best-effort: a resolver fault must never block a launch.
+  try {
+    const spawnDirs = resolveSpawnPathDirs();
+    if (spawnDirs.dirs.length) env[SPAWN_PATH_DIRS_ENV] = encodeSpawnPathDirs(spawnDirs.dirs);
+  } catch {
+    /* resolution is a safety net; never fail a launch over it */
+  }
 
 
   // 3. Build the .mcp.json that the user's claude/codex agent will
