@@ -53,7 +53,8 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import { listFleetAssignments, deriveActivity, type FleetAssignmentRow } from './fleet/assignments';
-import { resolveSessionStates, type SessionState } from './agent-tools/coordination/liveness-oracle';
+import { resolveSessionStates } from './agent-tools/coordination/liveness-oracle';
+import type { SessionState } from './agent-tools/coordination/presence-wakeability';
 import { planItemRef, PLAN_ITEM_KIND } from './issue-blocks-merge';
 import { ISSUE_FAMILY_KINDS } from './work-items';
 import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
