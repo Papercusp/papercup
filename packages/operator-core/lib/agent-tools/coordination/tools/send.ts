@@ -1573,9 +1573,9 @@ async function effectiveFederationScope(
 export default defineTool({
   name: 'coord:send',
   description:
-    'Send coordination messages. Single: {to, summary, expects, …}; distinct messages: items:[…]. `to` accepts ownerIds, ["*"] for fleet scope, or ["human"]. `expects` is REQUIRED: ack|answer|action|none; FYI uses `none` (expectsReply is derived). `body` is sections; `couldNotDetermine` uses [{ what, note? }] objects. Default injects; `wake` re-invokes sleeping recipients (`required` reports misses; `optimistic` needs `backstop`). Returns per-message {ok, to, msg_id|error} counts.',
+    'Send coordination messages. Single: {to, summary, expects, …}; distinct messages: items:[…]. `to` accepts ownerIds, ["*"] for fleet scope, or ["human"]. `expects` is REQUIRED: ack|answer|action|none; FYI uses `none` (expectsReply is derived). The optional envelope `why` is `{ goalRef, note? }` (a goal REF, never prose). `body` is sections; `couldNotDetermine` uses [{ what, note? }] objects. Default injects; `wake` re-invokes sleeping recipients (`required` reports misses; `optimistic` needs `backstop`). Returns per-message {ok, to, msg_id|error} counts.',
   guidance: {
-    when: 'Share context or ask. Use items:[…] for distinct messages. In body sections, `couldNotDetermine` is [{ what: "thing", note? }] objects, not a string or array of strings. wake:\'required\' = must act, miss → recipient_absent; wake:\'optimistic\' = best effort with `backstop`. Running recipients already see the inject; a wake wastes a turn.',
+    when: 'Share context or ask. Use items:[…] for distinct messages. The optional envelope `why` is `{ goalRef: "<goal/work-item ref>", note?: "<detail>" }`, a goal REF rather than prose. In body sections, `couldNotDetermine` is [{ what: "thing", note? }] objects, not a string or array of strings. wake:\'required\' = must act, miss → recipient_absent; wake:\'optimistic\' = best effort with `backstop`. Running recipients already see the inject; a wake wastes a turn.',
     notWhen: 'Human reply: speak. File lock: locks:acquire. Ambient note: omit wake. One message to many: to:[…]; distinct messages: items:[…]. Work transfer: coord:handoff.',
     seeAlso: [
       'coord:handoff (transfer WORK, not just a message)',
