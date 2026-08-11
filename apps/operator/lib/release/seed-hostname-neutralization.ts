@@ -41,6 +41,15 @@
  *
  * The decision is a PURE function so it can be tested without spawning anything; the
  * caller performs the re-exec.
+ *
+ * ── WHY NOT REUSE `provision/sandbox.ts` (which also shells bwrap) ──
+ * It has a same-named private `buildBwrapArgv`, but it is the OPPOSITE tool: a
+ * CONFINEMENT sandbox for untrusted plugin setup scripts — `--unshare-pid/ipc/user`,
+ * `--proc`, `--dev`, `tmpfs /tmp`, `--ro-bind /usr|/lib|/etc`. Every one of those breaks a
+ * seed cut, which needs the real filesystem, a real /tmp, the live corestore and a PG
+ * socket. We unshare UTS and NOTHING else, for the single purpose of changing what
+ * gethostname() returns. Nothing there is exported either. So this is a genuinely
+ * different concern, not a fork — do not "consolidate" the two.
  */
 
 import { accessSync, constants } from 'node:fs';
