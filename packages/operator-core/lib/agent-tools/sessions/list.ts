@@ -222,11 +222,44 @@ export default defineTool({
     // those tools see even when the owner stamp diverges. Page one only (the row is
     // not part of the offset stream); fail-soft (the fallback is a bonus, never
     // breaks the list).
-    if (args.owner === 'self' && offset === 0 && owner) {
+    // WI-37867 GENERALISES the EI-11403 fallback from owner:'self' to ANY named
+    // owner. The HUD conversation popup resolves an ARBITRARY agent's ownerId
+    // through this tool, and a session that has produced ZERO turns is absent
+    // from session_turns entirely — so the popup received null, built no stream
+    // URL, and rendered a silently blank window (no banner: the fetch resolved
+    // rather than threw). That is precisely the moment a human opens a chat: the
+    // session is newest. adv_sessions carries session_id from the instant of
+    // launch, so it can answer "which session is this agent running RIGHT NOW"
+    // when the transcript index structurally cannot.
+    if (offset === 0 && owner) {
       try {
         const { resolveSelfSession } = await import('../../search/self-session');
+        // Discovery-record lens first — it is what EI-11403 needed, because a
+        // managed-Codex live session's turns can be stamped under a different
+        // owner. Then the adv_sessions lens, which covers the zero-turn case the
+        // discovery record cannot (and does not depend on a pty record existing).
         const self = await resolveSelfSession(owner);
-        if (self && !sessions.some((s) => s.source_kind === self.sourceKind && s.session_id === self.sessionId)) {
+        let live: { sourceKind: string; sessionId: string } | null =
+          self ? { sourceKind: self.sourceKind, sessionId: self.sessionId } : null;
+        if (!live) {
+          const advRows = await tx<Array<{ agent: string | null; session_id: string }>>`
+            SELECT agent, session_id
+              FROM harness_shared.adv_sessions
+             WHERE coord_owner_id = ${owner}
+               AND ended_at IS NULL
+               AND session_id IS NOT NULL
+               AND (workspace_id = ${workspaceId} OR workspace_id = 'default')
+             ORDER BY started_at DESC
+             LIMIT 5`;
+          // Filter in JS against SESSION_SOURCE_KINDS so that constant stays the
+          // single source of truth (an agent value outside it has no lens here).
+          const adv = advRows.find((r) => r.agent != null
+            && (SESSION_SOURCE_KINDS as readonly string[]).includes(r.agent));
+          if (adv?.agent) live = { sourceKind: adv.agent, sessionId: adv.session_id };
+        }
+        // Bind to a const so the null-check narrows inside the closure below.
+        const liveSession = live;
+        if (liveSession && !sessions.some((s) => s.source_kind === liveSession.sourceKind && s.session_id === liveSession.sessionId)) {
           const liveRows = await tx<Array<{
             turns: number; prompt_count: number;
             harness_slug: string | null; cwd: string | null;
@@ -239,14 +272,14 @@ export default defineTool({
                    to_json(max(ts))  #>> '{}' AS last_ts
               FROM harness_shared.session_turns
              WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
-               AND source_kind = ${self.sourceKind} AND session_id = ${self.sessionId}
+               AND source_kind = ${liveSession.sourceKind} AND session_id = ${liveSession.sessionId}
                AND COALESCE(ts, ingested_at) < ${snapshotUntil}::timestamptz
                AND (${args.since ?? null}::timestamptz IS NULL OR COALESCE(ts, ingested_at) >= ${args.since ?? null}::timestamptz)
           `;
           const lr = liveRows[0];
           sessions.unshift({
-            source_kind: self.sourceKind,
-            session_id: self.sessionId,
+            source_kind: liveSession.sourceKind,
+            session_id: liveSession.sessionId,
             turns: lr?.turns ?? 0,
             prompt_count: lr?.prompt_count ?? 0,
             owner,
@@ -290,7 +323,7 @@ export default defineTool({
             'Indexed sessions only (ingest window ~45d). Raw pre-window files: dev:claude_session / dev:omp_session. ' +
             'Timestamps are ISO-8601 with an explicit offset; `since` is parsed as UTC. ' +
             'UNITS (EI-9970): `turns` = indexed TEXT turns only (excludes tool_use/tool_result/thinking content) — for cost/effort audits use prompt_count/response_count/tool_call_count instead (see this tool\'s description for exact definitions). response_count/tool_call_count are null for source_kind=agent_chat (no tool-call signal in that transcript shape). ' +
-            'EI-11403: a row with `active:true` (owner:\'self\' only) is your LIVE session surfaced even when its turns are still indexing / stamped under another owner — turns may lag; sessions:search { session:\'self\' } reads its full content.',
+            'EI-11403/WI-37867: a row with `active:true` is that owner\'s LIVE session surfaced even when it has produced NO indexed turns yet (or they are stamped under another owner) — such a row reads turns:0 and is NOT evidence the session is idle; sessions:search { session } reads its full content.',
           sessions,
         }),
       }],
