@@ -242,13 +242,21 @@ export default defineTool({
         let live: { sourceKind: string; sessionId: string } | null =
           self ? { sourceKind: self.sourceKind, sessionId: self.sessionId } : null;
         if (!live) {
+          // ⚠ NO workspace predicate here, deliberately — do not "restore" one.
+          // session_turns.workspace_id is the literal 'default' (a transcript
+          // CORPUS namespace, not a tenant), which is why the main query above
+          // can say `= workspaceId OR = 'default'`. adv_sessions is TENANT-keyed
+          // ('papercusp-workspace'), so copying that predicate here matches
+          // NOTHING whenever ctx.workspaceId is 'default'/'' — measured: it
+          // silently returned zero rows for a live session that plainly exists,
+          // i.e. it reproduced the very bug this block fixes. coord_owner_id is
+          // a globally unique agent id, so it is already an exact scope.
           const advRows = await tx<Array<{ agent: string | null; session_id: string }>>`
             SELECT agent, session_id
               FROM harness_shared.adv_sessions
              WHERE coord_owner_id = ${owner}
                AND ended_at IS NULL
                AND session_id IS NOT NULL
-               AND (workspace_id = ${workspaceId} OR workspace_id = 'default')
              ORDER BY started_at DESC
              LIMIT 5`;
           // Filter in JS against SESSION_SOURCE_KINDS so that constant stays the
