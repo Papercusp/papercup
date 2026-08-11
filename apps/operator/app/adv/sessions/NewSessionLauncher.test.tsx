@@ -52,7 +52,14 @@ vi.mock('sonner', () => ({
   toast: { success: h.toastSuccess, error: h.toastError, warning: h.toastWarning },
 }));
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
-vi.mock('@papercusp/operator-core/lib/launch-agent', () => ({
+// WI-37871: spread the REAL module rather than listing exports. This mock used
+// to return `{ launchAgent }` alone, which silently made every OTHER export
+// `undefined` inside the component — so `headless: OWNER_LAUNCH_HEADLESS` would
+// have arrived as `undefined` and the headless assertion below could not fail
+// for the right reason. Keeping the original module means the test pins the REAL
+// constant: flip it to `false` in launch-agent.ts and this suite goes red.
+vi.mock('@papercusp/operator-core/lib/launch-agent', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/operator-core/lib/launch-agent')>()),
   launchAgent: (opts: unknown) => h.launchAgent(opts),
 }));
 vi.mock('@/app/admin/plans/plans-api', () => ({
