@@ -58,7 +58,11 @@ describe('git seed provider', () => {
 
     const provider = createGitSeedProvider();
     const staging = tmpDir('gseed-stage-');
-    const { entry, payload } = await provider.cut({ sourceRepoDir: src, stagingDir: staging, originUrl: 'https://github.com/Papercusp/papercup' });
+    const { entry, payload } = await provider.cut({
+      sourceRepoDir: src,
+      stagingDir: staging,
+      originUrl: 'https://github.com/Papercusp/papercup',
+    });
     expect(entry.kind).toBe(GIT_SEED_KIND);
     expect(existsSync(join(staging, 'super.bundle'))).toBe(true);
     expect(await provider.verify(entry, payload)).toEqual({ ok: true });
@@ -99,7 +103,11 @@ describe('git seed provider', () => {
 
     const provider = createGitSeedProvider();
     const staging = tmpDir('gseed-stage2-');
-    const { entry, payload } = await provider.cut({ sourceRepoDir: superSrc, stagingDir: staging, originUrl: 'https://example/super' });
+    const { entry, payload } = await provider.cut({
+      sourceRepoDir: superSrc,
+      stagingDir: staging,
+      originUrl: 'https://example/super',
+    });
     expect((entry.meta as { submodulePaths: string[] }).submodulePaths).toContain('vendor/sub');
     expect(existsSync(join(staging, 'submodules'))).toBe(true);
     expect(await provider.verify(entry, payload)).toEqual({ ok: true });
@@ -131,7 +139,13 @@ describe('git seed provider', () => {
 
     const provider = createGitSeedProvider();
     const staging = tmpDir('gseed-depth-stage-');
-    const { entry, payload } = await provider.cut({ sourceRepoDir: superSrc, stagingDir: staging, originUrl: 'https://example/super', rev: 'HEAD', depth: 1 });
+    const { entry, payload } = await provider.cut({
+      sourceRepoDir: superSrc,
+      stagingDir: staging,
+      originUrl: 'https://example/super',
+      rev: 'HEAD',
+      depth: 1,
+    });
     expect((entry.meta as { depth?: number }).depth).toBe(1);
     expect(await provider.verify(entry, payload)).toEqual({ ok: true });
 
@@ -196,7 +210,9 @@ describe('git seed provider', () => {
 
     // Restore with NO key → refused.
     const noKeyTarget = join(tmpDir('gseed-enc-nokey-'), 'checkout');
-    await expect(provider.restore(entry, payload, { targetRepoDir: noKeyTarget })).rejects.toThrow(/no decryption key/i);
+    await expect(provider.restore(entry, payload, { targetRepoDir: noKeyTarget })).rejects.toThrow(
+      /no decryption key/i,
+    );
 
     // Restore with a WRONG key → decrypt fails.
     const badTarget = join(tmpDir('gseed-enc-bad-'), 'checkout');
@@ -286,7 +302,12 @@ describe('git seed provider', () => {
     await g(src, ['commit', '-qm', 'c']);
     const staging = tmpDir('gseed-stage3-');
     const { payload } = await provider.cut({ sourceRepoDir: src, stagingDir: staging, originUrl: 'u' });
-    const bogus = { kind: GIT_SEED_KIND, hash: 'deadbeef'.repeat(8), sizeBytes: 0, source: { type: 'resource' as const, path: staging } };
+    const bogus = {
+      kind: GIT_SEED_KIND,
+      hash: 'deadbeef'.repeat(8),
+      sizeBytes: 0,
+      source: { type: 'resource' as const, path: staging },
+    };
     const res = await provider.verify(bogus, payload);
     expect(res.ok).toBe(false);
     expect(res.reason).toMatch(/hash mismatch/);

@@ -198,7 +198,9 @@ export const runGitBounded = async (
     try {
       return await runGitViaSpawnerSidecar(args, cwd, timeoutMs, env);
     } catch (e) {
-      console.warn(`[git-sync] spawner-sidecar git fallback to local spawn: ${e instanceof Error ? e.message : String(e)}`);
+      console.warn(
+        `[git-sync] spawner-sidecar git fallback to local spawn: ${e instanceof Error ? e.message : String(e)}`,
+      );
     }
   }
   return runGitLocalBounded(args, cwd, timeoutMs);
@@ -655,9 +657,7 @@ export async function clearStaleIndexLock(
   try {
     await unlinkFile(lockPath);
   } catch (e) {
-    log(
-      `[git-sync] ${repoPath}: could not unlink stale index.lock: ${e instanceof Error ? e.message : String(e)}`,
-    );
+    log(`[git-sync] ${repoPath}: could not unlink stale index.lock: ${e instanceof Error ? e.message : String(e)}`);
     return false;
   }
   log(
@@ -827,7 +827,11 @@ type RepoSyncResult = { oversized: OversizedFile[]; contentErrors: ContentOffend
  */
 // Exported for the exact-boundary table test (test-coverage-gap G22): the size
 // comparison is strict `>` — a file AT maxBytes must be INCLUDED, not excluded.
-export async function findOversizedDirtyFiles(runGit: RunGit, repoPath: string, maxBytes: number): Promise<OversizedFile[]> {
+export async function findOversizedDirtyFiles(
+  runGit: RunGit,
+  repoPath: string,
+  maxBytes: number,
+): Promise<OversizedFile[]> {
   const r = await runGit(['status', '--porcelain', '-z', '-uall'], repoPath);
   if (r.code !== 0) return [];
   const entries = r.stdout.split('\0').filter(Boolean);
@@ -1026,7 +1030,10 @@ async function commitOneRepo(runGit: RunGit, repoPath: string, o: CommitRepoOpts
     if (bulk.length > 0) {
       o.log(
         `[git-sync] cumulative dirty set exceeds ${o.maxCommitTotalBytes} bytes — excluding ${bulk.length} large file(s) ` +
-          `from this commit (left dirty): ${bulk.slice(0, 5).map((f) => `${f.path} (${f.sizeBytes}B)`).join('; ')}`,
+          `from this commit (left dirty): ${bulk
+            .slice(0, 5)
+            .map((f) => `${f.path} (${f.sizeBytes}B)`)
+            .join('; ')}`,
       );
       oversized = [...oversized, ...bulk];
     }
@@ -1241,7 +1248,10 @@ async function reconcileAndPushOneRepo(
       const rl = await runGit(['rev-list', '--count', `${remote}/${branch}..HEAD`], repoPath);
       const aheadCount = rl.code === 0 ? Number.parseInt(rl.stdout.trim(), 10) || 0 : 1; // ref missing → assume unpushed
       if (committedLocal || aheadCount > 0) {
-        return { status: 'error', message: `fetch failed; HEAD has unpushed commits not on ${remote}/${branch} (cannot reconcile)` };
+        return {
+          status: 'error',
+          message: `fetch failed; HEAD has unpushed commits not on ${remote}/${branch} (cannot reconcile)`,
+        };
       }
       return { status: 'nothing' };
     }
@@ -1383,11 +1393,28 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   const contentDetectors = opts.contentDetectors ?? DEFAULT_CONTENT_DETECTORS;
   const deletionGuard = opts.deletionGuard ?? true;
   const readText = opts.readText ?? defaultReadText;
-  const repoO = { remote, message, doPush, maxBlobBytes, maxCommitTotalBytes, contentDetectors, deletionGuard, readText, log };
+  const repoO = {
+    remote,
+    message,
+    doPush,
+    maxBlobBytes,
+    maxCommitTotalBytes,
+    contentDetectors,
+    deletionGuard,
+    readText,
+    log,
+  };
 
   const repo = opts.repoPath ?? (await projectDirForSlug(slug));
   if (!repo) {
-    return { status: 'error', errors: [{ scope: 'superproject', message: `no repo path registered for harness '${slug}'` }], pushed: [], merged: [], oversized: [], contentErrors: [] };
+    return {
+      status: 'error',
+      errors: [{ scope: 'superproject', message: `no repo path registered for harness '${slug}'` }],
+      pushed: [],
+      merged: [],
+      oversized: [],
+      contentErrors: [],
+    };
   }
 
   // P-004: the live roster (active agents + their declared files) for THIS tick, supplied by
@@ -1406,13 +1433,21 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     didSomething: boolean;
   }
   const emptyPhase = (): PhaseCollect => ({
-    conflicts: [], errors: [], pushed: [], merged: [], oversized: [], contentErrors: [], didSomething: false,
+    conflicts: [],
+    errors: [],
+    pushed: [],
+    merged: [],
+    oversized: [],
+    contentErrors: [],
+    didSomething: false,
   });
 
   const absorb = (into: PhaseCollect, scope: string, r: RepoSyncResult): void => {
     if (r.oversized.length > 0) {
       into.oversized.push(...r.oversized.map((f) => ({ scope, ...f })));
-      log(`[git-sync] ${scope}: EXCLUDED ${r.oversized.length} oversized file(s) from the auto-commit (${r.oversized.map((f) => `${f.path} ${(f.sizeBytes / 1048576).toFixed(1)}MB`).join(', ')}) — gitignore or remove them (${slug})`);
+      log(
+        `[git-sync] ${scope}: EXCLUDED ${r.oversized.length} oversized file(s) from the auto-commit (${r.oversized.map((f) => `${f.path} ${(f.sizeBytes / 1048576).toFixed(1)}MB`).join(', ')}) — gitignore or remove them (${slug})`,
+      );
     }
     if (r.contentErrors.length > 0) {
       // EI-438 (D-001): broken files were EXCLUDED from this commit + left dirty for the
@@ -1420,11 +1455,15 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       // NOT defer the superproject (the (sub)repo's commit WITHOUT the broken file IS on
       // its origin, so the parent gitlink resolves).
       into.contentErrors.push(...r.contentErrors.map((c) => ({ scope, ...c })));
-      log(`[git-sync] ${scope}: QUARANTINED ${r.contentErrors.length} broken file(s) from the auto-commit (${r.contentErrors.map((c) => `${c.file} [${c.detectorKey}]`).join(', ')}) — content-fixer dispatched (${slug})`);
+      log(
+        `[git-sync] ${scope}: QUARANTINED ${r.contentErrors.length} broken file(s) from the auto-commit (${r.contentErrors.map((c) => `${c.file} [${c.detectorKey}]`).join(', ')}) — content-fixer dispatched (${slug})`,
+      );
     }
     if (r.status === 'conflict') {
       into.conflicts.push({ scope, conflictedFiles: r.conflictedFiles });
-      log(`[git-sync] ${scope}: merge conflict (${r.conflictedFiles.join(', ')}) — aborted clean, continuing (${slug})`);
+      log(
+        `[git-sync] ${scope}: merge conflict (${r.conflictedFiles.join(', ')}) — aborted clean, continuing (${slug})`,
+      );
     } else if (r.status === 'error') {
       into.errors.push({ scope, message: r.message });
       log(`[git-sync] ${scope}: ${r.message} — continuing (${slug})`);
@@ -1453,7 +1492,16 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       // EI-18689553108460319: submodules push under `doSubPush`, NOT the superproject's
       // `doPush` — a bridged/p2p-only hive's push:false must not silently strand every
       // submodule's commits too (see GitSyncConfig.pushSubmoduleOrigins).
-      absorb(out, s, await syncOneRepo(runGit, join(repo, s), { ...repoO, doPush: doSubPush, defaultBranch: 'main', attribution: attributionMapForRepo(roster, s, repo) }));
+      absorb(
+        out,
+        s,
+        await syncOneRepo(runGit, join(repo, s), {
+          ...repoO,
+          doPush: doSubPush,
+          defaultBranch: 'main',
+          attribution: attributionMapForRepo(roster, s, repo),
+        }),
+      );
     }
     return out;
   });
@@ -1480,19 +1528,33 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   // PHASE `git-sync:pointer-bump` — superproject stage + content-guard + commit (this
   // commit is what bakes the bumped submodule pointers in). ALWAYS runs.
   const commitRes = await step('git-sync:pointer-bump', () =>
-    commitOneRepo(runGit, repo, { ...repoO, attribution: attributionMapForRepo(roster, '', repo) }));
+    commitOneRepo(runGit, repo, { ...repoO, attribution: attributionMapForRepo(roster, '', repo) }),
+  );
   let repoResult: RepoSyncResult;
   if (commitRes.error) {
-    repoResult = { status: 'error', message: commitRes.error, oversized: commitRes.oversized, contentErrors: commitRes.contentErrors };
+    repoResult = {
+      status: 'error',
+      message: commitRes.error,
+      oversized: commitRes.oversized,
+      contentErrors: commitRes.contentErrors,
+    };
   } else if (pushBlocked) {
     // Committed locally (or there was nothing to commit); the network half waits for a
     // tick on which every submodule reconciled. Same shape reconcileAndPushOneRepo
     // returns for its own committed-but-did-not-push case (the offline path).
     superHeadSha = await headSha(runGit, repo);
     repoResult = commitRes.committedLocal
-      ? { status: 'synced', pushed: false, merged: false, oversized: commitRes.oversized, contentErrors: commitRes.contentErrors }
+      ? {
+          status: 'synced',
+          pushed: false,
+          merged: false,
+          oversized: commitRes.oversized,
+          contentErrors: commitRes.contentErrors,
+        }
       : { status: 'nothing', oversized: commitRes.oversized, contentErrors: commitRes.contentErrors };
-    log(`[git-sync] ${sub.conflicts.length} conflict(s) + ${sub.errors.length} error(s) in submodules — superproject ${commitRes.committedLocal ? 'COMMITTED locally' : 'had nothing to commit'}, deferring only its push (${slug})`);
+    log(
+      `[git-sync] ${sub.conflicts.length} conflict(s) + ${sub.errors.length} error(s) in submodules — superproject ${commitRes.committedLocal ? 'COMMITTED locally' : 'had nothing to commit'}, deferring only its push (${slug})`,
+    );
   } else {
     // PHASE `git-sync:push` — superproject fetch + merge + push (the network half).
     const pushRes = await step('git-sync:push', async () => ({
@@ -1517,5 +1579,12 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   if (!didSomething) return { status: 'nothing', oversized, contentErrors };
   // superHeadSha comes from the push step's checkpoint; a 'synced' verdict implies that
   // step ran (blocked/commit-error passes return above). Fallback read for safety only.
-  return { status: 'synced', headSha: superHeadSha ?? (await headSha(runGit, repo)), pushed, merged, oversized, contentErrors };
+  return {
+    status: 'synced',
+    headSha: superHeadSha ?? (await headSha(runGit, repo)),
+    pushed,
+    merged,
+    oversized,
+    contentErrors,
+  };
 }

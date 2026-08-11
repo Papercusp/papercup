@@ -94,7 +94,11 @@ async function configRepo(dir: string): Promise<void> {
 }
 
 /** One bare origin (seeded `shared.txt`) + N working clones. */
-async function makeSharedOrigin(tmpRoot: string, name: string, clones: string[]): Promise<{ bare: string; works: string[] }> {
+async function makeSharedOrigin(
+  tmpRoot: string,
+  name: string,
+  clones: string[],
+): Promise<{ bare: string; works: string[] }> {
   const bare = join(tmpRoot, `${name}-origin.git`);
   await mkdir(bare, { recursive: true });
   await git(['init', '--bare', '-b', 'main'], bare);
@@ -279,23 +283,26 @@ describe('P-004: 3+ simultaneous peers converge (superproject)', () => {
   it('THREE peers with DISJOINT edits → union on origin, zero conflicts', async () => {
     const tmpRoot = await mkdtemp(join(tmpdir(), 'mpc-'));
     try {
-    const { bare, works } = await makeSharedOrigin(tmpRoot, 'n3disjoint', ['a', 'b', 'c']);
-    const [a, b, c] = works;
-    await writeFile(join(a, 'from-a.txt'), 'a\n');
-    await writeFile(join(b, 'from-b.txt'), 'b\n');
-    await writeFile(join(c, 'from-c.txt'), 'c\n');
+      const { bare, works } = await makeSharedOrigin(tmpRoot, 'n3disjoint', ['a', 'b', 'c']);
+      const [a, b, c] = works;
+      await writeFile(join(a, 'from-a.txt'), 'a\n');
+      await writeFile(join(b, 'from-b.txt'), 'b\n');
+      await writeFile(join(c, 'from-c.txt'), 'c\n');
 
-    const stats = await convergeFleet([
-      { slug: 'na', dir: a },
-      { slug: 'nb', dir: b },
-      { slug: 'nc', dir: c },
-    ], bare);
+      const stats = await convergeFleet(
+        [
+          { slug: 'na', dir: a },
+          { slug: 'nb', dir: b },
+          { slug: 'nc', dir: c },
+        ],
+        bare,
+      );
 
-    expect(stats.conflicts).toBe(0); // disjoint files never conflict
-    const tip = await originTip(bare);
-    for (const w of works) expect(await headOf(w)).toBe(tip);
-    const files = await filesAt(bare);
-    for (const f of ['from-a.txt', 'from-b.txt', 'from-c.txt']) expect(files).toContain(f);
+      expect(stats.conflicts).toBe(0); // disjoint files never conflict
+      const tip = await originTip(bare);
+      for (const w of works) expect(await headOf(w)).toBe(tip);
+      const files = await filesAt(bare);
+      for (const f of ['from-a.txt', 'from-b.txt', 'from-c.txt']) expect(files).toContain(f);
     } finally {
       await rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
     }
@@ -304,25 +311,28 @@ describe('P-004: 3+ simultaneous peers converge (superproject)', () => {
   it('THREE peers editing the SAME file → conflicts resolve, all converge to one tip (no ping-pong)', async () => {
     const tmpRoot = await mkdtemp(join(tmpdir(), 'mpc-'));
     try {
-    const { bare, works } = await makeSharedOrigin(tmpRoot, 'n3conflict', ['a', 'b', 'c']);
-    const [a, b, c] = works;
-    await writeFile(join(a, 'shared.txt'), 'A version\n');
-    await writeFile(join(b, 'shared.txt'), 'B version\n');
-    await writeFile(join(c, 'shared.txt'), 'C version\n');
+      const { bare, works } = await makeSharedOrigin(tmpRoot, 'n3conflict', ['a', 'b', 'c']);
+      const [a, b, c] = works;
+      await writeFile(join(a, 'shared.txt'), 'A version\n');
+      await writeFile(join(b, 'shared.txt'), 'B version\n');
+      await writeFile(join(c, 'shared.txt'), 'C version\n');
 
-    const stats = await convergeFleet([
-      { slug: 'ca', dir: a },
-      { slug: 'cb', dir: b },
-      { slug: 'cc', dir: c },
-    ], bare);
+      const stats = await convergeFleet(
+        [
+          { slug: 'ca', dir: a },
+          { slug: 'cb', dir: b },
+          { slug: 'cc', dir: c },
+        ],
+        bare,
+      );
 
-    // two of the three lose the race against the first pusher and must resolve.
-    expect(stats.conflicts).toBeGreaterThanOrEqual(2);
-    const tip = await originTip(bare);
-    for (const w of works) expect(await headOf(w)).toBe(tip);
-    // origin holds exactly one resolved value of the shared file — the fleet agreed.
-    const content = await git(['show', 'main:shared.txt'], bare);
-    expect(content).toMatch(/^resolved by /);
+      // two of the three lose the race against the first pusher and must resolve.
+      expect(stats.conflicts).toBeGreaterThanOrEqual(2);
+      const tip = await originTip(bare);
+      for (const w of works) expect(await headOf(w)).toBe(tip);
+      // origin holds exactly one resolved value of the shared file — the fleet agreed.
+      const content = await git(['show', 'main:shared.txt'], bare);
+      expect(content).toMatch(/^resolved by /);
     } finally {
       await rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
     }
@@ -337,50 +347,53 @@ describe('P-004: cross-peer submodule conflict defers the superproject, then con
   it('the losing peer conflicts INSIDE the submodule, does NOT publish a broken gitlink, then the fleet converges', async () => {
     const tmpRoot = await mkdtemp(join(tmpdir(), 'mpc-'));
     try {
-    const { superBare, subBare, works } = await makeSharedOriginWithSubmodule(tmpRoot, 'xsub', ['a', 'b']);
-    const [a, b] = works;
+      const { superBare, subBare, works } = await makeSharedOriginWithSubmodule(tmpRoot, 'xsub', ['a', 'b']);
+      const [a, b] = works;
 
-    // both peers conflictingly edit the SAME file inside the submodule
-    await writeFile(join(a, 'libs/sub', 'mod.txt'), 'A mod\n');
-    await writeFile(join(b, 'libs/sub', 'mod.txt'), 'B mod\n');
+      // both peers conflictingly edit the SAME file inside the submodule
+      await writeFile(join(a, 'libs/sub', 'mod.txt'), 'A mod\n');
+      await writeFile(join(b, 'libs/sub', 'mod.txt'), 'B mod\n');
 
-    // peer A wins: its submodule commit + superproject pointer bump land on both origins
-    const outA = await runGitSync('xa', { runGit: testRunGit, repoPath: a, config: { branch: 'main' } });
-    expect(outA.status).toBe('synced');
-    const superTipAfterA = await originTip(superBare);
-    const subTipAfterA = await originTip(subBare);
+      // peer A wins: its submodule commit + superproject pointer bump land on both origins
+      const outA = await runGitSync('xa', { runGit: testRunGit, repoPath: a, config: { branch: 'main' } });
+      expect(outA.status).toBe('synced');
+      const superTipAfterA = await originTip(superBare);
+      const subTipAfterA = await originTip(subBare);
 
-    // peer B loses: its submodule merge CONFLICTS; the superproject is DEFERRED so no
-    // gitlink pointing at an unpushed/again submodule state is published.
-    const outB = await runGitSync('xb', { runGit: testRunGit, repoPath: b, config: { branch: 'main' } });
-    expect(outB.status).toBe('conflict');
-    if (outB.status === 'conflict') {
-      expect(outB.conflicts.map((c) => c.scope)).toContain('libs/sub');
-      expect(outB.pushed).not.toContain('superproject');
-    }
-    // the superproject origin is UNTOUCHED by B's deferred tick (still exactly A's push).
-    expect(await originTip(superBare)).toBe(superTipAfterA);
-    // B's tree is clean — the conflicted submodule merge was aborted, no half-merge.
-    expect(await git(['status', '--porcelain', '--untracked-files=no'], join(b, 'libs/sub'))).toBe('');
+      // peer B loses: its submodule merge CONFLICTS; the superproject is DEFERRED so no
+      // gitlink pointing at an unpushed/again submodule state is published.
+      const outB = await runGitSync('xb', { runGit: testRunGit, repoPath: b, config: { branch: 'main' } });
+      expect(outB.status).toBe('conflict');
+      if (outB.status === 'conflict') {
+        expect(outB.conflicts.map((c) => c.scope)).toContain('libs/sub');
+        expect(outB.pushed).not.toContain('superproject');
+      }
+      // the superproject origin is UNTOUCHED by B's deferred tick (still exactly A's push).
+      expect(await originTip(superBare)).toBe(superTipAfterA);
+      // B's tree is clean — the conflicted submodule merge was aborted, no half-merge.
+      expect(await git(['status', '--porcelain', '--untracked-files=no'], join(b, 'libs/sub'))).toBe('');
 
-    // now drive the fleet to quiescence (B resolves the submodule, both reconcile the super).
-    const stats = await convergeFleet([
-      { slug: 'xa', dir: a },
-      { slug: 'xb', dir: b },
-    ], superBare);
+      // now drive the fleet to quiescence (B resolves the submodule, both reconcile the super).
+      const stats = await convergeFleet(
+        [
+          { slug: 'xa', dir: a },
+          { slug: 'xb', dir: b },
+        ],
+        superBare,
+      );
 
-    // the submodule origin advanced past A's commit — B's conflicting edit was reconciled.
-    expect(await originTip(subBare)).not.toBe(subTipAfterA);
-    const subFiles = await git(['ls-tree', '-r', '--name-only', 'main'], subBare);
-    expect(subFiles).toContain('mod.txt');
-    // both peers' superprojects converged to the one origin tip, whose gitlink resolves.
-    const tip = await originTip(superBare);
-    expect(await headOf(a)).toBe(tip);
-    expect(await headOf(b)).toBe(tip);
-    // the published superproject pointer is reachable on the submodule origin (no broken pin).
-    const pointer = await git(['rev-parse', 'main:libs/sub'], superBare);
-    await git(['cat-file', '-e', `${pointer}^{commit}`], subBare);
-    expect(stats.rounds).toBeLessThan(20); // bounded — no ping-pong
+      // the submodule origin advanced past A's commit — B's conflicting edit was reconciled.
+      expect(await originTip(subBare)).not.toBe(subTipAfterA);
+      const subFiles = await git(['ls-tree', '-r', '--name-only', 'main'], subBare);
+      expect(subFiles).toContain('mod.txt');
+      // both peers' superprojects converged to the one origin tip, whose gitlink resolves.
+      const tip = await originTip(superBare);
+      expect(await headOf(a)).toBe(tip);
+      expect(await headOf(b)).toBe(tip);
+      // the published superproject pointer is reachable on the submodule origin (no broken pin).
+      const pointer = await git(['rev-parse', 'main:libs/sub'], superBare);
+      await git(['cat-file', '-e', `${pointer}^{commit}`], subBare);
+      expect(stats.rounds).toBeLessThan(20); // bounded — no ping-pong
     } finally {
       await rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
     }
@@ -403,30 +416,34 @@ describe('P-005: a force-pushed history rewrite is ABSORBED or LOUDLY errors —
   it('a REWIND (force-push dropping a commit) is reverted: a peer still holding the commit re-pushes it ff (synced, dropped content reappears)', async () => {
     const tmpRoot = await mkdtemp(join(tmpdir(), 'mpc-'));
     try {
-    const { bare, works } = await makeSharedOrigin(tmpRoot, 'rwind', ['rewriter', 'victim']);
-    const [rewriter, victim] = works;
+      const { bare, works } = await makeSharedOrigin(tmpRoot, 'rwind', ['rewriter', 'victim']);
+      const [rewriter, victim] = works;
 
-    // origin advances seed→X (X adds x.txt); the victim fast-forwards to X too.
-    await commitAndPush(rewriter, 'x.txt', 'x-commit\n', 'commit X');
-    await git(['fetch', 'origin', 'main'], victim);
-    await git(['merge', '--ff-only', 'origin/main'], victim); // victim now holds X
+      // origin advances seed→X (X adds x.txt); the victim fast-forwards to X too.
+      await commitAndPush(rewriter, 'x.txt', 'x-commit\n', 'commit X');
+      await git(['fetch', 'origin', 'main'], victim);
+      await git(['merge', '--ff-only', 'origin/main'], victim); // victim now holds X
 
-    // the rewriter REWINDS origin back to the seed (a non-FF rewrite — origin moves
-    // from X to its ancestor, dropping X) and force-pushes.
-    await git(['reset', '--hard', 'HEAD~1'], rewriter); // back to seed
-    await git(['push', '--no-verify', '--force', 'origin', 'HEAD:main'], rewriter);
+      // the rewriter REWINDS origin back to the seed (a non-FF rewrite — origin moves
+      // from X to its ancestor, dropping X) and force-pushes.
+      await git(['reset', '--hard', 'HEAD~1'], rewriter); // back to seed
+      await git(['push', '--no-verify', '--force', 'origin', 'HEAD:main'], rewriter);
 
-    // the victim — which still has X — makes a normal edit and git-syncs. Its merge of
-    // origin/main (now the seed, an ANCESTOR of victim) is a no-op, and its push
-    // fast-forwards origin back up THROUGH X: the dropped commit is re-introduced.
-    await writeFile(join(victim, 'v.txt'), 'victim work\n');
-    const out = await runGitSync('rwind-victim', { runGit: testRunGit, repoPath: victim, config: { branch: 'main' } });
-    expect(out.status).toBe('synced');
+      // the victim — which still has X — makes a normal edit and git-syncs. Its merge of
+      // origin/main (now the seed, an ANCESTOR of victim) is a no-op, and its push
+      // fast-forwards origin back up THROUGH X: the dropped commit is re-introduced.
+      await writeFile(join(victim, 'v.txt'), 'victim work\n');
+      const out = await runGitSync('rwind-victim', {
+        runGit: testRunGit,
+        repoPath: victim,
+        config: { branch: 'main' },
+      });
+      expect(out.status).toBe('synced');
 
-    expect(await headOf(victim)).toBe(await originTip(bare));
-    const files = await filesAt(bare);
-    expect(files).toContain('x.txt'); // the DROPPED commit's content reappeared — rewind reverted
-    expect(files).toContain('v.txt'); // the victim's own work landed
+      expect(await headOf(victim)).toBe(await originTip(bare));
+      const files = await filesAt(bare);
+      expect(files).toContain('x.txt'); // the DROPPED commit's content reappeared — rewind reverted
+      expect(files).toContain('v.txt'); // the victim's own work landed
     } finally {
       await rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
     }
@@ -435,28 +452,32 @@ describe('P-005: a force-pushed history rewrite is ABSORBED or LOUDLY errors —
   it('a CONFLICTING rewrite takes the ordinary conflict path (aborts clean, reports) — not an error loop', async () => {
     const tmpRoot = await mkdtemp(join(tmpdir(), 'mpc-'));
     try {
-    const { works } = await makeSharedOrigin(tmpRoot, 'rwconf', ['rewriter', 'victim']);
-    const [rewriter, victim] = works;
+      const { works } = await makeSharedOrigin(tmpRoot, 'rwconf', ['rewriter', 'victim']);
+      const [rewriter, victim] = works;
 
-    // the rewriter rewinds to seed and force-pushes a CONFLICTING change to shared.txt.
-    await git(['reset', '--hard', 'HEAD'], rewriter); // (already at seed)
-    await writeFile(join(rewriter, 'shared.txt'), 'rewriter shared\n');
-    await git(['add', '-A'], rewriter);
-    await git(['commit', '--no-verify', '-m', 'rewritten conflicting'], rewriter);
-    await git(['push', '--no-verify', '--force', 'origin', 'HEAD:main'], rewriter);
+      // the rewriter rewinds to seed and force-pushes a CONFLICTING change to shared.txt.
+      await git(['reset', '--hard', 'HEAD'], rewriter); // (already at seed)
+      await writeFile(join(rewriter, 'shared.txt'), 'rewriter shared\n');
+      await git(['add', '-A'], rewriter);
+      await git(['commit', '--no-verify', '-m', 'rewritten conflicting'], rewriter);
+      await git(['push', '--no-verify', '--force', 'origin', 'HEAD:main'], rewriter);
 
-    // the victim holds its own conflicting edit of the same file.
-    await writeFile(join(victim, 'shared.txt'), 'victim shared\n');
-    const out = await runGitSync('rwconf-victim', { runGit: testRunGit, repoPath: victim, config: { branch: 'main' } });
+      // the victim holds its own conflicting edit of the same file.
+      await writeFile(join(victim, 'shared.txt'), 'victim shared\n');
+      const out = await runGitSync('rwconf-victim', {
+        runGit: testRunGit,
+        repoPath: victim,
+        config: { branch: 'main' },
+      });
 
-    // ordinary conflict path (a merge-resolver takes it from here) — NOT a wedge.
-    expect(out.status).toBe('conflict');
-    if (out.status === 'conflict') {
-      expect(out.conflicts.map((c) => c.scope)).toContain('superproject');
-      expect(out.conflicts[0].conflictedFiles).toContain('shared.txt');
-    }
-    expect(await git(['status', '--porcelain', '--untracked-files=no'], victim)).toBe('');
-    await expect(git(['rev-parse', '--verify', 'MERGE_HEAD'], victim)).rejects.toThrow();
+      // ordinary conflict path (a merge-resolver takes it from here) — NOT a wedge.
+      expect(out.status).toBe('conflict');
+      if (out.status === 'conflict') {
+        expect(out.conflicts.map((c) => c.scope)).toContain('superproject');
+        expect(out.conflicts[0].conflictedFiles).toContain('shared.txt');
+      }
+      expect(await git(['status', '--porcelain', '--untracked-files=no'], victim)).toBe('');
+      await expect(git(['rev-parse', '--verify', 'MERGE_HEAD'], victim)).rejects.toThrow();
     } finally {
       await rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
     }
@@ -465,64 +486,74 @@ describe('P-005: a force-pushed history rewrite is ABSORBED or LOUDLY errors —
   it('an UNRELATED-history rewrite (orphan force-push) is a LOUD error — classified error (no conflicted paths), never a phantom merge-resolver', async () => {
     const tmpRoot = await mkdtemp(join(tmpdir(), 'mpc-'));
     try {
-    const { works } = await makeSharedOrigin(tmpRoot, 'rworphan', ['rewriter', 'victim']);
-    const [rewriter, victim] = works;
+      const { works } = await makeSharedOrigin(tmpRoot, 'rworphan', ['rewriter', 'victim']);
+      const [rewriter, victim] = works;
 
-    // the rewriter replaces origin with a brand-new ROOT history (no common ancestor).
-    await git(['checkout', '--orphan', 'orphan'], rewriter);
-    await git(['rm', '-rf', '.'], rewriter).catch(() => {});
-    await writeFile(join(rewriter, 'rewritten.txt'), 'unrelated root\n');
-    await git(['add', '-A'], rewriter);
-    await git(['commit', '--no-verify', '-m', 'unrelated root'], rewriter);
-    await git(['push', '--no-verify', '--force', 'origin', 'HEAD:main'], rewriter);
+      // the rewriter replaces origin with a brand-new ROOT history (no common ancestor).
+      await git(['checkout', '--orphan', 'orphan'], rewriter);
+      await git(['rm', '-rf', '.'], rewriter).catch(() => {});
+      await writeFile(join(rewriter, 'rewritten.txt'), 'unrelated root\n');
+      await git(['add', '-A'], rewriter);
+      await git(['commit', '--no-verify', '-m', 'unrelated root'], rewriter);
+      await git(['push', '--no-verify', '--force', 'origin', 'HEAD:main'], rewriter);
 
-    await writeFile(join(victim, 'v.txt'), 'victim work\n');
-    const logs: string[] = [];
-    const out = await runGitSync('rworphan-victim', {
-      runGit: testRunGit,
-      repoPath: victim,
-      config: { branch: 'main' },
-      log: (m) => logs.push(m),
-    });
+      await writeFile(join(victim, 'v.txt'), 'victim work\n');
+      const logs: string[] = [];
+      const out = await runGitSync('rworphan-victim', {
+        runGit: testRunGit,
+        repoPath: victim,
+        config: { branch: 'main' },
+        log: (m) => logs.push(m),
+      });
 
-    // git refuses to merge unrelated histories → runGitSync classifies it as ERROR
-    // (a merge that failed with NO conflicted paths), which routes to the loud EI-18
-    // git-sync-error escalation — crucially NOT 'conflict', so NO merge-resolver is
-    // dispatched at an unresolvable history, and NOT a silent loop.
-    expect(out.status).toBe('error');
-    if (out.status === 'error') {
-      expect(out.errors.map((e) => e.scope)).toContain('superproject');
-      expect(out.errors[0].message).toMatch(/no conflicted paths|unrelated histories/i);
+      // git refuses to merge unrelated histories → runGitSync classifies it as ERROR
+      // (a merge that failed with NO conflicted paths), which routes to the loud EI-18
+      // git-sync-error escalation — crucially NOT 'conflict', so NO merge-resolver is
+      // dispatched at an unresolvable history, and NOT a silent loop.
+      expect(out.status).toBe('error');
+      if (out.status === 'error') {
+        expect(out.errors.map((e) => e.scope)).toContain('superproject');
+        expect(out.errors[0].message).toMatch(/no conflicted paths|unrelated histories/i);
 
-      // WI-6824: the failure must carry the ref pair it ACTUALLY merged, not just the
-      // refusal text. `last_error` is nulled by the next healthy tick, so for the
-      // intermittent form of this fault an unidentified ref pair is unfixable-by-inspection.
-      const msg = out.errors[0].message;
-      // merge-base is the discriminator: no common ancestor is exactly the reported refusal.
-      expect(msg).toContain('merge-base=NONE(unrelated)');
-      expect(msg).toMatch(/attempt=(initial|non-ff-retry)/);
-      expect(msg).toMatch(/HEAD=[0-9a-f]{7,}/);
-      expect(msg).toMatch(/origin\/main=[0-9a-f]{7,}/);
-      // repo IDENTITY — a mis-resolved git-dir merging against the WRONG repository is the
-      // one cause that presents as unrelated histories between two individually-healthy
-      // repos, and it cannot be distinguished after the fact without these two fields.
-      expect(msg).toMatch(/git-dir=\S+/);
-      expect(msg).toMatch(/url=\S+/);
-    }
-    // and it must reach the LOG, not only the routine metadata that gets nulled.
-    expect(logs.some((m) => m.includes('merge failed (no conflicted paths)') && m.includes('merge-base=NONE(unrelated)'))).toBe(true);
-    expect(await git(['status', '--porcelain', '--untracked-files=no'], victim)).toBe('');
+        // WI-6824: the failure must carry the ref pair it ACTUALLY merged, not just the
+        // refusal text. `last_error` is nulled by the next healthy tick, so for the
+        // intermittent form of this fault an unidentified ref pair is unfixable-by-inspection.
+        const msg = out.errors[0].message;
+        // merge-base is the discriminator: no common ancestor is exactly the reported refusal.
+        expect(msg).toContain('merge-base=NONE(unrelated)');
+        expect(msg).toMatch(/attempt=(initial|non-ff-retry)/);
+        expect(msg).toMatch(/HEAD=[0-9a-f]{7,}/);
+        expect(msg).toMatch(/origin\/main=[0-9a-f]{7,}/);
+        // repo IDENTITY — a mis-resolved git-dir merging against the WRONG repository is the
+        // one cause that presents as unrelated histories between two individually-healthy
+        // repos, and it cannot be distinguished after the fact without these two fields.
+        expect(msg).toMatch(/git-dir=\S+/);
+        expect(msg).toMatch(/url=\S+/);
+      }
+      // and it must reach the LOG, not only the routine metadata that gets nulled.
+      expect(
+        logs.some((m) => m.includes('merge failed (no conflicted paths)') && m.includes('merge-base=NONE(unrelated)')),
+      ).toBe(true);
+      expect(await git(['status', '--porcelain', '--untracked-files=no'], victim)).toBe('');
 
-    // WI-6824 (the actual root cause): with NO `log` injected the default sink must still
-    // be a REAL one. It was `() => {}`, and the sole production caller passes no `log` —
-    // so this exact failure alarmed the fleet for ~10h while leaving zero trace in
-    // journald. Asserting on the injected sink alone would never have caught that, because
-    // the injection is what the test supplies and production does not.
-    const before = warned.length;
-    const again = await runGitSync('rworphan-victim', { runGit: testRunGit, repoPath: victim, config: { branch: 'main' } });
-    expect(again.status).toBe('error');
-    const viaDefaultSink = warned.slice(before);
-    expect(viaDefaultSink.some((m) => m.includes('merge failed (no conflicted paths)') && m.includes('merge-base=NONE(unrelated)'))).toBe(true);
+      // WI-6824 (the actual root cause): with NO `log` injected the default sink must still
+      // be a REAL one. It was `() => {}`, and the sole production caller passes no `log` —
+      // so this exact failure alarmed the fleet for ~10h while leaving zero trace in
+      // journald. Asserting on the injected sink alone would never have caught that, because
+      // the injection is what the test supplies and production does not.
+      const before = warned.length;
+      const again = await runGitSync('rworphan-victim', {
+        runGit: testRunGit,
+        repoPath: victim,
+        config: { branch: 'main' },
+      });
+      expect(again.status).toBe('error');
+      const viaDefaultSink = warned.slice(before);
+      expect(
+        viaDefaultSink.some(
+          (m) => m.includes('merge failed (no conflicted paths)') && m.includes('merge-base=NONE(unrelated)'),
+        ),
+      ).toBe(true);
     } finally {
       await rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
     }
@@ -569,14 +600,13 @@ describe('P-005: a force-pushed history rewrite is ABSORBED or LOUDLY errors —
       expect(files).toContain('local.txt');
       expect(await shx(['merge-base', '--is-ancestor', seedRoot, 'HEAD'], seeded)).toMatchObject({ code: 1 });
 
-      const recoveryRefs = await git(
-        ['for-each-ref', '--format=%(refname)', 'refs/papercusp/seed-recovery/'],
-        seeded,
-      );
+      const recoveryRefs = await git(['for-each-ref', '--format=%(refname)', 'refs/papercusp/seed-recovery/'], seeded);
       expect(recoveryRefs).toMatch(/^refs\/papercusp\/seed-recovery\/[0-9a-f]{40,64}$/);
       expect(await git(['show', `${recoveryRefs}:local.txt`], seeded)).toBe('post-restore local work');
       expect(
-        logs.some((m) => m.includes('converted installer seed snapshot') && m.includes('replayed 1 post-restore commit')),
+        logs.some(
+          (m) => m.includes('converted installer seed snapshot') && m.includes('replayed 1 post-restore commit'),
+        ),
       ).toBe(true);
     } finally {
       await rm(tmpRoot, { recursive: true, force: true }).catch(() => {});
