@@ -28,7 +28,7 @@ describe('verdict-cli startup diagnostics (EI-20110538428919633)', () => {
       await writeFile(
         fakeNode,
         `#!/usr/bin/env bash
-printf '%s\\n' '${sentinel}' 'Please run: npx playwright install' >&2
+printf '%s\\n' "$VERDICT_TEST_SENTINEL" 'Please run: npx playwright install' >&2
 exit 1
 `,
         'utf8',
@@ -45,6 +45,7 @@ exit 1
               ...process.env,
               PATH: `${fixtureRoot}${delimiter}${process.env.PATH ?? ''}`,
               VERDICT_DATA_DIR: dataDir,
+              VERDICT_TEST_SENTINEL: sentinel,
             },
             maxBuffer: 32 * 1024,
             timeout: 20_000,
