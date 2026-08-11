@@ -717,6 +717,21 @@ describe("LearningTab — Improvements view (default)", () => {
     expect(screen.getByText("15")).toBeTruthy(); // resolved (stat line)
   });
 
+  it("mounts windowed improvement rows with measurable positioning", () => {
+    render(<LearningTab />);
+
+    // The windowed branch must pass both the TanStack measurement callback and
+    // its absolute-positioning style through LoopRowView. A missing prop
+    // declaration used to throw `measureRef is not defined` during this mount,
+    // taking down every Improvements assertion in the suite.
+    const row = document.querySelector<HTMLElement>(".pc-learning__row");
+    expect(row).not.toBeNull();
+    expect(row?.style.position).toBe("absolute");
+    expect(row?.style.width).toBe("100%");
+    expect(row?.style.transform).toMatch(/^translateY\(/);
+    expect(row?.getAttribute("data-index")).toMatch(/^\d+$/);
+  });
+
   it("lists both lanes in the all view", () => {
     render(<LearningTab />);
     expect(

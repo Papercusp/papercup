@@ -11,6 +11,7 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
 } from "react";
 import {
   useQueryState,
@@ -2177,6 +2178,7 @@ function WindowedImprovementList({
             row={row}
             ctx={ctx}
             selected={isSelectedRow(row, lsel)}
+            index={virtualItem.index}
             measureRef={virtualizer.measureElement}
             style={{
               position: 'absolute',
@@ -2356,11 +2358,20 @@ function LoopRowView({
   row,
   ctx,
   selected = false,
+  index,
+  measureRef,
+  style,
 }: {
   row: LoopRow;
   ctx: LoopRowContext;
   /** Deep-link target (?lsel) — highlighted + scrolled into view; click dismisses. */
   selected?: boolean;
+  /** Virtualized row index required by TanStack's measurement callback. */
+  index?: number;
+  /** Optional TanStack callback used by the windowed list to measure this row. */
+  measureRef?: (element: HTMLLIElement | null) => void;
+  /** Absolute-positioning style supplied by the windowed list. */
+  style?: CSSProperties;
 }) {
   const { item, idea } = row;
   const meta = idea
@@ -2382,10 +2393,9 @@ function LoopRowView({
       ref.current?.scrollIntoView({ block: "center", behavior: "smooth" });
   }, [selected]);
 
-  const combinedRef = useCallback((el) => {
+  const combinedRef = useCallback((el: HTMLLIElement | null) => {
     ref.current = el;
-    if (typeof measureRef === 'function') measureRef(el);
-    else if (measureRef) measureRef.current = el;
+    measureRef?.(el);
   }, [measureRef]);
 
   // The leading id: the work item when there is one (it is the thing you act
@@ -2397,6 +2407,7 @@ function LoopRowView({
   return (
     <li
       ref={combinedRef}
+      data-index={index}
       style={style}
       className={`pc-learning__row${selected ? " pc-learning__row--selected" : ""}`}
       // No row-level `title`: it used to carry `tierReason` ("… → human
