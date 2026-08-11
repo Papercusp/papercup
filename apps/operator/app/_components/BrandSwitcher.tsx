@@ -70,7 +70,7 @@ export default function BrandSwitcher() {
       });
       const j = await res.json();
       if (!res.ok || !j.ok) throw new Error(j.error ?? `HTTP ${res.status}`);
-      // Persisted. The SSE `flag_changed` → loadFlags() refetch reconciles to the
+      // Persisted. The sync-bus `flags.changed` → loadFlags() refetch reconciles to the
       // server truth (same value) — no flicker — and propagates to other clients.
     } catch (e) {
       setFlagPayload(prev); // roll back the optimistic flip

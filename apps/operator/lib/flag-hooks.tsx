@@ -10,27 +10,20 @@
  */
 import { useEffect, useState } from 'react';
 
-import type { FlagKey, FlagValues } from '@papercusp/flags';
+import { FLAGS_CHANGED_EVENT, type FlagKey, type FlagValues } from '@papercusp/flags';
 import { FLAG_DEFAULTS } from '@papercusp/flags';
 import {
   getFlagSnapshot,
   loadFlags,
   subscribe,
-  subscribeToFlagStream,
 } from '@papercusp/flags/client';
-import { reportSyncReachable, reportSyncUnreachable } from '@papercusp/sync';
+import { onSyncBusEvent } from '@papercusp/sync';
 
 let bootstrapStarted = false;
-let streamSub: { close(): void } | null = null;
 
-// The flags stream is always-on, app-wide infrastructure (mounted once for
-// the whole session via `useFlag`'s bootstrap) — a sustained failure to
-// reach it is a real "operator unreachable" signal, not a per-component
-// concern. Feed the SAME shared connectivity store `@papercusp/sync`'s own
-// SSE transport reports to (SSEAdapter.tsx), so a down operator surfaces as
-// ONE consolidated "operator connection lost" toast (OfflineIndicator)
-// instead of each independent stream silently reconnect-looping on its own
-// with no user-visible signal beyond raw console network-error spam.
+// The sync adapter owns the one app-wide SSE transport and reports its
+// connectivity to the shared store. Flag changes ride that same transport;
+// this hook only turns the event into a normal bootstrap refetch.
 function ensureBootstrap(): void {
   if (bootstrapStarted) return;
   bootstrapStarted = true;
@@ -38,11 +31,11 @@ function ensureBootstrap(): void {
   void loadFlags().catch(() => {
     // network failures fall back to FLAG_DEFAULTS via getFlagSnapshot
   });
-  streamSub = subscribeToFlagStream(undefined, {
-    onOpen: () => reportSyncReachable(),
-    onStatusChange: (status) => {
-      if (status === 'failing') reportSyncUnreachable();
-    },
+  onSyncBusEvent((ev) => {
+    if (ev.name !== FLAGS_CHANGED_EVENT) return;
+    void loadFlags().catch(() => {
+      // Keep the last known payload; the next flip or route bootstrap retries.
+    });
   });
 }
 

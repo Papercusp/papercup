@@ -2,6 +2,9 @@
 // Adding a flag: append here, then create the matching definition in PostHog
 // (key MUST match the string literal exactly). Defaults are V1 ship-state (off).
 
+/** Sync-bus event emitted after a server-side flag value changes. */
+export const FLAGS_CHANGED_EVENT = "flags.changed";
+
 export const FLAGS = {
   // SNAPSHOTS retired (retire-snapshots-instance-spec-2026-06-09): the harness-
   // snapshot system + the Cupboard `kind=snapshot` path are gone; the reproducible

@@ -8,10 +8,15 @@
  * normally with no resync. The resync MECHANISM is unit-tested in @papercusp/sse;
  * this pins that THIS stream is correctly hooked to its bus bounds.
  */
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { _resetChannelsForTest, parseSseStream } from '@papercusp/sse';
 import route from './stream';
 import { publishFlagChange } from '../../../flag-bus';
+
+// The route test exercises the legacy standalone flag stream's ring/replay
+// contract. Keep the new shared-sync mirror out of this isolated test so it
+// does not try to open the operator PG notify sink for every synthetic flip.
+vi.mock('../../../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
 
 beforeEach(() => _resetChannelsForTest());
 

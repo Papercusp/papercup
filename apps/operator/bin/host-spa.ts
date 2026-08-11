@@ -140,7 +140,7 @@ function serveFile(absPath: string, status = 200, cacheControl?: string): Respon
  *     async `/api/flags/bootstrap` fetch resolves — the flash this removes.
  *     This is data injection into a static shell, NOT server-side rendering:
  *     the client still renders 100% of the UI, and still revalidates via
- *     `loadFlags()` + the SSE flag stream. We compute it exactly as the
+ *     `loadFlags()` + the shared sync SSE bus. We compute it exactly as the
  *     `/flags/bootstrap` route does (same reinit guard + distinct-id), since
  *     this host owns the same in-process flag backend. Best-effort: a flag
  *     backend hiccup must never break the shell, so on any error we omit the

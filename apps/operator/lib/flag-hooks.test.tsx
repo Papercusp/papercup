@@ -8,31 +8,31 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { act, cleanup, renderHook } from '@testing-library/react';
 
-// Shared holder so the mocked `subscribe`/`subscribeToFlagStream` can hand
-// their callbacks back to the test.
+// Shared holder so the mocked flag-store/sync-bus callbacks can hand their
+// callbacks back to the test.
 const h = vi.hoisted(() => ({
   emit: (_v: Record<string, boolean>) => {},
-  subscribeArgs: [] as unknown[],
-  reportReachable: vi.fn(),
-  reportUnreachable: vi.fn(),
+  syncEmit: (_v: { name: string }) => {},
+  loadFlags: vi.fn(async () => {}),
 }));
 
-vi.mock('@papercusp/flags', () => ({ FLAG_DEFAULTS: { myFeature: false } }));
+vi.mock('@papercusp/flags', () => ({
+  FLAG_DEFAULTS: { myFeature: false },
+  FLAGS_CHANGED_EVENT: 'flags.changed',
+}));
 vi.mock('@papercusp/flags/client', () => ({
   getFlagSnapshot: () => ({ flags: {} as Record<string, boolean> }),
-  loadFlags: () => Promise.resolve(),
+  loadFlags: h.loadFlags,
   subscribe: (fn: (v: Record<string, boolean>) => void) => {
     h.emit = fn;
     return () => {};
   },
-  subscribeToFlagStream: (...args: unknown[]) => {
-    h.subscribeArgs = args;
-    return { close() {} };
-  },
 }));
 vi.mock('@papercusp/sync', () => ({
-  reportSyncReachable: h.reportReachable,
-  reportSyncUnreachable: h.reportUnreachable,
+  onSyncBusEvent: (fn: (v: { name: string }) => void) => {
+    h.syncEmit = fn;
+    return () => {};
+  },
 }));
 
 import { useFlag } from './flag-hooks';
@@ -60,23 +60,15 @@ describe('useFlag', () => {
   });
 });
 
-describe('flags-stream connectivity wiring', () => {
-  it('subscribes with onOpen/onStatusChange hooks feeding the shared sync connectivity store', () => {
+describe('flags-sync-bus wiring', () => {
+  it('reloads the bootstrap payload for flag events without opening a private stream', async () => {
     renderHook(() => useFlag('myFeature' as never));
-    const [, hooks] = h.subscribeArgs as [
-      unknown,
-      { onOpen?: () => void; onStatusChange?: (s: string) => void } | undefined,
-    ];
-    expect(hooks).toBeDefined();
+    h.loadFlags.mockClear();
 
-    hooks?.onOpen?.();
-    expect(h.reportReachable).toHaveBeenCalled();
+    h.syncEmit({ name: 'unrelated.event' });
+    expect(h.loadFlags).not.toHaveBeenCalled();
 
-    hooks?.onStatusChange?.('failing');
-    expect(h.reportUnreachable).toHaveBeenCalledTimes(1);
-
-    // Non-'failing' statuses (e.g. 'open', 'connecting') don't report unreachable.
-    hooks?.onStatusChange?.('open');
-    expect(h.reportUnreachable).toHaveBeenCalledTimes(1);
+    h.syncEmit({ name: 'flags.changed' });
+    await expect.poll(() => h.loadFlags).toHaveBeenCalledTimes(1);
   });
 });

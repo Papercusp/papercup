@@ -199,10 +199,10 @@ function RootComponent() {
     <Tooltip.Provider delayDuration={150} skipDelayDuration={300}>
       <RootSyncProvider>
         <GlobalShortcutDispatcher />
-        {/* EI-2425 fix B: wire the live flag-flip SSE stream once at the app
-            root so a flag flip surfaces on an open desktop with no reload
-            (see FlagStreamSubscriber's own doc comment). Mounted app-wide,
-            before any flag-gated chrome below. */}
+        {/* EI-2425 / SSE budget fix: listen for flag flips on the sync bus
+            rather than opening a private EventSource (see
+            FlagStreamSubscriber's own doc comment). Mounted app-wide, before
+            any flag-gated chrome below. */}
         <FlagStreamSubscriber />
         {/* Dogfood clone-on-first-boot progress bar (desktop UI part A) — inside
             RootSyncProvider so it reads `hiveFromRepo.progress`; fixed at the top,

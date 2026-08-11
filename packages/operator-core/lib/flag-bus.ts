@@ -17,7 +17,7 @@ import {
   initFlagBackend,
   isBackendConfigured,
 } from '@papercusp/flags/server';
-import type { FlagKey } from '@papercusp/flags';
+import { FLAGS_CHANGED_EVENT, type FlagKey } from '@papercusp/flags';
 
 import { installFlagOverrideStore } from './flag-override-store';
 
@@ -105,6 +105,22 @@ export function getFlagBus() {
 export function publishFlagChange(key: FlagKey | null = null): void {
   const ch = getFlagBus();
   const env: FlagChangeEnvelope = { type: 'flag_changed', key, ts: Date.now() };
-  ch.publish(env);
+  const sequence = ch.publish(env);
   emitFlagChange(key);
+
+  // The app shell already owns the sync SSE connection. Mirror the flag flip
+  // onto that bus so its browser subscriber can refetch without opening a
+  // fourth standing EventSource against the same origin. Keep this
+  // fire-and-forget: a sync/PG outage must never turn a successful flag write
+  // into a failed write. `ts` is part of the args so two real flips of the
+  // same key inside the sync bus's dedupe window are not collapsed; the
+  // channel sequence closes the same-millisecond case.
+  void import('./sync-sse')
+    .then(({ notifySyncInvalidate }) =>
+      notifySyncInvalidate(FLAGS_CHANGED_EVENT, { key, ts: env.ts, sequence }),
+    )
+    .catch((err) => {
+      if (process.env.NODE_ENV === 'test' || process.env.VITEST) return;
+      console.warn('[flags] sync-bus flag notification failed:', err);
+    });
 }
