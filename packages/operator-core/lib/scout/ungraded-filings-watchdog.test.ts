@@ -10,12 +10,12 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { vi } from 'vitest';
 
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: () => Promise.resolve([]) }) }));
-vi.mock('../pot/started', () => ({ listStartedPots: vi.fn() }));
+vi.mock('../pot/started', () => ({ listBlenderMaintenanceScopes: vi.fn() }));
 const { wakeMug } = vi.hoisted(() => ({ wakeMug: vi.fn().mockResolvedValue(undefined) }));
 vi.mock('../pot/placement-watchdog', () => ({ resolveMugOwner: vi.fn(), wakeMug }));
 vi.mock('../pot/watchdog', () => ({ recentWatchdogFires: vi.fn(), recordFire: vi.fn() }));
 
-import { listStartedPots } from '../pot/started';
+import { listBlenderMaintenanceScopes } from '../pot/started';
 import {
   selectUngradedFilings,
   shouldNudgeMug,
@@ -183,7 +183,7 @@ describe('suIdeateUngradedStaleSec tunable', () => {
 
 describe('suIdeateUngradedSweep observability', () => {
   it('returns a synthetic error result when the outer infrastructure read fails', async () => {
-    vi.mocked(listStartedPots).mockRejectedValueOnce(new Error('started-pot registry unavailable'));
+    vi.mocked(listBlenderMaintenanceScopes).mockRejectedValueOnce(new Error('scope registry unavailable'));
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const result = await suIdeateUngradedSweep();
     expect(result).toEqual([
@@ -192,10 +192,10 @@ describe('suIdeateUngradedSweep observability', () => {
         installSlug: '*',
         outcome: 'error',
         staleCount: 0,
-        reason: 'started-pot registry unavailable',
+        reason: 'scope registry unavailable',
       },
     ]);
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('started-pot registry unavailable'));
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('scope registry unavailable'));
     warn.mockRestore();
   });
 });

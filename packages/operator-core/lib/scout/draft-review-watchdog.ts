@@ -40,7 +40,7 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
-import { listStartedPots } from '../pot/started';
+import { listBlenderMaintenanceScopes } from '../pot/started';
 import { resolveMugOwner } from '../pot/placement-watchdog';
 import { deliverScoutNudge } from './nudge-recipient';
 import { claimWatchdogFire } from '../pot/watchdog';
@@ -233,7 +233,7 @@ export async function fireReviewWake(
 }
 
 /**
- * The scout-draft review backstop sweep. For each STARTED hive: find scout-routed drafts
+ * The scout-draft review backstop sweep. For each registered Blender Hive: find scout-routed drafts
  * unreviewed past the deadline, and (debounced per-hive) wake the live Queen to review
  * them. Never throws — a watchdog that crashes its host guards nothing. DEFAULT-SAFE: no
  * stale draft ⇒ no wake. Kill switch: PAPERCUSP_SCOUT_DRAFT_REVIEW_STALE_SEC <= 0.
@@ -243,13 +243,13 @@ export async function scoutDraftReviewSweep(opts: { now?: number } = {}): Promis
   const staleSec = scoutDraftReviewStaleSec();
   if (staleSec <= 0) return results; // kill switch
   try {
-    const started = await listStartedPots();
-    if (started.length === 0) return results;
+    const scopes = await listBlenderMaintenanceScopes();
+    if (scopes.length === 0) return results;
     const { sql } = getOrgPg();
     const now = opts.now ?? Date.now();
     const thresholdMs = staleSec * 1_000;
     const windowHours = Math.max(1, Math.round(staleSec / 3_600));
-    for (const { workspaceId, installSlug } of started) {
+    for (const { workspaceId, installSlug } of scopes) {
       try {
         // WI-6978: plans live under the Pot/Hive HOME, not a member harness's own
         // slug. Fails open to the literal slug, so a resolver hiccup degrades to

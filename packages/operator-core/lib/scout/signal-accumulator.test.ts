@@ -10,7 +10,7 @@
 import { describe, it, expect, afterEach, vi } from 'vitest';
 
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: () => Promise.resolve([]) }) }));
-vi.mock('../pot/started', () => ({ listStartedPots: vi.fn(async () => []) }));
+vi.mock('../pot/started', () => ({ listBlenderMaintenanceScopes: vi.fn(async () => []) }));
 vi.mock('./tick-ledger', () => ({ readLastRanTickAtMs: vi.fn(async () => null) }));
 
 import {
@@ -128,27 +128,27 @@ describe('env tunables', () => {
 describe('scoutSignalAccumulatorSweep — fail-soft shell', () => {
   it('kill switch (lookback <= 0) selects nothing and touches no IO', async () => {
     vi.stubEnv('PAPERCUSP_SIGNAL_ACCUM_LOOKBACK_SEC', '0');
-    const { listStartedPots } = await import('../pot/started');
+    const { listBlenderMaintenanceScopes } = await import('../pot/started');
     await expect(scoutSignalAccumulatorSweep({ now: NOW })).resolves.toEqual([]);
-    expect(vi.mocked(listStartedPots)).not.toHaveBeenCalled();
+    expect(vi.mocked(listBlenderMaintenanceScopes)).not.toHaveBeenCalled();
   });
 
-  it('no started pots ⇒ no results, and the throttle withholds the next tick', async () => {
-    const { listStartedPots } = await import('../pot/started');
-    vi.mocked(listStartedPots).mockResolvedValue([]);
+  it('no registered Blender scopes ⇒ no results, and the throttle withholds the next tick', async () => {
+    const { listBlenderMaintenanceScopes } = await import('../pot/started');
+    vi.mocked(listBlenderMaintenanceScopes).mockResolvedValue([]);
     await expect(scoutSignalAccumulatorSweep({ now: NOW })).resolves.toEqual([]);
-    expect(vi.mocked(listStartedPots)).toHaveBeenCalledTimes(1);
-    // 30s later (a routinesTick) the throttle withholds — no second listStartedPots.
+    expect(vi.mocked(listBlenderMaintenanceScopes)).toHaveBeenCalledTimes(1);
+    // 30s later (a routinesTick) the throttle withholds — no second scope listing.
     await expect(scoutSignalAccumulatorSweep({ now: NOW + 30_000 })).resolves.toEqual([]);
-    expect(vi.mocked(listStartedPots)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(listBlenderMaintenanceScopes)).toHaveBeenCalledTimes(1);
   });
 
   it('never throws when the pot listing fails (fail-soft)', async () => {
     // The fail-soft path deliberately console.warns instead of throwing.
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {
-      const { listStartedPots } = await import('../pot/started');
-      vi.mocked(listStartedPots).mockRejectedValue(new Error('pg down'));
+      const { listBlenderMaintenanceScopes } = await import('../pot/started');
+      vi.mocked(listBlenderMaintenanceScopes).mockRejectedValue(new Error('pg down'));
       await expect(scoutSignalAccumulatorSweep({ now: NOW })).resolves.toEqual([]);
       expect(warn).toHaveBeenCalledWith(expect.stringContaining('sweep failed'));
     } finally {

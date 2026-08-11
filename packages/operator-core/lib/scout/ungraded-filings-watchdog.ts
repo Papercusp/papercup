@@ -39,7 +39,7 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
-import { listStartedPots } from '../pot/started';
+import { listBlenderMaintenanceScopes } from '../pot/started';
 import { resolveMugOwner } from '../pot/placement-watchdog';
 import { deliverScoutNudge } from './nudge-recipient';
 import { claimWatchdogFire, recentWatchdogFires } from '../pot/watchdog';
@@ -152,7 +152,7 @@ interface UngradedRow {
  *  cheapness; the pure decider re-applies it plus the threshold + cap). Unlike the
  *  draft watchdog's harness_plans read there is no workspace subtlety here: the
  *  ledger row carries the pot's REAL workspace_id + harness_slug (the capture
- *  bridge stamps both), which is exactly what listStartedPots hands the sweep. */
+ *  bridge stamps both), which is exactly what listBlenderMaintenanceScopes hands the sweep. */
 export async function readUngradedSuFilings(
   sql: Sql,
   workspaceId: string,
@@ -247,14 +247,14 @@ export async function suIdeateUngradedSweep(opts: { now?: number } = {}): Promis
   const staleSec = suIdeateUngradedStaleSec();
   if (staleSec <= 0) return results; // kill switch
   try {
-    const started = await listStartedPots();
-    if (started.length === 0) return results;
+    const scopes = await listBlenderMaintenanceScopes();
+    if (scopes.length === 0) return results;
     const { sql } = getOrgPg();
     const now = opts.now ?? Date.now();
     const thresholdMs = staleSec * 1_000;
     const days = Math.max(1, Math.round(staleSec / 86_400));
     const windowHours = Math.max(1, Math.round(staleSec / 3_600));
-    for (const { workspaceId, installSlug } of started) {
+    for (const { workspaceId, installSlug } of scopes) {
       try {
         const candidates = await readUngradedSuFilings(sql, workspaceId, installSlug);
         const stale = selectUngradedFilings(candidates, { now, thresholdMs });
@@ -296,7 +296,7 @@ export async function suIdeateUngradedSweep(opts: { now?: number } = {}): Promis
     console.warn(`[su-ideate-ungraded] sweep failed: ${reason}`);
     // Preserve the fail-soft routinesTick contract while making an outer
     // infrastructure failure observable in this DBOS step's durable output.
-    // Before this, listStartedPots/getOrgPg failures collapsed to [], which was
+    // Before this, scope discovery/getOrgPg failures collapsed to [], which was
     // indistinguishable from a healthy sweep with no eligible filings.
     results.push({ workspaceId: '*', installSlug: '*', outcome: 'error', staleCount: 0, reason });
   }

@@ -20,6 +20,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const h = vi.hoisted(() => ({
   isWorkspaceCoordinationOn: vi.fn(async () => false),
+  backgroundWorkspaceIds: vi.fn(() => ['papercusp-workspace']),
   // The fake operator_settings KV: key → 'true' | 'false'.
   kv: new Map<string, string>(),
   upserts: [] as Array<{ key: string; value: string }>,
@@ -55,6 +56,10 @@ const fakeSql = (strings: TemplateStringsArray | string[], ...values: unknown[])
 };
 
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: fakeSql }) }));
+vi.mock('../workspace-registry', async (importActual) => {
+  const actual = await importActual<typeof import('../workspace-registry')>();
+  return { ...actual, backgroundWorkspaceIds: h.backgroundWorkspaceIds };
+});
 // P-007 (retire-mug-kettle-su-only-2026-08-09): getPotStarted now short-circuits
 // to false while the mug/kettle tier is RETIRED (the flag's default). Every case
 // in this file is about K1 papercup-vs-legacy row SCOPING, which only exists to
@@ -80,6 +85,7 @@ vi.mock('../harness-registry', () => ({
   loadHarnessRegistry: vi.fn(async () => ({
     projects: h.registeredPots.map((slug) => ({ slug, harness_kind: 'hive' })),
   })),
+  isEphemeralForeignProject: (p: { ephemeral_foreign?: boolean }) => p.ephemeral_foreign === true,
 }));
 
 import {
@@ -89,6 +95,7 @@ import {
   setPotPlacementStarted,
   anyPotPlacementStarted,
   listStartedPots,
+  listBlenderMaintenanceScopes,
   listStartedWorkspaceLoops,
 } from './started';
 
@@ -99,6 +106,7 @@ beforeEach(() => {
   h.kv.clear();
   h.upserts.length = 0;
   h.registeredPots = ['papercusp', 'pot-a', 'pot-b', 'pot-x', 'other-ws'];
+  h.backgroundWorkspaceIds.mockReset().mockReturnValue([WS]);
   h.isWorkspaceCoordinationOn.mockReset().mockResolvedValue(false);
   delete process.env.PAPERCUSP_POT_HOME_SLUG;
 });
@@ -173,6 +181,34 @@ describe('listStartedPots — raw per-pot set (placement gate, UNCHANGED)', () =
     expect(rows).toEqual([
       { workspaceId: WS, installSlug: 'pot-a' },
       { workspaceId: WS, installSlug: 'pot-b' },
+    ]);
+  });
+});
+
+describe('listBlenderMaintenanceScopes — retained Blender population', () => {
+  it('enumerates registered Hive scopes even when every retired started bit is false', async () => {
+    expect(await listBlenderMaintenanceScopes()).toEqual(
+      h.registeredPots.map((installSlug) => ({ workspaceId: WS, installSlug })),
+    );
+  });
+
+  it('keeps workspace tags and excludes non-Hive and ephemeral registry entries', async () => {
+    h.backgroundWorkspaceIds.mockReturnValue([WS, 'other-ws']);
+    const reg = await import('../harness-registry');
+    vi.mocked(reg.loadHarnessRegistry).mockImplementation(async (workspaceId?: string) => ({
+      projects:
+        workspaceId === WS
+          ? [
+              { slug: 'same-slug', harness_kind: 'hive' },
+              { slug: 'member-repo', harness_kind: 'coding' },
+              { slug: 'foreign', harness_kind: 'hive', ephemeral_foreign: true },
+            ]
+          : [{ slug: 'same-slug', harness_kind: 'hive' }],
+    }));
+
+    expect(await listBlenderMaintenanceScopes()).toEqual([
+      { workspaceId: WS, installSlug: 'same-slug' },
+      { workspaceId: 'other-ws', installSlug: 'same-slug' },
     ]);
   });
 });

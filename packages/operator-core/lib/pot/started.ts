@@ -31,6 +31,8 @@ import {
   workspaceBrainScopeKey,
   workspaceBrainReadKeys,
 } from '../workspace-brain-scope';
+import { backgroundWorkspaceIds } from '../workspace-registry';
+import { isEphemeralForeignProject, loadHarnessRegistry } from '../harness-registry';
 
 /**
  * Is the Mug/Kettle/Cup tier still RUNNABLE?
@@ -260,6 +262,38 @@ async function readStartedRows(): Promise<Array<{ workspaceId: string; installSl
  *  `resolveTickHarnesses`) keeps gating per real pot slug. */
 export async function listStartedPots(): Promise<Array<{ workspaceId: string; installSlug: string }>> {
   return readStartedRows();
+}
+
+/**
+ * The retained Blender/Scout maintenance population: every registered Hive in
+ * every workspace this background process is responsible for. This deliberately
+ * does NOT consult `hive_started:*`: that bit belongs to the retired Mug/Kettle/Cup
+ * execution tier, while Scout outcome, draft, signal, and su-ideate grading
+ * maintenance still owns retained Blender state after that retirement.
+ *
+ * Keep the workspace tag attached to each scope. The same Hive slug can exist in
+ * more than one workspace, and flattening to slugs would make an admin read in one
+ * workspace silently operate on another workspace's corpus.
+ */
+export async function listBlenderMaintenanceScopes(): Promise<
+  Array<{ workspaceId: string; installSlug: string }>
+> {
+  const scopes: Array<{ workspaceId: string; installSlug: string }> = [];
+  const seen = new Set<string>();
+  for (const workspaceId of backgroundWorkspaceIds()) {
+    if (!workspaceId || workspaceId === '*') continue;
+    const registry = await loadHarnessRegistry(workspaceId);
+    for (const project of registry.projects) {
+      if (project.harness_kind !== 'hive' || isEphemeralForeignProject(project)) continue;
+      const installSlug = project.slug?.trim();
+      if (!installSlug) continue;
+      const key = `${workspaceId}\u0000${installSlug}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      scopes.push({ workspaceId, installSlug });
+    }
+  }
+  return scopes;
 }
 
 /**

@@ -48,7 +48,7 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
-import { listStartedPots } from '../pot/started';
+import { listBlenderMaintenanceScopes } from '../pot/started';
 import { readLastRanTickAtMs } from './tick-ledger';
 
 // ── lanes ─────────────────────────────────────────────────────────────────────
@@ -335,7 +335,7 @@ export function __resetSweepThrottleForTests(): void {
 }
 
 /**
- * The accumulator recount sweep. For each STARTED pot: derive the watermark
+ * The accumulator recount sweep. For each registered Blender Hive scope: derive the watermark
  * (last successful Scout cycle, lookback-floored), recount every lane, upsert
  * the cache rows. Never throws — a sweep that crashes its host routine tick
  * guards nothing. Kill switch: PAPERCUSP_SIGNAL_ACCUM_LOOKBACK_SEC <= 0.
@@ -350,10 +350,10 @@ export async function scoutSignalAccumulatorSweep(
   if (!shouldSweepNow(lastSweepAtMs, now, signalAccumulatorSweepSec())) return results;
   lastSweepAtMs = now;
   try {
-    const started = await listStartedPots();
-    if (started.length === 0) return results;
+    const scopes = await listBlenderMaintenanceScopes();
+    if (scopes.length === 0) return results;
     const { sql } = getOrgPg();
-    for (const { workspaceId, installSlug } of started) {
+    for (const { workspaceId, installSlug } of scopes) {
       try {
         // WORKSPACE-WIDE last-ran (installSlugs: [] = no slug filter): the tick
         // WRITE key has already drifted across slugs (papercusp-workspace →

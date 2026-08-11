@@ -31,13 +31,13 @@
  *     (the "12-day-dead-and-nobody-noticed" failure class this whole audit
  *     plan exists to close).
  *
- * Same watchdog-family chassis as signal-accumulator.ts (per-started-pot
+ * Same watchdog-family chassis as signal-accumulator.ts (per-registered-Blender-scope
  * sweep, in-process throttle, workspace-wide corpus) and
  * rubric-staleness-watchdog.ts (fires-ledger debounce + escalation):
  * fail-soft throughout (a sweep must never fail the routines tick it rides),
  * env-tunable kill switches, injectable deps for DB-free unit tests.
  */
-import { listStartedPots } from '../pot/started';
+import { listBlenderMaintenanceScopes } from '../pot/started';
 import { refreshScoutOutcomes, countStalePendingIdeas } from './routed-ledger';
 import { recentWatchdogFires, recordFire } from '../pot/watchdog';
 import { openEscalation } from '../agent-tools/coordination/escalations';
@@ -110,7 +110,7 @@ const SCOUT_OUTCOME_STALE_IDENTITY: AgentIdentity = {
 
 /** Injectable seams so the sweep's orchestration is testable without PG. */
 export interface OutcomeRefreshSweepDeps {
-  listStartedPots?: typeof listStartedPots;
+  listBlenderMaintenanceScopes?: typeof listBlenderMaintenanceScopes;
   refreshScoutOutcomes?: typeof refreshScoutOutcomes;
   countStalePendingIdeas?: typeof countStalePendingIdeas;
   recentWatchdogFires?: typeof recentWatchdogFires;
@@ -120,7 +120,7 @@ export interface OutcomeRefreshSweepDeps {
 }
 
 /**
- * The decoupled outcome-refresh sweep. For each started pot's WORKSPACE
+ * The decoupled outcome-refresh sweep. For each registered Blender scope's WORKSPACE
  * (de-duped — refreshScoutOutcomes' corpus read is already workspace-wide,
  * EI-10520, so refreshing once per workspace avoids N redundant refreshes on
  * a multi-pot workspace): refresh outcomes, then count+alert on stale-pending
@@ -140,10 +140,10 @@ export async function scoutOutcomeRefreshSweep(
   const thresholdSec = scoutOutcomeStalePendingThresholdSec();
 
   try {
-    const started = await (deps.listStartedPots ?? listStartedPots)();
-    if (started.length === 0) return results;
+    const scopes = await (deps.listBlenderMaintenanceScopes ?? listBlenderMaintenanceScopes)();
+    if (scopes.length === 0) return results;
     const seenWorkspaces = new Set<string>();
-    for (const { workspaceId, installSlug } of started) {
+    for (const { workspaceId, installSlug } of scopes) {
       if (seenWorkspaces.has(workspaceId)) continue;
       seenWorkspaces.add(workspaceId);
       try {

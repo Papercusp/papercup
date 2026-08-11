@@ -9,7 +9,7 @@
  * that tool at all — its path is
  *
  *     scoutDraftReviewSweep  (DBOS routine, bg-host)
- *       -> listStartedPots()            reads operator_settings hive_started:*
+ *       -> listBlenderMaintenanceScopes() reads registered Hive scopes
  *       -> fireReviewWake()
  *       -> wakeMug()                    (pot/placement-watchdog)
  *            -> wakeRecipients(...)     per-agent wake-MODE gate only
@@ -25,7 +25,7 @@
  *
  * The pause axes that DO suppress this wake, and must keep working, are
  * covered as controls below so this file cannot pass vacuously:
- *   - pot:pause  -> hive_started=false -> the pot leaves listStartedPots()
+ *   - registry removal -> the Hive leaves listBlenderMaintenanceScopes()
  *   - the per-hive debounce (claimWatchdogFire)
  *   - the kill switch (PAPERCUSP_SCOUT_DRAFT_REVIEW_STALE_SEC <= 0)
  */
@@ -33,9 +33,9 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 
 const HOUR = 3_600_000;
 
-const { listStartedPots, wakeMug, resolveMugOwner, claimWatchdogFire, routineStorageSlug, draftRows } =
+const { listBlenderMaintenanceScopes, wakeMug, resolveMugOwner, claimWatchdogFire, routineStorageSlug, draftRows } =
   vi.hoisted(() => ({
-    listStartedPots: vi.fn(),
+    listBlenderMaintenanceScopes: vi.fn(),
     wakeMug: vi.fn().mockResolvedValue(undefined),
     resolveMugOwner: vi.fn(),
     claimWatchdogFire: vi.fn(),
@@ -46,7 +46,7 @@ const { listStartedPots, wakeMug, resolveMugOwner, claimWatchdogFire, routineSto
 vi.mock('@papercusp/db-org', () => ({
   getOrgPg: () => ({ sql: () => Promise.resolve(draftRows.current) }),
 }));
-vi.mock('../pot/started', () => ({ listStartedPots }));
+vi.mock('../pot/started', () => ({ listBlenderMaintenanceScopes }));
 vi.mock('../pot/placement-watchdog', () => ({ resolveMugOwner, wakeMug }));
 vi.mock('../pot/watchdog', () => ({ claimWatchdogFire }));
 vi.mock('../pot-membership', () => ({ routineStorageSlug }));
@@ -72,7 +72,7 @@ const savedEnv = { ...process.env };
 beforeEach(() => {
   vi.clearAllMocks();
   draftRows.current = [staleDraftRow()];
-  listStartedPots.mockResolvedValue([{ workspaceId: 'ws-1', installSlug: 'pot-1' }]);
+  listBlenderMaintenanceScopes.mockResolvedValue([{ workspaceId: 'ws-1', installSlug: 'pot-1' }]);
   routineStorageSlug.mockResolvedValue('pot-1');
   claimWatchdogFire.mockResolvedValue(true);
   resolveMugOwner.mockResolvedValue('mug-owner-1');
@@ -107,7 +107,7 @@ describe('scout-draft-review vs owner steering pauseNewWork (P-013)', () => {
   });
 
   it('still disposes drafts of EVERY started pot while paused (no per-pot steering skip)', async () => {
-    listStartedPots.mockResolvedValue([
+      listBlenderMaintenanceScopes.mockResolvedValue([
       { workspaceId: 'ws-1', installSlug: 'pot-1' },
       { workspaceId: 'ws-1', installSlug: 'pot-2' },
     ]);
@@ -124,7 +124,7 @@ describe('scout-draft-review vs owner steering pauseNewWork (P-013)', () => {
  */
 describe('scout-draft-review suppressors that DO apply (controls)', () => {
   it('does not wake a pot that is not started (pot:pause clears hive_started)', async () => {
-    listStartedPots.mockResolvedValue([]);
+    listBlenderMaintenanceScopes.mockResolvedValue([]);
     const results = await scoutDraftReviewSweep();
     expect(wakeMug).not.toHaveBeenCalled();
     expect(results).toEqual([]);
@@ -148,7 +148,7 @@ describe('scout-draft-review suppressors that DO apply (controls)', () => {
     process.env.PAPERCUSP_SCOUT_DRAFT_REVIEW_STALE_SEC = '0';
     const results = await scoutDraftReviewSweep();
     expect(wakeMug).not.toHaveBeenCalled();
-    expect(listStartedPots).not.toHaveBeenCalled();
+    expect(listBlenderMaintenanceScopes).not.toHaveBeenCalled();
     expect(results).toEqual([]);
   });
 });

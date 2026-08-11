@@ -7,7 +7,7 @@
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
 
-vi.mock('../pot/started', () => ({ listStartedPots: vi.fn(async () => []) }));
+vi.mock('../pot/started', () => ({ listBlenderMaintenanceScopes: vi.fn(async () => []) }));
 vi.mock('./routed-ledger', () => ({
   refreshScoutOutcomes: vi.fn(async () => ({ total: 0, byLens: {}, ranked: [] })),
   countStalePendingIdeas: vi.fn(async () => 0),
@@ -68,7 +68,7 @@ describe('env tunables', () => {
 
 describe('scoutOutcomeRefreshSweep — orchestration (injected deps, no PG)', () => {
   const deps = (over: Parameters<typeof scoutOutcomeRefreshSweep>[0] = {}) => ({
-    listStartedPots: vi.fn(async () => [{ workspaceId: 'ws1', installSlug: 'papercusp' }]),
+    listBlenderMaintenanceScopes: vi.fn(async () => [{ workspaceId: 'ws1', installSlug: 'papercusp' }]),
     refreshScoutOutcomes: vi.fn(async () => ({ total: 0, byLens: {}, ranked: [] }) as never),
     countStalePendingIdeas: vi.fn(async () => 0),
     recentWatchdogFires: vi.fn(async () => 0),
@@ -91,7 +91,7 @@ describe('scoutOutcomeRefreshSweep — orchestration (injected deps, no PG)', ()
 
   it('de-dups by workspace — a multi-pot workspace refreshes once, not per pot', async () => {
     const d = deps({
-      listStartedPots: vi.fn(async () => [
+      listBlenderMaintenanceScopes: vi.fn(async () => [
         { workspaceId: 'ws1', installSlug: 'papercusp' },
         { workspaceId: 'ws1', installSlug: 'papercusp-b' },
       ]),
@@ -140,10 +140,10 @@ describe('scoutOutcomeRefreshSweep — orchestration (injected deps, no PG)', ()
     expect(results[0]).toMatchObject({ workspaceId: 'ws1', outcome: 'error', reason: 'pg down' });
   });
 
-  it('is fail-soft overall — a listStartedPots error yields no throw (empty results)', async () => {
+  it('is fail-soft overall — scope discovery error yields no throw (empty results)', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const d = deps({
-      listStartedPots: vi.fn(async () => {
+      listBlenderMaintenanceScopes: vi.fn(async () => {
         throw new Error('registry unavailable');
       }),
     });
@@ -157,7 +157,7 @@ describe('scoutOutcomeRefreshSweep — orchestration (injected deps, no PG)', ()
     const d = deps();
     const results = await scoutOutcomeRefreshSweep(d);
     expect(results).toEqual([]);
-    expect(d.listStartedPots).not.toHaveBeenCalled();
+    expect(d.listBlenderMaintenanceScopes).not.toHaveBeenCalled();
   });
 
   it('the in-process throttle skips a second sweep within the interval', async () => {
