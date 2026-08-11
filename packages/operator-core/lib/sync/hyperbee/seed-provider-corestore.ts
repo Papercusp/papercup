@@ -65,17 +65,30 @@ export const CORESTORE_SEED_KIND = 'corestore';
 /**
  * Tables cut OUT of the shipped seed (EI-20108164746219771).
  *
- * `presence` is heartbeat state keyed `<github_user_id>/<machine_label>` and `usage`
- * is telemetry; both are RUNTIME state that has no business in a shipped seed, and
- * both carry the build box owner's identity into every published SERVER installer.
+ * `presence` is heartbeat state keyed `<github_user_id>/<machine_label>`, carrying the
+ * build box's machine label into every published SERVER installer. It is RUNTIME state
+ * regenerated within seconds, so dropping it costs a joiner nothing.
  *
- * ⚠ DELIBERATELY NOT `hive-members`, which is also identity-bearing: it is the
- * membership ROSTER, is required for the seed to be useful, and is owner-authorised.
- * ⚠ DELIBERATELY NOT `NEVER_RATE_LIMITED_TABLE_TAGS`, the tempting existing set — it
- * also contains contributors / hive-members / hive-settings, which the seed REQUIRES.
- * Measured on the committed seed: exactly 5 rows leave (presence 2, usage 3).
+ * ⚠ `usage` IS DELIBERATELY **NOT** HERE, and an earlier revision of this constant had
+ * it — wrongly. The first census reported "usage=3 identity-bearing", but that probe
+ * matched FIELD NAMES (a key literally called `device_pubkey`), not the owner's identity.
+ * Re-measured against the release gate's OWN denylist, `usage` carries ZERO identity
+ * values. It is also `contributor_usage_events`: an append-only, federated ledger that
+ * is the source of truth for tier-C contributor stats. Excluding it would have discarded
+ * 1517 legitimate ledger rows to remove nothing.
+ * ⚠ DELIBERATELY NOT `hive-members` (the membership ROSTER — required, owner-authorised)
+ * and NOT `NEVER_RATE_LIMITED_TABLE_TAGS` (it also holds contributors / hive-members /
+ * hive-settings, all of which the seed REQUIRES).
+ *
+ * ⛔ TABLE-LEVEL EXCLUSION IS NOT THE WHOLE FIX. The same corrected census found identity
+ * inside two tables that CANNOT be dropped because they are required content:
+ *   hive-members  → value paths `github_username`, `device_attestations[].device_label`
+ *   hive-policy   → value path `policy_json`
+ * Those need a field-level decision (scrub the device label; the owner's handle in the
+ * roster is plausibly intended and owner-authorised), NOT another entry here. Tracked on
+ * the item — do not "finish" this fix by widening this list.
  */
-export const SEED_EXCLUDED_TABLES: readonly string[] = ['presence', 'usage'];
+export const SEED_EXCLUDED_TABLES: readonly string[] = ['presence'];
 
 /** What {@link mintFilteredSeedContentCore} produced, for the manifest. */
 export interface MintedSeedCore {

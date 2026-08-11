@@ -404,7 +404,7 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
     }) as unknown as TestCore;
   }
 
-  it('carries intended content, drops presence/usage, and never writes the source', async () => {
+  it('carries intended content, drops presence, KEEPS usage, and never writes the source', async () => {
     const { store: src, own } = await sourceWithIdentity();
     const lengthBefore = own.length;
     const staging = await stagingStore();
@@ -435,7 +435,11 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
     expect(tables.size).toBeGreaterThan(0);
     expect(tables.has('plans')).toBe(true);
     expect(tables.has('presence')).toBe(false);
-    expect(tables.has('usage')).toBe(false);
+    // `usage` SURVIVES by design — it is the append-only contributor ledger and carries
+    // no identity (measured against the release gate's own denylist). This assertion is
+    // deliberately the opposite of what an earlier revision asserted; see the
+    // SEED_EXCLUDED_TABLES docstring for why excluding it was a 1517-row own-goal.
+    expect(tables.has('usage')).toBe(true);
     expect(bytes).not.toContain(hostname());
   });
 
@@ -459,12 +463,22 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
     expect(core.writable).toBe(false);
   });
 
-  it('does not over-filter: hive-members stays in the seed', () => {
-    // The roster is identity-bearing but is REQUIRED content and owner-authorised.
-    // Widening the exclusion set to "anything carrying an id" would break seeding.
+  it('does not over-filter: only presence is excluded', () => {
     expect(SEED_EXCLUDED_TABLES).toContain('presence');
-    expect(SEED_EXCLUDED_TABLES).toContain('usage');
+
+    // `usage` (contributor_usage_events) is an append-only FEDERATED ledger and the
+    // source of truth for tier-C contributor stats. An earlier revision excluded it on
+    // a census that matched FIELD NAMES rather than identity values; re-measured against
+    // the release gate's own denylist it carries ZERO identity. Excluding it would drop
+    // 1517 legitimate ledger rows to remove nothing — this assertion is what stops that
+    // from being "re-fixed" back in.
+    expect(SEED_EXCLUDED_TABLES).not.toContain('usage');
+
+    // Required, owner-authorised content — never exclude wholesale. (They DO carry
+    // identity in specific value fields; that is a field-level decision, not a table
+    // exclusion. See the constant's docstring.)
     expect(SEED_EXCLUDED_TABLES).not.toContain('hive-members');
+    expect(SEED_EXCLUDED_TABLES).not.toContain('hive-policy');
     expect(SEED_EXCLUDED_TABLES).not.toContain('contributors');
   });
 });
