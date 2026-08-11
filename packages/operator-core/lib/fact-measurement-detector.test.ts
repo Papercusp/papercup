@@ -12,8 +12,7 @@ describe('fact measurement detector — moving numbers get an advisory', () => {
     const signals = detectFactMeasurements(
       'Measured at 20:50Z: 0 adjudicated, 142 keyword-triage candidates, 214 unchecked. Recheck the file later.',
     );
-    expect(signals.length).toBeGreaterThanOrEqual(3);
-    expect(signals.map((signal) => signal.value)).toEqual(expect.arrayContaining(['0', '142', '214']));
+    expect(signals.map((signal) => signal.value)).toEqual(['0', '142', '214']);
   });
 
   it('flags an as-of status count and a working-tree delta', () => {

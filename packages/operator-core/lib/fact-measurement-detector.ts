@@ -15,7 +15,9 @@
 
 export const MEASUREMENT_CONTEXT_WINDOW = 80;
 
-const NUMBER = /(?<![A-Za-z0-9_-])(?:\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?%?|\+\d+(?:\s*\/\s*-\d+)?)(?![A-Za-z0-9_-])/g;
+// Exclude colon-adjacent digits so a measurement timestamp (20:50Z) or port
+// (:3070) does not crowd the advisory ahead of the count/status it describes.
+const NUMBER = /(?<![A-Za-z0-9_:#-])(?:\d{1,3}(?:,\d{3})+|\d+(?:\.\d+)?%?|\+\d+(?:\s*\/\s*-\d+)?)(?![A-Za-z0-9_:#-])/g;
 
 /** Words that make a nearby number look like a moving observation. */
 const MOVING_CONTEXT =
