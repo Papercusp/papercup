@@ -36,7 +36,7 @@
  */
 
 import Corestore from 'corestore';
-import { mkdir, readdir, readFile, stat } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm, stat } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { join, relative } from 'node:path';
 import { createHash } from 'node:crypto';
@@ -49,7 +49,10 @@ import type {
   SeedPayload,
   VerifyResult,
 } from '@papercusp/seed-bundle';
-import type { PeerLogOp } from './peer-log';
+import { tmpdir } from 'node:os';
+import { openNamedLog, type PeerLogOp } from './peer-log';
+import { produceFilteredSnapshotIntoLog } from './log-snapshot';
+import { CURRENT_SCHEMA_VERSION } from './schema-version';
 import {
   findLatestCompleteSnapshotDetailed,
   SNAPSHOT_SCAN_LOOKBACK,
@@ -58,6 +61,105 @@ import {
 } from './read-merge';
 
 export const CORESTORE_SEED_KIND = 'corestore';
+
+/**
+ * Tables cut OUT of the shipped seed (EI-20108164746219771).
+ *
+ * `presence` is heartbeat state keyed `<github_user_id>/<machine_label>` and `usage`
+ * is telemetry; both are RUNTIME state that has no business in a shipped seed, and
+ * both carry the build box owner's identity into every published SERVER installer.
+ *
+ * ⚠ DELIBERATELY NOT `hive-members`, which is also identity-bearing: it is the
+ * membership ROSTER, is required for the seed to be useful, and is owner-authorised.
+ * ⚠ DELIBERATELY NOT `NEVER_RATE_LIMITED_TABLE_TAGS`, the tempting existing set — it
+ * also contains contributors / hive-members / hive-settings, which the seed REQUIRES.
+ * Measured on the committed seed: exactly 5 rows leave (presence 2, usage 3).
+ */
+export const SEED_EXCLUDED_TABLES: readonly string[] = ['presence', 'usage'];
+
+/** What {@link mintFilteredSeedContentCore} produced, for the manifest. */
+export interface MintedSeedCore {
+  /** Public key of the synthetic content core, as it must appear in `meta.coreKeys`. */
+  readonly keyHex: string;
+  /** Blocks landed in the staging store — `meta.coreLengths[keyHex]`. */
+  readonly length: number;
+  /** Rows carried by the filtered snapshot (diagnostic). */
+  readonly rowCount: number;
+}
+
+/**
+ * Mint the seed's CONTENT core: one filtered snapshot of the owner's log, in a core
+ * the owner never wrote (EI-20108164746219771).
+ *
+ * ── WHY MINT-THEN-REPLICATE INSTEAD OF WRITING STRAIGHT INTO `stagingDir` ──
+ * Writing a core directly into the staging store would make it WRITABLE there, and a
+ * writable hypercore's storage contains its SIGNING SECRET — which then ships inside
+ * the installer. That is precisely the failure this module's header calls its first
+ * correctness property ("NO SECRET-KEY LEAK ... `cut` never copies the source store").
+ * A privacy fix that shipped a signing secret would be a worse leak than the one it
+ * removes, so the core is minted in a THROWAWAY store and only its BLOCKS are
+ * replicated into staging — the same read-only path the owner's admitted logs already
+ * take. The staging copy is a replica: blocks, merkle trees and a public key, no secret.
+ *
+ * The throwaway store also supplies a fresh primary key, so the minted core's
+ * name-derived key differs per cut. That is fine and intended: the manifest names the
+ * key explicitly and restore addresses cores by public key (property 2 in the header) —
+ * nothing derives it, so nothing collides.
+ */
+export async function mintFilteredSeedContentCore(inp: {
+  readonly sourceStore: Corestore;
+  /** The owner's own-log key — READ ONLY; this function never writes the source. */
+  readonly ownerKeyHex: string;
+  /** The seed's staging corestore (already created by the caller). */
+  readonly stagingStore: Corestore;
+  readonly excludeTables?: readonly string[];
+  readonly now?: number;
+}): Promise<MintedSeedCore> {
+  const sourceCore = inp.sourceStore.get({
+    key: Buffer.from(inp.ownerKeyHex, 'hex'),
+    valueEncoding: 'json',
+  }) as unknown as ReadableCore;
+  await sourceCore.ready();
+  await sourceCore.update({ wait: true });
+  const sourceLog = coreAsAdmittedLog(sourceCore, inp.ownerKeyHex);
+
+  const mintDir = await mkdtemp(join(tmpdir(), 'papercusp-seed-mint-'));
+  try {
+    const mintStore = new Corestore(mintDir);
+    await mintStore.ready();
+    try {
+      const synthetic = await openNamedLog(mintStore, 'seed-content');
+      const produced = await produceFilteredSnapshotIntoLog(sourceLog, synthetic, {
+        now: inp.now ?? Date.now(),
+        schemaVersion: CURRENT_SCHEMA_VERSION,
+        excludeTables: inp.excludeTables ?? SEED_EXCLUDED_TABLES,
+      });
+      if (!produced.appended) {
+        throw new Error(
+          `[seed:corestore] refusing to cut: the source log ${inp.ownerKeyHex.slice(0, 12)}… folded ` +
+            `to no snapshot at all (length=${sourceLog.length}). A seed with no content core would ` +
+            `restore as an empty hive while still looking like a successful cut.`,
+        );
+      }
+
+      // Blocks only — see the secret-key note above.
+      const { teardown } = pipeReplicate(mintStore, inp.stagingStore);
+      let length: number;
+      try {
+        length = await downloadCoreRange(inp.stagingStore, synthetic.keyHex, 0);
+      } finally {
+        teardown();
+      }
+      return { keyHex: synthetic.keyHex, length, rowCount: produced.rowCount };
+    } finally {
+      await mintStore.close().catch(() => {});
+    }
+  } finally {
+    // The throwaway store holds the synthetic core's SECRET. Remove it — never let it
+    // outlive the cut, and never let it sit next to the artifacts being packaged.
+    await rm(mintDir, { recursive: true, force: true }).catch(() => {});
+  }
+}
 
 /** WI-37553 — escalating read budgets for the CUTTER's snapshot scan.
  *
