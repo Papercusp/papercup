@@ -9,14 +9,20 @@ import {
 import { InMemoryReadCursorStore } from '../coordination/read-cursors';
 
 function deps(generation = 'host-a:42') {
-  const inbox = vi.fn(async () => ({ entries: [], summary: { newest_ts: null } }));
+  const inbox = vi.fn(async (): Promise<Record<string, unknown>> => ({
+    entries: [],
+    summary: { newest_ts: null },
+  }));
   const glance = vi.fn(async () => ({ display: { title: 'su-abc', notice: null } }));
   const cursor = new InMemoryReadCursorStore();
   const readInboxCursor = vi.fn((ownerId: string) => cursor.ackAndRead(ownerId, INBOX_CURSOR_SURFACE));
   const stageInboxCursor = vi.fn((ownerId: string, next: Record<string, unknown>) =>
     cursor.stage(ownerId, INBOX_CURSOR_SURFACE, next),
   );
-  const readWatermark = vi.fn(async () => ({
+  const readWatermark = vi.fn(async (): Promise<{
+    messages_since_ts?: string | null;
+    messages_shown_ts?: string | null;
+  }> => ({
     messages_since_ts: null,
     messages_shown_ts: null,
   }));
