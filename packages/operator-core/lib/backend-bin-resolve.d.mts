@@ -86,6 +86,51 @@ export function resolveSpawnPathDirs(
 /** Env key carrying the resolved dirs to every spawner (server-side and Tauri). */
 export const SPAWN_PATH_DIRS_ENV: string;
 
+/** The two PATH layers a spawned window is GUARANTEED, split by precedence. */
+export function spawnPathLayers(env?: Record<string, string | undefined>): {
+  prepend: string[];
+  append: string[];
+};
+
+export type PreflightFailureReason =
+  /** Not found anywhere — the user must install it. */
+  | 'not-installed'
+  /** The OPERATOR can see it, but its dir was not injected — OUR bug. */
+  | 'resolved-but-not-injected'
+  /** The bin resolves; its `#!` interpreter does not — the window dies in `env`. */
+  | 'interpreter-unreachable';
+
+export type BackendPreflight =
+  | {
+      ok: true;
+      bin: string;
+      interpreter: string | null;
+      interpreterBin: string | null;
+      searched: string[];
+      foundOffPath: null;
+    }
+  | {
+      ok: false;
+      reason: PreflightFailureReason;
+      bin: string | null;
+      interpreter: string | null;
+      searched: string[];
+      foundOffPath: string | null;
+      /** Operator-facing explanation: what was searched, what was probed, what to do. */
+      diagnosis: string;
+    };
+
+/**
+ * Will `agent` actually RUN in the window this envelope opens? Searches ONLY the
+ * dirs we inject — never `process.env.PATH`, which is the operator's and does not
+ * have the defect.
+ */
+export function preflightBackendLaunch(
+  agent: string,
+  env?: Record<string, string | undefined>,
+  opts?: BackendResolveOpts,
+): BackendPreflight;
+
 export function encodeSpawnPathDirs(dirs: readonly string[] | null | undefined): string;
 
 export function decodeSpawnPathDirs(

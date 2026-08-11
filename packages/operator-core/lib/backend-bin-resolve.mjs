@@ -361,6 +361,138 @@ export function resolveSpawnPathDirs(opts = {}) {
 /** Env key carrying the resolved dirs to every spawner (server-side and Tauri). */
 export const SPAWN_PATH_DIRS_ENV = 'PAPERCUSP_BACKEND_PATH_DIRS';
 
+/**
+ * The two PATH layers a spawned window is GUARANTEED, split by precedence — the
+ * one definition of "what we actually put on that window's PATH", read by both
+ * the emitter (console-spawn's buildPathExport) and the checker
+ * ({@link preflightBackendLaunch}). Two copies here would let the preflight bless
+ * a PATH the emitter never produces, which is a worse failure than no preflight:
+ * a confident green followed by a dead window.
+ */
+export function spawnPathLayers(env = {}) {
+  return {
+    prepend: [env.PAPERCUSP_BIN_DIR, env.PAPERCUSP_SCRIPTS_DIR].filter(Boolean),
+    append: decodeSpawnPathDirs(env[SPAWN_PATH_DIRS_ENV]),
+  };
+}
+
+/**
+ * Will `agent` actually RUN in the window this envelope is about to open?
+ *
+ * ⚠ THE FALSE-NEGATIVE TRAP THIS EXISTS TO AVOID, stated plainly because it is
+ * what made the original bug take two failed launches to diagnose: a probe run
+ * from the OPERATOR (capability:bash, a `which` in the tool handler, this
+ * process's own `process.env.PATH`) inherits the OPERATOR's environment — which
+ * is precisely the environment that does NOT have the defect. Such a probe
+ * reports green while the window dies. So this deliberately searches ONLY the
+ * dirs we INJECT, and ignores `process.env.PATH` entirely.
+ *
+ * That makes the check stricter than reality (the window usually also inherits a
+ * desktop PATH that may well contain the backend), and that is the point: a pass
+ * means the window works NO MATTER what PATH it inherits — the self-sufficiency
+ * contract. A fail is reported as a diagnosis, and the caller's job is to refuse
+ * to open a doomed window rather than report a confident "Launched".
+ *
+ * Returns `{ ok, reason, diagnosis, searched, bin, interpreter, foundOffPath }`.
+ */
+export function preflightBackendLaunch(agent, env = {}, opts = {}) {
+  const { platform = process.platform } = opts;
+  const { prepend, append } = spawnPathLayers(env);
+  const searched = [...prepend, ...append];
+  const guaranteedEnv = { PATH: searched.join(delimiter), PATHEXT: env.PATHEXT };
+
+  const bin = resolveOnPath(agent, { env: guaranteedEnv, platform });
+  if (!bin) {
+    // Did the OPERATOR see it somewhere we failed to inject? That distinction is
+    // the difference between "not installed" (user action) and "our injection is
+    // broken" (our bug) — and reporting the second as the first is how a defect
+    // gets closed as user error.
+    const offPath = resolveBackendLaunch(agent, opts);
+    return {
+      ok: false,
+      reason: offPath ? 'resolved-but-not-injected' : 'not-installed',
+      bin: null,
+      interpreter: null,
+      searched,
+      foundOffPath: offPath?.bin ?? null,
+      diagnosis: describePreflightFailure({ agent, searched, offPath, opts }),
+    };
+  }
+
+  // The EXECUTION layer. `omp` is `#!/usr/bin/env bun`: a resolvable bin whose
+  // interpreter is unreachable dies inside `env`, not at the command, and every
+  // detection-shaped check calls that a pass.
+  const interpreter = readShebangInterpreter(bin, { platform, readHead: opts.readHead });
+  if (interpreter) {
+    const interpreterBin = resolveOnPath(interpreter, { env: guaranteedEnv, platform });
+    if (!interpreterBin) {
+      const offPath = resolveOnPath(interpreter, { env: process.env, platform })
+        ?? resolveInWellKnownDirs(interpreter, opts);
+      return {
+        ok: false,
+        reason: 'interpreter-unreachable',
+        bin,
+        interpreter,
+        searched,
+        foundOffPath: offPath,
+        diagnosis:
+          `\`${agent}\` resolves at ${bin}, but its interpreter does NOT.\n\n` +
+          `${bin} starts with \`#!… ${interpreter}\`, so the kernel runs ${interpreter} — ` +
+          `and ${interpreter} is not on any directory this window is guaranteed. The window ` +
+          `would fail inside \`env\`, not at the command, which is why a check that only ` +
+          `looks for \`${agent}\` reports success here.\n\n` +
+          describeSearched(searched) +
+          (offPath
+            ? `\n\n  ${interpreter} DOES exist at ${offPath} — the operator can see it but did not ` +
+              `inject its directory. That is a bug in the injection (backend-bin-resolve's ` +
+              `interpreter leg), not a missing install.`
+            : `\n\n  ${interpreter} was not found anywhere. Install it, or reinstall \`${agent}\` ` +
+              `with a runtime that is present.`),
+      };
+    }
+    return { ok: true, bin, interpreter, interpreterBin, searched, foundOffPath: null };
+  }
+  return { ok: true, bin, interpreter: null, interpreterBin: null, searched, foundOffPath: null };
+}
+
+function describeSearched(searched) {
+  return searched.length
+    ? `  Directories this window is guaranteed on PATH:\n${searched.map((d) => `    ${d}`).join('\n')}`
+    : '  This window is guaranteed NO directories on PATH — nothing was injected at all.';
+}
+
+function describePreflightFailure({ agent, searched, offPath, opts }) {
+  const probed = backendSearchDirs(opts);
+  const head =
+    `Refusing to open a terminal that cannot run \`${agent}\`.\n\n` +
+    `A desktop-spawned terminal does not inherit the operator's environment: a ` +
+    `client-server emulator (gnome-terminal, konsole) hands the command to a long-lived ` +
+    `server that runs it under the DESKTOP session's env, and every spawn runs ` +
+    `\`bash -lc\` — login but NON-interactive, so ~/.bashrc's PATH additions are skipped ` +
+    `by its "if not running interactively, return" early-exit. So this checks the env the ` +
+    `window will ACTUALLY receive, not the operator's.\n\n`;
+  if (offPath) {
+    return (
+      head +
+      `\`${agent}\` IS installed — at ${offPath.bin} — but its directory was not injected ` +
+      `into the window's PATH. This is OUR bug, not a missing install: report it against ` +
+      `backend-bin-resolve's injection leg.\n\n` +
+      describeSearched(searched)
+    );
+  }
+  return (
+    head +
+    `\`${agent}\` was not found in any known install location.\n\n` +
+    describeSearched(searched) +
+    `\n\n  Well-known install locations probed (${probed.length}):\n` +
+    probed.map((d) => `    ${d}`).join('\n') +
+    `\n\n  Install it with \`papercusp setup\`, then re-run. If it IS installed somewhere ` +
+    `else, that location is missing from backendSearchDirs() in ` +
+    `packages/operator-core/lib/backend-bin-resolve.mjs — add it there (one list, three ` +
+    `consumers) rather than working around it.`
+  );
+}
+
 /** Encode dirs for {@link SPAWN_PATH_DIRS_ENV}. Empty list ⇒ '' (caller omits the key). */
 export function encodeSpawnPathDirs(dirs) {
   return (dirs ?? []).filter(Boolean).join(delimiter);

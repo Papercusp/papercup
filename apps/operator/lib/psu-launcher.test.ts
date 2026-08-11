@@ -321,12 +321,21 @@ describe('backend-not-installed helpers (owner req 2026-07-06 — psu prompt-to-
     try {
       mkdirSync(join(winHome, '.papercusp', 'bin'), { recursive: true });
       writeFileSync(join(winHome, '.papercusp', 'bin', 'omp.exe'), '');
-      // home has no omp; USERPROFILE does → resolves via the winHome candidate
+      // home has no omp; USERPROFILE does → resolves via the winHome candidate.
+      // `platform: 'win32'` is REQUIRED, not decoration: %USERPROFILE% is a
+      // Windows concept and the shared resolver gates those candidates behind
+      // the platform, so a POSIX-defaulted call correctly never looks there.
+      // (WI-37920: this case previously passed only because the pre-shared list
+      // probed a winHome path unconditionally, on every OS.)
       const home = mkdtempSync(join(tmpdir(), 'psu-home-'));
       try {
-        expect(wellKnownBackendBin('omp', { home, env: { NODE_ENV: 'test', USERPROFILE: winHome } })).toBe(
-          join(winHome, '.papercusp', 'bin', 'omp.exe'),
-        );
+        expect(
+          wellKnownBackendBin('omp', {
+            home,
+            env: { NODE_ENV: 'test', USERPROFILE: winHome },
+            platform: 'win32',
+          }),
+        ).toBe(join(winHome, '.papercusp', 'bin', 'omp.exe'));
       } finally {
         rmSync(home, { recursive: true, force: true });
       }

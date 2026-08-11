@@ -7398,8 +7398,22 @@ export function whichBin(bin, { platform = process.platform } = {}) {
  * and it only reproduces inside a desktop terminal. Same one-definition reasoning
  * as `su-tier-roles.mjs`.
  */
-export function wellKnownBackendBin(agent, { home = homedir(), env = process.env } = {}) {
-  return sharedWellKnownBackendBin(agent, { home, env });
+export function wellKnownBackendBin(agent, opts = {}) {
+  // ⚠ FORWARD THE OPTIONS OBJECT — do NOT re-destructure and rebuild it.
+  //
+  // This wrapper used to read `{ home = homedir(), env = process.env }` and pass
+  // `{ home, env }`, which SILENTLY DROPPED every other option. `platform` was
+  // the casualty: a caller asking for win32 got process.platform instead, so the
+  // %USERPROFILE% branch could never run and the Windows case returned null. It
+  // reds a test that looks like it is about Windows paths while the actual defect
+  // is one line of destructuring here (caught 2026-08-11 by su-1f60f82c).
+  //
+  // The general shape, worth recognising anywhere: a pass-through wrapper that
+  // re-destructures its options is an arg-dropping footgun — the option is
+  // accepted by the signature, ignored in the body, and NOTHING errors. Defaults
+  // belong downstream (backendSearchDirs already applies home/env/platform), so
+  // forwarding whole is both simpler and the only correct form.
+  return sharedWellKnownBackendBin(agent, opts);
 }
 
 /** Detect a backend bin: PATH first, then well-known. `{ path, onPath } | null`. */
