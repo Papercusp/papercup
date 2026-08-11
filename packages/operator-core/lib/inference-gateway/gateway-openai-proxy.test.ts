@@ -234,6 +234,28 @@ describe('proxyOpenAi — happy path + header discipline', () => {
     const s = (await (await ask('/stats')).json()) as { codex: { requests: number } };
     expect(s.codex.requests).toBeGreaterThanOrEqual(1);
   });
+
+  it('observes native Responses streaming cache usage without altering the SSE body', async () => {
+    const completed = {
+      type: 'response.completed',
+      response: {
+        id: 'resp_cache',
+        usage: { input_tokens: 1500, input_tokens_details: { cached_tokens: 1200, cache_write_tokens: 100 } },
+      },
+    };
+    await bootCodex((_req, res) => {
+      res.writeHead(200, { 'content-type': 'text/event-stream' });
+      res.end(`data: ${JSON.stringify(completed)}\n\ndata: [DONE]\n\n`);
+    });
+    const res = await postResponses({ model: 'gpt-5.6-sol', input: 'hi', stream: true });
+    const body = await res.text();
+    expect(body).toContain('response.completed');
+    const stats = (await (await ask('/stats')).json()) as {
+      cache: { read: number; create: number; input: number; hits: number; byAccount: Record<string, { read: number }> };
+    };
+    expect(stats.cache).toMatchObject({ read: 1200, create: 100, input: 200, hits: 1 });
+    expect(stats.cache.byAccount['cdx-1']?.read).toBe(1200);
+  });
 });
 
 describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
@@ -348,6 +370,35 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
     expect(b.gateway).toBe(true);
     expect(b.error?.type).toBe('overloaded_error');
     expect(Number(res.headers.get('retry-after'))).toBeGreaterThan(0);
+  });
+
+  it('a non-streaming ChatGPT CLI bridge failure yields to the next subscription account', async () => {
+    const cliAccounts = [
+      { accountId: 'chatgpt-a', home: '/tmp/chatgpt-a' },
+      { accountId: 'chatgpt-b', home: '/tmp/chatgpt-b' },
+    ];
+    const calls: string[] = [];
+    gw = createInferenceGateway({
+      accountId: 'claude-acct',
+      token: async () => 'claude-tok',
+      codexCliAccounts: () => cliAccounts,
+      codexCliPool: createFailoverPool(cliAccounts.map((a) => ({ accountId: a.accountId, token: async () => '' }))),
+      codexCliRun: async (opts) => {
+        calls.push(opts.home);
+        if (opts.home === '/tmp/chatgpt-a') throw new Error('account unavailable');
+        return { text: 'served by b', inputTokens: 5, outputTokens: 3 };
+      },
+      selfHeal: { enabled: false },
+    });
+    port = await gw.listen(0);
+    const res = await postResponses(
+      { model: 'gpt-5.5', input: 'hi', stream: false },
+      { [ACCOUNT_HEADER]: 'chatgpt-a' },
+    );
+    expect(res.status).toBe(200);
+    expect(calls).toEqual(['/tmp/chatgpt-a', '/tmp/chatgpt-b']);
+    expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('chatgpt-b');
+    expect(res.headers.get(PIN_YIELDED_HEADER)).toBe('chatgpt-a->chatgpt-b');
   });
 });
 

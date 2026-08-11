@@ -2283,6 +2283,63 @@ export function createInferenceGateway(deps: GatewayDeps) {
     };
     stream.on('data', onData);
   }
+  /** Responses API twin of `observeCacheUsage`. Streaming usage arrives on a late
+   *  `response.completed` SSE event as `response.usage`; non-streaming responses expose `usage`
+   *  at the top level. Parse incrementally so a long agent stream never needs to be buffered. */
+  function observeOpenAiCacheUsage(stream: Readable, accountId: string, didFailover: boolean): void {
+    let carry = '';
+    let done = false;
+    const detach = () => {
+      stream.off('data', onData);
+      stream.off('end', onEnd);
+    };
+    const inspect = (raw: string): boolean => {
+      const text = raw.trim().replace(/^data:\s*/, '');
+      if (!text || text === '[DONE]') return false;
+      try {
+        const parsed = JSON.parse(text) as {
+          usage?: { input_tokens?: number; input_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number } };
+          response?: { usage?: { input_tokens?: number; input_tokens_details?: { cached_tokens?: number; cache_write_tokens?: number } } };
+        };
+        const usage = parsed.response?.usage ?? parsed.usage;
+        if (!usage) return false;
+        const read = usage.input_tokens_details?.cached_tokens ?? 0;
+        const create = usage.input_tokens_details?.cache_write_tokens ?? 0;
+        const input = Math.max(0, (usage.input_tokens ?? 0) - read - create);
+        recordCacheUsage(accountId, input, read, create, didFailover);
+        return true;
+      } catch {
+        return false;
+      }
+    };
+    const finish = (raw?: string) => {
+      if (done) return;
+      if (raw && !inspect(raw)) return;
+      done = true;
+      detach();
+    };
+    const onData = (chunk: Buffer) => {
+      if (done) return;
+      carry += chunk.toString('utf8');
+      const lines = carry.split(/\r?\n/);
+      carry = lines.pop() ?? '';
+      for (const line of lines) {
+        if (line.startsWith('data:') && inspect(line)) {
+          finish();
+          return;
+        }
+      }
+      // A non-streaming JSON response normally has no newline. Keep it bounded; usage-bearing SSE
+      // lines are handled above regardless of total stream length.
+      if (carry.length > 1_048_576) carry = carry.slice(-65_536);
+    };
+    const onEnd = () => {
+      if (!done && carry) finish(carry);
+      else finish();
+    };
+    stream.on('data', onData);
+    stream.on('end', onEnd);
+  }
   const cacheRate = (t: CacheTally): number => {
     const denom = t.read + t.create + t.input;
     return denom > 0 ? Math.round((t.read / denom) * 1000) / 1000 : 0;
@@ -4120,9 +4177,16 @@ export function createInferenceGateway(deps: GatewayDeps) {
    *  account (codex-cli-bridge.ts). Non-streaming only; runs INSIDE the codex admission
    *  queue (same slot accounting as the bearer path), so concurrent CLI spawns are bounded
    *  by codexConcurrency. */
-  async function serveCodexCliBridge(req: http.IncomingMessage, res: http.ServerResponse, cli: CodexCliAccount, preBody?: Buffer) {
+  async function serveCodexCliBridge(
+    req: http.IncomingMessage,
+    res: http.ServerResponse,
+    cli: CodexCliAccount,
+    preBody?: Buffer,
+    routing: { hardPin: boolean; pinned: CodexCliAccount | null; ownerId?: string } = { hardPin: false, pinned: null },
+  ) {
     totalRequests++;
     codexRequests++;
+    recordOwnerOutcome(routing.ownerId, 'request');
     let bodyBuf: Buffer;
     if (preBody) {
       bodyBuf = preBody; // already-read body (the OAuth-proxy path hands off a non-streaming request here)
@@ -4166,22 +4230,45 @@ export function createInferenceGateway(deps: GatewayDeps) {
     res.once('close', onGone);
     res.setTimeout(downstreamIdleMs, () => res.destroy());
     try {
-      const r = await codexCliRun({
-        home: cli.home,
-        model,
-        effort,
-        prompt,
-        timeoutMs: requestCeilingMs,
-        signal: ac.signal,
-      });
-      if (!res.headersSent) sendJson(res, 200, codexCliResponsesBody({ model, ...r }), { [ROUTED_ACCOUNT_HEADER]: cli.accountId });
-    } catch (e) {
-      codexUpstreamErrors++;
-      log('error', `inference-gateway: codex-cli bridge failed on '${cli.accountId}': ${(e as Error).message}`);
-      if (!res.headersSent) {
-        sendJson(res, 502, { type: 'error', error: { type: 'api_error', message: `inference-gateway: codex-cli bridge failed: ${(e as Error).message}` }, gateway: true }, { [ROUTED_ACCOUNT_HEADER]: cli.accountId });
-      } else {
-        res.destroy();
+      for (let attempt = 0; attempt < INTERNAL_RETRY_MAX_ATTEMPTS; attempt++) {
+        try {
+          const r = await codexCliRun({
+            home: cli.home,
+            model,
+            effort,
+            prompt,
+            timeoutMs: requestCeilingMs,
+            signal: ac.signal,
+          });
+          codexAimd.recordSuccess();
+          const headers: Record<string, string> = { [ROUTED_ACCOUNT_HEADER]: cli.accountId };
+          if (routing.pinned && !routing.hardPin && routing.pinned.accountId !== cli.accountId) {
+            headers[PIN_YIELDED_HEADER] = `${routing.pinned.accountId}->${cli.accountId}`;
+            recordOwnerOutcome(routing.ownerId, 'pin_yield', { account: cli.accountId, detail: headers[PIN_YIELDED_HEADER] });
+          }
+          recordRoute(routing.ownerId, cli.accountId, model);
+          recordOwnerOutcome(routing.ownerId, 'ok', { account: cli.accountId, status: 200 });
+          if (!res.headersSent) sendJson(res, 200, codexCliResponsesBody({ model, ...r }), headers);
+          return;
+        } catch (e) {
+          codexUpstreamErrors++;
+          recordOwnerOutcome(routing.ownerId, 'upstream_error', { account: cli.accountId, detail: 'cli-bridge' });
+          log('error', `inference-gateway: codex-cli bridge failed on '${cli.accountId}': ${(e as Error).message}`);
+          const canRetry = attempt < INTERNAL_RETRY_MAX_ATTEMPTS - 1 && !routing.hardPin && !ac.signal.aborted;
+          const next = canRetry ? codexCliPool?.onExhausted(cli.accountId, Date.now() + bare429FailoverBackoffMs) : null;
+          const nextCli = next ? codexCliAccounts().find((a) => a.accountId === next.accountId) : undefined;
+          if (nextCli && nextCli.accountId !== cli.accountId) {
+            codexFailovers++;
+            cli = nextCli;
+            continue;
+          }
+          if (!res.headersSent) {
+            sendJson(res, 502, { type: 'error', error: { type: 'api_error', message: `inference-gateway: codex-cli bridge failed: ${(e as Error).message}` }, gateway: true }, { [ROUTED_ACCOUNT_HEADER]: cli.accountId });
+          } else {
+            res.destroy();
+          }
+          return;
+        }
       }
     } finally {
       res.removeListener('close', onGone);
@@ -4225,7 +4312,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
       try { wantStream = (JSON.parse(bodyBuf.toString('utf8')) as { stream?: boolean }).stream === true; } catch { /* non-JSON — treat as non-stream */ }
     }
     if (!wantStream) {
-      await serveCodexCliBridge(req, res, cli, bodyBuf);
+      await serveCodexCliBridge(req, res, cli, bodyBuf, routing);
       return;
     }
     totalRequests++;
@@ -4393,6 +4480,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
         res.writeHead(up.status, outHeaders);
         if (!up.body) { detach(); res.end(); return; }
         const nodeStream = Readable.fromWeb(up.body as Parameters<typeof Readable.fromWeb>[0]);
+        observeOpenAiCacheUsage(
+          nodeStream,
+          cli.accountId,
+          attempt > 0 || (!!routing.pinned && routing.pinned.accountId !== cli.accountId),
+        );
         nodeStream.on('data', () => armStall(upstreamBodyIdleTimeoutMs));
         nodeStream.pipe(res);
         await new Promise<void>((resolve) => {
@@ -4469,7 +4561,7 @@ export function createInferenceGateway(deps: GatewayDeps) {
         pinnedCli !== null &&
         (dynPin ? dynPin.hard : (req.headers[ACCOUNT_PIN_HEADER] as string | undefined)?.trim().toLowerCase() === 'hard');
       if (codexOAuthProxyEnabled) await serveCodexOAuthProxy(req, res, cli, url, { hardPin, pinned: pinnedCli, ownerId: wantOwner });
-      else await serveCodexCliBridge(req, res, cli);
+      else await serveCodexCliBridge(req, res, cli, undefined, { hardPin, pinned: pinnedCli, ownerId: wantOwner });
       return;
     }
     const hardPin =
@@ -4701,6 +4793,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // upstreamBodyIdleTimeoutMs) aborts → the stream errors → we tear down both ends. Await completion so the
       // admission slot is held for the stream's life (forwarded-concurrency parity) and released cleanly.
       const nodeStream = Readable.fromWeb(up.body as Parameters<typeof Readable.fromWeb>[0]);
+      observeOpenAiCacheUsage(
+        nodeStream,
+        active.accountId,
+        attempt > 0 || (!!pinnedBearer && pinnedBearer.accountId !== active.accountId),
+      );
       nodeStream.on('data', () => armStall(upstreamBodyIdleTimeoutMs));
       nodeStream.pipe(res);
       await new Promise<void>((resolve) => {
@@ -4797,8 +4894,11 @@ export function createInferenceGateway(deps: GatewayDeps) {
         ...(deps.adminConfig ? deps.adminConfig() : { hotReload: false }),
         providers: gatewayProviderStatuses(providerAdapters),
         admission: s.admission,
+        codexAdmission: s.codexAdmission,
         concurrencyCap: s.concurrencyCap,
         aimd: s.aimd,
+        codexAimd: s.codexAimd,
+        codexHealthyAccounts: s.codexHealthyAccounts,
         upstreamBase,
       });
       return;
@@ -4812,14 +4912,26 @@ export function createInferenceGateway(deps: GatewayDeps) {
       // so the caller can verify the split actually cleared instead of assuming.
       req.resume(); // drain any request body so the socket releases cleanly
       const q = url.includes('?') ? url.slice(url.indexOf('?') + 1) : '';
-      const account = new URLSearchParams(q).get('account')?.trim() ?? '';
-      if (!pool.readmit) {
-        sendJson(res, 503, { type: 'error', error: { type: 'api_error', message: 'inference-gateway: this pool has no readmit (single-account pool)' }, gateway: true });
+      const params = new URLSearchParams(q);
+      const account = params.get('account')?.trim() ?? '';
+      const provider = params.get('provider')?.trim().toLowerCase() === 'codex' ? 'codex' : 'claude';
+      const targetPools = provider === 'codex'
+        ? [deps.codexPool, codexCliPool].filter((p): p is AccountPool => !!p)
+        : [pool];
+      if (!targetPools.some((p) => !!p.readmit)) {
+        sendJson(res, 503, { type: 'error', error: { type: 'api_error', message: `inference-gateway: ${provider} pool has no readmit` }, gateway: true });
         return;
       }
-      const ids = account ? [account] : (pool.entries ? pool.entries() : []).map((e) => e.accountId);
-      for (const id of ids) pool.readmit(id);
-      sendJson(res, 200, { ok: true, readmitted: ids, healthyAccounts: pool.healthyCount ? pool.healthyCount() : 1 });
+      const ids = account
+        ? [account]
+        : [...new Set(targetPools.flatMap((p) => (p.entries?.() ?? []).map((e) => e.accountId)))];
+      for (const targetPool of targetPools) {
+        for (const id of ids) targetPool.readmit?.(id);
+      }
+      const healthyAccounts = provider === 'codex'
+        ? (deps.codexPool?.healthyCount?.() ?? 0) + (codexCliPool?.healthyCount?.() ?? 0)
+        : (pool.healthyCount?.() ?? 1);
+      sendJson(res, 200, { ok: true, provider, readmitted: ids, healthyAccounts });
       return;
     }
     if (req.method === 'POST' && url.startsWith('/admin/clamp-mode')) {
