@@ -1658,16 +1658,67 @@ export function nativeSessionIdFromLaunchArgs(args = []) {
  *
  * Pure — exported for tests. `mintId` is injectable for deterministic tests.
  */
+/** The provenance envelope every SCRIPTED kickoff carries (tagKickoffProvenance
+ *  above, and turn-provenance.ts's ENVELOPE_RE which this mirrors). Minted ONLY
+ *  for a kickoff first turn, so a token bearing one is definitively a kickoff
+ *  positional and never a flag's value. */
+const KICKOFF_ENVELOPE_RE = /^\s*⟦turn-origin:[A-Za-z0-9:._@-]+ nonce:[a-f0-9]{8,64}⟧/;
+
+/** True for a SELF-CONTAINED inline flag (`--key=value`). It cannot consume the
+ *  FOLLOWING token as its value, which is what makes whatever follows it a
+ *  provable positional rather than a maybe-value. */
+function isInlineFlag(tok) {
+  return tok.startsWith('--') && tok.includes('=');
+}
+
+/**
+ * Drop the trailing KICKOFF POSITIONAL from a launch argv.
+ *
+ * WI-37939: `kickoffPositionalArgs` seeds a scripted launch's first turn as a
+ * TRAILING POSITIONAL (psu-launcher ~L7726). `mintRecycleArgs`'s copy loop then
+ * carried it through verbatim on every recycle / carry-respawn, so each fresh
+ * child re-exec'd `claude` with the ORIGINAL kickoff still on its argv and
+ * opened on that stale prompt as turn 1 — forever, however many respawns later.
+ * Measured on su-12b70e95: a fleet-kickoff minted 2026-08-10T16:57:23Z was
+ * re-delivered 26.6h later, asserting a GOAL-mode contract that session never
+ * held, for a goal already achieved. Same bug shape as the P-002 staleness fix
+ * below (argv copied through verbatim), one argv element over. A recycle is a
+ * CLEAN BOOT whose first prompt is the carry text the host types in
+ * (recycleChild -> injectTurnAtPrompt), so the launch prompt must not survive.
+ *
+ * CONSERVATIVE BY CONSTRUCTION — strips only on POSITIVE identification, because
+ * wrongly eating a flag's VALUE would launch the successor with a broken flag
+ * (strictly worse than the staleness this fixes). Two provably-safe signals:
+ *   1. the token carries a kickoff provenance envelope; or
+ *   2. it is not a flag AND the token before it is an inline `--key=value`,
+ *      which cannot own a following value — so this one is a positional.
+ * Anything else is left alone (an untagged kickoff behind a value-taking flag
+ * keeps today's behaviour rather than risking a mangled argv). Pure; exported
+ * for tests.
+ */
+export function stripKickoffPositional(args = []) {
+  const out = args.map((a) => String(a ?? ''));
+  while (out.length) {
+    const last = out[out.length - 1];
+    const prev = out.length >= 2 ? out[out.length - 2] : null;
+    const taggedKickoff = KICKOFF_ENVELOPE_RE.test(last);
+    const provablePositional = !last.startsWith('-') && prev !== null && isInlineFlag(prev);
+    if (!taggedKickoff && !provablePositional) break;
+    out.pop();
+  }
+  return out;
+}
+
 export function mintRecycleArgs(
   args = [],
   { mintId = () => randomUUID(), agent = null, personaFile = null } = {},
 ) {
-  const src = args.map((a) => String(a ?? ''));
+  const raw = args.map((a) => String(a ?? ''));
   // stale-prompt-render-in-live-sessions-2026-08-02 P-002: the freshly re-rendered
   // base persona, when the operator produced one. See the --system-prompt-file case
   // in the copy loop below for why this exists.
   const persona = typeof personaFile === 'string' && personaFile.trim() ? personaFile.trim() : null;
-  const hasSessionId = src.some((a) => a === '--session-id' || a.startsWith('--session-id='));
+  const hasSessionId = raw.some((a) => a === '--session-id' || a.startsWith('--session-id='));
   // A RESUME-launched Claude session (`claude --resume <id>`) has no --session-id
   // to rotate — but a recycle/carry-respawn successor never wants the old
   // transcript anyway (the carry document replaces it), so for claude we
@@ -1679,6 +1730,9 @@ export function mintRecycleArgs(
   // touched here (--session-id is a claude flag).
   const isClaude = String(agent ?? '').trim().toLowerCase() === 'claude';
   if (!hasSessionId && !isClaude) return { args, nativeId: null };
+  // WI-37939: drop the launch kickoff BEFORE the copy loop, so no path below can
+  // carry it into the successor argv. See stripKickoffPositional above.
+  const src = stripKickoffPositional(raw);
   const freshId = mintId();
   const out = [];
   for (let i = 0; i < src.length; i++) {
