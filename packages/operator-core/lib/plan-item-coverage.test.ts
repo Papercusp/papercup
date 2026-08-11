@@ -51,12 +51,16 @@ describe('classifyCoverage', () => {
   // read `working:'unclaimed'` beside a named assignee, which looks like one of the
   // two surfaces lagging or lying. It is neither: coverage is liveness-aware and the
   // ledger column is not (an assignee outlives its holder). Keep them SEPARATE.
-  it('held-not-live — open links whose holder is recorded but not live (RECLAIMABLE)', () => {
-    expect(classifyCoverage([link(false, 'stalled')], false)).toBe('held-not-live');
+  it('held-not-live — open links whose holder is gone or liveness is unknown (RECLAIMABLE)', () => {
     expect(classifyCoverage([link(false, 'dead')], false)).toBe('held-not-live');
     expect(classifyCoverage([link(false, 'reserved')], false)).toBe('held-not-live');
     // one never-held link + one dead-held link ⇒ still a recorded holder to explain
     expect(classifyCoverage([link(false, 'free'), link(false, 'dead')], false)).toBe('held-not-live');
+  });
+
+  it('held-stalled — a live holder with stale/missing progress is not a reclaim signal', () => {
+    expect(classifyCoverage([link(false, 'stalled')], false)).toBe('held-stalled');
+    expect(classifyCoverage([link(false, 'free'), link(false, 'stalled')], false)).toBe('held-stalled');
   });
 
   it('held-not-live — a DIRECT plan-item claim whose holder died, with no links', () => {
@@ -64,7 +68,7 @@ describe('classifyCoverage', () => {
     // holders by the caller, so a dead direct claim arrived as `false` and read as
     // 'none' — "genuinely unworked" — while a claim row and a holder id sat on it.
     expect(classifyCoverage([], false, 'dead')).toBe('held-not-live');
-    expect(classifyCoverage([], false, 'stalled')).toBe('held-not-live');
+    expect(classifyCoverage([], false, 'stalled')).toBe('held-stalled');
     expect(classifyCoverage([], false, 'reserved')).toBe('held-not-live');
     // and a dead direct claim over never-held links is still explained by a holder
     expect(classifyCoverage([link(false, 'free')], false, 'dead')).toBe('held-not-live');
@@ -98,7 +102,7 @@ describe('classifyCoverage', () => {
     expect(classifyCoverage([link(false, 'free')], true)).toBe('partial');
   });
 
-  it('treats stalled/dead exactly like the fleet view: not live → drops coverage', () => {
+  it('treats stalled as not active coverage without calling the live holder dead', () => {
     // one progressing + one stalled = partial (the stalled one isn't covered)
     expect(classifyCoverage([link(false, 'progressing'), link(false, 'stalled')], false)).toBe('partial');
   });

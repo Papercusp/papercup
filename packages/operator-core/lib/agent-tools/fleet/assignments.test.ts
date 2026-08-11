@@ -870,9 +870,10 @@ describe('COVERAGE_ORDER', () => {
   it('runs most-covered → least', () => {
     expect(COVERAGE_ORDER.indexOf('complete')).toBeLessThan(COVERAGE_ORDER.indexOf('full'));
     expect(COVERAGE_ORDER.indexOf('full')).toBeLessThan(COVERAGE_ORDER.indexOf('partial'));
-    // held-not-live is LESS covered than partial (nothing live) but MORE informative
-    // than unclaimed (a holder is on record) — it sits between them.
-    expect(COVERAGE_ORDER.indexOf('partial')).toBeLessThan(COVERAGE_ORDER.indexOf('held-not-live'));
+    // A live-but-non-progressing holder is safer to surface before a dead/unknown
+    // holder: neither counts as active coverage, but only the latter is reclaimable.
+    expect(COVERAGE_ORDER.indexOf('partial')).toBeLessThan(COVERAGE_ORDER.indexOf('held-stalled'));
+    expect(COVERAGE_ORDER.indexOf('held-stalled')).toBeLessThan(COVERAGE_ORDER.indexOf('held-not-live'));
     expect(COVERAGE_ORDER.indexOf('held-not-live')).toBeLessThan(COVERAGE_ORDER.indexOf('unclaimed'));
     expect(COVERAGE_ORDER.indexOf('unclaimed')).toBeLessThan(COVERAGE_ORDER.indexOf('none'));
   });

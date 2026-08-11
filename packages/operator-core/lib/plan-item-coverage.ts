@@ -352,11 +352,49 @@ interface CoverageLinkRow {
   src_updated_at: Date | string | null;
 }
 
+const LIVE_SESSION_STATES = new Set<SessionState>(['live', 'parked', 'recorded']);
+const GONE_SESSION_STATES = new Set<SessionState>(['ended', 'suspect', 'draining']);
+
+/** Resolve holder state through the same oracle used by coord:presence. */
+async function coverageSessionStates(
+  rows: readonly Pick<FleetAssignmentRow, 'agentId' | 'source' | 'holderHeartbeatAt'>[],
+): Promise<Map<string, SessionState>> {
+  const subjects = new Map<string, { ownerId: string; heartbeatAt?: string | null; claimsHeld: boolean }>();
+  for (const row of rows) {
+    if (!row.agentId || row.source === 'presence' || subjects.has(row.agentId)) continue;
+    subjects.set(row.agentId, {
+      ownerId: row.agentId,
+      heartbeatAt: row.holderHeartbeatAt,
+      claimsHeld: true,
+    });
+  }
+  if (subjects.size === 0) return new Map();
+  try {
+    const verdicts = await resolveSessionStates([...subjects.values()], { hydratePerId: true });
+    return new Map([...verdicts].map(([ownerId, verdict]) => [ownerId, verdict.sessionState]));
+  } catch {
+    return new Map();
+  }
+}
+
+/** Correct warm-heartbeat activity drift with the authoritative session state. */
+function normalizeCoverageActivity(
+  activity: ItemActivity,
+  sessionState: SessionState | undefined,
+): ItemActivity {
+  if (sessionState && GONE_SESSION_STATES.has(sessionState)) return 'dead';
+  // A live/parked/recorded session is not `reserved` merely because the view's
+  // heartbeat join was absent or stale during this read.
+  if (sessionState && LIVE_SESSION_STATES.has(sessionState) && activity === 'reserved') return 'alive';
+  return activity;
+}
+
 /**
  * Every plan item with ≥1 work→plan_item edge OR a live direct claim, keyed by the
  * coord_links dst_ref ('<plan_slug>#<item_id>') → its fused coverage. ONE coord_links
- * query + ONE fleet_assignment read, so multi-plan readers hoist it out of their plan
- * loop (the issue-blocks-merge pattern). Pure read; never throws on empty.
+ * query + ONE fleet_assignment read plus one batched liveness-oracle read, so
+ * multi-plan readers hoist it out of their plan loop (the issue-blocks-merge
+ * pattern). Pure read; never throws on empty.
  */
 export async function getAllPlanItemCoverage(): Promise<Map<string, PlanItemCoverage>> {
   const { sql } = getOrgPg();
@@ -394,6 +432,7 @@ export async function getAllPlanItemCoverage(): Promise<Map<string, PlanItemCove
 
   // 2. live claims (work-item AND plan-item) from the canonical view — one read.
   const fleet = await listFleetAssignments({ workspaceId: null, activeOnly: true });
+  const sessionStates = await coverageSessionStates(fleet);
   const wiActivity = new Map<string, { activity: ItemActivity; holder: string | null }>();
   // P-029/D-060: keep the claim's DECLARED GOAL alongside its activity. On a
   // `plan_item_claim` row the view's `detail` IS `plan_item_claims.intent`, and
@@ -404,10 +443,15 @@ export async function getAllPlanItemCoverage(): Promise<Map<string, PlanItemCove
   const directClaim = new Map<string, { activity: ItemActivity; holder: ClaimHolder | null; holderId: string | null }>();
   for (const r of fleet) {
     if (r.source === 'work_item_claim' && r.workItemId) {
-      wiActivity.set(r.workItemId, { activity: deriveActivity(r), holder: r.agentId });
+      const activity = normalizeCoverageActivity(deriveActivity(r), r.agentId ? sessionStates.get(r.agentId) : undefined);
+      wiActivity.set(r.workItemId, {
+        activity,
+        holder: isLiveActivity(activity) ? r.agentId : null,
+      });
     } else if (r.source === 'plan_item_claim' && r.planSlug && r.itemId) {
+      const activity = normalizeCoverageActivity(deriveActivity(r), r.agentId ? sessionStates.get(r.agentId) : undefined);
       directClaim.set(planItemRef(r.planSlug, r.itemId), {
-        activity: deriveActivity(r),
+        activity,
         holderId: r.agentId,
         holder: projectClaimHolder({
           ownerId: r.agentId,

@@ -30,6 +30,7 @@ import { PLAN_ITEM_KIND, planItemRef } from './issue-blocks-merge';
 import type { FleetAssignmentRow } from './fleet/assignments';
 
 const WS = DEFAULT_COORD_WORKSPACE;
+type TestSessionState = 'live' | 'parked' | 'draining' | 'suspect' | 'ended' | 'recorded';
 
 const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
 vi.mock('@papercusp/db-org', async () => {
@@ -46,6 +47,26 @@ vi.mock('./fleet/assignments', async () => {
   return {
     ...actual,
     listFleetAssignments: vi.fn(async () => h2.rows as FleetAssignmentRow[]),
+  };
+});
+
+const h3 = vi.hoisted(() => ({
+  states: new Map<string, TestSessionState>(),
+}));
+vi.mock('./agent-tools/coordination/liveness-oracle', async () => {
+  const actual = await vi.importActual<typeof import('./agent-tools/coordination/liveness-oracle')>(
+    './agent-tools/coordination/liveness-oracle',
+  );
+  return {
+    ...actual,
+    resolveSessionStates: vi.fn(async (subjects: { ownerId: string }[]) => {
+      const out = new Map<string, { ownerId: string; sessionState: TestSessionState }>();
+      for (const subject of subjects) {
+        const state = h3.states.get(subject.ownerId);
+        if (state) out.set(subject.ownerId, { ownerId: subject.ownerId, sessionState: state });
+      }
+      return out;
+    }),
   };
 });
 
@@ -88,6 +109,7 @@ afterAll(async () => {
 beforeEach(async () => {
   await rootSql`TRUNCATE harness_shared.coord_links, harness_shared.work_items`;
   h2.rows = [];
+  h3.states.clear();
 });
 
 async function edge(o: { plan: string; item: string; srcKind?: string; srcRef: string; rel?: string }) {
@@ -252,6 +274,49 @@ describe('getAllPlanItemCoverage — stamp-based coverage (PG, EI-13721)', () =>
     expect(c.level).toBe('full');
     expect(c.workers).toEqual(['su-worker']);
     expect(c.links[0]).toMatchObject({ activity: 'progressing', holder: 'su-worker' });
+  });
+
+  it('keeps a live holder with stale progress out of held-not-live (EI-20125544311539993)', async () => {
+    await insertIssue({ id: 'WI-live-stalled', state: 'open', plan: 'p1', item: 'P-009' });
+    h2.rows = [
+      {
+        source: 'work_item_claim',
+        workItemId: 'WI-live-stalled',
+        agentId: 'su-live',
+        orphaned: false,
+        stalled: true,
+        holderAlive: true,
+        holderHeartbeatAt: new Date().toISOString(),
+      },
+    ];
+    h3.states.set('su-live', 'live');
+
+    const cov = await getAllPlanItemCoverage();
+    const c = cov.get(planItemRef('p1', 'P-009'))!;
+    expect(c.level).toBe('held-stalled');
+    expect(c.links[0]).toMatchObject({ activity: 'stalled', holder: null });
+    expect(c.workers).toEqual([]);
+  });
+
+  it('uses a confirmed ended session to classify a warm stalled row as reclaimable', async () => {
+    await insertIssue({ id: 'WI-ended-stalled', state: 'open', plan: 'p1', item: 'P-010' });
+    h2.rows = [
+      {
+        source: 'work_item_claim',
+        workItemId: 'WI-ended-stalled',
+        agentId: 'su-ended',
+        orphaned: false,
+        stalled: true,
+        holderAlive: true,
+        holderHeartbeatAt: new Date().toISOString(),
+      },
+    ];
+    h3.states.set('su-ended', 'ended');
+
+    const cov = await getAllPlanItemCoverage();
+    const c = cov.get(planItemRef('p1', 'P-010'))!;
+    expect(c.level).toBe('held-not-live');
+    expect(c.links[0]).toMatchObject({ activity: 'dead', holder: null });
   });
 
   it('a work-item with no plan_item stamp at all contributes no coverage row', async () => {

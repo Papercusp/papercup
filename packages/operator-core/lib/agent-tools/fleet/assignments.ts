@@ -82,7 +82,15 @@ import { getLoopStatuses, type LoopStatus, type LifecycleBackoffInfo } from '../
 /** Coverage levels most-covered → least, for sorting the rollup. Every member of
  *  CoverageLevel must appear: `indexOf` returns -1 for an unlisted one, which sorts
  *  it ABOVE 'complete' as if it were the most-covered band (pinned by a test). */
-export const COVERAGE_ORDER = ['complete', 'full', 'partial', 'held-not-live', 'unclaimed', 'none'];
+export const COVERAGE_ORDER = [
+  'complete',
+  'full',
+  'partial',
+  'held-stalled',
+  'held-not-live',
+  'unclaimed',
+  'none',
+];
 
 /** A 'complete' coverage entry stays in the DEFAULT rollup only while its newest
  *  linked work-item update is this recent (EI-9015). */
