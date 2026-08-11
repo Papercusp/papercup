@@ -338,6 +338,8 @@ export interface CorestoreCutContext {
    * read-only core so the live source log is never rewritten or made unreachable.
    */
   readonly filtered?: boolean;
+  /** Identity literals supplied by the release audit for the projection scrub. */
+  readonly redactValues?: readonly string[];
 }
 
 /** Context for {@link createCorestoreSeedProvider}.restore (first-boot time). */

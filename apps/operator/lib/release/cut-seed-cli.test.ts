@@ -23,12 +23,28 @@ import {
   isTransientStoreOpenError,
   RO_OPEN_RETRY_ATTEMPTS,
   CUT_SEED_DRAIN_STALL_MS,
+  mergeReleaseSeedRedactionValues,
 } from './cut-seed-cli';
 import { DRAIN_PASS_TIMEOUT_MS } from '@papercusp/operator-core/lib/sync/hyperbee/outbox-drain';
 import type { SeedManifest, SeedStoreEntry } from '@papercusp/seed-bundle';
 
 const EPOCH_KEY = Uint8Array.from(Array.from({ length: 32 }, (_, i) => (i * 7) % 256));
 const HEX32 = 'ab'.repeat(32); // 64 hex chars = 32 bytes
+
+describe('mergeReleaseSeedRedactionValues (WI-37894)', () => {
+  it('keeps the real host when the audit runs inside the neutralized UTS child', () => {
+    const values = mergeReleaseSeedRedactionValues(
+      'papercusp-build\tbuildhost\t0\nmarsh-office\tbuilduser\t0\n',
+      'main-server-Precision-7865-Tower',
+    );
+
+    expect(values).toEqual([
+      'main-server-Precision-7865-Tower',
+      'papercusp-build',
+      'marsh-office',
+    ]);
+  });
+});
 
 describe('pickGitEncryption', () => {
   it('explicit keyHex ⇒ FIXTURE mode: seals via=seed-key-op with that key, never touches deriveEpochKey', async () => {

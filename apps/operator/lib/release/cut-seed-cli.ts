@@ -133,7 +133,23 @@ import type { BootedHarnessHandle, LocalWriteOp } from '@papercusp/operator-core
 const DEFAULT_HIVE = 'papercusp';
 const DEFAULT_ORIGIN = 'https://github.com/Papercusp/papercup';
 
-/** Keep the seed projection's scrub list in lockstep with the final desktop audit. */
+/**
+ * Keep the seed projection's scrub list in lockstep with the final desktop audit.
+ *
+ * The audit runs inside the UTS-neutralized child, so its live hostname probe sees
+ * `papercusp-build`, not the real build-box hostname. The parent deliberately passes
+ * that real value through {@link SEED_REAL_HOSTNAME_ENV}; retain it explicitly or the
+ * projection can redact the username while leaving the hostname in content prose.
+ */
+export function mergeReleaseSeedRedactionValues(output: string, realHostname?: string): readonly string[] {
+  return [...new Set([
+    realHostname?.trim(),
+    ...output
+      .split(/\r?\n/)
+      .map((line) => line.split('\t', 1)[0]?.trim()),
+  ].filter((value): value is string => !!value && value.length >= 3))];
+}
+
 function releaseSeedRedactionValues(root: string): readonly string[] {
   const audit = join(root, 'papercusp-desktop', 'bin', 'audit-release-bundle.py');
   const result = spawnSync('python3', [audit, '--identity-literals'], {
@@ -145,10 +161,7 @@ function releaseSeedRedactionValues(root: string): readonly string[] {
     throw new Error(`[cut-seed] could not resolve release identity literals from ${audit}${detail ? `: ${detail}` : ''}`);
   }
   const output = typeof result.stdout === 'string' ? result.stdout : result.stdout?.toString('utf8') ?? '';
-  return output
-    .split(/\r?\n/)
-    .map((line) => line.split('\t', 1)[0]?.trim())
-    .filter((value): value is string => !!value && value.length >= 3);
+  return mergeReleaseSeedRedactionValues(output, process.env[SEED_REAL_HOSTNAME_ENV]);
 }
 
 export interface PickGitEncryptionInput {
