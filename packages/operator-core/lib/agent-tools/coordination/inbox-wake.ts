@@ -28,6 +28,7 @@ import { listActiveAwaitsForKey } from '../../events/await/store';
 // hive-agent-tabs P-007/D-005: the per-agent wake-mode gate (consumed below).
 import { resolveWakeMode } from './wake-mode';
 import { stagePendingWake } from './pending-wakes';
+import { ADMIN_COORD_UI_OWNER } from './identity';
 import { listPresence } from './presence';
 import { resolveBestEffortAgainstRoster, isSelectorOrWildcard, knownOwnerIdSet } from './recipient-resolve';
 import { getLoopStatuses, type LoopStatus } from '../../harness/routines/loop';
@@ -77,6 +78,31 @@ export const LOOP_WAKE_SOURCE_PREFIX = 'loop:';
  */
 export function isLoopWakeSource(source: string | undefined): boolean {
   return (source ?? '').startsWith(LOOP_WAKE_SOURCE_PREFIX);
+}
+
+/**
+ * Is this wake the HUMAN OWNER's, sent from the operator GUI? Same deadlock shape as the
+ * self-loop bypass above, one actor over: the manual gate stages a wake **for the owner to
+ * review**, so a wake the OWNER THEMSELF just sent has no separate reviewer — it stages into
+ * a queue only the sender can release, i.e. the owner must go find their own message in
+ * `coord:wake-queue` and release it to itself. Nothing in the GUI says so; the composer's
+ * placeholder literally reads "Type to wake <ownerId>…", so the send returns `ok:true`,
+ * `staged:1`, and the conversation stays EMPTY forever.
+ *
+ * Measured (WI-37858, owner-reported "chat window opens but stays empty"): this workspace has
+ * `wake_mode:default = manual` set 2026-08-09; SessionChatModal's composer POSTs
+ * /api/admin/coord/send → coord:send { wake:'required' }, whose identity resolves to
+ * `ADMIN_COORD_UI_OWNER` (the admin routes pin `?client=`), and every message the owner typed
+ * staged instead of delivering — `pending_wakes` row 51591, `source='pc-admin-coord-ui'`.
+ *
+ * Scope is deliberately ONE constant, not "any non-agent sender": `ADMIN_COORD_UI_OWNER` is
+ * the single id every GUI write route pins (mode/set.ts already keys owner-authority off the
+ * same comparison), and a wake fan only runs when a caller explicitly ASKED to wake — so this
+ * fires only on a human deliberately clicking Send at a named agent. It does NOT un-pause the
+ * hive: agent→agent wakes stage exactly as before, which is what the pause primitive is for.
+ */
+export function isOwnerGuiWakeSource(source: string | undefined): boolean {
+  return source === ADMIN_COORD_UI_OWNER;
 }
 
 export interface WakeRecipientsResult {
@@ -149,9 +175,11 @@ export async function wakeRecipients(
   // iterations), so fan it out with Promise.all instead of awaiting one at a
   // time — same total DB work, but issued concurrently instead of serially.
   // A self-loop wake bypasses the manual gate entirely (staging it deadlocks — see
-  // isLoopWakeSource). The source is per-CALL, so compute once. Everything else still honors
-  // the per-agent manual pause/edit gate exactly as before (default-preserving).
-  const bypassManualGate = isLoopWakeSource(opts.source);
+  // isLoopWakeSource), and so does the OWNER's own GUI wake (staging it queues the owner's
+  // message for the owner's own review — see isOwnerGuiWakeSource, WI-37858). The source is
+  // per-CALL, so compute once. Everything else still honors the per-agent manual pause/edit
+  // gate exactly as before (default-preserving).
+  const bypassManualGate = isLoopWakeSource(opts.source) || isOwnerGuiWakeSource(opts.source);
   // EI-9971: known-roster check for the STAGING branch only (see knownOwnerIdSet's
   // doc) — reuses the same short-TTL roster cache resolveBestEffortAgainstRoster
   // just read above, so this costs nothing extra. `null` = roster unavailable/empty

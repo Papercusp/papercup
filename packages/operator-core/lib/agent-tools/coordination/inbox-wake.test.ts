@@ -17,7 +17,9 @@ vi.mock('./recipient-resolve', async (importActual) => ({
   knownOwnerIdSet: vi.fn(async () => null),
 }));
 
-import { wakeRecipients, buildStagedWakeNote } from './inbox-wake';
+import { wakeRecipients, buildStagedWakeNote, isOwnerGuiWakeSource } from './inbox-wake';
+import { ADMIN_COORD_UI_OWNER } from './identity';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 import { resolveWakeMode } from './wake-mode';
 import { stagePendingWake } from './pending-wakes';
 import { emitAwaitedEvent } from '../../events/await/engine';
@@ -87,6 +89,44 @@ describe('wakeRecipients wake-mode gate (hive-agent-tabs D-005, graduated by sta
     expect(stagePendingWake).toHaveBeenCalledTimes(1);
     expect(emitAwaitedEvent).not.toHaveBeenCalled();
     expect(r.staged).toBe(1);
+  });
+
+  // WI-37858 (owner-reported: "the chat window opens but stays empty"). The GUI composer
+  // (SessionChatModal) POSTs /api/admin/coord/send → coord:send { wake:'required' }, and the
+  // admin routes pin the caller identity to ADMIN_COORD_UI_OWNER — so under a `manual` global
+  // default every message the OWNER typed staged into a queue only the owner can release,
+  // i.e. staged for the sender's own review. Measured: pending_wakes row 51591,
+  // source='pc-admin-coord-ui'. Same deadlock shape as the self-loop case above.
+  it("the OWNER's own GUI wake FIRES in manual mode — staging it queues the owner's message for the owner's own review", async () => {
+    mockResolvedTyped(vi.mocked(resolveWakeMode), 'manual');
+    const r = await wakeRecipients(['s-hud-launched'], {
+      source: ADMIN_COORD_UI_OWNER,
+      summary: 'hello from the GUI - please reply with OK',
+    });
+    expect(stagePendingWake).not.toHaveBeenCalled(); // NOT staged despite manual mode
+    expect(emitAwaitedEvent).toHaveBeenCalledTimes(1); // delivered instead
+    expect(r.staged).toBe(0);
+    expect(r.woken).toBe(1);
+  });
+
+  it('the owner-GUI bypass does NOT un-pause agent→agent wakes (an agent source still STAGES)', async () => {
+    // The manual default IS the hive pause primitive; only the human's own directed send
+    // escapes it. An agent whose ownerId merely CONTAINS the GUI id must not slip through.
+    mockResolvedTyped(vi.mocked(resolveWakeMode), 'manual');
+    const r = await wakeRecipients(['s-1'], {
+      source: `su-89beac53-${ADMIN_COORD_UI_OWNER}`,
+      summary: 'peer steering wake',
+    });
+    expect(stagePendingWake).toHaveBeenCalledTimes(1);
+    expect(emitAwaitedEvent).not.toHaveBeenCalled();
+    expect(r.staged).toBe(1);
+  });
+
+  it('isOwnerGuiWakeSource is exact-match (a missing source never bypasses)', () => {
+    expect(isOwnerGuiWakeSource(ADMIN_COORD_UI_OWNER)).toBe(true);
+    expect(isOwnerGuiWakeSource(undefined)).toBe(false);
+    expect(isOwnerGuiWakeSource('')).toBe(false);
+    expect(isOwnerGuiWakeSource('pc-admin-coord-ui-x')).toBe(false);
   });
 
   // QUARANTINED (flaky: selector resolves against live presence/session state, nondeterministic; de-quarantine + root-cause in WI-1053)
