@@ -26,6 +26,19 @@ of actions. See `mug-autonomy-and-selffeed-fix-2026-06-15`. The 14th category,
 it post-dates that arming and was deliberately left ungraduated so it can graduate
 per plan risk (D-017), so it does *not* sit at `critical`.**
 
+:::caution\[The Mug is retired — the action audit and its 14 categories are not]
+The Mug · Kettle · Cup tier was **retired 2026-08-09**
+([canonical account](/internal/docs/agent-insights/mug-kettle-cup-tier-is-retired)), so the
+framing goal below — *"everything a human does is accessible to the Mug"* — no longer names
+a live actor. **su + GOAL mode are the only way to drive the app.**
+
+This spec is **kept** because the audit is the substrate, not the Mug: the enumeration of
+every human-driving action, the 14 autonomy categories (D-009 + D-017), and the
+per-action reversibility/authority classification are what the autonomy system still
+reasons about. Read "Mug-verb coverage" as **"is this action reachable by an agent at
+all"** — the coverage question survives the actor that motivated it.
+:::
+
 ## Why this exists (D-010)
 
 The owner's requirement: *"all the things a human does to drive it must be

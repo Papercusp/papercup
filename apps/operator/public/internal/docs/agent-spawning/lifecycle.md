@@ -1,11 +1,23 @@
 # Lifecycle
 URL: /internal/docs/agent-spawning/lifecycle
 
-The fleet flow — spawn → inspect → cancel — including status transitions, cross-restart durability, orphan reclaim, and what happens when things fail.
+>-
+
+:::caution\[`cup:spawn` REFUSES — the launch verb below is retired]
+The Mug · Kettle · Cup/nursery **role tier** was **retired 2026-08-09** (owner-directed);
+`cup:spawn` and `fleet:place_batch` now refuse. Launch with **`fleet:launch-on-plan`**
+(N agents on a plan) or **`capability:launch-agent`** (one flexible launch/resume/fork).
+See [the Mug · Kettle · Cup tier is retired](/internal/docs/agent-insights/mug-kettle-cup-tier-is-retired).
+
+The rest of this page is **still accurate and still load-bearing** — the status
+transitions, cross-restart durability, orphan reclaim and parent-wake behaviour describe
+the one spawn engine every launch path shares, including the live ones above.
+:::
 
 ## The three tools
 
-Every spawn flows through the `fleet:*` surface — launch with `cup:spawn`, watch with `fleet:tree`, abort with `fleet:cancel`.
+Every spawn flows through the `fleet:*` surface — launch with `cup:spawn` (**retired — use
+`fleet:launch-on-plan`**), watch with `fleet:tree`, abort with `fleet:cancel`.
 
 ```
                        ┌──────────────────────────┐

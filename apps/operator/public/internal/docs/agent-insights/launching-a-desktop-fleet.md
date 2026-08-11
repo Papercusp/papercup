@@ -58,14 +58,19 @@ now auto-injects `--fleet` into a psu command when its `fleet` arg is set — bu
 
 ## Tool decision table
 
-| Need                                       | Tool                                                |
-| ------------------------------------------ | --------------------------------------------------- |
-| Desktop fleet on a plan (the default)      | **`fleet:launch-on-plan`** (auto-join + auto-start) |
-| Register a fleet, no terminals             | `fleet:create`                                      |
-| One-off visible terminal(s), no fleet/plan | `capability:terminal` (its `fleet` = colour only)   |
-| Headless workers (no desktop window)       | `cup:spawn` / `fleet:place_batch` (nursery cups)    |
+| Need                                       | Tool                                                                                                              |
+| ------------------------------------------ | ----------------------------------------------------------------------------------------------------------------- |
+| Desktop fleet on a plan (the default)      | **`fleet:launch-on-plan`** (auto-join + auto-start)                                                               |
+| Register a fleet, no terminals             | `fleet:create`                                                                                                    |
+| One-off visible terminal(s), no fleet/plan | `capability:terminal` (its `fleet` = colour only)                                                                 |
+| Headless workers (no desktop window)       | **`fleet:launch-on-plan { headless: true }`** — ~~`cup:spawn` / `fleet:place_batch`~~ REFUSE (retired 2026-08-09) |
 
-`cup:spawn` / `fleet:place_batch` are HEADLESS — never use them for a "desktop fleet."
+Headless is a knob on the fleet, not a different tier: `fleet:launch-on-plan { headless: true }`
+opens leader-led su MEMBERS with no desktop window. `cup:spawn` / `fleet:place_batch` used to be
+the headless route — they spawned Mug-supervised nursery cups, and both **refuse** now that the
+Mug · Kettle · Cup tier is
+[retired](/internal/docs/agent-insights/mug-kettle-cup-tier-is-retired). Neither was ever right
+for a "desktop fleet."
 
 ## Members default to YOUR backend/model when you omit `agent` (2026-07-03)
 

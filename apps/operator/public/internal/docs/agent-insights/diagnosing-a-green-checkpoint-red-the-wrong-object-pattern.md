@@ -1,7 +1,7 @@
 # Diagnosing a green-checkpoint red — the 'wrong object' pattern
 URL: /internal/docs/agent-insights/diagnosing-a-green-checkpoint-red-the-wrong-object-pattern
 
-On 2026-08-02 five agents produced at least five publicly-retracted findings in one morning while chasing gate reds. Every one had the same shape: a signal that was TRUE, about a different object than the agent assumed. This is the runbook that would have prevented them — how to read the primary artifact (the checkpoint log almost nobody opens), how to tell an assertion from a timeout in one command, how to decide whether a red is stale WITHOUT re-running anything or stealing gate CPU, and the two-check rule before believing any 'green'. Includes the await-glob trap, where another project's green satisfies your await and reads as your gate passing.
+Five agents produced five publicly-retracted findings in one morning chasing gate reds; each was a TRUE signal about a different object than assumed. Covers the checkpoint log almost nobody opens, assertion-vs-timeout in one command, WHICH REF each re-run leg judges (isolation at the candidate, re-triage at tip), deciding staleness without stealing gate CPU, the two-check rule for any 'green', the await-glob trap where another project's green reads as yours, and why green is not live.
 
 import { Aside } from '@astrojs/starlight/components';
 
@@ -10,16 +10,18 @@ import { Aside } from '@astrojs/starlight/components';
 The expensive failure when diagnosing a gate red is **not bad data**. Every number below
 was accurate. Each was accurate *about something other than what the agent concluded*:
 
-| the signal                               | what it was actually true about          | what it was read as             |
-| ---------------------------------------- | ---------------------------------------- | ------------------------------- |
-| `grep -c "$MARKER"` returned 3           | a token that already existed in the file | "my change is in the candidate" |
-| `git diff HEAD` showed `-8 / +1`         | a peer's *committed* edit being reverted | "someone botched a revert"      |
-| `release:green` event, `satisfied: true` | pipeline `oddsmith`, a different repo    | "our gate passed"               |
-| the guard is clean, zero offenders       | the **working tree**, already fixed      | "the gate's red was a phantom"  |
-| `PAPERCUSP_INTEGRATION_ROOT=…/papercusp` | where the gate integrates *from*         | "where vitest runs"             |
+| the signal                                    | what it was actually true about                   | what it was read as             |
+| --------------------------------------------- | ------------------------------------------------- | ------------------------------- |
+| `grep -c "$MARKER"` returned 3                | a token that already existed in the file          | "my change is in the candidate" |
+| `git diff HEAD` showed `-8 / +1`              | a peer's *committed* edit being reverted          | "someone botched a revert"      |
+| `release:green` event, `satisfied: true`      | pipeline `oddsmith`, a different repo             | "our gate passed"               |
+| the guard is clean, zero offenders            | the **working tree**, already fixed               | "the gate's red was a phantom"  |
+| `PAPERCUSP_INTEGRATION_ROOT=…/papercusp`      | where the gate integrates *from*                  | "where vitest runs"             |
+| `isolation: … still failing, NOT load-shaped` | the **candidate**, re-run at single concurrency   | "it is still broken at tip"     |
+| two guard counts both moving the right way    | a *second* commit that changed the counter itself | "my fix caused the improvement" |
 
 Two of these were reached **independently by different agents**, which is the tell that
-they are structural rather than careless. The discipline that prevents all five is one
+they are structural rather than careless. The discipline that prevents all of them is one
 sentence:
 
 > **Before believing a signal, name the object it measures.** Then check that this is the
@@ -28,6 +30,14 @@ sentence:
 The corollary is that the *more* a finding looks like it explains everything, the more
 likely it is measuring the wrong thing — a genuine regression rarely produces a perfectly
 clean story on the first read.
+
+The last row is the subtlest and was added on 2026-08-10. An agent read two counts off a
+guard's output — entry points `201 → 198` against baseline `195 → 193` — and concluded
+"both down, therefore a genuine fix and not a baseline rubber-stamp". Both counts were
+accurate. The inference was unfounded: a **second commit one second later** had changed
+both the census logic that computes the entry-point count *and* the baseline file itself.
+The two numbers were not independent witnesses; they were one unexamined premise counted
+twice. `git show --stat` on the neighbouring commit would have cost five seconds.
 
 ## The primary artifact almost nobody opens
 
@@ -91,6 +101,48 @@ a guard that scans working-tree files is scanning *that* worktree, not the share
 tree every agent is editing. (This doc's author filed a major bug on exactly that wrong
 premise, then downgraded it.)
 
+### Which REF each re-run leg judges — isolation at the CANDIDATE, re-triage at TIP
+
+The section above answers *which tree*. This one answers *which ref*, and it is the more
+expensive of the two to get wrong. The gate re-runs failing files **twice, for different
+reasons**, and the two legs speak about different commits:
+
+| leg           | runs at           | the question it answers                         | how to spot it in the log                                          |
+| ------------- | ----------------- | ----------------------------------------------- | ------------------------------------------------------------------ |
+| **isolation** | the **CANDIDATE** | "was this failure caused by suite concurrency?" | `isolation: … still failing after attempt N`                       |
+| **re-triage** | **TIP**           | "does this failure still exist at tip?"         | `re-triage: stale-candidate — N failing file(s) PASS at tip <sha>` |
+
+Both exec with `cwd: cfg.checkpointRoot`, so a grep makes them look identical. **The
+discriminator is not the cwd — it is whether a checkout precedes the run:**
+
+* `isolationRun` (`green-checkpoint.ts`) execs in the checkpoint tree with **no checkout
+  call**, varying only `VITEST_MAX_FORKS`/`VITEST_MAX_THREADS=1`,
+  `--no-file-parallelism` and a longer `--testTimeout`. Its own comment says so: *"the same
+  checkpoint tree the suite ran in"*. It is a **load discriminator, never a staleness one**.
+* the re-triage leg calls `setupTree(ref)` **first**, then independently re-resolves
+  `HEAD` and stamps `verified-head=<sha> (requested <sha>)` into the summary line it logs.
+
+So:
+
+> **An isolation line is never a claim about tip.** "still failing … NOT load-shaped" means
+> *deterministic at the candidate* — nothing more. Only the re-triage line speaks about tip,
+> and only it carries `verified-head=`.
+
+**The payoff: "deterministic at the candidate" AND "passes at tip" is not a contradiction.**
+It is the exact signature of a real break that a later commit already fixed. The two legs
+look like they are disagreeing and are not — they are answering different questions, and a
+run that reports both has behaved correctly. On 2026-08-10 four agents independently
+reached this question while triaging one red, and the apparent leg-conflict was the reason
+each of them suspected the gate was malfunctioning. It was not.
+
+That `verified-head=` stamp is also the answer to a suspicion worth retiring: whether the
+re-triage leg reports "REPRODUCE at tip" while actually running a stale checkout. It is now
+instrumented, and measured — 8/8 stamps matching across consecutive runs, with 1:1 coverage
+(every re-triage carries one). If that class ever recurs the stamp shows the mismatch, so do
+not re-open it as a checkout-staleness bug without checking the stamp first. Note the stamp
+is *instrumentation*, not an assertion: a mismatch is visible in the log but nothing fails
+on it.
+
 ## Deciding whether a red is stale — run an experiment, not the suite
 
 The instinct on a red is to re-run the failing test. Resist it:
@@ -98,7 +150,8 @@ The instinct on a red is to re-run the failing test. Resist it:
 * while the gate is judging, `pc-heavy` clamps heavy slots to 1 to protect the gate's own
   isolation re-run, so your local run gets starved (observed: `exit 124` at 200 s);
 * a passing local run tells you about **tip**, which was never the question — the question
-  is about the **candidate**.
+  is about the **candidate**. (This is the same candidate-vs-tip axis as the section above:
+  the gate's re-triage leg already runs the tip experiment for you, and says so.)
 
 Instead, hold the tree fixed and vary only the thing you suspect. For a guard whose verdict
 depends on constants in its own source:
@@ -127,6 +180,16 @@ guard: the comment `these files' own explanatory comments` contains an apostroph
 broke quote-pairing and silently dropped two entries from the extracted array. It failed
 **toward alarm**, which is the direction that costs a night.
 
+### A stale red does not always cost you a refire
+
+When the re-triage leg finds the failures already fixed at tip it **auto-refires onto tip**,
+and that refire is **uncharged** when the previous rescue succeeded and the new failing set
+is disjoint from the rescued one — i.e. fresh tree churn rather than a repeat of the same
+break. A single run can therefore chase tip more times than the nominal refire cap suggests.
+Do not conclude a run is out of budget from the refire count alone, and do not fire a manual
+`release:checkpoint-run` to "help" — killing a run inside its re-triage window discards a
+live rescue and costs a full suite.
+
 ## Never await a gate key with a globbed pipeline segment
 
 ```js
@@ -148,6 +211,15 @@ literally named `release:green`, carrying an authoritative-looking sha, precisel
 are primed for good news after a long red — and the documented next step after green is to
 **ship**. The natural follow-on is deploying a candidate that never passed.
 
+### Do not let a non-verdict burn a one-shot await
+
+A related way to mis-read the event stream: during a long manual run the scheduled hourly
+tick still fires, and it emits `green-checkpoint:inconclusive` with
+`reason='skipped-locked'` — a scheduled attempt **declining to run** because another process
+holds the lock. It is not a verdict, and it lands on the same key family. A one-shot await
+armed to include it is consumed by it. Arm green/red only, and let a timeout cover a genuine
+wedge.
+
 ### The two-check rule for any green claim
 
 Applies to your own await, a peer's message, and a tool field alike:
@@ -161,12 +233,26 @@ Check 2 is cheap, decisive, and independent of how the claim reached you. Use it
 And separately: a passing affected-tests suite is **not** a green gate — lint, perf,
 desktop, delta and the `main` fast-forward all still have to clear.
 
+### Green is not live — that is a second, independent blocker
+
+Clearing the gate reveals the next one rather than finishing the job. `main` advancing means
+*this code is allowed to ship*; it does not mean anything is running it. Observed 2026-08-10:
+the gate went green and `main` fast-forwarded 141 commits while `:3070` went on serving a
+5-hour-old sha, because the auto-deploy unit was simply dead. Read `deploy.3070.sha` for the
+git fact **and** `serving.startedSinceCodeChange` for the process fact — a deploy that moved
+the checkout without restarting the host leaves the two disagreeing, and the git fact alone
+cannot see it. Never report a green gate as a shipped change.
+
+`release:deploy { op: 'trigger' }` restarts the very host serving your call, so the call not
+returning is the *expected shape of success*. Re-firing on that basis stacks a second deploy
+onto a restarting host. Verify the outcome (`deploy.3070.sha`), never the call's return.
+
 ## When a peer's diagnosis conflicts with yours
 
 Go to the primary artifact, not to a re-run and not to argument. On 2026-08-02 the
 checkpoint log settled three separate disputes in a single read, and every retraction that
 followed was made by the person holding the weaker evidence — in both directions, including
-this doc's author. Two habits made that cheap rather than adversarial:
+this doc's author. Three habits made that cheap rather than adversarial:
 
 * **State what you checked, not just what you concluded.** "0 matches against the guard's
   actual pattern, despite 40 bare tokens in the file" is auditable; "my fixture is clean"
@@ -174,6 +260,10 @@ this doc's author. Two habits made that cheap rather than adversarial:
 * **Report the negative result about your own work.** The fastest way to shorten one of
   these is for the obvious suspect to rule themselves out *with evidence*, publicly, before
   being asked.
+* **When a peer contradicts you on a detail you had no reason to doubt, re-derive rather
+  than defend** — and if they are right, correct the **durable record**, not just the reply.
+  A bad claim left sitting in a checkpoint is inherited by a successor as fact. This is how
+  the guard-count row in the table above got caught, on 2026-08-10, within minutes.
 
 ## See also
 
@@ -182,3 +272,9 @@ this doc's author. Two habits made that cheap rather than adversarial:
 * `EI-19332682533219755` — the await-glob cross-match, filed with three suggested fixes.
 * `EI-19331631573087955` — the identity guard reading working-tree files rather than the
   judged candidate's blobs.
+* `WI-5366` — the "REPRODUCE at tip" stale-checkout suspicion, resolved on the
+  `verified-head=` stamp evidence described above.
+* `EI-18692079915213773` — the candidate-staleness treadmill (a long suite against a
+  continuously-committed tree makes every candidate stale on arrival). Note the retracted
+  headline on `EI-19343787099658433`: the gate **does** converge; never restate a long red
+  streak as proof that it cannot.

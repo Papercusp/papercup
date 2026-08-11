@@ -1,7 +1,20 @@
 # Admission & the concurrency ceiling
 URL: /internal/docs/agent-spawning/allowlist-and-caps
 
-Who may spawn, how a spawn is admitted (brain judgment, not a rules budget), the one fleet-wide cap, and how a rejected spawn fails.
+>-
+
+:::caution\[The role gate below still runs — but `mug` / `cup` / `kettle` are retired roles]
+The Mug · Kettle · Cup/nursery **role tier** was **retired 2026-08-09** (owner-directed).
+`cup:spawn` refuses outright, and `RETIRED_TIER_ROLES = {mug, kettle, cup}` is checked
+*after* `canonicalCoordRole`, so the aliases `bee→cup`, `queen→mug`, `overwatch→kettle`
+are caught too. See
+[the Mug · Kettle · Cup tier is retired](/internal/docs/agent-insights/mug-kettle-cup-tier-is-retired).
+
+So read the filter below as **how role admission is computed**, not as a live roster:
+the mechanism (one chokepoint, admission by role, the concurrency ceiling) is unchanged
+and still governs `fleet:launch-on-plan` and `capability:launch-agent` — but the specific
+claim that "**`mug`** … **can** call `cup:spawn`" is no longer true of either role.
+:::
 
 ## Who may call `cup:spawn`
 

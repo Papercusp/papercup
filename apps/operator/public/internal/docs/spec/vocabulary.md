@@ -3,6 +3,20 @@ URL: /internal/docs/spec/vocabulary
 
 
 
+:::caution\[**Mug**, **Kettle** and **Cup** below are RETIRED roles — the Pot is not]
+The Mug · Kettle · Cup/nursery **role tier** was **retired 2026-08-09** (owner-directed), so
+the present-tense definitions below ("the Mug decides which Cups run", "the Mug places a work
+item onto a Cup") describe a tier that no longer runs. `cup:spawn` **refuses**, and
+`RETIRED_TIER_ROLES = {mug, kettle, cup}` is enforced after alias canonicalisation, so
+`queen`/`bee`/`overwatch` are caught too. **su + GOAL mode are the only way to drive the app**;
+fan out with `fleet:launch-on-plan`. See
+[the Mug · Kettle · Cup tier is retired](/internal/docs/agent-insights/mug-kettle-cup-tier-is-retired).
+
+The entries are **kept as vocabulary**: these words appear throughout the code, the schema and
+the older docs, so a reader still needs to know what they mean. The **Pot** itself is NOT
+retired — the pot substrate is explicitly kept (D-003).
+:::
+
 Term
 Definition
 Example

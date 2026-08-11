@@ -3,6 +3,17 @@ URL: /internal/docs/agent-insights/gateway-admission-control-loop
 
 Under inference scarcity the platform runs a TWO-SIDED admission control loop sharing ONE capacity oracle (the gateway /stats). SINK side (gateway-priority-tiers, GATEWAY_PRIORITY_TIERS): per-tier admission caps + a reserved tier-1 floor so the interactive/Mug/Scout lane is never crowded out by batch cups — it ALLOCATES scarce capacity fairly. SOURCE side (mug-capacity-dispatch, QUEEN_CAPACITY_DISPATCH): the Mug clamps fresh-cup placement to what the pool can sustain (read from the same gateway /stats) so it stops FLOODING a saturated pool with requests that just park/fail — it REDUCES the inflow. Neither CREATES capacity (the durable lever is more accounts); they make scarce capacity go to the right work. Both flag-gated, fail-safe (gateway-unreachable ⇒ no change), byte-identical off.
 
+:::caution\[The SOURCE half of this loop is retired — the SINK half is live]
+`QUEEN_CAPACITY_DISPATCH` clamps **Mug `fleet:place_batch`** placement, and both the Mug and
+`fleet:place_batch` were **retired 2026-08-09**
+([canonical account](/internal/docs/agent-insights/mug-kettle-cup-tier-is-retired)). So the
+inflow-reduction half described below **no longer fires** — nothing places cups to clamp.
+
+The **sink** half (gateway priority tiers, `getSpawnHeadroom`, the concurrency ceiling) is
+unchanged and still governs live launches. Do not read this page as evidence that inflow is
+still being throttled at the source: today it is not.
+:::
+
 ## The core idea
 
 When the inference pool is capacity-scarce (accounts at their 5h/7d caps or short-term-throttled), two

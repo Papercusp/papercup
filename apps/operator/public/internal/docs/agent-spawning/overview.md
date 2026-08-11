@@ -1,11 +1,29 @@
 # Overview
 URL: /internal/docs/agent-spawning/overview
 
-What agent spawning is, why we built it, and when to use it.
+>-
+
+:::caution\[The launch verb on this page is retired — `cup:spawn` REFUSES]
+The Mug · Kettle · Cup/nursery **role tier** was **retired 2026-08-09** (owner-directed).
+While `papercusp-mug-kettle-system` is OFF — which is the delivered end state, not a
+pending flip — **`cup:spawn` and `fleet:place_batch` refuse**, and no Mug exists to place
+or supervise anything. See
+[the Mug · Kettle · Cup tier is retired](/internal/docs/agent-insights/mug-kettle-cup-tier-is-retired).
+
+**Use instead:** `fleet:launch-on-plan` for N agents on a plan, or
+`capability:launch-agent` for a single flexible launch/resume/fork.
+
+This page is **kept, not retired**, because everything *around* the launch verb is still
+live and still correct: the one spawn chokepoint and its guards, the fleet concurrency
+ceiling, `fleet:tree` / `fleet:cancel`, `parent_spawn_id` lineage, and the durable
+`spawned_agents` nursery table. Read `cup:spawn` below as *the shape of a spawn call*,
+not as a verb you can issue.
+:::
 
 ## The one-line version
 
-One agent launches another via the `fleet:*` MCP tools — `cup:spawn` to launch, `fleet:tree` to watch, `fleet:cancel` to abort — and the parent gets a `spawnId` back immediately. The child runs to completion in the background; the parent inspects the tree later or moves on (and is woken on the child's death — see [Lifecycle](/internal/docs/agent-spawning/lifecycle)). Lineage threads through `parent_spawn_id` so the Intel panel shows the full tree.
+One agent launches another via the `fleet:*` MCP tools — `cup:spawn` to launch (**retired —
+use `fleet:launch-on-plan`**), `fleet:tree` to watch, `fleet:cancel` to abort — and the parent gets a `spawnId` back immediately. The child runs to completion in the background; the parent inspects the tree later or moves on (and is woken on the child's death — see [Lifecycle](/internal/docs/agent-spawning/lifecycle)). Lineage threads through `parent_spawn_id` so the Intel panel shows the full tree.
 
 ## Why this exists
 

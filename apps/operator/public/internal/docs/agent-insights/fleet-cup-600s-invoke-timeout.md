@@ -3,6 +3,15 @@ URL: /internal/docs/agent-insights/fleet-cup-600s-invoke-timeout
 
 A cup:spawn'd cup that fails with exit 143 (SIGTERM), an EMPTY error_message, and a duration landing exactly on PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS was killed by the DBOS invoke timeout (invokeTimeoutMs(), orchestrator-runner.ts). The default was 600_000ms (10 min) when first hit — three cups died that way on 2026-06-11 mid-edit, one leaving the shared tree red — and has since been raised to 2_700_000ms (45 min). Don't re-dispatch a task that outruns the timeout into the same guillotine — do it inline or raise the env.
 
+:::caution\[The `cup` this debugs is a retired role — the timeout it hits is not]
+`cup:spawn` **refuses** as of 2026-08-09 (the Mug · Kettle · Cup tier is
+[retired](/internal/docs/agent-insights/mug-kettle-cup-tier-is-retired)), so you will not
+spawn a cup to reproduce this. Kept because the failure SHAPE is a property of the shared
+DBOS invoke path, not of the cup role: **exit 143 (SIGTERM) + an EMPTY `error_message` +
+a duration landing exactly on `PAPERCUSP_DBOS_INVOKE_TIMEOUT_MS`** still identifies a
+timeout kill for any DBOS-invoked agent. Read "cup" below as "the invoked child".
+:::
+
 ## Symptom
 
 A `cup:spawn`'d agent shows `failed` in the nursery

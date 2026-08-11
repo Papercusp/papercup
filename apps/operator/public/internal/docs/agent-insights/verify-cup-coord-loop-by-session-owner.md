@@ -3,6 +3,18 @@ URL: /internal/docs/agent-insights/verify-cup-coord-loop-by-session-owner
 
 A cup:spawn cup (formerly 'bee') can do its FILE work perfectly yet be coordination-MUTE — zero coord/MCP writes under its real identity — because its platform MCP tools are DEFERRED behind Claude Code's ToolSearch and a small backend degrades to raw curl with the WRONG id (EI-311/EI-317). Unit tests pass; the reporting half of the Mug↔cup model silently doesn't exist (EI-75). You cannot see this from a green test run — verify it operationally with one SQL probe: coord_event_log.body->>'from' JOIN spawned_agents.session_owner WHERE child_role='cup'. Zero across N cups = mute. Non-zero with writer_key set = the loop is alive.
 
+:::caution\[The Mug↔cup loop this verifies is retired — the PROBE still works]
+`cup:spawn` **refuses** as of 2026-08-09; the Mug · Kettle · Cup tier is
+[retired](/internal/docs/agent-insights/mug-kettle-cup-tier-is-retired), so there is no
+Mug↔cup reporting loop left to prove. Kept because the underlying failure is not
+cup-specific and is still live: **an agent can do its file work perfectly and be
+coordination-MUTE**, because its platform MCP tools are deferred behind ToolSearch and a
+degraded backend writes under the wrong identity. Any spawned agent can fail this way.
+Re-point the probe by dropping the `child_role='cup'` predicate (or setting it to the role
+you actually launched) — the `coord_event_log.body->>'from'` ⋈ `spawned_agents.session_owner`
+join is unchanged.
+:::
+
 > **Terminology update (2026-07-08):** the pot-rename (D-007, migration
 > `519-pot-rename-slice2-role-contract.sql`) renamed the coord role `bee` →
 > `cup` (and `queen`→`mug`, `sentinel`→`papercup`, `overwatch`→`kettle`). The

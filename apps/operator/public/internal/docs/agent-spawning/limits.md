@@ -41,7 +41,7 @@ When a spawn finishes, the last \~2 KB of output (and, on failure, \~2 KB of std
 
 ## Reclaim is lazy + periodic, so an orphan row can briefly show "running"
 
-Orphaned active rows are reclaimed opportunistically (on the next `cup:spawn`, before its ceiling check) and by a periodic sweep — not the instant a host dies. Between a host's death and the next reclaim, its rows still read `running`/`restarting`, and only after `RECLAIM_STALE_MS` (5 min) of stale heartbeat do they qualify for reclaim at all.
+Orphaned active rows are reclaimed opportunistically (on the next spawn through `operator-spawn.ts` — *any* launch path, before its ceiling check) and by a periodic sweep — not the instant a host dies. Between a host's death and the next reclaim, its rows still read `running`/`restarting`, and only after `RECLAIM_STALE_MS` (5 min) of stale heartbeat do they qualify for reclaim at all.
 
 **Workaround:** none needed — the 5-minute staleness window deliberately tolerates a briefly-paused live host (GC, restart-in-progress) so a real spawn isn't reclaimed out from under itself. Reclaim is not purely time-based, either: once a heartbeat is stale past `RECLAIM_STALE_MS`, a same-host candidate is `/proc`-liveness-checked — a still-alive child is kept, its heartbeat re-bumped, **not** reclaimed (EI-85). Only a confirmed-dead child or a row on a host we can't reach is reclaimed to `failed`. So the 5-minute window is the floor; the pid probe is the actual guard against reclaiming a live-but-paused spawn. The Intel panel auto-polls, so a reclaimed row updates within a poll cycle.
 

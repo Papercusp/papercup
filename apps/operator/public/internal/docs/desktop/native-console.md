@@ -265,7 +265,10 @@ are exposed via `?superuser=1`:
 * **Cross-workspace**: `papercusp:list_workspaces`, then any tool
   with `?workspace=<slug>`.
 * **Spawn / supervise other agents** (the full `fleet:*` surface):
-  `cup:spawn` (formerly `cup:spawn`), `fleet:supervise`, `fleet:cancel`,
+  ~~`cup:spawn`~~ (**retired 2026-08-09 — refuses**; it reached that name via
+  `fleet:spawn` →\[WI-1764]→ `bee:spawn` →\[pot-rename D-007, migration 519]→ `cup:spawn`, then
+  retired with the [Mug · Kettle · Cup tier](/internal/docs/agent-insights/mug-kettle-cup-tier-is-retired);
+  launch with `fleet:launch-on-plan`), `fleet:supervise`, `fleet:cancel`,
   `fleet:tree`, `fleet:assignments`, plus `fleet:admit`, `fleet:bee_mail`,
   `fleet:drain`, `fleet:governor`, `fleet:place_batch`,
   `fleet:sandbox_deps`, `fleet:selected_bee`. (The old

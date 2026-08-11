@@ -25,7 +25,7 @@
  * that can hang is a scan that piles up.
  */
 
-import { linuxProcessIdentityFromStat } from '../process-identity';
+import { linuxProcessIdentityFromStat, linuxStartTicksFromProcStat } from '../process-identity';
 import {
   CGROUP_ROOT,
   absCgroupDir,
@@ -104,10 +104,63 @@ const DEFAULT_MAX_FOREIGN = 4000;
  */
 export { deriveUserManagerRoot };
 
-function readIdentity(pid: number, bootId: string | null, fs: CgroupFs): string | null {
-  if (!bootId) return null;
+/** USER_HZ — the unit `/proc/<pid>/stat`'s `starttime` is expressed in. 100 on
+ *  every platform we run on; the same constant `residue-liveness-probe.ts` uses. */
+const CLOCK_TICKS_PER_SEC = 100;
+
+/** Seconds since boot. Read ONCE per scan, not once per pid. */
+function readUptimeSec(fs: CgroupFs): number | null {
+  const raw = fs.readFile('/proc/uptime');
+  if (!raw) return null;
+  const secs = Number.parseFloat(raw.trim().split(/\s+/)[0] ?? '');
+  return Number.isFinite(secs) ? secs : null;
+}
+
+interface ProcFacts {
+  identity: string | null;
+  /** Wall-clock start, or null when /proc could not be read or uptime is unknown. */
+  startedAtMs: number | null;
+}
+
+/**
+ * Both facts we need from `/proc/<pid>/stat`, off a SINGLE read.
+ *
+ * `startedAtMs` exists so the reconciler can age a cgroup that has no ledger row
+ * to age (EI-20185455308799001): the managed scope is minted BEFORE the
+ * fire-and-forget enrolment insert commits, so a scan landing inside that window
+ * sees a `pc-*.scope` no live row claims and would otherwise alarm on a process
+ * that is enrolling normally.
+ *
+ * Start time is used rather than a scope mtime because the process is created
+ * WITH the scope, and because the tick parse is already solved here — `comm`
+ * (field 2) is parenthesised and may itself contain spaces and parens, so the
+ * fields after it can only be located from the LAST ')'. Re-deriving that by hand
+ * is how the field index silently shifts for such a process.
+ */
+function readProcFacts(
+  pid: number,
+  bootId: string | null,
+  uptimeSec: number | null,
+  nowMs: number,
+  fs: CgroupFs,
+): ProcFacts {
   const stat = fs.readFile(`/proc/${pid}/stat`);
-  return stat ? linuxProcessIdentityFromStat(bootId, stat) : null;
+  if (!stat) return { identity: null, startedAtMs: null };
+
+  const identity = bootId ? linuxProcessIdentityFromStat(bootId, stat) : null;
+
+  let startedAtMs: number | null = null;
+  if (uptimeSec !== null) {
+    const ticks = Number(linuxStartTicksFromProcStat(stat));
+    if (Number.isFinite(ticks)) {
+      const ageSec = uptimeSec - ticks / CLOCK_TICKS_PER_SEC;
+      // A negative age means the clocks disagree; report unknown rather than a
+      // future timestamp, which would read as "brand new" and suppress an alarm.
+      if (ageSec >= 0) startedAtMs = nowMs - ageSec * 1000;
+    }
+  }
+
+  return { identity, startedAtMs };
 }
 
 export interface ScanResult {
@@ -138,6 +191,8 @@ export function scanProcesses(opts: ScanOptions = {}): ScanResult {
   const selfPid = opts.selfPid ?? process.pid;
 
   const bootId = fs.readFile('/proc/sys/kernel/random/boot_id');
+  const uptimeSec = readUptimeSec(fs);
+  const scanNowMs = Date.now();
 
   const ownCgroup = parseProcCgroup(fs.readFile(`/proc/${selfPid}/cgroup`) ?? '');
   const userManagerRoot = opts.userManagerRoot ?? deriveUserManagerRoot(ownCgroup);
@@ -203,10 +258,12 @@ export function scanProcesses(opts: ScanOptions = {}): ScanResult {
     const { scope, exemptReason } = classifyScope(cgroupPath, owned, {
       terminalWindowAlive: probeWindow(absDir, cgroupPath),
     });
+    const facts = readProcFacts(pid, bootId, uptimeSec, scanNowMs, fs);
     processes.push({
       pid,
       cgroupPath,
-      processIdentity: readIdentity(pid, bootId, fs),
+      processIdentity: facts.identity,
+      startedAtMs: facts.startedAtMs,
       cmdline: parseProcCmdline(fs.readFile(`/proc/${pid}/cmdline`)),
       owned,
       scope,

@@ -18,9 +18,17 @@ It is NOT a replacement for `fleet:launch-on-plan` — that stays the right tool
 "open N members and work this plan". The routing rule:
 
 > **Work is a plan** → `fleet:launch-on-plan`. **Work is a brief, or the agent
-> already exists** → `capability:launch-agent`. **Headless background grinder on
-> ranked work** → `cup:spawn` (see
-> [desktop-fleet-vs-loop-cup](/agent-insights/desktop-fleet-vs-loop-cup)).
+> already exists** → `capability:launch-agent`. **Headless, no desktop window** →
+> `fleet:launch-on-plan { headless: true }` (see
+> [desktop-fleet-vs-loop-cup](/internal/docs/agent-insights/desktop-fleet-vs-loop-cup)).
+
+:::note\[This row used to say `cup:spawn` — it no longer works]
+The "headless background grinder on ranked work" route was `cup:spawn` (a Mug-supervised
+nursery cup). The Mug · Kettle · Cup tier was **retired 2026-08-09** and `cup:spawn` /
+`fleet:place_batch` **refuse**. A headless FLEET is not a cup: it is leader-led su members
+with no desktop window, so `fleet:launch-on-plan { headless: true }` is the replacement.
+See [the Mug · Kettle · Cup tier is retired](/internal/docs/agent-insights/mug-kettle-cup-tier-is-retired).
+:::
 
 All three sit on ONE shared core (`agent-launch-core.ts`) — command construction,
 fleet/launched-by/account injection, resume resolution. There is deliberately no

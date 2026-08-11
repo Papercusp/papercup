@@ -3,6 +3,15 @@ URL: /internal/docs/agent-insights/spawn-dies-at-launch-check-model-binary-pairi
 
 An agent spawn that exits 1 before its first turn, with an apparently empty stderr in the operator journal, reads exactly like the documented weekly-limit/quota signature and routes triage to accounts/egress. It usually is not. The CLI's actual refusal IS persisted — in harness_shared.harness_run_output.err_body, not the journal — and on 2026-08-08 it said `Model \"sonnet[1m]:high\" not found. Run \"omp models\"`: every cup was launching the omp binary with a Claude-only model spec. Duration is the tell (a quota refusal costs a round-trip; a bad model id dies in ~1.5s). This fleet has now been bitten in BOTH directions.
 
+:::caution\[The spawns observed here were `cup:spawn`s — the DIAGNOSIS is path-independent]
+`cup:spawn` **refuses** as of 2026-08-09 (the Mug · Kettle · Cup tier is
+[retired](/internal/docs/agent-insights/mug-kettle-cup-tier-is-retired)), so reproduce this
+with `fleet:launch-on-plan` / `capability:launch-agent` instead. Everything that makes this
+page worth reading is unchanged: **a spawn dying in \~1.5s with exit 1 is a model/binary
+MISPAIRING, not quota**, the real stderr lives in `harness_run_output.err_body` and not the
+journal, and env sourcing can silently no-op. Read `cup:spawn` below as "the launch call".
+:::
+
 ## The symptom, and why it misroutes you
 
 An agent spawn returns `ok`, then dies almost immediately. The operator journal shows:

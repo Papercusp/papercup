@@ -3,6 +3,15 @@ URL: /internal/docs/agent-insights/fleet-spawn-structural-error-identity-and-cod
 
 Why the advertised curl-able superuser HTTP path failed deterministically (no uiClientId default → resolveAgentIdentity throws) and why zod failures inflated the structural tool-error class (define-tool threw plain Errors that dispatch coded handler_error instead of invalid_input).
 
+:::caution\[`cup:spawn` is retired — the two DEFECTS it exposed are general]
+`cup:spawn` **refuses** as of 2026-08-09 (the Mug · Kettle · Cup tier is
+[retired](/internal/docs/agent-insights/mug-kettle-cup-tier-is-retired)), so the watchdog
+key `repeated-tool-error:cup:spawn:structural` can no longer fire. Kept because neither
+defect was cup-specific: a **missing transport identity default**, and **caller errors
+miscoded as structural** — the latter makes any tool's watchdog blame the tool for what is
+really a bad call. Both patterns are worth recognising on the live launch paths.
+:::
+
 ## Symptom
 
 The watchdog key `repeated-tool-error:cup:spawn:structural` fired and filed

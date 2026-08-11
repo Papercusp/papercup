@@ -3,6 +3,15 @@ URL: /internal/docs/agent-insights/place-batch-spawned-not-running-manual-wake
 
 >-
 
+:::caution\[`fleet:place_batch` / `cup:spawn` are retired — the LESSON is not]
+Both verbs **refuse** as of 2026-08-09; the Mug · Kettle · Cup/nursery tier is
+[retired](/internal/docs/agent-insights/mug-kettle-cup-tier-is-retired). Kept because the
+finding generalises to every launch path that replaced them: **a spawn result that reports
+`spawned:N` is not evidence that anything is RUNNING.** The same check applies to
+`fleet:launch-on-plan` and `capability:launch-agent` — verify with `fleet:assignments` +
+work-item state, and treat `woken:0` as a MISS, never a silent success.
+:::
+
 ## The trap
 
 `fleet:place_batch` returned `{ summary: { spawned: 3 } }` and three `placements:[{action:'spawned'}]`.

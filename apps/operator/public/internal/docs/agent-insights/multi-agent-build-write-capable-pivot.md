@@ -3,6 +3,15 @@ URL: /internal/docs/agent-insights/multi-agent-build-write-capable-pivot
 
 The coordinator runbook for building a whole plan via spawned workers when conditions are degraded. Fleet cups may be READ-ONLY (EI-524 capability confinement) — they draft, they can't write; the 'lift' can be announced-but-not-effective. Org-wide API rate-limiting kills parallel agent BURSTS but serial main-loop work survives. Pivot to write-capable Agent (Task) subagents + serial; place waves at ≤3 concurrency; ALWAYS verify cup/subagent drafts before applying.
 
+:::caution\[The `fleet:place_batch` → cups path described here is retired]
+The Mug · Kettle · Cup/nursery tier was **retired 2026-08-09**
+([canonical account](/internal/docs/agent-insights/mug-kettle-cup-tier-is-retired)):
+`fleet:place_batch` and `cup:spawn` **refuse**, and no `system:cup` can be spawned. The
+live equivalent of "decompose the plan into lanes and fan agents onto it" is
+**`fleet:launch-on-plan`**. Kept for the write-capability reasoning, which still applies to
+fleet members.
+:::
+
 ## Current behavior (2026-07-03)
 
 **Wall 1 below is CLOSED — fleet cups are now write+bash capable, not

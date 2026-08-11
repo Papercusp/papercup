@@ -11,6 +11,17 @@ How a Pot runs non-coding work. `generic-pot` is a built-in `kind:'pot'` bluepri
 > (judge acceptance, artifacts output, topic affinity, the schema fields) is unchanged — only the
 > blueprint *names* moved; substitute `work`/`coding` for the current ids.
 
+:::caution\[The placement half is retired — the pot/blueprint half is not]
+Instructions below addressed to **the Mug** (notably "the Mug must pass `affinity_kind`
+explicitly to `fleet:place_batch`") no longer have an actor: the Mug · Kettle · Cup tier
+was **retired 2026-08-09** and `fleet:place_batch` **refuses**
+([canonical account](/internal/docs/agent-insights/mug-kettle-cup-tier-is-retired)).
+
+The pot substrate this page is really about — generic (non-coding) pot blueprints, their
+config surface, and the affinity WEIGHTS themselves — is explicitly KEPT (D-003) and still
+live. Read the placement rows as "how affinity was consumed", not as a call to make.
+:::
+
 ## What
 
 The Pot/Mug/cup work-queue is no longer coding-only. The blueprint engine already
