@@ -696,3 +696,107 @@ export async function produceLogSnapshot(
   );
   return { appended: true, coversUpTo, rowCount, chunkCount: snapshotOps.length };
 }
+
+/**
+ * Fold `sourceLog` and write the resulting snapshot set into a DIFFERENT log
+ * (EI-20108164746219771 — the seed must not ship the owner's identity).
+ *
+ * ── WHY THIS EXISTS INSTEAD OF `produceLogSnapshot(ownLog, { excludeTables })` ──
+ * The seed cut cannot filter in place. `cut-seed-cli` appends its head snapshot to
+ * the LIVE own log (P-004 requires it inside the reader's tail-scan window), and
+ * readers fold FORWARD from the newest complete snapshot, skipping everything below
+ * its `coversUpTo`. So a table-incomplete snapshot in the live log does not merely
+ * omit rows from the seed — it makes those rows UNREACHABLE for every live reader
+ * that seeds from it. Trading a live read-model regression for a privacy fix is not
+ * a fix. (Stripping rows from already-written blocks is not available either: blocks
+ * are Merkle-signed and append-only.)
+ *
+ * So the seed becomes a PRODUCT rather than a slice of the owner's private log: mint
+ * a separate core, put exactly one filtered snapshot set in it, ship that. The live
+ * log is never written.
+ *
+ * ── THE PART THAT IS EASY TO GET WRONG: `coversUpTo` IS DUAL-PURPOSE ──
+ * It means both "this set summarizes source ops below N" AND "this set physically
+ * begins at index N". `produceLogSnapshot` can conflate them safely because source
+ * and target are the same log. HERE THEY DIVERGE: the reader uses it purely as a
+ * LOCATION (`verifySnapshotSet` reads chunk j at `coversUpTo + j`, read-merge.ts:437,
+ * and on a miss seeks BACKWARD past it, :558), so it MUST be the TARGET's append
+ * position — not the source's length. Anchoring to the source length would place a
+ * perfectly valid, fully readable set at coordinates nothing ever looks at, which is
+ * precisely the unfindable-set failure WI-37526 cost ~6 release cuts to diagnose.
+ *
+ * The target is expected to be fresh (length 0), but the target's own length is used
+ * rather than a hardcoded 0 so appending to a non-empty synthetic core stays correct.
+ */
+export async function produceFilteredSnapshotIntoLog(
+  sourceLog: Pick<OwnLog, 'get' | 'length'>,
+  targetLog: OwnLog,
+  opts: {
+    now: number;
+    schemaVersion: number;
+    excludeTables?: Iterable<string>;
+    maxChunkBytes?: number;
+  },
+): Promise<ProduceSnapshotResult> {
+  // An EMPTY SOURCE means there is nothing to seed — mirror `produceLogSnapshot`'s
+  // `coversUpTo === 0` early return rather than minting a core whose only content is
+  // a vacuous snapshot. (`chunkSnapshotRows([])` yields ONE empty chunk, not zero, so
+  // without this the function would report `appended: true` for a set summarizing
+  // nothing.)
+  //
+  // Deliberately NOT the same as "folded to zero rows": a NON-empty source whose rows
+  // are all excluded or all tombstoned still gets a real, empty snapshot, because
+  // "this hive has no shippable content" is a meaningful statement to seed with,
+  // whereas "there was no source" is not.
+  if (sourceLog.length === 0) {
+    return { appended: false, coversUpTo: targetLog.length, rowCount: 0, chunkCount: 0 };
+  }
+
+  const folder = new SnapshotRowFolder({ excludeTables: opts.excludeTables });
+  await foldLogRangeInto(sourceLog, folder, 0, sourceLog.length);
+
+  const rows = folder.finish({ now: opts.now });
+  // The TARGET's append position — see the dual-purpose note above.
+  const coversUpTo = targetLog.length;
+  const snapshotOps = buildSnapshotOpsFromRows({
+    rows,
+    coversUpTo,
+    // The set is authored by the core that CARRIES it. Individual rows keep their
+    // original `author_pubkey` (SnapshotRowFolder preserves it, because it is bound
+    // into the epoch-decrypt AAD), so provenance of the CONTENT is unchanged — only
+    // the envelope is re-authored.
+    author_pubkey: targetLog.keyHex,
+    ts: opts.now,
+    schema_version: opts.schemaVersion,
+    maxChunkBytes: opts.maxChunkBytes,
+  });
+
+  if (snapshotOps.length === 0) {
+    return { appended: false, coversUpTo, rowCount: 0, chunkCount: 0 };
+  }
+
+  await targetLog.appendBatch(snapshotOps);
+
+  // Same anchor verification produceLogSnapshot performs. A fresh single-writer core
+  // has no concurrent appender, so this should be unreachable — which is exactly why
+  // it is worth asserting: if it ever fires, the target was not the private core this
+  // function assumes, and shipping an unfindable seed would otherwise look like success.
+  const anchorOp = await targetLog.get(coversUpTo);
+  const anchorIsSnapshot = anchorOp != null && isSnapshotOp(anchorOp);
+  const anchorCovers = anchorIsSnapshot
+    ? (anchorOp.value as SnapshotPayload | undefined)?.coversUpTo
+    : undefined;
+  if (anchorCovers !== coversUpTo) {
+    throw new Error(
+      `[snapshot] synthetic-core anchor race: appended a ${snapshotOps.length}-chunk set for ` +
+        `coversUpTo=${coversUpTo}, but that index does not hold chunk 0 of it. The target log ` +
+        `is not exclusively held by this cut, so the set would be unfindable (WI-37526).`,
+    );
+  }
+
+  const rowCount = snapshotOps.reduce(
+    (sum, op) => sum + (op.value as SnapshotPayload).rows.length,
+    0,
+  );
+  return { appended: true, coversUpTo, rowCount, chunkCount: snapshotOps.length };
+}

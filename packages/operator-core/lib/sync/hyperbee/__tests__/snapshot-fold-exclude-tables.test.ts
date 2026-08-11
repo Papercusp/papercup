@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   produceLogSnapshot,
+  produceFilteredSnapshotIntoLog,
   SnapshotRowFolder,
   isSnapshotOp,
   type SnapshotPayload,
@@ -183,5 +184,133 @@ describe('SnapshotRowFolder excludeTables (EI-20108164746219771)', () => {
     const bytes = await serializeSet(filtered);
     expect(bytes).not.toContain(SYNTHETIC_MACHINE_LABEL);
     expect(bytes).not.toContain(SYNTHETIC_GITHUB_ID);
+  });
+});
+
+describe('produceFilteredSnapshotIntoLog — the synthetic seed core (EI-20108164746219771)', () => {
+  /** A source log in the shape the real seed has: content already folded into a snapshot. */
+  async function sourceInShippedSeedShape() {
+    const src = memLog('source-own-log');
+    await src.append(put('plans', 'p1', { title: 'keep me' }, 1));
+    await src.append(put('presence', IDENTITY_ROW.hbKey, { machine_label: SYNTHETIC_MACHINE_LABEL }, 2));
+    await src.append(put('usage', 'u1', { tokens: 5 }, 3));
+    await produceLogSnapshot(src, { now: 1000, schemaVersion: 1 });
+    return src;
+  }
+
+  it('NEVER writes the source log — the whole reason this function exists', async () => {
+    const src = await sourceInShippedSeedShape();
+    const lengthBefore = src.length;
+    const target = memLog('synthetic-seed-core');
+
+    await produceFilteredSnapshotIntoLog(src, target, {
+      now: 2000,
+      schemaVersion: 1,
+      excludeTables: ['presence', 'usage'],
+    });
+
+    // Filtering in place would make historical `usage` unreachable for every live
+    // reader folding forward from the newest snapshot. The source must be untouched.
+    expect(src.length).toBe(lengthBefore);
+    expect(target.length).toBeGreaterThan(0);
+  });
+
+  it('anchors coversUpTo to the TARGET position, so the set is findable where the reader looks', async () => {
+    const src = await sourceInShippedSeedShape();
+    const target = memLog('synthetic-seed-core');
+
+    const res = await produceFilteredSnapshotIntoLog(src, target, {
+      now: 2000,
+      schemaVersion: 1,
+      excludeTables: ['presence', 'usage'],
+    });
+
+    // A fresh core ⇒ the set begins at 0, NOT at the source's length. Anchoring to
+    // the source would be readable but unfindable (WI-37526).
+    expect(res.coversUpTo).toBe(0);
+    expect(res.coversUpTo).not.toBe(src.length);
+
+    // Every chunk present at [coversUpTo, coversUpTo + chunkCount), which is the span
+    // verifySnapshotSet scans.
+    for (let j = 0; j < res.chunkCount; j++) {
+      const op = await target.get(res.coversUpTo + j);
+      expect(op && isSnapshotOp(op)).toBe(true);
+      expect((op!.value as SnapshotPayload).coversUpTo).toBe(res.coversUpTo);
+    }
+  });
+
+  it('carries the intended content and none of the identity', async () => {
+    const src = await sourceInShippedSeedShape();
+    const target = memLog('synthetic-seed-core');
+
+    const res = await produceFilteredSnapshotIntoLog(src, target, {
+      now: 2000,
+      schemaVersion: 1,
+      excludeTables: ['presence', 'usage'],
+    });
+
+    const rows = await rowsOfSetAt(target, res.coversUpTo, res.chunkCount);
+    expect(rows.some((r) => r.table === 'plans')).toBe(true);
+    expect(rows.some((r) => r.table === 'presence')).toBe(false);
+    expect(rows.some((r) => r.table === 'usage')).toBe(false);
+
+    const bytes = JSON.stringify(
+      await Promise.all(
+        Array.from({ length: res.chunkCount }, (_, j) => target.get(res.coversUpTo + j)),
+      ),
+    );
+    expect(bytes).not.toContain(SYNTHETIC_MACHINE_LABEL);
+    expect(bytes).not.toContain(SYNTHETIC_GITHUB_ID);
+  });
+
+  it('re-authors only the ENVELOPE — rows keep their original author_pubkey', async () => {
+    // Row-level author_pubkey is bound into the epoch-decrypt AAD, so rewriting it
+    // would make encrypted content undecryptable for a seeded joiner (WI-808 / the
+    // seed-57-drop sibling). Only the snapshot op itself is authored by the new core.
+    const src = memLog('source-own-log');
+    await src.append(put('plans', 'p1', { title: 'keep me' }, 1));
+    const target = memLog('synthetic-seed-core');
+
+    const res = await produceFilteredSnapshotIntoLog(src, target, {
+      now: 2000,
+      schemaVersion: 1,
+      excludeTables: ['presence'],
+    });
+
+    const chunk = await target.get(res.coversUpTo);
+    expect(chunk!.author_pubkey).toBe('synthetic-seed-core');
+    expect((chunk!.value as SnapshotPayload).rows[0]!.author_pubkey).toBe('me');
+  });
+
+  it('reports appended:false for an empty source rather than claiming a set it never wrote', async () => {
+    const src = memLog('source-own-log');
+    const target = memLog('synthetic-seed-core');
+    const res = await produceFilteredSnapshotIntoLog(src, target, { now: 2000, schemaVersion: 1 });
+    expect(res.appended).toBe(false);
+    expect(res.chunkCount).toBe(0);
+    expect(target.length).toBe(0);
+  });
+
+  it('DOES append an empty snapshot when a non-empty source folds to zero rows', async () => {
+    // The deliberate other half of the rule above. "No source at all" and "a real hive
+    // whose every row was excluded" are different facts and must seed differently:
+    // the second is a legitimate empty-content seed, the first is nothing to seed from.
+    // Pinned because `chunkSnapshotRows([])` returns one empty chunk, so the two cases
+    // are trivially easy to collapse into whichever the implementation happens to do.
+    const src = memLog('source-own-log');
+    await src.append(put('presence', IDENTITY_ROW.hbKey, { machine_label: SYNTHETIC_MACHINE_LABEL }, 1));
+    const target = memLog('synthetic-seed-core');
+
+    const res = await produceFilteredSnapshotIntoLog(src, target, {
+      now: 2000,
+      schemaVersion: 1,
+      excludeTables: ['presence'],
+    });
+
+    expect(res.appended).toBe(true);
+    expect(res.rowCount).toBe(0);
+    expect(target.length).toBe(res.chunkCount);
+    const bytes = JSON.stringify(await target.get(res.coversUpTo));
+    expect(bytes).not.toContain(SYNTHETIC_MACHINE_LABEL);
   });
 });
