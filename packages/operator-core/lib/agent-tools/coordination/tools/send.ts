@@ -18,7 +18,8 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { parseReportBlock, type ReportBlock } from '@papercusp/chat-protocol';
-import { resolveAgentIdentity, type AgentIdentity } from '../identity';
+import { resolveAgentIdentity, ADMIN_COORD_UI_OWNER, type AgentIdentity } from '../identity';
+import { ownerChatWakePayloadFields } from '../owner-chat-turn';
 import {
   classifyUnknownRecipients,
   lookupEndedSessions,
@@ -1181,7 +1182,20 @@ async function sendOne(
       // Carrying msg_id here makes the correct action (thread the reply)
       // available at the moment of action instead of requiring a separate
       // coord:inbox call purely to recover an id already delivered in-body.
-      payload: { msg_id: env.msg_id },
+      // EI-20130618357432548: when the sender IS the owner's chat pane, carry the
+      // owner's message verbatim so the wake can be delivered AS the turn instead
+      // of wrapped in the pump's `[await-event] …` envelope (owner-chat-turn.ts
+      // explains why that envelope broke both the pane's echo-absorption and the
+      // recipient's reply routing). Gated on the AUTHENTICATED sender identity —
+      // `identity.ownerId` is resolved server-side, never caller-supplied — so an
+      // agent's own coord:send can never take this path. `msg.body` rather than
+      // `msg.summary`: the composer truncates the summary to 80 chars.
+      payload: {
+        msg_id: env.msg_id,
+        ...(identity.ownerId === ADMIN_COORD_UI_OWNER
+          ? ownerChatWakePayloadFields(typeof msg.body === 'string' ? msg.body : '')
+          : {}),
+      },
     });
     wake = { mode: wakeMode, targets: fan.targets, woken: fan.woken };
     if (fan.staged > 0) wake.staged = fan.staged;

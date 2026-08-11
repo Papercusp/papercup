@@ -98,6 +98,10 @@ import { renderLoopChecksBlock, renderLoopWallsBlock } from '../../harness/routi
 import { getLoopStatus, countAgentToolCallsInWindow } from '../../harness/routines/loop';
 import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
 import { isInboxOwnerReplyPayload } from '../../agent-tools/coordination/inbox-reply';
+import {
+  readOwnerChatTurnText,
+  ownerChatTurnText,
+} from '../../agent-tools/coordination/owner-chat-turn';
 import type { ResumeTurnExitRaw } from './resume-turn-outcome';
 import type { DeliveryWork, WakeChannel, WakeOutcome } from './types';
 
@@ -404,6 +408,19 @@ const COORD_INBOX_WAKE_PREFIX = 'coord:inbox-wake:';
 
 /** Compose the single-line wake turn injected/submitted into the woken session. */
 export function wakeTurnText(d: DeliveryWork): string {
+  // EI-20130618357432548 — the owner's own chat-pane message is delivered AS the
+  // turn, not wrapped in the machinery below. The wrapper is right for every
+  // agent/system wake (it names the key, the delivery id and the reconcile rule),
+  // and wrong for exactly this one case: the chat pane renders the agent's
+  // transcript back to the owner, so the wrapper is what the OWNER ends up
+  // reading in place of their own message — and its text is what defeated the
+  // pane's echo absorption. Gated on the marker the authenticated owner-GUI send
+  // path stamps (owner-chat-turn.ts); the same payload-marker gate the
+  // inbox-owner-reply path already uses at tagWakeText below. Every other
+  // delivery is byte-identical.
+  const ownerChatText = readOwnerChatTurnText(d.payload);
+  if (ownerChatText) return ownerChatTurnText(ownerChatText);
+
   const note = d.note ? ` (your note: ${d.note})` : '';
   const summary = d.summary ? ` — ${d.summary}` : '';
   const payload =
@@ -618,7 +635,15 @@ function tagWakeText(d: DeliveryWork, text: string, tag: typeof tagTurnForInject
   try {
     const origin = readColdLoopMarker(d.payload)
       ? 'loop-fire'
-      : isInboxOwnerReplyPayload(d.payload)
+      : // EI-20130618357432548: an owner CHAT-PANE turn is the same authority as an
+        // owner INBOX reply — both are authored by the authenticated human through an
+        // admin-only surface — so it mints the SAME existing distinguished origin
+        // rather than a new one. Deliberately still ENROLLED: delivering it
+        // unenveloped would classify it OWNER (interactive), and the admin route
+        // accepts a no-Origin localhost POST, so that would let any agent curl an
+        // owner-stamped turn (and thus an auto-registered mode grant) into a peer's
+        // session. See owner-chat-turn.ts's SECURITY note.
+        isInboxOwnerReplyPayload(d.payload) || readOwnerChatTurnText(d.payload)
         ? 'coord-inject:owner'
         : 'wake-pump';
     return tag({ sid: d.subscriberId, origin, text }).taggedText;
