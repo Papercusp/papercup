@@ -29,7 +29,10 @@ import {
 } from './AgentsPillSessions';
 import type { RosterAgent } from './AgentsRunningPill';
 
-vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => ({ data: [{ active: [] }] }) }));
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: () => ({ data: [{ active: [] }] }),
+  onSyncBusEvent: () => () => {},
+}));
 vi.mock('@/app/coord/presence-ui', () => ({ LivenessDot: () => null }));
 // Records the props the inspector was opened with, so the WI-6816 wiring test
 // below can assert what the SEARCH results actually hand it (renders nothing,

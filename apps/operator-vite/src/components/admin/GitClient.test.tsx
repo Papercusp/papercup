@@ -64,6 +64,7 @@ let hivesResult: Record<string, unknown> = { data: [], loading: false, fetching:
 vi.mock('@papercusp/sync', () => ({
   useSyncQuery: (opts: { queryName?: string }) =>
     opts?.queryName === 'dev.gitPipelineHives' ? hivesResult : mockResult,
+  onSyncBusEvent: () => () => {},
 }));
 
 import GitClient from './GitClient';

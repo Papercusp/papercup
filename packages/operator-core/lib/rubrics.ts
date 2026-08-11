@@ -1294,6 +1294,10 @@ export function applyRubricAmendment(stored: Rubric, input: AmendRubricInput): P
     // EI-12149: an amendment must carry the stored release-gating mark — dropping it
     // would silently un-gate the rubric (the WI-4287 loss class, on a boolean).
     ...(stored.releaseGating !== undefined ? { releaseGating: stored.releaseGating } : {}),
+    // Same loss class as releaseGating above (WI-4287): dropping this on an amendment
+    // would silently un-watch the rubric, and an un-watched health rubric fails EXACTLY
+    // as quietly as the gap this flag was added to close.
+    ...(stored.stalenessWatched !== undefined ? { stalenessWatched: stored.stalenessWatched } : {}),
     ...(input.methodRef ?? stored.methodRef ? { methodRef: (input.methodRef ?? stored.methodRef)! } : {}),
     ...(input.by ?? stored.createdBy ? { by: (input.by ?? stored.createdBy)! } : {}),
     status: stored.status,

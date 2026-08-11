@@ -16,7 +16,10 @@ const H = vi.hoisted(() => ({
   active: [] as unknown[],
 }));
 
-vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => ({ data: [{ active: H.active }] }) }));
+vi.mock('@papercusp/sync', () => ({
+  useSyncQuery: () => ({ data: [{ active: H.active }] }),
+  onSyncBusEvent: () => () => {},
+}));
 vi.mock('@/app/coord/presence-ui', () => ({
   LivenessDot: ({ liveness }: { liveness: string }) => <span data-testid={`dot-${liveness}`} />,
 }));
