@@ -782,9 +782,19 @@ const searchTranscripts = defineTool({
       groupHitsBySession, classifySessionGroups, buildActiveEntryMatchFilter,
       // WI-37883 — the owner-visibility filter and the amount of turn text it
       // needs, taken from ONE module so the SQL below cannot under-hydrate it.
-      filterOwnerVisibleTurnHits, OWNER_VISIBILITY_DECIDING_PREFIX_CHARS,
+      ownerVisiblePage, OWNER_VISIBILITY_DECIDING_PREFIX_CHARS, ownerVisibleCandidateCount,
     } = await import('../../../adv-session-search');
     const { advSessionsByTranscriptHandles } = await import('../../../adv-sessions');
+
+    /* `?includeMachineTurns=1` opts OUT of the owner-visibility filter — for
+       debugging a wake or a hook wall, where the plumbing IS the thing you are
+       looking for. Read here rather than at the filter because it also decides
+       how much to RETRIEVE (see the engine `limit` below). Not wired to any UI;
+       an engineer reaching for it knows what they are asking for. The AGENT
+       search path (`sessions:search`) is a different entry point entirely and
+       is untouched: agents legitimately search their own machine turns. */
+    const includeMachineTurns = url.searchParams.get('includeMachineTurns') === '1';
+    const candidateBudget = ownerVisibleCandidateCount(hitLimit);
 
     const sources = SEARCH_SOURCES.filter((s) => s.name === 'session_turn');
     const { sql } = getOrgPg();
@@ -845,13 +855,24 @@ const searchTranscripts = defineTool({
       query: q,
       workspaceId: activeWorkspaceId(),
       scopeFilter: null,
-      // P-010 Stage-B over-fetch: retrieve a pool for the reranker to choose
-      // from rather than the page itself. NOTE this is a no-op at THIS route's
-      // page sizes — rerankCandidateCount never under-fetches, so at 30 (pill)
-      // or 50 (HUD) it returns `limit` unchanged; it bites only if a caller
-      // ever asks for a small page. rerankPageHead handles the large-page case
-      // by budgeting CANDIDATES instead (see its header).
-      limit: rerankCandidateCount(hitLimit),
+      // Retrieve a POOL, not the page. Two independent over-fetches want a
+      // say here and the budget is the larger of them:
+      //
+      //   · P-010 Stage-B (`rerankCandidateCount`) — a pool for the reranker to
+      //     REORDER. A no-op at this route's page sizes: it is capped at
+      //     RERANK_MAX_CANDIDATES (24), so at 30 (pill) or 50 (HUD) it returns
+      //     `limit` unchanged and bites only on a small page.
+      //   · WI-37912 (`ownerVisibleCandidateCount`) — a pool for the
+      //     owner-visibility filter below to SURVIVE. That filter runs after
+      //     retrieval, and with no surplus every machine turn it drops was a
+      //     permanently empty result slot: measured at a mean 32.8% of a
+      //     30-slot page, and 100% for one real query.
+      //
+      // On the `?includeMachineTurns=1` debug path nothing is filtered, so the
+      // second budget would just retrieve rows to throw away.
+      limit: includeMachineTurns
+        ? rerankCandidateCount(hitLimit)
+        : Math.max(rerankCandidateCount(hitLimit), candidateBudget),
       mode: 'hybrid',
       embedder,
       embedTimeoutMs,
@@ -883,7 +904,13 @@ const searchTranscripts = defineTool({
     // Checked for abort first so a request the watchdog has already given up on
     // does not pay for a rerank nobody will read.
     signal.throwIfAborted();
-    const ordered = await rerankPageHead(q, results, hitLimit);
+    /* ⚠ `candidateBudget`, NOT `hitLimit` — the pool must survive the
+       owner-visibility filter below, which cannot backfill a slot from a page
+       that was already cut to size. This does NOT change the top of the page:
+       rerankPageHead scores `hits.slice(0, RERANK_MAX_CANDIDATES)` whatever
+       the limit and appends the remainder in retrieval order, so a bigger
+       limit only lets candidates through BEHIND the existing head. */
+    const ordered = await rerankPageHead(q, results, Math.max(hitLimit, candidateBudget));
     mark('rerank');
 
     // Engine hits → turn refs (source_id = `<sourceKind>:<sessionId>:<turnIdx>`).
@@ -973,19 +1000,19 @@ const searchTranscripts = defineTool({
        unfiltered search re-leaks it as an excerpt AND offers a deep-link that
        cannot anchor, because the target message is no longer rendered.
 
-       `?includeMachineTurns=1` opts out — for debugging a wake or a hook wall,
-       where the plumbing IS the thing you are looking for. Not wired to any UI;
-       an engineer reaching for it knows what they are asking for. The AGENT
-       search path (`sessions:search`) is a different entry point entirely and
-       is untouched: agents legitimately search their own machine turns.
-
        Filtering HERE, before the rollup, is what makes `totalHits` and the
        session groups agree — a session whose only matches were machine turns
-       must not appear at all, rather than appear with nothing to show. */
-    const visibleHits = (url.searchParams.get('includeMachineTurns') === '1'
-      ? turnHits
-      : filterOwnerVisibleTurnHits(turnHits)
-    )
+       must not appear at all, rather than appear with nothing to show.
+
+       WI-37912: filter the POOL and slice to the page, never the reverse. The
+       cut used to happen upstream, so a dropped machine turn cost a result slot
+       nothing could refill — a mean 32.8% of a 30-slot page, measured through
+       this route. `hidden` reports what that cost, and carries its own
+       boundedness marker because the count is taken over a capped pool. */
+    const page = includeMachineTurns
+      ? { hits: turnHits.slice(0, hitLimit), hidden: { count: 0, truncatedByLimit: false } }
+      : ownerVisiblePage(turnHits, hitLimit, candidateBudget);
+    const visibleHits = page.hits
       /* STRIP the head once the verdict is taken. `groups` is serialized to the
          client hit-for-hit, so leaving it on would ship the machine text this
          filter exists to keep off the wire — and would do it on the
@@ -1053,6 +1080,14 @@ const searchTranscripts = defineTool({
            the filter working. A count must describe what was actually handed
            over. */
         totalHits: visibleHits.length,
+        /* WI-37912: why the page may be SHORT. Over-fetching refills most
+           filtered slots, but a query whose matches are nearly all machine text
+           ("Stop hook feedback" — measured 100%) legitimately has little to
+           show, and a silently short page is indistinguishable from a bad
+           ranker. `truncatedByLimit: true` means the candidate pool was
+           saturated, so `count` is a FLOOR — a client must render it as "at
+           least N", never as a total. */
+        hiddenMachineHits: page.hidden,
         sessions,
         _stageTimingsMs: stageTimingsMs,
       }),

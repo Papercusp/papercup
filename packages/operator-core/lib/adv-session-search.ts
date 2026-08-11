@@ -426,18 +426,31 @@ export function mergeIdMatches<
  *
  * ── Why it is a post-filter and not an engine predicate ──────────────────────
  *
- * MEASURED over 3 days of `session_turns` before choosing: 38,760 assistant
- * turns (92.3%) vs 3,247 user turns (7.7%), of which 1,747 are machine-authored
- * — so this drops ~4% of the searchable corpus, not half of it. (The
- * intuition-trap is real: machine turns ARE 54% of USER-role rows, which is the
- * number the parent fix turned on, and reading that as 54% of the SEARCH corpus
- * argues for an engine-level predicate that duplicates the rule in SQL and can
- * drift from it.) At 4% a post-filter cannot meaningfully starve a page, and
- * reusing the one shared predicate is worth more than the recovered hits.
+ * Because the rule is a DISPLAY rule that already exists, once, in
+ * `isOwnerVisiblePrompt`. An engine-level predicate would have to restate it in
+ * SQL, and the two copies would then drift silently — in the direction that
+ * re-leaks machine text, since a SQL deny-list rots every time a new wake kind
+ * is added. That reasoning is unchanged and is why the filter stays HERE.
  *
- * Two queries do skew high — boilerplate that only exists inside wake blobs
- * ("loop wake", "coord:orient") — and for those, every dropped hit is one the
- * owner could not have opened anyway.
+ * ⚠ WHAT WAS WRONG WITH THE ORIGINAL SIZING ARGUMENT (WI-37912). This header
+ * used to justify the placement a second way: "MEASURED … this drops ~4% of the
+ * searchable corpus … at 4% a post-filter cannot meaningfully starve a page."
+ * The 4% corpus figure is real; the inference from it was not. A corpus AVERAGE
+ * does not bound the per-QUERY drop rate, and the filter is applied per query,
+ * to a page — so the two quantities were never comparable.
+ *
+ * MEASURED END-TO-END instead (2026-08-11, 18 queries through the live route,
+ * `?includeMachineTurns=1` vs default, limit=30 — not a SQL proxy): the page
+ * lost a MEAN of 9.8 of 30 slots (32.8%), median 25%, and `Stop hook feedback`
+ * returned ZERO of 30. Note this also refutes the old header's guess about
+ * WHICH queries skew: `loop wake` was named as a skewed term and lost 19 slots,
+ * but so did ordinary ones (`deploy` 15, `green checkpoint` 17), while the
+ * neutral control `the` lost none. Skew is a property of how user-heavy a
+ * query's top-N is, not of boilerplate vocabulary.
+ *
+ * So the placement is right and the SIZING was wrong. The fix is not to move
+ * the rule into SQL — it is to hand this filter a POOL rather than a page:
+ * see {@link OWNER_VISIBILITY_SEARCH_OVERFETCH}.
  *
  * ── Fails OPEN, deliberately ─────────────────────────────────────────────────
  *
@@ -472,6 +485,101 @@ export function filterOwnerVisibleTurnHits<T extends TranscriptTurnHit>(
     const normalizedVisible = visibleText.replace(/\s+/g, ' ').trim().toLocaleLowerCase();
     return markedTerms.some((term) => normalizedVisible.includes(term));
   });
+}
+
+/**
+ * How many candidates to RETRIEVE per requested result so
+ * {@link filterOwnerVisibleTurnHits} spends a CANDIDATE rather than a result
+ * slot when it drops a machine turn (WI-37912).
+ *
+ * SIZED FROM THE MEASUREMENT, not guessed. The end-to-end measurement in that
+ * filter's header found a mean page loss of 32.8% and a median of 25%; 3×
+ * refills any page whose drop rate is under 67%, which covered 17 of the 18
+ * queries measured. The 18th (`Stop hook feedback`, 100% dropped) is NOT a
+ * sizing failure and no factor fixes it — nearly every turn matching that
+ * phrase genuinely is machine text, so the honest answer is a short page that
+ * SAYS it is short. That is what {@link ownerVisiblePage}'s `hidden` count is
+ * for; over-fetch and disclosure are two halves of one fix, not alternatives.
+ *
+ * ⚠ Deliberately NOT `RERANK_OVERFETCH`. That constant sizes a pool for the
+ * cross-encoder to REORDER and is capped at `RERANK_MAX_CANDIDATES` (24) by
+ * per-pair latency; this one sizes a pool to SURVIVE a filter and is capped by
+ * hydration bytes. They answer different questions and must be free to move
+ * apart — `rerankCandidateCount` is a literal no-op at this route's page sizes
+ * (30 and 50), which is exactly why no surplus existed to backfill from.
+ */
+export const OWNER_VISIBILITY_SEARCH_OVERFETCH = 3;
+
+/**
+ * Hard ceiling on candidates retrieved per search, whatever the page size.
+ *
+ * The binding cost is METADATA HYDRATION, not retrieval or rerank: the route's
+ * join pulls each candidate's full text for `user` turns (WI-37909), and
+ * `session_turns.text` is stored capped at 8,000 chars (measured: mean 3.1KB,
+ * p95 8KB over 3 days of user turns). At 150 that is ~450KB typical / 1.2MB
+ * absolute worst case on a loopback socket, against a search whose measured
+ * wall clock is ~3.7s dominated by the cross-encoder. Rerank cost does NOT
+ * scale with this: `rerankPageHead` scores at most RERANK_MAX_CANDIDATES pairs
+ * regardless of pool size.
+ */
+export const OWNER_VISIBILITY_SEARCH_MAX_CANDIDATES = 150;
+
+/** Candidates to retrieve so a `hitLimit`-sized page survives the filter. */
+export function ownerVisibleCandidateCount(hitLimit: number): number {
+  return Math.max(
+    hitLimit,
+    Math.min(hitLimit * OWNER_VISIBILITY_SEARCH_OVERFETCH, OWNER_VISIBILITY_SEARCH_MAX_CANDIDATES),
+  );
+}
+
+/** A page of owner-visible hits plus what the filter took out to build it. */
+export interface OwnerVisiblePage<T> {
+  /** At most `hitLimit` hits, in the caller's (post-rerank) order. */
+  hits: T[];
+  hidden: {
+    /** Machine-authored candidates dropped while filling this page. */
+    count: number;
+    /**
+     * ⚠ TRUE ⇒ `count` IS A FLOOR, NOT A TOTAL — the candidate pool was
+     * saturated, so an unknown number of further machine turns were never
+     * retrieved to be counted. A caller rendering this must say "at least N",
+     * never "N". A count computed over a capped fetch that does not carry its
+     * own boundedness marker is indistinguishable from a real total, which is
+     * how a bounded measurement gets read as a verdict.
+     */
+    truncatedByLimit: boolean;
+  };
+}
+
+/**
+ * Filter a CANDIDATE POOL down to one page of owner-visible hits (WI-37912).
+ *
+ * The whole point is the ORDER of the two operations. The route used to cut to
+ * the page and then filter, so every machine turn in the top-N became a
+ * permanently empty slot — measured at a mean 32.8% of the page, up to 100%.
+ * Filtering first and slicing second spends a candidate instead.
+ *
+ * ⚠ THIS DOES NOT REORDER, and must not. `rerankPageHead` scores only
+ * `hits.slice(0, RERANK_MAX_CANDIDATES)` and appends the remainder in retrieval
+ * order, so a LARGER pool leaves the head of the page byte-identical and merely
+ * adds candidates behind it. Over-fetching is therefore purely additive: it can
+ * fill an empty slot but can never demote a hit that was already on the page.
+ *
+ * PURE → unit-tested.
+ */
+export function ownerVisiblePage<T extends TranscriptTurnHit>(
+  candidates: readonly T[],
+  hitLimit: number,
+  candidateBudget: number,
+): OwnerVisiblePage<T> {
+  const visible = filterOwnerVisibleTurnHits(candidates);
+  return {
+    hits: visible.slice(0, hitLimit),
+    hidden: {
+      count: candidates.length - visible.length,
+      truncatedByLimit: candidates.length >= candidateBudget,
+    },
+  };
 }
 
 /**
