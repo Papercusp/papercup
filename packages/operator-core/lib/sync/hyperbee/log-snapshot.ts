@@ -180,6 +180,27 @@ export class SnapshotRowFolder {
   /** key → its current-state row (live put OR a `deleted` tombstone). */
   private readonly latest = new Map<string, SnapshotRow>();
 
+  /**
+   * Tables to drop entirely from the fold (EI-20108164746219771). Empty by default,
+   * so every existing caller is byte-for-byte unchanged.
+   *
+   * WHY THIS IS A FOLD-TIME FILTER AND NOT A finish() FILTER: it must apply to BOTH
+   * branches of `add` — a PRIOR snapshot op expands its rows back in, so filtering
+   * only raw put/del ops would silently re-admit an excluded table the moment the
+   * source log already contained a snapshot. The shipped seed is exactly that case
+   * (measured: its 45 blocks are entirely a snapshot set, rawOps=0), so the
+   * expansion branch is the one that actually matters here, not the put/del branch.
+   *
+   * Dropping at fold time rather than at finish() also means excluded rows are never
+   * retained at all, which is the point when the reason for excluding them is that
+   * they carry identity.
+   */
+  private readonly excludeTables: ReadonlySet<string>;
+
+  constructor(opts?: { excludeTables?: Iterable<string> }) {
+    this.excludeTables = new Set(opts?.excludeTables ?? []);
+  }
+
   /** Number of distinct keys folded so far — the real bound on peak retention. */
   get keyCount(): number {
     return this.latest.size;
@@ -192,10 +213,14 @@ export class SnapshotRowFolder {
       // were the ops they summarize, so re-snapshotting is correct + idempotent.
       const payload = op.value as SnapshotPayload | undefined;
       if (payload && Array.isArray(payload.rows)) {
-        for (const r of payload.rows) this.latest.set(`${r.table}::${r.hbKey}`, r);
+        for (const r of payload.rows) {
+          if (this.excludeTables.has(r.table)) continue;
+          this.latest.set(`${r.table}::${r.hbKey}`, r);
+        }
       }
       return;
     }
+    if (this.excludeTables.has(op.table)) return;
     const key = `${op.table}::${op.hbKey}`;
     if (op.type === 'put') {
       this.latest.set(key, {
@@ -497,9 +522,61 @@ export interface ProduceSnapshotResult {
  * read the flag — it is the pure mechanism; the gate lives at the call site so the
  * producer stays unit-testable.
  */
+/**
+ * Fold `log[from, to)` into `folder`, with the two properties P-014 paid for.
+ *
+ * Extracted so the SEED path (`produceFilteredSnapshotIntoLog`) reuses this exact
+ * discipline instead of growing a second, subtly-different read loop — the read is
+ * the dangerous part, not the fold.
+ *
+ * 1. BOUNDED PIPELINE, NOT SERIAL AWAITS. The serial form pays a full async
+ *    round-trip per block, so it runs at ~1/latency ops/sec regardless of store
+ *    speed. Measured 2026-08-09: 461,475 blocks had not finished after 29 MINUTES,
+ *    and since the producer restarts from index 0 every time, that is not a slow
+ *    operation but an UNCOMPLETABLE one.
+ * 2. FOLD THEN DROP, AND YIELD TO THE MACROTASK QUEUE. Each window is folded and
+ *    released (peak retention = live keys + one window, not the whole op count —
+ *    materializing all decoded ops is what produced a `20.1G memory peak` and a
+ *    SIGABRT). And `await` alone yields only to the MICROTASK queue: a warm local
+ *    log resolves in-tick, so a loop of awaits starves every `setInterval` in the
+ *    process. Measured: a head snapshot ran 455s with ZERO `harness_shared.routines`
+ *    fires for the whole window — a 9-minute hole — and `bghost-watchdog` correctly
+ *    read the frozen ticker and restarted the unit, killing the snapshot. The
+ *    operation was killing its own host, which no timeout budget can fix.
+ *    `setImmediate` runs in the check phase, reached only after timers get their
+ *    turn, so one per window keeps the ticker alive and changes neither what is
+ *    folded nor in what order.
+ */
+async function foldLogRangeInto(
+  log: Pick<OwnLog, 'get'>,
+  folder: SnapshotRowFolder,
+  from: number,
+  to: number,
+): Promise<void> {
+  for (let start = from; start < to; start += SNAPSHOT_READ_CONCURRENCY) {
+    const end = Math.min(start + SNAPSHOT_READ_CONCURRENCY, to);
+    const window = await Promise.all(
+      Array.from({ length: end - start }, (_, k) => log.get(start + k)),
+    );
+    for (const op of window) if (op) folder.add(op);
+    // `window` falls out of scope here — the decoded blocks it held are collectable.
+    await new Promise<void>((resolve) => setImmediate(resolve));
+  }
+}
+
 export async function produceLogSnapshot(
   ownLog: OwnLog,
-  opts: { now: number; schemaVersion: number; maxChunkBytes?: number },
+  opts: {
+    now: number;
+    schemaVersion: number;
+    maxChunkBytes?: number;
+    /**
+     * Tables dropped from the fold (EI-20108164746219771). Omitted by every live
+     * caller, so the behavior of the running system is unchanged; supplied only by
+     * the seed cut, which must not ship runtime/identity-bearing rows.
+     */
+    excludeTables?: Iterable<string>;
+  },
 ): Promise<ProduceSnapshotResult> {
   // Re-anchored after the read by the ANCHOR CONVERGENCE below (WI-37526), so `let`.
   let coversUpTo = ownLog.length;
@@ -529,47 +606,14 @@ export async function produceLogSnapshot(
   // OP COUNT, and materializing all 461,475 decoded ops first is what put the holder at a
   // `20.1G memory peak` and killed it with SIGABRT ~110s in. Peak retention is now
   // (live keys + one window of SNAPSHOT_READ_CONCURRENCY blocks). See `SnapshotRowFolder`.
-  const folder = new SnapshotRowFolder();
+  const folder = new SnapshotRowFolder({ excludeTables: opts.excludeTables });
 
   /**
    * Fold `[from, to)` into the folder. Factored out of the main loop so the ANCHOR
    * CONVERGENCE below can reuse it for the (tiny) delta that arrives mid-read.
    */
-  const foldRange = async (from: number, to: number): Promise<void> => {
-  for (let start = from; start < to; start += SNAPSHOT_READ_CONCURRENCY) {
-    const end = Math.min(start + SNAPSHOT_READ_CONCURRENCY, to);
-    const window = await Promise.all(
-      Array.from({ length: end - start }, (_, k) => ownLog.get(start + k)),
-    );
-    for (const op of window) if (op) folder.add(op);
-    // `window` falls out of scope here — the decoded blocks it held are collectable.
-
-    // Yield to the MACROTASK queue between windows (P-014, half 3).
-    //
-    // `await` alone does NOT do this. It yields to the MICROTASK queue, and a block
-    // already resident in the store resolves within the same tick — so a loop of awaits
-    // over a warm local log drains microtasks forever and the event loop NEVER reaches
-    // its timer phase. Every `setInterval` in the process is starved for the whole read:
-    // the DBOS routines ticker, git-sync, and wake delivery all stop.
-    //
-    // Measured on this box 2026-08-09 against the live 461,475-block own log: a
-    // head-snapshot POST ran 455s and `harness_shared.routines` recorded ZERO fires for
-    // the entire window (last fire 11:45, next 11:55) — a 9-minute hole. `bghost-watchdog`
-    // reads exactly that signal (`MAX(last_fired_at)` stale > 240s while the unit is
-    // active) and CORRECTLY concluded the ticker was frozen, so it restarted the unit and
-    // killed the snapshot at 455s. That is the whole of WI-36770's "recycles every ~8.5
-    // min": the holder is healthy for 41 min at a stretch with no snapshot in flight, and
-    // recycles on that cadence only while one is running. So the snapshot was killing its
-    // own host — and no timeout budget could fix it, because the process that had to
-    // survive the operation was being restarted BECAUSE of the operation.
-    //
-    // `setImmediate` runs in the check phase, which the loop reaches only after giving
-    // timers their turn — so one per window is enough to keep the ticker alive. At
-    // SNAPSHOT_READ_CONCURRENCY=256 that is ~1.8k turns for this corpus: negligible
-    // against the read itself, and it does not change what is folded or in what order.
-    await new Promise<void>((resolve) => setImmediate(resolve));
-  }
-  };
+  const foldRange = (from: number, to: number): Promise<void> =>
+    foldLogRangeInto(ownLog, folder, from, to);
 
   await foldRange(0, coversUpTo);
   let foldedUpTo = coversUpTo;
