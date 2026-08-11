@@ -161,6 +161,7 @@ let syncResults: Record<string, Record<string, unknown>> = {};
 // (system_only) is invisible in the DOM, so it's asserted here (WI-4462).
 let lastFeedArgs: Record<string, unknown> | null = null;
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName, args = {}, enabled = true }: { queryName: string; args?: Record<string, unknown>; enabled?: boolean }) => {
     if (queryName === 'dev.coordFeed') {
       lastFeedArgs = args;

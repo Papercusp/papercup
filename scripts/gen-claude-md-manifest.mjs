@@ -29,6 +29,7 @@ import { readFileSync, writeFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 import { resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { PROJECTION_MARKER } from './project-doc-parts.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 // Overridable so the drift detector can be proven falsifiable against a mutated COPY
@@ -37,6 +38,19 @@ const SOURCE = process.env.PAPERCUSP_CLAUDE_MD
   ? resolve(process.env.PAPERCUSP_CLAUDE_MD)
   : resolve(ROOT, 'CLAUDE.md');
 const DEFAULT_OUT = resolve(ROOT, 'packages/operator-core/lib/doc-projection/claude-md-part-manifest.json');
+
+/**
+ * The composed client files are projector output, not a second source of the corpus.
+ * Keep this check beside the generator so a post-projection CLAUDE.md cannot silently
+ * retire every corpus-only prose part when someone runs this script from the repo root.
+ */
+export function projectionSourceProblem(text) {
+  if (!text.includes(PROJECTION_MARKER)) return null;
+  return (
+    `source carries the projection marker "${PROJECTION_MARKER}"; it is generated output, not canonical ` +
+    `source. Refusing to regenerate the manifest from it because that would retire the corpus-only prose parts.`
+  );
+}
 
 /**
  * The P-002 classification. [startLine, endLine, kind, fingerprint]
@@ -402,6 +416,8 @@ export function extractParts(text, { classBySha = null } = {}) {
 export function buildManifest(text, prior = null) {
   const lines = text.split('\n');
   const problems = [];
+  const projectionProblem = projectionSourceProblem(text);
+  if (projectionProblem) problems.push(projectionProblem);
 
   const fromCode = (code) => ({ kind: KIND[code], clientScope: SCOPE[code], projectRank: RANK[code], expiring: code === 'EXP' });
   const classBySha = prior

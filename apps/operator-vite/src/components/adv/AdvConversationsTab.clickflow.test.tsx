@@ -68,6 +68,7 @@ const ready = (data: unknown[] = []): Record<string, unknown> => ({
 const syncKey = (q: string, a: Record<string, unknown> = {}) => `${q}:${JSON.stringify(a)}`;
 let syncResults: Record<string, Record<string, unknown>> = {};
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName, args = {}, enabled = true }: { queryName: string; args?: Record<string, unknown>; enabled?: boolean }) => {
     if (!enabled) return ready();
     return syncResults[syncKey(queryName, args)] ?? syncResults[queryName] ?? ready();
