@@ -91,6 +91,34 @@ describe('adv-sessions coord_owner_id wiring (P-001/P-003)', () => {
     expect(values).toContain(10); // limit
   });
 
+  /*
+   * WI-6510 regression guard. `launch_argv` is OPTIONAL on `AdvSessionDbRow`
+   * ("only the pending-launch query SELECTs it"), so removing it from this
+   * query's column list is NOT a type error: `mapAdvSessionRow` maps the absent
+   * column to null, the roster's `adv?.launchArgv ?? []` turns that into an
+   * empty argv, and the chat MODEL pill then reports "no model recorded" for
+   * EVERY live agent while the DB row holds the full spec.
+   *
+   * That is exactly what shipped: unit tests and typecheck were green and the
+   * pill did not render at all in a live drive. Both halves are asserted here
+   * because either one alone passes while the feature is broken — the column
+   * must be SELECTed, and it must survive the mapping onto the entry.
+   */
+  it('advSessionsByCoordOwner SELECTs launch_argv and maps it onto the entry (WI-6510)', async () => {
+    const argv = ['psu', '--agent=claude', '--model=sonnet[1m]:high'];
+    const sql = mockSql(async () => [dbRow({ id: 11, coord_owner_id: 'su-live', launch_argv: argv })]);
+    const mod = await import('./adv-sessions');
+    const map = await mod.advSessionsByCoordOwner();
+
+    // Half 1 — the column is actually loaded.
+    const strings = sql.mock.calls[0]?.[0] as TemplateStringsArray | undefined;
+    const query = strings ? Array.from(strings).join(' ? ') : '';
+    expect(query).toContain('launch_argv');
+
+    // Half 2 — it survives onto the mapped row the roster reads.
+    expect(map.get('su-live')?.launchArgv).toEqual(argv);
+  });
+
   it('listEndedAdvSessions excludes handleless terminal wrappers from agent history (WI-5103)', async () => {
     const sql = mockSql(async () => []);
     const mod = await import('./adv-sessions');
