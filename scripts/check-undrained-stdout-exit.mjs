@@ -203,6 +203,94 @@ function resolvesToStaticString(node, depth = 0) {
   return false;
 }
 
+/** `null` / `undefined` — a payload that cannot grow, so it never widens a branch. */
+const isNullish = (node) =>
+  node.kind === ts.SyntaxKind.NullKeyword || (ts.isIdentifier(node) && node.text === 'undefined');
+
+/** The SourceFile owning `node` — parents are set (createSourceFile(..., true)). */
+function ownerSourceFile(node) {
+  let cur = node;
+  while (cur && !ts.isSourceFile(cur)) cur = cur.parent;
+  return cur ?? null;
+}
+
+/** A module-local `function f(){}` / `const f = () => …`, by name. Module-local ONLY:
+ * an IMPORTED name is deliberately not resolved — we cannot see its body, so treating
+ * it as bounded would be an assumption rather than a measurement. */
+function findModuleFunction(sf, name) {
+  if (!sf) return null;
+  for (const stmt of sf.statements) {
+    if (ts.isFunctionDeclaration(stmt) && stmt.name?.text === name) return stmt;
+    if (!ts.isVariableStatement(stmt)) continue;
+    for (const d of stmt.declarationList.declarations) {
+      if (
+        ts.isIdentifier(d.name) &&
+        d.name.text === name &&
+        d.initializer &&
+        (ts.isArrowFunction(d.initializer) || ts.isFunctionExpression(d.initializer))
+      ) {
+        return d.initializer;
+      }
+    }
+  }
+  return null;
+}
+
+/** EVERY `return` in `fn` yields a static string (or nothing/null). One data-derived
+ * return is enough to disqualify the whole function, so a helper that sometimes dumps
+ * a buffer still flags. Inner functions are skipped — their returns are not this one's.
+ * An arrow with an expression body is its single return. */
+function functionReturnsOnlyStatic(fn, depth) {
+  if (!fn.body) return false;
+  if (!ts.isBlock(fn.body)) return isNullish(fn.body) || resolvesToStaticString(fn.body, depth + 1);
+  let ok = true;
+  let sawReturn = false;
+  const visit = (n) => {
+    if (!ok) return;
+    if (isFunctionLike(n)) return;
+    if (ts.isReturnStatement(n)) {
+      sawReturn = true;
+      if (n.expression && !isNullish(n.expression) && !resolvesToStaticString(n.expression, depth + 1)) {
+        ok = false;
+      }
+      return;
+    }
+    ts.forEachChild(n, visit);
+  };
+  ts.forEachChild(fn.body, visit);
+  return ok && sawReturn;
+}
+
+/**
+ * Walk OUT from the write site for `const <name> = <init>`, nearest scope first.
+ *
+ * ⚠ `const` ONLY, and that restriction is load-bearing rather than stylistic: the
+ * guard's single biggest target is `let out = ''; for (…) out += row;
+ * console.log(out); process.exit(0)`. That initialiser IS a static string, so
+ * resolving `let` here would mark the archetypal accumulated buffer BOUNDED and
+ * silently retire the rule. `const` cannot be reassigned, so the initialiser is the
+ * final value; a mutated `const rows = []` is unaffected (an array literal is not a
+ * static string). Scope-correct by construction — a same-named local in a SIBLING
+ * function is never reached, which a flat name Set would wrongly conflate.
+ */
+function findConstInitializer(fromNode, name) {
+  for (let cur = fromNode; cur; cur = cur.parent) {
+    const list =
+      ts.isBlock(cur) || ts.isSourceFile(cur) || ts.isCaseClause(cur) || ts.isDefaultClause(cur)
+        ? cur.statements
+        : null;
+    if (!list) continue;
+    for (const stmt of list) {
+      if (!ts.isVariableStatement(stmt)) continue;
+      if ((stmt.declarationList.flags & ts.NodeFlags.Const) === 0) continue;
+      for (const decl of stmt.declarationList.declarations) {
+        if (ts.isIdentifier(decl.name) && decl.name.text === name) return decl.initializer ?? null;
+      }
+    }
+  }
+  return null;
+}
+
 function collectStaticStringConsts(sourceFile) {
   const statics = new Set();
   for (const stmt of sourceFile.statements) {
@@ -227,6 +315,13 @@ export function classifyPayload(arg, staticConsts) {
     const name = arg.text;
     if (ERROR_IDENT_RE.test(name)) return { unbounded: false, why: 'a caught error — a bounded diagnostic' };
     if (staticConsts.has(name)) return { unbounded: false, why: `\`${name}\` is a static string constant — cannot grow with the data` };
+    // A LOCAL `const` holding a literal/template — or a guarded call to a local helper
+    // that only returns one. Same boundedness argument as the module-level set above;
+    // the only difference is where the author happened to put it.
+    const localInit = arg.parent ? findConstInitializer(arg, name) : null;
+    if (localInit && resolvesToStaticString(localInit)) {
+      return { unbounded: false, why: `\`${name}\` is a local const holding a static diagnostic — cannot grow with the data` };
+    }
     return { unbounded: true, why: `the payload is the value \`${name}\` — an accumulated buffer or loop variable, unbounded as the data grows` };
   }
   return { unbounded: false, why: 'built from literals or a formatter call — a diagnostic message' };

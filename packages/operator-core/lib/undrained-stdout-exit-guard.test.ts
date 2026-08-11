@@ -131,6 +131,68 @@ describe('shapes the guard MUST NOT flag', () => {
     expect(flagged('console.error(red(`failed: ${msg}`));\nprocess.exit(1);\n')).toBe(0);
   });
 
+  it('a LOCAL const holding a static diagnostic — where the author put it is not the question', () => {
+    expect(flagged("function m(){ const msg = 'usage: thing'; console.error(msg); process.exit(1); }")).toBe(0);
+  });
+
+  it('a guarded notice from a module-local helper that only ever returns a template', () => {
+    // The real false positive that prompted this: apps/operator/scripts/psu-launcher.mjs
+    // hoists a one-line model-compatibility notice into a helper, which made a ~120-char
+    // MESSAGE read exactly like an accumulated buffer. Bounded payloads of this size are
+    // three orders of magnitude under the ~8 KiB sync-flush window.
+    expect(
+      flagged(
+        'function notice(m){ if (!m) return null; return `fallback — ${m} is remapped.`; }\n' +
+          'function m(){ const t = c ? notice(x) : null; if (t) console.error(t); process.exit(1); }',
+      ),
+    ).toBe(0);
+  });
+});
+
+/**
+ * The resolution added for the two cases above widens what counts as BOUNDED, and a
+ * widened exemption is exactly how a guard gets silently retired. These pin the blast
+ * radius: every shape the rule exists to catch must STILL fail after the widening.
+ */
+describe('the widening did NOT retire the rule (negative controls)', () => {
+  it('STILL flags the archetypal `let` accumulator, whose initialiser IS a static string', () => {
+    // The load-bearing case. `let out = ''` + `out += …` is the guard's single biggest
+    // target, and its initialiser is a string literal — so resolving `let` (rather than
+    // `const` only) would mark it bounded and quietly kill the rule. This is that test.
+    expect(
+      flagged("function m(){ let out=''; for (const r of rows) out += r; console.log(out); process.exit(0); }"),
+    ).toBe(1);
+  });
+
+  it('STILL flags a `let` that held a literal before being reassigned to data', () => {
+    expect(flagged("function m(){ let msg = 'x'; msg = big; console.error(msg); process.exit(1); }")).toBe(1);
+  });
+
+  it('STILL flags a const initialised from a helper that returns DATA', () => {
+    expect(
+      flagged(
+        "function collect(){ const a=[]; return a.join('\\n'); }\n" +
+          'function m(){ const out = collect(); console.log(out); process.exit(0); }',
+      ),
+    ).toBe(1);
+  });
+
+  it('STILL flags a helper with ONE data-derived return among literal ones', () => {
+    // Every return must be static; one dump disqualifies the whole helper.
+    expect(
+      flagged(
+        "function mk(x){ if (x) return 'lit'; return buf.toString(); }\n" +
+          'function m(){ const s = mk(1); console.error(s); process.exit(1); }',
+      ),
+    ).toBe(1);
+  });
+
+  it('STILL flags a const from an IMPORTED helper — an unseen body is not a bounded one', () => {
+    expect(
+      flagged("import { mk } from './x.mjs';\nfunction m(){ const s = mk(1); console.error(s); process.exit(1); }"),
+    ).toBe(1);
+  });
+
   it('an exit that is NOT in the write’s synchronous path', () => {
     expect(flagged('console.log(JSON.stringify(x));\nprocess.on("SIGINT", () => process.exit(0));\n')).toBe(0);
   });
