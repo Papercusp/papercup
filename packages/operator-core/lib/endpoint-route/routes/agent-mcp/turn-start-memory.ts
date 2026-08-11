@@ -278,7 +278,7 @@ const turnStartMemory = defineTool({
       const orientationPromise = (async () => {
         try {
           const [{ getFlag }, { FLAGS }, { buildTurnStartOrientationBlock }] = await Promise.all([
-            import('@papercusp/flags'),
+            import('@papercusp/flags/server'),
             import('@papercusp/flags'),
             import('../../../turn-start-orientation'),
           ]);
