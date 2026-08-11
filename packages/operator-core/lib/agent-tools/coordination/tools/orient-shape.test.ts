@@ -183,13 +183,16 @@ describe('shapeOrient — compaction folds (compaction-fold-audit-2026-07-06)', 
     expect(capped.inbox.recent).toHaveLength(5);
     expect(capped.inbox.recentTruncated).toBeDefined();
     expect(capped.inbox.recent[0].summary.length).toBeLessThanOrEqual(140);
-    // recovery present (⇒ afterCompaction) ⇒ all 10 entries survive with fuller bodies, no truncation
+    // recovery present (⇒ afterCompaction) starts with all 10 entries and fuller bodies,
+    // then the client-safe budget may walk back the beef to keep the orientation bounded.
     const recovered = shapeOrient({ ...base, recovery: { selfRecall: 'x' } }, 'trimmed') as {
       inbox: { recent: Array<{ summary: string }>; recentTruncated?: unknown };
     };
-    expect(recovered.inbox.recent).toHaveLength(10);
-    expect(recovered.inbox.recentTruncated).toBeUndefined();
-    expect(recovered.inbox.recent[0].summary.length).toBe(400); // 400 < relaxed 700-char cap ⇒ untruncated
+    expect(recovered.inbox.recent.length).toBeGreaterThan(0);
+    expect(recovered.inbox.recent.length).toBeLessThanOrEqual(10);
+    expect(JSON.stringify(recovered).length).toBeLessThanOrEqual(SHAPER_BUDGET_CHARS);
+    expect(recovered.inbox.recent[0].summary.length).toBeLessThanOrEqual(400);
+    if (recovered.inbox.recent.length < 10) expect(recovered.inbox.recentTruncated).toBeDefined();
   });
 
   it('EI-9031: carries the memory `degraded` marker through tier-shaping (a trimmed fleet-member session must still see it)', () => {
@@ -479,19 +482,19 @@ describe('shapeOrient — in-shaper budget ladder (EI-19408488769901676)', () =>
     expect(out.recovery.blob.length).toBe(40_000);
   });
 
-  it('SCOPE GUARD: a NON-post-compaction payload is never laddered, even when it overflows', () => {
-    // The ladder is deliberately scoped to the post-compaction call. Widening it to every
-    // tier breaks the `trimmed < standard` monotonicity invariant asserted above, because a
-    // rescued `standard` lands BELOW an unrescued `trimmed` (measured: 33,465 -> 12,754,
-    // under trimmed's own 14,383). If someone later drops the `afterCompaction` guard, this
-    // fails here — next to the reason — instead of surfacing as that confusing inversion.
+  it('CLIENT-SAFE GUARD: an ordinary payload that overflows is tightened in-shaper', () => {
+    // WI-20183757506064439: WI-37843 intentionally resolves orient's normal call to full,
+    // so the tool's own ceiling must have a domain-aware fallback for ordinary calls too.
+    // Otherwise the result-door exemption turns a large inbox into a hard client rejection.
     const huge = { self: { ownerId: 'su-1' }, inbox: { summary: { total: 40 }, recent: bigInbox(40) } };
     const out = shapeOrient(huge, 'trimmed') as Record<string, any>;
 
     expect(out.recovery).toBeUndefined(); // precondition: this is NOT a post-compaction orient
-    expect(out.shaperTightened).toBeUndefined();
-    // Untouched means the plain per-tier cap applied — 5 entries for trimmed, not a floor rung.
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(SHAPER_BUDGET_CHARS);
+    // Keep the orientation's highest-value fold and its recovery pointer rather than
+    // falling through to the generic projector, which drops fields by declaration order.
     expect(out.inbox.recent.length).toBe(5);
+    expect(out.inbox.recentTruncated.more).toBe('coord:inbox');
   });
 
   it('DRIFT GUARD: the shaper budget stays strictly under the framework hard ceiling', async () => {
@@ -500,11 +503,98 @@ describe('shapeOrient — in-shaper budget ladder (EI-19408488769901676)', () =>
     // it — a budget at or above the ceiling would silently restore the old fall-through.
     const { PAYLOAD_TIER_HARD_CEILING_CHARS } = await import('@papercusp/tooldef');
     expect(SHAPER_BUDGET_CHARS).toBeLessThan(PAYLOAD_TIER_HARD_CEILING_CHARS);
-    // Bounded on BOTH sides. Too small and the ladder never engages before the framework's
-    // fall-through, restoring the bug; too large a gap and it re-shapes payloads that would
-    // have been served intact (a 27_000 budget did exactly that, cutting `claimable` 15 -> 7).
-    const margin = PAYLOAD_TIER_HARD_CEILING_CHARS - SHAPER_BUDGET_CHARS;
-    expect(margin).toBeGreaterThanOrEqual(500);
-    expect(margin).toBeLessThanOrEqual(3_000);
+    // The orient tool has a stricter client-safe ceiling than the shared framework default.
+    // Keep this local budget in the 15–20k client-safe band unless the downstream consumer
+    // is re-measured before widening it.
+    expect(SHAPER_BUDGET_CHARS).toBeGreaterThanOrEqual(15_000);
+    expect(SHAPER_BUDGET_CHARS).toBeLessThanOrEqual(20_000);
+  });
+});
+
+/**
+ * EI-20113865649946366 — the claimable list is cut TWICE (handler, then this shaper)
+ * and only the HANDLER can measure the first cut. This rung must therefore not
+ * overwrite what it was told.
+ *
+ * The defect these pin: this shaper published `d.claimable.length` as `total`. That
+ * length is the list the handler HANDED DOWN, already bounded by its own limit — so
+ * orient reported `total: 20` while the oracle's authoritative count was ~1677. A
+ * bounded measurement rendered as a population is worse than silence: a confident
+ * number does not invite a re-read.
+ */
+describe('EI-20113865649946366: shaper carries upstream disclosure, never re-derives it', () => {
+  const upstream = {
+    shown: 20,
+    total: 1677,
+    totalScope: 'issue-family (bug/change/task)',
+    limit: 20,
+    more: 'work_items:claimable { harness } for the authoritative count',
+  };
+
+  it('CARRIES the authoritative total and only restates its own `shown`', () => {
+    const out = shapeOrient(
+      { ok: true, me: 'x', claimable: Array.from({ length: 20 }, (_, i) => row(i)), claimableTruncated: upstream },
+      'trimmed',
+    ) as { claimable: unknown[]; claimableTruncated: Record<string, unknown> };
+
+    // The authoritative facts survive this rung untouched...
+    expect(out.claimableTruncated.total).toBe(1677);
+    expect(out.claimableTruncated.totalScope).toBe(upstream.totalScope);
+    // ...and `shown` tracks what THIS rung actually delivered.
+    expect(out.claimableTruncated.shown).toBe(out.claimable.length);
+    // The regression guard proper: if a refactor re-derives `total` from the list it
+    // was handed, this is what catches it.
+    expect(out.claimableTruncated.total).not.toBe(out.claimable.length);
+  });
+
+  it('no upstream disclosure + its own cut ⇒ the delivered count IS the population', () => {
+    // The handler emits its marker IFF its own fetch was incomplete, so ABSENCE is
+    // informative: the handed-down list is the whole lane and `total` is honest here.
+    const out = shapeOrient(
+      { ok: true, me: 'x', claimable: Array.from({ length: 20 }, (_, i) => row(i)) },
+      'trimmed',
+    ) as { claimable: unknown[]; claimableTruncated?: Record<string, unknown> };
+    expect(out.claimableTruncated?.total).toBe(20);
+    expect(out.claimableTruncated?.shown).toBe(out.claimable.length);
+  });
+
+  it('ABSENT when this rung cuts nothing and nothing was cut upstream', () => {
+    const out = shapeOrient({ ok: true, me: 'x', claimable: [row(0)] }, 'trimmed') as {
+      claimableTruncated?: unknown;
+    };
+    expect(out.claimableTruncated).toBeUndefined();
+  });
+
+  it('a body clipped by THIS rung is flagged, and the fold-level marker survives', () => {
+    // `cap()` appends a bare '…', which names no fetch path and is indistinguishable
+    // from an ellipsis in the text itself — so the structural flag has to be raised
+    // here too, and the handler's fold-level marker must not be dropped (EI-9031 class:
+    // this rung rebuilds `memory` field-by-field, so anything unlisted vanishes).
+    const out = shapeOrient(
+      {
+        ok: true,
+        me: 'x',
+        claimable: [],
+        memory: {
+          query: 'q',
+          hits: [{ id: 'm1', memory: 'y'.repeat(400), score: 0.9 }],
+          bodiesTruncated: { hits: 1, cap: 200, more: 'memory:search { query }' },
+        },
+      },
+      'trimmed',
+    ) as { memory: { hits: Array<Record<string, unknown>>; bodiesTruncated?: Record<string, unknown> } };
+
+    expect(out.memory.hits[0].truncated).toBe(true);
+    expect(out.memory.bodiesTruncated).toBeDefined();
+    expect(out.memory.bodiesTruncated?.more).toMatch(/memory:search/);
+  });
+
+  it('ABSENT on the memory fold when no delivered body was clipped', () => {
+    const out = shapeOrient(
+      { ok: true, me: 'x', claimable: [], memory: { query: 'q', hits: [{ id: 'm1', memory: 'short', score: 0.9 }] } },
+      'trimmed',
+    ) as { memory: { hits: Array<Record<string, unknown>>; bodiesTruncated?: unknown } };
+    expect(out.memory.hits[0].truncated).toBeUndefined();
+    expect(out.memory.bodiesTruncated).toBeUndefined();
   });
 });

@@ -150,7 +150,7 @@ type Caps = { -readonly [K in keyof (typeof CAPS)['trimmed']]: number };
  * EI-19408488769901676 — THE BUDGET THE SHAPER MUST HIT ITSELF.
  *
  * The framework's contract (tooldef/payload-tier.ts) is a two-stage fallback: a result
- * over `PAYLOAD_TIER_HARD_CEILING_CHARS` (30_000) force-applies the smallest declared
+ * over the orient tool's client-safe ceiling force-applies the smallest declared
  * shaper, and **if that shaped result is STILL over, it falls through to the GENERIC
  * bounded projection** — `projectBoundedPayload`, which knows nothing about orientation
  * and drops whole fields blind, in declaration order, with no notion of what a
@@ -171,21 +171,21 @@ type Caps = { -readonly [K in keyof (typeof CAPS)['trimmed']]: number };
  * and the blind fallback then discards the very inbox the fold added. The fold defeated
  * itself in precisely the situation it was written for.
  *
- * So the shaper now owns its own budget and NEVER hands work to the generic projector:
- * `shapeOrient` walks a ladder of progressively tighter cap sets until it fits.
+ * So the smallest shaper now owns its own budget and NEVER hands work to the generic
+ * projector for the normal orient path: `shapeOrient(..., 'trimmed')` walks a ladder
+ * of progressively tighter cap sets until it fits. The standard projection remains a
+ * looser tier shape; when it exceeds the tool ceiling, the framework deliberately falls
+ * back to this bounded trimmed shaper.
  *
- * ⚠ Set just UNDER the framework ceiling (30_000), not comfortably under it, and that margin
- * is a deliberate trade rather than a rounding choice. The ladder is a LAST-RESORT rescue for
- * a payload that would otherwise be blind-projected — it is not an opinion about the right
- * size of an orientation. Every char of margin below the ceiling is a band in which a payload
- * that would have been served intact gets tightened for no benefit, so a too-eager budget
- * trades a rare catastrophic loss for a frequent small one. Measured while building this:
- * a budget of 27_000 re-shaped two existing test fixtures that had always fit, dropping
- * `claimable` from 15 rows to 7 — a real regression on the common path. 1_000 chars is enough
- * for the response envelope the framework wraps around `data` while keeping that dead band
- * narrow. Do not widen it without measuring what starts getting tightened.
+ * ⚠ The orient tool deliberately sets its own client-safe ceiling below the shared
+ * framework ceiling. Keep this shaper budget below that tool ceiling as well, with
+ * enough room for the transport envelope. The ladder is a LAST-RESORT rescue for a
+ * payload that would otherwise be rejected or blind-projected — it is not an opinion
+ * about the normal size of an orientation. Every char of margin below the tool ceiling
+ * is a band in which a payload that would otherwise be served intact gets tightened for
+ * no benefit, so the margin is intentionally small and must be measured before widening.
  */
-export const SHAPER_BUDGET_CHARS = 29_000;
+export const SHAPER_BUDGET_CHARS = 17_000;
 
 /** The tightest rung: what orientation still means when almost nothing fits. Also the
  *  per-key clamp for intermediate rungs, so tightening can never drive a cap to 0 and
@@ -430,19 +430,20 @@ function projectOrient(d: Record<string, unknown>, c: Caps, tier: TierName): Rec
  *
  *   0. post-compaction beef (only when `recovery` is present) — the most generous shape,
  *      and the current behaviour, so a payload that already fit is byte-identical.
- *   1. the plain per-tier caps — walks back the beef rather than the whole payload.
- *   2. half the per-tier caps, floor-clamped.
+ *      Ordinary calls start at the plain per-tier caps instead.
+ *   1. the plain trimmed caps — walks back the beef rather than the whole payload.
+ *   2. half the trimmed caps, floor-clamped.
  *   3. FLOOR_CAPS — the tightest orientation that is still orientation.
  *
  * Rung 0 fitting is the common case, so this costs one `JSON.stringify` on the happy path.
  *
- * Why a ladder and not simply "exempt afterCompaction from trimming" (the obvious fix, and
- * the one the report proposed): the hard ceiling is a TRANSPORT limit, not a preference —
- * an over-cap result is rejected or file-dumped by the client, which is worse than any
- * downgrade. The payload genuinely has to shrink. The bug was never that it shrank; it was
- * that the shrinking was done by a projector with no idea which fields carry the
- * orientation. Shrinking HERE keeps that judgement in the one place that has it, and every
- * rung still emits the D-004 counts + fetch-pointers, so nothing is silently dropped.
+ * Why a ladder and not simply "exempt orient from trimming" (the regression's tempting
+ * fix): the hard ceiling is a TRANSPORT limit, not a preference — an over-cap result is
+ * rejected or file-dumped by the client, which is worse than any downgrade. The payload
+ * genuinely has to shrink. The bug was never that it shrank; it was that the shrinking
+ * was done by a projector with no idea which fields carry the orientation. Shrinking
+ * HERE keeps that judgement in the one place that has it, and every rung still emits
+ * the D-004 counts + fetch-pointers, so nothing is silently dropped.
  */
 export function shapeOrient(data: unknown, tier: TierName): unknown {
   if (!data || typeof data !== 'object') return data;
@@ -450,30 +451,25 @@ export function shapeOrient(data: unknown, tier: TierName): unknown {
   const base: Caps = { ...CAPS[tier] };
   const afterCompaction = d.recovery != null;
 
-  // SCOPED TO THE POST-COMPACTION CALL, DELIBERATELY. Every other orient keeps EXACTLY its
-  // prior behaviour — same bytes, no measurement, no ladder.
-  //
-  // The temptation is to budget-enforce every tier, since the generic fall-through is bad
-  // for all of them. Measured while building this, that is a bad trade: it re-shapes
-  // payloads that were being served fine, and it BREAKS THE TIER MONOTONICITY INVARIANT
-  // (`trimmed` < `standard`), because a rescued `standard` lands below an unrescued
-  // `trimmed` — comparing a rescue against a normal shape is not comparing two tiers.
-  // Measured: a fixture whose `standard` shape is 33,465 chars rescued down to 12,754,
-  // i.e. below the 14,383 its own `trimmed` tier produced.
-  //
-  // The reported defect is specific and does not need that: `afterCompaction` is the one
-  // call whose shape is deliberately INFLATED (the beef below) at exactly the moment the
-  // agent can least afford a blind projection. Fixing the self-inflicted overshoot needs no
-  // change to any other call, so it makes none. A general budget-enforcing shaper is a
-  // separate change that must first settle what monotonicity means under rescue.
-  if (!afterCompaction) return projectOrient(d, base, tier);
+  // The framework's hard-ceiling fallback always selects the smallest declared
+  // shaper. Keep the standard projection's established looser shape byte-compatible;
+  // only the trimmed shaper must guarantee the client-safe bound.
+  if (tier !== 'trimmed') return projectOrient(d, base, tier);
 
-  const ladder: { caps: Caps; rung: string }[] = [
-    { caps: { ...base, inbox: Math.max(base.inbox, 20), inboxSummary: Math.max(base.inboxSummary, 700) }, rung: 'post-compaction' },
-    { caps: base, rung: tier },
-    { caps: tightenCaps(base, 0.5), rung: `${tier}-half` },
-    { caps: FLOOR_CAPS, rung: 'floor' },
-  ];
+  const ladder: { caps: Caps; rung: string }[] = afterCompaction
+    ? [
+        { caps: { ...base, inbox: Math.max(base.inbox, 20), inboxSummary: Math.max(base.inboxSummary, 700) }, rung: 'post-compaction' },
+        { caps: base, rung: tier },
+        { caps: tightenCaps(base, 0.5), rung: `${tier}-half` },
+        { caps: FLOOR_CAPS, rung: 'floor' },
+      ]
+    : [
+        // Ordinary orient calls still need the client-safe bound when the tool's
+        // default/full path is selected after WI-37843's session-tier opt-out.
+        { caps: base, rung: tier },
+        { caps: tightenCaps(base, 0.5), rung: `${tier}-half` },
+        { caps: FLOOR_CAPS, rung: 'floor' },
+      ];
 
   let projected: Record<string, unknown> | undefined;
   for (let i = 0; i < ladder.length; i++) {

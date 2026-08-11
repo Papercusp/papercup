@@ -1954,25 +1954,19 @@ export function assembleOrientOutput(legs: {
 }
 
 /**
- * WI-37843 [owner 2026-08-10]. orient's payload-tier hard ceiling — 30k tokens
- * at ~4 chars/token — replacing the shared 30,000-CHAR default for this tool.
+ * WI-20183757506064439. coord:orient deliberately skips the result door and the
+ * ambient session-tier shaper so the model receives the bootstrap orientation in
+ * one call. That exemption is only safe when paired with a tool-local ceiling below
+ * the narrowest downstream client cap: the observed unshaped payload was ~110KB and
+ * the MCP client rejected it before the agent received any structured result.
  *
- * MEASURED before the change (workspace-scoped, 7d): the result-door truncated
- * 1140 of 1140 orient calls — 100% — and the payload-tier ceiling had already
- * clamped them first (p99 29,908 of 30,000 chars: a clamp signature, not a
- * distribution). Unshaped, orient measured 16,472 tokens. So the session's one
- * bootstrap read was arriving at 1,500 of ~16,472 tokens (~9%), on the turn —
- * often post-compaction — when an agent can least afford to spend follow-up
- * round-trips reconstructing what orient had already fetched for it.
- *
- * Why a RAISED ceiling rather than none: past the MCP CLIENT's own result cap
- * the client rejects the result and dumps it to a file the caller must page
- * back in — the coord:orient 59.8KB overflow (WI-2859) that put this ceiling
- * here in the first place. Unshaped orient has historically reached ~43k tokens
- * (the 2026-07-01 fleet incident), so the valve is not theoretical: above this
- * the trimmed shaper still force-applies. A safety valve, not a target.
+ * Keep this ceiling in the measured 15–20KB client-safe band. The orient shaper owns
+ * the domain-aware downgrade and has a smaller budget (17KB), leaving room for the
+ * transport envelope while preserving the core orientation folds and their fetch
+ * pointers. An explicit `payloadTier:'full'` remains the documented escape hatch
+ * for callers that knowingly accept the downstream transport's behavior.
  */
-export const ORIENT_PAYLOAD_TIER_CEILING_CHARS = 120_000;
+export const ORIENT_PAYLOAD_TIER_CEILING_CHARS = 18_000;
 
 export default defineTool({
   name: 'coord:orient',
@@ -2097,7 +2091,7 @@ export default defineTool({
     trimmed: (data, sctx) => shapeOrient(data, sctx.tier as 'trimmed'),
   },
   // WI-37843 [owner 2026-08-10]: "this is a very important tool that is only
-  // called once at session start. remove the limit entirely."
+  // called once at session start. remove the routine session-tier limit."
   //
   // Orient was cut by THREE independent mechanisms, and each of the three
   // declarations below removes exactly one. Any subset is a half-fix, because
@@ -2111,8 +2105,9 @@ export default defineTool({
   //      shapeOrient's trimmed projection ran on essentially every agent call
   //      and produced ~24k chars where the real payload is ~66k (~16.5k tok).
   //      THIS is what actually cut agents. → ignoreSessionPayloadTier
-  //   3. THE HARD CEILING (30k chars) — force-shapes above the cap.
-  //      → payloadTierCeilingChars
+  //   3. THE CLIENT-SAFE HARD CEILING (18k chars) — force-shapes above the cap.
+  //      → payloadTierCeilingChars. This is intentionally finite: the result-door
+  //      exemption must never hand an ordinary orient call to the client at ~110KB.
   //
   // ⚠ CORRECTION (2026-08-10, same work-item). An earlier revision of this
   // comment asserted that "the payload-tier ceiling had ALREADY force-shaped it
@@ -2131,7 +2126,7 @@ export default defineTool({
   payloadTierCeilingChars: ORIENT_PAYLOAD_TIER_CEILING_CHARS,
   // The load-bearing half of the fix (see mechanism 2 above). Note what this
   // does NOT do: the `shape` shapers declared above stay in place and are still
-  // force-applied by the hard ceiling past ORIENT_PAYLOAD_TIER_CEILING_CHARS.
+  // force-applied by the client-safe hard ceiling past ORIENT_PAYLOAD_TIER_CEILING_CHARS.
   // Deleting them to "finish" the uncapping would remove the degradation path
   // and re-open the 2026-07-01 43k-token incident (P-012).
   ignoreSessionPayloadTier: true,

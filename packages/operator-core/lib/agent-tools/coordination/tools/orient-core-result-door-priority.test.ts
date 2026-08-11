@@ -26,6 +26,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { applyPayloadTier } from '@papercusp/tooldef';
 import { CHARS_PER_TOKEN_ESTIMATE } from '../../../context-doors';
 
 // Same PG-free door-config stub pattern as result-door.test.ts.
@@ -35,6 +36,7 @@ vi.mock('../../../context-doors-config', () => ({ getDoorConstantsSync: doorCons
 import { BAKED_DOOR_CONSTANTS } from '../../../context-doors';
 import { applyResultDoor, RESULT_DOOR_TOKENS } from '../../../result-door';
 import orientTool, { assembleOrientOutput, ORIENT_PAYLOAD_TIER_CEILING_CHARS } from './orient';
+import { SHAPER_BUDGET_CHARS, shapeOrient } from './orient-shape';
 
 const BUDGET_CHARS = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
 
@@ -111,16 +113,14 @@ describe('coord:orient declares ALL THREE uncapping legs (WI-37843)', () => {
     expect(orientTool.skipResultDoor).toBe('oversize-by-design');
   });
 
-  it('raises its payload-tier ceiling — the OTHER, unrecoverable cut', () => {
-    // The door spills what it cuts; this ceiling never serialized it. Declaring
-    // only the door exemption would have left orient trimmed anyway, which is
-    // the half-fix this pins against.
+  it('sets a client-safe payload-tier ceiling — the guard paired with the door exemption', () => {
+    // The door spills what it cuts; this ceiling runs before serialization. The
+    // exemption is safe only when ordinary/full orient calls are forced through
+    // the domain shaper below the narrowest downstream client cap.
     expect(orientTool.payloadTierCeilingChars).toBe(ORIENT_PAYLOAD_TIER_CEILING_CHARS);
-    // 30k tokens at ~4 chars/token. Measured unshaped orient was ~16.5k tokens,
-    // so the valve sits above the real payload rather than clamping it — the
-    // property that made p99 pin to the old 30,000-CHAR ceiling.
-    expect(ORIENT_PAYLOAD_TIER_CEILING_CHARS).toBe(120_000);
-    expect(ORIENT_PAYLOAD_TIER_CEILING_CHARS).toBeGreaterThan(16_472 * 4);
+    expect(ORIENT_PAYLOAD_TIER_CEILING_CHARS).toBe(18_000);
+    expect(ORIENT_PAYLOAD_TIER_CEILING_CHARS).toBeGreaterThan(SHAPER_BUDGET_CHARS);
+    expect(ORIENT_PAYLOAD_TIER_CEILING_CHARS).toBeLessThanOrEqual(20_000);
   });
 
   // The leg that actually uncaps AGENTS. The two above were landed first and
@@ -138,6 +138,51 @@ describe('coord:orient declares ALL THREE uncapping legs (WI-37843)', () => {
     expect(orientTool.shape).toBeDefined();
     expect(typeof orientTool.shape?.trimmed).toBe('function');
     expect(typeof orientTool.shape?.standard).toBe('function');
+  });
+
+  it('keeps an ordinary oversized/full orient below the client-safe ceiling through the domain shaper', async () => {
+    const inbox = Array.from({ length: 80 }, (_, i) => ({
+      kind: 'message',
+      from: `su-${i}`,
+      summary: `oversized inbox entry ${i} ${'x'.repeat(1_200)}`,
+    }));
+    const source = {
+      ok: true,
+      self: { ownerId: 'su-test' },
+      me: 'ownerId: su-test\ncoverage[37]:\n' + '  - plan: p\n'.repeat(400),
+      claimable: Array.from({ length: 100 }, (_, i) => ({
+        id: `WI-${i}`,
+        kind: 'bug',
+        title: `bug ${i} ${'t'.repeat(600)}`,
+        summary: 'duplicate summary '.repeat(100),
+        state: 'open',
+        payload: { plan_item: { item_id: 'P-001' }, blob: 'p'.repeat(2_000) },
+      })),
+      inbox: { summary: { total: 80 }, recent: inbox },
+    };
+    const shaped = shapeOrient(source, 'trimmed') as Record<string, unknown>;
+    expect(JSON.stringify(shaped).length).toBeLessThanOrEqual(SHAPER_BUDGET_CHARS);
+    expect((shaped.inbox as { recent: unknown[] }).recent.length).toBeGreaterThan(0);
+    expect(shaped.inbox).toHaveProperty('recentTruncated');
+
+    // Exercise the actual framework hard-ceiling path used by default/full orient
+    // calls after `ignoreSessionPayloadTier:true`, not only the pure shaper seam.
+    const ceilingLog = vi.fn();
+    const applied = applyPayloadTier({
+      toolName: 'coord:orient',
+      shape: {
+        trimmed: (data) => shapeOrient(data, 'trimmed'),
+        standard: (data) => shapeOrient(data, 'standard'),
+      },
+      response: { data: source },
+      tier: 'full',
+      args: {},
+      ceilingChars: ORIENT_PAYLOAD_TIER_CEILING_CHARS,
+      log: ceilingLog,
+    });
+    expect(applied.payloadProjection).toMatchObject({ forced: true, tier: 'trimmed' });
+    expect(JSON.stringify(applied.data).length).toBeLessThanOrEqual(SHAPER_BUDGET_CHARS);
+    expect(ceilingLog).toHaveBeenCalledWith(expect.stringContaining('force-applied the trimmed shaper'));
   });
 });
 
