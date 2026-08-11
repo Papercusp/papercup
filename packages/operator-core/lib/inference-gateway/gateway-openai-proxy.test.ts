@@ -16,6 +16,9 @@
  */
 import { describe, it, expect, afterEach, vi } from 'vitest';
 import http from 'node:http';
+import { promises as fs } from 'node:fs';
+import * as os from 'node:os';
+import * as path from 'node:path';
 import {
   createInferenceGateway,
   ACCOUNT_HEADER,
@@ -74,6 +77,7 @@ let gw: ReturnType<typeof createInferenceGateway> | undefined;
 let openaiUpstream: Upstream | undefined;
 let claudeUpstream: Upstream | undefined;
 let port = 0;
+const tempCodexHomes: string[] = [];
 
 afterEach(async () => {
   vi.useRealTimers();
@@ -83,7 +87,25 @@ afterEach(async () => {
   gw = undefined;
   openaiUpstream = undefined;
   claudeUpstream = undefined;
+  await Promise.all(tempCodexHomes.splice(0).map((home) => fs.rm(home, { recursive: true, force: true })));
 });
+
+const freshJwt = () => {
+  const b64 = (value: unknown) => Buffer.from(JSON.stringify(value)).toString('base64url');
+  return `${b64({ alg: 'none' })}.${b64({ exp: Math.floor(Date.now() / 1000) + 3600 })}.sig`;
+};
+
+async function makeCodexHome(accountId: string, withAuth = true): Promise<string> {
+  const home = await fs.mkdtemp(path.join(os.tmpdir(), `gateway-chatgpt-${accountId}-`));
+  tempCodexHomes.push(home);
+  if (withAuth) {
+    await fs.writeFile(path.join(home, 'auth.json'), JSON.stringify({
+      auth_mode: 'chatgpt',
+      tokens: { access_token: freshJwt(), refresh_token: `refresh-${accountId}`, account_id: accountId },
+    }));
+  }
+  return home;
+}
 
 /** Boot a gateway with a Codex pool + OpenAI upstream. `codexAccounts` defaults to two;
  *  `gwOpts` overrides createInferenceGateway deps (e.g. the stall-timeout knobs). */
@@ -400,6 +422,68 @@ describe('proxyOpenAi — resilience parity (rotate, do not surface)', () => {
     expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('chatgpt-b');
     expect(res.headers.get(PIN_YIELDED_HEADER)).toBe('chatgpt-a->chatgpt-b');
   });
+
+  it.each(['credential', 'transport', '429', '503'] as const)(
+    'a ChatGPT OAuth %s failure yields to the next subscription account and preserves the native SSE response',
+    async (failure) => {
+      const homeA = await makeCodexHome('chatgpt-a', failure !== 'credential');
+      const homeB = await makeCodexHome('chatgpt-b');
+      const cliAccounts = [
+        { accountId: 'chatgpt-a', home: homeA },
+        { accountId: 'chatgpt-b', home: homeB },
+      ];
+      const routed: string[] = [];
+      const fetchImpl = vi.fn(async (_url: RequestInfo | URL, init?: RequestInit) => {
+        const account = new Headers(init?.headers).get('chatgpt-account-id') ?? '';
+        routed.push(account);
+        if (account === 'chatgpt-a') {
+          if (failure === 'transport') throw new Error('subscription transport unavailable');
+          if (failure === '429') {
+            return new Response(JSON.stringify({ error: { message: 'rate limited' } }), {
+              status: 429,
+              headers: { 'content-type': 'application/json' },
+            });
+          }
+          if (failure === '503') {
+            return new Response(JSON.stringify({ error: { message: 'temporarily unavailable' } }), {
+              status: 503,
+              headers: { 'content-type': 'application/json' },
+            });
+          }
+        }
+        const completed = { type: 'response.completed', response: { id: 'resp_chatgpt_b', output: [] } };
+        return new Response(`data: ${JSON.stringify(completed)}\n\ndata: [DONE]\n\n`, {
+          status: 200,
+          headers: { 'content-type': 'text/event-stream' },
+        });
+      }) as typeof fetch;
+
+      gw = createInferenceGateway({
+        accountId: 'claude-acct',
+        token: async () => 'claude-tok',
+        codexCliAccounts: () => cliAccounts,
+        codexCliPool: createFailoverPool(cliAccounts.map((account) => ({
+          accountId: account.accountId,
+          token: async () => '',
+        }))),
+        codexOAuthProxy: true,
+        fetchImpl,
+        selfHeal: { enabled: false },
+      });
+      port = await gw.listen(0);
+
+      const res = await postResponses(
+        { model: 'gpt-5.5', input: 'parity matrix', stream: true },
+        { [ACCOUNT_HEADER]: 'chatgpt-a' },
+      );
+      expect(res.status).toBe(200);
+      expect(await res.text()).toContain('resp_chatgpt_b');
+      expect(res.headers.get(ROUTED_ACCOUNT_HEADER)).toBe('chatgpt-b');
+      expect(res.headers.get(PIN_YIELDED_HEADER)).toBe('chatgpt-a->chatgpt-b');
+      expect(routed).toEqual(failure === 'credential' ? ['chatgpt-b'] : ['chatgpt-a', 'chatgpt-b']);
+      expect(gw.stats().codex.failovers).toBeGreaterThanOrEqual(1);
+    },
+  );
 });
 
 describe('proxyOpenAi — health and self-heal control-plane parity', () => {
@@ -476,7 +560,7 @@ describe('proxyOpenAi — health and self-heal control-plane parity', () => {
 
     const wedged = postResponses({ model: 'gpt-x', input: 'hold', stream: true }).catch((e) => e);
     await upstreamStarted;
-    expect(gw.stats()).toMatchObject({
+    expect(gw!.stats()).toMatchObject({
       inFlight: 1,
       inFlightTracked: 1,
       admission: { running: 0, maxConcurrent: 8 },
@@ -489,9 +573,9 @@ describe('proxyOpenAi — health and self-heal control-plane parity', () => {
     expect(await served.json()).toMatchObject({ ok: true, attempt: 2 });
     await wedged;
     await vi.waitFor(() => {
-      expect(gw.stats().selfHealReclaims).toBeGreaterThanOrEqual(1);
-      expect(gw.stats().inFlight).toBe(0);
-      expect(gw.stats().inFlightTracked).toBe(0);
+      expect(gw!.stats().selfHealReclaims).toBeGreaterThanOrEqual(1);
+      expect(gw!.stats().inFlight).toBe(0);
+      expect(gw!.stats().inFlightTracked).toBe(0);
     });
   });
 });
