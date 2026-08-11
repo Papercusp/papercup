@@ -422,6 +422,12 @@ export default defineTool({
   capability: "coord:read",
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
+  // EI-20191127558336928: coord:inbox owns its coordination/admin reads and
+  // does not use ctx.tx. Do not keep the dispatcher's ambient org-app
+  // transaction open while mailbox, presence, watermark, and enrichment
+  // awaits run; under fleet load that reservation can starve the coordination
+  // read itself behind the 45s app-pool acquisition deadline.
+  skipWorkspaceTx: true,
   args: z.object({
     since_ts: z.string().optional(),
     kinds: z.array(z.enum(COORD_KINDS)).optional(),

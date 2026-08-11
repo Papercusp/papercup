@@ -74,6 +74,13 @@ const inbox = (owner: string): Promise<unknown> =>
   tool.handler({} as never, ctx(owner));
 
 describe("coord:inbox heartbeat throttle (EI-6797)", () => {
+  it("opts out of the ambient workspace transaction", () => {
+    // The handler uses dedicated coordination/admin accessors and never reads
+    // ctx.tx. Keeping an app-role transaction for its whole await-heavy read
+    // starves the same coordination lane this tool is meant to serve.
+    expect((tool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+
   it("coalesces the heavy heartbeat upsert across rapid same-owner calls", async () => {
     M.heartbeatPresence.mockClear();
     // Three back-to-back inbox reads for one owner (a fleet worker looping
