@@ -17,7 +17,7 @@ import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 import { projectDirForSlug } from '../../operator-notes';
-import { fireGitSyncNow } from '../../harness/git-sync/git-sync-action';
+import { fireGitSyncNow, type GitSyncFireOutcome } from '../../harness/git-sync/git-sync-action';
 import { withBoundedTimeout } from '../../bounded-timeout';
 
 const execFileP = promisify(execFile);
@@ -101,53 +101,52 @@ export default defineTool({
     const repoDir = await projectDirForSlug(slug);
     const before = repoDir ? await headSha(repoDir) : null;
 
-    const fired = await withBoundedTimeout(() => fireGitSyncNow(slug, workspaceId), {
+    const fired = await withBoundedTimeout<GitSyncFireOutcome | undefined>(() => fireGitSyncNow(slug, workspaceId), {
       fallback: undefined,
       timeoutMs: GIT_SYNC_RUN_BUDGET_MS,
       label: 'git-sync:run fireGitSyncNow',
     });
 
     const after = repoDir ? await headSha(repoDir) : null;
-    const committed = !!(before && after && before !== after);
-
-    if (fired.degraded) {
-      return {
-        content: [
-          {
-            type: 'text',
-            text: JSON.stringify({
-              ok: true,
-              fired: true,
-              degraded: true,
-              slug,
-              committed,
-              head_before: before,
-              head_after: after,
-              note:
-                `git-sync fired but did not finish within ${GIT_SYNC_RUN_BUDGET_MS}ms — commit+push across the ` +
-                'whole tree can be slow under PG/lock pressure. It keeps running in the background and will ' +
-                'commit/push (or self-skip if ineligible) on its own; committed:false here does NOT mean it ' +
-                'failed — re-check via `git log` / dev:pipeline_position shortly rather than re-firing immediately.',
-            }),
-          },
-        ],
-      };
-    }
-
+    const outcome = fired.value;
+    const status = fired.degraded
+      ? fired.reason === 'error'
+        ? 'error'
+        : 'in_progress'
+      : outcome?.status ?? 'unknown';
+    const committed = Boolean(before && after && before !== after) || outcome?.status === 'synced';
+    const success = outcome?.status === 'synced' || outcome?.status === 'nothing';
+    const note = fired.degraded
+      ? fired.reason === 'error'
+        ? `git-sync fire failed before it returned an outcome: ${fired.errorMessage ?? 'unknown error'}.`
+        : `git-sync fired but did not finish within ${GIT_SYNC_RUN_BUDGET_MS}ms — status is in_progress; ` +
+          'the action may still commit/push or self-skip. Re-check the routine outcome before re-firing.'
+      : outcome?.status === 'synced'
+        ? 'git-sync completed with status synced; commit/push details are in outcome.'
+        : outcome?.status === 'nothing'
+          ? 'git-sync completed with status nothing; no repo changes were committed.'
+          : outcome?.status === 'skipped'
+            ? `git-sync completed with status skipped (${outcome.reason}).`
+            : outcome?.status === 'conflict' || outcome?.status === 'error'
+              ? `git-sync completed with status ${outcome.status}; inspect outcome errors/conflicts.`
+              : 'git-sync returned no structured outcome; treat the result as unknown and inspect the routine log.';
     return {
       content: [
         {
           type: 'text',
           text: JSON.stringify({
-            ok: true,
+            ok: !(fired.degraded && fired.reason === 'error'),
             fired: true,
             slug,
+            status,
+            success,
             committed,
             head_before: before,
             head_after: after,
-            note: committed
-              ? 'git-sync fired — new commit(s) on staging (pushed if the push leg succeeded).'
-              : 'git-sync fired — nothing to commit (clean tree), OR this tick skipped (ineligible / lock held by a concurrent tick). See the operator log.',
+            ...(outcome ? { outcome } : {}),
+            ...(fired.degraded ? { degraded: true } : {}),
+            ...(fired.errorMessage ? { error: fired.errorMessage } : {}),
+            note,
           }),
         },
       ],

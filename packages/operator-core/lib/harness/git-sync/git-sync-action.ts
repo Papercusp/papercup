@@ -177,6 +177,15 @@ const ESCALATION_ERROR_KIND = 'git-sync-error';
 const CONFLICT_EVENT = 'git-sync:conflict';
 
 /**
+ * The durable action result returned to an on-demand caller. Cron callers ignore
+ * the value, but `git-sync:run` must not collapse a typed pipeline outcome into
+ * a void promise and then guess from a HEAD delta (EI-20197846888469383).
+ */
+export type GitSyncFireOutcome =
+  | GitSyncOutcome
+  | { status: 'skipped'; reason: string; blockedOn?: string };
+
+/**
  * EI-438 content guard (git-sync-content-guard-2026-06-13 P-004/P-005). Broken
  * files (an .mdx that won't compile, a curly quote used as code) are quarantined
  * from the auto-commit by the content guard (run-git-sync) so they never reach
@@ -1310,7 +1319,7 @@ async function computeConflictAuthorship(
  * (see GitSyncStepRunner in run-git-sync.ts): a re-run commit is `nothing to commit`,
  * a re-run push is `Everything up-to-date` — no double-commit.
  */
-async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
+async function handleGitSync(ctx: SystemActionCtx): Promise<GitSyncFireOutcome> {
   const { installSlug: slug, workspaceId } = ctx;
   const { config: cfg, extraLockResources } = configFromTrigger(ctx.triggerConfig);
   const cd = workspaceId || '*';
@@ -1350,7 +1359,7 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
   );
   if (!gate.eligible) {
     console.log(`[git-sync] ${slug}: ineligible (${gate.reason}) — skipping this tick`);
-    return;
+    return { status: 'skipped', reason: gate.reason ?? 'ineligible' };
   }
   // github-bridge P-003: on a bridged/p2p-only hive, member git-sync is COMMIT-ONLY —
   // the bridge writer (integrator lease holder) is the sole origin pusher (S-1). Local
@@ -1398,7 +1407,11 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
     } else {
       console.log(`[git-sync] ${slug}: a peer holds ${lock.blockedOn} — skipping this tick`);
     }
-    return;
+    return {
+      status: 'skipped',
+      reason: lock.blockedReason ?? 'lock_held',
+      ...(lock.blockedOn ? { blockedOn: lock.blockedOn } : {}),
+    };
   }
   // EI-18: previous tick's counters BEFORE this tick overwrites them.
   const prev = await readEscalationCounters(slug, workspaceId);
@@ -1564,6 +1577,8 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<void> {
   if (gate.hiveGitMode) {
     await runCheckpointedStep('git-sync:worktree-bridge', () => runWorktreeBridgeLeg(slug, workspaceId));
   }
+
+  return outcome;
 }
 
 /** The P-008 bridge leg of one bridged-hive git-sync tick. Best-effort: never
@@ -3777,14 +3792,14 @@ async function recordAndEscalateTick(a: {
  * stale tree when git-sync is lagging/wedged — WI-1320). Reads the routine's own
  * trigger_config so it behaves exactly like a tick; default config when the row is absent.
  */
-export async function fireGitSyncNow(installSlug: string, workspaceId: string): Promise<void> {
+export async function fireGitSyncNow(installSlug: string, workspaceId: string): Promise<GitSyncFireOutcome> {
   const { sql } = getOrgPg();
   const rows = (await sql`
     SELECT trigger_config FROM harness_shared.routines
      WHERE workspace_id = ${workspaceId} AND install_slug = ${installSlug} AND name = 'git-sync'
      LIMIT 1`) as Array<{ trigger_config: Record<string, unknown> | null }>;
   const triggerConfig = rows[0]?.trigger_config ?? {};
-  await handleGitSync({ installSlug, workspaceId, triggerConfig, payloadTemplate: null });
+  return handleGitSync({ installSlug, workspaceId, triggerConfig, payloadTemplate: null });
 }
 
 // WI-1416: ownSteps — the handler checkpoints its OWN DBOS sub-steps, so the routine

@@ -348,15 +348,17 @@ describe('WI-1416 durable-fire breadcrumbs', () => {
 
   it('stamps the breadcrumb even on an ineligible (skipped) tick — a gate-stalled fire is still visible', async () => {
     registryProjects = []; // no registry entry → no_path skip
-    await action(ctx);
+    const result = await action(ctx);
+    expect(result).toEqual({ status: 'skipped', reason: 'no_path' });
     expect(fireBreadcrumbs()).toEqual([{ fire_started_at: expect.any(Number) }]);
   });
 
   it('a COMPLETED tick resets reaped_count to 0 (recordOutcome) — the reaper counter reads as CONSECUTIVE reaps', async () => {
     runGitSyncMock.mockResolvedValue(syncedOutcome);
 
-    await action(ctx);
+    const result = await action(ctx);
 
+    expect(result).toMatchObject({ status: 'synced', headSha: syncedOutcome.headSha, pushed: syncedOutcome.pushed });
     expect(routinePatches()[0]).toMatchObject({ last_status: 'synced', reaped_count: 0 });
   });
 });

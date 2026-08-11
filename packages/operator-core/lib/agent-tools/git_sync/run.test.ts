@@ -38,6 +38,59 @@ describe('git-sync:run', () => {
     expect(parse(result as never)).toMatchObject({ ok: true, fired: true, slug: 'papercusp', committed: false });
   });
 
+  it('returns the shared synced outcome instead of inferring success from a HEAD delta', async () => {
+    const outcome = {
+      status: 'synced' as const,
+      headSha: 'abc123def456',
+      pushed: ['superproject'],
+      merged: [],
+      oversized: [],
+      contentErrors: [],
+    };
+    const fireSpy = vi.fn(async () => outcome);
+    vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
+    vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+    vi.doMock('../../operator-notes', () => ({ projectDirForSlug: async () => null }));
+    vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: fireSpy }));
+
+    const { default: tool } = await import('./run');
+    const result = parse((await tool.handler({}, MAKE_CTX())) as never);
+
+    expect(result).toMatchObject({
+      ok: true,
+      status: 'synced',
+      success: true,
+      committed: true,
+      outcome: { status: 'synced', headSha: 'abc123def456', pushed: ['superproject'] },
+    });
+  });
+
+  it('surfaces an explicit error outcome and does not report a clean-tree success', async () => {
+    const outcome = {
+      status: 'error' as const,
+      errors: [{ scope: 'libs/generic/cache', message: 'push failed: HTTP 403' }],
+      pushed: [],
+      merged: [],
+      oversized: [],
+      contentErrors: [],
+    };
+    vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
+    vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+    vi.doMock('../../operator-notes', () => ({ projectDirForSlug: async () => null }));
+    vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: vi.fn(async () => outcome) }));
+
+    const { default: tool } = await import('./run');
+    const result = parse((await tool.handler({}, MAKE_CTX())) as never);
+
+    expect(result).toMatchObject({
+      ok: true,
+      status: 'error',
+      success: false,
+      committed: false,
+      outcome: { status: 'error', errors: [{ scope: 'libs/generic/cache', message: 'push failed: HTTP 403' }] },
+    });
+  });
+
   // WI-4940: the trailing `git rev-parse HEAD` (headSha, called unconditionally after
   // fireGitSyncNow resolves — the exact spot the reporter's 120s hang landed in, AFTER
   // the commit had already succeeded) must be bounded, not a bare unbounded execFile.
