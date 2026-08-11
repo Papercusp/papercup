@@ -50,7 +50,7 @@ import { resolvePremiseStamps, PREMISE_STAMPS_FIELD } from '../premise-resolve';
 // bodies (dynamic), so this adds nothing to the send path's module graph. See
 // EI-19281789650149592: one static store import here red a 95-test suite.
 import { premiseProbes } from '../premise-probes';
-import { sendMessage, getMessageById } from '../messages';
+import { sendMessage, getMessageById, getUnresolvedAudienceSelectors } from '../messages';
 import { DIRECTIVE_EFFECT_KINDS, type DirectiveEffectSpec } from '../directive-effect';
 import { parseSlotSelector } from '../slot-selector';
 // NB `audience-host` is imported LAZILY at the one use site below, never statically:
@@ -941,6 +941,28 @@ async function sendOne(
   const audienceSelectors = msg.to.filter(
     (t) => t.startsWith('@') && parseSlotSelector(t) === null,
   );
+  // `expandAudience` deliberately preserves only concrete recipients on the
+  // envelope. Keep the selectors that resolved to no one alongside that
+  // envelope out-of-band so a valid recipient cannot hide a partial audience
+  // miss (especially an unregistered @fleet-leader).
+  const unresolvedSelectors = [...getUnresolvedAudienceSelectors(env)].filter((selector) =>
+    audienceSelectors.includes(selector),
+  );
+  let unresolvedAudience:
+    | { selectors: string[]; note: string }
+    | undefined;
+  if (unresolvedSelectors.length > 0) {
+    const leaderSelector = unresolvedSelectors.some((s) => s.startsWith('@fleet-leader:'));
+    const note = leaderSelector
+      ? `coord:send audience ${unresolvedSelectors.join(', ')} resolved to ZERO live recipients. ` +
+        'No current registered fleet leader matched the selector — the named fleet may be absent, or ' +
+        'an active member may be acting as leader without registered leadership. Verify fleet:status ' +
+        'and register the leader with fleet:take-leadership before relying on this route.'
+      : `coord:send audience ${unresolvedSelectors.join(', ')} resolved to ZERO live recipients while ` +
+        'other recipients were addressed. The selector was not expanded through a fallback audience; ' +
+        'verify its subscribers or live presence before assuming the whole audience received the message.';
+    unresolvedAudience = { selectors: unresolvedSelectors, note };
+  }
   let zeroRecipients: { selectors: string[]; note: string } | undefined;
   if (audienceSelectors.length > 0 && env.to.length === 0) {
     const isFleet = audienceSelectors.some(
@@ -1429,6 +1451,15 @@ async function sendOne(
     // P-003: who the `@fleet:` audience did NOT reach, and why — so a partial delivery
     // is legible rather than reading as a complete one.
     ...(fleetOmitted ? { fleet_omitted: fleetOmitted } : {}),
+    // Partial selector resolution is distinct from fleet-member omissions: the
+    // selector itself matched nobody, while another addressee did receive this
+    // message. Keep the direct list machine-readable and the note actionable.
+    ...(unresolvedAudience
+      ? {
+          unresolvedSelectors: unresolvedAudience.selectors,
+          unresolved_audience: unresolvedAudience,
+        }
+      : {}),
     // WI-37972: the durable coord row keeps the full body, but a normal
     // recipient `coord:inbox` read may clip it before the recipient can act.
     // Surface the same authored-vs-visible accounting on the SENDER result so
