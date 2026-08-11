@@ -66,6 +66,9 @@ export const MAX_WAKE_FANOUT = Number(process.env.PAPERCUSP_MAX_WAKE_FANOUT) || 
 /** A LOOP wake's source convention (loop-fire.ts: `loop:<routineId>`). */
 export const LOOP_WAKE_SOURCE_PREFIX = 'loop:';
 
+/** The delivery-ladder rescue wake must not be muted by the manual gate it detects. */
+export const DELIVERY_LADDER_WAKE_SOURCE = 'system:delivery-ladder';
+
 /**
  * Is this wake a LOOP's self-wake? A loop wake is the agent driving ITSELF (loop:arm), so it
  * must BYPASS the manual pause/edit gate below: there is no separate owner to release a staged
@@ -78,6 +81,11 @@ export const LOOP_WAKE_SOURCE_PREFIX = 'loop:';
  */
 export function isLoopWakeSource(source: string | undefined): boolean {
   return (source ?? '').startsWith(LOOP_WAKE_SOURCE_PREFIX);
+}
+
+/** Exact-match detector rescue source; broad system-source matching would bypass the pause. */
+export function isDeliveryLadderWakeSource(source: string | undefined): boolean {
+  return source === DELIVERY_LADDER_WAKE_SOURCE;
 }
 
 /**
@@ -175,11 +183,16 @@ export async function wakeRecipients(
   // iterations), so fan it out with Promise.all instead of awaiting one at a
   // time — same total DB work, but issued concurrently instead of serially.
   // A self-loop wake bypasses the manual gate entirely (staging it deadlocks — see
-  // isLoopWakeSource), and so does the OWNER's own GUI wake (staging it queues the owner's
-  // message for the owner's own review — see isOwnerGuiWakeSource, WI-37858). The source is
-  // per-CALL, so compute once. Everything else still honors the per-agent manual pause/edit
-  // gate exactly as before (default-preserving).
-  const bypassManualGate = isLoopWakeSource(opts.source) || isOwnerGuiWakeSource(opts.source);
+  // isLoopWakeSource), as does the OWNER's own GUI wake (staging it queues the owner's
+  // message for the owner's own review — see isOwnerGuiWakeSource, WI-37858). The
+  // delivery-ladder rescue also bypasses it: staging the alarm behind the manual gate
+  // would mute the detector whose job is to surface unread directed mail (EI-201236...).
+  // All three are exact/narrow source checks; everything else still honors the per-agent
+  // manual pause/edit gate exactly as before (default-preserving).
+  const bypassManualGate =
+    isLoopWakeSource(opts.source) ||
+    isOwnerGuiWakeSource(opts.source) ||
+    isDeliveryLadderWakeSource(opts.source);
   // EI-9971: known-roster check for the STAGING branch only (see knownOwnerIdSet's
   // doc) — reuses the same short-TTL roster cache resolveBestEffortAgainstRoster
   // just read above, so this costs nothing extra. `null` = roster unavailable/empty

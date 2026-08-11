@@ -4,8 +4,9 @@
  *
  * Pin the control contract: what Start arms (started bit, ENSURE-mode default
  * subscriptions, wake-mode auto, an immediate floor-debounced wake) and what
- * Pause clears (started bit FIRST — the watchdog's disarm — then wake-mode
- * manual, then the pending time wake; optional cup drain).
+ * Pause clears (started bit FIRST — the watchdog's disarm — then the pending
+ * time wake; optional cup drain). Pause only changes the global wake-mode when
+ * stageAllWakes:true is explicit.
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
@@ -37,8 +38,10 @@ vi.mock('../../pot/wake-defaults', () => ({
 }));
 
 const setDefaultWakeMode = vi.fn();
+const getDefaultWakeMode = vi.fn();
 vi.mock('../coordination/wake-mode', () => ({
   setDefaultWakeMode: (...a: unknown[]) => setDefaultWakeMode(...a),
+  getDefaultWakeMode: (...a: unknown[]) => getDefaultWakeMode(...a),
 }));
 
 const requestUrgentPotWake = vi.fn();
@@ -88,6 +91,7 @@ beforeEach(() => {
   armDefaults.mockResolvedValue({ rules: 3, added: 0 });
   requestUrgentPotWake.mockResolvedValue({ fired: true, coalesced: false });
   isWorkspaceCoordinationOn.mockResolvedValue(false);
+  getDefaultWakeMode.mockResolvedValue('auto');
   // Default: pausing THIS pot leaves none started → the workspace loop idles.
   anyPotPlacementStarted.mockResolvedValue(false);
 });
@@ -136,15 +140,15 @@ describe('pot:start (P-005 / D-006)', () => {
 });
 
 describe('pot:pause (P-005 / D-005 / P-013)', () => {
-  it('flips started=false FIRST, then wake-mode manual, then clears the time wake', async () => {
+  it('flips started=false FIRST, preserves auto wake-mode, then clears the time wake', async () => {
     const out = await call(potPause as never, { harness: 'my-pot' });
     expect(out.ok).toBe(true);
     expect(out.started).toBe(false);
-    expect(out.wakeMode).toBe('manual');
+    expect(out.wakeMode).toBe('auto');
     // WI-3261: pot:pause marks the pause DELIBERATE so the paused-pot recovery
     // watchdog never mistakes an owner-initiated pause for a silent outage.
     expect(setPotStarted).toHaveBeenCalledWith('ws-1', 'my-pot', false, { deliberate: true });
-    expect(setDefaultWakeMode).toHaveBeenCalledWith('manual');
+    expect(setDefaultWakeMode).not.toHaveBeenCalled();
     expect(clearPotTimeWake).toHaveBeenCalled();
     // Order (P-013): started=false before the wake clear, so no watchdog seam
     // can re-arm in between — Pause must not be undone by its own safety net.
@@ -157,6 +161,16 @@ describe('pot:pause (P-005 / D-005 / P-013)', () => {
     expect(setPotPlacementStarted).toHaveBeenCalledWith('ws-1', 'my-pot', false, { deliberate: true });
   });
 
+  it('stageAllWakes:true explicitly sets manual and reports the global mute', async () => {
+    getDefaultWakeMode.mockResolvedValue('manual');
+    const out = await call(potPause as never, { harness: 'my-pot', stageAllWakes: true });
+    expect(out.ok).toBe(true);
+    expect(out.wakeMode).toBe('manual');
+    expect(out.stageAllWakes).toBe(true);
+    expect(out.wakeModeNote).toMatch(/Global wake-mode set to manual/);
+    expect(setDefaultWakeMode).toHaveBeenCalledWith('manual');
+  });
+
   it('per-pot: keeps the workspace Mug loop running when ANOTHER pot is still started', async () => {
     anyPotPlacementStarted.mockResolvedValue(true); // a sibling pot remains started
     const out = await call(potPause as never, { harness: 'my-pot' });
@@ -165,7 +179,7 @@ describe('pot:pause (P-005 / D-005 / P-013)', () => {
     expect(out.workspaceLoopIdle).toBe(false); // …but the workspace loop stays up
     expect(out.wakeMode).toBe('auto');
     expect(setPotPlacementStarted).toHaveBeenCalledWith('ws-1', 'my-pot', false, { deliberate: true });
-    // The workspace loop is NOT idled: papercup-off / wake-mode manual / time-wake clear all skipped.
+    // The workspace loop is NOT idled: papercup-off / wake-mode / time-wake clear all skipped.
     expect(setPotStarted).not.toHaveBeenCalled();
     expect(setDefaultWakeMode).not.toHaveBeenCalled();
     expect(clearPotTimeWake).not.toHaveBeenCalled();

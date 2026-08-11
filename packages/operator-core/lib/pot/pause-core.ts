@@ -14,16 +14,19 @@
  *
  * The graceful cup-drain cue stays in the tool: it needs the caller's agent
  * identity, and it is a policy choice (the harder stop), not part of the transition.
+ * Coordination wake staging is also opt-in (`stageAllWakes`): pausing the Mug
+ * must not silently mute the workspace's agent-to-agent delivery plane.
  */
 
 import type { Sql } from 'postgres';
 import { clearPotTimeWake } from './wake';
 import { setPotStarted, setPotPlacementStarted, anyPotPlacementStarted } from './started';
-import { setDefaultWakeMode } from '../agent-tools/coordination/wake-mode';
+import { getDefaultWakeMode, setDefaultWakeMode } from '../agent-tools/coordination/wake-mode';
 
 export interface PausePotResult {
   harness: string;
   started: false;
+  /** The global wake mode after the pause; pause preserves it unless staging was requested. */
   wakeMode: 'manual' | 'auto';
   /** True when NO pot remained started, so the workspace Mug loop was idled too. */
   workspaceLoopIdle: boolean;
@@ -38,6 +41,7 @@ export async function pausePotState(
   sql: Sql,
   workspaceId: string,
   installSlug: string,
+  opts: { stageAllWakes?: boolean } = {},
 ): Promise<PausePotResult> {
   // Per-pot Stop: clear THIS pot's placement bit FIRST (P-013 ordering). This is
   // what stops the workspace Mug placing THIS pot's work.
@@ -48,14 +52,24 @@ export async function pausePotState(
   const loopIdle = !(await anyPotPlacementStarted(workspaceId, installSlug));
   if (loopIdle) {
     await setPotStarted(workspaceId, installSlug, false, { deliberate: true });
+  }
+
+  // Pausing the Mug is not permission to mute the coordination plane. A caller that
+  // explicitly wants every autonomous wake staged can opt in; the default preserves
+  // the current global mode, including an owner-selected `coord:wake-mode` setting.
+  if (opts.stageAllWakes) {
     await setDefaultWakeMode('manual');
+  }
+
+  if (loopIdle) {
     await clearPotTimeWake(sql, installSlug, { workspaceId });
   }
 
+  const wakeMode = await getDefaultWakeMode();
   return {
     harness: installSlug,
     started: false,
-    wakeMode: loopIdle ? 'manual' : 'auto',
+    wakeMode,
     workspaceLoopIdle: loopIdle,
     timeWakeCleared: loopIdle,
   };

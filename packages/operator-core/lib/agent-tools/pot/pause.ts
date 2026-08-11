@@ -2,15 +2,13 @@
  * pot:pause — the global "Pause Pot" control
  * (start-hive-wake-orchestration-2026-06-09 P-005, D-005/D-006).
  *
- * Pause reuses the wake-mode gate; it does not invent a new freeze (D-005):
+ * Pause stops the Mug loop and, by default, leaves the coordination wake-mode alone:
  *   1. persist `hive_started = false` (disarms every watchdog seam — else
  *      Pause would be undone by its own safety net, P-013),
- *   2. set the global wake-mode default to `manual` — every autonomous wake in
- *      the system flows through the `wakeRecipients` gate, so the whole pot
- *      freezes cleanly at turn boundaries with staged wakes reviewable via
- *      coord:wake-queue,
- *   3. clear the Mug's pending time wake,
+ *   2. clear the Mug's pending time wake,
  *   4. optionally send every live cup the graceful drain cue (the harder stop).
+ * Passing `stageAllWakes:true` explicitly opts into the old global manual-wake
+ * gate, and the result names the resulting mode so a caller can report it.
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -27,13 +25,13 @@ export default defineTool({
   name: 'pot:pause',
   profile: 'engineer',
   description:
-    'PAUSE the pot: persist hive_started=false (disarms the liveness watchdog), set the global wake-mode to manual (autonomous wakes are STAGED for review instead of firing — the one freeze seam, D-005), and clear the Mug\'s pending time wake. Optionally drain live cups gracefully. Resume with pot:start.',
+    'PAUSE the pot: persist hive_started=false (disarms the liveness watchdog) and clear the Mug\'s pending time wake. The coordination wake-mode is preserved by default; pass stageAllWakes:true to explicitly stage every autonomous wake for review. Optionally drain live cups gracefully. Resume with pot:start.',
   guidance: {
     when: 'The user clicks Pause Pot / asks to freeze autonomous operation, or you need the fleet quiet (incident, review, cost control).',
     notWhen:
-      'To stop ONE cup — fleet:drain / fleet:cancel. To pause one plan — plans:pause. Pausing does not kill running turns; they finish and their follow-on wakes stage.',
+      'To stop ONE cup — fleet:drain / fleet:cancel. To pause one plan — plans:pause. Pausing does not kill running turns; they finish. Use stageAllWakes:true only when their follow-on wakes should stage for owner review.',
     chaining:
-      'pot:pause { drainCups:true } for the harder stop → coord:wake-queue to review staged wakes → pot:start to resume.',
+      'pot:pause { stageAllWakes:true, drainCups:true } for an explicit harder stop → coord:wake-queue to review staged wakes → pot:start to resume.',
     seeAlso: [
       'pot:start (resume autonomous operation)',
       'coord:wake-queue (review staged wakes while paused)',
@@ -54,6 +52,10 @@ export default defineTool({
       .boolean()
       .default(false)
       .describe('Also send every live cup the graceful drain cue (checkpoint, release locks/claims, exit).'),
+    stageAllWakes: z
+      .boolean()
+      .default(false)
+      .describe('Explicitly set the GLOBAL wake-mode to manual so autonomous wakes stage for owner review; default preserves the current mode.'),
   }),
   async handler(args, ctx) {
     const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
@@ -78,7 +80,7 @@ export default defineTool({
     // fan-out (EI-20013729460455061) performs the IDENTICAL transition — including
     // the P-013 ordering and the WI-3261/WI-3309 `deliberate` markers that stop the
     // recovery sweep auto-resuming a deliberate pause.
-    const paused = await pausePotState(sql, workspaceId, installSlug);
+    const paused = await pausePotState(sql, workspaceId, installSlug, { stageAllWakes: args.stageAllWakes });
     const loopIdle = paused.workspaceLoopIdle;
     // Live UI reflection (P-006): the AdvShell harness-bar control
     // (AdvNowRunning) reads pot.controlState.
@@ -119,7 +121,11 @@ export default defineTool({
             ok: true,
             harness: installSlug,
             started: false,
-            wakeMode: loopIdle ? 'manual' : 'auto',
+            wakeMode: paused.wakeMode,
+            stageAllWakes: args.stageAllWakes,
+            wakeModeNote: args.stageAllWakes
+              ? 'Global wake-mode set to manual; autonomous wakes are staged for owner review until coord:wake-mode or pot:start restores auto.'
+              : `Global wake-mode preserved at ${paused.wakeMode}; pot:pause stopped the Mug loop without muting agent-to-agent wakes.`,
             workspaceLoopIdle: loopIdle,
             timeWakeCleared: loopIdle,
             drainedCups: drained,

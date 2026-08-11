@@ -58,14 +58,14 @@
 
 import { getOrgPg } from '@papercusp/db-org';
 import { sendMessage } from './messages';
-import { wakeRecipients } from './inbox-wake';
+import { DELIVERY_LADDER_WAKE_SOURCE, wakeRecipients } from './inbox-wake';
 import { lastInboxReadAtBatch } from './inbox-read-freshness';
 import { fetchWakeability, type WakeabilitySignals } from './presence-wakeability';
 import type { AgentIdentity } from './identity';
 import { isMachineAuthoredSender, MACHINE_SENDER_PATTERN } from './machine-authored';
 
 /** Sender identity stamped on ladder marker messages + wake sources (audit). */
-export const DELIVERY_LADDER_OWNER = 'system:delivery-ladder';
+export const DELIVERY_LADDER_OWNER = DELIVERY_LADDER_WAKE_SOURCE;
 
 /** Coord identity for the ladder's own marker write (mirrors
  *  RECONCILE_REPLY_DEADLINE_OWNER — a system principal, never a fleet agent). */

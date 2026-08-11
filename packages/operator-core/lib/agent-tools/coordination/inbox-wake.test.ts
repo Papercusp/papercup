@@ -17,7 +17,12 @@ vi.mock('./recipient-resolve', async (importActual) => ({
   knownOwnerIdSet: vi.fn(async () => null),
 }));
 
-import { wakeRecipients, buildStagedWakeNote, isOwnerGuiWakeSource } from './inbox-wake';
+import {
+  wakeRecipients,
+  buildStagedWakeNote,
+  isDeliveryLadderWakeSource,
+  isOwnerGuiWakeSource,
+} from './inbox-wake';
 import { ADMIN_COORD_UI_OWNER } from './identity';
 import { mockResolvedTyped } from '../../testing/typed-mock';
 import { resolveWakeMode } from './wake-mode';
@@ -83,6 +88,18 @@ describe('wakeRecipients wake-mode gate (hive-agent-tabs D-005, graduated by sta
     expect(r.woken).toBe(1);
   });
 
+  it('the delivery-ladder rescue wake FIRES in manual mode so the detector cannot be muted by the pause', async () => {
+    vi.mocked(resolveWakeMode).mockResolvedValue('manual' as never);
+    const r = await wakeRecipients(['s-1'], {
+      source: 'system:delivery-ladder',
+      summary: 'delivery-ladder rescue',
+    });
+    expect(stagePendingWake).not.toHaveBeenCalled();
+    expect(emitAwaitedEvent).toHaveBeenCalledTimes(1);
+    expect(r.staged).toBe(0);
+    expect(r.woken).toBe(1);
+  });
+
   it('a NON-loop wake in manual mode still STAGES (the bypass is scoped to loop sources only)', async () => {
     vi.mocked(resolveWakeMode).mockResolvedValue('manual' as never);
     const r = await wakeRecipients(['s-1'], { source: 'coord:send', summary: 'peer message' });
@@ -127,6 +144,12 @@ describe('wakeRecipients wake-mode gate (hive-agent-tabs D-005, graduated by sta
     expect(isOwnerGuiWakeSource(undefined)).toBe(false);
     expect(isOwnerGuiWakeSource('')).toBe(false);
     expect(isOwnerGuiWakeSource('pc-admin-coord-ui-x')).toBe(false);
+  });
+
+  it('isDeliveryLadderWakeSource is exact-match', () => {
+    expect(isDeliveryLadderWakeSource('system:delivery-ladder')).toBe(true);
+    expect(isDeliveryLadderWakeSource(undefined)).toBe(false);
+    expect(isDeliveryLadderWakeSource('system:delivery-ladder-extra')).toBe(false);
   });
 
   // QUARANTINED (flaky: selector resolves against live presence/session state, nondeterministic; de-quarantine + root-cause in WI-1053)
