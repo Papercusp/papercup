@@ -87,6 +87,29 @@ describe('voice-mode', () => {
     expect(s.supported).toBe(true);
   });
 
+  it('does not restore a persisted microphone mode in isolated Tauri verification', async () => {
+    vi.resetModules();
+    const g = globalThis as any;
+    const previousLocation = g.location;
+    Object.defineProperty(g, 'location', {
+      value: new URL('http://127.0.0.1:33700/?verify-tauri-isolated=1'),
+      configurable: true,
+    });
+    try {
+      localStorage.setItem(
+        'pc:ws:default:papercusp.voice.config.v1',
+        JSON.stringify({ lastMode: 'always-on' }),
+      );
+      const mod = await import('./voice-mode');
+      mod.initVoiceMode();
+      await new Promise((resolve) => setTimeout(resolve, 75));
+      expect(mod.getVoiceState().mode).toBe('off');
+    } finally {
+      if (previousLocation === undefined) delete g.location;
+      else Object.defineProperty(g, 'location', { value: previousLocation, configurable: true });
+    }
+  });
+
   it('lists available voices', async () => {
     const mod = await import('./voice-mode');
     mod.initVoiceMode();

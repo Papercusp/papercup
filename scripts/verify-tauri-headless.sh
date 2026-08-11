@@ -28,9 +28,10 @@
 #                  *process*, and (EI-10364) the SPA MODULE BUNDLE — a frozen
 #                  snapshot the fleet's shared `vite build --watch` can't touch,
 #                  so this webview's module graph is stable for the whole run.
-#   **NOT** ISOLATED: the DATABASE and the WORKSPACE. The sidecar inherits the
-#                  ambient env, so it connects to the SAME `DATABASE_URL` /
-#                  `PAPERCUSP_WORKSPACE` as the live system.
+#   **NOT** ISOLATED: the DATABASE, the WORKSPACE, and the WebView profile. The
+#                  sidecar inherits the ambient env, so it connects to the SAME
+#                  `DATABASE_URL` / `PAPERCUSP_WORKSPACE` as the live system, and
+#                  WebKit localStorage belongs to the desktop's normal profile.
 #
 #   => **EVERY WRITE YOU MAKE IN THIS WINDOW IS A REAL WRITE TO LIVE STATE.**
 #      Clicking a Mug steering control here mutates the owner's real steering
@@ -45,14 +46,16 @@
 #   EI-10387 (2026-07-18): the claim is now TRUE, OPT-IN. Pass
 #   VERIFY_TAURI_ISOLATED_DB=1 and this script boots a throwaway, fully-migrated,
 #   per-run embedded Postgres (own datadir, own free port — nobody else's pot),
-#   scopes PAPERCUSP_HOME/PAPERCUSP_WORKSPACE to this run, and *asserts at boot*
+#   scopes PAPERCUSP_HOME/PAPERCUSP_WORKSPACE and the Tauri WebView data/cache
+#   profile to this run, and *asserts at boot*
 #   (reading the real sidecar process's own /proc/<pid>/environ, not just our own
 #   env construction) that the resolved DB actually differs from the live one —
 #   refusing to proceed otherwise. Every write in that mode is safe: it lands in
 #   the throwaway DB, which nothing else reads, and is discarded at teardown. The
 #   instance boots into the normal first-run onboarding flow (an empty, freshly-
 #   migrated DB — the same state every real fresh install boots into), not the
-#   owner's real pots/plans.
+#   owner's real pots/plans. A WebView localStorage sentinel is also required to
+#   start absent, round-trip, and clear inside that disposable profile.
 #
 #   Default (VERIFY_TAURI_ISOLATED_DB unset) is UNCHANGED: shared live DB, as
 #   warned above — because many verify runs legitimately want to read/exercise
@@ -95,9 +98,10 @@
 #
 # ENV OVERRIDES (all optional)
 #   VERIFY_TAURI_ISOLATED_DB    1 = boot a genuinely isolated, throwaway,
-#                                fully-migrated embedded Postgres for this run
-#                                instead of sharing the live DATABASE_URL/
-#                                workspace (EI-10387). See the header block.
+#                                fully-migrated embedded Postgres and WebView
+#                                profile for this run instead of sharing the live
+#                                DATABASE_URL/workspace/profile (EI-10387).
+#                                See the header block.
 #                                Default 0 (today's shared-live-DB behavior).
 #   VERIFY_TAURI_ISOLATED_PG_TIMEOUT
 #                               seconds to wait for the isolated Postgres to
@@ -180,6 +184,12 @@ TIMEOUT="${VERIFY_TAURI_TIMEOUT:-180}"
 MEMORY_LIMIT_MB="${VERIFY_TAURI_MEMORY_LIMIT_MB:-12288}"
 WORK="$(mktemp -d "${TMPDIR:-/tmp}/verify-tauri-headless.XXXXXX")"
 LOG="$WORK/tauri.log"
+# Set before the first EXIT trap so the generated stop script can safely expand
+# the value even when boot fails before the isolated branch runs.
+ISOLATED_WEBVIEW_ROOT=""
+ISOLATED_WEBVIEW_DATA=""
+ISOLATED_WEBVIEW_CACHE=""
+ISOLATED_WEBVIEW_CONFIG=""
 
 log() { printf '\n[verify-tauri-headless] %s\n' "$*" >&2; }
 
@@ -513,6 +523,10 @@ rm -f "/tmp/.X11-unix/X$DISPLAY_NUM" 2>/dev/null
 # EI-10387: stop our throwaway isolated-DB postgres (if VERIFY_TAURI_ISOLATED_DB
 # booted one) — SIGTERM lets it shut the postmaster down cleanly before we reap.
 [ -n "$ISOLATED_PG_PID" ] && { kill -TERM "$ISOLATED_PG_PID" 2>/dev/null; sleep 1; kill -9 "$ISOLATED_PG_PID" 2>/dev/null; }
+# EI-20191224828837149: the isolated verifier owns a disposable Tauri/WebKit
+# profile too. Remove it on the explicit --boot-only stop path as well as the
+# normal EXIT teardown; otherwise localStorage would outlive the run.
+[ -n "$ISOLATED_WEBVIEW_ROOT" ] && rm -rf "$ISOLATED_WEBVIEW_ROOT" 2>/dev/null
 echo "stopped (display :$DISPLAY_NUM, port $DEV_PORT)"
 STOP
   chmod +x "$WORK/stop.sh"
@@ -732,7 +746,14 @@ if [ "$ISOLATED_DB" = "1" ]; then
   ISOLATED_PG_LOG="$WORK/isolated-pg.log"
   ISOLATED_HOME="$WORK/papercusp-home"
   ISOLATED_WORKSPACE="verify-tauri-isolated-$DISPLAY_NUM"
-  mkdir -p "$ISOLATED_HOME"
+  # Tauri's relative `dataDirectory` is resolved below XDG_DATA_HOME. Keep all
+  # three XDG roots under this run's work dir so WebKit localStorage, cache,
+  # cookies, and any GLib config state cannot reuse the owner's desktop profile.
+  ISOLATED_WEBVIEW_ROOT="$WORK/webview-profile"
+  ISOLATED_WEBVIEW_DATA="$ISOLATED_WEBVIEW_ROOT/data"
+  ISOLATED_WEBVIEW_CACHE="$ISOLATED_WEBVIEW_ROOT/cache"
+  ISOLATED_WEBVIEW_CONFIG="$ISOLATED_WEBVIEW_ROOT/config"
+  mkdir -p "$ISOLATED_HOME" "$ISOLATED_WEBVIEW_DATA" "$ISOLATED_WEBVIEW_CACHE" "$ISOLATED_WEBVIEW_CONFIG"
 
   # Migrations dir: monorepo path, else a packaged sidecar's own copy — same
   # resolution with-test-pg.mjs uses.
@@ -835,7 +856,7 @@ PGBOOT
   fi
 
   log "isolated-db postgres ready on :$ISOLATED_PG_PORT (data=$ISOLATED_PG_DATA_DIR) after ${ISOLATED_PG_ELAPSED}s"
-  ISOLATED_ENV_LINE="PAPERCUSP_HOME=\"$ISOLATED_HOME\" PAPERCUSP_WORKSPACE=\"$ISOLATED_WORKSPACE\" HARNESS_ADMIN_DATABASE_URL=\"$ISOLATED_ADMIN_URL\" HARNESS_DATABASE_URL=\"$ISOLATED_APP_URL\" PAPERCUSP_PG_PORT=\"$ISOLATED_PG_PORT\" PAPERCUSP_SKIP_PG_DISCOVERY=1"
+  ISOLATED_ENV_LINE="PAPERCUSP_HOME=\"$ISOLATED_HOME\" PAPERCUSP_WORKSPACE=\"$ISOLATED_WORKSPACE\" HARNESS_ADMIN_DATABASE_URL=\"$ISOLATED_ADMIN_URL\" HARNESS_DATABASE_URL=\"$ISOLATED_APP_URL\" PAPERCUSP_PG_PORT=\"$ISOLATED_PG_PORT\" PAPERCUSP_SKIP_PG_DISCOVERY=1 XDG_DATA_HOME=\"$ISOLATED_WEBVIEW_DATA\" XDG_CACHE_HOME=\"$ISOLATED_WEBVIEW_CACHE\" XDG_CONFIG_HOME=\"$ISOLATED_WEBVIEW_CONFIG\""
 fi
 
 # ── launch the isolated dev instance (agent-e2e.mdx §1.3 recipe, packaged) ──
@@ -884,6 +905,20 @@ SPA_ENV_LINE=""
 # reverted on any package reinstall/upgrade — see the note where it's applied), and keeps
 # this rig self-consistent even when the patch is absent/reverted.
 write_and_launch_tauri() {
+  local TAURI_DEV_URL="http://127.0.0.1:$DEV_PORT"
+  local TAURI_CONFIG
+  if [ "$ISOLATED_DB" = "1" ]; then
+    # The query is a client-side belt-and-braces guard: even if a future
+    # profile change accidentally exposes ambient localStorage, voice-mode will
+    # not restore a persisted microphone mode in a write-safe verifier.
+    TAURI_DEV_URL="${TAURI_DEV_URL}?verify-tauri-isolated=1"
+    # `--config` JSON replaces the windows array, so carry forward the complete
+    # current window shape while adding the per-run relative WebView profile.
+    # Tauri resolves this below XDG_DATA_HOME/<label>, which is private above.
+    TAURI_CONFIG="{\"build\":{\"devUrl\":\"$TAURI_DEV_URL\"},\"app\":{\"windows\":[{\"label\":\"main\",\"title\":\"Papercusp\",\"width\":1280,\"height\":800,\"minWidth\":800,\"minHeight\":600,\"resizable\":true,\"fullscreen\":false,\"center\":true,\"decorations\":true,\"dragDropEnabled\":false,\"dataDirectory\":\"verify-tauri-isolated-$DISPLAY_NUM\"}]}}"
+  else
+    TAURI_CONFIG="{\"build\":{\"devUrl\":\"$TAURI_DEV_URL\"}}"
+  fi
   cat > "$WORK/launch.sh" <<LAUNCH
 #!/usr/bin/env bash
 cd "$DESKTOP_DIR"
@@ -893,7 +928,7 @@ exec env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 GDK_BACKEND=x11 DISPLAY=":$DISP
   PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB=$MEMORY_LIMIT_MB \\
   $SPA_ENV_LINE \\
   $ISOLATED_ENV_LINE \\
-  ${LAUNCH_PREFIX[*]} npm run tauri -- dev --no-watch --config '{"build":{"devUrl":"http://127.0.0.1:$DEV_PORT"}}'
+  ${LAUNCH_PREFIX[*]} npm run tauri -- dev --no-watch --config '$TAURI_CONFIG'
 LAUNCH
   chmod +x "$WORK/launch.sh"
   setsid "$WORK/launch.sh" >"$LOG" 2>&1 &
@@ -1171,6 +1206,39 @@ while :; do
 done
 log "origin health confirmed: apiHealth=200 rootHtml=200 (pid=$BRIDGE_PID)"
 
+# EI-20191224828837149: DB/home/workspace isolation is not enough for a Tauri
+# verifier. WebKit localStorage is backed by the WebView profile, so prove the
+# isolated profile starts without a stable sentinel, can write/read it, and can
+# clear it again. The private XDG/dataDirectory roots above make `before:null`
+# meaningful: an ambient desktop profile must never already contain this key.
+if [ "$ISOLATED_DB" = "1" ]; then
+  ISOLATED_STORAGE_SENTINEL_KEY='papercusp.verify-tauri-headless.isolated-sentinel.v1'
+  ISOLATED_STORAGE_SENTINEL_JSON="$(tauri-agent-tools eval --pid "$BRIDGE_PID" "
+    (function () {
+      var key = '$ISOLATED_STORAGE_SENTINEL_KEY';
+      var value = 'verify-tauri-headless-isolated-v1';
+      var before = localStorage.getItem(key);
+      localStorage.setItem(key, value);
+      var after = localStorage.getItem(key);
+      localStorage.removeItem(key);
+      return JSON.stringify({ before: before, after: after, cleared: localStorage.getItem(key) === null });
+    })()
+  " 2>&1)" || ISOLATED_STORAGE_SENTINEL_JSON=""
+  if ! grep -Eq '"before"[[:space:]]*:[[:space:]]*null' <<<"$ISOLATED_STORAGE_SENTINEL_JSON" \
+    || ! grep -Eq '"after"[[:space:]]*:[[:space:]]*"verify-tauri-headless-isolated-v1"' <<<"$ISOLATED_STORAGE_SENTINEL_JSON" \
+    || ! grep -Eq '"cleared"[[:space:]]*:[[:space:]]*true' <<<"$ISOLATED_STORAGE_SENTINEL_JSON"; then
+    echo "FATAL: isolated WebView localStorage profile failed its absent/write/read/clear sentinel check: $ISOLATED_STORAGE_SENTINEL_JSON" >&2
+    exit 1
+  fi
+  # A real profile file is the second half of the guard: a mock/localStorage
+  # shim could pass the JS round-trip without proving WebKit used our path.
+  if ! find "$ISOLATED_WEBVIEW_ROOT" -type f -print -quit 2>/dev/null | grep -q .; then
+    echo "FATAL: isolated WebView localStorage round-trip passed, but no profile file appeared under $ISOLATED_WEBVIEW_ROOT — refusing to claim profile isolation." >&2
+    exit 1
+  fi
+  log "isolated WebView profile VERIFIED: sentinel round-tripped and cleared under $ISOLATED_WEBVIEW_ROOT"
+fi
+
 log "isolated instance ready: pid=$VERIFY_TAURI_PID port=$VERIFY_TAURI_PORT display=$VERIFY_TAURI_DISPLAY"
 
 # EI-19930573774744721: every check above (bridge PID alive, origin health 200)
@@ -1225,7 +1293,7 @@ if [ "$ISOLATED_DB" = "1" ]; then
   │                                                                        │
   │  Isolated: X display · devUrl port · pty port · sidecar process · SPA  │
   │            module bundle · DATABASE (throwaway, on :$ISOLATED_PG_PORT) │
-  │            · PAPERCUSP_HOME · PAPERCUSP_WORKSPACE                      │
+  │            · PAPERCUSP_HOME · PAPERCUSP_WORKSPACE · WebView profile   │
   │                                                                        │
   │  ALL writes here are safe — they land in the throwaway DB and are      │
   │  discarded at teardown. The instance boots into the normal first-run   │
@@ -1245,6 +1313,7 @@ else
   │  Isolated: X display · devUrl port · pty port · sidecar process · SPA  │
   │            module bundle (a frozen snapshot — EI-10364)                 │
   │  NOT isolated: DATABASE_URL · PAPERCUSP_HOME · PAPERCUSP_WORKSPACE     │
+  │                · WebView profile/localStorage                         │
   │                                                                        │
   │  READS are safe. **WRITES ARE REAL** — a Mug steering click here       │
   │  mutates real steering and wakes the real Mug (burning real tokens);   │

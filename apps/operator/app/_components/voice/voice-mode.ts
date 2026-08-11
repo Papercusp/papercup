@@ -167,6 +167,21 @@ const DEFAULT_CONFIG: VoiceConfig = {
 
 const STORAGE_KEY = 'papercusp.voice.config.v1';
 
+/**
+ * The headless Tauri verifier owns a throwaway WebView profile, but keep the
+ * safety boundary explicit in the client too. If a future launch regression
+ * exposes ambient localStorage again, a verifier must still start with voice
+ * mode off rather than re-opening a persisted microphone session.
+ */
+function isIsolatedTauriVerification(): boolean {
+  if (typeof window === 'undefined') return false;
+  try {
+    return new URL(window.location.href).searchParams.get('verify-tauri-isolated') === '1';
+  } catch {
+    return false;
+  }
+}
+
 // ── Voice OUTPUT (TTS) mute — the speaker toggle in the voice bar (owner ask
 // 2026-06-23: "a button next to the mic to enable/disable text-to-speech for
 // the Sentinel responses"). A per-workspace UI preference (localStorage): when
@@ -539,7 +554,9 @@ export function initVoiceMode(): void {
 
     // Restore last mode from config so navigation preserves user choice.
     // Skip if state.mode is already non-off (init may run again on hot reload).
-    if (state.mode === 'off' && config.lastMode !== 'off') {
+    // An isolated verifier must never re-open a persisted microphone mode,
+    // even if a stale/shared WebView profile slips past the launch guard.
+    if (state.mode === 'off' && config.lastMode !== 'off' && !isIsolatedTauriVerification()) {
       setVoiceMode(config.lastMode);
     }
   };

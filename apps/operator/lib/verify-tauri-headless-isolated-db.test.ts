@@ -4,17 +4,20 @@
  * The bug: scripts/verify-tauri-headless.sh's header claimed the isolated
  * instance had its "own embedded-PG, own workspace state" — but the sidecar it
  * launched actually inherited the ambient env, so it connected to the SAME
- * live DATABASE_URL / PAPERCUSP_WORKSPACE as the real system. An agent that
- * trusted the header could click a real Mug steering control (mutating owner
- * state + waking the real Mug) believing it was sandboxed.
+ * live DATABASE_URL / PAPERCUSP_WORKSPACE as the real system. The Tauri
+ * WebView also inherited the desktop profile, so localStorage preferences could
+ * cross the supposedly write-safe boundary. An agent that trusted the header
+ * could click a real Mug steering control (mutating owner state + waking the
+ * real Mug) believing it was sandboxed.
  *
  * The fix: make the claim true, opt-in. VERIFY_TAURI_ISOLATED_DB=1 boots a
- * throwaway, fully-migrated, per-run embedded Postgres and scopes
- * PAPERCUSP_HOME/PAPERCUSP_WORKSPACE to the run, then *asserts at boot* by
- * reading the REAL sidecar process's own /proc/<pid>/environ — not just the
- * launcher's own env construction — that the resolved DB actually differs
- * from the live one, refusing to proceed otherwise. The default (unset) mode
- * is left honestly documented as sharing the live DB/workspace.
+ * throwaway, fully-migrated, per-run embedded Postgres, scopes
+ * PAPERCUSP_HOME/PAPERCUSP_WORKSPACE and the Tauri WebView profile to the run,
+ * then *asserts at boot* by reading the REAL sidecar process's own
+ * /proc/<pid>/environ — not just the launcher's own env construction — that the
+ * resolved DB actually differs from the live one. It also round-trips a
+ * localStorage sentinel in the private profile. The default (unset) mode is
+ * left honestly documented as sharing the live DB/workspace/profile.
  *
  * A `readFileSync` text guard is the right shape here: the script boots a
  * real Tauri/Xvfb/Postgres stack, so its isolation wiring can only be
@@ -46,7 +49,7 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
   });
 
   it('honestly documents the default (shared-DB) mode', () => {
-    expect(src).toMatch(/\*\*NOT\*\* ISOLATED: the DATABASE and the WORKSPACE/);
+    expect(src).toMatch(/\*\*NOT\*\* ISOLATED: the DATABASE, the WORKSPACE/);
     expect(src).toContain('EVERY WRITE YOU MAKE IN THIS WINDOW IS A REAL WRITE TO LIVE STATE');
   });
 
@@ -66,6 +69,20 @@ describe('EI-10387 — verify-tauri-headless can genuinely isolate the database'
     expect(src).toMatch(/ISOLATED_WORKSPACE="verify-tauri-isolated-\$DISPLAY_NUM"/);
     expect(src).toMatch(/PAPERCUSP_HOME=\\"\$ISOLATED_HOME\\"/);
     expect(src).toMatch(/PAPERCUSP_WORKSPACE=\\"\$ISOLATED_WORKSPACE\\"/);
+  });
+
+  it('isolates the Tauri WebView profile and guards localStorage with a sentinel', () => {
+    expect(src).toMatch(/ISOLATED_WEBVIEW_ROOT="\$WORK\/webview-profile"/);
+    expect(src).toMatch(/XDG_DATA_HOME=\\"\$ISOLATED_WEBVIEW_DATA\\"/);
+    expect(src).toMatch(/XDG_CACHE_HOME=\\"\$ISOLATED_WEBVIEW_CACHE\\"/);
+    expect(src).toMatch(/XDG_CONFIG_HOME=\\"\$ISOLATED_WEBVIEW_CONFIG\\"/);
+    expect(src).toContain('dataDirectory');
+    expect(src).toContain('verify-tauri-isolated=1');
+    expect(src).toContain('ISOLATED_STORAGE_SENTINEL_KEY');
+    expect(src).toContain('localStorage.getItem');
+    expect(src).toContain('localStorage.setItem');
+    expect(src).toContain('localStorage.removeItem');
+    expect(src).toMatch(/rm -rf "\$ISOLATED_WEBVIEW_ROOT"/);
   });
 
   it('wins over .env.local DATABASE_URL via the admin/app URL resolver precedence', () => {
