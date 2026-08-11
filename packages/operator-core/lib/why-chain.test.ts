@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   computePipelineHealth,
   computeWhyChain,
@@ -12,6 +12,7 @@ import {
   type WhyChainDeps,
 } from './why-chain';
 import type { GitPipelineSnapshot } from './git-pipeline-stats';
+import * as gitPipelineStats from './git-pipeline-stats';
 import type { DevDeployState } from './dev-deploy-state';
 import type { AccountStatusRow } from './deployment/account-pool-store';
 
@@ -119,6 +120,18 @@ describe('computeWhyChain (EI-7349)', () => {
     expect(res.effective).toEqual({ status: 'ok', blockingStage: null });
     expect(res.evidence.stages).toBe(res.stages);
     expect(res.nextVerb).toBeNull();
+  });
+
+  it('defaults the live snapshot read to local git instead of lazily booting the spawner sidecar', async () => {
+    const snapshotSpy = vi.spyOn(gitPipelineStats, 'gitPipelineSnapshot').mockResolvedValue(snap());
+    const input = deps();
+    delete input.loadSnapshot;
+    try {
+      await computeWhyChain(input);
+      expect(snapshotSpy).toHaveBeenCalledWith(undefined, { useSpawnerSidecar: false });
+    } finally {
+      snapshotSpy.mockRestore();
+    }
   });
 
   it('gate red but not stalled: degraded, cites recent failing files', async () => {

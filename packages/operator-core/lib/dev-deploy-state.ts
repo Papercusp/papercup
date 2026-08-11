@@ -55,9 +55,19 @@ const pexec = promisify(execFile);
 /** A REAL non-zero git exit (not a sidecar fault) — must not trigger a local retry. */
 class GitExitError extends Error {}
 
-async function git(repo: string, args: string[]): Promise<string> {
+/** Options for the read-only release-gate snapshot. */
+export interface DevDeployStateOptions {
+  /**
+   * Permit the git runner to lazily boot the spawner sidecar. The default keeps
+   * the existing hot-path behavior; pure diagnostic compositions can opt out
+   * so a standalone read never creates an agent-spawn transport.
+   */
+  useSpawnerSidecar?: boolean;
+}
+
+async function git(repo: string, args: string[], useSpawnerSidecar: boolean): Promise<string> {
   const argv = ['-C', repo, ...args];
-  if (gitSidecarEnabled('PAPERCUSP_DEV_DEPLOY_SPAWN_SIDECAR')) {
+  if (useSpawnerSidecar && gitSidecarEnabled('PAPERCUSP_DEV_DEPLOY_SPAWN_SIDECAR')) {
     try {
       const r = await runGitViaSpawnerSidecar(argv, process.cwd(), 60_000, process.env);
       // Preserve the throwing contract: pexec rejects on a non-zero exit.
@@ -270,7 +280,7 @@ interface CommitRefResult {
   unknown: CellUnknown | null;
 }
 
-async function commitRef(repo: string, ref: string): Promise<CommitRefResult> {
+async function commitRef(repo: string, ref: string, useSpawnerSidecar: boolean): Promise<CommitRefResult> {
   try {
     // ONE `git log -1` fork/exec resolves+peels the ref AND formats sha + committer
     // epoch + subject, replacing the former 3-exec fan-out (rev-parse --verify ^{commit}
@@ -283,7 +293,7 @@ async function commitRef(repo: string, ref: string): Promise<CommitRefResult> {
     // application-attributable event-loop cost under the poll storm (P-009 cpuprofile
     // attribution, mcp-reliability-hardening-2026-07-11: git spawn from THIS file was
     // ≈59% of real on-loop work during the Jul-10 4–6s-lag saturation).
-    const out = await git(repo, ['log', '-1', '--format=%H%n%ct%n%s', ref + '^{commit}']);
+    const out = await git(repo, ['log', '-1', '--format=%H%n%ct%n%s', ref + '^{commit}'], useSpawnerSidecar);
     const [sha, ct, ...rest] = out.split('\n');
     return {
       ref: {
@@ -301,9 +311,9 @@ async function commitRef(repo: string, ref: string): Promise<CommitRefResult> {
 }
 
 /** Count of commits in `from..to` within `repo`, or null on failure. */
-async function aheadCount(repo: string, from: string, to: string): Promise<number | null> {
+async function aheadCount(repo: string, from: string, to: string, useSpawnerSidecar: boolean): Promise<number | null> {
   try {
-    const out = await git(repo, ['rev-list', '--count', from + '..' + to]);
+    const out = await git(repo, ['rev-list', '--count', from + '..' + to], useSpawnerSidecar);
     return Number(out);
   } catch {
     return null;
@@ -385,7 +395,8 @@ function lastDeployMtime(releaseRoot: string): number | null {
  * fan-out was halved 12→6 execs (commitRef 3→1, P-009) and the cache below
  * collapses concurrent/rapid callers to one fan-out per TTL.
  */
-async function computeDevDeployState(): Promise<DevDeployState> {
+async function computeDevDeployState(opts: DevDeployStateOptions = {}): Promise<DevDeployState> {
+  const useSpawnerSidecar = opts.useSpawnerSidecar ?? true;
   const cfg = resolveConfig();
   const errors: string[] = [];
 
@@ -395,10 +406,10 @@ async function computeDevDeployState(): Promise<DevDeployState> {
   // ref a successful `git push` already updates as a side effect) — no network call, same cost
   // class as the other 3 resolves below.
   const [stagingHeadR, greenPinR, deployedR, originHeadR] = await Promise.all([
-    commitRef(cfg.integrationRoot, cfg.integrationBranch),
-    commitRef(cfg.integrationRoot, cfg.releaseRef),
-    commitRef(cfg.releaseRoot, 'HEAD'),
-    commitRef(cfg.integrationRoot, `origin/${cfg.integrationBranch}`),
+    commitRef(cfg.integrationRoot, cfg.integrationBranch, useSpawnerSidecar),
+    commitRef(cfg.integrationRoot, cfg.releaseRef, useSpawnerSidecar),
+    commitRef(cfg.releaseRoot, 'HEAD', useSpawnerSidecar),
+    commitRef(cfg.integrationRoot, `origin/${cfg.integrationBranch}`, useSpawnerSidecar),
   ]);
   // Every downstream reader keeps the plain `CommitRef | null` shape it always
   // had — only `errors[]` (below) additionally consumes the `unknown` reason.
@@ -428,13 +439,13 @@ async function computeDevDeployState(): Promise<DevDeployState> {
   // aheadCount(from, to) = `rev-list --count from..to` = commits `to` has that `from` lacks.
   const [deployedBehindStaging, greenPinBehindStaging, deployedBehindGreenPin, stagingAheadOfOrigin] = await Promise.all([
     // live :3070 → staging tip (spans the un-checkpointed buffer; not a fault on its own)
-    deployed && stagingHead ? aheadCount(cfg.integrationRoot, deployed.sha, stagingHead.sha) : Promise.resolve(null),
+    deployed && stagingHead ? aheadCount(cfg.integrationRoot, deployed.sha, stagingHead.sha, useSpawnerSidecar) : Promise.resolve(null),
     // green pin (main) → staging tip = THE STAGING BUFFER (normal; not a deploy fault)
-    greenPin && stagingHead ? aheadCount(cfg.integrationRoot, greenPin.sha, stagingHead.sha) : Promise.resolve(null),
+    greenPin && stagingHead ? aheadCount(cfg.integrationRoot, greenPin.sha, stagingHead.sha, useSpawnerSidecar) : Promise.resolve(null),
     // live :3070 → green pin (main) = THE REAL DEPLOY GAP (green but not shipped)
-    deployed && greenPin ? aheadCount(cfg.integrationRoot, deployed.sha, greenPin.sha) : Promise.resolve(null),
+    deployed && greenPin ? aheadCount(cfg.integrationRoot, deployed.sha, greenPin.sha, useSpawnerSidecar) : Promise.resolve(null),
     // origin/<branch> → staging tip = THE SAFETY-CRITICAL UNPUSHED LEG (never "normal")
-    originHead && stagingHead ? aheadCount(cfg.integrationRoot, originHead.sha, stagingHead.sha) : Promise.resolve(null),
+    originHead && stagingHead ? aheadCount(cfg.integrationRoot, originHead.sha, stagingHead.sha, useSpawnerSidecar) : Promise.resolve(null),
   ]);
 
   return {
@@ -477,6 +488,7 @@ async function computeDevDeployState(): Promise<DevDeployState> {
 interface DeployStateCacheEntry {
   at: number;
   value: Promise<DevDeployState>;
+  useSpawnerSidecar: boolean;
 }
 let deployStateCache: DeployStateCacheEntry | null = null;
 
@@ -493,15 +505,21 @@ function deployStateTtlMs(): number {
  * `errors[]` rather than throwing). Concurrent + rapid callers within the TTL
  * window share one `git` fan-out; see the cache note above.
  */
-export async function devDeployState(): Promise<DevDeployState> {
+export async function devDeployState(opts: DevDeployStateOptions = {}): Promise<DevDeployState> {
+  const useSpawnerSidecar = opts.useSpawnerSidecar ?? true;
   const ttl = deployStateTtlMs();
   const now = Date.now();
-  if (ttl > 0 && deployStateCache && now - deployStateCache.at < ttl) {
+  if (
+    ttl > 0 &&
+    deployStateCache &&
+    deployStateCache.useSpawnerSidecar === useSpawnerSidecar &&
+    now - deployStateCache.at < ttl
+  ) {
     return deployStateCache.value;
   }
-  const value = computeDevDeployState();
+  const value = computeDevDeployState({ useSpawnerSidecar });
   if (ttl > 0) {
-    const entry: DeployStateCacheEntry = { at: now, value };
+    const entry: DeployStateCacheEntry = { at: now, value, useSpawnerSidecar };
     deployStateCache = entry;
     // computeDevDeployState resolves-with-errors rather than throwing, but if it
     // ever rejects, drop the entry so the next call retries instead of caching it.

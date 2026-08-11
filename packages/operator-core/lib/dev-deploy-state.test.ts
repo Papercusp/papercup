@@ -146,6 +146,26 @@ describe('devDeployState', () => {
     expect(st.deployed?.sha).toBe(shaA);
   });
 
+  it('can keep a pure diagnostic read on local git even when the host sidecar flag is enabled', async () => {
+    const oldSidecar = process.env.PAPERCUSP_SPAWNER_SIDECAR;
+    const oldSocket = process.env.PAPERCUSP_SPAWNER_IPC_SOCKET;
+    const socket = path.join(os.tmpdir(), `devdeploy-no-sidecar-${process.pid}-${Date.now()}.sock`);
+    process.env.PAPERCUSP_SPAWNER_SIDECAR = '1';
+    process.env.PAPERCUSP_SPAWNER_IPC_SOCKET = socket;
+    resetDevDeployStateCache();
+    try {
+      const st = await devDeployState({ useSpawnerSidecar: false });
+      expect(st.stagingHead?.sha).toBe(shaC);
+      expect(fs.existsSync(socket)).toBe(false);
+    } finally {
+      if (oldSidecar === undefined) delete process.env.PAPERCUSP_SPAWNER_SIDECAR;
+      else process.env.PAPERCUSP_SPAWNER_SIDECAR = oldSidecar;
+      if (oldSocket === undefined) delete process.env.PAPERCUSP_SPAWNER_IPC_SOCKET;
+      else process.env.PAPERCUSP_SPAWNER_IPC_SOCKET = oldSocket;
+      resetDevDeployStateCache();
+    }
+  });
+
   it('computes the "behind" distances correctly', async () => {
     const st = await devDeployState();
     // main = A→B→C. deployed=A → 2 behind main (B, C). ready=B → 1 behind main (C).

@@ -482,6 +482,12 @@ export function pinProvenGateCorrection(
 
 /** Options for `gitPipelineSnapshot` (overview-tab-expansion P-001). */
 export interface GitPipelineSnapshotOpts {
+  /**
+   * Permit the release-gate git read to lazily boot the spawner sidecar. Pure
+   * diagnostic compositions pass false so a standalone read never creates an
+   * agent-spawn transport; omitted preserves the existing default behavior.
+   */
+  useSpawnerSidecar?: boolean;
   /** Probe the live green-checkpoint systemd unit ("judging vs idle") into `activeRun`.
    *  Default FALSE — the probe forks systemctl, so only the background derived-read
    *  producer opts in; live callers stay fork-free. */
@@ -608,7 +614,7 @@ export async function gitPipelineSnapshot(
     summarizePipelineWindow(slug, 24 * 60 * 60),
     summarizePipelineWindow(slug, 7 * 24 * 60 * 60),
     recentPipelineEvents(slug, 25),
-    devDeployState(),
+    devDeployState({ useSpawnerSidecar: opts.useSpawnerSidecar }),
   ]);
 
   // WI-4489: is the recorded RED still trustworthy? The green pin is the ground truth (it only

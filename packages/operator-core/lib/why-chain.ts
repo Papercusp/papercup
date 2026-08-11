@@ -89,6 +89,12 @@ function nextVerbForRoot(rootCause: WhyChainStage | null): string | null {
 
 export interface WhyChainDeps {
   loadSnapshot?: () => Promise<GitPipelineSnapshot>;
+  /**
+   * Explicit opt-in for the snapshot's git sidecar. Diagnostic reads default
+   * to local git so importing/running this pure composition cannot boot an
+   * agent-spawn transport in a short-lived verification process.
+   */
+  useSpawnerSidecar?: boolean;
   loadAccounts?: (ws?: string) => Promise<AccountStatusRow[]>;
   /** Test seam / override for the live gateway ADMISSION read (EI-10880). Null ⇒ gateway unreachable. */
   loadAdmission?: () => Promise<AdmissionSnapshotLite | null>;
@@ -715,7 +721,9 @@ function withDisjointNote(stage: WhyChainStage, disjoint: boolean): WhyChainStag
 export async function computePipelineHealth(
   deps: WhyChainDeps & { slug?: string } = {},
 ): Promise<PipelineHealth> {
-  const loadSnapshot = deps.loadSnapshot ?? (() => gitPipelineSnapshot(deps.slug));
+  const loadSnapshot =
+    deps.loadSnapshot ??
+    (() => gitPipelineSnapshot(deps.slug, { useSpawnerSidecar: deps.useSpawnerSidecar ?? false }));
   const rawSnap = await loadSnapshot();
   const now = Date.now();
 
@@ -786,7 +794,9 @@ export async function computePipelineHealth(
 
 /** Compute the full why-chain (gate -> deploy -> admission -> pool), pure + read-only. */
 export async function computeWhyChain(deps: WhyChainDeps = {}): Promise<WhyChainResult> {
-  const loadSnapshot = deps.loadSnapshot ?? (() => gitPipelineSnapshot());
+  const loadSnapshot =
+    deps.loadSnapshot ??
+    (() => gitPipelineSnapshot(undefined, { useSpawnerSidecar: deps.useSpawnerSidecar ?? false }));
   const loadAccounts = deps.loadAccounts ?? ((ws?: string) => accountStatus(ws));
   const loadAdmission = deps.loadAdmission ?? loadAdmissionDefault;
 
