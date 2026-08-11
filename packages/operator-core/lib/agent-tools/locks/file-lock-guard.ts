@@ -184,7 +184,7 @@ export async function guardFileLock<T>(
   } finally {
     // Release like the PostToolUse hook does — by lock_id, owner-checked.
     await inWorkspaceTxn(coordinationDomain, ownerId, (tx) =>
-      tryRelease(tx, { coordinationDomain, owner: ownerId, lockId }),
+      tryRelease(tx, { coordinationDomain, owner: ownerId, lockId, paths }),
       { paths },
     ).catch((err) => {
       ctx.log?.(`[file-lock] release faulted (lock frees at TTL): ${err instanceof Error ? err.message : String(err)}`);

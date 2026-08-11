@@ -842,7 +842,7 @@ function workspaceContended() {
           holder: 'unknown',
           busy: [],
           advice:
-            'The lock service could not serialize this call in time (advisory-lock timeout). Holder identity is unknown; this does not prove the requested files are unheld. Do NOT queue wake_on_grant for this timeout because no holder or waiter ticket was returned; retry the operation with backoff or inspect the lock-service state.',
+            'The lock service could not serialize this call in time (advisory-lock timeout). Holder identity is unknown; this does not prove the requested files are unheld. Do NOT queue wake_on_grant for this timeout because no waiter ticket was returned; retry the operation with backoff or inspect the lock-service state.',
         }),
       },
     ],
