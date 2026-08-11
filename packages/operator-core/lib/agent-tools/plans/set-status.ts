@@ -1159,6 +1159,7 @@ export default defineTool({
               rationale: args.rationale,
               onlyIfNotTerminal: args.onlyIfNotTerminal,
               onlyIfNoOtherOpenCoverage: args.onlyIfNoOtherOpenCoverage,
+              onlyIfNotCompleted: args.onlyIfNotCompleted,
             },
           ];
     const env = await runBulk(list, (it) => setStatusOne(it, ctx), {
