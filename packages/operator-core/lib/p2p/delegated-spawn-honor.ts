@@ -82,6 +82,7 @@ import {
   type HonorAccountResolution,
 } from './honor-account-resolution';
 import type { OrgSql } from '../work-items';
+import type { FleetPresenceRow } from '../agent-tools/coordination/presence-fleet';
 
 /** How long a spawn-request stays honorable after its publisher-clock stamp. */
 export const SPAWN_REQUEST_HONOR_WINDOW_MS = 60 * 60_000;
@@ -236,17 +237,16 @@ export interface SpawnMembersResult {
 
 /** Result of {@link defaultVerifyLocalMemberBoot} / a caller's DI override. */
 export interface LocalBootVerifyResult {
-  /** True when a NEW presence row for `fleetSlug` was observed locally within the
-   *  verify window — i.e. an agent actually booted, not merely that a spawn call
-   *  returned 'ok'. */
+  /** True only when a NEW presence row for `fleetSlug` also has a completed tool
+   * invocation after this honor started. A launcher can author presence without
+   * the agent process ever taking a turn (WI-35786). */
   observed: boolean;
   /** Human detail — always states what evidence produced the verdict. */
   detail: string;
 }
 
-/** How long to locally poll `coord_presence` for the spawned member's row before
- *  finalizing 'honored' (Windows desktop-bridge honors only — see
- *  {@link defaultVerifyLocalMemberBoot}). Mirrors the order of magnitude of
+/** How long to locally poll for the spawned member's first attributed tool call
+ * before finalizing 'honored'. Mirrors the order of magnitude of
  *  spawnHeadless's own HEADLESS_BOOT_RECEIPT_MS boot-death window: long enough for a
  *  normal psu boot (coord:orient runs within the first few seconds), short enough to
  *  not meaningfully stall the replication-apply loop it runs inside. */
@@ -254,26 +254,17 @@ export const LOCAL_BOOT_VERIFY_MS = 8000;
 const LOCAL_BOOT_VERIFY_POLL_MS = 1000;
 
 /**
- * EI-19328706303827921: best-effort LOCAL liveness check after a spawn reports
- * `opened > 0`, gated to Windows desktop-bridge honors only (see the call site).
+ * WI-35786: LOCAL first-turn check after a spawn reports `opened > 0`.
  *
- * `spawn.opened` only proves the OS accepted a launch request. For the Windows
- * desktop-bridge branch (console-spawn.ts's `isWindowsDesktopHost()` case) that is the
- * ENTIRE signal: `bridged.ok` means the Tauri `console_launch` IPC round-trip to the
- * desktop webview succeeded, never that a window opened or an agent process is alive —
- * unlike the Linux/macOS/headless paths, which each run their own boot-death probe
- * before returning 'ok' (EARLY_EXIT_PROBE_MS / the headless boot-receipt scan), so this
- * check would be pure redundant latency there and is deliberately skipped.
+ * `spawn.opened` only proves the OS accepted a launch request. The Windows
+ * desktop-bridge signal is only the Tauri IPC round-trip; the Linux/macOS/headless
+ * probes detect an early process death but still do not prove the CLI reached its first
+ * turn. The same first-turn oracle therefore applies on every platform.
  *
- * Polls THIS host's own `coord_presence` for a NEW member on `fleetSlug` — the same
- * "did a launch actually produce an agent?" oracle presence-fleet.ts documents
- * (`listFleetPresence`) — for up to {@link LOCAL_BOOT_VERIFY_MS}. Deliberately does
- * NOT change `local_disposition` or refuse the request on a miss: a legitimately slow
- * boot must never be downgraded to a false refusal (same fail-open philosophy as the
- * honor path's other best-effort probes — WI-5306's runtime preflight, WI-5316's
- * account resolution). It only sharpens the federated success receipt's honesty
- * ("confirmed booted locally" vs "not observed within Ns — possible phantom honor")
- * instead of the same boilerplate caveat regardless of what actually happened.
+ * Presence alone is not the oracle: the macOS login-window failure created a fresh
+ * launcher-authored row, then no CLI process, transcript, or tool call ever existed.
+ * Poll the fleet roster plus its newest attributed tool invocation and require both
+ * to be newer than the honor start. The caller fails closed on a miss.
  */
 export async function defaultVerifyLocalMemberBoot(args: {
   workspaceId: string;
@@ -282,6 +273,7 @@ export async function defaultVerifyLocalMemberBoot(args: {
   windowMs?: number;
   pollMs?: number;
   sleep?: (ms: number) => Promise<void>;
+  listPresence?: (workspaceId: string, fleetSlug: string) => Promise<FleetPresenceRow[]>;
 }): Promise<LocalBootVerifyResult> {
   const windowMs = args.windowMs ?? LOCAL_BOOT_VERIFY_MS;
   const pollMs = args.pollMs ?? LOCAL_BOOT_VERIFY_POLL_MS;
@@ -293,17 +285,28 @@ export async function defaultVerifyLocalMemberBoot(args: {
         t.unref?.();
       }));
   const deadline = Date.now() + windowMs;
+  let presenceOnly: FleetPresenceRow | null = null;
   try {
-    const { listFleetPresence } = await import('../agent-tools/coordination/presence-fleet');
+    const listPresence =
+      args.listPresence ??
+      (await import('../agent-tools/coordination/presence-fleet')).listFleetPresence;
     for (;;) {
-      const rows = await listFleetPresence(args.workspaceId, args.fleetSlug);
-      const fresh = rows.find((r) => r.startedAt.getTime() >= args.sinceMs);
+      const rows = await listPresence(args.workspaceId, args.fleetSlug);
+      const fresh = rows.find(
+        (r) =>
+          r.startedAt.getTime() >= args.sinceMs &&
+          r.lastToolCallAt != null &&
+          r.lastToolCallAt.getTime() >= Math.max(args.sinceMs, r.startedAt.getTime()),
+      );
       if (fresh) {
         return {
           observed: true,
-          detail: `a member (owner ${fresh.ownerId}) joined '${args.fleetSlug}' locally, confirming the desktop-bridge launch actually booted`,
+          detail:
+            `member ${fresh.ownerId} took a tool-backed turn in '${args.fleetSlug}' locally ` +
+            `(first-turn evidence at ${fresh.lastToolCallAt!.toISOString()})`,
         };
       }
+      presenceOnly = rows.find((r) => r.startedAt.getTime() >= args.sinceMs) ?? presenceOnly;
       if (Date.now() >= deadline) break;
       await sleep(pollMs);
     }
@@ -313,9 +316,17 @@ export async function defaultVerifyLocalMemberBoot(args: {
       detail: `local presence check failed (best-effort, non-fatal): ${e instanceof Error ? e.message : String(e)}`,
     };
   }
+  if (presenceOnly) {
+    return {
+      observed: false,
+      detail:
+        `member ${presenceOnly.ownerId} registered presence in '${args.fleetSlug}', but no tool invocation ` +
+        `was attributed to it within ${Math.round(windowMs / 1000)}s — presence-only is not a boot proof`,
+    };
+  }
   return {
     observed: false,
-    detail: `no member joined '${args.fleetSlug}' locally within ${Math.round(windowMs / 1000)}s of honoring`,
+    detail: `no member took a tool-backed turn in '${args.fleetSlug}' locally within ${Math.round(windowMs / 1000)}s of honoring`,
   };
 }
 
@@ -368,17 +379,8 @@ export interface DelegatedSpawnHonorDeps {
   nowMs?: () => number;
   honorWindowMs?: number;
   /**
-   * EI-19328706303827921: is THIS honoring host a Windows desktop-bridge host
-   * (`isWindowsDesktopHost()`)? Default resolves the real check. Injected so tests can
-   * force either branch without faking `/proc/version`.
-   */
-  isWindowsHost?: () => Promise<boolean>;
-  /**
-   * EI-19328706303827921: best-effort LOCAL liveness verification, run ONLY on a
-   * Windows desktop-bridge honor (see {@link defaultVerifyLocalMemberBoot}'s doc for
-   * why the other platforms skip it). Never changes the outcome or disposition — it
-   * only sharpens the federated receipt's honesty about whether a boot was actually
-   * observed.
+   * WI-35786: LOCAL first-turn verification on every platform. A miss fails the
+   * honor closed with a federated member_boot_unconfirmed refusal.
    */
   verifyLocalMemberBoot?: (args: {
     workspaceId: string;
@@ -390,19 +392,6 @@ export interface DelegatedSpawnHonorDeps {
 async function defaultResolveDevicePubkey(githubUserId: number): Promise<string> {
   const keypair = await loadOrGenerateDeviceKeypair(resolveDeviceKeychainId(githubUserId));
   return keypair.pubkeyBase64;
-}
-
-/** Default `isWindowsHost` dep — dynamic import mirrors this file's other lazy deps
- *  (keeps the desktop-detection graph off the sync-projection import path). Async
- *  seam (unlike the underlying sync `isWindowsDesktopHost()`) purely so the import
- *  can be lazy; best-effort → false on any load failure. */
-async function defaultIsWindowsHost(): Promise<boolean> {
-  try {
-    const { isWindowsDesktopHost } = await import('../windows-desktop-windows');
-    return isWindowsDesktopHost();
-  } catch {
-    return false;
-  }
 }
 
 /**
@@ -679,7 +668,6 @@ export async function honorSpawnRequestFromProjection(
   const isTrustedUser = deps.isTrustedUser ?? defaultIsTrustedUser;
   const isPotMember = deps.isPotMember ?? defaultIsPotMember;
   const nowMs = deps.nowMs ?? Date.now;
-  const isWindowsHost = deps.isWindowsHost ?? defaultIsWindowsHost;
   const verifyLocalMemberBoot = deps.verifyLocalMemberBoot ?? defaultVerifyLocalMemberBoot;
 
   const record = parseWorkOfferRecordJson(args.row.record_json);
@@ -837,9 +825,8 @@ export async function honorSpawnRequestFromProjection(
   );
   if (!claimed) return { outcome: 'already_claimed' };
 
-  // EI-19328706303827921: snapshot BEFORE spawning — the local boot-verify check
-  // below (Windows desktop-bridge honors only) needs a "since" cutoff so a
-  // pre-existing fleet member can never be mistaken for the one we just spawned.
+  // Snapshot BEFORE spawning so the first-turn check below can never mistake a
+  // pre-existing fleet member for the one this request launched.
   const honorStartedAtMs = nowMs();
 
   let spawn: SpawnMembersResult;
@@ -900,23 +887,45 @@ export async function honorSpawnRequestFromProjection(
     return { outcome: 'refused', code: failure.code };
   }
 
-  // EI-19328706303827921: on a Windows desktop-bridge host, `spawn.opened > 0`
-  // proves only that the Tauri `console_launch` IPC round-trip succeeded — unlike
-  // the Linux/macOS/headless paths (which each run their own boot-death probe
-  // inside spawnConsole/spawnHeadless before returning 'ok'), the bridge has NO
-  // such check. Best-effort verify locally so the receipt can be honest about
-  // whether a member actually booted, rather than the same boilerplate caveat
-  // regardless of outcome. Never changes `local_disposition` or the outcome — a
-  // legitimately slow boot must never be downgraded to a false refusal — and is
-  // skipped entirely on the other platforms, which already verified this inside
-  // the spawn call and would only pay pure redundant latency here.
-  const bootVerify = (await isWindowsHost())
-    ? await verifyLocalMemberBoot({
-        workspaceId: args.workspaceId,
-        fleetSlug: args.row.fleet_slug,
-        sinceMs: honorStartedAtMs,
-      })
-    : null;
+  // D-029 / WI-35786: `opened > 0` and even a fresh coord_presence row are not
+  // proof that an agent took a turn. The macOS login-window failure produced both
+  // while no CLI process or transcript ever existed. Require a fresh attributed
+  // tool call on EVERY platform before publishing success.
+  const bootVerify = await verifyLocalMemberBoot({
+    workspaceId: args.workspaceId,
+    fleetSlug: args.row.fleet_slug,
+    sinceMs: honorStartedAtMs,
+  });
+  if (!bootVerify.observed) {
+    const code = 'member_boot_unconfirmed';
+    await setDisposition(
+      args.workspaceId,
+      args.potHomeSlug,
+      publisher,
+      args.row.offer_id,
+      `refused:${code}`,
+      { expect: 'honoring' },
+      args.sql,
+    );
+    await emitReceipt({
+      workspaceId: args.workspaceId,
+      potSlug: args.potHomeSlug,
+      kind: 'refusal',
+      offerId: args.row.offer_id,
+      action: 'delegated-seat:spawn',
+      refusal: {
+        code,
+        detail:
+          `spawn opened ${spawn.opened}/${payload.count} member target(s), but no first agent turn was proven: ` +
+          bootVerify.detail,
+      },
+      requester: { kind: 'session', ref: payload.requesterOwnerId, githubUserId: publisher },
+      responderGithubUserId: actor.githubUserId,
+      responderDevicePubkey: devicePubkey,
+      actor: 'delegated-spawn-honor',
+    });
+    return { outcome: 'refused', code };
+  }
 
   await setDisposition(
     args.workspaceId,
@@ -940,19 +949,7 @@ export async function honorSpawnRequestFromProjection(
   // account?" is the first question asked when the member then dies at boot —
   // and answering it currently requires shelling into the honoring host.
   const partial = spawn.failed > 0 ? `, ${spawn.failed} FAILED to open` : '';
-  // EI-19328706303827921: sharpen the boilerplate boot caveat with what the local
-  // verify actually found, when it ran (Windows desktop-bridge honors only — see
-  // above). `bootVerify === null` (every other platform) keeps the original
-  // wording verbatim, unchanged from before this fix.
-  const bootNote =
-    bootVerify === null
-      ? '. NOTE: this receipt attests the member PROCESS was launched, not that it ' +
-        'booted successfully — a member can still die at boot (e.g. auth failure).'
-      : bootVerify.observed
-        ? `. Local liveness check CONFIRMED a member booted (${bootVerify.detail}).`
-        : `. ⚠ Local liveness check found NO member locally (${bootVerify.detail}) — ` +
-          'this may be a PHANTOM HONOR (the desktop-bridge window may never have opened, ' +
-          'or the agent CLI died before registering presence); check the honoring host directly.';
+  const bootNote = `. Local first-turn check CONFIRMED the agent ran (${bootVerify.detail}).`;
   await emitReceipt({
     workspaceId: args.workspaceId,
     potSlug: args.potHomeSlug,

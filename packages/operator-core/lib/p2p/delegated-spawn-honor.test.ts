@@ -17,6 +17,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   SPAWN_REQUEST_HONOR_WINDOW_MS,
   classifyRuntimeProbe,
+  defaultVerifyLocalMemberBoot,
   evaluateSpawnRequestTarget,
   honorSpawnRequestFromProjection,
   probeAgentBinResolvable,
@@ -243,6 +244,10 @@ function deps(over: Partial<Record<keyof DelegatedSpawnHonorDeps, any>> = {}) {
   // override with fail cases.
   const isTrustedUser = vi.fn(async () => true);
   const isPotMember = vi.fn(async () => true);
+  const verifyLocalMemberBoot = vi.fn(async () => ({
+    observed: true,
+    detail: "member su-boot took a tool-backed turn in 'alpha' locally",
+  }));
   const d: DelegatedSpawnHonorDeps = {
     hostAccepts: vi.fn(async () => true),
     resolveActor: vi.fn(async () => ({ githubUserId: UID_B })) as any,
@@ -256,10 +261,21 @@ function deps(over: Partial<Record<keyof DelegatedSpawnHonorDeps, any>> = {}) {
     resolveHonorAccount,
     isTrustedUser,
     isPotMember,
+    verifyLocalMemberBoot,
     nowMs: () => NOW,
     ...over,
   };
-  return { d, setDisposition, spawnMembers, emitReceipt, probeAgentRuntime, resolveHonorAccount, isTrustedUser, isPotMember };
+  return {
+    d,
+    setDisposition,
+    spawnMembers,
+    emitReceipt,
+    probeAgentRuntime,
+    resolveHonorAccount,
+    isTrustedUser,
+    isPotMember,
+    verifyLocalMemberBoot,
+  };
 }
 
 const ARGS = { workspaceId: WS, potHomeSlug: HOME, row: row() };
@@ -354,10 +370,7 @@ describe('honorSpawnRequestFromProjection', () => {
     expect(emitted.detail).toContain('gateway pool is empty');
   });
 
-  // The honest limit of the receipt: spawnMembers reports a WINDOW opened, not
-  // a booted agent. Over-claiming here would recreate the phantom-honor
-  // ambiguity one layer up.
-  it('the honored receipt does NOT claim the member booted, and reports a partial open', async () => {
+  it('the honored receipt carries first-turn evidence and reports a partial open', async () => {
     const { d, emitReceipt } = deps({
       spawnMembers: vi.fn(async () => ({ opened: 1, failed: 1, firstError: 'second window failed' })),
     });
@@ -365,76 +378,107 @@ describe('honorSpawnRequestFromProjection', () => {
     const emitted = emitReceipt.mock.calls[0]![0] as { detail: string };
     expect(emitted.detail).toContain('opened 1/2');
     expect(emitted.detail).toContain('1 FAILED to open');
-    expect(emitted.detail).toMatch(/not that it booted successfully/i);
+    expect(emitted.detail).toMatch(/first-turn check CONFIRMED/i);
   });
 
-  // EI-19328706303827921: the Windows desktop-bridge honor path (console-spawn.ts's
-  // isWindowsDesktopHost branch) reports `spawn.opened > 0` purely from the Tauri IPC
-  // round-trip succeeding — no boot-death probe exists there, unlike every other
-  // platform. These tests cover the local best-effort verification added to close
-  // that gap: it must run ONLY on a Windows host, must NEVER change the outcome or
-  // disposition (fail-open — a slow boot is not a refusal), and must sharpen the
-  // receipt's honesty with whatever it actually found.
-  describe('Windows desktop-bridge local boot verification (EI-19328706303827921)', () => {
-    it('non-Windows host (the default): verifyLocalMemberBoot is never called, receipt unchanged', async () => {
-      const verifyLocalMemberBoot = vi.fn(async () => ({ observed: true, detail: 'unused' }));
-      const { d, emitReceipt } = deps({
-        isWindowsHost: vi.fn(async () => false),
-        verifyLocalMemberBoot,
-      });
-      expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({ outcome: 'honored', opened: 2, failed: 0 });
-      expect(verifyLocalMemberBoot).not.toHaveBeenCalled();
-      const emitted = emitReceipt.mock.calls[0]![0] as { detail: string };
-      expect(emitted.detail).toMatch(/not that it booted successfully/i);
-      expect(emitted.detail).not.toMatch(/PHANTOM|CONFIRMED/);
-    });
-
-    it('Windows host, member CONFIRMED locally: outcome/disposition unchanged, receipt says so', async () => {
+  describe('all-platform first-turn verification (D-029 / WI-35786)', () => {
+    it('member CONFIRMED by a tool call: honors and the receipt names the proof', async () => {
       const verifyLocalMemberBoot = vi.fn(async () => ({
         observed: true,
-        detail: "a member (owner su-abc) joined 'wi3746-verify-fleet' locally",
+        detail: "member su-abc took a tool-backed turn in 'alpha' locally",
       }));
-      const { d, setDisposition, emitReceipt } = deps({
-        isWindowsHost: vi.fn(async () => true),
-        verifyLocalMemberBoot,
-      });
+      const { d, setDisposition, emitReceipt } = deps({ verifyLocalMemberBoot });
       expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({ outcome: 'honored', opened: 2, failed: 0 });
       expect(verifyLocalMemberBoot).toHaveBeenCalledWith(
         expect.objectContaining({ workspaceId: WS, fleetSlug: row().fleet_slug, sinceMs: NOW }),
       );
       expect(setDisposition).toHaveBeenLastCalledWith(WS, HOME, UID_A, row().offer_id, 'honored', { expect: 'honoring' }, undefined);
       const emitted = emitReceipt.mock.calls[0]![0] as { detail: string };
-      expect(emitted.detail).toMatch(/CONFIRMED a member booted/i);
-      expect(emitted.detail).not.toMatch(/PHANTOM/i);
+      expect(emitted.detail).toMatch(/first-turn check CONFIRMED/i);
+      expect(emitted.detail).toContain('tool-backed turn');
     });
 
-    it('Windows host, NO member observed: still honored (fail-open, never a false refusal), receipt WARNS phantom', async () => {
+    it('presence/window without a tool call: fails closed and federates member_boot_unconfirmed', async () => {
       const verifyLocalMemberBoot = vi.fn(async () => ({
         observed: false,
-        detail: "no member joined 'wi3746-verify-fleet' locally within 8s of honoring",
+        detail: "member su-phantom registered presence in 'alpha', but no tool invocation was attributed",
       }));
-      const { d, setDisposition, emitReceipt } = deps({
-        isWindowsHost: vi.fn(async () => true),
-        verifyLocalMemberBoot,
+      const { d, setDisposition, emitReceipt } = deps({ verifyLocalMemberBoot });
+      expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({
+        outcome: 'refused',
+        code: 'member_boot_unconfirmed',
       });
-      // Outcome + disposition are UNCHANGED — a miss must never be downgraded to a
-      // refusal (same fail-open philosophy as the runtime/account preflights).
-      expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({ outcome: 'honored', opened: 2, failed: 0 });
-      expect(setDisposition).toHaveBeenLastCalledWith(WS, HOME, UID_A, row().offer_id, 'honored', { expect: 'honoring' }, undefined);
-      const emitted = emitReceipt.mock.calls[0]![0] as { detail: string };
-      expect(emitted.detail).toMatch(/PHANTOM HONOR/i);
-      expect(emitted.detail).toContain("no member joined 'wi3746-verify-fleet' locally within 8s of honoring");
+      expect(setDisposition).toHaveBeenLastCalledWith(
+        WS,
+        HOME,
+        UID_A,
+        row().offer_id,
+        'refused:member_boot_unconfirmed',
+        { expect: 'honoring' },
+        undefined,
+      );
+      expect(emitReceipt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          kind: 'refusal',
+          refusal: expect.objectContaining({
+            code: 'member_boot_unconfirmed',
+            detail: expect.stringContaining('no tool invocation was attributed'),
+          }),
+        }),
+      );
     });
 
-    it('an all-fail spawn on a Windows host never even calls verifyLocalMemberBoot (refusal path is unaffected)', async () => {
+    it('an all-fail spawn never calls verifyLocalMemberBoot (refusal path is unaffected)', async () => {
       const verifyLocalMemberBoot = vi.fn(async () => ({ observed: true, detail: 'unused' }));
       const { d } = deps({
-        isWindowsHost: vi.fn(async () => true),
         verifyLocalMemberBoot,
         spawnMembers: vi.fn(async () => ({ opened: 0, failed: 2, firstError: 'no display' })),
       });
       expect(await honorSpawnRequestFromProjection(ARGS, d)).toEqual({ outcome: 'refused', code: 'spawn_failed' });
       expect(verifyLocalMemberBoot).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('defaultVerifyLocalMemberBoot first-turn oracle', () => {
+    it('refuses a fresh presence-only row with no attributed tool invocation', async () => {
+      const startedAt = new Date(NOW + 1);
+      await expect(
+        defaultVerifyLocalMemberBoot({
+          workspaceId: WS,
+          fleetSlug: 'alpha',
+          sinceMs: NOW,
+          windowMs: 0,
+          listPresence: vi.fn(async () => [
+            {
+              ownerId: 'su-phantom',
+              startedAt,
+              heartbeatAt: new Date(NOW + 2),
+              lastToolCallAt: null,
+            },
+          ]),
+        }),
+      ).resolves.toMatchObject({ observed: false, detail: expect.stringMatching(/presence.*no tool invocation/i) });
+    });
+
+    it('accepts only when the fresh owner has a post-start attributed tool invocation', async () => {
+      const startedAt = new Date(NOW + 1);
+      const lastToolCallAt = new Date(NOW + 2);
+      await expect(
+        defaultVerifyLocalMemberBoot({
+          workspaceId: WS,
+          fleetSlug: 'alpha',
+          sinceMs: NOW,
+          windowMs: 0,
+          listPresence: vi.fn(async () => [
+            {
+              ownerId: 'su-real',
+              startedAt,
+              heartbeatAt: lastToolCallAt,
+              lastToolCallAt,
+            },
+          ]),
+        }),
+      ).resolves.toMatchObject({ observed: true, detail: expect.stringMatching(/tool-backed turn/i) });
     });
   });
 

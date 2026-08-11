@@ -45,6 +45,10 @@ export interface FleetPresenceRow {
   ownerId: string;
   startedAt: Date;
   heartbeatAt: Date;
+  /** Newest completed tool call attributed to this owner after this presence
+   * row started. Presence alone is launcher-authored on some desktop paths;
+   * this is the proof that the agent actually took a turn (WI-35786). */
+  lastToolCallAt: Date | null;
 }
 
 /**
@@ -61,17 +65,40 @@ export async function listFleetPresence(
   fleetSlug: string,
 ): Promise<FleetPresenceRow[]> {
   const { sql } = getOrgPg();
-  const rows = await sql<{ owner_id: string; started_at: Date; heartbeat_at: Date }[]>`
-    SELECT owner_id, started_at, heartbeat_at
-      FROM harness_shared.coord_presence
-     WHERE workspace_id = ${workspaceId}
-       AND fleet_slug = ${fleetSlug}
-     ORDER BY heartbeat_at DESC
+  const rows = await sql<{
+    owner_id: string;
+    started_at: Date | string;
+    heartbeat_at: Date | string;
+    last_tool_call_at: Date | string | null;
+  }[]>`
+    SELECT p.owner_id,
+           p.started_at,
+           p.heartbeat_at,
+           (
+             SELECT max(ti.invoked_at)
+               FROM harness_shared.tool_invocations ti
+              WHERE ti.workspace_id = p.workspace_id
+                AND ti.coord_owner_id = p.owner_id
+                AND ti.invoked_at >= p.started_at
+           ) AS last_tool_call_at
+      FROM harness_shared.coord_presence p
+     WHERE p.workspace_id = ${workspaceId}
+       AND p.fleet_slug = ${fleetSlug}
+     ORDER BY p.heartbeat_at DESC
   `;
   return rows.map((r) => ({
     ownerId: r.owner_id,
-    startedAt: r.started_at,
-    heartbeatAt: r.heartbeat_at,
+    // postgres.js can return timestamptz as a string under the org-pool type
+    // configuration. Normalize at the read boundary so liveness callers never
+    // branch on an invented Date type and then crash on `.getTime()` (WI-35786).
+    startedAt: r.started_at instanceof Date ? r.started_at : new Date(r.started_at),
+    heartbeatAt: r.heartbeat_at instanceof Date ? r.heartbeat_at : new Date(r.heartbeat_at),
+    lastToolCallAt:
+      r.last_tool_call_at == null
+        ? null
+        : r.last_tool_call_at instanceof Date
+          ? r.last_tool_call_at
+          : new Date(r.last_tool_call_at),
   }));
 }
 
