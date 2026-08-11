@@ -271,7 +271,11 @@ describe('normalizeOperatorBaseUrl (WI-6821 DEFECT A — a suffixed pin killed p
     // The env branch was the ONLY one that could return a path-suffixed url; every
     // other branch already returns a bare base.
     const t = resolveOperatorTarget({
-      env: { PAPERCUSP_OPERATOR_URL: 'http://localhost:3070/api/mcp', PAPERCUSP_MCP_PROXY: '0' },
+      env: {
+        NODE_ENV: 'test',
+        PAPERCUSP_OPERATOR_URL: 'http://localhost:3070/api/mcp',
+        PAPERCUSP_MCP_PROXY: '0',
+      },
       home: '/nonexistent-home-for-this-test',
       probe: () => false,
       warn: () => {},
@@ -298,15 +302,15 @@ describe('backend-not-installed helpers (owner req 2026-07-06 — psu prompt-to-
       // omp installer target on unix: ~/.local/bin/omp
       mkdirSync(join(home, '.local', 'bin'), { recursive: true });
       writeFileSync(join(home, '.local', 'bin', 'omp'), '#!/bin/sh\n');
-      expect(wellKnownBackendBin('omp', { home, env: {} })).toBe(join(home, '.local/bin/omp'));
+      expect(wellKnownBackendBin('omp', { home, env: { NODE_ENV: 'test' } })).toBe(join(home, '.local/bin/omp'));
       // codex installer target: ~/.papercusp/runtime/node_modules/.bin/codex
       mkdirSync(join(home, '.papercusp', 'runtime', 'node_modules', '.bin'), { recursive: true });
       writeFileSync(join(home, '.papercusp', 'runtime', 'node_modules', '.bin', 'codex'), '');
-      expect(wellKnownBackendBin('codex', { home, env: {} })).toBe(
+      expect(wellKnownBackendBin('codex', { home, env: { NODE_ENV: 'test' } })).toBe(
         join(home, '.papercusp/runtime/node_modules/.bin/codex'),
       );
       // nothing installed → null
-      expect(wellKnownBackendBin('claude', { home, env: {} })).toBeNull();
+      expect(wellKnownBackendBin('claude', { home, env: { NODE_ENV: 'test' } })).toBeNull();
     } finally {
       rmSync(home, { recursive: true, force: true });
     }
@@ -320,7 +324,7 @@ describe('backend-not-installed helpers (owner req 2026-07-06 — psu prompt-to-
       // home has no omp; USERPROFILE does → resolves via the winHome candidate
       const home = mkdtempSync(join(tmpdir(), 'psu-home-'));
       try {
-        expect(wellKnownBackendBin('omp', { home, env: { USERPROFILE: winHome } })).toBe(
+        expect(wellKnownBackendBin('omp', { home, env: { NODE_ENV: 'test', USERPROFILE: winHome } })).toBe(
           join(winHome, '.papercusp', 'bin', 'omp.exe'),
         );
       } finally {
@@ -340,7 +344,7 @@ describe('tagKickoffProvenance (turn-provenance-owner-vs-agent-2026-07-11 P-002)
   afterEach(() => {
     rmSync(provDir, { recursive: true, force: true });
   });
-  const envFor = () => ({ PAPERCUSP_TURN_PROVENANCE_DIR: provDir }) as NodeJS.ProcessEnv;
+  const envFor = (): NodeJS.ProcessEnv => ({ NODE_ENV: 'test', PAPERCUSP_TURN_PROVENANCE_DIR: provDir });
 
   it('prefixes the fleet-kickoff envelope and writes the ledger row FIRST (lockstep JSONL shape)', () => {
     const tagged = tagKickoffProvenance('Begin: advance this plan.', 'su-kick-1', envFor(), 1_760_000_000_000);
@@ -364,7 +368,10 @@ describe('tagKickoffProvenance (turn-provenance-owner-vs-agent-2026-07-11 P-002)
     // as the path's parent throws ENOTDIR instantly instead.
     const plainFile = join(provDir, 'plain-file');
     writeFileSync(plainFile, 'x');
-    const env = { PAPERCUSP_TURN_PROVENANCE_DIR: join(plainFile, 'sub') } as NodeJS.ProcessEnv;
+    const env: NodeJS.ProcessEnv = {
+      NODE_ENV: 'test',
+      PAPERCUSP_TURN_PROVENANCE_DIR: join(plainFile, 'sub'),
+    };
     expect(tagKickoffProvenance('hello', 'su-kick-2', env)).toBe('hello');
   });
 

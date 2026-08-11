@@ -59,7 +59,7 @@ describe('wellKnownBackendBin — PATH-independent backend detection (WI-37920)'
 
       // env deliberately carries an EMPTY PATH: this asserts the fallback list alone
       // is sufficient, which is exactly the situation inside a desktop terminal.
-      const found = wellKnownBackendBin(agent, { home, env: { PATH: '' } });
+      const found = wellKnownBackendBin(agent, { home, env: { NODE_ENV: 'test', PATH: '' } });
 
       expect(
         found,
@@ -73,7 +73,7 @@ describe('wellKnownBackendBin — PATH-independent backend detection (WI-37920)'
   it('returns null for a backend that genuinely is not installed', () => {
     const empty = mkdtempSync(join(tmpdir(), 'psu-backend-detect-empty-'));
     try {
-      expect(wellKnownBackendBin('omp', { home: empty, env: { PATH: '' } })).toBeNull();
+      expect(wellKnownBackendBin('omp', { home: empty, env: { NODE_ENV: 'test', PATH: '' } })).toBeNull();
     } finally {
       rmSync(empty, { recursive: true, force: true });
     }

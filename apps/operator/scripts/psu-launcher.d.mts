@@ -567,26 +567,31 @@ export function recoverSessionOwner(nativeSessionId: any, { home }?: {
  */
 export function nativeSessionIdFromLaunchArgs(args?: any[]): string | null;
 /**
- * WI-1980: build the argv for a cold-loop RECYCLE respawn.
+ * Drop the trailing KICKOFF POSITIONAL from a launch argv.
  *
- * The initial launch forces the launched session's OWN id via `--session-id
- * <uuid>` (not resume — it DECLARES the id, see nativeSessionIdFromLaunchArgs).
- * The recycle host reused that argv verbatim, so every respawn re-declared the
- * SAME id whose transcript already existed on disk from the first boot → claude
- * refused to create an already-existing session → boot-error → supervisor
- * respawn → boot-retry storm (4× in 31s at wake 8, su-8ab32510 repro).
+ * WI-37939: `kickoffPositionalArgs` seeds a scripted launch's first turn as a
+ * TRAILING POSITIONAL (psu-launcher ~L7726). `mintRecycleArgs`'s copy loop then
+ * carried it through verbatim on every recycle / carry-respawn, so each fresh
+ * child re-exec'd `claude` with the ORIGINAL kickoff still on its argv and
+ * opened on that stale prompt as turn 1 — forever, however many respawns later.
+ * Measured on su-12b70e95: a fleet-kickoff minted 2026-08-10T16:57:23Z was
+ * re-delivered 26.6h later, asserting a GOAL-mode contract that session never
+ * held, for a goal already achieved. Same bug shape as the P-002 staleness fix
+ * below (argv copied through verbatim), one argv element over. A recycle is a
+ * CLEAN BOOT whose first prompt is the carry text the host types in
+ * (recycleChild -> injectTurnAtPrompt), so the launch prompt must not survive.
  *
- * A RECYCLE is a HARD cold reset — its intent IS a clean conversation, so we
- * mint a FRESH `--session-id` and strip any warm-resume flags
- * (`--resume`/`--continue`/`--fork-session`). The coord identity (PAPERCUSP_SID
- * in `env`) is deliberately UNCHANGED (D-003) — only the native claude id
- * rotates. Returns { args, nativeId } where nativeId is the fresh id (so the
- * caller can re-anchor native→coord via recordSessionOwner), or null when the
- * argv carries no `--session-id` (e.g. omp launches) — then args is returned
- * untouched and the respawn is a no-op change.
- *
- * Pure — exported for tests. `mintId` is injectable for deterministic tests.
+ * CONSERVATIVE BY CONSTRUCTION — strips only on POSITIVE identification, because
+ * wrongly eating a flag's VALUE would launch the successor with a broken flag
+ * (strictly worse than the staleness this fixes). Two provably-safe signals:
+ *   1. the token carries a kickoff provenance envelope; or
+ *   2. it is not a flag AND the token before it is an inline `--key=value`,
+ *      which cannot own a following value — so this one is a positional.
+ * Anything else is left alone (an untagged kickoff behind a value-taking flag
+ * keeps today's behaviour rather than risking a mangled argv). Pure; exported
+ * for tests.
  */
+export function stripKickoffPositional(args?: any[]): string[];
 export function mintRecycleArgs(args?: any[], { mintId, agent, personaFile }?: {
     mintId?: (() => `${string}-${string}-${string}-${string}-${string}`) | undefined;
     agent?: null | undefined;
