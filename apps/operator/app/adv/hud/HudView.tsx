@@ -25,6 +25,7 @@
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
 import { useWorkspaceId } from '@/lib/use-workspace-id';
 import { useDebouncedValue } from '@/app/harness/picker-kit';
@@ -38,6 +39,7 @@ import { OtherDetail } from '@/app/admin/plans/PlanOtherList';
 import NewSessionLauncher from '@/app/adv/sessions/NewSessionLauncher';
 import { usePlanList } from '@/app/admin/plans/plans-api';
 import { useResolvedHarnessSlug } from '@/app/adv/create/use-create-data';
+import { hudLaunchOpenDecision } from './hud-launch-open';
 import HudBoard from './HudBoard';
 import HudEntityColumns from './HudEntityColumns';
 import GoalComposer from './GoalComposer';
@@ -1023,12 +1025,29 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
               // (and SessionChatModal) already take. Null only from an operator
               // predating the pre-pin, in which case we open nothing rather
               // than guessing.
-              if (!ownerId) return;
+              //
+              // WI-38009: opening nothing must not be SILENT. By the time this
+              // runs NewSessionLauncher has already fired a SUCCESS toast, so a
+              // bare `return` left the user looking at whichever chat was
+              // previously open with every visible signal saying the launch
+              // worked — which reads exactly as "+ New session resumed an
+              // existing session" (the owner's 2026-08-11 report). Reproduced
+              // live on an isolated instance: stub /api/adv/sessions/launch-su
+              // to return {status:'ok'} with no ownerId, click with a chat open,
+              // and `hudsession` never moves. The launch is REAL (an agent is
+              // running); what we cannot do is OPEN it — so say that, because a
+              // stale pane is otherwise indistinguishable from a deliberate
+              // resume.
+              const decision = hudLaunchOpenDecision(ownerId);
+              if (decision.kind === 'warn') {
+                toast.warning(decision.message);
+                return;
+              }
               // WI-6367: remember WHEN, so the chat can render the boot window
               // as "starting up" rather than as the gone-away empty state a
               // session with no roster row otherwise gets.
-              setPendingLaunch({ ownerId, startedAtMs: Date.now() });
-              void setOpenOwner(ownerId);
+              setPendingLaunch({ ownerId: decision.ownerId, startedAtMs: Date.now() });
+              void setOpenOwner(decision.ownerId);
             }}
           />
         }
