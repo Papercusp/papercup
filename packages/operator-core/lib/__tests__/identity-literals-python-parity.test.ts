@@ -162,10 +162,19 @@ describe('EI-19462813694036210: identity-literal parity between the .mjs and .py
   it('the known-sensitive set is the expected one — a NEW entry must be a conscious decision', () => {
     // Not a value assertion: keys only. Adding an entry to the python fails this until someone
     // re-affirms (here) that it stays unported, which is exactly the review beat we want.
+    //
+    // REVIEW BEAT, 2026-08-11 — `known-sensitive:owner-github-handle` (EI-20108164746219771).
+    // Affirmed: it STAYS UNPORTED, for the same reason as the other three. It is the owner's
+    // GitHub handle, added from a MEASURED leak (10 occurrences inside the shipped seed
+    // corestore), and it is owned by no box's `whoami` — so identity_literals(), which resolves
+    // only the building machine, could never produce it. Its remedy is stage-time redaction
+    // (bin/stage-source-tree.sh), not a working-tree block: arming it in the edit-time detector
+    // is the OVER-PORT failure this file's ⭐ test above independently pins.
     expect(knownSensitiveKeys).toEqual([
       'known-sensitive:linux-build-user',
       'known-sensitive:mac-vm-login',
       'known-sensitive:mac-vm-user',
+      'known-sensitive:owner-github-handle',
     ]);
   });
 

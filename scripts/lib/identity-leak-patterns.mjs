@@ -233,7 +233,16 @@ export const GENERIC_USERS = new Set([
   // `known-sensitive:mac-vm-user` / `mac-vm-login`) and were found by the drift
   // test added with this fix, not by hand — which is the point of pinning the
   // agreement rather than patching the one value that happened to bite.
-  'builduser', 'buildhost', 'macuser', 'maclogin',
+  //
+  // `ownerhandle` (REDACTION_BY_KEY's `known-sensitive:owner-github-handle`) is
+  // the third instance of that same pattern, and it arrived exactly the way the
+  // drift test predicted: the handle was added to the python denylist from a
+  // MEASURED leak (EI-20108164746219771, 10 occurrences in the shipped seed
+  // corestore), its redaction token was declared, and this set was not updated —
+  // so the sanctioned scrub output would have red-pinned check-no-box-identity
+  // the first time a staged file put it in a `/home/<user>/` position. The test
+  // caught it before a cut did; adding the token here is the fix, not a silencer.
+  'builduser', 'buildhost', 'macuser', 'maclogin', 'ownerhandle',
   // WI-4776: illustrative placeholder SEGMENTS used in docs to show the SHAPE of
   // a path (e.g. `/absolute/home/path` in a tool-arg example) — the word after
   // /home/ there is not a username at all, just prose continuing the sentence.
