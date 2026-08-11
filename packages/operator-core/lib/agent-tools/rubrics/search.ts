@@ -27,10 +27,19 @@ export default defineTool({
   capability: 'coord:read',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
-  args: z.object({ query: z.string().min(1), limit: z.number().int().positive().max(200).optional() }),
+  args: z.object({
+    query: z.string().min(1),
+    limit: z.number().int().positive().max(200).optional(),
+    kind: z
+      .enum(['standard', 'acceptance', 'any'])
+      .optional()
+      .describe(
+        "kind scope (default 'standard' — the reusable library). 'acceptance' / 'any' opt into per-plan acceptance rubrics",
+      ),
+  }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
-    const rubrics = await searchRubrics(args.query, args.limit);
+    const rubrics = await searchRubrics(args.query, args.limit, args.kind ?? 'standard');
     return {
       content: [
         {
@@ -40,6 +49,8 @@ export default defineTool({
             count: rubrics.length,
             rubrics: rubrics.map((r) => ({
               rubricId: r.rubricId,
+              kind: r.kind,
+              ...(r.subjectPlan ? { subjectPlan: r.subjectPlan } : {}),
               characteristic: r.characteristic,
               title: r.title,
               status: r.status,

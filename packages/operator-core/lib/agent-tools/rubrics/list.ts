@@ -37,11 +37,22 @@ export default defineTool({
   args: z.object({
     status: z.enum(['proposed', 'active', 'retired']).optional().describe('filter by lifecycle status; omit for all'),
     characteristic: z.string().optional().describe('filter to one umbrella domain (e.g. "hive-coordination")'),
+    kind: z
+      .enum(['standard', 'acceptance', 'any'])
+      .optional()
+      .describe(
+        "kind scope (default 'standard' — the reusable shared-standards library). 'acceptance' / 'any' opt into per-plan acceptance rubrics (one-shot definitions-of-done, acceptance-rubrics-on-every-plan-2026-08-11)",
+      ),
     limit: z.number().int().positive().max(500).optional(),
   }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
-    const rubrics = await listRubrics({ status: args.status, characteristic: args.characteristic, limit: args.limit });
+    const rubrics = await listRubrics({
+      status: args.status,
+      characteristic: args.characteristic,
+      limit: args.limit,
+      ...(args.kind ? { kind: args.kind } : {}),
+    });
     return {
       content: [
         {
@@ -51,6 +62,8 @@ export default defineTool({
             count: rubrics.length,
             rubrics: rubrics.map((r) => ({
               rubricId: r.rubricId,
+              kind: r.kind,
+              ...(r.subjectPlan ? { subjectPlan: r.subjectPlan } : {}),
               characteristic: r.characteristic,
               title: r.title,
               status: r.status,

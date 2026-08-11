@@ -1597,6 +1597,15 @@ export const FLAGS = {
   // auto-convert legs in declare-intent / set-status stay best-effort (wrapped so a convert
   // failure never breaks the underlying claim).
   PLAN_ITEM_CLAIM_AUTO_CONVERT: "papercusp-claim-auto-convert",
+  // acceptance-rubrics-on-every-plan-2026-08-11 (P-004/P-005, owner-ruled D-007/D-008):
+  // every plan ships with a GRADED acceptance rubric. ON ⇒ plans:set-plan-status →
+  // 'shipped' (and its 'done' alias) refuses unless an acceptance-kind rubric with
+  // subjectPlan=<the plan> exists AND carries a complete non-synthesized scorecard graded
+  // by a NON-implementer (grader ≠ rubric author, D-005). The refusal message is the
+  // authoring nudge (author the rubric POST-implementation — better informed, D-007).
+  // Rubric-template plans + scheduled template instances are exempt. Default ON (derived
+  // FLAG_DEFAULTS — not in DARK_FLAGS); OFF restores ungated plan shipping byte-identically.
+  ACCEPTANCE_RUBRIC_COMPLETION_GATE: "papercusp-acceptance-rubric-completion-gate",
   // infra-perf-reliability-audit-round4 P-005 (D-005): switch listEscalations({status:'open'})
   // to read the materialized harness_shared.coord_open_escalations projection (mig 355) instead
   // of the unbounded ~35k-event full-surface replay that pg_stat_statements pinned as ~88% of

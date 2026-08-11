@@ -29,6 +29,7 @@ import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-
 import { resolveAgentIdentity } from '../coordination/identity';
 import { emitDeprecateLearnings, type DeprecateLearnings } from '../../harness/improvements/deprecate-learnings';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
+import { evaluatePlanAcceptanceGate } from '../../plan-acceptance-gate';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 
 /** Canonical settable plan-level lifecycle targets — what we WRITE. */
@@ -163,7 +164,7 @@ export default defineTool({
   guidance: {
     when: "Moving a whole plan through its lifecycle: approving a reviewed draft (draft→ready, which unlocks Start), demoting an approved plan back to draft, marking it COMPLETE/FINISHED/DONE once every item is done (status='shipped' — archives it), or rejecting it (→superseded). DEPRECATING a Mug↔Blender draft that won't reach ready: status='superseded' + `learnings:{tried,stalled,salvageable}` — one atomic call deprecates AND records the salvage observation (don't file a separate improvements:capture).",
     notWhen:
-      "Flipping a P-NNN item's status — use plans:set-status. Converting a legacy plan that has no valid frontmatter — use plans:set-frontmatter first (this verb refuses it with no_status_line). `learnings` on a non-superseded status is ignored (it is a deprecate-only field).",
+      "Flipping a P-NNN item's status — use plans:set-status. Legacy plan without frontmatter — plans:set-frontmatter first (refused with no_status_line). `learnings` on a non-superseded status is ignored (deprecate-only). ⚠ 'shipped' refuses without a peer-graded acceptance rubric.",
     chaining:
       "plans:get (read current status) → plans:set-plan-status { slug, status: 'ready', expectedCurrent: 'draft' } to approve. Approving is optional before plans:start — starting a draft auto-approves it (draft→ready). Deprecate: plans:set-plan-status { slug, status:'superseded', learnings:{…} } → the returned learningsObservation reports the emitted observation.",
   },
@@ -181,6 +182,23 @@ export default defineTool({
     const env = await runBulk(
       slugs,
       async (slug) => {
+        // Completion gate (acceptance-rubrics-on-every-plan-2026-08-11 P-004/P-005):
+        // shipping requires a graded acceptance rubric — the refusal message IS the
+        // authoring nudge (author it post-implementation, D-007; grader ≠ implementer,
+        // D-005). Flag ACCEPTANCE_RUBRIC_COMPLETION_GATE (default ON); rubric-template
+        // plans + scheduled template instances are exempt inside the gate.
+        if (status === 'shipped') {
+          const gate = await evaluatePlanAcceptanceGate(slug);
+          if (!gate.satisfied) {
+            return {
+              ok: false as const,
+              slug,
+              error: gate.code ?? 'acceptance_gate_failed',
+              message: gate.message,
+              ...(gate.rubricId ? { rubricId: gate.rubricId } : {}),
+            };
+          }
+        }
         const rev = planRevisionCapture(
           ctx as PlanRevisionCtx,
           slug,

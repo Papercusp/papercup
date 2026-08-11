@@ -16,10 +16,25 @@ import { rubricCriterionWindowSchema } from '../plans/rubric-template';
 const criterion = z.object({
   key: z.string().min(1).describe('stable kebab id; an observation rating references this'),
   title: z.string().min(1),
-  model: z.string().min(1).describe('how this criterion is supposed to work (the MODEL)'),
-  method: z.string().min(1).describe('how to investigate it (signals / queries — the METHOD)'),
+  model: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      'how this criterion is supposed to work (the MODEL). REQUIRED for a standard-kind rubric (the store refuses a standard criterion without it); optional on an acceptance-kind criterion (the light profile)',
+    ),
+  method: z
+    .string()
+    .min(1)
+    .optional()
+    .describe(
+      'how to investigate it (signals / queries — the METHOD). REQUIRED for standard kind; optional on acceptance-kind criteria',
+    ),
   ratingScale: z.array(z.string()).optional().describe('per-criterion override of the rubric default scale'),
-  driftMarkers: z.string().describe('what degraded / broken looks like'),
+  driftMarkers: z
+    .string()
+    .optional()
+    .describe('what degraded / broken looks like. REQUIRED for standard kind; optional on acceptance-kind criteria'),
   replication: z
     .string()
     .min(1)
@@ -55,10 +70,36 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   args: z.object({
     rubricRef: z.string().min(1).max(120).describe('rubric ref/slug, e.g. "pot-coordination-health"'),
+    kind: z
+      .enum(['standard', 'acceptance'])
+      .optional()
+      .describe(
+        "default 'standard' (a reusable shared-standards library rubric — proposed, then Queen-ratified). 'acceptance' = a one-shot per-plan definition-of-done (acceptance-rubrics-on-every-plan-2026-08-11): requires subjectPlan, activates IMMEDIATELY (no ratification), is hidden from default library reads, and is authored AFTER the plan's implementation, before the plan may be marked done — the completion gate reads it",
+      ),
+    subjectPlan: z
+      .string()
+      .min(1)
+      .max(200)
+      .optional()
+      .describe(
+        'acceptance kind only (required there): the slug of the plan this rubric is the definition-of-done FOR. Validated to exist — a dangling link is refused',
+      ),
+    classRef: z
+      .string()
+      .min(1)
+      .max(120)
+      .optional()
+      .describe(
+        'acceptance kind only: rubricId of the standard-kind CLASS rubric this builds on (feature-ship / bugfix / migration / investigation). With classRef, criteria may be empty (the class alone may stand for e.g. investigation-only plans)',
+      ),
     characteristic: z.string().min(1).max(120).describe('umbrella domain, e.g. "hive-coordination"'),
     title: hardText(LIMITS.SHORT_TITLE),
     description: hardText(8000).optional(),
-    criteria: z.array(criterion).min(1).describe('the per-characteristic gradeable items'),
+    criteria: z
+      .array(criterion)
+      .describe(
+        'the gradeable items. Standard kind: >=1 required, each with full model/method/driftMarkers. Acceptance kind: 3–7 outcome criteria tracing to the plan\'s goal + Decisions (may be empty with classRef)',
+      ),
     ratingScale: z
       .array(z.string())
       .optional()
@@ -92,6 +133,9 @@ export default defineTool({
     const id = resolveAgentIdentity(ctx);
     const rubric = await proposeRubric({
       rubricId: args.rubricRef,
+      ...(args.kind ? { kind: args.kind } : {}),
+      ...(args.subjectPlan ? { subjectPlan: args.subjectPlan } : {}),
+      ...(args.classRef ? { classRef: args.classRef } : {}),
       characteristic: args.characteristic,
       title: args.title,
       description: args.description,
@@ -103,7 +147,9 @@ export default defineTool({
       allowMethodShrink: args.allowMethodShrink,
       shrinkReason: args.shrinkReason,
       by: id.ownerId,
-      status: 'proposed',
+      // Acceptance rubrics activate on propose (plan D-008: no ratification step) — the
+      // lib defaults their status to 'active'; standard proposals stay Queen-gated.
+      ...(args.kind === 'acceptance' ? {} : { status: 'proposed' as const }),
     });
     // WI-4287: surface testing-procedure completeness on every revision (non-blocking).
     const completeness = rubricCompleteness(rubric);

@@ -35,6 +35,7 @@ import { bulkContent, mergeIds, runBulk } from "../_bulk";
 import { cachedRead, type CachedReadCtx } from "../../cache";
 import { shapePlansGet } from "./get-shape";
 import { decoratePlanNowBlock } from "./liveness-decoration";
+import { getAcceptanceRubricForPlan } from "../../rubrics";
 
 /**
  * SWR backstop for plans:get (cache-expensive-tool-reads-round2-2026-06-23 P-001).
@@ -584,8 +585,25 @@ export default defineTool({
             const decisionBodiesTruncated =
               mode !== "full" &&
               boundedDecisions.some((d) => "body_truncated" in d);
+            // acceptance-rubrics-on-every-plan-2026-08-11 P-003: surface the plan's
+            // acceptance rubric (its definition-of-done) so completion state is
+            // discoverable from the plan itself. Absent = not yet authored (it is
+            // authored POST-implementation, D-007; the ship gate names the recipe).
+            const acceptanceRubric = await getAcceptanceRubricForPlan(row.planSlug)
+              .then((r) =>
+                r
+                  ? {
+                      rubricId: r.rubricId,
+                      status: r.status,
+                      criteriaCount: r.criteria.length,
+                      ...(r.classRef ? { classRef: r.classRef } : {}),
+                    }
+                  : null,
+              )
+              .catch(() => null);
             const structured = {
               ...base,
+              ...(acceptanceRubric ? { acceptanceRubric } : {}),
               items:
                 mode === "full"
                   ? resolvedItems
