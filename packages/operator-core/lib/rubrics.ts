@@ -30,7 +30,9 @@ import { getOrgPg } from '@papercusp/db-org';
 import { activeWorkspaceId } from './workspace-registry';
 import {
   rubricTemplateDataSchema,
+  rubricKindOf,
   RUBRIC_TEMPLATE_NAME,
+  type RubricKind,
   type RubricCriterionWindow,
 } from './agent-tools/plans/rubric-template';
 
@@ -96,6 +98,19 @@ export interface RubricCriterion {
 export interface Rubric {
   rubricId: string;
   workspaceId: string;
+  /**
+   * The rubric's kind (acceptance-rubrics-on-every-plan-2026-08-11): 'standard' = a
+   * reusable shared-standards library entry (every pre-kind rubric); 'acceptance' = a
+   * one-shot per-plan definition-of-done (see subjectPlan), hidden from the DEFAULT
+   * list/search library reads, the staleness watchdog, and the ratification queue —
+   * always resolvable by explicit id (getRubric) so the shared grading path works
+   * unchanged (plan D-010).
+   */
+  kind: RubricKind;
+  /** acceptance-kind only: the plan this rubric is the definition-of-done FOR. */
+  subjectPlan?: string | null;
+  /** acceptance-kind only: the standard-kind CLASS rubric it builds on (plan D-006/D-009). */
+  classRef?: string | null;
   /** Umbrella domain, e.g. 'hive-coordination' — Scout's digest groups by this. */
   characteristic: string;
   title: string;
@@ -257,15 +272,21 @@ export function planRowToRubric(row: RubricPlanRow): Rubric | null {
   return {
     rubricId: row.plan_slug,
     workspaceId: row.workspace_id,
+    kind: rubricKindOf(d),
+    ...(d.subjectPlan ? { subjectPlan: d.subjectPlan } : {}),
+    ...(d.classRef ? { classRef: d.classRef } : {}),
     characteristic: d.characteristic,
     title: row.title ?? row.plan_slug,
     description: d.description ?? '',
+    // Acceptance-kind criteria may omit model/method/driftMarkers (the light profile —
+    // per-kind superRefine guarantees standard-kind criteria always carry them), so the
+    // v1 required-string shape maps absent → '' rather than loosening every consumer.
     criteria: d.criteria.map((c) => ({
       key: c.key,
       title: c.title,
-      model: c.model,
-      method: c.method,
-      driftMarkers: c.driftMarkers,
+      model: c.model ?? '',
+      method: c.method ?? '',
+      driftMarkers: c.driftMarkers ?? '',
       ...(c.ratingScale ? { ratingScale: c.ratingScale } : {}),
       ...(c.replication ? { replication: c.replication } : {}),
       ...(c.instrumentKey ? { instrumentKey: c.instrumentKey } : {}),
@@ -293,28 +314,45 @@ function sortRubrics(rubrics: Rubric[]): Rubric[] {
   );
 }
 
+/** A kind scope for the library reads: one kind, or 'any' (explicit opt-in to both). */
+export type RubricKindFilter = RubricKind | 'any';
+
 /** Every rubric-template plan in the rubric workspace, mapped to Rubric. The single read
  *  path the three public reads filter/search over — which makes it the ONE choke point
  *  where the first-party seed hooks (any rubrics:list/get/search or Overwatch getRubric
  *  triggers it). Degrades to [] if the plans store is unavailable (e.g. a test DB with
- *  no harness_plans) — reads never throw. */
-async function loadAllRubrics(): Promise<Rubric[]> {
+ *  no harness_plans) — reads never throw.
+ *
+ *  DEFAULT SCOPE IS 'standard' (acceptance-rubrics-on-every-plan-2026-08-11): the
+ *  shared-standards library must not grow one entry per completed plan, so acceptance
+ *  rubrics are excluded here AND at the SQL level (they'd otherwise consume the row cap
+ *  as they accumulate — one per plan). Explicit-id reads (getRubric) and the subject-plan
+ *  lookup (getAcceptanceRubricForPlan) resolve them regardless. */
+async function loadAllRubrics(kind: RubricKindFilter = 'standard'): Promise<Rubric[]> {
   // Auto-seed on read in REAL processes only. Under vitest the established fixture
   // pattern mocks getOrgPg but often not withWorkspace — the seed's proposeRubric
   // writes would escape the testcontainer onto the real org PG (observed while
   // building rubrics-first-party-seed.integration.test.ts, which now mocks both and
   // exercises the seed EXPLICITLY via ensureFirstPartyRubricsSeeded()).
   if (!process.env.VITEST) await ensureFirstPartyRubricsSeeded();
-  return queryRubricPlans();
+  return queryRubricPlans(kind);
 }
 
 /** The raw plan-row read behind loadAllRubrics, seed-free (the seed itself reads/writes
  *  through paths that land back here — the seed gate above breaks the recursion). */
-async function queryRubricPlans(): Promise<Rubric[]> {
+async function queryRubricPlans(kind: RubricKindFilter = 'standard'): Promise<Rubric[]> {
   try {
     const { sql } = getOrgPg();
     // Exclude per-run instance plans (template_slug IS NOT NULL) — a rubric is a
-    // top-level plan, not a scheduled instance (D-003).
+    // top-level plan, not a scheduled instance (D-003). The kind predicate is pushed to
+    // SQL so acceptance rows (one per completed plan, unbounded) never eat the row cap;
+    // the in-process re-filter below keeps the scope honest under mocked-sql tests too.
+    const kindCond =
+      kind === 'any'
+        ? sql`TRUE`
+        : kind === 'acceptance'
+          ? sql`template_data->>'kind' = 'acceptance'`
+          : sql`(template_data->>'kind' IS DISTINCT FROM 'acceptance')`;
     const rows = await sql<RubricPlanRow[]>`
       SELECT plan_slug, workspace_id, harness_slug, title, status, created, updated, updated_at,
              owner, archived, template_data
@@ -322,8 +360,11 @@ async function queryRubricPlans(): Promise<Rubric[]> {
        WHERE workspace_id = ${rubricsScopeWorkspace()}
          AND template = ${RUBRIC_TEMPLATE_NAME}
          AND template_slug IS NULL
+         AND ${kindCond}
        LIMIT 500`;
-    return rows.map(planRowToRubric).filter((r): r is Rubric => r !== null);
+    return rows
+      .map(planRowToRubric)
+      .filter((r): r is Rubric => r !== null && (kind === 'any' || r.kind === kind));
   } catch {
     return [];
   }
