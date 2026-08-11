@@ -47,6 +47,10 @@ describe('classifyScope', () => {
       'papercup-mcp-proxy.service',
       'papercup-inference-gateway.service',
       'papercup-green-checkpoint-manual-1fxzuva.service',
+      // Exact auto-generated shape used by `systemd-run --user --scope` when no
+      // --unit is supplied. The release checkpoint runs this way and was otherwise
+      // shown as an escape even while the authoritative cgroup summary was clean.
+      'run-rc174537f041445b2abda49f2c7c51e09.scope',
     ]) {
       expect(classifyScope(`${APP_SLICE}/${unit}`, false)).toEqual({
         scope: 'exempt',
@@ -57,9 +61,9 @@ describe('classifyScope', () => {
 
   it('calls an unenrolled headless member UNACCOUNTED — this is the real gap', () => {
     // buildHeadlessSpawnCommand falls back to `papercup-headless-*` when it is
-    // handed no taskScope, i.e. exactly the P-009 residue. A transient .scope is
-    // NOT supervised the way a .service is, which is why the rule discriminates on
-    // the suffix rather than on the `papercup-` prefix both share.
+    // handed no taskScope, i.e. exactly the P-009 residue. A named application
+    // scope is NOT systemd-run's auto-generated transient unit, which is why the
+    // rule discriminates on the complete structural shape rather than `.scope`.
     const headless = `${APP_SLICE}/papercup-headless-bug-drain-member-2-10-781613-1785608783953.scope`;
     expect(classifyScope(headless, false)).toEqual({ scope: 'unaccounted', exemptReason: null });
   });
@@ -68,6 +72,9 @@ describe('classifyScope', () => {
     // The whole point of discriminating structurally: a name list would have
     // exempted this alongside papercup-bg-host.service and hidden the gap.
     expect(classifyScope(`${APP_SLICE}/papercup-anything.scope`, false).scope).toBe('unaccounted');
+    expect(classifyScope(`${APP_SLICE}/run-not-a-systemd-generated-unit.scope`, false).scope).toBe(
+      'unaccounted',
+    );
   });
 
   it('never returns an exemptReason without exempt, or exempt without a reason', () => {

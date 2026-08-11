@@ -44,9 +44,10 @@
  *     withdraws the exemption; see `terminal-window` for how it is observed and why
  *     "we could not tell" must never withdraw it.
  *
- *   systemd-unit — the leaf is a `.service`, so systemd owns its lifecycle: it has
- *     a journal, a stop verb, and (for non-transient units) a restart policy. It is
- *     accounted for by a different accountant, not unaccounted for. Guard allowlist:
+ *   systemd-unit — the leaf is a `.service`, or systemd-run's auto-generated
+ *     `run-r<32 hex>.scope`, so systemd owns its lifecycle: it has a journal and a
+ *     stop verb (plus a restart policy for non-transient services). It is accounted
+ *     for by a different accountant, not unaccounted for. Guard allowlist:
  *     `dev/restart.ts` ("already supervised by SUPERVISED_PROCESSES + unit-reconciler")
  *     and `release-actions.ts` ("must survive the operator restart it performs").
  *
@@ -92,6 +93,10 @@ export interface ScopeClassification {
  */
 export const TERMINAL_SLICE = 'app-org.gnome.Terminal.slice';
 const VTE_SCOPE_RE = /^vte-spawn-[0-9a-fA-F-]+\.scope$/;
+// The name systemd-run assigns when no --unit is supplied. Keep this deliberately
+// narrower than `*.scope`: named application scopes such as `papercup-headless-*`
+// are exactly the unaccounted population this classifier must continue exposing.
+const SYSTEMD_RUN_SCOPE_RE = /^run-r[0-9a-f]{32}\.scope$/;
 
 function segments(cgroupPath: string): string[] {
   return cgroupPath.split('/').filter(Boolean);
@@ -178,7 +183,7 @@ export interface ClassifyScopeOptions {
  *
  * `owned` short-circuits: a process inside our slice is ours regardless of what its
  * cgroup is named, and no exemption may override that. Terminal is checked BEFORE
- * the `.service` rule because `gnome-terminal-server.service` satisfies both and
+ * the systemd-unit rule because `gnome-terminal-server.service` satisfies both and
  * "human terminal" is the more informative reason.
  *
  * Pure — no /proc reads, no clock. The scan supplies the inputs, window liveness
@@ -203,7 +208,7 @@ export function classifyScope(
     }
     return { scope: 'exempt', exemptReason: 'human-terminal' };
   }
-  if (leaf.endsWith('.service')) {
+  if (leaf.endsWith('.service') || SYSTEMD_RUN_SCOPE_RE.test(leaf)) {
     return { scope: 'exempt', exemptReason: 'systemd-unit' };
   }
   return { scope: 'unaccounted', exemptReason: null };
