@@ -37,6 +37,7 @@
 
 import type { ChatMessage, ChatToolCall } from './chat-types';
 import { groupEntriesIntoTurns, type TimelineEntry } from '../../harness/AgentThinkingStream';
+import { stripMachineTurnAnnotations } from '@papercusp/operator-core/lib/agent-tools/coordination/owner-chat-turn';
 
 /**
  * Map a flat live-thinking timeline into chat messages, oldest-first — the
@@ -129,7 +130,14 @@ export function mapSessionTimeline(
 
   for (const turn of turns) {
     if (turn.prompt) {
-      const promptText = (turn.prompt.text ?? '').trim();
+      // EI-20130618357432548: a prompt that papercusp INJECTED carries machine
+      // annotations the owner never typed — the `⟦turn-origin:…⟧` provenance
+      // envelope, and the `⟦owner-chat⟧` note appended to their own chat message.
+      // This pane renders the transcript back TO the owner, so those are read as
+      // part of the conversation (the reported bug: their "hi" appearing as a wall
+      // of wake-pump plumbing). Strip them for display only. It also restores
+      // echo absorption in `mergeSentEchoes`, which matches on exact text.
+      const promptText = stripMachineTurnAnnotations(turn.prompt.text ?? '');
       if (promptText) {
         messages.push({
           role: 'user',
