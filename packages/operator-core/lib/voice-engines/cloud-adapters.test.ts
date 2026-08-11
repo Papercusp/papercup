@@ -84,7 +84,7 @@ describe('elevenlabs', () => {
     const m = stubFetch({
       body: { subscription: { tier: 'pro', character_count: 10, character_limit: 1000 }, email: 'a@b.c' },
     });
-    expect(await testElevenLabsConnection('el-key')).toEqual({
+    expect(await testElevenLabsConnection('sk_el-key')).toEqual({
       ok: true,
       tier: 'pro',
       characterCount: 10,
@@ -93,12 +93,12 @@ describe('elevenlabs', () => {
     });
     const { url, init } = firstCall(m);
     expect(url).toBe('https://api.elevenlabs.io/v1/user');
-    expect(headerOf(init, 'xi-api-key')).toBe('el-key');
+    expect(headerOf(init, 'xi-api-key')).toBe('sk_el-key');
   });
 
   it('testElevenLabsConnection: defaults missing subscription fields', async () => {
     stubFetch({ body: {} });
-    expect(await testElevenLabsConnection('k')).toEqual({
+    expect(await testElevenLabsConnection('sk_k')).toEqual({
       ok: true,
       tier: 'unknown',
       characterCount: 0,
@@ -109,6 +109,6 @@ describe('elevenlabs', () => {
 
   it('testElevenLabsConnection: non-ok → HTTP error', async () => {
     stubFetch({ status: 401 });
-    expect(await testElevenLabsConnection('bad')).toEqual({ ok: false, error: 'HTTP 401' });
+    expect(await testElevenLabsConnection('sk_bad')).toEqual({ ok: false, error: 'HTTP 401' });
   });
 });
