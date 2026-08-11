@@ -316,6 +316,32 @@ describe('releaseGating + criterion window end-to-end (EI-12146/EI-12149)', () =
 // inherited downstream by proposeRubric's assertNoSilentRubricLoss).
 import { applyRubricAmendment } from './rubrics';
 
+describe('applyRubricAmendment kind round-trip (acceptance-rubrics-on-every-plan-2026-08-11)', () => {
+  it('carries kind/subjectPlan/classRef through an amendment (identity fields, WI-4287 loss class)', () => {
+    const stored = rubric([crit({ key: 'k1' })], {
+      kind: 'acceptance',
+      subjectPlan: 'some-plan-2026-08-11',
+      classRef: 'plan-class-bugfix',
+      status: 'active',
+    });
+    const out = applyRubricAmendment(stored, { rubricId: stored.rubricId, methodRef: 'some-runbook' });
+    expect(out).toMatchObject({
+      kind: 'acceptance',
+      subjectPlan: 'some-plan-2026-08-11',
+      classRef: 'plan-class-bugfix',
+    });
+  });
+
+  it('a standard rubric emits NO kind field (absent = standard, pre-kind rows byte-stable)', () => {
+    const out = applyRubricAmendment(rubric([crit({ key: 'k1' })]), {
+      rubricId: 'su-agent-behavior',
+      methodRef: 'some-runbook',
+    });
+    expect('kind' in out).toBe(false);
+    expect('subjectPlan' in out).toBe(false);
+  });
+});
+
 describe('applyRubricAmendment (rubrics:amend pure core)', () => {
   const stored = () =>
     rubric([
