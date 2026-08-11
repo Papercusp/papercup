@@ -13,6 +13,8 @@
  * a caller can always pass `payloadTier: 'full'` for the unshaped result.
  */
 
+import { shapeFleetAssignments } from '../../fleet/assignments-shape';
+
 /** Per-tier caps. `standard` is a looser projection, not a different shape. */
 const CAPS = {
   trimmed: { claimable: 8, title: 90, inbox: 5, inboxSummary: 140, memory: 3, memoryText: 220, events: 5, eventText: 220, catchUp: 5, meChars: 2_400, facts: 8, factsBody: 200, paneContext: 2_400, briefMembers: 6, briefLists: 5, briefReason: 240 },
@@ -131,16 +133,154 @@ function projectEventEntry(e: unknown, textCap: number): unknown {
   return out;
 }
 
-/** `me` arrives as fleet:assignments' inner result — commonly an opaque TOON
- *  string whose tail is a per-plan `coverage` listing (37 plans in the
- *  incident). Cut at the coverage marker (keep the self/summary/claims head),
- *  else cap by chars; either way leave a fetch-pointer. */
+/** `me` arrives as fleet:assignments' inner result. It can be either the
+ *  serialized/TOON form used by older in-process callers or the raw object
+ *  returned when orient deliberately bypasses the sub-read's session-tier
+ *  shaper. The latter is important: a fleet-wide object has one full row per
+ *  member and was the source of the 64KB orient overflow. Reuse the canonical
+ *  assignments projection for object-shaped results so the two surfaces keep
+ *  the same placement vocabulary and caps. */
 function trimMe(me: unknown, chars: number): unknown {
   if (typeof me !== 'string') return me;
   const covIdx = me.indexOf('\ncoverage');
   const cut = covIdx > 0 ? Math.min(covIdx, chars) : chars;
   if (me.length <= cut) return me;
   return `${me.slice(0, cut)}\n… (trimmed — full assignments+coverage via fleet:assignments, or payloadTier:'full')`;
+}
+
+/** Keep reclaim rows useful without carrying the full assignment/view row into
+ * the nested orient fold. The direct fleet:assignments surface owns the richer
+ * row shape; orient only needs enough identity, liveness, and action signal to
+ * decide whether to ask/reclaim, plus a pointer for the full read. */
+function projectAssignmentAlert(row: unknown, textCap: number): unknown {
+  if (!row || typeof row !== 'object') return row;
+  const r = row as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  for (const key of [
+    'source',
+    'agent',
+    'harness',
+    'plan',
+    'id',
+    'expires',
+    'holder_present',
+    'progress',
+    'last_progress_at',
+    'holder_heartbeat_at',
+    'holder_last_tool_call_at',
+    'verdict',
+    'action',
+  ]) {
+    if (!(key in r)) continue;
+    const value = r[key];
+    out[key] = typeof value === 'string' ? cap(value, textCap) : value;
+  }
+  if (r.residue && typeof r.residue === 'object') {
+    const residue = r.residue as Record<string, unknown>;
+    out.residue = {
+      planSlug: cap(residue.planSlug, textCap),
+      itemId: cap(residue.itemId, textCap),
+      effectiveStatus: cap(residue.effectiveStatus, textCap),
+    };
+  }
+  return out;
+}
+
+function projectCoverageCollision(row: unknown, textCap: number): unknown {
+  if (!row || typeof row !== 'object') return row;
+  const r = row as Record<string, unknown>;
+  return {
+    ...(r.ref != null ? { ref: cap(r.ref, textCap) } : {}),
+    ...(r.directHolder != null ? { directHolder: cap(r.directHolder, textCap) } : {}),
+    ...(Array.isArray(r.principals)
+      ? { principals: r.principals.slice(0, 4).map((v) => cap(v, textCap)) }
+      : {}),
+    ...(Array.isArray(r.workItemHolders)
+      ? {
+          workItemHolders: r.workItemHolders.slice(0, 4).map((v) => {
+            if (!v || typeof v !== 'object') return v;
+            const holder = v as Record<string, unknown>;
+            return {
+              ...(holder.workItemId != null ? { workItemId: cap(holder.workItemId, textCap) } : {}),
+              ...(holder.holder != null ? { holder: cap(holder.holder, textCap) } : {}),
+            };
+          }),
+        }
+      : {}),
+  };
+}
+
+/**
+ * Object-shaped `me` needs a second projection from the canonical assignments
+ * shape. `shapeFleetAssignments` caps the standalone read, but its trimmed
+ * roster still permits 40 compact rows and its reclaim rows intentionally keep
+ * their richer objects. Nested inside orient, that allowance can consume the
+ * whole 17KB orient budget before claimable/inbox/recovery are delivered.
+ *
+ * Keep intervention rows first (including the caller's own row), cap the
+ * reclaim/collision lists, and disclose every nested reduction. The standalone
+ * fleet:assignments call remains the fetch-pointer for anything omitted here.
+ */
+function projectAssignmentObject(me: unknown, tier: TierName): unknown {
+  if (!me || typeof me !== 'object' || !Array.isArray((me as { agents?: unknown }).agents)) return me;
+  const shaped = shapeFleetAssignments(me, tier);
+  if (!shaped || typeof shaped !== 'object' || !Array.isArray((shaped as { agents?: unknown }).agents)) return shaped;
+
+  const d = shaped as Record<string, unknown>;
+  const summary = d.summary && typeof d.summary === 'object' ? (d.summary as Record<string, unknown>) : {};
+  const caps = tier === 'trimmed'
+    ? { agents: 6, alerts: 4, collisions: 4, text: 180, coverage: 12 }
+    : { agents: 12, alerts: 8, collisions: 8, text: 260, coverage: 24 };
+  const sourceAgents = d.agents.filter(
+    (agent) => (agent as Record<string, unknown> | null)?.agentId !== '(truncated)',
+  );
+  const rankedAgents = [...sourceAgents].sort((a, b) => {
+    const aSelf = (a as Record<string, unknown> | null)?.isSelf === true ? -10 : 0;
+    const bSelf = (b as Record<string, unknown> | null)?.isSelf === true ? -10 : 0;
+    return aSelf + briefMemberRank(a) - (bSelf + briefMemberRank(b));
+  });
+  const agents = rankedAgents.slice(0, caps.agents);
+  const out: Record<string, unknown> = { ...d, agents };
+
+  const totalAgents = typeof summary.agents === 'number' ? summary.agents : sourceAgents.length;
+  if (totalAgents > agents.length) {
+    out.agents_truncated = true;
+    out.agents_returned = agents.length;
+    out.agents_hint = `nested orient roster showing ${agents.length} of ${totalAgents}; use fleet:assignments { agent/plan/harness } for the full roster`;
+  }
+
+  const projectAlerts = (key: 'orphaned' | 'stalled', totalKey: 'orphaned_claims' | 'stalled_claims') => {
+    const rows = Array.isArray(d[key]) ? d[key] : [];
+    const total = typeof summary[totalKey] === 'number' ? summary[totalKey] : rows.length;
+    out[key] = rows.slice(0, caps.alerts).map((row) => projectAssignmentAlert(row, caps.text));
+    if (total > Math.min(rows.length, caps.alerts)) {
+      out[`${key}_note`] = `nested orient ${key} showing ${Math.min(rows.length, caps.alerts)} of ${total}; use fleet:assignments for the full list`;
+    }
+  };
+  projectAlerts('orphaned', 'orphaned_claims');
+  projectAlerts('stalled', 'stalled_claims');
+
+  if (Array.isArray(d.coverage_collisions)) {
+    const total = d.coverage_collisions.length;
+    out.coverage_collisions = d.coverage_collisions
+      .slice(0, caps.collisions)
+      .map((row) => projectCoverageCollision(row, caps.text));
+    if (total > caps.collisions) {
+      out.coverage_collisions_note = `nested orient coverage collisions showing ${caps.collisions} of ${total}; use fleet:assignments for the full list`;
+    }
+  }
+  if (Array.isArray(d.coverage) && d.coverage.length > caps.coverage) {
+    out.coverage = d.coverage.slice(0, caps.coverage);
+    out.coverage_note = `nested orient coverage showing ${caps.coverage} of ${d.coverage.length}; use fleet:assignments { plan } for the full list`;
+  }
+  return out;
+}
+
+function projectMe(me: unknown, tier: TierName, chars: number): unknown {
+  if (me && typeof me === 'object' && Array.isArray((me as { agents?: unknown }).agents)) {
+    return projectAssignmentObject(me, tier);
+  }
+  return trimMe(me, chars);
 }
 
 /** A mutable cap set — same keys as a CAPS tier, so a rung can tighten any leg. */
@@ -225,7 +365,7 @@ function projectOrient(d: Record<string, unknown>, c: Caps, tier: TierName): Rec
   const out: Record<string, unknown> = { ...d };
   out.payloadTier = tier;
 
-  out.me = trimMe(d.me, c.meChars);
+  out.me = projectMe(d.me, tier, c.meChars);
 
   if (Array.isArray(d.claimable)) {
     const delivered = d.claimable.length;

@@ -132,6 +132,59 @@ describe('shapeOrient trimmed', () => {
     expect(out.planEvents.recentTruncated).toBeUndefined();
   });
 
+  it('bounds an object-shaped fleet assignment fold instead of passing the roster through', () => {
+    const agents = Array.from({ length: 93 }, (_, i) => ({
+      agentId: `su-${i}`,
+      alive: i < 38,
+      claims: [{ id: `WI-${i}`, title: `claim ${i} ${'x'.repeat(400)}`, payload: { blob: 'z'.repeat(400) } }],
+      doing: { id: `WI-${i}`, title: `doing ${i} ${'d'.repeat(400)}` },
+      intent: `intent ${i} ${'i'.repeat(400)}`,
+      queued: Array.from({ length: 4 }, () => ({ id: `queued-${i}`, title: 'q'.repeat(200) })),
+      isSelf: i === 92,
+      verdict: i === 91 ? 'dead' : 'speaking',
+    }));
+    const me = {
+      ok: true,
+      summary: { agents: 93, alive: 38, orphaned_claims: 20, stalled_claims: 20 },
+      agents,
+      orphaned: Array.from({ length: 20 }, (_, i) => ({
+        source: 'work_item_claim',
+        agent: `su-${i}`,
+        id: `WI-${i}`,
+        detail: 'orphan detail '.repeat(80),
+        verdict: 'orphan',
+        action: 'reclaim',
+      })),
+      stalled: Array.from({ length: 20 }, (_, i) => ({
+        source: 'work_item_claim',
+        agent: `su-${i}`,
+        id: `WI-${i}`,
+        detail: 'stalled detail '.repeat(80),
+        verdict: 'held-by-live-agent',
+        action: 'ask',
+      })),
+      coverage: Array.from({ length: 37 }, (_, i) => ({ plan: `plan-${i}`, item: `P-${i}`, level: 'full' })),
+    };
+
+    const out = shapeOrient({ ok: true, me, claimable: [], inbox: { summary: {}, recent: [] } }, 'trimmed') as Record<string, any>;
+    const shapedMe = out.me as Record<string, any>;
+
+    // This was the production failure: the nested raw object made orient 64KB+
+    // and left the framework's generic projector to drop orientation fields.
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(SHAPER_BUDGET_CHARS);
+    expect(shapedMe.agents.length).toBeLessThanOrEqual(6);
+    expect(shapedMe.agents).toEqual(expect.arrayContaining([
+      expect.objectContaining({ agentId: 'su-92', isSelf: true }),
+      expect.objectContaining({ agentId: 'su-91', verdict: 'dead' }),
+    ]));
+    expect(shapedMe.agents_truncated).toBe(true);
+    expect(shapedMe.agents_hint).toContain('fleet:assignments');
+    expect(shapedMe.orphaned.length).toBeLessThanOrEqual(4);
+    expect(shapedMe.stalled.length).toBeLessThanOrEqual(4);
+    expect(shapedMe.orphaned_note).toContain('fleet:assignments');
+    expect(shapedMe.stalled_note).toContain('fleet:assignments');
+  });
+
   it('caps standing facts with a pointer, keeping owner + harness scope first (WI-2859)', () => {
     const facts = out.facts as Array<{ scope: string; body: string }>;
     expect(facts).toHaveLength(8);
