@@ -101,6 +101,7 @@ import { isInboxOwnerReplyPayload } from '../../agent-tools/coordination/inbox-r
 import {
   readOwnerChatTurnText,
   ownerChatTurnText,
+  OWNER_CHAT_TURN_ORIGIN,
 } from '../../agent-tools/coordination/owner-chat-turn';
 import type { ResumeTurnExitRaw } from './resume-turn-outcome';
 import type { DeliveryWork, WakeChannel, WakeOutcome } from './types';
@@ -643,8 +644,12 @@ function tagWakeText(d: DeliveryWork, text: string, tag: typeof tagTurnForInject
         // accepts a no-Origin localhost POST, so that would let any agent curl an
         // owner-stamped turn (and thus an auto-registered mode grant) into a peer's
         // session. See owner-chat-turn.ts's SECURITY note.
+        // EI-20135573616431912: the SHARED constant, not a literal — the owner's
+        // chat pane hides every user turn whose origin is not this exact string,
+        // so a drift between here and that filter would silently VANISH the
+        // owner's own messages from their conversation.
         isInboxOwnerReplyPayload(d.payload) || readOwnerChatTurnText(d.payload)
-        ? 'coord-inject:owner'
+        ? OWNER_CHAT_TURN_ORIGIN
         : 'wake-pump';
     return tag({ sid: d.subscriberId, origin, text }).taggedText;
   } catch {

@@ -18,6 +18,8 @@ import {
   OWNER_CHAT_TURN_MARKER,
   ownerChatTurnText,
   ownerChatWakePayloadFields,
+  ownerVisiblePromptText,
+  OWNER_CHAT_TURN_ORIGIN,
   readOwnerChatTurnText,
   stripMachineTurnAnnotations,
 } from './owner-chat-turn';
@@ -163,5 +165,66 @@ describe('SECURITY — the shape this fix deliberately does NOT take', () => {
     // its own; enrollment stays wake-executor's job.
     const fields = ownerChatWakePayloadFields('hi');
     expect(Object.keys(fields).sort()).toEqual([OWNER_CHAT_TEXT_FIELD, OWNER_CHAT_TURN_MARKER].sort());
+  });
+});
+
+describe('ownerVisiblePromptText — what the OWNER sees in their chat pane (EI-20135573616431912)', () => {
+  // Owner-reported: "All I said was hi ... Why did that agent then go on to say all
+  // this?" — followed by a pasted Stop-hook wall. Every string below is REAL stored
+  // text from harness_shared.session_turns (speaker='user'), not an invented shape.
+  // That distinction already cost this feature once: the first live test of the
+  // sibling item failed because the unit tests only exercised a hand-written shape
+  // the real caller never sends.
+
+  it('HIDES a loop-fire wake — the single biggest source of the leak', () => {
+    const real =
+      '⟦turn-origin:loop-fire nonce:5249104759324978⟧\n' +
+      '[await-event] coord:inbox-wake:su-89beac53 fired — 🔁 Loop wake (every ~300s after each turn settles). ' +
+      'You are continuing your OWN warm session toward: ...';
+    expect(ownerVisiblePromptText(real)).toBe('');
+  });
+
+  it('HIDES a wake-pump delivery', () => {
+    const real =
+      '⟦turn-origin:wake-pump nonce:a86e21b122a13757⟧\n' +
+      '[await-event] coord:inbox-wake:su-89beac53 fired — Your send.ts change red-gated operator-core.';
+    expect(ownerVisiblePromptText(real)).toBe('');
+  });
+
+  it('HIDES a Stop-hook coaching wall — it is harness→agent, recorded as a user turn only because that is the injection channel', () => {
+    const real =
+      'Stop hook feedback:\nThis turn ends by handing the next move back to the owner WITHOUT asking ' +
+      'anything answerable — a hand-back, not a question.';
+    expect(ownerVisiblePromptText(real)).toBe('');
+  });
+
+  it("SHOWS the owner's own chat message, with the envelope and trailing note removed", () => {
+    // The exact bytes captured off the live :3170 delivery for the sibling item.
+    const real =
+      '⟦turn-origin:coord-inject:owner nonce:fa2f7c5a6200e4ad⟧\n' +
+      'take 2: does this arrive as my own turn?\n\n' +
+      `${OWNER_CHAT_NOTE_TAG} Your owner typed the message above in their session chat pane...`;
+    expect(ownerVisiblePromptText(real)).toBe('take 2: does this arrive as my own turn?');
+  });
+
+  it('SHOWS an ordinary typed turn unchanged (no envelope, no markers)', () => {
+    const typed = 'All I said was hi in a new session with su-349bf in the gui';
+    expect(ownerVisiblePromptText(typed)).toBe(typed);
+  });
+
+  it('DRIFT RAIL: the origin the display filter allows is the SAME constant wake-executor mints', () => {
+    // The dangerous direction. wake-executor tags owner-authored deliveries with
+    // OWNER_CHAT_TURN_ORIGIN and this filter hides every user turn whose origin is
+    // not that exact string — so if the two ever diverge the owner's OWN messages
+    // silently vanish from their pane. Both sides now read this one constant;
+    // this asserts the envelope built from it survives the filter.
+    const envelope = `⟦turn-origin:${OWNER_CHAT_TURN_ORIGIN} nonce:deadbeefcafe1234⟧\nhi`;
+    expect(ownerVisiblePromptText(envelope)).toBe('hi');
+  });
+
+  it('fails CLOSED on an unrecognized future wake kind', () => {
+    // A deny-list would leak a wake kind nobody has invented yet; keying on
+    // provenance means the default for "enveloped but not owner-authored" is HIDE.
+    expect(ownerVisiblePromptText('⟦turn-origin:some-future-kind nonce:0123456789ab⟧\nmachine noise')).toBe('');
   });
 });

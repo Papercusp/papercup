@@ -200,3 +200,65 @@ export function stripMachineTurnAnnotations(text: string): string {
   if (noteAt >= 0) out = out.slice(0, noteAt);
   return out.trim();
 }
+
+/**
+ * The turn-provenance origin minted for a turn the AUTHENTICATED HUMAN authored
+ * through an admin-only surface — today the HUD chat pane and the owner Inbox
+ * reply, which are the same authority and deliberately share one origin.
+ *
+ * It lives HERE, in the import-free leaf, because two very different files must
+ * agree on it EXACTLY: `wake-executor.ts` MINTS it, and `ownerVisiblePromptText`
+ * below KEYS THE DISPLAY FILTER ON IT. If those two ever drift apart, the failure
+ * is silent and points the wrong way — the owner's own messages stop matching and
+ * VANISH from their chat pane, which is far worse than the plumbing leak this
+ * filter exists to stop. A shared constant makes that drift impossible.
+ */
+export const OWNER_CHAT_TURN_ORIGIN = 'coord-inject:owner';
+
+/** Same envelope as TURN_ORIGIN_ENVELOPE_RE, but CAPTURING the origin. */
+const TURN_ORIGIN_CAPTURE_RE = /^\s*⟦turn-origin:([A-Za-z0-9:._@-]+) nonce:[a-f0-9]{8,64}⟧/;
+
+/** A Stop-hook coaching block: written BY the harness TO the agent, recorded as a
+ *  `user`-role turn purely because that is the injection channel. */
+const HOOK_FEEDBACK_PREFIX = 'Stop hook feedback:';
+
+/**
+ * What a `user`-role transcript turn should show in the OWNER'S CHAT PANE —
+ * `''` when the turn is machine-authored and belongs to no conversation.
+ *
+ * EI-20135573616431912, owner-reported. `stripMachineTurnAnnotations` removes the
+ * envelope but RETURNS THE BODY, so every machine wake rendered as a message from
+ * the owner: loop-fire wake instructions, wake-pump envelopes, and Stop-hook
+ * coaching walls all appeared in their chat as things they had apparently said.
+ * The owner's report was "I said hi and it replied with all this" — he was reading
+ * the agent's private supervision, attributed to himself.
+ *
+ * MEASURED, not guessed (3 days of `session_turns` where speaker='user'):
+ *   1756 turn-origin envelopes · 1540 genuine owner turns · 71 coord injections ·
+ *   44 Stop-hook walls. So the machine half is the MAJORITY of that pane's
+ *   user-role rows, and the hook walls the owner happened to paste are the small
+ *   part of it.
+ *
+ * The rule is an ALLOW-LIST ON PROVENANCE, not a deny-list of markers — a
+ * deny-list rots silently every time a new wake kind is added, and it fails
+ * OPEN (leaking machine text) which is the direction that produced this bug:
+ *   - envelope present, origin === OWNER_CHAT_TURN_ORIGIN → the human authored it → SHOW
+ *   - envelope present, any other origin                  → machine-injected     → HIDE
+ *   - no envelope, Stop-hook wall                         → harness coaching     → HIDE
+ *   - no envelope, anything else                          → typed by the human   → SHOW
+ *
+ * This is a RENDER filter only. Nothing is deleted: the full turn stays in the
+ * transcript stores and in every audit/session-search path. The narrower reading
+ * of "never hide delivered content" in `stripMachineTurnAnnotations` above still
+ * holds for what it governs — a wake blob was delivered to the AGENT, and this
+ * pane is the OWNER's conversation, so it was never theirs to be shown.
+ *
+ * PURE → unit-tested.
+ */
+export function ownerVisiblePromptText(text: string): string {
+  if (!text) return '';
+  const origin = text.match(TURN_ORIGIN_CAPTURE_RE)?.[1];
+  if (origin !== undefined) return origin === OWNER_CHAT_TURN_ORIGIN ? stripMachineTurnAnnotations(text) : '';
+  if (text.trimStart().startsWith(HOOK_FEEDBACK_PREFIX)) return '';
+  return stripMachineTurnAnnotations(text);
+}

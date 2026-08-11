@@ -37,7 +37,7 @@
 
 import type { ChatMessage, ChatToolCall } from './chat-types';
 import { groupEntriesIntoTurns, type TimelineEntry } from '../../harness/AgentThinkingStream';
-import { stripMachineTurnAnnotations } from '@papercusp/operator-core/lib/agent-tools/coordination/owner-chat-turn';
+import { ownerVisiblePromptText } from '@papercusp/operator-core/lib/agent-tools/coordination/owner-chat-turn';
 
 /**
  * Map a flat live-thinking timeline into chat messages, oldest-first — the
@@ -137,7 +137,16 @@ export function mapSessionTimeline(
       // part of the conversation (the reported bug: their "hi" appearing as a wall
       // of wake-pump plumbing). Strip them for display only. It also restores
       // echo absorption in `mergeSentEchoes`, which matches on exact text.
-      const promptText = stripMachineTurnAnnotations(turn.prompt.text ?? '');
+      // EI-20135573616431912 (owner-reported): stripping the annotations is not
+      // enough — it removes the ENVELOPE but keeps the BODY, so every machine wake
+      // (loop-fire instructions, wake-pump blobs, Stop-hook coaching walls) still
+      // rendered here as a message FROM THE OWNER. Measured over 3 days, those are
+      // the MAJORITY of this pane's user-role turns: 1756 machine envelopes + 44
+      // hook walls vs 1540 genuine owner turns. `ownerVisiblePromptText` keeps only
+      // what the human actually authored, keyed on turn PROVENANCE rather than a
+      // marker deny-list (which rots, and fails open, every time a wake kind is
+      // added). Returning '' makes the existing guard below drop the message.
+      const promptText = ownerVisiblePromptText(turn.prompt.text ?? '');
       if (promptText) {
         messages.push({
           role: 'user',
