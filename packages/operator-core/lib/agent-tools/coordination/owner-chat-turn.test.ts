@@ -245,6 +245,127 @@ describe('ownerVisiblePromptText — what the OWNER sees in their chat pane (EI-
 });
 
 /**
+ * P-001 · THE FALSIFYING FIXTURE — `owner-visibility-provenance-2026-08-11`.
+ *
+ * Every fixture ABOVE feeds text that CARRIES an envelope, so the suite exercises
+ * the branches that work and never feeds the case that walks through the default.
+ * That is why three fixes went `done` here and failed live within hours (WI-37883,
+ * WI-37908, EI-20135573616431912): a suite built from the same assumption as the
+ * code cannot falsify it. These are the missing rows.
+ *
+ * MEASURED, not invented — `harness_shared.session_turns` where speaker='user' and
+ * the text carries NO `⟦turn-origin:…⟧` envelope, 7 days to 2026-08-11:
+ *
+ *     1844  un-enveloped user turns in total
+ *       50  hidden by today's two un-enveloped rules (2.7%)
+ *      367  compaction preamble          <- shown as the owner's own speech
+ *      107  [Request interrupted by user] <-        "
+ *       86  injected role prompts         <-        " (# Mug 43 · # AGENTS.md 31
+ *                                                     · # Kettle 21 · # Autonomous
+ *                                                     loop check 15, 14d window)
+ *
+ * ⚠ WHY THESE ARE `it.fails` AND NOT PLAIN RED TESTS. The assertions below are the
+ * real ones and they DO fail on today's predicate — the red run is recorded on
+ * WI-37953. Committing them plain would red the green-checkpoint gate for the whole
+ * fleet until P-002/P-003 land, which buys nothing the marker does not already give:
+ * `it.fails` PASSES only while the leak exists and turns RED the moment a fix closes
+ * it, per shape, forcing whoever lands the fix to flip that line to a plain `it`.
+ * So this is a live guard from the first commit rather than a broken build, and it
+ * cannot be satisfied by a partial fix — each shape is asserted on its own.
+ *
+ * ⛔ It is NOT an invitation to add a third matcher (plan D-002/D-003). A display-side
+ * deny-list cannot separate machine `"Continue from where you left off."` from
+ * owner-typed `"continue where you left off"`; that residue is P-004's job. These
+ * three shapes are structurally separable, which is exactly why they are the ones
+ * pinned here.
+ */
+describe('ownerVisiblePromptText — UN-ENVELOPED machine text walks through the fallthrough (P-001)', () => {
+  /** Verbatim head of the CLI's own compaction continuation — the single largest
+   *  un-enveloped machine shape in the corpus. `turn-ref.ts:174` already records
+   *  this population as "unenrollable — no injector". */
+  const COMPACTION_PREAMBLE =
+    'This session is being continued from a previous conversation that ran out of context. ' +
+    'The summary below covers the earlier portion of the conversation.\n\n' +
+    '<analysis>\nChronologically:\n\n1. Prior turns (su-e0359276) established the carry-note protocol…';
+
+  /** The CLI writes this as a `user` turn when the human presses Escape. The owner
+   *  did not type it — the harness authored it ABOUT them. */
+  const REQUEST_INTERRUPTED = '[Request interrupted by user]';
+
+  /** A role prompt injected as the first user turn of a spawned agent. The owner
+   *  reads their whole persona doc rendered as something they apparently said. */
+  const INJECTED_ROLE_PROMPT =
+    '# Mug — pot placement decider\n\n' +
+    'You are the Mug of this Pot: the placement and priority decider for the cup\n' +
+    'fleet. Each wake is fresh. Re-derive state from durable substrate, act, record.';
+
+  it.fails('HIDES the CLI compaction preamble (367 rows/7d — the biggest single leak)', () => {
+    expect(ownerVisiblePromptText(COMPACTION_PREAMBLE)).toBe('');
+  });
+
+  it.fails('HIDES `[Request interrupted by user]` (107 rows/7d — the harness narrating the owner)', () => {
+    expect(ownerVisiblePromptText(REQUEST_INTERRUPTED)).toBe('');
+  });
+
+  it.fails('HIDES an injected role prompt (86 rows/14d — a persona doc attributed to the owner)', () => {
+    expect(ownerVisiblePromptText(INJECTED_ROLE_PROMPT)).toBe('');
+  });
+
+  it.fails('HIDES every un-enveloped machine shape, not just the one that was fixed last', () => {
+    /* The census assertion. A fix that closes one shape and leaves the siblings is
+       the failure mode this plan exists to stop, so the set is asserted together —
+       and it stays `it.fails` until ALL of them are closed. */
+    for (const machine of [COMPACTION_PREAMBLE, REQUEST_INTERRUPTED, INJECTED_ROLE_PROMPT]) {
+      expect(ownerVisiblePromptText(machine)).toBe('');
+    }
+  });
+
+  /* ── The rails below are GREEN TODAY and must STAY green through the fix. ──
+     They are the other half of the instrument: the danger of any change here is
+     over-hiding, and hiding what the human actually wrote is the unrecoverable
+     direction (see OWNER_CHAT_TURN_ORIGIN's note). A fix that turns the four
+     assertions above green while reddening these has made the surface worse. */
+
+  it('SHOWS the owner ASKING about the machine text they are seeing', () => {
+    const typed = 'why does [Request interrupted by user] keep appearing in my chat as if I wrote it?';
+    expect(ownerVisiblePromptText(typed)).toBe(typed);
+  });
+
+  it('SHOWS an owner turn that merely OPENS with a markdown heading', () => {
+    // The role-prompt shape starts with `# `, and so does plenty of owner prose.
+    // A matcher keyed on the leading `#` would eat this; a curated-prefix one will not.
+    const typed = '# my notes\n\nship the pane fix, then re-run the stranger pass';
+    expect(ownerVisiblePromptText(typed)).toBe(typed);
+  });
+
+  it('SHOWS an owner turn that QUOTES the compaction preamble mid-sentence', () => {
+    const typed =
+      'the pane shows "This session is being continued from a previous conversation" as my own message — fix that';
+    expect(ownerVisiblePromptText(typed)).toBe(typed);
+  });
+
+  it('DERIVATION RAIL: the boolean form agrees with the text form on all three shapes', () => {
+    // Holds before and after the fix. It is what stops the search path (WI-37883)
+    // and the pane from drifting into two different answers about the same turn.
+    for (const text of [COMPACTION_PREAMBLE, REQUEST_INTERRUPTED, INJECTED_ROLE_PROMPT]) {
+      expect(isOwnerVisiblePrompt(text)).toBe(ownerVisiblePromptText(text) !== '');
+    }
+  });
+
+  it('PREFIX RAIL: the bounded head decides these shapes identically to the whole turn', () => {
+    // The search path hydrates only OWNER_VISIBILITY_DECIDING_PREFIX_CHARS. Each of
+    // these shapes is identified by its FIRST LINE, so the property must survive the
+    // fix — a fix keyed on something deeper in the body would silently break search.
+    for (const head of [COMPACTION_PREAMBLE, REQUEST_INTERRUPTED, INJECTED_ROLE_PROMPT]) {
+      const whole = `${head}\n${'x'.repeat(4096)}`;
+      expect(isOwnerVisiblePrompt(whole.slice(0, OWNER_VISIBILITY_DECIDING_PREFIX_CHARS))).toBe(
+        isOwnerVisiblePrompt(whole),
+      );
+    }
+  });
+});
+
+/**
  * WI-37883 — the boolean form, and the property the SEARCH path depends on.
  *
  * The chat pane calls `ownerVisiblePromptText` with the whole turn because it is
