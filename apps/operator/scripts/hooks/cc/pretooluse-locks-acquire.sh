@@ -23,7 +23,8 @@
 #
 # On success we exit 0 with NO stdout — "no decision, proceed with the
 # client's normal flow" — and cache the lock_id by tool_use_id so the
-# matching PostToolUse hook can release it.
+# matching PostToolUse hook can release only paths newly acquired by this
+# edit. A same-owner already-held grant gets no release cache.
 #
 # Fail-open: if Papercusp isn't installed, or the operator is
 # unreachable / unparseable, we ALWAYS allow the edit (cooperative
