@@ -160,7 +160,7 @@ function releaseSeedRedactionValues(root: string): readonly string[] {
     const detail = typeof result.stderr === 'string' ? result.stderr.trim() : '';
     throw new Error(`[cut-seed] could not resolve release identity literals from ${audit}${detail ? `: ${detail}` : ''}`);
   }
-  const output = typeof result.stdout === 'string' ? result.stdout : result.stdout?.toString('utf8') ?? '';
+  const output = result.stdout ?? '';
   return mergeReleaseSeedRedactionValues(output, process.env[SEED_REAL_HOSTNAME_ENV]);
 }
 
