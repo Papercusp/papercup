@@ -22,6 +22,7 @@ import {
   createCorestoreSeedProvider,
   CORESTORE_SEED_KIND,
   mintFilteredSeedContentCore,
+  redactSeedValue,
   SEED_EXCLUDED_TABLES,
 } from './seed-provider-corestore';
 import { produceLogSnapshot, SNAPSHOT_TABLE_TAG } from './log-snapshot';
@@ -405,6 +406,24 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
       valueEncoding: 'json',
     }) as unknown as TestCore;
   }
+
+  it('redacts email values in encoded JSON while preserving opaque binary', () => {
+    const privateEmail = `owner${'@'}example.org`;
+    const encoded = Buffer.from(
+      JSON.stringify({
+        owner: privateEmail,
+        nested: { contact: privateEmail },
+      }),
+    );
+
+    expect(redactSeedValue(encoded)).toEqual({
+      owner: '[email]',
+      nested: { contact: '[email]' },
+    });
+
+    const opaque = Buffer.from([0xff, 0x00, 0x91, 0x02]);
+    expect(redactSeedValue(opaque)).toBe(opaque);
+  });
 
   it('carries intended content, drops presence, KEEPS usage, and never writes the source', async () => {
     const { store: src, own, privateEmail } = await sourceWithIdentity();

@@ -85,20 +85,56 @@ export interface MintedSeedCore {
 /**
  * Public seed content must not carry email-shaped identity values from private plan
  * metadata or prose. This is deliberately shape-based: the release cutter cannot know
- * every address a person has used, while a generic email is still private data. Binary /
- * encrypted values are left untouched by the recursive projection below.
+ * every address a person has used, while a generic email is still private data. Opaque
+ * binary / encrypted values are left untouched; valid UTF-8 JSON values are projected too,
+ * because the corestore JSON boundary can surface encoded JSON as bytes.
  */
 const SEED_EMAIL_PATTERN = /[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9.-]{1,255}\.[A-Za-z]{2,24}/g;
+
+function redactEncodedJson(value: Uint8Array | ArrayBuffer): unknown {
+  const bytes = value instanceof ArrayBuffer ? new Uint8Array(value) : value;
+  let text: string;
+  try {
+    text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  } catch {
+    return value;
+  }
+
+  let decoded: unknown;
+  try {
+    decoded = JSON.parse(text) as unknown;
+  } catch {
+    return value;
+  }
+
+  const redacted = redactSeedValue(decoded);
+  // Preserve the original bytes when no sensitive value was found. This keeps opaque
+  // and already-sanitized encoded values byte-for-byte unchanged.
+  return redacted === decoded ? value : redacted;
+}
 
 export function redactSeedValue(value: unknown): unknown {
   if (typeof value === 'string') return value.replace(SEED_EMAIL_PATTERN, '[email]');
   if (value === null || typeof value !== 'object') return value;
-  if (value instanceof Uint8Array || value instanceof ArrayBuffer) return value;
-  if (Array.isArray(value)) return value.map((item) => redactSeedValue(item));
+  if (value instanceof Uint8Array || value instanceof ArrayBuffer) return redactEncodedJson(value);
+  if (Array.isArray(value)) {
+    let changed = false;
+    const out = value.map((item) => {
+      const redacted = redactSeedValue(item);
+      changed ||= redacted !== item;
+      return redacted;
+    });
+    return changed ? out : value;
+  }
 
   const out: Record<string, unknown> = {};
-  for (const [key, child] of Object.entries(value)) out[key] = redactSeedValue(child);
-  return out;
+  let changed = false;
+  for (const [key, child] of Object.entries(value)) {
+    const redacted = redactSeedValue(child);
+    changed ||= redacted !== child;
+    out[key] = redacted;
+  }
+  return changed ? out : value;
 }
 
 /**
