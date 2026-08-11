@@ -20,6 +20,7 @@ import { describe, it, expect, vi, beforeEach, afterEach, beforeAll, afterAll } 
 
 const getWorkItem = vi.fn();
 const setWorkItemStateWithAliasInfo = vi.fn();
+const setWorkItemClaimHold = vi.fn();
 const mergeWorkItemOutputPayload = vi.fn();
 const resolveWorkItemRef = vi.fn();
 const linkWorkItem = vi.fn();
@@ -27,6 +28,7 @@ const subscribeWorkItem = vi.fn();
 vi.mock('../../work-items', () => ({
   getWorkItem: (...a: unknown[]) => getWorkItem(...a),
   setWorkItemStateWithAliasInfo: (...a: unknown[]) => setWorkItemStateWithAliasInfo(...a),
+  setWorkItemClaimHold: (...a: unknown[]) => setWorkItemClaimHold(...a),
   workItemObjectRef: (x: { id: string }) => `wi:${x.id}`,
   mergeWorkItemOutputPayload: (...a: unknown[]) => mergeWorkItemOutputPayload(...a),
   resolveWorkItemRef: (...a: unknown[]) => resolveWorkItemRef(...a),
@@ -123,6 +125,8 @@ function okState(workItem: Record<string, unknown>) {
 beforeEach(() => {
   getWorkItem.mockReset();
   setWorkItemStateWithAliasInfo.mockReset();
+  setWorkItemClaimHold.mockReset();
+  setWorkItemClaimHold.mockResolvedValue({ id: 'WI-1', harness: 'papercup', hold: true, applicable: true });
   mergeWorkItemOutputPayload.mockReset();
   // Default: gate flag OFF + (when consulted) gate OK — reproduces today's behavior. The
   // flag mock MUST resolve a promise so the `.catch(() => false)` guard in completeOne works.
@@ -368,6 +372,48 @@ describe('work_items:complete (keyed-array)', () => {
       // `emits` rule (which keys on result.completion) still broadcasts it.
       expect(r.completion).toMatchObject({ summary: 'fixed it' });
       expect(r.stateError).toMatch(/HELD OPEN/);
+    });
+
+    it('parks a plan-gated failed close out of scheduler:get_next (EI-20190168400283197)', async () => {
+      getWorkItem.mockResolvedValue(issue);
+      setWorkItemStateWithAliasInfo.mockRejectedValue(
+        new Error(
+          "work_item 'WI-1' is not settled, and its linked plan-item a-plan#P-002 is STILL effectively 'blocked' (blocked-by: P-001) — completing it into 'resolved' now would race ahead of that plan gate.",
+        ),
+      );
+
+      const r = await one({ id: 'WI-1', state: 'resolved', completion: { summary: 'fixed it', tests: '5 green' } });
+
+      expect(r.ok).toBe(false);
+      expect(setWorkItemClaimHold).toHaveBeenCalledWith(
+        'WI-1',
+        true,
+        expect.objectContaining({
+          harness: 'papercup',
+          parkedBy: expect.any(String),
+          parkedReason: 'terminal completion refused by the linked plan-item gate',
+        }),
+      );
+      expect(r.planGateParkWarning).toMatch(/DURABLY PARKED out of scheduler:get_next/);
+      expect(r.stateWarning).toMatch(/durably parked out of scheduler:get_next/);
+      expect(r.stateWarning).not.toMatch(/stays claimable/);
+      expect(r.error).toMatch(/DID NOT CLOSE/);
+      expect(r.completion).toMatchObject({ summary: 'fixed it' });
+    });
+
+    it('does not claim a plan-gated close was parked when the claim hold write fails', async () => {
+      getWorkItem.mockResolvedValue(issue);
+      setWorkItemStateWithAliasInfo.mockRejectedValue(
+        new Error("work_item 'WI-1' is not settled, and its linked plan-item a-plan#P-002 is STILL effectively 'blocked'"),
+      );
+      setWorkItemClaimHold.mockRejectedValue(new Error('claim hold database unavailable'));
+
+      const r = await one({ id: 'WI-1', state: 'resolved', completion: { summary: 'fixed it', tests: '5 green' } });
+
+      expect(r.ok).toBe(false);
+      expect(r.planGateParkWarning).toMatch(/could not be durably parked/);
+      expect(r.planGateParkWarning).toMatch(/remains claimable/);
+      expect(r.stateWarning).toMatch(/stays claimable/);
     });
 
     it('the alias trap: a CLOSE-INTENT state that silently lands non-terminal (issue `done` -> `open`) returns ok:false', async () => {
@@ -2017,9 +2063,11 @@ describe('work_items:complete input coercion (EI-7031)', () => {
         .safeParse({ id: 'WI-1' });
       expect(result.success).toBe(false);
       const message = result.error?.issues.map((i) => i.message).join(' ') ?? '';
-      expect(message).toContain('{ id, state, completion: { summary } }');
+      expect(message).toContain('{ id, state, assumptions: "none"|[fact keys], completion: { summary } }');
       expect(message).toContain('state');
       expect(message).toContain('REQUIRED');
+      expect(message).toContain('assumptions');
+      expect(message).toContain('"none"');
     });
 
     // EI-18723223344390510: the deep-strictify fix closes the SAME EI-10883
@@ -2163,6 +2211,16 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(json.properties).toHaveProperty('id');
       expect(json.properties).toHaveProperty('completion');
       expect(json.properties).toHaveProperty('items');
+    });
+
+    it('surfaces the required assumptions declaration in the published schema (EI-20191275803505578)', () => {
+      const json = z.toJSONSchema(complete.args as never) as {
+        properties?: Record<string, { description?: string }>;
+      };
+      const description = json.properties?.assumptions?.description ?? '';
+      expect(description).toContain('REQUIRED');
+      expect(description).toContain('"none"');
+      expect(description).toContain('facts:assert keys');
     });
   });
 

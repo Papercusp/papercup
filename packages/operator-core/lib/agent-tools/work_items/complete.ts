@@ -50,6 +50,7 @@ import { harnessScopeMismatch } from '../../work-items-harness-scope';
 import {
   getWorkItem,
   setWorkItemStateWithAliasInfo,
+  setWorkItemClaimHold,
   workItemObjectRef,
   mergeWorkItemOutputPayload,
   resolveWorkItemRef,
@@ -141,6 +142,16 @@ const TERMINAL_WORK_ITEM_STATES = new Set<string>(SETTLED_WORK_ITEM_STATES);
  * state and NOT landing terminal is a failed close, and must report ok:false.
  */
 const CLOSE_INTENT_STATES = new Set([...TERMINAL_WORK_ITEM_STATES, 'done', 'complete', 'completed', 'dropped']);
+
+/**
+ * EI-20190168400283197: setWorkItemState rejects a terminal transition when the
+ * linked plan-item is still effectively blocked. The completion record is kept
+ * for the record-and-warn contract, so this exact rejection must be recognized
+ * and durably parked out of scheduler:get_next instead of left claimable.
+ */
+function isPlanGateRejection(error: string): boolean {
+  return /linked plan-item .* is STILL effectively /i.test(error);
+}
 
 const itemSpec = z.object({
   id: z.string().min(1),
@@ -852,6 +863,8 @@ async function completeOne(
   // later audit; it never reaches it at all.
   let workItem = existing;
   let stateError: string | undefined;
+  let planGateParked = false;
+  let planGateParkWarning: string | undefined;
   let aliasNote: string | undefined;
   // EI-18736669939338784: set when this close met an item ALREADY completed by someone
   // else, so the write was reshaped to preserve the stronger record. Surfaced as a loud
@@ -1032,6 +1045,34 @@ async function completeOne(
       appliedState = res.appliedState;
     } catch (e) {
       stateError = e instanceof Error ? e.message : String(e);
+      if (closeIntentRequested && isPlanGateRejection(stateError)) {
+        try {
+          const parked = await setWorkItemClaimHold(it.id, true, {
+            // The inline shorthand commonly omits `harness`; the fetched work-item is
+            // still the authoritative scope for this durable hold (as it is for
+            // assumption resolution below). Never write an unscoped hold in that case.
+            harness: it.harness ?? existing.harness,
+            parkedBy: ident.ownerId,
+            parkedReason: 'terminal completion refused by the linked plan-item gate',
+          });
+          if (parked?.applicable) {
+            planGateParked = true;
+            planGateParkWarning =
+              `the plan-gated close for ${it.id} was DURABLY PARKED out of scheduler:get_next until the ` +
+              'linked plan-item gate is cleared; clear the park deliberately with ' +
+              `work_items:release { id: '${it.id}', claimHold: false }.`;
+          } else {
+            planGateParkWarning =
+              `the plan-gated close for ${it.id} could not be durably parked (the claim hold was not applicable); ` +
+              'it remains claimable and must not be treated as isolated from the scheduler.';
+          }
+        } catch (parkError) {
+          planGateParkWarning =
+            `the plan-gated close for ${it.id} could not be durably parked: ` +
+            `${parkError instanceof Error ? parkError.message : String(parkError)}; ` +
+            'it remains claimable and must not be treated as isolated from the scheduler.';
+        }
+      }
     }
   }
 
@@ -1052,11 +1093,14 @@ async function completeOne(
   // prescribes an action the caller already took is worse than no warning: it actively routes
   // them into a loop instead of at the real cause.
   const nonTerminalHint = `so it stays claimable and the auto-loop may re-place work on it`;
+  const claimabilityHint = planGateParked
+    ? `it is durably parked out of scheduler:get_next until the linked plan-item gate is cleared`
+    : nonTerminalHint;
   const terminalVocab = `(feature: 'passed'|'deprecated'; issue: 'resolved'|'closed')`;
   const stateWarning = !finalState || TERMINAL_WORK_ITEM_STATES.has(finalState)
     ? undefined
     : stateError
-      ? `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${nonTerminalHint}. Your state '${effectiveState}' was REJECTED by the state write: ${stateError}. Re-sending the same state will fail the same way — fix the cause, or pass a valid TERMINAL state ${terminalVocab}.`
+      ? `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${claimabilityHint}. Your state '${effectiveState}' was REJECTED by the state write: ${stateError}. Re-sending the same state will fail the same way — fix the cause, or pass a valid TERMINAL state ${terminalVocab}.`
       : effectiveState
         ? `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${nonTerminalHint}. Your state '${requestedState ?? effectiveState}' WAS received and applied as '${appliedState ?? workItem?.state ?? existing.state}', which is NOT terminal${aliasNote ? ` (${aliasNote})` : ''}. Do NOT re-send the same value — pass a TERMINAL state ${terminalVocab}.`
         : `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${nonTerminalHint}. No top-level \`state\` was passed. Pass top-level \`state\` ${terminalVocab} to close it.`;
@@ -1305,7 +1349,7 @@ async function completeOne(
   const stateFailure = !stateNotApplied
     ? undefined
     : stateError
-      ? `COMPLETION RECORDED, BUT ${it.id} DID NOT CLOSE — it is still '${landedState}' and stays claimable. The state write failed: ${stateError}`
+      ? `COMPLETION RECORDED, BUT ${it.id} DID NOT CLOSE — it is still '${landedState}' and ${claimabilityHint}. The state write failed: ${stateError}`
       : `COMPLETION RECORDED, BUT ${it.id} DID NOT CLOSE — you requested state '${requestedState ?? effectiveState}' and it applied as '${appliedState ?? landedState}'${aliasNote ? ` (${aliasNote})` : ''}, which is NOT terminal, so the item stays claimable and the auto-loop may re-place work on it. Pass a TERMINAL state (issue: 'resolved'|'closed'; feature: 'passed'|'deprecated').`;
 
   const finish = closeLanded
@@ -1355,6 +1399,7 @@ async function completeOne(
     ...(stateError ? { stateError } : {}),
     ...(verificationCoverageError ? { verificationCoverageError } : {}),
     ...(stateWarning ? { stateWarning } : {}),
+    ...(planGateParkWarning ? { planGateParkWarning } : {}),
     // EI-18850142725126359 fix #4 — reported ONLY when the close actually LANDED.
     // The text is written in the future tense ("will red the next checkpoint"),
     // which is true of a terminal row and false of a close that was rejected — and
@@ -1418,11 +1463,11 @@ export default defineTool({
   name: 'work_items:complete',
   profile: 'engineer',
   description:
-    "Finish one OR many work-items with a STRUCTURED completion record (whatLanded/migrations/tests/deferred) — the system renders + broadcasts it, never narrate in prose. A terminal `state` converges the whole finish: item state + plan-item + claim release + checkpoint cleanup. Omit `state` and `ok:true` does NOT mean closed — check `finish.complete`/`stateWarning` (see seeAlso for idempotency + batch-result semantics).",
+    "Finish one OR many work-items with a STRUCTURED completion record (whatLanded/migrations/tests/deferred) — the system renders + broadcasts it, never narrate in prose. A terminal `state` converges the whole finish: item state + plan-item + claim release + checkpoint cleanup. Every terminal close also requires an explicit `assumptions` declaration: pass `\"none\"` or an array of `facts:assert` keys; omitting it is rejected. Omit `state` and `ok:true` does NOT mean closed — check `finish.complete`/`stateWarning` (see seeAlso for idempotency + batch-result semantics).",
   guidance: {
-    when: 'Finished work/plan-item(s). Fill the fields; do NOT also coord:send a prose summary — this emits it. To CLOSE pass a terminal top-level `state` (feature: \'passed\'|\'deprecated\'; issue: \'resolved\'|\'closed\'); other `completion.status` values record WITHOUT closing (issue status \'resolved\'|\'closed\' alone also closes, EI-12027). `verifiedHow` is a CLOSED ENUM, not free text — prose goes in testsRun/testResult. A verification-shaped item making a universal claim (every/all/nothing) must include `coverage` with an enumerated population, a status for every entry, and explicit residue; otherwise the close is rejected (WI-37960). A CLOSE claiming `verifiedHow:\'live-drove-ui\'` is REJECTED unless testsRun/testResult/filesChanged cite a REAL artifact — the cited image is opened, and a blank or non-existent capture is refused (WI-5891, EI-18797014705631713). A `tauri-agent-tools check` run is accepted on its own. Duplicate? set `completion.duplicateOf` to the surviving id.',
+    when: 'Finished work/plan-item(s). Fill the fields; do NOT also coord:send a prose summary — this emits it. To CLOSE pass a terminal top-level `state` (feature: \'passed\'|\'deprecated\'; issue: \'resolved\'|\'closed\') and an explicit `assumptions` declaration: use `\"none\"` when the close rests on no recorded fact, or an array of `facts:assert` keys; omitting `assumptions` is rejected. Other `completion.status` values record WITHOUT closing (issue status \'resolved\'|\'closed\' alone also closes, EI-12027). `verifiedHow` is a CLOSED ENUM, not free text — prose goes in testsRun/testResult. A verification-shaped item making a universal claim (every/all/nothing) must include `coverage` with an enumerated population, a status for every entry, and explicit residue; otherwise the close is rejected (WI-37960). A CLOSE claiming `verifiedHow:\'live-drove-ui\'` is REJECTED unless testsRun/testResult/filesChanged cite a REAL artifact — the cited image is opened, and a blank or non-existent capture is refused (WI-5891, EI-18797014705631713). A `tauri-agent-tools check` run is accepted on its own. Duplicate? set `completion.duplicateOf` to the surviving id.',
     notWhen: 'For a contextual aside (a question, a design note), use coord:send. To change state without a completion record, use work_items:set_state.',
-    chaining: 'work_items:claim → … → work_items:complete { id, state, completion }. On success, `finish.complete:true` proves state/plan/claim/checkpoint convergence and auto-emits to coord:inbox.',
+    chaining: 'work_items:claim → … → work_items:complete { id, state, assumptions, completion }. On success, `finish.complete:true` proves state/plan/claim/checkpoint convergence and auto-emits to coord:inbox.',
     seeAlso: [
       'work_items:set_state (change state without recording a completion)',
       'coord:send (a note/question that is not a completion)',
@@ -1502,13 +1547,19 @@ export default defineTool({
          *  one; the single-complete shorthand's requirement is closed by the refine below. */
         assumptions: assumptionsArg
           .optional()
-          .describe('assumption declaration for the single-complete shorthand (see items[].assumptions)'),
+          .describe(
+            'REQUIRED for a single-item terminal close: pass "none" or an array of facts:assert keys; ' +
+              'omit only when using items[] with per-item assumptions.',
+          ),
         items: z
           .array(itemSpec)
           .min(1)
           .max(100)
           .optional()
-          .describe('complete many work-items at once — each { id, completion, state?, harness? }; an omitted per-item state/harness falls back to the top-level one'),
+          .describe(
+            'complete many work-items at once — each { id, completion, assumptions, state?, harness? }; ' +
+              'an omitted per-item state/harness falls back to the top-level one',
+          ),
       })
       .refine((a) => (a.items?.length ?? 0) > 0 || (Boolean(a.id) && Boolean(a.completion)), {
         // EI-6999: the first shape error a caller hits should state the FULL
@@ -1519,11 +1570,12 @@ export default defineTool({
         // (a bare `completion` records the note but leaves the item claimable
         // — pass `state` too to actually close it). Say all of it up front.
         message:
-          'to CLOSE a work-item, pass { id, state, completion: { summary } } ' +
-          '(or items:[{ id, state, completion: { summary } }] for many) — ' +
+          'to CLOSE a work-item, pass { id, state, assumptions: "none"|[fact keys], completion: { summary } } ' +
+          '(or items:[{ id, state, assumptions: "none"|[fact keys], completion: { summary } }] for many) — ' +
           '`state` is the terminal lifecycle (issue: "resolved"|"closed"; feature: "passed"|"deprecated") ' +
           'and is REQUIRED to actually close it: a completion with no `state` only records the note, ' +
-          'the item stays claimable (see work_items:set_state to change state alone, without a completion record).',
+          'the item stays claimable. `assumptions` is also REQUIRED; pass "none" when no recorded fact ' +
+          'supports the close (see work_items:set_state to change state alone, without a completion record).',
       })
       // P-017 (b) gate #2 / D-050 — the same rule itemSpec enforces for items[], closed
       // for the single-complete shorthand so the gate cannot simply relocate to it.
