@@ -96,6 +96,19 @@ export default defineTool({
       };
     }
     const applied = clampCompactionLimit(args.limit, spec, { selfSet: true });
+    if (applied !== args.limit) {
+      return {
+        data: {
+          ok: false,
+          ownerId: identity.ownerId,
+          requested: args.limit,
+          cap,
+          error: 'limit_out_of_range',
+          message: `requested compaction limit ${args.limit} is outside the allowed range; no change was made`,
+          note: 'The requested limit was not written because it would require clamping.',
+        },
+      };
+    }
     await setCompactionLimit(identity.ownerId, applied);
     const presence = await getPresence(identity.ownerId);
     const persisted = presence?.compactionLimit ?? null;
@@ -105,14 +118,6 @@ export default defineTool({
         ok: persisted != null,
         ownerId: identity.ownerId,
         compactionLimit: persisted,
-        ...(applied !== args.limit
-          ? {
-              clamped: true,
-              requested: args.limit,
-              cap,
-              note: `requested limit clamped to the model-derived ceiling (${spec ? `window for ${spec} minus margin, ÷1.2 overshoot allowance` : 'model spec unresolvable — fleet-default [1m] ceiling'})`,
-            }
-          : {}),
         ...(persisted == null ? { note: 'no live presence row for this session — limit not persisted' } : {}),
       },
     };
