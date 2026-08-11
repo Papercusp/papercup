@@ -53,6 +53,44 @@ export function describeToolGuidanceBudget(): void {
   const violations = budgetViolations(named);
 
   describe('tool guidance budget (P-011 ratchet)', () => {
+    it('reports the soft-budget trim for a non-grandfathered hard-cap breach', () => {
+      const weight = HARD_CAP + 25;
+      const violations = budgetViolations([{ name: 'non-grandfathered-hard-cap', weight }]);
+      expect(violations).toHaveLength(1);
+
+      const violation = violations[0]!;
+      expect(violation).toMatchObject({
+        name: 'non-grandfathered-hard-cap',
+        weight,
+        hardCap: true,
+        grandfathered: false,
+        cutAtLeast: weight - BUDGET,
+      });
+      expect(formatViolations(violations)).toContain(
+        `cut ≥${weight - BUDGET} to clear the ${BUDGET}-char budget`,
+      );
+      expect(formatViolations(violations)).not.toContain(`${HARD_CAP}-char HARD CAP`);
+    });
+
+    it('keeps grandfathered hard-cap breaches bound to the hard cap', () => {
+      const name = 'grandfathered-hard-cap';
+      const weight = HARD_CAP + 25;
+      ALLOW_OVER_BUDGET.add(name);
+      try {
+        const violations = budgetViolations([{ name, weight }]);
+        expect(violations).toHaveLength(1);
+        expect(violations[0]).toMatchObject({
+          name,
+          hardCap: true,
+          grandfathered: true,
+          cutAtLeast: 25,
+        });
+        expect(formatViolations(violations)).toContain(`${HARD_CAP}-char HARD CAP`);
+      } finally {
+        ALLOW_OVER_BUDGET.delete(name);
+      }
+    });
+
     it('the registry loaded a real catalog', () => {
       // 724 tools as measured 2026-08-08 (the comment said 655 and had drifted —
       // the HEADROOM report below now prints the live count every run, so this

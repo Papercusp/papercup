@@ -130,8 +130,18 @@ export interface BudgetViolation {
   hardCap: boolean;
   /** true iff this tool is grandfathered in ALLOW_OVER_BUDGET. */
   grandfathered: boolean;
-  /** chars to cut to clear the binding limit (hard cap if over it, else budget). */
+  /** chars to cut to clear the effective binding ceiling. */
   cutAtLeast: number;
+}
+
+/**
+ * The ceiling a fixer must reach depends on the exemption: an ordinary tool
+ * must fit the soft budget, while a grandfathered tool may use the hard cap.
+ * Keep the hard cap as the upper bound even if the soft budget is configured
+ * above it in the future.
+ */
+function bindingCeiling(grandfathered: boolean): number {
+  return grandfathered ? HARD_CAP : Math.min(BUDGET, HARD_CAP);
 }
 
 /**
@@ -152,7 +162,7 @@ export function budgetViolations(weights?: readonly NamedToolWeight[]): BudgetVi
       weight: t.weight,
       hardCap,
       grandfathered,
-      cutAtLeast: t.weight - (hardCap ? HARD_CAP : BUDGET),
+      cutAtLeast: t.weight - bindingCeiling(grandfathered),
     });
   }
   return out.sort((a, b) => b.weight - a.weight);
@@ -163,8 +173,10 @@ export function budgetViolations(weights?: readonly NamedToolWeight[]): BudgetVi
 export function formatViolations(violations: readonly BudgetViolation[]): string {
   if (violations.length === 0) return '';
   const lines = violations.map((v) => {
-    const limit = v.hardCap ? `${HARD_CAP}-char HARD CAP` : `${BUDGET}-char budget`;
-    const tail = v.hardCap
+    const ceiling = bindingCeiling(v.grandfathered);
+    const hardCapBinding = ceiling === HARD_CAP;
+    const limit = hardCapBinding ? `${HARD_CAP}-char HARD CAP` : `${BUDGET}-char budget`;
+    const tail = hardCapBinding
       ? ''
       : ' (trim it — prefer a docs pointer over prose-in-place — or, only if genuinely irreducible, add an ALLOW_OVER_BUDGET entry)';
     return `  • ${v.name} is ${v.weight} — cut ≥${v.cutAtLeast} to clear the ${limit}${tail}`;
