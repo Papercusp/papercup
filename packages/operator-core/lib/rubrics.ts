@@ -122,6 +122,13 @@ export interface Rubric {
   /** This rubric GATES a release verdict (EI-12149) — the rubric-staleness watchdog
    *  alerts when an ACTIVE releaseGating rubric goes ungraded past its threshold. */
   releaseGating?: boolean;
+  /** This rubric must keep being GRADED without gating a release (P-011). Watched by the
+   *  same staleness watchdog, which selects `releaseGating || stalenessWatched`. Split
+   *  from releaseGating because they answer different questions: a HEALTH rubric that had
+   *  to claim release-gating to get watched would inherit the machine-instrument contract
+   *  it does not need and block ships it should not — so it stayed unwatched instead, and
+   *  a dead health loop became indistinguishable from a healthy one. */
+  stalenessWatched?: boolean;
   /**
    * CONTRACT-GENERATION BOUNDARY (goal-mode-rubric-v2-2026-08-10 D-015). ISO instant
    * before which gradings against this rubric measured a MATERIALLY DIFFERENT contract,
@@ -295,6 +302,7 @@ export function planRowToRubric(row: RubricPlanRow): Rubric | null {
     ratingScale: d.ratingScale,
     methodRef: d.methodRef ?? null,
     ...(d.releaseGating !== undefined ? { releaseGating: d.releaseGating } : {}),
+    ...(d.stalenessWatched !== undefined ? { stalenessWatched: d.stalenessWatched } : {}),
     ...(typeof d.historyResetAt === 'string' ? { historyResetAt: d.historyResetAt } : {}),
     status,
     createdBy: row.owner ?? null,
@@ -461,6 +469,9 @@ function buildSeedProposeInput(
     // automatic content sync.
     status: upgrading?.status ?? 'active',
     ...(upgrading?.releaseGating !== undefined ? { releaseGating: upgrading.releaseGating } : {}),
+    ...(upgrading?.stalenessWatched !== undefined
+      ? { stalenessWatched: upgrading.stalenessWatched }
+      : {}),
     // D-015: a declared contract-generation boundary is governance state, not content —
     // a content sync that silently dropped it would re-blend a retired contract's
     // gradings into the live trend, which is exactly what declaring it prevented.
@@ -656,6 +667,9 @@ export interface ProposeRubricInput {
   /** Mark this rubric release-gating (EI-12149) — the staleness watchdog then alerts
    *  when it goes ungraded past its threshold while active. */
   releaseGating?: boolean;
+  /** Mark this rubric staleness-watched WITHOUT making it a release gate (P-011) — for an
+   *  ongoing HEALTH rubric that must keep being graded but must not block a ship. */
+  stalenessWatched?: boolean;
   /** Contract-generation boundary (D-015) — see Rubric.historyResetAt. Normally set via
    *  setRubricHistoryReset() rather than here, because a propose demotes to 'proposed'. */
   historyResetAt?: string;
@@ -955,6 +969,7 @@ function buildRubricTemplateData(input: ProposeRubricInput): unknown {
     ratingScale: input.ratingScale ?? [...DEFAULT_RATING_SCALE],
     ...(input.methodRef ? { methodRef: input.methodRef } : {}),
     ...(input.releaseGating !== undefined ? { releaseGating: input.releaseGating } : {}),
+    ...(input.stalenessWatched !== undefined ? { stalenessWatched: input.stalenessWatched } : {}),
     ...(input.historyResetAt !== undefined ? { historyResetAt: input.historyResetAt } : {}),
     ...(input.description !== undefined ? { description: input.description } : {}),
     // EI-10751 provenance: the proposer of record is whoever authored THIS revision —

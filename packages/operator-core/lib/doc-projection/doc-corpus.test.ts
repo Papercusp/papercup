@@ -149,6 +149,18 @@ describe('the committed corpus agrees with the committed manifest', () => {
       // also the half that was silently unprojected, which is what broke the block.
       blocksRemoved: 3,
     },
+    {
+      when: '2026-08-11',
+      plan: 'acceptance-rubrics-on-every-plan-2026-08-11 P-006',
+      // The acceptance-rubric mandate was ADDED as a new part in harness_doc_parts after the
+      // manifest snapshot was frozen (the manifest is a P-014 migration artifact cut from the
+      // pre-projection CLAUDE.md; it is NOT re-cut for post-load part changes — regenerating it
+      // against today's PROJECTED file would drop every prose part, see the generator header).
+      // A part added post-load is a block the manifest predates, so the delta is NEGATIVE: the
+      // corpus legitimately carries one block more than the frozen part count.
+      why: 'added the acceptance-rubric mandate part post-load (new CLAUDE.md section)',
+      blocksRemoved: -1,
+    },
   ] as const;
 
   it('has one block per manifest part, less deliberate post-load merges', () => {

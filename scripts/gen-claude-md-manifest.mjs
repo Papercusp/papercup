@@ -168,6 +168,55 @@ const CLASSIFIED = {
   e337b6ddc39d8670: 'INS', // same warning, reworded by its author minutes later — a live example
   //                          of why these are keyed by content: the reword did NOT inherit the
   //                          old verdict, it came back UNCLASSIFIED for a fresh look.
+  // 2026-08-11, acceptance-rubrics-on-every-plan-2026-08-11 P-008 close-out — a day of fleet
+  // edits (08-10 → 08-11) accumulated 44 unclassified shas; the acceptance-rubric part-add made
+  // the corpus/manifest count disagree, surfacing the debt. Each entry below inherits the kind
+  // of the RANGES band its predecessor text was classified under (edited-in-place blocks), except
+  // the NEW acceptance-rubric section (L244-254), classified fresh: mandate → INV, procedure → REC.
+  '74ce21d375537f69': 'INV', // generated-file banner comment (header band, was [1,15] INV)
+  '66d8732b7f7fa2d9': 'INV', // "CLAUDE.md is GENERATED" edit-here-does-nothing warning (header band)
+  '7f03f82ccff20c50': 'INV', // nuqs "when in doubt" (nuqs band)
+  '27248f050cf1d0c8': 'INV', // sync reads via useSyncQuery (sync band)
+  '63244dd893eacece': 'INV', // retired-but-kept surfaces (retired band)
+  '70b9a0e2aa2d18cb': 'INV', // interactive PSU fast-redirect caveat (blocker-is-work band)
+  b46620700749e7d8: 'INV', // "not a paperwork nicety" (cross-lane-ruling band)
+  '5de19f8341082941': 'INV', // NEW: every plan ships a graded acceptance rubric — the mandate
+  c90bef7f972641c7: 'REC', // NEW: the rubrics:propose → grade → ship numbered procedure
+  e4209ee6aa342d4d: 'INV', // NEW: do NOT author rubric at plan-creation / during impl
+  '175012caaed9da5b': 'INV', // git blame / commit subject not evidence (git-blame band)
+  '3d3eab92f9c953e6': 'INV', // never tree-wide destructive git (destructive-git band)
+  '4bdc02653cd66cfc': 'INV', // pipeline_position is THE one call (pipeline band)
+  '9becd6ceaa007c37': 'INV', // plane block derived from changeSignal (state-plane band)
+  '170b31339bc7eec4': 'INV', // corroboration requires independent evidence (gate-premise band)
+  '170a81fc52423874': 'REC', // judged-sha cell result description (step-0 recipe band)
+  '9ffeab0cb6e5c504': 'INV', // never manual checkpoint-run in re-triage window (band [1250,1273])
+  ffe0e74c54cda1ae: 'INV', // verb now refuses with the answer (same band, tool-behavior update)
+  '7e4fb883d47f8fdc': 'INV', // :3070 = GREEN operator from release checkout (two-port band)
+  d155239fab627ef3: 'INV', // migrations only + atomic allocator (storage band)
+  '7174c313eb871f21': 'INV', // cwd reset outside repo tree (cd band)
+  '23b58d4bd089993d': 'INV', // never wait on self-matching process pattern (band [1690,1734])
+  '9dbad4b0b9a15867': 'REC', // ✅ proc-guard.mjs check first (tool recommendation)
+  '71e9c27df7d39add': 'INV', // pgrep -q does not exist here (band [1690,1734])
+  '92520ab4a43b5bfd': 'INV', // pgrep -x comm 15-char truncation (band [1690,1734])
+  '0cacb67d5e732ccb': 'REC', // ✅ two-sample cgroup delta (band [1735,1777] REC)
+  d861e922b67b7026: 'REC', // the cgroup recipe fenced code block (same recipe)
+  '7a6a4d30d5802618': 'REC', // every capability:bash job runs in its own scope (recipe caveat)
+  '1fb09dc254a11c4d': 'INS', // hand-rolled /proc walk false-idle evidence (band [1778,1797] INS)
+  ea8c5c1f0075bdf4: 'REC', // measure the whole process tree (recipe caveat)
+  '5b335f0b191b0d31': 'REC', // top -n1 usable; two-sample still preferred (recipe caveat)
+  '0e76e5d8a8c19c88': 'INV', // dark allowlist shrink-only (flags band)
+  '224a290b2a64b5fd': 'INV', // print-only affected probe emissions (tests band)
+  '7460e9852fc9b8c4': 'INV', // lint:tsc typechecks operator-core only (band [1908,1915])
+  '77b629143b1e13a8': 'INV', // required-field trigger (band [2016,2049])
+  e1a3af688dce9938: 'INV', // lint:required-field-strands (same band)
+  '1a4dd129d76af447': 'INV', // migration strands hand-rolled fixture (band [2050,2070])
+  b126206dfcdb7f8c: 'INV', // npm only — never pnpm/yarn (mandate)
+  c92a77e73c4f323f: 'INV', // mutation probe committed-by-sweep hazard (mutation-probe band)
+  '4096577550e801d4': 'INV', // adding-a-tool step 1 (band [2228,2284])
+  d4b8359815556547: 'INV', // root entrypoint queues behind pc-heavy (same band)
+  c70d45382ca9853d: 'INV', // editing a live tool counts too (same band)
+  '79b88796a185815c': 'INV', // limit bounds row lists, never aggregates (same band)
+  '0169fa20bd8c7bf6': 'INV', // censusLimit + truncatedByLimit fix pattern (same band)
 };
 
 const sha16 = (s) => createHash('sha256').update(s).digest('hex').slice(0, 16);
