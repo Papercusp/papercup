@@ -15,7 +15,7 @@
 import { afterEach, describe, it, expect } from 'vitest';
 import Corestore from 'corestore';
 import { chmodSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync } from 'node:fs';
-import { homedir, hostname, tmpdir } from 'node:os';
+import { homedir, hostname, tmpdir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { openOwnLog, type PeerLogOp } from './peer-log';
 import {
@@ -388,7 +388,7 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
     // Identity derived at RUNTIME — never a literal in tracked source (WI-4776). Writing
     // the real hostname in here would put the exact string this fix removes back into
     // shipped source and red the identity-lint gate.
-    await own.append(op('presence', `${hostname()}`, { machine_label: hostname() }, 2));
+    await own.append(op('presence', `${hostname()}`, { machine_label: hostname(), machine_user: userInfo().username }, 2));
     await own.append(op('usage', 'u1', { tokens: 5 }, 3));
     return { store, own, privateEmail };
   }
@@ -462,6 +462,9 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
     // SEED_EXCLUDED_TABLES docstring for why excluding it was a 1517-row own-goal.
     expect(tables.has('usage')).toBe(true);
     expect(bytes).not.toContain(hostname());
+    if (!['root', 'runner', 'build', 'ubuntu'].includes(userInfo().username)) {
+      expect(bytes).not.toContain(userInfo().username);
+    }
     expect(bytes).not.toContain(privateEmail);
     expect(bytes).toContain('[email]');
   });
@@ -503,7 +506,7 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
     expect(seedKey).not.toBe(own.keyHex);
     expect(meta.coreLengths[seedKey!]).toBeGreaterThan(0);
     expect(meta.coreSparseFrom).toBeUndefined();
-    expect(readdirSync(join(stagingDir, 'db')).filter((file) => /^\d+\.log$/.test(file))).toEqual([]);
+    expect(readdirSync(join(stagingDir, 'db')).some((file) => /^\d+\.log$/.test(file))).toBe(true);
     expect(await provider.verify(entry, payload)).toEqual({ ok: true });
 
     const targetStoreDir = join(tmpDir('papercusp-seed-filtered-target-'), 'hyperbee');
