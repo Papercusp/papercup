@@ -22,12 +22,11 @@ export default defineTool({
   name: 'p2p:trace',
   profile: 'engineer',
   description:
-    "Assemble the cross-machine P2P timeline for a pot (optionally one offer): receipts from BOTH sides (federated p2p_receipts facts, M21 offer-id threaded) + the local M15 refused-op counter snapshot. Read `kind`: 'refusal' is a refused action (carries refusalCode/missing); 'excused-breach' is a preemption-class interruption (X8), excluded from reliability signals; 'honored' is a SUCCESS fact, NOT a failure. Current D-029 honored receipts prove a post-start tool-backed first turn and synthesize `honored-first-turn-proven`; legacy launch-only receipts remain `honored-unverified`. No 'honored' receipt is ambiguous, not failed: the peer may predate that kind (EI-19333624101736074). With `offerId` on a delegated SPAWN request you also get `spawnRequestOutcome`, the synthesized verdict; `memberEvidenceAvailable:false` makes `indeterminate` mean \"unknowable from here\", never \"nobody honored it\".",
+    "Assemble the cross-machine P2P timeline for a pot, optionally one offer: federated receipts from both sides plus local refused-op counters. `kind`: `refusal` is a refused action (with refusalCode/missing); `excused-breach` is a preemption interruption excluded from reliability signals; `honored` is success, not failure. D-029 `honored` proves a post-start tool-backed first turn and yields `honored-first-turn-proven`; legacy launch-only receipts are `honored-unverified`. An `honored` receipt is not ambiguous or failed; older peers may lack the kind (EI-19333624101736074). For delegated spawns with `offerId`, `spawnRequestOutcome` is synthesized; `memberEvidenceAvailable:false` makes `indeterminate` mean unknowable here, never nobody honored it.",
   guidance: {
-    when: 'Debugging a refused/silent-looking cross-peer action ("why did my offer/wake/spawn not run on peer X?"): pass the pot (and offerId when you have one) to see every receipt both sides produced, ordered by event time, plus the unauthenticated-refusal counters. The receipt names the EXACT missing capability/budget.',
-    notWhen:
-      'Inspecting grant STATE (who may do what right now) — read the grants surface / checkP2pCapability instead; trace is the event TIMELINE, not the authorization table. General coord message history — coord:feed / coord:catch-up.',
-    chaining: 'p2p:trace (you) → fix the named gap (grant a capability, raise a cap, re-attest a device) → retry the action.',
+    when: 'Debug a refused or silent cross-peer offer/wake/spawn: pass the pot and optional offerId to see both sides\' receipts by event time plus unauthenticated-refusal counters; receipts name the exact missing capability/budget.',
+    notWhen: 'For grant state, use grants/checkP2pCapability; for coord history, use coord:feed/coord:catch-up. This is an event timeline.',
+    chaining: 'p2p:trace → fix the named gap → retry.',
     seeAlso: ['audit:list (the local audit rows the receipts also land in)'],
   },
   capability: 'coord:read',
