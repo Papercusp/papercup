@@ -1445,7 +1445,9 @@ async function sendOne(
           bodyDeliveredChars: bodyDelivery.bodyDeliveredChars,
           bodyDeliveryCap: bodyDelivery.bodyDeliveryCap,
           bodyCrowdedPageCap: bodyDelivery.bodyCrowdedPageCap,
-          ...(bodyDelivery.bodyMayBeTruncated ? { bodyReadRef: { msg_id: env.msg_id } } : {}),
+          ...(bodyDelivery.bodyMayBeTruncated
+            ? { bodyReadRef: { tool: 'coord:read', msg_id: env.msg_id } }
+            : {}),
         }
       : {}),
     // EI-18145: the reply was recorded (satisfying unanswered-directed /
@@ -1540,7 +1542,7 @@ async function effectiveFederationScope(
 export default defineTool({
   name: 'coord:send',
   description:
-    'Send one or many coordination messages. Single: {to, summary, expects, …}; many distinct: items:[…]. `to` accepts ownerIds, ["*"] fleet-scoped broadcasts, or ["human"] for the user. `expects` is REQUIRED — ack|answer|action|none, no default, so an FYI must say `none` explicitly (replaces `expectsReply`, now derived). Default injects; `wake` re-invokes a sleeping recipient (`required` reports a miss, `optimistic` needs `backstop`). Returns {ok, results:[{ok, to, msg_id? … | error}], counts}; failures are per-message.',
+    'Send one or many coordination messages. Single: {to, summary, expects, …}; many distinct: items:[…]. `to` accepts ownerIds, ["*"] fleet-scoped broadcasts, or ["human"] for the user. `expects` is REQUIRED — ack|answer|action|none, no default, so an FYI must say `none` explicitly (replaces `expectsReply`, now derived). Default injects; `wake` re-invokes a sleeping recipient (`required` reports a miss, `optimistic` needs `backstop`). Returns {ok, results:[{ok, to, msg_id? … | error}], counts}; body-bearing sends also report bodyTruncated plus authored/visible character counts and a coord:read pointer when the default inbox view may clip the body; failures are per-message.',
   guidance: {
     when: 'Sharing context or asking a question. Use items:[…] for many distinct messages. wake:\'required\' = recipient must act now, miss → recipient_absent. wake:\'optimistic\' = best-effort over a named backstop (`backstop:`). A running recipient already sees the inject — a wake is wasted on it.',
     notWhen: 'Human reply: just speak. File lock: locks:acquire. Don\'t wake for ambient notes (inject is default; wake = billable). ONE msg to MANY: single `to:[…]` — `items` is many-distinct-messages. Work transfer: coord:handoff. Without a backstop, wake:\'optimistic\' miss is SILENT — use wake:\'required\' + confirm woken≥1.',
