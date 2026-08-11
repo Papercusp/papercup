@@ -201,8 +201,8 @@ describe('awaitReplacementMember', () => {
     const res = await awaitReplacementMember({
       before: new Set(['a']),
       list: async () => [
-        { ownerId: 'a', startedAt: new Date(nowFn()), heartbeatAt: new Date(nowFn()) },
-        { ownerId: 'b', startedAt: new Date(nowFn()), heartbeatAt: new Date(nowFn()) },
+        { ownerId: 'a', startedAt: new Date(nowFn()), heartbeatAt: new Date(nowFn()), lastToolCallAt: null },
+        { ownerId: 'b', startedAt: new Date(nowFn()), heartbeatAt: new Date(nowFn()), lastToolCallAt: null },
       ],
       timeoutMs: 10_000,
       now: nowFn,
@@ -214,7 +214,9 @@ describe('awaitReplacementMember', () => {
     let t = nowFn();
     const res = await awaitReplacementMember({
       before: new Set(['a']),
-      list: async () => [{ ownerId: 'b', startedAt: new Date(0), heartbeatAt: new Date(nowFn() - 600_000) }],
+      list: async () => [
+        { ownerId: 'b', startedAt: new Date(0), heartbeatAt: new Date(nowFn() - 600_000), lastToolCallAt: null },
+      ],
       timeoutMs: 5_000,
       intervalMs: 1_000,
       now: () => t,
@@ -232,7 +234,9 @@ describe('awaitReplacementMember', () => {
       list: async () => {
         call += 1;
         if (call === 1) throw new Error('transient');
-        return [{ ownerId: 'b', startedAt: new Date(0), heartbeatAt: new Date(times[call - 1] ?? 0) }];
+        return [
+          { ownerId: 'b', startedAt: new Date(0), heartbeatAt: new Date(times[call - 1] ?? 0), lastToolCallAt: null },
+        ];
       },
       timeoutMs: 10_000,
       intervalMs: 1_000,

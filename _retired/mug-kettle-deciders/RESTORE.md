@@ -78,6 +78,31 @@ call-site comment claimed "MUG_WARM_SESSION, default OFF" and was **stale by fiv
 role is spawned), NOT the flag being off. If the Mug tier is ever restored, this module's
 warm path becomes live again the moment the flag key exists.
 
+### `cup-spawn-health-watchdog` (P-059 slice 4)
+
+Retired: `cup-spawn-health-watchdog.ts` + `cup-spawn-health-watchdog.test.ts`. **1 live
+importer at retirement.** It alarmed (WI-36299) when `cup:spawn` began failing — a monitor
+whose entire subject is the retired tier: with `MUG_KETTLE_SYSTEM` off, `cup:spawn` refuses
+by design, so the streak it watched for can no longer occur.
+
+| importer | symbol | what happened |
+|---|---|---|
+| `dbos/bootstrap.ts` | `startCupSpawnHealthWatchdog` | The best-effort start block (its own `try`/`catch`, plus the WI-36299 rationale paragraph above it) was deleted from `startDbosBackgroundWork`. Its three sibling watchdogs in that block — green-stall, git-sync-stall, origin-freshness — are untouched and live. |
+
+Also dead with it:
+
+- The env kill-switch **`PAPERCUSP_CUP_SPAWN_HEALTH_WATCHDOG`** — read only by this module,
+  so nothing consults it after the move. Restoring the module restores the switch.
+- Its **`spawn-role|cup|…` entry** in `scripts/ungated-mug-kettle-baseline.json`, pruned
+  because the baseline is shrink-only and the file is no longer an active-tree entry point.
+
+⚠ Two surviving mentions are deliberate and must NOT be read as importers:
+`harness/git-sync/quarantine-import-guard.ts` names this file in a **doc comment recording a
+real past incident** (EI-19932544083689229 — a NUL-byte quarantine of the source whose clean
+test sibling committed anyway, red-pinning the gate ~6h), and its test's fixtures use
+**fictional `lib/…` paths**, not the real `lib/pot/…` one. Both are prose/synthetic strings
+with no resolvable import, so neither breaks and neither needs restoring.
+
 <!-- Later P-059 slices append rows here. Keep the "why it retired" column
      evidence-bearing (importer count at retirement), not just a restatement
      of the file name. -->

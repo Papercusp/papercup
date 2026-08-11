@@ -84,7 +84,6 @@
     "spawn-role|cup|packages/operator-core/lib/iq-battery/bee-instance.ts",
     "spawn-role|cup|packages/operator-core/lib/modes/registry.ts",
     "spawn-role|cup|packages/operator-core/lib/papercup/papercup-deep-delegate-deps.ts",
-    "spawn-role|cup|packages/operator-core/lib/pot/cup-spawn-health-watchdog.ts",
     "spawn-role|cup|packages/operator-core/lib/pot/cup-wake-efficiency.ts",
     "spawn-role|cup|packages/operator-core/lib/pot/placement-watchdog.ts",
     "spawn-role|cup|packages/operator-core/lib/pot/soak-report.ts",

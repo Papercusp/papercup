@@ -376,20 +376,6 @@ export async function startDbos(): Promise<void> {
     // reaping stuck fires). Same process-level rationale; reads git-sync routine health.
     const { startGitSyncStallWatchdog } = await import('../release/git-sync-stall-watchdog');
     startGitSyncStallWatchdog(getOrgPg().sql);
-    // Sibling (WI-36299): cup:spawn had been failing at 100% for 19 days with NO alarm —
-    // every discovery was incidental (an agent tried to place a cup, it failed, only then
-    // did anyone look). placement-watchdog.ts deliberately does NOT escalate an
-    // infra-attributed placement loss per item (see evaluatePlacement's `infraAttributed`
-    // doc comment) — a systemic spawn outage produced zero alarms there BY DESIGN. This
-    // reads harness_shared.spawned_agents directly for a consecutive-failure streak, same
-    // process-level rationale as the checks above. Kill-switch:
-    // PAPERCUSP_CUP_SPAWN_HEALTH_WATCHDOG='0'.
-    try {
-      const { startCupSpawnHealthWatchdog } = await import('../pot/cup-spawn-health-watchdog');
-      startCupSpawnHealthWatchdog(getOrgPg().sql);
-    } catch (e) {
-      console.warn('[cup-spawn-health-watchdog] failed to start (non-fatal):', e instanceof Error ? e.message : e);
-    }
     // Sibling (WI-5607, EI-13924 follow-up): the ONE class the above two watchdogs cannot
     // see — a BRIDGED hive whose member git-sync keeps advancing local HEAD every tick while
     // the bridge writer's egress to GitHub origin is actually stuck. Independent of the
