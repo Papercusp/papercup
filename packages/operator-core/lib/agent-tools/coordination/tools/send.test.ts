@@ -1255,6 +1255,22 @@ describe('coord:send args schema (EI-7838: missing-summary must not be masked by
     }
   });
 
+  it('body-only completion notice remains a clear summary refusal even with valid body and wake fields', () => {
+    const r = tool.args.safeParse({
+      to: ['bee-1'],
+      expects: 'none',
+      wake: 'required',
+      body: [{ text: 'completion details', forYouBecause: { relation: 'other', note: 'you own the follow-up' } }],
+    });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      const msgs = r.error.issues.map((i) => i.message).join(' | ');
+      expect(r.error.issues.some((i) => i.path.join('.') === 'summary')).toBe(true);
+      expect(msgs).toMatch(/needs `summary`/);
+      expect(msgs).toMatch(/optional long-form text/i);
+    }
+  });
+
   it('a fully valid single-message payload still parses cleanly through the preprocess wrapper', () => {
     const r = tool.args.safeParse({ to: ['bee-1'], summary: 'hi', expects: 'none', wake: true });
     expect(r.success).toBe(true);
