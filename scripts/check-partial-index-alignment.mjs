@@ -71,7 +71,7 @@ import { readFileSync, readdirSync, statSync } from 'node:fs';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { isLiveCodeAt, stripCommentsOnly, stripSqlComments } from './lib/strip-comments-and-strings.mjs';
+import { isLiveCodeAt, stripCommentsAndStrings, stripSqlComments } from './lib/strip-comments-and-strings.mjs';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(HERE, '..');
@@ -181,8 +181,10 @@ const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  * attribution, since offsets inside a phantom point wherever the swallow ended up. It also
  * inflates the reassuring "N SQL statements scanned" line this lint prints on success.
  *
- * Comments only (`stripCommentsOnly`), never `stripCommentsAndStrings`: the corpus IS template
- * literals, and blanking string content would blank the SQL this lint exists to read.
+ * The code mask is used ONLY to decide whether a tag anchor is live code. The SQL body is always
+ * read from the raw source, because the corpus IS template literals and blanking their content
+ * would blank the SQL this lint exists to read. Using the strings-aware mask for anchors also
+ * prevents a `sql\`` mention inside an ordinary JavaScript string from becoming a phantom tag.
  *
  * @param {string} src - TypeScript/JavaScript source text
  * @param {string} [fileName] - real path, used only to pick a ScriptKind for the mask parse
@@ -190,14 +192,28 @@ const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
  */
 export function extractSqlTemplates(src, fileName) {
   const out = [];
-  const masked = stripCommentsOnly(src, fileName);
+  const masked = stripCommentsAndStrings(src, fileName);
   const tag = /\bsql\s*(?:<[^`>]*>)?\s*`/g;
-  let m;
-  while ((m = tag.exec(src))) {
-    // A tag inside a comment is prose, not code. Scan the RAW source for the body so every
-    // srcIndex still addresses the real file; the mask decides only whether to start at all.
-    if (!isLiveCodeAt(src, masked, m.index)) continue;
-    const start = m.index + m[0].length;
+  const tagAt = /^\bsql\s*(?:<[^`>]*>)?\s*`/;
+  const matchTagAt = (index) => {
+    // The sliced regex cannot see the character immediately before `index`, so restore the
+    // word-boundary check that the full-source regex gets for free (`not_sql` is not `sql`).
+    if (index > 0 && /\w/.test(src[index - 1])) return null;
+    return tagAt.exec(src.slice(index));
+  };
+
+  /**
+   * Parse one SQL template, folding SQL-tagged templates found inside `${...}` into the same
+   * logical statement. A parent query commonly supplies the presence guard while a conditional
+   * fragment supplies the comparison; scanning the child alone would therefore report a false
+   * positive, while dropping it (the old behavior) misses a real query entirely.
+   *
+   * @param {number} tagStart - offset of the `sql` token in the original source
+   * @param {number} tagLength - length through the opening backtick
+   * @returns {{ text: string, srcIndex: number[], endIndex: number } | null}
+   */
+  function parseTemplate(tagStart, tagLength) {
+    const start = tagStart + tagLength;
     let i = start;
     let depth = 0;
     let text = '';
@@ -206,6 +222,17 @@ export function extractSqlTemplates(src, fileName) {
       text += ch;
       srcIndex.push(at);
     };
+    const appendNested = (nested) => {
+      // Keep a token boundary between the parent SQL and the nested fragment. The exact SQL
+      // syntax is not needed by findMisalignedUses, but adjacency could otherwise join tokens
+      // across the interpolation and change which side of a comparison an accessor appears on.
+      push(' ', nested.tagStart);
+      for (let n = 0; n < nested.text.length; n++) {
+        push(nested.text[n], nested.srcIndex[n] ?? nested.tagStart);
+      }
+      push(' ', nested.endIndex - 1);
+    };
+
     for (; i < src.length; i++) {
       const c = src[i];
       if (c === '\\') {
@@ -217,21 +244,43 @@ export function extractSqlTemplates(src, fileName) {
       if (c === '$' && src[i + 1] === '{') {
         depth++;
         i++;
-        // interpolation reads as a bound parameter; every token char maps to the '$'
-        for (const ch of ' ? ') push(ch, m.index);
+        // interpolation reads as a bound parameter; every token char maps to the `${` anchor
+        for (const ch of ' ? ') push(ch, i - 1);
         continue;
       }
       if (depth > 0) {
+        // A nested sql tag is code inside the interpolation. Parse and consume its complete
+        // template so its backtick and `${...}` braces cannot terminate the parent scan.
+        const nestedMatch = matchTagAt(i);
+        if (nestedMatch && isLiveCodeAt(src, masked, i)) {
+          const nested = parseTemplate(i, nestedMatch[0].length);
+          if (nested) {
+            appendNested({ ...nested, tagStart: i });
+            i = nested.endIndex - 1;
+            continue;
+          }
+        }
         if (c === '{') depth++;
         else if (c === '}') depth--;
         continue;
       }
-      if (c === '`') break;
+      if (c === '`') {
+        return { text, srcIndex, endIndex: i + 1, tagStart };
+      }
       push(c, i);
     }
-    if (i < src.length) {
-      out.push({ text, srcIndex });
-      tag.lastIndex = i + 1;
+    return null;
+  }
+
+  let m;
+  while ((m = tag.exec(src))) {
+    // A tag inside a comment is prose, not code. Scan the RAW source for the body so every
+    // srcIndex still addresses the real file; the mask decides only whether to start at all.
+    if (!isLiveCodeAt(src, masked, m.index)) continue;
+    const parsed = parseTemplate(m.index, m[0].length);
+    if (parsed) {
+      out.push({ text: parsed.text, srcIndex: parsed.srcIndex });
+      tag.lastIndex = parsed.endIndex;
     }
   }
   return out;

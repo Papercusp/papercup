@@ -40,8 +40,10 @@ export function parseGuardedIndexes(schemaSrc: string): Array<{
  * attribution, since offsets inside a phantom point wherever the swallow ended up. It also
  * inflates the reassuring "N SQL statements scanned" line this lint prints on success.
  *
- * Comments only (`stripCommentsOnly`), never `stripCommentsAndStrings`: the corpus IS template
- * literals, and blanking string content would blank the SQL this lint exists to read.
+ * The code mask is used ONLY to decide whether a tag anchor is live code. The SQL body is always
+ * read from the raw source, because the corpus IS template literals and blanking their content
+ * would blank the SQL this lint exists to read. Using the strings-aware mask for anchors also
+ * prevents a `sql\`` mention inside an ordinary JavaScript string from becoming a phantom tag.
  *
  * @param {string} src - TypeScript/JavaScript source text
  * @param {string} [fileName] - real path, used only to pick a ScriptKind for the mask parse

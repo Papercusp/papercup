@@ -246,6 +246,38 @@ describe('line attribution survives interpolation', () => {
   });
 });
 
+describe('nested sql fragments inside interpolations stay in the parent statement', () => {
+  it('does not flag a child comparison when the parent supplies the presence guard', () => {
+    const src =
+      "const q = sql`SELECT 1 FROM t WHERE body ? 'related_msg_id' AND ${condition ? sql`body->>'related_msg_id' = ${id}` : sql``}`;";
+    const templates = extractSqlTemplates(src, 'nested-fragment.ts');
+    expect(templates).toHaveLength(1);
+    expect(templates[0]!.text).toContain("body->>'related_msg_id'");
+    expect(findMisalignedUses(templates[0]!.text, RELATED)).toHaveLength(0);
+  });
+
+  it('finds a child comparison that the parent does not guard and maps it to the child line', () => {
+    const src = [
+      'const q = sql`SELECT 1 FROM t',
+      "  WHERE ${condition ? sql`body->>'related_msg_id' = ${id}` : sql``}",
+      '`;',
+    ].join('\n');
+    const templates = extractSqlTemplates(src, 'nested-fragment.ts');
+    expect(templates).toHaveLength(1);
+    const hits = findMisalignedUses(templates[0]!.text, RELATED);
+    expect(hits).toHaveLength(1);
+    expect(src.slice(0, templates[0]!.srcIndex[hits[0]!]!).split('\n')).toHaveLength(2);
+  });
+
+  it('does not mistake a similarly named tagged template for a nested sql fragment', () => {
+    const src =
+      "const q = sql`SELECT 1 FROM t WHERE ${condition ? not_sql`body->>'related_msg_id' = ${id}` : sql``}`;";
+    const templates = extractSqlTemplates(src, 'nested-fragment.ts');
+    expect(templates).toHaveLength(1);
+    expect(findMisalignedUses(templates[0]!.text, RELATED)).toHaveLength(0);
+  });
+});
+
 describe('the self-reference exclusion stays NARROW', () => {
   // This lint necessarily scans a tree containing its own test, whose fixtures are
   // deliberately-vulnerable SQL. It excludes files that IMPORT it. The tempting future
