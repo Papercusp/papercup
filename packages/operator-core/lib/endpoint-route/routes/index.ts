@@ -363,6 +363,7 @@ import adminLlmTestsScenarios from './admin/llm-tests-scenarios';
 import adminPlans from './admin/plans';
 import adminCoord from './admin/coord';
 import adminMode from './admin/mode';
+import adminAccountsPin from './admin/accounts-pin';
 import adminCoordInboxReply from './admin/coord-inbox-reply';
 import adminCoordination from './admin/coordination';
 import adminComms from './admin/comms';
@@ -839,6 +840,7 @@ export const ALL_ROUTES: ReadonlyArray<AnyRoute> = [
   ...flatten(adminPlans as AnyRoute[]),
   ...flatten(adminCoord as AnyRoute[]),
   ...flatten(adminMode as AnyRoute[]),
+  ...flatten(adminAccountsPin as AnyRoute[]),
   ...flatten(adminCoordInboxReply as AnyRoute[]),
   ...flatten(adminCoordination as AnyRoute[]),
   ...flatten(adminComms as AnyRoute[]),
