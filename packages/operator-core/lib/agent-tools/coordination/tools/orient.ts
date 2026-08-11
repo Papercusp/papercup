@@ -177,6 +177,32 @@ export interface OrientMemoryHit {
   id?: unknown;
   memory?: string;
   score?: unknown;
+  /** EI-20113865649946366: this hit's body was cut at MEMORY_TEXT_CAP. Present ONLY
+   *  when clipped, so its absence positively means "this is the whole fact". */
+  truncated?: true;
+  /** The body's real length, so the reader can judge how much is missing. */
+  fullChars?: number;
+}
+
+/** Disclosure for a claimable list that was cut. EI-20113865649946366.
+ *
+ *  `total` and `truncatedByLimit` are deliberately NOT interchangeable, and a reader
+ *  should branch on which one is present: `total` is a measured population, while
+ *  `truncatedByLimit` is only "the fetch came back full, so assume more". Collapsing
+ *  them into one optimistic number is the defect this type exists to prevent. */
+export interface OrientClaimableTruncated {
+  /** Rows actually in `claimable` after every filter. */
+  shown: number;
+  /** Authoritative population, when one was measured. Absent ⇒ genuinely unknown. */
+  total?: number;
+  /** What `total` counts — stops it being read as "everything claimable". */
+  totalScope?: string;
+  /** The row cap this call fetched under. */
+  limit?: number;
+  /** Set when the fetch returned a full page and no authoritative count exists. */
+  truncatedByLimit?: true;
+  /** The verb(s) that return the rest. A marker without this is half a disclosure. */
+  more: string;
 }
 
 export interface OrientResult {
@@ -200,6 +226,12 @@ export interface OrientResult {
    *  and is authoritative — a `not_claimable` bounce off a stale candidate is
    *  expected and cheap, not a bug to chase. */
   claimable: unknown[];
+  /** Present ONLY when the claimable list above is genuinely incomplete — absence is a
+   *  positive statement that nothing was cut, which is what makes the marker readable.
+   *  `total` appears only when an authoritative count was available; the fallback legs
+   *  carry `truncatedByLimit` instead, because they cannot know the population and a
+   *  fabricated total is worse than an admitted bound. EI-20113865649946366. */
+  claimableTruncated?: OrientClaimableTruncated;
   /** coord:inbox folded down to its summary + the most-recent bounded entries.
    *  EI-18667514339699744: `entries` is aliased alongside `recent` (same array,
    *  same reference) so a caller reading either coord:orient's or coord:inbox's
@@ -227,6 +259,11 @@ export interface OrientResult {
     withheldBudget?: number;
     /** P-003: the non-exhaustive advisory (ORIENT_MEMORY_NOTE) — present iff hits>0. */
     note?: string;
+    /** EI-20113865649946366: how many DELIVERED hits had their body clipped, plus the
+     *  verb that returns the full text. Distinct from `note`, which says the RECALL is
+     *  non-exhaustive (other facts may exist) — this says the facts you WERE given are
+     *  themselves cut. Present only when at least one delivered hit was clipped. */
+    bodiesTruncated?: { hits: number; cap: number; more: string };
     degraded?: boolean;
     degradedReason?: string;
   } | null;
@@ -702,6 +739,17 @@ export async function composeOrient(
       ...extra,
     });
   let list: unknown;
+  /** EI-20113865649946366 — the AUTHORITATIVE issue-family claimable population, taken
+   *  from the oracle's own `claimableCount` (work_items/claimable.ts: "rows passing
+   *  spec_match AND every claim floor"). It is NOT `list.length`: that is bounded by
+   *  `claimableLimit` above, and reporting it as a total is how a limit-bounded 20 gets
+   *  read as "there are 20" when the oracle's count has been ~1677 on this harness.
+   *  The oracle already returns this in the SAME response we fetch the rows from, so
+   *  keeping it costs no extra round-trip — `unwrapRows` was simply discarding it.
+   *  Stays `undefined` on the legs where no oracle answered (no-harness, oracle
+   *  failure), which is why the disclosure below degrades to a boundedness marker
+   *  rather than inventing a total it cannot know. */
+  let claimableOracleTotal: number | undefined;
   if (monitor) {
     // EI-8300: a monitor tick doesn't self-select work — skip the claimable read
     // entirely (no round-trip), not just cap its output.
@@ -709,20 +757,26 @@ export async function composeOrient(
   } else if (!args.harness) {
     list = await listLane({});
   } else {
-    const [issueRows, featureRows] = await Promise.all([
+    const [issueRes, featureRows] = await Promise.all([
       call('work_items:claimable', {
         harness: args.harness,
         limit: claimableLimit,
         // Only override the oracle's state floor when the caller asked for one —
         // otherwise the resolved claim-spec's own states win, as get_next uses them.
         ...(args.claimableState ? { states: [args.claimableState] } : {}),
-      })
-        .then(unwrapRows)
-        .catch(() => null),
+      }).catch(() => null),
       listLane({ kind: 'feature' })
         .then(unwrapRows)
         .catch(() => null),
     ]);
+    // Unwrap AFTER capturing the count — the count lives on the envelope `unwrapRows`
+    // throws away. `null` (the caught failure) must stay distinguishable from `[]`
+    // (an oracle that answered with no rows), so it is not routed through unwrapRows.
+    const issueRows = issueRes === null ? null : unwrapRows(issueRes);
+    const oracleCount = (issueRes as { claimableCount?: unknown } | null)?.claimableCount;
+    if (typeof oracleCount === 'number' && Number.isFinite(oracleCount)) {
+      claimableOracleTotal = oracleCount;
+    }
     if (issueRows === null) {
       // Oracle unavailable ⇒ previous behaviour, never an empty backlog.
       list = await listLane({});
@@ -813,10 +867,48 @@ export async function composeOrient(
     }
   }
 
+  /** EI-20113865649946366 (owner criterion, 2026-08-10: a trim must announce itself
+   *  AND name the fetch path — a DISCLOSED trim is fine, a SILENT one is the bug).
+   *
+   *  Two different trims narrow this list and only one of them can know the real
+   *  population, so this deliberately emits two different shapes rather than one
+   *  uniform-looking number:
+   *    · oracle leg  → `total` is authoritative (the oracle counted the whole lane).
+   *    · fallback legs → only `truncatedByLimit`. Asking for N and getting N back is
+   *      evidence that MORE exist; it is not a count of them. Publishing `shown` as a
+   *      total there would be the very defect this fixes, one layer down.
+   *
+   *  `total` is issue-family scoped because that is what the oracle counts — saying so
+   *  costs one field and stops the number being read as "everything claimable". */
+  let claimableTruncated: OrientClaimableTruncated | undefined;
+  if (!monitor) {
+    const shown = claimable.length;
+    // The FETCH was bounded (pre-observe count), which is the honest signal for
+    // "there may be more" — `claimable` itself is post-filter and reads short.
+    const fetchHitLimit = claimableRaw.length >= claimableLimit;
+    if (typeof claimableOracleTotal === 'number' && claimableOracleTotal > shown) {
+      claimableTruncated = {
+        shown,
+        total: claimableOracleTotal,
+        totalScope: 'issue-family (bug/change/task) — the feature lane is fetched separately and not counted here',
+        limit: claimableLimit,
+        more: 'work_items:claimable { harness } for the authoritative count + per-floor breakdown; scheduler:get_next or work_items:list for more rows',
+      };
+    } else if (claimableOracleTotal === undefined && fetchHitLimit) {
+      claimableTruncated = {
+        shown,
+        truncatedByLimit: true,
+        limit: claimableLimit,
+        more: 'work_items:claimable { harness } for the authoritative count; work_items:list for more rows',
+      };
+    }
+  }
+
   const result: OrientResult = {
     ok: true,
     me,
     claimable,
+    ...(claimableTruncated ? { claimableTruncated } : {}),
     // EI-18667514339699744: alias `entries` alongside `recent` — coord:inbox's own
     // key name — so a caller who reads either name off this fold gets real rows
     // instead of a silent empty array on a mismatched accessor.
@@ -956,11 +1048,24 @@ export async function composeOrient(
         ...(args.harness ? { harness_slug: args.harness } : {}),
         limit: memLimit,
       })) as { results?: OrientMemoryHit[]; degraded?: boolean; reason?: string; degraded_reason?: string } | undefined;
-      const rawHits = (mem?.results ?? []).slice(0, memLimit).map((r) => ({
-        id: r.id,
-        memory: typeof r.memory === 'string' ? r.memory.slice(0, MEMORY_TEXT_CAP) : undefined,
-        score: r.score,
-      }));
+      // EI-20113865649946366: a body cut at MEMORY_TEXT_CAP (200) used to end
+      // mid-sentence with NOTHING saying so, so a clipped fact read as the whole fact.
+      // `ORIENT_MEMORY_NOTE` does not cover this: it says the RECALL is non-exhaustive
+      // (there may be other facts), which is a different claim from "the text of THIS
+      // fact is cut". memory/injection.ts already stamps this same disclosure on the
+      // same underlying bodies — this brings orient's fold in line with it.
+      // Per-hit stays minimal (a flag + the real length); the fetch verb rides once on
+      // the fold below rather than being repeated on every hit.
+      const rawHits = (mem?.results ?? []).slice(0, memLimit).map((r) => {
+        const full = typeof r.memory === 'string' ? r.memory : undefined;
+        const clipped = full !== undefined && full.length > MEMORY_TEXT_CAP;
+        return {
+          id: r.id,
+          memory: clipped ? full.slice(0, MEMORY_TEXT_CAP) : full,
+          score: r.score,
+          ...(clipped ? { truncated: true as const, fullChars: full.length } : {}),
+        };
+      });
       // EI-9031 markers first — the floor below is REGIME-SCOPED on them.
       const memDegraded = mem?.degraded === true;
       const memDegradedReason = mem?.degraded_reason ?? mem?.reason;
@@ -992,12 +1097,25 @@ export async function composeOrient(
           }
         })();
       }
+      // Counted over ADMITTED hits, not raw: a clipped hit the budget then dropped is
+      // already reported by `withheldBudget`, and counting it here too would overstate
+      // what the caller is actually holding.
+      const clippedHits = admitted.reduce((n, h) => n + (h.truncated === true ? 1 : 0), 0);
       result.memory = {
         query: memQuery,
         hits: admitted,
         ...(withheld > 0 ? { withheld } : {}),
         ...(filteredLowScore > 0 ? { filteredLowScore } : {}),
         ...(withheldBudget > 0 ? { withheldBudget } : {}),
+        ...(clippedHits > 0
+          ? {
+              bodiesTruncated: {
+                hits: clippedHits,
+                cap: MEMORY_TEXT_CAP,
+                more: 'memory:search { query } — the hits carry the full body; each clipped hit here marks `truncated` + `fullChars`',
+              },
+            }
+          : {}),
         // P-003: the non-exhaustive advisory rides ONLY a non-empty fold (zero
         // noise on the empty path).
         ...(admitted.length > 0 ? { note: ORIENT_MEMORY_NOTE } : {}),
@@ -1414,15 +1532,15 @@ export async function composeOrient(
       label: 'orient:announcedGates',
     });
     const anns = annsResult.value ?? [];
-    const visible = anns
-      .filter((a) =>
-        announcementVisibleTo(a, {
-          fleetSlug,
-          planSlug: args.planSlug ?? null,
-          harnessSlug: args.harness ?? null,
-        }),
-      )
-      .slice(0, 8);
+    const visibleAll = anns.filter((a) =>
+      announcementVisibleTo(a, {
+        fleetSlug,
+        planSlug: args.planSlug ?? null,
+        harnessSlug: args.harness ?? null,
+      }),
+    );
+    const ANNOUNCED_GATES_FOLD = 8;
+    const visible = visibleAll.slice(0, ANNOUNCED_GATES_FOLD);
     if (visible.length > 0) {
       result.announcedGates = visible.map((a) => ({
         event: a.eventKey,
@@ -1431,6 +1549,18 @@ export async function composeOrient(
         announcedBy: a.subscriberId,
         expires_ts: a.expiresTs,
       }));
+      // EI-20113865649946366: this fold is the mechanism by which an agent DISCOVERS
+      // which gate to park on, so a gate dropped past the fold is not cosmetic — the
+      // agent never learns the key exists and can wait on the wrong thing (or nothing).
+      // `visibleAll` is the already-visibility-filtered population, so this total is a
+      // real count of gates addressed to THIS caller, not the global announcement table.
+      if (visibleAll.length > visible.length) {
+        result.announcedGatesTruncated = {
+          shown: visible.length,
+          total: visibleAll.length,
+          more: 'events:catalog for the full set of gates visible to you',
+        };
+      }
     }
   } catch {
     /* best-effort — never break orientation */
