@@ -323,7 +323,75 @@ export const rubricTemplateDataSchema = z
         'EI-12932 first-party-bundle upgrade tracking: a stable hash of this rubric\'s bundle-sourced fields (characteristic/criteria/ratingScale/methodRef/description) as of the last first-party seed/upgrade write. Absent for a rubric never touched by the seeder, or one seeded before this field existed. Compared against a freshly computed hash of the LIVE stored fields to detect drift since that write — see rubricsNeedingSeed (cupboard/rubric-store.ts) for the decision core this guards.',
       ),
   })
-  .strict();
+  .strict()
+  // Per-kind validation profile (acceptance-rubrics-on-every-plan-2026-08-11 P-001).
+  // Fail-loud teaching errors, per the D-004 theme: a wrong-kind field combination is a
+  // caller mistake to explain, never to silently strip or tolerate.
+  .superRefine((d, ctx) => {
+    const kind = rubricKindOf(d);
+    if (kind === 'standard') {
+      if (d.subjectPlan !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['subjectPlan'],
+          message:
+            "subjectPlan is acceptance-kind only — a standard rubric is a reusable library standard, not a per-plan definition-of-done. Set kind:'acceptance' if this rubric belongs to one plan",
+        });
+      }
+      if (d.classRef !== undefined) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['classRef'],
+          message:
+            "classRef is acceptance-kind only — a standard rubric IS the class; it cannot reference one. Set kind:'acceptance' if this rubric builds on a class rubric",
+        });
+      }
+      if (d.criteria.length === 0) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['criteria'],
+          message: 'a standard rubric requires at least one criterion',
+        });
+      }
+      d.criteria.forEach((c, i) => {
+        for (const field of ['model', 'method', 'driftMarkers'] as const) {
+          if (c[field] === undefined) {
+            ctx.addIssue({
+              code: z.ZodIssueCode.custom,
+              path: ['criteria', i, field],
+              message: `standard-kind criterion '${c.key}' requires ${field} (only acceptance-kind criteria may omit it)`,
+            });
+          }
+        }
+      });
+    } else {
+      // kind === 'acceptance'
+      if (!d.subjectPlan) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['subjectPlan'],
+          message:
+            "an acceptance rubric requires subjectPlan (the slug of the plan it is the definition-of-done for) — without it the completion gate cannot find it and the rubric is orphaned",
+        });
+      }
+      if (d.criteria.length === 0 && !d.classRef) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['criteria'],
+          message:
+            'an acceptance rubric needs bespoke criteria OR a classRef (plan D-009: only a class-rubric reference may stand alone, e.g. investigation-only plans referencing the investigation class rubric)',
+        });
+      }
+      if (d.releaseGating) {
+        ctx.addIssue({
+          code: z.ZodIssueCode.custom,
+          path: ['releaseGating'],
+          message:
+            'releaseGating is standard-kind only — an acceptance rubric is one-shot and watchdog-exempt (plan D-008); a release bar must be a standard rubric',
+        });
+      }
+    }
+  });
 
 /** The validated structured-data type for a `rubric` template instance. */
 export type RubricTemplateData = z.infer<typeof rubricTemplateDataSchema>;
