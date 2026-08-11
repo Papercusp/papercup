@@ -251,7 +251,7 @@ export default defineTool({
       // per-edit hook (file-lock-guard.ts) and git-sync already ride out under
       // load; the explicit `locks:acquire` MCP tool never had it wired in, so a
       // background-sync contention dip on a busy workspace produced a
-      // user-visible `workspace_contended` failure with NO holder to blame —
+      // user-visible `workspace_contended` failure with an UNKNOWN holder —
       // exactly the routine-background-sync symptom this item reported.
       const routed = await acquireWithContentionRetry(() =>
         routeFileLockOp<Awaited<ReturnType<typeof tryAcquire>> & { sha_token?: ShaTokenGrant }>(
