@@ -1452,9 +1452,20 @@ export const MCP_SERVER_CAPABILITIES = {
  *
  * Disabled via PAPERCUSP_SU_MEMORY_INJECTION=off when needed.
  */
-const PAPERCUSP_MCP_INSTRUCTIONS = `At the start of any session-with-context (a user task you have not
-seen this run), bootstrap in ONE call:
+const PAPERCUSP_MCP_INSTRUCTIONS = `Get oriented ONCE per session-with-context (a user task you have
+not seen this run) — by whichever of these two routes your host gave you:
 
+  **ROUTE A — an \`## Orientation\` block already arrived in this turn.** Your held
+  work-items, unanswered directed messages, and whether a wake source (armed loop)
+  exists came WITH it: the server read them for you. Do NOT spend a
+  \`coord:orient\` round-trip re-fetching them — you are oriented. Claim your lane
+  with \`coord:declare-intent { intent, planItems }\`, and reach for
+  \`coord:orient\` only for what that block deliberately EXCLUDES: the claimable
+  backlog, full inbox bodies, a mem0 recall. Judge by PRESENCE ONLY — the block is
+  emitted just when that state CHANGES, and only to hosts that inject it, so its
+  ABSENCE never means "you are oriented".
+
+  **ROUTE B — no such block.** Bootstrap in ONE call:
   **\`coord:orient { intent }\`** — pass your one-line intent for the
   task. In a SINGLE round-trip it returns your current assignments
   (+ lane + load), the claimable backlog, your unread inbox summary,
