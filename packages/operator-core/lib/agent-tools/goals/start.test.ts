@@ -294,6 +294,36 @@ describe('the kickoff brief', () => {
     expect(brief).not.toContain('portfolio management');
     expect(brief).toContain('mode contract');
   });
+
+  // ── EI-20185528589678586 ────────────────────────────────────────────────
+  // This brief was once delivered ~26h after it was written, to a session that
+  // was not the goal's agent and held no `overlay:goal` row. Its two standing
+  // claims — that the goal was JUST started, and that the contract HAD been
+  // delivered — were both false on arrival, and neither was checkable from the
+  // text. These two tests pin the fix: the brief now reports what it knows
+  // (when it was written) and makes the rest falsifiable.
+  it('stamps when it was written instead of claiming the goal was just started', () => {
+    const brief = buildGoalKickoffBrief({
+      goalId: 'g-1',
+      title: 't',
+      writtenAt: new Date('2026-08-10T17:06:00Z'),
+    });
+    expect(brief).toContain('2026-08-10T17:06:00Z');
+    // The failing phrasing: a brief cannot know how long it will sit before it
+    // is read, so it must not assert freshness on the reader's behalf.
+    expect(brief).not.toContain('just started');
+  });
+
+  it('tells a reader holding no contract to STOP, rather than asserting one was delivered', () => {
+    const brief = buildGoalKickoffBrief({ goalId: 'g-1', title: 't' });
+    // Where to look — an agent can check this in one call and catch the absence.
+    expect(brief).toContain('modes[].contract');
+    expect(brief).toContain('mode:get');
+    expect(brief).toMatch(/STOP/);
+    // The unfalsifiable form: a bare statement that it already arrived reads as
+    // fact, so an agent that never received one has no cue anything is wrong.
+    expect(brief).not.toContain('(delivered with your orient)');
+  });
 });
 
 // ── EI-20049757392342975 ──────────────────────────────────────────────────

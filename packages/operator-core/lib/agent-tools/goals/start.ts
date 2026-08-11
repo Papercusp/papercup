@@ -58,6 +58,30 @@ import { setMode } from '../../modes/store';
  * What this brief carries is the part the contract CANNOT know: which goal,
  * stated in the owner's own words, with the two constraints GOAL mode requires
  * and this form is now the only place that enforces.
+ *
+ * EI-20185528589678586 — TWO THINGS THIS BRIEF MUST NOT ASSERT ABOUT ITSELF.
+ * Measured 2026-08-11: this brief was delivered ~26h after it was written, into
+ * a session that was not the goal's agent, for a goal that had reached
+ * `achieved` in between. Both of its standing claims were false on arrival:
+ *
+ *  1. FRESHNESS. It used to open "which the owner just started". A brief cannot
+ *     know when it will be read, so it no longer claims to — it STAMPS the
+ *     moment it was written and lets the reader do the subtraction. Any replay
+ *     is then self-evident from the text alone, with no dependency on the nonce
+ *     ledger or on the reader happening to be suspicious.
+ *  2. DELIVERY OF THE CONTRACT. It used to say the contract was "delivered with
+ *     your orient" — a statement of fact whose falsity is invisible, because an
+ *     agent holding no `overlay:goal` row simply sees no contract and has no cue
+ *     that one is missing. The pointer is now FALSIFIABLE: it names where to
+ *     look and what to do when it is not there. The comment above still holds —
+ *     do NOT paste the contract in here; a second copy is a second copy to
+ *     drift. Point at it, checkably.
+ *
+ * A STATUS line was considered and deliberately NOT added: this door always
+ * CREATES the goal it briefs (`goalId(args.title)` below), so status is
+ * invariably 'active' at generation time and the field would be decorative
+ * here. The stale-status problem belongs to whatever re-delivers a brief later,
+ * which is a different surface.
  */
 export function buildGoalKickoffBrief(opts: {
   goalId: string;
@@ -65,6 +89,8 @@ export function buildGoalKickoffBrief(opts: {
   killCriterion?: string | null;
   budgetCents?: number | null;
   body?: string | null;
+  /** Injectable for tests; defaults to the moment the brief is written. */
+  writtenAt?: Date;
 }): string {
   /* Both constraints are OPTIONAL at creation since 2026-08-09 (see the args
      schema). When one is absent the brief SAYS SO rather than omitting the
@@ -78,8 +104,10 @@ export function buildGoalKickoffBrief(opts: {
     opts.budgetCents == null
       ? null
       : `$${(opts.budgetCents / 100).toFixed(2)}`;
+  const writtenAt = (opts.writtenAt ?? new Date()).toISOString().replace(/\.\d{3}Z$/, 'Z');
   return [
-    `You are in GOAL mode on goal \`${opts.goalId}\`, which the owner just started.`,
+    `You are in GOAL mode on goal \`${opts.goalId}\`, started by the owner at ${writtenAt}`,
+    '(the moment THIS brief was written — if that is not roughly now, it reached you late).',
     '',
     `OUTCOME — ${opts.title}`,
     opts.body?.trim() ? `\n${opts.body.trim()}\n` : '',
@@ -90,8 +118,11 @@ export function buildGoalKickoffBrief(opts: {
       ? `CEILING — ${ceiling} declared. Report actuals against it; do not quietly exceed it.`
       : 'CEILING — none declared. Report actuals anyway, and flag before any large spend.',
     '',
-    'Your mode contract (delivered with your orient) governs how to run this, including',
-    'the mandatory kickoff question. Start there, then begin.',
+    'Your mode contract governs how to run this, including the mandatory kickoff question.',
+    'It arrives in your orient, under `modes[].contract`. If it is NOT there you are not',
+    'holding GOAL mode — STOP: run `mode:get { contracts: true }` and `goals:get`, and do',
+    'not act on this brief until you hold the contract. A brief can reach the wrong session,',
+    'or reach the right one long after the goal it names has moved on. Then begin.',
   ]
     .filter((l) => l !== '')
     .join('\n');
