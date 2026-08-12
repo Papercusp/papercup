@@ -42,6 +42,8 @@ const openConversationFixture = (over: Partial<OpenConversationResult> = {}): Op
   thread_id: 'thr-conv-new',
   topics: [],
   delivered: 0,
+  unrouted: false,
+  direct_to: [],
   ...over,
 });
 
