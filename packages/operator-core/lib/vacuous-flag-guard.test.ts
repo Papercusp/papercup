@@ -239,7 +239,13 @@ describe('vacuous flag guard — RULE A: a flag key no source file reads', () =>
 });
 
 describe('vacuous flag guard — the real tree', () => {
-  it('gates nothing on the current checkout (the ratchet this guard installs)', () => {
+  // 120s, not the 60s default. This case walks the whole tracked tree, and this box runs
+  // ~60 agents behind a `pc-heavy` slot queue — so the wall-clock here is dominated by
+  // contention, not by the scan (measured standalone: ~4s). It HAS already failed as
+  // `Test timed out in 60000ms`, which reads as a real ratchet violation and would send the
+  // next reader hunting a vacuous toggle that does not exist. A generous budget on a
+  // whole-tree case is the cheap way to keep a red meaningful.
+  it('gates nothing on the current checkout (the ratchet this guard installs)', { timeout: 120_000 }, () => {
     // The population was verified clean when this landed, which is exactly when a
     // detector is cheap to add. If this ever fails, a real vacuous toggle has been
     // introduced — fix the test or write the suppression pragma with a reason. Do

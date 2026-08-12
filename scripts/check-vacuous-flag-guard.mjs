@@ -172,17 +172,31 @@ function nearestSrcRoot(rel) {
 /**
  * Does anything reachable from `rel` read a flag? Bounded walk, memoized across
  * the whole run — the same subject tree is reached from many tests.
+ *
+ * ⚠ DELIBERATE ASYMMETRY: this walk reads RAW source, NOT masked source, while the
+ * gating decision in `scan` reads masked. That is not an oversight, and the two
+ * directions are not symmetric:
+ *
+ *   a `vi.mock` seen in a COMMENT → a finding invented out of prose → RED GATE.
+ *       Must be masked. This is EI-20045405992394901.
+ *   a flag read seen in a COMMENT → the subject counts as a CONSUMER → the mock is
+ *       judged to BIND → NO finding. Fail-safe: it can only SUPPRESS a report, never
+ *       manufacture one.
+ *
+ * So the expensive TypeScript parse is spent only where a false positive is possible.
+ * Masking every module in every subject tree cost 45x the whole scan's runtime to buy
+ * strictly more false negatives.
  */
-function reachesFlagRead(rel, contentOf, has, depth = MAX_IMPORT_DEPTH, seen = new Set()) {
+function reachesFlagRead(rel, readSource, has, depth = MAX_IMPORT_DEPTH, seen = new Set()) {
   if (depth < 0 || seen.has(rel)) return false;
   seen.add(rel);
-  const src = contentOf(rel);
+  const src = readSource(rel);
   if (src === null) return false;
   if (FLAG_READ_RE.test(src)) return true;
   if (depth === 0) return false;
   for (const m of src.matchAll(IMPORT_RE)) {
     const next = resolveImport(m[1], rel, has);
-    if (next && CODE_RE.test(next) && reachesFlagRead(next, contentOf, has, depth - 1, seen)) {
+    if (next && CODE_RE.test(next) && reachesFlagRead(next, readSource, has, depth - 1, seen)) {
       return true;
     }
   }
@@ -253,7 +267,7 @@ export function scan({ root = ROOT, files, readFile } = {}) {
   };
 
   /**
-   * The source every DETECTION regex runs against, with COMMENTS MASKED OUT.
+   * The source a GATING decision is made against, with COMMENTS MASKED OUT.
    *
    * ⚠ Do not "simplify" this back to the raw text. A guard that text-matches code tokens
    * against unmasked source mints PHANTOM offenders out of prose: its own error strings and
@@ -267,16 +281,27 @@ export function scan({ root = ROOT, files, readFile } = {}) {
    * blind the detector entirely. That is the same per-guard call documented for the other
    * partial-mask guards.
    *
-   * The mask is LENGTH-PRESERVING (verified: comments become spaces), which is what lets
-   * `m.index` offsets taken here stay valid against the raw text in `isSuppressed`.
+   * The mask is LENGTH-PRESERVING (comments become spaces), which is what lets `m.index`
+   * offsets taken here stay valid against the raw text in `isSuppressed`.
+   *
+   * ⚠⚠ CALLED ONLY FOR CANDIDATE FILES — masking is a real TypeScript parse, and running it
+   * over the whole tree took the scan from 2.4s to 107s (measured), which is fatal for a
+   * guard attached to every `.ts` edit and blew the 60s vitest timeout on its own test. The
+   * `mayMock` / `mayReadFlag` raw pre-filters below cut the parsed population to the handful
+   * of files that could possibly match. That is SOUND, not a shortcut: masking only ever
+   * REMOVES text, so a token absent from the raw source cannot appear in the masked source.
    */
-  const contentOf = (rel) => {
+  const maskedOf = (rel) => {
     if (!cache.has(rel)) {
       const raw = rawOf(rel);
       cache.set(rel, raw === null ? null : stripCommentsOnly(raw, rel));
     }
     return cache.get(rel);
   };
+
+  /** Cheap raw pre-filter: could this file possibly carry a flag-module mock? */
+  const mayMock = (raw) =>
+    raw !== null && raw.includes('vi.mock') && FLAG_MODULE_PREFIXES.some((p) => raw.includes(p));
 
   const fileSet = new Set(all);
   const has = (rel) => fileSet.has(rel);
@@ -291,14 +316,18 @@ export function scan({ root = ROOT, files, readFile } = {}) {
   // ── RULE B: a flag mock with no consumer anywhere in the subject tree ──────
   for (const rel of testFiles) {
     if (FLAG_MACHINERY_RE.test('/' + rel)) continue;
-    const src = contentOf(rel);
+    // Cheap raw pre-filter FIRST — see maskedOf: the TS parse is the expensive step, and a
+    // file with no `vi.mock` + flag-module mention in its RAW text cannot have one after
+    // masking (masking only removes).
+    if (!mayMock(rawOf(rel))) continue;
+    const src = maskedOf(rel);
     if (src === null) continue;
 
     for (const m of src.matchAll(VI_MOCK_RE)) {
       const spec = m[1];
       if (!FLAG_MODULE_PREFIXES.some((p) => spec.startsWith(p))) continue;
       // The RAW source, deliberately: the `vacuous-flag-ok:` pragma lives in a COMMENT,
-      // which `contentOf` has masked away. Reading the masked text here would silently
+      // which `maskedOf` has masked away. Reading the masked text here would silently
       // disable every suppression in the repo. Safe because the mask is length-preserving,
       // so `m.index` addresses the same byte in both.
       if (isSuppressed(rawOf(rel), m.index)) continue;
@@ -312,7 +341,7 @@ export function scan({ root = ROOT, files, readFile } = {}) {
         const spec2 = im[1];
         const target = resolveImport(spec2, rel, has);
         if (target) {
-          if (CODE_RE.test(target) && reachesFlagRead(target, contentOf, has)) {
+          if (CODE_RE.test(target) && reachesFlagRead(target, rawOf, has)) {
             binds = true;
             break;
           }
@@ -347,7 +376,10 @@ export function scan({ root = ROOT, files, readFile } = {}) {
   const inTests = new Map();
   const inSource = new Set();
   for (const rel of nonTestFiles) {
-    const src = contentOf(rel);
+    // Raw, not masked: Rule A is REPORT-ONLY, and its error direction is the safe one — a
+    // `FLAGS.X` mentioned in a source COMMENT counts as a consumer and merely suppresses a
+    // report. Parsing 8,963 source files to tighten a non-gating bucket is not worth 45x.
+    const src = rawOf(rel);
     if (src === null) continue;
     for (const m of src.matchAll(keyRe)) inSource.add(m[1]);
   }
@@ -358,7 +390,7 @@ export function scan({ root = ROOT, files, readFile } = {}) {
     // false positive — and a detector whose entire visible output is noise is one nobody
     // reads, which is how the next real finding gets skipped.
     if (FLAG_MACHINERY_RE.test('/' + rel)) continue;
-    const src = contentOf(rel);
+    const src = rawOf(rel);
     if (src === null) continue;
     for (const m of src.matchAll(keyRe)) {
       if (!inTests.has(m[1])) inTests.set(m[1], rel);
