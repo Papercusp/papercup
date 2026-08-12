@@ -132,6 +132,12 @@ describe('release:deploy — status', () => {
     statusM.mockResolvedValue(mkStatus({ state: 'gate-red', canTriggerGreen: false }));
     const b = body(await tool.handler({ op: 'status' } as never, { role: 'cup' } as never));
     expect(b).toMatchObject({ ok: true, op: 'status', state: 'gate-red' });
+    expect(b.diagnosticVintage).toMatchObject({
+      status: 'stale',
+      stagingHeadSha: 'staging0head',
+      greenPinSha: 'greenpin0',
+    });
+    expect(b.diagnosticVintage.warning).toContain('Verify any nextVerb');
     expect(launchM).not.toHaveBeenCalled();
   });
 });

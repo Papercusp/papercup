@@ -37,6 +37,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { readIdentity } from '../locks/identity';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { readDeployStatus, launchDetachedDeploy, type DeployStatus } from '../../release-deploy-launch';
+import { currentDiagnosticVintage } from '../../diagnostic-vintage';
 import { fireGitSyncNow } from '../../harness/git-sync/git-sync-action';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
 
@@ -85,6 +86,10 @@ function statusBrief(s: DeployStatus) {
     // EI-20234052054064013: a live checkpoint (including an in-process auto-refire) is the
     // authoritative answer to "should I fire another checkpoint?" — carry it in every reply.
     checkpointRunInFlight: s.checkpointRunInFlight,
+    diagnosticVintage: currentDiagnosticVintage({
+      stagingHeadSha: s.deploy.stagingHeadSha,
+      greenPinSha: s.deploy.greenPinSha,
+    }),
     canTriggerGreen: s.canTriggerGreen,
     recommendation: s.recommendation,
   };
@@ -166,7 +171,15 @@ export default defineTool({
     // ── status: read-only, always allowed ──
     if (args.op === 'status') {
       const status = await readDeployStatus();
-      return json({ ok: true, op: 'status', ...status });
+      return json({
+        ok: true,
+        op: 'status',
+        ...status,
+        diagnosticVintage: currentDiagnosticVintage({
+          stagingHeadSha: status.deploy.stagingHeadSha,
+          greenPinSha: status.deploy.greenPinSha,
+        }),
+      });
     }
 
     const { ownerLabel } = readIdentity(ctx);

@@ -19,6 +19,8 @@ import { gitPipelineSnapshot, type GitPipelineSnapshot } from './git-pipeline-st
 import { isCommitOnlyMember } from './git-pipeline-position';
 import { accountStatus, type AccountStatusRow } from './deployment/account-pool-store';
 import { runtimeDiagnostic, type RuntimeDiagnostic } from './runtime-diagnostic';
+import { computeDiagnosticVintage, type DiagnosticVintage } from './diagnostic-vintage';
+import { getBuildInfo } from './build-info';
 
 /** A postgres-js-like tagged-template client; injectable so this stays unit-testable. */
 type SqlLike = (strings: TemplateStringsArray, ...values: unknown[]) => PromiseLike<unknown[]>;
@@ -74,6 +76,8 @@ export interface WhyChainResult extends RuntimeDiagnostic<
   recentFailingFiles: string[];
   /** EI-17603: see `PipelineHealth.gateVerdictDisjointFromLedger` — same check, same meaning. */
   gateVerdictDisjointFromLedger?: boolean;
+  /** EI-20239342853734300: disclose whether this process is older than the tree it diagnoses. */
+  diagnosticVintage: DiagnosticVintage;
 }
 
 /**
@@ -100,6 +104,8 @@ export interface WhyChainDeps {
   loadAdmission?: () => Promise<AdmissionSnapshotLite | null>;
   /** Test seam: inject a fake sql client for the recent-failures query. */
   sql?: SqlLike;
+  /** Test seam for the process build identity used by the freshness disclosure. */
+  loadProcessSha?: () => string | null;
   workspaceId?: string;
   harnessSlug?: string;
 }
@@ -699,6 +705,8 @@ export interface PipelineHealth {
    *  fail/error row in `harness_shared.test_runs` for that commit. `recentFailingFiles` above is
    *  then ledger-derived instead of the (distrusted) checkpoint record. Present only when true. */
   gateVerdictDisjointFromLedger?: boolean;
+  /** EI-20239342853734300: disclose whether this process is older than the tree it diagnoses. */
+  diagnosticVintage: DiagnosticVintage;
   /** The upstream-most non-ok leg of THIS chain (gate, then deploy) — null when both are ok. */
   rootCause: WhyChainStage | null;
 }
@@ -726,6 +734,11 @@ export async function computePipelineHealth(
     (() => gitPipelineSnapshot(deps.slug, { useSpawnerSidecar: deps.useSpawnerSidecar ?? false }));
   const rawSnap = await loadSnapshot();
   const now = Date.now();
+  const diagnosticVintage = computeDiagnosticVintage({
+    processSha: deps.loadProcessSha?.() ?? getBuildInfo().sha,
+    stagingHeadSha: rawSnap.deploy.stagingHead?.sha,
+    greenPinSha: rawSnap.deploy.greenPin?.sha,
+  });
 
   // No green-checkpoint routine for this harness ⇒ there IS no gate to report on. Say so; a
   // zero-red `gate_health` on a harness that never runs a checkpoint would otherwise render as a
@@ -745,6 +758,7 @@ export async function computePipelineHealth(
       greenPinBehindStaging: null,
       deployedBehindGreenPin: null,
       recentFailingFiles: [],
+      diagnosticVintage,
       rootCause: null,
     };
   }
@@ -787,6 +801,7 @@ export async function computePipelineHealth(
     greenPinBehindStaging: snap.deploy.greenPinBehindStaging ?? null,
     deployedBehindGreenPin: snap.deploy.deployedBehindGreenPin ?? null,
     recentFailingFiles: failingFiles,
+    diagnosticVintage,
     ...(disjoint ? { gateVerdictDisjointFromLedger: true } : {}),
     rootCause: [gate, deploy].find((s) => s.status !== 'ok') ?? null,
   };
@@ -810,6 +825,11 @@ export async function computeWhyChain(deps: WhyChainDeps = {}): Promise<WhyChain
   // EI-17603: same cross-check as computePipelineHealth, applied here too so `dev:why` and
   // `coord:orient` can never drift into disagreeing about which files are actually red.
   const { snap, disjoint, ledgerFiles } = await verifyGateVerdict(rawSnap, deps);
+  const diagnosticVintage = computeDiagnosticVintage({
+    processSha: deps.loadProcessSha?.() ?? getBuildInfo().sha,
+    stagingHeadSha: rawSnap.deploy.stagingHead?.sha,
+    greenPinSha: rawSnap.deploy.greenPin?.sha,
+  });
   // Fed to gateStage as the FALLBACK proxy when `snap.gate.failingTests` is empty — `snap` is
   // already reconciled by verifyGateVerdict when the ledger corrected it, so this branch only
   // matters for a blob that named nothing file-shaped to begin with.
@@ -856,6 +876,7 @@ export async function computeWhyChain(deps: WhyChainDeps = {}): Promise<WhyChain
     stages,
     summary,
     recentFailingFiles: failingFiles,
+    diagnosticVintage,
     ...(disjoint ? { gateVerdictDisjointFromLedger: true } : {}),
     ...diagnostic,
   };

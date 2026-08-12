@@ -122,6 +122,24 @@ describe('computeWhyChain (EI-7349)', () => {
     expect(res.nextVerb).toBeNull();
   });
 
+  it('discloses when the diagnostic process is older than staging', async () => {
+    const res = await computeWhyChain(
+      deps({
+        snap: snap({
+          deploy: {
+            stagingHead: { sha: 'aaaaaaaa1111111', shortSha: 'aaaaaaaa1111', committedAtMs: 1, subject: 'tip' },
+            greenPin: { sha: 'bbbbbbbb2222222', shortSha: 'bbbbbbbb2222', committedAtMs: 1, subject: 'green' },
+          },
+        }),
+        loadProcessSha: () => 'cccccccc3333333',
+      }),
+    );
+    expect(res.diagnosticVintage.status).toBe('stale');
+    expect(res.diagnosticVintage.processMatchesStaging).toBe(false);
+    expect(res.diagnosticVintage.warning).toContain('may predate current fixes');
+    expect(res.diagnosticVintage.warning).toContain('Verify any nextVerb');
+  });
+
   it('defaults the live snapshot read to local git instead of lazily booting the spawner sidecar', async () => {
     const snapshotSpy = vi.spyOn(gitPipelineStats, 'gitPipelineSnapshot').mockResolvedValue(snap());
     const input = deps();
