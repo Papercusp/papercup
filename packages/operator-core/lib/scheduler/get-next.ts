@@ -71,6 +71,7 @@ import {
   observationLaneExclusionSql,
   externalBlockersExclusionSql,
   depsBlockedExclusionSql,
+  issueCooldownExclusionSql,
   reservedPlanLaneExclusionSql,
   federationDetectorExclusionSql,
   loopIterationNoiseExclusionSql,
@@ -919,14 +920,12 @@ export function issueClaimCandidateSubquery(
       -- refuses, burning an agent wake each. Now the SAME fragment claimNextIssueWorkItem
       -- enforces, so the preview and the claim can no longer disagree.
       (${depsBlockedExclusionSql(sql)})                                 AS ok_no_blocker,
-      (${
-        cooldown > 0
-          ? sql`(wi.last_released_by IS NULL
-              OR wi.last_released_by <> ${assignee}
-              OR wi.last_released_at IS NULL
-              OR wi.last_released_at < now() - make_interval(secs => ${cooldown}))`
-          : sql`TRUE`
-      })                                                                AS ok_cooldown
+      -- Mig 499 + WI-5939: the per-claim cooldown floor — the SAME exported fragment
+      -- claimNextIssueWorkItem enforces, so this preview and the real claim door cannot
+      -- disagree. It covers BOTH caller-relative reasons (released-by-me, and filed-by-someone-
+      -- else inside the filing-grace window); an exclusion for either reports here, under the
+      -- one cooldown breakdown bucket, per WI-5939 "do not add a parallel mechanism".
+      (${issueCooldownExclusionSql(sql, assignee, cooldown)})            AS ok_cooldown
     FROM harness_shared.work_items wi
     WHERE wi.item_kind IN ('bug', 'change', 'task')
       AND wi.workspace_id = ${issueWs}

@@ -5266,7 +5266,10 @@ const ISSUE_FLOOR_EXPLANATIONS: Record<string, string> = {
     'a true-peer federated row (origin not local/null, and not one of this workspace\'s own ' +
     'substrate-log author keys) — not self-selectable from this node (isIssueLocallyClaimableWhereSql)',
   cooldown:
-    'released by THIS caller within the release-cooldown window (mig 499 / EI-6956) — will clear on its own',
+    'cooling down FOR THIS CALLER — either released by THIS caller within the release-cooldown window ' +
+    '(mig 499 / EI-6956), or FILED BY SOMEONE ELSE within the filing-grace window (WI-5939: the filer ' +
+    'gets a head start to claim their own file-then-fix). Both clear on their own; the filer can claim ' +
+    'its own row immediately, and PAPERCUSP_FILING_GRACE_SEC=0 disables the grace leg.',
 };
 
 /**
@@ -5334,14 +5337,7 @@ export async function explainIssueClaimFloors(
            (${alreadyTerminallyCompletedExclusionSql(sql)})                       AS ok_completed,
            (${crossMachineRigExclusionSql(sql, opts.rigAvailable)})               AS ok_rig,
            (${depsBlockedExclusionSql(sql)})                                      AS ok_no_blocker,
-           (${
-             cooldown > 0
-               ? sql`(wi.last_released_by IS NULL
-                   OR wi.last_released_by <> ${assignee}
-                   OR wi.last_released_at IS NULL
-                   OR wi.last_released_at < now() - make_interval(secs => ${cooldown}))`
-               : sql`TRUE`
-           })                                                                     AS ok_cooldown
+           (${issueCooldownExclusionSql(sql, assignee, cooldown)})                AS ok_cooldown
       FROM harness_shared.work_items wi
      WHERE wi.workspace_id = ${issueWs}
        AND (wi.harness_slug = ${harness} OR wi.harness_slug = ${operatorScopeSlug})
@@ -5658,18 +5654,12 @@ export async function claimNextIssueWorkItem(
           -- (work_items:complete's own stateWarning documents this exact gap: a caller can
           -- omit state and leave the row claimable). Still directly claimable BY ID.
           AND ${alreadyTerminallyCompletedExclusionSql(tx)}
-          -- Mig 499: release-cooldown floor (mirrors claimFloorsWhereSql's feature-family
-          -- clause) — NULL-safe: never released, released by someone else, or released
-          -- long enough ago, all pass; only "released by ME within the cooldown window"
-          -- excludes the row from MY OWN next self-select.
-          AND ${
-            cooldown > 0
-              ? tx`(wi.last_released_by IS NULL
-                OR wi.last_released_by <> ${filter.assignee}
-                OR wi.last_released_at IS NULL
-                OR wi.last_released_at < now() - make_interval(secs => ${cooldown}))`
-              : tx`TRUE`
-          }
+          -- Mig 499 + WI-5939: the per-claim cooldown floor (issueCooldownExclusionSql) — the
+          -- SAME fragment the preview (get-next), the miss diagnosis and the per-id explainer
+          -- apply, so the claim door and every read of it can no longer disagree. NULL-safe in
+          -- both legs: only "released by ME within the release window" or "filed by SOMEONE
+          -- ELSE within the filing-grace window" excludes the row from MY OWN self-select.
+          AND ${issueCooldownExclusionSql(tx, filter.assignee, cooldown)}
         -- EI-7407: feature_order steering must be UNCONDITIONAL for issue-family claims (per
         -- this function's own doc above — "the Mug can now steer issues too, P-007" — with
         -- no swarmId/Multi-Swarm-lease caveat, unlike the feature-family path's P-010-gated

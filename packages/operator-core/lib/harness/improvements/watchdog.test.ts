@@ -19,6 +19,8 @@ import {
   staleProtectiveHoldSignalsFromCandidates,
   stuckPlanSignalsFromRows,
   escalationSignalsFromRows,
+  bridgeNeedsOwnerSignalsFromRows,
+  BRIDGE_NEEDS_OWNER_CONDITION_PREFIX,
   circuitOpenSignalsFromRows,
   isResolvedFirePath,
   normalizeRedTestPath,
