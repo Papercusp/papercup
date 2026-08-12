@@ -414,22 +414,6 @@ export interface DeliverScoutNudgeOpts {
   /** A true pager must re-invoke the selected su after the durable inbox write.
    *  Quiet review/grade nudges leave this false and remain inject-only. */
   wakeSu?: boolean;
-  /**
-   * Test seam, threaded through to {@link resolveNudgeRecipient}'s option of the same
-   * name (WI-38231). It exists so the END-TO-END retirement-gate tests can drive rung 1
-   * from BOTH sides of the predicate.
-   *
-   * WHY IT HAD TO BE ADDED: those tests used to force the tier ON by mocking the feature
-   * flag `mugKettleSystemEnabled` reads. The retire-mug-kettle lane then hard-coded that
-   * predicate to `return false`, which made the flag mock inert and the POSITIVE control
-   * ("while the tier runs, this same call DOES wake the Mug") unsatisfiable by
-   * construction. Deleting that control was the tempting fix and the wrong one — it is
-   * what stops its sibling "retired: NO Mug wake" case from passing vacuously, i.e. from
-   * being green merely because deliverScoutNudge had stopped doing anything at all.
-   * Routing the control through this seam keeps it meaningful no matter what the
-   * production predicate hard-codes.
-   */
-  mugKettleSystemEnabledFn?: () => Promise<boolean>;
 }
 
 /**
@@ -443,10 +427,6 @@ export async function deliverScoutNudge(
   const recipient = await resolveNudgeRecipient({
     workspaceId: opts.workspaceId,
     mugOwner: opts.mugOwner,
-    // Undefined in production, so the resolver falls through to the real predicate —
-    // this only lets the end-to-end tests drive BOTH sides of the retirement gate
-    // (WI-38231; see the field's doc on DeliverScoutNudgeOpts).
-    ...(opts.mugKettleSystemEnabledFn ? { mugKettleSystemEnabledFn: opts.mugKettleSystemEnabledFn } : {}),
   });
 
   // ALWAYS run the legacy Mug delivery first — this addition is PURELY ADDITIVE, the
