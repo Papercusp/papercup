@@ -1397,9 +1397,12 @@ describe('SessionChatModal', () => {
   });
 
   describe('P-003 AgentDossier right rail (hud-first-nav-and-dossier-2026-07-26)', () => {
-    function seedRoster(entries: Array<Record<string, unknown>>) {
+    function seedRoster(
+      entries: Array<Record<string, unknown>>,
+      extra: Record<string, unknown> = {},
+    ) {
       H.results['advRoster.list'] = {
-        data: [{ active: entries, pending: [] }],
+        data: [{ active: entries, pending: [], ...extra }],
         loading: false,
         fetching: false,
         error: null,
@@ -1419,6 +1422,31 @@ describe('SessionChatModal', () => {
       // Reuses the SAME already-fetched advRoster.list row (no forked
       // dossier, no second query) — the stubbed entry's ownerId round-trips.
       expect(lastAgentDossierProps?.entry?.ownerId).toBe('su-live-1');
+    });
+
+    it('passes an ended roster row to the dossier as terminal evidence, including its timestamp', async () => {
+      const endedAt = '2026-08-11T23:16:59.000Z';
+      seedRoster([], {
+        ended: [{ coordOwnerId: 'su-ended-1', endedAt }],
+      });
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-ended-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByTestId('session-chat-dossier-rail')).toBeTruthy());
+      await waitFor(() => expect(lastAgentDossierProps?.sessionEnded).toBe(true));
+      expect(lastAgentDossierProps?.sessionEndedAt).toBe(endedAt);
+      expect(lastAgentDossierProps?.unknownSession).toBe(false);
+    });
+
+    it('passes roster-ready absence to the dossier as unknown and marks Orders ownerKnown=false', async () => {
+      seedRoster([]);
+      mockFetchOnce(200, { sessions: [] });
+      render(<SessionChatModal sessionOwnerId="su-unknown-1" onClose={vi.fn()} />);
+
+      await waitFor(() => expect(screen.getByTestId('session-chat-unknown-session')).toBeTruthy());
+      await waitFor(() => expect(lastAgentDossierProps?.unknownSession).toBe(true));
+      expect(lastAgentDossierProps?.sessionEnded).toBe(false);
+      await waitFor(() => expect(lastAgentOrdersProps?.ownerKnown).toBe(false));
     });
 
     it('renders no rail while the modal is closed (sessionOwnerId null)', () => {
@@ -1957,6 +1985,7 @@ describe('SessionChatModal', () => {
   // yet". Every case below passes NO pendingLaunch — that is the point.
   describe('WI-6440 starting-up survives a reload (durable `starting` tier)', () => {
     const GONE = 'No recent Claude session found for this agent.';
+    const UNKNOWN = /No agent with this id was found in the current roster or session history/;
     const STARTING = /Starting up — waiting for this session to come online/;
     const FAILED = /This session hasn't come online/;
 
@@ -2001,7 +2030,8 @@ describe('SessionChatModal', () => {
       mockFetchOnce(200, { sessions: [] });
       render(<SessionChatModal sessionOwnerId="su-new-1" onClose={vi.fn()} />);
 
-      await waitFor(() => expect(screen.getByText(GONE)).toBeTruthy());
+      await waitFor(() => expect(screen.getByTestId('session-chat-unknown-session')).toBeTruthy());
+      expect(screen.getByTestId('session-chat-unknown-session').textContent).toMatch(UNKNOWN);
       expect(screen.queryByTestId('session-chat-starting-up')).toBeNull();
     });
 
