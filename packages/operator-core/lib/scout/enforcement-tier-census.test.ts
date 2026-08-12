@@ -196,7 +196,7 @@ describe('findStaleDeclarations', () => {
       windowDays: 7,
       getSql: () => ((strings: TemplateStringsArray) => {
         query = strings.join('');
-        return (async () => [
+        return Promise.resolve([
           { tool_name: 'coord:send', calls: '1645', callers: '95' },
           { tool_name: 'coord:read', calls: '15', callers: '6' },
         ]) as never;

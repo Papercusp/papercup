@@ -21,12 +21,13 @@ const daysBefore = (n: number): string =>
 
 /** A fake `sql` tag returning one row — the shape the sampler's single query yields. */
 function fakeSql(row: Record<string, unknown> | null, capture?: (query: string) => void) {
-  return (strings: TemplateStringsArray) => {
-    capture?.(strings.join(''));
-    return (async () => (row ? [row] : [])) as unknown as {
+  return () =>
+    (async (strings: TemplateStringsArray) => {
+      capture?.(strings.join(''));
+      return row ? [row] : [];
+    }) as unknown as {
       <T>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T>;
     };
-  };
 }
 
 describe('loadDispatchAdoptionSample — the window it publishes is the window it can prove', () => {
