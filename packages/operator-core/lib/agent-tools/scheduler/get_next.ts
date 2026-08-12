@@ -631,6 +631,12 @@ export function assembleSchedulerClaimResult(legs: {
   };
 }
 
+// EI-20245892539908894: a successful self-pull can be larger than the text
+// result door. Advertise the response as an object and return the claim payload
+// through `data` so MCP programmatic callers can receive lossless
+// `structuredContent` even when the model-facing text is capped.
+const schedulerResultSchema = z.object({ ok: z.boolean() }).passthrough();
+
 export default defineTool({
   name: 'scheduler:get_next',
   profile: 'engineer',
@@ -651,6 +657,7 @@ export default defineTool({
   },
   capability: 'work_items:write',
   requirePrincipal: false,
+  result: schedulerResultSchema,
   // EI-20219220087119072: this self-pull handler never reads ctx.tx. Its claim,
   // scope-reconciliation, and miss-diagnosis legs use their own DB accessors and
   // can await several independent reads; retaining the dispatcher's ambient
@@ -1309,72 +1316,70 @@ export default defineTool({
     // exhaustion only describes an actual fleet-scoped miss under a valid harness.
     const terminalExhaustionForMiss =
       !res && reconciliation.scope && !invalidHarnessKnownSlugs ? terminalExhaustion : null;
+    const payload = res
+      ? assembleSchedulerClaimResult({
+          workItem: res.workItem,
+          claimedUnder: res.claimedUnder,
+          freshness,
+          warning,
+          routingHint,
+          memory,
+          checkpoint: checkpointHint?.checkpoint,
+          checkpointAgeMs: checkpointHint?.checkpointAgeMs,
+          checkpointWarning: checkpointHint
+            ? 'A PRIOR holder left an in-flight checkpoint on this item — it may already be DONE or partly done. Read it before building: verify against the tree/tests first, do not assume greenfield (EI-529).'
+            : undefined,
+          checkpointBgJobWarning: bgJobWarning.detected ? bgJobWarning.reason : undefined,
+          priorWork: priorWorkHint?.priorWork,
+          priorWorkWarning: priorWorkHint?.priorWorkWarning,
+          // EI-19396519606401168: this note used to be built from the
+          // POST-CAP length, so a capped brief announced itself as the
+          // complete set. The shared helper still renders the true total
+          // and says when older decisions are not shown.
+          planDecisions: planDecisions?.decisions,
+          planDecisionsNote,
+          premises: premises?.rendered,
+          premisesNote: premises?.note,
+        })
+      : invalidHarnessKnownSlugs
+        ? {
+            ok: false,
+            error: 'invalid_input',
+            reason: 'harness_not_found',
+            message:
+              `harness '${args.harness}' does not resolve to a registered harness in this workspace — ` +
+              "pass the harness SLUG (e.g. 'papercusp'), not a workspace id or typo; see harness:list " +
+              'for valid slugs. This is a scope/argument problem, not a drained queue, so it is reported ' +
+              'as invalid_input and windDown is never set for it.',
+            passedHarness: args.harness,
+            knownHarnesses: invalidHarnessKnownSlugs,
+          }
+        : reconciliation.scope
+          ? fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds, {
+              cooldownDiag,
+              issueBreakdown: issueBreakdownForMiss,
+              featureFamilyMatched: featureFamilyMatchedForMiss,
+              terminalExhaustion: terminalExhaustionForMiss,
+              divergenceRecheck,
+              harness: args.harness,
+            })
+          : {
+            ok: false,
+            error: missDiagnosis.error,
+            // WI-4413: the miss now EXPLAINS itself — aggregate POOL/READY split, plus
+            // (when the spec names ids) the exact floor refusing each one.
+            ...(missDiagnosis.diagnosis ? { diagnosis: missDiagnosis.diagnosis } : {}),
+            ...(missDiagnosis.floors ? { floors: missDiagnosis.floors } : {}),
+            // P-006: teach the composed-await idle recipe exactly where the idle
+            // moment happens, instead of leaving the caller to a 60s re-poll.
+            advice: IDLE_PULL_MISS_ADVICE,
+          };
+    // The claim committed before this response was rendered. Keep the existing
+    // bounded text projection for ordinary model callers, but give programmatic
+    // callers the complete object so they can reconcile without blind retry.
+    if (res) return { data: payload };
     return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify(
-            res
-              ? assembleSchedulerClaimResult({
-                  workItem: res.workItem,
-                  claimedUnder: res.claimedUnder,
-                  freshness,
-                  warning,
-                  routingHint,
-                  memory,
-                  checkpoint: checkpointHint?.checkpoint,
-                  checkpointAgeMs: checkpointHint?.checkpointAgeMs,
-                  checkpointWarning: checkpointHint
-                    ? 'A PRIOR holder left an in-flight checkpoint on this item — it may already be DONE or partly done. Read it before building: verify against the tree/tests first, do not assume greenfield (EI-529).'
-                    : undefined,
-                  checkpointBgJobWarning: bgJobWarning.detected ? bgJobWarning.reason : undefined,
-                  priorWork: priorWorkHint?.priorWork,
-                  priorWorkWarning: priorWorkHint?.priorWorkWarning,
-                  // EI-19396519606401168: this note used to be built from the
-                  // POST-CAP length, so a capped brief announced itself as the
-                  // complete set. The shared helper still renders the true total
-                  // and says when older decisions are not shown.
-                  planDecisions: planDecisions?.decisions,
-                  planDecisionsNote,
-                  premises: premises?.rendered,
-                  premisesNote: premises?.note,
-                })
-              : invalidHarnessKnownSlugs
-                ? {
-                    ok: false,
-                    error: 'invalid_input',
-                    reason: 'harness_not_found',
-                    message:
-                      `harness '${args.harness}' does not resolve to a registered harness in this workspace — ` +
-                      "pass the harness SLUG (e.g. 'papercusp'), not a workspace id or typo; see harness:list " +
-                      'for valid slugs. This is a scope/argument problem, not a drained queue, so it is reported ' +
-                      'as invalid_input and windDown is never set for it.',
-                    passedHarness: args.harness,
-                    knownHarnesses: invalidHarnessKnownSlugs,
-                  }
-                : reconciliation.scope
-                  ? fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds, {
-                      cooldownDiag,
-                      issueBreakdown: issueBreakdownForMiss,
-                      featureFamilyMatched: featureFamilyMatchedForMiss,
-                      terminalExhaustion: terminalExhaustionForMiss,
-                      divergenceRecheck,
-                      harness: args.harness,
-                    })
-                  : {
-                    ok: false,
-                    error: missDiagnosis.error,
-                    // WI-4413: the miss now EXPLAINS itself — aggregate POOL/READY split, plus
-                    // (when the spec names ids) the exact floor refusing each one.
-                    ...(missDiagnosis.diagnosis ? { diagnosis: missDiagnosis.diagnosis } : {}),
-                    ...(missDiagnosis.floors ? { floors: missDiagnosis.floors } : {}),
-                    // P-006: teach the composed-await idle recipe exactly where the idle
-                    // moment happens, instead of leaving the caller to a 60s re-poll.
-                    advice: IDLE_PULL_MISS_ADVICE,
-                  },
-          ),
-        },
-      ],
+      content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
     };
   },
 });
