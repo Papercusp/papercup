@@ -72,6 +72,31 @@ interface TranscriptionPattern {
 export const CONTEXT_WINDOW = 60;
 
 /**
+ * A source checkout's HEAD is not a pipeline position. Keep this anchored to the
+ * value's left edge so an unrelated word such as "release" later in the same
+ * sentence cannot turn a source citation into a deployment claim.
+ */
+const SOURCE_HEAD_VALUE_PREFIX =
+  /\b(?:current|local|source|working(?:\s+tree)?)\s+(?:git\s+)?head(?:\s+(?:sha|commit))?\s*(?:is|=|:)?\s*$/i;
+
+/**
+ * If a source HEAD value is explicitly described as deployed/serving/live, it is
+ * still a real pipeline claim and must remain detectable. A bare source HEAD next
+ * to separate pipeline prose is only a citation and should stay quiet.
+ */
+const EXPLICIT_PIPELINE_STATE_AFTER_SOURCE_HEAD =
+  /^\s*(?:is|was|now|currently)\s+(?:(?:(?:the|a)\s+)?(?:deploy(?:ed|ing|ment)?|serving|serves|live|release[d]?|candidate|gate|green[- ]?checkpoint|staging|main|running|shipped)\b|at\s+:(?:3070|3170)\b)/i;
+
+function isUnlinkedSourceHeadCitation(haystack: string, valueStart: number, valueLength: number): boolean {
+  const before = haystack.slice(Math.max(0, valueStart - CONTEXT_WINDOW), valueStart);
+  if (!SOURCE_HEAD_VALUE_PREFIX.test(before)) return false;
+
+  const afterStart = valueStart + valueLength;
+  const after = haystack.slice(afterStart, Math.min(haystack.length, afterStart + CONTEXT_WINDOW));
+  return !EXPLICIT_PIPELINE_STATE_AFTER_SOURCE_HEAD.test(after);
+}
+
+/**
  * ⚠ Every `cell` here must be REGISTERED — asserted by the test suite.
  *
  * Both patterns currently point at `git.pipelinePosition`, which genuinely answers
@@ -161,6 +186,17 @@ export function detectCellTranscriptions(text: unknown): CellTranscription[] {
       const end = Math.min(haystack.length, m.index + m[0].length + CONTEXT_WINDOW);
       const window = haystack.slice(start, end);
       if (!p.context.test(window)) continue; // a citation, not a claim
+
+      // A broad context window is intentional for ordinary pipeline prose, but it
+      // must not connect a source `current HEAD <sha>` to a separate nearby
+      // "release"/"staging" sentence. Only an explicit state phrase attached to
+      // that HEAD value keeps it classified as a deployment claim.
+      if (
+        p.field === 'positions.deployed / serving.startedSinceCodeChange' &&
+        isUnlinkedSourceHeadCitation(haystack, m.index, m[0].length)
+      ) {
+        continue;
+      }
 
       const hit: CellTranscription = { cell: p.cell, field: p.field, value: m[0], what: p.what };
       const key = dedupeKey(hit);

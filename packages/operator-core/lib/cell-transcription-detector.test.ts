@@ -69,6 +69,10 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
     ['a bare uuid (leading segment, no prefix)', '8d9a671c-ccda-4aa9-b4f4-8f0d1c7a4804 is running'],
     ['an id in a deploy sentence', 'agent su-2846407f-4f4c-4313-8db8-dce7592e269d deployed the change'],
     ['a hyphenated identifier', 'the branch deadbeef-fix is now on staging'],
+    // A source checkout's HEAD is not the deployed pipeline position. The nearby
+    // release/staging words belong to separate facts in the same report.
+    ['a current source HEAD beside unrelated pipeline prose', 'current HEAD 2b95ba4eb7; release status remains red'],
+    ['a source HEAD beside a staging note', 'source HEAD is 2b95ba4eb7, while staging source is ahead'],
     // Pure digits are numbers far more often than shas — the pattern requires an a-f.
     ['a 7-digit number', 'the sweep processed 1234567 rows in the window'],
     ['a row count', 'tool_invocations holds 5461000 rows over 30 days'],
@@ -93,6 +97,12 @@ describe('cell-transcription detector — FALSE positives it must NOT raise (EI-
 
   it('DOES fire when that same pair is close together — proving the window is what separates them', () => {
     expect(detectCellTranscriptions('abc1234 was deployed').length).toBeGreaterThanOrEqual(1);
+  });
+
+  it('DOES fire when a source HEAD is explicitly described as deployed', () => {
+    const hits = detectCellTranscriptions('current HEAD 2b95ba4eb7 is deployed to :3070');
+    expect(hits).toHaveLength(1);
+    expect(hits[0]!.value).toBe('2b95ba4eb7');
   });
 });
 
