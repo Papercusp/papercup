@@ -60,8 +60,8 @@ export function claimSpecInertWarning(cupId: string, spawnedRole: string | null)
   return (
     `cupId "${cupId}" was spawned as role="${spawnedRole}", a coding-FACTORY push-pipeline role ` +
     'that is HANDED a FEATURE_ID and never calls scheduler:get_next — so this claim-spec is INERT ' +
-    '(it will never select any work). Claim-specs steer SELF-PULLING agents: a coding-hive bee ' +
-    '(role="cup"), the queen, or an su fleet leader/member instructed to pull via get_next. ' +
+    '(it will never select any work). Claim-specs steer SELF-PULLING agents: an su fleet ' +
+    'leader/member instructed to pull via get_next. ' +
     'Did you mean to push a FEATURE_ID to this factory role, or to steer a self-puller instead?'
   );
 }
