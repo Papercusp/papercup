@@ -64,6 +64,11 @@
  * carries both recovery shapes as structured data, so a successor does not have
  * to infer the retry from prose after a context boundary.
  *
+ * EI-20232176364474286: a concise plain refresh that trips that guard is retried
+ * once as an additive append. The retry's transform runs under the store lock, so
+ * it preserves the current prior even if another writer changed it between the
+ * refusal and retry; `confirmShrink:true` remains the explicit destructive path.
+ *
  * EI-18132462898750489: NO ownership guard existed — any agent could checkpoint (or
  * CLEAR) an item it does not hold, silently overwriting the actual assignee's
  * in-flight state. Confirmed live: a fleet member (su-2e534e59) that had only READ
@@ -316,7 +321,7 @@ const itemSpec = z.object({
   ),
   confirmShrink: looseBoolean().describe(
     'EI-18140632570924965: a plain replace (no append) that would shrink a substantial prior checkpoint by ' +
-      'more than half is BLOCKED (`shrink_blocked`) by default. Pass true to confirm the replace is intentional.',
+      'more than half is preserved by an automatic append. Pass true to confirm a destructive replacement.',
   ),
   dependsOn: dependsOnSpec(),
   checks: checksSpec(),
@@ -330,8 +335,8 @@ export default defineTool({
     'Single: { id, checkpoint? }. Many: items:[{ id, checkpoint?, harness? }]. ' +
     'Your transcript does NOT carry across a task boundary / re-spawn; the checkpoint is your continuity, ' +
     "re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; `append:true` joins instead. " +
-    'Writes are verify-read. A plain replace shrinking a substantial checkpoint >50%, or an append with a ' +
-    'disagreeing pre-read, is BLOCKED; the refusal is self-explaining (`errorCode` + structured `recovery` args). ' +
+    'Writes are verify-read. A plain replace shrinking a substantial checkpoint >50% is retried as a safe append, ' +
+    'while an append with a disagreeing pre-read is BLOCKED; refusals carry `errorCode` + recovery args. ' +
     'Refuses a peer-held item (`not_holder`).',
   guidance: {
     when:
