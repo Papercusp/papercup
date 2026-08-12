@@ -487,7 +487,7 @@ except Exception:
 # as if it created an OS schedule. Strip quoted spans BEFORE matching: quoted
 # content can only ever REMOVE a would-be separator, so every genuine (unquoted)
 # `crontab -e`/`batch < f`/`&& crontab`/`sudo crontab` deny is preserved.
-def _strip_quotes_and_comments(s):
+def _strip_quotes_and_comments(s, preserve_expansions=False):
     # THE shared normalizer for every scanner in this file: removes quoted spans
     # AND `#`-to-end-of-line comments in ONE quote-aware pass.
     #
@@ -531,7 +531,17 @@ def _strip_quotes_and_comments(s):
     # leaves half the hole open.
     #
     # Like the sibling strippers this only ever REMOVES characters, so it can
-    # never manufacture a match.
+    # never manufacture a match. The shell-write guard opts into preserving a
+    # simple variable-only DOUBLE-QUOTED span (e.g. `"$f"`) as `$f`: the span
+    # is a target candidate that cannot be resolved safely, and erasing it
+    # would turn a variable-driven in-place rewrite into a completely silent
+    # allow. Other quoted content, and all single-quoted content, stays blank;
+    # preserving arbitrary quoted text would re-open the operator false-positive
+    # class this normalizer exists to prevent.
+    _quoted_expansion_only = re.compile(
+        r'^\$(?:[A-Za-z_][A-Za-z0-9_]*|\{[A-Za-z_][A-Za-z0-9_]*'
+        r'(?:\[[^]]+\])?\}|[0-9@*#?$!-])$'
+    )
     out, i, n = [], 0, len(s)
     while i < n:
         c = s[i]
@@ -559,7 +569,11 @@ def _strip_quotes_and_comments(s):
                 j += 1
             if j >= n:
                 break
-            out.append(' ')
+            inner = s[i + 1:j]
+            if preserve_expansions and _quoted_expansion_only.fullmatch(inner):
+                out.append(' ' + inner + ' ')
+            else:
+                out.append(' ')
             i = j + 1
             continue
         out.append(c)
@@ -2820,7 +2834,9 @@ def _shell_write_guard():
         _cwd = os.path.realpath(payload.get('cwd') or os.getcwd())
     except Exception:
         return
-    _clean = _strip_quotes_and_comments(_strip_heredoc_bodies(command))
+    _clean = _strip_quotes_and_comments(
+        _strip_heredoc_bodies(command), preserve_expansions=True
+    )
     _has_paren = '(' in _clean or ')' in _clean
     _targets = []  # (raw_target, human-readable construct name, position in _clean)
     # EI-19966359020779598 — set when an in-place-write construct's target

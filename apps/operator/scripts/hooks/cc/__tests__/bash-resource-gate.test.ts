@@ -2638,6 +2638,17 @@ describe('shell-write file-target guard (EI-18664655909328670)', () => {
     expect(ctx).toContain('shell-write guard notice');
   });
 
+  it('advises for a quoted loop-variable target instead of silently allowing the rewrite', () => {
+    const command =
+      "cd packages/operator-core/lib/bash-substitution/pairs && " +
+      "for f in ambient-context.ts logs.ts; do sed -i 's/a/b/' \"$f\"; done";
+    const ctx = expectShellWriteAdvisory(
+      runGate(bashCmd(command, { cwd: CANON }), CANON_ENV),
+    );
+    expect(ctx).toContain('variable-driven target list');
+    expect(ctx).toContain('shell variable');
+  });
+
   it('the bare-variable advisory is scoped to the in-place-rewrite family — a plain `>`/`>>` redirect to a bare $VAR stays fully silent (unchanged)', () => {
     // Deliberately NOT advised: `> "$LOG"`/`>> $LOG` is the overwhelmingly
     // common "write a computed scratch/log path" idiom, and this guard has a
