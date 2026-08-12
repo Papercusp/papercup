@@ -19,7 +19,7 @@
  * indistinguishable from a healthy one (plan no-http-anywhere-2026-07-28, D-011).
  */
 
-import { commands, type IpcStatus } from './tauri-bindings';
+import { commands, type IpcStatus } from '@papercusp/operator-core/lib/tauri-bindings';
 
 export type { IpcStatus };
 

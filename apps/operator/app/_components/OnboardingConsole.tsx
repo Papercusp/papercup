@@ -23,7 +23,7 @@
  */
 import { useCallback, useEffect, useState } from 'react';
 import { isTauriNative } from '@papercusp/operator-core/lib/pty-tauri';
-import { commands } from '@/lib/tauri-bindings';
+import { commands } from '@papercusp/operator-core/lib/tauri-bindings';
 import { InlinePtyTerminal } from './SetupWizard/InlinePtyTerminal';
 
 interface SpawnSpec {

@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { commands, type TerminalLayout } from '@/lib/tauri-bindings';
+import { commands, type TerminalLayout } from '@papercusp/operator-core/lib/tauri-bindings';
 import { isTauri } from './SetupWizard/tauri-detect';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';

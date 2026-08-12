@@ -15,7 +15,7 @@ const h = vi.hoisted(() => ({
   setEnabledSpy: vi.fn(() => Promise.resolve({ status: 'ok', data: false })),
 }));
 
-vi.mock('@/lib/tauri-bindings', () => ({
+vi.mock('@papercusp/operator-core/lib/tauri-bindings', () => ({
   commands: { nativeTerminalSetEnabled: h.setEnabledSpy },
 }));
 vi.mock('./SetupWizard/tauri-detect', () => ({ isTauri: () => h.isTauri }));
