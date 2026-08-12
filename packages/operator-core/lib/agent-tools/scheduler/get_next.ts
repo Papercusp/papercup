@@ -508,7 +508,14 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    harness: z.string().min(1),
+    harness: z
+      .string()
+      .min(1)
+      .optional()
+      .describe(
+        'Harness to pull from. OPTIONAL — defaults to the session\'s own harness when it has exactly one. ' +
+          'Pass it explicitly only to pull from a DIFFERENT harness than the session is scoped to.',
+      ),
     heldPaths: z
       .array(z.string())
       .max(500)
@@ -532,7 +539,48 @@ export default defineTool({
         'WI-2796: pass true ONLY when you actually have/coordinate a live ≥2-machine or Hetzner federation rig. Default (false/omitted): items tagged payload.needs_2_machine_rig are excluded — a single-box caller cannot execute them anyway.',
       ),
   }),
-  async handler(args, ctx) {
+  async handler(rawArgs, ctx) {
+    // WI-38059 — default `harness` from the session instead of requiring it.
+    //
+    // WHY: this was filed FIVE separate times by different agents before anyone
+    // fixed it (EI-14940, EI-20184580886728084, EI-20186903579866871,
+    // EI-20193064803605796, plus the Gemini grading pass S4). The shape of the
+    // failure is always identical: an agent is told "pull work via
+    // scheduler:get_next", calls it, and gets
+    // `invalid_args: harness: expected string, received undefined` on its FIRST
+    // action after a wake — the single worst moment to spend a round-trip, and
+    // the reason it kept getting re-filed rather than learned.
+    //
+    // A session already knows its harness; making the caller restate it bought
+    // nothing. Cross-harness pulls still work by passing it explicitly, so this
+    // widens behaviour without removing any.
+    const ctxHarness = (ctx as { harnessSlug?: unknown }).harnessSlug;
+    const resolvedHarness =
+      rawArgs.harness ?? (typeof ctxHarness === 'string' && ctxHarness.trim() ? ctxHarness.trim() : undefined);
+    if (!resolvedHarness) {
+      // Only reachable from a session with no harness binding at all (unscoped
+      // operator / cross-workspace). Say which of the two is missing rather than
+      // re-emitting the bare zod complaint the five filings were about.
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify({
+              ok: false,
+              error: 'harness_required',
+              detail:
+                'No `harness` argument and this session is not scoped to one, so there is no queue to pull from. ' +
+                'Pass harness explicitly (a harness-scoped session supplies it automatically).',
+            }),
+          },
+        ],
+        isError: true,
+      };
+    }
+    // Re-bind so every downstream `args.harness` stays a definite string — the
+    // alternative (renaming ~15 call sites) would also have caught the unrelated
+    // `args.harness` inside buildMissDiagnosis, which has its own `args` param.
+    const args = { ...rawArgs, harness: resolvedHarness };
     const ident = resolveAgentIdentity(ctx);
     // P-016: reconcile ALL incompatible pre-existing claims before the next
     // pickup. The sweep is batch-shaped (one pass, one leader alert), so a dead
