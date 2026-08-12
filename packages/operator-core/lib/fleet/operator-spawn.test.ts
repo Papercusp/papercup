@@ -560,7 +560,7 @@ describe('spawnAgentInHarness — role="kettle" is retired ABOVE the overwatch g
 });
 
 describe('spawnAgentInHarness — coding-factory role needs a pushed FEATURE_ID (coding-hive-bee-vs-coding-factory-scoper-2026-06-23)', () => {
-  it('rejects a coding-FACTORY pipeline role with NO pushed-feature context, pointing at role="cup"', async () => {
+  it('rejects a coding-FACTORY pipeline role with NO pushed-feature context, pointing at an su fleet', async () => {
     // A scoper spawned with no featureId / FEATURE_ID= extra / chunkId is the
     // observed mistake (testing the coding-hive handoff by spawning a scoper +
     // setting claim-specs on it — inert). The guard refuses + names the bee unit.

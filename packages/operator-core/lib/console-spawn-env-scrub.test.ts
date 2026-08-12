@@ -88,4 +88,27 @@ describe('spawned-child env scrub (EI-19407722209410974)', () => {
     expect(out.DISPLAY).toBe(':1');
     expect(TERMINAL_CONTEXT_ENV_KEYS).toContain('GNOME_TERMINAL_SCREEN');
   });
+
+  it('the scrub removes operator-only sidecar toggles before launching agents', () => {
+    // These flags tune git offload inside the operator service itself. If they
+    // cross the operator→agent boundary, an unrelated agent-shell test can
+    // route through the degraded spawner sidecar and emit a console warning
+    // (WI-37487). Keep the assertion on the shared scrub, not one caller, so
+    // visible, macOS, and headless spawn paths all inherit the same guard.
+    const out = scrubTerminalContextEnv({
+      PATH: '/usr/bin',
+      PAPERCUSP_DEV_DEPLOY_SPAWN_SIDECAR: '1',
+      PAPERCUSP_SYSTEM_HEALTH_SPAWN_SIDECAR: '1',
+      PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:3170',
+    });
+    expect(out.PAPERCUSP_DEV_DEPLOY_SPAWN_SIDECAR).toBeUndefined();
+    expect(out.PAPERCUSP_SYSTEM_HEALTH_SPAWN_SIDECAR).toBeUndefined();
+    expect(out.PAPERCUSP_OPERATOR_URL).toBe('http://127.0.0.1:3170');
+    expect(TERMINAL_CONTEXT_ENV_KEYS).toEqual(
+      expect.arrayContaining([
+        'PAPERCUSP_DEV_DEPLOY_SPAWN_SIDECAR',
+        'PAPERCUSP_SYSTEM_HEALTH_SPAWN_SIDECAR',
+      ]),
+    );
+  });
 });
