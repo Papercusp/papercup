@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { lintParsed, summarizeLintReports, type PlanLintReport } from './lint';
 import { parsePlan } from './parser';
+import { stampTerminalNowBlock } from './terminal-now-stamp';
 
 /**
  * P-002 (promote-spawn-child-harness): `plans:lint` emits a soft WARNING (never
@@ -679,5 +680,59 @@ describe('plans:lint — unknown_decision_ref (EI-522)', () => {
     );
     const report = await lint(raw);
     expect(codes(report.warnings)).toContain('unknown_decision_ref');
+  });
+});
+
+describe('plans:lint — terminal_status_stale_now (WI-38303)', () => {
+  // The MIRROR of completion_status_mismatch: that one catches a done-reading Now
+  // under a live status, this one catches a live-reading Now under a terminal
+  // status. Measured cost of the gap: 277 papercusp plans, and two agents sent to
+  // redo finished work in one session.
+  const planDoc = (opts: { status: string; nowState?: string; nowNext: string }) =>
+    `---\ntitle: T\nslug: terminal-now-lint-test\nstatus: ${opts.status}\ncreated: 2026-08-12\n---\n\n` +
+    `# T\n\n## Now\n\n**State:** ${opts.nowState ?? 'shipped it'}\n\n**Next:** ${opts.nowNext}\n\n` +
+    `## Phase 1\n\n- **P-001** \`done\` do a thing\n\n## Decisions\n`;
+  const lintDoc = async (raw: string) => lintParsed(parsePlan(raw), 'terminal-now-lint-test', false);
+  const has = (r: { warnings: { code: string }[] }) =>
+    codes(r.warnings).includes('terminal_status_stale_now');
+
+  it('warns when a SHIPPED plan still tells the reader to do something', async () => {
+    const r = await lintDoc(planDoc({ status: 'shipped', nowNext: 'Grade the rubric, then flip the plan to shipped.' }));
+    expect(has(r)).toBe(true);
+    expect(codes(r.errors)).not.toContain('terminal_status_stale_now'); // warning, never error
+    expect(r.warnings.find((f) => f.code === 'terminal_status_stale_now')!.message).toMatch(/'shipped'/);
+  });
+
+  it('warns on a SUPERSEDED plan too', async () => {
+    const r = await lintDoc(planDoc({ status: 'superseded', nowNext: 'Rebuild the adapter against the new API.' }));
+    expect(has(r)).toBe(true);
+  });
+
+  it('does NOT warn on a live status — that direction is completion_status_mismatch', async () => {
+    for (const status of ['draft', 'ready', 'active']) {
+      expect(has(await lintDoc(planDoc({ status, nowNext: 'Grade the rubric.' })))).toBe(false);
+    }
+  });
+
+  it('does NOT warn when the Next already reads as closed', async () => {
+    for (const next of ['none', 'Nothing outstanding.', 'n/a', '—', 'none — the plan is shipped.']) {
+      expect(has(await lintDoc(planDoc({ status: 'shipped', nowNext: next })))).toBe(false);
+    }
+  });
+
+  it('is SILENCED by the set-plan-status stamp — the two guards do not double-report', async () => {
+    const stamped = stampTerminalNowBlock(
+      planDoc({ status: 'shipped', nowNext: 'Grade the rubric, then flip the plan to shipped.' }),
+      'shipped',
+      new Date('2026-08-12T21:00:00Z'),
+    );
+    expect(stamped).not.toBeNull();
+    expect(has(await lintDoc(stamped as string))).toBe(false);
+  });
+
+  it('CONTROL: the same doc unstamped DOES warn', async () => {
+    // Calibration for the test above — proves the silence came from the stamp.
+    const r = await lintDoc(planDoc({ status: 'shipped', nowNext: 'Grade the rubric, then flip the plan to shipped.' }));
+    expect(has(r)).toBe(true);
   });
 });
