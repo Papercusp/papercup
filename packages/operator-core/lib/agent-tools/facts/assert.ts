@@ -288,6 +288,13 @@ export default defineTool({
       args.shareable === true
         ? await (await import('../../agent-facts/store')).resolveFactFederationSlug(ctx.harnessSlug)
         : null;
+    if (args.shareable === true && !potHomeSlug) {
+      throw new InvalidInputError(
+        'facts:assert — a shareable fact requires a resolvable federation scope; pass a harness-scoped context ' +
+          'or omit shareable to keep the fact private. A shareable fact without harness_slug would be captured ' +
+          'and fail in substrate_outbox.',
+      );
+    }
     // P-007: a TYPED sourceRef (msg:/wi:/owner-turn) is platform-verified at
     // assert time — the stamp travels with the fact and folds render the
     // verified quote with zero extra reads. Fail-soft: stamping never blocks

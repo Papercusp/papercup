@@ -28,13 +28,18 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentFact, AssertFactInput } from '../../agent-facts/store';
 
 const assertFactSpy = vi.hoisted(() => vi.fn<(input: AssertFactInput) => Promise<AgentFact>>());
+const resolveFactFederationSlugSpy = vi.hoisted(() => vi.fn<() => Promise<string | null>>());
 
 vi.mock('../../agent-facts/store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../agent-facts/store')>();
   // Spread the real module: the tool imports clampFactBody / resolveFactScopeRef /
   // FACT_SCOPES / the key-prefix + cap constants from here too, and the refusal
   // logic under test is built on the REAL clamp. Only the write is replaced.
-  return { ...actual, assertFact: assertFactSpy };
+  return {
+    ...actual,
+    assertFact: assertFactSpy,
+    resolveFactFederationSlug: resolveFactFederationSlugSpy,
+  };
 });
 
 import assertTool from './assert';
@@ -86,6 +91,8 @@ describe('facts:assert — pre-write truncation refusal (EI-18685042986450096)',
   beforeEach(() => {
     assertFactSpy.mockReset();
     assertFactSpy.mockImplementation(async (input) => fakeStoredFact(input));
+    resolveFactFederationSlugSpy.mockReset();
+    resolveFactFederationSlugSpy.mockResolvedValue(null);
   });
 
   it('REFUSES an over-cap body with no acceptTruncation — names the overage + previews the exact dropped tail', async () => {
@@ -151,6 +158,28 @@ describe('facts:assert — pre-write truncation refusal (EI-18685042986450096)',
     );
     expect(assertFactSpy).toHaveBeenCalledTimes(1);
     expect(assertFactSpy.mock.calls[0][0]).toMatchObject({ scope: 'harness', scopeRef: null });
+  });
+
+  it('REFUSES an unroutable shareable fact before the write', async () => {
+    await expect(
+      assertTool.handler(
+        { scope: 'workspace', key: 'k-unroutable-shareable', body: 'share me', shareable: true } as never,
+        ctx,
+      ),
+    ).rejects.toThrow(/shareable.*federation scope|harness_slug/i);
+    expect(resolveFactFederationSlugSpy).toHaveBeenCalledWith(undefined);
+    expect(assertFactSpy).not.toHaveBeenCalled();
+  });
+
+  it('passes the resolved hive-home slug for a routable shareable fact', async () => {
+    resolveFactFederationSlugSpy.mockResolvedValue('hive-home');
+    await assertTool.handler(
+      { scope: 'workspace', key: 'k-routable-shareable', body: 'share me', shareable: true } as never,
+      { ...ctx, harnessSlug: 'member-harness' } as never,
+    );
+    expect(resolveFactFederationSlugSpy).toHaveBeenCalledWith('member-harness');
+    expect(assertFactSpy).toHaveBeenCalledTimes(1);
+    expect(assertFactSpy.mock.calls[0][0]).toMatchObject({ shareable: true, potHomeSlug: 'hive-home' });
   });
 
   it('the acceptTruncation arg description documents the escape hatch (P-007 regression guard stays visible)', () => {
