@@ -94,7 +94,11 @@ import {
   splitCarryNoteChecks,
   splitCarryNoteWalls,
 } from '../../carry-note';
-import { renderLoopChecksBlock, renderLoopWallsBlock } from '../../harness/routines/loop-fire';
+import {
+  clipLoopCheckpointForWake,
+  renderLoopChecksBlock,
+  renderLoopWallsBlock,
+} from '../../harness/routines/loop-fire';
 import { getLoopStatus, countAgentToolCallsInWindow } from '../../harness/routines/loop';
 import {
   formatEnvelope,
@@ -534,6 +538,21 @@ export async function rehydrateLoopWakeText(
     const ageMs = meta.updatedAtMs != null ? Date.now() - meta.updatedAtMs : null;
     const ageStr = ageMs != null ? `${Math.max(0, Math.round(ageMs / 1000))}s` : 'unknown';
 
+    // EI-20230529647745311: the re-check used to be appended after the fire-time
+    // snapshot. The injection door intentionally keeps the HEAD and spills the TAIL,
+    // so a delayed loop wake could still inject the old candidate/next-action while
+    // the fresh read lived only in the spill file. Put the delivery-time state first
+    // so the state that governs the turn survives the door. Keep the narrative note in
+    // this high-priority block (not only walls/checks): those fields carry the candidate
+    // and next action that a stale wake can otherwise resurrect.
+    const liveNote = meta.note ? clipLoopCheckpointForWake(meta.note, 2_200) : null;
+    const checkpointState = liveNote
+      ? `Current verified loop:checkpoint (resolved at delivery for owner ${d.subscriberId}, harness ${marker.harness}):\n${liveNote}`
+      :
+        `⚠ NO delivery-time loop:checkpoint was found for owner ${d.subscriberId}, harness ${marker.harness}. ` +
+        `If the wake text below contains a checkpoint, it is a stale fire-time snapshot; do not trust or re-execute it. ` +
+        `Reconcile the carry-note store identity and write loop:checkpoint before ending this turn.`;
+
     // EI-18825117783927950: best-effort, SEPARATELY caught so a status-read hiccup
     // degrades only this banner, never the walls/checks rehydration above it.
     let supersededNote = '';
@@ -561,19 +580,27 @@ export async function rehydrateLoopWakeText(
       /* best-effort — never blocks or alters the walls/checks rehydration above */
     }
 
-    return (
-      `${baseText}\n\n` +
-      `🔄 LIVE RE-CHECK at actual delivery time (EI-10935 — this delivery may have been queued/staged, so the ` +
-      `checkpoint/walls text ABOVE can be a stale snapshot from when the wake FIRED, not from now). Freshest ` +
-      `carry-note is ${ageStr} old. Current open walls:\n${wallsNow}\n` +
+    const liveRecheck =
+      `🔄 LIVE RE-CHECK at actual delivery time (EI-10935 / EI-20230529647745311 — this delivery may have been ` +
+      `queued/staged, so the checkpoint/walls text below can be a stale snapshot from when the wake FIRED, not ` +
+      `from now). Freshest carry-note is ${ageStr} old.\n\n` +
+      checkpointState +
+      `\n\nCurrent open walls:\n${wallsNow}\n` +
       (checksNow ? `${checksNow}\n` : '') +
-      `If this disagrees with the text above (esp. a wall shown open above that is NOT listed here), TRUST THIS ` +
-      `BLOCK — it is the live re-read: do not re-execute an irreversible action or re-ask the owner about a wall ` +
-      `not listed here.` +
-      supersededNote
-    );
+      `TRUST THIS BLOCK — it is the delivery-time re-read and outranks the fire-time snapshot below: do not re-execute an irreversible action ` +
+      `or re-ask the owner about a wall not listed here.`;
+
+    // Keep both the live state and a lifecycle supersession warning ahead of the
+    // generic fire-time text. The latter is just as important to preserve: an ended
+    // or re-armed loop must not be revived by a queued stale imperative.
+    return `${liveRecheck}${supersededNote}\n\n${baseText}`;
   } catch {
-    return baseText; // fail-soft — never let a rehydration hiccup block delivery
+    // The delivery itself remains fail-soft, but do not silently present a loop
+    // snapshot as authoritative when the delivery-time read failed completely.
+    return (
+      `⚠ LOOP CHECKPOINT RE-CHECK FAILED at delivery time for owner ${d.subscriberId}. ` +
+      `The checkpoint below may be stale; reconcile the loop:checkpoint store/identity before acting.\n\n${baseText}`
+    );
   }
 }
 

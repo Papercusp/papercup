@@ -389,7 +389,7 @@ describe('rehydrateLoopWakeText (EI-10935: delivery-time carry-note re-check)', 
 
   it('a LOOP wake whose FRESH carry-note now has NO open walls explicitly says so — supersedes a stale OPEN WALLS block above (the exact EI-10935 regression)', async () => {
     const getLoopCarryNoteWithMetaFn = vi.fn(async () => ({
-      note: '## Did\nCleared the wall after the owner go-ahead.\n\n## Left\nNothing.',
+      note: '## Did\nCleared the wall after the owner go-ahead; candidate 29e97a6761 is current.\n\n## Left\nNothing.\n\n## Next action\nRe-check 29e97a6761.',
       updatedAtMs: Date.now() - 5_000,
     }));
     const d = work({ payload: { harness: 'papercusp', wakeCount: 5 }, subscriberId: 'su-loop-1' });
@@ -401,12 +401,16 @@ describe('rehydrateLoopWakeText (EI-10935: delivery-time carry-note re-check)', 
     });
     // The stale text is still present (never mutated/removed)...
     expect(out).toContain(STALE_TEXT);
-    // ...but a live re-check block is appended, EXPLICITLY stating no walls are
-    // open now — an agent reading to the end sees the wall was cleared, not
-    // still pending.
+    // ...but a live re-check block is prepended, EXPLICITLY stating no walls are
+    // open now — the delivery-time state leads the stale snapshot and cannot be
+    // lost to the injection door's head-keep cap.
     expect(out).toMatch(/LIVE RE-CHECK/);
+    expect(out).toContain('candidate 29e97a6761 is current');
     expect(out).toMatch(/none open — any wall shown OPEN above has been CLEARED since/);
     expect(out).toMatch(/TRUST THIS BLOCK/);
+    // The delivery-time block leads the fire-time snapshot so the injection door's
+    // head-keep behavior cannot spill the only state that was read at delivery.
+    expect(out.indexOf('LIVE RE-CHECK')).toBeLessThan(out.indexOf(STALE_TEXT));
   });
 
   it('a LOOP wake whose FRESH carry-note STILL has an open wall renders it in the re-check block', async () => {
@@ -426,7 +430,35 @@ describe('rehydrateLoopWakeText (EI-10935: delivery-time carry-note re-check)', 
     });
     const d = work({ payload: { harness: 'papercusp', wakeCount: 1 } });
     const out = await rehydrateLoopWakeText(d, STALE_TEXT, { getLoopCarryNoteWithMetaFn });
-    expect(out).toBe(STALE_TEXT);
+    expect(out).toContain(STALE_TEXT);
+    expect(out).toMatch(/LOOP CHECKPOINT RE-CHECK FAILED/);
+  });
+
+  it('keeps the delivery-time narrative checkpoint ahead of the injection-door spill (EI-20230529647745311)', async () => {
+    const d = work({
+      id: 990_002,
+      subscriberId: 'su-loop-door-regression',
+      payload: { harness: 'papercusp', wakeCount: 2 },
+    });
+    const current = await rehydrateLoopWakeText(
+      d,
+      `STALE-CANDIDATE-7e0e5011\n${'old fire-time snapshot '.repeat(2_000)}`,
+      {
+        getLoopCarryNoteWithMetaFn: vi.fn(async () => ({
+          note: '## Did\nVerified candidate 29e97a6761 after loop:checkpoint write.\n\n## Next action\nWait for its verdict.',
+          updatedAtMs: Date.now() - 1_000,
+        })),
+      },
+    );
+    const delivered = applyInjectionDoor(d, current);
+    try {
+      expect(delivered).toContain('candidate 29e97a6761');
+      expect(delivered.indexOf('LIVE RE-CHECK')).toBeLessThan(delivered.indexOf('STALE-CANDIDATE-7e0e5011'));
+      expect(delivered).toMatch(/injection-door: wake text exceeded/);
+    } finally {
+      const m = delivered.match(/the FULL text is at (\S+) —/);
+      if (m) rmSync(m[1], { force: true });
+    }
   });
 });
 
