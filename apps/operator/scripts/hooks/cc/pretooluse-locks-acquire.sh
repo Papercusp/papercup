@@ -104,7 +104,22 @@ def now_iso():
     return time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())
 
 
+compatibility_advisory = None
+
+
 def allow():
+    # A compatibility fallback may still allow the edit, but it must tell the
+    # model that the first request hit a stale operator. Otherwise a successful
+    # retry is indistinguishable from a healthy first attempt and the runtime
+    # skew keeps widening silently.
+    if compatibility_advisory:
+        json.dump({'hookSpecificOutput': {
+            'hookEventName': 'PreToolUse',
+            'permissionDecision': 'allow',
+            'permissionDecisionReason': 'file-lock compatibility fallback (non-blocking)',
+            'additionalContext': compatibility_advisory,
+        }}, sys.stdout)
+        sys.exit(0)
     # Exit 0, no stdout → no decision, client proceeds with normal flow.
     sys.exit(0)
 
@@ -762,31 +777,43 @@ repo_relative = deduped_repo_relative
 
 # ── Acquire (no server-side wait: block immediately so the agent can
 #    replan now rather than hang the edit). ──────────────────────────────
-body = json.dumps({
-    'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-    'params': {'name': 'locks:acquire', 'arguments': {
-        'paths': repo_relative,
-        'intent': f'PreToolUse:{tool_name}',
-        'ttl_sec': 1200,
-        'wait': {'max_sec': 0},
-        **({'coordination_domain': next(iter(repo_domains))} if len(repo_domains) == 1 else {}),
-    }},
-}).encode()
+lock_arguments = {
+    'paths': repo_relative,
+    'intent': f'PreToolUse:{tool_name}',
+    'ttl_sec': 1200,
+    'wait': {'max_sec': 0},
+}
+if len(repo_domains) == 1:
+    lock_arguments['coordination_domain'] = next(iter(repo_domains))
 
-req = urllib.request.Request(
+
+def _make_request(arguments):
     # format=json: the MCP result-format default flipped to compact (TOON-rendered
     # text); this hook json.loads the tool result, so it MUST request json or the
     # parse fails and lock protection silently drops (fail-open).
-    operator_url.rstrip('/') + '/api/mcp?superuser=1&format=json&client='
-    + urllib.parse.quote(owner, safe=''),
-    data=body,
-    headers={
-        'Authorization': 'Bearer ' + token,
-        'Content-Type': 'application/json',
-        'Accept': 'application/json, text/event-stream',
-    },
-    method='POST',
-)
+    body = json.dumps({
+        'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
+        'params': {'name': 'locks:acquire', 'arguments': arguments},
+    }).encode()
+    return urllib.request.Request(
+        operator_url.rstrip('/') + '/api/mcp?superuser=1&format=json&client='
+        + urllib.parse.quote(owner, safe=''),
+        data=body,
+        headers={
+            'Authorization': 'Bearer ' + token,
+            'Content-Type': 'application/json',
+            'Accept': 'application/json, text/event-stream',
+        },
+        method='POST',
+    )
+
+
+req = _make_request(lock_arguments)
+req_without_coordination_domain = None
+if 'coordination_domain' in lock_arguments:
+    fallback_arguments = dict(lock_arguments)
+    del fallback_arguments['coordination_domain']
+    req_without_coordination_domain = _make_request(fallback_arguments)
 def _is_conn_refused(exc):
     # The :3070 host has no hot-reload, so picking up a lib/** edit means a
     # RESTART; during that few-second boot the port REFUSES connections. That
