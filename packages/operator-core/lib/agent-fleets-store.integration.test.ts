@@ -174,7 +174,7 @@ describe('fleet control state (P-009 / mig 575) — typed wind-down round-trip',
   });
 
   it('a stale reconcile snapshot cannot overwrite a newer resume', async () => {
-    const { record } = await createFleetIfAbsent(
+    await createFleetIfAbsent(
       { workspaceId: WS, fleetSlug: 'cas-fleet', leaderOwnerId: 'su-lead' },
       rootSql,
     );
@@ -200,7 +200,6 @@ describe('fleet control state (P-009 / mig 575) — typed wind-down round-trip',
       'cas-fleet',
       { state: 'winding-down', reason: 'stale reconcile', by: 'system:fleet-control-reconcile' },
       rootSql,
-      undefined,
       undefined,
       { state: 'active', updatedAtMs: snapshot!.updatedAt },
     );
