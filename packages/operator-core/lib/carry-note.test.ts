@@ -37,6 +37,7 @@ import {
   coerceCarryRowShape,
   type WallEntry,
   type CheckEntry,
+  type CarryArgRepair,
 } from './carry-note';
 
 describe('scope constructors — the convergence axis', () => {
@@ -222,7 +223,11 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
   });
 
   it('maps descriptive label/name aliases to claim, while an explicit claim wins', () => {
-    const labelRepairs: Array<{ field: string; kind: string; detail: string }> = [];
+    // Typed as the REAL exported CarryArgRepair, not a structural stand-in: a
+    // hand-rolled `{ field: string; kind: string; detail: string }` silently
+    // drifted when `kind` was narrowed to 'truncated' | 'renamed', which is what
+    // put 3 committed type errors in this file (EI-20278756030495608).
+    const labelRepairs: CarryArgRepair[] = [];
     expect(coerceCarryRowShape({ label: 'labelled claim' }, 'checks[0]', labelRepairs)).toEqual({
       claim: 'labelled claim',
     });
@@ -230,12 +235,12 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
       expect.objectContaining({ field: 'checks[0].label', kind: 'renamed' }),
     ]);
 
-    const nameRepairs: Array<{ field: string; kind: string; detail: string }> = [];
+    const nameRepairs: CarryArgRepair[] = [];
     expect(coerceCarryRowShape({ name: 'named claim' }, 'checks[1]', nameRepairs)).toEqual({
       claim: 'named claim',
     });
 
-    const canonicalRepairs: Array<{ field: string; kind: string; detail: string }> = [];
+    const canonicalRepairs: CarryArgRepair[] = [];
     expect(
       coerceCarryRowShape(
         { claim: 'canonical claim', label: 'ignored label', name: 'ignored name' },
