@@ -15,7 +15,6 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 // eslint-disable-next-line import/no-relative-packages
-// @ts-expect-error — the .mjs script has no declaration file (same as test-file-router.test.ts).
 import {
   reachableStatic,
   computeEagerExternalized,
@@ -23,6 +22,7 @@ import {
   decideEager,
   ALLOWED_EAGER_BUILTINS,
   parseJsonFileArg,
+// @ts-expect-error — the .mjs script has no declaration file
 } from '../../../scripts/trace-vite-externalized.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
