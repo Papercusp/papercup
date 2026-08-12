@@ -247,7 +247,7 @@ This is not a paperwork nicety — it changes outcomes.
 
 **Every plan ships with a GRADED acceptance rubric — authored AFTER implementation, before the plan is marked shipped** (acceptance-rubrics-on-every-plan-2026-08-11; flag `ACCEPTANCE_RUBRIC_COMPLETION_GATE`, default ON). `plans:set-plan-status → 'shipped'` (and its `done` alias) REFUSES without one. Once your implementation is verified:
 
-1. `rubrics:propose { kind:'acceptance', subjectPlan:'<plan-slug>', classRef:'plan-class-feature-ship'|'plan-class-bugfix'|'plan-class-migration'|'plan-class-investigation', criteria:[3–7 OUTCOME criteria tracing to the plan's goal + Decisions — never a restatement of the diff] }` — it activates immediately (no ratification) and stays hidden from the standard rubrics library reads (`kind` filter). An investigation-only plan may pass `criteria: []` with `classRef:'plan-class-investigation'`.
+1. `rubrics:propose { rubricRef:'<acceptance-rubric-slug>', kind:'acceptance', subjectPlan:'<plan-slug>', classRef:'plan-class-feature-ship'|'plan-class-bugfix'|'plan-class-migration'|'plan-class-investigation', characteristic:'<umbrella-domain>', title:'<acceptance-rubric-title>', criteria:[3–7 OUTCOME criteria tracing to the plan's goal + Decisions — never a restatement of the diff] }` — it activates immediately (no ratification) and stays hidden from the standard rubrics library reads (`kind` filter). An investigation-only plan may pass `criteria: []` with `classRef:'plan-class-investigation'`.
 2. A NON-implementer grades it: `scorecards:emit { rubricRef, ratings }` with concrete evidence per rating — grader ≠ rubric author; a self-grade never satisfies the gate.
 3. Ship. The acceptance rubric is auto-retired with its plan.
 

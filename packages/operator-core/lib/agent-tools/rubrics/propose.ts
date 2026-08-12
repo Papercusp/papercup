@@ -50,6 +50,68 @@ const criterion = z.object({
   window: rubricCriterionWindowSchema.optional(),
 });
 
+export const rubricsProposeArgs = z.object({
+  rubricRef: z.string().min(1).max(120).describe('rubric ref/slug, e.g. "pot-coordination-health"'),
+  kind: z
+    .enum(['standard', 'acceptance'])
+    .optional()
+    .describe(
+      "default 'standard' (a reusable shared-standards library rubric — proposed, then Queen-ratified). 'acceptance' = a one-shot per-plan definition-of-done (acceptance-rubrics-on-every-plan-2026-08-11): requires subjectPlan, activates IMMEDIATELY (no ratification), is hidden from default library reads, and is authored AFTER the plan's implementation, before the plan may be marked done — the completion gate reads it",
+    ),
+  subjectPlan: z
+    .string()
+    .min(1)
+    .max(200)
+    .optional()
+    .describe(
+      'acceptance kind only (required there): the slug of the plan this rubric is the definition-of-done FOR. Validated to exist — a dangling link is refused',
+    ),
+  classRef: z
+    .string()
+    .min(1)
+    .max(120)
+    .optional()
+    .describe(
+      'acceptance kind only: rubricId of the standard-kind CLASS rubric this builds on (feature-ship / bugfix / migration / investigation). With classRef, criteria may be empty (the class alone may stand for e.g. investigation-only plans)',
+    ),
+  characteristic: z.string().min(1).max(120).describe('umbrella domain, e.g. "hive-coordination"'),
+  title: hardText(LIMITS.SHORT_TITLE),
+  description: hardText(8000).optional(),
+  criteria: z
+    .array(criterion)
+    .describe(
+      'the gradeable items. Standard kind: >=1 required, each with full model/method/driftMarkers. Acceptance kind: 3–7 outcome criteria tracing to the plan\'s goal + Decisions (may be empty with classRef)',
+    ),
+  ratingScale: z
+    .array(z.string())
+    .optional()
+    .describe('default scale shared by criteria (omit → ["healthy","degraded","broken","unknown"])'),
+  methodRef: z.string().max(200).optional().describe('agent-insights runbook slug for the long-form method'),
+  releaseGating: z
+    .boolean()
+    .optional()
+    .describe('mark this rubric as a release gate; every criterion then requires a unique machine-readable instrument binding'),
+  dropKeys: z
+    .array(z.string().min(1))
+    .max(100)
+    .optional()
+    .describe(
+      'loss-guard ack: stored criterion keys this proposal INTENTIONALLY drops. Propose is a whole-document replace — omitting a stored key without acking it here is rejected (it would silently delete the criterion)',
+    ),
+  allowMethodShrink: z
+    .boolean()
+    .optional()
+    .describe(
+      "loss-guard ack: allow a criterion's method+replication procedure text to shrink >40% or lose its REPLICATION DRILL marker. Requires shrinkReason",
+    ),
+  shrinkReason: z
+    .string()
+    .min(1)
+    .max(2000)
+    .optional()
+    .describe('why the procedure shrink is intentional (required with allowMethodShrink)'),
+});
+
 export default defineTool({
   name: 'rubrics:propose',
   profile: 'engineer',
@@ -68,67 +130,7 @@ export default defineTool({
   capability: 'coord:write',
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
-  args: z.object({
-    rubricRef: z.string().min(1).max(120).describe('rubric ref/slug, e.g. "pot-coordination-health"'),
-    kind: z
-      .enum(['standard', 'acceptance'])
-      .optional()
-      .describe(
-        "default 'standard' (a reusable shared-standards library rubric — proposed, then Queen-ratified). 'acceptance' = a one-shot per-plan definition-of-done (acceptance-rubrics-on-every-plan-2026-08-11): requires subjectPlan, activates IMMEDIATELY (no ratification), is hidden from default library reads, and is authored AFTER the plan's implementation, before the plan may be marked done — the completion gate reads it",
-      ),
-    subjectPlan: z
-      .string()
-      .min(1)
-      .max(200)
-      .optional()
-      .describe(
-        'acceptance kind only (required there): the slug of the plan this rubric is the definition-of-done FOR. Validated to exist — a dangling link is refused',
-      ),
-    classRef: z
-      .string()
-      .min(1)
-      .max(120)
-      .optional()
-      .describe(
-        'acceptance kind only: rubricId of the standard-kind CLASS rubric this builds on (feature-ship / bugfix / migration / investigation). With classRef, criteria may be empty (the class alone may stand for e.g. investigation-only plans)',
-      ),
-    characteristic: z.string().min(1).max(120).describe('umbrella domain, e.g. "hive-coordination"'),
-    title: hardText(LIMITS.SHORT_TITLE),
-    description: hardText(8000).optional(),
-    criteria: z
-      .array(criterion)
-      .describe(
-        'the gradeable items. Standard kind: >=1 required, each with full model/method/driftMarkers. Acceptance kind: 3–7 outcome criteria tracing to the plan\'s goal + Decisions (may be empty with classRef)',
-      ),
-    ratingScale: z
-      .array(z.string())
-      .optional()
-      .describe('default scale shared by criteria (omit → ["healthy","degraded","broken","unknown"])'),
-    methodRef: z.string().max(200).optional().describe('agent-insights runbook slug for the long-form method'),
-    releaseGating: z
-      .boolean()
-      .optional()
-      .describe('mark this rubric as a release gate; every criterion then requires a unique machine-readable instrument binding'),
-    dropKeys: z
-      .array(z.string().min(1))
-      .max(100)
-      .optional()
-      .describe(
-        'loss-guard ack: stored criterion keys this proposal INTENTIONALLY drops. Propose is a whole-document replace — omitting a stored key without acking it here is rejected (it would silently delete the criterion)',
-      ),
-    allowMethodShrink: z
-      .boolean()
-      .optional()
-      .describe(
-        "loss-guard ack: allow a criterion's method+replication procedure text to shrink >40% or lose its REPLICATION DRILL marker. Requires shrinkReason",
-      ),
-    shrinkReason: z
-      .string()
-      .min(1)
-      .max(2000)
-      .optional()
-      .describe('why the procedure shrink is intentional (required with allowMethodShrink)'),
-  }),
+  args: rubricsProposeArgs,
   async handler(args, ctx) {
     const id = resolveAgentIdentity(ctx);
     const rubric = await proposeRubric({
