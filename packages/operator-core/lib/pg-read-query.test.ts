@@ -8,6 +8,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   assertSingleReadStatement,
+  assertReadOnlyExplainStatement,
   extractPgErrorInfo,
   extractReferencedTables,
   describeReferencedTableColumns,
@@ -124,6 +125,26 @@ describe('assertSingleReadStatement', () => {
   });
 });
 
+describe('assertReadOnlyExplainStatement', () => {
+  it('accepts EXPLAIN with parenthesized options and a SELECT body', () => {
+    expect(assertReadOnlyExplainStatement('EXPLAIN (FORMAT TEXT) SELECT 1')).toBe(
+      'EXPLAIN (FORMAT TEXT) SELECT 1',
+    );
+    expect(assertReadOnlyExplainStatement('EXPLAIN ANALYZE SELECT 1')).toBe('EXPLAIN ANALYZE SELECT 1');
+  });
+
+  it('preserves SELECT/WITH-only validation for the explained statement', () => {
+    for (const sql of ['EXPLAIN (FORMAT TEXT) UPDATE t SET x = 1', 'EXPLAIN ANALYZE DELETE FROM t']) {
+      expect(() => assertReadOnlyExplainStatement(sql)).toThrow(/read-only/i);
+    }
+  });
+
+  it('rejects malformed or missing EXPLAIN bodies', () => {
+    expect(() => assertReadOnlyExplainStatement('EXPLAIN (FORMAT TEXT)')).toThrow(/must include/i);
+    expect(() => assertReadOnlyExplainStatement('EXPLAIN (FORMAT TEXT SELECT 1')).toThrow(/not closed/i);
+  });
+});
+
 // EI-8301: dev:pg_query dropped Postgres' HINT/DETAIL on a failed query, so a
 // "column does not exist" error only showed the bare message — agents then
 // guessed non-obvious column names repeatedly. extractPgErrorInfo pulls the
@@ -228,6 +249,49 @@ describe('pgReadQuery — whole-call deadline (EI-19415142351884573)', () => {
     await expect(
       pgReadQuery('SELECT 1', { client: failingClient, timeoutMs: 5000 }),
     ).rejects.toThrow('connection refused');
+  });
+});
+
+describe('pgReadQuery — read-only EXPLAIN', () => {
+  it('executes EXPLAIN directly inside READ ONLY and caps plan rows', async () => {
+    const calls: string[] = [];
+    const explainRows = [
+      { 'QUERY PLAN': 'Limit  (cost=0.00..1.00 rows=1 width=4)' },
+      { 'QUERY PLAN': '  ->  Result  (cost=0.00..0.01 rows=1 width=4)' },
+      { 'QUERY PLAN': '        Output: 1' },
+    ];
+    const client = {
+      begin: async (fn: (tx: { unsafe: (sql: string) => Promise<unknown> }) => Promise<void>) => {
+        await fn({
+          unsafe: async (sql: string) => {
+            calls.push(sql);
+            return sql.startsWith('EXPLAIN') ? explainRows : [];
+          },
+        });
+      },
+    } as never;
+
+    const result = await pgReadQuery('EXPLAIN (FORMAT TEXT) SELECT 1', { client, maxRows: 2 });
+
+    expect(calls).toEqual([
+      'SET TRANSACTION READ ONLY',
+      'SET LOCAL statement_timeout = 5000',
+      "SET LOCAL TIME ZONE 'UTC'",
+      'EXPLAIN (FORMAT TEXT) SELECT 1',
+    ]);
+    expect(result.rows).toEqual(explainRows.slice(0, 2));
+    expect(result.rowCount).toBe(2);
+    expect(result.truncated).toBe(true);
+    expect(result.fields).toEqual(['QUERY PLAN']);
+  });
+
+  it('rejects EXPLAIN of a write before executing it', async () => {
+    const begin = vi.fn();
+    const client = { begin } as never;
+    await expect(pgReadQuery('EXPLAIN (FORMAT TEXT) UPDATE t SET x = 1', { client })).rejects.toThrow(
+      /read-only/i,
+    );
+    expect(begin).not.toHaveBeenCalled();
   });
 });
 

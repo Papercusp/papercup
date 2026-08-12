@@ -113,6 +113,24 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     expect(pgReadQueryMock).toHaveBeenCalledOnce();
   });
 
+  it('runs a read-only EXPLAIN over a SELECT body and returns planner rows', async () => {
+    pgReadQueryMock.mockResolvedValue({
+      rowCount: 1,
+      truncated: false,
+      fields: ['QUERY PLAN'],
+      elapsedMs: 4,
+      rows: [{ 'QUERY PLAN': 'Result  (cost=0.00..0.01 rows=1 width=4)' }],
+    });
+    const sql = 'EXPLAIN (FORMAT TEXT) SELECT 1';
+    const res = await pgQueryTool.handler({ sql, allowUnscoped: true } as never, {} as never);
+    expect(payloadOf(res as never)).toMatchObject({
+      rowCount: 1,
+      fields: ['QUERY PLAN'],
+      rows: [{ 'QUERY PLAN': expect.stringContaining('Result') }],
+    });
+    expect(pgReadQueryMock).toHaveBeenCalledWith(sql, { maxRows: undefined, timeoutMs: undefined });
+  });
+
   it('omits the advisory field when the guard finds nothing (or throws)', async () => {
     const clean = await pgQueryTool.handler({ sql: 'SELECT 1' } as never, {} as never);
     expect(payloadOf(clean as never)).not.toHaveProperty('advisory');

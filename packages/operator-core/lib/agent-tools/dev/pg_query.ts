@@ -8,8 +8,9 @@
  * (claimable-read-tool-and-sql-encapsulation-audit-2026-07-21 P-004): a hot read
  * with a stable shape belongs behind a tool that wraps the SQL so it cannot
  * drift (work_items:claimable, plans:list's filters + groupBy, …). Read-only
- * enforced (write attempts are rejected by the transaction), statement_timeout +
- * row cap.
+ * enforced (write attempts are rejected by validation and the transaction),
+ * statement_timeout + row cap. EXPLAIN is allowed only when its explained
+ * statement is SELECT/WITH…SELECT, so planner diagnostics remain read-only.
  */
 
 import { z } from 'zod';
@@ -82,16 +83,16 @@ export default defineTool({
   name: 'dev:pg_query',
   profile: 'engineer',
   description:
-    'Run a read-only SELECT / WITH…SELECT against operator Postgres, or pass `describe` to inspect a relation. Tenant-scoped reads require a workspace_id/harness_slug predicate unless `allowUnscoped: true`. Read-only enforced; rows capped. `timeoutMs` bounds connect, acquire, and execution; bigint/int8 values return as exact strings.',
+    'Run a read-only SELECT / WITH…SELECT or EXPLAIN over a SELECT/WITH…SELECT against operator Postgres, or pass `describe` to inspect a relation. Tenant-scoped reads require a workspace_id/harness_slug predicate unless `allowUnscoped: true`. Read-only enforced; rows capped. `timeoutMs` bounds connect, acquire, and execution; bigint/int8 values return as exact strings.',
   capability: 'intel:read',
   guidance: {
     when:
-      "A genuinely ad-hoc / analytic read of PG-canonical state — a one-off group-by/join/slice you won't run again. NOT the default way to read canonical state: most hot reads already have a stable-shape tool (work_items:claimable, work_items:list, plans:list/plans:items, search:*, gitnexus:query). Reach here only when no tool covers the shape.",
+      "A genuinely ad-hoc / analytic read or planner diagnostic of PG-canonical state — a one-off group-by/join/slice or EXPLAIN over a SELECT/WITH query you won't run again. NOT the default way to read canonical state: most hot reads already have a stable-shape tool (work_items:claimable, work_items:list, plans:list/plans:items, search:*, gitnexus:query). Reach here only when no tool covers the shape.",
     notWhen:
-      'A read a documented tool above already covers (hand-written claimability/plan queries are the classic footgun, and a predicate missing workspace_id/harness_slug can match another tenant), or to CHANGE state — writes are rejected here.',
+      'A read a documented tool above already covers (hand-written claimability/plan queries are the classic footgun, and a predicate missing workspace_id/harness_slug can match another tenant), or to CHANGE state — writes and EXPLAIN of writes are rejected here.',
     chaining:
       'Check a table\'s shape first with `describe: "schema.table"` (or a glob) instead of `psql -c "\\d …"`. ' +
-      'Alias duplicate output columns (the row cap wraps the query in a subquery). Pass `maxRows` to widen the cap; if `truncated`, tighten WHERE/LIMIT instead of raising it blindly.',
+      'Use `EXPLAIN (FORMAT TEXT) SELECT …` for a bounded planner diagnostic; its explained statement must be SELECT/WITH…SELECT. Alias duplicate output columns (the row cap wraps ordinary queries in a subquery). Pass `maxRows` to widen the cap; if `truncated`, tighten WHERE/LIMIT instead of raising it blindly.',
     seeAlso: [
       'work_items:claimable (what issue-family work is claimable RIGHT NOW — the SSOT claim floors as a tool; a raw status=open query is not claimability)',
       'plans:list (plan directory, recency filters, and groupBy/aggregateOnly counts — instead of hand-written SQL over harness_plans)',
@@ -117,7 +118,7 @@ export default defineTool({
       .string()
       .min(1)
       .optional()
-      .describe('A single read-only SELECT or WITH…SELECT statement. No `;`-separated statements.'),
+      .describe('A single read-only SELECT, WITH…SELECT, or EXPLAIN whose explained statement is SELECT/WITH…SELECT. No `;`-separated statements.'),
     describe: z
       .string()
       .min(1)
@@ -177,7 +178,7 @@ export default defineTool({
     }
 
     if (!args.sql) {
-      return jsonError('missing_args', 'Pass `sql` (a read-only SELECT) or `describe` (a relation to inspect).');
+      return jsonError('missing_args', 'Pass `sql` (a read-only SELECT/WITH or EXPLAIN over SELECT/WITH) or `describe` (a relation to inspect).');
     }
     const sql = args.sql;
 

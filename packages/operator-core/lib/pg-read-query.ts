@@ -1706,6 +1706,118 @@ function stripSqlLiteralsAndComments(sql: string): string {
   return out;
 }
 
+/** Skip whitespace and SQL comments while locating the EXPLAIN body. */
+function skipSqlTrivia(sql: string, start: number): number {
+  let i = start;
+  while (i < sql.length) {
+    if (/\s/.test(sql[i] ?? '')) {
+      i++;
+      continue;
+    }
+    if (sql[i] === '-' && sql[i + 1] === '-') {
+      const end = sql.indexOf('\n', i + 2);
+      i = end === -1 ? sql.length : end + 1;
+      continue;
+    }
+    if (sql[i] === '/' && sql[i + 1] === '*') {
+      const end = sql.indexOf('*/', i + 2);
+      i = end === -1 ? sql.length : end + 2;
+      continue;
+    }
+    break;
+  }
+  return i;
+}
+
+function readSqlWord(sql: string, start: number): { word: string; end: number } | null {
+  const match = /^[A-Za-z_][A-Za-z0-9_$]*/.exec(sql.slice(start));
+  return match ? { word: match[0], end: start + match[0].length } : null;
+}
+
+/** Find the closing parenthesis for EXPLAIN's option list, quote-aware. */
+function findSqlClosingParen(sql: string, start: number): number {
+  let depth = 0;
+  for (let i = start; i < sql.length; i++) {
+    const ch = sql[i];
+    if (ch === '-' && sql[i + 1] === '-') {
+      const end = sql.indexOf('\n', i + 2);
+      i = end === -1 ? sql.length : end;
+      continue;
+    }
+    if (ch === '/' && sql[i + 1] === '*') {
+      const end = sql.indexOf('*/', i + 2);
+      if (end === -1) return -1;
+      i = end + 1;
+      continue;
+    }
+    if (ch === "'") {
+      for (i++; i < sql.length; i++) {
+        if (sql[i] === "'") {
+          if (sql[i + 1] === "'") {
+            i++;
+            continue;
+          }
+          break;
+        }
+      }
+      continue;
+    }
+    if (ch === '"') {
+      for (i++; i < sql.length; i++) {
+        if (sql[i] === '"') {
+          if (sql[i + 1] === '"') {
+            i++;
+            continue;
+          }
+          break;
+        }
+      }
+      continue;
+    }
+    if (ch === '$') {
+      const tag = /^\$([A-Za-z_][A-Za-z0-9_]*)?\$/.exec(sql.slice(i))?.[0];
+      if (tag) {
+        const end = sql.indexOf(tag, i + tag.length);
+        if (end === -1) return -1;
+        i = end + tag.length - 1;
+        continue;
+      }
+    }
+    if (ch === '(') depth++;
+    else if (ch === ')' && --depth === 0) return i;
+  }
+  return -1;
+}
+
+/** Consume the legacy, non-parenthesized EXPLAIN option spelling. */
+function consumeLegacyExplainOptions(sql: string, start: number): number {
+  let i = skipSqlTrivia(sql, start);
+  const booleanOptions = new Set(['analyze', 'verbose', 'costs', 'settings', 'buffers', 'wal', 'timing', 'summary']);
+  const booleanValues = new Set(['true', 'false', 'on', 'off']);
+  while (true) {
+    const token = readSqlWord(sql, i);
+    if (!token) return i;
+    const word = token.word.toLowerCase();
+    if (word === 'format') {
+      const value = readSqlWord(sql, skipSqlTrivia(sql, token.end));
+      if (!value || !/^(text|xml|json|yaml)$/i.test(value.word)) return i;
+      i = skipSqlTrivia(sql, value.end);
+      continue;
+    }
+    if (!booleanOptions.has(word)) return i;
+    i = skipSqlTrivia(sql, token.end);
+    const value = readSqlWord(sql, i);
+    if (value && booleanValues.has(value.word.toLowerCase())) i = skipSqlTrivia(sql, value.end);
+  }
+}
+
+function startsWithExplain(raw: string): boolean {
+  const q = raw.trim();
+  const start = skipSqlTrivia(q, 0);
+  const token = readSqlWord(q, start);
+  return token?.word.toLowerCase() === 'explain';
+}
+
 /**
  * Validate the query is a single read statement and return it trimmed (a
  * single trailing `;` is stripped). Throws PgReadQueryError otherwise. The
@@ -1733,6 +1845,35 @@ export function assertSingleReadStatement(raw: string): string {
 }
 
 /**
+ * Validate an EXPLAIN whose explained statement is read-only. EXPLAIN itself
+ * is not a SELECT/WITH statement, so it has its own narrow entry point rather
+ * than weakening assertSingleReadStatement. The option list is skipped, then
+ * the body goes through the exact same single SELECT/WITH validation.
+ */
+export function assertReadOnlyExplainStatement(raw: string): string {
+  const q = raw.trim().replace(/;\s*$/, '').trim();
+  if (!q) throw new PgReadQueryError('empty query');
+  const start = skipSqlTrivia(q, 0);
+  const explain = readSqlWord(q, start);
+  if (!explain || explain.word.toLowerCase() !== 'explain') {
+    throw new PgReadQueryError('only EXPLAIN SELECT / WITH…SELECT queries are allowed');
+  }
+
+  let bodyStart = skipSqlTrivia(q, explain.end);
+  if (q[bodyStart] === '(') {
+    const close = findSqlClosingParen(q, bodyStart);
+    if (close === -1) throw new PgReadQueryError('EXPLAIN option list is not closed');
+    bodyStart = skipSqlTrivia(q, close + 1);
+  } else {
+    bodyStart = consumeLegacyExplainOptions(q, bodyStart);
+  }
+  const body = q.slice(bodyStart).trim();
+  if (!body) throw new PgReadQueryError('EXPLAIN must include a SELECT / WITH…SELECT statement');
+  assertSingleReadStatement(body);
+  return q;
+}
+
+/**
  * Execute a read-only query. The query is wrapped in `SELECT * FROM (…) LIMIT n+1`
  * so the row cap is enforced in the DB (not after pulling every row into memory).
  * A query whose output has duplicate column names must alias them (PG rejects a
@@ -1752,7 +1893,8 @@ export async function pgReadQuery(
   rawQuery: string,
   opts: { maxRows?: number; timeoutMs?: number; client?: OrgSql } = {},
 ): Promise<PgReadQueryResult> {
-  const query = assertSingleReadStatement(rawQuery);
+  const isExplain = startsWithExplain(rawQuery);
+  const query = isExplain ? assertReadOnlyExplainStatement(rawQuery) : assertSingleReadStatement(rawQuery);
   const maxRows = Math.max(
     1,
     Math.min(PG_READ_QUERY_HARD_MAX_ROWS, Math.trunc(opts.maxRows ?? PG_READ_QUERY_DEFAULT_MAX_ROWS)),
@@ -1771,9 +1913,13 @@ export async function pgReadQuery(
     await tx.unsafe('SET TRANSACTION READ ONLY');
     await tx.unsafe(`SET LOCAL statement_timeout = ${timeoutMs}`);
     await tx.unsafe(SET_LOCAL_UTC);
-    rows = (await tx.unsafe(
-      `SELECT * FROM (${query}) AS _pgq LIMIT ${maxRows + 1}`,
+    const resultRows = (await tx.unsafe(
+      isExplain ? query : `SELECT * FROM (${query}) AS _pgq LIMIT ${maxRows + 1}`,
     )) as unknown as Record<string, unknown>[];
+    // EXPLAIN returns its plan as rows and cannot itself be wrapped in the
+    // SELECT * / LIMIT shape above. Keep the same response cap at this seam;
+    // the transaction timeout still bounds plan generation.
+    rows = isExplain && resultRows.length > maxRows + 1 ? resultRows.slice(0, maxRows + 1) : resultRows;
   });
   // Bound the WHOLE call (not just server-side execution) — see withCallDeadline's doc.
   await withCallDeadline(work, callDeadlineMs, callTimeoutMessage(timeoutMs, callDeadlineMs));
