@@ -1,5 +1,22 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+
+const mocks = vi.hoisted(() => ({
+  gitPipelineSnapshot: vi.fn(),
+  gitPipelinePosition: vi.fn(),
+  computeDeployStatus: vi.fn(),
+  buildReleaseTrace: vi.fn(),
+  inspectEventKey: vi.fn(),
+  resolveAgentIdentity: vi.fn(),
+}));
+
+vi.mock('../../git-pipeline-stats', () => ({ gitPipelineSnapshot: mocks.gitPipelineSnapshot }));
+vi.mock('../../git-pipeline-position', () => ({ gitPipelinePosition: mocks.gitPipelinePosition }));
+vi.mock('../../release-deploy-launch', () => ({ computeDeployStatus: mocks.computeDeployStatus }));
+vi.mock('../../release-trace', () => ({ buildReleaseTrace: mocks.buildReleaseTrace }));
+vi.mock('../../events/await/store', () => ({ inspectEventKey: mocks.inspectEventKey }));
+vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: mocks.resolveAgentIdentity }));
+
 import tool from './trace';
 
 describe('release:trace tool contract', () => {
@@ -35,5 +52,23 @@ describe('release:trace tool contract', () => {
         expect.objectContaining({ required: expect.arrayContaining(['sha']) }),
       ]),
     );
+  });
+
+  it('uses the sidecar-free snapshot path for diagnostic reads (EI-20264406467393669)', async () => {
+    const snapshot = {
+      generatedAtMs: 123,
+      deploy: { integrationRoot: '/workspace/papercusp' },
+      gate: { verdictStale: false, consecutiveReds: 0, failingTests: [], fireStale: false },
+    };
+    mocks.gitPipelineSnapshot.mockResolvedValueOnce(snapshot);
+    mocks.gitPipelinePosition.mockResolvedValueOnce({ targetSha: 'abcd1234' });
+    mocks.computeDeployStatus.mockReturnValueOnce({ state: 'green' });
+    mocks.inspectEventKey.mockResolvedValue({ waiters: [], deliveries: [] });
+    mocks.resolveAgentIdentity.mockReturnValueOnce({ ownerId: 'test-owner' });
+    mocks.buildReleaseTrace.mockReturnValueOnce({ ok: true });
+
+    await tool.handler({ path: 'packages/operator-core/lib/agent-tools/release/trace.ts' } as never, {} as never);
+
+    expect(mocks.gitPipelineSnapshot).toHaveBeenCalledWith(undefined, { useSpawnerSidecar: false });
   });
 });

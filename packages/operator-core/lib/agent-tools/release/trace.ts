@@ -84,7 +84,10 @@ export default defineTool({
   async handler(args, ctx) {
     if (!args.path && !args.sha) return { data: { ok: false, error: 'Provide path or sha.' } };
     const identity = resolveAgentIdentity(ctx);
-    const snapshot = await gitPipelineSnapshot();
+    // A diagnostic read must stay fork/sidecar-free. The default enables the
+    // dev-deploy spawner sidecar, which can block this read while composing
+    // release truth (EI-20264406467393669).
+    const snapshot = await gitPipelineSnapshot(undefined, { useSpawnerSidecar: false });
     const position = await gitPipelinePosition(
       { path: args.path, sha: args.sha },
       {
