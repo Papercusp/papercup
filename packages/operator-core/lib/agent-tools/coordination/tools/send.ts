@@ -1667,7 +1667,15 @@ export default defineTool({
   // introspection, so the advertised tool schema is byte-identical either way).
   args: z.preprocess((data, pctx) => {
     const a = data as
-      | { items?: unknown[]; to?: unknown[]; summary?: unknown; expects?: unknown; body?: unknown }
+      | {
+          items?: unknown[];
+          to?: unknown[];
+          summary?: unknown;
+          expects?: unknown;
+          body?: unknown;
+          wake?: unknown;
+          endTurn?: unknown;
+        }
       | null
       | undefined;
     const hasItems = Array.isArray(a?.items) && a.items.length > 0;
@@ -1697,6 +1705,33 @@ export default defineTool({
         pctx.addIssue({ code: 'custom', path: [...path, 'body'], message: BODY_MUST_BE_ARRAY_MESSAGE });
       }
     };
+    // EI-20271510434650928: endTurn is an ESC-before-wake recovery operation. Without
+    // an explicit wake mode it can end a recipient's current turn and then leave them
+    // idle, which is strictly worse than a plain inject. Enforce the coupling before
+    // object validation so the same gate applies to both the shorthand and items[].
+    const flagUnsafeEndTurn = (message: { endTurn?: unknown; wake?: unknown }, path: (string | number)[]) => {
+      if (
+        message.endTurn === true &&
+        message.wake !== true &&
+        message.wake !== 'required' &&
+        message.wake !== 'optimistic'
+      ) {
+        pctx.addIssue({
+          code: 'custom',
+          path: [...path, 'wake'],
+          message:
+            '`endTurn: true` requires an explicit wake mode: `wake: true`, `wake: \'required\'`, or ' +
+            '`wake: \'optimistic\'`. Ending a turn without waking it can leave the recipient idle.',
+        });
+      }
+    };
+    if (hasItems) {
+      (a?.items ?? []).forEach((it, i) => {
+        if (it && typeof it === 'object') flagUnsafeEndTurn(it as { endTurn?: unknown; wake?: unknown }, ['items', i]);
+      });
+    } else {
+      flagUnsafeEndTurn(a ?? {}, []);
+    }
     if (hasItems) {
       (a?.items ?? []).forEach((it, i) => {
         if (it && typeof it === 'object') flagMalformedBody((it as { body?: unknown }).body, ['items', i]);
