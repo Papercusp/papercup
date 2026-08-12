@@ -87,6 +87,7 @@ vi.mock('@/app/harness/Select', () => ({
 }));
 
 import { toast } from 'sonner';
+import { GOAL_LAUNCH_ROLES } from '@papercusp/operator-core/lib/goal-launch-settings';
 import GoalSettingsSection from './GoalSettingsSection';
 import type { GoalDetailLaunchSettings } from './goal-detail-model';
 
@@ -313,7 +314,7 @@ describe('GoalSettingsSection — role profiles', () => {
     mount(null);
     open();
     fireEvent.click(screen.getByRole('button', { name: 'Add role profile' }));
-    fireEvent.change(screen.getByLabelText('Role'), { target: { value: 'engineer' } });
+    fireEvent.change(screen.getByLabelText('Role'), { target: { value: 'plan-fleet-member' } });
     // Two "Effort" fields exist once a role row is open (defaults + the role),
     // so target the role's by its scoped id rather than by label text.
     const roleEffort = document.querySelector<HTMLInputElement>('input[id$="-effort"][id*="role-"]')!;
@@ -321,17 +322,51 @@ describe('GoalSettingsSection — role profiles', () => {
     fireEvent.click(saveBtn());
 
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
-    expect(writtenBody().launchSettings).toEqual({ roles: { engineer: { effort: 'high' } } });
+    expect(writtenBody().launchSettings).toEqual({
+      roles: { 'plan-fleet-member': { effort: 'high' } },
+    });
   });
 
   it('refuses a role that pins nothing instead of dropping the row silently', async () => {
     mount(null);
     open();
     fireEvent.click(screen.getByRole('button', { name: 'Add role profile' }));
-    fireEvent.change(screen.getByLabelText('Role'), { target: { value: 'engineer' } });
+    fireEvent.change(screen.getByLabelText('Role'), { target: { value: 'plan-fleet-member' } });
     fireEvent.click(saveBtn());
 
     expect((await screen.findByTestId('goal-settings-problems')).textContent).toContain('pins no settings');
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  // D-016 (WI-38048): the role key is a closed launch-slot vocabulary. The panel
+  // is the owner's ONLY authoring surface for it, so "the server binds by slot"
+  // is only half a fix — these pin the half that makes a slot reachable.
+  it('offers the launch slots as a picker rather than a free-text box', () => {
+    mount(null);
+    open();
+    fireEvent.click(screen.getByRole('button', { name: 'Add role profile' }));
+
+    const role = screen.getByLabelText('Role');
+    // A text input would accept a psu persona and store a key that binds
+    // nothing — the exact defect D-016 closes.
+    expect(role.tagName).toBe('SELECT');
+    const values = Array.from((role as HTMLSelectElement).options).map((o) => o.value);
+    for (const slot of GOAL_LAUNCH_ROLES) expect(values).toContain(slot);
+    expect(values).not.toContain('engineer');
+  });
+
+  it('shows a legacy free-text key and refuses to save it, rather than hiding the row', () => {
+    // A document written before the vocabulary closed. Dropping the row would
+    // leave the owner unable to see (or fix) the setting that is not binding.
+    mount({ roles: { engineer: { effort: 'high' } } } as never);
+    open();
+
+    const role = screen.getByLabelText('Role') as HTMLSelectElement;
+    expect(role.value).toBe('engineer');
+    fireEvent.click(saveBtn());
+    expect(screen.getByTestId('goal-settings-problems').textContent).toContain(
+      'is not a launch slot',
+    );
     expect(fetchMock).not.toHaveBeenCalled();
   });
 });
