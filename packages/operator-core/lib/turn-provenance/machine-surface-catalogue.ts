@@ -84,7 +84,27 @@ export const MACHINE_SURFACE_PATTERNS: readonly RegExp[] = [
   // Claude's background-task completion banner (self-labels "NOT USER INPUT").
   /\[\s*SYSTEM NOTIFICATION\b[^\]]*\bNOT USER INPUT\b[^\]]*\]/i,
   // Native auto-compaction continuation summary (unenrollable — no injector).
-  /^\s*This session is being continued from a previous conversation/,
+  //
+  // MATCHES THE FULL MACHINE SENTENCE, NOT ITS PREFIX (WI-38157). This pattern
+  // used to stop at "…from a previous conversation", which is a prefix an owner
+  // legitimately shares: "This session is being continued from a previous
+  // conversation -- what does that mean?" matched, and the predicate returned
+  // an empty string, so the owner's question was SUPPRESSED OUTRIGHT rather
+  // than mislabelled. That is the unrecoverable direction — a machine turn
+  // shown as owner speech stays visible and correctable, but an owner's words
+  // hidden are simply gone, with nothing left to notice they were lost.
+  //
+  // Extending to the full sentence is LOSSLESS and strictly NARROWING, measured
+  // over the whole corpus (session_turns, workspace_id='default', speaker=user):
+  // loose prefix 3,434 rows == full sentence 3,434 rows, 0 rows stop being
+  // hidden; the shortest genuine machine turn is 1,066 chars because the banner
+  // is always followed by the compaction summary itself.
+  //
+  // That length fact is also why the obvious fix is the WRONG one: requiring the
+  // turn to be "substantially only the banner" fails open on every real machine
+  // row, since the banner is a tiny fraction of a large turn. Narrowing the
+  // pattern cannot widen what is hidden, so it cannot re-open D-002/D-003.
+  /^\s*This session is being continued from a previous conversation that ran out of context\./,
   // Task/subagent completion notification (Task-tool subsystem), e.g.
   //   <task-notification> <task-id>…</task-id> <summary>…</summary>
   /^\s*<task-notification\b/,
@@ -197,7 +217,18 @@ export const CLASSIFY_HEAD_CHARS = 240;
  * FINDABLE (`WHERE turn_origin_classifier_version < CURRENT`) so a backfill
  * sweep can re-derive them. Leaving it unbumped is what makes them invisible.
  */
-export const MACHINE_SURFACE_CATALOGUE_VERSION = 3;
+// 3 → 4 (WI-38157): the compaction-banner pattern was NARROWED from a prefix to
+// the full machine sentence. Unusually, this bump matters in the RECOVERY
+// direction rather than the usual one. The note above is written for a pattern
+// being ADDED, where stale rows sit wrongly stamped `owner-typed`; here stale
+// rows sit wrongly stamped as a machine surface, which means owner turns that
+// are currently HIDDEN from the owner's own chat pane and memory tail. Leaving
+// this unbumped would fix the classification forward while leaving every
+// already-suppressed owner turn suppressed forever — the exact half-fix this
+// plan exists to prevent. The bump makes them findable
+// (`WHERE turn_origin_classifier_version < CURRENT`) so the scheduled
+// turn-provenance-backfill sweep re-derives them and the owner's words come back.
+export const MACHINE_SURFACE_CATALOGUE_VERSION = 4;
 
 /** Does this turn's head carry a CLI/subsystem synthetic-command wrapper? */
 export function hasSyntheticMarker(text: string): boolean {
