@@ -26,6 +26,7 @@ import {
   buildSchemaColumnRedirect,
   buildTenantScopeAdvisory,
   buildDerivedColumnRedirect,
+  buildToolRoutingAdvisory,
   buildJsonbPathRedirect,
   describeReferencedTableColumns,
   describeRelation,
@@ -248,6 +249,19 @@ export default defineTool({
       } catch {
         splitEvidenceAdvisory = null;
       }
+      // P-001 (sql-escape-tool-routing-2026-08-12): "a tool already answers
+      // this read". Distinct from every builder above — those warn the ANSWER
+      // may be wrong (wrong tenant, always-NULL path, wrong question, empty by
+      // construction); this one fires on a read whose answer is perfectly
+      // correct and simply did not need SQL. It is deliberately LAST in the
+      // composition: a correctness warning must never be pushed down the line
+      // by a routing hint.
+      let toolRoutingAdvisory: string | null = null;
+      try {
+        toolRoutingAdvisory = buildToolRoutingAdvisory(sql);
+      } catch {
+        toolRoutingAdvisory = null;
+      }
       const advisory =
         [
           claimabilityAdvisory,
@@ -256,6 +270,7 @@ export default defineTool({
           nativeToolAdvisory,
           corpusNamespaceAdvisory,
           tenantAdvisory,
+          toolRoutingAdvisory,
         ]
           .filter(Boolean)
           .join(' ') || null;
