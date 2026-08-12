@@ -32,8 +32,8 @@ describe('ptool MCP identity binding', () => {
   });
 
   it('defaults direct sessions to trimmed payloads and allows an explicit full escape hatch', () => {
-    expect(resolveContextTier({ env: {} })).toBe('trimmed');
-    expect(resolveContextTier({ env: { PAPERCUSP_CONTEXT_TIER: ' full ' } })).toBe('full');
+    expect(resolveContextTier({ env: { NODE_ENV: 'test' } })).toBe('trimmed');
+    expect(resolveContextTier({ env: { NODE_ENV: 'test', PAPERCUSP_CONTEXT_TIER: ' full ' } })).toBe('full');
     expect(buildMcpUrl('http://127.0.0.1:3170', { contextTier: 'full' }).searchParams.get('ctx_tier'))
       .toBe('full');
   });

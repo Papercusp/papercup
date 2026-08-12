@@ -227,9 +227,15 @@ export function connectWithLocalRetry(connectOnce: any, operatorUrl: any, scope:
     sleep?: ((ms: any) => Promise<any>) | undefined;
 }): Promise<any>;
 /** Build ptool's superuser MCP URL. Pure and exported so the identity and
- * payload-tier contracts are regression-tested without opening a transport. */
-export function buildMcpUrl(operatorUrl: any, { workspace, harness, client, contextTier, }?: {
-    contextTier?: string | undefined;
+ * payload-tier contracts are regression-tested without opening a transport.
+ * @param {string} operatorUrl
+ * @param {{workspace?: string, harness?: string, client?: string, contextTier?: string}} [options]
+ */
+export function buildMcpUrl(operatorUrl: string, { workspace, harness, client, contextTier, }?: {
+    workspace?: string;
+    harness?: string;
+    client?: string;
+    contextTier?: string;
 }): URL;
 /** List every tool, following pagination if the server returns a cursor. */
 export function listAllTools(client: any, { timeoutMs }?: {

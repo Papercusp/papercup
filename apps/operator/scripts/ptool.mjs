@@ -790,7 +790,10 @@ export async function connectWithLocalRetry(
 }
 
 /** Build ptool's superuser MCP URL. Pure and exported so the identity and
- * payload-tier contracts are regression-tested without opening a transport. */
+ * payload-tier contracts are regression-tested without opening a transport.
+ * @param {string} operatorUrl
+ * @param {{workspace?: string, harness?: string, client?: string, contextTier?: string}} [options]
+ */
 export function buildMcpUrl(operatorUrl, {
   workspace,
   harness,
