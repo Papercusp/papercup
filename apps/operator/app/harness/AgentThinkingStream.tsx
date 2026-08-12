@@ -2,6 +2,7 @@
 
 import { useEffect, useState, type ReactNode } from 'react';
 import { createResilientEventSource } from '@papercusp/sse';
+import { STREAM_SILENCE_STALE_MS, type TransportStatus } from '../_components/chat/stream-freshness';
 import { TONE } from './theme';
 
 /**
@@ -102,11 +103,35 @@ export function useAgentThinkingStream(slug: string, phase: string, runId: strin
   // `{found:true, index}` = the backfill index of the matched entry (scroll
   // target); `{found:false}` = the term wasn't found (tail backfill shown).
   const [anchor, setAnchor] = useState<{ found: boolean; index?: number } | null>(null);
+  /**
+   * Liveness, for the staleness detector (gui-chat-pane-repaint-2026-08-12 P-003).
+   *
+   * `status` above cannot answer "is this view current?". It only reaches
+   * 'error' via the transport's `onError`, which fires after THREE consecutive
+   * failures with zero successful opens — so a stream that keeps half-recovering
+   * (open → zombie → reconnect → open) never trips it, and neither does one the
+   * transport still considers open that has quietly stopped delivering. Both
+   * leave a frozen transcript that is pixel-identical to a live one, which is
+   * the reported bug.
+   *
+   * `createResilientEventSource` already knows: it publishes 'failing' the
+   * moment it schedules a backoff or its 45s zombie watchdog trips. That signal
+   * was simply being discarded. We surface it, plus the wall-clock of the last
+   * inbound signal of any kind — heartbeats included, which is what keeps an
+   * IDLE agent from reading as a broken stream.
+   */
+  const [transport, setTransport] = useState<TransportStatus>('idle');
+  const [lastSignalAt, setLastSignalAt] = useState<number | null>(null);
+  /** Bumped by the silence watchdog purely to force a re-render at the stale
+   *  edge — see the transition rules where it is set. */
+  const [, setStaleTick] = useState(0);
   useEffect(() => {
     setStatus('connecting');
     setEvents([]);
     setThinking(false);
     setAnchor(null);
+    setTransport('idle');
+    setLastSignalAt(null);
     // The one-shot `backfill` is sent ONCE per connection — if it arrives
     // corrupted (e.g. the stream dropped mid-event and resumed), nothing in-band
     // ever re-sends it and the pane would wedge on "connecting…" while small
@@ -151,10 +176,50 @@ export function useAgentThinkingStream(slug: string, phase: string, runId: strin
       flushTimer = setTimeout(flush, FLUSH_BACKSTOP_MS);
     };
 
+    // ── Liveness bookkeeping for the staleness banner ────────────────────────
+    // `onSignal` fires at least once per server heartbeat (15s), so it must NOT
+    // setState on every call — that would re-render the whole transcript four
+    // times a minute forever. Two rules make this cheap AND correct:
+    //
+    //  1. Only publish on a TRANSITION (first signal, or stale -> fresh). A
+    //     steady heartbeat on an already-fresh stream costs nothing.
+    //  2. The stale edge publishes a COUNTER, not the timestamp. Re-publishing
+    //     the timestamp would be a same-value setState, which React bails out
+    //     of — no re-render, no banner, at exactly the moment the banner is the
+    //     entire point. The counter always changes, so the component re-derives
+    //     freshness against a current `Date.now()`.
+    //
+    // The timer is a re-armed WATCHDOG, not a poll: it fires once per silence
+    // window and is cancelled by the next signal, so a healthy stream never
+    // reaches it. (setInterval would be a bare timer and is banned here.)
+    let lastSignalMs: number | null = null;
+    let staleTimer: ReturnType<typeof setTimeout> | null = null;
+    let markedStale = false;
+    const clearStaleWatchdog = () => {
+      if (staleTimer !== null) { clearTimeout(staleTimer); staleTimer = null; }
+    };
+    const armStaleWatchdog = () => {
+      clearStaleWatchdog();
+      staleTimer = setTimeout(() => {
+        markedStale = true;
+        setStaleTick((n) => n + 1);
+      }, STREAM_SILENCE_STALE_MS);
+    };
+    const onSignal = () => {
+      const wasStale = markedStale;
+      markedStale = false;
+      const first = lastSignalMs === null;
+      lastSignalMs = Date.now();
+      if (first || wasStale) setLastSignalAt(lastSignalMs);
+      armStaleWatchdog();
+    };
+
     const source = createResilientEventSource({
       // A caller can pass an explicit stream URL (e.g. the interactive-session
       // transcript endpoint); default is the bee run-log stream.
       url: streamUrl ?? `/api/harness/${slug}/agents/${runId}/stream?phase=${phase}`,
+      onSignal,
+      onStatusChange: (s) => setTransport(s),
       handlers: {
         backfill: (data) => {
           try {
@@ -193,9 +258,11 @@ export function useAgentThinkingStream(slug: string, phase: string, runId: strin
       },
       onError: () => { setStatus('error'); setThinking(false); },
     });
-    return () => { cancelFlush(); source.close(); };
+    return () => { cancelFlush(); clearStaleWatchdog(); source.close(); };
   }, [slug, phase, runId, streamUrl]);
-  return { events, status, thinking, anchor };
+  // `transport` + `lastSignalAt` are the staleness detector's inputs; callers
+  // pass them to `classifyStreamFreshness` rather than re-deriving liveness.
+  return { events, status, thinking, anchor, transport, lastSignalAt };
 }
 
 /** Format an entry's ISO timestamp as a compact local `HH:MM:SS`, or null when
