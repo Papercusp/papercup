@@ -85,6 +85,10 @@ import {
   isWorkItemCompletionAuthority,
   type WorkItemCompletionAuthority,
 } from './work-item-completion-authority';
+import {
+  liveDriveAcceptanceGap,
+  liveDriveAcceptanceMessage,
+} from './turn-provenance/owner-visible-surface-acceptance';
 import { readExternalBlockers, type ExternalBlockerRecord } from './external-blockers';
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from './pg-timestamp';
 import { noteGoalClaimed, readAgentStateStamp } from './agent-state-stamp';
@@ -2518,6 +2522,42 @@ export async function setWorkItemState(
           `(plans:get-item { slug: '${block.planSlug}', item: '${block.itemId}' }); if they are (or the plan is ` +
           `wrong), override with work_items:set_state { id: '${id}', state: '${state}', force: true } ` +
           `— NOTE work_items:complete does NOT accept a \`force\` arg, so passing one there is silently ignored (WI-4530).`,
+      );
+    }
+  }
+  // ── D-019 / P-007 (WI-37958): the REFUSING tier of the live-drive acceptance ──
+  // The WARN tier lives at work_items:complete (`liveDriveEvidenceWarning`). It cannot
+  // refuse: complete.ts:1108-1116 (D-005 / EI-24) makes that seam record-and-warn by
+  // contract, because rejecting the CALL discards the agent's only written account of
+  // what it did — a gate that destroys evidence to enforce evidence is self-defeating.
+  //
+  // THIS seam has the property that one lacks: the completion is already recorded by the
+  // time we get here, so refusing the TERMINAL FLIP preserves the evidence, leaves the
+  // item open, and tells the agent why. That is what satisfies P-007's "a checklist
+  // nobody runs is worth less than a gate that refuses" without violating EI-24.
+  //
+  // Scoped to OWNER_VISIBLE_SURFACE_FILES (8 named files), NOT every close in the fleet:
+  // a gate that fires on everything is one people learn to route around, and a
+  // routed-around gate is the checklist this replaces. Keeping the registry small is what
+  // buys the refusal its legitimacy.
+  //
+  // Bypasses, both deliberate: `skipCompletionGate` (trusted system paths — restore,
+  // watchdog sweeps, reconcile: "not completions at all", so they carry no evidence to
+  // judge) and `force` (the caller asserts the change cannot alter what is rendered).
+  if (!opts.force && !opts.skipCompletionGate && isCompletingTransition) {
+    const liveDriveGap = liveDriveAcceptanceGap(opts.completionEvidence);
+    if (liveDriveGap) {
+      throw new Error(
+        `live-drive-acceptance: work_item '${id}' → '${state}' rejected — ` +
+          `${liveDriveAcceptanceMessage(id, liveDriveGap)} ` +
+          `YOUR COMPLETION IS NOT LOST: it was recorded before this refusal, and the item stays open — ` +
+          `drive the surface, then re-close with work_items:complete { id: '${id}', state: '${state}', ` +
+          `completion: { …, verifiedHow: 'live-drove-ui' } }. If the change genuinely cannot alter what ` +
+          `the owner sees (a comment, a rename, a type-only edit), override with ` +
+          `work_items:set_state { id: '${id}', state: '${state}', force: true } and say why in the ` +
+          `completion's \`deferred\`, so the next reader knows it was considered rather than missed ` +
+          `— NOTE work_items:complete does NOT accept a \`force\` arg (WI-4530). Authority: plan ` +
+          `owner-visibility-provenance-2026-08-11 D-019.`,
       );
     }
   }
