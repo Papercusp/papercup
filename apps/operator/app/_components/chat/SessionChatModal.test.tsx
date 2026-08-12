@@ -603,6 +603,14 @@ describe('SessionChatModal', () => {
       expect(status!.getAttribute('title')).toContain('Session state: ended');
       expect(status!.getAttribute('title')).toContain('last activity: 2d ago');
 
+      // WI-38052's sibling affordance must consume the same terminal oracle:
+      // an ended session cannot receive a wake, so the composer is hidden and
+      // explains the relaunch/resume path instead of inviting a dead send.
+      expect(screen.getByTestId('session-chat-composer-unavailable').textContent).toContain(
+        'session has ended',
+      );
+      expect(screen.queryByPlaceholderText(/Type to wake/i)).toBeNull();
+
       const dot = status!.querySelector('[role="img"]');
       expect(dot?.getAttribute('data-session-state')).toBe('ended');
       expect(dot?.getAttribute('data-liveness')).toBe('stale');

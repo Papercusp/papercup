@@ -133,6 +133,36 @@ interface RosterPayload {
   starting?: HudRosterEntry[];
 }
 
+interface SessionChatComposerState {
+  passive: boolean;
+  disabled: boolean;
+  message?: string;
+}
+
+/**
+ * The composer has three user-facing affordances: reply to a live turn, wake
+ * a parked session, or explain that an ended session needs relaunch/resume.
+ * Only `ended` is terminal; draining/suspect are intentionally left on the
+ * conservative wake path until the oracle gives a definitive terminal state.
+ * Missing/unknown state keeps the legacy passive affordance for old payloads.
+ */
+function sessionChatComposerState(value: string | null | undefined): SessionChatComposerState {
+  switch (normalizeSessionState(value)) {
+    case 'live':
+      return { passive: false, disabled: false };
+    case 'parked':
+      return { passive: true, disabled: false };
+    case 'ended':
+      return {
+        passive: true,
+        disabled: true,
+        message: 'This session has ended — relaunch or resume the agent.',
+      };
+    default:
+      return { passive: true, disabled: false };
+  }
+}
+
 /* Moved to `use-owner-session-chat` (D-011) and re-exported here: nothing
    outside this file imported them, but the names are referenced from comments
    in HudView/PostureActions and from tests, and a chat surface is the natural
