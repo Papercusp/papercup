@@ -574,4 +574,28 @@ describe('ptool prettyText / resultToText', () => {
     };
     expect(resultToText(result, { raw: true })).toBe('{"ok":true,"state":"done"}');
   });
+
+  it('raw extraction keeps a complete JSON prefix when result-door guidance shares its text item', () => {
+    const result = {
+      content: [{
+        type: 'text',
+        text: '{"ok":true,"session_id":"sess-1","results":[{"text":"brace } and [ bracket"}]}\n' +
+          '[result-door: this result exceeded the ~1500-token per-result budget; the remainder was truncated]',
+      }],
+    };
+    expect(resultToText(result, { raw: true })).toBe(
+      '{"ok":true,"session_id":"sess-1","results":[{"text":"brace } and [ bracket"}]}',
+    );
+  });
+
+  it('does not recover an actually truncated JSON prefix', () => {
+    const result = {
+      content: [{
+        type: 'text',
+        text: '{"ok":true,"results":[{"session_id":"sess-1"}\n' +
+          '[result-door: this result exceeded the ~1500-token per-result budget; the remainder was truncated]',
+      }],
+    };
+    expect(resultToText(result, { raw: true })).toContain('[result-door:');
+  });
 });
