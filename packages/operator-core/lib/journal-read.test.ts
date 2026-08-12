@@ -27,6 +27,7 @@ import {
   JOURNAL_READ_DEFAULT_LIMIT,
   JOURNAL_READ_DEFAULT_SINCE,
   JOURNAL_READ_MAX_LIMIT,
+  normalizeJournalWindow,
   parseJournalJson,
   readJournal,
   type JournalExec,
@@ -44,6 +45,23 @@ const execReturning = (stdout: string): JournalExec => async () => ({ stdout });
 const noUnknownUnits = async () => [];
 
 describe('buildJournalctlArgs', () => {
+  it('normalizes compact relative lookbacks while preserving native timestamp grammar', () => {
+    const args = buildJournalctlArgs({ units: ['a.service'], since: '40m', until: '-2h' });
+    expect(args[args.indexOf('--since') + 1]).toBe('-40 minutes');
+    expect(args[args.indexOf('--until') + 1]).toBe('-2 hours');
+    expect(buildJournalctlArgs({ units: ['a.service'], since: '2026-07-26 00:00' }))
+      .toContain('2026-07-26 00:00');
+  });
+
+  it('normalizes all supported compact duration units to past windows', () => {
+    expect(normalizeJournalWindow('5s')).toBe('-5 seconds');
+    expect(normalizeJournalWindow('10m')).toBe('-10 minutes');
+    expect(normalizeJournalWindow('-2h')).toBe('-2 hours');
+    expect(normalizeJournalWindow('3d')).toBe('-3 days');
+    expect(normalizeJournalWindow('1w')).toBe('-1 weeks');
+    expect(normalizeJournalWindow('  40 min  ')).toBe('  40 min  ');
+  });
+
   it('PUSHES grep down to --grep — the whole reason this tool exists', () => {
     const args = buildJournalctlArgs({ units: ['papercup-bg-host.service'], grep: 'oom|killed process' });
     const at = args.indexOf('--grep');
@@ -324,6 +342,12 @@ describe('readJournal', () => {
   it('reports the window it actually used, including the defaulted one', async () => {
     const out = await readJournal({ units: ['a.service'] }, execReturning(''), noUnknownUnits);
     expect(out.window).toEqual({ since: JOURNAL_READ_DEFAULT_SINCE, until: null });
+  });
+
+  it('reports the normalized window for compact relative lookbacks', async () => {
+    const out = await readJournal({ units: ['a.service'], since: '40m' }, execReturning(''), noUnknownUnits);
+    expect(out.window).toEqual({ since: '-40 minutes', until: null });
+    expect(out.command).toContain('--since -40 minutes');
   });
 });
 

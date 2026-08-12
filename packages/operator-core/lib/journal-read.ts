@@ -78,6 +78,24 @@ export const JOURNAL_MAX_BUFFER = 32 * 1024 * 1024;
  *  UNSCOPED scan of a 1.2GB journal) was ~26s; a unit-scoped read is ~7s. */
 export const JOURNAL_TIMEOUT_MS = 30_000;
 
+/**
+ * Normalize the compact lookback shorthand agents commonly use (`40m`, `-2h`)
+ * into journalctl's accepted relative-time grammar. Keep every other value
+ * verbatim so journalctl remains the authority for its full timestamp syntax.
+ */
+export function normalizeJournalWindow(value: string): string {
+  const match = value.trim().match(/^-?(\d+)(s|m|h|d|w)$/i);
+  if (!match) return value;
+  const units: Record<string, string> = {
+    s: 'seconds',
+    m: 'minutes',
+    h: 'hours',
+    d: 'days',
+    w: 'weeks',
+  };
+  return `-${match[1]} ${units[match[2].toLowerCase()]}`;
+}
+
 /** syslog severities, most severe first — index IS the numeric priority. */
 export const JOURNAL_LEVELS = [
   'emerg', 'alert', 'crit', 'err', 'warning', 'notice', 'info', 'debug',
@@ -216,8 +234,8 @@ export function buildJournalctlArgs(opts: JournalReadOptions): string[] {
   args.push(`--output-fields=${JOURNAL_OUTPUT_FIELDS.join(',')}`);
   for (const unit of opts.units ?? []) args.push('-u', unit);
   if (opts.identifier) args.push('-t', opts.identifier);
-  args.push('--since', opts.since ?? JOURNAL_READ_DEFAULT_SINCE);
-  if (opts.until) args.push('--until', opts.until);
+  args.push('--since', normalizeJournalWindow(opts.since ?? JOURNAL_READ_DEFAULT_SINCE));
+  if (opts.until) args.push('--until', normalizeJournalWindow(opts.until));
   if (opts.level) args.push('-p', opts.level);
   if (opts.grep) {
     args.push('--grep', opts.grep, '--case-sensitive=false');
@@ -458,7 +476,10 @@ export async function readJournal(
     matched: 0,
     collapsed: 0,
     truncated: false,
-    window: { since: opts.since ?? JOURNAL_READ_DEFAULT_SINCE, until: opts.until ?? null },
+    window: {
+      since: normalizeJournalWindow(opts.since ?? JOURNAL_READ_DEFAULT_SINCE),
+      until: opts.until ? normalizeJournalWindow(opts.until) : null,
+    },
     units,
     unitsUnknown: [] as string[],
     command: `journalctl ${args.join(' ')}`,
