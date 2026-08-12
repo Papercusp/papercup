@@ -26,6 +26,7 @@ function row(over: Partial<Parameters<typeof classifyStrandedRows>[0][number]> =
     title: 't',
     assignee: null,
     severity: null,
+    origin: 'local',
     note: 'P-001 DONE + VERIFIED + plan item FLIPPED to done. Nothing left here.',
     updated_ts: String(daysAgo(10)),
     ...over,
@@ -330,5 +331,77 @@ describe('row projection (WI-38297)', () => {
     expect(
       classifyStrandedRows([row({ updated_ts: String(ts) })], { limit: 1 }).candidates[0]!.checkpointAgeDays,
     ).toBe(3);
+  });
+});
+
+/**
+ * A remote-authored item REFUSES `work_items:complete` on this node — "its authoring
+ * peer must claim/resolve it, and this node will receive the terminal state through
+ * federation". Nothing else in a candidate row predicts that, so before this existed a
+ * drain agent paid the ENTIRE verification cost and only then discovered it could not
+ * close the item. Measured live 2026-08-12: 74 of 489 open checkpointed items (15%).
+ */
+describe('closableLocally: the federation wall a drain agent otherwise hits last (WI-38297)', () => {
+  it('marks a remote-authored candidate unclosable and keeps its raw origin', () => {
+    const r = classifyStrandedRows([row({ issue_id: 'WI-3529', origin: 'remote' })], { limit: 5 });
+    expect(r.candidates[0]!.closableLocally).toBe(false);
+    expect(r.candidates[0]!.origin).toBe('remote');
+  });
+
+  it('treats a locally-authored candidate as closable', () => {
+    const r = classifyStrandedRows([row({ issue_id: 'WI-5372', origin: 'local' })], { limit: 5 });
+    expect(r.candidates[0]!.closableLocally).toBe(true);
+  });
+
+  /**
+   * FAILS OPEN, deliberately. Only an explicit 'remote' is a wall: if the column is ever
+   * null/renamed/unmapped, every row would read as unclosable and the tool would hide the
+   * entire drainable backlog behind a phantom wall. Being wrong the other way costs one
+   * cheap, authoritative refusal from the server.
+   */
+  it.each([[null], ['unknown-future-value']])('treats origin %s as closable (fails open)', (origin) => {
+    const r = classifyStrandedRows([row({ origin })], { limit: 5 });
+    expect(r.candidates[0]!.closableLocally).toBe(true);
+  });
+
+  it('counts matchedNotClosableLocally over the WHOLE population, never the returned page', () => {
+    const rows = [
+      row({ issue_id: 'R-1', origin: 'remote', updated_ts: String(daysAgo(30)) }),
+      row({ issue_id: 'R-2', origin: 'remote', updated_ts: String(daysAgo(29)) }),
+      row({ issue_id: 'R-3', origin: 'remote', updated_ts: String(daysAgo(28)) }),
+      row({ issue_id: 'L-1', origin: 'local', updated_ts: String(daysAgo(27)) }),
+    ];
+    // limit:1 returns a single row — the aggregate must still describe all four, or a
+    // caller sizing "how much of this can I drain" reads a floor as a total.
+    const r = classifyStrandedRows(rows, { limit: 1 });
+    expect(r.returned).toBe(1);
+    expect(r.truncatedByLimit).toBe(true);
+    expect(r.matched).toBe(4);
+    expect(r.matchedNotClosableLocally).toBe(3);
+  });
+
+  it('counts only MATCHED rows — a non-matching remote row is not counted', () => {
+    const r = classifyStrandedRows(
+      [
+        row({ issue_id: 'REMOTE-BUT-NOT-A-STRAND', origin: 'remote', note: 'still working on the resolver' }),
+        row({ issue_id: 'REMOTE-STRAND', origin: 'remote' }),
+      ],
+      { limit: 5 },
+    );
+    expect(r.matched).toBe(1);
+    expect(r.matchedNotClosableLocally).toBe(1);
+  });
+
+  it('does not let origin disturb the measured age-first ranking', () => {
+    // Age is the primary key and remains so: a FRESH local row must not outrank an OLD
+    // remote one just because the local one is actionable here.
+    const r = classifyStrandedRows(
+      [
+        row({ issue_id: 'YOUNG-LOCAL', origin: 'local', updated_ts: String(daysAgo(2)) }),
+        row({ issue_id: 'OLD-REMOTE', origin: 'remote', updated_ts: String(daysAgo(40)) }),
+      ],
+      { limit: 5 },
+    );
+    expect(r.candidates.map((c) => c.id)).toEqual(['OLD-REMOTE', 'YOUNG-LOCAL']);
   });
 });

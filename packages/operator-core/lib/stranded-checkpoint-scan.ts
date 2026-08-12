@@ -82,6 +82,24 @@ export interface StrandedCandidate {
    * report provably never arrived.
    */
   citesBgJob: boolean;
+  /**
+   * Whether THIS node can take the item terminal at all.
+   *
+   * A remote-authored item REFUSES `work_items:complete` locally — "its authoring peer
+   * must claim/resolve it, and this node will receive the terminal state through
+   * federation". Nothing about the checkpoint, the age, or the bg-job citation predicts
+   * it, so a drain agent discovers it only AFTER paying the whole verification cost.
+   * That happened on WI-3529: fully source-verified (rig real, 4/4 green in 10 days),
+   * then unclosable — the evidence had to be posted as a comment for its authoring peer
+   * instead. Measured 2026-08-12 over the live backlog: 74 of 489 open checkpointed
+   * items (15%) are remote-authored, so this is a routine outcome, not an edge case.
+   *
+   * A `false` does NOT mean "skip it" — those strands still need draining, just by a
+   * different move (verify, then hand the authoring peer the evidence).
+   */
+  closableLocally: boolean;
+  /** Raw federation origin backing `closableLocally` (`'local' | 'remote' | null`). */
+  origin: string | null;
 }
 
 export interface StrandedScanResult {
@@ -96,6 +114,10 @@ export interface StrandedScanResult {
   minAgeDays: number;
   /** Of `matched`, how many also cite a background job (the stronger signal). */
   matchedCitingBgJob: number;
+  /** Of `matched`, how many CANNOT be closed on this node (remote-authored). Counted
+   *  over the FULL population like every other count here, never over the page, so a
+   *  caller sizing "how much of this can I actually drain" is not reading a floor. */
+  matchedNotClosableLocally: number;
   /** Rows actually returned (bounded by the caller's limit). */
   returned: number;
   /** True when `matched > returned` — the counts above are still totals, but the ROW
@@ -111,6 +133,7 @@ interface ScanRow {
   title: string | null;
   assignee: string | null;
   severity: string | null;
+  origin: string | null;
   note: string | null;
   updated_ts: string | number | null;
 }
@@ -135,6 +158,7 @@ export function classifyStrandedRows(
   const minAgeDays = opts.minAgeDays ?? 0;
   const matches: StrandedCandidate[] = [];
   let matchedCitingBgJob = 0;
+  let matchedNotClosableLocally = 0;
 
   for (const r of rows) {
     const note = r.note ?? '';
@@ -148,6 +172,11 @@ export function classifyStrandedRows(
     if (minAgeDays > 0 && ageDays != null && ageDays < minAgeDays) continue;
     const citesBgJob = detectBgJobCheckpointClaim(note).detected;
     if (citesBgJob) matchedCitingBgJob += 1;
+    // Only an explicit 'remote' blocks a local close — an unknown/null origin is treated
+    // as closable so a missing column reads as "try it", never as a phantom wall that
+    // hides drainable work. The refusal is authoritative and cheap when we are wrong.
+    const closableLocally = r.origin !== 'remote';
+    if (!closableLocally) matchedNotClosableLocally += 1;
     matches.push({
       id: r.issue_id,
       harness: harnessFromIssueScope(r.scope),
@@ -159,6 +188,8 @@ export function classifyStrandedRows(
       checkpointWrittenTs: ts,
       checkpointAgeDays: ageDays,
       citesBgJob,
+      closableLocally,
+      origin: r.origin,
     });
   }
 
@@ -189,6 +220,7 @@ export function classifyStrandedRows(
     matched: matches.length,
     minAgeDays,
     matchedCitingBgJob,
+    matchedNotClosableLocally,
     returned: page.length,
     truncatedByLimit: matches.length > page.length,
     candidates: page,
@@ -220,7 +252,7 @@ export async function scanStrandedCheckpoints(args: {
   const harnessScope = args.harness ? `harness:${args.harness}` : null;
   const rows = await sql<ScanRow[]>`
     SELECT ei.issue_id, ei.scope, ei.kind, ei.title, ei.assignee, ei.severity,
-           cn.note, cn.updated_ts
+           ei.origin, cn.note, cn.updated_ts
       FROM harness_shared.carry_notes cn
       JOIN harness_shared.engineer_issues ei
         ON ei.workspace_id = cn.workspace_id

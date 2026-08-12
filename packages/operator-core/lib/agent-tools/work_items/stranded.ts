@@ -20,7 +20,7 @@ export default defineTool({
     // PROMPT-WEIGHT: keep this + guidance under 1500 chars (tool-guidance-budget).
     // The derivation, the precision measurement and the rejected classifiers are in
     // the scan module's header, deliberately not here.
-    "Open issue-family items whose OWN checkpoint declares the work finished — the stranded-finished backlog (code committed, item never closed because the holder's verification job died with their session). Returns candidates + the checkpoint HEAD that matched, oldest/strongest first. READ-ONLY and deliberately not a sweep: the classifier measured ~43% precise, and its false positives include notes reading '⛔ DO NOT CLOSE' and 'CLAIMED, no code written yet'. SOURCE-VERIFY every candidate before closing it. `citesBgJob` marks the stronger subset (the checkpoint's promised evidence was a background job that cannot outlive its author). `matched` counts the WHOLE population; the row list is a page (`truncatedByLimit`).",
+    "Open issue-family items whose OWN checkpoint declares the work finished — the stranded-finished backlog (code committed, item never closed because the holder's verification job died with their session). Returns candidates + the checkpoint HEAD that matched, oldest/strongest first. READ-ONLY and deliberately not a sweep: the classifier measured ~43% precise, and its false positives include notes reading '⛔ DO NOT CLOSE' and 'CLAIMED, no code written yet'. SOURCE-VERIFY every candidate before closing it. `citesBgJob` marks the stronger subset (the checkpoint's promised evidence was a background job that cannot outlive its author). `matched` counts the WHOLE population; the row list is a page (`truncatedByLimit`). `closableLocally:false` marks a remote-authored item this node CANNOT complete — verify it, then hand its authoring peer the evidence.",
   guidance: {
     when:
       "Draining/triaging a backlog, or auditing why it is not shrinking — to find work that is already committed and needs only verify-and-close.",
@@ -91,7 +91,12 @@ export default defineTool({
         'positives are emphatic ("⛔ DO NOT CLOSE…", "CLAIMED, no code written yet"). Read each checkpointHead, then ' +
         'verify the claim IN SOURCE (the commit/tests it names) before claiming and completing. `matched`/`scanned` ' +
         'are totals over the whole population; `candidates` is a page — check `truncatedByLimit` before quoting the ' +
-        'row count as the size of the problem.',
+        'row count as the size of the problem. CHECK `closableLocally` BEFORE YOU START: a remote-authored candidate ' +
+        'REFUSES work_items:complete on this node ("its authoring peer must claim/resolve it"), and nothing else in ' +
+        'the row predicts it — you find out only after paying the full verification cost. It is not a skip signal: ' +
+        'verify it, then post the evidence as a comment so its authoring peer can close it (that federates). ' +
+        '`matchedNotClosableLocally` sizes that subset over the whole population — measured 15% of open checkpointed ' +
+        'items when this was added.',
     };
     return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
   },
