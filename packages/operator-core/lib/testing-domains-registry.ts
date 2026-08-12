@@ -1613,6 +1613,7 @@ defineTestDomain({
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/vm-run-env.selftest.sh'], label: 'vm_run guest-env delivery (WI-6176)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/seat-offer-diag.selftest.sh'], label: 'seat-offer b→a failure discriminator (WI-6179)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/b9-attestation-precondition.selftest.sh'], label: 'LEG4 attestation precondition + both-frames restore (WI-5064)' },
+        { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/b3-revocation-kcut.selftest.sh'], label: 'revocation K-cut: the device-scoped absence assert resolves a KEY-BEARING device (never the synthetic att2dev one), and delivery is not classified as disclosure (EI-18712383368117845)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/restart-settle-barrier.selftest.sh'], label: 'restart settle-barrier budget + WARN_IS_FAIL escalation (WI-6181)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/rig-wait-converged.selftest.sh'], label: 'rig wait-converged: non-numeric psql is not a false PASS (WI-6181)' },
         { kind: 'shell', cmd: 'bash', args: ['papercusp-desktop/bin/lib/roster-scope.selftest.sh'], label: 'roster-gate workspace + pot scoping (WI-6181)' },
