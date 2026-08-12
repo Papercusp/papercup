@@ -805,8 +805,44 @@ export function checkActiveCheckpointRun(
  *  runs (21:25→22:02); no verdict landed and the green pin froze for 2h. replaceStale therefore
  *  only unlocks once the run is old enough that it plausibly SHOULD have verdicted already (the
  *  true EI-9672 wedged-salvage case); younger runs — and runs whose age systemd cannot report —
- *  are refused with `replace_refused_young` so callers wait for the verdict instead. */
-export const REPLACE_STALE_MIN_AGE_SEC = 20 * 60;
+ *  are refused with `replace_refused_young` so callers wait for the verdict instead.
+ *
+ *  ⚠ THIS NUMBER IS NOT FREE TO PICK — it is pinned to GREEN_CHECKPOINT_SUITE_TIMEOUT_MS
+ *  (120m, harness/routines/release-actions.ts) by release-timing-invariants.test.ts, which is
+ *  where the whole gate timing chain is enforced. It is written as a literal here rather than
+ *  imported from that module ON PURPOSE: release-actions.ts calls registerSystemAction at
+ *  module scope and pulls a large graph (pipeline-events, release-checkpoint-config, dev-data),
+ *  so importing it into this low-level launch helper would drag that registration side effect
+ *  into every consumer of this file. The existing chain constants already live in three files
+ *  across two workspaces and are coupled by that test rather than by imports, for the same
+ *  reason. If you retune the suite budget, the test tells you this must move with it.
+ *
+ *  It was a literal `20 * 60` for months, which is SIX TIMES tighter than the budget the
+ *  system actually grants a run, so
+ *  "old enough to plausibly be wedged" was false by construction: every healthy run became
+ *  replaceable ~20 min into a suite that is allowed to take 120. WI-38026 measured the
+ *  consequence on 2026-08-12 — three consecutive runs SIGTERMed mid-suite, each by a
+ *  DIFFERENT su reacting to the same red gate, none reaching a verdict:
+ *
+ *    01:34:53 judging c4d0f09c → killed at 1317s, superseded by 8365fc24
+ *    01:56:49 judging 8365fc24 → killed at 1358s, superseded by d7d7f6de
+ *
+ *  Each log line read "a replaceStale before producing a verdict". The gate had been red
+ *  6.5h and `main` frozen for the whole fleet — with the named test failures ALREADY FIXED
+ *  in the tree. No amount of fixing tests can green a gate that is never allowed to finish
+ *  judging, which is what makes this a starvation bug and not a tuning preference.
+ *
+ *  The invariant, stated so it cannot drift again: A RUN STILL INSIDE ITS OWN SUITE BUDGET
+ *  IS NOT WEDGED — the system granted it that time, so killing it is destroying work the
+ *  system asked for. Replacement therefore cannot unlock before the point at which the run's
+ *  own suite would have been terminated (GREEN_CHECKPOINT_SUITE_TIMEOUT_MS). Past that, a
+ *  still-running process genuinely is the EI-9672 salvage case. Deriving it also keeps the
+ *  two numbers ONE decision: retuning the suite budget now carries this with it.
+ *
+ *  This is not the only protection — `delivering` (checked FIRST in classifyReplaceRequest)
+ *  covers the verdict tail at any age, and an abandoned lock is reclaimed independently via
+ *  CHECKPOINT_LOCK_STALE_MS. Enforced by release-timing-invariants.test.ts. */
+export const REPLACE_STALE_MIN_AGE_SEC = 120 * 60;
 
 /** Why a `replaceStale:true` request was (not) allowed to stop the in-flight run. */
 export type ReplaceDecision = { replace: true } | { replace: false; reason: 'not_stale' | 'young' | 'delivering' };

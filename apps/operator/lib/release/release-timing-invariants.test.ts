@@ -23,6 +23,7 @@ import { describe, expect, it } from 'vitest';
 
 import { DEFAULT_STALE_ROUTINE_FIRE_NO_OUTPUT_MS } from '@papercusp/operator-core/lib/dbos/dbos-executor-reaper';
 import { GREEN_CHECKPOINT_SUITE_TIMEOUT_MS } from '@papercusp/operator-core/lib/harness/routines/release-actions';
+import { REPLACE_STALE_MIN_AGE_SEC } from '@papercusp/operator-core/lib/release-checkpoint-launch';
 
 import { CHECKPOINT_LOCK_STALE_MS, DEFAULT_REFIRE_RUN_BUDGET_MS, SELF_WATCHDOG_MS } from './green-checkpoint';
 
@@ -126,5 +127,39 @@ describe('green-gate timing chain (WI-6112)', () => {
     // …with enough headroom that the deadline check (which predicts the next pass from the last
     // one) is not itself racing the timeout it exists to stay clear of.
     expect(GREEN_CHECKPOINT_SUITE_TIMEOUT_MS - DEFAULT_REFIRE_RUN_BUDGET_MS).toBeGreaterThanOrEqual(5 * MIN);
+  });
+
+  /**
+   * WI-38026 (2026-08-12) — the EXTERNAL link in the same chain, and the one that was missing.
+   *
+   * The four constants above bound what the run does to ITSELF. `REPLACE_STALE_MIN_AGE_SEC`
+   * bounds when someone ELSE may kill it, and it was a hand-written `20 * 60` that nothing
+   * tied to the rest of the chain — six times tighter than the suite budget. So a healthy run
+   * became "replaceable" ~20 min into a suite allowed to take 120, and with several agents
+   * independently reacting to one red gate, three consecutive runs were SIGTERMed mid-suite
+   * (1317s, 1358s, each "a replaceStale before producing a verdict"). Zero verdicts landed,
+   * `main` stayed frozen 6.5h, and the tests the gate named had ALREADY been fixed in the
+   * tree — the gate was simply never allowed to finish judging them.
+   *
+   * The invariant: a run still inside its own suite budget is not wedged, so replacement
+   * cannot unlock before that budget is spent.
+   */
+  it('does not let a peer kill a run that is still inside its own suite budget (WI-38026)', () => {
+    expect(REPLACE_STALE_MIN_AGE_SEC * 1000).toBeGreaterThanOrEqual(GREEN_CHECKPOINT_SUITE_TIMEOUT_MS);
+  });
+
+  it('detects the historical replace-storm setting it exists to prevent', () => {
+    // The literal value that shipped for months and starved the gate on 2026-08-12. If this
+    // ever stops being a violation, the assertion above has been loosened into a no-op and
+    // healthy runs are killable again — the same way the reaper inversion went unnoticed.
+    const historicalReplaceStaleMinAgeSec = 20 * 60;
+    expect(historicalReplaceStaleMinAgeSec * 1000).toBeLessThan(GREEN_CHECKPOINT_SUITE_TIMEOUT_MS);
+  });
+
+  it('keeps replacement possible for a genuinely wedged run, below the lock-stale reclaim', () => {
+    // The guard must not swing so far that replaceStale becomes unreachable: past its own
+    // suite timeout a still-running process IS the EI-9672 salvage case, and it must be
+    // stoppable before the lock would be reclaimed out from under it anyway.
+    expect(REPLACE_STALE_MIN_AGE_SEC * 1000).toBeLessThan(CHECKPOINT_LOCK_STALE_MS);
   });
 });

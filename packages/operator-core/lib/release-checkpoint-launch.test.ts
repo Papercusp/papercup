@@ -847,8 +847,18 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
    *  candidate is `freshCandidate` (i.e. candidate_stale:true) — mirrors the
    *  "candidate_stale" checkActiveCheckpointRun test above, plus responds to the
    *  `systemctl --user stop` call this describe block exercises. Defaults to a run OLD
-   *  enough to pass the EI-11667 min-age guard (45 min — the wedged-salvage case). */
-  function staleActiveExecFn(stopStatus = 0, ageMinutes = 45) {
+   *  enough to pass the EI-11667 min-age guard — the wedged-salvage case.
+   *
+   *  ⚠ DERIVED from REPLACE_STALE_MIN_AGE_SEC, never a literal. This was hardcoded `45`
+   *  (minutes), which silently encoded the old 20-min threshold: when WI-38026 raised the
+   *  threshold to the suite budget, 45 min became YOUNG and three tests here failed by
+   *  asserting a `systemctl stop` that correctly no longer happens. The intent of these
+   *  cases is "comfortably past the replace threshold", so say exactly that — otherwise the
+   *  next retune breaks them again and the failure looks like a regression in the guard
+   *  rather than a stale number in its test. */
+  const WEDGED_AGE_MIN = REPLACE_STALE_MIN_AGE_SEC / 60 + 25;
+
+  function staleActiveExecFn(stopStatus = 0, ageMinutes = WEDGED_AGE_MIN) {
     const startedAt = new Date(Date.now() - ageMinutes * 60_000).toISOString();
     const oldCandidate = '1111111111111111111111111111111111111111';
     const currentHead = '3333333333333333333333333333333333333333';
@@ -867,7 +877,7 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
   it('a STALE active run OLD enough to be wedged is stopped, then a fresh run launches (replaceStale:true)', async () => {
     const child = fakeChild();
     const spawnFn = vi.fn(() => child) as never;
-    const execFn = staleActiveExecFn(0, 45);
+    const execFn = staleActiveExecFn(0, WEDGED_AGE_MIN);
     const readLogHead = vi.fn(() => '[green-checkpoint] checkpointing candidate 11111111 (base def)\n');
     // EI-19326961954611487: this test's execFn reaches a SUCCESSFUL stop, which reaches
     // recordDisplacement — inject a fake so it never falls through to the real appendFileSync.
@@ -989,7 +999,7 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
   it('WI-4957: a successfully-stopped stale run triggers cancellation of awaits bound to ITS candidate, BEFORE the fresh run launches', async () => {
     const child = fakeChild();
     const spawnFn = vi.fn(() => child);
-    const execFn = staleActiveExecFn(0, 45);
+    const execFn = staleActiveExecFn(0, WEDGED_AGE_MIN);
     const readLogHead = vi.fn(() => '[green-checkpoint] checkpointing candidate 11111111 (base def)\n');
     const cancelStaleAwaits = vi.fn(async (_root: string, _staleCandidateSha: string) => ({ cancelled: 2 }));
     // EI-19326961954611487: this test's execFn also reaches a SUCCESSFUL stop → recordDisplacement
@@ -1053,7 +1063,7 @@ describe('launchDetachedCheckpoint replaceStale (EI-9672: force alone could not 
     const child = fakeChild();
     const spawnFn = vi.fn(() => child);
     const calls: string[] = [];
-    const baseExecFn = staleActiveExecFn(0, 45);
+    const baseExecFn = staleActiveExecFn(0, WEDGED_AGE_MIN);
     const execFn = vi.fn((cmd: string, args: string[]) => {
       if (cmd === 'systemctl' && args[1] === 'stop') calls.push('stop');
       return baseExecFn(cmd, args);
