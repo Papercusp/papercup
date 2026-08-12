@@ -99,7 +99,7 @@ describe('fleet:status', () => {
     expect(h.getCompletionIntegrityStats).not.toHaveBeenCalled();
   });
 
-  it('joins the durable leader id with roster liveness and marks an ended leader slot vacant', async () => {
+  it('returns an ended leader with an explicit liveness annotation', async () => {
     h.listFleetRosterDiagnosed.mockResolvedValueOnce({
       entries: [
         {
@@ -122,9 +122,47 @@ describe('fleet:status', () => {
 
     const out = parse(await invoke({ fleet: 'rocket' }));
 
-    expect(out.leader).toBe('su-leader');
+    expect(out.leader).toEqual({
+      agentId: 'su-leader',
+      sessionState: 'ended',
+      heartbeatFresh: false,
+      lastActiveSecAgo: null,
+      presenceRow: true,
+    });
+    expect(out.leaderId).toBe('su-leader');
+    expect(out.leaderLive).toBe(false);
     expect(out.leaderSessionState).toBe('ended');
     expect(out.leaderVacant).toBe(true);
+  });
+
+  it('does not present a durable leader with no presence row as live', async () => {
+    h.listFleetRosterDiagnosed.mockResolvedValueOnce({
+      entries: [
+        {
+          agentId: 'su-member',
+          agentRole: 'su',
+          fleetRole: 'member',
+          alive: true,
+          sessionState: 'live',
+        },
+      ],
+      degradedLegs: [],
+    });
+
+    const out = parse(await invoke({ fleet: 'rocket' }));
+
+    expect(out.leader).toEqual({
+      agentId: 'su-leader',
+      sessionState: 'unknown',
+      heartbeatFresh: false,
+      lastActiveSecAgo: null,
+      presenceRow: false,
+    });
+    expect(out.leaderId).toBe('su-leader');
+    expect(out.leaderLive).toBe(false);
+    // Missing presence is not enough evidence to seize leadership on a read.
+    expect(out.leaderSessionState).toBeNull();
+    expect(out.leaderVacant).toBe(false);
   });
 
   it('reports memberCount from the roster (presence) and beeCount from the nursery, plus workspace runningBees (WI-1764 #4 / WI-1813)', async () => {

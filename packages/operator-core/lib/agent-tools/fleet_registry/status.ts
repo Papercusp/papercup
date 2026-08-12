@@ -176,16 +176,31 @@ export default defineTool({
     const { members: memberCount } = splitFleetRosterCounts(liveRoster);
 
     // The registry's leader is durable, while its liveness belongs to the roster.
-    // Keep the authoritative `leader` id unchanged, but surface the joined state so
-    // a dead leader cannot look like an active authority to members. A missing roster
-    // row is UNKNOWN (not vacancy); only an explicit ended/recorded verdict is positive
-    // evidence that the slot is gone. A null registry leader is an explicit vacancy.
+    // Do not return that durable id as an unannotated `leader`: callers naturally read
+    // the same bare shape as "this is the active authority". `leaderId` preserves the
+    // identity for callers that need it; `leader` carries the joined liveness verdict.
+    // A missing roster row is UNKNOWN (not vacancy); only an explicit ended/recorded
+    // verdict is positive evidence that the slot is gone. A null registry leader is an
+    // explicit vacancy.
     const leaderMember = fleet.leaderOwnerId
       ? roster.find((member) => member.agentId === fleet.leaderOwnerId)
       : undefined;
     const leaderSessionState = leaderMember?.sessionState ?? null;
     const leaderVacant =
       fleet.leaderOwnerId == null || ['ended', 'recorded'].includes(leaderSessionState ?? '');
+    const leaderLiveness = fleet.leaderOwnerId
+      ? {
+          agentId: fleet.leaderOwnerId,
+          // An absent oracle row is not evidence of a live session. Keep the
+          // distinction from an explicit ended row in `presenceRow`.
+          sessionState: leaderMember?.sessionState ?? 'unknown',
+          heartbeatFresh: leaderMember
+            ? (leaderMember.heartbeatFresh ?? leaderMember.alive ?? false)
+            : false,
+          lastActiveSecAgo: leaderMember?.lastActiveSecAgo ?? null,
+          presenceRow: leaderMember != null,
+        }
+      : null;
 
     // agent-launch-resume-primitives P-006 / D-006: there is deliberately NO
     // "resume the fleet" verb — any single verb has to GUESS which dead members to
@@ -224,7 +239,9 @@ export default defineTool({
       slug: fleet.fleetSlug,
       title: fleet.title,
       description: fleet.description,
-      leader: fleet.leaderOwnerId,
+      leader: leaderLiveness,
+      leaderId: fleet.leaderOwnerId,
+      leaderLive: leaderLiveness?.sessionState === 'live',
       leaderSessionState,
       leaderVacant,
       // P-009 (H4): the typed control state — 'winding-down' means members must
