@@ -814,6 +814,28 @@ if 'coordination_domain' in lock_arguments:
     fallback_arguments = dict(lock_arguments)
     del fallback_arguments['coordination_domain']
     req_without_coordination_domain = _make_request(fallback_arguments)
+
+
+def _coordination_domain_rejection(value):
+    """Return a short error detail when an older operator rejects the new arg.
+
+    The MCP endpoint normally returns this as a JSON-RPC ``error`` object, but
+    some older dispatch paths wrap the same text in a successful result's
+    content. Keep the compatibility match deliberately narrow: only an
+    invalid/unrecognized ``coordination_domain`` key may trigger the fallback;
+    other invalid-input errors must retain the normal fail-open behavior.
+    """
+    try:
+        text = value if isinstance(value, str) else json.dumps(value, sort_keys=True)
+    except Exception:
+        text = str(value)
+    if 'coordination_domain' not in text:
+        return None
+    if not re.search(r'invalid[_ -]?args|unrecognized key|unknown key|unexpected key', text, re.I):
+        return None
+    return text[:300]
+
+
 def _is_conn_refused(exc):
     # The :3070 host has no hot-reload, so picking up a lib/** edit means a
     # RESTART; during that few-second boot the port REFUSES connections. That
@@ -839,7 +861,7 @@ RETRY_BACKOFFS = (0.4, 0.8, 1.2)
 _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
-def _locks_acquire_once():
+def _locks_acquire_once(request):
     """One locks:acquire POST → the parsed inner tool result (a dict).
     Fail-open (allow → exit 0) on any transport or parse failure — identical
     posture to the previous inline flow; extracted so the EI-9478 transient
@@ -848,7 +870,7 @@ def _locks_acquire_once():
     last_exc = None
     for _attempt in range(len(RETRY_BACKOFFS) + 1):
         try:
-            resp = _opener.open(req, timeout=10)
+            resp = _opener.open(request, timeout=10)
             raw_resp = resp.read().decode('utf-8', errors='replace')
             break
         except Exception as e:
@@ -865,6 +887,7 @@ def _locks_acquire_once():
 
     # Parse the first JSON-RPC result out of a JSON or text/event-stream body.
     result = None
+    rpc_error = None
     for line in raw_resp.splitlines():
         line = line.strip()
         if not line or line.startswith('event:'):
@@ -873,11 +896,23 @@ def _locks_acquire_once():
             line = line[5:].strip()
         try:
             cand = json.loads(line)
-            if isinstance(cand, dict) and 'result' in cand:
-                result = cand['result']
-                break
+            if isinstance(cand, dict):
+                if 'result' in cand:
+                    result = cand['result']
+                    break
+                if 'error' in cand:
+                    rpc_error = cand['error']
+                    break
         except Exception:
             pass
+
+    if rpc_error is not None:
+        compatibility_error = _coordination_domain_rejection(rpc_error)
+        if compatibility_error:
+            return {
+                '_hook_compatibility_error': True,
+                '_detail': compatibility_error,
+            }
 
     if not result:
         mark_error('parse', 'no JSON-RPC result in response')
@@ -895,6 +930,12 @@ def _locks_acquire_once():
     if not inner:
         mark_error('parse', 'no text content in tool result')
         allow()
+    compatibility_error = _coordination_domain_rejection(inner)
+    if compatibility_error:
+        return {
+            '_hook_compatibility_error': True,
+            '_detail': compatibility_error,
+        }
     return inner
 
 
@@ -1003,7 +1044,24 @@ def _clear_transient_streak():
         pass
 
 
-inner = _locks_acquire_once()
+request = req
+inner = _locks_acquire_once(request)
+if inner.get('_hook_compatibility_error'):
+    if req_without_coordination_domain is None:
+        mark_error('compatibility', inner.get('_detail', 'coordination_domain rejected'))
+        allow()
+    # The tree hook can update before the operator process reaches main. Keep
+    # the edit protected by retrying the same acquire against the older
+    # argument contract, and surface the skew as a non-blocking advisory.
+    compatibility_advisory = (
+        'locks:acquire compatibility fallback: the running operator rejected '
+        'the coordination_domain argument (likely hook/operator version skew). '
+        'Retried without that field and retained file-lock enforcement; '
+        'domain isolation is unavailable until the operator deploy catches up.'
+    )
+    mark_error('compatibility', inner.get('_detail', 'coordination_domain rejected'))
+    request = req_without_coordination_domain
+    inner = _locks_acquire_once(request)
 # We reached the operator and got a usable answer → enforcement healthy.
 mark_success()
 
@@ -1017,7 +1075,7 @@ if inner.get('ok') is True:
 if _is_transient(inner):
     for _backoff in (0.6, 1.2):
         time.sleep(_backoff)
-        inner = _locks_acquire_once()
+        inner = _locks_acquire_once(request)
         if inner.get('ok') is True:
             _grant(inner)
         if not _is_transient(inner):

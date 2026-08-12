@@ -33,9 +33,12 @@ let nextInner: unknown = { ok: true, lock_id: 'stub-lock' };
  * contended on attempt 1, ok on attempt 2). When null/empty the static `nextInner`
  * is used for every call, so existing tests are unaffected. */
 let nextInnerSeq: unknown[] | null = null;
+/** Simulate a stale operator that rejects the newer coordination_domain arg. */
+let rejectCoordinationDomain = false;
 /** Optionally frame the response as text/event-stream (the hook parses both). */
 let useSse = false;
 let lastRequest: { url: string; body: Record<string, any> } | null = null;
+let requests: Array<{ url: string; body: Record<string, any> }> = [];
 
 beforeAll(async () => {
   home = fs.mkdtempSync(join(os.tmpdir(), 'cchook-dec-home-'));
@@ -57,13 +60,29 @@ beforeAll(async () => {
     let body = '';
     req.on('data', (d) => (body += d));
     req.on('end', () => {
-      lastRequest = { url: req.url ?? '', body: JSON.parse(body) as Record<string, any> };
-      const payload = nextInnerSeq && nextInnerSeq.length ? nextInnerSeq.shift() : nextInner;
-      const rpc = {
-        jsonrpc: '2.0',
-        id: 1,
-        result: { content: [{ type: 'text', text: JSON.stringify(payload) }] },
-      };
+      const parsed = JSON.parse(body) as Record<string, any>;
+      lastRequest = { url: req.url ?? '', body: parsed };
+      requests.push(lastRequest);
+      const args = parsed.params?.arguments as Record<string, any> | undefined;
+      const rpc = rejectCoordinationDomain && args?.coordination_domain
+        ? {
+            jsonrpc: '2.0',
+            id: 1,
+            error: {
+              code: -32602,
+              message: 'invalid_input: invalid_args: Unrecognized key: "coordination_domain"',
+            },
+          }
+        : {
+            jsonrpc: '2.0',
+            id: 1,
+            result: {
+              content: [{
+                type: 'text',
+                text: JSON.stringify(nextInnerSeq && nextInnerSeq.length ? nextInnerSeq.shift() : nextInner),
+              }],
+            },
+          };
       if (useSse) {
         res.writeHead(200, { 'content-type': 'text/event-stream' });
         res.end(`event: message\ndata: ${JSON.stringify(rpc)}\n\n`);
@@ -85,8 +104,10 @@ afterAll(async () => {
 afterEach(() => {
   nextInner = { ok: true, lock_id: 'stub-lock' };
   nextInnerSeq = null;
+  rejectCoordinationDomain = false;
   useSse = false;
   lastRequest = null;
+  requests = [];
 });
 
 // Async spawn (NOT spawnSync): spawnSync blocks the event loop, so the in-process stub operator
@@ -152,6 +173,27 @@ describe('cc PreToolUse hook — operator decision rendering (stub operator)', (
     expect(fs.existsSync(pathsCache)).toBe(true);
     expect(JSON.parse(fs.readFileSync(pathsCache, 'utf8'))).toEqual(['sub/grant.ts']);
     expect(fs.readFileSync(join(cache, 'tu-grant.domain'), 'utf8')).toBe(fs.realpathSync(repo));
+  });
+
+  it('stale operator rejects coordination_domain → retries without it and emits a non-blocking advisory', async () => {
+    rejectCoordinationDomain = true;
+    nextInner = { ok: true, lock_id: 'legacy-lock' };
+    const r = await run(editOf('sub/legacy-operator.ts', 'tu-legacy-operator'));
+    expect(r.status).toBe(0);
+
+    const out = JSON.parse(r.stdout);
+    expect(out.hookSpecificOutput).toMatchObject({
+      hookEventName: 'PreToolUse',
+      permissionDecision: 'allow',
+    });
+    expect(out.hookSpecificOutput.permissionDecisionReason).toMatch(/compatibility fallback/i);
+    expect(out.hookSpecificOutput.additionalContext).toMatch(/version skew/i);
+    expect(out.hookSpecificOutput.additionalContext).toMatch(/retained file-lock enforcement/i);
+
+    expect(requests).toHaveLength(2);
+    expect(requests[0].body.params.arguments.coordination_domain).toBe(fs.realpathSync(repo));
+    expect(requests[1].body.params.arguments).not.toHaveProperty('coordination_domain');
+    expect(fs.readFileSync(join(cache, 'tu-legacy-operator.lock'), 'utf8')).toBe('legacy-lock');
   });
 
   it('PostToolUse releases through the same physical domain as PreToolUse', async () => {
