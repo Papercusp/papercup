@@ -574,6 +574,7 @@ import './dev/worker_chunk_loop_metrics';
 import './db/migrate';
 import './db/check_drift';
 import './db/migrations';
+import './issues/list';
 import './db/next_migration';
 import './testing/prune_orphan_runs';
 import './testing/flakiness';
