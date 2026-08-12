@@ -43,7 +43,7 @@ import type { BoundLexicon } from '@papercusp/lexicon';
 // nothing else in this rail uses it.
 // `Network` left with the Pots tab (2026-08-10) — it was that tab's icon and
 // nothing else in this rail uses it.
-import { Coffee, CupSoda, KeyRound, Cog, Bot, Coins, MessagesSquare, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
+import { CupSoda, KeyRound, Cog, Bot, Coins, MessagesSquare, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
@@ -69,10 +69,14 @@ import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
 // may use right now), beside Mug as a sibling owner-steering lever (accounts-pool-tab
 // P-005; promoted to the LEFTMOST sidebar tab by owner request 2026-06-17).
 const AccountsTab = lazy(() => import('./AccountsTab'));
-// 👑 Mug steering — the owner's focus/pause controls for the autonomous Mug.
-// Moved here from the /adv top tab strip as an owner-steering tab (owner
-// review 2026-06-15; queen-steering-panel-2026-06-15 B-04).
-const MugTab = lazy(() => import('./MugTab'));
+// (👑 Mug steering — the owner's focus/pause controls for the autonomous Mug —
+// sat HERE until 2026-08-12. RETIRED with its tier to
+// `_retired/mug-kettle-deciders/` by retire-mug-kettle-su-only-2026-08-09
+// P-063/D-096, together with the four panels MugTab was the ONLY importer of:
+// MugHeartbeat, ModelTiersOverride, ThrottleSection, AutonomySurfacing. The
+// panel's controls all wrote `pot:set-steering` for a tier that cannot run.
+// Its siblings PotSteeringTree + useModelOverride are KEPT per P-064 and are
+// now unmounted — see D-095.)
 // (👁 Overwatch — the Kettle's actionable panel — sat HERE until 2026-08-11.
 // RETIRED with its tier to `_retired/mug-kettle-deciders/` by
 // retire-mug-kettle-su-only-2026-08-09 P-059/D-083: the panel's only controls
@@ -179,12 +183,22 @@ const TABS = [
   // the System tab first — see SystemTab.tsx. `LocalPotsControl` is the one part
   // that went with the tier: adv/PotsRunningPill (P-075) and this tab were its
   // only two mounts, so D-070's deferred deletion landed with P-077.)
-  // Cup-cast nav icons (restore-pot-lexicon D-006): Mug→Coffee ☕ ·
-  // Papercup→CupSoda 🥤. classic labels flow from the lexicon.
-  // (Kettle→Thermometer was the third; it retired with the Kettle tab, and the
-  // Thermometer import went with it — P-059/D-083.)
+  // Cup-cast nav icons (restore-pot-lexicon D-006): Papercup→CupSoda 🥤.
+  // classic labels flow from the lexicon.
+  // (Two siblings retired with their tabs, each taking its lucide import with
+  // it: Kettle→Thermometer on 2026-08-11 — P-059/D-083 — and Mug→Coffee ☕ on
+  // 2026-08-12 — P-063/D-096.)
   { id: 'sentinel', label: (t: BoundLexicon) => t('operator'), icon: CupSoda, tip: (t: BoundLexicon) => `${t('operator')} — your voice/text front-door agent; talks, suggests, and hands work to the ${t('brain')}`, render: (a: boolean) => <PapercupTab active={a} /> },
-  { id: 'queen', label: (t: BoundLexicon) => t('brain'), icon: Coffee, tip: (t: BoundLexicon) => `The ${t('brain')} — plans work and places it across the ${t('fleet', { lower: true })}`, render: (a: boolean) => <MugTab active={a} /> },
+  // (☕ Mug/`queen` — the owner's steering tab, and the DEFAULT-OPEN leftmost
+  // tab since 2026-06-15 — sat HERE until 2026-08-12. RETIRED with its tier by
+  // P-063/D-096, exactly the way the Kettle entry below went: removing the
+  // entry IS the retirement, because TabId and TAB_IDS are both DERIVED from
+  // this array, so 'queen' leaves the type — making any stale
+  // `tab === 'queen'` a compile error rather than dead code — and leaves the
+  // nuqs parser, which rejects `?lst=queen` back to the default tab.
+  // ⚠ That default MOVED to 'accounts' in this same change (see the `lst`
+  // parser below): a static 'queen' default would no longer typecheck, and a
+  // first load with no `?lst` would otherwise land on a tab that is gone.)
   // (👁 Kettle/overwatch sat HERE until 2026-08-11 — RETIRED with its tier by
   // P-059/D-083. Removing the entry is what retires it: TabId and TAB_IDS are
   // both DERIVED from this array, so the id leaves the type (making any stale
