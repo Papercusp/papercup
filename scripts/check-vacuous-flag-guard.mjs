@@ -81,7 +81,7 @@
 import { readFileSync, existsSync, statSync, realpathSync } from 'node:fs';
 import { join, dirname, resolve, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { listTrackedFiles, coverageOf, describeUnscanned } from './lib/tracked-files.mjs';
+import { listTrackedFiles, describeUnscanned } from './lib/tracked-files.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -137,26 +137,29 @@ function readOrNull(abs) {
  * with its own `@` alias, and hard-coding one of them is the documented cross-tree
  * alias trap (AGENT-ENV.md).
  */
-function resolveImport(spec, fromRel) {
-  let absNoExt;
+function resolveImport(spec, fromRel, has) {
+  let relNoExt;
   if (spec.startsWith('.')) {
-    absNoExt = resolve(ROOT, dirname(fromRel), spec);
+    relNoExt = normalizeRel(join(dirname(fromRel), spec));
   } else if (spec.startsWith('@/')) {
     const srcRoot = nearestSrcRoot(fromRel);
     if (!srcRoot) return null;
-    absNoExt = resolve(ROOT, srcRoot, spec.slice(2));
+    relNoExt = normalizeRel(join(srcRoot, spec.slice(2)));
   } else {
     return null;
   }
   for (const ext of ['', ...RESOLVE_EXTS]) {
-    const cand = absNoExt + ext;
-    if (existsSync(cand) && statSync(cand).isFile()) return relative(ROOT, cand);
+    if (has(relNoExt + ext)) return relNoExt + ext;
   }
   for (const ext of RESOLVE_EXTS) {
-    const cand = join(absNoExt, 'index' + ext);
-    if (existsSync(cand) && statSync(cand).isFile()) return relative(ROOT, cand);
+    const cand = `${relNoExt}/index${ext}`;
+    if (has(cand)) return cand;
   }
   return null;
+}
+
+function normalizeRel(p) {
+  return p.split('/').filter((s) => s !== '.' && s !== '').join('/');
 }
 
 function nearestSrcRoot(rel) {
@@ -169,7 +172,7 @@ function nearestSrcRoot(rel) {
  * Does anything reachable from `rel` read a flag? Bounded walk, memoized across
  * the whole run — the same subject tree is reached from many tests.
  */
-function reachesFlagRead(rel, contentOf, depth = MAX_IMPORT_DEPTH, seen = new Set()) {
+function reachesFlagRead(rel, contentOf, has, depth = MAX_IMPORT_DEPTH, seen = new Set()) {
   if (depth < 0 || seen.has(rel)) return false;
   seen.add(rel);
   const src = contentOf(rel);
@@ -177,8 +180,10 @@ function reachesFlagRead(rel, contentOf, depth = MAX_IMPORT_DEPTH, seen = new Se
   if (FLAG_READ_RE.test(src)) return true;
   if (depth === 0) return false;
   for (const m of src.matchAll(IMPORT_RE)) {
-    const next = resolveImport(m[1], rel);
-    if (next && CODE_RE.test(next) && reachesFlagRead(next, contentOf, depth - 1, seen)) return true;
+    const next = resolveImport(m[1], rel, has);
+    if (next && CODE_RE.test(next) && reachesFlagRead(next, contentOf, has, depth - 1, seen)) {
+      return true;
+    }
   }
   return false;
 }
@@ -215,7 +220,16 @@ function isSuppressed(src, idx) {
   return false;
 }
 
-export function scan({ root = ROOT, files } = {}) {
+/**
+ * @param root        repo root to enumerate (ignored when `files`+`readFile` are injected)
+ * @param files       explicit repo-relative file list, instead of enumerating the tree
+ * @param readFile    (rel) => string|null — injected so the guard's OWN test can drive it
+ *                    over a synthetic in-memory tree. That is what makes this detector
+ *                    falsifiable WITHOUT mutating the shared checkout: git-sync sweeps the
+ *                    whole tree on a timer, so a probe that mutates a real file can be
+ *                    COMMITTED mid-run even when nothing goes wrong and no handler fails.
+ */
+export function scan({ root = ROOT, files, readFile } = {}) {
   // `listTrackedFiles` already folds coverage in ({ files, unscanned, unscannedPresent, … }),
   // so it is used whole rather than re-run through `coverageOf` — which takes the FILE LIST,
   // not the wrapper, and fails loudly if handed the latter.
@@ -228,10 +242,14 @@ export function scan({ root = ROOT, files } = {}) {
   const unscannedPresent = scan0.unscannedPresent ?? [];
 
   const cache = new Map();
+  const load = readFile ?? ((rel) => readOrNull(join(root, rel)));
   const contentOf = (rel) => {
-    if (!cache.has(rel)) cache.set(rel, readOrNull(join(root, rel)));
+    if (!cache.has(rel)) cache.set(rel, load(rel));
     return cache.get(rel);
   };
+
+  const fileSet = new Set(all);
+  const has = (rel) => fileSet.has(rel);
 
   const codeFiles = all.filter((f) => CODE_RE.test(f));
   const testFiles = codeFiles.filter((f) => TEST_RE.test(f));
@@ -255,19 +273,37 @@ export function scan({ root = ROOT, files } = {}) {
       // excluded as a subject: a test that calls useFlag() itself is exercising
       // the mock, not being bound by it.
       let binds = false;
+      let unresolved = 0;
       for (const im of src.matchAll(IMPORT_RE)) {
-        const target = resolveImport(im[1], rel);
-        if (target && CODE_RE.test(target) && reachesFlagRead(target, contentOf)) {
-          binds = true;
-          break;
+        const spec2 = im[1];
+        const target = resolveImport(spec2, rel, has);
+        if (target) {
+          if (CODE_RE.test(target) && reachesFlagRead(target, contentOf, has)) {
+            binds = true;
+            break;
+          }
+        } else if (spec2.startsWith('.') || spec2.startsWith('@/')) {
+          // A LOCAL import that did not resolve against the tracked-file set — a
+          // generated or untracked module. We did not look inside it, so we cannot
+          // claim it holds no flag read.
+          unresolved += 1;
         }
       }
       if (binds) continue;
 
       const knob = mockExposesMutableKnob(src, m.index);
       const line = src.slice(0, m.index).split('\n').length;
-      const row = { file: rel, line, spec, knob };
-      if (knob) gating.push({ ...row, verdict: 'VACUOUS-TOGGLE' });
+      const row = { file: rel, line, spec, knob, unresolved };
+
+      // ⚠ "I could not look" is NOT "there is nothing there". The subject set is the
+      // tracked-file list, so a test importing a GENERATED or untracked module resolves
+      // nothing and would otherwise read as a proven-empty subject tree — manufacturing a
+      // gating verdict out of a blind spot. A gate may only fire on a subject tree this
+      // guard actually read end to end; anything else is demoted to the report bucket,
+      // which is the fail-safe direction and mirrors the EXIT_NOT_CHECKED distinction
+      // scripts/affected-tests.mjs draws for the strand-guard family.
+      if (knob && unresolved === 0) gating.push({ ...row, verdict: 'VACUOUS-TOGGLE' });
+      else if (knob) reported.push({ ...row, verdict: 'UNPROVABLE-TOGGLE' });
       else reported.push({ ...row, verdict: 'INERT-MOCK' });
     }
   }
@@ -282,6 +318,12 @@ export function scan({ root = ROOT, files } = {}) {
     for (const m of src.matchAll(keyRe)) inSource.add(m[1]);
   }
   for (const rel of testFiles) {
+    // The flags library's OWN tests declare synthetic fixture registries (ALPHA, BETA,
+    // GAMMA, GRADUATED, …) that are keys of a fake FLAGS object, not of the real one.
+    // Counting them produced 8 confident findings on the first run, every one of them a
+    // false positive — and a detector whose entire visible output is noise is one nobody
+    // reads, which is how the next real finding gets skipped.
+    if (FLAG_MACHINERY_RE.test('/' + rel)) continue;
     const src = contentOf(rel);
     if (src === null) continue;
     for (const m of src.matchAll(keyRe)) {
@@ -311,7 +353,7 @@ function main() {
   const census = process.argv.includes('--census');
   const r = scan();
 
-  const unscannedNote = describeUnscanned(r.unscanned, ROOT);
+  const unscannedNote = r.unscannedPresent.length ? describeUnscanned(r.unscanned, ROOT) : '';
 
   if (census) {
     console.log(`scanned ${r.counts.testFiles} test files / ${r.counts.nonTestFiles} source files`);
@@ -322,7 +364,11 @@ function main() {
 
   if (report || census) {
     for (const x of r.reported) {
-      console.log(`  INERT-MOCK        ${x.file}:${x.line} mocks ${x.spec} — no subject reads a flag`);
+      const why =
+        x.verdict === 'UNPROVABLE-TOGGLE'
+          ? `toggled via \`${x.knob}\`, but ${x.unresolved} local import(s) did not resolve — NOT judged`
+          : 'no subject reads a flag';
+      console.log(`  ${x.verdict.padEnd(17)} ${x.file}:${x.line} mocks ${x.spec} — ${why}`);
     }
     for (const x of r.testOnlyKeys) {
       console.log(`  TEST-ONLY-KEY     FLAGS.${x.key} — referenced by ${x.file}, by no source file`);

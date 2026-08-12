@@ -208,6 +208,8 @@
     "lint:no-unenrolled-mjs-imports": "node scripts/check-unenrolled-mjs-imports.mjs",
     "lint:no-raw-setinterval": "node scripts/check-no-raw-setinterval.mjs",
     "lint:no-ungated-mug-kettle": "node scripts/check-ungated-mug-kettle.mjs",
+    "lint:vacuous-flag-guard": "node scripts/check-vacuous-flag-guard.mjs",
+    "lint:vacuous-flag-guard:report": "node scripts/check-vacuous-flag-guard.mjs --report",
     "lint:no-hand-rolled-module-pin": "node scripts/check-no-hand-rolled-module-pin.mjs",
     "lint:no-unhosted-remote-core": "node scripts/check-no-unhosted-remote-core.mjs",
     "lint:no-unthreaded-apply": "node scripts/check-no-unthreaded-apply.mjs",
