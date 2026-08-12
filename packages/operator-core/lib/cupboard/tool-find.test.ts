@@ -174,6 +174,17 @@ describe('findTools', () => {
     expect(hits[0].tool).toBe('coord:orient');
   });
 
+  it('degrades to lexical when the query embedder exceeds its budget', async () => {
+    const hits = await findTools(corpus, 'deploy a bot', {
+      embedder: () => new Promise<number[]>(() => {}),
+      embeddings,
+      embedTimeoutMs: 5,
+    });
+    expect(hits.find((h) => h.tool === 'cup:spawn')).toBeUndefined();
+    expect(hits.every((h) => h.via === 'lexical')).toBe(true);
+    expect(hits.every((h) => h.cosine === null)).toBe(true);
+  });
+
   it('carries argSchema through to the hit (null when absent)', async () => {
     const withSchema = {
       ...entry('flags:set', 'feature flag set'),

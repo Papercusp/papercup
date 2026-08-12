@@ -83,10 +83,49 @@ export interface ToolFindOptions {
   embeddings?: ReadonlyMap<string, readonly number[]> | null;
   /** Minimum cosine to admit a SEMANTIC-only hit (default 0.35). The floor in floored-union. */
   minCosine?: number;
+  /**
+   * Bound the per-query embed call. A resolved embedder can still stall (for
+   * example, an OpenAI fetch without a client timeout), so discovery must
+   * degrade to lexical-only instead of holding the whole tool call open.
+   * Defaults to the interactive 4s budget; pass 0 to preserve an unbounded
+   * call for an explicit batch caller.
+   */
+  embedTimeoutMs?: number;
 }
 
 const DEFAULT_LIMIT = 10;
 const DEFAULT_MIN_COSINE = 0.35;
+const DEFAULT_EMBED_TIMEOUT_MS = 4_000;
+
+/**
+ * Await one query embedding without allowing a stalled provider to block
+ * lexical discovery. The losing promise is intentionally not cancelled — the
+ * Embedder type has no signal seam — but its eventual settlement is handled so
+ * a late rejection cannot become an unhandled promise.
+ */
+async function embedWithBudget(
+  embedder: Embedder,
+  query: string,
+  budgetMs: number,
+): Promise<number[] | null> {
+  const p = Promise.resolve().then(() => embedder(query));
+  if (!(budgetMs > 0)) return await p.catch(() => null);
+  return await new Promise<number[] | null>((resolve) => {
+    let settled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const finish = (value: number[] | null): void => {
+      if (settled) return;
+      settled = true;
+      if (timer !== undefined) clearTimeout(timer);
+      resolve(value);
+    };
+    timer = setTimeout(() => finish(null), budgetMs);
+    p.then(
+      (value) => finish(value),
+      () => finish(null),
+    );
+  });
+}
 
 /**
  * High-confidence symptom → decisive first-read routing. Semantic similarity is
@@ -154,6 +193,7 @@ export async function findTools(
 ): Promise<ToolFindHit[]> {
   const limit = opts.limit && opts.limit > 0 ? opts.limit : DEFAULT_LIMIT;
   const minCosine = opts.minCosine ?? DEFAULT_MIN_COSINE;
+  const embedTimeoutMs = opts.embedTimeoutMs ?? DEFAULT_EMBED_TIMEOUT_MS;
 
   // 1. Lexical leg — authoritative. Over-fetch so its ranking survives the cap.
   const lexical = searchTools(corpus, query, { limit: limit * 3 });
@@ -164,7 +204,7 @@ export async function findTools(
   if (opts.embedder && opts.embeddings && opts.embeddings.size > 0 && query.trim()) {
     let qv: number[] | null = null;
     try {
-      qv = await opts.embedder(query);
+      qv = await embedWithBudget(opts.embedder, query, embedTimeoutMs);
     } catch {
       qv = null; // embedder failure → lexical-only (graceful)
     }

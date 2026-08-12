@@ -13,6 +13,7 @@ import {
   buildMcpUrl,
   buildCallToolParams,
   jsonSourceKind,
+  shouldPrintInvocationLine,
 } from '../scripts/ptool.mjs';
 
 describe('ptool parseArgs', () => {
@@ -112,6 +113,18 @@ describe('ptool jsonSourceKind (EI-14958)', () => {
 
   it('prefers --json-file over --json when (incorrectly) both are given', () => {
     expect(jsonSourceKind({ ...base, json: '{"a":1}', jsonFile: 'payload.json' })).toBe('file');
+  });
+});
+
+describe('ptool invocation output mode (EI-20202581520430575)', () => {
+  it('keeps the invocation line for interactive calls', () => {
+    expect(shouldPrintInvocationLine(null)).toBe(true);
+  });
+
+  it('suppresses the invocation line for every scripted JSON source', () => {
+    expect(shouldPrintInvocationLine('inline')).toBe(false);
+    expect(shouldPrintInvocationLine('file')).toBe(false);
+    expect(shouldPrintInvocationLine('stdin')).toBe(false);
   });
 });
 

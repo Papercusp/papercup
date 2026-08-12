@@ -225,6 +225,10 @@ export default defineTool({
       limit: args.limit ?? 8,
       embedder,
       embeddings: embIndex,
+      // WI-20202755675039636: a resolved provider can still stall (notably an
+      // OpenAI fetch without a client-side timeout); keep discovery responsive
+      // by degrading this query to lexical-only at the interactive budget.
+      embedTimeoutMs: interactiveEmbedAcquireBudgetMs(),
     });
 
     // Dynamic expansion (dynamic-tool-surface-2026-07-01): activate the matched

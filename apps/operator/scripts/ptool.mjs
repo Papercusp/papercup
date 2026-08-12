@@ -129,6 +129,15 @@ export function jsonSourceKind(args) {
   return null;
 }
 
+/**
+ * Decide whether the human-readable invocation line belongs on stderr.
+ * Scripted JSON mode must leave stdout/stderr suitable for machine capture;
+ * interactive calls retain the line as useful operator feedback. Pure.
+ */
+export function shouldPrintInvocationLine(jsonKind) {
+  return jsonKind == null;
+}
+
 /* ─── catalog grouping (pure — exported for tests) ────────────────────── */
 
 /** The service a tool belongs to — the segment before the first `:`
@@ -582,7 +591,7 @@ async function main() {
         console.error('ptool: cancelled');
         return;
       }
-    } else {
+    } else if (shouldPrintInvocationLine(jsonKind)) {
       console.error(`→ ${toolName}  ${JSON.stringify(callArgs)}`);
     }
 

@@ -43,6 +43,9 @@ const getOrgPg = vi.fn();
 vi.mock('@papercusp/db-org', () => ({
   getOrgPg: (...a: unknown[]) => getOrgPg(...(a as [])),
   generated: new Proxy({}, { get: () => new Proxy({}, { get: () => ({}) }) }),
+  // Agent-MCP task tools are imported by the route stack and build this
+  // response-only schema at module load; this test never exercises that path.
+  createSelectSchema: () => ({}),
   schemaOf: () => 'harness_shared',
 }));
 
