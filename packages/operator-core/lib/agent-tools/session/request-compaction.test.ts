@@ -21,6 +21,17 @@ import { z } from 'zod';
 import { truncateHint } from './request-compaction';
 import { __resetRefusalMarkers } from '../../enforcement-gate-io';
 import { __resetRespawnExpectedMarkers, consumeRespawnExpected } from '../../carry-respawn-marker';
+const flushMarks = vi.hoisted(() => new Map<string, number>());
+vi.mock('../../flush-refusal-marker', () => ({
+  REFUSAL_MARKER_TTL_MS: 10 * 60_000,
+  wasRecentlyRefused: async (boundary: string, ownerId: string, nowMs = Date.now()) =>
+    (flushMarks.get(`${boundary}:${ownerId}`) ?? -1) >= nowMs,
+  markRefused: async (boundary: string, ownerId: string, nowMs = Date.now()) => {
+    flushMarks.set(`${boundary}:${ownerId}`, nowMs + 10 * 60_000);
+  },
+  clearRefused: async (boundary: string, ownerId: string) => { flushMarks.delete(`${boundary}:${ownerId}`); },
+  __resetRefusalMarkers: async () => { flushMarks.clear(); },
+}));
 // P-009 split `pending` into still-racing vs ORPHANED on an age threshold, so the
 // ages below are load-bearing. Derive them from the real budget rather than
 // hardcoding minutes: a fixture that names its own magic number silently changes
@@ -176,9 +187,9 @@ import { afterEach } from 'vitest';
 let provDir = '';
 const ENVELOPE_LINE = /^⟦turn-origin:self-compaction nonce:[a-f0-9]{16}⟧\n/;
 
-beforeEach(() => {
+beforeEach(async () => {
   vi.clearAllMocks();
-  __resetRefusalMarkers(); // P-016 gate marker is module-level — isolate each test
+  await __resetRefusalMarkers(); // P-016 durable marker — isolate each test
   void __resetRespawnExpectedMarkers(); // EI-18676518990229124 — same module-level isolation
   injectIntoHost.mockResolvedValue(true);
   readPriorRespawnOutcome.mockResolvedValue({ outcome: 'none' });
