@@ -370,6 +370,7 @@ describe('a successful claim declares the caller intent (EI-20099413453852234)',
   });
 
   it('routes a legacy/pre-envelope bug through the cheap validation lane at claim time', async () => {
+    getNextM.mockResolvedValue({ workItem: { id: 'WI-4242', title: 'Fix the flaky thing', kind: 'bug' } });
     const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
       content: Array<{ text: string }>;
     };
@@ -382,6 +383,14 @@ describe('a successful claim declares the caller intent (EI-20099413453852234)',
         reasons: ['no freshness envelope (pre-envelope or unknown-generation report)'],
       },
     });
+  });
+
+  it('does not attach bug-freshness routing to a non-bug claim', async () => {
+    getNextM.mockResolvedValue({ workItem: { id: 'WI-4243', title: 'Improve the flow', kind: 'change' } });
+    const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
+      content: Array<{ text: string }>;
+    };
+    expect(JSON.parse(out.content[0]!.text)).not.toHaveProperty('freshness');
   });
 
   // THE REGRESSION CASE, and the reason this is a read-modify-write rather than a bare write.

@@ -203,6 +203,32 @@ describe('engineer issues surface (real PG)', () => {
     expect(got?.title).toBe('shop freezes');
   });
 
+  it('stamps generation freshness on new bugs while leaving non-bug payloads alone (P-014)', async () => {
+    const bug = await issues.createIssue({
+      title: 'freshly observed defect',
+      kind: 'bug',
+      createdBy: 'agA',
+      payload: { reporterNote: 'preserved' },
+    });
+    expect(bug.payload).toMatchObject({
+      reporterNote: 'preserved',
+      freshnessEnvelope: {
+        reporterSession: 'agA',
+        linkedFixRefs: [],
+      },
+    });
+    expect((bug.payload as { freshnessEnvelope?: { observedAt?: unknown } }).freshnessEnvelope?.observedAt)
+      .toEqual(expect.any(String));
+
+    const change = await issues.createIssue({
+      title: 'desired behavior change',
+      kind: 'change',
+      createdBy: 'agA',
+      payload: { reporterNote: 'preserved' },
+    });
+    expect(change.payload).toEqual({ reporterNote: 'preserved' });
+  });
+
   it('issue-family writes refresh updated_at — no stale updated_ts (WI-339 regression)', async () => {
     // The bug: the local-write helpers omitted `updated_at` from the UPDATE SET clause,
     // so the INSTEAD OF trigger's COALESCE(NEW.updated_at, now()) carried the OLD view

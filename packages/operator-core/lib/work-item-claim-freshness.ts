@@ -159,7 +159,11 @@ export function assessClaimFreshness(
   }
 
   score = Math.max(0, Math.min(1, Math.round(score * 100) / 100));
-  const likelyStale = score < 0.6;
+  // A linked fixing ref is direct evidence that the observed failure may have
+  // been invalidated, regardless of how recent the original reproduction was.
+  // Keep this as a routing verdict only: the validation lane still has to prove
+  // the item already fixed before any terminal transition.
+  const likelyStale = envelope.linkedFixRefs.length > 0 || score < 0.6;
   return {
     lane: likelyStale ? 'validation' : 'implementation',
     score,

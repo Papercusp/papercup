@@ -702,7 +702,7 @@ export interface CreateIssueInput {
 /** Create an issue: insert, tag topics, auto-subscribe the author, fan out. */
 export async function createIssue(input: CreateIssueInput): Promise<EngineerIssue> {
   const created = nowIso();
-  const inputPayload = input.payload ? { ...input.payload } : {};
+  const inputPayload: Record<string, unknown> = input.payload ? { ...input.payload } : {};
   const storageKind = input.kind ?? 'bug';
   if (storageKind === 'bug' && inputPayload.freshnessEnvelope == null) {
     const build = getBuildInfo();

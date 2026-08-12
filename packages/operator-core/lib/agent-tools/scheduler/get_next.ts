@@ -812,18 +812,20 @@ export default defineTool({
     let routingHint: unknown;
     let freshness: ClaimFreshnessVerdict | null = null;
     if (res?.workItem) {
-      const wi = res.workItem as { title?: string; summary?: string; payload?: unknown };
+      const wi = res.workItem as { kind?: string; title?: string; summary?: string; payload?: unknown };
       const existing =
         wi.payload && typeof wi.payload === 'object' && !Array.isArray(wi.payload)
           ? (wi.payload as Record<string, unknown>).routingHint
           : undefined;
       routingHint = existing ?? matchRoutingGateHint(wi.title) ?? undefined;
-      const build = getBuildInfo();
-      freshness = assessClaimFreshness(wi.payload, {
-        headSha: build.sha,
-        runtimeSha: build.sha,
-        runtimeVersion: build.version,
-      });
+      if (wi.kind === 'bug') {
+        const build = getBuildInfo();
+        freshness = assessClaimFreshness(wi.payload, {
+          headSha: build.sha,
+          runtimeSha: build.sha,
+          runtimeVersion: build.version,
+        });
+      }
     }
     // Claim-time recall port (memory-delivery-unification-2026-07-12 P-008 /
     // D-006): on a hit, piggyback a targeted memory recall for the claimed
