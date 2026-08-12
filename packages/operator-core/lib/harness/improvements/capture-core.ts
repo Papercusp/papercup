@@ -821,6 +821,18 @@ export async function captureImprovement(
     // Idea lifecycle starts at capture (self-learning P-031): open → triaged → applied
     // → verified/recurred. triage-core / resolve-core / the decay sweep advance it.
     payload.ideaLifecycle = initializeIdeaLifecycle();
+    // EI-20275452450016416: persist the coverage the dedup ACTUALLY achieved. The
+    // semantic leg fails OPEN, so a row filed while the embedder was load-shedding was
+    // admitted without a differently-worded-duplicate check — and that was previously
+    // reported to the caller and then discarded, leaving no way to find those rows
+    // later. Degradation is load-correlated and so is filing volume, so blind filings
+    // cluster exactly when the most rows are created.
+    // Stamped UNCONDITIONALLY (not only when degraded) on purpose: presence of the key
+    // is what separates "checked clean" from "unknown" — stamping only the degraded
+    // rows would make absence mean either "checked" or "filed before this existed",
+    // which is the same lost distinction the discard created.
+    // Re-dedup work-list: payload->'dedupCoverage'->>'degraded' = 'true'.
+    payload.dedupCoverage = dedupCoverage;
   }
   // P-010 source-tag: track who filed this for per-Hive analytics
   if (sourceRole !== 'human') payload.sourceRole = sourceRole;
