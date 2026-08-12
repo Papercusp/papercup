@@ -60,7 +60,12 @@ const OBSERVE_VERBS: ReadonlySet<string> = new Set(['improvements:capture']);
 const ESCALATE_VERBS: ReadonlySet<string> = new Set(['coord:escalate']);
 /**
  * EI-3588: `kettle:declare-wake` schedules overwatch's OWN next wake (REPLACE
- * semantics — see agent-tools/overwatch/declare_wake.ts) before it ends a turn.
+ * semantics) before it ends a turn. ⚠ The TOOL retired to
+ * `_retired/mug-kettle-deciders/…/agent-tools/overwatch/declare_wake.ts`
+ * (retire-mug-kettle-su-only-2026-08-09 P-059/D-080), so nothing can emit this verb
+ * today; the entry stays because this set is keyed on a NAME STRING, not an import,
+ * and dropping it would silently reclassify the verb to `structural` if the tool is
+ * ever restored. `lib/overwatch/` is itself a later P-059 slice.
  * It never mutates agents, work placement, or shared infra (D-001's concern) — it
  * is pure self-scheduling bookkeeping the role brief mandates EVERY turn. Before
  * this fix it fell through to `structural` ⇒ gated ⇒ escalate-only, forcing
