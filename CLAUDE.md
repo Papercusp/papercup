@@ -280,12 +280,16 @@ auto-deploys it to `:3070`. Pipeline view: `/admin/git`. Long form + symptoms:
 > subject describes the sweeping agent's INTENT, not the diff. Both are false-positive
 > generators, not dead ends.
 >
-> **Which commit carries your change → `git log -1 -- <path>`. NOT `git rev-parse HEAD`:
-> the tip is routinely a DIFFERENT commit from the same sweep, so quoting it attributes
-> your work to a stranger's diff. Whether a sha someone cites really carries a change →
-> `git show --stat <sha>`, or grep the file.** For authorship, use the commissioning
-> work-item/plan-item or a timestamp-correlated `sessions:search`; if neither resolves,
-> say "not attributable" — never name a person.
+> **Which commit carries your change → `TZ=UTC git log -1 --format='%cI %H %s' -- <path>`.
+> NOT `git rev-parse HEAD`:** the tip is routinely a DIFFERENT commit from the same
+> sweep, so quoting it attributes your work to a stranger's diff. Git otherwise renders
+> `%ad`/`%cd` in the machine's local timezone (`-0400` here), while Papercusp timestamps
+> are UTC; use the explicit offset in `%cI` or keep `TZ=UTC` for `--since`/`--until` too.
+> Whether a sha someone cites really carries a change → `git show --stat <sha>`, or grep
+> the file. For live/deployed status, use `dev:pipeline_position { path }`, whose
+> timestamps are UTC. For authorship, use the commissioning work-item/plan-item or a
+> timestamp-correlated `sessions:search`; if neither resolves, say "not attributable" —
+> never name a person.
 
 > 🚨 **NEVER run a tree-wide destructive git op on the shared checkout** — not
 > `git reset --hard`, not `git checkout .` / `git checkout -- :/`, not
