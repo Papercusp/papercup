@@ -268,6 +268,11 @@ export interface DeployStatus {
    *  WITHOUT probing (the pure `computeDeployStatus(snap)` path, e.g. the staleness watchdog);
    *  `readDeployStatus()` always populates it. */
   deployInFlight: DeployInFlight | null;
+  /** EI-20234052054064013: the live green-checkpoint singleton probe. This is separate from
+   *  completed gate-health metadata: an active run (including an in-process auto-refire) is
+   *  authoritative evidence that a fresh verdict is already being produced. Null means the
+   *  snapshot was not probed, or the probe found no active run. */
+  checkpointRunInFlight: GitPipelineSnapshot['activeRun'];
   /** True iff `trigger` would do something safe + useful: there is green code ahead of the
    *  live deploy AND the gate is not currently red/wedged. */
   canTriggerGreen: boolean;
@@ -297,9 +302,15 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
    * status decision.  Unknown (`null`) and probed-idle (`active:false`) must
    * remain distinct from a positive liveness reading.
    */
-  const checkpointRunActive = snap.activeRun?.active === true;
+  const checkpointRunInFlight = snap.activeRun;
+  const checkpointRunActive = checkpointRunInFlight?.active === true;
   const fireStale = g.fireStale && !checkpointRunActive;
   const fireStaleReason = fireStale ? g.fireStaleReason : null;
+  const activeCheckpointRecommendation = checkpointRunActive
+    ? `A green-checkpoint run is ACTIVE${checkpointRunInFlight?.candidate ? ` on candidate ${checkpointRunInFlight.candidate}` : ''}` +
+      `${checkpointRunInFlight?.refireObserved ? ` (auto-refire from ${checkpointRunInFlight.initialCandidate ?? 'an earlier candidate'} observed)` : ''}. ` +
+      'Do NOT run `release:checkpoint-run` again; re-check this status after the active run completes.'
+    : null;
   // EI-10902: the most recent green_checkpoint pipeline event (snap.recent is newest-first) —
   // whatever runner produced it. `detail` carries the shape buildCheckpointDetail wrote
   // (candidate/from/failingTests/logPath/runId), already persisted for every tick; this is
@@ -398,7 +409,9 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
     recommendation =
       `The gate's health blob reports ${g.consecutiveReds} red(s), but that verdict is STALE — ${g.verdictStaleReason ?? 'it has been superseded'}. ` +
       `Do NOT chase the failing tests it names; they may already be green (verify by running them before you touch anything). ` +
-      `Run release:checkpoint-run for a FRESH verdict. If the gate keeps reporting 'skipped-locked', a peer's manual suite runs are holding the run-lock — let one routine fire through.`;
+      (activeCheckpointRecommendation
+        ? `${activeCheckpointRecommendation} If the gate keeps reporting 'skipped-locked' after it finishes, let one routine fire through.`
+        : `Run release:checkpoint-run for a FRESH verdict. If the gate keeps reporting 'skipped-locked', a peer's manual suite runs are holding the run-lock — let one routine fire through.`);
   } else if (fireStale) {
     state = 'gate-wedged';
     recommendation =
@@ -406,7 +419,8 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
   } else if (typeof greenPinBehindStaging === 'number' && greenPinBehindStaging > 0) {
     state = 'staging-buffered';
     recommendation =
-      `${greenPinBehindStaging} staging commit(s) are awaiting the next green-checkpoint (gate is green, it just hasn't promoted them to the pin yet). Wait one checkpoint cycle, then re-check; nothing to do.`;
+      `${greenPinBehindStaging} staging commit(s) are awaiting the next green-checkpoint (gate is green, it just hasn't promoted them to the pin yet). ` +
+      `${activeCheckpointRecommendation ?? 'Wait one checkpoint cycle, then re-check; nothing to do.'}`;
   } else if (nothingToDeploy) {
     state = 'up-to-date';
     recommendation = 'The live :3070 operator is at the green pin — nothing to deploy.';
@@ -444,6 +458,7 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
       deployedAtMs: d.deployedAtMs,
     },
     deployInFlight: inFlight,
+    checkpointRunInFlight,
     canTriggerGreen,
     nothingToDeploy,
     state,

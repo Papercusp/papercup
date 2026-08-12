@@ -82,6 +82,9 @@ function statusBrief(s: DeployStatus) {
     // question it answers — "is a deploy already running?" — is exactly the one a caller who got
     // a transport error instead of a result comes back to ask.
     deployInFlight: s.deployInFlight,
+    // EI-20234052054064013: a live checkpoint (including an in-process auto-refire) is the
+    // authoritative answer to "should I fire another checkpoint?" — carry it in every reply.
+    checkpointRunInFlight: s.checkpointRunInFlight,
     canTriggerGreen: s.canTriggerGreen,
     recommendation: s.recommendation,
   };

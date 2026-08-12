@@ -80,6 +80,7 @@ function mkStatus(over: Partial<DeployStatus> = {}): DeployStatus {
       deployedAtMs: 1,
     },
     deployInFlight: null,
+    checkpointRunInFlight: null,
     canTriggerGreen: false,
     nothingToDeploy: true,
     state: 'up-to-date',
@@ -103,6 +104,20 @@ function inFlight(over: Partial<NonNullable<DeployStatus['deployInFlight']>> = {
     logPath: '/tmp/papercup-auto-deploy.log',
     logMtimeMs: null,
     source: 'systemd',
+    ...over,
+  };
+}
+
+function checkpointRun(
+  over: Partial<NonNullable<DeployStatus['checkpointRunInFlight']>> = {},
+): NonNullable<DeployStatus['checkpointRunInFlight']> {
+  return {
+    active: true,
+    candidate: 'fb941a2c',
+    initialCandidate: '80cde64e',
+    refireObserved: true,
+    startedAtMs: Date.parse('2026-08-12T07:29:34Z'),
+    elapsedSec: 2400,
     ...over,
   };
 }
@@ -205,6 +220,22 @@ describe('release:deploy — trigger', () => {
     const b = body(await tool.handler({ op: 'status' } as never, { role: 'cup' } as never));
     expect(b).toMatchObject({ ok: true, op: 'status', state: 'deploy-in-flight' });
     expect((b.deployInFlight as { active: boolean }).active).toBe(true);
+  });
+
+  it('op:status surfaces checkpoint candidate/liveness so an auto-refire is not duplicated', async () => {
+    statusM.mockResolvedValue(
+      mkStatus({
+        state: 'gate-verdict-stale',
+        checkpointRunInFlight: checkpointRun(),
+      }),
+    );
+    const b = body(await tool.handler({ op: 'status' } as never, { role: 'cup' } as never));
+    expect(b.checkpointRunInFlight).toMatchObject({
+      active: true,
+      candidate: 'fb941a2c',
+      initialCandidate: '80cde64e',
+      refireObserved: true,
+    });
   });
 
   it('a FINISHED deploy does not keep refusing — the normal green trigger still fires', async () => {

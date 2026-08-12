@@ -22,7 +22,8 @@ import type { DeployInFlight } from './release-deploy-launch';
 import type { GitPipelineSnapshot } from './git-pipeline-stats';
 import type { PipelineEventRow } from './harness/git-sync/pipeline-events';
 
-/** Minimal snapshot fixture — computeDeployStatus only reads gate + deploy (+ recent, EI-10902). */
+/** Minimal snapshot fixture — computeDeployStatus reads gate + deploy (+ recent, EI-10902).
+ *  Tests that exercise live checkpoint liveness add `activeRun` explicitly. */
 function mkSnap(
   gate: Partial<GitPipelineSnapshot['gate']>,
   deploy: Partial<GitPipelineSnapshot['deploy']>,
@@ -63,6 +64,7 @@ function mkSnap(
       errors: [],
       ...deploy,
     },
+    activeRun: null,
     recent,
   } as unknown as GitPipelineSnapshot;
 }
@@ -123,6 +125,28 @@ describe('computeDeployStatus — decision tree', () => {
     expect(s.gate.fireStaleReason).toBeNull();
     expect(s.state).toBe('staging-buffered');
     expect(s.recommendation).not.toMatch(/WEDGED/);
+  });
+
+  it('surfaces an active auto-refire and never recommends a duplicate checkpoint run', () => {
+    const activeRun = {
+      active: true,
+      candidate: 'fb941a2c',
+      initialCandidate: '80cde64e',
+      refireObserved: true,
+      startedAtMs: Date.now() - 15 * 60_000,
+      elapsedSec: 900,
+    };
+    const s = computeDeployStatus({
+      ...mkSnap(
+        { consecutiveReds: 13, verdictStale: true, verdictStaleReason: 'stale candidate' },
+        { deployedBehindGreenPin: 0 },
+      ),
+      activeRun,
+    });
+    expect(s.checkpointRunInFlight).toEqual(activeRun);
+    expect(s.recommendation).toMatch(/ACTIVE.*fb941a2c/);
+    expect(s.recommendation).toMatch(/Do NOT run `release:checkpoint-run` again/);
+    expect(s.recommendation).not.toMatch(/Run release:checkpoint-run for a FRESH verdict/);
   });
 
   it('a probed-idle checkpoint run does not suppress a genuine WEDGED classification', () => {
@@ -624,6 +648,7 @@ describe('EI-18724155280048738: an in-flight deploy must be distinguishable from
   it('BACK-COMPAT: the pure one-arg call (staleness watchdog) is unchanged and reports null', () => {
     const s = computeDeployStatus(mkSnap({}, { deployedBehindGreenPin: 2 }));
     expect(s.deployInFlight).toBeNull();
+    expect(s.checkpointRunInFlight).toBeNull();
     expect(s.state).toBe('green-deployable');
     expect(s.canTriggerGreen).toBe(true);
   });
@@ -638,6 +663,27 @@ describe('readDeployStatus wiring', () => {
     });
     expect(s.deployInFlight?.active).toBe(true);
     expect(s.state).toBe('deploy-in-flight');
+  });
+
+  it('carries the active checkpoint probe through the status object', async () => {
+    const activeRun = {
+      active: true,
+      candidate: 'fb941a2c',
+      refireObserved: true,
+      initialCandidate: '80cde64e',
+      startedAtMs: Date.now() - 15 * 60_000,
+      elapsedSec: 900,
+    };
+    const s = await readDeployStatus({
+      loadSnapshot: async () => ({ ...mkSnap({}, {}), activeRun }),
+      loadInFlight: async () =>
+        computeDeployInFlight({
+          props: parseSystemctlShow('ExecMainStartTimestamp=\nActiveState=inactive\nSubState=dead\n'),
+          logPath: '/l',
+          logMtimeMs: null,
+        }),
+    });
+    expect(s.checkpointRunInFlight).toEqual(activeRun);
   });
 
   it('a THROWING probe never fails the status read — it degrades to null', async () => {
