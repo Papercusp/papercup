@@ -451,7 +451,8 @@ describe('implication cascade (D-003)', () => {
     expect(rows.find((r) => r.mode === 'auto')!.ownerDirected).toBe(false);
     expect(rows.find((r) => r.mode === 'ideate')!.ownerDirected).toBe(false);
     const peerClear = await setMode({ workspaceId: WS, ownerId: ME, modeId: 'auto', enabled: false, reason: 'peer clears', setBy: PEER, sql: m.sql });
-    expect(peerClear).toMatchObject({ ok: true, stickyConflict: undefined });
+    expect(peerClear.ok).toBe(true);
+    expect(peerClear.stickyConflict).toBeUndefined();
   });
 
   it('a mode with no implications reports none (no empty `implied` noise)', async () => {
