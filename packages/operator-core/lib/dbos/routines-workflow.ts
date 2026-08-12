@@ -49,7 +49,10 @@ import { clearStaleReaperLastError } from './dbos-executor-reaper';
 import { poolPressure, recordPoolShed, lastPoolProbeMs, recordPoolShedEvent } from './pool-pressure';
 import { activeWorkspaceId } from '../workspace-registry';
 import { shouldShedSchedulerTickUnderLoopPressure } from './tick-load-shed';
-import { anotherRoutinesTickInFlight } from './routine-tick-overlap-guard';
+import {
+  anotherRoutinesTickInFlight,
+  ROUTINE_TICK_OVERLAP_STATEMENT_TIMEOUT_MS,
+} from './routine-tick-overlap-guard';
 // Side-effect import: registers every `system:<action>` handler before the first tick.
 import '../harness/routines/register-system-actions';
 // Side-effect import (F-E1 phase 1): wire papercusp-routines-per-workspace into the routines lib.
@@ -407,16 +410,24 @@ async function routinesTickImpl(): Promise<void> {
   // already past that gate and simply running long — this closes that gap
   // directly. Fail-soft + stale-safe (see routine-tick-overlap-guard.ts).
   if (
+    !poolCritical &&
     await anotherRoutinesTickInFlight(DBOS.workflowID ?? '', {
       queryInFlight: (selfId, cutoffEpochMs) =>
-        sql<{ workflow_uuid: string }[]>`
-          SELECT workflow_uuid FROM dbos.workflow_status
-           WHERE name = 'routinesTick'
-             AND status = 'PENDING'
-             AND workflow_uuid <> ${selfId}
-             AND started_at_epoch_ms IS NOT NULL
-             AND started_at_epoch_ms > ${cutoffEpochMs}
-           LIMIT 1`,
+        sql.begin(async (tx) => {
+          // The overlap probe is a read-only guard, not routine work. Keep its
+          // server-side statement budget below the caller deadline so a
+          // checked-out connection cannot remain occupied after the guard has
+          // already fail-softed.
+          await tx.unsafe(`SET LOCAL statement_timeout = ${ROUTINE_TICK_OVERLAP_STATEMENT_TIMEOUT_MS}`);
+          return tx<{ workflow_uuid: string }[]>`
+            SELECT workflow_uuid FROM dbos.workflow_status
+             WHERE name = 'routinesTick'
+               AND status = 'PENDING'
+               AND workflow_uuid <> ${selfId}
+               AND started_at_epoch_ms IS NOT NULL
+               AND started_at_epoch_ms > ${cutoffEpochMs}
+             LIMIT 1`;
+        }),
     })
   ) {
     console.warn(`[routines-tick] SKIPPED — another routinesTick invocation already in flight (EI-9935 overlap guard)`);

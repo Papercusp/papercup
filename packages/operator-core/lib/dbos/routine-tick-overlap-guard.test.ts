@@ -6,7 +6,12 @@
  * live evidence).
  */
 import { describe, expect, it, vi } from 'vitest';
-import { anotherRoutinesTickInFlight, shouldShedForOverlap, type InFlightRow } from './routine-tick-overlap-guard';
+import {
+  anotherRoutinesTickInFlight,
+  ROUTINE_TICK_OVERLAP_QUERY_DEADLINE_MS,
+  shouldShedForOverlap,
+  type InFlightRow,
+} from './routine-tick-overlap-guard';
 
 describe('shouldShedForOverlap (pure)', () => {
   it('no other in-flight rows ⇒ do not shed', () => {
@@ -43,6 +48,18 @@ describe('anotherRoutinesTickInFlight', () => {
     });
     const result = await anotherRoutinesTickInFlight('self-id', { queryInFlight, now: () => 1_000_000 });
     expect(result).toBe(false);
+  });
+
+  it('is FAIL-SOFT when the overlap query does not settle before its caller deadline', async () => {
+    vi.useFakeTimers();
+    const queryInFlight = vi.fn(() => new Promise<InFlightRow[]>(() => {}));
+    const result = anotherRoutinesTickInFlight('self-id', {
+      queryInFlight,
+      now: () => 1_000_000,
+    });
+    const assertion = expect(result).resolves.toBe(false);
+    await vi.advanceTimersByTimeAsync(ROUTINE_TICK_OVERLAP_QUERY_DEADLINE_MS);
+    await assertion;
   });
 
   it('defaults `now` to Date.now when not provided', async () => {

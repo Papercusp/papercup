@@ -1,3 +1,5 @@
+import { withDbCallDeadline } from '@papercusp/db-org';
+
 /**
  * routine-tick-overlap-guard.ts — EI-9935: prevent routinesTickImpl invocations
  * from running CONCURRENTLY.
@@ -47,6 +49,32 @@ export const ROUTINE_TICK_OVERLAP_STALE_MS = Math.max(
   Number(process.env.PAPERCUSP_ROUTINES_TICK_OVERLAP_STALE_MS) || 5 * 60_000,
 );
 
+/**
+ * Keep the overlap probe shorter than the scheduler's cadence. The DB-side
+ * statement timeout below protects a checked-out connection; this caller-side
+ * deadline also covers pool acquisition and a dead endpoint, either of which
+ * can otherwise leave routinesTick wedged before PostgreSQL gets to run the
+ * query.
+ */
+export const ROUTINE_TICK_OVERLAP_QUERY_DEADLINE_MS = Math.max(
+  250,
+  Number(process.env.PAPERCUSP_ROUTINES_TICK_OVERLAP_QUERY_DEADLINE_MS) || 5_000,
+);
+
+/**
+ * The statement timeout is deliberately below the whole-call deadline, leaving
+ * a small amount of room for BEGIN/connection release while preserving the
+ * fail-soft caller bound. It is independently tunable for a slow-but-healthy
+ * database, but can never exceed the caller deadline.
+ */
+export const ROUTINE_TICK_OVERLAP_STATEMENT_TIMEOUT_MS = Math.max(
+  100,
+  Math.min(
+    ROUTINE_TICK_OVERLAP_QUERY_DEADLINE_MS - 100,
+    Number(process.env.PAPERCUSP_ROUTINES_TICK_OVERLAP_STATEMENT_TIMEOUT_MS) || 3_000,
+  ),
+);
+
 export interface InFlightRow {
   workflow_uuid: string;
 }
@@ -55,6 +83,8 @@ export interface OverlapCheckDeps {
   /** Query any OTHER 'PENDING' routinesTick row started at/after `cutoffEpochMs`. */
   queryInFlight: (selfWorkflowId: string, cutoffEpochMs: number) => Promise<InFlightRow[]>;
   now?: () => number;
+  /** Injectable for deterministic tests; production uses the DB call deadline. */
+  withDeadline?: typeof withDbCallDeadline;
 }
 
 /** Pure decision from a query result — exported for a trivial no-DB unit test. */
@@ -75,7 +105,13 @@ export async function anotherRoutinesTickInFlight(
 ): Promise<boolean> {
   const now = deps.now ?? Date.now;
   try {
-    const rows = await deps.queryInFlight(selfWorkflowId, now() - staleMs);
+    const rows = await (deps.withDeadline ?? withDbCallDeadline)(
+      deps.queryInFlight(selfWorkflowId, now() - staleMs),
+      {
+        ms: ROUTINE_TICK_OVERLAP_QUERY_DEADLINE_MS,
+        label: 'routinesTick overlap probe',
+      },
+    );
     return shouldShedForOverlap(rows);
   } catch {
     return false;
