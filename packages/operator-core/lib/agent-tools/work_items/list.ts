@@ -307,7 +307,7 @@ export default defineTool({
   // Freshness negotiation (agent-tool-delta-client-rollout-2026-06-23, P-001) — the #1
   // LLM-agent re-read by total bytes×repeats (queen/bee/overwatch poll the backlog ~3×/wake,
   // ~25KB/call). The diffable unit is the WorkItem row set (the data IS the array), keyed by
-  // `id`; `kind` is the row type. The framework folds the filter args (harness/kind/state/
+  // `id`; `kind` is the row type. The framework folds the filter args (harness/q/kind/state/
   // parent/includeChildren/limit) into the view fingerprint; `scope` adds the workspace.
   // NOTE: row summaries are budget-EXCERPTED by list size, so a row's content-hash can shift
   // when the list size changes — that just re-sends the row as `updated` (still checksum-correct,
