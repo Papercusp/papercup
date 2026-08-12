@@ -347,7 +347,7 @@ const armIssuesFlagRefresh = lazyFlagRefresh(refreshIssuesPerWorkspace, {
       'EI-19452830964505931 that divergence is also correctly SCOPED: the cache is keyed by ' +
       'activeWorkspaceId() (the same key the PG override store uses), so an OFF override in one ' +
       "workspace can no longer be served to another — 'generic-test' holds it OFF and " +
-      "'shared-hive-test-aviynw' holds it ON in the very same database. An unseeded workspace " +
+      'a second shared-hive test workspace holds it ON in the very same database. An unseeded workspace ' +
       'falls back to FLAG_DEFAULTS in the reader, so it serves the registry default rather than a ' +
       'hardcoded literal. Note this does NOT cover a getFlag FAILURE: that path still fails CLOSED ' +
       "to the legacy 'default' partition (see refreshIssuesPerWorkspace above), bounded by the 3s " +

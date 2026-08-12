@@ -493,7 +493,7 @@ export default function DeployAccountsPage() {
 
           <label className="pc-da__field">
             <span>1 · Account ID</span>
-            <input value={accountId} onChange={(e) => setAccountId(e.target.value)} placeholder="e.g. machine-2 or aviynw10" />
+            <input value={accountId} onChange={(e) => setAccountId(e.target.value)} placeholder="e.g. machine-2 or acct-10" />
           </label>
           <label className="pc-da__field">
             <span>Label (optional)</span>
