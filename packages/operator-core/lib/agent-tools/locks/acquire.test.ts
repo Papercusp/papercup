@@ -19,7 +19,13 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { z } from 'zod';
 
-vi.mock('./identity', () => ({ readIdentity: vi.fn(() => ({ ownerId: 'me', ownerLabel: 'Me', coordinationDomain: 'dom' })) }));
+// WI-38252: file-lock surfaces resolve their default domain via
+// readFileLockIdentity (the tree agents EDIT); readIdentity stays exported for
+// the resource-lock surfaces. Both names resolve to one fn here.
+vi.mock('./identity', () => {
+  const identity = vi.fn(() => ({ ownerId: 'me', ownerLabel: 'Me', coordinationDomain: 'dom' }));
+  return { readIdentity: identity, readFileLockIdentity: identity };
+});
 vi.mock('./coordination-domain', () => ({ resolveExplicitFileLockDomain: vi.fn((requested: string | undefined, fallback: string) => requested ?? fallback) }));
 vi.mock('./enrich-busy', () => ({ enrichBusy: vi.fn(async (b: unknown) => b) }));
 vi.mock('./in-workspace-txn', () => {

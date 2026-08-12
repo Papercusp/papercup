@@ -10,7 +10,11 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('./identity', () => ({ readIdentity: vi.fn(() => ({ ownerId: 'me', coordinationDomain: 'dom' })) }));
+// WI-38252: file locks resolve their default domain via readFileLockIdentity.
+vi.mock('./identity', () => {
+  const identity = vi.fn(() => ({ ownerId: 'me', coordinationDomain: 'dom' }));
+  return { readIdentity: identity, readFileLockIdentity: identity };
+});
 vi.mock('./in-workspace-txn', () => ({
   inWorkspaceTxn: vi.fn(async (_d: string, _o: string, fn: (tx: unknown) => unknown) => fn({})),
 }));

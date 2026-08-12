@@ -22,7 +22,9 @@ vi.mock('./su-lock-store', () => ({
   tryAcquire: h.tryAcquire,
   tryRelease: h.tryRelease,
 }));
-vi.mock('./identity', () => ({ readIdentity: h.readIdentity }));
+// WI-38252: the guard resolves its domain via readFileLockIdentity (the tree
+// agents EDIT) so it cannot disagree with locks:acquire. Same stub for both.
+vi.mock('./identity', () => ({ readIdentity: h.readIdentity, readFileLockIdentity: h.readIdentity }));
 vi.mock('./in-workspace-txn', () => ({
   inWorkspaceTxn: (_cd: string, _owner: string, fn: (tx: unknown) => unknown) => fn({}),
 }));

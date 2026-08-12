@@ -8,7 +8,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockResolvedOnceTyped, mockResolvedTyped } from '../../testing/typed-mock';
 
-vi.mock('./identity', () => ({ readIdentity: vi.fn(() => ({ ownerId: 'me', ownerLabel: 'Me', coordinationDomain: 'dom' })) }));
+// WI-38252: file locks resolve their default domain via readFileLockIdentity.
+vi.mock('./identity', () => {
+  const identity = vi.fn(() => ({ ownerId: 'me', ownerLabel: 'Me', coordinationDomain: 'dom' }));
+  return { readIdentity: identity, readFileLockIdentity: identity };
+});
 vi.mock('./coordination-domain', () => ({ resolveExplicitFileLockDomain: vi.fn((requested: string | undefined, fallback: string) => requested ?? fallback) }));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me' })) }));
 vi.mock('./in-workspace-txn', () => ({
