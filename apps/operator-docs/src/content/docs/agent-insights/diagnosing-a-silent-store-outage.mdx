@@ -4,22 +4,19 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Diagnosing a silent store outage — when the database answers, and lies
-description: The 2026-08-02 outage returned `not_found` for records that existed, because reads were hitting a different, empty Postgres. Three liveness/shape guards all passed. Here is how to tell a wrong-store outage from data loss, and which artifacts actually answer the question.
+title: "Diagnosing a silent store outage — when the database answers, and lies"
+description: "The 2026-08-02 outage returned `not_found` for records that existed, because reads were hitting a different, empty Postgres. Three liveness/shape guards all passed. Here is how to tell a wrong-store outage from data loss, and which artifacts actually answer the question."
+type: Insight
 discovered: 2026-08-02
-tags: [postgres, embedded-pg, mcp-proxy, incident, diagnosis, topology]
+tags: ["postgres", "embedded-pg", "mcp-proxy", "incident", "diagnosis", "topology"]
 status: active
 documents:
-  - libs/papercusp/libs/db/src/store-identity.ts
-  - libs/papercusp/libs/db/src/connection.ts
-  - libs/generic/embedded-pg-discovery/src/index.ts
-  - apps/operator/bin/mcp-proxy.ts
+  - "libs/papercusp/libs/db/src/store-identity.ts"
+  - "libs/papercusp/libs/db/src/connection.ts"
+  - "libs/generic/embedded-pg-discovery/src/index.ts"
+  - "apps/operator/bin/mcp-proxy.ts"
 sidebar:
   order: 6
-type: Insight
-generated:
-  by: agent
-  at: 2026-08-02
 ---
 
 ## The failure this exists for
@@ -114,6 +111,11 @@ Two readings, and you must pick deliberately:
 suspect it:
 
 ```sql
+-- sql-snippet-justified: this is a STORE-IDENTITY probe, not a migrations read. Two of its
+-- three columns (pg_control_system().system_identifier, current_database()) have no tool
+-- form, and the point is that ONE query against a connection you chose settles
+-- wrong-store-vs-data-loss. db:migrations answers from whichever store the operator is
+-- talking to — the very thing under suspicion — so it cannot replace this.
 SELECT (SELECT system_identifier::text FROM pg_control_system()) AS sysid,
        current_database(), (SELECT count(*) FROM harness_shared.schema_migrations);
 ```

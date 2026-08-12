@@ -12,7 +12,7 @@ sidebar:
 
 Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC. This is a **coarse** map of that surface — grouped by verb prefix, listing each group's verbs + capability tags. It is intentionally NOT the full per-tool schema dump (that churns on every guidance tweak across the fleet); for full schemas + guidance an agent calls `agent_tools:list { asRole }` or reads `tools/list` at runtime.
 
-**729 MCP tools** across **143 groups**.
+**728 MCP tools** across **142 groups**.
 
 ## Groups
 
@@ -51,14 +51,13 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `config` | 8 | `doors-get` `doors-set` `doors-set-session` `list-overrides` `reset-overrides` `set-compaction-limit` `tiers-get` `tiers-set` | `coord:read` `coord:write` `operator:read` `operator:write` |
 | `conventions` | 1 | `governing` | `coord:read` |
 | `conversation` | 2 | `append` `recent` | `operator:converse` |
-| `conversations` | 7 | `answer` `get` `join` `list` `post` `promote` `resolve` | `coord:read` `coord:write` |
-| `coord` | 44 | `ack` `ask` `ask-owner` `await-inbox` `catch-up` `conditions` `couple` `declare-intent` `decouple` `deliberate` `dispatch` `emit` `escalate` `escalations` `feed` `glance` `goal` `handoff` `handoff_config` `handoffs` `inbox` `mark-terminal` `message-agent` `orient` `plan-events` `presence` `read` `rebind-identity` `resolve` `retract` `roster` `send` `session_reaper_config` `supersede` `thread` `thread-post` `vote` `wake` `wake-mode` `wake-queue` `walls` `watermark` `watermark-set` `whoami` | `audit:read` `coord:mark-terminal` `coord:read` `coord:write` `operator:write` |
+| `conversations` | 8 | `answer` `get` `join` `list` `post` `promote` `resolve` `supersede` | `coord:read` `coord:write` |
+| `coord` | 43 | `ack` `ask` `ask-owner` `await-inbox` `catch-up` `conditions` `couple` `declare-intent` `decouple` `deliberate` `dispatch` `emit` `escalate` `escalations` `feed` `glance` `goal` `handoff` `handoff_config` `handoffs` `inbox` `mark-terminal` `message-agent` `orient` `plan-events` `presence` `read` `rebind-identity` `resolve` `retract` `roster` `send` `session_reaper_config` `supersede` `thread` `thread-post` `vote` `wake` `wake-mode` `wake-queue` `walls` `watermark` `whoami` | `audit:read` `coord:mark-terminal` `coord:read` `coord:write` `operator:write` |
 | `cross_harness` | 8 | `docs_get` `docs_outline` `docs_search` `plans_get` `plans_list` `plans_search` `recent_activity` `supervisor_notes` | `cross_harness:read` `harness:read` `plans:read` |
-| `cup` | 1 | `spawn` | `work_items:write` |
 | `cupboard` | 9 | `install-app` `install-blueprint` `install-plugin` `install-template` `publish-app` `publish-plugin` `publish-template` `search` `unpublish` | `harness:read` `harness:write` |
 | `curation` | 3 | `change-feed` `feed` `state-of-pot` | `curation:read` |
 | `datatypes` | 6 | `catalog` `get` `install` `list` `publish` `summary` | `intel:read` `intel:write` |
-| `db` | 5 | `check_drift` `migrate` `migrate-policy` `next-migration` `txn-timeouts` | `locks:read` `locks:write` `operator:write` |
+| `db` | 6 | `check_drift` `migrate` `migrate-policy` `migrations` `next-migration` `txn-timeouts` | `locks:read` `locks:write` `operator:read` `operator:write` |
 | `decision_ledger` | 2 | `list` `summary` | `intel:read` |
 | `deploy` | 6 | `await` `harness` `pot` `status` `teardown` `teardown_pot` | `coord:write` `harness:read` `harness:write` |
 | `deploys` | 1 | `vintage` | `intel:read` |
@@ -88,8 +87,8 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `inbox` | 1 | `triage` | `coord:write` |
 | `instance` | 3 | `boot` `capture` `clone` | `harness:read` `harness:write` |
 | `intel` | 2 | `artifacts` `spawn_tree` | `intel:read` |
+| `issues` | 1 | `list` | `operator:read` |
 | `journal` | 4 | `peer-brief` `push-utilization` `recent` `record-turn` | `activity:report` `coord:read` `intel:read` |
-| `kettle` | 3 | `declare-wake` `pause` `start` | `coord:write` `harness:write` |
 | `knowledge_packs` | 10 | `candidates` `decide_candidate` `export` `install` `list` `publish` `set_enabled` `sweep` `uninstall` `upgrade` | `harness:write` `memory:read` `memory:write` |
 | `learning` | 1 | `set-scout-budget` | `operator:write` |
 | `lexicon` | 1 | `active_pack` | `work_items:read` |
@@ -116,7 +115,7 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `plans` | 51 | `add-decision` `add-item` `apply-plan-block` `arm-schedule` `attention` `backfill-dependency-edges` `backfill-revisions` `disarm-schedule` `edit` `export` `get` `get-input-schema` `get-item` `get-template-data` `items` `launch` `lint` `list` `new` `pause` `promote` `ratify-decision` `resume` `revision-diff` `revision-transcript` `revisions` `run-now` `run-transcript` `runs` `search` `set-archived` `set-content` `set-content-chunk` `set-decision-body` `set-frontmatter` `set-frontmatter-field` `set-importance` `set-initiative` `set-input-schema` `set-item-blocked-by` `set-item-phase` `set-now` `set-plan-status` `set-priority` `set-run-status` `set-schedule` `set-status` `set-template-data` `start` `summarize-revision` `transfer-owner` | `coord:write` `plans:read` `plans:write` |
 | `platform` | 4 | `contribute` `dogfood_verify` `enable` `fork_gc` | `harness:read` `harness:write` |
 | `plugins` | 4 | `fire_event` `invoke_action` `runtime_status` `tui_panes` | `plugins:read` `plugins:write` |
-| `pot` | 31 | `add-member` `ask` `asks` `ban_member` `beacon_consent` `control_policy` `create` `create_from_repo` `cross_grant` `declare-wake` `dissolve` `get` `get-steering` `leave` `list` `membership_decide` `membership_pending` `moderation_queue` `moderation_resolve` `mug_efficiency` `obliterate` `pause` `report` `request_work` `set-steering` `start` `status` `survey` `takedown` `update` `wake` | `harness:read` `harness:write` `intel:write` `operator:write` `routines:write` `work_items:read` `work_items:write` |
+| `pot` | 30 | `add-member` `ask` `asks` `ban_member` `beacon_consent` `control_policy` `create` `create_from_repo` `cross_grant` `declare-wake` `dissolve` `get` `get-steering` `leave` `list` `membership_decide` `membership_pending` `moderation_queue` `moderation_resolve` `mug_efficiency` `obliterate` `pause` `report` `request_work` `set-steering` `start` `status` `takedown` `update` `wake` | `harness:read` `harness:write` `intel:write` `operator:write` `routines:write` `work_items:read` `work_items:write` |
 | `pot_git` | 2 | `integration_requests` `secrets_exemptions` | `audit:write` |
 | `probe` | 3 | `emit` `get` `record-hop` | `coord:read` `coord:write` |
 | `processes` | 4 | `freeze` `kill` `limit` `list` | `intel:read` `processes:control` `processes:kill` |
@@ -131,7 +130,7 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `review` | 1 | `approve` | `harness:write` |
 | `roles` | 4 | `firing_on` `get` `known` `list` | `roles:read` |
 | `routines` | 3 | `group-set` `list` `set` | `operator:read` `operator:write` |
-| `rubrics` | 7 | `amend` `get` `list` `propose` `ratify` `search` `trend` | `coord:read` `coord:write` |
+| `rubrics` | 8 | `amend` `get` `list` `propose` `ratify` `search` `set-history-reset` `trend` | `coord:read` `coord:write` |
 | `saved_prompts` | 1 | `list` | `intel:read` |
 | `schedule` | 1 | `inventory` | `operator:read` |
 | `scheduler` | 5 | `get_claim_spec` `get_next` `preview_spec_delta` `running` `set_claim_spec` | `work_items:read` `work_items:write` |
@@ -148,7 +147,7 @@ Every MCP tool is authored once via `defineTool` and projected onto HTTP/MCP/IPC
 | `tasks` | 3 | `create` `get` `list` | `tasks:read` `tasks:write` |
 | `telemetry` | 1 | `set_buffer` | `operator:write` |
 | `templates` | 3 | `get-guide` `list` `new-app` | `harness:read` `harness:write` |
-| `testing` | 3 | `flakiness` `prune-orphan-runs` `run` | `locks:write` `operator:write` `work_items:write` |
+| `testing` | 4 | `flakiness` `prune-orphan-runs` `run` `runs` | `locks:write` `operator:read` `operator:write` `work_items:write` |
 | `tools` | 3 | `find` `invoke` `scaffold` | `agent_tools:read` `intel:write` |
 | `topics` | 6 | `create` `feed` `list` `merge` `tag` `unsubscribe` | `coord:read` `coord:write` |
 | `trust` | 4 | `add` `comms` `list` `remove` | `audit:write` `intel:read` |
