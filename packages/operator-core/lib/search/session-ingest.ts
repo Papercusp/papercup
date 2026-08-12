@@ -1201,6 +1201,23 @@ export async function backfillTurnProvenanceOnce(
       FROM harness_shared.session_turns
      WHERE turn_origin_classifier_version IS NULL
         OR turn_origin_classifier_version < ${MACHINE_SURFACE_CATALOGUE_VERSION}
+     -- STALE-VERSION ROWS FIRST, never-classified rows after. The two
+     -- populations are NOT equally harmful, and a plain LIMIT serves them in
+     -- physical order, which starves the harmful one: measured on the first
+     -- real sweep, 20,000 rows drained entirely from the NULL backlog while all
+     -- 2,435 version-below-current rows sat untouched behind it.
+     --
+     -- A NULL row is HONEST - it asserts nothing, and every reader is told NULL
+     -- means "never classified". A stale-version row carries a CONCRETE verdict
+     -- with a stored column's authority, and that stale verdict is
+     -- disproportionately the owner-typed RESIDUAL, precisely because the
+     -- residual is what each newer catalogue is written to stop over-assigning.
+     -- So the rows that actively misattribute machine text to the owner drain
+     -- first; the ones that merely say nothing wait.
+     --
+     -- DESC NULLS LAST orders non-NULL versions ahead of NULLs and is served by
+     -- session_turns_provenance_version_idx rather than a sort of the backlog.
+     ORDER BY turn_origin_classifier_version DESC NULLS LAST
      LIMIT ${limit}
   `;
   if (!rows.length) return { scanned: 0, updated: 0, more: false };
