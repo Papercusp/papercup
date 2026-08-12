@@ -71,11 +71,14 @@ export const CHECKPOINT_AWAIT_DEFAULT_TIMEOUT_SEC = CHECKPOINT_MAX_RUNTIME_SEC +
 const checkpointTimeoutArg = z
   .number()
   .int()
-  .positive()
+  // A zero-second deadline is intentional here: it lets callers use the
+  // candidateSha already-judged latch as a bounded, non-blocking probe. The
+  // await store also supports immediate expiry when no verdict is recorded.
+  .nonnegative()
   .max(MAX_TIMEOUT_SEC)
   .optional()
   .describe(
-    `Deadline in seconds (default ${CHECKPOINT_AWAIT_DEFAULT_TIMEOUT_SEC} ≈ ${Math.round(CHECKPOINT_AWAIT_DEFAULT_TIMEOUT_SEC / 60)}min — WI-5685: sized to the suite's real worst-case ceiling, the ${Math.round(CHECKPOINT_MAX_RUNTIME_SEC / 60)}min systemd backstop + slack, NOT the generic events:await default (${DEFAULT_TIMEOUT_SEC}s) which used to strand a default-timeout caller mid-suite); on the deadline you are woken with a TIMEOUT marker.`,
+    `Deadline in seconds (0 = bounded immediate probe; default ${CHECKPOINT_AWAIT_DEFAULT_TIMEOUT_SEC} ≈ ${Math.round(CHECKPOINT_AWAIT_DEFAULT_TIMEOUT_SEC / 60)}min — WI-5685: sized to the suite's real worst-case ceiling, the ${Math.round(CHECKPOINT_MAX_RUNTIME_SEC / 60)}min systemd backstop + slack, NOT the generic events:await default (${DEFAULT_TIMEOUT_SEC}s) which used to strand a default-timeout caller mid-suite); on the deadline you are woken with a TIMEOUT marker.`,
   );
 
 /**

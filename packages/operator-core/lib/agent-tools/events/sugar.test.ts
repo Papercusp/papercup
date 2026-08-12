@@ -521,6 +521,36 @@ describe("checkpoint:await already-judged latch (EI-18676650746298156 — deploy
     return JSON.parse(res.content[0].text);
   };
 
+  it("EI-20256713252259611: accepts a zero-second timeout for an immediate probe", () => {
+    expect(
+      checkpointTool.args.safeParse({
+        candidateSha: "94c1234567890abcdef",
+        timeout_sec: 0,
+      }).success,
+    ).toBe(true);
+  });
+
+  it("EI-20256713252259611: zero-timeout probe reaches an already-judged latch", async () => {
+    vi.mocked(findGreenCheckpointVerdictForCandidate).mockResolvedValueOnce({
+      status: "advanced",
+      detail: { candidate: "94c123456789", green: true },
+      createdAtMs: 1_700_000_000_000,
+    } as never);
+
+    const out = await call({
+      candidateSha: "94c1234567890abcdef",
+      timeout_sec: 0,
+    });
+
+    expect(out).toMatchObject({
+      ok: true,
+      already_judged: true,
+      green: true,
+      event: "release:green:papercusp",
+    });
+    expect(registerAwait).not.toHaveBeenCalled();
+  });
+
   it("a candidateSha ALREADY judged GREEN answers already_judged and registers NOTHING (the stranded-wait class)", async () => {
     vi.mocked(findGreenCheckpointVerdictForCandidate).mockResolvedValueOnce({
       status: "advanced",
