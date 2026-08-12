@@ -357,6 +357,13 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(r.error).toContain('append:true requires a non-blank');
     });
 
+    it('append:true still rejects an omitted checkpoint when no checks are supplied', async () => {
+      const r = await one({ id: 'WI-7', append: true });
+      expect(setWorkItemCheckpointWithPrior).not.toHaveBeenCalled();
+      expect(r.ok).toBe(false);
+      expect(r.error).toContain('append:true requires a non-blank');
+    });
+
     it('append:true truncates the OLDEST content (front) with a marker when the join would exceed the 32000-char cap', async () => {
       getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
       const prior = 'P'.repeat(31990);
@@ -1114,6 +1121,30 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(stored).toContain('- ✓ X holds');
       expect(stored).toContain('evidence: ran probe X at 16:20Z');
       expect(r.cleared).not.toBe(true);
+    });
+
+    it('EI-20252594592830798: append:true with checks and no checkpoint is an additive checks-only patch', async () => {
+      withPrior(null);
+      await one({
+        id: 'WI-7',
+        checkpoint: 'the detailed body that must survive an additive checks refresh',
+        checks: [{ claim: 'existing check holds', recheck: 'run existing check' }],
+      });
+      const prior = await lastStored();
+
+      withPrior(prior);
+      const r = await one({
+        id: 'WI-7',
+        append: true,
+        checks: [{ claim: 'new check holds', recheck: 'run the new check' }],
+      });
+      expect(r.ok).toBe(true);
+      const stored = await lastStored();
+      expect(stored).toContain('the detailed body that must survive');
+      expect(stored).toContain('existing check holds');
+      expect(stored).toContain('new check holds');
+      expect(stored).not.toContain('\n\n---\n');
+      expect(r.checks).toBe(2);
     });
 
     it('EI-19447043119380534: a checks-only patch that CLEARS the rows (checks:[]) still keeps the body', async () => {

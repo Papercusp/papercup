@@ -29,7 +29,8 @@
  * cap: if the join would exceed it, the OLDEST content is trimmed (with a visible
  * `[older checkpoint content truncated]` marker) so the newest addendum is never the
  * part that gets cut. `append: true` with a blank/omitted checkpoint text is rejected
- * (append + clear is a contradiction) rather than silently falling back to a clear.
+ * (append + clear is a contradiction) unless `checks` is supplied as an additive,
+ * body-preserving patch.
  *
  * EI-8987: `contentHash` is a short sha256 (first 12 hex chars) of the STORED text —
  * computed from what the store actually persisted (the same trimmed string
@@ -315,9 +316,10 @@ const itemSpec = z.object({
     'EI-9036: append `checkpoint` onto the EXISTING stored checkpoint (joined with a `---` separator) instead ' +
       'of replacing it. Makes the WHOLE write additive: supplied `checks` are UNIONED onto the carried set ' +
       'rather than replacing it (EI-19944669306930709). Reads the current checkpoint first via the same path a ' +
-      'future pickup uses. Requires a non-blank `checkpoint` (append + clear is contradictory — rejected, not ' +
-      'silently treated as a clear). Bounded to the 32000-char cap: the OLDEST content is trimmed first if the ' +
-      'join would overflow it.',
+      'future pickup uses. A missing `checkpoint` is allowed with `checks` as an additive, body-preserving patch. ' +
+      'Otherwise append requires a non-blank `checkpoint` (append + clear is contradictory — rejected, not silently ' +
+      'treated as a clear). Bounded to the 32000-char cap: the OLDEST content is trimmed first if the join would ' +
+      'overflow it.',
   ),
   confirmShrink: looseBoolean().describe(
     'EI-18140632570924965: a plain replace (no append) that would shrink a substantial prior checkpoint by ' +
@@ -381,7 +383,8 @@ export default defineTool({
       append: looseBoolean().describe(
         'single shorthand default for `append` (EI-9036): join `checkpoint` onto the existing stored checkpoint ' +
           'instead of replacing it, and UNION supplied `checks` onto the carried set instead of replacing them ' +
-          '(EI-19944669306930709). Also the default applied to any `items[]` entry that omits its own `append`.',
+          '(EI-19944669306930709). With `checks` and no `checkpoint`, this is an additive checks-only patch. ' +
+          'Also the default applied to any `items[]` entry that omits its own `append`.',
       ),
       confirmShrink: looseBoolean().describe(
         'single shorthand default for `confirmShrink` (EI-18140632570924965), also the items[] default.',
@@ -466,15 +469,18 @@ export default defineTool({
         const workspaceId = resolveConcreteWorkspaceId(c.workspaceId);
         // EI-9036: append:true joins onto the EXISTING checkpoint instead of replacing
         // it — the fix for the "meant to add a short addendum, silently wiped the
-        // detailed prior note" trap. append + a blank/omitted checkpoint is a
+        // detailed prior note" trap. append + a blank/omitted checkpoint remains a
         // contradiction (append has nothing to append, and blank normally means
-        // CLEAR) — reject it loudly rather than guessing which the caller meant.
+        // CLEAR), except when checks are supplied: that is an additive checks-only
+        // patch and must preserve the narrative body.
         const wantsAppend = it.append ?? args.append ?? false;
+        const rawSuppliedChecks = it.checks ?? args.checks;
+        const isChecksOnlyPatch = it.checkpoint === undefined && rawSuppliedChecks !== undefined;
         // P-007: `dependsOn` is tri-state at the store (undefined ⇒ preserve the
         // existing declaration, [] ⇒ clear, list ⇒ re-stamp), so only forward the
         // key when the caller actually supplied one.
         const declaredDeps = it.dependsOn ?? args.dependsOn;
-        if (wantsAppend && !(it.checkpoint && it.checkpoint.length > 0)) {
+        if (wantsAppend && !(it.checkpoint && it.checkpoint.length > 0) && !isChecksOnlyPatch) {
           return {
             ok: false as const,
             id: it.id,
@@ -570,7 +576,6 @@ export default defineTool({
         // failure mode, where a row was quietly reshaped and a verified check's evidence
         // was destroyed with no signal.
         const repairs: CarryArgRepair[] = [];
-        const rawSuppliedChecks = it.checks ?? args.checks;
         const suppliedChecks = rawSuppliedChecks?.map((row, i) => {
           const out = { ...row };
           out.claim = truncateCarryField(out.claim, CARRY_ROW_SOFT_CAPS.claim, `checks[${i}].claim`, repairs);
@@ -604,7 +609,8 @@ export default defineTool({
         // explicit null — a real clear stays reachable via { checkpoint: null } (or ''),
         // and a bare { id } with no checks still clears, which is the contract
         // work_items:complete's terminal cleanup and "blank clears a stale note" rely on.
-        const isChecksOnlyPatch = it.checkpoint === undefined && suppliedChecks !== undefined && !wantsAppend;
+        // `append:true` makes this body-less metadata patch additive too: supplied
+        // checks are UNIONED rather than replacing the carried set.
         const isBodyPreservingPatch = isChecksOnlyPatch || isDependencyOnlyPatch;
         // A CLEAR wipes the checks too, UNLESS the caller supplied some in the same
         // call. This is a DELIBERATE divergence from loop:checkpoint, where checks
