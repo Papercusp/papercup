@@ -89,13 +89,22 @@ export default defineTool({
       .max(120)
       .optional()
       .describe('Install slug whose git-sync to fire (default: the operator home harness).'),
+    harness: z
+      .string()
+      .max(120)
+      .optional()
+      .describe('Alias for installSlug when using the standard per-call harness scope argument.'),
   }),
   async handler(args, _ctx) {
     // No in-handler role gate: firing git-sync is a SAFE, idempotent op — it runs
     // the same commit+push action a cron tick already fires on its own ≤3-min
     // cycle, self-locks against a concurrent tick, and mutates no config (see the
     // agentRoles note above). Access control is the invoke allowlist.
-    const slug = args.installSlug ?? operatorHomeHarnessSlug();
+    // `harness` is the standard per-call scope spelling used by the operator
+    // tools and by ptool's --harness convenience flag. Keep installSlug as the
+    // canonical name for existing callers, but accept the alias so a caller
+    // does not have to learn this tool's internal routine vocabulary.
+    const slug = args.installSlug ?? args.harness ?? operatorHomeHarnessSlug();
     const workspaceId = activeWorkspaceId();
 
     const repoDir = await projectDirForSlug(slug);

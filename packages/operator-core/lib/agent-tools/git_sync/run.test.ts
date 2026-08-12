@@ -38,6 +38,21 @@ describe('git-sync:run', () => {
     expect(parse(result as never)).toMatchObject({ ok: true, fired: true, slug: 'papercusp', committed: false });
   });
 
+  it('accepts the standard harness scope spelling as an alias for installSlug', async () => {
+    const fireSpy = vi.fn(async () => undefined);
+    vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'operator-home' }));
+    vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+    vi.doMock('../../operator-notes', () => ({ projectDirForSlug: async () => null }));
+    vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: fireSpy }));
+
+    const { default: tool } = await import('./run');
+    const result = await tool.handler({ harness: 'papercusp' }, MAKE_CTX());
+
+    expect(fireSpy).toHaveBeenCalledTimes(1);
+    expect(fireSpy).toHaveBeenCalledWith('papercusp', 'default');
+    expect(parse(result as never)).toMatchObject({ ok: true, fired: true, slug: 'papercusp', committed: false });
+  });
+
   it('returns the shared synced outcome instead of inferring success from a HEAD delta', async () => {
     const outcome = {
       status: 'synced' as const,
