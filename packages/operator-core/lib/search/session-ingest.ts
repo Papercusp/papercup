@@ -1253,6 +1253,43 @@ export async function backfillTurnProvenanceOnce(
   };
 }
 
+/**
+ * Sweep passes per tick. One pass is PROVENANCE_BACKFILL_BATCH rows, so this
+ * caps a tick's write volume while still converging: the measured backlog when
+ * this lane was first wired was 370,478 never-classified rows (96% of the
+ * table), which drains in a couple of hours at this rate rather than pinning
+ * the pool for one enormous transaction.
+ */
+export const PROVENANCE_BACKFILL_PASSES_PER_TICK = 4;
+
+/**
+ * Run the provenance re-derivation lane for one tick.
+ *
+ * WHY THIS NO-ARG WRAPPER EXISTS. `backfillTurnProvenanceOnce` takes a `sql`
+ * handle and does exactly one batch, which makes it testable but not directly
+ * schedulable. It sat EXPORTED AND UNCALLED — zero production call sites — so
+ * the re-derivation lane its own docstring describes as "permanent rather than
+ * a one-off migration chore" never ran at all, and every
+ * MACHINE_SURFACE_CATALOGUE_VERSION bump silently STRANDED rows instead of
+ * repairing them (WI-38135). This is the schedulable entry point; keep the tick
+ * pointed at it and `no-uncalled-provenance-backfill.test.ts` will hold the
+ * call site in place.
+ */
+export async function runTurnProvenanceBackfillOnce(): Promise<ProvenanceBackfillResult> {
+  const { sql } = getOrgPg();
+  let scanned = 0;
+  let updated = 0;
+  let more = false;
+  for (let pass = 0; pass < PROVENANCE_BACKFILL_PASSES_PER_TICK; pass += 1) {
+    const r = await backfillTurnProvenanceOnce(sql);
+    scanned += r.scanned;
+    updated += r.updated;
+    more = r.more;
+    if (!r.more) break;
+  }
+  return { scanned, updated, more };
+}
+
 interface IngestState {
   byte_offset: number;
   turn_count: number;

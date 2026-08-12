@@ -1191,6 +1191,50 @@ const sessionIngestWorkflow = idempotentRegisterWorkflow('sessionIngest', () =>
 );
 DBOS.registerScheduled(sessionIngestWorkflow, { name: 'sessionIngest', crontab: '30 */2 * * * *' });
 
+// Every 5min (offset :45s — clear of the :30s session-ingest tick above and the
+// :00 minute stampede): turn-provenance re-derivation (WI-38135). Re-classifies
+// session_turns rows the CURRENT machine-surface catalogue has not seen — those
+// never classified (version IS NULL) and those stamped by an older catalogue
+// (version < CURRENT).
+//
+// WHY THIS TICK IS NOT OPTIONAL. `turn_origin_verdict = 'owner-typed'` is the
+// RESIDUAL of a versioned deny-list — "no rule matched", NOT positive evidence
+// the owner spoke. So every pattern added to the catalogue silently invalidates
+// past verdicts, and without this lane those rows keep asserting the owner said
+// something he did not, with a stored column's authority behind it
+// (EI-20135573616431912). The sweep existed and was correct but had ZERO call
+// sites, so it never ran: 370,478 rows (96% of the table) sat unclassified.
+// Bumping MACHINE_SURFACE_CATALOGUE_VERSION only makes stale rows FINDABLE —
+// this is what makes them repaired.
+//
+// Bounded per tick (PASSES_PER_TICK × PROVENANCE_BACKFILL_BATCH), shed under
+// loop pressure, and never throws — same contract as the ingest tick above.
+async function turnProvenanceBackfillTick(): Promise<void> {
+  await DBOS.runStep(async () => {
+    if (shouldShedHeavyTick('turn-provenance-backfill')) return;
+    try {
+      const { runTurnProvenanceBackfillOnce } = await import('../search/session-ingest');
+      const r = await runTurnProvenanceBackfillOnce();
+      if (r.updated > 0) {
+        console.log(
+          `[turn-provenance-backfill] re-derived ${r.updated} turn(s) ` +
+            `(${r.scanned} scanned${r.more ? ', more pending' : ', backlog drained'})`,
+        );
+      }
+    } catch (err) {
+      console.warn(`[turn-provenance-backfill] sweep skipped (non-fatal): ${(err as Error).message}`);
+    }
+  }, { name: 'turn-provenance-backfill' });
+}
+const turnProvenanceBackfillWorkflow = idempotentRegisterWorkflow('turnProvenanceBackfill', () =>
+  DBOS.registerWorkflow(turnProvenanceBackfillTick, {
+    name: 'turnProvenanceBackfill', maxRecoveryAttempts: 5,
+  }),
+);
+DBOS.registerScheduled(turnProvenanceBackfillWorkflow, {
+  name: 'turnProvenanceBackfill', crontab: '45 */5 * * * *',
+});
+
 // Daily 05:20 (after the 03:00–05:00 GC cluster): session_turns retention prune —
 // the index stays bounded (~45d window); the JSONL files remain the archive.
 async function sessionTurnsPruneTick(): Promise<void> {
