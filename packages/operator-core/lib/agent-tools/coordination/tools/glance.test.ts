@@ -96,6 +96,22 @@ beforeEach(() => {
 afterEach(() => vi.clearAllMocks());
 
 describe('coord:glance', () => {
+  it('routes named-fleet health to fleet tools instead of implying a fleet argument', () => {
+    const tool = glance as {
+      description?: string;
+      guidance?: { notWhen?: string; seeAlso?: unknown };
+    };
+    const discoverability = [
+      tool.description,
+      tool.guidance?.notWhen,
+      JSON.stringify(tool.guidance?.seeAlso ?? []),
+    ].join('\n');
+    expect(discoverability).toContain('accepts no `fleet` argument');
+    expect(discoverability).toContain('fleet:assignments');
+    expect(discoverability).toContain('fleet:leader-brief');
+    expect(discoverability).toContain('audience/state only to scope tips');
+  });
+
   it('quiet fleet → auto mode, zero counts, no tips', async () => {
     const g = out(await glance.handler(parse({}), ctx));
     expect(g.ok).toBe(true);

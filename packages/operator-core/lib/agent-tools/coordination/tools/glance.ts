@@ -161,13 +161,15 @@ export function normalizeObjective(value: string | null | undefined): string | n
 export default defineTool({
   name: 'coord:glance',
   description:
-    "One cheap combined fleet glance: wake mode (default) + staged-wake count, bees in flight (bees.running = fresh-heartbeat nursery rows, a process-alive signal that can include parked/idle sessions; bees.working = the confirmed-active subset with fresh child-stdout output — prefer it for real health checks), paused governor buckets, recent cross-CLI activity rows, and contextual tips (with ready-to-run slash commands) evaluated for the caller's audience. With audience 'user' also returns a server-rendered `display` block (title + statusline lines + tip notice) that client status surfaces print verbatim — the single-source TUI render. The statusline/TUI read — one call instead of four.",
+    "One cheap combined fleet glance: wake mode (default) + staged-wake count, bees in flight (bees.running = fresh-heartbeat nursery rows, a process-alive signal that can include parked/idle sessions; bees.working = the confirmed-active subset with fresh child-stdout output — prefer it for real health checks), paused governor buckets, recent cross-CLI activity rows, and contextual tips (with ready-to-run slash commands) evaluated for the caller's audience. With audience 'user' also returns a server-rendered `display` block (title + statusline lines + tip notice) that client status surfaces print verbatim — the single-source TUI render. The statusline/TUI read — one call instead of four. This is not a named-fleet roster query and accepts no `fleet` argument; use fleet:assignments or fleet:leader-brief for named-fleet health, and use audience/state only to scope tips.",
   guidance: {
     when: "A status surface (statusline, TUI bar, dashboard widget) needs the fleet's headline state in one round-trip, or you want the current contextual tips for an audience.",
     notWhen:
-      'Deep rate-limit telemetry (usage %, $spend) — dev:rate_governor_status. Full presence roster — coord:presence. Reviewing/releasing the staged wakes themselves — coord:wake-queue.',
+      'Deep rate-limit telemetry (usage %, $spend) — dev:rate_governor_status. Full presence roster or named-fleet health — coord:presence, fleet:assignments, or fleet:leader-brief; this tool has no `fleet` argument. Reviewing/releasing the staged wakes themselves — coord:wake-queue.',
     seeAlso: [
       'coord:roster (full presence with view lenses)',
+      'fleet:assignments (named-fleet roster/health)',
+      'fleet:leader-brief (leader-only named-fleet health brief)',
       'dev:rate_governor_status (deep rate-limit / spend telemetry)',
       'coord:wake-queue (review or release the staged wakes)',
     ],

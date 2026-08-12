@@ -31,6 +31,7 @@
  * Run: npm run test:file -- packages/operator-core/lib/agent-tools/coordination/tools/send-arg-shape.test.ts
  */
 import { describe, expect, it } from 'vitest';
+import { z } from 'zod';
 
 import sendTool, { itemSpec } from './send';
 
@@ -51,10 +52,10 @@ describe('EI-20223353810864057 — primary coord:send guidance names required su
     // The top-level summary property is structurally optional because items[]
     // calls omit the single-message fields. Its property description must still
     // teach deferred callers that summary is required for the single form.
-    const argsOut = (sendTool.args as unknown as {
-      out: { shape: Record<string, { description?: string }> };
-    }).out;
-    const summaryDescription = argsOut.shape.summary?.description ?? '';
+    const schema = z.toJSONSchema(sendTool.args) as {
+      properties?: { summary?: { description?: string } };
+    };
+    const summaryDescription = schema.properties?.summary?.description ?? '';
 
     expect(summaryDescription).toMatch(/REQUIRED for the single-message form/i);
     expect(summaryDescription).toMatch(/items/);
