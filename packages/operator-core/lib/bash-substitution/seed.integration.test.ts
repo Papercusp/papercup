@@ -61,6 +61,9 @@ describe('seedSubstitutionRegistry (real PG)', () => {
       // The frozen population count feeds Phase 5's before/after measurement.
       expect(Number(row.baseline_calls)).toBeGreaterThan(0);
 
+      const pair = ALL_PAIRS.find((candidate) => candidate.intentLabel === row.intent_label);
+      expect(pair, `${String(row.intent_label)} has no source pair`).toBeDefined();
+
       // Evidence floor — assert the SAME two-branch admissibility `auditPair`
       // enforces, not just the sample branch of it. A HOMOGENEOUS intent carries
       // every spelling that exists rather than 20 distinct ones (`nproc` has 2,
@@ -72,11 +75,20 @@ describe('seedSubstitutionRegistry (real PG)', () => {
       const byCensus =
         Number(row.baseline_calls) >= MIN_POPULATION_ATOMS &&
         Number(row.baseline_sessions) >= MIN_POPULATION_SESSIONS;
-      expect(
-        bySample || byCensus,
-        `${String(row.intent_label)} is thin evidence: sample=${String(row.sample_size)} ` +
-          `population=${String(row.baseline_calls)} atoms / ${String(row.baseline_sessions)} sessions`,
-      ).toBe(true);
+      if (pair?.policyTier !== undefined && pair.expectedVerdict === 'unaudited') {
+        // D-003 policy rows are enforced by an independent pre-existing rule,
+        // not by an equivalence verdict. They must still seed when their
+        // evidence is below the audit floor, and must remain explicitly honest
+        // about that lack of a derived verdict.
+        expect(row.equivalence_verdict).toBe('unaudited');
+        expect(Number(row.sample_size)).toBeLessThan(MIN_SAMPLE_SIZE);
+      } else {
+        expect(
+          bySample || byCensus,
+          `${String(row.intent_label)} is thin evidence: sample=${String(row.sample_size)} ` +
+            `population=${String(row.baseline_calls)} atoms / ${String(row.baseline_sessions)} sessions`,
+        ).toBe(true);
+      }
 
       // Rows land at `observe` no matter how good the verdict is — promotion is
       // P-020's staged decision, never an automatic consequence of a green audit.
@@ -89,6 +101,34 @@ describe('seedSubstitutionRegistry (real PG)', () => {
         expect(row.tier).toBe('observe');
       }
     }
+  });
+
+  it('seeds a below-floor policy row as unaudited instead of deriving a verdict', async () => {
+    const pair = ALL_PAIRS.find((candidate) => candidate.policyTier !== undefined)!;
+    const fixture = loadPairFixtures([pair])[0].fixture;
+    expect(pair.expectedVerdict).toBe('unaudited');
+    expect(fixture.sample.length).toBeLessThan(MIN_SAMPLE_SIZE);
+
+    const workspace = `${WORKSPACE}-policy-regression`;
+    const [outcome] = await seedSubstitutionRegistry({
+      workspaceId: workspace,
+      fixtures: [{ pair, fixture }],
+      client: db.adminSql,
+    });
+
+    expect(outcome).toMatchObject({
+      intentLabel: pair.intentLabel,
+      verdict: 'unaudited',
+      sampleSize: fixture.sample.length,
+      inserted: true,
+    });
+
+    const [row] = (await db.adminSql`
+      SELECT equivalence_verdict, tier, sample_size
+        FROM harness_shared.bash_tool_substitutions
+       WHERE workspace_id = ${workspace} AND intent_label = ${pair.intentLabel}
+    `) as unknown as Array<{ equivalence_verdict: string; tier: string; sample_size: number }>;
+    expect(row).toEqual({ equivalence_verdict: 'unaudited', tier: pair.policyTier, sample_size: fixture.sample.length });
   });
 
   it('seeds an authorized policy row AT its declared tier, and re-asserts it on conflict', async () => {
@@ -151,7 +191,12 @@ describe('seedSubstitutionRegistry (real PG)', () => {
 
     // And the point of storing them: a non-equivalent verdict must carry the
     // evidence that explains it, which is also the DB's own CHECK.
-    const nonEquivalent = ALL_PAIRS.filter((p) => p.expectedVerdict !== 'equivalent');
+    // `unaudited` is an honest absence of a derived verdict, not a failing
+    // audit. Only derived non-equivalent verdicts must carry failure evidence;
+    // the below-floor policy row intentionally stores an empty array.
+    const nonEquivalent = ALL_PAIRS.filter(
+      (p) => p.expectedVerdict !== 'equivalent' && p.expectedVerdict !== 'unaudited',
+    );
     for (const pair of nonEquivalent) {
       const row = rows.find((r) => r.intent_label === pair.intentLabel);
       expect(row, `${pair.id} was not seeded`).toBeDefined();

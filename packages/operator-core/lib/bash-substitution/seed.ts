@@ -49,7 +49,8 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
-import { auditPair } from './equivalence';
+import { auditPair, matchingAtoms, maxTierFor, meetsAuditFloor } from './equivalence';
+import { normalizeRegistryFlags } from './match';
 import { ALL_PAIRS } from './pairs';
 import { assertPolicyTier } from './types';
 import type { CorpusFixture } from './corpus';
@@ -258,7 +259,7 @@ export async function seedSubstitutionRegistry(opts: {
   const outcomes: SeedOutcome[] = [];
 
   for (const { pair, fixture } of opts.fixtures) {
-    const audit = auditPair(pair, fixture.sample, fixture);
+    const audit = auditForSeed(pair, fixture);
     if (audit.verdict !== pair.expectedVerdict) {
       throw new Error(
         `[substitution-seed] pair "${pair.id}" computes "${audit.verdict}" but is recorded as ` +
@@ -276,6 +277,42 @@ export async function seedSubstitutionRegistry(opts: {
   }
 
   return outcomes;
+}
+
+/**
+ * Produce the row for a pair whose evidence is intentionally unaudited.
+ *
+ * The only allowed case is a policy row: D-003 grants its `deny` tier from a
+ * pre-existing rule, so the row must still be seeded even though its corpus is
+ * too small to derive an equivalence verdict. Ordinary pairs continue through
+ * `auditPair` and therefore still throw when they fall below the evidence floor.
+ */
+function auditForSeed(pair: SubstitutionPair, fixture: CorpusFixture): PairAudit {
+  if (meetsAuditFloor(fixture.sample.length, fixture)) {
+    return auditPair(pair, fixture.sample, fixture);
+  }
+
+  if (pair.expectedVerdict !== 'unaudited' || pair.policyTier === undefined) {
+    // Keep the audit harness as the enforcement point for every non-policy
+    // pair. Calling it here preserves its actionable floor error and prevents
+    // a future pair from opting into an unaudited row accidentally.
+    return auditPair(pair, fixture.sample, fixture);
+  }
+
+  const sample = matchingAtoms(pair, fixture.sample);
+  return {
+    pairId: pair.id,
+    intentLabel: pair.intentLabel,
+    bashPattern: pair.bashPattern.source,
+    bashPatternFlags: normalizeRegistryFlags(pair.bashPattern.flags),
+    toolName: pair.toolName,
+    verdict: 'unaudited',
+    sampleSize: sample.length,
+    coveredCount: 0,
+    failingCases: [],
+    sessionCount: new Set(sample.map((entry) => entry.sid)).size,
+    maxTier: maxTierFor('unaudited'),
+  };
 }
 
 /** The pairs this seeder knows about — re-exported so callers need one import. */
