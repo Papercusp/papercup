@@ -1035,6 +1035,24 @@ describe('WI-4494: recordCheckpointVerdict — the producer records', () => {
     });
   });
 
+  it('EI-20215068298600724: buildCheckpointDetail persists unmatched failing files (capped)', () => {
+    const d = buildCheckpointDetail({
+      reason: 'not-green',
+      green: false,
+      candidate: 'a'.repeat(40),
+      lineage: {
+        candidate: 'a'.repeat(40),
+        tip: 'b'.repeat(40),
+        commitsBehind: 5,
+        failingFilesChangedInRange: ['packages/operator-core/lib/a.test.ts'],
+        failingFilesUnchangedInRange: Array.from({ length: 30 }, (_, i) => `lib/u${i}.test.ts`),
+      },
+    });
+    expect((d.lineage as Record<string, unknown>).failingFilesUnchangedInRange).toEqual(
+      Array.from({ length: 20 }, (_, i) => `lib/u${i}.test.ts`),
+    );
+  });
+
   it('buildCheckpointDetail omits lineage entirely when absent (no lineage read this run)', () => {
     const d = buildCheckpointDetail({ reason: 'not-green', green: false, candidate: 'a'.repeat(40) });
     expect(d.lineage).toBeUndefined();

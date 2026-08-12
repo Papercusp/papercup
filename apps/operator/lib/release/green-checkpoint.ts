@@ -1278,6 +1278,12 @@ export interface GateLineage {
   /** Of the failing test files, which ones were touched somewhere in
    *  `candidate..tip` — the presumptive-stale discriminator. */
   failingFilesChangedInRange: string[];
+  /** Of the path-shaped failing test files, which ones did NOT match any changed
+   *  path in `candidate..tip`. A non-empty value is important when another
+   *  failing file did match: the matched file may be stale, while these failures
+   *  remain undetermined because their fixes can have landed in the subject they
+   *  police rather than in the test file itself (EI-20215068298600724). */
+  failingFilesUnchangedInRange?: string[];
   /** Submodules whose pin MOVED in range but whose contents could not be diffed
    *  (EI-19365565179927273). Non-empty ⇒ part of the range is UNKNOWN, so an empty
    *  `failingFilesChangedInRange` must NOT be read as "nothing changed". */
@@ -1416,6 +1422,7 @@ export function unmatchedFailingFiles(failing: string[], changed: string[]): str
  *  git reads so the exact wording is unit-testable without a repo. */
 export function formatGateLineageLine(lineage: GateLineage): string {
   const { candidate, tip, commitsBehind, failingFilesChangedInRange: changed } = lineage;
+  const unchanged = lineage.failingFilesUnchangedInRange ?? [];
   // EI-20063423357086565: an UNCOMMITTED on-disk fix is invisible to every commit-based
   // discriminator below, so it is appended to whichever verdict we reach rather than being
   // one more branch of them. It is deliberately the LAST thing in the line: it reframes any
@@ -1445,9 +1452,17 @@ export function formatGateLineageLine(lineage: GateLineage): string {
   // old wording asserted "presumptively a real red" on evidence that cannot support it.
   const considered = lineage.failingPathsConsidered;
   const rangeChanged = lineage.rangeFilesChanged;
+  // Current records carry the exact unmatched names. Legacy/in-memory callers may
+  // only have the path count, so retain a conservative count in that case instead
+  // of silently restoring the old whole-line confidence.
+  const unchangedCount =
+    unchanged.length > 0 ? unchanged.length : considered == null ? 0 : Math.max(considered - changed.length, 0);
+  const unchangedDetail = unchanged.length > 0 ? `: ${unchanged.join(', ')}` : '';
   const discriminator =
     changed.length > 0
-      ? `${changed.length} of the failing file(s) were MODIFIED in that range (presumptively STALE — re-verify at tip before re-diagnosing from scratch): ${changed.join(', ')}`
+      ? unchangedCount > 0
+        ? `${changed.length} of the failing file(s) were MODIFIED in that range (presumptively STALE — re-verify at tip before re-diagnosing from scratch): ${changed.join(', ')}; ${unchangedCount} other failing file(s) were NOT MODIFIED in that range — their skew is UNDETERMINED because a fix may have landed in the subject they police: re-run each at tip before diagnosing${unchangedDetail}`
+        : `${changed.length} of the failing file(s) were MODIFIED in that range (presumptively STALE — re-verify at tip before re-diagnosing from scratch): ${changed.join(', ')}`
       : unexpanded.length > 0
         ? `no superproject file matched, but ${unexpanded.length} submodule(s) moved in that range and could not be diffed (skew UNDETERMINED — re-verify at tip before treating this as a real red): ${unexpanded.join(', ')}`
         : considered === 0
@@ -1459,7 +1474,7 @@ export function formatGateLineageLine(lineage: GateLineage): string {
               // just not the failing TEST files. For any test that polices other files the
               // fix lands in the policed source, so this is the expected shape of an
               // ALREADY-FIXED red — not evidence of a real one.
-              `none of the failing TEST files changed, but ${rangeChanged ?? 'an unmeasured number of'} other file(s) did — a test that polices OTHER files (a budget/lint/census ratchet) is fixed in the file it polices, not in itself, so this is skew UNDETERMINED: re-run each failing file at tip before diagnosing`
+              `none of the failing TEST files changed, but ${rangeChanged ?? 'an unmeasured number of'} other file(s) did — a test that polices OTHER files (a budget/lint/census ratchet) is fixed in the file it polices, not in itself, so this is skew UNDETERMINED: re-run each failing file at tip before diagnosing${unchangedDetail}`
             : `nothing at all changed in that range (a real red — the range is empty, so there is nothing downstream that could have fixed it)`;
   const caveat =
     changed.length > 0 && unexpanded.length > 0
@@ -1528,6 +1543,8 @@ export async function computeGateLineage(
         ? changedFilesRecursive(repo, candidate, tip)
         : Promise.resolve<RangeChangeSet>({ files: [], unexpandedSubmodules: [] }),
     ]);
+    const changedFailingFiles = matchFailingFilesToChanged(failingTests, changed.files);
+    const unchangedFailingFiles = unmatchedFailingFiles(failingTests, changed.files);
     return {
       candidate,
       tip,
@@ -1540,7 +1557,8 @@ export async function computeGateLineage(
       // bare gitlink DIRECTORY, so a submodule test path could never match anything here
       // and every submodule red read as "presumptively a real red". Expanding the gitlinks
       // upstream lets the (already correct) suffix matcher work unchanged.
-      failingFilesChangedInRange: matchFailingFilesToChanged(failingTests, changed.files),
+      failingFilesChangedInRange: changedFailingFiles,
+      ...(unchangedFailingFiles.length ? { failingFilesUnchangedInRange: unchangedFailingFiles } : {}),
       submodulesUnexpanded: changed.unexpandedSubmodules,
       failingPathsConsidered: considered.length,
       ...dirtyField,

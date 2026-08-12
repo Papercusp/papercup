@@ -304,6 +304,11 @@ export interface CheckpointVerdict {
     tip: string;
     commitsBehind: number;
     failingFilesChangedInRange: string[];
+    /** EI-20215068298600724: path-shaped failing files that did not match the
+     *  candidate→tip range. Their fixes may have landed in the subjects they
+     *  police, so a mixed match must remain visibly undetermined in durable gate
+     *  history instead of reading as one all-stale/red verdict. */
+    failingFilesUnchangedInRange?: string[];
     /** EI-19390159514676981: TOTAL files changed in the range. Without it the durable
      *  record cannot distinguish "the range was empty" (a real red) from "the range
      *  changed other files, just not the failing TEST files" — which is the expected
@@ -363,6 +368,9 @@ export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unkn
       tip: v.lineage.tip.slice(0, 12),
       commitsBehind: v.lineage.commitsBehind,
       failingFilesChangedInRange: v.lineage.failingFilesChangedInRange.slice(0, 20),
+      ...(v.lineage.failingFilesUnchangedInRange?.length
+        ? { failingFilesUnchangedInRange: v.lineage.failingFilesUnchangedInRange.slice(0, 20) }
+        : {}),
       // Carry the two discriminators too, or the durable record reproduces exactly the
       // false confidence the transient line was fixed for: an empty
       // failingFilesChangedInRange is only real-red evidence when the range itself was

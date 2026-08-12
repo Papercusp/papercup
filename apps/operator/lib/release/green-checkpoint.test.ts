@@ -81,6 +81,7 @@ import {
   formatGateLineageLine,
   computeGateLineage,
   matchFailingFilesToChanged,
+  unmatchedFailingFiles,
   failingFilesUncommitted,
   type GateLineage,
   type CheckpointDeps,
@@ -1253,6 +1254,25 @@ describe('runGreenCheckpoint', () => {
       expect(line).toContain('src/b.test.ts');
     });
 
+    it('EI-20215068298600724: a mixed match keeps unmatched failing files UNDETERMINED', () => {
+      const lineage: GateLineage = {
+        candidate: 'c'.repeat(40),
+        tip: 't'.repeat(40),
+        commitsBehind: 4,
+        failingFilesChangedInRange: ['packages/operator-core/lib/a.test.ts'],
+        failingFilesUnchangedInRange: ['lib/b.test.ts', 'lib/c.test.ts'],
+        failingPathsConsidered: 3,
+        rangeFilesChanged: 12,
+      };
+      const line = formatGateLineageLine(lineage);
+      expect(line).toContain('presumptively STALE');
+      expect(line).toContain('2 other failing file(s) were NOT MODIFIED');
+      expect(line).toContain('their skew is UNDETERMINED');
+      expect(line).toContain('lib/b.test.ts');
+      expect(line).toContain('lib/c.test.ts');
+      expect(line).not.toContain('a real red');
+    });
+
     // EI-19365565179927273. "presumptively a real red" is a claim about the WHOLE range,
     // so it may only be made when the whole range was readable. A moved-but-undiffable
     // submodule makes part of it unknown — and an agent acting on a false "real red" goes
@@ -1344,6 +1364,21 @@ describe('runGreenCheckpoint', () => {
       ]);
     });
 
+    it('computeGateLineage: records failing files whose fixes may have landed in their subjects', async () => {
+      const c1 = await commit('a', '1', 'c1');
+      await git(repo, ['branch', 'ready', c1]);
+      const candidate = await commit('a', '2', 'c2 — the candidate');
+      await commit('src/a.test.ts', 'fixed', 'c3 — changes one failing test file');
+      await commit('src/subject.ts', 'fixed', 'c4 — changes a subject, not the other failing test file');
+      const tip = await commit('other.ts', 'y', 'c5');
+      const lineage = await computeGateLineage(repo, 'main', candidate, ['src/a.test.ts', 'src/b.test.ts']);
+      expect(lineage).not.toBeNull();
+      expect(lineage!.tip).toBe(tip);
+      expect(lineage!.failingFilesChangedInRange).toEqual(['src/a.test.ts']);
+      expect(lineage!.failingFilesUnchangedInRange).toEqual(['src/b.test.ts']);
+      expect(formatGateLineageLine(lineage!)).toContain('src/b.test.ts');
+    });
+
     it('matchFailingFilesToChanged: skips workspace names, needs a path boundary, dedupes', () => {
       // A workspace name is not a file, even though it contains a slash.
       expect(matchFailingFilesToChanged(['@papercusp/web'], ['apps/web'])).toEqual([]);
@@ -1358,6 +1393,15 @@ describe('runGreenCheckpoint', () => {
           ['packages/x/lib/a.test.ts'],
         ),
       ).toEqual(['packages/x/lib/a.test.ts']);
+    });
+
+    it('unmatchedFailingFiles: returns only path-shaped failures absent from the range', () => {
+      expect(
+        unmatchedFailingFiles(
+          ['@papercusp/operator-core', 'lib/a.test.ts', 'lib/b.test.ts'],
+          ['packages/operator-core/lib/a.test.ts', 'packages/other/lib/subject.ts'],
+        ),
+      ).toEqual(['lib/b.test.ts']);
     });
 
     it('computeGateLineage: candidate IS the tip', async () => {
