@@ -2126,7 +2126,7 @@ describe('EI-19341572300046923 — refusing a verdict about uncompiled files', (
           siblingGates,
           unresolvedGates: [],
         }).join('\n');
-        expect(text).toContain('npm run lint:tsc:operator');
+        expect(text).toContain('npm run lint:tsc:operator -- --files=apps/operator/lib/release/green-checkpoint.ts');
         expect(text).not.toMatch(/nothing local will ever catch/i);
         expect(text).not.toMatch(/No typecheck gate FOUND/);
       });

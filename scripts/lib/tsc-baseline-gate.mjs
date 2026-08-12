@@ -1400,7 +1400,10 @@ export function formatUncoveredFilesBanner({
   }
 
   for (const [command, files] of byCommand) {
-    lines.push(`   RUN THIS to check them:  ${command}`);
+    // Preserve the caller's scoped-verdict contract when handing off to a sibling gate. A bare
+    // sibling command would typecheck its whole project (and lose the exact file attribution
+    // that led us here), while the caller explicitly named these paths for a focused check.
+    lines.push(`   RUN THIS to check them:  ${command} -- --files=${files.join(',')}`);
     for (const f of files) lines.push(`     - ${f}`);
   }
   if (ungated.length) {
