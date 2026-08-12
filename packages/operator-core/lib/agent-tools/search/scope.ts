@@ -49,7 +49,13 @@ export const SCOPE_ALL = 'all' as const;
 
 /** Canonical source names, derived from the registry, plus the `all` token. */
 export function scopeChoices(): [string, ...string[]] {
-  return [...SEARCH_SOURCES.map((s) => s.name), SCOPE_ALL] as [string, ...string[]];
+  // `z.enum` wants a non-empty tuple. Widen to `string[]` first and assert THAT:
+  // the spread's inferred `[...string[], 'all']` does not overlap the target tuple
+  // (the leading rest makes the first element unknowable to TS), so casting it
+  // directly is the error TS2352 exists to catch. The non-emptiness is real —
+  // SCOPE_ALL is always appended — it is just not visible in the inferred shape.
+  const names: string[] = [...SEARCH_SOURCES.map((s) => s.name), SCOPE_ALL];
+  return names as [string, ...string[]];
 }
 
 /**
