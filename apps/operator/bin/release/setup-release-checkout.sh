@@ -412,6 +412,17 @@ need_node_modules() {
 sync_one_node_modules() {
   local src="$1" dest="$2"
   local tmp="${dest}.deploy-tmp.$$" old="${dest}.deploy-old.$$"
+  # EI-202238*: package installers atomically rename transient trees such as
+  # `sidecar.old.<pid>` while this script's `find` enumeration is in flight.
+  # A node_modules path can therefore be real when `find` prints it and gone by
+  # the time this function runs. It was never part of the stable dependency
+  # tree, so skip that vanished source instead of crashing the whole release
+  # gate before tests begin. A stable source disappearing is still caught by
+  # the post-copy dependency gates below.
+  if [ ! -d "$src" ]; then
+    log "node_modules source vanished during enumeration; skipping transient path: $src"
+    return 0
+  fi
   rm -rf "$tmp" "$old"                 # defensive: clear this run's leftovers (crash-safety)
   mkdir -p "$(dirname "$dest")"
   cp -al "$src" "$tmp"                 # slow; "$dest" stays untouched + complete throughout

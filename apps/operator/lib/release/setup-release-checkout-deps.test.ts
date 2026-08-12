@@ -175,6 +175,7 @@ describe('setup-release-checkout.sh sync_one_node_modules() — atomic node_modu
   function syncOne(src: string, dest: string): number {
     const wrapper = [
       'set -euo pipefail',
+      'log() { :; }',
       'source <(sed -n "/^sync_one_node_modules()/,/^}/p" "$SETUP_SCRIPT")',
       'sync_one_node_modules "$SRC" "$DEST"',
     ].join('\n');
@@ -236,6 +237,16 @@ describe('setup-release-checkout.sh sync_one_node_modules() — atomic node_modu
     syncOne(src, dest);
     const leftovers = readdirSync(work).filter((n) => n.includes('deploy-tmp') || n.includes('deploy-old'));
     expect(leftovers).toEqual([]);
+  });
+
+  it('skips a source that vanished after enumeration instead of crashing the gate', () => {
+    const vanished = join(work, 'sidecar.old.2029466/node_modules');
+    const dest = join(work, 'release-sidecar/node_modules');
+    mkdirSync(dest, { recursive: true });
+    writeFileSync(join(dest, 'marker.txt'), 'STABLE');
+
+    expect(syncOne(vanished, dest)).toBe(0);
+    expect(readFileSync(join(dest, 'marker.txt'), 'utf8')).toBe('STABLE');
   });
 });
 
