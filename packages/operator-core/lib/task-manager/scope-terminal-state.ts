@@ -40,14 +40,52 @@ export type ExecFileFn = (
 const LIVE_ACTIVE_STATES = new Set(['active', 'activating', 'reloading', 'deactivating']);
 
 /**
+ * Align `systemctl show -p <one-property> --value <u1> <u2> ...` output to its unit
+ * operands, or return `null` when the shape is not one we recognise.
+ *
+ * ⚠ WI-38163. systemd separates per-unit blocks with a BLANK line, so requesting a
+ * single property for N units yields **2N-1** lines (value, '', value, '', value),
+ * NOT N. The original implementation asserted one-line-per-unit and guarded the
+ * mismatch by bailing out — which meant the guard fired on EVERY real multi-unit
+ * call and D-018's stranded/ended_unobserved split silently never fired except for
+ * a tick with exactly one candidate. Measured before the fix: 740 `stranded` vs 258
+ * `ended_unobserved` sidecar rows, ~74% of routine shutdowns filed as escapes.
+ *
+ * The one-line-per-unit shape is still accepted, because N=1 is genuinely that shape
+ * and a future systemd could drop the separator. Anything else returns `null` so the
+ * caller keeps failing soft — never a misaligned unit<->state pairing.
+ */
+export function parseActiveStateValues(stdout: string, unitCount: number): string[] | null {
+  if (unitCount <= 0) return null;
+  const lines = stdout.split('\n');
+  const trimmed = lines[lines.length - 1] === '' ? lines.slice(0, -1) : lines;
+
+  // One line per unit — the N=1 case, and any systemd that omits the separator.
+  if (trimmed.length === unitCount) return trimmed;
+
+  // Blank-separated blocks: values at even indices, separators at odd ones.
+  if (unitCount > 1 && trimmed.length === unitCount * 2 - 1) {
+    for (let i = 1; i < trimmed.length; i += 2) {
+      // A non-blank separator means this is not the shape we think it is.
+      if ((trimmed[i] ?? '').trim() !== '') return null;
+    }
+    const values: string[] = [];
+    for (let i = 0; i < trimmed.length; i += 2) values.push(trimmed[i] ?? '');
+    return values;
+  }
+
+  return null;
+}
+
+/**
  * For each of `units` (systemd `--user` scope unit names), ask systemd whether it
  * is still active. Returns the subset CONFIRMED released.
  *
  * Fails soft to an EMPTY set on any error (no `systemctl` binary, no user bus, a
  * non-Linux host, a timeout) — the caller then falls back to the pre-D-018
  * behavior (strand it) rather than ever fabricating a release. One batched call
- * covers the whole candidate list: `systemctl show` accepts multiple unit
- * operands and prints one `ActiveState=<value>` line per unit, in argument order.
+ * covers the whole candidate list; see `parseActiveStateValues` for the output
+ * shape, which is NOT one line per unit.
  */
 export async function checkScopesReleased(
   units: readonly string[],
@@ -61,13 +99,11 @@ export async function checkScopesReleased(
       timeout: 10_000,
       maxBuffer: 1024 * 1024,
     });
-    // `--value` with multiple units prints exactly one line per unit, in order,
-    // plus a trailing newline. Guard the count mismatch rather than trust it
-    // blindly: a systemd that changed its output shape should degrade to
-    // "nothing confirmed", never to a misaligned unit<->state pairing.
-    const lines = stdout.split('\n');
-    const values = lines[lines.length - 1] === '' ? lines.slice(0, -1) : lines;
-    if (values.length !== units.length) return released;
+    // Shape handling lives in `parseActiveStateValues` (WI-38163) — a `null` there
+    // means "could not align", which degrades to "nothing confirmed" rather than to
+    // a misaligned unit<->state pairing.
+    const values = parseActiveStateValues(stdout, units.length);
+    if (!values) return released;
     for (let i = 0; i < units.length; i++) {
       const state = (values[i] ?? '').trim();
       if (state.length > 0 && !LIVE_ACTIVE_STATES.has(state)) released.add(units[i]!);

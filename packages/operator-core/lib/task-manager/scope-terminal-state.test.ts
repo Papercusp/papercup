@@ -1,13 +1,36 @@
 import { describe, it, expect, vi } from 'vitest';
-import { checkScopesReleased, type ExecFileFn } from './scope-terminal-state';
+import { checkScopesReleased, parseActiveStateValues, type ExecFileFn } from './scope-terminal-state';
 
-/** Build an ExecFileFn that returns one ActiveState line per unit, in order. */
+/**
+ * Build an ExecFileFn returning systemd's REAL output shape.
+ *
+ * ⚠ WI-38163 — this helper previously joined with '\n' (one line per unit), which
+ * systemd does NOT emit for multiple operands: it separates per-unit blocks with a
+ * BLANK line, so N units produce 2N-1 lines. Every multi-unit test therefore passed
+ * against a fiction while the production guard bailed out on every real call, and
+ * D-018's stranded/ended_unobserved split never fired for 2+ candidates.
+ *
+ * Captured verbatim from this box (systemd --user):
+ *   $ systemctl --user show -p ActiveState --value pc-fakeaaa.scope pc-fakebbb.scope
+ *   inactive
+ *   <blank>
+ *   inactive
+ */
 function fakeExec(statesByUnit: Record<string, string>): ExecFileFn {
   return vi.fn(async (_file: string, args: readonly string[]) => {
     // args = ['--user', 'show', '-p', 'ActiveState', '--value', ...units]
     const units = args.slice(5);
-    const stdout = units.map((u) => statesByUnit[u] ?? '').join('\n') + '\n';
+    const stdout = units.map((u) => statesByUnit[u] ?? '').join('\n\n') + '\n';
     return { stdout, stderr: '' };
+  });
+}
+
+/** The one-line-per-unit shape — what a single operand really returns, and what a
+ *  future systemd could emit for several. Still accepted by design. */
+function fakeExecUnseparated(statesByUnit: Record<string, string>): ExecFileFn {
+  return vi.fn(async (_file: string, args: readonly string[]) => {
+    const units = args.slice(5);
+    return { stdout: units.map((u) => statesByUnit[u] ?? '').join('\n') + '\n', stderr: '' };
   });
 }
 
@@ -88,5 +111,97 @@ describe('checkScopesReleased', () => {
     const exec = fakeExec({ 'pc-a.scope': 'inactive', 'pc-b.scope': 'inactive' });
     const released = await checkScopesReleased(['pc-a.scope'], exec);
     expect(released.has('pc-b.scope')).toBe(false);
+  });
+
+  // ── WI-38163: the blank-line separator regression ────────────────────────────
+  //
+  // These pin the ACTUAL systemd output shape. Against the pre-fix implementation
+  // (which asserted one line per unit and bailed on a count mismatch) every one of
+  // them fails with an empty set — which is exactly what shipped, and why ~74% of
+  // routine sidecar shutdowns were filed as escapes.
+
+  it('WI-38163: a real blank-line-separated batch still resolves every unit', async () => {
+    // Verbatim shape: 'active\n\ninactive\n\nfailed\n' — 5 lines for 3 units.
+    const exec = fakeExec({
+      'pc-live.scope': 'active',
+      'pc-dead1.scope': 'inactive',
+      'pc-dead2.scope': 'failed',
+    });
+    const released = await checkScopesReleased(['pc-live.scope', 'pc-dead1.scope', 'pc-dead2.scope'], exec);
+    expect(released).toEqual(new Set(['pc-dead1.scope', 'pc-dead2.scope']));
+  });
+
+  it('WI-38163: the one-line-per-unit shape is still accepted', async () => {
+    const exec = fakeExecUnseparated({ 'pc-a.scope': 'active', 'pc-b.scope': 'inactive' });
+    const released = await checkScopesReleased(['pc-a.scope', 'pc-b.scope'], exec);
+    expect(released).toEqual(new Set(['pc-b.scope']));
+  });
+});
+
+describe('parseActiveStateValues (WI-38163)', () => {
+  it('parses the blank-separated shape systemd actually emits: N units -> 2N-1 lines', () => {
+    expect(parseActiveStateValues('active\n\ninactive\n\nfailed\n', 3)).toEqual(['active', 'inactive', 'failed']);
+    expect(parseActiveStateValues('inactive\n\ninactive\n', 2)).toEqual(['inactive', 'inactive']);
+  });
+
+  it('parses the one-line-per-unit shape, including the N=1 case', () => {
+    expect(parseActiveStateValues('active\n', 1)).toEqual(['active']);
+    expect(parseActiveStateValues('active\ninactive\n', 2)).toEqual(['active', 'inactive']);
+  });
+
+  it('preserves ORDER — the unit<->state pairing is positional', () => {
+    expect(parseActiveStateValues('a\n\nb\n\nc\n\nd\n', 4)).toEqual(['a', 'b', 'c', 'd']);
+  });
+
+  it('returns null (fail soft) when the shape is unrecognised', () => {
+    expect(parseActiveStateValues('inactive\n', 2)).toBeNull(); // too few
+    expect(parseActiveStateValues('a\nb\nc\nd\n', 3)).toBeNull(); // 4 lines, neither N nor 2N-1
+    expect(parseActiveStateValues('', 1)).toBeNull(); // no output at all
+    expect(parseActiveStateValues('a\n', 0)).toBeNull(); // no units requested
+  });
+
+  it('returns null when an expected separator slot is NOT blank', () => {
+    // 2N-1 lines but the odd slot carries a value — the length coincidence must not
+    // be enough to claim alignment, or a real state would be silently dropped.
+    expect(parseActiveStateValues('active\nnot-a-separator\ninactive\n', 2)).toBeNull();
+  });
+
+  it('an empty ActiveState value survives parsing and is rejected downstream, not here', () => {
+    // Parsing keeps the blank; checkScopesReleased is what refuses to treat a blank
+    // as "confirmed released" (state.length > 0). Keeping that split means an
+    // unknown unit cannot silently shift its NEIGHBOURS' states by one position.
+    expect(parseActiveStateValues('\n\ninactive\n', 2)).toEqual(['', 'inactive']);
+  });
+
+  // ── Falsifiability control ───────────────────────────────────────────────────
+  //
+  // The repo's tier-1 pattern: keep the deliberately-wrong implementation HERE, as a
+  // permanent control, instead of mutating the shared tree to prove the guard can
+  // fail (a mutation probe races git-sync's whole-tree sweep and has committed a
+  // mutant before). This is verbatim the pre-WI-38163 parse.
+  const BUGGY_LEGACY_PARSE = (stdout: string, unitCount: number): string[] | null => {
+    const lines = stdout.split('\n');
+    const values = lines[lines.length - 1] === '' ? lines.slice(0, -1) : lines;
+    return values.length !== unitCount ? null : values;
+  };
+
+  it('CONTROL: the pre-fix parse returns null on the shape systemd really emits', () => {
+    // This is the whole bug, pinned. 2 units -> 3 lines -> the old count check
+    // rejects it -> empty released set -> every candidate strands.
+    expect(BUGGY_LEGACY_PARSE('inactive\n\ninactive\n', 2)).toBeNull();
+    expect(BUGGY_LEGACY_PARSE('active\n\ninactive\n\nfailed\n', 3)).toBeNull();
+
+    // ...while the current parse handles exactly those inputs. If this pair ever
+    // agrees, the fix has been reverted.
+    expect(parseActiveStateValues('inactive\n\ninactive\n', 2)).not.toBeNull();
+    expect(parseActiveStateValues('active\n\ninactive\n\nfailed\n', 3)).not.toBeNull();
+  });
+
+  it('CONTROL: both parses agree on N=1, which is why the bug hid for so long', () => {
+    // A single operand emits no separator, so the old code was correct for N=1 —
+    // and a tick with exactly one candidate is what produced the 258 rows that DID
+    // get classified `ended_unobserved`.
+    expect(BUGGY_LEGACY_PARSE('inactive\n', 1)).toEqual(['inactive']);
+    expect(parseActiveStateValues('inactive\n', 1)).toEqual(['inactive']);
   });
 });
