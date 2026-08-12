@@ -998,6 +998,46 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
         });
       });
 
+      it('presence resolves the caller as a member, but the registry says it leads that same fleet: role and leaderBrief are reconciled together', async () => {
+        const { call, calls } = fakeCall({
+          ...CORE,
+          'fleet:assignments': () => ({
+            ok: true,
+            agents: [{ agentId: 'su-leader', fleetSlug: 'p2p-git', fleetRole: 'member' }],
+          }),
+          'fleet:leader-brief': () => LEADER_BRIEF_RESULT,
+        });
+        const fleetLeadershipCheck = vi.fn(async () => 'p2p-git');
+        const r = await composeOrient(
+          { mode: 'monitor' },
+          call,
+          'su-leader',
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          undefined,
+          { fleetSlug: 'p2p-git', fleetRole: 'member' },
+          undefined,
+          undefined,
+          undefined,
+          fleetLeadershipCheck,
+        );
+
+        expect(fleetLeadershipCheck).toHaveBeenCalledTimes(1);
+        expect(r.leaderBrief).toMatchObject(LEADER_BRIEF_RESULT);
+        expect(r.presenceDrift).toEqual({
+          fleet: 'p2p-git',
+          note: expect.stringContaining("reported fleetRole 'member'"),
+        });
+        expect((r.me as { agents: Array<Record<string, unknown>> }).agents[0]).toMatchObject({
+          agentId: 'su-leader',
+          fleetSlug: 'p2p-git',
+          fleetRole: 'leader',
+        });
+        expect(calls.some((c) => c.name === 'fleet:leader-brief')).toBe(true);
+      });
+
       it('the registry AGREES the caller leads nothing: no drift reported, no leaderBrief fold, presenceDriftCheck still only fires once', async () => {
         const { call, calls } = fakeCall({ ...CORE });
         const presenceDriftCheck = vi.fn(async () => null);

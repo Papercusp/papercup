@@ -646,6 +646,13 @@ export async function composeOrient(
    *  nothing. Injected so composeOrient stays IO-free + unit-testable — the same
    *  contract as pipelineFold / roleFolds. Undefined ⇒ the check never runs. */
   presenceDriftCheck?: () => Promise<string | null>,
+  /** EI-20201050911711528: cross-checks the registry when presence resolves a
+   *  named fleet but labels this caller as a member. The registry's
+   *  `agent_fleets.leader_owner_id` is authoritative for the single-leader role;
+   *  resolving the current fleet slug (or null when the registry disagrees) keeps
+   *  a stale presence projection from silently suppressing `leaderBrief`. Injected
+   *  so composeOrient remains IO-free and unit-testable. */
+  fleetLeadershipCheck?: () => Promise<string | null>,
   /** P-008 (b) (unified-agent-state-plane-2026-07-27): the cell-read identity the
    *  standing-facts fold re-checks declared dependencies under. Resolved by the
    *  handler via `cellReaderFromCtx(identity, ctx)` and INJECTED — same contract
@@ -659,10 +666,11 @@ export async function composeOrient(
 ): Promise<OrientResult> {
   const monitor = args.mode === 'monitor';
   // EI-18731216945970087: only exercised when presence itself found no fleet at all,
-  // in monitor mode (the failure's exact shape) — a correctly-labeled member/leader's
-  // tick never pays this extra lookup. A caught drift is treated as authoritative
-  // 'leader' for the REST of this call (the leaderBrief gate + the fleet-scoped legs
-  // below), and reported LOUDLY via `result.presenceDrift` rather than silently fixed.
+  // in monitor mode (the original failure's exact shape). EI-20201050911711528
+  // adds the same registry authority check for a named fleet whose role projection
+  // is stale. A caught drift is treated as authoritative 'leader' for the REST of
+  // this call (the leaderBrief gate + the fleet-scoped legs below), and reported
+  // LOUDLY via `result.presenceDrift` rather than silently fixed.
   let effectiveFleetMembership = fleetMembership;
   let presenceDrift: OrientResult['presenceDrift'];
   if (monitor && !fleetMembership?.fleetSlug && presenceDriftCheck) {
@@ -686,6 +694,31 @@ export async function composeOrient(
       /* best-effort — never break orientation over a drift cross-check */
     }
   }
+  if (
+    (monitor || args.afterCompaction === true) &&
+    fleetMembership?.fleetSlug &&
+    fleetMembership.fleetRole !== 'leader' &&
+    fleetLeadershipCheck
+  ) {
+    try {
+      const ledFleet = await fleetLeadershipCheck();
+      if (ledFleet === fleetMembership.fleetSlug) {
+        effectiveFleetMembership = { fleetSlug: ledFleet, fleetRole: 'leader' };
+        presenceDrift = {
+          fleet: ledFleet,
+          note:
+            `PRESENCE DRIFT: the registry (agent_fleets.leader_owner_id) says you LEAD fleet ` +
+            `'${ledFleet}', but your presence/assignment projection reported fleetRole ` +
+            `'${fleetMembership.fleetRole ?? 'null'}'. Recovered the registry role for THIS call; ` +
+            `leaderBrief below is real. If this repeats, the membership projection is stale after ` +
+            `fleet:take-leadership — corroborate with fleet:assignments { fleet } / fleet:status ` +
+            `before treating the self-scoped role as authoritative.`,
+        };
+      }
+    } catch {
+      /* best-effort — never break orientation over a drift cross-check */
+    }
+  }
   // WI-3818: unconditional in BOTH modes (monitor's one fleet-related read) — a
   // hang here used to block the whole orient call. Degrades to a minimal
   // empty-roster shape (never throws) so downstream folds — already
@@ -702,7 +735,7 @@ export async function composeOrient(
       label: 'orient:fleet:assignments',
     },
   );
-  let me = meResult.value;
+  let me = overlaySelfFleetMembership(meResult.value, ownerId, effectiveFleetMembership);
   // ── fleet ROSTER delta (P-004 monitor / P-005 full): diff the roster against
   // the caller's server-side cursor and deliver TRANSITIONS instead of the full
   // roster re-read byte-identically almost every call (D-003 audit — the same
@@ -2237,6 +2270,26 @@ export default defineTool({
     // that left a fleet does not resurrect stale membership. Only a failed presence
     // read may fall back to launch context.
     const fleetMembership = await resolvePresenceFleet(ownerId, deriveFleetMembership());
+    // EI-20201050911711528: presence membership is still the live fleet-slug
+    // projection, but the registry is authoritative for WHO LEADS that fleet.
+    // A failed fleet:take-leadership projection (or a stale append-only role fact)
+    // can leave the caller labeled 'member' even after agent_fleets.leader_owner_id
+    // names it as leader. Only install this extra check for the leaderBrief gates,
+    // and only for a non-leader projection; ordinary correctly-labeled leaders and
+    // non-monitor/full calls keep their existing read cost.
+    const currentFleetSlug = fleetMembership?.fleetSlug;
+    const fleetLeadershipCheck =
+      ownerId &&
+      currentFleetSlug &&
+      fleetMembership?.fleetRole !== 'leader' &&
+      (args.mode === 'monitor' || args.afterCompaction === true)
+        ? async () => {
+            const { getFleet } = await import('../../../agent-fleets-store');
+            const ws = resolveConcreteWorkspaceId((ctx as { workspaceId?: string | null }).workspaceId);
+            const fleet = await getFleet(ws, currentFleetSlug);
+            return fleet?.leaderOwnerId === ownerId ? currentFleetSlug : null;
+          }
+        : undefined;
     // EI-18731216945970087: a resolvable FLEET LEADER on a monitor tick was seeing
     // `agents:1` (agents:'me' is BY DESIGN caller-scoped — see OrientResult.me) with
     // `leaderBrief` silently ABSENT — byte-indistinguishable from "all quiet" — because
@@ -2355,6 +2408,7 @@ export default defineTool({
       roleFolds,
       () => pipelinePromise,
       presenceDriftCheck,
+      fleetLeadershipCheck,
       // P-008 (b): the identity the standing-facts fold re-checks declared cell
       // dependencies under. Best-effort — an unattributable caller (no ownerId)
       // gets no re-check rather than a read made under a guessed identity.
