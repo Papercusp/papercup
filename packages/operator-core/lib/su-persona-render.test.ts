@@ -48,6 +48,32 @@ describe('applySuPromptOverlays — the one canonical overlay order', () => {
     expect(iProv).toBeLessThan(iMode);
     expect(iMode).toBeLessThan(iPrec);
     expect(promptText).toContain('su-launcher-1');
+    expect(promptText).toContain('to: ["human"] to reach the owner');
+  });
+
+  it('teaches the live fleet-leader fallback when the launcher session ends', async () => {
+    const fleetRuntime = buildSuInstructionRuntime({
+      ownerId: 'su-member',
+      autoMode: true,
+      drainMode: false,
+      fleet: { slug: 'drain-crew', role: 'member' },
+      workspaceId: 'ws',
+      harnessSlug: 'papercusp',
+      planSlug: 'drain-plan',
+    });
+    const { promptText } = await applySuPromptOverlays({
+      basePromptText: '# BASE\n',
+      agent: 'claude',
+      launchedBy: 'su-ended-launcher',
+      modeSection: '',
+      instructionRuntime: fleetRuntime,
+    });
+
+    expect(promptText).toContain(
+      'If that session ends, use coord:send with to: ["@fleet-leader:drain-crew"] to reach the current fleet leader',
+    );
+    expect(promptText).toContain('this selector survives session retirement and leadership rotation');
+    expect(promptText).not.toContain('to: ["human"]');
   });
 
   it('omits provenance and the mode section when the session has neither', async () => {

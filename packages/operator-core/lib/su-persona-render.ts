@@ -153,13 +153,19 @@ export async function applySuPromptOverlays(opts: {
   // (The matching owner-scoped standing FACT is asserted by the launch route —
   // it is a side effect, and a re-render must not re-fire it.)
   if (opts.launchedBy) {
+    const fleetSlug =
+      opts.instructionRuntime.route?.kind === 'fleet' ? opts.instructionRuntime.route.fleet : null;
+    const endedLauncherFallback = fleetSlug
+      ? `If that session ends, use coord:send with to: ["@fleet-leader:${fleetSlug}"] to reach the current ` +
+        'fleet leader; this selector survives session retirement and leadership rotation.'
+      : 'If that session ends, use coord:send with to: ["human"] to reach the owner; this owner surface survives session retirement.';
     promptText =
       `${promptText.replace(/\n+$/, '')}\n\n---\n## Provenance — who launched this session\n\n` +
       `You were launched by **${opts.launchedBy}**, the agent that chose this mission and its launch ` +
       `brief. They are your LAUNCHER/SUPERVISOR: report milestones, blockers, and anomalies to ` +
       `them (coord:send), answer their messages before your own next step, and treat their ` +
       `directives as steering. If asked who launched you or whose work this is, the answer is ` +
-      `${opts.launchedBy}.\n`;
+      `${opts.launchedBy}. ${endedLauncherFallback}\n`;
   }
 
   if (opts.modeSection) {
