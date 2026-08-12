@@ -39,6 +39,8 @@ import {
   gateHealthCallFromQuery,
   workItemsGetCallFromQuery,
   workItemsListCallFromQuery,
+  WORK_ITEMS_BY_ID_SHAPE,
+  WORK_ITEMS_SEARCH_SHAPE,
 } from './sql-reads-helpers';
 import type { CoverageResult, SqlSubstitutionPair } from '../types';
 
@@ -494,13 +496,12 @@ export const workItemsById: SqlSubstitutionPair = {
   relation: 'work_items',
   // Requires an id predicate; the search pair below forbids one, so the two
   // partition this relation's traffic rather than competing for it.
-  // The `where…payload->` lookahead excludes a payload PREDICATE while still
-  // claiming a payload PROJECTION — the verb returns the whole payload at
-  // payloadTier:'full', so projecting one is served and filtering on one is not.
-  // D-008 sets the bar at 100% coverage, so an atom `cover()` must refuse is one
-  // this shape may not claim in the first place.
-  sqlShape:
-    /^(?!.*\bjoin\b)(?!.*\b(?:count|sum|avg|min|max)\s*\()(?!.*\bgroup\s+by\b)(?!.*\bsource_plan_slug\b)(?!.*\bwhere\b[\s\S]*\bpayload\s*(?:->|->>|\?))(?=.*\b(?:feature_id|id)\s*(?:=\s*'|in\s*\())/is,
+  // A positive WHITELIST (see the residual-predicate rule in sql-reads-helpers):
+  // the WHERE must be an id selector plus optional scope and NOTHING else. This
+  // is what keeps a payload PREDICATE, an `IS NULL`, or an OR-branch from being
+  // claimed and then quietly dropped — while a payload PROJECTION stays claimed,
+  // because the verb returns the whole payload at payloadTier:'full'.
+  sqlShape: WORK_ITEMS_BY_ID_SHAPE,
   toolName: 'work_items:get',
   advisoryText:
     "work_items:get { id } — or { ids: [...] } for up to 100 at once — returns the whole row: state, assignee, severity, kind, parent, createdAt/updatedAt/closedAt AND the forensic columns (terminalOwner, terminalCompletionRef, terminalCompletionEvidence, completionAuthority), plus the holder, checkpoint and priorWork warnings raw SQL cannot show you. ⚠ The DEFAULT tier DROPS `payload` and `summary`; pass payloadTier:'full' for those (framework-reserved, so a schema-validating client sends it via tools:invoke). A `payload->` PREDICATE, a `source_plan_slug` slice, an aggregate or a JOIN still wants SQL.",
@@ -543,15 +544,13 @@ export const workItemsSearch: SqlSubstitutionPair = {
   // a TIME predicate (no time-window arg — translating without it would WIDEN the
   // answer), `source_plan_slug` (no arg at all), and an id predicate (that is the
   // by-id pair above, and `list` has no id filter).
-  // Four further exclusions, each a question the verb cannot ASK — and three of
-  // the four were found by READING the rendered calls, not by any coverage count:
-  //  - an OR of several text fragments (`q` is one substring per call) — 9 of the
-  //    first 20 sampled atoms, every one silently flattened to its first fragment;
-  //  - a `lane` predicate (there is an include-observations BOOLEAN, no lane filter);
-  //  - a `payload->` predicate (no payload filter);
-  //  - an `item_kind IN (…)` list (`kind` takes one value per call).
-  sqlShape:
-    /^(?!.*\bjoin\b)(?!.*\b(?:count|sum|avg|min|max)\s*\()(?!.*\bgroup\s+by\b)(?!.*\bsource_plan_slug\b)(?!.*\b(?:feature_id|id)\s*(?:=\s*'|in\s*\())(?!.*\b(?:created_at|updated_at|closed_at|created_ts|updated_ts|closed_ts)\s*[<>])(?!.*\bwhere\b[\s\S]*\bpayload\s*(?:->|->>|\?))(?!.*\blane\s*(?:=|<>|!=|\s+in\s*\())(?!.*\bitem_kind\s+in\s*\()(?!.*\b(?:title|summary)\s+i?like\s*'[^']*'[\s\S]*\bor\b[\s\S]*\b(?:title|summary)\s+i?like\s*')(?=.*\b(?:title\s+i?like|summary\s+i?like|status\s*=\s*'|state\s*=\s*'|item_kind\s*=\s*'|taken_by\s*=\s*'|assignee\s*=\s*'|(?:completion_)?authority\s*=\s*'))/is,
+  // The same positive whitelist, over the typed slices `work_items:list` can ask
+  // for. Everything the corpus writes that the verb CANNOT ask — `state NOT IN
+  // (…)`, `taken_by IS NULL`, `feature_order IS NOT NULL`, a time window, an
+  // `item_kind IN (…)` list, a `lane` filter, an OR across two columns — fails to
+  // match and is left to SQL. An id selector is excluded because that is the
+  // by-id pair above and `list` has no id filter at all.
+  sqlShape: WORK_ITEMS_SEARCH_SHAPE,
   toolName: 'work_items:list',
   advisoryText:
     "work_items:list { q, state, kind, assignee, harness, completionAuthority, limit } reads a filtered slice with server-side filters. ⚠ `q` is a literal substring over title AND body/summary, so a title-only ILIKE routes to a SUPERSET. ⚠ It EXCLUDES observation-lane rows by default — pass includeObservations:true to match what a raw SELECT returns. No id filter (that is work_items:get), no time-window arg and no source_plan_slug filter, so a created_at slice, a plan-slug slice, a kind IN-list, a payload-> predicate, an aggregate or a JOIN still wants SQL.",

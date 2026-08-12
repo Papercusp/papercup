@@ -365,6 +365,90 @@ function inListFor(atom: string, column: string): string[] {
 /** `work_items:get` takes 1–100 ids per call (get.ts `ids`: maxItems 100). */
 export const WORK_ITEMS_GET_MAX_IDS = 100;
 
+/* ── The residual-predicate rule ──────────────────────────────────────────────
+ *
+ * A translation is equivalent only if EVERY predicate in the WHERE clause is
+ * accounted for. The obvious way to build one of these translators — extract the
+ * predicates you recognise and render them — silently DROPS the rest, and each
+ * drop changes the answer: dropping `status NOT IN (…)` WIDENS it, dropping an
+ * OR-branch NARROWS it. Neither is visible in a coverage count.
+ *
+ * That is not hypothetical. The first version of these two pairs scored a clean
+ * 20/20 and 20/20 while 10 of the 40 sampled atoms rendered a call answering a
+ * different question — `state NOT IN (…)`, `taken_by IS NULL`, `feature_order IS
+ * NOT NULL`, an OR over `payload::text`, and an OR of two `harness_slug` values,
+ * every one of them quietly discarded. It was found by printing the rendered
+ * calls and reading them, exactly as fact `substitution-pair-narrowing-over-claim`
+ * prescribes.
+ *
+ * So the shape is a POSITIVE WHITELIST: the WHERE clause must be built ONLY from
+ * predicates the verb can express, AND-joined. Anything else — an OR across two
+ * columns, an IS NULL, a NOT IN, a function call, a column nobody taught it —
+ * fails to match and the pair simply does not claim the atom. Unclaimed traffic
+ * stays SQL and stays visible to the census, which is the honest outcome; a
+ * claimed atom rendered wrong is not.
+ *
+ * AND-only is a real constraint, not a simplification: `work_items:list` ANDs its
+ * filter arguments, so an OR between two different columns is not expressible in
+ * one call at all.
+ */
+
+/** A single-quoted SQL string literal. */
+const STR = String.raw`'[^']*'`;
+/** An optional table alias (`w.title`). */
+const ALIAS = String.raw`(?:\w+\.)?`;
+
+/**
+ * `feature_id = 'X'` / `id IN ('A','B')` — the by-id selector.
+ *
+ * ⚠ The leading `\b` is load-bearing and its absence is not a style nit. Without
+ * it, `id` matches the TAIL of `workspace_id`, so `WHERE workspace_id = '…'`
+ * reads as an id selector: the by-id pair claimed a `SELECT DISTINCT
+ * harness_slug` that selects no item at all, and the search pair's negative
+ * lookahead excluded every query mentioning `workspace_id` — which is most of
+ * them. One missing boundary, wrong in both directions at once.
+ */
+const ID_PREDICATE = String.raw`${ALIAS}\b(?:feature_id|id)\s*(?:=\s*${STR}|in\s*\(\s*${STR}(?:\s*,\s*${STR})*\s*\))`;
+
+/**
+ * Scope predicates BOTH verbs apply implicitly: the call is scoped to the
+ * caller's workspace, and `harness` is a first-class argument. Free to consume.
+ */
+const SCOPE_PREDICATE = String.raw`${ALIAS}(?:workspace_id|harness_slug|scope)\s*=\s*${STR}`;
+
+/** The typed slices `work_items:list` can actually ask for. */
+const FILTER_PREDICATE =
+  String.raw`${ALIAS}(?:(?:title|summary)\s+i?like\s*${STR}` +
+  String.raw`|(?:status|state)\s*=\s*${STR}` +
+  String.raw`|(?:item_kind|kind)\s*=\s*${STR}` +
+  String.raw`|(?:taken_by|assignee)\s*=\s*${STR}` +
+  String.raw`|(?:completion_)?authority\s*=\s*${STR})`;
+
+/**
+ * A WHERE clause composed ONLY of `allowed`, AND-joined, running to the end of
+ * the statement. The trailing anchor is what makes this a whitelist rather than a
+ * prefix test: an unrecognised predicate leaves text the alternation cannot
+ * consume, so the match fails instead of silently stopping early.
+ */
+function whereBuiltOnlyFrom(allowed: string): string {
+  return String.raw`\bwhere\s+\(?\s*(?:${allowed})\s*\)?(?:\s+and\s+\(?\s*(?:${allowed})\s*\)?)*\s*(?:\border\s+by\b|\blimit\b|\bgroup\s+by\b|$)`;
+}
+
+/** Shapes that disqualify either pair outright, whatever the WHERE looks like. */
+const NOT_A_PLAIN_ROW_READ = String.raw`^(?!.*\bjoin\b)(?!.*\b(?:count|sum|avg|min|max)\s*\()(?!.*\bgroup\s+by\b)`;
+
+/** `sql.work-items-by-id` — an id selector plus (optionally) scope, nothing else. */
+export const WORK_ITEMS_BY_ID_SHAPE = new RegExp(
+  `${NOT_A_PLAIN_ROW_READ}(?=[\\s\\S]*${ID_PREDICATE})[\\s\\S]*${whereBuiltOnlyFrom(`${ID_PREDICATE}|${SCOPE_PREDICATE}`)}`,
+  'is',
+);
+
+/** `sql.work-items-search` — typed slices plus scope, and NO id selector. */
+export const WORK_ITEMS_SEARCH_SHAPE = new RegExp(
+  `${NOT_A_PLAIN_ROW_READ}(?![\\s\\S]*${ID_PREDICATE})(?=[\\s\\S]*${FILTER_PREDICATE})[\\s\\S]*${whereBuiltOnlyFrom(`${FILTER_PREDICATE}|${SCOPE_PREDICATE}`)}`,
+  'is',
+);
+
 /**
  * The BY-ID forensic read — the dominant `work_items` shape by a wide margin:
  * `SELECT feature_id, status, taken_by, terminal_owner, authority,
