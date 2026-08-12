@@ -137,12 +137,54 @@ function nestedObjectFieldsText(p: { type?: unknown; properties?: unknown; requi
  */
 export function schemaToText(inputSchema: unknown): string | null {
   if (!inputSchema || typeof inputSchema !== 'object') return null;
-  const props = (inputSchema as { properties?: unknown }).properties;
-  if (!props || typeof props !== 'object') return null;
-  const requiredRaw = (inputSchema as { required?: unknown }).required;
-  const required = new Set<string>(Array.isArray(requiredRaw) ? (requiredRaw as string[]) : []);
+  const root = inputSchema as Record<string, unknown>;
+  const directProps = root.properties;
+  const rawBranches = Array.isArray(root.anyOf)
+    ? root.anyOf
+    : Array.isArray(root.oneOf)
+      ? root.oneOf
+      : [];
+  const branches = (directProps && typeof directProps === 'object' && !Array.isArray(directProps)
+    ? [root]
+    : rawBranches
+  ).filter((branch): branch is Record<string, unknown> => !!branch && typeof branch === 'object' && !Array.isArray(branch));
+  if (branches.length === 0) return null;
+
+  // A raw union can require different top-level keys in each branch. Merge
+  // the fields for searchable text, but mark a field required only when it is
+  // present and required in every branch. The branch-required names remain in
+  // the prefix so callers can see the OR constraint instead of inferring that
+  // the flattened optional view is the whole contract.
+  const merged = new Map<string, { raw: unknown; presentIn: number; requiredInAll: boolean }>();
+  for (const branch of branches) {
+    const props = branch.properties;
+    if (!props || typeof props !== 'object' || Array.isArray(props)) continue;
+    const requiredRaw = branch.required;
+    const required = new Set<string>(Array.isArray(requiredRaw) ? requiredRaw.filter((v): v is string => typeof v === 'string') : []);
+    for (const [name, raw] of Object.entries(props as Record<string, unknown>)) {
+      const prior = merged.get(name);
+      if (prior) {
+        prior.presentIn += 1;
+        prior.requiredInAll = prior.requiredInAll && required.has(name);
+      } else {
+        merged.set(name, { raw, presentIn: 1, requiredInAll: required.has(name) });
+      }
+    }
+  }
+  if (merged.size === 0) return null;
+
+  const unionHint = branches.length > 1
+    ? branches
+      .map((branch) => Array.isArray(branch.required)
+        ? branch.required.filter((v): v is string => typeof v === 'string')
+        : [])
+      .filter((names) => names.length > 0)
+      .map((names) => names.join('&'))
+      .join('|')
+    : '';
   const parts: string[] = [];
-  for (const [name, raw] of Object.entries(props as Record<string, unknown>)) {
+  for (const [name, entry] of merged) {
+    const raw = entry.raw;
     const p = (raw && typeof raw === 'object' ? raw : {}) as {
       description?: unknown;
       type?: unknown;
@@ -209,10 +251,11 @@ export function schemaToText(inputSchema: unknown): string | null {
     const isEnum = !!(enumValues && enumValues.length > 0);
     const boundText = bound && !isEnum ? `(${bound})` : '';
     const patternText = pattern && !isEnum ? `~/${pattern}/` : '';
-    const head = `${name}${required.has(name) ? '' : '?'}${type ? `:${type}${boundText}${patternText}${nested}` : ''}`;
+    const required = entry.presentIn === branches.length && entry.requiredInAll;
+    const head = `${name}${required ? '' : '?'}${type ? `:${type}${boundText}${patternText}${nested}` : ''}`;
     parts.push(desc ? `${head} ${desc}` : head);
   }
-  return parts.length > 0 ? parts.join('; ') : null;
+  return parts.length > 0 ? `${unionHint ? `one-of:${unionHint}; ` : ''}${parts.join('; ')}` : null;
 }
 
 function unitOf(pack: PackDescriptor): ToolDiscoveryEntry['unit'] {

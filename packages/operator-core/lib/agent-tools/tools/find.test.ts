@@ -12,6 +12,8 @@
  * Run with: npx vitest run packages/operator-core/lib/agent-tools/tools/find.test.ts
  */
 import { describe, it, expect, vi } from 'vitest';
+import { z } from 'zod';
+import { defineTool } from '@papercusp/agent-mcp';
 
 // Force lexical-only: buildQueryEmbedder resolves to null (unconfigured embedder).
 vi.mock('../search/embedder', () => ({
@@ -113,6 +115,27 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     const text = embedText.get('tools:find');
     expect(text).toContain('tools:find');
     expect(text).toContain('query');
+  });
+
+  it('uses the raw discovery schema for a release:trace-style path-or-sha union', () => {
+    const name = 'test:release-trace-discovery-schema';
+    defineTool({
+      name,
+      capability: 'test:read',
+      requirePrincipal: false,
+      args: z.union([
+        z.object({ path: z.string().min(1), sha: z.string().optional() }),
+        z.object({ path: z.string().optional(), sha: z.string().min(4) }),
+      ]),
+      handler: async () => ({ content: [{ type: 'text' as const, text: 'ok' }] }),
+    });
+
+    const { corpus, schemaByTool } = buildCorpus();
+    const entry = corpus.find((candidate) => candidate.tool === name);
+    expect(entry?.argSchema).toContain('one-of:path|sha');
+    expect(entry?.argSchema).toContain('path?:string');
+    expect(entry?.argSchema).toContain('sha?:string');
+    expect(schemaByTool.get(name)).toMatchObject({ anyOf: expect.any(Array) });
   });
 });
 

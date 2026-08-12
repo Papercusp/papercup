@@ -220,10 +220,15 @@ export function buildCorpus(): {
     if (!tool.expose.mcp) continue;
     const name = tool.expose.mcp.name;
     const when = tool.guidance?.when?.trim();
-    const argSchema = schemaToText(tool.inputSchema);
+    // Strict MCP/OpenAI callers receive the flattened schema, but discovery
+    // needs the raw union so branch requirements (for example path OR sha)
+    // remain visible. Older/plugin projections may not expose the raw field,
+    // so retain the flattened fallback.
+    const discoverySchema = tool.discoveryInputSchema ?? tool.inputSchema;
+    const argSchema = schemaToText(discoverySchema);
     const returns = (tool.guidance as { returns?: string } | undefined)?.returns?.trim();
     if (returns) returnsByTool.set(name, returns);
-    schemaByTool.set(name, tool.inputSchema);
+    schemaByTool.set(name, discoverySchema);
     // Fold the "when to use" line into the searchable text — it's the richest
     // intent signal for both legs (lexical description weight + the embedding).
     const description = [tool.description, when].filter(Boolean).join(' ').trim() || null;

@@ -258,6 +258,26 @@ describe('schemaToText — compact arg-schema text (tools:find searchable params
     expect(schemaToText('nope')).toBeNull();
   });
 
+  it('preserves a release:trace-style path-or-sha union in discovery text', () => {
+    const txt = schemaToText({
+      anyOf: [
+        {
+          type: 'object',
+          required: ['path'],
+          properties: { path: { type: 'string' }, sha: { type: 'string' } },
+        },
+        {
+          type: 'object',
+          required: ['sha'],
+          properties: { path: { type: 'string' }, sha: { type: 'string' } },
+        },
+      ],
+    });
+    expect(txt).toContain('one-of:path|sha');
+    expect(txt).toContain('path?:string');
+    expect(txt).toContain('sha?:string');
+  });
+
   describe('EI-13181: numeric/length bounds (same lossy-discovery class as EI-13164 — a min/max is dropped just like an enum was)', () => {
     it('a min+max integer (sessions:digest\'s real z.number().int().min(1).max(100)) renders the inclusive range', () => {
       // zod's toJSONSchema for `z.number().int().min(1).max(100).optional().describe('Default 30.')`
