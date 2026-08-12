@@ -159,7 +159,9 @@ describe('live-federation gate: a RED backs off instead of re-running the full h
 
   it('labels the FRESH-RED verdict as still-red and NOT a green', () => {
     // A release-gate exit line that reads like a pass is the failure mode this wording prevents.
-    const line = extractLine(/^\s*echo "GATE: FRESH-RED[^\n]*$/m, 'the FRESH-RED verdict line');
+    // Verb-agnostic since WI-38285 routed every terminal path through verdict() (banks, then
+    // emits the identical line); this guard is about the LABEL, not the emitting verb.
+    const line = extractLine(/^\s*(?:echo|verdict) "GATE: FRESH-RED[^\n]*$/m, 'the FRESH-RED verdict line');
     expect(line).toMatch(/still red/);
     expect(line).toMatch(/NOT a green/);
     expect(line).toContain('already tracked');

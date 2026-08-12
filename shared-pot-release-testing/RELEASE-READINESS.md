@@ -81,6 +81,13 @@ waiting on a decision; every open row has a named owner and a concrete flip cond
 > under systemd. **Nobody can re-read what that green actually asserted.** Do not promote it to an
 > evidentiary spine — cite it as "a green was recorded, its content is unrecoverable."
 >
+> ✅ **The MECHANISM is fixed as of 2026-08-12 (WI-38285) — this particular green is not.** Every
+> terminal path in the gate now emits through `verdict()`, which banks the verdict token, the
+> per-leg breakdown, the matrix skip reason, HEAD, and whether the run was systemd- or hand-invoked
+> to `$STATE_DIR/verdicts.jsonl` before echoing. So the NEXT hand-run green is recoverable and can
+> be cited as evidence. The 08-12 one predates the fix and stays unrecoverable — an empty
+> `verdicts.jsonl` for a run before that date means "not recorded", never "no run happened".
+>
 > ⚠ **CORRECTED 2026-08-09 (su-c2f97, WI-37144): the "no recorded decision / 57 seconds after a 5th
 > consecutive RED" reading was WRONG and must not be repeated.** The stop was ordered by the
 > **owner**, explicitly, and NOT because of the red: session `d699c658` turn 20
@@ -468,8 +475,23 @@ its three dark flags are all `owner-authority` kill-switches, which the watermar
    announced event had never been emitted. **A gate that goes green silently is
    indistinguishable from one that never did.** Machine state and program state disagreed for
    hours with nothing reconciling them. Fixed this pass (event emitted, P-402 closed, Now
-   rewritten, D-015 recorded). Carry the rule: *the verdict lives in the service journal — the
-   marker file is a claim, the journal line is the evidence.*
+   rewritten, D-015 recorded).
+   ⚠ **The rule this item used to carry — *"the verdict lives in the service journal — the marker
+   file is a claim, the journal line is the evidence"* — was FALSIFIED on 2026-08-12 (WI-38285)
+   and must not be repeated.** The journal holds the verdict only when the run went through
+   systemd; a bare `./live-federation-gate.sh` never touches journald at all, and a manual
+   `systemctl start` of the SERVICE leaves service entries and no timer ones. So the journal
+   answers about the TIMER and lies by omission about the GATE — which is how the
+   2026-08-12T11:12:50Z GREEN became unrecoverable while the rule above said the evidence
+   existed. Since the timer was owner-stopped on 2026-08-07 **every** run is a hand-run, so this
+   was the normal case, not an edge case.
+   **Corrected rule: the verdict lives in `$STATE_DIR/verdicts.jsonl`** — every terminal path now
+   emits through `verdict()`, which banks a structured record (verdict token, per-leg breakdown,
+   matrix skip reason, HEAD, systemd-vs-hand invoker, pid, run dir) and then echoes the identical
+   line. The marker files remain what they always were — bare epoch integers, a claim and never
+   evidence. Fixed 2026-08-12 in `papercusp-desktop/bin/live-federation-gate.sh`; guarded by
+   `packages/operator-core/lib/live-federation-gate-verdict-bank.test.ts`, whose static leg fails
+   if any future terminal path goes back to emitting its own `echo`.
 2. **Work-item ledger diverges from plan-item ledger on four rows.** `P-301`→WI-5136 `todo`,
    `P-402`→WI-5137 `todo` and WI-5064 `open`, `P-104`→WI-5130 `blocked` — while all four plan
    items read `done`. ⚠ **Do not attribute this to WI-6218** (skipCompletionGate stamping

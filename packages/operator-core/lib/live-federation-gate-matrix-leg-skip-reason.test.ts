@@ -211,14 +211,19 @@ describe('EI-18715623477356990: a skipped local-matrix leg always says WHY, this
 
   describe('static: the reason can never be dropped from a verdict line again', () => {
     it.each([
-      ['GREEN', /echo "GATE: GREEN[^\n]*\n/],
+      // Verb-agnostic `(?:echo|verdict)`: WI-38285 moved every terminal path from a bare `echo`
+      // to `verdict()`, which banks the record to $STATE_DIR/verdicts.jsonl and then emits the
+      // byte-identical line. This guard is about the skip-reason SUFFIX on the line, not about
+      // which verb emits it — a reverted bare echo is caught by
+      // live-federation-gate-verdict-bank.test.ts instead.
+      ['GREEN', /(?:echo|verdict) "GATE: GREEN[^\n]*\n/],
       // The §4 VERDICT red specifically — matched via ${REDS[*]}. The earlier assert-core
-      // self-test bail also echoes "GATE: RED", but it exits long before §3b runs, so there is
+      // self-test bail also emits "GATE: RED", but it exits long before §3b runs, so there is
       // no leg decision to report at that point.
-      ['RED', /echo "GATE: RED \(\$\{REDS\[\*\]\}\)[^\n]*\n/],
-      ['SKIPPED (no legs ran)', /echo "GATE: SKIPPED \(no legs ran[^\n]*\n/],
-      ['SKIPPED-STARVATION', /echo "GATE: SKIPPED-STARVATION[^\n]*\n/],
-      ['SKIPPED-STORM', /echo "GATE: SKIPPED-STORM[^\n]*\n/],
+      ['RED', /(?:echo|verdict) "GATE: RED \(\$\{REDS\[\*\]\}\)[^\n]*\n/],
+      ['SKIPPED (no legs ran)', /(?:echo|verdict) "GATE: SKIPPED \(no legs ran[^\n]*\n/],
+      ['SKIPPED-STARVATION', /(?:echo|verdict) "GATE: SKIPPED-STARVATION[^\n]*\n/],
+      ['SKIPPED-STORM', /(?:echo|verdict) "GATE: SKIPPED-STORM[^\n]*\n/],
     ])('the %s exit line carries $(matrix_skip_suffix)', (_label, re) => {
       const line = extractLine(re, `the ${_label} exit line`);
       expect(line).toMatch(/matrix_skip_suffix/);

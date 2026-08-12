@@ -115,6 +115,11 @@ function runAdmission(opts: {
     'log() { echo "LOG: $*" >&2; }', // stderr, exactly like the real log()
     'check_staleness() { echo "CALLED: check_staleness" >&2; }',
     'skip_cleanup() { echo "CALLED: skip_cleanup" >&2; }',
+    // WI-38285: terminal paths emit through verdict(), which banks the record to
+    // $STATE_DIR/verdicts.jsonl and then echoes the byte-identical line. This harness evals the
+    // admission chain in isolation with no STATE_DIR, and what it asserts on is the EMITTED
+    // line, so the stub keeps just that half.
+    'verdict() { echo "$1"; }',
     extractAdmissionChain(),
     'echo "REACHED: past-admission"',
   ].join('\n');

@@ -82,7 +82,11 @@ describe('live-federation gate: every host-loadavg failure line carries the fram
   });
 
   it('the SKIPPED-STORM downgrade line names the frame-scoped reading, not just the host load', () => {
-    const line = extractLine(/^\s*echo "GATE: SKIPPED-STORM \([^\n]*$/m, 'the SKIPPED-STORM verdict line');
+    // Verb-agnostic: WI-38285 moved every terminal path from a bare `echo` to `verdict()` (which
+    // banks the record before emitting the identical line). This guard is about the frame-scoped
+    // READING in the line, not about which verb emits it — a reverted bare echo is caught by
+    // live-federation-gate-verdict-bank.test.ts instead.
+    const line = extractLine(/^\s*(?:echo|verdict) "GATE: SKIPPED-STORM \([^\n]*$/m, 'the SKIPPED-STORM verdict line');
     expect(line).toContain('load $LOAD1_END');
     expect(line, 'the storm downgrade must not name host load alone').toContain('$FRAME_NOTE');
   });
@@ -93,7 +97,7 @@ describe('live-federation gate: every host-loadavg failure line carries the fram
   });
 
   it('the RED verdict line names the frame-scoped reading', () => {
-    const line = extractLine(/^echo "GATE: RED \(\$\{REDS\[\*\]\}\)[^\n]*$/m, 'the RED verdict line');
+    const line = extractLine(/^(?:echo|verdict) "GATE: RED \(\$\{REDS\[\*\]\}\)[^\n]*$/m, 'the RED verdict line');
     expect(line, 'the RED verdict must carry the frame-scoped reading').toContain('$FRAME_NOTE');
   });
 
