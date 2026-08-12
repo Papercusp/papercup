@@ -317,6 +317,19 @@ export default defineTool({
   // see packages/operator-core/lib/cell-registrations.ts. It already satisfies D-038
   // axis 5: those cells project this one derivation rather than recomputing it, and a
   // no-arg call is legal precisely so the three GLOBAL cells resolve (P-007 / D-067).
+  //
+  // EI-20261626591106746 / EI-18803497769946984: this handler's work is SUBPROCESS work
+  // (git status/rev-list/ls-remote, the release + systemd probes) and it never reads
+  // ctx.tx — `ctx` is used only for role/harnessSlug in planeFor(). Holding the ambient
+  // workspace transaction idle across those awaits trips Postgres's
+  // idle_in_transaction_session_timeout (60s), which reaches the caller as a bare
+  // `write CONNECTION_CLOSED 127.0.0.1:6432` naming neither this tool nor this cause —
+  // and, because this tool RESOLVES five registered cells, every one of them degrades to
+  // status:'unknown' at the same moment. Measured 2026-08-12 while Postgres (232/253 conns
+  // idle, zero ungranted locks), the host (load 38/128 cores, PSI ~0) and git (all ops
+  // sub-second) were ALL healthy: the hang was this idle transaction, not contention.
+  // See ProjectedTool.skipWorkspaceTx; same declaration as dev:restart and capability:git.
+  skipWorkspaceTx: true,
   capability: 'intel:read',
   guidance: {
     when: 'After leaving an edit in the tree (git-sync owns commit/push): to confirm it reached staging/main/:3070, to see WHY it is stuck (gate red/stalled) — or, whenever the code you touched might not be operator code, to find out whether a deploy or a RESTART is what activates it. Pass `path`, not `sha`: the sha cannot tell you which host runs the code.',
