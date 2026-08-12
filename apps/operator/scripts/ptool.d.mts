@@ -239,10 +239,14 @@ export function isTransportFailure(error: any): boolean;
  *
  * Returns the active client because the successful replay belongs to the new
  * session. A failed replay client is closed before the error is surfaced.
+ * @param {any} client
+ * @param {any} params
+ * @param {{reconnect?: () => Promise<any>, maxAttempts?: number, timeoutMs?: number}} [options]
  */
 export function callToolWithReplayRecovery(client: any, params: any, { reconnect, maxAttempts, timeoutMs, }?: {
-    maxAttempts?: number | undefined;
-    timeoutMs?: number | undefined;
+    reconnect?: () => Promise<any>;
+    maxAttempts?: number;
+    timeoutMs?: number;
 }): Promise<{
     client: any;
     result: any;

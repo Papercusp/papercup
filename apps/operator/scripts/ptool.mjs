@@ -803,6 +803,9 @@ async function closeClientQuietly(client) {
  *
  * Returns the active client because the successful replay belongs to the new
  * session. A failed replay client is closed before the error is surfaced.
+ * @param {any} client
+ * @param {any} params
+ * @param {{reconnect?: () => Promise<any>, maxAttempts?: number, timeoutMs?: number}} [options]
  */
 export async function callToolWithReplayRecovery(
   client,
