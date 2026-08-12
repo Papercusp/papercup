@@ -17,7 +17,16 @@ const helper = src.match(/cat > "\$POLL" <<'POLL_SCRIPT'\n([\s\S]*?)\nPOLL_SCRIP
 describe('EI-10822 — verify-tauri-headless DOM polling', () => {
   it('exports the per-run helper to assertion commands and boot-only sessions', () => {
     expect(src).toContain('export VERIFY_TAURI_POLL="$POLL"');
-    expect(src).toContain('export VERIFY_TAURI_POLL=$VERIFY_TAURI_POLL');
+    // EI-20226754912676562 re-pointed this half of the guard. --boot-only used
+    // to hand the helper path over by printing `export VERIFY_TAURI_POLL=...`
+    // to stdout; concurrent callers redirecting that stream to one shared log
+    // could source a PEER's block. The path now travels in the private per-run
+    // env file and is re-exported only after that file re-verifies ownership.
+    // Assert the NEW carrier — asserting the old one re-demands the bug.
+    expect(src).toContain(
+      String.raw`printf 'VERIFY_TAURI_POLL=%q\n' "$VERIFY_TAURI_POLL"`,
+    );
+    expect(src).toMatch(/^export VERIFY_TAURI_POLL VERIFY_TAURI_STOP\b/m);
     expect(helper).toBeTruthy();
   });
 

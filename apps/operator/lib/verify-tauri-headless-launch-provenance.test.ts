@@ -57,18 +57,38 @@ describe('EI-20200818150345989 — verifier bridge handoff carries launch proven
   });
 
   it('exports the verified identity to assertion and --boot-only callers', () => {
+    // The ORDERING property is the point and is unchanged: the identity is
+    // exported only AFTER the bridge has been verified, i.e. before the
+    // --boot-only branch can hand anything to a caller.
     const bridgeExportIdx = src.indexOf(
       'export VERIFY_TAURI_OWNER_SID="$TAURI_OWNER_SID"',
     );
     const bootOnlyIdx = src.indexOf('if [ "${1:-}" = "--boot-only" ]; then');
-    const bootOnlyExportIdx = src.indexOf(
-      'export VERIFY_TAURI_OWNER_SID=$VERIFY_TAURI_OWNER_SID',
-    );
+    const bootOnlyHandoffIdx = src.indexOf('write_boot_only_env_script || exit 1');
     expect(bridgeExportIdx).toBeGreaterThan(-1);
     expect(bridgeExportIdx).toBeLessThan(bootOnlyIdx);
-    expect(bootOnlyExportIdx).toBeGreaterThan(bootOnlyIdx);
+    expect(bootOnlyHandoffIdx).toBeGreaterThan(bootOnlyIdx);
+
+    // EI-20226754912676562 changed the CARRIER, not the property: the verified
+    // identity now reaches a --boot-only caller through the private per-run env
+    // file instead of a raw export block on shared stdout.
     expect(src).toContain(
-      'export VERIFY_TAURI_LAUNCH_PROVENANCE=$VERIFY_TAURI_LAUNCH_PROVENANCE',
+      String.raw`printf 'VERIFY_TAURI_OWNER_SID=%q\n' "$VERIFY_TAURI_OWNER_SID"`,
     );
+    expect(src).toContain(
+      String.raw`printf 'VERIFY_TAURI_LAUNCH_PROVENANCE=%q\n' "$VERIFY_TAURI_LAUNCH_PROVENANCE"`,
+    );
+
+    // ...and that carrier re-checks provenance against the TARGET's own environ
+    // at source time, because a caller can source a stale/copied path long
+    // after this boot completed.
+    expect(src).toContain(
+      'PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$VERIFY_TAURI_LAUNCH_PROVENANCE',
+    );
+
+    // Recurrence guard for the bug that motivated the change: no raw
+    // `export VERIFY_TAURI_X=$VERIFY_TAURI_X` block may come back, because a
+    // shared stdout log lets one caller reconstruct a PEER's rig identity.
+    expect(src).not.toMatch(/export VERIFY_TAURI_[A-Z_]+=\$VERIFY_TAURI_[A-Z_]+/);
   });
 });
