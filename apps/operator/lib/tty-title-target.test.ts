@@ -404,6 +404,16 @@ describe('install parity — hooks/cc reaches ALL THREE deploy paths', () => {
     expect(missing, `absent from CC_HOOK_FILES: ${missing.join(', ')}`).toEqual([]);
   });
 
+  it('OMP companion guard: the desktop sidecar ships every direct OMP hook TypeScript sibling', () => {
+    const sidecar = readFileSync(SIDECAR_BUILD, 'utf8');
+    // OMP entrypoints are loaded as independent TypeScript files. Copying only
+    // coord-hook.ts/inject-hook.ts recreates EI-20228871846415832 the next time
+    // either entrypoint gains a relative sibling import. Keep this assertion
+    // generic so a future extracted sibling is covered without adding its name.
+    expect(sidecar).toMatch(/hooks\/omp[\s\S]{0,500}\*\.ts/);
+    expect(sidecar).toContain('non-preempting-delivery.ts');
+  });
+
   it('a python lib is installed non-executable (imported, never exec\'d)', () => {
     const ts = readFileSync(DESKTOP_INSTALL, 'utf8');
     expect(ts).toContain('CC_HOOK_LIB_FILES');
