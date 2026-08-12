@@ -148,11 +148,11 @@ describe('loadRoleCapabilities', () => {
       expect(caps.has('routines:write')).toBe(false);
     });
 
-    test('sentinel CANNOT place/execute: carved OUT of cup:spawn + DENIED fs-write/bash at the envelope', async () => {
-      const { default: spawn } = await import('../../../agent-tools/cup/spawn.js');
-      expect(spawn.agentRoles).not.toContain('papercup');
-      // ...but the Queen (operator) still spawns it.
-      expect(spawn.agentRoles).toContain('operator');
+    test('sentinel CANNOT execute: DENIED fs-write/bash at the envelope', async () => {
+      // (This test also asserted the sentinel was carved OUT of `cup:spawn`'s
+      // agentRoles until P-059 retired that verb. Narrowed, not deleted — the
+      // envelope belt below is the half that survives the tool. The carve-out
+      // it pinned is now structural: there is no cup:* verb to be carved out of.)
       // The envelope belt: even a tool asking for fs-write/bash is refused.
       const { evaluateCapabilityEnvelope } = await import('../../../capability-envelope/policy.js');
       const prev = process.env.PAPERCUSP_TESTING_FULL_ACCESS_ROLES;
@@ -219,13 +219,12 @@ describe('loadRoleCapabilities', () => {
       expect(caps.has('routines:write')).toBe(false);
     });
 
-    test('overwatch is carved OUT of placement/optimization (cup:spawn + gym:judge — D-001/D-002)', async () => {
-      const { default: spawn } = await import('../../../agent-tools/cup/spawn.js');
-      expect(spawn.agentRoles).not.toContain('kettle'); // placement is the Queen's; it NUDGES her
+    test('overwatch is carved OUT of optimization (gym:judge — D-002)', async () => {
+      // (The placement half — `cup:spawn`.agentRoles excludes 'kettle' — retired
+      // with the verb in P-059. Narrowed, not deleted: gym:judge exercises the
+      // same carve-out property on a live tool.)
       const { default: judge } = await import('../../../agent-tools/gym/judge.js');
       expect(judge.agentRoles).not.toContain('kettle'); // not a gym evaluator (gates on harness:read it holds)
-      // ...but the Queen (operator) still places.
-      expect(spawn.agentRoles).toContain('operator');
     });
   });
 
