@@ -179,7 +179,16 @@ export const FACT_BODY_MAX_CHARS = 1200;
 /** P-007: bounded verbatim quote inside a source-provenance stamp (fold-friendly —
  *  mirrors RELAY_RENDER_CHARS; a fold can carry 12+ facts, so quotes stay short). */
 export const FACT_PROVENANCE_QUOTE_CHARS = 160;
+/** Ordinary facts expire after a week. A convention with no explicit ttlSec
+ * uses PostgreSQL's `infinity` timestamp instead (see assertFact). */
 export const FACT_DEFAULT_TTL_SEC = 7 * 24 * 3600;
+/** PostgreSQL's canonical no-expiry timestamptz representation. */
+export const FACT_PERMANENT_EXPIRY = 'infinity';
+
+/** True for the only unbounded expiry representation emitted by this store. */
+export function isPermanentFactExpiry(expiresAt: string): boolean {
+  return expiresAt === FACT_PERMANENT_EXPIRY;
+}
 /**
  * A volatile measurement is a snapshot, not a standing property. An explicit
  * longer TTL is refused at the write boundary rather than silently preserving
@@ -410,6 +419,7 @@ export interface AgentFact {
   settledBy?: string | null;
   createdBy: string;
   updatedAt: string;
+  /** ISO timestamp, or PostgreSQL's `infinity` for an unbounded convention. */
   expiresAt: string;
   /** Migration 801: deliberate retraction audit metadata. These fields are
    * selected by the version-history read; ordinary live folds omit them. */
@@ -609,6 +619,7 @@ export interface AssertFactInput {
    *  invites the re-derivation it exists to prevent. */
   settledBy?: string | null;
   createdBy: string;
+  /** Explicit TTL; omitted conventions are permanent, other facts default to 7d. */
   ttlSec?: number;
   workspaceId?: string;
   /** F0-2 (federated-scout-gym): OPT-IN federation egress — only shareable
@@ -1126,6 +1137,11 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
   // EI-18681964809855890: an explicit ttlSec always wins; otherwise a
   // provisional/suspected confidence tier shortens the default (see
   // defaultTtlSecForConfidence) before falling back to FACT_DEFAULT_TTL_SEC.
+  // P-028 / EI-20038280125466267: a declared convention is normative state,
+  // not a decaying observation. With no explicit TTL, store it with
+  // PostgreSQL's `infinity` timestamp; callers can still opt into a bounded
+  // convention lifetime by passing ttlSec explicitly.
+  const permanentConvention = input.kind === 'convention' && input.ttlSec == null && !subjectVolatile;
   const ttl = subjectVolatile
     ? (input.ttlSec && input.ttlSec > 0 ? input.ttlSec : FACT_VOLATILE_MAX_TTL_SEC)
     : input.ttlSec && input.ttlSec > 0
@@ -1214,7 +1230,8 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
        COALESCE(${input.potHomeSlug ?? null}, (SELECT harness_slug FROM superseded)),
        ${input.scope}, ${ref}, ${key}, ${body},
        ${input.sourceRef ?? null}, ${input.createdBy ?? null},
-       now() + make_interval(secs => ${ttl}), ${input.shareable === true},
+       ${permanentConvention ? sql`'infinity'::timestamptz` : sql`now() + make_interval(secs => ${ttl})`},
+       ${input.shareable === true},
        ${audienceScope},
        ${input.sourceProvenance ? JSON.stringify(input.sourceProvenance) : null}::text::jsonb,
        ${confidence},
@@ -1374,6 +1391,10 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
           AND retracted_at IS NULL AND expires_at > now()
           AND key NOT LIKE ${`${WALL_KEY_PREFIX}%`}
           AND key NOT LIKE ${`${DEAD_END_KEY_PREFIX}%`}
+          -- P-028: conventions are governance rows, not ordinary cap
+          -- population. Their explicit TTL still controls natural expiry,
+          -- but the per-scope observation cap must never retract policy.
+          AND COALESCE(kind, '') <> 'convention'
           AND id IS DISTINCT FROM ${writtenId}
         ORDER BY CASE confidence
                    WHEN 'verified'    THEN 0
