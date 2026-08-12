@@ -40,7 +40,7 @@ const REFS = z
   .describe('Item IDs this decision relates to. Appear in the body as P-NNN tokens.');
 
 const ITEM_REFS_ALIAS_DESC =
-  'Alias for `refs` (EI-18735663944089262) — plans:get returns a decision\'s item refs under this exact name (itemRefs), so accepting it here means a read-then-write roundtrip does not need a field rename. Prefer `refs`; if both are given, `refs` wins.';
+  'Alias for `refs` (EI-18735663944089262) — plans:get returns a decision\'s item refs under this exact name (itemRefs), so accepting it here means a read-then-write roundtrip does not need a field rename. Both fields enforce the same in-plan `P-NNN` reference format; work-item/issue ids are not accepted. Prefer `refs`; if both are given, `refs` wins.';
 
 const AFFECTS = z
   .array(z.string().min(1))

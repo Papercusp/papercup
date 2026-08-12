@@ -50,6 +50,10 @@ describe('plans:add-decision — itemRefs alias for refs', () => {
     expect(parsed.success).toBe(true);
   });
 
+  it('documents the shared P-NNN namespace on the itemRefs alias', () => {
+    expect(tool.args.shape.itemRefs.description).toMatch(/same in-plan `P-NNN` reference format/i);
+  });
+
   it('still rejects a genuinely unknown key (EI-10883 closed shape intact)', () => {
     const parsed = tool.args.safeParse({
       slug: 'some-plan',
