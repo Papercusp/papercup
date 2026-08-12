@@ -693,7 +693,7 @@ export function fileFingerprint(absolute) {
 function gitHeadSha(root) {
   try {
     const res = run('git', ['rev-parse', '--short=10', 'HEAD'], { cwd: root });
-    if (res.error || res.status !== 0) return null;
+    if (!res || res.error || res.status !== 0) return null;
     const sha = (res.stdout ?? '').trim();
     return sha === '' ? null : sha;
   } catch {
@@ -719,7 +719,7 @@ function gitPathStates(absolutePaths, root) {
   } catch {
     return states;
   }
-  if (res.error || res.status !== 0) return states; // unmeasured stays `unknown`, never `clean`
+  if (!res || res.error || res.status !== 0) return states; // unmeasured stays `unknown`, never `clean`
   // git answered for every requested path, so anything it did not name is genuinely clean.
   for (const abs of absolutePaths) states.set(abs, 'clean');
   for (const record of (res.stdout ?? '').split('\0')) {
@@ -744,7 +744,7 @@ function gitLineDeltas(absolutePaths, root) {
   } catch {
     return deltas;
   }
-  if (res.error || res.status !== 0) return deltas;
+  if (!res || res.error || res.status !== 0) return deltas;
   for (const line of (res.stdout ?? '').split('\n')) {
     const match = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(line);
     if (!match) continue;
