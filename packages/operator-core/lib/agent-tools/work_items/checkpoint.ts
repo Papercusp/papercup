@@ -321,7 +321,7 @@ function checksSpec() {
         '`## Checks` section every time this checkpoint is re-injected. Put hash/id/timestamp/state expectations ' +
         'HERE rather than in checkpoint prose, so the probe travels with the claim and a successor can tell an ' +
         'ASSERTED claim from a VERIFIED one. Carry-forward semantics: OMITTED preserves the existing rows (a ' +
-        'plain rewrite never silently drops them) and [] clears them. With `append: true` a supplied list is ' +
+        'plain rewrite never silently drops them) and [] clears them. With `append: true` or `rowsMode:\'merge\'` a supplied list is ' +
         `UNIONED onto the carried set (supplied wins on matching claim text), but capped at ` +
         `${CARRY_NOTE_MAX_CHECKS}: an overflow would evict the carried tail, so an additive write refuses atomically ` +
         'before it can drop rows. Retire stale rows with a plain replace first, or append without `checks` to leave ' +
