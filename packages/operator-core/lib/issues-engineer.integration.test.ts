@@ -214,10 +214,10 @@ describe('engineer issues surface (real PG)', () => {
     expect((await issues.getIssue(child.id))?.parent).toBe(parent.id);
 
     const retained = issues.updateIssue(child.id, { parent: parent.id, silent: true });
-    expect((await retained)?.parent).toBe(parent.id);
+    expect(notTripped(await retained)?.parent).toBe(parent.id);
 
     const cleared = issues.updateIssue(child.id, { parent: null, silent: true });
-    expect((await cleared)?.parent).toBeNull();
+    expect(notTripped(await cleared)?.parent).toBeNull();
     expect((await issues.getIssue(child.id))?.parent).toBeNull();
   });
 

@@ -24,6 +24,7 @@ function existing(p: Partial<EngineerIssue> & { id: string; title: string }): En
     payload: null,
     foundDuring: null,
     linkedFeatureId: null,
+    parent: null,
     createdBy: null,
     signalOrigin: 'organic',
     assigneeRank: null,
