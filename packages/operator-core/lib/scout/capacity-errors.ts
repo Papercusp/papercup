@@ -65,6 +65,14 @@ export function admissionDenialFrom(input: unknown): AdmissionDenial | undefined
     ...(typeof denial.pausedAccounts === 'number' ? { pausedAccounts: denial.pausedAccounts } : {}),
     ...(typeof denial.totalAccounts === 'number' ? { totalAccounts: denial.totalAccounts } : {}),
     ...(typeof denial.freeSlots === 'number' ? { freeSlots: denial.freeSlots } : {}),
+    // WI-38062: which concurrency gate refused, + that gate's real occupancy. Extracted here or
+    // the discrimination is lost exactly where it is needed — this is the boundary through which
+    // every HISTORICAL row is re-classified, so a field dropped here is invisible to the metric
+    // no matter how faithfully the write path stamped it. Rows persisted before the stamp simply
+    // carry no `gate`, which must stay distinguishable from 'bucket' (never default it).
+    ...(denial.gate === 'bucket' || denial.gate === 'fleet' ? { gate: denial.gate } : {}),
+    ...(typeof denial.gateInFlight === 'number' ? { gateInFlight: denial.gateInFlight } : {}),
+    ...(typeof denial.gateLimit === 'number' ? { gateLimit: denial.gateLimit } : {}),
   };
 }
 
