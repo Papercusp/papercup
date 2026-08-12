@@ -1885,6 +1885,47 @@ describe('SessionChatModal', () => {
       expect(screen.queryByText(GONE)).toBeNull();
     });
 
+    it('keeps the boot copy while sessions:list resolves before the live roster', async () => {
+      // The launch row can produce a native session result before the owner has
+      // self-registered in coord_presence. `resolved` is therefore not proof
+      // that the roster's active leg has caught up; the dossier must remain in
+      // the starting state until that authoritative live row arrives.
+      seedRoster([]);
+      let responseRead = false;
+      fetchMock.mockResolvedValueOnce({
+        ok: true,
+        status: 200,
+        text: async () => {
+          responseRead = true;
+          return JSON.stringify({
+            sessions: [
+              { source_kind: 'claude', session_id: 'claude-live', active: true, last_ts: null },
+            ],
+          });
+        },
+      });
+      render(
+        <SessionChatModal
+          sessionOwnerId="su-new-1"
+          onClose={vi.fn()}
+          pendingLaunch={{ ownerId: 'su-new-1', startedAtMs: Date.now() }}
+        />,
+      );
+
+      await waitFor(() => expect(screen.getByTestId('session-chat-starting-up')).toBeTruthy());
+      // Flush past the resolver response. Before this point the old `!resolved`
+      // formula also passes, so asserting only the initial banner would be
+      // vacuous; once the live native row resolves, that formula drops the
+      // banner and exposes the gone-away dossier copy.
+      await waitFor(() => expect(responseRead).toBe(true));
+      await act(async () => {
+        await Promise.resolve();
+      });
+      expect(screen.getByText(STARTING)).toBeTruthy();
+      expect(lastAgentDossierProps?.startingUp).toBe(true);
+      expect(screen.queryByText(GONE)).toBeNull();
+    });
+
     // Non-vacuity guard: identical inputs minus `pendingLaunch` must still take
     // the old branch. Without this, a bug making `startingUp` always-true would
     // pass the test above.

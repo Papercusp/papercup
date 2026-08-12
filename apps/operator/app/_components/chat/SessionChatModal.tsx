@@ -1137,11 +1137,19 @@ export default function SessionChatModal({
   // server still lists it as starting (WI-6440, survives a reload). Both inputs
   // are reactive (advRoster.list pushes; the resolve effect re-runs), so this
   // flips off on its own the moment the session comes online — no clearing
-  // handshake with the caller.
+  // handshake with the caller. `resolved` is deliberately NOT a prerequisite:
+  // sessions:list can resolve the native transcript as soon as bootstrap has
+  // recorded it, before advRoster.list has observed the same owner in its live
+  // presence leg. That is still the boot window, and treating a resolved live
+  // transcript as proof of roster registration recreates WI-6367's gone-away
+  // dossier copy (EI-20228009737109144).
   const launchedByThisView =
     pendingLaunch != null && sessionOwnerId != null && pendingLaunch.ownerId === sessionOwnerId;
   const startingUp =
-    !resolved && !actionRosterEntry && !endedEntry && (launchedByThisView || startingEntry != null);
+    !actionRosterEntry &&
+    !endedEntry &&
+    resolved?.active !== false &&
+    (launchedByThisView || startingEntry != null);
 
   // WI-6821: the server OBSERVED this launch die (terminal process gone, never
   // registered) rather than inferring it from elapsed time. Server-derived on
