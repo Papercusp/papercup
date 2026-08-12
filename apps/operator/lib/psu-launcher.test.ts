@@ -5442,6 +5442,11 @@ describe('psuLaunchArgvRecord (WI-1343 launch_argv reconstruction)', () => {
     expect(argv).toContain('--no-plan');
     expect(argv).not.toContain('--workspace=null');
   });
+  it('records the explicit --headless launch discriminator', () => {
+    const args = parseArgs(['--no-picker', '--agent=claude', '--harness=h1', '--no-plan', '--headless']);
+    const argv = psuLaunchArgvRecord({ agent: 'claude', workspace: null, harness: 'h1', plan: null }, args);
+    expect(argv).toContain('--headless');
+  });
   it('captures fleet, account, profile, context-size, model, add-dir and passthrough', () => {
     const args = parseArgs([
       '--no-picker', '--agent=claude', '--harness=h1', '--plan=p1',

@@ -266,11 +266,13 @@ describe('classifyLiveIdle (P-011 slice 2: live-but-idle detection — the D-007
     heartbeatAgoMs: number,
     lastActiveAgoMs: number | null,
     role: string | null = null,
+    launchArgv: unknown = undefined,
   ): LiveIdleCandidate => ({
     coordOwnerId,
     heartbeatAtMs: NOW - heartbeatAgoMs,
     lastActiveAtMs: lastActiveAgoMs == null ? null : NOW - lastActiveAgoMs,
     role,
+    launchArgv,
   });
 
   it('flags a session that is alive (fresh heartbeat) but idle (stale activity) and not busy', () => {
@@ -316,6 +318,30 @@ describe('classifyLiveIdle (P-011 slice 2: live-but-idle detection — the D-007
   it('does NOT flag an owner-directed su session (roleless su-… id) even when idle + alive + not busy', () => {
     const c = cand('su-173cbb09-c016-4d62-8806-70487830c24f', 30_000, 5 * 60 * 60 * 1000);
     expect(classifyLiveIdle({ candidates: [c], busyOwners: new Set(), nowMs: NOW })).toHaveLength(0);
+  });
+
+  it('flags a roleless su session only when launch_argv has an exact --headless token', () => {
+    const c = cand(
+      'su-headless',
+      30_000,
+      5 * 60 * 60 * 1000,
+      null,
+      ['psu', '--no-picker', '--agent=codex', '--headless'],
+    );
+    expect(classifyLiveIdle({ candidates: [c], busyOwners: new Set(), nowMs: NOW })).toEqual([c]);
+  });
+
+  it('keeps unknown, embedded, and non-su responsive launches protected', () => {
+    const unknown = cand('su-unknown', 30_000, 5 * 60 * 60 * 1000, null, null);
+    const embedded = cand('su-embedded', 30_000, 5 * 60 * 60 * 1000, null, ['psu --headless']);
+    const assignment = cand('su-assignment', 30_000, 5 * 60 * 60 * 1000, null, ['--headless=true']);
+    const operator = cand('s-operator', 30_000, 5 * 60 * 60 * 1000, 'operator', ['psu', '--headless']);
+    const planner = cand('s-planner', 30_000, 5 * 60 * 60 * 1000, 'planner', ['psu', '--headless']);
+    expect(classifyLiveIdle({
+      candidates: [unknown, embedded, assignment, operator, planner],
+      busyOwners: new Set(),
+      nowMs: NOW,
+    })).toHaveLength(0);
   });
 
   it('does NOT flag sentinel (operator) / planner sessions by presence agentRole', () => {

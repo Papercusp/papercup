@@ -653,6 +653,19 @@ export interface LiveIdleCandidate {
    *  Optional (defaults null → id-only classification) so existing callers/tests
    *  that don't supply it still compile; a roleless su-… id still reads responsive. */
   role?: string | null;
+  /** The durable launch argv from adv_sessions. Only an exact '--headless'
+   *  token is meaningful; absent, malformed, and legacy values stay protected. */
+  launchArgv?: unknown;
+}
+
+/**
+ * A narrowly scoped launch discriminator for the live-idle reaper. The
+ * recorded argv is JSON and has legacy/console shapes, so only a raw token
+ * equal to '--headless' is authoritative. Embedded shell text, '--headless='
+ * variants, and unknown values must not weaken the responsive-session guard.
+ */
+function hasExplicitHeadlessLaunch(argv: unknown): boolean {
+  return Array.isArray(argv) && argv.some((arg) => arg === '--headless');
 }
 
 /**
@@ -689,8 +702,13 @@ export function classifyLiveIdle(opts: {
   return opts.candidates.filter((c) => {
     if (opts.nowMs - c.heartbeatAtMs >= livenessMs) return false; // dead process → dead-ghost reaper's job
     if (opts.busyOwners.has(c.coordOwnerId)) return false; // holds a claim / wake / running bee
-    // Owner-directed (responsive) sessions are never live-idle-terminated (P-001).
-    if (classifyAgentPane({ role: c.role ?? null, ownerId: c.coordOwnerId }).driveMode === 'responsive') return false;
+    const pane = classifyAgentPane({ role: c.role ?? null, ownerId: c.coordOwnerId });
+    // Owner-directed (responsive) sessions are never live-idle-terminated
+    // (P-001), except for an explicitly headless SU launch. Restrict the
+    // exception to kind 'su': operator/planner panes remain owner-directed,
+    // and unknown/legacy argv remains protected by default.
+    const explicitlyHeadlessSu = pane.kind === 'su' && hasExplicitHeadlessLaunch(c.launchArgv);
+    if (pane.driveMode === 'responsive' && !explicitlyHeadlessSu) return false;
     return opts.nowMs - (c.lastActiveAtMs ?? 0) >= idleMs; // no genuine activity for idleMs
   });
 }
@@ -779,9 +797,16 @@ export async function findIdleLiveSessions(
     // spares fewer, never terminates a viewed session it would otherwise spare.
     for (const o of viewerOwners) busyOwners.add(o);
     const rows = await sql<
-      Array<{ id: number; coord_owner_id: string; heartbeat_at: string | Date; last_active_at: string | Date | null; agent_role: string | null }>
+      Array<{
+        id: number;
+        coord_owner_id: string;
+        heartbeat_at: string | Date;
+        last_active_at: string | Date | null;
+        agent_role: string | null;
+        launch_argv: unknown;
+      }>
     >`
-      SELECT s.id, p.owner_id AS coord_owner_id, p.heartbeat_at, p.last_active_at, p.agent_role
+      SELECT s.id, p.owner_id AS coord_owner_id, p.heartbeat_at, p.last_active_at, p.agent_role, s.launch_argv
         FROM harness_shared.coord_presence p
         JOIN harness_shared.adv_sessions s ON s.coord_owner_id = p.owner_id AND s.ended_at IS NULL
        WHERE p.heartbeat_at IS NOT NULL`;
@@ -803,6 +828,7 @@ export async function findIdleLiveSessions(
       lastActiveAtMs: r.last_active_at ? new Date(r.last_active_at).getTime() : null,
       // agentRole feeds the P-001 responsive-session exclusion in classifyLiveIdle.
       role: r.agent_role,
+      launchArgv: r.launch_argv,
     }));
     const idle = classifyLiveIdle({ candidates, busyOwners, nowMs, livenessMs: opts.livenessMs, idleMs: opts.idleMs });
     const idleKeys = new Set(idle.map((c) => c.coordOwnerId));

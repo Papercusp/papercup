@@ -6398,6 +6398,11 @@ export function psuLaunchArgvRecord(selections, args, { brain = false } = {}) {
   const argv = args.sessionPortSourceAdvSessionId
     ? ['psu', '--no-picker', `--resume=${args.sessionPortSourceAdvSessionId}`, `--agent=${selections.agent}`]
     : ['psu', '--no-picker', `--agent=${selections.agent}`];
+  // Headless is a durable launch discriminator: the live-session reaper may
+  // only relax the owner-directed SU safeguard when this exact token was
+  // recorded. Do not infer it from the environment or rewrite it as an
+  // assignment/value form; legacy and interactive rows must stay protected.
+  if (args.headless) argv.push('--headless');
   if (selections.workspace) argv.push(`--workspace=${selections.workspace}`);
   if (selections.harness) argv.push(`--harness=${selections.harness}`);
   argv.push(selections.plan ? `--plan=${selections.plan}` : '--no-plan');
