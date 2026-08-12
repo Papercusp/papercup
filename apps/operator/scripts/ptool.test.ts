@@ -7,6 +7,8 @@ import {
   resultToText,
   sanitizeJsonText,
   timeoutForTool,
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore -- plain .mjs launcher script, no type declarations.
 } from './ptool.mjs';
 
 describe('ptool call deadlines', () => {

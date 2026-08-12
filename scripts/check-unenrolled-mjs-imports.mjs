@@ -60,8 +60,6 @@ const CONFIG = 'tsconfig.declarations.json';
  * @type {Set<string>}
  */
 export const BASELINE = new Set([
-  'apps/operator/lib/operator-discovery.test.ts -> apps/operator/scripts/operator-discovery.mjs',
-  'apps/operator/lib/ptool.test.ts -> apps/operator/scripts/ptool.mjs',
   'apps/operator/scripts/check-vitest-mock-paths.test.ts -> apps/operator/scripts/check-vitest-mock-paths.mjs',
 ]);
 
