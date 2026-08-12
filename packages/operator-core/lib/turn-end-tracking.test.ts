@@ -7,12 +7,14 @@ import {
   UNGUARDED_HALT_NOTE,
   composeMechanicalCheckpoint,
   detectUnguardedHalt,
+  detectEphemeralDeliverableReferences,
   detectUnregisteredArtifacts,
   isDeliverableWrite,
   awaitGuaranteesRewake,
   isRewakeGuaranteed,
   isStaleHeldCheckpoint,
   mergeMechanicalCheckpoint,
+  renderEphemeralDeliverableWarning,
   settledMessagesCursor,
   unregisteredArtifactTripwire,
 } from './turn-end-tracking';
@@ -102,6 +104,52 @@ describe('deliverable detection', () => {
     expect(t?.kind).toBe('unregistered-artifact');
     expect(t?.files).toEqual(['/tmp/s/scratchpad/report.md']);
     expect(t?.note).toContain('artifacts:save');
+  });
+});
+
+describe('ephemeral terminal-deliverable reference detection', () => {
+  it('finds scratch paths and both Claude artifact URL forms, in text order', () => {
+    const refs = detectEphemeralDeliverableReferences(
+      'source .papercusp/scratch/report.md; published https://claude.ai/code/artifact/abc; ' +
+        'also https://claude.ai/artifacts/def.',
+    );
+    expect(refs).toEqual([
+      { kind: 'scratch-path', reference: '.papercusp/scratch/report.md' },
+      { kind: 'artifact-url', reference: 'https://claude.ai/code/artifact/abc' },
+      { kind: 'artifact-url', reference: 'https://claude.ai/artifacts/def' },
+    ]);
+  });
+
+  it('recognises home/absolute scratch paths and papercusp scratch URIs, but not repo files', () => {
+    const refs = detectEphemeralDeliverableReferences(
+      '~/.papercusp/scratch/ws/report.md /home/dev/.papercusp/scratch/ws/other.txt ' +
+        'papercusp://scratch/ws/tool/run/report.md packages/operator-core/src/report.md',
+    );
+    expect(refs).toEqual([
+      { kind: 'scratch-path', reference: '~/.papercusp/scratch/ws/report.md' },
+      { kind: 'scratch-path', reference: '/home/dev/.papercusp/scratch/ws/other.txt' },
+      { kind: 'scratch-uri', reference: 'papercusp://scratch/ws/tool/run/report.md' },
+    ]);
+  });
+
+  it('deduplicates and bounds the result while trimming markdown punctuation', () => {
+    const refs = detectEphemeralDeliverableReferences(
+      [1, 2, 3, 4, 5, 6].map((n) => `.papercusp/scratch/report-${n}.md,`).join(' ') +
+        ' .papercusp/scratch/report-1.md',
+    );
+    expect(refs).toHaveLength(5);
+    expect(refs.every((ref) => !/[.,]$/.test(ref.reference))).toBe(true);
+    expect(new Set(refs.map((ref) => ref.reference)).size).toBe(5);
+  });
+
+  it('renders an actionable warn-only message and stays silent for clean text', () => {
+    expect(renderEphemeralDeliverableWarning('completion for EI-1', [])).toBeUndefined();
+    const refs = detectEphemeralDeliverableReferences('.papercusp/scratch/report.md');
+    const warning = renderEphemeralDeliverableWarning('plans:set-now for plan-a', refs);
+    expect(warning).toContain("plans:set-now for plan-a names an ephemeral terminal-deliverable reference");
+    expect(warning).toContain('Persist the deliverable first in committed repository, plan, or work-item storage');
+    expect(warning).toContain('record its source path alongside any URL');
+    expect(warning).toContain('write was recorded');
   });
 });
 

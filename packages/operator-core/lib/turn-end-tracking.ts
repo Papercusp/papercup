@@ -187,6 +187,103 @@ export function unregisteredArtifactTripwire(
 }
 
 /* ------------------------------------------------------------------ */
+/* Ephemeral terminal-deliverable reference detection                  */
+/* ------------------------------------------------------------------ */
+
+/** A textual reference that cannot be the sole durable home of a deliverable. */
+export type EphemeralDeliverableReferenceKind = 'scratch-path' | 'scratch-uri' | 'artifact-url';
+
+export interface EphemeralDeliverableReference {
+  kind: EphemeralDeliverableReferenceKind;
+  reference: string;
+}
+
+/** Keep an adversarial completion/plan body from becoming an unbounded regex job. */
+const MAX_EPHEMERAL_REFERENCE_SCAN_CHARS = 40_000;
+/** A warning must remain useful even when a caller pasted a very large report. */
+export const MAX_EPHEMERAL_DELIVERABLE_REFERENCES = 5;
+
+/**
+ * These are references, not filesystem writes. A path under `.papercusp/scratch`
+ * is session-local (including `~/.papercusp/scratch` and nested repo copies),
+ * while `papercusp://scratch` is the URI form returned by large-tool-output
+ * doors. Claude artifact URLs are account-scoped and deletable, so they are a
+ * rendering surface rather than a durable source of truth.
+ */
+const SCRATCH_REFERENCE_RE =
+  /(?:^|[\s"'`(<\[])((?:~\/|(?:\.\.?\/)+|\/)?(?:[A-Za-z0-9._~-]+\/)*\.papercusp\/scratch(?:\/[A-Za-z0-9._~:@%+,-]+)*)/g;
+const SCRATCH_URI_REFERENCE_RE =
+  /(?:^|[\s"'`(<\[])(papercusp:\/\/scratch\/[A-Za-z0-9._~:@%+,-]+(?:\/[A-Za-z0-9._~:@%+,-]+)*)/gi;
+const CLAUDE_ARTIFACT_REFERENCE_RE =
+  /(?:^|[\s"'`(<\[])((?:https?:\/\/)?claude\.ai\/(?:code\/)?artifacts?\/[A-Za-z0-9][A-Za-z0-9._~:\/?#@!$&+,;=%-]*)/gi;
+
+function trimEphemeralReference(reference: string): string {
+  // Markdown prose commonly puts a reference immediately before punctuation.
+  // Do not let that punctuation become part of the caller-visible evidence.
+  return reference.replace(/[.,;:!?)}]+$/g, '');
+}
+
+/**
+ * Find bounded, ordered references to session/account-local deliverable stores.
+ * Pure and fail-open: malformed or overlong input can only reduce the warning,
+ * never reject the durable write that the caller is making.
+ */
+export function detectEphemeralDeliverableReferences(text: string): EphemeralDeliverableReference[] {
+  const source = String(text ?? '').slice(0, MAX_EPHEMERAL_REFERENCE_SCAN_CHARS);
+  if (!source) return [];
+
+  const found: Array<EphemeralDeliverableReference & { index: number }> = [];
+  const collect = (regex: RegExp, kind: EphemeralDeliverableReferenceKind) => {
+    regex.lastIndex = 0;
+    for (const match of source.matchAll(regex)) {
+      const raw = match[1];
+      if (!raw) continue;
+      const reference = trimEphemeralReference(raw);
+      if (!reference) continue;
+      const index = match.index ?? 0;
+      found.push({ kind, reference, index });
+    }
+  };
+
+  collect(SCRATCH_REFERENCE_RE, 'scratch-path');
+  collect(SCRATCH_URI_REFERENCE_RE, 'scratch-uri');
+  collect(CLAUDE_ARTIFACT_REFERENCE_RE, 'artifact-url');
+
+  found.sort((a, b) => a.index - b.index);
+  const seen = new Set<string>();
+  const unique: EphemeralDeliverableReference[] = [];
+  for (const { kind, reference } of found) {
+    const key = `${kind}:${reference.toLowerCase()}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push({ kind, reference });
+    if (unique.length >= MAX_EPHEMERAL_DELIVERABLE_REFERENCES) break;
+  }
+  return unique;
+}
+
+/**
+ * Caller-facing warning shared by durable Now and completion surfaces.
+ * Warn-only is intentional: the content is already being persisted, and a
+ * detector fault or a false positive must never discard that narrative.
+ */
+export function renderEphemeralDeliverableWarning(
+  surface: string,
+  references: EphemeralDeliverableReference[],
+): string | undefined {
+  if (references.length === 0) return undefined;
+  const listed = references
+    .slice(0, MAX_EPHEMERAL_DELIVERABLE_REFERENCES)
+    .map(({ kind, reference }) => `${kind} '${reference}'`)
+    .join(', ');
+  return `${surface} names ${references.length === 1 ? 'an' : 'ephemeral'} ephemeral terminal-deliverable ` +
+    `reference${references.length === 1 ? '' : 's'}: ${listed}. These references are session/account-local ` +
+    `and are not durable source storage. Persist the deliverable first in committed repository, plan, or ` +
+    `work-item storage, and record its source path alongside any URL. This warning is advisory; the write ` +
+    `was recorded (deliverable-durability guard).`;
+}
+
+/* ------------------------------------------------------------------ */
 /* Unguarded-halt detection — the re-wake guarantee at turn end        */
 /* ------------------------------------------------------------------ */
 
