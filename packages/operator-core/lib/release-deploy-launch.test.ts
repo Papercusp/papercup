@@ -106,6 +106,37 @@ describe('computeDeployStatus — decision tree', () => {
     expect(s.recommendation).toMatch(/WEDGED|no fire in 9h/);
   });
 
+  it('a live checkpoint run suppresses the age-only WEDGED classification', () => {
+    const s = computeDeployStatus({
+      ...mkSnap(
+        { consecutiveReds: 0, fireStale: true, fireStaleReason: 'no GREEN verdict in ~12h' },
+        { deployedBehindGreenPin: 0, greenPinBehindStaging: 3 },
+      ),
+      activeRun: {
+        active: true,
+        candidate: '80cde64e',
+        startedAtMs: Date.now() - 15 * 60_000,
+        elapsedSec: 900,
+      },
+    });
+    expect(s.gate.fireStale).toBe(false);
+    expect(s.gate.fireStaleReason).toBeNull();
+    expect(s.state).toBe('staging-buffered');
+    expect(s.recommendation).not.toMatch(/WEDGED/);
+  });
+
+  it('a probed-idle checkpoint run does not suppress a genuine WEDGED classification', () => {
+    const s = computeDeployStatus({
+      ...mkSnap(
+        { consecutiveReds: 0, fireStale: true, fireStaleReason: 'no fire in 9h' },
+        { deployedBehindGreenPin: 0 },
+      ),
+      activeRun: { active: false, candidate: null, startedAtMs: null, elapsedSec: null },
+    });
+    expect(s.gate.fireStale).toBe(true);
+    expect(s.state).toBe('gate-wedged');
+  });
+
   it('staging-buffered: green gate, nothing deployable yet, staging awaiting the next checkpoint', () => {
     const s = computeDeployStatus(mkSnap({}, { deployedBehindGreenPin: 0, greenPinBehindStaging: 4 }));
     expect(s.state).toBe('staging-buffered');

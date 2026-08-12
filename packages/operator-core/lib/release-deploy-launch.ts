@@ -289,6 +289,17 @@ export interface DeployStatus {
 export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployInFlight | null = null): DeployStatus {
   const g = snap.gate;
   const d = snap.deploy;
+  /**
+   * A stale last-fire/last-green timestamp is not evidence that the checkpoint
+   * scheduler is wedged when the run-lock probe has positively observed a live
+   * checkpoint process.  Keep the raw snapshot fork-free for callers that do
+   * not opt into the probe, but make a probed live run authoritative for this
+   * status decision.  Unknown (`null`) and probed-idle (`active:false`) must
+   * remain distinct from a positive liveness reading.
+   */
+  const checkpointRunActive = snap.activeRun?.active === true;
+  const fireStale = g.fireStale && !checkpointRunActive;
+  const fireStaleReason = fireStale ? g.fireStaleReason : null;
   // EI-10902: the most recent green_checkpoint pipeline event (snap.recent is newest-first) —
   // whatever runner produced it. `detail` carries the shape buildCheckpointDetail wrote
   // (candidate/from/failingTests/logPath/runId), already persisted for every tick; this is
@@ -315,7 +326,7 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
   // === 0` answers "is main stalled"; it must NOT also answer "is the last-evaluated
   // candidate green" when the two diverge, so exclude the one status where they do.
   const lastVerdictWasPartialRed = lastVerdict?.status === 'advanced-prefix';
-  const gateGreen = g.consecutiveReds === 0 && !g.fireStale && !lastVerdictWasPartialRed;
+  const gateGreen = g.consecutiveReds === 0 && !fireStale && !lastVerdictWasPartialRed;
   const deployedBehindGreenPin = d.deployedBehindGreenPin;
   const greenPinBehindStaging = d.greenPinBehindStaging;
 
@@ -388,10 +399,10 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
       `The gate's health blob reports ${g.consecutiveReds} red(s), but that verdict is STALE — ${g.verdictStaleReason ?? 'it has been superseded'}. ` +
       `Do NOT chase the failing tests it names; they may already be green (verify by running them before you touch anything). ` +
       `Run release:checkpoint-run for a FRESH verdict. If the gate keeps reporting 'skipped-locked', a peer's manual suite runs are holding the run-lock — let one routine fire through.`;
-  } else if (g.fireStale) {
+  } else if (fireStale) {
     state = 'gate-wedged';
     recommendation =
-      `The green-checkpoint is WEDGED — not firing (${g.fireStaleReason ?? 'stale'}). It produces 0 reds because it never ran, so the gate can't advance. Surface this to an operator; the pipeline can't self-heal a non-firing checkpoint.`;
+      `The green-checkpoint is WEDGED — not firing (${fireStaleReason ?? 'stale'}). It produces 0 reds because it never ran, so the gate can't advance. Surface this to an operator; the pipeline can't self-heal a non-firing checkpoint.`;
   } else if (typeof greenPinBehindStaging === 'number' && greenPinBehindStaging > 0) {
     state = 'staging-buffered';
     recommendation =
@@ -411,8 +422,8 @@ export function computeDeployStatus(snap: GitPipelineSnapshot, inFlight: DeployI
       green: gateGreen,
       consecutiveReds: g.consecutiveReds,
       stalled: g.stalled,
-      fireStale: g.fireStale,
-      fireStaleReason: g.fireStaleReason,
+      fireStale,
+      fireStaleReason,
       lastGreenAtMs: g.lastGreenAtMs,
       verdictStale: g.verdictStale,
       verdictStaleReason: g.verdictStaleReason,
@@ -452,7 +463,10 @@ export interface ReadDeployStatusDeps {
  *  READ-ONLY. The in-flight probe is best-effort: if it throws, the status still returns (with
  *  `deployInFlight:null`) rather than failing the whole read. */
 export async function readDeployStatus(deps: ReadDeployStatusDeps = {}): Promise<DeployStatus> {
-  const load = deps.loadSnapshot ?? (() => gitPipelineSnapshot());
+  // The release status surface is explicitly a liveness diagnostic.  It must
+  // opt into the live run-lock probe, otherwise a long-running checkpoint has
+  // no chance to clear the age-only fire-stale alarm until it finishes.
+  const load = deps.loadSnapshot ?? (() => gitPipelineSnapshot(undefined, { includeActiveRun: true }));
   const loadInFlight = deps.loadInFlight ?? (() => readDeployInFlight());
   const [snap, inFlight] = await Promise.all([
     load(),
