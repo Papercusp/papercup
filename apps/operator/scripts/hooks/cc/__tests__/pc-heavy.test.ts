@@ -80,6 +80,61 @@ async function waitFor(label: string, predicate: () => boolean, timeoutMs = 15_0
 }
 
 /**
+ * Wait for a LANDMARK IN A LIVE CHILD'S STDERR — the async twin of `waitFor`.
+ *
+ * The concurrency tests here need a holder to occupy a slot "long enough" for a waiter to
+ * genuinely queue. Sizing that with the holder's own `sleep N` makes N a bet on BOTH sides:
+ * too short and the holder expires before the waiter enqueues (the test silently degrades
+ * into the uncontended path it exists to distinguish from); long enough to be safe and every
+ * run pays N seconds in full, because the waiter cannot proceed until the holder finishes.
+ * Anchoring on the script's OWN stderr landmarks removes the bet: the holder sleeps far
+ * longer than needed and is KILLED the instant the landmark proves the waiter really queued.
+ *
+ * `seen` is created by the caller so it can assert on the same buffer afterwards; create it
+ * IMMEDIATELY after `spawn` and before calling this, because Node fires 'data' handlers in
+ * registration order and the check below reads what the collector already decoded.
+ * `peek()`, never `text()`, in the per-chunk check (WI-6728): text() flushes the decoder's
+ * pending partial character and resets it, so polling it per chunk re-creates the multi-byte
+ * corruption the collector exists to prevent. text() is correct in the terminal paths below.
+ *
+ * Exiting WITHOUT the landmark is a loud failure, never a silent fall-through — the
+ * assertions after it would otherwise run against a world that never got set up.
+ */
+async function untilStderr(
+  p: ReturnType<typeof spawn>,
+  seen: ReturnType<typeof createTextCollector>,
+  ready: (stderr: string) => boolean,
+  label: string,
+  ms = 30_000,
+): Promise<void> {
+  if (ready(seen.peek())) return;
+  await new Promise<void>((res, rej) => {
+    const finish = (err?: Error) => {
+      clearTimeout(timer);
+      p.stderr?.off('data', onData);
+      p.off('close', onClose);
+      if (err) rej(err); else res();
+    };
+    const timer = setTimeout(
+      () => finish(new Error(`untilStderr(${JSON.stringify(label)}) timed out after ${ms}ms; stderr so far: ${seen.text()}`)),
+      ms,
+    );
+    const onData = () => { if (ready(seen.peek())) finish(); };
+    const onClose = () => {
+      if (ready(seen.peek())) finish();
+      else finish(new Error(`untilStderr(${JSON.stringify(label)}): the process exited first; stderr: ${seen.text()}`));
+    };
+    p.stderr?.on('data', onData);
+    p.on('close', onClose);
+  });
+}
+
+/** SIGKILL a detached child's whole process GROUP — see the note at the first holder below. */
+const killGroup = (p: ReturnType<typeof spawn>) => {
+  try { process.kill(-(p.pid as number), 'SIGKILL'); } catch { /* already gone */ }
+};
+
+/**
  * How many of `slots` slot-files are currently flocked BY SOMEONE ELSE.
  *
  * Probes the same primitive pc-heavy.sh itself uses (`flock -n` on `$PC_HEAVY_DIR/slot.$i`,
@@ -363,24 +418,39 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     // indistinguishable from "not started yet" or "died silently". Holder A takes
     // the only slot and sleeps; a waiter arriving while it's held must hit the
     // fallback branch and print the enqueue line BEFORE it starts polling.
-    const holder = spawn('bash', [PC_HEAVY, 'sleep', '5'], {
+    // The holder sleeps far longer than this test takes and is killed the moment the
+    // waiter's own stderr proves it enqueued — so the claim "the line is printed BEFORE
+    // the wait ends" is observed CAUSALLY (it appeared while the slot was still held),
+    // not merely inferred from two indices in a buffer read after the fact.
+    const holder = spawn('bash', [PC_HEAVY, 'sleep', '30'], {
       env: baseEnv({ PC_HEAVY_SLOTS: '1' }),
       cwd: dir,
       detached: true,
     });
     await waitFor('holder grabs the only slot', () => heldSlotCount(dir, 1) === 1);
     try {
-      const r = runSync(['bash', '-c', 'echo got-it'], { PC_HEAVY_SLOTS: '1', PC_HEAVY_TIMEOUT_SEC: '20' });
-      expect(r.status).toBe(0);
-      expect(r.stdout.trim()).toBe('got-it');
-      expect(r.stderr).toContain('[pc-heavy] queued for a heavy slot');
+      const waiter = spawn('bash', [PC_HEAVY, 'bash', '-c', 'echo got-it'], {
+        env: baseEnv({ PC_HEAVY_SLOTS: '1', PC_HEAVY_TIMEOUT_SEC: '20' }),
+        cwd: dir,
+      });
+      const wOut = createTextCollector(waiter.stdout);
+      const wErr = createTextCollector(waiter.stderr);
+      const exited = new Promise<number>((res) => waiter.on('exit', (c) => res(c ?? -1)));
+
+      await untilStderr(waiter, wErr, (t) => t.includes('[pc-heavy] queued for a heavy slot'),
+        'the enqueue-time queued line, while the slot is still held');
+      killGroup(holder); // frees the slot; the waiter now proceeds
+
+      expect(await exited).toBe(0);
+      const stderr = wErr.text(); // exited: terminal read
+      expect(wOut.text().trim()).toBe('got-it');
       // Must precede "slot acquired" — it announces the wait BEGINNING, not the end.
-      const queuedIdx = r.stderr.indexOf('[pc-heavy] queued for a heavy slot');
-      const acquiredIdx = r.stderr.indexOf('[pc-heavy] slot acquired');
+      const queuedIdx = stderr.indexOf('[pc-heavy] queued for a heavy slot');
+      const acquiredIdx = stderr.indexOf('[pc-heavy] slot acquired');
       expect(queuedIdx).toBeGreaterThanOrEqual(0);
       expect(acquiredIdx).toBeGreaterThan(queuedIdx);
     } finally {
-      try { process.kill(-(holder.pid as number), 'SIGKILL'); } catch { /* likely already exited */ }
+      killGroup(holder);
     }
 
     // The common uncontended case (the vast majority of calls, per the "first-try
@@ -395,26 +465,39 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     // A long wait under a hard clamp must not go silent for its whole duration —
     // same rationale as the enqueue line, amortized across the wait. Real default
     // is 15s; override to 1s so the test doesn't have to actually wait that long.
-    const holder = spawn('bash', [PC_HEAVY, 'sleep', '4'], {
+    //
+    // TWO heartbeats is what proves PERIODIC rather than one-shot, so the wait is
+    // genuinely the subject here — but only up to the SECOND beat. Sizing the holder's
+    // sleep to cover it (the previous `sleep 4`) made every run pay the remainder too,
+    // and made the count depend on how much of that window this call's own startup ate.
+    // Releasing the slot the instant the second beat lands costs exactly the subject.
+    const holder = spawn('bash', [PC_HEAVY, 'sleep', '30'], {
       env: baseEnv({ PC_HEAVY_SLOTS: '1' }),
       cwd: dir,
       detached: true,
     });
     await waitFor('holder grabs the only slot', () => heldSlotCount(dir, 1) === 1);
     try {
-      const r = runSync(['bash', '-c', 'echo got-it'], {
-        PC_HEAVY_SLOTS: '1',
-        PC_HEAVY_TIMEOUT_SEC: '20',
-        PC_HEAVY_HEARTBEAT_SEC: '1',
+      const waiter = spawn('bash', [PC_HEAVY, 'bash', '-c', 'echo got-it'], {
+        env: baseEnv({
+          PC_HEAVY_SLOTS: '1',
+          PC_HEAVY_TIMEOUT_SEC: '20',
+          PC_HEAVY_HEARTBEAT_SEC: '1',
+        }),
+        cwd: dir,
       });
-      expect(r.status).toBe(0);
-      const heartbeats = (r.stderr.match(/\[pc-heavy\] still queued/g) ?? []).length;
-      // Holder sleeps ~4s from a 500ms head start, minus this call's own startup —
-      // at a 1s heartbeat interval that's a handful; require at least 2 to prove
-      // it's periodic, not a one-shot fluke.
-      expect(heartbeats).toBeGreaterThanOrEqual(2);
+      const wErr = createTextCollector(waiter.stderr);
+      const exited = new Promise<number>((res) => waiter.on('exit', (c) => res(c ?? -1)));
+      const beats = (t: string) => (t.match(/\[pc-heavy\] still queued/g) ?? []).length;
+
+      await untilStderr(waiter, wErr, (t) => beats(t) >= 2,
+        'two periodic "still queued" heartbeats while the slot is held', 20_000);
+      killGroup(holder); // frees the slot; the waiter now proceeds
+
+      expect(await exited).toBe(0);
+      expect(beats(wErr.text())).toBeGreaterThanOrEqual(2); // exited: terminal read
     } finally {
-      try { process.kill(-(holder.pid as number), 'SIGKILL'); } catch { /* likely already exited */ }
+      killGroup(holder);
     }
   });
 });
@@ -473,6 +556,12 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
     // ever reaches the deadline. Its `realRuns < n` assertion would also still
     // pass at 5-of-6 duplicated. This test inverts both: the command outlives
     // the window, and the expectation is exact.
+    //
+    // What the test needs is the RATIO (command > window), not the absolute duration —
+    // and the whole test costs the command's runtime, since nothing can finish before
+    // the leader does. 3s against a 2s window keeps a 1.5x margin in the only direction
+    // that can break it: a leader finishing FASTER than the window would make this
+    // vacuous, and a slower one only strengthens it.
     const marker = join(dir, 'slow-runs.marker');
     const n = 5;
     const results = await Promise.all(
@@ -480,7 +569,7 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
         new Promise<{ status: number | null; stderr: string }>((res) => {
           const p = spawn(
             'bash',
-            [PC_HEAVY, 'bash', '-c', `printf x >> "${marker}"; sleep 5; echo slow-done`],
+            [PC_HEAVY, 'bash', '-c', `printf x >> "${marker}"; sleep 3; echo slow-done`],
             { env: baseEnv({ PC_HEAVY_SLOTS: '8', PC_HEAVY_COALESCE_SEC: '2' }), cwd: dir },
           );
           let stderr = '';
@@ -592,7 +681,10 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
       cwd: dir,
       detached: true,
     });
-    await new Promise((r) => setTimeout(r, 400)); // let it claim the coalescing lock
+    // Wait for the lock to actually EXIST rather than betting 400ms on it: too short and
+    // the kill lands before there is anything to strand (the test then proves nothing);
+    // long enough to be safe under load and every run pays the slack.
+    await waitFor('leader claims the coalescing lock', () => lockMtime() !== null);
     process.kill(-(leader.pid as number), 'SIGKILL'); // hard-kill: no trap/cleanup runs
     const staleMtime = lockMtime();
     expect(staleMtime).not.toBeNull();
@@ -798,13 +890,15 @@ describe('pc-heavy.sh — atomic result publish (EI-19368312145172418)', () => {
     const populatedSize = statSync(outFile as string).size;
     expect(populatedSize).toBeGreaterThan(0);
 
-    // Age the entry to ~3s. `_age` is computed in INTEGER seconds, so a 1.6s wait
-    // can floor to age=1 and read as fresh against a 1s TTL — the second caller
-    // would then COALESCE instead of leading, nothing would truncate, and this
-    // test would pass while asserting nothing at all. (Caught exactly that way:
-    // the first draft of this test was vacuous.) The positive control below is
-    // what makes the vacuity detectable rather than silent.
-    await new Promise((r) => setTimeout(r, 3000));
+    // Age the entry past the 1s TTL the second caller will use. `_age` is computed in
+    // INTEGER seconds, so a 1.6s wait can floor to age=1 and read as FRESH against that
+    // TTL — the second caller would then COALESCE instead of leading, nothing would
+    // truncate, and this test would pass while asserting nothing at all. (Caught exactly
+    // that way: the first draft of this test was vacuous.) 2.1s is the smallest wait that
+    // floors to 2 with margin; the elapsed time is measured from the entry's mtime, which
+    // predates this line, so the real age is only ever LARGER. The positive control below
+    // is what makes the vacuity detectable rather than silent if that ever stops holding.
+    await new Promise((r) => setTimeout(r, 2100));
 
     // A caller with a 1s window sees that entry as STALE, so it runs for real —
     // becoming a second leader while the entry is still fresh to a 90s caller.
@@ -814,11 +908,12 @@ describe('pc-heavy.sh — atomic result publish (EI-19368312145172418)', () => {
       detached: true,
     });
     try {
-      await new Promise((r) => setTimeout(r, 1200)); // second leader is mid-run
-
-      // POSITIVE CONTROL — the whole test is meaningless unless a SECOND real
-      // execution is actually in flight right now. If this reads 1, the second
-      // caller coalesced instead of leading and the invariant below is vacuous.
+      // POSITIVE CONTROL — the whole test is meaningless unless a SECOND real execution
+      // is actually in flight right now; if the second caller coalesced instead of
+      // leading, the invariant below is vacuous. Waiting for the marker rather than
+      // guessing 1200ms costs only as long as the leader takes to reach it, and turns
+      // "it coalesced" into a NAMED timeout instead of a bare `2 !== 1`.
+      await waitFor('the second leader starts a real run', () => realRunCount() === 2);
       expect(realRunCount()).toBe(2);
 
       // THE INVARIANT: the published entry is still intact while it runs.
@@ -1342,34 +1437,24 @@ describe('pc-heavy.sh — release-gate reserve (EI-19315056231449472)', () => {
       plantPhase(lock, { phase: 'suite', at: at(), phaseProtocol: 2 });
 
       const gateEnv = { PC_HEAVY_SLOTS: '1', PC_HEAVY_COALESCE: '0' };
-      const untilStderr = (p: ReturnType<typeof spawn>, needle: string, ms = 30_000) =>
-        new Promise<void>((res, rej) => {
-          // Boundary-safe accumulation (WI-6728): pc-heavy's stderr is dense
-          // with non-ASCII, and a character straddling two 'data' events would
-          // otherwise decode to replacement chars on both sides.
-          //
-          // Two orderings are load-bearing here:
-          //  - attach FIRST (createTextCollector registers its own 'data'
-          //    handler), because Node fires handlers in registration order —
-          //    so the chunk is decoded into `seen` before the check reads it;
-          //  - peek(), NOT text(), in the per-chunk check: text() flushes the
-          //    decoder's pending partial character and resets it, so polling it
-          //    per chunk re-creates the very corruption this avoids. text() is
-          //    correct in the timeout path below — a single terminal read.
-          const seen = createTextCollector(p.stderr);
-          const timer = setTimeout(
-            () => rej(new Error(`timed out waiting for ${JSON.stringify(needle)}; stderr so far: ${seen.text()}`)),
-            ms,
-          );
-          p.stderr!.on('data', () => {
-            if (seen.peek().includes(needle)) { clearTimeout(timer); res(); }
-          });
-        });
 
       // Occupy the single slot so the sweep is forced to QUEUE rather than start.
-      const holder = spawn('bash', [PC_HEAVY, 'sleep', '30'], { env: baseEnv(gateEnv), cwd: dir });
+      // `detached` (own process group) is LOAD-BEARING, not tidiness: pc-heavy
+      // deliberately lets its child INHERIT the slot fd, and an flock lives on
+      // the open file DESCRIPTION shared across that fork — so killing only the
+      // wrapper leaves the orphaned `sleep` holding the slot for its full
+      // duration. This test then waited out the whole sleep (~30s, 41% of the
+      // file's runtime) before the sweep could proceed. Killing the GROUP frees
+      // the slot at the instant we intend, which is also what every other
+      // holder in this file does.
+      const holder = spawn('bash', [PC_HEAVY, 'sleep', '30'], {
+        env: baseEnv(gateEnv),
+        cwd: dir,
+        detached: true,
+      });
+      const holderErr = createTextCollector(holder.stderr);
       try {
-        await untilStderr(holder, 'slot acquired');
+        await untilStderr(holder, holderErr, (t) => t.includes('slot acquired'), 'the holder taking the slot');
 
         const sweepProc = spawn('bash', [PC_HEAVY, 'true', 'scripts/affected-tests.mjs'], {
           env: baseEnv(gateEnv),
@@ -1380,18 +1465,19 @@ describe('pc-heavy.sh — release-gate reserve (EI-19315056231449472)', () => {
 
         // Confirm it is genuinely WAITING before the phase moves — otherwise this
         // would silently degrade into a re-test of the admission-time check.
-        await untilStderr(sweepProc, 'queued for a heavy slot');
+        await untilStderr(sweepProc, sweepErr, (t) => t.includes('queued for a heavy slot'),
+          'the sweep genuinely queueing behind the holder');
         expect(sweepErr.peek()).not.toContain('REFUSING'); // mid-stream: peek, never text
 
         // The gate advances into its classifier phase while the sweep is queued.
         plantPhase(lock, { phase: 'isolating', at: at(), phaseProtocol: 2 });
-        holder.kill('SIGKILL'); // frees the slot; the sweep now proceeds
+        killGroup(holder); // frees the slot (whole tree — see above); the sweep now proceeds
 
         expect(await exited).toBe(75);
         expect(sweepErr.text()).toContain('REFUSING test:affected'); // exited: terminal read
         expect(sweepErr.text()).toContain('isolating');
       } finally {
-        holder.kill('SIGKILL');
+        killGroup(holder);
       }
     });
 
