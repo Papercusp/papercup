@@ -33,7 +33,7 @@ const VERDICT_HELPERS = [
   'shouldStandDownForLivePeer',
 ] as const;
 
-function productionCallSites(symbol: string): string[] {
+function directProductionCallSites(symbol: string): string[] {
   let out = '';
   try {
     out = execFileSync('grep', ['-rl', '--include=*.ts', symbol, 'packages', 'libs', 'apps'], {
@@ -51,6 +51,35 @@ function productionCallSites(symbol: string): string[] {
       // the definition itself, any test, and THIS guard are not production callers
       .filter((f) => !f.endsWith(`coord/${MODULE}`))
       .filter((f) => !/\.test\.tsx?$/.test(f))
+  );
+}
+
+/**
+ * Follow verdict-helper calls inside this module until they reach a production
+ * caller. A helper used by another helper is wired when that outer helper is
+ * itself wired; discarding gate-ownership.ts wholesale made that real path look
+ * dead. The visited set keeps a dead/cyclic helper chain from passing itself.
+ */
+function productionCallSites(symbol: string, visited: ReadonlySet<string> = new Set()): string[] {
+  const direct = directProductionCallSites(symbol);
+  if (direct.length > 0 || visited.has(symbol)) return direct;
+
+  const source = readFileSync(MODULE_PATH, 'utf8');
+  const nextVisited = new Set(visited).add(symbol);
+  const callers = new Set<string>();
+  const occurrence = new RegExp(`\\b${symbol}\\s*\\(`, 'g');
+  let match: RegExpExecArray | null;
+  while ((match = occurrence.exec(source)) !== null) {
+    const before = source.slice(0, match.index);
+    const definitions = [...before.matchAll(/export function\s+(\w+)\s*\(/g)];
+    const caller = definitions.at(-1)?.[1];
+    if (caller && caller !== symbol && VERDICT_HELPERS.includes(caller as (typeof VERDICT_HELPERS)[number])) {
+      callers.add(caller);
+    }
+  }
+
+  return [...callers].flatMap((caller) =>
+    productionCallSites(caller, nextVisited).map((site) => `${MODULE} -> ${caller} -> ${site}`),
   );
 }
 
@@ -83,5 +112,11 @@ describe('gate-ownership verdict helpers are WIRED, not merely correct', () => {
     // everything (a wrong cwd, a broken --include) would make every assertion above pass for the
     // wrong reason — the same false-green shape this guard exists to catch.
     expect(productionCallSites('ownershipDefinitelyNotARealHelperName')).toHaveLength(0);
+  });
+
+  it('recognizes the live-holder verdict through the production-wired stand-down wrapper', () => {
+    expect(productionCallSites('ownershipHeldByLiveHolder')).toContain(
+      `${MODULE} -> shouldStandDownForLivePeer -> packages/operator-core/lib/agent-tools/release/checkpoint-run.ts`,
+    );
   });
 });
