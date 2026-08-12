@@ -459,13 +459,26 @@ export function mergeIdMatches<
  * The dangerous direction here is hiding something the human wrote, exactly as
  * in `ownerVisiblePromptText`'s own note — never keeping one machine row too
  * many.
+ *
+ * ⚠ FAIL-OPEN ON A CONTENT-FREE HEAD, NOT MERELY AN EMPTY ONE (WI-37910). The
+ * check below used to read `h.textHead === ''`, which let a head of pure
+ * WHITESPACE through to the predicate — and a whitespace head strips to `''`,
+ * i.e. reads as HIDE, while the whole turn (whose real text starts past
+ * `OWNER_VISIBILITY_DECIDING_PREFIX_CHARS`) reads as SHOW. That is the search
+ * path dropping a hit inside text a human wrote: the one direction this filter
+ * and that predicate both exist to prevent. It needs ≥512 leading whitespace
+ * characters so it was never reachable in practice, but the bug was structural,
+ * not statistical — the emptiness test was narrower than the property it stood
+ * for. The head is only DECISIVE when it carries a marker or visible content;
+ * with neither, it makes no claim, and the honest answer to "no claim" here is
+ * to keep the hit.
  */
 export function filterOwnerVisibleTurnHits<T extends TranscriptTurnHit>(
   hits: readonly T[],
 ): T[] {
   return hits.filter((h) => {
     if (h.speaker !== 'user') return true;
-    if (typeof h.textHead !== 'string' || h.textHead === '') return true;
+    if (typeof h.textHead !== 'string' || h.textHead.trim() === '') return true;
     if (!isOwnerVisiblePrompt(h.textHead)) return false;
 
     /* WI-37909 — an owner-chat turn is visible as a whole, but its trailing

@@ -415,11 +415,19 @@ describe('isOwnerVisiblePrompt', () => {
     expect(isOwnerVisiblePrompt('hi')).toBe(true);
   });
 
-  it('PREFIX-SAFE: the verdict off a truncated head matches the verdict off the whole turn', () => {
-    /* The property the search path rests on. Every branch keys on a LEADING
-       marker, so hydrating `left(text, N)` must not change the answer — which is
-       what lets the route decide visibility without pulling whole transcripts
-       through a per-keystroke query. A 4KB body is far past the bound. */
+  it('PREFIX-SAFE for a DECISIVE head: the verdict off a truncated head matches the whole turn', () => {
+    /* The property the search path rests on, stated with the precondition it
+       actually needs. Every branch keys on a LEADING marker, so hydrating
+       `left(text, N)` must not change the answer — PROVIDED the head is
+       decisive, i.e. it carries a marker or visible content. A 4KB body is far
+       past the bound.
+
+       ⚠ WI-37910: this test used to be named plain `PREFIX-SAFE` and to assert
+       a GENERAL equivalence. A body of solid `x` can never produce a
+       whitespace-only head, so it could not reach the region where the
+       equivalence fails, and the name certified a guarantee the code does not
+       have. The counterexamples now live in their own test below; keep both —
+       the pair is the honest statement. */
     const body = 'x'.repeat(4096);
     for (const whole of [
       `${MACHINE_ENVELOPE}${body}`,
@@ -432,6 +440,31 @@ describe('isOwnerVisiblePrompt', () => {
     }
   });
 
+  it('DIVERGES on a CONTENT-FREE head — pinned in the direction that hides a human turn (WI-37910)', () => {
+    /* The region the old PREFIX-SAFE body could not reach. When the first
+       OWNER_VISIBILITY_DECIDING_PREFIX_CHARS characters are all whitespace, the
+       head strips to '' and reads HIDE while the whole turn reads SHOW — the
+       predicate answering `false` about text a human wrote.
+
+       This is pinned as a KNOWN divergence rather than fixed in the predicate:
+       `ownerVisiblePromptText` cannot tell a head from a whole turn, so making
+       a content-free window mean "inconclusive" here would render a blank row
+       for a genuinely whitespace-only turn. It is closed at the consumer —
+       see the fail-open test in adv-session-search.test.ts. If a future change
+       makes these agree, DELETE this test rather than weakening it; if it makes
+       them diverge somewhere new, this is the test that should tell you. */
+    const blankHead = ' '.repeat(OWNER_VISIBILITY_DECIDING_PREFIX_CHARS + 8);
+    for (const whole of [
+      `${blankHead}a genuinely typed message that starts past the bound`,
+      `${OWNER_ENVELOPE}${blankHead}a genuinely typed message that starts past the bound`,
+    ]) {
+      const head = whole.slice(0, OWNER_VISIBILITY_DECIDING_PREFIX_CHARS);
+      expect(head.trim(), 'the head must be content-free for this to be the divergent case').toBe('');
+      expect(isOwnerVisiblePrompt(whole), 'the whole turn is the human\'s and must SHOW').toBe(true);
+      expect(isOwnerVisiblePrompt(head), 'the head alone reads HIDE — the divergence').toBe(false);
+    }
+  });
+
   it('the bound is comfortably longer than the envelope that has to fit inside it', () => {
     /* The one way prefix-safety breaks is a marker that no longer fits: a
        truncated envelope stops matching and reads as unmarked prose, i.e. as the
@@ -440,11 +473,20 @@ describe('isOwnerVisiblePrompt', () => {
     expect(OWNER_VISIBILITY_DECIDING_PREFIX_CHARS).toBeGreaterThan(MACHINE_ENVELOPE.length * 3);
   });
 
-  it('fails toward SHOWING when the head is unmarked (the safe direction)', () => {
-    /* The documented divergence: a turn whose head carries no marker but whose
-       full text strips to empty reads visible from the head. Keeping one machine
-       row is recoverable; hiding something the human wrote is the failure this
-       whole predicate exists to prevent. */
+  it('fails toward SHOWING when the head is unmarked but the whole strips to empty (divergence 1)', () => {
+    /* Divergence 1, CONSTRUCTED rather than gestured at. Keeping one machine row
+       is recoverable; hiding something the human wrote is the failure this whole
+       predicate exists to prevent.
+
+       ⚠ WI-37910: this test used to assert only `isOwnerVisiblePrompt('a
+       genuinely typed message') === true`, which is true of any plain string and
+       exercises no divergence at all — the name promised a property the body
+       never built. Build the case. */
+    const whole = `${'y'.repeat(OWNER_VISIBILITY_DECIDING_PREFIX_CHARS)}\n${COMPACTION_PREAMBLE}`;
+    const head = whole.slice(0, OWNER_VISIBILITY_DECIDING_PREFIX_CHARS);
+    expect(head.trim(), 'the head must carry visible content for this to be divergence 1').not.toBe('');
+    expect(isOwnerVisiblePrompt(head), 'an unmarked head reads SHOW').toBe(true);
+    // Baseline: a plain typed turn is shown, head or whole.
     expect(isOwnerVisiblePrompt('a genuinely typed message')).toBe(true);
   });
 });

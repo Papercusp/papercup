@@ -588,6 +588,40 @@ describe('filterOwnerVisibleTurnHits', () => {
     expect(filterOwnerVisibleTurnHits([hit({ textHead: 'anything' })])).toHaveLength(1);
   });
 
+  it('FAILS OPEN on a CONTENT-FREE head, not only an empty one (WI-37910)', () => {
+    /* The head is hydrated as `left(st.text, OWNER_VISIBILITY_DECIDING_PREFIX_CHARS)`.
+       A turn whose first 512 characters are WHITESPACE yields a head that is not
+       `''` but strips to `''` — so `ownerVisiblePromptText` reads it as HIDE while
+       the whole turn, whose real text begins past the bound, reads SHOW. The old
+       guard tested `textHead === ''` and therefore let that case through to the
+       predicate, dropping a search hit inside text a human wrote: the one
+       direction this filter exists to prevent.
+
+       A head with no marker AND no visible content makes no claim. Keep the hit.
+
+       This is the CONSUMER half of the divergence pinned in
+       owner-chat-turn.test.ts ('DIVERGES on a CONTENT-FREE head'). That test
+       asserts the predicate still diverges; this one asserts the divergence can
+       no longer reach a result. Both must hold — if you fix the predicate, this
+       stays true and that one gets deleted. */
+    const blankHead = ' '.repeat(600);
+    expect(
+      filterOwnerVisibleTurnHits([hit({ speaker: 'user', textHead: blankHead })]),
+      'a whitespace-only head must not be read as a HIDE verdict',
+    ).toHaveLength(1);
+    expect(
+      filterOwnerVisibleTurnHits([hit({ speaker: 'user', textHead: '\n\n\t  \n' })]),
+      'newlines and tabs are content-free too',
+    ).toHaveLength(1);
+    // The guard must stay narrow: a head with real content is still decided.
+    expect(
+      filterOwnerVisibleTurnHits([
+        hit({ speaker: 'user', textHead: '   ⟦turn-origin:loop-fire nonce:095d0a31d74f617e⟧\n🔁 Loop wake' }),
+      ]),
+      'leading whitespace before a machine marker must NOT buy the row a pass',
+    ).toHaveLength(0);
+  });
+
   it('PRESERVES the caller\'s relevance order', () => {
     /* Same property groupHitsBySession is documented to protect: post-Stage-B the
        ARRAY ORDER is the rerank's verdict, so a filter must remove without

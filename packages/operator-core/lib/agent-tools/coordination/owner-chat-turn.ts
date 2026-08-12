@@ -327,12 +327,38 @@ export function ownerVisiblePromptText(text: string): string {
  * 512 is ~4× the longest envelope, which leaves room for the marker to grow
  * without anyone having to remember this constant exists.
  *
- * ⚠ THE ONE DIVERGENCE, and its direction is deliberate. A turn whose head is
- * unmarked but whose FULL text strips to empty reads VISIBLE from the prefix and
- * EMPTY from the whole. That fails toward SHOWING the turn — which is the safe
- * side on both surfaces: the dangerous failure this predicate exists to prevent
- * is hiding something the human actually wrote (see OWNER_CHAT_TURN_ORIGIN's
- * note), never keeping one machine row too many.
+ * ⚠ THERE ARE TWO DIVERGENCES, NOT ONE, AND THEY POINT IN OPPOSITE DIRECTIONS.
+ * This block used to claim a single divergence that always failed toward
+ * SHOWING. That was false, and a test named PREFIX-SAFE certified it (WI-37910,
+ * found by independent verification of WI-37883). Both are stated here because
+ * the next person to widen this predicate will reason from this comment:
+ *
+ *   1. HEAD SHOWS, WHOLE HIDES — the head is unmarked but the full text strips
+ *      to empty. Fails toward showing: the safe side, and genuinely deliberate.
+ *
+ *   2. HEAD HIDES, WHOLE SHOWS — the first
+ *      {@link OWNER_VISIBILITY_DECIDING_PREFIX_CHARS} characters are entirely
+ *      WHITESPACE (with or without a leading owner envelope), so the head strips
+ *      to empty and reads HIDE, while the real text begins past the bound and
+ *      reads SHOW. This fails toward HIDING something a human wrote — the
+ *      direction the whole predicate exists to prevent.
+ *
+ * Divergence 2 is NOT fixed here, and deliberately so. This function cannot see
+ * whether it was handed a head or a whole turn, so "a content-free window means
+ * inconclusive, not hide" is a statement only the CALLER can make — and making
+ * it here would render a blank row for a genuinely whitespace-only turn. It is
+ * closed at the one seam that hydrates a bounded head: `filterOwnerVisibleTurnHits`
+ * in `adv-session-search.ts` keeps a hit whose head has no visible content,
+ * instead of asking this predicate a question the head cannot answer.
+ *
+ * So the invariant to carry forward is not "the head always agrees with the
+ * whole". It is: **a head is DECISIVE only when it carries a marker or visible
+ * content; with neither it makes no claim, and a caller must fail open.** Any
+ * new consumer that hydrates a bounded head owes the same guard.
+ *
+ * It takes ≥512 leading whitespace characters to reach, so no owner turn is
+ * believed to have been hidden by it. The defect worth fixing was the false
+ * guarantee, not the traffic.
  */
 export const OWNER_VISIBILITY_DECIDING_PREFIX_CHARS = 512;
 
