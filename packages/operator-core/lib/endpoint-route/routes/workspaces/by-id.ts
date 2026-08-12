@@ -3,30 +3,11 @@
  * Ported from app/api/workspaces/[id]/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
 import { existsSync, promises as fs } from 'node:fs';
-import { workspacesRoot } from '../../../workspace-registry';
+import { readRegistry, workspacesRoot, writeRegistry } from '../../../workspace-registry';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { defineTool } from '@papercusp/agent-mcp';
 
-const REGISTRY_PATH = join(workspacesRoot(), 'registry.json');
-
-interface Workspace {
-  id: string;
-  name: string;
-  createdAt: number;
-}
-interface Registry {
-  current: string;
-  workspaces: Workspace[];
-}
-
-async function readRegistry(): Promise<Registry> {
-  if (!existsSync(REGISTRY_PATH)) return { current: '', workspaces: [] };
-  return JSON.parse(await fs.readFile(REGISTRY_PATH, 'utf8')) as Registry;
-}
-async function writeRegistry(reg: Registry): Promise<void> {
-  await fs.writeFile(REGISTRY_PATH, JSON.stringify(reg, null, 2) + '\n', 'utf8');
-}
 function validId(id: string): boolean {
   return /^[a-z0-9][a-z0-9._-]{0,63}$/i.test(id);
 }
@@ -47,11 +28,11 @@ export default [
       }
       const name = String(body.name ?? '').trim();
       if (!name) return Response.json({ ok: false, error: 'name required' }, { status: 400 });
-      const reg = await readRegistry();
+      const reg = readRegistry();
       const ws = reg.workspaces.find((w) => w.id === id);
       if (!ws) return Response.json({ ok: false, error: 'not found' }, { status: 404 });
       ws.name = name;
-      await writeRegistry(reg);
+      writeRegistry(reg);
       return Response.json({ ok: true, workspace: ws });
     },
   }),
@@ -62,7 +43,7 @@ export default [
     async handler(_req, ctx) {
       const { id } = ctx.params;
       if (!validId(id)) return Response.json({ ok: false, error: 'invalid id' }, { status: 400 });
-      const reg = await readRegistry();
+      const reg = readRegistry();
       if (!reg.workspaces.some((w) => w.id === id)) {
         return Response.json({ ok: false, error: 'not found' }, { status: 404 });
       }
@@ -79,7 +60,7 @@ export default [
         );
       }
       reg.workspaces = reg.workspaces.filter((w) => w.id !== id);
-      await writeRegistry(reg);
+      writeRegistry(reg);
 
       const dir = join(workspacesRoot(), id);
       let archived: string | null = null;

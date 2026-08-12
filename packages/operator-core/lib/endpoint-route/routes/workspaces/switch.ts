@@ -8,18 +8,13 @@
  *
  * Ported from app/api/workspaces/switch/route.ts. `auth: 'loopback'` (auth-tier Wave 1).
  */
-import { existsSync, promises as fs } from 'node:fs';
-import { workspacesRoot } from '../../../workspace-registry';
+import { existsSync } from 'node:fs';
+import { readRegistry, workspacesRoot, writeRegistry } from '../../../workspace-registry';
 import { join } from 'node:path';
 import { dispatchWorkspaceSwitch } from '@papercusp/agent-mcp';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const REGISTRY_PATH = join(workspacesRoot(), 'registry.json');
-
-interface Registry {
-  current: string;
-  workspaces: { id: string; name: string; createdAt: number }[];
-}
 
 export default defineTool({
   method: 'POST',
@@ -40,7 +35,7 @@ export default defineTool({
     if (!existsSync(REGISTRY_PATH)) {
       return Response.json({ ok: false, error: 'no workspace registry on disk' }, { status: 404 });
     }
-    const reg = JSON.parse(await fs.readFile(REGISTRY_PATH, 'utf8')) as Registry;
+    const reg = readRegistry();
     if (!reg.workspaces.some((w) => w.id === id)) {
       return Response.json({ ok: false, error: `unknown workspace "${id}"` }, { status: 404 });
     }
@@ -52,7 +47,7 @@ export default defineTool({
     // card-correlator PENDING entries, state-channel run snapshots).
     const leaving = reg.current;
     reg.current = id;
-    await fs.writeFile(REGISTRY_PATH, JSON.stringify(reg, null, 2) + '\n', 'utf8');
+    writeRegistry(reg);
     // Fire-and-forget — cleanup is best-effort; a subscriber failure must
     // not break the switch. dispatchWorkspaceSwitch isolates throws.
     void dispatchWorkspaceSwitch(leaving).catch((e) => {
