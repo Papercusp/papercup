@@ -23,11 +23,14 @@
 import { describe, it, expect } from 'vitest';
 import type { Sql } from 'postgres';
 import {
+  GOAL_LAUNCH_DEFAULTS,
+  UNLIMITED_CEILING,
   goalLaunchSettingsSchema,
   launchProfileSchema,
   foldLaunchProfile,
   readGoalLaunchSettings,
   writeGoalLaunchSettings,
+  resolveCeiling,
   resolveGoalLaunch,
   type GoalLaunchSettings,
 } from './goal-launch-settings';
@@ -119,8 +122,22 @@ describe('goalLaunchSettingsSchema', () => {
     expect(goalLaunchSettingsSchema.safeParse({ maxAgents: -1 }).success).toBe(false);
   });
 
-  it('allows null to mean "no ceiling"', () => {
+  it('allows null — which since D-015 means "unpinned", not "no ceiling"', () => {
     expect(goalLaunchSettingsSchema.safeParse({ maxAgents: null }).success).toBe(true);
+  });
+
+  it('accepts the explicit unlimited literal on either ceiling', () => {
+    expect(goalLaunchSettingsSchema.safeParse({ maxAgents: UNLIMITED_CEILING }).success).toBe(true);
+    expect(goalLaunchSettingsSchema.safeParse({ maxPerFleet: UNLIMITED_CEILING }).success).toBe(true);
+  });
+
+  it('rejects any OTHER string, so a typo cannot read as an opt-out', () => {
+    // 'unlimted' silently accepted would store a ceiling nobody enforces while
+    // the panel shows it as set — the exact class .strict() exists to catch, one
+    // level down at the value.
+    expect(goalLaunchSettingsSchema.safeParse({ maxAgents: 'unlimted' }).success).toBe(false);
+    expect(goalLaunchSettingsSchema.safeParse({ maxAgents: 'none' }).success).toBe(false);
+    expect(goalLaunchSettingsSchema.safeParse({ maxAgents: '12' }).success).toBe(false);
   });
 
   it('constrains carry and contextSize to the values psu honours', () => {
@@ -284,11 +301,16 @@ describe('resolveGoalLaunch — the D-005 ceilings', () => {
   });
 
   it('refuses on the per-fleet cap', async () => {
+    // maxAgents is opted out EXPLICITLY so this isolates the per-fleet leg.
+    // Leaving it unset used to do that; since D-015 an unset ceiling is the
+    // default (12), and a fixture with 20 live agents would be refused by the
+    // GOAL leg before the fleet leg is ever reached — the test would still pass
+    // for a while, then start asserting the wrong mechanism.
     const r = await resolveGoalLaunch({
       workspaceId: WS,
       launcherOwnerId: 'su-goal',
       fleetSlug: 'f1',
-      sql: base({ maxPerFleet: 5 }, { total: 20, fleet: 5 }),
+      sql: base({ maxAgents: UNLIMITED_CEILING, maxPerFleet: 5 }, { total: 20, fleet: 5 }),
     });
     expect(r.refusal?.reason).toBe('fleet_max_agents');
   });
@@ -306,16 +328,167 @@ describe('resolveGoalLaunch — the D-005 ceilings', () => {
     expect(r.refusal?.reason).toBe('goal_max_agents');
   });
 
-  it('skips the headcount query entirely when no ceiling is declared', async () => {
+  it('skips the headcount query only when BOTH ceilings are explicitly unlimited', async () => {
     // The resolver is on every launch path; it must not add a count query to
-    // launches it cannot refuse.
+    // launches it cannot refuse. Since D-015 that is the RARE case — a goal has
+    // to have opted out of both ceilings by name to get here.
     const seen: string[] = [];
     await resolveGoalLaunch({
       workspaceId: WS,
       launcherOwnerId: 'su-goal',
-      sql: mockSql({ modeSubject: { 'su-goal': 'g1' }, settings: { g1: { defaults: { model: 'opus' } } }, seen }),
+      sql: mockSql({
+        modeSubject: { 'su-goal': 'g1' },
+        settings: { g1: { maxAgents: UNLIMITED_CEILING, maxPerFleet: UNLIMITED_CEILING } },
+        seen,
+      }),
     });
     expect(seen.some((s) => s.includes('FROM harness_shared.session_briefs b'))).toBe(false);
+  });
+});
+
+describe('resolveGoalLaunch — the D-015 system defaults', () => {
+  /**
+   * The regression these pin is not "the numbers changed". It is that an
+   * UNPINNED goal used to be UNGOVERNED: with both ceilings null, `needsCount`
+   * went false, the headcount was never taken and nothing could be refused —
+   * while D-004 had already deleted the capacity preflight on the premise that
+   * these ceilings were doing the work. Nine of eleven live goals were in that
+   * state when it was found.
+   */
+
+  it('governs a goal that has pinned NOTHING — the case that was ungoverned', async () => {
+    const seen: string[] = [];
+    const r = await resolveGoalLaunch({
+      workspaceId: WS,
+      launcherOwnerId: 'su-goal',
+      // No settings row at all: the shape 9 of 11 live goals were in.
+      sql: mockSql({ modeSubject: { 'su-goal': 'g1' }, headcount: { g1: { total: 0, fleet: 0 } }, seen }),
+    });
+    expect(r.ceilings.maxAgents).toBe(GOAL_LAUNCH_DEFAULTS.maxAgents);
+    expect(r.ceilings.maxPerFleet).toBe(GOAL_LAUNCH_DEFAULTS.maxPerFleet);
+    // The count is the proof it is ENFORCEABLE, not merely reported: a ceiling
+    // nobody counts against refuses nothing.
+    expect(seen.some((s) => s.includes('FROM harness_shared.session_briefs b'))).toBe(true);
+  });
+
+  it('actually REFUSES an unpinned goal at the default, rather than reporting a number it ignores', async () => {
+    const r = await resolveGoalLaunch({
+      workspaceId: WS,
+      launcherOwnerId: 'su-goal',
+      sql: mockSql({
+        modeSubject: { 'su-goal': 'g1' },
+        headcount: { g1: { total: GOAL_LAUNCH_DEFAULTS.maxAgents, fleet: 0 } },
+      }),
+    });
+    expect(r.refusal?.reason).toBe('goal_max_agents');
+    expect(r.refusal?.limit).toBe(GOAL_LAUNCH_DEFAULTS.maxAgents);
+  });
+
+  it('says the ceiling was a DEFAULT, so nobody hunts the panel for a number they never typed', async () => {
+    const r = await resolveGoalLaunch({
+      workspaceId: WS,
+      launcherOwnerId: 'su-goal',
+      sql: mockSql({
+        modeSubject: { 'su-goal': 'g1' },
+        headcount: { g1: { total: GOAL_LAUNCH_DEFAULTS.maxAgents, fleet: 0 } },
+      }),
+    });
+    expect(r.refusal?.message).toContain('system default');
+  });
+
+  it('does NOT claim a default when the owner pinned the number themselves', async () => {
+    const r = await resolveGoalLaunch({
+      workspaceId: WS,
+      launcherOwnerId: 'su-goal',
+      sql: mockSql({
+        modeSubject: { 'su-goal': 'g1' },
+        settings: { g1: { maxAgents: 2 } },
+        headcount: { g1: { total: 2, fleet: 0 } },
+      }),
+    });
+    expect(r.refusal?.limit).toBe(2);
+    expect(r.refusal?.message).not.toContain('system default');
+  });
+
+  it('a pinned ceiling beats the default in BOTH directions', async () => {
+    const lower = await resolveGoalLaunch({
+      workspaceId: WS,
+      launcherOwnerId: 'su-goal',
+      sql: mockSql({ modeSubject: { 'su-goal': 'g1' }, settings: { g1: { maxAgents: 3 } }, headcount: { g1: { total: 0, fleet: 0 } } }),
+    });
+    expect(lower.ceilings.maxAgents).toBe(3);
+    const higher = await resolveGoalLaunch({
+      workspaceId: WS,
+      launcherOwnerId: 'su-goal',
+      sql: mockSql({ modeSubject: { 'su-goal': 'g1' }, settings: { g1: { maxAgents: 400 } }, headcount: { g1: { total: 0, fleet: 0 } } }),
+    });
+    expect(higher.ceilings.maxAgents).toBe(400);
+  });
+
+  it('lets an owner opt a goal OUT entirely, and admits a launch the default would refuse', async () => {
+    // The owner-directed half of D-015: absent means "defaulted", so ungoverned
+    // has to remain SAYABLE — and saying it has to actually work.
+    const r = await resolveGoalLaunch({
+      workspaceId: WS,
+      launcherOwnerId: 'su-goal',
+      count: 50,
+      sql: mockSql({
+        modeSubject: { 'su-goal': 'g1' },
+        settings: { g1: { maxAgents: UNLIMITED_CEILING } },
+        headcount: { g1: { total: 999, fleet: 0 } },
+      }),
+    });
+    expect(r.ceilings.maxAgents).toBeNull();
+    expect(r.refusal).toBeNull();
+  });
+
+  it('opting ONE ceiling out leaves the OTHER on its default — they are independent', async () => {
+    const r = await resolveGoalLaunch({
+      workspaceId: WS,
+      launcherOwnerId: 'su-goal',
+      fleetSlug: 'f1',
+      sql: mockSql({
+        modeSubject: { 'su-goal': 'g1' },
+        settings: { g1: { maxAgents: UNLIMITED_CEILING } },
+        headcount: { g1: { total: 999, fleet: GOAL_LAUNCH_DEFAULTS.maxPerFleet } },
+      }),
+    });
+    expect(r.ceilings.maxAgents).toBeNull();
+    expect(r.ceilings.maxPerFleet).toBe(GOAL_LAUNCH_DEFAULTS.maxPerFleet);
+    expect(r.refusal?.reason).toBe('fleet_max_agents');
+  });
+
+  it('applies NO ceiling when there is no goal in scope — defaults are per-GOAL, not global', async () => {
+    // A launch outside any goal is not a goal launch. Defaulting it to 12 would
+    // put a goal-mode ceiling on every ordinary spawn in the workspace.
+    const r = await resolveGoalLaunch({ workspaceId: WS, launcherOwnerId: 'su-nobody', sql: mockSql({}) });
+    expect(r.goalId).toBeNull();
+    expect(r.ceilings).toEqual({ maxAgents: null, maxPerFleet: null });
+    expect(r.refusal).toBeNull();
+  });
+});
+
+describe('resolveCeiling — the three states stay three', () => {
+  it('maps each state to its own outcome', () => {
+    expect(resolveCeiling(undefined, 12)).toBe(12);
+    expect(resolveCeiling(null, 12)).toBe(12);
+    expect(resolveCeiling(UNLIMITED_CEILING, 12)).toBeNull();
+    expect(resolveCeiling(7, 12)).toBe(7);
+  });
+
+  it('keeps unlimited and unpinned DISTINGUISHABLE — collapsing them is the original bug', () => {
+    expect(resolveCeiling(UNLIMITED_CEILING, 12)).not.toBe(resolveCeiling(undefined, 12));
+  });
+
+  it('defaults are above the contract floor of 8', () => {
+    // The GOAL contract obliges a goal agent + a standing drain fleet + one plan
+    // fleet. A default below that refuses the fleet the contract mandates, so
+    // the default itself would be the bug. This guards the NUMBER against a
+    // well-meaning trim.
+    expect(GOAL_LAUNCH_DEFAULTS.maxAgents).toBeGreaterThanOrEqual(8);
+    // And a goal must be able to run more than one fleet at a time, or
+    // "parallelize hard" is unreachable by construction.
+    expect(GOAL_LAUNCH_DEFAULTS.maxAgents).toBeGreaterThan(GOAL_LAUNCH_DEFAULTS.maxPerFleet * 2);
   });
 });
 

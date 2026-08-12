@@ -106,9 +106,18 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
+/** What the server ships for an unpinned ceiling (D-015). */
+const DEFAULTS = { maxAgents: 12, maxPerFleet: 5 };
+
 function mount(settings: GoalDetailLaunchSettings | null, invalid?: string | null) {
   return render(
-    <GoalSettingsSection goalId="G-1" settings={settings} settingsInvalid={invalid} options={OPTIONS} />,
+    <GoalSettingsSection
+      goalId="G-1"
+      settings={settings}
+      settingsInvalid={invalid}
+      options={OPTIONS}
+      defaults={DEFAULTS}
+    />,
   );
 }
 
@@ -123,14 +132,65 @@ const maxAgents = () => screen.getByLabelText('Max agents') as HTMLInputElement;
 const saveBtn = () => screen.getByRole('button', { name: /Save settings/ }) as HTMLButtonElement;
 
 describe('GoalSettingsSection — collapsed summary', () => {
-  it('says an absent ceiling is absent rather than showing nothing', () => {
+  it('reports the DEFAULT an unpinned goal runs under, not "no ceiling"', () => {
+    // The summary is the only line most visits read, so this is where the
+    // pre-D-015 reading ("nothing set" ⇒ "nothing in force") would survive
+    // longest after the resolver stopped agreeing with it.
     mount(null);
-    expect(screen.getByTestId('goal-settings-summary').textContent).toBe('No agent ceiling');
+    const text = screen.getByTestId('goal-settings-summary').textContent ?? '';
+    expect(text).toContain('Max 12 agents');
+    expect(text).toContain('default');
+  });
+
+  it('reserves "No agent ceiling" for a goal that opted out ON PURPOSE', () => {
+    mount({ maxAgents: 'unlimited' });
+    expect(screen.getByTestId('goal-settings-summary').textContent).toContain('No agent ceiling');
+  });
+
+  it('reads DIFFERENTLY for defaulted vs deliberately unbounded — they are not the same goal', () => {
+    const { unmount } = mount(null);
+    const defaulted = screen.getByTestId('goal-settings-summary').textContent;
+    unmount();
+    mount({ maxAgents: 'unlimited', maxPerFleet: 'unlimited' });
+    expect(screen.getByTestId('goal-settings-summary').textContent).not.toBe(defaulted);
   });
 
   it('leads with the ceiling in force', () => {
     mount({ maxAgents: 3 });
     expect(screen.getByTestId('goal-settings-summary').textContent).toContain('Max 3 agents');
+  });
+});
+
+describe('GoalSettingsSection — the unlimited opt-out', () => {
+  const noCeiling = () => screen.getAllByRole('checkbox', { name: /no ceiling/i })[0];
+
+  it('writes the explicit literal, not a blank field', () => {
+    mount(null);
+    open();
+    fireEvent.click(noCeiling());
+    fireEvent.click(saveBtn());
+    expect(writtenBody().launchSettings).toEqual({ maxAgents: 'unlimited' });
+  });
+
+  it('clearing the opt-out returns the ceiling to the DEFAULT, not to a number', () => {
+    mount({ maxAgents: 'unlimited' });
+    open();
+    fireEvent.click(noCeiling());
+    fireEvent.click(saveBtn());
+    // Nothing pinned at all ⇒ the whole document clears, and the resolver's
+    // default takes over. Landing on some remembered number instead would pin a
+    // ceiling the owner never chose.
+    expect(writtenBody().launchSettings).toBeNull();
+  });
+
+  it('a typed number and the opt-out cannot both be in force', () => {
+    mount({ maxAgents: 4 });
+    open();
+    expect(maxAgents().value).toBe('4');
+    fireEvent.click(noCeiling());
+    expect(maxAgents().disabled).toBe(true);
+    fireEvent.click(saveBtn());
+    expect(writtenBody().launchSettings).toEqual({ maxAgents: 'unlimited' });
   });
 });
 
