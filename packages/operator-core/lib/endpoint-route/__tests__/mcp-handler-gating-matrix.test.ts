@@ -373,6 +373,25 @@ defineTool({
   },
 });
 
+// EI-20226130855047135: this role-gated recovery-shaped probe must not open a
+// short principal-synthesis transaction for a privileged caller. Signed role
+// callers still exercise the normal synthesis path below.
+const txlessRoleProbeSeen: UnifiedToolContext[] = [];
+registerProjectedTool({
+  pluginName: 'gating-matrix-test',
+  description: 'test-only probe: role-gated recovery tool with no ambient tx',
+  inputSchema: { type: 'object', additionalProperties: false },
+  capabilities: ['agent_tools:read'],
+  requirePrincipal: false,
+  agentRoles: ['scoper'],
+  skipWorkspaceTx: true,
+  expose: { mcp: { name: 'gatingtest:txless_role' } },
+  fn: async (_input, ctx) => {
+    txlessRoleProbeSeen.push(ctx);
+    return { content: [{ type: 'text' as const, text: 'gatingtest:txless_role-ok' }] };
+  },
+});
+
 // EI-19389430626961976: a pair of probes whose ONLY difference is
 // `skipResultDoor`, both returning a body well over the resultEach door
 // budget (~6000 chars at the baked 1500-token floor) — for pinning that the
@@ -492,6 +511,7 @@ beforeEach(() => {
   h.invocations.length = 0;
   h.scopedClampFlag.value = false;
   invokeProbeSeen.length = 0;
+  txlessRoleProbeSeen.length = 0;
   delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
   _resetVerifiedSpawns(); // every case reuses spawn='spawn-1' — isolate the real verified-spawn tracker per test
 });
@@ -1554,6 +1574,21 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
     expect(call.ctx.principal?.slug).toBe('system:operator');
     expect(call.ctx.gateBypass).toEqual({ role: true, capability: true, quota: true });
     expect(h.withWorkspaceCalls).toEqual(['ws-test']);
+  });
+
+  it('EI-20226130855047135: privileged role-gated recovery calls skip principal synthesis', async () => {
+    const projected = lookupByMcpName('tools:find');
+    expect(projected?.requirePrincipal).toBe(false);
+    expect(projected?.skipWorkspaceTx).toBe(true);
+
+    const res = await callTool('gatingtest:txless_role', {}, superuserExtra('&workspace=ws-test'));
+    expect(res.isError).toBeUndefined();
+    expect(textOf(res)).toBe('gatingtest:txless_role-ok');
+    expect(txlessRoleProbeSeen).toHaveLength(1);
+    expect(txlessRoleProbeSeen[0].tx).toBeUndefined();
+    expect(txlessRoleProbeSeen[0].principal).toBeUndefined();
+    expect(txlessRoleProbeSeen[0].gateBypass?.capability).toBe(true);
+    expect(h.withWorkspaceCalls).toEqual([]);
   });
 
   it('power-profile callers cannot invoke engineer-profile tools by name (mirrors the list filter)', async () => {

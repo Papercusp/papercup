@@ -1048,7 +1048,12 @@ import { warnIfHoldingWorkspaceTxTooLong } from './idle-tx-warning';
  * no ambient tx at all.
  */
 async function dispatchWithSynthesizedTx<T>(
-  tool: { name?: string; crossWorkspace?: boolean; skipWorkspaceTx?: boolean },
+  tool: {
+    name?: string;
+    crossWorkspace?: boolean;
+    skipWorkspaceTx?: boolean;
+    requirePrincipal?: boolean;
+  },
   spawnCtx: BuiltSpawnContext,
   baseCtx: UnifiedToolContext,
   run: (ctx: UnifiedToolContext) => Promise<T>,
@@ -1065,6 +1070,23 @@ async function dispatchWithSynthesizedTx<T>(
       tx: adminTx,
       principal: await synthesizeDispatchPrincipal(adminTx, spawnCtx),
     };
+    return runWithWorkspaceIfConcrete(spawnCtx.workspaceId, () => run(ctx));
+  }
+  // EI-20226130855047135: role-gated tools explicitly declare that their
+  // handlers do not require a principal. A superuser/power-user already has
+  // the capability bypass needed by the dispatch stack, and a tool that also
+  // opts out of its ambient workspace transaction does not need a short
+  // principal-synthesis transaction either. Keeping that probe out of the
+  // org-app pool leaves recovery/discovery tools callable while the pool is
+  // saturated. Signed role callers still take the existing synthesis path so
+  // their capability grants remain enforced.
+  if (
+    tool.skipWorkspaceTx === true &&
+    tool.requirePrincipal === false &&
+    baseCtx.gateBypass?.capability === true &&
+    dispatchNeedsTx(spawnCtx)
+  ) {
+    const ctx: UnifiedToolContext = { ...baseCtx, tx: undefined, principal: undefined };
     return runWithWorkspaceIfConcrete(spawnCtx.workspaceId, () => run(ctx));
   }
   // EI-18666279107998059: same needsTx scoping as below, but the principal is
