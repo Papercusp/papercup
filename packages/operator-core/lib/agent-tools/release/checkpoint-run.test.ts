@@ -1041,6 +1041,7 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
       readGateOwnership: vi.fn(async () => ownership),
       shouldStandDownForLivePeer: vi.fn(() => true),
       ownershipNeedsLivenessConfirmation: vi.fn(() => null),
+      ownershipContradicted: vi.fn(() => false),
     }));
 
     const { default: tool } = await import('./checkpoint-run');
@@ -1085,6 +1086,7 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
       readGateOwnership: vi.fn(async () => ownership),
       shouldStandDownForLivePeer: vi.fn(() => false),
       ownershipNeedsLivenessConfirmation: vi.fn(() => true),
+      ownershipContradicted: vi.fn(() => false),
     }));
     vi.doMock('../coordination/identity', () => ({
       resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-caller', workspaceId: 'papercusp-workspace' })),
@@ -1152,6 +1154,7 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
       readGateOwnership: vi.fn(async () => ownership),
       shouldStandDownForLivePeer: vi.fn(() => false),
       ownershipNeedsLivenessConfirmation: vi.fn(() => true),
+      ownershipContradicted: vi.fn(() => false),
     }));
     vi.doMock('../coordination/identity', () => ({
       resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-caller', workspaceId: 'papercusp-workspace' })),
