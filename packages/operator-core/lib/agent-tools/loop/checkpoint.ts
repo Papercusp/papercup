@@ -172,6 +172,11 @@ export default defineTool({
     ],
   },
   capability: 'routines:write',
+  // EI-20228649300818575: this handler writes through the carry-note store and
+  // performs its own bounded coordination reads. Do not hold the ambient org-app
+  // workspace transaction while it waits on those independent scopes; under pool
+  // starvation that outer acquisition can deadlock the mandatory continuity write.
+  skipWorkspaceTx: true,
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z

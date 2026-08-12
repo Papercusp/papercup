@@ -119,6 +119,10 @@ beforeEach(() => {
 });
 
 describe('loop:checkpoint — the loop carry-note producer', () => {
+  it('opts out of the ambient workspace transaction because the handler owns independent DB scopes', () => {
+    expect((tool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+
   it('structured fields → renderCarryNote, keyed by caller ownerId + ctx harness (the loopScope the wake executor reads)', async () => {
     const b = body(await call({ did: 'wired producer', left: 'run tests', insight: 'inject wraps note', next: 'vitest' }));
     expect(b).toMatchObject({ ok: true, harness: 'papercusp', ownerId: 'su-caller', cleared: false });
