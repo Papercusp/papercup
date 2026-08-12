@@ -49,6 +49,13 @@ describe('renderContextUsageLine (WI-1795 compaction affordance)', () => {
     expect(line).toMatch(/do not merely describe ending the turn/i);
   });
 
+  it('does not prescribe self-compaction when no supported PTY host exists', () => {
+    const line = renderContextUsageLine(127, 100, false);
+    expect(line).toContain('self-compaction is unavailable');
+    expect(line).toContain('next wake');
+    expect(line).not.toContain('request-compaction');
+  });
+
   it('gates precisely on the rounded percentage at COMPACTION_HINT_PCT', () => {
     // pct rounds: 0.845 → 85 (hint), 0.844 → 84 (no hint)
     const withHint = renderContextUsageLine(845, 1000);
@@ -109,6 +116,14 @@ describe('renderBandedContextGauge (P-013/P-015 ambient gauge)', () => {
     expect(line).toContain('CRITICAL');
     expect(line).toContain('session:request-compaction');
     expect(line).toMatch(/do not merely narrate ending the turn/i);
+  });
+
+  it('uses a supported next-wake path when self-compaction is unavailable', () => {
+    const line = renderBandedContextGauge(127, 100, false);
+    expect(line).toContain('CRITICAL');
+    expect(line).toContain('self-compaction is unavailable');
+    expect(line).toContain('next wake');
+    expect(line).not.toContain('request-compaction');
   });
 
   it('bands exactly on the rounded percent at each boundary', () => {

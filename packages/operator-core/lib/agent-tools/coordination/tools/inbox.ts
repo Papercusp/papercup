@@ -56,6 +56,7 @@ import {
 import { readPriorRespawnOutcome, lostRespawnAmbientLine } from "../../../carry-respawn-outcome";
 import { classifyStaleClaims, renderFlushGateLine, FLUSH_GATE_PCT } from "./inbox-flush-gate";
 import { currentContextTokensForOwner } from "../../../compaction-usage";
+import { selfCompactionAvailability } from "../../../events/await/psu-pty-discovery";
 import { listActiveClaimFreshnessForOwner } from "../../../work-item-claims";
 import { activeWorkspaceId } from "../../../workspace-registry";
 import { cachedRead, type CachedReadCtx } from "../../../cache";
@@ -930,16 +931,24 @@ export default defineTool({
       // same sessions it was the only source for before).
       const live = await currentContextTokensForOwner(identity.ownerId);
       const tokens = live ?? pres?.contextTokens;
-      usageLine = renderContextUsageLine(tokens, pres?.compactionLimit);
+      const pct = contextUsagePct(tokens, pres?.compactionLimit);
+      // EI-20210946042796988: the ambient affordance must agree with the actual
+      // request-compaction predicate. Headless/autonomous members have no supported
+      // psu-pty host, so prescribing the call would spend their last turn on a
+      // guaranteed `no_live_pty_host` refusal.
+      const selfCompactionAvailable =
+        pct != null && pct >= CONTEXT_GAUGE_LOUD_PCT
+          ? selfCompactionAvailability(identity.ownerId).available
+          : null;
+      usageLine = renderContextUsageLine(tokens, pres?.compactionLimit, selfCompactionAvailable);
       // flush-to-proceed-stretch-discipline-2026-07-04 P-002: near a compaction boundary,
       // surface any work-item claim whose checkpoint is stale (unflushed state) and NAME the
       // action (work_items:checkpoint) — the flush invariant enforced on the ONE surface in
       // front of the agent at the moment it matters. The claims read fires ONLY at/above the
       // gate pct, so normal low-% turns pay nothing extra. Best-effort: any failure omits the
       // line and never breaks the inbox read.
-      const pct = contextUsagePct(tokens, pres?.compactionLimit);
       if (pct != null && pct >= CONTEXT_GAUGE_LOUD_PCT) {
-        contextGauge = renderBandedContextGauge(tokens, pres?.compactionLimit);
+        contextGauge = renderBandedContextGauge(tokens, pres?.compactionLimit, selfCompactionAvailable);
       }
       if (pct != null && pct >= FLUSH_GATE_PCT) {
         try {

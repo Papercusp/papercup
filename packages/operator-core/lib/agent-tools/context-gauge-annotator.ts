@@ -17,12 +17,17 @@
 
 import type { ResultAnnotator } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity, type ResolveIdentityCtx } from './coordination/identity';
-import { renderBandedContextGauge } from './coordination/tools/inbox-context-usage';
+import {
+  CONTEXT_GAUGE_LOUD_PCT,
+  contextUsagePct,
+  renderBandedContextGauge,
+} from './coordination/tools/inbox-context-usage';
 import {
   getContextUsage,
   isContextGaugeEnabled,
 } from '../system-health/context-usage-cache';
 import { currentContextTokensSyncForOwner } from '../compaction-usage';
+import { selfCompactionAvailability } from '../events/await/psu-pty-discovery';
 
 /** The tool-result shape, derived from the annotator signature (no extra import). */
 type AnnotatedResult = Parameters<ResultAnnotator>[0];
@@ -54,7 +59,10 @@ export const contextGaugeAnnotator: ResultAnnotator = (result, ctx) => {
   // this call — never a possibly-stale number; the next call reads the anchor.
   const tokens = currentContextTokensSyncForOwner(ownerId);
   if (tokens == null) return result;
-  const line = renderBandedContextGauge(tokens, usage.limit);
+  const pct = contextUsagePct(tokens, usage.limit);
+  const selfCompactionAvailable =
+    pct != null && pct >= CONTEXT_GAUGE_LOUD_PCT ? selfCompactionAvailability(ownerId).available : null;
+  const line = renderBandedContextGauge(tokens, usage.limit, selfCompactionAvailable);
   if (!line) return result; // below the quiet band — silent
   if (resultCarriesContextLine(result)) return result; // don't double-render (coord:inbox)
   return {
