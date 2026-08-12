@@ -141,6 +141,20 @@ describe('dev:restart dry run', () => {
     expect(tool.guidance?.chaining).toMatch(/reason:/);
   });
 
+  it('generated tool catalog preserves the real-restart enablement gates', () => {
+    const catalogPath = new URL('../../../../../.papercusp/tool-catalog.json', import.meta.url).pathname;
+    const catalog = JSON.parse(readFileSync(catalogPath, 'utf8')) as {
+      tools: Array<{ name: string; description?: string; guidance?: { chaining?: string } }>;
+    };
+    const projected = catalog.tools.find((entry) => entry.name === 'dev:restart');
+
+    expect(projected).toBeDefined();
+    expect(projected?.description).toMatch(/authorize:true/);
+    expect(projected?.guidance?.chaining).toMatch(/confirm:true/);
+    expect(projected?.guidance?.chaining).toMatch(/authorize:true/);
+    expect(projected?.guidance?.chaining).toMatch(/reason:/);
+  });
+
   it('target:staging reports the staging unit + mentions the coalescing window', async () => {
     const b = body(await call({ target: 'staging' }));
     expect(b).toMatchObject({ ok: true, dry_run: true, target: 'staging', would_run: 'systemctl --user restart papercup-staging-api.service' });
