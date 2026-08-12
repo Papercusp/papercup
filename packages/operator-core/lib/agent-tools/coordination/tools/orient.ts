@@ -817,21 +817,17 @@ export async function composeOrient(
   // just-compacted agent lost its context, so "already shown" no longer means
   // "already known"; it keeps the fuller unscoped re-read. BEST-EFFORT + fail-open:
   // an absent/failed watermark ⇒ the unfiltered read, never a broken orient.
-  let inboxSince: string | undefined;
-  if (monitor && !args.afterCompaction) {
-    try {
-      const wm = (await call('coord:watermark', {})) as { read_through_ts?: string | null } | null | undefined;
-      if (typeof wm?.read_through_ts === 'string' && wm.read_through_ts) {
-        inboxSince = wm.read_through_ts;
-      }
-    } catch {
-      /* fail-open: unscoped read */
-    }
-  }
+  // D-013 R1: `coord:inbox` is a VIEW, not a delta — orient's inbox leg is an
+  // agent-facing fold, so it takes the recent-N view bounded by `limit` (the
+  // WI-6939 `enough` window makes that bound the cheap one) rather than a
+  // caller-carried floor. This also drops the `coord:watermark` round-trip that
+  // existed only to derive that floor: monitor mode previously narrowed to
+  // "newer than read_through_ts", which could HIDE mail the agent had been shown
+  // but not acted on. `unanswered` remains the actionable signal, and it is
+  // computed independently of this window.
   const inbox = (await call('coord:inbox', {
     limit: args.inboxLimit ?? (args.afterCompaction ? 25 : 10),
     max_body_chars: args.afterCompaction ? 800 : 300,
-    ...(inboxSince ? { since_ts: inboxSince } : {}),
   })) as { summary?: unknown; entries?: unknown } | undefined;
 
   // work_items:list returns the bare array (its `result` schema), but be defensive

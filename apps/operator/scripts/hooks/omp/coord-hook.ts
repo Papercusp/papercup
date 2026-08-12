@@ -730,16 +730,12 @@ async function onTurnStartAttached(ownerId: string): Promise<TurnStartResult> {
   // the same batch — plan_event lines live in coord/plan-events-*.jsonl,
   // NOT coord/messages/, so coord:inbox never surfaces them (audit NB-2).
   const [inboxResult, locksResult, , planEventsResult] = await Promise.all([
-    callMcpTool('coord:inbox', wm.messages ? { since_ts: wm.messages } : {}, { timeoutMs: 1000 }),
+    callMcpTool('coord:inbox', {}, { timeoutMs: 1000 }),
     callMcpTool('locks:queue', { owner: ownerId }, { timeoutMs: 1000 }).catch(() => null),
     callMcpTool('coord:declare-intent', {
       intent: '(active — see coord:presence for current work)',
     }, { timeoutMs: 1000 }),
-    callMcpTool(
-      'coord:plan-events',
-      wm.planEvents ? { since_ts: wm.planEvents } : {},
-      { timeoutMs: 1000 },
-    ).catch(() => null),
+    callMcpTool('coord:plan-events', {}, { timeoutMs: 1000 }).catch(() => null),
   ]);
 
   // coord:inbox returning null means the operator call FAILED (an empty
@@ -860,25 +856,14 @@ export async function onTurnEnd(): Promise<void> {
   });
 }
 
-/**
- * Mid-turn coord delivery (parity with the Claude/Codex PostToolUse coord
- * hook): on each tool_result, poll coord:inbox for messages that arrived since
- * the last position surfaced this turn, and return a compact reminder for any
- * new ones. Advances both the mid-turn cursor (so a message is never injected
- * twice) and the staged watermark (so turn_end persists the progress).
- *
- * Attached-only + best-effort: returns '' when there's no baseline (detached
- * or pre-seed — never dump history on a missing cursor) or on any transient
- * failure (the next tool_result re-checks). The adapter injects the reminder
- * via pi.sendMessage(deliverAs:'steer') so it lands in the running turn.
- */
-export async function pollInboxDelta(): Promise<{ reminder: string }> {
-  const since = _midTurnCursor;
-  if (!since) return { reminder: '' };
-  const inboxResult = await callMcpTool('coord:inbox', { since_ts: since });
-  if (inboxResult === null) return { reminder: '' }; // transient failure — skip
-  return consumeInboxDelta(inboxResult);
-}
+/* `pollInboxDelta` (the LEGACY direct mid-turn poll) was removed with the
+ * agent-facing `since_ts` parameter it depended on — plan
+ * fleet-deltas-leader-primitives-2026-07-10, decision D-013 R2. It had no
+ * production caller: the adapter takes mid-turn delivery from `activity:report`'s
+ * bundled surface (see `consumeInboxDelta(bundle.surfaces.inbox)` below), which
+ * owns the server-side read cursor for surface 'inbox' and is therefore a real
+ * delta without any client-carried timestamp. `consumeInboxDelta` is retained —
+ * it is the shared shape-consumer that path still uses. */
 
 /** Consume the server's coord:inbox JSON shape from either the legacy direct
  * poll or activity:report's bundled surface. */
