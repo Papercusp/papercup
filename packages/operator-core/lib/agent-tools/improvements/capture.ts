@@ -145,6 +145,50 @@ export function describeExperimentGap(args: {
   };
 }
 
+/**
+ * WI-38065: report-only LENS-ATTRIBUTION advisory for the su IDEATE-pass feature path.
+ *
+ * The su-ideate ledger bridge below stamps `lens: args.ideation?.lens ?? 'su-ideate'`, and
+ * sentinel rows are excluded from EVERY per-lens statistic (outcome-feedback.ts:168,:315).
+ * Measured 2026-08-12 over 30 days of origin='su-ideate' filings: the sentinel was 41 of 62
+ * (66%). So the per-lens win-rates that steer sampling — and the diversity floor that keeps a
+ * cold or losing lens alive — were being computed over a THIRD of the corpus. A floor cannot
+ * protect a lens it cannot see.
+ *
+ * WHY A RESULT-SIDE ADVISORY RATHER THAN BETTER GUIDANCE: both filing doors ALREADY spell the
+ * cost out in their arg guidance (here, and scout/route-idea.ts), and that guidance was losing
+ * 2:1. An explanation is read while COMPOSING the call; the omission happens precisely when the
+ * filer is not thinking about lens learning. This states the CONSEQUENCE afterwards, about the
+ * filing just made — the same report-only channel as {@link describeExperimentGap}.
+ *
+ * DELIBERATELY NOT A GATE. The `ideation` block is documented below as "Never a gate: purely
+ * additive", and that decision stands: a required subfield would not reach the dominant case
+ * anyway (filings that omit `ideation` entirely), and nothing here blocks or declines. An agent
+ * that genuinely wants no lens simply ignores it.
+ *
+ * Computed from the CALLER's args (like experimentGap), so a dedup-decline / checkDuplicatesOnly
+ * response carries it too — the filer is told before they re-file, not after.
+ */
+export function describeLensAttribution(
+  args: { kind?: string; lane?: string; ideation?: { lens?: string } },
+  source?: string,
+): { sentinel: true; lenses: string[]; note: string } | undefined {
+  // Same eligibility as the su-ideate ledger row below — no row, nothing to attribute.
+  if (source !== 'su' || args.kind !== 'feature' || args.lane === 'observation') return undefined;
+  if (args.ideation?.lens) return undefined;
+  return {
+    sentinel: true,
+    lenses: [...SU_IDEATION_LENSES],
+    note:
+      "Filed — this is a report, not a rejection. You declared no `ideation.lens`, so this filing was " +
+      "recorded under the 'su-ideate' sentinel and earns NO per-lens learning: sentinel rows are excluded " +
+      'from every per-lens statistic, so this idea will not inform the win-rates that steer which stance ' +
+      'future passes sample, and it cannot be kept alive by the diversity floor. Two thirds of su filings ' +
+      'currently land this way, which means that learning runs on a minority of the corpus. To attribute ' +
+      'it, re-file or amend with `ideation.lens` — you already know which stance produced it.',
+  };
+}
+
 export default defineTool({
   name: 'improvements:capture',
   profile: 'engineer',
@@ -745,6 +789,9 @@ export default defineTool({
       // Computed from the CALLER's args, so a dedup-decline / checkDuplicatesOnly response
       // carries it too — the filer is told before they re-file, not after.
       const experimentGap = describeExperimentGap(args);
+      // WI-38065: report-only lens-attribution advisory (see describeLensAttribution above).
+      // Same caller-args basis as experimentGap, so a dedup-decline carries it too.
+      const lensAttribution = describeLensAttribution(args, source);
       return {
         content: [
           {
