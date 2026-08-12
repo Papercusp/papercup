@@ -25,7 +25,33 @@ import {
   openEnvOperatorLog,
   viteChildArgv,
   viteChildEnv,
+  formatEnvOperatorPass2Result,
 } from './env-operator-launcher';
+
+describe('formatEnvOperatorPass2Result', () => {
+  it('emits stable fields for a completed source pass instead of prose', () => {
+    expect(
+      formatEnvOperatorPass2Result({ status: 'ran', spawned: 2, skipped: 1 }),
+    ).toBe('[env-operators] PASS2_RESULT status=ran spawned=2 skipped=1');
+  });
+
+  it('records terminal skip and failure outcomes explicitly', () => {
+    expect(
+      formatEnvOperatorPass2Result({
+        status: 'skipped',
+        reason: 'no-source-tree',
+        skipped: 2,
+      }),
+    ).toBe('[env-operators] PASS2_RESULT status=skipped skipped=2 reason=no-source-tree');
+    expect(
+      formatEnvOperatorPass2Result({ status: 'failed', reason: 'provisioning-error' }),
+    ).toBe('[env-operators] PASS2_RESULT status=failed reason=provisioning-error');
+  });
+
+  it('does not depend on the legacy "source pass" wording', () => {
+    expect(formatEnvOperatorPass2Result({ status: 'ran' })).not.toContain('source pass');
+  });
+});
 
 const SPECS: readonly EnvOperatorSpec[] = [
   { id: 'dev', port: 3270, branch: 'staging' },

@@ -585,7 +585,11 @@ export function runBootstrap(): void {
     const armEnvOperators = setTimeout(() => {
       void (async () => {
         try {
-          const { launchEnvOperators, isTransientSkip } = await import(
+          const {
+            formatEnvOperatorPass2Result,
+            launchEnvOperators,
+            isTransientSkip,
+          } = await import(
             '@papercusp/operator-core/lib/harness/env-operator-launcher'
           );
           // [WI-3330] Launch the BUNDLED env operators (prod:3070/staging:3170/
@@ -641,6 +645,13 @@ export function runBootstrap(): void {
             console.log(
               `[env-operators] source pass (2/2): spawned=${second.spawned.length} skipped=${second.skipped.length}`,
             );
+            console.log(
+              formatEnvOperatorPass2Result({
+                status: 'ran',
+                spawned: second.spawned.length,
+                skipped: second.skipped.length,
+              }),
+            );
           } else if (deferredIds.length) {
             // CLOSE the deferral in the failure direction too. Without this the last word
             // on dev/local is "deferred to pass 2" and pass 2 never runs — a promise the
@@ -654,8 +665,31 @@ export function runBootstrap(): void {
                 '+',
               )} are unavailable for this boot (now terminal, not pending)`,
             );
+            console.log(
+              formatEnvOperatorPass2Result({
+                status: 'skipped',
+                reason: 'no-source-tree',
+                skipped: deferredIds.length,
+              }),
+            );
+          } else {
+            // No source archive was shipped, so there is no source pass to run. Emit the
+            // terminal outcome anyway: consumers must distinguish "not applicable" from
+            // "waiting for a pass" without parsing prose.
+            console.log(
+              formatEnvOperatorPass2Result({
+                status: 'skipped',
+                reason: 'no-source-archive',
+              }),
+            );
           }
         } catch (e) {
+          console.log(
+            formatEnvOperatorPass2Result({
+              status: 'failed',
+              reason: 'provisioning-error',
+            }),
+          );
           console.warn('[env-operators] provisioning failed (non-fatal):', (e as Error)?.message ?? e);
         }
       })();

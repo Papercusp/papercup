@@ -278,6 +278,30 @@ export interface LaunchEnvOperatorsResult {
   skipped: { id: string; reason: string }[];
 }
 
+/**
+ * Machine-readable completion marker for the optional source-operator pass.
+ *
+ * The WI-3307 acceptance harness used to infer that pass 2 ran by searching for
+ * human-readable prose (`[env-operators] source pass`). That made a wording edit
+ * change the verdict, and a newly added line could make a failed extract look like
+ * a successful pass. Keep the contract as fields with stable names; callers should
+ * branch on `status`, not on the surrounding log text.
+ */
+export type EnvOperatorPass2Status = 'ran' | 'skipped' | 'failed';
+
+export function formatEnvOperatorPass2Result(input: {
+  status: EnvOperatorPass2Status;
+  spawned?: number;
+  skipped?: number;
+  reason?: string;
+}): string {
+  const fields = [`[env-operators] PASS2_RESULT status=${input.status}`];
+  if (input.spawned !== undefined) fields.push(`spawned=${input.spawned}`);
+  if (input.skipped !== undefined) fields.push(`skipped=${input.skipped}`);
+  if (input.reason !== undefined) fields.push(`reason=${input.reason}`);
+  return fields.join(' ');
+}
+
 /** Default reachability probe — GET /api/desktop/version, server-side (no CORS). Never throws. */
 async function defaultProbe(origin: string, timeoutMs = 700): Promise<boolean> {
   try {

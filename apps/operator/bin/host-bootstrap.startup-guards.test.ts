@@ -95,6 +95,16 @@ describe('host-bootstrap wires every startup guard', () => {
   });
 });
 
+describe('host-bootstrap emits a machine-readable source-pass verdict', () => {
+  it('calls the stable PASS2_RESULT formatter for ran, skipped, and failed outcomes', () => {
+    expect(bootSrc).toContain('formatEnvOperatorPass2Result');
+    expect(bootSrc.match(/formatEnvOperatorPass2Result\s*\(/g)?.length ?? 0).toBeGreaterThanOrEqual(4);
+    expect(bootSrc).toMatch(/status:\s*'ran'/);
+    expect(bootSrc).toMatch(/status:\s*'skipped'/);
+    expect(bootSrc).toMatch(/status:\s*'failed'/);
+  });
+});
+
 describe('host-bootstrap keeps one owner for the endpoint IPC tool registry', () => {
   it('does not re-import the agent-tools barrel through a second module specifier', () => {
     expect(bootSrc).not.toContain("import('@papercusp/operator-core/lib/agent-tools')");
