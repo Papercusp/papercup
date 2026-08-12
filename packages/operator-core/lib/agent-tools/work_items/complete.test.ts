@@ -112,13 +112,12 @@ const withAssumptions = (x: unknown): unknown => {
   return o;
 };
 
-const parse = (x: unknown) =>
-  (complete.args as { parse: (x: unknown) => unknown }).parse(withAssumptions(x));
+const parse = (x: unknown) => (complete.args as { parse: (x: unknown) => unknown }).parse(withAssumptions(x));
 type Out = { data: any };
 /** Full envelope. */
 const env = async (x: unknown) => {
   const res = (await complete.handler(parse(x) as never, ctx)) as Out;
-  return (res.data);
+  return res.data;
 };
 /** The single (n=1) result item — the dual-arity verb wraps it in the bulk envelope. */
 const one = async (x: unknown) => (await env(x)).results[0];
@@ -247,7 +246,11 @@ describe('work_items:complete (keyed-array)', () => {
     getWorkItem.mockResolvedValue(item);
     setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
     const r = await one({ id: 'F-12', state: 'passed', completion: { workItem: 'F-12', summary: 'shipped' } });
-    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith('F-12', 'passed', expect.objectContaining({ by: expect.any(String) }));
+    expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+      'F-12',
+      'passed',
+      expect.objectContaining({ by: expect.any(String) }),
+    );
     expect(r.workItem.state).toBe('passed');
     expect(r.ok).toBe(true);
     expect(r.finish).toMatchObject({
@@ -375,7 +378,9 @@ describe('work_items:complete (keyed-array)', () => {
     it('a state write that THROWS (peer HOLD-OPEN) returns ok:false — but still records + carries the completion (EI-24)', async () => {
       getWorkItem.mockResolvedValue(issue);
       setWorkItemStateWithAliasInfo.mockRejectedValue(
-        new Error("work_item 'WI-1' is HELD OPEN by su-peer (\"blocked\") — closing it into 'resolved' requires the holder."),
+        new Error(
+          "work_item 'WI-1' is HELD OPEN by su-peer (\"blocked\") — closing it into 'resolved' requires the holder.",
+        ),
       );
       const r = await one({ id: 'WI-1', state: 'resolved', completion: { summary: 'fixed it', tests: '5 green' } });
 
@@ -418,7 +423,9 @@ describe('work_items:complete (keyed-array)', () => {
     it('does not claim a plan-gated close was parked when the claim hold write fails', async () => {
       getWorkItem.mockResolvedValue(issue);
       setWorkItemStateWithAliasInfo.mockRejectedValue(
-        new Error("work_item 'WI-1' is not settled, and its linked plan-item a-plan#P-002 is STILL effectively 'blocked'"),
+        new Error(
+          "work_item 'WI-1' is not settled, and its linked plan-item a-plan#P-002 is STILL effectively 'blocked'",
+        ),
       );
       setWorkItemClaimHold.mockRejectedValue(new Error('claim hold database unavailable'));
 
@@ -460,7 +467,11 @@ describe('work_items:complete (keyed-array)', () => {
         appliedState: 'done',
         aliasNote: `requested state '${state}' has no distinct representation for this family — recorded as 'done' instead.`,
       }));
-      const r = await one({ id: 'WI-5517', state: 'resolved', completion: { summary: 'fixed the root cause', tests: '5 green' } });
+      const r = await one({
+        id: 'WI-5517',
+        state: 'resolved',
+        completion: { summary: 'fixed the root cause', tests: '5 green' },
+      });
 
       expect(r.ok).toBe(true); // it DID close — must not be reported as a failed close
       expect(r.error).toBeUndefined();
@@ -487,7 +498,11 @@ describe('work_items:complete (keyed-array)', () => {
         aliasNote: `requested state '${state}' has no distinct representation for this item's family — recorded as '${state === 'closed' ? 'dropped' : 'done'}' instead.`,
       }));
 
-      const resolved = await one({ id: 'EI-999', state: 'resolved', completion: { summary: 'fixed', tests: '3 green' } });
+      const resolved = await one({
+        id: 'EI-999',
+        state: 'resolved',
+        completion: { summary: 'fixed', tests: '3 green' },
+      });
       expect(resolved.ok).toBe(true);
       expect(resolved.error).toBeUndefined();
       expect(resolved.workItem.state).toBe('done');
@@ -509,7 +524,11 @@ describe('work_items:complete (keyed-array)', () => {
         appliedState: 'open',
         aliasNote: `requested state '${state}' aliased to 'open'.`,
       }));
-      const r = await one({ id: 'WI-1', state: 'needs_human', completion: { summary: 'needs an owner decision', tests: 'n/a' } });
+      const r = await one({
+        id: 'WI-1',
+        state: 'needs_human',
+        completion: { summary: 'needs an owner decision', tests: 'n/a' },
+      });
 
       expect(r.ok).toBe(true);
       expect(r.error).toBeUndefined();
@@ -929,7 +948,9 @@ describe('work_items:complete (keyed-array)', () => {
   it('a FAILED state write never loses the completion (EI-24) AND reports ok:false (WI-4529)', async () => {
     getWorkItem.mockResolvedValue({ ...item, id: 'WI-8', kind: 'task', family: 'issue' });
     setWorkItemStateWithAliasInfo.mockRejectedValue(
-      new Error("work_item 'WI-8' (kind=task) cannot take state 'bogus' — valid: open, resolved, closed, done, dropped, todo"),
+      new Error(
+        "work_item 'WI-8' (kind=task) cannot take state 'bogus' — valid: open, resolved, closed, done, dropped, todo",
+      ),
     );
     const r = await one({ id: 'WI-8', state: 'bogus', completion: { summary: 'work landed; state vocab wrong' } });
     expect(r.ok).toBe(false); // WI-4529: the requested transition did NOT happen
@@ -963,7 +984,11 @@ describe('work_items:complete (keyed-array)', () => {
       setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
       const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 'shipped' } });
       expect(itemTestGate).not.toHaveBeenCalled();
-      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith('F-12', 'passed', expect.objectContaining({ by: expect.any(String) }));
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+        'F-12',
+        'passed',
+        expect.objectContaining({ by: expect.any(String) }),
+      );
       expect(r.ok).toBe(true);
       expect(r.workItem.state).toBe('passed');
     });
@@ -1008,7 +1033,9 @@ describe('work_items:complete (keyed-array)', () => {
     it('flag ON but an ISSUE-family item: the gate is NOT consulted (feature-only)', async () => {
       getFlag.mockResolvedValue(true);
       getWorkItem.mockResolvedValue({ ...item, id: 'WI-9', kind: 'bug', family: 'issue' });
-      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, id: 'WI-9', family: 'issue', state: 'resolved' }));
+      setWorkItemStateWithAliasInfo.mockResolvedValue(
+        okState({ ...item, id: 'WI-9', family: 'issue', state: 'resolved' }),
+      );
       const r = await one({ id: 'WI-9', state: 'resolved', completion: { summary: 'fixed' } });
       expect(itemTestGate).not.toHaveBeenCalled();
       expect(r.ok).toBe(true);
@@ -1175,7 +1202,11 @@ describe('work_items:complete (keyed-array)', () => {
       setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...issue, state: 'resolved' }));
       const r = await one({ id: 'WI-7', completion: { summary: 'fixed it', status: 'resolved', tests: '5 green' } });
 
-      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith('WI-7', 'resolved', expect.objectContaining({ by: expect.any(String) }));
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+        'WI-7',
+        'resolved',
+        expect.objectContaining({ by: expect.any(String) }),
+      );
       expect(r.ok).toBe(true);
       expect(r.workItem.state).toBe('resolved');
       expect(r.stateWarning).toBeUndefined(); // it DID close — no "not closed" footgun warning
@@ -1186,7 +1217,11 @@ describe('work_items:complete (keyed-array)', () => {
       getWorkItem.mockResolvedValue(issue);
       setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...issue, state: 'closed' }));
       const r = await one({ id: 'WI-7', completion: { summary: 'closing it', status: 'closed' } });
-      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith('WI-7', 'closed', expect.objectContaining({ by: expect.any(String) }));
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+        'WI-7',
+        'closed',
+        expect.objectContaining({ by: expect.any(String) }),
+      );
       expect(r.workItem.state).toBe('closed');
       expect(r.stateInferredFromCompletionStatus).toMatch(/inferred state:'closed'/);
     });
@@ -1208,7 +1243,7 @@ describe('work_items:complete (keyed-array)', () => {
       expect(r.stateInferredFromCompletionStatus).toBeUndefined();
     });
 
-    it('does NOT infer for a FEATURE-family item (would risk stepping on the pipeline\'s own status semantics)', async () => {
+    it("does NOT infer for a FEATURE-family item (would risk stepping on the pipeline's own status semantics)", async () => {
       getWorkItem.mockResolvedValue(item); // family: 'feature'
       const r = await one({ id: 'F-12', completion: { summary: 'all done', status: 'resolved' } });
       expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
@@ -1249,7 +1284,10 @@ describe('work_items:complete (keyed-array)', () => {
       const r = await one({ id: 'F-12', completion: { summary: 'closing this out', duplicateOf: 'F-1' } });
       expect(r.duplicateOfWarning).toBeUndefined();
       expect(resolveWorkItemRef).toHaveBeenCalledWith('F-1', undefined);
-      expect(linkWorkItem).toHaveBeenCalledWith('F-12', { kind: 'feature', ref: 'papercup#F-1' }, 'duplicates', { harness: undefined, by: 'su-tester' });
+      expect(linkWorkItem).toHaveBeenCalledWith('F-12', { kind: 'feature', ref: 'papercup#F-1' }, 'duplicates', {
+        harness: undefined,
+        by: 'su-tester',
+      });
       expect(subscribeWorkItem).toHaveBeenCalledWith('su-holder', 'F-12', 'full', { harness: undefined });
     });
 
@@ -1277,7 +1315,10 @@ describe('work_items:complete (keyed-array)', () => {
 
     it("nudges toward duplicateOf when the summary says 'dup of X' but the field was omitted (the exact WI-3646 pattern)", async () => {
       getWorkItem.mockResolvedValue({ ...item });
-      const r = await one({ id: 'F-12', completion: { summary: 'Re-closing: dup of WI-3543, deferring to its investigation' } });
+      const r = await one({
+        id: 'F-12',
+        completion: { summary: 'Re-closing: dup of WI-3543, deferring to its investigation' },
+      });
       expect(r.duplicateOfWarning).toMatch(/duplicateOf.*was not set/i);
       expect(linkWorkItem).not.toHaveBeenCalled();
     });
@@ -1390,7 +1431,8 @@ describe('work_items:complete (keyed-array)', () => {
       family: 'issue',
       state: 'open',
       harness: 'papercup',
-      title: 'Independent verification pass — every page reachable, every stated fact traceable to its cited source, nothing invented',
+      title:
+        'Independent verification pass — every page reachable, every stated fact traceable to its cited source, nothing invented',
       summary: 'Verify the rendered surface against its sources.',
     };
     const universalCompletion = {
@@ -1467,9 +1509,9 @@ describe('work_items:complete (keyed-array)', () => {
           residue: ['none'],
         }),
       ).toBe(true);
-      expect(
-        hasEnumeratedVerificationCoverage({ population: ['a', 'b'], checked: ['a'], residue: ['none'] }),
-      ).toBe(false);
+      expect(hasEnumeratedVerificationCoverage({ population: ['a', 'b'], checked: ['a'], residue: ['none'] })).toBe(
+        false,
+      );
     });
   });
 
@@ -1499,7 +1541,11 @@ describe('work_items:complete (keyed-array)', () => {
 
     it('does NOT warn when `deferred` is a non-empty list (conscious deferral)', async () => {
       getWorkItem.mockResolvedValue(item);
-      const r = await one({ id: 'F-12', state: 'passed', completion: { summary: 's', deferred: ['live smoke pending'] } });
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: { summary: 's', deferred: ['live smoke pending'] },
+      });
       expect(r.verificationWarning).toBeUndefined();
     });
 
@@ -1873,8 +1919,12 @@ describe('work_items:complete input coercion (EI-7031)', () => {
     });
 
     it('derives a summary from title / whatLanded / status when omitted (the 2× missing summary)', () => {
-      expect((coerceCompletionShape({ title: 'Fix loop guard' }) as { summary: string }).summary).toBe('Fix loop guard');
-      expect((coerceCompletionShape({ whatLanded: 'guard.ts patched' }) as { summary: string }).summary).toBe('guard.ts patched');
+      expect((coerceCompletionShape({ title: 'Fix loop guard' }) as { summary: string }).summary).toBe(
+        'Fix loop guard',
+      );
+      expect((coerceCompletionShape({ whatLanded: 'guard.ts patched' }) as { summary: string }).summary).toBe(
+        'guard.ts patched',
+      );
       expect((coerceCompletionShape({ status: 'shipped' }) as { summary: string }).summary).toBe('shipped');
       expect((coerceCompletionShape({}) as { summary: string }).summary).toBe('done');
     });
@@ -1926,7 +1976,10 @@ describe('work_items:complete input coercion (EI-7031)', () => {
 
     it('a JSON ARRAY string (not an object) is not mistaken for the object shape — falls back to bare-string summary', () => {
       const jsonArrayString = JSON.stringify(['a', 'b']);
-      expect(coerceCompletionShape(jsonArrayString)).toEqual({ summary: jsonArrayString, __shapeCoercedFrom: 'bare-string' });
+      expect(coerceCompletionShape(jsonArrayString)).toEqual({
+        summary: jsonArrayString,
+        __shapeCoercedFrom: 'bare-string',
+      });
     });
 
     it('a JSON-OBJECT-shaped string is recursed into the object path — NOT marked as a bare-string coercion (fields survive, EI-7311)', () => {
@@ -1945,10 +1998,12 @@ describe('work_items:complete input coercion (EI-7031)', () => {
     });
 
     it('gathers flat structured verification fields under `completion`', () => {
-      expect(gatherFlatCompletion({ id: 'WI-1', summary: 'done', testsRun: 'vitest green', addedTests: true })).toEqual({
-        id: 'WI-1',
-        completion: { summary: 'done', testsRun: 'vitest green', addedTests: true },
-      });
+      expect(gatherFlatCompletion({ id: 'WI-1', summary: 'done', testsRun: 'vitest green', addedTests: true })).toEqual(
+        {
+          id: 'WI-1',
+          completion: { summary: 'done', testsRun: 'vitest green', addedTests: true },
+        },
+      );
     });
 
     it('leaves a call that already has `completion` unchanged (same reference)', () => {
@@ -2025,7 +2080,12 @@ describe('work_items:complete input coercion (EI-7031)', () => {
 
       it('coerces a bare PROSE-string `completion` and MERGES a flat `tests` sibling into { summary } (the exact WI-5069 repro)', () => {
         expect(
-          gatherFlatCompletion({ id: 'WI-5069', state: 'done', completion: 'Completion audit prose', tests: '18 green' }),
+          gatherFlatCompletion({
+            id: 'WI-5069',
+            state: 'done',
+            completion: 'Completion audit prose',
+            tests: '18 green',
+          }),
         ).toEqual({
           id: 'WI-5069',
           state: 'done',
@@ -2153,8 +2213,11 @@ describe('work_items:complete input coercion (EI-7031)', () => {
     // below) and this case now tests the "no completion at all" shape in
     // isolation, with no unrecognized-key noise to compete with the assertion.
     it('a shape with no completion at all states the FULL minimal closing contract in ONE error', () => {
-      const result = (complete.args as { safeParse: (x: unknown) => { success: boolean; error?: { issues: Array<{ message: string }> } } })
-        .safeParse({ id: 'WI-1' });
+      const result = (
+        complete.args as {
+          safeParse: (x: unknown) => { success: boolean; error?: { issues: Array<{ message: string }> } };
+        }
+      ).safeParse({ id: 'WI-1' });
       expect(result.success).toBe(false);
       const message = result.error?.issues.map((i) => i.message).join(' ') ?? '';
       expect(message).toContain('{ id, state, assumptions: "none"|[fact keys], completion: { summary } }');
@@ -2173,8 +2236,11 @@ describe('work_items:complete input coercion (EI-7031)', () => {
     // than having it silently dropped and getting only the generic
     // missing-completion message.
     it('rejects an unrecognized top-level key instead of silently dropping it (EI-18723223344390510)', () => {
-      const result = (complete.args as { safeParse: (x: unknown) => { success: boolean; error?: { issues: Array<{ message: string }> } } })
-        .safeParse({ id: 'WI-1', note: 'just a note, not a completion' });
+      const result = (
+        complete.args as {
+          safeParse: (x: unknown) => { success: boolean; error?: { issues: Array<{ message: string }> } };
+        }
+      ).safeParse({ id: 'WI-1', note: 'just a note, not a completion' });
       expect(result.success).toBe(false);
       const message = result.error?.issues.map((i) => i.message).join(' ') ?? '';
       expect(message.toLowerCase()).toContain('unrecognized');
@@ -2223,12 +2289,24 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       // The state write actually ran for each item, with the top-level state.
       expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledTimes(3);
       for (const id of ['WI-5794', 'WI-5795', 'WI-5796']) {
-        expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(id, 'resolved', expect.objectContaining({ by: expect.any(String) }));
+        expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+          id,
+          'resolved',
+          expect.objectContaining({ by: expect.any(String) }),
+        );
       }
       // THE ASSERTION THAT MATTERS: the re-read state of every item is terminal.
-      expect(out.results.map((r: { workItem: { state: string } }) => r.workItem.state)).toEqual(['done', 'done', 'done']);
+      expect(out.results.map((r: { workItem: { state: string } }) => r.workItem.state)).toEqual([
+        'done',
+        'done',
+        'done',
+      ]);
       // …and no item is left telling the caller to pass the state they already passed.
-      expect(out.results.map((r: { stateWarning?: string }) => r.stateWarning)).toEqual([undefined, undefined, undefined]);
+      expect(out.results.map((r: { stateWarning?: string }) => r.stateWarning)).toEqual([
+        undefined,
+        undefined,
+        undefined,
+      ]);
       expect(out.counts).toEqual({ ok: 3, failed: 0 });
     });
 
@@ -2344,7 +2422,9 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       });
       expect(missingAssumptions.success).toBe(false);
 
-      const bulkWithPerItemAssumptions = (complete.args as { safeParse: (x: unknown) => { success: boolean } }).safeParse({
+      const bulkWithPerItemAssumptions = (
+        complete.args as { safeParse: (x: unknown) => { success: boolean } }
+      ).safeParse({
         items: [{ id: 'WI-1', state: 'resolved', assumptions: 'none', completion: { summary: 'fixed' } }],
       });
       expect(bulkWithPerItemAssumptions.success).toBe(true);
@@ -2447,7 +2527,10 @@ describe('work_items:complete input coercion (EI-7031)', () => {
     });
 
     it('stamps NO authority when no terminal state was requested — nothing was closed to judge', async () => {
-      const r = await one({ id: 'WI-1', completion: { summary: 'progress note', verifiedHow: 'unit', testResult: 'ok' } });
+      const r = await one({
+        id: 'WI-1',
+        completion: { summary: 'progress note', verifiedHow: 'unit', testResult: 'ok' },
+      });
       expect(r.completionAuthority).toBeUndefined();
       expect(r.countsTowardBurnDown).toBeUndefined();
       expect(r.authorityWarning).toBeUndefined();

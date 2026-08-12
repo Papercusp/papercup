@@ -31,10 +31,7 @@ import { z } from 'zod';
 import { existsSync, readdirSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { detectPapercupRoot } from '../../harness/register-papercusp';
-import {
-  assumptionsArg,
-  resolveDeclaredAssumptions,
-} from './_assumptions';
+import { assumptionsArg, resolveDeclaredAssumptions } from './_assumptions';
 import { nonAssumptionKindAdvisory } from '../../agent-facts/assumptions';
 import type { StoredAssumptionDeclaration } from '../../coord-lifecycle/records';
 import { defineTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
@@ -304,15 +301,14 @@ function hasIntentionalTestNameFilterProof(
   // Vitest accepts both the short CLI spelling and the long spelling surfaced
   // by testing:run. The boundary prevents prose such as "-test" from counting
   // as a filter invocation.
-  const hasNameFilter = /(?:^|[\s`'"(])(?:-t\b|--testNamePattern\b|--test-name-pattern\b)(?:\s+|=)/i.test(
-    prose,
-  );
+  const hasNameFilter = /(?:^|[\s`'"(])(?:-t\b|--testNamePattern\b|--test-name-pattern\b)(?:\s+|=)/i.test(prose);
   if (!hasNameFilter) return false;
 
   // Require the clean count to be labelled as the unfiltered/full run and keep
   // the window bounded so a clean result from an unrelated command cannot
   // accidentally bless a filtered run's skipped count.
-  const cleanRun = /\b(?:unfiltered|full(?:\s+(?:suite|file|run))?|without\s+(?:a\s+)?(?:test[- ]name\s+)?filter|no\s+(?:test[- ]name\s+)filter)\b[\s\S]{0,180}?\b0\s+(?:tests?\s+)?skip(?:ped|s)?\b|\b0\s+(?:tests?\s+)?skip(?:ped|s)?\b[\s\S]{0,180}?\b(?:unfiltered|full(?:\s+(?:suite|file|run))?|without\s+(?:a\s+)?(?:test[- ]name\s+)?filter|no\s+(?:test[- ]name\s+)filter)\b/i;
+  const cleanRun =
+    /\b(?:unfiltered|full(?:\s+(?:suite|file|run))?|without\s+(?:a\s+)?(?:test[- ]name\s+)?filter|no\s+(?:test[- ]name\s+)filter)\b[\s\S]{0,180}?\b0\s+(?:tests?\s+)?skip(?:ped|s)?\b|\b0\s+(?:tests?\s+)?skip(?:ped|s)?\b[\s\S]{0,180}?\b(?:unfiltered|full(?:\s+(?:suite|file|run))?|without\s+(?:a\s+)?(?:test[- ]name\s+)?filter|no\s+(?:test[- ]name\s+)filter)\b/i;
   return cleanRun.test(prose);
 }
 
@@ -477,10 +473,7 @@ export function unresolvedPathsInCompletion(
  *
  * PURE — unit-tested without PG, like its path-shaped sibling above.
  */
-export function completionRefBody(
-  completion: unknown,
-  evidence?: CompletionVerificationEvidence | undefined,
-): string {
+export function completionRefBody(completion: unknown, evidence?: CompletionVerificationEvidence | undefined): string {
   const rec = (completion ?? {}) as {
     summary?: unknown;
     testsRun?: unknown;
@@ -577,9 +570,10 @@ export function isVerificationWorkItem(item: {
   payload?: unknown;
 }): boolean {
   if (item.kind === 'task') return true;
-  const payload = item.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
-    ? (item.payload as Record<string, unknown>)
-    : {};
+  const payload =
+    item.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
+      ? (item.payload as Record<string, unknown>)
+      : {};
   const markers = [payload.verificationKind, payload.workType, payload.category]
     .filter((v): v is string => typeof v === 'string')
     .join(' ');
@@ -783,7 +777,8 @@ async function completeOne(
   // every other field is necessarily empty (not merely "unset"). Pull the marker
   // off BEFORE anything downstream sees it (rendering, evidence extraction, the
   // broadcast record) — it is purely an internal signal for the warning below.
-  const shapeCoercedFromBareString = (it.completion as { __shapeCoercedFrom?: string }).__shapeCoercedFrom === 'bare-string';
+  const shapeCoercedFromBareString =
+    (it.completion as { __shapeCoercedFrom?: string }).__shapeCoercedFrom === 'bare-string';
   if (shapeCoercedFromBareString) delete (it.completion as { __shapeCoercedFrom?: string }).__shapeCoercedFrom;
 
   // EI-18764241942332131: Postgres' jsonb text-input parser rejects a literal NUL
@@ -901,7 +896,8 @@ async function completeOne(
   // never feature-only 'passed'/'deprecated', which would risk stepping on the
   // scoper→…→curator pipeline's own status semantics for feature-family items, exactly
   // what D-004 was written to avoid). Scoped to `family === 'issue'` for the same reason.
-  const rawCompletionStatus = typeof it.completion.status === 'string' ? it.completion.status.trim().toLowerCase() : undefined;
+  const rawCompletionStatus =
+    typeof it.completion.status === 'string' ? it.completion.status.trim().toLowerCase() : undefined;
   const inferredCloseState =
     // work-item-status-full-unify: `dropped` (the unified drop-terminal) is equally unambiguous —
     // it can never arise from the schema default — so it also infers a close. `done` stays
@@ -959,7 +955,8 @@ async function completeOne(
   // still built + returned below (EI-24: the narrative is never lost), it just
   // cannot land the CLOSE. This is a deliberate, narrow exception to this file's
   // usual record-and-warn discipline — see isBackedLiveDroveUiClaim's doc comment.
-  const closeIntentRequested = Boolean(effectiveState) && CLOSE_INTENT_STATES.has(String(effectiveState).trim().toLowerCase());
+  const closeIntentRequested =
+    Boolean(effectiveState) && CLOSE_INTENT_STATES.has(String(effectiveState).trim().toLowerCase());
   const completionEvidenceForGate = completionEvidenceFromRecord(it.completion);
   const verificationCoverageGap =
     closeIntentRequested &&
@@ -997,8 +994,7 @@ async function completeOne(
   // EI-20008560598714546: summary is also a natural place to cite the live
   // artifact. Scan the persisted evidence shape for that citation, while the
   // authority judgement above remains scoped to structured verification fields.
-  const unbackedLiveDroveUiClose =
-    closeIntentRequested && !isBackedLiveDroveUiClaim(completionEvidenceToPersist);
+  const unbackedLiveDroveUiClose = closeIntentRequested && !isBackedLiveDroveUiClaim(completionEvidenceToPersist);
 
   // EI-18797014705631713: citing an artifact is not the same as HAVING one. The text
   // check above proves a path was written down; this reads the file. A screenshot of a
@@ -1006,9 +1002,7 @@ async function completeOne(
   // produced by the same command as a real one — so the strongest-looking evidence type
   // was the easiest to fake by accident. Deliberately fail-open: it refuses only when
   // every cited artifact is confidently bad (see verifyLiveDroveUiArtifacts).
-  const artifactVerdict = closeIntentRequested
-    ? await verifyLiveDroveUiArtifacts(completionEvidenceToPersist)
-    : null;
+  const artifactVerdict = closeIntentRequested ? await verifyLiveDroveUiArtifacts(completionEvidenceToPersist) : null;
   const falseLiveDroveUiClose = !unbackedLiveDroveUiClose && artifactVerdict?.ok === false;
 
   // EI-18850142725126359 fix #4 — PRE-FLIGHT THE PLANE RATCHET.
@@ -1080,8 +1074,8 @@ async function completeOne(
     stateError =
       `REJECTED — this completion claims verifiedHow:'live-drove-ui' to close ${it.id} but cites no real ` +
       'artifact (a screenshot/capture image path, or a recorded tauri-agent-tools capture/screenshot/check ' +
-      "invocation) in summary/testsRun/testResult/filesChanged. This is exactly the gap that shipped WI-5874/P-001 past " +
-      "its own author: unit tests verify structure, not pixels. Either cite the artifact, or honestly set " +
+      'invocation) in summary/testsRun/testResult/filesChanged. This is exactly the gap that shipped WI-5874/P-001 past ' +
+      'its own author: unit tests verify structure, not pixels. Either cite the artifact, or honestly set ' +
       "verifiedHow to 'unit'/'manual'/'integration' and re-send.";
   } else if (falseLiveDroveUiClose) {
     stateError =
@@ -1171,13 +1165,14 @@ async function completeOne(
     ? `it is durably parked out of scheduler:get_next until the linked plan-item gate is cleared`
     : nonTerminalHint;
   const terminalVocab = `(feature: 'passed'|'deprecated'; issue: 'resolved'|'closed')`;
-  const stateWarning = !finalState || TERMINAL_WORK_ITEM_STATES.has(finalState)
-    ? undefined
-    : stateError
-      ? `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${claimabilityHint}. Your state '${effectiveState}' was REJECTED by the state write: ${stateError}. Re-sending the same state will fail the same way — fix the cause, or pass a valid TERMINAL state ${terminalVocab}.`
-      : effectiveState
-        ? `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${nonTerminalHint}. Your state '${requestedState ?? effectiveState}' WAS received and applied as '${appliedState ?? workItem?.state ?? existing.state}', which is NOT terminal${aliasNote ? ` (${aliasNote})` : ''}. Do NOT re-send the same value — pass a TERMINAL state ${terminalVocab}.`
-        : `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${nonTerminalHint}. No top-level \`state\` was passed. Pass top-level \`state\` ${terminalVocab} to close it.`;
+  const stateWarning =
+    !finalState || TERMINAL_WORK_ITEM_STATES.has(finalState)
+      ? undefined
+      : stateError
+        ? `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${claimabilityHint}. Your state '${effectiveState}' was REJECTED by the state write: ${stateError}. Re-sending the same state will fail the same way — fix the cause, or pass a valid TERMINAL state ${terminalVocab}.`
+        : effectiveState
+          ? `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${nonTerminalHint}. Your state '${requestedState ?? effectiveState}' WAS received and applied as '${appliedState ?? workItem?.state ?? existing.state}', which is NOT terminal${aliasNote ? ` (${aliasNote})` : ''}. Do NOT re-send the same value — pass a TERMINAL state ${terminalVocab}.`
+          : `recorded a completion for ${it.id} but it is NOT closed — still '${workItem?.state ?? existing.state}', ${nonTerminalHint}. No top-level \`state\` was passed. Pass top-level \`state\` ${terminalVocab} to close it.`;
 
   // flush-to-proceed-stretch-discipline-2026-07-04 P-006: verification linting. A settled
   // unit is either VERIFIED (`tests`) or CONSCIOUSLY DEFERRED (`deferred`) — never silent. A
@@ -1221,9 +1216,10 @@ async function completeOne(
   // the SAME evidence extraction as everything else above (completionEvidenceForGate)
   // so it can never disagree with what the caller actually supplied.
   const skippedTestsMention = skippedTestsMentionedInEvidence(completionEvidenceForGate);
-  const skippedTestsWarning = skippedTestsMention && !hasIntentionalTestNameFilterProof(completionEvidenceForGate)
-    ? `completion for ${it.id} reports ${skippedTestsMention.count} test(s) SKIPPED in \`${skippedTestsMention.source}\` — a skip reads as part of a green summary ("N passed | M skipped") but the skipped assertion(s) never actually ran (EI-19380332459719944: this exact shape — "8 passed | 1 skipped" — read as a clean pass and nearly shipped a false verification on a critical item). If the skip PRE-DATES this change and is unrelated to what this completion verifies, no action needed. If it's a skip left over from unblocking the gate (yours or a peer's), un-skip it and re-run before trusting this as evidence that the skipped assertion(s) pass.`
-    : undefined;
+  const skippedTestsWarning =
+    skippedTestsMention && !hasIntentionalTestNameFilterProof(completionEvidenceForGate)
+      ? `completion for ${it.id} reports ${skippedTestsMention.count} test(s) SKIPPED in \`${skippedTestsMention.source}\` — a skip reads as part of a green summary ("N passed | M skipped") but the skipped assertion(s) never actually ran (EI-19380332459719944: this exact shape — "8 passed | 1 skipped" — read as a clean pass and nearly shipped a false verification on a critical item). If the skip PRE-DATES this change and is unrelated to what this completion verifies, no action needed. If it's a skip left over from unblocking the gate (yours or a peer's), un-skip it and re-run before trusting this as evidence that the skipped assertion(s) pass.`
+      : undefined;
 
   // EI-19454554361062529: a test result is evidence about BEHAVIOUR and silent about
   // TYPES. Same evidence extraction as every other check above, so it can never
@@ -1248,9 +1244,7 @@ async function completeOne(
   // completion-integrity gate. Same evidence extraction as every check above, so it can never
   // disagree with what the caller actually supplied.
   const liveDriveGap = liveDriveAcceptanceGap(completionEvidenceForGate);
-  const liveDriveEvidenceWarning = liveDriveGap
-    ? liveDriveAcceptanceMessage(it.id, liveDriveGap)
-    : undefined;
+  const liveDriveEvidenceWarning = liveDriveGap ? liveDriveAcceptanceMessage(it.id, liveDriveGap) : undefined;
 
   // EI-20093150500083378: `filesChanged` is the one evidence field nothing challenged, and
   // it is the one most often written from memory rather than observation. Same evidence
@@ -1376,7 +1370,8 @@ async function completeOne(
         const linkRes = await linkWorkItem(it.id, dst, 'duplicates', { harness: it.harness, by: ident.ownerId }).catch(
           (e) => ({ error: e instanceof Error ? e.message : String(e) }),
         );
-        if ('error' in linkRes) duplicateOfWarning = `failed to record the \`duplicates\` link to '${duplicateOf}': ${linkRes.error}`;
+        if ('error' in linkRes)
+          duplicateOfWarning = `failed to record the \`duplicates\` link to '${duplicateOf}': ${linkRes.error}`;
       }
     }
   } else if (mentionsWorkItemDuplicate(`${it.completion.summary} ${it.completion.status ?? ''}`)) {
@@ -1466,8 +1461,7 @@ async function completeOne(
   // the pure emits renderer never has to re-derive mutable coordination state, and
   // a successful completion becomes the fleet report instead of requiring a second
   // hand-authored coord:send (EI-20194762143976862).
-  const completionFleetSlug =
-    closeLanded && !stateError && !finishFailed ? deriveFleetMembership().fleetSlug : null;
+  const completionFleetSlug = closeLanded && !stateError && !finishFailed ? deriveFleetMembership().fleetSlug : null;
   const fleetRepullNudge =
     completionFleetSlug != null
       ? `${it.id} is CLOSED. If you hold no other claim right now, do NOT settle — call scheduler:get_next immediately to pull the next unit before ending this turn (EI-19312103118112942: completing is the midpoint of a wake, not the end).`
@@ -1558,11 +1552,12 @@ export default defineTool({
   name: 'work_items:complete',
   profile: 'engineer',
   description:
-    "Complete one or many work-items with structured evidence; the system renders and broadcasts it. Pass terminal `state` plus `assumptions` (`\"none\"` or facts:assert keys) to converge item, plan-item, claim, and checkpoint; without `state`, it only records. Check `finish.complete`/`stateWarning`.",
+    'Complete one or many work-items with structured evidence; the system renders and broadcasts it. Pass terminal `state` plus `assumptions` (`"none"` or facts:assert keys) to converge item, plan-item, claim, and checkpoint; without `state`, it only records. Check `finish.complete`/`stateWarning`.',
   guidance: {
     when: 'After verification, pass `completion`, terminal `state`, and `assumptions` (`\"none\"` or fact keys); use `verifiedHow` and put evidence in `testsRun`/`testResult`. Add `coverage` for universal claims, a cited artifact for live-UI closes, and `completion.duplicateOf` for duplicates.',
     notWhen: 'Use coord:send for notes; use work_items:set_state only with completion evidence; do not summarize.',
-    chaining: 'work_items:claim → work_items:complete { id, state, assumptions, completion }; `finish.complete:true` confirms convergence and emits.',
+    chaining:
+      'work_items:claim → work_items:complete { id, state, assumptions, completion }; `finish.complete:true` confirms convergence and emits.',
     seeAlso: [
       'work_items:set_state (change state without recording a completion)',
       'coord:send (a note/question that is not a completion)',
@@ -1644,55 +1639,59 @@ export default defineTool({
     gatherFlatCompletion,
     z.union(
       [
-      z
-        .object({
-          id: z.string().min(1).optional().describe('single-complete shorthand: the work-item id (use with `completion`)'),
-          harness: z.string().max(80).optional().describe('default harness for the inline id / items that omit one'),
-          /** Optional terminal state to also set. */
-          state: z.string().min(1).max(40).optional(),
-          /** The structured completion record (single-complete shorthand). */
-          completion: completionSpec.optional(),
-          /** Optional kind-specific structured output (single-complete shorthand). */
-          outputPayload: z.unknown().optional(),
-          /** REQUIRED for the single-item form; bulk calls use per-item declarations. */
-          assumptions: assumptionsArg.describe(
-            'REQUIRED for a single-item terminal close: pass "none" or an array of facts:assert keys.',
-          ),
-          // Keep the union's handler type uniform while ensuring a bulk payload
-          // cannot accidentally parse through this branch and have `items` stripped.
-          items: z.never().optional(),
-        })
-        .strict()
-        .refine((a) => Boolean(a.id) && Boolean(a.completion), {
-          // EI-6999: the first shape error a caller hits should state the FULL
-          // minimal shape needed to actually CLOSE an item, not just "you're
-          // missing `completion`" — a caller who fixes that alone still hits a
-          // SECOND round-trip discovering `completion.summary` is required, then
-          // a THIRD discovering `completion` alone never changes lifecycle state
-          // (a bare `completion` records the note but leaves the item claimable
-          // — pass `state` too to actually close it). Say all of it up front.
-          message: COMPLETE_CLOSE_SHAPE_MESSAGE,
-        }),
-      z
-        .object({
-          id: z.string().min(1).optional(),
-          harness: z.string().max(80).optional().describe('default harness for the inline id / items that omit one'),
-          /** Optional terminal state to apply to items that omit their own. */
-          state: z.string().min(1).max(40).optional(),
-          /** Optional single-item fields are retained for backwards-compatible bulk envelopes. */
-          completion: completionSpec.optional(),
-          outputPayload: z.unknown().optional(),
-          assumptions: assumptionsArg.optional().describe('ignored for items[]; pass assumptions on every item'),
-          items: z
-            .array(itemSpec)
-            .min(1)
-            .max(100)
-            .describe(
-              'complete many work-items at once — each { id, completion, assumptions, state?, harness? }; ' +
-                'an omitted per-item state/harness falls back to the top-level one',
+        z
+          .object({
+            id: z
+              .string()
+              .min(1)
+              .optional()
+              .describe('single-complete shorthand: the work-item id (use with `completion`)'),
+            harness: z.string().max(80).optional().describe('default harness for the inline id / items that omit one'),
+            /** Optional terminal state to also set. */
+            state: z.string().min(1).max(40).optional(),
+            /** The structured completion record (single-complete shorthand). */
+            completion: completionSpec.optional(),
+            /** Optional kind-specific structured output (single-complete shorthand). */
+            outputPayload: z.unknown().optional(),
+            /** REQUIRED for the single-item form; bulk calls use per-item declarations. */
+            assumptions: assumptionsArg.describe(
+              'REQUIRED for a single-item terminal close: pass "none" or an array of facts:assert keys.',
             ),
-        })
-        .strict(),
+            // Keep the union's handler type uniform while ensuring a bulk payload
+            // cannot accidentally parse through this branch and have `items` stripped.
+            items: z.never().optional(),
+          })
+          .strict()
+          .refine((a) => Boolean(a.id) && Boolean(a.completion), {
+            // EI-6999: the first shape error a caller hits should state the FULL
+            // minimal shape needed to actually CLOSE an item, not just "you're
+            // missing `completion`" — a caller who fixes that alone still hits a
+            // SECOND round-trip discovering `completion.summary` is required, then
+            // a THIRD discovering `completion` alone never changes lifecycle state
+            // (a bare `completion` records the note but leaves the item claimable
+            // — pass `state` too to actually close it). Say all of it up front.
+            message: COMPLETE_CLOSE_SHAPE_MESSAGE,
+          }),
+        z
+          .object({
+            id: z.string().min(1).optional(),
+            harness: z.string().max(80).optional().describe('default harness for the inline id / items that omit one'),
+            /** Optional terminal state to apply to items that omit their own. */
+            state: z.string().min(1).max(40).optional(),
+            /** Optional single-item fields are retained for backwards-compatible bulk envelopes. */
+            completion: completionSpec.optional(),
+            outputPayload: z.unknown().optional(),
+            assumptions: assumptionsArg.optional().describe('ignored for items[]; pass assumptions on every item'),
+            items: z
+              .array(itemSpec)
+              .min(1)
+              .max(100)
+              .describe(
+                'complete many work-items at once — each { id, completion, assumptions, state?, harness? }; ' +
+                  'an omitted per-item state/harness falls back to the top-level one',
+              ),
+          })
+          .strict(),
       ],
       {
         error: (issue) => ({
@@ -1724,18 +1723,20 @@ export default defineTool({
     // refusal, the test-completion gate, the inference/close-intent logic) sees the same value.
     const list: CompleteItem[] = isBulkForm
       ? args.items!.map((it) => ({ ...it, harness: it.harness ?? args.harness, state: it.state ?? args.state }))
-      : [{
-          id: args.id as string,
-          harness: args.harness,
-          state: args.state,
-          completion: args.completion!,
-          outputPayload: args.outputPayload,
-          // P-017 (b) gate #2: the refine above guarantees this is present on the
-          // shorthand axis, so the assertion is safe — but it must be threaded HERE or
-          // the declaration the gate just forced would be collected and then dropped on
-          // the floor for every single-complete call.
-          assumptions: args.assumptions!,
-        }];
+      : [
+          {
+            id: args.id as string,
+            harness: args.harness,
+            state: args.state,
+            completion: args.completion!,
+            outputPayload: args.outputPayload,
+            // P-017 (b) gate #2: the refine above guarantees this is present on the
+            // shorthand axis, so the assertion is safe — but it must be threaded HERE or
+            // the declaration the gate just forced would be collected and then dropped on
+            // the floor for every single-complete call.
+            assumptions: args.assumptions!,
+          },
+        ];
     const env = await runBulk(list, (it) => completeOne(it, ident, ctx), { keyOf: (it) => ({ id: it.id }) });
     // EI-14676: the generic bulk contract's top-level `ok` means "the batch ran" (see
     // _bulk.ts) — correct for an explicit N-item `items:[…]` batch, where partial failure
