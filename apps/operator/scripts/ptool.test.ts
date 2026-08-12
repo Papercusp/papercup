@@ -1,15 +1,19 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   callToolWithPressureRetry,
+  callToolWithReplayRecovery,
+  buildCallToolParams,
   buildMcpUrl,
   resolveContextTier,
   resolveTokenPath,
   resolveTokenPaths,
   formatToolCallFailure,
   isLoopPressureShed,
+  isTransportFailure,
   printResult,
   PTOOL_CALL_TOOL_TIMEOUT_MS,
   PTOOL_GIT_SYNC_RUN_TIMEOUT_MS,
+  PTOOL_POST_CONNECT_RETRIES,
   PTOOL_TRUNCATED_RESULT_MESSAGE,
   resultToText,
   sanitizeJsonText,
@@ -120,6 +124,66 @@ describe('ptool tools/call failure diagnostics', () => {
     expect(formatToolCallFailure('coord:send', error)).toContain('rejected before dispatch');
     expect(formatToolCallFailure('coord:send', error)).toContain('no tool execution occurred');
     expect(formatToolCallFailure('coord:send', error)).not.toContain('may have executed');
+  });
+});
+
+describe('ptool keyed post-connect replay recovery (EI-20245300628078356)', () => {
+  it('puts one caller-supplied idempotency key beside the format metadata', () => {
+    expect(buildCallToolParams('work_items:complete', { id: 'EI-1' }, {
+      idempotencyKey: 'ptool-key-1',
+    })).toEqual({
+      name: 'work_items:complete',
+      arguments: { id: 'EI-1' },
+      _meta: { format: 'json', idempotencyKey: 'ptool-key-1' },
+    });
+  });
+
+  it('recognizes MCP stream-close/deadline failures but not tool errors', () => {
+    expect(isTransportFailure(Object.assign(new Error('Connection closed'), { code: -32000 }))).toBe(true);
+    expect(isTransportFailure(Object.assign(new Error('Request timed out'), { code: -32001 }))).toBe(true);
+    expect(isTransportFailure(new Error('MCP error -32602: invalid arguments'))).toBe(false);
+    expect(isTransportFailure(new Error('tool failed after dispatch'))).toBe(false);
+  });
+
+  it('reconnects once and replays the exact keyed request after a post-connect close', async () => {
+    const result = { content: [{ type: 'text', text: '{"ok":true}' }] };
+    const params = buildCallToolParams('work_items:complete', { id: 'EI-1' }, {
+      idempotencyKey: 'ptool-key-1',
+    });
+    const first = {
+      callTool: vi.fn().mockRejectedValue(Object.assign(new Error('Connection closed'), { code: -32000 })),
+      close: vi.fn(),
+    };
+    const second = { callTool: vi.fn().mockResolvedValue(result), close: vi.fn() };
+    const reconnect = vi.fn().mockResolvedValue(second);
+
+    await expect(callToolWithReplayRecovery(first, params, {
+      reconnect,
+      timeoutMs: 1,
+    })).resolves.toEqual({ client: second, result });
+
+    expect(reconnect).toHaveBeenCalledTimes(1);
+    expect(first.close).toHaveBeenCalledTimes(1);
+    expect(first.callTool).toHaveBeenCalledWith(params, undefined, { timeout: 1, maxTotalTimeout: 1 });
+    expect(second.callTool).toHaveBeenCalledWith(params, undefined, { timeout: 1, maxTotalTimeout: 1 });
+    expect(second.callTool.mock.calls[0][0]._meta.idempotencyKey).toBe('ptool-key-1');
+  });
+
+  it('bounds repeated post-connect failures to the configured replay budget', async () => {
+    const firstError = Object.assign(new Error('socket hang up'), { code: 'UND_ERR_SOCKET' });
+    const secondError = Object.assign(new Error('Connection closed'), { code: -32000 });
+    const first = { callTool: vi.fn().mockRejectedValue(firstError), close: vi.fn() };
+    const second = { callTool: vi.fn().mockRejectedValue(secondError), close: vi.fn() };
+    const reconnect = vi.fn().mockResolvedValue(second);
+    const params = buildCallToolParams('coord:send', {}, { idempotencyKey: 'ptool-key-2' });
+
+    await expect(callToolWithReplayRecovery(first, params, { reconnect })).rejects.toBe(secondError);
+    expect(PTOOL_POST_CONNECT_RETRIES).toBe(1);
+    expect(reconnect).toHaveBeenCalledTimes(PTOOL_POST_CONNECT_RETRIES);
+    expect(first.callTool).toHaveBeenCalledTimes(1);
+    expect(second.callTool).toHaveBeenCalledTimes(1);
+    expect(first.close).toHaveBeenCalledTimes(1);
+    expect(second.close).toHaveBeenCalledTimes(1);
   });
 });
 

@@ -56,6 +56,7 @@
  * matching psu launches; set `PAPERCUSP_CONTEXT_TIER=full` for the explicit
  * unshaped-payload escape hatch.
  */
+import { randomUUID } from 'node:crypto';
 import { readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
@@ -650,14 +651,16 @@ function readToken({ tokenFile = null, env = process.env, home = homedir() } = {
  *  so ptool still emits a lossless scripting payload.
  *  @param {string} toolName
  *  @param {any} callArgs
- *  @param {{outputSchema?: {type?: string}}} [options]
+ *  @param {{outputSchema?: {type?: string}, idempotencyKey?: string}} [options]
  */
-export function buildCallToolParams(toolName, callArgs, { outputSchema } = {}) {
+export function buildCallToolParams(toolName, callArgs, { outputSchema, idempotencyKey } = {}) {
   const objectRooted = outputSchema?.type === 'object';
+  const meta = objectRooted ? { structured: true } : { format: 'json' };
+  if (idempotencyKey) meta.idempotencyKey = idempotencyKey;
   return {
     name: toolName,
     arguments: callArgs,
-    _meta: objectRooted ? { structured: true } : { format: 'json' },
+    _meta: meta,
   };
 }
 
@@ -762,6 +765,73 @@ export async function callToolWithPressureRetry(
     }
   }
   throw lastError;
+}
+
+/**
+ * The MCP SDK uses these error codes for a request whose stream closed or whose
+ * client-side deadline expired. Network implementations wrap the same failure
+ * in ordinary fetch/socket errors, so keep the code and message checks together
+ * rather than treating every rejected tools/call as replayable.
+ */
+export function isTransportFailure(error) {
+  const codes = [error?.code, error?.cause?.code];
+  if (codes.some((code) => code === -32000 || code === -32001)) return true;
+  const detail = errorDetail(error);
+  return /(?:fetch failed|econn(?:reset|refused|aborted)|etimedout|epipe|en[et]unreach|und_err_socket|socket (?:hang up|closed|reset|error)|(?:connection|transport|stream) (?:closed|reset|aborted|failed)|other side closed|network error)/i.test(detail);
+}
+
+/** Number of reconnects allowed after a connected tools/call fails. */
+export const PTOOL_POST_CONNECT_RETRIES = 1;
+
+async function closeClientQuietly(client) {
+  try {
+    await client?.close?.();
+  } catch {
+    // The original stream is already broken; its close failure must not prevent
+    // the keyed replay from opening a fresh MCP session.
+  }
+}
+
+/**
+ * Recover one post-connect transport failure by opening a fresh MCP session and
+ * replaying the exact same tools/call params. `params._meta.idempotencyKey` is
+ * generated once by the caller, so the server returns the stored result when
+ * the first attempt committed before its response stream died. Recovery is
+ * deliberately bounded: an ambiguous write must never become an unbounded
+ * retry loop, even when the operator is repeatedly restarting.
+ *
+ * Returns the active client because the successful replay belongs to the new
+ * session. A failed replay client is closed before the error is surfaced.
+ */
+export async function callToolWithReplayRecovery(
+  client,
+  params,
+  {
+    reconnect,
+    maxAttempts = PTOOL_POST_CONNECT_RETRIES,
+    timeoutMs = PTOOL_CALL_TOOL_TIMEOUT_MS,
+  } = {},
+) {
+  let activeClient = client;
+  let retriesUsed = 0;
+  while (true) {
+    try {
+      const result = await callToolWithPressureRetry(activeClient, params, { timeoutMs });
+      return { client: activeClient, result };
+    } catch (error) {
+      if (
+        !isTransportFailure(error) ||
+        retriesUsed >= maxAttempts ||
+        typeof reconnect !== 'function'
+      ) {
+        if (activeClient !== client) await closeClientQuietly(activeClient);
+        throw error;
+      }
+      retriesUsed += 1;
+      await closeClientQuietly(activeClient);
+      activeClient = await reconnect();
+    }
+  }
 }
 
 /**
@@ -1059,10 +1129,11 @@ async function main() {
   }
   const operatorUrl = args.url || OPERATOR_URL;
   const workspace = resolveWorkspaceScope({ workspace: args.workspace });
-  const client = await connectWithLocalRetry(
+  const scope = { workspace, harness: args.harness, tokenFile: args.tokenFile };
+  let client = await connectWithLocalRetry(
     connect,
     operatorUrl,
-    { workspace, harness: args.harness, tokenFile: args.tokenFile },
+    scope,
   );
   try {
     const tools = await listAllTools(client);
@@ -1147,11 +1218,21 @@ async function main() {
 
     let result;
     try {
-      result = await callToolWithPressureRetry(
+      const recovered = await callToolWithReplayRecovery(
         client,
-        buildCallToolParams(toolName, callArgs, { outputSchema: tool.outputSchema }),
-        { timeoutMs: timeoutForTool(toolName) },
+        buildCallToolParams(toolName, callArgs, {
+          outputSchema: tool.outputSchema,
+          // One key belongs to this logical CLI invocation. Reconnect recovery
+          // deliberately reuses these params so the server can deduplicate it.
+          idempotencyKey: randomUUID(),
+        }),
+        {
+          timeoutMs: timeoutForTool(toolName),
+          reconnect: () => connectWithLocalRetry(connect, operatorUrl, scope),
+        },
       );
+      client = recovered.client;
+      result = recovered.result;
     } catch (error) {
       console.error(formatToolCallFailure(toolName, error));
       process.exitCode = 1;
