@@ -99,7 +99,7 @@ describe('coord:orient args', () => {
     const called = [...source.matchAll(/\bcall\('([^']+)'/g)].map((match) => match[1]);
     expect(new Set(called)).toEqual(new Set(ORIENT_FOLD_TOOL_NAMES));
 
-    const crossWorkspace = new Set(ORIENT_CROSS_WORKSPACE_FOLD_TOOL_NAMES);
+    const crossWorkspace: ReadonlySet<string> = new Set(ORIENT_CROSS_WORKSPACE_FOLD_TOOL_NAMES);
     for (const name of ORIENT_FOLD_TOOL_NAMES) {
       const tool = lookupByMcpName(name);
       expect(tool, `${name} must be registered`).toBeDefined();

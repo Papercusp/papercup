@@ -1,7 +1,7 @@
 /**
  * work_items:list — cross-kind list over the unified surface (unify-work-items,
  * D-007). Default = top-level items only; chunks surface under their parent (D-004,
- * pass `parent` or includeChildren). Filter by harness / kind / state.
+ * pass `parent` or includeChildren). Filter by harness / kind / state / q.
  */
 import { z } from "zod";
 import { defineTool } from "@papercusp/agent-mcp";
@@ -211,9 +211,9 @@ export default defineTool({
   name: "work_items:list",
   profile: "engineer",
   description:
-    "List work-items across kinds (feature/chunk/bug/change/task). Default shows top-level items (chunks are hidden — pass parent or includeChildren). Filter by harness, kind, state. Returns the WorkItem array directly — each row's summary is EXCERPTED to keep the list bounded (a row carries summary_truncated + summary_full_chars when cut); use work_items:get { id } for a full body.",
+    "List work-items across kinds (feature/chunk/bug/change/task). Default shows top-level items (chunks are hidden — pass parent or includeChildren). Filter by harness, kind, state, or q (a case-insensitive literal substring over title and body/summary). Returns the WorkItem array directly — each row's summary is EXCERPTED to keep the list bounded (a row carries summary_truncated + summary_full_chars when cut); use work_items:get { id } for a full body.",
   guidance: {
-    when: "You want the current work-items in a harness (or operator-wide). Default hides chunks; pass `parent` to see a parent's chunks. Each row carries `priority` (the shared backlog order, LOWER = claimed sooner) so the Mug can read the whole backlog's order in one call before steering it with work_items:set_priority.",
+    when: "You want the current work-items in a harness (or operator-wide). Default hides chunks; pass `parent` to see a parent's chunks. Pass `q` for a case-insensitive literal substring over title and body/summary. Each row carries `priority` (the shared backlog order, LOWER = claimed sooner) so the Mug can read the whole backlog's order in one call before steering it with work_items:set_priority.",
     chaining:
       "work_items:list → work_items:get { id } for detail; work_items:claim to take one; work_items:set_priority to re-order the backlog.",
     notWhen:
@@ -235,6 +235,11 @@ export default defineTool({
   agentRoles: [...COORD_ROLES],
   args: z.object({
     harness: z.string().max(80).optional(),
+    q: z
+      .string()
+      .max(200)
+      .optional()
+      .describe("case-insensitive literal substring matched against title and body/summary"),
     // P-001/P-011 generic-kind: a built-in kind OR a workspace-registered generic-kind
     // datatype (declared via meta:define-datatype). familyOf() maps any non-issue kind to
     // the feature family + featureFamilyKindClause admits registered generic kinds, so the
@@ -327,6 +332,7 @@ export default defineTool({
     trimmed: (data) => shapeWorkItemsList(data, "trimmed"),
   },
   async handler(args, ctx) {
+    const q = args.q?.trim() || undefined;
     // EI-6506: `mine` resolves to the CALLER's own agent identity — an explicit
     // `assignee` wins if both are passed (mine is the no-args-needed convenience,
     // not an override of a deliberate lookup of someone else's work).
@@ -358,6 +364,7 @@ export default defineTool({
         tool: "work_items:list",
         key: {
           harness: args.harness ?? null,
+          q: q ?? null,
           kind: args.kind ?? null,
           state: args.state ?? null,
           assignee: assignee ?? null,
@@ -380,6 +387,7 @@ export default defineTool({
       async () => {
         const rows = await listWorkItems({
           harness: args.harness,
+          q,
           kind: args.kind as WorkItemKind | undefined,
           state: args.state,
           assignee,
