@@ -264,6 +264,10 @@ function configFromTrigger(triggerConfig: Record<string, unknown>): ActionTrigge
     config: {
       push: triggerConfig.push !== false,
       pushSubmodules: triggerConfig.push_submodules !== false,
+      pushSubmoduleOrigins:
+        typeof triggerConfig.pushSubmoduleOrigins === 'boolean'
+          ? triggerConfig.pushSubmoduleOrigins
+          : undefined,
       branch: typeof triggerConfig.branch === 'string' ? triggerConfig.branch : undefined,
       remote: typeof triggerConfig.remote === 'string' ? triggerConfig.remote : undefined,
       maxBlobBytes: typeof triggerConfig.max_blob_bytes === 'number' ? triggerConfig.max_blob_bytes : undefined,
@@ -1446,19 +1450,27 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<GitSyncFireOutcome> 
     return { status: 'skipped', reason: gate.reason ?? 'ineligible' };
   }
   // github-bridge P-003: on a bridged/p2p-only hive, member git-sync is COMMIT-ONLY —
-  // the bridge writer (integrator lease holder) is the sole origin pusher (S-1). Local
-  // commit+fetch+merge still runs (work must keep flowing into the tree/P2P plane).
-  if (cfg.push && gate.hiveGitMode) {
-    console.log(`[git-sync] ${slug}: hive git mode '${gate.hiveGitMode}' — commit-only this tick (the bridge owns origin pushes)`);
-    cfg.push = false;
-    // EI-18689553108460319 + WI-6016: the bridge writer owns the SUPERPROJECT's canonical
-    // refs — NOT an independently-hosted submodule library that nothing else ever pushes.
-    // So this override, and ONLY this override, opts submodule origin-pushes back in.
-    // It must be EXPLICIT: run-git-sync now defaults pushSubmoduleOrigins to follow
-    // `push`, because a bare push:false is ambiguous and a JOINER's push:false must
-    // push nothing anywhere (the S0 no-direct-push invariant, AH-6). Respect an explicit
-    // caller/config value if one was already set.
-    if (cfg.pushSubmoduleOrigins === undefined) cfg.pushSubmoduleOrigins = true;
+  // the bridge writer (integrator lease holder) is the sole origin pusher (S-1).
+  // The local commit still runs; the dedicated GitHub-ingress/admission and P2P
+  // worktree-bridge legs below own remote-to-worktree flow.
+  if (gate.hiveGitMode) {
+    // EI-20232774599730947: do not bypass the P2P/GitHub admission path with a
+    // second direct origin fetch+merge. In particular, a restored installer
+    // seed retains an intentionally unrelated local lineage; retrying its
+    // one-time transplant every tick eventually conflicts with ordinary local
+    // git-sync commits and paints an otherwise healthy P2P writer red.
+    cfg.reconcileSuperprojectOrigin = false;
+    if (cfg.push) {
+      console.log(`[git-sync] ${slug}: hive git mode '${gate.hiveGitMode}' — commit-only this tick (the bridge owns origin pushes)`);
+      cfg.push = false;
+      // EI-18689553108460319 + WI-6016: the bridge writer owns the
+      // SUPERPROJECT's canonical refs — NOT an independently-hosted submodule
+      // library that nothing else ever pushes. Only a runtime legacy→P2P flip
+      // opts this previously-pushing member back in. A joiner whose persisted
+      // config was already push:false and omitted this key must still push
+      // nothing anywhere (AH-6).
+      if (cfg.pushSubmoduleOrigins === undefined) cfg.pushSubmoduleOrigins = true;
+    }
   }
   // EI-18812945811758018: the EFFECTIVE push mode for this tick, recorded later as part
   // of recordOutcome's SINGLE metadata write (never its own patch — a skipped tick must

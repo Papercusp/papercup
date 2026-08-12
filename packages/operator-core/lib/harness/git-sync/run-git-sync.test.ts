@@ -429,6 +429,40 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(out.status).toBe('nothing');
   });
 
+  it('EI-20232774599730947: P2P commit-only skips direct superproject reconciliation, so a retained installer seed is not transplanted again', async () => {
+    // Model the physical Mac after restore: a retained synthetic seed marker,
+    // an unrelated GitHub main, and new local work that belongs in the P2P
+    // namespace rather than a direct origin/main rebase.
+    git(repo, 'checkout', '--orphan', 'seeded');
+    git(repo, 'rm', '-rf', '.');
+    writeFileSync(join(repo, 'seed.txt'), 'seed\n');
+    git(repo, 'add', 'seed.txt');
+    git(repo, 'commit', '--no-verify', '-m', 'papercusp seed snapshot HEAD');
+    const seedRoot = git(repo, 'rev-parse', 'HEAD');
+    git(repo, 'update-ref', 'refs/remotes/origin/papercusp-seed-snapshot-test', seedRoot);
+    writeFileSync(join(repo, 'local-p2p.txt'), 'local P2P work\n');
+
+    const originTipBefore = git(originDir, 'rev-parse', 'main');
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: {
+        push: false,
+        pushSubmodules: false,
+        reconcileSuperprojectOrigin: false,
+      },
+    });
+
+    expect(out.status).toBe('synced');
+    if (out.status === 'synced') {
+      expect(out.pushed).toEqual([]);
+      expect(out.merged).toEqual([]);
+    }
+    expect(git(originDir, 'rev-parse', 'main')).toBe(originTipBefore);
+    expect(() => git(repo, 'merge-base', '--is-ancestor', 'origin/main', 'HEAD')).toThrow();
+    expect(git(repo, 'for-each-ref', '--format=%(refname)', 'refs/papercusp/seed-recovery/')).toBe('');
+    expect(git(repo, 'status', '--porcelain')).toBe('');
+  });
+
   it('EI-20216304202023591: failed fetch removes only its fresh interrupted tmp_pack and reports reclaimed bytes', async () => {
     const packDir = join(repo, '.git', 'objects', 'pack');
     mkdirSync(packDir, { recursive: true });

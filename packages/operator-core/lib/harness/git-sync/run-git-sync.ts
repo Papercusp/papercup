@@ -311,6 +311,16 @@ export interface GitSyncConfig {
    *  does not extend to submodules, each an independent GitHub repo the bridge never
    *  touches — so they keep pushing normally unless this is explicitly set false too. */
   pushSubmoduleOrigins?: boolean;
+  /** Reconcile the SUPERPROJECT worktree with its configured Git remote
+   *  (fetch + merge) before an optional push. Default true.
+   *
+   *  Non-legacy P2P hives set this false: their dedicated GitHub-ingress leg
+   *  imports GitHub heads into the bare P2P store and their worktree-bridge leg
+   *  advances the checkout from the admitted canonical staging ref. Running a
+   *  second direct origin merge here bypasses that admission path and makes an
+   *  installer seed look perpetually unconverted when the two histories are
+   *  intentionally unrelated. Submodule origin syncing remains independent. */
+  reconcileSuperprojectOrigin?: boolean;
   /** Branch to sync when a repo is on a branch / for the superproject (default 'main'). */
   branch?: string;
   /** Remote name (default 'origin'). */
@@ -1725,6 +1735,7 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
   // independently-hosted submodule library) opt back in EXPLICITLY.
   const doSubPush = cfg.pushSubmoduleOrigins !== undefined ? cfg.pushSubmoduleOrigins : doPush;
   const doSub = cfg.pushSubmodules !== false;
+  const reconcileSuperprojectOrigin = cfg.reconcileSuperprojectOrigin !== false;
   const message = cfg.message ?? `chore(git-sync): auto-commit ${slug} [skip ci]`;
   const maxBlobBytes = cfg.maxBlobBytes ?? DEFAULT_MAX_BLOB_BYTES;
   const maxCommitTotalBytes = cfg.maxCommitTotalBytes ?? DEFAULT_MAX_COMMIT_TOTAL_BYTES;
@@ -1910,6 +1921,22 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     log(
       `[git-sync] ${sub.conflicts.length} conflict(s) + ${sub.errors.length} error(s) in submodules — superproject ${commitRes.committedLocal ? 'COMMITTED locally' : 'had nothing to commit'}, deferring only its push (${slug})`,
     );
+  } else if (!reconcileSuperprojectOrigin) {
+    // EI-20232774599730947: a bridged/p2p-only member is truly commit-only at
+    // this layer. GitHub ingress + admission and the P2P worktree bridge own
+    // remote-to-worktree flow; fetching/merging origin here is both redundant
+    // and unsafe for an installer seed whose local P2P lineage intentionally
+    // remains unrelated to GitHub main.
+    superHeadSha = await headSha(runGit, repo);
+    repoResult = commitRes.committedLocal
+      ? {
+          status: 'synced',
+          pushed: false,
+          merged: false,
+          oversized: commitRes.oversized,
+          contentErrors: commitRes.contentErrors,
+        }
+      : { status: 'nothing', oversized: commitRes.oversized, contentErrors: commitRes.contentErrors };
   } else {
     // PHASE `git-sync:push` — superproject fetch + merge + push (the network half).
     const pushRes = await step('git-sync:push', async () => ({

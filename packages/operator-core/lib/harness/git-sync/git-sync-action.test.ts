@@ -73,6 +73,11 @@ vi.mock('../../harness-registry', () => ({
   loadHarnessRegistry: async () => ({ projects: registryProjects }),
 }));
 
+let potGitMode: 'legacy' | 'bridged' | 'p2p-only' = 'legacy';
+vi.mock('./hive-git-mode', () => ({
+  getPotGitMode: async () => potGitMode,
+}));
+
 // Real dirs for the gate's disk checks (path exists / has .git).
 const tmpRoot = mkdtempSync(join(tmpdir(), 'git-sync-action-'));
 const repoDir = join(tmpRoot, 'repo');
@@ -327,6 +332,7 @@ beforeEach(() => {
   templateCalls.length = 0;
   txQueries.length = 0;
   registryProjects = [{ slug: 'papercup', path: repoDir }];
+  potGitMode = 'legacy';
 });
 
 describe('registry population', () => {
@@ -821,14 +827,70 @@ describe('clean sync outcome', () => {
 
     await action({
       ...ctx,
-      triggerConfig: { push: false, push_submodules: false, branch: 'staging', remote: 'upstream', max_blob_bytes: 1024 },
+      triggerConfig: {
+        push: false,
+        push_submodules: false,
+        pushSubmoduleOrigins: false,
+        branch: 'staging',
+        remote: 'upstream',
+        max_blob_bytes: 1024,
+      },
     });
 
     expect(runGitSyncMock).toHaveBeenCalledWith('papercup', {
-      config: { push: false, pushSubmodules: false, branch: 'staging', remote: 'upstream', maxBlobBytes: 1024 },
+      config: {
+        push: false,
+        pushSubmodules: false,
+        pushSubmoduleOrigins: false,
+        branch: 'staging',
+        remote: 'upstream',
+        maxBlobBytes: 1024,
+      },
       deletionGuard: true,
       step: expect.any(Function),
     });
+  });
+
+  it.each(['bridged', 'p2p-only'] as const)(
+    "EI-20232774599730947: %s mode makes the superproject truly commit-only while preserving submodule-origin sync",
+    async (mode) => {
+      potGitMode = mode;
+      registryProjects = [{ slug: 'papercup', path: repoDir, hive_slug: 'papercup' }];
+      runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [], contentErrors: [] });
+      const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+      try {
+        await action(ctx);
+      } finally {
+        log.mockRestore();
+      }
+
+      expect(runGitSyncMock).toHaveBeenCalledWith('papercup', expect.objectContaining({
+        config: expect.objectContaining({
+          push: false,
+          pushSubmoduleOrigins: true,
+          reconcileSuperprojectOrigin: false,
+        }),
+      }));
+    },
+  );
+
+  it('EI-20232774599730947: a pre-seeded P2P member stays superproject commit-only and honors its explicit submodule-origin push', async () => {
+    potGitMode = 'bridged';
+    registryProjects = [{ slug: 'papercup', path: repoDir, hive_slug: 'papercup' }];
+    runGitSyncMock.mockResolvedValue({ status: 'nothing', oversized: [], contentErrors: [] });
+
+    await action({
+      ...ctx,
+      triggerConfig: { push: false, pushSubmoduleOrigins: true },
+    });
+
+    expect(runGitSyncMock).toHaveBeenCalledWith('papercup', expect.objectContaining({
+      config: expect.objectContaining({
+        push: false,
+        pushSubmoduleOrigins: true,
+        reconcileSuperprojectOrigin: false,
+      }),
+    }));
   });
 });
 
