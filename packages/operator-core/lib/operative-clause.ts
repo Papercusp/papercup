@@ -85,7 +85,7 @@ export const OPERATIVE_CLAUSE_MAX_CLAUSES_DEFAULT = 2;
  * be any case, the NOT may not.
  */
 export const OPERATIVE_MARKERS =
-  /\b(ALWAYS|NEVER|MUST|DON'T|REQUIRED|RULE:|NO MORE)\b|\b(?:[Dd]o|[Dd]oes|[Mm]ust|[Ss]hould)\s+NOT\b|⛔|SUPERSED(?:ING|ED)|\[owner[:\s][^\]]*\]/;
+  /\b(ALWAYS|NEVER|MUST|DO NOT|DON'T|REQUIRED|RULE:|NO MORE)\b|\b(?:[Dd]o|[Dd]oes|[Mm]ust|[Ss]hould)\s+NOT\b|⛔|SUPERSED(?:ING|ED)|\[owner[:\s][^\]]*\]/;
 
 export interface ExtractOperativeClausesOptions {
   /** Total char budget across all preserved clauses. */
