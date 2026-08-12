@@ -40,7 +40,7 @@ export default defineTool({
     when:
       'You need a SPECIFIC named agent to answer something only they know (resolve ids via coord:presence). Normally reached from the owner\'s Ask-an-agent UI, not from agent code.',
     notWhen:
-      'Agent-to-agent: use `coord:send` (5,591 calls/30d vs this tool\'s 16 — it is what agents actually use, and it wakes the recipient). For live state do NOT ask a peer at all — query it: who holds a file → locks:list; who is on what → fleet:assignments / coord:presence; a work-item\'s status → work_items:get (its checkpoint IS the status). For an owner decision → coord:ask-owner. Open-ended discussion → conversations:post.',
+      'Agent-to-agent: use `coord:send` (5,591 calls/30d vs this tool\'s 16 — it is what agents actually use, and it wakes the recipient). For live state do NOT ask a peer at all — query it: who holds a file → locks:queue { paths: [...] }; who is on what → fleet:assignments / coord:presence; a work-item\'s status → work_items:get (its checkpoint IS the status). For an owner decision → coord:ask-owner. Open-ended discussion → conversations:post.',
     chaining:
       'coord:presence (get the ownerId) → coord:ask { to:[id] } → conversations:get for replies → conversations:resolve when answered.',
   },

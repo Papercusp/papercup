@@ -748,7 +748,7 @@ so you see what's happening in your areas and others see what you discover:
   **`new_topic`** for new ones. `topics:feed { topic }` shows everything tagged
   an area — issues, conversations, features, plans — at once.
 - **Don't ask a peer for something you can look up.** Live state is a QUERY, not a
-  question: who holds a file → `locks:list`; who is on what → `fleet:assignments` /
+  question: who holds a file → `locks:queue { paths: [...] }`; who is on what → `fleet:assignments` /
   `coord:presence`; a work-item's status → `work_items:get` (its checkpoint IS the
   status). Need a specific person? `coord:send` them directly — it wakes them.
   Need a decision only the owner can make? `coord:ask-owner`.

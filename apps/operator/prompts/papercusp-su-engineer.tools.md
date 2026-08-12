@@ -906,7 +906,7 @@ A live **subscribe→inject** substrate routes work across agents by **topic**:
   `new_topic` to learn of new ones). `topics:feed { topic }` reads everything
   tagged an area.
 - **Don't ask a peer for something you can look up.** Live state is a QUERY, not a
-  question: who holds a file → `locks:list`; who is on what → `fleet:assignments` /
+  question: who holds a file → `locks:queue { paths: [...] }`; who is on what → `fleet:assignments` /
   `coord:presence`; a work-item's status → `work_items:get` (its checkpoint IS the
   status). Need a specific person? `coord:send` them directly — it wakes them.
   Need a decision only the owner can make? `coord:ask-owner`.

@@ -40,7 +40,15 @@ const listResourcesM = vi.mocked(listResources);
 const queueM = vi.mocked(readResourceQueue);
 
 const tool = (await import('./list')).default;
-type Out = { data: { ok: boolean; holders: unknown[]; draining: boolean } };
+type Out = {
+  data: {
+    ok: boolean;
+    holders: unknown[];
+    draining: boolean;
+    plane: string;
+    fileLockHint: string;
+  };
+};
 const call = (args: Record<string, unknown>) => tool.handler(args as never, {} as never) as Promise<Out>;
 
 const holder = (owner: string) => ({
@@ -117,5 +125,16 @@ describe('locks:list — host-global domain resolution (EI-18674647773291145)', 
     expect(queueM).toHaveBeenNthCalledWith(3, expect.anything(), { coordinationDomain: 'ws-scoped-domain', resource: undefined });
     expect(b.data.holders).toHaveLength(3);
     expect(b.data.draining).toBe(true);
+  });
+
+  it('marks the resource plane and routes file-holder checks to locks:queue', async () => {
+    listResourcesM.mockResolvedValue([]);
+    queueM.mockResolvedValue({ holders: [], draining: false });
+
+    const b = await call({});
+
+    expect(b.data.plane).toBe('resource');
+    expect(b.data.fileLockHint).toContain('locks:queue { paths: [...] }');
+    expect(b.data.fileLockHint).not.toContain('locks:list { paths');
   });
 });
