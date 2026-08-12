@@ -6036,24 +6036,21 @@ export function realCheckpointDeps(
     // break / stale candidate) instead of blaming load unconditionally.
     const startedAt = Date.now();
     try {
-      const r = await exec(
-        'npm',
-        [
-          'run',
-          'test',
-          '--workspace',
-          workspace,
-          '--',
-          '--no-file-parallelism',
-          // EI-19332206710686203: single concurrency removes the SUITE's contention but not
-          // the box's ambient load, so an isolated re-run can still be slow. Without this the
-          // re-run inherits vitest's 5s default and re-fails a merely-slow test — the absorber
-          // would then never rescue a timeout-shaped flake, which is the commonest kind here.
-          `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`,
-          file,
-        ],
-        { cwd: cfg.checkpointRoot, env, allowNonZero: true, timeoutMs: ISOLATION_RUN_TIMEOUT_MS },
-      );
+      const invocation = resolveWorkspaceTestInvocation(cfg.checkpointRoot, workspace, [
+        '--no-file-parallelism',
+        // EI-19332206710686203: single concurrency removes the SUITE's contention but not
+        // the box's ambient load, so an isolated re-run can still be slow. Without this the
+        // re-run inherits vitest's 5s default and re-fails a merely-slow test — the absorber
+        // would then never rescue a timeout-shaped flake, which is the commonest kind here.
+        `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`,
+        file,
+      ]);
+      const r = await exec(invocation.cmd, invocation.args, {
+        cwd: invocation.cwd,
+        env,
+        allowNonZero: true,
+        timeoutMs: ISOLATION_RUN_TIMEOUT_MS,
+      });
       // WI-6969: capture THIS attempt's own failing case names + timing-signature so the
       // retry loop can tell "matches the original failure exactly, structurally can't be
       // load" from "looks like a real timing-sensitive flake" without spending another
@@ -6104,8 +6101,12 @@ export function realCheckpointDeps(
       // it is what contention is, and scoring it as one was the category error. A genuine
       // co-execution DEADLOCK is unaffected: it blows 60s exactly as it blew 5s, and
       // CONCURRENT_CONFIRM_TIMEOUT_MS still bounds the whole run.
-      const r = await exec('npm', ['run', 'test', '--workspace', workspace, '--', `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`, ...files], {
-        cwd: cfg.checkpointRoot,
+      const invocation = resolveWorkspaceTestInvocation(cfg.checkpointRoot, workspace, [
+        `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`,
+        ...files,
+      ]);
+      const r = await exec(invocation.cmd, invocation.args, {
+        cwd: invocation.cwd,
         env,
         allowNonZero: true,
         timeoutMs: CONCURRENT_CONFIRM_TIMEOUT_MS,
@@ -6134,8 +6135,9 @@ export function realCheckpointDeps(
     // the load that crashed it. On vitest's 5s default a merely-slow test is scored
     // `realFailure` and the crash is never absorbed. Note this argv had no `--` separator
     // before: everything after it is forwarded to vitest, not consumed by npm.
-    const r = await exec('npm', ['run', 'test', '--workspace', workspace, '--', `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`], {
-      cwd: cfg.checkpointRoot,
+    const invocation = resolveWorkspaceTestInvocation(cfg.checkpointRoot, workspace, [`--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`]);
+    const r = await exec(invocation.cmd, invocation.args, {
+      cwd: invocation.cwd,
       env,
       allowNonZero: true,
       timeoutMs: WORKSPACE_RERUN_TIMEOUT_MS,
@@ -6588,24 +6590,21 @@ export function realCheckpointDeps(
       env.VITEST_MAX_THREADS = '1';
       const summaries: string[] = [headNote];
       for (const [workspace, wsFiles] of byWorkspace) {
-        const r = await exec(
-          'npm',
-          [
-            'run',
-            'test',
-            '--workspace',
-            workspace,
-            '--',
-            '--no-file-parallelism',
-            // EI-19332206710686203: the stale-candidate rescue asks "is this red already fixed
-            // at tip?" — a question it cannot answer if a slow test re-times-out at vitest's
-            // 5s default. A false `pass:false` here reports a genuinely-fixed tip as still
-            // broken and keeps `main` frozen on a red that no longer exists.
-            `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`,
-            ...wsFiles,
-          ],
-          { cwd: cfg.checkpointRoot, env, allowNonZero: true, timeoutMs: ISOLATION_RUN_TIMEOUT_MS },
-        ).catch((e: unknown) => ({ code: 1, stdout: '', stderr: String(e) }));
+        const invocation = resolveWorkspaceTestInvocation(cfg.checkpointRoot, workspace, [
+          '--no-file-parallelism',
+          // EI-19332206710686203: the stale-candidate rescue asks "is this red already fixed
+          // at tip?" — a question it cannot answer if a slow test re-times-out at vitest's
+          // 5s default. A false `pass:false` here reports a genuinely-fixed tip as still
+          // broken and keeps `main` frozen on a red that no longer exists.
+          `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`,
+          ...wsFiles,
+        ]);
+        const r = await exec(invocation.cmd, invocation.args, {
+          cwd: invocation.cwd,
+          env,
+          allowNonZero: true,
+          timeoutMs: ISOLATION_RUN_TIMEOUT_MS,
+        }).catch((e: unknown) => ({ code: 1, stdout: '', stderr: String(e) }));
         summaries.push(`${workspace}: ${r.code === 0 ? 'pass' : 'FAIL'}`);
         if (r.code !== 0) {
           // The group verdict is FINAL here (`pass:false`, unchanged). Everything below is
@@ -6617,20 +6616,17 @@ export function realCheckpointDeps(
           // no auto-refire is pending and these extra minutes cannot starve a rescue. The only
           // cost is delaying a verdict that is not going to change.
           const perFile = await splitTipFailuresPerFile(files, async (wsName, file) => {
-            const one = await exec(
-              'npm',
-              [
-                'run',
-                'test',
-                '--workspace',
-                wsName,
-                '--',
-                '--no-file-parallelism',
-                `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`,
-                file,
-              ],
-              { cwd: cfg.checkpointRoot, env, allowNonZero: true, timeoutMs: ISOLATION_RUN_TIMEOUT_MS },
-            ).catch(() => null);
+            const invocation = resolveWorkspaceTestInvocation(cfg.checkpointRoot, wsName, [
+              '--no-file-parallelism',
+              `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`,
+              file,
+            ]);
+            const one = await exec(invocation.cmd, invocation.args, {
+              cwd: invocation.cwd,
+              env,
+              allowNonZero: true,
+              timeoutMs: ISOLATION_RUN_TIMEOUT_MS,
+            }).catch(() => null);
             // A throw is INDETERMINATE, not a failure — returning false here would name a
             // healthy file under "STILL FAILING (fix these)". null abandons the whole split.
             return one === null ? null : one.code === 0;
@@ -6667,8 +6663,10 @@ export function realCheckpointDeps(
       const summaries: string[] = [headNote];
       for (const { script, workspace } of runs) {
         const label = workspace ? `${workspace} :: ${script}` : script;
-        const args = workspace ? ['run', script, '-w', workspace] : ['run', script];
-        const r = await exec('npm', args, { cwd: cfg.checkpointRoot, env, allowNonZero: true }).catch(
+        const invocation = workspace
+          ? resolveWorkspaceScriptInvocation(cfg.checkpointRoot, workspace, script)
+          : { cmd: 'npm' as const, args: ['run', script], cwd: cfg.checkpointRoot };
+        const r = await exec(invocation.cmd, invocation.args, { cwd: invocation.cwd, env, allowNonZero: true }).catch(
           (e: unknown) => ({ code: 1, stdout: '', stderr: String(e) }),
         );
         summaries.push(`${label}: ${r.code === 0 ? 'pass' : 'FAIL'}`);

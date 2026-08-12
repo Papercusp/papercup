@@ -27,6 +27,10 @@
  *               ptool <group:verb> --json - <<'EOF'            # read JSON from stdin
  *               {"copy": "it's fine now"}
  *               EOF
+ *               ptool code:run --script-file batch.js     # carry script as file data
+ *               ptool code:run --script - <<'EOF'          # carry script as stdin data
+ *               return await tools.dev.build_status({});
+ *               EOF
  *               ptool --list [filter]              # print the catalog
  *               ptool <group:verb> --workspace=<ws> --harness=<slug>
  *
@@ -34,8 +38,9 @@
  * argument — any apostrophe in the payload (a normal English string like
  * "it's") terminates that shell quoting early and the tool never sees valid
  * JSON (EI-14958). `--json -` (read stdin) or `--json-file <path>` sidestep
- * shell quoting entirely — prefer them for any payload that isn't a trivial
- * literal.
+ * shell quoting entirely. For `code:run`, use `--script -` or
+ * `--script-file <path>` to carry JavaScript source as data; prefer these for
+ * scripts containing nested shell commands, substitutions, or quoted strings.
  *
  * When launched inside a tracked psu session, ptool carries PAPERCUSP_SID as
  * the MCP `client=` identity. That makes it a safe transport fallback when a
@@ -67,6 +72,8 @@ export function parseArgs(argv) {
     tool: null,
     json: null,
     jsonFile: null,
+    script: null,
+    scriptFile: null,
     list: false,
     listFilter: null,
     workspace: null,
@@ -81,6 +88,8 @@ export function parseArgs(argv) {
     '--json': 'json',
     '--args': 'json',
     '--json-file': 'jsonFile',
+    '--script': 'script',
+    '--script-file': 'scriptFile',
     '--workspace': 'workspace',
     '--harness': 'harness',
     '--url': 'url',
@@ -159,6 +168,25 @@ export function jsonSourceKind(args) {
   if (args.jsonFile) return 'file';
   if (args.json === '-') return 'stdin';
   if (args.json != null) return 'inline';
+  return null;
+}
+
+/**
+ * Decide where a direct `code:run` script comes from. The file/stdin forms
+ * carry JavaScript as data, so the caller's shell never has to quote nested
+ * commands or apostrophes (EI-20235746813390458). `--script-file` takes
+ * priority over `--script`, mirroring jsonSourceKind's file precedence.
+ * Pure — the actual file/stdin read is impure and lives in main().
+ *
+ *   'file'   — `--script-file <path>` was given.
+ *   'stdin'  — `--script -` was given.
+ *   'inline' — a normal `--script '<source>'` value.
+ *   null     — no direct script source was given.
+ */
+export function scriptSourceKind(args) {
+  if (args.scriptFile) return 'file';
+  if (args.script === '-') return 'stdin';
+  if (args.script != null) return 'inline';
   return null;
 }
 
@@ -764,16 +792,23 @@ const USAGE = `ptool — call any Papercusp defineTool endpoint from the termina
   ptool <group:verb> --json - <<'EOF'  read the JSON args from stdin
   {"copy": "it's fine now"}
   EOF
+  ptool code:run --script-file batch.js   read the script from a file
+  ptool code:run --script - <<'EOF'      read the script from stdin
+  return await tools.dev.build_status({});
+  EOF
   ptool --list [filter]         print the catalog (optionally name-filtered)
 
 A shell-quoted --json '<inline>' cannot safely carry an apostrophe (the quote
 terminates early) — prefer --json-file or --json - for any payload that isn't
-a trivial literal.
+a trivial literal. For code:run, prefer --script-file or --script - for source
+that contains nested shell commands or quoted strings.
 
 Flags:
   --json <json> / --args <json>   args object for a direct (non-interactive) call;
                                    '-' reads the JSON from stdin instead
   --json-file <path>              read the args JSON from a file (quoting-free)
+  --script <source>               direct code:run JavaScript source; '-' reads stdin
+  --script-file <path>            direct code:run JavaScript source (quoting-free)
   --workspace <ws>                scope the session (needed for harness:*, features:*, …)
   --harness <slug>                scope the session to a harness
   --raw                           print the raw result text (no JSON pretty-print)
@@ -846,13 +881,31 @@ async function main() {
       process.exit(1);
     }
 
-    // Assemble args: explicit --json/--json-file/stdin, else interactive
-    // prompting. The source is decided by the pure jsonSourceKind() so a
-    // shell-quoting-hostile inline payload always has a quoting-free escape
-    // hatch (EI-14958).
+    // Assemble args: explicit JSON or direct code:run script source, else
+    // interactive prompting. Pure source-kind helpers keep shell-hostile
+    // scripts on a quoting-free path (EI-20235746813390458).
     let callArgs;
     const jsonKind = jsonSourceKind(args);
-    if (jsonKind != null) {
+    const scriptKind = scriptSourceKind(args);
+    if (jsonKind != null && scriptKind != null) {
+      console.error('ptool: choose one input source: --json/--json-file or --script/--script-file');
+      process.exit(1);
+    }
+    const inputKind = scriptKind ?? jsonKind;
+    if (scriptKind != null) {
+      if (toolName !== 'code:run') {
+        console.error('ptool: --script/--script-file can only be used with code:run');
+        process.exit(1);
+      }
+      try {
+        if (scriptKind === 'file') callArgs = { script: readFileSync(args.scriptFile, 'utf8') };
+        else if (scriptKind === 'stdin') callArgs = { script: readFileSync(0, 'utf8') };
+        else callArgs = { script: args.script };
+      } catch (e) {
+        console.error(`ptool: could not read script from ${scriptKind === 'file' ? `--script-file ${args.scriptFile}` : 'stdin'}: ${e.message}`);
+        process.exit(1);
+      }
+    } else if (jsonKind != null) {
       let jsonText;
       try {
         if (jsonKind === 'file') jsonText = readFileSync(args.jsonFile, 'utf8');
@@ -875,7 +928,7 @@ async function main() {
 
     // Interactive confirmation (only when we prompted — a scripted --json/
     // --json-file/stdin call is non-interactive by intent).
-    if (jsonKind == null && !args.tool) {
+    if (inputKind == null && !args.tool) {
       const { confirm } = await import('@inquirer/prompts');
       console.error(`\n→ ${toolName}  ${JSON.stringify(callArgs)}`);
       const go = await confirm({ message: 'Call it?', default: true });
@@ -883,7 +936,7 @@ async function main() {
         console.error('ptool: cancelled');
         return;
       }
-    } else if (shouldPrintInvocationLine(jsonKind)) {
+    } else if (shouldPrintInvocationLine(inputKind)) {
       console.error(`→ ${toolName}  ${JSON.stringify(callArgs)}`);
     }
 
@@ -892,7 +945,7 @@ async function main() {
       buildCallToolParams(toolName, callArgs, { outputSchema: tool.outputSchema }),
       { timeoutMs: timeoutForTool(toolName) },
     );
-    const code = printResult(result, { raw: shouldPrintRawResult(jsonKind, args.raw) });
+    const code = printResult(result, { raw: shouldPrintRawResult(inputKind, args.raw) });
     if (code !== 0) process.exitCode = code;
   } finally {
     await client.close().catch(() => {});

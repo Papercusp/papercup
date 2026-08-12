@@ -1455,3 +1455,30 @@ describe('deriveKickoffPrompt — kickoff-prompt-absorption P-004 (guard profile
     expect(k).not.toContain('ALREADY ARMED');
   });
 });
+
+describe('buildLaunchProvenanceFactBody — fleet-safe reporting fallback', () => {
+  it('preserves original launcher attribution and teaches the live fleet leader selector', async () => {
+    const { buildLaunchProvenanceFactBody } = await import('../routes/agent-mcp/bootstrap-su');
+    const body = buildLaunchProvenanceFactBody({
+      launchedBy: 'su-ended-launcher',
+      planSlug: 'drain-plan',
+      launchContextPath: '/tmp/fleet-brief.md',
+      fleetSlug: 'nonp2p-bug-drain-headless-0812',
+    });
+
+    expect(body).toContain('You were launched by su-ended-launcher on plan drain-plan with brief fleet-brief.md.');
+    expect(body).toContain('original launcher/supervisor');
+    expect(body).toContain('to: ["@fleet-leader:nonp2p-bug-drain-headless-0812"]');
+    expect(body).toContain('survives session retirement and leadership rotation');
+  });
+
+  it('keeps fleetless launches on the direct launcher guidance', async () => {
+    const { buildLaunchProvenanceFactBody } = await import('../routes/agent-mcp/bootstrap-su');
+    const body = buildLaunchProvenanceFactBody({ launchedBy: 'su-direct-launcher' });
+
+    expect(body).toBe(
+      'You were launched by su-direct-launcher. They are your launcher/supervisor — report milestones + anomalies to them.',
+    );
+    expect(body).not.toContain('@fleet-leader:');
+  });
+});

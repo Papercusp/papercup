@@ -18,7 +18,7 @@
  * real-git temp-repo path; here we never touch a real branch.
  */
 import { describe, it, expect, afterAll, vi } from 'vitest';
-import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -26,6 +26,7 @@ import {
   checkNpmScript,
   hasNpmScript,
   realCheckpointDeps,
+  resolveWorkspaceTestInvocation,
   CONCURRENT_CONFIRM_TIMEOUT_MS,
   ISOLATION_RUN_TIMEOUT_MS,
   RESCUE_TEST_TIMEOUT_MS,
@@ -105,6 +106,16 @@ afterAll(() => rmSync(tmpLogDir, { recursive: true, force: true }));
 const cpTree = mkdtempSync(join(tmpdir(), 'green-cp-tree-'));
 writeFileSync(join(cpTree, 'package.json'), JSON.stringify({ name: 'cp-fixture' }));
 
+// EI-20234934941780220: the desktop package is a git submodule, not a root npm workspace. Keep
+// a minimal standalone fixture here so rescue tests assert the cwd/argv contract without running
+// the real desktop suite or depending on the checkout's current submodule contents.
+const standaloneTree = mkdtempSync(join(tmpdir(), 'green-cp-standalone-tree-'));
+mkdirSync(join(standaloneTree, 'papercusp-desktop'), { recursive: true });
+writeFileSync(
+  join(standaloneTree, 'papercusp-desktop', 'package.json'),
+  JSON.stringify({ name: '@papercusp/desktop', scripts: { test: 'vitest run' } }),
+);
+
 // WI-7255 — DO NOT materialise the `failingTests` paths (lib/foo.test.ts,
 // lib/llm-testing/__tests__/runner-aggregate.test.ts, ...) inside cpTree. Their ABSENCE is
 // load-bearing, and this comment exists because it was already done once and had to be
@@ -125,6 +136,7 @@ writeFileSync(join(cpTree, 'package.json'), JSON.stringify({ name: 'cp-fixture' 
 //
 // If these go red again, fix the resolution logic — never the fixtures.
 afterAll(() => rmSync(cpTree, { recursive: true, force: true }));
+afterAll(() => rmSync(standaloneTree, { recursive: true, force: true }));
 
 const typecheckTree = mkdtempSync(join(tmpdir(), 'green-cp-typecheck-tree-'));
 writeFileSync(
@@ -1212,6 +1224,34 @@ describe('EI-19332206710686203: rescue re-runs carry an explicit per-test timeou
     expect(testRun!.args).toContain(TIMEOUT_FLAG);
     expect(testRun!.args.indexOf(TIMEOUT_FLAG)).toBeGreaterThan(testRun!.args.indexOf('--'));
     expect(testRun!.args).toContain('lib/a.test.ts');
+  });
+
+  it('routes standalone package rescue runs through the package directory', async () => {
+    const standaloneCfg = releaseConfig({
+      integrationRoot: '/int',
+      releaseRoot: '/int',
+      checkpointRoot: standaloneTree,
+      releaseRef: 'ready',
+      integrationBranch: 'main',
+      checkpointLogDir: tmpLogDir,
+    });
+    const { exec, calls } = makeExec([]);
+    const deps = realCheckpointDeps(standaloneCfg, exec);
+    const file = 'test/test-registry-coverage.test.js';
+
+    await deps.isolationRun?.({ workspace: '@papercusp/desktop', file });
+    await deps.concurrentRun?.({ workspace: '@papercusp/desktop', files: [file] });
+    await deps.workspaceRerun?.({ workspace: '@papercusp/desktop' });
+    await deps.runTestsAtRef?.('deadbeef', [{ workspace: '@papercusp/desktop', file }]);
+
+    const testRuns = calls.filter((c) => c.cmd === 'npm' && c.args[0] === 'run' && c.args[1] === 'test');
+    expect(testRuns).toHaveLength(4);
+    for (const run of testRuns) {
+      expect(run.opts?.cwd).toBe(join(standaloneTree, 'papercusp-desktop'));
+      expect(run.args).not.toContain('--workspace');
+      expect(run.args.slice(0, 3)).toEqual(['run', 'test', '--']);
+    }
+    expect(testRuns.at(-1)?.args).toContain(file);
   });
 });
 

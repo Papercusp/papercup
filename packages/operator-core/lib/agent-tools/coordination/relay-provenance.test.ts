@@ -164,6 +164,56 @@ describe('parseHumanTurns — owner-typed turns out of a session JSONL', () => {
     expect(turns.map((t) => t.text)).toEqual(['array-form turn']);
   });
 
+  it('extracts Codex rollout response_item user turns and skips injected wakes', () => {
+    const turns = parseHumanTurns(
+      [
+        row({
+          timestamp: '2026-08-12T09:00:00.000Z',
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: 'keep working on getting main green' }],
+          },
+        }),
+        row({
+          timestamp: '2026-08-12T09:01:00.000Z',
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'user',
+            content: [{ type: 'input_text', text: '⟦turn-origin:loop-fire nonce:aabbccdd00112233⟧\nresume the lane' }],
+          },
+        }),
+        row({
+          timestamp: '2026-08-12T09:02:00.000Z',
+          type: 'response_item',
+          payload: {
+            type: 'message',
+            role: 'assistant',
+            content: [{ type: 'output_text', text: 'on it' }],
+          },
+        }),
+      ].join('\n'),
+    );
+    expect(turns).toEqual([{ ts: '2026-08-12T09:00:00.000Z', text: 'keep working on getting main green' }]);
+  });
+
+  it('extracts Codex history rows and converts Unix-second timestamps', () => {
+    const ts = Date.parse('2026-08-12T09:00:00.000Z') / 1000;
+    const turns = parseHumanTurns(
+      [
+        JSON.stringify({ session_id: 'sess-1', ts, text: 'an owner turn from history' }),
+        JSON.stringify({
+          session_id: 'sess-1',
+          ts: ts + 1,
+          text: '⟦turn-origin:wake-pump nonce:1122334455667788⟧\nmachine continuation',
+        }),
+      ].join('\n'),
+    );
+    expect(turns).toEqual([{ ts: '2026-08-12T09:00:00.000Z', text: 'an owner turn from history' }]);
+  });
+
   it('skips assistant rows, isMeta rows, blank turns, and harness-synthetic turns', () => {
     const turns = parseHumanTurns(
       [

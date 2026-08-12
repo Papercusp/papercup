@@ -966,6 +966,36 @@ export function deriveKickoffPrompt(opts: {
 }
 
 /**
+ * Build the standing launch-provenance fact folded into every cold-wake orient.
+ *
+ * A concrete launcher owner id is useful provenance, but it is not a durable
+ * delivery address: the launcher session can end or fleet leadership can
+ * rotate. Named-fleet launches therefore teach the live role selector as the
+ * reporting fallback while preserving the original launcher for attribution.
+ */
+export function buildLaunchProvenanceFactBody(opts: {
+  launchedBy: string;
+  planSlug?: string | null;
+  launchContextPath?: string | null;
+  fleetSlug?: string | null;
+}): string {
+  const provenance =
+    `You were launched by ${opts.launchedBy}` +
+    (opts.planSlug ? ` on plan ${opts.planSlug}` : '') +
+    (opts.launchContextPath ? ` with brief ${basename(opts.launchContextPath)}` : '');
+
+  if (!opts.fleetSlug) {
+    return `${provenance}. They are your launcher/supervisor — report milestones + anomalies to them.`;
+  }
+
+  return (
+    `${provenance}. They are your original launcher/supervisor; report milestones + anomalies to them while live. ` +
+    `If that session ends, use coord:send with to: [\"@fleet-leader:${opts.fleetSlug}\"] to reach the current fleet leader; ` +
+    'this selector survives session retirement and leadership rotation.'
+  );
+}
+
+/**
  * context-trimming-tiers P-007: the context-discipline line a fleet launch bakes
  * next to the AUTO directive — durable system prompt (survives compaction) +
  * turn-1 kickoff, same dual delivery. Six 200k-window members died mid-task on
@@ -1908,11 +1938,12 @@ const post = defineTool({
           scope: 'owner',
           scopeRef: sid,
           key: 'launch-provenance',
-          body:
-            `You were launched by ${launchedBy}` +
-            (planSlug ? ` on plan ${planSlug}` : '') +
-            (launchContextPath ? ` with brief ${basename(launchContextPath)}` : '') +
-            `. They are your launcher/supervisor — report milestones + anomalies to them.`,
+          body: buildLaunchProvenanceFactBody({
+            launchedBy,
+            planSlug,
+            launchContextPath,
+            fleetSlug: fleetPin.fleetSlug,
+          }),
           sourceRef: 'bootstrap-su:launched-by',
           createdBy: launchedBy,
           ttlSec: 30 * 24 * 3600,

@@ -4,7 +4,7 @@
  *
  * Verifies: the VTL auth tier, the 400 on a missing id, the 404 on an unknown
  * account (no save), and the happy path (recordAccountReset clears the projected
- * pause/penalty → saveAccountPool → notifySyncInvalidate('accounts.pool') so the
+ * pause/penalty → updateAccountPool → notifySyncInvalidate('accounts.pool') so the
  * tab refreshes). The pure recordAccountReset is left REAL; only the IO + CORS +
  * sync-bus boundaries are mocked.
  */
@@ -14,12 +14,15 @@ vi.mock('../../cors', () => ({ requireAllowedOriginOr403: () => null }));
 
 const h = vi.hoisted(() => ({
   loadAccountPool: vi.fn(),
-  saveAccountPool: vi.fn(),
+  // WI-38164: the route writes through the ATOMIC updateAccountPool(mutator). It used to
+  // load the pool and blind-save the whole document back, so a Reset click could revive
+  // accounts removed since that read and erase accounts registered since it.
+  updateAccountPool: vi.fn(),
   notifySyncInvalidate: vi.fn(),
 }));
 vi.mock('../../../deployment/account-pool-store', () => ({
   loadAccountPool: h.loadAccountPool,
-  saveAccountPool: h.saveAccountPool,
+  updateAccountPool: h.updateAccountPool,
 }));
 vi.mock('../../../sync-sse', () => ({ notifySyncInvalidate: h.notifySyncInvalidate }));
 
@@ -55,8 +58,9 @@ async function post(body: unknown) {
 
 beforeEach(() => {
   h.loadAccountPool.mockReset();
-  h.saveAccountPool.mockReset();
-  h.saveAccountPool.mockResolvedValue(undefined);
+  h.updateAccountPool.mockReset();
+  // Run the mutator against current pool state, as the real transactional RMW does.
+  h.updateAccountPool.mockImplementation(async (mutator: (p: unknown) => unknown) => mutator(await h.loadAccountPool()));
   h.notifySyncInvalidate.mockReset();
   h.notifySyncInvalidate.mockResolvedValue(undefined);
 });
@@ -78,7 +82,7 @@ describe('POST /api/admin/deploy-accounts/reset-rate', () => {
     const { status, body } = await post({ id: 'nope' });
     expect(status).toBe(404);
     expect(body?.error).toBe('unknown_account');
-    expect(h.saveAccountPool).not.toHaveBeenCalled();
+    expect(h.updateAccountPool).not.toHaveBeenCalled();
     expect(h.notifySyncInvalidate).not.toHaveBeenCalled();
   });
 
@@ -88,7 +92,7 @@ describe('POST /api/admin/deploy-accounts/reset-rate', () => {
     expect(status).toBe(200);
     expect(body?.ok).toBe(true);
     // The saved pool carries a fresh rate for a1 (pause + penalty cleared).
-    const saved = h.saveAccountPool.mock.calls[0]?.[0] as TestPool | undefined;
+    const saved = (await h.updateAccountPool.mock.results[0]?.value) as TestPool | undefined;
     const acct = saved?.accounts.find((a) => a.id === 'a1');
     expect(acct?.rate.pausedUntil).toBe(0);
     expect(acct?.rate.penaltyCount).toBe(0);

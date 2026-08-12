@@ -66,8 +66,44 @@ function isSyntheticTurn(text: string): boolean {
   return classifyRecordedTurn(text).verdict !== 'owner-typed';
 }
 
+/**
+ * Read text blocks from either transcript format used by the supported
+ * clients. Claude writes `message.content` blocks with `type: "text"`;
+ * Codex writes `response_item.payload.content` blocks with
+ * `type: "input_text"`. Keeping this at the parser boundary means the
+ * provenance verifier remains client-neutral instead of silently treating a
+ * Codex session as a transcript with no owner turns.
+ */
+function readTextContent(content: unknown): string | null {
+  if (typeof content === 'string') return content;
+  if (!Array.isArray(content)) return null;
+  const texts = content
+    .filter(
+      (b): b is { type: string; text: string } =>
+        !!b &&
+        typeof b === 'object' &&
+        typeof (b as { type?: unknown }).type === 'string' &&
+        typeof (b as { text?: unknown }).text === 'string' &&
+        ['text', 'input_text'].includes((b as { type: string }).type),
+    )
+    .map((b) => b.text);
+  return texts.length ? texts.join('\n') : null;
+}
+
+function codexTimestamp(value: unknown): string {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    // Codex history.jsonl stores Unix seconds, while rollout JSONL stores an
+    // ISO timestamp on the envelope row.
+    const date = new Date(value * 1000);
+    return Number.isNaN(date.getTime()) ? '' : date.toISOString();
+  }
+  return '';
+}
+
 /** Parse the human (owner-typed) turns out of raw JSONL text, in file order.
- *  Skips tool_result-only user entries, isMeta rows, and synthetic turns. */
+ *  Skips tool_result-only user entries, isMeta rows, and synthetic turns.
+ *  Supports Claude JSONL, Codex rollout JSONL, and Codex history.jsonl. */
 export function parseHumanTurns(jsonl: string): HumanTurn[] {
   const out: HumanTurn[] = [];
   for (const line of jsonl.split('\n')) {
@@ -78,26 +114,28 @@ export function parseHumanTurns(jsonl: string): HumanTurn[] {
     } catch {
       continue; // torn first line of a tail read / corrupt row
     }
-    if (o.type !== 'user' || o.isMeta === true) continue;
-    const m = (o.message ?? {}) as Record<string, unknown>;
-    const c = m.content;
-    let text: string;
-    if (typeof c === 'string') {
-      text = c;
-    } else if (Array.isArray(c)) {
-      const texts = c
-        .filter(
-          (b): b is { type: string; text: string } =>
-            !!b && typeof b === 'object' && (b as { type?: unknown }).type === 'text',
-        )
-        .map((b) => b.text);
-      if (!texts.length) continue; // tool_result-only plumbing
-      text = texts.join('\n');
-    } else {
-      continue;
+    let text: string | null = null;
+    let ts = typeof o.timestamp === 'string' ? o.timestamp : '';
+
+    if (o.type === 'user' && o.isMeta !== true) {
+      // Claude-shaped session rows.
+      const m = (o.message ?? {}) as Record<string, unknown>;
+      text = readTextContent(m.content);
+    } else if (o.type === 'response_item') {
+      // Codex rollout rows. `event_msg` also mirrors UserMessage items, but
+      // the response_item is the canonical single copy; consuming both would
+      // duplicate every turn in the provenance scan.
+      const p = (o.payload ?? {}) as Record<string, unknown>;
+      if (p.type === 'message' && p.role === 'user') text = readTextContent(p.content);
+    } else if (typeof o.text === 'string' && 'session_id' in o) {
+      // Codex history.jsonl rows are already flattened to user text.
+      text = o.text;
+      ts = codexTimestamp(o.ts);
     }
+
+    if (text == null) continue; // tool_result-only / non-user plumbing
     if (!text.trim() || isSyntheticTurn(text)) continue;
-    out.push({ ts: typeof o.timestamp === 'string' ? o.timestamp : '', text });
+    out.push({ ts, text });
   }
   return out;
 }

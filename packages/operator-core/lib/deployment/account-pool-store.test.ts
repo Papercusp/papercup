@@ -99,7 +99,7 @@ describe('selectAccountForDeploy (P-020)', () => {
     let saved = false;
     const out = await selectAccountForDeploy({ target: 'hetzner', credentialRef: 'token:/pinned' }, 'h1', 'ws', {
       loadPool: async () => poolOf('a'),
-      savePool: async () => void (saved = true),
+      mutatePool: async (m) => ((saved = true), m(poolOf('a'))),
     });
     expect(out.credentialRef).toBe('token:/pinned');
     expect(saved).toBe(false);
@@ -108,7 +108,7 @@ describe('selectAccountForDeploy (P-020)', () => {
   it('returns the config unchanged when the pool is empty', async () => {
     const out = await selectAccountForDeploy({ target: 'hetzner' }, 'h1', 'ws', {
       loadPool: async () => emptyPool(),
-      savePool: async () => {},
+      mutatePool: async (m) => m(emptyPool()),
     });
     expect(out).toEqual({ target: 'hetzner' });
   });
@@ -118,7 +118,7 @@ describe('selectAccountForDeploy (P-020)', () => {
     const out = await selectAccountForDeploy({ target: 'hetzner', region: 'ash' }, 'h1', 'ws', {
       now: () => T0,
       loadPool: async () => pool,
-      savePool: async (p) => void (pool = p),
+      mutatePool: async (m) => (pool = m(pool)),
     });
     expect(out).toMatchObject({ target: 'hetzner', region: 'ash', credentialRef: 'token:~/.papercusp/a', accountId: 'a' });
     expect(getAccount(pool, 'a')!.boundTo).toEqual(['h1']);
@@ -132,7 +132,7 @@ describe('handleAccountExhausted (P-021)', () => {
     const res = await handleAccountExhausted('a', 'ws', {
       now: () => T0 + 30_000,
       loadPool: async () => pool,
-      savePool: async () => {},
+      mutatePool: async (m) => (pool = m(pool)),
       memberDeployment: async () => ({ target: 'hetzner' }),
       redeploy: async () => ({ frame: frameOf('x') }),
     });
@@ -146,7 +146,7 @@ describe('handleAccountExhausted (P-021)', () => {
     const res = (await handleAccountExhausted('a', 'ws', {
       now: () => T0,
       loadPool: async () => pool,
-      savePool: async (p) => void (pool = p),
+      mutatePool: async (m) => (pool = m(pool)),
       memberDeployment: async () => ({ target: 'hetzner', region: 'ash', size: 'cpx31' }),
       redeploy: async (slug, _ws, dep) => {
         redeployed.push({ slug, credentialRef: dep.credentialRef, accountId: dep.accountId });
@@ -167,7 +167,7 @@ describe('handleAccountExhausted (P-021)', () => {
     const res = await handleAccountExhausted('a', 'ws', {
       now: () => T0,
       loadPool: async () => pool,
-      savePool: async () => {},
+      mutatePool: async (m) => (pool = m(pool)),
       memberDeployment: async () => ({ target: 'hetzner' }),
       redeploy: async () => ({ frame: frameOf('x') }),
     });
@@ -180,7 +180,7 @@ describe('handleAccountExhausted (P-021)', () => {
     const res = (await handleAccountExhausted('a', 'ws', {
       now: () => T0,
       loadPool: async () => pool,
-      savePool: async (p) => void (pool = p),
+      mutatePool: async (m) => (pool = m(pool)),
       memberDeployment: async () => ({ target: 'local' }),
       redeploy: async () => ({ frame: frameOf('x') }),
     })) as Extract<ScaleOutResult, { scaledOut: true }>;
