@@ -31,7 +31,13 @@ export const SESSION_TIMELINE_RESPONSE_BUDGET_CHARS = 4_800;
 // share this ONE classification without pulling this file's `@papercusp/agent-mcp`
 // import (and its bootstrap side effects) into their own module graph.
 export { AUTOMATIC_TOOL_NAMES } from './automatic-tool-names';
-import { AUTOMATIC_TOOL_NAMES } from './automatic-tool-names';
+import {
+  AGENT_CALL_ORIGINS,
+  AUTOMATIC_CALL_ORIGINS,
+  AUTOMATIC_TOOL_NAMES,
+  agentToolInvocationPredicate,
+  automaticToolInvocationPredicate,
+} from './automatic-tool-names';
 
 /** One resolved watermark → how many live assumptions it covers (P-024 (c)).
  *  `watermark` is typed `string | number` because postgres-js returns BIGINT as
@@ -57,7 +63,9 @@ export function buildAutomaticCallAuditSummary(row: AutomaticCallAuditRow) {
       : 0,
     classification: {
       automatic_tools: [...AUTOMATIC_TOOL_NAMES],
-      rule: 'automatic_calls match the known hook/status tool set; every other tool invocation is agent-authored',
+      automatic_origins: [...AUTOMATIC_CALL_ORIGINS],
+      agent_origins: [...AGENT_CALL_ORIGINS],
+      rule: 'explicit call_origin wins: hook/ui/system are automatic and agent/unknown are agent-authored; NULL rows use the legacy automatic tool-name set; include_auto=true shows all traffic',
     },
   };
 }
@@ -70,6 +78,9 @@ export interface TimelineEntry {
   tool_name?: string | null;
   status?: string | null;
   auto?: boolean;
+  /** Migration 809 provenance; NULL means the row predates origin tracking. */
+  call_origin?: string | null;
+  call_origin_source?: string | null;
   repeat_count?: number;
   oldest_ts?: string;
   /**
@@ -143,6 +154,8 @@ const timelineResultSchema = z.object({
     automatic_share: z.number().min(0).max(1),
     classification: z.object({
       automatic_tools: z.array(z.string()),
+      automatic_origins: z.array(z.string()),
+      agent_origins: z.array(z.string()),
       rule: z.string(),
     }),
   }),
@@ -154,6 +167,8 @@ const timelineResultSchema = z.object({
     tool_name: z.string().nullable().optional(),
     status: z.string().nullable().optional(),
     auto: z.boolean().optional(),
+    call_origin: z.string().nullable().optional(),
+    call_origin_source: z.string().nullable().optional(),
     repeat_count: z.number().int().positive().optional(),
     oldest_ts: z.string().optional(),
     goal_ref: z.string().nullable().optional(),
