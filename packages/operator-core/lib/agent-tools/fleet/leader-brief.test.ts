@@ -67,6 +67,66 @@ describe('fleetCapacityProviderForMembers (EI-20243921934115652)', () => {
     ).toBe('codex');
   });
 
+  it('uses the authoritative adv-session backend for visible PSU members without model tiers', () => {
+    expect(
+      fleetCapacityProviderForMembers(
+        [
+          { agentId: 'su-codex-1', model: null, alive: true },
+          { agentId: 'su-codex-2', model: null, alive: true },
+        ],
+        new Map([
+          ['su-codex-1', 'codex'],
+          ['su-codex-2', 'codex'],
+        ]),
+      ),
+    ).toBe('codex');
+  });
+
+  it('ignores a dead historical Claude backend beside live visible Codex members', () => {
+    expect(
+      fleetCapacityProviderForMembers(
+        [
+          { agentId: 'su-codex', model: null, alive: true },
+          { agentId: 'su-claude-old', model: null, alive: false, verdict: 'dead' },
+        ],
+        new Map([
+          ['su-codex', 'codex'],
+          ['su-claude-old', 'claude'],
+        ]),
+      ),
+    ).toBe('codex');
+  });
+
+  it('keeps live visible mixed backends unknown', () => {
+    expect(
+      fleetCapacityProviderForMembers(
+        [
+          { agentId: 'su-codex', model: null, alive: true },
+          { agentId: 'su-claude', model: null, alive: true },
+        ],
+        new Map([
+          ['su-codex', 'codex'],
+          ['su-claude', 'claude'],
+        ]),
+      ),
+    ).toBeNull();
+  });
+
+  it('does not infer a provider from OMP without a model', () => {
+    expect(
+      fleetCapacityProviderForMembers(
+        [{ agentId: 'su-omp', model: null, alive: true }],
+        new Map([['su-omp', 'omp']]),
+      ),
+    ).toBeNull();
+    expect(
+      fleetCapacityProviderForMembers(
+        [{ agentId: 'su-omp', model: 'gpt-5.6-luna', alive: true }],
+        new Map([['su-omp', 'omp']]),
+      ),
+    ).toBe('codex');
+  });
+
   it('returns unknown for live-mixed or unmeasured fleets instead of borrowing a provider', () => {
     expect(
       fleetCapacityProviderForMembers([

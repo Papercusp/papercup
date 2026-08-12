@@ -266,10 +266,12 @@ export interface PoolDegradedState {
  */
 export function fleetCapacityProviderForMembers(
   members: ReadonlyArray<{
+    agentId?: string;
     model?: string | null;
     alive?: boolean;
     verdict?: MemberVerdict | null;
   }>,
+  agentByOwner: ReadonlyMap<string, 'claude' | 'omp' | 'codex' | null | undefined> = new Map(),
 ): AccountProvider | null {
   const providers = new Set(
     members
@@ -277,7 +279,19 @@ export function fleetCapacityProviderForMembers(
       // different backend. They are not consuming inference now and must not turn a uniform
       // live fleet into an apparent mixed-provider fleet.
       .filter((member) => member.alive !== false && member.verdict !== 'dead')
-      .map((member) => providerForModel(member.model ?? undefined))
+      .map((member) => {
+        const modelProvider = providerForModel(member.model ?? undefined);
+        if (modelProvider) return modelProvider;
+
+        // Visible PSU sessions do not have a spawned_agents row, so their roster model_tier
+        // is legitimately null. adv_sessions.agent is the authoritative backend for those
+        // members. OMP remains unknown here because its provider comes from its model, not
+        // from the OMP client itself.
+        const agent = member.agentId ? agentByOwner.get(member.agentId) : null;
+        if (agent === 'codex') return 'codex';
+        if (agent === 'claude') return 'claude';
+        return null;
+      })
       .filter((provider): provider is AccountProvider => provider != null),
   );
   return providers.size === 1 ? [...providers][0] : null;
@@ -2192,7 +2206,20 @@ export default defineTool({
     // reader always used the legacy Claude pool, so a Codex fleet inherited Claude exhaustion
     // and the brief told its leader not to wake 25 healthy Luna lanes. Mixed/unknown model
     // families fail soft to UNKNOWN instead of borrowing either provider's capacity.
-    const capacityProvider = fleetCapacityProviderForMembers(grouped);
+    const capacityAgentByOwner = await (async (): Promise<
+      Map<string, 'claude' | 'omp' | 'codex' | null>
+    > => {
+      try {
+        const { advSessionsByCoordOwner } = await import('../../adv-sessions');
+        const sessions = await advSessionsByCoordOwner();
+        return new Map(
+          [...sessions].map(([ownerId, session]) => [ownerId, session.agent] as const),
+        );
+      } catch {
+        return new Map();
+      }
+    })();
+    const capacityProvider = fleetCapacityProviderForMembers(grouped, capacityAgentByOwner);
     const poolCapacity = capacityProvider ? await readPoolDegradedState(capacityProvider) : null;
     const nowMs = Date.now();
     const members = grouped.map((a) =>
