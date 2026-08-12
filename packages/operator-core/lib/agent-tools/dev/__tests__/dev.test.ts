@@ -99,6 +99,36 @@ describe('dev:build_status', () => {
     const result = await tool.handler({}, MAKE_CTX());
     expect(parsePayload(result as never)).toEqual({ ...data, flake_suspects: [] });
   });
+
+  it('accepts an ambient harness argument without narrowing the cross-workspace feed', async () => {
+    const data = {
+      prodBuild: { exists: true, mtimeMs: 1000 },
+      devBuild: { exists: true, mtimeMs: 1000 },
+      prodLogTail: null,
+      dev3055Reachable: true,
+      prod3070Reachable: true,
+    };
+    vi.doMock('../../../dev-data', () => ({
+      buildStatus: vi.fn(async () => data),
+      testFlakeRollup: vi.fn(async () => ({ entries: [] })),
+      flagFlakeSuspects: vi.fn(() => []),
+    }));
+    const { default: tool } = await import('../build_status');
+    const { dispatchProjectedTool, lookupByMcpName } = await import('@papercusp/tooldef');
+    const projected = lookupByMcpName('dev:build_status');
+    expect(projected).toBeDefined();
+
+    const result = await dispatchProjectedTool(
+      projected!,
+      'dev:build_status',
+      { harness: 'papercusp' },
+      MAKE_CTX({ emit: vi.fn() }),
+      {},
+    );
+
+    expect(result.ok).toBe(true);
+    expect(parsePayload(result.response as never)).toEqual({ ...data, flake_suspects: [] });
+  });
 });
 
 // ── dev:why ─────────────────────────────────────────────────────────

@@ -25,7 +25,16 @@ export default defineTool({
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'cup'],
-  args: z.object({}),
+  args: z.object({
+    // Harness-scoped callers commonly pass their ambient harness to every
+    // diagnostic read. Build status is intentionally workspace-wide, so this
+    // compatibility field is accepted but does not filter the result.
+    harness: z
+      .string()
+      .max(120)
+      .optional()
+      .describe('Optional ambient harness label accepted for compatibility; this cross-workspace feed is not filtered by it.'),
+  }),
   async handler() {
     const result = await buildStatus();
     // event-await-discoverability P-001: if you're re-reading this to see a build/
