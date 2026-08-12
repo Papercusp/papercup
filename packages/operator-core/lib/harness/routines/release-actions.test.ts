@@ -14,6 +14,7 @@
  */
 import { describe, it, expect, vi, beforeEach, beforeAll, afterEach, afterAll } from 'vitest';
 import { describeGateRedOwnership } from '../../release/gate-red-ownership';
+import { resolveIntegrationRoot, integrationRootEvidence } from './release-actions';
 import { EventEmitter } from 'node:events';
 import { fileURLToPath } from 'node:url';
 
@@ -1250,5 +1251,108 @@ describe('EI-13723: recordCheckpointVerdict also dispatches the release-fixer (n
     spawnMock.mockImplementationOnce(() => fakeSpawn(stdout, 0));
     await getSystemAction('green-checkpoint')!(ctx);
     expect(fireLaunchBlueprintForEvent).not.toHaveBeenCalled();
+  });
+});
+
+/**
+ * EI-20263854732193595 — the integration root must FAIL CLOSED.
+ *
+ * The old fallback was `process.env.PAPERCUSP_INTEGRATION_ROOT ?? resolve(cwd,'..','..')`,
+ * which is CORRECT for a normal operator and CATASTROPHIC for one running out of the
+ * release checkout — and returned both without complaint. A wrong-tree gate run does not
+ * error; it produces a well-formed verdict about the wrong commits, which is why this was
+ * only noticed when two agents independently concluded the gate was executing the release
+ * copy of green-checkpoint.ts during a 22h freeze.
+ *
+ * These cases are written so the guard is FALSIFIABLE in both directions: the refusals
+ * must fire, AND the paths that legitimately worked before must keep working (a guard
+ * that refuses everything would pass a refusal-only suite while breaking the operator).
+ */
+describe('EI-20263854732193595: resolveIntegrationRoot fails closed on release/checkpoint checkouts', () => {
+  const WS = '/home/dev/papercupai-workspace';
+
+  it('REFUSES the release checkout when the env var is unset (the silent-wrong-tree case)', () => {
+    expect(() => resolveIntegrationRoot({}, `${WS}/papercup-release/apps/operator`)).toThrow(
+      /refusing to gate .*papercup-release/,
+    );
+  });
+
+  it('REFUSES the gate\'s own checkpoint test tree', () => {
+    expect(() => resolveIntegrationRoot({}, `${WS}/papercusp-checkpoint/apps/operator`)).toThrow(
+      /refusing to gate .*papercusp-checkpoint/,
+    );
+  });
+
+  it('names the offending path AND the remedy — a refusal nobody can act on just moves the confusion', () => {
+    let msg = '';
+    try {
+      resolveIntegrationRoot({}, `${WS}/papercusp-release/apps/operator`);
+    } catch (e) {
+      msg = e instanceof Error ? e.message : String(e);
+    }
+    expect(msg).toContain(`${WS}/papercusp-release`); // the resolved path, not just the basename
+    expect(msg).toContain('PAPERCUSP_INTEGRATION_ROOT'); // how to fix it
+  });
+
+  it('STILL resolves the normal staging operator via the cwd fallback (guard must not break the working path)', () => {
+    expect(resolveIntegrationRoot({}, `${WS}/papercusp/apps/operator`)).toBe(`${WS}/papercusp`);
+  });
+
+  it('an EXPLICIT env root always wins — even when cwd sits inside the release checkout', () => {
+    expect(
+      resolveIntegrationRoot(
+        { PAPERCUSP_INTEGRATION_ROOT: `${WS}/papercusp` },
+        `${WS}/papercup-release/apps/operator`,
+      ),
+    ).toBe(`${WS}/papercusp`);
+  });
+
+  /* ---- root-in-log evidence -------------------------------------------------
+   * The guard above only refuses the KNOWN-BAD checkouts. An explicit env root
+   * pointing somewhere unexpected is still silently wrong, and no guard can catch
+   * that — only a human reading the log can. So the run has to SAY which tree it
+   * judged, and say how it decided. */
+
+  it('states the resolved root AND how it was decided (cwd fallback)', () => {
+    const line = integrationRootEvidence({}, `${WS}/papercusp/apps/operator`);
+    expect(line).toContain(`${WS}/papercusp`);
+    expect(line).toContain('source=cwd-fallback');
+  });
+
+  it('distinguishes an EXPLICIT env root from the fallback — the two failure modes differ', () => {
+    const line = integrationRootEvidence(
+      { PAPERCUSP_INTEGRATION_ROOT: `${WS}/somewhere-else` },
+      `${WS}/papercusp/apps/operator`,
+    );
+    expect(line).toContain(`${WS}/somewhere-else`);
+    expect(line).toContain('source=PAPERCUSP_INTEGRATION_ROOT');
+    // ...and must NOT claim the fallback produced it — that mislabel would send a
+    // reader hunting a cwd bug when the real cause is an env var.
+    expect(line).not.toContain('cwd-fallback');
+  });
+
+  it('propagates the refusal rather than logging a well-formed line about a bad tree', () => {
+    expect(() => integrationRootEvidence({}, `${WS}/papercup-release/apps/operator`)).toThrow(
+      /refusing to gate/,
+    );
+  });
+
+  /* A builder nobody calls emits no evidence, which is indistinguishable from the bug
+   * this closes. Pin the CALL SITE in the checkpoint action, not just the function. */
+  it('is actually invoked by the green-checkpoint action (evidence must reach the run log)', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const src = await readFile(
+      fileURLToPath(new URL('./release-actions.ts', import.meta.url)),
+      'utf8',
+    );
+    const callSite = /integrationRootEvidence\(\)/.test(src);
+    expect(callSite, 'integrationRootEvidence() must be called, not merely exported').toBe(true);
+    // it must be logged BEFORE routing/verdict work, or it is missing from exactly the
+    // runs that go wrong early
+    const evidenceIdx = src.indexOf('integrationRootEvidence()');
+    const routingIdx = src.indexOf('await resolveCheckpointRouting(ctx');
+    expect(evidenceIdx).toBeGreaterThan(-1);
+    expect(routingIdx).toBeGreaterThan(-1);
+    expect(evidenceIdx).toBeLessThan(routingIdx);
   });
 });

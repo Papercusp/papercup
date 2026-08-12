@@ -78,10 +78,72 @@ function parseMarkerLine(stdout: string, marker: string): Record<string, unknown
   }
 }
 
+/** Checkouts that must NEVER serve as the integration tree.
+ *
+ *  `papercup-release` / `papercusp-release` are the DEPLOY ARTIFACT (pinned to green
+ *  `main`); `*-checkpoint` are the gate's own isolated test trees. Gating any of them
+ *  judges code that is NOT what agents commit to — and does so SILENTLY, which is the
+ *  whole defect: a wrong-tree run reports a perfectly well-formed verdict about the
+ *  wrong commits. Two agents independently concluded the gate was executing the
+ *  release copy while debugging a 22h freeze (EI-20263854732193595). */
+const NON_INTEGRATION_CHECKOUTS = new Set([
+  'papercup-release',
+  'papercusp-release',
+  'papercup-checkpoint',
+  'papercusp-checkpoint',
+]);
+
 /** The integration tree (where green-checkpoint/deploy operate). Explicit env so
- *  it stays correct even after the operator itself runs from the release checkout. */
+ *  it stays correct even after the operator itself runs from the release checkout.
+ *
+ *  FAIL-CLOSED (EI-20263854732193595): when `PAPERCUSP_INTEGRATION_ROOT` is unset the
+ *  cwd-relative fallback is CORRECT for a normal operator (…/papercusp/apps/operator →
+ *  …/papercusp) and CATASTROPHIC for one running out of the release checkout
+ *  (…/papercup-release/apps/operator → …/papercup-release). The old code could not tell
+ *  those apart and returned both without complaint. The guard is deliberately NARROW —
+ *  it refuses ONLY the known-bad checkouts, so every working path keeps working and
+ *  only the silent-wrong-tree case becomes a loud error. */
+export function resolveIntegrationRoot(
+  env: NodeJS.ProcessEnv = process.env,
+  cwd: string = process.cwd(),
+): string {
+  const explicit = env.PAPERCUSP_INTEGRATION_ROOT;
+  if (explicit) return explicit;
+
+  const derived = path.resolve(cwd, '..', '..');
+  const base = path.basename(derived);
+  if (NON_INTEGRATION_CHECKOUTS.has(base)) {
+    throw new Error(
+      `integrationRoot: refusing to gate ${derived} — "${base}" is a release/checkpoint checkout, ` +
+        `not the integration tree. Gating it would judge code nobody commits to and report a ` +
+        `well-formed verdict about the wrong commits. Set PAPERCUSP_INTEGRATION_ROOT to the ` +
+        `staging checkout explicitly. (EI-20263854732193595)`,
+    );
+  }
+  return derived;
+}
+
 function integrationRoot(): string {
-  return process.env.PAPERCUSP_INTEGRATION_ROOT ?? path.resolve(process.cwd(), '..', '..');
+  return resolveIntegrationRoot();
+}
+
+/** One line of run-scoped evidence: WHICH tree this gate run is judging, and HOW that was
+ *  decided. The guard above stops the catastrophic case (a release/checkpoint checkout);
+ *  this makes the merely-SURPRISING case legible — an explicit `PAPERCUSP_INTEGRATION_ROOT`
+ *  pointing somewhere unexpected still produces a perfectly well-formed verdict about the
+ *  wrong commits, and no guard can tell that apart from a correct one.
+ *
+ *  Why a line in the log at all (EI-20263854732193595): during the 22h freeze TWO agents
+ *  independently concluded the gate was executing the release copy, and neither could
+ *  cheaply confirm or refute it, because the checkpoint log never stated the root. The
+ *  absence of that one line is what turned a five-minute check into hours of archaeology. */
+export function integrationRootEvidence(
+  env: NodeJS.ProcessEnv = process.env,
+  cwd: string = process.cwd(),
+): string {
+  const root = resolveIntegrationRoot(env, cwd);
+  const source = env.PAPERCUSP_INTEGRATION_ROOT ? 'PAPERCUSP_INTEGRATION_ROOT' : 'cwd-fallback';
+  return `integration root: ${root} (source=${source})`;
 }
 
 function tsxBin(root: string): string {
@@ -546,6 +608,10 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
   // skip (never run a suite for it). The overlay rides runScript's extraEnv → the
   // env-driven releaseConfig() in green-checkpoint.ts picks up the per-hive config.
   const { resolveCheckpointRouting } = await import('./hive-release-env');
+  // EI-20263854732193595: state the judged tree ONCE per run, before any verdict exists.
+  // Pinned by a source test — a builder nobody calls is the same silent-but-well-formed
+  // failure this whole item is about.
+  console.log(`${orchestratorStdoutTag()} ${integrationRootEvidence()}`);
   const routing = await resolveCheckpointRouting(ctx, integrationRoot());
   if (routing.skip) {
     console.log(`${orchestratorStdoutTag()} skip ${ctx.installSlug}: ${routing.skip.reason}`);
