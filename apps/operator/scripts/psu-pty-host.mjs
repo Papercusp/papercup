@@ -1477,6 +1477,26 @@ export function startupOutputReady(agent, output) {
  * OMP launches a descendant process; signalling only node-pty's immediate child
  * can let that target survive after the host exits. The direct child signal is
  * retained as a cross-platform fallback (negative group pids are POSIX-only). */
+/**
+ * node-pty's NUMERIC signal -> its name ('SIGHUP'), or null when there was no signal.
+ *
+ * WI-38054. node-pty reports a signal death as `{ exitCode: 0, signal: N }`; the number
+ * alone is unreadable in a database row, and `0`/undefined must map to null rather than
+ * to a spurious signal name — a session that exited normally must not acquire one.
+ *
+ * Resolved from `os.constants.signals` rather than a hardcoded table so it stays correct
+ * across platforms (the numbers differ) instead of confidently naming the wrong signal.
+ */
+export function signalNameFromCode(signal) {
+  if (typeof signal !== 'number' || !Number.isFinite(signal) || signal <= 0) return null;
+  for (const [name, num] of Object.entries(osConstants.signals)) {
+    if (num === signal) return name;
+  }
+  // An unrecognised number is still positive evidence of a KILL, so never discard it —
+  // returning null here would silently restore the "looks like a clean exit" bug.
+  return `SIG${signal}`;
+}
+
 export function killPtyProcessTree(child, signal = 'SIGKILL', kill = process.kill) {
   const pid = Number(child?.pid);
   let killed = false;

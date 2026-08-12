@@ -1243,6 +1243,59 @@ export function buildCorpusNamespaceAdvisory(rawSql: string): string | null {
 }
 
 /**
+ * Completion evidence read from ONE of its surfaces — a confident false "no evidence"
+ * (EI-20203674337042683, WI-38056, plan luna-audit-fixes-2026-08-12 D-001).
+ *
+ * A terminal work-item's evidence is written to a DIFFERENT column depending on how it
+ * was closed, and no route writes both. Measured 2026-08-12 over one fleet's 165 closes:
+ *
+ *   closed `done`    → payload->'_completionEvidence'   160/160, terminal_completion_ref 1/160
+ *   closed `dropped` → terminal_completion_ref            2/5,   payload evidence         3/5
+ *   rows with NEITHER surface populated ......................................... 0
+ *
+ * So coverage is total, but any query that selects ONE surface reports the other route's
+ * closes as evidence-free — a well-formed empty that reads as a finding. This is not
+ * hypothetical: it is how the WI-38045 fleet audit came to report "2 closes with no
+ * evidence", grade an agent's work down for it, and file a defect that did not exist.
+ * EI-13845 and WI-37360 are the same trap found twice before.
+ *
+ * `terminal_reason` is called out separately because it is the column an auditor reaches
+ * for FIRST and it does not hold a reason: it preserves the legacy terminal VOCABULARY
+ * token ('resolved' / 'closed' — see work-items.ts, the resolved→done / closed→dropped
+ * nuance). Reading it as prose yields NULL for exactly the rows whose story is richest.
+ */
+export function buildSplitCompletionEvidenceAdvisory(rawSql: string): string | null {
+  const tables = extractReferencedTables(rawSql);
+  if (!tables.some((t) => ['work_items', 'engineer_issues'].includes(bareTableName(t)))) return null;
+
+  const body = stripSqlLiteralsAndComments(rawSql);
+  const readsPayloadEvidence = /_completionEvidence/i.test(body);
+  const readsTerminalRef = /\bterminal_completion_ref\b/i.test(body);
+  const readsTerminalReason = /\bterminal_reason\b/i.test(body);
+  if (!readsPayloadEvidence && !readsTerminalRef && !readsTerminalReason) return null;
+  // Both evidence surfaces already read: the query cannot under-report, and a
+  // terminal_reason mention alongside them is a deliberate vocabulary read.
+  if (readsPayloadEvidence && readsTerminalRef) return null;
+
+  const missing = readsPayloadEvidence ? 'terminal_completion_ref' : "payload->'_completionEvidence'";
+  const present = readsPayloadEvidence ? "payload->'_completionEvidence'" : 'terminal_completion_ref';
+  const reasonNote = readsTerminalReason
+    ? ' Also: `terminal_reason` is NOT a free-text reason — it stores the legacy terminal ' +
+      "vocabulary token ('resolved'/'closed'), so it is NULL for precisely the closes you are " +
+      'probably hunting.'
+    : '';
+  return (
+    '⚠ split completion-evidence surface: this reads ' + present + ' but not ' + missing +
+    '. Completion evidence lands on a DIFFERENT column depending on the close route — `done` ' +
+    "closes write payload->'_completionEvidence' (measured 160/160) while `dropped` closes " +
+    'write terminal_completion_ref — and no route writes both. A single-surface read therefore ' +
+    'reports the other route\'s closes as evidence-free, which looks like a finding rather than ' +
+    'a gap in the query (rows with neither surface populated: 0 of 165). Read BOTH, or use ' +
+    'work_items:get, which already returns them together.' + reasonNote
+  );
+}
+
+/**
  * `tool_invocations` asked about a NATIVE client tool — a guaranteed zero (EI-20103748074297088).
  *
  * `harness_shared.tool_invocations` is an MCP-tool ledger; native Edit / Write / Bash never pass

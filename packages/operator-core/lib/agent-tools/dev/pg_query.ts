@@ -20,6 +20,7 @@ import {
   buildClaimabilityAdvisory,
   buildCorpusNamespaceAdvisory,
   buildNativeToolAttributionAdvisory,
+  buildSplitCompletionEvidenceAdvisory,
   buildSilentNullPathAdvisory,
   buildTenantScopeAdvisory,
   buildDerivedColumnRedirect,
@@ -179,10 +180,21 @@ export default defineTool({
       } catch {
         nativeToolAdvisory = null;
       }
+      // WI-38056: reading ONE of the two completion-evidence surfaces. Its own
+      // builder for the usual reason — this one does not warn about the wrong
+      // tenant or an empty table, but about a POPULATED table answering
+      // "no evidence" for every row closed through the other route.
+      let splitEvidenceAdvisory: string | null = null;
+      try {
+        splitEvidenceAdvisory = buildSplitCompletionEvidenceAdvisory(sql);
+      } catch {
+        splitEvidenceAdvisory = null;
+      }
       const advisory =
         [
           claimabilityAdvisory,
           nullPathAdvisory,
+          splitEvidenceAdvisory,
           nativeToolAdvisory,
           corpusNamespaceAdvisory,
           tenantAdvisory,
