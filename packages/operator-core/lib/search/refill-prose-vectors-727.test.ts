@@ -1,8 +1,10 @@
 import { describe, expect, it } from 'vitest';
 
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore — pure JS script, no .d.ts
-import { classifyPass } from '../../../../scripts/refill-prose-vectors-727.mjs';
+import {
+  classifyPass,
+// @ts-expect-error — pure JS script
+} from '../../../../scripts/refill-prose-vectors-727.mjs';
 
 describe('refill-727 pass freshness', () => {
   const bootMs = 1_000;
