@@ -282,13 +282,14 @@ export async function readPoolDegradedState(): Promise<PoolDegradedState | null>
 
 /**
  * WI-37161: true exactly when the shared inference pool is congested ENOUGH that an idle member
- * is more likely queued-for-inference than declining/floor-blocked work — poolExhausted OR
- * degraded, AND a nonzero gateway queue (a degraded pool with an EMPTY queue is not currently
- * starving anyone; the queue depth is what turns "the pool is imperfect" into "requests are
- * backed up right now").
+ * is more likely queued-for-inference than declining/floor-blocked work. A `poolExhausted` read
+ * is sufficient on its own: the capacity writer sets it when the cross-checked provider has no
+ * usable accounts, even when the gateway queue is empty because requests cannot be admitted to a
+ * real account. A merely `degraded` pool still needs a nonzero gateway queue — an imperfect pool
+ * with no queued requests is not currently starving anyone.
  */
 function isPoolCongested(p: PoolDegradedState | null | undefined): p is PoolDegradedState {
-  return p != null && (p.poolExhausted || p.degraded) && (p.queueDepth ?? 0) > 0;
+  return p != null && (p.poolExhausted || (p.degraded && (p.queueDepth ?? 0) > 0));
 }
 
 /** PURE: exported for direct unit-testing (no PG/DI ceremony needed).

@@ -1665,9 +1665,29 @@ describe('computeFleetBlockVerdict (P-019/P-012 — which LAYER is blocking the 
         matchedByFilter: 457,
         idleMemberCount: 6,
         lanelessIdleCount: 0,
-        poolCapacity: { ...congestedPool, queueDepth: 0 },
+        poolCapacity: { ...congestedPool, poolExhausted: false, queueDepth: 0 },
       });
       expect(v?.layer).toBe('members');
+    });
+  });
+
+  describe('an exhausted pool remains blocking even with an EMPTY gateway queue', () => {
+    it('lets poolExhausted outrank members when no provider accounts are usable', () => {
+      const v = computeFleetBlockVerdict({
+        claimable: 293,
+        matchedByFilter: 457,
+        idleMemberCount: 6,
+        lanelessIdleCount: 0,
+        poolCapacity: {
+          ...congestedPool,
+          degraded: false,
+          queueDepth: 0,
+          usableAccounts: 0,
+          availableAccounts: 0,
+        },
+      });
+      expect(v?.layer).toBe('inference-pool');
+      expect(v?.remedy).toMatch(/do NOT coord:send wake/i);
     });
   });
 
