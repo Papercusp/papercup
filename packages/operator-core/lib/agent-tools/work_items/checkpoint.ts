@@ -557,7 +557,18 @@ export default defineTool({
         // still reporting ok:true/verified:true.
         let appendPriorRaw: string | null = null;
         let appendPreReadFailed = false;
-        if (wantsAppend && it.checkpoint) {
+        // EI-20283744332352340: the guard below must key off "a join was ATTEMPTED",
+        // not off `wantsAppend`. A checks-only patch (`append:true` + `checks`, no
+        // `checkpoint` — the documented body-preserving shape carved out at :536)
+        // performs no pre-read and no join at all: `checkpointToStore` stays
+        // undefined and the body is preserved by the store's own transform, which
+        // reads the authoritative prior inside the locked transaction. Testing
+        // `wantsAppend` there fired on a null that only means "never attempted",
+        // refusing every checks-only patch against a >500-char checkpoint — and its
+        // recovery block then offered `confirmShrink:true`, pointing the caller at
+        // the destructive replace this guard exists to prevent.
+        const didAttemptJoin = wantsAppend && !!it.checkpoint;
+        if (didAttemptJoin) {
           try {
             appendPriorRaw = await getWorkItemCheckpoint({ harness, workItemId: it.id, workspaceId });
           } catch {
@@ -789,7 +800,7 @@ export default defineTool({
                   // exactly the failure signature: the write path resolves the item, the
                   // (different) read path used to build the join does not.
                   (_priorNote, priorLen) => {
-                    if (wantsAppend && priorLen > 500 && (appendPriorRaw === null || appendPriorRaw.length === 0)) {
+                    if (didAttemptJoin && priorLen > 500 && (appendPriorRaw === null || appendPriorRaw.length === 0)) {
                       return `append_base_unreadable — the append pre-read returned ${appendPreReadFailed ? 'an error' : 'nothing'} ` +
                         `while the current checkpoint is ${priorLen} chars (read authoritatively at write time, inside ` +
                         'the same locked transaction as this write). Appending now would silently REPLACE it instead of ' +

@@ -89,6 +89,7 @@ function compactSummary(value: unknown, ultra = false): unknown {
     'unowned_criticals',
     'unowned_criticals_federated',
     'abandoned_unclaimed',
+    'admission_blocked',
     'fleet_paused',
   ];
   const out = pick(source, metricKeys, 120) ?? {};
@@ -179,6 +180,25 @@ function compactAdvisory(value: unknown): unknown {
   return pick(source, keys, 160) ?? {};
 }
 
+/**
+ * EI-18680302159738037: a fleet-scope admission block, bounded for the monitor
+ * transport. `itemId`/`member`/`specId`/`specRevision` are the ACTIONABLE core
+ * (what was refused, to whom, and which spec+revision the leader edits) and are
+ * kept whole; `reason` is the one field that can be long, so it clips.
+ */
+function compactAdmissionBlock(value: unknown): unknown {
+  return pick(value, [
+    'itemId',
+    'member',
+    'specId',
+    'specRevision',
+    'code',
+    'occurrences',
+    'action',
+    'reason',
+  ], 160) ?? {};
+}
+
 function compactInvariant(value: unknown): unknown {
   const source = asDict(value);
   if (!source) return value;
@@ -218,7 +238,13 @@ function addCappedArray(out: Dict, source: Dict, key: string, cap: number, proje
 
 function addAlertFields(out: Dict, source: Dict): void {
   for (const [key, value] of Object.entries(source)) {
-    if (!/(?:AlertReason|AlertFalsifier)$/.test(key) && key !== 'customInvariantAlertReason' && key !== 'fleetPausedReason') continue;
+    // EI-18680302159738037: `*Action` joins the carried set. An advisory's RESOLVING
+    // ACTION was being computed and then dropped by this projection, so the default
+    // monitor read showed a count and rows with no remedy — and for both advisories
+    // that emit one, the intuitive remedy is the WRONG verb (release is a no-op on
+    // abandonedUnclaimed; a nudge cannot clear an admission block). Clipped like a
+    // reason, so a long note cannot crowd out the decision core.
+    if (!/(?:AlertReason|AlertFalsifier|Action)$/.test(key) && key !== 'customInvariantAlertReason' && key !== 'fleetPausedReason') continue;
     out[key] = key.endsWith('Falsifier') ? compactFalsifier(value) : clip(value, 220) ?? value;
   }
 }
@@ -240,6 +266,12 @@ function buildProjection(data: Dict, tier: LeaderBriefPayloadTier, caps: typeof 
   for (const key of ['unownedCriticals', 'unownedCriticalsFederated', 'abandonedUnclaimed', 'orphanedInFlight']) {
     addCappedArray(out, data, key, caps.advisories, compactAdvisory);
   }
+  // EI-18680302159738037: admission blocks project through their OWN compactor —
+  // compactAdvisory's key set (workItemId/title/status/assignee/…) shares not one
+  // field with a block, so routing them through it would emit `{}` per row: a
+  // count with rows that say nothing, which is how this signal got ignored the
+  // first time.
+  addCappedArray(out, data, 'admissionBlocked', caps.advisories, compactAdmissionBlock);
   if (Array.isArray(data.customInvariants)) {
     addCappedArray(out, data, 'customInvariants', caps.invariants, compactInvariant);
   }
