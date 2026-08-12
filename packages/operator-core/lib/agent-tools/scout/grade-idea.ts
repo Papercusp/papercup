@@ -516,7 +516,7 @@ export default defineTool({
     notWhen:
       'Not an accept/reject of the routed artifact — a grade is a pure learning signal; the draft proceeds through normal triage regardless. Never pass grader attribution: gradedBy is derived from the caller identity (Mug, resolved agent ownerId, or the human owner surface).',
     chaining:
-      "Nothing to chain: weights update on the next refreshScoutOutcomes pass and feedback enters ideator priming automatically. A su-ideate grade with feedback auto-notifies the originator (revisionWake in the result: ≤3 wakes them to revise or defend, >3 is an unwoken FYI). applied:false + reason 'owner-grade-sovereign' (Mug regrading an owner-graded row) is expected, not an error — owner grades are sovereign; the returned summary carries the standing grade.",
+      "Nothing to chain: weights update on the next refreshScoutOutcomes pass and feedback enters ideator priming automatically. The originator auto-notify is reported as revisionWake (thresholds in the description). applied:false + reason 'owner-grade-sovereign' (Mug regrading an owner-graded row) is expected, not an error — owner grades are sovereign; the returned summary carries the standing grade.",
   },
   requirePrincipal: false,
   agentRoles: [...SU_ROLES],
