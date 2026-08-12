@@ -14,13 +14,13 @@
  * empty-suite-guard.test.ts for the sibling pattern this follows.
  */
 import { describe, it, expect } from 'vitest';
-// @ts-expect-error batch-watchdog.mjs is a standalone Node script without declarations.
 import {
   resolveBatchTimeoutMs,
   isWatchdogTimeout,
   parseBatchProgress,
   classifyBatchProgress,
   formatBatchProgress,
+// @ts-expect-error batch-watchdog.mjs is a standalone Node script without declarations.
 } from '../../../../scripts/lib/batch-watchdog.mjs';
 
 describe('resolveBatchTimeoutMs', () => {
