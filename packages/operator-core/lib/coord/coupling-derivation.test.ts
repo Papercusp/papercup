@@ -270,6 +270,7 @@ describe('DerivationRow is bound to the real presence producer', () => {
       'awaitingEventKey',
       'currentPlanSlug',
       'claimedItems',
+      'claimedPlanItemRefs',
     ];
     const missing = readFields.filter((f) => !emitted.has(f));
     expect(missing).toEqual([]);
@@ -357,6 +358,107 @@ describe('deriveCouplingsFromPlanBlocking', () => {
       [{ item: 'P-005', blockedBy: ['P-003'] }],
     );
     expect(derived).toEqual([]);
+  });
+
+  // -------------------------------------------------------------------------
+  // EI-20200393414409502 — occupancy via HELD WORK-ITEMS, not just plan-item claims.
+  //
+  // These are the cases the signal could not reach before: the fleet records what it
+  // is working on in `work_items.taken_by` (31 agents / 46 items when measured), not
+  // in `plan_item_claims` (5 agents), so keying occupancy to the latter alone made
+  // `blocks-me` census a permanent zero for 14 days while 6 plans had co-located
+  // agents and blocked items.
+  // -------------------------------------------------------------------------
+  it('couples on occupancy carried by a held WORK-ITEM stamp, with no plan-item claim on either side', () => {
+    const derived = deriveCouplingsFromPlanBlocking(
+      'su-me',
+      [
+        row({ ownerId: 'su-me', currentPlanSlug: 'p1', claimedPlanItemRefs: ['p1#P-005'] }),
+        row({ ownerId: 'su-peer', currentPlanSlug: 'p1', claimedPlanItemRefs: ['p1#P-003'] }),
+      ],
+      [{ item: 'P-005', blockedBy: ['P-003'] }],
+    );
+    expect(derived).toEqual([
+      { ownerId: 'su-peer', relation: 'blocks-me', because: 'your P-005 is blocked by P-003, which they hold' },
+    ]);
+  });
+
+  it('counts a peer as on THIS plan through a qualified ref even when it declares another plan', () => {
+    // Holding stamped work on the plan is stronger evidence than the declaration,
+    // and the ref is plan-qualified so it cannot collide. 43 agents declare a plan
+    // slug and only 4 also hold a live plan-item claim, so the declaration alone
+    // routinely fails to describe where an agent's work actually is.
+    const derived = deriveCouplingsFromPlanBlocking(
+      'su-me',
+      [
+        row({ ownerId: 'su-me', currentPlanSlug: 'p1', claimedItems: ['P-005'] }),
+        row({ ownerId: 'su-peer', currentPlanSlug: 'ELSEWHERE', claimedPlanItemRefs: ['p1#P-003'] }),
+      ],
+      [{ item: 'P-005', blockedBy: ['P-003'] }],
+    );
+    expect(derived).toEqual([
+      { ownerId: 'su-peer', relation: 'blocks-me', because: 'your P-005 is blocked by P-003, which they hold' },
+    ]);
+  });
+
+  it('does NOT match a ref qualified with a DIFFERENT plan (the collision the qualification prevents)', () => {
+    // The failure this rules out: reading `other#P-003` as `P-003` would couple two
+    // agents over an identifier that means unrelated things in the two plans — the
+    // exact hazard the plan-local `claimedItems` check has always guarded against,
+    // now that occupancy no longer requires a declared plan to be admitted.
+    const derived = deriveCouplingsFromPlanBlocking(
+      'su-me',
+      [
+        row({ ownerId: 'su-me', currentPlanSlug: 'p1', claimedItems: ['P-005'] }),
+        row({ ownerId: 'su-peer', currentPlanSlug: 'p1', claimedPlanItemRefs: ['other#P-003'] }),
+      ],
+      [{ item: 'P-005', blockedBy: ['P-003'] }],
+    );
+    expect(derived).toEqual([]);
+  });
+
+  it('unions the two surfaces rather than preferring one', () => {
+    // A caller holding P-005 by plan-item claim and P-009 by work-item stamp is
+    // blocked through EITHER; a fix that swapped the surfaces instead of unioning
+    // them would pass the tests above and still drop half the real edges.
+    const derived = deriveCouplingsFromPlanBlocking(
+      'su-me',
+      [
+        row({
+          ownerId: 'su-me',
+          currentPlanSlug: 'p1',
+          claimedItems: ['P-005'],
+          claimedPlanItemRefs: ['p1#P-009'],
+        }),
+        row({ ownerId: 'su-peer', currentPlanSlug: 'p1', claimedItems: ['P-003'] }),
+      ],
+      [
+        { item: 'P-005', blockedBy: ['P-003'] },
+        { item: 'P-009', blockedBy: ['P-003'] },
+      ],
+    );
+    expect(derived).toEqual([
+      { ownerId: 'su-peer', relation: 'blocks-me', because: 'your P-005 is blocked by P-003, which they hold' },
+      { ownerId: 'su-peer', relation: 'blocks-me', because: 'your P-009 is blocked by P-003, which they hold' },
+    ]);
+  });
+
+  it('ignores a malformed ref instead of throwing (rows are unknown[] and must stay total)', () => {
+    const derived = deriveCouplingsFromPlanBlocking(
+      'su-me',
+      [
+        row({ ownerId: 'su-me', currentPlanSlug: 'p1', claimedItems: ['P-005'] }),
+        row({
+          ownerId: 'su-peer',
+          currentPlanSlug: 'p1',
+          claimedPlanItemRefs: ['', '#P-003', 'p1#', 'p1#P-003'],
+        }),
+      ],
+      [{ item: 'P-005', blockedBy: ['P-003'] }],
+    );
+    expect(derived).toEqual([
+      { ownerId: 'su-peer', relation: 'blocks-me', because: 'your P-005 is blocked by P-003, which they hold' },
+    ]);
   });
 
   it('is empty with no edges, and empty when the caller declares no plan', () => {
@@ -528,5 +630,55 @@ describe('deriveCouplings (orchestrator)', () => {
       },
     });
     expect(called).toBe(true);
+  });
+
+  it('DOES read the plan when both sides hold only WORK-ITEM occupancy (EI-20200393414409502)', async () => {
+    // The gate was not merely rare, it was UNSATISFIABLE: zero plans fleet-wide had
+    // the two live plan-item claim holders it demanded. This is the reachability
+    // proof — same gate, both surfaces.
+    let called = false;
+    await deriveCouplings(
+      'su-me',
+      [
+        row({ ownerId: 'su-me', currentPlanSlug: 'p1', claimedPlanItemRefs: ['p1#P-005'] }),
+        row({ ownerId: 'su-peer', currentPlanSlug: 'p1', claimedPlanItemRefs: ['p1#P-003'] }),
+      ],
+      {
+        planEdges: async () => {
+          called = true;
+          return [{ item: 'P-005', blockedBy: ['P-003'] }];
+        },
+      },
+    );
+    expect(called).toBe(true);
+  });
+
+  it('still does NOT read the plan for a LONE claimant — D-004, the fix that must not happen', async () => {
+    // The one-line "fix" for the starved signal is to drop the peer clause so any
+    // claimant triggers the read. That reintroduces the 90KB+ plan parse on the
+    // common path (most agents are the only one on their plan), which is the cost
+    // this gate exists for. Widening the OCCUPANCY SURFACE is the sanctioned fix;
+    // widening the GATE is not. Asserted as a negative because nothing else fails
+    // when it regresses — the signal simply gets more expensive, silently.
+    let called = false;
+    await deriveCouplings(
+      'su-me',
+      [
+        row({
+          ownerId: 'su-me',
+          currentPlanSlug: 'p1',
+          claimedItems: ['P-005'],
+          claimedPlanItemRefs: ['p1#P-009'],
+        }),
+        row({ ownerId: 'su-peer', currentPlanSlug: 'p1' }),
+      ],
+      {
+        planEdges: async () => {
+          called = true;
+          return [];
+        },
+      },
+    );
+    expect(called).toBe(false);
   });
 });

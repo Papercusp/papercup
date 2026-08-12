@@ -163,6 +163,14 @@ export const PRESENCE_STATE_FIELDS = [
   'currentView',
   'currentFiles',
   'claimedItems',
+  // EI-20200393414409502: plan-QUALIFIED refs (`<slug>#<item>`) for the plan items an
+  // agent occupies through held, non-terminal work-items. It is emitted (unlike its
+  // sibling join `workItemClaims`, which is deliberately not) because the coupling
+  // derivation reads STABILIZED rows — `deriveCouplings` is handed `snapshot.active`,
+  // i.e. the output of `toStableRosterRow`, so a field absent from this list is not
+  // "cheaper", it is INVISIBLE to the derivation no matter what the producer joins.
+  // The producer omits it when empty, so the common row is unchanged on the wire.
+  'claimedPlanItemRefs',
   'awaitingEvent',
   'awaitingEventKey',
   'awaitingNote',

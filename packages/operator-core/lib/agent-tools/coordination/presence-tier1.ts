@@ -24,6 +24,28 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { getAllWakeModeOverrides, getDefaultWakeMode, type WakeMode } from './wake-mode';
+import { planItemRef } from '../../issue-blocks-merge';
+import { ISSUE_TERMINAL_STATUSES } from '../../work-item-blocking';
+import { TERMINAL_STATUSES as FEATURE_TERMINAL_STATUSES } from '../../dbos/frontier-readiness';
+
+/**
+ * A held work-item stops occupying its plan item once it is DONE — in either family.
+ * The union of the two canonical terminal sets is deliberately family-agnostic: the
+ * alternative is joining `item_kind` to pick a set, and the only rows that would
+ * decide differently are cross-family impossibilities (an issue at `passed`, a
+ * feature at `resolved`). Erring toward "terminal" there under-fires one coupling
+ * edge; erring the other way FABRICATES one, which is the worse failure for a signal
+ * whose whole point is that it be trustworthy when it speaks.
+ *
+ * ⚠ IMPORTED, NEVER RE-LITERALLED. A local `['resolved','closed']` copy of exactly
+ * these sets is what made plan-item coverage read closed work as unworked for months
+ * after the status unification (EI-18129037155166784) — the copy did not move when
+ * the alias layer started persisting `done`/`dropped`.
+ */
+const WORK_ITEM_TERMINAL_STATUSES: ReadonlySet<string> = new Set([
+  ...ISSUE_TERMINAL_STATUSES,
+  ...FEATURE_TERMINAL_STATUSES,
+]);
 
 export interface PresenceTier1 {
   /** Seconds since genuine activity (last_active_at), or null if never/unknown. */
@@ -160,11 +182,27 @@ export async function fetchPresenceTier1(
         FROM harness_shared.plan_item_claims
        WHERE owner = ANY(${ownerIds}::text[]) AND expires_ts > now()
         GROUP BY owner`,
-    sql<{ taken_by: string; items: string[] }[]>`
-      SELECT taken_by, array_agg(feature_id ORDER BY feature_id) AS items
+    // UNGROUPED on purpose (it used to `array_agg … GROUP BY taken_by`): the rows
+    // now carry the `payload.plan_item` stamp too, and the ref is built in TS with
+    // `planItemRef` rather than concatenated in SQL. That is the single-sourcing
+    // that matters here — the consumer (coupling-derivation) parses the same
+    // format, and a `'#'` literal in this query would be a second definition of it
+    // free to drift. Roster-bounded and tiny: 63 rows across 36 owners fleet-wide
+    // at the time of writing, max 7 per owner.
+    sql<
+      {
+        taken_by: string;
+        feature_id: string;
+        status: string | null;
+        plan_slug: string | null;
+        item_id: string | null;
+      }[]
+    >`
+      SELECT taken_by, feature_id, status,
+             payload->'plan_item'->>'plan_slug' AS plan_slug,
+             payload->'plan_item'->>'item_id'   AS item_id
         FROM harness_shared.work_items
-       WHERE taken_by = ANY(${ownerIds}::text[])
-       GROUP BY taken_by`,
+       WHERE taken_by = ANY(${ownerIds}::text[])`,
     sql<{ session_owner: string; model_tier: string | null }[]>`
       SELECT DISTINCT ON (session_owner) session_owner, model_tier
         FROM harness_shared.spawned_agents
@@ -183,15 +221,35 @@ export async function fetchPresenceTier1(
   ]);
 
   const claimsByOwner = new Map(claims.map((r) => [r.owner, r.items ?? []]));
-  const workItemClaimsByOwner = new Map(workItemClaims.map((r) => [r.taken_by, r.items ?? []]));
+  const workItemClaimsByOwner = new Map<string, string[]>();
+  const planItemRefsByOwner = new Map<string, Set<string>>();
+  for (const r of workItemClaims) {
+    const held = workItemClaimsByOwner.get(r.taken_by);
+    if (held) held.push(r.feature_id);
+    else workItemClaimsByOwner.set(r.taken_by, [r.feature_id]);
+    if (!r.plan_slug || !r.item_id) continue;
+    if (r.status != null && WORK_ITEM_TERMINAL_STATUSES.has(r.status)) continue;
+    const refs = planItemRefsByOwner.get(r.taken_by);
+    if (refs) refs.add(planItemRef(r.plan_slug, r.item_id));
+    else planItemRefsByOwner.set(r.taken_by, new Set([planItemRef(r.plan_slug, r.item_id)]));
+  }
+  // Sorted so the emitted STATE field is byte-stable across reads of an unchanged
+  // agent — the delta/etag contract (D-005/D-006) the whole state lane rests on.
+  for (const items of workItemClaimsByOwner.values()) items.sort();
   const modelByOwner = new Map(models.map((r) => [r.session_owner, r.model_tier]));
   const awaitByOwner = new Map(awaits.map((r) => [r.subscriber_id, r]));
 
   for (const ownerId of ownerIds) {
     const aw = awaitByOwner.get(ownerId);
+    const planItemRefs = planItemRefsByOwner.get(ownerId);
     out.set(ownerId, {
       claimedItems: claimsByOwner.get(ownerId) ?? [],
       workItemClaims: workItemClaimsByOwner.get(ownerId) ?? [],
+      // Omitted rather than `[]` when empty: `pick` drops undefined, so a roster of
+      // agents occupying nothing pays no payload for the field at all.
+      ...(planItemRefs && planItemRefs.size > 0
+        ? { claimedPlanItemRefs: [...planItemRefs].sort() }
+        : {}),
       model: modelByOwner.get(ownerId) ?? null,
       awaitingEvent: aw != null,
       awaitingEventKey: aw?.event_key ?? null,

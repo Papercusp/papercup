@@ -71,6 +71,55 @@ export interface DerivationRow {
   awaitingEventKey?: string | null;
   currentPlanSlug?: string | null;
   claimedItems?: readonly string[] | null;
+  /** Plan-QUALIFIED (`<slug>#<item>`) occupancy from held, non-terminal work-items —
+   *  see {@link planItemsHeldOn}. Produced by presence-tier1, emitted in the STATE
+   *  lane. */
+  claimedPlanItemRefs?: readonly string[] | null;
+}
+
+/** Split a `<plan_slug>#<item_id>` occupancy ref. The producer builds these with
+ *  `planItemRef`; this is the only place that takes one apart, so the format has
+ *  exactly two sites and a test pins them to each other.
+ *
+ *  Splits on the FIRST `#`: plan slugs never contain one, and splitting last would
+ *  mis-parse an item id that did. */
+function splitPlanItemRef(ref: string): { plan: string; item: string } | null {
+  const at = ref.indexOf('#');
+  if (at <= 0 || at === ref.length - 1) return null;
+  return { plan: ref.slice(0, at), item: ref.slice(at + 1) };
+}
+
+/**
+ * Every plan item this row occupies ON `planSlug`, from BOTH surfaces that record
+ * occupancy — the union that makes this signal reachable at all.
+ *
+ * `claimedItems` (from `plan_item_claims`) holds PLAN-LOCAL ids, so it counts only
+ * when the row's declared `currentPlanSlug` IS this plan — a bare `P-003` compared
+ * across plans is an identifier collision, not a match.
+ *
+ * `claimedPlanItemRefs` (from held work-items' `payload.plan_item` stamp) is already
+ * plan-qualified, so it needs no declared plan and CANNOT collide. That is why a peer
+ * counts as being on this plan through work it holds here even when it declares a
+ * different `currentPlanSlug` — a strictly safer match than the declaration, since
+ * holding the work is the stronger evidence.
+ *
+ * ⚠ EI-20200393414409502: keying this to `plan_item_claims` ALONE is what made
+ * `blocks-me`/`blocked-by-me` unfirable. Fleet-wide, 31 agents held work-items and 5
+ * held live plan-item claims; NO plan had the two co-holders the signal required, so
+ * it censused a permanent, error-free zero — indistinguishable from "this never
+ * happens" — while 6 plans had co-located agents and blocked items.
+ */
+function planItemsHeldOn(row: DerivationRow | undefined, planSlug: string): Set<string> {
+  const out = new Set<string>();
+  if (!row || !planSlug) return out;
+  if (cleanId(row.currentPlanSlug) === planSlug) {
+    for (const item of itemList(row.claimedItems)) out.add(item);
+  }
+  for (const ref of itemList(row.claimedPlanItemRefs)) {
+    const parsed = splitPlanItemRef(ref);
+    if (parsed && parsed.plan === planSlug) out.add(parsed.item);
+  }
+  return out;
 }
 
 /** One `blocked-by` edge within a single plan: `item` cannot start until each of
@@ -337,9 +386,13 @@ export function deriveCouplingsFromPlanBlocking(
   }
   if (!selfRow) return [];
 
+  // The plan under comparison still comes from the caller's DECLARATION, so exactly
+  // one plan's edges are ever read. Widening `myPlan` to every plan the caller holds
+  // stamped work on would multiply the expensive plan read — the cost this signal is
+  // gated on — for a case the declaration already covers (43 agents declare a plan).
   const myPlan = cleanId(selfRow.currentPlanSlug);
   if (!myPlan) return [];
-  const myItems = new Set(itemList(selfRow.claimedItems));
+  const myItems = planItemsHeldOn(selfRow, myPlan);
   if (myItems.size === 0) return [];
 
   /** item → the items it is blocked BY. */
@@ -358,9 +411,12 @@ export function deriveCouplingsFromPlanBlocking(
     if (seen.has(ownerId)) continue;
     // Same plan only: a `blocked-by` id is plan-local, so comparing it against an
     // item claimed on a DIFFERENT plan would couple two agents over a collision of
-    // identifiers ("P-003") that mean unrelated things.
-    if (cleanId(row.currentPlanSlug) !== myPlan) continue;
-    const theirItems = itemList(row.claimedItems);
+    // identifiers ("P-003") that mean unrelated things. `planItemsHeldOn` IS that
+    // scoping now — it admits a peer's plan-local `claimedItems` only when the peer
+    // declares this same plan, and admits its work-item occupancy only through refs
+    // already qualified with this plan. So the guard moved INTO the helper; it did
+    // not go away, and a peer on another plan still yields an empty set here.
+    const theirItems = [...planItemsHeldOn(row, myPlan)].sort();
     if (theirItems.length === 0) continue;
     seen.add(ownerId);
 
@@ -505,16 +561,23 @@ export async function deriveCouplings(
   // your plan) the read never happens at all, rather than being paid on every
   // poll to produce nothing — the P-013 analogue of the per-process fleet-wide
   // recomputation costed in WI-6126.
+  //
+  // ⚠ THE PEER CONDITION STAYS (D-004). EI-20200393414409502 made this precondition
+  // unsatisfiable fleet-wide, and the tempting one-line "fix" is to drop the peer
+  // clause so a lone claimant triggers the read. That would put the 90KB+ plan parse
+  // back on the common path — the cost argument above is still sound. What was wrong
+  // was never the SHAPE of the gate, only the narrow surface it measured occupancy
+  // on: `plan_item_claims` alone, while the fleet records its work in work-items.
+  // `planItemsHeldOn` reads both, so the same two-holder gate is now REACHABLE
+  // instead of being a permanent false.
   const myPlan = cleanId(selfRow?.currentPlanSlug);
-  const myItemCount = Array.isArray(selfRow?.claimedItems) ? selfRow.claimedItems.length : 0;
   let planSignalPossible = false;
-  if (myPlan && myItemCount > 0) {
+  if (myPlan && planItemsHeldOn(selfRow, myPlan).size > 0) {
     for (const raw of rows) {
       const row = (raw ?? {}) as DerivationRow;
       const id = cleanId(row.ownerId);
       if (!id || id === self) continue;
-      if (cleanId(row.currentPlanSlug) !== myPlan) continue;
-      if (Array.isArray(row.claimedItems) && row.claimedItems.length > 0) {
+      if (planItemsHeldOn(row, myPlan).size > 0) {
         planSignalPossible = true;
         break;
       }

@@ -11,6 +11,7 @@ import { afterEach, beforeAll, describe, expect, it } from 'vitest';
 import { getOrgPg } from '@papercusp/db-org';
 import { fetchPresenceTier1 } from './presence-tier1';
 import { getDefaultWakeMode, setWakeMode } from './wake-mode';
+import { planItemRef } from '../../issue-blocks-merge';
 
 const OWNER = `tier1-it-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
 const WS = 'default';
@@ -20,6 +21,7 @@ let ready = true;
 async function cleanup(): Promise<void> {
   const { sql } = getOrgPg();
   await sql`DELETE FROM harness_shared.plan_item_claims WHERE owner = ${OWNER}`.catch(() => {});
+  await sql`DELETE FROM harness_shared.work_items WHERE taken_by = ${OWNER}`.catch(() => {});
   await sql`DELETE FROM harness_shared.event_awaits WHERE subscriber_id = ${OWNER}`.catch(() => {});
   await sql`DELETE FROM harness_shared.operator_settings WHERE key = ${`wake_mode:agent:${OWNER}`}`.catch(
     () => {},
@@ -81,5 +83,62 @@ describe('fetchPresenceTier1 (live PG)', () => {
   it('empty ownerIds short-circuits to an empty map', async () => {
     if (!ready) return;
     expect((await fetchPresenceTier1([])).size).toBe(0);
+  });
+
+  // ---------------------------------------------------------------------------
+  // EI-20200393414409502 — claimedPlanItemRefs, and WHY IT MUST BE PROVEN HERE.
+  //
+  // The consumer (coupling-derivation) reads roster rows STRUCTURALLY, so a unit
+  // test with hand-built fixtures cannot tell a REAL field from a plausible one that
+  // production never populates — the exact way `currentFiles` shipped "green (51/51)"
+  // reading a field empty for essentially every live agent, and the way D-082's
+  // `claimedItems` composition would have matched zero rows forever. Only a check
+  // against the PRODUCER can, so the jsonb path, the terminal filter and the ref
+  // format are asserted against live PG here.
+  // ---------------------------------------------------------------------------
+  it('derives plan-item occupancy from a held work-item stamp, EXCLUDING terminal work', async () => {
+    if (!ready) return;
+    const { sql } = getOrgPg();
+    // Three held work-items: one live+stamped (occupies), one DONE+stamped (does
+    // not — the work is finished, so it blocks nobody), one live but unstamped
+    // (nothing to map back to a plan item).
+    await sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, status, taken_by, payload)
+      VALUES
+        (${WS}, 'papercup', ${`${OWNER}-live`}, 'task', 'open', ${OWNER},
+         ${sql.json({ plan_item: { plan_slug: 'tier1-it-plan', item_id: 'P-101' } })}),
+        (${WS}, 'papercup', ${`${OWNER}-done`}, 'task', 'done', ${OWNER},
+         ${sql.json({ plan_item: { plan_slug: 'tier1-it-plan', item_id: 'P-102' } })}),
+        (${WS}, 'papercup', ${`${OWNER}-bare`}, 'task', 'open', ${OWNER}, ${sql.json({})})
+    `;
+
+    const e = (await fetchPresenceTier1([OWNER])).get(OWNER);
+    expect(e).toBeDefined();
+    // The FORMAT is pinned to the shared builder, not to a hand-typed '#' string:
+    // the derivation splits on the same separator, and a literal here would be a
+    // third definition of the format free to drift from both.
+    expect(e!.claimedPlanItemRefs).toEqual([planItemRef('tier1-it-plan', 'P-101')]);
+    // The unstamped and terminal rows still count as HELD work — only the plan-item
+    // projection excludes them.
+    expect(e!.workItemClaims).toEqual([`${OWNER}-bare`, `${OWNER}-done`, `${OWNER}-live`]);
+    // Occupancy is NOT plan-item claims: nothing was seeded in plan_item_claims, and
+    // that surface staying empty is precisely the starvation this field routes around.
+    expect(e!.claimedItems).toEqual([]);
+  });
+
+  it('OMITS claimedPlanItemRefs entirely when the owner occupies nothing (no empty-array payload cost)', async () => {
+    if (!ready) return;
+    const { sql } = getOrgPg();
+    await sql`
+      INSERT INTO harness_shared.work_items
+        (workspace_id, harness_slug, feature_id, item_kind, status, taken_by, payload)
+      VALUES (${WS}, 'papercup', ${`${OWNER}-bare`}, 'task', 'open', ${OWNER}, ${sql.json({})})
+    `;
+    const e = (await fetchPresenceTier1([OWNER])).get(OWNER);
+    // Undefined, not []: `pick` drops undefined, which is what keeps the field off
+    // every row of a roster where nobody holds stamped work.
+    expect(e!.claimedPlanItemRefs).toBeUndefined();
+    expect(e!.workItemClaims).toEqual([`${OWNER}-bare`]);
   });
 });

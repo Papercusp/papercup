@@ -56,6 +56,7 @@ const MAXIMAL_ROW: RosterRow = {
   currentView: 'harness/papercup',
   currentFiles: ['a.ts'],
   claimedItems: ['P-001'],
+  claimedPlanItemRefs: ['plan-x#P-002'],
   awaitingEvent: true,
   awaitingEventKey: 'k',
   awaitingNote: 'note',
