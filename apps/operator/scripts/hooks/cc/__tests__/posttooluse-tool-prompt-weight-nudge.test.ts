@@ -162,10 +162,19 @@ describe('posttooluse-tool-prompt-weight-nudge', () => {
       expect(msg).toContain('guidance.returns');
     });
 
-    it('over the HARD CAP → reported against the hard cap, not the soft budget', () => {
+    it('over the HARD CAP but NOT grandfathered → still reported against the BUDGET, with the FULL cut', () => {
+      // This asserted the opposite until 2026-08-12, and the old expectation was
+      // the bug: an ordinary tool at 1693 must reach 1500, not 1600. Telling its
+      // author to "Cut >=93" got them to 1600 — still over budget, still red,
+      // and the blocking sibling would refuse the edit a second time after they
+      // did exactly what it asked. The binding ceiling is the one they must
+      // actually clear, so the hard cap is NOT what this message names here.
       const msg = runHook({ tool_name: 'Edit', tool_input: { file_path: join(toolDir(), 'hard.ts') } });
-      expect(msg).toContain('HARD CAP');
-      expect(msg).toContain('Cut >=93');
+      expect(msg).toContain(`${BUDGET}-char budget`);
+      expect(msg).toContain(`Cut >=${HARD_CAP + 93 - BUDGET}`);
+      // And it must NOT under-state the cut by naming the hard cap instead.
+      expect(msg).not.toContain('HARD CAP');
+      expect(msg).not.toContain('Cut >=93.');
     });
 
     it('a non-edit tool is ignored', () => {
@@ -245,10 +254,43 @@ describe('posttooluse-tool-prompt-weight-nudge', () => {
       const [v] = hook.violationsFor([{ name: 'a', weight: BUDGET + 1 }], b);
       expect(v).toMatchObject({ hardCap: false, limit: BUDGET, cutAtLeast: 1 });
     });
-    it('over the hard cap switches tier', async () => {
+    it('over the hard cap sets the TIER flag, but the ceiling stays the budget for an ordinary tool', async () => {
+      // `hardCap` and `limit` answer two different questions and used to be
+      // conflated here: hardCap is "is it ALSO past the hard cap", limit is
+      // "what must it actually reach". For a non-grandfathered tool the answer
+      // to the second is the BUDGET, so the cut is measured from there.
       const hook = await loadHook();
       const [v] = hook.violationsFor([{ name: 'a', weight: HARD_CAP + 1 }], b);
-      expect(v).toMatchObject({ hardCap: true, limit: HARD_CAP, cutAtLeast: 1 });
+      expect(v).toMatchObject({
+        hardCap: true,
+        hardCapBinding: false,
+        limit: BUDGET,
+        cutAtLeast: HARD_CAP + 1 - BUDGET,
+      });
+    });
+
+    it('the hard cap binds only for a GRANDFATHERED tool — the one case it is the ceiling', async () => {
+      // Without this, nothing exercises hardCapBinding:true and the "HARD CAP"
+      // wording in formatNudge() is unreachable by the suite — a message no test
+      // can produce is a message no test protects.
+      const hook = await loadHook();
+      const [v] = hook.violationsFor([{ name: 'g', weight: HARD_CAP + 1 }], { ...b, allowOverBudget: ['g'] });
+      expect(v).toMatchObject({
+        hardCap: true,
+        hardCapBinding: true,
+        grandfathered: true,
+        limit: HARD_CAP,
+        cutAtLeast: 1,
+      });
+      expect(hook.formatNudge([v])).toContain('HARD CAP');
+    });
+
+    it('a grandfathered tool merely over BUDGET is not a violation at all', async () => {
+      // The exemption's whole purpose. Pairs with the case above so the
+      // grandfathered path is pinned in both directions rather than only where
+      // it still fails.
+      const hook = await loadHook();
+      expect(hook.violationsFor([{ name: 'g', weight: BUDGET + 1 }], { ...b, allowOverBudget: ['g'] })).toEqual([]);
     });
   });
 });
