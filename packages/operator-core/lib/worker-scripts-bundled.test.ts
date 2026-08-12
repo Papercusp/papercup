@@ -32,7 +32,7 @@
  */
 
 import { describe, expect, it } from 'vitest';
-import { readFileSync, readdirSync, statSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync, statSync } from 'node:fs';
 import { join, relative, resolve } from 'node:path';
 
 const REPO_ROOT = resolve(__dirname, '../../..');
@@ -50,6 +50,15 @@ const BUNDLERS: { label: string; path: string }[] = [
     path:
       process.env.PROBE_DESKTOP_SCRIPT ??
       join(REPO_ROOT, 'papercusp-desktop/bin/build-desktop-sidecar.sh'),
+  },
+];
+
+/** Worker entries whose source is TypeScript and whose bundlers must run an
+ * esbuild pass instead of copying a sibling `.script.mjs` asset. */
+const ESBUILD_WORKERS: { source: string; output: string }[] = [
+  {
+    source: 'packages/operator-core/lib/event-loop-sentinel.worker.ts',
+    output: 'event-loop-sentinel.worker.mjs',
   },
 ];
 
@@ -115,6 +124,15 @@ function executableText(source: string): string {
 describe('worker scripts are staged beside every bundled entry', () => {
   const scripts = findWorkerScripts(REPO_ROOT);
 
+  it('found the known esbuild-worker population', () => {
+    const missingSources = ESBUILD_WORKERS.filter(({ source }) => !existsSync(resolve(REPO_ROOT, source)));
+
+    expect(
+      missingSources,
+      'The esbuild-worker guard must not go green because its source population disappeared.',
+    ).toEqual([]);
+  });
+
   it('found the known worker-script population', () => {
     // A zero-length scan would make every assertion below vacuously true — the
     // same zero-work false-green this repo has paid for repeatedly (a tsc run
@@ -137,6 +155,18 @@ describe('worker scripts are staged beside every bundled entry', () => {
           `every such worker has an inline fallback, so it degrades SILENTLY to main-thread ` +
           `work instead of failing. Add a copy step next to the existing ones in ` +
           `${relative(REPO_ROOT, bundler.path)}.`,
+      ).toEqual([]);
+    });
+
+    it(`stages every source esbuild worker — ${bundler.label}`, () => {
+      const executable = executableText(readFileSync(bundler.path, 'utf8'));
+
+      const missing = ESBUILD_WORKERS.filter(({ output }) => !executable.includes(output));
+
+      expect(
+        missing.map(({ source, output }) => `${source} → ${output}`),
+        `These TypeScript workers are not esbuild-staged by ${bundler.label}. ` +
+          'They cannot load in the packaged plain-node runtime when copied as .ts.',
       ).toEqual([]);
     });
   }
