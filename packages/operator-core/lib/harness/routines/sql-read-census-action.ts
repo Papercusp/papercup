@@ -71,10 +71,11 @@ export function censusRequiredFallPct(fallback = 0.3): number {
   return Number.isFinite(n) ? n : fallback;
 }
 
+/** Synthetic identity for the background census escalation (mirrors the sibling watchdogs'). */
 const CENSUS_IDENTITY: AgentIdentity = {
-  ownerId: 'system:sql-read-census',
-  role: 'system',
-  harness: null,
+  ownerId: 'sql-read-census',
+  ownerLabel: 'system · sql-read-census',
+  source: 'principal',
   workspaceId: null,
   userId: null,
 };

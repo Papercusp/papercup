@@ -41,6 +41,11 @@ const WIDGET_PAIR: SqlSubstitutionPair = {
   expectedVerdict: 'equivalent',
   corpus: 'sql',
   relation: 'widgets',
+  // The census NEVER calls cover() — it counts and clusters, and whether a verb
+  // could serve a query is the equivalence harness's job, not the census's. The
+  // envelope is required by the type, so this fixture supplies the trivial one and
+  // says so, rather than a stub that would look like a coverage claim.
+  cover: (atom: string) => ({ covered: true, expression: `widgets:list // ${atom.slice(0, 20)}` }),
 };
 
 const cluster = (over: Partial<CensusCluster> & Pick<CensusCluster, 'relation'>): CensusCluster => ({
