@@ -42,6 +42,7 @@ import { getFlag } from '@papercusp/flags/server';
 import {
   startMemoryWatchdog,
   resolveMemoryWatchdogLimitMb,
+  resolveMemoryWatchdogProactiveGcMb,
 } from '@papercusp/operator-core/lib/memory-watchdog';
 import { startEventLoopSentinel } from '@papercusp/operator-core/lib/event-loop-sentinel-host';
 import {
@@ -402,14 +403,11 @@ function startRequestServers(): void {
     // correct). Kill-switch: PAPERCUSP_MEMORY_PROACTIVE_GC=0. An explicit
     // PAPERCUSP_MEMORY_PROACTIVE_GC_MB overrides the threshold.
     const proactiveGcOff = process.env.PAPERCUSP_MEMORY_PROACTIVE_GC === '0';
-    const proactiveGcMbEnv = Number(process.env.PAPERCUSP_MEMORY_PROACTIVE_GC_MB);
     startMemoryWatchdog({
       rssLimitMb: limitMb,
       proactiveGcMb: proactiveGcOff
         ? 0
-        : Number.isFinite(proactiveGcMbEnv) && proactiveGcMbEnv > 0
-          ? proactiveGcMbEnv
-          : undefined,
+        : resolveMemoryWatchdogProactiveGcMb(process.env),
       onTrip: ({ rssMb }) => {
         // INVOCATION_ID = running under systemd (Restart=always). The tauri-dev
         // OWN-PORT operator is instead supervised by dev-operator-ifneeded.sh's

@@ -59,6 +59,17 @@ export const MEMORY_WATCHDOG_LIMIT_MB_STAGING = 10240;
 export const MEMORY_WATCHDOG_LIMIT_MB_BACKGROUND = 12288;
 
 /**
+ * Role-aware proactive-GC thresholds. These intentionally do NOT derive from
+ * `PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB`: that variable is a recycle backstop
+ * override, and raising it must not silently move the cause-side GC trigger
+ * out of reach (EI-20237116358190923).
+ */
+export const MEMORY_WATCHDOG_PROACTIVE_GC_MB_REQUEST = Math.round(MEMORY_WATCHDOG_LIMIT_MB_REQUEST * 0.6);
+export const MEMORY_WATCHDOG_PROACTIVE_GC_MB_DESKTOP = Math.round(MEMORY_WATCHDOG_LIMIT_MB_DESKTOP * 0.6);
+export const MEMORY_WATCHDOG_PROACTIVE_GC_MB_STAGING = Math.round(MEMORY_WATCHDOG_LIMIT_MB_STAGING * 0.6);
+export const MEMORY_WATCHDOG_PROACTIVE_GC_MB_BACKGROUND = Math.round(MEMORY_WATCHDOG_LIMIT_MB_BACKGROUND * 0.6);
+
+/**
  * The RSS high-water mark (MiB) THIS process should recycle at. An explicit
  * `PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB` always wins; otherwise the default is
  * role-aware (see above), so a FRESH box's bg-host — and the :3170 staging
@@ -79,6 +90,21 @@ export function resolveMemoryWatchdogLimitMb(env: NodeJS.ProcessEnv = process.en
   if (env.PAPERCUSP_HONO_PORT === '3270') return MEMORY_WATCHDOG_LIMIT_MB_DESKTOP;
   if (env.PAPERCUSP_HONO_PORT === '3170') return MEMORY_WATCHDOG_LIMIT_MB_STAGING;
   return MEMORY_WATCHDOG_LIMIT_MB_REQUEST;
+}
+
+/**
+ * Resolve the proactive-GC trigger independently from the recycle backstop.
+ * An explicit proactive-GC override wins; otherwise the process role chooses
+ * the threshold. In particular, an explicit recycle-limit override does not
+ * change this value, so a high backstop cannot disable the cause-side fix.
+ */
+export function resolveMemoryWatchdogProactiveGcMb(env: NodeJS.ProcessEnv = process.env): number {
+  const explicit = Number(env.PAPERCUSP_MEMORY_PROACTIVE_GC_MB);
+  if (Number.isFinite(explicit) && explicit > 0) return explicit;
+  if (backgroundWorkersEnabled(env)) return MEMORY_WATCHDOG_PROACTIVE_GC_MB_BACKGROUND;
+  if (env.PAPERCUSP_HONO_PORT === '3270') return MEMORY_WATCHDOG_PROACTIVE_GC_MB_DESKTOP;
+  if (env.PAPERCUSP_HONO_PORT === '3170') return MEMORY_WATCHDOG_PROACTIVE_GC_MB_STAGING;
+  return MEMORY_WATCHDOG_PROACTIVE_GC_MB_REQUEST;
 }
 
 export interface MemoryWatchdogOpts {

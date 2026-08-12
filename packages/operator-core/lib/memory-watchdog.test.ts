@@ -2,10 +2,15 @@ import { describe, it, expect, vi, afterEach, beforeEach } from 'vitest';
 import {
   startMemoryWatchdog,
   resolveMemoryWatchdogLimitMb,
+  resolveMemoryWatchdogProactiveGcMb,
   MEMORY_WATCHDOG_LIMIT_MB_BACKGROUND,
   MEMORY_WATCHDOG_LIMIT_MB_DESKTOP,
   MEMORY_WATCHDOG_LIMIT_MB_REQUEST,
   MEMORY_WATCHDOG_LIMIT_MB_STAGING,
+  MEMORY_WATCHDOG_PROACTIVE_GC_MB_BACKGROUND,
+  MEMORY_WATCHDOG_PROACTIVE_GC_MB_DESKTOP,
+  MEMORY_WATCHDOG_PROACTIVE_GC_MB_REQUEST,
+  MEMORY_WATCHDOG_PROACTIVE_GC_MB_STAGING,
 } from './memory-watchdog';
 
 describe('startMemoryWatchdog', () => {
@@ -213,6 +218,31 @@ describe('startMemoryWatchdog', () => {
     expect(exitSpy).toHaveBeenCalledWith(42);
     h.stop();
   });
+
+  it('runs proactive GC at its independent threshold while the recycle backstop remains higher', () => {
+    withRss(2500);
+    const forceGc = vi.fn();
+    const onTrip = vi.fn();
+    const log = vi.fn();
+    const h = startMemoryWatchdog({
+      intervalMs: 1000,
+      rssLimitMb: 12288,
+      proactiveGcMb: 1920,
+      gcCooldownMs: 0,
+      forceGc,
+      onTrip,
+      log,
+    });
+
+    vi.advanceTimersByTime(1000);
+    expect(forceGc).toHaveBeenCalledTimes(1);
+    expect(onTrip).not.toHaveBeenCalled();
+    expect(log).toHaveBeenCalledWith(
+      '[memory-watchdog] proactive GC (heap kept out of the stall zone)',
+      expect.objectContaining({ proactiveGcMb: 1920, rssLimitMb: 12288 }),
+    );
+    h.stop();
+  });
 });
 
 describe('resolveMemoryWatchdogLimitMb (EI-1613 — role-aware RSS default)', () => {
@@ -280,5 +310,50 @@ describe('resolveMemoryWatchdogLimitMb (EI-1613 — role-aware RSS default)', ()
     expect(resolveMemoryWatchdogLimitMb(bg({ PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB: '0' }))).toBe(12288);
     expect(resolveMemoryWatchdogLimitMb(bg({ PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB: '-1' }))).toBe(12288);
     expect(resolveMemoryWatchdogLimitMb(bg({ PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB: 'nonsense' }))).toBe(12288);
+  });
+});
+
+describe('resolveMemoryWatchdogProactiveGcMb (EI-20237116358190923)', () => {
+  const bg = (over: Record<string, string> = {}) =>
+    ({ PAPERCUSP_BACKGROUND_WORKERS: '1', ...over }) as unknown as NodeJS.ProcessEnv;
+  const req = (over: Record<string, string> = {}) =>
+    ({ PAPERCUSP_BACKGROUND_WORKERS: '0', ...over }) as unknown as NodeJS.ProcessEnv;
+
+  it('keeps the background proactive-GC trigger at its role tier when the recycle backstop is raised', () => {
+    expect(
+      resolveMemoryWatchdogProactiveGcMb(bg({ PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB: '32768' })),
+    ).toBe(MEMORY_WATCHDOG_PROACTIVE_GC_MB_BACKGROUND);
+  });
+
+  it('keeps request-worker proactive GC at its role tier when the recycle backstop is raised', () => {
+    expect(
+      resolveMemoryWatchdogProactiveGcMb(req({ PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB: '12288' })),
+    ).toBe(MEMORY_WATCHDOG_PROACTIVE_GC_MB_REQUEST);
+  });
+
+  it('selects desktop and staging proactive-GC tiers by port', () => {
+    expect(resolveMemoryWatchdogProactiveGcMb(req({ PAPERCUSP_HONO_PORT: '3270' }))).toBe(
+      MEMORY_WATCHDOG_PROACTIVE_GC_MB_DESKTOP,
+    );
+    expect(resolveMemoryWatchdogProactiveGcMb(req({ PAPERCUSP_HONO_PORT: '3170' }))).toBe(
+      MEMORY_WATCHDOG_PROACTIVE_GC_MB_STAGING,
+    );
+  });
+
+  it('honors an explicit proactive-GC threshold override without coupling it to the recycle limit', () => {
+    expect(
+      resolveMemoryWatchdogProactiveGcMb(
+        bg({ PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB: '32768', PAPERCUSP_MEMORY_PROACTIVE_GC_MB: '6000' }),
+      ),
+    ).toBe(6000);
+  });
+
+  it('falls back to the role tier for a non-positive or invalid proactive-GC override', () => {
+    expect(resolveMemoryWatchdogProactiveGcMb(bg({ PAPERCUSP_MEMORY_PROACTIVE_GC_MB: '0' }))).toBe(
+      MEMORY_WATCHDOG_PROACTIVE_GC_MB_BACKGROUND,
+    );
+    expect(resolveMemoryWatchdogProactiveGcMb(bg({ PAPERCUSP_MEMORY_PROACTIVE_GC_MB: 'nope' }))).toBe(
+      MEMORY_WATCHDOG_PROACTIVE_GC_MB_BACKGROUND,
+    );
   });
 });
