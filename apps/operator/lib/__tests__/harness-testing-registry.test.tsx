@@ -24,6 +24,7 @@ import HarnessTestsView from '../../app/adv/harnesses/HarnessTestsView';
 // per-test via this mutable slot instead of stubbing global fetch for the GET.
 let syncQueryResult: { data: unknown; loading: boolean; error: Error | null } = { data: undefined, loading: true, error: null };
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: () => ({ ...syncQueryResult, fetching: syncQueryResult.loading, invalidate: vi.fn() }),
 }));
 

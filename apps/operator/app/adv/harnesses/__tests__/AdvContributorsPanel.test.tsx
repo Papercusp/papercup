@@ -15,6 +15,7 @@ const syncState = vi.hoisted(() => ({
   contributors: [] as unknown[],
 }));
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName }: { queryName: string }) => ({
     data: queryName === 'contributors.byHarness' ? syncState.contributors : null,
     loading: false,

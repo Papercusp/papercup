@@ -25,6 +25,7 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: (q: { queryName: string; args: unknown }) => {
     h.lastQuery = q;
     return { data: h.liveData, loading: false };

@@ -19,6 +19,7 @@ interface SyncState { loading?: boolean; fetching?: boolean; data?: unknown; err
 let wiState: SyncState;
 const invalidateMock = vi.fn();
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName }: { queryName: string }) => {
     if (queryName === 'trust.list') return { data: [], loading: false, fetching: false, error: null, invalidate: vi.fn() };
     return { ...wiState, invalidate: invalidateMock };

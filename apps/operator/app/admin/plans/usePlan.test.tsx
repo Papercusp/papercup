@@ -27,6 +27,7 @@ const syncCalls: SyncCall[] = [];
 let syncRows: unknown[] = [];
 const invalidateSpy = vi.fn();
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: (opts: SyncCall) => {
     syncCalls.push(opts);
     if (opts.enabled === false) {

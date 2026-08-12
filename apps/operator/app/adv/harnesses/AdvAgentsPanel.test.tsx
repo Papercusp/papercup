@@ -21,6 +21,7 @@ interface SyncState { loading?: boolean; fetching?: boolean; data?: unknown; err
 let workingState: SyncState;
 const invalidateMock = vi.fn();
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: () => ({ ...workingState, invalidate: invalidateMock }),
 }));
 vi.mock('@papercusp/grid-core', () => ({

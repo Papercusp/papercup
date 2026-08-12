@@ -26,6 +26,7 @@ const { syncPrefs } = vi.hoisted(() => ({
   },
 }));
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName }: { queryName: string }) => ({
     data: queryName === 'userPreferences.current' ? syncPrefs.userRows : syncPrefs.workspaceRows,
     loading: false,

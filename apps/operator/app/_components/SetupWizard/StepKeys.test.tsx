@@ -14,6 +14,7 @@ const syncFixture = vi.hoisted(() => ({
 }));
 
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: () => ({
     data: syncFixture.rows,
     loading: false,

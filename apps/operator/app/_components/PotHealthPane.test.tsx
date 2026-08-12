@@ -19,6 +19,7 @@ const h = vi.hoisted(() => ({
 }));
 
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: (opts: { queryName: string }) => {
     h.queryNames.push(opts.queryName);
     return { data: h.queries[opts.queryName]?.data };

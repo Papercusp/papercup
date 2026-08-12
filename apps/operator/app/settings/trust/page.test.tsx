@@ -19,6 +19,7 @@ const { mutateMock, toastFn } = vi.hoisted(() => ({
 }));
 let trustResult: Record<string, unknown> = { data: [], loading: false, error: null };
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: () => trustResult,
   useSyncMutate: () => mutateMock,
 }));

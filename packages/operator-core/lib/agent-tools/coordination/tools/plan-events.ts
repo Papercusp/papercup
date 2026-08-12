@@ -79,7 +79,6 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
-    since_ts: z.string().optional(),
     plan_slug: z.string().optional(),
     files_back: z
       .number()

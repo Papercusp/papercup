@@ -18,6 +18,7 @@ import type { HarnessListing } from '@papercusp/operator-core/lib/cupboard/types
 /* ── Mocks ─────────────────────────────────────────────────────────── */
 let syncData: Record<string, unknown[]>;
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: (opts: { queryName: string }) => ({
     data: syncData[opts.queryName] ?? [],
     error: null,

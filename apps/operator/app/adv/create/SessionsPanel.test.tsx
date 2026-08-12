@@ -27,6 +27,7 @@ const useSyncQueryMock = vi.fn().mockReturnValue({
   invalidate: () => {},
 });
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: (opts: unknown) => useSyncQueryMock(opts),
 }));
 

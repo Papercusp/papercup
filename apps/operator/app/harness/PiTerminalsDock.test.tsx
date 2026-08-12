@@ -71,7 +71,7 @@ vi.mock('@papercusp/operator-core/lib/browser-workspace', () => ({
   wsLocalKey: (k: string) => k,
   getBrowserWorkspaceId: () => 'default',
 }));
-vi.mock('@papercusp/sync', () => ({ fetchSyncQuery: vi.fn(async () => []) }));
+vi.mock('@papercusp/sync', () => ({ onSyncBusEvent: () => () => {}, fetchSyncQuery: vi.fn(async () => []) }));
 vi.mock('./PiPanel', () => ({ default: () => null }));
 vi.mock('./ChatPanel', () => ({ default: () => null }));
 vi.mock('./Tooltip', () => ({

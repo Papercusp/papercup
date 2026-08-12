@@ -16,6 +16,7 @@ import { cleanup, render, screen, waitFor } from '@testing-library/react';
 /* ── Mocks ─────────────────────────────────────────────────────────── */
 let syncResult: { data: unknown[] | undefined };
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: () => ({ data: syncResult.data, loading: false, error: null, fetching: false, invalidate: vi.fn() }),
 }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));

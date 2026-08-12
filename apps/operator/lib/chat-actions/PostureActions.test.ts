@@ -8,6 +8,7 @@ import type { ChatActionContext, ChatModeAction, ChatModeOption } from './types'
 // this file keeps testing descriptors rather than the sync layer.
 const fetchSyncQueryMock = vi.fn();
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   fetchSyncQuery: (...args: unknown[]) => fetchSyncQueryMock(...args) as unknown,
 }));
 

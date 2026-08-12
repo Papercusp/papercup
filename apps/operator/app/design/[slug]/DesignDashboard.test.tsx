@@ -29,6 +29,7 @@ const { syncRows, detailArgsSeen, invalidateMock } = vi.hoisted(() => ({
 }));
 
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: ({
     queryName,
     args,

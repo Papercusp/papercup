@@ -20,6 +20,7 @@ const mutateFn = vi.fn(async (args: unknown) => {
 });
 
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName }: { queryName: string }) => ({
     data: FIXTURES[queryName] ?? [],
     error: null,

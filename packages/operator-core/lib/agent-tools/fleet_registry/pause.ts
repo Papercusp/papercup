@@ -15,7 +15,7 @@ export default defineTool({
     'PAUSE a named fleet — an ALIAS of fleet:wind-down: the same typed, binding control state (registry control_state=winding-down) + fleet-scoped member cue. Invokers: the owner (su session), THAT fleet\'s leader, or the queen. Lift with fleet:resume.',
   guidance: {
     when: "You'd say 'pause the fleet' — same semantics as fleet:wind-down.",
-    notWhen: 'To pause the Mug/pot — pot:pause. To pause the Kettle — kettle:pause. To pause one plan — plans:pause.',
+    notWhen: 'To pause the Mug/pot — pot:pause. To pause one plan — plans:pause.',
     chaining: ROUTING_LADDER,
     seeAlso: ['fleet:wind-down (the canonical verb)', 'fleet:resume (lift it)'],
   },

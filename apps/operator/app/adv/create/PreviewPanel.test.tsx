@@ -36,6 +36,7 @@ vi.mock('nuqs', () => ({
 
 // The decision.ledger sync query is irrelevant to ?item/?other routing — stub it.
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: () => ({ data: [] }),
 }));
 

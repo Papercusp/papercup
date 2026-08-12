@@ -28,6 +28,7 @@ vi.mock('nuqs', () => ({
   parseAsString: { withDefault: (d: unknown) => ({ _d: d }) },
 }));
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: () => ({ data: sessionRows.value, loading: false, error: null, invalidate: vi.fn() }),
 }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));

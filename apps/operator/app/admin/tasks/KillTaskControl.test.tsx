@@ -34,6 +34,7 @@ const H = vi.hoisted(() => ({
 }));
 
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncMutate: (_path: string, _rest: unknown) => async (args: unknown) => {
     H.calls.push(args);
     return H.reply;

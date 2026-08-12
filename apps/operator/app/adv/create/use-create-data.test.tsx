@@ -35,6 +35,7 @@ import { withNuqsTestingAdapter } from 'nuqs/adapters/testing';
 let registryRows: unknown[] | undefined;
 let registryQueryArgs: unknown;
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName, args }: { queryName: string; args?: unknown }) => {
     if (queryName === 'harnessProjects.lite') {
       registryQueryArgs = args;

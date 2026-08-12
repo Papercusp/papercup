@@ -16,6 +16,7 @@ const syncState = vi.hoisted(() => ({
   invalidate: vi.fn(),
 }));
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: ({ enabled }: { enabled?: boolean }) => ({
     data: enabled ? syncState.members.map((workspaceId) => ({ workspaceId })) : null,
     loading: false,

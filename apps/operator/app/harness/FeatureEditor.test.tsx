@@ -14,6 +14,7 @@ const { audit, confirmState } = vi.hoisted(() => ({
   confirmState: { answer: true },
 }));
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: () => ({ data: audit.data, loading: false, error: null }),
 }));
 vi.mock('./useConfirmDialog', () => ({

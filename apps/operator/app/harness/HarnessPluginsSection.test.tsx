@@ -24,6 +24,7 @@ import type { ReactElement } from 'react';
 let enabledRows: unknown[];
 let configRows: unknown[];
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName }: { queryName: string }) => {
     const data = queryName === 'pluginEnables.byWorkspace' ? enabledRows
       : queryName === 'pluginConfigs.byHarness' ? configRows

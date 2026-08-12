@@ -20,6 +20,7 @@ vi.mock('sonner', () => ({ toast: { error: (...args: unknown[]) => toastError(..
 
 let syncRows: Array<{ id: string; title: string; state: string }> = [];
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: () => ({ data: syncRows, loading: false, fetching: false, error: null, invalidate: vi.fn() }),
 }));
 

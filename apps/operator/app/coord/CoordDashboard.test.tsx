@@ -18,6 +18,7 @@ const { syncRows, syncErrors } = vi.hoisted(() => ({
 }));
 vi.mock('@/lib/use-workspace-id', () => ({ useWorkspaceId: () => 'default' }));
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName }: { queryName: string }) => {
     const key = queryName === 'dev.coordPresence' ? 'presence' : queryName === 'coord.inbox' ? 'inbox' : 'plans';
     return { data: syncRows[key], error: syncErrors[key], loading: false, fetching: false, invalidate: vi.fn() };

@@ -33,6 +33,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 
 let offlineState = true; // start offline: a live operator would clear `dead`
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncConnectivity: () => ({ offline: offlineState }),
 }));
 

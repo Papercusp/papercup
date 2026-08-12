@@ -26,6 +26,7 @@ const syncState = new Map<string, SyncState>();
 const invalidates = new Map<string, ReturnType<typeof vi.fn>>();
 
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName }: { queryName: string }) => ({
     ...(syncState.get(queryName) ?? { data: undefined, loading: false }),
     error: syncState.get(queryName)?.error ?? null,

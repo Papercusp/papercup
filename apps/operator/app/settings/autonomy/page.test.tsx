@@ -15,6 +15,7 @@ const mutateMock = vi.fn(async () => ({ ok: true }));
 let syncResult: { data: unknown[]; loading: boolean; error: Error | null };
 
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   // queryName-aware: the policy table gets ROWS; the recent-auto-decisions feed
   // (decision.ledger, B-13/P-113) gets its own empty result so it renders its
   // empty state rather than mis-rendering policy rows as decision rows.

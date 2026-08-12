@@ -22,6 +22,7 @@ import type { ReactElement } from 'react';
 /* ── Mocks ─────────────────────────────────────────────────────────── */
 const syncState = new Map<string, { data: unknown[] | undefined; loading?: boolean }>();
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName }: { queryName: string }) => ({
     data: syncState.get(queryName)?.data,
     error: null,

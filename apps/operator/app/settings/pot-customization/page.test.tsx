@@ -14,6 +14,7 @@ const mutateMock = vi.fn(async () => ({ ok: true }));
 let hiveList: unknown[] = [];
 let overrideRows: unknown[] = [];
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: (opts?: { queryName?: string }) =>
     opts?.queryName === 'learning.hiveList'
       ? { data: hiveList, loading: false, error: null }

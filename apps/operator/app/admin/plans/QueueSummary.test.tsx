@@ -12,6 +12,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 /* ── Mocks ─────────────────────────────────────────────────────────── */
 let syncResult: { data: unknown[] };
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: () => ({ ...syncResult, error: null, fetching: false, loading: false, invalidate: vi.fn() }),
 }));
 

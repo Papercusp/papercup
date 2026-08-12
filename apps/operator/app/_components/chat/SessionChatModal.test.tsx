@@ -157,6 +157,7 @@ const H = vi.hoisted(() => ({
 }));
 const attentionInvalidate = vi.fn();
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName }: { queryName: string }) =>
     H.results[queryName] ?? { data: [], loading: false, fetching: false, error: null, invalidate: vi.fn() },
 }));

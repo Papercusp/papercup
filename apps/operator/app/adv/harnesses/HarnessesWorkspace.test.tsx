@@ -15,6 +15,7 @@ import type { ReactElement } from 'react';
 /* ── Mocks ─────────────────────────────────────────────────────────── */
 let syncResult: { data: unknown[]; error: Error | null };
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: () => ({ ...syncResult, loading: false, fetching: false, invalidate: vi.fn() }),
 }));
 // Passthrough lexicon that honours the plural option so the empty-state copy

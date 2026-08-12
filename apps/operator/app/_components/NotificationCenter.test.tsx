@@ -16,6 +16,7 @@ const { sync, confirmState } = vi.hoisted(() => ({
 }));
 
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: () => ({
     data: sync.data,
     loading: sync.loading,

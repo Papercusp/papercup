@@ -29,6 +29,7 @@ const syncState = vi.hoisted(() => ({
   lastEnabled: undefined as boolean | undefined,
 }));
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: ({ args, enabled }: { args?: unknown; enabled?: boolean }) => {
     syncState.lastArgs = args;
     syncState.lastEnabled = enabled;

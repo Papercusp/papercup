@@ -49,6 +49,7 @@ const syncState = vi.hoisted(() => ({
   orders: null as AgentOrdersDTO | null,
 }));
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: (opts: { enabled?: boolean }) => ({
     data: opts.enabled === false || !syncState.orders ? null : [syncState.orders],
     loading: false,

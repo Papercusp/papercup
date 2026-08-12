@@ -40,6 +40,7 @@ vi.mock('./plans-api', () => ({
 }));
 
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: (opts: { queryName: string }) => {
     if (opts.queryName === 'featureTimeline.byFeature') {
       return { data: featureTimelineEvents, error: null, fetching: false, loading: false, invalidate: vi.fn() };

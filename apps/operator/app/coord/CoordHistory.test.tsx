@@ -16,6 +16,7 @@ const { feed, syncCalls, invalidateSpy } = vi.hoisted(() => ({
   invalidateSpy: vi.fn(),
 }));
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: (opts: { args?: Record<string, unknown> }) => {
     syncCalls.push(opts);
     return { data: feed.items, loading: false, fetching: false, error: feed.error, invalidate: invalidateSpy };

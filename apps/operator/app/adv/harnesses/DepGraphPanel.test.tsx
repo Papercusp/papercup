@@ -30,6 +30,7 @@ interface SyncState {
 let itemsState: SyncState;
 let edgesState: SyncState;
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName }: { queryName: string }) =>
     queryName === 'workItems.depEdges'
       ? { ...edgesState, invalidate: vi.fn() }

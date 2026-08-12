@@ -54,6 +54,7 @@ vi.mock('./plans-api', async (importActual) => {
 // rows; decision.ledger (Queen's-log) → an empty list. Both return the flat
 // row-array shape the resolvers emit.
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName }: { queryName: string }) => ({
     data: queryName === 'harnessProjects.lite' ? registryRows : [],
     error: null,

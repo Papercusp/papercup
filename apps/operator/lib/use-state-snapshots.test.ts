@@ -23,6 +23,7 @@ vi.mock('@papercusp/sse', () => ({
 const reportReachable = vi.fn();
 const reportUnreachable = vi.fn();
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   reportSyncReachable: () => reportReachable(),
   reportSyncUnreachable: () => reportUnreachable(),
 }));

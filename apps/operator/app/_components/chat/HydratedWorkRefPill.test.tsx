@@ -16,6 +16,7 @@ const { syncResults, syncCalls } = vi.hoisted(() => ({
 }));
 
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: (opts: { queryName: string; enabled?: boolean; args?: unknown }) => {
     syncCalls.push({ queryName: opts.queryName, enabled: opts.enabled, args: opts.args });
     const enabled = opts.enabled !== false;

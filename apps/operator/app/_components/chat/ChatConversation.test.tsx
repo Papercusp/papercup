@@ -36,6 +36,7 @@ vi.mock('@tanstack/react-virtual', () => ({
 // live rows needed for these tests (rendering/no-linkify/activation, not
 // hydration itself, which HydratedWorkRefPill.test.tsx already covers).
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: () => ({ data: [], loading: false, fetching: false, transport: 'sse' as const, invalidate: () => {}, error: null }),
 }));
 

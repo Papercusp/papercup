@@ -21,6 +21,7 @@ import type { ReactElement } from 'react';
 /* ── Mocks ─────────────────────────────────────────────────────────── */
 let syncResult: { data: unknown[] };
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: () => ({ ...syncResult, error: null, loading: false, fetching: false, invalidate: vi.fn() }),
 }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));

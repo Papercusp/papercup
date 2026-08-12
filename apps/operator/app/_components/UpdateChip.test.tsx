@@ -44,6 +44,7 @@ vi.mock('@tauri-apps/api/event', () => ({
 // Operator connectivity — drives the background-check gate. Default online.
 let offlineState = false;
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncConnectivity: () => ({ offline: offlineState }),
 }));
 

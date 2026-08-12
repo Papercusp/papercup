@@ -24,6 +24,7 @@ type SyncCall = { queryName: string; enabled?: boolean; args?: Record<string, un
 const { syncCalls } = vi.hoisted(() => ({ syncCalls: [] as SyncCall[] }));
 
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: (opts: { queryName: string; enabled?: boolean; args?: Record<string, unknown> }) => {
     syncCalls.push({ queryName: opts.queryName, enabled: opts.enabled, args: opts.args });
     const enabled = opts.enabled !== false;

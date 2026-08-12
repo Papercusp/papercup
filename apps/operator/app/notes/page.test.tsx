@@ -22,6 +22,7 @@ vi.mock('nuqs', async () => {
 
 let syncResult: { data: unknown[]; loading: boolean };
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: () => ({ ...syncResult, error: null, fetching: false, invalidate: vi.fn() }),
 }));
 

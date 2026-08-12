@@ -15,6 +15,7 @@ const { syncState, invalidateSpy } = vi.hoisted(() => ({
   invalidateSpy: vi.fn(),
 }));
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: () => ({ ...syncState, invalidate: invalidateSpy }),
 }));
 

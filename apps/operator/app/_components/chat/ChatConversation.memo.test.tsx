@@ -54,6 +54,7 @@ vi.mock('@tanstack/react-virtual', () => {
 });
 
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: () => ({
     data: [], loading: false, fetching: false, transport: 'sse' as const, invalidate: () => {}, error: null,
   }),

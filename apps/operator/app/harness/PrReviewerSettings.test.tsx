@@ -40,6 +40,7 @@ const syncMock = vi.hoisted(() => ({
   mutate: vi.fn(async (_args: unknown) => ({ ok: true })),
 }));
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: () => syncMock.result,
   useSyncMutate: () => syncMock.mutate,
 }));

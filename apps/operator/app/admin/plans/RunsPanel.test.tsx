@@ -15,6 +15,7 @@ import type { ReactElement } from 'react';
 /* ── Mocks ─────────────────────────────────────────────────────────── */
 let syncResult: { data: unknown[]; loading: boolean };
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: () => ({ ...syncResult, error: null, fetching: false, invalidate: vi.fn() }),
 }));
 // RichGrid is a heavy virtualized grid; stub it to a simple list so we can

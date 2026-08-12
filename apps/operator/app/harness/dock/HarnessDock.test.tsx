@@ -64,7 +64,7 @@ vi.mock('../useConfirmDialog', () => ({
   useConfirmDialog: () => ({ confirm: appMocks.confirm, element: null }),
 }));
 vi.mock('@/lib/use-workspace-id', () => ({ useWorkspaceId: () => 'default' }));
-vi.mock('@papercusp/sync', () => ({ fetchSyncQuery: vi.fn(async () => []) }));
+vi.mock('@papercusp/sync', () => ({ onSyncBusEvent: () => () => {}, fetchSyncQuery: vi.fn(async () => []) }));
 
 // P-006 perf-marks wiring: spy begin/end, keep the real PERF_INTERACTIONS names.
 const perfMarks = vi.hoisted(() => ({ begin: vi.fn(), end: vi.fn() }));

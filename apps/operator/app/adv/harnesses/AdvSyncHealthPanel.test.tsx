@@ -19,6 +19,7 @@ const recentQueries = vi.fn();
 const readIpcStatus = vi.fn();
 
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   syncMetrics: {
     snapshot: () => snapshot(),
     recentQueries: () => recentQueries(),

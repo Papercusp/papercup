@@ -52,6 +52,7 @@ vi.mock('nuqs', () => ({
   parseAsBoolean: { withDefault: (d: unknown) => ({ _d: d }) },
 }));
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: () => ({ data: rosterData.value, loading: false, error: null, invalidate: vi.fn() }),
 }));
 vi.mock('@/app/harness/Tooltip', () => ({ Tooltip: ({ children }: { children: React.ReactNode }) => <>{children}</> }));

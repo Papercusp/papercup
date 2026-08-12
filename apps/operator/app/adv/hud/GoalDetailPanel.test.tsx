@@ -90,6 +90,7 @@ let rosterResult: { data: unknown[] | null; loading: boolean; error: unknown } =
   error: null,
 };
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: (opts: { queryName: string; args?: Record<string, unknown>; enabled?: boolean }) => {
     syncCalls.push(opts);
     const result = opts.queryName === 'advRoster.list' ? rosterResult : syncResult;

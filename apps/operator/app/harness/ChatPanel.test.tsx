@@ -27,6 +27,7 @@ let syncRows: Array<Record<string, unknown>> = [];
 let syncLoading = false;
 const invalidateSpy = vi.fn();
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: () => ({
     data: syncRows,
     loading: syncLoading,
