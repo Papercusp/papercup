@@ -415,6 +415,13 @@ export function buildCallToolParams(toolName, callArgs) {
 // output for a minute looks indistinguishable from a dead operator.
 export const PTOOL_LIST_TOOLS_TIMEOUT_MS = 10_000;
 
+// A named tools/call can otherwise inherit the MCP SDK's 60s timeout, and a
+// saturated default operator route can produce no output at all while that
+// request is outstanding. Keep the CLI liveness bound below the observed
+// stand-down failure window; callers can still opt out for a deliberately
+// long-running call by passing timeoutMs: 0 to the exported helper.
+export const PTOOL_CALL_TOOL_TIMEOUT_MS = 30_000;
+
 /**
  * P-010 admission control may reject a tools/call before dispatch when the
  * operator event loop is critically saturated. That refusal is explicitly
@@ -430,12 +437,23 @@ export function isLoopPressureShed(error) {
 export async function callToolWithPressureRetry(
   client,
   params,
-  { maxAttempts = 30, retryDelayMs = 1_000, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {},
+  {
+    maxAttempts = 30,
+    retryDelayMs = 1_000,
+    timeoutMs = PTOOL_CALL_TOOL_TIMEOUT_MS,
+    sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  } = {},
 ) {
   let lastError;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
     try {
-      return await client.callTool(params);
+      return await client.callTool(
+        params,
+        undefined,
+        timeoutMs > 0
+          ? { timeout: timeoutMs, maxTotalTimeout: timeoutMs }
+          : undefined,
+      );
     } catch (error) {
       lastError = error;
       if (!isLoopPressureShed(error) || attempt === maxAttempts) throw error;

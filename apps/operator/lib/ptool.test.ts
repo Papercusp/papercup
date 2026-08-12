@@ -14,6 +14,7 @@ import {
   buildCallToolParams,
   listAllTools,
   PTOOL_LIST_TOOLS_TIMEOUT_MS,
+  PTOOL_CALL_TOOL_TIMEOUT_MS,
   isLoopPressureShed,
   callToolWithPressureRetry,
   connectWithLocalRetry,
@@ -170,6 +171,29 @@ describe('ptool invocation output mode (EI-20202581520430575)', () => {
 });
 
 describe('ptool loop-pressure admission retry (EI-20209060351693879)', () => {
+  it('bounds every tools/call request so a saturated operator cannot hang the CLI indefinitely', async () => {
+    const result = { content: [{ type: 'text', text: '{"ok":true}' }] };
+    const params = { name: 'coord:send', arguments: {} };
+    const callTool = vi.fn().mockResolvedValue(result);
+
+    await expect(callToolWithPressureRetry({ callTool }, params)).resolves.toBe(result);
+    expect(callTool).toHaveBeenCalledWith(
+      params,
+      undefined,
+      { timeout: PTOOL_CALL_TOOL_TIMEOUT_MS, maxTotalTimeout: PTOOL_CALL_TOOL_TIMEOUT_MS },
+    );
+  });
+
+  it('allows an explicitly unbounded tools/call request for a caller-owned long-running operation', async () => {
+    const result = { content: [{ type: 'text', text: '{"ok":true}' }] };
+    const callTool = vi.fn().mockResolvedValue(result);
+
+    await expect(
+      callToolWithPressureRetry({ callTool }, { name: 'testing:run', arguments: {} }, { timeoutMs: 0 }),
+    ).resolves.toBe(result);
+    expect(callTool).toHaveBeenCalledWith({ name: 'testing:run', arguments: {} }, undefined, undefined);
+  });
+
   it('recognizes only the pre-dispatch critical-pressure shed signal', () => {
     expect(isLoopPressureShed(new Error('retryable: loop_pressure_critical'))).toBe(true);
     expect(isLoopPressureShed(new Error('operator event loop critically saturated — request shed'))).toBe(true);
