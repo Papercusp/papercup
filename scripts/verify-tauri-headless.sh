@@ -767,8 +767,36 @@ wait_owned_ports_free() {
     port_is_listening "$port" && log "WARNING: :$port still held after ${PORT_STRAGGLER_WAIT}s at teardown — releasing the advisory lock anyway; a display-reusing run may collide (EI-11559)."
   done
 }
+
+# EI-20237827969985420: a signal arriving during the boot poll used to enter
+# teardown through the EXIT/INT/TERM trap with `$?` still equal to the last
+# successful `sleep`/log command. That made the same killed run report either
+# exit=0 or the signal code depending on which command happened to be active,
+# and the signal trap's `exit` then re-entered the EXIT trap for a duplicate
+# teardown. Keep signal disposition separate from ordinary command status, and
+# let the one EXIT trap own cleanup.
+SIGNAL_EXIT_CODE=0
+signal_exit_code() {
+  case "$1" in
+    HUP) printf '129\n' ;;
+    INT) printf '130\n' ;;
+    TERM) printf '143\n' ;;
+    *) printf '1\n' ;;
+  esac
+}
+handle_signal() {
+  SIGNAL_EXIT_CODE="$(signal_exit_code "$1")"
+  # The EXIT trap below performs cleanup exactly once. Reset signal traps before
+  # leaving this handler so an exit during teardown cannot recurse through it.
+  trap - INT TERM HUP
+  exit "$SIGNAL_EXIT_CODE"
+}
 teardown() {
   local ec=$?
+  [ "$SIGNAL_EXIT_CODE" -ne 0 ] && ec="$SIGNAL_EXIT_CODE"
+  # Cleanup can itself run commands which receive a signal. Disable all traps
+  # before the first side effect so the EXIT path cannot run twice.
+  trap - EXIT INT TERM HUP
   log "tearing down (exit=$ec)"
   write_stop_script
   "$WORK/stop.sh" >/dev/null 2>&1 || true
@@ -800,7 +828,10 @@ teardown() {
 # kills Xvfb; WebKit then exits with XIO and the "ready" desktop disappears
 # before the caller's first tauri-agent-tools command (WI-4975).
 XVFB_PID="$(start_verify_process "${VERIFY_SCOPE_BASE}-xvfb" "$WORK/xvfb.log" Xvfb ":$DISPLAY_NUM" -screen 0 1920x1080x24 -nolisten tcp)"
-trap teardown EXIT INT TERM
+trap teardown EXIT
+trap 'handle_signal INT' INT
+trap 'handle_signal TERM' TERM
+trap 'handle_signal HUP' HUP
 sleep 1
 DISPLAY=":$DISPLAY_NUM" xdpyinfo >/dev/null 2>&1 || { echo "FATAL: Xvfb :$DISPLAY_NUM never came up — see $WORK/xvfb.log" >&2; exit 1; }
 OPENBOX_PID="$(start_verify_process "${VERIFY_SCOPE_BASE}-openbox" "$WORK/openbox.log" env DISPLAY=":$DISPLAY_NUM" openbox)"
