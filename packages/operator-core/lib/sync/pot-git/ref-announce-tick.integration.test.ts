@@ -14,6 +14,7 @@ import { tmpdir } from 'node:os';
 import { generateEd25519KeypairDer, signWithPrivateKeyDer } from '../../identity/ed25519';
 import { defaultRunGit, ensurePotGitRepo, writeNamespaceRef, readNamespaceRef } from './storage';
 import { readSigrefs } from './sigrefs';
+import { HANDOFF_REF, publishHandoffToken } from './handoff-token';
 import { serveUploadPack } from './fetch-transport';
 import { Duplex } from 'node:stream';
 import { buildRefAnnouncement, type SignedRefAnnouncement } from './ref-announce';
@@ -162,6 +163,45 @@ describe('ref-announce-tick (P-202 runtime driver)', () => {
       });
       expect(out.changed).toBe(true);
       expect(out.announcement?.version).toBe(2);
+    });
+
+    it('P-505: announces a handoff-token ref written after the prior sigrefs snapshot', async () => {
+      const devHandoff = mkDevice();
+      const staging = await mintCommit(repoB, 'handoff staging');
+      await writeNamespaceRef(repoB, devHandoff.pubkeyBase64, 'refs/heads/staging', staging);
+
+      const initial = await runRefAnnouncePublishTick({
+        repoPath: repoB,
+        devicePubkeyBase64: devHandoff.pubkeyBase64,
+        sign: devHandoff.sign,
+        nowMs: 20_000,
+      });
+      expect(initial.changed).toBe(true);
+      expect(initial.announcement?.version).toBe(1);
+
+      await publishHandoffToken(
+        repoB,
+        devHandoff.pubkeyBase64,
+        { epoch: 83, seq: 46, stagingSha: staging, nowMs: 21_000 },
+        devHandoff.sign,
+      );
+      expect(await readNamespaceRef(repoB, devHandoff.pubkeyBase64, HANDOFF_REF)).toBeTruthy();
+
+      const refreshed = await runRefAnnouncePublishTick({
+        repoPath: repoB,
+        devicePubkeyBase64: devHandoff.pubkeyBase64,
+        sign: devHandoff.sign,
+        nowMs: 22_000,
+      });
+      expect(refreshed.changed).toBe(true);
+      expect(refreshed.refused).toBeNull();
+      expect(refreshed.announcement?.version).toBe(2);
+      expect((await readSigrefs(repoB, devHandoff.pubkeyBase64))?.refs).toEqual(
+        expect.arrayContaining([
+          { ref: 'refs/heads/staging', sha: staging },
+          { ref: HANDOFF_REF, sha: expect.any(String) },
+        ]),
+      );
     });
 
     it('G-10: refuses a publish whose new blob contains a secret — no version bump, no announcement, and a repeat attempt refuses again (never wedges, never silently admits)', async () => {
