@@ -11,6 +11,8 @@
  */
 import { describe, expect, it } from "vitest";
 import { PAYLOAD_TIER_HARD_CEILING_CHARS } from "@papercusp/agent-mcp";
+import { CHARS_PER_TOKEN_ESTIMATE } from "../../context-doors";
+import { RESULT_DOOR_TOKENS } from "../../result-door";
 import { shapeWorkItemsGet } from "./get-shape";
 
 type Envelope = {
@@ -130,6 +132,33 @@ describe("shapeWorkItemsGet — the checkpoint is the payload, degraded last", (
 });
 
 describe("shapeWorkItemsGet — bulk reads stay under the transport ceiling", () => {
+  it("keeps a default single-item read below the MCP result-door budget", () => {
+    const out = shapeWorkItemsGet(
+      envelope([
+        row({
+          checkpoint: "C".repeat(5_000),
+          holder: {
+            goalRef: "EI-20243922284675857",
+            goalText: "The holder is actively fixing the default read overflow.",
+            assumptions: { count: 1, keys: ["launch-provenance"] },
+            declaredAt: "2026-08-12T10:56:00.000Z",
+            stale: false,
+            agreement: "sole",
+            competing: [],
+          },
+        }),
+      ]),
+      "trimmed",
+    ) as Envelope;
+    const serialized = JSON.stringify(out);
+
+    // The real MCP result door measures this same serialized text and spills
+    // anything over its universal floor. The shaper must leave valid JSON for
+    // the door, rather than relying on the door's lossy footer after the fact.
+    expect(serialized).toMatch(/^\{[\s\S]*\}$/);
+    expect(serialized.length).toBeLessThanOrEqual(RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE);
+  });
+
   it("bounds a 100-id read below the hard ceiling while preserving EVERY id", () => {
     const rows = Array.from({ length: 100 }, (_, i) =>
       row({
@@ -156,15 +185,18 @@ describe("shapeWorkItemsGet — bulk reads stay under the transport ceiling", ()
     expect(out._shapeNote?.dropped.some((d) => d.startsWith("rows("))).toBe(true);
   });
 
-  it("a 10-id read still gives each row a usable checkpoint", () => {
+  it("a 10-id read preserves every id when the result door requires stubs", () => {
     const rows = Array.from({ length: 10 }, (_, i) =>
       row({ id: `WI-${i}`, workItem: { id: `WI-${i}`, state: "open" }, checkpoint: "C".repeat(1_000) }),
     );
     const out = shapeWorkItemsGet(envelope(rows), "trimmed") as Envelope;
 
     expect(out.results).toHaveLength(10);
-    for (const r of out.results) expect(String(r.checkpoint).length).toBeGreaterThan(400);
-    expect(JSON.stringify(out).length).toBeLessThan(PAYLOAD_TIER_HARD_CEILING_CHARS);
+    expect(out.results.map((r) => r.id)).toEqual(rows.map((r) => r.id));
+    expect(out.results.some((r) => r._stub)).toBe(true);
+    expect(out.results.filter((r) => r.hasCheckpoint).length).toBeGreaterThan(0);
+    expect(out._shapeNote?.dropped.some((d) => d.startsWith("rows("))).toBe(true);
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE);
   });
 });
 
