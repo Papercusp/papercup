@@ -18,6 +18,7 @@ import {
   deriveFleetRollups,
   derivePlanRollups,
   formatAge,
+  hasSessionChatSurface,
   HUD_DEFAULT_THRESHOLDS,
   isInfrastructureAwait,
   isSuSession,
@@ -96,6 +97,19 @@ describe('shortHandle', () => {
   });
   it('truncates an unrecognised long id rather than overflowing a card', () => {
     expect(shortHandle('a'.repeat(40))).toHaveLength(17); // 16 + ellipsis
+  });
+});
+
+describe('hasSessionChatSurface', () => {
+  it('keeps Claude, Papercup, and partial legacy rows on the existing surface', () => {
+    expect(hasSessionChatSurface('claude')).toBe(true);
+    expect(hasSessionChatSurface('papercup')).toBe(true);
+    expect(hasSessionChatSurface(null)).toBe(true);
+    expect(hasSessionChatSurface(undefined)).toBe(true);
+  });
+
+  it.each(['codex', 'OMP', ' codex '])('rejects the native %s surface from Claude chat', (agent) => {
+    expect(hasSessionChatSurface(agent)).toBe(false);
   });
 });
 
@@ -513,6 +527,13 @@ describe('deriveColumn — precedence', () => {
 });
 
 describe('deriveBadges', () => {
+  it('carries native agent kind and chat support into the card model', () => {
+    const session = toHudSession(entry({ agent: 'omp' }), undefined, OPTS);
+    expect(session.agent).toBe('omp');
+    expect(session.chatSupported).toBe(false);
+    expect(toHudSession(entry({ agent: 'papercup' }), undefined, OPTS).chatSupported).toBe(true);
+  });
+
   it('does NOT badge fleet leadership — that is identity, rendered beside the handle', () => {
     // Emitting it here too rendered "LEAD" twice on every leader card and burnt
     // one of the capped badge slots. `isLeader` on the session carries it.

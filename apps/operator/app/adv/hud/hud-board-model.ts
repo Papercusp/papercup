@@ -668,6 +668,11 @@ export interface HudSession {
   fleetSlug: string | null;
   fleetColor: string | null;
   isLeader: boolean;
+  /** Native agent kind, retained so presentation can explain an unavailable
+   *  chat surface without re-reading the roster or guessing from the label. */
+  agent: string | null;
+  /** False for Codex/OMP rows: those cards must not promise Claude chat. */
+  chatSupported: boolean;
   planSlug: string | null;
   blockedOn: HudOpenAwait | null;
   /** Context use as a 0–100 percentage; null when never sampled (NOT 0 — an
@@ -852,6 +857,18 @@ export function isInfrastructureAwait(a: HudOpenAwait | null | undefined): boole
  *  re-sniffing ids, so the board can't drift from the rest of the app. */
 export function isSuSession(e: HudRosterEntry): boolean {
   return e.agentPaneKind === 'su';
+}
+
+/**
+ * Whether the shared SessionChatModal has a transcript/composer surface for
+ * this roster agent kind. Claude remains the default for older/partial roster
+ * payloads, and `papercup` is a Claude-backed counterparty in the existing
+ * chat surface. Codex and OMP sessions have different native transcript
+ * identifiers, so presenting the Claude popup for them is a false affordance.
+ */
+export function hasSessionChatSurface(agent: string | null | undefined): boolean {
+  const kind = agent?.trim().toLowerCase();
+  return kind !== 'codex' && kind !== 'omp';
 }
 
 /**
@@ -1247,6 +1264,8 @@ export function toHudSession(
     fleetSlug: e.fleetSlug,
     fleetColor: e.fleetColor,
     isLeader: e.fleetRole === 'leader',
+    agent: e.agent,
+    chatSupported: hasSessionChatSurface(e.agent),
     planSlug: e.currentPlanSlug,
     blockedOn: e.openAwait,
     contextPct: contextPct(e.contextTokens, e.compactionLimit),

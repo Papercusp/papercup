@@ -368,6 +368,16 @@ describe('HudBoard', () => {
     expect(props.onOpenSession).toHaveBeenCalledWith('su-aaaaaaaa-1111-2222-3333-444444444444');
   });
 
+  it('does not present Codex/OMP sessions as clickable Claude chat cards', () => {
+    const { props } = renderBoard([entry({ agent: 'codex' })]);
+    const card = screen.getByText('su-aaaaaaaa').closest('.hud__card');
+    expect(card).toBeTruthy();
+    expect(card?.tagName).toBe('DIV');
+    expect(card?.getAttribute('data-chat-supported')).toBe('false');
+    expect(card?.getAttribute('title')).toContain('codex');
+    expect(props.onOpenSession).not.toHaveBeenCalled();
+  });
+
   it('takes the fleet accent from roster DATA, not a hardcoded palette', () => {
     renderBoard([entry({ fleetSlug: 'atlas', fleetColor: '#86efac' })]);
     const card = screen.getByRole('button', { name: /su-aaaaaaaa/ });

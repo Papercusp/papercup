@@ -12,8 +12,9 @@
  * Deliberately NOT built on `app/harness/Kanban.tsx` (plan D-001): that
  * primitive is a dnd-kit sortable board, and HUD's columns are DERIVED from
  * live session state. A drag handle would promise that moving a card changes
- * what the agent is doing — it cannot. Cards are buttons that open the session,
- * nothing more.
+ * what the agent is doing — it cannot. Cards open the session only when that
+ * agent kind has a supported chat surface; Codex/OMP rows remain readable but
+ * are deliberately non-clickable.
  */
 
 import { memo, useMemo, useRef, type ReactNode } from 'react';
@@ -201,14 +202,14 @@ function SessionCard({
   const statChips = session.badges.filter((b) => b.kind !== 'mode');
   const chips = [...modeChips, ...statChips.slice(0, MAX_CHIPS)];
   const overflow = statChips.length - Math.min(statChips.length, MAX_CHIPS);
-  return (
-    <button
-      type="button"
-      className={`hud__card hud__card--${session.column}`}
-      style={session.fleetColor ? ({ '--hud-fleet': session.fleetColor } as React.CSSProperties) : undefined}
-      onClick={() => onOpen(session.ownerId)}
-      aria-label={`${session.handle} — ${session.reason}`}
-    >
+  const cardProps = {
+    className: `hud__card hud__card--${session.column}${session.chatSupported ? '' : ' hud__card--chat-unavailable'}`,
+    style: session.fleetColor ? ({ '--hud-fleet': session.fleetColor } as React.CSSProperties) : undefined,
+    'aria-label': `${session.handle} — ${session.reason}`,
+    'data-chat-supported': session.chatSupported ? 'true' : 'false',
+  };
+  const contents = (
+    <>
       {/* Flex row lives on this inner span, never the <button> itself — see
           the WebKitGTK note on .hud__card in hud.css. */}
       <span className="hud__card-row">
@@ -257,6 +258,27 @@ function SessionCard({
           ) : null}
         </span>
       </span>
+    </>
+  );
+  if (!session.chatSupported) {
+    return (
+      <div
+        {...cardProps}
+        title={`Chat is unavailable for ${session.agent ?? 'this'} sessions.`}
+        role="group"
+        aria-disabled="true"
+      >
+        {contents}
+      </div>
+    );
+  }
+  return (
+    <button
+      type="button"
+      {...cardProps}
+      onClick={() => onOpen(session.ownerId)}
+    >
+      {contents}
     </button>
   );
 }

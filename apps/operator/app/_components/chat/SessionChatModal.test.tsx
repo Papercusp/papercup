@@ -317,6 +317,43 @@ describe('SessionChatModal', () => {
     expect(captured).toBeNull(); // never opened a stream with no session id
   });
 
+  it('names a live Codex agent instead of blaming a missing Claude session', async () => {
+    H.results['advRoster.list'] = {
+      data: [
+        {
+          active: [
+            {
+              ownerId: 'su-live-1',
+              agent: 'codex',
+              sessionState: 'live',
+              liveness: 'live',
+              modes: [],
+              claims: [],
+              currentFiles: [],
+              openAwait: null,
+            },
+          ],
+          pending: [],
+        },
+      ],
+      loading: false,
+      fetching: false,
+      error: null,
+      invalidate: vi.fn(),
+    };
+    mockFetchOnce(200, { sessions: [{ source_kind: 'omp', session_id: 'omp-1', last_ts: null }] });
+    render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+
+    await waitFor(() => expect(screen.getByTestId('session-chat-unsupported-agent')).toBeTruthy());
+    expect(screen.getByTestId('session-chat-unsupported-agent').textContent).toContain('codex');
+    expect(screen.getByTestId('session-chat-unsupported-agent').textContent).toContain(
+      'available only for Claude sessions',
+    );
+    expect(screen.queryByText(/No recent Claude session/)).toBeNull();
+    expect(screen.queryByPlaceholderText(/Reply|Type to wake/i)).toBeNull();
+    expect(captured).toBeNull();
+  });
+
   it('surfaces a sessions:list resolution failure', async () => {
     fetchMock.mockResolvedValueOnce({ ok: false, status: 500, text: async () => 'boom' });
     render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
