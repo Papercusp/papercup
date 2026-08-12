@@ -8,7 +8,51 @@ import { computeDeployStatus } from '../../release-deploy-launch';
 import { buildReleaseTrace, type ReleaseTraceAwait, type ReleaseTraceWake } from '../../release-trace';
 import { buildKey } from '../../events/await/catalog';
 import { inspectEventKey } from '../../events/await/store';
+import { withBoundedTimeout, type BoundedTimeoutResult } from '../../bounded-timeout';
 import { resolveAgentIdentity } from '../coordination/identity';
+
+/**
+ * Keep the composite diagnostic below the MCP transport deadline even when one
+ * of its independent release/PG reads is queued behind a saturated pool.
+ * The three budgets are sequential in the handler, so their sum remains below
+ * the ~55s client deadline in the worst case.
+ */
+export const RELEASE_TRACE_SNAPSHOT_TIMEOUT_MS = 20_000;
+export const RELEASE_TRACE_POSITION_TIMEOUT_MS = 15_000;
+export const RELEASE_TRACE_AWAIT_TIMEOUT_MS = 10_000;
+
+type TraceTimeoutStage = 'pipeline_snapshot' | 'pipeline_position' | 'await_history';
+
+function throwReadError(read: BoundedTimeoutResult<unknown>, label: string): never {
+  if (read.error instanceof Error) throw read.error;
+  throw new Error(read.errorMessage ?? `${label} failed`);
+}
+
+function traceTimeoutResponse(
+  args: { path?: string; sha?: string },
+  stage: TraceTimeoutStage,
+  timeoutMs: number,
+  read: BoundedTimeoutResult<unknown>,
+  event?: string,
+) {
+  return {
+    data: {
+      ok: false,
+      target: { path: args.path ?? null, sha: args.sha ?? null },
+      trace: { status: 'unknown', complete: false },
+      nextVerb: null,
+      error: {
+        code: 'trace_timeout',
+        stage,
+        retryable: true,
+        timeoutMs,
+        elapsedMs: read.elapsedMs,
+        ...(event ? { event } : {}),
+        message: `release:trace ${stage} did not complete within ${timeoutMs}ms; release truth is unknown — retry the read`,
+      },
+    },
+  };
+}
 
 function payloadSha(value: unknown): string | null {
   if (!value || typeof value !== 'object' || Array.isArray(value)) return null;
@@ -87,14 +131,39 @@ export default defineTool({
     // A diagnostic read must stay fork/sidecar-free. The default enables the
     // dev-deploy spawner sidecar, which can block this read while composing
     // release truth (EI-20264406467393669).
-    const snapshot = await gitPipelineSnapshot(undefined, { useSpawnerSidecar: false });
-    const position = await gitPipelinePosition(
-      { path: args.path, sha: args.sha },
+    const snapshotRead = await withBoundedTimeout(() => gitPipelineSnapshot(undefined, { useSpawnerSidecar: false }), {
+      fallback: null,
+      timeoutMs: RELEASE_TRACE_SNAPSHOT_TIMEOUT_MS,
+      label: 'release:trace:pipeline-snapshot',
+    });
+    if (snapshotRead.degraded) {
+      if (snapshotRead.reason === 'error') throwReadError(snapshotRead, 'release:trace:pipeline-snapshot');
+      return traceTimeoutResponse(args, 'pipeline_snapshot', RELEASE_TRACE_SNAPSHOT_TIMEOUT_MS, snapshotRead);
+    }
+    const snapshot = snapshotRead.value;
+    if (!snapshot) throw new Error('release:trace:pipeline-snapshot returned no snapshot');
+
+    const positionRead = await withBoundedTimeout(
+      () =>
+        gitPipelinePosition(
+          { path: args.path, sha: args.sha },
+          {
+            loadSnapshot: () => Promise.resolve(snapshot),
+            loadDeploy: () => Promise.resolve(snapshot.deploy),
+          },
+        ),
       {
-        loadSnapshot: () => Promise.resolve(snapshot),
-        loadDeploy: () => Promise.resolve(snapshot.deploy),
+        fallback: null,
+        timeoutMs: RELEASE_TRACE_POSITION_TIMEOUT_MS,
+        label: 'release:trace:pipeline-position',
       },
     );
+    if (positionRead.degraded) {
+      if (positionRead.reason === 'error') throwReadError(positionRead, 'release:trace:pipeline-position');
+      return traceTimeoutResponse(args, 'pipeline_position', RELEASE_TRACE_POSITION_TIMEOUT_MS, positionRead);
+    }
+    const position = positionRead.value;
+    if (!position) throw new Error('release:trace:pipeline-position returned no position');
     const deploy = computeDeployStatus(snapshot);
     const pipeline = pipelineName(snapshot.deploy.integrationRoot);
     const keys = [
@@ -103,7 +172,31 @@ export default defineTool({
       buildKey('checkpoint', { pipeline }),
       buildKey('checkpoint-red', { pipeline }),
     ];
-    const histories = await Promise.all(keys.map(async (event) => ({ event, history: await inspectEventKey(event) })));
+    const historyReads = await Promise.all(
+      keys.map(async (event) => {
+        const read = await withBoundedTimeout(() => inspectEventKey(event), {
+          fallback: null,
+          timeoutMs: RELEASE_TRACE_AWAIT_TIMEOUT_MS,
+          label: `release:trace:await-history:${event}`,
+        });
+        if (read.degraded && read.reason === 'error') throwReadError(read, `release:trace:await-history:${event}`);
+        return { event, read };
+      }),
+    );
+    const timedOutHistory = historyReads.find(({ read }) => read.degraded);
+    if (timedOutHistory) {
+      return traceTimeoutResponse(
+        args,
+        'await_history',
+        RELEASE_TRACE_AWAIT_TIMEOUT_MS,
+        timedOutHistory.read,
+        timedOutHistory.event,
+      );
+    }
+    const histories = historyReads.map(({ event, read }) => {
+      if (!read.value) throw new Error(`release:trace:await-history:${event} returned no history`);
+      return { event, history: read.value };
+    });
     const awaits: ReleaseTraceAwait[] = histories.flatMap(({ event, history }) =>
       history.waiters.map((row) => ({
         event,
