@@ -15,13 +15,26 @@ import { describe, expect, it } from 'vitest';
 
 import {
   classifyUngraded,
+  epochMsForOrigin,
   summarizeUngraded,
+  DEFAULT_UNGRADED_EPOCH_POLICY,
+  SCOUT_UNGRADED_EPOCH_MS,
+  SU_IDEATE_UNGRADED_EPOCH_MS,
+  type UngradedEpochPolicy,
   type UngradedRowLike,
 } from './ungraded-scope';
 
 const EPOCH = Date.parse('2026-07-11T00:00:00Z');
 const AFTER = EPOCH + 86_400_000;
 const BEFORE = EPOCH - 86_400_000;
+
+/**
+ * A SINGLE-floor policy: every origin falls back to one epoch. This is exactly the
+ * pre-D-014 behaviour, kept so the three original axes stay testable in isolation from
+ * the per-origin floor — an axis test that also varied the floor would stop being
+ * independently falsifiable, which is the property this file is built on.
+ */
+const flat = (epochMs: number): UngradedEpochPolicy => ({ byOrigin: {}, fallbackMs: epochMs });
 
 const row = (over: Partial<UngradedRowLike> = {}): UngradedRowLike => ({
   origin: 'su-ideate',

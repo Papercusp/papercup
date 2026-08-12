@@ -2391,9 +2391,8 @@ async function collectScout(ctx: HealthCtx): Promise<HealthPanel<ScoutHealth>> {
       // terminality or epoch filter — 1,103 against an actionable backlog of 15. It now
       // reads the ONE definition (scout/ungraded-scope.ts), which cannot hand back an
       // unlabelled scalar.
-      const { readUngradedBreakdown, DEFAULT_UNGRADED_EPOCH_POLICY } = await import(
-        '../scout/ungraded-scope'
-      );
+      const { readUngradedBreakdown, DEFAULT_UNGRADED_EPOCH_POLICY, epochMsForOrigin } =
+        await import('../scout/ungraded-scope');
       const rows = await sql<Array<{ graded: number }>>`
         SELECT (count(*) FILTER (WHERE graded_at IS NOT NULL AND graded_at > now() - interval '24 hours'))::int AS graded
           FROM harness_shared.scout_routed_ideas
@@ -2410,6 +2409,13 @@ async function collectScout(ctx: HealthCtx): Promise<HealthPanel<ScoutHealth>> {
         actionable: breakdown.actionable,
         actionableByOrigin: breakdown.actionableByOrigin,
         allUngraded: breakdown.allUngraded,
+        // Name the floor beside the count, per origin actually present in the census.
+        epochMsByOrigin: Object.fromEntries(
+          Object.keys(breakdown.actionableByOrigin).map((origin) => [
+            origin,
+            epochMsForOrigin(breakdown.policy, origin),
+          ]),
+        ),
       };
     } catch { /* grading read unavailable */ }
     // WI-6338: the recurrence guard — compute + surface the three-record
