@@ -33,7 +33,7 @@ import {
   type DepStamp,
   type FreshnessResult,
 } from './freshness';
-import { resolveCurrentTokens, validateDep } from './freshness/resolvers';
+import { normalizeDep, resolveCurrentTokens, validateDep } from './freshness/resolvers';
 
 export interface WorkItemCheckpointRef {
   /**
@@ -187,7 +187,11 @@ export async function setWorkItemCheckpointWithPrior(
   let recomputed = false;
 
   if (depsSpecified) {
-    const declared = [...new Set(opts?.dependsOn ?? [])];
+    // Agents routinely have the work-item id already in hand and pass `WI-123`
+    // instead of the typed `work-item:WI-123` form. Normalize recognized ids before
+    // validation/resolution so the checkpoint records the dependency rather than
+    // accepting the note while silently dropping its freshness edge.
+    const declared = [...new Set((opts?.dependsOn ?? []).map(normalizeDep))];
     if (declared.length === 0) {
       depsPayload = null; // explicit clear
     } else {

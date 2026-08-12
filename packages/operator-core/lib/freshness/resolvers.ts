@@ -58,6 +58,24 @@ export function splitDep(dep: string): { kind: string; ref: string } | null {
   return { kind: dep.slice(0, idx), ref: dep.slice(idx + 1) };
 }
 
+/**
+ * Normalize the bare work-item ids agents commonly use in checkpoint calls.
+ *
+ * The freshness substrate stores typed dependency tags (`work-item:WI-123`),
+ * while work-item tools conventionally accept bare ids (`WI-123`, `EI-123`,
+ * or a feature-shaped `F-...` id). Keeping this repair at the dependency write
+ * boundary makes the stored token canonical and leaves arbitrary untyped strings
+ * invalid rather than guessing that a file path or other ref is a work-item.
+ */
+export function normalizeDep(dep: string): string {
+  const trimmed = dep.trim();
+  if (splitDep(trimmed)) return trimmed;
+
+  const match = /^(WI|EI|F)-([A-Za-z0-9][A-Za-z0-9_-]*)$/i.exec(trimmed);
+  if (!match) return trimmed;
+  return `work-item:${match[1]!.toUpperCase()}-${match[2]}`;
+}
+
 function allNull(refs: readonly string[]): Map<string, string | null> {
   return new Map(refs.map((r) => [r, null]));
 }

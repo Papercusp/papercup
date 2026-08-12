@@ -175,6 +175,24 @@ describe('resolvers — tokens come from versions that already exist', () => {
     expect(tokens.get('plan:my-plan')).toBe('v28');
   });
 
+  it('normalizes a bare work-item id before stamping its checkpoint dependency', async () => {
+    await seedWorkItem('WI-DEP', 'open', 1000);
+
+    const res = await setWorkItemCheckpointWithPrior(ref('WI-BARE'), 'blocked on WI-DEP', {
+      dependsOn: ['WI-DEP'],
+    });
+
+    expect(res.depsStamped).toBe(1);
+    expect(res.depsWarnings).toBeUndefined();
+    expect((await getWorkItemCheckpointDeps(ref('WI-BARE')))?.stamps).toEqual([
+      expect.objectContaining({ dep: 'work-item:WI-DEP', token: 'open@1000' }),
+    ]);
+    expect((await getWorkItemCheckpointFreshness(ref('WI-BARE')))?.verdict).toBe('fresh');
+
+    await seedWorkItem('WI-DEP', 'done', 2000);
+    expect((await getWorkItemCheckpointFreshness(ref('WI-BARE')))?.verdict).toBe('stale');
+  });
+
   it('refuses to read outside the repo root and never throws', async () => {
     const tokens = await resolveCurrentTokens(['file:../escape.ts', 'file:/etc/passwd', 'bogus-kind:x'], {
       workspaceId: WS,
