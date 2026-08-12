@@ -29,7 +29,7 @@ import { join } from 'node:path';
 
 // @ts-ignore — pure JS adapter, no .d.ts; the dispatcher's frozen CLI contract is the seam.
 import adapter, { portForEvent, parse, render } from '../../inject/adapters/omp.mjs';
-import {
+import register, {
   MISS_LOG_BASENAME,
   MISS_LOG_MAX_BYTES,
   PORT_TIMEOUT_MS,
@@ -523,6 +523,37 @@ describe('inject-hook — runDispatcher', () => {
       env: envWith(echoDispatcher),
       execPath: join(dir, 'no-such-runtime'),
     })).toBeNull();
+  });
+});
+
+describe('inject-hook — event registration delivery', () => {
+  it('delivers mid-turn context as followUp so it cannot cancel an in-flight tool call', async () => {
+    const previousEnv = { ...process.env };
+    Object.assign(process.env, envWith(echoDispatcher));
+    try {
+      const handlers = new Map<string, (event: unknown) => Promise<unknown> | unknown>();
+      const sent: Array<{ message: { customType: string; content: string }; options?: { deliverAs?: string } }> = [];
+      register({
+        on: (event, handler) => handlers.set(event, handler),
+        sendMessage: (message, options) => sent.push({ message, options }),
+      });
+
+      const turnEnd = handlers.get('turn_end');
+      expect(turnEnd).toBeDefined();
+      await turnEnd!({ type: 'turn_end', toolResults: [{ toolCallId: 'call-1' }] });
+
+      expect(sent).toEqual([
+        {
+          message: { customType: 'papercusp-context', content: 'INJECTED CONTEXT', display: false },
+          options: { deliverAs: 'followUp' },
+        },
+      ]);
+    } finally {
+      for (const key of Object.keys(process.env)) {
+        if (!(key in previousEnv)) delete process.env[key];
+      }
+      Object.assign(process.env, previousEnv);
+    }
   });
 });
 

@@ -422,14 +422,14 @@ export default function register(pi: OmpHookApi): void {
 
   // MID-TURN. `turn_end` carries the whole turn's toolResults[], matching
   // claude's once-per-BATCH PostToolBatch shape (`tool_result` would fire per
-  // individual call). Injected imperatively as a steer so it lands in the
-  // running turn, before the agent decides what to do next — the same delivery
-  // the coord hook already uses for its mid-turn messages.
+  // individual call). Deliver as a followUp so OMP queues the context after
+  // the current action instead of steering/cancelling an in-flight tool call.
+  // This matches the coord hook's non-interrupting mid-turn delivery.
   pi.on('turn_end', async (event: unknown) => {
     try {
       const text = await runDispatcher('mid-turn', 'turn_end', event, { selfDir });
       if (!text) return;
-      pi.sendMessage({ customType: CUSTOM_TYPE, content: text, display: false }, { deliverAs: 'steer' });
+      pi.sendMessage({ customType: CUSTOM_TYPE, content: text, display: false }, { deliverAs: 'followUp' });
     } catch {
       return;
     }
