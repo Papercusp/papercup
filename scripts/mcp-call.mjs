@@ -29,6 +29,68 @@ import { pathToFileURL } from 'node:url';
 /** The JSON-RPC id we send; parseSse selects the frame that answers it. */
 const REQUEST_ID = 1;
 
+/**
+ * A managed staging restart can leave the explicitly pinned port refused while
+ * systemd is rebuilding the host. Keep this recovery path aligned with the
+ * always-up MCP proxy's measured restart budget, but only use it for an
+ * explicit `--port` pin. An unpinned call must retain its immediate canonical
+ * 3070 fallback instead of waiting 90s before discovering that its inherited
+ * port hint is stale.
+ */
+export const MCP_CALL_CONNECTION_RETRY_WINDOW_MS = 90_000;
+export const MCP_CALL_CONNECTION_RETRY_DELAY_MS = 1_000;
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/** ECONNREFUSED is raised before an HTTP request can reach the operator. */
+export function isConnectionRefusedError(error) {
+  const seen = new Set();
+  let current = error;
+  while (current && (typeof current === 'object' || typeof current === 'function') && !seen.has(current)) {
+    seen.add(current);
+    if (current.code === 'ECONNREFUSED') return true;
+    current = current.cause;
+  }
+  return false;
+}
+
+/**
+ * Retry only a pre-connect refusal. Retrying resets, HTTP errors, or any other
+ * fetch failure could duplicate a POST whose request reached the operator.
+ * The injected seams keep the restart-window behavior directly testable.
+ */
+export async function fetchWithConnectionRecovery(
+  url,
+  init,
+  {
+    fetchImpl = fetch,
+    retryWindowMs = MCP_CALL_CONNECTION_RETRY_WINDOW_MS,
+    retryDelayMs = MCP_CALL_CONNECTION_RETRY_DELAY_MS,
+    sleepImpl = sleep,
+    now = Date.now,
+    onRetry,
+  } = {},
+) {
+  const budgetMs = Number.isFinite(retryWindowMs) ? Math.max(0, retryWindowMs) : 0;
+  const delayMs = Number.isFinite(retryDelayMs) ? Math.max(1, retryDelayMs) : MCP_CALL_CONNECTION_RETRY_DELAY_MS;
+  const deadline = now() + budgetMs;
+  let attempt = 0;
+
+  while (true) {
+    try {
+      return await fetchImpl(url, init);
+    } catch (error) {
+      if (!isConnectionRefusedError(error)) throw error;
+      const remainingMs = deadline - now();
+      if (remainingMs <= 0) throw error;
+      const waitMs = Math.min(delayMs, remainingMs);
+      attempt += 1;
+      onRetry?.({ attempt, delayMs: waitMs, remainingMs });
+      await sleepImpl(waitMs);
+    }
+  }
+}
+
 export function parseArgs(argv) {
   const flags = {};
   const pos = [];
@@ -155,7 +217,20 @@ async function main() {
   const attempts = [];
   for (const port of candidatePorts) {
     try {
-      res = await fetch(`http://localhost:${port}/api/mcp?${qs}`, init);
+      res = await fetchWithConnectionRecovery(`http://localhost:${port}/api/mcp?${qs}`, init, {
+        // An explicit pin means the caller deliberately chose this operator
+        // and must not be silently routed to another port while it restarts.
+        retryWindowMs: pinned ? MCP_CALL_CONNECTION_RETRY_WINDOW_MS : 0,
+        onRetry: ({ attempt, delayMs, remainingMs }) => {
+          // Keep a long restart quiet without hiding that recovery is active.
+          if (attempt === 1 || attempt % 10 === 0) {
+            console.error(
+              `mcp-call: ${port} refused the connection; operator may be restarting — ` +
+                `retry ${attempt} in ${delayMs}ms (${Math.ceil(remainingMs / 1000)}s left)`,
+            );
+          }
+        },
+      });
       if (!pinned && port !== String(configuredPort)) {
         console.error(
           `mcp-call: WARNING — nothing was listening on PAPERCUSP_HONO_PORT=${configuredPort}; ` +
@@ -166,7 +241,7 @@ async function main() {
       }
       break;
     } catch (err) {
-      attempts.push(`${port} (${err?.cause?.code ?? err?.message ?? 'unknown error'})`);
+      attempts.push(`${port} (${err?.cause?.code ?? err?.code ?? err?.message ?? 'unknown error'})`);
     }
   }
 

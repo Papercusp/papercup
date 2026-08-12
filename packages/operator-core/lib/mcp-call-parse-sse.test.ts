@@ -3,8 +3,15 @@ import { describe, expect, it } from 'vitest';
 // scripts/mcp-call.mjs is the sanctioned recovery path when the Claude Code
 // papercusp-su MCP client drops (EI-1740 / EI-1750). Root scripts/** route into
 // this workspace for test selection (EI-19346163916263067).
-// @ts-expect-error — plain .mjs script, no type declarations
-import { parseSse, resolveCandidatePorts } from '../../../scripts/mcp-call.mjs';
+import {
+  fetchWithConnectionRecovery,
+  isConnectionRefusedError,
+  parseSse,
+  resolveCandidatePorts,
+  // @ts-expect-error — plain .mjs script, no type declarations
+} from '../../../scripts/mcp-call.mjs';
+
+type RetryEvent = { attempt: number; delayMs: number; remainingMs: number };
 
 const RESULT_FRAME = (payload: unknown, id: number | string = 1) =>
   `event: message\ndata: ${JSON.stringify({
@@ -118,5 +125,95 @@ describe('mcp-call operator port selection', () => {
 
   it('refuses malformed explicit pins instead of silently selecting another operator', () => {
     expect(() => resolveCandidatePorts({ port: 'nope' }, {})).toThrow(/--port must be an integer/);
+  });
+});
+
+describe('mcp-call connection recovery', () => {
+  it('recognizes a nested undici ECONNREFUSED cause but not other failures', () => {
+    expect(
+      isConnectionRefusedError(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } })),
+    ).toBe(true);
+    expect(
+      isConnectionRefusedError(Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNRESET' } })),
+    ).toBe(false);
+  });
+
+  it('retries a refused explicit-port connection and returns the eventual response', async () => {
+    let calls = 0;
+    const retries: Array<{ attempt: number; delayMs: number }> = [];
+    const response = { ok: true };
+
+    const result = await fetchWithConnectionRecovery(
+      'http://localhost:3170/api/mcp',
+      {},
+      {
+        fetchImpl: async () => {
+          calls += 1;
+          if (calls === 1) {
+            throw Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } });
+          }
+          return response;
+        },
+        retryWindowMs: 50,
+        retryDelayMs: 1,
+        sleepImpl: async () => {},
+        onRetry: ({ attempt, delayMs }: RetryEvent) => retries.push({ attempt, delayMs }),
+      },
+    );
+
+    expect(result).toBe(response);
+    expect(calls).toBe(2);
+    expect(retries).toEqual([{ attempt: 1, delayMs: 1 }]);
+  });
+
+  it('does not retry non-refused failures that may follow a sent request', async () => {
+    let calls = 0;
+    const error = Object.assign(new Error('connection reset'), { cause: { code: 'ECONNRESET' } });
+
+    await expect(
+      fetchWithConnectionRecovery(
+        'http://localhost:3170/api/mcp',
+        {},
+        {
+          fetchImpl: async () => {
+            calls += 1;
+            throw error;
+          },
+          retryWindowMs: 50,
+          sleepImpl: async () => {},
+        },
+      ),
+    ).rejects.toBe(error);
+    expect(calls).toBe(1);
+  });
+
+  it('stops retrying once the bounded restart window expires', async () => {
+    let now = 0;
+    let calls = 0;
+    const retryDelays: number[] = [];
+    const error = Object.assign(new TypeError('fetch failed'), { cause: { code: 'ECONNREFUSED' } });
+
+    await expect(
+      fetchWithConnectionRecovery(
+        'http://localhost:3170/api/mcp',
+        {},
+        {
+          fetchImpl: async () => {
+            calls += 1;
+            throw error;
+          },
+          retryWindowMs: 5,
+          retryDelayMs: 2,
+          sleepImpl: async (ms: number) => {
+            now += ms;
+          },
+          now: () => now,
+          onRetry: ({ delayMs }: RetryEvent) => retryDelays.push(delayMs),
+        },
+      ),
+    ).rejects.toBe(error);
+
+    expect(calls).toBe(4);
+    expect(retryDelays).toEqual([2, 2, 1]);
   });
 });
