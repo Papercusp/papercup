@@ -96,6 +96,17 @@ export const ASSUMPTIONS_SHAPE_HINT =
   'Shape: an ARRAY of facts:assert keys — assumptions: ["my-fact-key"] (note the brackets, even for a ' +
   'single key) — or the bare literal assumptions: "none".';
 
+/**
+ * Recovery guidance shared by both terminal writers. A transport timeout can
+ * happen after `work_items:complete` has committed its record, so callers must
+ * read the item before retrying. If they intentionally fall back to
+ * `work_items:set_state`, the terminal-only assumptions declaration must travel
+ * with the completion evidence instead of being dropped from the second call.
+ */
+export const TERMINAL_CLOSE_RECOVERY_HINT =
+  'If work_items:complete times out, first re-read work_items:get; if the item is still open, retry the exact same completion payload (including assumptions). If you use work_items:set_state as the fallback, carry the same assumptions declaration and pass completionRef too. ' +
+  ASSUMPTIONS_SHAPE_HINT;
+
 export const assumptionsArg = z
   .union(
     [
