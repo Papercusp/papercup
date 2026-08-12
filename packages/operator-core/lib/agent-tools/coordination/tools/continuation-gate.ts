@@ -102,6 +102,11 @@ export interface ContinuationGateInputs {
    *  null/undefined ⇒ unknown → guidance unchanged (non-breaking for callers
    *  that don't supply it; an interactive session's owner is the guaranteed wake). */
   rewakeGuaranteed?: boolean | null;
+  /** Does the guaranteed next wake actually start on FRESH context? An armed
+   *  warm loop guarantees another turn but preserves this transcript, so it
+   *  must not satisfy the context-pressure remedy. false steers the caller to
+   *  switch the loop to cold carry before settling. */
+  nextWakeFresh?: boolean | null;
   /** Can this session actually SELF-COMPACT — i.e. would `session:request-compaction`
    *  succeed (selfCompactionAvailability(ownerId).available)? A carry-respawn is driven
    *  through a psu-pty host, so a headless/autonomous member has none and the call
@@ -121,6 +126,8 @@ export interface ContinuationVerdict {
   unreadInbox: number | null;
   /** The re-wake-guarantee input echoed back (null ⇒ unknown/not supplied). */
   rewakeGuaranteed: boolean | null;
+  /** Whether the next wake sheds the current transcript (null ⇒ unknown). */
+  nextWakeFresh: boolean | null;
   /** The self-compaction availability input echoed back (null ⇒ unknown/not supplied). */
   selfCompactionAvailable: boolean | null;
   /** Why the gate is CLOSED, one phrase per blocking leg (empty ⇒ open). */
@@ -148,7 +155,7 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
     reasons.push('context usage unknown — cannot confirm headroom, so settle');
   } else if (contextPct >= ceilingPct) {
     reasons.push(
-      `at ${contextPct}% context (≥ ${ceilingPct}% continuation ceiling) — settle so the next wake starts on fresh context, not a mid-unit compaction`,
+      `at ${contextPct}% context (≥ ${ceilingPct}% continuation ceiling) — settle before starting another unit`,
     );
   }
 
@@ -162,6 +169,7 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
 
   const shouldContinue = reasons.length === 0;
   const rewakeGuaranteed = inputs.rewakeGuaranteed ?? null;
+  const nextWakeFresh = inputs.nextWakeFresh ?? null;
   const selfCompactionAvailable = inputs.selfCompactionAvailable ?? null;
   let guidance = shouldContinue
     ? `continuation gate OPEN (${contextPct}% context, no unread inbox): you MAY run the next unit in this turn IF it is already scoped — but FIRST flush (every held work-item claim checkpointed, P-002). Re-evaluate this gate at the next unit boundary.`
@@ -199,6 +207,22 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
             `for the missing re-wake. Self-compaction (session:request-compaction) also continues the work, but it ` +
             `requires a live psu-pty host and refuses with no_live_pty_host on a session that has none.`;
     guidance = opening + remedy;
+  } else if (!shouldContinue && rewakeGuaranteed === true && nextWakeFresh === false) {
+    // EI-20223970530333577: a WARM loop guarantees another wake but does not
+    // shed context. Treating those two properties as equivalent told a 91%-full
+    // loop to end for a "fresh" wake that could never arrive; Codex then tried
+    // session:request-compaction, which structurally has no psu-pty host. The
+    // executable boundary is: persist the carry-note, retune this already-armed
+    // loop to cold, then settle. Cold-loop settle is accepted by the compaction
+    // tool once the carry-note exists, but no extra call is required here.
+    guidance =
+      `continuation gate CLOSED — settle this turn: ${reasons.join('; ')}. ` +
+      `⚠ The guaranteed next wake is WARM and will retain this over-ceiling context. ` +
+      `Write loop:checkpoint { did, left, insight, next }, then retune the existing loop with ` +
+      `loop:arm { carry: 'cold' } and end the turn; the cold wake starts from that durable carry-note. ` +
+      (selfCompactionAvailable === false
+        ? `Do not call session:request-compaction: this session has no live psu-pty host and it would refuse with no_live_pty_host.`
+        : `A host-backed session may alternatively use session:request-compaction.`);
   }
 
   return {
@@ -208,6 +232,7 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
     contextHeadroom,
     unreadInbox,
     rewakeGuaranteed,
+    nextWakeFresh,
     selfCompactionAvailable,
     reasons,
     guidance,
@@ -223,6 +248,7 @@ export function continuationGateFromReads(args: {
   unreadInbox: number | null | undefined;
   ceilingPct?: number;
   rewakeGuaranteed?: boolean | null;
+  nextWakeFresh?: boolean | null;
   selfCompactionAvailable?: boolean | null;
 }): ContinuationVerdict {
   return evaluateContinuationGate({
@@ -230,6 +256,7 @@ export function continuationGateFromReads(args: {
     unreadInbox: args.unreadInbox,
     ceilingPct: args.ceilingPct,
     rewakeGuaranteed: args.rewakeGuaranteed,
+    nextWakeFresh: args.nextWakeFresh,
     selfCompactionAvailable: args.selfCompactionAvailable,
   });
 }

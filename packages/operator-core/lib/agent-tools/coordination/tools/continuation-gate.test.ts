@@ -142,6 +142,36 @@ describe('re-wake guarantee escalation (kills the "the next wake re-opens the ga
     expect(v.guidance).not.toMatch(/SILENTLY HALT/);
   });
 
+  it('a guaranteed WARM wake does not masquerade as a fresh-context boundary', () => {
+    const v = evaluateContinuationGate({
+      contextPct: 91,
+      unreadInbox: 0,
+      rewakeGuaranteed: true,
+      nextWakeFresh: false,
+      selfCompactionAvailable: false,
+    });
+    expect(v.shouldContinue).toBe(false);
+    expect(v.nextWakeFresh).toBe(false);
+    expect(v.guidance).toMatch(/next wake is WARM/);
+    expect(v.guidance).toMatch(/loop:checkpoint/);
+    expect(v.guidance).toMatch(/carry: 'cold'/);
+    expect(v.guidance).toMatch(/no_live_pty_host/);
+    expect(v.guidance).not.toMatch(/the next wake re-opens the gate/);
+  });
+
+  it('a guaranteed COLD wake keeps the ordinary settle path', () => {
+    const v = evaluateContinuationGate({
+      contextPct: 91,
+      unreadInbox: 0,
+      rewakeGuaranteed: true,
+      nextWakeFresh: true,
+      selfCompactionAvailable: false,
+    });
+    expect(v.nextWakeFresh).toBe(true);
+    expect(v.guidance).toMatch(/the next wake re-opens the gate/);
+    expect(v.guidance).not.toMatch(/next wake is WARM/);
+  });
+
   it('unknown (null/absent) re-wake keeps the base guidance — non-breaking', () => {
     const v = evaluateContinuationGate({ contextPct: 80, unreadInbox: 0 });
     expect(v.rewakeGuaranteed).toBeNull();

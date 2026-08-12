@@ -685,6 +685,7 @@ export default defineTool({
         // coord:inbox-wake keepalive (liveness, not a deliberate wake for this
         // work). Best-effort; unknown ⇒ null → base guidance (non-breaking).
         let rewakeGuaranteed: boolean | null = null;
+        let nextWakeFresh: boolean | null = null;
         try {
           const [{ isRewakeGuaranteed }, { listActiveAwaits, INBOX_WAKE_KEY_PREFIX }, { getModes }] =
             await Promise.all([
@@ -702,8 +703,12 @@ export default defineTool({
             loopActive: Boolean(loop?.active),
             activeAwaitCount: awaits.filter((a) => !a.eventKey.startsWith(INBOX_WAKE_KEY_PREFIX)).length,
           });
+          // A loop can guarantee another turn without guaranteeing a fresh
+          // context. Only cold carry sheds the transcript on settle.
+          nextWakeFresh = loop?.active ? loop.carry === 'cold' : null;
         } catch {
           rewakeGuaranteed = null;
+          nextWakeFresh = null;
         }
         // Can this session actually SELF-COMPACT? (EI-20209826138488049.) When the
         // gate has no guaranteed re-wake it recommends a recovery mechanism, and
@@ -723,6 +728,7 @@ export default defineTool({
           compactionLimit: derivedLimit,
           unreadInbox,
           rewakeGuaranteed,
+          nextWakeFresh,
           selfCompactionAvailable,
         });
       },
