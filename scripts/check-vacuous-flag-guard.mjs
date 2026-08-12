@@ -1,0 +1,351 @@
+#!/usr/bin/env node
+/**
+ * check-vacuous-flag-guard.mjs — mechanical detector for the VACUOUS FLAG GUARD
+ * class (WI-38269, routed from the acceptance scorecard for
+ * retire-mug-kettle-su-only-2026-08-09, criterion `guards-bind-not-vacuous`).
+ *
+ * WHY THIS EXISTS
+ * A test can gate an absence/refusal assertion on a feature flag that NOTHING
+ * READS. The mock toggles, the assertion passes, and it proves nothing — and it
+ * is indistinguishable, from the outside, from a guard that genuinely binds.
+ *
+ * That is not hypothetical. `AdvNowRunning.test.tsx` carried a mutable `tierLive`
+ * knob that the retirement cases flipped, while `AdvNowRunning.tsx` had stopped
+ * importing `useFlag` entirely. The knob "drove NOTHING — which silently made the
+ * D-010 absence case pass for the wrong reason". It was found BY ACCIDENT: an
+ * unrelated red pulled the implementer into that file. Nothing was looking for it,
+ * which is the actual defect this closes — the instance was repaired, the CLASS
+ * was not.
+ *
+ *   node scripts/check-vacuous-flag-guard.mjs            # gate
+ *   node scripts/check-vacuous-flag-guard.mjs --report   # + the non-gating bucket
+ *   node scripts/check-vacuous-flag-guard.mjs --census   # the full measured population
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE TWO RULES, AND WHY ONLY ONE OF THEM GATES
+ *
+ * RULE B — MOCK WITHOUT A CONSUMER (the motivating shape).
+ * A test mocks a flag module (`vi.mock('@papercusp/flags/client', …)`) but NONE of
+ * the modules it pulls in — followed transitively, see MAX_IMPORT_DEPTH — contains
+ * a flag read. Two verdicts, because they are not equally dangerous:
+ *
+ *   VACUOUS-TOGGLE (GATES) — the mock exposes a MUTABLE knob the test reassigns
+ *       (`let tierLive = false; vi.mock(… useFlag: () => tierLive …)` with a later
+ *       `tierLive = true`). The test is asserting that flipping the flag CHANGES
+ *       something, against a subject that cannot see the flag. Both branches run
+ *       identical code, so one of the two cases passes for the wrong reason. This
+ *       is exactly the motivating instance.
+ *
+ *   INERT-MOCK (report)  — the mock is a CONSTANT (`useFlag: () => false`) and no
+ *       subject reads a flag. Nothing is being proven by the flag, but nothing is
+ *       being falsely proven either: it is usually a leftover from a real hook the
+ *       component has since dropped, or defensive insulation against a transitive
+ *       import. Harmless today, misleading to the next reader. Reported, never
+ *       gated — gating this would fail the tree on tidy-up debt and train people
+ *       to add suppressions, which is how a detector becomes noise.
+ *
+ * RULE A — TEST-ONLY FLAG KEY (report).
+ * A `FLAGS.<KEY>` / `"papercusp-<slug>"` literal referenced by test files and by
+ * ZERO non-test files. The flag exists, tests exercise it, nothing consumes it.
+ * Reported rather than gated because it has a legitimate stable form: a flag
+ * declared ahead of the code that will read it, and the retirement case — a flag
+ * whose consumers were deliberately removed while the key stays declared so the
+ * registry keeps refusing it. Both are correct states to be in.
+ *
+ * ─────────────────────────────────────────────────────────────────────────────
+ * THE FALSE-POSITIVE DISCRIMINATORS (why this is not noise). A test is NOT flagged
+ * when:
+ *   - it lives in the flags library itself, or in a file whose subject IS the flag
+ *     machinery (libs/flags/**) — mocking a flag read is the point there;
+ *   - any module reachable from its local imports (depth ≤ MAX_IMPORT_DEPTH) reads
+ *     a flag — the mock is insulating a real transitive consumer;
+ *   - the test asserts on the flag REGISTRY rather than a flag's effect
+ *     (`'X' in FLAGS`, `FLAGS.X` inside an expect) — that is the retirement-ratchet
+ *     shape, which is a genuine guard and must keep passing;
+ *   - the mock target is not resolvable to a flag module at all.
+ *
+ * SUPPRESSION: put `vacuous-flag-ok: <reason>` on the `vi.mock` line or in the
+ * contiguous comment block directly above it. A deliberate exception then carries
+ * its justification at the site — which is itself the improvement, because it turns
+ * an invisible always-passes into a documented intentional choice.
+ *
+ * ⚠ VERIFIED-CLEAN BASELINE, DELIBERATELY NO BASELINE FILE. When this was written
+ * the gating population was ZERO: the grader had already swept
+ * `apps/operator-vite/src` + `packages/operator-core/lib` for zero-call-site flag
+ * reads and found none, and this detector independently agrees. A guard introduced
+ * against a clean population needs no allowlist, and adding an empty one would only
+ * create somewhere for the next violation to be parked. If this ever gates, the
+ * answer is to fix the test or to write the suppression pragma with a reason — not
+ * to open a baseline.
+ */
+import { readFileSync, existsSync, statSync, realpathSync } from 'node:fs';
+import { join, dirname, resolve, relative } from 'node:path';
+import { fileURLToPath, pathToFileURL } from 'node:url';
+import { listTrackedFiles, coverageOf, describeUnscanned } from './lib/tracked-files.mjs';
+
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+
+const TEST_RE = /\.(test|spec)\.[cm]?[jt]sx?$/;
+const CODE_RE = /\.[cm]?[jt]sx?$/;
+
+/**
+ * The flag-module specifiers a `vi.mock` can name. Matched as a PREFIX so
+ * '@papercusp/flags/client', '@papercusp/flags/server' and bare '@papercusp/flags'
+ * all count, without enumerating subpaths that may be added later.
+ */
+const FLAG_MODULE_PREFIXES = ['@papercusp/flags', '@/lib/flags', 'libs/flags'];
+
+/**
+ * A FLAG READ — the thing a subject must contain for a flag mock to bind to it.
+ *
+ * `FLAGS.` is deliberately NOT here. Referencing the registry is not reading a
+ * flag's VALUE: `'MUG_KETTLE_SYSTEM' in FLAGS` is a registry assertion, and
+ * counting it as a read would make the retirement ratchet — a guard that genuinely
+ * binds — look like a consumer and mask a real vacuous mock next to it.
+ */
+const FLAG_READ_RE = /\b(?:useFlag|getFlag|requireFlag|gateApiRoute|flagEnabled|isFlagEnabled)\s*\(/;
+
+/** Paths whose SUBJECT is the flag machinery — mocking a flag read is the point there. */
+const FLAG_MACHINERY_RE = /(^|\/)libs\/flags\//;
+
+const SUPPRESS_RE = /vacuous-flag-ok:/;
+
+/** How far to follow a test's local imports before concluding nothing reads a flag. */
+const MAX_IMPORT_DEPTH = 3;
+
+const IMPORT_RE = /(?:^|\n)\s*(?:import|export)[\s\S]{0,200}?from\s*['"]([^'"]+)['"]/g;
+const VI_MOCK_RE = /vi\.mock\s*\(\s*['"]([^'"]+)['"]/g;
+
+const RESOLVE_EXTS = ['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs'];
+
+/** Read a tracked file, tolerating a race with a concurrent peer edit. */
+function readOrNull(abs) {
+  try {
+    if (!existsSync(abs) || !statSync(abs).isFile()) return null;
+    return readFileSync(abs, 'utf8');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve an import specifier to a repo-relative file, or null for anything this
+ * guard deliberately does not follow (bare package specifiers, assets).
+ *
+ * The `@/` alias resolves against the nearest ancestor `src/` directory of the
+ * importer rather than a hard-coded root: this repo has more than one `src` tree
+ * with its own `@` alias, and hard-coding one of them is the documented cross-tree
+ * alias trap (AGENT-ENV.md).
+ */
+function resolveImport(spec, fromRel) {
+  let absNoExt;
+  if (spec.startsWith('.')) {
+    absNoExt = resolve(ROOT, dirname(fromRel), spec);
+  } else if (spec.startsWith('@/')) {
+    const srcRoot = nearestSrcRoot(fromRel);
+    if (!srcRoot) return null;
+    absNoExt = resolve(ROOT, srcRoot, spec.slice(2));
+  } else {
+    return null;
+  }
+  for (const ext of ['', ...RESOLVE_EXTS]) {
+    const cand = absNoExt + ext;
+    if (existsSync(cand) && statSync(cand).isFile()) return relative(ROOT, cand);
+  }
+  for (const ext of RESOLVE_EXTS) {
+    const cand = join(absNoExt, 'index' + ext);
+    if (existsSync(cand) && statSync(cand).isFile()) return relative(ROOT, cand);
+  }
+  return null;
+}
+
+function nearestSrcRoot(rel) {
+  const parts = rel.split('/');
+  const i = parts.lastIndexOf('src');
+  return i === -1 ? null : parts.slice(0, i + 1).join('/');
+}
+
+/**
+ * Does anything reachable from `rel` read a flag? Bounded walk, memoized across
+ * the whole run — the same subject tree is reached from many tests.
+ */
+function reachesFlagRead(rel, contentOf, depth = MAX_IMPORT_DEPTH, seen = new Set()) {
+  if (depth < 0 || seen.has(rel)) return false;
+  seen.add(rel);
+  const src = contentOf(rel);
+  if (src === null) return false;
+  if (FLAG_READ_RE.test(src)) return true;
+  if (depth === 0) return false;
+  for (const m of src.matchAll(IMPORT_RE)) {
+    const next = resolveImport(m[1], rel);
+    if (next && CODE_RE.test(next) && reachesFlagRead(next, contentOf, depth - 1, seen)) return true;
+  }
+  return false;
+}
+
+/** Is the identifier the mock factory returns reassigned anywhere in the file? */
+function mockExposesMutableKnob(src, mockStart) {
+  const factory = src.slice(mockStart, mockStart + 600);
+  const ids = new Set();
+  for (const m of factory.matchAll(/=>\s*([A-Za-z_$][\w$]*)\b/g)) ids.add(m[1]);
+  for (const m of factory.matchAll(/:\s*\(\)\s*=>\s*([A-Za-z_$][\w$]*)\b/g)) ids.add(m[1]);
+  for (const id of ids) {
+    if (id === 'undefined' || id === 'null' || id === 'true' || id === 'false') continue;
+    // A reassignment anywhere in the file: `id = ...` not preceded by let/const/var.
+    const re = new RegExp(`(?<!\\b(?:let|const|var)\\s)\\b${id}\\s*=(?!=|>)`, 'g');
+    if (re.test(src)) return id;
+  }
+  return null;
+}
+
+function isSuppressed(src, idx) {
+  const lineStart = src.lastIndexOf('\n', idx) + 1;
+  const lineEnd = src.indexOf('\n', idx);
+  const line = src.slice(lineStart, lineEnd === -1 ? src.length : lineEnd);
+  if (SUPPRESS_RE.test(line)) return true;
+  // The contiguous comment block directly above.
+  let cursor = lineStart - 1;
+  while (cursor > 0) {
+    const start = src.lastIndexOf('\n', cursor - 1) + 1;
+    const prev = src.slice(start, cursor).trim();
+    if (!prev.startsWith('//') && !prev.startsWith('*') && !prev.startsWith('/*')) break;
+    if (SUPPRESS_RE.test(prev)) return true;
+    cursor = start - 1;
+  }
+  return false;
+}
+
+export function scan({ root = ROOT, files } = {}) {
+  // `listTrackedFiles` already folds coverage in ({ files, unscanned, unscannedPresent, … }),
+  // so it is used whole rather than re-run through `coverageOf` — which takes the FILE LIST,
+  // not the wrapper, and fails loudly if handed the latter.
+  const scan0 = files ? { files, unscanned: [], unscannedPresent: [] } : listTrackedFiles(root);
+  const all = scan0.files;
+  const unscanned = scan0.unscanned ?? [];
+  // Keyed on unscannedPresent, not unscanned: this repo permanently carries one ABSENT
+  // submodule (libs/zero-harness, retired and deliberately uninitialized), so an alarm on
+  // bare `unscanned` fires on every run in a healthy tree and gets trained away.
+  const unscannedPresent = scan0.unscannedPresent ?? [];
+
+  const cache = new Map();
+  const contentOf = (rel) => {
+    if (!cache.has(rel)) cache.set(rel, readOrNull(join(root, rel)));
+    return cache.get(rel);
+  };
+
+  const codeFiles = all.filter((f) => CODE_RE.test(f));
+  const testFiles = codeFiles.filter((f) => TEST_RE.test(f));
+  const nonTestFiles = codeFiles.filter((f) => !TEST_RE.test(f));
+
+  const gating = [];
+  const reported = [];
+
+  // ── RULE B: a flag mock with no consumer anywhere in the subject tree ──────
+  for (const rel of testFiles) {
+    if (FLAG_MACHINERY_RE.test('/' + rel)) continue;
+    const src = contentOf(rel);
+    if (src === null) continue;
+
+    for (const m of src.matchAll(VI_MOCK_RE)) {
+      const spec = m[1];
+      if (!FLAG_MODULE_PREFIXES.some((p) => spec.startsWith(p))) continue;
+      if (isSuppressed(src, m.index)) continue;
+
+      // Does ANY module this test pulls in read a flag? The test's own body is
+      // excluded as a subject: a test that calls useFlag() itself is exercising
+      // the mock, not being bound by it.
+      let binds = false;
+      for (const im of src.matchAll(IMPORT_RE)) {
+        const target = resolveImport(im[1], rel);
+        if (target && CODE_RE.test(target) && reachesFlagRead(target, contentOf)) {
+          binds = true;
+          break;
+        }
+      }
+      if (binds) continue;
+
+      const knob = mockExposesMutableKnob(src, m.index);
+      const line = src.slice(0, m.index).split('\n').length;
+      const row = { file: rel, line, spec, knob };
+      if (knob) gating.push({ ...row, verdict: 'VACUOUS-TOGGLE' });
+      else reported.push({ ...row, verdict: 'INERT-MOCK' });
+    }
+  }
+
+  // ── RULE A: a flag key referenced only by tests ───────────────────────────
+  const keyRe = /\bFLAGS\.([A-Z][A-Z0-9_]*)/g;
+  const inTests = new Map();
+  const inSource = new Set();
+  for (const rel of nonTestFiles) {
+    const src = contentOf(rel);
+    if (src === null) continue;
+    for (const m of src.matchAll(keyRe)) inSource.add(m[1]);
+  }
+  for (const rel of testFiles) {
+    const src = contentOf(rel);
+    if (src === null) continue;
+    for (const m of src.matchAll(keyRe)) {
+      if (!inTests.has(m[1])) inTests.set(m[1], rel);
+    }
+  }
+  const testOnlyKeys = [...inTests.entries()]
+    .filter(([k]) => !inSource.has(k))
+    .map(([key, file]) => ({ key, file, verdict: 'TEST-ONLY-FLAG-KEY' }));
+
+  return {
+    gating,
+    reported,
+    testOnlyKeys,
+    unscanned,
+    unscannedPresent,
+    counts: {
+      codeFiles: codeFiles.length,
+      testFiles: testFiles.length,
+      nonTestFiles: nonTestFiles.length,
+    },
+  };
+}
+
+function main() {
+  const report = process.argv.includes('--report');
+  const census = process.argv.includes('--census');
+  const r = scan();
+
+  const unscannedNote = describeUnscanned(r.unscanned, ROOT);
+
+  if (census) {
+    console.log(`scanned ${r.counts.testFiles} test files / ${r.counts.nonTestFiles} source files`);
+    console.log(`gating (VACUOUS-TOGGLE):   ${r.gating.length}`);
+    console.log(`reported (INERT-MOCK):     ${r.reported.length}`);
+    console.log(`reported (TEST-ONLY KEYS): ${r.testOnlyKeys.length}`);
+  }
+
+  if (report || census) {
+    for (const x of r.reported) {
+      console.log(`  INERT-MOCK        ${x.file}:${x.line} mocks ${x.spec} — no subject reads a flag`);
+    }
+    for (const x of r.testOnlyKeys) {
+      console.log(`  TEST-ONLY-KEY     FLAGS.${x.key} — referenced by ${x.file}, by no source file`);
+    }
+  }
+
+  if (r.gating.length === 0) {
+    console.log(`✓ no vacuous flag guards${unscannedNote ? ` (${unscannedNote})` : ''}`);
+    process.exit(0);
+  }
+
+  console.error('\n✗ VACUOUS FLAG GUARD — a flag mock with a mutable knob that drives NOTHING:\n');
+  for (const x of r.gating) {
+    console.error(`  ${x.file}:${x.line}`);
+    console.error(`      mocks ${x.spec}, toggled via \`${x.knob}\`, but no module this test`);
+    console.error(`      imports reads a flag (checked ${MAX_IMPORT_DEPTH} import hops).`);
+    console.error(`      Both branches of that toggle run identical code, so one of them`);
+    console.error(`      passes for the wrong reason.\n`);
+  }
+  console.error('Fix the test so the assertion binds to something, or — if the mock is');
+  console.error('deliberate — put `vacuous-flag-ok: <reason>` on the vi.mock line.\n');
+  if (unscannedNote) console.error(unscannedNote);
+  process.exit(1);
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) main();
