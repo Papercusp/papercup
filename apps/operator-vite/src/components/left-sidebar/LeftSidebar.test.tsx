@@ -13,16 +13,21 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import { cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 
-// `overwatchOn` is the BLANKET answer the shared useFlag mock gives every flag —
+// `blanketFlagOn` is the BLANKET answer the shared useFlag mock gives every flag —
 // it predates there being more than one gated tab, and the order tests lean on it
 // to turn the whole rail on at once. `flags` overrides it PER KEY, which is what
 // the CONVERSATIONS_RAIL_TAB tests need: that flag is DEFAULT OFF (WI-37561), so
-// "overwatch on, convos off" is a real configuration and a single boolean cannot
+// "sentinel on, convos off" is a real configuration and a single boolean cannot
 // express it. Without the per-key override, a test asserting the Convos tab is
-// hidden would be indistinguishable from one asserting Overwatch is hidden.
+// hidden would be indistinguishable from one asserting Sentinel is hidden.
+// (It was called `overwatchOn` until 2026-08-11, when the Kettle tab retired —
+// P-059/D-083. The name was already a misnomer by then: it answers EVERY flag
+// except MUG_KETTLE, so it is what turns Sentinel and Convos on, and the several
+// `= true` assignments below are load-bearing for THOSE tabs. Renamed rather than
+// removed precisely so the next reader does not delete them as overwatch residue.)
 // `mugKettleOn` is a THIRD knob, separate from the blanket for the same reason
 // `flags` is: a single boolean cannot express a real configuration. It defaults
-// to TRUE — the inverse of `overwatchOn` — because MUG_KETTLE_SYSTEM is the only
+// to TRUE — the inverse of `blanketFlagOn` — because MUG_KETTLE_SYSTEM is the only
 // gate here whose OFF state removes the rail's DEFAULT tab, so letting the
 // blanket answer it would silently retire the Mug tier underneath every test
 // written before the gate existed. Those tests would not fail loudly; the
@@ -37,7 +42,7 @@ import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 // assignments several tests do cannot clobber it by omission.
 const MUG_KETTLE = 'papercusp-mug-kettle-system';
 const H = vi.hoisted(() => ({
-  overwatchOn: false,
+  blanketFlagOn: false,
   mugKettleOn: true,
   flags: {} as Record<string, boolean>,
   pathname: '/adv',
@@ -47,7 +52,7 @@ vi.mock('@papercusp/flags/client', () => ({
   useFlag: (key: string) =>
     key === 'papercusp-mug-kettle-system'
       ? (H.flags[key] ?? H.mugKettleOn)
-      : (H.flags[key] ?? H.overwatchOn),
+      : (H.flags[key] ?? H.blanketFlagOn),
 }));
 vi.mock('@/lib/router-compat/navigation', () => ({ usePathname: () => H.pathname }));
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
@@ -55,13 +60,16 @@ vi.mock('@papercusp/operator-core/lib/browser-workspace', () => ({
   wsLocalKey: (k: string) => `test:${k}`,
 }));
 // Stub the lazy tab panels with trivial markers — their own surfaces are tested
-// separately (MugTab / OverwatchTab).
+// separately (MugTab).
 // (No './PotsTab' stub: this rail no longer mounts it at all — the Pots tab was
 // removed 2026-08-10 on owner directive. A stub here would hide a regression that
 // re-added the tab, the same reasoning as the SwarmTab/VoiceTab note below.)
 vi.mock('./AccountsTab', () => ({ default: () => <div data-testid="panel-accounts" /> }));
 vi.mock('./MugTab', () => ({ default: () => <div data-testid="panel-queen" /> }));
-vi.mock('./OverwatchTab', () => ({ default: () => <div data-testid="panel-overwatch" /> }));
+// (No './OverwatchTab' stub: that module RETIRED to _retired/mug-kettle-deciders/
+// with the Kettle tab — P-059/D-083. A vi.mock naming a module that no longer
+// exists is the strand this repo has been bitten by before, so it goes with the
+// tab rather than lingering as a harmless-looking line.)
 vi.mock('./SystemTab', () => ({ default: () => <div data-testid="panel-system" /> }));
 vi.mock('./AgentsTab', () => ({ default: () => <div data-testid="panel-agents" /> }));
 vi.mock('./SpendTab', () => ({ default: () => <div data-testid="panel-spend" /> }));
@@ -96,7 +104,7 @@ beforeAll(() => {
 });
 beforeEach(() => {
   localStorage.clear();
-  H.overwatchOn = false;
+  H.blanketFlagOn = false;
   H.mugKettleOn = true;
   H.flags = {};
   H.pathname = '/adv';
@@ -150,7 +158,7 @@ describe('<LeftSidebar> shell', () => {
     // dark tab still has a place in the order, and this test is what keeps that
     // place from drifting while nobody can see the tab. The gated-OFF subsets are
     // covered by the flag tests below.
-    H.overwatchOn = true;
+    H.blanketFlagOn = true;
     renderRail();
     const tabs = within(screen.getByRole('tablist')).getAllByRole('tab');
     expect(tabs.map((x) => x.textContent?.trim())).toEqual([
@@ -163,7 +171,11 @@ describe('<LeftSidebar> shell', () => {
       // editing the expectation.)
       'operator',
       'brain',
-      'overwatch',
+      // ('overwatch' (the Kettle) sat HERE, between Mug and Agents, until
+      // 2026-08-11. RETIRED with its tier — P-059/D-083 — so unlike the gated-OFF
+      // case this is a removal from TABS itself, and every entry after it shifts
+      // up one. If you are reading this because the test red'd, check whether your
+      // change meant to move a tab at all before editing the expectation.)
       // (🎯 Goals sat HERE, between Kettle and Agents, 2026-08-07 → 2026-08-09.
       // REMOVED on owner directive: "remove the goals middle pane tab entirely.
       // We already have a goals tab inside the hud tab lets just use that."
@@ -202,7 +214,7 @@ describe('<LeftSidebar> shell', () => {
   // The collapsed icon rail is a SECOND rendering of the same TABS array, and the
   // owner navigates by it while collapsed — so it must carry the same order.
   it('keeps the collapsed icon rail in the same order as the expanded tabs', () => {
-    H.overwatchOn = true;
+    H.blanketFlagOn = true;
     renderRail('?lsb=false');
     const railButtons = Array.from(
       document.querySelectorAll<HTMLElement>('[data-testid^="left-sidebar-rail-"]'),
@@ -217,7 +229,10 @@ describe('<LeftSidebar> shell', () => {
       // longer matches the nuqs literal parser and falls through to the default.)
       'sentinel',
       'queen',
-      'overwatch',
+      // ('overwatch' was here — removed 2026-08-11 with the Kettle tab. It joins
+      // 'hives'/'goal'/'blender'/'docs'/'tasks' as a RETIRED id: a stale
+      // `?lst=overwatch` no longer matches the nuqs literal parser and falls
+      // through to the default tab.)
       // ('goal' was here — removed 2026-08-09 with the Goals tab. It joins
       // 'blender'/'docs'/'tasks' as a RETIRED id: a stale `?lst=goal` no longer
       // matches the nuqs literal parser and falls through to the default tab.)
@@ -315,7 +330,7 @@ describe('<LeftSidebar> shell', () => {
   // expanded tabs AND collapsed icon rail — or the owner sees them in two
   // places at once, which is exactly what the move was meant to end.
   it('no longer hosts the Fleet or Peers tabs — they moved to the op-chat sidebar (WI-5162)', () => {
-    H.overwatchOn = true;
+    H.blanketFlagOn = true;
     renderRail();
     for (const gone of ['swarm', 'voice']) {
       expect(screen.queryByTestId(`left-sidebar-tab-${gone}`)).toBeNull();
@@ -340,7 +355,7 @@ describe('<LeftSidebar> shell', () => {
   });
 
   it('hides the Overwatch tab while the OVERWATCH flag is off', () => {
-    H.overwatchOn = false;
+    H.blanketFlagOn = false;
     renderRail();
     expect(screen.queryByTestId('left-sidebar-tab-overwatch')).toBeNull();
     // Other tabs are present.
@@ -348,13 +363,13 @@ describe('<LeftSidebar> shell', () => {
   });
 
   it('shows the Overwatch tab when the flag is on', () => {
-    H.overwatchOn = true;
+    H.blanketFlagOn = true;
     renderRail();
     expect(screen.getByTestId('left-sidebar-tab-overwatch')).toBeTruthy();
   });
 
   it('snaps a stale ?lst=overwatch back to Mug while the flag is off', async () => {
-    H.overwatchOn = false;
+    H.blanketFlagOn = false;
     renderRail('?lst=overwatch');
     // The guard effect rewrites lst → queen (the default, so it's omitted from the
     // URL); assert the rail lands on the Mug tab + panel.
@@ -368,7 +383,7 @@ describe('<LeftSidebar> shell', () => {
   // two different things and the difference is the point, so this pair of tests
   // is what stops a later change "restoring" it by reflex.
   it('no longer hosts a Goals tab — the HUD Goals tab is the one goals surface', () => {
-    H.overwatchOn = true;
+    H.blanketFlagOn = true;
     H.flags = { 'papercusp-conversations-rail-tab': true };
     renderRail();
     expect(screen.queryByTestId('left-sidebar-tab-goal')).toBeNull();
@@ -406,7 +421,7 @@ describe('<LeftSidebar> shell', () => {
     it('hides Convos from BOTH the tab strip and the collapsed icon rail while the flag is off', () => {
       // Everything else on, convos off — the configuration the single blanket
       // boolean could not express, and the one the owner actually ships.
-      H.overwatchOn = true;
+      H.blanketFlagOn = true;
       H.flags = { [CONVOS]: false };
       renderRail();
       expect(screen.queryByTestId('left-sidebar-tab-conversations')).toBeNull();
@@ -420,7 +435,7 @@ describe('<LeftSidebar> shell', () => {
     });
 
     it('shows Convos again the moment the flag is flipped on', () => {
-      H.overwatchOn = true;
+      H.blanketFlagOn = true;
       H.flags = { [CONVOS]: true };
       renderRail();
       expect(screen.getByTestId('left-sidebar-tab-conversations')).toBeTruthy();
@@ -484,7 +499,7 @@ describe('<LeftSidebar> shell', () => {
     const CONVOS_KEY = 'papercusp-conversations-rail-tab';
 
     it('hides Mug AND Overwatch from both the tab strip and the collapsed icon rail while the tier is retired', () => {
-      H.overwatchOn = true; // even with OVERWATCH explicitly ON
+      H.blanketFlagOn = true; // even with OVERWATCH explicitly ON
       H.mugKettleOn = false;
       renderRail();
       expect(screen.queryByTestId('left-sidebar-tab-queen')).toBeNull();
@@ -498,7 +513,7 @@ describe('<LeftSidebar> shell', () => {
     });
 
     it('shows both again the moment the testing flag is flipped on', () => {
-      H.overwatchOn = true;
+      H.blanketFlagOn = true;
       H.mugKettleOn = true;
       renderRail();
       expect(screen.getByTestId('left-sidebar-tab-queen')).toBeTruthy();
@@ -510,14 +525,14 @@ describe('<LeftSidebar> shell', () => {
     // and it must not resurrect a tab for a tier that cannot run. Asserting only
     // the tier-off case above would pass even if the gate were an OR.
     it('keeps Overwatch hidden when its own flag is ON but the tier is retired', () => {
-      H.overwatchOn = true;
+      H.blanketFlagOn = true;
       H.mugKettleOn = false;
       renderRail();
       expect(screen.queryByTestId('left-sidebar-tab-overwatch')).toBeNull();
     });
 
     it('keeps Overwatch hidden when the tier is ON but its own OVERWATCH flag is off', () => {
-      H.overwatchOn = false;
+      H.blanketFlagOn = false;
       H.mugKettleOn = true;
       renderRail();
       expect(screen.queryByTestId('left-sidebar-tab-overwatch')).toBeNull();
@@ -549,7 +564,7 @@ describe('<LeftSidebar> shell', () => {
     });
 
     it('snaps a bookmarked ?lst=overwatch back to Accounts while the tier is retired', async () => {
-      H.overwatchOn = true;
+      H.blanketFlagOn = true;
       H.mugKettleOn = false;
       renderRail('?lst=overwatch');
       await waitFor(() =>
