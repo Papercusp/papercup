@@ -1,0 +1,114 @@
+/**
+ * EI-20228373335568300 — managed Codex rollouts are the first durable source
+ * of the native id, model, and reasoning effort for an adv_sessions row.
+ * These tests stay filesystem/pure so they do not depend on a live fleet row;
+ * the SQL contract guard below pins the metadata-only repair semantics.
+ */
+
+import { readFileSync } from 'node:fs';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, expect, it, afterEach } from 'vitest';
+import {
+  codexAdvSessionMetadata,
+  parseCodexEffectiveConfig,
+} from './session-ingest';
+
+const NATIVE_ID = '019f4fa9-4a09-78c0-8a35-d7e3382d1f8f';
+
+let root: string | null = null;
+
+afterEach(async () => {
+  if (root) await rm(root, { recursive: true, force: true });
+  root = null;
+});
+
+async function managedRollout(config: string, name = `rollout-2026-08-12T00-00-00-${NATIVE_ID}.jsonl`) {
+  root = await mkdtemp(join(tmpdir(), 'codex-adv-metadata-'));
+  const home = join(root, 'su-codex-homes', 'session-15002');
+  const day = join(home, 'sessions', '2026', '08', '12');
+  await mkdir(day, { recursive: true });
+  await writeFile(join(home, 'config.toml'), config);
+  const filePath = join(day, name);
+  await writeFile(filePath, '');
+  return filePath;
+}
+
+describe('parseCodexEffectiveConfig', () => {
+  it('reads the root model and reasoning effort, not profile/table values', () => {
+    expect(parseCodexEffectiveConfig([
+      'model = "gpt-5.6-sol"',
+      'model_reasoning_effort = "xhigh"',
+      '[profiles.fast]',
+      'model = "gpt-5.5"',
+      'model_reasoning_effort = "low"',
+    ].join('\n'))).toEqual({ model: 'gpt-5.6-sol', effort: 'xhigh' });
+  });
+
+  it('fails soft when Codex has not written either setting yet', () => {
+    expect(parseCodexEffectiveConfig('[features]\nmemories = false')).toEqual({ model: null, effort: null });
+  });
+});
+
+describe('codexAdvSessionMetadata', () => {
+  it('maps a paused/no-new-bytes rollout to its adv row and effective config', async () => {
+    const filePath = await managedRollout([
+      'model = "gpt-5.6-sol"',
+      'model_reasoning_effort = "xhigh"',
+      '[features]',
+      'memories = false',
+    ].join('\n'));
+
+    // The empty file models a paused session: discovery has a durable rollout
+    // path, but there is no late transcript turn to advance byte_offset.
+    expect(codexAdvSessionMetadata(filePath)).toEqual({
+      advSessionId: 15002,
+      sessionId: NATIVE_ID,
+      model: 'gpt-5.6-sol',
+      effort: 'xhigh',
+    });
+  });
+
+  it('still repairs the native id when the reaper removed config.toml', async () => {
+    const filePath = await managedRollout('');
+    await rm(join(root!, 'su-codex-homes', 'session-15002', 'config.toml'));
+
+    expect(codexAdvSessionMetadata(filePath)).toEqual({
+      advSessionId: 15002,
+      sessionId: NATIVE_ID,
+      model: null,
+      effort: null,
+    });
+  });
+
+  it('does not attribute shared or temporary homes to adv_sessions', async () => {
+    const filePath = await managedRollout('model = "gpt-5.6-sol"');
+    expect(codexAdvSessionMetadata(filePath.replace('/su-codex-homes/session-15002/', '/.codex/'))).toBeNull();
+    expect(codexAdvSessionMetadata(filePath.replace('/su-codex-homes/session-15002/', '/su-codex-homes/session-t-1/'))).toBeNull();
+    expect(codexAdvSessionMetadata(filePath.replace(NATIVE_ID, 'not-a-native-id'))).toBeNull();
+  });
+});
+
+describe('Codex adv-session backfill wiring', () => {
+  const source = readFileSync(new URL('./session-ingest.ts', import.meta.url), 'utf8');
+
+  it('collects metadata before the no-new-bytes short circuit', () => {
+    const start = source.indexOf('const codexMetadataBackfill');
+    const end = source.indexOf('await backfillSessionOwners', start);
+    const block = source.slice(start, end);
+    expect(block.indexOf('codexAdvSessionMetadata')).toBeGreaterThanOrEqual(0);
+    expect(block.indexOf('codexAdvSessionMetadata')).toBeLessThan(block.indexOf('cand.size <= st.byte_offset'));
+  });
+
+  it('updates only identity/launch metadata and never lifecycle timestamps', () => {
+    const start = source.indexOf('async function backfillCodexAdvSessions');
+    const end = source.indexOf('/**\n * Rows re-classified per sweep.', start);
+    const block = source.slice(start, end);
+    expect(block).toContain('UPDATE harness_shared.adv_sessions');
+    expect(block).toContain("sessions.workspace_id = ${activeWorkspaceId()}");
+    expect(block).not.toMatch(/\bended_at\s*=/);
+    expect(block).not.toMatch(/\bstarted_at\s*=/);
+    expect(block).not.toMatch(/\bexit_code\s*=/);
+  });
+});

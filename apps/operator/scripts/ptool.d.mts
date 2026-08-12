@@ -113,8 +113,13 @@ export function prettyText(text: any): string;
 /** Prefer the complete structured result requested by ptool, then fall back to
  *  flattening an MCP tools/call result's `content[]` into one text blob.
  *  Content text may carry result-door truncation markers and is therefore a
- *  human-readable fallback, not the scripting authority. Pure. */
-export function resultToText(result: any): any;
+ *  human-readable fallback, not the scripting authority. Pure.
+ *  @param {any} result
+ *  @param {{raw?: boolean}} [options]
+ */
+export function resultToText(result: any, { raw }?: {
+    raw?: boolean;
+}): any;
 /** Build the `tools/call` params for a ptool invocation. Pure and exported so
  *  the `_meta.structured` opt-in is regression-tested without opening a
  *  transport (EI-13245): the MCP SDK's `Client.callTool` throws "has an
