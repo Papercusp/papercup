@@ -2636,18 +2636,28 @@ export function bridgeNeedsOwnerSignalsFromRows(rows: BridgeNeedsOwnerRow[]): Wa
  */
 export async function collectBridgeNeedsOwnerSignals(sql: Sql, workspaceId: string): Promise<WatchdogSignal[]> {
   const rows = await sql<BridgeNeedsOwnerRow[]>`
-    WITH gated AS (
-      SELECT e.harness_slug,
-             e.mtime_ms,
-             (e.escalation::jsonb)->>'needs_owner_cause' AS cause,
-             (e.escalation::jsonb)->>'needs_owner_sweeps' AS sweeps,
-             ((e.escalation::jsonb)->>'needs_owner_alerted')::boolean AS alerted
+    -- MATERIALIZED is load-bearing, not a hint: escalation is a TEXT column and only
+    -- SOME phases put JSON in it (the escalation-spike path writes plain prose, and a
+    -- non-JSON row exists on this box today). A cast in the same query level as its own
+    -- IS JSON guard can be evaluated BEFORE that guard — SQL predicates are unordered —
+    -- and one such row would abort the whole collector. A collector that throws is a
+    -- guard that is silent, which is the exact failure this invariant exists to catch,
+    -- so the fence keeps the cast strictly downstream of the rows that survive the test.
+    WITH parseable AS MATERIALIZED (
+      SELECT e.harness_slug, e.mtime_ms, e.escalation
         FROM harness_shared.harness_escalations e
        WHERE e.workspace_id = ${workspaceId}
          AND e.phase = 'github-bridge'
-         AND e.escalation IS NOT NULL
-         AND jsonb_typeof(e.escalation::jsonb) = 'object'
-         AND ((e.escalation::jsonb)->>'needs_owner') = 'true'
+         AND e.escalation IS JSON OBJECT
+    ),
+    gated AS (
+      SELECT p.harness_slug,
+             p.mtime_ms,
+             (p.escalation::jsonb)->>'needs_owner_cause' AS cause,
+             (p.escalation::jsonb)->>'needs_owner_sweeps' AS sweeps,
+             ((p.escalation::jsonb)->>'needs_owner_alerted')::boolean AS alerted
+        FROM parseable p
+       WHERE ((p.escalation::jsonb)->>'needs_owner') = 'true'
     )
     SELECT g.harness_slug, g.cause, g.sweeps, g.alerted,
            EXISTS (

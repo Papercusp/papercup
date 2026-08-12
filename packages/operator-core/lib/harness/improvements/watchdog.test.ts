@@ -3061,4 +3061,92 @@ describe('signal lanes — metric vs defect (P-005/P-006: stats are not improvem
     expect(signalLaneOf('some-brand-new-collector')).toBe('defect');
     expect(sourceFilesWorkItem('some-brand-new-collector')).toBe(true);
   });
+
+  // WI-38327: its nearest neighbours are metrics, so the classification is worth pinning.
+  it('bridge-needs-owner-unalerted is a DEFECT, unlike the escalation MEASUREMENTS beside it', () => {
+    expect(signalLaneOf('bridge-needs-owner-unalerted')).toBe('defect');
+    expect(sourceFilesWorkItem('bridge-needs-owner-unalerted')).toBe(true);
+    expect(signalLaneOf('unresolved-escalation')).toBe('metric');
+  });
+});
+
+/**
+ * WI-38327 — the recurrence guard for the github-bridge owner-gated egress block.
+ * The invariant: needs_owner=true past the debounce ⇒ an owner-rail record exists.
+ * Zero signals == satisfied.
+ */
+describe('bridge-needs-owner-unalerted (WI-38327 recurrence guard)', () => {
+  const gated = (over: Partial<Parameters<typeof bridgeNeedsOwnerSignalsFromRows>[0][number]> = {}) => ({
+    harness_slug: 'papercusp',
+    cause: 'bridge-egress-unreachable',
+    sweeps: 3,
+    alerted: true,
+    owner_alerted: true,
+    ...over,
+  });
+
+  it('SATISFIED: an owner-gated block the owner rail has a record of yields no signal', () => {
+    expect(bridgeNeedsOwnerSignalsFromRows([gated()])).toEqual([]);
+  });
+
+  it('VIOLATION: past the threshold with no owner-rail record — the ~26h/899-commit incident', () => {
+    const signals = bridgeNeedsOwnerSignalsFromRows([gated({ owner_alerted: false })]);
+    expect(signals).toHaveLength(1);
+    expect(signals[0].source).toBe('bridge-needs-owner-unalerted');
+    expect(signals[0].key).toBe('bridge-needs-owner:papercusp');
+    expect(signals[0].severity).toBe('critical');
+    expect(signals[0].scope).toBe('harness:papercusp');
+    expect(signals[0].body).toContain(`${BRIDGE_NEEDS_OWNER_CONDITION_PREFIX}papercusp`);
+  });
+
+  it('the latch claiming alerted:true does NOT satisfy it — the writer persists intent, then delivers in a try/catch', () => {
+    // The whole reason the falsifier is attention_notifications and not the latch.
+    const signals = bridgeNeedsOwnerSignalsFromRows([gated({ alerted: true, owner_alerted: false })]);
+    expect(signals).toHaveLength(1);
+    expect(signals[0].body).toContain('swallowed its failure');
+  });
+
+  it('names the DECIDER when the latch never alerted despite passing the threshold', () => {
+    const signals = bridgeNeedsOwnerSignalsFromRows([gated({ alerted: false, owner_alerted: false })]);
+    expect(signals[0].body).toContain('decider itself is not firing');
+  });
+
+  it('DEBOUNCE: below the threshold is not yet a violation (a single non-transient blip)', () => {
+    expect(bridgeNeedsOwnerSignalsFromRows([gated({ sweeps: 1, alerted: false, owner_alerted: false })])).toEqual([]);
+  });
+
+  it('FAILS CLOSED on an absent latch — the shape a regression that drops it would produce', () => {
+    const signals = bridgeNeedsOwnerSignalsFromRows([
+      gated({ sweeps: null, alerted: null, cause: null, owner_alerted: false }),
+    ]);
+    expect(signals).toHaveLength(1);
+    expect(signals[0].body).toContain('latch fields are ABSENT');
+  });
+
+  it('accepts a string sweeps count (jsonb ->> always returns text)', () => {
+    expect(bridgeNeedsOwnerSignalsFromRows([gated({ sweeps: '5', owner_alerted: false })])).toHaveLength(1);
+    expect(bridgeNeedsOwnerSignalsFromRows([gated({ sweeps: '1', owner_alerted: false })])).toEqual([]);
+  });
+
+  it('CONTROL: an unparseable sweeps value is not silently read as past-threshold', () => {
+    // Calibration for the two cases above — proves the filter reads the value rather
+    // than passing everything non-null through.
+    expect(bridgeNeedsOwnerSignalsFromRows([gated({ sweeps: 'lots', owner_alerted: false })])).toEqual([]);
+  });
+
+  it('is per-harness: two blocked hives yield two independently-keyed signals', () => {
+    const signals = bridgeNeedsOwnerSignalsFromRows([
+      gated({ harness_slug: 'papercusp', owner_alerted: false }),
+      gated({ harness_slug: 'oddsmith-hive', owner_alerted: false }),
+    ]);
+    expect(signals.map((s) => s.key)).toEqual([
+      'bridge-needs-owner:papercusp',
+      'bridge-needs-owner:oddsmith-hive',
+    ]);
+  });
+
+  it('is ephemeral-benchmark filtered like every other per-harness source (test debris is not an improvement)', () => {
+    const [signal] = bridgeNeedsOwnerSignalsFromRows([gated({ harness_slug: 'xbench-throwaway', owner_alerted: false })]);
+    expect(isEphemeralBenchmarkSignal(signal)).toBe(true);
+  });
 });

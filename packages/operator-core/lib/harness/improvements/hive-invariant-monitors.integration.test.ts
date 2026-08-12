@@ -23,6 +23,7 @@ import {
   collectStalledFeatureSignals,
   collectOrphanedSpawnSignals,
   collectEscalationSpikeSignals,
+  collectBridgeNeedsOwnerSignals,
 } from './watchdog';
 
 const WS = 'ws-invariants';
@@ -153,5 +154,69 @@ describe('escalation-spike collector (SQL half)', () => {
     expect(signals[0].body).toContain('3 escalation(s)');
     expect(signals[0].body).toContain('inv-a×2');
     expect(signals[0].body).toContain('inv-b×1');
+  });
+});
+
+/**
+ * WI-38327 — the SQL half of the github-bridge recurrence guard. The pure half
+ * (`bridgeNeedsOwnerSignalsFromRows`) is unit-tested in watchdog.test.ts; what needs a
+ * real PG is the part that cannot be exercised any other way: the jsonb extraction out of
+ * a TEXT `escalation` column, and the cause-matched EXISTS against the owner rail.
+ */
+describe('bridge-needs-owner-unalerted collector (SQL half)', () => {
+  const CAUSE = 'bridge-egress-unreachable';
+  const mkEscalation = (slug: string, body: Record<string, unknown>) => db.adminSql`
+    INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, workspace_id, mtime_ms)
+    VALUES (${slug}, 'github-bridge', ${JSON.stringify(body)}, ${WS}, ${Date.now()})`;
+  const mkOwnerAlarm = (slug: string, cause: string) => db.adminSql`
+    INSERT INTO harness_shared.attention_notifications
+      (workspace_id, harness_slug, kind, title, body, importance, data)
+    VALUES (${WS}, ${slug}, 'intervention', 'bridge blocked', 'owner action required', 'urgent',
+            ${db.adminSql.json({ conditionKey: `github-bridge-needs-owner:${slug}`, cause })})`;
+
+  it('fires for an owner-gated bridge with no owner-rail record, and is SILENT once one exists', async () => {
+    const latch = { needs_owner: true, needs_owner_alerted: true, needs_owner_cause: CAUSE, needs_owner_sweeps: 3 };
+    await mkEscalation('inv-bridge-unpaged', latch);
+    await mkEscalation('inv-bridge-paged', latch);
+    await mkOwnerAlarm('inv-bridge-paged', CAUSE);
+
+    const signals = await collectBridgeNeedsOwnerSignals(db.adminSql as never, WS);
+    expect(signals.map((s) => s.key)).toEqual(['bridge-needs-owner:inv-bridge-unpaged']);
+  });
+
+  it('the EXISTS is CAUSE-matched: a previous episode\'s page does not cover a NEW cause', async () => {
+    await mkEscalation('inv-bridge-newcause', {
+      needs_owner: true, needs_owner_alerted: true,
+      needs_owner_cause: 'admission-blocked', needs_owner_sweeps: 4,
+    });
+    // The owner was paged — but about the OTHER signal kind (the WI-6643 masking bug).
+    await mkOwnerAlarm('inv-bridge-newcause', CAUSE);
+
+    const signals = await collectBridgeNeedsOwnerSignals(db.adminSql as never, WS);
+    expect(signals.map((s) => s.key)).toContain('bridge-needs-owner:inv-bridge-newcause');
+  });
+
+  it('ignores rows that are not owner-gated', async () => {
+    await mkEscalation('inv-bridge-ok', { needs_owner: false, needs_owner_sweeps: 9 });
+    const signals = await collectBridgeNeedsOwnerSignals(db.adminSql as never, WS);
+    expect(signals.map((s) => s.key)).not.toContain('bridge-needs-owner:inv-bridge-ok');
+  });
+
+  it('a PLAIN-PROSE escalation body does not abort the sweep — `escalation` is TEXT, not jsonb', async () => {
+    // The reason the collector fences its cast behind a MATERIALIZED `IS JSON OBJECT`
+    // filter. Only some phases write JSON here; a row like this exists on the dev box
+    // today, and an unguarded `escalation::jsonb` would throw and silence the guard —
+    // the failure mode this whole invariant exists to prevent, reintroduced one level up.
+    await db.adminSql`
+      INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, workspace_id, mtime_ms)
+      VALUES ('inv-bridge-prose', 'github-bridge', 'push rejected: refusing to allow an OAuth App', ${WS}, ${Date.now()})`;
+    await mkEscalation('inv-bridge-still-seen', {
+      needs_owner: true, needs_owner_alerted: true, needs_owner_cause: CAUSE, needs_owner_sweeps: 2,
+    });
+
+    // Must not throw, AND must still report the violating row sitting beside the prose one.
+    const signals = await collectBridgeNeedsOwnerSignals(db.adminSql as never, WS);
+    expect(signals.map((s) => s.key)).toContain('bridge-needs-owner:inv-bridge-still-seen');
+    expect(signals.map((s) => s.key)).not.toContain('bridge-needs-owner:inv-bridge-prose');
   });
 });
