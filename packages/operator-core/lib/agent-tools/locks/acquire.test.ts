@@ -102,6 +102,11 @@ describe('locks:acquire — outcome branches', () => {
     expect(guidance).not.toMatch(/single incidental edit needs no manual call/);
   });
 
+  it('guidance omits published_sha for uncommitted edits and reserves it for a published SHA', () => {
+    expect(tool.guidance?.chaining).toMatch(/still uncommitted, omit published_sha/);
+    expect(tool.guidance?.chaining).toMatch(/actually published a lowercase 40–64-character hexadecimal commit SHA/);
+  });
+
   it('publishes coordination_domain as an absolute canonical checkout root, not a workspace slug', () => {
     const description = tool.args.shape.coordination_domain.description ?? '';
     expect(description).toMatch(/absolute canonical repository checkout root/i);

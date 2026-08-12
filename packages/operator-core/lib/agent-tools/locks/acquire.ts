@@ -98,7 +98,7 @@ export default defineTool({
     notWhen:
       'Read-only inspection needs no claim. A single incidental edit in a hooked session needs no manual call — do NOT wrap every hooked edit in acquire/release. Explicit locks are the fallback for unhooked Codex.',
     chaining:
-      'On ok: edit → commit → locks:release { lock_id }. On busy: wake_on_grant:true → end your turn; the wake carries your lock_id + running TTL — edit, then release. Only block (wait) when you need the lock THIS turn and the holder is about to finish; events:cancel + locks:cancel_wait retracts a queued wake.',
+      'On ok: edit → commit → locks:release { lock_id }. If the edit is still uncommitted, omit published_sha; pass published_sha only when you have actually published a lowercase 40–64-character hexadecimal commit SHA. On busy: wake_on_grant:true → end your turn; the wake carries your lock_id + running TTL — edit, then release. Only block (wait) when you need the lock THIS turn and the holder is about to finish; events:cancel + locks:cancel_wait retracts a queued wake.',
     seeAlso: [
       'locks:acquire_granular (a directory/subtree, not a single file set)',
       'locks:acquire_resource (a named shared resource — dev server, db schema)',
