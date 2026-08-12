@@ -211,10 +211,11 @@ describe('coord:declare-intent lane validation (EI-356)', () => {
     const res = parse(await tool.handler({ intent: 'replacement work', items: [] }, ctx));
     expect(res.ok).toBe(true);
     expect(writePresence).toHaveBeenCalledTimes(1);
-    expect(writePresence.mock.calls[0][1]).toMatchObject({
-      intent: 'replacement work',
-      currentPlanSlug: null,
-    });
+    expect(writePresence).toHaveBeenCalledWith(
+      expect.any(Object),
+      expect.objectContaining({ intent: 'replacement work', currentPlanSlug: null }),
+      null,
+    );
     expect(reconcileDeclaredClaims).not.toHaveBeenCalled();
   });
 
