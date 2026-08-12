@@ -269,9 +269,11 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       cwd: dir,
       detached: true, // own process group, so -pid kills the whole tree
     });
-    await new Promise((r) => setTimeout(r, 500)); // let it grab the only slot
+    await waitFor('holder grabs the only slot', () => heldSlotCount(dir, 1) === 1);
     process.kill(-(holder.pid as number), 'SIGKILL'); // kill the group, no cleanup runs
-    await new Promise((r) => setTimeout(r, 300)); // let the kernel release the lock
+    // The kernel drops the flock when the last fd closes — which is the very thing under test, so
+    // wait for the slot to actually read as free rather than assuming a fixed grace period.
+    await waitFor('kernel releases the killed holder\'s flock', () => heldSlotCount(dir, 1) === 0);
 
     const t0 = Date.now();
     const r = runSync(['bash', '-c', 'echo got-slot'], { PC_HEAVY_SLOTS: '1', PC_HEAVY_TIMEOUT_SEC: '10' });
@@ -298,14 +300,14 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       cwd: dir,
       detached: true,
     });
-    await new Promise((r) => setTimeout(r, 500)); // let A grab slot 0
+    await waitFor('A grabs slot 0', () => heldSlotCount(dir, slots) >= 1);
 
     const holderB = spawn('bash', [PC_HEAVY, 'sleep', '2'], {
       env: baseEnv({ PC_HEAVY_SLOTS: String(slots) }),
       cwd: dir,
       detached: true,
     });
-    await new Promise((r) => setTimeout(r, 500)); // let B grab slot 1 (slot 0 is busy)
+    await waitFor('B grabs slot 1 (slot 0 is busy)', () => heldSlotCount(dir, slots) === slots);
 
     const t0 = Date.now();
     const r = runSync(['bash', '-c', 'echo got-a-free-slot'], {
