@@ -87,12 +87,22 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   }),
 }));
 
-vi.mock('../../work-items', () => ({
-  CLAIM_STATES_ALLOWLIST: ['open', 'failing'],
-  claimNextWorkItem: vi.fn(),
-  releaseWorkItem: vi.fn(),
-  diagnoseClaimNextMiss: vi.fn(),
-}));
+// `isSettledWorkItemState` is passed through REAL, not stubbed: it is a pure predicate,
+// and claim_next reaches it TRANSITIVELY (claim_next -> ./retraction-advisory -> work-items).
+// A whole-module factory that omits a transitively-imported export fails the suite at import
+// time with "No X export is defined on the mock" — which is what happened here. Stubbing it
+// as vi.fn() would be worse than the crash: it would return undefined, making every
+// "is this settled?" check silently falsy. Same reasoning, and same fix, as comment.test.ts.
+vi.mock('../../work-items', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../work-items')>();
+  return {
+    CLAIM_STATES_ALLOWLIST: ['open', 'failing'],
+    claimNextWorkItem: vi.fn(),
+    releaseWorkItem: vi.fn(),
+    diagnoseClaimNextMiss: vi.fn(),
+    isSettledWorkItemState: actual.isSettledWorkItemState,
+  };
+});
 // Claim-time recall port (P-008) — mock so this handler test stays a hermetic
 // unit (the recall itself is pinned in memory/claim-port.test.ts).
 vi.mock('../../memory/claim-port', () => ({ buildClaimRecallBlock: vi.fn(async () => null) }));

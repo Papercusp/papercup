@@ -1338,21 +1338,62 @@ describe('EI-20263854732193595: resolveIntegrationRoot fails closed on release/c
   });
 
   /* A builder nobody calls emits no evidence, which is indistinguishable from the bug
-   * this closes. Pin the CALL SITE in the checkpoint action, not just the function. */
+   * this closes. Pin the CALL SITE in the checkpoint action, not just the function.
+   *
+   * `logsRootBeforeRouting` is kept as a pure function over source TEXT precisely so its
+   * falsifiability can be shown against synthetic controls below — mutating the real file
+   * to prove the guard bites would race git-sync's tree-wide sweep, which commits whatever
+   * is on disk when it ticks (the probe would land committed even if nothing went wrong). */
+  const logsRootBeforeRouting = (src: string): boolean => {
+    // Must match a LOGGED CALL, not any occurrence of the name: a bare substring test also
+    // matches the `export function integrationRootEvidence(` declaration, so it would pass
+    // on a builder that is exported and never invoked — the exact regression this pins
+    // against. (Caught by the synthetic controls below, not by review.)
+    const logCall = /console\.log\([^\n]*integrationRootEvidence\(\)/.exec(src);
+    const routingIdx = src.indexOf('await resolveCheckpointRouting(ctx');
+    if (!logCall || routingIdx === -1) return false;
+    return logCall.index < routingIdx;
+  };
+
   it('is actually invoked by the green-checkpoint action (evidence must reach the run log)', async () => {
     const { readFile } = await import('node:fs/promises');
     const src = await readFile(
       fileURLToPath(new URL('./release-actions.ts', import.meta.url)),
       'utf8',
     );
-    const callSite = /integrationRootEvidence\(\)/.test(src);
-    expect(callSite, 'integrationRootEvidence() must be called, not merely exported').toBe(true);
-    // it must be logged BEFORE routing/verdict work, or it is missing from exactly the
-    // runs that go wrong early
-    const evidenceIdx = src.indexOf('integrationRootEvidence()');
-    const routingIdx = src.indexOf('await resolveCheckpointRouting(ctx');
-    expect(evidenceIdx).toBeGreaterThan(-1);
-    expect(routingIdx).toBeGreaterThan(-1);
-    expect(evidenceIdx).toBeLessThan(routingIdx);
+    expect(
+      logsRootBeforeRouting(src),
+      'integrationRootEvidence() must be CALLED before routing — not merely exported',
+    ).toBe(true);
+  });
+
+  it('...and that pin is falsifiable — it rejects the shapes it is meant to catch', () => {
+    // exported but never called: the silent-no-evidence regression. This control is the
+    // one that caught the first draft of the pin, which matched the declaration itself.
+    expect(
+      logsRootBeforeRouting(
+        'export function integrationRootEvidence() {}\nawait resolveCheckpointRouting(ctx, x);',
+      ),
+    ).toBe(false);
+    // called, but AFTER routing: missing from exactly the runs that fail early
+    expect(
+      logsRootBeforeRouting(
+        'await resolveCheckpointRouting(ctx, x);\nconsole.log(integrationRootEvidence());',
+      ),
+    ).toBe(false);
+    // computed but never logged: evidence that never reaches the run log is no evidence
+    expect(
+      logsRootBeforeRouting(
+        'const line = integrationRootEvidence();\nawait resolveCheckpointRouting(ctx, x);',
+      ),
+    ).toBe(false);
+    // routing site renamed away: the pin must not silently pass on a moved target
+    expect(logsRootBeforeRouting('console.log(integrationRootEvidence());')).toBe(false);
+    // calibration: the real shape must still pass, or the refusals above prove nothing
+    expect(
+      logsRootBeforeRouting(
+        'console.log(`${orchestratorStdoutTag()} ${integrationRootEvidence()}`);\nawait resolveCheckpointRouting(ctx, x);',
+      ),
+    ).toBe(true);
   });
 });
