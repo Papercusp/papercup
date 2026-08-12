@@ -50,6 +50,7 @@ import { clearPresence } from '../coordination/presence';
 import { mergeIds, runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
 import { softText, clampText } from '../limits';
 import { readProcessIdentity } from '../../process-identity';
+import { markAdvSessionEnded } from '../../adv-sessions';
 
 /** Console-marker substring stamped into every fleet/desktop launch command
  *  (capability:terminal / fleet:launch-on-plan) — identifies a papercusp tab
@@ -90,6 +91,8 @@ export interface KillDeps {
   clearPresence?: (ownerId: string) => Promise<void>;
   /** Append an audit row. */
   audit?: (action: string, subject: string, details: Record<string, unknown>) => Promise<void>;
+  /** Atomically stamp the terminal tuple after this endpoint confirms the host died. */
+  markSessionEnded?: (id: string, signal: 'SIGTERM' | 'SIGKILL') => Promise<void>;
   sleep?: (ms: number) => Promise<void>;
 }
 
@@ -270,6 +273,14 @@ export async function killOne(input: KillOneInput, deps: KillDeps): Promise<Kill
   const signal = (await stopPid(host.pid, prims)) ?? 'SIGTERM';
   if (host.ptyPid && host.ptyPid !== host.pid && prims.alive(host.ptyPid)) {
     prims.kill(host.ptyPid, 'SIGTERM');
+  }
+
+  // The launcher normally reports its own exit, but killing its host can sever that
+  // best-effort callback before it reaches the operator. The kill endpoint already has
+  // authoritative proof that the process is gone, so stamp the complete terminal tuple
+  // here instead of leaving an internally contradictory ended_by-only row behind.
+  if (host.advSessionId != null) {
+    await deps.markSessionEnded?.(host.advSessionId, signal).catch(() => {});
   }
 
   let terminal: KillOneResult['terminal'] = 'left-open';
@@ -455,6 +466,7 @@ export default defineTool({
       findHost: (ownerId) => findLiveHost(ownerId),
       cancelNursery: (target, why) => cancelNurseryTarget(target, why, workspaceId, actor),
       clearPresence: (ownerId) => clearPresence(ownerId),
+      markSessionEnded: (id, signal) => markAdvSessionEnded(Number(id), null, 'signal', { signal }),
       audit: (action, subject, details) => writeKillAudit(action, subject, details, workspaceId, actor.ownerId),
     };
 

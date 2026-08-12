@@ -61,6 +61,11 @@ const host = (pid: number): PsuPtyHost => ({
   startedAt: Date.now(),
 });
 
+const trackedHost = (pid: number, advSessionId: string): PsuPtyHost => ({
+  ...host(pid),
+  advSessionId,
+});
+
 const noSleep = (_ms: number) => Promise.resolve();
 
 describe('findTabShellPid', () => {
@@ -154,6 +159,29 @@ describe('killOne', () => {
     expect(r.terminal).toBe('left-open');
     expect(t.kills.some((k) => k.pid === 200)).toBe(false); // shell untouched
     expect(t.aliveSet.has(200)).toBe(true);
+  });
+
+  it('desktop: stamps the tracked adv_session after confirming the host died', async () => {
+    const t = makeProcTree({
+      300: { ppid: 1, cmdline: 'node psu-launcher.mjs' },
+    });
+    const ended: Array<{ id: string; signal: string }> = [];
+    const deps: KillDeps = {
+      cancelNursery: async () => null,
+      findHost: () => trackedHost(300, '15153'),
+      readProc: t.readProc,
+      kill: t.kill,
+      alive: t.alive,
+      sleep: noSleep,
+      markSessionEnded: async (id, signal) => {
+        ended.push({ id, signal });
+      },
+    };
+
+    const r = await killOne({ actor: 'su-me', target: 'su-target', closeTerminal: false, reason: 'stop' }, deps);
+
+    expect(r.ok).toBe(true);
+    expect(ended).toEqual([{ id: '15153', signal: 'SIGTERM' }]);
   });
 
   it('escalates to SIGKILL when the host survives SIGTERM', async () => {
