@@ -173,14 +173,14 @@ import './pot/pause';
 // (focus directive / eligible plans / new-work pause); hive_settings-backed (C-1).
 import './pot/set_steering';
 import './pot/get_steering';
-// overwatch-role-2026-06-15 B-07 — the autonomous system-health supervisor's
-// control surface (start/pause its loop), sibling to pot:start/pause:
-import './overwatch/start';
-import './overwatch/pause';
-// (kettle:declare-wake — the overwatch's declare-next-wake verb — RETIRED to
-// _retired/mug-kettle-deciders/ by retire-mug-kettle-su-only-2026-08-09 P-059/D-080.
-// Its wake PRIMITIVE (declareOverwatchTimeWake, lib/overwatch/) is still live and is
-// what `overwatch/loop.ts` below calls; only the agent-facing tool retired.)
+// (The whole `agent-tools/overwatch/` GROUP is now RETIRED to
+// _retired/mug-kettle-deciders/ by retire-mug-kettle-su-only-2026-08-09 P-059:
+//   - kettle:declare-wake (declare-next-wake)   — D-080
+//   - kettle:start / kettle:pause (loop control) — D-083, with their OverwatchTab UI
+// The directory no longer exists. Note the asymmetry that survives: the agent-facing
+// TOOLS retired, but the wake PRIMITIVE (declareOverwatchTimeWake) and the loop module
+// in `lib/overwatch/` are still live and still imported below — `lib/overwatch/` is its
+// own later P-059 slice, and the tools imported IT, not the reverse.)
 // overwatch-role-2026-06-15 B-04 — the wake-loop module: registers the
 // `system:overwatch-launch` action + the B-07 wake-bridge waker at boot (so an
 // `kettle:start` in THIS process finds a wired waker, not the fail-soft no-op).

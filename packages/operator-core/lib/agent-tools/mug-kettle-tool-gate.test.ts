@@ -182,15 +182,17 @@ describe('P-010 tool gate: the shared refusal', () => {
  * honours. The restore contract MOVES from the flag to
  * `_retired/mug-kettle-deciders/RESTORE.md`, which records every row removed
  * here so that a restore re-adds it. Removed so far: pot:survey,
- * kettle:declare-wake (P-059).
+ * kettle:declare-wake, kettle:start, kettle:pause (P-059) — the last two took
+ * the whole `agent-tools/overwatch/` directory with them, so there is no longer
+ * an overwatch tool group for a future row to live in.
  */
 const GATED: Array<{ name: string; load: () => Promise<{ default: unknown }>; args: Record<string, unknown> }> = [
   // D-017 actuators — the refusal is harm-prevention.
   { name: 'pot:start', load: () => import('./pot/start'), args: { harness: 'papercusp' } },
   { name: 'pot:wake', load: () => import('./pot/wake'), args: { harness: 'papercusp', reason: 't' } },
   { name: 'cup:spawn', load: () => import('./cup/spawn'), args: { harness: 'papercusp', role: 'coder' } },
-  { name: 'kettle:start', load: () => import('./overwatch/start'), args: { harness: 'papercusp' } },
-  // (kettle:declare-wake retired here by P-059/D-080 — see the note above this list.)
+  // (kettle:start and kettle:declare-wake retired here by P-059 — see the note
+  // above this list. kettle:pause retired from EXCLUDED for the same reason.)
   // D-048 tier surfaces. set-steering is the one true actuator of the four (it
   // writes, then requestUrgentPotWake); the rest are reads whose zero-valued
   // answers would misreport a retired tier as a healthy idle one.
@@ -277,12 +279,11 @@ const EXCLUDED: Array<{ name: string; why: string; load: () => Promise<{ default
     load: () => import('./pot/pause'),
     args: { harness: 'papercusp' },
   },
-  {
-    name: 'kettle:pause',
-    why: 'a STOPPER, same reason as pot:pause',
-    load: () => import('./overwatch/pause'),
-    args: { harness: 'papercusp' },
-  },
+  // (kettle:pause sat HERE as a STOPPER, excluded for the same reason as
+  // pot:pause. It RETIRED with the rest of `agent-tools/overwatch/` in P-059,
+  // and a retired tool cannot be a stopper for a tier that no longer runs — the
+  // exclusion asserted a live refusal-direction, which is now vacuous.
+  // pot:pause below is unaffected: the pot substrate survives per D-003.)
   {
     name: 'curation:state-of-pot',
     why: "Scout's own corpus-synthesis step; D-001 keeps Scout INTACT, and the census found ZERO curation entry points",

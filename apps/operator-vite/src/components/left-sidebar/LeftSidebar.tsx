@@ -43,7 +43,7 @@ import type { BoundLexicon } from '@papercusp/lexicon';
 // nothing else in this rail uses it.
 // `Network` left with the Pots tab (2026-08-10) — it was that tab's icon and
 // nothing else in this rail uses it.
-import { Coffee, Thermometer, CupSoda, KeyRound, Cog, Bot, Coins, MessagesSquare, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
+import { Coffee, CupSoda, KeyRound, Cog, Bot, Coins, MessagesSquare, PanelLeftOpen, PanelLeftClose } from 'lucide-react';
 import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { LEFT_SIDEBAR_CSS } from './left-sidebar.styles';
@@ -73,11 +73,11 @@ const AccountsTab = lazy(() => import('./AccountsTab'));
 // Moved here from the /adv top tab strip as an owner-steering tab (owner
 // review 2026-06-15; queen-steering-panel-2026-06-15 B-04).
 const MugTab = lazy(() => import('./MugTab'));
-// 👁 Overwatch — the autonomous supervisor's actionable panel (control + the
-// anomaly→action list). Moved here from the /adv strip next to Mug (owner ask
-// 2026-06-15; system-health-tab P-008) — its duplicated health grid dropped (the
-// Health tab owns the panels). Flag-gated (OVERWATCH); hidden when the role is dark.
-const OverwatchTab = lazy(() => import('./OverwatchTab'));
+// (👁 Overwatch — the Kettle's actionable panel — sat HERE until 2026-08-11.
+// RETIRED with its tier to `_retired/mug-kettle-deciders/` by
+// retire-mug-kettle-su-only-2026-08-09 P-059/D-083: the panel's only controls
+// were `kettle:start`/`kettle:pause`, which retired in the same slice, so the
+// tab could not have done anything even with both its flags forced on.)
 // 📣 Sentinel — the always-on, voice-first human-facing companion's
 // quick live-override settings (audience mode, voice, proactive nudges, DND). The
 // sidebar is the quick live-override surface; full workspace settings hold the
@@ -179,12 +179,17 @@ const TABS = [
   // the System tab first — see SystemTab.tsx. `LocalPotsControl` is the one part
   // that went with the tier: adv/PotsRunningPill (P-075) and this tab were its
   // only two mounts, so D-070's deferred deletion landed with P-077.)
-  // Cup-cast nav icons (restore-pot-lexicon D-006): Mug→Coffee ☕ · Kettle→Thermometer
-  // (no lucide kettle exists; the thermometer ties the kettle's heat to overwatch's
-  // system-health monitoring) · Papercup→CupSoda 🥤. classic labels flow from the lexicon.
+  // Cup-cast nav icons (restore-pot-lexicon D-006): Mug→Coffee ☕ ·
+  // Papercup→CupSoda 🥤. classic labels flow from the lexicon.
+  // (Kettle→Thermometer was the third; it retired with the Kettle tab, and the
+  // Thermometer import went with it — P-059/D-083.)
   { id: 'sentinel', label: (t: BoundLexicon) => t('operator'), icon: CupSoda, tip: (t: BoundLexicon) => `${t('operator')} — your voice/text front-door agent; talks, suggests, and hands work to the ${t('brain')}`, render: (a: boolean) => <PapercupTab active={a} /> },
   { id: 'queen', label: (t: BoundLexicon) => t('brain'), icon: Coffee, tip: (t: BoundLexicon) => `The ${t('brain')} — plans work and places it across the ${t('fleet', { lower: true })}`, render: (a: boolean) => <MugTab active={a} /> },
-  { id: 'overwatch', label: (t: BoundLexicon) => t('overwatch'), icon: Thermometer, tip: (t: BoundLexicon) => `${t('overwatch')} — supervises ${t('fleet', { lower: true })} & system health, nudges when things drift`, render: (a: boolean) => <OverwatchTab active={a} /> },
+  // (👁 Kettle/overwatch sat HERE until 2026-08-11 — RETIRED with its tier by
+  // P-059/D-083. Removing the entry is what retires it: TabId and TAB_IDS are
+  // both DERIVED from this array, so the id leaves the type (making any stale
+  // `tab === 'overwatch'` a compile error rather than dead code) and leaves the
+  // nuqs parser, which rejects `?lst=overwatch` back to the default tab.)
   // (🎯 Goals sat HERE, between Kettle and Agents, from 2026-08-07 to 2026-08-09.
   // Removed on owner directive — see the note above the imports. The HUD's Goals
   // tab is the one goals surface now.)
@@ -287,11 +292,11 @@ export default function LeftSidebar() {
   const setOpen = (v: boolean) => void setRail({ lsb: v });
   const setTab = (v: TabId) => void setRail({ lst: v });
 
-  // Overwatch is flag-gated (OVERWATCH, default OFF until proven live, D-009):
-  // hide its sidebar tab while the role is dark. The nuqs enum still accepts
-  // 'overwatch' (deep-link / ui:dispatch), so snap a stale ?lst=overwatch back
-  // to Mug when the flag is off (mirrors AdvShell's health/overwatch guard).
-  const overwatchOn = useFlag(FLAGS.OVERWATCH);
+  // (The OVERWATCH flag was read HERE to hide the Kettle tab while its role was
+  // dark. The tab is now RETIRED outright (P-059/D-083), so there is nothing
+  // left to gate and the read is gone. FLAGS.OVERWATCH itself still exists and
+  // still gates the live overwatch runtime — cross-monitor.ts, the system-action
+  // waker — so this removal is of a CONSUMER, not of the flag.)
   // Papercup is flag-gated too (PAPERCUP, default ON since
   // voice-unified-sentinel-pipeline made Papercup the one voice brain) — same
   // hide-tab + stale-?lst snap-back treatment as overwatch for when it IS off.
@@ -313,13 +318,12 @@ export default function LeftSidebar() {
   // the nuqs default, so gating it turns all four landings into a landing on a
   // hidden tab. `homeTab` below is what keeps that from happening.
   //
-  // `overwatch` takes BOTH gates: it has its own OVERWATCH flag (D-009) and it
-  // is a retired-tier role under this plan's D-018. Either being off hides it —
-  // OVERWATCH staying on must not resurrect a tab for a tier that cannot run.
+  // (`overwatch` used to take BOTH this gate and its own OVERWATCH flag. It is
+  // now retired from TABS entirely, so it needs no gate: a tab that does not
+  // exist cannot be resurrected by a flag.)
   const mugKettleOn = useFlag(FLAGS.MUG_KETTLE_SYSTEM);
   const visibleTabs = TABS.filter(
     (x) =>
-      (x.id !== 'overwatch' || (overwatchOn && mugKettleOn)) &&
       (x.id !== 'queen' || mugKettleOn) &&
       (x.id !== 'sentinel' || sentinelOn) &&
       (x.id !== 'conversations' || conversationsOn),
@@ -333,14 +337,19 @@ export default function LeftSidebar() {
   // above warns about, just with the flags inverted.
   const homeTab: TabId = mugKettleOn ? 'queen' : 'accounts';
   useEffect(() => {
-    if (!overwatchOn && tab === 'overwatch') void setRail({ lst: homeTab });
     if (!sentinelOn && tab === 'sentinel') void setRail({ lst: homeTab });
     if (!conversationsOn && tab === 'conversations') void setRail({ lst: homeTab });
     // The nuqs default is a static 'queen', so a first load with no ?lst reads
     // `queen` even when the tier is retired — this is the branch that catches it
     // as well as an explicit ?lst=queen deep link.
-    if (!mugKettleOn && (tab === 'queen' || tab === 'overwatch')) void setRail({ lst: homeTab });
-  }, [overwatchOn, sentinelOn, conversationsOn, mugKettleOn, homeTab, tab, setRail]);
+    //
+    // A stale `?lst=overwatch` needs no branch of its own any more: 'overwatch'
+    // left TAB_IDS when its TABS entry was retired, so parseAsStringLiteral now
+    // REJECTS it and `tab` reads the 'queen' default — which this same branch
+    // then lands on homeTab. The deep link self-heals through the parser rather
+    // than through a guard that would have to be kept in sync by hand.
+    if (!mugKettleOn && tab === 'queen') void setRail({ lst: homeTab });
+  }, [sentinelOn, conversationsOn, mugKettleOn, homeTab, tab, setRail]);
 
   const pathname = usePathname() ?? '';
   const chromeless = isChromelessPath(pathname);
