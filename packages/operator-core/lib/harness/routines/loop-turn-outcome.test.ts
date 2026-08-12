@@ -184,6 +184,38 @@ describe('handleLoopResumeTurnExit (P0b — feed the circuit on a dead loop turn
     expect(res.handled).toBe(false);
     expect(recordFire).not.toHaveBeenCalled();
   });
+
+  it('a context-overflow death pauses the loop and never re-arms the same oversized warm transcript', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(claimWatchdogFire).mockResolvedValue(true);
+    vi.mocked(captureImprovement).mockResolvedValue({} as never);
+    vi.mocked(requestOverwatchWake).mockResolvedValue({ wired: true, result: { fired: true } } as never);
+    const sql = fakeSql({ ref: refRow, rearmRows: [{ id: 'loop_su_owner' }] });
+    const recordFire = vi.fn(async () => {});
+    const autoPause = vi.fn(async () => {});
+    const res = await handleLoopResumeTurnExit(
+      loopDelivery(),
+      deathRaw({ stdoutTail: 'Prompt is too long: 210000 tokens > 200000 maximum' }),
+      { sql: sql as never, recordFire, autoPause },
+    );
+
+    expect(res).toMatchObject({ handled: true, class: 'context_overflow' });
+    expect(res.rearmedMs).toBeUndefined();
+    expect(autoPause).toHaveBeenCalledWith(
+      sql,
+      'loop_su_owner',
+      expect.stringContaining('paused to prevent repeated oversized warm wakes'),
+      'loop-turn-outcome',
+    );
+    expect(sql.calls.filter((c) => c.kind === 'update')).toHaveLength(0);
+    expect(captureImprovement).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'bug',
+        body: expect.stringContaining('context-overflow terminal guard'),
+      }),
+    );
+    expect(requestOverwatchWake).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('handleLoopResumeTurnExit — EI-13818 wedge-death alert (item c)', () => {

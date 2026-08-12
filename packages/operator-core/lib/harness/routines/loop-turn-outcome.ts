@@ -41,6 +41,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import { runWithWorkspace } from '../../workspace-als';
 import { classifyFireError, recordFire as defaultRecordFire } from '../../autoloop';
 import { getLoopCarryNote as defaultGetLoopCarryNote, splitCarryNoteWalls } from '../../carry-note';
+import { autoPauseLoopRoutine as defaultAutoPauseLoopRoutine } from './loop-cost-cap';
 import { detectOwnerAsk, stashLoopWallNag as defaultStashLoopWallNag } from './loop-wall-nag';
 import { registerResumeTurnOutcomeHandler } from '../../events/await/engine';
 import {
@@ -167,6 +168,8 @@ async function rearmLoopAfterDeath(sql: Sql, routineId: string, delayMs: number,
 export interface LoopTurnOutcomeDeps {
   sql?: Sql;
   recordFire?: typeof defaultRecordFire;
+  /** Injected pause seam for terminal context-overflow deaths. */
+  autoPause?: typeof defaultAutoPauseLoopRoutine;
   now?: number;
   /** P-006 turn-settle nag seams. */
   getLoopCarryNote?: typeof defaultGetLoopCarryNote;
@@ -232,15 +235,35 @@ export async function handleLoopResumeTurnExit(
       ),
     ).catch((e) => log(`recordFire failed for loop ${routineId}: ${e instanceof Error ? e.message : e}`));
 
-    // 2. 429-aware re-arm (P1a) — only while still parked at 'infinity' (the dead turn).
-    const intervalMs = (ref.intervalSec ?? 60) * 1000;
-    const delayMs = computeDeathRearmMs(outcome, intervalMs, now);
-    const rearmed = await rearmLoopAfterDeath(sql, routineId, delayMs, now).catch((e) => {
-      log(`re-arm failed for loop ${routineId}: ${e instanceof Error ? e.message : e}`);
-      return false;
-    });
+    // 2. A context-window death is terminal for THIS loop instance. Re-arming the same
+    // warm transcript at its normal cadence only repeats the oversized prompt and burns
+    // turns into a known wall. Pause the routine so the operator/overwatch path can arrange
+    // a fresh carry-respawn or a smaller launch; all other classes keep the existing
+    // retry-after-aware re-arm below. The classifier lives in the shared turn taxonomy, but
+    // use a string comparison here so this protection remains fail-safe while mixed-version
+    // operator processes roll forward to the new class.
+    const contextOverflow = String(klass) === 'context_overflow';
+    let delayMs: number | undefined;
+    let rearmed = false;
+    if (contextOverflow) {
+      const autoPause = deps.autoPause ?? defaultAutoPauseLoopRoutine;
+      await autoPause(
+        sql,
+        routineId,
+        `loop-turn-outcome: context overflow (${outcome.error.message}); paused to prevent repeated oversized warm wakes`,
+        'loop-turn-outcome',
+      ).catch((e) => log(`context-overflow pause failed for loop ${routineId}: ${e instanceof Error ? e.message : e}`));
+    } else {
+      // 429-aware re-arm (P1a) — only while still parked at 'infinity' (the dead turn).
+      const intervalMs = (ref.intervalSec ?? 60) * 1000;
+      delayMs = computeDeathRearmMs(outcome, intervalMs, now);
+      rearmed = await rearmLoopAfterDeath(sql, routineId, delayMs, now).catch((e) => {
+        log(`re-arm failed for loop ${routineId}: ${e instanceof Error ? e.message : e}`);
+        return false;
+      });
+    }
     log(
-      `loop '${routineId}' turn DIED (${klass}) → recorded error + ${rearmed ? `re-armed +${Math.round(delayMs / 1000)}s` : 'not re-armed (already advanced)'}`,
+      `loop '${routineId}' turn DIED (${klass}) → recorded error + ${contextOverflow ? 'paused for fresh-context recovery' : rearmed ? `re-armed +${Math.round(delayMs! / 1000)}s` : 'not re-armed (already advanced)'}`,
     );
 
     // 3. EI-13818 (c): raise a LOUD, debounced signal the first time this loop is observed
@@ -265,8 +288,9 @@ export async function handleLoopResumeTurnExit(
     // silent). `chronicBackoff` widens the net for exactly the case the class-based gate
     // structurally cannot see: the delay computed for THIS fire is long enough that a human
     // needs to know regardless of class. See CHRONIC_BACKOFF_ALERT_FLOOR_MS's own doc for why.
-    const chronicBackoff = !outcome.error.surfaceToUser && delayMs >= CHRONIC_BACKOFF_ALERT_FLOOR_MS;
-    if (outcome.error.surfaceToUser || chronicBackoff) {
+    const chronicBackoff =
+      !contextOverflow && !outcome.error.surfaceToUser && delayMs! >= CHRONIC_BACKOFF_ALERT_FLOOR_MS;
+    if (contextOverflow || outcome.error.surfaceToUser || chronicBackoff) {
       try {
         const { claimWatchdogFire } = await import('../../pot/watchdog');
         const claimed = await claimWatchdogFire({
@@ -291,9 +315,12 @@ export async function handleLoopResumeTurnExit(
               `owner is a FLEET LEADER the fleet may be running leaderless until it clears. Check ` +
               `sessions:read / coord:presence for owner ${ref.targetOwnerId ?? 'unknown'}; if it is a fleet ` +
               `leader, consider relaunching leadership on another account/session rather than waiting out the cap.` +
-              (chronicBackoff
+              (contextOverflow
+                ? ` [context-overflow terminal guard: the loop was paused instead of re-arming the same ` +
+                  `oversized warm transcript; recover it with a fresh carry-respawn or corrected launch.]`
+                : chronicBackoff
                 ? ` [chronic-backoff trigger: ${klass} is normally auto-absorbed silently, but the computed ` +
-                  `re-arm delay for this fire was ${Math.round(delayMs / 60_000)}min — well past a normal ` +
+                  `re-arm delay for this fire was ${Math.round(delayMs! / 60_000)}min — well past a normal ` +
                   `transient wait, so this alerted despite the class alone saying "handle silently".]`
                 : ''),
             scope: `harness:${ref.installSlug}`,
