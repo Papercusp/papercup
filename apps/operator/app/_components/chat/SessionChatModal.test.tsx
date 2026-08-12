@@ -600,7 +600,8 @@ describe('SessionChatModal', () => {
       expect(status).toBeTruthy();
       expect(status!.textContent).toContain('ended');
       expect(status!.textContent).not.toMatch(/\blive\b/);
-      expect(status!.getAttribute('title')).toBe('Session state: ended');
+      expect(status!.getAttribute('title')).toContain('Session state: ended');
+      expect(status!.getAttribute('title')).toContain('last activity: 2d ago');
 
       const dot = status!.querySelector('[role="img"]');
       expect(dot?.getAttribute('data-session-state')).toBe('ended');

@@ -477,9 +477,10 @@ function SessionStateHeader({
       : null;
   const sessionState = normalizeSessionState(entry.sessionState);
   const statusLabel = sessionState ?? entry.liveness;
+  const activityAgeTitle = ageSec != null ? `; last activity: ${formatAge(ageSec)} ago` : '';
   const statusTitle = sessionState
-    ? `Session state: ${sessionState}`
-    : `Heartbeat liveness: ${entry.liveness}`;
+    ? `Session state: ${sessionState}${activityAgeTitle}`
+    : `Heartbeat liveness: ${entry.liveness}${activityAgeTitle}`;
 
   // P-004: the SAME agentDetail.byOwner cache AgentDossier's own Locks/Coord
   // sections read (useSyncQuery shares its cache by {queryName, args} — a
@@ -677,6 +678,11 @@ export function LiveSessionChat({
     return entries.find((e) => e.ownerId === sessionOwnerId) ?? null;
   }, [roster.data, sessionOwnerId]);
 
+  const composerState = useMemo(
+    () => sessionChatComposerState(rosterEntry?.sessionState),
+    [rosterEntry?.sessionState],
+  );
+
   // WI-5997: stamp every mapped message with this session's roster
   // currentPlanSlug so a P-NNN ref pill's click can resolve which plan to
   // open (D-001 PlanPopupModal) — an approximation (uniform across the whole
@@ -787,7 +793,9 @@ export function LiveSessionChat({
       focusIndex={focusIndex}
       busy={sending}
       peerBusy={thinking}
-      passive
+      passive={composerState.passive}
+      composerDisabled={composerState.disabled}
+      composerDisabledMessage={composerState.message}
       onSend={onSend}
       banner={banner}
       error={sendError}
