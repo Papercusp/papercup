@@ -18,6 +18,7 @@ export function parseArgs(argv: any): {
     harness: null;
     raw: boolean;
     url: null;
+    tokenFile: null;
     help: boolean;
 };
 /**
@@ -142,6 +143,14 @@ export function prettyText(text: any): string;
  */
 export function resultToText(result: any, { raw }?: {
     raw?: boolean;
+}): any;
+/** Resolve the bearer-token file in precedence order. Pure and injectable for
+ * tests: an explicit CLI path wins over the environment, which wins over the
+ * normal per-home token. */
+export function resolveTokenPath({ tokenFile, env, home }?: {
+    tokenFile?: null | undefined;
+    env?: NodeJS.ProcessEnv | undefined;
+    home?: string | undefined;
 }): any;
 /** Build the `tools/call` params for a ptool invocation. Pure and exported so
  *  the MCP result negotiation is regression-tested without opening a
