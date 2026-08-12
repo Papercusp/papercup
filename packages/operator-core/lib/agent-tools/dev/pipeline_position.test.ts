@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import tool from './pipeline_position';
+import tool, { PIPELINE_POSITION_RESPONSE_BUDGET_CHARS } from './pipeline_position';
 import { gitPipelinePosition, type PipelinePosition } from '../../git-pipeline-position';
 import { resolveSeeAlso } from '@papercusp/agent-mcp';
 /**
@@ -33,6 +33,108 @@ describe('dev:pipeline_position role allowlist', () => {
     for (const r of expected) {
       expect(roles.has(r), `pipeline_position must be allowed for role '${r}'`).toBe(true);
     }
+  });
+});
+
+describe('dev:pipeline_position bounded response wiring (EI-20245527109472763)', () => {
+  type Out = { data: Record<string, unknown> };
+
+  const PATH = 'packages/operator-core/lib/agent-tools/dev/pipeline_position.ts';
+  const marker = 'shape-pipeline-position-regression-marker';
+  const singleRelease = {
+    host: 'operator-release',
+    releasePipelineApplies: true,
+    restartTarget: 'staging',
+    activation: 'deploy',
+  };
+  const singleStaging = {
+    host: 'bg-host',
+    releasePipelineApplies: false,
+    restartTarget: 'bg-host',
+    activation: 'restart bg-host',
+  };
+  const oversized = {
+    input: { path: PATH, sha: null },
+    repoRoot: '/repo',
+    submodule: null,
+    targetSha: 'sha0000001',
+    targetShortSha: 'sha000000',
+    targetSubject: 'subj',
+    dirtyUncommitted: false,
+    positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
+    deployedSha: 'sha0000001',
+    gate: {
+      stalled: false,
+      consecutiveReds: 0,
+      lastGreenAtMs: 1,
+      fireStale: false,
+      fireStaleReason: null,
+      ownership: { claimState: 'unheld', thread: 'x'.repeat(12_000) },
+    },
+    verdictProvenance: {
+      lastGreenSha: 'sha0000001',
+      lastGreenShortSha: 'sha000000',
+      lastGreenAgeMs: 1000,
+      mainFastForwarded: true,
+      deployedBehindGreenPin: 0,
+      deployOrigin: 'gate-green',
+    },
+    gitSyncLastStatus: 'synced',
+    summary: 'stub summary',
+    notes: [],
+  } as unknown as PipelinePosition;
+
+  const expectBounded = (out: Out) => {
+    const projection = out.data.projection as Record<string, unknown>;
+    expect(projection).toMatchObject({ kind: 'bounded', truncated: true });
+    expect(projection.fullRead).toEqual({
+      tool: 'dev:pipeline_position',
+      args: { path: PATH, marker },
+    });
+    expect(projection.omittedFields).toContain('gate.ownership.thread');
+    expect(JSON.stringify(out.data).length).toBeLessThanOrEqual(PIPELINE_POSITION_RESPONSE_BUDGET_CHARS);
+  };
+
+  it('bounds the multi-consumer exit without dropping activations', async () => {
+    vi.mocked(gitPipelinePosition).mockResolvedValue({
+      ...oversized,
+      runtime: singleStaging,
+      runtimes: [singleStaging, singleRelease],
+    } as unknown as PipelinePosition);
+
+    const out = (await tool.handler({ path: PATH, marker } as never, {} as never)) as Out;
+
+    expectBounded(out);
+    expect(out.data.activations).toHaveLength(2);
+  });
+
+  it('bounds the non-release exit without dropping activation guidance', async () => {
+    vi.mocked(gitPipelinePosition).mockResolvedValue({
+      ...oversized,
+      runtime: singleStaging,
+      runtimes: [singleStaging],
+    } as unknown as PipelinePosition);
+
+    const out = (await tool.handler({ path: PATH, marker } as never, {} as never)) as Out;
+
+    expectBounded(out);
+    expect(out.data.activation).toMatchObject({ host: 'bg-host', releasePipelineApplies: false });
+  });
+
+  it('bounds the default exit without dropping the deploy awaitable', async () => {
+    vi.mocked(gitPipelinePosition).mockResolvedValue({
+      ...oversized,
+      positions: { committedLocal: true, onStaging: true, inMain: true, deployed: false },
+      blockedOn: 'deployed',
+      nextAction: null,
+      runtime: singleRelease,
+      runtimes: [singleRelease],
+    } as unknown as PipelinePosition);
+
+    const out = (await tool.handler({ path: PATH, marker } as never, {} as never)) as Out;
+
+    expectBounded(out);
+    expect(out.data.awaitable).toMatchObject({ sugar: 'deploy:await' });
   });
 });
 

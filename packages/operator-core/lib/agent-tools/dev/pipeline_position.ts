@@ -457,6 +457,7 @@ export default defineTool({
     // would drop the plane for exactly the paths with unusual activation routes, which are
     // the ones whose readers are most likely to be reasoning about staleness.
     const plane = planeFor(result, args, ctx);
+    const rereadArgs = { path: args.path, sha: args.sha, marker: args.marker };
 
     // WI-5440: a path can have MORE THAN ONE consumer on DIFFERENT activation
     // routes (e.g. a file read by both a bg-host-only routine and an
@@ -468,8 +469,7 @@ export default defineTool({
     if (runtimes && runtimes.length > 1) {
       const anyReleaseCarried = runtimes.some((r) => r.releasePipelineApplies);
       return {
-        data: {
-          ...result,
+        data: shapePipelinePosition(result, {
           ...(plane ? { plane } : {}),
           activations: runtimes.map((r) => ({
             hint: r.activation,
@@ -489,7 +489,7 @@ export default defineTool({
             : `This path has ${runtimes.length} distinct consumers on different activation routes (${runtimes
                 .map((r) => r.host)
                 .join(' + ')}), none carried by the release pipeline — do NOT deploy:await; pick the restart matching the consumer you care about from \`activations\`.`,
-        },
+        }, rereadArgs),
       };
     }
 
@@ -501,8 +501,7 @@ export default defineTool({
     const runtime = result.runtime;
     if (runtime && !runtime.releasePipelineApplies) {
       return {
-        data: {
-          ...result,
+        data: shapePipelinePosition(result, {
           ...(plane ? { plane } : {}),
           activation: {
             hint: runtime.activation,
@@ -516,7 +515,7 @@ export default defineTool({
               : {}),
             note: 'Do NOT deploy:await this path — the process that runs it never reads the release checkout. The `positions.deployed` flag below is about the operator, not about this code being live.',
           },
-        },
+        }, rereadArgs),
       };
     }
 
@@ -571,6 +570,11 @@ export default defineTool({
             // silences the monitor loop (WI-6604).
             sugarArgs: { timeout_sec: 600 },
           };
-    return { data: { ...result, ...(plane ? { plane } : {}), ...(awaitable ? { awaitable } : {}) } };
+    return {
+      data: shapePipelinePosition(result, {
+        ...(plane ? { plane } : {}),
+        ...(awaitable ? { awaitable } : {}),
+      }, rereadArgs),
+    };
   },
 });
