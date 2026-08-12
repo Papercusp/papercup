@@ -13,7 +13,6 @@ import {
   type LostWakeRateRow,
   type LostWakeWitness,
 } from './lost-wake-detect';
-import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 
 const row = (event_key: string, fired_event: number, fired_timeout: number): LostWakeRateRow => ({
   event_key,
@@ -131,7 +130,7 @@ describe('GREEN_CHECKPOINT_WITNESS.matches', () => {
 });
 
 describe('GREEN_CHECKPOINT_WITNESS.check', () => {
-  it('scopes the independent pipeline witness to the coordination workspace', async () => {
+  it('queries only checkpoint statuses that emit a release:green event', async () => {
     const calls: { strings: readonly string[]; values: unknown[] }[] = [];
     const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
       calls.push({ strings: [...strings], values });
@@ -145,14 +144,11 @@ describe('GREEN_CHECKPOINT_WITNESS.check', () => {
     );
 
     expect(result?.occurred).toBe(true);
-    const query = calls[0]?.strings.join('?');
-    expect(query).toContain('workspace_id = ?');
-    expect(calls[0]?.values).toContain(DEFAULT_COORD_WORKSPACE);
+    expect(calls[0]?.values).toContainEqual(['advanced', 'advanced-prefix']);
   });
 
-  it('does not count a same-slug verdict from another workspace as evidence', async () => {
+  it('does not count an up-to-date verdict as evidence', async () => {
     const sql = ((strings: TemplateStringsArray, ..._values: unknown[]) => {
-      expect([...strings].join('?')).toContain('workspace_id = ?');
       return [];
     }) as unknown as Parameters<typeof GREEN_CHECKPOINT_WITNESS.check>[0];
 
@@ -164,7 +160,7 @@ describe('GREEN_CHECKPOINT_WITNESS.check', () => {
 
     expect(result).toEqual({
       occurred: false,
-      evidence: 'no advanced/up-to-date pipeline_events row for install_slug=papercusp in the window',
+      evidence: 'no advanced/advanced-prefix pipeline_events row for install_slug=papercusp in the window',
     });
   });
 });

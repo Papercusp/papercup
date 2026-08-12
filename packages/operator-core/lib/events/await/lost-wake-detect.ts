@@ -116,7 +116,12 @@ export const GREEN_CHECKPOINT_WITNESS: LostWakeWitness = {
     eventKey.startsWith('green-checkpoint:red:'),
   async check(sql, eventKey, sinceMs) {
     const isGreen = eventKey.startsWith('release:green');
-    const statuses = isGreen ? ['advanced', 'up-to-date'] : ['not-green'];
+    // `up-to-date` is a recorded checkpoint verdict, but runGreenCheckpoint returns
+    // before the release:green emit when the integration head already equals the green
+    // pin. It is therefore NOT independent evidence that this awaitable key fired.
+    // `advanced-prefix` is included because the partial-green path emits release:green
+    // for the clean prefix it promoted.
+    const statuses = isGreen ? ['advanced', 'advanced-prefix'] : ['not-green'];
     const suffix = eventKey.includes(':', isGreen ? 'release:green'.length : 'green-checkpoint:red'.length)
       ? eventKey.slice(eventKey.lastIndexOf(':') + 1)
       : null;
@@ -127,7 +132,6 @@ export const GREEN_CHECKPOINT_WITNESS: LostWakeWitness = {
         SELECT count(*)::int AS n, max(created_at) AS latest
         FROM harness_shared.pipeline_events
         WHERE kind = 'green_checkpoint'
-          AND workspace_id = ${DEFAULT_COORD_WORKSPACE}
           AND install_slug = ${installSlug}
           AND status = ANY(${statuses}::text[])
           AND created_at >= now() - ${`${Math.round(sinceMs / 1000)} seconds`}::interval
