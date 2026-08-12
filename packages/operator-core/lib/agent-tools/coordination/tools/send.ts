@@ -33,7 +33,7 @@ import {
   lookupEndedSessions,
   roleAddressingGuidance,
 } from '../dead-session-recipient-guidance';
-import { fetchPresenceFleet } from '../presence-fleet';
+import { fetchPresenceFleet, resolvePresenceFleet } from '../presence-fleet';
 import { scopeBroadcastAudience, ALLHIVE_BROADCAST_FIELD } from '../scope-broadcast';
 import { resolveSenderCueAuthority } from '../cue-authority-resolve';
 import { CUE_AUTHORITY_FIELD, type CueAuthorityStamp } from '../cue-authority';
@@ -669,7 +669,11 @@ async function sendOne(
           const classified = await classifyUnknownRecipients(trulyUnknown, (ids) =>
             lookupEndedSessions(ids, identity.workspaceId),
           );
-          roleHint = roleAddressingGuidance(classified, deriveFleetMembership().fleetSlug) ?? '';
+          const senderFleetMembership = await resolvePresenceFleet(
+            identity.ownerId,
+            deriveFleetMembership(),
+          );
+          roleHint = roleAddressingGuidance(classified, senderFleetMembership.fleetSlug) ?? '';
         } catch {
           roleHint = '';
         }

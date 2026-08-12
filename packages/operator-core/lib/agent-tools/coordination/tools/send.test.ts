@@ -97,7 +97,10 @@ vi.mock('../presence', () => ({ getPresence: vi.fn(async () => null) }));
 // every existing '*' test keeps its literal broadcast. (The old tests mocked
 // getPresence().fleetSlug — a field production never returns — which is exactly
 // what hid the no-op bug this item fixes.)
-vi.mock('../presence-fleet', () => ({ fetchPresenceFleet: vi.fn(async () => new Map()) }));
+vi.mock('../presence-fleet', () => ({
+  fetchPresenceFleet: vi.fn(async () => new Map()),
+  resolvePresenceFleet: vi.fn(async () => ({ fleetSlug: null, fleetRole: null })),
+}));
 // P-008 last leg / D-084: `basedOn` is DERIVED off the invocation log at send
 // time. Mocked here so the WIRING is asserted without a PG round-trip — the
 // derivation itself is covered by based-on.test.ts + based-on.integration.test.ts.
@@ -121,7 +124,7 @@ import { wakeRecipients, reportIdleRecipients } from '../inbox-wake';
 import { describeMissedRecipients } from '../recipient-liveness';
 import { resolveWorkspaceHiveScope } from '../federation-scope';
 import { getPresence } from '../presence';
-import { fetchPresenceFleet } from '../presence-fleet';
+import { fetchPresenceFleet, resolvePresenceFleet } from '../presence-fleet';
 import { deriveFleetMembership } from '../identity';
 import { lookupEndedSessions } from '../dead-session-recipient-guidance';
 import { getFlag } from '@papercusp/flags/server';
@@ -141,6 +144,7 @@ const livenessM = vi.mocked(describeMissedRecipients);
 const fedScopeM = vi.mocked(resolveWorkspaceHiveScope);
 const getPresenceM = vi.mocked(getPresence);
 const fetchPresenceFleetM = vi.mocked(fetchPresenceFleet);
+const resolvePresenceFleetM = vi.mocked(resolvePresenceFleet);
 const deriveFleetMembershipM = vi.mocked(deriveFleetMembership);
 const lookupEndedSessionsM = vi.mocked(lookupEndedSessions);
 const flagM = vi.mocked(getFlag);
@@ -195,6 +199,7 @@ beforeEach(() => {
   remoteMapM.mockResolvedValue(new Map<string, number>() as never);
   // P-004: non-fleeted by default → a bare '*' stays a literal hive broadcast.
   fetchPresenceFleetM.mockResolvedValue(new Map() as never);
+  resolvePresenceFleetM.mockResolvedValue({ fleetSlug: null, fleetRole: null });
   deriveFleetMembershipM.mockReturnValue({ fleetSlug: null, fleetRole: null });
   lookupEndedSessionsM.mockResolvedValue(new Map());
   // D-084: nothing traceable read by default, so an ordinary send is unchanged.
@@ -796,7 +801,12 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
 
   it('EI-20252202491571252: a stale session refusal names the current fleet leader selector', async () => {
     const endedLeaderSession = 'su-ce1406c1-8159-45fb-a569-41bc2f1aeb3b';
-    deriveFleetMembershipM.mockReturnValueOnce({
+    // The process was launched into one fleet, but the request-scoped durable
+    // presence row is the authority for the sender's CURRENT responsibility.
+    // This catches the production bug where send.ts read only the stale launch
+    // environment and could not route a successor after a launcher died.
+    deriveFleetMembershipM.mockReturnValueOnce({ fleetSlug: 'stale-launch-fleet', fleetRole: 'member' });
+    resolvePresenceFleetM.mockResolvedValueOnce({
       fleetSlug: 'nonp2p-bug-drain-luna-max-0811',
       fleetRole: 'member',
     });
@@ -814,6 +824,10 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
       unknown_recipients: [endedLeaderSession],
     });
     expect(b.results[0].message).toContain('@fleet-leader:nonp2p-bug-drain-luna-max-0811');
+    expect(resolvePresenceFleetM).toHaveBeenCalledWith('me', {
+      fleetSlug: 'stale-launch-fleet',
+      fleetRole: 'member',
+    });
     expect(lookupEndedSessionsM).toHaveBeenCalledWith([endedLeaderSession], 'ws1');
     expect(sendM).not.toHaveBeenCalled();
   });
