@@ -1230,7 +1230,12 @@ describe('resolveFleet — terminal color env (fleet-color-schemes)', () => {
 
   it('an EXISTING fleet (fleet slug) carries the fleet color env', async () => {
     getFleetSchemeMock.mockResolvedValue({ name: 'forest', bg: forest.bg, fg: forest.fg, cursor: forest.cursor });
-    const { env, fleetRole } = await resolveFleet('default', { fleet: 'team', ownerId: 'su-1' });
+    // EI-18278623507151337: joins as `su-2`, NOT the shared getFleetMock record's
+    // `leaderOwnerId: 'su-1'`. This case is about the COLOR env on an ordinary member
+    // join; an owner that matches the record's leader is now (correctly) kept a LEADER
+    // by the composer-side role check, which would make the `member` assertion below
+    // assert the wrong thing about a different scenario.
+    const { env, fleetRole } = await resolveFleet('default', { fleet: 'team', ownerId: 'su-2' });
     expect(fleetRole).toBe('member');
     expect(env.PAPERCUSP_FLEET_SLUG).toBe('team');
     expect(env.PAPERCUSP_FLEET_BG).toBe(forest.bg);
