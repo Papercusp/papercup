@@ -288,12 +288,22 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     v_ei := jsonb_strip_nulls(jsonb_build_object('scope',NEW.scope,'severity',NEW.severity,'source',NEW.source,'found_during',NEW.found_during,'linked_feature_id',NEW.linked_feature_id,'created_by',NEW.created_by,'assigned_by',NEW.assigned_by,'signal_origin',NEW.signal_origin));
     -- EI-20092514168581881: refuse ungated terminal transitions. Lifecycle transitions belong to setIssueState /
     -- work_items:set_state, which applies the completion-integrity gate. Keep this
-    -- hand-rolled fixture aligned with migration 797's live compatibility trigger.
+    -- hand-rolled fixture aligned with migration 797's live compatibility trigger,
+    -- and with migration 799's self-diagnosing refusal (EI-20202062074776959): an
+    -- application_name matching 'pcusp:%' reaching this branch is necessarily a STALE
+    -- operator, because a current one writes harness_shared.work_items directly and
+    -- never gets here — so it is told to redeploy, not to re-call the refused tools.
     IF TG_OP = 'UPDATE'
        AND NEW.state IN ('resolved', 'closed', 'done', 'dropped')
        AND COALESCE(OLD.state, '') NOT IN ('resolved', 'closed', 'done', 'dropped')
     THEN
-      RAISE EXCEPTION 'engineer_issues terminal transition refused — use setIssueState/work_items:set_state or work_items:complete so completion integrity is enforced (issue %) ', NEW.issue_id;
+      IF COALESCE(current_setting('application_name', true), '') LIKE 'pcusp:%' THEN
+        RAISE EXCEPTION 'engineer_issues terminal transition refused for issue % — and RE-CALLING work_items:complete / work_items:set_state CANNOT FIX IT. This UPDATE arrived on operator connection "%", which still routes terminal state through the engineer_issues compatibility view; a CURRENT operator writes harness_shared.work_items directly and never reaches this trigger. So that process is running code older than issues-engineer.ts EI-20092514168581881, the REQUIRES-DEPLOYED half of migration 797. FIX: redeploy or restart THAT operator process, then retry the close once. Any completion record you already submitted is stored — only the state flip is outstanding.', NEW.issue_id, COALESCE(current_setting('application_name', true), '?')
+          USING HINT = 'Dev box, force it now: PAPERCUSP_ALLOW_DEV_RESTART=1 npx tsx apps/operator/lib/release/deploy-cli.ts --execute — then re-run the close. Do NOT revert the guard and do NOT force-deploy on a fleet-wide premise: this refusal is PER-HOST (plan gui-chat-e2e-actions-2026-08-11, D-014).';
+      ELSE
+        RAISE EXCEPTION 'engineer_issues terminal transition refused — use setIssueState/work_items:set_state or work_items:complete so completion integrity is enforced (issue %) ', NEW.issue_id
+          USING HINT = 'The issue compatibility view is a read/field-edit surface, not a lifecycle writer. If you ARE an operator process and reached this, your build predates issues-engineer.ts EI-20092514168581881 — redeploy that process rather than retrying the tools (EI-20202062074776959).';
+      END IF;
     END IF;
     IF TG_OP = 'INSERT' THEN
       -- agent-protocol-authority-semantics-2026-07-26 P-004 (migration 679): authority
