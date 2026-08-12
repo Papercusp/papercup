@@ -76,6 +76,43 @@ export function violatesIdleTxInvariant(src: string): boolean {
   return DEFINES_TOOL.test(src) && SPAWNS_CHILD.test(src) && !OPTS_OUT.test(src);
 }
 
+/*
+ * EI-20261626591106746 — the INDIRECT half of the class, and why this guard does NOT
+ * try to detect it by following imports.
+ *
+ * `dev:pipeline_position` hung past 55s in production with exactly this defect, yet the
+ * file-local predicate above cleared it: the tool file never mentions child_process. It
+ * imports `gitPipelinePosition` from ../../git-pipeline-position, and THAT file imports
+ * `execFile` (line 23). One hop, and the regex is blind.
+ *
+ * The obvious generalisation — follow relative imports and flag any tool that REACHES
+ * child_process — was implemented and MEASURED against this tree before being rejected:
+ *
+ *     depth 0 (this guard):   0 offenders
+ *     depth 1:               29 offenders
+ *     depth 2:               92 offenders
+ *
+ * Transitive import reachability is not a sound proxy for "this handler blocks on
+ * subprocess work": importing a module that happens to contain an execFile somewhere
+ * does not mean the handler ever awaits it. Shipping the depth-1 form would have failed
+ * the build for 29 tools, none of them verified violations — turning a guard into an
+ * outage for a fleet whose release gate was already red. A guard that cries wolf gets
+ * an ALLOW entry per tool and dies of exemptions.
+ *
+ * So the indirect case is pinned EXPLICITLY below instead. That is narrower and needs a
+ * human to add each entry, which is the correct trade when the alternative is a
+ * detector with a 29:1 false-positive rate.
+ */
+const INDIRECT_SHELL_OUT: ReadonlyMap<string, string> = new Map([
+  [
+    'dev/pipeline_position.ts',
+    'Imports gitPipelinePosition (../../git-pipeline-position), which shells out to git ' +
+      'via execFile for status/rev-list/ls-remote plus the release + systemd probes. Never ' +
+      'reads ctx.tx. Hung >55s in production 2026-08-12 (EI-20261626591106746), taking all ' +
+      'five registered cells it resolves to status:unknown with it.',
+  ],
+]);
+
 describe('idle-tx recurrence guard — the predicate has teeth', () => {
   // A guard nobody has watched FAIL is decoration. These run the detection against
   // synthetic sources, so we prove it catches a real violation without briefly
@@ -103,6 +140,28 @@ describe('idle-tx recurrence guard — the predicate has teeth', () => {
 
   it('ignores a non-tool helper that shells out', () => {
     expect(violatesIdleTxInvariant(`import { spawn } from 'node:child_process';`)).toBe(false);
+  });
+});
+
+describe('indirect idle-tx pins (EI-20261626591106746)', () => {
+  // These tools do their blocking subprocess work behind an IMPORT, so the file-local
+  // predicate above cannot see them and never will. Each entry is a hand-verified claim;
+  // the assertion exists so the declaration cannot be dropped in a refactor — which is
+  // exactly how dev:pipeline_position reached production without one.
+  it.each([...INDIRECT_SHELL_OUT.entries()])('%s declares skipWorkspaceTx', (rel, reason) => {
+    const src = readFileSync(join(agentToolsDir, rel), 'utf8');
+    expect(OPTS_OUT.test(src), `${rel} must declare skipWorkspaceTx: true.\n${reason}`).toBe(true);
+  });
+
+  it('every pinned file still exists and defines a tool', () => {
+    // Calibration: a pin left pointing at a moved/renamed file would quietly stop
+    // guarding anything, which is the failure mode of every hand-maintained list.
+    for (const rel of INDIRECT_SHELL_OUT.keys()) {
+      const src = readFileSync(join(agentToolsDir, rel), 'utf8');
+      expect(DEFINES_TOOL.test(src), `${rel} no longer defines a tool — re-home this pin`).toBe(
+        true,
+      );
+    }
   });
 });
 
