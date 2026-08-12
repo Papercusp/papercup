@@ -14,7 +14,11 @@ import { describe, expect, it } from 'vitest';
  * `@papercusp/db-org` and `@papercusp/papercusp-shared`), so a stale URL is a
  * hard release blocker, not a cosmetic nit. This test parses the committed
  * `.gitmodules` and fails the build the instant a submodule URL points at a
- * known-dead name — catching the regression in CI instead of on a user's Mac.
+ * known-dead name or regresses to HTTPS. Git-sync pushes every submodule origin;
+ * SSH is the authenticated protocol already proven by the superproject on the
+ * shared fleet, while GitHub rejects the HTTPS path when the account email is
+ * unverified. Catching that protocol drift in CI prevents another fleet-wide
+ * backlog of unreplicated submodule commits.
  *
  * See agent-insights/macos-packaged-app-path-and-git +
  * setup-wizard-github-network-timeout.
@@ -88,14 +92,14 @@ describe('.gitmodules submodule URL invariants (release blocker)', () => {
 
   it('the load-bearing source submodules point at the real (papercup-named) repos', () => {
     const byPath = new Map(entries.map((e) => [e.path, e.url]));
-    expect(byPath.get('libs/papercusp-db')).toBe('https://github.com/Papercusp/papercup-db.git');
+    expect(byPath.get('libs/papercusp-db')).toBe('git@github.com:Papercusp/papercup-db.git');
     expect(byPath.get('libs/papercusp-shared')).toBe(
-      'https://github.com/Papercusp/papercup-shared.git',
+      'git@github.com:Papercusp/papercup-shared.git',
     );
   });
 
-  it('every submodule URL is an https GitHub URL under the Papercusp org', () => {
-    const bad = entries.filter((e) => !/^https:\/\/github\.com\/Papercusp\/[\w.-]+\.git$/i.test(e.url));
+  it('every submodule URL is an SSH GitHub URL under the Papercusp org', () => {
+    const bad = entries.filter((e) => !/^git@github\.com:Papercusp\/[\w.-]+\.git$/i.test(e.url));
     expect(
       bad,
       `non-conforming submodule URL(s): ${bad.map((b) => `${b.path} → ${b.url}`).join(', ')}`,

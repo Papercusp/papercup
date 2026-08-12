@@ -1,114 +1,114 @@
 [submodule "libs/agent-chat"]
 	path = libs/agent-chat
-	url = https://github.com/Papercusp/agent-chat.git
+	url = git@github.com:Papercusp/agent-chat.git
 [submodule "libs/git-graph"]
 	path = libs/generic/git-graph
-	url = https://github.com/Papercusp/git-graph.git
+	url = git@github.com:Papercusp/git-graph.git
 [submodule "libs/papergrid"]
 	path = libs/generic/papergrid
-	url = https://github.com/Papercusp/papergrid.git
+	url = git@github.com:Papercusp/papergrid.git
 [submodule "libs/papercusp-db"]
 	path = libs/papercusp-db
-	url = https://github.com/Papercusp/papercup-db.git
+	url = git@github.com:Papercusp/papercup-db.git
 [submodule "libs/papercusp-shared"]
 	path = libs/papercusp-shared
-	url = https://github.com/Papercusp/papercup-shared.git
+	url = git@github.com:Papercusp/papercup-shared.git
 [submodule "libs/ui-primitives"]
 	path = libs/generic/ui-primitives
-	url = https://github.com/Papercusp/ui-primitives.git
+	url = git@github.com:Papercusp/ui-primitives.git
 [submodule "libs/papercusp"]
 	path = libs/papercusp
-	url = https://github.com/Papercusp/papercusp.git
+	url = git@github.com:Papercusp/papercusp.git
 [submodule "libs/sync"]
 	path = libs/generic/sync
-	url = https://github.com/Papercusp/sync.git
+	url = git@github.com:Papercusp/sync.git
 [submodule "libs/token-kit"]
 	path = libs/generic/token-kit
-	url = https://github.com/Papercusp/token-kit.git
+	url = git@github.com:Papercusp/token-kit.git
 [submodule "libs/sse"]
 	path = libs/generic/sse
-	url = https://github.com/Papercusp/sse.git
+	url = git@github.com:Papercusp/sse.git
 [submodule "libs/rerank"]
 	path = libs/generic/rerank
-	url = https://github.com/Papercusp/rerank.git
+	url = git@github.com:Papercusp/rerank.git
 [submodule "libs/search-core"]
 	path = libs/generic/search-core
-	url = https://github.com/Papercusp/search-core.git
+	url = git@github.com:Papercusp/search-core.git
 [submodule "libs/chat-protocol"]
 	path = libs/generic/chat-protocol
-	url = https://github.com/Papercusp/chat-protocol.git
+	url = git@github.com:Papercusp/chat-protocol.git
 [submodule "libs/generic/rrf"]
 	path = libs/generic/rrf
-	url = https://github.com/Papercusp/rrf.git
+	url = git@github.com:Papercusp/rrf.git
 [submodule "libs/generic/embedded-pg-discovery"]
 	path = libs/generic/embedded-pg-discovery
-	url = https://github.com/Papercusp/embedded-pg-discovery.git
+	url = git@github.com:Papercusp/embedded-pg-discovery.git
 [submodule "libs/generic/plan-parser"]
 	path = libs/generic/plan-parser
-	url = https://github.com/Papercusp/plan-parser.git
+	url = git@github.com:Papercusp/plan-parser.git
 [submodule "libs/generic/rate-limit"]
 	path = libs/generic/rate-limit
-	url = https://github.com/Papercusp/rate-limit.git
+	url = git@github.com:Papercusp/rate-limit.git
 [submodule "libs/generic/ipc-framing"]
 	path = libs/generic/ipc-framing
-	url = https://github.com/Papercusp/ipc-framing.git
+	url = git@github.com:Papercusp/ipc-framing.git
 [submodule "libs/generic/ipc-endpoint-server"]
 	path = libs/generic/ipc-endpoint-server
-	url = https://github.com/Papercusp/ipc-endpoint-server.git
+	url = git@github.com:Papercusp/ipc-endpoint-server.git
 [submodule "libs/generic/desktop-ipc"]
 	path = libs/generic/desktop-ipc
-	url = https://github.com/Papercusp/desktop-ipc.git
+	url = git@github.com:Papercusp/desktop-ipc.git
 [submodule "libs/generic/search"]
 	path = libs/generic/search
-	url = https://github.com/Papercusp/search.git
+	url = git@github.com:Papercusp/search.git
 [submodule "libs/generic/memory"]
 	path = libs/generic/memory
-	url = https://github.com/Papercusp/memory.git
+	url = git@github.com:Papercusp/memory.git
 [submodule "libs/generic/tooldef"]
 	path = libs/generic/tooldef
-	url = https://github.com/Papercusp/tooldef.git
+	url = git@github.com:Papercusp/tooldef.git
 [submodule "libs/generic/tooldef-http"]
 	path = libs/generic/tooldef-http
-	url = https://github.com/Papercusp/tooldef-http.git
+	url = git@github.com:Papercusp/tooldef-http.git
 [submodule "libs/testing-shell"]
 	path = libs/testing-shell
-	url = https://github.com/Papercusp/testing-shell.git
+	url = git@github.com:Papercusp/testing-shell.git
 [submodule "libs/test-config"]
 	path = libs/test-config
-	url = https://github.com/Papercusp/test-config.git
+	url = git@github.com:Papercusp/test-config.git
 [submodule "papercusp-desktop"]
 	path = papercusp-desktop
-	url = https://github.com/Papercusp/papercusp-desktop.git
+	url = git@github.com:Papercusp/papercusp-desktop.git
 [submodule "libs/generic/dock-workbench"]
 	path = libs/generic/dock-workbench
-	url = https://github.com/Papercusp/dock-workbench.git
+	url = git@github.com:Papercusp/dock-workbench.git
 [submodule "libs/generic/control-mutation"]
 	path = libs/generic/control-mutation
-	url = https://github.com/Papercusp/control-mutation.git
+	url = git@github.com:Papercusp/control-mutation.git
 [submodule "libs/generic/prospect-contract"]
 	path = libs/generic/prospect-contract
-	url = https://github.com/Papercusp/prospect-contract.git
+	url = git@github.com:Papercusp/prospect-contract.git
 [submodule "libs/generic/debounce-coalesce"]
 	path = libs/generic/debounce-coalesce
-	url = https://github.com/Papercusp/debounce-coalesce.git
+	url = git@github.com:Papercusp/debounce-coalesce.git
 [submodule "libs/generic/cache"]
 	path = libs/generic/cache
-	url = https://github.com/Papercusp/cache.git
+	url = git@github.com:Papercusp/cache.git
 [submodule "libs/generic/failure-detector"]
 	path = libs/generic/failure-detector
-	url = https://github.com/Papercusp/failure-detector.git
+	url = git@github.com:Papercusp/failure-detector.git
 [submodule "libs/generic/rules"]
 	path = libs/generic/rules
-	url = https://github.com/Papercusp/rules.git
+	url = git@github.com:Papercusp/rules.git
 [submodule "libs/generic/tauri-release-kit"]
 	path = libs/generic/tauri-release-kit
-	url = https://github.com/Papercusp/tauri-release-kit.git
+	url = git@github.com:Papercusp/tauri-release-kit.git
 [submodule "libs/generic/resumable-download"]
 	path = libs/generic/resumable-download
-	url = https://github.com/Papercusp/resumable-download.git
+	url = git@github.com:Papercusp/resumable-download.git
 [submodule "libs/generic/model-pricing"]
 	path = libs/generic/model-pricing
-	url = https://github.com/Papercusp/model-pricing.git
+	url = git@github.com:Papercusp/model-pricing.git
 [submodule "libs/generic/card-stack"]
 	path = libs/generic/card-stack
-	url = https://github.com/Papercusp/card-stack.git
+	url = git@github.com:Papercusp/card-stack.git
