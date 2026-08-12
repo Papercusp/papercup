@@ -20,6 +20,9 @@ import { fileURLToPath } from 'node:url';
 import { createFreshPgDb, type FreshPgDb } from '../test/_pg-helpers';
 import { HARNESS_FEATURES_CONSOLIDATED_DDL, USER_TRUST_LIST_DDL, WORK_ITEM_DEPS_DDL } from '../test/_work-items-schema';
 import { ensureCoordCapabilityTables, PgEntitySubscriptionStore, PgLinkStore } from '@papercusp/coordination/capabilities';
+// WI-38339: the canonical terminal union the notTerminal filter derives from — imported
+// so the drift guard below compares against the SOURCE, not a copy of it.
+import { ANY_FAMILY_TERMINAL_STATES } from './work-item-dispatch-states';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const SQL_DIR = resolve(__dirname, '../../../libs/papercusp/libs/db/sql');
@@ -2367,13 +2370,18 @@ describe('WI-38339 work-item shape filters', () => {
   it('notTerminal stays correct for EVERY state in the canonical terminal union', async () => {
     // The drift guard. ANY_FAMILY_TERMINAL_STATES is the single source these filters
     // derive from; if a spelling is added there and this predicate stops covering it,
-    // "everything still open" silently starts returning finished work. Feature-family
-    // only, because the issue view's CHECK constraint admits a narrower state set.
+    // "everything still open" silently starts returning finished work.
+    //
+    // The status is written DIRECTLY rather than through setWorkItemState on purpose:
+    // the state machine NORMALIZES dialect spellings (todo→open, and the issue/feature
+    // aliases onto each other), so driving it through the writer would test which
+    // spellings the writer accepts — not whether the PREDICATE covers every spelling
+    // that can be present in the column, which is the actual failure mode.
     for (const st of ANY_FAMILY_TERMINAL_STATES) {
       const item = await wi.createWorkItem({ kind: 'feature', title: `t-${st}`, harness: H });
-      await wi.setWorkItemState(item.id, st, { harness: H, by: 'agA', completionRef: 'test' });
+      await db.sql`UPDATE harness_shared.work_items SET status = ${st} WHERE feature_id = ${item.id}`;
       const live = await wi.listWorkItems({ harness: H, notTerminal: true });
-      expect(ids(live)).not.toContain(item.id);
+      expect(ids(live), `notTerminal must exclude status='${st}'`).not.toContain(item.id);
     }
   });
 
