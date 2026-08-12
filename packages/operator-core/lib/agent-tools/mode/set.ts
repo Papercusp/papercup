@@ -451,6 +451,8 @@ export default defineTool({
             scope: 'owner',
             scopeRef,
             key: modeInstructionsFactKey(def.id),
+            retractedBy: ident.ownerId,
+            reason: `mode '${def.id}' instructions cleared`,
             ...(ident.workspaceId ? { workspaceId: ident.workspaceId } : {}),
           });
           if (removed) instructionsFact = 'retracted';

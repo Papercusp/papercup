@@ -404,6 +404,25 @@ describe('P-008 (a) append-versioning — a correction APPENDS, it never destroy
     expect(rows[1].retracted_at).not.toBeNull();
   });
 
+  it('a deliberate retract preserves its actor and reason in version history', async () => {
+    await assertFact({ ...base, body: 'temporary conclusion' }, db.sql);
+    await retractFact(
+      {
+        scope: 'owner',
+        scopeRef: 'su-v',
+        key: 'ver',
+        workspaceId: WS,
+        retractedBy: 'su-auditor',
+        reason: 'new live evidence superseded it',
+      },
+      db.sql,
+    );
+    const [version] = await factVersions({ ...base, limit: 1 }, db.sql);
+    expect(version.retractedAt).not.toBeNull();
+    expect(version.retractedBy).toBe('su-auditor');
+    expect(version.retractionReason).toBe('new live evidence superseded it');
+  });
+
   it('the partial unique index still forbids a SECOND current version', async () => {
     await assertFact({ ...base, body: 'one' }, db.sql);
     await expect(

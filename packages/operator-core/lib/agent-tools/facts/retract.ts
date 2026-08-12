@@ -30,14 +30,23 @@ export default defineTool({
     ref: z.string().max(120).optional().describe('Alias for scopeRef (EI-7371) — prefer scopeRef.'),
     harness: z.string().max(120).optional().describe('Alias for scopeRef when scope:"harness" (EI-7371) — prefer scopeRef.'),
     key: z.string().min(1).max(120),
+    reason: z.string().min(1).max(500).describe('Why this fact stopped being true — retained in the 30-day audit trail.'),
   }),
   async handler(args, ctx) {
+    const { resolveAgentIdentity } = await import('../coordination/identity');
+    const identity = resolveAgentIdentity(ctx);
     // EI-7517: default an omitted scopeRef from the caller's context (owner = me,
     // harness = this harness, role = my role) so a fact asserted self-scoped
     // without a ref can be retracted the same way — symmetry with facts:assert.
     // EI-7371: resolve common misnamed aliases (scope_ref/ref/harness) first.
     const scopeRef = await resolveScopeRefFromCtx(args.scope, resolveScopeRefAlias(args.scope, args), ctx);
-    const retracted = await retractFact({ scope: args.scope, scopeRef: scopeRef ?? null, key: args.key });
+    const retracted = await retractFact({
+      scope: args.scope,
+      scopeRef: scopeRef ?? null,
+      key: args.key,
+      retractedBy: identity.ownerId,
+      reason: args.reason,
+    });
     if (retracted) return { data: { ok: true, retracted } };
 
     // EI-19328780288425209: a miss here is ambiguous — "never existed" vs "exists at a

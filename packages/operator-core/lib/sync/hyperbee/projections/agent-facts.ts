@@ -37,6 +37,9 @@ export interface AgentFactWireRow {
   /** ISO timestamps as text on the wire (PG casts on write). */
   expires_at: string;
   retracted_at: string | null;
+  /** Migration 801: deliberate retraction audit metadata. Optional for older ops. */
+  retracted_by?: string | null;
+  retraction_reason?: string | null;
   created_by: string;
   /** mig 574 (audience-scoped facts): the author's delivery-audience constraint
    *  (v1 grammar 'fleet:<slug>'). Carried so a receiving peer HONORS the
@@ -83,6 +86,8 @@ export function isAgentFactWireRow(input: unknown): input is AgentFactWireRow {
   if (!isStringOrNull(r.source_ref)) return false;
   if (!isString(r.expires_at)) return false;
   if (!isStringOrNull(r.retracted_at)) return false;
+  if (r.retracted_by !== undefined && !isStringOrNull(r.retracted_by)) return false;
+  if (r.retraction_reason !== undefined && !isStringOrNull(r.retraction_reason)) return false;
   if (!isString(r.created_by)) return false;
   // mig 574 additions — optional (pre-574 history ops omit them), but when
   // present they must be well-typed or the op is refused as malformed.
@@ -175,15 +180,18 @@ async function writeToPg(
   const sourceProvenance = row.source_provenance != null ? JSON.stringify(row.source_provenance) : null;
   const measurement = row.measurement != null ? JSON.stringify(row.measurement) : null;
   const confidence = row.confidence ?? null;
+  const retractedBy = row.retracted_by ?? null;
+  const retractionReason = row.retraction_reason ?? null;
   await sql`
     INSERT INTO harness_shared.agent_facts
       (workspace_id, harness_slug, scope, scope_ref, key, body, source_ref,
-       created_by, expires_at, retracted_at, shareable,
+       created_by, expires_at, retracted_at, retracted_by, retraction_reason, shareable,
        author_pubkey, origin, fed_ts, source_hive, audience_scope, source_provenance, measurement, confidence)
     VALUES
       (${opts.workspaceId}, ${row.harness_slug}, ${row.scope}, ${row.scope_ref},
        ${row.key}, ${row.body}, ${row.source_ref}, ${row.created_by},
-       ${row.expires_at}::timestamptz, ${row.retracted_at}::timestamptz, true,
+       ${row.expires_at}::timestamptz, ${row.retracted_at}::timestamptz,
+       ${retractedBy}, ${retractionReason}, true,
        ${authorPubkey}, ${origin}, ${fedTs}, ${sourceHive},
        ${audienceScope}, ${sourceProvenance}::text::jsonb, ${measurement}::text::jsonb, ${confidence})
     -- ⚠ P-008 (a) / migration 689: the identity index is now PARTIAL
@@ -205,6 +213,8 @@ async function writeToPg(
       source_ref    = EXCLUDED.source_ref,
       expires_at    = EXCLUDED.expires_at,
       retracted_at  = EXCLUDED.retracted_at,
+      retracted_by  = EXCLUDED.retracted_by,
+      retraction_reason = EXCLUDED.retraction_reason,
       author_pubkey = EXCLUDED.author_pubkey,
       origin        = EXCLUDED.origin,
       fed_ts        = EXCLUDED.fed_ts,

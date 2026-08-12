@@ -54,6 +54,8 @@ describe('decodeValue — defensive on every field', () => {
     expect(
       decodeValue(row({ measurement: { subjectVolatile: true, measuredAt: '2026-08-11T20:50:00Z' } })),
     ).not.toBeNull();
+    expect(decodeValue(row({ retracted_by: 'su-1', retraction_reason: 'superseded by live evidence' }))).not.toBeNull();
+    expect(decodeValue({ ...row(), retraction_reason: 42 })).toBeNull();
   });
 });
 
@@ -94,6 +96,16 @@ describe('writeToPg — H6 source partitioning', () => {
     expect(calls.length).toBe(1);
     // The local partition: source_hive interpolates as null.
     expect(calls[0]).toContain(null);
+  });
+
+  it('carries deliberate retraction actor and reason across federation', async () => {
+    const { sql, calls } = fakeSql();
+    await buildAgentFactsProjection(opts(sql)).writeToPg(
+      row({ retracted_at: new Date().toISOString(), retracted_by: 'su-author', retraction_reason: 'condition cleared' }),
+      { authorPubkey: 'stamped-source-log-key', origin: 'remote' } as never,
+    );
+    expect(calls[0]).toContain('su-author');
+    expect(calls[0]).toContain('condition cleared');
   });
 });
 

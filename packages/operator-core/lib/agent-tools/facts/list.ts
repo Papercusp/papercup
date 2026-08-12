@@ -64,6 +64,9 @@ export function projectFact(
     createdBy: f.createdBy,
     updatedAt: f.updatedAt,
     expiresAt: f.expiresAt,
+    ...(f.retractedAt !== undefined ? { retractedAt: f.retractedAt } : {}),
+    ...(f.retractedBy !== undefined ? { retractedBy: f.retractedBy } : {}),
+    ...(f.retractionReason !== undefined ? { retractionReason: f.retractionReason } : {}),
     ...(f.audienceScope ? { audienceScope: f.audienceScope } : {}),
     // WI-6052: confidence is now persisted — surface it same as audienceScope
     // (omitted when unset, matching the legacy/unbadged shape).

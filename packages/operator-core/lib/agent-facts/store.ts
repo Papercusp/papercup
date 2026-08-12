@@ -411,6 +411,11 @@ export interface AgentFact {
   createdBy: string;
   updatedAt: string;
   expiresAt: string;
+  /** Migration 801: deliberate retraction audit metadata. These fields are
+   * selected by the version-history read; ordinary live folds omit them. */
+  retractedAt?: string | null;
+  retractedBy?: string | null;
+  retractionReason?: string | null;
   /**
    * P-008 (a): this VERSION's immutable row id — the thing a D-003 pointer names
    * (P-009's `assumption_set_id`). Optional because the fold/list reads do not
@@ -1530,7 +1535,14 @@ export async function assertFact(input: AssertFactInput, inject?: Sql): Promise<
 
 /** Soft-retract by identity. Returns whether a live fact was retracted. */
 export async function retractFact(
-  args: { scope: FactScope; scopeRef?: string | null; key: string; workspaceId?: string },
+  args: {
+    scope: FactScope;
+    scopeRef?: string | null;
+    key: string;
+    workspaceId?: string;
+    retractedBy?: string;
+    reason?: string;
+  },
   inject?: Sql,
 ): Promise<boolean> {
   const err = validateFactScope(args.scope, args.scopeRef);
@@ -1538,6 +1550,8 @@ export async function retractFact(
   const sql = sqlOf(inject);
   const ws = args.workspaceId ?? activeWorkspaceId();
   const ref = args.scope === 'workspace' ? '' : (args.scopeRef ?? '').trim();
+  const retractedBy = args.retractedBy?.trim() || null;
+  const reason = args.reason?.trim() || null;
   // LOCAL partition only (H6): retracting YOUR fact must not retract another
   // source's independent observation of the same identity. Your retraction
   // federates to peers' copies of YOUR partition via the mig-461/462 update
@@ -1546,7 +1560,8 @@ export async function retractFact(
   // the live value, not a new version — it does not fork the chain, and the
   // superseded tail must stay untouched or history would be rewritten by it.
   const rows = await sql<{ key: string }[]>`
-    UPDATE harness_shared.agent_facts SET retracted_at = now()
+    UPDATE harness_shared.agent_facts
+       SET retracted_at = now(), retracted_by = ${retractedBy}, retraction_reason = ${reason}
      WHERE workspace_id = ${ws} AND scope = ${args.scope}
        AND coalesce(scope_ref,'') = ${ref} AND key = ${args.key.trim()}
        AND source_hive IS NULL
@@ -1873,7 +1888,9 @@ export async function factVersions(
   const rows = await sql<AgentFactRow[]>`
     SELECT id, superseded_at::text, supersedes_id,
            scope, scope_ref, key, body, source_ref, audience_scope, source_provenance,
-           confidence, measurement, kind, depends_on, claim, enforcement, settled_by, created_by, updated_at::text, expires_at::text
+           confidence, measurement, kind, depends_on, claim, enforcement, settled_by,
+           created_by, updated_at::text, expires_at::text, retracted_at::text,
+           retracted_by, retraction_reason
       FROM harness_shared.agent_facts
      WHERE workspace_id = ${ws} AND scope = ${args.scope}
        AND coalesce(scope_ref,'') = ${ref} AND key = ${key}
@@ -2084,6 +2101,9 @@ interface AgentFactRow {
   created_by: string;
   updated_at: string;
   expires_at: string;
+  retracted_at?: string | null;
+  retracted_by?: string | null;
+  retraction_reason?: string | null;
   /** P-008 (a) — selected only where the caller needs version identity. */
   id?: string | number | null;
   superseded_at?: string | null;
@@ -2164,6 +2184,9 @@ function rowToFact(r: AgentFactRow): AgentFact {
     createdBy: r.created_by,
     updatedAt: r.updated_at,
     expiresAt: r.expires_at,
+    ...(r.retracted_at === undefined ? {} : { retractedAt: r.retracted_at }),
+    ...(r.retracted_by === undefined ? {} : { retractedBy: r.retracted_by }),
+    ...(r.retraction_reason === undefined ? {} : { retractionReason: r.retraction_reason }),
     // P-008 (c), migration 693. Absent when the read did not select it; null when
     // the row predates 693 — kept distinguishable from '' so a caller can tell
     // "not selected" from "carries no version".
