@@ -66,6 +66,12 @@
 #                         a broad sweep's 15-minute queue budget. An explicit
 #                         PC_HEAVY_TIMEOUT_SEC still wins for callers that need a
 #                         different bound.
+#   PC_HEAVY_FOCUSED_SLOTS  concurrent focused `test:file` runs allowed in the
+#                         separate lane while a release-gate reserve is live
+#                         (default 1). This lane prevents the scoped verification
+#                         recommended during gate classifier phases from waiting
+#                         behind the reserve's last ordinary slot; it remains
+#                         bounded so the gate still retains host headroom.
 #   PC_HEAVY_DIR          slot-file dir (default ${XDG_RUNTIME_DIR:-/tmp}/pc-heavy-slots)
 #   PC_HEAVY_NICE         nice increment (default 10)
 #   PC_HEAVY_IONICE       ionice spec: "best-effort N" | "idle" | "" to skip
@@ -452,10 +458,38 @@ if [ "$_gate_active" = 1 ]; then
   # (and we continue, merely clamped) in every other case. See the function.
   _gate_refuse_broad_sweep "$@"
 fi
+
+# EI-20223200344608082 — a scoped `test:file` is the safe verification path
+# during the gate's classifier phases, but the reserve clamp applies to every
+# ordinary heavy command. On a saturated host that leaves one shared slot; an
+# unrelated holder can therefore starve the exact-file check the guard just
+# prescribed. Give test-files.mjs one small, independent lane while the gate
+# reserve is live. The lane is intentionally bounded (default one slot) and
+# only exists for the scoped runner; broad sweeps continue to use the protected
+# ordinary pool.
+_is_focused_test=0
+for _arg in "$@"; do
+  case "$_arg" in
+    scripts/test-files.mjs|*/scripts/test-files.mjs) _is_focused_test=1; break ;;
+  esac
+done
+_focused_lane=0
+_focused_slots=0
+if [ "$_gate_active" = 1 ] && [ "$_is_focused_test" = 1 ]; then
+  _focused_lane=1
+  _focused_slots="${PC_HEAVY_FOCUSED_SLOTS:-1}"
+  case "$_focused_slots" in ''|*[!0-9]*) _focused_slots=1 ;; esac
+  [ "$_focused_slots" -ge 1 ] || _focused_slots=1
+  _slots="$_focused_slots"
+fi
 if [ "${PC_HEAVY_DEBUG:-}" = "1" ]; then
-  echo "[pc-heavy] slots=$_slots fixed=$_slots_fixed cores=$_cores floor=$_floor ceil=$_ceil gate=$_gate_active phase=${_gate_phase:-none} div=$_gate_div" >&2
+  echo "[pc-heavy] slots=$_slots fixed=$_slots_fixed cores=$_cores floor=$_floor ceil=$_ceil gate=$_gate_active phase=${_gate_phase:-none} div=$_gate_div focused=$_focused_lane" >&2
 fi
 _dir="${PC_HEAVY_DIR:-${XDG_RUNTIME_DIR:-/tmp}/pc-heavy-slots}"
+_slot_dir="$_dir"
+if [ "$_focused_lane" = 1 ]; then
+  _slot_dir="$_dir/focused"
+fi
 _timeout="${PC_HEAVY_TIMEOUT_SEC:-900}"
 if [ -z "${PC_HEAVY_TIMEOUT_SEC:-}" ]; then
   for _arg in "$@"; do
@@ -467,7 +501,7 @@ if [ -z "${PC_HEAVY_TIMEOUT_SEC:-}" ]; then
 fi
 
 # Can't create the slot dir or flock is missing → fail-open (run unthrottled).
-if ! mkdir -p "$_dir" 2>/dev/null || ! command -v flock >/dev/null 2>&1; then
+if ! mkdir -p "$_dir" "$_slot_dir" 2>/dev/null || ! command -v flock >/dev/null 2>&1; then
   export PC_HEAVY_BYPASS=1
   exec "$@"
 fi
@@ -785,7 +819,7 @@ fi
 # tsc/vitest/build runs were being dropped on the floor.
 _held=""
 for _i in $(seq 0 $(( _slots - 1 ))); do
-  if { exec {_fd}>"$_dir/slot.$_i"; } 2>/dev/null; then
+  if { exec {_fd}>"$_slot_dir/slot.$_i"; } 2>/dev/null; then
     if flock -n "$_fd"; then _held=1; break; fi
     eval "exec ${_fd}>&-" 2>/dev/null || true   # not ours — close it
   fi
@@ -816,8 +850,13 @@ if [ -z "$_held" ]; then
   # inference this line + the heartbeat below restore. Fires once, the
   # instant queueing actually begins (never on the common uncontended
   # fast-path above, which never reaches this branch at all).
-  echo "[pc-heavy] queued for a heavy slot (all $_slots slot(s) busy) —" \
-       "pid $$, waiting up to ${_timeout}s" >&2
+  if [ "$_focused_lane" = 1 ]; then
+    echo "[pc-heavy] queued for a focused test lane slot (all $_slots slot(s) busy) —" \
+         "pid $$, waiting up to ${_timeout}s" >&2
+  else
+    echo "[pc-heavy] queued for a heavy slot (all $_slots slot(s) busy) —" \
+         "pid $$, waiting up to ${_timeout}s" >&2
+  fi
   _wait_start=$(date +%s)
   _fallback_deadline=$(( _wait_start + _timeout ))
   # PC_HEAVY_HEARTBEAT_SEC: test-only override (default 15s in production) so a
@@ -833,9 +872,13 @@ if [ -z "$_held" ]; then
     # one FINISHING re-widens it — a waiter that queued before the gate began
     # must not walk into the run it is about to starve. Unlike load adaptation
     # this applies to a FIXED PC_HEAVY_SLOTS too (see _effective_slots).
-    _slots="$(_effective_slots)"
+    if [ "$_focused_lane" = 1 ]; then
+      _slots="$_focused_slots"
+    else
+      _slots="$(_effective_slots)"
+    fi
     for _i in $(seq 0 $(( _slots - 1 ))); do
-      if { exec {_fd}>"$_dir/slot.$_i"; } 2>/dev/null; then
+      if { exec {_fd}>"$_slot_dir/slot.$_i"; } 2>/dev/null; then
         if flock -n "$_fd"; then _held=1; break 2; fi
         eval "exec ${_fd}>&-" 2>/dev/null || true   # not ours — close it
       fi

@@ -1194,6 +1194,48 @@ describe('pc-heavy.sh — release-gate reserve (EI-19315056231449472)', () => {
     expect(slotsLine(probe(16, { PC_HEAVY_LOAD1_OVERRIDE: '99' }).stderr)).toContain('slots=1 ');
   });
 
+  it('EI-20223200344608082: focused test:file uses an independent bounded lane while the gate clamps the ordinary pool', async () => {
+    plantLock(liveOwner());
+    const gateEnv = { PC_HEAVY_SLOTS: '1', PC_HEAVY_COALESCE: '0' };
+    const holder = spawn('bash', [PC_HEAVY, 'sleep', '30'], {
+      env: baseEnv(gateEnv),
+      cwd: dir,
+      detached: true,
+    });
+    const holderErr = createTextCollector(holder.stderr);
+    const focused = spawn(
+      'bash',
+      [PC_HEAVY, 'bash', '-c', 'sleep 1; echo focused-ok', 'scripts/test-files.mjs'],
+      {
+        env: baseEnv({ ...gateEnv, PC_HEAVY_FOCUSED_SLOTS: '1' }),
+        cwd: dir,
+      },
+    );
+    const focusedOut = createTextCollector(focused.stdout);
+    const focusedErr = createTextCollector(focused.stderr);
+    const focusedExited = new Promise<number>((res) => focused.on('exit', (c) => res(c ?? -1)));
+    try {
+      await untilStderr(holder, holderErr, (t) => t.includes('slot acquired'), 'the ordinary holder taking the slot');
+      await untilStderr(
+        focused,
+        focusedErr,
+        (t) => t.includes('slot acquired'),
+        'focused test:file taking its independent lane',
+      );
+
+      // The ordinary pool remains occupied while the focused lane is running.
+      expect(heldSlotCount(dir, 1)).toBe(1);
+      expect(heldSlotCount(join(dir, 'focused'), 1)).toBe(1);
+      expect(focusedErr.peek()).toContain('release gate is JUDGING');
+
+      expect(await focusedExited).toBe(0);
+      expect(focusedOut.text()).toContain('focused-ok');
+    } finally {
+      killGroup(holder);
+      try { process.kill(-(focused.pid as number), 'SIGKILL'); } catch { /* already exited */ }
+    }
+  });
+
   it('announces the clamp on stderr even without PC_HEAVY_DEBUG, so a slow run explains itself', () => {
     plantLock(liveOwner());
     const r = runSync(['true'], { PC_HEAVY_COALESCE: '0' });
