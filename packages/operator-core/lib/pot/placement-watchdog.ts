@@ -48,6 +48,7 @@ import type { AgentIdentity } from '../agent-tools/coordination/identity';
 import { liveHolderFragment, STALE_CLAIM_GRACE_MS } from '../work-items-stale-claims';
 import { listStartedPots, mugKettleSystemEnabled } from './started';
 import { workItemCheckpointScope } from '../work-item-checkpoint';
+import { checkpointDeclaresTerminal } from '../checkpoint-terminal-claim';
 import { ANY_FAMILY_TERMINAL_STATES } from '../work-item-dispatch-states';
 import { isClaimHoldParked } from '../work-items';
 import { reconcileLinkedWorkItemsForPlanItem } from '../plan-items/reconcile-linked-work-items';
@@ -143,49 +144,20 @@ export function isUnitParkedForReconcile(status: string | null | undefined, payl
 }
 
 /**
- * EI-15232 — high-precision markers that a cup's own checkpoint DECLARES it believed
- * it reached a terminal (passed/deprecated/resolved/closed/done/complete) or a
- * deliberate blocked/needs-human state. Used to detect a STALE-OPEN unit: the cup
- * asserts terminal/blocked in its checkpoint, but the unit's `set_state` flip
- * silently failed to persist, so the row still reads `todo`. Concrete (2026-07-17):
- * WI-3503 "STATE: Terminal (passed) … checkpoint cleared" and WI-3504 "transition to
- * BLOCKED" — both left state=todo.
+ * EI-15232 — does the cup's checkpoint text DECLARE a terminal/blocked completion?
  *
- * Deliberately CONSERVATIVE: a FALSE positive would suppress a legitimate re-place
- * page for an item that still needs work (the worse error), so the scan requires an
- * explicit state ASSERTION, not a passing mention of the word. A false negative just
- * preserves today's behavior (the page still fires) — never worse than the status quo.
+ * WI-38297: the markers and the predicate MOVED to `../checkpoint-terminal-claim` so a
+ * second reader (the stranded-checkpoint triage scan behind `work_items:stranded`) can
+ * use them without importing this module's whole graph. Re-exported here because this
+ * is where every existing call site and test addresses it — one definition, two doors.
+ * The measured-precision caveat that governs how far a caller may act on a match lives
+ * with the predicate.
+ *
+ * NOTE the import+export pair rather than a bare `export … from`: this module CALLS
+ * the predicate itself (the stale-open reconcile batch-read below), and a re-export
+ * alone creates no local binding.
  */
-const CHECKPOINT_TERMINAL_MARKERS: ReadonlyArray<RegExp> = [
-  // "STATE: Terminal", "state = terminal"
-  /\bstate\s*[:=]\s*terminal\b/i,
-  // "Terminal (passed)", "Terminal (blocked)", …
-  /\bterminal\s*\(\s*(?:passed|blocked|deprecated|resolved|closed|done|needs-human)/i,
-  // an assertive transition to a terminal/park state: "transition(ed) to BLOCKED",
-  // "flipped to passed", "moved to resolved", "set state to closed", "marked deprecated",
-  // "now needs-human", "status: passed"
-  /\b(?:transition(?:ed|ing)?|flipp?ed|moved|set(?:\s+state)?|marked|status\s*[:=]|now)\s+(?:to\s+|as\s+)?(?:passed|deprecated|resolved|closed|blocked|needs-human|done)\b/i,
-  // an explicit "✅ COMPLETE" / "✅ DONE" completion header the cup writes on finish
-  /✅\s*(?:complete(?:d)?|done|passed)\b/i,
-  // EI-18712524449804476 — a checkpoint that OPENS with an assertive all-caps terminal
-  // marker word, the convention this codebase's own agents actually write in practice
-  // ("TERMINAL — WI-4446 COMPLETE + VERIFIED, state=passed. Do NOT restart.",
-  // "SUPERSEDED by owner decision"). Anchored to the START of the checkpoint (never a
-  // passing mid-text mention) to keep the same conservative, false-positive-averse
-  // posture as the markers above.
-  /^\s*(?:TERMINAL|SUPERSEDED|OBSOLETE|VOID|DUPLICATE)\b/,
-  // EI-18712524449804476 — a checkpoint that OPENS with the item's own id followed
-  // directly by a terminal verb ("WI-4480 PASSED 2026-07-17 15:12Z (terminalOwner …)").
-  // Anchored to the start for the same reason as above.
-  /^\s*(?:WI|EI|F)-\d+\s+(?:PASSED|COMPLETE(?:D)?|DONE|RESOLVED|CLOSED|DEPRECATED|SUPERSEDED)\b/,
-];
-
-/** EI-15232 — does the cup's checkpoint text DECLARE a terminal/blocked completion?
- *  Pure; exported for the decider unit tests. */
-export function checkpointDeclaresTerminal(checkpoint: string | null | undefined): boolean {
-  if (!checkpoint) return false;
-  return CHECKPOINT_TERMINAL_MARKERS.some((re) => re.test(checkpoint));
-}
+export { checkpointDeclaresTerminal };
 
 /**
  * WI-6038 — the SAME "declares terminal but the unit row hasn't caught up yet"

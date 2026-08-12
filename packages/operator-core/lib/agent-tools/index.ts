@@ -926,6 +926,7 @@ import './work_items/list';
 // "what issue-family work can I actually claim now" read (the SSOT floors as a tool, so
 // agents stop reaching for raw SQL on work_items / the claimable view).
 import './work_items/claimable';
+import './work_items/stranded';
 import './work_items/burn_down';
 import './work_items/search';
 import './work_items/set_state';
