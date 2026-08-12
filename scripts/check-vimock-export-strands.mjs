@@ -72,7 +72,7 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as ts from 'typescript';
@@ -94,6 +94,42 @@ function git(args, { allowFail = false } = {}) {
     if (allowFail) return null;
     throw err;
   }
+}
+
+/** Read workspace package names from the root npm workspace patterns, including submodule packages. */
+function discoverWorkspacePackageNames() {
+  const names = new Set();
+  let patterns;
+  try {
+    const rootPackage = JSON.parse(readFileSync(resolve(ROOT, 'package.json'), 'utf8'));
+    patterns = Array.isArray(rootPackage.workspaces) ? rootPackage.workspaces : rootPackage.workspaces?.packages;
+  } catch {
+    patterns = [];
+  }
+  for (const pattern of patterns ?? []) {
+    const star = pattern.indexOf('*');
+    const base = star === -1 ? pattern : pattern.slice(0, star);
+    let candidates = [pattern];
+    if (star !== -1) {
+      let entries;
+      try {
+        entries = readdirSync(resolve(ROOT, base), { withFileTypes: true });
+      } catch {
+        entries = [];
+      }
+      candidates = entries.filter((entry) => entry.isDirectory()).map((entry) => `${base}${entry.name}`);
+    }
+    for (const candidate of candidates) {
+      const manifest = resolve(ROOT, candidate, 'package.json');
+      try {
+        const name = JSON.parse(readFileSync(manifest, 'utf8')).name;
+        if (typeof name === 'string' && name) names.add(name);
+      } catch {
+        // An unreadable manifest is outside this advisory's scope; npm/typecheck owns it.
+      }
+    }
+  }
+  return names;
 }
 
 const hasExportModifier = (node) =>
@@ -171,24 +207,78 @@ export function diffAddedRuntimeExports(beforeText, afterText, fileName = 'f.ts'
 }
 
 /**
+ * Every runtime-valued import in `sourceText`, keyed by the raw module specifier.
+ *
+ * A mock can strand a consumer even when the exporting module did not change in the same
+ * commit: importing a new value from a workspace package is enough to make an existing
+ * enumerating factory incomplete. Type-only bindings are erased and deliberately omitted,
+ * just as they are from collectRuntimeExports.
+ */
+export function collectRuntimeImports(sourceText, fileName = 'f.ts') {
+  const sf = ts.createSourceFile(fileName, String(sourceText), ts.ScriptTarget.Latest, true);
+  const imports = new Map();
+  const add = (spec, name) => {
+    if (!spec || !name) return;
+    if (!imports.has(spec)) imports.set(spec, new Set());
+    imports.get(spec).add(name);
+  };
+
+  for (const stmt of sf.statements) {
+    if (!ts.isImportDeclaration(stmt) || !stmt.importClause) continue;
+    const specifier = ts.isStringLiteral(stmt.moduleSpecifier) ? stmt.moduleSpecifier.text : null;
+    if (!specifier || stmt.importClause.isTypeOnly) continue;
+
+    if (stmt.importClause.name) add(specifier, 'default');
+    const bindings = stmt.importClause.namedBindings;
+    if (!bindings) continue;
+    if (ts.isNamespaceImport(bindings)) {
+      add(specifier, '*');
+      continue;
+    }
+    if (!ts.isNamedImports(bindings)) continue;
+    for (const element of bindings.elements) {
+      if (element.isTypeOnly) continue;
+      add(specifier, element.propertyName?.text ?? element.name.text);
+    }
+  }
+  return imports;
+}
+
+/** Runtime-valued imports present in `after` but absent from `before`. */
+export function diffAddedRuntimeImports(beforeText, afterText, fileName = 'f.ts') {
+  const before = collectRuntimeImports(beforeText, fileName);
+  const after = collectRuntimeImports(afterText, fileName);
+  const added = [];
+  for (const [specifier, names] of after) {
+    const previous = before.get(specifier) ?? new Set();
+    const newNames = [...names].filter((name) => !previous.has(name));
+    if (newNames.length) added.push({ specifier, names: newNames });
+  }
+  return added;
+}
+
+/**
  * Test files that mock `modulePath` with an ENUMERATING factory.
  *
  * `modulePath` is repo-relative and extensionless, matching resolveSpec's output, so the
  * comparison is between two values produced by the same resolver rather than between a
  * path and a hand-normalised string.
  */
-export function findEnumeratingMockers({ modulePath, testFiles = [], read }) {
+export function findEnumeratingMockers({ modulePath, moduleSpecifiers = [], testFiles = [], read }) {
   const hits = [];
-  const needle = modulePath.split('/').pop();
+  const needle = modulePath ? modulePath.split('/').pop() : null;
+  const specifiers = new Set(moduleSpecifiers);
   for (const path of testFiles) {
     const text = read(path);
     if (text === null || text === undefined) continue;
     // Cheap substring pre-filter before parsing, mirroring collectCandidateFiles in the
     // sibling guard: a test that never mentions the basename cannot mock it relatively.
-    if (needle && !text.includes(needle)) continue;
+    if (needle && !text.includes(needle) && ![...specifiers].some((s) => text.includes(s))) continue;
     for (const call of analyzeMockCalls(text, path)) {
       if (call.form !== 'full-replacement') continue;
-      if (resolveSpec(path, call.spec) !== modulePath) continue;
+      const relativeMatch = modulePath && resolveSpec(path, call.spec) === modulePath;
+      const bareMatch = specifiers.has(call.spec);
+      if (!relativeMatch && !bareMatch) continue;
       hits.push({ path, line: call.line, spec: call.spec });
     }
   }
@@ -198,6 +288,15 @@ export function findEnumeratingMockers({ modulePath, testFiles = [], read }) {
 /** Repo-relative + extensionless, so a changed source path is comparable to resolveSpec. */
 export function moduleKeyFor(file) {
   return String(file).replace(/\.(?:[cm]?[jt]sx?)$/, '');
+}
+
+/** Workspace package names are the only bare specifiers this trigger should inspect. */
+export function isWorkspacePackageSpecifier(specifier, packageNames) {
+  if (!specifier || specifier.startsWith('.') || specifier.startsWith('node:')) return false;
+  for (const name of packageNames ?? []) {
+    if (specifier === name || specifier.startsWith(`${name}/`)) return true;
+  }
+  return false;
 }
 
 /**
@@ -274,7 +373,11 @@ export function formatFindings(findings) {
   ];
   const toRun = new Set();
   for (const f of findings) {
-    out.push(`  ${f.file}  (+${f.added.join(', ')})`);
+    out.push(
+      f.trigger === 'import'
+        ? `  ${f.file}  (new runtime import from '${f.specifier}': +${f.added.join(', ')})`
+        : `  ${f.file}  (+${f.added.join(', ')})`,
+    );
     for (const m of f.mockers) {
       out.push(`    ↳ ${m.path}:${m.line}  vi.mock('${m.spec}', () => ({ … }))`);
       toRun.add(m.path);
@@ -342,6 +445,8 @@ function main() {
   const examinedFiles = [];
   const identicalFiles = [];
   const changed = [];
+  const changedImporters = [];
+  const workspacePackageNames = discoverWorkspacePackageNames();
   for (const { status, file } of candidates) {
     if (!file || status.startsWith('A') || status.startsWith('D')) continue;
     if (file.endsWith('.d.ts')) continue;
@@ -359,11 +464,15 @@ function main() {
     if (declaredFiles && beforeText === afterText) identicalFiles.push(file);
     const added = diffAddedRuntimeExports(beforeText, afterText, file);
     if (added.length) changed.push({ file, added });
+    const addedImports = diffAddedRuntimeImports(beforeText, afterText, file).filter(({ specifier }) =>
+      isWorkspacePackageSpecifier(specifier, workspacePackageNames),
+    );
+    if (addedImports.length) changedImporters.push({ file, imports: addedImports });
   }
 
-  // Only walk the test corpus when something actually added an export.
+  // Only walk the test corpus when something actually added an export or importer edge.
   const findings = [];
-  if (changed.length) {
+  if (changed.length || changedImporters.length) {
     const testFiles = gitTestFiles();
     const read = (f) => {
       try {
@@ -376,10 +485,34 @@ function main() {
       const mockers = findEnumeratingMockers({ modulePath: moduleKeyFor(c.file), testFiles, read });
       if (mockers.length) findings.push({ ...c, mockers });
     }
+    for (const importer of changedImporters) {
+      for (const added of importer.imports) {
+        const mockers = findEnumeratingMockers({
+          moduleSpecifiers: [added.specifier],
+          testFiles,
+          read,
+        });
+        if (mockers.length) {
+          findings.push({
+            file: importer.file,
+            added: added.names,
+            specifier: added.specifier,
+            trigger: 'import',
+            mockers,
+          });
+        }
+      }
+    }
   }
 
   if (json) {
-    console.log(JSON.stringify({ base, examined: examinedFiles, identical: identicalFiles, findings }, null, 2));
+    console.log(
+      JSON.stringify(
+        { base, examined: examinedFiles, identical: identicalFiles, changedImporters, findings },
+        null,
+        2,
+      ),
+    );
     // NOT process.exit(): it does not drain an async pipe write, so a piped run would
     // report FEWER findings than were found. See scripts/check-undrained-stdout-exit.mjs.
     process.exitCode = 0;
@@ -390,11 +523,21 @@ function main() {
     // Distinguish "no exports added" from "exports added, but nothing enumerates them" —
     // the second is a real clean bill for a real trigger, and collapsing them would hide
     // that the trigger fired at all.
-    if (changed.length) {
-      console.log(
-        `✓ ${changed.length} module(s) gained runtime exports, but no enumerating vi.mock factory targets them:`,
-      );
+    if (changed.length || changedImporters.length) {
+      if (changed.length) {
+        console.log(
+          `✓ ${changed.length} module(s) gained runtime exports, but no enumerating vi.mock factory targets them:`,
+        );
+      }
       for (const c of changed) console.log(`    ${c.file}  (+${c.added.join(', ')})`);
+      for (const importer of changedImporters) {
+        for (const added of importer.imports) {
+          console.log(
+            `✓ ${importer.file} gained runtime imports from '${added.specifier}', but no enumerating vi.mock factory targets it:`,
+          );
+          console.log(`    (+${added.names.join(', ')})`);
+        }
+      }
       // A real clean bill for a real trigger: modules were examined AND changed.
       process.exit(0);
     }
@@ -454,6 +597,18 @@ function runSelfTest() {
     diffAddedRuntimeExports('export const a = 1;', 'export const a = 1;\nexport type T = 2;').length === 0,
   );
 
+  const addedImports = diffAddedRuntimeImports(
+    "import { old } from '@papercusp/sync';",
+    "import { old, onSyncBusEvent, type SyncBusEvent } from '@papercusp/sync';",
+  );
+  check(
+    'diff names a newly imported runtime value but excludes a type-only value',
+    addedImports.length === 1 &&
+      addedImports[0].specifier === '@papercusp/sync' &&
+      addedImports[0].names.length === 1 &&
+      addedImports[0].names[0] === 'onSyncBusEvent',
+  );
+
   // An ENUMERATING factory on the changed module is a hit …
   const testPath = 'packages/x/lib/__tests__/a.test.ts';
   const hits = findEnumeratingMockers({
@@ -462,6 +617,13 @@ function runSelfTest() {
     read: () => "vi.mock('../subject', () => ({ old: 1 }));",
   });
   check('flags an enumerating factory on the changed module', hits.length === 1);
+
+  const bareHits = findEnumeratingMockers({
+    moduleSpecifiers: ['@papercusp/sync'],
+    testFiles: [testPath],
+    read: () => "vi.mock('@papercusp/sync', () => ({ useSyncQuery: vi.fn() }));",
+  });
+  check('flags an enumerating factory for a bare workspace package specifier', bareHits.length === 1);
 
   // … while each SAFE form is silent. These are the controls: without them the check
   // above would pass just as well with the classifier stuck at "everything is a hit".

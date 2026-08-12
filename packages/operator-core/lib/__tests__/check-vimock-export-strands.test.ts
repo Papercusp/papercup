@@ -23,7 +23,10 @@ import { fileURLToPath } from 'node:url';
 import {
   collectRuntimeExports,
   diffAddedRuntimeExports,
+  collectRuntimeImports,
+  diffAddedRuntimeImports,
   findEnumeratingMockers,
+  isWorkspacePackageSpecifier,
   moduleKeyFor,
   formatNoFindings,
   formatFindings,
@@ -94,6 +97,33 @@ describe('diffAddedRuntimeExports — only what is NEW', () => {
   });
 });
 
+describe('diffAddedRuntimeImports — bare package strands', () => {
+  it('collects runtime imports and excludes type-only bindings', () => {
+    const imports = collectRuntimeImports(
+      "import { old, type SyncBusEvent } from '@papercusp/sync';\nimport type { FlagKey } from '@papercusp/flags';",
+    ) as Map<string, Set<string>>;
+    expect([...imports.get('@papercusp/sync')!]).toEqual(['old']);
+    expect(imports.has('@papercusp/flags')).toBe(false);
+  });
+
+  it('names a newly imported runtime value from a workspace package', () => {
+    expect(
+      diffAddedRuntimeImports(
+        "import { old } from '@papercusp/sync';",
+        "import { old, onSyncBusEvent, type SyncBusEvent } from '@papercusp/sync';",
+      ),
+    ).toEqual([{ specifier: '@papercusp/sync', names: ['onSyncBusEvent'] }]);
+  });
+
+  it('recognizes workspace packages and rejects external/built-in specifiers', () => {
+    const packages = new Set(['@papercusp/sync', '@papercusp/operator-core']);
+    expect(isWorkspacePackageSpecifier('@papercusp/sync', packages)).toBe(true);
+    expect(isWorkspacePackageSpecifier('@papercusp/operator-core/lib/flag-bus', packages)).toBe(true);
+    expect(isWorkspacePackageSpecifier('@testing-library/react', packages)).toBe(false);
+    expect(isWorkspacePackageSpecifier('node:fs', packages)).toBe(false);
+  });
+});
+
 describe('findEnumeratingMockers — the selection gap, precisely', () => {
   it('CALIBRATION — fires on a bare enumerating factory targeting the changed module', () => {
     // Pins that the detector still works, so the controls below cannot pass by the
@@ -120,6 +150,15 @@ describe('findEnumeratingMockers — the selection gap, precisely', () => {
       spec: string;
     }[];
     expect(hit).toMatchObject({ path: TEST_PATH, line: 2, spec: '../subject' });
+  });
+
+  it('CALIBRATION — fires on a bare workspace package specifier', () => {
+    const hits = findEnumeratingMockers({
+      moduleSpecifiers: ['@papercusp/sync'],
+      testFiles: [TEST_PATH],
+      read: () => "vi.mock('@papercusp/sync', () => ({ useSyncQuery: vi.fn() }));",
+    }) as unknown[];
+    expect(hits).toHaveLength(1);
   });
 });
 
@@ -157,6 +196,20 @@ describe('formatFindings — the advice an agent actually acts on', () => {
     expect(out).toMatch(/mugKettleSystemEnabled/);
     expect(out).toMatch(/watchdog-paused-recovery\.test\.ts/);
     expect(out).toMatch(/npm run test:file --/);
+  });
+
+  it('labels importer-triggered bare-package findings distinctly', () => {
+    const out = formatFindings([
+      {
+        file: 'apps/operator/lib/flag-hooks.tsx',
+        added: ['onSyncBusEvent'],
+        specifier: '@papercusp/sync',
+        trigger: 'import',
+        mockers: [{ path: 'apps/operator-vite/src/routes/workbench.test.tsx', line: 53, spec: '@papercusp/sync' }],
+      },
+    ]) as string;
+    expect(out).toMatch(/new runtime import from '@papercusp\/sync'/);
+    expect(out).toMatch(/onSyncBusEvent/);
   });
 
   it('warns that a GREEN run is NOT proof — the quiet fail-soft shape (EI-20017608270017874)', () => {
