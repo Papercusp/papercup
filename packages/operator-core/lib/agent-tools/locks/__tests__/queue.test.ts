@@ -38,6 +38,7 @@ describe('locks:queue tool metadata', () => {
   it('has the expected name, capability, args, and guidance.when', () => {
     expect(tool.name).toBe('locks:queue');
     expect(tool.capability).toBe('locks:read');
+    expect((tool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
     expect((tool.guidance?.when ?? '').length).toBeGreaterThan(0);
     expect(tool.description).toContain('workspace-global diagnostic: omit harness');
     expect(tool.guidance?.chaining).toContain('omit harness');

@@ -25,6 +25,11 @@ export default defineTool({
   },
   capability: 'locks:read',
   requirePrincipal: false,
+  // EI-20229273881874423: this diagnostic owns its read pool and never reads
+  // ctx.tx. Do not retain the ambient workspace transaction while the lock
+  // queue is saturated; a queued org-app acquisition makes self-verification
+  // fail before the diagnostic handler can run.
+  skipWorkspaceTx: true,
   agentRoles: [...AGENT_ROLES],
   args: z.object({
     paths: z.array(z.string()).optional(),

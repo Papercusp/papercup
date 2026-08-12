@@ -1624,6 +1624,24 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
     expect(h.withWorkspaceCalls).toEqual([]);
   });
 
+  it('EI-20229273881874423: privileged locks:queue does not queue on org-app', async () => {
+    const projected = lookupByMcpName('locks:queue');
+    expect(projected?.requirePrincipal).toBe(false);
+    expect(projected?.skipWorkspaceTx).toBe(true);
+
+    // locks:queue owns its read pool and does not use ctx.tx. The privileged
+    // dispatcher must therefore skip the short principal-synthesis probe as
+    // well as the ambient transaction, or a saturated org-app pool can make a
+    // self-verification read fail before the handler starts.
+    const res = await callTool(
+      'locks:queue',
+      { owner: 'su-1336ba21-d2bc-44f7-bec4-fe2f0314199f' },
+      superuserExtra('&workspace=ws-test'),
+    );
+    expect(res.isError).toBeUndefined();
+    expect(h.withWorkspaceCalls).toEqual([]);
+  });
+
   it('power-profile callers cannot invoke engineer-profile tools by name (mirrors the list filter)', async () => {
     h.verifyAccessToken.mockResolvedValueOnce(POWER_CLAIMS);
     const res = await callTool(
