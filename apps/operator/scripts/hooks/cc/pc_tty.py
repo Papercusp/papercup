@@ -95,9 +95,12 @@ def coordination_owner_id(input_raw='', env=None):
     keys = []
     if native_id:
         keys.append(native_id)
-    adv_id = (env.get('PAPERCUSP_ADV_SESSION_ID') or '').strip()
-    if adv_id:
-        keys.append(f'adv-{adv_id}')
+        # The adv-session binding is a useful second key only when this hook
+        # invocation identified a native session. Without that payload, using
+        # an ambient adv id would override an explicit fixture/non-Claude SID.
+        adv_id = (env.get('PAPERCUSP_ADV_SESSION_ID') or '').strip()
+        if adv_id:
+            keys.append(f'adv-{adv_id}')
 
     root = (env.get('PAPERCUSP_SESSION_OWNERS_DIR') or '').strip()
     if not root:

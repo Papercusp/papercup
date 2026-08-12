@@ -459,6 +459,61 @@ describe('statusline-fleet render (fixture mode)', () => {
     }
   });
 
+  it('uses the born coordination owner for live glance requests after SID drift', async () => {
+    const nativeId = '0123abcd-1234-5678-9abc-def012345678';
+    const ownerId = 'su-real-owner';
+    let requestedClient = '';
+    const server = createServer((req, res) => {
+      if (req.url?.startsWith('/admin/route')) {
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({ account: null }));
+        return;
+      }
+      if (req.url?.startsWith('/api/mcp')) {
+        requestedClient = new URL(req.url, 'http://127.0.0.1').searchParams.get('client') ?? '';
+        const glance = {
+          ok: true,
+          display: { title: 'su-real', statusline: ['◇ su-real'], notice: null },
+        };
+        res.writeHead(200, { 'content-type': 'application/json' });
+        res.end(JSON.stringify({
+          jsonrpc: '2.0',
+          id: 1,
+          result: { content: [{ type: 'text', text: JSON.stringify(glance) }] },
+        }));
+        return;
+      }
+      res.writeHead(404).end();
+    });
+    await new Promise<void>((resolveListen) => server.listen(0, '127.0.0.1', resolveListen));
+    try {
+      const addr = server.address();
+      if (!addr || typeof addr === 'string') throw new Error('missing test server address');
+      const home = mkdtempSync(join(tmpdir(), 'statusline-owner-live-home-'));
+      const owners = join(home, '.papercusp', 'psu-session-owners');
+      const cacheDir = mkdtempSync(join(tmpdir(), 'statusline-owner-live-cache-'));
+      mkdirSync(owners, { recursive: true });
+      writeFileSync(join(home, '.papercusp', 'superuser-token'), 'test-token');
+      writeFileSync(join(owners, nativeId), JSON.stringify({ v: 1, ownerId }));
+      const env = {
+        ...process.env,
+        HOME: home,
+        PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${addr.port}`,
+        PAPERCUSP_SID: 'su-stale-owner',
+        PAPERCUSP_STATUSLINE_CACHE_DIR: cacheDir,
+        PAPERCUSP_STATUSLINE_GLANCE_TTL_SEC: '0',
+        COLUMNS: '200',
+      };
+      const out = await renderLiveAsync(env, JSON.stringify({ session_id: nativeId }));
+      expect(requestedClient).toBe(ownerId);
+      expect(out).toContain('◇ su-real');
+      rmSync(home, { recursive: true, force: true });
+      rmSync(cacheDir, { recursive: true, force: true });
+    } finally {
+      await new Promise<void>((resolveClose) => server.close(() => resolveClose()));
+    }
+  });
+
   const quietGlance = {
     ok: true,
     wake: { default: 'auto', stagedTotal: 0, stagedOwners: 0 },

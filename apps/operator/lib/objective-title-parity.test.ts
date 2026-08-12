@@ -11,7 +11,7 @@
  * + SID + equivalent model, the two titles must be equal.
  */
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -54,13 +54,14 @@ function codexRun(
   glance: unknown,
   modelSpec: string,
   extraEnv: Record<string, string> = {},
+  input = '{}',
 ): { title: string; stdout: string } {
   const fixture = join(dir, `${Math.random().toString(36).slice(2)}.cx.json`);
   const ttyFile = join(dir, `${Math.random().toString(36).slice(2)}.cx.tty`);
   writeFileSync(fixture, JSON.stringify(glance));
   const stdout = execFileSync('bash', [OBJ_TITLE], {
     encoding: 'utf8',
-    input: '{}',
+    input,
     env: {
       ...process.env,
       PAPERCUSP_OBJECTIVE_FIXTURE: fixture,
@@ -135,6 +136,27 @@ describe('SINGLE-SOURCE display pipe — title parity BY CONSTRUCTION (tui-statu
     const cx = codexTitle(glance, '');
     expect(cx).toBe(cc);
     expect(cc).toContain('fallback objective');
+  });
+
+  it('legacy fallback uses the native session owner when PAPERCUSP_SID has drifted', () => {
+    const home = mkdtempSync(join(tmpdir(), 'objective-owner-home-'));
+    const owners = join(home, '.papercusp', 'psu-session-owners');
+    const nativeId = '0123abcd-1234-5678-9abc-def012345678';
+    mkdirSync(owners, { recursive: true });
+    writeFileSync(join(owners, nativeId), JSON.stringify({ v: 1, ownerId: 'su-real-owner' }));
+    try {
+      const glance = { ...base, display: { ...display, title: null }, self: { objective: 'fallback objective' } };
+      const { title } = codexRun(
+        glance,
+        '',
+        { HOME: home, PAPERCUSP_SID: 'su-stale-owner' },
+        JSON.stringify({ session_id: nativeId }),
+      );
+      expect(title).toContain('su-real');
+      expect(title).not.toContain('su-stale');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });
 
