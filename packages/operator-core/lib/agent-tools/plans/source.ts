@@ -957,28 +957,12 @@ export async function listPlanIndexRows(
   try {
     const rows = await withWorkspace(workspaceId, async (tx) => {
       const filters = normalizePlanIndexFilterValues(opts);
-      // Hide per-run instance plans (Option C, D-003) by default — they are reached
-      // via the template's Runs history, not the main plan directory. A templateSlug
-      // filter (P-005) is itself an instance selector, so it overrides the hiding.
-      const instanceFilter = opts.templateSlug
-        ? tx``
-        : opts.includeInstances
-          ? tx``
-          : tx`AND template_slug IS NULL`;
-      // P-005 template filters — `template` rides the harness_plans_template_idx index (mig 329).
-      const templateFilter = opts.template ? tx`AND template = ${opts.template}` : tx``;
-      const templateSlugFilter = opts.templateSlug
-        ? tx`AND template_slug = ${opts.templateSlug}`
-        : tx``;
-      const createdSinceFilter = opts.createdSince ? tx`AND created_at >= ${opts.createdSince}` : tx``;
-      const updatedSinceFilter = opts.updatedSince ? tx`AND updated_at >= ${opts.updatedSince}` : tx``;
       const orderClause =
         opts.order === 'updated'
           ? tx`ORDER BY updated_at DESC NULLS LAST`
           : opts.order === 'created'
             ? tx`ORDER BY created_at DESC NULLS LAST`
             : tx`ORDER BY plan_slug ASC`;
-      const limitClause = opts.limit && opts.limit > 0 ? tx`LIMIT ${opts.limit}` : tx``;
       // P-006 payload projection (see the function docstring for the measurements).
       // includeItems:false yields an empty array rather than NULL so `row.items.length`
       // stays safe; the heavy fragment emits typed NULLs so the row shape — and therefore
@@ -996,15 +980,15 @@ export async function listPlanIndexRows(
                template
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
-         ${archivedFilter}
-         ${statusFilter}
-         ${instanceFilter}
-         ${templateFilter}
-         ${templateSlugFilter}
-         ${createdSinceFilter}
-         ${updatedSinceFilter}
+           AND (${filters.includeArchived} OR archived = false)
+           AND (${!filters.statusActive} OR status = ${filters.status})
+           AND (${filters.includeInstances} OR template_slug IS NULL)
+           AND (${!filters.templateActive} OR template = ${filters.template})
+           AND (${!filters.templateSlugActive} OR template_slug = ${filters.templateSlug})
+           AND (${!filters.createdSinceActive} OR created_at >= ${filters.createdSince})
+           AND (${!filters.updatedSinceActive} OR updated_at >= ${filters.updatedSince})
          ${orderClause}
-         ${limitClause}
+         LIMIT ${filters.limit}
       `;
     });
     return rows.map((r) => {
@@ -1018,22 +1002,19 @@ export async function listPlanIndexRows(
       err.message?.includes('does not exist')
     ) {
       const rows = await withWorkspace(workspaceId, async (tx) => {
-        const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
-        const statusFilter = opts.status ? tx`AND status = ${opts.status}` : tx``;
-        const instanceFilter = opts.includeInstances ? tx`` : tx`AND template_slug IS NULL`;
-        const limitClause = opts.limit && opts.limit > 0 ? tx`LIMIT ${opts.limit}` : tx``;
+        const filters = normalizePlanIndexFilterValues(opts);
         return tx<Array<Omit<PlanDbRow, 'content'>>>`
           SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
                  title, status, created, updated, owner, initiative, supersedes, superseded_by,
                  op_status, op_started_at, op_updated_at, current_wave, op_priority,
                  archived, is_legacy, updated_at, items, now_state, now_next
-            FROM harness_shared.harness_plans
+           FROM harness_shared.harness_plans
            WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
-           ${archivedFilter}
-           ${statusFilter}
-           ${instanceFilter}
+             AND (${filters.includeArchived} OR archived = false)
+             AND (${!filters.statusActive} OR status = ${filters.status})
+             AND (${filters.includeInstances} OR template_slug IS NULL)
            ORDER BY plan_slug ASC
-           ${limitClause}
+           LIMIT ${filters.limit}
         `;
       });
       return rows.map((r) => {
@@ -1097,28 +1078,13 @@ export async function listPlanIndexRowsForWorkspace(
   const { workspaceId } = opts;
   try {
     const rows = await withWorkspace(workspaceId, async (tx) => {
-      const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
-      const statusFilter = opts.status ? tx`AND status = ${opts.status}` : tx``;
-      // A templateSlug filter (P-005) is itself an instance selector, so it overrides
-      // the default instance-hiding.
-      const instanceFilter = opts.templateSlug
-        ? tx``
-        : opts.includeInstances
-          ? tx``
-          : tx`AND template_slug IS NULL`;
-      const templateFilter = opts.template ? tx`AND template = ${opts.template}` : tx``;
-      const templateSlugFilter = opts.templateSlug
-        ? tx`AND template_slug = ${opts.templateSlug}`
-        : tx``;
-      const createdSinceFilter = opts.createdSince ? tx`AND created_at >= ${opts.createdSince}` : tx``;
-      const updatedSinceFilter = opts.updatedSince ? tx`AND updated_at >= ${opts.updatedSince}` : tx``;
+      const filters = normalizePlanIndexFilterValues(opts);
       const orderClause =
         opts.order === 'updated'
           ? tx`ORDER BY updated_at DESC NULLS LAST`
           : opts.order === 'created'
             ? tx`ORDER BY created_at DESC NULLS LAST`
             : tx`ORDER BY harness_slug ASC, plan_slug ASC`;
-      const limitClause = opts.limit && opts.limit > 0 ? tx`LIMIT ${opts.limit}` : tx``;
       // P-006 payload projection — identical to listPlanIndexRows above; see its docstring.
       const itemsCol = opts.includeItems === false ? tx`'[]'::jsonb AS items` : tx`items`;
       const heavyCols = opts.heavyFields
@@ -1133,15 +1099,15 @@ export async function listPlanIndexRowsForWorkspace(
                template
           FROM harness_shared.harness_plans
          WHERE workspace_id = ${workspaceId}
-         ${archivedFilter}
-         ${statusFilter}
-         ${instanceFilter}
-         ${templateFilter}
-         ${templateSlugFilter}
-         ${createdSinceFilter}
-         ${updatedSinceFilter}
+           AND (${filters.includeArchived} OR archived = false)
+           AND (${!filters.statusActive} OR status = ${filters.status})
+           AND (${filters.includeInstances} OR template_slug IS NULL)
+           AND (${!filters.templateActive} OR template = ${filters.template})
+           AND (${!filters.templateSlugActive} OR template_slug = ${filters.templateSlug})
+           AND (${!filters.createdSinceActive} OR created_at >= ${filters.createdSince})
+           AND (${!filters.updatedSinceActive} OR updated_at >= ${filters.updatedSince})
          ${orderClause}
-         ${limitClause}
+         LIMIT ${filters.limit}
       `;
     });
     return rows.map((r) => {
@@ -1155,10 +1121,7 @@ export async function listPlanIndexRowsForWorkspace(
       err.message?.includes('does not exist')
     ) {
       const rows = await withWorkspace(workspaceId, async (tx) => {
-        const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
-        const statusFilter = opts.status ? tx`AND status = ${opts.status}` : tx``;
-        const instanceFilter = opts.includeInstances ? tx`` : tx`AND template_slug IS NULL`;
-        const limitClause = opts.limit && opts.limit > 0 ? tx`LIMIT ${opts.limit}` : tx``;
+        const filters = normalizePlanIndexFilterValues(opts);
         return tx<Array<Omit<PlanDbRow, 'content'>>>`
           SELECT workspace_id, harness_slug, plan_slug, content_hash, version,
                  title, status, created, updated, owner, initiative, supersedes, superseded_by,
@@ -1166,11 +1129,11 @@ export async function listPlanIndexRowsForWorkspace(
                  archived, is_legacy, updated_at, items, now_state, now_next
             FROM harness_shared.harness_plans
            WHERE workspace_id = ${workspaceId}
-           ${archivedFilter}
-           ${statusFilter}
-           ${instanceFilter}
+             AND (${filters.includeArchived} OR archived = false)
+             AND (${!filters.statusActive} OR status = ${filters.status})
+             AND (${filters.includeInstances} OR template_slug IS NULL)
            ORDER BY harness_slug ASC, plan_slug ASC
-           ${limitClause}
+           LIMIT ${filters.limit}
         `;
       });
       return rows.map((r) => {
