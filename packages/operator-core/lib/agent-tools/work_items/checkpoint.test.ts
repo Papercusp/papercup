@@ -957,6 +957,45 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(stored).toContain('evidence: observed probe C pass');
     });
 
+    it('EI-20234792018972820: accepts documented probe aliases alongside boolean verified rows', async () => {
+      withPrior(null);
+      const r = await one({
+        id: 'WI-7',
+        checkpoint: 'probe alias compatibility',
+        checks: [
+          {
+            claim: 'probe alias true with evidence becomes verified',
+            probe: 'run probe alias A',
+            verified: true,
+            evidence: 'observed probe alias A pass',
+          },
+          {
+            claim: 'probe alias false stays predicted',
+            probe: 'run probe alias B',
+            verified: false,
+            evidence: 'contradictory probe alias evidence must be discarded',
+          },
+          {
+            claim: 'canonical recheck wins over probe alias',
+            probe: 'ignored probe alias',
+            recheck: 'canonical recheck command',
+            verified: true,
+            evidence: 'canonical evidence',
+          },
+        ],
+      });
+
+      expect(r.ok).toBe(true);
+      const stored = await lastStored();
+      expect(stored).toContain('- ✓ probe alias true with evidence becomes verified — re-check: run probe alias A');
+      expect(stored).toContain('evidence: observed probe alias A pass');
+      expect(stored).toContain('- ? probe alias false stays predicted — re-check: run probe alias B');
+      expect(stored).not.toContain('contradictory probe alias evidence must be discarded');
+      expect(stored).toContain('- ✓ canonical recheck wins over probe alias — re-check: canonical recheck command');
+      expect(stored).not.toContain('ignored probe alias');
+      expect(r.checks).toBe(3);
+    });
+
     it('applies the same boolean compatibility repair inside items[]', async () => {
       withPrior(null);
       const out = await env({
