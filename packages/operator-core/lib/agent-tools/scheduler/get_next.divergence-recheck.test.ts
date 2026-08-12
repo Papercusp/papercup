@@ -67,9 +67,13 @@ const drained = { matchedByFilter: 22, claimable: 0, excluded: {} as never };
 
 async function call() {
   const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
-    content: Array<{ text: string }>;
+    data?: unknown;
+    content?: Array<{ text: string }>;
   };
-  return JSON.parse(out.content[0]!.text);
+  // EI-20245892539908894: a successful claim returns `{ data }` (defineTool renders it into
+  // BOTH structuredContent and text); a miss still returns the plain `{ content }` projection.
+  // Unwrap either, so this helper asserts on the payload rather than on the envelope shape.
+  return out.data ?? JSON.parse(out.content![0]!.text);
 }
 
 /** The opts object the tool handed to fleetScopedMiss (the verdict inputs under test). */

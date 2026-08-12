@@ -71,9 +71,13 @@ import { evaluateClaimConcurrency } from '../../scheduler/claim-spec-store';
 
 async function callMiss() {
   const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
-    content: Array<{ text: string }>;
+    data?: unknown;
+    content?: Array<{ text: string }>;
   };
-  return JSON.parse(out.content[0]!.text);
+  // EI-20245892539908894: a successful claim returns `{ data }` (defineTool renders it into
+  // BOTH structuredContent and text); a miss still returns the plain `{ content }` projection.
+  // Unwrap either, so this helper asserts on the payload rather than on the envelope shape.
+  return out.data ?? JSON.parse(out.content![0]!.text);
 }
 
 describe('scheduler:get_next miss diagnosis is concurrency-aware (EI-12095)', () => {

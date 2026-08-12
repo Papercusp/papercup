@@ -42,8 +42,14 @@ vi.mock('../../work-item-checkpoint', () => ({
 import getNextTool from './get_next';
 
 const run = async () => {
-  const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as { content: Array<{ text: string }> };
-  return JSON.parse(out.content[0]!.text);
+  const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
+    data?: unknown;
+    content?: Array<{ text: string }>;
+  };
+  // EI-20245892539908894: a successful claim returns `{ data }` (defineTool renders it into
+  // BOTH structuredContent and text); a miss still returns the plain `{ content }` projection.
+  // Unwrap either, so this helper asserts on the payload rather than on the envelope shape.
+  return out.data ?? JSON.parse(out.content![0]!.text);
 };
 
 beforeEach(() => {
