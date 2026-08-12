@@ -120,6 +120,20 @@ beforeEach(async () => {
   sqlCalls = [];
 });
 
+it('P-010 import hygiene: pot tool modules perform no database I/O while loading', async () => {
+  const modules: Array<[string, () => Promise<unknown>]> = [
+    ['pot:declare-wake', () => import('./pot/declare_wake')],
+    ['pot survey', () => import('../pot/survey')],
+  ];
+  for (const [label, load] of modules) {
+    sqlCalls = [];
+    await load();
+    await settle();
+    await settle();
+    expect(sqlCalls, `${label} performed database I/O during module import`).toEqual([]);
+  }
+});
+
 describe('P-010 tool gate: the shared refusal', () => {
   it('CALIBRATION — tier ENABLED: returns null so the handler proceeds', async () => {
     tierFlag = true;
