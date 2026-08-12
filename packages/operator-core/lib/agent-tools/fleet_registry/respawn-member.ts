@@ -138,6 +138,12 @@ export default defineTool({
   },
   capability: 'fleet:respawn-member',
   requirePrincipal: false,
+  // EI-20215222062407258: this orchestration awaits the drain, launch, and (by default)
+  // up-to-90-second replacement-heartbeat verification without reading ctx.tx. Holding the
+  // dispatcher's ambient workspace transaction across that wait lets Postgres terminate its
+  // idle backend during a concurrent respawn wave, surfacing as a bare
+  // `write CONNECTION_CLOSED 127.0.0.1:6432`. See ProjectedTool.skipWorkspaceTx.
+  skipWorkspaceTx: true,
   agentRoles: [...SU_ROLES],
   args: z
     .object({

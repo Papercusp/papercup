@@ -50,6 +50,9 @@ describe('contextGaugeAnnotator (P-013 wiring logic)', () => {
     expect(texts).toHaveLength(2);
     expect(texts[1]).toContain('context: 270000/300000 (90%)');
     expect(texts[1]).toContain('CRITICAL');
+    // Test owners are headless: the ambient result must not offer a carry-respawn
+    // that can only fail with no_live_pty_host.
+    expect(texts[1]).not.toContain('request-compaction');
     expect((out._meta as Record<string, unknown>)?._contextGauge).toContain('90%');
   });
 

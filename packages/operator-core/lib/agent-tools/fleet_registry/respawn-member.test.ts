@@ -47,6 +47,12 @@ function parse(res: unknown) {
   return JSON.parse((res as { content: { text: string }[] }).content[0].text);
 }
 
+describe('fleet:respawn-member — ambient workspace transaction safety (EI-20215222062407258)', () => {
+  it('opts out because drain/launch/heartbeat verification can await beyond the idle tx timeout', () => {
+    expect((tool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
   resolveFleetMemberTarget.mockResolvedValue({
