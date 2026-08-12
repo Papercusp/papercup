@@ -36,6 +36,7 @@ import {
   migrationsCallFromQuery,
   testRunsCallFromQuery,
   issuesListCallFromQuery,
+  gateHealthCallFromQuery,
 } from './sql-reads-helpers';
 import type { CoverageResult, SqlSubstitutionPair } from '../types';
 
@@ -376,10 +377,67 @@ export const engineerIssuesSearch: SqlSubstitutionPair = {
 };
 
 /** Every pair in the SQL corpus, in registry order. */
+/**
+ * The gate-health read — the LARGEST single cluster the SQL audit measured (708
+ * calls / 110 distinct agents over the 14d retention) and the one the plan's own
+ * acceptance grade caught still routing around the catalog.
+ *
+ * This pair is deliberately Class C, not Class A. `routines:list` has been able
+ * to answer this since P-002, and D-002 ruled that no fourth gate surface should
+ * be added — that ruling stands and this does not reopen it. What was missing was
+ * only the routing ROW: the capability existed, carried the right guidance, and
+ * was still unreachable from the one table an agent reads before writing SQL.
+ * Capability and reachability are separate failures, and closing the first is
+ * what makes it easy to believe you have closed the second.
+ */
+export const gateHealthRead: SqlSubstitutionPair = {
+  id: 'sql.gate-health',
+  intentLabel: 'gate-health-read',
+  corpus: 'sql',
+  relation: 'routines',
+  // Claim ONLY the gate-health corpus, not all `routines` traffic. Pause-state
+  // and cadence reads are a different intent with a different residual, and a
+  // pair that swallowed them would over-claim exactly the way D-006 forbids.
+  sqlShape: /\bgate_health\b/is,
+  toolName: 'routines:list',
+  advisoryText:
+    "routines:list { name: 'green-checkpoint' } returns `health.gate_health` — the live in-flight-retriage marker, observed candidate and consecutive-red count — plus nextFireAt/lastFiredAt, which is the whole of this read. No raw SQL needed.",
+  routing: {
+    want: "the green-checkpoint gate's health (consecutive reds, observed candidate, whether a re-triage is in flight)",
+    use: "`routines:list { name: 'green-checkpoint' }` — read `health.gate_health`, plus `nextFireAt` / `lastFiredAt` on the same row",
+    insteadOf:
+      "a hand-written `SELECT metadata->'gate_health'->>'consecutiveReds', metadata->'gate_health'->'inFlightRetriage' FROM harness_shared.routines`. ⚠ Only the projected row is served — `tier`, `payload_template`, `concurrency`, `catchup`, `reschedule_interval_sec` and any `metadata` key outside the operational allowlist are NOT returned, and a cross-routine aggregate or a JOIN still wants SQL. ⚠ For \"is my change live / what is blocking it\" use dev:pipeline_position, and for the judged candidate use state:read { cell:'gate.greenCheckpoint.candidate' } — different questions with their own provenance handling",
+  },
+  expectedVerdict: 'equivalent',
+  cover(atom: string): CoverageResult {
+    if (/\bjoin\b/i.test(atom)) {
+      return { covered: false, reason: 'a JOIN across relations — routines:list reads one table' };
+    }
+    if (/\bcount\s*\(|\bgroup\s+by\b/i.test(atom)) {
+      return {
+        covered: false,
+        reason: 'an aggregate over routines — routines:list returns rows (or rollup:true per GROUP, which is a different shape)',
+      };
+    }
+    const unprojected = /\b(tier|payload_template|concurrency|catchup|reschedule_interval_sec|target_owner_id)\b/i.exec(atom);
+    if (unprojected) {
+      return {
+        covered: false,
+        reason: `selects \`${unprojected[1]}\`, which is not on the projected row — the verb fetches the column but does not return it`,
+      };
+    }
+    const call = gateHealthCallFromQuery(atom);
+    return call
+      ? { covered: true, expression: `${call} // gate_health → \`health.gate_health\`` }
+      : { covered: false, reason: 'no gate_health projection — a different routines read with a different residual' };
+  },
+};
+
 export const SQL_READ_PAIRS: SqlSubstitutionPair[] = [
   informationSchemaColumns,
   informationSchemaTables,
   schemaMigrationsApplied,
   testRunsHistory,
   engineerIssuesSearch,
+  gateHealthRead,
 ];

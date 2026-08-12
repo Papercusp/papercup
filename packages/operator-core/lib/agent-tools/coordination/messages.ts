@@ -201,7 +201,18 @@ export async function sendMessage(
   // broadcast (hive-queen, or an unstamped ordinary sender) stays legible to
   // the receive-side defang (P-003 H1).
   const kind = opts.kind ?? 'message';
-  if (kind === 'message' && to.includes('*')) {
+  // coord:emit deliberately keeps lifecycle records on the visible `message`
+  // wire kind so inbox readers can see them, while stamping `auto` + a
+  // lifecycle category to distinguish machine chatter from a control cue.
+  // Treat that explicit machine-lifecycle shape like the executable lifecycle
+  // kinds above: it carries no authority and must not trip H5a merely because
+  // the sender happens to be a fleet leader broadcasting the lifecycle signal.
+  const isAutoLifecycleMessage =
+    kind === 'message' &&
+    opts.extra?.auto === true &&
+    typeof opts.extra.lifecycle === 'string' &&
+    opts.extra.lifecycle.length > 0;
+  if (kind === 'message' && to.includes('*') && !isAutoLifecycleMessage) {
     let stamp: CueAuthorityStamp | null;
     if (opts.cueAuthorityResolved !== undefined) {
       stamp = opts.cueAuthorityResolved;

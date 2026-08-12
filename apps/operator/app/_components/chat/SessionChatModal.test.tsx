@@ -132,6 +132,9 @@ type Handlers = Record<string, (data: string, ev?: unknown) => void>;
 let captured: { handlers: Handlers; onError?: (e: Error) => void; url: string } | null = null;
 const closeSpy = vi.fn();
 vi.mock('@papercusp/sse', () => ({
+  // Mirror the transport ceilings consumed by stream-freshness.ts.
+  DEFAULT_ZOMBIE_TIMEOUT_MS: 45_000,
+  DESKTOP_IPC_STREAM_IDLE_TIMEOUT_MS: 32_000,
   createResilientEventSource: (opts: { url: string; handlers: Handlers; onError?: (e: Error) => void }) => {
     // EI-14216: OperatorChat transitively imports OperatorConversationProvider
     // (for CardAnswerError), which imports voice-mode.ts, which — on some

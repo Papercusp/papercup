@@ -65,6 +65,165 @@ export function capEntryText(e: AgentTimelineEntry): AgentTimelineEntry {
   };
 }
 
+/**
+ * The harness Run-view stream crosses the desktop IPC boundary as individual
+ * SSE frames. Keep raw-log frames small enough that a large tail or a burst of
+ * log-bus lines cannot make the webview/parser retain one enormous message.
+ * These are DATA limits; SSE framing adds only a small fixed header.
+ */
+export const HARNESS_STREAM_LOG_CHUNK_BYTES = 64 * 1024;
+export const HARNESS_STREAM_LOG_BATCH_LINES = 100;
+export const HARNESS_STREAM_LOG_BATCH_BYTES = 64 * 1024;
+
+/**
+ * The old Run-view only reads these feature fields. `parseFeatures` also
+ * returns notes, metadata, provenance, and other detail columns that can be
+ * very large; sending those on every 3-second heartbeat made one `features`
+ * event reach tens of megabytes. Keep the event name and list shape stable,
+ * while retaining the fields the view actually renders/filters.
+ */
+export const HARNESS_STREAM_FEATURE_TEXT_CAP = 1_000;
+export const HARNESS_STREAM_FEATURE_CLAIMS_CAP = 32;
+export const HARNESS_STREAM_FEATURE_TAGS_CAP = 32;
+export const HARNESS_STREAM_FEATURE_PAYLOAD_CAP_BYTES = 4 * 1024 * 1024;
+
+const STREAM_TEXT_ENCODER = new TextEncoder();
+
+function utf8ByteLength(value: string): number {
+  return STREAM_TEXT_ENCODER.encode(value).byteLength;
+}
+
+/**
+ * Split text on Unicode scalar boundaries so each returned string's encoded
+ * bytes stay within `maxBytes`. A UTF-8 scalar is at most four bytes, so the
+ * effective minimum is four even if a caller passes a smaller limit.
+ * Pure — exported for regression tests.
+ */
+export function splitUtf8Chunks(
+  value: string,
+  maxBytes = HARNESS_STREAM_LOG_CHUNK_BYTES,
+): string[] {
+  if (!value) return [];
+  const limit = Math.max(4, Math.floor(maxBytes));
+  const chunks: string[] = [];
+  let start = 0;
+  let used = 0;
+
+  for (let index = 0; index < value.length;) {
+    const codePoint = value.codePointAt(index)!;
+    const width = codePoint > 0xffff ? 2 : 1;
+    const charBytes = utf8ByteLength(value.slice(index, index + width));
+    if (used > 0 && used + charBytes > limit) {
+      chunks.push(value.slice(start, index));
+      start = index;
+      used = 0;
+    }
+    used += charBytes;
+    index += width;
+  }
+  if (start < value.length) chunks.push(value.slice(start));
+  return chunks;
+}
+
+/**
+ * Join raw log lines into bounded SSE payloads. A line that is itself larger
+ * than the limit is split safely by `splitUtf8Chunks`; normal lines remain
+ * newline-delimited so the existing Run-view consumer can append them.
+ * Pure — exported for regression tests.
+ */
+export function batchRawLogLines(
+  lines: Iterable<string>,
+  maxBytes = HARNESS_STREAM_LOG_BATCH_BYTES,
+  maxLines = HARNESS_STREAM_LOG_BATCH_LINES,
+): string[] {
+  const byteLimit = Math.max(4, Math.floor(maxBytes));
+  const lineLimit = Math.max(1, Math.floor(maxLines));
+  const batches: string[] = [];
+  let current = '';
+  let currentBytes = 0;
+  let currentLines = 0;
+  const flush = () => {
+    if (!current) return;
+    batches.push(current);
+    current = '';
+    currentBytes = 0;
+    currentLines = 0;
+  };
+
+  for (const rawLine of lines) {
+    const line = rawLine.endsWith('\n') ? rawLine : `${rawLine}\n`;
+    for (const part of splitUtf8Chunks(line, byteLimit)) {
+      const partBytes = utf8ByteLength(part);
+      if (current && (currentLines >= lineLimit || currentBytes + partBytes > byteLimit)) {
+        flush();
+      }
+      current += part;
+      currentBytes += partBytes;
+      currentLines += 1;
+      if (currentBytes >= byteLimit || currentLines >= lineLimit) flush();
+    }
+  }
+  flush();
+  return batches;
+}
+
+function capStreamFeatureText(value: unknown): unknown {
+  if (typeof value !== 'string' || value.length <= HARNESS_STREAM_FEATURE_TEXT_CAP) return value;
+  return `${value.slice(0, HARNESS_STREAM_FEATURE_TEXT_CAP)}…`;
+}
+
+/**
+ * Project one parsed feature to the legacy Run-view contract without carrying
+ * heavy detail columns across the SSE/IPC boundary. Pure — exported for tests.
+ */
+export function slimFeatureForStream(feature: any): Record<string, unknown> {
+  const out: Record<string, unknown> = {
+    id: feature?.id,
+    title: capStreamFeatureText(feature?.title),
+    status: feature?.status,
+    attempts: feature?.attempts,
+  };
+  if (feature?.summary != null) out.summary = capStreamFeatureText(feature.summary);
+  if (Array.isArray(feature?.claims)) {
+    out.claims = feature.claims
+      .slice(0, HARNESS_STREAM_FEATURE_CLAIMS_CAP)
+      .map((claim: unknown) => capStreamFeatureText(claim));
+  }
+  if (feature?.project_id != null) out.project_id = capStreamFeatureText(feature.project_id);
+  if (Array.isArray(feature?.tags)) {
+    out.tags = feature.tags
+      .slice(0, HARNESS_STREAM_FEATURE_TAGS_CAP)
+      .map((tag: unknown) => capStreamFeatureText(tag));
+  }
+  return out;
+}
+
+export function slimFeaturesForStream(features: readonly any[]): Record<string, unknown>[] {
+  return features.map(slimFeatureForStream);
+}
+
+export type HarnessStreamFeatureState = [unknown, unknown, unknown];
+
+/** The compact state tuple used when even the legacy feature projection is too large. */
+export function featureStateForStream(features: readonly any[]): HarnessStreamFeatureState[] {
+  return features.map((feature) => [feature?.id, feature?.status, feature?.attempts]);
+}
+
+/**
+ * Preserve the legacy feature-object payload for ordinary harnesses, but
+ * degrade a pathological feature corpus to the compact state tuples already
+ * used by the stream's change detector. This keeps the `features` event name
+ * and array contract while preventing detail text from crossing IPC in bulk.
+ */
+export function featuresForStreamEvent(
+  features: readonly any[],
+): Record<string, unknown>[] | HarnessStreamFeatureState[] {
+  const slim = slimFeaturesForStream(features);
+  return utf8ByteLength(JSON.stringify(slim)) <= HARNESS_STREAM_FEATURE_PAYLOAD_CAP_BYTES
+    ? slim
+    : featureStateForStream(features);
+}
+
 export function createAgentTimelineParser() {
   let pendingText = '';
   let pendingThinking = '';
@@ -476,29 +635,77 @@ const slugStream = defineTool({
 
         let lastFeatureState = '';
 
+        const emitLogText = (text: string) => {
+          for (const chunk of splitUtf8Chunks(text, HARNESS_STREAM_LOG_CHUNK_BYTES)) {
+            if (sink.closed) return;
+            sink.eventRaw('log', chunk);
+          }
+        };
+        const emitLogLines = (lines: Iterable<string>) => {
+          for (const batch of batchRawLogLines(
+            lines,
+            HARNESS_STREAM_LOG_BATCH_BYTES,
+            HARNESS_STREAM_LOG_BATCH_LINES,
+          )) {
+            if (sink.closed) return;
+            sink.eventRaw('log', batch);
+          }
+        };
+
         try {
           const chunk = tailFile(runLogPath, 256 * 1024);
-          if (chunk) sink.eventRaw('log', chunk);
+          if (chunk) emitLogText(chunk);
         } catch { /* no log file yet */ }
+
+        let pendingLiveLines: string[] = [];
+        let pendingLiveBytes = 0;
+        let liveFlushTimer: ReturnType<typeof setTimeout> | null = null;
+        const flushLiveLines = () => {
+          if (liveFlushTimer) {
+            clearTimeout(liveFlushTimer);
+            liveFlushTimer = null;
+          }
+          if (pendingLiveLines.length === 0) return;
+          const lines = pendingLiveLines;
+          pendingLiveLines = [];
+          pendingLiveBytes = 0;
+          emitLogLines(lines);
+        };
+        const queueLiveLine = (line: string) => {
+          if (sink.closed) return;
+          const text = line.endsWith('\n') ? line : `${line}\n`;
+          pendingLiveLines.push(text);
+          pendingLiveBytes += utf8ByteLength(text);
+          if (
+            pendingLiveLines.length >= HARNESS_STREAM_LOG_BATCH_LINES ||
+            pendingLiveBytes >= HARNESS_STREAM_LOG_BATCH_BYTES
+          ) {
+            flushLiveLines();
+          } else if (!liveFlushTimer) {
+            // Coalesce a short burst without adding meaningful latency to the
+            // Run-view. Thresholds above remain the hard memory/frame bounds.
+            liveFlushTimer = setTimeout(flushLiveLines, 25);
+          }
+        };
 
         const { subscribe: logSubscribe } = await import('../../../harness-log-bus');
         const sub = logSubscribe(`${project.slug}:raw`, (env) => {
-          if (sink.closed) return;
-          sink.eventRaw('log', env.line + '\n');
+          queueLiveLine(env.line);
         });
-        for (const env of sub.recent) {
-          if (sink.closed) break;
-          sink.eventRaw('log', env.line + '\n');
-        }
-        sink.onClose(() => sub.unsubscribe());
+        emitLogLines(sub.recent.map((env) => env.line));
+        sink.onClose(() => {
+          flushLiveLines();
+          sub.unsubscribe();
+        });
 
         const pushFeatures = async () => {
           if (sink.closed) return;
           const feats = await parseFeatures(project);
-          const state = JSON.stringify(feats.map((f) => [f.id, f.status, f.attempts]));
+          const streamFeatures = featuresForStreamEvent(feats);
+          const state = JSON.stringify(featureStateForStream(feats));
           if (state !== lastFeatureState) {
             lastFeatureState = state;
-            sink.event('features', feats);
+            sink.event('features', streamFeatures);
           }
         };
         while (!sink.closed) {

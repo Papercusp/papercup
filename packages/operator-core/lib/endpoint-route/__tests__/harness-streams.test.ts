@@ -9,7 +9,97 @@ import {
   positionalScanLimit,
   POSITIONAL_SCAN_CEILING,
   preferHigherFidelityBackfill,
+  splitUtf8Chunks,
+  batchRawLogLines,
+  slimFeatureForStream,
+  slimFeaturesForStream,
+  featureStateForStream,
+  featuresForStreamEvent,
+  HARNESS_STREAM_LOG_BATCH_BYTES,
+  HARNESS_STREAM_LOG_BATCH_LINES,
+  HARNESS_STREAM_FEATURE_TEXT_CAP,
+  HARNESS_STREAM_FEATURE_PAYLOAD_CAP_BYTES,
 } from '../routes/harness/streams';
+
+const utf8Bytes = (value: string) => new TextEncoder().encode(value).byteLength;
+
+describe('harness Run-view stream framing', () => {
+  it('splits raw text on Unicode boundaries under the byte cap', () => {
+    const source = 'prefix-🙂-漢字-नमस्ते-尾';
+    const chunks = splitUtf8Chunks(source, 12);
+
+    expect(chunks.join('')).toBe(source);
+    expect(chunks.every((chunk) => utf8Bytes(chunk) <= 12)).toBe(true);
+    expect(chunks.some((chunk) => chunk.includes('�'))).toBe(false);
+  });
+
+  it('batches newline-delimited log lines without exceeding byte or line limits', () => {
+    const lines = ['one', 'two🙂', '三'.repeat(20), 'four', 'five'];
+    const batches = batchRawLogLines(lines, 24, 2);
+
+    expect(batches.join('')).toBe(lines.map((line) => `${line}\n`).join(''));
+    expect(batches.every((batch) => utf8Bytes(batch) <= 24)).toBe(true);
+    expect(batches.every((batch) => batch.split('\n').filter(Boolean).length <= 2)).toBe(true);
+  });
+
+  it('keeps the Run-view feature shape while dropping heavy detail columns', () => {
+    const feature = {
+      id: 'F-1',
+      title: 'A feature',
+      summary: 's'.repeat(HARNESS_STREAM_FEATURE_TEXT_CAP + 50),
+      status: 'in_progress',
+      attempts: 2,
+      claims: ['claim one'],
+      project_id: 'project-a',
+      tags: ['ui'],
+      notes: 'large notes body',
+      metadata: { huge: 'detail' },
+      author_pubkey: 'secret-provenance',
+    };
+
+    const slim = slimFeatureForStream(feature);
+    expect(slim).toMatchObject({
+      id: 'F-1',
+      title: 'A feature',
+      status: 'in_progress',
+      attempts: 2,
+      claims: ['claim one'],
+      project_id: 'project-a',
+      tags: ['ui'],
+    });
+    expect(String(slim.summary)).toHaveLength(HARNESS_STREAM_FEATURE_TEXT_CAP + 1);
+    expect(slim).not.toHaveProperty('notes');
+    expect(slim).not.toHaveProperty('metadata');
+    expect(slim).not.toHaveProperty('author_pubkey');
+  });
+
+  it('projects every feature before the heartbeat serializes it', () => {
+    const features = slimFeaturesForStream([
+      { id: 'F-1', title: 'one', status: 'todo', attempts: 0, metadata: { blob: 'x'.repeat(10_000) } },
+      { id: 'F-2', title: 'two', status: 'passed', attempts: 1, notes: 'x'.repeat(10_000) },
+    ]);
+
+    expect(features).toHaveLength(2);
+    expect(JSON.stringify(features)).not.toContain('blob');
+    expect(JSON.stringify(features)).not.toContain('notes');
+    expect(HARNESS_STREAM_LOG_BATCH_BYTES).toBe(64 * 1024);
+    expect(HARNESS_STREAM_LOG_BATCH_LINES).toBe(100);
+  });
+
+  it('falls back to compact state tuples when a feature corpus is too large', () => {
+    const features = Array.from({ length: 5_000 }, (_, i) => ({
+      id: `F-${i}`,
+      title: `feature ${i}`,
+      summary: 'x'.repeat(10_000),
+      status: i % 2 ? 'passed' : 'todo',
+      attempts: i % 3,
+    }));
+
+    expect(JSON.stringify(slimFeaturesForStream(features)).length)
+      .toBeGreaterThan(HARNESS_STREAM_FEATURE_PAYLOAD_CAP_BYTES);
+    expect(featuresForStreamEvent(features)).toEqual(featureStateForStream(features));
+  });
+});
 
 describe('capEntryText (UI-bound thinking entry cap)', () => {
   it('leaves short/absent text untouched (same object, no copy)', () => {

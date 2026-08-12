@@ -288,3 +288,37 @@ export function issuesListCallFromQuery(atom: string): string | null {
   if (args.length === 0) return null;
   return renderCall('issues:list', args);
 }
+
+/**
+ * The gate-health read: `SELECT metadata->'gate_health'->>'consecutiveReds',
+ * metadata->'gate_health'->'inFlightRetriage' … FROM harness_shared.routines`.
+ *
+ * 708 calls / 110 distinct agents over the 14d retention — the largest single
+ * cluster the SQL audit measured, and the last one still routing around the
+ * catalog. (The census reports this relation at 478/105 because it runs a 7-day
+ * window; same cluster, half the window. Do not "reconcile" the two.)
+ *
+ * `routines:list` has served this since P-002 put `gate_health` at the HEAD of
+ * `healthOf()`'s allowlist — the whole object, not a field subset — beside the
+ * `nextFireAt`/`lastFiredAt` the same queries read. The capability was never the
+ * gap and the tool's own guidance already names this cluster; what never existed
+ * was the ROUTING ROW, which is the surface an agent consults on the way to
+ * writing the SQL. That is Class C, not Class A, and it is why this pair exists.
+ */
+export function gateHealthCallFromQuery(atom: string): string | null {
+  if (!/\bgate_health\b/i.test(atom)) return null;
+  const args: Array<[string, string]> = [];
+
+  // `gate_health` is written only onto the green-checkpoint routine, so a query
+  // that reads it WITHOUT a name predicate is still asking about that one row.
+  // Naming it in the translation is faithful, not a narrowing: it returns the
+  // same row the SQL would have found, without scanning an unbounded table.
+  const name =
+    /\bname\s*=\s*'([^']+)'/i.exec(atom)?.[1] ?? /\bname\s+i?like\s*'%?([^'%]+)%?'/i.exec(atom)?.[1] ?? null;
+  args.push(['name', JSON.stringify(name ?? 'green-checkpoint')]);
+
+  const installSlug = /\binstall_slug\s*=\s*'([^']+)'/i.exec(atom)?.[1];
+  if (installSlug) args.push(['installSlug', JSON.stringify(installSlug)]);
+
+  return renderCall('routines:list', args);
+}

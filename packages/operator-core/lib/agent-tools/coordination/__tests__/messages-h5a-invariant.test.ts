@@ -136,6 +136,20 @@ describe('H5a: sendMessage audience⊆authority invariant', () => {
     expect(resolvedStamp.calls).toBe(0); // kind gate first — resolver never consulted
   });
 
+  it('auto lifecycle messages stay visible on kind=message without tripping H5a', async () => {
+    resolvedStamp.value = FLEET_STAMP;
+    const env = await sendMessage(fakeIdentity('su-07320b7c'), {
+      to: ['*'],
+      summary: 'P-001 done',
+      extra: { auto: true, lifecycle: 'completion' },
+    });
+    expect(env.to).toEqual(['*']);
+    expect(env.kind).toBe('message');
+    expect(env.auto).toBe(true);
+    expect(env.lifecycle).toBe('completion');
+    expect(resolvedStamp.calls).toBe(0); // lifecycle signal carries no control authority
+  });
+
   it('hive-wide authority may broadcast, and the seam stamps the envelope for the receive side (H1 input)', async () => {
     resolvedStamp.value = QUEEN_STAMP;
     const env = await sendMessage(fakeIdentity('mug-1'), { to: ['*'], summary: 'hive pause' });

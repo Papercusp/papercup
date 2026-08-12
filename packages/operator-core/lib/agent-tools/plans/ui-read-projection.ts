@@ -94,8 +94,24 @@ export const UI_TEXT_PREVIEW_MAX = 280;
  *  no UI consumer reads. `archived` and `coverageDivergence` join the original
  *  two under WI-7086: the four consumers below read only `plan` and the nested
  *  `item`, and `archived` survives solely as a comment about the SERVER's
- *  ordering (PlanItemsList.tsx:140), never as a field anything branches on. */
-const ITEMS_ROW_DROP = ['coverage', 'blockedByIssues', 'archived', 'coverageDivergence'] as const;
+ *  ordering (PlanItemsList.tsx:140), never as a field anything branches on.
+ *
+ *  `specTriadMissing` joins them under WI-5910 — a server-derived gating
+ *  annotation (items.ts:284, set only when `triad.gated`), same category as
+ *  `blockedByIssues`. 325 B on the live `{status:'blocked'}` read; 0 B on
+ *  `{actionable:true}`, which filters gated items out before this row is built.
+ *
+ *  ⚠ FALSE-POSITIVE GREP: `launch-on-plan.ts:121` reads `result.specTriadMissing`
+ *  and looks like a live consumer. It is not — that is `PromotePlanResult`
+ *  (plan-workitem-promotion-run.ts:88), a DIFFERENT object that never travels
+ *  this feed. Confirm the OWNING TYPE, not the field name, before restoring it. */
+const ITEMS_ROW_DROP = [
+  'coverage',
+  'blockedByIssues',
+  'archived',
+  'coverageDivergence',
+  'specTriadMissing',
+] as const;
 
 /**
  * Fields on the nested `item` that no plans:items UI consumer reads — the parse
@@ -116,6 +132,17 @@ const ITEMS_ROW_DROP = ['coverage', 'blockedByIssues', 'archived', 'coverageDive
  * true }`, `{ status: 'blocked' }`), so the client never re-derives a predicate
  * it already asked the server to apply. `effectiveStatus` — the one status the
  * pill actually renders — is deliberately NOT dropped.
+ *
+ * `staleBlockedHint` joins them under WI-5910. It is set by the plan-parser
+ * (libs/generic/plan-parser/src/effective-status.ts) only on items resolved
+ * `blocked`, so it is invisible on the `{actionable:true}` worst case and costs
+ * 4,759 B — 6.8% — of the live `{status:'blocked'}` read, which PlansClient.tsx:379
+ * and use-create-data.ts:337 both mount unconditionally.
+ *
+ * ⚠ FALSE-POSITIVE GREP: `lint.ts:566` reads `staleBlockedHint` and is the only
+ * hit outside the parser. It is not a consumer of this feed — it reads the hint
+ * off its OWN `resolveEffectiveStatusForItems` call, server-side, and never
+ * touches the projected UI rows.
  */
 const ITEM_DROP = [
   'rawLine',
@@ -128,6 +155,7 @@ const ITEM_DROP = [
   'lineNumber',
   'authority',
   'riskTier',
+  'staleBlockedHint',
 ] as const;
 
 /**

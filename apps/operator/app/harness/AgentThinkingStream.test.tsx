@@ -26,6 +26,9 @@ let captured: { handlers: Handlers; onError?: (e: Error) => void } | null = null
 const closeSpy = vi.fn();
 const reconnectSpy = vi.fn();
 vi.mock('@papercusp/sse', () => ({
+  // Mirror the transport ceilings consumed by stream-freshness.ts.
+  DEFAULT_ZOMBIE_TIMEOUT_MS: 45_000,
+  DESKTOP_IPC_STREAM_IDLE_TIMEOUT_MS: 32_000,
   createResilientEventSource: (opts: { handlers: Handlers; onError?: (e: Error) => void }) => {
     captured = { handlers: opts.handlers, onError: opts.onError };
     return { close: closeSpy, reconnect: reconnectSpy };

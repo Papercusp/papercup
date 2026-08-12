@@ -253,6 +253,10 @@ export default defineTool({
           // candidate so release:trace can distinguish gate eligibility from the
           // separate origin/GitHub publication leg.
           observedCandidate: snapshot.gate.observedCandidate,
+          // Preserve the live run projection from gitPipelinePosition. The terminal
+          // observedCandidate can legitimately name an older verdict while this run
+          // is judging a newer candidate.
+          checkpointRunInFlight: position.gate?.checkpointRunInFlight,
           // EI-18672078222841101: who already owns this red. Unlike `failingTests` above
           // this is NOT blanked on a stale verdict — `describeGateRedOwnership` renders the
           // staleness itself ('verdict-stale'), which is exactly the case that misled a

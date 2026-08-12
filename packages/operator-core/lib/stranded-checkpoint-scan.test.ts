@@ -224,7 +224,7 @@ describe('ranking — oldest strand first (WI-38297)', () => {
         row({ issue_id: 'PLAIN', updated_ts: String(daysAgo(5)) }),
         row({
           issue_id: 'BG',
-          note: 'P-001 DONE + VERIFIED. Awaiting the in-flight verification job.',
+          note: 'WI-3561 DONE. tsc --noEmit running in background; awaiting result before considering this done.',
           updated_ts: String(daysAgo(5)),
         }),
       ],

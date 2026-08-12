@@ -22,9 +22,11 @@ describe('projectPlansReadForUi — plans:items', () => {
           archived: false,
           coverage: { level: 'partial', workers: ['a', 'b', 'c'] },
           blockedByIssues: [{ id: 'x' }],
+          specTriadMissing: ['acceptance'],
           item: {
             id: 'P-001',
             storedStatus: 'todo',
+            staleBlockedHint: 'blocked by P-000, which is done',
             // false, not null — so only ITEM_DROP can remove it and the
             // assertion below cannot be satisfied by the null-omit instead.
             needsHuman: false,
@@ -77,6 +79,14 @@ describe('projectPlansReadForUi — plans:items', () => {
     expect(item).not.toHaveProperty('blockedBy');
     expect(item).not.toHaveProperty('decisionRefs');
     expect(item).not.toHaveProperty('lineNumber');
+
+    // WI-5910: the last two server-derived annotations no UI consumer reads.
+    // Both are absent from the `{actionable:true}` worst case and only appear on
+    // `{status:'blocked'}`, which is why they outlived the WI-7086 audit. Each
+    // has a FALSE-POSITIVE grep hit on a different object (PromotePlanResult /
+    // lint.ts's own resolve) — see ui-read-projection.ts before restoring either.
+    expect(row).not.toHaveProperty('specTriadMissing');
+    expect(item).not.toHaveProperty('staleBlockedHint');
   });
 
   it('omits null-valued keys on the nested item (D-025 applied to this feed)', () => {

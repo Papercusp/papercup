@@ -132,7 +132,10 @@ async function main(): Promise<void> {
     .split(',')
     .map((t) => t.trim())
     .filter(Boolean);
-  let censusForAlloc = census;
+  // Annotated as a plain array, NOT inferred from `census`: the query returns a
+  // postgres.js RowList, and `.filter()` yields a bare array that will not
+  // assign back into a RowList-typed binding.
+  let censusForAlloc: QueryStratum[] = census;
   if (onlyTools.length) {
     censusForAlloc = census.filter((c) => onlyTools.includes(c.tool));
     const missing = onlyTools.filter((t) => !census.some((c) => c.tool === t));

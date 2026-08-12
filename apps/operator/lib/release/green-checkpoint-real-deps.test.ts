@@ -175,6 +175,19 @@ writeFileSync(
 );
 afterAll(() => rmSync(workspacesTypecheckTree, { recursive: true, force: true }));
 
+// WI-38284: root `scripts/*.ts` is its own no-emit typecheck project. Keep a candidate
+// fixture that opts into only that script so these tests exercise the real optional-leg
+// discovery and failure path without coupling them to the other typecheck fixtures.
+const scriptsTypecheckTree = mkdtempSync(join(tmpdir(), 'green-cp-scripts-typecheck-tree-'));
+writeFileSync(
+  join(scriptsTypecheckTree, 'package.json'),
+  JSON.stringify({
+    name: 'cp-scripts-typecheck-fixture',
+    scripts: { 'lint:tsc:scripts': 'node scripts/lint-tsc-scripts.mjs' },
+  }),
+);
+afterAll(() => rmSync(scriptsTypecheckTree, { recursive: true, force: true }));
+
 // EI-485: a candidate tree that provides `lint:migrations` but not `lint:tsc` — isolates
 // the migrations-lint leg's wiring (position in the sequence, env, failure signature)
 // from the typecheck leg's, the same way typecheckTree isolates typecheck from cpTree's
@@ -446,6 +459,46 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
     } finally {
       rmSync(allTree, { recursive: true, force: true });
     }
+  });
+
+  // WI-38284: root scripts are load-bearing TypeScript CLIs, but they sit outside every
+  // package project. The dedicated leg must be discovered and run by the REAL checkpoint
+  // dependency path, not merely exported in the post-suite helper.
+  it('detects the optional lint:tsc:scripts script without requiring it from subject hives', () => {
+    expect(hasNpmScript(cpTree, 'lint:tsc:scripts')).toBe(false);
+    expect(hasNpmScript(scriptsTypecheckTree, 'lint:tsc:scripts')).toBe(true);
+  });
+
+  it('runs the root scripts typecheck leg before the SPA build when the candidate provides it', async () => {
+    // suite green → scripts typecheck green → marker grep clean → SPA build green.
+    const { exec, calls } = makeExec([{ code: 0 }, { code: 0 }, { code: 1 }, { code: 0 }]);
+    const r = await realCheckpointDeps(cfg, exec).runGreen(scriptsTypecheckTree, 'base-sha');
+
+    expect(r.green).toBe(true);
+    expect(calls).toHaveLength(4);
+    expect(calls[1].cmd).toBe('npm');
+    expect(calls[1].args).toEqual(['run', 'lint:tsc:scripts']);
+    expect(calls[1].opts?.cwd).toBe(scriptsTypecheckTree);
+    expect(calls[1].opts?.env?.GREEN_CHECKPOINT).toBe('1');
+    expect(calls[1].opts?.env?.AFFECTED_BASE).toBe('base-sha');
+    expect(calls[2].cmd).toBe('git');
+    expect(calls[3].args).toContain('build');
+  });
+
+  it('holds the candidate when root scripts typecheck reports a regression and skips the SPA build', async () => {
+    const { exec, calls } = makeExec([
+      { code: 0 },
+      { code: 1, stdout: 'scripts/leak-ratchet.ts(42,7): error TS2322: Type mismatch' },
+    ]);
+    const r = await realCheckpointDeps(cfg, exec).runGreen(scriptsTypecheckTree, null);
+
+    expect(r.green).toBe(false);
+    expect(r.failingTests).toContain('lint:tsc:scripts');
+    expect(r.summary).toContain('SCRIPTS TYPECHECK FAILED');
+    expect(r.summary).toContain('scripts/leak-ratchet.ts');
+    // The scripts leg is a soft failure, so later cheap legs may run; the expensive SPA
+    // build must still not be reached on a red post-suite leg.
+    expect(calls.some((c) => c.args.includes('build'))).toBe(false);
   });
 
   // EI-485: lint:migrations' PG-backed unreserved-number check was never wired into any

@@ -26,6 +26,12 @@ export interface ReleaseTraceGate {
    * it to origin/staging.
    */
   observedCandidate?: string | null;
+  /**
+   * The live checkpoint run, when measured. This is deliberately separate from
+   * `observedCandidate`: that field names the last terminal verdict, while this
+   * one names the candidate currently being judged by an in-flight run.
+   */
+  checkpointRunInFlight?: PipelinePosition['gate']['checkpointRunInFlight'];
   /** EI-18672078222841101: who already owns this red (see `GateRedOwnership`). Optional so
    *  an unwired/legacy caller renders exactly as before. This is the surface that matters
    *  most: `release:trace` is what an agent reads when it decides whether to investigate,
