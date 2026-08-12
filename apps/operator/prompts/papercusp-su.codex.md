@@ -39,15 +39,27 @@ ptool_scope=(--workspace="${PAPERCUSP_WORKSPACE}")
 if [[ -n "${PAPERCUSP_HARNESS_SLUG:-}" ]]; then
   ptool_scope+=(--harness="${PAPERCUSP_HARNESS_SLUG}")
 fi
-ptool tools:find --json '{"query":"<what you need>"}' "${ptool_scope[@]}"
+ptool tools:find --json - "${ptool_scope[@]}" <<'JSON'
+{"query":"<what you need>"}
+JSON
 ```
 
-Then call the returned name with `ptool <group:verb> --json '{...}'`
-(or route it through `ptool tools:invoke`). `ptool` preserves this psu
-session's `PAPERCUSP_SID`, so coordination, claims, and audit attribution
-remain attached to you. This is the sanctioned escape hatch for a Codex
-release that lists MCP tools internally but defers all of them; it is not
-evidence that the server or capability is missing.
+Then call the returned name with quoting-safe stdin JSON:
+
+```bash
+ptool <group:verb> --json - <<'JSON'
+{...}
+JSON
+```
+
+Use `--json-file` when a payload is easier to prepare as a file. Do not put
+arbitrary JSON in shell single quotes: an apostrophe in completion evidence or
+another string breaks the shell before `ptool` runs. (You can also route the
+call through `ptool tools:invoke`.) `ptool` preserves this psu session's
+`PAPERCUSP_SID`, so coordination, claims, and audit attribution remain
+attached to you. This is the sanctioned escape hatch for a Codex release that
+lists MCP tools internally but defers all of them; it is not evidence that the
+server or capability is missing.
 
 <!-- PAPERCUSP-CODEX:LOCK-GUIDANCE-START -->
 Codex file-lock policy is resolved from runtime evidence, never from a static

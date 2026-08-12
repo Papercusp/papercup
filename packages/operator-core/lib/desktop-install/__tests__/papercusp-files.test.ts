@@ -784,6 +784,18 @@ describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {
     expect(canonicalOverlay).not.toContain('--harness="$PAPERCUSP_HARNESS_SLUG"');
   });
 
+  it('keeps Codex ptool JSON replay on a shell-safe stdin/file path', async () => {
+    const canonicalOverlay = await fs.readFile(
+      new URL('../../../../../apps/operator/prompts/papercusp-su.codex.md', import.meta.url),
+      'utf8',
+    );
+    expect(canonicalOverlay).toContain("ptool tools:find --json - \"${ptool_scope[@]}\" <<'JSON'");
+    expect(canonicalOverlay).toContain("ptool <group:verb> --json - <<'JSON'");
+    expect(canonicalOverlay).toContain('Use `--json-file`');
+    expect(canonicalOverlay).not.toContain("ptool tools:find --json '{");
+    expect(canonicalOverlay).not.toContain("ptool <group:verb> --json '{...}'");
+  });
+
   it('throws when the base profile file is missing', async () => {
     await expect(renderSuPlaybook({ agent: 'claude', profile: 'ghost', operatorAppRoot: tmpAppRoot })).rejects.toThrow(
       /papercusp-su-ghost\.tools\.md/,
