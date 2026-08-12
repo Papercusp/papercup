@@ -19,6 +19,7 @@ import {
   interruptViaPty,
   recolorViaPty,
   pidIsPsuHost,
+  selfCompactionAvailability,
   pruneDeadDiscoveryFiles,
   sanitizeKey,
   PSU_PTY_DIR,
@@ -603,6 +604,53 @@ describe('hostSupports (WI-1804 rollout gate)', () => {
   it('is true only when caps advertises the capability', () => {
     expect(hostSupports(hostWith(['compact']), 'compact')).toBe(true);
     expect(hostSupports(hostWith(['osc', 'compact']), 'compact')).toBe(true);
+  });
+});
+
+// EI-20209826138488049: the continuation gate, the context gauge and the inbox all
+// decide whether to RECOMMEND self-compaction from this ONE function, and
+// session:request-compaction reads it for its own refusal — so a recommendation
+// cannot drift from what the tool actually does. These assert the two refusals it
+// must reproduce EXACTLY, by the error CODE the tool returns.
+describe('selfCompactionAvailability (the shared recommend-vs-refuse predicate)', () => {
+  it('no live host ⇒ unavailable, reason no_live_pty_host (the headless fleet member)', () => {
+    const a = selfCompactionAvailability('su-nobody', tmpDir());
+    expect(a.available).toBe(false);
+    expect(a.reason).toBe('no_live_pty_host');
+    expect(a.host).toBeNull();
+  });
+
+  it('a live host WITHOUT the carry-respawn cap ⇒ unavailable, and still hands back the host it found', () => {
+    const dir = tmpDir();
+    const { sock } = startSocket(dir, 'su-old');
+    writeMeta(dir, 'su-old', { pid: process.pid, ptyPid: process.pid, sock, command: 'claude-su', startedAt: 1, caps: ['compact'] });
+    const a = selfCompactionAvailability('su-old', dir, ID_OK);
+    expect(a.available).toBe(false);
+    expect(a.reason).toBe('host_predates_carry_respawn');
+    // The host is deliberately NOT null here — the distinction between "no host"
+    // and "a host too old" is the whole reason there are two refusal codes.
+    expect(a.host?.ownerId).toBe('su-old');
+  });
+
+  it('a live carry-respawn-capable host ⇒ available, with the host attached', () => {
+    const dir = tmpDir();
+    const { sock } = startSocket(dir, 'su-new');
+    writeMeta(dir, 'su-new', { pid: process.pid, ptyPid: process.pid, sock, command: 'claude-su', startedAt: 1, caps: ['carry-respawn'] });
+    const a = selfCompactionAvailability('su-new', dir, ID_OK);
+    expect(a.available).toBe(true);
+    expect(a.reason).toBeNull();
+    expect(a.host?.sock).toBe(sock);
+  });
+
+  it('inherits findLiveHost\'s identity gate — a recycled pid is NOT a self-compactable session', () => {
+    const dir = tmpDir();
+    const { sock } = startSocket(dir, 'su-recycled');
+    writeMeta(dir, 'su-recycled', { pid: process.pid, ptyPid: process.pid, sock, command: 'claude-su', startedAt: 1, caps: ['carry-respawn'] });
+    // Same fixture as the available case above — ONLY the identity verifier differs,
+    // proving availability is gated on the real host resolution, not just the caps.
+    const a = selfCompactionAvailability('su-recycled', dir, { verifyIdentity: () => false });
+    expect(a.available).toBe(false);
+    expect(a.reason).toBe('no_live_pty_host');
   });
 });
 

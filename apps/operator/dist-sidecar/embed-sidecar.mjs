@@ -3131,7 +3131,7 @@ var require_dist = __commonJS({
     function parse(stream, callback) {
       const parser = new parser_1.Parser();
       stream.on("data", (buffer) => parser.parse(buffer, callback));
-      return new Promise((resolve2) => stream.on("end", () => resolve2()));
+      return new Promise((resolve3) => stream.on("end", () => resolve3()));
     }
     exports.parse = parse;
   }
@@ -3862,12 +3862,12 @@ var require_client = __commonJS({
           this._connect(callback);
           return;
         }
-        return new this._Promise((resolve2, reject) => {
+        return new this._Promise((resolve3, reject) => {
           this._connect((error) => {
             if (error) {
               reject(error);
             } else {
-              resolve2(this);
+              resolve3(this);
             }
           });
         });
@@ -4213,8 +4213,8 @@ var require_client = __commonJS({
           readTimeout = config.query_timeout || this.connectionParameters.query_timeout;
           query = new Query2(config, values, callback);
           if (!query.callback) {
-            result = new this._Promise((resolve2, reject) => {
-              query.callback = (err, res) => err ? reject(err) : resolve2(res);
+            result = new this._Promise((resolve3, reject) => {
+              query.callback = (err, res) => err ? reject(err) : resolve3(res);
             }).catch((err) => {
               Error.captureStackTrace(err);
               throw err;
@@ -4291,8 +4291,8 @@ var require_client = __commonJS({
         if (cb) {
           this.connection.once("end", cb);
         } else {
-          return new this._Promise((resolve2) => {
-            this.connection.once("end", resolve2);
+          return new this._Promise((resolve3) => {
+            this.connection.once("end", resolve3);
           });
         }
       }
@@ -4341,8 +4341,8 @@ var require_pg_pool = __commonJS({
       const cb = function(err, client) {
         err ? rej(err) : res(client);
       };
-      const result = new Promise2(function(resolve2, reject) {
-        res = resolve2;
+      const result = new Promise2(function(resolve3, reject) {
+        res = resolve3;
         rej = reject;
       }).catch((err) => {
         Error.captureStackTrace(err);
@@ -4403,7 +4403,7 @@ var require_pg_pool = __commonJS({
         if (typeof Promise2.try === "function") {
           return Promise2.try(f);
         }
-        return new Promise2((resolve2) => resolve2(f()));
+        return new Promise2((resolve3) => resolve3(f()));
       }
       _isFull() {
         return this._clients.length >= this.options.max;
@@ -4796,8 +4796,8 @@ var require_query2 = __commonJS({
     NativeQuery.prototype._getPromise = function() {
       if (this._promise) return this._promise;
       this._promise = new Promise(
-        function(resolve2, reject) {
-          this._once("end", resolve2);
+        function(resolve3, reject) {
+          this._once("end", resolve3);
           this._once("error", reject);
         }.bind(this)
       );
@@ -4974,12 +4974,12 @@ var require_client2 = __commonJS({
         this._connect(callback);
         return;
       }
-      return new this._Promise((resolve2, reject) => {
+      return new this._Promise((resolve3, reject) => {
         this._connect((error) => {
           if (error) {
             reject(error);
           } else {
-            resolve2(this);
+            resolve3(this);
           }
         });
       });
@@ -5003,8 +5003,8 @@ var require_client2 = __commonJS({
         query = new NativeQuery(config, values, callback);
         if (!query.callback) {
           let resolveOut, rejectOut;
-          result = new this._Promise((resolve2, reject) => {
-            resolveOut = resolve2;
+          result = new this._Promise((resolve3, reject) => {
+            resolveOut = resolve3;
             rejectOut = reject;
           }).catch((err) => {
             Error.captureStackTrace(err);
@@ -5064,8 +5064,8 @@ var require_client2 = __commonJS({
       }
       let result;
       if (!cb) {
-        result = new this._Promise(function(resolve2, reject) {
-          cb = (err) => err ? reject(err) : resolve2();
+        result = new this._Promise(function(resolve3, reject) {
+          cb = (err) => err ? reject(err) : resolve3();
         });
       }
       this.native.end(function() {
@@ -6829,6 +6829,16 @@ var _workerReady = null;
 var _nextId = 0;
 var _pending = /* @__PURE__ */ new Map();
 var _workerDisabled = false;
+var _beforeExitHookInstalled = false;
+var _beforeExitListener = null;
+var _refd = false;
+function syncWorkerRef() {
+  const want = _pending.size > 0;
+  if (!_worker || want === _refd) return;
+  if (want) _worker.ref();
+  else _worker.unref();
+  _refd = want;
+}
 function workerPath() {
   const here = typeof __filename !== "undefined" ? __filename : fileURLToPath(import.meta.url);
   return resolve(dirname(here), "local-embedder-worker.script.mjs");
@@ -6851,6 +6861,8 @@ function ensureWorker() {
     _worker.on("message", (msg) => {
       if (msg.kind === "ready") {
         initialized = true;
+        syncWorkerRef();
+        installBeforeExitHook();
         resolveReady();
         return;
       }
@@ -6858,6 +6870,7 @@ function ensureWorker() {
       const p = _pending.get(msg.id);
       if (!p) return;
       _pending.delete(msg.id);
+      syncWorkerRef();
       if (msg.kind === "embed_ok" && Array.isArray(msg.vector)) {
         p.resolve(msg.vector);
       } else {
@@ -6867,17 +6880,23 @@ function ensureWorker() {
     _worker.on("error", (err) => {
       for (const [, p] of _pending) p.reject(err);
       _pending.clear();
-      _workerDisabled = true;
       _worker = null;
       _workerReady = null;
+      _refd = false;
       if (!initialized) rejectReady(err);
     });
     _worker.on("exit", (code) => {
       if (code !== 0 && !initialized) {
         rejectReady(new Error(`worker exited with code ${code} before ready`));
       }
+      if (_pending.size > 0) {
+        const err = new Error(`embedder worker exited with code ${code} while ${_pending.size} request(s) were in flight`);
+        for (const [, p] of _pending) p.reject(err);
+        _pending.clear();
+      }
       _worker = null;
       _workerReady = null;
+      _refd = false;
     });
   });
   return _workerReady;
@@ -6888,6 +6907,7 @@ async function embedViaWorker(text, opts = {}) {
   const id = _nextId++;
   return new Promise((resolveEmbed, rejectEmbed) => {
     _pending.set(id, { resolve: resolveEmbed, reject: rejectEmbed });
+    syncWorkerRef();
     _worker.postMessage({
       kind: "embed",
       id,
@@ -6899,11 +6919,39 @@ async function embedViaWorker(text, opts = {}) {
     });
   });
 }
+async function _resetWorker() {
+  if (_worker) {
+    try {
+      await _worker.terminate();
+    } catch {
+    }
+  }
+  _worker = null;
+  _workerReady = null;
+  _workerDisabled = false;
+  if (_pending.size > 0) {
+    const err = new Error(`embedder worker was shut down while ${_pending.size} request(s) were in flight`);
+    for (const [, p] of _pending) p.reject(err);
+  }
+  _pending.clear();
+  _refd = false;
+  _nextId = 0;
+}
+function installBeforeExitHook() {
+  if (_beforeExitHookInstalled) return;
+  _beforeExitHookInstalled = true;
+  _beforeExitListener = async () => {
+    if (_pending.size > 0) return;
+    await _resetWorker();
+  };
+  process.on("beforeExit", _beforeExitListener);
+}
 function getWorkerState() {
   return {
     alive: _worker !== null,
     disabled: _workerDisabled,
-    pendingCount: _pending.size
+    pendingCount: _pending.size,
+    keepAlive: _refd
   };
 }
 var _lastFallbackWarnAt = 0;
@@ -7197,6 +7245,222 @@ function resolveExecutionTarget(env = typeof process === "undefined" ? {} : proc
   return CPU_EXECUTION_TARGET;
 }
 
+// ../../libs/generic/rerank/src/local-reranker-worker.ts
+import { Worker as Worker2 } from "node:worker_threads";
+import { fileURLToPath as fileURLToPath2 } from "node:url";
+import { resolve as resolve2, dirname as dirname2 } from "node:path";
+var _worker2 = null;
+var _workerReady2 = null;
+var _nextId2 = 0;
+var _pending2 = /* @__PURE__ */ new Map();
+var _workerDisabled2 = false;
+var _beforeExitHookInstalled2 = false;
+var _beforeExitListener2 = null;
+var _refd2 = false;
+function syncWorkerRef2() {
+  const want = _pending2.size > 0;
+  if (!_worker2 || want === _refd2) return;
+  if (want) _worker2.ref();
+  else _worker2.unref();
+  _refd2 = want;
+}
+function workerPath2() {
+  const here = typeof __filename !== "undefined" ? __filename : fileURLToPath2(import.meta.url);
+  return resolve2(dirname2(here), "local-reranker-worker.script.mjs");
+}
+function ensureWorker2() {
+  if (_workerDisabled2) return Promise.reject(new Error("rerank worker disabled"));
+  if (_workerReady2) return _workerReady2;
+  _workerReady2 = new Promise((resolveReady, rejectReady) => {
+    try {
+      _worker2 = new Worker2(workerPath2());
+    } catch (err) {
+      _workerDisabled2 = true;
+      _workerReady2 = null;
+      rejectReady(err);
+      return;
+    }
+    let initialized = false;
+    _worker2.on(
+      "message",
+      (msg) => {
+        if (msg.kind === "ready") {
+          initialized = true;
+          _refd2 = true;
+          syncWorkerRef2();
+          installBeforeExitHook2();
+          resolveReady();
+          return;
+        }
+        if (typeof msg.id !== "number") return;
+        const p = _pending2.get(msg.id);
+        if (!p) return;
+        _pending2.delete(msg.id);
+        syncWorkerRef2();
+        if (msg.kind === "score_ok" && Array.isArray(msg.scores)) p.resolve(msg.scores);
+        else p.reject(new Error(msg.error ?? "rerank worker error"));
+      }
+    );
+    _worker2.on("error", (err) => {
+      for (const [, p] of _pending2) p.reject(err);
+      _pending2.clear();
+      _worker2 = null;
+      _workerReady2 = null;
+      _refd2 = false;
+      if (!initialized) rejectReady(err);
+    });
+    _worker2.on("exit", (code) => {
+      if (code !== 0 && !initialized) {
+        rejectReady(new Error(`rerank worker exited with code ${code} before ready`));
+      }
+      for (const [, p] of _pending2) p.reject(new Error(`rerank worker exited with code ${code}`));
+      _pending2.clear();
+      _worker2 = null;
+      _workerReady2 = null;
+      _refd2 = false;
+    });
+  }).catch((err) => {
+    _workerReady2 = null;
+    throw err;
+  });
+  return _workerReady2;
+}
+async function scoreViaWorker(req) {
+  await ensureWorker2();
+  if (!_worker2) throw new Error("rerank worker not initialized");
+  const id = _nextId2++;
+  return new Promise((resolveScore, rejectScore) => {
+    _pending2.set(id, { resolve: resolveScore, reject: rejectScore });
+    syncWorkerRef2();
+    _worker2.postMessage({ kind: "score", id, ...req });
+  });
+}
+async function shutdownLocalReranker() {
+  if (_worker2) {
+    try {
+      await _worker2.terminate();
+    } catch {
+    }
+  }
+  _worker2 = null;
+  _workerReady2 = null;
+  _workerDisabled2 = false;
+  _refd2 = false;
+  _pending2.clear();
+  _nextId2 = 0;
+}
+function installBeforeExitHook2() {
+  if (_beforeExitHookInstalled2) return;
+  _beforeExitHookInstalled2 = true;
+  _beforeExitListener2 = async () => {
+    if (_pending2.size > 0) return;
+    await shutdownLocalReranker();
+  };
+  process.on("beforeExit", _beforeExitListener2);
+}
+function getRerankWorkerState() {
+  return {
+    alive: _worker2 !== null,
+    disabled: _workerDisabled2,
+    pendingCount: _pending2.size,
+    keepAlive: _refd2
+  };
+}
+var _lastFallbackWarnAt2 = 0;
+var FALLBACK_WARN_COOLDOWN_MS2 = 3e4;
+function warnRerankFallback(err) {
+  const now = Date.now();
+  if (now - _lastFallbackWarnAt2 < FALLBACK_WARN_COOLDOWN_MS2) return;
+  _lastFallbackWarnAt2 = now;
+  if (process.env.NODE_ENV !== "test") {
+    console.warn(
+      `[rerank] worker path failed \u2014 falling back to inline (main-thread, blocks the event loop) for this call, so the timeout bound is only accurate to one batch: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+}
+
+// ../../libs/generic/rerank/src/scorer-gate.ts
+var RerankDeadlineError = class extends Error {
+  constructor(message) {
+    super(message);
+    this.name = "RerankDeadlineError";
+  }
+};
+function isDeadlineFailure(err) {
+  if (err instanceof RerankDeadlineError) return true;
+  return err instanceof Error && /deadline exceeded/.test(err.message);
+}
+var RERANK_MAX_CONCURRENT_ENV = "RERANK_MAX_CONCURRENT_SCORERS";
+var _maxConcurrent = null;
+var _active = 0;
+var _activePairs = 0;
+var _queue = [];
+var _msPerPair = null;
+var _observations = 0;
+function maxConcurrent() {
+  if (_maxConcurrent !== null) return _maxConcurrent;
+  const raw = Number(process.env[RERANK_MAX_CONCURRENT_ENV]);
+  _maxConcurrent = Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 1;
+  return _maxConcurrent;
+}
+function estimatedWaitMs(pairs) {
+  if (_msPerPair === null) return null;
+  const backlog = _activePairs + _queue.reduce((n, w) => n + w.pairs, 0);
+  return (backlog + pairs) * _msPerPair;
+}
+function wouldMissDeadline(pairs, deadline) {
+  if (deadline === void 0) return false;
+  const wait = estimatedWaitMs(pairs);
+  if (wait === null) return false;
+  return Date.now() + wait > deadline;
+}
+function shedError(pairs, deadline) {
+  const wait = Math.round(estimatedWaitMs(pairs) ?? 0);
+  const budget = Math.max(0, deadline - Date.now());
+  return new RerankDeadlineError(
+    `rerank: scoring deadline exceeded after 0 of ${pairs} pairs \u2014 the shared scorer is ${_active} deep with ${_queue.length} queued, so this call needs ~${wait}ms against ${budget}ms of budget. Shedding now rather than spending the budget waiting.`
+  );
+}
+function pump() {
+  while (_queue.length > 0 && _active < maxConcurrent()) {
+    const w = _queue.shift();
+    if (w.deadline !== void 0 && wouldMissDeadline(w.pairs, w.deadline)) {
+      w.refuse(shedError(w.pairs, w.deadline));
+      continue;
+    }
+    _active++;
+    _activePairs += w.pairs;
+    w.admit();
+  }
+}
+async function runInScorerGate(pairs, deadline, fn) {
+  if (pairs <= 0) return await fn();
+  if (deadline !== void 0 && wouldMissDeadline(pairs, deadline)) {
+    throw shedError(pairs, deadline);
+  }
+  await new Promise((admit, refuse) => {
+    _queue.push({ pairs, deadline, admit, refuse });
+    pump();
+  });
+  const startedAt = Date.now();
+  const soloRun = _active === 1;
+  try {
+    return await fn();
+  } finally {
+    const elapsed = Date.now() - startedAt;
+    _active--;
+    _activePairs -= pairs;
+    if (soloRun && elapsed > 0) {
+      _observations++;
+      if (_observations > 1) {
+        const sample = elapsed / pairs;
+        _msPerPair = _msPerPair === null ? sample : _msPerPair * 0.7 + sample * 0.3;
+      }
+    }
+    pump();
+  }
+}
+
 // ../../libs/generic/rerank/src/local-engine.ts
 var LOCAL_RERANKER_MODEL = "Alibaba-NLP/gte-reranker-modernbert-base";
 var FAST_RERANKER_MODEL = "Xenova/ms-marco-MiniLM-L-6-v2";
@@ -7207,6 +7471,7 @@ var TRANSFORMERS_PACKAGE4 = "@huggingface/transformers";
 var dynamicImport2 = new Function("specifier", "return import(specifier)");
 var _models = /* @__PURE__ */ new Map();
 var _loaderOverride = null;
+var _workerWithLoaderForTest = false;
 async function defaultLoader(model, dtype, device) {
   const transformers = await dynamicImport2(TRANSFORMERS_PACKAGE4);
   const [tokenizer, classifier] = await Promise.all([
@@ -7262,13 +7527,26 @@ function scoreFromLogits(row) {
   const [negative, positive] = row;
   return sigmoid(positive - negative);
 }
-async function scoreCrossEncoder(query, texts, opts = {}) {
+function yieldToEventLoop() {
+  return new Promise((resolve3) => {
+    if (typeof setImmediate === "function") setImmediate(resolve3);
+    else setTimeout(resolve3, 0);
+  });
+}
+async function scoreCrossEncoderInline(query, texts, opts = {}) {
   if (texts.length === 0) return [];
   const { tokenizer, model } = await loadCrossEncoder(opts);
   const maxLength = opts.maxLength ?? DEFAULT_MAX_LENGTH;
   const batchSize = Math.max(1, opts.batchSize ?? DEFAULT_BATCH_SIZE);
+  const { deadline } = opts;
   const scores = [];
   for (let start = 0; start < texts.length; start += batchSize) {
+    await yieldToEventLoop();
+    if (deadline !== void 0 && Date.now() >= deadline) {
+      throw new Error(
+        `rerank: scoring deadline exceeded after ${start} of ${texts.length} pairs \u2014 degrading to retrieval order`
+      );
+    }
     const batch = texts.slice(start, start + batchSize);
     const inputs = tokenizer(
       // The cross-encoder scores a PAIR: the query is repeated against each doc.
@@ -7289,6 +7567,36 @@ async function scoreCrossEncoder(query, texts, opts = {}) {
     }
   }
   return scores;
+}
+async function scoreCrossEncoder(query, texts, opts = {}) {
+  if (texts.length === 0) return [];
+  return await runInScorerGate(
+    texts.length,
+    opts.deadline,
+    () => scoreCrossEncoderUngated(query, texts, opts)
+  );
+}
+async function scoreCrossEncoderUngated(query, texts, opts) {
+  if ((_loaderOverride === null || _workerWithLoaderForTest) && !getRerankWorkerState().disabled) {
+    const target = effectiveTarget(opts);
+    const effective = target.device !== "cpu" && _gpuUnusable ? CPU_EXECUTION_TARGET : target;
+    try {
+      return await scoreViaWorker({
+        query,
+        texts,
+        model: opts.model ?? LOCAL_RERANKER_MODEL,
+        dtype: effective.dtype,
+        device: effective.device,
+        maxLength: opts.maxLength ?? DEFAULT_MAX_LENGTH,
+        batchSize: Math.max(1, opts.batchSize ?? DEFAULT_BATCH_SIZE),
+        deadline: opts.deadline
+      });
+    } catch (err) {
+      if (isDeadlineFailure(err)) throw err;
+      warnRerankFallback(err);
+    }
+  }
+  return await scoreCrossEncoderInline(query, texts, opts);
 }
 
 // ../../libs/generic/rerank/src/index.ts
@@ -7409,13 +7717,17 @@ var defaultRerankBuilders = {
   rerank: buildSidecarReranker(LOCAL_RERANKER_MODEL),
   "rerank-fast": buildSidecarReranker(FAST_RERANKER_MODEL)
 };
+var defaultWorkerStates = {
+  embedder: getWorkerState,
+  reranker: getRerankWorkerState
+};
 function json(res, status, body) {
   const payload = JSON.stringify(body);
   res.writeHead(status, { "Content-Type": "application/json", "Content-Length": Buffer.byteLength(payload) });
   res.end(payload);
 }
 function readBody(req) {
-  return new Promise((resolve2, reject) => {
+  return new Promise((resolve3, reject) => {
     let size = 0;
     const chunks = [];
     req.on("data", (c) => {
@@ -7427,7 +7739,7 @@ function readBody(req) {
       }
       chunks.push(c);
     });
-    req.on("end", () => resolve2(Buffer.concat(chunks).toString("utf8")));
+    req.on("end", () => resolve3(Buffer.concat(chunks).toString("utf8")));
     req.on("error", reject);
   });
 }
@@ -7435,6 +7747,7 @@ function createEmbedSidecarServer(opts = {}) {
   const builders = opts.builders ?? defaultBuilders;
   const rerankBuilders = opts.rerankBuilders ?? defaultRerankBuilders;
   const log = opts.log ?? ((line) => console.log(line));
+  const workerStates = opts.workerStates ?? defaultWorkerStates;
   const port = opts.port ?? Number(process.env[EMBED_SIDECAR_PORT_ENV] ?? EMBED_SIDECAR_DEFAULT_PORT);
   const startedAt = Date.now();
   const embedders = /* @__PURE__ */ new Map();
@@ -7496,9 +7809,9 @@ function createEmbedSidecarServer(opts = {}) {
       });
     };
     if (active < concurrency) return start();
-    return new Promise((resolve2, reject) => {
+    return new Promise((resolve3, reject) => {
       waiting.push(() => {
-        start().then(resolve2, reject);
+        start().then(resolve3, reject);
       });
     });
   };
@@ -7631,6 +7944,32 @@ function createEmbedSidecarServer(opts = {}) {
         // is fail-safe by design), so this is where that shows up. Before the
         // first load it reports the host's resolved target. See plan D-006.
         rerankExecution: activeExecutionTarget(),
+        // WI-37696: the two worker-thread crash-breakers THIS process owns.
+        //
+        // Both the embedder (@papercusp/memory) and the cross-encoder
+        // (@papercusp/rerank) run their model in a persistent worker thread and
+        // fall back to INLINE main-thread work when it is unavailable. Each has
+        // a `disabled` latch that, once tripped, is permanent for the process —
+        // and because the fallback returns identical values, tripping it emits
+        // no error, no log line and no exit code. The sidecar keeps answering
+        // 200 while the one thing it exists for (a warm model OFF the request
+        // thread) is silently gone, and every /rerank then blocks this loop for
+        // the duration of a forward pass.
+        //
+        // This is the correct process to report it from: the state is module-
+        // global, these workers spawn HERE (not in the operator host), and the
+        // getters are imported from the SAME bare specifier the embedders and
+        // rerankers above use, so this reads the live module record rather than
+        // a second, pristine copy. `disabled: true` is the field to alert on.
+        //
+        // Report-only — `ok` stays true. A fallen-back sidecar is degraded, not
+        // down; it still returns correct vectors and scores, so failing the
+        // health check would tell a supervisor to restart a process that is
+        // serving every request correctly.
+        workers: {
+          embedder: workerStates.embedder(),
+          reranker: workerStates.reranker()
+        },
         cache: { hits: cacheHits, misses: cacheMisses, size: vecCache.size },
         concurrency
       });
@@ -7648,11 +7987,11 @@ function createEmbedSidecarServer(opts = {}) {
     }
     json(res, 404, { error: `no route ${req.method} ${url}` });
   });
-  const listening = new Promise((resolve2, reject) => {
+  const listening = new Promise((resolve3, reject) => {
     server.once("error", reject);
     server.listen(port, "127.0.0.1", () => {
       const addr = server.address();
-      resolve2(typeof addr === "object" && addr ? addr.port : port);
+      resolve3(typeof addr === "object" && addr ? addr.port : port);
     });
   });
   if (opts.warmAtBoot !== false) {
@@ -7671,8 +8010,8 @@ function createEmbedSidecarServer(opts = {}) {
     server,
     listening,
     warmStates: () => ({ ...warm }),
-    close: () => new Promise((resolve2) => {
-      server.close(() => resolve2());
+    close: () => new Promise((resolve3) => {
+      server.close(() => resolve3());
     })
   };
 }

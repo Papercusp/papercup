@@ -45,7 +45,7 @@ it collision-free:
 - **Declare a real intent + claim your lane — and hold a work-item before you edit.** On
   starting a distinct piece of work, `coord:declare-intent { intent, current_plan_slug, items }`
   — the intent line is what a blocked peer reads; `items` CLAIMS the plan items you're taking.
-  An unclaimed lane is invisible to peers and the Mug → work gets double-placed. Before your
+  An unclaimed lane is invisible to peers → work gets double-placed. Before your
   first code/deliverable edit you MUST hold a work-item assigned to you — claim the plan item
   (declare-intent `{ items }` / `plan_items:claim`) or, for ad-hoc work, `work_items:create
   { title, assign_to:self, state:'wip' }`. No code edit without a work-item; not done until
@@ -108,6 +108,9 @@ kickoff adds mission specifics, never this:
   An empty result is SIGNAL, not a fault: the lane is drained, DAG-blocked, or scoped
   away from you. Don't spin on it, and don't cherry-pick the raw backlog around it —
   but a nonempty queue you can see + an idle you = a SPEC bug: report it to the leader.
+  When the claim returns `freshness.lane:'validation'`, run the cheapest current-HEAD
+  reproduction or focused test BEFORE implementation. The score is a routing hint, never
+  closure evidence: an already-fixed result still closes only with the verification you ran.
 - **Claim via a `wip`-flip or the work-items pull — never hand-edit plan files** beyond
   status flips. An ad-hoc unit gets its work-item ATOMICALLY: `work_items:create { kind,
   title, assign_to: self }` (creates AND claims in one write — no create→claim race).
@@ -127,9 +130,11 @@ kickoff adds mission specifics, never this:
   TURN; the wake carries the payload. Only when no event exists for the condition,
   re-arm at a longer interval sized to the blocker and RESTORE the cadence the instant
   it clears.
-- **Report to the LEADER via `coord:send`** — terminal outcomes, blockers WITH diagnosis,
-  and anything fleet-wide (a shared-tree fault you hit — broken deps, a wedged service —
-  is the leader's to fix fleet-wide: say so, don't route around it silently).
+- **Report exceptions to the LEADER via `coord:send`.** A successful
+  `work_items:complete` already routes its structured completion to the current fleet
+  leader — do NOT send a second completion FYI. Send blockers WITH diagnosis, cross-lane
+  rulings, and anything fleet-wide (a shared-tree fault you hit — broken deps, a wedged
+  service — is the leader's to fix fleet-wide: say so, don't route around it silently).
 - **Never contest a live peer's claim** — a `claim_conflict` means coordinate with the
   holder, not take the item.
 - **A gate opens on the LEADER'S emitted event — never on a peer's announcement of
@@ -310,7 +315,7 @@ row is non-compliance. New platform surfaces add a ROW here, not a new section.
 | when the ask sounds like | the papercusp way |
 |---|---|
 | "do X daily / weekly / on a schedule" | `plans:set-schedule` (authors the recurrence on a plan) THEN `plans:arm-schedule` — arming is a separate, autonomy-gated step; an unarmed schedule never fires. (`routines:set` is NOT this — it only retunes/pauses SYSTEM routines.) |
-| "watch for Y / alert me when Z" | `watch:create` — the unified subscription primitive; `events:await` (wake:true, once:true) and `topics:subscribe` (wake:false, standing) are its presets. wake:false = cheap inbox inject; wake:true costs a turn. Patterns are EXACT-match: if `events:catalog` has no key for the condition, say so and fall back to the schedule row (scheduled poll+diff against a watermark fact). |
+| "watch for Y / alert me when Z" | `watch:create` — the unified subscription primitive; `events:await` (wake:true, once:true) is its one surviving preset, and ambient topic interest is `watch:create { targetKind:"topic", wake:false }` directly (the `topics:subscribe` preset was retired 2026-08-09 for zero use). wake:false = cheap inbox inject; wake:true costs a turn. Patterns are EXACT-match: if `events:catalog` has no key for the condition, say so and fall back to the schedule row (scheduled poll+diff against a watermark fact). |
 | "keep working on this continuously" (solo, non-fleet) | `loop:arm` — tracked (`loop:status`), stoppable (`loop:end`), auto-claims its driving work-item. Never a self-rolled keep-alive. |
 | user hands you a credential / API key | `setup:save_key` ONLY for the 4 platform provider keys (openai / anthropic / zeroentropy / github_pat). ANY other secret: never into a tree file — injected config outside the repo. |
 | "before we migrate / risky or destructive data change" | `backup:snapshot_create` — snapshot before the destructive op; returns an id you can self-restore from (`backup:restore`). |
@@ -335,19 +340,16 @@ Launch-tool routing reference: [Launching agents — which tool for which door](
   (AskUserQuestion), then wait; never infer the route:**
   - **A. Yourself** — you implement it directly, now, in this session. "Yourself" means
     THIS session doing the work — **NOT** a client-native subagent/Workflow fan-out
-    dressed up as A. Parallelism is what options C/D/E are for; a fleet is observable
+    dressed up as A. Parallelism is what options B/C/D are for; a fleet is observable
     (presence, claims, `fleet:tree`), coordinated (locks, scheduler), durable across
     restarts, and steerable, and a client-native swarm is invisible to ALL of it. On
     Claude clients `Task`/`Agent`/`Workflow` are DENIED by default anyway (owner mandate
     2026-07-02), so offering one is offering a route you cannot execute.
-  - **B. Hand to the Mug (pot auto-loop)** — enqueue for the mug→cup→blender loop to
-    pick up. ⚠️ State the caveat when offering it: this auto-loop flow is not fully working
-    yet, so B may not actually get picked up.
-  - **C. Send to a specific active fleet** — ONLY when ≥1 named fleet has an active agent.
+  - **B. Send to a specific active fleet** — ONLY when ≥1 named fleet has an active agent.
     You MUST inline-list the available fleets (name + live-agent count) right in the question,
     queried live (`fleet:assignments` / `coord:presence` / the fleet registry) — do NOT say
-    "I'll list them first." If NO fleet is active, OMIT option C entirely.
-  - **D. Spawn a new VISIBLE desktop fleet** — launch a fresh fleet of VISIBLE terminals on the
+    "I'll list them first." If NO fleet is active, OMIT option B entirely.
+  - **C. Spawn a new VISIBLE desktop fleet** — launch a fresh fleet of VISIBLE terminals on the
     owner's REAL desktop. **ALWAYS PREFER `fleet:launch-on-plan { name, plan, count, agent }`**
     — the purpose-built spawn utility: it ensures the fleet (you become leader), opens N member
     windows, AND threads `--fleet=<slug>` + the auto-kickoff so each member **auto-JOINS the
@@ -361,12 +363,14 @@ Launch-tool routing reference: [Launching agents — which tool for which door](
     fixed at that layer too — but you still don't need to hand-roll: `fleet:launch-on-plan`
     covers this.) ⚠️ `capability:terminal` / `fleet:launch-on-plan` are the ONLY tools that open
     real desktop terminals — `cup:spawn` / `fleet:place_batch` spawn HEADLESS nursery cups (no
-    window on the owner's desktop, Mug-supervised — NOT the same as option E's headless su
-    FLEET), so NEVER use them for a "desktop fleet." ⚠️ Only OFFER options D/E when
+    window on the owner's desktop, Mug-supervised — NOT the same as option D's headless su
+    FLEET), so NEVER use them for a "desktop fleet." ⚠️ And they are not a fallback either: the
+    Mug-supervised nursery tier is **RETIRED** behind `papercusp-mug-kettle-system` (default OFF
+    = the delivered end state), so `cup:spawn` REFUSES — a FLEET is the only fan-out. ⚠️ Only OFFER options C/D when
     `fleet:launch-on-plan` is actually in your toolset (some client surfaces expose only the
-    nursery-cup tools); if not, say so and don't present a fleet you can't launch. When no fleet is active, label option C "(there are no active fleets)" so the
-    owner sees why C was skipped.
-  - **E. Spawn a new HEADLESS fleet** — the SAME fleet as D via the SAME tool, just
+    nursery-cup tools); if not, say so and don't present a fleet you can't launch. When no fleet is active, label option B "(there are no active fleets)" so the
+    owner sees why B was skipped.
+  - **D. Spawn a new HEADLESS fleet** — the SAME fleet as C via the SAME tool, just
     `fleet:launch-on-plan { name, plan, count, agent, headless: true }`: the members are
     background su sessions with **NO desktop window**, identical to D in every other way — you
     become leader, each member auto-JOINS the fleet and auto-STARTS on the plan, registers
@@ -375,7 +379,8 @@ Launch-tool routing reference: [Launching agents — which tool for which door](
     working invisibly, on a headless host, or without cluttering their desktop. ⚠️ A headless
     *fleet* is NOT cups: `fleet:launch-on-plan { headless: true }` launches leader-led su
     MEMBERS; `cup:spawn` / `fleet:place_batch` launch Mug-supervised nursery CUPS (count in
-    beeCount, no fleet, no leader) — never conflate them. Availability is identical to D (both
+    beeCount, no fleet, no leader) — never conflate them, and note the cup half is RETIRED
+    (`papercusp-mug-kettle-system`, default OFF) so `cup:spawn` REFUSES. Availability is identical to D (both
     are `fleet:launch-on-plan`), so offer D and E together or neither; visible-vs-headless is
     just the `headless` knob, INDEPENDENT of the carry knob below.
 - **NEVER OFFER A ROUTE YOU HAVE NOT CONFIRMED YOU CAN EXECUTE.** Before a route reaches
@@ -391,7 +396,7 @@ Launch-tool routing reference: [Launching agents — which tool for which door](
   a month after the owner deny-listed it. The tool was absent from that very session.)
 - **Ask the route EVEN IF one option seems obvious.** This is an AUTHORIZATION gate — the
   owner chooses WHO runs the work; you do not get to judge the answer "obvious" and skip the
-  question. You cannot know the owner won't want the mug/fleet path even on a throwaway.
+  question. You cannot know the owner won't want the fleet path even on a throwaway.
   "It's low-stakes / the route is obvious / B–D make no sense" is NOT a license to skip the
   ask, and DISCLOSING the route you took is NOT a substitute for asking. The ONLY non-AUTO
   case that skips this ask is a task so trivial it warrants NO plan at all — the moment a
@@ -400,7 +405,7 @@ Launch-tool routing reference: [Launching agents — which tool for which door](
   plan/approach AND the route (and any WHAT/HOW choice the owner left unspecified) — put them
   in a SINGLE `AskUserQuestion`, not serial round-trips. The gate is a checkpoint, not an
   interrogation.
-- **Offering a fleet route (C/D/E)? TELL the user, in the same ask, which launch knobs they can
+- **Offering a fleet route (B/C/D)? TELL the user, in the same ask, which launch knobs they can
   set** — don't make them discover the flags later. Say, alongside the route options: *"If you
   pick a fleet route you can also tell me (a) which MODEL and EFFORT level the agents should run
   (e.g. `sonnet:high`, `gpt-5.5:high` — effort tunes reasoning depth vs cost), (b) which
@@ -418,7 +423,7 @@ Launch-tool routing reference: [Launching agents — which tool for which door](
   thread) — the safe default; `cold` starts each wake from a FRESH context rebuilt from the
   agent's last checkpoint (cheaper over a long run, survives compaction, but the checkpoint note
   becomes its only memory) — suited to very long unattended drains. Carry is INDEPENDENT of
-  whether the fleet is visible (D) or headless (E)."* If the user doesn't choose, apply the
+  whether the fleet is visible (C) or headless (D)."* If the user doesn't choose, apply the
   defaults (warm carry) and announce them at spawn time (see the spawn-announcement rule below).
 - **Confirm before write-side calls** (file edits, creating work-items, shipping a plan,
   schema writes) unless the specific action is already authorized. **Reversibility lowers the
@@ -426,7 +431,7 @@ Launch-tool routing reference: [Launching agents — which tool for which door](
   route-confirmation.** A trivial, reversible, throwaway task still gets the plan-review and
   route asks; it just doesn't also trip the hard-to-reverse gate.
 - **An explicit owner route/approach choice is STICKY for the whole task.** Once the owner
-  picks WHO runs the work (you / the Mug / a fleet) or HOW to build it, do NOT silently
+  picks WHO runs the work (you / a fleet) or HOW to build it, do NOT silently
   switch to a different route or approach mid-task because the chosen path got interrupted,
   closed, or failed — RE-ESTABLISH it (relaunch the agent, reopen the window, retry the
   approach), or surface the deviation and confirm first. Quietly switching to something the
@@ -468,6 +473,25 @@ Launch-tool routing reference: [Launching agents — which tool for which door](
   (`plans:add-decision`) THE MOMENT it forms — a verdict living only in a coord message gets
   lost and the same dispute reopens in the next lane. `loop:end` only when the fleet's plan is
   done or the owner stops it. "I launched it" is not "I'm leading it"; leading means watching.
+- **Anything you re-read by hand every wake belongs in `fleet:invariant`, not in your
+  head.** It registers read-only SQL that `fleet:leader-brief` evaluates on EVERY read —
+  the contract is ROWS RETURNED == VIOLATED (zero rows == satisfied), and the offending
+  rows come back as the evidence (`summary.customInvariantAlert` + `customInvariants[]`).
+  Use `{{fleet}}` / `{{workspace}}` instead of hardcoding a slug so a copied check polices
+  the fleet it now belongs to — they substitute as ALREADY-QUOTED literals, so write
+  `= {{fleet}}`, never `= '{{fleet}}'` (the doubled quotes are a syntax error on any
+  hyphenated slug). The canonical case is **spec drift**: a claim spec YOU authored can be
+  silently rewritten by another automated actor with nothing failing loudly, so register
+  "spec revision/kind has moved off what I set" once and let the brief police it.
+  Hand-re-reading is the failure mode — you only catch drift on the wakes you happen to
+  remember the old value, which is exactly when you are busiest. Invariants are evaluated
+  only when a brief is READ; they never wake you on their own.
+  ⚠ **REGISTER, then READ one brief and confirm `status:'satisfied'`.** Registration only
+  stores SQL — it does not run it, and an invariant that errors (bad column, wrong scope)
+  reports `status:'error'`, which protects you from nothing. Prove it can FIRE too: run the
+  same SQL via `dev:pg_query` with a deliberately wrong pin and check it returns a row.
+  A check that returns zero rows because it is broken is indistinguishable from one that
+  returns zero rows because you are safe.
 - **Each monitor wake, BENCH lanes blocked-waiting >2 wakes** (`fleet:bench { member,
   wakeEvent }`; leader-brief's `benchSuggestion` flags them) — a lane waiting on a peer's
   critical path parks on the gate, never live-loops.
@@ -530,8 +554,8 @@ These asks are exactly what AUTO mode suspends — and the boundary is BINARY, n
 continuum: **AUTO OFF ⇒ ASK the route, always (per above); AUTO ON ⇒ SELF-SELECT it.** While
 AUTO is ON, do NOT stop to ask the route — CHOOSE it yourself by judgment and DISCLOSE the
 choice in your report: implement it
-yourself (A) for most work, or route to the mug (B), an active fleet (C), or a newly
-spawned desktop fleet (D) when the job is big enough to warrant fan-out. AUTO authorizes
+yourself (A) for most work, or an active fleet (B), or a newly
+spawned desktop fleet (C/D) when the job is big enough to warrant fan-out. AUTO authorizes
 committing fleet resources on your own judgment — including spawning a desktop fleet —
 so name the route you took, and why, when you report back.
 
@@ -579,6 +603,27 @@ it is easy to never see. They answer the box; the text above it silently dies. T
   MATTERS (a wind-down report, an owner-gated wall, a risk disclosure), verify by the
   channel's own signal (dialog answered, `coord:send` result, an explicit ack) — not by
   "I wrote it".
+- **An artifact URL you cite as "delivered" is a claim you have not checked unless you
+  RE-RESOLVE it.** Publishing an `Artifact` returns a URL, but a *publish result* is not proof
+  the page is live and reachable by the owner — the same `rendered ≠ delivered` trap, one hop
+  further out: a URL you write into a checkpoint / plan / report is a durable claim a
+  successor inherits and trusts without re-checking. Before citing a published artifact's URL
+  as delivered on any durable surface (`work_items:checkpoint`, a plan, a status report),
+  verify it actually resolves — `Artifact { action:'list' }` should show it, or `WebFetch` the
+  URL directly — rather than trusting the tool call that produced it. Prefer recording the
+  SOURCE FILE PATH alongside the URL, not the bare URL alone: a source path lets any later
+  reader republish rather than dead-end, where a bare dead URL is a dead end. **After a
+  carry-respawn, pass the recorded `url` explicitly when updating the artifact**: native
+  Artifact identity is conversation-scoped, so republishing by the same source path alone
+  can silently fork a second artifact. If the update returns a different URL, stop and
+  re-resolve both artifacts before citing either one. (EI-20208902739802837 — a carry-respawn
+  republished the same path into a stale twin; the existing URL + source path were available,
+  but the update omitted `url`.) (EI-19944806095285549 — a checkpoint asserted a delivered artifact
+  URL that did not exist; `Artifact { action:'list' }` showed nothing published that day and
+  `WebFetch` 404'd it. The publish-time error for an update conflict ("hasn't viewed the
+  latest version... read it first") reads exactly like "the artifact exists and was changed
+  by someone else" — the OPPOSITE of the truth when the artifact never existed at all — so
+  don't trust that error shape as confirmation either; re-resolve independently.)
 - A `PreToolUse` hook enforces the first rule mechanically where available (blocking a
   dialog preceded by a long same-turn report, with a teaching message) — but the hook is a
   backstop; the discipline is yours.
@@ -703,7 +748,7 @@ AUTO you skip the ask and still register per the tiers.
   (`coord:catch-up { audience }` as a member, `coord:feed { audience }` as the firehose) — never
   a state tool. Full map: the `presence-vs-history-who-is-on-what` agent-insights doc.
 - **Don't ask a peer for something you can look up.** Live state is a QUERY, not a
-  question: who holds a file → `locks:list`; who is on what → `fleet:assignments` /
+  question: who holds a file → `locks:queue { paths: [...] }`; who is on what → `fleet:assignments` /
   `coord:presence`; a work-item's status → `work_items:get` (its checkpoint IS the
   status). Need a specific person? `coord:send` them directly — it wakes them.
   Need a decision only the owner can make? `coord:ask-owner`.
@@ -711,7 +756,10 @@ AUTO you skip the ask and still register per the tiers.
   moment you notice it — don't let it evaporate into prose: a health/degradation signal
   or turn-end reflection → `improvements:capture` (with evidence); a concrete actionable
   problem → an issue/work-item (never silently drop; claim before fixing; close or promote
-  when done); durable how-it-works → an agent-insights doc. **The WORKAROUND IS THE
+  when done); durable how-it-works → an agent-insights doc, authored with `docs:author`
+  (NEVER by hand-writing the .mdx — Postgres is canonical and the file is a projection, so
+  a hand-written or hand-edited file is refused by the next projection and never lands).
+  **The WORKAROUND IS THE
   TRIGGER — file MID-TASK, at the moment you route around, never "later".** The instant
   you retry a call with changed args, fall back to a different tool/verb, or route around
   ANY failure, that workaround IS a discovery: `improvements:capture` it (and
@@ -723,6 +771,12 @@ AUTO you skip the ask and still register per the tiers.
   costs seconds; the uncaptured friction re-costs every next agent the same discovery.
   **Filing a suspected bug is
   unconditional — the only judgment call is fix-now vs leave-it-filed, never whether to file.**
+  For a suspected TOOL-CALL failure, preserve that immediacy without exciting the work queue:
+  pass `improvements:capture { toolFailure:{ toolName, errorCode?, status?, message,
+  schemaRevision?, fieldPath?, runtimeVersion? } }`. A one-off lands immediately in correlated,
+  non-claimable probation; a second independent reporter or the invocation-ledger watchdog
+  promotes the SAME row. Set `reproduced:true`, `clearServerMismatch:true`, or
+  `hardInternal:true` only when you have that direct evidence — those bypass probation.
   A "bug" includes SUB-OPTIMAL, not just a hard stopper: a false alarm / wrong reading from any
   monitor or tracker (a false alarm is a bug in the alarm), a flap that self-recovered,
   degradation under load — the system must stay responsive at ANY load, so load-correlated

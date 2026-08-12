@@ -1,8 +1,55 @@
 // ../../packages/operator-core/lib/event-loop-sentinel.worker.ts
 import { workerData, parentPort } from "node:worker_threads";
-import { writeSync } from "node:fs";
+import { writeSync, readFileSync } from "node:fs";
+
+// ../../packages/operator-core/lib/proc-thread-cpu.ts
+var USER_HZ = 100;
+function parseProcStat(raw) {
+  const close = raw.lastIndexOf(")");
+  if (close < 0) return null;
+  const rest = raw.slice(close + 1).trim().split(/\s+/);
+  if (rest.length < 13) return null;
+  const state2 = rest[0];
+  const utime = Number(rest[11]);
+  const stime = Number(rest[12]);
+  if (!Number.isFinite(utime) || !Number.isFinite(stime)) return null;
+  return { state: state2, ticks: utime + stime };
+}
+var UNKNOWN = {
+  kind: "unknown",
+  cpuMs: null,
+  cores: null,
+  suspectWrongSubject: false
+};
+function classifyThreadCpu(opts) {
+  const {
+    baselineTicks,
+    currentTicks,
+    elapsedMs,
+    userHz = USER_HZ,
+    spinningCores = 0.5,
+    parkedCores = 0.05
+  } = opts;
+  if (baselineTicks == null || currentTicks == null) return UNKNOWN;
+  if (!Number.isFinite(elapsedMs) || elapsedMs <= 0) return UNKNOWN;
+  if (!(userHz > 0)) return UNKNOWN;
+  const deltaTicks = currentTicks - baselineTicks;
+  if (deltaTicks < 0) return UNKNOWN;
+  const cpuMs = deltaTicks / userHz * 1e3;
+  const cores = cpuMs / elapsedMs;
+  const suspectWrongSubject = cores > 1.5;
+  const kind = cores >= spinningCores ? "spinning" : cores <= parkedCores ? "parked" : "partial";
+  return { kind, cpuMs, cores, suspectWrongSubject };
+}
 
 // ../../packages/operator-core/lib/event-loop-sentinel.ts
+var SENTINEL_SAB_IDX = {
+  HEARTBEAT: 0,
+  LAG_P50_MS: 1,
+  LAG_P95_MS: 2,
+  LAG_P99_MS: 3,
+  LAG_MAX_MS: 4
+};
 function initialLoopSentinelState(nowMs, counter) {
   return {
     lastCounter: counter,
@@ -68,6 +115,48 @@ function emit(line, detail) {
 var data = workerData;
 var view = new Int32Array(data.sab);
 var { thresholds, observeIntervalMs, mode, pid } = data;
+function lastKnownLag() {
+  return {
+    lastLagP50Ms: Atomics.load(view, SENTINEL_SAB_IDX.LAG_P50_MS),
+    lastLagP95Ms: Atomics.load(view, SENTINEL_SAB_IDX.LAG_P95_MS),
+    lastLagP99Ms: Atomics.load(view, SENTINEL_SAB_IDX.LAG_P99_MS),
+    lastLagMaxMs: Atomics.load(view, SENTINEL_SAB_IDX.LAG_MAX_MS)
+  };
+}
+function readMainThreadStat() {
+  try {
+    return parseProcStat(readFileSync(`/proc/${pid}/task/${pid}/stat`, "utf8"));
+  } catch {
+    return null;
+  }
+}
+function readMainThreadWchan() {
+  try {
+    const w = readFileSync(`/proc/${pid}/task/${pid}/wchan`, "utf8").trim();
+    return w === "" || w === "0" ? null : w;
+  } catch {
+    return null;
+  }
+}
+var healthyCpu = null;
+function mainThreadActivity() {
+  const now = readMainThreadStat();
+  const verdict = classifyThreadCpu({
+    baselineTicks: healthyCpu?.ticks ?? null,
+    currentTicks: now?.ticks ?? null,
+    elapsedMs: healthyCpu ? Date.now() - healthyCpu.atMs : 0
+  });
+  const out = {
+    mainThreadActivity: verdict.kind,
+    mainThreadState: now?.state ?? "unknown"
+  };
+  if (verdict.cpuMs != null) out.mainThreadCpuMsDuringStall = Math.round(verdict.cpuMs);
+  if (verdict.cores != null) out.mainThreadCores = Number(verdict.cores.toFixed(2));
+  if (verdict.suspectWrongSubject) out.suspectWrongSubject = true;
+  const wchan = readMainThreadWchan();
+  if (wchan) out.mainThreadWchan = wchan;
+  return out;
+}
 var state = initialLoopSentinelState(
   Date.now(),
   Atomics.load(view, 0)
@@ -96,17 +185,22 @@ var timer = setInterval(() => {
   const action = decision.action;
   switch (action.kind) {
     case "ok":
-    case "grace":
+    case "grace": {
       warnedThisStall = false;
       reportedThisStall = false;
+      const healthy = readMainThreadStat();
+      if (healthy) healthyCpu = { ticks: healthy.ticks, atMs: Date.now() };
       return;
+    }
     case "warn":
       if (!warnedThisStall) {
         warnedThisStall = true;
         emit("main event loop STALLED (not yet actionable)", {
           stalenessMs: action.stalenessMs,
           wedgeAfterMs: thresholds.wedgeAfterMs,
-          consecutiveStale: action.consecutiveStale
+          consecutiveStale: action.consecutiveStale,
+          ...mainThreadActivity(),
+          ...lastKnownLag()
         });
       }
       return;
@@ -118,7 +212,8 @@ var timer = setInterval(() => {
         {
           stalenessMs: action.stalenessMs,
           consecutiveStale: action.consecutiveStale,
-          pid
+          pid,
+          ...lastKnownLag()
         }
       );
       return;
@@ -138,7 +233,9 @@ var timer = setInterval(() => {
           wedgeAfterMs: thresholds.wedgeAfterMs,
           mode,
           pid,
-          reason: action.reason
+          reason: action.reason,
+          ...mainThreadActivity(),
+          ...lastKnownLag()
         }
       );
       if (mode === "kill") {

@@ -1,3 +1,23 @@
+> # ⛔ RETIRED — NOT ACTIVE (2026-08-09)
+>
+> This is the persona for a **Mug / Kettle / Cup tier role**, and that tier is
+> retired: su + GOAL mode are the only way to drive the app
+> (`retire-mug-kettle-su-only-2026-08-09`, D-020, owner-directed; P-062).
+>
+> **Nothing dispatches this prompt.** The role is refused at all three
+> role-admission doors (`RETIRED_TIER_ROLES` / `isRetiredTierRole`, D-018/D-022),
+> and the blueprints that named it (`cup`, `coding` → inherited by `work`) each
+> carry a structured `retired:` block that the launch/spend guard reads
+> (`blueprintRetirement()`, WI-5645).
+>
+> Preserved-not-active per the repo retired-surface convention: kept for
+> reference and for reversibility, **not deployed, not tested, not to be
+> extended**. Do not wire new work to it, and do not copy patterns out of it into
+> a live persona without checking they still apply.
+>
+> To revive: flip `FLAGS.MUG_KETTLE_SYSTEM` ON (it is `case:'cutover'` — reversible
+> by design) and delete the `retired:` blocks from the blueprints above.
+
 # The Kettle — autonomous system-health supervisor for the Pot
 
 You are **the Kettle of this Pot** — an always-on autonomous role, a sibling
@@ -495,14 +515,17 @@ improvements:capture {
 
 **All 15 keys MUST be present, every turn.** A fully idle turn still gets all 15, each honestly `unknown` with a one-line reason. A missed scorecard forces the backstop to synthesize a floor and files an `overwatch-scorecard` watchdog fire — a habit bug. Don't lean on the backstop.
 
-### ✓ Step 3: Declare your next wake
-**ALWAYS** call `kettle:declare-wake` — your own wake channel (do NOT use `pot:declare-wake`, that's the Mug's). Choose based on what you observed:
+### ✓ Step 3: Declare your next wake — ⛔ RETIRED VERB, NOTHING TO DO
 
-- **Active drift** (unresolved anomalies / nudges in flight) → `kettle:declare-wake { inSeconds: 60–180 }` (1–3 min)
-- **System healthy** (no anomalies, all panels green) → `kettle:declare-wake { inSeconds: 600–1800 }` (10–30 min)
-- **Owner asked you to pause** → `kettle:declare-wake { mode: 'none' }` (sleep until restarted)
+The agent-facing wake verb this step used to name (`kettle` + `declare-wake`) was
+**retired with the Mug/Kettle tier** (retire-mug-kettle-su-only-2026-08-09 P-059/D-080)
+and no longer exists in the tool catalog — there is no wake for you to declare by hand,
+and no substitute verb to reach for. Do not go looking for one, and never reach for the
+Mug's `pot:declare-wake`: that is a different channel you cannot and must not touch.
 
-Optionally, leave a carry-note for your next wake: `kettle:declare-wake { inSeconds: 120, kickoff: 'Mug cadence recovering — re-check next wake' }`.
+The underlying wake PRIMITIVE (`declareOverwatchTimeWake`) is still live and is driven by
+`lib/overwatch/loop.ts`, so a Kettle that is somehow running still re-arms without you.
+Finish your turn after Step 2.
 
 ## End-of-turn verb (REQUIRED)
 
