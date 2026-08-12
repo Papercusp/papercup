@@ -17,6 +17,9 @@
  * proves the new LABEL is applied is paired with one proving the GATE still holds.
  */
 import { describe, expect, it } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { resolve, dirname } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   classifyResidualFailure,
@@ -166,5 +169,77 @@ describe('formatLoadSuspectMarker', () => {
     // affected-tests-result-line.test.ts and parsed by green-checkpoint, and widening a
     // verdict contract to carry an advisory is how advisories get read as verdicts.
     expect(marker).not.toContain('AFFECTED_TESTS_RESULT');
+  });
+});
+
+/**
+ * WIRING — the helper being correct is worthless if nothing calls it, and the classification
+ * above is a pure function that cannot observe its own caller. Driving the absorption path for
+ * real would need a genuinely failing vitest child AND a loaded box, so these are SOURCE-SHAPE
+ * assertions, which affected-tests-result-line.test.ts establishes as legitimate exactly where
+ * "executing the path is genuinely expensive". They pin CODE tokens, never prose — prose pins
+ * are what red-pinned the fleet's gate twice (EI-20103084274785576).
+ */
+describe('wiring into scripts/affected-tests.mjs', () => {
+  const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..');
+  /**
+   * Same test-only seam as affected-tests-result-line.test.ts: point this at a MUTATED COPY
+   * (outside the tree) to prove these assertions can actually fail. It is the only safe way
+   * to falsify them — mutating the real script in place races git-sync, which sweeps the whole
+   * tree every few minutes and would commit the mutant even if nothing else went wrong. Unset
+   * in every normal run. Drive it with scripts/mutation-probe.sh.
+   */
+  // Resolved against REPO_ROOT, not process.cwd(): vitest runs this suite with
+  // cwd=packages/operator-core, so a bare resolve() of a RELATIVE override silently looked for
+  // packages/operator-core/scripts/affected-tests.mjs and the probe's baseline leg died on
+  // ENOENT. `resolve(base, abs)` returns abs unchanged, so this is correct for both forms.
+  const AFFECTED_TESTS = process.env.PAPERCUSP_AFFECTED_TESTS_SCRIPT
+    ? resolve(REPO_ROOT, process.env.PAPERCUSP_AFFECTED_TESTS_SCRIPT)
+    : resolve(REPO_ROOT, 'scripts/affected-tests.mjs');
+  const src = readFileSync(AFFECTED_TESTS, 'utf8');
+
+  it('imports the classifier from the shared module rather than re-deriving it inline', () => {
+    expect(src).toContain("from './lib/load-suspect.mjs'");
+    expect(src).toContain('classifyResidualFailure');
+  });
+
+  it('judges against the SAME threshold that auto-enables absorption', () => {
+    // If the enabling comparison and the blaming comparison ever used different constants, a
+    // run could switch absorption on for a load it then refuses to blame — the exact
+    // incoherence WI-38300 is about, reintroduced one constant over.
+    expect(src).toMatch(/threshold:\s*AUTO_RETRY_LOAD1_THRESHOLD/);
+  });
+
+  it('samples the load AFTER each absorption re-run, never before it', () => {
+    // ⚠ THE ASSERTION NO UNIT TEST CAN REACH, and the one a refactor is most likely to
+    // silently invert. loadavg()[0] is a TRAILING average: sampled after the re-run it
+    // describes the load the RE-RUN experienced; hoisted above the re-run it describes the
+    // first pass, which is already known-high (it is what enabled absorption) and would
+    // therefore label essentially EVERY residual failure load-suspect. That failure is
+    // invisible in output — the notice still renders, with a plausible number.
+    const sites = [...src.matchAll(/r = run\((?:failedFiles)?\);[\s\S]{0,500}?load1AtRerun = loadavg\(\)\[0\];/g)];
+    expect(sites).toHaveLength(2); // both arms: scoped fresh-process re-run, and whole-workspace retry
+  });
+
+  it('emits the advisory marker BEFORE the verdict line, and never inside it', () => {
+    const markerCall = src.lastIndexOf('formatLoadSuspectMarker({');
+    const failedVerdict = src.indexOf("errSync(resultLine('failed'))");
+    expect(markerCall).toBeGreaterThan(0);
+    expect(failedVerdict).toBeGreaterThan(0);
+    expect(markerCall).toBeLessThan(failedVerdict);
+    // The verdict template must stay exactly as affected-tests-result-line.test.ts pins it:
+    // no load-suspect field may be smuggled onto the line green-checkpoint parses.
+    expect(src).not.toMatch(/AFFECTED_TESTS_RESULT status=\$\{status\}[^`]*loadSuspect/);
+  });
+
+  it('keeps a load-suspect task counted in `failed` — the gate still holds', () => {
+    // The label is applied INSIDE the branch that has already run `failed++`, so it cannot
+    // subtract from the count. Pinned because "report it differently" is one edit away from
+    // "report it less", and that edit would be invisible on a green tree.
+    const failedIncrement = src.indexOf('failed++;');
+    const labelSite = src.indexOf('classifyResidualFailure({');
+    expect(failedIncrement).toBeGreaterThan(0);
+    expect(labelSite).toBeGreaterThan(failedIncrement);
+    expect(src).not.toMatch(/failed--|failed\s*-=\s*1/);
   });
 });

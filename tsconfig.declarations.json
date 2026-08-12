@@ -71,6 +71,14 @@
   "files": [
     "scripts/lib/not-checked.mjs",
     "scripts/lib/task-exit-class.mjs",
+    // WI-38300 — the load-suspect classifier, sibling of task-exit-class.mjs above and
+    // registered for the FIRST reason this list exists: it is imported directly by
+    // affected-tests-load-suspect.test.ts, which would otherwise pay a TS7016 that gets
+    // absorbed into that file's permanent tsc baseline. Verified the silent-absence mode
+    // this file warns about (EI-20035436440627349): with the module written but unlisted,
+    // `gen:declarations` reported "emitted 44 declaration file(s)" and exit 0 while
+    // emitting nothing for it.
+    "scripts/lib/load-suspect.mjs",
     "scripts/lib/quarantine.mjs",
     "scripts/lib/sync-write.mjs",
     "scripts/lib/vitest-summary.mjs",
