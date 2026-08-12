@@ -120,7 +120,6 @@
     "tool|cup:spawn|packages/operator-core/lib/llm-testing/scenarios/papercup/SN01-handoff-planning-ask.ts",
     "tool|cup:spawn|packages/operator-core/lib/llm-testing/targets/mug.ts",
     "tool|cup:spawn|packages/operator-core/lib/llm-testing/targets/overwatch.ts",
-    "tool|kettle:declare-wake|packages/operator-core/lib/agent-tools/overwatch/declare_wake.ts",
     "tool|kettle:pause|packages/operator-core/lib/agent-tools/overwatch/pause.ts",
     "tool|kettle:start|packages/operator-core/lib/agent-tools/overwatch/start.ts",
     "tool|pot:add-member|packages/operator-core/lib/agent-tools/pot/add_member.ts",
