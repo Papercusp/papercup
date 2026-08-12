@@ -87,6 +87,13 @@ export const TURN_ORIGIN_BASES = [
   'self-compaction',
   'fleet-kickoff',
   'session-port',
+  // Role prompts are materialized by the role-launch bootstrap with the same
+  // sid that owns the session.  They are system-prompt files at the CLI edge,
+  // but native transcript adapters persist their contents as user-shaped rows.
+  'role-prompt',
+  // The credential-gated real-resume smoke is itself an injector: both its
+  // fresh prompt and its resume prompt must be attributable in the transcript.
+  'resume-smoke',
   'watchdog',
   // EI-18680056073436345: the Claude-CLI-NATIVE ScheduleWakeup tool fires its
   // `prompt` as a UserPromptSubmit turn from INSIDE the CLI process itself —
