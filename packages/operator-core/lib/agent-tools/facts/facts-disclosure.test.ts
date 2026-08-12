@@ -180,6 +180,48 @@ describe('projectFact — facts:list must stay inside the output budget (EI-1094
     expect(serialized).toMatch(/^\{[\s\S]*\}$/);
     expect(serialized.length).toBeLessThan(RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE);
   });
+
+  it('keeps the default page bounded when every row carries live metadata', () => {
+    // EI-20245738587790330: the eight-row default passed the synthetic body-only
+    // fixture but overflowed on staging facts whose rows also carried stale-source,
+    // audience, claim, and dependency metadata.
+    const rows = Array.from({ length: FACTS_LIST_DEFAULT_LIMIT }, (_, index) =>
+      projectFact(
+        {
+          ...fact('z'.repeat(500), {
+            key: `metadata-${index}`,
+            audienceScope: 'fleet:nonp2p-bug-drain-luna-max-0811',
+            confidence: 'verified',
+            kind: 'conclusion',
+            claim: { subject: 'pipeline.gate', assertion: 'green' },
+            dependsOn: [
+              {
+                cell: 'pipeline.gate',
+                observedAt: '2026-08-12T11:00:00.000Z',
+                digest: 'a'.repeat(64),
+                observed: 'green',
+              },
+            ],
+          }),
+          sourceStale: {
+            sourceItem: 'EI-20245738587790330',
+            sourceItemState: 'done',
+            note: 'source item is terminal; this fact may be stale and should be rechecked before relying on it.',
+          },
+        },
+        false,
+      ),
+    );
+    const serialized = JSON.stringify({
+      ok: true,
+      count: rows.length,
+      excerpted: true,
+      note: FACTS_LIST_EXCERPT_NOTE,
+      facts: rows,
+    });
+    expect(serialized).toMatch(/^\{[\s\S]*\}$/);
+    expect(serialized.length).toBeLessThan(RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE);
+  });
 });
 
 describe('facts:list key lookup — distinguish projection omission from live absence (EI-19437221871431967)', () => {

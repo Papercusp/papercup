@@ -24,10 +24,12 @@ import {
 /**
  * EI-10948 removed the old 50-row blow-up, but 25 excerpted rows still exceed the
  * universal ~1500-token result door on a broad harness read (EI-20242506233119355).
- * Eight rows leave enough headroom for the wrapper and per-fact metadata while callers
- * that need a wider census can still pass an explicit `limit`.
+ * A later live probe showed that eight rows can still overflow when the rows carry
+ * stale-source metadata (EI-20245738587790330). Four rows leave enough headroom for
+ * the wrapper and per-fact metadata while callers that need a wider census can still
+ * pass an explicit `limit`.
  */
-export const FACTS_LIST_DEFAULT_LIMIT = 8;
+export const FACTS_LIST_DEFAULT_LIMIT = 4;
 /** Excerpt width — enough to identify a fact + decide whether to retract it. */
 export const FACTS_LIST_EXCERPT_CHARS = 180;
 export const FACTS_LIST_EXCERPT_NOTE =
