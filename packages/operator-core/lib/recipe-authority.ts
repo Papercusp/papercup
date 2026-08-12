@@ -47,6 +47,8 @@ export type RecipeUnresolvedCause =
   | { kind: 'dynamic-dispatch-target'; tool: string }
   /** A scoped-namespace call whose args are computed at runtime — the entities touched are unknowable. */
   | { kind: 'dynamic-scope-args'; tool: string }
+  /** A coordination call embeds a sender/cursor that can be stale outside its original wake. */
+  | { kind: 'volatile-coordination-args'; tool: string; keys: string[] }
   /** Tools were referenced but NO call could be statically resolved (dynamic/unsupported access form). */
   | { kind: 'unparsable-call-form'; tool: null };
 
@@ -110,6 +112,22 @@ const asRecord = (value: unknown): Record<string, unknown> | null =>
 
 const SCOPE_NAMESPACES = new Set(['plans', 'workitems', 'fleet', 'harness', 'locks', 'resource', 'resources']);
 const OPAQUE_TOOLS = new Set(['dev:pgquery', 'capability:bash', 'capability:script', 'code:run']);
+// Coordination cursors and sender ids describe a momentary conversation, not a
+// reusable lane. A saved recipe carrying one must fail closed: neither the
+// recipe's stable entity refs nor a later authority proof can prove that the
+// old leader/cursor is still the right one.
+const VOLATILE_COORDINATION_ARG_KEYS = new Set([
+  'from',
+  'sender',
+  'senderid',
+  'since',
+  'sincets',
+  'cursor',
+  'after',
+  'afterts',
+  'before',
+  'beforets',
+]);
 
 /** Collect known authority keys from one statically projected argument object. */
 function collectArgs(
@@ -196,6 +214,17 @@ function inspectCall(
   collectArgs(call.tool, call.args, out);
   if (OPAQUE_TOOLS.has(normalizedTool)) {
     return { kind: 'opaque-tool', tool: call.tool };
+  }
+  if (ns === 'coord') {
+    const args = asRecord(call.args);
+    const volatileKeys = args
+      ? Object.keys(args)
+          .filter((key) => VOLATILE_COORDINATION_ARG_KEYS.has(normPart(key)))
+          .sort()
+      : [];
+    if (volatileKeys.length > 0) {
+      return { kind: 'volatile-coordination-args', tool: call.tool, keys: volatileKeys };
+    }
   }
   if (call.dynamicArgs && SCOPE_NAMESPACES.has(ns)) {
     return { kind: 'dynamic-scope-args', tool: call.tool };
@@ -434,6 +463,14 @@ function unresolvedReason(cause: RecipeUnresolvedCause | null | undefined): stri
         '(plan/item/fleet/harness/lock/resource), so the exact entities it would touch cannot be known before ' +
         `it runs — ${permanent}${workaround} If the arguments ARE fixed, spell them as literals and the call ` +
         'becomes provable.'
+      );
+    case 'volatile-coordination-args':
+      return (
+        `the recipe script calls \`${cause.tool}\` with volatile coordination sender/cursor argument(s) ` +
+        `${cause.keys.map((key) => `\`${key}\``).join(', ')}, so its saved leader or inbox position can be stale ` +
+        'when reused in a later wake — no authority proof can safely revalidate a momentary conversation cursor. ' +
+        'Rewrite the recipe to derive the current sender/cursor from live context, or run the script directly via ' +
+        'code:run; until then it is not safely reusable through recipes:run.'
       );
     case 'unparsable-call-form':
       return (

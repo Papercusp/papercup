@@ -20,11 +20,11 @@ import { searchSimilarRecipes } from './code-recipes-search';
 const { createOrgTestDb } = await import('../test/_org-test-db');
 
 /**
- * A deterministic 384-dim unit-ish embedding seeded by a scalar so two recipes
+ * A deterministic 768-dim unit-ish embedding seeded by a scalar so two recipes
  * sharing a seed are cosine-close and a different seed is far. (The cosine leg
  * orders by `embedding <=> qVec`; identical vectors ⇒ distance 0.)
  */
-const seededEmbedding = (seed: number): number[] => Array.from({ length: 384 }, (_, i) => Math.sin(seed + i * 0.01));
+const seededEmbedding = (seed: number): number[] => Array.from({ length: 768 }, (_, i) => Math.sin(seed + i * 0.01));
 
 describe('code_recipes hybrid search (real PG)', () => {
   let db: OrgTestDb;
@@ -258,5 +258,31 @@ describe('code_recipes hybrid search (real PG)', () => {
       },
     });
     expect(matched?.authority.revision).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('does not recommend recipes with stale coordination sender/cursor literals', async () => {
+    await upsertRecipe(db.adminSql, {
+      potSlug: null,
+      id: 'stale-coordination-cursor',
+      title: 'Retry wake leader inbox',
+      description: 'check the leader reply after a scheduler wake',
+      script: `return await tools.coord.inbox({
+        from: 'su-stale-leader',
+        since_ts: '2026-07-10T16:05:00.000Z',
+      });`,
+      toolsUsed: ['coord:inbox'],
+      embedding: seededEmbedding(41),
+    });
+
+    const results = await searchSimilarRecipes(db.adminSql, {
+      title: 'Retry wake leader inbox',
+      description: 'check the leader reply after a scheduler wake',
+      toolsUsed: ['coord:inbox'],
+      embedding: seededEmbedding(41),
+      recommendationContext: { harness: 'papercusp' },
+      limit: 10,
+    });
+
+    expect(results.find((row) => row.id === 'stale-coordination-cursor')).toBeUndefined();
   });
 });

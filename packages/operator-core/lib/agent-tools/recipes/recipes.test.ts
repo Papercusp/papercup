@@ -17,7 +17,11 @@ import {
   listAllProjectedTools,
   roleScopedToolNames,
 } from '@papercusp/agent-mcp';
-import { recipeRevision } from '../../recipe-authority';
+import {
+  deriveRecipeAuthority,
+  recipeRevision,
+  validateRecipeAuthorityProof,
+} from '../../recipe-authority';
 
 // ── Mocks ────────────────────────────────────────────────────────────────────
 // recipes:run lazy/eagerly imports these; replace so no PG/orchestration runs and
@@ -306,6 +310,32 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     }, mkCtx('worker'));
     const staleBody = JSON.parse((stale as { content: { text: string }[] }).content[0].text);
     expect(staleBody.results[0]).toMatchObject({ ok: false, error: 'authority_stale_revision' });
+  });
+
+  it('fails closed when a coordination recipe hardcodes sender or cursor arguments', async () => {
+    const script = `return await tools.coord.inbox({
+      from: 'su-stale-leader',
+      since_ts: '2026-07-10T16:05:00.000Z',
+    });`;
+    const descriptor = await deriveRecipeAuthority(script);
+
+    expect(descriptor.unresolved).toBe(true);
+    expect(descriptor.unresolvedCause).toEqual({
+      kind: 'volatile-coordination-args',
+      tool: 'coord.inbox',
+      keys: ['from', 'since_ts'],
+    });
+
+    const result = await validateRecipeAuthorityProof({
+      script,
+      updatedAt: '2026-08-12T00:00:00.000Z',
+    });
+    expect(result.ok).toBe(false);
+    if (!result.ok) {
+      expect(result.error).toBe('authority_unresolved');
+      expect(result.reason).toContain('volatile coordination sender/cursor');
+      expect(result.reason).toContain('since_ts');
+    }
   });
 });
 

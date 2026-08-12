@@ -50,6 +50,34 @@ describe('recipe recommendation authority (P-008)', () => {
     });
   });
 
+  it('fails closed for volatile coordination sender and cursor arguments', async () => {
+    const coordinationScript = `return await tools.coord.inbox({
+      from: 'su-stale-leader',
+      since_ts: '2026-07-10T16:05:00.000Z',
+    });`;
+    await expect(deriveRecipeAuthority(coordinationScript)).resolves.toMatchObject({
+      unresolved: true,
+      unresolvedCause: {
+        kind: 'volatile-coordination-args',
+        tool: 'coord.inbox',
+        keys: ['from', 'since_ts'],
+      },
+    });
+    await expect(buildRecipeAuthorityRecommendation({
+      script: coordinationScript,
+      updatedAt: '2026-08-12T00:00:00.000Z',
+      context: { harness: 'papercusp' },
+    })).resolves.toBeNull();
+    await expect(validateRecipeAuthorityProof({
+      script: coordinationScript,
+      updatedAt: '2026-08-12T00:00:00.000Z',
+    })).resolves.toMatchObject({
+      ok: false,
+      error: 'authority_unresolved',
+      reason: expect.stringContaining('volatile coordination sender/cursor'),
+    });
+  });
+
   it('revalidates the stored revision and live entity identity at run time', async () => {
     const updatedAt = '2026-07-13T12:00:00.000Z';
     const proof = {
