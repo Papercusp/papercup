@@ -13,6 +13,40 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveOwnerSessions } from '../../dev-data';
 
+const ownerResolutionSchema = z.object({
+  owner_id: z.string(),
+  sessions: z.array(
+    z.object({
+      source: z.enum(['adv_sessions', 'spawned_agents']),
+      owner_id: z.string(),
+      session_id: z.string().nullable(),
+      omp_thread_id: z.string().nullable(),
+      spawn_id: z.string().nullable(),
+      run_id: z.string().nullable(),
+      agent: z.string().nullable(),
+      role: z.string().nullable(),
+      mode: z.string().nullable(),
+      harness_slug: z.string().nullable(),
+      plan_slug: z.string().nullable(),
+      cwd: z.string().nullable(),
+      status: z.string().nullable(),
+      started_at: z.string().nullable(),
+      ended_at: z.string().nullable(),
+    }),
+  ),
+  activity: z.array(
+    z.object({
+      spawn_id: z.string(),
+      workspace_id: z.string().nullable(),
+      harness_slug: z.string().nullable(),
+      tool_count: z.number().int().nonnegative(),
+      error_count: z.number().int().nonnegative(),
+      started_at: z.string(),
+      ended_at: z.string(),
+    }),
+  ),
+});
+
 export default defineTool({
   name: 'dev:resolve_owner',
   profile: 'engineer',
@@ -32,6 +66,11 @@ export default defineTool({
   args: z.object({
     ownerId: z.string().min(1),
   }),
+  // Keep the lossless object available as MCP structuredContent for programmatic
+  // callers (ptool / MCP clients that request `_meta.structured`). The text body
+  // still goes through the ordinary result door, but a large JSON text block can
+  // otherwise be cut before callers receive the complete owner resolution.
+  result: ownerResolutionSchema,
   async handler(args) {
     const result = await resolveOwnerSessions(args.ownerId);
     return { content: [{ type: 'text', text: JSON.stringify(result) }] };

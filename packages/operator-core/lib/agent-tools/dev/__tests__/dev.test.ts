@@ -127,7 +127,7 @@ describe('dev:build_status', () => {
     );
 
     expect(result.ok).toBe(true);
-    expect(parsePayload(result.response as never)).toEqual({ ...data, flake_suspects: [] });
+    expect(parsePayload(result.result as never)).toMatchObject({ ...data, flake_suspects: [] });
   });
 });
 
@@ -401,6 +401,72 @@ describe('dev:resolve_owner', () => {
     const result = await tool.handler({ ownerId: 'su-5988767d' }, MAKE_CTX());
     expect(mock).toHaveBeenCalledWith('su-5988767d');
     expect(parsePayload(result as never)).toEqual(resolution);
+  });
+
+  it('advertises an object result and preserves a large resolution in structuredContent', async () => {
+    const resolution = {
+      owner_id: 'su-ended',
+      sessions: Array.from({ length: 50 }, (_, i) => ({
+        source: i % 2 === 0 ? 'adv_sessions' : 'spawned_agents',
+        owner_id: 'su-ended',
+        session_id: `session-${i}`,
+        omp_thread_id: i % 2 === 0 ? `omp-${i}` : null,
+        spawn_id: i % 2 === 0 ? null : `spawn-${i}`,
+        run_id: i % 2 === 0 ? null : `run-${i}`,
+        agent: i % 2 === 0 ? 'codex' : null,
+        role: 'debugger',
+        mode: i % 2 === 0 ? 'console' : null,
+        harness_slug: i % 2 === 0 ? null : 'papercusp',
+        plan_slug: 'nonp2p-bug-drain-headless-0812',
+        cwd: `/tmp/${'x'.repeat(220)}`,
+        status: i % 2 === 0 ? null : 'done',
+        started_at: '2026-08-12T09:00:00.000Z',
+        ended_at: '2026-08-12T10:00:00.000Z',
+      })),
+      activity: Array.from({ length: 100 }, (_, i) => ({
+        spawn_id: `spawn-${i}`,
+        workspace_id: 'default',
+        harness_slug: 'papercusp',
+        tool_count: i + 1,
+        error_count: i % 7 === 0 ? 1 : 0,
+        started_at: '2026-08-12T09:00:00.000Z',
+        ended_at: '2026-08-12T10:00:00.000Z',
+      })),
+    };
+    vi.doMock('../../../dev-data', () => ({ resolveOwnerSessions: vi.fn(async () => resolution) }));
+    await import('../resolve_owner');
+    const { dispatchProjectedTool, lookupByMcpName } = await import('@papercusp/agent-mcp');
+    const projected = lookupByMcpName('dev:resolve_owner');
+    expect(projected).toBeDefined();
+
+    const dispatched = await dispatchProjectedTool(
+      projected!,
+      'dev:resolve_owner',
+      { ownerId: 'su-ended' },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'default',
+        runId: 'resolve-owner-test',
+        role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp',
+        requestedFormat: 'json',
+        requestedStructured: true,
+        tx: vi.fn(async () => []),
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    expect(projected!.outputJsonSchema?.type).toBe('object');
+    expect(dispatched.result?.structuredContent).toMatchObject({ owner_id: 'su-ended' });
+    const structured = dispatched.result?.structuredContent as typeof resolution;
+    expect(structured.sessions).toHaveLength(50);
+    expect(structured.activity).toHaveLength(100);
+    expect(structured.sessions[49]?.cwd).toBe(`/tmp/${'x'.repeat(220)}`);
   });
 });
 
