@@ -339,6 +339,50 @@ export function findLiveHost(
   return null;
 }
 
+/** Why a carry-respawn (session:request-compaction) cannot run for this session.
+ *  These are exactly the two refusal branches request-compaction returns. */
+export type SelfCompactionUnavailableReason = 'no_live_pty_host' | 'host_predates_carry_respawn';
+
+export interface SelfCompactionAvailability {
+  /** Can `session:request-compaction` actually succeed for this owner RIGHT NOW? */
+  available: boolean;
+  /** The refusal request-compaction would return (null when available). */
+  reason: SelfCompactionUnavailableReason | null;
+  /** The resolved host, when one was found (present even when it predates carry-respawn). */
+  host: PsuPtyHost | null;
+}
+
+/**
+ * CAN this session self-compact? (EI-20209826138488049.)
+ *
+ * A carry-respawn is driven THROUGH a psu-pty host, so `session:request-compaction`
+ * refuses in two distinct ways: no live host at all (`no_live_pty_host` — every
+ * headless/autonomous fleet member, which has no psu-hosted TUI), or a live host too
+ * old to carry-respawn (`host_predates_carry_respawn`). Both mean the same thing to a
+ * CALLER deciding whether to RECOMMEND self-compaction: it is not an available
+ * mechanism here.
+ *
+ * This exists so that recommendation and refusal cannot DRIFT. The continuation gate
+ * used to tell every re-wake-less session to self-compact, because the advice was
+ * written against an adjacent-but-different notion ("an agent near its limit should
+ * compact") rather than the predicate the tool actually evaluates. A session with no
+ * host then burned its last turn on a call that could only fail. Both consumers now
+ * evaluate THIS function, so the advice is true by construction rather than by two
+ * places agreeing to stay in sync.
+ */
+export function selfCompactionAvailability(
+  ownerId: string,
+  dir: string = PSU_PTY_DIR,
+  opts: { verifyIdentity?: VerifyPidIdentity } = {},
+): SelfCompactionAvailability {
+  const host = findLiveHost(ownerId, dir, opts);
+  if (!host) return { available: false, reason: 'no_live_pty_host', host: null };
+  if (!hostSupports(host, 'carry-respawn')) {
+    return { available: false, reason: 'host_predates_carry_respawn', host };
+  }
+  return { available: true, reason: null, host };
+}
+
 /**
  * EVERY live psu-pty host on this box (the fleet's interactive sessions), not
  * just one owner's. Same self-validation as findLiveHost (recorded ownerId

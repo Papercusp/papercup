@@ -674,11 +674,25 @@ export default defineTool({
         } catch {
           rewakeGuaranteed = null;
         }
+        // Can this session actually SELF-COMPACT? (EI-20209826138488049.) When the
+        // gate has no guaranteed re-wake it recommends a recovery mechanism, and
+        // recommending self-compaction to a session with no psu-pty host sent it to
+        // spend its LAST turn on a call that can only return no_live_pty_host. Read
+        // the SAME predicate session:request-compaction evaluates — not a correlated
+        // proxy — so advice and refusal cannot disagree. Best-effort; unknown ⇒ null.
+        let selfCompactionAvailable: boolean | null = null;
+        try {
+          const { selfCompactionAvailability } = await import('../../events/await/psu-pty-discovery');
+          selfCompactionAvailable = selfCompactionAvailability(ownerId).available;
+        } catch {
+          selfCompactionAvailable = null;
+        }
         return continuationGateFromReads({
           contextTokens: liveTokens ?? pres?.contextTokens,
           compactionLimit: derivedLimit,
           unreadInbox,
           rewakeGuaranteed,
+          selfCompactionAvailable,
         });
       },
       {

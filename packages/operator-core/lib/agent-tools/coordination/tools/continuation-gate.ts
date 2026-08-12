@@ -102,6 +102,13 @@ export interface ContinuationGateInputs {
    *  null/undefined ⇒ unknown → guidance unchanged (non-breaking for callers
    *  that don't supply it; an interactive session's owner is the guaranteed wake). */
   rewakeGuaranteed?: boolean | null;
+  /** Can this session actually SELF-COMPACT — i.e. would `session:request-compaction`
+   *  succeed (selfCompactionAvailability(ownerId).available)? A carry-respawn is driven
+   *  through a psu-pty host, so a headless/autonomous member has none and the call
+   *  refuses (`no_live_pty_host`); a stale host refuses too (`host_predates_carry_respawn`).
+   *  false ⇒ never prescribe self-compaction — it would spend the session's LAST turn on
+   *  a call that cannot succeed. null/undefined ⇒ unknown (non-breaking). */
+  selfCompactionAvailable?: boolean | null;
 }
 
 export interface ContinuationVerdict {
@@ -114,6 +121,8 @@ export interface ContinuationVerdict {
   unreadInbox: number | null;
   /** The re-wake-guarantee input echoed back (null ⇒ unknown/not supplied). */
   rewakeGuaranteed: boolean | null;
+  /** The self-compaction availability input echoed back (null ⇒ unknown/not supplied). */
+  selfCompactionAvailable: boolean | null;
   /** Why the gate is CLOSED, one phrase per blocking leg (empty ⇒ open). */
   reasons: string[];
   /** One-line agent-facing guidance derived from the verdict. */
@@ -153,6 +162,7 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
 
   const shouldContinue = reasons.length === 0;
   const rewakeGuaranteed = inputs.rewakeGuaranteed ?? null;
+  const selfCompactionAvailable = inputs.selfCompactionAvailable ?? null;
   let guidance = shouldContinue
     ? `continuation gate OPEN (${contextPct}% context, no unread inbox): you MAY run the next unit in this turn IF it is already scoped — but FIRST flush (every held work-item claim checkpointed, P-002). Re-evaluate this gate at the next unit boundary.`
     : `continuation gate CLOSED — settle this turn: ${reasons.join('; ')}. Checkpoint what you hold and end the turn; the next wake re-opens the gate.`;
@@ -161,17 +171,47 @@ export function evaluateContinuationGate(inputs: ContinuationGateInputs): Contin
   // an autonomous session with no armed loop / real await / present owner,
   // "end the turn; the next wake re-opens the gate" is FALSE COMFORT — there is
   // no next wake, so ending here silently HALTS the session. Replace the closing
-  // instruction with the self-compact / arm-a-wake directive. Only fires on an
+  // instruction with an arm-a-wake / self-compact directive. Only fires on an
   // explicit false (unknown/true keeps the base guidance — non-breaking).
+  //
+  // WHICH remedy leads is not cosmetic (EI-20209826138488049). The diagnosed
+  // condition is "no re-wake exists", and `loop:arm` REMOVES that condition,
+  // whereas self-compaction only sidesteps it for one more turn — so arming is
+  // the direct fix and is available to EVERY session. Self-compaction is the
+  // CONDITIONAL one: it is driven through a psu-pty host, so on a headless or
+  // autonomous member it fails (`no_live_pty_host`), and on a stale host it fails
+  // too (`host_predates_carry_respawn`). Prescribing it first sent exactly the
+  // sessions that could not use it to spend their LAST turn discovering that.
   if (!shouldContinue && rewakeGuaranteed === false) {
-    guidance =
+    const opening =
       `continuation gate CLOSED — settle this turn: ${reasons.join('; ')}. ` +
       `⚠ NO guaranteed re-wake (autonomous mode; no armed loop, no registered await, no owner present): ` +
-      `ending the turn now would SILENTLY HALT the session. Do NOT just end it — SELF-COMPACT to continue ` +
-      `(session:request-compaction { autoContinue: true }), or arm a wake first (loop:arm / events:await).`;
+      `ending the turn now would SILENTLY HALT the session. Do NOT just end it — `;
+    const remedy =
+      selfCompactionAvailable === false
+        ? `ARM A WAKE: loop:arm { intervalSec, goal } (or events:await for a real condition). ` +
+          `Self-compaction is NOT available to this session — it has no live psu-pty host able to carry-respawn, ` +
+          `so session:request-compaction would refuse; do not spend your last turn on it.`
+        : selfCompactionAvailable === true
+          ? `ARM A WAKE first — loop:arm { intervalSec, goal } / events:await — which is what makes settling safe; ` +
+            `or SELF-COMPACT to continue on fresh context (session:request-compaction), which this session CAN do.`
+          : `ARM A WAKE: loop:arm { intervalSec, goal } / events:await — always available, and the direct remedy ` +
+            `for the missing re-wake. Self-compaction (session:request-compaction) also continues the work, but it ` +
+            `requires a live psu-pty host and refuses with no_live_pty_host on a session that has none.`;
+    guidance = opening + remedy;
   }
 
-  return { shouldContinue, ceilingPct, contextPct, contextHeadroom, unreadInbox, rewakeGuaranteed, reasons, guidance };
+  return {
+    shouldContinue,
+    ceilingPct,
+    contextPct,
+    contextHeadroom,
+    unreadInbox,
+    rewakeGuaranteed,
+    selfCompactionAvailable,
+    reasons,
+    guidance,
+  };
 }
 
 /** Convenience: build the gate inputs from raw presence + inbox reads (the shape
@@ -183,11 +223,13 @@ export function continuationGateFromReads(args: {
   unreadInbox: number | null | undefined;
   ceilingPct?: number;
   rewakeGuaranteed?: boolean | null;
+  selfCompactionAvailable?: boolean | null;
 }): ContinuationVerdict {
   return evaluateContinuationGate({
     contextPct: contextUsagePct(args.contextTokens, args.compactionLimit),
     unreadInbox: args.unreadInbox,
     ceilingPct: args.ceilingPct,
     rewakeGuaranteed: args.rewakeGuaranteed,
+    selfCompactionAvailable: args.selfCompactionAvailable,
   });
 }
