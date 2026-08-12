@@ -44,6 +44,7 @@ import { randomUUID } from 'node:crypto';
 import { resumeCommandFor, wakeTurnText } from '../../../packages/operator-core/lib/events/await/wake-executor';
 import type { DeliveryWork } from '../../../packages/operator-core/lib/events/await/types';
 import { writeInteractiveClaudeConfig } from '../../../packages/operator-core/lib/interactive-claude-config';
+import { tagTurnForInjection } from '../../../packages/operator-core/lib/turn-provenance/turn-provenance';
 
 // A cheap model keeps the smoke's ~4 real turns near-free. Override via env.
 const CLAUDE_MODEL = process.env.PAPERCUSP_SMOKE_MODEL || 'claude-haiku-4-5-20251001';
@@ -78,6 +79,12 @@ function jsonlLines(file: string): number {
   } catch {
     return 0;
   }
+}
+
+/** Enroll the exact prompt bytes before handing them to a real CLI. */
+function tagSmokeTurn(sid: string, text: string, dir: string): string | null {
+  const tagged = tagTurnForInjection({ sid, origin: 'resume-smoke', text, dir });
+  return tagged.ledgerWritten ? tagged.taggedText : null;
 }
 
 /** Find `<root>/**​/<needle>` (first match) — claude hashes cwd into the projects
@@ -125,16 +132,25 @@ function claudeLeg(): Leg {
   const sessionId = randomUUID(); // forced native session id (claude --session-id)
   const { configDir } = writeInteractiveClaudeConfig({ sid }); // the real EI-155 dir
   const cwd = mkdtempSync(join(tmpdir(), 'resume-smoke-claude-'));
-  const env = { ...process.env, CLAUDE_CONFIG_DIR: configDir };
+  const provenanceDir = mkdtempSync(join(tmpdir(), 'resume-smoke-provenance-'));
+  const env = {
+    ...process.env,
+    CLAUDE_CONFIG_DIR: configDir,
+    PAPERCUSP_TURN_PROVENANCE_DIR: provenanceDir,
+  };
 
   try {
     // 1. Fresh launch: force --session-id so resume can target it EXACTLY (the
     //    same flag the launcher's suLaunchArgs forces, plus headless -p).
     log('  claude: launching a fresh session (forced --session-id)…');
+    const launchText = tagSmokeTurn(sid, 'Reply with the single word READY.', provenanceDir);
+    if (!launchText) {
+      return { agent: 'claude', status: 'fail', detail: 'turn-provenance ledger write failed before fresh launch' };
+    }
     const launch = run(
       'claude',
       ['--session-id', sessionId, '-p', '--dangerously-skip-permissions', '--permission-mode', 'bypassPermissions',
-        '--model', CLAUDE_MODEL, 'Reply with the single word READY.'],
+        '--model', CLAUDE_MODEL, launchText],
       { cwd, env },
     );
     if (launch.code !== 0) {
@@ -152,13 +168,17 @@ function claudeLeg(): Leg {
     //    would inject for an always-armed inbox-wake fired by a directed
     //    coord:send {wake:true}, so this leg proves the message-bearing wake
     //    renders in the woken session's transcript, not just that resume works.
-    const wakeText = wakeTurnText({
+    const wakePayload = wakeTurnText({
       id: 9001,
       eventKey: `coord:inbox-wake:${sid}`,
       note: 'always-armed inbox-wake (resume-spawn-live P-009 rung)',
       summary: 'coord:send wake-rung ping — read your inbox',
       payload: null,
     } as DeliveryWork) + ' Reply with the single word AGAIN.';
+    const wakeText = tagSmokeTurn(sid, wakePayload, provenanceDir);
+    if (!wakeText) {
+      return { agent: 'claude', status: 'fail', detail: 'turn-provenance ledger write failed before resume' };
+    }
     const cmd = resumeCommandFor({ agent: 'claude', sessionId, ompThreadId: null }, wakeText);
     if (!cmd) return { agent: 'claude', status: 'fail', detail: 'resumeCommandFor returned null for a claude session with a sessionId' };
     log(`  claude: resuming via \`${cmd.bin} ${cmd.args.filter((a) => a !== wakeText).join(' ')} <wake-turn-text>\``);
@@ -183,6 +203,7 @@ function claudeLeg(): Leg {
   } finally {
     rmSync(configDir, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
+    rmSync(provenanceDir, { recursive: true, force: true });
   }
 }
 
