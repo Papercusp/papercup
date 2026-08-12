@@ -77,6 +77,27 @@ describe('ptool result formatting', () => {
     })).toBe('{"items":[{"id":"P-001"}]}');
   });
 
+  it('fails loudly instead of emitting a result-door-truncated JSON prefix', () => {
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      const result = {
+        content: [{
+          type: 'text',
+          text: '{"items":[{"id":"P-001"},\n[result-door: this result exceeded the token budget and was truncated.',
+        }],
+      };
+      expect(printResult(result, { raw: true })).toBe(1);
+      expect(log).not.toHaveBeenCalled();
+      expect(error).toHaveBeenCalledWith(
+        'ptool: operator result was truncated before a complete JSON payload; narrow the query before piping to jq',
+      );
+    } finally {
+      log.mockRestore();
+      error.mockRestore();
+    }
+  });
+
   it('keeps appended advisory content off raw stdout so jq can parse the payload', () => {
     const result = {
       content: [

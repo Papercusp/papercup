@@ -422,6 +422,23 @@ export function resultToText(result, { raw = false } = {}) {
   return contentText;
 }
 
+/**
+ * The result door can splice its truncation notice into a text block before
+ * ptool sees it. That leaves a JSON-looking prefix which is not a document;
+ * never let that prefix reach a machine-readable stdout stream.
+ */
+const RESULT_DOOR_TRUNCATION_RE = /\[result-door:[\s\S]{0,2000}\btruncated\b/i;
+
+function isInvalidTruncatedJson(text) {
+  if (!RESULT_DOOR_TRUNCATION_RE.test(text)) return false;
+  try {
+    JSON.parse(text);
+    return false;
+  } catch {
+    return true;
+  }
+}
+
 /* ─── runtime (impure) ────────────────────────────────────────────────── */
 
 function readToken() {
@@ -702,6 +719,12 @@ export function printResult(result, { raw }) {
   if (result?.isError) {
     console.error('✗ tool returned an error:');
     console.error(raw ? safeText : prettyText(safeText));
+    return 1;
+  }
+  if (raw && isInvalidTruncatedJson(safeText)) {
+    console.error(
+      'ptool: operator result was truncated before a complete JSON payload; narrow the query before piping to jq',
+    );
     return 1;
   }
   console.log(raw ? safeText : prettyText(safeText));
