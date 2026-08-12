@@ -22,7 +22,7 @@ import { getOrgPg } from '@papercusp/db-org';
 import type { OrgSql } from './work-items';
 import { assertScopeWellFormed, harnessScope, harnessOfScope } from './work-item-scope';
 import { resolveWorkItemPot } from './pot-membership';
-import { ISSUE_TERMINAL_STATES } from './work-item-dispatch-states';
+import { ANY_FAMILY_TERMINAL_STATES, ISSUE_TERMINAL_STATES } from './work-item-dispatch-states';
 import { neutralizeToolCallTags } from './text-safety';
 import {
   PgTaggableStore,
@@ -946,6 +946,46 @@ export interface ListIssuesFilter {
   createdBy?: string;
   /** ISO timestamp — rows created STRICTLY after it. Pairs with {@link createdBy}. */
   createdAfter?: string;
+  /**
+   * WI-38339 — `state` as a SET, for the question a single-valued `state` cannot ask.
+   * Measured over 7d of real agent SQL on this box: 46 hand-written statements filtered
+   * `state`/`status` with IN / NOT IN, and the dominant one is "everything not terminal"
+   * (`status NOT IN ('done','resolved',…)`) — unanswerable one value at a time, so agents
+   * hand-write the query forever. Empty array = no filter (never "match nothing"): an
+   * empty IN-list would silently return zero rows, which reads as a real answer.
+   *
+   * ANDs with {@link state} when both are passed (`state` stays the single-value form for
+   * every existing caller); use {@link notTerminal} for the negated set.
+   */
+  states?: readonly string[];
+  /**
+   * WI-38339 — the "everything still live" shorthand: excludes every state terminal in
+   * EITHER family. DERIVED from {@link ANY_FAMILY_TERMINAL_STATES}, never re-listed here:
+   * that constant's own doc records why (EI-18653071581558556 — hand-copied terminal sets
+   * drifted, and since every consumer reads "not in the set ⇒ still active", finished work
+   * was scored as stranded; ~88% of one live report was phantoms). Uses the cross-family
+   * UNION rather than the issue-only set on purpose — a row carrying the other dialect's
+   * terminal spelling is exactly the drift case this must not miss.
+   */
+  notTerminal?: boolean;
+  /**
+   * WI-38339 — INCLUSIVE created/updated window (`>=`), matching `plans:list`'s
+   * established `createdSince`/`updatedSince` (plans/source.ts uses `created_at >= …`).
+   *
+   * ⚠ Deliberately NOT folded into {@link createdAfter}, which is EXCLUSIVE (`>`).
+   * Re-pointing that field at `>=` would silently move an existing caller's boundary,
+   * and mapping the new inclusive arg onto the exclusive column predicate would make one
+   * `work_items:list` call apply different boundary semantics per family — the sort of
+   * quiet inconsistency that is unfalsifiable from the result.
+   */
+  createdSince?: string;
+  /** ISO timestamp — rows updated at or after it (INCLUSIVE). See {@link createdSince}. */
+  updatedSince?: string;
+  /**
+   * WI-38339 — "what work came out of this plan", currently unanswerable without raw SQL
+   * (37 hand-written statements over the 7d window). Both relations carry the column.
+   */
+  sourcePlanSlug?: string;
   /** Learning-signal provenance allowlist (frontier P-002/D-002). Omit = NO origin
    *  filter (the generic work-item surface shows everything); the LEARNING read
    *  seam (read-items.ts) is what defaults to organic-only. */
@@ -1154,6 +1194,42 @@ function issueIdsWhereSql(sql: OrgSql, aliased: boolean, ids: readonly string[])
 }
 
 /**
+ * WI-38339 — the SHAPE filters (state SET / notTerminal / created+updated window /
+ * source plan) as ONE fragment, so `listIssues` and every COUNT companion apply a
+ * byte-identical predicate.
+ *
+ * A single shared builder rather than the predicate written out at each site, because
+ * these filters land at EIGHT call sites here (listIssues, countIssues ×2,
+ * countIssuesByState ×2, countObservationsByKind ×2, plus the aliased topic-join
+ * variants) and the WI-5512 parity rule already governs them: a predicate applied to a
+ * list but missed by its count makes "N of TOTAL" quietly wrong — the numerator honest,
+ * the denominator not. Hand-repeating four new predicates across eight sites is a
+ * coin-flip per site, and the failure is SILENT (a plausible number, never an error).
+ *
+ * `aliased` selects the `ei.`-prefixed column form used inside the topic-joined
+ * subqueries, matching {@link issueIdsWhereSql} / {@link issueAdmissibleWhereSql}.
+ *
+ * Returns `TRUE` when no shape filter is set, so a call site can AND it unconditionally.
+ */
+export function issueShapeWhereSql(sql: OrgSql, aliased: boolean, filter: ListIssuesFilter) {
+  const col = (c: string) => sql.unsafe(aliased ? `ei.${c}` : c);
+  // An EMPTY `states` array is NO filter, never "match nothing": `= ANY('{}')` is false for
+  // every row, so an empty list would return zero rows — indistinguishable from a genuine
+  // empty result, which is the failure direction a caller cannot detect.
+  const states = filter.states && filter.states.length > 0 ? filter.states : null;
+  return sql`
+    ${states ? sql`${col('state')} = ANY(${states as string[]}::text[])` : sql`TRUE`}
+    AND ${
+      filter.notTerminal
+        ? sql`NOT (${col('state')} = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))`
+        : sql`TRUE`
+    }
+    AND ${filter.createdSince ? sql`${col('created_at')} >= ${filter.createdSince}::timestamptz` : sql`TRUE`}
+    AND ${filter.updatedSince ? sql`${col('updated_at')} >= ${filter.updatedSince}::timestamptz` : sql`TRUE`}
+    AND ${filter.sourcePlanSlug ? sql`${col('source_plan_slug')} = ${filter.sourcePlanSlug}` : sql`TRUE`}`;
+}
+
+/**
  * WI-37827: exported ONLY so the runtime equivalence guard
  * (`issue-admissible-branch-equivalence.integration.test.ts`) can evaluate the real
  * fragment each column form returns against real rows, rather than regexing the SQL
@@ -1355,6 +1431,7 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
        AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
        AND ${filter.createdBy ? sql`created_by = ${filter.createdBy}` : sql`TRUE`}
        AND ${filter.createdAfter ? sql`created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
+       AND ${issueShapeWhereSql(sql, false, filter)}
        AND ${filter.issueIds ? issueIdsWhereSql(sql, false, filter.issueIds) : sql`TRUE`}
        AND ${filter.topic ? sql`issue_id IN (SELECT src_ref FROM tagged)` : sql`TRUE`}
        AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, false) : sql`TRUE`}
@@ -1424,6 +1501,7 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
          AND ${filter.signalOrigins ? sql`ei.signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
          AND ${filter.createdBy ? sql`ei.created_by = ${filter.createdBy}` : sql`TRUE`}
          AND ${filter.createdAfter ? sql`ei.created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
+         AND ${issueShapeWhereSql(sql, true, filter)}
          AND ${filter.issueIds ? issueIdsWhereSql(sql, true, filter.issueIds) : sql`TRUE`}
          AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, true) : sql`TRUE`}
          AND ${
@@ -1455,6 +1533,7 @@ export async function countIssues(filter: ListIssuesFilter = {}): Promise<number
        AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
        AND ${filter.createdBy ? sql`created_by = ${filter.createdBy}` : sql`TRUE`}
        AND ${filter.createdAfter ? sql`created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
+       AND ${issueShapeWhereSql(sql, false, filter)}
        AND ${filter.issueIds ? issueIdsWhereSql(sql, false, filter.issueIds) : sql`TRUE`}
        AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, false) : sql`TRUE`}
        AND ${
@@ -1519,6 +1598,7 @@ export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise
          AND ${filter.signalOrigins ? sql`ei.signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
          AND ${filter.createdBy ? sql`ei.created_by = ${filter.createdBy}` : sql`TRUE`}
          AND ${filter.createdAfter ? sql`ei.created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
+         AND ${issueShapeWhereSql(sql, true, filter)}
          AND ${filter.issueIds ? issueIdsWhereSql(sql, true, filter.issueIds) : sql`TRUE`}
          AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, true) : sql`TRUE`}
          AND ${
@@ -1549,6 +1629,7 @@ export async function countIssuesByState(filter: ListIssuesFilter = {}): Promise
          AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
          AND ${filter.createdBy ? sql`created_by = ${filter.createdBy}` : sql`TRUE`}
          AND ${filter.createdAfter ? sql`created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
+         AND ${issueShapeWhereSql(sql, false, filter)}
          AND ${filter.issueIds ? issueIdsWhereSql(sql, false, filter.issueIds) : sql`TRUE`}
          AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, false) : sql`TRUE`}
          AND ${
@@ -1606,6 +1687,7 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
          AND ${filter.signalOrigins ? sql`ei.signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
          AND ${filter.createdBy ? sql`ei.created_by = ${filter.createdBy}` : sql`TRUE`}
          AND ${filter.createdAfter ? sql`ei.created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
+         AND ${issueShapeWhereSql(sql, true, filter)}
          AND ${filter.issueIds ? issueIdsWhereSql(sql, true, filter.issueIds) : sql`TRUE`}
          AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, true) : sql`TRUE`}
          AND ${
@@ -1647,6 +1729,7 @@ export async function countObservationsByKind(filter: ListIssuesFilter = {}): Pr
        AND ${filter.signalOrigins ? sql`signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
        AND ${filter.createdBy ? sql`created_by = ${filter.createdBy}` : sql`TRUE`}
        AND ${filter.createdAfter ? sql`created_at > ${filter.createdAfter}::timestamptz` : sql`TRUE`}
+       AND ${issueShapeWhereSql(sql, false, filter)}
        AND ${filter.issueIds ? issueIdsWhereSql(sql, false, filter.issueIds) : sql`TRUE`}
        AND ${filter.admissibleOnly ? issueAdmissibleWhereSql(sql, false) : sql`TRUE`}
        AND ${
