@@ -26,7 +26,7 @@
  * produced by a different embedder than the active one", so an interrupted run
  * simply resumes. Re-running after completion is a no-op.
  */
-import { fileURLToPath } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import path from 'node:path';
 import { statSync } from 'node:fs';
 
@@ -69,6 +69,19 @@ function predicateChangedSinceBoot() {
   } catch {
     return null; // unreadable ⇒ cannot claim staleness; say nothing rather than guess
   }
+}
+
+/**
+ * Decide what a completed pass means without conflating an empty pass under a
+ * stale module with a genuinely drained current predicate. Keeping this as a
+ * pure seam makes the false-DONE guard executable in a unit test without
+ * starting the database-backed driver.
+ */
+export function classifyPass({ embedded, changedAt, nowMs, bootMs, maxRuntimeMs }) {
+  if (embedded === 0 && changedAt != null) return 'stale';
+  if (embedded === 0) return 'done';
+  if (nowMs - bootMs > maxRuntimeMs) return 'budget';
+  return 'continue';
 }
 
 // Drain-to-empty ceiling. Far above the largest target (session_turns ~331k)
@@ -127,21 +140,30 @@ async function main() {
       .join(' ');
     log(`pass ${pass}: embedded=${embedded} failed=${failed} in ${secs}s  ${perTable}`);
 
-    if (embedded === 0) {
-      const changedAt = predicateChangedSinceBoot();
-      if (changedAt) {
-        log(
-          `⚠ NOT DONE — a full pass embedded nothing, but embed-backfill.ts changed on disk at ` +
-            `${new Date(changedAt).toISOString()}, AFTER this process imported it at ` +
-            `${new Date(BOOT_MS).toISOString()}. ESM cached the OLD module, so "nothing left" is ` +
-            `true only under the predicate as it was at boot. Rows made eligible by the newer ` +
-            `predicate are INVISIBLE to this process and are NOT embedded. ` +
-            `RE-RUN this driver to sweep under current code. ` +
-            `(total embedded this run = ${grandTotal})`,
-        );
-        process.exitCode = 3;
-        return;
-      }
+    const changedAt = embedded === 0 ? predicateChangedSinceBoot() : null;
+    const outcome = classifyPass({
+      embedded,
+      changedAt,
+      nowMs: Date.now(),
+      bootMs: BOOT_MS,
+      maxRuntimeMs: MAX_RUNTIME_MS,
+    });
+
+    if (outcome === 'stale') {
+      log(
+        `⚠ NOT DONE — a full pass embedded nothing, but embed-backfill.ts changed on disk at ` +
+          `${new Date(changedAt).toISOString()}, AFTER this process imported it at ` +
+          `${new Date(BOOT_MS).toISOString()}. ESM cached the OLD module, so "nothing left" is ` +
+          `true only under the predicate as it was at boot. Rows made eligible by the newer ` +
+          `predicate are INVISIBLE to this process and are NOT embedded. ` +
+          `RE-RUN this driver to sweep under current code. ` +
+          `(total embedded this run = ${grandTotal})`,
+      );
+      process.exitCode = 3;
+      return;
+    }
+
+    if (outcome === 'done') {
       log(
         `DONE — a full pass embedded nothing, and embed-backfill.ts is unchanged since boot ` +
           `(${new Date(BOOT_MS).toISOString()}), so this is DONE under the CURRENT predicate. ` +
@@ -150,7 +172,7 @@ async function main() {
       return;
     }
 
-    if (Date.now() - BOOT_MS > MAX_RUNTIME_MS) {
+    if (outcome === 'budget') {
       log(
         `stopping at the ${Math.round(MAX_RUNTIME_MS / 60000)}min code-freshness budget with work ` +
           `still to do — a longer-lived process would keep sweeping under an increasingly stale ` +
@@ -163,7 +185,13 @@ async function main() {
   log(`stopped at MAX_PASSES=${MAX_PASSES}; total embedded this run = ${grandTotal} (re-run to continue)`);
 }
 
-main().catch((e) => {
-  log('fatal:', e?.stack ?? e);
-  process.exitCode = 1;
-});
+const invokedScript = process.argv[1]
+  ? import.meta.url === pathToFileURL(path.resolve(process.argv[1])).href
+  : false;
+
+if (invokedScript) {
+  main().catch((e) => {
+    log('fatal:', e?.stack ?? e);
+    process.exitCode = 1;
+  });
+}
