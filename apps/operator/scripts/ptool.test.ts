@@ -3,6 +3,8 @@ import {
   callToolWithPressureRetry,
   buildMcpUrl,
   resolveContextTier,
+  resolveTokenPath,
+  resolveTokenPaths,
   formatToolCallFailure,
   isLoopPressureShed,
   printResult,
@@ -36,6 +38,36 @@ describe('ptool MCP identity binding', () => {
     expect(resolveContextTier({ env: { NODE_ENV: 'test', PAPERCUSP_CONTEXT_TIER: ' full ' } })).toBe('full');
     expect(buildMcpUrl('http://127.0.0.1:3170', { contextTier: 'full' }).searchParams.get('ctx_tier'))
       .toBe('full');
+  });
+});
+
+describe('ptool bearer-token resolution', () => {
+  it('keeps explicit and environment token overrides authoritative', () => {
+    const env = {
+      PAPERCUSP_MCP_TOKEN_FILE: '/run/papercusp/explicit-token',
+      PAPERCUSP_HOME: '/home/tester/.papercusp-workspaces/demo/.papercusp',
+    };
+
+    expect(resolveTokenPaths({
+      tokenFile: '/tmp/cli-token',
+      env,
+      home: '/home/tester',
+    })).toEqual(['/tmp/cli-token']);
+    expect(resolveTokenPaths({ env, home: '/home/tester' }))
+      .toEqual(['/run/papercusp/explicit-token']);
+  });
+
+  it('falls back to the shared host token when an isolated workspace token is absent', () => {
+    const env = {
+      PAPERCUSP_HOME: '/home/tester/.papercusp-workspaces/demo/.papercusp',
+    };
+    const paths = resolveTokenPaths({ env, home: '/home/tester' });
+
+    expect(paths).toEqual([
+      '/home/tester/.papercusp-workspaces/demo/.papercusp/superuser-token',
+      '/home/tester/.papercusp/superuser-token',
+    ]);
+    expect(resolveTokenPath({ env, home: '/home/tester' })).toBe(paths[0]);
   });
 });
 

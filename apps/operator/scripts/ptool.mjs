@@ -597,36 +597,48 @@ function isInvalidTruncatedJson(text) {
 
 /* ─── runtime (impure) ────────────────────────────────────────────────── */
 
-/** Resolve the bearer-token file in precedence order. Pure and injectable for
- * tests: an explicit CLI path wins over the environment, then the isolated
- * `PAPERCUSP_HOME` root used by packaged operators, then the normal per-home
- * token. */
-export function resolveTokenPath({ tokenFile = null, env = process.env, home = homedir() } = {}) {
+/** Resolve the bearer-token files in precedence order. Pure and injectable for
+ * tests: an explicit CLI path wins over the environment. When an isolated
+ * `PAPERCUSP_HOME` is configured, its token is preferred, but the normal
+ * per-home token remains a fallback when the isolated file is absent. A su
+ * session can carry the workspace-scoped HOME even though the shared
+ * superuser bearer still lives at `~/.papercusp/superuser-token` (EI-202457).
+ */
+export function resolveTokenPaths({ tokenFile = null, env = process.env, home = homedir() } = {}) {
   const explicit = typeof tokenFile === 'string' ? tokenFile.trim() : '';
-  if (explicit) return explicit;
+  if (explicit) return [explicit];
 
   const fromEnv = typeof env?.PAPERCUSP_MCP_TOKEN_FILE === 'string'
     ? env.PAPERCUSP_MCP_TOKEN_FILE.trim()
     : '';
-  if (fromEnv) return fromEnv;
+  if (fromEnv) return [fromEnv];
 
   // Packaged and isolated operators set PAPERCUSP_HOME to the directory that
   // owns operator.json, embedded-pg.json, and superuser-token. Falling back to
   // homedir() here sends the host user's token to an isolated endpoint, which
   // is rejected as superuser_invalid_bearer even though the endpoint is live.
   const isolatedHome = typeof env?.PAPERCUSP_HOME === 'string' ? env.PAPERCUSP_HOME.trim() : '';
-  if (isolatedHome) return join(isolatedHome, 'superuser-token');
+  const isolated = isolatedHome ? join(isolatedHome, 'superuser-token') : null;
+  const shared = join(home, '.papercusp', 'superuser-token');
+  return isolated && isolated !== shared ? [isolated, shared] : [shared];
+}
 
-  return join(home, '.papercusp', 'superuser-token');
+/** Resolve the first bearer-token candidate for callers that need one path. */
+export function resolveTokenPath(options = {}) {
+  return resolveTokenPaths(options)[0];
 }
 
 function readToken({ tokenFile = null, env = process.env, home = homedir() } = {}) {
-  const tokenPath = resolveTokenPath({ tokenFile, env, home });
-  try {
-    return readFileSync(tokenPath, 'utf8').trim();
-  } catch {
-    return '';
+  for (const tokenPath of resolveTokenPaths({ tokenFile, env, home })) {
+    try {
+      const token = readFileSync(tokenPath, 'utf8').trim();
+      if (token) return token;
+    } catch {
+      // Try the next candidate. The isolated workspace token is optional for
+      // sessions whose shared superuser bearer is still in the host home.
+    }
   }
+  return '';
 }
 
 /** Build the `tools/call` params for a ptool invocation. Pure and exported so
@@ -832,10 +844,10 @@ export function buildMcpUrl(operatorUrl, {
 async function connect(operatorUrl, { workspace, harness, tokenFile } = {}, { timeoutMs } = {}) {
   const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
   const { StreamableHTTPClientTransport } = await import('@modelcontextprotocol/sdk/client/streamableHttp.js');
-  const tokenPath = resolveTokenPath({ tokenFile });
+  const tokenPaths = resolveTokenPaths({ tokenFile });
   const token = readToken({ tokenFile });
   if (!token) {
-    throw new Error(`no superuser token at ${tokenPath} — is the operator installed? (run apps/operator/scripts/install-standalone-mcp.sh)`);
+    throw new Error(`no superuser token at ${tokenPaths.join(' or ')} — is the operator installed? (run apps/operator/scripts/install-standalone-mcp.sh)`);
   }
   const url = buildMcpUrl(operatorUrl, {
     workspace: resolveWorkspaceScope({ workspace }),
