@@ -1652,12 +1652,21 @@ export function startSupervisorBeat(ownerId: any, { fetchImpl, intervalMs, opera
  * deployed (an older release 404s) — is swallowed: end-stamping is telemetry,
  * never a reason to hold the user's terminal open. Exported with injectables
  * for tests. Never rejects.
+ *
+ * @param {number|string|null} advSessionId  the adv_sessions PK to stamp
+ * @param {number|null|undefined} exitCode   the child's exit code (null when unknown)
+ * @param {{ fetchImpl?: typeof fetch, operatorUrl?: string, token?: string|null,
+ *           timeoutMs?: number, killedBySignal?: string|null }} [opts]
+ *   `killedBySignal` is the signal NAME that killed the child, or null for a voluntary
+ *   exit. The server derives `ended_by` from it (WI-38054); omitting it makes every kill
+ *   record as a clean self-reported exit.
  */
-export function reportSessionEnded(advSessionId: any, exitCode: any, { fetchImpl, operatorUrl, token, timeoutMs }?: {
-    fetchImpl?: typeof fetch | undefined;
-    operatorUrl?: any;
-    token?: null | undefined;
-    timeoutMs?: number | undefined;
+export function reportSessionEnded(advSessionId: number | string | null, exitCode: number | null | undefined, { fetchImpl, operatorUrl, token, timeoutMs, killedBySignal, }?: {
+    fetchImpl?: typeof fetch;
+    operatorUrl?: string;
+    token?: string | null;
+    timeoutMs?: number;
+    killedBySignal?: string | null;
 }): Promise<void>;
 /**
  * Best-effort "my session RESUMED" report — the inverse of reportSessionEnded.
