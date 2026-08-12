@@ -33,6 +33,7 @@ import { anchorManualDoc } from '../../harness/docs/manual-anchor';
 import { applyProjectionBanner } from '../../harness/docs/authored-doc-projection';
 import { getAuthoredDocContent } from '../../harness/docs/doc-record';
 import { resolveHarnessScope, isEngineeringDocsSentinel } from '../_harness-scope';
+import { invalidateEngineeringAdapter } from './_engineering-adapter';
 
 // ── Pure helpers (exported for unit tests — these encode the footgun-prevention) ──
 
@@ -538,6 +539,7 @@ export default defineTool({
     try {
       await fs.mkdir(dirname(abs), { recursive: true });
       await fs.writeFile(abs, applyProjectionBanner(content, docId), 'utf8');
+      if (harnessRes.engineering) invalidateEngineeringAdapter();
     } catch (e) {
       warnings.push(
         `the doc is saved (Postgres is canonical) but its .mdx projection failed to write (${(e as Error).message}) — ` +

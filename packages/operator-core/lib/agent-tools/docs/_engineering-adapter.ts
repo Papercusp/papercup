@@ -21,3 +21,12 @@ export const engineeringAdapter: DocSource = starlightContentAdapter({
   contentRoot: DOCS_CONTENT_ROOT,
   baseUrl: '/internal/docs',
 });
+
+/**
+ * docs:author projects the canonical row into this adapter's source tree. The
+ * adapter is a process-lifetime singleton for read performance, so the author
+ * must drop its page + rendered-body caches after a successful write.
+ */
+export function invalidateEngineeringAdapter(): void {
+  (engineeringAdapter as DocSource & { invalidate?: () => void }).invalidate?.();
+}

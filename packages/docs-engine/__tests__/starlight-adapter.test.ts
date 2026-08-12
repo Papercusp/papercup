@@ -97,6 +97,32 @@ describe('starlightContentAdapter — synthetic fixture', () => {
     expect(body).not.toContain('---');
     expect(body).toContain('Voice');
   });
+
+  it('invalidates cached metadata and rendered content after a projection write', async () => {
+    const src = starlightContentAdapter({ contentRoot: tmp });
+    const file = path.join(tmp, 'agents', 'operator.mdx');
+    const original = await fs.readFile(file, 'utf8');
+    try {
+      const before = await src.getPage('agents/operator');
+      expect(before!.title).toBe('Operator agent');
+      expect(await src.getContent(before!)).toContain('Voice');
+
+      await fs.writeFile(
+        file,
+        `---\ntitle: Updated operator\n---\n\n## Changed\n\nnew body\n`,
+        'utf8',
+      );
+      src.invalidate();
+
+      const after = await src.getPage('agents/operator');
+      expect(after!.title).toBe('Updated operator');
+      expect(await src.getContent(after!)).toContain('Changed');
+      expect(await src.getContent(after!)).not.toContain('Voice');
+    } finally {
+      await fs.writeFile(file, original, 'utf8');
+      src.invalidate();
+    }
+  });
 });
 
 describe('starlightContentAdapter — real operator-docs tree', () => {

@@ -56,11 +56,15 @@ interface StarlightPage extends DocPage {
    * original ~120-page corpus that was fine (search.ts's own comment says
    * so); the corpus has since grown to 600+ pages and a cold search took
    * ~18.7s — right up against docs-qa.test.ts's 30s budget, so it started
-   * timing out under any concurrent host load. Same invalidation lifetime
-   * as `pageCache` below (process-lifetime, never invalidated — this
-   * adapter already assumed the on-disk corpus doesn't change mid-process).
+   * timing out under any concurrent host load. The cache is cleared by
+   * `invalidate()` when a writer updates the on-disk corpus in this process.
    */
   renderedBody?: string;
+}
+
+export interface StarlightContentSource extends DocSource {
+  /** Drop page metadata and rendered-body caches after a source write. */
+  invalidate(): void;
 }
 
 /** Parse YAML-style frontmatter; returns { meta, body } where meta is a flat record. */
@@ -144,13 +148,17 @@ async function walkContent(root: string, maxDepth: number): Promise<string[]> {
   return out;
 }
 
-export function starlightContentAdapter(opts: StarlightContentAdapterOptions): DocSource {
+export function starlightContentAdapter(opts: StarlightContentAdapterOptions): StarlightContentSource {
   const name = opts.name ?? 'starlight';
   const baseUrl = (opts.baseUrl ?? '/internal/docs').replace(/\/$/, '');
   const contentRoot = path.resolve(opts.contentRoot);
   const maxDepth = opts.maxDepth ?? 8;
 
   let pageCache: Map<string, StarlightPage> | null = null;
+
+  function invalidate(): void {
+    pageCache = null;
+  }
 
   async function buildPages(): Promise<Map<string, StarlightPage>> {
     if (pageCache) return pageCache;
@@ -192,6 +200,7 @@ export function starlightContentAdapter(opts: StarlightContentAdapterOptions): D
 
   return {
     name,
+    invalidate,
     async listPages(): Promise<DocPage[]> {
       const cache = await buildPages();
       return [...cache.values()].map(({ absolutePath: _abs, ...page }) => page);
