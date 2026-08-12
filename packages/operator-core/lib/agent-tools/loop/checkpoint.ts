@@ -144,30 +144,23 @@ export default defineTool({
   name: 'loop:checkpoint',
   profile: 'engineer',
   description:
-    "Write (or clear) your su AUTO loop's carry-note — the compressed 'note to my next self' a COLD wake " +
-    '(reset/recycle) rebuilds its working state from; your transcript does NOT survive one. ' +
-    'Pass the structured fields { did, left, insight, next } OR a raw { note }. ' +
-    "Keyed by the loop's ownerId, so a cold successor reads the SAME note. " +
-    'Replace-on-write; blank/null clears — except { walls } (owner-gated) and { checks } ' +
-    '(external-state claims + probes), which render into every wake until you pass []. ' +
-    'Returns { ok, harness, ownerId, cleared, length, verified, contentHash, walls, checks }; ' +
-    'writes are verify-read (checkpoint_verify_failed on a miss).',
+    "Write or clear the su AUTO loop carry-note read by a COLD wake after reset/recycle; " +
+    'the live transcript does not survive. Pass { did, left, insight, next } or raw { note }; ' +
+    'blank/null clears. The note is keyed by ownerId; { walls } and { checks } persist across ' +
+    'rewrites until replaced. Returns { ok, harness, ownerId, cleared, length, verified, ' +
+    'contentHash, walls, checks }; writes verify-read.',
   guidance: {
     when:
-      "Before you end a turn on a COLD loop (carry:'cold'): persist what the next cold wake needs — " +
-      'what you did, what is left, the key non-obvious insight, and the single next action. Keep it COMPRESSED ' +
-      '(facts, not a transcript). Until the first checkpoint exists a cold loop silently stays WARM (P-006 ' +
-      'no-anchor guard), and one that stops checkpointing keeps restarting from a stale note. For provenance-safe ' +
-      'authoring, put a same-line [turn:<session>@<iso-ts>] ref on any owner directive or completed coordination ' +
-      'action, citing the turn where it actually happened; never invent a ref. If the source is not the owner, ' +
-      'say so with [self-imposed], [peer:<sid>], or [inferred] rather than rephrasing it as owner authority.',
+      "At the end of a COLD loop turn, store compressed facts (did, left, insight, next), not a transcript. " +
+      'Add a same-line [turn:<session>@<iso-ts>] ref for owner directives or completed coordination actions; ' +
+      'mark non-owner sources [self-imposed], [peer:<sid>], or [inferred]. Pair with work_items:checkpoint ' +
+      'because a loop note can be lost if the session dies.',
     notWhen:
-      "A WARM loop (carry:'warm', the default) carries its live transcript across wakes and needs no carry-note. " +
-      'Not for work-item state — that is work_items:checkpoint.',
+      "WARM loops (carry:'warm', the default) carry the live transcript and need no note. " +
+      'Use work_items:checkpoint for work-item state.',
     chaining:
-      "loop:checkpoint { did, left, insight, next } as the last step before ending a cold-loop turn — but it is " +
-      'the WEAKEST continuity write: the carry-note is LOST if your session dies. So also refresh ' +
-      'work_items:checkpoint { id, checkpoint } (a successor INHERITS it) and facts:assert any durable conclusion.',
+      'Use as the last step before a cold-loop turn ends; also refresh work_items:checkpoint for successor ' +
+      'recovery and facts:assert for durable conclusions.',
     seeAlso: [
       "loop:arm (arm the loop; carry:'cold' opts into the cold lifecycle)",
       'loop:status (inspect the loop, incl. carry mode)',
