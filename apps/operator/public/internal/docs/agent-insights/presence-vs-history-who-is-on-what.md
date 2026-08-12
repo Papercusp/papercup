@@ -77,7 +77,7 @@ coord:catch-up { audience: "@topic:federation", token_budget: 8000 }
 
 ```text
 coord:feed { audience: "@fleet:some-other-fleet", limit: 30 }
-coord:feed { q: "green gate", since_ts: "2026-07-01T00:00:00Z" }
+coord:feed { q: "green gate", since: "2026-07-01T00:00:00Z" }
 ```
 
 ## Membership is the join key — and it must outlive death

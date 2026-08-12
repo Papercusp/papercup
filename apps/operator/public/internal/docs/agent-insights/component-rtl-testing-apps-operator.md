@@ -31,7 +31,6 @@ import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 
 let syncResult: { data: unknown[]; loading: boolean };
 vi.mock('@papercusp/sync', () => ({
-  onSyncBusEvent: () => () => {},
   useSyncQuery: () => ({ ...syncResult, error: null, fetching: false, invalidate: vi.fn() }),
 }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } })); // INLINE — see gotcha
