@@ -20,7 +20,9 @@ import {
   resolveShimNode,
   ensureBundledNodeLinked,
   ensureGhLinked,
+  repairPapercuspGitCredentialHelpers,
   ensureAgentClisLinked,
+  type GitConfigRunner,
 } from './papercusp-files';
 
 let tmp: string;
@@ -255,6 +257,82 @@ describe('ensureGhLinked', () => {
     expect(await ensureGhLinked(home, binDir)).toBe(false); // no source this run — leave it alone
     const dest = path.join(binDir, 'gh');
     expect(await fs.realpath(dest)).toBe(await fs.realpath(bundled)); // still the old, still-valid link
+  });
+});
+
+describe('repairPapercuspGitCredentialHelpers (WI-38006)', () => {
+  function inMemoryGitConfig(initial: Record<string, string[]>): {
+    values: Record<string, string[]>;
+    calls: string[][];
+    runner: GitConfigRunner;
+  } {
+    const values = Object.fromEntries(Object.entries(initial).map(([key, helpers]) => [key, [...helpers]]));
+    const calls: string[][] = [];
+    const runner: GitConfigRunner = async (args) => {
+      calls.push([...args]);
+      const operation = args[2];
+      const key = args[3];
+      if (operation === '--get-all') {
+        const helpers = values[key];
+        return helpers
+          ? { code: 0, stdout: `${helpers.join('\n')}\n` }
+          : { code: 1, stdout: '' };
+      }
+      if (operation === '--replace-all') {
+        const replacement = args[4];
+        const matcher = new RegExp(args[5]);
+        values[key] = (values[key] ?? []).map((helper) => (matcher.test(helper) ? replacement : helper));
+        return { code: 0, stdout: '' };
+      }
+      return { code: 2, stdout: '' };
+    };
+    return { values, calls, runner };
+  }
+
+  it('replaces stale helpers for github + gist while preserving blank resets and user helpers', async () => {
+    const home = path.join(tmp, 'home');
+    const binDir = path.join(home, '.papercusp', 'bin');
+    await touch(path.join(binDir, 'gh'));
+    const staleGithub = '!/Applications/Papercusp.app/Contents/Resources/sidecar/bin/gh auth git-credential';
+    const staleGist = '!/Applications/Papercusp GUI.app/Contents/Resources/sidecar/bin/gh auth git-credential';
+    const config = inMemoryGitConfig({
+      'credential.https://github.com.helper': ['', staleGithub, 'osxkeychain'],
+      'credential.https://gist.github.com.helper': ['', staleGist, '!/opt/custom-gh auth git-credential'],
+    });
+    const stable = `!${path.join(binDir, 'gh')} auth git-credential`;
+
+    expect(await repairPapercuspGitCredentialHelpers(home, binDir, config.runner)).toBe(2);
+    expect(config.values['credential.https://github.com.helper']).toEqual(['', stable, 'osxkeychain']);
+    expect(config.values['credential.https://gist.github.com.helper']).toEqual([
+      '',
+      stable,
+      '!/opt/custom-gh auth git-credential',
+    ]);
+  });
+
+  it('is idempotent after an app rename has been reconciled to the stable shim', async () => {
+    const home = path.join(tmp, 'home with spaces');
+    const binDir = path.join(home, '.papercusp', 'bin');
+    await touch(path.join(binDir, 'gh'));
+    const config = inMemoryGitConfig({
+      'credential.https://github.com.helper': [
+        '',
+        '!/Applications/Papercusp Server.app/Contents/Resources/sidecar/bin/gh auth git-credential',
+      ],
+    });
+
+    expect(await repairPapercuspGitCredentialHelpers(home, binDir, config.runner)).toBe(1);
+    expect(await repairPapercuspGitCredentialHelpers(home, binDir, config.runner)).toBe(0);
+    expect(config.calls.filter((args) => args[2] === '--replace-all')).toHaveLength(1);
+  });
+
+  it('does nothing when the stable gh shim is unavailable', async () => {
+    const home = path.join(tmp, 'home');
+    const binDir = path.join(home, '.papercusp', 'bin');
+    const runner = vi.fn<GitConfigRunner>();
+
+    expect(await repairPapercuspGitCredentialHelpers(home, binDir, runner)).toBe(0);
+    expect(runner).not.toHaveBeenCalled();
   });
 });
 

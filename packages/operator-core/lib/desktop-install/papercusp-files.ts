@@ -1682,6 +1682,101 @@ export async function ensureGhLinked(home: string, binDir: string): Promise<bool
   }
 }
 
+interface GitConfigCommandResult {
+  code: number;
+  stdout: string;
+}
+
+export type GitConfigRunner = (args: string[]) => Promise<GitConfigCommandResult>;
+
+const PAPERCUSP_BUNDLE_GH_HELPER =
+  /^!\/Applications\/Papercusp[^/]*\.app\/Contents\/Resources\/sidecar\/bin\/gh auth git-credential$/;
+const GITHUB_CREDENTIAL_HELPER_KEYS = [
+  'credential.https://github.com.helper',
+  'credential.https://gist.github.com.helper',
+] as const;
+
+function gitConfigValues(stdout: string): string[] {
+  const normalized = stdout.replace(/\r\n/g, '\n');
+  if (!normalized) return [];
+  // `git config --get-all` terminates every value with a newline. Remove only
+  // that terminator: an intentional blank helper is represented by `"\n"` and
+  // must remain as `['']`, not disappear.
+  return (normalized.endsWith('\n') ? normalized.slice(0, -1) : normalized).split('\n');
+}
+
+function exactGitConfigValueRegex(value: string): string {
+  return `^${value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`;
+}
+
+async function defaultGitConfigRunner(home: string, args: string[]): Promise<GitConfigCommandResult> {
+  const { execFile } = await import('node:child_process');
+  const { promisify } = await import('node:util');
+  const pexec = promisify(execFile);
+  try {
+    const { stdout } = await pexec('git', args, {
+      encoding: 'utf8',
+      // installPapercuspFiles accepts an explicit home in tests and repair
+      // tooling. Make `--global` target that same user instead of the operator
+      // process's ambient HOME.
+      env: { ...process.env, HOME: home },
+    });
+    return { code: 0, stdout: String(stdout ?? '') };
+  } catch (error: unknown) {
+    const result = error as { code?: number; stdout?: string | Buffer };
+    return {
+      code: typeof result.code === 'number' ? result.code : 1,
+      stdout: String(result.stdout ?? ''),
+    };
+  }
+}
+
+/**
+ * Heal credential helpers written by older Papercusp app bundles (WI-38006).
+ *
+ * `gh auth setup-git` historically wrote the bundle-relative gh path into the
+ * user's global gitconfig. Once `Papercusp.app` was renamed/replaced, Git tried
+ * to execute a path that no longer existed even though ensureGhLinked had
+ * already installed the stable `~/.papercusp/bin/gh` shim.
+ *
+ * This deliberately replaces ONLY exact Papercusp-owned `/Applications/
+ * Papercusp*.app/.../sidecar/bin/gh auth git-credential` values. Blank reset
+ * entries, osxkeychain, and arbitrary user helpers are preserved in place.
+ * Best-effort: a missing stable shim or unavailable git executable is a no-op,
+ * so desktop boot can never fail because credential repair was unavailable.
+ * Returns the number of stale values replaced.
+ */
+export async function repairPapercuspGitCredentialHelpers(
+  home: string,
+  binDir: string,
+  runner?: GitConfigRunner,
+): Promise<number> {
+  const stableGh = path.join(binDir, 'gh');
+  if (!(await pathExists(stableGh))) return 0;
+
+  const run = runner ?? ((args: string[]) => defaultGitConfigRunner(home, args));
+  const stableHelper = `!${stableGh} auth git-credential`;
+  let replaced = 0;
+
+  for (const key of GITHUB_CREDENTIAL_HELPER_KEYS) {
+    const read = await run(['config', '--global', '--get-all', key]);
+    if (read.code !== 0) continue;
+    const staleValues = gitConfigValues(read.stdout).filter((value) => PAPERCUSP_BUNDLE_GH_HELPER.test(value));
+    for (const stale of new Set(staleValues)) {
+      const update = await run([
+        'config',
+        '--global',
+        '--replace-all',
+        key,
+        stableHelper,
+        exactGitConfigValueRegex(stale),
+      ]);
+      if (update.code === 0) replaced += staleValues.filter((value) => value === stale).length;
+    }
+  }
+  return replaced;
+}
+
 /**
  * WI-3334 (dev-source shim gap): the psu/ptool shims `exec node` after
  * `export PATH="$HOME/.local/bin:$PATH"`, expecting node in ~/.local/bin. But a
@@ -2426,6 +2521,10 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   // buildGithubLoginSpec's `gh auth setup-git` bakes a stable, app-rename-proof
   // path into ~/.gitconfig's credential helper instead of an app-bundle path.
   await ensureGhLinked(home, paths.binDir);
+  // Installs predating the stable shim may already have a now-dangling bundle
+  // path baked into ~/.gitconfig. Heal only those Papercusp-owned values; keep
+  // every blank reset and user-configured helper intact.
+  await repairPapercuspGitCredentialHelpers(home, paths.binDir);
 
   // WI-3334: link the bundled node into ~/.local/bin so the psu/ptool shims'
   // `exec node` resolves even when the shim itself fell back to bare `node`
