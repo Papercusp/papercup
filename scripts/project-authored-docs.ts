@@ -19,6 +19,14 @@
  *   node --import tsx scripts/project-authored-docs.ts --ingest     # bootstrap file → PG
  *   node --import tsx scripts/project-authored-docs.ts --write      # project PG → file
  *   node --import tsx scripts/project-authored-docs.ts --check      # CI: corpus == projection
+ *
+ * P-009 (ephemeral corpus) adds two more, and their ORDER matters:
+ *   --retire-orphans            # ONE-TIME: record in PG which rows are dead. Must run
+ *                               # WHILE the corpus is still committed — it reads the
+ *                               # working tree as the oracle, and P-009 destroys it.
+ *   --materialize [--out=DIR]   # build-time: write every LIVE row to DIR. Unlike --write
+ *                               # it does not intersect with existing files, because its
+ *                               # job is to produce a corpus where none is committed.
  */
 import { readFileSync, writeFileSync, existsSync, readdirSync, statSync, mkdirSync } from 'node:fs';
 import { resolve, dirname, join, relative, sep } from 'node:path';
@@ -291,6 +299,74 @@ async function main(): Promise<number> {
     console.log(`  docs root      ${relative(ROOT, docsRoot)}`);
     console.log(`  files          ${fmt(files.length)}`);
     console.log(`  rows           ${fmt(rows.size)} (content_mode='authored')`);
+
+    // ── MODE: --retire-orphans — the ONE-TIME liveness backfill (P-009 step 2) ──────────
+    // Records into PG what only the working tree currently knows: which authored rows are
+    // dead. MUST run while the corpus is still committed. Once P-009 untracks it, every doc
+    // is absent from disk and this mode would retire the ENTIRE corpus — so it refuses to
+    // run when the tree cannot be the oracle, rather than trusting the caller's timing.
+    if (retireOrphans) {
+      const orphans = [...rows.values()].filter((r) => !fileSet.has(r.doc_id));
+      const alreadyRetired = orphans.filter((r) => r.retired_at !== null).length;
+      const toRetire = orphans.filter((r) => r.retired_at === null);
+
+      console.log(`\n  RETIRE ORPHANS (one-time liveness backfill)`);
+      if (files.length === 0) {
+        console.error(`    ✗ REFUSING: zero files on disk, so file-absence proves nothing here.`);
+        console.error(`      This mode reads the WORKING TREE as the oracle for which docs are live.`);
+        console.error(`      An empty tree would retire all ${fmt(rows.size)} rows — the whole corpus.`);
+        return 1;
+      }
+      // A corpus that is mostly orphans means the tree is not a trustworthy oracle either
+      // (a partial checkout, a wrong docs root, a half-finished untrack). Retiring is a
+      // bulk state change that is tedious to reverse, so it refuses rather than guesses.
+      if (orphans.length > files.length) {
+        console.error(`    ✗ REFUSING: ${fmt(orphans.length)} orphan rows exceed ${fmt(files.length)} files on disk.`);
+        console.error(`      That ratio says the tree is not a complete checkout of the corpus.`);
+        return 1;
+      }
+      for (const row of toRetire) {
+        await retireRow(client, row.doc_id, BACKFILL_RETIRE_REASON);
+      }
+      console.log(`    live           ${fmt(files.length)} row(s) have a file and stay live`);
+      console.log(`    retired        ${fmt(toRetire.length)} row(s) had no file and are now marked retired`);
+      if (alreadyRetired) console.log(`    already        ${fmt(alreadyRetired)} row(s) were retired before this run (left untouched)`);
+      console.log(`\n  ✓ liveness is now recorded in Postgres, not inferred from the filesystem.`);
+      return 0;
+    }
+
+    // ── MODE: --materialize — build-time projection of the LIVE corpus (P-009 step 3) ───
+    // Writes every non-retired authored row to `--out=` (default: the real docs root).
+    // Unlike --write, this does NOT intersect with the files that already exist: that is
+    // the entire point, since it must produce a complete corpus where none is committed.
+    if (materialize) {
+      const outRoot = outArg ? resolve(ROOT, outArg) : docsRoot;
+      const live = [...rows.values()].filter((r) => r.retired_at === null);
+      const retired = rows.size - live.length;
+      const tally = { wrote: 0, empty: 0 };
+
+      console.log(`\n  MATERIALIZE (PG → ${relative(ROOT, outRoot) || '.'})`);
+      if (retired === 0 && rows.size > 0) {
+        // Not fatal, but worth saying out loud: before the backfill ran, EVERY row looks
+        // live, so a materialize here would resurrect docs that were deliberately deleted.
+        console.log(`    ⚠ no row is marked retired — if --retire-orphans has not run yet, this`);
+        console.log(`      will write back docs that were deliberately deleted. Run it first.`);
+      }
+      for (const row of live) {
+        if (!row.content) {
+          tally.empty += 1; // an empty row would materialize an empty page
+          continue;
+        }
+        const abs = join(outRoot, row.doc_id);
+        mkdirSync(dirname(abs), { recursive: true });
+        writeFileSync(abs, applyProjectionBanner(row.content, row.doc_id), 'utf8');
+        tally.wrote += 1;
+      }
+      console.log(`    wrote          ${fmt(tally.wrote)} file(s) from live rows`);
+      console.log(`    retired        ${fmt(retired)} row(s) skipped (deliberately removed docs)`);
+      if (tally.empty) console.log(`    empty row      ${fmt(tally.empty)} row(s) hold no content and were skipped`);
+      return 0;
+    }
 
     const orphanRows = [...rows.keys()].filter((id) => !fileSet.has(id));
     const untracked = files.filter((id) => !rows.has(id));
