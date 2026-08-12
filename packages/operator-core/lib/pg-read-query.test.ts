@@ -19,6 +19,8 @@ import {
   buildNativeToolAttributionAdvisory,
   buildSplitCompletionEvidenceAdvisory,
   buildDerivedColumnRedirect,
+  buildToolRoutingAdvisory,
+  TOOL_ROUTING_BY_TABLE,
   buildJsonbPathRedirect,
   buildSchemaColumnRedirect,
   parseMissingColumnName,
@@ -1683,5 +1685,119 @@ describe('buildSplitCompletionEvidenceAdvisory — one evidence surface read as 
     expect(
       buildSplitCompletionEvidenceAdvisory('SELECT terminal_completion_ref FROM harness_shared.harness_plans'),
     ).toBeNull();
+  });
+});
+
+/**
+ * P-001 (sql-escape-tool-routing-2026-08-12) — "a tool already answers this read".
+ *
+ * The behaviour under test is a BALANCE, so both halves are asserted with equal
+ * weight: an advisory that never fires teaches nothing, and one that fires on
+ * the analytic reads `dev:pg_query` exists to serve is noise on a path that
+ * carried ~15.9k calls in 14 days. The silence cases below are therefore the
+ * real specification, not padding.
+ */
+describe('buildToolRoutingAdvisory', () => {
+  it('fires on a plain single-table read of a covered relation', () => {
+    const advisory = buildToolRoutingAdvisory(
+      "SELECT name, active, last_fired_at FROM harness_shared.routines WHERE install_slug = 'papercusp'",
+    );
+    expect(advisory).toContain('routines:list');
+    // It must say what the tool ADDS, not merely that one exists.
+    expect(advisory).toContain('pause');
+  });
+
+  it('names the derived-liveness surface for a raw coord_presence read', () => {
+    const advisory = buildToolRoutingAdvisory(
+      "SELECT owner_id, heartbeat_at FROM harness_shared.coord_presence WHERE workspace_id = 'papercusp-workspace'",
+    );
+    expect(advisory).toContain('coord:presence');
+    expect(advisory).toContain('sessionState');
+  });
+
+  it('stays silent on an uncovered relation', () => {
+    expect(
+      buildToolRoutingAdvisory("SELECT * FROM harness_shared.some_unrouted_table WHERE id = '1'"),
+    ).toBeNull();
+  });
+
+  it.each([
+    ['a group-by', 'SELECT status, count(*) FROM harness_shared.work_items GROUP BY status'],
+    ['an aggregate', 'SELECT count(*) FROM harness_shared.routines'],
+    ['a window function', 'SELECT name, row_number() OVER (ORDER BY last_fired_at) FROM harness_shared.routines'],
+    [
+      'a join',
+      'SELECT r.name FROM harness_shared.routines r JOIN harness_shared.harness_plans p ON p.slug = r.name',
+    ],
+    ['a union', 'SELECT name FROM harness_shared.routines UNION SELECT slug FROM harness_shared.harness_plans'],
+  ])('stays silent on %s — that is what this tool is FOR', (_label, sql) => {
+    expect(buildToolRoutingAdvisory(sql)).toBeNull();
+  });
+
+  it('defers to the claimability advisory rather than crowding it', () => {
+    const sql = "SELECT feature_id FROM harness_shared.work_items WHERE status = 'open'";
+    // The specific correctness warning still fires...
+    expect(buildClaimabilityAdvisory(sql)).not.toBeNull();
+    // ...and the generic routing hint stands down so it is not buried.
+    expect(buildToolRoutingAdvisory(sql)).toBeNull();
+  });
+
+  it('still routes a work_items read that is NOT the claimability shape', () => {
+    const advisory = buildToolRoutingAdvisory(
+      "SELECT title FROM harness_shared.work_items WHERE feature_id = 'WI-1'",
+    );
+    expect(advisory).toContain('work_items:list');
+  });
+
+  /**
+   * THE RECURRENCE GUARD. Routing an agent to a verb that does not exist is
+   * strictly worse than the raw SQL it replaces — the SQL works, and the
+   * phantom costs a round trip and teaches a name that resolves to nothing.
+   *
+   * ⚠ This guard exists because the obvious way to check a verb's existence is
+   * WRONG here: a `grep "name: '<verb>'"` under-reports, since several real
+   * tools declare their name with DOUBLE quotes (work_items:list, plans:items).
+   * A single-quote grep reports them absent, which reads exactly like proof of
+   * absence. Assert against the loaded registry instead of any text search.
+   */
+  it('every routed verb resolves in the real tool registry', async () => {
+    const { readdirSync, readFileSync } = await import('node:fs');
+    const { join, dirname } = await import('node:path');
+    const { fileURLToPath } = await import('node:url');
+
+    const here = dirname(fileURLToPath(import.meta.url));
+    // BOTH tool roots. The write-side group lives under operator-core, the
+    // read-side group under agent-mcp — and scanning only the first is a
+    // mistake this guard has already caught once (it reported goals:list,
+    // goals:get and harness:status as phantom when all three are real).
+    const toolRoots = [
+      join(here, 'agent-tools'),
+      join(here, '..', '..', 'agent-mcp', 'src', 'tools'),
+    ];
+    const known = new Set<string>();
+    for (const root of toolRoots) {
+      for (const entry of readdirSync(root, { recursive: true, encoding: 'utf8' })) {
+        if (!entry.endsWith('.ts') || entry.includes('.test.')) continue;
+        const src = readFileSync(join(root, entry), 'utf8');
+        // Quote-agnostic ON PURPOSE — see this block's doc comment.
+        for (const m of src.matchAll(/\bname:\s*['"]([a-z_]+:[a-z_-]+)['"]/g)) known.add(m[1]);
+      }
+    }
+
+    // CALIBRATION: without this, a scan that silently found nothing would make
+    // `phantom` empty for the wrong reason and the guard would pass while
+    // verifying nothing. It has already earned its place once — the first
+    // version of this test loaded the registry the wrong way and this line is
+    // what said so, instead of a confusing wall of "verb does not exist".
+    expect(known.size).toBeGreaterThan(100);
+
+    const routed = Object.values(TOOL_ROUTING_BY_TABLE)
+      .flatMap((r) => r.tool.split('/'))
+      .map((v) => v.trim())
+      .filter((v) => /^[a-z_]+:[a-z_-]+$/.test(v));
+    expect(routed.length).toBeGreaterThan(10);
+
+    const phantom = routed.filter((v) => !known.has(v));
+    expect(phantom, `routed to verbs that do not exist: ${phantom.join(', ')}`).toEqual([]);
   });
 });
