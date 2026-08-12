@@ -4,7 +4,7 @@
  *
  * P-013 asks to PROPOSE a rubric 'su-ideation-health' — and to EMIT the proposal ONLY.
  * Ratification (flipping it 'active' so Overwatch/Scout grade against it) stays with the
- * owner/Mug via `rubrics:ratify`. That split is the D-012 PARITY PRECEDENT: the teaching
+ * an independent reviewer or owner via `rubrics:ratify`. That split is the D-012 PARITY PRECEDENT: the teaching
  * signal stays honest only when the party that AUTHORS the standard is not the party that
  * RATIFIES it (D-012: a grader is an owner-proxy that must not be the author). So the
  * emitter here HARD-PINS status:'proposed' — there is no code path in this module that
@@ -121,14 +121,15 @@ const defaultDeps: ProposeSuIdeationHealthDeps = { propose: proposeRubric };
 /**
  * Emit the su-ideation-health rubric as a PROPOSAL — and only a proposal. Whatever status a
  * caller might request, the write is HARD-PINNED to 'proposed' (D-012 parity: the proposer is
- * not the ratifier — activation to 'active' is an owner/Mug act via rubrics:ratify). Idempotent
+ * not the ratifier — activation to 'active' is an independent-reviewer/owner act via
+ * rubrics:ratify). Idempotent
  * on rubricId (re-emit refreshes the proposal content, never its ratification).
  */
 export async function proposeSuIdeationHealthRubric(
   opts: { by?: string } = {},
   deps: ProposeSuIdeationHealthDeps = defaultDeps,
 ): Promise<Rubric> {
-  const status: RubricStatus = 'proposed'; // never 'active' — ratification stays owner/Mug
+  const status: RubricStatus = 'proposed'; // never 'active' — proposer≠ratifier stays enforced
   return deps.propose({
     ...SU_IDEATION_HEALTH_RUBRIC,
     ...(opts.by ? { by: opts.by } : {}),

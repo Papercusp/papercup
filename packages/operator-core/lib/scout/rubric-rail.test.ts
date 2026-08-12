@@ -98,6 +98,12 @@ describe('buildScoutRubricDraftBody', () => {
     expect(body).toContain('ratingScale');
   });
 
+  it('routes ratification to an independent reviewer and preserves proposer≠ratifier', () => {
+    expect(body).toContain('Awaiting independent review and ratification');
+    expect(body).toContain('independent reviewer promotes this draft');
+    expect(body).toContain('proposer must not self-ratify');
+  });
+
   it('tolerates a gap with no detail/ref (free-text-derived cluster)', () => {
     const b = buildScoutRubricDraftBody({
       slug: 'scout-rubric-x-2026-06-21',

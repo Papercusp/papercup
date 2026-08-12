@@ -8,7 +8,10 @@
 import { describe, expect, it, vi } from 'vitest';
 
 import {
+  evaluateRubricProposalDwell,
   evaluateRubricStaleness,
+  rubricProposalDwellSweep,
+  rubricProposalDwellThresholdSec,
   rubricStalenessSweep,
   rubricStalenessThresholdSec,
 } from './rubric-staleness-watchdog';
@@ -16,6 +19,7 @@ import type { Rubric } from './rubrics';
 import type { ScorecardFreshness } from './scorecard-freshness';
 
 const SIX_H = 6 * 3_600_000;
+const DAY = 24 * 3_600_000;
 
 const freshness = (over: Partial<ScorecardFreshness> = {}): ScorecardFreshness => ({
   rubricRef: 'blender-release-readiness',
@@ -66,6 +70,113 @@ describe('evaluateRubricStaleness — the pure decider', () => {
   it('kill switch (thresholdMs <= 0) is never stale', () => {
     expect(evaluateRubricStaleness(rubric, freshness(), 0).stale).toBe(false);
     expect(evaluateRubricStaleness(rubric, freshness(), -1).stale).toBe(false);
+  });
+});
+
+describe('evaluateRubricProposalDwell — the independent-ratifier decider', () => {
+  const rubric = {
+    rubricId: 'search-retrieval-quality',
+    status: 'proposed' as const,
+    updatedAt: '2026-07-13T00:00:00.000Z',
+    proposedBy: 'su-proposer',
+  };
+  const now = Date.parse('2026-07-15T00:00:00.000Z');
+
+  it('STALE after the dwell window and names the missing independent ratifier', () => {
+    const v = evaluateRubricProposalDwell(rubric, DAY, now);
+    expect(v.stale).toBe(true);
+    expect(v.ageMs).toBe(2 * DAY);
+    expect(v.reason).toContain('no independent ratifier');
+    expect(v.reason).toContain('search-retrieval-quality');
+  });
+
+  it('HEALTHY while recent, and non-proposed rubrics are outside this detector', () => {
+    expect(evaluateRubricProposalDwell({ ...rubric, updatedAt: '2026-07-14T12:00:00.000Z' }, DAY, now).stale).toBe(
+      false,
+    );
+    expect(evaluateRubricProposalDwell({ ...rubric, status: 'active' }, DAY, now).stale).toBe(false);
+  });
+
+  it('invalid timestamps are stale because the watchdog cannot establish progress', () => {
+    const v = evaluateRubricProposalDwell({ ...rubric, updatedAt: 'not-a-date' }, DAY, now);
+    expect(v.stale).toBe(true);
+    expect(v.ageMs).toBeNull();
+    expect(v.reason).toContain('invalid updatedAt');
+  });
+
+  it('kill switch is never stale', () => {
+    expect(evaluateRubricProposalDwell(rubric, 0, now)).toMatchObject({ stale: false, ageMs: 0 });
+  });
+});
+
+describe('rubricProposalDwellSweep — orchestration (injected deps, no PG)', () => {
+  const proposedRubric = {
+    rubricId: 'search-retrieval-quality',
+    status: 'proposed',
+    updatedAt: '2026-07-13T00:00:00.000Z',
+    proposedBy: 'su-proposer',
+  } as unknown as Rubric;
+
+  const deps = (over: Parameters<typeof rubricProposalDwellSweep>[1] = {}) => ({
+    listRubrics: vi.fn(async () => [proposedRubric]),
+    recentWatchdogFires: vi.fn(async () => 0),
+    recordFire: vi.fn(async () => undefined),
+    openEscalation: vi.fn(async () => ({}) as never),
+    ...over,
+  });
+
+  const withThreshold = async <T>(fn: () => Promise<T>): Promise<T> => {
+    const previous = process.env.PAPERCUSP_RUBRIC_PROPOSAL_DWELL_THRESHOLD_SEC;
+    process.env.PAPERCUSP_RUBRIC_PROPOSAL_DWELL_THRESHOLD_SEC = String(DAY / 1_000);
+    try {
+      return await fn();
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCUSP_RUBRIC_PROPOSAL_DWELL_THRESHOLD_SEC;
+      else process.env.PAPERCUSP_RUBRIC_PROPOSAL_DWELL_THRESHOLD_SEC = previous;
+    }
+  };
+
+  it('alerts with a fires row and escalation when a proposal outlives the review window', async () => {
+    await withThreshold(async () => {
+      const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+      const d = deps();
+      const results = await rubricProposalDwellSweep({}, { ...d, now: Date.parse('2026-07-15T00:00:00.000Z') });
+      warn.mockRestore();
+      expect(results[0]).toMatchObject({ rubricRef: 'search-retrieval-quality', outcome: 'alerted' });
+      expect(d.recordFire).toHaveBeenCalledWith(
+        expect.objectContaining({ source: 'rubric-proposal-dwell', reason: expect.stringContaining('independent ratifier') }),
+      );
+      expect(d.openEscalation).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          summary: expect.stringContaining('search-retrieval-quality'),
+          body: expect.stringContaining('must not self-ratify'),
+        }),
+      );
+    });
+  });
+
+  it('debounces an already-alerted proposal and does not duplicate either output', async () => {
+    await withThreshold(async () => {
+      const d = deps({ recentWatchdogFires: vi.fn(async () => 1) });
+      const results = await rubricProposalDwellSweep({}, { ...d, now: Date.parse('2026-07-15T00:00:00.000Z') });
+      expect(results[0]).toMatchObject({ rubricRef: 'search-retrieval-quality', outcome: 'debounced' });
+      expect(d.recordFire).not.toHaveBeenCalled();
+      expect(d.openEscalation).not.toHaveBeenCalled();
+    });
+  });
+
+  it('is fail-soft when listing proposed rubrics fails', async () => {
+    await withThreshold(async () => {
+      const d = deps({ listRubrics: vi.fn(async () => { throw new Error('plans store unavailable'); }) });
+      await expect(rubricProposalDwellSweep({}, { ...d, now: Date.parse('2026-07-15T00:00:00.000Z') })).resolves.toEqual([
+        { rubricRef: '*', outcome: 'error', reason: 'plans store unavailable' },
+      ]);
+    });
+  });
+
+  it('uses the documented 24h default when no override is set', () => {
+    expect(rubricProposalDwellThresholdSec()).toBe(86_400);
   });
 });
 

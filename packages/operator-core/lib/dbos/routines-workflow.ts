@@ -869,6 +869,31 @@ async function routinesTickImpl(): Promise<void> {
     { name: 'rubric-staleness-sweep' },
   );
 
+  // WI-38044: proposed rubrics now use an independent-reviewer ratification
+  // gate; the retired Mug/Queen path is not a prerequisite. Alert when a
+  // proposal outlives its review dwell window so valid standards cannot strand
+  // indefinitely in `proposed`. Fail-soft; kill switch:
+  // PAPERCUSP_RUBRIC_PROPOSAL_DWELL_THRESHOLD_SEC<=0.
+  await DBOS.runStep(
+    async () => {
+      const { rubricProposalDwellSweep } = await import('../rubric-staleness-watchdog');
+      const results = await rubricProposalDwellSweep();
+      for (const res of results) {
+        if (res.outcome === 'alerted' || res.outcome === 'error') {
+          console.warn(`[rubric-proposal-dwell] ${res.outcome}: ${res.rubricRef} — ${res.reason}`);
+        }
+      }
+      return {
+        ranAtMs: Date.now(),
+        resultCount: results.length,
+        alertedCount: results.filter((r) => r.outcome === 'alerted').length,
+        errorCount: results.filter((r) => r.outcome === 'error').length,
+        results: results.slice(0, 10),
+      };
+    },
+    { name: 'rubric-proposal-dwell-sweep' },
+  );
+
   // session-turn-storage-2026-07-28 P-007 (D-005): the TRANSCRIPT-INGEST lag
   // watchdog. Alerts when an adapter has on-disk bytes past its stored
   // byte_offset and has not consumed them for longer than the threshold —

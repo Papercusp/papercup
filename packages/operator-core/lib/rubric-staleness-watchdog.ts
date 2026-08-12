@@ -37,6 +37,13 @@ export function rubricStalenessThresholdSec(): number {
   return Number.isFinite(n) ? n : 21_600;
 }
 
+/** How long a proposed rubric may wait for independent review before the
+ * proposal-dwell watchdog alerts. Default 24h; `<=0` disables that sweep. */
+export function rubricProposalDwellThresholdSec(): number {
+  const n = Number(process.env.PAPERCUSP_RUBRIC_PROPOSAL_DWELL_THRESHOLD_SEC ?? 86_400);
+  return Number.isFinite(n) ? n : 86_400;
+}
+
 // ── pure decider (unit-tested with no DB) ──────────────────────────────────────
 
 export interface RubricStalenessVerdict {
@@ -80,6 +87,49 @@ export function evaluateRubricStaleness(
       `release-gating rubric '${rubric.rubricId}' has NO scorecard in the last ${hours}h ` +
       `(grading stopped — a dead grader loop, not a healthy quiet period). ` +
       `The newest verdict on record predates the window; a release call reading it is reading stale evidence.`,
+  };
+}
+
+export interface RubricProposalDwellVerdict {
+  stale: boolean;
+  reason: string;
+  ageMs: number | null;
+}
+
+/** PURE: is a proposed rubric stuck awaiting its independent ratifier? */
+export function evaluateRubricProposalDwell(
+  rubric: Pick<Rubric, 'rubricId' | 'status' | 'updatedAt' | 'proposedBy'>,
+  thresholdMs: number,
+  nowMs = Date.now(),
+): RubricProposalDwellVerdict {
+  if (thresholdMs <= 0) return { stale: false, ageMs: 0, reason: 'kill switch (thresholdMs <= 0)' };
+  if (rubric.status !== 'proposed') return { stale: false, ageMs: 0, reason: 'rubric is not proposed' };
+  const updatedAtMs = Date.parse(rubric.updatedAt);
+  if (!Number.isFinite(updatedAtMs)) {
+    return {
+      stale: true,
+      ageMs: null,
+      reason:
+        `proposed rubric '${rubric.rubricId}' has an invalid updatedAt; ` +
+        `cannot establish independent-ratifier progress`,
+    };
+  }
+  const ageMs = Math.max(0, nowMs - updatedAtMs);
+  if (ageMs < thresholdMs) {
+    return {
+      stale: false,
+      ageMs,
+      reason: `proposal updated ${Math.round(ageMs / 3_600_000)}h ago; within dwell threshold`,
+    };
+  }
+  const hours = Math.max(1, Math.round(thresholdMs / 3_600_000));
+  return {
+    stale: true,
+    ageMs,
+    reason:
+      `proposed rubric '${rubric.rubricId}' has no independent ratifier after ` +
+      `${Math.max(1, Math.round(ageMs / 3_600_000))}h (dwell threshold ${hours}h); ` +
+      `last updated ${rubric.updatedAt}; proposed by ${rubric.proposedBy ?? 'unknown'}`,
   };
 }
 
@@ -186,6 +236,85 @@ export async function rubricStalenessSweep(
             `methodRef runbook → file ONE complete scorecard via improvements:capture { lane:'observation', ` +
             `observation: { rubricRef, ratings } } → verify scorecards:list newest has missingKeys: []. ` +
             `If the assigned grader's loop died, restart/re-arm it — the staleness, not just the grade, is the defect (EI-12149).`,
+        });
+        results.push({ rubricRef: rubric.rubricId, outcome: 'alerted', reason: verdict.reason });
+      } catch (e) {
+        results.push({
+          rubricRef: rubric.rubricId,
+          outcome: 'error',
+          reason: e instanceof Error ? e.message : String(e),
+        });
+      }
+    }
+  } catch (e) {
+    results.push({ rubricRef: '*', outcome: 'error', reason: e instanceof Error ? e.message : String(e) });
+  }
+  return results;
+}
+
+export interface RubricProposalDwellSweepDeps {
+  listRubrics?: typeof listRubrics;
+  recentWatchdogFires?: typeof recentWatchdogFires;
+  recordFire?: typeof recordFire;
+  openEscalation?: typeof openEscalation;
+  now?: number;
+}
+
+/**
+ * Alert on proposed rubrics that have outlived the independent-review dwell
+ * window. This is deliberately a sibling sweep to release-scorecard staleness:
+ * a valid proposal can be waiting for a reviewer even when no scorecard exists
+ * yet, and the retired Mug/Queen path must not be required for activation.
+ */
+export async function rubricProposalDwellSweep(
+  opts: { workspaceId?: string; installSlug?: string } = {},
+  deps: RubricProposalDwellSweepDeps = {},
+): Promise<RubricStalenessSweepResult[]> {
+  const thresholdSec = rubricProposalDwellThresholdSec();
+  if (thresholdSec <= 0) return [{ rubricRef: '*', outcome: 'skipped', reason: 'kill switch' }];
+  const thresholdMs = thresholdSec * 1_000;
+  const now = deps.now ?? Date.now();
+  const workspaceId = opts.workspaceId ?? 'papercusp-workspace';
+  const installSlug = opts.installSlug ?? 'papercusp';
+  const results: RubricStalenessSweepResult[] = [];
+  try {
+    const rubrics = await (deps.listRubrics ?? listRubrics)({ status: 'proposed' });
+    for (const rubric of rubrics) {
+      try {
+        const verdict = evaluateRubricProposalDwell(rubric, thresholdMs, now);
+        if (!verdict.stale) {
+          results.push({ rubricRef: rubric.rubricId, outcome: 'healthy', reason: verdict.reason });
+          continue;
+        }
+        const windowHours = Math.max(1, Math.round(thresholdSec / 3_600));
+        const firedRecently =
+          (await (deps.recentWatchdogFires ?? recentWatchdogFires)(
+            workspaceId,
+            installSlug,
+            windowHours,
+            'rubric-proposal-dwell',
+            rubric.rubricId,
+          )) > 0;
+        if (firedRecently) {
+          results.push({ rubricRef: rubric.rubricId, outcome: 'debounced', reason: 'fires-ledger debounce' });
+          continue;
+        }
+        console.warn(`[rubric-proposal-dwell] ALERT: ${verdict.reason}`);
+        await (deps.recordFire ?? recordFire)({
+          workspaceId,
+          installSlug,
+          source: 'rubric-proposal-dwell',
+          reason: verdict.reason,
+          wakeAt: null,
+        });
+        await (deps.openEscalation ?? openEscalation)(RUBRIC_STALENESS_IDENTITY, {
+          severity: 'advisory',
+          summary: `Proposed rubric '${rubric.rubricId}' has no independent ratifier`,
+          body:
+            `${verdict.reason}\n\n` +
+            `To clear: an agent other than proposedBy reviews via rubrics:get and calls ` +
+            `rubrics:ratify { rubricRef: '${rubric.rubricId}' }; the proposer must not self-ratify. ` +
+            `If the proposal is unsound, revise it or deprecate it.`,
         });
         results.push({ rubricRef: rubric.rubricId, outcome: 'alerted', reason: verdict.reason });
       } catch (e) {

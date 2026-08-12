@@ -13,7 +13,7 @@
  * ON A GAP, Scout AUTHORS a `template: rubric` DRAFT plan (the cluster's evidence is
  * the model/method/drift seed) and runs it through the EXISTING queen↔scout feedback
  * loop (D-003): the draft ships `status: draft` + `origin: scout` + the
- * {@link SCOUT_DRAFT_LOOP_NOTE}, so the Queen reviews it and either PROMOTES it
+ * {@link SCOUT_DRAFT_LOOP_NOTE}, so an independent reviewer reviews it and either PROMOTES it
  * (ratify → fills the rubric `templateData` + active) or sends feedback to revise /
  * deprecates it (a `learnings` observation re-feeds Scout). No new authoring/review
  * flow — it rides the SAME machinery the broad `plan` rail uses (scout-plan-draft.ts).
@@ -29,7 +29,7 @@
  * one STABLE slug per gap theme, so a re-run each cycle no-ops on the existing draft
  * (createScoutPlanDraft is idempotent on slug collision) — no draft spam. Every author
  * is best-effort: one gap that fails to write never aborts the batch or the cycle.
- * Loose by design — over-propose; the Queen ratification is the real quality filter (D-003).
+ * Loose by design — over-propose; independent ratification is the real quality filter (D-003).
  */
 
 import { createScoutPlanDraft, type CreateScoutPlanDraftInput } from './scout-plan-draft';
@@ -102,7 +102,7 @@ updated: ${date}
 
 ## Now
 
-**State:** Draft rubric proposal — the Blender loop's auto-crystallization rail detected a RUBRIC GAP: a recurring friction the Pot keeps hitting with NO covering active rubric (plan-templates-and-rubric-v2 P-009 / D-003). Awaiting Mug ratification; NOT a live standard until promoted (active + templateData).
+**State:** Draft rubric proposal — the Blender loop's auto-crystallization rail detected a RUBRIC GAP: a recurring friction the Pot keeps hitting with NO covering active rubric (plan-templates-and-rubric-v2 P-009 / D-003). Awaiting independent review and ratification; NOT a live standard until promoted (active + templateData).
 
 **Next:** ${SCOUT_DRAFT_LOOP_NOTE}
 
@@ -117,10 +117,11 @@ shared standard to grade it by — that absence is the gap. The clustered observ
 above are the raw material for the rubric's per-criterion model (how it should work),
 method (how to investigate it), and drift markers (what degraded/broken looks like).
 
-## Proposed rubric — Mug/Blender fills the structured \`templateData\` on ratification
+## Proposed rubric — reviewer/Blender fills the structured \`templateData\` on ratification
 
 Define the rubric with \`plans:set-template-data\` (validated against the \`rubric\`
-template schema), then the Mug promotes this draft to \`active\`:
+template schema), then an independent reviewer promotes this draft to \`active\` via
+\`rubrics:ratify\` (the proposer must not self-ratify):
 
 - **characteristic:** the umbrella domain this rubric measures (Blender's digest groups by this).
 - **criteria:** one or more \`{ key, title, model, method, driftMarkers }\` — what a structured observation grades.

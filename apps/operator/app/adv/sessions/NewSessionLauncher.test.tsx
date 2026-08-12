@@ -603,11 +603,25 @@ describe('NewSessionLauncher', () => {
       expect(screen.getByRole('combobox', { name: 'Mode for new session' })).toBeTruthy();
     });
 
-    it('defaults to Interactive and sends mode:null — an unchanged launch', async () => {
+    it('defaults to AUTO for the always-headless unbound launch', async () => {
       render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
       fireEvent.click(screen.getByRole('button', { name: '+ New session' }));
       await waitFor(() => expect(h.launchAgent).toHaveBeenCalledTimes(1));
-      expect(h.launchAgent).toHaveBeenCalledWith(expect.objectContaining({ mode: null }));
+      expect(h.launchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: 'auto', headless: true, planSlug: null }),
+      );
+    });
+
+    it('keeps Interactive as an explicit opt-out', async () => {
+      render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
+      fireEvent.change(screen.getByRole('combobox', { name: 'Mode for new session' }), {
+        target: { value: MODE_SELECT_NONE },
+      });
+      fireEvent.click(screen.getByRole('button', { name: '+ New session' }));
+      await waitFor(() => expect(h.launchAgent).toHaveBeenCalledTimes(1));
+      expect(h.launchAgent).toHaveBeenCalledWith(
+        expect.objectContaining({ mode: null, headless: true }),
+      );
     });
 
     it('threads a chosen mode through to the launch', async () => {
