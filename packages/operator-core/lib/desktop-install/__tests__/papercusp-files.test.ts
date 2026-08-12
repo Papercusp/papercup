@@ -772,6 +772,18 @@ describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {
     expect(canonicalOverlay).not.toContain('You load the full catalog');
   });
 
+  it('keeps the Codex ptool fallback from passing an empty harness scope', async () => {
+    const canonicalOverlay = await fs.readFile(
+      new URL('../../../../../apps/operator/prompts/papercusp-su.codex.md', import.meta.url),
+      'utf8',
+    );
+    expect(canonicalOverlay).toContain('ptool_scope=(--workspace="${PAPERCUSP_WORKSPACE}")');
+    expect(canonicalOverlay).toContain('if [[ -n "${PAPERCUSP_HARNESS_SLUG:-}" ]]');
+    expect(canonicalOverlay).toContain('ptool_scope+=(--harness="${PAPERCUSP_HARNESS_SLUG}")');
+    expect(canonicalOverlay).toContain('"${ptool_scope[@]}"');
+    expect(canonicalOverlay).not.toContain('--harness="$PAPERCUSP_HARNESS_SLUG"');
+  });
+
   it('throws when the base profile file is missing', async () => {
     await expect(renderSuPlaybook({ agent: 'claude', profile: 'ghost', operatorAppRoot: tmpAppRoot })).rejects.toThrow(
       /papercusp-su-ghost\.tools\.md/,

@@ -35,8 +35,11 @@ model-facing tool list. If the whole `papercusp-su` namespace is missing,
 including `tools:find`, use the installed CLI over the same MCP transport:
 
 ```bash
-ptool tools:find --json '{"query":"<what you need>"}' \
-  --workspace="$PAPERCUSP_WORKSPACE" --harness="$PAPERCUSP_HARNESS_SLUG"
+ptool_scope=(--workspace="${PAPERCUSP_WORKSPACE}")
+if [[ -n "${PAPERCUSP_HARNESS_SLUG:-}" ]]; then
+  ptool_scope+=(--harness="${PAPERCUSP_HARNESS_SLUG}")
+fi
+ptool tools:find --json '{"query":"<what you need>"}' "${ptool_scope[@]}"
 ```
 
 Then call the returned name with `ptool <group:verb> --json '{...}'`
