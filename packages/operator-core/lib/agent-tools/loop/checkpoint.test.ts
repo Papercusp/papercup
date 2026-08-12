@@ -571,6 +571,23 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
       expect(() => parse({ walls: [{ claim: 'needs owner key', status: 'verified', evidence: 'asked 02:00Z' }] })).toThrow();
     });
 
+    it('maps compact wall claim strings to lossless `{ claim }` rows', () => {
+      const out = parse({ walls: ['needs owner key', 'awaiting owner approval'] }) as {
+        walls: { claim: string }[];
+      };
+      expect(out.walls).toEqual([{ claim: 'needs owner key' }, { claim: 'awaiting owner approval' }]);
+    });
+
+    it('accepts a scalar or JSON-encoded string wall from a stale wire manifest', () => {
+      expect(parse({ walls: 'needs owner key' })).toMatchObject({ walls: [{ claim: 'needs owner key' }] });
+      expect(parse({ walls: '["needs owner key"]' })).toMatchObject({ walls: [{ claim: 'needs owner key' }] });
+    });
+
+    it('writes compact wall strings through the normal typed row path', async () => {
+      const b = body(await call({ did: 'progress', walls: ['needs owner key'] }));
+      expect(b).toMatchObject({ ok: true, walls: 1 });
+    });
+
     it('walls still get the cap RELAXATION even though they get no shape coercion', async () => {
       const b = body(await call({ did: 'p', walls: [{ claim: 'W'.repeat(700) }] }));
       expect(b.ok).toBe(true);

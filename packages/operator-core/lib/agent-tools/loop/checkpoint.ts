@@ -75,6 +75,31 @@ const CARRY_ROW_ID_SCHEMA = z
   );
 
 /**
+ * EI-20207367072280826: a wall is often authored as a compact claim string
+ * (`walls: ['waiting for owner approval']`) while the persisted form needs a
+ * row object. This mapping is lossless for the string shorthand: the value is
+ * the claim and there is no optional metadata to discard. Also accept a JSON
+ * encoded array from a stale manifest-pinned client, matching the checks
+ * field's wire repair. Object rows stay untouched so genuinely undeclared
+ * fields still fail the strict schema instead of being silently dropped.
+ */
+function normalizeWallInput(value: unknown): unknown {
+  let rows: unknown = value;
+  if (typeof rows === 'string') {
+    const trimmed = rows.trim();
+    if (!trimmed) return [];
+    try {
+      rows = JSON.parse(trimmed);
+    } catch {
+      rows = [rows];
+    }
+    // A JSON string is still a compact one-wall shorthand, not an array.
+    if (typeof rows === 'string') rows = [rows];
+  }
+  return Array.isArray(rows) ? rows.map((row) => (typeof row === 'string' ? { claim: row } : row)) : rows;
+}
+
+/**
  * P-007 (fleet-member-dx-improvements-2026-07-10, EI-9035): the owner's most
  * recent coord:inbox / coord:orient invocation (ISO), or null. The continuation
  * gate's unread-inbox leg previously keyed ONLY off the turn-END watermark
@@ -190,25 +215,31 @@ export default defineTool({
       // the `{status, evidence}` volume is a checks-row phenomenon (97 calls in 6 days
       // vs 2 for walls).
       walls: z
-        .array(
-          z.object({
-            claim: z
-              .string()
-              .min(1)
-              .max(CARRY_ROW_SOFT_CAPS.claim * CARRY_CAP_HARD_MULTIPLE)
-              .describe('The pending owner-gated action/decision, stated concretely.'),
-            id: CARRY_ROW_ID_SCHEMA,
-            recheck: z
-              .string()
-              .max(CARRY_ROW_SOFT_CAPS.recheck * CARRY_CAP_HARD_MULTIPLE)
-              .optional()
-              .describe('A concrete command a successor runs to re-check it.'),
-          }),
+        .preprocess(
+          normalizeWallInput,
+          z
+            .array(
+              z.object({
+                claim: z
+                  .string()
+                  .min(1)
+                  .max(CARRY_ROW_SOFT_CAPS.claim * CARRY_CAP_HARD_MULTIPLE)
+                  .describe('The pending owner-gated action/decision, stated concretely.'),
+                id: CARRY_ROW_ID_SCHEMA,
+                recheck: z
+                  .string()
+                  .max(CARRY_ROW_SOFT_CAPS.recheck * CARRY_CAP_HARD_MULTIPLE)
+                  .optional()
+                  .describe('A concrete command a successor runs to re-check it.'),
+              }),
+            )
+            .max(CARRY_NOTE_MAX_WALLS),
         )
-        .max(CARRY_NOTE_MAX_WALLS)
         .optional()
         .describe(
           'Open WALLS (owner-gated commitments) as rows — rendered into EVERY wake + carry brief until cleared. ' +
+            "Compact claim strings are accepted (`walls: ['owner approval']`) and mapped losslessly to `{ claim }`; " +
+            'a JSON-encoded array is accepted for stale wire manifests. ' +
             'OMITTED ⇒ existing walls CARRY FORWARD (a rewrite or note-clear never drops them); a supplied list ' +
             "REPLACES (pass rowsMode:'merge' to upsert instead), so pass the full current set (dropped ones come " +
             'back as `wallsDropped`); [] clears.',
