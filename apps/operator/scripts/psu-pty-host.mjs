@@ -842,6 +842,18 @@ export function makeComposerWedgeDetector({ minDefers = 3, minQuietMs = 5 * 60_0
         ownerBytesEverSeen: ownerQuietMs !== Infinity,
       };
     },
+    /**
+     * How many consecutive wakes have been deferred against the CURRENT staged
+     * length. Exposed because `note()` deliberately reports once per episode —
+     * after the first report it returns null forever, so the count it is still
+     * maintaining becomes invisible to the caller at exactly the point the
+     * episode gets bad. The breaker needs the running value, not the one-shot
+     * report: this is the only wedge signal that requires no clock at all, and
+     * therefore the only one that survives a host whose measurements are absent.
+     */
+    consecutiveDefers() {
+      return consecutive;
+    },
   };
 }
 
@@ -882,12 +894,46 @@ export function makeComposerWedgeDetector({ minDefers = 3, minQuietMs = 5 * 60_0
  * it and every caller passing it becomes a type error — while vitest stays
  * green, because it never typechecks. Same trap, one function down.
  *
- * @param {{ pending: boolean, pendingAgeMs?: number, ownerQuietMs?: number }} sample
- * @param {{ minAgeMs?: number, minQuietMs?: number }} [thresholds]
+ * ## The wake-loss fallback (EI-20287339148365013)
+ *
+ * Both measurements above are TIMING PROXIES for the harm. The harm itself is
+ * "wakes are being thrown away", and `consecutiveDefers` measures that directly
+ * — which matters because each proxy has a way to be silently defeated, and one
+ * of them already was:
+ *
+ *  - MEASUREMENTS ABSENT. Measured 2026-08-12: ten hosts deferred every wake for
+ *    up to 259 minutes with `pendingAgeMs`/`ownerQuietMs` missing from every
+ *    event they emitted (they predated the commit that added the fields). The
+ *    destructuring defaults then resolve to `pendingAgeMs = 0`, the age guard
+ *    fails, and the breaker CAN NEVER FIRE. A missing measurement must not read
+ *    as "nothing is wrong": for a liveness guard, absent evidence is the case
+ *    that most needs breaking, not the one that most needs caution.
+ *  - QUIET RESET BY A REPEATING EMITTER. `ownerQuietMs` is reset by any byte
+ *    classified as text, so a terminal reply family the scanner does not yet
+ *    recognise — the exact bug that staged these lines — holds the quiet window
+ *    below threshold indefinitely while the line sits there. The proxy reports
+ *    "a person is here" precisely when a machine is.
+ *
+ * The counter is only incremented against an UNCHANGED staged length (see
+ * makeComposerWedgeDetector), which is what keeps it off a person: a human's
+ * line moves as they type. A human whose line has not moved across N wakes has
+ * walked away from it, and the doc above already settles that trade — they lose
+ * a line they had abandoned, where the alternative is an agent dead until
+ * somebody notices.
+ *
+ * @param {{ pending: boolean, pendingAgeMs?: number, ownerQuietMs?: number, consecutiveDefers?: number }} sample
+ * @param {{ minAgeMs?: number, minQuietMs?: number, maxDefers?: number }} [thresholds]
  */
-export function shouldBreakComposerWedge(sample, { minAgeMs = 90_000, minQuietMs = 90_000 } = {}) {
-  const { pending, pendingAgeMs = 0, ownerQuietMs = Infinity } = sample ?? {};
+export function shouldBreakComposerWedge(
+  sample,
+  { minAgeMs = 90_000, minQuietMs = 90_000, maxDefers = 5 } = {},
+) {
+  const { pending, pendingAgeMs = 0, ownerQuietMs = Infinity, consecutiveDefers = 0 } = sample ?? {};
   if (!pending) return false;
+  // Checked BEFORE the timing rule, and deliberately depending on neither
+  // measurement: this is the path that still works on a host whose forensics
+  // fields are absent, which is the population that stayed wedged for hours.
+  if (consecutiveDefers >= maxDefers) return true;
   if (!(pendingAgeMs >= minAgeMs)) return false;
   return ownerQuietMs >= minQuietMs;
 }
@@ -2790,6 +2836,11 @@ export function hostThroughPty(o) {
   // member nobody is typing into.
   const wedgeBreakAgeMs = positiveNumber(env.PAPERCUSP_PSU_PTY_WEDGE_BREAK_MS, 90_000);
   const wedgeBreakQuietMs = positiveNumber(env.PAPERCUSP_PSU_PTY_WEDGE_BREAK_QUIET_MS, 90_000);
+  // EI-20287339148365013: the clock-free backstop. Bounds the damage in the
+  // unit that actually hurts — wakes thrown away — so it still fires on a host
+  // where the timing measurements are absent or are being reset by a repeating
+  // machine emitter, which is how ten hosts stayed wedged for up to 259 minutes.
+  const wedgeBreakMaxDefers = positiveNumber(env.PAPERCUSP_PSU_PTY_WEDGE_BREAK_MAX_DEFERS, 5);
   /**
    * Clear a staged line that has stopped tracking a person, so a gated write can
    * proceed instead of deferring forever. Returns true when it cleared one.
@@ -2803,14 +2854,23 @@ export function hostThroughPty(o) {
     const pendingLength = ownerComposerGate.pendingLength();
     const pendingAgeMs = ownerComposerGate.pendingAgeMs();
     const ownerQuietMs = ownerComposerGate.ownerQuietMs();
+    const consecutiveDefers = wedgeDetector.consecutiveDefers();
     if (
       !shouldBreakComposerWedge(
-        { pending: ownerComposerGate.hasPending(), pendingAgeMs, ownerQuietMs },
-        { minAgeMs: wedgeBreakAgeMs, minQuietMs: wedgeBreakQuietMs },
+        { pending: ownerComposerGate.hasPending(), pendingAgeMs, ownerQuietMs, consecutiveDefers },
+        {
+          minAgeMs: wedgeBreakAgeMs,
+          minQuietMs: wedgeBreakQuietMs,
+          maxDefers: wedgeBreakMaxDefers,
+        },
       )
     ) {
       return false;
     }
+    // Which rule fired is the first question asked of a break in the field, and
+    // reconstructing it later from thresholds and timings is exactly the archaeology
+    // whose absence made the original episode undiagnosable. Record it.
+    const brokenBy = consecutiveDefers >= wedgeBreakMaxDefers ? 'wake-loss' : 'idle-timing';
     try {
       // \u0015 = Ctrl-U (kill line). Written as an ESCAPE on purpose: a literal
       // control byte here is invisible in review and is exactly what a patch, an
