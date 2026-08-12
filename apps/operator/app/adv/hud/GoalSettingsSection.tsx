@@ -443,25 +443,20 @@ export default function GoalSettingsSection({
                       slot the owner never chose — it stays visible, and
                       `formToSettings` refuses it by name on save.
                     */}
-                    <select
+                    <Select
                       id={`gs-${goalId}-${r.key}-role`}
                       className="hud-goal__set-in"
                       value={r.role}
                       disabled={busy}
-                      onChange={(e) => setRoleField(r.key, 'role', e.target.value)}
-                    >
-                      <option value="">Choose a launch slot…</option>
-                      {r.role && !GOAL_LAUNCH_ROLE_OPTIONS.some((o) => o.value === r.role) ? (
-                        <option value={r.role} disabled>
-                          {r.role} (not a launch slot)
-                        </option>
-                      ) : null}
-                      {GOAL_LAUNCH_ROLE_OPTIONS.map((o) => (
-                        <option key={o.value} value={o.value}>
-                          {o.label}
-                        </option>
-                      ))}
-                    </select>
+                      onChange={(value) => setRoleField(r.key, 'role', value)}
+                      placeholder="Choose a launch slot…"
+                      options={[
+                        ...(r.role && !GOAL_LAUNCH_ROLE_OPTIONS.some((o) => o.value === r.role)
+                          ? [{ value: r.role, label: `${r.role} (not a launch slot)`, disabled: true }]
+                          : []),
+                        ...GOAL_LAUNCH_ROLE_OPTIONS,
+                      ]}
+                    />
                   </label>
                   <button
                     type="button"
