@@ -87,15 +87,25 @@ export interface AgentOrdersProps {
   ownerId: string;
   /** False while the panel is collapsed — skips the fetch entirely. */
   enabled?: boolean;
+  /**
+   * The caller's roster/session lookup could not find this owner. `false` is
+   * deliberately distinct from an omitted value: an omitted value preserves
+   * the standalone /adv consumer's existing query behaviour, while `false`
+   * prevents a default mission from being presented for an id that has no
+   * recorded agent behind it.
+   */
+  ownerKnown?: boolean;
   onClose?: () => void;
 }
 
 export default function AgentOrders({
   ownerId,
   enabled = true,
+  ownerKnown,
   onClose,
 }: AgentOrdersProps): React.JSX.Element {
-  const { orders, error, loading } = useAgentOrders(ownerId || null, enabled);
+  const unknownOwner = ownerKnown === false;
+  const { orders, error, loading } = useAgentOrders(ownerId || null, enabled && !unknownOwner);
   const nowMs = useMemo(() => Date.now(), []);
   /* Collapse state lives in the URL, shared with the Activity rail — see
      rail-sections.tsx for why one param and why not useState. */
@@ -138,18 +148,23 @@ export default function AgentOrders({
       {/* The whole payload is new on the wire (see use-agent-orders.ts): an
           operator predating it serves nothing, which must read as "this
           operator can't answer", never as "the agent has no orders". */}
-      {!orders && !loading ? (
+      {unknownOwner ? (
+        <div className="pc-orders__sec" data-testid="orders-owner-unknown">
+          <Empty text="No agent with this id was found in the current roster or session history." />
+        </div>
+      ) : null}
+      {!unknownOwner && !orders && !loading ? (
         <div className="pc-orders__sec">
           <Unavailable what={error ? `orders (${error})` : 'orders from this operator'} />
         </div>
       ) : null}
-      {!orders && loading ? (
+      {!unknownOwner && !orders && loading ? (
         <div className="pc-orders__sec">
           <Empty text="Loading orders…" />
         </div>
       ) : null}
 
-      {orders ? (
+      {!unknownOwner && orders ? (
         <>
           {/* Two clusters, not six peers (P-005 / Treatment C3). The split is
               the same one that justified splitting Orders from Activity in the

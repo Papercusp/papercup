@@ -39,7 +39,11 @@
 
 import { useCallback, useMemo } from 'react';
 import { useQueryState, parseAsString } from 'nuqs';
-import { formatRelativeUpdated, formatIdleAge } from '@papercusp/operator-core/lib/format/relative-time';
+import {
+  formatAbsoluteUpdated,
+  formatRelativeUpdated,
+  formatIdleAge,
+} from '@papercusp/operator-core/lib/format/relative-time';
 import { LivenessDot } from '@/app/coord/presence-ui';
 import { useLexicon } from '@/lib/useLexicon';
 import { agentDisplayLabel, agentRoleLabel } from '@/app/harness/agent-display';
@@ -523,6 +527,9 @@ export default function AgentDossier({
   onClose,
   startingUp = false,
   launchFailed = false,
+  sessionEnded = false,
+  sessionEndedAt = null,
+  unknownSession = false,
   zoneTitle = false,
 }: {
   ownerId: string;
@@ -537,6 +544,12 @@ export default function AgentDossier({
    *  Without this the rail keeps saying "starting up" about a corpse — the same
    *  lie as the banner, in the surface right next to it. */
   launchFailed?: boolean;
+  /** The owner is known from session history, but its session is terminal. */
+  sessionEnded?: boolean;
+  /** The server-observed terminal timestamp, when the roster supplied one. */
+  sessionEndedAt?: string | null;
+  /** The roster and session-history reads completed without finding this id. */
+  unknownSession?: boolean;
   /** Renders the rail's ZONE title bar — "Activity — what they're doing" — the
    *  vertical half of the Framed vocabulary [owner-approved 2026-08-02, artifact
    *  6379bb65]. A PROP rather than always-on, because this component has two
@@ -699,6 +712,14 @@ export default function AgentDossier({
         <div className="pc-dossier__note">This session's launch failed — it never came online.</div>
       ) : startingUp ? (
         <div className="pc-dossier__note">Starting up — this agent hasn't registered yet.</div>
+      ) : sessionEnded ? (
+        <div className="pc-dossier__note" data-testid="dossier-session-ended">
+          This session ended{sessionEndedAt ? ` at ${formatAbsoluteUpdated(sessionEndedAt)}` : ''}. Resume or relaunch is available below.
+        </div>
+      ) : unknownSession ? (
+        <div className="pc-dossier__note" data-testid="dossier-unknown-session">
+          No agent with this id was found in the current roster or session history.
+        </div>
       ) : (
         <div className="pc-dossier__note">This agent is no longer in the live roster.</div>
       )}

@@ -100,6 +100,17 @@ describe('AgentOrders', () => {
   afterEach(() => cleanup());
 
   describe('three states, never two (D-003)', () => {
+    it('does not invent a mission for an owner absent from roster and session history', () => {
+      setOrders(BASE);
+      const { getByTestId, queryByText } = render(
+        <AgentOrders ownerId="su-never-existed" ownerKnown={false} />,
+      );
+      expect(getByTestId('orders-owner-unknown').textContent).toContain(
+        'No agent with this id was found in the current roster or session history.',
+      );
+      expect(queryByText('execute-owner-directed-scope')).toBeNull();
+    });
+
     it('distinguishes a FAILED read from a genuinely-empty one — the two must never render alike', () => {
       // Genuinely empty: we asked, the answer was "none".
       setOrders({ mission: null, unavailable: [] });

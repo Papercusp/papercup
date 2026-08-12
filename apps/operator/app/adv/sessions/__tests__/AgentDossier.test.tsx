@@ -528,6 +528,31 @@ describe('AgentDossier', () => {
     expect(getByText('gone-1')).toBeTruthy();
   });
 
+  it('labels a known ended session with its end time and recovery path', () => {
+    const { getByTestId, queryByText } = render(
+      <AgentDossier
+        ownerId="su-ended-1"
+        entry={null}
+        onClose={() => {}}
+        sessionEnded
+        sessionEndedAt="2026-08-11T23:16:59.000Z"
+      />,
+    );
+    expect(getByTestId('dossier-session-ended').textContent).toContain('This session ended at');
+    expect(getByTestId('dossier-session-ended').textContent).toContain('Resume or relaunch');
+    expect(queryByText('This agent is no longer in the live roster.')).toBeNull();
+  });
+
+  it('labels an id absent from both roster and session history as unknown', () => {
+    const { getByTestId, queryByText } = render(
+      <AgentDossier ownerId="su-never-existed" entry={null} onClose={() => {}} unknownSession />,
+    );
+    expect(getByTestId('dossier-unknown-session').textContent).toContain(
+      'No agent with this id was found in the current roster or session history.',
+    );
+    expect(queryByText('This agent is no longer in the live roster.')).toBeNull();
+  });
+
   // WI-6367: a never-started agent arrives here identically to an ended one
   // (entry: null). Told which it is, the rail must not use the past tense.
   // WI-6821: once the launch is OBSERVED dead, "starting up" is a lie here just
