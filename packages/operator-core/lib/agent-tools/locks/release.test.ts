@@ -9,6 +9,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { mockResolvedOnceTyped, mockResolvedTyped } from '../../testing/typed-mock';
 
 vi.mock('./identity', () => ({ readIdentity: vi.fn(() => ({ ownerId: 'me', ownerLabel: 'Me', coordinationDomain: 'dom' })) }));
+vi.mock('./coordination-domain', () => ({ resolveExplicitFileLockDomain: vi.fn((requested: string | undefined, fallback: string) => requested ?? fallback) }));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me' })) }));
 vi.mock('./in-workspace-txn', () => ({
   inWorkspaceTxn: vi.fn(async (_d: string, _o: string, fn: (tx: unknown) => unknown) => fn({})),
@@ -34,10 +35,12 @@ vi.mock('../../authority/lock-event-stream', () => ({ recordLockEvent: vi.fn() }
 import { routeFileLockOp } from '../../authority/file-lock-routing';
 import { recordLockEvent } from '../../authority/lock-event-stream';
 import { releaseAllResourcesForOwner } from './su-lock-store';
+import { resolveExplicitFileLockDomain } from './coordination-domain';
 
 const routeM = vi.mocked(routeFileLockOp);
 const releaseResourcesM = vi.mocked(releaseAllResourcesForOwner);
 const recordEventM = vi.mocked(recordLockEvent);
+const resolveDomainM = vi.mocked(resolveExplicitFileLockDomain);
 const tool = (await import('./release')).default;
 
 type Out = { data?: any; content?: Array<{ text: string }> };
@@ -62,6 +65,12 @@ describe('locks:release handler', () => {
         { ok: true, lock_id: '11111111-1111-1111-1111-111111111111', released: ['released:11111111-1111-1111-1111-111111111111'] },
       ],
     });
+  });
+
+  it('uses the domain carried by the matching edit-hook acquire', async () => {
+    await call({ lock_id: '11111111-1111-1111-1111-111111111111', coordination_domain: '/canonical/staging' });
+    expect(resolveDomainM).toHaveBeenCalledWith('/canonical/staging', 'dom');
+    expect(routeM.mock.calls[0]?.[0]).toBe('/canonical/staging');
   });
 
   it('releases selected lock_ids as a keyed bulk envelope', async () => {

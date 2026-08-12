@@ -21,6 +21,7 @@ import { join } from 'node:path';
 import { createServer, type Server } from 'node:http';
 
 const HOOK = join(__dirname, '..', 'pretooluse-locks-acquire.sh');
+const POST_HOOK = join(__dirname, '..', 'posttooluse-locks-release.sh');
 
 let home: string, cache: string, ws: string, repo: string;
 let server: Server;
@@ -110,6 +111,20 @@ async function run(
   return { status, stdout: stdout.trim() };
 }
 
+async function runPost(input: object): Promise<{ status: number | null; stdout: string }> {
+  const { status, stdout } = await runHookProcess('bash', [POST_HOOK], {
+    input: JSON.stringify(input),
+    env: {
+      ...process.env,
+      HOME: home,
+      PAPERCUSP_LOCKS_CACHE_DIR: cache,
+      PAPERCUSP_WORKSPACE_ROOT: ws,
+      PAPERCUSP_OPERATOR_URL: `http://127.0.0.1:${port}`,
+    },
+  });
+  return { status, stdout: stdout.trim() };
+}
+
 const editOf = (rel: string, toolUseId: string) => ({
   tool_name: 'Edit',
   tool_input: { file_path: join(repo, rel) },
@@ -125,6 +140,7 @@ describe('cc PreToolUse hook — operator decision rendering (stub operator)', (
     expect(r.status).toBe(0);
     expect(r.stdout).toBe(''); // allow = no decision
     expect(lastRequest?.body.params.arguments.paths).toEqual(['sub/grant.ts']);
+    expect(lastRequest?.body.params.arguments.coordination_domain).toBe(fs.realpathSync(repo));
     // The lock_id is cached by tool_use_id so PostToolUse can release it.
     const cached = join(cache, 'tu-grant.lock');
     expect(fs.existsSync(cached)).toBe(true);
@@ -135,6 +151,21 @@ describe('cc PreToolUse hook — operator decision rendering (stub operator)', (
     const pathsCache = join(cache, 'tu-grant.paths');
     expect(fs.existsSync(pathsCache)).toBe(true);
     expect(JSON.parse(fs.readFileSync(pathsCache, 'utf8'))).toEqual(['sub/grant.ts']);
+    expect(fs.readFileSync(join(cache, 'tu-grant.domain'), 'utf8')).toBe(fs.realpathSync(repo));
+  });
+
+  it('PostToolUse releases through the same physical domain as PreToolUse', async () => {
+    nextInner = { ok: true, lock_id: 'domain-lock' };
+    const pre = await run(editOf('sub/domain-release.ts', 'tu-domain-release'));
+    expect(pre.status).toBe(0);
+    const post = await runPost({ tool_use_id: 'tu-domain-release', session_id: 's' });
+    expect(post.status).toBe(0);
+    expect(lastRequest?.body.params.name).toBe('locks:release');
+    expect(lastRequest?.body.params.arguments).toMatchObject({
+      lock_id: 'domain-lock',
+      coordination_domain: fs.realpathSync(repo),
+    });
+    expect(fs.existsSync(join(cache, 'tu-domain-release.domain'))).toBe(false);
   });
 
   it('already-held grant → allow without caching a PostToolUse release token', async () => {

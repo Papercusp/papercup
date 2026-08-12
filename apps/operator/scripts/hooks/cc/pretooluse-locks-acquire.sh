@@ -544,6 +544,7 @@ workspace_root = os.path.realpath(
 
 # ── Resolve to repo-relative POSIX, refuse symlinked paths ─────────────
 repo_relative = []
+repo_domains = set()
 
 
 def _external_home_key(abs_path):
@@ -579,6 +580,12 @@ for p in raw_paths:
         if _external_key:
             repo_relative.append(_external_key)
         continue  # Outside a repo and outside HOME remains uncoordinated.
+
+    # The hook may call an operator serving a DIFFERENT checkout than the one
+    # being edited (normally :3070's release tree vs the canonical staging
+    # tree). Preserve the physical repo root so locks:acquire keys the same
+    # domain as this edit instead of the operator process's own checkout.
+    repo_domains.add(os.path.realpath(root))
 
     # ── Worktree discipline: only the canonical staging tree is editable ──
     # The shared staging tree (papercusp) is the ONE tree agents edit — its
@@ -762,6 +769,7 @@ body = json.dumps({
         'intent': f'PreToolUse:{tool_name}',
         'ttl_sec': 1200,
         'wait': {'max_sec': 0},
+        **({'coordination_domain': next(iter(repo_domains))} if len(repo_domains) == 1 else {}),
     }},
 }).encode()
 
@@ -896,6 +904,7 @@ def _grant(granted):
         'paths': repo_relative[:50],
         'release_paths': release_paths,
         'lock_id': lock_id,
+        **({'coordination_domain': next(iter(repo_domains))} if len(repo_domains) == 1 else {}),
     }
     write_marker('last-decision.json', decision)
     write_marker(owner_marker_name('decision'), decision)
@@ -905,6 +914,9 @@ def _grant(granted):
                 f.write(lock_id)
             with open(os.path.join(cache_dir, tool_use_id + '.paths'), 'w') as f:
                 json.dump(release_paths, f)
+            if len(repo_domains) == 1:
+                with open(os.path.join(cache_dir, tool_use_id + '.domain'), 'w') as f:
+                    f.write(next(iter(repo_domains)))
         except Exception:
             pass
     _clear_transient_streak()

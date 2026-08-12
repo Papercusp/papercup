@@ -21,7 +21,7 @@
  */
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname } from 'node:path';
+import { dirname, isAbsolute } from 'node:path';
 import { hasValidGitEntry } from './valid-git-entry';
 import { activeWorkspaceId } from '../../workspace-registry';
 
@@ -56,6 +56,32 @@ export function lockDomainForProjectDir(projectDir: string): string {
   } catch {
     return root;
   }
+}
+
+/**
+ * Resolve a client-supplied physical repo root for a file-lock operation.
+ *
+ * A client edit hook can be talking to a different operator checkout than the
+ * one being edited (for example, :3070's release tree while the edit is in
+ * staging). In that case the hook supplies the repo root it resolved from the
+ * edit path. Canonicalize and validate it here so the lock authority receives
+ * the physical repo domain, never a relative string or a nested directory.
+ */
+export function resolveExplicitFileLockDomain(requested: string | undefined, fallback: string): string {
+  if (requested === undefined) return fallback;
+  const value = requested.trim();
+  if (!value) throw new Error('coordination_domain must be a non-empty absolute repository root');
+  if (!isAbsolute(value)) throw new Error('coordination_domain must be an absolute repository root');
+  let resolved: string;
+  try {
+    resolved = realpathSync(value);
+  } catch {
+    throw new Error(`coordination_domain is not a reachable repository root: ${value}`);
+  }
+  if (!hasValidGitEntry(resolved)) {
+    throw new Error(`coordination_domain is not a repository root: ${value}`);
+  }
+  return resolved;
 }
 
 /** The lock coordination domain for the operator (cached). */

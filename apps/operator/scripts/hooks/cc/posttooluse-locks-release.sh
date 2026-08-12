@@ -140,9 +140,25 @@ try:
 except Exception:
     pass
 
+# The matching PreToolUse may have acquired through an operator serving a
+# different checkout than the edited tree. Carry its physical repo domain
+# across the release call; otherwise the release would look in the operator's
+# own domain and strand the real lock until TTL.
+domain_cache_path = os.path.join(cache_dir, tool_use_id + '.domain')
+coordination_domain = None
+try:
+    with open(domain_cache_path) as f:
+        loaded_domain = f.read().strip()
+    if loaded_domain:
+        coordination_domain = loaded_domain
+except Exception:
+    pass
+
 release_args = {'lock_id': lock_id}
 if release_paths:
     release_args['paths'] = release_paths
+if coordination_domain:
+    release_args['coordination_domain'] = coordination_domain
 
 body = json.dumps({
     'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
@@ -219,6 +235,10 @@ except Exception:
     pass
 try:
     os.remove(paths_cache_path)
+except Exception:
+    pass
+try:
+    os.remove(domain_cache_path)
 except Exception:
     pass
 

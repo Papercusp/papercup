@@ -69,6 +69,7 @@ import { recordLockEvent } from '../../authority/lock-event-stream';
 import { DEFAULT_LOCK_TTL_SEC as DEFAULT_TTL_SEC, MAX_LOCK_TTL_SEC as MAX_TTL_SEC, MAX_LOCK_WAIT_SEC as MAX_WAIT_SEC } from './lock-config';
 import { hardText, LIMITS } from '../limits';
 import { externalHomePathToLockKey } from './external-path';
+import { resolveExplicitFileLockDomain } from './coordination-domain';
 import { isTransientPgConnectionError } from '../../host-benign-errors';
 
 /** wake_on_grant queue window (await-event-primitive D-005): how long a
@@ -119,6 +120,12 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   args: z.object({
     paths: z.array(z.string().min(1)).max(50).optional().describe('repo-relative POSIX file paths (no ./, .., backslashes, or absolute paths)'),
+    coordination_domain: z
+      .string()
+      .min(1)
+      .max(4096)
+      .optional()
+      .describe('physical repository root supplied by a client edit hook when its operator checkout differs from the edited tree'),
     external_paths: z
       .array(z.string().min(1))
       .max(50)
@@ -162,7 +169,13 @@ export default defineTool({
     }
   }),
   async handler(args, ctx) {
-    const { ownerId, ownerLabel, coordinationDomain } = readIdentity(ctx);
+    const { ownerId, ownerLabel, coordinationDomain: defaultCoordinationDomain } = readIdentity(ctx);
+    let coordinationDomain: string;
+    try {
+      coordinationDomain = resolveExplicitFileLockDomain(args.coordination_domain, defaultCoordinationDomain);
+    } catch (err) {
+      return errorResult(err instanceof Error ? err.message : String(err));
+    }
 
     let paths: string[];
     try {

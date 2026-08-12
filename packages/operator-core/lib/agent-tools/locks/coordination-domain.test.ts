@@ -11,6 +11,7 @@ import {
   isWorkspaceScopedResource,
   workspaceScopedLockDomain,
   candidateResourceLockDomains,
+  resolveExplicitFileLockDomain,
   __resetLockCoordinationDomain,
 } from './coordination-domain';
 
@@ -100,6 +101,27 @@ describe('lockCoordinationDomain', () => {
     expect(lockCoordinationDomain()).toBe('/d1'); // cached — env change not re-read
     __resetLockCoordinationDomain();
     expect(lockCoordinationDomain()).toBe('/d2'); // re-read after reset
+  });
+});
+
+describe('resolveExplicitFileLockDomain', () => {
+  it('canonicalizes a valid physical repository root', () => {
+    const root = mkdtempSync(join(tmpdir(), 'lockdom-explicit-'));
+    mkFakeGitDir(root);
+    const link = `${root}-link`;
+    symlinkSync(root, link);
+    expect(resolveExplicitFileLockDomain(link, '/fallback')).toBe(realpathSync(root));
+  });
+
+  it('rejects a relative, missing, or non-repository domain', () => {
+    expect(() => resolveExplicitFileLockDomain('relative', '/fallback')).toThrow(/absolute/);
+    expect(() => resolveExplicitFileLockDomain('/does/not/exist', '/fallback')).toThrow(/reachable/);
+    const dir = mkdtempSync(join(tmpdir(), 'lockdom-not-repo-'));
+    expect(() => resolveExplicitFileLockDomain(dir, '/fallback')).toThrow(/repository root/);
+  });
+
+  it('uses the server domain when the client does not supply an override', () => {
+    expect(resolveExplicitFileLockDomain(undefined, '/fallback')).toBe('/fallback');
   });
 });
 

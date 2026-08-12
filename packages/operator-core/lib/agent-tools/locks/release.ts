@@ -25,6 +25,7 @@ import {
 import { recordLockEvent } from '../../authority/lock-event-stream';
 import { noteShaTokenRelease } from '../../authority/sha-token-registry';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
+import { resolveExplicitFileLockDomain } from './coordination-domain';
 
 const lockIdSchema = z.string().uuid({
   error: (issue) => {
@@ -61,6 +62,12 @@ export default defineTool({
     lock_id: lockIdSchema.optional(),
     lock_ids: z.array(lockIdSchema).min(1).max(200).optional(),
     paths: z.array(z.string()).optional(),
+    coordination_domain: z
+      .string()
+      .min(1)
+      .max(4096)
+      .optional()
+      .describe('physical repository root supplied by a client edit hook when releasing a lock acquired through another operator checkout'),
     all_mine: z.boolean().optional(),
     // G-0 (P-033) publish-then-release: the head sha you published to your
     // hive-git namespace before releasing. The authority stamps the NEXT grant
@@ -72,7 +79,15 @@ export default defineTool({
       .optional(),
   }),
   async handler(args, ctx) {
-    const { ownerId, ownerLabel, coordinationDomain } = readIdentity(ctx);
+    const { ownerId, ownerLabel, coordinationDomain: defaultCoordinationDomain } = readIdentity(ctx);
+    let coordinationDomain: string;
+    try {
+      coordinationDomain = resolveExplicitFileLockDomain(args.coordination_domain, defaultCoordinationDomain);
+    } catch (err) {
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: err instanceof Error ? err.message : String(err) }) }],
+      };
+    }
     const lockIds = mergeIds(args.lock_id, args.lock_ids);
 
     if (lockIds.length === 0 && !args.all_mine) {

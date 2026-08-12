@@ -19,6 +19,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 vi.mock('./identity', () => ({ readIdentity: vi.fn(() => ({ ownerId: 'me', ownerLabel: 'Me', coordinationDomain: 'dom' })) }));
+vi.mock('./coordination-domain', () => ({ resolveExplicitFileLockDomain: vi.fn((requested: string | undefined, fallback: string) => requested ?? fallback) }));
 vi.mock('./enrich-busy', () => ({ enrichBusy: vi.fn(async (b: unknown) => b) }));
 vi.mock('./in-workspace-txn', () => {
   class WorkspaceContendedError extends Error {}
@@ -61,6 +62,7 @@ import { normalizePaths, tryInsertWaiter, readWaiterStatus, pokeWorkspace, expir
 import { WorkspaceContendedError } from './in-workspace-txn';
 import { routeFileLockOp } from '../../authority/file-lock-routing';
 import { recordLockEvent } from '../../authority/lock-event-stream';
+import { resolveExplicitFileLockDomain } from './coordination-domain';
 const normM = vi.mocked(normalizePaths);
 const insertM = vi.mocked(tryInsertWaiter);
 const routeM = vi.mocked(routeFileLockOp);
@@ -69,6 +71,7 @@ const statusM = vi.mocked(readWaiterStatus);
 const pokeM = vi.mocked(pokeWorkspace);
 const expireM = vi.mocked(expireWaiter);
 const tryAcquireM = vi.mocked(tryAcquire);
+const resolveDomainM = vi.mocked(resolveExplicitFileLockDomain);
 const tool = (await import('./acquire')).default;
 
 /** postgres-js's own shape for a connection drop mid-query (EI-19324204900062056). */
@@ -113,6 +116,13 @@ describe('locks:acquire — outcome branches', () => {
       ok: true, lock_id: 'L1', owner: 'me', owner_label: 'Me',
       expires_ts: '2026-02-01T00:00:00.000Z', held: ['a.ts'],
     });
+  });
+
+  it('uses the client edit hook domain when supplied, so a release-tree operator cannot split the lock namespace', async () => {
+    routeM.mockResolvedValue({ value: { ok: true, lock_id: 'L1', expires_ts: new Date('2026-02-01T00:00:00Z'), held: ['a.ts'] }, via: 'local-authority' });
+    await call({ coordination_domain: '/canonical/staging' });
+    expect(resolveDomainM).toHaveBeenCalledWith('/canonical/staging', 'dom');
+    expect(routeM.mock.calls[0]?.[0]).toBe('/canonical/staging');
   });
 
   it('maps absolute home configuration files to the hook-compatible reserved key', async () => {
