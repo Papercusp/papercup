@@ -2580,13 +2580,23 @@ const sessionEnded = defineTool({
     if (denied) return denied;
     let advSessionId: number | null = null;
     let exitCode: number | null = null;
+    let killedBySignal: string | null = null;
     try {
-      const body = (await req.json()) as { advSessionId?: unknown; exitCode?: unknown };
+      const body = (await req.json()) as {
+        advSessionId?: unknown;
+        exitCode?: unknown;
+        killedBySignal?: unknown;
+      };
       if (typeof body.advSessionId === 'number' && Number.isInteger(body.advSessionId)) {
         advSessionId = body.advSessionId;
       }
       if (typeof body.exitCode === 'number' && Number.isInteger(body.exitCode)) {
         exitCode = body.exitCode;
+      }
+      // Shape-validated rather than trusted: this string is persisted and then read back
+      // as the reason an agent died, so it must be a signal NAME and nothing else.
+      if (typeof body.killedBySignal === 'string' && /^SIG[A-Z0-9]{1,15}$/.test(body.killedBySignal)) {
+        killedBySignal = body.killedBySignal;
       }
     } catch {
       /* fall through to the 400 */
@@ -2595,7 +2605,14 @@ const sessionEnded = defineTool({
       return jsonRes({ error: 'advSessionId required' }, 400);
     }
     try {
-      await markAdvSessionEnded(advSessionId, exitCode, 'self');
+      // WI-38054: 'self' is a claim about VOLUNTARINESS, not merely about who reported.
+      // This endpoint used to hardcode it, so every kill the launcher observed — an
+      // owner's Ctrl-C, an OOM, a :3270 sidecar restart tearing down its cgroup — was
+      // recorded as the session choosing to exit. Combined with node-pty's exitCode 0
+      // for a signal death, the row then asserted a clean exit outright, which is why a
+      // mass reap of the owner's agents was indistinguishable from two normal endings.
+      const endedBy = killedBySignal ? 'signal' : 'self';
+      await markAdvSessionEnded(advSessionId, exitCode, endedBy, { signal: killedBySignal });
       return jsonRes({ ok: true });
     } catch (err) {
       return jsonRes({ ok: false, error: err instanceof Error ? err.message : String(err) }, 503);
