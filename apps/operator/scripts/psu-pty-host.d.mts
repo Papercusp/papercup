@@ -128,6 +128,84 @@ export function makeIdleGate({ idleMs, capMs, now }?: {
     }>;
 };
 /**
+ * Split a terminal byte stream into ZONES so that "is this byte owner-authored
+ * text?" is answered in exactly one place. Stateful across chunks: a reply can
+ * be split over two reads, and a stateless classifier would mis-read the tail
+ * of a sequence as owner text — the same failure one level up.
+ *
+ * Each byte is reported as one of:
+ *   'text'   — outside any escape sequence (owner keystrokes live here)
+ *   'esc'    — a bare ESC whose family is not yet known (the next byte decides)
+ *   'csi'    — inside ESC [ … ; also produced by arrow/function keys, so this
+ *              zone is AMBIGUOUS: a human pressing Left and a terminal
+ *              answering a cursor query are indistinguishable here.
+ *   'ss3'    — inside ESC O …; ambiguous for the same reason (keypad keys).
+ *   'string' — inside a string sequence; UNAMBIGUOUSLY terminal-authored.
+ *
+ * Pure (no I/O); exported for tests.
+ */
+export function makeAnsiZoneScanner(): {
+    /** Feed a chunk; `onByte(code, zone)` is called once per byte, in order. */
+    scan(data: any, onByte: any): void;
+    /** Drop any half-parsed sequence (used when the composer is force-reset). */
+    reset(): void;
+};
+/**
+ * Does this stdin chunk contain anything a HUMAN could have produced?
+ *
+ * Used to keep terminal replies out of the owner-presence signals. It is
+ * deliberately conservative: only the unambiguous 'string' zone is treated as
+ * definitely-not-human, so arrow keys, function keys and keypad input (CSI/SS3)
+ * still count as owner activity exactly as they did before. The one behaviour
+ * given up is a LONE Escape keypress followed by nothing else, ever — its
+ * family never resolves, and paying that to stop every terminal reply forging
+ * owner presence is the right trade.
+ *
+ * Stateful across chunks — construct one per stdin stream.
+ */
+export function makeOwnerInputDetector(): {
+    /** true when the chunk could be owner-authored; false = pure terminal reply. */
+    sawOwnerInput(data: any): boolean;
+};
+/**
+ * Detect a composer that is no longer tracking a real person (WI-38156).
+ *
+ * The parser fix above removes the KNOWN phantom source; this exists for the
+ * next unknown one. The original incident was silent for hours — 532 deferrals
+ * across 9h, one session dead for 2h — because each individual defer is
+ * perfectly legitimate ("the owner is mid-line, don't corrupt their input"),
+ * and nothing ever asked the follow-up question: has that same untouched line
+ * been blocking wakes all morning?
+ *
+ * The signature that separates a phantom from a person: the staged length
+ * never changes AND no owner-authored byte has arrived for a long time. A real
+ * person who walked away mid-line trips this too — which is CORRECT. The agent
+ * is equally stuck either way, and somebody should be told.
+ *
+ * Pure (no clock, no I/O — the caller supplies the measurements); exported for
+ * tests.
+ */
+export function makeComposerWedgeDetector({ minDefers, minQuietMs }?: {
+    minDefers?: number | undefined;
+    minQuietMs?: number | undefined;
+}): {
+    /**
+     * Record one deferral. Returns a report payload the first time a wedge is
+     * suspected for a given staged line, otherwise null (so a wedged host logs
+     * once per episode instead of once per wake).
+     */
+    note({ pendingLength, ownerQuietMs, pendingAgeMs }?: {
+        ownerQuietMs?: number | undefined;
+        pendingAgeMs?: number | undefined;
+    }): {
+        pendingLength: any;
+        consecutiveDefers: number;
+        pendingAgeMs: number;
+        ownerQuietMs: number | null;
+        ownerBytesEverSeen: boolean;
+    } | null;
+};
+/**
  * Track a bridged owner's line-editor state separately from keystroke activity.
  * The idle gate only knows that typing stopped; it cannot tell whether the
  * owner pressed Enter. Injecting a wake into a quiet-but-unsubmitted line
@@ -138,12 +216,17 @@ export function makeIdleGate({ idleMs, capMs, now }?: {
  * fallback is to keep a line pending until an explicit submit/cancel arrives;
  * a false defer is safe, while appending machine bytes to owner text is not.
  */
-export function makeOwnerComposerGate({ capMs }?: {
+export function makeOwnerComposerGate({ capMs, now }?: {
     capMs?: number | undefined;
+    now?: (() => number) | undefined;
 }): {
     observe: (data: any) => void;
     hasPending(): boolean;
     pendingLength(): number;
+    /** How long the current line has been staged (0 when nothing is pending). */
+    pendingAgeMs(t?: number): number;
+    /** How long since ANY owner-authored byte arrived (Infinity when never). */
+    ownerQuietMs(t?: number): number;
     markSubmitted(): void;
     /** Wait for an owner submit/cancel, bounded so a parked line cannot wedge a host. */
     waitClear(): Promise<any>;
