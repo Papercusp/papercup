@@ -19,7 +19,8 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     // (AskUserQuestion|ExitPlanMode, owner-inbox-single-pane P-001) + guard-operator-desktop
     // (browser-navigation MCP tools + Skill, EI-16981) + content-lint (Edit|Write|MultiEdit,
     // P-013, wired WI-5543) + secrets-guard (Edit|Write|MultiEdit, wired WI-5542) +
-    // nul-byte-edit-guard (Edit|MultiEdit, EI-18896033546676518) +
+    // nul-byte-edit-guard (Edit|MultiEdit, EI-18896033546676518) + tool-prompt-weight-guard
+    // (Edit|Write|MultiEdit, EI-20204186116417704) +
     // schedule-wakeup-provenance (ScheduleWakeup, EI-18680056073436345) +
     // write-overwrite-guard (Write, EI-19966323166806405) + generated-file-edit-guard
     // (Edit|Write|MultiEdit, claude-md-projection-from-pg-2026-08-10 P-006), in install order.
@@ -33,6 +34,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/pretooluse-content-lint.mjs`,
       `${DEST}/pretooluse-secrets-guard.mjs`,
       `${DEST}/pretooluse-nul-byte-edit-guard.mjs`,
+      `${DEST}/pretooluse-tool-prompt-weight-guard.mjs`,
       `${DEST}/pretooluse-schedule-wakeup-provenance.mjs`,
       `${DEST}/pretooluse-write-overwrite-guard.mjs`,
       `${DEST}/pretooluse-generated-file-edit-guard.mjs`,
@@ -48,9 +50,10 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     expect(cfg.hooks.PreToolUse[6].matcher).toBe('Edit|Write|MultiEdit'); // content-lint
     expect(cfg.hooks.PreToolUse[7].matcher).toBe('Edit|Write|MultiEdit'); // secrets-guard
     expect(cfg.hooks.PreToolUse[8].matcher).toBe('Edit|MultiEdit'); // nul-byte-edit-guard
-    expect(cfg.hooks.PreToolUse[9].matcher).toBe('ScheduleWakeup'); // schedule-wakeup-provenance
-    expect(cfg.hooks.PreToolUse[10].matcher).toBe('Write'); // write-overwrite-guard
-    expect(cfg.hooks.PreToolUse[11].matcher).toBe('Edit|Write|MultiEdit'); // generated-file-edit-guard
+    expect(cfg.hooks.PreToolUse[9].matcher).toBe('Edit|Write|MultiEdit'); // tool-prompt-weight-guard
+    expect(cfg.hooks.PreToolUse[10].matcher).toBe('ScheduleWakeup'); // schedule-wakeup-provenance
+    expect(cfg.hooks.PreToolUse[11].matcher).toBe('Write'); // write-overwrite-guard
+    expect(cfg.hooks.PreToolUse[12].matcher).toBe('Edit|Write|MultiEdit'); // generated-file-edit-guard
 
     // PostToolBatch: mid-turn context push (context-injection-audit-2026-07-28 P-015).
     // ⚠ It lives HERE and not on PreToolUse deliberately (D-027) — PreToolUse only
