@@ -524,6 +524,7 @@ export function citesScreenshotArtifact(text: string | null | undefined): boolea
  */
 export function isBackedLiveDroveUiClaim(evidence: CompletionVerificationEvidence | null | undefined): boolean {
   if (!evidence || evidence.verifiedHow !== 'live-drove-ui') return true;
+  if (citesScreenshotArtifact(evidence.summary)) return true;
   if (citesScreenshotArtifact(evidence.testsRun)) return true;
   if (citesScreenshotArtifact(evidence.testResult)) return true;
   if (evidence.filesChanged?.some((f) => citesScreenshotArtifact(f))) return true;
@@ -663,7 +664,7 @@ function isUrlProbeCitation(source: string, matchText: string, matchIndex: numbe
 export function citedImagePaths(evidence: CompletionVerificationEvidence | null | undefined): string[] {
   if (!evidence) return [];
   const found = new Set<string>();
-  const sources = [evidence.testsRun, evidence.testResult, ...(evidence.filesChanged ?? [])];
+  const sources = [evidence.summary, evidence.testsRun, evidence.testResult, ...(evidence.filesChanged ?? [])];
   for (const source of sources) {
     if (!source) continue;
     for (const match of source.matchAll(IMAGE_PATH_PATTERN)) {
@@ -678,7 +679,7 @@ export function citedImagePaths(evidence: CompletionVerificationEvidence | null 
 /** Does the evidence cite an invocation that could have failed? */
 export function citesAssertionBearingRun(evidence: CompletionVerificationEvidence | null | undefined): boolean {
   if (!evidence) return false;
-  return [evidence.testsRun, evidence.testResult, ...(evidence.filesChanged ?? [])].some(
+  return [evidence.summary, evidence.testsRun, evidence.testResult, ...(evidence.filesChanged ?? [])].some(
     (text) => !!text && ASSERTION_BEARING_PATTERN.test(text),
   );
 }
@@ -700,7 +701,7 @@ const WEB_PROBE_STATUS_PATTERN = /(?:https?:\/\/\S+|`?[\w./~-]+\.\w+`?)\s*(?:->|
 
 export function citesWebProbeEvidence(evidence: CompletionVerificationEvidence | null | undefined): boolean {
   if (!evidence) return false;
-  return [evidence.testsRun, evidence.testResult, ...(evidence.filesChanged ?? [])].some(
+  return [evidence.summary, evidence.testsRun, evidence.testResult, ...(evidence.filesChanged ?? [])].some(
     (text) => !!text && /https?:\/\//i.test(text) && WEB_PROBE_STATUS_PATTERN.test(text),
   );
 }

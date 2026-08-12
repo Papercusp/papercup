@@ -337,6 +337,15 @@ describe('isBackedLiveDroveUiClaim (WI-5891)', () => {
     ).toBe(true);
   });
 
+  it('is BACKED when summary cites a falsifiable check artifact', () => {
+    expect(
+      isBackedLiveDroveUiClaim({
+        verifiedHow: 'live-drove-ui',
+        summary: 'LIVE EVIDENCE — /tmp/wi37549-check.json via tauri-agent-tools check --pid 255538 --json',
+      }),
+    ).toBe(true);
+  });
+
   it('is BACKED when filesChanged itself carries the screenshot path', () => {
     expect(
       isBackedLiveDroveUiClaim({

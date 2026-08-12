@@ -909,7 +909,6 @@ async function completeOne(
   // `proposed` — the partial case is rejected explicitly rather than assumed away,
   // because an "is the object present?" test passes every one of them.
   const completionAuthority = authorityForCompletion(completionEvidenceForGate);
-  const unbackedLiveDroveUiClose = closeIntentRequested && !isBackedLiveDroveUiClaim(completionEvidenceForGate);
 
   // EI-19319623239777505: the object actually PERSISTED to the row additionally carries
   // the caller's free-text `completion.summary`. This is deliberately a SEPARATE object
@@ -929,6 +928,11 @@ async function completeOne(
   const completionEvidenceToPersist: CompletionVerificationEvidence | undefined = summaryText
     ? { ...(completionEvidenceForGate ?? {}), summary: summaryText }
     : completionEvidenceForGate;
+  // EI-20008560598714546: summary is also a natural place to cite the live
+  // artifact. Scan the persisted evidence shape for that citation, while the
+  // authority judgement above remains scoped to structured verification fields.
+  const unbackedLiveDroveUiClose =
+    closeIntentRequested && !isBackedLiveDroveUiClaim(completionEvidenceToPersist);
 
   // EI-18797014705631713: citing an artifact is not the same as HAVING one. The text
   // check above proves a path was written down; this reads the file. A screenshot of a
@@ -937,7 +941,7 @@ async function completeOne(
   // was the easiest to fake by accident. Deliberately fail-open: it refuses only when
   // every cited artifact is confidently bad (see verifyLiveDroveUiArtifacts).
   const artifactVerdict = closeIntentRequested
-    ? await verifyLiveDroveUiArtifacts(completionEvidenceForGate)
+    ? await verifyLiveDroveUiArtifacts(completionEvidenceToPersist)
     : null;
   const falseLiveDroveUiClose = !unbackedLiveDroveUiClose && artifactVerdict?.ok === false;
 
@@ -1010,7 +1014,7 @@ async function completeOne(
     stateError =
       `REJECTED — this completion claims verifiedHow:'live-drove-ui' to close ${it.id} but cites no real ` +
       'artifact (a screenshot/capture image path, or a recorded tauri-agent-tools capture/screenshot/check ' +
-      "invocation) in testsRun/testResult/filesChanged. This is exactly the gap that shipped WI-5874/P-001 past " +
+      "invocation) in summary/testsRun/testResult/filesChanged. This is exactly the gap that shipped WI-5874/P-001 past " +
       "its own author: unit tests verify structure, not pixels. Either cite the artifact, or honestly set " +
       "verifiedHow to 'unit'/'manual'/'integration' and re-send.";
   } else if (falseLiveDroveUiClose) {

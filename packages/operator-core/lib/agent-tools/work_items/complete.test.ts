@@ -727,6 +727,24 @@ describe('work_items:complete (keyed-array)', () => {
       expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
     });
 
+    it('a falsifiable `check` cited in summary closes normally (EI-20008560598714546)', async () => {
+      getWorkItem.mockResolvedValue(item);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...item, state: 'passed' }));
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: {
+          summary:
+            'LIVE EVIDENCE — /tmp/wi37549-check.json (11/11 passed, exit 0), recorded via tauri-agent-tools check --pid 255538 --json',
+          testResult: '11/11 passed',
+          verifiedHow: 'live-drove-ui',
+        },
+      });
+      expect(r.ok).toBe(true);
+      expect(r.error).toBeUndefined();
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalled();
+    });
+
     // EI-18855312333744373 — WI-6553's actual shape: a deployed-web verification, cited
     // as URL paths + HTTP status codes, wrongly rejected as fabricated because the
     // extractor read `/me.jpg` as a local filesystem citation.
