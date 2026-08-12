@@ -102,6 +102,10 @@ describe('coord:orient args', () => {
     expect(orientTool.args.safeParse({ recipesLimit: 0 }).success).toBe(true);
   });
 
+  it('accepts stale includeFleetCatchup casing in the transport schema', () => {
+    expect(orientTool.args.safeParse({ includeFleetCatchup: false }).success).toBe(true);
+  });
+
   it('keeps every in-process fold classified and outside the ambient workspace transaction', () => {
     const source = readFileSync(new URL('./orient.ts', import.meta.url), 'utf8');
     const called = [...source.matchAll(/\bcall\('([^']+)'/g)].map((match) => match[1]);
