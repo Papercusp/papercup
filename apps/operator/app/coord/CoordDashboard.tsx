@@ -82,14 +82,28 @@ interface HookErrorRecord {
   // 'pretooluse' | 'posttooluse'. Same marker file, either source — keep in
   // sync with the route union in routes/su-locks/hook-health.ts.
   handler: 'tool_call' | 'tool_result' | 'pretooluse' | 'posttooluse';
-  phase: 'connect' | 'http' | 'parse';
+  // `request` = the operator answered and REFUSED the hook's arguments —
+  // a hook defect, not an outage. Keep in sync with the route union in
+  // routes/su-locks/hook-health.ts.
+  phase: 'connect' | 'http' | 'parse' | 'request';
   detail: string;
+  operator_url: string;
+}
+/** A hook whose arguments the operator refused — reported separately from
+ *  `healthy`, which any other client's success would mask. See
+ *  HookRequestDefectRecord in routes/su-locks/hook-health.ts. */
+interface HookRequestDefectRecord {
+  ts: string;
+  handler: HookErrorRecord['handler'];
+  detail: string;
+  count: number;
   operator_url: string;
 }
 interface HookHealthResponse {
   healthy: boolean;
   last_success_ts: string | null;
   last_error: HookErrorRecord | null;
+  last_request_defect?: HookRequestDefectRecord | null;
 }
 
 const STALE_WINDOW_MS = 5 * 60_000;
@@ -131,7 +145,35 @@ function HookHealthBanner() {
     };
   }, []);
 
-  if (!data || data.healthy || !data.last_error) return null;
+  if (!data) return null;
+
+  // A REQUEST DEFECT outranks the healthy flag, because `healthy` cannot
+  // see it: it compares the shared last-error marker against the shared
+  // last-success marker, and any other client's successful hook call
+  // clears it while this hook still fails on every single call. Checked
+  // first, and independently of `healthy`, for exactly that reason.
+  const defect = data.last_request_defect ?? null;
+  if (defect) {
+    const defectAgeMs = Date.now() - Date.parse(defect.ts);
+    if (Number.isFinite(defectAgeMs) && defectAgeMs <= STALE_WINDOW_MS) {
+      const defectMinutes = Math.max(1, Math.round(defectAgeMs / 60_000));
+      return (
+        <div role="alert" className={styles.warningAlert}>
+          <strong className={styles.strong}>
+            File-lock enforcement is off — the {defect.handler} hook is sending an
+            invalid request.
+          </strong>{' '}
+          The operator answered and REFUSED it, so this is a bug in the hook, not
+          an outage: {defect.detail} ({defect.count}
+          {defect.count === 1 ? ' occurrence' : ' consecutive occurrences'},
+          last {defectMinutes}m ago). Every edit is being allowed without a claim
+          until the hook is fixed.
+        </div>
+      );
+    }
+  }
+
+  if (data.healthy || !data.last_error) return null;
   const ageMs = Date.now() - Date.parse(data.last_error.ts);
   if (!Number.isFinite(ageMs) || ageMs > STALE_WINDOW_MS) return null;
 
@@ -139,6 +181,8 @@ function HookHealthBanner() {
   const label =
     phase === 'connect'
       ? 'operator unreachable from an agent session'
+      : phase === 'request'
+      ? `hook ${data.last_error.handler} sent an invalid request (hook bug, not an outage)`
       : `hook ${data.last_error.handler} error (${phase})`;
   const minutes = Math.max(1, Math.round(ageMs / 60_000));
   return (

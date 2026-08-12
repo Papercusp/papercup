@@ -23,8 +23,32 @@ interface HookErrorRecord {
   // OMP hook: 'tool_call' | 'tool_result'. Claude/Codex cc/ hooks:
   // 'pretooluse' | 'posttooluse'. Same marker file, either source.
   handler: 'tool_call' | 'tool_result' | 'pretooluse' | 'posttooluse';
-  phase: 'connect' | 'http' | 'parse';
+  // `request` = the operator answered and REFUSED the hook's arguments —
+  // a hook defect, not an outage. Kept distinct from `connect` so a
+  // deterministic schema bug is not reported as a transient miss.
+  phase: 'connect' | 'http' | 'parse' | 'request';
   detail: string;
+  operator_url: string;
+}
+
+/**
+ * A request defect written by a hook whose arguments the operator refused.
+ *
+ * Reported SEPARATELY from `healthy` on purpose. `healthy` compares the
+ * shared last-error marker against the shared last-success marker, and
+ * every client on the box writes both — so one unrelated agent's
+ * successful hook call flips `healthy` back to true while a per-client
+ * defect is still rejecting every single call. That masking is why a
+ * session's worth of consecutive `locks:acquire` rejections surfaced
+ * nowhere. `count` is the consecutive-occurrence count observed by the
+ * emitting hook process; the record's own recency is the liveness signal
+ * (a live defect of this class re-writes it on every tool call).
+ */
+interface HookRequestDefectRecord {
+  ts: string;
+  handler: 'tool_call' | 'tool_result' | 'pretooluse' | 'posttooluse';
+  detail: string;
+  count: number;
   operator_url: string;
 }
 
@@ -54,6 +78,9 @@ export default defineTool({
     const errorRec = (await readJsonFile(resolve(dir, 'last-error.json'))) as HookErrorRecord | null;
     const successRec = await readJsonFile(resolve(dir, 'last-success.json'));
     const lastDecision = await readJsonFile(resolve(dir, 'last-decision.json'));
+    const defectRec = (await readJsonFile(
+      resolve(dir, 'last-request-defect.json'),
+    )) as HookRequestDefectRecord | null;
 
     const lastSuccessTs =
       successRec && typeof successRec.ts === 'string' ? successRec.ts : null;
@@ -69,11 +96,18 @@ export default defineTool({
       healthy = Number.isFinite(okMs) && okMs >= errMs;
     }
 
+    // Deliberately NOT folded into `healthy` — see HookRequestDefectRecord.
+    // A concurrent success by any other client would mask it there, which
+    // is the exact hole this field exists to close.
+    const lastRequestDefect =
+      defectRec && typeof defectRec.ts === 'string' ? defectRec : null;
+
     return Response.json({
       healthy,
       last_success_ts: lastSuccessTs,
       last_error: lastError,
       last_decision: lastDecision,
+      last_request_defect: lastRequestDefect,
     });
   },
 });

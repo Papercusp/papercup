@@ -1678,8 +1678,11 @@ export interface HookErrorRecord {
   ts: string;
   /** Which hook handler hit the error. */
   handler: 'tool_call' | 'tool_result';
-  /** Coarse phase of the failure. */
-  phase: 'connect' | 'http' | 'parse';
+  /** Coarse phase of the failure. `request` = the operator ANSWERED and
+   *  refused our arguments — a defect in the hook itself, never an
+   *  outage. It is separated from `connect` because collapsing the two
+   *  reported a deterministic schema bug as a transient transport miss. */
+  phase: 'connect' | 'http' | 'parse' | 'request';
   /** One-line human-readable context. */
   detail: string;
   /** Operator URL the hook was trying to reach. */
@@ -1714,6 +1717,85 @@ async function writeMarker(path: string, value: unknown): Promise<void> {
 export async function recordHookSuccess(): Promise<void> {
   const rec: HookSuccessRecord = { ts: new Date().toISOString() };
   await writeMarker(resolve(locksCacheDir(), 'last-success.json'), rec);
+}
+
+/**
+ * A REQUEST DEFECT — the operator answered and refused our arguments.
+ *
+ * Kept in its OWN marker file, deliberately, because `healthy` in
+ * `/api/su-locks/hook-health` is a machine-wide last-error-vs-last-success
+ * comparison over a marker set shared by every client on the box. A
+ * persistent per-client defect is therefore masked the instant ANY other
+ * agent's hook call succeeds — which, on a busy fleet, is immediate. That
+ * masking is the reason 220 consecutive `locks:acquire` rejections
+ * produced no signal anywhere. A success by an unrelated client cannot
+ * clear this file; only the defect ceasing to recur can, via its own
+ * recency.
+ */
+export interface HookRequestDefectRecord {
+  ts: string;
+  handler: HookErrorRecord['handler'];
+  /** One-line context — the tool + the operator's refusal. */
+  detail: string;
+  /** Consecutive occurrences observed by THIS hook process. A defect of
+   *  this class repeats on every tool call, so a high count is the
+   *  signal that enforcement has been off for a long time. */
+  count: number;
+  operator_url: string;
+}
+
+/** Consecutive request-defect count for this hook process. */
+let _requestDefectCount = 0;
+export function _resetRequestDefectCountForTests(): void {
+  _requestDefectCount = 0;
+}
+
+/**
+ * Record a deterministic request defect (our arguments were refused).
+ * Writes the dedicated marker AND the shared `last-error.json` with
+ * `phase: 'request'`, so an operator watching either surface sees a hook
+ * BUG rather than "operator unreachable".
+ */
+export async function recordRequestDefect(input: {
+  handler: HookErrorRecord['handler'];
+  detail: string;
+}): Promise<void> {
+  _requestDefectCount += 1;
+  const rec: HookRequestDefectRecord = {
+    ts: new Date().toISOString(),
+    handler: input.handler,
+    detail: input.detail,
+    count: _requestDefectCount,
+    operator_url:
+      process.env.PAPERCUSP_BUNDLE_URL ??
+      process.env.PAPERCUSP_OPERATOR_URL ??
+      '(unset)',
+  };
+  await writeMarker(resolve(locksCacheDir(), 'last-request-defect.json'), rec);
+  await recordHookError({
+    handler: input.handler,
+    phase: 'request',
+    detail: input.detail,
+  });
+}
+
+/**
+ * Narrow a {@link callMcpTool} result to the structured error shape it
+ * returns under `preserveErrors` — the operator answered and REFUSED.
+ * Returns null for every normal result (including a `busy` refusal, which
+ * is a successful call reporting contention, not a request defect).
+ */
+export function asStructuredCallError(
+  result: unknown,
+): { error: string; message: string } | null {
+  if (result === null || typeof result !== 'object') return null;
+  const r = result as { ok?: unknown; error?: unknown; message?: unknown };
+  if (r.ok !== false) return null;
+  if (r.error !== 'mcp_tool_error' && r.error !== 'mcp_rpc_error') return null;
+  return {
+    error: r.error,
+    message: typeof r.message === 'string' ? r.message : '(no message)',
+  };
 }
 
 /** Record a hook error (fail-open path). */
@@ -1860,16 +1942,51 @@ export function extractLockTargets(
 }
 
 /**
- * Repo-relative lock keys for a tool's edits — the `rel` of each
- * {@link LockTarget}. Kept as the simple projection for callers/tests
- * that only need the keys; the worktree roots (needed for symlink
- * detection) come from {@link extractLockTargets}.
+ * Dedupe {@link LockTarget}s down to the repo-relative lock keys sent to
+ * `locks:acquire`, preserving first-seen order. Lock keys are
+ * worktree-relative, so the same file claimed through two worktrees
+ * collapses to one key.
+ *
+ * ⚠ THIS FUNCTION IS THE SINGLE SOURCE OF THE ACQUIRE PAYLOAD — both
+ * {@link extractPathsFromToolInput} (what tests assert on) and
+ * `onToolCall` (what actually claims the lock) MUST route through it.
+ * They used to compute the keys separately, and that divergence is
+ * precisely how a total loss of OMP lock enforcement shipped unnoticed:
+ * `onToolCall` inlined the dedupe as
+ *
+ *     targets.map(t => t.rel).filter(x => !(seen.has(x) || seen.add(x)))
+ *
+ * `Set.add()` returns the SET, not a boolean — so `false || Set` is
+ * truthy and the negation is `false` for EVERY element. `paths` was
+ * unconditionally `[]`, and every OMP `locks:acquire` was rejected
+ * `invalid_args` (measured: 220/220 byte-identical failures in one
+ * session, 2026-08-11). The existing guard test passed throughout,
+ * because it asserted on `extractPathsFromToolInput` — the projection
+ * `onToolCall` did NOT use. Keeping one implementation is the fix; the
+ * one-line correction alone would leave the divergence in place.
+ */
+export function lockKeysFromTargets(targets: LockTarget[]): string[] {
+  const seen = new Set<string>();
+  const keys: string[] = [];
+  for (const target of targets) {
+    if (seen.has(target.rel)) continue;
+    seen.add(target.rel);
+    keys.push(target.rel);
+  }
+  return keys;
+}
+
+/**
+ * Repo-relative lock keys for a tool's edits — the deduped `rel` of each
+ * {@link LockTarget}. This is the EXACT payload `onToolCall` sends to
+ * `locks:acquire` (both call {@link lockKeysFromTargets}); the worktree
+ * roots needed for symlink detection come from {@link extractLockTargets}.
  */
 export function extractPathsFromToolInput(
   toolName: string,
   input: Record<string, unknown>,
 ): string[] {
-  return extractLockTargets(toolName, input).map((t) => t.rel);
+  return lockKeysFromTargets(extractLockTargets(toolName, input));
 }
 
 /**
@@ -4105,27 +4222,62 @@ export async function onToolCall(
   }
 
   // Lock keys are worktree-relative, so the same file claimed through
-  // two worktrees collapses to one key — dedupe, preserving order.
-  const seen = new Set<string>();
-  const paths: string[] = [];
-  for (const target of targets) {
-    if (seen.has(target.rel)) continue;
-    seen.add(target.rel);
-    paths.push(target.rel);
+  // two worktrees collapses to one key. Shared with
+  // extractPathsFromToolInput so a test of that projection covers THIS
+  // payload — see lockKeysFromTargets' note on why they must not diverge.
+  const paths = lockKeysFromTargets(targets);
+
+  // targets was non-empty (the no-target case returned above), so an empty
+  // key list here is an INTERNAL INVARIANT VIOLATION, not a benign no-op.
+  // It means enforcement is silently off for this edit, which is exactly
+  // the state that persisted undetected for a whole session. Fail open —
+  // a harness bug must never wedge the agent — but never silently.
+  if (paths.length === 0) {
+    console.error(
+      `[su-locks] INVARIANT: ${targets.length} lock target(s) produced 0 keys; ` +
+        'lock enforcement is OFF for this tool call (failing open)',
+    );
+    await recordRequestDefect({
+      handler: 'tool_call',
+      detail:
+        `lock-key derivation produced 0 keys from ${targets.length} target(s) ` +
+        `for tool '${event.toolName}' — enforcement silently disabled`,
+    });
+    return {};
   }
 
-  // Keep the safety rail from ever emitting the invalid `paths: []` request
-  // shape if a future target-normalization change returns malformed entries.
-  // The normal no-target path returns above; this is a second invariant at the
-  // exact boundary that calls locks:acquire.
-  if (paths.length === 0) return {};
+  const result = await callMcpTool(
+    'locks:acquire',
+    {
+      paths,
+      intent: `tool_call:${event.toolName}`,
+      ttl_sec: 1200,
+      wait: { max_sec: 0 },
+    },
+    // Without this a deterministic schema/argument rejection collapses to
+    // `null` and is indistinguishable from "operator unreachable" — it then
+    // takes the fail-open transport branch below and reports itself as a
+    // transient miss. That is how 220 consecutive invalid_args rejections
+    // escalated nothing.
+    { preserveErrors: true },
+  );
 
-  const result = await callMcpTool('locks:acquire', {
-    paths,
-    intent: `tool_call:${event.toolName}`,
-    ttl_sec: 1200,
-    wait: { max_sec: 0 },
-  });
+  // A structured error means the operator ANSWERED and refused our request:
+  // our arguments are wrong. That is a defect in THIS hook, never a
+  // transport problem, and it will recur on every tool call until fixed.
+  const structured = asStructuredCallError(result);
+  if (structured !== null) {
+    console.error(
+      `[su-locks] locks:acquire REFUSED THE REQUEST (${structured.error}): ` +
+        `${structured.message} — this is a hook defect, not an operator outage; ` +
+        'allowing tool_call (fail-open)',
+    );
+    await recordRequestDefect({
+      handler: 'tool_call',
+      detail: `locks:acquire ${structured.error}: ${structured.message}`,
+    });
+    return {};
+  }
 
   if (result == null) {
     // Operator unreachable or call errored — fail open. Cooperative
