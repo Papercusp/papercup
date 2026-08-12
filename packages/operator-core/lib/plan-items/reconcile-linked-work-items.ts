@@ -45,7 +45,7 @@ import {
   SETTLED_WORK_ITEM_STATES,
   type WorkItem,
 } from '../work-items';
-import { getPlanRow, planItemsForRow, type PlanIndexDecision } from '../agent-tools/plans/source';
+import { getPlanRow, planItemsForRow } from '../agent-tools/plans/source';
 import { resolveEffectiveStatusForItems } from '@papercusp/plan-parser';
 import {
   activeExternalBlockers,
@@ -87,14 +87,9 @@ export interface CompletedPlanItem {
   /**
    * EI-18677799334390930: the coordination identity (ownerId) of whoever actually
    * flipped the plan item to done/dropped, when the trigger's ctx resolved one —
-   * best-effort, may be absent (e.g. a system-triggered flip). Threaded into the
-   * synthetic completionRef this module stamps on every linked work-item it
-   * terminal-closes, so a leader reading a reconcile-sourced close can route a
-   * correction straight to the actor who caused it, instead of broadcasting to the
-   * fleet asking "who flipped this plan item?" (the exact operational gap the
-   * originating bug report hit — `coord:send` to RECONCILER_SYSTEM_ACTOR itself
-   * always fails with `unknown_recipient`, since the reconciler is a mechanism, not
-   * an addressable agent).
+   * best-effort, may be absent (e.g. a system-triggered flip). Retained as transient
+   * trigger context for callers, but deliberately NOT persisted as completion evidence:
+   * mirroring a plan status is only a proposed judgement, not independent verification.
    */
   triggeredBy?: string | null;
 }
@@ -221,15 +216,6 @@ export async function reconcileLinkedWorkItemsForPlanItem(
   item: CompletedPlanItem,
   opts: {
     knownTerminalStatus?: TerminalPlanItemStatus;
-    /** EI-19319970920449941: the plan's decisions, when the caller already has
-     *  the plan row in hand (the periodic sweep reads it once per plan and
-     *  reuses it for every candidate item — see reconcileOrphanedPlanItemWorkItems).
-     *  Passing it here avoids a redundant per-item getPlanRow round-trip; when
-     *  omitted (a caller that hasn't already read the row), the decision-citing
-     *  half of the completionRef below is simply skipped — never a hard fetch,
-     *  to preserve the exact "trust the caller's read" perf contract knownTerminalStatus
-     *  already documents. */
-    knownDecisions?: PlanIndexDecision[];
   } = {},
 ): Promise<ReconcileLinkedWorkItemsResult> {
   const out: ReconcileLinkedWorkItemsResult = {
@@ -245,13 +231,6 @@ export async function reconcileLinkedWorkItemsForPlanItem(
     // the sweep (bail if it is no longer terminal) and selects the settled state
     // each linked work-item is flipped to (TERMINAL_PLAN_ITEM_TARGET).
     let terminalStatus: TerminalPlanItemStatus;
-    // EI-19319970920449941: the plan's decisions ARE already the audit-trail an
-    // agent is told to write findings to (plans:add-decision), and each decision
-    // already carries `itemRefs` naming the plan items it evidences — so this is
-    // an EXACT join, not a guess. Populated below from whichever plan-row read
-    // this branch performs; `opts.knownDecisions` lets a caller that already read
-    // the row (the periodic sweep) skip a second one.
-    let decisions: PlanIndexDecision[] = opts.knownDecisions ?? [];
     if (opts.knownTerminalStatus) {
       // The periodic data-heal sweep (reconcileOrphanedPlanItemWorkItems) has
       // ALREADY re-read the plan row fresh and CONFIRMED this item terminal, so it
@@ -280,20 +259,8 @@ export async function reconcileLinkedWorkItemsForPlanItem(
         return out;
       }
       terminalStatus = current && isTerminalPlanItemStatus(current.status) ? current.status : 'done';
-      decisions = row?.decisions ?? decisions;
     }
     const target = TERMINAL_PLAN_ITEM_TARGET[terminalStatus];
-    // The decision(s) that name THIS plan item as evidenced — the exact join
-    // scheduler/plan-item-lane-guard.ts already uses for a different purpose
-    // (`d.itemRefs.includes(li.id)`). Only cite an EXACT itemRefs match: a
-    // pointer that turns out empty on inspection would be worse than no pointer
-    // at all (the audit would learn to distrust it).
-    const evidencingDecisions = decisions.filter((d) => d.itemRefs.includes(item.itemId));
-    const decisionNote = evidencingDecisions.length
-      ? ` — evidence recorded on plan decision(s) ${evidencingDecisions
-          .map((d) => d.id)
-          .join(', ')} (plans:get { slug:'${item.planSlug}', heading:'Decisions' }); this is not a bare flip`
-      : '';
 
     const linked = await findAllLinkedWorkItems(item.planSlug, item.itemId);
     for (const wi of linked) {
@@ -391,13 +358,10 @@ export async function reconcileLinkedWorkItemsForPlanItem(
       // trip on. No second clearStaleLaneHold call needed; it is idempotent
       // but redundant.
       try {
-        const attribution = item.triggeredBy ? ` (plan item flipped by ${item.triggeredBy})` : '';
         await setWorkItemState(wi.id, targetState, {
           harness: wi.harness ?? undefined,
           by: RECONCILER_SYSTEM_ACTOR,
-          completionRef: `Reconciled via plan-item status: ${item.planSlug}#${item.itemId} ${
-            terminalStatus === 'dropped' ? 'dropped' : 'completed'
-          }${attribution}${decisionNote}`,
+          completionAuthority: 'proposed',
         });
         out.reconciled.push(wi.id);
       } catch {
@@ -950,7 +914,7 @@ export async function reconcileOrphanedPlanItemWorkItems(
         out.terminalPlanItems += 1;
         const r = await reconcileLinkedWorkItemsForPlanItem(
           { planSlug: c.planSlug, itemId: c.itemId, harnessSlug: c.harnessSlug },
-          { knownTerminalStatus: st, knownDecisions: row.decisions },
+          { knownTerminalStatus: st },
         );
         out.reconciled.push(...r.reconciled);
         out.skippedInFlight.push(...r.skippedInFlight);
