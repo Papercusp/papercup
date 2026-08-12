@@ -287,10 +287,10 @@ export default defineTool({
             : {
                 opStatusRetired: true as const,
                 message:
-                  'Plan approved. Item promotion runs asynchronously; verify claimable work-items before launching a fleet. The operational started axis is RETIRED ' +
-                  '(papercusp-mug-kettle-system is OFF, the delivered state), so op_status was not ' +
-                  'written — su agents self-select these items via scheduler:get_next instead of ' +
-                  'waiting for a dispatcher. Flip the flag ON in /admin/features to restore it.',
+                  'Plan approved. Item promotion runs asynchronously; verify claimable work-items before launching a fleet. The operational started axis is PERMANENTLY RETIRED ' +
+                  '(P-068 DELETED papercusp-mug-kettle-system — there is no flag to flip and no ' +
+                  'toggle in /admin/features), so op_status was not written — su agents self-select ' +
+                  'these items via scheduler:get_next instead of waiting for a dispatcher.',
               }),
         };
       },
