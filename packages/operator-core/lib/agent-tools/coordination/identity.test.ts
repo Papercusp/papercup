@@ -11,7 +11,12 @@
  * stable coord owner, AND that a truly unattributable ctx still hard-errors.
  */
 import { describe, expect, it } from 'vitest';
-import { resolveAgentIdentity, SUPERUSER_FALLBACK_CLIENT_ID, isEphemeralMcpCallIdentity } from './identity';
+import {
+  resolveAgentIdentity,
+  SUPERUSER_FALLBACK_CLIENT_ID,
+  isEphemeralMcpCallIdentity,
+  isTransportOnlyIdentity,
+} from './identity';
 
 describe('resolveAgentIdentity — cup:spawn child (THE UMBILICAL)', () => {
   it('attributes a role-gated signed spawn ctx to its `s-…` client id (was: threw → MUTE bee)', () => {
@@ -183,5 +188,18 @@ describe('isEphemeralMcpCallIdentity (EI-8509)', () => {
     expect(id.ownerId).toBe('mcp-call-99887');
     expect(id.source).toBe('omp-hook-session');
     expect(isEphemeralMcpCallIdentity(id.ownerId)).toBe(true);
+  });
+});
+
+describe('isTransportOnlyIdentity — terminal completion attribution', () => {
+  it('flags the shared client-less fallback and mcp-call.mjs auto-generated identity', () => {
+    expect(isTransportOnlyIdentity(SUPERUSER_FALLBACK_CLIENT_ID)).toBe(true);
+    expect(isTransportOnlyIdentity('mcp-call-12345')).toBe(true);
+  });
+
+  it('does not flag a real per-session or spawn owner', () => {
+    expect(isTransportOnlyIdentity('su-abc123')).toBe(false);
+    expect(isTransportOnlyIdentity('s-1780000000000-deadbeef')).toBe(false);
+    expect(isTransportOnlyIdentity(null)).toBe(false);
   });
 });

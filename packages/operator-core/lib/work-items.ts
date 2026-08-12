@@ -89,6 +89,7 @@ import { liveDriveTerminalRefusal } from './turn-provenance/owner-visible-surfac
 import { readExternalBlockers, type ExternalBlockerRecord } from './external-blockers';
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from './pg-timestamp';
 import { noteGoalClaimed, readAgentStateStamp } from './agent-state-stamp';
+import { isTransportOnlyIdentity } from './agent-tools/coordination/identity';
 export { activeExternalBlockers, readExternalBlockers, updateExternalBlockerHistory } from './external-blockers';
 export type {
   ExternalBlockerCapability,
@@ -2287,6 +2288,13 @@ export async function setWorkItemState(
   } else {
     throw new Error(
       `work_item '${id}' (kind=${wi.kind}) cannot take state '${state}' — valid: ${norm.valid.join(', ')}`,
+    );
+  }
+  if (!opts.skipCompletionGate && isSettledWorkItemState(state) && isTransportOnlyIdentity(opts.by)) {
+    throw new Error(
+      `completion-integrity: work_item '${id}' → '${state}' rejected — '${opts.by}' is a transport-only ` +
+        `identity with no live completion owner. Retry through a connected agent session or pass an ` +
+        `explicit --client <ownerId>.`,
     );
   }
   // EI-7422: refuse to silently REOPEN an item that is already terminally

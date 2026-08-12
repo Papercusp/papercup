@@ -273,6 +273,17 @@ export function isEphemeralMcpCallIdentity(ownerId: string | null | undefined): 
 }
 
 /**
+ * True when an owner id is a transport-only identity with no live agent behind
+ * it. These ids remain valid for ordinary reads and coordination so client-less
+ * recovery calls do not fail at the identity layer, but they must not receive
+ * credit for a terminal completion: doing so makes a transport fallback look
+ * like the agent that actually did the work.
+ */
+export function isTransportOnlyIdentity(ownerId: string | null | undefined): boolean {
+  return ownerId === SUPERUSER_FALLBACK_CLIENT_ID || isEphemeralMcpCallIdentity(ownerId);
+}
+
+/**
  * EI-7766/EI-9274: many work-item write tools accept an `assignee`/`assign_to` that
  * names a concrete ownerId — but the literal `'self'` is a natural guess many callers
  * make (mirroring the `self` convention already honored elsewhere, e.g. search/sessions

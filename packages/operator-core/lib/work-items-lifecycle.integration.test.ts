@@ -293,6 +293,20 @@ describe('P-004 — completion authority round-trips through both family views',
     );
   });
 
+  it('refuses terminal completion credit for transport-only identities across both families', async () => {
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'transport issue', harness: 'papercup', createdBy: 'agA' });
+    await expect(
+      wi.setWorkItemState(bug.id, 'resolved', { by: 'su-loopback', completionRef: 'recovery completion' }),
+    ).rejects.toThrow(/transport-only identity/);
+    expect((await wi.getWorkItem(bug.id, 'papercup'))?.state).toBe('open');
+
+    const feature = await wi.createWorkItem({ kind: 'feature', title: 'transport feature', harness: 'papercup', createdBy: 'agA' });
+    await expect(
+      wi.setWorkItemState(feature.id, 'passed', { by: 'mcp-call-12345', completionRef: 'recovery completion' }),
+    ).rejects.toThrow(/transport-only identity/);
+    expect((await wi.getWorkItem(feature.id, 'papercup'))?.state).not.toBe('passed');
+  });
+
   // The EI-7422 reopen guard used to require terminal_completion_ref, which complete.ts
   // auto-filled on every close. With that auto-fill deleted, a guard keyed on the ref alone
   // would have stopped firing for every new completion — silently re-opening the hole.

@@ -348,6 +348,16 @@ describe('engineer issues surface (real PG)', () => {
     expect(stillOpen?.assignedAt).toBeTruthy();
   });
 
+  it('refuses terminal completion credit for transport-only identities', async () => {
+    for (const owner of ['su-loopback', 'mcp-call-12345']) {
+      const { id } = await issues.createIssue({ title: `transport owner ${owner}`, createdBy: 'agA' });
+      await expect(issues.setIssueState(id, 'resolved', owner, 'recovery completion')).rejects.toThrow(
+        /transport-only identity/,
+      );
+      expect((await issues.getIssue(id))?.state).toBe('open');
+    }
+  });
+
   it('terminal issue transitions clear the progress anchor with the released claim', async () => {
     const { id } = await issues.createIssue({ title: 'clear progress on close', createdBy: 'agA' });
     await issues.claimIssue(id, 'agB');

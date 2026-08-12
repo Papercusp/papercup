@@ -67,6 +67,7 @@ import { DEFAULT_SIGNAL_ORIGIN, type SignalOrigin } from './harness/improvements
 import { ISSUE_TERMINAL_STATUSES } from './work-item-blocking';
 import { mirrorWorkItemBlockingEdge, removeMirroredWorkItemBlockingEdge } from './dbos/work-item-deps-store';
 import { randomInt } from 'node:crypto';
+import { isTransportOnlyIdentity } from './agent-tools/coordination/identity';
 
 /**
  * Upper bound on rows a single `listIssues` read returns. Kept in lock-step with
@@ -2039,6 +2040,13 @@ export async function setIssueState(
 ): Promise<EngineerIssue | null> {
   const isTerminal = ISSUE_TERMINAL_STATUSES.has(state);
   if (isTerminal && !opts.skipCompletionGate) {
+    if (isTransportOnlyIdentity(by)) {
+      throw new Error(
+        `completion-integrity: issue '${id}' → '${state}' rejected — '${by}' is a transport-only ` +
+          `identity with no live completion owner. Retry through a connected agent session or pass an ` +
+          `explicit --client <ownerId>.`,
+      );
+    }
     if (!by || !by.trim()) {
       throw new Error(
         `completion-integrity: issue '${id}' → '${state}' rejected — a terminal transition requires an owner (by)`,
