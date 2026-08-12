@@ -61,6 +61,7 @@ async function getHealth(): Promise<{
     last_success_ts: string | null;
     last_error: Record<string, unknown> | null;
     last_decision: Record<string, unknown> | null;
+    last_request_defect: Record<string, unknown> | null;
   };
 }> {
   const res = await Promise.resolve(
@@ -73,7 +74,13 @@ describe('GET /api/su-locks/hook-health', () => {
   it('healthy=true, both null when no markers exist', async () => {
     const { status, body } = await getHealth();
     expect(status).toBe(200);
-    expect(body).toEqual({ healthy: true, last_success_ts: null, last_error: null, last_decision: null });
+    expect(body).toEqual({
+      healthy: true,
+      last_success_ts: null,
+      last_error: null,
+      last_decision: null,
+      last_request_defect: null,
+    });
   });
 
   it('healthy=true when only a success marker exists', async () => {
@@ -109,7 +116,35 @@ describe('GET /api/su-locks/hook-health', () => {
     writeFileSync(join(TMP, 'last-error.json'), 'not-json');
     writeFileSync(join(TMP, 'last-success.json'), '{bad');
     const { body } = await getHealth();
-    expect(body).toEqual({ healthy: true, last_success_ts: null, last_error: null, last_decision: null });
+    expect(body).toEqual({
+      healthy: true,
+      last_success_ts: null,
+      last_error: null,
+      last_decision: null,
+      last_request_defect: null,
+    });
+  });
+
+  it('surfaces a request defect independently from the shared healthy signal', async () => {
+    writeSuccess('2026-08-12T04:00:00Z');
+    writeFileSync(
+      join(TMP, 'last-request-defect.json'),
+      JSON.stringify({
+        ts: '2026-08-12T04:01:00Z',
+        handler: 'tool_call',
+        detail: 'invalid locks:acquire request',
+        count: 3,
+        operator_url: 'http://operator.test',
+      }),
+    );
+
+    const { body } = await getHealth();
+    expect(body.healthy).toBe(true);
+    expect(body.last_request_defect).toMatchObject({
+      handler: 'tool_call',
+      detail: 'invalid locks:acquire request',
+      count: 3,
+    });
   });
 
   it('surfaces the last automatic acquire decision for lock observability', async () => {
