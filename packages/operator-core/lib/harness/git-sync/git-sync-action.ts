@@ -967,6 +967,14 @@ async function recordOutcome(
   await patchRoutineMetadata(slug, workspaceId, {
     last_status: outcome.status,
     last_synced_at: Date.now(),
+    // A completed non-skipped outcome supersedes any earlier eligibility skip.
+    // JSONB patches are additive, so leaving these fields untouched makes a later
+    // `synced` tick look contradictory (`last_status: synced` alongside an old
+    // `last_skip_reason: remote_hive_view`). That stale pair caused readers to
+    // compare a commit-only/P2P worktree head with origin and diagnose a false
+    // remote-sync failure (EI-20269018542485023).
+    last_skip_reason: null,
+    last_skipped_at: null,
     last_pushed: pushed,
     // EI-18812945811758018: rides the SAME single write, so `last_pushed` is never
     // readable without the mode that says what an empty one MEANS for this member.

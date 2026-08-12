@@ -766,6 +766,8 @@ describe('clean sync outcome', () => {
       expect.objectContaining({
         last_status: 'synced',
         last_synced_at: expect.any(Number),
+        last_skip_reason: null,
+        last_skipped_at: null,
         head_sha: 'abc123def456',
         last_pushed: ['libs/generic/sync', 'superproject'],
         last_merged: ['superproject'],
