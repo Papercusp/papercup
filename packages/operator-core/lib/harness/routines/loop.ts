@@ -1517,6 +1517,8 @@ export interface PriorLoopFacts {
   intervalSec: number | null;
   /** The concrete harness namespace the existing routine is installed under. */
   harnessSlug: string | null;
+  /** The structurally persisted mission, when present on newer loop rows. */
+  goal?: string | null;
   /** The current payload_template.kickoff — the arm-time goal comparison substrate. */
   kickoff: string;
   fireCount: number;
@@ -1558,6 +1560,7 @@ export async function readActiveLoopFacts(
     active: Boolean(r.active),
     intervalSec: r.reschedule_interval_sec == null ? null : Number(r.reschedule_interval_sec),
     harnessSlug: typeof r.install_slug === 'string' ? r.install_slug : null,
+    goal: typeof pt.goal === 'string' && pt.goal.trim() ? pt.goal.trim() : null,
     kickoff: typeof pt.kickoff === 'string' ? pt.kickoff : '',
     fireCount: r.fire_count == null ? 0 : Number(r.fire_count),
     carry: pt.carry === 'cold' ? 'cold' : 'warm',

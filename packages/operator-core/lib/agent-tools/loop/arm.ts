@@ -333,6 +333,11 @@ export function computeLoopOverwriteNote(
   // loop, unchanged — no warning.
   if (priorKickoffNorm === normalizeLoopText(next.kickoff)) return null;
   const nextGoal = normalizeLoopText(next.goal);
+  // EI-20248422377293824: a custom wakePrompt (or a legacy kickoff shape) may
+  // not render the mission text, so kickoff containment alone cannot recognize
+  // a carry-only re-arm that preserved the structurally stored goal.
+  const priorGoal = normalizeLoopText(prior.goal ?? '');
+  if (priorGoal.length > 0 && priorGoal === nextGoal) return null;
   // Goal preserved (present verbatim in the prior kickoff)? Then only interval/carry/mode
   // changed — a deliberate retune, not a goal swap. No warning.
   if (nextGoal.length > 0 && priorKickoffNorm.includes(nextGoal)) return null;
