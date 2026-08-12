@@ -59,7 +59,7 @@ describe('sessions:read EI-20236684982538421 — structured large-window respons
     );
 
     expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
-    expect(tool.outputJsonSchema?.type).toBe('object');
+    expect(projected.outputJsonSchema?.type).toBe('object');
     expect(dispatched.result?.structuredContent).toMatchObject({
       ok: true,
       session_id: 'sess-known',
