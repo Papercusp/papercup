@@ -1123,6 +1123,63 @@ export async function reviveDisarmedLoop(sql: Sql, routineId: string, reason: st
 }
 
 /**
+ * Derive configured-vs-observed cadence from arm-relative timestamps.
+ *
+ * `firesSinceArm` is an attempted-fire count, not a delivery count. Dividing the
+ * arm-to-last-fire span by that count therefore answers the same question as the
+ * incident report: 15 fires over 7h47m reads as roughly a 31-minute effective
+ * interval, rather than the configured 60 seconds. `longestObservedGapSec` is
+ * already aggregated by the status query from event_wake_deliveries; this pure
+ * function only normalizes it so missing history stays visibly unknown.
+ */
+export function computeLoopCadence(input: {
+  intervalSec: number | null;
+  armedAtMs: number | null;
+  firesSinceArm: number;
+  lastFiredAtMs: number | null;
+  longestObservedGapSec?: number | null;
+  nowMs?: number;
+}): {
+  expectedFiresSinceArm: number | null;
+  effectiveIntervalSec: number | null;
+  cadenceRatio: number | null;
+  longestObservedGapSec: number | null;
+} {
+  const intervalSec = input.intervalSec;
+  const armedAtMs = input.armedAtMs;
+  const nowMs = input.nowMs ?? Date.now();
+  const expectedFiresSinceArm =
+    intervalSec != null && Number.isFinite(intervalSec) && intervalSec > 0 &&
+    armedAtMs != null && Number.isFinite(armedAtMs) && Number.isFinite(nowMs) && nowMs >= armedAtMs
+      ? Math.max(0, Math.floor((nowMs - armedAtMs) / (intervalSec * 1000)))
+      : null;
+
+  const firesSinceArm = Number.isFinite(input.firesSinceArm) ? Math.max(0, input.firesSinceArm) : 0;
+  const lastFiredAtMs = input.lastFiredAtMs;
+  const elapsedSinceArmMs =
+    armedAtMs != null && Number.isFinite(armedAtMs) &&
+    lastFiredAtMs != null && Number.isFinite(lastFiredAtMs) && lastFiredAtMs >= armedAtMs
+      ? lastFiredAtMs - armedAtMs
+      : null;
+  const effectiveIntervalSec =
+    elapsedSinceArmMs != null && firesSinceArm > 0
+      ? elapsedSinceArmMs / 1000 / firesSinceArm
+      : null;
+  const cadenceRatio =
+    effectiveIntervalSec != null && intervalSec != null && Number.isFinite(intervalSec) && intervalSec > 0
+      ? effectiveIntervalSec / intervalSec
+      : null;
+  const longestObservedGapSec =
+    input.longestObservedGapSec != null &&
+    Number.isFinite(Number(input.longestObservedGapSec)) &&
+    Number(input.longestObservedGapSec) >= 0
+      ? Number(input.longestObservedGapSec)
+      : null;
+
+  return { expectedFiresSinceArm, effectiveIntervalSec, cadenceRatio, longestObservedGapSec };
+}
+
+/**
  * Read an owner's loop status (NULL if none). A lean shape rather than the full
  * RoutineRow — and it correctly reads the parked sentinel: postgres-js parses
  * `next_fire_at='infinity'::timestamptz` to an invalid Date, so we detect parked
@@ -1138,6 +1195,7 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
   const completedMs = r.lifecycle_completed_at ? new Date(r.lifecycle_completed_at).getTime() : null;
   const presenceMs = r.presence_last_active_at ? new Date(r.presence_last_active_at).getTime() : null;
   const lastTurnMs = r.last_turn_at ? new Date(r.last_turn_at).getTime() : null;
+  const armedAtMs = r.armed_at ? new Date(r.armed_at).getTime() : null;
   const fireCount = r.fire_count == null ? 0 : Number(r.fire_count);
   // WI-36070 — mirror checkLoopDeadMan's own derivation exactly (loop-dead-man.ts), including the
   // clamp at 0: a loop armed before the fire_count_at_arm stamp reads baseline 0, and a negative
@@ -1165,6 +1223,13 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     lastDeliveryOutcome: r.last_delivery_outcome ?? null,
     nextFireAtIso,
   });
+  const cadence = computeLoopCadence({
+    intervalSec,
+    armedAtMs,
+    firesSinceArm,
+    lastFiredAtMs: lastFiredMs,
+    longestObservedGapSec: r.longest_observed_gap_sec == null ? null : Number(r.longest_observed_gap_sec),
+  });
   return {
     name: r.name,
     ownerId: r.target_owner_id ?? fallbackOwnerId,
@@ -1183,6 +1248,7 @@ function loopStatusFromRow(r: any, fallbackOwnerId: string): LoopStatus {
     nextFireAt: nextFireAtIso,
     lastFiredAt: r.last_fired_at ? new Date(r.last_fired_at).toISOString() : null,
     armedAt: r.armed_at ? new Date(r.armed_at).toISOString() : null,
+    ...cadence,
     costCapCents: typeof costCap === 'number' ? costCap : null,
     maxFires: typeof pt?.maxFires === 'number' ? pt.maxFires : null,
     maxDurationSec: typeof pt?.maxDurationSec === 'number' ? pt.maxDurationSec : null,
@@ -1340,6 +1406,26 @@ export async function getLoopStatuses(
                WHERE st3.owner = r.target_owner_id
                  AND st3.speaker = 'assistant'
             ) real_turn_sources)                                          AS last_real_turn_at,
+           -- EI-20217869515819188: compute the largest observed gap in this arm's
+           -- wake-delivery history without fetching the whole event ledger into JS.
+           -- COALESCE(delivered_at, created_at) matches lastWakeAt's existing
+           -- semantics: a created-but-not-yet-delivered wake is still an observed
+           -- delivery attempt, while a missing row remains distinguishable from a
+           -- queued row. No LIMIT is used here; a capped history would make a
+           -- round-number cap look like the true longest gap.
+           (SELECT max(gap_sec) FROM (
+              SELECT EXTRACT(EPOCH FROM (
+                       observed_at - LAG(observed_at) OVER (ORDER BY observed_at)
+                     )) AS gap_sec
+                FROM (
+                  SELECT COALESCE(w2.delivered_at, w2.created_at) AS observed_at
+                    FROM harness_shared.event_wake_deliveries w2
+                   WHERE w2.subscriber_id = r.target_owner_id
+                     AND w2.source = 'loop:' || r.id
+                     AND COALESCE(w2.delivered_at, w2.created_at) >=
+                         COALESCE((r.metadata->>'armed_at')::timestamptz, '-infinity'::timestamptz)
+                ) observed_wakes
+           ) wake_gaps)                                                     AS longest_observed_gap_sec,
            (SELECT max(p.last_active_at) FROM harness_shared.coord_presence p
              WHERE p.owner_id = r.target_owner_id) AS presence_last_active_at,
            lw.channel                                                    AS last_wake_channel,
