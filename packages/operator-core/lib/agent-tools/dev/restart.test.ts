@@ -135,6 +135,12 @@ describe('dev:restart dry run', () => {
     expect(acquireM).not.toHaveBeenCalled();
   });
 
+  it('chaining guidance includes both gates for a real restart', () => {
+    expect(tool.guidance?.chaining).toMatch(/confirm:true/);
+    expect(tool.guidance?.chaining).toMatch(/authorize:true/);
+    expect(tool.guidance?.chaining).toMatch(/reason:/);
+  });
+
   it('target:staging reports the staging unit + mentions the coalescing window', async () => {
     const b = body(await call({ target: 'staging' }));
     expect(b).toMatchObject({ ok: true, dry_run: true, target: 'staging', would_run: 'systemctl --user restart papercup-staging-api.service' });
