@@ -28,7 +28,7 @@
  */
 
 import { z } from 'zod';
-import { existsSync, readdirSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { detectPapercupRoot } from '../../harness/register-papercusp';
 import {
@@ -65,6 +65,7 @@ import {
   type CompletionCoverage,
   type CompletionRecord,
   type CompletionVerificationEvidence,
+  type CompletionTreeStamp,
 } from '../../coord-lifecycle/records';
 import { isBackedLiveDroveUiClaim, verifyLiveDroveUiArtifacts } from '../../completion-audit';
 import {
@@ -549,6 +550,106 @@ export function unresolvedPathsInCompletion(
   }
 
   return missing.length > 0 ? { missing } : undefined;
+}
+
+/** Injected reads for {@link completionTreeStamp}, so it is unit-testable with no real tree. */
+export interface CompletionTreeStampProbe {
+  repoRoot?: string | null;
+  /** Returns file contents, or undefined when the path does not exist / cannot be read. */
+  readFile?: (absPath: string) => string | undefined;
+}
+
+const SHA_RE = /^[0-9a-f]{40}$|^[0-9a-f]{64}$/;
+
+/**
+ * EI-18682004530991057 (proposal 3): stamp the completion with the commit its
+ * verification was observed against.
+ *
+ * WHY THE SERVER READS IT INSTEAD OF ASKING THE CALLER. `testResult: "172 passed"`
+ * names no particular code. Every agent here edits ONE shared working tree, so an
+ * unstamped result cannot be told apart from one describing an older revision or a
+ * tree a peer was mid-edit in. Measured live 2026-08-12 on the sibling item
+ * EI-20275701671571753: an agent measured a prompt-weight breach of 1604 against a
+ * DIRTY tree holding a half-finished peer edit and filed it as a fleet-blocking gate
+ * red. Neither the pre-edit (1336) nor post-edit (1478) state can produce 1604 — the
+ * number described a transient that was never committed and never existed for anyone
+ * else. A stamped measurement is self-evidently anchored (or self-evidently not).
+ *
+ * And it is stamped rather than requested because a caller-supplied sha is a
+ * testimonial about the very claim under review, filled in last, from memory —
+ * exactly how `filesChanged` came to carry 8 fabricated paths out of 12
+ * (EI-20093150500083378). Observed beats attested.
+ *
+ * ⚠ SPAWN-FREE BY CONSTRUCTION — do not "simplify" this to `git rev-parse HEAD`.
+ * EI-18808838427010743 (open, CRITICAL) measures every `git` spawn from the bg-host
+ * as ~165ms of BLOCKED EVENT LOOP, because fork() from a multi-GB-RSS parent costs
+ * ~40ms/GB in page-table copying — and that host's per-ref `git` loops already kill
+ * peer sockets mid-transfer. work_items:complete is a fleet-wide hot path; adding a
+ * fork to it would feed a known critical defect to save two file reads. This resolves
+ * HEAD by reading the refs directly: at most `.git/HEAD` + one ref file, or
+ * `packed-refs` when the loose ref has been packed away.
+ *
+ * FAIL-OPEN and SILENT, like every sibling check in this file (EI-24 record-and-warn):
+ * returns undefined on no repo root, an unreadable/absent `.git`, a ref that does not
+ * resolve, or anything not shaped like a sha. Absence records "not observed" — it must
+ * never be read as "clean".
+ *
+ * PURE via the injected probe — unit-tested without touching a real tree.
+ */
+export function completionTreeStamp(probe: CompletionTreeStampProbe = {}): CompletionTreeStamp | undefined {
+  // `in` rather than `??`, for the same reason as unresolvedPathsInCompletion above:
+  // an EXPLICIT `repoRoot: null` means "do not guess", which differs from omitting it.
+  const repoRoot = 'repoRoot' in probe ? probe.repoRoot : detectPapercupRoot();
+  if (!repoRoot) return undefined;
+
+  const readFile =
+    probe.readFile ??
+    ((abs: string) => {
+      try {
+        return readFileSync(abs, 'utf8');
+      } catch {
+        return undefined;
+      }
+    });
+
+  try {
+    // `.git` is a DIRECTORY in the main checkout, but a FILE holding `gitdir: <path>`
+    // in a worktree or submodule. This repo has both, so follow the indirection once
+    // rather than silently returning nothing in a worktree.
+    let gitDir = nodePath.join(repoRoot, '.git');
+    const dotGit = readFile(gitDir);
+    if (dotGit !== undefined) {
+      const pointed = /^gitdir:\s*(.+)$/m.exec(dotGit.trim())?.[1]?.trim();
+      if (!pointed) return undefined; // a readable `.git` FILE that is not a gitdir pointer
+      gitDir = nodePath.isAbsolute(pointed) ? pointed : nodePath.resolve(repoRoot, pointed);
+    }
+
+    const head = readFile(nodePath.join(gitDir, 'HEAD'))?.trim();
+    if (!head) return undefined;
+
+    // Detached HEAD: the sha sits in the file itself.
+    if (SHA_RE.test(head)) return { headSha: head };
+
+    const ref = /^ref:\s*(.+)$/.exec(head)?.[1]?.trim();
+    if (!ref) return undefined;
+
+    // Loose ref first; then packed-refs, where a ref lives once it has been packed.
+    const loose = readFile(nodePath.join(gitDir, ref))?.trim();
+    if (loose && SHA_RE.test(loose)) return { headSha: loose };
+
+    const packed = readFile(nodePath.join(gitDir, 'packed-refs'));
+    if (!packed) return undefined;
+    for (const line of packed.split('\n')) {
+      if (!line || line.startsWith('#') || line.startsWith('^')) continue;
+      const [sha, name] = line.trim().split(/\s+/, 2);
+      // Exact ref match only — a suffix/`includes` match would happily bind
+      // `refs/heads/staging` to `refs/remotes/origin/staging` and stamp the WRONG commit.
+      if (name === ref && sha && SHA_RE.test(sha)) return { headSha: sha };
+    }
+    return undefined;
+  } catch {
+    return undefined; // never let evidence-stamping fail a close
+  }
 }
 
 /**
@@ -1127,9 +1228,26 @@ async function completeOne(
   // close AND inside a second-close attestation, since that path reads `opts.completionEvidence`)
   // fixes both cases from one write, without touching the authority/warning semantics above.
   const summaryText = it.completion.summary?.trim();
-  const completionEvidenceToPersist: CompletionVerificationEvidence | undefined = summaryText
+  const completionEvidenceBeforeStamp: CompletionVerificationEvidence | undefined = summaryText
     ? { ...(completionEvidenceForGate ?? {}), summary: summaryText }
     : completionEvidenceForGate;
+
+  // EI-18682004530991057 (proposal 3): stamp WHAT TREE this evidence was observed
+  // against. Applied to the PERSISTED object only — never to `completionEvidenceForGate`
+  // — for the same reason `summary` is kept out of it above: `hasTests`,
+  // `authorityForCompletion` and `isBackedLiveDroveUiClaim` all key off whether
+  // STRUCTURED evidence was supplied, so folding a server-generated field into the gate
+  // evidence would let an evidence-free close silently read as "evidence supplied" and
+  // promote itself to `committed`. The stamp describes evidence; it is never evidence.
+  //
+  // Deliberately stamps ONLY a record that already exists: a close carrying nothing at
+  // all stays `undefined` rather than gaining an `_completionEvidence` object whose one
+  // key came from the server, which a later reader could mistake for caller-supplied proof.
+  const treeStamp = completionEvidenceBeforeStamp ? completionTreeStamp() : undefined;
+  const completionEvidenceToPersist: CompletionVerificationEvidence | undefined =
+    completionEvidenceBeforeStamp && treeStamp
+      ? { ...completionEvidenceBeforeStamp, treeStamp }
+      : completionEvidenceBeforeStamp;
   // EI-20268156880922192: the completion record is durable, but a cited
   // session-local scratch path or account-local artifact URL is not. Scan the
   // exact persisted evidence shape, warn after recording, and fail open if the

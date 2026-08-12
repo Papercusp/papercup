@@ -843,14 +843,20 @@ describe('work_items:complete (keyed-array)', () => {
         completionAuthority: 'committed',
         // EI-19319623239777505: `summary` now rides alongside the structured fields
         // (previously silently dropped — see the dedicated tests below).
-        completionEvidence: {
+        // `objectContaining` rather than a strict object: EI-18682004530991057 adds a
+        // SERVER-stamped `treeStamp` (the HEAD sha the evidence was observed against),
+        // which is not caller-supplied and is deliberately absent when it cannot be
+        // observed. Asserting strict equality here would couple this test both to the
+        // stamp's presence AND to the real repo's current HEAD. What this test is FOR is
+        // that every caller-supplied field rides through — which is what it still asserts.
+        completionEvidence: expect.objectContaining({
           filesChanged: ['packages/operator-core/lib/agent-tools/work_items/complete.ts'],
           testsRun: 'pnpm vitest complete.test.ts --run',
           testResult: '1/1 green',
           verifiedHow: 'unit',
           addedTests: true,
           summary: 'shipped',
-        },
+        }),
       }),
     );
     expect(setWorkItemStateWithAliasInfo.mock.calls[0][2]).not.toHaveProperty('completionRef');
@@ -904,9 +910,19 @@ describe('work_items:complete (keyed-array)', () => {
       'passed',
       expect.objectContaining({
         completionAuthority: 'proposed',
-        completionEvidence: { summary: 'just a narrative, no structured evidence' },
+        completionEvidence: expect.objectContaining({ summary: 'just a narrative, no structured evidence' }),
       }),
     );
+    // The strict-equality assertion above was doing real work — it proved no structured
+    // field was INVENTED for a caller who supplied none. EI-18682004530991057 adds a
+    // server-stamped `treeStamp`, so strict equality is no longer available; the guarantee
+    // is asserted directly instead, which states it more plainly than the old shape did.
+    // (`treeStamp` is deliberately NOT in this list: it describes the evidence, it is
+    // never evidence, and `authorityForCompletion` does not read it — hence 'proposed'.)
+    const persisted = setWorkItemStateWithAliasInfo.mock.calls[0][2].completionEvidence;
+    for (const invented of ['filesChanged', 'testsRun', 'testResult', 'verifiedHow', 'addedTests', 'coverage']) {
+      expect(persisted).not.toHaveProperty(invented);
+    }
   });
 
   it('fills completion.workItem from the id when the caller omits it (DRY)', async () => {
