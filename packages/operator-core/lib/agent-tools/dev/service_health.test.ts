@@ -94,6 +94,12 @@ describe("dev:service_health handler", () => {
     expect((tool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });
 
+  it("documents the canonical staging unit read after dev:restart", () => {
+    const when = (tool as { guidance?: { when?: string } }).guidance?.when ?? "";
+    expect(when).toContain('dev:restart { target:"staging" }');
+    expect(when).toContain('dev:service_health { units:["papercup-staging-api"], scope:"user" }');
+  });
+
   it("surfaces the probe snapshot under { ok, services }", async () => {
     probeM.mockResolvedValue([
       { name: "operator", up: true, latencyMs: 12 },
