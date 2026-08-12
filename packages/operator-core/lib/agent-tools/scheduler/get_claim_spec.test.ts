@@ -33,4 +33,19 @@ describe('scheduler:get_claim_spec — args', () => {
   it('accepts an optional workspace override alongside cupId', () => {
     expect(args.safeParse({ cupId: 'su-bee-1', workspace: 'ws-1' }).success).toBe(true);
   });
+
+  it('rejects generic wake-context keys instead of accepting them as selectors', () => {
+    for (const key of ['harness', 'planSlug']) {
+      const parsed = args.safeParse({ fleet: 'my-fleet', [key]: 'context-value' });
+      expect(parsed.success, `unexpectedly accepted ${key}`).toBe(false);
+    }
+  });
+
+  it('guidance warns fleet callers about the selector-only contract', () => {
+    const when = getClaimSpecTool.guidance?.when ?? '';
+    expect(when).toMatch(/selector-only/i);
+    expect(when).toContain('harness');
+    expect(when).toContain('planSlug');
+    expect(when).toMatch(/rejected/i);
+  });
 });
