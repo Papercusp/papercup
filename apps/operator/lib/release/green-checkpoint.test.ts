@@ -1663,6 +1663,40 @@ describe('runGreenCheckpoint', () => {
       expect(r.advanced).toBe(false); // still holds the gate — only the REASON changes
     });
 
+    it('downgrades a tip re-run when HEAD advances before classification, instead of auto-refiring stale evidence', async () => {
+      const c1 = await commit('a', '1', 'c1');
+      await git(repo, ['branch', 'ready', c1]);
+      const c2 = await commit('a', '2', 'c2');
+      const c3 = await commit('src/failing.test.ts', 'fixed', 'c3 — the tested tip');
+      const { deps, calls } = bothPathsWired({ passesAtTip: true });
+      let landedDuringRetriage: string | undefined;
+      deps.runTestsAtRef = async () => {
+        // Simulate git-sync landing a newer commit after the re-triage's initial tip snapshot.
+        landedDuringRetriage = await commit('src/another-fix.ts', 'landed during re-triage', 'c4');
+        return { pass: true, summary: 'pass at tested tip' };
+      };
+
+      const r = await runGreenCheckpoint(cfg(), deps, { candidate: c2, noPush: true });
+
+      expect(landedDuringRetriage).toBeDefined();
+      expect(r).toMatchObject({
+        advanced: false,
+        green: false,
+        reason: 'not-green',
+        retriage: {
+          classification: 'unknown',
+          autoRefire: false,
+          tip: c3,
+        },
+      });
+      expect(r.retriage?.detail).toContain(`tip ${c3.slice(0, 8)} was cut at re-triage start`);
+      expect(r.retriage?.detail).toContain(`integration HEAD is now ${landedDuringRetriage!.slice(0, 8)}`);
+      expect(r.retriage?.detail).toContain('staleness is UNKNOWN');
+      expect(r.retriage?.detail).toContain('will not auto-refire');
+      expect(calls.filter((call) => call === 'runGreen')).toHaveLength(1);
+      expect(calls).not.toContain('advance');
+    });
+
     it('a STALE red REFIRES on the tip and can advance — the rescue that seven gate runs never reached', async () => {
       const c1 = await commit('a', '1', 'c1');
       await git(repo, ['branch', 'ready', c1]);

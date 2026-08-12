@@ -2022,6 +2022,29 @@ export function describeSkippedRetriage(input: {
 }
 
 /**
+ * The tip re-run is only evidence about the SHA it actually tested. A busy integration branch
+ * can advance while that run is in flight, so never turn an older successful/failed re-run into
+ * a verdict about the newer tree. The caller holds the gate and makes the next checkpoint run
+ * re-verify the current head instead.
+ */
+function describeRetriageTipMoved(testedTip: string, currentTip: string): string {
+  return (
+    `tip ${testedTip.slice(0, 8)} was cut at re-triage start, but integration HEAD is now ` +
+    `${currentTip.slice(0, 8)} after the tip re-run — staleness is UNKNOWN; re-verify at current HEAD ` +
+    'before diagnosing. The gate remains held and this result will not auto-refire.'
+  );
+}
+
+/** Honest fallback when the post-rescue HEAD read itself failed. */
+function describeRetriageCurrentTipUnavailable(testedTip: string): string {
+  return (
+    `tip re-run was tested at ${testedTip.slice(0, 8)}, but integration HEAD could not be resolved after ` +
+    'the re-triage — staleness is UNKNOWN; re-verify at current HEAD before diagnosing. The gate remains ' +
+    'held and this result will not auto-refire.'
+  );
+}
+
+/**
  * The `real-red` verdict's prose — and, when the diagnostic split ran, the ANSWER instead of
  * the homework.
  *
@@ -4659,6 +4682,12 @@ export async function runGreenCheckpoint(
               return null;
             })
           : undefined;
+      // EI-20273810951781385: the re-run above is a snapshot of `tip`, not a lock on the
+      // integration branch. On a busy fleet another commit can land before this verdict is
+      // classified, making even a successful tip re-run stale again. Re-resolve HEAD only after
+      // BOTH rescue arms finish; if it moved (or the read failed), the evidence is inconclusive:
+      // hold the gate and make the next run re-verify instead of auto-refiring on an older SHA.
+      const currentTipAfterRetriage = await deps.resolveTip?.().catch(() => null) ?? null;
       // A half that could not EXECUTE (null) leaves the red unmeasured — the same fail-soft
       // "treating red as real" both arms already had, now applied to the composed pair. A half that
       // was not NEEDED (undefined) contributes no failure.
@@ -4675,15 +4704,32 @@ export async function runGreenCheckpoint(
       // The budget's view of "what this pass tried to rescue" is the UNION of both halves, so a
       // refire re-trying the same mixed set is charged exactly like a single-arm repeat.
       const currentFailing: readonly (string | FailingFile)[] = [...failingFiles, ...rescueGates];
-      const verdict = classifyRedAgainstTip({
-        candidate,
-        tip,
-        failingTests: failingTests ?? [],
-        tipRetest,
-        refireAttempts: opts.refireAttempts ?? 0,
-        maxRefires: autoRefireCapFromEnv(),
-        ...refireBudgetInputs(opts, currentFailing, runStartedAtMs, passStartedAtMs),
-      });
+      const verdict: RedTriage =
+        currentTipAfterRetriage === null
+          ? {
+              classification: 'unknown',
+              autoRefire: false,
+              chargeRefire: false,
+              refireBlockedBy: null,
+              detail: describeRetriageCurrentTipUnavailable(tip),
+            }
+          : currentTipAfterRetriage !== tip
+            ? {
+                classification: 'unknown',
+                autoRefire: false,
+                chargeRefire: false,
+                refireBlockedBy: null,
+                detail: describeRetriageTipMoved(tip, currentTipAfterRetriage),
+              }
+            : classifyRedAgainstTip({
+                candidate,
+                tip,
+                failingTests: failingTests ?? [],
+                tipRetest,
+                refireAttempts: opts.refireAttempts ?? 0,
+                maxRefires: autoRefireCapFromEnv(),
+                ...refireBudgetInputs(opts, currentFailing, runStartedAtMs, passStartedAtMs),
+              });
       retriage = { ...verdict, tip };
       // WI-5366: each runner's summary carries the verified-head note (+ per-workspace
       // pass/FAIL) but was previously computed and discarded — log it alongside the
