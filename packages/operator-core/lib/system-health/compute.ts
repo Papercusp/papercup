@@ -25,7 +25,7 @@ import type { Sql } from 'postgres';
 import type { ImprovementCandidate } from '../harness/improvements/policy';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
-import { gitSidecarEnabled, runGitViaSpawnerSidecar } from '../fleet/git-via-sidecar';
+import { gitSidecarEnabled, noteSidecarFallback, runGitViaSpawnerSidecar } from '../fleet/git-via-sidecar';
 import { probeHttpReachable } from '../escalating-http-probe';
 import { activeWorkspaceId, readRegistry } from '../workspace-registry';
 import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
@@ -1549,10 +1549,10 @@ async function runGit(cwd: string, args: string[]): Promise<string> {
       }
       return r.stdout.trim();
     } catch (e) {
+      // A non-zero git exit is a REAL result, not a sidecar fault — rethrow it
+      // rather than counting it as one and re-running locally.
       if (e instanceof SystemHealthGitExitError) throw e;
-      console.warn(
-        `[system-health] spawner-sidecar git fallback to local spawn: ${e instanceof Error ? e.message : String(e)}`,
-      );
+      noteSidecarFallback('system-health', e);
     }
   }
   const { stdout } = await execFileP('git', argv, { timeout: 10_000, maxBuffer: 2 * 1024 * 1024 });

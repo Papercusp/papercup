@@ -18,6 +18,7 @@ import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { disarmPlanSchedule } from './arm-plan-schedule';
 import { autoPauseOnCostBreach } from './plan-run-cost';
+import { routineStorageSlug } from '../../pot-membership';
 
 /** Work-item states that count as a finished execution. */
 const TERMINAL = ['passed', 'done', 'resolved', 'closed', 'deprecated', 'dropped', 'failed'];
@@ -42,8 +43,16 @@ export async function reconcileScheduledPlanRuns(
 ): Promise<ReconcileResult> {
   const db = opts.sql ?? getOrgPg().sql;
   const harnessFilter = opts.harnessSlug ? db`AND harness_slug = ${opts.harnessSlug}` : db``;
-  const running = await db<Array<{ id: number; harness_slug: string; plan_slug: string }>>`
-    SELECT id, harness_slug, plan_slug
+  const running = await db<
+    Array<{
+      id: number;
+      harness_slug: string;
+      plan_slug: string;
+      workspace_id: string;
+      instance_plan_slug: string | null;
+    }>
+  >`
+    SELECT id, harness_slug, plan_slug, workspace_id, instance_plan_slug
       FROM harness_shared.plan_runs
      WHERE run_type = 'scheduled' AND status = 'running' ${harnessFilter}
   `;
@@ -64,6 +73,28 @@ export async function reconcileScheduledPlanRuns(
       wis.length === 0 || failed === 0 ? 'success' : passed === 0 ? 'failed' : 'partial';
     const status = outcome === 'failed' ? 'failed' : 'done';
     const now = Date.now();
+
+    // A scheduled fire creates two lifecycle rows: the plan_runs ledger above and an
+    // ephemeral `<template>@run-…` harness_plans instance. Keep the instance in sync
+    // with the ledger when the run settles. The UI projection deliberately drops
+    // terminal instances, so leaving this row active makes every finished run remain
+    // visible (and causes unbounded coord.plans growth).
+    //
+    // plan_runs stores the raw install slug while harness_plans is Hive-scoped. Resolve
+    // the latter with the same mapping used by plan-run-action before updating it.
+    if (run.instance_plan_slug) {
+      const planStorageSlug = await routineStorageSlug(run.harness_slug, run.workspace_id);
+      await db`
+        UPDATE harness_shared.harness_plans
+           SET status = 'superseded'
+         WHERE workspace_id = ${run.workspace_id}
+           AND harness_slug = ${planStorageSlug}
+           AND plan_slug = ${run.instance_plan_slug}
+           AND template_slug = ${run.plan_slug}
+           AND status = 'active'
+      `;
+    }
+
     await db`
       UPDATE harness_shared.plan_runs
          SET status = ${status}, outcome = ${outcome}, finished_at = ${now}, updated_at = ${now}

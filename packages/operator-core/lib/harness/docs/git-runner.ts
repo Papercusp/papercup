@@ -30,7 +30,7 @@
 import { spawn } from 'node:child_process';
 import { collectChildOutput } from '../../child-output.js';
 import type { GitRunner } from './subject-ref';
-import { gitSidecarEnabled, runGitViaSpawnerSidecar } from '../../fleet/git-via-sidecar';
+import { gitSidecarEnabled, noteSidecarFallback, runGitViaSpawnerSidecar } from '../../fleet/git-via-sidecar';
 
 /**
  * Kill-timeout for the sidecar-routed run.
@@ -61,18 +61,6 @@ export const runGitLocal: GitRunner = (args, cwd) =>
     );
   });
 
-/** Distinct sidecar-fallback reasons already logged (see {@link runGit}). */
-const loggedSidecarFallbacks = new Set<string>();
-
-function warnSidecarFallbackOnce(e: unknown): void {
-  const reason = e instanceof Error ? e.message : String(e);
-  if (loggedSidecarFallbacks.has(reason)) return;
-  // Bound the set — a pathological source of unique messages must not leak.
-  if (loggedSidecarFallbacks.size > 32) loggedSidecarFallbacks.clear();
-  loggedSidecarFallbacks.add(reason);
-  console.warn(`[harness-docs] spawner-sidecar git unavailable, using local spawn: ${reason}`);
-}
-
 export const runGit: GitRunner = async (args, cwd) => {
   if (gitSidecarEnabled('PAPERCUSP_HARNESS_DOCS_SPAWN_SIDECAR')) {
     try {
@@ -81,9 +69,11 @@ export const runGit: GitRunner = async (args, cwd) => {
       // environment rather than the caller's.
       return await runGitViaSpawnerSidecar(args, cwd, SIDECAR_GIT_TIMEOUT_MS, process.env);
     } catch (e) {
-      // Warn once per distinct reason rather than per call: this is the hottest
-      // git path in the host, and a log line per call would itself be a cost.
-      warnSidecarFallbackOnce(e);
+      // A log line per call would itself be a cost on this, the hottest git
+      // path in the host — but warning only ONCE made a permanently-degraded
+      // sidecar look identical to a healthy one. The shared seam counts every
+      // fallback and re-warns on a bounded cadence, giving both properties.
+      noteSidecarFallback('harness-docs', e);
     }
   }
   return runGitLocal(args, cwd);

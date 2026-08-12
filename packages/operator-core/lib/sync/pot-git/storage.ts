@@ -33,6 +33,7 @@ import { join } from 'node:path';
 import { mkdir, access, readdir, rm, stat, unlink } from 'node:fs/promises';
 import {
   gitSidecarEnabled,
+  noteSidecarFallback,
   runGitViaSpawnerSidecar,
   runGitStdinViaSpawnerSidecar,
 } from '../../fleet/git-via-sidecar';
@@ -146,26 +147,17 @@ export const defaultRunGit: RunGit = async (args, cwd, opts) => {
         LANG: 'C',
       });
     } catch (e) {
-      // Fall through to the local spawn. Warn once per distinct reason rather
-      // than per call: this runs in the hot ref-read path, and a log line per
-      // git call would itself become a cost worth profiling.
-      warnSidecarFallbackOnce(e);
+      // Fall through to the local spawn, but COUNT it: falling back means every
+      // git call here is paying the full ~165 ms fork stall again, which is the
+      // exact condition the sidecar exists to remove. Accounting lives in the
+      // shared seam so a persistent fault stays loud instead of logging once
+      // and then looking identical to a healthy process — see
+      // {@link noteSidecarFallback}.
+      noteSidecarFallback('pot-git', e);
     }
   }
   return runGitLocal(args, cwd, opts);
 };
-
-/** Distinct sidecar-fallback reasons already logged (see {@link defaultRunGit}). */
-const loggedSidecarFallbacks = new Set<string>();
-
-function warnSidecarFallbackOnce(e: unknown): void {
-  const reason = e instanceof Error ? e.message : String(e);
-  if (loggedSidecarFallbacks.has(reason)) return;
-  // Bound the set — a pathological source of unique messages must not leak.
-  if (loggedSidecarFallbacks.size > 32) loggedSidecarFallbacks.clear();
-  loggedSidecarFallbacks.add(reason);
-  console.warn(`[pot-git] spawner-sidecar git unavailable, using local spawn: ${reason}`);
-}
 
 /**
  * The run-git seam for plumbing that takes its INPUT SET ON STDIN — the
@@ -267,7 +259,7 @@ export const defaultRunGitStdin: RunGitStdin = async (args, cwd, stdin, opts) =>
         LANG: 'C',
       });
     } catch (e) {
-      warnSidecarFallbackOnce(e);
+      noteSidecarFallback('pot-git', e);
     }
   }
   return runGitStdinLocal(args, cwd, stdin, opts);

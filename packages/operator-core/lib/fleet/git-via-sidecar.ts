@@ -42,6 +42,8 @@
 import * as fsp from 'node:fs/promises';
 import * as os from 'node:os';
 import * as path from 'node:path';
+import { pinModuleState } from '@papercusp/module-singleton';
+
 import { isSidecarEnabledFromEnv } from '../process-supervision/sidecar-spawn-shared';
 
 /** The shape every `RunGit` seam in the repo returns. */
@@ -124,9 +126,122 @@ export function gitSidecarEnabled(
 }
 
 /**
+ * Sidecar-fallback accounting (EI-18808838427010743).
+ *
+ * {@link runGitViaSpawnerSidecar} REJECTS when the sidecar is unreachable, and
+ * every caller is expected to catch that and fall back to a local spawn — by
+ * design, so a sidecar fault degrades performance instead of breaking git.
+ *
+ * That design has a hole, and it is the reason this exists: the degradation is
+ * precisely the ~40 ms/GB fork stall this whole subsystem was built to remove.
+ * From a 5.4 GB bg-host that is ~165 ms of dead event loop on EVERY git call —
+ * the original CRITICAL condition, silently restored. Each call site used to
+ * log once per distinct reason, which makes a sidecar that has been down for an
+ * hour indistinguishable from one that blipped once at boot: the only evidence
+ * is a single old log line. A mitigation whose failure is unobservable is not a
+ * fix, so every fallback is COUNTED, here, in the one module all call sites
+ * already import — not in seven private warn-once sets.
+ *
+ * Counting is the point rather than logging: a RATE is what separates "one
+ * transient reconnect" from "every git call is paying 165 ms right now".
+ */
+export interface SidecarFallbackSubsystemStats {
+  readonly count: number;
+  readonly firstAtMs: number;
+  readonly lastAtMs: number;
+  readonly lastReason: string;
+}
+
+export interface SidecarFallbackStats {
+  readonly total: number;
+  readonly bySubsystem: Readonly<Record<string, SidecarFallbackSubsystemStats>>;
+}
+
+interface MutableFallbackEntry {
+  count: number;
+  firstAtMs: number;
+  lastAtMs: number;
+  lastReason: string;
+}
+
+/**
+ * PINNED, not a bare module-scoped Map, and the reason is specific to a
+ * detector: a split module record gives each copy its own counters, so the
+ * reader sees one shard and UNDER-reports. An under-reporting fallback counter
+ * reads exactly like a healthy process — the one failure this must not have.
+ */
+const __sidecarFallbacks = pinModuleState<{
+  bySubsystem: Map<string, MutableFallbackEntry>;
+  lastWarnAtMs: Map<string, number>;
+}>('@papercusp/operator-core.fleet.git-via-sidecar.fallbacks', () => ({
+  bySubsystem: new Map(),
+  lastWarnAtMs: new Map(),
+}));
+
+/**
+ * Re-warn cadence per subsystem. The hot ref-read path cannot afford a log line
+ * per git call (that cost is itself worth profiling), but silence forever is
+ * what hid the regression — so: warn immediately, then at most this often,
+ * carrying the cumulative count so a persistent fault stays loud.
+ */
+const FALLBACK_WARN_INTERVAL_MS = 60_000;
+
+/**
+ * Record that `subsystem` fell back to a local spawn because the sidecar was
+ * unavailable. Safe to call on every fallback — it is two Map operations and,
+ * at most once a minute per subsystem, one `console.warn`.
+ */
+export function noteSidecarFallback(subsystem: string, e: unknown, nowMs: number = Date.now()): void {
+  const reason = e instanceof Error ? e.message : String(e);
+  const prev = __sidecarFallbacks.bySubsystem.get(subsystem);
+  if (prev) {
+    prev.count += 1;
+    prev.lastAtMs = nowMs;
+    prev.lastReason = reason;
+  } else {
+    __sidecarFallbacks.bySubsystem.set(subsystem, {
+      count: 1,
+      firstAtMs: nowMs,
+      lastAtMs: nowMs,
+      lastReason: reason,
+    });
+  }
+
+  const lastWarnAtMs = __sidecarFallbacks.lastWarnAtMs.get(subsystem);
+  if (lastWarnAtMs !== undefined && nowMs - lastWarnAtMs < FALLBACK_WARN_INTERVAL_MS) return;
+  __sidecarFallbacks.lastWarnAtMs.set(subsystem, nowMs);
+
+  const entry = __sidecarFallbacks.bySubsystem.get(subsystem)!;
+  const since =
+    entry.count > 1 ? ` (${entry.count} fallbacks since ${new Date(entry.firstAtMs).toISOString()})` : '';
+  console.warn(`[${subsystem}] spawner-sidecar git unavailable, using local spawn${since}: ${reason}`);
+}
+
+/**
+ * Every sidecar fallback recorded in this process. A non-zero, still-CLIMBING
+ * count means git calls are currently paying the full fork cost.
+ */
+export function getSidecarFallbackStats(): SidecarFallbackStats {
+  const bySubsystem: Record<string, SidecarFallbackSubsystemStats> = {};
+  let total = 0;
+  for (const [subsystem, entry] of __sidecarFallbacks.bySubsystem) {
+    bySubsystem[subsystem] = { ...entry };
+    total += entry.count;
+  }
+  return { total, bySubsystem };
+}
+
+/** Test-only: clear the accounting between cases. */
+export function resetSidecarFallbackStatsForTest(): void {
+  __sidecarFallbacks.bySubsystem.clear();
+  __sidecarFallbacks.lastWarnAtMs.clear();
+}
+
+/**
  * Execute `git <args>` inside the spawner sidecar. Rejects if the sidecar is
- * unreachable — every caller is expected to fall back to a local spawn, so a
- * sidecar problem degrades performance rather than breaking git.
+ * unreachable — every caller is expected to fall back to a local spawn (and to
+ * report it via {@link noteSidecarFallback}), so a sidecar problem degrades
+ * performance rather than breaking git.
  *
  * The sidecar owns the real kill-timeout; the client timeout is deliberately
  * slack so it cannot race a legitimate timeout RESPONSE coming back.

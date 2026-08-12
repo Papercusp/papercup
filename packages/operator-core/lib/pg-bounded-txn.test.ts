@@ -114,7 +114,14 @@ describe('boundedOrgTxn', () => {
         // the diagnostic query: tx needs `.unsafe`, and its SECOND call (the SELECT)
         // is the one whose return value the diagnosis reads.
         const rows = [
-          { pid: 1644480, age_s: 104, q: 'BEGIN; SET LOCAL statement_timeout = 0; -- a migration', unblocked: true },
+          {
+            pid: 1644480,
+            age_s: 104,
+            // pg_stat_activity.query is only the blocker's current/last statement;
+            // this innocent SELECT is not proof of the statement that acquired its lock.
+            q: "SELECT id, confidence, expires_at, created_at, updated_at FROM harness_shared.agent_facts WHERE workspace_id = $1 AND scope = $2 AND coalesce(scope_ref, '') = $3",
+            unblocked: true,
+          },
           { pid: 1671608, age_s: 80, q: 'LOCK TABLE harness_shared.harness_features', unblocked: false },
         ];
         const tx = { unsafe: async () => rows };
@@ -126,7 +133,11 @@ describe('boundedOrgTxn', () => {
     }, { client }).catch((e) => e);
     expect(err).toBeInstanceOf(OrgTxnTimeoutError);
     expect((err as OrgTxnTimeoutError).blockerHint).toContain('pid 1644480');
-    expect((err as OrgTxnTimeoutError).blockerHint).toContain('a migration');
+    expect((err as OrgTxnTimeoutError).blockerHint).toContain('current/last statement');
+    expect((err as OrgTxnTimeoutError).blockerHint).toContain(
+      'lock may have been taken by an earlier statement in this transaction',
+    );
+    expect((err as OrgTxnTimeoutError).blockerHint).toContain('SELECT id, confidence');
     expect((err as OrgTxnTimeoutError).message).toContain('likely blocked by pid 1644480');
     expect((err as OrgTxnTimeoutError).message).toContain('1 other backend(s) also waiting');
   });

@@ -86,8 +86,10 @@ const BLOCKER_DIAGNOSIS_TIMEOUT_MS = 2_000;
  * cannot prove it was OUR specific wait's blocker, only what's blocking *something*
  * right now — which on this system is normally the same one or two backends
  * (confirmed live 2026-08-03: 20/25 sampled backends blocked, 12 of them on both of
- * two head pids). Never throws — a diagnostic that itself fails must not mask the
- * real OrgTxnTimeoutError; returns undefined on any error or empty result.
+ * two head pids). The query text is the blocker's current/last statement; a
+ * transaction-held lock may have been taken by an earlier statement in that
+ * transaction. Never throws — a diagnostic that itself fails must not mask the real
+ * OrgTxnTimeoutError; returns undefined on any error or empty result.
  */
 async function describeContentionAtFailure(client: OrgSql): Promise<string | undefined> {
   try {
@@ -115,7 +117,8 @@ async function describeContentionAtFailure(client: OrgSql): Promise<string | und
     const q = (head.q ?? '').trim() || '(query text unavailable)';
     const blockedCount = rows.filter((r) => !r.unblocked).length;
     return (
-      `likely blocked by pid ${head.pid} (running ${age}): ${q}` +
+      `likely blocked by pid ${head.pid} (running ${age}; current/last statement — ` +
+      `lock may have been taken by an earlier statement in this transaction): ${q}` +
       (blockedCount > 0 ? ` — ${blockedCount} other backend(s) also waiting` : '')
     );
   } catch {

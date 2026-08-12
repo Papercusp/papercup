@@ -16,7 +16,7 @@
  */
 import { execFile } from 'node:child_process';
 import { existsSync } from 'node:fs';
-import { gitSidecarEnabled, runGitViaSpawnerSidecar } from './fleet/git-via-sidecar';
+import { gitSidecarEnabled, noteSidecarFallback, runGitViaSpawnerSidecar } from './fleet/git-via-sidecar';
 import { getOrgPg } from '@papercusp/db-org';
 import { loadHarnessRegistry } from './harness-registry';
 import { resolveHiveReleaseEnv } from './harness/routines/hive-release-env';
@@ -155,9 +155,12 @@ async function revListCount(root: string, from: string, to: string): Promise<num
       if (r.code !== 0) return null;
       const n = Number.parseInt(r.stdout.trim(), 10);
       return Number.isFinite(n) ? n : null;
-    } catch {
-      // Sidecar unreachable — fall through to the local fork. Best-effort
-      // helper: it already swallows every error into `null`, so no warn here.
+    } catch (e) {
+      // Sidecar unreachable — fall through to the local fork. This helper
+      // swallows every error into `null`, so it used to leave NO trace at all:
+      // the fallback (and the fork stall it reintroduces) was completely
+      // invisible here. Counting it costs nothing and is the only signal.
+      noteSidecarFallback('git-pipeline', e);
     }
   }
   return revListCountLocal(root, args);

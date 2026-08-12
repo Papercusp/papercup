@@ -38,7 +38,7 @@ import { collectChildOutput } from '../../child-output.js';
 import { lstat, readFile, readlink, readdir, realpath, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { projectDirForSlug } from '../../operator-notes';
-import { gitSidecarEnabled, runGitViaSpawnerSidecar } from '../../fleet/git-via-sidecar';
+import { gitSidecarEnabled, noteSidecarFallback, runGitViaSpawnerSidecar } from '../../fleet/git-via-sidecar';
 import { detectContentOffenders, type ContentOffender } from './content-guard';
 import { detectUnsafeDeletions } from './deletion-import-guard';
 import { detectQuarantineImporters } from './quarantine-import-guard';
@@ -269,9 +269,11 @@ export const runGitBounded = async (
         idleTimeoutMs: network ? timeoutMs : undefined,
       });
     } catch (e) {
-      console.warn(
-        `[git-sync] spawner-sidecar git fallback to local spawn: ${e instanceof Error ? e.message : String(e)}`,
-      );
+      // Was a console.warn PER CALL — the opposite failure from warn-once, and
+      // just as unhelpful: a sustained outage buries the log without ever
+      // stating a rate. The shared seam bounds the cadence and carries the
+      // cumulative count.
+      noteSidecarFallback('git-sync', e);
     }
   }
   return runGitLocalBounded(effectiveArgs, cwd, timeoutMs, hardTimeoutMs, network);

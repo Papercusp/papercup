@@ -72,11 +72,27 @@ const gate = readFileSync(GATE_PATH, 'utf8');
  */
 const NO_PRUNE = { GATE_KEEP_RUNS: '100000' };
 
+/**
+ * The RUNNER's environment must never decide the verdict under test. systemd exports
+ * INVOCATION_ID into every process of a unit, and that variable is the exact signal the gate
+ * reads to classify `invoker: hand | systemd` — so a suite launched by a systemd unit or scope
+ * (the green-checkpoint gate itself, or any agent's `systemd-run --scope` shell) leaks it into
+ * every spawn below and silently turns each "hand" fixture into a systemd one. That made this
+ * file pass for a human at a terminal and fail in the pipeline, which is the worst possible
+ * split: invisible to whoever checks it, blocking to everyone else.
+ *
+ * So the child env carries INVOCATION_ID only when the CALLER declares it. `undefined` is not
+ * enough — spawnSync stringifies it to "undefined", which is a NON-EMPTY value and reads as
+ * present — so the key is deleted outright.
+ */
 function runGate(env: Record<string, string>): { stdout: string; stderr: string; status: number | null } {
+  const childEnv: NodeJS.ProcessEnv = { ...process.env, ...NO_PRUNE, GATE_NO_FILE: '1', ...env };
+  if (!('INVOCATION_ID' in env)) delete childEnv.INVOCATION_ID;
+
   const r = spawnSync('bash', [GATE_PATH], {
     encoding: 'utf8',
     timeout: 60_000,
-    env: { ...process.env, ...NO_PRUNE, GATE_NO_FILE: '1', ...env },
+    env: childEnv,
   });
   return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status };
 }
@@ -182,6 +198,26 @@ describe('live-federation gate: every verdict is banked durably, not just echoed
     const unit = freshStateDir('last-red');
     runGate({ GATE_STATE_DIR: unit, INVOCATION_ID: 'deadbeefcafe' });
     expect(readBank(unit)[0].invoker).toBe('systemd');
+  }, 60_000);
+
+  it('CONTROL: classifies a hand run as "hand" even when the SUITE itself runs under systemd', () => {
+    // The regression this pins (EI-20281218869378447): runGate used to spread process.env
+    // wholesale, so a suite launched by a systemd unit or scope inherited INVOCATION_ID and the
+    // "hand" case above silently measured its own PARENT instead of the gate. It passed by hand
+    // and failed in the pipeline — green for whoever checked it, red for everyone else.
+    //
+    // Simulating the parent is what makes this falsifiable: delete the scrub in runGate and this
+    // test fails, on any machine, without needing to be run from a real unit.
+    const previous = process.env.INVOCATION_ID;
+    process.env.INVOCATION_ID = 'deadbeefcafe';
+    try {
+      const dir = freshStateDir('last-red');
+      runGate({ GATE_STATE_DIR: dir });
+      expect(readBank(dir)[0].invoker).toBe('hand');
+    } finally {
+      if (previous === undefined) delete process.env.INVOCATION_ID;
+      else process.env.INVOCATION_ID = previous;
+    }
   }, 60_000);
 
   it('CONTROL: banks nothing when banking is disabled, so a pass here is not vacuous', () => {

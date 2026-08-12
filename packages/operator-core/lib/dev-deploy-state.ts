@@ -23,7 +23,7 @@ import { execFile, execFileSync } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as path from 'node:path';
 import * as fs from 'node:fs';
-import { gitSidecarEnabled, runGitViaSpawnerSidecar } from './fleet/git-via-sidecar';
+import { gitSidecarEnabled, noteSidecarFallback, runGitViaSpawnerSidecar } from './fleet/git-via-sidecar';
 import { type CellUnknown, cellUnknown, formatCellUnknown } from './cell-contract';
 
 const pexec = promisify(execFile);
@@ -80,24 +80,13 @@ async function git(repo: string, args: string[], useSpawnerSidecar: boolean): Pr
       // rather than re-running the same failing command locally. Sniffing the
       // message would be fragile; the sentinel type cannot collide.
       if (e instanceof GitExitError) throw e;
-      warnDeploySidecarFallbackOnce(e);
+      noteSidecarFallback('dev-deploy', e);
     }
   }
   const { stdout } = await pexec('git', argv, {
     maxBuffer: 32 * 1024 * 1024,
   });
   return stdout.trim();
-}
-
-/** Distinct sidecar-fallback reasons already logged (see {@link git}). */
-const loggedDeploySidecarFallbacks = new Set<string>();
-
-function warnDeploySidecarFallbackOnce(e: unknown): void {
-  const reason = e instanceof Error ? e.message : String(e);
-  if (loggedDeploySidecarFallbacks.has(reason)) return;
-  if (loggedDeploySidecarFallbacks.size > 32) loggedDeploySidecarFallbacks.clear();
-  loggedDeploySidecarFallbacks.add(reason);
-  console.warn(`[dev-deploy-state] spawner-sidecar git unavailable, using local spawn: ${reason}`);
 }
 
 /** A commit identity: sha + commit epoch-ms + subject line. */

@@ -15,7 +15,7 @@ import { reconcileScheduledPlanRuns, autoPauseOnFailureStreak } from './reconcil
 let org: OrgTestDb;
 let sql: Sql;
 const WS = 'ws-recon';
-const HARNESS = 'papercup';
+const HARNESS = 'plan-run-reconcile-fixture';
 let wiSeq = 0;
 
 beforeAll(async () => {
@@ -62,6 +62,14 @@ async function runRow(id: number) {
   return r[0];
 }
 
+async function instancePlanRow(slug: string) {
+  const rows = await sql<{ status: string; template_slug: string | null }[]>`
+    SELECT status, template_slug
+      FROM harness_shared.harness_plans
+     WHERE workspace_id = ${WS} AND harness_slug = ${HARNESS} AND plan_slug = ${slug}`;
+  return rows[0];
+}
+
 describe('reconcileScheduledPlanRuns', () => {
   it('leaves a run running while any work_item is non-terminal', async () => {
     const id = await seedRun('p-running');
@@ -82,6 +90,23 @@ describe('reconcileScheduledPlanRuns', () => {
     expect(row.status).toBe('done');
     expect(row.outcome).toBe('success');
     expect(row.finished_at).not.toBeNull();
+  });
+
+  it('supersedes the active instance plan when its scheduled run settles', async () => {
+    const id = await seedRun('p-instance');
+    const instanceSlug = `p-instance@run-${id}`;
+    await sql`
+      INSERT INTO harness_shared.harness_plans
+        (workspace_id, harness_slug, plan_slug, status, template_slug)
+      VALUES (${WS}, ${HARNESS}, ${instanceSlug}, 'active', 'p-instance')`;
+    await sql`
+      UPDATE harness_shared.plan_runs
+         SET workspace_id = ${WS}, instance_plan_slug = ${instanceSlug}
+       WHERE id = ${id}`;
+    await reconcileScheduledPlanRuns({ sql });
+
+    expect(await instancePlanRow(instanceSlug)).toEqual({ status: 'superseded', template_slug: 'p-instance' });
+    expect((await runRow(id)).status).toBe('done');
   });
 
   it('settles partial when some passed and some failed', async () => {
