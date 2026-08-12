@@ -57,6 +57,12 @@ export default defineTool({
     'One read-only, SHA-centric release truth: commit presence, exact gate + authoritative failing tests, green pin, deployed SHA, registered awaits, stale-wake lineage, tested/deployed parity, applicable safety constraints, and at most one safe nextVerb. Composes dev:pipeline_position, release:deploy status, and events:status authorities instead of creating another release state machine.',
   capability: 'intel:read',
   requirePrincipal: false,
+  // EI-20246294559310854: this diagnostic composes several independent admin-pool,
+  // git, and await-history reads and never consumes ctx.tx. Do not retain the
+  // dispatcher's ambient org-app transaction while red-verdict reconciliation runs;
+  // under pool pressure that held slot made release:trace itself hit
+  // withWorkspace:acquire(app) before the read could finish.
+  skipWorkspaceTx: true,
   agentRoles: [...SU_ROLES, 'cup', 'release-fixer', 'release-manager'],
   guidance: {
     when: 'After a release/gate/deploy wake, or whenever one commit’s truth is scattered across pipeline, gate, deploy, and await reads. Pass path when runtime ownership matters; pass sha for an exact lineage audit.',
