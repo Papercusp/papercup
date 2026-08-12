@@ -326,6 +326,34 @@ describe("coord:inbox handler (doc-drift ambient exclusion — EI-2871)", () => 
   });
 });
 
+describe("coord:inbox includeAmbient compatibility alias (EI-20224620909324295)", () => {
+  const ambient = {
+    ts: at(1),
+    msg_id: "ambient-1",
+    from: "system:doc-freshness",
+    to: ["*"],
+    kind: "message",
+    category: "doc-drift",
+    summary: "ambient digest",
+  };
+
+  it("accepts the camelCase alias while retaining strict unknown-key rejection", () => {
+    expect(tool.args.safeParse({ include_ambient: true }).success).toBe(true);
+    expect(tool.args.safeParse({ includeAmbient: true }).success).toBe(true);
+    expect(tool.args.safeParse({ includeAmbien: true }).success).toBe(false);
+  });
+
+  it("maps the alias to the canonical ambient filter and gives snake_case precedence", async () => {
+    M.readInbox.mockImplementation(async () => [ambient]);
+
+    const alias = await callInbox({ includeAmbient: true });
+    expect(alias.summary).toMatchObject({ ambient_excluded: 0, total: 1 });
+
+    const canonicalWins = await callInbox({ include_ambient: false, includeAmbient: true });
+    expect(canonicalWins.summary).toMatchObject({ ambient_excluded: 1, total: 0 });
+  });
+});
+
 describe("coord:inbox handler (default raw-entry budget)", () => {
   const longPeerPing = (m: number) => ({
     ts: at(m),
