@@ -100,6 +100,7 @@ import { computeMemberIdleVerdict, summariseIdleCauses } from '../../fleet-membe
 import type { MemberIdleCause } from '../../fleet-member-idle-verdict';
 import { computePoolReservation } from '../../fleet-pool-reservation';
 import { trimToByteBudget } from '../_bound-output';
+import { LEADER_BRIEF_SHAPER_BUDGET_CHARS, shapeLeaderBrief } from './leader-brief-shape';
 
 // EI-20226510994156306: a 50-member leader brief previously serialized ~66KB
 // before the transport's own result cap. Keep the detailed, verbose rows small;
@@ -263,12 +264,20 @@ export interface PoolDegradedState {
  * hand. Fails soft to `null` (UNKNOWN), never to "healthy" — an unread pool state must not
  * silence a real starvation signal, matching this file's `laneGating`/`fleetPaused` convention.
  */
-export function fleetCapacityProviderForModels(
-  models: ReadonlyArray<string | null | undefined>,
+export function fleetCapacityProviderForMembers(
+  members: ReadonlyArray<{
+    model?: string | null;
+    alive?: boolean;
+    verdict?: MemberVerdict | null;
+  }>,
 ): AccountProvider | null {
   const providers = new Set(
-    models
-      .map((model) => providerForModel(model ?? undefined))
+    members
+      // Historical identities can remain on the roster after a fleet is respawned onto a
+      // different backend. They are not consuming inference now and must not turn a uniform
+      // live fleet into an apparent mixed-provider fleet.
+      .filter((member) => member.alive !== false && member.verdict !== 'dead')
+      .map((member) => providerForModel(member.model ?? undefined))
       .filter((provider): provider is AccountProvider => provider != null),
   );
   return providers.size === 1 ? [...providers][0] : null;
@@ -1927,6 +1936,16 @@ export default defineTool({
       'could not be read it says so rather than silently promoting itself.',
   },
   capability: 'work_items:read',
+  // The default full response is intentionally rich, but the direct MCP result
+  // door is smaller than a fleet-wide diagnostic. The domain shaper preserves
+  // blockedAt + aggregate health + bounded intervention rows before the door can
+  // cut JSON in the middle of the envelope. Explicit payloadTier:'full' remains
+  // the unshaped escape hatch for programmatic/narrow callers.
+  shape: {
+    standard: (data) => shapeLeaderBrief(data, 'standard'),
+    trimmed: (data) => shapeLeaderBrief(data, 'trimmed'),
+  },
+  payloadTierCeilingChars: LEADER_BRIEF_SHAPER_BUDGET_CHARS,
   requirePrincipal: false,
   // EI-20192040030675541: this supervision read owns its individual
   // workspace-scoped reads and never touches ctx.tx. Keeping the dispatcher's
@@ -2173,7 +2192,7 @@ export default defineTool({
     // reader always used the legacy Claude pool, so a Codex fleet inherited Claude exhaustion
     // and the brief told its leader not to wake 25 healthy Luna lanes. Mixed/unknown model
     // families fail soft to UNKNOWN instead of borrowing either provider's capacity.
-    const capacityProvider = fleetCapacityProviderForModels(grouped.map((a) => a.model));
+    const capacityProvider = fleetCapacityProviderForMembers(grouped);
     const poolCapacity = capacityProvider ? await readPoolDegradedState(capacityProvider) : null;
     const nowMs = Date.now();
     const members = grouped.map((a) =>

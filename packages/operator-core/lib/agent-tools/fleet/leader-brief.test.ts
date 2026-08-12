@@ -19,7 +19,7 @@ import {
   compactLeaderBriefMemberVerdicts,
   decorateComposedParkedOn,
   FALSIFIER_FORBIDDEN_TOOLS,
-  fleetCapacityProviderForModels,
+  fleetCapacityProviderForMembers,
   projectMember,
   reconcilePsuHostLiveness,
   resolveComposedParkedOn,
@@ -39,18 +39,42 @@ describe('fleet:leader-brief — ambient workspace transaction safety (EI-201920
   });
 });
 
-describe('fleetCapacityProviderForModels (EI-20243921934115652)', () => {
+describe('fleetCapacityProviderForMembers (EI-20243921934115652)', () => {
   it('scopes an all-Codex fleet to the Codex pool', () => {
-    expect(fleetCapacityProviderForModels(['gpt-5.6-luna', 'gpt-5.6-sol'])).toBe('codex');
+    expect(
+      fleetCapacityProviderForMembers([
+        { model: 'gpt-5.6-luna', alive: true },
+        { model: 'gpt-5.6-sol', alive: true },
+      ]),
+    ).toBe('codex');
   });
 
   it('keeps an all-Claude fleet on the Claude pool', () => {
-    expect(fleetCapacityProviderForModels(['claude-sonnet-4-5', 'opus'])).toBe('claude');
+    expect(
+      fleetCapacityProviderForMembers([
+        { model: 'claude-sonnet-4-5', alive: true },
+        { model: 'opus', alive: true },
+      ]),
+    ).toBe('claude');
   });
 
-  it('returns unknown for mixed or unmeasured fleets instead of borrowing a provider', () => {
-    expect(fleetCapacityProviderForModels(['gpt-5.6-luna', 'claude-sonnet-4-5'])).toBeNull();
-    expect(fleetCapacityProviderForModels([null, undefined])).toBeNull();
+  it('ignores dead historical identities when the live fleet is uniform', () => {
+    expect(
+      fleetCapacityProviderForMembers([
+        { model: 'gpt-5.6-luna', alive: true },
+        { model: 'claude-sonnet-4-5', alive: false, verdict: 'dead' },
+      ]),
+    ).toBe('codex');
+  });
+
+  it('returns unknown for live-mixed or unmeasured fleets instead of borrowing a provider', () => {
+    expect(
+      fleetCapacityProviderForMembers([
+        { model: 'gpt-5.6-luna', alive: true },
+        { model: 'claude-sonnet-4-5', alive: true },
+      ]),
+    ).toBeNull();
+    expect(fleetCapacityProviderForMembers([{ model: null }, {}])).toBeNull();
   });
 });
 
