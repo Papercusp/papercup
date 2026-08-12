@@ -40,7 +40,7 @@
 
 import { createRequire } from 'node:module';
 import { createHash, randomBytes } from 'node:crypto';
-import { homedir } from 'node:os';
+import { constants as osConstants, homedir } from 'node:os';
 import { dirname, isAbsolute, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { spawn } from 'node:child_process';
@@ -3618,9 +3618,19 @@ export function hostThroughPty(o) {
     let cleaned = false;
     let orphanTimer = null; // WI-3141 orphan watchdog; assigned below, cleared in cleanup
     let killChild = () => {};
-    const cleanup = (code) => {
+    /**
+     * WI-38054: the signal WE sent, recorded the moment we decide to tear the child
+     * down. node-pty's own `signal` is preferred when it arrives, but the teardown
+     * paths can complete without ever seeing an exit event (the child may already be
+     * gone), and those are precisely the paths where "the session did not choose to
+     * end" must still be recorded. Without this, a teardown reports a bare `0` and the
+     * row asserts a clean voluntary exit.
+     */
+    let teardownSignal = null;
+    const cleanup = (code, signal = null) => {
       if (cleaned) return;
       cleaned = true;
+      const endedSignal = signal ?? teardownSignal;
       // A PTY leader can exit before its descendants. Reap the group while its
       // forkpty pgid is still unambiguous, then remove our signal listeners.
       killPtyProcessTree(child, 'SIGKILL');
@@ -3696,8 +3706,10 @@ export function hostThroughPty(o) {
         }
       }
       const finishExit = () => {
+        // `resolve` keeps its numeric contract for embedding callers; the signal rides
+        // the onExit channel, which is the one that reaches the adv_sessions record.
         resolve(code ?? 0);
-        onExit(code ?? 0);
+        onExit(code ?? 0, endedSignal);
       };
       if (managedKickoff && !managedKickoffDisposition) {
         void acknowledgeManagedKickoff({
@@ -3722,10 +3734,16 @@ export function hostThroughPty(o) {
     // child's genuine exit runs cleanup.
     wireChildExit = () => {
       const thisChild = child;
-      thisChild.onExit(({ exitCode }) => {
+      thisChild.onExit(({ exitCode, signal }) => {
         if (recycling) return; // an intended recycle kill — respawn re-wires; host lives on
         if (child !== thisChild) return; // a superseded child that died late — ignore
-        cleanup(exitCode);
+        // WI-38054: `signal` MUST be read here. node-pty reports a signal death as
+        // { exitCode: 0, signal: N } — MEASURED in this tree: SIGHUP -> {"exitCode":0,"signal":1}.
+        // Destructuring only exitCode (as this did) throws away the sole evidence that
+        // the session was killed, and the surviving 0 then travels all the way to
+        // adv_sessions as a clean voluntary exit. Two of the owner's agents were reaped
+        // by a sidecar restart and recorded as `ended_by='self', exit_code=0` this way.
+        cleanup(exitCode, signalNameFromCode(signal));
       });
     };
     wireChildExit();
@@ -4044,9 +4062,14 @@ export function hostThroughPty(o) {
     // SIGHUP/SIGTERM: kill the whole forkpty group so no backend descendant can
     // survive and let child.onExit serialize the managed-port failure receipt.
     killChild = () => {
+      // WI-38054: record the teardown BEFORE sending it. This host is being torn down
+      // (its own SIGINT/SIGTERM/SIGHUP), so whatever happens next, the session did not
+      // choose to end — and the `if (!signalled) cleanup(0)` branch below would
+      // otherwise report a bare 0 that is indistinguishable from a clean exit.
+      teardownSignal = 'SIGHUP';
       const signalled = killPtyProcessTree(child, 'SIGHUP');
       killPtyProcessTree(child, 'SIGKILL');
-      if (!signalled) cleanup(0);
+      if (!signalled) cleanup(0, 'SIGHUP');
     };
     signalSource.on?.('SIGINT', killChild);
     signalSource.on?.('SIGTERM', killChild);
@@ -4075,12 +4098,13 @@ export function hostThroughPty(o) {
           /* the terminal we'd warn on may be the very one that vanished */
         }
         try {
+          teardownSignal = 'SIGHUP'; // WI-38054 — an orphan teardown is a kill, not an exit
           killPtyProcessTree(child, 'SIGHUP');
           killPtyProcessTree(child, 'SIGKILL');
         } catch {
           /* already gone */
         }
-        cleanup(0);
+        cleanup(0, 'SIGHUP');
       };
 
       // (1) The bridged TTY going EOF / closed / errored = the terminal vanished.

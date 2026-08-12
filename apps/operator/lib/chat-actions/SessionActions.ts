@@ -97,6 +97,27 @@ export async function focusWindow(ctx: SessionActionCtx): Promise<void> {
   }
 }
 
+/** Stop the attached owner through the audited fleet:kill primitive. The
+ * desktop webview cannot attach an agent bearer, so this uses the same
+ * loopback-only admin proxy as the rest of the HUD's owner-scoped writes. */
+export async function stopAgent(ctx: SessionActionCtx): Promise<void> {
+  if (!ctx.sessionOwnerId) throw new Error('no session owner id');
+  const res = await postText('/api/admin/coordination/fleet/kill', {
+    owner: ctx.sessionOwnerId,
+    close_terminal: true,
+    reason: 'Stopped by the owner from the session pane.',
+  });
+  const data = await res.json().catch(() => null) as {
+    data?: { results?: Array<{ ok?: boolean; error?: string }> };
+    results?: Array<{ ok?: boolean; error?: string }>;
+    error?: string;
+  } | null;
+  const result = data?.data?.results?.[0] ?? data?.results?.[0];
+  if (!res.ok || !result?.ok) {
+    throw new Error(`stop failed: ${result?.error ?? data?.error ?? `HTTP ${res.status}`}`);
+  }
+}
+
 /**
  * THREE DIRECT BUTTONS, not one collapsed picker
  * (gui-chat-session-controls-2026-07-25 P-015, owner ask 2026-07-27:
@@ -158,4 +179,18 @@ registerChatAction({
     return Boolean(c.sessionOwnerId) && canFocusWindow(c);
   },
   run: async (ctx) => focusWindow(ctx as SessionActionCtx),
+});
+
+registerChatAction({
+  id: 'session-stop',
+  label: 'Stop agent',
+  shortLabel: 'Stop',
+  icon: '■',
+  group: 'session',
+  available: (ctx) => Boolean(ctx.sessionOwnerId),
+  confirm: (ctx) => ({
+    message: `Stop ${ctx.ownerLabel ?? ctx.sessionOwnerId}? This ends the agent and closes its terminal when one exists.`,
+    confirmLabel: 'Stop agent',
+  }),
+  run: async (ctx) => stopAgent(ctx as SessionActionCtx),
 });

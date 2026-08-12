@@ -10,6 +10,7 @@ import {
   focusWindow,
   launchInNewTerminal,
   resumableSessionId,
+  stopAgent,
   type SessionActionCtx,
 } from './SessionActions';
 
@@ -62,7 +63,7 @@ describe('SessionActions — pure predicates', () => {
 // replacing P-006's single `session-actions` entry whose params opened a radio
 // card. The behaviour under test moved from "which options does the card
 // offer" to "which buttons are available" — same predicates, different shape.
-const IDS = ['session-resume', 'session-fork', 'session-focus'] as const;
+const IDS = ['session-resume', 'session-fork', 'session-focus', 'session-stop'] as const;
 
 describe('SessionActions — registration', () => {
   it('registers three separate actions, all in the "session" group', () => {
@@ -89,6 +90,17 @@ describe('SessionActions — registration', () => {
     expect(getChatAction('session-resume')!.icon).toBe('↻');
     expect(getChatAction('session-fork')!.icon).toBe('⑂');
   });
+
+  it('registers stop as a confirmed one-click action', () => {
+    expect(getChatAction('session-stop')!.label).toBe('Stop agent');
+    expect(getChatAction('session-stop')!.params).toBeUndefined();
+    const confirm = getChatAction('session-stop')!.confirm;
+    expect(typeof confirm).toBe('function');
+    if (typeof confirm !== 'function') return;
+    expect(confirm({ ...baseCtx })).toMatchObject({
+      confirmLabel: 'Stop agent',
+    });
+  });
 });
 
 describe('SessionActions — per-button availability', () => {
@@ -97,17 +109,17 @@ describe('SessionActions — per-button availability', () => {
 
   it('claude session with a window: all three buttons', () => {
     expect(availability({ ...baseCtx, agent: 'claude', sessionId: 's1', windowId: 'w1' })).toEqual([
-      'session-resume', 'session-fork', 'session-focus',
+      'session-resume', 'session-fork', 'session-focus', 'session-stop',
     ]);
   });
 
   it('omp session: resumable but NOT forkable (--fork-session is claude-only)', () => {
-    expect(availability({ ...baseCtx, agent: 'omp', ompThreadId: 't1' })).toEqual(['session-resume']);
+    expect(availability({ ...baseCtx, agent: 'omp', ompThreadId: 't1' })).toEqual(['session-resume', 'session-stop']);
   });
 
   it('codex session with an advSessionId: focus only, never resume/fork', () => {
     expect(availability({ ...baseCtx, agent: 'codex', sessionId: 's1', advSessionId: 7 })).toEqual([
-      'session-focus',
+      'session-focus', 'session-stop',
     ]);
   });
 
@@ -117,12 +129,12 @@ describe('SessionActions — per-button availability', () => {
 
   it('claude session with no window: resume + fork, but no focus', () => {
     expect(availability({ ...baseCtx, agent: 'claude', sessionId: 's1' })).toEqual([
-      'session-resume', 'session-fork',
+      'session-resume', 'session-fork', 'session-stop',
     ]);
   });
 
   it('pid alone does not make a window focusable', () => {
-    expect(availability({ ...baseCtx, pid: 1234 })).toEqual([]);
+    expect(availability({ ...baseCtx, pid: 1234 })).toEqual(['session-stop']);
   });
 });
 
@@ -215,6 +227,35 @@ describe('SessionActions — focusWindow', () => {
     fetchMock.mockResolvedValueOnce({ ok: false, status: 404, text: async () => 'window not found' });
     const ctx: SessionActionCtx = { ...baseCtx, windowId: 'w1' };
     await expect(focusWindow(ctx)).rejects.toThrow(/focus failed: HTTP 404 — window not found/);
+  });
+});
+
+describe('SessionActions — stopAgent', () => {
+  it('posts the owner-targeted kill through the loopback admin proxy', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: { results: [{ ok: true }] } }),
+    });
+    await stopAgent({ ...baseCtx, ownerLabel: 'Ada' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url).toBe('/api/admin/coordination/fleet/kill');
+    expect(init.method).toBe('POST');
+    expect(init.headers).toMatchObject({ 'content-type': 'text/plain' });
+    expect(JSON.parse(init.body as string)).toMatchObject({
+      owner: 'su-abc123',
+      close_terminal: true,
+    });
+  });
+
+  it('surfaces a failed kill instead of reporting success', async () => {
+    fetchMock.mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({ data: { results: [{ ok: false, error: 'not found' }] } }),
+    });
+    await expect(stopAgent(baseCtx)).rejects.toThrow(/stop failed: not found/);
   });
 });
 

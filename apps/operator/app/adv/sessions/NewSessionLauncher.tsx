@@ -568,12 +568,20 @@ export default function NewSessionLauncher({
           `Agent launch ${target}${chosenModel ? ` (${chosenModel})` : ''} may not have opened a window.`,
           { description: result.warning, duration: 8000 },
         );
+        setLaunchReceipts((previous) => [
+          { ownerId: result.ownerId ?? null, target },
+          ...previous,
+        ].slice(0, 5));
         onLaunched?.(result.ownerId ?? null);
       } else if (result.ok) {
         toast.success(
           `Agent launched ${target}${chosenModel ? ` (${chosenModel})` : ''}.`,
           { duration: 3000 },
         );
+        setLaunchReceipts((previous) => [
+          { ownerId: result.ownerId ?? null, target },
+          ...previous,
+        ].slice(0, 5));
         // A launch that CREATED a fleet added a row to the very list this
         // picker renders — re-read it so the new fleet is joinable straight
         // away, and drop back to it rather than leaving the create row armed
@@ -738,6 +746,43 @@ export default function NewSessionLauncher({
           {launching ? 'Launching…' : '+ New session'}
         </Button>
       </>
+      {launchReceipts.length > 0 ? (
+        <div
+          className="pc-new-session-launcher__receipt"
+          role="status"
+          aria-live="polite"
+          data-testid="new-session-launch-status"
+        >
+          <strong>Headless launch recorded</strong>
+          <span>
+            {launchReceipts.length === 1
+              ? `Agent launched ${launchReceipts[0].target}.`
+              : `${launchReceipts.length} headless agents launched from this control.`}
+          </span>
+          <span>
+            No console window is opened. Use Sessions to inspect live status and stop an agent.
+          </span>
+          {launchReceipts[0].ownerId ? (
+            <span className="pc-new-session-launcher__receipt-id">
+              Latest owner: {launchReceipts[0].ownerId}
+            </span>
+          ) : (
+            <span className="pc-new-session-launcher__receipt-id">
+              The owner id is still starting; Sessions will show it when registered.
+            </span>
+          )}
+          {onViewSessions ? (
+            <Button
+              variant="ghost"
+              size="mini"
+              className="pc-new-session-launcher__receipt-action"
+              onClick={onViewSessions}
+            >
+              View sessions
+            </Button>
+          ) : null}
+        </div>
+      ) : null}
     </div>
   );
 }

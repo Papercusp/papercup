@@ -425,6 +425,32 @@
   color: var(--fg-dim);
 }
 
+/* WI-38039: headless launches have no terminal tab to act as their receipt.
+   Keep the acknowledgement on its own wrapped shelf so it remains visible
+   after the toast expires without making the picker controls unreadably narrow. */
+.pc-new-session-launcher__receipt {
+  display: inline-flex;
+  flex: 1 0 100%;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 4px 8px;
+  min-width: 0;
+  padding: 5px 8px;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  font-size: 11px;
+  line-height: 1.4;
+}
+
+.pc-new-session-launcher__receipt-id {
+  color: var(--fg-mute);
+  overflow-wrap: anywhere;
+}
+
+.pc-new-session-launcher__receipt-action {
+  margin-left: auto;
+}
+
 /* WI-6505 — the headed/headless picker on the chat popup's fleet-launch row.
    Same ceiling discipline as the pickers above. */
 .pc-new-session-launcher__select--window {

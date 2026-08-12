@@ -45,6 +45,11 @@ const ALLOWED: Record<string, ReadonlySet<string>> = {
   // only `list` is exposed, never `read`/`search` (those return turn TEXT,
   // which this admin mount has no reason to proxy).
   sessions: new Set(['list']),
+  // WI-38039: the session pane needs the same audited owner-targeted kill
+  // primitive as agents do, but the desktop webview has no bearer token. Keep
+  // the loopback + origin-checked admin proxy narrow to this one verb; the
+  // underlying fleet:kill tool still owns identity, audit, and target safety.
+  fleet: new Set(['kill']),
 };
 
 function unwrap(toolResult: { status: number; body: unknown }): Response {

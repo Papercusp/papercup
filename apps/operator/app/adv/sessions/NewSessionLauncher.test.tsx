@@ -430,6 +430,43 @@ describe('NewSessionLauncher', () => {
     expect(onLaunched).toHaveBeenCalledWith(null);
   });
 
+  it('keeps a visible headless launch receipt with the returned owner id', async () => {
+    h.launchAgent.mockResolvedValueOnce({ ok: true, ownerId: 'su-headless-1' });
+    render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
+    fireEvent.click(screen.getByRole('button', { name: '+ New session' }));
+    const status = await screen.findByTestId('new-session-launch-status');
+    expect(status.textContent).toContain('Headless launch recorded');
+    expect(status.textContent).toContain('su-headless-1');
+    expect(status.textContent).toContain('No console window is opened');
+  });
+
+  it('keeps the receipt legible when an older launch response has no owner id', async () => {
+    h.launchAgent.mockResolvedValueOnce({ ok: true });
+    render(<NewSessionLauncher />, { wrapper: withNuqsTestingAdapter() });
+    fireEvent.click(screen.getByRole('button', { name: '+ New session' }));
+    const status = await screen.findByTestId('new-session-launch-status');
+    expect(status.textContent).toContain('owner id is still starting');
+  });
+
+  it('counts repeated launches and offers the caller a Sessions-board action', async () => {
+    h.launchAgent
+      .mockResolvedValueOnce({ ok: true, ownerId: 'su-headless-1' })
+      .mockResolvedValueOnce({ ok: true, ownerId: 'su-headless-2' });
+    const onViewSessions = vi.fn();
+    render(<NewSessionLauncher onViewSessions={onViewSessions} />, {
+      wrapper: withNuqsTestingAdapter(),
+    });
+    const launchButton = screen.getByRole('button', { name: '+ New session' });
+    fireEvent.click(launchButton);
+    await waitFor(() => expect(h.launchAgent).toHaveBeenCalledTimes(1));
+    fireEvent.click(launchButton);
+    const status = await screen.findByTestId('new-session-launch-status');
+    expect(status.textContent).toContain('2 headless agents launched');
+    expect(screen.getByRole('button', { name: 'View sessions' })).toBeTruthy();
+    fireEvent.click(screen.getByRole('button', { name: 'View sessions' }));
+    expect(onViewSessions).toHaveBeenCalledTimes(1);
+  });
+
   it('toasts an error and does not call onLaunched when launchAgent fails', async () => {
     h.launchAgent.mockResolvedValueOnce({ ok: false, error: 'boom' });
     const onLaunched = vi.fn();

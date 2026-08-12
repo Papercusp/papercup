@@ -1019,6 +1019,7 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
         transcriptExtra={transcriptExtra}
         headerAction={
           <NewSessionLauncher
+            onViewSessions={() => void setTab('sessions')}
             onLaunched={(ownerId) => {
               // WI-6363: `ownerId` is the pre-pinned coord owner id the new
               // session registers as, so it is exactly the key `hudsession`
