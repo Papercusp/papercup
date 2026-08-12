@@ -30,6 +30,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 
 const spawnMock = vi.fn();
+
+// The cross-process adoption probe. Stubbed because the real one opens a unix
+// socket, and this file must stay hermetic — but note the DEFAULT below is
+// `false` (nothing is serving), so every pre-existing test in this file keeps its
+// original spawn-a-child behavior and only the adoption cases opt in.
+const probeAliveMock = vi.hoisted(() => vi.fn(async () => false));
+vi.mock('../sidecar-socket/pid-keyed-socket', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../sidecar-socket/pid-keyed-socket')>()),
+  probeUnixSocketAlive: (...a: unknown[]) => probeAliveMock(...(a as [])),
+}));
 // Partial mock — keep the real surface for everything this file does not stub
 // (a full replacement breaks at import time on transitive promisify(execFile)).
 vi.mock('node:child_process', async (importOriginal) => ({
@@ -70,7 +80,11 @@ vi.mock('../task-manager/store', () => ({
   closeTask: async () => {},
 }));
 
-import { _resetSpawnerSidecarSpawnStateForTests, spawnSpawnerSidecar } from './spawner-sidecar-spawn';
+import {
+  _resetSpawnerSidecarSpawnStateForTests,
+  hasAdoptedSpawnerSidecar,
+  spawnSpawnerSidecar,
+} from './spawner-sidecar-spawn';
 import { probeScopeSupport, resetScopeProbe } from '../task-manager/managed-spawn';
 import { setTaskManagerEnabledForTest } from '../task-manager/enabled';
 
@@ -142,6 +156,11 @@ const SOCK = '/tmp/papercusp-test-spawner.sock';
 describe('spawner sidecar cgroup confinement (EI-19479764372783341)', () => {
   beforeEach(async () => {
     spawnMock.mockReset();
+    // Reset the ADOPTION probe to "nothing is serving" so a leftover
+    // mockResolvedValueOnce from a prior test cannot make an unrelated case adopt
+    // (and thus assert "spawn called 0 times" for the wrong reason).
+    probeAliveMock.mockReset();
+    probeAliveMock.mockResolvedValue(false);
     L.registerThrows = null;
     L.markThrows = null;
     L.marked = [];
@@ -310,5 +329,67 @@ describe('spawner sidecar cgroup confinement (EI-19479764372783341)', () => {
 
     child.stdout.emit('data', Buffer.from('PAPERCUSP_SPAWNER_READY\n'));
     await expect(Promise.all([a, b])).resolves.toEqual([undefined, undefined]);
+  });
+
+  // ── the CROSS-PROCESS fan-out (spawner-sidecar-cluster-fanout-2026-08-12) ──
+  //
+  // The guard above is about two callers in ONE process. This is the sibling
+  // property one scope up, and the one that actually cost 8GB: two callers in
+  // DIFFERENT processes. Under `node:cluster` every worker has its own fresh
+  // module state, so no in-process latch can see a sibling's sidecar — only a
+  // probe of the shared socket can. Measured 2026-08-12 at PAPERCUSP_CLUSTER=16:
+  // 16 sidecars, 9.5GB, 0.004 cores each.
+
+  it('ADOPTS a sibling worker sidecar already serving the shared socket (spawns nothing)', async () => {
+    probeAliveMock.mockResolvedValueOnce(true);
+
+    await expect(spawnSpawnerSidecar(SOCK)).resolves.toBeUndefined();
+
+    // The whole point: no second ~450MB hono-host for this worker.
+    expect(spawnMock).not.toHaveBeenCalled();
+    expect(hasAdoptedSpawnerSidecar()).toBe(true);
+  });
+
+  it('spawns normally when nothing is serving the socket (adoption must not suppress the FIRST sidecar)', async () => {
+    // CONTROL for the test above: if the probe were stuck returning true, or the
+    // adoption branch swallowed every spawn, the assertion there would pass while
+    // the cluster ended up with ZERO sidecars — strictly worse than sixteen. This
+    // proves the adoption branch is conditional on the probe, not unconditional.
+    probeAliveMock.mockResolvedValueOnce(false);
+    const child = makeChild();
+    spawnMock.mockImplementationOnce(() => child);
+
+    const p = spawnSpawnerSidecar(SOCK);
+    await flush();
+    expect(spawnMock).toHaveBeenCalledTimes(1);
+    expect(hasAdoptedSpawnerSidecar()).toBe(false);
+
+    child.stdout.emit('data', Buffer.from('PAPERCUSP_SPAWNER_READY\n'));
+    await expect(p).resolves.toBeUndefined();
+  });
+
+  it('a bind-race loser adopts instead of crash-respawning (EI-19982828461130670)', async () => {
+    // The probe cannot close the window between "found nothing" and "our child
+    // bound", so two workers can both spawn; exactly one wins. The loser's child
+    // dies EADDRINUSE — a SUCCESS for the cluster (a sidecar now serves the shared
+    // path), so it must neither warn as a crash nor burn the respawn budget
+    // re-losing the same race, and must settle rather than hang to the 10s timeout.
+    probeAliveMock.mockResolvedValueOnce(false);
+    const child = makeChild();
+    spawnMock.mockImplementationOnce(() => child);
+
+    const p = spawnSpawnerSidecar(SOCK);
+    await flush();
+
+    child.stderr.emit('data', Buffer.from('listen EADDRINUSE: address already in use ' + SOCK + '\n'));
+    child.emit('exit', 1);
+
+    // Settles promptly as success — not a 10s "startup timeout" rejection.
+    await expect(p).resolves.toBeUndefined();
+    expect(hasAdoptedSpawnerSidecar()).toBe(true);
+
+    // And no respawn was scheduled: re-losing the race would just repeat this.
+    await flush();
+    expect(spawnMock).toHaveBeenCalledTimes(1);
   });
 });

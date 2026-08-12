@@ -151,33 +151,41 @@ export async function spawnSpawnerSidecar(socketPath?: string): Promise<void> {
 
   // See `spawnInFlight` — a spawn that has passed the check above but not yet
   // assigned `sidecarProcess`. Join it rather than starting a second one.
+  //
+  // ⚠ The check above and the assignment below MUST stay in the same synchronous
+  // tick. Do not `await` between them — that is the exact re-entrancy window
+  // EI-19479764372783341 closed, and re-opening it lets two concurrent callers each
+  // spawn a sidecar. The cross-process adoption probe below is async and therefore
+  // lives INSIDE the guarded promise, not before it. (Caught by
+  // spawner-sidecar-cgroup-confinement.test.ts's "exactly ONE sidecar" guard when
+  // this was first written the other way round.)
   if (spawnInFlight) return spawnInFlight;
 
-  // ── CROSS-PROCESS ADOPTION (plan spawner-sidecar-cluster-fanout-2026-08-12) ──
-  //
-  // Every guard above this line is MODULE-scoped, i.e. per PROCESS: `sidecarProcess`
-  // and `spawnInFlight` can only ever see spawns made by THIS process. Under
-  // `node:cluster` that is not the relevant scope. Each of N workers is a separate
-  // process with its own fresh `sidecarProcess = null`, so each one independently
-  // concluded it had to spawn a sidecar — and a sidecar is a full `hono-host.mjs`.
-  // Measured on this box 2026-08-12 under PAPERCUSP_CLUSTER=16: 16 sidecars, 9.5GB,
-  // each at 0.004 cores. The in-process guards were all working perfectly; they were
-  // simply answering a question about the wrong population.
-  //
-  // With the path pinned across the fork (pinSpawnerSocketForCluster), all workers
-  // resolve the SAME socket, so a live listener means a sibling already did this work
-  // and we ADOPT it instead of spawning a duplicate. `getSpawnerIpcClient` dials that
-  // same path, so an adopting worker is fully functional with no child of its own.
-  //
-  // This is a connect probe, not `existsSync`: a stale socket FILE routinely outlives
-  // its server here (that is what the reaper exists for), so presence proves nothing.
-  const probeSocket = socketPath ?? resolveSpawnerSocketPath();
-  if (await probeUnixSocketAlive(probeSocket)) {
-    adoptedSocketPath = probeSocket;
-    return;
-  }
-
-  spawnInFlight = spawnSpawnerSidecarInner(socketPath).finally(() => {
+  spawnInFlight = (async () => {
+    // ── CROSS-PROCESS ADOPTION (plan spawner-sidecar-cluster-fanout-2026-08-12) ──
+    //
+    // Every in-process guard is MODULE-scoped: `sidecarProcess` and `spawnInFlight`
+    // can only see spawns made by THIS process. Under `node:cluster` that is not the
+    // relevant scope. Each of N workers is a separate process with its own fresh
+    // `sidecarProcess = null`, so each independently concluded it had to spawn a
+    // sidecar — and a sidecar is a full `hono-host.mjs`. Measured 2026-08-12 at
+    // PAPERCUSP_CLUSTER=16: 16 sidecars, 9.5GB, 0.004 cores each. The in-process
+    // guards were working perfectly; they were answering about the wrong population.
+    //
+    // With the path pinned across the fork (pinSpawnerSocketForCluster) all workers
+    // resolve the SAME socket, so a live listener means a sibling already did this
+    // work and we ADOPT it. `getSpawnerIpcClient` dials that same path, so an
+    // adopting worker is fully functional with no child of its own.
+    //
+    // A connect probe, not `existsSync`: a stale socket FILE routinely outlives its
+    // server here (that is what the reaper exists for), so presence proves nothing.
+    const probeSocket = socketPath ?? resolveSpawnerSocketPath();
+    if (await probeUnixSocketAlive(probeSocket)) {
+      adoptedSocketPath = probeSocket;
+      return;
+    }
+    return spawnSpawnerSidecarInner(socketPath);
+  })().finally(() => {
     spawnInFlight = null;
   });
   return spawnInFlight;
@@ -548,6 +556,10 @@ export function _resetSpawnerSidecarSpawnStateForTests(): void {
   sidecarScopeUnit = null;
   sidecarReady = false;
   readyWaiters.length = 0;
+  // Same reasoning as `spawnInFlight` below: an adoption left set by a prior test
+  // makes the next spawnSpawnerSidecar() return early having spawned nothing, so a
+  // later "spawn called 0 times" assertion would pass for the wrong reason.
+  adoptedSocketPath = null;
   // Must be cleared with the rest: an attempt left in flight by a prior test
   // would be RETURNED to the next caller instead of spawning, so every later
   // assertion reads "spawn called 0 times" for a reason that is not the subject.
