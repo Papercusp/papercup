@@ -34,10 +34,11 @@
  * header→projection map (trivially unit-testable), and every I/O edge (fetch, credential resolve,
  * dispatcher build) is a `deps` seam, so the probe is testable with zero network.
  */
-import type { AccountEgress, ClaudeAccount } from '../deployment/account-pool';
+import { egressEntries, type AccountEgress, type ClaudeAccount } from '../deployment/account-pool';
 import { parseUnifiedWindow, parseUnified7dWindow } from './gateway';
 import { withOAuthBeta } from './credential-store';
 import { resolveAccountEgress } from './egress-dispatcher';
+import { describeFetchError } from '../loopback-fetch';
 
 /** Upstream root. Mirrors gateway.ts DEFAULT_UPSTREAM; env-tunable for a staging/mock upstream. */
 const UPSTREAM = process.env.PAPERCUSP_GATEWAY_UPSTREAM || 'https://api.anthropic.com';
@@ -122,13 +123,31 @@ export function provesUnwall(before: CapacityWindows, now: CapacityWindows, full
   return freed7 || freed5;
 }
 
-/** The egress this account actually routes through — see `resolveAccountEgress`, the canonical
- *  selector in egress-dispatcher.ts. Re-exported under the historical name used here. */
+/** The egress this account starts on — see `resolveAccountEgress`, the canonical selector in
+ * egress-dispatcher.ts. Re-exported under the historical name used here. */
 export const probeEgressFor: (a: ClaudeAccount) => AccountEgress | undefined = resolveAccountEgress;
 
 /**
+ * The ordered egress candidates the gateway can use for this account. A pool entry may be `{}` to
+ * mean the box-direct IP, so preserve it; an account with no configured entries still gets one
+ * `undefined` candidate for the default shared egress. Capacity probes must walk these candidates
+ * because the pool head can be transport-dead while a sibling route still returns authoritative
+ * budget headers (the gateway's normal per-IP failover behavior).
+ */
+function probeEgressCandidates(account: ClaudeAccount): Array<AccountEgress | undefined> {
+  const entries = egressEntries(account);
+  return entries.length > 0 ? entries : [undefined];
+}
+
+function describeEgress(egress: AccountEgress | undefined): string {
+  return egress?.proxyUrl ?? (egress?.localAddress ? `src ${egress.localAddress}` : 'default-egress');
+}
+
+/**
  * Probe ONE account's live budget windows. Never throws — a credential/transport failure is captured on
- * the result so a sweep over N accounts always returns N rows.
+ * the result so a sweep over N accounts always returns N rows. When an account has an egress pool, walk
+ * the ordered candidates on transport/no-header failure so one dead proxy cannot hide a usable sibling
+ * route (including the valid `{}` box-direct fallback).
  *
  * We send the smallest possible VALID request (1 output token, a one-char prompt). The response BODY is
  * irrelevant and never read; only headers matter. A 4xx/429 still carries the unified headers, so we treat
@@ -141,71 +160,88 @@ export async function probeAccountCapacity(
 ): Promise<CapacityProbeResult> {
   const before = storedWindows(account);
   const base: Omit<CapacityProbeResult, 'ok' | 'windows' | 'unwalls'> = { accountId: account.id, before };
-  try {
-    const fetchImpl = deps.fetchImpl ?? fetch;
-    const resolveToken =
-      deps.resolveToken ??
-      (async (a: ClaudeAccount) => {
-        const { makeCredentialResolver } = await import('./credential-store');
-        return makeCredentialResolver(a.credentialRef, a.id).current();
-      });
-    const buildDispatcher =
-      deps.buildDispatcher ??
-      (async (eg: AccountEgress | undefined) => {
-        const { buildEgressDispatcher } = await import('./egress-dispatcher');
-        return (await buildEgressDispatcher(eg)).dispatcher;
-      });
-
-    const token = await resolveToken(account);
-    const dispatcher = await buildDispatcher(probeEgressFor(account));
-
-    const ac = new AbortController();
-    const timer = setTimeout(() => ac.abort(), PROBE_TIMEOUT_MS);
-    timer.unref?.();
-    let res: Response;
-    try {
-      res = await fetchImpl(`${UPSTREAM}/v1/messages`, {
-        method: 'POST',
-        signal: ac.signal,
-        headers: {
-          'content-type': 'application/json',
-          'anthropic-version': ANTHROPIC_VERSION,
-          'anthropic-beta': withOAuthBeta(null),
-          authorization: `Bearer ${token}`,
-        },
-        body: JSON.stringify({
-          model: CAPACITY_PROBE_MODEL,
-          max_tokens: 1,
-          messages: [{ role: 'user', content: '.' }],
-        }),
-        // undici honours `dispatcher` on the RequestInit; the DOM lib type doesn't know it.
-        ...(dispatcher ? ({ dispatcher } as Record<string, unknown>) : {}),
-      } as RequestInit);
-    } finally {
-      clearTimeout(timer);
-    }
-    // Drain the body so the socket releases cleanly — we never inspect it.
-    void res.text().catch(() => undefined);
-
-    const h: Record<string, string | undefined> = {};
-    res.headers.forEach((v, k) => {
-      h[k.toLowerCase()] = v;
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const resolveToken =
+    deps.resolveToken ??
+    (async (a: ClaudeAccount) => {
+      const { makeCredentialResolver } = await import('./credential-store');
+      return makeCredentialResolver(a.credentialRef, a.id).current();
     });
-    const windows = parseCapacityHeaders(h);
-    const sawHeader = Object.keys(windows).length > 0;
-    return {
-      ...base,
-      ok: sawHeader,
-      status: res.status,
-      windows,
-      unwalls: sawHeader && provesUnwall(before, windows, fullUtil),
-      ...(sawHeader
-        ? {}
-        : { error: `HTTP ${res.status} carried no anthropic-ratelimit-unified-* header` }),
-    };
+  const buildDispatcher =
+    deps.buildDispatcher ??
+    (async (eg: AccountEgress | undefined) => {
+      const { buildEgressDispatcher } = await import('./egress-dispatcher');
+      return (await buildEgressDispatcher(eg)).dispatcher;
+    });
+
+  let token: string;
+  try {
+    token = await resolveToken(account);
   } catch (e) {
-    return { ...base, ok: false, windows: {}, unwalls: false, error: (e as Error).message };
+    return { ...base, ok: false, windows: {}, unwalls: false, error: describeFetchError(e) };
   }
+
+  const failures: string[] = [];
+  for (const egress of probeEgressCandidates(account)) {
+    const route = describeEgress(egress);
+    try {
+      const dispatcher = await buildDispatcher(egress);
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), PROBE_TIMEOUT_MS);
+      timer.unref?.();
+      let res: Response;
+      try {
+        res = await fetchImpl(`${UPSTREAM}/v1/messages`, {
+          method: 'POST',
+          signal: ac.signal,
+          headers: {
+            'content-type': 'application/json',
+            'anthropic-version': ANTHROPIC_VERSION,
+            'anthropic-beta': withOAuthBeta(null),
+            authorization: `Bearer ${token}`,
+          },
+          body: JSON.stringify({
+            model: CAPACITY_PROBE_MODEL,
+            max_tokens: 1,
+            messages: [{ role: 'user', content: '.' }],
+          }),
+          // undici honours `dispatcher` on the RequestInit; the DOM lib type doesn't know it.
+          ...(dispatcher ? ({ dispatcher } as Record<string, unknown>) : {}),
+        } as RequestInit);
+      } finally {
+        clearTimeout(timer);
+      }
+      // Drain the body so the socket releases cleanly — we never inspect it.
+      void res.text().catch(() => undefined);
+
+      const h: Record<string, string | undefined> = {};
+      res.headers.forEach((v, k) => {
+        h[k.toLowerCase()] = v;
+      });
+      const windows = parseCapacityHeaders(h);
+      const sawHeader = Object.keys(windows).length > 0;
+      if (sawHeader) {
+        return {
+          ...base,
+          ok: true,
+          status: res.status,
+          windows,
+          unwalls: provesUnwall(before, windows, fullUtil),
+        };
+      }
+      failures.push(`${route}: HTTP ${res.status} carried no anthropic-ratelimit-unified-* header`);
+    } catch (e) {
+      failures.push(`${route}: ${describeFetchError(e)}`);
+    }
+  }
+
+  return {
+    ...base,
+    ok: false,
+    windows: {},
+    unwalls: false,
+    error: failures.join('; '),
+  };
 }
 
 /** Should this account be probed under `walledOnly`? Pure, so the selection rule is unit-testable. */

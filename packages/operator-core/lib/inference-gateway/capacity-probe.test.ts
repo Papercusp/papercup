@@ -170,6 +170,47 @@ describe('probeAccountCapacity', () => {
     expect(r.before.utilization7d).toBe(1.0); // before-state still reported for the evidence table
   });
 
+  it('fails over from a dead pool head to a usable sibling egress', async () => {
+    const a = acct(
+      'walled',
+      { utilization7d: 1.0 },
+      { egressPool: [{ proxyUrl: 'http://dead:3128' }, {}] },
+    );
+    const seen: string[] = [];
+    let route = '';
+    const r = await probeAccountCapacity(
+      a,
+      {
+        resolveToken: async () => 'tok',
+        buildDispatcher: async (eg) => {
+          route = eg?.proxyUrl ?? 'default-egress';
+          seen.push(route);
+          return route;
+        },
+        fetchImpl: (async () => {
+          if (route === 'http://dead:3128') {
+            throw Object.assign(new TypeError('fetch failed'), {
+              cause: { code: 'UND_ERR_CONNECT_TIMEOUT', message: 'Connect Timeout Error' },
+            });
+          }
+          return new Response('{}', {
+            status: 429,
+            headers: {
+              'anthropic-ratelimit-unified-7d-utilization': '1.0',
+              'anthropic-ratelimit-unified-7d-reset': '1784048400',
+            },
+          });
+        }) as unknown as typeof fetch,
+      },
+      FULL,
+    );
+    expect(seen).toEqual(['http://dead:3128', 'default-egress']);
+    expect(r.ok).toBe(true);
+    expect(r.status).toBe(429);
+    expect(r.windows.utilization7d).toBe(1);
+    expect(r.unwalls).toBe(false);
+  });
+
   it('a credential-resolve failure is captured per-account, not thrown', async () => {
     const r = await probeAccountCapacity(
       acct('bad-cred', { utilization7d: 1.0 }),
