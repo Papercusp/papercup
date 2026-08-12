@@ -107,6 +107,52 @@ const MARKER_RE = /sql-snippet-justified:[ \t]*(\S.*)$/im;
 /** How many lines above the hit may carry the marker. */
 const MARKER_LOOKBACK = 3;
 
+/**
+ * GENERATED regions, exempt as a class.
+ *
+ * The `gen:tool-routing` block in CLAUDE.md is a table whose third column is
+ * literally "the SQL to write INSTEAD of the tool" — a counter-example on every
+ * row, which is the case this lint's own `sql-snippet-justified` escape exists
+ * for. Two reasons it is exempted as a REGION rather than marker-by-marker:
+ *
+ *  1. A per-row marker cannot be written. The rows are single table lines and
+ *     the marker would have to sit inside a rendered cell (visible to every
+ *     agent) or on its own line (which breaks the markdown table). MARKER_LOOKBACK
+ *     is 3, so one marker above the block cannot reach a 40-row table either.
+ *  2. Nothing is being waved through. The block is machine-written from audited
+ *     pairs and `npm run gen:tool-routing:check` fails the build if a byte of it
+ *     drifts from `ALL_PAIRS` — a STRONGER guarantee than a hand-written
+ *     justification, not a weaker one. The SQL in it cannot be edited by hand at
+ *     all, which is precisely what this lint is defending.
+ *
+ * Deliberately keyed on explicit marker pairs, not on "looks generated": an
+ * open-ended heuristic here would let a hand-written file silence itself by
+ * imitating a banner.
+ */
+const GENERATED_REGIONS = [
+  ['<!-- BEGIN GENERATED gen:tool-routing — do not edit by hand -->', '<!-- END GENERATED gen:tool-routing -->'],
+];
+
+/**
+ * Is this 1-based line inside a generated region of the RAW source?
+ * Exported so the self-test can pin it, and so a caller can see the rule rather
+ * than infer it from a silent null.
+ */
+export function inGeneratedRegion(rawSrc, lineno) {
+  const lines = rawSrc.split('\n');
+  for (const [begin, end] of GENERATED_REGIONS) {
+    let open = -1;
+    for (let i = 0; i < lines.length; i += 1) {
+      if (open < 0 && lines[i].includes(begin)) open = i + 1;
+      else if (open >= 0 && lines[i].includes(end)) {
+        if (lineno >= open && lineno <= i + 1) return true;
+        open = -1;
+      }
+    }
+  }
+  return false;
+}
+
 /** Which tool to point the author at, per covered table. */
 const TOOL_FOR = {
   work_items: 'work_items:claimable (claim floors) / work_items:list (filtered slice)',

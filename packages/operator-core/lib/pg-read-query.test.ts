@@ -1749,6 +1749,35 @@ describe('buildToolRoutingAdvisory', () => {
     expect(advisory).toContain('pause');
   });
 
+  // The three relations P-009 tranche 2 shipped audited pairs for. Each had a
+  // CLAUDE.md row and a frozen-fixture equivalence verdict while the LIVE nudge
+  // — the one the agent meets mid-query, which is the only one they are reading
+  // at the moment it matters — was silent or pointed elsewhere.
+  it('fires for a schema_migrations lookup and says what the verdict adds', () => {
+    const advisory = buildToolRoutingAdvisory(
+      "SELECT filename, applied_at FROM harness_shared.schema_migrations WHERE filename LIKE '795%'",
+    );
+    expect(advisory).toContain('db:migrations');
+    // The whole reason to switch: an empty SQL result cannot distinguish these.
+    expect(advisory).toContain('draft-not-armed');
+  });
+
+  it('fires for a test_runs read and warns that the guessed status literal cannot match', () => {
+    const advisory = buildToolRoutingAdvisory(
+      "SELECT file_path, status FROM harness_shared.test_runs WHERE status = 'failed' ORDER BY started_at DESC LIMIT 20",
+    );
+    expect(advisory).toContain('testing:runs');
+    expect(advisory).toContain("status='failed'");
+  });
+
+  it('names the id-capable verb for engineer_issues, since issues:list has no id filter', () => {
+    const advisory = buildToolRoutingAdvisory(
+      "SELECT issue_id, state, title FROM harness_shared.engineer_issues WHERE state = 'open'",
+    );
+    expect(advisory).toContain('issues:list');
+    expect(advisory).toContain('work_items:get');
+  });
+
   it('names the derived-liveness surface for a raw coord_presence read', () => {
     const advisory = buildToolRoutingAdvisory(
       "SELECT owner_id, heartbeat_at FROM harness_shared.coord_presence WHERE workspace_id = 'papercusp-workspace'",

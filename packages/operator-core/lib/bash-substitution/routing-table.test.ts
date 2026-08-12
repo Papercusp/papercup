@@ -32,7 +32,9 @@ import {
   spliceRoutingBlock,
 } from './routing-table';
 import { ALL_PAIRS } from './pairs';
-import type { SubstitutionPair } from './types';
+import { isSqlPair } from './types';
+import type { SqlSubstitutionPair, SubstitutionPair } from './types';
+import { TOOL_ROUTING_BY_TABLE } from '../pg-read-query';
 
 // lib/bash-substitution → lib → operator-core → packages → repo root (four).
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..', '..');
@@ -169,6 +171,73 @@ describe('every audited pair carries a usable routing row', () => {
     // The tool the row points at must be the tool the gate enforces, or the table
     // teaches a different routing than the hook applies.
     expect(p.routing.use).toContain(p.toolName);
+  });
+});
+
+/**
+ * D-006's "the two must never disagree about a relation's verb", as a guard.
+ *
+ * There are TWO surfaces telling an agent which verb answers a relation, and
+ * they are reached at different moments: `TOOL_ROUTING_BY_TABLE` fires live, at
+ * the instant a hand-written query is submitted, and the CLAUDE.md routing rows
+ * are read ambiently in the prompt. A SQL pair that reaches `equivalent` has
+ * EARNED its verb against frozen evidence — so the live advisory must not be
+ * silent about that relation, and must not name a different verb.
+ *
+ * The silent case is the one that actually happened: `schema_migrations` and
+ * `test_runs` had audited pairs and CLAUDE.md rows while the live map had no
+ * entry at all, so the agent most in need of the nudge — the one mid-query —
+ * was the only one who never saw it. `engineer_issues` had the other failure,
+ * an entry naming a verb that cannot express the shape being routed.
+ *
+ * Catalog relations are exempt BY NAME: `information_schema.columns` routes to
+ * `dev:pg_query { describe }`, and the map is keyed on the BARE relation, which
+ * for those pairs would be `columns`/`tables` — words far too generic to key a
+ * live advisory on without colliding with an unrelated papercusp table.
+ */
+describe('an equivalent SQL pair is not contradicted by the live routing advisory', () => {
+  const CATALOG_EXEMPT = new Set(['information_schema.columns', 'information_schema.tables']);
+  const auditedSqlPairs = ALL_PAIRS.filter(
+    (p) => isSqlPair(p) && p.expectedVerdict === 'equivalent' && !CATALOG_EXEMPT.has(p.relation),
+  ) as SqlSubstitutionPair[];
+
+  it('covers at least the tranche-2 relations (a silent map is the failure being guarded)', () => {
+    expect(auditedSqlPairs.map((p) => p.relation).sort()).toEqual([
+      'engineer_issues',
+      'schema_migrations',
+      'test_runs',
+    ]);
+  });
+
+  /**
+   * The check itself, as a function, so it can be run against a DELIBERATELY
+   * BROKEN map below. A guard that has only ever been run against a passing
+   * input has not been shown to be capable of failing — and the repo's
+   * falsifiability discipline forbids proving that by mutating the real map,
+   * since git-sync would happily commit the mutant mid-probe.
+   */
+  const disagreement = (p: SqlSubstitutionPair, map: Record<string, { tool: string }>): string | null => {
+    const route = map[p.relation];
+    if (!route) return `no row for ${p.relation}`;
+    if (!route.tool.includes(p.toolName)) return `${p.relation} names "${route.tool}", not ${p.toolName}`;
+    return null;
+  };
+
+  it.each(auditedSqlPairs.map((p) => [p.id, p] as const))('%s', (_id, p) => {
+    expect(
+      disagreement(p, TOOL_ROUTING_BY_TABLE),
+      `the live advisory contradicts (or is silent about) an audited pair — CLAUDE.md and the in-query nudge would teach different verbs for ${p.relation}`,
+    ).toBeNull();
+  });
+
+  it('CONTROL: the same check FAILS on a map that is silent about the relation', () => {
+    const pair = auditedSqlPairs[0]!;
+    expect(disagreement(pair, {})).toMatch(/no row for/);
+  });
+
+  it('CONTROL: the same check FAILS on a map naming a different verb', () => {
+    const pair = auditedSqlPairs[0]!;
+    expect(disagreement(pair, { [pair.relation]: { tool: 'some:other-verb' } })).toMatch(/not /);
   });
 });
 

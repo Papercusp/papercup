@@ -1315,9 +1315,24 @@ export const TOOL_ROUTING_BY_TABLE: Record<string, ToolRoute> = {
     tool: 'facts:list',
     gives: 'scope resolution + TTL/retraction handling, so a stale fact is not read as standing',
   },
+  // Three verbs, because this relation's traffic is three different questions
+  // and D-006 rules that a row must name the verb that can ASK the one in front
+  // of it. `issues:list` has NO id filter, so pointing a by-id forensic read
+  // there would answer a question nobody asked.
   engineer_issues: {
-    tool: 'improvements:digest',
-    gives: 'scored + deduped triage with the auto-eligible / needs-human split',
+    tool: 'issues:list / work_items:get / improvements:digest',
+    gives:
+      'typed filters + unbounded counts (issues:list), one item with its checkpoint (work_items:get — issues:list has no id filter), or scored+deduped triage (improvements:digest)',
+  },
+  schema_migrations: {
+    tool: 'db:migrations',
+    gives:
+      'a VERDICT when nothing matches — pending / draft-not-armed / no-such-migration — which an empty SQL result cannot tell apart',
+  },
+  test_runs: {
+    tool: 'testing:runs',
+    gives:
+      "a TYPED status enum: the column is CHECK-constrained to pass|fail|skip|cancelled|error|running, so a hand-written status='failed' matches nothing and reads as a clean \"no failures\"",
   },
   task_ledger: {
     tool: 'processes:list',
