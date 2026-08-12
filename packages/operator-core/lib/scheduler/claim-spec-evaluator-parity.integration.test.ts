@@ -1,0 +1,411 @@
+/**
+ * claim-spec-evaluator-parity.integration.test.ts — WI-5995.
+ *
+ * ONE spec language, TWO evaluators. This is the STANDING parity guard over the pair.
+ *
+ *   • the SQL compiler — `compileFilter`/`compileLeaf` (get-next.ts), what `scheduler:get_next`,
+ *     `work_items:claimable` and the miss-diagnosis breakdown actually execute;
+ *   • the JS evaluator — `matchesClaimSpecFilter` (claim-spec-match.ts), what by-id claims,
+ *     create+assign, plan-item dispatch and get_next's own post-claim re-check execute.
+ *
+ * That seam has now diverged FOUR times, each found in production by a starved or mis-served
+ * fleet rather than by a test: EI-13306 (scalar `not`/`!=` over a NULL column dropped the
+ * backlog — measured 2341 -> 4), EI-18654360178824151 / WI-5781 (plan+tags resolved from
+ * different logical sources), WI-5995 itself (this file), and the json-array `!=` null-drop
+ * pinned below. Each was fixed with a POINT fix plus a hand-written case list naming the shape
+ * that had just burned someone. A hand-written case list cannot fail for a shape nobody has
+ * been burned by yet — which is why the fourth divergence was found by a fleet, not by
+ * claim-spec-null-semantics.integration.test.ts sitting right next to it.
+ *
+ * So this file is deliberately NOT another case list. It is a PROPERTY over a cross-product:
+ * every (field x op) leaf the spec language admits, each emitted BOTH bare and wrapped in
+ * `not:`, evaluated against a corpus of rows covering set / absent / empty / column-only /
+ * payload-only for every field. ~N_filters x N_rows verdict pairs; both engines must agree on
+ * every one. A new op, a new field, or a new FIELD_MAP entry is covered the day it is added,
+ * with no test edit — and every disagreement is collected and reported TOGETHER, so a
+ * regression shows its full blast radius instead of one arbitrary first failure.
+ *
+ * ⚠ THE SUBJECT IS BUILT BY THE REAL MAPPER, NOT HAND-MIRRORED. Every prior parity test in
+ * this directory builds its JS-side subject from a hand-written `WorkItem` literal that the
+ * test author kept in sync with the seeded row by eye. That cannot see a whole CLASS of
+ * divergence — the one where the row projection feeding the JS evaluator never carried the
+ * column at all — and it silently passes when the mirror drifts. Here the row is seeded, read
+ * BACK through the same `FEATURE_COLS` projection the production read path uses, and mapped by
+ * the real `featureRowToWorkItem` -> `claimSpecSubjectFromWorkItem`. The two engines therefore
+ * disagree here for exactly the reasons they would disagree in production.
+ *
+ * Real Postgres (testcontainer; Docker required) ON PURPOSE: the defects in this class are SQL
+ * three-valued-logic and collation behaviours. A unit test asserting the emitted SQL string
+ * contains "COALESCE" would pin the implementation while proving nothing about the verdict.
+ *
+ * Run:
+ *   cd packages/operator-core && npx vitest run --config vitest.integration.config.ts \
+ *     lib/scheduler/claim-spec-evaluator-parity.integration.test.ts
+ */
+import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
+import type postgres from 'postgres';
+import { createFreshPgDb, type FreshPgDb } from '../../test/_pg-helpers';
+import {
+  HARNESS_FEATURES_CONSOLIDATED_DDL,
+  USER_TRUST_LIST_DDL,
+  WORK_ITEM_DEPS_DDL,
+} from '../../test/_work-items-schema';
+import type { FilterLeaf, FilterNode } from './claim-spec';
+import type { ClaimSpecSubject } from './claim-spec-match';
+
+const h = vi.hoisted(() => ({ sql: undefined as unknown as postgres.Sql }));
+vi.mock('@papercusp/db-org', async () => {
+  const actual = await vi.importActual<typeof import('@papercusp/db-org')>('@papercusp/db-org');
+  return { ...actual, getOrgPg: () => ({ sql: h.sql }) };
+});
+vi.mock('../workspace-registry', async () => {
+  const actual = await vi.importActual<typeof import('../workspace-registry')>('../workspace-registry');
+  return { ...actual, activeWorkspaceId: () => 'default' };
+});
+
+const { compileFilter } = await import('./get-next');
+const { validateClaimSpec } = await import('./claim-spec');
+const { matchesClaimSpecFilter, claimSpecSubjectFromWorkItem } = await import('./claim-spec-match');
+const { featureRowToWorkItem, FEATURE_COLS } = await import('../work-items');
+
+const H = 'papercup';
+const WS = 'default';
+let db: FreshPgDb;
+
+// ────────────────────────────────────────────────────────────────────────────
+// The row corpus. Each row isolates one axis of how a field's value can reach
+// (or fail to reach) an evaluator.
+// ────────────────────────────────────────────────────────────────────────────
+
+interface SeedRow {
+  id: string;
+  /** Why this row is in the corpus — quoted into the divergence report. */
+  why: string;
+  title: string;
+  createdTs: number;
+  featureOrder?: number | null;
+  planSlugCol?: string | null;
+  planItemIdsCol?: string[] | null;
+  tagsCol?: unknown;
+  goalId?: string | null;
+  takenBy?: string | null;
+  redundancy?: number | null;
+  expectedCostCents?: number | null;
+  payload?: Record<string, unknown> | null;
+}
+
+const PLAN = 'plan-alpha';
+
+const ROWS: SeedRow[] = [
+  {
+    id: 'F-agree',
+    why: 'CONTROL: every field set, and set IDENTICALLY in its column and its payload leg, so any '
+      + 'divergence on this row is an OPERATOR bug, never a source-split one.',
+    title: 'p2p data path is ~95% LOSSY, not dead',
+    createdTs: 1000,
+    featureOrder: 5,
+    planSlugCol: PLAN,
+    planItemIdsCol: ['P-001'],
+    tagsCol: ['p2p-release', 'infra'],
+    goalId: 'G-1',
+    takenBy: 'agent-1',
+    redundancy: 3,
+    expectedCostCents: 500,
+    payload: {
+      tags: ['p2p-release', 'infra'],
+      paths: ['libs/generic/a.ts'],
+      plan_item: { plan_slug: PLAN, item_id: 'P-001' },
+      risk_tier: 'high',
+      est_cost: 500,
+      redundancy: 3,
+    },
+  },
+  {
+    id: 'F-absent',
+    why: 'Every optional field ABSENT — the null-poison probe. A negated predicate must ADMIT this '
+      + 'row (a row with no plan is certainly not in plan X); a positive one must refuse it.',
+    title: 'plain backlog item',
+    createdTs: 2000,
+  },
+  {
+    id: 'F-payload-only',
+    why: 'plan/tags/paths live ONLY in payload, columns NULL — the WI-5781 / EI-18654360178824151 '
+      + 'shape the SQL FIELD_MAP was COALESCEd to resolve.',
+    title: 'payload-only linkage',
+    createdTs: 3000,
+    payload: {
+      tags: ['infra'],
+      paths: ['libs/generic/b.ts'],
+      plan_item: { plan_slug: PLAN, item_id: 'P-002' },
+      risk_tier: 'low',
+      est_cost: 250,
+      redundancy: 2,
+    },
+  },
+  {
+    id: 'F-column-only',
+    why: 'The MIRROR of F-payload-only: plan/tags/plan_item/redundancy/est_cost live ONLY in their '
+      + 'COLUMNS, payload NULL. This is the DEFAULT shape for anything written through the standard '
+      + 'writer (source_plan_slug is the indexed, authoritative leg), so it is not an edge case — it '
+      + 'is the common one, and it is the axis a hand-mirrored subject structurally cannot test.',
+    title: 'column-only linkage',
+    createdTs: 4000,
+    planSlugCol: PLAN,
+    planItemIdsCol: ['P-003'],
+    tagsCol: ['infra'],
+    redundancy: 2,
+    expectedCostCents: 250,
+  },
+  {
+    id: 'F-empty',
+    why: 'EMPTY arrays rather than absent ones — `[]` and NULL are different values in both engines '
+      + 'and must still produce the same verdict.',
+    title: 'empty collections',
+    createdTs: 5000,
+    tagsCol: [],
+    planItemIdsCol: [],
+    payload: { tags: [], paths: [] },
+  },
+  {
+    id: 'F-nonp2p',
+    why: 'The `word`-vs-`glob` discriminator (EI-18690730909662985): a `*p2p*` GLOB matches this '
+      + 'title, a `p2p` WORD must not. Both engines must draw that boundary in the same place.',
+    title: 'nonp2p-bug-drain member cannot claim this',
+    createdTs: 6000,
+  },
+  {
+    id: 'F-snake',
+    why: 'The snake_case word boundary (WI-5639): Postgres \\m/\\M and JS \\b BOTH count `_` as a '
+      + 'word character, which is why both engines use explicit [^A-Za-z0-9] classes instead. This '
+      + 'row fails if either drifts back to the built-in anchors.',
+    title: 'replication_soak: connected_never_replicated after 13.0s',
+    createdTs: 7000,
+  },
+  {
+    id: 'F-case',
+    why: 'Case-folding parity: ILIKE / `~*` (Postgres, collation-driven) vs the JS `i` regex flag.',
+    title: 'Hyperswarm Sidecar ISOLATION',
+    createdTs: 8000,
+  },
+];
+
+async function seed(r: SeedRow) {
+  await db.sql`
+    INSERT INTO harness_shared.work_items
+      (harness_slug, feature_id, item_kind, status, workspace_id, title, summary,
+       created_ts, updated_ts, feature_order, source_plan_slug, source_plan_item_ids,
+       tags, goal_id, taken_by, redundancy, expected_cost_cents, payload)
+    VALUES (${H}, ${r.id}, 'feature', 'open', ${WS}, ${r.title}, '',
+       ${r.createdTs}, 0, ${r.featureOrder ?? null}, ${r.planSlugCol ?? null},
+       ${r.planItemIdsCol ?? null}, ${r.tagsCol === undefined ? null : db.sql.json(r.tagsCol as never)},
+       ${r.goalId ?? null}, ${r.takenBy ?? null}, ${r.redundancy ?? null},
+       ${r.expectedCostCents ?? null},
+       ${r.payload === undefined || r.payload === null ? null : db.sql.json(r.payload as never)})`;
+}
+
+// ────────────────────────────────────────────────────────────────────────────
+// The filter corpus: every (field x op) the language admits, bare AND negated.
+// ────────────────────────────────────────────────────────────────────────────
+
+/** One probe value per field, chosen so the corpus splits — some rows match, some do not. */
+const LEAF_SPECS: Array<{ field: FilterLeaf['field']; ops: FilterLeaf['op'][]; value: unknown; inValue: unknown[] }> = [
+  { field: 'id', ops: ['=', '!=', 'in', 'glob', 'word', 'contains'], value: 'F-agree', inValue: ['F-agree', 'F-absent'] },
+  { field: 'title', ops: ['=', '!=', 'in', 'glob', 'word', 'contains'], value: 'p2p', inValue: ['p2p'] },
+  { field: 'kind', ops: ['=', '!=', 'in', 'glob', 'word', 'contains'], value: 'feature', inValue: ['feature', 'bug'] },
+  { field: 'plan', ops: ['=', '!=', 'in', 'glob', 'word', 'contains'], value: PLAN, inValue: [PLAN] },
+  { field: 'risk_tier', ops: ['=', '!=', 'in', 'glob', 'word', 'contains'], value: 'high', inValue: ['high', 'low'] },
+  { field: 'assignee', ops: ['=', '!=', 'in', 'glob', 'word', 'contains'], value: 'agent-1', inValue: ['agent-1'] },
+  { field: 'goal', ops: ['=', '!=', 'in', 'glob', 'word', 'contains'], value: 'G-1', inValue: ['G-1'] },
+  { field: 'priority', ops: ['=', '!=', 'in', '<', '<=', '>', '>='], value: 5, inValue: [5] },
+  { field: 'age', ops: ['=', '!=', 'in', '<', '<=', '>', '>='], value: 4000, inValue: [4000] },
+  { field: 'redundancy', ops: ['=', '!=', 'in', '<', '<=', '>', '>='], value: 1, inValue: [1, 2] },
+  { field: 'est_cost', ops: ['=', '!=', 'in', '<', '<=', '>', '>='], value: 250, inValue: [250] },
+  { field: 'tags', ops: ['=', '!=', 'in', 'glob', 'word', 'contains'], value: 'infra', inValue: ['infra'] },
+  { field: 'paths', ops: ['=', '!=', 'in', 'glob', 'word', 'contains'], value: 'libs/generic/b.ts', inValue: ['libs/generic/b.ts'] },
+  { field: 'plan_item', ops: ['=', '!=', 'in', 'contains'], value: 'P-003', inValue: ['P-001', 'P-003'] },
+];
+
+/** A glob/word probe per text field, so the wildcard paths get their own coverage. */
+const GLOB_PROBES: Array<{ field: FilterLeaf['field']; value: string }> = [
+  { field: 'title', value: '*p2p*' },
+  { field: 'title', value: '*LOSSY*' },
+  { field: 'title', value: '*replication*' },
+  { field: 'plan', value: 'plan-*' },
+  { field: 'tags', value: '*infra*' },
+  { field: 'paths', value: 'libs/generic/*' },
+];
+
+interface Probe {
+  name: string;
+  filter: FilterNode;
+}
+
+function buildProbes(): Probe[] {
+  const out: Probe[] = [];
+  const push = (name: string, leaf: FilterLeaf) => {
+    out.push({ name, filter: leaf });
+    out.push({ name: `not:{${name}}`, filter: { not: leaf } });
+  };
+
+  for (const spec of LEAF_SPECS) {
+    for (const op of spec.ops) {
+      const value = op === 'in' ? spec.inValue : spec.value;
+      push(`${spec.field} ${op} ${JSON.stringify(value)}`, { field: spec.field, op, value } as FilterLeaf);
+    }
+  }
+  for (const g of GLOB_PROBES) {
+    push(`${g.field} glob ${g.value}`, { field: g.field, op: 'glob', value: g.value } as FilterLeaf);
+    // `word` takes a literal, not a pattern — strip the wildcards for its probe.
+    const literal = g.value.replace(/\*/g, '');
+    push(`${g.field} word ${literal}`, { field: g.field, op: 'word', value: literal } as FilterLeaf);
+  }
+
+  // Combinators over a NULL-valued leaf: a poisoned leaf must not contaminate its siblings.
+  out.push({
+    name: 'all:[kind = feature, not:{plan = PLAN}]',
+    filter: { all: [{ field: 'kind', op: '=', value: 'feature' }, { not: { field: 'plan', op: '=', value: PLAN } }] },
+  });
+  out.push({
+    name: 'any:[plan = PLAN, kind = feature]',
+    filter: { any: [{ field: 'plan', op: '=', value: PLAN }, { field: 'kind', op: '=', value: 'feature' }] },
+  });
+  out.push({
+    name: 'not:{not:{plan = PLAN}} (double negation round-trips)',
+    filter: { not: { not: { field: 'plan', op: '=', value: PLAN } } },
+  });
+  out.push({
+    name: 'the live p2p fence: all:[kind = feature, not:{title word p2p}, not:{tags contains p2p-release}]',
+    filter: {
+      all: [
+        { field: 'kind', op: '=', value: 'feature' },
+        { not: { field: 'title', op: 'word', value: 'p2p' } },
+        { not: { field: 'tags', op: 'contains', value: 'p2p-release' } },
+      ],
+    },
+  });
+  return out;
+}
+
+const PROBES = buildProbes();
+
+beforeAll(async () => {
+  db = await createFreshPgDb('sched-evaluator-parity');
+  h.sql = db.sql;
+  await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  await db.sql.unsafe(USER_TRUST_LIST_DDL);
+  await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
+  for (const r of ROWS) await seed(r);
+}, 120_000);
+
+afterAll(async () => {
+  await db?.cleanup();
+});
+
+/**
+ * Build each row's JS-side subject the way PRODUCTION does — read the row back through the
+ * same `FEATURE_COLS` projection the read path uses, then the real mapper. Deliberately NOT a
+ * hand-written literal: see the file header.
+ */
+async function subjects(): Promise<Map<string, ClaimSpecSubject>> {
+  const rows = await db.sql.unsafe(
+    `SELECT ${FEATURE_COLS} FROM harness_shared.work_items WHERE harness_slug = '${H}' ORDER BY feature_id`,
+  );
+  const out = new Map<string, ClaimSpecSubject>();
+  for (const r of rows) {
+    const item = featureRowToWorkItem(r as never);
+    out.set(item.id, claimSpecSubjectFromWorkItem(item));
+  }
+  return out;
+}
+
+/** The ids the SQL compiler's fragment admits, for one filter. */
+async function sqlAdmits(filter: FilterNode): Promise<Set<string>> {
+  const rows = await db.sql<{ feature_id: string }[]>`
+    SELECT feature_id
+      FROM harness_shared.work_items
+     WHERE harness_slug = ${H}
+       AND ${compileFilter(db.sql as never, filter)}`;
+  return new Set(rows.map((r) => r.feature_id));
+}
+
+describe('WI-5995 — the SQL compiler and the JS evaluator agree on every (field x op x row)', () => {
+  it('every probe in the corpus is a VALID spec (a rejected filter would make the property vacuous)', () => {
+    for (const p of PROBES) {
+      const v = validateClaimSpec({
+        specVersion: '1.0',
+        specId: 'parity',
+        revision: 1,
+        view: { filter: p.filter },
+        rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+      });
+      expect(v.ok, `probe "${p.name}" is not a valid spec: ${v.errors.join('; ')}`).toBe(true);
+    }
+  });
+
+  it('the corpus is non-trivial — probes actually split the row set (a filter that admits all or none proves nothing)', async () => {
+    let splitting = 0;
+    for (const p of PROBES) {
+      const admitted = await sqlAdmits(p.filter);
+      if (admitted.size > 0 && admitted.size < ROWS.length) splitting += 1;
+    }
+    // Calibration, not a threshold to tune: if a refactor made every probe degenerate, the
+    // agreement assertion below would pass vacuously and this is the only thing that notices.
+    expect(splitting, 'no probe splits the corpus — the parity assertion would be vacuous').toBeGreaterThan(
+      PROBES.length / 4,
+    );
+  });
+
+  it('NO probe x row pair disagrees between the two engines', async () => {
+    const subj = await subjects();
+    expect(subj.size, 'every seeded row must map through the real projection').toBe(ROWS.length);
+
+    const disagreements: string[] = [];
+    for (const p of PROBES) {
+      const admitted = await sqlAdmits(p.filter);
+      for (const row of ROWS) {
+        const sqlVerdict = admitted.has(row.id);
+        const jsVerdict = matchesClaimSpecFilter(subj.get(row.id)!, p.filter);
+        if (sqlVerdict !== jsVerdict) {
+          disagreements.push(
+            `  ${p.name}\n    on ${row.id}: SQL=${sqlVerdict ? 'ADMIT' : 'refuse'} JS=${jsVerdict ? 'ADMIT' : 'refuse'}\n    (${row.why})`,
+          );
+        }
+      }
+    }
+
+    expect(
+      disagreements,
+      `${disagreements.length} of ${PROBES.length * ROWS.length} verdict pairs DIVERGED between the SQL `
+        + `compiler (get-next.ts) and the JS evaluator (claim-spec-match.ts).\n`
+        + `One spec language must not mean two things. Each line below is a spec that admits an item on `
+        + `one claim path and refuses it on the other:\n\n${disagreements.join('\n')}\n`,
+    ).toEqual([]);
+  }, 120_000);
+});
+
+// ────────────────────────────────────────────────────────────────────────────
+// Regression pin for the divergence this file was written to find.
+// ────────────────────────────────────────────────────────────────────────────
+describe('WI-5995 — a json-array `!=` must not silently eat the backlog', () => {
+  it('tags != X ADMITS a row with NO tags (the 778x pool collapse)', async () => {
+    // Pre-fix this compiled to `NOT (col ? 'x')`: on an absent array that is `NOT NULL` = NULL,
+    // which a WHERE clause drops. Measured on the live backlog at the time of the fix: 33 of
+    // 25,691 genuinely-admissible open rows survived a single `tags != 'p2p-release'` leaf.
+    const admitted = await sqlAdmits({ field: 'tags', op: '!=', value: 'p2p-release' });
+    expect(admitted.has('F-absent'), 'a row with no tags is certainly not tagged p2p-release').toBe(true);
+    expect(admitted.has('F-agree'), 'the fence must still EXCLUDE the tag it names').toBe(false);
+  });
+
+  it('paths != X ADMITS a row with NO paths', async () => {
+    const admitted = await sqlAdmits({ field: 'paths', op: '!=', value: 'libs/generic/b.ts' });
+    expect(admitted.has('F-absent')).toBe(true);
+    expect(admitted.has('F-payload-only'), 'the fence must still EXCLUDE the path it names').toBe(false);
+  });
+
+  it('null-safety did not widen `!=` into a no-op on either engine', async () => {
+    // The inverse failure mode: "fix" the NULL drop by making the predicate match everything.
+    const admitted = await sqlAdmits({ field: 'tags', op: '!=', value: 'infra' });
+    expect(admitted.has('F-agree')).toBe(false);
+    expect(admitted.has('F-column-only')).toBe(false);
+  });
+});
