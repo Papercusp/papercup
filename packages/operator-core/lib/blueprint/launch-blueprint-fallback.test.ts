@@ -167,7 +167,7 @@ describe('defaultFire fallback — durable spawn row (WI-108)', () => {
     });
     expect(escalationCall).toBeDefined();
     expect(escalationCall).toContain('green-checkpoint-release-fixer-no-turn');
-    expect(finishSpawn.mock.calls[0]![1]).toMatchObject({ status: 'failed' });
+    expect(vi.mocked(finishSpawn).mock.calls[0]![1]).toMatchObject({ status: 'failed' });
     warn.mockRestore();
   });
 
