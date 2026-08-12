@@ -38,6 +38,7 @@
  */
 import http from 'node:http';
 import { randomUUID } from 'node:crypto';
+import { normalizeMcpName } from '@papercusp/tooldef';
 // The one path this proxy answers itself. Shared with watchdog.mjs so the liveness probe and
 // the route it probes cannot drift apart (WI-6743).
 import { MCP_PROXY_LOCAL_HEALTH_PATH } from './budgets.mjs';
@@ -653,21 +654,27 @@ export function shouldShedForInFlight(currentInFlight: number, maxInFlight: numb
   return currentInFlight >= maxInFlight;
 }
 
+const RESERVED_CONTROL_PLANE_TOOLS = new Set([
+  'scheduler:get_next',
+  'coord:orient',
+  'loop:checkpoint',
+  'tools:find',
+  'loop:arm',
+  'improvements:capture',
+].map(normalizeMcpName));
+
 /** Fleet bootstrap, continuation checkpoints, scheduler claims, deferred tool discovery, loop
  * arming, and incident capture are liveness/control-plane traffic: if they cannot run, workers
  * cannot orient, persist a safe wake boundary, drain the queue generating proxy load, recover a
- * missing tool surface, keep themselves alive, or file the failure that needs fixing. Keep this
- * deliberately narrow. */
+ * missing tool surface, keep themselves alive, or file the failure that needs fixing. The MCP
+ * client may send a canonical colon-form name or its `mcp__<server>__group_verb` advertisement
+ * name; both are normalized through the shared tooldef helper before this narrow membership check.
+ * Keep the reserved set deliberately narrow. */
 export function isReservedControlPlaneCall(rawBody: Buffer): boolean {
   try {
     const message = JSON.parse(rawBody.toString('utf8')) as { method?: unknown; params?: { name?: unknown } };
-    return message.method === 'tools/call' &&
-      (message.params?.name === 'scheduler:get_next' ||
-        message.params?.name === 'coord:orient' ||
-        message.params?.name === 'loop:checkpoint' ||
-        message.params?.name === 'tools:find' ||
-        message.params?.name === 'loop:arm' ||
-        message.params?.name === 'improvements:capture');
+    if (message.method !== 'tools/call' || typeof message.params?.name !== 'string') return false;
+    return RESERVED_CONTROL_PLANE_TOOLS.has(normalizeMcpName(message.params.name));
   } catch {
     return false;
   }

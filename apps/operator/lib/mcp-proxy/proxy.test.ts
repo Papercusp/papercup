@@ -878,6 +878,22 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     expect(isReservedControlPlaneCall(Buffer.from('{bad json'))).toBe(false);
   });
 
+  it.each([
+    ['canonical colon-form', 'scheduler:get_next'],
+    ['underscore group/verb form', 'scheduler_get_next'],
+    ['Claude MCP-advertised form', 'mcp__papercusp-su__scheduler_get_next'],
+    ['MCP-advertised form with underscore server slug', 'mcp__papercusp_su__scheduler_get_next'],
+  ])('normalizes %s before checking the reserved set', (_label, name) => {
+    expect(isReservedControlPlaneCall(Buffer.from(JSON.stringify({ method: 'tools/call', params: { name } })))).toBe(true);
+  });
+
+  it('does not reserve a similarly named non-control-plane call after normalization', () => {
+    expect(isReservedControlPlaneCall(Buffer.from(JSON.stringify({
+      method: 'tools/call',
+      params: { name: 'mcp__papercusp-su__work_items_get' },
+    })))).toBe(false);
+  });
+
   it.each(['scheduler:get_next', 'coord:orient', 'loop:checkpoint', 'tools:find', 'loop:arm', 'improvements:capture'])('admits %s from the reserve while ordinary calls shed', async (controlPlaneTool) => {
     let releaseUpstream: () => void = () => {};
     const gate = new Promise<void>((resolve) => { releaseUpstream = resolve; });
