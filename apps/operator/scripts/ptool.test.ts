@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest';
 import {
   callToolWithPressureRetry,
+  buildMcpUrl,
   printResult,
   PTOOL_CALL_TOOL_TIMEOUT_MS,
   PTOOL_GIT_SYNC_RUN_TIMEOUT_MS,
@@ -10,6 +11,20 @@ import {
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore -- plain .mjs launcher script, no type declarations.
 } from './ptool.mjs';
+
+describe('ptool MCP identity binding', () => {
+  it('carries the live PAPERCUSP_SID as the MCP client query parameter', () => {
+    const url = buildMcpUrl('http://127.0.0.1:3170', {
+      workspace: 'papercusp-workspace',
+      harness: 'papercusp',
+      client: 'su-live-owner-123',
+    });
+
+    expect(url.searchParams.get('client')).toBe('su-live-owner-123');
+    expect(url.searchParams.get('workspace')).toBe('papercusp-workspace');
+    expect(url.searchParams.get('harness')).toBe('papercusp');
+  });
+});
 
 describe('ptool call deadlines', () => {
   it('keeps the normal liveness ceiling while allowing git-sync:run to return its continuation', () => {
@@ -59,6 +74,31 @@ describe('ptool result formatting', () => {
       content: [{ type: 'text', text: '{"items":[\n[result-door: truncated]' }],
       structuredContent: { items: [{ id: 'P-001' }] },
     })).toBe('{"items":[{"id":"P-001"}]}');
+  });
+
+  it('keeps appended advisory content off raw stdout so jq can parse the payload', () => {
+    const result = {
+      content: [
+        { type: 'text', text: '{"ok":true,"value":7}' },
+        { type: 'text', text: 'See also: loop:arm (start a loop)' },
+      ],
+    };
+
+    expect(resultToText(result, { raw: true })).toBe('{"ok":true,"value":7}');
+    expect(resultToText(result, { raw: false })).toBe(
+      '{"ok":true,"value":7}\nSee also: loop:arm (start a loop)',
+    );
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(printResult(result, { raw: true })).toBe(0);
+      expect(log).toHaveBeenCalledWith('{"ok":true,"value":7}');
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+      error.mockRestore();
+    }
   });
 
   it('fails loudly instead of exiting zero with blank stdout for an empty response', () => {
