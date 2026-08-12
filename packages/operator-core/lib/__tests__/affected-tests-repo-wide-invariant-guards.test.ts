@@ -886,7 +886,13 @@ describe('affected-tests: the host-suite skip is DECLARED and verified, never as
       const command = pkg.scripts?.[g.script] ?? '';
       const ratchetPath = g.hostSuiteRatchet as string;
       const body = readFileSync(resolve(REPO_ROOT, ratchetPath), 'utf8');
-      const detector = /([\w-]+\.mjs)/.exec(command)?.[1] ?? null;
+      // WI-38089: match a `.ts`/`.mts`/`.cjs` detector too, not just `.mjs`. The narrower regex
+      // failed CLOSED (a legitimate ratchet over a tsx detector could not be declared at all, and
+      // the only way past it was to DROP the ratchet and pay the guard on every edit) — but
+      // failing closed here pushes toward the wasteful direction for an expensive guard, so the
+      // extension list, not the assertion, is what widens. The requirement is unchanged: the
+      // ratchet file must still reference the same detector by name.
+      const detector = /([\w-]+\.(?:mjs|cjs|mts|ts))/.exec(command)?.[1] ?? null;
 
       // Case 1: the guard script IS this vitest file, so the host suite runs it by construction.
       const isOwnVitestTarget =
@@ -987,5 +993,139 @@ describe('affected-tests: --print-affected includes repo-wide guards (EI-2009918
       'AFFECTED_GUARD\t@papercusp/operator-core\tlint:guard-reachability',
     );
     expect(out).not.toContain('AFFECTED_TESTS_RESULT');
+  });
+});
+
+/**
+ * WI-38089 — the declarations freshness guard, wired the same way.
+ *
+ * `generated-declarations.test.ts` execs `scripts/gen-declarations.ts --check`, comparing the
+ * `.mjs` inputs declared in tsconfig.declarations.json against their committed `.d.mts`. It is a
+ * vitest file inside operator-core, so it was reachable only when operator-core was otherwise
+ * affected. MEASURED 2026-08-12: `--changed-paths apps/operator/scripts/psu-launcher.mjs` selected
+ * `@papercusp/web` ONLY, though psu-launcher.mjs IS a declared input. Editing it without re-running
+ * `npm run gen:declarations` therefore produced no local signal — test:affected green, and the
+ * drift is type-only so lint:tsc is green too — and first surfaced as green-checkpoint red #9
+ * (candidate cc56ee43) an hour later, against a candidate its author had long moved past.
+ *
+ * The `appliesTo` set is DERIVED from tsconfig.declarations.json rather than mirrored, so there is
+ * no list here to keep in sync. What needs asserting instead is that the derivation still
+ * DISCRIMINATES: 'attaches for a declared input' and 'does NOT attach for an undeclared .mjs' are a
+ * matched pair, and the router widens to every `.mjs` if it cannot read the config — so a
+ * derivation that silently stopped finding inputs fails the negative test rather than passing both.
+ */
+describe('affected-tests: declarations freshness guard (WI-38089)', () => {
+  const DECL_SCRIPT = 'lint:declarations-fresh';
+  const DECL_TASK = `${HOST_WORKSPACE} :: ${DECL_SCRIPT}`;
+  /** A declared input OUTSIDE the host workspace — the measured case from the filing. */
+  const OUTSIDE_INPUT = 'apps/operator/scripts/psu-launcher.mjs';
+  /** A declared input INSIDE the host workspace, whose full `test` task already covers the check. */
+  const INSIDE_INPUT = 'packages/operator-core/lib/model-context-budget.mjs';
+  /**
+   * An `.mjs` that is NOT a declared input, so it cannot cause declaration drift.
+   *
+   * It must ALSO route to a workspace other than operator-core, or the negative test proves
+   * nothing: a root-level `scripts/*.mjs` fans out to operator-core, whose `test` task then
+   * satisfies the hostSuiteRatchet and suppresses the guard for that reason instead of because the
+   * path is undeclared. (Measured the hard way — `scripts/check-js-syntax.mjs` was the first
+   * choice here and is itself one of the 42 declared inputs, so it asserted the opposite of what
+   * it appeared to.) `apps/operator-docs` routes only to @papercupai/operator-docs.
+   */
+  const UNDECLARED_MJS = 'apps/operator-docs/astro.config.mjs';
+  const DECL_CONFIG = 'tsconfig.declarations.json';
+
+  function declaredInputs(): string[] {
+    const raw = readFileSync(resolve(REPO_ROOT, DECL_CONFIG), 'utf8');
+    return [...raw.matchAll(/"([^"\n]+\.mjs)"/g)].map((m) => m[1]);
+  }
+
+  it('keeps its premises true: both probe paths are still declared inputs, and the control is not', () => {
+    const declared = declaredInputs();
+    expect(
+      declared.length,
+      'no declared .mjs inputs found — the router would then widen to every .mjs, silently ' +
+        'turning this guard into a tax on unrelated edits',
+    ).toBeGreaterThan(0);
+    expect(declared, `${OUTSIDE_INPUT} must remain a declared input or this suite proves nothing`)
+      .toContain(OUTSIDE_INPUT);
+    expect(declared, `${INSIDE_INPUT} must remain a declared input`).toContain(INSIDE_INPUT);
+    expect(
+      declared,
+      `${UNDECLARED_MJS} must NOT be declared — it is the negative control that proves the ` +
+        'derivation discriminates rather than matching everything',
+    ).not.toContain(UNDECLARED_MJS);
+  });
+
+  it('attaches for a declared input OUTSIDE its host workspace', () => {
+    const out = dryTasks(OUTSIDE_INPUT);
+    expect(
+      out,
+      `editing ${OUTSIDE_INPUT} must run the declarations check; without it, forgetting ` +
+        '`npm run gen:declarations` gets ZERO local signal (test:affected green, lint:tsc green ' +
+        'because the drift is type-only) and first reds the shared gate an hour later',
+    ).toContain(DECL_TASK);
+  });
+
+  it('attaches when the CONFIG itself changes, which is the missing-declaration shape', () => {
+    // Adding an input without generating its `.d.mts` is a config edit, not a source edit, and
+    // `--check` reports it as `missing` rather than `stale`.
+    expect(dryTasks(DECL_CONFIG)).toContain(DECL_TASK);
+  });
+
+  it('attaches when a generated .d.mts is hand-edited', () => {
+    const dmts = OUTSIDE_INPUT.replace(/\.mjs$/, '.d.mts');
+    expect(
+      dryTasks(dmts),
+      'drift in the opposite direction: the committed declaration no longer matches what the ' +
+        'generator would emit',
+    ).toContain(DECL_TASK);
+  });
+
+  it('does NOT attach for an .mjs that is not a declared input', () => {
+    // Establish the control is VALID before trusting the negative: if this path selected
+    // operator-core, the hostSuiteRatchet would suppress the guard and the assertion below would
+    // pass without the derivation having discriminated anything at all.
+    expect(
+      printAffected(UNDECLARED_MJS),
+      `${UNDECLARED_MJS} must not route to ${HOST_WORKSPACE}, or this test passes for the wrong ` +
+        'reason (ratchet suppression, not an undeclared path)',
+    ).not.toContain(`AFFECTED_WS\t${HOST_WORKSPACE}`);
+    expect(
+      dryTasks(UNDECLARED_MJS),
+      `this is the most expensive entry in the registry (~6.1s: a tsc emit plus a 42-file ` +
+        'byte-compare), so attaching it to an .mjs that cannot violate the invariant spends ' +
+        "every agent's budget for no possible finding",
+    ).not.toContain(DECL_TASK);
+  });
+
+  it('does NOT double-run when the host workspace is already affected', () => {
+    const out = dryTasks(INSIDE_INPUT);
+    expect(out, 'the host workspace should run its own suite here').toContain(
+      `${HOST_WORKSPACE} :: test`,
+    );
+    expect(
+      out,
+      'generated-declarations.test.ts execs the SAME --check invocation inside operator-core’s ' +
+        'suite, so attaching the narrow task as well would run a 6s check twice',
+    ).not.toContain(DECL_TASK);
+  });
+
+  it('keeps the guard script defined, and pointed at the CHECK rather than the vitest file', () => {
+    const pkg = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf8'),
+    ) as { scripts?: Record<string, string> };
+    expect(
+      pkg.scripts?.[DECL_SCRIPT],
+      `${HOST_WORKSPACE} must define "${DECL_SCRIPT}". The router only builds a task when the ` +
+        'script exists, so removing it re-opens the gap silently — the run stays green and simply ' +
+        'stops checking.',
+    ).toBeTruthy();
+    expect(pkg.scripts?.[DECL_SCRIPT]).toContain('gen-declarations');
+    expect(
+      pkg.scripts?.[DECL_SCRIPT],
+      'must invoke --check; without it the script GENERATES declarations, which would make the ' +
+        'guard mutate the tree it is meant to police',
+    ).toContain('--check');
+    expect(pkg.scripts?.[DECL_SCRIPT]).not.toContain('vitest');
   });
 });

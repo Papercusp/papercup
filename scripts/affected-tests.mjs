@@ -594,7 +594,81 @@ const GC_TAG_SOURCE_ROOTS = ['packages/operator-core/lib', 'apps/operator/lib'];
 // permanent, content-free red on every candidate that touches a .ts file.
 const EXIT_NOT_CHECKED = 2;
 
+// WI-38089 — the declarations freshness guard must be reachable from the `.mjs` files it guards.
+//
+// `packages/operator-core/lib/generated-declarations.test.ts` execs `scripts/gen-declarations.ts
+// --check`, comparing the 42 `.mjs` inputs declared in tsconfig.declarations.json against their
+// committed `.d.mts`. It is a vitest file inside @papercusp/operator-core, so it was selected only
+// when operator-core was otherwise affected. MEASURED 2026-08-12:
+//
+//   --changed-paths apps/operator/scripts/psu-launcher.mjs
+//       -> AFFECTED_WS @papercusp/web ONLY                         (guard does NOT run)
+//   --changed-paths packages/operator-core/lib/model-context-budget.mjs
+//       -> AFFECTED_WS @papercusp/operator-core, ...               (guard runs)
+//
+// psu-launcher.mjs IS a declared input (tsconfig.declarations.json), so editing it without
+// re-running `npm run gen:declarations` produced NO local signal — test:affected green, and the
+// drift is type-only so lint:tsc is green too — and first surfaced as green-checkpoint red #9
+// (candidate cc56ee43) an hour later, against a candidate its author had long moved past. That is
+// the expensive shape this list exists for: the red lands on whoever is watching the gate rather
+// than on whoever caused it. Two remediation commits in the preceding 4h are the same class:
+// d41534e1 ("regenerate all generated declaration projections") and 00d79147.
+//
+// DERIVED from tsconfig.declarations.json rather than MIRRORED as a literal list — a deliberate
+// deviation from the mirrored roots above. The config IS the set gen-declarations reads, so
+// deriving makes drift structurally impossible rather than merely asserted. The stated reason those
+// other lists are copied — "a static import would let a load error in a lint script hard-fail
+// everyone's test:affected" — is about importing EXECUTABLE modules; this reads data, never
+// executes it, and is wrapped so a malformed config cannot throw here.
+//
+// A quoted-`.mjs` regex, not JSON.parse: the config carries `//` comments, so JSON.parse rejects it
+// outright (verified). An over-match — a quoted `.mjs` inside a comment — only widens attachment,
+// which is the fail-safe direction; every real entry is quoted, so under-matching a declared input
+// cannot happen.
+const DECLARATIONS_CONFIG = 'tsconfig.declarations.json';
+let declarationInputsCache;
+function declarationMjsInputs() {
+  if (declarationInputsCache !== undefined) return declarationInputsCache;
+  try {
+    const raw = readFileSync(join(ROOT, DECLARATIONS_CONFIG), 'utf8');
+    const found = [...raw.matchAll(/"([^"\n]+\.mjs)"/g)].map((m) => m[1]);
+    // An empty set would silently disable the guard, which is the failure mode this whole
+    // registry exists to prevent — treat it as "could not read" and widen instead.
+    declarationInputsCache = found.length > 0 ? new Set(found) : null;
+  } catch {
+    // Fail SAFE, not open. Elsewhere in this file failing open (no guard) is right because the
+    // subject list is the CHANGED paths; here the subject is the guard's own scope, so an
+    // unreadable config must not quietly stop it firing. Over-attaching costs ~6s; under-attaching
+    // costs a fleet-blocking gate red discovered hours later.
+    declarationInputsCache = null;
+  }
+  return declarationInputsCache;
+}
+
 const REPO_WIDE_INVARIANT_GUARDS = [
+  {
+    // WI-38089. See declarationMjsInputs() above for the measurement and the derive-vs-mirror
+    // rationale.
+    workspace: '@papercusp/operator-core',
+    // ~6.1s measured (3 runs, warm): a `tsc --emitDeclarationOnly` into a temp dir, then a
+    // byte-compare of 42 files. The most expensive entry in this list, which is why `appliesTo` is
+    // the narrowest possible set — the declared inputs themselves — rather than every `.mjs`.
+    script: 'lint:declarations-fresh',
+    // The ratchet is real: generated-declarations.test.ts execs the SAME `--check` invocation, so
+    // when operator-core's own suite runs, this has genuinely already executed.
+    hostSuiteRatchet: 'packages/operator-core/lib/generated-declarations.test.ts',
+    appliesTo: (f) => {
+      // Adding an input without generating its `.d.mts` is a config edit, not a source edit, and
+      // `--check` reports it as `missing` rather than `stale` — so the config itself must attach.
+      if (f === DECLARATIONS_CONFIG) return true;
+      const declared = declarationMjsInputs();
+      if (!declared) return /\.mjs$/.test(f) || /\.d\.mts$/.test(f);
+      if (declared.has(f)) return true;
+      // Hand-editing a generated `.d.mts` is drift in the opposite direction: the committed
+      // declaration no longer matches what the generator would emit.
+      return f.endsWith('.d.mts') && declared.has(f.replace(/\.d\.mts$/, '.mjs'));
+    },
+  },
   {
     // EI-19454727576364875 — a `lint:*` script is declared in a package.json, so editing a
     // package.json is the single edit that can ORPHAN a guard (add a script and wire it nowhere;
