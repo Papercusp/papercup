@@ -884,6 +884,11 @@ describe('fleet:launch-on-plan handler — member baseline wiring', () => {
     // On a writable tmp the compose lands and its path threads into psu's --launch-context.
     if (payload.memberBaselineApplied) {
       expect(payload.memberLaunchContextPath).toContain('fleet-alpha-fleet-launch-context.md');
+      const fs = require('node:fs');
+      const composed = fs.readFileSync(payload.memberLaunchContextPath, 'utf8');
+      // Fleet carry defaults warm independently of headless; make it explicit so
+      // loop:arm's headless omitted-carry default cannot silently override it.
+      expect(composed).toContain("`loop:arm { intervalSec, goal, carry: 'warm' }`");
       const firstGreeting = spawnConsoleMock.mock.calls[0][0].envelope.greetingCmd as string;
       expect(firstGreeting).toContain('--launch-context=');
       expect(firstGreeting).toContain('fleet-alpha-fleet-launch-context.md');

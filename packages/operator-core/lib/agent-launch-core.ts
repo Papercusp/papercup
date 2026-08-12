@@ -696,11 +696,14 @@ export const MEMBER_BASELINE_RULES: ReadonlyArray<{ head: string; body: string }
 
 /** Render the full member-facing baseline markdown (the numbered rules with a
  *  short header). Pure + exported for tests.
- *  P-004 carry (owner directive 2026-07-10, orthogonal to headless): `carry:'cold'`
- *  rewrites the loop:arm rule to arm a COLD loop (each wake a fresh context) and
- *  promotes the carry-note checkpoint from "at every boundary" to LOAD-BEARING —
- *  a cold wake reconstructs ONLY from the last checkpoint. Default 'warm' is
- *  byte-identical to before (nothing silently goes cold). */
+ *  P-004 carry (owner directive 2026-07-10, orthogonal to headless): every member
+ *  gets an explicit `carry` on its loop:arm instruction. `carry:'warm'` is the
+ *  fleet default and is explicit because loop:arm has a different context-sensitive
+ *  default for an unattended headless caller. `carry:'cold'` rewrites the rule to
+ *  arm a COLD loop (each wake a fresh context) and promotes the carry-note checkpoint
+ *  from "at every boundary" to LOAD-BEARING — a cold wake reconstructs ONLY from the
+ *  last checkpoint. This keeps the fleet's warm/cold launch knob authoritative and
+ *  prevents a headless member from silently overriding the fleet default. */
 export function renderMemberBaseline(opts: {
   fleetSlug: string;
   /** OPTIONAL (P-003): a pure claim-spec fleet has no plan — the baseline then points
@@ -713,11 +716,13 @@ export function renderMemberBaseline(opts: {
   const cold = carry === 'cold';
   const rules = MEMBER_BASELINE_RULES.map((r, i) => {
     let body = r.body;
-    if (cold && r.head.startsWith('STAY ALIVE')) {
-      body = body.replace(
-        '`loop:arm { intervalSec, goal }`',
-        "`loop:arm { intervalSec, goal, carry: 'cold' }` — you are a COLD member: each wake starts a FRESH context, so nothing but your checkpoint carries across wakes",
-      );
+    if (r.head.startsWith('STAY ALIVE')) {
+      const carryInstruction = `\`loop:arm { intervalSec, goal, carry: '${carry}' }\``;
+      body = body.replace('`loop:arm { intervalSec, goal }`', carryInstruction);
+      if (cold) {
+        body +=
+          ' — you are a COLD member: each wake starts a FRESH context, so nothing but your checkpoint carries across wakes';
+      }
     }
     if (cold && r.head.startsWith('Carry-note checkpoint')) {
       body = `${body} COLD CARRY makes this LOAD-BEARING, not optional: your next wake reconstructs itself ONLY from this checkpoint — skip it and your successor-self wakes blind with no memory of what you did.`;
