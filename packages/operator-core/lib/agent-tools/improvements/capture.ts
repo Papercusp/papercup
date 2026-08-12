@@ -800,6 +800,7 @@ export default defineTool({
               ...result,
               ...(priorArt ? { priorArt } : {}),
               ...(experimentGap ? { experimentGap } : {}),
+              ...(lensAttribution ? { lensAttribution } : {}),
               ...(notified ? { notified: notified.notified } : {}),
               ...(linked ? { linked } : {}),
               ...(foundDuringTruncated

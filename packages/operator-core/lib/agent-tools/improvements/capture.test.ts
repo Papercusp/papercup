@@ -756,14 +756,17 @@ describe('IDEATE-pass novelty pre-check (P-008 priorArt)', () => {
   it('a pre-check failure NEVER fails the capture — the field is simply absent (report-only, D-005)', async () => {
     mockPriorArt.mockRejectedValue(new Error('corpus read exploded'));
     const body = await bodyOf({ title: 'a fresh su idea', kind: 'feature' });
-    // P-007/D-010 added `experimentGap` to this same response (this filing declares no
-    // cheapExperiment, so it is reported). Kept as a STRICT whole-body equality so a
-    // future field addition still has to come through this assertion deliberately.
+    // P-007/D-010 added `experimentGap` to this same response, and WI-38065 added
+    // `lensAttribution` (this su filing declares neither a cheapExperiment nor an
+    // ideation.lens, so both are reported). Kept as a STRICT whole-body equality so a
+    // future field addition still has to come through this assertion deliberately —
+    // which is exactly how WI-38065 was caught here rather than silently widening it.
     expect(body).toEqual({
       ok: true,
       id: 'EI-1',
       created: true,
       experimentGap: { missing: ['hypothesis', 'method', 'falsifiableSignal'], note: expect.any(String) },
+      lensAttribution: { sentinel: true, lenses: expect.any(Array), note: expect.any(String) },
     });
     expect('priorArt' in body).toBe(false);
   });
@@ -847,6 +850,87 @@ describe('improvements:capture — cheapExperiment gap is report-only (P-007/D-0
     expect(body.ok).toBe(true);
     expect(body.error).toBeUndefined();
     expect(mockCapture).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('improvements:capture — lens attribution is report-only (WI-38065)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    // Only an 'su' source writes the su-ideate ledger row, so only an su source has a lens
+    // to attribute — the advisory is scoped to match.
+    mockIdentity.mockReturnValue(identity('omp-hook-session'));
+    mockCapture.mockResolvedValue({
+      ok: true,
+      created: true,
+      issue: { id: 'EI-900', title: 'su idea' },
+    } as unknown as Awaited<ReturnType<typeof captureImprovement>>);
+    mockPriorArt.mockResolvedValue([]);
+  });
+
+  async function bodyOf(args: Record<string, unknown>, ctx: unknown = {}) {
+    const res = await callTool(args, ctx);
+    return JSON.parse(res.content[0].text) as Record<string, unknown>;
+  }
+
+  it('reports the sentinel when an su feature filing declares no lens — and still files it', async () => {
+    const body = await bodyOf({ title: 'an unlensed idea', kind: 'feature' });
+    // It LANDED. Report-over-reject is the whole contract here.
+    expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({ title: 'an unlensed idea' }));
+    expect(body.ok).toBe(true);
+    expect(body.lensAttribution).toMatchObject({
+      sentinel: true,
+      note: expect.stringContaining('not a rejection'),
+    });
+    // The advisory must OFFER the vocabulary — a nudge the filer cannot act on without a
+    // second lookup is most of the reason the pre-existing arg guidance was losing.
+    expect((body.lensAttribution as { lenses: string[] }).lenses).toContain('risk-first');
+  });
+
+  it('the row it describes really did get the sentinel — the advisory is not decorative', async () => {
+    await callTool({ title: 'an unlensed idea', kind: 'feature' });
+    expect(mockRecordRoutedIdea).toHaveBeenCalledWith(expect.objectContaining({ lens: 'su-ideate' }));
+  });
+
+  it('a DECLARED lens reports nothing at all (absent, not empty) and is stamped on the row', async () => {
+    const body = await bodyOf({ title: 'a lensed idea', kind: 'feature', ideation: { lens: 'risk-first' } });
+    expect('lensAttribution' in body).toBe(false);
+    expect(mockRecordRoutedIdea).toHaveBeenCalledWith(expect.objectContaining({ lens: 'risk-first' }));
+  });
+
+  it('is scoped exactly to the filings that GET a ledger row — never other kinds or the observation lane', async () => {
+    expect('lensAttribution' in (await bodyOf({ title: 'x', kind: 'change' }))).toBe(false);
+    expect('lensAttribution' in (await bodyOf({ title: 'x', kind: 'bug' }))).toBe(false);
+    expect('lensAttribution' in (await bodyOf({ title: 'x', kind: 'feature', lane: 'observation' }))).toBe(false);
+  });
+
+  it('is scoped to an su SOURCE — a non-su caller writes no ledger row, so has no lens to attribute', async () => {
+    // capture.ts:546 maps ONLY omp-hook-session / static-client to source 'su'; every other
+    // IdentitySource resolves to 'engineer' and writes no su-ideate row.
+    mockIdentity.mockReturnValue(identity('power-user-token'));
+    const body = await bodyOf({ title: 'x', kind: 'feature' });
+    expect('lensAttribution' in body).toBe(false);
+    // Pin WHY it is absent — no ledger row was written, so there was no lens to attribute.
+    // Without this the assertion would also pass if the advisory silently stopped firing.
+    expect(mockRecordRoutedIdea).not.toHaveBeenCalled();
+  });
+
+  it('reports on a dedup-decline too — the filer is told BEFORE they re-file', async () => {
+    mockCapture.mockResolvedValue({ ok: false, created: false, duplicateOf: 'EI-5' } as unknown as Awaited<
+      ReturnType<typeof captureImprovement>
+    >);
+    expect((await bodyOf({ title: 'a dup', kind: 'feature' })).lensAttribution).toMatchObject({ sentinel: true });
+  });
+
+  it('CONTROL — an omitted lens is never itself a failure reason (falsifies "gate crept in")', async () => {
+    // capture.ts documents the ideation block as "Never a gate: purely additive", and WI-38065
+    // deliberately did NOT overturn that. A gate would surface as ok:false / an error / an
+    // uncalled core. This is the assertion that fails if anyone later "tightens" this advisory
+    // into a rejection or a required arg.
+    const body = await bodyOf({ title: 'no lens here', kind: 'feature' });
+    expect(body.ok).toBe(true);
+    expect(body.error).toBeUndefined();
+    expect(mockCapture).toHaveBeenCalledTimes(1);
+    expect(mockRecordRoutedIdea).toHaveBeenCalledTimes(1);
   });
 });
 
