@@ -393,6 +393,7 @@
     "knip": "^5.88.1",
     "msw": "^2.13.6",
     "nx": "22.6.5",
+    "patch-package": "^8.0.1",
     "puppeteer-core": "^24.41.0",
     "stream-chain": "^3.6.1",
     "stream-json": "^2.1.0",
