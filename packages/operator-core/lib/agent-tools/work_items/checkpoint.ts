@@ -118,8 +118,11 @@
  * requires a non-empty replacement body, so the guard armed for the DELIBERATE case
  * and skipped the ACCIDENTAL one. Fix: an omitted `checkpoint` alongside `checks` is a
  * checks-only PATCH that carries the stored body forward (read inside the store's
- * locked transaction, so a concurrent writer cannot interleave). An explicit clear
- * stays reachable via `checkpoint: null`/`''`, and a bare `{ id }` still clears — the
+ * locked transaction, so a concurrent writer cannot interleave). A dependency-only
+ * PATCH (`dependsOn` supplied while `checkpoint` is omitted) uses the same
+ * body-preserving path, so correcting freshness metadata never requires re-sending
+ * — and accidentally shrinking — the narrative checkpoint. An explicit clear stays
+ * reachable via `checkpoint: null`/`''`, and a bare `{ id }` still clears — the
  * contract work_items:complete's terminal cleanup depends on.
  */
 import { z } from 'zod';
@@ -293,12 +296,15 @@ function checksSpec() {
 const itemSpec = z.object({
   id: z.string().min(1).describe('the work-item id to checkpoint'),
   /** The compressed in-flight state. Blank / null / omitted ⇒ CLEAR the checkpoint —
-   *  EXCEPT omitted alongside `checks`, which is a checks-only patch (EI-19447043119380534). */
+   *  EXCEPT omitted alongside `checks` or `dependsOn`, which is a metadata-only patch
+   *  that preserves the stored body (EI-19447043119380534, EI-20232161144151845). */
   checkpoint: z
     .string()
     .max(32000)
     .nullish()
-    .describe('compressed in-flight state; blank/null ⇒ clear (omitted WITH `checks` ⇒ checks-only patch, body kept)'),
+    .describe(
+      'compressed in-flight state; blank/null ⇒ clear (omitted WITH `checks` or `dependsOn` ⇒ metadata-only patch, body kept)',
+    ),
   harness: z.string().max(80).optional().describe('per-item harness (else the batch `harness` default / ctx / item lookup)'),
   append: looseBoolean().describe(
     'EI-9036: append `checkpoint` onto the EXISTING stored checkpoint (joined with a `---` separator) instead ' +
@@ -356,12 +362,15 @@ export default defineTool({
     .object({
       id: z.string().min(1).optional().describe('single shorthand: the work-item id (use with `checkpoint`)'),
       /** The compressed in-flight state. Blank / null / omitted ⇒ CLEAR the checkpoint —
-       *  EXCEPT omitted alongside `checks`, which is a checks-only patch (EI-19447043119380534). */
+       *  EXCEPT omitted alongside `checks` or `dependsOn`, which is a metadata-only patch
+       *  that preserves the stored body (EI-19447043119380534, EI-20232161144151845). */
       checkpoint: z
         .string()
         .max(32000)
         .nullish()
-        .describe('single shorthand: compressed in-flight state; blank/null ⇒ clear (omitted WITH `checks` ⇒ checks-only patch)'),
+        .describe(
+          'single shorthand: compressed in-flight state; blank/null ⇒ clear (omitted WITH `checks` or `dependsOn` ⇒ metadata-only patch, body kept)',
+        ),
       items: z.array(itemSpec).min(1).max(100).optional().describe('checkpoint many work-items at once — each { id, checkpoint?, harness?, append? }'),
       harness: z.string().max(80).optional().describe('default harness for the inline id / items that omit one'),
       append: looseBoolean().describe(
@@ -456,6 +465,10 @@ export default defineTool({
         // contradiction (append has nothing to append, and blank normally means
         // CLEAR) — reject it loudly rather than guessing which the caller meant.
         const wantsAppend = it.append ?? args.append ?? false;
+        // P-007: `dependsOn` is tri-state at the store (undefined ⇒ preserve the
+        // existing declaration, [] ⇒ clear, list ⇒ re-stamp), so only forward the
+        // key when the caller actually supplied one.
+        const declaredDeps = it.dependsOn ?? args.dependsOn;
         if (wantsAppend && !(it.checkpoint && it.checkpoint.length > 0)) {
           return {
             ok: false as const,
@@ -463,6 +476,13 @@ export default defineTool({
             error: 'append:true requires a non-blank `checkpoint` — append has nothing to append, and blank normally means clear (contradiction).',
           };
         }
+        // EI-20232161144151845: dependency stamps are metadata about the stored
+        // checkpoint. Callers correcting a dependency must not re-send a shorter
+        // transcript just to update that metadata — doing so either risks a
+        // shrink_blocked refusal or tempts them to confirm a destructive rewrite.
+        // Omitted checkpoint is therefore a dependency-only PATCH, just like the
+        // checks-only PATCH below; explicit null/'' remains a deliberate clear.
+        const isDependencyOnlyPatch = it.checkpoint === undefined && declaredDeps !== undefined && !wantsAppend;
         let checkpointToStore = it.checkpoint;
         // WI-7190: this pre-read is a SEPARATE call (getWorkItemCheckpoint) from the
         // authoritative prior the write transaction reads a few lines below (inside
@@ -520,10 +540,6 @@ export default defineTool({
         let priorLength: number | null = null;
         let stored: string | null;
         let blockedReason: string | undefined;
-        // P-007: `dependsOn` is tri-state at the store (undefined ⇒ preserve the
-        // existing declaration, [] ⇒ clear, list ⇒ re-stamp), so only forward the
-        // key when the caller actually supplied one.
-        const declaredDeps = it.dependsOn ?? args.dependsOn;
         const depsOpt = declaredDeps !== undefined ? { dependsOn: declaredDeps } : {};
         // Both branches go through setWorkItemCheckpointWithPrior — the plain
         // setWorkItemCheckpoint is only a wrapper over it, so unifying costs nothing
