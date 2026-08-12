@@ -88,7 +88,7 @@ export default defineTool({
     ),
   async handler(args, ctx) {
     if (!(await knowledgePacksEnabled())) return text(FLAG_OFF);
-    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.principal?.workspaceId);
     const by = (await getSessionUserOrDefault()).id;
     const { decideKnowledgePackCandidate } = await import('../../knowledge-packs/candidates');
 

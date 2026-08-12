@@ -48,7 +48,7 @@ export default defineTool({
     workspace: z.string().max(120).optional(),
   }),
   async handler(args, ctx) {
-    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.principal?.workspaceId);
 
     if (!args.listingId && !args.githubUrl) {
       return text({ ok: false, error: 'listingId or githubUrl required' });

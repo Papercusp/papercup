@@ -48,7 +48,7 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     if (!(await knowledgePacksEnabled())) return text(FLAG_OFF);
-    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.principal?.workspaceId);
     const { loadKnowledgePack } = await import('../../knowledge-packs/load-packs');
     const loaded = await loadKnowledgePack(args.pack);
     if (!loaded) return text({ ok: false, reason: 'pack_not_found', pack: args.pack });

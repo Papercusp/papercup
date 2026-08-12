@@ -63,7 +63,7 @@ export default defineTool({
     ),
   async handler(args, ctx) {
     if (!(await knowledgePacksEnabled())) return text(FLAG_OFF);
-    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.principal?.workspaceId);
     const { setPackEnabled } = await import('../../knowledge-packs/manage');
 
     const list: FlipItem[] = args.items?.length
