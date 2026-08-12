@@ -3,20 +3,28 @@
 // Edits here are silently discarded on the next run — change the JSDoc in
 // scripts/proc-guard.mjs and regenerate.
 /**
- * One live process, as read out of `/proc`.
- *
- * @typedef {object} ProcRow
- * @property {number} pid
- * @property {number | null} ppid - null when `/proc/<pid>/stat` was unreadable or unparseable.
- * @property {string} cmdline - Full command line, NUL separators replaced by spaces.
- */
-/**
  * Parse a NUL-separated /proc/<pid>/cmdline buffer into a display string (space-joined args).
  *
  * @param {Buffer | string} raw
  * @returns {string}
  */
 export function parseCmdline(raw: Buffer | string): string;
+/**
+ * Parse a NUL-separated `/proc/<pid>/cmdline` buffer into argv entries.
+ *
+ * @param {Buffer | string} raw
+ * @returns {string[]}
+ */
+export function parseArgv(raw: Buffer | string): string[];
+/**
+ * Remove known agent-launch prompt payloads from argv before process matching.
+ * The executable and every non-prompt argument remain eligible, so commands
+ * such as `qemu-system-x86_64 ... mac_hdd_ng.img` retain their target args.
+ *
+ * @param {string[]} argv
+ * @returns {string[]}
+ */
+export function getOperationalArgv(argv: string[]): string[];
 /**
  * Parse the ppid out of a /proc/<pid>/stat line. The comm field (2nd field) is
  * parenthesized and may itself contain spaces/parens, so field-splitting must
@@ -46,12 +54,11 @@ export function listProcesses(procRoot?: string): ProcRow[];
  */
 export function getAncestryChain(pid: number, byPid: Map<number, number | null>, maxHops?: number): Set<number>;
 /**
- * Processes matching `pattern` (a RegExp source — `pgrep -f` semantics: matched
- * against the full cmdline), EXCLUDING the caller's own pid and its whole
- * ancestor chain. This is the guard primitive: a caller running inside a
- * `bash -c` / `-lic` wrapper whose own command line happens to contain
- * `pattern` is never reported as a match, while a genuinely unrelated external
- * process with the same pattern in its cmdline still is.
+ * Processes matching `pattern` (a RegExp source) against operational argv,
+ * EXCLUDING the caller's own pid and its whole ancestor chain. Operational argv
+ * keeps the executable and real process arguments but excludes known agent
+ * prompt payloads. A genuinely unrelated external process with the same
+ * pattern in a real argument still matches.
  *
  * @param {string} pattern - A RegExp source, matched against the full cmdline.
  * @param {{ procRoot?: string; selfPid?: number }} [opts]
@@ -62,6 +69,23 @@ export function matchExternalProcesses(pattern: string, opts?: {
     selfPid?: number;
 }): ProcRow[];
 /**
+ * Return both the liveness-safe matches and the raw-argv matches for audit.
+ * `argvTextOnly` contains external processes where the pattern appears only in
+ * a recognized prompt payload; those must never make a liveness check positive.
+ *
+ * @param {string} pattern - A RegExp source.
+ * @param {{ procRoot?: string; selfPid?: number }} [opts]
+ * @returns {{ matches: ProcRow[]; fullMatches: ProcRow[]; argvTextOnly: ProcRow[] }}
+ */
+export function matchExternalProcessesDetailed(pattern: string, opts?: {
+    procRoot?: string;
+    selfPid?: number;
+}): {
+    matches: ProcRow[];
+    fullMatches: ProcRow[];
+    argvTextOnly: ProcRow[];
+};
+/**
  * One live process, as read out of `/proc`.
  */
 export type ProcRow = {
@@ -70,6 +94,10 @@ export type ProcRow = {
      * - null when `/proc/<pid>/stat` was unreadable or unparseable.
      */
     ppid: number | null;
+    /**
+     * - Raw process arguments, decoded from NUL-separated cmdline.
+     */
+    argv: string[];
     /**
      * - Full command line, NUL separators replaced by spaces.
      */

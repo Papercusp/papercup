@@ -157,8 +157,9 @@ export function resultToText(result: any, { raw }?: {
     raw?: boolean;
 }): any;
 /** Resolve the bearer-token file in precedence order. Pure and injectable for
- * tests: an explicit CLI path wins over the environment, which wins over the
- * normal per-home token. */
+ * tests: an explicit CLI path wins over the environment, then the isolated
+ * `PAPERCUSP_HOME` root used by packaged operators, then the normal per-home
+ * token. */
 export function resolveTokenPath({ tokenFile, env, home }?: {
     tokenFile?: null | undefined;
     env?: NodeJS.ProcessEnv | undefined;

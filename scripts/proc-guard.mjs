@@ -30,19 +30,31 @@
  * pattern text is never mistaken for a real match — while a genuinely unrelated
  * external process with the same pattern in its cmdline still matches.
  *
+ * A second, independent false-positive class is agent launchers: their argv can
+ * carry a long `PAPERCUSP_KICKOFF_PROMPT=...` shell assignment or a turn prompt
+ * as the final argument. Those are operator prose, not the executable or its
+ * runtime arguments. Matching the raw joined cmdline therefore reports a live
+ * agent as a running gate/script whenever its prompt happens to name that gate.
+ * `getOperationalArgv` removes those known prompt payload arguments while
+ * retaining the executable and all other process arguments (including qemu's
+ * image/path arguments). The detailed matcher reports both views so a caller can
+ * audit what was ignored instead of mistaking a raw argv count for liveness.
+ *
  * CLI:
  *   node scripts/proc-guard.mjs check <pattern>
- *     Exit 0 + print every matching row (pid + full cmdline) when at least one
- *     EXTERNAL (non-self, non-ancestor) process matches. Exit 1 + a "no match"
- *     line otherwise. Never prints a bare count without the rows — a guard that
- *     only prints a number hides exactly the self-match failure this exists to
- *     catch (see the work-item's "guard-writing rule").
+ *     Exit 0 + print every operationally matching row (pid + full cmdline) when
+ *     at least one EXTERNAL (non-self, non-ancestor) process matches. Exit 1 + a
+ *     "no match" line otherwise. The output includes the full-argv count and
+ *     argv-text-only count so prompt collisions are visible but cannot turn a
+ *     liveness check into a permanent YES.
  *
  * Library (unit-tested against a fixture /proc — see proc-guard.test.ts;
  * `procRoot` / `selfPid` are both injectable for that reason):
- *   listProcesses(procRoot?)              -> [{ pid, ppid, cmdline }]
+ *   listProcesses(procRoot?)              -> [{ pid, ppid, argv, cmdline }]
  *   getAncestryChain(pid, byPid)           -> Set<pid> (pid + every ancestor, incl. pid 1)
- *   matchExternalProcesses(pattern, opts) -> matching rows, self + ancestors excluded
+ *   getOperationalArgv(argv)              -> argv with known prompt payloads removed
+ *   matchExternalProcesses(pattern, opts) -> operational matching rows, self + ancestors excluded
+ *   matchExternalProcessesDetailed(...)   -> operational, full, and argv-text-only rows
  */
 import { readFileSync, readdirSync } from 'node:fs';
 import path from 'node:path';
@@ -55,8 +67,11 @@ const DEFAULT_PROC_ROOT = '/proc';
  * @typedef {object} ProcRow
  * @property {number} pid
  * @property {number | null} ppid - null when `/proc/<pid>/stat` was unreadable or unparseable.
+ * @property {string[]} argv - Raw process arguments, decoded from NUL-separated cmdline.
  * @property {string} cmdline - Full command line, NUL separators replaced by spaces.
  */
+
+const PROMPT_ARG_MARKERS = ['PAPERCUSP_KICKOFF_PROMPT=', '⟦turn-origin:'];
 
 /**
  * Parse a NUL-separated /proc/<pid>/cmdline buffer into a display string (space-joined args).
@@ -65,11 +80,32 @@ const DEFAULT_PROC_ROOT = '/proc';
  * @returns {string}
  */
 export function parseCmdline(raw) {
+  return parseArgv(raw).join(' ');
+}
+
+/**
+ * Parse a NUL-separated `/proc/<pid>/cmdline` buffer into argv entries.
+ *
+ * @param {Buffer | string} raw
+ * @returns {string[]}
+ */
+export function parseArgv(raw) {
   return raw
     .toString('utf8')
     .split('\0')
-    .filter((s) => s.length > 0)
-    .join(' ');
+    .filter((s) => s.length > 0);
+}
+
+/**
+ * Remove known agent-launch prompt payloads from argv before process matching.
+ * The executable and every non-prompt argument remain eligible, so commands
+ * such as `qemu-system-x86_64 ... mac_hdd_ng.img` retain their target args.
+ *
+ * @param {string[]} argv
+ * @returns {string[]}
+ */
+export function getOperationalArgv(argv) {
+  return argv.filter((arg, index) => index === 0 || !PROMPT_ARG_MARKERS.some((marker) => arg.includes(marker)));
 }
 
 /**
@@ -91,7 +127,7 @@ export function parsePpid(statLine) {
 }
 
 /**
- * Enumerate every live process as { pid, ppid, cmdline }, from a /proc root (real or a test fixture).
+ * Enumerate every live process as { pid, ppid, argv, cmdline }, from a /proc root (real or a test fixture).
  *
  * @param {string} [procRoot] - Defaults to `/proc`; a fixture directory in tests.
  * @returns {ProcRow[]}
@@ -109,12 +145,13 @@ export function listProcesses(procRoot = DEFAULT_PROC_ROOT) {
   for (const name of entries) {
     if (!/^\d+$/.test(name)) continue;
     const pid = Number(name);
-    let cmdline = '';
+    let argv;
     try {
-      cmdline = parseCmdline(readFileSync(path.join(procRoot, name, 'cmdline')));
+      argv = parseArgv(readFileSync(path.join(procRoot, name, 'cmdline')));
     } catch {
       continue; // process exited between readdir and read (or fixture has no cmdline) — skip
     }
+    const cmdline = argv.join(' ');
     if (!cmdline) continue; // kernel threads / zombies have empty cmdline — never a real match
     let ppid = null;
     try {
@@ -122,7 +159,7 @@ export function listProcesses(procRoot = DEFAULT_PROC_ROOT) {
     } catch {
       ppid = null;
     }
-    out.push({ pid, ppid, cmdline });
+    out.push({ pid, ppid, argv, cmdline });
   }
   return out;
 }
@@ -151,25 +188,42 @@ export function getAncestryChain(pid, byPid, maxHops = 512) {
 }
 
 /**
- * Processes matching `pattern` (a RegExp source — `pgrep -f` semantics: matched
- * against the full cmdline), EXCLUDING the caller's own pid and its whole
- * ancestor chain. This is the guard primitive: a caller running inside a
- * `bash -c` / `-lic` wrapper whose own command line happens to contain
- * `pattern` is never reported as a match, while a genuinely unrelated external
- * process with the same pattern in its cmdline still is.
+ * Processes matching `pattern` (a RegExp source) against operational argv,
+ * EXCLUDING the caller's own pid and its whole ancestor chain. Operational argv
+ * keeps the executable and real process arguments but excludes known agent
+ * prompt payloads. A genuinely unrelated external process with the same
+ * pattern in a real argument still matches.
  *
- * @param {string} pattern - A RegExp source, matched against the full cmdline.
+ * @param {string} pattern - A RegExp source, matched against operational argv.
  * @param {{ procRoot?: string; selfPid?: number }} [opts]
  * @returns {ProcRow[]}
  */
 export function matchExternalProcesses(pattern, opts = {}) {
+  return matchExternalProcessesDetailed(pattern, opts).matches;
+}
+
+/**
+ * Return both the liveness-safe matches and the raw-argv matches for audit.
+ * `argvTextOnly` contains external processes where the pattern appears only in
+ * a recognized prompt payload; those must never make a liveness check positive.
+ *
+ * @param {string} pattern - A RegExp source.
+ * @param {{ procRoot?: string; selfPid?: number }} [opts]
+ * @returns {{ matches: ProcRow[]; fullMatches: ProcRow[]; argvTextOnly: ProcRow[] }}
+ */
+export function matchExternalProcessesDetailed(pattern, opts = {}) {
   const procRoot = opts.procRoot ?? DEFAULT_PROC_ROOT;
   const selfPid = opts.selfPid ?? process.pid;
   const all = listProcesses(procRoot);
   const byPid = new Map(all.map((p) => [p.pid, p.ppid]));
   const excluded = getAncestryChain(selfPid, byPid);
   const re = new RegExp(pattern);
-  return all.filter((p) => !excluded.has(p.pid) && re.test(p.cmdline));
+  const external = all.filter((p) => !excluded.has(p.pid));
+  const fullMatches = external.filter((p) => re.test(p.cmdline));
+  const matches = external.filter((p) => re.test(getOperationalArgv(p.argv).join(' ')));
+  const matchedOperationalPids = new Set(matches.map((p) => p.pid));
+  const argvTextOnly = fullMatches.filter((p) => !matchedOperationalPids.has(p.pid));
+  return { matches, fullMatches, argvTextOnly };
 }
 
 function main(argv) {
@@ -179,13 +233,24 @@ function main(argv) {
     process.exit(2);
     return;
   }
-  const matches = matchExternalProcesses(pattern);
+  const report = matchExternalProcessesDetailed(pattern);
+  const { matches, fullMatches, argvTextOnly } = report;
   if (matches.length === 0) {
-    console.log(`proc-guard: no external process matches /${pattern}/`);
+    if (fullMatches.length > 0) {
+      console.log(
+        `proc-guard: no external process matches /${pattern}/ (${fullMatches.length} full-argv match(es), all ${argvTextOnly.length} argv-text-only; ignored)`,
+      );
+    } else {
+      console.log(`proc-guard: no external process matches /${pattern}/`);
+    }
     process.exit(1);
     return;
   }
-  console.log(`proc-guard: ${matches.length} external process(es) match /${pattern}/:`);
+  const rawSuffix =
+    fullMatches.length === matches.length
+      ? ''
+      : ` (${fullMatches.length} full-argv match(es): ${argvTextOnly.length} argv-text-only ignored)`;
+  console.log(`proc-guard: ${matches.length} external process(es) match /${pattern}/${rawSuffix}:`);
   for (const m of matches) console.log(`  ${m.pid}  ${m.cmdline}`);
   process.exit(0);
 }

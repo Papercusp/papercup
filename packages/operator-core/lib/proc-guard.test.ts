@@ -22,8 +22,11 @@ import { join } from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import {
   getAncestryChain,
+  getOperationalArgv,
   listProcesses,
   matchExternalProcesses,
+  matchExternalProcessesDetailed,
+  parseArgv,
   parseCmdline,
   parsePpid,
 } from '../../../scripts/proc-guard.mjs';
@@ -53,6 +56,25 @@ describe('parseCmdline', () => {
 
   it('drops the trailing empty segment from the terminating NUL', () => {
     expect(parseCmdline(Buffer.from('node\0script.mjs\0'))).toBe('node script.mjs');
+  });
+});
+
+describe('parseArgv and getOperationalArgv', () => {
+  it('keeps raw argv boundaries while parseCmdline remains display-compatible', () => {
+    const raw = Buffer.from('node\0script.mjs\0argument with spaces\0');
+    expect(parseArgv(raw)).toEqual(['node', 'script.mjs', 'argument with spaces']);
+    expect(parseCmdline(raw)).toBe('node script.mjs argument with spaces');
+  });
+
+  it('removes kickoff prompt payloads but retains the executable and real args', () => {
+    const argv = [
+      '/usr/bin/gnome-terminal',
+      '--wait',
+      'PAPERCUSP_KICKOFF_PROMPT=green-checkpoint',
+      '--target',
+      'mac_hdd_ng.img',
+    ];
+    expect(getOperationalArgv(argv)).toEqual(['/usr/bin/gnome-terminal', '--wait', '--target', 'mac_hdd_ng.img']);
   });
 });
 
@@ -140,6 +162,32 @@ describe('matchExternalProcesses — the EI-18666147162251862 regression', () =>
   it('returns [] against a missing /proc root rather than throwing', () => {
     const matches = matchExternalProcesses('anything', { procRoot: '/no/such/proc/root', selfPid: 1 });
     expect(matches).toEqual([]);
+  });
+
+  it('ignores kickoff prompt text while retaining the real-vs-argv-text split', () => {
+    fixtureRoot = mkdtempSync(join(tmpdir(), 'proc-guard-fixture-'));
+    const PATTERN = 'green-checkpoint';
+    fixtureProc(fixtureRoot, 1, 0, ['/sbin/init']);
+    fixtureProc(fixtureRoot, 100, 1, ['node', 'scripts/proc-guard.mjs', 'check', PATTERN]);
+    fixtureProc(fixtureRoot, 777, 1, ['node', 'apps/operator/lib/release/green-checkpoint.ts']);
+    fixtureProc(fixtureRoot, 778, 1, [
+      'bun',
+      '/home/dev/.papercusp/bin/omp',
+      '--model',
+      'model:low',
+      '⟦turn-origin:fleet-kickoff nonce:abc⟧ The green-checkpoint gate is red.',
+    ]);
+    fixtureProc(fixtureRoot, 779, 1, [
+      'bash',
+      '-lc',
+      "export PAPERCUSP_KICKOFF_PROMPT='The green-checkpoint gate is red.'; exec $SHELL",
+    ]);
+
+    const report = matchExternalProcessesDetailed(PATTERN, { procRoot: fixtureRoot, selfPid: 100 });
+    expect(report.matches.map((m) => m.pid)).toEqual([777]);
+    expect(report.fullMatches.map((m) => m.pid)).toEqual([777, 778, 779]);
+    expect(report.argvTextOnly.map((m) => m.pid)).toEqual([778, 779]);
+    expect(matchExternalProcesses(PATTERN, { procRoot: fixtureRoot, selfPid: 100 }).map((m) => m.pid)).toEqual([777]);
   });
 });
 
