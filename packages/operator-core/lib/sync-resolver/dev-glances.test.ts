@@ -159,6 +159,30 @@ describe('dev.* glance resolvers', () => {
       vi.doUnmock('../dev-data');
     });
 
+    it('dev.telemetry delegates to cachedRead with a 30-second soft TTL and stable key', async () => {
+      const entries = [{ tool_name: 'work_items:list', call_count: 1 }];
+      const telemetryRollup = vi.fn(async () => ({ entries }));
+      const cachedRead = vi.fn(
+        async (_ctx: unknown, _options: unknown, factory: () => Promise<unknown>) => factory(),
+      );
+      vi.doMock('../cache', () => ({ cachedRead }));
+      vi.doMock('../dev-data', () => ({ telemetryRollup }));
+      const { resolveNamedQueryV2: r } = await import('./index');
+
+      const rows = (await r('dev.telemetry', { hours: 168, limit: 50 })) as unknown[];
+
+      expect(rows).toEqual(entries);
+      expect(cachedRead).toHaveBeenCalledOnce();
+      expect(cachedRead).toHaveBeenCalledWith(
+        {},
+        { tool: 'dev.telemetry', key: { hours: 168, limit: 50 }, tags: [], softTtlMs: 30_000 },
+        expect.any(Function),
+      );
+      expect(telemetryRollup).toHaveBeenCalledOnce();
+      vi.doUnmock('../cache');
+      vi.doUnmock('../dev-data');
+    });
+
     it('dev.toolFormatAdoption returns the flat format-mix rows (passes hours through, workspaceIds:null)', async () => {
       const formatRows = [
         { format: 'toon', n: 75 },
