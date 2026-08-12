@@ -203,5 +203,74 @@ describe('the echo store', () => {
     const id = recordSentEcho('su-a', 'go');
     expect(() => settleSentEcho('su-a', `${id}-nope`, 'sent')).not.toThrow();
   });
+
+  /**
+   * THE RENDER SEAM, not a style preference. `SessionChatModal` reads this store
+   * through `useSentEchoes` and then feeds it to a `useMemo` keyed on the
+   * snapshot:
+   *
+   *     const messages = useMemo(() => mergeSentEchoes(mapped.messages, echoes),
+   *                              [mapped.messages, echoes]);
+   *
+   * `useMemo` compares deps by REFERENCE, so a mutation that leaves the array
+   * identity unchanged is INVISIBLE to the render even though the store did emit
+   * and the component did re-render. That is not hypothetical: the store used to
+   * `push` into the same array and assign `found.delivery` in place, and the
+   * measured consequence was that the FIRST send to an agent rendered while the
+   * 2nd and every later one did not — the owner-visible "I sent it and the chat
+   * didn't update".
+   *
+   * These assertions are about IDENTITY on purpose. Asserting on contents alone
+   * passes happily against the broken store (the contents were always correct —
+   * they just never reached the memo), which is exactly why the defect survived a
+   * suite that already covered ordering, absorption, capping and settling.
+   */
+  it('hands back a NEW array reference on every mutation, so a memo keyed on it recomputes', () => {
+    const empty = getSentEchoes('su-a');
+
+    const first = recordSentEcho('su-a', 'first');
+    const afterFirst = getSentEchoes('su-a');
+    expect(afterFirst).not.toBe(empty);
+
+    // The regression that shipped: a push into the existing array left this ===.
+    const second = recordSentEcho('su-a', 'second');
+    const afterSecond = getSentEchoes('su-a');
+    expect(afterSecond).not.toBe(afterFirst);
+
+    // ...and so did settling, so a failed send never un-rendered.
+    settleSentEcho('su-a', second, 'failed');
+    expect(getSentEchoes('su-a')).not.toBe(afterSecond);
+
+    // Identity changed WITHOUT disturbing the semantics the rest of the suite pins.
+    settleSentEcho('su-a', first, 'sent');
+    expect(getSentEchoes('su-a').map((e) => [e.text, e.delivery])).toEqual([
+      ['first', 'sent'],
+      ['second', 'failed'],
+    ]);
+  });
+
+  it('leaves an ALREADY-CAPTURED snapshot unmutated — the memo can compare old vs new', () => {
+    recordSentEcho('su-a', 'first');
+    // What the previous render closed over. If a later mutation writes THROUGH
+    // this, the two snapshots are equal and no memo/effect can tell them apart.
+    const snapshot = getSentEchoes('su-a');
+    expect(snapshot.map((e) => e.text)).toEqual(['first']);
+
+    const id = recordSentEcho('su-a', 'second');
+    settleSentEcho('su-a', id, 'failed');
+
+    expect(snapshot.map((e) => e.text)).toEqual(['first']);
+    expect(snapshot[0].delivery).toBe('sending');
+  });
+
+  it('a re-read with NO mutation in between is stable, so a settled pane does not re-render forever', () => {
+    recordSentEcho('su-a', 'go');
+    expect(getSentEchoes('su-a')).toBe(getSentEchoes('su-a'));
+    // The no-op settle paths must not manufacture a new identity either.
+    settleSentEcho('su-a', 'echo-does-not-exist', 'sent');
+    const stable = getSentEchoes('su-a');
+    settleSentEcho('nobody-at-all', 'echo-1', 'sent');
+    expect(getSentEchoes('su-a')).toBe(stable);
+  });
 });
 

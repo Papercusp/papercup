@@ -66,13 +66,17 @@ export default defineTool({
     workspace: wsArg,
   }),
   async handler(args) {
-    const { loadAccountPool, saveAccountPool } = await import('../../deployment/account-pool-store');
+    const { updateAccountPool } = await import('../../deployment/account-pool-store');
     const { registerAccount, getAccount } = await import('../../deployment/account-pool');
     const ws = args.workspace ?? activeWorkspaceId();
     try {
-      const pool = await loadAccountPool(ws);
-      const next = registerAccount(pool, { id: args.id, provider: args.provider, credentialRef: args.credentialRef, label: args.label, egress: args.egress, egressPool: args.egressPool }, Date.now());
-      await saveAccountPool(next, ws);
+      // Atomic RMW (WI-38164) — a load-then-blind-save here loses any account another
+      // writer registered in between, which is exactly how owner-registered accounts
+      // silently vanished from the Deploy Accounts page.
+      const next = await updateAccountPool(
+        (pool) => registerAccount(pool, { id: args.id, provider: args.provider, credentialRef: args.credentialRef, label: args.label, egress: args.egress, egressPool: args.egressPool }, Date.now()),
+        ws,
+      );
       return ok({ account: getAccount(next, args.id) });
     } catch (e) {
       return fail({ error: (e instanceof Error ? e.message : String(e)).slice(0, 400) });
@@ -130,18 +134,21 @@ export const accountsRemoveTool = defineTool({
       message: 'pass `id` (one) or `ids` (many)',
     }),
   async handler(args) {
-    const { loadAccountPool, saveAccountPool } = await import('../../deployment/account-pool-store');
+    const { updateAccountPool } = await import('../../deployment/account-pool-store');
     const { removeAccount, getAccount } = await import('../../deployment/account-pool');
     const ws = args.workspace ?? activeWorkspaceId();
     const ids = mergeIds(args.id, args.ids);
-    // Read-modify-write per id, sequentially (runBulk is sequential) so each
-    // remove sees the prior write's pool state.
+    // Atomic read-modify-write per id, sequentially (runBulk is sequential) so each
+    // remove sees the prior write's pool state — and, since WI-38164, so a remove
+    // cannot carry a stale snapshot back over a CONCURRENT writer's registration.
     const env = await runBulk(
       ids,
       async (id) => {
-        const pool = await loadAccountPool(ws);
-        const existed = !!getAccount(pool, id);
-        await saveAccountPool(removeAccount(pool, id), ws);
+        let existed = false;
+        await updateAccountPool((pool) => {
+          existed = !!getAccount(pool, id);
+          return removeAccount(pool, id);
+        }, ws);
         return { ok: true as const, id, removed: existed };
       },
       { keyOf: (id) => ({ id }) },
@@ -211,19 +218,18 @@ export const accountsResetRateTool = defineTool({
       message: 'pass `id` (one) or `ids` (many)',
     }),
   async handler(args) {
-    const { loadAccountPool, saveAccountPool } = await import('../../deployment/account-pool-store');
+    const { loadAccountPool, updateAccountPool } = await import('../../deployment/account-pool-store');
     const { recordAccountReset, getAccount } = await import('../../deployment/account-pool');
     const ws = args.workspace ?? activeWorkspaceId();
     const ids = mergeIds(args.id, args.ids);
     let anyReset = false;
-    // Read-modify-write per id, sequentially so each reset sees the prior write.
+    // Atomic read-modify-write per id, sequentially so each reset sees the prior write
+    // (WI-38164: the previous load-then-blind-save could flush a stale whole document).
     const env = await runBulk(
       ids,
       async (id) => {
-        const pool = await loadAccountPool(ws);
-        if (!getAccount(pool, id)) return { ok: false as const, id, error: 'unknown_account' };
-        const next = recordAccountReset(pool, id, { resetWindows: args.resetWindows });
-        await saveAccountPool(next, ws);
+        if (!getAccount(await loadAccountPool(ws), id)) return { ok: false as const, id, error: 'unknown_account' };
+        const next = await updateAccountPool((pool) => recordAccountReset(pool, id, { resetWindows: args.resetWindows }), ws);
         anyReset = true;
         return { ok: true as const, id, account: getAccount(next, id) };
       },

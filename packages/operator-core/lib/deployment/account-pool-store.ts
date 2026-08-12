@@ -104,10 +104,6 @@ export async function loadAccountPoolForProvider(provider: AccountProvider, ws?:
   return { accounts: accountsForProvider(await loadAccountPool(ws), provider) };
 }
 
-export async function saveAccountPool(pool: AccountPool, ws?: string): Promise<void> {
-  await writeOperatorState('operator_account_pool', { accounts: pool.accounts }, ws);
-}
-
 // ── The DEFAULT account (default-deploy-account-2026-08-08 P-002) ─────────────
 
 /**
@@ -387,30 +383,62 @@ export async function selectInProcessAccount(key: string, ws?: string, priorAcco
 }
 
 /**
- * Read-modify-write the pool. Not a single PG transaction (the pool is a low-churn
- * PROJECTION — the governor is the rate-state source of truth — so a lost racing
- * penalty write self-heals on the next pause); deploy-time binds are single-caller.
+ * Read-modify-write the pool ATOMICALLY — the ONLY sanctioned way to write it.
+ *
+ * The mutator runs inside a single transaction holding this workspace's row under
+ * `SELECT … FOR UPDATE`, so a concurrent writer is serialized behind it and reads the
+ * committed result rather than a snapshot taken before it. Keep the mutator PURE and
+ * SYNCHRONOUS: it executes while the row lock is held.
+ *
+ * ⚠ WI-38164 — WHY THIS IS A TRANSACTION NOW, and why the old reasoning was wrong.
+ * This used to be a bare `mutator(await loadAccountPool())` followed by a blind
+ * whole-document `saveAccountPool()`, justified in a comment as safe because "the pool
+ * is a low-churn PROJECTION … so a lost racing penalty write self-heals on the next
+ * pause". That is true of the RATE fields and false of everything else in the same
+ * document. The row also carries MEMBERSHIP, and a lost membership write does not
+ * self-heal — the account is simply gone until a human notices.
+ *
+ * It bit exactly that way (owner report, 2026-08-12): accounts `aviynw2` and `aviynw4`
+ * were registered from the Deploy Accounts page and vanished twice, hours later, along
+ * with `aviynw2_codex`. The tell was an account REAPPEARING — `aviynw` was dropped from
+ * the pool at 18:01 and was back at 18:40 with no registration in between, which no
+ * mutator in `account-pool.ts` can do (they are all `accounts.map(...)`, none can add an
+ * id that was not in its input). Only a writer flushing a whole document it had read
+ * hours earlier can, and that same write is what erased the two new accounts.
+ *
+ * Callers that need to do IO (allocate an egress IP, redeploy a member) must do it
+ * OUTSIDE and pass only the resulting pure mutation in here — never hold a pool object
+ * across an await and write it back.
  */
 export async function updateAccountPool(
   mutator: (pool: AccountPool) => AccountPool,
   ws?: string,
 ): Promise<AccountPool> {
-  const next = mutator(await loadAccountPool(ws));
-  await saveAccountPool(next, ws);
-  return next;
+  return await updateOperatorState<AccountPool>(
+    'operator_account_pool',
+    { accounts: [] },
+    // Normalize INSIDE the transaction so the mutator sees exactly what
+    // `loadAccountPool` would have handed it (WI-3068's partially-written `rate: {}`
+    // rows read as permanently paused otherwise).
+    (current) => mutator({ accounts: (current?.accounts ?? []).map(normalizeAccount) }),
+    ws,
+  );
 }
 
 // ── P-020: deploy-time account selection ─────────────────────────────────────
 
 export interface DeployAccountDeps {
   loadPool: (ws: string) => Promise<AccountPool>;
-  savePool: (pool: AccountPool, ws: string) => Promise<void>;
+  /** WI-38164: a MUTATION, not a whole-document save. The selection above reads the pool,
+   *  then does async work (override read, headroom scoring) before it knows what to bind —
+   *  writing back the pool it read would discard anything registered in that window. */
+  mutatePool: (mutator: (pool: AccountPool) => AccountPool, ws: string) => Promise<AccountPool>;
   now?: () => number;
   log?: (level: LogLevel, msg: string) => void;
 }
 
 export function defaultDeployAccountDeps(log?: (level: LogLevel, msg: string) => void): DeployAccountDeps {
-  return { log, loadPool: (ws) => loadAccountPool(ws), savePool: (pool, ws) => saveAccountPool(pool, ws) };
+  return { log, loadPool: (ws) => loadAccountPool(ws), mutatePool: (m, ws) => updateAccountPool(m, ws) };
 }
 
 /**
@@ -443,7 +471,12 @@ export async function selectAccountForDeploy(
     deps.log?.('info', `[accounts] pool has no available account — '${slug}' deploys on the frame default credential`);
     return deployment;
   }
-  await deps.savePool(bindAccount(unbindAccount(pool, slug), chosen.id, slug), ws);
+  // Re-derive the bind from the pool AS IT IS AT WRITE TIME, not from the `pool` snapshot
+  // read above — the override read + headroom scoring in between is enough of a window for
+  // a concurrent registration to be lost (WI-38164). The CHOICE stays based on the snapshot
+  // (it is a heuristic pick, and re-scoring under the row lock would be IO in a transaction);
+  // only the mutation is re-applied to current state.
+  await deps.mutatePool((p) => bindAccount(unbindAccount(p, slug), chosen.id, slug), ws);
   deps.log?.('info', `[accounts] bound account '${chosen.id}' to '${slug}' by headroom`);
   return { ...deployment, credentialRef: chosen.credentialRef, accountId: chosen.id };
 }
@@ -452,7 +485,11 @@ export async function selectAccountForDeploy(
 
 export interface ScaleOutDeps {
   loadPool: (ws: string) => Promise<AccountPool>;
-  savePool: (pool: AccountPool, ws: string) => Promise<void>;
+  /** WI-38164: a MUTATION, not a whole-document save. This reaction runs a full
+   *  teardown+redeploy per bound member between reading the pool and recording the new
+   *  binds — minutes — so writing back the pool it read is the widest lost-update window
+   *  in the file. Only the rebinds are re-applied, to current state. */
+  mutatePool: (mutator: (pool: AccountPool) => AccountPool, ws: string) => Promise<AccountPool>;
   /** The member's current cloud deployment template (target/region/size) to replicate. */
   memberDeployment: (slug: string, ws: string) => Promise<DeploymentConfig | undefined>;
   /** Provision a fresh frame for `slug` on `deployment` (real = repoint registry + deployHarness). */
@@ -494,7 +531,7 @@ export async function handleAccountExhausted(
   if (slugs.length === 0) return { scaledOut: false, reason: 'no-bound-members' };
 
   const members: ScaleOutMember[] = [];
-  let next = pool;
+  const rebound: string[] = [];
   for (const slug of slugs) {
     const template = await deps.memberDeployment(slug, ws).catch(() => undefined);
     if (!template || template.target === 'local') {
@@ -505,13 +542,22 @@ export async function handleAccountExhausted(
     try {
       const { frame } = await deps.redeploy(slug, ws, deployment);
       members.push({ slug, frame });
-      next = bindAccount(unbindAccount(next, slug), fresh.id, slug);
+      rebound.push(slug);
       deps.log?.('info', `[accounts] scaled '${slug}' off '${exhaustedId}' → '${fresh.id}' on frame ${frame.id}`);
     } catch (e) {
       members.push({ slug, error: (e instanceof Error ? e.message : String(e)).slice(0, 300) });
     }
   }
-  await deps.savePool(next, ws);
+  // Apply the rebinds to the pool AS IT IS NOW. Accumulating them onto the `pool` object
+  // read before the redeploy loop and saving that is what discarded every account
+  // registered while the loop ran (WI-38164) — and each `redeploy` is a real machine
+  // teardown + provision, so "while the loop ran" is minutes, per member.
+  if (rebound.length > 0) {
+    await deps.mutatePool(
+      (p) => rebound.reduce((acc, slug) => bindAccount(unbindAccount(acc, slug), fresh.id, slug), p),
+      ws,
+    );
+  }
   return { scaledOut: true, account: fresh.id, members };
 }
 
@@ -519,7 +565,7 @@ export function defaultScaleOutDeps(log?: (level: LogLevel, msg: string) => void
   return {
     log,
     loadPool: (ws) => loadAccountPool(ws),
-    savePool: (pool, ws) => saveAccountPool(pool, ws),
+    mutatePool: (m, ws) => updateAccountPool(m, ws),
     async memberDeployment(slug, ws) {
       const { loadHarnessRegistry } = await import('../harness-registry');
       const reg = await loadHarnessRegistry(ws);

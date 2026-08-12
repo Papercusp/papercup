@@ -11,7 +11,11 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'default') }));
 vi.mock('../../deployment/account-pool-store', () => ({
   loadAccountPool: vi.fn(),
-  saveAccountPool: vi.fn(),
+  // WI-38164: pool writes go through the ATOMIC updateAccountPool(mutator). Both egress
+  // paths do a network round-trip (provider.allocate / provider.release) between reading
+  // the pool and writing it, so a blind snapshot save here dropped whatever else changed
+  // in that window. The mock re-reads via loadM so the mutator sees the test's pool.
+  updateAccountPool: vi.fn(),
 }));
 vi.mock('../../inference-gateway/egress-probe', () => ({ testEgressForAccount: vi.fn() }));
 
@@ -30,11 +34,13 @@ vi.mock('../../inference-gateway/egress-providers', () => ({
   createEgressProvider: createEgressProviderMock,
 }));
 
-import { loadAccountPool, saveAccountPool } from '../../deployment/account-pool-store';
+import { loadAccountPool, updateAccountPool } from '../../deployment/account-pool-store';
 import { testEgressForAccount } from '../../inference-gateway/egress-probe';
 
 const loadM = vi.mocked(loadAccountPool);
-const saveM = vi.mocked(saveAccountPool);
+const saveM = vi.mocked(updateAccountPool);
+/** The pool the mutator of the Nth updateAccountPool call produced. */
+const writtenPool = (n = 0) => saveM.mock.results[n]!.value as Promise<{ accounts: Array<{ id: string; egress?: unknown }> }>;
 const verifyM = vi.mocked(testEgressForAccount);
 
 const mod = await import('./egress');
@@ -49,7 +55,8 @@ const baseAccount = { id: 'acct-a', provider: 'claude', credentialRef: 'token:/x
 beforeEach(() => {
   vi.clearAllMocks();
   loadM.mockResolvedValue({ accounts: [{ ...baseAccount }] } as never);
-  saveM.mockResolvedValue(undefined as never);
+  // Apply the mutator to CURRENT pool state, as the real transactional RMW does.
+  saveM.mockImplementation((async (mutator: (p: unknown) => unknown) => mutator(await loadM())) as never);
   verifyM.mockResolvedValue({ accountId: 'acct-a', clean: true } as never);
 });
 
@@ -72,7 +79,7 @@ describe('egress:provision', () => {
     expect(createEgressProviderMock).toHaveBeenCalledWith('static', { entries: [{ id: 'ip-1', proxyUrl: 'http://10.0.0.1:3128' }] });
     expect(allocateMock).toHaveBeenCalledWith('acct-a');
     expect(saveM).toHaveBeenCalledTimes(1);
-    const savedPool = saveM.mock.calls[0][0] as { accounts: Array<{ id: string; egress?: unknown }> };
+    const savedPool = await writtenPool();
     expect(savedPool.accounts[0].egress).toEqual({
       proxyUrl: 'http://10.0.0.1:3128',
       localAddress: undefined,
@@ -131,19 +138,21 @@ describe('egress:release', () => {
       (await egressReleaseTool.handler({ provider: 'static', id: 'ip-1', accountId: 'acct-a' } as never, {} as never)) as Out,
     );
     expect(saveM).toHaveBeenCalledTimes(1);
-    const savedPool = saveM.mock.calls[0][0] as { accounts: Array<{ egress?: unknown }> };
+    const savedPool = await writtenPool();
     expect(savedPool.accounts[0].egress).toEqual({});
     expect(b).toMatchObject({ ok: true, accountCleared: true });
   });
 
   it('does NOT clear the account when its egress points at a DIFFERENT allocation', async () => {
-    loadM.mockResolvedValue({
-      accounts: [{ ...baseAccount, egress: { proxyUrl: 'http://10.0.0.9:3128', providerId: 'static', providerAllocationId: 'ip-9' } }],
-    } as never);
+    const other = { proxyUrl: 'http://10.0.0.9:3128', providerId: 'static', providerAllocationId: 'ip-9' };
+    loadM.mockResolvedValue({ accounts: [{ ...baseAccount, egress: other }] } as never);
     const b = body(
       (await egressReleaseTool.handler({ provider: 'static', id: 'ip-1', accountId: 'acct-a' } as never, {} as never)) as Out,
     );
-    expect(saveM).not.toHaveBeenCalled();
+    // WI-38164: the mismatch guard now lives INSIDE the atomic mutator (it has to — the
+    // account must be re-checked under the row lock, after the network release), so the
+    // contract is "the pool comes back unchanged", not "no write was attempted".
+    expect((await writtenPool()).accounts[0].egress).toEqual(other);
     expect(b).toMatchObject({ ok: true, accountCleared: false });
   });
 });

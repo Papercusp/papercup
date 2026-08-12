@@ -3,7 +3,7 @@
  * removeAccount/recordAccountReset + the store load/save are mocked). These manage the
  * Queen's Claude-account pool — the multi-account routing the whole fleet depends on —
  * so the handler wiring is worth pinning:
- *   • register: load→register→save→getAccount, and never-throw (400-char truncation);
+ *   • register: updateAccountPool(register)→getAccount, and never-throw (400-char truncation);
  *   • remove: the `removed` flag reflects whether the account existed;
  *   • reset-rate: the unknown_account guard (no save when absent) + the success path;
  *   • scale_out: the force→requireSustained mapping (force skips the sustained check)
@@ -19,7 +19,10 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'default') }));
 vi.mock('../../deployment/account-pool-store', () => ({
   loadAccountPool: vi.fn(),
-  saveAccountPool: vi.fn(),
+  // WI-38164: the handlers write through the ATOMIC updateAccountPool(mutator), never a
+  // blind saveAccountPool(snapshot). The mock runs the mutator so the pure-op mocks below
+  // still record their calls — and so a handler that reverts to load-then-save fails here.
+  updateAccountPool: vi.fn(),
   accountStatus: vi.fn(),
   handleAccountExhausted: vi.fn(),
   defaultScaleOutDeps: vi.fn(() => ({})),
@@ -32,10 +35,10 @@ vi.mock('../../deployment/account-pool', () => ({
 }));
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: vi.fn() }));
 
-import { loadAccountPool, saveAccountPool, handleAccountExhausted, accountStatus } from '../../deployment/account-pool-store';
+import { loadAccountPool, updateAccountPool, handleAccountExhausted, accountStatus } from '../../deployment/account-pool-store';
 import { getAccount, recordAccountReset } from '../../deployment/account-pool';
 const loadM = vi.mocked(loadAccountPool);
-const saveM = vi.mocked(saveAccountPool);
+const saveM = vi.mocked(updateAccountPool);
 const exhaustM = vi.mocked(handleAccountExhausted);
 const getAcct = vi.mocked(getAccount);
 const statusM = vi.mocked(accountStatus);
@@ -55,7 +58,8 @@ const body = (o: Out) => (o.data ?? JSON.parse(o.content![0].text));
 beforeEach(() => {
   vi.clearAllMocks();
   loadM.mockResolvedValue({ accounts: [] } as never);
-  saveM.mockResolvedValue(undefined as never);
+  // Run the mutator against a stand-in pool, exactly as the real atomic RMW does.
+  saveM.mockImplementation((async (mutator: (p: unknown) => unknown) => mutator({ accounts: [] })) as never);
   getAcct.mockReturnValue({ id: 'A1', label: 'acct' } as never);
 });
 
@@ -67,7 +71,7 @@ describe('accounts:register', () => {
   });
 
   it('never throws — a store failure becomes { ok:false, error } truncated to 400', async () => {
-    loadM.mockRejectedValue(new Error('y'.repeat(500)));
+    saveM.mockRejectedValue(new Error('y'.repeat(500)));
     const b = body(await registerTool.handler({ id: 'A1', credentialRef: 'token:/p' } as never, {} as never) as Out);
     expect(b.ok).toBe(false);
     expect(String(b.error).length).toBe(400);

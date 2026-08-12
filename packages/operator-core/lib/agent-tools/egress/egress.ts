@@ -83,7 +83,7 @@ export default defineTool({
   }),
   async handler(args) {
     const { createEgressProvider } = await import('../../inference-gateway/egress-providers');
-    const { loadAccountPool, saveAccountPool } = await import('../../deployment/account-pool-store');
+    const { loadAccountPool, updateAccountPool } = await import('../../deployment/account-pool-store');
     const { registerAccount, getAccount } = await import('../../deployment/account-pool');
     const { testEgressForAccount } = await import('../../inference-gateway/egress-probe');
     const ws = args.workspace ?? activeWorkspaceId();
@@ -108,23 +108,29 @@ export default defineTool({
         return ok({ dryRun: true, allocation, verify });
       }
 
-      const next = registerAccount(
-        pool,
-        {
-          id: target.id,
-          provider: target.provider,
-          credentialRef: target.credentialRef,
-          label: target.label,
-          egress: {
-            proxyUrl: allocation.proxyUrl,
-            localAddress: allocation.localAddress,
-            providerId: args.provider,
-            providerAllocationId: allocation.id,
+      // Atomic RMW against CURRENT state (WI-38164). `pool` above was read BEFORE
+      // `provider.allocate()` — a real network round-trip to the IP provider — so writing
+      // that snapshot back discarded every pool change made while the allocation was in
+      // flight. Re-resolve the target inside the transaction and touch only its egress.
+      const next = await updateAccountPool((p) => {
+        const cur = getAccount(p, args.accountId) ?? target;
+        return registerAccount(
+          p,
+          {
+            id: cur.id,
+            provider: cur.provider,
+            credentialRef: cur.credentialRef,
+            label: cur.label,
+            egress: {
+              proxyUrl: allocation.proxyUrl,
+              localAddress: allocation.localAddress,
+              providerId: args.provider,
+              providerAllocationId: allocation.id,
+            },
           },
-        },
-        Date.now(),
-      );
-      await saveAccountPool(next, ws);
+          Date.now(),
+        );
+      }, ws);
       const verify = await testEgressForAccount(next.accounts, args.accountId, { compareOthers: args.compareOthers });
       return ok({
         allocation,
@@ -190,20 +196,23 @@ export const egressReleaseTool = defineTool({
 
       let accountCleared = false;
       if (args.accountId) {
-        const { loadAccountPool, saveAccountPool } = await import('../../deployment/account-pool-store');
+        const { updateAccountPool } = await import('../../deployment/account-pool-store');
         const { registerAccount, getAccount } = await import('../../deployment/account-pool');
         const ws = args.workspace ?? activeWorkspaceId();
-        const pool = await loadAccountPool(ws);
-        const acct = getAccount(pool, args.accountId);
-        if (acct && acct.egress?.providerId === args.provider && acct.egress?.providerAllocationId === args.id) {
-          const next = registerAccount(
+        // Atomic RMW (WI-38164): `provider.release()` above is a network call, so the
+        // pool must be re-read under the row lock rather than snapshotted before it.
+        await updateAccountPool((pool) => {
+          const acct = getAccount(pool, args.accountId!);
+          if (!acct || acct.egress?.providerId !== args.provider || acct.egress?.providerAllocationId !== args.id) {
+            return pool;
+          }
+          accountCleared = true;
+          return registerAccount(
             pool,
             { id: acct.id, provider: acct.provider, credentialRef: acct.credentialRef, label: acct.label, egress: {} },
             Date.now(),
           );
-          await saveAccountPool(next, ws);
-          accountCleared = true;
-        }
+        }, ws);
       }
       return ok({ released: true, accountCleared });
     } catch (e) {

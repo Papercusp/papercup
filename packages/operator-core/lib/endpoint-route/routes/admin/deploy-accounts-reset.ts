@@ -6,7 +6,7 @@
  * does NOT touch live governor buckets (they self-expire) or the credential.
  */
 import { getAccount, recordAccountReset } from '../../../deployment/account-pool';
-import { loadAccountPool, saveAccountPool } from '../../../deployment/account-pool-store';
+import { loadAccountPool, updateAccountPool } from '../../../deployment/account-pool-store';
 import { notifySyncInvalidate } from '../../../sync-sse';
 import { requireAllowedOriginOr403 } from '../../cors';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -27,10 +27,13 @@ export default defineTool({
     }
     if (!body?.id) return Response.json({ ok: false, error: 'id required' }, { status: 400 });
     const id = String(body.id);
-    const pool = await loadAccountPool();
-    if (!getAccount(pool, id)) return Response.json({ ok: false, error: 'unknown_account', id }, { status: 404 });
-    const next = recordAccountReset(pool, id);
-    await saveAccountPool(next);
+    if (!getAccount(await loadAccountPool(), id)) {
+      return Response.json({ ok: false, error: 'unknown_account', id }, { status: 404 });
+    }
+    // Atomic RMW (WI-38164): this button used to write back the whole pool document it
+    // had just read, so a Reset click could resurrect accounts removed since the read
+    // and erase accounts registered since it.
+    const next = await updateAccountPool((pool) => recordAccountReset(pool, id));
     // Live UI reflection — the Accounts tab reads the accounts.pool sync query.
     void notifySyncInvalidate('accounts.pool', {}).catch(() => {});
     return Response.json({ ok: true, account: getAccount(next, id) });
