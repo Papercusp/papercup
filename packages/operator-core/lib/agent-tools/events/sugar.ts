@@ -394,6 +394,11 @@ defineTool({
     ],
   },
   requirePrincipal: false,
+  // EI-20231798718160589: this handler only captures a wake handle and writes
+  // coordination-plane awaits; it never reads ctx.tx. Do not hold the ambient
+  // org-app transaction while registering the gate wait, or pool pressure can
+  // make checkpoint:await time out before the registration runs.
+  skipWorkspaceTx: true,
   agentRoles: [...SU_ROLES],
   args: z.object({
     pipeline: z

@@ -137,6 +137,10 @@ const call = async (args: Record<string, unknown>) => {
   return JSON.parse(res.content[0].text);
 };
 
+it("opts checkpoint:await out of the ambient workspace transaction", () => {
+  expect((checkpointTool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+});
+
 beforeEach(() => {
   vi.clearAllMocks();
 });
