@@ -137,11 +137,27 @@ export function classifyStreamFreshness(input: StreamFreshnessInput): StreamFres
  * CONVERSATION MAY BE BEHIND, never that their message failed — that inference
  * is exactly the one that was wrong, and a banner that implied it would be
  * automating the original mistake.
+ *
+ * ⚠ EVERY banner here MUST carry the delivery reassurance, on every rung — not
+ * just the one whose timing analysis says it should win (WI-38270). Driving this
+ * live proved the rung analysis wrong twice over: `'stale'` is preempted in the
+ * canonical deaf-producer case because the transport publishes `'failing'` at
+ * ~20 s — BEFORE the 35 s silence timer, and while its socket is still
+ * ESTABLISHED, so neither documented timer explains it. What the owner actually
+ * sees is `'reconnecting'`, and that rung used to say only "new messages may not
+ * appear", which answers the wrong question: the owner's fear was never that the
+ * VIEW was behind, it was that THEIR MESSAGE never sent. It had sent — in 250 ms.
+ *
+ * A retrying READ stream is no evidence at all about a WRITE: sends go over a
+ * separate POST path. So the reassurance is equally TRUE and equally NEEDED on
+ * both rungs, and putting it on both is what makes this robust to the timing
+ * question being unresolved — whichever rung wins the race, the sentence that
+ * prevents the false inference is on screen. Do not "tidy" it back onto one rung.
  */
 export function streamFreshnessMessage(freshness: StreamFreshness): string | null {
   switch (freshness) {
     case 'reconnecting':
-      return 'Reconnecting to this session — new messages may not appear until it recovers.';
+      return "Reconnecting to this session — new messages may not appear until it recovers. Anything you've sent was still delivered.";
     case 'stale':
       return "No update from this session in a while — it may be behind. Anything you've sent was still delivered.";
     default:

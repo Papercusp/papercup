@@ -135,6 +135,34 @@ describe('streamFreshnessMessage', () => {
     expect(streamFreshnessMessage('stale')).toMatch(/still delivered/i);
   });
 
+  /**
+   * WI-38270 — found by DRIVING THIS LIVE, not by reasoning about it.
+   *
+   * Asserting the reassurance on `'stale'` alone was betting the whole feature on
+   * a rung analysis that turned out to be wrong: in the real deaf-producer case
+   * the pane shows `'reconnecting'`, because the transport publishes `'failing'`
+   * at ~20 s — before the 35 s silence timer, with its socket still ESTABLISHED.
+   * So the owner hit the exact failure this module exists for and was shown the
+   * ONE banner that never told them their message had been delivered.
+   *
+   * This is therefore asserted over EVERY banner-bearing rung rather than the one
+   * we predict will win: a rung we get wrong about, or a rung added later, must
+   * not be able to silently drop the sentence. Whichever rung the runtime picks,
+   * the reassurance is on screen.
+   */
+  it('affirms delivery on EVERY banner — no rung may drop it (WI-38270)', () => {
+    const bannerRungs = (['reconnecting', 'stale', 'fresh', 'unknown'] as const)
+      .filter((f) => streamFreshnessMessage(f) !== null);
+
+    // Calibration: if this ever drops below two, the loop below is passing
+    // vacuously and is no longer guarding anything.
+    expect(bannerRungs.length).toBeGreaterThanOrEqual(2);
+
+    for (const f of bannerRungs) {
+      expect(streamFreshnessMessage(f), `rung '${f}' must affirm delivery`).toMatch(/still delivered/i);
+    }
+  });
+
   it('stays silent for the states that need no banner', () => {
     expect(streamFreshnessMessage('fresh')).toBeNull();
     expect(streamFreshnessMessage('unknown')).toBeNull();
