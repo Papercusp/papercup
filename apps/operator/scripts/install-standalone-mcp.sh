@@ -1730,8 +1730,11 @@ fi
 # over the same superuser MCP surface psu uses (/api/mcp?superuser=1 +
 # ~/.papercusp/superuser-token). Thin shim over the Node launcher in the repo
 # (which resolves @inquirer/prompts + the MCP SDK from the operator's
-# node_modules). Scripting escape:
-#   ptool <group:verb> --json '<args>'   |   ptool --list [filter]
+# node_modules). Scripting escape (prefer stdin/file JSON for arbitrary text):
+#   ptool <group:verb> --json - <<'JSON'   |   ptool --list [filter]
+#   {"evidence":"it's safe"}
+#   JSON
+#   ptool <group:verb> --json-file payload.json
 PTOOL_LAUNCHER="${SCRIPT_DIR}/ptool.mjs"
 PTOOL_BIN_DIR="${HOME}/.local/bin"
 PTOOL_PATH="${PTOOL_BIN_DIR}/ptool"
@@ -1741,7 +1744,10 @@ if [ -f "$PTOOL_LAUNCHER" ]; then
 #!/usr/bin/env bash
 # papercusp defineTool CLI (managed by install-standalone-mcp.sh).
 # Pick a service + endpoint, prompts for args, calls it over the superuser
-# MCP surface. Scripting: ptool <group:verb> --json '<args>'; ptool --list.
+# MCP surface. Scripting: ptool <group:verb> --json - <<'JSON' ... JSON;
+# ptool <group:verb> --json-file payload.json; ptool --list. Avoid single-quoted
+# inline JSON when text can contain apostrophes (for example loop:checkpoint
+# recheck strings), because the shell splits the payload before ptool runs.
 exec node "${PTOOL_LAUNCHER}" "\$@"
 WRAPEOF
   chmod 755 "$PTOOL_PATH"

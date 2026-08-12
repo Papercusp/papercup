@@ -25,11 +25,11 @@
  *
  * Interactive:  ptool
  *               ptool <group:verb>                 # skip the pickers, prompt args
- * Scripting:    ptool <group:verb> --json '{...}'  # call directly
- *               ptool <group:verb> --json-file payload.json   # read JSON from a file
- *               ptool <group:verb> --json - <<'EOF'            # read JSON from stdin
+ * Scripting:    ptool <group:verb> --json - <<'EOF'          # read JSON from stdin (safe)
  *               {"copy": "it's fine now"}
  *               EOF
+ *               ptool <group:verb> --json-file payload.json   # read JSON from a file (safe)
+ *               ptool <group:verb> --json '{...}'            # quote-free inline payloads only
  *               ptool code:run --script-file batch.js     # carry script as file data
  *               ptool code:run --script - <<'EOF'          # carry script as stdin data
  *               return await tools.dev.build_status({});
@@ -37,11 +37,12 @@
  *               ptool --list [filter]              # print the catalog
  *               ptool <group:verb> --workspace=<ws> --harness=<slug>
  *
- * `--json '<inline>'` asks the SHELL to carry the JSON through a single-quoted
- * argument — any apostrophe in the payload (a normal English string like
- * "it's") terminates that shell quoting early and the tool never sees valid
- * JSON (EI-14958). `--json -` (read stdin) or `--json-file <path>` sidestep
- * shell quoting entirely. For `code:run`, use `--script -` or
+ * Prefer `--json -` (read stdin) or `--json-file <path>` for arbitrary payloads,
+ * especially `loop:checkpoint` checks/walls whose recheck text commonly contains
+ * shell quotes. A `--json '<inline>'` argument asks the SHELL to carry the JSON
+ * through a single-quoted argument — any apostrophe in the payload (a normal
+ * English string like "it's") terminates that shell quoting early and the tool
+ * never sees valid JSON (EI-14958). For `code:run`, use `--script -` or
  * `--script-file <path>` to carry JavaScript source as data; prefer these for
  * scripts containing nested shell commands, substitutions, or quoted strings.
  *
@@ -1064,20 +1065,21 @@ const USAGE = `ptool — call any Papercusp defineTool endpoint from the termina
 
   ptool                         interactive: pick service → endpoint → args
   ptool <group:verb>            skip the pickers, prompt for that tool's args
-  ptool <group:verb> --json '<args>'   call directly with a JSON args object
-  ptool <group:verb> --json-file payload.json   read the JSON args from a file
-  ptool <group:verb> --json - <<'EOF'  read the JSON args from stdin
+  ptool <group:verb> --json - <<'EOF'  read JSON args from stdin (safe)
   {"copy": "it's fine now"}
   EOF
+  ptool <group:verb> --json-file payload.json   read JSON args from a file (safe)
+  ptool <group:verb> --json '<args>'   inline, quote-free JSON only
   ptool code:run --script-file batch.js   read the script from a file
   ptool code:run --script - <<'EOF'      read the script from stdin
   return await tools.dev.build_status({});
   EOF
   ptool --list [filter]         print the catalog (optionally name-filtered)
 
+Prefer --json-file or --json - for any payload that is not a trivial,
+quote-free literal — especially loop:checkpoint checks/walls with recheck text.
 A shell-quoted --json '<inline>' cannot safely carry an apostrophe (the quote
-terminates early) — prefer --json-file or --json - for any payload that isn't
-a trivial literal. For code:run, prefer --script-file or --script - for source
+terminates early). For code:run, prefer --script-file or --script - for source
 that contains nested shell commands or quoted strings.
 
 Flags:
