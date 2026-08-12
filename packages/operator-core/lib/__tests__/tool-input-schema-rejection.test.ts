@@ -14,7 +14,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import '../agent-tools/index'; // side-effect: register the full real tool catalog (+ pre-prompt registry)
-import { getCatalog, listAllProjectedTools, validateSync } from '@papercusp/tooldef';
+import { getCatalog, listAllProjectedTools, toArgsJsonSchema, validateSync } from '@papercusp/tooldef';
 import { advertisedArgsSchema } from '@papercusp/result-encoding';
 
 const catalog = getCatalog(); // built-ins with Zod args
@@ -36,6 +36,23 @@ describe('built-in tool args schemas (invalid_args class — schema level)', () 
       }
     }
     expect(threw, `validators that threw: ${threw.join(', ')}`).toEqual([]);
+  });
+
+  it('every built-in args schema remains JSON-Schema representable (EI-20081950141743058)', () => {
+    // `defineTool` performs this conversion during registration, but keeping the
+    // registry-wide check explicit catches a future trailing `.transform()` at the
+    // commit that introduces it. The full `../agent-tools/index` import above also
+    // exercises role-gated registrations, whose raw schemas are converted before
+    // they enter the projected registry.
+    const failures: string[] = [];
+    for (const t of catalog) {
+      try {
+        toArgsJsonSchema(t.name, t.args);
+      } catch (error) {
+        failures.push(`${t.name}: ${error instanceof Error ? error.message : String(error)}`);
+      }
+    }
+    expect(failures, `unrepresentable args schemas:\n${failures.join('\n')}`).toEqual([]);
   });
 
   it('required-arg built-ins reject {} with a structured issue', () => {
