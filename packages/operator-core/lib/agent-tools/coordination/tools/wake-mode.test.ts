@@ -1,9 +1,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const resolveWakeMode = vi.fn();
-const setWakeMode = vi.fn();
-const getDefaultWakeMode = vi.fn();
-const setDefaultWakeMode = vi.fn();
+const { resolveWakeMode, setWakeMode, getDefaultWakeMode, setDefaultWakeMode } = vi.hoisted(() => ({
+  resolveWakeMode: vi.fn(),
+  setWakeMode: vi.fn(),
+  getDefaultWakeMode: vi.fn(),
+  setDefaultWakeMode: vi.fn(),
+}));
 
 vi.mock('../wake-mode', () => ({
   resolveWakeMode,
