@@ -13,6 +13,7 @@ import {
   type LostWakeRateRow,
   type LostWakeWitness,
 } from './lost-wake-detect';
+import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 
 const row = (event_key: string, fired_event: number, fired_timeout: number): LostWakeRateRow => ({
   event_key,
@@ -126,5 +127,44 @@ describe('GREEN_CHECKPOINT_WITNESS.matches', () => {
   it('does not match an unrelated event key', () => {
     expect(GREEN_CHECKPOINT_WITNESS.matches('work-item:claimable')).toBe(false);
     expect(GREEN_CHECKPOINT_WITNESS.matches('overwatch:surface-landed')).toBe(false);
+  });
+});
+
+describe('GREEN_CHECKPOINT_WITNESS.check', () => {
+  it('scopes the independent pipeline witness to the coordination workspace', async () => {
+    const calls: { strings: readonly string[]; values: unknown[] }[] = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push({ strings: [...strings], values });
+      return [{ n: 1, latest: '2026-08-12T12:00:00.000Z' }];
+    }) as unknown as Parameters<typeof GREEN_CHECKPOINT_WITNESS.check>[0];
+
+    const result = await GREEN_CHECKPOINT_WITNESS.check(
+      sql,
+      'release:green:papercusp',
+      24 * 60 * 60 * 1000,
+    );
+
+    expect(result?.occurred).toBe(true);
+    const query = calls[0]?.strings.join('?');
+    expect(query).toContain('workspace_id = ?');
+    expect(calls[0]?.values).toContain(DEFAULT_COORD_WORKSPACE);
+  });
+
+  it('does not count a same-slug verdict from another workspace as evidence', async () => {
+    const sql = ((strings: TemplateStringsArray, ..._values: unknown[]) => {
+      expect([...strings].join('?')).toContain('workspace_id = ?');
+      return [];
+    }) as unknown as Parameters<typeof GREEN_CHECKPOINT_WITNESS.check>[0];
+
+    const result = await GREEN_CHECKPOINT_WITNESS.check(
+      sql,
+      'release:green:papercusp',
+      24 * 60 * 60 * 1000,
+    );
+
+    expect(result).toEqual({
+      occurred: false,
+      evidence: 'no advanced/up-to-date pipeline_events row for install_slug=papercusp in the window',
+    });
   });
 });

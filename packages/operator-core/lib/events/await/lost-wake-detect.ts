@@ -127,6 +127,7 @@ export const GREEN_CHECKPOINT_WITNESS: LostWakeWitness = {
         SELECT count(*)::int AS n, max(created_at) AS latest
         FROM harness_shared.pipeline_events
         WHERE kind = 'green_checkpoint'
+          AND workspace_id = ${DEFAULT_COORD_WORKSPACE}
           AND install_slug = ${installSlug}
           AND status = ANY(${statuses}::text[])
           AND created_at >= now() - ${`${Math.round(sinceMs / 1000)} seconds`}::interval
