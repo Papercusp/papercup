@@ -104,6 +104,8 @@ export const PROSE_VECTOR_COLUMNS: ReadonlyArray<{ table: string; column: string
   { table: 'harness_shared.operator_turns', column: 'text_embedding' },
   { table: 'harness_shared.work_items', column: 'embedding' },
   { table: 'harness_shared.doc_sections', column: 'embedding' },
+  // Migration 781 adds canonical doc content and its in-row semantic index.
+  { table: 'harness_shared.harness_docs', column: 'embedding' },
   { table: 'harness_shared.harness_plans', column: 'embedding' },
   { table: 'harness_shared.harness_escalations', column: 'body_embedding' },
   { table: 'harness_shared.harness_brainstorm', column: 'content_embedding' },

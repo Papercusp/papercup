@@ -741,6 +741,19 @@ export const TARGETS: BackfillTarget[] = [
     recencyCol: 'updated_at',
     recencyColKind: 'timestamptz',
   },
+  // P-001 (claude-md-projection-from-pg-2026-08-10): migration 781 makes
+  // harness_docs.content canonical for authored docs (and the projector's
+  // cached output for composed docs), so its in-row vector is a maintained
+  // prose surface just like harness_plans. The full PK is required here:
+  // doc_id is only unique within a workspace+harness.
+  {
+    table: 'harness_shared.harness_docs',
+    embedCol: 'embedding',
+    bodySql: `COALESCE(title, '') || E'\\n' || left(COALESCE(content, ''), 2000)`,
+    keyCols: ['workspace_id', 'harness_slug', 'doc_id'],
+    recencyCol: 'updated_at',
+    recencyColKind: 'timestamptz',
+  },
   // P-010 (shared-embedding-sidecar-and-enrichment-2026-07-10): the plan
   // store (migration 553). plans:search gains a semantic leg and plans:new's
   // similar_exists token guard gains cosine confirmation — the token matcher
