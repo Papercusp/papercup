@@ -25,7 +25,12 @@
  * can drop it immediately and skip even that window.
  */
 
-import { setEntityResolver, setEntityEnum, type EntityResolver } from '@papercusp/tooldef';
+import {
+  setEntityResolver,
+  setEntityEnum,
+  type EntityEnumerator,
+  type EntityResolver,
+} from '@papercusp/tooldef';
 import { similarity } from '@papercusp/operator-core/lib/operator-fuzzy-dedup';
 
 /** How long a loaded entity set is trusted before a refresh. */
@@ -34,6 +39,36 @@ const CACHE_TTL_MS = 30_000;
 const SUGGEST_THRESHOLD = 0.6;
 /** Name the full valid set in an error only when it is this small. */
 const MAX_ALLOWED_IN_ERROR = 25;
+
+/**
+ * Registration mode for the publishable entity vocabularies. Unit mode keeps
+ * `tools/list` hermetic: the pot and harness sets are database-backed and are
+ * intentionally not useful to enumerate in a unit process. Live mode is the
+ * explicit escape hatch for production and integration tests that exercise the
+ * real registry.
+ */
+export type PapercuspEntityRegistrationMode = 'unit' | 'live';
+
+export interface PapercuspEntityRegistrationOptions {
+  /** Override the environment-selected mode for this registration. */
+  mode?: PapercuspEntityRegistrationMode;
+}
+
+/** A no-op vocabulary: no values means no enum is added to the JSON schema. */
+const EMPTY_ENTITY_ENUM: EntityEnumerator = async () => [];
+
+/**
+ * The shared unit test config signals its DB rail with PAPERCUSP_FORBID_REAL_PG.
+ * Keep this module independent of that generic package: it consumes the signal
+ * only. The VITEST fallback also protects the hand-rolled agent-mcp test config;
+ * a suite that genuinely needs the live registry must opt in with `mode: live`
+ * (and, for a real DB, PAPERCUSP_ALLOW_DB_IN_TESTS=1).
+ */
+function defaultEntityRegistrationMode(): PapercuspEntityRegistrationMode {
+  if (process.env.PAPERCUSP_ALLOW_DB_IN_TESTS === '1') return 'live';
+  if (process.env.PAPERCUSP_FORBID_REAL_PG === '1' || process.env.VITEST) return 'unit';
+  return 'live';
+}
 
 interface CacheEntry {
   values: Set<string>;
