@@ -1391,6 +1391,62 @@ describe('coord:send args schema (EI-7838: missing-summary must not be masked by
   });
 });
 
+describe('coord:send endTurn safety gate (EI-20271510434650928)', () => {
+  it('refuses an endTurn request without an explicit wake mode', () => {
+    const r = tool.args.safeParse({
+      to: ['bee-1'],
+      summary: 'recover a stuck turn',
+      expects: 'none',
+      endTurn: true,
+    });
+    expect(r.success).toBe(false);
+    if (!r.success) {
+      const wakeIssues = r.error.issues.filter((issue) => issue.path.join('.') === 'wake');
+      expect(wakeIssues.length).toBeGreaterThan(0);
+      expect(wakeIssues.map((issue) => issue.message).join(' | ')).toMatch(/endTurn/i);
+      expect(wakeIssues.map((issue) => issue.message).join(' | ')).toMatch(/wake/i);
+    }
+  });
+
+  it('requires the same explicit wake opt-in on every supported endTurn mode', () => {
+    for (const wake of [true, 'required', 'optimistic'] as const) {
+      expect(
+        tool.args.safeParse({
+          to: ['bee-1'],
+          summary: 'recover a stuck turn',
+          expects: 'none',
+          endTurn: true,
+          wake,
+        }).success,
+        `wake:${String(wake)}`,
+      ).toBe(true);
+    }
+
+    expect(
+      tool.args.safeParse({
+        to: ['bee-1'],
+        summary: 'recover a stuck turn',
+        expects: 'none',
+        endTurn: true,
+        wake: false,
+      }).success,
+    ).toBe(false);
+  });
+
+  it('applies the safety gate to items[] as well as the shorthand', () => {
+    expect(
+      tool.args.safeParse({
+        items: [{ to: ['bee-1'], summary: 'recover a stuck turn', expects: 'none', endTurn: true }],
+      }).success,
+    ).toBe(false);
+    expect(
+      tool.args.safeParse({
+        items: [{ to: ['bee-1'], summary: 'recover a stuck turn', expects: 'none', endTurn: true, wake: 'required' }],
+      }).success,
+    ).toBe(true);
+  });
+});
+
 describe('coord:send optimistic-wake guidance after Mug/Kettle retirement', () => {
   it('does not advertise the retired Mug survey as a backstop', () => {
     // `coord:send` wraps its object schema in z.preprocess, so the model-facing
