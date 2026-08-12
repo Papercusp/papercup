@@ -41,8 +41,17 @@ import { defaultBlockingStore } from '../work-item-blocking';
 import { selectReady, type ReadinessNode } from '../dbos/frontier-readiness';
 import { activeExternalBlockers } from '../external-blockers';
 import { placementConfig } from './placement-watchdog';
+import { mapWithConcurrency } from '../gym/concurrency';
 
 const MS_PER_DAY = 86_400_000;
+
+/**
+ * Keep the per-harness plan slice below the org-app pool width. `surveyPot`
+ * starts four other independent database reads alongside this slice, so an
+ * unbounded `Promise.all(planSlugs.map(...))` can queue dozens of acquisitions
+ * behind an eight-connection pool and make the whole MCP plane go silent.
+ */
+export const POT_SURVEY_PLAN_READ_CONCURRENCY = 2;
 
 /** Importance rank for "hottest open item" (most → least). */
 const IMPORTANCE_RANK = Object.fromEntries(IMPORTANCE_LEVELS.map((level, i) => [level, i])) as Record<
@@ -1192,8 +1201,10 @@ export async function surveyPot(
   }
 
   const [planRowsPerHarness, featureFrontierRows, escalatedIssueRows, frontierQuarantined, reconcile] = await Promise.all([
-    Promise.all(
-      planSlugs.map(async (slug) => {
+    mapWithConcurrency(
+      planSlugs,
+      POT_SURVEY_PLAN_READ_CONCURRENCY,
+      async (slug) => {
         try {
           // Bounded retry on a transient CONNECT_TIMEOUT (WI-2776): a read-only plan
           // list, safe to re-issue. Absorbs the self-healing pooler blip that made a
@@ -1206,7 +1217,7 @@ export async function surveyPot(
           );
           return [] as PlanIndexRow[];
         }
-      }),
+      },
     ),
     deps.fetchFrontier(surveySlugs, opts.frontierLimit ?? 50),
     // EI-12275: the escalated-issue slice (severity critical/major bug/change/task),

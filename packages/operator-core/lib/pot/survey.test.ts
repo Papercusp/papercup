@@ -13,6 +13,7 @@ import {
   frontierInEligiblePlans,
   notStopped,
   frontierRowToCandidate,
+  POT_SURVEY_PLAN_READ_CONCURRENCY,
   planToCandidate,
   resolvePotMembership,
   surveyPot,
@@ -307,6 +308,32 @@ describe('surveyPot (P-012 regression)', () => {
     expect(frontierScope).toEqual([]); // [] ⇒ workspace-wide, never home-only
     expect(planSlugs.sort()).toEqual(['other-pot', 'papercup-pot']);
     expect(survey.scope).toBe('workspace');
+  });
+
+  it('bounds per-harness plan reads below the org-app pool width (EI-20211235356451610)', async () => {
+    let inFlight = 0;
+    let maxInFlight = 0;
+    const members = Array.from({ length: 24 }, (_, i) => ({
+      slug: `member-${i}`,
+      hive_slug: 'papercup-pot',
+    }));
+
+    await surveyPot('default', 'papercup-pot', {
+      deps: depsFor({
+        loadRegistry: async () => ({ projects: [{ slug: 'papercup-pot' }, ...members] }),
+        listPlanRows: async () => {
+          inFlight += 1;
+          maxInFlight = Math.max(maxInFlight, inFlight);
+          await new Promise<void>((resolve) => queueMicrotask(resolve));
+          inFlight -= 1;
+          return [];
+        },
+        fetchFrontier: async () => [],
+      }),
+    });
+
+    expect(maxInFlight).toBe(POT_SURVEY_PLAN_READ_CONCURRENCY);
+    expect(maxInFlight).toBeLessThan(8);
   });
 
   it('extraSurveySlugs UNIONs started hives into a members-wired scope (owner model 2026-07-01: the Mug works ANY started pot)', async () => {
