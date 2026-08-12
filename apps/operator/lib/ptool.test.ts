@@ -12,6 +12,8 @@ import {
   resultToText,
   buildMcpUrl,
   buildCallToolParams,
+  listAllTools,
+  PTOOL_LIST_TOOLS_TIMEOUT_MS,
   isLoopPressureShed,
   callToolWithPressureRetry,
   connectWithLocalRetry,
@@ -248,6 +250,36 @@ describe('ptool local operator connect retry (EI-20207246136942518)', () => {
     expect(connectOnce).toHaveBeenCalledTimes(2);
     expect(connectOnce.mock.calls[0][2]).toEqual({ timeoutMs: 1 });
     expect(sleep).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('ptool tool catalog request budget (EI-20224721374462856)', () => {
+  it('passes a bounded request and total timeout to every tools/list page', async () => {
+    const client = {
+      listTools: vi
+        .fn()
+        .mockResolvedValueOnce({ tools: [{ name: 'first' }], nextCursor: 'next-page' })
+        .mockResolvedValueOnce({ tools: [{ name: 'second' }] }),
+    };
+
+    await expect(listAllTools(client)).resolves.toEqual([{ name: 'first' }, { name: 'second' }]);
+    expect(client.listTools).toHaveBeenNthCalledWith(
+      1,
+      {},
+      { timeout: PTOOL_LIST_TOOLS_TIMEOUT_MS, maxTotalTimeout: PTOOL_LIST_TOOLS_TIMEOUT_MS },
+    );
+    expect(client.listTools).toHaveBeenNthCalledWith(
+      2,
+      { cursor: 'next-page' },
+      { timeout: PTOOL_LIST_TOOLS_TIMEOUT_MS, maxTotalTimeout: PTOOL_LIST_TOOLS_TIMEOUT_MS },
+    );
+  });
+
+  it('allows a caller-owned budget when explicitly set to zero', async () => {
+    const client = { listTools: vi.fn().mockResolvedValue({ tools: [] }) };
+
+    await expect(listAllTools(client, { timeoutMs: 0 })).resolves.toEqual([]);
+    expect(client.listTools).toHaveBeenCalledWith({}, undefined);
   });
 });
 

@@ -409,6 +409,12 @@ export function buildCallToolParams(toolName, callArgs) {
   return { name: toolName, arguments: callArgs, _meta: { structured: true } };
 }
 
+// `tools/list` is a recovery prerequisite for every named ptool call, but it
+// is still a remote MCP request and can stall while the operator is under
+// pressure. Do not inherit the SDK's 60s default: a CLI that produces no
+// output for a minute looks indistinguishable from a dead operator.
+export const PTOOL_LIST_TOOLS_TIMEOUT_MS = 10_000;
+
 /**
  * P-010 admission control may reject a tools/call before dispatch when the
  * operator event loop is critically saturated. That refusal is explicitly
@@ -535,11 +541,14 @@ async function connect(operatorUrl, { workspace, harness } = {}, { timeoutMs } =
 }
 
 /** List every tool, following pagination if the server returns a cursor. */
-async function listAllTools(client) {
+export async function listAllTools(client, { timeoutMs = PTOOL_LIST_TOOLS_TIMEOUT_MS } = {}) {
   const all = [];
   let cursor;
   do {
-    const page = await client.listTools(cursor ? { cursor } : {});
+    const page = await client.listTools(
+      cursor ? { cursor } : {},
+      timeoutMs > 0 ? { timeout: timeoutMs, maxTotalTimeout: timeoutMs } : undefined,
+    );
     if (Array.isArray(page.tools)) all.push(...page.tools);
     cursor = page.nextCursor;
   } while (cursor);
