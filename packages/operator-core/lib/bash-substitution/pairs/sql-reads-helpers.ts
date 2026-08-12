@@ -309,13 +309,46 @@ export function gateHealthCallFromQuery(atom: string): string | null {
   if (!/\bgate_health\b/i.test(atom)) return null;
   const args: Array<[string, string]> = [];
 
-  // `gate_health` is written only onto the green-checkpoint routine, so a query
-  // that reads it WITHOUT a name predicate is still asking about that one row.
-  // Naming it in the translation is faithful, not a narrowing: it returns the
-  // same row the SQL would have found, without scanning an unbounded table.
-  const name =
+  // ── Which ROW(S) the query selects ──────────────────────────────────────────
+  // `routines:list` has no `target_role` filter and its `name` takes exactly ONE
+  // routine (list.ts args: installSlug | name | q | group | rollup). But this
+  // corpus selects the row by `target_role='system:<name>'` in 19 of 20 sampled
+  // atoms, not by `name`. So the mapping has to go through target_role, and the
+  // multi-routine case has to be recognised rather than flattened.
+  //
+  // The bug this shape exists to prevent: defaulting to `name:'green-checkpoint'`
+  // whenever no `name =` predicate is found. That is right for the single-routine
+  // reads, and silently WRONG for `target_role IN (a,b,c)` — it would return one
+  // row where the SQL returned three, while `cover()` reported it substitutable.
+  // A narrowing translation is the exact over-claim D-006 forbids.
+  const explicitName =
     /\bname\s*=\s*'([^']+)'/i.exec(atom)?.[1] ?? /\bname\s+i?like\s*'%?([^'%]+)%?'/i.exec(atom)?.[1] ?? null;
-  args.push(['name', JSON.stringify(name ?? 'green-checkpoint')]);
+
+  // `target_role IN ('system:a','system:b')` — a multi-routine read.
+  const roleInList = /\btarget_role\s+in\s*\(([^)]*)\)/i.exec(atom)?.[1];
+  const rolesInList = roleInList ? [...roleInList.matchAll(/'([^']+)'/g)].map((m) => m[1]) : [];
+  const singleRole = /\btarget_role\s*=\s*'([^']+)'/i.exec(atom)?.[1] ?? null;
+
+  // A routine's target_role is `system:<name>`; the row's own `name` is the tail.
+  const roleToName = (role: string): string => role.replace(/^system:/i, '');
+
+  if (explicitName) {
+    args.push(['name', JSON.stringify(explicitName)]);
+  } else if (rolesInList.length > 1) {
+    // Deliberately NO `name` arg: the caller wanted several routines, and the
+    // faithful substitution is the unfiltered (install-scoped) list they read the
+    // rows out of — a superset, never a silently narrower answer.
+  } else if (rolesInList.length === 1) {
+    args.push(['name', JSON.stringify(roleToName(rolesInList[0]))]);
+  } else if (singleRole) {
+    args.push(['name', JSON.stringify(roleToName(singleRole))]);
+  } else {
+    // No row predicate at all. `gate_health` is written only onto the
+    // green-checkpoint routine, so such a query is still asking about that one
+    // row: naming it returns what the SQL would have found without scanning an
+    // unbounded table.
+    args.push(['name', JSON.stringify('green-checkpoint')]);
+  }
 
   const installSlug = /\binstall_slug\s*=\s*'([^']+)'/i.exec(atom)?.[1];
   if (installSlug) args.push(['installSlug', JSON.stringify(installSlug)]);

@@ -1295,7 +1295,14 @@ export const TOOL_ROUTING_BY_TABLE: Record<string, ToolRoute> = {
   },
   routines: {
     tool: 'routines:list',
-    gives: 'cadence + active state + the deliberate-pause record { reason, by, at }, and rollup:true for the per-group view',
+    // `health.gate_health` is named EXPLICITLY because the gate-health read is the
+    // largest single cluster in the SQL corpus (EI-20285616516435031). This string
+    // is what an agent sees at the instant they submit that query, and a `gives`
+    // listing only cadence/pause/rollup reads as "a different question" to someone
+    // mid-`metadata->'gate_health'` SELECT — so the one nudge aimed at the biggest
+    // cluster was silent about the very field it needed to name.
+    gives:
+      'cadence + active state + the deliberate-pause record { reason, by, at }, `health.gate_health` for the green-checkpoint gate (consecutive reds, observed candidate, in-flight re-triage), and rollup:true for the per-group view',
   },
   coord_presence: {
     tool: 'coord:presence / fleet:assignments',

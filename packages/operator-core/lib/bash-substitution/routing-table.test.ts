@@ -201,9 +201,16 @@ describe('an equivalent SQL pair is not contradicted by the live routing advisor
     (p) => isSqlPair(p) && p.expectedVerdict === 'equivalent' && !CATALOG_EXEMPT.has(p.relation),
   ) as SqlSubstitutionPair[];
 
-  it('covers at least the tranche-2 relations (a silent map is the failure being guarded)', () => {
+  it('covers at least the audited relations (a silent map is the failure being guarded)', () => {
+    // `routines` joined the tranche-2 three with the gate-health pair
+    // (EI-20285616516435031). Listing them EXACTLY, rather than asserting a
+    // minimum, is the point: a new equivalent SQL pair must not slip in without
+    // someone confirming the live in-query advisory speaks about its relation
+    // too. That confirmation is the per-pair check immediately below; this
+    // assertion is what forces a human past it.
     expect(auditedSqlPairs.map((p) => p.relation).sort()).toEqual([
       'engineer_issues',
+      'routines',
       'schema_migrations',
       'test_runs',
     ]);

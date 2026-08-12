@@ -400,13 +400,17 @@ export const gateHealthRead: SqlSubstitutionPair = {
   // pair that swallowed them would over-claim exactly the way D-006 forbids.
   sqlShape: /\bgate_health\b/is,
   toolName: 'routines:list',
+  // The residual lives HERE, in the prose surface, rather than in the table cell:
+  // `routing.*` renders into a markdown row every agent carries in-prompt and is
+  // capped at 300 chars for that reason, so the full boundary would either blow
+  // the cap or squeeze out the part that matters.
   advisoryText:
-    "routines:list { name: 'green-checkpoint' } returns `health.gate_health` — the live in-flight-retriage marker, observed candidate and consecutive-red count — plus nextFireAt/lastFiredAt, which is the whole of this read. No raw SQL needed.",
+    "routines:list { name: 'green-checkpoint' } returns `health.gate_health` — the live in-flight-retriage marker, observed candidate and consecutive-red count — plus nextFireAt/lastFiredAt, which is the whole of this read. No raw SQL needed. ⚠ Only the projected row comes back: `tier`, `payload_template`, `concurrency`, `catchup`, `reschedule_interval_sec` and any `metadata` key outside the operational allowlist are NOT returned, and a cross-routine aggregate or a JOIN still wants SQL. ⚠ Different questions, different surfaces: \"is my change live / what is blocking it\" is dev:pipeline_position, and the sha the gate is judging is state:read { cell:'gate.greenCheckpoint.candidate' } — which carries its own provenance caveat.",
   routing: {
     want: "the green-checkpoint gate's health (consecutive reds, observed candidate, whether a re-triage is in flight)",
     use: "`routines:list { name: 'green-checkpoint' }` — read `health.gate_health`, plus `nextFireAt` / `lastFiredAt` on the same row",
     insteadOf:
-      "a hand-written `SELECT metadata->'gate_health'->>'consecutiveReds', metadata->'gate_health'->'inFlightRetriage' FROM harness_shared.routines`. ⚠ Only the projected row is served — `tier`, `payload_template`, `concurrency`, `catchup`, `reschedule_interval_sec` and any `metadata` key outside the operational allowlist are NOT returned, and a cross-routine aggregate or a JOIN still wants SQL. ⚠ For \"is my change live / what is blocking it\" use dev:pipeline_position, and for the judged candidate use state:read { cell:'gate.greenCheckpoint.candidate' } — different questions with their own provenance handling",
+      "a hand-written `SELECT metadata->'gate_health'->… FROM harness_shared.routines`. ⚠ Unprojected columns (`tier`, `concurrency`), cross-routine aggregates and JOINs still want SQL. \"Is my change live\" is dev:pipeline_position; the judged sha is state:read { cell:'gate.greenCheckpoint.candidate' }",
   },
   expectedVerdict: 'equivalent',
   cover(atom: string): CoverageResult {
