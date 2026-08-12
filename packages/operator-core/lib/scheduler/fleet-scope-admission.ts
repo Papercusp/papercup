@@ -454,6 +454,68 @@ export async function diagnoseFleetScopeClassRefusal(args: {
 }
 
 /**
+ * EI-20263410682554156: a plan-scoped fleet lane becomes permanently empty when
+ * its plan is shipped or superseded, but the claim spec remains valid and keeps
+ * pointing at that terminal plan.  The ordinary zero-match diagnosis can name
+ * the symptom without naming this cause, so inspect the plan lifecycle before
+ * composing the leader remedy.
+ *
+ * This is deliberately a best-effort enrichment.  Admission has already been
+ * decided by the caller; a plan-table read failure must preserve the refusal and
+ * fall back to the generic spec-widen guidance rather than wedge claiming.
+ */
+export interface FleetScopeRetiredPlan {
+  planSlug: string;
+  status: 'shipped' | 'superseded';
+}
+
+/** Extract positive plan predicates from any nested filter branch. */
+export function planPredicateValues(spec: unknown): string[] {
+  const values = new Set<string>();
+  function walk(node: unknown): void {
+    if (node === null || typeof node !== 'object') return;
+    const obj = node as { field?: unknown; op?: unknown; value?: unknown; all?: unknown; any?: unknown; not?: unknown };
+    if (obj.field === 'plan' && (obj.op === '=' || obj.op === 'in')) {
+      if (typeof obj.value === 'string') values.add(obj.value);
+      if (Array.isArray(obj.value)) {
+        for (const value of obj.value) if (typeof value === 'string') values.add(value);
+      }
+    }
+    if (Array.isArray(obj.all)) obj.all.forEach(walk);
+    if (Array.isArray(obj.any)) obj.any.forEach(walk);
+    // A negated plan predicate does not pin a lane to that plan, so it cannot
+    // explain why every candidate disappeared after that plan retired.
+    // Do not recurse through `not` for this diagnosis.
+  }
+  walk((spec as { view?: { filter?: unknown } } | undefined)?.view?.filter);
+  return [...values];
+}
+
+export async function diagnoseFleetScopeRetiredPlans(args: {
+  scope: FleetScopeContext;
+}): Promise<FleetScopeRetiredPlan[]> {
+  const planSlugs = planPredicateValues(args.scope.record?.spec);
+  if (planSlugs.length === 0) return [];
+  try {
+    const { sql } = getOrgPg();
+    const rows = (await sql`
+      SELECT plan_slug, status
+        FROM harness_shared.harness_plans
+       WHERE workspace_id = ${args.scope.workspaceId}
+         AND plan_slug = ANY(${planSlugs}::text[])
+         AND status = ANY(${['shipped', 'superseded']}::text[])
+    `) as Array<{ plan_slug: string; status: string }>;
+    return rows.flatMap((row) =>
+      (row.status === 'shipped' || row.status === 'superseded') && typeof row.plan_slug === 'string'
+        ? [{ planSlug: row.plan_slug, status: row.status }]
+        : [],
+    );
+  } catch {
+    return [];
+  }
+}
+
+/**
  * The CLASS sentence prepended to the leader remedy, or '' when the reading does not
  * support one. Deliberately conservative — it reports the two measured counts and lets the
  * leader judge, rather than asserting the spec is wrong:
@@ -493,6 +555,7 @@ export function fleetScopeLeaderRemedy(
   admission: Extract<FleetScopeAdmission, { allowed: false }>,
   liveRouteTarget?: boolean | null,
   classRefusal?: FleetScopeClassRefusal | null,
+  retiredPlans?: FleetScopeRetiredPlan[] | null,
 ): string {
   const fleetSlug = admission.scope.fleetSlug;
   if (admission.code === 'fleet_winding_down') {
@@ -503,6 +566,13 @@ export function fleetScopeLeaderRemedy(
   }
   const spec = admission.scope.record?.spec;
   const specRef = spec?.specId ? formatSpecRef(spec.specId, spec.revision) : 'the fleet lane (no authored spec yet — default)';
+  const retiredPlanNote = retiredPlans?.length
+    ? `⚠ RETIRED PLAN PIN — this spec still filters on ${retiredPlans
+        .map((plan) => `'${plan.planSlug}' (status: ${plan.status})`)
+        .join(', ')}. A shipped/superseded plan is terminal, so keeping it as the member's lane can match ZERO rows ` +
+      `without the spec being malformed. Re-steer the fleet to a live plan (or another positive filter) with ` +
+      `scheduler:set_claim_spec; do not keep bumping this revision for individual rows. `
+    : '';
   const routeElsewhereNote =
     liveRouteTarget === false
       ? `Do NOT rely on "route the work elsewhere" — no other live agent (leader or member) was found in fleet ` +
@@ -513,7 +583,7 @@ export function fleetScopeLeaderRemedy(
     // EI-19484346966003625 (R1): the class reading LEADS, because it can invalidate the
     // per-row advice that follows it — a leader who reads only the first sentence must not
     // walk away with "bump a revision for this row" when the spec matches nothing.
-    `${fleetScopeClassRefusalNote(classRefusal)}` +
+    `${retiredPlanNote}${fleetScopeClassRefusalNote(classRefusal)}` +
     `To let this member self-claim it, WIDEN the fleet lane in ONE call: ` +
     `scheduler:set_claim_spec { fleet: "${fleetSlug}", spec: { … a revision bump of ${specRef} ` +
     `whose view.filter admits this work } } — the member picks it up on its next scheduler:get_next, ` +
@@ -533,7 +603,7 @@ export async function notifyFleetScopeRefusal(
   // WI-6326: irrelevant while winding-down (that remedy branch never mentions
   // "route elsewhere" at all) — skip the extra lookup.
   const windingDown = admission.code === 'fleet_winding_down';
-  const [liveRouteTarget, classRefusal] = await Promise.all([
+  const [liveRouteTarget, classRefusal, retiredPlans] = await Promise.all([
     windingDown
       ? Promise.resolve(null)
       : hasLiveFleetRouteTarget(admission.scope.fleetSlug, admission.scope.workspaceId, admission.scope.ownerId),
@@ -542,12 +612,13 @@ export async function notifyFleetScopeRefusal(
     windingDown || !opts?.harness
       ? Promise.resolve(null)
       : diagnoseFleetScopeClassRefusal({ scope: admission.scope, harness: opts.harness }),
+    windingDown ? Promise.resolve([]) : diagnoseFleetScopeRetiredPlans({ scope: admission.scope }),
   ]);
   const { sendMessage } = await import('../agent-tools/coordination/messages');
   await sendMessage(identity, {
     to: [`@fleet-leader:${admission.scope.fleetSlug}`],
     summary: `fleet-scope admission blocked ${action}`,
-    body: `${admission.reason}. The assignment was not mutated. ${fleetScopeLeaderRemedy(admission, liveRouteTarget, classRefusal)}`,
+    body: `${admission.reason}. The assignment was not mutated. ${fleetScopeLeaderRemedy(admission, liveRouteTarget, classRefusal, retiredPlans)}`,
     category: 'fleet-scope-admission',
   }).catch(() => undefined);
   return { liveRouteTarget, classRefusal };

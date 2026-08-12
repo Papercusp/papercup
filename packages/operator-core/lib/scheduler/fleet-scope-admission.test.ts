@@ -71,6 +71,7 @@ import {
   admitWorkItemForFleetTarget,
   diagnoseFleetScopeCooldownMiss,
   diagnoseFleetScopeIssueFloorMiss,
+  diagnoseFleetScopeRetiredPlans,
   fleetScopeLeaderRemedy,
   fleetScopedMiss,
   hasLiveFleetRouteTarget,
@@ -1382,6 +1383,33 @@ describe('fleet scope assignment admission (P-016)', () => {
       reason: 'work-item WI-5700 does not match p2p-release-verify-lane@20 for fleet \'p2p-release-verify\'',
       scope,
     };
+
+    it('EI-20263410682554156: identifies a terminal plan pin and changes the remedy from per-row widening to re-steering', async () => {
+      const planViolation: Extract<FleetScopeAdmission, { allowed: false }> = {
+        ...violation,
+        scope: {
+          ...scope,
+          record: {
+            ...scope.record,
+            spec: {
+              ...scope.record.spec,
+              view: { filter: { field: 'plan', op: '=' as const, value: 'finished-plan' } },
+            },
+          },
+        },
+      };
+      admissionMocks.sql.mockResolvedValue([{ plan_slug: 'finished-plan', status: 'shipped' }]);
+
+      const retired = await diagnoseFleetScopeRetiredPlans({ scope: planViolation.scope });
+      expect(retired).toEqual([{ planSlug: 'finished-plan', status: 'shipped' }]);
+
+      const remedy = fleetScopeLeaderRemedy(planViolation, null, null, retired);
+      expect(remedy).toMatch(/RETIRED PLAN PIN/);
+      expect(remedy).toMatch(/finished-plan.*status: shipped/);
+      expect(remedy).toMatch(/terminal/);
+      expect(remedy).toMatch(/scheduler:set_claim_spec/);
+      expect(remedy).toMatch(/do not keep bumping this revision/i);
+    });
 
     it('fleetScopeLeaderRemedy names scheduler:set_claim_spec, the fleet slug, and the current spec ref (unambiguous, not "@N") for a scope violation', () => {
       const remedy = fleetScopeLeaderRemedy(violation);
