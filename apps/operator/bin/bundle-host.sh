@@ -87,6 +87,48 @@ HOST_EXTERNALS=(
 )
 for np in "${NATIVE_PKGS[@]}"; do HOST_EXTERNALS+=( "--external:$np" ); done
 
+# WI-38221 memory trim (measured 2026-08-12). Packages whose SOURCE the host
+# pays for in every process but which a request-serving worker never executes.
+# esbuild wraps CJS deps in a lazy __commonJS thunk, so these already never RUN
+# — but the bundle still carries their full source, and V8 still parses it, in
+# all 17 host processes on this box. Dropping them takes the bundle 61.2 -> 36.4
+# MB and a host process 206.2 -> 140.9 MB RSS (~1.08 GB box-wide); with the
+# ascii-escape pass below, 113.4 MB (~1.54 GB).
+#
+# The codebase ALREADY tried to get this with source-level `await import()`
+# (agent-mcp/src/delta-eval-harness.ts:37 "ships multi-MB BPE rank tables",
+# tooldef/parse-check.ts:32) and got ZERO benefit: esbuild INLINES dynamic
+# imports into the same bundle unless --splitting. `--external:` is the lever
+# that actually works.
+#
+# ⚠ EXTERNAL ⇒ RESOLVED FROM node_modules AT RUNTIME. Every entry below is
+# verified to resolve to real .js (not .ts) from the bundle's own directory in
+# BOTH this tree and papercup-release. Re-run
+# `node .papercusp/scratch/verify-externals.mjs <bundle> <dir>` before adding
+# one. Do NOT reach for the blanket `--packages=external`: it externalizes the
+# @papercusp/* workspace packages too, 80 of which resolve to .ts SOURCE that
+# plain node cannot load — precompiling exactly that graph is why this bundle
+# exists (WI-3336, no tsx loader). It measures well and cannot boot.
+#
+# The packaged desktop app is NOT affected: papercusp-desktop/bin/build-desktop-sidecar.sh
+# is an independent script with its own esbuild call, and MUST keep bundling its
+# deps (it has no node_modules at runtime).
+HOST_EXTERNALS+=(
+  # 9.61 MB — the whole TypeScript compiler, reached via content-lint/registry
+  # from git-sync/run-git-sync.ts, which a request worker never runs.
+  --external:typescript
+  # 5.34 MB of BPE rank tables; only the delta-eval harness tokenizes.
+  --external:js-tiktoken
+  # ~7 MB voice stack — not on the request path.
+  --external:phonemizer
+  --external:opusscript
+  --external:@jitsi/rnnoise-wasm
+  # test infrastructure, in production.
+  --external:testcontainers
+  --external:dockerode
+  --external:esbuild
+)
+
 # self-exec guards would all fire at boot. isCliEntry()
 # (operator-core/lib/util/cli-entry.ts) returns false under this define — its
 # ONLY consumer (verified 2026-07-07). Unlike the sidecar build we bake NO

@@ -45,6 +45,56 @@ function pauseOf(
   };
 }
 
+/**
+ * The OPERATIONAL half of `routines.metadata` — read back out for the same
+ * reason {@link pauseOf} exists, one field family over
+ * (plan `sql-escape-tool-routing-2026-08-12`, P-002).
+ *
+ * ⚠ THIS IS THE THIRD TIME. Read {@link pauseOf}'s comment first: it was
+ * written because this tool SELECTed `metadata` and projected none of it, so a
+ * responder saw a bare `active:false` and could not tell a deliberate hold from
+ * a stall — "a durable record nobody can read is not a fix". That fix surfaced
+ * `metadata.pause` and stopped there, and `metadata.gate_health` then reproduced
+ * the identical failure at scale.
+ *
+ * Measured 2026-08-12 (`harness_shared.tool_invocations`, 14d, workspace
+ * `papercusp-workspace`): 112 distinct agents hand-wrote
+ * `SELECT metadata->'gate_health'…FROM harness_shared.routines` — 722 calls,
+ * the single largest cross-agent raw-SQL cluster in the whole audit. Every one
+ * of them was querying a row THIS TOOL ALREADY FETCHES. Several variants guess
+ * at the column name (`next_fire_at` / `next_run_at` / `next_due_at`), which is
+ * what reverse-engineering a schema looks like from the outside.
+ *
+ * So this projects the family, not one more single field — a per-field fix here
+ * is what guarantees a fourth instance. `gate_health` is the load-bearing one
+ * (green-checkpoint's live verdict: in-flight retriage, observed candidate,
+ * consecutive reds); the rest are the generic routine-health signals every
+ * `routines` row can carry.
+ *
+ * Returns null when the row carries none of them, so an ordinary routine's
+ * payload is unchanged and the field stays cheap on the trimmed projection.
+ */
+function healthOf(metadata: Record<string, unknown> | null): Record<string, unknown> | null {
+  if (!metadata) return null;
+  const OPERATIONAL_KEYS = [
+    'gate_health',
+    'last_status',
+    'last_error',
+    'last_errors',
+    'consecutive_error_ticks',
+    'consecutive_content_error_ticks',
+    'fire_count',
+    'armed_at',
+    'fire_started_at',
+    'last_synced_at',
+  ] as const;
+  const out: Record<string, unknown> = {};
+  for (const k of OPERATIONAL_KEYS) {
+    if (metadata[k] !== undefined && metadata[k] !== null) out[k] = metadata[k];
+  }
+  return Object.keys(out).length ? out : null;
+}
+
 export default defineTool({
   name: 'routines:list',
   profile: 'engineer',
@@ -235,6 +285,7 @@ export default defineTool({
       lastFiredAt: iso(r.last_fired_at),
       group: r.group_slug,
       paused: pauseOf(r.metadata),
+      health: healthOf(r.metadata),
     }));
     // {data} envelope so the payload-tier shaper applies.
     return { data: { count: routines.length, routines } };
