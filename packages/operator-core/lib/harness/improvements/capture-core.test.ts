@@ -1165,3 +1165,52 @@ describe('P-007 — dedupCoverage: an empty result must disclose whether it coul
     expect(res.dedupCoverage?.degraded).toBe(true);
   });
 });
+
+describe('EI-20275452450016416 — the achieved coverage is PERSISTED, not just reported', () => {
+  const coverageOf = (d: ReturnType<typeof deps>) =>
+    (d.created[0].payload as Record<string, unknown> | undefined)?.dedupCoverage;
+
+  it('stamps payload.dedupCoverage when the semantic leg was DOWN — the re-dedup work-list', async () => {
+    // Returning the degraded bit to the caller and then discarding it left no way to
+    // find the rows admitted without a differently-worded-duplicate check. Measured
+    // pre-fix: 0 of 6,179 rows in 7 days carried it.
+    const d = deps();
+    await captureImprovement({ title: 'a brand new finding', kind: 'bug' }, { ...d, findSemanticDupes: async () => null });
+    expect(coverageOf(d)).toEqual({ lexical: 'ok', semantic: 'unavailable', degraded: true });
+  });
+
+  it('stamps it when the leg was HEALTHY too — absence must not be ambiguous', async () => {
+    // Stamping only the degraded rows would make a missing key mean either "checked
+    // clean" or "filed before this existed" — the same lost distinction the discard
+    // created. Presence of the key is what makes the population measurable.
+    const d = deps();
+    await captureImprovement(
+      { title: 'a brand new finding', kind: 'bug' },
+      { ...d, findSemanticDupes: async () => ({ hard: [], soft: [], thresholds: { hard: 0.9, soft: 0.8 } }) },
+    );
+    expect(coverageOf(d)).toEqual({ lexical: 'ok', semantic: 'ok', degraded: false });
+  });
+
+  it('CONTROL: the two persisted rows are DISTINGUISHABLE — a stamp that never varies is not evidence', async () => {
+    const down = deps();
+    await captureImprovement({ title: 'a brand new finding', kind: 'bug' }, { ...down, findSemanticDupes: async () => null });
+    const up = deps();
+    await captureImprovement(
+      { title: 'a brand new finding', kind: 'bug' },
+      { ...up, findSemanticDupes: async () => ({ hard: [], soft: [], thresholds: { hard: 0.9, soft: 0.8 } }) },
+    );
+    expect(coverageOf(down)).not.toEqual(coverageOf(up));
+  });
+
+  it('does NOT stamp the observation lane — both legs are skipped by design, so the value is a constant', async () => {
+    // An observation skips dedup entirely (recurrence IS its signal), so its coverage
+    // is always {skipped, skipped, false}. Persisting a constant would add a column of
+    // noise to the highest-volume lane and dilute the degraded work-list.
+    const d = deps();
+    await captureImprovement(
+      { title: 'a sensor reading', kind: 'change', lane: 'observation' },
+      { ...d, findSemanticDupes: async () => null },
+    );
+    expect(coverageOf(d)).toBeUndefined();
+  });
+});
