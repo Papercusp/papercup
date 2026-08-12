@@ -35,7 +35,7 @@
  */
 import { spawn } from 'node:child_process';
 import { collectChildOutput } from '../../child-output.js';
-import { lstat, readFile, unlink } from 'node:fs/promises';
+import { lstat, readFile, readdir, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { projectDirForSlug } from '../../operator-notes';
 import { gitSidecarEnabled, runGitViaSpawnerSidecar } from '../../fleet/git-via-sidecar';
@@ -679,6 +679,70 @@ export async function clearStaleIndexLock(
 }
 
 /**
+ * A failed `git fetch` can leave `index-pack`'s incoming pack at
+ * `.git/objects/pack/tmp_pack_*`. The temp name is deliberately not a valid
+ * reachable pack ref; Git only renames it after the pack is complete. Snapshot
+ * the names before fetch and remove ONLY new regular files after a failed fetch.
+ * This avoids deleting an older leak (or a peer's pre-existing temp pack) while
+ * reclaiming a large partial pack immediately instead of waiting for age-based GC.
+ */
+async function listTempPackFiles(runGit: RunGit, repoPath: string): Promise<Map<string, number>> {
+  const result = new Map<string, number>();
+  const gd = await runGit(['rev-parse', '--absolute-git-dir'], repoPath);
+  const gitDir = gd.code === 0 ? gd.stdout.trim() : '';
+  if (!gitDir) return result;
+  let names: string[];
+  try {
+    names = await readdir(join(gitDir, 'objects', 'pack'));
+  } catch {
+    return result;
+  }
+  for (const name of names) {
+    if (!/^tmp_pack_[^/]+$/.test(name)) continue;
+    try {
+      const st = await lstat(join(gitDir, 'objects', 'pack', name));
+      if (st.isFile()) result.set(name, st.size);
+    } catch {
+      // A concurrent fetch may have finalized or removed the temp file.
+    }
+  }
+  return result;
+}
+
+async function pruneFailedFetchTempPacks(
+  runGit: RunGit,
+  repoPath: string,
+  beforeFetch: Map<string, number>,
+  log: (m: string) => void,
+): Promise<{ removed: string[]; bytesReclaimed: number }> {
+  const afterFetch = await listTempPackFiles(runGit, repoPath);
+  const removed: string[] = [];
+  let bytesReclaimed = 0;
+  const gd = await runGit(['rev-parse', '--absolute-git-dir'], repoPath);
+  const gitDir = gd.code === 0 ? gd.stdout.trim() : '';
+  if (!gitDir) return { removed, bytesReclaimed };
+  const packDir = join(gitDir, 'objects', 'pack');
+
+  for (const [name, size] of afterFetch) {
+    if (beforeFetch.has(name)) continue;
+    try {
+      // `lstat` + the anchored name filter keep this unlink scoped to a regular
+      // temp pack in THIS repo's object store; symlinks and directories are left.
+      const current = await lstat(join(packDir, name));
+      if (!current.isFile()) continue;
+      await unlink(join(packDir, name));
+      removed.push(name);
+      bytesReclaimed += size;
+    } catch (e) {
+      log(
+        `[git-sync] ${repoPath}: could not prune failed-fetch temp pack ${name}: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+  return { removed, bytesReclaimed };
+}
+
+/**
  * Recursively discover submodule paths (repo-relative), DEEPEST-FIRST. Dynamic —
  * reads the live submodule tree (`git submodule status --recursive`), never a
  * hardcoded list. Skips uninitialized submodules (leading '-'). Deepest-first so a
@@ -1277,8 +1341,15 @@ async function reconcileAndPushOneRepo(
     );
   }
 
+  const tempPacksBeforeFetch = await listTempPackFiles(runGit, repoPath);
   const fetch = await runGit(['fetch', remote, branch], repoPath);
   if (fetch.code !== 0) {
+    const reclaimed = await pruneFailedFetchTempPacks(runGit, repoPath, tempPacksBeforeFetch, o.log);
+    const cleanupNote =
+      reclaimed.removed.length > 0
+        ? `; pruned ${reclaimed.removed.length} newly-created unreferenced tmp_pack file(s), reclaimed ${reclaimed.bytesReclaimed} bytes`
+        : '';
+    if (cleanupNote) o.log(`[git-sync] ${repoPath}: failed fetch cleanup${cleanupNote}`);
     // Fetch failed (offline / transient). GAP-4: when we're meant to push and HEAD has
     // commits not on the last-known origin tip, those commits are NOT on origin — return
     // 'error' so runGitSync DEFERS the superproject. Otherwise the superproject would
@@ -1291,7 +1362,7 @@ async function reconcileAndPushOneRepo(
       if (committedLocal || aheadCount > 0) {
         return {
           status: 'error',
-          message: `fetch failed; HEAD has unpushed commits not on ${remote}/${branch} (cannot reconcile)`,
+          message: `fetch failed; HEAD has unpushed commits not on ${remote}/${branch} (cannot reconcile)${cleanupNote}`,
         };
       }
       return { status: 'nothing' };

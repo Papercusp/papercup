@@ -427,6 +427,46 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(out.status).toBe('nothing');
   });
 
+  it('EI-20216304202023591: failed fetch removes only its fresh interrupted tmp_pack and reports reclaimed bytes', async () => {
+    const packDir = join(repo, '.git', 'objects', 'pack');
+    mkdirSync(packDir, { recursive: true });
+    const existingTmpPack = join(packDir, 'tmp_pack_existing-from-before-fetch');
+    const interruptedTmpPack = join(packDir, 'tmp_pack_interrupted-index-pack');
+    writeFileSync(existingTmpPack, Buffer.alloc(64, 1));
+    const reclaimedBytes = 8 * 1024 * 1024;
+    const logs: string[] = [];
+    const realRunGit: RunGit = async (args, cwd) => {
+      const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
+      return {
+        code: r.status ?? -1,
+        stdout: String(r.stdout ?? ''),
+        stderr: `${String(r.stderr ?? '')}${r.error ? `\n${r.error.message}` : ''}`,
+      };
+    };
+    const runGit: RunGit = async (args, cwd) => {
+      if (args.includes('fetch')) {
+        // Simulate index-pack being interrupted after writing a large partial pack.
+        writeFileSync(interruptedTmpPack, Buffer.alloc(reclaimedBytes, 7));
+        return { code: 128, stdout: '', stderr: 'fatal: early EOF\n' };
+      }
+      return realRunGit(args, cwd);
+    };
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      runGit,
+      config: { pushSubmodules: false },
+      log: (message) => logs.push(message),
+    });
+
+    expect(out.status).toBe('nothing');
+    expect(existsSync(interruptedTmpPack)).toBe(false);
+    expect(existsSync(existingTmpPack)).toBe(true);
+    expect(logs).toContain(
+      `[git-sync] ${repo}: failed fetch cleanup; pruned 1 newly-created unreferenced tmp_pack file(s), reclaimed ${reclaimedBytes} bytes`,
+    );
+  });
+
   it('on a divergent conflict: aborts to a CLEAN tree and reports conflicted files', async () => {
     // a second clone pushes a conflicting change to origin/main
     const other = join(root, 'other');
