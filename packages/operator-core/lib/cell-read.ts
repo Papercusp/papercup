@@ -259,6 +259,13 @@ export interface CellHoist {
   /** True ⇒ the declared key was absent from the resolver result: registration
    *  drift, NOT a measured silence. `value` is null and means nothing. */
   drifted?: true;
+  /** True ⇒ the declared key was absent, but the PAYLOAD ITSELF declares it was
+   *  truncated by its door, so the absence is UNATTRIBUTABLE — see
+   *  {@link payloadTruncatedByDoor}. Mutually exclusive with `drifted`. */
+  truncatedByDoor?: true;
+  /** The re-read that would return the untruncated payload, carried straight from the
+   *  door's own `projection.fullRead` — the lever, so the reader never has to guess it. */
+  fullRead?: unknown;
 }
 
 /**
@@ -281,6 +288,14 @@ export interface CellFalsifierRead {
    *  not `valueAtPath`, decides this, because `valueAtPath` collapses a legitimately
    *  null intermediate segment to the SAME `undefined` a missing key produces. */
   drifted?: true;
+  /** True ⇒ the path was absent, but the PAYLOAD ITSELF declares it was truncated by its
+   *  door, so the absence is UNATTRIBUTABLE — see {@link payloadTruncatedByDoor}.
+   *  Mutually exclusive with `drifted`. A falsifier that arrives this way has NOT fired
+   *  and has NOT been contradicted: it simply did not survive transit, and a reader must
+   *  treat the headline as UNFALSIFIED rather than as confirmed. */
+  truncatedByDoor?: true;
+  /** The re-read that returns the untruncated payload (the door's own `projection.fullRead`). */
+  fullRead?: unknown;
 }
 
 /**
@@ -295,6 +310,22 @@ export interface CellFalsifierRead {
  * has something.
  */
 export function formatCellHoist(h: CellHoist): string | null {
+  /**
+   * WI-38266 — checked BEFORE `drifted`, and the order is the whole point: these two
+   * absences look identical on the payload and demand OPPOSITE actions. Drift sends you
+   * to fix a resolver; truncation sends you to re-read it. Getting this backwards is what
+   * made the old prose accuse a blameless resolver of a registration defect.
+   */
+  if (h.truncatedByDoor) {
+    return (
+      `⚠ this cell's result-level unknown channel "${h.key}" did not arrive, but its resolver's response declares ` +
+      `ITSELF truncated — so the absence is UNATTRIBUTABLE: it may have been dropped in transit to fit a response ` +
+      `budget rather than never measured. Do NOT read this as a resolver defect, and do NOT read the null as a ` +
+      `clean measurement. Re-read the untruncated payload` +
+      (h.fullRead === undefined ? '' : ` via ${JSON.stringify(h.fullRead)}`) +
+      ` to get the real qualifier.`
+    );
+  }
   if (h.drifted) {
     return `⚠ this cell declares the result-level unknown channel "${h.key}", but its resolver did not emit it. The reason a null value carries is MISSING, not empty — treat a null here as unexplained, and read this as a registration defect in the resolver rather than a clean measurement.`;
   }
@@ -551,7 +582,7 @@ async function readCellValue(
       harnessSlug: env.harnessSlug,
       role: env.role,
       onBehalfOf: reader.ownerId,
-      spawnId: 'cell-read',
+      spawnId: CELL_READ_SPAWN_ID,
     });
     // A dispatch that loses the race can still reject LATER, after we've already
     // returned via the timeout branch below — and nothing else will be listening for
@@ -708,9 +739,49 @@ async function readCellValue(
  * hoist is REPORTED — the read still succeeds (P-026: an enrichment may never fail its
  * caller), and the caller is told the channel is broken rather than empty.
  */
+/**
+ * WI-38266 — DID THE DOOR EAT IT? A payload that self-declares truncation makes every
+ * missing path UNATTRIBUTABLE, and blaming the resolver for it is a false verdict.
+ *
+ * The bug this closes, measured end-to-end on `deploy.3070.sha`: `gitPipelinePosition()`
+ * emitted BOTH declared paths correctly, each carrying an enumerated `not-applicable`
+ * reason ("No path was given (sha-only probe), so no serving process can be identified").
+ * `dev:pipeline_position` then bounded its own response to fit
+ * `PIPELINE_POSITION_RESPONSE_BUDGET_CHARS`, dropping both — and because `readCell`
+ * dispatches the TOOL, it walked the SHAPED payload and reported `drifted: true`, whose
+ * prose tells the agent to read it "as a registration defect in the resolver". So a
+ * correct, fully-explained measurement was rendered as a code bug in a blameless resolver,
+ * and `serving.startedSinceCodeChange` — the falsifier CLAUDE.md names as the ONLY way to
+ * separate "deployed sha X" from "the process is EXECUTING X" — silently stopped arriving.
+ *
+ * ⚠ WHY TRUNCATION ALONE DECIDES THIS, and NOT a lookup in `omittedFields`. That list is
+ * computed against ONE shaping tier, so it under-reports precisely when the shaping was
+ * most aggressive (`serving` was dropped from the live payload WITHOUT appearing in it).
+ * Trusting the list would reintroduce the same false-confidence bug one level down: a
+ * field missing from BOTH the payload and the omission report would read as resolver
+ * drift again. The honest rule is the weaker, sound one — once a payload says it was
+ * truncated, this module can no longer attribute ANY absence, and says so.
+ *
+ * Deliberately NOT a `status: 'unknown'` for the whole read: the HEADLINE usually
+ * survives (doors shape the periphery first), and refusing a value we actually hold would
+ * trade a false blame for a false blackout. The read stays, carrying an honest qualifier.
+ */
+function payloadTruncatedByDoor(payload: unknown): { truncated: boolean; fullRead?: unknown } {
+  const projection = valueAtPath(payload, 'projection');
+  if (!projection || typeof projection !== 'object') return { truncated: false };
+  const p = projection as Record<string, unknown>;
+  if (p.truncated !== true) return { truncated: false };
+  return { truncated: true, ...(p.fullRead === undefined ? {} : { fullRead: p.fullRead }) };
+}
+
 function hoistFrom(payload: unknown, key: string): CellHoist {
   const hoisted = valueAtPath(payload, key);
-  return hoisted === undefined ? { key, value: null, drifted: true } : { key, value: hoisted };
+  if (hoisted !== undefined) return { key, value: hoisted };
+  const door = payloadTruncatedByDoor(payload);
+  if (door.truncated) {
+    return { key, value: null, truncatedByDoor: true, ...(door.fullRead === undefined ? {} : { fullRead: door.fullRead }) };
+  }
+  return { key, value: null, drifted: true };
 }
 
 /**
@@ -768,10 +839,38 @@ function falsifierPathExists(payload: unknown, path: string): { exists: boolean;
  */
 function falsifierFrom(payload: unknown, f: { field: string; kills: string }): CellFalsifierRead {
   const r = falsifierPathExists(payload, f.field);
-  return r.exists
-    ? { field: f.field, value: r.value, kills: f.kills }
-    : { field: f.field, value: null, kills: f.kills, drifted: true };
+  if (r.exists) return { field: f.field, value: r.value, kills: f.kills };
+  // WI-38266 — same MISSING-vs-EATEN split as `hoistFrom`, and it matters MORE here: a
+  // drifted falsifier reads as "this cell's apparatus is broken", while a truncated one
+  // means the headline simply arrived UNFALSIFIED and the reader must go get it.
+  const door = payloadTruncatedByDoor(payload);
+  if (door.truncated) {
+    return {
+      field: f.field,
+      value: null,
+      kills: f.kills,
+      truncatedByDoor: true,
+      ...(door.fullRead === undefined ? {} : { fullRead: door.fullRead }),
+    };
+  }
+  return { field: f.field, value: null, kills: f.kills, drifted: true };
 }
+
+/**
+ * WI-38266 — the `spawnId` `readCell` dispatches under, exported so a door can recognise
+ * the MACHINE consumer and skip the response shaping it applies for agents.
+ *
+ * Shared rather than re-typed at each door on purpose: a door matching a stale literal
+ * would silently go back to serving `readCell` a truncated payload, and the symptom
+ * (a cell blaming its own resolver) points nowhere near the typo. `cell-read-door-
+ * shaping.test.ts` pins this constant against the doors that honour it.
+ *
+ * Why the cell reader is exempt at all: a response budget exists to protect an AGENT's
+ * context window. `readCell` walks two or three declared paths and re-serialises only
+ * those, so the budget buys it nothing and costs it the ability to tell a measured null
+ * from a field that never survived transit.
+ */
+export const CELL_READ_SPAWN_ID = 'cell-read';
 
 /** Sentinel for "this cell needs a subject and none was given" — distinct from the
  *  legitimate empty-args case, which a plain `{}` would collide with. */

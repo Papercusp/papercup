@@ -13,6 +13,7 @@ import { defineTool, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-
 import { gitPipelinePosition, type PipelinePosition } from '../../git-pipeline-position';
 import { buildKey } from '../../events/await/catalog';
 import { listCells } from '../../cell-registry';
+import { CELL_READ_SPAWN_ID } from '../../cell-read';
 import { stampStatePlane, type StatePlaneBlock } from '../../state-plane-stamp';
 import { resolveAgentIdentity } from '../coordination/identity';
 
@@ -205,9 +206,25 @@ export function shapePipelinePosition(
   result: PipelinePosition,
   extras: JsonRecord = {},
   rereadArgs: { path?: string; sha?: string; marker?: string } = {},
+  opts: { unbounded?: boolean } = {},
 ): JsonRecord | PipelinePosition {
   const original = { ...(result as unknown as JsonRecord), ...extras };
   const originalChars = serializedChars(original);
+  /**
+   * WI-38266 — the budget is skipped for a MACHINE consumer that asked for the whole
+   * payload. Not a bypass: `readCell` projects two or three declared paths and returns
+   * only those, so nothing unbounded reaches an agent's context by this route.
+   *
+   * It is skipped because the shaping was ACTIVELY WRONG for that caller. `readCell`
+   * walks the payload for its headline, its hoist and its falsifier; when the shaping
+   * dropped `serving`/`verdictUnknown` to fit this budget, the cell reported the absence
+   * as `drifted` and told agents to read it "as a registration defect in the resolver" —
+   * about a resolver that had emitted both fields with an enumerated `not-applicable`
+   * reason. The falsifier CLAUDE.md relies on to separate "deployed sha X" from "the
+   * process is EXECUTING X" stopped arriving entirely, which is the one misreading
+   * `DEPLOYED_SHA_CELL` exists to kill.
+   */
+  if (opts.unbounded) return original;
   if (originalChars <= PIPELINE_POSITION_RESPONSE_BUDGET_CHARS) return original;
 
   const omittedFields = Object.keys(result as unknown as JsonRecord).filter((field) => !(field in compactPipelineResult(result, extras, {
@@ -472,6 +489,15 @@ export default defineTool({
     const plane = planeFor(result, args, ctx);
     const rereadArgs = { path: args.path, sha: args.sha, marker: args.marker };
 
+    /**
+     * WI-38266 — `readCell` is a machine consumer walking declared paths, not an agent
+     * spending context, and shaping its payload made this door's own cells
+     * (`deploy.3070.sha`, `gate.greenCheckpoint.*`, `git.pipelinePosition`) report their
+     * blameless resolver as defective. Keyed on the shared constant rather than a local
+     * literal so the tag and the exemption cannot drift apart.
+     */
+    const shapeOpts = { unbounded: ctx.spawnId === CELL_READ_SPAWN_ID };
+
     // WI-5440: a path can have MORE THAN ONE consumer on DIFFERENT activation
     // routes (e.g. a file read by both a bg-host-only routine and an
     // operator-served MCP tool) — collapsing to a single `activation` block
@@ -502,7 +528,7 @@ export default defineTool({
             : `This path has ${runtimes.length} distinct consumers on different activation routes (${runtimes
                 .map((r) => r.host)
                 .join(' + ')}), none carried by the release pipeline — do NOT deploy:await; pick the restart matching the consumer you care about from \`activations\`.`,
-        }, rereadArgs),
+        }, rereadArgs, shapeOpts),
       };
     }
 
@@ -528,7 +554,7 @@ export default defineTool({
               : {}),
             note: 'Do NOT deploy:await this path — the process that runs it never reads the release checkout. The `positions.deployed` flag below is about the operator, not about this code being live.',
           },
-        }, rereadArgs),
+        }, rereadArgs, shapeOpts),
       };
     }
 
@@ -587,7 +613,7 @@ export default defineTool({
       data: shapePipelinePosition(result, {
         ...(plane ? { plane } : {}),
         ...(awaitable ? { awaitable } : {}),
-      }, rereadArgs),
+      }, rereadArgs, shapeOpts),
     };
   },
 });
