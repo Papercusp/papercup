@@ -676,7 +676,7 @@ export async function fireAwaitsForKey(input: {
  */
 export async function claimSpecificOnceAwaits(
   ids: number[],
-  reason: 'event' | 'timeout' = 'event',
+  reason: 'event' | 'timeout' | 'claim-spec-revision' = 'event',
 ): Promise<AwaitRow[]> {
   if (ids.length === 0) return [];
   const { sql } = getOrgPg();
