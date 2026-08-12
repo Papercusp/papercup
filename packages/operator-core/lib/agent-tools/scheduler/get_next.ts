@@ -732,7 +732,7 @@ export default defineTool({
         brief &&
         (!identityWorkspace || !briefWorkspace || identityWorkspace === briefWorkspace)
       ) {
-        resolvedHarness = resolveConcreteHarnessSlug(brief.harnessSlug, undefined) ?? undefined;
+        resolvedHarness = resolveConcreteHarnessSlug(brief.harnessSlug, undefined);
       }
     }
     if (!resolvedHarness) {
