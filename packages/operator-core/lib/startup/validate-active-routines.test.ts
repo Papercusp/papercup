@@ -32,6 +32,21 @@ import * as harnessCore from '../harness-core';
 import * as workspaceRegistry from '../workspace-registry';
 import { mockOrgPgSql } from '../testing/mock-org-pg';
 
+/**
+ * The SQL text of every statement the mocked `sql` tag was called with.
+ *
+ * The "issues no UPDATE" tests below used to assert `mockSql` was called exactly N times.
+ * That counts STATEMENTS when the property they mean is "no row was PAUSED" — so adding any
+ * unrelated statement (EI-18685043834332306 added four for recurrence aging) broke them while
+ * the property they guard was never in question. Assert the property directly instead: it
+ * still fails loudly if a pause UPDATE ever appears, and no longer fails when it does not.
+ */
+function pausedARow(mockSql: { mock: { calls: unknown[][] } }): boolean {
+  return mockSql.mock.calls.some((c) =>
+    /SET\s+active\s*=\s*false/i.test(Array.isArray(c[0]) ? c[0].join(' ? ') : String(c[0])),
+  );
+}
+
 describe('validateActiveRoutines', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -235,7 +250,10 @@ describe('enforceActiveRoutines (EI-18678269428596559 recurrence guard P-3)', ()
     const mockWs = 'papercusp-workspace';
     const mockRoutines = [{ install_slug: '', name: 'broken-routine', workspace_id: mockWs }];
 
-    const mockSql = vi.fn().mockResolvedValueOnce(mockRoutines);
+    // The SELECT, then `[]` for every recurrence-aging statement — which drives the
+    // fail-OPEN branch (nothing claimed the wave and no peer mark appeared), so the FATAL
+    // must still be emitted. Losing the alarm here would be the worst outcome.
+    const mockSql = vi.fn().mockResolvedValueOnce(mockRoutines).mockResolvedValue([]);
     mockOrgPgSql(vi.mocked(dbOrg.getOrgPg), mockSql);
     vi.mocked(workspaceRegistry.activeWorkspaceId).mockReturnValue(mockWs);
 
@@ -244,7 +262,7 @@ describe('enforceActiveRoutines (EI-18678269428596559 recurrence guard P-3)', ()
     const result = await enforceActiveRoutines();
 
     expect(result.autoDeactivated).toEqual([]);
-    expect(mockSql).toHaveBeenCalledTimes(1); // only the SELECT — no UPDATE attempted
+    expect(pausedARow(mockSql)).toBe(false); // no UPDATE attempted — a blank slug is never auto-healed
     const logged = consoleSpy.mock.calls.map((c) => String(c[0]));
     expect(logged.some((l) => l.startsWith('[routine-validation] FATAL'))).toBe(true);
 
@@ -395,7 +413,7 @@ describe('validateActiveRoutines — unregistered system-action handlers (EI-193
     const result = await enforceActiveRoutines();
 
     expect(result.autoDeactivated).toEqual([]);
-    expect(mockSql).toHaveBeenCalledTimes(1); // SELECT only — the row is correct, the code is not
+    expect(pausedARow(mockSql)).toBe(false); // the row is correct, the code is not — never pause it
     // enforce passes silent:true, so it must re-emit the report itself or the boot caller
     // (which logs only on `ok`) prints nothing at all.
     const logged = consoleSpy.mock.calls.map((c) => String(c[0]));
