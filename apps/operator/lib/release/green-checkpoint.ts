@@ -3725,6 +3725,7 @@ async function tryLongestGreenPrefix(
   candidate: string,
   failingTests: string[] | undefined,
   noPush: boolean,
+  logPartialGreenGate: (line: string) => void,
 ): Promise<CheckpointResult | null> {
   if (!deps.commitsInRange || !deps.affectedWorkspacesForRange) return null; // not wired (e.g. a minimal stub)
   if (!failingTests?.length) return null; // no signature → can't localize → don't guess
@@ -3778,7 +3779,7 @@ async function tryLongestGreenPrefix(
   const failingPaths = pathShapedFailing(failingTests).filter((f) => f.includes('/'));
   const locateByFile = failingPaths.length > 0 && !!deps.changedFilesForRange;
   if (failingWs.size === 0 && !locateByFile) return null; // localizable by neither → hold
-  deps.log(
+  logPartialGreenGate(
     `partial-green-gate: locating at ${locateByFile ? 'FILE' : 'workspace'} granularity ` +
       `(${locateByFile ? `${failingPaths.length} failing path(s)` : `failing ws: ${[...failingWs].join(', ')}`})`,
   );
@@ -3803,7 +3804,7 @@ async function tryLongestGreenPrefix(
     // WI-38218: say WHY. "the first new commit already implicates the failure" is a
     // legitimate outcome, but it is the same silent null as "the salvage never ran",
     // which is exactly the ambiguity WI-38207 had to fix by reading the source.
-    deps.log(
+    logPartialGreenGate(
       `partial-green-gate: no salvageable prefix — the first commit after ${lastReady.slice(0, 8)} already ` +
         `implicates the failure at ${locateByFile ? 'FILE' : 'workspace'} granularity`,
     );
@@ -3811,20 +3812,20 @@ async function tryLongestGreenPrefix(
   }
 
   // CONFIRM the prefix is itself green before FF-ing `main` to it (the invariant guard).
-  deps.log(
+  logPartialGreenGate(
     `partial-green-gate: candidate ${candidate.slice(0, 8)} red (failing ws: ${[...failingWs].join(', ')}); ` +
       `confirming longest clean prefix ${prefixTip.slice(0, 8)}`,
   );
   await deps.setupTree(prefixTip);
   const confirm = await deps.runGreen(cfg.checkpointRoot, lastReady);
   if (!confirm.green) {
-    deps.log(`partial-green-gate: prefix ${prefixTip.slice(0, 8)} did NOT confirm green — holding (no partial advance)`);
+    logPartialGreenGate(`partial-green-gate: prefix ${prefixTip.slice(0, 8)} did NOT confirm green — holding (no partial advance)`);
     return null; // affected reasoning was incomplete; stay safe
   }
   const adv = await deps.advance(prefixTip);
   if (!adv.advanced) return null;
   if (!noPush) await deps.push(cfg.releaseRef, adv.from).catch((e) => deps.log(`warn: push ${cfg.releaseRef} failed: ${e}`));
-  deps.log(
+  logPartialGreenGate(
     `✅ partial-green-gate: ${cfg.releaseRef} advanced ${adv.from?.slice(0, 8) ?? 'none'} → ${prefixTip.slice(0, 8)} ` +
       `(longest green prefix; tip ${candidate.slice(0, 8)} still red)`,
   );
@@ -4001,6 +4002,28 @@ function appendGateHeldByIfMissing(
     appendFileSync(logPath, formatGateHeldByNote(failingTests));
   } catch (e) {
     log?.(`warn: GATE_HELD_BY line not published to ${logPath}: ${e instanceof Error ? e.message : e}`);
+  }
+}
+
+/**
+ * Publish partial-green-gate narration to both the live orchestrator transcript and the
+ * candidate log that already exists by the time salvage begins.  The initial runGreen
+ * snapshot necessarily happens before prefix discovery/confirmation, so relying on deps.log
+ * alone sends these lines to the next nested run's transcript (EI-20273247083807948).
+ * Best-effort, like the rest of the checkpoint logging path: a log failure must not change the
+ * safety decision, and captured marker text must stay out of the non-verdict log channel.
+ */
+function appendPartialGreenGateLine(
+  logPath: string | undefined,
+  line: string,
+  log: (s: string) => void,
+): void {
+  log(line);
+  if (!logPath) return;
+  try {
+    appendFileSync(logPath, `\n${defangCapturedResultMarkers(line)}\n`);
+  } catch (e) {
+    log(`warn: partial-green-gate line not published to ${logPath}: ${e instanceof Error ? e.message : e}`);
   }
 }
 
@@ -4306,6 +4329,7 @@ export async function runGreenCheckpoint(
   // formatGatePromotionTrailer for why this is a trailer and not a header field.
   const stampPromotion = (promoted: boolean, reason: GatePromotionReason, advancedTo?: string | null) =>
     stampGatePromotion(logPath, { candidate, green, promoted, reason, advancedTo }, (s) => deps.log(s));
+  const logPartialGreenGate = (line: string) => appendPartialGreenGateLine(logPath, line, (s) => deps.log(s));
   // load-flake-isolation-2026-06-23: runGreen may have ABSORBED a load-flake — the
   // affected suite went red under the gate's 8-fork load, but every originally-failing
   // FILE then PASSED on an isolated single-concurrency re-run, so it reported green=true
@@ -4814,21 +4838,21 @@ export async function runGreenCheckpoint(
     const staleRed = retriage?.classification === 'stale-candidate';
     const partialGreenEnabled = partialGreenGateEnabledFromEnv();
     if (staleRed) {
-      deps.log('partial-green-gate: skipped — red is a STALE candidate (passes at tip); its failure signature is a phantom');
+      logPartialGreenGate('partial-green-gate: skipped — red is a STALE candidate (passes at tip); its failure signature is a phantom');
     } else if (!lastReady) {
-      deps.log(`partial-green-gate: skipped — no ${cfg.releaseRef} base to salvage a prefix from (lastReady unset)`);
+      logPartialGreenGate(`partial-green-gate: skipped — no ${cfg.releaseRef} base to salvage a prefix from (lastReady unset)`);
     } else if (!partialGreenEnabled) {
-      deps.log('partial-green-gate: skipped — disabled by PAPERCUSP_PARTIAL_GREEN_GATE=0');
+      logPartialGreenGate('partial-green-gate: skipped — disabled by PAPERCUSP_PARTIAL_GREEN_GATE=0');
     }
     if (lastReady && !staleRed && partialGreenEnabled) {
-      deps.log(
+      logPartialGreenGate(
         `partial-green-gate: attempting longest-green-prefix salvage between ${lastReady.slice(0, 8)} and candidate ${candidate.slice(0, 8)}`,
       );
       let salvageErrored = false;
-      const partial = await tryLongestGreenPrefix(cfg, deps, lastReady, candidate, failingTests, !!opts.noPush).catch(
+      const partial = await tryLongestGreenPrefix(cfg, deps, lastReady, candidate, failingTests, !!opts.noPush, logPartialGreenGate).catch(
         (e) => {
           salvageErrored = true;
-          deps.log(`partial-green-gate: errored, holding (${e instanceof Error ? e.message : e})`);
+          logPartialGreenGate(`partial-green-gate: errored, holding (${e instanceof Error ? e.message : e})`);
           return null;
         },
       );
@@ -4856,7 +4880,7 @@ export async function runGreenCheckpoint(
       // found no green prefix — an entirely different operator situation from "it never ran",
       // and previously indistinguishable from it in the log.
       if (!salvageErrored) {
-        deps.log(
+        logPartialGreenGate(
           `partial-green-gate: no salvageable green prefix between ${lastReady.slice(0, 8)} and candidate ${candidate.slice(0, 8)} — holding ${cfg.releaseRef}`,
         );
       }
