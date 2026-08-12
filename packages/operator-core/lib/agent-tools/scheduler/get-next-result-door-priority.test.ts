@@ -21,6 +21,7 @@ const BUDGET_CHARS = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
 const RUN_ID = '11111111-2222-4333-8444-555555555557';
 const DECISION_MARKER = 'EI-20202324455243251-GOVERNING-DECISION-SURVIVED';
 const CLAIM_MARKER = 'EI-20243251614343957';
+const RETRACTION_MARKER = 'EI-20027532687512023-RETRACTION-ADVISORY-SURVIVED';
 
 let sandbox: string;
 let previousScratchRoot: string | undefined;
@@ -72,6 +73,7 @@ describe('scheduler:get_next claim-time decisions survive the result-door', () =
     const assembled = assembleSchedulerClaimResult({
       planDecisions: decisions(),
       planDecisionsNote: 'Showing the 8 MOST RECENT of 8 governing decision(s).',
+      retractionWarning: RETRACTION_MARKER,
       workItem: bulkyWorkItem(),
       claimedUnder: { specId: 'nonp2p-bug-drain-luna-max-0811', revision: 1 },
     });
@@ -79,15 +81,16 @@ describe('scheduler:get_next claim-time decisions survive the result-door', () =
     expect(Object.keys(assembled).slice(0, 5)).toEqual([
       'ok',
       'claimReceipt',
+      'retractionWarning',
       'planDecisions',
       'planDecisionsNote',
-      'workItem',
     ]);
 
     const doored = doorify(assembled);
     expect(doored.content).toHaveLength(2); // the bulky echo still exercises the door
     const kept = (doored.content[0] as { text: string }).text;
     expect(kept).toContain('"claimReceipt":{"committed":true,"workItemId":"EI-20243251614343957"');
+    expect(kept).toContain(RETRACTION_MARKER);
     expect(kept).toContain(DECISION_MARKER);
     expect(kept).toContain('planDecisionsNote');
   });
