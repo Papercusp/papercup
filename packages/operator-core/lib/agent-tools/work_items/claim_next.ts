@@ -33,6 +33,11 @@ import {
   diagnoseFleetScopeCooldownMiss,
 } from '../../scheduler/fleet-scope-admission';
 import { getClaimTimeRetractionAdvisory } from './retraction-advisory';
+import { fetchContextPressure } from '../coordination/context-pressure';
+import {
+  decideContextPressureGate,
+  contextCriticalRefusalResult,
+} from '../../scheduler/context-pressure-claim-gate';
 
 export default defineTool({
   name: 'work_items:claim_next',
@@ -70,6 +75,12 @@ export default defineTool({
     harness: z.string().min(1),
     kind: z.enum(['feature', 'chunk']).optional(),
     assignee: z.string().max(120).optional().describe('default: you (also resolves the literal "self" to you)'),
+    ignoreContextPressure: z
+      .boolean()
+      .optional()
+      .describe(
+        'WI-5940 escape hatch: proceed even though your CACHED context-pressure bucket reads critical (self-pull only). Pass true only when your OWN live gauge contradicts it.',
+      ),
     // WI-1912: clamped to the claimable allowlist — same wall as scheduler:get_next; a
     // free-string `states` let a caller widen past the resolver-owned blocked/cursed floors.
     states: z
@@ -101,6 +112,36 @@ export default defineTool({
     // the caller) — previously stored verbatim, producing an unmatchable, permanently
     // orphaned claim (WI-3881).
     const assignee = resolveSelfLiteral(args.assignee, ident.ownerId) ?? ident.ownerId;
+    // WI-5940: the same compact-first refusal scheduler:get_next applies, via the SHARED
+    // decision so the two self-select surfaces cannot drift (the WI-6409 failure mode).
+    //
+    // SELF-PULL ONLY. When `assignee` is someone else this is a DIRECTED placement, not a
+    // self-select — the caller is a leader handing work to another agent, and refusing that on
+    // the LEADER's context pressure would gate the wrong agent's state. Directed claims stay
+    // ungated here (work_items:claim, the by-id surface, is likewise deliberately not gated).
+    if (assignee === ident.ownerId) {
+      const gateEnabled = await getFlag(FLAGS.SCHEDULER_CONTEXT_PRESSURE_GATE, ident.ownerId).catch(
+        () => true,
+      );
+      const bucket = gateEnabled
+        ? await fetchContextPressure([ident.ownerId])
+            .then((m) => m.get(ident.ownerId) ?? null)
+            .catch(() => null)
+        : null;
+      const gate = decideContextPressureGate({
+        bucket,
+        override: args.ignoreContextPressure === true,
+        enabled: gateEnabled,
+        overrideArg: 'ignoreContextPressure',
+      });
+      if (gate.refuse) {
+        return {
+          content: [
+            { type: 'text' as const, text: JSON.stringify(contextCriticalRefusalResult(gate)) },
+          ],
+        };
+      }
+    }
     const reconciliation = await reconcileFleetScopeClaims({
       ownerId: assignee,
       workspaceId: ident.workspaceId,

@@ -1661,6 +1661,15 @@ export const FLAGS = {
   // specs and falls back to the DEFAULT ordering (== work_items:claim_next) — a no-breakage
   // kill-switch. DEFAULT ON (alpha flags-default-on; the resolver + spec store are complete + tested).
   SCHEDULER_SPEC_CLAIM: "papercusp-scheduler-spec-claim",
+  // WI-5940 — gate the SELF-SELECT claim paths (scheduler:get_next + its work_items:claim_next
+  // wrapper) on the caller's own context pressure: ON ⇒ a caller whose cached bucket is CRITICAL
+  // gets a typed compact-first verdict (claim_refused_context_critical) instead of an item, since
+  // an agent that compacts mid-task carries in-flight state worst. OFF ⇒ today's behavior.
+  // Only 'critical' refuses; 'ok'/'high'/unknown always serve, and the caller can override with
+  // ignoreContextPressure when its LIVE gauge contradicts the ~2-min-stale cached bucket — so an
+  // over-eager refusal can never manufacture a false drain. DEFAULT ON (complete + tested;
+  // cuttable kill-switch if the gate ever withholds work it should have served).
+  SCHEDULER_CONTEXT_PRESSURE_GATE: "papercusp-scheduler-context-pressure-gate",
   // work-item-deps-and-readiness-2026-06-22 P-005: the scheduler claim reads the maintained
   // readiness sidecar (work_item_blocked — an indexed anti-join) instead of the inline per-claim
   // NOT EXISTS subquery. Behavior-identical; a performance cutover. DEFAULT ON (derived
