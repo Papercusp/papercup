@@ -436,14 +436,12 @@ export interface OrientResult {
    *  (fleet-reliability-verification-2026-07-10 P-007). Absent for a non-leader / non-fleet
    *  caller, or in full mode; null on a failed fold. */
   leaderBrief?: unknown | null;
-  /** EI-18731216945970087: present ONLY when composeOrient caught a presence/registry
-   *  leadership DRIFT — the caller's presence row (coord_presence.fleet_slug/fleet_role)
-   *  showed no fleet at all on a monitor tick, but `harness_shared.agent_fleets
-   *  .leader_owner_id` (the durable registry fact) says they lead one. The
-   *  `leaderBrief` above is still folded for the recovered fleet — this field exists
-   *  so the drift itself is LOUD (never a silent leaderBrief omission) and so a
-   *  repeat caller knows their presence row is not settling. Absent on the (default)
-   *  agreeing path. */
+  /** EI-18731216945970087 / EI-20201050911711528: present ONLY when composeOrient
+   *  caught a presence/registry leadership DRIFT — the caller's presence projection
+   *  showed no fleet or a non-leader role, but `agent_fleets.leader_owner_id` says
+   *  they lead one. The `leaderBrief` above is still folded for the recovered fleet;
+   *  this field makes the disagreement LOUD instead of silently omitting the brief.
+   *  Absent on the agreeing path. */
   presenceDrift?: { fleet: string; note: string };
   /** Monitor-mode fleet DELTA (fleet-deltas-leader-primitives P-004): what changed
    *  in the fleet since this caller's last monitor orient, diffed server-side
@@ -514,6 +512,38 @@ export interface OrientRoleFolds {
   paneContext?: () => Promise<string | null>;
   /** Reads the papercup-deep pane's unanswered directed-question thread. */
   deepWork?: () => Promise<NonNullable<OrientResult['deepWork']> | null>;
+}
+
+/**
+ * Overlay the effective membership onto the caller's own fleet-assignment row.
+ *
+ * `fleet:assignments` is a separate projection from the registry-backed
+ * leadership check. During the projection lag that caused EI-20201050911711528,
+ * the same orient could therefore say `fleetRole:'member'` in `me` while omitting
+ * `leaderBrief` because the registry already knew the caller was the leader. Keep
+ * this narrow: only the row belonging to `ownerId` is changed, and an absent or
+ * malformed assignments payload is passed through unchanged.
+ */
+function overlaySelfFleetMembership(
+  me: unknown,
+  ownerId: string | undefined,
+  membership: { fleetSlug: string | null; fleetRole: string | null } | null | undefined,
+): unknown {
+  if (!ownerId || !membership?.fleetSlug || !membership.fleetRole) return me;
+  if (!me || typeof me !== 'object' || Array.isArray(me)) return me;
+  const record = me as { agents?: unknown[] };
+  if (!Array.isArray(record.agents)) return me;
+  let changed = false;
+  const agents = record.agents.map((agent) => {
+    if (!agent || typeof agent !== 'object' || Array.isArray(agent)) return agent;
+    const row = agent as Record<string, unknown>;
+    const rowOwnerId = row.agentId ?? row.ownerId;
+    if (rowOwnerId !== ownerId) return agent;
+    if (row.fleetSlug === membership.fleetSlug && row.fleetRole === membership.fleetRole) return agent;
+    changed = true;
+    return { ...row, fleetSlug: membership.fleetSlug, fleetRole: membership.fleetRole };
+  });
+  return changed ? { ...record, agents } : me;
 }
 
 /** PURE (P-016): which role-specific folds a caller's dispatch role earns.
