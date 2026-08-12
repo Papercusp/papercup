@@ -199,6 +199,7 @@ export function schemaToText(inputSchema: unknown): string | null {
       maxLength?: unknown;
       minItems?: unknown;
       maxItems?: unknown;
+      items?: unknown;
       pattern?: unknown;
     };
     // EI-13164: an `enum` property's JSON-schema output ALSO carries `type:"string"`
@@ -251,9 +252,25 @@ export function schemaToText(inputSchema: unknown): string | null {
     const isEnum = !!(enumValues && enumValues.length > 0);
     const boundText = bound && !isEnum ? `(${bound})` : '';
     const patternText = pattern && !isEnum ? `~/${pattern}/` : '';
+    // EI-20250807342723221: an array's item enum is part of the caller-facing
+    // contract too. JSON Schema places it under `items`, so checking only the
+    // property itself turns `states: z.array(z.enum(['open', 'failing']))`
+    // into a misleading bare `array` and hides the only accepted values.
+    const itemSchema = p.items && typeof p.items === 'object' && !Array.isArray(p.items)
+      ? p.items as { enum?: unknown }
+      : null;
+    const itemEnumValues = Array.isArray(itemSchema?.enum)
+      ? itemSchema.enum.filter((v): v is string | number | boolean =>
+          typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean',
+        )
+      : [];
+    const itemText = p.type === 'array' && itemEnumValues.length > 0
+      ? `<enum(${itemEnumValues.join('|')})>`
+      : '';
     const required = entry.presentIn === branches.length && entry.requiredInAll;
     const head = `${name}${required ? '' : '?'}${type ? `:${type}${boundText}${patternText}${nested}` : ''}`;
-    parts.push(desc ? `${head} ${desc}` : head);
+    const rendered = `${head}${itemText}`;
+    parts.push(desc ? `${rendered} ${desc}` : rendered);
   }
   return parts.length > 0 ? `${unionHint ? `one-of:${unionHint}; ` : ''}${parts.join('; ')}` : null;
 }

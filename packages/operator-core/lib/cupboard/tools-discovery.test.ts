@@ -306,6 +306,23 @@ describe('schemaToText — compact arg-schema text (tools:find searchable params
       expect(schemaToText({ properties: { paths: { type: 'array', maxItems: 20 } } })).toBe('paths?:array(≤20)');
     });
 
+    it('EI-20250807342723221: an array item enum is visible in discovery text', () => {
+      // zod-to-json-schema places z.array(z.enum([...]))'s enum under `items`,
+      // not beside the property type. The allowed values must survive the
+      // compact projection or tools:find teaches callers an invalid shape.
+      const txt = schemaToText({
+        properties: {
+          states: {
+            type: 'array',
+            maxItems: 20,
+            items: { type: 'string', enum: ['open', 'failing'] },
+            description: 'claimable states',
+          },
+        },
+      });
+      expect(txt).toBe('states?:array(≤20)<enum(open|failing)> claimable states');
+    });
+
     it('no bound declared → no parens (unchanged from before)', () => {
       expect(schemaToText({ properties: { key: { type: 'string' } } })).toBe('key?:string');
     });
