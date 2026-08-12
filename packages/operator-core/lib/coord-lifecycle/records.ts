@@ -72,6 +72,28 @@ export const CompletionCoverageSchema = z.object({
 });
 export type CompletionCoverage = z.infer<typeof CompletionCoverageSchema>;
 
+/**
+ * EI-18682004530991057 (proposal 3) — what tree a completion's verification was
+ * observed against. See the `treeStamp` field on
+ * {@link CompletionVerificationEvidenceSchema} for why this is server-stamped.
+ *
+ * Deliberately carries ONLY what can be observed EXACTLY and CHEAPLY. It does not
+ * carry a dirty/clean verdict: every spawn-free way to compute one is a heuristic
+ * (an mtime newer than `.git/index` cannot distinguish "touched" from "modified"),
+ * and a heuristic verdict written into a durable record that later readers trust
+ * WITHOUT re-checking is worse than an absent field — it manufactures exactly the
+ * confident-but-wrong reading this whole evidence surface exists to prevent. The
+ * honest half ships; the guessed half does not.
+ */
+export const CompletionTreeStampSchema = z.object({
+  /**
+   * Full HEAD commit sha of the integration checkout at close time, read directly
+   * from the git refs (never via a `git` subprocess — see completionTreeStamp()).
+   */
+  headSha: z.string().regex(/^[0-9a-f]{40}$|^[0-9a-f]{64}$/),
+});
+export type CompletionTreeStamp = z.infer<typeof CompletionTreeStampSchema>;
+
 export const CompletionVerificationEvidenceSchema = z.object({
   /** Files/modules changed, for audit queries without reading completion prose. */
   filesChanged: z.array(z.string().min(1)).optional(),
@@ -106,6 +128,29 @@ export const CompletionVerificationEvidenceSchema = z.object({
    * non-authority-bearing carry-through of the prose the caller already wrote.
    */
   summary: z.string().min(1).optional(),
+  /**
+   * EI-18682004530991057 (proposal 3) — the commit the verification was run against,
+   * stamped by the SERVER at close time rather than asked of the caller.
+   *
+   * Why it is not optional-in-spirit: `testResult: "172 passed / 0 failed"` names no
+   * particular code. On this shared checkout every agent edits ONE working tree, so a
+   * result recorded without a commit is not weak evidence, it is unanchored evidence —
+   * a later reader cannot tell whether it describes the code they are looking at, an
+   * older revision, or a tree that was mid-edit by a peer when the suite ran. The
+   * sibling EI-18681435059177620 measured this directly: three measurements of one file
+   * were each invalidated by an edit landing on top, producing both a false alarm AND a
+   * false all-clear inside 25 minutes.
+   *
+   * SERVER-STAMPED on purpose. Asking the caller for it would put the one field a
+   * reviewer most needs to trust in the hands of the party whose claim is being checked,
+   * and it is the field most likely to be filled in from memory — the same failure mode
+   * `filesChanged` already exhibits (EI-20093150500083378: 8 of 12 declared paths did not
+   * exist). A caller-supplied sha is a testimonial; an observed one is evidence.
+   *
+   * Absent whenever it could not be observed (no repo root, unreadable/ambiguous git
+   * refs). Absence means "not observed", never "clean" or "unknown-but-fine".
+   */
+  treeStamp: CompletionTreeStampSchema.optional(),
 });
 export type CompletionVerificationEvidence = z.infer<typeof CompletionVerificationEvidenceSchema>;
 
