@@ -2088,6 +2088,36 @@ export function tryRematerializeFromArchive(sessionId: any, sourceKind?: null, {
     timeoutMs?: number | undefined;
 }): Promise<any>;
 /**
+ * Re-verify — and if necessary RESTORE — a resume's transcript in the last
+ * moment before exec. This closes the owner-hit race of 2026-08-12: `psu
+ * --resume <id>` printed "resuming from its per-session CLAUDE_CONFIG_DIR" and
+ * then died on `No conversation found with session ID: …`.
+ *
+ * Both resume paths resolve the session — and check that its transcript is on
+ * disk — BEFORE prompting for backend/model and then account. Those prompts are
+ * HUMAN-paced, while archive-at-death deletes an ended session's transcript on a
+ * fixed 15s timer (SETTLE_DELAY_MS, session-archive-hook.ts). So resuming a
+ * JUST-ENDED session — precisely what claude's own exit message tells you to do
+ * ("Resume this session with: claude --resume <id>") — lands inside that window:
+ * the existence check passes, the timer fires while the user is answering the
+ * prompts, and psu execs an id that can no longer resolve. Measured on adv 15148:
+ * archived + deleted 13:03:42.406, launched 13:03:55.438, 13s apart.
+ *
+ * The bytes are never lost — archive-at-death PUTS them in the DB session archive
+ * before deleting — so the fix is to look again AFTER the prompts and
+ * rematerialize when the file has gone. Returns true when there is something to
+ * resume, false when there genuinely is not (the caller must then refuse to
+ * launch rather than hand the agent an id that cannot resolve).
+ *
+ * Only claude/codex have an id-addressable on-disk transcript; omp resumes by
+ * thread name and is passed through unchanged. Injectable `home`/`rematerialize`
+ * for tests; never throws.
+ */
+export function ensureResumeTranscriptPresent(source: any, { home, rematerialize }?: {
+    home?: string | undefined;
+    rematerialize?: typeof tryRematerializeFromArchive | undefined;
+}): Promise<boolean>;
+/**
  * Is a claude session's isolated `CLAUDE_CONFIG_DIR` LAUNCH-READY, or merely
  * transcript-bearing? The .mjs mirror of operator-core's
  * `isInteractiveClaudeConfigReady` — duplicated for the same reason
