@@ -42,15 +42,21 @@ vi.mock('../sidecar-socket/pid-keyed-socket', async (importOriginal) => ({
 }));
 /** Captures the `systemctl --user kill …` the shutdown paths issue against the
  *  sidecar's OWN scope (EI-20200233989444731). Stubbed so a unit test never
- *  signals a real cgroup on the developer's box. */
-const execFileSyncMock = vi.hoisted(() => vi.fn(() => Buffer.from('')));
+ *  signals a real cgroup on the developer's box.
+ *
+ *  The parameters are TYPED on purpose: an untyped `vi.fn(() => …)` gives
+ *  `mock.calls` an empty-tuple element type, so every `calls[n][0]` read below
+ *  fails typecheck with TS2493 while the test itself passes. */
+const execFileSyncMock = vi.hoisted(() =>
+  vi.fn((_file: string, _args: readonly string[]) => Buffer.from('')),
+);
 
 // Partial mock — keep the real surface for everything this file does not stub
 // (a full replacement breaks at import time on transitive promisify(execFile)).
 vi.mock('node:child_process', async (importOriginal) => ({
   ...(await importOriginal<typeof import('node:child_process')>()),
   spawn: (...a: unknown[]) => spawnMock(...a),
-  execFileSync: (...a: unknown[]) => execFileSyncMock(...(a as [])),
+  execFileSync: (...a: unknown[]) => execFileSyncMock(...(a as [string, readonly string[]])),
 }));
 
 // Hermetic ledger. The real store needs Postgres, and this file is about the
@@ -205,10 +211,10 @@ describe('spawner sidecar cgroup confinement (EI-19479764372783341)', () => {
       await expect(p).rejects.toThrow(/startup timeout/i);
 
       const scopeKill = execFileSyncMock.mock.calls.find(
-        (c) => c[0] === 'systemctl' && Array.isArray(c[1]) && (c[1] as string[]).includes('kill'),
+        (c) => c[0] === 'systemctl' && c[1]?.includes('kill'),
       );
       expect(scopeKill, 'the startup-timeout path must signal the sidecar scope').toBeTruthy();
-      const argv = scopeKill![1] as unknown as string[];
+      const argv = scopeKill![1];
       expect(argv).toEqual(expect.arrayContaining(['--user', 'kill', '--signal=SIGTERM']));
       expect(
         argv.some((a) => /^pc-.+\.scope$/.test(a)),
@@ -241,7 +247,7 @@ describe('spawner sidecar cgroup confinement (EI-19479764372783341)', () => {
       await expect(p).rejects.toThrow(/startup timeout/i);
 
       const scopeKill = execFileSyncMock.mock.calls.find(
-        (c) => c[0] === 'systemctl' && Array.isArray(c[1]) && (c[1] as string[]).includes('kill'),
+        (c) => c[0] === 'systemctl' && c[1]?.includes('kill'),
       );
       expect(scopeKill, 'no scope exists, so there is nothing to signal').toBeUndefined();
       // ...and the client kill is then the ONLY thing standing between us and a leak.
