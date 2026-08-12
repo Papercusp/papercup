@@ -15,7 +15,8 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { setWorkItemStateWithAliasInfo } from '../../work-items';
+import { getWorkItem, setWorkItemStateWithAliasInfo } from '../../work-items';
+import { resolvePlanItemStamp } from '../../scheduler/plan-item-lane-guard';
 // From the LEAF module, not '../../work-items': unit tests here mock that module
 // wholesale, which would make the guard `undefined` at exactly this call site.
 import { harnessScopeMismatch } from '../../work-items-harness-scope';
@@ -111,12 +112,13 @@ export default defineTool({
   name: 'work_items:set_state',
   profile: 'engineer',
   description:
-    'Set lifecycle state for one OR many work-items. BOTH families store the UNIFIED enum: open|wip|blocked|needs-human|done|dropped (open = the single claimable token; legacy feature passed/deprecated + issue resolved/closed are still accepted and fold to done/dropped, preserving the nuance in terminal_reason). EI-9360: an issue set needs-human auto-sets payload.needsHuman; blocked auto-applies the WI-2797 self-select claim hold — both durably exclude the item from claim_next/scheduler:get_next (still directly claimable by id) without a separate call; see aliasNote. Reopening another agent\'s terminal completion is rejected unless `force:true`. Single: { id, state }. Many same state: { ids:[…], state }. Many heterogeneous: items:[{ id, state, harness?, decision?, force? }]. Returns { ok, results:[{ ok, id, workItem?, aliased, requestedState, appliedState, aliasNote? | error }], counts } — check `aliased`/`appliedState`, not just `ok` (EI-7712).',
+    'Set lifecycle state for one OR many work-items. BOTH families store the UNIFIED enum: open|wip|blocked|needs-human|done|dropped (open = the single claimable token; legacy feature passed/deprecated + issue resolved/closed are still accepted and fold to done/dropped, preserving the nuance in terminal_reason). EI-9360: an issue set needs-human auto-sets payload.needsHuman; blocked auto-applies the WI-2797 self-select claim hold — both durably exclude the item from claim_next/scheduler:get_next (still directly claimable by id) without a separate call; see aliasNote. Plan-linked feature items are an exception: direct state:"blocked" is refused because the plan item is the source of truth; use plans:set-status to block that plan item. Reopening another agent\'s terminal completion is rejected unless `force:true`. Single: { id, state }. Many same state: { ids:[…], state }. Many heterogeneous: items:[{ id, state, harness?, decision?, force? }]. Returns { ok, results:[{ ok, id, workItem?, aliased, requestedState, appliedState, aliasNote? | error }], counts } — check `aliased`/`appliedState`, not just `ok` (EI-7712).',
   guidance: {
-    when: 'Use after moving lifecycle. Batch a wave with { ids:[…], state } or items:[…]. Prefer work_items:complete for terminal evidence. needs-human/blocked auto-exclude from self-select (EI-9360) — no extra call needed; un-park blocked via release{claimHold:false}. If already terminally completed, read terminalOwner/ref before any `force:true` reopen.',
+    when: 'Use after moving lifecycle. Batch a wave with { ids:[…], state } or items:[…]. Prefer work_items:complete for terminal evidence. needs-human/blocked auto-exclude from self-select (EI-9360) — no extra call needed; un-park blocked via release{claimHold:false}. For a plan-linked feature item, use plans:set-status{status:"blocked"} because the plan item is the source of truth; this verb refuses a direct blocked write there. If already terminally completed, read terminalOwner/ref before any `force:true` reopen.',
     chaining: 'work_items:claim → … → work_items:set_state { state }.',
     seeAlso: [
       'work_items:complete (terminal state WITH a structured completion record)',
+      'plans:set-status { item, status:"blocked" } (the source-of-truth park for plan-linked feature items)',
       'work_items:release (drop a claim without changing state; claimHold:true parks an issue-family item out of claim_next self-select — WI-2797)',
       'work_items:set_priority (steer backlog order, not lifecycle state)',
     ],
@@ -193,6 +195,20 @@ export default defineTool({
       list,
       async (it) => {
         const harness = it.harness ?? args.harness;
+        if (String(it.state).trim().toLowerCase() === 'blocked') {
+          const current = await getWorkItem(it.id, harness);
+          if (current) {
+            const planStamp = await resolvePlanItemStamp(current);
+            if (planStamp) {
+              const itemIds = planStamp.item_ids.join(', ');
+              throw new Error(
+                `work-item '${it.id}' is linked to plan item(s) ${planStamp.plan_slug}#${itemIds}; ` +
+                  'direct state:"blocked" writes are not durable because the plan item is the source of truth. ' +
+                  `Use plans:set-status { slug: "${planStamp.plan_slug}", item: "${planStamp.item_ids[0]}", status: "blocked" } instead.`,
+              );
+            }
+          }
+        }
         // P-114 arm-call-site: gate-FIRST (before the mutation) so the captured prior-state
         // handle is faithful; best-effort (never fails the verb); null on the common path.
         const armPlan = await planWorkItemArm(

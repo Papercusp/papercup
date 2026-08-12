@@ -47,7 +47,7 @@ export default defineTool({
     notWhen: 'A per-item `not_holder` means a LIVE peer currently holds it — coordinate with the `holder` (coord:send), do not blind-force: force is for reclaiming a dead/stuck agent\'s item, never for clearing a peer\'s in-flight claim.',
     chaining: 'work_items:claim → … → work_items:release.',
     seeAlso: [
-      'work_items:set_state { state:"blocked" } (feature-family park with a reason; issue-family aliases blocked back to open — release { claimHold:true } is the durable self-select exclusion)',
+      'work_items:set_state { state:"blocked" } (standalone feature-family park; plan-linked feature items must use plans:set-status because the plan item is the source of truth; issue-family aliases blocked back to open — release { claimHold:true } is the durable self-select exclusion)',
       'work_items:hold_open (hold the item open — stamps held_open_by + blocks non-holder terminal transitions — WITHOUT releasing your claim)',
       'work_items:claim (re-take it later, or claim a held item directly by id — a hold only excludes self-select)',
     ],

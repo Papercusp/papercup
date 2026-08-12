@@ -7,12 +7,16 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: () => ({ ownerId: 'me' }) }));
-vi.mock('../../work-items', () => ({ setWorkItemStateWithAliasInfo: vi.fn() }));
+vi.mock('../../work-items', () => ({ getWorkItem: vi.fn(), setWorkItemStateWithAliasInfo: vi.fn() }));
+vi.mock('../../scheduler/plan-item-lane-guard', () => ({ resolvePlanItemStamp: vi.fn() }));
 vi.mock('./arm-reversible-work-item', () => ({ planWorkItemArm: vi.fn(async () => null), commitWorkItemArm: vi.fn() }));
 
-import { setWorkItemStateWithAliasInfo } from '../../work-items';
+import { getWorkItem, setWorkItemStateWithAliasInfo } from '../../work-items';
+import { resolvePlanItemStamp } from '../../scheduler/plan-item-lane-guard';
 import { planWorkItemArm } from './arm-reversible-work-item';
+const getM = vi.mocked(getWorkItem);
 const setM = vi.mocked(setWorkItemStateWithAliasInfo);
+const planStampM = vi.mocked(resolvePlanItemStamp);
 const armM = vi.mocked(planWorkItemArm);
 const tool = (await import('./set_state')).default;
 
@@ -27,6 +31,8 @@ function noAlias(id: string, state: string) {
 beforeEach(() => {
   vi.clearAllMocks();
   armM.mockResolvedValue(null as never);
+  getM.mockResolvedValue(null);
+  planStampM.mockResolvedValue(null);
   setM.mockImplementation(async (id: string, state: string) => noAlias(id, state));
 });
 
@@ -78,6 +84,32 @@ describe('work_items:set_state handler (keyed-array)', () => {
     const b = await body({ id: 'WI-1', state: 'bogus' });
     expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-1' });
     expect(String(b.results[0].error)).toMatch(/cannot take state/);
+  });
+
+  it('refuses direct blocked writes for plan-linked work-items and points to the plan source of truth', async () => {
+    getM.mockResolvedValue({ id: 'WI-plan', family: 'feature', payload: {}, harness: 'papercusp' } as never);
+    planStampM.mockResolvedValue({ plan_slug: 'plan-slug', item_ids: ['P-015'] });
+
+    const b = await body({ id: 'WI-plan', state: 'blocked' });
+
+    expect(b).toMatchObject({ ok: false, counts: { ok: 0, failed: 1 } });
+    expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-plan' });
+    expect(String(b.results[0].error)).toMatch(/plan-slug#P-015/);
+    expect(String(b.results[0].error)).toMatch(/plans:set-status/);
+    expect(setM).not.toHaveBeenCalled();
+    expect(armM).not.toHaveBeenCalled();
+  });
+
+  it('keeps standalone blocked writes on the existing lifecycle path', async () => {
+    const b = await body({ id: 'WI-standalone', state: 'blocked' });
+
+    expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
+    expect(setM).toHaveBeenCalledWith('WI-standalone', 'blocked', {
+      harness: undefined,
+      by: 'me',
+      completionRef: undefined,
+      force: undefined,
+    });
   });
 });
 
