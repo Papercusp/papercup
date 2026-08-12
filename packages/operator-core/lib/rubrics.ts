@@ -18,7 +18,8 @@
  *   • WRITES (proposeRubric / ratifyRubric) author/promote a rubric-template plan through
  *     the canonical plan-write path (withPlanLock): propose upserts the plan + its
  *     validated template_data (status draft = a "proposed" rubric); ratify flips the
- *     plan status → active. The Queen ratifies a rubric by promoting its plan.
+ *     plan status → active. An independent reviewer or owner/su ratifies a rubric by
+ *     promoting its plan; the proposer≠ratifier invariant is enforced in this module.
  *
  * The v1 standalone table (harness_shared.rubrics, mig 326/327) and the P-006
  * transitional plans∪table union are GONE (P-007 Stage 2): the seeded
@@ -242,7 +243,7 @@ export function planStatusToRubricStatus(planStatus: string | null, archived = f
 }
 
 /** The inverse of planStatusToRubricStatus, for the WRITE path: a rubric status → the
- *  plan frontmatter status to author. proposed → draft (awaiting Queen ratification),
+ *  plan frontmatter status to author. proposed → draft (awaiting independent ratification),
  *  active → active (ratified), retired → superseded. */
 export function rubricStatusToPlanStatus(status: RubricStatus): string {
   switch (status) {
@@ -677,7 +678,7 @@ export interface ProposeRubricInput {
   by?: string;
   /**
    * Lifecycle status to write. Defaults to 'proposed' (the rubrics:propose tool path,
-   * D-001: agents propose, the Queen ratifies). Seed/test paths may pass 'active' to
+   * D-001: agents propose, an independent reviewer ratifies). Seed/test paths may pass 'active' to
    * author a ratified rubric directly. Idempotent on rubricId: re-propose updates the
    * plan content + template_data and sets the status.
    */
@@ -1074,8 +1075,9 @@ criteria, ratingScale, methodRef) live in \`template_data\`, queried via
 rubrics:list/get/search; this body is the narrative model/method context. Status
 \`${planStatus}\` ⇒ a ${planStatusToRubricStatus(planStatus)} rubric.
 
-**Next:** The Mug ratifies a proposed rubric by promoting this plan to \`active\`
-(rubrics:ratify / plans:set-plan-status). Revise the criteria via plans:set-template-data.
+**Next:** An independent reviewer (or the owner/su) ratifies a proposed rubric by promoting
+this plan to \`active\` (rubrics:ratify / plans:set-plan-status); the proposer cannot
+self-ratify. Revise the criteria via plans:set-template-data.
 
 ## Background
 
@@ -1343,7 +1345,7 @@ async function readRawRubricTemplateData(rubricId: string): Promise<Record<strin
 }
 
 /**
- * Ratify a proposed rubric → active (D-001: the Queen/owner gate) by promoting its plan
+ * Ratify a proposed rubric → active (D-001: independent reviewer/owner gate) by promoting its plan
  * (status → active). Returns the activated rubric, or null if no rubric-template plan
  * with that id exists.
  *

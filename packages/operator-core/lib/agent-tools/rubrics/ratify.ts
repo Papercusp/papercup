@@ -4,10 +4,11 @@
  * bulk-endpoint-standardization-2026-06-21). An active rubric is the shared
  * definition EVERY agent grades against, so the bar is higher than a one-off observation.
  *
- * D-001 GATE: the ratifying authority is the QUEEN/owner (fully autonomous — not a human
- * sign-off). v1 enforces this softly: the queen role is in COORD_ROLES, and superuser
- * callers bypass the role gate (so the owner/su can seed). Hardening the gate to
- * queen-only (via the autonomy policy) is a v2 follow-up; the intent is documented here.
+ * D-001 GATE: ratification is an INDEPENDENT REVIEW step, not a self-approval. Any
+ * coordination agent (or the owner/su) may ratify after reviewing a proposal, but the
+ * persisted proposer≠ratifier check remains enforced by ratifyRubric. The retired Mug/Queen
+ * worker is no longer a required counterparty; proposal dwell is surfaced by the rubric
+ * proposal-dwell watchdog so an independent reviewer can pick it up.
  *
  * Bulk by default (the house keyed-array contract): ratify ONE inline ({ rubricRef
  * }), MANY (rubricRefs:[…]) → { ok, results:[{ ok, rubricId, rubric? | error }],
@@ -26,11 +27,11 @@ export default defineTool({
   name: 'rubrics:ratify',
   profile: 'engineer',
   description:
-    'Ratify one OR many proposed rubrics → status "active" (D-001: the Mug/owner gate — an active rubric becomes the shared definition every agent grades against). Single: { rubricRef }. Many: { rubricRefs:[…] }. Returns { ok, results:[{ ok, rubricId, rubric?, completeness?, replicationSqlCheck? | error }], counts } — correlate by rubricId, not by position; a not-found ref never fails the rest. Each result reports testing-procedure `completeness` (criteria lacking their own replication drill + whether the rubric-level methodRef is set) and `replicationSqlCheck` (drill SQL that fails against live PG — read its `summary`; `findings` is REAL defects only) — the owner shape is one procedure per aspect PLUS one main methodRef; review the gaps before ratifying.',
+    'Ratify one OR many proposed rubrics → status "active" (D-001: an independent reviewer gate — any coordination agent or owner/su may ratify after review, but never the proposer). Single: { rubricRef }. Many: { rubricRefs:[…] }. Returns { ok, results:[{ ok, rubricId, rubric?, completeness?, replicationSqlCheck? | error }], counts } — correlate by rubricId, not by position; a not-found ref never fails the rest. Each result reports testing-procedure `completeness` (criteria lacking their own replication drill + whether the rubric-level methodRef is set) and `replicationSqlCheck` (drill SQL that fails against live PG — read its `summary`; `findings` is REAL defects only) — review the gaps before ratifying.',
   guidance: {
-    when: 'You are the Mug/owner reviewing proposed rubric(s) and judge them sound shared standards. Activating one makes every agent grade structured observations against it. Ratify several at once via rubricRefs:[…].',
-    notWhen: 'Authoring or revising content — rubrics:propose. You are not the ratifying authority — leave it proposed and flag the Mug.',
-    chaining: 'rubrics:list { status: "proposed" } → rubrics:get → rubrics:ratify { rubricRefs:[…] }. Bulk: single | rubricRefs[] → { ok, results, counts }; correlate by rubricId not position; one failure never fails the rest.',
+    when: 'You are an independent reviewer (or the owner/su) reviewing proposed rubric(s) and judge them sound shared standards. Activating one makes every agent grade structured observations against it. Ratify several at once via rubricRefs:[…].',
+    notWhen: 'Authoring or revising content — rubrics:propose. If you are the proposer, leave it proposed for another reviewer; do not self-ratify.',
+    chaining: 'rubrics:list { status: "proposed" } → rubrics:get → review the criteria/method → rubrics:ratify { rubricRefs:[…] }. Bulk: single | rubricRefs[] → { ok, results, counts }; correlate by rubricId not position; one failure never fails the rest.',
     seeAlso: [
       'rubrics:propose (author or revise content, not activate)',
       'rubrics:list { status:"proposed" } (find rubrics awaiting ratification)',
