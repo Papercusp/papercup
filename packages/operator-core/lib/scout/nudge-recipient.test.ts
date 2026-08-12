@@ -497,19 +497,31 @@ describe('deliverScoutNudge — the retirement gate, end to end (P-037)', () => 
     );
   });
 
-  // CALIBRATION — the identical fixture while the tier runs. Without it these
-  // assertions would also pass if deliverScoutNudge had simply stopped doing anything.
-  it('CALIBRATION: while the tier runs, the identical call DOES wake the Mug and park the slot', async () => {
-    getFlag.mockResolvedValue(true);
+  // CALIBRATION — this used to run the identical fixture WITH THE TIER ON
+  // (`getFlag.mockResolvedValue(true)`) and assert the Mug was woken, proving the
+  // "not called" assertions above were not just measuring a dead function.
+  //
+  // P-068/D-098 makes that case unconstructible: `mugKettleSystemEnabled()` is now
+  // a permanent `false` and never consults `getFlag` at all, so mocking the flag
+  // true changes nothing and the old assertion could only ever fail. (That is the
+  // exact red WI-38231 reported — the test was unsatisfiable by construction, not
+  // broken.)
+  //
+  // The vacuity risk is unchanged, so this is REPLACED rather than deleted: the
+  // positive control now runs on the surviving su rung. Both spies the assertions
+  // above depend on must demonstrably FIRE here, or a `not.toHaveBeenCalled()`
+  // up there would be silence rather than evidence.
+  it('CALIBRATION: the identical call still delivers — via the su rung, on the same spies', async () => {
     const r = await deliverScoutNudge({
       workspaceId: WS,
       mugOwner: 'mug-1',
       summary: 'Scout-draft review backstop: 3 drafts unreviewed',
       source: 'scout-draft-review',
+      wakeSu: true,
     });
 
-    expect(r.kind).toBe('mug');
+    expect(r.kind).toBe('su');
+    expect(sendMessage.mock.calls.filter((c) => toOf(c).includes('su-a'))).toHaveLength(1);
     expect(wakeRecipients).toHaveBeenCalledTimes(1);
-    expect(sendMessage.mock.calls.filter((c) => toOf(c).includes('@role:mug'))).toHaveLength(1);
   });
 });

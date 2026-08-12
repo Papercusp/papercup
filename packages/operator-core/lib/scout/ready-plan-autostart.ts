@@ -86,7 +86,11 @@
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
-import { listBlenderMaintenanceScopes, mugKettleSystemEnabled } from '../pot/started';
+import {
+  listBlenderMaintenanceScopes,
+  listBlenderMaintenanceWorkspaceIds,
+  mugKettleSystemEnabled,
+} from '../pot/started';
 import { resolveMugOwner } from '../pot/placement-watchdog';
 import { deliverScoutNudge } from './nudge-recipient';
 import { claimWatchdogFire, recentWatchdogFires } from '../pot/watchdog';
@@ -318,12 +322,72 @@ async function fireDecomposeWake(
  * for ratified plans with no items. Never throws. DEFAULT-SAFE: nothing ready ⇒
  * nothing happens. Kill switch: PAPERCUSP_SCOUT_READY_AUTOSTART=0.
  */
-export async function scoutReadyAutostartSweep(): Promise<ScoutReadyAutostartResult[]> {
+/** DI seams for the empty-population probe — mirrors outcome-refresh-sweep's deps shape. */
+export interface ScoutReadyAutostartSweepDeps {
+  listBlenderMaintenanceWorkspaceIds?: typeof listBlenderMaintenanceWorkspaceIds;
+  countEligibleReadyPlans?: (workspaceId: string) => Promise<number>;
+}
+
+/**
+ * How many ready scout plans WOULD this sweep have started, workspace-wide? Deliberately
+ * the same selector `readScoutReadyCandidates` uses, minus the per-harness narrowing —
+ * an alarm must count the population the sweep was supposed to serve, not a proxy.
+ */
+async function countEligibleReadyPlans(workspaceId: string): Promise<number> {
+  const { sql } = getOrgPg();
+  const rows = await sql<{ n: string }[]>`
+    SELECT count(*)::text AS n
+      FROM harness_shared.harness_plans
+     WHERE workspace_id = ${workspaceId}
+       AND status = 'ready'
+       AND archived = false
+       AND (op_status IS NULL OR op_status <> 'started')
+       AND content LIKE ${'%\norigin: scout\n%'}`;
+  return Number(rows[0]?.n ?? 0);
+}
+
+export async function scoutReadyAutostartSweep(
+  deps: ScoutReadyAutostartSweepDeps = {},
+): Promise<ScoutReadyAutostartResult[]> {
   const results: ScoutReadyAutostartResult[] = [];
   if (!scoutReadyAutostartEnabled()) return results;
   try {
     const scopes = await listBlenderMaintenanceScopes();
-    if (scopes.length === 0) return results;
+    if (scopes.length === 0) {
+      // THE SILENT-NO-OP PROBE (D-074, and the gap an independent acceptance grade
+      // caught: this was the ONE of five retained sweeps that early-returned bare).
+      // An empty scope list is ORDINARY when there is nothing to do, and an ALARM only
+      // when it hides eligible work — so probe workspace-wide for ready scout plans
+      // this sweep would have started, and stay silent unless some exist. Without this
+      // the sweep is indistinguishable from healthy while a ratified plan waits
+      // forever, which is exactly the failure D-074 named, re-keyed onto the new
+      // registry-derived population.
+      let eligibleBacklogCount = 0;
+      try {
+        const workspaceIds = (deps.listBlenderMaintenanceWorkspaceIds ?? listBlenderMaintenanceWorkspaceIds)();
+        const countFn = deps.countEligibleReadyPlans ?? countEligibleReadyPlans;
+        for (const workspaceId of workspaceIds) {
+          eligibleBacklogCount += await countFn(workspaceId);
+        }
+      } catch {
+        // Fail SILENT, never loud: the probe exists to add an alarm, so a probe that
+        // cannot read must not manufacture one (nor fail the sweep it is auditing).
+        return results;
+      }
+      if (eligibleBacklogCount > 0) {
+        const reason =
+          `${eligibleBacklogCount} ready scout plan(s) are eligible for autostart, but no ` +
+          'registered Blender scopes were evaluated';
+        console.warn(`[scout-ready-autostart] ALERT: ${reason}`);
+        results.push({
+          workspaceId: '*',
+          installSlug: '*',
+          outcome: 'error',
+          reason,
+        });
+      }
+      return results;
+    }
     // P-070: resolve the retirement gate ONCE per sweep, not once per plan — the
     // flag cannot meaningfully change inside a single 30s tick, and the per-plan
     // read would be N PostHog/flag reads for one answer.

@@ -81,6 +81,57 @@ describe('scoutReadyAutostartSweep population', () => {
 
     expect(maintenanceScopesMock).toHaveBeenCalledTimes(1);
   });
+
+  /**
+   * THE SILENT-NO-OP PROBE (D-074). This sweep was the ONE of five retained Blender
+   * consumers that early-returned bare on an empty scope list — caught by an independent
+   * acceptance grade, not by this suite, because "returns []" is exactly what a healthy
+   * sweep with no candidates also does. The distinguishing question is whether eligible
+   * work EXISTS while nothing was evaluated, so that is what these two cases pin.
+   */
+  it('ALARMS when the scope list is empty but ready scout plans are eligible', async () => {
+    maintenanceScopesMock.mockReset().mockResolvedValueOnce([]);
+    // The operator-visible half of the alarm is the console line, so assert it rather
+    // than merely silencing it (this suite fails on an unasserted console.warn).
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const results = await scoutReadyAutostartSweep({
+      listBlenderMaintenanceWorkspaceIds: () => ['papercusp-workspace', 'other-ws'],
+      countEligibleReadyPlans: async (ws) => (ws === 'papercusp-workspace' ? 2 : 1),
+    });
+
+    expect(results).toHaveLength(1);
+    expect(results[0]).toMatchObject({ workspaceId: '*', installSlug: '*', outcome: 'error' });
+    expect(results[0].reason).toContain('3 ready scout plan(s)');
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(String(warn.mock.calls[0]?.[0])).toContain('[scout-ready-autostart] ALERT');
+    warn.mockRestore();
+  });
+
+  it('stays SILENT when the scope list is empty and nothing is eligible — absence of work is not an alarm', async () => {
+    maintenanceScopesMock.mockReset().mockResolvedValueOnce([]);
+
+    await expect(
+      scoutReadyAutostartSweep({
+        listBlenderMaintenanceWorkspaceIds: () => ['papercusp-workspace'],
+        countEligibleReadyPlans: async () => 0,
+      }),
+    ).resolves.toEqual([]);
+  });
+
+  /** A probe that cannot read must not manufacture an alarm, nor fail the sweep it audits. */
+  it('fails SILENT when the eligibility probe throws', async () => {
+    maintenanceScopesMock.mockReset().mockResolvedValueOnce([]);
+
+    await expect(
+      scoutReadyAutostartSweep({
+        listBlenderMaintenanceWorkspaceIds: () => ['papercusp-workspace'],
+        countEligibleReadyPlans: async () => {
+          throw new Error('pg unreachable');
+        },
+      }),
+    ).resolves.toEqual([]);
+  });
 });
 
 describe('startReadyScoutPlan', () => {
