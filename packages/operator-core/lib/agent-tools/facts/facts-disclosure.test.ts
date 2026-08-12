@@ -42,6 +42,10 @@ const fact = (body: string, extra: Partial<AgentFact> = {}): AgentFact => ({
   ...extra,
 });
 
+it('opts out of the ambient workspace transaction because facts:list uses dedicated org-pool reads', () => {
+  expect((factsListTool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+});
+
 describe('clampFactBody — boundary-aware clip (cold-carry-system-hardening-2026-07-19 P-004)', () => {
   it('clips at the last sentence boundary and marks the elision, never mid-sentence', () => {
     // EI-18681984560352579 / mig 664: parametric on FACT_BODY_MAX_CHARS (1200) —

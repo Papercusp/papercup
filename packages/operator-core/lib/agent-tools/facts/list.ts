@@ -159,6 +159,12 @@ export default defineTool({
     seeAlso: ['facts:assert', 'facts:retract'],
   },
   requirePrincipal: false,
+  // EI-20244379119118480: this handler uses the fact store's dedicated org-pool
+  // accessors and never reads ctx.tx. Do not hold the dispatcher's ambient
+  // workspace transaction across the stale-source/dependency reads; under fleet
+  // pressure that idle org-app slot can make facts:list wait for the 45s acquire
+  // deadline before its own read even starts.
+  skipWorkspaceTx: true,
   agentRoles: [...AGENT_ROLES],
   modality: ['text'],
   args: z.object({
