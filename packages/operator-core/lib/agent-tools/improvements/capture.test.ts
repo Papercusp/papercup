@@ -306,7 +306,7 @@ describe('improvements:capture — observation strict/fail-loud (P-012)', () => 
   // not-yet-deployed schema persisted scope-only, no error). Tested via the exposed args zod.
   const argsSchema = (
     captureTool as unknown as {
-      args: { safeParse: (v: unknown) => { success: boolean; error?: { issues: unknown[] } } };
+      args: { safeParse: (v: unknown) => { success: boolean; data?: unknown; error?: { issues: unknown[] } } };
     }
   ).args;
 
