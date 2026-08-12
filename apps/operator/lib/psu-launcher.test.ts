@@ -4408,9 +4408,37 @@ describe('sessionHasTranscript (ghost rows — adv-tracked launches that never p
     expect(sessionHasTranscript({ agent: 'codex', id: 43, sessionId: UUID }, { home })).toBe(false);
   });
 
-  it('codex: KEEPS rows it cannot verify (no sessionId → `resume --last`; no row id → no home to check)', () => {
+  /*
+   * WI-38226 — this assertion FLIPPED, deliberately. It used to read
+   * `{ agent:'codex', id:42, sessionId:null } → true` under "no sessionId ⇒ unverifiable ⇒
+   * keep". That premise was wrong: a codex resume runs `codex resume --last` pinned to THIS
+   * row's own isolated CODEX_HOME (resumeArgsFor + launchResume's CODEX_HOME pin), so "is
+   * there anything to resume" is answerable without an id — just look in that home. Treating
+   * it as unverifiable made the picker offer launches that die on selection, and it was not a
+   * rare corner: measured on the live box, 127 of the 241 most recent codex rows had no
+   * session_id AND no rollout on disk (128 had no CODEX_HOME at all).
+   *
+   * The genuinely unverifiable case — no adv row id, hence no home to look in — still keeps.
+   */
+  it('codex: no sessionId → verifies the home holds ANY rollout (what `resume --last` will find)', () => {
+    const dir = join(home, '.papercusp', 'su-codex-homes', 'session-42', 'sessions', '2026', '06', '12');
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(join(dir, `rollout-2026-06-12T09-00-00-${UUID}.jsonl`), `{"type":"meta"}\n`);
     expect(sessionHasTranscript({ agent: 'codex', id: 42, sessionId: null }, { home })).toBe(true);
+  });
+
+  it('codex: FALSE for the no-sessionId GHOST — home exists but holds no rollout at all', () => {
+    // The launch minted its CODEX_HOME and died before persisting a turn: `codex resume --last`
+    // finds nothing, so offering this row hands the owner a session that cannot come back.
+    mkdirSync(join(home, '.papercusp', 'su-codex-homes', 'session-42', 'sessions'), { recursive: true });
+    expect(sessionHasTranscript({ agent: 'codex', id: 42, sessionId: null }, { home })).toBe(false);
+    // …and the same when the home was never created at all (the more common shape on disk).
+    expect(sessionHasTranscript({ agent: 'codex', id: 99, sessionId: null }, { home })).toBe(false);
+  });
+
+  it('codex: KEEPS a row with no adv id — there is no tracked home to check, so it IS unverifiable', () => {
     expect(sessionHasTranscript({ agent: 'codex', id: null, sessionId: UUID }, { home })).toBe(true);
+    expect(sessionHasTranscript({ agent: 'codex', id: null, sessionId: null }, { home })).toBe(true);
   });
 
   it('omp: verifies the tracked per-session transcript by native thread id', () => {
