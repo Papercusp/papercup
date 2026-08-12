@@ -23,6 +23,33 @@ function pipelineName(root: string): string {
   return (path.basename(path.resolve(root)).replace(/[^a-zA-Z0-9_-]/g, '-') || 'default').slice(0, 64);
 }
 
+const tracePath = z
+  .string()
+  .min(1)
+  .max(400)
+  .describe('Repo-relative path whose release position should be traced; required unless sha is supplied.');
+const traceSha = z
+  .string()
+  .min(4)
+  .max(64)
+  .describe('Commit SHA whose release lineage should be traced; required unless path is supplied.');
+const traceContext = {
+  work_item: z
+    .string()
+    .min(1)
+    .max(80)
+    .optional()
+    .describe(
+      'Optional work item to make the terminal nextVerb a ready work_items:set_live_verified call; it does not replace the required path or sha.',
+    ),
+  after_generation: z
+    .number()
+    .int()
+    .nonnegative()
+    .optional()
+    .describe('generatedAtMs from the caller’s cached trace; any different generation requires full replacement.'),
+};
+
 export default defineTool({
   name: 'release:trace',
   profile: 'engineer',
@@ -41,22 +68,13 @@ export default defineTool({
       '{ generatedAtMs, target, gate, greenPin, deploy, testedDeployedParity, awaits, staleWake, constraints, nextVerb, resync, summary }',
     seeAlso: ['dev:pipeline_position', 'release:deploy', 'events:status', 'deploy:await', 'checkpoint:await'],
   },
-  args: z.object({
-    path: z.string().min(1).max(400).optional(),
-    sha: z.string().min(4).max(64).optional(),
-    work_item: z
-      .string()
-      .min(1)
-      .max(80)
-      .optional()
-      .describe('Optional work item to make the terminal nextVerb a ready work_items:set_live_verified call.'),
-    after_generation: z
-      .number()
-      .int()
-      .nonnegative()
-      .optional()
-      .describe('generatedAtMs from the caller’s cached trace; any different generation requires full replacement.'),
-  }),
+  // Use a representable union rather than a refinement: the same schema is published to
+  // callers as JSON Schema, where a custom refinement would disappear and advertise the
+  // rejected work_item-only shape (EI-20232784385629302).
+  args: z.union([
+    z.object({ path: tracePath, sha: traceSha.optional(), ...traceContext }),
+    z.object({ path: tracePath.optional(), sha: traceSha, ...traceContext }),
+  ]),
   async handler(args, ctx) {
     if (!args.path && !args.sha) return { data: { ok: false, error: 'Provide path or sha.' } };
     const identity = resolveAgentIdentity(ctx);
