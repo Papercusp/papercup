@@ -906,6 +906,20 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     })))).toBe(false);
   });
 
+  it('recognizes a JSON-RPC batch when any member is a reserved control-plane call', () => {
+    expect(isReservedControlPlaneCall(Buffer.from(JSON.stringify([
+      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'work_items:get' } },
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'mcp__papercusp_su__scheduler_get_next' } },
+    ])))).toBe(true);
+  });
+
+  it('does not reserve a JSON-RPC batch with no control-plane calls', () => {
+    expect(isReservedControlPlaneCall(Buffer.from(JSON.stringify([
+      { jsonrpc: '2.0', id: 1, method: 'tools/call', params: { name: 'work_items:get' } },
+      { jsonrpc: '2.0', id: 2, method: 'tools/list' },
+    ])))).toBe(false);
+  });
+
   it.each(['scheduler:get_next', 'coord:orient', 'coord:send', 'loop:checkpoint', 'tools:find', 'loop:arm', 'improvements:capture', 'locks:queue', 'locks:release', 'work_items:checkpoint'])('admits %s from the reserve while ordinary calls shed', async (controlPlaneTool) => {
     let releaseUpstream: () => void = () => {};
     const gate = new Promise<void>((resolve) => { releaseUpstream = resolve; });

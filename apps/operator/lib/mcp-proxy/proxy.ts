@@ -679,9 +679,19 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set([
  * Keep the reserved set deliberately narrow. */
 export function isReservedControlPlaneCall(rawBody: Buffer): boolean {
   try {
-    const message = JSON.parse(rawBody.toString('utf8')) as { method?: unknown; params?: { name?: unknown } };
-    if (message.method !== 'tools/call' || typeof message.params?.name !== 'string') return false;
-    return RESERVED_CONTROL_PLANE_TOOLS.has(normalizeMcpName(message.params.name));
+    const parsed = JSON.parse(rawBody.toString('utf8')) as unknown;
+    // JSON-RPC permits a request body to contain a batch. Reserve the whole forward when
+    // any member is a control-plane call: one HTTP request consumes one admission slot, and
+    // hiding a scheduler/orientation call inside a batch must not make it compete with ordinary
+    // traffic for the non-reserved ceiling.
+    const messages = Array.isArray(parsed) ? parsed : [parsed];
+    return messages.some((message) => {
+      if (!message || typeof message !== 'object') return false;
+      const call = message as { method?: unknown; params?: { name?: unknown } };
+      return call.method === 'tools/call'
+        && typeof call.params?.name === 'string'
+        && RESERVED_CONTROL_PLANE_TOOLS.has(normalizeMcpName(call.params.name));
+    });
   } catch {
     return false;
   }
