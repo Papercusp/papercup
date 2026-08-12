@@ -30,6 +30,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { emitDeprecateLearnings, type DeprecateLearnings } from '../../harness/improvements/deprecate-learnings';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
 import { evaluatePlanAcceptanceGate } from '../../plan-acceptance-gate';
+import { evaluateScoutRatificationGate } from '../../scout/ratification-gate';
 import { retireAcceptanceRubricForPlan } from '../../rubrics';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 
