@@ -132,6 +132,28 @@ describe('listFleetRosterDiagnosed (WI-3818 bounded fan-out)', () => {
     warnSpy.mockRestore();
   });
 
+  it('starts the independent assignments leg before a slow presence read consumes its budget', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    fetchPresenceTier1Mock.mockResolvedValue(new Map<string, PresenceTier1Joins>());
+    fetchWakeabilityMock.mockResolvedValue(new Map<string, WakeabilitySignals>());
+    listFleetAssignmentsMock.mockReturnValue(neverSettles<FleetAssignmentRow[]>());
+
+    const resultPromise = listFleetRosterDiagnosed({
+      fleetSlug: 'p2p-parity-lanes',
+      readPresence: () => neverSettles<FleetFoldPresence[]>(),
+    });
+
+    // This is the regression assertion: before EI-20255612618270299 the
+    // assignments query was not even started until the presence timeout fired.
+    expect(listFleetAssignmentsMock).toHaveBeenCalledTimes(1);
+
+    await vi.advanceTimersByTimeAsync(FLEET_ROSTER_SUBREAD_TIMEOUT_MS);
+    const result = await resultPromise;
+    expect(result.degradedLegs).toEqual(['presence', 'assignments']);
+    expect(result.entries).toEqual([]);
+    warnSpy.mockRestore();
+  });
+
   it('degrades to a SLIM-BUT-USABLE roster (identity present, work-detail empty) when only assignments hangs', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     fetchPresenceTier1Mock.mockResolvedValue(new Map<string, PresenceTier1Joins>());

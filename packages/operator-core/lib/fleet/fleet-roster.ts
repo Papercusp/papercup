@@ -50,8 +50,9 @@ import { withBoundedTimeout } from '../bounded-timeout';
 import { findLiveHost } from '../events/await/psu-pty-discovery';
 
 /**
- * WI-3818: per-sub-read budget for listFleetRoster's fan-out (presence, then
- * Tier-1/assignments/wakeability in parallel). During the 2026-07-10 host-load
+ * WI-3818: per-sub-read budget for listFleetRoster's fan-out (presence and the
+ * independent assignments leg start together; Tier-1/wakeability then run in
+ * parallel). During the 2026-07-10 host-load
  * storm any one of these hanging blocked the WHOLE roster read until the 55s
  * MCP client timeout — the caller got nothing instead of a slim-but-usable
  * partial roster. Each leg now degrades to an empty fallback at this budget
@@ -415,6 +416,15 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
   const readPresence = opts.readPresence ?? defaultReadFleetPresence;
   const degradedLegs: FleetRosterDegradedLeg[] = [];
 
+  // Assignments do not depend on the presence result: the fold filters them by
+  // the member ids after both reads complete. Start this independent leg before
+  // awaiting presence so a slow presence/fleet-label join cannot spend the
+  // assignments leg's entire budget before it even begins (EI-20255612618270299).
+  const rowsResultPromise = withBoundedTimeout(listFleetAssignments({ workspaceId }), {
+    fallback: [],
+    timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
+    label: 'fleet-roster:assignments',
+  });
   const presenceResult = await withBoundedTimeout(readPresence({ workspaceId }), {
     fallback: [] as FleetFoldPresence[],
     timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
@@ -426,16 +436,11 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
   const inFleet = new Set(presence.map((p) => p.ownerId));
   const localIds = presence.filter((p) => !p.federated).map((p) => p.ownerId);
 
-  const [tier1Result, rowsResult, wakeabilityResult, recordedResult, selfWakeResult] = await Promise.all([
+  const [tier1Result, wakeabilityResult, recordedResult, selfWakeResult, rowsResult] = await Promise.all([
     withBoundedTimeout(fetchPresenceTier1(localIds), {
       fallback: new Map<string, PresenceTier1Joins>(),
       timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
       label: 'fleet-roster:tier1',
-    }),
-    withBoundedTimeout(listFleetAssignments({ workspaceId }), {
-      fallback: [],
-      timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
-      label: 'fleet-roster:assignments',
     }),
     // EI-5858: wakeability drives the `ended` gate on `alive` + surfaces
     // sessionState. Best-effort — a slow/failed query degrades to
@@ -468,6 +473,7 @@ export async function listFleetRosterDiagnosed(opts: ListFleetRosterOpts): Promi
       timeoutMs: FLEET_ROSTER_SUBREAD_TIMEOUT_MS,
       label: 'fleet-roster:selfwake',
     }),
+    rowsResultPromise,
   ]);
   if (tier1Result.degraded) degradedLegs.push('tier1');
   if (rowsResult.degraded) degradedLegs.push('assignments');
