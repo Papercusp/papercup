@@ -50,9 +50,17 @@ export default defineTool({
     writeRegistry(reg);
     // Fire-and-forget — cleanup is best-effort; a subscriber failure must
     // not break the switch. dispatchWorkspaceSwitch isolates throws.
-    void dispatchWorkspaceSwitch(leaving).catch((e) => {
-      console.warn('[workspaces/switch] dispatchWorkspaceSwitch failed:', e);
-    });
+    //
+    // `reg.current` is optional, so `leaving` is undefined on the FIRST switch
+    // of a registry that never had a current workspace. There is no departing
+    // workspace to clean up in that case, and dispatching anyway would hand
+    // every subscriber an undefined id to evict state under — so skip it
+    // rather than widening the callee or casting the gap away.
+    if (leaving !== undefined) {
+      void dispatchWorkspaceSwitch(leaving).catch((e) => {
+        console.warn('[workspaces/switch] dispatchWorkspaceSwitch failed:', e);
+      });
+    }
     return Response.json({ ok: true, id });
   },
 });
