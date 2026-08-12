@@ -309,7 +309,7 @@ const agentRunStream = defineTool({
 
     return sseResponse({
       signal: req.signal,
-      heartbeatMs: 15_000,
+      heartbeatMs: SESSION_STREAM_HEARTBEAT_MS,
       setup: async (sink) => {
         const token: StreamToken = {
           abort: () => { sink.close(); },
@@ -461,7 +461,7 @@ const slugStream = defineTool({
 
     return sseResponse({
       signal: req.signal,
-      heartbeatMs: 15_000,
+      heartbeatMs: SESSION_STREAM_HEARTBEAT_MS,
       setup: async (sink) => {
         const token: StreamToken = {
           abort: () => { sink.close(); },
@@ -553,7 +553,7 @@ const logStream = defineTool({
 
     return sseResponse({
       signal: req.signal,
-      heartbeatMs: 15_000,
+      heartbeatMs: SESSION_STREAM_HEARTBEAT_MS,
       setup: async (sink) => {
         const token: StreamToken = {
           abort: () => { sink.close(); },
@@ -901,6 +901,29 @@ export async function backfillFromSessionTurns(
  * the deliberate remote opt-out.) A per-principal + workspace-scoped check is
  * the follow-up for a multi-tenant/exposed deployment.
  */
+/**
+ * Server heartbeat cadence for the agent timeline SSE streams in this file
+ * (`/adv/session/thinking` and the per-run harness streams) — the BOTTOM RUNG
+ * of the staleness ladder their UI consumers render.
+ *
+ * An idle agent emits no transcript events, so these heartbeats are the ONLY
+ * proof the stream is still alive. Three constants must stay ordered:
+ *
+ *   SESSION_STREAM_HEARTBEAT_MS (15s)      ── the beat
+ *     × 2 <  STREAM_SILENCE_STALE_MS (35s) ── pane says "may be behind"
+ *          <  DEFAULT_ZOMBIE_TIMEOUT_MS (45s) ── transport gives up
+ *
+ * Raise this and the panes start crying stale at healthy idle streams; lower
+ * the gap to the watchdog and the "stale" rung becomes unreachable dead code
+ * (which is exactly what shipped once — EI-20265888603098901). The ordering is
+ * pinned by `stream-freshness.ladder.test.ts`, which reads this literal, so
+ * changing it fails that test rather than silently drifting.
+ *
+ * Consumers: `apps/operator/app/_components/chat/SessionChatModal.tsx` and
+ * `apps/operator/app/harness/AgentThinkingStream.tsx`.
+ */
+export const SESSION_STREAM_HEARTBEAT_MS = 15_000;
+
 const sessionThinkingStream = defineTool({
   method: 'GET',
   path: '/adv/session/thinking',
@@ -942,7 +965,7 @@ const sessionThinkingStream = defineTool({
     const ended = url.searchParams.get('ended') === '1' || url.searchParams.get('ended') === 'true';
     return sseResponse({
       signal: req.signal,
-      heartbeatMs: 15_000,
+      heartbeatMs: SESSION_STREAM_HEARTBEAT_MS,
       setup: async (sink) => {
         const { resolveInteractiveTranscript, SESSION_THINKING_ACTIVE_MS } = await import('../../../claude-sessions');
         const { findCodexRolloutPath, findCodexRolloutPathByUuid, findOmpSessionPath } = await import('../../../session-transcript-resolvers');
