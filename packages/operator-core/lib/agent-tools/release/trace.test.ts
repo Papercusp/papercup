@@ -12,6 +12,10 @@ describe('release:trace tool contract', () => {
     }
   });
 
+  it('does not hold an ambient workspace transaction during reconciliation (EI-20246294559310854)', () => {
+    expect((tool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+
   it('requires path or sha in the published schema even when work_item is supplied (EI-20232784385629302)', () => {
     const missingTarget = tool.args.safeParse({ work_item: 'WI-38026' });
     expect(missingTarget.success).toBe(false);
