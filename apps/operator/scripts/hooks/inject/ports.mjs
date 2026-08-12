@@ -99,6 +99,125 @@ export function specFor(port) {
   return isPort(port) ? PORTS[port] : null;
 }
 
+/* ------------------------------------------------------------------ */
+/* DELIVERY SEAMS — how a payload reaches the model, and whether that   */
+/* act can destroy work in flight.                                      */
+/* Plan: omp-context-injection-and-behavior-2026-08-12, P-002 + P-012.  */
+/* ------------------------------------------------------------------ */
+
+/**
+ * WHY THIS EXISTS. Every adapter in this directory decides WHAT to say. None of
+ * them used to declare HOW it gets said — that lived only in each client-native
+ * artifact, in prose, in three different files. So when OMP's artifact delivered
+ * through a channel that PRE-EMPTS the agent loop, nothing compared it to the
+ * other two and nothing failed.
+ *
+ * The cost, measured over one Gemini session (2026-08-11): 13 tool calls were
+ * DISCARDED mid-flight and replaced with a synthesised "Skipped due to pending
+ * system advisory" result. 13 of 13 immediately followed one of our injections;
+ * no cancellation had any other cause. The model then explained the loss to
+ * itself and got it wrong — it concluded its whole tool-calling convention was
+ * rejected and switched conventions for the remaining ~220 calls.
+ *
+ * That is the property this registry names: an injection may only ever ADD to
+ * something the client is already assembling. It may never enqueue an event the
+ * agent loop has to drain, because draining is what cancels pending work.
+ *
+ * @typedef {'hook-return-value' | 'tool-result-merge' | 'queued-message' | 'steer-interrupt'} DeliveryMechanism
+ */
+
+/**
+ * The known delivery mechanisms and whether each can pre-empt in-flight work.
+ *
+ * The pre-empting entries are deliberately KEPT rather than deleted. A new
+ * adapter author reaches for exactly these, and a named mechanism carrying its
+ * own measured verdict is a better guardrail than an absence they would have to
+ * infer. `validateDeliverySeam` refuses them; this table explains why.
+ *
+ * @type {Record<DeliveryMechanism, { canPreempt: boolean, why: string }>}
+ */
+export const DELIVERY_MECHANISMS = {
+  'hook-return-value': {
+    canPreempt: false,
+    why:
+      'The payload is the hook process\'s own RETURN VALUE, which the client merges into ' +
+      'content it is already assembling. There is no queue and no event, so there is ' +
+      'nothing for an agent loop to drain and nothing it can cancel.',
+  },
+  'tool-result-merge': {
+    canPreempt: false,
+    why:
+      'The payload is returned FROM a tool-result handler and merged into that tool ' +
+      'result. The call it rides on has already completed, so appending to it cannot ' +
+      'displace work — the same additive property as a hook return value, reached ' +
+      'through an in-process module seam instead of stdout.',
+  },
+  'queued-message': {
+    canPreempt: true,
+    why:
+      'REFUSED. Enqueuing a message makes the agent loop drain the queue, and draining ' +
+      'DISCARDS the tool calls it was about to run, handing the model a synthesised ' +
+      '"skipped" result. Measured 13/13 cancellations in one session. Note that a ' +
+      'deferred variant ("deliver on the next turn") is not a repair: it lands in a ' +
+      'buffer whose only drain is a later turn-triggering delivery, which trades a ' +
+      'loud, countable tax for a silent hole.',
+  },
+  'steer-interrupt': {
+    canPreempt: true,
+    why:
+      'REFUSED. Interrupting is the entire point of a steer. It is a legitimate ' +
+      'mechanism for an operator deliberately redirecting an agent, and never a ' +
+      'legitimate one for delivering context the agent did not ask for.',
+  },
+};
+
+/**
+ * A seam declaration, exported by each adapter as `deliverySeam`.
+ *
+ * `artifact` names the client-native file that actually performs the delivery —
+ * the adapters themselves are pure, so the seam is implemented one layer out.
+ * Requiring the path keeps the declaration falsifiable: a reviewer can open the
+ * named file and check it, rather than trusting an adjective.
+ *
+ * @typedef {object} DeliverySeam
+ * @property {DeliveryMechanism} mechanism
+ * @property {string} artifact   repo-relative path to the file that delivers.
+ * @property {string} evidence   what was READ or MEASURED to classify it.
+ */
+
+/**
+ * Validate one adapter's seam declaration.
+ *
+ * Returns a result rather than throwing: the caller is a test that wants to
+ * report every offending client at once, not stop at the first.
+ *
+ * @param {unknown} seam
+ * @returns {{ ok: boolean, errors: string[] }}
+ */
+export function validateDeliverySeam(seam) {
+  const errors = [];
+  if (!seam || typeof seam !== 'object') {
+    return { ok: false, errors: ['no deliverySeam declared'] };
+  }
+  const { mechanism, artifact, evidence } = /** @type {any} */ (seam);
+  const spec = typeof mechanism === 'string' ? DELIVERY_MECHANISMS[mechanism] : undefined;
+  if (!spec) {
+    errors.push(
+      `unknown delivery mechanism ${JSON.stringify(mechanism)} — add it to ` +
+        'DELIVERY_MECHANISMS with a measured verdict before using it',
+    );
+  } else if (spec.canPreempt) {
+    errors.push(`mechanism '${mechanism}' can pre-empt in-flight work: ${spec.why}`);
+  }
+  if (typeof artifact !== 'string' || !artifact) {
+    errors.push('artifact must name the client-native file that delivers the payload');
+  }
+  if (typeof evidence !== 'string' || !evidence) {
+    errors.push('evidence must say what was read or measured to classify the seam');
+  }
+  return { ok: errors.length === 0, errors };
+}
+
 /**
  * Is this port switched off, and how?
  *

@@ -88,4 +88,28 @@ export function render(port, text) {
   return JSON.stringify({ hookSpecificOutput: { hookEventName, additionalContext: text } });
 }
 
-export default { client, portForEvent, parse, render };
+/**
+ * SEAM (P-002 audit): claude cannot pre-empt, and the reason is structural
+ * rather than incidental. The hook is a SUBPROCESS whose stdout the CLI reads;
+ * `additionalContext` is merged into the prompt (turn-start) or into the batch
+ * boundary the CLI is already assembling (mid-turn). No queue exists, so there
+ * is nothing for the agent loop to drain and nothing it can cancel.
+ *
+ * Note the near-miss already documented on `portForEvent` above: PreToolUse
+ * WOULD have been able to interfere — not by cancelling, but because delivering
+ * context there requires also emitting a `permissionDecision`, i.e. voting on
+ * whether the call runs. That was rejected for the same reason this seam is
+ * safe: a hook that only wants to SAY something must never also act on the call.
+ *
+ * @type {import('../ports.mjs').DeliverySeam}
+ */
+export const deliverySeam = {
+  mechanism: 'hook-return-value',
+  artifact: 'apps/operator/scripts/hooks/inject/index.mjs (stdout → claude CLI)',
+  evidence:
+    'render() returns a hookSpecificOutput.additionalContext envelope on stdout; the CLI ' +
+    'merges it. Verified against the two shell hooks this adapter replaces, which used the ' +
+    'same envelope. No message-queue API is involved on any path.',
+};
+
+export default { client, portForEvent, parse, render, deliverySeam };

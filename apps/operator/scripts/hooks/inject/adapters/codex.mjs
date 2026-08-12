@@ -123,4 +123,28 @@ export function render(port, text) {
   return JSON.stringify({ hookSpecificOutput: { hookEventName, additionalContext: text } });
 }
 
-export default { client, portForEvent, parse, render };
+/**
+ * SEAM (P-002 audit): codex cannot pre-empt, for the same structural reason as
+ * claude and on independently-read evidence — codex's OWN embedded draft-07
+ * output schemas (see the header for the extraction) define
+ * `hookSpecificOutput: { hookEventName, additionalContext }` on
+ * `post-tool-use.command.output`, with NO permission field beside it. The
+ * payload is the hook's return value; nothing is enqueued.
+ *
+ * The pre-tool-use output schema DOES carry permission semantics
+ * (`PreToolUseHookSpecificOutputWire` sits alongside `PermissionRequestDecisionWire`),
+ * which is exactly why this adapter binds mid-turn to post-tool-use instead —
+ * the same near-miss claude documents, avoided the same way.
+ *
+ * @type {import('../ports.mjs').DeliverySeam}
+ */
+export const deliverySeam = {
+  mechanism: 'hook-return-value',
+  artifact: 'apps/operator/scripts/hooks/inject/index.mjs (stdout → codex CLI)',
+  evidence:
+    "Read from codex 0.146.0's embedded JSON Schemas in the native binary, not inferred " +
+    'from claude: post-tool-use.command.output declares additionalContext and carries no ' +
+    'permission field. No queueing API appears on the delivery path.',
+};
+
+export default { client, portForEvent, parse, render, deliverySeam };
