@@ -1041,16 +1041,18 @@ describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
   });
 });
 
+const processEnv = (values: Record<string, string>): NodeJS.ProcessEnv => values;
+
 describe('ompCoreToolNames (PAPERCUSP_OMP_TOOLS_EXCLUDE — spine trim escape hatch)', () => {
   it('returns the full spine when the env var is unset/empty', () => {
-    expect(ompCoreToolNames({})).toEqual([...OMP_CORE_MCP_TOOL_NAMES]);
-    expect(ompCoreToolNames({ PAPERCUSP_OMP_TOOLS_EXCLUDE: '' })).toEqual([...OMP_CORE_MCP_TOOL_NAMES]);
+    expect(ompCoreToolNames(processEnv({}))).toEqual([...OMP_CORE_MCP_TOOL_NAMES]);
+    expect(ompCoreToolNames(processEnv({ PAPERCUSP_OMP_TOOLS_EXCLUDE: '' }))).toEqual([...OMP_CORE_MCP_TOOL_NAMES]);
   });
 
   it('drops the named tools (comma-separated, whitespace-tolerant), keeping the rest in order', () => {
     // (work_items:update left the spine in the 2026-07-05 rebalance — exclude two tools
     // that ARE in the spine so the length-2 assertion stays meaningful.)
-    const kept = ompCoreToolNames({ PAPERCUSP_OMP_TOOLS_EXCLUDE: 'work_items:set_state, coord:glance' });
+    const kept = ompCoreToolNames(processEnv({ PAPERCUSP_OMP_TOOLS_EXCLUDE: 'work_items:set_state, coord:glance' }));
     expect(kept).not.toContain('work_items:set_state');
     expect(kept).not.toContain('coord:glance');
     expect(kept.length).toBe(OMP_CORE_MCP_TOOL_NAMES.length - 2);
@@ -1058,13 +1060,13 @@ describe('ompCoreToolNames (PAPERCUSP_OMP_TOOLS_EXCLUDE — spine trim escape ha
   });
 
   it('ignores names not in the spine (no-op, no error)', () => {
-    expect(ompCoreToolNames({ PAPERCUSP_OMP_TOOLS_EXCLUDE: 'not:a-tool' })).toEqual([...OMP_CORE_MCP_TOOL_NAMES]);
+    expect(ompCoreToolNames(processEnv({ PAPERCUSP_OMP_TOOLS_EXCLUDE: 'not:a-tool' }))).toEqual([...OMP_CORE_MCP_TOOL_NAMES]);
   });
 });
 
 describe('claudeSeedToolNames (EI-9011 — CC lock-hook verbs advertised to Claude only)', () => {
   it('is the spine plus the manual lock verbs, deduped', () => {
-    const seed = claudeSeedToolNames({});
+    const seed = claudeSeedToolNames(processEnv({}));
     for (const n of OMP_CORE_MCP_TOOL_NAMES) expect(seed).toContain(n);
     for (const n of CLAUDE_SEED_EXTRA_TOOL_NAMES) expect(seed).toContain(n);
     expect(new Set(seed).size).toBe(seed.length);
@@ -1082,7 +1084,7 @@ describe('claudeSeedToolNames (EI-9011 — CC lock-hook verbs advertised to Clau
     // native ToolSearch indexes ONLY the advertised subset — so an unseeded name answers
     // "No matching deferred tools found", which reads as "this tool does not exist".
     // Measured before the fix: 68/111/119 tools:invoke fallback reaches per 14d.
-    const seed = claudeSeedToolNames({});
+    const seed = claudeSeedToolNames(processEnv({}));
     for (const n of ['state:read', 'capability:bash', 'capability:bash_output']) {
       expect(seed).toContain(n);
     }
@@ -1093,12 +1095,12 @@ describe('claudeSeedToolNames (EI-9011 — CC lock-hook verbs advertised to Clau
     // capability:bash { run_in_background: true } and read with capability:bash_output.
     // Seeding only the launcher strands every background job, which is exactly why
     // bash_output out-reached bash (119 vs 111) before the fix.
-    const seed = claudeSeedToolNames({});
+    const seed = claudeSeedToolNames(processEnv({}));
     expect(seed.includes('capability:bash')).toBe(seed.includes('capability:bash_output'));
   });
 
   it('honors the spine exclude escape hatch without touching the lock extras', () => {
-    const seed = claudeSeedToolNames({ PAPERCUSP_OMP_TOOLS_EXCLUDE: 'coord:glance' });
+    const seed = claudeSeedToolNames(processEnv({ PAPERCUSP_OMP_TOOLS_EXCLUDE: 'coord:glance' }));
     expect(seed).not.toContain('coord:glance');
     expect(seed).toContain('locks:acquire');
   });
@@ -1250,19 +1252,28 @@ describe('OMP_CORE_MCP_TOOL_NAMES drift guard (weak-model-tool-tier)', () => {
 });
 
 describe('applyGithubTokenEnv (GitHub MCP plugin token)', () => {
+  const ghResult = (status: number, stdout: string): import('node:child_process').SpawnSyncReturns<string> => ({
+    pid: 0,
+    output: [stdout],
+    stdout,
+    stderr: '',
+    status,
+    signal: null,
+  });
+
   it('exports the gh token into env when unset', () => {
     const env: Record<string, string> = {};
-    applyGithubTokenEnv(env, { runGh: () => ({ status: 0, stdout: 'gho_abc123\n' }) });
+    applyGithubTokenEnv(env, { runGh: () => ghResult(0, 'gho_abc123\n') });
     expect(env.GITHUB_PERSONAL_ACCESS_TOKEN).toBe('gho_abc123');
   });
   it('leaves an already-set token untouched', () => {
     const env: Record<string, string> = { GITHUB_PERSONAL_ACCESS_TOKEN: 'preset' };
-    applyGithubTokenEnv(env, { runGh: () => ({ status: 0, stdout: 'gho_other' }) });
+    applyGithubTokenEnv(env, { runGh: () => ghResult(0, 'gho_other') });
     expect(env.GITHUB_PERSONAL_ACCESS_TOKEN).toBe('preset');
   });
   it('fail-soft when gh errors or is logged out (env unchanged)', () => {
     const env: Record<string, string> = {};
-    applyGithubTokenEnv(env, { runGh: () => ({ status: 1, stdout: '' }) });
+    applyGithubTokenEnv(env, { runGh: () => ghResult(1, '') });
     expect(env.GITHUB_PERSONAL_ACCESS_TOKEN).toBeUndefined();
     applyGithubTokenEnv(env, { runGh: () => { throw new Error('no gh'); } });
     expect(env.GITHUB_PERSONAL_ACCESS_TOKEN).toBeUndefined();
