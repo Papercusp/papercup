@@ -53,7 +53,6 @@ export const BASELINE = new Set([
   "libs/papercusp/packages/orchestrator/src/state-pg.ts:118:fallback:ON hfc.harness_slug = ${ctx.harnessSlug ?? ''}",
   "libs/papercusp/packages/orchestrator/src/state-pg.ts:146:fallback:AND harness_slug  = ${ctx.harnessSlug ?? ''}",
   "libs/papercusp/packages/orchestrator/src/state.ts:66:fallback:ctx.harnessSlug ??",
-  "packages/operator-core/lib/agent-tools/capability/bash.ts:111:predicate:const leasedDisplay = ctx.harnessSlug ? displayForHive(ctx.harnessSlug) : undefined;",
   "packages/operator-core/lib/agent-tools/cell-reader-ctx.ts:50:identity-field:...(ctx.harnessSlug ? { harnessSlug: ctx.harnessSlug } : {}),",
   "packages/operator-core/lib/agent-tools/cell-reader-ctx.ts:54:fallback:harnessSlug: ctx.harnessSlug ?? null,",
   "packages/operator-core/lib/agent-tools/code/run.ts:992:fallback:harness: ctx.harnessSlug ?? null,",

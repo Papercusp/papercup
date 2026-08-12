@@ -67,7 +67,7 @@ describe('raw ctx.harnessSlug sentinel detector', () => {
     expect(scan.staleBaseline, 'a stale baseline hides a changed or removed site').toEqual([]);
     expect(scan.offenders, 'a new raw identity use must fail the build').toEqual([]);
     for (const key of BASELINE) expect(typeof key).toBe('string');
-    expect(BASELINE.size).toBe(68);
+    expect(BASELINE.size).toBe(67);
   }, 120_000);
 
   it('uses a source fingerprint in baseline keys', () => {

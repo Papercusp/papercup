@@ -25,6 +25,7 @@ import {
   DEFAULT_BACKGROUND_TIMEOUT_MS,
   DEFAULT_TIMEOUT_MS,
   detectBufferingLastStage,
+  formatBufferingPipelineAdvice,
   MAX_BACKGROUND_TIMEOUT_MS,
   MAX_TIMEOUT_MS,
   runForeground,
@@ -33,6 +34,7 @@ import {
 import { typecheckHeapLaunchWarning } from './background-typecheck-verdict';
 import { capabilityExecSandboxEnabled } from './exec-sandbox';
 import { displayForHive } from '../computer/desktop-lease';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { resolveCapabilityBaseDir } from './base-dir';
 
 export default defineTool({
@@ -108,7 +110,8 @@ export default defineTool({
     // The handler runs in the OPERATOR process, so resolve per-caller from ctx.harnessSlug
     // (the bee's spawn-env never reaches here). No lease → no DISPLAY → unchanged. The lease
     // is always a sandbox display, never host :0.
-    const leasedDisplay = ctx.harnessSlug ? displayForHive(ctx.harnessSlug) : undefined;
+    const hive = resolveConcreteHarnessSlug(undefined, ctx);
+    const leasedDisplay = hive ? displayForHive(hive) : undefined;
     const desktopEnv = leasedDisplay ? { DISPLAY: leasedDisplay } : undefined;
 
     if (args.run_in_background) {
@@ -120,12 +123,7 @@ export default defineTool({
       // at launch, rather than leaving the reader to discover it from a string of
       // empty bash_output polls that look identical to "never started".
       const bufferingStage = detectBufferingLastStage(args.command);
-      const bufferingNote = bufferingStage
-        ? ` NOTE: this command's last pipeline stage pipes through \`${bufferingStage}\`, which BUFFERS its ` +
-          `output — the log will most likely stay at 0 bytes for the whole run and fill all at once at exit. ` +
-          `An empty bash_output read here is NOT evidence the job hasn't started or produced nothing — poll for ` +
-          `the "[capability:bash] JOB END" marker rather than for growing output.`
-        : '';
+      const bufferingNote = bufferingStage ? formatBufferingPipelineAdvice(bufferingStage, 'launch') : '';
       // EI-20063051138162607: the sibling typecheck tools spawn tsc themselves and
       // so can pin its heap (tscHeapEnv); this one runs a command the CALLER wrote,
       // and rewriting NODE_OPTIONS underneath it would be the more surprising
