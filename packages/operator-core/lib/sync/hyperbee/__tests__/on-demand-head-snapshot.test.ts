@@ -26,6 +26,7 @@ import { bootHarnessSubstrate } from '../boot';
 import { CURRENT_SCHEMA_VERSION } from '../schema-version';
 import { findLatestSnapshotIndex } from '../read-merge';
 import { isSnapshotOp } from '../log-snapshot';
+import { listBootHistory } from '../boot-history';
 
 const cleanups: Array<() => void | Promise<void>> = [];
 afterEach(async () => {
@@ -52,7 +53,15 @@ async function bootWithOps(slug: string, opCount: number) {
     mergePollMs: 0, // drive mergeNow by hand
     loadRevokedOverride: async () => new Set(), // avoid real PG
     applyOverride: async () => true,
+    rekeyDepsOverride: null, // unit boot must not auto-build re-key deps through real PG
   });
+  expect(
+    listBootHistory({
+      workspaceId: 'ws-p019',
+      harnessSlug: slug,
+      kinds: ['epoch_gate_skipped'],
+    }),
+  ).toHaveLength(0);
   cleanups.push(() => handle.close());
   for (let i = 0; i < opCount; i++) {
     await handle.append({

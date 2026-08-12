@@ -73,7 +73,7 @@ import {
 } from './read-merge';
 import { produceLogSnapshot, shouldCompactOwnLog, type ProduceSnapshotResult } from './log-snapshot';
 import type { OpEnvelope } from './op-envelope-types';
-import { buildHiveRekeyBootDeps } from './hive-epoch-boot-deps';
+import { buildHiveRekeyBootDeps, type HiveRekeyBootDeps } from './hive-epoch-boot-deps';
 import { drainQueuedEpochContent, type DrainedEpoch } from './hive-epoch-op-gate';
 import { PendingMembershipContent, reapplyDrainedMemberContent } from './pending-membership-content';
 import { acceptOpVersion, CURRENT_SCHEMA_VERSION, type SchemaVersionAlert } from './schema-version';
@@ -473,6 +473,14 @@ export interface BootHarnessOpts {
     workspaceId: string,
     harnessSlug: string,
   ) => Promise<string | null | undefined>;
+  /**
+   * Test seam — override the boot-scope re-key dependency composition. Production
+   * leaves this undefined and builds the real crypto/provider stack. Passing null
+   * explicitly disables the build for hermetic unit tests; the override is honored
+   * both at initial boot and during a re-key rebuild so a test never reaches PG by
+   * accident through the re-key lifecycle.
+   */
+  rekeyDepsOverride?: HiveRekeyBootDeps | null;
   /**
    * Test seam — override the projection apply sink. Production leaves this
    * undefined and the per-harness scoped apply (`buildHarnessProjectionApply`,
@@ -1322,10 +1330,14 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   // null because the home was not yet bound) — see the rekey() rebind. The per-pass applyImpl +
   // drain re-read `rekeyDeps` each pass (mergeOnePass re-evaluates), so a rebuild takes effect
   // on the next pass with no reboot.
-  let rekeyDeps = await buildHiveRekeyBootDeps({
-    workspaceId: opts.workspaceId,
-    harnessSlug: opts.harnessSlug,
-  });
+  const buildRekeyDeps = async (): Promise<HiveRekeyBootDeps | null> => {
+    if (opts.rekeyDepsOverride !== undefined) return opts.rekeyDepsOverride;
+    return buildHiveRekeyBootDeps({
+      workspaceId: opts.workspaceId,
+      harnessSlug: opts.harnessSlug,
+    });
+  };
+  let rekeyDeps = await buildRekeyDeps();
   // ── Re-key DRAIN HOOK queue (su-c2a63) ── The hive_epoch_keys projection's
   // `onEpochKeyApplied(hive, epoch)` PUSHES here when a key row applies — RECORDING, not
   // draining (so it never re-enters the apply that is firing it). `mergeOnePass` drains it
@@ -4976,10 +4988,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           // including the sameTopic in-place path (which skips only close+rejoin) — so a
           // same-topic first-join still rebuilds the gate. This is the witness's B path (a
           // mid-session joiner): without it K1 (B reads F-CTRL) can't pass.
-          rekeyDeps = await buildHiveRekeyBootDeps({
-            workspaceId: opts.workspaceId,
-            harnessSlug: opts.harnessSlug,
-          });
+          rekeyDeps = await buildRekeyDeps();
           registerAllHarnessProjections({
             workspaceId: opts.workspaceId,
             harnessSlug: opts.harnessSlug,
