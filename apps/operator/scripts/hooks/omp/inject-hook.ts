@@ -50,6 +50,15 @@ import { appendFileSync, existsSync, mkdirSync, statSync, writeFileSync } from '
 import { homedir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  PENDING_MAX_AGE_MS,
+  appendAdvisories,
+  clearAdvisoryStash,
+  stashAdvisory,
+  takeAdvisories,
+} from './non-preempting-delivery';
+
+export { PENDING_MAX_AGE_MS } from './non-preempting-delivery';
 
 /** D-001 ports. */
 export type InjectionPort = 'turn-start' | 'mid-turn';
@@ -432,39 +441,21 @@ export function runDispatcher(
  * being surfaced at the start of the next turn (that is the turn whose tool
  * call it cancelled). It now arrives at the same place, minus the cancellation.
  */
-interface PendingMidTurn {
-  text: string;
-  at: number;
-}
-
-/** Stash awaiting a tool result to ride in on. Module scope is correct here:
- *  omp loads this hook once per session, in-process. */
-let PENDING_MID_TURN: PendingMidTurn | null = null;
-
-/** A recall block is advisory and perishable. If no tool result has appeared in
- *  this long, the turn it described is ancient — drop it rather than inject
- *  stale context. */
-export const PENDING_MAX_AGE_MS = 5 * 60_000;
-
 /** Newest wins: a later turn's recall supersedes an undelivered earlier one, so
  *  the stash can never grow or replay a backlog. */
 export function stashMidTurn(text: string, now: number = Date.now()): void {
-  PENDING_MID_TURN = { text, at: now };
+  stashAdvisory('memory-recall', text, now);
 }
 
 /** Take-and-clear. Returns null when nothing is stashed or the stash is stale —
  *  either way the stash is empty afterwards. */
 export function takeMidTurn(now: number = Date.now()): string | null {
-  const pending = PENDING_MID_TURN;
-  PENDING_MID_TURN = null;
-  if (!pending) return null;
-  if (now - pending.at > PENDING_MAX_AGE_MS) return null;
-  return pending.text;
+  return takeAdvisories(now);
 }
 
 /** Test seam — reset module state between cases. */
 export function clearMidTurnStash(): void {
-  PENDING_MID_TURN = null;
+  clearAdvisoryStash();
 }
 
 /**
@@ -476,11 +467,7 @@ export function clearMidTurnStash(): void {
  * string, and the (TextContent | ImageContent)[] array form.
  */
 export function appendBlock(content: unknown, text: string): unknown {
-  if (typeof content === 'string') return `${content}\n\n${text}`;
-  if (Array.isArray(content)) return [...content, { type: 'text', text }];
-  // No content at all (or an unexpected shape): emit the block alone rather
-  // than fabricating a wrapper around something we do not understand.
-  return [{ type: 'text', text }];
+  return appendAdvisories(content, text);
 }
 
 /** Minimal structural view of the omp HookAPI surface this module uses. Kept

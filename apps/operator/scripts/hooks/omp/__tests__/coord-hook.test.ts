@@ -163,6 +163,7 @@ import {
 // The audited pairs, so the pre-filter guard below can read each pair's VERDICT
 // instead of inferring enforceability from a fixture filename.
 import { ALL_PAIRS } from '@papercusp/operator-core/lib/bash-substitution/pairs/index';
+import { clearAdvisoryStash, takeAdvisories } from '../non-preempting-delivery';
 
 // ── native-scheduler lockout (native-scheduler-lockout-2026-06-09 P-010) ─────
 
@@ -179,6 +180,7 @@ const _origPaperAgentForSuite = process.env.PAPERCUSP_AGENT;
 beforeEach(() => {
   delete process.env.PAPERCUSP_SID;
   delete process.env.PAPERCUSP_AGENT;
+  clearAdvisoryStash();
 });
 afterEach(() => {
   if (_origPaperSidForSuite === undefined) delete process.env.PAPERCUSP_SID;
@@ -2613,7 +2615,7 @@ describe('register (OMP adapter)', () => {
    *
    *   - session_start / turn_start handler return values are DISCARDED
    *   - tool_call may return ToolCallEventResult to block
-   *   - turn_start injects via pi.sendMessage(), not via return value
+   *   - model-facing advisories are stashed for the tool_result seam
    */
   it('subscribes session_start, turn_start, and tool_call', async () => {
     const subs = new Map<string, (e: unknown, ctx?: unknown) => unknown>();
@@ -2644,6 +2646,12 @@ describe('register (OMP adapter)', () => {
       {},
     );
     expect(block).toEqual({});
+  });
+
+  it('has no model-facing pi.sendMessage call site and imports the shared delivery seam', () => {
+    const source = readFileSync(resolve(dirname(fileURLToPath(import.meta.url)), '../coord-hook.ts'), 'utf8');
+    expect(source).toContain("from './non-preempting-delivery'");
+    expect(source).not.toMatch(/pi\??\.sendMessage\s*\(/);
   });
 
   it('operator unreachable with no coord work sends no hidden reminder (F-H4)', async () => {
@@ -2758,6 +2766,7 @@ describe('degraded notice is edge-triggered (WI-1082 — no per-turn spam / loop
   it('surfaces the degraded notice ONCE across a streak, and re-arms after recovery', async () => {
     const subs = new Map<string, (e: unknown, ctx?: unknown) => unknown>();
     const sent: Array<{ content: string }> = [];
+    const delivered: string[] = [];
     const notifications: Array<{ message: string }> = [];
     const pi = {
       on: (event: string, handler: (e: unknown, ctx?: unknown) => unknown) => {
@@ -2773,24 +2782,32 @@ describe('degraded notice is edge-triggered (WI-1082 — no per-turn spam / loop
       hasUI: true,
       ui: { notify: (message: string) => notifications.push({ message }) },
     };
+    const drain = () => {
+      const text = takeAdvisories();
+      if (text) delivered.push(text);
+    };
     const degradedNotes = () =>
-      sent.filter((s) => s.content.includes('coordination read was slow')).length;
+      delivered.filter((text) => text.includes('coordination read was slow')).length;
 
     // 3 consecutive degraded turns → exactly ONE degraded notice + ONE TUI notification.
     for (let i = 0; i < 3; i++) {
       await subs.get('turn_start')!({ type: 'turn_start', turnIndex: i, timestamp: 0 }, ctx);
+      drain();
     }
     expect(degradedNotes()).toBe(1);
+    expect(sent).toEqual([]);
     expect(notifications.length).toBe(1);
 
     // Operator recovers → a healthy turn re-arms the latch (still just one notice).
     inboxFails = false;
     await subs.get('turn_start')!({ type: 'turn_start', turnIndex: 3, timestamp: 0 }, ctx);
+    drain();
     expect(degradedNotes()).toBe(1);
 
     // Slow again → a fresh streak surfaces exactly one MORE notice (re-armed).
     inboxFails = true;
     await subs.get('turn_start')!({ type: 'turn_start', turnIndex: 4, timestamp: 0 }, ctx);
+    drain();
     expect(degradedNotes()).toBe(2);
     expect(notifications.length).toBe(2);
   });
@@ -4252,10 +4269,10 @@ describe('mid-turn coord delivery uses followUp, not steer (ornith-coord-inbox-f
    * tool ("Skipped due to queued user message"). Under a busy fleet's ambient
    * `*` broadcast flood + a slow local model, every tool is aborted before it
    * finishes → the session never makes progress. Mid-turn coord awareness must
-   * therefore be delivered as `followUp` (after the tool completes), never
-   * `steer`.
+   * therefore be appended to the completed tool result, never queued through
+   * any sendMessage delivery mode.
    */
-  it('delivers the coord delta as followUp so the in-flight tool is not aborted', async () => {
+  it('appends the coord delta to the tool result without queueing a message', async () => {
     const subs = new Map<string, (e: unknown, ctx?: unknown) => unknown>();
     const sent: Array<{ msg: { customType?: string }; opts?: { deliverAs?: string } }> = [];
     const pi = {
@@ -4291,12 +4308,16 @@ describe('mid-turn coord delivery uses followUp, not steer (ornith-coord-inbox-f
     });
 
     await subs.get('tool_call')!({ type: 'tool_call', toolName: 'read', toolCallId: 'tc-1', input: {} }, {});
-    await subs.get('tool_result')!({ type: 'tool_result', toolCallId: 'tc-1' }, {});
+    const result = await subs.get('tool_result')!(
+      { type: 'tool_result', toolCallId: 'tc-1', content: 'ORIGINAL' },
+      {},
+    );
 
-    const coordMsg = sent.find((s) => s.msg.customType === 'coord-reminder');
-    expect(coordMsg).toBeDefined();
-    expect(coordMsg!.opts?.deliverAs).toBe('followUp');
-    expect(coordMsg!.opts?.deliverAs).not.toBe('steer');
+    expect(sent).toEqual([]);
+    expect(result).toEqual({
+      content:
+        'ORIGINAL\n\n<system-reminder type="coord">\n[coord+1]\n- peerX ambient broadcast\n</system-reminder>',
+    });
   });
 });
 
@@ -4810,15 +4831,15 @@ describe('emitStatusDisplay (OMP display pipe: title verbatim + 💡 notice on c
       display: { title: 'su-abc12', statusline: [], notice: { id: 'wake-mode-manual', text: '💡 back to auto: coord:wake-mode mode=auto' } },
     };
     await emitStatusDisplay(pi as never, ctx);
-    expect(sent).toHaveLength(1);
-    expect(sent[0].customType).toBe('papercusp-status-tip');
-    expect(sent[0].content).toContain('papercusp-status-tip');
-    expect(sent[0].content).toContain('💡 back to auto: coord:wake-mode mode=auto');
-    expect(sent[0].content).toContain('coord:glance for detail');
+    expect(sent).toHaveLength(0);
+    const first = takeAdvisories();
+    expect(first).toContain('papercusp-status-tip');
+    expect(first).toContain('💡 back to auto: coord:wake-mode mode=auto');
+    expect(first).toContain('coord:glance for detail');
     expect(notes).toEqual([{ m: '💡 back to auto: coord:wake-mode mode=auto', t: 'info' }]);
     // Same notice again → deduped (no spam on every turn).
     await emitStatusDisplay(pi as never, ctx);
-    expect(sent).toHaveLength(1);
+    expect(takeAdvisories()).toBeNull();
     expect(notes).toHaveLength(1);
     // A CHANGED notice re-emits.
     payload = {
@@ -4826,8 +4847,7 @@ describe('emitStatusDisplay (OMP display pipe: title verbatim + 💡 notice on c
       display: { title: 'su-abc12', statusline: [], notice: { id: 'governor-paused', text: '💡 governor paused' } },
     };
     await emitStatusDisplay(pi as never, ctx);
-    expect(sent).toHaveLength(2);
-    expect(sent[1].content).toContain('governor paused');
+    expect(takeAdvisories()).toContain('governor paused');
   });
 
   it('no notice → nothing sent, no ui.notify (title leg still runs)', async () => {
@@ -4844,8 +4864,8 @@ describe('emitStatusDisplay (OMP display pipe: title verbatim + 💡 notice on c
     const pi = { sendMessage: (m: { content: string }) => { sent.push(m); } };
     payload = { ok: true, display: { title: null, statusline: [], notice: { id: 't', text: '💡 headless tip' } } };
     await emitStatusDisplay(pi as never, undefined);
-    expect(sent).toHaveLength(1);
-    expect(sent[0].content).toContain('headless tip');
+    expect(sent).toHaveLength(0);
+    expect(takeAdvisories()).toContain('headless tip');
   });
 });
 

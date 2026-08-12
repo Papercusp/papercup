@@ -45,6 +45,7 @@ import register, {
   takeMidTurn,
   shouldSkip,
 } from '../inject-hook';
+import { stashAdvisory } from '../non-preempting-delivery';
 
 // ── fixtures ────────────────────────────────────────────────────────────────
 
@@ -641,6 +642,14 @@ describe('inject-hook — mid-turn stash', () => {
     stashMidTurn('STALE', 1_000);
     expect(takeMidTurn(1_000 + PENDING_MAX_AGE_MS + 1)).toBeNull();
     expect(takeMidTurn(1_000 + PENDING_MAX_AGE_MS + 2)).toBeNull();
+  });
+
+  it('preserves independent hook advisories instead of letting one overwrite another', () => {
+    clearMidTurnStash();
+    stashMidTurn('MEMORY', 1_000);
+    stashAdvisory('coord-turn-start', 'COORD', 1_001);
+    expect(takeMidTurn(1_002)).toBe('MEMORY\n\nCOORD');
+    expect(takeMidTurn(1_003)).toBeNull();
   });
 });
 

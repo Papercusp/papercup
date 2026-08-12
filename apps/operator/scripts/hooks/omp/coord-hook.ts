@@ -12,10 +12,9 @@
  *   turn_end         → persist the watermark pointers consumed.
  *   tool_call        → L2 file-lock enforcement — extract paths,
  *                      locks:acquire, block on busy.
- *   tool_result      → release the lock for that toolCallId, AND inject any
- *                      coord messages that arrived since the last tool call
- *                      (mid-turn delivery via pi.sendMessage steer — parity
- *                      with the Claude/Codex PostToolUse coord hook).
+ *   tool_result      → release the lock for that toolCallId, AND append any
+ *                      pending advisory context to the completed result — the
+ *                      non-preempting Claude/Codex PostToolUse analogue.
  *   session_shutdown → defensive release of any locks still held.
  *
  * Runtime: the hook is loaded BY OMP, inside the OMP child process,
@@ -51,6 +50,11 @@ import { promises as fsp, existsSync, readdirSync, readFileSync, realpathSync, s
 import { randomUUID } from 'node:crypto';
 import { homedir, tmpdir } from 'node:os';
 import { basename, dirname, join, relative, resolve } from 'node:path';
+import {
+  appendAdvisories,
+  stashAdvisory,
+  takeAdvisories,
+} from './non-preempting-delivery';
 
 // ── Pure helpers (unit-tested) ───────────────────────────────────────
 
@@ -1642,6 +1646,7 @@ export interface ToolResultEvent {
   type: 'tool_result';
   toolCallId: string;
   toolName?: string;
+  content?: unknown;
 }
 
 /**
@@ -2498,7 +2503,7 @@ export function buildObjectiveTitleOsc(
 //     buildObjectiveTitleOsc objective render survives ONLY as the fallback
 //     for a pre-display operator);
 //   • NOTICE → display.notice (the 💡 tip), delivered ON CHANGE to the human
-//     (ctx.ui.notify) AND the model (pi.sendMessage system-reminder), deduped
+//     (ctx.ui.notify) AND the model (shared tool-result advisory), deduped
 //     by notice key so a standing tip doesn't spam every turn.
 
 /**
@@ -2619,7 +2624,7 @@ export function _resetStatusNoticeDedup(): void {
  * coord:glance directly or inside activity:report's hook bundle. */
 export async function applyStatusDisplay(
   glance: { self?: { objective?: string | null }; display?: GlanceDisplayBlock | null } | null,
-  pi?: { sendMessage: HookApi['sendMessage'] },
+  _pi?: { sendMessage: HookApi['sendMessage'] },
   ctx?: unknown,
 ): Promise<void> {
   const osc =
@@ -2632,12 +2637,10 @@ export async function applyStatusDisplay(
     try {
       const c = ctx as { hasUI?: boolean; ui?: { notify?: (m: string, t?: string) => void } } | undefined;
       if (c?.hasUI && typeof c.ui?.notify === 'function') c.ui.notify(text, 'info');
-      pi?.sendMessage({
-        customType: 'papercusp-status-tip',
-        content: `<system-reminder type="papercusp-status-tip">${text} (fleet status tip — act on it or surface it to the user; coord:glance for detail)</system-reminder>`,
-        display: false,
-        attribution: 'agent',
-      });
+      stashAdvisory(
+        'coord-status-tip',
+        `<system-reminder type="papercusp-status-tip">${text} (fleet status tip — act on it or surface it to the user; coord:glance for detail)</system-reminder>`,
+      );
       _lastStatusNoticeKey = key;
     } catch {
       /* delivery failed → key stays unset so the next turn retries */
@@ -4352,8 +4355,8 @@ async function safe<T>(fn: () => Promise<T>, fallback: T): Promise<T> {
  *
  * Verified 2026-05-20 against the installed version: turn_start
  * handlers receive `TurnStartEvent` and their return value is
- * DISCARDED — to inject context, call `pi.sendMessage()` from inside
- * the handler. tool_call handlers may return ToolCallEventResult
+ * DISCARDED — model context is stashed for the next tool_result instead.
+ * tool_call handlers may return ToolCallEventResult
  * ({ block?, reason? }) to block. session_start handlers' return
  * values are also discarded.
  */
@@ -4368,7 +4371,7 @@ type ToolCallHandler = (
 type ToolResultHandler = (
   event: ToolResultEvent,
   ctx: unknown,
-) => Promise<void> | void;
+) => Promise<{ content?: unknown } | void> | { content?: unknown } | void;
 
 interface HookApi {
   on(event: 'session_start', handler: SessionStartHandler): void;
@@ -4458,16 +4461,7 @@ export default function register(pi: HookApi): void {
     // WS4 orientation primer — inject once, model-facing (display:false,
     // attribution:'agent' = not billed to the user), same channel as the
     // coord reminders. Non-fatal: the primer is additive guidance.
-    try {
-      pi.sendMessage({
-        customType: 'papercusp-orientation',
-        content: ORIENTATION_PRIMER,
-        display: false,
-        attribution: 'agent',
-      });
-    } catch {
-      /* additive — never gate the session on the primer */
-    }
+    stashAdvisory('coord-orientation', ORIENTATION_PRIMER);
   });
 
   pi.on('turn_start', async (_event, ctx) => {
@@ -4481,17 +4475,7 @@ export default function register(pi: HookApi): void {
       mode: 'attached' as CoordMode,
     });
     if (reminder.length > 0) {
-      // OMP `turn_start` discards the handler's return value, so we
-      // inject via sendMessage. attribution='agent' so the message is
-      // not billed to the user; display=false because the reminder is
-      // for the model, not the human (the /coord UI surfaces it for
-      // humans).
-      pi.sendMessage({
-        customType: 'coord-reminder',
-        content: reminder,
-        display: false,
-        attribution: 'agent',
-      });
+      stashAdvisory('coord-turn-start', reminder);
     }
     if (degraded && !_degradedNotified) {
       // Edge-triggered (WI-1082): surface the degraded notice ONCE per slow streak,
@@ -4507,13 +4491,10 @@ export default function register(pi: HookApi): void {
       //  2. To the human — a best-effort OMP TUI notification. The ctx shape is accessed
       //     defensively; if the API differs the marker simply no-ops.
       _degradedNotified = true;
-      pi.sendMessage({
-        customType: 'coord-reminder',
-        content:
-          '<system-reminder type="coord">A coordination read was slow and was skipped this turn (transient — it retries automatically; NO action needed). Inbox/locks/changed-plans may be momentarily stale; just continue your task.</system-reminder>',
-        display: false,
-        attribution: 'agent',
-      });
+      stashAdvisory(
+        'coord-degraded',
+        '<system-reminder type="coord">A coordination read was slow and was skipped this turn (transient — it retries automatically; NO action needed). Inbox/locks/changed-plans may be momentarily stale; just continue your task.</system-reminder>',
+      );
       const c = ctx as
         | { hasUI?: boolean; ui?: { notify?: (m: string, t?: string) => void } }
         | undefined;
@@ -4545,15 +4526,11 @@ export default function register(pi: HookApi): void {
     void safe(() => reportTurnJournal(ctx), undefined);
     // owner-inbox-single-pane-2026-07-17 P-004: ingest the turn's final text into P-002's
     // ask surface, and soft-nudge a correction on the NEXT turn if it ended in an
-    // unstructured owner-ask. followUp (not steer) so an in-flight tool is never aborted —
-    // same non-interrupting delivery as the tool_result activity reminder below.
+    // unstructured owner-ask. The nudge waits for the next tool_result seam.
     void safe(async () => {
       const { nudge } = await reportTurnAskIngest(ctx);
       if (nudge.length > 0) {
-        pi.sendMessage(
-          { customType: 'coord-reminder', content: nudge, display: false, attribution: 'agent' },
-          { deliverAs: 'followUp' },
-        );
+        stashAdvisory('coord-owner-ask', nudge);
       }
     }, undefined);
   });
@@ -4575,32 +4552,31 @@ export default function register(pi: HookApi): void {
     // 1. Release the lock acquired for this tool (existing behavior).
     await safe(() => onToolResult(event), undefined);
     // 2. One post-tool activity heartbeat also returns generation-stamped
-    //    inbox/display deltas. Delivered as `followUp`, NOT `steer`:
-    //    `steer` routes to omp's steering queue, which ABORTS the in-flight
+    //    inbox/display deltas. Never queue these through sendMessage:
+    //    omp's message queues ABORT the in-flight
     //    tool (its result becomes "Skipped due to queued user message") every
     //    time a coord delta lands. On a slow local model (ornith IQ3_M, ~40s
     //    turns) in a busy fleet, ambient `*` broadcasts (claim pickups, sweeps)
     //    arrive faster than tools complete, so every tool is aborted before
     //    finishing → the session LIVELOCKS and never makes progress (observed
     //    2026-07-04: a leader burned 424 msgs / 170K tokens of "Skipped…" with
-    //    0 goal actions — fact `ornith-coord-inbox-flood-livelock`). `followUp`
-    //    delivers the same awareness AFTER the running tool completes:
-    //    non-interrupting, and actually closer to the Claude/Codex passive
-    //    `additionalContext` parity this hook targets (that path appends, it
-    //    does not abort). Urgent control cues still arrive at the next tool
+    //    0 goal actions — fact `ornith-coord-inbox-flood-livelock`). Appending
+    //    to this completed result matches the Claude/Codex passive
+    //    `additionalContext` parity this hook targets. Urgent control cues still arrive at the next tool
     //    boundary (one call later) — an acceptable trade vs. a full livelock.
     const bundle = await safe(() => reportActivityResult(event), null);
     const { reminder } = await safe(() => consumeActivityHookBundle(bundle, pi, ctx), { reminder: '' });
     // 3. Drain any bash→tool advisory staged by this tool's tool_call (P-017).
-    //    Rides the SAME followUp message rather than adding a channel, so the
-    //    advisory can never abort the tool it is about.
     const content = [drainSubstitutionAdvisory(), reminder].filter((s) => s.length > 0).join('\n\n');
-    if (content.length > 0) {
-      pi.sendMessage(
-        { customType: 'coord-reminder', content, display: false, attribution: 'agent' },
-        { deliverAs: 'followUp' },
-      );
-    }
+    if (content.length > 0) stashAdvisory('coord-tool-result', content);
+
+    // D-001/D-002: `sendMessage` is an interrupt even when labelled followUp.
+    // Append every pending advisory to the tool result the model was already
+    // going to read. inject-hook shares this keyed stash, so whichever hook's
+    // tool_result handler runs first atomically delivers all pending blocks.
+    const advisory = takeAdvisories();
+    if (!advisory) return;
+    return { content: appendAdvisories(event.content, advisory) };
   });
 
   pi.on('session_shutdown', async () => {
