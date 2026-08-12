@@ -4539,6 +4539,39 @@ export function hostThroughPty(o) {
         recycling = false;
         return;
       }
+      // EI-20287339148365013: a respawn REPLACES the agent, so any line staged
+      // against the predecessor is stale BY DEFINITION — nobody is mid-sentence
+      // to a process that no longer exists. Clearing it here makes the routine
+      // event that already happens (a carry-respawn) double as the recovery the
+      // wedge class never had.
+      //
+      // Measured 2026-08-12: su-f0c6fa5e carry-respawned at 22:56:00Z and its
+      // successor deferred its very first wake 3 minutes later against the same
+      // 11-char phantom the PREVIOUS agent had been stuck behind — the host
+      // process, and therefore the composer model, outlive the agent. The owner
+      // read that as "the bug isn't fixed"; it was the fix being unable to reach
+      // a staged line nothing ever resets. This is also the ONLY lever that
+      // helps without a relaunch: the pty-host is long-lived, so a code fix
+      // reaches an existing host only at moments the host itself re-enters.
+      const stagedAcrossRespawn = ownerComposerGate.hasPending()
+        ? ownerComposerGate.pendingLength()
+        : 0;
+      if (stagedAcrossRespawn > 0) {
+        // Ctrl-U to the CHILD first, then resync our own model — the same
+        // ordering breakComposerWedgeIfConfirmed uses and for the same reason:
+        // clearing only our model would leave the real composer holding text
+        // that the next injected turn would then append to.
+        try {
+          child?.write('\u0015');
+        } catch {
+          /* the child is being replaced anyway */
+        }
+        ownerComposerGate.markSubmitted();
+        appendHostEvent(ownerId, 'owner-composer-cleared-on-respawn', {
+          pendingLength: stagedAcrossRespawn,
+          respawnMode,
+        });
+      }
       if (drillId) {
         const respawnedExtra = {
           drillId,

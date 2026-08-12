@@ -1787,6 +1787,50 @@ describe('WI-3455 — pidLooksLikePsuHost (host-side identity check, mirrors psu
   });
 });
 
+describe('every child.write() control byte is an ESCAPE, never a literal (EI-20287339148365013)', () => {
+  // The file has carried a prose warning about this since WI-38257: a literal
+  // control byte "is invisible in review and is exactly what a patch, an editor
+  // or a copy-paste silently drops", degrading child.write('\u0015') to
+  // child.write('') — which still clears our MODEL while the real composer
+  // keeps its text, so the next injected turn appends to owner text. That is
+  // the precise corruption the composer gate exists to prevent, reintroduced by
+  // the code meant to fix it.
+  //
+  // The prose was not enough: writing the respawn clear below, I emitted a
+  // literal 0x15 anyway, and it rendered as an ordinary quoted string in every
+  // view I had. Only a byte-level read caught it. So this asserts the property
+  // mechanically instead of asking the next author to be more careful.
+  const SOURCE = nodeFs.readFileSync(new URL('../scripts/psu-pty-host.mjs', import.meta.url), 'utf8');
+
+  it('has at least two write sites to check — the guard must not pass by finding nothing', () => {
+    // A regex that silently stops matching would make this whole block vacuous.
+    const sites = SOURCE.split('\n').filter((l) => l.includes('child?.write('));
+    expect(sites.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('never passes a raw control character to child.write()', () => {
+    const offenders: string[] = [];
+    SOURCE.split('\n').forEach((line, i) => {
+      const arg = /child\?\.write\((.*)\)/.exec(line)?.[1];
+      if (!arg) return;
+      if ([...arg].some((c) => c.charCodeAt(0) < 0x20)) offenders.push(`line ${i + 1}: ${line.trim()}`);
+    });
+    expect(offenders).toEqual([]);
+  });
+
+  it('CONTROL: the same check DOES flag a literal byte, so a green here means something', () => {
+    // Falsifiability without mutating the shared tree (the sweep would commit a
+    // mutant): run the identical predicate over a synthetic line instead.
+    const mutant = `child?.write('${String.fromCharCode(21)}');`;
+    const arg = /child\?\.write\((.*)\)/.exec(mutant)?.[1] ?? '';
+    expect([...arg].some((c) => c.charCodeAt(0) < 0x20)).toBe(true);
+    // …and the escape form it should have been must pass the same predicate.
+    const good = String.raw`child?.write('\u0015');`;
+    const goodArg = /child\?\.write\((.*)\)/.exec(good)?.[1] ?? '';
+    expect([...goodArg].some((c) => c.charCodeAt(0) < 0x20)).toBe(false);
+  });
+});
+
 describe('hostIdleMs — the fact the resume guard never reported (EI-20289007209260909)', () => {
   // The measured husk. A headless session whose kickoff said "acknowledge and
   // stop" did exactly that, then held its socket and identity for 4h15m while
