@@ -47,36 +47,78 @@ const row = (over: Partial<UngradedRowLike> = {}): UngradedRowLike => ({
 describe('classifyUngraded — the three axes, each independently falsifiable', () => {
   it('CALIBRATION: an ungraded, open, post-epoch row is actionable', () => {
     // If this ever fails, the buckets below are all passing vacuously.
-    expect(classifyUngraded(row(), { epochMs: EPOCH })).toBe('actionable');
+    expect(classifyUngraded(row(), { policy: flat(EPOCH) })).toBe('actionable');
   });
 
   it('axis GRADED: a row with a grade is never actionable, however open or recent', () => {
-    expect(classifyUngraded(row({ humanGrade: 4 }), { epochMs: EPOCH })).toBe('graded');
+    expect(classifyUngraded(row({ humanGrade: 4 }), { policy: flat(EPOCH) })).toBe('graded');
     // grade 0 is a REAL grade, not a missing one — the classic falsy-vs-null trap
-    expect(classifyUngraded(row({ humanGrade: 0 }), { epochMs: EPOCH })).toBe('graded');
+    expect(classifyUngraded(row({ humanGrade: 0 }), { policy: flat(EPOCH) })).toBe('graded');
   });
 
   it('axis TERMINALITY: a settled artifact is excluded, "pending" is not', () => {
-    expect(classifyUngraded(row({ outcome: 'shipped' }), { epochMs: EPOCH })).toBe('terminal');
-    expect(classifyUngraded(row({ outcome: 'dropped' }), { epochMs: EPOCH })).toBe('terminal');
-    expect(classifyUngraded(row({ outcome: 'pending' }), { epochMs: EPOCH })).toBe('actionable');
+    expect(classifyUngraded(row({ outcome: 'shipped' }), { policy: flat(EPOCH) })).toBe('terminal');
+    expect(classifyUngraded(row({ outcome: 'dropped' }), { policy: flat(EPOCH) })).toBe('terminal');
+    expect(classifyUngraded(row({ outcome: 'pending' }), { policy: flat(EPOCH) })).toBe('actionable');
   });
 
   it('axis EPOCH: D-013 is forward-only — a pre-epoch row is excluded even while open', () => {
-    expect(classifyUngraded(row({ routedAtMs: BEFORE }), { epochMs: EPOCH })).toBe('pre-epoch');
-    expect(classifyUngraded(row({ routedAtMs: EPOCH }), { epochMs: EPOCH })).toBe('actionable');
+    expect(classifyUngraded(row({ routedAtMs: BEFORE }), { policy: flat(EPOCH) })).toBe('pre-epoch');
+    expect(classifyUngraded(row({ routedAtMs: EPOCH }), { policy: flat(EPOCH) })).toBe('actionable');
   });
 
   it('a missing/NaN clock is excluded rather than counted — never act blind on no timestamp', () => {
-    expect(classifyUngraded(row({ routedAtMs: Number.NaN }), { epochMs: EPOCH })).toBe('pre-epoch');
+    expect(classifyUngraded(row({ routedAtMs: Number.NaN }), { policy: flat(EPOCH) })).toBe('pre-epoch');
   });
 
-  it('ORIGIN never changes the bucket — it partitions the census, it does not exclude', () => {
+  it('ORIGIN never changes the bucket UNDER A SHARED FLOOR — it partitions the census', () => {
     // The axis that produced the mislabel: scout rows are a different POPULATION, not a
     // different eligibility. Conflating the two is what turned 15 into "1,082 su filings".
+    // NOTE (D-014): this now says "under a shared floor" for a reason. Origin is no
+    // longer inert — it SELECTS the floor (see the per-origin describe below). What
+    // remained true, and is what actually prevented the 70x mislabel, is the accounting
+    // invariant: every row still lands in exactly one of the four buckets.
     for (const origin of ['su-ideate', 'scout', 'drill']) {
-      expect(classifyUngraded(row({ origin }), { epochMs: EPOCH })).toBe('actionable');
+      expect(classifyUngraded(row({ origin }), { policy: flat(EPOCH) })).toBe('actionable');
     }
+  });
+});
+
+/**
+ * D-014. The single-epoch read was not arithmetically wrong either — it applied one
+ * producer's floor to every producer, which drew scout's line in a place chosen for the
+ * su-ideate corpus and left 592 rows in an "actionable" backlog nobody had decided to own.
+ */
+describe('D-014 per-origin epoch floor', () => {
+  it('CALIBRATION: the two shipped floors are distinct, else every test below is vacuous', () => {
+    expect(SU_IDEATE_UNGRADED_EPOCH_MS).toBe(Date.parse('2026-07-11T00:00:00Z'));
+    expect(SCOUT_UNGRADED_EPOCH_MS).toBe(Date.parse('2026-08-12T00:00:00Z'));
+    expect(SCOUT_UNGRADED_EPOCH_MS).toBeGreaterThan(SU_IDEATE_UNGRADED_EPOCH_MS);
+  });
+
+  it('THE BUG THIS FIXES: one timestamp, two producers, two verdicts', () => {
+    // 2026-07-20 — after the su-ideate floor, before scout's. Under the single-epoch read
+    // BOTH were 'actionable'; that is the whole 592-row backlog in one assertion.
+    const t = Date.parse('2026-07-20T00:00:00Z');
+    const policy = DEFAULT_UNGRADED_EPOCH_POLICY;
+    expect(classifyUngraded(row({ origin: 'su-ideate', routedAtMs: t }), { policy })).toBe('actionable');
+    expect(classifyUngraded(row({ origin: 'scout', routedAtMs: t }), { policy })).toBe('pre-epoch');
+  });
+
+  it('an unknown origin gets the FALLBACK, never silent exclusion behind another floor', () => {
+    const policy = DEFAULT_UNGRADED_EPOCH_POLICY;
+    expect(epochMsForOrigin(policy, 'a-producer-added-next-quarter')).toBe(policy.fallbackMs);
+    // And the fallback is the OLDEST floor on purpose: a new producer must over-count
+    // (visible, recoverable) rather than vanish behind someone else's cut (invisible).
+    expect(policy.fallbackMs).toBeLessThanOrEqual(Math.min(...Object.values(policy.byOrigin)));
+  });
+
+  it('a non-finite floor falls back instead of poisoning every comparison against it', () => {
+    // `routedAtMs < NaN` is false, so a NaN floor would silently mark EVERY row
+    // actionable — the failure mode that looks like a healthy census.
+    const broken: UngradedEpochPolicy = { byOrigin: { scout: Number.NaN }, fallbackMs: EPOCH };
+    expect(epochMsForOrigin(broken, 'scout')).toBe(EPOCH);
+    expect(classifyUngraded(row({ origin: 'scout', routedAtMs: BEFORE }), { policy: broken })).toBe('pre-epoch');
   });
 });
 
@@ -88,7 +130,7 @@ describe('summarizeUngraded', () => {
   ];
 
   it('keeps each origin separately addressable instead of summing them into one scalar', () => {
-    const b = summarizeUngraded(rows, EPOCH);
+    const b = summarizeUngraded(rows, flat(EPOCH));
     expect(b.actionableByOrigin['su-ideate']).toBe(15);
     expect(b.actionableByOrigin.scout).toBe(595);
     expect(b.actionable).toBe(610);
@@ -97,16 +139,23 @@ describe('summarizeUngraded', () => {
   it('ACCOUNTS for the gap: allUngraded === actionable + preEpoch + terminal', () => {
     // The invariant that makes the 15-vs-1,103 discrepancy explainable rather than
     // alarming. If a future axis is added and not accounted for, this fails.
-    const b = summarizeUngraded(rows, EPOCH);
+    const b = summarizeUngraded(rows, flat(EPOCH));
     expect(b.allUngraded).toBe(b.actionable + b.excluded.preEpoch + b.excluded.terminal);
   });
 
-  it('carries the epoch it was taken against, so a stored census stays interpretable', () => {
-    expect(summarizeUngraded(rows, EPOCH).epochMs).toBe(EPOCH);
+  it('carries the POLICY it was taken against, so a stored census stays interpretable', () => {
+    // D-014: one number cannot describe a multi-origin census any more, so the whole
+    // floor set travels with it. A census stored with only "the epoch" is a wrong answer
+    // to "which line was drawn here" for every origin but one.
+    const policy = DEFAULT_UNGRADED_EPOCH_POLICY;
+    const b = summarizeUngraded(rows, policy);
+    expect(b.policy).toBe(policy);
+    expect(epochMsForOrigin(b.policy, 'scout')).toBe(SCOUT_UNGRADED_EPOCH_MS);
+    expect(epochMsForOrigin(b.policy, 'su-ideate')).toBe(SU_IDEATE_UNGRADED_EPOCH_MS);
   });
 
   it('an empty read is a real zero, not a crash', () => {
-    const b = summarizeUngraded([], EPOCH);
+    const b = summarizeUngraded([], flat(EPOCH));
     expect(b).toMatchObject({ actionable: 0, allUngraded: 0 });
   });
 });
