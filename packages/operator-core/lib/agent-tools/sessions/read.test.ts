@@ -18,7 +18,7 @@ vi.mock('./_shared', async (importOriginal) => ({
   sessionSearchEnabled: vi.fn(async () => true),
 }));
 
-const tool = (await import('./read')).default;
+await import('./read');
 const { dispatchProjectedTool, lookupByMcpName } = await import('@papercusp/agent-mcp');
 const projected = lookupByMcpName('sessions:read')!;
 
