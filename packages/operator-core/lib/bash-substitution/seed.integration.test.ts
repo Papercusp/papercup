@@ -218,6 +218,49 @@ describe('seedSubstitutionRegistry (real PG)', () => {
     expect(count).toBe(BASH_GATE_PAIRS.length);
   });
 
+  it('freezes the population baselines when re-seeding with new fixture totals', async () => {
+    const pair = BASH_GATE_PAIRS.find(
+      (candidate) => candidate.policyTier === undefined && candidate.expectedVerdict === 'equivalent',
+    )!;
+    const { fixture } = loadPairFixtures([pair])[0];
+    const workspace = `${WORKSPACE}-baseline-regression`;
+    const refreshedFixture = {
+      ...fixture,
+      totalAtoms: fixture.totalAtoms + 100,
+      totalSessions: fixture.totalSessions + 10,
+    };
+
+    await seedSubstitutionRegistry({
+      workspaceId: workspace,
+      fixtures: [{ pair, fixture }],
+      client: db.adminSql,
+    });
+
+    const [first] = (await db.adminSql`
+      SELECT baseline_calls, baseline_sessions
+        FROM harness_shared.bash_tool_substitutions
+       WHERE workspace_id = ${workspace} AND intent_label = ${pair.intentLabel}
+    `) as unknown as Array<{ baseline_calls: number; baseline_sessions: number }>;
+    expect(first).toBeDefined();
+
+    await seedSubstitutionRegistry({
+      workspaceId: workspace,
+      fixtures: [{ pair, fixture: refreshedFixture }],
+      client: db.adminSql,
+    });
+
+    const [second] = (await db.adminSql`
+      SELECT baseline_calls, baseline_sessions
+        FROM harness_shared.bash_tool_substitutions
+       WHERE workspace_id = ${workspace} AND intent_label = ${pair.intentLabel}
+    `) as unknown as Array<{ baseline_calls: number; baseline_sessions: number }>;
+
+    expect(Number(second.baseline_calls)).toBe(fixture.totalAtoms);
+    expect(Number(second.baseline_sessions)).toBe(fixture.totalSessions);
+    expect(Number(second.baseline_calls)).not.toBe(refreshedFixture.totalAtoms);
+    expect(Number(second.baseline_sessions)).not.toBe(refreshedFixture.totalSessions);
+  });
+
   it('never demotes a rule that an observation window already promoted', async () => {
     // Simulate P-020 promoting one rule to `advise` after its window.
     const target = BASH_GATE_PAIRS[0].intentLabel;

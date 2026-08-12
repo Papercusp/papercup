@@ -341,6 +341,14 @@ export type WatchdogSource =
   // items that day, 4 of them self-closing unread. Debounced 24h per path, keyed
   // `tsc-new-file-red::<path>`.
   | 'tsc-new-file-red'
+  // sql-escape-tool-routing-2026-08-12 P-008: the nightly SQL-read census's
+  // escalation debounce. Keyed by the ALARM CLASSES that crossed
+  // (`no-fall+verdict-drift+uncovered`), never by the run, so a NEW class is
+  // never suppressed by an older one still inside its window — the EI-16071
+  // failure, whose key was source-only. Debounced 7d: an uncovered cluster that
+  // persists for a fortnight is not new news every night, and ~15 clusters on
+  // this box already sit above the threshold.
+  | 'sql-read-census'
   // EI-19409061552037718: the stale-routine-executor watchdog — a long-lived host
   // with PAPERCUSP_DBOS_ROUTINES=1 running code frozen at boot while this
   // checkout's tree HEAD has since moved. Debounced per executor identity

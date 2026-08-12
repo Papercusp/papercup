@@ -79,6 +79,7 @@ export const BESPOKE_ACTIVE_SEEDS: BespokeActiveSeed[] = [
   { name: 'task-reconcile', seedScript: 'seed-task-reconcile-routine.ts' },
   { name: 'supervision-reconcile', seedScript: 'seed-supervision-reconcile-routine.ts' },
   { name: 'corpus-term-df', seedScript: 'seed-corpus-term-df-routine.ts' },
+  { name: 'sql-read-census', seedScript: 'seed-sql-read-census-routine.ts' },
 ];
 
 /**

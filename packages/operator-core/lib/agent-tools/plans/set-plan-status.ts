@@ -26,6 +26,7 @@ import { withPlanLock, bumpUpdatedDate } from './with-plan-lock';
 import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { clearStartedForTerminalPlan, isTerminalPlanStatus } from './plan-start-state';
+import { stampTerminalNowBlock } from './terminal-now-stamp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { emitDeprecateLearnings, type DeprecateLearnings } from '../../harness/improvements/deprecate-learnings';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
@@ -118,7 +119,7 @@ const argsSchema = z
   });
 
 type SetPlanStatusValue =
-  | { ok: true; oldStatus: string | null; newStatus: string; changed: boolean }
+  | { ok: true; oldStatus: string | null; newStatus: string; changed: boolean; nowStamped?: boolean }
   | { ok: false; code: 'not_found' | 'no_status_line' | 'unexpected_status'; current?: string | null };
 
 /** Frontmatter `status:` line, captured value in group 2, trailing ws in group 3. */
@@ -274,9 +275,23 @@ export default defineTool({
                 value: { ok: true, oldStatus: flip.oldStatus, newStatus: status, changed: false },
               };
             }
+            // A terminal flip leaves the `## Now` block — the cold-resume
+            // anchor, and the most-read field on the plan — still describing
+            // live work, which reads as authoritative long after it stops
+            // being true. Stamp it in the SAME locked write so the status and
+            // the prose can never disagree, not even transiently. Prepend-only:
+            // the author's State/Next survive verbatim under the banner. See
+            // terminal-now-stamp.ts for the measured failures behind this.
+            const stamped = stampTerminalNowBlock(flip.newBody, status);
             return {
-              newBody: bumpUpdatedDate(flip.newBody),
-              value: { ok: true, oldStatus: flip.oldStatus, newStatus: status, changed: true },
+              newBody: bumpUpdatedDate(stamped ?? flip.newBody),
+              value: {
+                ok: true,
+                oldStatus: flip.oldStatus,
+                newStatus: status,
+                changed: true,
+                nowStamped: stamped !== null,
+              },
             };
           },
         );

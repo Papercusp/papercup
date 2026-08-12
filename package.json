@@ -208,6 +208,7 @@
     "lint:no-unbounded-inbox-read": "node scripts/check-unbounded-inbox-read.mjs",
     "lint:no-unenrolled-mjs-imports": "node scripts/check-unenrolled-mjs-imports.mjs",
     "lint:no-raw-setinterval": "node scripts/check-no-raw-setinterval.mjs",
+    "lint:sidecar-fallback-reported": "node scripts/check-sidecar-fallback-reported.mjs",
     "lint:no-ungated-mug-kettle": "node scripts/check-ungated-mug-kettle.mjs",
     "lint:vacuous-flag-guard": "node scripts/check-vacuous-flag-guard.mjs",
     "lint:vacuous-flag-guard:report": "node scripts/check-vacuous-flag-guard.mjs --report",

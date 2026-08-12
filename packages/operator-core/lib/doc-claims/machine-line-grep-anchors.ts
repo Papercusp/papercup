@@ -44,6 +44,11 @@ export const CANONICAL_ANCHOR: Readonly<Record<string, string>> = Object.freeze(
   GATE_PROMOTION: 'candidate=',
   AFFECTED_TESTS_RESULT: 'status=',
   AFFECTED_TESTS_FAILING_FILES: 'run=',
+  // WI-38300. Emitted only when absorption's residue is load-correlated, so its ABSENCE is
+  // the common case — which is exactly the shape that makes a bare grep dangerous here: a
+  // run with no load-suspect residue matches only the vitest test names that echo the
+  // marker, and that impostor match reads as a positive finding.
+  AFFECTED_TESTS_LOAD_SUSPECT: 'tasks=',
   TEST_FILE_RESULT: 'requested=',
 });
 

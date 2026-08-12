@@ -345,7 +345,11 @@ function RunRow({
         <span>·</span>
         <span>{formatOriginWhen(run.launchedAt)}</span>
         <span>·</span>
-        <span>{run.turnCount} {run.turnCount === 1 ? 'turn' : 'turns'}</span>
+        <span>
+          {run.turnCount == null
+            ? 'turns unrecorded'
+            : `${run.turnCount} ${run.turnCount === 1 ? 'turn' : 'turns'}`}
+        </span>
       </div>
       {run.note ? <p className="pc-agent-row__note">{run.note}</p> : null}
     </li>

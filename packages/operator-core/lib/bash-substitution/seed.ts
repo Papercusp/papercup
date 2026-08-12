@@ -83,11 +83,13 @@ export interface SeedOutcome {
  * the unit an advisory speaks about, so re-seeding updates in place rather than
  * accumulating duplicate rules that would fire twice on the same command.
  *
- * `tier`, `false_positive_count` and `observed_since` are deliberately NOT
- * overwritten on conflict: those are PROMOTION state earned by an observation
- * window (P-020), and re-running the seed must not silently demote a rule that
- * has already been promoted, nor erase the false-positive evidence that would
- * argue against promoting it.
+ * `tier`, `false_positive_count`, `observed_since`, `baseline_calls` and
+ * `baseline_sessions` are deliberately NOT overwritten on conflict: the first
+ * three are PROMOTION state earned by an observation window (P-020), and the
+ * last two are the frozen before-measurement denominators for that window.
+ * Re-running the seed must not silently demote a rule that has already been
+ * promoted, erase the false-positive evidence that would argue against
+ * promoting it, or replace the past with a fresh measurement of the present.
  *
  * The ONE exception is a POLICY tier (`assertPolicyTier` — D-003): that tier is
  * not earned by observation, it is DECLARED by the pair because a rule already
@@ -130,8 +132,6 @@ async function upsertPair(
       tier                = CASE WHEN ${pair.policyTier ?? null}::text IS NULL
                                  THEN bash_tool_substitutions.tier
                                  ELSE EXCLUDED.tier END,
-      baseline_calls      = EXCLUDED.baseline_calls,
-      baseline_sessions   = EXCLUDED.baseline_sessions,
       updated_at          = now()
     RETURNING (xmax = 0) AS inserted
   `) as unknown as Array<{ inserted: boolean }>;

@@ -41,6 +41,8 @@ import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
 import { noteAssumptionAsserted } from '../../agent-state-stamp';
 import { neutralizeToolCallTags } from '../../text-safety';
 import { factMeasurementHint } from '../../fact-measurement-detector';
+import { boundedOrgTxn } from '../../pg-bounded-txn';
+import { acquireWithContentionRetry } from '../locks/contention-retry';
 
 /**
  * EI-10952: the disclosure for a truncated body. Returns undefined on the clean
@@ -143,6 +145,10 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   modality: ['text'],
+  // The handler performs async provenance/dependency work before its multi-query
+  // assertFact write. Do not let the dispatcher hold an ambient workspace txn
+  // across those awaits; the write owns a bounded admin-pool transaction below.
+  skipWorkspaceTx: true,
   args: z.object({
     scope: z.enum(FACT_SCOPES).describe('workspace (global, no ref) | role | owner | harness | work_item'),
     scopeRef: z.string().max(120).optional().describe('Required for every scope except workspace: role name / ownerId / harness slug / WI id.'),
@@ -398,7 +404,11 @@ export default defineTool({
         dependsOn = [];
       }
     }
-    const fact = await assertFact({
+    // assertFact appends a version and may evict at the per-scope cap, so the
+    // whole multi-query write must share one bounded transaction. Retry that
+    // complete unit on transient PG contention; retrying individual statements
+    // could leave a partial append/eviction behind.
+    const factInput = {
       scope: args.scope,
       scopeRef: scopeRef ?? null,
       key: slotted.key,
@@ -420,7 +430,10 @@ export default defineTool({
       createdBy: identity.ownerId,
       ...(args.shareable !== undefined ? { shareable: args.shareable } : {}),
       ...(potHomeSlug ? { potHomeSlug } : {}),
-    }, ctx.tx);
+    };
+    const fact = await acquireWithContentionRetry(() =>
+      boundedOrgTxn((tx) => assertFact(factInput, tx)),
+    );
     // P-009 / D-011: an ASSUMPTION advances this agent's assumption watermark,
     // which every subsequent tool call is stamped with. `fact.id` is the
     // append-versioned row id P-008(a) made immutable — that immutability is

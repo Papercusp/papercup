@@ -235,8 +235,8 @@ describe('plan_runs round-trip (P-027)', () => {
     // Newest-first (launched_at DESC, id DESC tie-break).
     expect(runs[0]!.id).toBe(runId2);
     expect(runs[1]!.id).toBe(runId);
-    // Independent turn-count tallies.
-    expect(runs[0]!.turnCount).toBe(0);
+    // An absent transcript is not a measured zero-turn run.
+    expect(runs[0]!.turnCount).toBeNull();
     expect(runs[1]!.turnCount).toBe(3);
     // null note/title round-trip.
     expect(runs[0]!.note).toBeNull();

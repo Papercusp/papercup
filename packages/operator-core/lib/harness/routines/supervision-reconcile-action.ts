@@ -19,6 +19,7 @@ import { sendMessage } from '../../agent-tools/coordination/messages';
 import type { AgentIdentity } from '../../agent-tools/coordination/identity';
 import { reconcileTick, type ReconcilerDeps } from '../../supervision/unit-reconciler';
 import { fileSupervisionGiveUpEi, resolveSupervisionGiveUpEi } from '../../supervision/give-up-ei';
+import { fileSupervisionPausedEi, resolveSupervisionPausedEi } from '../../supervision/paused-unit-ei';
 
 const execFileP = promisify(execFile);
 
@@ -57,6 +58,11 @@ function productionDeps(ctx: SystemActionCtx): ReconcilerDeps {
     // unit enters the claim queue instead of depending on someone reading the `*` broadcast.
     fileGiveUpEi: fileSupervisionGiveUpEi,
     resolveGiveUpEi: resolveSupervisionGiveUpEi,
+    // EI-20003974512096022: same treatment for the PAUSE path — a supervised unit sitting
+    // administratively disabled past the threshold becomes a claimable EI instead of an
+    // indefinitely-repeating broadcast nobody owns.
+    filePausedEi: fileSupervisionPausedEi,
+    resolvePausedEi: resolveSupervisionPausedEi,
   };
 }
 

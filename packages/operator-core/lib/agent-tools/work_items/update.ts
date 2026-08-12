@@ -229,6 +229,14 @@ export default defineTool({
     when: 'Refine filed work-items: clarify text, re-rate severity, correct kind (bug↔change controls lane), attach a feature, adopt/clear a goal, or backfill plan_item provenance for a plan-scoped lane. Batch via items:[…].',
     notWhen: 'Use set_state for lifecycle, amend for structural decisions, comment for notes, or tag for topics.',
     chaining: 'work_items:get → work_items:update { id, …fields }.',
+    // EI-20281509195248260: `tags` is the measured case — the belief "nothing writes
+    // tags" was filed 9x in 19h (see work_items/tag.ts's header) plus
+    // EI-18669607533031012, because THIS tool's unrecognized-key rejection listed only
+    // what it accepts and never named the writer. Costs zero prompt weight (not
+    // rendered into the description) and is paid only on that failure path.
+    argRedirects: {
+      tags: 'work_items:tag { id, topic } — the ONLY writer for the claim-spec-visible `tags` field (it mirrors the topic into exactly what a scheduler:set_claim_spec filter on `tags` reads)',
+    },
   },
   capability: 'work_items:write',
   requirePrincipal: false,

@@ -48,6 +48,16 @@
  */
 import { supervisedProcesses, type SupervisionEntry } from '../service-health';
 import type { SupervisionGiveUpEpisode, RecoveredSupervisionEpisode } from './give-up-ei';
+import type { SupervisionPausedEpisode, ResumedSupervisionEpisode } from './paused-unit-ei';
+import {
+  decidePause,
+  formatPauseDuration,
+  updatePauseState,
+  _resetPauseClockForTests,
+  type PauseDecision,
+  type PauseState,
+  type PauseStoreDeps,
+} from './pause-clock';
 
 // ── Parsing (pure) ──────────────────────────────────────────────────────────
 
@@ -508,6 +518,19 @@ export interface ReconcilerDeps {
    *  unit recovered (`decideReconcile`'s 'recovered' transition). Same optionality/best-effort
    *  rationale as `fileGiveUpEi`. */
   resolveGiveUpEi?: (recovery: RecoveredSupervisionEpisode) => Promise<string[]>;
+  /**
+   * EI-20003974512096022 fix 1: file a durable EI once a supervised unit has been
+   * ADMINISTRATIVELY PAUSED (disabled/masked) longer than `PAUSE_ESCALATION_MS`. Same rationale
+   * as `fileGiveUpEi` — a broadcast leaves the dark unit unowned — but for the pause path, which
+   * previously only ever broadcast. Same optionality/best-effort contract.
+   */
+  filePausedEi?: (episode: SupervisionPausedEpisode) => Promise<string | null>;
+  /** Auto-resolve the pause EI once the unit is observed no longer paused. */
+  resolvePausedEi?: (resumed: ResumedSupervisionEpisode) => Promise<string[]>;
+  /** DI seam for the DURABLE pause clock (migration 812). Omitted ⇒ the real
+   *  `operator_supervision_pause_state` store; injected by tests so the ramp/threshold logic
+   *  runs without PG. */
+  pauseStore?: PauseStoreDeps;
 }
 
 /** Strip journald's `Aug 10 12:19:03 host bundle-host.sh[1655791]: ` line prefix, so the
@@ -662,6 +685,10 @@ const flapStateByUnit = new Map<string, UnitFlapState>();
 export function _resetReconcilerState(): void {
   flapStateByUnit.clear();
   degradedWarned = false;
+  // The pause clock's hermetic fallback is process-local and would otherwise LEAK between tests:
+  // a second test's paused unit would arrive already carrying `lastNotifiedTier`, so its
+  // transition gate would suppress the broadcast the test is asserting on.
+  _resetPauseClockForTests();
 }
 let degradedWarned = false;
 
@@ -710,6 +737,14 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
   const autoRestartFlagOn = await deps.autoRestartFlagOn();
 
   const actions: ReconcileAction[] = [];
+  /** EI-20003974512096022: units observed administratively paused THIS tick, resolved against
+   *  the durable pause clock after the loop (see `reconcilePauses`). */
+  const pausedThisTick: string[] = [];
+  /** Every supervised unit this tick actually reached a verdict on. A unit whose `systemctl show`
+   *  probe failed is deliberately NOT in here: we could not tell whether it is still paused, and
+   *  treating "unreadable" as "resumed" would clear its clock and auto-resolve its EI on a read
+   *  error — the same failure direction `isAdministrativelyPaused` already refuses to take. */
+  const observedThisTick: string[] = [];
   for (const entry of registry) {
     if (!entry.unit) continue; // systemd-user layer entries always carry `unit`; defensive skip.
     const status = byUnit.get(entry.unit);
@@ -815,6 +850,14 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
     });
     flapStateByUnit.set(entry.unit, nextState);
     actions.push(action);
+
+    // EI-20003974512096022: did we actually LEARN this unit's pause state this tick? Either the
+    // `show` probe returned a `UnitFileState` (so disabled/masked is knowable), or the unit is up
+    // — an up unit is not dark, whatever its unit-file state says. A failed probe is neither, and
+    // must not be mistaken for "resumed".
+    if (show?.unitFileState !== undefined || action.kind === 'healthy' || action.kind === 'recovered') {
+      observedThisTick.push(entry.unit);
+    }
 
     // WI-9249: the two escalation paths below used to page with a restart COUNT and no cause,
     // so "needs investigation" meant every responder began from zero. The silent-crash-loop
@@ -945,6 +988,15 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
         break;
       }
       case 'report-only':
+        // EI-20003974512096022: the PAUSED reason no longer notifies from here. Its
+        // notify gate used to be `action.notify` (i.e. in-memory `wasDown`), which a bg-host
+        // restart resets — that is how ONE 2-day pause emitted 16 identical broadcasts. It is
+        // now decided against the DURABLE pause clock in the post-loop pass below, which also
+        // ramps salience with duration (fix 2) and files a claimable EI (fix 1).
+        if (action.reason === 'paused') {
+          pausedThisTick.push(entry.unit);
+          break;
+        }
         if (action.notify) {
           await deps
             .notify({
@@ -953,9 +1005,7 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
                   ? action.confirmedAbsent
                     ? `⚠ supervision: \`${entry.unit}\` not found by systemctl --user (LoadState=not-found — removed/never installed) — report-only`
                     : `⚠ supervision: \`${entry.unit}\` is not loaded by systemctl --user and its state could not be read — report-only (NOT confirmed missing; check \`systemctl --user status ${entry.unit}\`)`
-                  : action.reason === 'paused'
-                    ? `⏸ supervision: \`${entry.unit}\` is down but administratively disabled/masked — respecting the pause, NOT auto-restarting (\`systemctl --user enable --now ${entry.unit}\` to resume)`
-                    : `⚠ supervision: \`${entry.unit}\` is down (report-only: ${entry.autoRestart ? 'FLAGS.supervisorAutoRestart is off' : 'entry.autoRestart:false'})`,
+                  : `⚠ supervision: \`${entry.unit}\` is down (report-only: ${entry.autoRestart ? 'FLAGS.supervisorAutoRestart is off' : 'entry.autoRestart:false'})`,
               category: 'supervision',
             })
             .catch(() => {});
@@ -985,7 +1035,89 @@ export async function reconcileTick(deps: ReconcilerDeps): Promise<ReconcileTick
     }
   }
 
+  await reconcilePauses(deps, pausedThisTick, observedThisTick, now);
+
   return { checked: registry.length, actions, degraded: false };
+}
+
+/**
+ * EI-20003974512096022 fixes 1+2 — resolve this tick's paused units against the DURABLE pause
+ * clock, then act on the result: ramp the broadcast's salience with the pause's age, and file ONE
+ * claimable EI once it outlives `PAUSE_ESCALATION_MS`.
+ *
+ * ONE atomic read-modify-write per tick covers every unit (the same read-once/write-once shape as
+ * `liveness-alarm.ts`), so two overlapping ticks cannot lost-update each other's clocks. All the
+ * I/O — broadcasts, EI file/resolve — happens AFTER the transaction commits, never inside the
+ * mutator: the mutator runs while the row is held `FOR UPDATE`, so awaiting in there would convert
+ * a microsecond lock into a network round-trip held against every concurrent writer.
+ *
+ * Best-effort throughout: a supervision tick must never be failed by its own bookkeeping.
+ */
+async function reconcilePauses(
+  deps: ReconcilerDeps,
+  pausedUnits: string[],
+  observedUnits: string[],
+  now: number,
+): Promise<void> {
+  const pausedSet = new Set(pausedUnits);
+  const observedSet = new Set(observedUnits);
+
+  const decisions = new Map<string, PauseDecision>();
+  let resumed: string[] = [];
+
+  await updatePauseState((current) => {
+    const next: PauseState = {};
+    decisions.clear();
+
+    // Carry forward every unit we could NOT read this tick — an unreadable probe is not evidence
+    // the pause ended, and dropping the record here would silently restart the clock (and so
+    // re-arm the whole never-fires-on-a-restarting-box failure this store exists to remove).
+    for (const [unit, record] of Object.entries(current ?? {})) {
+      if (!pausedSet.has(unit) && !observedSet.has(unit)) next[unit] = record;
+    }
+
+    for (const unit of pausedSet) {
+      const { next: record, decision } = decidePause(current?.[unit], now);
+      next[unit] = record;
+      decisions.set(unit, decision);
+    }
+
+    // Observed AND no longer paused ⇒ the episode is over: drop the clock (by omission from
+    // `next`) and resolve whatever EI it filed.
+    resumed = Object.keys(current ?? {}).filter((unit) => observedSet.has(unit) && !pausedSet.has(unit));
+
+    return next;
+  }, deps.pauseStore);
+
+  for (const [unit, decision] of decisions) {
+    if (decision.notify) {
+      const age = formatPauseDuration(decision.durationMs);
+      await deps
+        .notify({
+          summary:
+            decision.tier.id === 'observed'
+              ? `⏸ supervision: \`${unit}\` is down but administratively disabled/masked — respecting the pause, NOT auto-restarting (\`systemctl --user enable --now ${unit}\` to resume)`
+              : `⏸ supervision: \`${unit}\` has now been administratively disabled/masked for ${decision.tier.label} (${age}) — a supervised unit is dark. If this pause is intended, say so on its EI and close it; if nobody can account for it, re-enable it (\`systemctl --user enable --now ${unit}\`).`,
+          // Fix 2: past the 4h tier this stops being an ambient supervision FYI and routes to the
+          // escalation channel. A tier fires at most once per episode (durably gated), so ramping
+          // adds urgency without adding volume — the 16-identical-broadcasts failure was the
+          // opposite trade.
+          kind: decision.tier.kind,
+          ...(decision.tier.kind === 'escalation' ? {} : { category: 'supervision' }),
+        })
+        .catch(() => {});
+    }
+
+    if (decision.shouldEscalate) {
+      await deps
+        .filePausedEi?.({ unit, pausedForMs: decision.durationMs, pausedSince: decision.pausedSince })
+        .catch(() => {});
+    }
+  }
+
+  for (const unit of resumed) {
+    await deps.resolvePausedEi?.({ unit }).catch(() => {});
+  }
 }
 
 // ── P-004: additive supervision snapshot (for dev:service_health) ──────────

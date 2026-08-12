@@ -47,6 +47,11 @@ import {
   formatBatchProgress,
 } from './lib/batch-watchdog.mjs';
 import { classifyTaskExit, isGatingFailure } from './lib/task-exit-class.mjs';
+import {
+  classifyResidualFailure,
+  formatLoadSuspectNotice,
+  formatLoadSuspectMarker,
+} from './lib/load-suspect.mjs';
 import { detectCargoTermination } from './lib/cargo-result.mjs';
 // EI-10542: this runner interleaves its own header/status lines (fd 1/2) with
 // child suite output written synchronously via `stdio: 'inherit'`. On a non-TTY
@@ -101,6 +106,87 @@ function errSync(msg = '') {
   rawErrSync(msg);
   logLine(`${msg}\n`);
 }
+// ── How the run ENDED, recorded in the run's own log (EI-18682539587976453) ──
+// The `AFFECTED_TESTS_RESULT` line is emitted on every CLEAN exit path, and
+// EI-18796017307093897's guard pins exactly that. But a run that is KILLED reaches
+// none of them, so the marker's ABSENCE means either "still running" or "died" —
+// and telling those two apart is precisely what a triager needs. Measured
+// near-miss: a background test:affected killed at a compaction boundary left a log
+// whose last line was a clean "0 errors" — byte-for-byte what a healthy in-progress
+// run looks like at that instant. It was caught only by noticing a stale mtime and
+// hunting for the process. Absence is not a signal; it is the lack of one.
+//
+// So every termination this process can OBSERVE now emits the marker exactly once,
+// and for the ones it CANNOT observe — every signal, for the reason spelled out at
+// the `process.on('exit')` block below — the BEGIN line carries the pid, so a reader
+// holding a marker-less log settles "dead or still running" with `kill -0 <pid>`
+// instead of a pgrep pattern that self-matches. Both halves are needed: a log is
+// only self-identifying if EVERY way it can end is either stamped or classifiable.
+let terminalEmitted = false;
+// `--print-affected` is an ENUMERATION query, not a run: it deliberately emits no
+// verdict marker so a parser gets a clean AFFECTED_WS/AFFECTED_GUARD list, and two
+// tests pin that absence. Exempt it rather than teaching every caller to ignore a
+// marker they were promised would not appear.
+let terminalSuppressed = false;
+// Counters for the abort path, read through a swappable closure because the real
+// bindings (`tasks`, `failed`, …) are declared ~1500 lines below: a closure over a
+// not-yet-initialized `let` throws a TDZ ReferenceError, and a crash INSIDE the
+// crash handler loses the verdict entirely — the failure this whole block exists to
+// prevent. Upgraded in place once the real counters exist; until then zeros are the
+// honest answer, because no task has run yet.
+let plannedTaskCount = 0;
+let readTerminalCounters = () => ({
+  tasks: plannedTaskCount,
+  failed: 0,
+  quarantinedFailed: 0,
+  timedOutTasks: 0,
+});
+/** Emit the terminal marker for a run that did NOT reach a clean verdict path. */
+function emitAbortMarker(extra) {
+  if (terminalEmitted || terminalSuppressed) return;
+  terminalEmitted = true;
+  const c = readTerminalCounters();
+  // Same five fields a caller parses on every other path, so one grep classifies
+  // any log — a reader must not need a second parser for the abnormal case.
+  errSync(
+    `AFFECTED_TESTS_RESULT status=aborted tasks=${c.tasks} failed=${c.failed} ` +
+      `quarantinedFailed=${c.quarantinedFailed} timedOutTasks=${c.timedOutTasks} ${extra}`,
+  );
+}
+// Written to the run log only — never stdout/stderr. Its job is to make the LOG
+// self-identifying, and stdout carries parsed contracts (`--print-affected`) that
+// gain nothing from it.
+logLine(
+  `AFFECTED_TESTS_BEGIN run=${RUN_TOKEN} pid=${process.pid} at=${new Date().toISOString()}` +
+    ` (no AFFECTED_TESTS_RESULT below ⇒ this run never terminated on its own: check \`kill -0 ${process.pid}\`)\n`,
+);
+// ⚠⚠ DELIBERATELY NO SIGTERM/SIGINT TRAP HERE — it is the obvious fix, it is what
+// EI-18682539587976453 proposed, and it MAKES THIS SCRIPT WORSE. Measured 2026-08-12
+// on this file: with `process.on('SIGTERM', …)` registered, a group SIGTERM mid-run
+// left the run ALIVE and marker-less 105s later, and it took a SIGKILL to reap.
+//
+// Two facts compose into that: (1) registering ANY listener for a signal removes its
+// default disposition, so the process no longer dies on delivery; (2) a JS signal
+// handler runs on the event loop, and this script's run loop is a SYNCHRONOUS chain
+// of `spawnSync` calls that never yields a turn — so the handler that was supposed
+// to write the marker cannot run until the whole run is over anyway. The trap thus
+// buys no marker and costs promptness: it converts a killable runner into one that
+// only SIGKILL can stop, against a repo whose kill discipline is load-bearing.
+//
+// What DOES work is below and above: `exit` covers every in-process way out (an
+// uncaught exception, an unhandled rejection, an early exit that emits no verdict),
+// and for a signal — where by construction nothing of ours can run — the BEGIN line's
+// pid is the handle, so `kill -0 <pid>` settles "dead or still running" straight from
+// the log. Generalizing to the other long-running scripts the filer named
+// (green-checkpoint, deploy-cli): a signal trap is only a real option for a runner
+// whose main loop is genuinely async, and it must still be paired with a SIGKILL
+// escalation upstream. Check the loop before reaching for the trap.
+process.on('exit', (code) => {
+  // Catches every remaining way out with no verdict: an uncaught exception, an
+  // unhandled rejection, or an early process.exit() on a path that emits nothing
+  // (e.g. the unrecognized-flag refusal). A clean path has already set the flag.
+  emitAbortMarker(`reason=exit-without-verdict code=${code}`);
+});
 // Whether to run child suites via CAPTURED spawnSync (vs `stdio: 'inherit'`).
 // `retryFailed` already needs capture to learn which files failed. We ALSO
 // capture whenever stdout is not a real TTY — i.e. exactly a background-task /
@@ -1445,6 +1531,9 @@ if (printAffected) {
   for (const guard of selectedInvariantGuards) {
     outSync(`AFFECTED_GUARD\t${guard.workspace}\t${guard.script}`);
   }
+  // An enumeration query, not a run: no verdict is owed, and two tests pin that
+  // no AFFECTED_TESTS_RESULT appears here. Exempt it from the abort fallback.
+  terminalSuppressed = true;
   process.exit(0);
 }
 
@@ -1460,6 +1549,7 @@ if (!tasks.length) {
     outSync(`Affected: ${affected.map((w) => w.name).join(', ')} — but none declare a 'test' script.`);
     outSync('AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 reason=no-test-script');
   }
+  terminalEmitted = true;
   process.exit(0);
 }
 
@@ -1471,6 +1561,9 @@ outSync(
       // triager reading the log is not left wondering whether the selection silently failed.
       'Affected workspaces (0) — repo-wide invariant guards only.',
 );
+// The task list is final here, so an abort from this point on can report the real
+// planned count instead of the pre-selection zero.
+plannedTaskCount = tasks.length;
 outSync(`Running ${tasks.length} task(s):`);
 for (const t of tasks) outSync(`  - ${t.ws.name} :: ${t.script}`);
 // EI-15802: printed EARLY (before any suite runs) and again in the final
@@ -1481,6 +1574,7 @@ outSync(`Full run log: ${RUN_LOG_PATH} (grep this — not just the exit code or 
 
 if (dry) {
   outSync(`AFFECTED_TESTS_RESULT status=dry-run tasks=${tasks.length} failed=0 quarantinedFailed=0 timedOutTasks=0`);
+  terminalEmitted = true;
   process.exit(0);
 }
 
@@ -1644,6 +1738,11 @@ let quarantinedFailed = 0;
 // break into the same red. Purely additive: never subtracted from `failed`, never
 // changes the exit code or any retry/absorption decision.
 let timedOutTasks = 0;
+// The real counters now exist, so an abort during the run loop below — the long
+// window this whole mechanism is about — reports what had actually happened when
+// the signal landed, not the pre-run zeros. Declared here rather than at the top
+// because a closure over these `let`s is a TDZ throw until this point.
+readTerminalCounters = () => ({ tasks: tasks.length, failed, quarantinedFailed, timedOutTasks });
 // EI-2341 item 2: the final summary used to report only a COUNT of failed tasks,
 // so finding WHICH task failed meant scrolling back through the whole run's
 // interleaved output. Track names as we go and name them in the final summary.
@@ -1655,6 +1754,10 @@ const failedTaskNames = [];
 // list must never be indistinguishable from "nothing failed".
 const failedFileEntries = [];
 const unattributedTasks = [];
+// WI-38300: failures that survived HARDEN-GATE absorption while the box was STILL loaded.
+// They stay counted in `failed` — this list only drives the extra attribution a triager needs
+// so nobody "fixes" tests that were never broken. See scripts/lib/load-suspect.mjs.
+const loadSuspectTasks = [];
 // WI-37607: the CULPRIT MODULES of any parse failure seen in a failed task's output. Accumulated
 // separately from the two above because it is orthogonal to both: a module that fails to parse
 // still yields FAIL rows for every file importing it, so the usual shape is a FULLY attributed
@@ -1706,6 +1809,12 @@ for (const t of tasks) {
     return r;
   };
   let r = run();
+  // WI-38300: absorption state, read by the reporting branch far below to decide whether a
+  // surviving failure is a confident red or load-suspect residue. Declared out here because
+  // the retry branch and the reporting branch are separate statements over the same task.
+  let absorptionRan = false;
+  let load1AtRerun = null;
+  let residualFiles = [];
   const watchdogTimedOut = isWatchdogTimeout(
     { signal: r.signal, status: r.status, elapsedMs: r.__elapsedMs },
     { killSignal: BATCH_KILL_SIGNAL, timeoutMs: BATCH_TIMEOUT_MS },
@@ -1762,11 +1871,21 @@ for (const t of tasks) {
         `\n>>> ${t.ws.name} FAILED — fresh-process re-run of ${failedFiles.length} failed file(s) (HARDEN-GATE flake absorption): ${failedFiles.join(', ')}`,
       );
       r = run(failedFiles);
+      absorptionRan = true;
+      residualFiles = failedFiles;
+      // WI-38300: sampled AFTER the re-run, deliberately. loadavg()[0] is a TRAILING 1-minute
+      // average, so a post-sample describes the load the RE-RUN itself experienced — the thing
+      // in question. A pre-sample describes the first pass, which is already known to have been
+      // high (it is what enabled absorption) and therefore discriminates nothing.
+      load1AtRerun = loadavg()[0];
       if (r.status === 0)
         errSync(`>>> ${t.ws.name} failed files passed in a fresh process — counted as a FLAKE, not a failure.`);
     } else {
       errSync(`\n>>> ${t.ws.name} FAILED — retrying once (AFFECTED_RETRY_FAILED, flake absorption)`);
       r = run();
+      absorptionRan = true;
+      // Post-sample for the same reason as the scoped arm above.
+      load1AtRerun = loadavg()[0];
       if (r.status === 0) errSync(`>>> ${t.ws.name} passed on retry — counted as a FLAKE, not a failure.`);
     }
   }
@@ -1854,6 +1973,30 @@ for (const t of tasks) {
               `"timed out in" (see AGENT-ENV/CLAUDE.md's assertion-vs-timeout recipe).`,
           );
         }
+      }
+      // WI-38300: absorption's own premise ("a real regression fails both runs; a load flake
+      // almost never fails twice in a row") does NOT hold for the load class that AUTO-ENABLES
+      // absorption — the retry is immediate, so it re-runs under the same load that caused the
+      // first failure. When that is what happened, say so instead of rendering the residue as a
+      // confident regression. The task stays COUNTED either way (residualGates); only the
+      // attribution changes. Classification lives in a pure helper because this branch runs only
+      // once the gate is already red — on a healthy tree, never.
+      const residualClass = classifyResidualFailure({
+        absorptionRan,
+        rerunStatus: absorptionRan ? r.status : null,
+        load1AtRerun,
+        threshold: AUTO_RETRY_LOAD1_THRESHOLD,
+      });
+      if (residualClass === 'load-suspect') {
+        loadSuspectTasks.push({ task: `${t.ws.name} :: ${t.script}`, load1AtRerun, files: residualFiles });
+        errSync(
+          formatLoadSuspectNotice({
+            workspace: t.ws.name,
+            load1AtRerun,
+            threshold: AUTO_RETRY_LOAD1_THRESHOLD,
+            files: residualFiles,
+          }),
+        );
       }
     }
   }
@@ -1967,10 +2110,27 @@ if (failed) {
   })) {
     errSync(line);
   }
+  // WI-38300: a SEPARATE greppable advisory, deliberately NOT a field on resultLine — that
+  // line's shape is pinned by affected-tests-result-line.test.ts and parsed by
+  // green-checkpoint, and widening a VERDICT contract to carry an ADVISORY is how advisories
+  // come to be read as verdicts. Emitted only when there is load-suspect residue, so its
+  // absence is the ordinary case and costs no output.
+  if (loadSuspectTasks.length) {
+    errSync(
+      formatLoadSuspectMarker({
+        tasks: loadSuspectTasks.length,
+        files: loadSuspectTasks.reduce((n, e) => n + e.files.length, 0),
+        maxLoad1: Math.max(...loadSuspectTasks.map((e) => e.load1AtRerun)),
+        threshold: AUTO_RETRY_LOAD1_THRESHOLD,
+      }),
+    );
+  }
   errSync(resultLine('failed'));
+  terminalEmitted = true;
   errSync(`Full run log: ${RUN_LOG_PATH}`);
   process.exit(1);
 }
 outSync('\nAll affected tests passed.');
 outSync(resultLine('passed'));
+terminalEmitted = true;
 outSync(`Full run log: ${RUN_LOG_PATH}`);

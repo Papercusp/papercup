@@ -114,6 +114,12 @@ describe('AgentsPanel component', () => {
     expect(screen.getByRole('button', { name: /View authoring conversation/i })).toBeTruthy();
   });
 
+  it('labels a run with no recorded transcript turns explicitly', () => {
+    runState = { data: [run({ turnCount: null })], loading: false, error: null, refresh: refreshMock };
+    renderPanel();
+    expect(screen.getByText('turns unrecorded')).toBeTruthy();
+  });
+
   it('shows the origin loading and none states', () => {
     revState = { data: null, loading: true, error: null };
     renderPanel();

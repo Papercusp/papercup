@@ -21,6 +21,8 @@ import {
   type ForceReleaseBasis,
 } from './release-force-guard';
 import { readWorkItemReleaseRequest, resolveWorkItemReleaseRequest } from '../../work-items-release-request';
+import { getWorkItemCheckpoint } from '../../work-item-checkpoint';
+import { detectBgJobCheckpointClaim } from '../../checkpoint-bg-job-claim';
 
 const itemSpec = z.object({
   id: z.string().min(1),
@@ -274,8 +276,47 @@ export default defineTool({
                   `the item does (WI-6678).`,
               }),
         };
+        // WI-38297: the STRANDING warning. The bg-job checkpoint classifier
+        // (EI-18654296679612119) already fires on every PICKUP path — work_items:get,
+        // work_items:claim, scheduler:get_next — i.e. it warns whoever inherits the item.
+        // It did NOT fire here, on the way OUT, which is the moment the strand is actually
+        // created: a holder writes "verification running in bg job <id>, will report+complete
+        // once it finishes", releases, and their session dies taking that job's bookkeeping
+        // with it (EI-16611). Nobody is ever told the item was finished, so it sits `open`
+        // looking like unstarted work. Measured 2026-08-12: WI-5895 sat open 17 days that way
+        // with its fix already committed, and it is not a one-off — 47 of the ~449 open,
+        // unheld items holding a checkpoint cite a background job.
+        //
+        // WARN, never refuse. detectBgJobCheckpointClaim is deliberately BROAD ("a false
+        // positive only prompts a verification the reader should do anyway"), so gating a
+        // release on it would block legitimate ones on a low-precision signal. The releasing
+        // agent is also the ONE reader who can cheaply settle it — they still have the pid and
+        // the shell. Fail-soft: a checkpoint-read hiccup must never fail the release itself.
+        const strandWarning = wasHeld
+          ? await getWorkItemCheckpoint({
+              harness: workItem.harness ?? it.harness ?? null,
+              workItemId: it.id,
+              workspaceId: ident.workspaceId ?? undefined,
+            })
+              .then((cp) => (cp && detectBgJobCheckpointClaim(cp).detected ? cp : null))
+              .catch(() => null)
+          : null;
+        const stranding = strandWarning
+          ? {
+              strandedCheckpointWarning:
+                `You are releasing '${it.id}' while its checkpoint cites a BACKGROUND JOB as the evidence it is waiting on. ` +
+                `That job's bookkeeping lives in YOUR process/shell and does not survive your session (EI-16611) — the next ` +
+                `reader gets a checkpoint promising a result that can never arrive, and the item sits open as if unstarted ` +
+                `(WI-5895 sat 17 days that way with its fix already committed). You are the last reader who can settle this ` +
+                `cheaply, while you still have the pid and the log. Before walking away, do ONE of: (a) verify the job now ` +
+                `(check the referenced pid is alive AND the log reached the runner's OWN completion marker — a log that just ` +
+                `stopped growing is ambiguous, not proof) and work_items:complete it; (b) re-checkpoint replacing the bg-job ` +
+                `reference with a re-runnable command a successor can execute from scratch; or (c) work_items:set_state ` +
+                `{ state:'blocked' } with the reason, so it lands somewhere that gets re-read instead of looking claimable.`,
+            }
+          : {};
         const claimHold = it.claimHold ?? args.claimHold;
-        if (claimHold === undefined) return { ok: true as const, id: it.id, workItem, forced, ...delta };
+        if (claimHold === undefined) return { ok: true as const, id: it.id, workItem, forced, ...delta, ...stranding };
         // WI-321 boomerang fix: a release-park is a DURABLE park (claim_hold_* provenance),
         // NOT a held_open_* lease — a lease dies ~2h after the parker's session ends
         // (WI-4531 reaper), so every park placed by an ephemeral agent boomeranged back
@@ -292,6 +333,7 @@ export default defineTool({
           workItem,
           forced,
           ...delta,
+          ...stranding,
           claimHold: held?.applicable ? held.hold : undefined,
         };
       },

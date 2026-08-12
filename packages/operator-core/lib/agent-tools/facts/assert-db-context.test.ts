@@ -1,14 +1,20 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentFact, AssertFactInput } from '../../agent-facts/store';
 
-const assertFactSpy = vi.hoisted(() =>
-  vi.fn<(input: AssertFactInput, inject?: unknown) => Promise<AgentFact>>(),
-);
+const h = vi.hoisted(() => {
+  const boundedTx = { query: vi.fn(), marker: 'bounded-org-txn' };
+  return {
+    assertFact: vi.fn<(input: AssertFactInput, inject?: unknown) => Promise<AgentFact>>(),
+    boundedTx,
+    boundedOrgTxn: vi.fn(async (fn: (tx: typeof boundedTx) => Promise<AgentFact>) => fn(boundedTx)),
+  };
+});
 
 vi.mock('../../agent-facts/store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../agent-facts/store')>();
-  return { ...actual, assertFact: assertFactSpy };
+  return { ...actual, assertFact: h.assertFact };
 });
+vi.mock('../../pg-bounded-txn', () => ({ boundedOrgTxn: h.boundedOrgTxn }));
 
 import assertTool from './assert';
 
@@ -34,21 +40,46 @@ function storedFact(input: AssertFactInput): AgentFact {
   } as AgentFact;
 }
 
-describe('facts:assert — reuse the authenticated workspace transaction', () => {
+describe('facts:assert — own a bounded transaction for the multi-query write', () => {
   beforeEach(() => {
-    assertFactSpy.mockReset();
-    assertFactSpy.mockImplementation(async (input) => storedFact(input));
+    h.assertFact.mockReset();
+    h.assertFact.mockImplementation(async (input) => storedFact(input));
+    h.boundedOrgTxn.mockReset();
+    h.boundedOrgTxn.mockImplementation(async (fn) => fn(h.boundedTx));
   });
 
-  it('passes ctx.tx to the store instead of opening a second pool client', async () => {
-    const tx = { query: vi.fn() };
+  it('uses its own bounded transaction instead of the ambient ctx.tx', async () => {
+    const ambientTx = { query: vi.fn(), marker: 'ambient-dispatcher-tx' };
 
     await assertTool.handler(
       { scope: 'owner', scopeRef: 'su-test', key: 'tx-reuse', body: 'keep this conclusion' } as never,
-      { isSuperuser: true, uiClientId: 'su-test-tx-reuse', tx } as never,
+      { isSuperuser: true, uiClientId: 'su-test-tx-reuse', tx: ambientTx } as never,
     );
 
-    expect(assertFactSpy).toHaveBeenCalledTimes(1);
-    expect(assertFactSpy.mock.calls[0][1]).toBe(tx);
+    expect((assertTool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+    expect(h.boundedOrgTxn).toHaveBeenCalledTimes(1);
+    expect(h.assertFact).toHaveBeenCalledTimes(1);
+    expect(h.assertFact.mock.calls[0][1]).toBe(h.boundedTx);
+    expect(h.assertFact.mock.calls[0][1]).not.toBe(ambientTx);
+  });
+
+  it('retries the complete bounded transaction on transient contention', async () => {
+    let attempts = 0;
+    h.boundedOrgTxn.mockImplementation(async (fn) => {
+      attempts += 1;
+      if (attempts === 1) {
+        throw Object.assign(new Error('lock timeout'), { code: '55P03' });
+      }
+      return fn(h.boundedTx);
+    });
+
+    await assertTool.handler(
+      { scope: 'owner', scopeRef: 'su-test', key: 'tx-retry', body: 'retry the whole unit' } as never,
+      { isSuperuser: true, uiClientId: 'su-test-tx-retry' } as never,
+    );
+
+    expect(h.boundedOrgTxn).toHaveBeenCalledTimes(2);
+    expect(h.assertFact).toHaveBeenCalledTimes(1);
+    expect(h.assertFact.mock.calls[0][1]).toBe(h.boundedTx);
   });
 });

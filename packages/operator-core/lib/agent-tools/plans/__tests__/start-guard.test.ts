@@ -15,14 +15,12 @@ const H = vi.hoisted(() => {
   const state: {
     txCalls: { strings: readonly string[]; values: unknown[] }[];
     frontmatterStatus: string | null;
-    /** WI-5825 regression override: force the next UPDATE to match 0 rows. */
+    /** WI-5825 regression override: force the next statement to match 0 rows. */
     forceNoMatch: boolean;
-    /** P-047: is the retired op_status axis still writable (flag ON)? */
-    mugKettleOn: boolean;
-  } = { txCalls: [], frontmatterStatus: 'ready', forceNoMatch: false, mugKettleOn: true };
+  } = { txCalls: [], frontmatterStatus: 'ready', forceNoMatch: false };
   const tx = (strings: readonly string[], ...values: unknown[]) => {
     state.txCalls.push({ strings, values });
-    // WI-5825 regression hook: force the UPDATE to match 0 rows.
+    // WI-5825 regression hook: force the statement to match 0 rows.
     if (state.forceNoMatch) return Promise.resolve([]);
     return Promise.resolve([{ op_status: 'started', op_updated_at: '2026-06-02T00:00:00.000Z' }]);
   };
@@ -56,22 +54,32 @@ vi.mock('../source', async (orig) => {
   };
 });
 
-// P-047 (retire-mug-kettle-su-only-2026-08-09): plans:start's op_status write is
-// now gated on the Mug/Kettle retirement flag. PIN it — a real
-// `mugKettleSystemEnabled` here reaches the flags server (this suite has no DB),
-// resolves fail-CLOSED to retired, and would turn every "the UPDATE runs"
-// assertion below into a false red about a write that is merely gated off.
-// Default ON so the pre-retirement contract stays asserted verbatim; the retired
-// branch flips it explicitly in its own describe block.
-vi.mock('../../../pot/started', async (orig) => {
-  const actual = await orig<typeof import('../../../pot/started')>();
-  return { ...actual, mugKettleSystemEnabled: vi.fn(async () => H.state.mugKettleOn) };
-});
+// WI-38289: `pot/started` is deliberately NOT mocked here.
+//
+// This suite used to mock `mugKettleSystemEnabled` and default it ON, because it
+// once read `FLAGS.MUG_KETTLE_SYSTEM` off the flags server (which this suite has
+// no DB for). P-068/D-098 DELETED that flag and collapsed the predicate to a hard
+// `return false` (pot/started.ts), so:
+//   - the mock has nothing left to insulate us from — the real predicate does no
+//     I/O and cannot fail-closed, and
+//   - defaulting it ON asserted a tier state production can no longer REACH.
+// Every "the op_status UPDATE runs" assertion under that default was coverage of
+// an unreachable branch: it reads as meaningful, but no caller can ever produce
+// it, and it would keep a dead branch alive through future refactors.
+//
+// Running against the REAL predicate is strictly stronger: the assertions below
+// now describe the only state a caller can observe, and if the tier is ever
+// genuinely un-retired this file reds and forces that decision to be re-examined
+// here rather than silently passing on a simulated `true`.
+//
+// The handler's own now-unreachable `axisLive` write branch is separate, tracked
+// follow-up (WI-38240) — D-098 is explicit that those branches are retired
+// per-file with tests, never by deleting the predicate.
 
 // plans:start fires promotePlanItems fire-and-forget after the start. Stub it so
-// the suite needs no work_items database — and so the P-047 block below can
-// assert promotion STILL runs with the op_status write gated off (previously it
-// ran for real and its failure was swallowed by the handler's own .catch()).
+// the suite needs no work_items database — and so the retired-axis block below
+// can assert promotion STILL runs with the op_status write gated off (previously
+// it ran for real and its failure was swallowed by the handler's own .catch()).
 vi.mock('../../../plan-workitem-promotion-run', () => ({
   promotePlanItems: vi.fn(async () => ({ promoted: 0, flagOff: false })),
 }));
@@ -112,21 +120,35 @@ beforeEach(() => {
   H.state.txCalls = [];
   H.state.frontmatterStatus = 'ready';
   H.state.forceNoMatch = false;
-  H.state.mugKettleOn = true;
 });
 
 /**
- * The op_status UPDATE, found by CONTENT rather than by position. The handler
- * runs other reads through the same mocked `withWorkspace` before it writes —
- * the P-006 `checkPlanStartable` gate reads the plan row first — so indexing
+ * The retired branch's plan-row READ, found by CONTENT rather than by position.
+ * The handler runs other reads through the same mocked `withWorkspace` — the
+ * P-006 `checkPlanStartable` gate reads the plan row first — so indexing
  * `txCalls[0]` pins the transaction's statement ORDER, which no assertion here
- * is actually about. Adding a read ahead of the write then reds this file for a
- * change that never touched the write at all (it did, 2026-08-01).
+ * is actually about. Adding a read ahead of it then reds this file for a change
+ * that never touched it at all (it did, 2026-08-01).
+ *
+ * `op_status AS prev_op_status` is the retired SELECT's own distinctive shape,
+ * so this cannot accidentally match the gate's separate read of the same table.
  */
-const opStatusUpdate = (): { strings: readonly string[]; values: unknown[] } => {
-  const call = H.state.txCalls.find((c) => c.strings.join('§').includes('UPDATE harness_shared.harness_plans'));
-  if (!call) throw new Error(`no op_status UPDATE among ${H.state.txCalls.length} tx call(s) — the write never ran`);
+const planRowRead = (): { strings: readonly string[]; values: unknown[] } => {
+  const call = H.state.txCalls.find((c) => c.strings.join('§').includes('op_status AS prev_op_status'));
+  if (!call) throw new Error(`no plan-row read among ${H.state.txCalls.length} tx call(s) — the read never ran`);
   return call;
+};
+
+/**
+ * WI-38289: the op_status write is UNREACHABLE — `mugKettleSystemEnabled()` is a
+ * hard `false`, so no input can steer the handler into its UPDATE branch. Assert
+ * that as a standing property rather than deleting the subject outright: if the
+ * branch ever becomes reachable again, these tests red instead of quietly
+ * describing a system that no longer exists.
+ */
+const expectNoOpStatusWrite = (): void => {
+  const writes = H.state.txCalls.filter((c) => c.strings.join('§').includes('UPDATE harness_shared.harness_plans'));
+  expect(writes).toEqual([]);
 };
 
 describe('plans:start terminal guard', () => {
@@ -141,46 +163,41 @@ describe('plans:start terminal guard', () => {
     expect(H.state.txCalls).toHaveLength(0);
   });
 
-  it('starts a non-terminal (ready) plan — the op_status UPDATE runs', async () => {
+  it('starts a non-terminal (ready) plan — the guard lets it through to the plan row', async () => {
     H.state.frontmatterStatus = 'ready';
     const res = await run({ slug: 'live-plan-2026-06-02' });
 
     expect(res.isError).toBeUndefined();
     expect(res.data.counts).toEqual({ ok: 1, failed: 0 });
-    expect(res.data.results[0]).toMatchObject({ ok: true, status: 'started' });
-    // PG-canonical: op_status is folded onto the plan's own harness_plans row.
-    const sql = opStatusUpdate().strings.join('§');
-    expect(sql).toContain('UPDATE harness_shared.harness_plans');
-    expect(sql).toContain("op_status     = 'started'");
+    expect(res.data.results[0]).toMatchObject({ ok: true });
+    // The positive control for the two refusals above: a non-terminal plan gets
+    // PAST the guard and reaches its row. What the handler does once there is the
+    // retired-axis block's subject, not this one's.
+    expect(() => planRowRead()).not.toThrow();
   });
 
   it('starts a legacy/no-frontmatter plan (status null → not terminal)', async () => {
     H.state.frontmatterStatus = null;
     const res = await run({ slug: 'legacy-plan' });
     expect(res.isError).toBeUndefined();
-    expect(() => opStatusUpdate()).not.toThrow();
+    // The contract is that a MISSING status is not read as terminal. Assert the
+    // refusal's ABSENCE — this used to be asserted via "the UPDATE ran", which
+    // WI-38289 removed as coverage of an unreachable branch.
+    expect(res.data.counts).toEqual({ ok: 1, failed: 0 });
+    expect(res.data.results[0]).not.toMatchObject({ error: 'plan_terminal' });
+    expect(() => planRowRead()).not.toThrow();
   });
 
-  it('WI-5825: the UPDATE is keyed on the resolvePlanScope pair — the same authority the plan READ used', async () => {
+  it('WI-5825: the plan row is keyed on the resolvePlanScope pair — the same authority the plan READ used', async () => {
     H.state.frontmatterStatus = 'ready';
     await run({ slug: 'live-plan-2026-06-02' });
-    const { values } = opStatusUpdate();
-    // This handler reads the plan through the reader path and then writes; keying
-    // the write off a second resolver (activeWorkspaceId / the raw ctx slug) is
-    // exactly how the two came to disagree.
+    const { values } = planRowRead();
+    // This handler reads the plan through the reader path and then addresses the
+    // row; keying that off a SECOND resolver (activeWorkspaceId / the raw ctx
+    // slug) is exactly how the two came to disagree. The retired branch reads on
+    // the same key the write used, so the invariant outlives the write itself.
     expect(values).toContain('ws-of-harness');
     expect(values).not.toContain(DEFAULT_WORKSPACE_ID);
-  });
-
-  it('WI-5825: a 0-row UPDATE reports plan_not_found instead of announcing a start that never happened', async () => {
-    H.state.frontmatterStatus = 'ready';
-    H.state.forceNoMatch = true;
-    const res = await run({ slug: 'ghost-plan' });
-    expect(res.data.counts).toEqual({ ok: 0, failed: 1 });
-    expect(res.data.results[0]).toMatchObject({ ok: false, error: 'plan_not_found' });
-    // ...and crucially it is NOT reported as started, so the `plan started` demand
-    // event (which fires on transitioned:true) cannot fire on a write that missed.
-    expect(res.data.results[0]).not.toMatchObject({ status: 'started' });
   });
 });
 
@@ -195,16 +212,12 @@ describe('plans:start terminal guard', () => {
  * the P-044 mistake ("the cut was backwards"): the su queue would never fill.
  */
 describe('plans:start — the retired op_status axis (P-047)', () => {
-  beforeEach(() => {
-    H.state.mugKettleOn = false;
-  });
-
   it('writes NO op_status while the tier is retired — and says so instead of claiming a start', async () => {
     const res = await run({ slug: 'live-plan-2026-06-02' });
 
     expect(res.data.counts).toEqual({ ok: 1, failed: 0 });
     // The whole point: no UPDATE reached harness_plans.
-    expect(() => opStatusUpdate()).toThrow(/the write never ran/);
+    expectNoOpStatusWrite();
     // Reporting `status:'started'` on a row that carries nothing is the WI-5825
     // "announced a start that never happened" bug wearing a flag.
     expect(res.data.results[0]).toMatchObject({ ok: true, status: null, opStatusRetired: true });
@@ -219,11 +232,32 @@ describe('plans:start — the retired op_status axis (P-047)', () => {
     expect(res.data.results[0]).toMatchObject({ transitioned: false });
   });
 
-  it('still detects plan_not_found — the retired branch reads the SAME key the write used', async () => {
+  it('WI-5825: still detects plan_not_found — the retired branch reads the SAME key the write used', async () => {
     H.state.forceNoMatch = true;
     const res = await run({ slug: 'ghost-plan' });
     expect(res.data.counts).toEqual({ ok: 0, failed: 1 });
     expect(res.data.results[0]).toMatchObject({ ok: false, error: 'plan_not_found' });
+    // ...and crucially it is NOT reported as started, so the `plan started` demand
+    // event (which fires on transitioned:true) cannot fire on a row that missed.
+    // WI-5825 originally pinned this against the UPDATE; the retired read inherits
+    // it verbatim because it is keyed identically, which is why WI-38289 could
+    // drop the write-side copy without losing the contract.
+    expect(res.data.results[0]).not.toMatchObject({ status: 'started' });
+  });
+
+  /**
+   * CONTROL (WI-38289) — permanent, and deliberately wrong on purpose.
+   *
+   * `expectNoOpStatusWrite()` asserts the ABSENCE of something no input can
+   * produce any more, so nothing in this file can ever trip it: on its own it is
+   * indistinguishable from an assertion that is simply broken. That is the exact
+   * vacuous-guard shape this item was filed about, one level up — so the detector
+   * gets its own falsification here, against a synthetic tx record rather than a
+   * mutated tree. If someone weakens the matcher, THIS reds.
+   */
+  it('control: expectNoOpStatusWrite actually detects an op_status write', () => {
+    H.state.txCalls.push({ strings: ['UPDATE harness_shared.harness_plans SET op_status'], values: [] });
+    expect(() => expectNoOpStatusWrite()).toThrow();
   });
 
   it('KEEPS promoting items into work_items — the gate is on the write, never on the mechanism', async () => {

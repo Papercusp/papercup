@@ -443,6 +443,16 @@ import './hive-git-gc-action';
 // returns null and the leg keeps its original length ordering, so there is
 // nothing to stage dark.
 import './corpus-term-df-action';
+// sql-escape-tool-routing-2026-08-12 P-008: `system:sql-read-census` — the nightly
+// (tier:'durable', 04:17 UTC) deterministic census of raw `dev:pg_query` reads against
+// the tool-routing pair registry. No LLM and no daily agent turn: measured volume swings
+// 10 -> 3,474 calls/day, so an agent would confirm "nothing changed" on most days at full
+// turn cost. Wakes an agent ONLY on a threshold crossing — an uncovered cluster past N
+// distinct agents, a pair verdict drifting off `equivalent`, or (the one that matters) a
+// cluster whose traffic did NOT fall after its routing row shipped. DURABLE because the
+// row it writes each night is the pre-ship baseline a later night's no-fall check reads,
+// and `tool_invocations` is pruned to 14 days so that history cannot be recomputed.
+import './sql-read-census-action';
 // critical-process-supervisor-2026-07-04 P-002 (EI-7021 design): `system:supervision-reconcile`
 // — the failed-unit reconciler, a bespoke ephemeral (tier:'ephemeral', 60s) operator-HOME cadence
 // (same reasoning as hive-git-gc-action's deviation from the generic per-install triggers.schedule

@@ -229,3 +229,90 @@ describe('affected-tests.mjs emits a self-verifying AFFECTED_TESTS_RESULT line (
     });
   });
 });
+
+/**
+ * EI-18682539587976453 — a log must say HOW the run ended, not leave it to be inferred.
+ *
+ * The guard above proves a marker exists on every CLEAN exit path. That leaves the
+ * case the near-miss was actually about: a run that reaches NO exit path. Its log
+ * then ends on whatever the last child printed — in the observed instance a clean
+ * "0 errors", byte-for-byte what a healthy in-progress run looks like at that
+ * instant. Absence of a verdict meant "still running" OR "died", and separating them
+ * took an mtime check plus a process hunt.
+ *
+ * Two mechanisms close it, and they are tested here as one property: every ending is
+ * either STAMPED (the `exit` fallback writes status=aborted) or CLASSIFIABLE (the
+ * BEGIN line carries the pid, so `kill -0` answers from the log alone).
+ */
+describe('affected-tests.mjs: a terminated run leaves a self-identifying log (EI-18682539587976453)', () => {
+  it('stamps status=aborted when a path exits without emitting a verdict', () => {
+    // The unrecognized-flag refusal is the cheap, real instance of "exits with no
+    // verdict" — it runs no children, so this executes in well under a second.
+    const { stdout, stderr, status } = runAffected(['--bogus-flag-that-does-not-exist']);
+    const markers = markerLines(`${stdout}${stderr}`);
+    expect(markers, `expected exactly one marker line, got:\n${stdout}${stderr}`).toHaveLength(1);
+
+    const fields = parseMarker(markers[0]);
+    expect(fields.status).toBe('aborted');
+    // The reason must be present and machine-readable: "aborted" alone would tell a
+    // triager the run died without telling them it died before doing any work.
+    expect(fields.reason).toBe('exit-without-verdict');
+    expect(status).toBe(1);
+
+    // Same field set as every other path — a reader must not need a second parser
+    // for the abnormal case, which is exactly the case they are least prepared for.
+    for (const f of REQUIRED_MARKER_FIELDS) {
+      expect(Object.keys(fields), `missing '${f}' in: ${markers[0]}`).toContain(f);
+    }
+  });
+
+  it('opens the run log with a BEGIN line carrying this run pid, so a marker-less log is still classifiable', () => {
+    const { stdout } = runAffected(['--changed-paths', 'scripts/affected-tests.mjs', '--dry']);
+    const runLog = /Full run log: (\S+)/.exec(stdout)?.[1];
+    expect(runLog, `no run-log path announced in:\n${stdout}`).toBeTruthy();
+
+    const begin = readFileSync(runLog!, 'utf8')
+      .split('\n')
+      .find((l) => l.startsWith('AFFECTED_TESTS_BEGIN '));
+    expect(begin, `no AFFECTED_TESTS_BEGIN line in ${runLog}`).toBeTruthy();
+
+    const pid = Number(/\bpid=(\d+)\b/.exec(begin!)?.[1]);
+    // The pid is the whole point of the line: it is what turns "no verdict here"
+    // into a decidable `kill -0 <pid>` instead of a pgrep pattern that self-matches.
+    expect(Number.isInteger(pid) && pid > 0).toBe(true);
+    // Tie the line to THIS run. The run token also keys the log filename, so a BEGIN
+    // line whose pid belongs to some other run would be worse than no line at all.
+    expect(begin).toMatch(new RegExp(`\\brun=${pid}-[0-9a-f]+\\b`));
+    expect(runLog).toContain(String(pid));
+  });
+
+  it('registers NO signal handler — the trap is the obvious fix and it breaks killability', () => {
+    // SOURCE SHAPE by necessity: falsifying this behaviourally needs a real multi-minute
+    // run to kill, which is the documented exception this file allows. It pins a CODE
+    // property, never prose.
+    //
+    // WHY IT IS WORTH A GUARD. Adding `process.on('SIGTERM', …)` to write the missing
+    // marker is the intuitive fix, and it is what the filing proposed. Measured on this
+    // script 2026-08-12: it left a group-SIGTERM'd run ALIVE and marker-less 105s later,
+    // reapable only by SIGKILL. Registering a listener removes the default disposition,
+    // and this script's run loop is a synchronous chain of spawnSync calls that never
+    // yields the event-loop turn the handler would need — so the trap buys no marker and
+    // costs promptness, against a repo where kill discipline is load-bearing.
+    //
+    // Judged over CODE lines only. The block that explains this rule necessarily
+    // WRITES `process.on('SIGTERM', …)` to warn about it, so judging the whole file
+    // fires on the documentation of the bug itself — the same prose-vs-code trap
+    // `doc-claims/machine-line-grep-anchors.ts` scopes around for the same reason.
+    const codeOnly = source
+      .split('\n')
+      .filter((l) => !/^\s*(\/\/|\*|\/\*)/.test(l))
+      .join('\n');
+    const signalTrap = /process\.(on|once)\(\s*['"`]SIG/.exec(codeOnly);
+    expect(
+      signalTrap?.[0],
+      'A signal handler was added to affected-tests.mjs. That makes the runner ' +
+        'un-killable without buying the marker it was added for — see the comment at ' +
+        "the process.on('exit') block. Read it before removing this guard.",
+    ).toBeUndefined();
+  });
+});

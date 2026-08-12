@@ -4923,7 +4923,7 @@ describe('runGreenCheckpoint — longest-green-prefix (P-016)', () => {
     // changedFilesForRange at all, which must fall back to workspace granularity.
     changedFiles?: Record<string, string[] | null>;
     commits: string[]; // lastReady..candidate, OLDEST-FIRST full shas
-    confirmGreen: boolean;
+    confirmGreen: boolean | boolean[];
     logPath?: string;
   }): { deps: CheckpointDeps; calls: string[] } {
     const calls: string[] = [];
@@ -4942,9 +4942,11 @@ describe('runGreenCheckpoint — longest-green-prefix (P-016)', () => {
           };
         }
         calls.push('runGreen:confirm');
+        const confirmVerdicts = Array.isArray(opts.confirmGreen) ? opts.confirmGreen : [opts.confirmGreen];
+        const green = confirmVerdicts[Math.min(runGreenN - 2, confirmVerdicts.length - 1)] ?? false;
         return {
-          green: opts.confirmGreen,
-          summary: opts.confirmGreen ? 'all pass' : 'still red',
+          green,
+          summary: green ? 'all pass' : 'still red',
           ...(opts.logPath ? { logPath: opts.logPath } : {}),
         };
       },
@@ -5009,6 +5011,29 @@ describe('runGreenCheckpoint — longest-green-prefix (P-016)', () => {
       expect(await revParse(repo, 'ready')).toBe(c3);
       expect(calls).toContain(`files:${c2.slice(0, 7)}`); // located by FILE...
       expect(calls).not.toContain(`affected:${c2.slice(0, 7)}`); // ...not by workspace
+    });
+
+    it('WI-38298: recovers to a later green prefix after the first prefix confirm is red', async () => {
+      const { c2, c3, c4 } = await chain();
+      const { deps, calls } = partialDeps({
+        candidateFailingTests: [FAILING],
+        affected: { [c2]: [HUB], [c3]: [HUB], [c4]: [HUB] },
+        changedFiles: {
+          [c2]: ['packages/operator-core/lib/unrelated-a.ts'],
+          [c3]: [FAILING], // the later prefix repairs the failure the first prefix exposed
+          [c4]: [FAILING],
+        },
+        commits: [c2, c3, c4],
+        confirmGreen: [false, true],
+      });
+
+      const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+      expect(r).toMatchObject({ advanced: true, reason: 'advanced-prefix', advancedTo: c3 });
+      expect(await revParse(repo, 'ready')).toBe(c3);
+      expect(calls.filter((c) => c === 'runGreen:confirm')).toHaveLength(2);
+      expect(calls).toContain(`setup:${c2.slice(0, 7)}`);
+      expect(calls).toContain(`setup:${c3.slice(0, 7)}`);
     });
 
     it('stops the prefix AT the commit touching the failing file — never extends past it', async () => {

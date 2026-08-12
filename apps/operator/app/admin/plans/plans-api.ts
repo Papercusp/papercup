@@ -2060,7 +2060,8 @@ export interface PlanRun {
   status: PlanRunStatus;
   title: string | null;
   updatedAt: number;
-  turnCount: number;
+  /** Null means no transcript rows were recorded for the run. */
+  turnCount: number | null;
 }
 
 export function fetchPlanRuns(slug: string) {

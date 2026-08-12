@@ -292,8 +292,9 @@ export async function markPlanRunResumed(
 /** A `plan_runs` row plus its transcript turn count — the list-view
  *  shape returned by `listPlanRuns` / the `plans:runs` tool. */
 export interface PlanRunSummary extends PlanRunRow {
-  /** Number of `plan_run_turns` rows for this run. */
-  turnCount: number;
+  /** Number of `plan_run_turns` rows for this run. Null means no transcript
+   * rows were recorded, which is distinct from a measured zero-turn run. */
+  turnCount: number | null;
   /** Work-item rollup for the run (scheduled runs): counts by bucket. */
   workItems: { total: number; passed: number; failed: number; open: number };
   /** Σ plan_run_turns cost (interactive runs). Scheduled-run EXECUTION cost lives in
@@ -368,7 +369,7 @@ export async function listPlanRuns(
   return withWorkspace(activeWorkspaceId(), async (tx) => {
     const rows = await tx<
       (RawPlanRunRow & {
-        turn_count: number | string;
+        turn_count: number | string | null;
         cost_usd: number | string;
         wi_total: number | string;
         wi_passed: number | string;
@@ -380,7 +381,7 @@ export async function listPlanRuns(
              r.launched_by, r.launched_at, r.status, r.title, r.updated_at,
              r.run_type, r.trigger, r.outcome, r.finished_at, r.run_seq, r.instance_plan_slug,
              r.result_summary,
-             (SELECT COUNT(*) FROM harness_shared.plan_run_turns t WHERE t.plan_run_id = r.id) AS turn_count,
+             NULLIF((SELECT COUNT(*) FROM harness_shared.plan_run_turns t WHERE t.plan_run_id = r.id), 0) AS turn_count,
              (SELECT COALESCE(SUM(t.cost_usd), 0) FROM harness_shared.plan_run_turns t WHERE t.plan_run_id = r.id) AS cost_usd,
              (SELECT COUNT(*) FROM harness_shared.harness_features_consolidated w
                 WHERE w.harness_slug = r.harness_slug AND w.payload -> 'plan_run' ->> 'runId' = r.id::text) AS wi_total,
@@ -400,7 +401,7 @@ export async function listPlanRuns(
       const failed = Number(r.wi_failed);
       return {
         ...mapPlanRunRow(r),
-        turnCount: Number(r.turn_count),
+        turnCount: r.turn_count == null ? null : Number(r.turn_count),
         costUsd: Number(r.cost_usd),
         workItems: { total, passed, failed, open: Math.max(0, total - passed - failed) },
         resultSummary: (r.result_summary as Record<string, unknown> | null) ?? null,

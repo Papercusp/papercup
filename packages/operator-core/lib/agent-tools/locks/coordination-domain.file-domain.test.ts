@@ -79,6 +79,17 @@ describe('fileLockCoordinationDomain (WI-38252)', () => {
       saved[k] = process.env[k];
       delete process.env[k];
     }
+    // HERMETIC BY DEFAULT — do NOT let candidate 3 reach the real machine.
+    // `fileLockDomainCandidates()` falls back to `<PAPERCUSP_WORKSPACE_ROOT |
+    // ~/papercupai-workspace>/papercusp`, which on a dev box is a REAL repo. With
+    // the var merely deleted, any test that expects the TERMINAL fallback instead
+    // resolved that live tree, so the assertion `=== lockCoordinationDomain()`
+    // held only while the executing checkout was itself named `papercusp` — it
+    // passed in the shared tree and FAILED in the gate's `papercusp-checkpoint`
+    // (green-checkpoint red 2026-08-12T20:54Z: expected `…/papercusp-checkpoint`,
+    // received `…/papercusp`). The subject is location-independent; the fixture
+    // must be too, so each test opts IN to a workspace root it created itself.
+    process.env.PAPERCUSP_WORKSPACE_ROOT = join(tmpdir(), 'wi38252-no-workspace-root');
     __resetFileLockCoordinationDomain();
   });
 
@@ -146,6 +157,10 @@ describe('fileLockCoordinationDomain (WI-38252)', () => {
     cleanup.push(notARepo);
     process.env.PAPERCUSP_CANONICAL_TREE = notARepo;
 
+    // The PROPERTY: a bare directory never becomes a lock namespace. Assert that
+    // directly — `=== lockCoordinationDomain()` alone would also be satisfied by
+    // a coincidence of paths on the box the suite happens to run in.
+    expect(fileLockCoordinationDomain()).not.toBe(notARepo);
     expect(fileLockCoordinationDomain()).toBe(lockCoordinationDomain());
   });
 
