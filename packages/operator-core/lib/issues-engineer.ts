@@ -1014,6 +1014,56 @@ export interface ListIssuesFilter {
   titlePrefix?: string;
 }
 
+/**
+ * The narrow filter used by {@link listIssueScopes}. It deliberately mirrors
+ * only the population selectors needed by a per-scope learning read rather
+ * than pretending to be a second implementation of every listIssues filter.
+ */
+export interface ListIssueScopesFilter {
+  state?: IssueState;
+  kind?: IssueStoreKind;
+  kinds?: readonly IssueStoreKind[];
+  topic?: string;
+  lane?: string;
+  signalOrigins?: readonly SignalOrigin[];
+  issueIds?: readonly string[];
+}
+
+/**
+ * Return the distinct scopes represented by a population before applying a
+ * recency window. A global `ORDER BY created_at DESC LIMIT n` cannot discover
+ * older scopes, which makes any subsequent JS grouping a recency window across
+ * the whole corpus rather than a window per scope (WI-9454).
+ */
+export async function listIssueScopes(filter: ListIssueScopesFilter = {}): Promise<string[]> {
+  const { sql } = getOrgPg();
+  const kindSet: readonly IssueStoreKind[] = filter.kind ? [filter.kind] : (filter.kinds ?? ISSUE_KINDS);
+  const topicTagsCte = filter.topic
+    ? sql`WITH tagged AS MATERIALIZED (
+            SELECT cl.src_ref
+              FROM harness_shared.coord_links cl
+             WHERE cl.workspace_id = ${coordScopeWorkspace()}
+               AND cl.rel = 'tagged'
+               AND cl.src_kind = ${ISSUE_KIND}
+               AND cl.dst_kind = 'topic'
+               AND cl.dst_ref = ${filter.topic}
+          )`
+    : sql``;
+  const rows = await sql<{ scope: string }[]>`
+    ${topicTagsCte}
+    SELECT DISTINCT ei.scope
+      FROM harness_shared.engineer_issues ei
+     WHERE ei.workspace_id = ${issuesScopeWorkspace()}
+       AND ei.kind = ANY(${kindSet as string[]}::text[])
+       AND ${filter.state ? sql`ei.state = ${filter.state}` : sql`TRUE`}
+       AND ${filter.signalOrigins ? sql`ei.signal_origin = ANY(${filter.signalOrigins as string[]}::text[])` : sql`TRUE`}
+       AND ${filter.issueIds ? issueIdsWhereSql(sql, true, filter.issueIds) : sql`TRUE`}
+       AND ${filter.topic ? sql`ei.issue_id IN (SELECT src_ref FROM tagged)` : sql`TRUE`}
+       AND ${filter.lane ? sql`ei.lane = ${filter.lane}` : sql`TRUE`}
+     ORDER BY ei.scope ASC`;
+  return rows.map((row) => row.scope);
+}
+
 /** WI-37499: `LIKE`-escape a literal prefix so `%`/`_`/`\` in it match literally. */
 function likePrefixPattern(prefix: string): string {
   return `${prefix.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;

@@ -29,7 +29,7 @@
 
 import { updateIssue, commentIssue } from '../../issues-engineer';
 import type { ImprovementCandidate, ImprovementSeverity } from './policy';
-import { readImprovementItems } from './read-items';
+import { readImprovementItems, type ReadImprovementOpts } from './read-items';
 import { signatureRecurrence, type SignatureRecurrence } from './digest';
 import { classifyIdeaType } from './triage';
 import { applyTriageDecision, type ApplyTriageInput, type ApplyTriageResult } from './triage-core';
@@ -151,7 +151,7 @@ export interface EscalationResult {
 
 /** Injectable dependency seam (unit tests run without PG). */
 export interface EscalationDeps {
-  readItems: () => Promise<ImprovementCandidate[]>;
+  readItems: (opts?: ReadImprovementOpts) => Promise<ImprovementCandidate[]>;
   updateIssue: (id: string, patch: { severity: 'major'; by: string }) => Promise<unknown>;
   commentIssue: (id: string, body: string, authorId?: string) => Promise<unknown>;
   applyTriage: (input: ApplyTriageInput) => Promise<ApplyTriageResult>;
@@ -160,7 +160,7 @@ export interface EscalationDeps {
 }
 
 const defaultDeps: EscalationDeps = {
-  readItems: () => readImprovementItems({}),
+  readItems: (opts) => readImprovementItems(opts),
   updateIssue: (id, patch) => updateIssue(id, patch),
   commentIssue,
   applyTriage: applyTriageDecision,
@@ -172,7 +172,7 @@ export async function runRecurrenceEscalation(
   opts: PlanEscalationOpts = {},
   deps: EscalationDeps = defaultDeps,
 ): Promise<EscalationResult> {
-  const all = await deps.readItems();
+  const all = await deps.readItems({ windowPerScope: true });
   const actions = planRecurrenceEscalation(all, opts);
   const result: EscalationResult = { escalated: 0, gymRouted: 0, promotionsSuggested: 0, candidatesStaged: 0 };
 

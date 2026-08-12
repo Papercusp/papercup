@@ -18,7 +18,15 @@
  *     (anti-re-dispatch counter + the explicit human-routing flag, D-001).
  */
 
-import { countIssues, listIssues, type EngineerIssue, type IssueState, type ListIssuesFilter } from '../../issues-engineer';
+import {
+  countIssues,
+  listIssueScopes,
+  listIssues,
+  type EngineerIssue,
+  type IssueState,
+  type ListIssueScopesFilter,
+  type ListIssuesFilter,
+} from '../../issues-engineer';
 import type { ImprovementCandidate, ImprovementState, WorkItemKind } from './policy';
 import { isSignalOrigin, originAllowed, ORGANIC_ONLY, type SignalOrigin } from './provenance';
 import { asStructuredObservation } from './observation-types';
@@ -197,6 +205,13 @@ export interface ReadImprovementOpts {
   state?: 'open' | 'resolved' | 'closed';
   limit?: number;
   /**
+   * Read the newest `limit` rows independently for every represented scope.
+   * The default global recency window can hide older scopes before recurrence
+   * grouping runs; this mode is for cross-scope consumers such as recurrence
+   * escalation (WI-9454).
+   */
+  windowPerScope?: boolean;
+  /**
    * P-008 (db-performance-remediation-2026-07-26): skip the `body` column for a
    * consumer that never reads `candidate.body`. Default (omitted) keeps it, so this
    * is opt-OUT per caller — see {@link ListIssuesFilter.includeBody} for the measured
@@ -247,6 +262,8 @@ export interface ReadImprovementOpts {
 /** Injectable dependency seam so the adapter is unit-testable without PG. */
 export interface ReadImprovementDeps {
   listIssues: (filter: ListIssuesFilter) => Promise<EngineerIssue[]>;
+  /** Resolves the distinct scopes before a per-scope recency window is read. */
+  listScopes?: (filter: ListIssueScopesFilter) => Promise<readonly string[]>;
   /**
    * Resolves the learning-loop provenance union — required ONLY when
    * {@link ReadImprovementOpts.loopOutputOnly} is set.
@@ -262,6 +279,7 @@ export interface ReadImprovementDeps {
 
 const defaultDeps: ReadImprovementDeps = {
   listIssues,
+  listScopes: listIssueScopes,
   readLoopOutputIds: async () => (await (await import('./loop-output')).readLoopOutputIds()).ids,
 };
 
@@ -432,11 +450,51 @@ async function readBySelector(
     issueIds = await deps.readLoopOutputIds();
   }
 
+  if (opts.windowPerScope) {
+    if (!deps.listScopes) {
+      throw new Error('readBySelector: windowPerScope requires deps.listScopes');
+    }
+    const discovered = await deps.listScopes({
+      ...selector,
+      state: opts.state,
+      signalOrigins: origins,
+      ...(issueIds ? { issueIds } : {}),
+    });
+    const allowed = opts.harnessScopes
+      ? new Set(opts.harnessScopes)
+      : opts.harnessSlug
+        ? new Set([`harness:${opts.harnessSlug}`])
+        : undefined;
+    const scopes = allowed ? discovered.filter((scope) => allowed.has(scope)) : discovered;
+    const scopedReads = await Promise.all(
+      scopes.map((scope) =>
+        readBySelector(
+          selector,
+          {
+            ...opts,
+            windowPerScope: false,
+            harnessSlug: undefined,
+            harnessScopes: [scope],
+          },
+          deps,
+        ),
+      ),
+    );
+    return scopedReads.flat();
+  }
+
+  const requestedScope = opts.harnessScopes?.length === 1
+    ? opts.harnessScopes[0]
+    : opts.harnessSlug
+      ? `harness:${opts.harnessSlug}`
+      : undefined;
+
   const issues = await deps.listIssues({
     ...selector,
     state: opts.state,
     limit: opts.limit ?? 500,
     signalOrigins: origins,
+    ...(requestedScope ? { scope: requestedScope } : {}),
     ...(opts.includeBody === false ? { includeBody: false } : {}),
     ...(issueIds ? { issueIds } : {}),
   });
