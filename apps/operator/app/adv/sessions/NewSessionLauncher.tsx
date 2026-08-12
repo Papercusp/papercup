@@ -396,7 +396,14 @@ export interface NewSessionLauncherProps {
    *  `null` when the launch reported success without an id (an older operator
    *  that predates the pre-pinned owner id). */
   onLaunched?: (ownerId: string | null) => void;
+  /** Move the caller to the live Sessions board after a headless launch. */
+  onViewSessions?: () => void;
 }
+
+type LaunchReceipt = {
+  ownerId: string | null;
+  target: string;
+};
 
 /**
  * The "+ New session" control: a plan picker, a model picker, and a button —
@@ -405,7 +412,11 @@ export interface NewSessionLauncherProps {
  * (HUD board, Sessions panel, …) with no props beyond an optional
  * post-launch hook.
  */
-export default function NewSessionLauncher({ className, onLaunched }: NewSessionLauncherProps) {
+export default function NewSessionLauncher({
+  className,
+  onLaunched,
+  onViewSessions,
+}: NewSessionLauncherProps) {
   const t = useLexicon();
   // The AdvShell-active harness slug — read directly rather than threaded as
   // a prop so this stays a drop-in control. Shared with AdvSessionsClient's
@@ -427,6 +438,11 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
   // P-042 — the launch posture. Local useState like its siblings: a mid-edit
   // draft of the next launch, not a shareable view.
   const [mode, setMode] = useState(NEW_SESSION_DEFAULT_MODE);
+  // WI-38039: headless launches do not open a terminal, so the short-lived
+  // toast cannot be the only acknowledgement. Keep a small receipt shelf in
+  // this control; it is deliberately launch history, not a liveness claim —
+  // the Sessions board remains authoritative for whether an agent is live.
+  const [launchReceipts, setLaunchReceipts] = useState<LaunchReceipt[]>([]);
 
   // psu's OWN option source — see use-su-launch-options' header. Keyed to the
   // backend the picked model implies, because pool pinning is per-backend.
