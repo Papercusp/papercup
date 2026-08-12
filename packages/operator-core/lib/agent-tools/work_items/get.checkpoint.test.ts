@@ -20,9 +20,11 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 
 const getWorkItem = vi.fn();
 const getWorkItemDetail = vi.fn();
+const getWorkItemThreadWindow = vi.fn();
 vi.mock('../../work-items', () => ({
   getWorkItem: (...a: unknown[]) => getWorkItem(...a),
   getWorkItemDetail: (...a: unknown[]) => getWorkItemDetail(...a),
+  getWorkItemThreadWindow: (...a: unknown[]) => getWorkItemThreadWindow(...a),
 }));
 
 const getWorkItemCheckpointWithMeta = vi.fn();
@@ -63,6 +65,7 @@ it('opts out of the ambient workspace transaction because the handler never read
 beforeEach(() => {
   getWorkItem.mockReset();
   getWorkItemDetail.mockReset();
+  getWorkItemThreadWindow.mockReset();
   getWorkItemCheckpointWithMeta.mockReset();
   // P-007: default to "no dependencies declared" so every pre-existing suite keeps
   // exercising the time-heuristic fallback; the override suite opts in explicitly.
@@ -130,6 +133,39 @@ describe('work_items:get — checkpoint field', () => {
     const r = await one({ id: 'WI-11', detail: true });
     expect(getWorkItemDetail).toHaveBeenCalled();
     expect(r).toMatchObject({ ok: true, id: 'WI-11', checkpoint: 'detail-path checkpoint' });
+  });
+
+  it('exposes a bounded recent-comment window without loading full detail', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-12', harness: 'papercup', kind: 'bug', family: 'issue', title: 't', state: 'open' });
+    getWorkItemThreadWindow.mockResolvedValue({
+      posts: [{ id: 7, thread_id: 'thread-12', author_id: 'su-peer', body: 'comment', created_ts: '2026-08-12T10:00:00.000Z' }],
+      total: 9,
+      topics: ['release-gate'],
+      createdAt: '2026-08-12T09:00:00.000Z',
+    });
+
+    const r = await one({ id: 'WI-12', threadLimit: 3 });
+
+    expect(getWorkItem).toHaveBeenCalledWith('WI-12', undefined);
+    expect(getWorkItemThreadWindow).toHaveBeenCalledWith('WI-12', 3, undefined);
+    expect(getWorkItemDetail).not.toHaveBeenCalled();
+    console.log('DEBUG-WI12', r, getWorkItem.mock.results, getWorkItemThreadWindow.mock.results);
+    expect(r).toMatchObject({
+      ok: true,
+      id: 'WI-12',
+      threadWindow: { total: 9, posts: [{ body: 'comment' }], topics: ['release-gate'] },
+    });
+  });
+
+  it('threadLimit wins over detail:true and keeps a thread read failure explicit', async () => {
+    getWorkItem.mockResolvedValue({ id: 'WI-13', harness: 'papercup', kind: 'bug', family: 'issue', title: 't', state: 'open' });
+    getWorkItemDetail.mockResolvedValue({ id: 'WI-13', harness: 'papercup', kind: 'bug', family: 'issue', title: 'wrong full path', state: 'open', topics: [], posts: [], links: [] });
+    getWorkItemThreadWindow.mockRejectedValue(new Error('thread store unavailable'));
+
+    const r = await one({ id: 'WI-13', detail: true, threadLimit: 2 });
+
+    expect(getWorkItemDetail).not.toHaveBeenCalled();
+    expect(r).toMatchObject({ ok: true, id: 'WI-13', threadWindow: null, threadWindowReadFailed: true });
   });
 
   it('never calls the checkpoint store for a not-found item', async () => {

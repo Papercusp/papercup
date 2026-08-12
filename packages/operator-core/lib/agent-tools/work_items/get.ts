@@ -65,7 +65,7 @@ export default defineTool({
   description:
     "Fetch one OR many work-items by id (WI-/F-/EI-…) — `id` for one or `ids` for several (1–100). `harness` disambiguates a repeated feature id. Returns { ok, results:[…], counts } — correlate by id, NOT position. Use `threadLimit` for a bounded, consumable recent-comment window; `detail:true` remains the full coord-substrate read. Several conditional fields carry warnings you must read before acting (claim collisions, stale checkpoints, prose-only completion evidence): see `returns`.",
   guidance: {
-    when: "You have one or more work-item ids and need their full state (kind, lifecycle, assignee, parent). Pass every id you need at once via `ids` instead of calling per id.",
+    when: "You have one or more work-item ids and need their full state (kind, lifecycle, assignee, parent). Pass every id you need at once via `ids` instead of calling per id. For comments, pass `threadLimit` (1–10) to get a bounded recent window with a same-snapshot total; this avoids loading the full thread behind `detail:true`.",
     returns:
       "{ ok, results:[{ ok, id, workItem?, holder?, checkpoint?, checkpointAgeMs?, checkpointUpdatedAtMs?, planItemBlocked?, planItemClaimCollision?, error? }], counts } — correlate by id, not position.\n\nConditional fields, present only when they apply:\n• `holder` — WHO holds this item and WHAT they are working toward, without attempting a claim ({ goalRef, goalText, assumptions:{count,keys}, declaredAt, stale, agreement, competing[] }). Read `agreement`/`competing` before trusting `goalRef`: 'divergent' plus a non-empty `competing` means the holder holds several claims and precedence picked one — measured, 3 of 19 holders hold two work-items at once. Absent means EITHER the holder declared no goal OR it is not readable by you; the two are deliberately indistinguishable.\n• `planItemBlocked` — the linked plan lane is still blocked/needs-human/stale ({ reason, planSlug, itemId, effectiveStatus }). Check before unblocking.\n• `planItemClaimCollision` — holding this work-item is NOT holding its linked plan item; someone else now holds a LIVE claim on it ({ planSlug, itemId, claimedBy, claimedByLabel, note }). Coordinate before continuing — you may be duplicating work.\n• `priorWork`/`priorWorkWarning` — P-001: this item has ALREADY BEEN WORKED (prior release/attempt history), so it is NOT fresh work even when it reads open+unassigned. Loudest when NO checkpoint exists — that row is otherwise indistinguishable from never-started. Read the source before building.\n• `checkpoint` — in-flight state from work_items:checkpoint, with `checkpointAgeMs` its write-recency (trust a stale one less).\n• `checkpointFreshness` — P-007: the verdict from the checkpoint's DECLARED dependencies ({ verdict: fresh|stale|recomputed, changed:[{dep,was,now}], reason }). Present only when its author declared any; it OVERRIDES the age/activity signals below (which cannot see a PEER's change at all), and a `stale` verdict names exactly which dependency moved.\n• `checkpointStale` — the assignee kept working after that checkpoint. Fallback only; suppressed when `checkpointFreshness` is present.\n• `citedFacts` — this item's PROSE cites `facts:assert` key(s) as its authority and some no longer resolve ({ cited:[{ key, condition, ref, excerpt?, scope }], dangling, decayed, note }). Measured: 22 of 25 such citations workspace-wide were already dead, while the item still read as fully specified. `decayed` (retracted/expired/superseded) is RECOVERABLE — the body is quoted in `excerpt` right here, so do not go hunting for it; `dangling` has no row under any scope and is unrecoverable, so do NOT treat that citation as specification and do NOT escalate its absence as a contested directive (it far more likely decayed than was withdrawn). Absent when every citation still resolves live, AND when the ledger could not be read at all — this never reports a read failure as a dangling reference.\n• `checkpointBgJobWarning` — the checkpoint cites a background job/task as evidence, and that bookkeeping can die silently across a process boundary. Verify the pid/completion-marker before trusting it.\n• `lifecycle` (with `detail:true`) — ANSWERS \"was this item ever blocked / held / reopened, by whom, when\". Unifies the three stores that each hold part of the answer (audit_log, payload.reopenHistory, payload flags) into one newest-first timeline: { events:[{ at, kind, by, source, action?, detail? }], flags:{ needsHuman, claimHold, heldOpenBy, heldOpenReason }, coverage }. READ `coverage` BEFORE concluding anything from an empty `events`: `notRecorded[]` names the transitions that are recorded NOWHERE for this item's family (non-terminal moves always; feature-family blocks before this field existed), and `degraded:true` means a source could not be READ — which is not the same fact as a source being empty. An empty timeline is never by itself evidence that nothing happened; conflating those two is the exact error this field was built to end.",
     notWhen:
@@ -105,6 +105,15 @@ export default defineTool({
         .optional()
         .describe(
           "also return topics, thread posts (comments), outgoing links, and `lifecycle` — the unified history (blocks, holds, reopens) with a coverage report saying what is NOT recorded",
+        ),
+      threadLimit: z
+        .number()
+        .int()
+        .min(1)
+        .max(10)
+        .optional()
+        .describe(
+          "return a bounded oldest-first recent-comment window instead of loading the full thread; max 10 posts, with a same-snapshot total",
         ),
     })
     .refine((a) => Boolean(a.id) || (a.ids?.length ?? 0) > 0, {
@@ -146,6 +155,10 @@ export default defineTool({
         // .changed, so tagging it left the entry TTL-only-invalidated → read-your-writes
         // staleness). Not-found is NOT cached (cacheEmpty default false) — a just-created
         // item must surface immediately, and a miss is cheap to recompute.
+        const boundedThread = args.threadLimit !== undefined;
+        // A bounded thread request wins over detail:true so the diagnostic path
+        // never pays the unbounded full-render read.
+        const readDetail = args.detail === true && !boundedThread;
         const workItem = await cachedRead(
           ctx as CachedReadCtx,
           {
@@ -153,19 +166,29 @@ export default defineTool({
             key: {
               id,
               harness: args.harness ?? null,
-              detail: args.detail === true,
+              detail: readDetail,
             },
             tags: ["work_items", `work_items:${id}`],
             softTtlMs: WORK_ITEMS_GET_SOFT_TTL_MS,
           },
           () =>
-            args.detail
+            readDetail
               ? getWorkItemDetail(id, args.harness)
               : getWorkItem(id, args.harness),
         );
         if (!workItem) {
           return { ok: false as const, id, error: `work_item '${id}' not found` };
         }
+        // Bounded diagnostic thread read. Do not route this through
+        // getWorkItemDetail: that full-render helper intentionally loads every
+        // post and was the source of truncated MCP replies on heavily-commented
+        // items. A failure is explicit and fail-soft so the ordinary work-item
+        // read remains usable.
+        const threadWindowRead = boundedThread
+          ? getWorkItemThreadWindow(id, args.threadLimit!, args.harness)
+              .then((threadWindow) => ({ threadWindow, failed: false as const }))
+              .catch(() => ({ threadWindow: null, failed: true as const }))
+          : Promise.resolve({ threadWindow: undefined, failed: false as const });
         // EI-7252: an in-flight checkpoint (work_items:checkpoint → carry-note scope
         // `workitem:<harness>:<id>`) was previously INVISIBLE here — an investigator
         // (or a compacted successor) reading work_items:get had no way to know one
@@ -195,7 +218,8 @@ export default defineTool({
         // client's 15s deadline. Start them together so latency is bounded by the
         // slowest enrichment rather than their sum. Each leg keeps its existing
         // fail-soft fallback, so concurrency does not widen the failure surface.
-        const [checkpointRead, planItemBlocked, claimCollision, decoratedRows, priorWorkRaw] = await Promise.all([
+        const [checkpointRead, planItemBlocked, claimCollision, decoratedRows, priorWorkRaw, threadWindowReadResult] =
+          await Promise.all([
           getWorkItemCheckpointWithMeta({
             harness: workItem.harness,
             workItemId: workItem.id,
@@ -212,7 +236,8 @@ export default defineTool({
             harness: workItem.harness,
             workItemId: workItem.id,
           }).catch(() => null),
-        ]);
+            threadWindowRead,
+          ]);
         const [decorated] = decoratedRows;
         const { checkpoint, updatedAtMs: checkpointUpdatedAtMs, readFailed: checkpointReadFailed } = checkpointRead;
         const checkpointAgeMs = checkpointUpdatedAtMs != null ? Math.max(0, Date.now() - checkpointUpdatedAtMs) : null;
@@ -358,6 +383,8 @@ export default defineTool({
           ...(citedFacts ? { citedFacts } : {}),
           ...(planItemBlocked ? { planItemBlocked } : {}),
           ...(claimCollision ? { planItemClaimCollision: claimCollision } : {}),
+          ...(boundedThread ? { threadWindow: threadWindowReadResult.threadWindow } : {}),
+          ...(threadWindowReadResult.failed ? { threadWindowReadFailed: true as const } : {}),
           ...(lifecycle ? { lifecycle } : {}),
         };
       },

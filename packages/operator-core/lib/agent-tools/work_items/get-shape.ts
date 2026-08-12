@@ -85,6 +85,14 @@ const FIELD_CAPS = {
   },
 } as const;
 
+/** `threadLimit` bounds rows at the query, and these caps keep individual post
+ * bodies bounded too. A post can be large enough to overflow an otherwise small
+ * recent window, so row-count-only bounding is not sufficient for MCP replies. */
+const THREAD_CAPS = {
+  trimmed: { posts: 5, topics: 12, body: 600 },
+  standard: { posts: 10, topics: 24, body: 1200 },
+} as const;
+
 type WorkItemsGetTier = keyof typeof FIELD_CAPS;
 type FieldCaps = (typeof FIELD_CAPS)[WorkItemsGetTier];
 type Row = Record<string, unknown>;
@@ -221,6 +229,41 @@ function projectCitedFacts(raw: unknown, caps: FieldCaps, dropped: Set<string>):
   };
 }
 
+/** Project the explicit bounded diagnostic thread. The query already limits the
+ * window, but the payload still needs a body cap because one post can be large.
+ * `shown` and `total` stay in-band so a short window is never mistaken for the
+ * whole conversation. */
+function projectThreadWindow(raw: unknown, tier: WorkItemsGetTier, dropped: Set<string>): unknown {
+  if (!raw || typeof raw !== "object") return raw ?? null;
+  const w = raw as Row;
+  const caps = THREAD_CAPS[tier];
+  const posts = Array.isArray(w.posts) ? w.posts : [];
+  const topics = Array.isArray(w.topics) ? w.topics : [];
+  const keptPosts = posts.slice(-caps.posts).map((value) => {
+    const post = value && typeof value === "object" ? (value as Row) : {};
+    const body = typeof post.body === "string" ? post.body : "";
+    const bodyTruncated = body.length > caps.body;
+    if (bodyTruncated) dropped.add("threadWindow.postBodies");
+    return {
+      id: post.id ?? null,
+      thread_id: post.thread_id ?? null,
+      author_id: post.author_id ?? null,
+      body: clip(body, caps.body),
+      created_ts: post.created_ts ?? null,
+      ...(bodyTruncated ? { bodyChars: body.length, bodyTruncated: true } : {}),
+    };
+  });
+  if (posts.length > caps.posts) dropped.add("threadWindow.posts");
+  if (topics.length > caps.topics) dropped.add("threadWindow.topics");
+  return {
+    posts: keptPosts,
+    shown: keptPosts.length,
+    total: typeof w.total === "number" ? w.total : null,
+    topics: topics.slice(0, caps.topics),
+    createdAt: w.createdAt ?? null,
+  };
+}
+
 function projectRow(r: Row, caps: FieldCaps, checkpointChars: number, dropped: Set<string>): Row {
   if (r.ok === false) return r; // an error row is already tiny and self-describing
 
@@ -255,6 +298,10 @@ function projectRow(r: Row, caps: FieldCaps, checkpointChars: number, dropped: S
     ok: r.ok ?? true,
     id: r.id ?? null,
     workItem: projectWorkItem(r.workItem, caps, dropped),
+    ...(r.threadWindow !== undefined
+      ? { threadWindow: projectThreadWindow(r.threadWindow, caps === FIELD_CAPS.trimmed ? "trimmed" : "standard", dropped) }
+      : {}),
+    ...(r.threadWindowReadFailed ? { threadWindowReadFailed: true } : {}),
     // THE payload of this tool. Degraded only after everything above was already
     // dropped, and never without the loud in-band marker.
     checkpoint: clip(checkpoint, checkpointChars),
