@@ -271,17 +271,18 @@ describe('the presence.ts composition: spread sources + observe', () => {
   });
 
   /**
-   * The pre-P-004 production shape: no domain ⇒ `couplingSourcesFor` omits
-   * `heldFiles` ⇒ the lock signal cannot fire. Every OTHER leg stays armed, so the
-   * census names the one dead gate instead of smearing suspicion across the run.
+   * `coordinationDomain` is an optional partition key for the lock-interest read,
+   * not a gate on whether the source is wired. `couplingSourcesFor` always supplies
+   * `heldFiles`, so a reader with no resolved domain still reports an armed lock leg
+   * (and the fail-soft source may simply return no interests).
    */
-  it('reports ONLY the lock leg unarmed when no coordination domain resolved', async () => {
+  it('keeps the lock leg armed when no coordination domain resolved', async () => {
     let census: any;
     await deriveCouplings('su-self', rows, {
       ...couplingSourcesFor({ selfOwnerId: 'su-self', rosterOwnerIds: ['su-self', 'su-peer'] }),
       observe: (c) => (census = c),
     });
-    expect(census.relations['holds-a-lock-on'].armed).toBe(false);
+    expect(census.relations['holds-a-lock-on'].armed).toBe(true);
     expect(census.relations['coord-exchange'].armed).toBe(true);
     expect(census.relations['blocks-me'].armed).toBe(true);
   });
