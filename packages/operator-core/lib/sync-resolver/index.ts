@@ -3539,12 +3539,17 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       const { ensureBootstrap, getTxPool, readQueue } = await import(
         '../agent-tools/locks/su-lock-store'
       );
-      const { lockCoordinationDomain } = await import(
+      // WI-38252: the FILE-lock domain (the tree agents edit), never
+      // `lockCoordinationDomain()` (the tree this process's code loaded from).
+      // On `:3070` those differ, and reading the process domain answers an
+      // authoritative-looking "no lock on this path" about a checkout nobody
+      // edits.
+      const { fileLockCoordinationDomain } = await import(
         '../agent-tools/locks/coordination-domain'
       );
       await ensureBootstrap();
       const result = await readQueue(getTxPool(), {
-        coordinationDomain: lockCoordinationDomain(),
+        coordinationDomain: fileLockCoordinationDomain(),
         paths: [path],
       });
       // readQueue already filters `path = ANY(paths)`; the find() keeps the

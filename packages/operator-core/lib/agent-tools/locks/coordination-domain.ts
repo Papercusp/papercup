@@ -110,6 +110,96 @@ export function __resetLockCoordinationDomain(): void {
 }
 
 /**
+ * The directory name of the canonical staging tree inside the workspace root.
+ *
+ * PARITY CONTRACT with `apps/operator/scripts/hooks/cc/pretooluse-locks-acquire.sh`
+ * (its `_canonical_tree`: `PAPERCUSP_CANONICAL_TREE` or
+ * `<workspace_root>/papercusp`). The hook and this module MUST resolve the same
+ * tree — that identity is the whole point of {@link fileLockCoordinationDomain}
+ * and is pinned by `coordination-domain.file-domain.test.ts`. Keep in sync.
+ */
+export const CANONICAL_TREE_DIRNAME = 'papercusp';
+
+/**
+ * The coordination domain for FILE locks — the tree whose files agents actually
+ * EDIT, which is NOT necessarily the tree whose code the operator is RUNNING.
+ *
+ * WI-38252. {@link lockCoordinationDomain} resolves the domain from
+ * `import.meta.url` — the repo root of the executing code — on the premise
+ * stated in this file's header: "Every SU agent on this operator edits THIS
+ * papercup checkout". That premise is FALSE for the `:3070` operator, which
+ * serves every SU agent while running from the RELEASE checkout
+ * (`papercup-release`) whose files nobody edits. The result was a silent
+ * two-namespace split, measured live 2026-08-12:
+ *
+ *   .../papercup-release : 18 rows — ALL deliberate agent `locks:acquire`, 0 hook
+ *   .../papercusp        :  5 rows — ALL PreToolUse hook acquires, 0 agent
+ *
+ * 100% disjoint. The PreToolUse hook sends an explicit `coordination_domain`
+ * (the physical repo root of the edited file) precisely because it knows the
+ * operator may serve a different checkout; an AGENT calling `locks:acquire`
+ * sends no such argument and fell back to the operator's own checkout. So every
+ * deliberate agent file lock was granted in a namespace the enforcement guard
+ * never reads: `locks:acquire` answered `ok:true` + `newly_held` for paths a
+ * live peer held, and the holder's own `locks:release` reported `released: []`
+ * for the lock the guard was still enforcing against them.
+ *
+ * Resolution order — first candidate that is a real repo root on disk wins:
+ *   1. `PAPERCUSP_LOCK_DOMAIN` — the existing global override (tests, packaged
+ *      builds with no repo on disk). Unchanged semantics.
+ *   2. `PAPERCUSP_CANONICAL_TREE` — the hook's own notion of the edit tree.
+ *   3. `<PAPERCUSP_WORKSPACE_ROOT | ~/papercupai-workspace>/<CANONICAL_TREE_DIRNAME>`.
+ *   4. {@link lockCoordinationDomain} — today's behaviour, kept as the terminal
+ *      fallback so an environment with no resolvable edit tree (a packaged
+ *      build, a foreign harness checkout) degrades to exactly what it did
+ *      before rather than to a fabricated path.
+ *
+ * Deliberately SEPARATE from {@link lockCoordinationDomain} rather than a
+ * change to it: that function is also the domain for RESOURCE locks
+ * (`resourceLockDomain`), and silently re-keying those would orphan live
+ * `git-sync:<slug>` / `release-deploy` holds — the identical cross-domain
+ * failure documented in {@link hostGlobalLockDomain}. Resource locks are
+ * untouched by this fix.
+ */
+export function fileLockCoordinationDomain(): string {
+  if (_fileDomain) return _fileDomain;
+  const override = process.env.PAPERCUSP_LOCK_DOMAIN;
+  if (override && override.trim()) {
+    _fileDomain = override.trim();
+    return _fileDomain;
+  }
+  for (const candidate of fileLockDomainCandidates()) {
+    try {
+      const real = realpathSync(candidate);
+      if (hasValidGitEntry(real)) {
+        _fileDomain = real;
+        return _fileDomain;
+      }
+    } catch {
+      // Not present on this box — try the next candidate.
+    }
+  }
+  _fileDomain = lockCoordinationDomain();
+  return _fileDomain;
+}
+
+/** The edit-tree candidates, in order — see {@link fileLockCoordinationDomain}. */
+function fileLockDomainCandidates(): string[] {
+  const candidates: string[] = [];
+  const canonical = process.env.PAPERCUSP_CANONICAL_TREE?.trim();
+  if (canonical) candidates.push(canonical);
+  const workspaceRoot = process.env.PAPERCUSP_WORKSPACE_ROOT?.trim()
+    || join(homedir(), 'papercupai-workspace');
+  candidates.push(join(workspaceRoot, CANONICAL_TREE_DIRNAME));
+  return candidates;
+}
+
+/** Reset the file-lock domain cache — test-only. */
+export function __resetFileLockCoordinationDomain(): void {
+  _fileDomain = null;
+}
+
+/**
  * EI-18674647773291145 (Defect 2): the FIXED domain for genuinely HOST-GLOBAL
  * resources — ones that name a single shared subsystem on this host (e.g. the
  * one shared release checkout `release-deploy` guards) rather than a physical

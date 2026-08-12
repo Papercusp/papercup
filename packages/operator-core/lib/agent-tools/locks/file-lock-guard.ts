@@ -15,13 +15,17 @@
  * file-mutation tools (`capability:write`, `capability:edit`).
  *
  * PARITY WITH THE PreToolUse HOOK — load-bearing. The client hook
- * (`~/.papercusp/hooks/cc/pretooluse-locks-acquire.sh`) sends only
- * repo-relative `paths` to `locks:acquire`; the SERVER stamps
- * `coordination_domain` via `readIdentity(ctx)` (= `lockCoordinationDomain()`).
+ * (`~/.papercusp/hooks/cc/pretooluse-locks-acquire.sh`) sends repo-relative
+ * `paths` to `locks:acquire` PLUS an explicit `coordination_domain` (the
+ * physical repo root it resolved from the edit path); when a caller omits that
+ * argument the SERVER stamps it via `readFileLockIdentity(ctx)`
+ * (= `fileLockCoordinationDomain()` — the tree agents EDIT, WI-38252; NOT
+ * `lockCoordinationDomain()`, the tree whose code the process loaded, which on
+ * `:3070` is a different checkout entirely).
  * For a fleet-agent dispatch lock to contend with an SU-session hook lock on
  * the SAME logical file, this HOF must produce the SAME `(coordinationDomain,
  * repo-relative-path)` key. So it:
- *   - resolves the domain via `readIdentity(ctx)` (identical to `locks:acquire`),
+ *   - resolves the domain via `readFileLockIdentity(ctx)` (identical to `locks:acquire`),
  *   - computes the repo-relative path the way the hook does (resolve against the
  *     tool cwd → nearest `.git` ancestor → relpath), then `normalizePaths`.
  * A path that escapes any repo, or canonicalizes to nothing, is left
@@ -38,7 +42,7 @@
 import { existsSync, statSync } from 'node:fs';
 import { dirname, isAbsolute, join, relative, resolve } from 'node:path';
 import { hasValidGitEntry } from './valid-git-entry';
-import { readIdentity, type IdentityCtx } from './identity';
+import { readFileLockIdentity, type IdentityCtx } from './identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { acquireWithContentionRetry, isWorkspaceContended } from './contention-retry';
 import { normalizePaths, tryAcquire, tryRelease, type AcquireBusy } from './su-lock-store';
@@ -142,7 +146,7 @@ export async function guardFileLock<T>(
     return { acquired: true, result: await run() };
   }
 
-  const { ownerId, ownerLabel, coordinationDomain } = readIdentity(ctx);
+  const { ownerId, ownerLabel, coordinationDomain } = readFileLockIdentity(ctx);
   const ttlSec = spec.ttlSec ?? DEFAULT_TTL_SEC;
 
   let acquired: Awaited<ReturnType<typeof tryAcquire>>;

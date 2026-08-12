@@ -173,7 +173,7 @@ export type PeerRelationsReader = (
  * unfortunate: the sender has explicitly said that edge should not surface.
  */
 export const readPeerRelations: PeerRelationsReader = async (selfOwnerId, opts) => {
-  const [{ resolvePresenceScope, assemblePresenceSnapshot }, { couplingSourcesFor }, { deriveCouplings }, { listCouplingsFor, resolveCoupledPeers }, { lockCoordinationDomain }] =
+  const [{ resolvePresenceScope, assemblePresenceSnapshot }, { couplingSourcesFor }, { deriveCouplings }, { listCouplingsFor, resolveCoupledPeers }, { fileLockCoordinationDomain }] =
     await Promise.all([
       import('./presence-snapshot'),
       import('./coupling-sources'),
@@ -189,18 +189,23 @@ export const readPeerRelations: PeerRelationsReader = async (selfOwnerId, opts) 
   // path (11 calls ever) and produced 0 edges in 14 days everywhere else.
   //
   // Resolved HERE rather than threaded from `send.ts` because the domain is a
-  // PROCESS fact, not a caller fact: `lockCoordinationDomain()` takes no
-  // arguments, and `readIdentity()` — the source the presence path uses — is
-  // literally a wrapper around this same call (locks/identity.ts:73). Threading
-  // it through `sendOne` would add a parameter carrying no caller-specific
-  // information. Imported dynamically to honour this file's import contract
-  // above: a static import would put it in `send.ts`'s load-time graph.
+  // PROCESS fact, not a caller fact: it takes no arguments, and the presence
+  // path resolves the same value. Threading it through `sendOne` would add a
+  // parameter carrying no caller-specific information. Imported dynamically to
+  // honour this file's import contract above: a static import would put it in
+  // `send.ts`'s load-time graph.
+  //
+  // WI-38252: it must be `fileLockCoordinationDomain()` — the tree agents EDIT
+  // — not `lockCoordinationDomain()`, the tree whose code this process loaded.
+  // On `:3070` those are different checkouts, and the file-lock rows live under
+  // the former, so reading the latter derived `holds-a-lock-on` edges from an
+  // empty namespace and produced 0 edges regardless of what was held.
   //
   // Fail-soft, like every other leg here: a throw degrades to the previous
   // behaviour (no lock signal) rather than failing a send.
   let coordinationDomain: string | undefined;
   try {
-    coordinationDomain = lockCoordinationDomain();
+    coordinationDomain = fileLockCoordinationDomain();
   } catch {
     coordinationDomain = undefined;
   }

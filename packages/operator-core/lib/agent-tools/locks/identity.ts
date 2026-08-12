@@ -32,7 +32,7 @@ import {
   resolveAgentIdentity,
   type ResolveIdentityCtx,
 } from '../coordination/identity';
-import { lockCoordinationDomain } from './coordination-domain';
+import { fileLockCoordinationDomain, lockCoordinationDomain } from './coordination-domain';
 
 /**
  * Loose ctx type — read-only access to the fields we need. Wraps the
@@ -71,5 +71,34 @@ export function readIdentity(ctx: IdentityCtx): SuAgentIdentity {
     ownerId: id.ownerId,
     ownerLabel: id.ownerLabel,
     coordinationDomain: lockCoordinationDomain(),
+  };
+}
+
+/**
+ * Identity for a FILE-lock operation — identical to {@link readIdentity} except
+ * that `coordinationDomain` is the tree agents EDIT
+ * ({@link fileLockCoordinationDomain}) rather than the tree the operator process
+ * is RUNNING ({@link lockCoordinationDomain}).
+ *
+ * WI-38252: those two are the same directory on a dev operator launched from the
+ * staging tree, and DIFFERENT on `:3070`, which serves every SU agent while
+ * running from the release checkout. Defaulting a file lock to the running
+ * tree put every deliberate agent lock in a namespace the PreToolUse guard
+ * never reads — `locks:acquire` granted paths a live peer held, and the
+ * holder's own `locks:release` could not see the lock being enforced against
+ * them.
+ *
+ * Every surface that touches the FILE-lock store must resolve its default
+ * domain through THIS function, so the verb's verdict and the guard's verdict
+ * are computed from one authority and cannot disagree again. RESOURCE locks
+ * keep {@link readIdentity} — re-keying them would orphan live holds (see
+ * `hostGlobalLockDomain`).
+ */
+export function readFileLockIdentity(ctx: IdentityCtx): SuAgentIdentity {
+  const id = resolveAgentIdentity(ctx);
+  return {
+    ownerId: id.ownerId,
+    ownerLabel: id.ownerLabel,
+    coordinationDomain: fileLockCoordinationDomain(),
   };
 }
