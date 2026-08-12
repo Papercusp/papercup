@@ -3849,11 +3849,11 @@ export async function runGreenCheckpoint(
    * candidate readable as healthy: a refire advances it while pid/started_at stay fixed, which
    * has repeatedly been misread as a corrupt field.
    *
-   * Not awaited: a diagnostic must never add latency to (or fail) the run it describes. The
-   * writer swallows its own errors, and the `void` makes the fire-and-forget deliberate rather
-   * than an unhandled-rejection accident.
+   * Awaited so the marker is observable before setup begins and cannot race a fast terminal
+   * cleanup. The best-effort writer swallows its own errors, so publication failure still never
+   * fails the checkpoint run; the single metadata write is part of entering the in-flight state.
    */
-  void deps.recordInFlightCandidate?.({
+  await deps.recordInFlightCandidate?.({
     candidate,
     base: lastReady ?? null,
     selectedAtMs: candidateSelectedAtMs,

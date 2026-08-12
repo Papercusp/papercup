@@ -176,6 +176,27 @@ afterEach(() => {
   rmSync(repo, { recursive: true, force: true });
 });
 
+describe('in-flight candidate publication', () => {
+  it('awaits marker publication before checkpoint tree setup begins', async () => {
+    const ready = await commit('a', '1', 'ready');
+    await git(repo, ['branch', 'ready', ready]);
+    await commit('b', '2', 'candidate');
+    const { deps } = stubDeps(true);
+    const order: string[] = [];
+    deps.recordInFlightCandidate = async () => {
+      await Promise.resolve();
+      order.push('published');
+    };
+    deps.setupTree = async () => {
+      order.push('setup');
+    };
+
+    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(order.slice(0, 2)).toEqual(['published', 'setup']);
+  });
+});
+
 describe('acquireCheckpointRunLock', () => {
   it('blocks a second live checkpoint process from mutating the same checkpoint tree', () => {
     const lockDir = join(repo, '.checkpoint-logs', '.green-checkpoint-run.lock');
