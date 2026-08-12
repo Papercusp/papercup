@@ -23,6 +23,8 @@ import {
   splitTipFailuresPerFile,
   TIP_SPLIT_MAX_FILES,
   nonTestGateIdsFrom,
+  rescueGateIdsFrom,
+  fileRescueCovers,
   parseFailingTaskId,
   isRerunnableGateEntry,
   resolveGateRuns,
@@ -1928,14 +1930,24 @@ describe('runGreenCheckpoint', () => {
       expect(calls).toContain('commitsInRange'); // ...then genuinely salvaged, same as a real test red
     });
 
-    it('a mixed red (a failing test file ALONGSIDE a gate id) goes through the FILE-based rescue, not the gate one', async () => {
-      // failingFiles is non-empty here, so the existing file rescue applies unchanged;
-      // the gate path must not also fire (it would double-rescue the same red).
+    // EI-19992136440423793 path (a). ⚠ THIS TEST'S EXPECTATION WAS DELIBERATELY INVERTED, and
+    // that is the point of the change — it is not a weakened guard. It used to assert
+    // `expect(calls).not.toContain('runGateAtRef')` on the rationale that firing both "would
+    // double-rescue the same red". That premise is false: the two arms cover DIFFERENT HALVES of
+    // the failing set — `runTestsAtRef` re-runs the located test FILES, `runGateAtRef` re-runs the
+    // registered lint/typecheck legs, and neither one measures the other's half. So on a mixed red
+    // the old behaviour did not avoid a double-rescue, it threw the lint half away UNMEASURED:
+    // `gateIds = failingFiles.length === 0 ? nonTestGateIdsFrom(failingTests) : []` forced the
+    // empty set the moment any test file was present. The cost was a whole extra ~55min suite —
+    // the file half passes at tip, the gate refires on partial evidence, and only THEN does anyone
+    // discover the lint leg is still red.
+    it('a mixed red (a failing test file ALONGSIDE a gate id) re-verifies BOTH halves in one pass', async () => {
       const c1 = await commit('a', '1', 'c1');
       await git(repo, ['branch', 'ready', c1]);
       const c2 = await commit('a', '2', 'c2');
       await commit('unrelated.ts', 'x', 'c3'); // tip strictly newer than the judged candidate
       const calls: string[] = [];
+      const gateIdsSeen: string[][] = [];
       const { deps } = stubDeps(false, ['@papercusp/web', 'lint:identity-leak']);
       deps.runGreen = async () => ({
         green: false,
@@ -1947,6 +1959,95 @@ describe('runGreenCheckpoint', () => {
       deps.runTestsAtRef = async () => {
         calls.push('runTestsAtRef');
         return { pass: false, summary: 'still red at tip' };
+      };
+      deps.runGateAtRef = async (_ref, ids) => {
+        calls.push('runGateAtRef');
+        gateIdsSeen.push(ids);
+        return { pass: true, summary: 'pass at tip' };
+      };
+
+      const r = await runGreenCheckpoint(cfg(), deps, { candidate: c2, noPush: true });
+
+      expect(calls).toContain('runTestsAtRef');
+      expect(calls).toContain('runGateAtRef');
+      // The gate half re-runs ONLY the lint leg — never `@papercusp/web`, which is the workspace
+      // the file rescue already covers. Routing that to the gate runner would try to `npm run
+      // @papercusp/web` and is exactly what the subtraction exists to prevent.
+      expect(gateIdsSeen).toEqual([['lint:identity-leak']]);
+      // The composed verdict is the AND of both halves: the test file still fails at tip, so the
+      // red is real and nothing refires, even though the lint half passed. A rescue that refired
+      // here would be declaring the whole red stale off one half of the evidence.
+      expect(r.retriage).toMatchObject({ classification: 'real-red', autoRefire: false });
+      expect(r.advanced).toBe(false);
+    });
+
+    it('a mixed red whose BOTH halves pass at tip is stale and refires once, covering both', async () => {
+      // The complement of the case above, and the one that actually recovers gate minutes: with
+      // the two arms composed this is settled in a single cheap pass instead of refiring on the
+      // file half alone and re-discovering the lint half a full suite later.
+      const c1 = await commit('a', '1', 'c1');
+      await git(repo, ['branch', 'ready', c1]);
+      const c2 = await commit('a', '2', 'c2');
+      const c3 = await commit('b', '2', 'c3 — fixes both the test and the lint');
+      const calls: string[] = [];
+      const { deps } = stubDeps(false, ['@papercusp/web', 'lint:identity-leak']);
+      let run = 0;
+      deps.runGreen = async () => {
+        calls.push('runGreen');
+        run += 1;
+        return run === 1
+          ? {
+              green: false,
+              summary: '1 failed + 1 lint',
+              failingTests: ['@papercusp/web', 'lint:identity-leak'],
+              failingFiles: [{ file: 'src/failing.test.ts', workspace: '@papercusp/web' }],
+            }
+          : { green: true, summary: 'all pass' };
+      };
+      deps.resolveTip = async () => revParse(repo, 'HEAD');
+      deps.runTestsAtRef = async () => {
+        calls.push('runTestsAtRef');
+        return { pass: true, summary: 'files pass at tip' };
+      };
+      deps.runGateAtRef = async () => {
+        calls.push('runGateAtRef');
+        return { pass: true, summary: 'lint passes at tip' };
+      };
+
+      const r = await runGreenCheckpoint(cfg(), deps, { candidate: c2, noPush: true });
+
+      // BOTH halves were measured before the refire — the whole point of composing them.
+      expect(calls).toContain('runTestsAtRef');
+      expect(calls).toContain('runGateAtRef');
+      expect(calls.indexOf('runGateAtRef')).toBeLessThan(calls.lastIndexOf('runGreen'));
+      expect(r.green).toBe(true);
+      expect(r.advanced).toBe(true);
+      expect(r.candidate).toBe(c3);
+    });
+
+    it('a mixed red with an UNRESCUABLE entry beside the gate id still vetoes the gate half', async () => {
+      // The safety property the subtraction must NOT erode. `@papercusp/operator-vite` (a build
+      // break) is deliberately absent from NON_TEST_GATE_SCRIPTS and is not covered by the file
+      // rescue either, so nothing can measure it at tip — which means a "stale" verdict reached
+      // from the other two halves would rest on evidence nobody collected. The residual therefore
+      // fails nonTestGateIdsFrom's all-or-nothing check and the file rescue runs alone, exactly as
+      // it did before path (a).
+      const c1 = await commit('a', '1', 'c1');
+      await git(repo, ['branch', 'ready', c1]);
+      const c2 = await commit('a', '2', 'c2');
+      await commit('unrelated.ts', 'x', 'c3');
+      const calls: string[] = [];
+      const { deps } = stubDeps(false, ['@papercusp/web', 'lint:identity-leak', '@papercusp/operator-vite']);
+      deps.runGreen = async () => ({
+        green: false,
+        summary: '1 failed + 1 lint + 1 build',
+        failingTests: ['@papercusp/web', 'lint:identity-leak', '@papercusp/operator-vite'],
+        failingFiles: [{ file: 'src/failing.test.ts', workspace: '@papercusp/web' }],
+      });
+      deps.resolveTip = async () => revParse(repo, 'HEAD');
+      deps.runTestsAtRef = async () => {
+        calls.push('runTestsAtRef');
+        return { pass: true, summary: 'files pass at tip' };
       };
       deps.runGateAtRef = async () => {
         calls.push('runGateAtRef');
@@ -2263,7 +2364,85 @@ describe('runGreenCheckpoint', () => {
       expect(nonTestGateIdsFrom(['lint:plane-integrity'])).toEqual(['lint:plane-integrity']);
       expect(nonTestGateIdsFrom(['lint:tsc', 'lint:plane-integrity'])).toEqual(['lint:tsc', 'lint:plane-integrity']);
     });
+  });
 
+  /* EI-19992136440423793 path (a), pure half. `rescueGateIdsFrom` subtracts what the FILE rescue
+   * already re-runs and then applies nonTestGateIdsFrom's unchanged all-or-nothing rule to the
+   * residual. Two things these pin, and they pull in opposite directions on purpose:
+   *   - the MIXED red now yields its registered gate ids instead of `[]` (the defect);
+   *   - an entry nothing can re-run at tip still vetoes (the safety property that made the
+   *     all-or-nothing rule right in the first place).
+   * A change that only satisfies the first is the half-fix this item's path (b) already showed is
+   * not enough: there are TWO all-or-nothing gates, and relaxing one alone moves the veto rather
+   * than removing it. */
+  describe('rescueGateIdsFrom + fileRescueCovers (EI-19992136440423793 path (a), pure)', () => {
+    const WEB_FILE = { file: 'src/failing.test.ts', workspace: '@papercusp/web' };
+
+    it('THE DEFECT: a mixed red yields its registered gate ids, where the old ternary yielded []', () => {
+      // Old behaviour, preserved here as a control so the difference is visible rather than
+      // asserted from memory: fed the whole mixed set, the all-or-nothing rule returns [].
+      expect(nonTestGateIdsFrom(['@papercusp/web', 'lint:identity-leak'])).toEqual([]);
+      // New behaviour: the workspace is covered by the file rescue, so only the lint leg remains.
+      expect(rescueGateIdsFrom(['@papercusp/web', 'lint:identity-leak'], [WEB_FILE])).toEqual([
+        'lint:identity-leak',
+      ]);
+    });
+
+    it('with NO failing files it is exactly nonTestGateIdsFrom — the gate-only path is unchanged', () => {
+      // By construction (nothing is subtracted when failingFiles is empty), so this is a
+      // characterisation of the identity rather than a sample of it.
+      for (const failing of [
+        ['lint:identity-leak'],
+        ['lint:tsc', 'lint:design-primitives'],
+        ['@papercusp/web'],
+        ['@papercusp/operator-vite'],
+        ['lint:identity-leak', '@papercusp/web'],
+        [],
+      ]) {
+        expect(rescueGateIdsFrom(failing, [])).toEqual(nonTestGateIdsFrom(failing));
+        expect(rescueGateIdsFrom(failing)).toEqual(nonTestGateIdsFrom(failing));
+      }
+      expect(rescueGateIdsFrom(undefined)).toEqual([]);
+    });
+
+    it('THE SAFETY PROPERTY: an entry neither file-covered nor re-runnable still vetoes the whole gate half', () => {
+      // '@papercusp/operator-vite' is a build break — deliberately absent from the registry and
+      // not a test file, so nothing measures it at tip. A rescue that ran anyway would call the
+      // red stale on evidence it never collected.
+      expect(
+        rescueGateIdsFrom(['@papercusp/web', 'lint:identity-leak', '@papercusp/operator-vite'], [WEB_FILE]),
+      ).toEqual([]);
+    });
+
+    it('covers the three shapes the extractor emits for one test failure, and nothing else', () => {
+      expect(fileRescueCovers('src/failing.test.ts', [WEB_FILE])).toBe(true); // the located file
+      expect(fileRescueCovers('@papercusp/web', [WEB_FILE])).toBe(true); // its workspace
+      expect(fileRescueCovers('@papercusp/web :: test', [WEB_FILE])).toBe(true); // its test task id
+      // A LINT task in the same workspace is the GATE half's own work — covering it here would
+      // subtract it from the very set it belongs to, silently dropping the rescue for it.
+      expect(fileRescueCovers('@papercusp/web :: lint:identity-leak', [WEB_FILE])).toBe(false);
+      // A different workspace, a registry id, and a build break are all uncovered.
+      expect(fileRescueCovers('@papercusp/operator-core', [WEB_FILE])).toBe(false);
+      expect(fileRescueCovers('lint:tsc', [WEB_FILE])).toBe(false);
+      expect(fileRescueCovers('@papercusp/operator-vite', [WEB_FILE])).toBe(false);
+      // Nothing is covered when there are no failing files — the subtraction is a no-op there.
+      expect(fileRescueCovers('@papercusp/web', [])).toBe(false);
+    });
+
+    it('a workspace-scoped LINT task survives the subtraction and is still rescued beside a failing file', () => {
+      // The EI-20092765275570648 shape: `<ws> :: lint:<name>` is self-describing and re-runnable
+      // without a registry entry. It must not be mistaken for the file half's work just because
+      // its workspace also has a failing test file.
+      expect(
+        rescueGateIdsFrom(['@papercusp/web', '@papercusp/web :: lint:no-ungated-mug-kettle'], [WEB_FILE]),
+      ).toEqual(['@papercusp/web :: lint:no-ungated-mug-kettle']);
+    });
+  });
+
+  /* The rest of the P-020 group above: what the gated signatures RESOLVE to, and the two ways that
+   * resolution can go quiet instead of redding the gate. Split out from the sibling describe only
+   * so the pure path-(a) cases sit between them — the subject is unchanged. */
+  describe('agent-state-plane gated scripts — registry contents and the vacuous-pass guard (P-020)', () => {
     it('maps to exactly the five plane probes — 4 lints plus the Phase 3 guard mutation tests', () => {
       expect(NON_TEST_GATE_SCRIPTS['lint:plane-integrity']).toEqual([
         'lint:plane-producers',

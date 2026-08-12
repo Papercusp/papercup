@@ -2203,6 +2203,46 @@ export function nonTestGateIdsFrom(failingTests: string[] | undefined): string[]
   return ids.length > 0 && ids.every(isRerunnableGateEntry) ? ids : [];
 }
 
+/** Does the FILE rescue (`runTestsAtRef`) already re-run this `failingTests` entry at tip?
+ *
+ *  The extractor emits up to three entries for the SAME test failure — the located file, the
+ *  workspace it ran under, and that workspace's `<ws> :: test` task id — and the file rescue
+ *  re-runs all three by re-running the file. Those are the only shapes claimed here.
+ *
+ *  Deliberately narrow, and narrow in the SAFE direction: anything else (a build break, a cargo
+ *  or desktop task, an unmapped crash signature) is NOT covered, so it still reaches
+ *  `nonTestGateIdsFrom`'s all-or-nothing check and still vetoes the gate rescue exactly as before.
+ *  Subtracting only what is genuinely re-run elsewhere is what lets the two rescues COMPOSE
+ *  without either one declaring a red stale on evidence nobody collected. */
+export function fileRescueCovers(entry: string, failingFiles: readonly FailingFile[]): boolean {
+  if (failingFiles.length === 0) return false;
+  if (failingFiles.some((f) => f.file === entry || f.workspace === entry)) return true;
+  const task = parseFailingTaskId(entry);
+  return task !== null && task.script.startsWith('test') && failingFiles.some((f) => f.workspace === task.workspace);
+}
+
+/** The non-test gate ids to re-verify at tip BESIDE whatever the file rescue re-runs.
+ *
+ *  EI-19992136440423793 path (a). The two rescues used to be mutually EXCLUSIVE — the caller read
+ *  `failingFiles.length === 0 ? nonTestGateIdsFrom(failingTests) : []` — so ONE failing test file
+ *  threw away the gate rescue for every registered lint leg beside it, and a MIXED red's lint half
+ *  was never measured for staleness at all. (Path (b), the sibling half of the same item, closed
+ *  the other veto: an UNREGISTERED leg anywhere in the failing set. Both are all-or-nothing gates,
+ *  and relaxing either one alone leaves the mixed red stuck on the other.)
+ *
+ *  Subtract the entries the file rescue already covers, then apply the SAME all-or-nothing
+ *  admission to what remains. Two properties fall out for free:
+ *   - with no failing files nothing is subtracted, so this IS `nonTestGateIdsFrom(failingTests)`
+ *     — the gate-only path is unchanged BY CONSTRUCTION, not by test;
+ *   - an entry that is neither file-covered nor a re-runnable gate still vetoes, so a red the
+ *     rescue cannot fully measure keeps today's plain-red behaviour. */
+export function rescueGateIdsFrom(
+  failingTests: string[] | undefined,
+  failingFiles: readonly FailingFile[] = [],
+): string[] {
+  return nonTestGateIdsFrom((failingTests ?? []).filter((e) => !fileRescueCovers(e, failingFiles)));
+}
+
 /** Is this `failingTests` entry something the tip rescue can re-run on its own?
  *
  *  Two admissible shapes, and nothing else — an unmapped signature is never guessed at:
@@ -4546,59 +4586,117 @@ export async function runGreenCheckpoint(
     writeCheckpointRunPhase(checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot), 'delivering');
     const tip = await deps.resolveTip?.().catch(() => null) ?? null;
     let retriage: (RedTriage & { tip: string | null }) | undefined;
-    // WI-7290: hoisted out of the else-arm below so the skip-reason synthesis after this
-    // if/else can name WHICH non-test gates (if any) were in play.
+    // WI-7290: hoisted out of the rescue block below so the skip-reason synthesis after it
+    // can name WHICH non-test gates (if any) were in play.
     let gateIds: string[] = [];
-    // Re-running needs a workspace per file (the cwd for `npm run test --workspace`), so a
-    // red we could name but not LOCATE stays a plain red rather than a silent no-op.
-    if (tip && tip !== candidate && failingFiles.length > 0 && deps.runTestsAtRef) {
-      deps.log(`red at ${candidate.slice(0, 8)}; re-running ${failingFiles.length} failing file(s) at tip ${tip.slice(0, 8)}`);
-      const tipRun = await deps.runTestsAtRef(tip, failingFiles).catch((e: unknown) => {
-        deps.log(`tip re-run failed to execute (${e instanceof Error ? e.message : e}) — treating red as real`);
-        return null;
-      });
+    if (tip && tip !== candidate) {
+      // EI-19992136440423793 path (a): the file rescue and its LINT/TYPECHECK sibling COMPOSE —
+      // they used to EXCLUDE each other. A gate red (lint:tsc / lint:migrations /
+      // lint:identity-leak / lint:design-primitives) never populates `failingFiles` (that list is
+      // test-FILE-only), so the gate rescue exists to re-verify it; but its id set was gated on
+      // `failingFiles.length === 0`, which meant ONE failing test file threw the lint half away
+      // UNMEASURED. Composed, a mixed red measures both halves in one cheap pass instead of paying
+      // a whole extra ~55min suite on the next refire to discover the half nobody looked at.
+      gateIds = rescueGateIdsFrom(failingTests, failingFiles);
+      // Re-running FILES needs a workspace per file (the cwd for `npm run test --workspace`), so a
+      // red we could name but not LOCATE stays a plain red rather than a silent no-op.
+      const needFiles = failingFiles.length > 0;
+      // A half we cannot RUN is not evidence. An unrunnable GATE half degrades to the file rescue
+      // alone (exactly the previous behaviour — never lose a rescue we used to have); an unrunnable
+      // FILE half vetoes the whole rescue, because a stale verdict reached while a located test
+      // file went unmeasured is a verdict built on evidence we chose not to collect. `gateIds`
+      // itself stays the IDENTIFIED set either way, so describeSkippedRetriage can still report a
+      // gate rescue that was wanted but had no runner wired.
+      const rescueGates = deps.runGateAtRef ? gateIds : [];
+      const needGates = rescueGates.length > 0;
+      if ((needFiles || needGates) && (!needFiles || deps.runTestsAtRef)) {
+      const scope = [
+        needFiles ? `${failingFiles.length} failing file(s)` : null,
+        needGates ? `${rescueGates.length} non-test gate(s) (${rescueGates.join(', ')})` : null,
+      ]
+        .filter((part): part is string => part !== null)
+        .join(' + ');
+      deps.log(`red at ${candidate.slice(0, 8)}; re-running ${scope} at tip ${tip.slice(0, 8)}`);
+      // Both halves always run — no short-circuit. Each is cheap by construction (the file rescue
+      // re-runs only the N named files; the 7th stale red was disproved in 559ms, and every
+      // registry entry is one fast deterministic repo-wide script), so stopping at the first
+      // failure would trade the other half's diagnostic for nothing the verdict consumes.
+      const fileRun =
+        needFiles && deps.runTestsAtRef
+          ? await deps.runTestsAtRef(tip, failingFiles).catch((e: unknown) => {
+              deps.log(`tip re-run failed to execute (${e instanceof Error ? e.message : e}) — treating red as real`);
+              return null;
+            })
+          : undefined;
+      const gateRun =
+        needGates && deps.runGateAtRef
+          ? await deps.runGateAtRef(tip, rescueGates).catch((e: unknown) => {
+              deps.log(`tip gate re-run failed to execute (${e instanceof Error ? e.message : e}) — treating red as real`);
+              return null;
+            })
+          : undefined;
+      // A half that could not EXECUTE (null) leaves the red unmeasured — the same fail-soft
+      // "treating red as real" both arms already had, now applied to the composed pair. A half that
+      // was not NEEDED (undefined) contributes no failure.
+      const tipRetest =
+        fileRun === null || gateRun === null
+          ? null
+          : {
+              ran: true,
+              pass: (fileRun?.pass ?? true) && (gateRun?.pass ?? true),
+              // DIAGNOSTIC only (see classifyRedAgainstTip) — the file half is the only one with a
+              // per-file split to offer.
+              ...(fileRun?.perFile ? { perFile: fileRun.perFile } : {}),
+            };
+      // The budget's view of "what this pass tried to rescue" is the UNION of both halves, so a
+      // refire re-trying the same mixed set is charged exactly like a single-arm repeat.
+      const currentFailing: readonly (string | FailingFile)[] = [...failingFiles, ...rescueGates];
       const verdict = classifyRedAgainstTip({
         candidate,
         tip,
         failingTests: failingTests ?? [],
-        tipRetest: tipRun ? { ran: true, pass: tipRun.pass, perFile: tipRun.perFile } : null,
+        tipRetest,
         refireAttempts: opts.refireAttempts ?? 0,
         maxRefires: autoRefireCapFromEnv(),
-        ...refireBudgetInputs(opts, failingFiles, runStartedAtMs, passStartedAtMs),
+        ...refireBudgetInputs(opts, currentFailing, runStartedAtMs, passStartedAtMs),
       });
       retriage = { ...verdict, tip };
-      // WI-5366: tipRun.summary carries the verified-head note (+ per-workspace
-      // pass/FAIL) from runTestsAtRef but was previously computed and discarded —
-      // log it alongside the classification so a future "REPRODUCE at tip <sha>"
-      // verdict always shows the sha the tree was ACTUALLY verified at, not just
-      // the sha that was requested.
-      deps.log(`re-triage: ${verdict.classification} — ${verdict.detail}${tipRun ? ` (${tipRun.summary})` : ''}`);
+      // WI-5366: each runner's summary carries the verified-head note (+ per-workspace
+      // pass/FAIL) but was previously computed and discarded — log it alongside the
+      // classification so a future "REPRODUCE at tip <sha>" verdict always shows the sha
+      // the tree was ACTUALLY verified at, not just the sha that was requested. Both
+      // halves' summaries appear, so a composed rescue names what each one measured.
+      const ranSummary = [fileRun?.summary, gateRun?.summary].filter(Boolean).join('; ');
+      deps.log(`re-triage: ${verdict.classification} — ${verdict.detail}${ranSummary ? ` (${ranSummary})` : ''}`);
 
       // A stale red is not a red. Re-fire the whole gate on the newer tip rather than
       // holding the pin on a failure that no longer exists — bounded by the refire cap
       // so a genuinely-broken tip still converges to a held gate and a human.
       if (verdict.autoRefire) {
         await deps.broadcast(
-          `🔁 green-checkpoint re-firing on tip ${tip.slice(0, 8)}: red at ${candidate.slice(0, 8)} was STALE (${failingFiles.length} file(s) pass at tip)`,
+          `🔁 green-checkpoint re-firing on tip ${tip.slice(0, 8)}: red at ${candidate.slice(0, 8)} was STALE (${scope} pass at tip)`,
         ).catch(() => {});
         // EI-18669342433807110: the recursive re-fire below can run a full suite again (minutes)
         // before this process returns anything — mark the refire IN FLIGHT now so a concurrent
         // reader doesn't spend that whole window seeing a plain cached red with no hint a fresh
         // verdict is imminent.
-        const next = nextRefireOpts(opts, verdict, failingFiles, runStartedAtMs);
+        const next = nextRefireOpts(opts, verdict, currentFailing, runStartedAtMs);
         await deps
           .recordInFlightRetriage?.({
             fromCandidate: candidate,
             refiringCandidate: tip,
             refireAttempt: next.refireAttempts,
             maxRefires: autoRefireCapFromEnv(),
-            failingFiles: failingFiles.map((f) => f.file),
+            failingFiles: [...failingFiles.map((f) => f.file), ...rescueGates],
             charged: verdict.chargeRefire,
             totalRefires: next.totalRefires,
             absoluteCeiling: refireAbsoluteCeiling(autoRefireCapFromEnv()),
             // WI-38224: stamped on EVERY refire publish, not just the first — the value is constant
             // by construction (the refire recurses in-process), and that constancy beside advancing
-            // candidate fields is exactly the signal a reader needs.
+            // candidate fields is exactly the signal a reader needs. EI-19992136440423793 path (a)
+            // collapsed the two rescue arms into this ONE publish site, so the failure that comment
+            // guarded against — one arm stamping it and the other silently not — is now structurally
+            // impossible rather than merely tested for.
             runnerBootedAtMs: RUNNER_PROCESS_BOOTED_AT_MS,
           })
           .catch(() => {});
@@ -4616,63 +4714,6 @@ export async function runGreenCheckpoint(
         stampPromotion(false, 'superseded-by-refire');
         return runGreenCheckpoint(cfg, deps, { ...opts, candidate: tip, ...next });
       }
-    } else {
-      // EI-18759362119598634: the LINT/TYPECHECK sibling of the rescue above. A gate
-      // red (lint:tsc / lint:migrations / lint:identity-leak / lint:design-primitives)
-      // never populates `failingFiles` — that list is test-FILE-only — so it fell
-      // straight past the file-based rescue with nothing to re-run and was held red
-      // even once a peer's fix landed. When `failingTests` names ONLY known gate ids,
-      // re-verify them by re-running just those script(s) at tip.
-      gateIds = failingFiles.length === 0 ? nonTestGateIdsFrom(failingTests) : [];
-      if (tip && tip !== candidate && gateIds.length > 0 && deps.runGateAtRef) {
-        deps.log(`red at ${candidate.slice(0, 8)}; re-running ${gateIds.length} non-test gate(s) at tip ${tip.slice(0, 8)}: ${gateIds.join(', ')}`);
-        const tipRun = await deps.runGateAtRef(tip, gateIds).catch((e: unknown) => {
-          deps.log(`tip gate re-run failed to execute (${e instanceof Error ? e.message : e}) — treating red as real`);
-          return null;
-        });
-        const verdict = classifyRedAgainstTip({
-          candidate,
-          tip,
-          failingTests: failingTests ?? [],
-          tipRetest: tipRun ? { ran: true, pass: tipRun.pass } : null,
-          refireAttempts: opts.refireAttempts ?? 0,
-          maxRefires: autoRefireCapFromEnv(),
-          ...refireBudgetInputs(opts, gateIds, runStartedAtMs, passStartedAtMs),
-        });
-        retriage = { ...verdict, tip };
-        deps.log(`re-triage: ${verdict.classification} — ${verdict.detail}${tipRun ? ` (${tipRun.summary})` : ''}`);
-
-        if (verdict.autoRefire) {
-          await deps.broadcast(
-            `🔁 green-checkpoint re-firing on tip ${tip.slice(0, 8)}: red at ${candidate.slice(0, 8)} was STALE (${gateIds.length} gate(s) pass at tip: ${gateIds.join(', ')})`,
-          ).catch(() => {});
-          const next = nextRefireOpts(opts, verdict, gateIds, runStartedAtMs);
-          await deps
-            .recordInFlightRetriage?.({
-              fromCandidate: candidate,
-              refiringCandidate: tip,
-              refireAttempt: next.refireAttempts,
-              maxRefires: autoRefireCapFromEnv(),
-              failingFiles: gateIds,
-              charged: verdict.chargeRefire,
-              totalRefires: next.totalRefires,
-              absoluteCeiling: refireAbsoluteCeiling(autoRefireCapFromEnv()),
-              // WI-38224 — see the sibling publish site above; both arms must stamp it, or the
-              // gate-id rescue arm silently produces unstamped markers that read as `unknown`.
-              runnerBootedAtMs: RUNNER_PROCESS_BOOTED_AT_MS,
-            })
-            .catch(() => {});
-          // EI-19326481022404981: same rationale as the test-file rescue arm above — this
-          // run is abandoning `candidate` for `tip`; retire any await sha-bound to it.
-          await deps.cancelStaleAwaits?.(candidate).catch(() => {});
-          // WI-37490: same as the test-file rescue arm above — record this pass's own
-          // verdict before recursing, so a refire that dies leaves it recorded.
-          await deps.recordVerdict?.(buildNotGreenResult(retriage)).catch(() => {});
-          // EI-20014356905761236: same as the test-file rescue arm — this pass is abandoning
-          // `candidate`, so its own log must record that rather than ending on a bare red.
-          stampPromotion(false, 'superseded-by-refire');
-          return runGreenCheckpoint(cfg, deps, { ...opts, candidate: tip, ...next });
-        }
       }
     }
 

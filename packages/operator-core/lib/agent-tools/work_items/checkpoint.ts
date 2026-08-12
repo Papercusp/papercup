@@ -373,8 +373,8 @@ export default defineTool({
     'Single: { id, checkpoint? }. Many: items:[{ id, checkpoint?, harness? }]. ' +
     'Your transcript does NOT carry across a task boundary / re-spawn; the checkpoint is your continuity, ' +
     "re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; `append:true` joins instead. " +
-    'Writes are verify-read. A plain replace shrinking a substantial checkpoint >50% is retried as a safe append, ' +
-    'while an append with a disagreeing pre-read or an overflowing checks union is BLOCKED; refusals carry `errorCode` + recovery args. ' +
+    'Writes are verify-read — a suspicious shrink is retried as a safe append, a disagreeing append is BLOCKED, ' +
+    'and every refusal carries `errorCode` + recovery args. ' +
     'Refuses a peer-held item (`not_holder`). `rowsMode:"merge"` is the additive check-row form when the body should still replace.',
   guidance: {
     when:
