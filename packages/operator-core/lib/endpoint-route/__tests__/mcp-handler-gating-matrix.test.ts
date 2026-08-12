@@ -1606,6 +1606,24 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
     expect(h.withWorkspaceCalls).toEqual([]);
   });
 
+  it('EI-20229910901734876: privileged scheduler:get_next does not queue on org-app', async () => {
+    const projected = lookupByMcpName('scheduler:get_next');
+    expect(projected?.requirePrincipal).toBe(false);
+    expect(projected?.skipWorkspaceTx).toBe(true);
+
+    // scheduler:get_next owns its DB accessors and already opts out of retaining
+    // an ambient workspace transaction. The privileged dispatcher must also skip
+    // the short principal-synthesis probe; otherwise a saturated org-app pool
+    // can fail the pull before the scheduler evaluates its claim lane.
+    const res = await callTool(
+      'scheduler:get_next',
+      { harness: 'papercusp' },
+      superuserExtra('&workspace=ws-test'),
+    );
+    expect(res.isError).toBeUndefined();
+    expect(h.withWorkspaceCalls).toEqual([]);
+  });
+
   it('power-profile callers cannot invoke engineer-profile tools by name (mirrors the list filter)', async () => {
     h.verifyAccessToken.mockResolvedValueOnce(POWER_CLAIMS);
     const res = await callTool(
