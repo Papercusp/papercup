@@ -410,14 +410,46 @@ export function classifyInboxFromFilter(
   return { resolvedFrom, unmatched };
 }
 
+/**
+ * The INTERNAL delivery floor — deliberately NOT in the agent-facing args schema
+ * (plan fleet-deltas-leader-primitives-2026-07-10, decision D-013 R2).
+ *
+ * D-002 ratified "no `since_ts` parameter anywhere". That is a rule about what an
+ * AGENT must hand-carry: a client-seeded timestamp is the WI-1600 footgun (seed it
+ * to wall-clock now and every earlier message is invisible forever) and it costs
+ * tokens on every call. It is NOT a rule that in-process callers may not bound
+ * their own reads.
+ *
+ * So the agent-facing parameter is gone and `coord:inbox` is a VIEW (D-013 R1):
+ * agents carry no cursor and a second read in the same turn re-shows the window
+ * instead of emptying out. The DELIVERY path — `activity/hook-bundle.ts`, which
+ * owns the server-side two-phase read cursor for surface `'inbox'` — is the one
+ * caller that genuinely wants a delta, and it passes its committed floor through
+ * here. One implementation, no fork, no parallel cursor store.
+ *
+ * Not agent-reachable: the MCP dispatcher validates against the args schema above,
+ * which has no such field, so only in-process callers holding a real cursor can
+ * set it.
+ */
+export interface InboxDeliveryFloor {
+  /** Committed floor from the caller's OWN server-side read cursor. Never a
+   *  client-reported wall-clock timestamp. */
+  __deliveryFloorTs?: string | null;
+}
+
+function internalDeliveryFloor(args: unknown): string | undefined {
+  const floor = (args as InboxDeliveryFloor | null | undefined)?.__deliveryFloorTs;
+  return typeof floor === "string" && floor.length > 0 ? floor : undefined;
+}
+
 export default defineTool({
   name: "coord:inbox",
   description:
-    "Read your coordination inbox — messages, acks, handoffs etc. addressed to you (or broadcast). Returns a summary header (counts by kind) + the most-recent `limit` entries (default 50). Ambient system broadcasts (service-health, rate-limit pauses, doc-freshness RE-VERIFY digests) are excluded by default — include_ambient shows them. Repeated system broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a stale alarm whose condition later cleared carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected by its sender — follow that msg_id. `since_ts` filters strictly later than the given ISO timestamp; `kinds` narrows to specific entry kinds. `unanswered_only` narrows to the directed messages fleet:assignments'/leader-brief's `unanswered_directed` counter flagged (same primitive — can't disagree). CAUTION (WI-1600 since_ts gap): in a tail-poll, never seed since_ts to wall-clock now/poll-start — anything that landed earlier stays invisible to every later poll. Read once unfiltered, then advance the cursor to that read's `summary.newest_ts`; or skip polling via the push-based `coord:await-inbox`.",
+    "Read your coordination inbox — messages, acks, handoffs etc. addressed to you (or broadcast). Returns a summary header (counts by kind) + the most-recent `limit` entries (default 50). Ambient system broadcasts (service-health, rate-limit pauses, doc-freshness RE-VERIFY digests) are excluded by default — include_ambient shows them. Repeated system broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a stale alarm whose condition later cleared carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected by its sender — follow that msg_id. `kinds` narrows to specific entry kinds. `unanswered_only` narrows to the directed messages fleet:assignments'/leader-brief's `unanswered_directed` counter flagged (same primitive — can't disagree). This is a VIEW of your recent inbox, not a delta: you carry no cursor, so re-reading in the same turn always re-shows the same window rather than emptying out.",
   guidance: {
     when: "At turn start (the OMP hook will do this for you once it ships); whenever you suspect another agent contacted you.",
     notWhen:
-      'For agent-presence ("who is active?") — use coord:presence. For file locks — use locks:queue. To WAIT for one specific message/handoff — prefer coord:await-inbox (push/wake) over a since_ts poll (see the WI-1600 CAUTION).',
+      'For agent-presence ("who is active?") — use coord:presence. For file locks — use locks:queue. To WAIT for one specific message/handoff — prefer coord:await-inbox (push/wake) over a poll.',
   },
   capability: "coord:read",
   requirePrincipal: false,
@@ -429,7 +461,6 @@ export default defineTool({
   // read itself behind the 45s app-pool acquisition deadline.
   skipWorkspaceTx: true,
   args: z.object({
-    since_ts: z.string().optional(),
     kinds: z.array(z.enum(COORD_KINDS)).optional(),
     from: z
       .string()
@@ -475,6 +506,9 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
+    // D-013 R2: agents supply no floor (the parameter is gone); only the
+    // cursor-owning delivery path does.
+    const deliveryFloorTs = internalDeliveryFloor(args);
     const inboxContext = ctx as {
       contextTier?: keyof typeof INBOX_TIER_DEFAULTS;
       payloadTierOverride?: keyof typeof INBOX_TIER_DEFAULTS;
@@ -534,7 +568,7 @@ export default defineTool({
           tool: "coord:inbox",
           key: {
             owner: identity.ownerId,
-            since_ts: args.since_ts ?? null,
+            since_ts: deliveryFloorTs ?? null,
             kinds: args.kinds ?? null,
             // WI-6939: the derive is now WINDOWED, so how much it reads depends on
             // `limit` and on whether the narrowing filters force the full read.
@@ -585,7 +619,7 @@ export default defineTool({
           // containing the alarm also contains the resolution.
           readInbox(
             identity.ownerId,
-            { since_ts: args.since_ts, kinds: args.kinds },
+            { since_ts: deliveryFloorTs, kinds: args.kinds },
             !resolvedFrom && !args.unanswered_only
               ? {
                   enough: (entries) => {
