@@ -27,7 +27,7 @@
 import { z } from 'zod';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { readIdentity } from './identity';
+import { readFileLockIdentity } from './identity';
 import { enrichBusy } from './enrich-busy';
 import { inWorkspaceTxn, WorkspaceContendedError } from './in-workspace-txn';
 import { acquireWithContentionRetry } from './contention-retry';
@@ -171,7 +171,7 @@ export default defineTool({
     }
   }),
   async handler(args, ctx) {
-    const { ownerId, ownerLabel, coordinationDomain: defaultCoordinationDomain } = readIdentity(ctx);
+    const { ownerId, ownerLabel, coordinationDomain: defaultCoordinationDomain } = readFileLockIdentity(ctx);
     let coordinationDomain: string;
     try {
       coordinationDomain = resolveExplicitFileLockDomain(args.coordination_domain, defaultCoordinationDomain);
