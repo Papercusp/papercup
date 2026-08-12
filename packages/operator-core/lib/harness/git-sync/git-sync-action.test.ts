@@ -10,7 +10,8 @@
  *     `git-sync` + `libs-papercusp-submodule` back-off names). Peer-held lock →
  *     skip the tick (back-pressure, partial acquisitions released); an UNKNOWN
  *     extra name → skip with a loud log (never auto-registered); lock INFRA
- *     error → proceed UNLOCKED (fail-open); locks released after the run —
+ *     error → proceed UNLOCKED (fail-open); every fire uses a distinct lock
+ *     owner so cron/manual fires cannot coalesce; locks released after the run —
  *     success, error, and throw.
  *   - P-008 runtime gate (action half): unregistered slug / hive home /
  *     remote-hive view / non-local deployment / vanished or non-git checkout →
@@ -505,15 +506,64 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       coordinationDomain: 'ws-42',
       resource: 'git-sync:papercup',
       mode: 'exclusive',
-      owner: 'system:git-sync',
       ttlSec: 600,
     });
+    expect((tryAcquireResourceMock.mock.calls[0][1] as { owner: string }).owner).toMatch(/^system:git-sync:[0-9a-f-]+$/);
     // ONLY the per-slug name is auto-registered (idempotent ON CONFLICT DO NOTHING);
     // the extras are a human-registered coordination surface
     expect(registeredResources()).toEqual(['git-sync:papercup']);
     expect(txQueries.find((q) => q.text.includes('agent_resource_registry'))?.text)
       .toContain('ON CONFLICT (resource) DO NOTHING');
     expect(releasedResources()).toEqual(['libs-papercusp-submodule', 'git-sync', 'git-sync:papercup']);
+  });
+
+  it('gives overlapping cron/manual fires distinct owners so the second fire backs off', async () => {
+    let firstRunStarted!: () => void;
+    const firstRunStartedPromise = new Promise<void>((resolve) => {
+      firstRunStarted = resolve;
+    });
+    let releaseFirstRun!: () => void;
+    const releaseFirstRunPromise = new Promise<void>((resolve) => {
+      releaseFirstRun = resolve;
+    });
+    let activeOwner: string | null = null;
+    tryAcquireResourceMock.mockImplementation(async (_tx, opts) => {
+      const { resource, owner } = opts as { resource: string; owner: string };
+      if (resource === 'git-sync:papercup') {
+        if (activeOwner === null) activeOwner = owner;
+        else if (activeOwner !== owner) return { ok: false, reason: 'held_exclusive' };
+      }
+      return { ok: true };
+    });
+    tryReleaseResourceMock.mockImplementation(async (_tx, opts) => {
+      const { owner } = opts as { owner: string };
+      if (owner === activeOwner) activeOwner = null;
+      return { ok: true };
+    });
+    runGitSyncMock.mockImplementationOnce(async () => {
+      firstRunStarted();
+      await releaseFirstRunPromise;
+      return syncedOutcome;
+    });
+
+    const first = action(ctx);
+    await firstRunStartedPromise;
+    const second = action(ctx);
+    await second;
+
+    // The second fire sees a foreign exclusive owner and never reaches the git
+    // pipeline. A constant `system:git-sync` owner would incorrectly refresh
+    // the first lease and make this assertion fail.
+    expect(runGitSyncMock).toHaveBeenCalledTimes(1);
+    const owners = tryAcquireResourceMock.mock.calls
+      .filter(([, opts]) => (opts as { resource: string }).resource === 'git-sync:papercup')
+      .map(([, opts]) => (opts as { owner: string }).owner);
+    expect(owners).toHaveLength(2);
+    expect(new Set(owners).size).toBe(2);
+    expect(owners.every((owner) => /^system:git-sync:[0-9a-f-]+$/.test(owner))).toBe(true);
+
+    releaseFirstRun();
+    await first;
   });
 
   // WI-5960: the routine acquires `git-sync:<slug>` under `ctx.workspaceId || '*'`

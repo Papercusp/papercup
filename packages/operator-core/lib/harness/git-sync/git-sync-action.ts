@@ -1413,11 +1413,14 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<GitSyncFireOutcome> 
   // P-006: per-slug resource first (auto-registered), then the routine's extras
   // (papercup: legacy 'git-sync' + 'libs-papercusp-submodule' — the back-off protocol).
   // Locks stay at the WORKFLOW layer — deliberately NOT a checkpointed step, so a
-  // resumed/replayed fire RE-acquires them (a same-owner exclusive acquire refreshes
-  // the TTL) instead of trusting a checkpoint whose lease may have expired mid-stall.
+  // resumed/replayed fire re-acquires them instead of trusting a checkpoint whose
+  // lease may have expired mid-stall. Every fire gets a fresh owner token: if a
+  // prior process still owns the lease, the replay must wait/skip rather than
+  // coalescing with that potentially concurrent process.
   const resources = [...new Set([gitSyncResourceName(slug), ...extraLockResources])];
   const acquired: string[] = [];
-  const lock = await acquireLocks(cd, slug, resources, acquired);
+  const lockOwner = newGitSyncLockOwner();
+  const lock = await acquireLocks(cd, slug, resources, acquired, lockOwner);
   if (lock.state === 'held') {
     if (lock.blockedReason === 'unknown_resource') {
       console.warn(
@@ -1471,7 +1474,7 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<GitSyncFireOutcome> 
       step: runCheckpointedStep,
     });
   } finally {
-    if (lock.state === 'acquired') await releaseAll(cd, acquired);
+    if (lock.state === 'acquired') await releaseAll(cd, lockOwner, acquired);
   }
 
   // WI-3072: stash-detection recurrence guard — read-only (no lock needed), runs
