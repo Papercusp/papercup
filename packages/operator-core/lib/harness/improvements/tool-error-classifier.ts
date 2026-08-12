@@ -279,3 +279,72 @@ export function toolErrorSignalKey(
   const fp = FINGERPRINTED_TOOL_ERROR_CLASSES.has(klass) && fingerprint ? fingerprint : null;
   return fp ? `${toolName}:${klass}:${fp}` : `${toolName}:${klass}`;
 }
+
+/**
+ * Agent-side report used by the probation intake. The invocation ledger can
+ * independently corroborate the stable `signalKey`; the remaining dimensions
+ * sharpen the per-reporter fingerprint so unlike client/schema generations do
+ * not look like independent reproductions of one defect.
+ */
+export interface SuspectedToolFailure {
+  toolName: string;
+  errorCode?: string;
+  status?: string;
+  message: string;
+  schemaRevision?: string;
+  fieldPath?: string;
+  runtimeVersion?: string;
+  reproduced?: boolean;
+  clearServerMismatch?: boolean;
+  hardInternal?: boolean;
+}
+
+export interface NormalizedToolFailure {
+  class: ToolErrorClass;
+  /** Exact key emitted by the repeated-tool-error watchdog. */
+  watchdogKey: string;
+  /** Full client/schema-aware correlation identity retained in the payload. */
+  correlationFingerprint: string;
+  messageFingerprint: string | null;
+  direct: boolean;
+}
+
+function correlationSegment(value: string | null | undefined, fallback: string): string {
+  const normalized = (value ?? '')
+    .toLowerCase()
+    .replace(/[^a-z0-9._:-]+/g, '-')
+    .replace(/^-+|-+$/g, '')
+    .slice(0, 80);
+  return normalized || fallback;
+}
+
+/**
+ * Normalize one agent-reported tool failure for probation/corroboration.
+ *
+ * `watchdogKey` deliberately uses the same tool/class/message-shape identity as
+ * the invocation-ledger collector. `correlationFingerprint` additionally pins
+ * error code, schema revision, field path, and runtime version for the
+ * independent-agent leg. A caller must explicitly attest reproduction or a
+ * clear server/internal mismatch to bypass probation; an unknown one-off never
+ * becomes claimable merely because the classifier's safe fallback is structural.
+ */
+export function normalizeSuspectedToolFailure(input: SuspectedToolFailure): NormalizedToolFailure {
+  const klass = classifyToolError(input.errorCode, input.status, input.message);
+  const messageFingerprint = toolErrorFingerprint(input.message);
+  const signalKey = toolErrorSignalKey(input.toolName.trim(), klass, messageFingerprint);
+  const correlationFingerprint = [
+    correlationSegment(input.toolName, 'unknown-tool'),
+    correlationSegment(input.errorCode, klass),
+    correlationSegment(input.schemaRevision, 'schema-unknown'),
+    correlationSegment(input.fieldPath, 'field-unknown'),
+    correlationSegment(input.runtimeVersion, 'runtime-unknown'),
+    correlationSegment(messageFingerprint, 'message-unknown'),
+  ].join('|');
+  return {
+    class: klass,
+    watchdogKey: `repeated-tool-error:${signalKey}`,
+    correlationFingerprint,
+    messageFingerprint,
+    direct: input.reproduced === true || input.clearServerMismatch === true || input.hardInternal === true,
+  };
+}

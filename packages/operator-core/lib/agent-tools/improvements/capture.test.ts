@@ -82,6 +82,55 @@ describe('improvements:capture tool envelope', () => {
     }
   });
 
+  it('routes a one-off tool failure to correlated non-claimable probation', async () => {
+    mockIdentity.mockReturnValue(identity('static-client', 'su-reporter'));
+    await callTool({
+      title: 'coord:send rejected a valid body',
+      kind: 'bug',
+      toolFailure: {
+        toolName: 'coord:send',
+        errorCode: 'invalid_args',
+        status: 'error',
+        message: 'invalid_args: body must be an array',
+        schemaRevision: '42',
+        fieldPath: 'body',
+        runtimeVersion: 'codex-1.2.3',
+      },
+    });
+    expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'change',
+      lane: 'observation',
+      watchdogKey: expect.stringMatching(/^repeated-tool-error:coord:send:caller:/),
+      payloadExtra: {
+        toolFailureProbation: expect.objectContaining({
+          state: 'probation',
+          intendedKind: 'change',
+          reporters: ['su-reporter'],
+          correlationFingerprint: expect.stringContaining('coord:send|invalid_args|42|body|codex-1.2.3'),
+        }),
+      },
+    }));
+  });
+
+  it('files a reproduced server failure directly as claimable bug work', async () => {
+    await callTool({
+      title: 'terminal writer rejects a valid state',
+      kind: 'bug',
+      toolFailure: {
+        toolName: 'work_items:complete',
+        message: 'terminal writer rejected a valid state',
+        reproduced: true,
+      },
+    });
+    expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({
+      kind: 'bug',
+      lane: undefined,
+      payloadExtra: {
+        toolFailureProbation: expect.objectContaining({ state: 'promoted', directEvidence: true }),
+      },
+    }));
+  });
+
   it('passes every arg + the resolved ownerId through to the core unchanged', async () => {
     mockIdentity.mockReturnValue(identity('static-client', 'su-owner'));
     await callTool({

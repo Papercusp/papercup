@@ -142,6 +142,109 @@ describe('captureImprovement — observation lane (turn-end-reflection-observati
   });
 });
 
+describe('captureImprovement — correlated tool-failure probation (P-013)', () => {
+  const key = 'repeated-tool-error:coord:send:caller:invalid-args-body-must-be';
+  const probation = (reporter: string) => ({
+    state: 'probation' as const,
+    class: 'caller',
+    watchdogKey: key,
+    correlationFingerprint: 'coord:send|invalid_args|42|body|codex-1.2|invalid-args-body-must-be',
+    intendedKind: 'change' as const,
+    reporters: [reporter],
+  });
+
+  it('keeps the first report in the observation lane and preserves its correlation dimensions', async () => {
+    const d = deps();
+    await captureImprovement(
+      {
+        title: 'coord:send rejected a valid body',
+        kind: 'change',
+        lane: 'observation',
+        watchdogKey: key,
+        createdBy: 'su-a',
+        payloadExtra: { toolFailureProbation: probation('su-a') },
+      },
+      d,
+    );
+    expect(d.created[0]).toMatchObject({ kind: 'change', severity: 'nit' });
+    expect(d.created[0].payload).toMatchObject({
+      lane: 'observation',
+      watchdogKey: key,
+      toolFailureProbation: { state: 'probation', reporters: ['su-a'] },
+    });
+  });
+
+  it('promotes the same row in place when a second independent agent reports it', async () => {
+    const prior = existing({
+      id: 'EI-PROBATION',
+      title: 'coord:send rejected a valid body',
+      kind: 'change',
+      severity: 'nit',
+      payload: { lane: 'observation', watchdogKey: key, toolFailureProbation: probation('su-a') },
+    });
+    const mergedPatches: Record<string, unknown>[] = [];
+    const tags: string[] = [];
+    const untags: string[] = [];
+    const d: CaptureDeps & { created: CreateIssueInput[] } = {
+      ...deps(),
+      findIssuesByWatchdogKeys: async () => [prior],
+      updateIssuePatch: async (_id, patch) => existing({ ...prior, ...patch }),
+      mergeIssuePayload: async (_id, patch) => {
+        mergedPatches.push(patch);
+        return existing({ ...prior, kind: 'change', severity: 'minor', payload: { ...(prior.payload as object), ...patch } });
+      },
+      tagIssue: async (_id, topic) => { tags.push(topic); },
+      untagIssue: async (_id, topic) => { untags.push(topic); },
+    };
+    const res = await captureImprovement(
+      {
+        title: 'coord:send rejected a valid body',
+        kind: 'change',
+        lane: 'observation',
+        watchdogKey: key,
+        createdBy: 'su-b',
+        payloadExtra: { toolFailureProbation: probation('su-b') },
+      },
+      d,
+    );
+    expect(res).toMatchObject({ created: false, reason: 'promoted', issue: { id: 'EI-PROBATION' } });
+    expect(d.created).toHaveLength(0);
+    expect(mergedPatches[0]).toMatchObject({
+      lane: null,
+      toolFailureProbation: { state: 'promoted', reporters: ['su-a', 'su-b'] },
+    });
+    expect(tags).toEqual([IMPROVEMENT_TOPIC]);
+    expect(untags).toEqual([OBSERVATION_TOPIC]);
+  });
+
+  it('lets the invocation-ledger watchdog promote an exact-key probation row without minting a duplicate', async () => {
+    const prior = existing({
+      id: 'EI-PROBATION',
+      title: 'one-off report',
+      payload: { lane: 'observation', watchdogKey: key, toolFailureProbation: probation('su-a') },
+    });
+    const d: CaptureDeps & { created: CreateIssueInput[] } = {
+      ...deps(),
+      findIssuesByWatchdogKeys: async () => [prior],
+      updateIssuePatch: async (_id, patch) => existing({ ...prior, ...patch }),
+      mergeIssuePayload: async (_id, patch) => existing({ ...prior, kind: 'change', payload: { ...(prior.payload as object), ...patch } }),
+      tagIssue: async () => {},
+      untagIssue: async () => {},
+    };
+    const res = await captureImprovement(
+      {
+        title: 'Tool coord:send repeatedly rejecting caller input',
+        kind: 'change',
+        watchdogKey: key,
+        createdBy: 'system:improvement-watchdog',
+      },
+      d,
+    );
+    expect(res).toMatchObject({ created: false, reason: 'promoted', issue: { id: 'EI-PROBATION' } });
+    expect(d.created).toHaveLength(0);
+  });
+});
+
 describe('captureImprovement — auto-ratify-on-first-scorecard hook (WI-5415)', () => {
   it('calls autoRatifyRubric with the rubricRef + grader when a scorecard lands against it', async () => {
     const calls: Array<[string, string]> = [];

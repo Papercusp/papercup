@@ -1936,6 +1936,23 @@ describe('partitionSignalsByKnownKeys — key pre-filter (audit P-004/P-005)', (
     expect(out.staleResolved).toEqual([]);
   });
 
+  it('keeps an OPEN tool-failure probation observation fresh so the watchdog promotes it', () => {
+    const s = sig({ source: 'repeated-tool-error', key: 'coord:send:caller:invalid-args-body' });
+    const out = partitionSignalsByKnownKeys(
+      [s],
+      [{
+        watchdogKey: 'repeated-tool-error:coord:send:caller:invalid-args-body',
+        state: 'open',
+        updatedAt: '2026-08-11T00:00:00Z',
+        probation: true,
+      }],
+      ['repeated-tool-error:coord:send:caller:invalid-args-body'],
+    );
+    expect(out.fresh).toEqual([s]);
+    expect(out.knownOpen).toEqual([]);
+    expect(out.standing).toEqual([]);
+  });
+
   it('drops a resolved-dup signal whose evidence pre-dates the resolution (D-002 — not a regression)', () => {
     const s = sig({ key: 'lib/a.test.ts', latestAt: '2026-06-08T00:00:00.000Z' });
     const out = partitionSignalsByKnownKeys([s], [dup('red-test:lib/a.test.ts', 'resolved', '2026-06-09T00:00:00.000Z')]);

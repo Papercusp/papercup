@@ -27,6 +27,10 @@ import { SU_IDEATION_LENSES, type SuIdeationLens } from '../../scout/types';
 import { resolveWorkItemRef } from '../../work-items';
 import { clampText, hardText, softText, LIMITS } from '../limits';
 import { coerceCaptureArgs } from './capture-coerce';
+import {
+  normalizeSuspectedToolFailure,
+  type SuspectedToolFailure,
+} from '../../harness/improvements/tool-error-classifier';
 
 const observationRatingsSchema = z.record(
   z.string().min(1),
@@ -275,6 +279,24 @@ export default defineTool({
           .optional()
           .describe(
             "EI-15448, lane:'observation' ONLY: a STABLE identity for a RECURRING condition (e.g. an OverwatchBrief anomaly line's `[conditionKey: overwatch:escalation-aging]` — copy it verbatim). A still-OPEN prior observation carrying the SAME conditionKey is updated in place (repeatCount bumped, title/body refreshed to this call's latest reading) instead of minting a fresh row every call — fixes the wake-over-wake status-note flood (7k+ open items from one unresolved condition). Omit for a genuinely novel/one-off reading, which always re-files as before. A rubric-graded scorecard (observation.rubricRef) DEFAULTS to `scorecard:<rubricRef>:<sourceHive>` when you omit this (EI-19325151590626958) — pass it explicitly to override. Ignored outside lane:'observation'.",
+          ),
+        toolFailure: z
+          .object({
+            toolName: z.string().min(1).max(160),
+            errorCode: z.string().max(160).optional(),
+            status: z.string().max(80).optional(),
+            message: z.string().min(1).max(4000),
+            schemaRevision: z.string().max(160).optional(),
+            fieldPath: z.string().max(300).optional(),
+            runtimeVersion: z.string().max(160).optional(),
+            reproduced: z.boolean().optional(),
+            clearServerMismatch: z.boolean().optional(),
+            hardInternal: z.boolean().optional(),
+          })
+          .strict()
+          .optional()
+          .describe(
+            'Suspected tool-call failure. A one-off is captured immediately in non-claimable probation and correlated by tool/error/schema/field/runtime; a second independent reporter or the invocation watchdog promotes the SAME row. Set reproduced, clearServerMismatch, or hardInternal only with direct evidence to file claimable work immediately.',
           ),
         // EI-12176 compatibility aliases. Older generated guidance advertised these at
         // top level. Declaring + normalising them prevents tools:invoke's permissive
@@ -562,10 +584,37 @@ export default defineTool({
     // was trimmed rather than losing the finding to a validation bounce.
     const foundDuring = clampText(args.foundDuring, LIMITS.LABEL);
     const foundDuringTruncated = typeof args.foundDuring === 'string' && args.foundDuring.length > LIMITS.LABEL;
+    const normalizedToolFailure = args.toolFailure
+      ? normalizeSuspectedToolFailure(args.toolFailure as SuspectedToolFailure)
+      : undefined;
+    const toolFailureKind: 'bug' | 'change' | undefined = normalizedToolFailure
+      ? args.toolFailure?.clearServerMismatch || args.toolFailure?.hardInternal
+        ? 'bug'
+        : normalizedToolFailure.class === 'caller' || normalizedToolFailure.class === 'rate-limit'
+          ? 'change'
+          : 'bug'
+      : undefined;
+    const effectiveKind = toolFailureKind ?? args.kind ?? 'change';
+    const effectiveLane = normalizedToolFailure && !normalizedToolFailure.direct ? 'observation' : args.lane;
+    const toolFailureProbation = normalizedToolFailure
+      ? {
+          state: normalizedToolFailure.direct ? ('promoted' as const) : ('probation' as const),
+          class: normalizedToolFailure.class,
+          watchdogKey: normalizedToolFailure.watchdogKey,
+          correlationFingerprint: normalizedToolFailure.correlationFingerprint,
+          messageFingerprint: normalizedToolFailure.messageFingerprint,
+          intendedKind: toolFailureKind,
+          reporters: [id.ownerId],
+          firstSeenAt: new Date().toISOString(),
+          lastSeenAt: new Date().toISOString(),
+          report: args.toolFailure,
+          ...(normalizedToolFailure.direct ? { directEvidence: true } : {}),
+        }
+      : undefined;
     try {
       const result = await captureImprovement({
         title: args.title,
-        kind: args.kind ?? 'change',
+        kind: effectiveKind,
         body: args.body,
         severity: args.severity as IssueSeverity | undefined,
         subTopic: args.subTopic,
@@ -575,14 +624,20 @@ export default defineTool({
         force: args.force,
         checkDuplicatesOnly: args.checkDuplicatesOnly,
         origin: args.origin,
-        lane: args.lane,
+        lane: effectiveLane,
         watchdogKey:
-          args.lane === 'observation'
+          normalizedToolFailure
+            ? normalizedToolFailure.watchdogKey
+            : effectiveLane === 'observation'
             ? (args.conditionKey ?? defaultScorecardConditionKey(observation))
             : undefined,
         payloadExtra:
-          observation || hasIdeation
-            ? { ...(observation ? { observation } : {}), ...(hasIdeation ? { ideation } : {}) }
+          observation || hasIdeation || toolFailureProbation
+            ? {
+                ...(observation ? { observation } : {}),
+                ...(hasIdeation ? { ideation } : {}),
+                ...(toolFailureProbation ? { toolFailureProbation } : {}),
+              }
             : undefined,
         createdBy: id.ownerId,
         // WI-5950: resolve the 'self' literal here (same seam work_items:create uses) so the
@@ -674,7 +729,7 @@ export default defineTool({
       const selfId = captured.issue?.id;
       const priorArt = selfId ? priorArtRaw?.filter((p) => p.ref !== `wi:${selfId}` && p.ref !== selfId) : priorArtRaw;
       const notified =
-        args.notifyAgents?.length && captured.created && captured.issue?.id && args.lane !== 'observation'
+        args.notifyAgents?.length && captured.created && captured.issue?.id && effectiveLane !== 'observation'
           ? await notifyAgents(id, {
               addressees: args.notifyAgents,
               objectRef: issueRef(captured.issue.id),

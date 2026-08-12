@@ -31,6 +31,8 @@ import {
   findIssuesByWatchdogKeys,
   updateIssue,
   mergeIssuePayload,
+  tagIssue,
+  untagIssue,
   type EngineerIssue,
   type IssueSeverity,
   type IssueSource,
@@ -254,7 +256,7 @@ export interface DedupCoverage {
 export interface CaptureImprovementResult {
   ok: true;
   created: boolean;
-  reason?: 'likely-duplicate' | 'check-only' | 'stale-evidence' | 'coalesced';
+  reason?: 'likely-duplicate' | 'check-only' | 'stale-evidence' | 'coalesced' | 'promoted';
   /** Native engineer_issues storage kind. Always agrees with issue.kind. */
   kind?: 'bug' | 'change';
   /** Caller-facing capture classification; `feature` is stored as kind=`change`. */
@@ -305,9 +307,18 @@ export interface CaptureDeps {
   findIssuesByWatchdogKeys?: (keys: string[]) => Promise<EngineerIssue[]>;
   updateIssuePatch?: (
     id: string,
-    patch: { title?: string; body?: string; silent?: boolean; confirmShrink?: boolean },
+    patch: {
+      title?: string;
+      body?: string;
+      severity?: IssueSeverity;
+      kind?: 'bug' | 'change';
+      silent?: boolean;
+      confirmShrink?: boolean;
+    },
   ) => Promise<EngineerIssue | null>;
   mergeIssuePayload?: (id: string, patch: Record<string, unknown>) => Promise<EngineerIssue | null>;
+  tagIssue?: (id: string, topic: string, by?: string) => Promise<void>;
+  untagIssue?: (id: string, topic: string) => Promise<void>;
 }
 
 // WI-4308: use the dedup-widened search (also checks the legacy DEFAULT_COORD_WORKSPACE
@@ -322,6 +333,70 @@ const defaultDeps: CaptureDeps = {
 /** The native column kind for a capture: feature is a payload refinement of change. */
 export function storageKindOf(kind: ImprovementKind): 'bug' | 'change' {
   return kind === 'bug' ? 'bug' : 'change';
+}
+
+interface ToolFailureProbationPayload {
+  state?: 'probation' | 'promoted';
+  reporters?: string[];
+  correlationFingerprint?: string;
+  intendedKind?: 'bug' | 'change';
+  [key: string]: unknown;
+}
+
+function toolFailureProbationOf(payload: Record<string, unknown> | null | undefined): ToolFailureProbationPayload | null {
+  const candidate = payload?.toolFailureProbation;
+  return candidate && typeof candidate === 'object' && !Array.isArray(candidate)
+    ? (candidate as ToolFailureProbationPayload)
+    : null;
+}
+
+/** Promote one exact-key probation row in place, preserving its history/id. */
+async function promoteToolFailureProbation(
+  prior: EngineerIssue,
+  input: CaptureImprovementInput,
+  deps: CaptureDeps,
+): Promise<EngineerIssue | null> {
+  const priorPayload = (prior.payload as Record<string, unknown> | null) ?? {};
+  const priorProbation = toolFailureProbationOf(priorPayload) ?? {};
+  const incomingProbation = toolFailureProbationOf(input.payloadExtra ?? {}) ?? {};
+  const reporters = [...new Set([
+    ...(Array.isArray(priorProbation.reporters) ? priorProbation.reporters : []),
+    ...(Array.isArray(incomingProbation.reporters) ? incomingProbation.reporters : []),
+    ...(input.createdBy ? [input.createdBy] : []),
+  ].filter(Boolean))];
+  const kind = incomingProbation.intendedKind ?? storageKindOf(input.kind);
+
+  // Change the visible content first while the row is still safely parked. The
+  // lane flip is last: if either write fails, a retry cannot expose a half-
+  // promoted observation to the scheduler.
+  const updatedRaw = await (deps.updateIssuePatch ?? updateIssue)(prior.id, {
+    title: input.title,
+    body: input.body,
+    severity: input.severity ?? (kind === 'bug' ? 'major' : 'minor'),
+    kind,
+    silent: true,
+    confirmShrink: true,
+  }).catch(() => null);
+  const updated = updatedRaw && 'id' in updatedRaw ? updatedRaw : null;
+  if (!updated) return null;
+  const promotedAt = new Date().toISOString();
+  const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(prior.id, {
+    lane: null,
+    toolFailureProbation: {
+      ...priorProbation,
+      ...incomingProbation,
+      state: 'promoted',
+      reporters,
+      intendedKind: kind,
+      promotedAt,
+      promotedBy: input.createdBy ?? 'system:improvement-watchdog',
+    },
+    ideaLifecycle: initializeIdeaLifecycle(),
+  }).catch(() => null);
+  if (!merged) return null;
+  await (deps.tagIssue ?? tagIssue)(prior.id, IMPROVEMENT_TOPIC, input.createdBy).catch(() => {});
+  await (deps.untagIssue ?? untagIssue)(prior.id, OBSERVATION_TOPIC).catch(() => {});
+  return merged;
 }
 
 export async function captureImprovement(
@@ -371,6 +446,35 @@ export async function captureImprovement(
     validateScorecardRatingValues(observationForGate, rubric);
   }
   const origin = input.origin ?? DEFAULT_SIGNAL_ORIGIN;
+
+  // P-013: the invocation-ledger watchdog (or a caller with deterministic
+  // reproduction evidence) corroborates an exact-key probation observation.
+  // Promote THAT row in place before fuzzy dedup can decline it against itself.
+  if (!isObservation && input.watchdogKey) {
+    const exact = await (deps.findIssuesByWatchdogKeys ?? findIssuesByWatchdogKeys)([input.watchdogKey]).catch(
+      () => [] as EngineerIssue[],
+    );
+    const probation = exact.find((i) => {
+      const payload = (i.payload as Record<string, unknown> | null) ?? {};
+      return i.state === 'open' && payload.lane === 'observation' && toolFailureProbationOf(payload)?.state === 'probation';
+    });
+    if (probation) {
+      const promoted = await promoteToolFailureProbation(probation, input, deps);
+      if (promoted) {
+        return {
+          ok: true,
+          created: false,
+          reason: 'promoted',
+          kind: promoted.kind as 'bug' | 'change',
+          improvementKind: input.kind,
+          issue: promoted,
+          topics: [IMPROVEMENT_TOPIC, ...(input.subTopic ? [input.subTopic] : [])],
+          possibleDuplicates: [],
+          dedupCoverage: { lexical: 'skipped', semantic: 'skipped', degraded: false },
+        };
+      }
+    }
+  }
   // Observations skip search-first dedup entirely (D-005): recurrence IS the signal
   // Scout clusters downstream, and the reflecting agent is told not to dedup — so a
   // recurring observation re-files rather than being declined as a duplicate.
@@ -567,6 +671,29 @@ export async function captureImprovement(
     );
     if (prior) {
       const priorPayload = (prior.payload as Record<string, unknown>) ?? {};
+      const priorProbation = toolFailureProbationOf(priorPayload);
+      const incomingProbation = toolFailureProbationOf(input.payloadExtra ?? {});
+      const priorReporters = Array.isArray(priorProbation?.reporters) ? priorProbation.reporters : [];
+      const incomingReporters = Array.isArray(incomingProbation?.reporters) ? incomingProbation.reporters : [];
+      const reporters = [...new Set([...priorReporters, ...incomingReporters, ...(input.createdBy ? [input.createdBy] : [])])];
+      const independentReporter = reporters.some((r) => !priorReporters.includes(r));
+      if (priorProbation?.state === 'probation' && incomingProbation && priorReporters.length > 0 && independentReporter) {
+        const promoted = await promoteToolFailureProbation(prior, input, deps);
+        if (promoted) {
+          return {
+            ok: true,
+            created: false,
+            reason: 'promoted',
+            kind: promoted.kind as 'bug' | 'change',
+            improvementKind: input.kind,
+            issue: promoted,
+            topics: [IMPROVEMENT_TOPIC, ...(input.subTopic ? [input.subTopic] : [])],
+            possibleDuplicates,
+            dedupCoverage,
+            ...(alreadyDecided.length ? { alreadyDecided } : {}),
+          };
+        }
+      }
       const repeatCount = (typeof priorPayload.repeatCount === 'number' ? priorPayload.repeatCount : 1) + 1;
       const mergePatch: Record<string, unknown> = {
         watchdogKey: input.watchdogKey,
@@ -574,6 +701,14 @@ export async function captureImprovement(
         lastSeenAt: new Date().toISOString(),
       };
       if (input.payloadExtra) Object.assign(mergePatch, input.payloadExtra);
+      if (priorProbation && incomingProbation) {
+        mergePatch.toolFailureProbation = {
+          ...priorProbation,
+          ...incomingProbation,
+          reporters,
+          lastSeenAt: new Date().toISOString(),
+        };
+      }
       if (input.filedByRole) mergePatch.filedByRole = input.filedByRole;
       if (sourceRole !== 'human') mergePatch.sourceRole = sourceRole;
       const merged = await (deps.mergeIssuePayload ?? mergeIssuePayload)(prior.id, mergePatch);

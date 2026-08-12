@@ -470,6 +470,9 @@ export interface WatchdogKeyDup {
   /** The item's signal_origin (frontier P-002) — dup matching is origin-scoped.
    *  Absent = organic (legacy rows / pre-column readers). */
   signalOrigin?: string;
+  /** Observation-lane tool-failure probation rows are corroboration candidates,
+   * not already-filed work; the collector must be allowed to promote them. */
+  probation?: boolean;
 }
 
 /** The pre-filter's split of collected signals (P-004 / D-001 + P-005 / D-002). */
@@ -541,8 +544,13 @@ export function partitionSignalsByKnownKeys(
     const matches = (byKey.get(watchdogKeyOf(s)) ?? []).filter(
       (m) => effectiveOrigin(m.signalOrigin) === effectiveOrigin(s.origin),
     );
-    if (matches.some((m) => m.state === 'open')) {
+    const openMatches = matches.filter((m) => m.state === 'open');
+    if (openMatches.some((m) => !m.probation)) {
       out.knownOpen.push(s);
+      continue;
+    }
+    if (openMatches.some((m) => m.probation)) {
+      out.fresh.push(s);
       continue;
     }
     // DELTA GATE (P-003 / D-001): this exact key already fired on the previous ran tick, so
@@ -592,6 +600,9 @@ export async function readWatchdogKeyDups(keys: string[]): Promise<WatchdogKeyDu
     state: i.state,
     updatedAt: i.updatedAt,
     signalOrigin: i.signalOrigin,
+    probation:
+      (i.payload as Record<string, unknown> | null)?.lane === 'observation' &&
+      ((i.payload as Record<string, unknown> | null)?.toolFailureProbation as { state?: unknown } | undefined)?.state === 'probation',
   }));
 }
 

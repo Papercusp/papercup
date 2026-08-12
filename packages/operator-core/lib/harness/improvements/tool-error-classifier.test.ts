@@ -29,6 +29,7 @@ import {
   toolErrorFingerprintSqlCase,
   TOOL_ERROR_RULES,
   FINGERPRINTED_TOOL_ERROR_CLASSES,
+  normalizeSuspectedToolFailure,
   type ToolErrorClass,
 } from './tool-error-classifier';
 import { TOOL_ERROR_CORPUS } from './tool-error-corpus.fixture';
@@ -132,6 +133,45 @@ describe('toolErrorSignalKey (P-012) — fingerprint by class', () => {
     expect(toolErrorSignalKey('docs:get', 'structural', null)).toBe('docs:get:structural');
     expect(toolErrorSignalKey('coord:thread', 'caller', undefined)).toBe('coord:thread:caller');
   });
+});
+
+describe('normalizeSuspectedToolFailure — correlated probation identity (P-013)', () => {
+  it('shares the watchdog key while retaining schema/field/runtime dimensions in the reporter fingerprint', () => {
+    const a = normalizeSuspectedToolFailure({
+      toolName: 'coord:send',
+      errorCode: 'invalid_args',
+      status: 'error',
+      message: 'invalid_args: body must be an array',
+      schemaRevision: '42',
+      fieldPath: 'body',
+      runtimeVersion: 'codex-1.2.3',
+    });
+    const b = normalizeSuspectedToolFailure({
+      toolName: 'coord:send',
+      errorCode: 'invalid_args',
+      status: 'error',
+      message: 'invalid_args: body must be an array',
+      schemaRevision: '43',
+      fieldPath: 'body',
+      runtimeVersion: 'codex-1.2.4',
+    });
+    expect(a.watchdogKey).toBe(b.watchdogKey);
+    expect(a.watchdogKey).toMatch(/^repeated-tool-error:coord:send:caller:/);
+    expect(a.correlationFingerprint).not.toBe(b.correlationFingerprint);
+    expect(a.direct).toBe(false);
+  });
+
+  it.each(['reproduced', 'clearServerMismatch', 'hardInternal'] as const)(
+    'bypasses probation only on explicit %s evidence',
+    (field) => {
+      const normalized = normalizeSuspectedToolFailure({
+        toolName: 'work_items:complete',
+        message: 'terminal writer rejected a valid state',
+        [field]: true,
+      });
+      expect(normalized.direct).toBe(true);
+    },
+  );
 });
 
 describe('SQL generators are driven by the table (structural check; real-PG parity in the integration test)', () => {
