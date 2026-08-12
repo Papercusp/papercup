@@ -66,8 +66,8 @@ vi.mock('../workspace-registry', async () => {
 const { compileFilter } = await import('./get-next');
 const { validateClaimSpec } = await import('./claim-spec');
 const { matchesClaimSpecFilter, claimSpecSubjectFromWorkItem } = await import('./claim-spec-match');
-const { featureRowToWorkItem, FEATURE_COLS, issueToWorkItem, ISSUE_COLS } = await import('../work-items');
-const { toIssue } = await import('../issues-engineer');
+const { featureRowToWorkItem, FEATURE_COLS, issueToWorkItem } = await import('../work-items');
+const { toIssue, ISSUE_COLS } = await import('../issues-engineer');
 
 const H = 'papercup';
 const ISSUE_H = 'papercup-issue-parity';
