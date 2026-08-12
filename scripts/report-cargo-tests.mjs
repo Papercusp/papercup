@@ -39,6 +39,7 @@ import { existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
 import { resolveScriptPgUrl } from './lib/pg-url.mjs';
+import { classifyCargoRun, formatCargoResultLine } from './lib/cargo-result.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..');
@@ -209,6 +210,7 @@ async function main() {
   const results = parseTestResultLines(combined);
   const failureDetails = parseFailureDetails(combined);
   const source = process.env.CI ? 'ci' : 'local';
+  const cargoResult = classifyCargoRun({ code, output: combined, resultCount: results.length });
 
   const rows = results.map((r) => ({
     filePath: `${crateDir}::${r.name}`,
@@ -225,7 +227,7 @@ async function main() {
   const anyFail = results.some((r) => r.outcome === 'FAILED');
   rows.push({
     filePath: `${crateDir} (cargo aggregate)`,
-    status: results.length === 0 ? 'error' : anyFail ? 'fail' : 'pass',
+    status: cargoResult.status === 'killed' ? 'error' : results.length === 0 ? 'error' : anyFail ? 'fail' : 'pass',
     durationMs: finishedAt.getTime() - startedAt.getTime(),
     startedAt,
     finishedAt,
@@ -234,8 +236,15 @@ async function main() {
   });
 
   if (results.length === 0) {
-    console.error(`[report-cargo-tests] WARNING: parsed 0 test result lines from cargo test output (exit code ${code}) — recording a single error aggregate row.`);
+    const suffix = cargoResult.termination
+      ? ` — cargo process was killed by ${cargoResult.termination.signalName} (signal ${cargoResult.termination.signal})`
+      : '';
+    console.error(`[report-cargo-tests] WARNING: parsed 0 test result lines from cargo test output (exit code ${code})${suffix} — recording a single error aggregate row.`);
   }
+
+  // Emit this after the child output so the discriminator is retained in the
+  // fixed-size tail used by affected-tests and background gate notifications.
+  console.log(formatCargoResultLine(cargoResult));
 
   const sql = await tryGetPg();
   const inserted = await insertRows(sql, rows);

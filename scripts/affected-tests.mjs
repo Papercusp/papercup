@@ -41,6 +41,7 @@ import { emptySuiteGuardArgs } from './lib/empty-suite-guard.mjs';
 import { applyWorkerCapEnv } from './lib/worker-cap.mjs';
 import { resolveBatchTimeoutMs, isWatchdogTimeout } from './lib/batch-watchdog.mjs';
 import { classifyTaskExit, isGatingFailure } from './lib/task-exit-class.mjs';
+import { detectCargoTermination } from './lib/cargo-result.mjs';
 // EI-10542: this runner interleaves its own header/status lines (fd 1/2) with
 // child suite output written synchronously via `stdio: 'inherit'`. On a non-TTY
 // fd (the gate captures to a pipe/file) `console.*` is async-buffered and flushes
@@ -1743,12 +1744,26 @@ try {
     logLine(cargoRun.stderr ?? '');
   }
   if (cargoRun.status !== 0) {
-    errSync(`>>> cargo test suite exited with code ${cargoRun.status}`);
+    const cargoOutput = `${cargoRun.stdout ?? ''}${cargoRun.stderr ?? ''}`;
+    const termination = detectCargoTermination(cargoOutput);
+    if (termination) {
+      errSync(
+        `>>> cargo test suite was killed by ${termination.signalName} (signal ${termination.signal}); ` +
+          'this is an external process termination, not a compiler diagnostic — re-run before source triage.',
+      );
+    } else {
+      errSync(`>>> cargo test suite exited with code ${cargoRun.status}`);
+    }
     if (!quarantined.has('papercusp-desktop')) {
       failed++;
       failedTaskNames.push('papercusp-desktop :: cargo test');
       // Not a vitest task — the vitest FAIL-row parser can never attribute it to files.
-      unattributedTasks.push({ task: 'papercusp-desktop :: cargo test', reason: 'non-vitest' });
+      const cargoFailure = {
+        task: 'papercusp-desktop :: cargo test',
+        reason: 'non-vitest',
+      };
+      if (termination) cargoFailure.reason = `killed-by-signal:${termination.signalName}`;
+      unattributedTasks.push(cargoFailure);
     }
   }
 } catch (err) {
