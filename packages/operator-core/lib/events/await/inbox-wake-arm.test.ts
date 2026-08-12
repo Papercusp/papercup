@@ -23,12 +23,24 @@ vi.mock('./engine', () => ({ startAwaitSweeper: vi.fn() }));
 // mock: queries naming `event_awaits` return the "already armed?" rows, `adv_sessions`
 // the "live tracked session?" rows. Tests set h.state before calling.
 const h = vi.hoisted(() => {
-  const state = { armed: [] as unknown[], live: [] as unknown[], fail: false };
+  const state = {
+    armed: [] as unknown[],
+    live: [] as unknown[],
+    // When set, this is the result for the fixed "most-recent row" query.
+    // `live` remains the legacy any-live result so the regression fails against
+    // the pre-fix implementation.
+    latestLive: undefined as unknown[] | undefined,
+    fail: false,
+  };
   const sql = (strings: TemplateStringsArray) => {
     if (state.fail) return Promise.reject(new Error('pg down'));
     const text = strings.join(' ');
     if (text.includes('event_awaits')) return Promise.resolve(state.armed);
-    if (text.includes('adv_sessions')) return Promise.resolve(state.live);
+    if (text.includes('adv_sessions')) {
+      return Promise.resolve(
+        text.includes('ORDER BY started_at DESC') ? (state.latestLive ?? state.live) : state.live,
+      );
+    }
     return Promise.resolve([] as unknown[]);
   };
   return { state, sql };
@@ -149,6 +161,7 @@ describe('ensureInboxWakeArmedForActiveSession (self-heal)', () => {
   beforeEach(() => {
     h.state.armed = [];
     h.state.live = [];
+    h.state.latestLive = undefined;
     h.state.fail = false;
   });
 
@@ -175,6 +188,17 @@ describe('ensureInboxWakeArmedForActiveSession (self-heal)', () => {
     h.state.armed = [];
     h.state.live = []; // no live adv_sessions row
     const armed = await ensureInboxWakeArmedForActiveSession({ ownerId: 'su-heal-3' });
+    expect(armed).toBe(false);
+    expect(upsertInboxWakeAwait).not.toHaveBeenCalled();
+  });
+
+  it('does not resurrect an ended owner when an older incarnation is still marked live', async () => {
+    // The owner has a stale pre-resume/crash row with no ended_at, but its
+    // latest incarnation ended.  The self-heal must inspect only that latest
+    // row, otherwise a later tool report recreates the cancelled wake.
+    h.state.live = [{ one: 1 }];
+    h.state.latestLive = [];
+    const armed = await ensureInboxWakeArmedForActiveSession({ ownerId: 'su-heal-ended-latest' });
     expect(armed).toBe(false);
     expect(upsertInboxWakeAwait).not.toHaveBeenCalled();
   });

@@ -148,11 +148,21 @@ export async function ensureInboxWakeArmedForActiveSession(input: {
          AND (expires_ts IS NULL OR expires_ts > now())
        LIMIT 1`;
     if (armed.length > 0) return false; // already wakeable — nothing to heal
+    // An owner can have multiple recorded incarnations.  Only the most recent
+    // row describes the current session: an older crashed row may still have
+    // ended_at IS NULL even after the latest incarnation ended cleanly.  Using
+    // "any live row" here resurrects the ended owner on every later tool
+    // report, recreating the standing inbox-wake we just cancelled.
     const live = await sql<{ one: number }[]>`
       SELECT 1 AS one
-        FROM harness_shared.adv_sessions
-       WHERE coord_owner_id = ${ownerId} AND ended_at IS NULL
-       LIMIT 1`;
+        FROM (
+          SELECT ended_at
+            FROM harness_shared.adv_sessions
+           WHERE coord_owner_id = ${ownerId}
+           ORDER BY started_at DESC, id DESC
+           LIMIT 1
+        ) latest
+       WHERE latest.ended_at IS NULL`;
     if (live.length === 0) return false; // not a live tracked session — don't arm
     await armInboxWake({ ownerId, workspaceId: input.workspaceId });
     return true;
