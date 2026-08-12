@@ -201,9 +201,10 @@ export function truncateCarryField(v: string, cap: number, field: string, repair
 /**
  * Repair one incoming `checks`/`walls` row IN THE ARGUMENT SHAPE, before validation.
  *
- * Handles the common wrong shapes agents reach for: `{claim, recheck, status,
- * evidence}` instead of `{claim, recheck, verified}`, and the documented-looking
- * `{claim, probe, verified}` alias where `probe` is intended to mean `recheck`.
+ * Handles the common wrong shapes agents reach for: `{label/name, status,
+ * evidence}` or `{claim, recheck, status, evidence}` instead of `{claim,
+ * recheck, verified}`, and the documented-looking `{claim, probe, verified}`
+ * alias where `probe` is intended to mean `recheck`.
  * Measured across 6 days of transcripts, `evidence` (57×) and `status` (40×) were
  * by far the top rejected undeclared keys; the probe alias is handled here too so
  * a caller's concrete falsification command is not discarded at the schema boundary.
@@ -216,10 +217,42 @@ export function truncateCarryField(v: string, cap: number, field: string, repair
 export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryArgRepair[]): unknown {
   if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
   const r = { ...(row as Record<string, unknown>) };
+  const hasLabel = 'label' in r;
+  const hasName = 'name' in r;
   const hasStatus = 'status' in r;
   const hasEvidence = 'evidence' in r;
   const hasProbe = 'probe' in r;
-  if (!hasStatus && !hasEvidence && !hasProbe && typeof r.verified !== 'boolean') return row;
+  if (!hasLabel && !hasName && !hasStatus && !hasEvidence && !hasProbe && typeof r.verified !== 'boolean') {
+    return row;
+  }
+
+  if (hasLabel || hasName) {
+    // `claim` is canonical. When a caller supplies both the canonical field and
+    // one of these descriptive aliases, preserve the explicit claim and only
+    // remove the undeclared aliases before strict schema validation. If neither
+    // is canonical, prefer `label` (the observed wire shape) over `name`.
+    const alias = hasLabel ? 'label' : 'name';
+    const aliasValue = r[alias];
+    if (!('claim' in r)) r.claim = aliasValue;
+    if (hasLabel) delete r.label;
+    if (hasName) delete r.name;
+    repairs.push({
+      field: `${path}.${alias}`,
+      kind: 'renamed',
+      detail:
+        `the descriptive \`${alias}\` key is accepted as an alias for \`claim\`; ` +
+        ('claim' in (row as Record<string, unknown>)
+          ? 'the canonical claim value was kept'
+          : 'the alias value was mapped to claim'),
+    });
+    if (hasLabel && hasName) {
+      repairs.push({
+        field: `${path}.name`,
+        kind: 'renamed',
+        detail: 'the undeclared `name` alias was removed; `label` was selected when no canonical claim was supplied',
+      });
+    }
+  }
 
   if (hasProbe) {
     // `recheck` is the canonical field, but `probe` is the natural/documented

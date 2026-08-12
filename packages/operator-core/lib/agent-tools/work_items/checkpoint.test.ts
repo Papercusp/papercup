@@ -964,6 +964,38 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(stored).toContain('evidence: observed probe C pass');
     });
 
+    it('accepts descriptive label/name rows and preserves an explicit canonical claim', async () => {
+      withPrior(null);
+      const r = await one({
+        id: 'WI-7',
+        checkpoint: 'descriptive row compatibility',
+        checks: [
+          {
+            label: 'labelled claim',
+            status: 'verified',
+            evidence: 'observed labelled claim',
+          },
+          { name: 'named claim' },
+          {
+            claim: 'canonical claim',
+            label: 'ignored label',
+            name: 'ignored name',
+            status: 'verified',
+            evidence: 'observed canonical claim',
+          },
+        ],
+      });
+      expect(r.ok).toBe(true);
+      const stored = await lastStored();
+      expect(stored).toContain('- ✓ labelled claim');
+      expect(stored).toContain('evidence: observed labelled claim');
+      expect(stored).toContain('- ? named claim');
+      expect(stored).toContain('- ✓ canonical claim');
+      expect(stored).not.toContain('ignored label');
+      expect(stored).not.toContain('ignored name');
+      expect(r.checks).toBe(3);
+    });
+
     it('EI-20234792018972820: accepts documented probe aliases alongside boolean verified rows', async () => {
       withPrior(null);
       const r = await one({

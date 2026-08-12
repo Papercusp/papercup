@@ -34,6 +34,7 @@ import {
   CARRY_NOTE_MAX_WALLS,
   CARRY_NOTE_MAX_CHECKS,
   CARRY_NOTE_CHECKS_LEGEND,
+  coerceCarryRowShape,
   type WallEntry,
   type CheckEntry,
 } from './carry-note';
@@ -218,6 +219,31 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
       claim: 'hand-written claim',
       recheck: 'run the probe',
     });
+  });
+
+  it('maps descriptive label/name aliases to claim, while an explicit claim wins', () => {
+    const labelRepairs: Array<{ field: string; kind: string; detail: string }> = [];
+    expect(coerceCarryRowShape({ label: 'labelled claim' }, 'checks[0]', labelRepairs)).toEqual({
+      claim: 'labelled claim',
+    });
+    expect(labelRepairs).toEqual([
+      expect.objectContaining({ field: 'checks[0].label', kind: 'renamed' }),
+    ]);
+
+    const nameRepairs: Array<{ field: string; kind: string; detail: string }> = [];
+    expect(coerceCarryRowShape({ name: 'named claim' }, 'checks[1]', nameRepairs)).toEqual({
+      claim: 'named claim',
+    });
+
+    const canonicalRepairs: Array<{ field: string; kind: string; detail: string }> = [];
+    expect(
+      coerceCarryRowShape(
+        { claim: 'canonical claim', label: 'ignored label', name: 'ignored name' },
+        'checks[2]',
+        canonicalRepairs,
+      ),
+    ).toEqual({ claim: 'canonical claim' });
+    expect(canonicalRepairs[0]?.detail).toContain('canonical claim value was kept');
   });
 
   it('newly-supplied verified evidence gets an instant stamped; inherited evidence keeps its own (fold #5)', () => {
