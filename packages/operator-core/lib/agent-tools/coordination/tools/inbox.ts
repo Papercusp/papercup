@@ -446,9 +446,9 @@ function internalDeliveryFloor(args: unknown): string | undefined {
 export default defineTool({
   name: "coord:inbox",
   description:
-    "Read your coordination inbox — messages, acks, handoffs etc. addressed to you (or broadcast). The direct tool's bound is `limit`; `coord:orient`'s `inboxLimit` translates to it. Returns a summary header (counts by kind) + the most-recent `limit` entries (default 50). Ambient system broadcasts are excluded by default; include_ambient (alias includeAmbient) shows them. Repeated system broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a stale alarm whose condition later cleared carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected by its sender — follow that msg_id. `kinds` narrows to specific entry kinds. `unanswered_only` narrows to the directed messages fleet:assignments'/leader-brief's `unanswered_directed` counter flagged (same primitive — can't disagree). This is a VIEW of your recent inbox, not a delta: you carry no cursor, so re-reading in the same turn always re-shows the same window rather than emptying out.",
+    "Read coordination messages, acks, and handoffs addressed to you or broadcast. The direct bound is `limit`; `coord:orient.inboxLimit` maps to it. Returns counts by kind plus the newest `limit` entries (default 50). Ambient system broadcasts are excluded by default; include_ambient (alias includeAmbient) shows them. Repeated broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a cleared stale alarm carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected — follow that msg_id. `kinds` narrows entry kinds. `unanswered_only` uses the same directed-message primitive as fleet:assignments/leader-brief. This is a VIEW, not a delta: re-reading the same window does not empty it.",
   guidance: {
-    when: "At turn start (the OMP hook will do this for you once it ships); whenever you suspect another agent contacted you. For a direct inbox read, pass `limit`; accepted direct args are `kinds`, `from`, `include_ambient`/`includeAmbient`, `include_intents`, `max_body_chars`, and `unanswered_only`; `includeRead` is not supported. `inboxLimit` belongs to the `coord:orient` wrapper, not this tool.",
+    when: "At turn start (the OMP hook will do this for you once it ships); whenever you suspect another agent contacted you. Bound a direct read with `limit` — `inboxLimit` belongs to the `coord:orient` wrapper, not this tool.",
     notWhen:
       'For agent-presence ("who is active?") — use coord:presence. For file locks — use locks:queue. To WAIT for one specific message/handoff — prefer coord:await-inbox (push/wake) over a poll.',
   },
@@ -461,6 +461,13 @@ export default defineTool({
   // awaits run; under fleet load that reservation can starve the coordination
   // read itself behind the 45s app-pool acquisition deadline.
   skipWorkspaceTx: true,
+  // EI-20243434212359053: coord:inbox returns a hand-built JSON text body that
+  // the OMP/Codex coordination hooks parse programmatically. If the generic
+  // result door splices its truncation footer into that body, those consumers
+  // receive an invalid JSON prefix even when the inbox arguments are bounded.
+  // The handler already bounds entry content; keep the transport body intact
+  // for its machine-readable callers.
+  skipResultDoor: "programmatic-caller",
   args: z.object({
     kinds: z.array(z.enum(COORD_KINDS)).optional(),
     from: z

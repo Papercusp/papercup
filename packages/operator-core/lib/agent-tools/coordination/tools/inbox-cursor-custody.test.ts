@@ -39,9 +39,9 @@ describe("EI-20224626485772812 — direct coord:inbox argument naming", () => {
     const keys = Object.keys(tool.args.shape);
     expect(keys).toContain("limit");
     expect(keys).not.toContain("inboxLimit");
-    expect(tool.description).toMatch(/direct tool's bound is `limit`/i);
-    expect(tool.description).toMatch(/coord:orient.*`inboxLimit`.*translates/i);
-    expect(JSON.stringify(tool.guidance ?? {})).toMatch(/pass `limit`/i);
+    expect(tool.description).toMatch(/direct bound is `limit`/i);
+    expect(tool.description).toMatch(/coord:orient\.inboxLimit.*maps/i);
+    expect(JSON.stringify(tool.guidance ?? {})).toMatch(/bound a direct read with `limit`/i);
     expect(JSON.stringify(tool.guidance ?? {})).toMatch(/`inboxLimit` belongs to the `coord:orient` wrapper/i);
   });
 
@@ -61,7 +61,9 @@ describe("EI-20224626485772812 — direct coord:inbox argument naming", () => {
     }
     expect(keys).not.toContain("includeRead");
     expect(tool.args.safeParse({ includeRead: false }).success).toBe(false);
-    expect(JSON.stringify(tool.guidance ?? {})).toMatch(/`includeRead` is not supported/i);
+    // The compact guidance intentionally omits the stale key; the strict args
+    // schema above remains the enforcement surface for rejecting it.
+    expect(JSON.stringify(tool.guidance ?? {})).not.toMatch(/includeRead/i);
   });
 });
 
@@ -97,6 +99,12 @@ describe("coord:inbox — the VIEW contract is stated to the caller (D-013 R1)",
     // can be rewritten without failing here.
     expect(tool.description).toMatch(/VIEW/);
     expect(tool.description).toMatch(/not a delta/i);
+  });
+});
+
+describe("coord:inbox — machine-readable result contract (EI-20243434212359053)", () => {
+  it("skips the generic result door for programmatic inbox consumers", () => {
+    expect((tool as { skipResultDoor?: string }).skipResultDoor).toBe("programmatic-caller");
   });
 });
 
