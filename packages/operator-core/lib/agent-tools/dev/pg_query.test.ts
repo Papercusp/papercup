@@ -7,10 +7,18 @@
  */
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 
-const { pgReadQueryMock, advisoryMock, describeColumnsMock } = vi.hoisted(() => ({
+const {
+  pgReadQueryMock,
+  advisoryMock,
+  describeColumnsMock,
+  describeRelationMock,
+  listRelationsMock,
+} = vi.hoisted(() => ({
   pgReadQueryMock: vi.fn(),
   advisoryMock: vi.fn(),
   describeColumnsMock: vi.fn(),
+  describeRelationMock: vi.fn(),
+  listRelationsMock: vi.fn(),
 }));
 
 vi.mock('../../pg-read-query', async (importOriginal) => ({
@@ -18,6 +26,8 @@ vi.mock('../../pg-read-query', async (importOriginal) => ({
   pgReadQuery: pgReadQueryMock,
   buildTenantScopeAdvisory: advisoryMock,
   describeReferencedTableColumns: describeColumnsMock,
+  describeRelation: describeRelationMock,
+  listRelations: listRelationsMock,
 }));
 
 import pgQueryTool from './pg_query';
@@ -33,11 +43,44 @@ beforeEach(() => {
   pgReadQueryMock.mockReset().mockResolvedValue(OK_RESULT);
   advisoryMock.mockReset().mockResolvedValue(null);
   describeColumnsMock.mockReset().mockResolvedValue([]);
+  describeRelationMock.mockReset().mockResolvedValue(null);
+  listRelationsMock.mockReset().mockResolvedValue([]);
 });
 
 describe('dev:pg_query — P-005 guard wiring', () => {
   it('does not retain an ambient workspace transaction while using the admin read pool', () => {
     expect((pgQueryTool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+
+  it('returns a relation description as structured data for transport-safe shaping', async () => {
+    const description = {
+      relation: 'harness_shared.tool_invocations',
+      kind: 'table',
+      columns: [{ name: 'id', type: 'text', nullable: false, default: null, comment: null }],
+      indexes: [{ name: 'tool_invocations_pkey', definition: 'CREATE UNIQUE INDEX …' }],
+      constraints: [{ name: 'tool_invocations_pkey', type: 'PRIMARY KEY', definition: 'PRIMARY KEY (id)' }],
+    };
+    describeRelationMock.mockResolvedValue(description);
+
+    const res = await pgQueryTool.handler(
+      { describe: 'harness_shared.tool_invocations' } as never,
+      {} as never,
+    );
+
+    expect(res).toEqual({ data: description });
+    expect(res).not.toHaveProperty('content');
+  });
+
+  it('returns glob relation listings as structured data for transport-safe shaping', async () => {
+    const relations = [{ relation: 'harness_shared.tool_invocations', kind: 'table' }];
+    listRelationsMock.mockResolvedValue(relations);
+
+    const res = await pgQueryTool.handler({ describe: 'harness_shared.tool_*' } as never, {} as never);
+
+    expect(res).toEqual({
+      data: { pattern: 'harness_shared.tool_*', relationCount: 1, relations },
+    });
+    expect(res).not.toHaveProperty('content');
   });
 
   it('refuses an unscoped tenant read before executing it', async () => {

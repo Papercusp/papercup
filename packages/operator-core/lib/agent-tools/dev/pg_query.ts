@@ -39,6 +39,17 @@ function jsonResult(payload: unknown) {
   return { content: [{ type: 'text' as const, text: JSON.stringify(payload) }] };
 }
 
+/**
+ * Return structured data so the tool framework can apply its transport-safe
+ * payload shaping before serialising the response. The `describe` path can
+ * contain many column comments, index definitions and constraints; returning
+ * a hand-serialised content block there lets an oversized relation description
+ * reach the result door as invalid, truncated JSON.
+ */
+function dataResult<T>(data: T) {
+  return { data };
+}
+
 /** An error payload in the MCP content shape. */
 function jsonError(reason: string, message: string) {
   return {
@@ -144,7 +155,7 @@ export default defineTool({
         // A glob (or bare `*`) means "list what matches" rather than "describe one".
         if (/[*?]/.test(args.describe)) {
           const relations = await listRelations(args.describe);
-          return jsonResult({ pattern: args.describe, relationCount: relations.length, relations });
+          return dataResult({ pattern: args.describe, relationCount: relations.length, relations });
         }
         const description = await describeRelation(args.describe);
         if (!description) {
@@ -154,7 +165,7 @@ export default defineTool({
             `No relation matching "${args.describe}".` + (near.length ? ` Did you mean: ${near.map((r) => r.relation).join(', ')}?` : ''),
           );
         }
-        return jsonResult(description);
+        return dataResult(description);
       } catch (err) {
         return jsonError('describe_failed', extractPgErrorInfo(err).message ?? String(err));
       }
