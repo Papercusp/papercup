@@ -233,7 +233,9 @@ export default defineTool({
             hint: r.activation,
             host: r.host,
             releasePipelineApplies: r.releasePipelineApplies,
-            ...(r.restartTarget ? { tool: 'dev:restart', args: { target: r.restartTarget, confirm: true } } : {}),
+            ...(r.restartTarget
+              ? { tool: 'dev:restart', args: { target: r.restartTarget, confirm: true, authorize: true, reason: 'load the edit' } }
+              : {}),
           })),
           note: anyReleaseCarried
             ? `This path has ${runtimes.length} distinct consumers on different activation routes (${runtimes
@@ -265,7 +267,10 @@ export default defineTool({
             host: runtime.host,
             releasePipelineApplies: false,
             ...(runtime.restartTarget
-              ? { tool: 'dev:restart', args: { target: runtime.restartTarget, confirm: true } }
+              ? {
+                  tool: 'dev:restart',
+                  args: { target: runtime.restartTarget, confirm: true, authorize: true, reason: 'load the edit' },
+                }
               : {}),
             note: 'Do NOT deploy:await this path — the process that runs it never reads the release checkout. The `positions.deployed` flag below is about the operator, not about this code being live.',
           },

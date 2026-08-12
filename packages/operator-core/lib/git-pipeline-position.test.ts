@@ -1308,6 +1308,8 @@ describe('runtime-owner map (EI-10895)', () => {
     expect(own.releasePipelineApplies).toBe(false);
     expect(own.restartTarget).toBe(restartTarget);
     expect(own.activation).toMatch(/dev:restart/);
+    expect(own.activation).toMatch(/authorize: true/);
+    expect(own.activation).toMatch(/reason: "<why>"/);
   });
 
   /* ---------------------------------------------------------------------- *
@@ -2145,6 +2147,21 @@ describe('evaluateServing: process truth, never a git inference', () => {
       codeAsOfSource: 'deploy',
     });
     expect(sv.unit).toBe('papercup-dev-api.service');
+  });
+
+  it('serving restart advice includes the audited enablement gate', () => {
+    const sv = evaluateServing({
+      runtime: {
+        host: 'bg-host',
+        releasePipelineApplies: false,
+        restartTarget: 'bg-host',
+        activation: 'bg-host activation',
+      },
+      process: { pid: 1, startedAtMs: 2 },
+      codeAsOfMs: 1,
+      codeAsOfSource: 'file-mtime',
+    });
+    expect(sv.restartLever).toBe('dev:restart { target: "bg-host", confirm: true, authorize: true, reason: "<why>" }');
   });
 
   it('an UNREADABLE process start is UNKNOWN, never "live" (fail-soft in the honest direction)', () => {

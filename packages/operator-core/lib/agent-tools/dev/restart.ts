@@ -224,7 +224,7 @@ export default defineTool({
   guidance: {
     when: 'To LOAD a code edit into a long-running host. gateway/bg-host/embed-sidecar run tsx STRAIGHT FROM THE STAGING TREE (no build/deploy) — a RESTART loads your edit, never wait on a deploy. Pick by what you edited: inference-gateway/** → "gateway"; routines/git-sync → "bg-host"; embeddings → "embed-sidecar"; operator server-side → "staging" (then probe :3170).',
     notWhen: 'Just probing. A gateway restart drops in-flight LLM requests fleet-wide (read gateway:status first). ⚠ "bg-host" kills its WHOLE cgroup — agent spawner, desktop sidecars, in-flight pg_dump (~208 tasks); its drain is a LOCK drain, not a child drain, so blast radius = a raw systemctl (EI-19479764372783341). NEVER raw `systemctl --user restart` these units — bypasses drain + debounce (WI-4221). gateway/bg-host/embed-sidecar are REFUSED while a green-checkpoint run is live/imminent — wait, or override_gate_collision:true.',
-    chaining: 'dry (also previews gate_collision) → review holders → { confirm:true, target } → drops + returns (or coalesced:true — a peer just restarted; probe directly). Gateway: gateway:status → restart → gateway:status.',
+    chaining: 'dry → review holders → { confirm:true, authorize:true, reason:"<why>", target } → restart (or coalesced:true; probe directly). Gateway: status → restart → status.',
     seeAlso: [
       'dev:service_health (check what is down first)',
       'gateway:status (in-flight/admission state — read BEFORE and AFTER a gateway restart)',

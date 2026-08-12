@@ -86,12 +86,64 @@ describe('dev:pipeline_position multi-consumer paths (WI-5440)', () => {
     expect(activations).toHaveLength(2);
     expect(activations[0]).toMatchObject({ host: 'bg-host', releasePipelineApplies: false });
     expect(activations[1]).toMatchObject({ host: 'operator-release', releasePipelineApplies: true });
+    expect(activations[0].args).toMatchObject({
+      target: 'bg-host',
+      confirm: true,
+      authorize: true,
+      reason: 'load the edit',
+    });
+    expect(activations[1].args).toMatchObject({
+      target: 'staging',
+      confirm: true,
+      authorize: true,
+      reason: 'load the edit',
+    });
     // Never the single-consumer shape — that's exactly the misroute this fixes.
     expect(out.data.activation).toBeUndefined();
     // At least one consumer needs the deploy pipeline, so the note must not
     // blanket-tell the caller to skip deploy:await.
     expect(out.data.note).not.toMatch(/^Do NOT deploy:await/);
     expect(out.data.note).toMatch(/operator-release/);
+  });
+});
+
+describe('dev:pipeline_position single runtime activation (EI-20242154394397741)', () => {
+  it('includes the audited enablement gate in the concrete restart args', async () => {
+    const fakeResult = {
+      input: { path: 'packages/operator-core/lib/dbos/routines-tick.ts', sha: null },
+      repoRoot: '/repo',
+      submodule: null,
+      targetSha: 'sha0000001',
+      targetShortSha: 'sha000000',
+      targetSubject: 'subj',
+      dirtyUncommitted: false,
+      positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
+      deployedSha: 'sha0000001',
+      gate: { stalled: false, consecutiveReds: 0, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null },
+      verdictProvenance: {
+        lastGreenSha: 'sha0000001',
+        lastGreenShortSha: 'sha000000',
+        lastGreenAgeMs: 1000,
+        mainFastForwarded: true,
+        deployedBehindGreenPin: 0,
+        deployOrigin: 'gate-green',
+      },
+      gitSyncLastStatus: 'synced',
+      runtime: { host: 'bg-host', releasePipelineApplies: false, restartTarget: 'bg-host', activation: 'bg-host activation text' },
+      summary: 'stub summary',
+      notes: [],
+    } as unknown as PipelinePosition;
+    vi.mocked(gitPipelinePosition).mockResolvedValue(fakeResult);
+
+    const out = (await tool.handler(
+      { path: 'packages/operator-core/lib/dbos/routines-tick.ts' } as never,
+      {} as never,
+    )) as { data: Record<string, unknown> };
+
+    expect(out.data.activation).toMatchObject({
+      tool: 'dev:restart',
+      args: { target: 'bg-host', confirm: true, authorize: true, reason: 'load the edit' },
+    });
   });
 });
 

@@ -559,6 +559,20 @@ const DEFAULT_OWNER: RuntimeOwnership = {
 };
 
 /**
+ * EI-20242154394397741: `confirm` is the deliberate drain/restart gate, while
+ * `authorize` is the separate audited enablement gate. Runtime ownership text
+ * predates the latter and used to hand callers a guaranteed `restart_withheld`
+ * response. Normalize every concrete restart recipe at the boundary so the
+ * many hand-authored ownership entries cannot drift back to the incomplete form.
+ */
+function withRestartAuthorization(text: string): string {
+  return text.replace(
+    /dev:restart \{ target: ("[^"]+"), confirm: true \}/g,
+    'dev:restart { target: $1, confirm: true, authorize: true, reason: "<why>" }',
+  );
+}
+
+/**
  * ALL processes that run this path — a path can have more than one consumer
  * on DIFFERENT activation routes (WI-5440: e.g. a file read by both a
  * bg-host-only routine AND an operator-served MCP tool). Returns the full
@@ -571,8 +585,8 @@ export function classifyRuntimeOwners(relPath: string | null | undefined): Runti
   if (!relPath) return null;
   const p = relPath.replace(/^\.?\//, '');
   const hit = RUNTIME_OWNERS.find((r) => r.match.test(p));
-  if (hit) return Array.isArray(hit.own) ? hit.own : [hit.own];
-  return [DEFAULT_OWNER];
+  const owners = hit ? (Array.isArray(hit.own) ? hit.own : [hit.own]) : [DEFAULT_OWNER];
+  return owners.map((owner) => ({ ...owner, activation: withRestartAuthorization(owner.activation) }));
 }
 
 /**
@@ -1242,7 +1256,7 @@ function servingRestartLever(rt: RuntimeOwnership): string {
     return 'PAPERCUSP_ALLOW_DEV_RESTART=1 npx tsx apps/operator/lib/release/deploy-cli.ts --execute';
   }
   return rt.restartTarget
-    ? `dev:restart { target: "${rt.restartTarget}", confirm: true }`
+    ? `dev:restart { target: "${rt.restartTarget}", confirm: true, authorize: true, reason: "<why>" }`
     : 'restart the host process';
 }
 
@@ -1489,7 +1503,7 @@ export function evaluateRuntimeGenerations(
       codeAsOfSource,
       runningYourCode: null,
       behindMin: null,
-      activationLever: p.activationLever,
+      activationLever: withRestartAuthorization(p.activationLever),
       unknownReason: null,
     };
     // Content identity is checked FIRST for a release host, because it can settle
