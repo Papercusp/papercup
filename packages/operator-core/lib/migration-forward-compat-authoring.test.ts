@@ -26,9 +26,14 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  addedColumnsFor,
   ACK_MARKER,
   ENFORCE_FROM,
+  findDraftColumnReferences,
+  isDraftMigrationFile,
   isEnforcedMigrationFile,
+  isMigrationArtifactFile,
+  SOURCE_ROOTS,
   violationsFor,
 } from '../../../scripts/check-migration-forward-compat.mjs';
 import { buildAllocationResult } from '../../../scripts/next-migration.mjs';
@@ -146,6 +151,63 @@ describe('the nudge covers the DRAFT window, which IS the authoring window', () 
     expect(isCandidateFile('libs/papercusp/libs/db/sql/archive/001-x.sql')).toBe(false);
     expect(isCandidateFile('apps/operator/lib/foo.ts')).toBe(false);
     expect(isCandidateFile('libs/papercusp/libs/db/sql/README.md')).toBe(false);
+  });
+});
+
+describe('the parked-migration dependency guard (EI-20208711931756460)', () => {
+  const DRAFT = `${ENFORCE_FROM + 107}-adv-sessions-ended-by-signal.sql.DRAFT`;
+
+  it('recognizes armed and parked migration artifacts, but not historical drafts', () => {
+    expect(isMigrationArtifactFile(DRAFT)).toBe(true);
+    expect(isMigrationArtifactFile(DRAFT.replace('.DRAFT', ''))).toBe(true);
+    expect(isDraftMigrationFile(DRAFT)).toBe(true);
+    expect(isDraftMigrationFile(`${ENFORCE_FROM - 1}-old.sql.DRAFT`)).toBe(false);
+  });
+
+  it('extracts ADD COLUMN identifiers while ignoring migration comments', () => {
+    const sql = `
+      -- ADD COLUMN IF NOT EXISTS commented_out text;
+      ALTER TABLE harness_shared.adv_sessions
+        ADD COLUMN IF NOT EXISTS ended_signal text;
+      ALTER TABLE harness_shared.adv_sessions ADD COLUMN "quoted_signal" text;
+    `;
+    expect(addedColumnsFor(sql)).toEqual(['ended_signal', 'quoted_signal']);
+  });
+
+  it('finds source consumers and ignores comments in source files', () => {
+    const sql = 'ALTER TABLE harness_shared.adv_sessions ADD COLUMN IF NOT EXISTS ended_signal text;';
+    const result = findDraftColumnReferences(sql, [
+      {
+        file: 'packages/operator-core/lib/adv-sessions.ts',
+        text: 'const query = sql`SELECT ended_signal FROM adv_sessions`;\n',
+      },
+      {
+        file: 'packages/operator-core/lib/comment-only.ts',
+        text: '// ended_signal is discussed, but never read\nconst value = 1;\n',
+      },
+      {
+        file: 'packages/operator-core/lib/sql-comment-only.sql',
+        text: '-- ended_signal is discussed, but never read\nSELECT 1;\n',
+      },
+    ]);
+
+    expect(result.columns).toEqual(['ended_signal']);
+    expect(result.references).toEqual([
+      {
+        column: 'ended_signal',
+        file: 'packages/operator-core/lib/adv-sessions.ts',
+        line: 1,
+      },
+    ]);
+  });
+
+  it('keeps the source scan domain explicit and production-oriented', () => {
+    expect(SOURCE_ROOTS).toEqual([
+      'apps',
+      'packages',
+      'libs/papercusp/packages',
+      'libs/papercusp/libs/db/src',
+    ]);
   });
 });
 

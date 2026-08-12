@@ -40,10 +40,10 @@
  */
 
 import { readdirSync, readFileSync, existsSync } from 'node:fs';
-import { join, dirname, resolve } from 'node:path';
+import { join, dirname, extname, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { stripSqlComments } from './lib/strip-comments-and-strings.mjs';
+import { stripCommentsOnly, stripSqlComments } from './lib/strip-comments-and-strings.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 /**
@@ -56,6 +56,43 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
  */
 export const SQL_DIR_REL = 'libs/papercusp/libs/db/sql';
 const SQL_DIR = join(__dirname, '..', ...SQL_DIR_REL.split('/'));
+
+/**
+ * A migration is authored in a parked filename before it is armed. The runner
+ * intentionally ignores these suffixes, but the authoring-time dependency guard
+ * must not: this is the exact window in which code can start naming a column that
+ * the shared database does not have yet.
+ */
+export const PARKED_SUFFIXES = ['.DRAFT', '.PENDING-CODE-DEPLOY'];
+
+/**
+ * Production source roots searched for references to columns added by parked
+ * migrations. Keep this explicit: scanning generated output, docs, or dependency
+ * trees would turn a cheap authoring guard into a noisy repository grep.
+ *
+ * Exported so the affected-tests router can mirror the exact domain and attach the
+ * guard when either the parked migration OR a source consumer changes.
+ */
+export const SOURCE_ROOTS = [
+  'apps',
+  'packages',
+  'libs/papercusp/packages',
+  'libs/papercusp/libs/db/src',
+];
+
+const SOURCE_EXTENSIONS = new Set(['.cjs', '.cts', '.js', '.jsx', '.mjs', '.mts', '.sql', '.ts', '.tsx']);
+const SOURCE_SKIP_DIRS = new Set([
+  '.git',
+  '__snapshots__',
+  '_retired',
+  'build',
+  'coverage',
+  'dist',
+  'dist-host',
+  'node_modules',
+  'public',
+  'target',
+]);
 
 /**
  * Migrations are immutable once applied, so historical files can never be fixed.
@@ -167,6 +204,116 @@ export function isEnforcedMigrationFile(file) {
 }
 
 /**
+ * True when a filename is an armed migration or a parked migration artifact.
+ * The main lint uses this instead of `endsWith('.sql')` so a DRAFT can reach the
+ * dependency check while destructive-DDL enforcement remains limited to armed SQL.
+ */
+export function isMigrationArtifactFile(file) {
+  return file.endsWith('.sql') || PARKED_SUFFIXES.some((suffix) => file.endsWith(`.sql${suffix}`));
+}
+
+/** True when `file` is an enforced migration that has not been armed yet. */
+export function isDraftMigrationFile(file) {
+  const suffix = PARKED_SUFFIXES.find((candidate) => file.endsWith(`.sql${candidate}`));
+  return suffix ? isEnforcedMigrationFile(file.slice(0, -suffix.length)) : false;
+}
+
+/**
+ * Extract column identifiers introduced by an ALTER TABLE ADD COLUMN statement.
+ * Comments are masked first, while SQL string bodies remain visible so a real
+ * EXECUTE statement inside a DO block is still checked. This intentionally covers
+ * the narrow, mechanically decidable class behind EI-20208711931756460.
+ */
+export function addedColumnsFor(sqlText) {
+  const code = stripComments(sqlText);
+  const columns = [];
+  const seen = new Set();
+  const addColumn = /\bADD\s+COLUMN(?:\s+IF\s+NOT\s+EXISTS)?\s+(?:"([^"]+)"|([A-Za-z_][A-Za-z0-9_$]*))/gi;
+  for (const match of code.matchAll(addColumn)) {
+    const column = match[1] ?? match[2];
+    if (!seen.has(column)) {
+      seen.add(column);
+      columns.push(column);
+    }
+  }
+  return columns;
+}
+
+function sourceFileExtension(file) {
+  return extname(file).toLowerCase();
+}
+
+function isSourceFile(file) {
+  return SOURCE_EXTENSIONS.has(sourceFileExtension(file));
+}
+
+function sourceCommentsMasked(text, file) {
+  return sourceFileExtension(file) === '.sql' ? stripSqlComments(text) : stripCommentsOnly(text, file);
+}
+
+function sourceFilesForRepo() {
+  const files = [];
+
+  function walk(absDir) {
+    let entries;
+    try {
+      entries = readdirSync(absDir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const entry of entries) {
+      if (entry.isSymbolicLink() || SOURCE_SKIP_DIRS.has(entry.name)) continue;
+      const abs = join(absDir, entry.name);
+      if (entry.isDirectory()) {
+        walk(abs);
+        continue;
+      }
+      const file = relative(resolve(__dirname, '..'), abs).split(sep).join('/');
+      if (!entry.isFile() || !isSourceFile(file) || file.startsWith(`${SQL_DIR_REL}/`)) continue;
+      files.push({ file, text: readFileSync(abs, 'utf8') });
+    }
+  }
+
+  const repoRoot = resolve(__dirname, '..');
+  for (const root of SOURCE_ROOTS) {
+    const abs = join(repoRoot, ...root.split('/'));
+    if (existsSync(abs)) walk(abs);
+  }
+  return files;
+}
+
+/**
+ * Find source files that already reference columns introduced by a parked
+ * migration. `sourceFiles` is injectable so unit tests can prove the detector on
+ * small fixtures without writing into the shared checkout.
+ *
+ * @param {string} sqlText
+ * @param {Array<{file: string, text: string}>} sourceFiles
+ * @returns {{ columns: string[], references: Array<{column: string, file: string, line: number}> }}
+ */
+export function findDraftColumnReferences(sqlText, sourceFiles = []) {
+  const columns = addedColumnsFor(sqlText);
+  const references = [];
+  for (const column of columns) {
+    const token = new RegExp(`(?<![A-Za-z0-9_$])${escapeRe(column)}(?![A-Za-z0-9_$])`, 'i');
+    for (const source of sourceFiles) {
+      if (source.file.startsWith(`${SQL_DIR_REL}/`)) continue;
+      const masked = sourceCommentsMasked(source.text, source.file);
+      const match = token.exec(masked);
+      if (!match || match.index === undefined) continue;
+      references.push({
+        column,
+        file: source.file,
+        line: masked.slice(0, match.index).split('\n').length,
+      });
+    }
+  }
+  return { columns, references };
+}
+
+const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+/**
  * NON-VACUITY SELF-TEST (D-076 section 4).
  *
  * A structural scan that silently matches nothing reports GREEN and is worse than no
@@ -251,6 +398,29 @@ function selfTest() {
     failures.push('acknowledgment marker matched an EMPTY FORWARD-COMPAT line (must require a reason)');
   }
 
+  const draftFixture = `
+    -- ADD COLUMN IF NOT EXISTS commented_out text;
+    ALTER TABLE harness_shared.adv_sessions
+      ADD COLUMN IF NOT EXISTS ended_signal text;
+  `;
+  const draftRefs = findDraftColumnReferences(draftFixture, [
+    { file: 'packages/operator-core/lib/adv-sessions.ts', text: 'const q = sql`SELECT ended_signal FROM adv_sessions`;\n' },
+    { file: 'packages/operator-core/lib/comment.ts', text: '// ended_signal is documented here, not read\n' },
+  ]);
+  if (!draftRefs.columns.includes('ended_signal')) {
+    failures.push('draft dependency detector did NOT extract an ADD COLUMN identifier');
+  }
+  if (
+    !draftRefs.references.some(
+      (ref) => ref.column === 'ended_signal' && ref.file === 'packages/operator-core/lib/adv-sessions.ts',
+    )
+  ) {
+    failures.push('draft dependency detector did NOT find a source reference');
+  }
+  if (draftRefs.references.some((ref) => ref.file.endsWith('/comment.ts'))) {
+    failures.push('draft dependency detector treated a source comment as a reference');
+  }
+
   return failures;
 }
 
@@ -269,14 +439,15 @@ function main() {
     process.exit(1);
   }
 
-  const all = readdirSync(SQL_DIR).filter((f) => f.endsWith('.sql'));
+  const all = readdirSync(SQL_DIR).filter(isMigrationArtifactFile);
   if (all.length === 0) {
-    console.error(`check-migration-forward-compat: zero .sql files in ${SQL_DIR}`);
+    console.error(`check-migration-forward-compat: zero migration artifacts in ${SQL_DIR}`);
     console.error('Refusing to report green on an empty scan.');
     process.exit(1);
   }
 
   const inScope = all
+    .filter((f) => f.endsWith('.sql'))
     .filter((f) => isEnforcedMigrationFile(f))
     .map((f) => ({ file: f, num: Number.parseInt(f.slice(0, f.indexOf('-')), 10) }))
     .sort((a, b) => a.num - b.num);
@@ -290,7 +461,19 @@ function main() {
     offenders.push({ file, hits });
   }
 
-  if (offenders.length > 0) {
+  const draftOffenders = [];
+  const draftFiles = all.filter(isDraftMigrationFile).sort();
+  if (draftFiles.length > 0) {
+    const sourceFiles = sourceFilesForRepo();
+    for (const file of draftFiles) {
+      const text = readFileSync(join(SQL_DIR, file), 'utf8');
+      const dependency = findDraftColumnReferences(text, sourceFiles);
+      if (dependency.references.length > 0) draftOffenders.push({ file, ...dependency });
+    }
+  }
+
+  if (offenders.length > 0 || draftOffenders.length > 0) {
+    if (offenders.length > 0) {
     console.error('Forward-incompatible migration(s): destructive DDL with no FORWARD-COMPAT acknowledgment.\n');
     console.error('The database migrates NOW; :3070 keeps running the older release checkout until the');
     console.error('next commit -> green-checkpoint -> deploy cycle finishes. Destructive DDL therefore');
@@ -306,6 +489,18 @@ function main() {
     console.error('  -- FORWARD-COMPAT: <why the currently-deployed release does not use this>');
     console.error('\nBackground: EI-18797473716313783 (migration 689 dropped an ON CONFLICT arbiter and');
     console.error('broke facts:assert fleet-wide for ~3 hours).');
+    }
+    if (draftOffenders.length > 0) {
+      console.error('\nDraft migration(s) already referenced by source before they were armed:\n');
+      console.error('The runner ignores *.DRAFT and *.PENDING-CODE-DEPLOY files. A source read that');
+      console.error('names a column from one of those files breaks every live operator until the');
+      console.error('migration is armed and applied. Keep dependent code out of the draft, or arm/apply');
+      console.error('the migration before shipping the code that reads it.\n');
+      for (const { file, columns, references } of draftOffenders) {
+        console.error(`  ${file} adds: ${columns.join(', ')}`);
+        for (const ref of references) console.error(`      [add-column] ${ref.column} referenced by ${ref.file}:${ref.line}`);
+      }
+    }
     process.exit(1);
   }
 

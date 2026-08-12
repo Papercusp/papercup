@@ -406,6 +406,32 @@ describe('readGateOwnership', () => {
     expect(ownershipContradicted(own)).toBe(true);
   });
 
+  it('passes active gate ownership into the oracle so a stale holder is suspect, not ended', async () => {
+    const seen: Array<{ ownerId: string; claimsHeld?: boolean }> = [];
+    const own = await readGateOwnership({
+      harness: 'papercusp',
+      findConditionObjects: (async () =>
+        new Map([['green-stall:papercusp', mkObj({ claimState: 'held', takenBy: 'su-stale' })]])) as never,
+      resolveSessionStates: (async (subjects: readonly { ownerId: string; claimsHeld?: boolean }[]) => {
+        seen.push(...subjects);
+        return new Map(
+          subjects.map((subject) => [
+            subject.ownerId,
+            {
+              ownerId: subject.ownerId,
+              sessionState: subject.claimsHeld ? 'suspect' : 'ended',
+            },
+          ]),
+        );
+      }) as never,
+    });
+
+    expect(seen).toEqual([{ ownerId: 'su-stale', claimsHeld: true }]);
+    expect(own.holderSessionState).toBe('suspect');
+    expect(ownershipContradicted(own)).toBe(false);
+    expect(ownershipNeedsLivenessConfirmation(own)).toBe(true);
+  });
+
   it('does NOT call the oracle when there is no holder to measure', async () => {
     let calls = 0;
     const own = await readGateOwnership({

@@ -90,6 +90,10 @@ const body = (o: Out) => JSON.parse(o.content[0]!.text);
 beforeEach(() => vi.clearAllMocks());
 
 describe("dev:service_health handler", () => {
+  it("opts out of the ambient workspace transaction because health probes are DB-independent", () => {
+    expect((tool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+
   it("surfaces the probe snapshot under { ok, services }", async () => {
     probeM.mockResolvedValue([
       { name: "operator", up: true, latencyMs: 12 },

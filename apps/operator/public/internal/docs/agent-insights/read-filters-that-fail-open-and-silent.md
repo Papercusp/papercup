@@ -48,6 +48,7 @@ was true of the id-exclusion leg and blind to the dead tag leg. Write the claim 
 the slot it reads is non-empty in the real data:
 
 ```sql
+-- sql-snippet-justified: one-off cross-slot forensic probe; no tool exposes this column-versus-payload population comparison.
 -- the probe that exposed instance 1 in one call
 SELECT count(*) FILTER (WHERE tags IS NOT NULL)   AS tags_column,
        count(*) FILTER (WHERE payload ? 'tags')   AS payload_tags

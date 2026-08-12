@@ -171,6 +171,18 @@ describe('db:next-migration allocator (§A1)', () => {
     expect(out.requested_from_harness).toBe('papercusp');
   });
 
+  it('accepts the CLI-documented by attribution on the MCP door', async () => {
+    const res = (await tool.handler(
+      { name: 'compatible-by', by: 'su-explicit-label' } as never,
+      CTX,
+    )) as { content: { text: string }[] };
+    const out = JSON.parse(res.content[0]!.text) as { ok: boolean; reserved_by?: string };
+    expect(out).toMatchObject({ ok: true, reserved_by: 'su-explicit-label' });
+    const [row] = await rootSql<{ reserved_by: string }[]>`
+      SELECT reserved_by FROM harness_shared.migration_reservations ORDER BY num DESC LIMIT 1`;
+    expect(row?.reserved_by).toBe('su-explicit-label');
+  });
+
   it('filesystem-max is respected: an unreserved on-disk NNN-*.sql higher than any reservation bumps the number', async () => {
     writeFileSync(join(h.sqlDir, '300-baz.sql'), '-- a peer wrote this without reserving');
     const r = await allocate();

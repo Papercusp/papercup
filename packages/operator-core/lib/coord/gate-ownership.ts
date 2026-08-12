@@ -445,7 +445,10 @@ export async function readGateOwnership(
   if (obj.takenBy) {
     try {
       const resolve = opts.resolveSessionStates ?? resolveSessionStates;
-      const verdicts = await resolve([{ ownerId: obj.takenBy }], { hydratePerId: true });
+      const verdicts = await resolve(
+        [{ ownerId: obj.takenBy, claimsHeld: obj.claimState === 'held' }],
+        { hydratePerId: true },
+      );
       holderSessionState = verdicts.get(obj.takenBy)?.sessionState ?? null;
     } catch {
       holderSessionState = null;

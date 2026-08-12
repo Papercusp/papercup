@@ -114,6 +114,15 @@ export default defineTool({
       .string()
       .optional()
       .describe('One line on what the migration does — recorded in the ledger so peers see what this NNN is for.'),
+    // EI-20224602696919268: the documented CLI accepts --by. Agents naturally
+    // translate that spelling to the namesake MCP tool, where strict schema
+    // validation previously rejected it before allocation. Accept the same
+    // optional attribution override on both doors; identity remains the default.
+    by: z
+      .string()
+      .max(200)
+      .optional()
+      .describe('Optional reservation label, matching scripts/next-migration.mjs --by. Defaults to the resolved caller identity.'),
   }),
   async handler(args, ctx) {
     const sqlDirs = candidateSqlDirs();
@@ -121,6 +130,7 @@ export default defineTool({
       return json({ ok: false, error: 'sql dir (libs/papercusp/libs/db/sql) not found' });
 
     const { ownerLabel } = resolveAgentIdentity(ctx);
+    const reservedBy = args.by?.trim() || ownerLabel;
     const slug = slugify(args.name ?? '');
     const { sql } = getOrgPg();
 
@@ -156,7 +166,7 @@ export default defineTool({
       const filename = `${String(next).padStart(3, '0')}-${slug}.sql`;
       await tx`
         INSERT INTO harness_shared.migration_reservations (num, filename, reserved_by, intent)
-        VALUES (${next}, ${filename}, ${ownerLabel}, ${args.intent ?? null})`;
+          VALUES (${next}, ${filename}, ${reservedBy}, ${args.intent ?? null})`;
       return { next, filename };
     });
 
@@ -169,7 +179,7 @@ export default defineTool({
       path: draftPath,
       arm_path: armPath,
       arm_command: `mv ${draftPath} ${armPath}`,
-      reserved_by: ownerLabel,
+      reserved_by: reservedBy,
       ...(args.harness ? { requested_from_harness: args.harness } : {}),
       note: `Reserved. Write + iterate the migration at ${draftPath} (a ".DRAFT" suffix). The runner only ever applies files matching *.sql, so this draft is INVISIBLE to boot auto-apply / db:migrate / the green-checkpoint preflight while you edit it — including any deliberate temporary both-ways guard-test mutation. Once it's ready and tested, ARM it for auto-apply with: ${`mv ${draftPath} ${armPath}`}`,
     });

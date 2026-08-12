@@ -70,7 +70,7 @@ override to the delta**:
 2. **Re-seed the override without the moved content.** `pot-instances/<pot>.<role>.md` is the
    version-controlled SOURCE; the live copy is the federated `promptOverride.<role>` in `hive_settings`
    (they DIVERGE — the file is not auto-synced). Re-seed via the loopback write path:
-   `POST /api/agent-mcp/pot-override-set { hiveSlug, kind:'prompt', name:'<role>', value:<file md> }`
+   `POST /api/agent-mcp/pot-override-set { potSlug, kind:'prompt', name:'<role>', value:<file md> }`
    (an empty value CLEARS it). Verify the PG row updated (`harness_shared.hive_settings`).
 
 ## The guard

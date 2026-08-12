@@ -34,6 +34,18 @@ import { describe, expect, it } from "vitest";
 import tool from "./inbox";
 import { INBOX_CURSOR_SURFACE } from "../../activity/hook-bundle";
 
+describe("EI-20224626485772812 — direct coord:inbox argument naming", () => {
+  it("teaches direct callers to use limit, while reserving inboxLimit for coord:orient", () => {
+    const keys = Object.keys(tool.args.shape);
+    expect(keys).toContain("limit");
+    expect(keys).not.toContain("inboxLimit");
+    expect(tool.description).toMatch(/direct tool's bound is `limit`/i);
+    expect(tool.description).toMatch(/coord:orient.*`inboxLimit`.*translates/i);
+    expect(JSON.stringify(tool.guidance ?? {})).toMatch(/pass `limit`/i);
+    expect(JSON.stringify(tool.guidance ?? {})).toMatch(/`inboxLimit` belongs to the `coord:orient` wrapper/i);
+  });
+});
+
 describe("coord:inbox — agent-facing since_ts is deleted (D-013 R2)", () => {
   it("does not declare a `since_ts` argument", () => {
     expect(Object.keys(tool.args.shape)).not.toContain("since_ts");

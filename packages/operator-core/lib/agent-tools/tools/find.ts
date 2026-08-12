@@ -191,7 +191,7 @@ export default defineTool({
   guidance: {
     when:
       'You need a tool that is not in your loaded/core set and do not know its exact name — search by what you want to DO ' +
-      '("set a feature flag", "spawn a worker bee"). Also the cheapest way to learn a tool\'s RESPONSE shape before batching over it.',
+      '("set a feature flag", "spawn a worker bee").',
     notWhen:
       'The tool is already in your core set or you know its exact name — just call it. For a full permission-annotated dump use agent_tools:list.',
     chaining:

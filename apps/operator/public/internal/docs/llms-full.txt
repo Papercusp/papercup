@@ -4565,6 +4565,7 @@ Prove it **fails** on a mutated copy before trusting it, and do that **out of tr
 **Before you audit on a field’s presence or absence, find the first day that field was written.** Then scope the query to that window. A field that did not exist cannot be evidence of anything.
 
 ```sql
+-- sql-snippet-justified: one-off vintage audit; no tool exposes this per-field, per-day schema-history diagnostic.
 -- Run this BEFORE the audit, not after someone disputes it.
 SELECT to_timestamp(updated_ts/1000)::date AS day,
        count(*)                                        AS rows,
@@ -34707,6 +34708,7 @@ POST /api/admin/plans/set-priority  { slug: <plan>, priority: 777 }
   → { ok: true, priority: 777 }
 
 
+-- sql-snippet-justified: one-off post-write probe of the tenant key; no plans tool exposes this exact write/read zero-row diagnostic.
 SELECT op_priority FROM harness_shared.harness_plans WHERE plan_slug = <plan>
   → 777        ✅ fixed
   → NULL       ❌ the classic: ok:true over a 0-row write
@@ -35599,7 +35601,7 @@ Real incident (2026-06-24): `papercusp/promptOverride.su` was a \~21.6 KB wholes
 When you find generic content trapped in an override, **move it to the generated chain and slim the override to the delta**:
 
 1. **Put the generic/cross-cutting content in the generated base**, authored once. The clean mechanism is a render function + a splice marker (mirrors `renderWireSchemasSection` / `renderCoordLegend`): e.g. `renderModesPolicy()` in `operating-modes-policy.ts`, spliced at `AUTO_MODE_MARKER` by `renderSuPlaybook` / `writeSplicedPlaybook`. Add the marker to the bases that should carry it (`blueprints/base/prompts/su.md`, `papercusp-su-engineer.tools.md`, `papercusp-su-power.tools.md`). An absent marker is a clean no-op (a base may opt out).
-2. **Re-seed the override without the moved content.** `pot-instances/<pot>.<role>.md` is the version-controlled SOURCE; the live copy is the federated `promptOverride.<role>` in `hive_settings` (they DIVERGE — the file is not auto-synced). Re-seed via the loopback write path: `POST /api/agent-mcp/pot-override-set { hiveSlug, kind:'prompt', name:'<role>', value:<file md> }` (an empty value CLEARS it). Verify the PG row updated (`harness_shared.hive_settings`).
+2. **Re-seed the override without the moved content.** `pot-instances/<pot>.<role>.md` is the version-controlled SOURCE; the live copy is the federated `promptOverride.<role>` in `hive_settings` (they DIVERGE — the file is not auto-synced). Re-seed via the loopback write path: `POST /api/agent-mcp/pot-override-set { potSlug, kind:'prompt', name:'<role>', value:<file md> }` (an empty value CLEARS it). Verify the PG row updated (`harness_shared.hive_settings`).
 
 ## The guard
 
@@ -37510,10 +37512,10 @@ A psu su launch is assembled by `buildSuLaunchSpec` (`packages/operator-core/lib
    FILE=apps/operator/prompts/pot-instances/papercup-pot.su.md
    curl -s -X POST http://127.0.0.1:3070/api/agent-mcp/pot-override-set \
      -H 'Content-Type: application/json' \
-     --data "$(jq -Rs '{hiveSlug:"papercusp",kind:"prompt",name:"su",value:.}' < "$FILE")"
+     --data "$(jq -Rs '{potSlug:"papercusp",kind:"prompt",name:"su",value:.}' < "$FILE")"
    ```
 
-   (Loopback-only route → `setHiveInstancePromptOverride`; `hiveSlug` is the pot HOME slug — `papercusp` here. The additive-override guard only WARNS, it does not block. The base persona file, by contrast, is read live from disk — no re-seed needed for `base/prompts/su.md`.)
+   (Loopback-only route → `setHiveInstancePromptOverride`; `potSlug` is the pot HOME slug — `papercusp` here. The additive-override guard only WARNS, it does not block. The base persona file, by contrast, is read live from disk — no re-seed needed for `base/prompts/su.md`.)
 
 2. **`papercusp-desktop` sidecar bundle** — `papercusp-desktop/src-tauri/sidecar/{harness/blueprints,prompts}/…`. Real-file SNAPSHOTS bundled into the packaged desktop app (`tauri.conf.json` resources `sidecar/**/*`), refreshed by `papercusp-desktop/bin/build-desktop-sidecar.sh` at desktop build. Don’t hand-edit — they regenerate from the repo sources on the next build. (On the dev box, psu reads the repo sources directly, so the sidecar only matters for the shipped app.)
 
@@ -38944,6 +38946,7 @@ This is the whole lesson. Verifying one leg, getting green, and recording *the w
 **2. Prove the filter can ever match anything.** Before trusting an exclusion, confirm the slot it reads is non-empty in the real data:
 
 ```sql
+-- sql-snippet-justified: one-off cross-slot forensic probe; no tool exposes this column-versus-payload population comparison.
 -- the probe that exposed instance 1 in one call
 SELECT count(*) FILTER (WHERE tags IS NOT NULL)   AS tags_column,
        count(*) FILTER (WHERE payload ? 'tags')   AS payload_tags

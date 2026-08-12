@@ -19,6 +19,7 @@ afterEach(() => {
   vi.doUnmock('../../workspace-registry');
   vi.doUnmock('../../operator-notes');
   vi.doUnmock('../../harness/git-sync/git-sync-action');
+  vi.doUnmock('../../bounded-timeout');
   vi.doUnmock('node:child_process');
 });
 
@@ -103,6 +104,39 @@ describe('git-sync:run', () => {
       success: false,
       committed: false,
       outcome: { status: 'error', errors: [{ scope: 'libs/generic/cache', message: 'push failed: HTTP 403' }] },
+    });
+  });
+
+  it('makes a timeout explicitly non-terminal and exposes the commit event plus routine progress reference', async () => {
+    vi.doMock('../../bounded-timeout', () => ({
+      withBoundedTimeout: async () => ({ value: undefined, degraded: true, reason: 'timeout', elapsedMs: 45_000 }),
+    }));
+    vi.doMock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: () => 'papercusp' }));
+    vi.doMock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+    vi.doMock('../../operator-notes', () => ({ projectDirForSlug: async () => null }));
+    vi.doMock('../../harness/git-sync/git-sync-action', () => ({ fireGitSyncNow: vi.fn(async () => undefined) }));
+
+    const { default: tool } = await import('./run');
+    const result = parse((await tool.handler({}, MAKE_CTX())) as never);
+
+    expect(result).toMatchObject({
+      ok: false,
+      fired: true,
+      status: 'in_progress',
+      success: false,
+      committed: false,
+      degraded: true,
+      continuation: {
+        completion_event: { key: 'git-sync:committed', payload_field: 'sha' },
+        await_tool: 'git-sync:await',
+        progress_ref: {
+          surface: 'routine.metadata',
+          workspace_id: 'default',
+          install_slug: 'papercusp',
+          target_role: 'system:git-sync',
+          fields: ['fire_started_at', 'last_status', 'last_synced_at', 'head_sha'],
+        },
+      },
     });
   });
 

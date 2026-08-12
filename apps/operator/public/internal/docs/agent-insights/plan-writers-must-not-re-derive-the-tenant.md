@@ -85,6 +85,7 @@ never trust the tool's own `ok`:
 POST /api/admin/plans/set-priority  { slug: <plan>, priority: 777 }
   → { ok: true, priority: 777 }
 
+-- sql-snippet-justified: one-off post-write probe of the tenant key; no plans tool exposes this exact write/read zero-row diagnostic.
 SELECT op_priority FROM harness_shared.harness_plans WHERE plan_slug = <plan>
   → 777        ✅ fixed
   → NULL       ❌ the classic: ok:true over a 0-row write

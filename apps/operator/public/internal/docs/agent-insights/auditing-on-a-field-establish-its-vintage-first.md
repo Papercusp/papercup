@@ -10,6 +10,7 @@ was written.** Then scope the query to that window. A field that did not exist
 cannot be evidence of anything.
 
 ```sql
+-- sql-snippet-justified: one-off vintage audit; no tool exposes this per-field, per-day schema-history diagnostic.
 -- Run this BEFORE the audit, not after someone disputes it.
 SELECT to_timestamp(updated_ts/1000)::date AS day,
        count(*)                                        AS rows,

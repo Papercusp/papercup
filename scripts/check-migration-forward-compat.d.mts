@@ -19,6 +19,30 @@ export function violationsFor(sqlText: any): {
  */
 export function isEnforcedMigrationFile(file: any): boolean;
 /**
+ * True when a filename is an armed migration or a parked migration artifact.
+ * The main lint uses this instead of `endsWith('.sql')` so a DRAFT can reach the
+ * dependency check while destructive-DDL enforcement remains limited to armed SQL.
+ */
+export function isMigrationArtifactFile(file: any): boolean;
+/** True when `file` is an enforced migration that has not been armed yet. */
+export function isDraftMigrationFile(file: any): boolean;
+/** Extract column identifiers introduced by an ALTER TABLE ADD COLUMN statement. */
+export function addedColumnsFor(sqlText: any): string[];
+/**
+ * Find source files that already reference columns introduced by a parked migration.
+ */
+export function findDraftColumnReferences(sqlText: any, sourceFiles?: Array<{
+    file: string;
+    text: string;
+}>): {
+    columns: string[];
+    references: Array<{
+        column: string;
+        file: string;
+        line: number;
+    }>;
+};
+/**
  * Repo-relative form of the scanned directory, EXPORTED so the repo-wide invariant
  * guard that routes this lint (MIGRATION_SQL_DIR in scripts/affected-tests.mjs) can be
  * asserted against the directory this lint actually reads, rather than a hand-copied
@@ -49,3 +73,7 @@ export const ENFORCE_FROM: 693;
  * `forward-compat-authoring-nudge.test.ts` pins that.
  */
 export const ACK_MARKER: RegExp;
+/** Parked migration suffixes that are invisible to the runner while being authored. */
+export const PARKED_SUFFIXES: string[];
+/** Production source roots searched for parked-migration column consumers. */
+export const SOURCE_ROOTS: string[];

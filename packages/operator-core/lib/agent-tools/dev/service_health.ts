@@ -492,6 +492,10 @@ export default defineTool({
     ],
   },
   capability: "intel:read",
+  // This handler probes HTTP/systemd/in-memory state and never reads ctx.tx.
+  // Keeping the ambient workspace transaction open while those probes run pins
+  // an org-app pool slot and lets concurrent health checks saturate the pool.
+  skipWorkspaceTx: true,
   requirePrincipal: false,
   agentRoles: [
     "scoper",

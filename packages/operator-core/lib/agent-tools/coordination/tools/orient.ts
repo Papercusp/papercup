@@ -144,7 +144,7 @@ export interface OrientArgs {
   /** Explicit memory:search query (overrides `intent` for the recall fold). */
   memoryQuery?: string;
   /** Plan slug for the declared lane (used with `intent`). */
-  planSlug?: string;
+  planSlug?: string | null;
   /** Plan items to CLAIM as your lane (used with `intent` + `planSlug`). */
   planItems?: string[];
   /** Max memory hits to fold (default 5, hard-capped 10). */
@@ -160,6 +160,8 @@ export interface OrientArgs {
   /** Fold a bounded catch-up slice of YOUR fleet's audience-history when you belong to a
    *  named fleet — the auto "what did my fleet say while I was away" at wake (default true). */
   includeFleetCatchUp?: boolean;
+  /** Back-compat alias for includeFleetCatchUp (EI-20224878072252879). */
+  includeCatchup?: boolean;
   /** Max fleet catch-up messages to fold (default 8, hard-capped 25). */
   fleetCatchUpLimit?: number;
   /** Fold a COMPACT fleet-health glance (coord:glance's health subset — bees
@@ -1545,8 +1547,9 @@ export async function composeOrient(
     }
   }
 
-  if (!monitor && (args.includeFleetCatchUp !== false || args.includeFleetHealth !== false)) {
-    if (fleetSlug && args.includeFleetCatchUp !== false) {
+  const includeFleetCatchUp = args.includeFleetCatchUp ?? args.includeCatchup;
+  if (!monitor && (includeFleetCatchUp !== false || args.includeFleetHealth !== false)) {
+    if (fleetSlug && includeFleetCatchUp !== false) {
       try {
         const cuLimit = Math.min(args.fleetCatchUpLimit ?? FLEET_CATCHUP_FOLD, FLEET_CATCHUP_CAP);
         const cu = (await call('coord:catch-up', {
@@ -2069,6 +2072,12 @@ export default defineTool({
     'fleet:leader-brief',
   ],
   requirePrincipal: false,
+  // EI-20223970317648049: orient is a compound bootstrap whose sequential
+  // best-effort folds can exceed the flat 55s MCP transport deadline during
+  // fleet/DB contention. Keep the dispatcher and MCP deadlines aligned with
+  // the compound tool's real budget so a healthy server-side orientation is
+  // not reported as an unrecoverable request_timeout to a new member.
+  timeoutSec: 120,
   agentRoles: [...COORD_ROLES],
   args: z.object({
     harness: z
@@ -2095,7 +2104,12 @@ export default defineTool({
       .max(500)
       .optional()
       .describe('Explicit memory:search query (overrides `intent` for recall).'),
-    planSlug: z.string().max(120).optional().describe('Plan slug for the declared lane (used with `intent`).'),
+    planSlug: z
+      .string()
+      .max(120)
+      .nullable()
+      .optional()
+      .describe('Plan slug for the declared lane (used with `intent`); null is equivalent to omission for planless lanes.'),
     planItems: z
       .array(z.string().max(20))
       .max(40)
@@ -2121,6 +2135,10 @@ export default defineTool({
       .describe(
         "Fold a bounded catch-up of YOUR fleet's audience-history when you're in a named fleet (default true).",
       ),
+    includeCatchup: z
+      .boolean()
+      .optional()
+      .describe('Deprecated alias for includeFleetCatchUp; accepted for compatibility with older launch/checkpoint guidance.'),
     fleetCatchUpLimit: z
       .number()
       .int()

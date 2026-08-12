@@ -35,7 +35,7 @@
  */
 import { spawn } from 'node:child_process';
 import { collectChildOutput } from '../../child-output.js';
-import { lstat, readFile, readdir, unlink } from 'node:fs/promises';
+import { lstat, readFile, readlink, readdir, realpath, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { projectDirForSlug } from '../../operator-notes';
 import { gitSidecarEnabled, runGitViaSpawnerSidecar } from '../../fleet/git-via-sidecar';
@@ -426,6 +426,11 @@ export interface RunGitSyncOpts {
    *  derives a per-repo attribution map and peels per-agent commits; when absent (flag OFF / no
    *  caller) commits are unchanged (today's single whole-tree commit). DERIVED, never authored. */
   loadRoster?: () => Promise<AttributionRosterEntry[]>;
+  /** WI-EI-20224214315801764: override the age floor for crash-left `tmp_pack_*` files. */
+  staleTempPackMs?: number;
+  /** Test seam for proving whether a candidate temp pack is still open by a process.
+   *  `null` means the state is unknown; unknown is always preserved. */
+  isTempPackOpen?: (path: string) => Promise<boolean | null>;
 }
 
 /** Default content-guard file reader — the working-tree bytes that `add -A` would
@@ -743,6 +748,38 @@ export async function clearStaleIndexLock(
   return true;
 }
 
+/** A crash-left `index-pack` file is safe to consider only after this age floor. */
+export const STALE_TEMP_PACK_MS = 30 * 60_000;
+
+type TempPackEntry = { name: string; size: number; mtimeMs: number; nlink: number };
+
+async function gitDirForRepo(runGit: RunGit, repoPath: string): Promise<string> {
+  const gd = await runGit(['rev-parse', '--absolute-git-dir'], repoPath);
+  return gd.code === 0 ? gd.stdout.trim() : '';
+}
+
+async function listTempPackEntries(runGit: RunGit, repoPath: string): Promise<{ gitDir: string; entries: TempPackEntry[] }> {
+  const gitDir = await gitDirForRepo(runGit, repoPath);
+  if (!gitDir) return { gitDir: '', entries: [] };
+  let names: string[];
+  try {
+    names = await readdir(join(gitDir, 'objects', 'pack'));
+  } catch {
+    return { gitDir, entries: [] };
+  }
+  const entries: TempPackEntry[] = [];
+  for (const name of names) {
+    if (!/^tmp_pack_[^/]+$/.test(name)) continue;
+    try {
+      const st = await lstat(join(gitDir, 'objects', 'pack', name));
+      if (st.isFile()) entries.push({ name, size: st.size, mtimeMs: st.mtimeMs, nlink: st.nlink });
+    } catch {
+      // A concurrent fetch may have finalized or removed the temp file.
+    }
+  }
+  return { gitDir, entries };
+}
+
 /**
  * A failed `git fetch` can leave `index-pack`'s incoming pack at
  * `.git/objects/pack/tmp_pack_*`. The temp name is deliberately not a valid
@@ -752,26 +789,155 @@ export async function clearStaleIndexLock(
  * reclaiming a large partial pack immediately instead of waiting for age-based GC.
  */
 async function listTempPackFiles(runGit: RunGit, repoPath: string): Promise<Map<string, number>> {
+  const { entries } = await listTempPackEntries(runGit, repoPath);
   const result = new Map<string, number>();
-  const gd = await runGit(['rev-parse', '--absolute-git-dir'], repoPath);
-  const gitDir = gd.code === 0 ? gd.stdout.trim() : '';
-  if (!gitDir) return result;
-  let names: string[];
-  try {
-    names = await readdir(join(gitDir, 'objects', 'pack'));
-  } catch {
-    return result;
-  }
-  for (const name of names) {
-    if (!/^tmp_pack_[^/]+$/.test(name)) continue;
+  for (const entry of entries) result.set(entry.name, entry.size);
+  return result;
+}
+
+/**
+ * `tmp_pack_*` has no Git index and therefore cannot be reached by a ref while it
+ * retains its temporary name. Keep the additional checks explicit: an index/keep
+ * sidecar, an advertised pack entry, or a hard link means another Git process may
+ * have made the file reachable, so the scavenger must leave it alone.
+ */
+async function tempPackHasReferences(gitDir: string, entry: TempPackEntry): Promise<boolean> {
+  if (entry.nlink > 1) return true;
+  const packPath = join(gitDir, 'objects', 'pack', entry.name);
+  for (const suffix of ['.idx', '.keep']) {
     try {
-      const st = await lstat(join(gitDir, 'objects', 'pack', name));
-      if (st.isFile()) result.set(name, st.size);
+      await lstat(`${packPath}${suffix}`);
+      return true;
     } catch {
-      // A concurrent fetch may have finalized or removed the temp file.
+      // No sidecar — keep checking the other proof surfaces.
     }
   }
-  return result;
+  try {
+    const advertised = await readFile(join(gitDir, 'objects', 'info', 'packs'), 'utf8');
+    if (advertised.split('\n').some((line) => line.includes(entry.name))) return true;
+  } catch {
+    // `objects/info/packs` is optional; absence is not evidence of a reference.
+  }
+  return false;
+}
+
+/** Return true when `/proc` proves a descriptor currently names the candidate. */
+async function procSeesOpenFile(path: string): Promise<boolean | null> {
+  const canonical = await realpath(path).catch(() => null);
+  if (!canonical) return null;
+  let pids: string[];
+  try {
+    pids = await readdir('/proc');
+  } catch {
+    return null;
+  }
+  for (const pid of pids) {
+    if (!/^\d+$/.test(pid)) continue;
+    let fds: string[];
+    try {
+      fds = await readdir(`/proc/${pid}/fd`);
+    } catch {
+      continue;
+    }
+    for (const fd of fds) {
+      try {
+        const target = await readlink(`/proc/${pid}/fd/${fd}`);
+        if (target === canonical || target === `${canonical} (deleted)`) return true;
+      } catch {
+        // Processes can exit or close a descriptor while the directory is scanned.
+      }
+    }
+  }
+  return false;
+}
+
+/** macOS has no `/proc`; `lsof` is part of the base system and is read-only here. */
+async function lsofSeesOpenFile(path: string): Promise<boolean | null> {
+  return await new Promise<boolean | null>((resolve) => {
+    let settled = false;
+    let stdout = '';
+    const finish = (value: boolean | null): void => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    const child = spawn('lsof', ['-t', path], { stdio: ['ignore', 'pipe', 'ignore'] });
+    child.stdout?.on('data', (chunk: Buffer | string) => {
+      stdout += String(chunk);
+    });
+    child.once('error', () => finish(null));
+    child.once('close', (code) => finish(code === 0 && stdout.trim().length > 0));
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      finish(null);
+    }, 1000);
+    timer.unref?.();
+  });
+}
+
+async function defaultTempPackOpenCheck(path: string): Promise<boolean | null> {
+  if (process.platform === 'linux') return procSeesOpenFile(path);
+  if (process.platform === 'darwin') return lsofSeesOpenFile(path);
+  return null;
+}
+
+export interface TempPackScavengeDeps {
+  now?: () => number;
+  staleMs?: number;
+  isOpen?: (path: string) => Promise<boolean | null>;
+  unlinkFile?: (path: string) => Promise<void>;
+}
+
+/**
+ * Remove only crash-left temp packs. Every deletion requires all of these proofs:
+ * the entry is an old regular `tmp_pack_*` file, has no Git sidecar/reference or
+ * hard link, no process has it open, and its size/mtime/type remain unchanged across
+ * a second stat. Unknown open-state is fail-closed. This is intentionally separate
+ * from failed-fetch cleanup: that path is same-attempt freshness based and remains
+ * unchanged so it cannot delete a peer's pre-existing file.
+ */
+export async function scavengeStaleTempPacks(
+  runGit: RunGit,
+  repoPath: string,
+  log: (m: string) => void,
+  deps: TempPackScavengeDeps = {},
+): Promise<{ removed: string[]; bytesReclaimed: number }> {
+  const now = deps.now ?? Date.now;
+  const staleMs = deps.staleMs ?? STALE_TEMP_PACK_MS;
+  const isOpen = deps.isOpen ?? defaultTempPackOpenCheck;
+  const unlinkFile = deps.unlinkFile ?? unlink;
+  const { gitDir, entries } = await listTempPackEntries(runGit, repoPath);
+  if (!gitDir) return { removed: [], bytesReclaimed: 0 };
+  const packDir = join(gitDir, 'objects', 'pack');
+  const removed: string[] = [];
+  let bytesReclaimed = 0;
+
+  for (const entry of entries) {
+    if (entry.mtimeMs > now() - staleMs || entry.mtimeMs > now()) continue;
+    const path = join(packDir, entry.name);
+    try {
+      if (await tempPackHasReferences(gitDir, entry)) continue;
+      if (await isOpen(path) !== false) continue;
+      const current = await lstat(path);
+      if (
+        !current.isFile() ||
+        current.size !== entry.size ||
+        current.mtimeMs !== entry.mtimeMs ||
+        current.nlink > 1 ||
+        (await tempPackHasReferences(gitDir, { ...entry, size: current.size, mtimeMs: current.mtimeMs, nlink: current.nlink })) ||
+        (await isOpen(path)) !== false
+      ) continue;
+      await unlinkFile(path);
+      removed.push(entry.name);
+      bytesReclaimed += entry.size;
+    } catch (e) {
+      log(
+        `[git-sync] ${repoPath}: could not prune stale temp pack ${entry.name}: ${e instanceof Error ? e.message : String(e)}`,
+      );
+    }
+  }
+  return { removed, bytesReclaimed };
 }
 
 async function pruneFailedFetchTempPacks(
@@ -1125,6 +1291,8 @@ interface CommitRepoOpts {
   deletionGuard: boolean;
   readText: (repoPath: string, relPath: string) => Promise<string | null>;
   log: (m: string) => void;
+  staleTempPackMs: number;
+  isTempPackOpen?: (path: string) => Promise<boolean | null>;
   /** P-004 (flag GIT_SYNC_DERIVED_ATTRIBUTION): path→agent map for THIS repo. When present
    *  + non-empty, dirty files are peeled into per-agent commits first; the catch-all
    *  `git add -A` commit (today's behavior) sweeps the remainder. Absent/empty = byte-identical

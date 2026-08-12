@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   captureImprovement,
+  validateScoutEvidenceCitations,
   storageKindOf,
   DUP_THRESHOLD,
   CONTAINMENT_THRESHOLD,
@@ -84,6 +85,56 @@ describe('captureImprovement — filer-role attribution (close-observation-attri
     const d = deps();
     await captureImprovement({ title: 'x', kind: 'change', lane: 'observation' }, d);
     expect((d.created[0].payload as Record<string, unknown> | undefined)?.filedByRole).toBeUndefined();
+  });
+});
+
+describe('Scout evidence citations (EI-19450720466036446)', () => {
+  it('records unresolved and same-role citations at capture time', async () => {
+    const d = deps();
+    d.getIssue = async (id) =>
+      id === 'EI-200'
+        ? existing({ id, title: 'Scout sibling', payload: { sourceRole: 'Scout' } })
+        : null;
+
+    await captureImprovement(
+      {
+        title: 'watchdog false-fire experiment',
+        kind: 'change',
+        body: 'Known incident evidence: EI-200 and EI-404.',
+        sourceRole: 'Scout',
+      },
+      d,
+    );
+
+    const integrity = (d.created[0].payload as Record<string, unknown>).evidenceIntegrity as Record<string, unknown>;
+    expect(integrity.checked).toBe(true);
+    expect(integrity.citedIds).toEqual(['EI-200', 'EI-404']);
+    expect(integrity.resolvedIds).toEqual(['EI-200']);
+    expect(integrity.unresolvedIds).toEqual(['EI-404']);
+    expect(integrity.circularIds).toEqual(['EI-200']);
+    expect(integrity.lookupFailedIds).toEqual([]);
+  });
+
+  it('records resolver failures without rejecting the Scout capture', async () => {
+    const d = deps();
+    d.getIssue = async () => {
+      throw new Error('temporary datastore outage');
+    };
+    const result = await captureImprovement(
+      { title: 'watchdog evidence retry', kind: 'bug', body: 'See EI-405.', sourceRole: 'Scout' },
+      d,
+    );
+
+    expect(result.created).toBe(true);
+    const integrity = (d.created[0].payload as Record<string, unknown>).evidenceIntegrity as Record<string, unknown>;
+    expect(integrity.checked).toBe(true);
+    expect(integrity.unresolvedIds).toEqual([]);
+    expect(integrity.lookupFailedIds).toEqual(['EI-405']);
+  });
+
+  it('returns no integrity record when a proposal has no work-item citations', async () => {
+    const integrity = await validateScoutEvidenceCitations('No prior incident ids are named here.');
+    expect(integrity).toBeUndefined();
   });
 });
 

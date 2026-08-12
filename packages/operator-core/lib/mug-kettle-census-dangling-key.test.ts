@@ -33,6 +33,7 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join, basename, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+// @ts-ignore -- runtime census helper intentionally exercised from TypeScript.
 import {
   buildBaselineDocument,
   evaluateBaselineReseed,

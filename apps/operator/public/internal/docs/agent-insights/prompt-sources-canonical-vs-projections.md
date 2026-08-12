@@ -41,10 +41,10 @@ papercup `CLAUDE.md` (the Project guide) + the **instance overlay** — concaten
    FILE=apps/operator/prompts/pot-instances/papercup-pot.su.md
    curl -s -X POST http://127.0.0.1:3070/api/agent-mcp/pot-override-set \
      -H 'Content-Type: application/json' \
-     --data "$(jq -Rs '{hiveSlug:"papercusp",kind:"prompt",name:"su",value:.}' < "$FILE")"
+     --data "$(jq -Rs '{potSlug:"papercusp",kind:"prompt",name:"su",value:.}' < "$FILE")"
    ```
 
-   (Loopback-only route → `setHiveInstancePromptOverride`; `hiveSlug` is the pot HOME slug —
+   (Loopback-only route → `setHiveInstancePromptOverride`; `potSlug` is the pot HOME slug —
    `papercusp` here. The additive-override guard only WARNS, it does not block. The base persona
    file, by contrast, is read live from disk — no re-seed needed for `base/prompts/su.md`.)
 

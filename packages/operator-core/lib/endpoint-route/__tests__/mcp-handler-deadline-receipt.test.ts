@@ -279,6 +279,8 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     expect(textOf(res)).toContain('request_timeout');
     expect(textOf(res)).toContain('deadlinetest:slow');
     expect(textOf(res)).toContain(`${TEST_DEADLINE_MS}ms`);
+    expect(textOf(res)).toContain('commit status is UNKNOWN');
+    expect(textOf(res)).toContain('re-read the current state');
     // Idempotency-key-aware wording (the two branches in _mcp-handler.ts differ
     // on whether a key was supplied) — this call passed one.
     expect(textOf(res)).toContain('retry with the same _meta.idempotencyKey');
@@ -323,7 +325,9 @@ describe('P2-5 deadline path — background persist + real-outcome receipt (WI-6
     const res = await callTool('deadlinetest:slow', {}, scoped('ws-test'));
     expect(res.isError).toBe(true);
     expect(textOf(res)).toContain('request_timeout');
+    expect(textOf(res)).toContain('commit status is UNKNOWN');
     expect(textOf(res)).toContain('Do NOT retry yet');
+    expect(textOf(res)).toContain('re-read the current state');
 
     // Give the slow tool plenty of time to finish server-side; without an
     // idempotencyKey the handler's `if (idempotencyKey && ...)` guard means no

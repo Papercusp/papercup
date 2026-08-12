@@ -69,6 +69,16 @@ describe('classifyResumeTurnExit — survived vs died (P0a)', () => {
     }
   });
 
+  it('classifies a prompt-overflow death as context_overflow, not agent_crash', () => {
+    const out = classifyResumeTurnExit(raw({ exitCode: 1, stdoutTail: 'Prompt is too long: 210000 tokens > 200000 maximum' }));
+    expect(out.ok).toBe(false);
+    if (!out.ok) {
+      expect(out.error.class).toBe('context_overflow');
+      expect(out.error.retryable).toBe(false);
+      expect(out.error.surfaceToUser).toBe(true);
+    }
+  });
+
   it('a signal kill is a death', () => {
     const out = classifyResumeTurnExit(raw({ exitCode: null, signal: 'SIGKILL' }));
     expect(out.ok).toBe(false);

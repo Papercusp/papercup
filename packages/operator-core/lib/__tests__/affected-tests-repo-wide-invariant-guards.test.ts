@@ -54,7 +54,10 @@ import {
 } from '../../../../scripts/check-partial-index-alignment.mjs';
 // Likewise the REAL scanned dir of the forward-compat lint, so the guard's routing
 // prefix cannot drift from the directory the lint actually reads.
-import { SQL_DIR_REL as MIGRATION_SQL_DIR } from '../../../../scripts/check-migration-forward-compat.mjs';
+import {
+  SQL_DIR_REL as MIGRATION_SQL_DIR,
+  SOURCE_ROOTS as MIGRATION_SOURCE_ROOTS,
+} from '../../../../scripts/check-migration-forward-compat.mjs';
 // And the REAL scan roots + routing predicate of the OKF conformance lint. The router
 // MIRRORS these as literals on purpose (a static import there would let a load error in
 // this lint hard-fail every agent's test:affected), so importing the originals HERE is
@@ -338,6 +341,8 @@ describe('affected-tests: migration forward-compat guard (WI-9573)', () => {
   const FC_TASK = `${HOST_WORKSPACE} :: ${FC_SCRIPT}`;
   /** A real migration, under the directory the lint itself reports scanning. */
   const MIGRATION_PATH = `${MIGRATION_SQL_DIR}/750-drop-dead-hfc-partial-indexes.sql`;
+  const DRAFT_MIGRATION_PATH = `${MIGRATION_SQL_DIR}/800-adv-sessions-ended-by-signal.sql.DRAFT`;
+  const SOURCE_CONSUMER_PATH = 'apps/operator/lib/release/deploy-cli.ts';
 
   it('attaches for a migration .sql change, which routes to no operator-core suite', () => {
     const out = dryTasks(MIGRATION_PATH);
@@ -347,6 +352,25 @@ describe('affected-tests: migration forward-compat guard (WI-9573)', () => {
         'wiring it ran ONLY inside green-checkpoint, so destructive DDL with no ' +
         'FORWARD-COMPAT acknowledgment got zero local signal and red-pinned the shared ' +
         'gate for every agent hours later.',
+    ).toContain(FC_TASK);
+  });
+
+  it('attaches for a parked .DRAFT migration change, which the authoring guard must inspect', () => {
+    const out = dryTasks(DRAFT_MIGRATION_PATH);
+    expect(
+      out,
+      `a parked migration at ${DRAFT_MIGRATION_PATH} must run the forward-compat guard; ` +
+        'the runner ignores it by design, but source consumers must be rejected before it is armed',
+    ).toContain(FC_TASK);
+  });
+
+  it('attaches for a source consumer change in the detector source domain', () => {
+    expect(MIGRATION_SOURCE_ROOTS).toContain('apps');
+    const out = dryTasks(SOURCE_CONSUMER_PATH);
+    expect(
+      out,
+      `${SOURCE_CONSUMER_PATH} is inside the detector's source domain; a source edit while a ` +
+        'DRAFT migration exists must still reach the dependency guard',
     ).toContain(FC_TASK);
   });
 
@@ -382,7 +406,7 @@ describe('affected-tests: migration forward-compat guard (WI-9573)', () => {
     ).toContain(FC_TASK);
   });
 
-  it('does NOT attach for a .sql OUTSIDE the scanned migrations directory', () => {
+  it('does NOT attach for a migration-looking .sql OUTSIDE the scanned migrations directory', () => {
     // The discriminating case: same extension, different directory. A prefix-free
     // `endsWith('.sql')` rule would attach here and spend every agent's edit budget
     // on a scan that cannot produce a finding.
@@ -392,6 +416,11 @@ describe('affected-tests: migration forward-compat guard (WI-9573)', () => {
       `only files under ${MIGRATION_SQL_DIR}/ are scanned by the lint, so a .sql ` +
         'elsewhere cannot violate the invariant',
     ).not.toContain(FC_TASK);
+  });
+
+  it('does NOT attach for a parked .DRAFT OUTSIDE the scanned migrations directory', () => {
+    const out = dryTasks('apps/operator/docs/examples/999-not-a-migration.sql.DRAFT');
+    expect(out).not.toContain(FC_TASK);
   });
 
   it('keeps the guard script defined, so the attachment cannot silently no-op', () => {

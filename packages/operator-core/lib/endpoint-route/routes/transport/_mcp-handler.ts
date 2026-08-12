@@ -2571,8 +2571,8 @@ const handler = createMcpHandler(
                 content: [{
                   type: 'text' as const,
                   text: idempotencyKey
-                    ? `request_timeout: tool "${toolName}" exceeded ${deadlineMs}ms (still running server-side; retry with the same _meta.idempotencyKey to replay its result once it completes).`
-                    : `request_timeout: tool "${toolName}" exceeded ${deadlineMs}ms (still running server-side — this call had no idempotencyKey, so a blind retry now risks double-applying a mutation that may already have landed. Do NOT retry yet: first re-read the current state via the matching *:get/*:list to confirm whether it landed before deciding your next step. For future calls, pass _meta.idempotencyKey up front so a timeout-retry can safely replay instead of re-executing).`,
+                    ? `request_timeout: tool "${toolName}" exceeded ${deadlineMs}ms (commit status is UNKNOWN: still running server-side. Before retrying, re-read the current state via the matching *:get/*:list to confirm whether it landed; once it completes, retry with the same _meta.idempotencyKey to replay its result instead of re-executing).`
+                    : `request_timeout: tool "${toolName}" exceeded ${deadlineMs}ms (commit status is UNKNOWN: still running server-side — this call had no idempotencyKey, so a blind retry now risks double-applying a mutation that may already have landed. Do NOT retry yet: first re-read the current state via the matching *:get/*:list to confirm whether it landed before deciding your next step. For future calls, pass _meta.idempotencyKey up front so a timeout-retry can safely replay instead of re-executing).`,
                 }],
               };
             });
@@ -2968,7 +2968,7 @@ export async function dispatchLegacyWithDeadline(
           code: 'request_timeout',
           message:
             `tool "${opts.toolName}" exceeded ${deadlineMs}ms on the legacy dispatch path ` +
-            `(still running server-side, not cancelled; this path has no idempotency-key replay, ` +
+            `(commit status is UNKNOWN: still running server-side, not cancelled; this path has no idempotency-key replay, ` +
             `so re-check current state via the matching *:get/*:list before deciding whether to retry).`,
         },
       };

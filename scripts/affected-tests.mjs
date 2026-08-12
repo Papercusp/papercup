@@ -551,10 +551,17 @@ const PARTIAL_INDEX_SOURCE_ROOTS = [
 ];
 const PARTIAL_INDEX_SCHEMA_FILE = 'libs/papercusp/libs/db/src/schema/generated.ts';
 
-// WI-9573. Mirrors SQL_DIR in scripts/check-migration-forward-compat.mjs — that lint
-// readdirSync()s exactly this directory, so if it ever moves, this must follow or the
-// guard silently stops firing (the same "green because it stopped checking" shape).
+// WI-9573 / EI-20208711931756460. Mirrors SQL_DIR + SOURCE_ROOTS in
+// scripts/check-migration-forward-compat.mjs — that lint scans parked migration artifacts
+// and source consumers, so if either domain moves, this must follow or the guard silently
+// stops firing (the same "green because it stopped checking" shape).
 const MIGRATION_SQL_DIR = 'libs/papercusp/libs/db/sql';
+const MIGRATION_SOURCE_ROOTS = [
+  'apps',
+  'packages',
+  'libs/papercusp/packages',
+  'libs/papercusp/libs/db/src',
+];
 
 // EI-7667. Mirrors ROOTS in scripts/check-no-unthreaded-apply.mjs — that guard walks
 // exactly these roots, so if its scan widens, this must follow or the guard silently
@@ -801,7 +808,7 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       (/\.[cm]?tsx?$/.test(f) && PARTIAL_INDEX_SOURCE_ROOTS.some((r) => f.startsWith(`${r}/`))),
   },
   {
-    // WI-9573 — the D-034 shape a THIRD time, and the most expensive instance yet.
+    // WI-9573 / EI-20208711931756460 — the D-034 shape a THIRD time, and the most expensive instance yet.
     // lint:migration-forward-compat had NO local enforcement point at all: it was invoked
     // only by green-checkpoint (apps/operator/lib/release/green-checkpoint.ts), so a
     // migration author got zero signal and the violation first surfaced as a red FLEET
@@ -815,7 +822,15 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     workspace: '@papercusp/operator-core',
     // The standalone script (~0.1s: it readdirs one directory and regex-scans 65 files).
     script: 'lint:migration-forward-compat',
-    appliesTo: (f) => f.startsWith(`${MIGRATION_SQL_DIR}/`) && f.endsWith('.sql'),
+    appliesTo: (f) => {
+      const isMigrationArtifact =
+        f.startsWith(`${MIGRATION_SQL_DIR}/`) &&
+        (f.endsWith('.sql') || f.endsWith('.sql.DRAFT') || f.endsWith('.sql.PENDING-CODE-DEPLOY'));
+      const isSourceConsumer = MIGRATION_SOURCE_ROOTS.some(
+        (root) => f.startsWith(`${root}/`) && /\.[cm]?[jt]sx?$|\.sql$/.test(f),
+      );
+      return isMigrationArtifact || isSourceConsumer;
+    },
   },
   {
     // WI-4311 — the D-034 shape again, with the most delayed discovery of the set.

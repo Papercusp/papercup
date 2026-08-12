@@ -270,7 +270,9 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
     expect(r.green).toBe(false);
     const written = readdirSync(tmpLogDir).filter((f) => !before.has(f));
     expect(written).toHaveLength(1);
-    const body = readFileSync(join(tmpLogDir, written[0]), 'utf8');
+    const writtenLog = written.at(0);
+    if (!writtenLog) throw new Error('expected one newly-written checkpoint log');
+    const body = readFileSync(join(tmpLogDir, writtenLog), 'utf8');
     // This line is written by realCheckpointDeps.runGreen itself, before the orchestration
     // layer can append its richer verdict block or be interrupted by a watchdog.
     const heldByLine = body.split('\n').find((line) => line.startsWith('GATE_HELD_BY count='));

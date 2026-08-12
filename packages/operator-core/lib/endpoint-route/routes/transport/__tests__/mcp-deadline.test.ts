@@ -85,6 +85,8 @@ describe('dispatchLegacyWithDeadline (WI-4760)', () => {
       expect(r.ok).toBe(false);
       expect(r.error?.code).toBe('request_timeout');
       expect(r.error?.message).toMatch(/legacytest:hang.*exceeded 10ms/);
+      expect(r.error?.message).toContain('commit status is UNKNOWN');
+      expect(r.error?.message).toContain('re-check current state');
       // Attribution/telemetry (the ticket's second requirement): the wedge is
       // logged with the tool name so it can be found + fixed.
       expect(warn.mock.calls.some((c) => String(c[0]).includes('legacytest:hang'))).toBe(true);

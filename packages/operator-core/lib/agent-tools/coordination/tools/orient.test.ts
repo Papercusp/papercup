@@ -8,6 +8,7 @@ import {
   ORIENT_MEMORY_NOTE,
   ORIENT_DEEP_WORK_NOTE,
 } from './orient';
+import orientTool from './orient';
 import type { InnerCall } from '../../_compound-dispatch';
 
 const foldFactsMock = vi.hoisted(() => vi.fn(async (): Promise<unknown[]> => []));
@@ -46,6 +47,19 @@ beforeEach(() => {
   foldFactsMock.mockResolvedValue([]);
   listActiveAnnouncementsMock.mockResolvedValue([]);
   getFleetMock.mockResolvedValue(null);
+});
+
+describe('coord:orient args', () => {
+  it('declares a transport budget above the flat MCP deadline for compound bootstrap work', () => {
+    expect((orientTool as { timeoutSec?: number }).timeoutSec).toBe(120);
+    expect((orientTool as { timeoutSec?: number }).timeoutSec).toBeGreaterThan(55);
+  });
+
+  it('accepts an explicit null planSlug for planless lanes', () => {
+    expect(
+      orientTool.args.safeParse({ intent: 'planless wake', planSlug: null, planItems: [] }).success,
+    ).toBe(true);
+  });
 });
 
 function fakeCall(handlers: Record<string, (args: Record<string, unknown>) => unknown>): {

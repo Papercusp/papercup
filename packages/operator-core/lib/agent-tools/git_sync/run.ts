@@ -33,6 +33,8 @@ const execFileP = promisify(execFile);
  */
 export const GIT_SYNC_RUN_BUDGET_MS = 45_000;
 
+const GIT_SYNC_COMMITTED_EVENT = 'git-sync:committed';
+
 /**
  * WI-4940: `git rev-parse HEAD` itself has NO bound — the ~120s hang the reporter
  * observed (a WI-4938 caller had to terminate its wait) happened AFTER the
@@ -125,6 +127,23 @@ export default defineTool({
       : outcome?.status ?? 'unknown';
     const committed = Boolean(before && after && before !== after) || outcome?.status === 'synced';
     const success = outcome?.status === 'synced' || outcome?.status === 'nothing';
+    // A timeout means the fire was accepted but its promise is still running in the
+    // background. Keep that state explicitly non-terminal and hand the caller the
+    // existing commit event + durable routine fields that settle/prove it, rather than
+    // making `ok:true, committed:false` look like a completed no-op.
+    const continuation = fired.degraded && fired.reason === 'timeout'
+      ? {
+          completion_event: { key: GIT_SYNC_COMMITTED_EVENT, payload_field: 'sha' },
+          await_tool: 'git-sync:await',
+          progress_ref: {
+            surface: 'routine.metadata',
+            workspace_id: workspaceId,
+            install_slug: slug,
+            target_role: 'system:git-sync',
+            fields: ['fire_started_at', 'last_status', 'last_synced_at', 'head_sha'],
+          },
+        }
+      : undefined;
     const note = fired.degraded
       ? fired.reason === 'error'
         ? `git-sync fire failed before it returned an outcome: ${fired.errorMessage ?? 'unknown error'}.`
@@ -144,7 +163,7 @@ export default defineTool({
         {
           type: 'text',
           text: JSON.stringify({
-            ok: !(fired.degraded && fired.reason === 'error'),
+            ok: !fired.degraded,
             fired: true,
             slug,
             status,
@@ -155,6 +174,7 @@ export default defineTool({
             ...(outcome ? { outcome } : {}),
             ...(fired.degraded ? { degraded: true } : {}),
             ...(fired.errorMessage ? { error: fired.errorMessage } : {}),
+            ...(continuation ? { continuation } : {}),
             note,
           }),
         },

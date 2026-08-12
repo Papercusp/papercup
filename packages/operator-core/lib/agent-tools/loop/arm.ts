@@ -38,6 +38,7 @@ import {
   LOOP_INTERVAL_FLOOR_SEC,
 } from '../../harness/routines/loop';
 import { claimWorkItem, classifyClaimFailure, getWorkItem } from '../../work-items';
+import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
 import { armInboxWake } from '../../events/await/inbox-wake-arm';
 import { listWakeAwaitsForSubscriber } from '../../events/await/store';
 import { findLiveHost, sessionClassForHost } from '../../events/await/psu-pty-discovery';
@@ -754,21 +755,30 @@ export default defineTool({
             hint: admission.reason,
           };
         } else {
-          const wi = await claimWorkItem(drivenCandidate, ownerId, { harness });
-          if (wi) {
-            claimedWorkItem = drivenCandidate;
-            workItemClaim = { id: drivenCandidate, claimed: true };
+          // EI-20223724711056304: a loop pin is not allowed to resurrect finished
+          // work. The lower-level by-id claim path can return an idempotent-looking
+          // row for a terminal item, so read lifecycle state BEFORE mutation and
+          // keep both the routine binding and wake prompt free of the stale id.
+          const beforeClaim = await getWorkItem(drivenCandidate, harness);
+          if (beforeClaim && ANY_FAMILY_TERMINAL_STATES.includes(String(beforeClaim.state))) {
+            workItemClaim = { id: drivenCandidate, claimed: false, reason: 'terminal' };
           } else {
+            const wi = await claimWorkItem(drivenCandidate, ownerId, { harness });
+            if (wi) {
+              claimedWorkItem = drivenCandidate;
+              workItemClaim = { id: drivenCandidate, claimed: true };
+            } else {
             // claimWorkItem returns a bare null for three outcomes — re-read + classify
             // for an accurate, actionable note (mirrors work_items:claim's claimOne).
-            const current = await getWorkItem(drivenCandidate, harness);
-            const failure = classifyClaimFailure(current, ownerId);
-            workItemClaim =
-              failure.reason === 'conflict'
-                ? { id: drivenCandidate, claimed: false, reason: 'claim_conflict', holder: failure.holder }
-                : failure.reason === 'not_found'
-                  ? { id: drivenCandidate, claimed: false, reason: 'not_found' }
-                  : { id: drivenCandidate, claimed: false, reason: 'not_claimable' };
+              const current = await getWorkItem(drivenCandidate, harness);
+              const failure = classifyClaimFailure(current, ownerId);
+              workItemClaim =
+                failure.reason === 'conflict'
+                  ? { id: drivenCandidate, claimed: false, reason: 'claim_conflict', holder: failure.holder }
+                  : failure.reason === 'not_found'
+                    ? { id: drivenCandidate, claimed: false, reason: 'not_found' }
+                    : { id: drivenCandidate, claimed: false, reason: 'not_claimable' };
+            }
           }
         }
       } catch (e) {

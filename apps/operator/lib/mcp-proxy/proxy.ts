@@ -653,14 +653,16 @@ export function shouldShedForInFlight(currentInFlight: number, maxInFlight: numb
   return currentInFlight >= maxInFlight;
 }
 
-/** Fleet bootstrap and scheduler claims are liveness/control-plane traffic: if either cannot
- * run, workers cannot orient or drain the very queue that is generating proxy load. Keep this
- * deliberately narrow. */
+/** Fleet bootstrap, continuation checkpoints, and scheduler claims are liveness/control-plane
+ * traffic: if they cannot run, workers cannot orient, persist a safe wake boundary, or drain the
+ * very queue generating proxy load. Keep this deliberately narrow. */
 export function isReservedControlPlaneCall(rawBody: Buffer): boolean {
   try {
     const message = JSON.parse(rawBody.toString('utf8')) as { method?: unknown; params?: { name?: unknown } };
     return message.method === 'tools/call' &&
-      (message.params?.name === 'scheduler:get_next' || message.params?.name === 'coord:orient');
+      (message.params?.name === 'scheduler:get_next' ||
+        message.params?.name === 'coord:orient' ||
+        message.params?.name === 'loop:checkpoint');
   } catch {
     return false;
   }
