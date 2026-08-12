@@ -406,6 +406,40 @@ export default defineTool({
     if (!job) {
       const stranded = strandedJobLookup(args.bash_id, ctx.stateDir);
       if (stranded) {
+        const strandedLog = inspectStrandedJobLog(stranded.tail, args.filter);
+        const strandedOutput = {
+          output_tail: strandedLog.output,
+          ...(strandedLog.filterError ? { filter_error: strandedLog.filterError } : {}),
+        };
+
+        // EI-20230176152308336: the durable JOB END marker is stronger than a
+        // stale/non-terminal task-ledger row. The marker is appended from the
+        // child close handler, so once it is present the job has a recoverable
+        // terminal verdict even though the in-memory BashJob and/or its ledger
+        // update may have been lost. Return the normal BashOutput success shape
+        // instead of making callers poll a process that already finished.
+        if (strandedLog.terminal) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify({
+                  ok: true,
+                  bash_id: args.bash_id,
+                  status: strandedLog.terminal.status,
+                  exit_code: strandedLog.terminal.exitCode,
+                  running: false,
+                  total_bytes: stranded.sizeBytes,
+                  log_path: stranded.logPath,
+                  recovered_from_log_marker: true,
+                  ...strandedOutput,
+                  output: strandedLog.output,
+                }),
+              },
+            ],
+          };
+        }
+
         // EI-18759519171684432: before asserting anything about the JOB's real OS
         // liveness, consult the durable task-manager ledger — it survives exactly
         // the failure (in-memory JOBS map entry gone) that got us into this branch,
@@ -448,7 +482,7 @@ export default defineTool({
                   task_id: ledgerVerdict.taskId,
                   log_path: stranded.logPath,
                   total_bytes_written: stranded.sizeBytes,
-                  output_tail: stranded.tail,
+                  ...strandedOutput,
                 }),
               },
             ],
@@ -495,7 +529,7 @@ export default defineTool({
                     'capability:bash if you still need the result; check output_tail below for how far it got.',
                   log_path: stranded.logPath,
                   total_bytes_written: stranded.sizeBytes,
-                  output_tail: stranded.tail,
+                  ...strandedOutput,
                 }),
               },
             ],
@@ -532,7 +566,7 @@ export default defineTool({
                 advice,
                 log_path: stranded.logPath,
                 total_bytes_written: stranded.sizeBytes,
-                output_tail: stranded.tail,
+                ...strandedOutput,
               }),
             },
           ],

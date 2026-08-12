@@ -4,7 +4,8 @@
  * no subprocess, deterministic.
  */
 import { describe, it, expect } from 'vitest';
-import { filterOutputLines } from './bash_output';
+import { formatJobLogEndMarker } from './bash-jobs';
+import { filterOutputLines, inspectStrandedJobLog, parseJobLogEndMarker } from './bash_output';
 
 describe('filterOutputLines', () => {
   const chunk = 'apple\nbanana\napricot\ncherry';
@@ -48,5 +49,30 @@ describe('filterOutputLines', () => {
     expect(filterOutputLines(chunk, '^a').error).toBeUndefined();
     expect(filterOutputLines(chunk, 'a(pp|pr)').error).toBeUndefined();
     expect(filterOutputLines(chunk, 'err|warn|fail').error).toBeUndefined();
+  });
+});
+
+describe('stranded job log recovery (EI-20230176152308336)', () => {
+  const log =
+    'noise\nTests 111 passed\nEXIT=0\n' +
+    formatJobLogEndMarker('completed', 0, Date.UTC(2026, 7, 12, 7, 6, 45));
+
+  it('parses a durable JOB END marker as a terminal verdict', () => {
+    expect(parseJobLogEndMarker(log)).toEqual({ status: 'completed', exitCode: 0 });
+  });
+
+  it('returns the terminal verdict and applies filter to the recovered tail', () => {
+    const recovered = inspectStrandedJobLog(log, '^(Tests|EXIT=)');
+    expect(recovered.terminal).toEqual({ status: 'completed', exitCode: 0 });
+    expect(recovered.output).toBe('Tests 111 passed\nEXIT=0');
+    expect(recovered.output).not.toContain('noise');
+    expect(recovered.output).not.toContain('JOB END');
+    expect(recovered.filterError).toBeUndefined();
+  });
+
+  it('keeps liveness unresolved when the marker is absent while still filtering output', () => {
+    const recovered = inspectStrandedJobLog('still running\nTests 111 passed\n', 'Tests');
+    expect(recovered.terminal).toBeNull();
+    expect(recovered.output).toBe('Tests 111 passed');
   });
 });
