@@ -57,7 +57,7 @@ describe('EI-20207763368144905 — nested HUD assertion quoting', () => {
       'tauri-agent-tools eval --pid "$VERIFY_TAURI_PID" \\',
       `  '${EXPRESSION}'`,
       '"$VERIFY_TAURI_POLL" --selector body --text Peer --no-errors',
-    ].join('\\n');
+    ].join('\n');
     const result = spawnSync('bash', ['-c', recipe], {
       encoding: 'utf8',
       env: {
