@@ -738,18 +738,6 @@ export interface LoopStatus {
    *  the check's 5-min floor from that owner's last real turn. Use THIS field for any
    *  "was a turn produced after T" test; never fall back to `lastTurnAt` for it. */
   lastRealTurnAt: string | null;
-  /**
-   * Cadence observability for the current arm. `expectedFiresSinceArm` is the number of
-   * interval-sized opportunities that have elapsed since `armedAt`; compare it with
-   * `firesSinceArm`, which is the number of attempted fires actually recorded. The
-   * effective interval/ratio are derived from the arm-to-last-fire span, while the
-   * longest gap is measured from the durable loop wake-delivery history. A null metric
-   * means the source does not have enough timestamps yet, never "zero".
-   */
-  expectedFiresSinceArm: number | null;
-  effectiveIntervalSec: number | null;
-  cadenceRatio: number | null;
-  longestObservedGapSec: number | null;
   /** EI-18712914572668391: true when this loop keeps getting re-armed (fireCount climbing,
    *  `stalled` reading false because it isn't currently PARKED) while `lastTurnAt` has not
    *  kept pace — i.e. fires are being ATTEMPTED without turns actually being PRODUCED. This
