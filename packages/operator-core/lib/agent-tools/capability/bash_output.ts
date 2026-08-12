@@ -11,11 +11,13 @@ import { statSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import {
+  JOB_LOG_END_MARKER_PREFIX,
   detectBufferingLastStage,
   formatBufferingPipelineAdvice,
   getJob,
   readJobOutput,
   scratchDir,
+  type BashStatus,
   type BashJob,
 } from './bash-jobs';
 import { backgroundTypecheckVerdict } from './background-typecheck-verdict';
@@ -260,6 +262,52 @@ export function filterOutputLines(chunk: string, filter: string | undefined): { 
   } catch (err) {
     return { output: chunk, error: `invalid filter regex (${err instanceof Error ? err.message : String(err)}) — returning unfiltered output` };
   }
+}
+
+type RecoveredJobStatus = Exclude<BashStatus, 'running'>;
+
+export interface StrandedJobLogInspection {
+  terminal: { status: RecoveredJobStatus; exitCode: number | null } | null;
+  output: string;
+  filterError?: string;
+}
+
+// The marker is written only after the child reaches a terminal state and the
+// spill stream is flushed. It is therefore the durable completion evidence for
+// a job whose in-memory BashJob entry was lost, even when the task ledger has not
+// observed the close yet. Anchor at the start of a line so ordinary command
+// output containing the marker prefix cannot become a false terminal verdict.
+const JOB_LOG_END_MARKER_RE = new RegExp(
+  '^' +
+    JOB_LOG_END_MARKER_PREFIX.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') +
+    ': status=(completed|failed|killed|timed_out) exit=(null|-?\\d+) at [^\\n]*(?:\\n|$)',
+  'm',
+);
+
+/** Parse the durable terminal marker from a stranded job log tail. */
+export function parseJobLogEndMarker(
+  log: string,
+): { status: RecoveredJobStatus; exitCode: number | null } | null {
+  const match = JOB_LOG_END_MARKER_RE.exec(log);
+  if (!match) return null;
+  return {
+    status: match[1] as RecoveredJobStatus,
+    exitCode: match[2] === 'null' ? null : Number(match[2]),
+  };
+}
+
+/**
+ * Inspect a stranded log once for both durable completion and filtered output.
+ * Keeping these decisions together prevents the tracking-loss branches from
+ * drifting away from the normal BashOutput filter contract.
+ */
+export function inspectStrandedJobLog(log: string, filter: string | undefined): StrandedJobLogInspection {
+  const filtered = filterOutputLines(log, filter);
+  return {
+    terminal: parseJobLogEndMarker(log),
+    output: filtered.output,
+    ...(filtered.error ? { filterError: filtered.error } : {}),
+  };
 }
 
 /**
