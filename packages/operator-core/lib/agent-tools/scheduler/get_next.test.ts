@@ -110,6 +110,12 @@ import getNextTool, { GET_NEXT_BUDGET_MS } from './get_next';
 import claimNextTool from '../work_items/claim_next';
 import { CLAIM_STATES_ALLOWLIST } from '../../work-items';
 
+describe('scheduler:get_next ambient transaction reservation', () => {
+  it('opts out because the self-pull handler owns its DB accessors', () => {
+    expect((getNextTool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+});
+
 const TOOLS: Array<{ name: string; args: ZodTypeAny }> = [
   { name: 'scheduler:get_next', args: (getNextTool as { args: ZodTypeAny }).args },
   { name: 'work_items:claim_next', args: (claimNextTool as { args: ZodTypeAny }).args },
