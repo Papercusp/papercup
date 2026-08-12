@@ -6,18 +6,9 @@
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "\"Unresolved escalation in harness X\" phantoms: a stale/orphaned harness_escalations row, not a live problem"
 description: "The recurring auto-implement EI 'Unresolved escalation in harness X' is almost always a PHANTOM — a harness_shared.harness_escalations row whose escalation is set + supervisor_notes empty, while the underlying condition is long since resolved. The green-checkpoint-{stall,watchdog} variants self-clear via trackGateStall / green-stall-watchdog only when the row's harness_slug equals the LIVE install-slug; a row keyed under a DEAD/renamed slug (e.g. legacy 'papercup' after the papercup→papercusp rename, which has no live green-checkpoint routine) can never be matched by the clear. As of the EI-8396 fix, collectEscalationSignals now SUPPRESSES exactly those two green-checkpoint phases when the row's install-slug has no live green-checkpoint routine, so a dead-install orphan of those phases no longer loops forever. A stale row under any OTHER phase (or a same-slug row that just never got cleared) still re-fires the watchdog every tick. The drill: confirm the real condition is resolved via routines.gate_health, then clear the stale row (escalation=NULL + supervisor_notes) — do NOT try to 'fix' a green gate."
-discovered: 2026-07-07
-tags: [watchdog, escalation, unresolved-escalation, green-checkpoint-stall, git-sync-watchdog, mcp-dark-int, github-bridge, phantom, orphaned-row, install-slug-rename, auto-implement, EI-7690, EI-8396, WI-2825]
-status: active
-documents:
-  - packages/operator-core/lib/harness/improvements/watchdog.ts
-  - packages/operator-core/lib/harness/routines/release-actions.ts
-  - packages/operator-core/lib/release/green-stall-watchdog.ts
-  - packages/operator-core/lib/sync/pot-git/github-divergence.ts
 type: Insight
-generated:
-  by: agent
-  at: 2026-07-06
+discovered: 2026-07-07
+status: active
 ---
 
 ## The signal
@@ -102,7 +93,7 @@ stale row under any other phase, still re-fires and still needs the manual clear
    ```sql
    SELECT metadata->'gate_health', last_fired_at
      FROM harness_shared.routines
-    WHERE install_slug = '<live-slug>' AND target_role = 'system:green-checkpoint';
+    WHERE workspace_id = '<ws>' AND install_slug = '<live-slug>' AND target_role = 'system:green-checkpoint';
    ```
    `consecutiveReds = 0`, `stallAlerted = false`, a recent `lastGreenAt` + `last_fired_at`
    ⇒ the stall is **resolved**; the escalation is a phantom.
@@ -223,7 +214,7 @@ resolution — while the PG `harness_escalations` row the improvement-watchdog's
 `shared-pot-test`/`git-sync-watchdog` yet it immediately re-dispatched as EI-8788. **Always verify
 the fix on the PG row, not the disk view:** `SELECT COALESCE(escalation,'')<>'' AS has_esc,
 COALESCE(supervisor_notes,'')<>'' AS has_notes FROM harness_shared.harness_escalations WHERE
-harness_slug=... AND phase=...` — a resolved row must show `has_esc=false` (cleared) and/or
+workspace_id = '<ws>' AND harness_slug=... AND phase=...` — a resolved row must show `has_esc=false` (cleared) and/or
 `has_notes=true`; if `harness:escalation` shows notes but the PG row still has `has_esc=true,
 has_notes=false`, your resolve missed the phase.
 
@@ -250,7 +241,7 @@ git-sync-watchdog:
    ```sql
    SELECT COALESCE(escalation,'')<>'' AS has_esc, COALESCE(supervisor_notes,'')<>'' AS has_notes
      FROM harness_shared.harness_escalations
-    WHERE phase = 'mcp-dark-int:su-<uuid>';
+    WHERE workspace_id = '<ws>' AND phase = 'mcp-dark-int:su-<uuid>';
    ```
 2. **Confirm the session is genuinely gone** (not still dark): `su-<uuid>` has **no**
    `harness_shared.coord_presence` row and **no** `harness_shared.spawned_agents` row.
@@ -288,7 +279,7 @@ mcp-dark-int:
    ```sql
    SELECT COALESCE(escalation,'')<>'' AS has_esc, length(coalesce(escalation,'')) AS esc_len, mtime_ms
      FROM harness_shared.harness_escalations
-    WHERE harness_slug = '<hive>' AND phase = 'github-bridge';
+    WHERE workspace_id = '<ws>' AND harness_slug = '<hive>' AND phase = 'github-bridge';
    ```
    `has_esc = false` (esc_len 0) with an `mtime_ms` **after** the EI's `createdAt` ⇒ a clean bridge tick
    cleared it. `collectEscalationSignals` gates on `COALESCE(e.escalation,'') <> ''`, so a NULL row is
