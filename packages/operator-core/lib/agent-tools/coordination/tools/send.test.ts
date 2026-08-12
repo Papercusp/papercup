@@ -290,6 +290,27 @@ describe('coord:send handler (bulk keyed-array)', () => {
     expect(sendM).toHaveBeenCalledTimes(1);
   });
 
+  it('EI-20268344447779966: a delivery exception is surfaced at the envelope level', async () => {
+    // runBulk intentionally catches per-item throws and preserves the generic
+    // execution-level ok:true. coord:send must add an unmistakable delivery
+    // signal so a caller cannot report this as sent after a transient PG lock
+    // timeout (the incident that filed this item).
+    sendM.mockRejectedValueOnce(new Error('canceling statement due to lock timeout'));
+
+    const b = await body({ to: ['bee-1'], summary: 'wind down and report back' });
+
+    expect(b).toMatchObject({
+      ok: true,
+      partial: true,
+      counts: { ok: 0, failed: 1 },
+      results: [{ ok: false, to: ['bee-1'], error: 'canceling statement due to lock timeout' }],
+    });
+    expect(b.deliveryFailureWarning).toMatch(/coord:send completed the batch/i);
+    expect(b.deliveryFailureWarning).toMatch(/failed delivery/i);
+    expect(b.deliveryFailureWarning).toMatch(/do not assume every message was delivered/i);
+    expect(b.deliveryFailureWarning).toContain('canceling statement due to lock timeout');
+  });
+
   it("wake:'required' miss on a DEAD recipient → recipient_dead + truthful black-hole note (WI-574)", async () => {
     wakeM.mockResolvedValueOnce({ targets: ['dead-bee'], keys: [], woken: 0, staged: 0, stagedTargets: [] } as never);
     idleM.mockResolvedValueOnce({ idle: ['dead-bee'] } as never);
