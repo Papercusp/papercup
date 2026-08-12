@@ -517,7 +517,7 @@ describe('emitAwaitedEvent — WI-4014 Part 2: standing event-key inject subscri
 });
 
 describe('pumpWakeDeliveries — pacing (D-007)', () => {
-  it('reopens ordinary event deliveries when a headless resume dies after spawn', async () => {
+  it('reopens ordinary event deliveries when Codex exits 0 without turn.completed', async () => {
     const first = workRow({
       id: 90,
       subscriberId: 'su-a',
@@ -540,10 +540,11 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
         // Reproduce the fast-exit race: the child dies before the pump finishes
         // writing delivered/coalesced state.
         deps.onResumeTurnExit?.(d, {
-          exitCode: 1,
+          exitCode: 0,
           signal: null,
-          stdoutTail: 'API Error: 429 · Rate limited',
+          stdoutTail: '{"type":"item.completed","item":{"type":"command_execution","exit_code":0}}',
           stderrTail: '',
+          outputProtocol: 'codex-jsonl',
         });
         return { kind: 'delivered', channel: 'resume-headless' };
       },
@@ -558,10 +559,10 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
       expect(h.store.reopenDeliveredAfterResumeDeath).toHaveBeenCalledTimes(2);
     });
     expect(h.store.reopenDeliveredAfterResumeDeath).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 90, error: 'resume-turn-death:rate_limited', maxAttempts: 8 }),
+      expect.objectContaining({ id: 90, error: 'resume-turn-death:malformed_output', maxAttempts: 8 }),
     );
     expect(h.store.reopenDeliveredAfterResumeDeath).toHaveBeenCalledWith(
-      expect.objectContaining({ id: 91, error: 'resume-turn-death:rate_limited', maxAttempts: 8 }),
+      expect.objectContaining({ id: 91, error: 'resume-turn-death:malformed_output', maxAttempts: 8 }),
     );
     expect(h.store.markDeliveryDelivered.mock.invocationCallOrder[0]).toBeLessThan(
       h.store.reopenDeliveredAfterResumeDeath.mock.invocationCallOrder[0],

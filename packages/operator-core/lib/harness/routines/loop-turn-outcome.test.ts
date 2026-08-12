@@ -163,6 +163,30 @@ describe('handleLoopResumeTurnExit (P0b — feed the circuit on a dead loop turn
     expect(update!.text).toContain("'infinity'");
   });
 
+  it('a Codex exit 0 without turn.completed records malformed_output and re-arms the loop', async () => {
+    vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const sql = fakeSql({ ref: refRow, rearmRows: [{ id: 'loop_su_owner' }] });
+    const recordFire = vi.fn(async () => {});
+    const res = await handleLoopResumeTurnExit(
+      loopDelivery(),
+      deathRaw({
+        exitCode: 0,
+        stdoutTail: '{"type":"item.completed","item":{"type":"command_execution","exit_code":0}}',
+        outputProtocol: 'codex-jsonl',
+      }),
+      { sql: sql as never, recordFire },
+    );
+
+    expect(res).toMatchObject({ handled: true, class: 'malformed_output' });
+    expect(recordFire).toHaveBeenCalledWith(
+      'papercusp',
+      'loop-su-owner',
+      expect.stringContaining('malformed_output'),
+      'error',
+    );
+    expect(sql.calls.some((c) => c.kind === 'update')).toBe(true);
+  });
+
   it('a SURVIVED loop turn (clean exit) is a no-op — reconcile owns the ok reset', async () => {
     const sql = fakeSql({ ref: refRow });
     const recordFire = vi.fn(async () => {});
