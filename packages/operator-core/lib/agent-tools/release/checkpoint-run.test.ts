@@ -1020,6 +1020,50 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
     expect(b.reason).toBeUndefined();
   });
 
+  it('EI-20208253097914491: stamps a condition_claimed refusal before returning', async () => {
+    const launchSpy = mockLaunch();
+    const ownership = {
+      eventKey: 'gate-red-streak:papercusp',
+      workItem: 'WI-38026',
+      claimState: 'held',
+      unknown: null,
+      takenBy: 'su-live-holder',
+      takenAt: '2026-08-12T02:00:00.000Z',
+      expiresAt: null,
+      holderSessionState: 'live',
+      duplicates: [],
+      thread: { recent: [], total: 0 },
+    };
+    vi.doMock('../../coord/gate-ownership', () => ({
+      readGateOwnership: vi.fn(async () => ownership),
+      shouldStandDownForLivePeer: vi.fn(() => true),
+      ownershipNeedsLivenessConfirmation: vi.fn(() => null),
+    }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const metadata = vi.fn();
+    const ctx = {
+      log: vi.fn(),
+      signal: new AbortController().signal,
+      progress: vi.fn(),
+      role: 'operator',
+      uiClientId: 'su-caller',
+      metadata,
+    } as never;
+    const b = parse((await tool.handler({ reason: 'gate red' }, ctx)) as never);
+
+    expect(launchSpy).not.toHaveBeenCalled();
+    expect(b).toMatchObject({ ok: false, launched: false, reason: 'condition_claimed' });
+    expect(metadata).toHaveBeenCalledTimes(1);
+    expect(metadata).toHaveBeenCalledWith({
+      standDown: 'condition_claimed',
+      standDownWorkItem: 'WI-38026',
+      standDownTakenBy: 'su-live-holder',
+      standDownHolderSessionState: 'live',
+      fireReason: 'gate red',
+    });
+  });
+
   it('waitForEligibility returns a durable receipt without sleeping or spawning in the request', async () => {
     const scheduleSpy = vi.fn(async () => ({
       pendingId: 'pending-1',
