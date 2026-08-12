@@ -197,6 +197,11 @@ if ! (
     --define:__PAPERCUSP_BUNDLED_SIDECAR__=true \
     --log-limit=20 \
     "${HOST_EXTERNALS[@]}"
+  # WI-38221: widen-avoidance pass. Runs on $TMPFILE, BEFORE the atomic rename
+  # below, so the swap stays atomic and a failure here leaves the last-known-good
+  # $OUTFILE untouched. The helper never exits non-zero — a bundle that skipped
+  # the escape is correct, just fatter, and is not worth failing a boot over.
+  node "$SCRIPT_DIR/ascii-escape-bundle.mjs" "$TMPFILE"
   mv -f "$TMPFILE" "$OUTFILE"
 ) 9>"$LOCKFILE" >"$BUILD_LOG" 2>&1; then
   bundle_rc=1
