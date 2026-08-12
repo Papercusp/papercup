@@ -635,3 +635,62 @@ export async function listNamespaceRefs(
   }
   return out.sort((a, b) => a.ref.localeCompare(b.ref));
 }
+
+/**
+ * Read ONE ref across MANY device namespaces in a SINGLE `git` invocation.
+ * Returns `devicePubkeyBase64 -> sha`, with NO entry for a device lacking the ref.
+ *
+ * ⚠ PERFORMANCE-CRITICAL — this is not a convenience wrapper (EI-18808838427010743).
+ * The obvious serial shape,
+ *
+ *     for (const dev of devices) await readNamespaceRef(repoPath, dev, REF, runGit);
+ *
+ * costs one `git` SPAWN PER DEVICE, and a spawn is not cheap in the process that
+ * matters here: fork() copies the PARENT's page tables at ~40ms per GB of parent
+ * RSS, charged as synchronous system time on the calling thread. bg-host runs at
+ * ~4.2GB RSS, so each spawn blocks its event loop ~165ms for a command git itself
+ * completes in ~4ms. A 12-member pot therefore stalls the loop ~2s per tick —
+ * long enough to stop UDX/hyperswarm keepalives and kill peer sockets mid-transfer
+ * (the mechanism behind EI-18808621019872598). One `for-each-ref` is O(1) spawns
+ * regardless of member count, which is why callers must prefer this over a loop.
+ *
+ * ⚠ SEMANTIC DELTA vs `readNamespaceRef`, stated so nobody has to rediscover it:
+ * `for-each-ref` reports what a ref POINTS AT and does not perform
+ * `rev-parse --verify <ref>^{object}`'s object-existence check. A ref whose object
+ * is missing locally (a torn or partial fetch) is therefore REPORTED here but reads
+ * as ABSENT there. That is the same trade the long-standing sibling
+ * `listNamespaceRefs` already makes, and it fails in the safe direction for these
+ * callers: an unusable sha surfaces as a downstream integration/fetch error rather
+ * than silently excluding a member from a gate.
+ */
+export async function readNamespaceRefForDevices(
+  repoPath: string,
+  devicePubkeysBase64: readonly string[],
+  ref: string,
+  runGit: RunGit = defaultRunGit,
+): Promise<Map<string, string>> {
+  const out = new Map<string, string>();
+  if (devicePubkeysBase64.length === 0) return out;
+
+  // Build the exact full ref path per device via namespaceRefPath so this can
+  // never drift from how readNamespaceRef/writeNamespaceRef address the same ref.
+  const wanted = new Map<string, string>(); // fullRefPath -> devicePubkeyBase64
+  for (const dev of devicePubkeysBase64) wanted.set(namespaceRefPath(dev, ref), dev);
+
+  const r = await runGit(
+    ['for-each-ref', '--format=%(objectname) %(refname)', 'refs/namespaces/'],
+    repoPath,
+  );
+  if (r.code !== 0) return out;
+
+  for (const line of r.stdout.split('\n')) {
+    const t = line.trim();
+    if (!t) continue;
+    const sp = t.indexOf(' ');
+    if (sp < 0) continue;
+    const sha = t.slice(0, sp);
+    const dev = wanted.get(t.slice(sp + 1));
+    if (dev && sha) out.set(dev, sha);
+  }
+  return out;
+}

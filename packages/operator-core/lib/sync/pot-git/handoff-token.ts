@@ -47,6 +47,7 @@ import {
   defaultRunGit,
   deviceNamespaceKey,
   readNamespaceRef,
+  readNamespaceRefForDevices,
   writeNamespaceRef,
 } from './storage';
 import { STAGING_REF } from './integrator';
@@ -323,8 +324,11 @@ export async function resolveMaxObservedStaging(
 ): Promise<MaxObservedStaging | null> {
   // Observed (deviceHex, sha), deduped by sha keeping the lowest device hex.
   const byDevice: { deviceHex: string; sha: string }[] = [];
+  // ONE `for-each-ref` for every device, not one `git` spawn per device —
+  // see readNamespaceRefForDevices (EI-18808838427010743).
+  const shas = await readNamespaceRefForDevices(repoPath, devicePubkeysBase64, STAGING_REF, runGit);
   for (const dev of devicePubkeysBase64) {
-    const sha = await readNamespaceRef(repoPath, dev, STAGING_REF, runGit);
+    const sha = shas.get(dev);
     if (sha) byDevice.push({ deviceHex: deviceNamespaceKey(dev), sha });
   }
   if (byDevice.length === 0) return null;

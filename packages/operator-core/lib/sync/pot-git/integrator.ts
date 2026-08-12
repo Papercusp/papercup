@@ -37,6 +37,7 @@ import {
   defaultRunGit,
   deviceNamespaceKey,
   readNamespaceRef,
+  readNamespaceRefForDevices,
   writeNamespaceRef,
 } from './storage';
 
@@ -192,8 +193,11 @@ export async function collectMemberHeads(
   runGit: RunGit = defaultRunGit,
 ): Promise<MemberHead[]> {
   const out: MemberHead[] = [];
+  // ONE `for-each-ref` for every member, not one `git` spawn per member —
+  // see readNamespaceRefForDevices (EI-18808838427010743).
+  const shas = await readNamespaceRefForDevices(repoPath, memberDevicePubkeysBase64, WORK_REF, runGit);
   for (const dev of memberDevicePubkeysBase64) {
-    const sha = await readNamespaceRef(repoPath, dev, WORK_REF, runGit);
+    const sha = shas.get(dev);
     if (sha) out.push({ deviceHex: deviceNamespaceKey(dev), sha });
   }
   return out;

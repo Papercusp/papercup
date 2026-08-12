@@ -38,7 +38,7 @@ import { lockAuthorityForHive, type LockAuthorityDeps } from '../../authority/lo
 import {
   defaultRunGit,
   hiveGitRepoPath,
-  readNamespaceRef,
+  readNamespaceRefForDevices,
   type RunGit,
 } from './storage';
 import { WORK_REF, integrateMemberHeads, type IntegrationResult, type MemberHead } from './integrator';
@@ -127,11 +127,22 @@ async function collectGateableHeads(
   const head = await runGit(['symbolic-ref', '-q', 'HEAD'], repoPath);
   const defaultRef = head.code === 0 ? head.stdout.trim() : null;
   const out: GateableHead[] = [];
+  // TWO `for-each-ref` calls at worst, not two `git` spawns PER MEMBER — see
+  // readNamespaceRefForDevices (EI-18808838427010743). The fallback scan is
+  // skipped entirely unless some member is actually missing WORK_REF, so the
+  // healthy all-aliased case costs exactly one spawn.
+  const workShas = await readNamespaceRefForDevices(repoPath, memberDevicePubkeysBase64, WORK_REF, runGit);
+  const needFallback =
+    defaultRef !== null &&
+    defaultRef !== WORK_REF &&
+    memberDevicePubkeysBase64.some((dev) => !workShas.has(dev));
+  const fallbackShas = needFallback
+    ? await readNamespaceRefForDevices(repoPath, memberDevicePubkeysBase64, defaultRef, runGit)
+    : new Map<string, string>();
   for (const dev of memberDevicePubkeysBase64) {
-    let sha = await readNamespaceRef(repoPath, dev, WORK_REF, runGit);
-    if (!sha && defaultRef && defaultRef !== WORK_REF) {
-      sha = await readNamespaceRef(repoPath, dev, defaultRef, runGit);
-    }
+    // `??` preserves the original precedence: the fallback is consulted ONLY
+    // when this device has no WORK_REF, never as an override.
+    const sha = workShas.get(dev) ?? fallbackShas.get(dev) ?? null;
     if (sha) out.push({ devicePubkeyBase64: dev, sha });
   }
   return out;
