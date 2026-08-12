@@ -215,6 +215,41 @@ export function makeComposerWedgeDetector({ minDefers, minQuietMs }?: {
     } | null;
 };
 /**
+ * Decide whether a staged composer line has stopped tracking a person and may
+ * be CLEARED so wakes can flow again (WI-38257).
+ *
+ * makeComposerWedgeDetector above answers "should somebody be TOLD?". This
+ * answers "may the host ACT?", and they are deliberately separate questions
+ * because the detector's entire remedy is a stderr line reading "press Ctrl-U
+ * here to clear it" — which asks the very human whose absence IS the failure. A
+ * detector whose only actuator is an absent human is not a recovery path.
+ *
+ * Measured on the 2026-08-12 incident: a 53-char line sat staged while every
+ * wake deferred with `owner-input-cap` for 112s+, the agent took no turn at all,
+ * and the episode ended only because the owner typed. The detector never even
+ * fired — `owner-composer-wedge-suspected` count was 0 in that ledger, because
+ * its default quiet window is 5 min, longer than the strand a human was willing
+ * to sit through. A threshold above human patience reports nothing, ever.
+ *
+ * The predicate is deliberately NOT "no owner byte was ever seen". That reading
+ * is the tempting one and it is WRONG: the incident recorded ownerQuietMs=102321
+ * — finite, so owner-classified bytes HAD arrived — and a never-saw-a-byte guard
+ * would have sat out the very event it was written for. What actually separates
+ * a wedge from a person is the pair below: a line whose length has not moved AND
+ * which has received no owner byte for the whole window. A person who walked
+ * away mid-line trips it too, and that is the correct trade — they lose a line
+ * they had already abandoned, where the alternative is an agent dead until
+ * somebody notices. ownerQuietMs is Infinity when no owner byte was ever seen,
+ * which satisfies any threshold, so a pure phantom clears as soon as it is old
+ * enough.
+ *
+ * Pure (the caller supplies the measurements); exported for tests.
+ */
+export function shouldBreakComposerWedge(sample: any, { minAgeMs, minQuietMs }?: {
+    minAgeMs?: number | undefined;
+    minQuietMs?: number | undefined;
+}): boolean;
+/**
  * Track a bridged owner's line-editor state separately from keystroke activity.
  * The idle gate only knows that typing stopped; it cannot tell whether the
  * owner pressed Enter. Injecting a wake into a quiet-but-unsubmitted line
