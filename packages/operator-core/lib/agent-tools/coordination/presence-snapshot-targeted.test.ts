@@ -69,7 +69,10 @@ vi.mock('../../desktop-window-liveness', () => ({
   gatherOnDesktopSessions: vi.fn(async () => ({ owners: new Set<string>() })),
 }));
 vi.mock('../../pty-viewer-heartbeat', () => ({ gatherViewerAttachedOwners: vi.fn(async () => new Set<string>()) }));
-vi.mock('../locks/su-lock-store', () => ({ getTxPool: vi.fn(), readGranularHolders: vi.fn(async () => []) }));
+vi.mock('../locks/su-lock-store', () => ({
+  getTxPool: vi.fn(),
+  readPathInterestsByOwner: vi.fn(async () => []),
+}));
 vi.mock('./watermarks', () => ({ writeWatermark: vi.fn(async () => undefined) }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'test-ws' }));
 

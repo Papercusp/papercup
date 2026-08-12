@@ -29,7 +29,7 @@ import type {
   CouplingDerivationSources,
   PlanBlockingEdge,
 } from '../../coord/coupling-derivation';
-import { fetchPresenceHeldFiles } from './presence-snapshot';
+import { fetchPresencePathInterests } from './presence-snapshot';
 import { coordSql, coordWorkspaceId, coordHasPgFastPath } from './log';
 import { readPlanBySlug } from '../plans/source';
 
@@ -196,14 +196,23 @@ export function couplingSourcesFor(opts: {
   harnessSlug?: string | undefined;
   workspaceId?: string | undefined;
 }): CouplingDerivationSources {
-  const domain = opts.coordinationDomain;
+  // ⚠ NOT gated on `coordinationDomain` any more, and NOT the holds-only lane.
+  // Two independent reasons the old form emitted exactly zero, forever:
+  //   · it read `agent_granular_locks`, abandoned by production 2026-07-02 (0 live
+  //     rows since) — EI-20199756190949760;
+  //   · even repointed, `agent_file_locks_pkey` is PRIMARY KEY (coordination_domain,
+  //     path), so at most ONE owner exists per path and the "two agents hold the same
+  //     path" predicate is UNSATISFIABLE BY CONSTRUCTION. A mutual-exclusion table
+  //     records who WON contention, never that contention happened.
+  // The contention is in `agent_lock_waiters`; `fetchPresencePathInterests` unions it
+  // in. The domain is a partition key, not an access control — the roster bound below
+  // plus `deriveCouplings`' own roster intersection are the access boundary (D-044 /
+  // D-078c), so reading across domains does not widen. Passing the reader's domain is
+  // what BROKE it: agents write locks under the proxying operator's checkout while a
+  // reader resolves its own tree.
   return {
-    ...(domain
-      ? {
-          heldFiles: async (): Promise<ReadonlyMap<string, readonly string[]>> =>
-            fetchPresenceHeldFiles(opts.rosterOwnerIds, domain),
-        }
-      : {}),
+    heldFiles: async (): Promise<ReadonlyMap<string, readonly string[]>> =>
+      fetchPresencePathInterests(opts.rosterOwnerIds, opts.coordinationDomain ?? null),
     planEdges: (planSlug: string) =>
       fetchPlanBlockingEdges(planSlug, {
         harnessSlug: opts.harnessSlug,

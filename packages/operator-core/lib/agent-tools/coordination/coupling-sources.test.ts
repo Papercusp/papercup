@@ -54,7 +54,7 @@ describe('presenceNeedsCoordinationDomain — each consumer gets its OWN reason 
   });
 });
 
-describe('couplingSourcesFor — the lock lane is armed by the DOMAIN, nothing else', () => {
+describe('couplingSourcesFor — the lock lane is ALWAYS armed; the domain does not gate it', () => {
   const base = { selfOwnerId: 'su-me', rosterOwnerIds: ['su-me', 'su-peer'] };
 
   it('arms heldFiles when a coordination domain is supplied', () => {
@@ -63,11 +63,20 @@ describe('couplingSourcesFor — the lock lane is armed by the DOMAIN, nothing e
     );
   });
 
-  it('omits heldFiles entirely when no domain is supplied — degrades, never throws', () => {
-    // `deriveCouplings` treats an absent source as a dead leg and settles it to
-    // empty, so the other signals still land. That is the intended degradation —
-    // the bug was never this behaviour, it was the caller choosing it by accident.
-    expect(couplingSourcesFor({ ...base }).heldFiles).toBeUndefined();
+  it('ALSO arms heldFiles with NO domain — domain-gating is what killed this signal', () => {
+    // CONTRACT REVERSED DELIBERATELY (EI-20199756190949760). This used to assert
+    // `toBeUndefined()`: no domain ⇒ no lock lane. That gate looked like a safe
+    // degradation and was in fact the kill switch, for a reason no amount of care
+    // at the call site could fix — agents write locks under the PROXYING operator's
+    // checkout while a reader resolves its OWN tree, so the domain a caller can
+    // honestly supply is the one guaranteed to match nothing. Measured: 100% of live
+    // `agent_file_locks` rows sit under one domain that no agent-side reader resolves.
+    //
+    // The domain is a PARTITION key, never an access control. Access is bounded by
+    // `rosterOwnerIds` here and re-intersected against the roster inside
+    // `deriveCouplings` before emission (D-044 / D-078c), both of which hold with or
+    // without a domain — so arming the lane unconditionally cannot widen anything.
+    expect(typeof couplingSourcesFor({ ...base }).heldFiles).toBe('function');
   });
 
   it('always supplies the domain-INDEPENDENT legs, with or without a domain', () => {

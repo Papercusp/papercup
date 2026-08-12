@@ -39,7 +39,7 @@ import {
 import { deriveVerdict } from './liveness-oracle';
 import { deriveContextPressure } from './context-pressure';
 import { writeWatermark } from './watermarks';
-import { getTxPool, readGranularHolders } from '../locks/su-lock-store';
+import { getTxPool, readPathInterestsByOwner } from '../locks/su-lock-store';
 import { gatherOnDesktopSessions } from '../../desktop-window-liveness';
 import { gatherViewerAttachedOwners } from '../../pty-viewer-heartbeat';
 import type { Watermark } from '@papercusp/coordination/core';
@@ -725,19 +725,60 @@ export function groupHeldFilesByOwner(
 }
 
 /**
- * IO seam (P-011 / include_detail): read the live file-lock holders from the SU
+ * IO seam (P-011 / include_detail): read the live file-lock HOLDS from the SU
  * lock store (the SEPARATE papercusp_su DB) and group them per owner. Fail-soft
  * → empty map: presence must render even if that store is unreachable, and this
  * cross-DB query is OPT-IN (only under include_detail), never on the lean path.
+ *
+ * ⚠ READS `agent_file_locks`, NOT `agent_granular_locks`. The granular table was
+ * abandoned by production on 2026-07-02 and has had ZERO live rows since, so this
+ * lane silently returned an empty map on every call (EI-20199756190949760).
+ * `coordinationDomain` is now OPTIONAL and defaults to every domain: agents write
+ * locks under the proxying operator's checkout while a reader resolves its own
+ * tree, so passing the reader's domain returns zero rows by construction. The
+ * `ownerIds` bound is the real restriction and is applied either way.
  */
 export async function fetchPresenceHeldFiles(
   ownerIds: string[],
-  coordinationDomain: string,
+  coordinationDomain?: string | null,
 ): Promise<Map<string, string[]>> {
   if (ownerIds.length === 0) return new Map();
   try {
-    const holders = await readGranularHolders(getTxPool(), coordinationDomain);
+    const holders = await readPathInterestsByOwner(getTxPool(), ownerIds, {
+      coordinationDomain: coordinationDomain ?? null,
+      includeIntents: false,
+    });
     return groupHeldFilesByOwner(holders, new Set(ownerIds));
+  } catch {
+    return new Map();
+  }
+}
+
+/**
+ * IO seam for the `holds-a-lock-on` COUPLING derivation — held locks UNION
+ * in-flight waiter tickets, per owner, across coordination domains.
+ *
+ * ⚠ NOT the same question as {@link fetchPresenceHeldFiles}, and the difference is
+ * the whole fix. The derivation emits an edge when two agents are interested in the
+ * SAME path, and `agent_file_locks_pkey` is `PRIMARY KEY (coordination_domain, path)`
+ * — at most ONE owner per path — so a holds-only source can NEVER satisfy that
+ * predicate. It is a mutual-exclusion table: it records who WON contention, never
+ * that contention happened. The contention lives in `agent_lock_waiters`, whose
+ * `paths text[]` can hold two owners against one path.
+ *
+ * Fail-soft → empty map, like the holds lane: a coupling read must never degrade
+ * the roster.
+ */
+export async function fetchPresencePathInterests(
+  ownerIds: string[],
+  coordinationDomain?: string | null,
+): Promise<Map<string, string[]>> {
+  if (ownerIds.length === 0) return new Map();
+  try {
+    const rows = await readPathInterestsByOwner(getTxPool(), ownerIds, {
+      coordinationDomain: coordinationDomain ?? null,
+    });
+    return groupHeldFilesByOwner(rows, new Set(ownerIds));
   } catch {
     return new Map();
   }
