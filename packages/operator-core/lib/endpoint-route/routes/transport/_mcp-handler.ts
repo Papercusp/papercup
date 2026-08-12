@@ -169,6 +169,9 @@ const REQUEST_ORIGIN_QUERY_KEYS = new Set([
   'delta',
   'plan_run',
   'all_workspaces',
+  // EI-20267598379696870: how a caller DECLARES who chose the call (`&origin=hook`). Our hook
+  // clients know what they are; inference is what corrupted the metric in the first place.
+  'origin',
 ]);
 
 const REQUEST_ORIGIN_HEADER_KEYS = [
@@ -183,6 +186,9 @@ const REQUEST_ORIGIN_HEADER_KEYS = [
   'x-papercusp-agent',
   'x-papercusp-model',
   'mcp-session-id',
+  // EI-20267598379696870: the header form of the `origin` declaration above, for callers that
+  // cannot shape their URL.
+  'x-papercusp-call-origin',
 ] as const;
 
 function buildMcpRequestOrigin(extra: unknown): RequestOriginMetadata | undefined {

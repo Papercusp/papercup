@@ -154,7 +154,7 @@ def plan_exists(slug):
         }},
     }).encode()
     req = urllib.request.Request(
-        operator_url.rstrip('/') + '/api/mcp?superuser=1&format=json&client='
+        operator_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&format=json&client='
         + urllib.parse.quote(client_id, safe=''),
         data=body,
         headers={

@@ -334,12 +334,12 @@ export async function callMcpTool(
     env.mcpUrl ??
     (process.env.PAPERCUSP_BUNDLE_URL
       ? withClient(
-          new URL('/api/mcp?power_user=1', process.env.PAPERCUSP_BUNDLE_URL).toString(),
+          new URL('/api/mcp?power_user=1&origin=hook', process.env.PAPERCUSP_BUNDLE_URL).toString(),
         )
       : (process.env.PAPERCUSP_OPERATOR_URL || process.env.PAPERCUSP_API_BASE)
       ? withClient(
           new URL(
-            '/api/mcp?superuser=1',
+            '/api/mcp?superuser=1&origin=hook',
             process.env.PAPERCUSP_OPERATOR_URL || process.env.PAPERCUSP_API_BASE!,
           ).toString(),
         )

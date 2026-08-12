@@ -65,7 +65,7 @@ if agent:
 body = json.dumps({'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
                    'params': {'name': 'activity:report', 'arguments': args}}).encode()
 req = urllib.request.Request(
-    operator_url.rstrip('/') + '/api/mcp?superuser=1&client=' + urllib.parse.quote(owner, safe=''),
+    operator_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&client=' + urllib.parse.quote(owner, safe=''),
     data=body,
     headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
              'Accept': 'application/json, text/event-stream'},

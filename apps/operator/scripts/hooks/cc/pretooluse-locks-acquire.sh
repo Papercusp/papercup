@@ -797,7 +797,7 @@ def _make_tool_request(name, arguments):
         'params': {'name': name, 'arguments': arguments},
     }).encode()
     return urllib.request.Request(
-        operator_url.rstrip('/') + '/api/mcp?superuser=1&format=json&client='
+        operator_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&format=json&client='
         + urllib.parse.quote(owner, safe=''),
         data=body,
         headers={

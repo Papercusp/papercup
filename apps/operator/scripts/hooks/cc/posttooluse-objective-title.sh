@@ -95,7 +95,7 @@ def call_glance():
     # crownless title on codex/omp from the day TOON became the default (WI-3665). The
     # fixture-driven parity test never caught it because fixtures bypass the network.
     req = urllib.request.Request(
-        operator_url.rstrip('/') + '/api/mcp?superuser=1&format=json&client=' + urllib.parse.quote(me, safe=''),
+        operator_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&format=json&client=' + urllib.parse.quote(me, safe=''),
         data=body,
         headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json',
                  'Accept': 'application/json, text/event-stream'},

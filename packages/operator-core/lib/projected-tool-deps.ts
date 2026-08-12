@@ -55,6 +55,7 @@ import { telemetryBufferConfig } from "./telemetry-buffer-config";
 import { recordDecisionLedger } from "./decision-ledger/emit";
 import { resolveAgentIdentity } from "./agent-tools/coordination/identity";
 import { readAgentStateStamp } from "./agent-state-stamp";
+import { classifyCallOrigin } from "./telemetry-call-origin";
 
 /**
  * Serialize to a Postgres-`jsonb`-safe JSON string. Postgres `jsonb` (and `text`)
@@ -241,10 +242,11 @@ const TELEMETRY_INSERT_SQL = `INSERT INTO harness_shared.tool_invocations
     error_message, args_json, transport, event_count, metadata_json,
     principal_kind, principal_auth_method, principal_trust, error_code,
     coord_owner_id, invoked_at,
-    intent_event_id, assumption_set_id, goal_ref)
+    intent_event_id, assumption_set_id, goal_ref,
+    call_origin, call_origin_source)
  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,
          $16,$17::jsonb,$18,$19,$20::jsonb,$21,$22,$23,$24,$25,$26::timestamptz,
-         $27,$28,$29)`;
+         $27,$28,$29,$30,$31)`;
 
 // P-020: the telemetry-buffer sizing (maxPending / debounceMs / maxBatch) is now runtime-settable
 // via telemetryBufferConfig() (canonical defaults TELEMETRY_BUFFER_DEFAULTS live in
@@ -527,6 +529,16 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
     coordOwnerId = null;
   }
   const stamp = readAgentStateStamp(coordOwnerId);
+  // EI-20267598379696870: WHO CHOSE this call — the model, or per-turn hook automation? Every
+  // other provenance column on this table is identical for both populations, and hook traffic is
+  // ~74% of it (measured 2026-08-12), so without this an agent-behavior metric reads mostly
+  // automation — and directionally, since hooks emit only coordination verbs. `source` says
+  // whether the caller DECLARED it or we inferred it, so a wrong guess is never mistakable for a
+  // known fact. Pure + inline; see lib/telemetry-call-origin.ts.
+  const callOrigin = classifyCallOrigin({
+    requestOrigin: input.ctx.requestOrigin,
+    spawnId: input.ctx.spawnId,
+  });
   return {
     workspaceId: input.ctx.workspaceId,
     params: [
@@ -570,6 +582,8 @@ function buildTelemetryRow(input: RecordInvocationInput): TelemetryRow | null {
       stamp.intentEventId,
       stamp.assumptionSetId,
       stamp.goalRef,
+      callOrigin.origin,
+      callOrigin.source,
     ],
   };
 }

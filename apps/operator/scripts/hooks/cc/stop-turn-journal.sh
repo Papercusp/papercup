@@ -87,7 +87,7 @@ body = json.dumps({
     'params': {'name': 'journal:record-turn', 'arguments': args},
 }).encode()
 req = urllib.request.Request(
-    operator_url.rstrip('/') + '/api/mcp?superuser=1&client='
+    operator_url.rstrip('/') + '/api/mcp?superuser=1&origin=hook&client='
     + urllib.parse.quote(owner, safe=''),
     data=body,
     headers={
