@@ -24,7 +24,8 @@
  *     transcript telemetry).
  *   - `dry_run` — plan + log but delete nothing (preview a first run).
  *   - `reindex_indexes` — `Array<{ schema: string; index: string }>`; default the
- *     two heavily-bloated indexes the 2026-07-05 infra audit found (EI-7482).
+ *     two heavily-bloated telemetry indexes from EI-7482 plus all five
+ *     `shared_presence` indexes (EI-19462887419312553).
  *   - `reindex_day_of_week` — 0 (Sunday, default) .. 6 (Saturday), UTC.
  *   - `reindex_enabled` — set `false` to disable the reindex step entirely.
  *   - `reindex_now` — force an immediate one-off reindex regardless of cadence.
@@ -64,10 +65,19 @@ export interface ReindexTarget {
 
 /** The two indexes the 2026-07-05 infra audit (EI-7482) measured as heavily
  *  bloated: `route_invocations_ws_time_idx` (~3.5x bloated, ~3 GB reclaimable)
- *  and `tool_invocations_quota_idx` (1.16 GB for only 761 scans). */
+ *  and `tool_invocations_quota_idx` (1.16 GB for only 761 scans). The
+ *  `shared_presence` roster is also included: it is a tiny, hot-UPDATEd
+ *  federated table whose five indexes measured 276 MB for nine rows on the
+ *  live operator DB (EI-19462887419312553). It is read-only from Storage, so
+ *  periodic REINDEX is its reclaim path rather than age-pruning. */
 export const DEFAULT_REINDEX_TARGETS: readonly ReindexTarget[] = [
   { schema: 'harness_shared', index: 'route_invocations_ws_time_idx' },
   { schema: 'harness_shared', index: 'tool_invocations_quota_idx' },
+  { schema: 'harness_shared', index: 'shared_presence_recent_idx' },
+  { schema: 'harness_shared', index: 'shared_presence_pot_recent_idx' },
+  { schema: 'harness_shared', index: 'shared_presence_fleet_recent_idx' },
+  { schema: 'harness_shared', index: 'shared_presence_pkey' },
+  { schema: 'harness_shared', index: 'shared_presence_user_idx' },
 ];
 
 const DEFAULT_REINDEX_DAY_OF_WEEK = 0; // Sunday, UTC.

@@ -201,6 +201,16 @@ export const STORAGE_CATEGORIES: readonly StorageCategory[] = [
     federation: 'federated',
     description: 'The issue/bug queue. Federated (peer-log) — read-only here.',
   },
+  {
+    id: 'shared-presence',
+    label: 'Shared presence roster',
+    kind: 'pg',
+    schema: 'harness_shared',
+    table: 'shared_presence',
+    federation: 'federated',
+    description:
+      'Cross-machine presence roster projected from the peer log. Read-only here because trimming changes what peers see; weekly index-bloat maintenance runs through telemetry-retention.',
+  },
   // ── on-disk stores (always local) ────────────────────────────────────────
   {
     id: 'agent-sessions',

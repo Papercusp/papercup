@@ -67,6 +67,11 @@ describe('storage categories taxonomy', () => {
     const plans = getStorageCategory('plans');
     expect(plans?.federation).toBe('federated');
     expect(isTrimmable(plans!)).toBe(false);
+
+    const presence = getStorageCategory('shared-presence');
+    expect(presence && isPgCategory(presence) && presence.table).toBe('shared_presence');
+    expect(presence?.federation).toBe('federated');
+    expect(isTrimmable(presence!)).toBe(false);
   });
 
   it('harness_run_output is a local-diagnostic epoch_ms category (wired into DEFAULT_RETENTION_TARGETS@14d, EI-7491)', () => {

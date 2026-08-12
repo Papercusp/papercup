@@ -131,9 +131,18 @@ describe('resolveTargets', () => {
 });
 
 describe('resolveReindexTargets (EI-7482)', () => {
-  it('defaults to the two audit-identified bloated indexes', () => {
+  it('defaults to the audit-identified telemetry indexes plus every shared_presence index', () => {
     expect(resolveReindexTargets({})).toEqual([...DEFAULT_REINDEX_TARGETS]);
     expect(resolveReindexTargets({ reindex_indexes: [] })).toEqual([...DEFAULT_REINDEX_TARGETS]);
+    expect(DEFAULT_REINDEX_TARGETS).toEqual(
+      expect.arrayContaining([
+        { schema: 'harness_shared', index: 'shared_presence_recent_idx' },
+        { schema: 'harness_shared', index: 'shared_presence_pot_recent_idx' },
+        { schema: 'harness_shared', index: 'shared_presence_fleet_recent_idx' },
+        { schema: 'harness_shared', index: 'shared_presence_pkey' },
+        { schema: 'harness_shared', index: 'shared_presence_user_idx' },
+      ]),
+    );
   });
 
   it('honors a configured index list + drops malformed entries', () => {
