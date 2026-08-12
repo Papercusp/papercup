@@ -97,6 +97,10 @@ describe('fleet:status', () => {
     expect((statusTool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });
 
+  it('keeps the deliberate full-roster response parseable for machine consumers', () => {
+    expect((statusTool as { skipResultDoor?: string }).skipResultDoor).toBe('oversize-by-design');
+  });
+
   it('returns the live roster without completion stats when no harness is requested', async () => {
     const result = await invoke({ fleet: 'rocket' });
     expect(result).toMatchObject({

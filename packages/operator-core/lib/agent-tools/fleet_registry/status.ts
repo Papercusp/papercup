@@ -212,6 +212,12 @@ export default defineTool({
   // across the roster/optional-leg fan-out; it pins an org-app slot and can
   // starve subsequent control-plane calls under fleet load.
   skipWorkspaceTx: true,
+  // The explicit full tier is a deliberate lossless roster read. If its JSON
+  // exceeds the generic result door, that door appends a spill pointer/footer
+  // into the body and makes machine consumers (for example `ptool --raw`)
+  // unable to parse it. Trimmed and standard calls remain bounded by the
+  // shapers above; full callers own the larger response they requested.
+  skipResultDoor: 'oversize-by-design',
   agentRoles: [...SU_ROLES, 'cup'],
   args: z.object({
     fleet: z.string().min(1).describe('The fleet slug (from fleet:list).'),
