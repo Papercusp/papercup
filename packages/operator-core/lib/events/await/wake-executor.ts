@@ -1564,6 +1564,15 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
 
     // ── adv-session handle ───────────────────────────────────────────────
     const fresh = await getSession(handle.advSessionId).catch(() => null);
+    // The await/delivery plane is intentionally pinned to DEFAULT_COORD_WORKSPACE
+    // (WI-3575), so d.workspaceId is the coordination workspace, not necessarily
+    // the agent's tenant. A process-exit resume must re-export the persisted
+    // adv-session workspace or a loop wake can silently relaunch the agent in
+    // `default` even while its session row and coord identity remain correctly
+    // scoped to another workspace.
+    const sessionDelivery = fresh?.workspaceId
+      ? { ...d, workspaceId: fresh.workspaceId }
+      : d;
     const pid = fresh?.pid ?? handle.pid;
     const ended = fresh?.endedAt != null;
     const pidKnown = pid != null && pid > 0;
@@ -1582,7 +1591,11 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       isAlive = Boolean(p && !p.stale && !p.revoked);
     }
 
-    const text = tagWakeText(d, applyInjectionDoor(d, await rehydrateLoopWakeText(d, wakeTurnText(d), deps)), tagTurn);
+    const text = tagWakeText(
+      sessionDelivery,
+      applyInjectionDoor(sessionDelivery, await rehydrateLoopWakeText(sessionDelivery, wakeTurnText(sessionDelivery), deps)),
+      tagTurn,
+    );
 
     // Channel 1b (turn-lifecycle-control Phase 3, P-014): a live INTERACTIVE psu
     // session hosts its pty + control socket in the psu PROCESS (D-006), so our
@@ -1592,7 +1605,7 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // + socket present) — so inject the wake turn in place; on any miss fall
     // through to the normal channels.
     const outcome = await injectPsuHostWakeWithReverify(
-      d,
+      sessionDelivery,
       text,
       findPsuHost,
       injectPsuHost,
@@ -1695,9 +1708,9 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
     // tail: dossier P-008 + the work-item CHECKPOINT P-011 = the continuity, D-002). The
     // marker payload is stamped by place_batch ONLY when the flag is on, so flag-off is
     // byte-identical to today (the carry-seam oracle). Fail-soft: false ⇒ legacy resume.
-    const freshTarget = freshContextWarmInjectTarget(d);
+    const freshTarget = freshContextWarmInjectTarget(sessionDelivery);
     if (freshTarget) {
-      const forked = await runFreshContextWarmInject(d, freshTarget, deps.freshContext, (m) =>
+      const forked = await runFreshContextWarmInject(sessionDelivery, freshTarget, deps.freshContext, (m) =>
         console.log(`[wake-executor:fresh-context] ${m}`),
       );
       if (forked) return { kind: 'delivered', channel: 'fresh-context-warm-inject' };
@@ -1800,8 +1813,10 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // ACTIVE workspace instead of rejecting — a net, not a replacement: this
       // explicit export stays the correct primary carrier.)
       // Mirrors bootstrap-su's envelopeEnv + console-launcher (the fresh-launch
-      // legs that already set this). d.workspaceId is the delivery's workspace.
-      PAPERCUSP_WORKSPACE: d.workspaceId,
+      // legs that already set this). The event delivery's workspace is the flat
+      // coordination workspace; use the persisted session scope for the child.
+      PAPERCUSP_WORKSPACE: sessionDelivery.workspaceId,
+      ...(fresh?.harnessSlug ? { PAPERCUSP_HARNESS_SLUG: fresh.harnessSlug } : {}),
       PAPERCUSP_WAKE_DELIVERY_ID: String(d.id),
       // MCP handshake headroom: under fleet load the operator's event loop can
       // stall past claude's default MCP connect timeout, and claude then marks

@@ -981,6 +981,22 @@ describe('executeWake — the liveness ladder', () => {
     expect(o.env.PAPERCUSP_TURN_TRIGGER).toBe('coord-wake');
   });
 
+  it('uses the persisted adv-session scope when the event delivery is pinned to the flat coord workspace', async () => {
+    const spawnDetached = vi.fn(() => 4321);
+    const out = await executeWake(
+      work({ workspaceId: 'default', wakeHandle: advHandle() }),
+      deps({
+        getSession: vi.fn(async () => session({ workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp' })) as never,
+        alive: vi.fn(() => false),
+        spawnDetached,
+      }),
+    );
+    expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
+    const [, , o] = spawnDetached.mock.calls[0] as unknown as [string, string[], { env: Record<string, string> }];
+    expect(o.env.PAPERCUSP_WORKSPACE).toBe('papercusp-workspace');
+    expect(o.env.PAPERCUSP_HARNESS_SLUG).toBe('papercusp');
+  });
+
   it('exited codex → DETACHED `exec resume <uuid>` with CODEX_HOME, uuid recovered from the rollout (P-009)', async () => {
     const spawnDetached = vi.fn(() => 5555);
     const out = await executeWake(
