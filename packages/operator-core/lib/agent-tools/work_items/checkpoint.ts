@@ -672,9 +672,10 @@ export default defineTool({
                 // just told us mattered. A carried row passed through inherits from
                 // itself, so its evidence and original sinceMs survive untouched.
                 //
-                // PLAIN (non-append) replace is deliberately UNCHANGED: it is the only
-                // way to RETIRE a stale check, and dropping that would trade one footgun
-                // for another. Retiring a row while appending is two calls, by design.
+                // PLAIN (non-append) replace keeps its retire-stale-check semantics. The
+                // automatic concise-refresh retry is the exception: that retry is
+                // explicitly additive, so it carries the prior rows forward. Retiring a
+                // row while appending remains two calls, by design.
                 const effectiveChecks =
                   suppliedChecks === undefined
                     ? undefined
