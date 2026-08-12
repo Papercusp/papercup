@@ -638,7 +638,9 @@ async function sendOne(
       // ownerId in the durable reply. Once the session is gone there is no
       // roster left to perform that expansion, but the related message gives
       // us the authenticated canonical sender id.
-      goneRepliedTo = goneReplyAliases.length ? [closingGoneSender] : [];
+      if (goneReplyAliases.length && closingGoneSender !== null) {
+        goneRepliedTo = [closingGoneSender];
+      }
       const trulyUnknown = r.unknown.filter((id) => !goneReplyAliases.includes(id));
       if (trulyUnknown.length || r.ambiguous.length) {
         // EI-19343900550313022: this is ALL-OR-NOTHING BY DESIGN (see toArg's
