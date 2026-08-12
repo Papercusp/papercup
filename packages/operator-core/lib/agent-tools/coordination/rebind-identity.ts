@@ -132,10 +132,17 @@ export interface RebindIdentityResult {
 }
 
 export interface RebindIdentityOpts {
-  /** Skip the from-is-live presence guard (caller has verified the old session is dead). */
+  /** Skip the from-is-live liveness guard (caller has verified the old session is dead). */
   force?: boolean;
   sql?: Sql;
   now?: number;
+  /** DI seam for the liveness guard — defaults to the shared oracle
+   *  (`resolveSessionStates`, dynamically imported). Injected by unit tests so
+   *  the guard stays hermetic; the oracle's own IO does NOT go through `sql`. */
+  resolveLiveness?: (
+    from: string,
+    hints: { claimsHeld: boolean; nowMs: number },
+  ) => Promise<FromLivenessVerdict | null>;
   /**
    * SU-locks (file locks + lock waiters) owner rebind (EI-8999 / P-002,
    * fleet-reliability-verification-2026-07-10) — injected because
@@ -167,17 +174,25 @@ export async function rebindIdentity(
   const sql = opts.sql ?? getOrgPg().sql;
   const now = opts.now ?? Date.now();
 
+  let fromSessionState: SessionState | null = null;
+  let fromHeartbeatFresh: boolean | undefined;
   if (!opts.force) {
-    // The guard reads, never blocks on, presence: a read failure fails OPEN
-    // (proceed) — the surfaces themselves are idempotent and the caller chose
-    // to rebind; only a POSITIVE fresh beat refuses.
+    // The guard reads, never blocks on, liveness: a read failure — or a
+    // degraded oracle leg that yields NO verdict for this id — fails OPEN
+    // (proceed), because the surfaces are idempotent and the caller chose to
+    // rebind. Only an AFFIRMATIVE live-ish verdict refuses.
     try {
-      const rows = await sql<Array<{ heartbeat_at: string | Date }>>`
-        SELECT heartbeat_at FROM harness_shared.coord_presence WHERE owner_id = ${f}
-      `;
-      const beat = rows[0]?.heartbeat_at ? new Date(rows[0].heartbeat_at).getTime() : null;
-      if (beat !== null && now - beat < REBIND_FROM_LIVE_WINDOW_MS) {
-        return { ...base, refused: 'from_appears_live', fromHeartbeatAgoMs: Math.max(0, now - beat) };
+      const claimsHeld = await readClaimsHeld(sql, f);
+      const verdict = await (opts.resolveLiveness ?? defaultResolveLiveness)(f, { claimsHeld, nowMs: now });
+      fromSessionState = verdict?.sessionState ?? null;
+      fromHeartbeatFresh = verdict?.heartbeatFresh;
+      if (verdict && (REBIND_BLOCKING_SESSION_STATES as readonly SessionState[]).includes(verdict.sessionState)) {
+        return {
+          ...base,
+          refused: 'from_appears_live',
+          fromSessionState: verdict.sessionState,
+          ...(verdict.heartbeatFresh === undefined ? {} : { fromHeartbeatFresh: verdict.heartbeatFresh }),
+        };
       }
     } catch {
       /* fail open */
@@ -533,6 +548,8 @@ export async function rebindIdentity(
     ok: surfaces.every((s) => !s.error),
     from: f,
     to: t,
+    fromSessionState,
+    ...(fromHeartbeatFresh === undefined ? {} : { fromHeartbeatFresh }),
     surfaces,
     totalMoved,
   };

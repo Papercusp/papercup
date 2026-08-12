@@ -1,13 +1,20 @@
 /**
  * rebind-identity — unit tests (compaction-continuity-hardening-2026-07-07 P-007).
  * The core is a per-surface, idempotent from→to migration over injected sql.
- * Load-bearing contracts: the from-appears-live presence guard (never steal a
- * live peer's identity), collision semantics (the LIVE id's row / the NEWER
+ * Load-bearing contracts: the from-appears-live LIVENESS guard (never steal a
+ * live peer's identity — but never force the legitimate warm-dead rebind onto
+ * `force:true` either), collision semantics (the LIVE id's row / the NEWER
  * carry-note wins; a duplicate active await is cancelled, not doubled), the
  * append-only fleet fact discipline, and per-surface error isolation.
  */
 import { describe, expect, it, vi } from 'vitest';
-import { rebindIdentity, REBIND_FROM_LIVE_WINDOW_MS } from './rebind-identity';
+import {
+  rebindIdentity,
+  REBIND_BLOCKING_SESSION_STATES,
+  type FromLivenessVerdict,
+  type RebindIdentityOpts,
+} from './rebind-identity';
+import type { SessionState } from './presence-wakeability';
 import { loopRoutineId, loopRoutineName } from '../../harness/routines/loop';
 
 const NOW = 1_800_000_000_000;
@@ -20,8 +27,8 @@ interface FakeCall {
 }
 
 interface FakeOpts {
-  /** Age of the from-id's presence beat; null/undefined = no presence row. */
-  presenceBeatMsAgo?: number | null;
+  /** Does the from-id still hold a plan/work-item claim? (suspect-vs-ended input) */
+  claimsHeld?: boolean;
   loops?: Array<{ id: string; install_slug: string }>;
   /** New loop ids that already exist (the live id armed its own loop). */
   loopIdExists?: string[];
@@ -62,13 +69,9 @@ function fakeSql(opts: FakeOpts = {}) {
     const text = strings.raw.join('?').replace(/\s+/g, ' ').trim();
     calls.push({ text, vals });
     if (opts.failOn?.test(text)) return Promise.reject(new Error('surface exploded'));
-    if (text.includes('SELECT heartbeat_at FROM harness_shared.coord_presence')) {
-      return Promise.resolve(
-        opts.presenceBeatMsAgo == null
-          ? []
-          : [{ heartbeat_at: new Date(NOW - opts.presenceBeatMsAgo).toISOString() }],
-      );
-    }
+    // The liveness guard's ONLY sql read: the claimsHeld EXISTS probe. The
+    // verdict itself comes through the injected `resolveLiveness` seam.
+    if (text.includes('SELECT (EXISTS')) return Promise.resolve([{ held: !!opts.claimsHeld }]);
     if (text.includes('SELECT id, install_slug FROM harness_shared.routines')) return Promise.resolve(opts.loops ?? []);
     if (text.includes('SELECT id FROM harness_shared.routines WHERE id =')) {
       return Promise.resolve((opts.loopIdExists ?? []).includes(String(vals[0])) ? [{ id: vals[0] }] : []);
@@ -152,6 +155,32 @@ function fakeSql(opts: FakeOpts = {}) {
   return Object.assign(fn, { calls });
 }
 
+/**
+ * A from-id whose session is OVER. This is the DEFAULT for every non-guard test
+ * below, and it is the canonical relaunch shape: the predecessor's heartbeat is
+ * still warm (`heartbeatFresh: true`) while its session has ended. The whole
+ * point of gating on `sessionState` is that this rebinds with NO force — under
+ * the old heartbeat-age gate this exact verdict was refused.
+ */
+const warmDead = async (): Promise<FromLivenessVerdict> => ({ sessionState: 'ended', heartbeatFresh: true });
+
+/** Resolve the from-id to a fixed state, and record the hints it was handed. */
+const resolvesTo = (state: SessionState, heartbeatFresh = true) => {
+  const seen: Array<{ claimsHeld: boolean; nowMs: number }> = [];
+  const fn = async (_from: string, hints: { claimsHeld: boolean; nowMs: number }) => {
+    seen.push(hints);
+    return { sessionState: state, heartbeatFresh };
+  };
+  return Object.assign(fn, { seen });
+};
+
+const rebind = (
+  f: string,
+  t: string,
+  sql: unknown,
+  extra: Partial<RebindIdentityOpts> = {},
+) => rebindIdentity(f, t, { sql: sql as never, now: NOW, resolveLiveness: warmDead, ...extra });
+
 const surfaceOf = (res: Awaited<ReturnType<typeof rebindIdentity>>, name: string) => {
   const s = res.surfaces.find((x) => x.surface === name);
   expect(s, `surface ${name} missing`).toBeTruthy();
@@ -172,34 +201,92 @@ describe('argument + liveness guards', () => {
     expect(sql.calls).toHaveLength(0);
   });
 
-  it('refuses while the from-id still beats within the live window (never steal a live peer)', async () => {
-    const sql = fakeSql({ presenceBeatMsAgo: 30_000 });
-    const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW });
-    expect(res).toMatchObject({ ok: false, refused: 'from_appears_live' });
-    expect(res.fromHeartbeatAgoMs).toBe(30_000);
-    expect(res.surfaces).toHaveLength(0);
-    // Only the guard read ran.
-    expect(sql.calls).toHaveLength(1);
+  it.each(REBIND_BLOCKING_SESSION_STATES)(
+    'refuses a from-id the oracle derives as %s (never steal a live peer)',
+    async (state) => {
+      const sql = fakeSql();
+      const res = await rebind(FROM, TO, sql, { resolveLiveness: resolvesTo(state) });
+      expect(res).toMatchObject({ ok: false, refused: 'from_appears_live', fromSessionState: state });
+      expect(res.surfaces).toHaveLength(0);
+      // Only the guard's claimsHeld probe ran — no surface was touched.
+      expect(sql.calls).toHaveLength(1);
+    },
+  );
+
+  it.each(['ended', 'suspect'] as const)(
+    'rebinds a %s from-id with NO force even while its heartbeat is still WARM',
+    async (state) => {
+      // The regression this guard was rewritten for (EI-20273348458054257): a
+      // relaunched session's predecessor keeps a fresh beat for minutes after
+      // its turn ends. Gating on heartbeat age refused this and pushed the
+      // happy path onto `force:true`; gating on sessionState lets it through.
+      const sql = fakeSql();
+      const res = await rebind(FROM, TO, sql, { resolveLiveness: resolvesTo(state, true) });
+      expect(res.ok).toBe(true);
+      expect(res).toMatchObject({ fromSessionState: state, fromHeartbeatFresh: true });
+      expect(res.refused).toBeUndefined();
+      expect(res.surfaces).toHaveLength(16);
+    },
+  );
+
+  it('hands the oracle the from-id\'s REAL claimsHeld — the input that separates suspect from ended', async () => {
+    for (const claimsHeld of [true, false]) {
+      const resolve = resolvesTo('ended');
+      await rebind(FROM, TO, fakeSql({ claimsHeld }), { resolveLiveness: resolve });
+      expect(resolve.seen).toEqual([{ claimsHeld, nowMs: NOW }]);
+    }
   });
 
-  it('proceeds when the beat is stale, when no presence row exists, and under force despite a fresh beat', async () => {
+  it('proceeds under force even when the oracle says the from-id is LIVE', async () => {
+    const resolve = resolvesTo('live');
+    const res = await rebind(FROM, TO, fakeSql(), { force: true, resolveLiveness: resolve });
+    expect(res.ok).toBe(true);
+    expect(res.surfaces).toHaveLength(16);
+    // force skips the guard entirely — the oracle is never consulted.
+    expect(resolve.seen).toHaveLength(0);
+  });
+
+  it('fails OPEN when the oracle returns no verdict, or the guard read throws', async () => {
     for (const opts of [
-      { presenceBeatMsAgo: REBIND_FROM_LIVE_WINDOW_MS + 1, force: undefined },
-      { presenceBeatMsAgo: null, force: undefined },
-      { presenceBeatMsAgo: 5_000, force: true },
+      { sql: fakeSql(), resolveLiveness: async () => null },
+      { sql: fakeSql({ failOn: /SELECT \(EXISTS/ }), resolveLiveness: warmDead },
     ]) {
-      const sql = fakeSql({ presenceBeatMsAgo: opts.presenceBeatMsAgo });
-      const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW, force: opts.force });
+      const res = await rebind(FROM, TO, opts.sql, { resolveLiveness: opts.resolveLiveness });
       expect(res.ok).toBe(true);
       expect(res.surfaces).toHaveLength(16);
     }
   });
 
-  it('a throwing guard read fails OPEN — the caller chose to rebind and the moves are idempotent', async () => {
-    const sql = fakeSql({ failOn: /SELECT heartbeat_at/ });
-    const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW });
-    expect(res.ok).toBe(true);
-    expect(res.surfaces).toHaveLength(16);
+  /**
+   * FALSIFIABILITY CONTROL (repo discipline: a deliberately-wrong implementation
+   * kept permanently in the TEST file — never a mutation of the shared tree).
+   * This is the gate exactly as it was before EI-20273348458054257: refuse while
+   * the from-id's beat is younger than the 180s live window. Kept so the
+   * regression below cannot silently pass against a reverted implementation.
+   */
+  const legacyHeartbeatGate = (heartbeatAgoMs: number) => heartbeatAgoMs < 180_000;
+
+  it('the OLD heartbeat gate refuses the warm-dead rebind that the CURRENT gate admits', async () => {
+    // The control is wrong about the case that matters...
+    expect(legacyHeartbeatGate(30_000)).toBe(true); // would refuse — the defect
+    const res = await rebind(FROM, TO, fakeSql(), { resolveLiveness: resolvesTo('ended', true) });
+    expect(res.refused).toBeUndefined(); // ...the real subject admits it
+
+    // ...and CALIBRATION: on a genuinely live peer both agree to refuse, so the
+    // control is discriminating between these two cases, not just always-refuse.
+    expect(legacyHeartbeatGate(30_000)).toBe(true);
+    const live = await rebind(FROM, TO, fakeSql(), { resolveLiveness: resolvesTo('live', true) });
+    expect(live.refused).toBe('from_appears_live');
+  });
+
+  it('never gates on the raw heartbeat: a WARM beat alone cannot refuse, a COLD one alone cannot admit', async () => {
+    // The defect in one assertion. `heartbeatFresh` is process-keepalive
+    // freshness, not a liveness verdict, so it must not move the decision in
+    // EITHER direction — only `sessionState` may.
+    const warmButEnded = await rebind(FROM, TO, fakeSql(), { resolveLiveness: resolvesTo('ended', true) });
+    expect(warmButEnded.refused).toBeUndefined();
+    const coldButParked = await rebind(FROM, TO, fakeSql(), { resolveLiveness: resolvesTo('parked', false) });
+    expect(coldButParked).toMatchObject({ refused: 'from_appears_live', fromHeartbeatFresh: false });
   });
 });
 
@@ -207,7 +294,7 @@ describe('armed loop routine', () => {
   it('re-keys id + name + target_owner_id and text-replaces the sid inside payload_template', async () => {
     const oldId = loopRoutineId('papercusp', FROM);
     const sql = fakeSql({ loops: [{ id: oldId, install_slug: 'papercusp' }] });
-    const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW });
+    const res = await rebind(FROM, TO, sql);
     expect(surfaceOf(res, 'loop-routine')).toMatchObject({ moved: 1 });
     const update = sql.calls.find((c) => c.text.includes('UPDATE harness_shared.routines'));
     expect(update).toBeTruthy();
@@ -222,7 +309,7 @@ describe('armed loop routine', () => {
       loops: [{ id: oldId, install_slug: 'papercusp' }],
       loopIdExists: [loopRoutineId('papercusp', TO)],
     });
-    const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW });
+    const res = await rebind(FROM, TO, sql);
     expect(surfaceOf(res, 'loop-routine')).toMatchObject({ moved: 0, dropped: 1 });
     const del = sql.calls.find((c) => c.text.includes('DELETE FROM harness_shared.routines'));
     expect(del!.vals).toContain(oldId);
@@ -234,7 +321,7 @@ describe('loop carry-note (+walls) scope rows', () => {
 
   it('moves both the loop and loopnag scopes to the live id', async () => {
     const sql = fakeSql({ notes: [note(`loop:papercusp:${FROM}`), note(`loopnag:papercusp:${FROM}`)] });
-    const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW });
+    const res = await rebind(FROM, TO, sql);
     expect(surfaceOf(res, 'carry-note')).toMatchObject({ moved: 2 });
     const updates = sql.calls.filter((c) => c.text.includes('UPDATE harness_shared.carry_notes'));
     expect(updates.map((u) => u.vals[0])).toEqual([`loop:papercusp:${TO}`, `loopnag:papercusp:${TO}`]);
@@ -245,7 +332,7 @@ describe('loop carry-note (+walls) scope rows', () => {
       notes: [note(`loop:papercusp:${FROM}`, '2026-07-07T10:00:00Z')],
       noteClash: { [`loop:papercusp:${TO}`]: '2026-07-07T11:00:00Z' },
     });
-    const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW });
+    const res = await rebind(FROM, TO, sql);
     expect(surfaceOf(res, 'carry-note')).toMatchObject({ moved: 0, dropped: 1 });
     expect(sql.calls.some((c) => c.text.includes('UPDATE harness_shared.carry_notes'))).toBe(false);
   });
@@ -255,7 +342,7 @@ describe('loop carry-note (+walls) scope rows', () => {
       notes: [note(`loop:papercusp:${FROM}`, '2026-07-07T12:00:00Z')],
       noteClash: { [`loop:papercusp:${TO}`]: '2026-07-07T11:00:00Z' },
     });
-    const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW });
+    const res = await rebind(FROM, TO, sql);
     expect(surfaceOf(res, 'carry-note')).toMatchObject({ moved: 1 });
     const del = sql.calls.find((c) => c.text.includes('DELETE FROM harness_shared.carry_notes'));
     expect(del!.vals).toContain(`loop:papercusp:${TO}`);
@@ -271,7 +358,7 @@ describe('standing awaits', () => {
       ],
       awaitDupKeys: [`coord:inbox-wake:${TO}`],
     });
-    const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW });
+    const res = await rebind(FROM, TO, sql);
     expect(surfaceOf(res, 'awaits')).toMatchObject({ moved: 1, cancelled: 1 });
     const cancel = sql.calls.find((c) => c.text.includes('SET cancelled_at'));
     expect(cancel!.vals).toContain(1);
@@ -287,7 +374,7 @@ describe('fleet membership (append-only) + leadership', () => {
       fleetToLatest: null,
       leaderSlugs: ['bug-drain'],
     });
-    const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW });
+    const res = await rebind(FROM, TO, sql);
     expect(surfaceOf(res, 'fleet-membership')).toMatchObject({ appended: 2 });
     expect(surfaceOf(res, 'fleet-leadership')).toMatchObject({ moved: 1 });
     const inserts = sql.calls.filter((c) => c.text.includes('INSERT INTO harness_shared.fleet_membership_events'));
@@ -303,10 +390,10 @@ describe('fleet membership (append-only) + leadership', () => {
       fleetLatest: { workspace_id: 'coord-ws', owner_label: null, fleet_slug: 'bug-drain', fleet_role: 'member' },
       fleetToLatest: { fleet_slug: 'bug-drain' },
     });
-    const res1 = await rebindIdentity(FROM, TO, { sql: inFleet as never, now: NOW });
+    const res1 = await rebind(FROM, TO, inFleet);
     expect(surfaceOf(res1, 'fleet-membership')).toMatchObject({ appended: 1 }); // just the leave
     const noFleet = fakeSql({ fleetLatest: { workspace_id: 'coord-ws', owner_label: null, fleet_slug: null, fleet_role: null } });
-    const res2 = await rebindIdentity(FROM, TO, { sql: noFleet as never, now: NOW });
+    const res2 = await rebind(FROM, TO, noFleet);
     expect(surfaceOf(res2, 'fleet-membership').appended).toBeUndefined();
   });
 });
@@ -330,7 +417,7 @@ describe('remaining re-keys, totals, and error isolation', () => {
       cursorDrop: 1,
       cursorMove: 1,
     });
-    const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW });
+    const res = await rebind(FROM, TO, sql);
     expect(surfaceOf(res, 'presence')).toMatchObject({ dropped: 1 });
     expect(surfaceOf(res, 'claim-spec')).toMatchObject({ moved: 0, dropped: 1 });
     expect(surfaceOf(res, 'plan-claims')).toMatchObject({ moved: 2 });
@@ -348,7 +435,7 @@ describe('remaining re-keys, totals, and error isolation', () => {
 
   it('read-cursors (EI-8999, migration 537) re-keys coord_read_cursors, live-side-wins on a (workspace,surface) collision', async () => {
     const sql = fakeSql({ cursorMove: 2 });
-    const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW });
+    const res = await rebind(FROM, TO, sql);
     expect(surfaceOf(res, 'read-cursors')).toMatchObject({ moved: 2 });
     const upd = sql.calls.find((c) => c.text.includes('UPDATE harness_shared.coord_read_cursors SET owner_id'));
     expect(upd).toBeTruthy();
@@ -357,7 +444,7 @@ describe('remaining re-keys, totals, and error isolation', () => {
 
   it('pending-wakes (EI-8999) re-keys staged manual-mode wakes so a compaction rebind never strands one under the dead sid', async () => {
     const sql = fakeSql({ pendingWakes: 2 });
-    const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW });
+    const res = await rebind(FROM, TO, sql);
     expect(surfaceOf(res, 'pending-wakes')).toMatchObject({ moved: 2 });
     const upd = sql.calls.find((c) => c.text.includes('UPDATE harness_shared.pending_wakes SET owner_id'));
     expect(upd).toBeTruthy();
@@ -366,7 +453,7 @@ describe('remaining re-keys, totals, and error isolation', () => {
 
   it('owner-directives re-keys only OPEN binding instructions; dispositioned history stays attributed to its originating sid', async () => {
     const sql = fakeSql({ ownerDirectives: 2 });
-    const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW });
+    const res = await rebind(FROM, TO, sql);
     expect(surfaceOf(res, 'owner-directives')).toMatchObject({ moved: 2 });
     const upd = sql.calls.find((c) => c.text.includes('UPDATE harness_shared.owner_directives SET owner_id'));
     expect(upd).toBeTruthy();
@@ -376,14 +463,14 @@ describe('remaining re-keys, totals, and error isolation', () => {
 
   it('held-items re-key excludes terminal states (history keeps its author)', async () => {
     const sql = fakeSql({ heldItems: 1 });
-    await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW });
+    await rebind(FROM, TO, sql);
     const upd = sql.calls.find((c) => c.text.includes('UPDATE harness_shared.engineer_issues'));
     expect(upd!.text).toContain("state NOT IN ('done', 'resolved', 'deprecated', 'closed')");
   });
 
   it('held-work-items (WI-3642) re-keys work_items.taken_by directly, covering EVERY item_kind, excluding terminal statuses', async () => {
     const sql = fakeSql({ heldWorkItems: 2 });
-    const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW });
+    const res = await rebind(FROM, TO, sql);
     expect(surfaceOf(res, 'held-work-items')).toMatchObject({ moved: 2 });
     const upd = sql.calls.find((c) => c.text.includes('UPDATE harness_shared.work_items SET taken_by'));
     expect(upd).toBeTruthy();
@@ -397,7 +484,7 @@ describe('remaining re-keys, totals, and error isolation', () => {
 
   it('one exploding surface reports its error and never sinks the others (idempotent re-run finishes it)', async () => {
     const sql = fakeSql({ planClaims: 1, failOn: /UPDATE harness_shared\.agent_fleets/ });
-    const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW });
+    const res = await rebind(FROM, TO, sql);
     expect(res.ok).toBe(false);
     expect(surfaceOf(res, 'fleet-leadership').error).toContain('surface exploded');
     expect(res.surfaces).toHaveLength(16);
@@ -408,7 +495,7 @@ describe('remaining re-keys, totals, and error isolation', () => {
 describe('SU-locks file locks + waiters (EI-8999/P-002 — opt-in, separate side-database)', () => {
   it('is entirely SKIPPED when the caller does not wire rebindLockOwner — no I/O attempted, surface count unchanged', async () => {
     const sql = fakeSql();
-    const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW });
+    const res = await rebind(FROM, TO, sql);
     expect(res.surfaces).toHaveLength(16);
     expect(res.surfaces.find((s) => s.surface === 'file-locks')).toBeUndefined();
   });
@@ -416,7 +503,7 @@ describe('SU-locks file locks + waiters (EI-8999/P-002 — opt-in, separate side
   it('is called + folded into totalMoved when the caller wires it (the production tool always does)', async () => {
     const sql = fakeSql();
     const rebindLockOwner = vi.fn().mockResolvedValue({ fileLocksMoved: 2, waitersMoved: 1 });
-    const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW, rebindLockOwner });
+    const res = await rebind(FROM, TO, sql, { rebindLockOwner });
     expect(res.surfaces).toHaveLength(17);
     expect(surfaceOf(res, 'file-locks')).toMatchObject({ moved: 3 });
     expect(rebindLockOwner).toHaveBeenCalledWith(FROM, TO);
@@ -426,7 +513,7 @@ describe('SU-locks file locks + waiters (EI-8999/P-002 — opt-in, separate side
   it('a throwing rebindLockOwner is isolated like any other surface — recorded as an error, never sinks the rest', async () => {
     const sql = fakeSql({ planClaims: 1 });
     const rebindLockOwner = vi.fn().mockRejectedValue(new Error('papercusp_su unreachable'));
-    const res = await rebindIdentity(FROM, TO, { sql: sql as never, now: NOW, rebindLockOwner });
+    const res = await rebind(FROM, TO, sql, { rebindLockOwner });
     expect(res.ok).toBe(false);
     expect(surfaceOf(res, 'file-locks').error).toContain('papercusp_su unreachable');
     expect(surfaceOf(res, 'plan-claims')).toMatchObject({ moved: 1 });

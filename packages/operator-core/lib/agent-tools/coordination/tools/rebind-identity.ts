@@ -24,8 +24,10 @@ export default defineTool({
     'changed your PAPERCUSP_SID: armed loop routine, loop carry-note (+walls), plan/work-item claims, scheduler ' +
     'claim-spec, standing awaits, fleet membership/leadership, open held work-items, owner-scoped facts, held ' +
     'FILE LOCKS + lock waiters (EI-8999/P-002 — a separate side-database, rekeyed too). ' +
-    'Idempotent — re-run to finish a partial pass. Refuses while the old sid still shows a fresh presence ' +
-    'heartbeat (a live peer) unless force:true. Returns { ok, from, to, surfaces:[{surface,moved,…}], totalMoved }.',
+    'Idempotent — re-run to finish a partial pass. Refuses while the old sid still resolves LIVE through the ' +
+    'shared liveness oracle (sessionState live/parked/draining/recorded) unless force:true — a warm heartbeat on ' +
+    'an ENDED session does NOT refuse, so the ordinary relaunch needs no force. Returns { ok, from, to, ' +
+    'fromSessionState, surfaces:[{surface,moved,…}], totalMoved }.',
   guidance: {
     when:
       'Your session recovered under a NEW PAPERCUSP_SID (the SessionStart banner names both ids, or coord:whoami ' +
@@ -54,7 +56,11 @@ export default defineTool({
       force: z
         .boolean()
         .optional()
-        .describe('Override the from-appears-live presence guard — only after verifying the old session is dead.'),
+        .describe(
+          'Override the from-appears-live LIVENESS guard. Rarely needed: the guard reads the derived sessionState, ' +
+            'so a dead predecessor with a still-warm heartbeat already rebinds without it. Pass it only when the ' +
+            'oracle reports the old id live/parked/draining and you have independently confirmed it is dead.',
+        ),
     })
     .strict(),
   async handler(args, ctx) {

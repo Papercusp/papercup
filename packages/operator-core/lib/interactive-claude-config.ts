@@ -430,7 +430,7 @@ async function rebindIdentityIfChanged(intent) {
   const recorded = ((intent && intent.sid) || '').trim();
   if (!live || !recorded || live === recorded) return null;
   const head = '⚠ IDENTITY CHANGED ACROSS RELAUNCH — recorded PAPERCUSP_SID ' + recorded + ' → live ' + live + '. Your armed loop, loop carry-note (+walls), claims, claim-spec, standing awaits, fleet membership and open held work-items were keyed under the OLD id.';
-  const manual = 'Run coord:rebind-identity { from: \\'' + recorded + '\\', to: \\'' + live + '\\' } NOW (add force:true only after coord:presence confirms the old id is dead), then coord:orient { afterCompaction: true }.';
+  const manual = 'Run coord:rebind-identity { from: \\'' + recorded + '\\', to: \\'' + live + '\\' } NOW (it needs NO force for an ended predecessor, even one whose heartbeat is still warm; add force:true only if it refuses with a live sessionState AND coord:presence confirms the old id is dead), then coord:orient { afterCompaction: true }.';
   const base = (process.env.PAPERCUSP_OPERATOR_URL || 'http://localhost:3070').replace(/\\/+$/, '');
   const ctl = new AbortController();
   const timer = setTimeout(() => ctl.abort(), 4500);
@@ -455,7 +455,8 @@ async function rebindIdentityIfChanged(intent) {
       };
     }
     if (body && body.refused === 'from_appears_live') {
-      return { rebound: false, to: live, text: head + ' AUTO-REBIND REFUSED — the old id still shows a LIVE presence heartbeat (another session may hold it). If you are certain it is dead: ' + manual };
+      const st = body.fromSessionState ? ' as sessionState=' + body.fromSessionState : '';
+      return { rebound: false, to: live, text: head + ' AUTO-REBIND REFUSED — the old id still resolves' + st + ' through the liveness oracle, so a DIFFERENT live session may hold it. Note this is NOT the ordinary warm-heartbeat case (an ended predecessor rebinds automatically). Confirm with coord:presence, and only if it really is dead: ' + manual };
     }
     return { rebound: false, to: live, text: head + ' Auto-rebind did not complete. ' + manual };
   } catch {
