@@ -87,6 +87,7 @@ import { getResourceProfile } from '@papercusp/operator-core/lib/resource-profil
 import { isBenignHostError } from './host-benign-errors';
 import { applyServerTimeouts } from './host-request-deadline';
 import { pinSubstrateSocketForCluster } from '@papercusp/operator-core/lib/sync/hyperbee/substrate-socket-path';
+import { pinSpawnerSocketForCluster } from '@papercusp/operator-core/lib/fleet/spawner-socket-path';
 import { runSubstrateSidecarServer } from '@papercusp/operator-core/lib/sync/hyperbee/substrate-sidecar-server';
 import { runSpawnerSidecarServer } from '@papercusp/operator-core/lib/fleet/spawner-sidecar-server';
 import { runGatewaySidecarMain } from '@papercusp/operator-core/lib/inference-gateway/sidecar-main';
@@ -627,6 +628,7 @@ const clusterHandle = sidecarMode ? null : startCluster({
     PAPERCUSP_BACKGROUND_WORKERS: '0',
     PAPERCUSP_EXPECTED_OPERATOR_PROCS: String(expectedOperatorProcs),
     ...substrateSocketWorkerEnv,
+    ...spawnerSocketWorkerEnv,
   },
   onPrimary: () => {
     // WI-6793: the clustered PRIMARY runs the background machinery (DBOS,

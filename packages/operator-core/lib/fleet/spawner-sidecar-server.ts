@@ -47,7 +47,11 @@ import { spawnInvokeOnce, type SpawnInvokeOnceResult } from '../dbos/orchestrato
 import { installFlagOverrideStore } from '../flag-override-store';
 import { ensureFlagChangeListener } from '../flag-change-listener';
 import { managedSetInterval } from '@papercusp/scheduled-registry';
-import { resolveSpawnerSocketPath, ownerPidFromSocketPath } from './spawner-socket-path';
+import {
+  resolveSpawnerSocketPath,
+  ownerPidFromSocketPath,
+  reapOrphanedSpawnerSockets,
+} from './spawner-socket-path';
 import { execProcess, type ExecParams } from './sidecar-exec-process';
 
 // JSON-RPC 2.0 response builders
@@ -106,6 +110,31 @@ export function runSpawnerSidecarServer(): void {
 
   if (!fs.existsSync(socketDir)) fs.mkdirSync(socketDir, { recursive: true });
   if (fs.existsSync(socketPath)) fs.unlinkSync(socketPath);
+
+  // Sweep OTHER hosts' orphaned socket files (dead owner pids) before claiming ours
+  // — the EI-7832 fix the substrate sidecar got and this one did not.
+  //
+  // The `existsSync/unlinkSync` above can only ever catch OUR OWN path. The scheme is
+  // pid-keyed, so an unpinned restart computes a brand-new path every time and a
+  // PRIOR process's leftover file lives at a different (dead) pid's path that nothing
+  // here ever looks at. With no reaper these accumulate without bound: measured in
+  // tmpdir on this box 2026-08-12 — 206 files, 185 with no live listener, oldest 4
+  // days, against WI-7273's count of 52 on 2026-08-03 (~4x/week).
+  //
+  // Safe to run from a sidecar serving a PINNED (cluster-primary-keyed) socket: the
+  // reaper only removes paths whose owner pid is derivable AND provably dead, and the
+  // pinned path's owner is the live primary. Best-effort; never blocks boot.
+  try {
+    const { removed, errors } = reapOrphanedSpawnerSockets();
+    if (removed.length > 0) {
+      console.log(`[spawner-sidecar] reaped ${removed.length} orphaned socket(s) from dead pids`);
+    }
+    if (errors.length > 0) {
+      console.error(`[spawner-sidecar] socket reap had ${errors.length} error(s): ${JSON.stringify(errors)}`);
+    }
+  } catch (e) {
+    console.error('[spawner-sidecar] socket reap threw (non-fatal)', e);
+  }
 
   // requestId → AbortController for the in-flight spawn it owns, so `spawn:cancel`
   // can stop it. Keyed by the client's per-request JSON-RPC id (single-client v1).
