@@ -120,6 +120,13 @@ transaction (`audit:list`) and fail `workspace_required` until you pass
 verb. Don't paper over a missing workspace/slug with a default — ask one short
 question.
 
+**Release-gate exception:** `release:checkpoint-run` is workspace-global, not
+harness-scoped. Its live schema accepts only `force`, `replaceStale`, `paths`,
+`waitForEligibility`, and `reason`; do **not** pass `harness` to it. It runs the
+shared green-checkpoint pipeline, so call it with only the arguments its live
+schema declares (or no arguments), even when the surrounding diagnosis names a
+specific harness.
+
 ## The tool surface
 
 `papercusp-su` exposes the **full catalog** at admin tier. It evolves fast —

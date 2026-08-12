@@ -43,6 +43,13 @@ Most state lives under a harness, so harness-scoped tools (`docs:*`, `plans:*`, 
 
 Workspace-global tools (`harness:list`, `search:*`, `memory:*`, `coord:*`, `locks:*`, `flags:*`) work regardless of scope. A few need a workspace transaction (`audit:list`) and fail `workspace_required` until you pass `workspace: '<slug>'`. Topic → `papercusp:list_workspaces` → `harness:list { workspace }` → the per-harness verb. Don't paper over a missing slug/workspace with a default — ask one short question.
 
+**Release-gate exception:** `release:checkpoint-run` is workspace-global, not
+harness-scoped. Its live schema accepts only `force`, `replaceStale`, `paths`,
+`waitForEligibility`, and `reason`; do **not** pass `harness` to it. It runs the
+shared green-checkpoint pipeline, so call it with only the arguments its live
+schema declares (or no arguments), even when the surrounding diagnosis names a
+specific harness.
+
 ## The tool surface
 
 You reach Papercusp via the **`papercusp-su`** MCP server (HTTP at `http://localhost:3070/api/mcp?superuser=1`, bearer-authenticated). `?superuser=1` skips role/quota gates but still emits telemetry. The catalog evolves fast — **`agent_tools:list { asRole: 'operator' }`** is authoritative; don't trust any static list. Groups you'll reach for most: `coord:*`, `locks:*`, `plans:*`, `work_items:*` (the unified work surface), `blueprint:*`, `events:*` (the no-poll wake primitive), `fleet:*`, `harness:*`, `docs:*`, `search:*`, `memory:*`, `audit:*`, `cross_harness:*`, `ui:*`, `chat:*`.
