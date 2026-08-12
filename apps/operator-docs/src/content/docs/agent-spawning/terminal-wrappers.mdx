@@ -4,17 +4,20 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: psu — the engineer-collaborator launcher
-description: psu is the single launcher for engineer-collaborator (su) + role sessions; it assembles the playbook + MCP + flags per-launch and execs the raw CLI.
+title: "psu — the engineer-collaborator launcher"
+description: "psu is the single launcher for engineer-collaborator (su) + role sessions; it assembles the playbook + MCP + flags per-launch and execs the raw CLI."
+type: Insight
+discovered: 2026-08-12
+status: active
+documents:
+  - "packages/operator-core/lib/endpoint-route/routes/operator/rate-limit-config.ts"
+plans:
+  - "psu-wrappers-and-plan-tracked-launch-2026-05-30"
+  - "psu-role-sessions-2026-05-30"
+  - "agent-launch-unification-2026-05-30"
+  - "psu-only-launch-unification-2026-05-31"
 sidebar:
   order: 7
-plans:
-  - psu-wrappers-and-plan-tracked-launch-2026-05-30
-  - psu-role-sessions-2026-05-30
-  - agent-launch-unification-2026-05-30
-  - psu-only-launch-unification-2026-05-31
-documents:
-  - packages/operator-core/lib/endpoint-route/routes/operator/rate-limit-config.ts
 ---
 
 `psu` is the **one** command for launching a CLI agent in
@@ -293,8 +296,11 @@ It also installs two more things to `~/.local/bin`:
 
 - **`ptool`** — a `defineTool` CLI: pick a service → an endpoint → it
   prompts for each argument (from the tool's `inputSchema`) and calls it
-  over the **same** superuser MCP surface psu uses. Scripting:
-  `ptool <group:verb> --json '<args>'` or `ptool --list [filter]`.
+  over the **same** superuser MCP surface psu uses. For scripting, prefer
+  `ptool <group:verb> --json - <<'JSON'` with stdin or
+  `ptool <group:verb> --json-file payload.json`; use `--json '<args>'` only
+  for quote-free inline payloads. `loop:checkpoint` checks/walls often contain
+  shell quotes, so stdin/file JSON avoids caller-shell corruption.
 - **OMP-native memory disabled** — the installer runs
   `omp config set memory.backend off`. OMP's config is **global**, so this
   affects **every** omp invocation (plain `omp` too, not only psu sessions):

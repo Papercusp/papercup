@@ -335,8 +335,11 @@ refresh; to revoke, delete the files the installer prints.</li>
 <ul>
 <li><strong><code dir="auto">ptool</code></strong> — a <code dir="auto">defineTool</code> CLI: pick a service → an endpoint → it
 prompts for each argument (from the tool’s <code dir="auto">inputSchema</code>) and calls it
-over the <strong>same</strong> superuser MCP surface psu uses. Scripting:
-<code dir="auto">ptool &#x3C;group:verb> --json '&#x3C;args>'</code> or <code dir="auto">ptool --list [filter]</code>.</li>
+over the <strong>same</strong> superuser MCP surface psu uses. For scripting, prefer
+<code dir="auto">ptool &#x3C;group:verb> --json - &#x3C;&#x3C;'JSON'</code> with stdin or
+<code dir="auto">ptool &#x3C;group:verb> --json-file payload.json</code>; use <code dir="auto">--json '&#x3C;args>'</code> only
+for quote-free inline payloads. <code dir="auto">loop:checkpoint</code> checks/walls often contain
+shell quotes, so stdin/file JSON avoids caller-shell corruption.</li>
 <li><strong>OMP-native memory disabled</strong> — the installer runs
 <code dir="auto">omp config set memory.backend off</code>. OMP’s config is <strong>global</strong>, so this
 affects <strong>every</strong> omp invocation (plain <code dir="auto">omp</code> too, not only psu sessions):

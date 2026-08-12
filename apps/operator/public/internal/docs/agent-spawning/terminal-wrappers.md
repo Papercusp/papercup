@@ -280,8 +280,11 @@ It also installs two more things to `~/.local/bin`:
 
 * **`ptool`** — a `defineTool` CLI: pick a service → an endpoint → it
   prompts for each argument (from the tool's `inputSchema`) and calls it
-  over the **same** superuser MCP surface psu uses. Scripting:
-  `ptool <group:verb> --json '<args>'` or `ptool --list [filter]`.
+  over the **same** superuser MCP surface psu uses. For scripting, prefer
+  `ptool <group:verb> --json - <<'JSON'` with stdin or
+  `ptool <group:verb> --json-file payload.json`; use `--json '<args>'` only
+  for quote-free inline payloads. `loop:checkpoint` checks/walls often contain
+  shell quotes, so stdin/file JSON avoids caller-shell corruption.
 * **OMP-native memory disabled** — the installer runs
   `omp config set memory.backend off`. OMP's config is **global**, so this
   affects **every** omp invocation (plain `omp` too, not only psu sessions):
