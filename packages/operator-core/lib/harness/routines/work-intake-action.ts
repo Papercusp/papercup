@@ -14,7 +14,7 @@
  * this host's own hostRef/responderGithubUserId/executorDevice/
  * sourceRepoPath/rootPath are NOT invented here — they are read from the
  * routine's `triggerConfig` (this codebase's existing per-routine config
- * convention: bee-transcript-cap-action.ts, claim-discipline-action.ts, …
+ * convention: claim-discipline-action.ts, idle-session-reaper-action.ts, …
  * all read `ctx.triggerConfig` the same way). Missing/malformed config is a
  * LOUD no-op (never a silent skip, never a fabricated identity) — the tick
  * cannot run meaningfully without knowing who it is.

@@ -1191,16 +1191,10 @@ export const FLAGS = {
   // DEFAULT ON (alpha flags-default-on) — additive, bounded, fail-soft; OFF ⇒ no dossier
   // (the agent falls back to its read tools), behavior otherwise unchanged.
   CUP_WAKE_DOSSIER: "papercusp-bee-wake-dossier",
-  // bee-context-efficiency Phase 4 (P-013, D-007): the transcript-cap BACKSTOP. A
-  // cadence sweep recycles a bee whose session has carried too many tasks / too large a
-  // token-span (force a fresh spawn after a threshold; the work-item checkpoint carries
-  // continuity). Only ever recycles an IDLE/drained bee (D-005 — never mid-task). DEFAULT
-  // ON (not in DARK_FLAGS — WI-1658: pre-inversion default was already true). The
-  // seed-bee-transcript-cap-routine.ts bring-up script still SEEDS its routine row
-  // INACTIVE on first insert (a separate, routine-level gate from this flag) —
-  // check routines:list/routines:set for its live active state before relying on
-  // the sweep actually firing.
-  CUP_TRANSCRIPT_CAP: "papercusp-bee-transcript-cap",
+  // RETIRED (P-059, D-090): CUP_TRANSCRIPT_CAP ("papercusp-bee-transcript-cap") — gated
+  // the cup transcript-cap backstop sweep, which retired with the Mug/Kettle/Cup tier.
+  // The flag was DEFAULT-ON and never in DARK_FLAGS, so removing the key parks no dark
+  // debt. Restore contract: `_retired/mug-kettle-deciders/RESTORE.md` § `bee-transcript-cap`.
   // plan-implementation-framework P-003 (compiled-briefs): when on, plan_items:convert
   // COMPILES the work-item brief from the plan item + plan focus (## Now) + the decisions
   // bearing on the item, instead of leaving payload.brief to a hand-authored overlay.

@@ -368,10 +368,10 @@ import './orphaned-mcp-reaper-action';
 // Flag-gated (TEST_WEBVIEW_REAPER, DEFAULT ON) + seeded INACTIVE (double-gate).
 // Seed: seed-test-webview-reaper-routine.ts. Core: test-desktop-reaper.ts.
 import './test-webview-reaper-action';
-// bee-context-efficiency-2026-06-14 P-013 (D-007): the bee transcript-cap backstop —
-// recycles a bee whose session transcript grew past the cap (idle-only, D-005) so its
-// next task spawns fresh. Flag-gated DEFAULT-OFF + seeded INACTIVE (double-gated).
-import './bee-transcript-cap-action';
+// RETIRED (P-059, D-090): `bee-transcript-cap-action` — the cup transcript-cap backstop.
+// Its sole decider (`pot/cup-transcript-cap.ts`) retired with it; the routine row it
+// registered never existed in `harness_shared.routines`, so nothing was orphaned. Restore
+// contract: `_retired/mug-kettle-deciders/RESTORE.md` § `bee-transcript-cap`.
 import './claim-discipline-action';
 // WI-6054 (turn-end-tracking P-016): the SYSTEM-side unguarded-halt sweep. The
 // detector's only caller was the agent-invoked `journal:record-turn`, so it never

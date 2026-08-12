@@ -74,7 +74,7 @@ export default defineTool({
     "Retune or pause/resume a scheduled system routine (git-sync, green-checkpoint, release-trigger, scout, …) without raw SQL: change its cron, its active flag (active:false = PAUSE, active:true = RESUME), its trigger_config, its GROUP (group — metadata only, see routines:group-set / routines:list { rollup:true }), and/or DEEP-merge a patch into its payload_template (the routine's own run knobs — e.g. the scout singleton's payload.budget.maxIdeators). Audited + one-call-revertible via the control harness; an invalid cron is rejected. On a cron change, next_fire_at is recomputed.",
   capability: 'operator:write',
   guidance: {
-    when: 'Pause git-sync during a delicate manual operation (active:false), resume it (active:true), retune a routine\'s cadence (cron), patch a routine CONFIG value (triggerConfig — e.g. the bee-transcript-cap caps), assign/clear its group (group — WI-5018 routines grouping), or retune a routine\'s RUN KNOBS (payloadTemplate — e.g. the scout singleton\'s budget.maxIdeators / models.ideator) on a running system — the safe alternative to the raw UPDATE harness_shared.routines the playbook forbids.',
+    when: 'Pause git-sync during a delicate manual operation (active:false), resume it (active:true), retune a routine\'s cadence (cron), patch a routine CONFIG value (triggerConfig — e.g. a sweep\'s caps), assign/clear its group (group — WI-5018 routines grouping), or retune a routine\'s RUN KNOBS (payloadTemplate — e.g. the scout singleton\'s budget.maxIdeators / models.ideator) on a running system — the safe alternative to the raw UPDATE harness_shared.routines the playbook forbids.',
     notWhen: 'For a harness blueprint autoloop, use autoloop:control. To just SEE routines, routines:list. To pause/resume a WHOLE group at once, routines:group-set. (These routine rows are their own store; they do not appear in config:list-overrides.)',
     chaining: 'routines:list first to get the exact name + installSlug; routines:list after to confirm the change.',
     seeAlso: [
@@ -95,7 +95,7 @@ export default defineTool({
     triggerConfig: z
       .record(z.string(), z.unknown())
       .optional()
-      .describe('Merge these keys into the routine trigger_config (live-configurability-audit P-017 — e.g. the bee-transcript-cap caps max_tasks / max_carried_read_tokens / max_transcript_entries). The safe way to retune a routine CONFIG value without raw SQL. `cron` is ignored here — set it via the validated `cron` arg.'),
+      .describe('Merge these keys into the routine trigger_config (live-configurability-audit P-017 — e.g. the claim-discipline throttle_min, or a reaper dry_run). The safe way to retune a routine CONFIG value without raw SQL. `cron` is ignored here — set it via the validated `cron` arg.'),
     payloadTemplate: z
       .record(z.string(), z.unknown())
       .optional()

@@ -35,6 +35,9 @@ was `packages/operator-core/lib/pot/cup-fresh-context-delta.ts`.
 |---|---|---|
 | `cup-fresh-context-delta.ts` (+ test) | `packages/operator-core/lib/pot/` | The P-006 three-regime cost comparison for cup fresh-context vs. warm regimes. Exported `freshContextRegimeDelta` / `FreshContextRegimeDelta`. **Zero non-test importers at retirement** — its only consumer was its own test. |
 | `mug-brief.ts` (+ test) | `packages/operator-core/lib/pot/` | The Mug's brief RENDERER — `renderMugBrief` / `floorFromSurvey` plus the floor/caps types. **One non-test importer at retirement, `mug-brief-launch.ts`**, which retired in the same slice; nothing outside the pair referenced it (`renderMugBrief` survived only in a stale comment in `pot/wake.ts`). |
+| `cup-transcript-cap.ts` (+ test) | `packages/operator-core/lib/pot/` | The transcript-cap BACKSTOP decision + sweep (`shouldRecycleCupTranscript` / `runCupTranscriptCapSweep`). **One non-test importer at retirement, `bee-transcript-cap-action.ts`**, which retired in the same slice. Its routine row was never seeded, so the sweep had never fired. |
+| `bee-transcript-cap-action.ts` | `packages/operator-core/lib/harness/routines/` | The `system:bee-transcript-cap` routine handler — the decider's sole consumer. Gathered live-cup metrics and nudged over-cap idle cups to checkpoint + recycle. |
+| `seed-bee-transcript-cap-routine.ts` | `packages/operator-core/lib/harness/routines/` | The bring-up script for that routine's row (seeded INACTIVE). **Never run against this workspace** — no `bee-transcript-cap` row existed at retirement. |
 | `mug-brief-launch.ts` (+ test) | `packages/operator-core/lib/pot/` | The Mug brief's ASSEMBLY + launch-time seams: `computeMugWakeBrief` (route-side wake brief, WI-682), `computePotPlacementSplit` (started/stopped hive partition), `computeMugBriefFloorView` (the `mugBrief.floorView` sync projection), `carryNoteHead`. **Three live importers at retirement, all deleted with it** — see below. |
 
 ### What the `mug-brief` pair's three live importers became (P-059 slice 2)
@@ -387,6 +390,71 @@ capability="…">` TAG-ATTRIBUTE fixtures (an opaque approval key, a different n
 the `llm-testing/targets/{mug,overwatch}.ts` bait tool-defs + the `OW01`/`OW02` scenarios are
 self-contained in the test harness rather than resolved against the live catalog — those
 belong to the `lib/overwatch/` slice, per the precedent set for `kettle:declare-wake`.
+
+## `bee-transcript-cap` — the transcript-cap backstop sweep (P-059, D-090)
+
+**FOUR files**, the decider and the routine that was its sole consumer:
+
+| file | original path |
+|---|---|
+| `cup-transcript-cap.ts` (+ test) | `packages/operator-core/lib/pot/` |
+| `bee-transcript-cap-action.ts` | `packages/operator-core/lib/harness/routines/` |
+| `seed-bee-transcript-cap-routine.ts` | `packages/operator-core/lib/harness/routines/` |
+
+`cup-transcript-cap.ts` had **exactly one non-test importer at retirement** —
+`bee-transcript-cap-action.ts`, the `system:bee-transcript-cap` routine handler, which
+retired with it. So this is a whole feature leaving, not an orphaned module.
+
+⚠ **D-090 SPLIT ITS SIBLING OFF THIS SLICE.** `pot/cup-wake-efficiency.ts` sits in the same
+directory, shares the `cup-` prefix, and was consumed by this same routine — and it **STAYS**.
+It has live consumers outside the tier (`pot-eval/live-ops.ts` → `pot-eval/index.ts`, plus four
+`external-bench/` harnesses), and its `spawn-role|cup|…cup-wake-efficiency.ts` baseline row
+stays with it. A restorer must not read "the transcript-cap slice" as covering both files: the
+test is per-file (*who imports this, and does that consumer survive?*), never the shared prefix.
+
+**The routine row was never seeded.** `harness_shared.routines` held **no** `bee-transcript-cap`
+row at retirement — verified against a checked denominator (477 routines / 218 active), so
+retiring the handler orphaned no scheduled work. A restore must therefore run
+`seed-bee-transcript-cap-routine.ts` (it seeds INACTIVE) or the sweep will never fire, exactly
+as it never did.
+
+**Live-tree edits a restore must undo — EIGHT. Numbers 4–8 are pointers *into* this surface that
+a name-grep of the moved files does NOT find.**
+
+1. `harness/routines/register-system-actions.ts` — `import './bee-transcript-cap-action';`
+   (was `:374`) replaced by a comment. Restoring the files without this line registers nothing.
+2. `libs/flags/src/types.ts` — `CUP_TRANSCRIPT_CAP: "papercusp-bee-transcript-cap"` removed.
+   ⚠ It was **DEFAULT-ON and never in `DARK_FLAGS`**, so removing it parks no dark debt and a
+   restore must NOT add an allowlist entry — re-add the key alone. (The sweep was still
+   double-gated: this flag AND the routine's own `active` column.)
+3. `scripts/ungated-mug-kettle-baseline.json` — **TWO rows dropped** (D-084):
+   `spawn-role|cup|…bee-transcript-cap-action.ts` and
+   `system-action|bee-transcript-cap|…bee-transcript-cap-action.ts`.
+4. `automation/routine-classification.ts` — the `'system:bee-transcript-cap'` spend row (`:349`)
+   AND `^bee-transcript-cap$` dropped from `CLEANUP_FAMILY` (`:514`). ⚠ Both are keyed on the
+   routine NAME STRING, so neither dangles a symbol — but leaving them classifies a routine that
+   cannot exist, and an UNCLASSIFIED routine falls to a different default.
+5. `agent-tools/routines/set.ts` — TWO `guidance`/`describe` strings stopped citing
+   `the bee-transcript-cap caps max_tasks / max_carried_read_tokens / max_transcript_entries`
+   as the worked example, now `the claim-discipline throttle_min, or a reaper dry_run`. Guidance
+   ships to agents, so a stale pointer is a live wrong instruction. ⚠ Both replacements are
+   SHORTER: `lint:tool-prompts` headroom was 2 chars (p99 1493 / max 1498 vs budget 1500), so a
+   restore that puts the longer text back must re-run that lint before landing.
+6. `agent-tools/routines/routines.test.ts:370` — the trigger_config-merge fixture was re-pointed
+   off this routine to `claim-discipline` + its real `throttle_min` knob (D-088 triage: a mocked
+   name string, not a dependency — but a fixture naming a nonexistent routine reads as coverage).
+7. `su-cold-loop.ts:50,56` — the `ColdLoopCaps.recycleEveryNWakes` provenance comments. ⚠ The
+   cold-loop **PORTED** the maxTasks-8 recycle cadence; it never imported it. The comments were
+   re-pointed here, not deleted, because the default's origin is the reason it is 8.
+8. `harness/routines/work-intake-action.ts:17` — the "per-routine `triggerConfig` convention"
+   example list, re-pointed to two live siblings.
+
+**What deliberately did NOT change:** `docs/mug-kettle-surface-census.json` and
+`docs/pot-substrate-split-census.json` still name these paths. Both are **dated point-in-time
+survey artifacts** (`generatedAt` 2026-08-09, `item: P-005`), not live indexes — no test or
+package script enforces them (`verify-pot-substrate-ast.mjs` is a manual CLI). Rewriting a dated
+survey to match a later tree would falsify the record it exists to preserve. Likewise the
+`scratchpad/lexicon-audit-2026-07-09/*` inventories and `junit.xml`.
 
 <!-- Later P-059 slices append rows here. Keep the "why it retired" column
      evidence-bearing (importer count at retirement), not just a restatement

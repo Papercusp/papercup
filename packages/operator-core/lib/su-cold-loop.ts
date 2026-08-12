@@ -47,13 +47,15 @@ export interface ColdLoopMarker {
 
 export interface ColdLoopCaps {
   /** Force a hard RECYCLE every Nth cold wake (sheds process cruft); the other
-   *  wakes are the cheap in-place RESET-CONTEXT. Ported from bee-transcript-cap's
-   *  maxTasks recycle cadence (D-002 HYBRID). ≤0 ⇒ never recycle (reset-only). */
+   *  wakes are the cheap in-place RESET-CONTEXT. Ported from the cup transcript-cap's
+   *  maxTasks recycle cadence (D-002 HYBRID) — that sweep is now retired (P-059, D-090:
+   *  `_retired/mug-kettle-deciders/`), but the cadence idea was COPIED here, never
+   *  imported, so this is unaffected. ≤0 ⇒ never recycle (reset-only). */
   recycleEveryNWakes: number;
 }
 
-/** Conservative default: reset each wake, a hard recycle every 8th — matching the
- *  bee transcript-cap DEFAULT (maxTasks: 8). Editable via the loop's config. */
+/** Conservative default: reset each wake, a hard recycle every 8th — inherited from the
+ *  (now retired) cup transcript-cap DEFAULT (maxTasks: 8). Editable via the loop's config. */
 export const DEFAULT_COLD_LOOP_CAPS: ColdLoopCaps = { recycleEveryNWakes: 8 };
 
 /** Read the cold-loop marker off a wake-delivery payload. Returns null when the

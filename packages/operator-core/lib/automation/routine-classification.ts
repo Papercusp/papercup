@@ -346,7 +346,6 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:hetzner-orphan-frame-reaper': { spend: 'none', why: 'Reaps orphaned remote frames' },
   'system:test-webview-reaper': { spend: 'none', why: 'Reaps leaked test webviews' },
   'system:orphaned-mcp-reaper': { spend: 'none', why: 'Reaps leaked agent-spawned playwright-mcp server processes' },
-  'system:bee-transcript-cap': { spend: 'none', why: 'Truncates oversized transcripts' },
   'system:precompute-derived-reads': { spend: 'none', why: 'Refreshes derived read tables' },
   'system:interactive-usage-ingest': { spend: 'none', why: 'Tails local transcripts into usage samples (SQL/FS only)' },
   'system:task-reconcile': { spend: 'none', why: 'REPORT-ONLY kernel-vs-ledger reconcile — no kill/freeze path exists' },
@@ -511,7 +510,7 @@ const DOCS_FAMILY = /doc|^knowledge-pack-/i;
 const WAKE_FAMILY = /(^|-)wake($|-)/i;
 const LEARNING_FAMILY = /^improvement-|^bp-singleton-|^gym|^template-gym$|^pot-eval-battery$|^scout|prospector|^oddsmith-|^scan$/i;
 const GIT_RELEASE_FAMILY = /git-sync|checkpoint|release|deploy|^pr-poll$|^cargo-test$|^gate-/i;
-const CLEANUP_FAMILY = /gc$|^gc-|reaper|retention|^bee-transcript-cap$|precompute|^knowledge-pack-/i;
+const CLEANUP_FAMILY = /gc$|^gc-|reaper|retention|precompute|^knowledge-pack-/i;
 const FEDERATION_FAMILY = /^p2p-|hive|foreign|outbox|federation/i;
 
 /**

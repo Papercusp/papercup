@@ -364,18 +364,18 @@ describe('routines:set', () => {
   });
 
   it('patches trigger_config (P-017) — merges the patch, preserves cron, ignores a cron key in the patch', async () => {
-    sqlMock.mockResolvedValue([{ trigger_config: { cron: '0 */10 * * * *', max_tasks: 8 }, active: true, next_fire_at: null }]);
+    sqlMock.mockResolvedValue([{ trigger_config: { cron: '0 */10 * * * *', throttle_min: 8 }, active: true, next_fire_at: null }]);
     const b = body(
       await setTool.handler(
-        { name: 'bee-transcript-cap', triggerConfig: { max_tasks: 4, cron: 'EVIL' } } as never,
+        { name: 'claim-discipline', triggerConfig: { throttle_min: 4, cron: 'EVIL' } } as never,
         { role: 'operator' } as never,
       ),
     );
     expect(b).toMatchObject({ ok: true, applied: true });
-    // The UPDATE wrote the merged trigger_config: the caps patch (max_tasks:4) applied, cron preserved
+    // The UPDATE wrote the merged trigger_config: the caps patch (throttle_min:4) applied, cron preserved
     // (0 */10) — the `cron: 'EVIL'` key in the patch was ignored (cron only via the validated arg).
     const wrote = sqlMock.mock.calls.some((c) =>
-      c.some((v) => typeof v === 'string' && v.includes('"max_tasks":4') && v.includes('"cron":"0 */10') && !v.includes('EVIL')),
+      c.some((v) => typeof v === 'string' && v.includes('"throttle_min":4') && v.includes('"cron":"0 */10') && !v.includes('EVIL')),
     );
     expect(wrote).toBe(true);
   });
