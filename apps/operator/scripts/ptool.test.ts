@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   callToolWithPressureRetry,
   buildMcpUrl,
+  resolveContextTier,
   printResult,
   PTOOL_CALL_TOOL_TIMEOUT_MS,
   PTOOL_GIT_SYNC_RUN_TIMEOUT_MS,
@@ -25,6 +26,14 @@ describe('ptool MCP identity binding', () => {
     expect(url.searchParams.get('client')).toBe('su-live-owner-123');
     expect(url.searchParams.get('workspace')).toBe('papercusp-workspace');
     expect(url.searchParams.get('harness')).toBe('papercusp');
+    expect(url.searchParams.get('ctx_tier')).toBe('trimmed');
+  });
+
+  it('defaults direct sessions to trimmed payloads and allows an explicit full escape hatch', () => {
+    expect(resolveContextTier({ env: {} })).toBe('trimmed');
+    expect(resolveContextTier({ env: { PAPERCUSP_CONTEXT_TIER: ' full ' } })).toBe('full');
+    expect(buildMcpUrl('http://127.0.0.1:3170', { contextTier: 'full' }).searchParams.get('ctx_tier'))
+      .toBe('full');
   });
 });
 
