@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { printResult, resultToText } from './ptool.mjs';
+import { printResult, resultToText, sanitizeJsonText } from './ptool.mjs';
 
 describe('ptool result formatting', () => {
   it('prints structuredContent when the MCP response has no content blocks', () => {
@@ -18,6 +18,13 @@ describe('ptool result formatting', () => {
     }
   });
 
+  it('prefers complete structuredContent over lossy text content', () => {
+    expect(resultToText({
+      content: [{ type: 'text', text: '{"items":[\n[result-door: truncated]' }],
+      structuredContent: { items: [{ id: 'P-001' }] },
+    })).toBe('{"items":[{"id":"P-001"}]}');
+  });
+
   it('fails loudly instead of exiting zero with blank stdout for an empty response', () => {
     const log = vi.spyOn(console, 'log').mockImplementation(() => {});
     const error = vi.spyOn(console, 'error').mockImplementation(() => {});
@@ -31,5 +38,38 @@ describe('ptool result formatting', () => {
       log.mockRestore();
       error.mockRestore();
     }
+  });
+
+  it('escapes raw controls inside JSON text for jq-safe raw output', () => {
+    const nul = String.fromCharCode(0);
+    const raw = `{"message":"before${nul}after\nline"}`;
+    const repaired = sanitizeJsonText(raw);
+
+    expect(JSON.parse(repaired)).toEqual({ message: `before${nul}after\nline` });
+    expect(repaired).toContain('\\u0000');
+    expect(repaired).toContain('\\u000a');
+
+    const log = vi.spyOn(console, 'log').mockImplementation(() => {});
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+    try {
+      expect(printResult({ content: [{ type: 'text', text: raw }] }, { raw: true })).toBe(0);
+      expect(log).toHaveBeenCalledWith(repaired);
+      expect(printResult({ content: [{ type: 'text', text: raw }] }, { raw: false })).toBe(0);
+      expect(log).toHaveBeenLastCalledWith(JSON.stringify(JSON.parse(repaired), null, 2));
+      expect(error).not.toHaveBeenCalled();
+    } finally {
+      log.mockRestore();
+      error.mockRestore();
+    }
+  });
+
+  it('leaves non-JSON text unchanged', () => {
+    const text = `plain${String.fromCharCode(0)}text`;
+    expect(sanitizeJsonText(text)).toBe(text);
+  });
+
+  it('repairs a truncated JSON prefix without requiring a valid whole document', () => {
+    const truncated = '{"message":"first\nsecond';
+    expect(sanitizeJsonText(truncated)).toBe('{"message":"first\\u000asecond');
   });
 });

@@ -303,6 +303,58 @@ export function mergeConvenienceArgs(args, { workspace, harness }, inputSchema) 
 
 /* ─── result formatting (pure — exported for tests) ───────────────────── */
 
+/**
+ * Repair JSON text whose string values contain literal control characters.
+ * A tool can return JSON in an MCP text content block, and printing that text
+ * unchanged makes `ptool --raw | jq` reject the whole result. Only escape
+ * controls found inside structurally quoted spans; preserve ordinary human
+ * text and malformed JSON that contains no such controls verbatim. The result
+ * door may truncate otherwise-valid JSON, so whole-document validity cannot be
+ * a prerequisite for repairing the visible prefix.
+ */
+export function sanitizeJsonText(text) {
+  if (typeof text !== 'string') return String(text);
+  const first = text.trimStart()[0];
+  if (first !== '{' && first !== '[' && first !== '"') return text;
+
+  try {
+    JSON.parse(text);
+    return text;
+  } catch {
+    // Continue only for the known text-content serialization defect below.
+  }
+
+  let inString = false;
+  let escaped = false;
+  let changed = false;
+  let repaired = '';
+  for (const ch of text) {
+    const code = ch.charCodeAt(0);
+    if (inString) {
+      if (escaped) {
+        repaired += ch;
+        escaped = false;
+      } else if (ch === '\\') {
+        repaired += ch;
+        escaped = true;
+      } else if (ch === '"') {
+        repaired += ch;
+        inString = false;
+      } else if (code < 0x20) {
+        repaired += `\\u${code.toString(16).padStart(4, '0')}`;
+        changed = true;
+      } else {
+        repaired += ch;
+      }
+    } else {
+      repaired += ch;
+      if (ch === '"') inString = true;
+    }
+  }
+
+  return changed ? repaired : text;
+}
+
 /** Pretty-print a text payload: if it parses as JSON, indent it; else
  *  return it unchanged. Pure. */
 export function prettyText(text) {
@@ -317,22 +369,20 @@ export function prettyText(text) {
   }
 }
 
-/** Flatten an MCP tools/call result's `content[]` into a single text blob.
- *  Non-text parts are rendered as their JSON. Pure. */
+/** Prefer the complete structured result requested by ptool, then fall back to
+ *  flattening an MCP tools/call result's `content[]` into one text blob.
+ *  Content text may carry result-door truncation markers and is therefore a
+ *  human-readable fallback, not the scripting authority. Pure. */
 export function resultToText(result) {
-  const parts = Array.isArray(result?.content) ? result.content : [];
-  const contentText = parts
-    .map((c) => (c && c.type === 'text' && typeof c.text === 'string' ? c.text : JSON.stringify(c)))
-    .join('\n');
-  if (contentText.trim()) return contentText;
-
-  // EI-20218995388404497: an MCP host may satisfy an output schema with
-  // structuredContent and omit content[]. Do not turn that valid result into
-  // an apparently successful blank stdout response.
   if (result && Object.prototype.hasOwnProperty.call(result, 'structuredContent')) {
     const structuredText = JSON.stringify(result.structuredContent);
     if (typeof structuredText === 'string') return structuredText;
   }
+
+  const parts = Array.isArray(result?.content) ? result.content : [];
+  const contentText = parts
+    .map((c) => (c && c.type === 'text' && typeof c.text === 'string' ? c.text : JSON.stringify(c)))
+    .join('\n');
   return contentText;
 }
 
@@ -567,12 +617,13 @@ export function printResult(result, { raw }) {
     console.error('ptool: operator returned an empty MCP result; no content or structuredContent was received');
     return 1;
   }
+  const safeText = sanitizeJsonText(text);
   if (result?.isError) {
     console.error('✗ tool returned an error:');
-    console.error(raw ? text : prettyText(text));
+    console.error(raw ? safeText : prettyText(safeText));
     return 1;
   }
-  console.log(raw ? text : prettyText(text));
+  console.log(raw ? safeText : prettyText(safeText));
   return 0;
 }
 
