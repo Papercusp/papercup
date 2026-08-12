@@ -653,16 +653,21 @@ export function shouldShedForInFlight(currentInFlight: number, maxInFlight: numb
   return currentInFlight >= maxInFlight;
 }
 
-/** Fleet bootstrap, continuation checkpoints, and scheduler claims are liveness/control-plane
- * traffic: if they cannot run, workers cannot orient, persist a safe wake boundary, or drain the
- * very queue generating proxy load. Keep this deliberately narrow. */
+/** Fleet bootstrap, continuation checkpoints, scheduler claims, deferred tool discovery, loop
+ * arming, and incident capture are liveness/control-plane traffic: if they cannot run, workers
+ * cannot orient, persist a safe wake boundary, drain the queue generating proxy load, recover a
+ * missing tool surface, keep themselves alive, or file the failure that needs fixing. Keep this
+ * deliberately narrow. */
 export function isReservedControlPlaneCall(rawBody: Buffer): boolean {
   try {
     const message = JSON.parse(rawBody.toString('utf8')) as { method?: unknown; params?: { name?: unknown } };
     return message.method === 'tools/call' &&
       (message.params?.name === 'scheduler:get_next' ||
         message.params?.name === 'coord:orient' ||
-        message.params?.name === 'loop:checkpoint');
+        message.params?.name === 'loop:checkpoint' ||
+        message.params?.name === 'tools:find' ||
+        message.params?.name === 'loop:arm' ||
+        message.params?.name === 'improvements:capture');
   } catch {
     return false;
   }

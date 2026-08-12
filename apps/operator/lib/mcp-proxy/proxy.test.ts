@@ -866,16 +866,19 @@ describe('WI-35737: a departed client stops the retry loop', () => {
  *      32-89 minutes.
  */
 describe('EI-19305299022434394: admission control — shed with 429 before opening an upstream socket', () => {
-  it('recognizes fleet bootstrap, continuation checkpoints, and scheduler claims as reserved control-plane traffic', () => {
+  it('recognizes fleet bootstrap, continuation checkpoints, scheduler claims, deferred discovery, loop arming, and incident capture as reserved control-plane traffic', () => {
     const call = (name: string) => Buffer.from(JSON.stringify({ method: 'tools/call', params: { name } }));
     expect(isReservedControlPlaneCall(call('scheduler:get_next'))).toBe(true);
     expect(isReservedControlPlaneCall(call('coord:orient'))).toBe(true);
     expect(isReservedControlPlaneCall(call('loop:checkpoint'))).toBe(true);
+    expect(isReservedControlPlaneCall(call('tools:find'))).toBe(true);
+    expect(isReservedControlPlaneCall(call('loop:arm'))).toBe(true);
+    expect(isReservedControlPlaneCall(call('improvements:capture'))).toBe(true);
     expect(isReservedControlPlaneCall(call('work_items:get'))).toBe(false);
     expect(isReservedControlPlaneCall(Buffer.from('{bad json'))).toBe(false);
   });
 
-  it.each(['scheduler:get_next', 'coord:orient', 'loop:checkpoint'])('admits %s from the reserve while ordinary calls shed', async (controlPlaneTool) => {
+  it.each(['scheduler:get_next', 'coord:orient', 'loop:checkpoint', 'tools:find', 'loop:arm', 'improvements:capture'])('admits %s from the reserve while ordinary calls shed', async (controlPlaneTool) => {
     let releaseUpstream: () => void = () => {};
     const gate = new Promise<void>((resolve) => { releaseUpstream = resolve; });
     const upstream = track(http.createServer((_req, res) => void gate.then(() => res.end('{"result":"ok"}'))));
