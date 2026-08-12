@@ -2940,12 +2940,14 @@ export function resumeEnvFor(session, { mintSid = () => `su-${randomUUID()}`, fo
       PAPERCUSP_AGENT: session.agent,
       PAPERCUSP_SID: mintSid(),
       ...(session.workspaceId ? { PAPERCUSP_WORKSPACE: session.workspaceId } : {}),
+      ...(session.harnessSlug ? { PAPERCUSP_HARNESS_SLUG: session.harnessSlug } : {}),
     };
   }
   return {
     PAPERCUSP_AGENT: session.agent,
     PAPERCUSP_SID: session.coordOwnerId || mintSid(),
     ...(session.workspaceId ? { PAPERCUSP_WORKSPACE: session.workspaceId } : {}),
+    ...(session.harnessSlug ? { PAPERCUSP_HARNESS_SLUG: session.harnessSlug } : {}),
     ...(session.id != null ? { PAPERCUSP_ADV_SESSION_ID: String(session.id) } : {}),
   };
 }
