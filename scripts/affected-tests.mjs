@@ -1044,6 +1044,31 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     appliesTo: (f) => /\.[cm]?[jt]sx?$/.test(f) || f.endsWith('.md'),
   },
   {
+    // WI-38269 — the VACUOUS FLAG GUARD class, routed from the acceptance scorecard for
+    // retire-mug-kettle-su-only-2026-08-09 (criterion `guards-bind-not-vacuous`).
+    //
+    // WHY REGISTERED HERE AT ALL, when the guard already has an enforcing test.
+    // `packages/operator-core/lib/vacuous-flag-guard.test.ts` runs the scan over the real
+    // tree, so check-lint-guard-reachability classifies it `test`/blocking. But the `test`
+    // tier only fires when @papercusp/operator-core is independently affected — and the
+    // motivating instance lived in `apps/operator-vite/src/components/adv/`, a DIFFERENT
+    // workspace. So the one edit that produced the original defect is exactly the edit the
+    // test tier would not have selected. That is the gap this list exists to close, and it
+    // is the same argument the partial-index and green-checkpoint-tag entries make.
+    //
+    // ~2.4s measured (6,658 test files + 8,963 source files; two regex passes plus a
+    // bounded, memoized import walk). Comparable to the mug-kettle entry above.
+    workspace: '@papercusp/operator-core',
+    script: 'lint:vacuous-flag-guard',
+    hostSuiteRatchet: 'packages/operator-core/lib/vacuous-flag-guard.test.ts',
+    // BOTH directions matter, which is why this is not a test-file-only predicate. The
+    // defect appears when a TEST adds a flag mock — and, the actual motivating case, when
+    // a SOURCE file DROPS its last flag read while the test that toggles it stays behind.
+    // Narrowing to `*.test.*` would rebuild the blind spot one level down: AdvNowRunning.tsx
+    // is the file that changed, and it is not a test.
+    appliesTo: (f) => /\.[cm]?[jt]sx?$/.test(f),
+  },
+  {
     // WI-37605 — the D-034 shape again, and this one straddles the boundary in BOTH
     // directions, which is why neither workspace's own suite can hold it. The invariant
     // ("no executable line hardcodes the green-checkpoint production tag") is violated in
