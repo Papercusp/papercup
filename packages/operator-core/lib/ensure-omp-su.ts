@@ -23,7 +23,7 @@
 import { existsSync, mkdirSync, copyFileSync, chmodSync, statSync, renameSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join, dirname, delimiter } from 'node:path';
-import { execFileSync } from 'node:child_process';
+import { execFile } from 'node:child_process';
 
 function dlog(msg: string): void {
   process.stderr.write(`[ensure-omp-su] ${msg}\n`);
@@ -55,26 +55,40 @@ function isOnPath(bin: string): boolean {
   return resolveOnPath(bin) !== null;
 }
 
-function setOmpConfig(key: string, value: string): void {
+function runOmpConfig(args: string[]): Promise<void> {
+  return new Promise((resolve, reject) => {
+    execFile('omp', args, { stdio: 'ignore' }, (error) => {
+      if (error) reject(error);
+      else resolve();
+    });
+  });
+}
+
+async function setOmpConfig(key: string, value: string): Promise<void> {
   if (!isOnPath('omp')) return;
   try {
-    execFileSync('omp', ['config', 'set', key, value], { stdio: 'ignore' });
+    // This helper runs during operator startup. `execFileSync` here used to
+    // freeze the HTTP event loop once per key while OMP loaded its config; five
+    // sequential writes were enough to leave accepted connections queued on
+    // :3170 even though systemd still reported the process active. Keep the
+    // writes ordered, but let libuv wait for each child off the main thread.
+    await runOmpConfig(['config', 'set', key, value]);
     dlog(`OMP config ${key}=${value}`);
   } catch (e) {
     dlog(`OMP config ${key} failed: ${(e as Error).message}`);
   }
 }
 
-function ensureOmpHindsightConfig(): void {
+async function ensureOmpHindsightConfig(): Promise<void> {
   const hindsightUrl =
     process.env.PAPERCUSP_HINDSIGHT_API_URL ??
     process.env.HINDSIGHT_API_URL ??
     'http://localhost:8888';
-  setOmpConfig('memory.backend', 'hindsight');
-  setOmpConfig('hindsight.apiUrl', hindsightUrl);
-  setOmpConfig('hindsight.scoping', 'per-project-tagged');
-  setOmpConfig('hindsight.autoRecall', 'true');
-  setOmpConfig('hindsight.autoRetain', 'true');
+  await setOmpConfig('memory.backend', 'hindsight');
+  await setOmpConfig('hindsight.apiUrl', hindsightUrl);
+  await setOmpConfig('hindsight.scoping', 'per-project-tagged');
+  await setOmpConfig('hindsight.autoRecall', 'true');
+  await setOmpConfig('hindsight.autoRetain', 'true');
 }
 
 // NOTE (eval-disable scoping, 2026-07-04 / WI-2382): the `eval` builtin doom-loop fix for weak
@@ -263,7 +277,7 @@ export async function ensureOmpSuInstalled(): Promise<void> {
     if (process.platform !== 'linux') return;
 
     await ensurePapercuspBootstrap();
-    ensureOmpHindsightConfig();
+    await ensureOmpHindsightConfig();
 
     // Skip if the bootstrap files are already in place — fast path on reboot.
     const { playbookPath: playbookDest, coordPath: coordDest } =

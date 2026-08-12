@@ -10,7 +10,7 @@
  *   - ensureOmpHindsightConfig's `omp config set` shellouts actually fire
  *     (5 keys), gated on `omp` being on PATH
  *
- * Hermetic: child_process (execSync/execFileSync) + fs + os + the two
+ * Hermetic: child_process (execSync/execFile) + fs + os + the two
  * desktop-install leaves are all mocked; nothing spawns or touches the
  * real home. `process.platform` is overridden per-test (it's read-only, so
  * via Object.defineProperty) and restored after.
@@ -29,7 +29,7 @@ function setPlatform(p: NodeJS.Platform): void {
   Object.defineProperty(process, 'platform', { value: p, configurable: true });
 }
 
-const execFileSyncSpy = vi.fn();
+const execFileSpy = vi.fn();
 const execSyncSpy = vi.fn();
 const installPapercuspFilesSpy = vi.fn(async () => ({ playbookWritten: true, extensionWritten: true }));
 const installOmpIntegrationSpy = vi.fn(async () => ({ changed: false, actions: [], reason: undefined }));
@@ -39,7 +39,7 @@ const homeState = { throws: false };
 
 beforeEach(() => {
   vi.resetModules();
-  execFileSyncSpy.mockReset();
+  execFileSpy.mockReset();
   execSyncSpy.mockReset();
   installPapercuspFilesSpy.mockClear();
   installOmpIntegrationSpy.mockClear();
@@ -66,7 +66,7 @@ beforeEach(() => {
       },
     };
   });
-  // command -v omp / omp-su succeed (omp IS on PATH); execFileSync (the actual
+  // command -v omp / omp-su succeed (omp IS on PATH); execFile (the actual
   // `omp config set` shellout) is a spy we assert against.
   vi.doMock('node:child_process', () => ({
     execSync: (...args: unknown[]) => {
@@ -79,7 +79,11 @@ beforeEach(() => {
       }
       return opts?.encoding ? '' : Buffer.from('');
     },
-    execFileSync: (...args: unknown[]) => execFileSyncSpy(...args),
+    execFile: (...args: unknown[]) => {
+      execFileSpy(...args);
+      const callback = args.at(-1) as (error: Error | null) => void;
+      queueMicrotask(() => callback(null));
+    },
   }));
   // Partial mock (see ensure-omp-su.test.ts): keep the real pure
   // resolveInstallPaths; stub only the fs-writing installer.
@@ -124,12 +128,12 @@ describe('ensureOmpSuInstalled — single-flight cache', () => {
     // concurrent callers — the single-flight guard, not two re-runs. (The eval-tool-tier
     // disable moved to psu-launcher's per-session config, WI-2382 scoping fix.)
     expect(installPapercuspFilesSpy).toHaveBeenCalledTimes(1);
-    expect(execFileSyncSpy).toHaveBeenCalledTimes(5);
+    expect(execFileSpy).toHaveBeenCalledTimes(5);
 
     // A THIRD call after settle still reuses the cache (no re-run).
     await mod.ensureOmpSuInstalled();
     expect(installPapercuspFilesSpy).toHaveBeenCalledTimes(1);
-    expect(execFileSyncSpy).toHaveBeenCalledTimes(5);
+    expect(execFileSpy).toHaveBeenCalledTimes(5);
   });
 
   it('HOLDS the cache on rejection — a failing run is not retried by the next call', async () => {
@@ -167,7 +171,7 @@ describe('ensureOmpSuInstalled — platform guard', () => {
 
     expect(installPapercuspFilesSpy).not.toHaveBeenCalled();
     expect(installOmpIntegrationSpy).not.toHaveBeenCalled();
-    expect(execFileSyncSpy).not.toHaveBeenCalled();
+    expect(execFileSpy).not.toHaveBeenCalled();
   });
 });
 
@@ -182,8 +186,8 @@ describe('ensureOmpSuInstalled — ensureOmpHindsightConfig shellouts', () => {
     // config set`. The eval-tool-tier disable is NO LONGER set here: it moved to psu-launcher's
     // per-session config (writeOmpSessionConfigDir string-surgery) so eval is off only for psu
     // agent sessions and the user's global ~/.omp keeps eval enabled (WI-2382 scoping fix).
-    expect(execFileSyncSpy).toHaveBeenCalledTimes(5);
-    const keysSet = execFileSyncSpy.mock.calls.map((c) => {
+    expect(execFileSpy).toHaveBeenCalledTimes(5);
+    const keysSet = execFileSpy.mock.calls.map((c) => {
       const argv = c[1] as string[];
       return argv[2]; // omp config set <key> <value>
     });
@@ -195,15 +199,15 @@ describe('ensureOmpSuInstalled — ensureOmpHindsightConfig shellouts', () => {
       'hindsight.autoRetain',
     ]);
     // Each is an `omp config set …` invocation.
-    for (const call of execFileSyncSpy.mock.calls) {
+    for (const call of execFileSpy.mock.calls) {
       expect(call[0]).toBe('omp');
       expect((call[1] as string[]).slice(0, 2)).toEqual(['config', 'set']);
     }
     // memory.backend → hindsight specifically.
-    expect(execFileSyncSpy.mock.calls[0][1]).toEqual(['config', 'set', 'memory.backend', 'hindsight']);
+    expect(execFileSpy.mock.calls[0][1]).toEqual(['config', 'set', 'memory.backend', 'hindsight']);
     // NO eval.* shellout fires here anymore (moved to per-session psu-launcher config).
     for (const lang of ['eval.py', 'eval.js', 'eval.rb', 'eval.jl']) {
-      expect(execFileSyncSpy.mock.calls.find((c) => (c[1] as string[])[2] === lang)).toBeUndefined();
+      expect(execFileSpy.mock.calls.find((c) => (c[1] as string[])[2] === lang)).toBeUndefined();
     }
   });
 
@@ -213,7 +217,7 @@ describe('ensureOmpSuInstalled — ensureOmpHindsightConfig shellouts', () => {
     try {
       const mod = await import('./ensure-omp-su');
       await mod.ensureOmpSuInstalled();
-      const apiUrlCall = execFileSyncSpy.mock.calls.find((c) => (c[1] as string[])[2] === 'hindsight.apiUrl');
+      const apiUrlCall = execFileSpy.mock.calls.find((c) => (c[1] as string[])[2] === 'hindsight.apiUrl');
       expect(apiUrlCall?.[1]).toEqual(['config', 'set', 'hindsight.apiUrl', 'http://hindsight.test:9999']);
     } finally {
       delete process.env.PAPERCUSP_HINDSIGHT_API_URL;

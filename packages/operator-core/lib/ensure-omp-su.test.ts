@@ -25,7 +25,10 @@ beforeEach(() => {
   });
 
   vi.doMock('node:child_process', async () => ({
-    execFileSync: () => undefined,
+    execFile: (...args: unknown[]) => {
+      const callback = args.at(-1) as (error: Error | null) => void;
+      queueMicrotask(() => callback(null));
+    },
   }));
 
   // Partial mock: stub only the fs-writing installer; keep the REAL pure
