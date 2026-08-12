@@ -46,6 +46,26 @@ function jsonError(reason: string, message: string) {
   };
 }
 
+/**
+ * EI-20218730860484837: PostgreSQL's `regprocedure` input syntax requires a
+ * function signature, even for a zero-argument function. The raw 22P02 error
+ * says only "expected a left parenthesis", which sends a caller back to SQL
+ * trial-and-error. Add a hint only for that exact error shape and query cast;
+ * never rewrite the caller's SQL or broaden unrelated parse errors.
+ */
+function regprocedureSignatureHint(
+  sql: string,
+  info: { code?: string; message: string; detail?: string },
+): string | undefined {
+  if (info.code !== '22P02' || !/::\s*regprocedure\b/i.test(sql)) return undefined;
+  const errorText = `${info.message} ${info.detail ?? ''}`;
+  if (!/expected\s+a\s+left\s+parenthesis/i.test(errorText)) return undefined;
+  return (
+    'PostgreSQL regprocedure casts require a function signature. For a zero-argument function, use ' +
+    "'schema.function()'::regprocedure (for example 'harness_shared.engineer_issues_view_dml()'::regprocedure)."
+  );
+}
+
 export default defineTool({
   name: 'dev:pg_query',
   profile: 'engineer',
@@ -255,6 +275,8 @@ export default defineTool({
       if (info.detail) payload.detail = info.detail;
       if (info.code) payload.code = info.code;
       if (info.position) payload.position = info.position;
+      const regprocedureHint = regprocedureSignatureHint(sql, info);
+      if (regprocedureHint && !payload.hint) payload.hint = regprocedureHint;
       // P-005(a): a 42703 (undefined_column) carries the referenced tables'
       // CANONICAL column lists so the retry takes one round trip, not a
       // guessing loop (a fresh post-compaction context has no query memory).

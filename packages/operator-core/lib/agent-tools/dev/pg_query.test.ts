@@ -137,6 +137,23 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     expect(p2).not.toHaveProperty('knownColumns');
   });
 
+  it('adds the zero-argument signature hint for a regprocedure cast parse error', async () => {
+    pgReadQueryMock.mockRejectedValue(
+      Object.assign(new Error('expected a left parenthesis'), { code: '22P02' }),
+    );
+    const res = await pgQueryTool.handler(
+      {
+        sql: "SELECT pg_get_functiondef('harness_shared.engineer_issues_view_dml'::regprocedure)",
+      } as never,
+      {} as never,
+    );
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    expect(payloadOf(res as never)).toMatchObject({
+      code: '22P02',
+      hint: expect.stringContaining("'harness_shared.engineer_issues_view_dml()'::regprocedure"),
+    });
+  });
+
   // EI-19415142351884573: a whole-call timeout is a distinct failure from a
   // real PG error ("we never found out" vs "PG said no") and must be reported
   // as such, not fall into the generic HINT/DETAIL/42703 error path below it.
