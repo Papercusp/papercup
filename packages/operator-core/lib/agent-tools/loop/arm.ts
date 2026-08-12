@@ -14,9 +14,10 @@
  * cost-cap). End it with loop:end.
  *
  * This is the user-directed counterpart to the autonomous queen/bee/scout loop,
- * which is a SEPARATE system (pot:declare-wake / kettle:declare-wake) and is
- * out of scope here (plan D-007) — do not use loop:arm from an autonomous-fleet
- * agent.
+ * which is a SEPARATE system (pot:declare-wake) and is out of scope here (plan
+ * D-007) — do not use loop:arm from an autonomous-fleet agent. (Its Kettle half,
+ * `kettle:declare-wake`, retired with the tier — retire-mug-kettle-su-only-2026-08-09
+ * P-059/D-080.)
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
@@ -363,7 +364,7 @@ export default defineTool({
   guidance: {
     when: 'Use for an su/interactive session that should keep advancing a goal on a recurring cadence. Arm it last before ending your turn. Pass ownerId only to arm an already-running, wake-reachable session other than your own.',
     notWhen:
-      'Not for wall-clock schedules (plans:set-schedule) or autonomous queen/bee/scout loops (pot:declare-wake / kettle:declare-wake). Do not use Claude /loop instead. Not the PRIMARY watcher when the thing you watch already emits — park on it with events:await and keep the loop as the slow backstop.',
+      'Not for wall-clock schedules (plans:set-schedule) or autonomous queen/bee/scout loops (pot:declare-wake). Do not use Claude /loop instead. Not the PRIMARY watcher when the thing you watch already emits — park on it with events:await and keep the loop as the slow backstop.',
     chaining:
       'loop:arm { intervalSec, goal } → end turn → re-wakes each iteration → loop:status to inspect → loop:end to stop.',
     seeAlso: [

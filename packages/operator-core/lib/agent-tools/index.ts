@@ -177,9 +177,10 @@ import './pot/get_steering';
 // control surface (start/pause its loop), sibling to pot:start/pause:
 import './overwatch/start';
 import './overwatch/pause';
-// overwatch-role-2026-06-15 B-04 — the overwatch's declare-next-wake verb (its own
-// channel, gated coord:write so it can't touch the Queen's pot:declare-wake):
-import './overwatch/declare_wake';
+// (kettle:declare-wake — the overwatch's declare-next-wake verb — RETIRED to
+// _retired/mug-kettle-deciders/ by retire-mug-kettle-su-only-2026-08-09 P-059/D-080.
+// Its wake PRIMITIVE (declareOverwatchTimeWake, lib/overwatch/) is still live and is
+// what `overwatch/loop.ts` below calls; only the agent-facing tool retired.)
 // overwatch-role-2026-06-15 B-04 — the wake-loop module: registers the
 // `system:overwatch-launch` action + the B-07 wake-bridge waker at boot (so an
 // `kettle:start` in THIS process finds a wired waker, not the fail-soft no-op).

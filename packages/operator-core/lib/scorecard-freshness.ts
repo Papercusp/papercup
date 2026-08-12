@@ -218,7 +218,7 @@ export function interpretOverwatchEmission(
     return {
       verdict: 'loop-dead',
       actionable: true,
-      note: `Kettle is enabled + started but its WAKE LOOP is stale (last run ${ctx.lastRunAt ?? 'never'}) — the emission gap is a DEAD MONITOR LOOP, not an agent skip. Revive it (kettle:start / kettle:declare-wake) and investigate the overwatch liveness watchdog.`,
+      note: `Kettle is enabled + started but its WAKE LOOP is stale (last run ${ctx.lastRunAt ?? 'never'}) — the emission gap is a DEAD MONITOR LOOP, not an agent skip. Revive it (kettle:start) and investigate the overwatch liveness watchdog.`,
     };
   }
   // The wake loop IS firing, yet no COMPLETE scorecard landed — the AGENT is skipping /

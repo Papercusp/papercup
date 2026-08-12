@@ -181,7 +181,8 @@ describe('P-010 tool gate: the shared refusal', () => {
  * retired, and keeping it would assert a reversibility the system no longer
  * honours. The restore contract MOVES from the flag to
  * `_retired/mug-kettle-deciders/RESTORE.md`, which records every row removed
- * here so that a restore re-adds it. Removed so far: pot:survey (P-059).
+ * here so that a restore re-adds it. Removed so far: pot:survey,
+ * kettle:declare-wake (P-059).
  */
 const GATED: Array<{ name: string; load: () => Promise<{ default: unknown }>; args: Record<string, unknown> }> = [
   // D-017 actuators — the refusal is harm-prevention.
@@ -189,7 +190,7 @@ const GATED: Array<{ name: string; load: () => Promise<{ default: unknown }>; ar
   { name: 'pot:wake', load: () => import('./pot/wake'), args: { harness: 'papercusp', reason: 't' } },
   { name: 'cup:spawn', load: () => import('./cup/spawn'), args: { harness: 'papercusp', role: 'coder' } },
   { name: 'kettle:start', load: () => import('./overwatch/start'), args: { harness: 'papercusp' } },
-  { name: 'kettle:declare-wake', load: () => import('./overwatch/declare_wake'), args: { harness: 'papercusp', inSeconds: 60 } },
+  // (kettle:declare-wake retired here by P-059/D-080 — see the note above this list.)
   // D-048 tier surfaces. set-steering is the one true actuator of the four (it
   // writes, then requestUrgentPotWake); the rest are reads whose zero-valued
   // answers would misreport a retired tier as a healthy idle one.

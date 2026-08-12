@@ -196,6 +196,46 @@ even named alike (`survey-workspace-scope.test.ts` exists in BOTH trees — only
    `shapeMemoryHit` half is untouched. Restoring `survey-shape.ts` must restore that block —
    `git log -- <this file>` recovers it verbatim.
 
+## `kettle:declare-wake` — the Kettle's own wake verb (P-059 slice 7, 2026-08-11)
+
+`packages/operator-core/lib/agent-tools/overwatch/declare_wake.ts` + `declare_wake.test.ts`.
+
+**Why it retired:** gated at `:29` (`refuseIfMugKettleRetired`), and grep-verified at HEAD to
+have **zero live importers** — only `agent-tools/index.ts` (registration), the GATED row in
+`mug-kettle-tool-gate.test.ts`, and its own test.
+
+⛔ **Do not confuse the TOOL with the PRIMITIVE.** `declareOverwatchTimeWake` in
+`packages/operator-core/lib/overwatch/` is STILL LIVE — `lib/overwatch/loop.ts` calls it, and
+`lib/overwatch/autonomy.ts` still keys its `LIFECYCLE_VERBS` policy on the *string*
+`'kettle:declare-wake'`. Only the agent-facing tool retired. (`lib/overwatch/` is a LATER
+P-059 slice; leaving that string is correct until then.)
+
+**Five live-tree edits go with it — a restore must undo ALL of them:**
+
+1. `agent-tools/index.ts` — the registration site (`import './overwatch/declare_wake';`, was
+   `:182`) replaced by a comment. A restore that returns the file but not this line silently
+   restores nothing. ⚠ The sibling `import '../overwatch/loop';` two lines below is a
+   DIFFERENT module (`lib/overwatch/`, still live) — do not touch it.
+2. `agent-tools/mug-kettle-tool-gate.test.ts` — the `{ name: 'kettle:declare-wake', … }`
+   GATED row removed per D-080 (the restore contract for its reversibility is THIS file).
+   `kettle:start` stays in `GATED` and `kettle:pause` stays in `EXCLUDED` — both tools are
+   still live as of this slice.
+3. `agent-tools/loop/arm.ts` — TWO pointers swept: the header comment and the `notWhen`
+   guidance string both named `pot:declare-wake / kettle:declare-wake` as the autonomous
+   counterpart loop; the Kettle half was dropped so live guidance cannot instruct a verb
+   that no longer resolves.
+4. `lib/scorecard-freshness.ts` — the `loop-dead` verdict's **actionable** note said
+   "Revive it (kettle:start / kettle:declare-wake)"; narrowed to `kettle:start`. This one is
+   emitted at RUNTIME to an agent, so a stale pointer here is a live wrong instruction, not
+   a comment.
+5. `libs/papercusp/…/blueprints/coding/prompts/kettle.md` — "Step 3: Declare your next wake"
+   replaced by a retirement note. ⚠ This is the edit that keeps the tree GREEN:
+   `prompt-blueprint-verb-catalog.test.ts` scans the prompt/blueprint corpus for the shape
+   "call \`group:verb\`" and asserts the verb resolves against the live catalog, so leaving
+   the original **ALWAYS call `kettle:declare-wake`** line would have redded the shared gate
+   from a file two directories outside the one being retired. Note this file lives in the
+   `libs/papercusp` SUBMODULE, so its restore is a submodule commit, not a superproject one.
+
 <!-- Later P-059 slices append rows here. Keep the "why it retired" column
      evidence-bearing (importer count at retirement), not just a restatement
      of the file name. -->
