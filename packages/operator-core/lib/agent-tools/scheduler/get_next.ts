@@ -579,13 +579,13 @@ export default defineTool({
   name: 'scheduler:get_next',
   profile: 'engineer',
   description:
-    'Self-select via your claim SPEC: atomically claims the next eligible item under global floors + spec.view.filter, ordered by spec.rank, SKIP LOCKED. Outside a fleet, no spec uses default ordering (warned). A fleet MEMBER with no matching/inherited spec fails closed (windDown:true) — never falls through to generic backlog. Returns the claimed item + selecting spec revision, or a self-describing miss. The fleet/member spec is resolved server-side: specId and revision are result provenance, not request arguments.',
+    'Self-select via your claim SPEC: atomically claims the next eligible item under global floors + spec filter/rank, SKIP LOCKED. Outside a fleet, no spec uses default ordering (warned). A fleet member without an inherited spec fails closed (windDown:true), never into generic backlog. Returns the item plus spec provenance, or a diagnosed miss.',
   guidance: {
-    when: 'You are a SELF-PULLING agent picking up your next item — a coding-pot cup (role="cup") or an su fleet MEMBER pulling its lane. Call this instead of scanning the raw frontier or self-prioritizing: scheduling is your Mug\'s/leader\'s judgment via your claim spec; pickup is yours. A claim-spec self-puller is a cup or su fleet member, NOT a coding-factory pipeline role (see notWhen). Use only { harness: "<your-harness>", heldPaths?, states?, rigAvailable? }; do NOT pass specId, revision, fleet, workspace, or claimSpec — the inherited spec is reported in the result\'s claimedUnder field.',
+    when: 'A self-pulling cup or su fleet member needs its next item. Use the Mug/leader claim spec instead of scanning the frontier. Pass only { harness, heldPaths?, states?, rigAvailable? }; never pass specId, revision, fleet, workspace, or claimSpec. claimedUnder reports the inherited spec.',
     notWhen:
-      'You are a coding-FACTORY pipeline role (scoper/architect/worker/validator/…): PUSHED a FEATURE_ID by the orchestrator spine, you do NOT self-pull. Claiming a SPECIFIC item by id → work_items:claim. Plain oldest-first self-select (non-fleet only) → work_items:claim_next.',
+      'Coding-factory roles are pushed a FEATURE_ID and do not self-pull. For a specific id use work_items:claim; for plain non-fleet oldest-first use work_items:claim_next.',
     chaining:
-      'scheduler:get_next → work_items:set_state → work_items:release. Leader re-steers via scheduler:set_claim_spec. A non-fleet MISS may park on a work-item:claimable event. A fleet scoped miss returns windDown:true: checkpoint/release, loop:end, report to the leader; resume after a spec revision or claimable event. windDown:false + excludedBreakdown.claimable>0 is a claim-path bug, not a drain.',
+      'After a claim, set state and eventually release/complete it; leaders re-steer with scheduler:set_claim_spec. On a fleet miss with windDown:true, checkpoint/release and park until a spec revision or claimable event. windDown:false plus excludedBreakdown.claimable>0 is a claim-path bug.',
     seeAlso: [
       'work_items:claimable (how many / which items are claimable, WITHOUT claiming — same oracle, no side-effect)',
       'work_items:claim_next (plain oldest-first self-select, no spec)',
