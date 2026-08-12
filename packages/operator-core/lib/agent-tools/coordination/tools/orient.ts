@@ -898,10 +898,16 @@ export async function composeOrient(
   // "newer than read_through_ts", which could HIDE mail the agent had been shown
   // but not acted on. `unanswered` remains the actionable signal, and it is
   // computed independently of this window.
-  const inbox = (await call('coord:inbox', {
-    limit: args.inboxLimit ?? (args.afterCompaction ? 25 : 10),
-    max_body_chars: args.afterCompaction ? 800 : 300,
-  })) as { summary?: unknown; entries?: unknown } | undefined;
+  const inboxLimit = args.inboxLimit ?? (args.afterCompaction ? 25 : 10);
+  // EI-20287600163306401: callers that already consumed the inbox can pass zero
+  // to suppress this duplicate fold. The nested coord:inbox tool requires a
+  // positive limit, so do not forward an explicit zero as an invalid call.
+  const inbox = inboxLimit === 0
+    ? undefined
+    : (await call('coord:inbox', {
+        limit: inboxLimit,
+        max_body_chars: args.afterCompaction ? 800 : 300,
+      })) as { summary?: unknown; entries?: unknown } | undefined;
 
   // work_items:list returns the bare array (its `result` schema), but be defensive
   // about the wrapped shapes the unwrap may yield.
@@ -2137,7 +2143,7 @@ export default defineTool({
       .describe('Scope assignments + claimable + recall + declare to this harness.'),
     claimableState: z.string().max(40).optional().describe("Work-item state for the claimable list (default 'open' — the unified claimable token)."),
     claimableLimit: z.number().int().nonnegative().max(100).optional().describe('Max claimable items (default 20; 0 skips backlog enumeration).'),
-    inboxLimit: z.number().int().positive().max(50).optional().describe('Max recent inbox entries (default 10).'),
+    inboxLimit: z.number().int().nonnegative().max(50).optional().describe('Max recent inbox entries (default 10; 0 skips the inbox read).'),
     mode: z
       .enum(['full', 'monitor'])
       .optional()
