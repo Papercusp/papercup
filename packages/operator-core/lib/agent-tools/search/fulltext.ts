@@ -15,7 +15,7 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { runFullTextSearch } from '@papercusp/search';
 import { SEARCH_SOURCES } from './sources';
-import { rerankCandidateCount, rerankProseHits } from './rerank';
+import { rerankCandidateCount, rerankPageHead } from './rerank';
 import { searchFilterArgs, resolveSearchFilters } from './filters';
 import { resolveAgentIdentity } from '../coordination/identity';
 
@@ -56,7 +56,7 @@ export default defineTool({
     query: z.string().min(1).max(500),
     scope: z.array(z.enum(SCOPE_CHOICES)).optional(),
     harness_slug: z.string().optional(),
-    limit: z.number().int().min(1).max(20).optional().describe('Max results (default 5; maximum 20).'),
+    limit: z.number().int().min(1).max(50).optional().describe('Max results (default 5; maximum 50).'),
     ...searchFilterArgs,
   }),
   async handler(args, ctx) {
@@ -91,7 +91,7 @@ export default defineTool({
       query: args.query,
       workspaceId: ctx.workspaceId ?? '',
       scopeFilter: args.harness_slug ?? null,
-      // Stage B over-fetch — see the note in semantic.ts. `rerankProseHits`
+      // Stage B over-fetch — see the note in semantic.ts. `rerankPageHead`
       // slices back to `limit`, including on the passthrough path.
       limit: rerankCandidateCount(limit),
       filters,
@@ -100,7 +100,15 @@ export default defineTool({
 
     // Stage B: cross-encoder rerank. Fail-safe — no ZeroEntropy key → the
     // BM25 order unchanged (see ./rerank).
-    const reranked = await rerankProseHits(args.query, results, limit);
+    //
+    // `rerankPageHead`, not `rerankProseHits`: above `limit` 24 the over-fetch
+    // degenerates to the page itself (rerankCandidateCount never under-fetches),
+    // so handing the whole page to the cross-encoder would score up to 50 pairs
+    // against a budget MEASURED at 24 (~45ms/pair, no parallelism escape) and
+    // blow PROSE_RERANK_TIMEOUT_MS into a full degrade. rerankPageHead honours
+    // the cap as a CANDIDATE budget: the head is reranked, the tail rides
+    // through in BM25 order, and worst-case cost is flat in page size.
+    const reranked = await rerankPageHead(args.query, results, limit);
 
     // search:fulltext's output rows use `rank` (no score/rankers).
     const top = reranked.map((r) => ({

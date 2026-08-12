@@ -65,9 +65,13 @@ export const RERANK_OVERFETCH = 4;
  * linear in candidates with no parallelism escape hatch, and the cap — not the
  * multiplier — is what bounds worst-case latency.
  *
- * Both prose search tools default to `limit` 5 (max 20). Without a cap, a
+ * Both prose search tools default to `limit` 5 (max 50). Without a cap, a
  * `limit: 20` call would rerank 80 pairs ≈ 3.6s. At 24 the worst case is
  * ≈ 1.1s while the common `limit: 5` path still gets a full 4× pool.
+ *
+ * Their max rose 20 → 50 (EI-20275475712246963), which is ABOVE this cap — so
+ * both now go through {@link rerankPageHead} rather than {@link rerankProseHits}
+ * to keep the scored-pair count pinned here regardless of page size.
  */
 export const RERANK_MAX_CANDIDATES = 24;
 
@@ -503,9 +507,9 @@ export async function rerankProseHits(
  * WHY THIS EXISTS (P-010). `rerankCandidateCount` deliberately never
  * under-fetches — `Math.max(limit, …)` — so for any `limit` at or above the cap
  * it returns `limit` itself and the "over-fetch" degenerates to the page. Both
- * prose agent tools cap at `limit` 20 so they never reach that point; the
- * transcript-search route asks for 30 (the desktop pill) to 50 (the HUD), which
- * does. Handing that whole page to {@link rerankProseHits} would score 30–50
+ * prose agent tools now cap at `limit` 50 (raised from 20 by
+ * EI-20275475712246963), so they DO reach it, as does the transcript-search
+ * route at 30 (the desktop pill) to 50 (the HUD). Handing that whole page to {@link rerankProseHits} would score 30–50
  * pairs against a cap MEASURED at 24 (≈45ms/pair, no parallelism escape hatch —
  * see RERANK_MAX_CANDIDATES) — i.e. 1.35–2.25s on this box and ~2–4.5s on a
  * laptop, straight through the {@link PROSE_RERANK_TIMEOUT_MS} budget into a

@@ -29,7 +29,7 @@ import {
   loadCoverageSnapshotCached,
   assessSearchCoverage,
 } from '../../search/coverage-gate';
-import { rerankCandidateCount, rerankProseHits } from './rerank';
+import { rerankCandidateCount, rerankPageHead } from './rerank';
 import { searchFilterArgs, resolveSearchFilters } from './filters';
 import { resolveAgentIdentity } from '../coordination/identity';
 
@@ -96,7 +96,7 @@ export default defineTool({
     query: z.string().min(1).max(500),
     scope: z.array(z.enum(SCOPE_CHOICES)).optional(),
     harness_slug: z.string().optional(),
-    limit: z.number().int().min(1).max(20).optional(),
+    limit: z.number().int().min(1).max(50).optional().describe('Max results (default 5; maximum 50).'),
     mode: z.enum(MODE_CHOICES).optional(),
     ...searchFilterArgs,
   }),
@@ -152,7 +152,7 @@ export default defineTool({
       workspaceId: ctx.workspaceId ?? '',
       scopeFilter: args.harness_slug ?? null,
       // Stage B over-fetch: retrieve a larger pool than we return so the
-      // reranker can pull a buried hit INTO the page. `rerankProseHits` slices
+      // reranker can pull a buried hit INTO the page. `rerankPageHead` slices
       // back to `limit`, so the caller-visible page size is unchanged — and it
       // still slices correctly when reranking is unavailable (passthrough).
       limit: rerankCandidateCount(limit),
@@ -169,7 +169,12 @@ export default defineTool({
 
     // Stage B: cross-encoder rerank the fused page. Fail-safe — no ZeroEntropy
     // key → the RRF order unchanged (see ./rerank).
-    const reranked = await rerankProseHits(args.query, results, limit);
+    //
+    // `rerankPageHead`, not `rerankProseHits`: above `limit` 24 the over-fetch
+    // degenerates to the page itself, so the whole page would be scored against
+    // a budget MEASURED at 24 pairs. rerankPageHead reranks the head and keeps
+    // the tail in RRF order, holding worst-case cost flat in page size.
+    const reranked = await rerankPageHead(args.query, results, limit);
 
     // P-009: report WHAT THE INDEX ACTUALLY CONTAINS alongside the hits. Only
     // non-healthy sources are itemised, so a healthy search stays compact.

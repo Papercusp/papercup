@@ -56,6 +56,11 @@ const mockRerank = async (importOriginal: () => Promise<typeof import('../search
   return {
     ...actual,
     rerankProseHits: async (_: unknown, r: unknown[]) => r,
+    // Both prose tools call rerankPageHead (not rerankProseHits) since their cap
+    // rose to 50 — above RERANK_MAX_CANDIDATES. Stub it too: the real one calls
+    // the module-internal rerankProseHits, so overriding only that leaves the
+    // live cross-encoder path running inside these unit tests.
+    rerankPageHead: async (_: unknown, r: unknown[], limit: number) => r.slice(0, limit),
   };
 };
 
@@ -86,7 +91,47 @@ describe('search:fulltext', () => {
     const { default: tool } = await import('../search/fulltext');
     const limit = (tool.args as any).shape.limit;
     expect(limit.description).toContain('default 5');
-    expect(limit.description).toContain('maximum 20');
+    expect(limit.description).toContain('maximum 50');
+  });
+
+  // EI-20275475712246963: the cap was 20 and callers legitimately wanting a
+  // bigger page got `invalid_args`. It was filed FOUR times; the first "fix"
+  // only documented the ceiling in the describe string, which cannot stop a
+  // caller from asking for 40. Pin the accept/reject boundary itself.
+  it('accepts a limit above the old cap of 20, and still rejects one past 50', async () => {
+    const { default: tool } = await import('../search/fulltext');
+    const limit = (tool.args as any).shape.limit;
+    expect(limit.safeParse(40).success).toBe(true);
+    expect(limit.safeParse(50).success).toBe(true);
+    expect(limit.safeParse(51).success).toBe(false);
+    expect(limit.safeParse(0).success).toBe(false);
+  });
+
+  // The cap above 24 is only affordable because Stage B is routed through
+  // rerankPageHead, which honours RERANK_MAX_CANDIDATES as a CANDIDATE budget.
+  // Calling rerankProseHits here instead would score the whole 50-row page at a
+  // MEASURED ~45ms/pair and blow PROSE_RERANK_TIMEOUT_MS into a full degrade —
+  // so the routing, not just the number, is what makes the raised cap correct.
+  it('routes Stage B through rerankPageHead so scored pairs stay capped at a big limit', async () => {
+    const rows = Array.from({ length: 50 }, (_, i) => ({ ...MOCK_HIT, source_id: `hit_${i}` }));
+    const rerankPageHead = vi.fn(async (_q: unknown, r: unknown[], limit: number) => r.slice(0, limit));
+    const rerankProseHits = vi.fn(async (_q: unknown, r: unknown[]) => r);
+    vi.doMock('@papercusp/search', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('@papercusp/search')>()),
+      runFullTextSearch: vi.fn(async () => ({ results: rows, totalHits: rows.length })),
+    }));
+    vi.doMock('../search/rerank', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('../search/rerank')>()),
+      rerankProseHits,
+      rerankPageHead,
+    }));
+
+    const { default: tool } = await import('../search/fulltext');
+    const res: any = await tool.handler({ query: 'authentication', limit: 50 }, MAKE_CTX());
+
+    expect(rerankPageHead).toHaveBeenCalledTimes(1);
+    expect(rerankProseHits).not.toHaveBeenCalled();
+    expect(JSON.parse(res.content[0].text).results).toHaveLength(50);
   });
 
   it('calls runFullTextSearch with query + workspaceId + the over-fetched (rerankCandidateCount) limit', async () => {
@@ -233,6 +278,17 @@ describe('search:fulltext', () => {
 // ─── search:semantic ──────────────────────────────────────────────────────────
 
 describe('search:semantic', () => {
+  // Fixed with fulltext as ONE condition (EI-20275475712246963): the sibling
+  // prose tool carried a byte-identical `.max(20)` on the same Stage B seam, so
+  // raising only one would have left the other filing the same bug.
+  it('accepts a limit above the old cap of 20, and still rejects one past 50', async () => {
+    const { default: tool } = await import('../search/semantic');
+    const limit = (tool.args as any).shape.limit;
+    expect(limit.safeParse(40).success).toBe(true);
+    expect(limit.safeParse(50).success).toBe(true);
+    expect(limit.safeParse(51).success).toBe(false);
+  });
+
   it('calls runHybridSearch with query + mode + workspaceId', async () => {
     const runHybridSearch = vi.fn<HybridMock>(async () => ({ results: [], totalHits: 0, embedderAvailable: true, legs: emptyLegs() }));
     vi.doMock('@papercusp/search', async (importOriginal) => ({
