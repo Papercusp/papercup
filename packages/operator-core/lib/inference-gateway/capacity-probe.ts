@@ -45,10 +45,14 @@ const UPSTREAM = process.env.PAPERCUSP_GATEWAY_UPSTREAM || 'https://api.anthropi
 const ANTHROPIC_VERSION = '2023-06-01';
 /** The cheapest model that still returns the unified budget headers. Env-tunable in case the id moves. */
 export const CAPACITY_PROBE_MODEL = process.env.PAPERCUSP_CAPACITY_PROBE_MODEL || 'claude-haiku-4-5';
-/** A probe must never hang a sweep. Short — we only need response HEADERS, never the body. */
-const PROBE_TIMEOUT_MS = Number(process.env.PAPERCUSP_CAPACITY_PROBE_TIMEOUT_MS) || 15_000;
+/** A probe must never hang a sweep. This bounds the WHOLE account path, not just response headers. */
+export const CAPACITY_PROBE_ACCOUNT_TIMEOUT_MS = Number(process.env.PAPERCUSP_CAPACITY_PROBE_TIMEOUT_MS) || 15_000;
+/** Keep the all-account MCP call below the ~55s transport deadline, including token/dispatcher setup. */
+export const CAPACITY_PROBE_SWEEP_TIMEOUT_MS = Number(process.env.PAPERCUSP_CAPACITY_PROBE_SWEEP_TIMEOUT_MS) || 45_000;
 /** Bound the fan-out so an 8-account sweep doesn't open 8 simultaneous proxy connections. */
 const PROBE_CONCURRENCY = Number(process.env.PAPERCUSP_CAPACITY_PROBE_CONCURRENCY) || 3;
+export const CAPACITY_PROBE_TIMEOUT_ERROR = 'capacity probe deadline exceeded';
+export const CAPACITY_PROBE_NOT_STARTED_ERROR = `${CAPACITY_PROBE_TIMEOUT_ERROR} before account probe started`;
 
 /** The unified-window projection a probe recovered from upstream response headers. */
 export interface CapacityWindows {
@@ -60,6 +64,8 @@ export interface CapacityWindows {
 
 export interface CapacityProbeResult {
   accountId: string;
+  /** False when the sweep returned a deterministic row without starting this account. */
+  attempted?: boolean;
   /** True when we got an HTTP response carrying at least one unified header — i.e. a usable reading.
    *  A 429 counts: it CONFIRMS a wall and carries the real reset. Only transport failures are `false`. */
   ok: boolean;
@@ -82,6 +88,8 @@ export interface CapacityProbeDeps {
   /** Build the per-account egress dispatcher (per-account IP). Injected in tests. */
   buildDispatcher?: (egress: AccountEgress | undefined) => Promise<unknown>;
   now?: () => number;
+  /** Internal shared deadline supplied by the bounded multi-account sweep. */
+  deadlineAt?: number;
 }
 
 /**
@@ -143,6 +151,64 @@ function describeEgress(egress: AccountEgress | undefined): string {
   return egress?.proxyUrl ?? (egress?.localAddress ? `src ${egress.localAddress}` : 'default-egress');
 }
 
+function timeoutError(phase: string): Error {
+  const error = new Error(`${CAPACITY_PROBE_TIMEOUT_ERROR} during ${phase}`);
+  error.name = 'CapacityProbeTimeoutError';
+  return error;
+}
+
+function isTimeoutError(error: unknown): boolean {
+  return error instanceof Error && error.name === 'CapacityProbeTimeoutError';
+}
+
+/** Bound an operation that has no cancellation seam of its own (credential refresh or dispatcher import). */
+function withDeadline<T>(operation: () => Promise<T> | T, timeoutMs: number, phase: string, onTimeout?: () => void): Promise<T> {
+  if (timeoutMs <= 0) return Promise.reject(timeoutError(phase));
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      try {
+        onTimeout?.();
+      } finally {
+        reject(timeoutError(phase));
+      }
+    }, timeoutMs);
+    timer.unref?.();
+    Promise.resolve()
+      .then(operation)
+      .then(
+        (value) => {
+          clearTimeout(timer);
+          resolve(value);
+        },
+        (error) => {
+          clearTimeout(timer);
+          reject(error);
+        },
+      );
+  });
+}
+
+function remainingMs(deadlineAt: number, now: () => number): number {
+  return Math.max(0, deadlineAt - now());
+}
+
+function noReadingResult(account: ClaudeAccount, error: string): CapacityProbeResult {
+  return {
+    accountId: account.id,
+    attempted: false,
+    ok: false,
+    windows: {},
+    before: storedWindows(account),
+    unwalls: false,
+    error,
+  };
+}
+
+function describeProbeError(error: unknown, phase: string, deadlineAt: number, now: () => number): string {
+  if (isTimeoutError(error) || now() >= deadlineAt) return `${CAPACITY_PROBE_TIMEOUT_ERROR} during ${phase}`;
+  return describeFetchError(error);
+}
+
 /**
  * Probe ONE account's live budget windows. Never throws — a credential/transport failure is captured on
  * the result so a sweep over N accounts always returns N rows. When an account has an egress pool, walk
@@ -159,7 +225,9 @@ export async function probeAccountCapacity(
   fullUtil = 0.97,
 ): Promise<CapacityProbeResult> {
   const before = storedWindows(account);
-  const base: Omit<CapacityProbeResult, 'ok' | 'windows' | 'unwalls'> = { accountId: account.id, before };
+  const now = deps.now ?? Date.now;
+  const deadlineAt = deps.deadlineAt ?? now() + CAPACITY_PROBE_ACCOUNT_TIMEOUT_MS;
+  const base: Omit<CapacityProbeResult, 'ok' | 'windows' | 'unwalls'> = { accountId: account.id, attempted: true, before };
   const fetchImpl = deps.fetchImpl ?? fetch;
   const resolveToken =
     deps.resolveToken ??
@@ -176,22 +244,41 @@ export async function probeAccountCapacity(
 
   let token: string;
   try {
-    token = await resolveToken(account);
+    token = await withDeadline(
+      () => resolveToken(account),
+      remainingMs(deadlineAt, now),
+      'credential resolution',
+    );
   } catch (e) {
-    return { ...base, ok: false, windows: {}, unwalls: false, error: describeFetchError(e) };
+    return {
+      ...base,
+      ok: false,
+      windows: {},
+      unwalls: false,
+      error: describeProbeError(e, 'credential resolution', deadlineAt, now),
+    };
   }
 
   const failures: string[] = [];
   for (const egress of probeEgressCandidates(account)) {
     const route = describeEgress(egress);
+    const routeTimeoutMs = remainingMs(deadlineAt, now);
+    if (routeTimeoutMs <= 0) {
+      failures.push(`${route}: ${CAPACITY_PROBE_TIMEOUT_ERROR} during egress dispatcher`);
+      break;
+    }
     try {
-      const dispatcher = await buildDispatcher(egress);
+      const dispatcher = await withDeadline(
+        () => buildDispatcher(egress),
+        routeTimeoutMs,
+        'egress dispatcher',
+      );
+      const fetchTimeoutMs = remainingMs(deadlineAt, now);
+      if (fetchTimeoutMs <= 0) throw timeoutError('fetch');
       const ac = new AbortController();
-      const timer = setTimeout(() => ac.abort(), PROBE_TIMEOUT_MS);
-      timer.unref?.();
       let res: Response;
-      try {
-        res = await fetchImpl(`${UPSTREAM}/v1/messages`, {
+      res = await withDeadline(
+        () => fetchImpl(`${UPSTREAM}/v1/messages`, {
           method: 'POST',
           signal: ac.signal,
           headers: {
@@ -207,10 +294,11 @@ export async function probeAccountCapacity(
           }),
           // undici honours `dispatcher` on the RequestInit; the DOM lib type doesn't know it.
           ...(dispatcher ? ({ dispatcher } as Record<string, unknown>) : {}),
-        } as RequestInit);
-      } finally {
-        clearTimeout(timer);
-      }
+        } as RequestInit),
+        fetchTimeoutMs,
+        'fetch',
+        () => ac.abort(),
+      );
       // Drain the body so the socket releases cleanly — we never inspect it.
       void res.text().catch(() => undefined);
 
@@ -231,7 +319,8 @@ export async function probeAccountCapacity(
       }
       failures.push(`${route}: HTTP ${res.status} carried no anthropic-ratelimit-unified-* header`);
     } catch (e) {
-      failures.push(`${route}: ${describeFetchError(e)}`);
+      failures.push(`${route}: ${describeProbeError(e, isTimeoutError(e) ? 'fetch' : 'egress dispatcher', deadlineAt, now)}`);
+      if (isTimeoutError(e) || now() >= deadlineAt) break;
     }
   }
 
@@ -256,10 +345,14 @@ export function isWalledCandidate(a: ClaudeAccount, fullUtil: number): boolean {
  */
 export async function probeCapacityForAccounts(
   accounts: ClaudeAccount[],
-  opts: { walledOnly?: boolean; fullUtil?: number } = {},
+  opts: { walledOnly?: boolean; fullUtil?: number; timeoutMs?: number } = {},
   deps: CapacityProbeDeps = {},
 ): Promise<CapacityProbeResult[]> {
   const fullUtil = opts.fullUtil ?? 0.97;
+  const now = deps.now ?? Date.now;
+  const requestedSweepMs = opts.timeoutMs ?? CAPACITY_PROBE_SWEEP_TIMEOUT_MS;
+  const sweepTimeoutMs = Number.isFinite(requestedSweepMs) ? Math.max(0, Math.min(requestedSweepMs, CAPACITY_PROBE_SWEEP_TIMEOUT_MS)) : CAPACITY_PROBE_SWEEP_TIMEOUT_MS;
+  const sweepDeadlineAt = now() + sweepTimeoutMs;
   const targets = accounts
     .filter((a) => (a.provider ?? 'claude') === 'claude')
     .filter((a) => !opts.walledOnly || isWalledCandidate(a, fullUtil));
@@ -270,7 +363,13 @@ export async function probeCapacityForAccounts(
     for (;;) {
       const a = queue.shift();
       if (!a) return;
-      out.push(await probeAccountCapacity(a, deps, fullUtil));
+      const startedAt = now();
+      if (startedAt >= sweepDeadlineAt) {
+        out.push(noReadingResult(a, CAPACITY_PROBE_NOT_STARTED_ERROR));
+        continue;
+      }
+      const accountDeadlineAt = Math.min(sweepDeadlineAt, startedAt + CAPACITY_PROBE_ACCOUNT_TIMEOUT_MS);
+      out.push(await probeAccountCapacity(a, { ...deps, now, deadlineAt: accountDeadlineAt }, fullUtil));
     }
   });
   await Promise.all(workers);
