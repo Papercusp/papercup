@@ -2304,3 +2304,127 @@ describe('countWorkItemsByState — the state histogram (P-008)', () => {
     expect(await wi.countWorkItemsByState({ harness: 'no-such-harness-at-all' })).toEqual({});
   });
 });
+
+/**
+ * WI-38339 — the SHAPE filters (states / notTerminal / createdSince / updatedSince /
+ * sourcePlanSlug), which exist so agents stop hand-writing these as raw SQL.
+ *
+ * WHY THESE RUN AGAINST REAL PG rather than asserting on a built fragment: the two
+ * families store time in different TYPES — harness_features_consolidated.created_ts /
+ * updated_ts are BIGINT epoch-ms, engineer_issues.created_at / updated_at are
+ * timestamptz. The first draft of the feature-side helper compared the bigint column to
+ * `…::timestamptz`, which tsc cannot see inside a SQL template and which Postgres
+ * rejects outright (no such operator). Only executing the query catches that, and it is
+ * the whole reason the window cases below assert per family instead of in aggregate.
+ */
+describe('WI-38339 work-item shape filters', () => {
+  const H = 'shape-filters-harness';
+
+  /** Both families in one harness, so every filter is exercised across the union rather
+   *  than against whichever family happens to answer first. */
+  async function seed() {
+    const feat = await wi.createWorkItem({ kind: 'feature', title: 'shape feat', harness: H });
+    const bug = await wi.createWorkItem({ kind: 'bug', title: 'shape bug', harness: H });
+    const doneFeat = await wi.createWorkItem({ kind: 'feature', title: 'shape feat done', harness: H });
+    const doneBug = await wi.createWorkItem({ kind: 'bug', title: 'shape bug done', harness: H });
+    await wi.setWorkItemState(doneFeat.id, 'done', { harness: H, by: 'agA', completionRef: 'test' });
+    await wi.setWorkItemState(doneBug.id, 'resolved', { harness: H, by: 'agA', completionRef: 'test' });
+    return { feat, bug, doneFeat, doneBug };
+  }
+
+  const ids = (rows: { id: string }[]) => rows.map((r) => r.id).sort();
+
+  it('CALIBRATION: an unfiltered list returns every seeded row in both families', async () => {
+    // Without this, every negative assertion below would pass just as happily against
+    // filters that silently match NOTHING — the failure mode a boolean "did it filter?"
+    // check cannot distinguish from success.
+    const { feat, bug, doneFeat, doneBug } = await seed();
+    const all = await wi.listWorkItems({ harness: H });
+    expect(ids(all)).toEqual([feat.id, bug.id, doneFeat.id, doneBug.id].sort());
+  });
+
+  it('states: matches ANY listed state, across both families', async () => {
+    const { doneFeat, doneBug } = await seed();
+    const terminal = await wi.listWorkItems({ harness: H, states: ['done', 'resolved'] });
+    expect(ids(terminal)).toEqual([doneFeat.id, doneBug.id].sort());
+  });
+
+  it('states: [] is NO filter, never "match nothing"', async () => {
+    // `= ANY('{}')` is false for every row, so the natural implementation returns zero
+    // rows — indistinguishable from a genuine empty result, and therefore undetectable
+    // by the caller. Pinned because it is a silent-wrong-answer, not an error.
+    const { feat, bug, doneFeat, doneBug } = await seed();
+    const rows = await wi.listWorkItems({ harness: H, states: [] });
+    expect(ids(rows)).toEqual([feat.id, bug.id, doneFeat.id, doneBug.id].sort());
+  });
+
+  it('notTerminal: excludes every terminal state in EITHER family', async () => {
+    const { feat, bug } = await seed();
+    const live = await wi.listWorkItems({ harness: H, notTerminal: true });
+    expect(ids(live)).toEqual([feat.id, bug.id].sort());
+  });
+
+  it('notTerminal stays correct for EVERY state in the canonical terminal union', async () => {
+    // The drift guard. ANY_FAMILY_TERMINAL_STATES is the single source these filters
+    // derive from; if a spelling is added there and this predicate stops covering it,
+    // "everything still open" silently starts returning finished work. Feature-family
+    // only, because the issue view's CHECK constraint admits a narrower state set.
+    for (const st of ANY_FAMILY_TERMINAL_STATES) {
+      const item = await wi.createWorkItem({ kind: 'feature', title: `t-${st}`, harness: H });
+      await wi.setWorkItemState(item.id, st, { harness: H, by: 'agA', completionRef: 'test' });
+      const live = await wi.listWorkItems({ harness: H, notTerminal: true });
+      expect(ids(live)).not.toContain(item.id);
+    }
+  });
+
+  it('createdSince/updatedSince are INCLUSIVE, and correct against BOTH column types', async () => {
+    // The bigint-vs-timestamptz case. A row created AT the boundary must be INCLUDED
+    // (>=, matching plans:list), and a window in the future must exclude everything —
+    // run per family so a feature-side unit/type error cannot hide behind issue rows.
+    const { feat, bug } = await seed();
+    const rows = await wi.listWorkItems({ harness: H, notTerminal: true });
+    const boundary = rows.map((r) => r.createdAt).sort()[0];
+
+    const atBoundary = await wi.listWorkItems({ harness: H, notTerminal: true, createdSince: boundary });
+    expect(ids(atBoundary)).toContain(ids([feat])[0]);
+    expect(ids(atBoundary)).toContain(ids([bug])[0]);
+
+    const future = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+    expect(await wi.listWorkItems({ harness: H, createdSince: future })).toEqual([]);
+    expect(await wi.listWorkItems({ harness: H, updatedSince: future })).toEqual([]);
+
+    const past = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    expect(ids(await wi.listWorkItems({ harness: H, updatedSince: past })).length).toBeGreaterThan(0);
+  });
+
+  it('the COUNT companions apply the same shape filters as the list (WI-5512 parity)', async () => {
+    // The reason the predicate is ONE shared builder per family rather than written out
+    // at each site: a filter honored by the list but dropped by a count yields a
+    // plausible "N of TOTAL" with an honest numerator and a dishonest denominator, and
+    // nothing errors. This asserts list/count/histogram agree under the same filter.
+    await seed();
+    for (const f of [
+      { notTerminal: true },
+      { states: ['done', 'resolved'] },
+      { sourcePlanSlug: 'no-such-plan' },
+      { createdSince: new Date(Date.now() + 60 * 60 * 1000).toISOString() },
+    ] as const) {
+      const filter = { harness: H, ...f };
+      const listed = (await wi.listWorkItems(filter)).length;
+      expect(await wi.countWorkItems(filter)).toBe(listed);
+      const histogram = await wi.countWorkItemsByState(filter);
+      expect(Object.values(histogram).reduce((a, b) => a + b, 0)).toBe(listed);
+    }
+  });
+
+  it('sourcePlanSlug selects only rows produced by that plan, in both families', async () => {
+    const { feat, bug } = await seed();
+    const slug = 'wi-38339-test-plan';
+    await db.sql`UPDATE harness_shared.work_items SET source_plan_slug = ${slug}
+                  WHERE feature_id IN (${feat.id}, ${bug.id})`;
+
+    const fromPlan = await wi.listWorkItems({ harness: H, sourcePlanSlug: slug });
+    expect(ids(fromPlan)).toEqual([feat.id, bug.id].sort());
+    expect(await wi.listWorkItems({ harness: H, sourcePlanSlug: 'a-plan-that-produced-nothing' })).toEqual([]);
+  });
+});
