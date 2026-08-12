@@ -2429,6 +2429,56 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       });
       expect(bulkWithPerItemAssumptions.success).toBe(true);
     });
+
+    it('documents nested verification evidence and the legacy top-level aliases (EI-20224652919070419)', () => {
+      const description = (complete as { description?: string }).description ?? '';
+      const when = ((complete as { guidance?: { when?: string } }).guidance?.when ?? '');
+      const json = z.toJSONSchema(complete.args as never) as {
+        anyOf?: Array<{ properties?: { completion?: unknown } }>;
+        oneOf?: Array<{ properties?: { completion?: unknown } }>;
+      };
+      const branches = json.anyOf ?? json.oneOf ?? [];
+      const completionSchema = branches.map((branch) => branch.properties?.completion ?? null);
+      const text = `${description}\n${when}\n${JSON.stringify(completionSchema)}`;
+
+      expect(text).toContain('completion.verification');
+      expect(text).toContain('Top-level evidence');
+      expect(text).toContain('deferred');
+      expect(text).toContain('coordNotes');
+      expect(text).toContain('not inside');
+    });
+
+    it('accepts the documented nested verification shape while keeping completion fields outside it', () => {
+      const schema = complete.args as { safeParse: (x: unknown) => { success: boolean; error?: { issues: Array<{ message: string }> } } };
+      const valid = schema.safeParse({
+        id: 'WI-1',
+        state: 'resolved',
+        assumptions: 'none',
+        completion: {
+          summary: 'fixed',
+          verification: {
+            filesChanged: ['src/fix.ts'],
+            testsRun: 'npm run test:file -- src/fix.test.ts',
+            testResult: '9/9 green',
+            verifiedHow: 'unit',
+            addedTests: true,
+            coverage: { population: ['src/fix.ts'], checked: ['src/fix.ts'], residue: ['none'] },
+          },
+          deferred: ['live smoke pending'],
+          coordNotes: 'follow-up is tracked',
+        },
+      });
+      expect(valid.success).toBe(true);
+
+      const invalid = schema.safeParse({
+        id: 'WI-1',
+        state: 'resolved',
+        assumptions: 'none',
+        completion: { summary: 'fixed', verification: { deferred: ['live smoke pending'] } },
+      });
+      expect(invalid.success).toBe(false);
+      expect(invalid.error?.issues.map((issue) => issue.message).join(' ')).toContain('Unrecognized key');
+    });
   });
 
   // ── P-004: completion AUTHORITY ────────────────────────────────────────────────────

@@ -108,8 +108,7 @@ const completionSpec = z
     // but coerces to { summary: <string> } ONLY: testsRun/testResult/verifiedHow/addedTests/
     // filesChanged/whatLanded/deferred/migrations all come back EMPTY, silently. Pass an
     // object when you have any of those to report.
-    "Structured completion record: { summary, testsRun?, testResult?, verifiedHow?: 'unit'|'integration'|'live-drove-ui'|'manual'|'already-passing', addedTests?: boolean, filesChanged?: string[], whatLanded?: string[], deferred?: string[], migrations?: string[], coordNotes?, coverage?: { population: string[], checked?: string[], notChecked?: string[], notApplicable?: string[], residue: string[] } }. " +
-      'A bare STRING is also accepted but is coerced to { summary: <string> } ONLY — every other field above comes back empty, not just unset. Pass the object form whenever you have tests/files/verification to report.',
+    "Structured completion record: { summary, verification?: { filesChanged?: string[], testsRun?: string, testResult?: string, verifiedHow?: 'unit'|'integration'|'live-drove-ui'|'manual'|'already-passing', addedTests?: boolean, coverage?: { population: string[], checked?: string[], notChecked?: string[], notApplicable?: string[], residue?: string[] } }, testsRun?, testResult?, verifiedHow?, addedTests?, filesChanged?: string[], whatLanded?: string[], deferred?: string[], migrations?: string[], coordNotes?, coverage? }. Put structured evidence under `completion.verification`; the top-level evidence fields are legacy aliases. Keep `deferred` and `coordNotes` at the completion level, not inside `verification`. A bare STRING is also accepted but is coerced to { summary: <string> } ONLY — every other field above comes back empty, not just unset. Pass the object form whenever you have tests/files/verification to report.",
   );
 
 /**
@@ -1554,7 +1553,7 @@ export default defineTool({
   description:
     'Complete one or many work-items with structured evidence; the system renders and broadcasts it. Pass terminal `state` plus `assumptions` (`"none"` or facts:assert keys) to converge item, plan-item, claim, and checkpoint; without `state`, it only records. Check `finish.complete`/`stateWarning`.',
   guidance: {
-    when: 'After verification, pass `completion`, terminal `state`, and `assumptions` (`\"none\"` or fact keys); use `verifiedHow` and put evidence in `testsRun`/`testResult`. Add `coverage` for universal claims, a cited artifact for live-UI closes, and `completion.duplicateOf` for duplicates.',
+    when: 'After verification, pass `completion`, terminal `state`, and `assumptions` (`\"none\"` or fact keys); put structured evidence in `completion.verification` (`filesChanged`, `testsRun`, `testResult`, `verifiedHow`, `addedTests`, `coverage`). Top-level evidence aliases remain accepted. Keep `deferred`/`coordNotes` outside `verification`; add a cited artifact for live-UI closes and `completion.duplicateOf` for duplicates.',
     notWhen: 'Use coord:send for notes; use work_items:set_state only with completion evidence; do not summarize.',
     chaining:
       'work_items:claim → work_items:complete { id, state, assumptions, completion }; `finish.complete:true` confirms convergence and emits.',
