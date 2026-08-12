@@ -173,6 +173,41 @@ describe('fleet control state (P-009 / mig 575) — typed wind-down round-trip',
     ).toBeNull();
   });
 
+  it('a stale reconcile snapshot cannot overwrite a newer resume', async () => {
+    const { record } = await createFleetIfAbsent(
+      { workspaceId: WS, fleetSlug: 'cas-fleet', leaderOwnerId: 'su-lead' },
+      rootSql,
+    );
+    // Make the snapshot unambiguously older than the resume write, even if both calls
+    // happen within one millisecond in a fast test process.
+    await rootSql.unsafe(
+      `UPDATE harness_shared.agent_fleets SET updated_at = $3 WHERE workspace_id = $1 AND fleet_slug = $2`,
+      [WS, 'cas-fleet', 1_000_000],
+    );
+    const snapshot = await getFleet(WS, 'cas-fleet', rootSql);
+    expect(snapshot?.updatedAt).toBe(1_000_000);
+
+    const resumed = await setFleetControlState(
+      WS,
+      'cas-fleet',
+      { state: 'active', reason: 'newer resume', by: 'su-lead' },
+      rootSql,
+    );
+    expect(resumed?.updatedAt).toBeGreaterThan(snapshot!.updatedAt);
+
+    const staleWindDown = await setFleetControlState(
+      WS,
+      'cas-fleet',
+      { state: 'winding-down', reason: 'stale reconcile', by: 'system:fleet-control-reconcile' },
+      rootSql,
+      undefined,
+      undefined,
+      { state: 'active', updatedAtMs: snapshot!.updatedAt },
+    );
+    expect(staleWindDown).toBeNull();
+    expect((await getFleet(WS, 'cas-fleet', rootSql))?.controlState).toBe('active');
+  });
+
   it('a forged control_state reads back as active (defensive rowToRecord)', async () => {
     await insertFleet('forged-ctl');
     await rootSql.unsafe(

@@ -302,16 +302,34 @@ export async function setFleetControlState(
   control: { state: FleetControlState; reason?: string | null; by?: string | null },
   sql?: Sql,
   expectedLeaderOwnerId?: string | null,
+  expected?: { state?: FleetControlState; updatedAtMs?: number },
 ): Promise<AgentFleetRecord | null> {
   const s = pg(sql);
   const now = Date.now();
+  const hasExpectedState = expected?.state !== undefined;
+  const hasExpectedUpdatedAt = expected?.updatedAtMs !== undefined;
   const rows = (await s.unsafe(
     `UPDATE harness_shared.agent_fleets
         SET control_state = $3, control_reason = $4, control_by = $5, control_at = $6, updated_at = $6
       WHERE workspace_id = $1 AND fleet_slug = $2
         AND ($7::boolean = false OR leader_owner_id IS NOT DISTINCT FROM $8::text)
+        AND ($9::boolean = false OR control_state = $10::text)
+        AND ($11::boolean = false OR updated_at = $12::bigint)
       RETURNING ${COLS}`,
-    [workspaceId, fleetSlug, control.state, control.reason ?? null, control.by ?? null, now, expectedLeaderOwnerId !== undefined, expectedLeaderOwnerId ?? null],
+    [
+      workspaceId,
+      fleetSlug,
+      control.state,
+      control.reason ?? null,
+      control.by ?? null,
+      now,
+      expectedLeaderOwnerId !== undefined,
+      expectedLeaderOwnerId ?? null,
+      hasExpectedState,
+      expected?.state ?? null,
+      hasExpectedUpdatedAt,
+      expected?.updatedAtMs ?? null,
+    ],
   )) as unknown as FleetRow[];
   if (rows[0]) refreshDirectoryCard(workspaceId, fleetSlug, { sql });
   return rows[0] ? rowToRecord(rows[0]) : null;

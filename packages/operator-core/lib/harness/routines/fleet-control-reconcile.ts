@@ -119,7 +119,16 @@ export interface FleetControlReconcileDeps {
    */
   sessionStates?: (ownerIds: string[]) => Promise<Map<string, SessionState | null>>;
   /** Apply the verdict. */
-  windDown?: (fleetSlug: string, reason: string) => Promise<void>;
+  /**
+   * Apply a wind-down against the snapshot that produced the verdict. Returning false means
+   * the compare-and-set lost to a newer fleet update (for example, fleet:resume) and the
+   * caller must not report the stale wind-down as applied.
+   */
+  windDown?: (
+    fleetSlug: string,
+    reason: string,
+    expected: { state: 'active'; updatedAtMs: number },
+  ) => Promise<boolean | void>;
   nowMs?: number;
   cap?: number;
   floorMs?: number;
@@ -186,7 +195,14 @@ export async function reconcileFleetControlStates(
         note(verdict.skip);
         continue;
       }
-      await deps.windDown(fleet.fleetSlug, verdict.reason);
+      const applied = await deps.windDown(fleet.fleetSlug, verdict.reason, {
+        state: 'active',
+        updatedAtMs: fleet.updatedAtMs,
+      });
+      if (applied === false) {
+        note('state-changed-since-snapshot');
+        continue;
+      }
       result.woundDown.push(fleet.fleetSlug);
     } catch {
       note('error');
@@ -230,14 +246,21 @@ export async function defaultFleetControlReconcileDeps(
       for (const r of reconciled) out.set(r.agentId, r.sessionState ?? null);
       return out;
     },
-    windDown: async (fleetSlug: string, reason: string) => {
+    windDown: async (
+      fleetSlug: string,
+      reason: string,
+      expected: { state: 'active'; updatedAtMs: number },
+    ) => {
       const { setFleetControlState } = await import('../../agent-fleets-store');
-      await setFleetControlState(
+      const updated = await setFleetControlState(
         workspaceId,
         fleetSlug,
         { state: 'winding-down', reason, by: 'system:fleet-control-reconcile' },
         db,
+        undefined,
+        expected,
       );
+      return updated !== null;
     },
   };
 }

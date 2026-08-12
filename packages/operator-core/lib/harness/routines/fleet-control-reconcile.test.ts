@@ -98,6 +98,29 @@ describe('reconcileFleetControlStates — IO wrapper', () => {
     expect(String(reason)).toContain('fleet-control-reconcile');
   });
 
+  it('does not report a stale wind-down after a newer resume wins the compare-and-set', async () => {
+    let controlState: 'active' | 'winding-down' = 'active';
+    let updatedAtMs = OLD;
+    const d = deps({
+      windDown: vi.fn(async (_slug, _reason, expected) => {
+        // A leader resume lands after the reconcile snapshot but before its write.
+        controlState = 'active';
+        updatedAtMs = NOW;
+        return controlState === expected.state && updatedAtMs === expected.updatedAtMs;
+      }),
+    });
+
+    const res = await reconcileFleetControlStates(d);
+
+    expect(res.woundDown).toEqual([]);
+    expect(res.skipped['state-changed-since-snapshot']).toBe(1);
+    expect(d.windDown).toHaveBeenCalledWith(
+      'dead-fleet',
+      expect.stringContaining('fleet-control-reconcile'),
+      { state: 'active', updatedAtMs: OLD },
+    );
+  });
+
   it('THE GUARD: a fleet with one live member is left alone', async () => {
     const d = deps({
       sessionStates: vi.fn(async () =>
