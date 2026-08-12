@@ -8,11 +8,17 @@
  * behind it: a `ready` flip still auto-promotes items into the claimable pool with no
  * second gate, but nothing said who may perform the flip.
  *
- * The named approver is now the Blender STEWARD (the GOAL holder), BOUNDED: it may
- * ratify only drafts promoting ≤3 open items, with nothing in the dangerous set
- * (irreversible migration / outward-facing publish/send / fleet-autonomy escalation /
- * auth/security / kill-switch), and never a draft whose idea it filed itself. Anything
- * larger or riskier escalates to the owner instead of being ratified. The decompose-wake
+ * The named approver is now the Blender STEWARD (the GOAL holder). There is NO SIZE
+ * LIMIT on what it may ratify [owner 2026-08-11] — a draft of any item count is
+ * eligible — but TWO conditions still bind: nothing in the dangerous set (irreversible
+ * migration / outward-facing publish/send / fleet-autonomy escalation / auth/security /
+ * kill-switch), and never a draft whose idea the steward filed itself. Anything failing
+ * either check escalates to the owner instead of being ratified.
+ *
+ * ⚠ Those two conditions are the ENTIRE safety margin — the item cap that used to sit in
+ * front of them was lifted deliberately. They are currently DOCTRINE (this comment + the
+ * steward contract), not enforced here: nothing in this sweep inspects who originated a
+ * ratified plan. Treat that as a known gap, not as a guarantee. The decompose-wake
  * below (`source='scout-ready-decompose'`) likewise now targets the nudge ladder rather
  * than a Queen lookup. Read every "Queen" below as "the ratifying steward".
  *
