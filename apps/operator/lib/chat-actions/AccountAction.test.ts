@@ -197,3 +197,69 @@ describe('readAccountPin — the two absences are different answers', () => {
     expect(readAccountPin(ctxWith({ account: 'max-3' }))).toEqual({ account: 'max-3', hard: false });
   });
 });
+
+/**
+ * The gateway-free case (EI-20208335287200289, second half).
+ *
+ * A `--account=default` session bypasses the inference gateway, so `accounts:pin` writes a real
+ * durable pin, returns ok — and the session keeps routing exactly as before. The pill used to
+ * offer every pool account as a clickable row while its own tooltip said the spawn pin was
+ * something "this control cannot read". It could: `launchArgv` is already on the same ctx.
+ */
+describe('--account=default is READ from the launch argv, not guessed at', () => {
+  const argvCtx = (launchArgv: unknown): ChatActionContext =>
+    ({ sessionOwnerId: OWNER, accountPin: null, launchArgv }) as ChatActionContext;
+
+  const DEFAULT_ARGV = ['psu', '--no-picker', '--account=default'];
+  /* The SECOND argv shape: a console launch records [terminal, greetingCmd] with the flags
+     embedded in one shell string. A parser that only handles tokens reads this as "no --account"
+     and re-offers the useless rows — the same shape that made the MODEL pill lie (D-002). */
+  const DEFAULT_ARGV_SHELL = ['gnome-terminal', "echo 'resuming'; exec psu --resume=x --account='default'"];
+
+  it.each([
+    ['token argv', DEFAULT_ARGV],
+    ['embedded shell argv', DEFAULT_ARGV_SHELL],
+  ])('disables every gateway-routed row for a gateway-free session (%s)', (_label, argv) => {
+    const rows = accountOptions([{ id: 'aviynw3' }, { id: 'aviynw4' }], 'default');
+    for (const r of rows) {
+      expect(r.disabled, `${r.id} must not be offered as settable`).toBe(true);
+    }
+    // and the reason is on the row, not only in a tooltip somewhere else
+    expect(rows.find((o) => o.id === 'aviynw3')!.hint).toMatch(/bypasses the inference gateway/i);
+    // the read that feeds it handles BOTH recorded argv shapes
+    expect(axis().current(argvCtx(argv)).title).toMatch(/bypasses the inference gateway/i);
+  });
+
+  it('REFUSES the write rather than reporting a pin that can never take effect', async () => {
+    // fetch is NOT mocked to fail here — the point is that a gateway-free session must be refused
+    // BEFORE the call, because the call itself would have succeeded and reported ok.
+    fetchMock.mockResolvedValue({ ok: true, text: async () => JSON.stringify({ ok: true, appliedLive: true }) });
+    await expect(axis().set(argvCtx(DEFAULT_ARGV), 'aviynw3')).rejects.toThrow(/respawn/i);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('CONTROL: a gateway-routed session is unaffected — rows stay settable', async () => {
+    const rows = accountOptions([{ id: 'aviynw3' }], 'auto');
+    expect(rows.find((o) => o.id === 'aviynw3')!.disabled).toBeUndefined();
+    expect(rows.find((o) => o.id === 'auto')!.disabled).toBeUndefined();
+    // ...and only the un-settable __default row is still disabled, as before this change
+    expect(rows.find((o) => o.id === '__default')!.disabled).toBe(true);
+
+    fetchMock.mockResolvedValue({ ok: true, text: async () => JSON.stringify({ ok: true, appliedLive: true }) });
+    await expect(axis().set(argvCtx(['psu', '--account=auto']), 'aviynw3')).resolves.not.toThrow();
+    expect(fetchMock).toHaveBeenCalled();
+  });
+
+  it('an UNKNOWN argv does not disable the menu — absence is not evidence of --account=default', () => {
+    // [] is the "no launch record" case adv-roster produces; undefined is an older payload.
+    for (const argv of [[], undefined]) {
+      expect(axis().current(argvCtx(argv)).title).not.toMatch(/bypasses the inference gateway/i);
+    }
+    const rows = accountOptions([{ id: 'aviynw3' }], undefined);
+    expect(rows.find((o) => o.id === 'aviynw3')!.disabled).toBeUndefined();
+  });
+
+  it('a STATIC pool pin at spawn is reported instead of claimed unreadable', () => {
+    expect(axis().current(argvCtx(['psu', '--account=aviynw3'])).title).toMatch(/--account=aviynw3/);
+  });
+});
