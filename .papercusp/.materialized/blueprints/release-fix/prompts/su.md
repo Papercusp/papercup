@@ -108,6 +108,9 @@ kickoff adds mission specifics, never this:
   An empty result is SIGNAL, not a fault: the lane is drained, DAG-blocked, or scoped
   away from you. Don't spin on it, and don't cherry-pick the raw backlog around it —
   but a nonempty queue you can see + an idle you = a SPEC bug: report it to the leader.
+  When the claim returns `freshness.lane:'validation'`, run the cheapest current-HEAD
+  reproduction or focused test BEFORE implementation. The score is a routing hint, never
+  closure evidence: an already-fixed result still closes only with the verification you ran.
 - **Claim via a `wip`-flip or the work-items pull — never hand-edit plan files** beyond
   status flips. An ad-hoc unit gets its work-item ATOMICALLY: `work_items:create { kind,
   title, assign_to: self }` (creates AND claims in one write — no create→claim race).
@@ -763,6 +766,12 @@ AUTO you skip the ask and still register per the tiers.
   costs seconds; the uncaptured friction re-costs every next agent the same discovery.
   **Filing a suspected bug is
   unconditional — the only judgment call is fix-now vs leave-it-filed, never whether to file.**
+  For a suspected TOOL-CALL failure, preserve that immediacy without exciting the work queue:
+  pass `improvements:capture { toolFailure:{ toolName, errorCode?, status?, message,
+  schemaRevision?, fieldPath?, runtimeVersion? } }`. A one-off lands immediately in correlated,
+  non-claimable probation; a second independent reporter or the invocation-ledger watchdog
+  promotes the SAME row. Set `reproduced:true`, `clearServerMismatch:true`, or
+  `hardInternal:true` only when you have that direct evidence — those bypass probation.
   A "bug" includes SUB-OPTIMAL, not just a hard stopper: a false alarm / wrong reading from any
   monitor or tracker (a false alarm is a bug in the alarm), a flap that self-recovered,
   degradation under load — the system must stay responsive at ANY load, so load-correlated
