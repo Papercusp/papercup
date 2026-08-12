@@ -49,6 +49,14 @@ export function jsonSourceKind(args: any): "file" | "stdin" | "inline" | null;
  * interactive calls retain the line as useful operator feedback. Pure.
  */
 export function shouldPrintInvocationLine(jsonKind: any): boolean;
+/**
+ * Scripted JSON calls must keep stdout machine-parseable. The MCP response may
+ * contain advisory text after its primary JSON content, so every explicit JSON
+ * input uses the raw extractor even when the caller did not spell `--raw`.
+ * Interactive calls retain the existing pretty human-readable output unless
+ * `--raw` was explicitly requested.
+ */
+export function shouldPrintRawResult(jsonKind: any, raw: any): boolean;
 /** The service a tool belongs to — the segment before the first `:`
  *  (`work_items:list` → `work_items`). Colon-less names group under
  *  `(misc)`. Pure. */
