@@ -627,7 +627,18 @@ describe('production flag defaults (CLAUDE.md: new flags DEFAULT TO ENABLED)', (
     // declared intent with zero sentinels while the last 60 commits carried real per-agent
     // subjects with zero sentinel subjects. case was 'owner-authority', so NO parking-subset
     // or watermark impact (both stay 14) and no graduation trade was owed. Count 33 → 32.
-    expect(offCount).toBe(32);
+    // 2026-08-12 (retire-mug-kettle-su-only-2026-08-09 P-068 / D-098) —
+    // papercusp-mug-kettle-system left this ledger by DELETION, not graduation: the flag
+    // was removed from the registry entirely. Do not read the decrement the usual way. For
+    // every other entry, leaving the dark set means the feature shipped ON; this one had
+    // INVERTED polarity, so its removal means the retirement it delivered is now PERMANENT
+    // and the testing escape hatch is gone. The gates did not go with it —
+    // pot/started.ts's mugKettleSystemEnabled() is a hard `false` feeding the same ~20 call
+    // sites. case was 'cutover', so NO parking-subset or watermark impact (both stay 14)
+    // and no graduation trade was owed. Count 32 → 31.
+    // Pinned by libs/flags/src/mug-kettle-cutover-flag.test.ts, which now guards the
+    // DELETION (the flag must not come back) rather than the polarity.
+    expect(offCount).toBe(31);
   });
 
   it('sanity: the four cut-for-V1 flags + key owner-authority security flags are still dark', () => {

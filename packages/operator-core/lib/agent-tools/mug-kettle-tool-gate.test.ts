@@ -135,23 +135,38 @@ it('P-010 import hygiene: pot tool modules perform no database I/O while loading
 });
 
 describe('P-010 tool gate: the shared refusal', () => {
-  it('CALIBRATION — tier ENABLED: returns null so the handler proceeds', async () => {
-    tierFlag = true;
-    await expect(refuseIfMugKettleRetired('start the Mug', 'use su')).resolves.toBeNull();
+  // This block used to open with "CALIBRATION — tier ENABLED: returns null so the
+  // handler proceeds", proving the gate could answer BOTH ways and was therefore
+  // not a constant. P-068/D-098 deleted the flag and made it a constant deliberately,
+  // so that case is unconstructible and its assertion is now exactly backwards.
+  //
+  // The discriminating power did NOT go with it — and the survivor is stronger. The
+  // EXCLUDED suite at the bottom of this file drives real UNGATED tools (pot:pause,
+  // pot:dissolve, pot:list, pot:status, curation:state-of-pot) through this same
+  // harness and asserts they do not return this refusal. So "the harness refuses
+  // everything" cannot pass unnoticed here, which is the property the ON case used
+  // to provide.
+  it('refuses under EVERY flag-store answer — the retirement is not a flag read any more', async () => {
+    // The flag store is still mocked, so this drives every answer it could give,
+    // including the throw, and pins that none of them reaches the caller.
+    for (const state of [true, false, null] as const) {
+      tierFlag = state;
+      await expect(refuseIfMugKettleRetired('start the Mug', 'use su')).resolves.not.toBeNull();
+    }
   });
 
-  it('tier RETIRED: returns a refusal naming the flag and the replacement route', async () => {
-    tierFlag = false;
+  it('returns a refusal naming the PERMANENCE and the replacement route', async () => {
     const refusal = await refuseIfMugKettleRetired('start the Mug', 'Use an su session instead.');
     expect(refusal).not.toBeNull();
     expect(refusal!.isError).toBe(true);
     const body = parse(refusal);
     expect(body.error).toBe(MUG_KETTLE_RETIRED_ERROR);
-    // A LOUD refusal, never a silent no-op (the P-008 wording): the caller must
-    // be able to act on it without reading this plan. So it has to carry the
-    // flag it is gated on AND what to do instead.
-    expect(body.flag).toBe('papercusp-mug-kettle-system');
-    expect(String(body.message)).toContain('papercusp-mug-kettle-system');
+    // A LOUD refusal, never a silent no-op (the P-008 wording): the caller must be
+    // able to act on it without reading this plan. It no longer carries a `flag`
+    // field, and that is the point — there is no flag left to name, and sending a
+    // caller to /admin/features for a key that does not exist is worse than silence.
+    expect(body.flag).toBeUndefined();
+    expect(String(body.message)).toContain('permanently');
     expect(String(body.message)).toContain('Use an su session instead.');
     // `ok:false` is what a caller branches on; assert it rather than assume the
     // isError envelope is enough — several surfaces read only the JSON body.
@@ -264,21 +279,17 @@ describe.each(GATED)('P-010 tool gate: $name', ({ name, load, args }) => {
     expect(sqlCalls).toEqual([]);
   });
 
-  it(`CALIBRATION — tier ENABLED: ${name} gets PAST the gate`, async () => {
-    tierFlag = true;
-    const mod = await load();
-    const tool = mod.default as { handler: (a: unknown, c: unknown) => Promise<unknown> };
-    // The handler is free to fail for any OTHER reason under these stub mocks —
-    // what must never happen is the retirement refusal, which would mean the
-    // cutover is irreversible and the flag is decorative.
-    let body: Record<string, unknown> | null = null;
-    try {
-      body = parse(await tool.handler(args, { workspaceId: 'ws', harnessSlug: 'papercusp' }));
-    } catch {
-      body = null; // threw downstream of the gate — still proof it got past it
-    }
-    if (body) expect(body.error).not.toBe(MUG_KETTLE_RETIRED_ERROR);
-  });
+  // The per-tool "CALIBRATION — tier ENABLED: ${name} gets PAST the gate" case was
+  // REMOVED here (P-068/D-098). It asserted that the refusal was absent with the
+  // flag ON, and its stated purpose was to prove "the cutover is [not] irreversible
+  // and the flag is [not] decorative" — both of which P-068 deliberately made
+  // false. The cutover IS irreversible now; there is no flag.
+  //
+  // It is not replaced per-tool, because a same-tool control is exactly what the
+  // deletion removes. The equivalent evidence is CROSS-tool and already runs: the
+  // EXCLUDED suite below drives ungated tools through this identical harness and
+  // requires they do NOT produce this refusal. That is what keeps the assertion
+  // above from being satisfiable by a harness that refuses everything.
 });
 
 /**
