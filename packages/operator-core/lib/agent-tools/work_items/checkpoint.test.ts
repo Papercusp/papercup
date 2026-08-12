@@ -850,6 +850,45 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         const r = await one({ id: 'WI-NEW', checkpoint: 'first note', append: true });
         expect(r.ok).toBe(true);
       });
+
+      // EI-20283744332352340 — the guard keyed off `wantsAppend`, but a checks-only
+      // patch never performs the pre-read it inspects, so `appendPriorRaw === null`
+      // there means "never attempted", not "the two paths disagree". Every
+      // checks-only patch against a >500-char checkpoint was refused, and the
+      // refusal's own recovery block pointed at `confirmShrink:true` — the
+      // destructive replace this guard exists to prevent. Reproduced live on
+      // WI-38258 (22,058 chars), including with `harness` passed explicitly, which
+      // is what rules out the filed item's stated `harness` hypothesis.
+      it('does NOT block a checks-only additive patch — no join is attempted, so an unread pre-read is not a disagreement', async () => {
+        getWorkItem.mockResolvedValue({ id: 'WI-38258', harness: 'papercup' });
+        const priorNote = 'D'.repeat(22058);
+        setWorkItemCheckpointWithPrior.mockImplementation(
+          async (
+            _ref: unknown,
+            text: string | undefined,
+            opts?: {
+              guard?: (n: string | null, l: number) => string | null;
+              transform?: (n: string | null, text: string) => string | null | undefined;
+            },
+          ) => {
+            const blockedReason = opts?.guard ? (opts.guard(priorNote, priorNote.length) ?? undefined) : undefined;
+            // The body is preserved by the store's transform, which reads the
+            // authoritative prior itself — the caller sent no `checkpoint` text.
+            expect(text).toBeUndefined();
+            const stored = blockedReason ? priorNote : (opts?.transform?.(priorNote, priorNote) ?? priorNote);
+            return { stored, priorLength: priorNote.length, blockedReason };
+          },
+        );
+        const r = await one({
+          id: 'WI-38258',
+          append: true,
+          checks: [{ claim: 'the deploy has not landed', recheck: 'dev:pipeline_position' }],
+        });
+        expect(r.ok).toBe(true);
+        expect(r.error).toBeUndefined();
+        // Body preserved byte-for-byte, with the supplied row rendered onto it.
+        expect(r.storedHead ?? '').toContain('DDDD');
+      });
     });
 
     it('a per-item confirmShrink:true overrides a batch-level default of false/omitted', async () => {

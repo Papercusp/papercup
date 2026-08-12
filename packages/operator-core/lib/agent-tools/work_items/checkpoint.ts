@@ -567,8 +567,11 @@ export default defineTool({
         // refusing every checks-only patch against a >500-char checkpoint — and its
         // recovery block then offered `confirmShrink:true`, pointing the caller at
         // the destructive replace this guard exists to prevent.
-        const didAttemptJoin = wantsAppend && !!it.checkpoint;
-        if (didAttemptJoin) {
+        // Holds the addendum being joined (and narrows it to `string` for the join
+        // below); `null` IS the "no join attempted" signal the guard reads.
+        const joinAddendum = wantsAppend && it.checkpoint ? it.checkpoint : null;
+        const didAttemptJoin = joinAddendum !== null;
+        if (joinAddendum !== null) {
           try {
             appendPriorRaw = await getWorkItemCheckpoint({ harness, workItemId: it.id, workspaceId });
           } catch {
@@ -584,7 +587,7 @@ export default defineTool({
           // from the stored prior note, which the store reads inside its own locked
           // transaction.
           const priorBody = appendPriorRaw !== null ? splitCarryNoteChecks(appendPriorRaw).body : null;
-          checkpointToStore = joinCheckpoint(priorBody, it.checkpoint);
+          checkpointToStore = joinCheckpoint(priorBody, joinAddendum);
         }
         // EI-8824: c.workspaceId is '*' for an unscoped superuser session (the
         // read-scoping wildcard) — passing it straight through as `?? undefined`
