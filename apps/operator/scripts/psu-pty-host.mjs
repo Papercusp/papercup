@@ -802,8 +802,17 @@ export function makeComposerWedgeDetector({ minDefers = 3, minQuietMs = 5 * 60_0
      * Record one deferral. Returns a report payload the first time a wedge is
      * suspected for a given staged line, otherwise null (so a wedged host logs
      * once per episode instead of once per wake).
+     *
+     * The param is typed explicitly rather than left to inference: a
+     * destructured field with NO default (`pendingLength`) is dropped from the
+     * inferred object type entirely, so the generated .d.mts declared a shape
+     * without it and every caller that passed it became a type error — while
+     * vitest stayed green, because it never typechecks.
+     *
+     * @param {{ pendingLength: number, ownerQuietMs?: number, pendingAgeMs?: number }} sample
      */
-    note({ pendingLength, ownerQuietMs = Infinity, pendingAgeMs = 0 } = {}) {
+    note(sample) {
+      const { pendingLength, ownerQuietMs = Infinity, pendingAgeMs = 0 } = sample ?? {};
       if (pendingLength !== lastLength) {
         // The line moved, so somebody is editing it. Start the count over.
         lastLength = pendingLength;
