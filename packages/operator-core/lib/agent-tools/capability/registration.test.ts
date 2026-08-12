@@ -47,4 +47,9 @@ describe('capability tool registration', () => {
       expect(tool!.guidance?.when, `${name} missing guidance.when`).toBeTruthy();
     }
   });
+
+  it('keeps background output polling out of ambient workspace transactions', () => {
+    const tool = lookupByMcpName('capability:bash_output');
+    expect((tool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
 });

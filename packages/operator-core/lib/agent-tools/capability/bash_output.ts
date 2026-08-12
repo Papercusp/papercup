@@ -338,6 +338,10 @@ export default defineTool({
   },
   capability: 'capability:bash',
   requirePrincipal: false,
+  // EI-20190459016345227: output polling does not read ctx.tx and can await
+  // the durable task-ledger fallback while a live seed cut is running. Do not
+  // retain the ambient workspace transaction across that control-path I/O.
+  skipWorkspaceTx: true,
   agentRoles: [...AGENT_ROLES],
   args: z.object({
     bash_id: z.string().min(1).describe('The id returned by capability:bash (run_in_background).'),
