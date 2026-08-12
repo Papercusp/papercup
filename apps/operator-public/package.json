@@ -10,7 +10,7 @@
     "d1:apply:local": "wrangler d1 execute papercusp-cupboard --local --file migrations/001_init.sql",
     "d1:apply:remote": "wrangler d1 execute papercusp-cupboard --remote --file migrations/001_init.sql",
     "test": "vitest run --passWithNoTests",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "bash ../../scripts/pc-heavy.sh tsc --noEmit"
   },
   "dependencies": {
     "@papercusp/artifact-registry": "*",

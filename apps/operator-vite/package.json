@@ -13,8 +13,8 @@
     "test": "vitest run",
     "generate:routes": "node scripts/generate-route-tree.mjs",
     "pretypecheck": "npm run generate:routes",
-    "typecheck": "node ../../scripts/lint-tsc-operator-vite.mjs",
-    "typecheck:raw": "tsc --noEmit"
+    "typecheck": "bash ../../scripts/pc-heavy.sh node ../../scripts/lint-tsc-operator-vite.mjs",
+    "typecheck:raw": "bash ../../scripts/pc-heavy.sh tsc --noEmit"
   },
   "dependencies": {
     "@bprogress/react": "^1.2.7",
