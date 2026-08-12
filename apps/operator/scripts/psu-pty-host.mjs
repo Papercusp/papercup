@@ -2155,7 +2155,10 @@ export function injectTurn(sock, text) {
  * @param {string} o.ownerId            coord ownerId (PAPERCUSP_SID) — the discovery key
  * @param {number|string} [o.advSessionId]  adv_sessions row id, when known
  * @param {object} [o.io]               { stdin, stdout } override (tests); default process.*
- * @param {(code:number)=>void} [o.onExit]  exit handler; default process.exit
+ * @param {(code:number, killedBySignal:string|null)=>void} [o.onExit]  exit handler;
+ *   default process.exit. `killedBySignal` is the signal NAME when the child was killed
+ *   (WI-38054) and null on a voluntary exit — it is the only thing distinguishing the
+ *   two, because node-pty reports a signal death with exitCode 0.
  * @param {boolean} [o.bridgeTty]       force the TTY bridge on/off; default = stdin.isTTY
  * @param {string} [o.kickoffFile]      server-owned session-port seed (never a CLI arg)
  * @param {object} [o.sessionPort]      { renderedHash } for the managed seed

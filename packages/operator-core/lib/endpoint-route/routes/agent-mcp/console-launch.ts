@@ -33,10 +33,14 @@ import { resolveWindowIdForTitleFragment } from '../../../adv-session-windows';
 // "active" (acceptable — operator-restart is the recovery boundary
 // anyway). A future reaper can sweep stale rows by querying live pids.
 function attachExitWatcher(child: ChildProcess, sessionPromise: Promise<number | null>): void {
-  child.on('exit', (code) => {
+  // WI-38054: `signal` is the second argument Node has always passed here, and dropping
+  // it recorded every killed terminal as a voluntary 'self' exit. Node gives it as a
+  // NAME ('SIGHUP'), which is exactly what the column stores.
+  child.on('exit', (code, signal) => {
     sessionPromise
       .then((id) => {
-        if (id != null) void markAdvSessionEnded(id, code, 'self');
+        if (id == null) return;
+        void markAdvSessionEnded(id, code, signal ? 'signal' : 'self', { signal });
       })
       .catch(() => { /* best-effort */ });
   });

@@ -5188,11 +5188,25 @@ export function startSupervisorBeat(
  * deployed (an older release 404s) — is swallowed: end-stamping is telemetry,
  * never a reason to hold the user's terminal open. Exported with injectables
  * for tests. Never rejects.
+ *
+ * @param {number|string|null} advSessionId  the adv_sessions PK to stamp
+ * @param {number|null|undefined} exitCode   the child's exit code (null when unknown)
+ * @param {{ fetchImpl?: typeof fetch, operatorUrl?: string, token?: string|null,
+ *           timeoutMs?: number, killedBySignal?: string|null }} [opts]
+ *   `killedBySignal` is the signal NAME that killed the child, or null for a voluntary
+ *   exit. The server derives `ended_by` from it (WI-38054); omitting it makes every kill
+ *   record as a clean self-reported exit.
  */
 export async function reportSessionEnded(
   advSessionId,
   exitCode,
-  { fetchImpl = fetch, operatorUrl = OPERATOR_URL, token = null, timeoutMs = 2_000 } = {},
+  {
+    fetchImpl = fetch,
+    operatorUrl = OPERATOR_URL,
+    token = null,
+    timeoutMs = 2_000,
+    killedBySignal = null,
+  } = {},
 ) {
   if (!advSessionId) return;
   try {
@@ -5204,7 +5218,15 @@ export async function reportSessionEnded(
         'content-type': 'application/json',
         ...(tok ? { authorization: `Bearer ${tok}` } : {}),
       },
-      body: JSON.stringify({ advSessionId: Number(advSessionId), exitCode: exitCode ?? null }),
+      // WI-38054: `killedBySignal` is what lets the server tell a VOLUNTARY exit from a
+      // kill. Without it every end reports as `ended_by='self'`, and because a signal
+      // death carries exitCode 0, the row then positively asserts a clean exit — which
+      // is how a sidecar restart reaped two of the owner's agents unnoticed.
+      body: JSON.stringify({
+        advSessionId: Number(advSessionId),
+        exitCode: exitCode ?? null,
+        killedBySignal: killedBySignal ?? null,
+      }),
     });
   } catch {
     /* best-effort — never surface */
@@ -5676,7 +5698,12 @@ function spawnInherit({ wrapperBin, args = [], cwd, env }) {
     process.exit(127);
   });
   child.on('exit', (code, signal) => {
-    void reportSessionEnded(env.PAPERCUSP_ADV_SESSION_ID || null, code).finally(() => {
+    // WI-38054: this path always KNEW the signal — it used it to re-kill itself — but
+    // forwarded only `code`, so a killed session still recorded as a voluntary 'self'
+    // exit. Report it.
+    void reportSessionEnded(env.PAPERCUSP_ADV_SESSION_ID || null, code, {
+      killedBySignal: signal ?? null,
+    }).finally(() => {
       if (signal) process.kill(process.pid, signal);
       else process.exit(code ?? 0);
     });
@@ -5891,10 +5918,12 @@ function runWrapper({
             coordOwnerId: ownerId,
           });
         },
-        onExit: (code) => {
-          void reportSessionEnded(env.PAPERCUSP_ADV_SESSION_ID || null, code).finally(() =>
-            process.exit(code ?? 0),
-          );
+        // WI-38054: the managed-PTY path had no `signal` parameter at all, which is
+        // where the owner's reaped agents lost the only evidence they were killed.
+        onExit: (code, killedBySignal = null) => {
+          void reportSessionEnded(env.PAPERCUSP_ADV_SESSION_ID || null, code, {
+            killedBySignal,
+          }).finally(() => process.exit(code ?? 0));
         },
       }).catch((e) => {
         // The pty was already spawned (the promise only rejects on an unforeseen

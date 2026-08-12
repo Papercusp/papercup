@@ -11,7 +11,10 @@ import {
 import { withFieldReliability } from './field-reliability';
 
 type EndFields = Pick<AdvSessionRow, 'endedAt' | 'endedBy'>;
-type KillFields = Pick<AdvSessionRow, 'endedAt' | 'endedBy' | 'endedSignal'>;
+// endedSignal optional: most assertions here are about endedBy alone, and a row that
+// omits the signal is a real shape (a kill whose signal we could not name).
+type KillFields = Pick<AdvSessionRow, 'endedAt' | 'endedBy'> &
+  Partial<Pick<AdvSessionRow, 'endedSignal'>>;
 
 const ENDED = '2026-08-02T19:05:07.810Z';
 
@@ -129,13 +132,13 @@ describe('a KILLED session is not a voluntary exit (WI-38054)', () => {
   });
 
   it('still reports a signal death as INVOLUNTARY, which is the whole point', () => {
-    expect(isInvoluntaryEnd({ endedAt: ENDED, endedBy: 'signal' })).toBe(true);
-    expect(isInvoluntaryEnd({ endedAt: ENDED, endedBy: 'self' })).toBe(false);
+    expect(isInvoluntaryEnd({ endedBy: 'signal' })).toBe(true);
+    expect(isInvoluntaryEnd({ endedBy: 'self' })).toBe(false);
     // A sweeper row is NOT "involuntary" — we have no idea how the process died; it
     // was simply already gone. Claiming otherwise is the same over-attribution the
     // 'signal'-not-'reaped' naming decision exists to avoid.
-    expect(isInvoluntaryEnd({ endedAt: ENDED, endedBy: 'reaper' })).toBe(false);
-    expect(isInvoluntaryEnd({ endedAt: ENDED, endedBy: null })).toBe(false);
+    expect(isInvoluntaryEnd({ endedBy: 'reaper' })).toBe(false);
+    expect(isInvoluntaryEnd({ endedBy: null })).toBe(false);
   });
 
   it('says KILLED in prose, and names the signal, while still stating the real time', () => {

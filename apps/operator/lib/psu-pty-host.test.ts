@@ -28,6 +28,7 @@ import {
   makeAgentBusyGate,
   makeCarryRearmController,
   makeSubmitVerifier,
+  signalNameFromCode,
   turnCoalesceKey,
   renderCoalescedTurn,
   makeTurnCoalescer,
@@ -2375,5 +2376,36 @@ describe('decodeControl mode:shutdown (WI-6638)', () => {
     // A truthy-but-not-true value must not enable it either.
     const sneaky = decodeControl(JSON.stringify({ v: 1, mode: 'shutdown', data: '', force: 'yes' }));
     expect(sneaky).toMatchObject({ force: false });
+  });
+});
+
+describe('signalNameFromCode — the evidence a session was KILLED (WI-38054)', () => {
+  // node-pty reports a signal death as { exitCode: 0, signal: N }. The 0 is a
+  // placeholder, not a status, so this number is the ONLY thing that can stop a killed
+  // session being recorded as a clean voluntary exit. MEASURED in this tree:
+  //     kill(pid, 'SIGHUP')  ->  {"exitCode":0,"signal":1}
+
+  it('names the real signals rather than storing an unreadable number', () => {
+    expect(signalNameFromCode(1)).toBe('SIGHUP');
+    expect(signalNameFromCode(9)).toBe('SIGKILL');
+    expect(signalNameFromCode(15)).toBe('SIGTERM');
+  });
+
+  it('returns null when there was no signal — a clean exit must not acquire one', () => {
+    // The fix is worthless if it over-fires: a normal exit tagged with a signal name
+    // would make every ordinary session look reaped — the same wrong answer, pointed
+    // the other way.
+    expect(signalNameFromCode(0)).toBeNull();
+    expect(signalNameFromCode(undefined)).toBeNull();
+    expect(signalNameFromCode(null)).toBeNull();
+    expect(signalNameFromCode(NaN)).toBeNull();
+    expect(signalNameFromCode(-1)).toBeNull();
+    expect(signalNameFromCode('SIGHUP')).toBeNull(); // already a name, not node-pty's shape
+  });
+
+  it('never DISCARDS an unrecognised signal number', () => {
+    // Returning null here would silently restore "looks like a clean exit" for any
+    // platform signal this Node build cannot name. Keep the evidence, unnamed.
+    expect(signalNameFromCode(9999)).toBe('SIG9999');
   });
 });

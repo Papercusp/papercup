@@ -712,7 +712,17 @@ const invoke = defineTool({
     // `claude --resume` (wake-executor checks pid liveness, then resumes).
     if (advSessionRowId != null) {
       try {
-        await markAdvSessionEnded(advSessionRowId, r.exitCode ?? null, 'self');
+        // WI-38054: a timed-out worker did not choose to stop — THIS route SIGTERMs it
+        // (see the configuredTimeoutMs note above), so recording 'self' claimed a
+        // voluntary exit for a kill we ourselves performed. Only `timedOut` is
+        // attributed; an ordinary non-zero exit stays 'self' rather than guessing.
+        const killedByTimeout = r.timedOut ?? false;
+        await markAdvSessionEnded(
+          advSessionRowId,
+          r.exitCode ?? null,
+          killedByTimeout ? 'signal' : 'self',
+          { signal: killedByTimeout ? 'SIGTERM' : null },
+        );
       } catch (e) {
         console.warn(`[invoke] failed to mark adv session ${advSessionRowId} as ended:`, e);
       }

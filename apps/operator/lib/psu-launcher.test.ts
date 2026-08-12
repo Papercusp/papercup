@@ -4435,14 +4435,51 @@ describe('reportSessionEnded (stamp adv ended_at on child exit — best-effort, 
     expect(calls).toHaveLength(1);
     expect(calls[0].url).toBe('http://op:1/api/agent-mcp/console/bootstrap-su/session-ended');
     expect(calls[0].opts.headers.authorization).toBe('Bearer tok-1');
-    expect(JSON.parse(calls[0].opts.body)).toEqual({ advSessionId: 17, exitCode: 0 });
+    expect(JSON.parse(calls[0].opts.body)).toEqual({
+      advSessionId: 17,
+      exitCode: 0,
+      killedBySignal: null,
+    });
   });
 
   it('maps a null/undefined exit code to null (signal exits)', async () => {
     const calls = [];
     const fetchImpl = async (url, opts) => { calls.push({ url, opts }); return { ok: true }; };
     await reportSessionEnded(17, undefined, { fetchImpl, operatorUrl: 'http://op:1', token: 't' });
-    expect(JSON.parse(calls[0].opts.body)).toEqual({ advSessionId: 17, exitCode: null });
+    expect(JSON.parse(calls[0].opts.body)).toEqual({
+      advSessionId: 17,
+      exitCode: null,
+      killedBySignal: null,
+    });
+  });
+
+  // WI-38054 — the field that decides whether the server records a voluntary exit or a
+  // kill. A killed session reports exitCode 0 (node-pty's placeholder), so if this does
+  // not travel, the row asserts a clean exit and a reap becomes undetectable.
+  it('forwards the killing signal, so exit 0 cannot be read as a clean exit', async () => {
+    const calls = [];
+    const fetchImpl = async (url, opts) => { calls.push({ url, opts }); return { ok: true }; };
+    await reportSessionEnded(17, 0, {
+      fetchImpl,
+      operatorUrl: 'http://op:1',
+      token: 't',
+      killedBySignal: 'SIGHUP',
+    });
+    expect(JSON.parse(calls[0].opts.body)).toEqual({
+      advSessionId: 17,
+      exitCode: 0,
+      killedBySignal: 'SIGHUP',
+    });
+  });
+
+  it('sends killedBySignal: null for an ordinary exit — never omits the key', async () => {
+    // Omitting it would be indistinguishable, server-side, from an older launcher that
+    // cannot report signals at all. Always stating it keeps "no signal" an assertion
+    // rather than an absence.
+    const calls = [];
+    const fetchImpl = async (url, opts) => { calls.push({ url, opts }); return { ok: true }; };
+    await reportSessionEnded(17, 0, { fetchImpl, operatorUrl: 'http://op:1', token: 't' });
+    expect(JSON.parse(calls[0].opts.body)).toHaveProperty('killedBySignal', null);
   });
 
   it('no adv row id → no request (untracked sessions have nothing to stamp)', async () => {
