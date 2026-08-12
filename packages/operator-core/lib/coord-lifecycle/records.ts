@@ -35,10 +35,11 @@ export const LIFECYCLE_CATEGORIES = [
 export type LifecycleCategory = (typeof LIFECYCLE_CATEGORIES)[number];
 
 /**
- * HOW the work was verified. WI-4536: this is a CLOSED ENUM, but it sits among free-text
- * siblings (`testsRun`, `testResult` are prose), so callers naturally write a sentence here
- * and get rejected — the enum members were discoverable ONLY from the rejection. Name them in
- * the schema so they surface in the tool description / typed signature instead.
+ * HOW the work was verified. WI-4536 originally made this a CLOSED ENUM, but it sits among
+ * free-text siblings (`testsRun`, `testResult`) and callers naturally write a concise label
+ * such as "macOS Tauri smoke" here. Keep the canonical labels discoverable and queryable,
+ * while accepting any non-empty label so a useful verification record is never rejected at
+ * the completion boundary. Detailed evidence still belongs in `testsRun` / `testResult`.
  *   unit            — a unit test suite
  *   integration     — an integration test (real PG / containers / a live dependency)
  *   live-drove-ui   — drove the running UI (e.g. the Tauri shell) and observed it
@@ -46,10 +47,10 @@ export type LifecycleCategory = (typeof LIFECYCLE_CATEGORIES)[number];
  *   already-passing — no new verification; the existing suite already covered it
  */
 export const CompletionVerifiedHowSchema = z
-  .enum(['unit', 'integration', 'live-drove-ui', 'manual', 'already-passing'])
+  .string()
+  .min(1)
   .describe(
-    "HOW it was verified — one of exactly: 'unit' | 'integration' | 'live-drove-ui' | 'manual' | 'already-passing'. " +
-      'NOT free text (put prose in `testsRun` / `testResult`).',
+    "HOW it was verified — a non-empty label. Prefer 'unit' | 'integration' | 'live-drove-ui' | 'manual' | 'already-passing' for queryable coarse modes; concise free-text labels are also accepted. Put detailed evidence in `testsRun` / `testResult`.",
   );
 
 /**

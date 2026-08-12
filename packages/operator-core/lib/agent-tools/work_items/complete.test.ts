@@ -2232,6 +2232,47 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(r.completion.whatLanded).toEqual(['a.ts']);
     });
 
+    it('accepts a descriptive verifiedHow label in nested verification evidence', async () => {
+      const r = await one({
+        id: 'WI-9',
+        state: 'resolved',
+        completion: {
+          summary: 'verified the desktop shell behavior',
+          verification: {
+            verifiedHow: 'macOS Tauri smoke observed in the running shell',
+            testResult: 'the changed flow rendered and responded as expected',
+          },
+        },
+      });
+      expect(r.ok).toBe(true);
+      expect(r.completion.verification.verifiedHow).toBe('macOS Tauri smoke observed in the running shell');
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+        'WI-9',
+        'resolved',
+        expect.objectContaining({
+          completionEvidence: expect.objectContaining({
+            verifiedHow: 'macOS Tauri smoke observed in the running shell',
+            testResult: 'the changed flow rendered and responded as expected',
+          }),
+        }),
+      );
+    });
+
+    it('accepts a descriptive verifiedHow label through the legacy top-level alias', async () => {
+      const r = await one({
+        id: 'WI-9',
+        state: 'resolved',
+        completion: {
+          summary: 'verified the API behavior',
+          verifiedHow: 'staging API replay with authenticated owner session',
+          testResult: 'HTTP 200 and terminal state were observed on the replay',
+        },
+      });
+      expect(r.ok).toBe(true);
+      expect(r.completion.verifiedHow).toBe('staging API replay with authenticated owner session');
+      expect(r.completionAuthority).toBe('committed');
+    });
+
     // EI-9930: a flat `tests` sibling of an existing `completion` used to be silently
     // dropped by the schema's default key-stripping (no unknown-arg error), so the
     // completion recorded with neither `tests` nor `deferred` and tripped a false
