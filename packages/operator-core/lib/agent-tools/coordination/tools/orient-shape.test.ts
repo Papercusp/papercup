@@ -196,8 +196,65 @@ describe('shapeOrient trimmed', () => {
     expect(facts[0].scope).toBe('owner'); // owner ranks first
     // bodies capped
     for (const f of facts) expect(f.body.length).toBeLessThanOrEqual(200);
-    // no silent cap
-    expect(out.factsTruncated).toMatchObject({ total: 20, shown: 8, more: 'facts:list' });
+    // no silent cap. The pointer names `full:true` because bare `facts:list`
+    // excerpts bodies by default — a recovery pointer that returns a second
+    // excerpt does not recover anything.
+    expect(out.factsTruncated).toMatchObject({
+      total: 20,
+      shown: 8,
+      more: 'facts:list { full:true }',
+    });
+    // The drop is RANKED, not random, so the disclosure names the classes lost:
+    // 12 workspace facts were dropped wholesale here.
+    expect((out.factsTruncated as { droppedByScope: Record<string, number> }).droppedByScope).toEqual({
+      workspace: 12,
+    });
+  });
+
+  it('discloses how many fact BODIES it clipped, not just how many facts it dropped', () => {
+    // Distinct from factsTruncated: a fact can survive the COUNT cap and still be
+    // delivered with most of its body gone. Both cuts are losses; both are named.
+    expect(out.factsBodiesTruncated).toMatchObject({ cap: 200, more: 'facts:list { full:true }' });
+    expect((out.factsBodiesTruncated as { facts: number }).facts).toBeGreaterThan(0);
+  });
+
+  describe('operative clauses in standing facts survive the body cap', () => {
+    // A standing fact's tail is routinely an IMPERATIVE, and the bare `cap` severed
+    // it — measured on a live fold, "DO NOT retry — the error says so explicitly"
+    // sat past the 200-char cut and shipped as a bare '…'. An agent that loses that
+    // clause retries the exact call the fact exists to stop.
+    const withFacts = (facts: unknown[]) =>
+      shapeOrient({ ...fixture(), facts }, 'trimmed') as Record<string, unknown>;
+
+    const filler = 'x'.repeat(400);
+
+    it('preserves a directive that sits PAST the cut', () => {
+      const out2 = withFacts([
+        { scope: 'harness', ref: 'papercusp', body: `head ${filler} DO NOT retry — the error is correct.`, src: 'WI-3' },
+      ]);
+      const body = (out2.facts as Array<{ body: string }>)[0].body;
+      expect(body).toContain('⚠ OPERATIVE');
+      expect(body).toContain('DO NOT retry');
+    });
+
+    it('CONTROL: a fact with no directive is capped plainly, with no OPERATIVE marker', () => {
+      // Permanent falsifier. An implementation that always appends the marker (or
+      // never truncates at all) passes the test above and fails this one, so the
+      // pair cannot both be satisfied by a degenerate implementation.
+      const out2 = withFacts([{ scope: 'harness', ref: 'papercusp', body: `head ${filler} ordinary trailing prose.`, src: 'WI-4' }]);
+      const body = (out2.facts as Array<{ body: string }>)[0].body;
+      expect(body).not.toContain('⚠ OPERATIVE');
+      expect(body).not.toContain('ordinary trailing prose');
+      expect(body.length).toBeLessThanOrEqual(200);
+    });
+
+    it('CALIBRATION: a short fact is passed through untouched', () => {
+      // Guards the other direction — if the cap fired on everything, the two tests
+      // above could pass while the shaper mangled bodies that needed no cutting.
+      const out2 = withFacts([{ scope: 'harness', ref: 'papercusp', body: 'short body, nothing to cut', src: 'WI-5' }]);
+      expect((out2.facts as Array<{ body: string }>)[0].body).toBe('short body, nothing to cut');
+      expect(out2.factsBodiesTruncated).toBeUndefined();
+    });
   });
 
   it('shrinks the payload by an order of magnitude on the incident-shaped fixture', () => {

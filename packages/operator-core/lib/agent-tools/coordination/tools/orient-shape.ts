@@ -35,6 +35,22 @@ const FACT_SCOPE_RANK: Record<string, number> = { owner: 0, work_item: 1, harnes
 const factRank = (f: unknown): number =>
   FACT_SCOPE_RANK[(f as { scope?: string } | null)?.scope ?? ''] ?? 2;
 
+/** The fetch-pointer for standing facts. It names `full:true` deliberately:
+ *  bare `facts:list` EXCERPTS bodies by default, so pointing a reader there to
+ *  recover an excerpted body hands them a second excerpt. A recovery pointer
+ *  that does not recover is worse than none — it closes the question. */
+const FACTS_MORE = 'facts:list { full:true }';
+
+/** Population of a dropped fact set by scope, for the disclosure below. */
+const countByScope = (fs: readonly unknown[]): Record<string, number> => {
+  const out: Record<string, number> = {};
+  for (const f of fs) {
+    const s = String((f as { scope?: string } | null)?.scope ?? 'unknown');
+    out[s] = (out[s] ?? 0) + 1;
+  }
+  return out;
+};
+
 /** Project one claimable work-item row to its placement-relevant core.
  *  Drops the duplicated summary, null fields, timestamps, and the fat payload
  *  subtree; keeps the plan_item linkage (the "which lane" signal). */
@@ -510,15 +526,46 @@ function projectOrient(d: Record<string, unknown>, c: Caps, tier: TierName): Rec
   // Standing facts are folded VERBATIM and grow unboundedly as agents assert
   // them (the coord:orient 59.8KB overflow, WI-2859). Cap count + body, keeping
   // owner/harness-scope facts first, with a fetch-pointer for the rest.
+  //
+  // The BODY cap uses the operative-preserving cap, not the bare `cap` — the same
+  // move the memory leg already made (EI-20113865649946366: a bare '…' names no
+  // fetch path and is indistinguishable from an ellipsis in the text itself). A
+  // standing fact is the one payload whose tail is routinely an IMPERATIVE, so the
+  // bare cap was severing directives: measured on a live 24-fact fold, FOUR
+  // operative clauses sat past the 200-char cut and were delivered as '…' —
+  // including "DO NOT retry — the error says so explicitly", whose loss makes an
+  // agent retry a call the fact exists to stop. The sibling read path (facts:list)
+  // already preserves exactly these clauses, so the two paths disagreed about the
+  // same fact, and orient is the one every agent gets on every wake.
   if (Array.isArray(d.facts)) {
     const total = d.facts.length;
     const ranked = [...d.facts].sort((a, b) => factRank(a) - factRank(b));
-    out.facts = ranked.slice(0, c.facts).map((f) =>
-      f && typeof f === 'object' ? { ...(f as Record<string, unknown>), body: cap((f as Record<string, unknown>).body, c.factsBody) } : f,
-    );
+    let bodiesCut = 0;
+    out.facts = ranked.slice(0, c.facts).map((f) => {
+      if (!f || typeof f !== 'object') return f;
+      const r = f as Record<string, unknown>;
+      const shaped = recapDisclosed(r.body, r.bodyTruncated, c.factsBody, FACTS_MORE);
+      if (!shaped) return r;
+      if (shaped.truncation) bodiesCut += 1;
+      return { ...r, body: shaped.text };
+    });
     if (total > c.facts) {
-      out.factsTruncated = { total, shown: c.facts, more: 'facts:list' };
+      // `droppedByScope` because this drop is RANKED, not random: factRank sorts
+      // workspace-scope LAST, so a fold carrying enough harness facts drops EVERY
+      // workspace fact. Measured on the same live fold: 12 harness / 12 workspace
+      // at a cap of 8 dropped 100% of the workspace scope. A bare {total, shown}
+      // reads as "16 random extras"; the truth was "an entire scope class is gone",
+      // which is what a reader needs before trusting this as their view of facts.
+      out.factsTruncated = {
+        total,
+        shown: c.facts,
+        more: FACTS_MORE,
+        droppedByScope: countByScope(ranked.slice(c.facts)),
+      };
     }
+    // One aggregate rather than a per-fact object: the marker has to be cheap
+    // enough that disclosure is not itself the thing that busts the budget.
+    if (bodiesCut > 0) out.factsBodiesTruncated = { facts: bodiesCut, cap: c.factsBody, more: FACTS_MORE };
   }
 
   const inbox = d.inbox as { summary?: unknown; recent?: unknown } | undefined;
