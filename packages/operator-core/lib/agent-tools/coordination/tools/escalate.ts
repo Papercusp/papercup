@@ -71,7 +71,7 @@ export default defineTool({
       .max(120)
       .optional()
       .describe(
-        'Stable identifier for a RECURRING condition (e.g. "mug-placement-stall", "work-feed-dead"). Re-escalating the same conditionKey COALESCES onto the existing open row (bumps its repeatCount) instead of opening a new one. Pass it for any watchdog/monitor condition you re-check on a cadence — especially when the summary embeds a live count or duration ("stalled ~7h", "302 items"), because without it the dedup falls back to the prose summary, which never repeats, and every wake leaks a new permanently-open escalation.',
+        'Stable identifier for a RECURRING condition (e.g. "mug-placement-stall", "work-feed-dead"). Re-escalating the same conditionKey COALESCES onto the existing open row (bumps its repeatCount) instead of opening a new one; the response reports coalesced:true and bodyDiscarded:true when the new text is not persisted. Pass it for any watchdog/monitor condition you re-check on a cadence — especially when the summary embeds a live count or duration ("stalled ~7h", "302 items"), because without it the dedup falls back to the prose summary, which never repeats, and every wake leaks a new permanently-open escalation.',
       ),
     options: z
       .array(z.object({ id: z.string().min(1), label: z.string().min(1) }))
@@ -130,11 +130,24 @@ export default defineTool({
       ...(Object.keys(meta).length > 0 ? { meta } : {}),
       ...(harnessSlug ? { harness_slug: harnessSlug } : {}),
     });
+    const coalesced = rec.coalesced === true;
     return {
       content: [
         {
           type: 'text' as const,
-          text: JSON.stringify({ ok: true, msg_id: rec.msg_id, ts: rec.ts }),
+          text: JSON.stringify({
+            ...(coalesced
+              ? {
+                  notice: 'COALESCED: existing escalation retained; this call\'s summary/body/options were discarded.',
+                  coalesced: true,
+                  existingMsgId: rec.existingMsgId ?? rec.msg_id,
+                  bodyDiscarded: rec.bodyDiscarded ?? true,
+                }
+              : {}),
+            ok: true,
+            msg_id: rec.msg_id,
+            ts: rec.ts,
+          }),
         },
       ],
     };

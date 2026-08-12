@@ -290,6 +290,7 @@ describe('coord:escalate handler', () => {
     );
     expect(body.ok).toBe(true);
     expect(body.msg_id).toBeTruthy();
+    expect(body.coalesced).toBeUndefined();
 
     const open = parse(await run(escalationsTool, { status: 'open' }));
     const rec = open.escalations.find((e: { msg_id: string }) => e.msg_id === body.msg_id);
@@ -322,6 +323,10 @@ describe('coord:escalate handler', () => {
       }),
     );
     expect(second.msg_id).toBe(first.msg_id); // same row, bumped — not a new one
+    expect(second.coalesced).toBe(true);
+    expect(second.existingMsgId).toBe(first.msg_id);
+    expect(second.bodyDiscarded).toBe(true);
+    expect(second.notice).toMatch(/^COALESCED:/);
 
     // Exactly one open row survives both firings — the leak this key exists to stop.
     // (repeatCount/lastSeenTs are asserted only here as "not a second row": the bump is

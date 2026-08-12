@@ -61,6 +61,32 @@ interface EscalationDedupIdentity {
 }
 
 /**
+ * A coalesced open is returned with a transient notice for the caller. These
+ * fields are deliberately added only to the returned view, never to the
+ * append-only event or materialized open projection: a duplicate fire remains
+ * one row while the caller learns that its new text was not persisted.
+ */
+export type EscalationOpenResult = EscalationRecord & {
+  coalesced?: boolean;
+  existingMsgId?: string;
+  bodyDiscarded?: boolean;
+};
+
+interface EscalationDedupResult {
+  record: EscalationRecord;
+  coalesced: boolean;
+}
+
+function markCoalesced(record: EscalationRecord): EscalationOpenResult {
+  return {
+    ...record,
+    coalesced: true,
+    existingMsgId: record.msg_id,
+    bodyDiscarded: true,
+  };
+}
+
+/**
  * WI-7353: a duration embedded in a summary is a MONOTONICALLY-CHANGING value, and a
  * dedup key that contains one can never dedup — every tick derives a fresh key, so one
  * continuous condition mints an unbounded flood of un-coalesced rows.
@@ -258,7 +284,7 @@ async function openEscalationWithPgDedupLock(
   },
   dedup: EscalationDedupIdentity,
   nowIso: string,
-): Promise<EscalationRecord | null> {
+): Promise<EscalationDedupResult | null> {
   if (!coordHasPgFastPath()) return null;
   try {
     const sql = coordSql();
@@ -274,10 +300,10 @@ async function openEscalationWithPgDedupLock(
         ))
       `;
       const bumped = await bumpProjectionDuplicateWithSql(tx, ws, dedup, nowIso, input.severity);
-      if (bumped) return bumped;
+      if (bumped) return { record: bumped, coalesced: true };
       const env = buildOpenEscalationRecord(identity, input, dedup, nowIso);
       await insertEscalationEventWithSql(tx, ws, env);
-      return env;
+      return { record: env, coalesced: false };
     });
   } catch {
     return null;
@@ -338,21 +364,23 @@ export async function openEscalation(
      *  escalation, never what the runtime executes. */
     evidence?: EvidenceStamp;
   },
-): Promise<EscalationRecord> {
+): Promise<EscalationOpenResult> {
   const nowIso = new Date().toISOString();
   const dedup = escalationDedupIdentity(input);
   const locked = await openEscalationWithPgDedupLock(identity, input, dedup, nowIso);
-  if (locked) return locked;
+  if (locked) return locked.coalesced ? markCoalesced(locked.record) : locked.record;
   const bumped = await tryBumpProjectionDuplicate(dedup, nowIso, input.severity);
-  if (bumped) return bumped;
+  if (bumped) return markCoalesced(bumped);
   const existing = await findOpenDuplicate(dedup);
   if (existing)
-    return withRepeatMetadata(
-      existing,
-      dedup,
-      nowIso,
-      repeatCountOf(existing as Record<string, unknown>) + 1,
-      input.severity,
+    return markCoalesced(
+      withRepeatMetadata(
+        existing,
+        dedup,
+        nowIso,
+        repeatCountOf(existing as Record<string, unknown>) + 1,
+        input.severity,
+      ),
     );
 
   const env = buildOpenEscalationRecord(identity, input, dedup, nowIso);
