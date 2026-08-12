@@ -19,7 +19,14 @@ vi.mock('../search/embedder', () => ({
   interactiveEmbedAcquireBudgetMs: () => 4000,
 }));
 
-import toolFind, { buildEmbeddingIndex, buildCorpus, warmToolFindIndex } from './find';
+import toolFind, {
+  boundDiscoveryHits,
+  buildEmbeddingIndex,
+  buildCorpus,
+  compactSchemaForResult,
+  DISCOVERY_RESULT_MAX_BYTES,
+  warmToolFindIndex,
+} from './find';
 
 type ToolDef = {
   name: string;
@@ -130,6 +137,63 @@ describe('handler — graceful degrade + result shape', () => {
     const out = await callHandler({ query: 'tools:find' });
     const self = out.hits.find((h) => h.tool === 'tools:find');
     expect(self?.argSchema).toContain('query');
+  });
+});
+
+describe('bounded discovery projection (EI-20235784774977954)', () => {
+  it('keeps nested object fields visible without copying verbose descriptions', () => {
+    const schema = {
+      type: 'object',
+      properties: {
+        body: {
+          anyOf: [
+            { type: 'string' },
+            {
+              type: 'array',
+              minItems: 1,
+              maxItems: 20,
+              items: {
+                type: 'object',
+                properties: {
+                  text: { type: 'string' },
+                  couldNotDetermine: { type: 'array', items: { type: 'object', properties: { what: { type: 'string' }, note: { type: 'string' } }, required: ['what'] } },
+                },
+                required: ['text'],
+              },
+            },
+          ],
+        },
+        expects: { type: 'string', enum: ['ack', 'answer', 'action', 'none'] },
+      },
+    };
+
+    const compact = compactSchemaForResult(schema);
+    expect(compact).toContain('body?:string|array(1-20){text,couldNotDetermine?}');
+    expect(compact).toContain('expects?:enum(ack|answer|action|none)');
+    expect(compact).not.toContain('description');
+  });
+
+  it('returns valid bounded JSON and marks omitted hits', () => {
+    const base = {
+      query: 'a verbose discovery query',
+      semantic: 'on',
+      activated: false,
+      howToCall: 'tools:invoke {name, args}',
+      totalMatches: 8,
+    };
+    const hits = Array.from({ length: 8 }, (_, i) => ({
+      tool: `tool:${i}`,
+      description: 'd'.repeat(320),
+      argSchema: 'field?:object' + 'x'.repeat(2_180),
+      via: 'lexical',
+    }));
+    const bounded = boundDiscoveryHits(base, hits);
+    const payload = { ...base, count: bounded.hits.length, truncated: bounded.truncated, hits: bounded.hits };
+
+    expect(Buffer.byteLength(JSON.stringify(payload), 'utf8')).toBeLessThanOrEqual(DISCOVERY_RESULT_MAX_BYTES);
+    expect(JSON.parse(JSON.stringify(payload))).toEqual(payload);
+    expect(bounded.truncated).toBe(true);
+    expect(bounded.hits.length).toBeLessThan(hits.length);
   });
 });
 
