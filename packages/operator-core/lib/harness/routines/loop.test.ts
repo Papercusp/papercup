@@ -50,6 +50,7 @@ import {
   TURNS_STALLED_MIN_FIRE_COUNT,
   autoArmFleetMemberLoop,
   getLoopStatuses,
+  computeLoopCadence,
   LOOP_WAKE_ACTION,
   LOOP_INTERVAL_FLOOR_SEC,
   countAgentToolCallsInWindow,
@@ -894,6 +895,68 @@ describe('getLoopStatuses — firesSinceArm (WI-36070: the number maxFires is ac
     const s = out.get('su-x')!;
     expect(s.firesSinceArm).toBe(0);
     expect(s.fireCount).toBe(500);
+  });
+});
+
+describe('computeLoopCadence (EI-20217869515819188 — configured vs observed cadence)', () => {
+  const armedAtMs = Date.parse('2026-08-11T20:03:22.000Z');
+  const nowMs = armedAtMs + (7 * 60 * 60 + 47 * 60) * 1000;
+
+  it('reports expected opportunities, effective interval, and slow-cadence ratio from arm-relative fires', () => {
+    const out = computeLoopCadence({
+      intervalSec: 60,
+      armedAtMs,
+      firesSinceArm: 15,
+      lastFiredAtMs: armedAtMs + 15 * 31 * 60 * 1000,
+      longestObservedGapSec: 2.5 * 60 * 60,
+      nowMs,
+    });
+
+    expect(out.expectedFiresSinceArm).toBe(467);
+    expect(out.effectiveIntervalSec).toBe(31 * 60);
+    expect(out.cadenceRatio).toBe(31);
+    expect(out.longestObservedGapSec).toBe(2.5 * 60 * 60);
+  });
+
+  it('keeps every metric null when its timestamps are insufficient, never fabricating zero', () => {
+    expect(
+      computeLoopCadence({
+        intervalSec: 60,
+        armedAtMs: null,
+        firesSinceArm: 0,
+        lastFiredAtMs: null,
+        longestObservedGapSec: null,
+        nowMs,
+      }),
+    ).toEqual({
+      expectedFiresSinceArm: null,
+      effectiveIntervalSec: null,
+      cadenceRatio: null,
+      longestObservedGapSec: null,
+    });
+  });
+
+  it('preserves a measured zero gap while rejecting invalid history values', () => {
+    expect(
+      computeLoopCadence({
+        intervalSec: 60,
+        armedAtMs,
+        firesSinceArm: 1,
+        lastFiredAtMs: armedAtMs,
+        longestObservedGapSec: 0,
+        nowMs: armedAtMs,
+      }).longestObservedGapSec,
+    ).toBe(0);
+    expect(
+      computeLoopCadence({
+        intervalSec: 60,
+        armedAtMs,
+        firesSinceArm: 1,
+        lastFiredAtMs: armedAtMs,
+        longestObservedGapSec: -1,
+        nowMs: armedAtMs,
+      }).longestObservedGapSec,
+    ).toBeNull();
   });
 });
 
