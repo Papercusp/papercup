@@ -584,6 +584,44 @@ function defaultReadLockOwner(lockDir: string): { pid?: number; startedAt?: stri
   }
 }
 
+/**
+ * Read the OS process-start instant for a PID when the host exposes Linux procfs.
+ *
+ * The run-lock records the wall-clock instant at which its owner acquired the lock. A
+ * recycled PID can pass `kill(pid, 0)` while belonging to a process that started AFTER that
+ * instant, so liveness alone is not an identity check. Procfs is deliberately best-effort:
+ * non-Linux hosts and restricted procfs fall back to the existing PID probe rather than
+ * turning an unreadable identity hint into a confident idle verdict.
+ */
+function defaultReadProcessStartMs(pid: number): number | null {
+  if (process.platform !== 'linux') return null;
+  try {
+    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+    const commEnd = stat.lastIndexOf(')');
+    if (commEnd < 0) return null;
+    const fields = stat.slice(commEnd + 1).trim().split(/\s+/);
+    // After the comm field, fields[0] is stat field 3 (state); starttime is field 22.
+    const startTicks = Number(fields[19]);
+    const uptimeSec = Number(readFileSync('/proc/uptime', 'utf8').trim().split(/\s+/)[0]);
+    if (!Number.isFinite(startTicks) || !Number.isFinite(uptimeSec)) return null;
+    const clockTicksPerSecond = 100;
+    return Date.now() - uptimeSec * 1000 + (startTicks / clockTicksPerSecond) * 1000;
+  } catch {
+    return null;
+  }
+}
+
+/** Keep this in sync with green-checkpoint.ts's CHECKPOINT_LOCK_STALE_MS. The writer
+ * reclaims a lock at this age even when its recorded PID still appears alive; the reader
+ * must not continue presenting that same over-age lock as a measured in-flight run when no
+ * contender has arrived to trigger the writer-side cleanup. */
+export const CHECKPOINT_RUN_LOCK_STALE_MS = 190 * 60_000;
+
+/** Procfs start times and lock timestamps use different clocks/precision on some hosts. A
+ * small allowance avoids rejecting the genuine owner when it acquired the lock immediately
+ * after process start, while still rejecting a recycled PID that started materially later. */
+const PROCESS_START_AFTER_LOCK_TOLERANCE_MS = 5_000;
+
 /** EI-18757156963245979: default reader for the run-lock's `phase.json` — the marker the RUN
  *  itself publishes (green-checkpoint.ts's `writeCheckpointRunPhase`) when it leaves the suite
  *  and enters the verdict path. Real fs; injectable for tests. Never throws: a missing or
@@ -616,11 +654,24 @@ function checkRunLockHeld(
   root: string,
   pidAlive: (pid: number) => boolean,
   readLockOwner: (lockDir: string) => { pid?: number; startedAt?: string } | null,
+  readProcessStartMs: (pid: number) => number | null = defaultReadProcessStartMs,
 ): { held: boolean; pid?: number | null; started_at?: string | null; elapsed_sec?: number | null } {
   const lockDir = checkpointRunLockDirMirror(checkpointLogDirFromEnv(), root);
   const owner = readLockOwner(lockDir);
   if (!owner || typeof owner.pid !== 'number' || !pidAlive(owner.pid)) return { held: false };
   const startedMs = owner.startedAt ? Date.parse(owner.startedAt) : NaN;
+  if (Number.isFinite(startedMs)) {
+    const ageMs = Date.now() - startedMs;
+    if (ageMs > CHECKPOINT_RUN_LOCK_STALE_MS) return { held: false };
+
+    const processStartedMs = readProcessStartMs(owner.pid);
+    if (Number.isFinite(processStartedMs) && processStartedMs! > startedMs + PROCESS_START_AFTER_LOCK_TOLERANCE_MS) {
+      // kill(pid, 0) proved only that *a* process exists. Its start time proves it cannot be
+      // the process that wrote this lock, so treating the lock as held would resurrect the
+      // recycled-PID false positive that wedged dev:pipeline_position and checkpoint:run.
+      return { held: false };
+    }
+  }
   const elapsedSec = Number.isFinite(startedMs) ? Math.max(0, Math.floor((Date.now() - startedMs) / 1000)) : null;
   return { held: true, pid: owner.pid, started_at: owner.startedAt ?? null, elapsed_sec: elapsedSec };
 }
@@ -646,8 +697,9 @@ export function isCheckpointRunLockHeldCheap(
   root: string,
   pidAlive: (pid: number) => boolean = defaultPidAlive,
   readLockOwner: (lockDir: string) => { pid?: number; startedAt?: string } | null = defaultReadLockOwner,
+  readProcessStartMs: (pid: number) => number | null = defaultReadProcessStartMs,
 ): { held: boolean; elapsedSec: number | null } {
-  const r = checkRunLockHeld(root, pidAlive, readLockOwner);
+  const r = checkRunLockHeld(root, pidAlive, readLockOwner, readProcessStartMs);
   return { held: r.held, elapsedSec: r.elapsed_sec ?? null };
 }
 
@@ -681,6 +733,7 @@ export function checkActiveCheckpointRun(
   // real-file reader, which returns null for the synthetic paths tests use, degrading to the
   // previous head-only behaviour.
   readLogTail: (logPath: string) => string | null = defaultReadLogTail,
+  readProcessStartMs: (pid: number) => number | null = defaultReadProcessStartMs,
 ): ActiveCheckpointCheck {
   const unit = checkpointUnitForRoot(root);
   const r = execFn('systemctl', [
@@ -702,7 +755,7 @@ export function checkActiveCheckpointRun(
   if (r.status !== 0 || !Object.prototype.hasOwnProperty.call(props, 'ActiveState')) {
     // The run-lock is an INDEPENDENT oracle (a plain file read, no fork), so consult it before
     // giving up: it is what keeps a transiently-unforkable host from wedging the gate shut.
-    const lockHeld = checkRunLockHeld(root, pidAlive, readLockOwner);
+    const lockHeld = checkRunLockHeld(root, pidAlive, readLockOwner, readProcessStartMs);
     const detail =
       `systemctl show exited ${r.status ?? 'null (spawn failed)'}` +
       `${Object.prototype.hasOwnProperty.call(props, 'ActiveState') ? '' : ' without an ActiveState property'}` +
@@ -726,7 +779,7 @@ export function checkActiveCheckpointRun(
     // WI-5685: the manual unit isn't active, but the shared RUN LOCK might still be held by a
     // process that never went through the manual unit at all (the hourly cron tick — see the
     // checkRunLockHeld doc comment). Cross-check it before declaring nothing active.
-    const lockHeld = checkRunLockHeld(root, pidAlive, readLockOwner);
+    const lockHeld = checkRunLockHeld(root, pidAlive, readLockOwner, readProcessStartMs);
     if (lockHeld.held) {
       const current = currentCheckpointCandidate(root, execFn);
       // EI-18695275971973546: resolve the REAL in-flight candidate from the isolated

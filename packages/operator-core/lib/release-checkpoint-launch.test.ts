@@ -33,6 +33,7 @@ import {
   CHECKPOINT_UNIT,
   checkpointUnitForRoot,
   CHECKPOINT_MAX_RUNTIME_SEC,
+  CHECKPOINT_RUN_LOCK_STALE_MS,
   CANDIDATE_RERESOLVE_WINDOW_SEC,
   REPLACE_STALE_MIN_AGE_SEC,
   classifyReplaceRequest,
@@ -531,6 +532,28 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
       expect(r).toEqual({ held: false, elapsedSec: null });
     });
 
+    it('reports held:false when a live PID started after the lock (recycled-PID identity guard)', () => {
+      const lockStartedAt = Date.now() - 60_000;
+      const readLockOwner = vi.fn(() => ({ pid: 9999, startedAt: new Date(lockStartedAt).toISOString() }));
+      const r = isCheckpointRunLockHeldCheap('/tree', vi.fn(() => true), readLockOwner, () => Date.now());
+      expect(r).toEqual({ held: false, elapsedSec: null });
+    });
+
+    it('reports held:false for an over-age live PID when procfs identity is unavailable', () => {
+      const lockStartedAt = Date.now() - CHECKPOINT_RUN_LOCK_STALE_MS - 1_000;
+      const readLockOwner = vi.fn(() => ({ pid: 9999, startedAt: new Date(lockStartedAt).toISOString() }));
+      const r = isCheckpointRunLockHeldCheap('/tree', vi.fn(() => true), readLockOwner, () => null);
+      expect(r).toEqual({ held: false, elapsedSec: null });
+    });
+
+    it('keeps a live PID whose process predates the lock', () => {
+      const lockStartedAt = Date.now() - 60_000;
+      const readLockOwner = vi.fn(() => ({ pid: 9999, startedAt: new Date(lockStartedAt).toISOString() }));
+      const r = isCheckpointRunLockHeldCheap('/tree', vi.fn(() => true), readLockOwner, () => lockStartedAt - 60_000);
+      expect(r.held).toBe(true);
+      expect(r.elapsedSec).toBeGreaterThanOrEqual(59);
+    });
+
     it('never shells out — no execFn/systemctl seam exists on this probe at all', () => {
       // Type-level assertion as much as a runtime one: the whole point of this sibling is that
       // it takes no execFn, unlike checkActiveCheckpointRun. Calling it with only fs-level fakes
@@ -561,7 +584,10 @@ describe('checkActiveCheckpointRun run-lock fallback (WI-5685: the cron-holds-th
       fs.mkdirSync(lockDir, { recursive: true });
       fs.writeFileSync(
         path.join(lockDir, 'owner.json'),
-        JSON.stringify({ pid: process.pid, startedAt: new Date(Date.now() - 5 * 60_000).toISOString() }),
+        // Keep the synthetic lock acquisition after this test process's real start time;
+        // a backdated timestamp would intentionally look like a recycled PID to the procfs
+        // identity guard under test.
+        JSON.stringify({ pid: process.pid, startedAt: new Date(Date.now() - 1_000).toISOString() }),
       );
 
       const execFn = vi.fn((cmd: string) => {
