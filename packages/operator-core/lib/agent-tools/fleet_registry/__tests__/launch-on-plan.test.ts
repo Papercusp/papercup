@@ -884,6 +884,11 @@ describe('fleet:launch-on-plan handler — member baseline wiring', () => {
       const firstGreeting = spawnConsoleMock.mock.calls[0][0].envelope.greetingCmd as string;
       expect(firstGreeting).toContain('--launch-context=');
       expect(firstGreeting).toContain('fleet-alpha-fleet-launch-context.md');
+      // EI-20222088167233986: no explicit `workspace` arg was supplied above,
+      // but the handler resolved ws-1 from its caller scope. The command must
+      // carry that resolved value rather than inheriting the operator's
+      // process-level workspace (often `default`) across warm wakes.
+      expect(firstGreeting).toContain('--workspace=ws-1');
     }
   });
 

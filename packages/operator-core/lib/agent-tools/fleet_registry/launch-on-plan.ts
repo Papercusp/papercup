@@ -2385,7 +2385,12 @@ export default defineTool({
       agent: (goalLaunch.effective.agent as typeof effAgent) ?? effAgent,
       headless: args.headless || undefined,
       account: goalLaunch.effective.account ?? effAccount,
-      workspace: args.workspace?.trim() || undefined,
+      // The caller's request scope is already resolved above. Always stamp that
+      // authoritative workspace onto the psu command: omitting the flag makes a
+      // fleet member inherit the operator process's workspace (commonly
+      // `default`), so its first warm wake loses the harness it was launched to
+      // drain even though the fleet/claim rows live in the correct workspace.
+      workspace: workspaceId,
       role: args.role?.trim() || undefined,
       model: effModel,
       seat: seatPin?.ref,
