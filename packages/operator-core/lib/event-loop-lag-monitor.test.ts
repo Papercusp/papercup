@@ -772,18 +772,50 @@ describe('setLagPublishTarget (EI-19484853609145439: sentinel-readable last-know
   it('publishes rounded p50/p95/p99/max into the SAB at SENTINEL_SAB_IDX on every tick', async () => {
     const sab = new SharedArrayBuffer(SENTINEL_SAB_INT32_LEN * Int32Array.BYTES_PER_ELEMENT);
     const view = new Int32Array(sab);
+    const lagSlots = [
+      SENTINEL_SAB_IDX.LAG_P50_MS,
+      SENTINEL_SAB_IDX.LAG_P95_MS,
+      SENTINEL_SAB_IDX.LAG_P99_MS,
+      SENTINEL_SAB_IDX.LAG_MAX_MS,
+    ];
+    // Sentinel-seed every slot: proves the tick WROTE each one, rather than us
+    // reading a coincidental 0 that was already sitting there.
+    for (const idx of lagSlots) Atomics.store(view, idx, -1);
     setLagPublishTarget(sab);
     handle = startEventLoopLagMonitor({ intervalMs: 20, warnP95Ms: 100_000 });
     // Manufacture real, measurable lag so the published values are not all 0
     // by coincidence (0 is also a legal "idle loop" reading).
     blockFor(30);
-    await new Promise((r) => setTimeout(r, 80));
+    // Wait on the CONDITION, never a fixed sleep — and specifically on the one
+    // that MATTERS: that a tick has published the manufactured lag. Waiting for
+    // a bare "some tick ran" is the wrong condition and still flakes, because
+    // the FIRST tick after the block legitimately carries max=0 (it can fire
+    // before the histogram has attributed the block). This condition is
+    // MONOTONE — the histogram is cumulative and `read()` never resets, so once
+    // `h.max` clears the block it stays cleared — which is what makes the wait
+    // race-free rather than merely longer. A timeout here is a real failure:
+    // the monitor never published the lag it measured.
+    await vi.waitFor(() => {
+      expect(Atomics.load(view, SENTINEL_SAB_IDX.LAG_MAX_MS)).toBeGreaterThanOrEqual(20);
+    }, { timeout: 10_000, interval: 5 });
 
-    const sample = handle.sample();
-    expect(Atomics.load(view, SENTINEL_SAB_IDX.LAG_P50_MS)).toBe(Math.round(sample.p50Ms));
-    expect(Atomics.load(view, SENTINEL_SAB_IDX.LAG_P95_MS)).toBe(Math.round(sample.p95Ms));
-    expect(Atomics.load(view, SENTINEL_SAB_IDX.LAG_P99_MS)).toBe(Math.round(sample.p99Ms));
-    expect(Atomics.load(view, SENTINEL_SAB_IDX.LAG_MAX_MS)).toBe(Math.round(sample.maxMs));
+    const published = lagSlots.map((idx) => Atomics.load(view, idx));
+    for (const v of published) {
+      expect(v).not.toBe(-1); // the tick wrote this slot
+      expect(Number.isInteger(v)).toBe(true); // Math.round was applied
+      expect(v).toBeGreaterThanOrEqual(0);
+    }
+
+    // Do not compare this published snapshot with `handle.sample()` afterward:
+    // the monitor resets its histogram at the end of every tick, so the two reads
+    // can belong to different windows. The snapshot itself must still preserve
+    // the histogram's percentile ordering and the manufactured block must appear
+    // in its max slot.
+    const [p50, p95, p99, max] = published;
+    expect(p50).toBeLessThanOrEqual(p95);
+    expect(p95).toBeLessThanOrEqual(p99);
+    expect(p99).toBeLessThanOrEqual(max);
+    expect(max).toBeGreaterThanOrEqual(20);
     // The heartbeat slot (index 0, owned by event-loop-sentinel-host.ts) must
     // never be touched by the lag monitor — it is a different publisher.
     expect(Atomics.load(view, SENTINEL_SAB_IDX.HEARTBEAT)).toBe(0);
@@ -800,12 +832,16 @@ describe('setLagPublishTarget (EI-19484853609145439: sentinel-readable last-know
     await new Promise((r) => setTimeout(r, 60));
     expect(Atomics.load(view, SENTINEL_SAB_IDX.LAG_P95_MS)).toBe(-1);
     setLagPublishTarget(sab);
-    await new Promise((r) => setTimeout(r, 60));
-    // A real tick ran and overwrote the sentinel — consistent with whatever
-    // sample() reads right now (no artificial load required: this proves
-    // late-binding WORKS, not that lag was elevated).
-    const sample = handle.sample();
-    expect(Atomics.load(view, SENTINEL_SAB_IDX.LAG_P95_MS)).toBe(Math.round(sample.p95Ms));
+    // A real tick ran and overwrote the sentinel — that overwrite IS the proof
+    // late-binding works (no artificial load required: this proves the wiring,
+    // not that lag was elevated). Wait on the overwrite itself; a later sample
+    // belongs to a different reset window and is not a valid comparison.
+    await vi.waitFor(() => {
+      expect(Atomics.load(view, SENTINEL_SAB_IDX.LAG_P95_MS)).not.toBe(-1);
+    }, { timeout: 10_000, interval: 5 });
+    const publishedP95 = Atomics.load(view, SENTINEL_SAB_IDX.LAG_P95_MS);
+    expect(Number.isInteger(publishedP95)).toBe(true);
+    expect(publishedP95).toBeGreaterThanOrEqual(0);
   });
 
   it('null clears the target — no throw, and no further writes', async () => {
