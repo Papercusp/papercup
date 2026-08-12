@@ -710,27 +710,38 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     describe('monitor inbox watermark (fleet-leader-frictions P-004)', () => {
       const WM_TS = '2026-07-10T03:30:00.000Z';
 
-      it('scopes the monitor inbox read to since_ts = the messages_shown watermark', async () => {
+      // ── RETIRED by D-013 R1 (plan fleet-deltas-leader-primitives-2026-07-10) ──
+      // This block used to pin the OPPOSITE contract: monitor mode read
+      // `coord:watermark` and scoped the inbox to `since_ts = read_through_ts`.
+      //
+      // Why that was withdrawn rather than merely made unnecessary: scoping to
+      // "newer than what you were last SHOWN" can HIDE a message the agent was
+      // shown but has not acted on — and `read_through_ts` advances on the mere
+      // act of rendering an inbox, not on the agent doing anything about it. For
+      // a monitor loop, whose whole job is to notice outstanding work, that is
+      // precisely the wrong window. `unanswered` remains the actionable signal
+      // and is computed independently of it.
+      //
+      // `coord:inbox` is now a VIEW with no caller-supplied floor at all, so the
+      // three cases here (scoped / null-watermark / watermark-read-failed) have
+      // collapsed into one contract, pinned below. The `coord:watermark` call is
+      // gone with them — a whole round-trip that existed only to derive a floor.
+      it('monitor mode passes NO floor and does not read the watermark at all (D-013 R1)', async () => {
         const { call, calls } = fakeCall({
           ...CORE,
           'coord:watermark': () => ({ owner_id: 'leader', self: true, read_through_ts: WM_TS }),
         });
         const r = await composeOrient({ mode: 'monitor' }, call, 'leader');
         expect(r.ok).toBe(true);
+        // Even with a perfectly good watermark ON OFFER, it is neither fetched
+        // nor applied — that is what makes this a contract and not an accident
+        // of the fixture.
+        expect(calls.some((c) => c.name === 'coord:watermark')).toBe(false);
         const inboxCall = calls.find((c) => c.name === 'coord:inbox');
-        expect(inboxCall?.args).toMatchObject({ since_ts: WM_TS });
+        expect(inboxCall?.args.since_ts).toBeUndefined();
       });
 
-      it('no watermark yet (null read_through_ts) ⇒ the unscoped read', async () => {
-        const { call, calls } = fakeCall({
-          ...CORE,
-          'coord:watermark': () => ({ owner_id: 'leader', self: true, read_through_ts: null }),
-        });
-        await composeOrient({ mode: 'monitor' }, call, 'leader');
-        expect(calls.find((c) => c.name === 'coord:inbox')?.args.since_ts).toBeUndefined();
-      });
-
-      it('a FAILED watermark read fails open — unscoped inbox, orient still ok', async () => {
+      it('a broken watermark source is irrelevant now — orient never touches it', async () => {
         const { call, calls } = fakeCall({
           ...CORE,
           'coord:watermark': () => {
@@ -739,6 +750,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
         });
         const r = await composeOrient({ mode: 'monitor' }, call, 'leader');
         expect(r.ok).toBe(true);
+        expect(calls.some((c) => c.name === 'coord:watermark')).toBe(false);
         expect(calls.find((c) => c.name === 'coord:inbox')?.args.since_ts).toBeUndefined();
       });
 
