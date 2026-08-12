@@ -56,6 +56,12 @@ const run = (args: Record<string, unknown> = {}) =>
     handler: (a: unknown, ctx: unknown) => Promise<{ content: [{ type: 'text'; text: string }] }>;
   }).handler(args, {}).then((r) => JSON.parse(r.content[0].text));
 
+describe('loop:status — ambient workspace transaction safety (EI-20229292848756531)', () => {
+  it('opts out because the handler owns independent DB reads and never consumes ctx.tx', () => {
+    expect((statusTool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+});
+
 beforeEach(() => {
   _resetStoreIdentityForTests();
   getLoopStatusMock.mockReset();

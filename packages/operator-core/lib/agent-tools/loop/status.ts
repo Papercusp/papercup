@@ -43,6 +43,12 @@ export default defineTool({
   },
   capability: 'routines:write',
   requirePrincipal: false,
+  // EI-20229292848756531: this read performs independent DB probes
+  // (loop status, wake reachability, and pending awaits) and never consumes
+  // ctx.tx. Do not hold the dispatcher's ambient org-app transaction across
+  // those awaits; pool contention would make loop:status itself time out at
+  // withWorkspace:acquire(app).
+  skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES],
   args: z.object({
     ownerId: z
