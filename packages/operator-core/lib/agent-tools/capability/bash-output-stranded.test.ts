@@ -13,7 +13,17 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { strandedJobLookup, STRANDED_LOG_TAIL_BYTES } from './bash_output';
+import { strandedJobAdvice, strandedJobLookup, STRANDED_LOG_TAIL_BYTES } from './bash_output';
+
+describe('strandedJobAdvice (EI-20219872509843731)', () => {
+  it('does not promise that a confined systemd scope survives an operator restart', () => {
+    const advice = strandedJobAdvice(true);
+    expect(advice).toContain('not a restart-durability guarantee');
+    expect(advice).toContain('routine :3070/:3170 restart can end the scope');
+    expect(advice).not.toContain('should survive a routine operator restart');
+    expect(advice).not.toContain('SURPRISING case');
+  });
+});
 
 describe('strandedJobLookup (EI-8855)', () => {
   let dir: string;

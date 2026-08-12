@@ -169,6 +169,27 @@ export type LedgerLivenessVerdict =
   | { kind: 'no_ledger_row' }
   | { kind: 'ledger_inconclusive' };
 
+/**
+ * Explain a ledger-confirmed stranded job without overstating what confinement
+ * guarantees. A `systemd-run --scope` payload is outside the operator service's
+ * cgroup, but the `systemd-run` monitor remains the operator's child. A routine
+ * :3070/:3170 restart can therefore kill that monitor and end the sibling scope
+ * too (EI-20219872509843731, observed across a restart wave on 2026-08-12).
+ */
+export function strandedJobAdvice(confined: boolean): string {
+  return confined
+    ? ' This job was CONFINED in its own systemd scope (task-manager), but the current ' +
+        '`systemd-run --scope` monitor is still a child of the launching operator. A routine ' +
+        ':3070/:3170 restart can end the scope, so confinement is a resource boundary, not a ' +
+        'restart-durability guarantee. Check the operator service journal around the scope end ' +
+        'time before attributing it to OOM or a manual `processes:kill`.'
+    : ' This job was UNCONFINED (task-manager confinement was off, or its probe failed, at the moment ' +
+        'it spawned), so it ran as a direct child of the operator process — the far more likely ' +
+        'explanation is the routine, documented one: a peer restarted :3070/:3170 mid-job (repo-' +
+        'conventions § two-port model) and every OTHER unconfined in-flight background job died with it. ' +
+        'Not a bug in your command.';
+}
+
 export function diagnoseFromLedger(
   row: TaskRow | null,
   probeIdentity: (pid: number) => string | null = readProcessIdentity,
@@ -399,25 +420,16 @@ export default defineTool({
           //     documented one — a peer restarted :3070/:3170 mid-job (repo-
           //     conventions § two-port model) and took every unconfined
           //     in-flight background job down with it. Not a bug in the command.
-          //   - CONFINED (its own systemd scope, a sibling of the operator's own
-          //     unit — task-manager-no-escape-2026-07-27): that scope should
-          //     survive an operator restart, so a confined job still going
-          //     stranded is the SURPRISING case — worth a second look (OOM via
-          //     `dmesg`/`journalctl -k`, a manual `processes:kill`, or a genuine
-          //     task-manager gap) rather than shrugging it off as routine.
+          //   - CONFINED: the payload is outside the operator's cgroup, but the
+          //     systemd-run --scope monitor is still its child. Killing that
+          //     monitor during an operator restart can end the sibling scope too;
+          //     confinement is not restart durability (EI-20219872509843731).
           const strandedAdvice =
             ledgerVerdict.state !== 'stranded'
               ? null
               : ledgerVerdict.confined
-                ? ' This job was CONFINED in its own systemd scope (task-manager), which should survive a routine ' +
-                  'operator restart — so this is the SURPRISING case, not the routine one. Worth checking `dmesg`/' +
-                  '`journalctl -k` for an OOM kill around when it died, or whether someone ran `processes:kill` on ' +
-                  'it, before assuming this was just an operator restart.'
-                : ' This job was UNCONFINED (task-manager confinement was off, or its probe failed, at the moment ' +
-                  'it spawned), so it ran as a direct child of the operator process — the far more likely ' +
-                  'explanation is the routine, documented one: a peer restarted :3070/:3170 mid-job (repo-' +
-                  'conventions § two-port model) and every OTHER unconfined in-flight background job died with it. ' +
-                  'Not a bug in your command.';
+                ? strandedJobAdvice(true)
+                : strandedJobAdvice(false);
           return {
             content: [
               {
