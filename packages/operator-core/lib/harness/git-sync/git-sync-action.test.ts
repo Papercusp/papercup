@@ -11,8 +11,9 @@
  *     skip the tick (back-pressure, partial acquisitions released); an UNKNOWN
  *     extra name → skip with a loud log (never auto-registered); lock INFRA
  *     error → proceed UNLOCKED (fail-open); every fire uses a distinct lock
- *     owner so cron/manual fires cannot coalesce; locks released after the run —
- *     success, error, and throw.
+ *     owner so cron/manual fires cannot coalesce; long runs refresh every held
+ *     lease before its TTL; locks released after the run — success, error, and
+ *     throw.
  *   - P-008 runtime gate (action half): unregistered slug / hive home /
  *     remote-hive view / non-local deployment / vanished or non-git checkout →
  *     no-op with `last_status: 'skipped'` metadata, no locks, no escalation.
@@ -564,6 +565,53 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
 
     releaseFirstRun();
     await first;
+  });
+
+  it('EI-20224276977835463: refreshes every held lease during a long run and stops refreshing before release', async () => {
+    vi.useFakeTimers();
+    try {
+      let runStarted!: () => void;
+      const runStartedPromise = new Promise<void>((resolve) => {
+        runStarted = resolve;
+      });
+      let finishRun!: () => void;
+      const finishRunPromise = new Promise<void>((resolve) => {
+        finishRun = resolve;
+      });
+      runGitSyncMock.mockImplementationOnce(async () => {
+        runStarted();
+        await finishRunPromise;
+        return syncedOutcome;
+      });
+
+      const running = action(ctx);
+      await runStartedPromise;
+
+      const initialResources = ['git-sync:papercup', 'git-sync', 'libs-papercusp-submodule'];
+      expect(acquiredResources()).toEqual(initialResources);
+      const initialOwner = (tryAcquireResourceMock.mock.calls[0][1] as { owner: string }).owner;
+
+      await vi.advanceTimersByTimeAsync(60_000);
+
+      expect(acquiredResources()).toEqual([...initialResources, ...initialResources]);
+      for (const [, opts] of tryAcquireResourceMock.mock.calls.slice(3)) {
+        expect(opts).toMatchObject({
+          owner: initialOwner,
+          mode: 'exclusive',
+          ttlSec: 600,
+        });
+      }
+
+      finishRun();
+      await running;
+      expect(releasedResources()).toEqual([...initialResources].reverse());
+
+      const callsAfterRelease = tryAcquireResourceMock.mock.calls.length;
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(tryAcquireResourceMock).toHaveBeenCalledTimes(callsAfterRelease);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   // WI-5960: the routine acquires `git-sync:<slug>` under `ctx.workspaceId || '*'`

@@ -152,6 +152,11 @@ import { parsePapercuspTrailers, recordCommitAttribution, type CommitAttribution
 
 const GIT_SYNC_OWNER = 'system:git-sync';
 const LOCK_TTL_SEC = 600;
+// Keep the lease refresh comfortably inside its expiry window. Long, progressing
+// fetches can legitimately run well past LOCK_TTL_SEC; without a refresh the
+// resource row expires mid-run and the next scheduled fire enters the same
+// checkout concurrently (EI-20224276977835463).
+const LOCK_HEARTBEAT_INTERVAL_MS = 60_000;
 
 /**
  * Resource locks coalesce a same-owner acquire into a lease refresh. That is
@@ -321,6 +326,65 @@ async function releaseAll(cd: string, owner: string, acquired: string[]): Promis
       /* best-effort: TTL reaps it anyway */
     }
   }
+}
+
+/**
+ * Refresh every acquired resource lock while the git pipeline is running.
+ *
+ * `tryAcquireResource` deliberately coalesces a same-owner acquire into a lease
+ * refresh, so this uses the exact same store path and resource-domain contract as
+ * the initial acquire. Only one refresh pass may be in flight; a slow lock-store
+ * round trip must not build an unbounded interval backlog. The stop function
+ * waits for an already-started pass before the caller releases the locks.
+ */
+function startLockHeartbeat(
+  cd: string,
+  slug: string,
+  resources: string[],
+  owner: string,
+): () => Promise<void> {
+  let inFlight: Promise<void> | null = null;
+
+  const refresh = async (): Promise<void> => {
+    for (const resource of resources) {
+      try {
+        const result = await acquireWithContentionRetry(() =>
+          inWorkspaceTxn(cd, owner, (tx) =>
+            tryAcquireResource(tx, {
+              coordinationDomain: cd,
+              resource,
+              mode: 'exclusive',
+              owner,
+              ownerLabel: `git-sync:${slug}`,
+              reason: `auto-commit ${slug}`,
+              ttlSec: LOCK_TTL_SEC,
+            })),
+        );
+        if (!result.ok) {
+          console.error(
+            `[git-sync] ${slug}: LOST exclusive lock ${resource} during lease refresh (${result.reason ?? 'refused'})`,
+          );
+        }
+      } catch (e) {
+        console.warn(
+          `[git-sync] ${slug}: lock heartbeat failed for ${resource}: ${e instanceof Error ? e.message : String(e)}`,
+        );
+      }
+    }
+  };
+
+  const timer = setInterval(() => {
+    if (inFlight) return;
+    inFlight = refresh().finally(() => {
+      inFlight = null;
+    });
+  }, LOCK_HEARTBEAT_INTERVAL_MS);
+  timer.unref?.();
+
+  return async () => {
+    clearInterval(timer);
+    if (inFlight) await inFlight;
+  };
 }
 
 // EI-1720 + worker-fire-path zombie spawns: the lock-acquire contention retry
@@ -1464,6 +1528,9 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<GitSyncFireOutcome> 
 
   // 'acquired' (locked) or 'error' (unlocked best-effort) → run.
   let outcome: GitSyncOutcome;
+  const stopLockHeartbeat = lock.state === 'acquired'
+    ? startLockHeartbeat(cd, slug, [...acquired], lockOwner)
+    : async () => {};
   try {
     outcome = await runGitSync(slug, {
       config: cfg,
@@ -1475,6 +1542,7 @@ async function handleGitSync(ctx: SystemActionCtx): Promise<GitSyncFireOutcome> 
       step: runCheckpointedStep,
     });
   } finally {
+    await stopLockHeartbeat();
     if (lock.state === 'acquired') await releaseAll(cd, lockOwner, acquired);
   }
 
