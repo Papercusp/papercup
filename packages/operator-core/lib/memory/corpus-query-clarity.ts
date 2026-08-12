@@ -67,8 +67,14 @@ export type QueryClarityVerdict =
   /** Attested terms with a clarity score at or above the threshold. The cheap
    *  path is expected to work; do not spend anything more. */
   | 'focused'
-  /** Attested terms, but the query looks like the corpus at large rather than
-   *  like any part of it. This is the ESCALATION CANDIDATE. */
+  /**
+   * Attested terms, but the query looks like the corpus at large rather than
+   * like any part of it.
+   *
+   * ⚠ THIS WAS THE ESCALATION CANDIDATE AND IS NO LONGER ONE — D-095 §4
+   * measured it as the BEST-reaching bucket, not the failing one. See
+   * {@link clarityWarrantsEscalation} for the numbers and the reversal.
+   */
   | 'unfocused'
   /**
    * NO term in this query is attested by the corpus at least `minDf` times.
@@ -144,6 +150,15 @@ export interface QueryClarityOptions {
  * measured 27.8% against a synthetic estimate of >90%, i.e. a synthetic guess
  * was wrong by more than 3x in the direction that justifies always-on spend.
  * Picking this constant from intuition reproduces exactly that error.
+ *
+ * ⚠ SINCE D-095 THIS CONSTANT GOVERNS NO SPEND. It separates `focused` from
+ * `unfocused`, and `unfocused` no longer escalates
+ * ({@link clarityWarrantsEscalation}), so moving it re-labels queries between
+ * two buckets that BOTH retrieve well and changes no cost. It stays
+ * uncalibrated ON PURPOSE, not by neglect: D-095 §5 found no knee in the decile
+ * curve to calibrate against, and explicitly forbids picking a percentile or
+ * fitting to the paper's 27.8%. Calibrate it when — and only when — a tier
+ * exists that spends differently on the two sides of it.
  */
 export const CORPUS_CLARITY_FOCUSED_BITS = 5;
 
@@ -341,12 +356,41 @@ export function assessCorpusQueryClarity(
 /**
  * Does this verdict warrant paying for a tier the cheap path does not include?
  *
- * Only `unfocused` and `unretrievable` do. `keyed` and `focused` are expected
- * to work; `unknown` deliberately does NOT escalate — an escalation tier armed
- * by a broken signal would fire on 100% of traffic exactly when nobody is
- * measuring it, which is the failure mode a cascade exists to avoid. `unknown`
- * is a reason to fix the DF table, not to spend money.
+ * ONLY `unretrievable`. `keyed` and `focused` are expected to work, and
+ * `unknown` deliberately does NOT escalate — a tier armed by a broken signal
+ * would fire on 100% of traffic exactly when nobody is measuring it, which is
+ * the failure mode a cascade exists to avoid. `unknown` is a reason to fix the
+ * DF table, not to spend money.
+ *
+ * ⚠⚠ `unfocused` USED TO ESCALATE AND NO LONGER DOES. This is a MEASURED
+ * reversal (D-095 §4), not a preference, and it falsifies the cascade's own
+ * founding premise — that a query which "looks like the corpus at large" will
+ * retrieve badly. The R5 study (n≈1,190, two independent seeds, warm embedder
+ * arm) measured the opposite: `unfocused` had the BEST reach of any bucket —
+ * mean 5.82 of 6 lines admitted, 92.4% filling all six, zero-hit rate 0.0% —
+ * while the bucket that actually fails is `unretrievable`: zero-hit 21.7%, mean
+ * admitted 0.93. Escalating `unfocused` would spend the expensive tier
+ * precisely where retrieval already works.
+ *
+ * The narrowing is most of the traffic, not a rounding difference. Re-measured
+ * 2026-08-12 (`bench/corpus-query-clarity-cli.ts --queries 2000`, live DF table
+ * 40,325 terms / 40,000 docs) and weighted by the live 7-day surface mix,
+ * `unfocused`+`unretrievable` is 29.4% of recalls while `unretrievable` alone is
+ * ~9.6%. So this predicate now arms a tier on roughly a THIRD as much traffic —
+ * and on the third that actually comes back empty.
+ *
+ * ⚠ KNOWN GAP, left uncovered deliberately: D-095 §4 also names the high-SCS
+ * deciles 7–10 (zero-hit 12–14%) as a candidate trigger. They read as `focused`
+ * against the current threshold and are NOT escalated here, because separating
+ * them needs a calibrated SCS cut and D-095 §5 found no knee to calibrate
+ * against. Whoever builds the tier must decide about that population
+ * explicitly rather than inherit silence about it.
+ *
+ * ⚠ This predicate says WHEN a tier should be paid for. It says nothing about
+ * WHAT the tier does — that is the parent plan's P-006 owner gate
+ * (`context-injection-audit-2026-07-28`). Do not self-answer it here, and do
+ * not wire an LLM leg behind this function.
  */
 export function clarityWarrantsEscalation(verdict: QueryClarityVerdict): boolean {
-  return verdict === 'unfocused' || verdict === 'unretrievable';
+  return verdict === 'unretrievable';
 }

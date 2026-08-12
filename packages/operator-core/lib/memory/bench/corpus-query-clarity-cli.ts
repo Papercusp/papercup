@@ -43,7 +43,12 @@
  */
 import { getOrgPg } from '@papercusp/db-org';
 
-import { assessCorpusQueryClarity, scoreCorpusQueryClarity, type QueryClarityVerdict } from '../corpus-query-clarity';
+import {
+  assessCorpusQueryClarity,
+  clarityWarrantsEscalation,
+  scoreCorpusQueryClarity,
+  type QueryClarityVerdict,
+} from '../corpus-query-clarity';
 import { corpusQueryText } from '../corpus-recall';
 
 function argValue(name: string): string | undefined {
@@ -158,11 +163,14 @@ async function main(): Promise<void> {
   }
 
   console.log(`\n## Clarity verdict by surface — scored on the ISSUED query (≤2 terms)\n`);
-  console.log(`| surface | clamp | ${VERDICTS.join(' | ')} | ESCALATES | (pool-scored, control) |`);
+  console.log(
+    `| surface | clamp | ${VERDICTS.join(' | ')} | ESCALATES | (unfocused, pool-scored — control) |`,
+  );
   console.log(`|---|---:|${VERDICTS.map(() => '---:').join('|')}|---:|---:|`);
 
   let weightedEscalate = 0;
-  let weightedPoolEscalate = 0;
+  let weightedPoolUnfocused = 0;
+  let weightedIssuedUnfocused = 0;
   let weightedKeyed = 0;
   let weightShare = 0;
   const perSurfaceScs = new Map<string, number[]>();
@@ -196,17 +204,39 @@ async function main(): Promise<void> {
     perSurfaceScs.set(m.surface, scs);
     perSurfaceIssuedScs.set(m.surface, issuedScs);
 
-    const escalate = (issuedCounts.get('unfocused') ?? 0) + (issuedCounts.get('unretrievable') ?? 0);
-    const poolEscalate = (counts.get('unfocused') ?? 0) + (counts.get('unretrievable') ?? 0);
+    // Summed THROUGH the shipped predicate, never a hand-written verdict list.
+    // This probe's entire job is to report what the code would actually spend
+    // on, so a local copy of the rule does not merely duplicate it — it reports
+    // the OLD rule with full confidence the moment the rule moves, which is
+    // exactly what happened when D-095 narrowed escalation to `unretrievable`
+    // alone (this line used to add `unfocused` in, and would have printed 29.4%
+    // for a predicate that fires on ~9.6%). Same reasoning that pulled
+    // `corpusQueryIdToken` out of corpus-recall rather than copying it.
+    const sumEscalating = (c: Map<QueryClarityVerdict, number>): number =>
+      VERDICTS.reduce((n, v) => n + (clarityWarrantsEscalation(v) ? (c.get(v) ?? 0) : 0), 0);
+    const escalate = sumEscalating(issuedCounts);
+
+    // ⚠ THE POOL ARM IS THE CLARITY-INSTRUMENT CONTROL AND MUST BE READ ON THE
+    // `unfocused` SHARE, NOT ON THE ESCALATION RATE. Running it through the
+    // predicate instead prints ~0% by construction and means nothing: pool scope
+    // scores every candidate term, so a query is almost never WHOLLY unattested,
+    // and `unretrievable` — the sole escalating verdict since D-095 — is an
+    // ATTESTATION verdict, not a clarity one. The `−log2(n)` length artifact this
+    // control exists to expose lives entirely in the focused/unfocused cut, so
+    // that is the cut it has to be measured on.
+    const poolUnfocused = counts.get('unfocused') ?? 0;
+    const issuedUnfocused = issuedCounts.get('unfocused') ?? 0;
+
     weightedEscalate += m.share * (escalate / turns.length);
-    weightedPoolEscalate += m.share * (poolEscalate / turns.length);
+    weightedPoolUnfocused += m.share * (poolUnfocused / turns.length);
+    weightedIssuedUnfocused += m.share * (issuedUnfocused / turns.length);
     weightedKeyed += m.share * ((issuedCounts.get('keyed') ?? 0) / turns.length);
     weightShare += m.share;
 
     console.log(
       `| ${m.surface} | ${m.clampChars} | ` +
         VERDICTS.map((v) => pct(issuedCounts.get(v) ?? 0, turns.length)).join(' | ') +
-        ` | **${pct(escalate, turns.length)}** | ${pct(poolEscalate, turns.length)} |`,
+        ` | **${pct(escalate, turns.length)}** | ${pct(poolUnfocused, turns.length)} |`,
     );
   }
 
@@ -245,14 +275,26 @@ async function main(): Promise<void> {
   // share OF MEASURED TRAFFIC rather than a number silently diluted by the tail.
   const norm = weightShare > 0 ? weightShare : 1;
   console.log(`\n## Headline\n`);
+  // The bucket list is DERIVED from the predicate, not typed out beside it, so
+  // the label can never describe a rule the number was not computed with.
+  const escalatingVerdicts = VERDICTS.filter((v) => clarityWarrantsEscalation(v));
   console.log(
     `- **Traffic-weighted escalation rate: ${((weightedEscalate / norm) * 100).toFixed(1)}%** ` +
-      `(unfocused + unretrievable, scored on the ISSUED query), over ${(norm * 100).toFixed(1)}% of recalls.`,
+      `(${escalatingVerdicts.join(' + ')}, scored on the ISSUED query), over ${(norm * 100).toFixed(1)}% of recalls.`,
   );
   console.log(
-    `- Same threshold, POOL-scored (the wrong instrument, kept as a control): ` +
-      `${((weightedPoolEscalate / norm) * 100).toFixed(1)}% — the gap between these two numbers is ` +
-      `entirely an artifact of \`−log2(n)\`, not a fact about the queries.`,
+    `- ⚠ NOT comparable to rates published before D-095 (2026-08-10). Escalation was ` +
+      `re-targeted from \`unfocused\`+\`unretrievable\` to \`unretrievable\` alone, so the ` +
+      `pre-D-095 figures (19.7% on 2026-08-09, 29.4% on 2026-08-12) count a bucket this ` +
+      `number excludes. Compare rules before comparing rates.`,
+  );
+  console.log(
+    `- Clarity-instrument control (the D-095 re-target does not touch this): the SAME queries ` +
+      `are labelled \`unfocused\` ${((weightedIssuedUnfocused / norm) * 100).toFixed(1)}% of the ` +
+      `time issued-scored vs ${((weightedPoolUnfocused / norm) * 100).toFixed(1)}% pool-scored. ` +
+      `That gap is entirely the \`−log2(n)\` length artifact — pool scoring subtracts a bit of ` +
+      `"clarity" per DOUBLING of the candidate count, so it reports envelope length, not query ` +
+      `content. This is why issued is the default (D-088 R2).`,
   );
   console.log(
     `- Keyed (retrievable by construction, never escalate): ${((weightedKeyed / norm) * 100).toFixed(1)}%.`,

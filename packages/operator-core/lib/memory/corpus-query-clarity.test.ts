@@ -6,6 +6,7 @@ import {
   clarityWarrantsEscalation,
   scoreCorpusQueryClarity,
   type QueryClarityOptions,
+  type QueryClarityVerdict,
 } from './corpus-query-clarity';
 
 /** A collection big enough that log2(ndocs/df) lands in a readable range. */
@@ -133,8 +134,52 @@ describe('absence of evidence is not focus', () => {
     expect(clarityWarrantsEscalation('unknown')).toBe(false);
     expect(clarityWarrantsEscalation('keyed')).toBe(false);
     expect(clarityWarrantsEscalation('focused')).toBe(false);
-    expect(clarityWarrantsEscalation('unfocused')).toBe(true);
     expect(clarityWarrantsEscalation('unretrievable')).toBe(true);
+  });
+});
+
+describe('the escalation trigger is the FAILING bucket, not the diffuse-looking one', () => {
+  // D-095 §4, locked here because the reverted premise is the INTUITIVE one and
+  // will be re-proposed by anyone reading only the verdict names. The cascade
+  // was designed on the assumption that a query which "looks like the corpus at
+  // large" retrieves badly. R5 (n≈1,190, two independent seeds, warm embedder
+  // arm) measured the opposite:
+  //
+  //   bucket          traffic   admitted   full 6/6   zero-hit
+  //   unfocused       15.9%     5.82       92.4%      0.0%   <- BEST reach
+  //   unretrievable    4.0%     0.93         —       21.7%   <- actually fails
+  //
+  // So escalating `unfocused` spends the expensive tier where retrieval already
+  // works. These assertions fail if that reversal is ever quietly undone.
+
+  it('does NOT escalate `unfocused` — it had the best reach of any bucket', () => {
+    expect(clarityWarrantsEscalation('unfocused')).toBe(false);
+  });
+
+  it('DOES escalate `unretrievable` — the only bucket that comes back empty', () => {
+    expect(clarityWarrantsEscalation('unretrievable')).toBe(true);
+  });
+
+  it('escalates on EXACTLY one verdict, so a new verdict cannot silently join the expensive path', () => {
+    // Enumerated rather than spot-checked: adding a verdict to the union and
+    // defaulting it into escalation is the shape this guard exists to catch.
+    const all: QueryClarityVerdict[] = ['keyed', 'focused', 'unfocused', 'unretrievable', 'unknown'];
+    expect(all.filter((v) => clarityWarrantsEscalation(v))).toEqual(['unretrievable']);
+  });
+
+  it('the threshold constant cannot move what escalates — it only re-labels focused/unfocused', () => {
+    // The consequence of the re-target, asserted so it is not merely a comment:
+    // CORPUS_CLARITY_FOCUSED_BITS decides focused-vs-unfocused, and NEITHER
+    // escalates. A query on either side of the threshold costs the same. This is
+    // why D-095 §5 leaves the constant uncalibrated rather than guessing a value.
+    const table = { alpha: 900 };
+    const lowCut = scoreCorpusQueryClarity(['alpha'], opts(table, { focusedBits: -100 }));
+    const highCut = scoreCorpusQueryClarity(['alpha'], opts(table, { focusedBits: 100 }));
+
+    expect(lowCut.verdict).toBe('focused');
+    expect(highCut.verdict).toBe('unfocused');
+    expect(clarityWarrantsEscalation(lowCut.verdict)).toBe(false);
+    expect(clarityWarrantsEscalation(highCut.verdict)).toBe(false);
   });
 });
 
