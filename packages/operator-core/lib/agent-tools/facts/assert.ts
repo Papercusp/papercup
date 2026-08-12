@@ -252,7 +252,11 @@ export default defineTool({
       .positive()
       .max(90 * 24 * 3600)
       .optional()
-      .describe('TTL seconds (default 7d for ordinary facts; omitted kind:convention means permanent; max 90d).'),
+      .describe(
+        `TTL seconds (default 7d for ordinary facts; omitted kind:convention means permanent; max 90d). ` +
+          `When subjectVolatile:true, ttlSec must be ≤${FACT_VOLATILE_MAX_TTL_SEC} seconds (15 minutes); ` +
+          `subjectVolatile:true also requires measuredAt.`,
+      ),
     shareable: z.boolean().optional().describe('OPT-IN federation egress (F0-2): true = this fact may leave the pot over the substrate. Default false — facts are pot-private.'),
     acceptTruncation: z
       .boolean()
