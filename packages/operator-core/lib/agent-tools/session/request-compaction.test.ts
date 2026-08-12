@@ -16,15 +16,11 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/session/request-compaction.test.ts
  */
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { truncateHint } from './request-compaction';
 import { __resetRefusalMarkers } from '../../enforcement-gate-io';
 import { __resetRespawnExpectedMarkers, consumeRespawnExpected } from '../../carry-respawn-marker';
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { spawn } from 'node:child_process';
 const flushMarks = vi.hoisted(() => new Map<string, number>());
 vi.mock('../../flush-refusal-marker', () => ({
   REFUSAL_MARKER_TTL_MS: 10 * 60_000,
@@ -188,9 +184,10 @@ const closedSpec = {
 // tagged (origin self-compaction). Isolate the ledger dir so this suite never
 // writes the real ~/.papercusp/turn-provenance, and strip the envelope where an
 // assertion is about the NOTE itself.
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { spawn } from 'node:child_process';
 import { afterEach } from 'vitest';
 let provDir = '';
 const ENVELOPE_LINE = /^⟦turn-origin:self-compaction nonce:[a-f0-9]{16}⟧\n/;
