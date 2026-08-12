@@ -14,11 +14,12 @@
  */
 
 import { shapeFleetAssignments } from '../../fleet/assignments-shape';
+import { capPreservingOperativeDetailed } from '../../../operative-clause';
 
 /** Per-tier caps. `standard` is a looser projection, not a different shape. */
 const CAPS = {
-  trimmed: { claimable: 8, title: 90, inbox: 5, inboxSummary: 140, memory: 3, memoryText: 220, events: 5, eventText: 220, catchUp: 5, meChars: 2_400, facts: 8, factsBody: 200, paneContext: 2_400, briefMembers: 6, briefLists: 5, briefReason: 240 },
-  standard: { claimable: 15, title: 140, inbox: 8, inboxSummary: 240, memory: 5, memoryText: 400, events: 8, eventText: 500, catchUp: 8, meChars: 6_000, facts: 14, factsBody: 400, paneContext: 6_000, briefMembers: 12, briefLists: 10, briefReason: 500 },
+  trimmed: { claimable: 8, title: 90, inbox: 5, inboxSummary: 140, memory: 3, memoryText: 220, events: 5, eventText: 220, catchUp: 5, meChars: 2_400, facts: 8, factsBody: 200, paneContext: 2_400, briefMembers: 6, briefLists: 5, briefReason: 240, recoveryItems: 6, recoveryCheckpoint: 1_200, recoveryBody: 600 },
+  standard: { claimable: 15, title: 140, inbox: 8, inboxSummary: 240, memory: 5, memoryText: 400, events: 8, eventText: 500, catchUp: 8, meChars: 6_000, facts: 14, factsBody: 400, paneContext: 6_000, briefMembers: 12, briefLists: 10, briefReason: 500, recoveryItems: 8, recoveryCheckpoint: 1_200, recoveryBody: 600 },
 } as const;
 
 type TierName = keyof typeof CAPS;
@@ -351,6 +352,12 @@ const FLOOR_CAPS: Caps = {
   claimable: 4, title: 60, inbox: 3, inboxSummary: 100, memory: 1, memoryText: 120,
   events: 2, eventText: 120, catchUp: 2, meChars: 1_200, facts: 4, factsBody: 100,
   paneContext: 800, briefMembers: 4, briefLists: 3, briefReason: 120,
+  // EI: `recovery` used to be an UNCAPPED passthrough, which made the ladder
+  // mathematically unable to reach budget on the ONE path where `recovery` exists
+  // and is the LARGEST field. Measured on a real post-compaction payload: floor
+  // came out at 23,786 chars vs a 17,000 budget, with recovery 7,320 of it (30.8%)
+  // — larger than the whole 6,786-char overflow. See projectRecovery below.
+  recoveryItems: 2, recoveryCheckpoint: 400, recoveryBody: 200,
 };
 
 /** Scale every cap toward FLOOR_CAPS, clamped so no leg drops below the floor. */
@@ -372,16 +379,108 @@ const jsonLen = (v: unknown): number => {
   }
 };
 
+/** Re-cap an ALREADY-disclosed excerpt WITHOUT lying about how much is missing.
+ *
+ *  The upstream recovery fold (compaction-recovery.ts) caps each held item's
+ *  checkpoint/body at a FIXED size and attaches a `{ keptChars, totalChars,
+ *  withheldChars, more }` disclosure. When a tighter rung re-caps that excerpt, a
+ *  naive re-run would recompute `totalChars` from the EXCERPT — reporting "300 of
+ *  1,200 withheld" for a checkpoint whose real body is 20,000 chars. That
+ *  under-reports the gap, which is a silent-loss regression in the very code that
+ *  exists to prevent one. Compose instead: keep the ORIGINAL total and recompute
+ *  what is missing against it. */
+function recapDisclosed(
+  text: unknown,
+  prior: unknown,
+  max: number,
+  more: string | undefined,
+): { text: string; truncation?: Record<string, unknown> } | null {
+  if (typeof text !== 'string') return null;
+  const p = (prior && typeof prior === 'object' ? (prior as Record<string, unknown>) : null);
+  const originalTotal = typeof p?.totalChars === 'number' ? p.totalChars : text.length;
+  const r = capPreservingOperativeDetailed(text, max, more ? { more } : undefined);
+  // Nothing was cut here and nothing had been cut upstream ⇒ nothing to disclose.
+  if (!r.truncation && !p) return { text: r.text };
+  const kept = r.text.length;
+  return {
+    text: r.text,
+    truncation: {
+      ...p,
+      ...(r.truncation as Record<string, unknown> | undefined),
+      keptChars: kept,
+      totalChars: originalTotal,
+      withheldChars: Math.max(0, originalTotal - kept),
+      ...(more ? { more } : {}),
+    },
+  };
+}
+
+/** Bring `recovery` under the ladder.
+ *
+ *  Why this exists: `recovery` used to be an UNCAPPED passthrough. The passthrough
+ *  guarantee (see projectOrient below) is good reasoning — "a tighter rung can only
+ *  SHRINK the capped lists, never drop a whole field" — but it made the ladder
+ *  MATHEMATICALLY unable to reach budget on the afterCompaction path, the one path
+ *  where `recovery` exists and is the largest field. The ladder floored every other
+ *  leg and still overflowed, then fell through to the generic bounded projector,
+ *  which drops WHOLE FIELDS — destroying the very guarantee the passthrough was
+ *  protecting. Exempting `recovery` from the ladder is what got `recovery` dropped.
+ *
+ *  So: shrink it here instead, keeping the field PRESENT, the operative clause
+ *  intact, and every omission disclosed with a fetch pointer (D-004). */
+function projectRecovery(rec: unknown, c: Caps): unknown {
+  if (!rec || typeof rec !== 'object') return rec;
+  const r = rec as Record<string, unknown>;
+  if (!Array.isArray(r.checkpoints)) return rec;
+  const all = r.checkpoints;
+  const kept = all.slice(0, c.recoveryItems);
+  const out: Record<string, unknown> = { ...r };
+  out.checkpoints = kept.map((e) => {
+    if (!e || typeof e !== 'object') return e;
+    const h = e as Record<string, unknown>;
+    const more = typeof h.id === 'string' ? `work_items:get { id: '${h.id}' }` : undefined;
+    const ckpt = recapDisclosed(h.checkpoint, h.checkpointTruncated, c.recoveryCheckpoint, more);
+    const body = recapDisclosed(h.body, h.bodyTruncated, c.recoveryBody, more);
+    const o: Record<string, unknown> = { ...h };
+    if (ckpt) {
+      o.checkpoint = ckpt.text;
+      if (ckpt.truncation) o.checkpointTruncated = ckpt.truncation;
+    }
+    if (body) {
+      o.body = body.text;
+      if (body.truncation) o.bodyTruncated = body.truncation;
+    }
+    return o;
+  });
+  if (all.length > kept.length) {
+    out.checkpointsTruncated = {
+      total: all.length,
+      shown: kept.length,
+      more: 'work_items:list { mine: true }',
+    };
+  }
+  return out;
+}
+
 /** Project an OrientResult at EXACTLY the given caps. Unknown fields pass through
  *  untouched — that passthrough is what makes the ladder safe: a tighter rung can only
- *  SHRINK the capped lists, never drop a whole field. So `recovery`, `control`, `self`
- *  and any future top-level key survive every rung, which is precisely the guarantee the
- *  generic projector could not make. */
+ *  SHRINK the capped lists, never drop a whole field. So `control`, `self` and any future
+ *  top-level key survive every rung, which is precisely the guarantee the generic
+ *  projector could not make.
+ *
+ *  `recovery` is the one field that had to move from "passthrough" to "capped". It is
+ *  still never DROPPED — that guarantee is unchanged — but it is now SHRUNK per rung,
+ *  because leaving the afterCompaction path's largest field outside the ladder made the
+ *  budget unreachable and handed the payload to the generic projector, which drops whole
+ *  fields. See projectRecovery. */
 function projectOrient(d: Record<string, unknown>, c: Caps, tier: TierName): Record<string, unknown> {
   const out: Record<string, unknown> = { ...d };
   out.payloadTier = tier;
 
   out.me = projectMe(d.me, tier, c.meChars);
+
+  // The one former passthrough that had to come under the ladder — see projectRecovery.
+  if (d.recovery != null) out.recovery = projectRecovery(d.recovery, c);
 
   if (Array.isArray(d.claimable)) {
     const delivered = d.claimable.length;
