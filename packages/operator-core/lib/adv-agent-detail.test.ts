@@ -1,4 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 import type {
   ActiveLockRow,
   WaiterRow,
@@ -94,6 +96,7 @@ const {
 // rather than against literal prose is the point: a gloss re-typed in the test
 // would pass while the shipped text drifted from the write path's meaning.
 const { ADMISSION_STAGE_SHORT_WHY } = await import('./memory/recall-stats');
+const advAgentDetailSource = readFileSync(join(__dirname, 'adv-agent-detail.ts'), 'utf8');
 type PushedContextRow = import('./adv-agent-detail').PushedContextRow;
 type PushedContextRefDetailRow = import('./adv-agent-detail').PushedContextRefDetailRow;
 type PushedContextRef = import('./adv-agent-detail').PushedContextRef;
@@ -111,6 +114,13 @@ const date = (ms: number): Date => new Date(ms);
  *  serves from. Every live lock row was recorded under the former. */
 const DOMAIN_RELEASE = '/ws/papercup-release';
 const DOMAIN_STAGING = '/ws/papercusp';
+
+describe('adv-agent-detail import boundary', () => {
+  it('reads Codex diagnostics without linking the role spawn/TOML builder', () => {
+    expect(advAgentDetailSource).toContain("from './codex-home-diagnostics'");
+    expect(advAgentDetailSource).not.toContain("from './role-codex-home'");
+  });
+});
 
 function lock(overrides: Partial<ActiveLockRow> = {}): ActiveLockRow {
   return {
