@@ -60,7 +60,7 @@ export function reconcileFleetStatusLiveness(
 export default defineTool({
   name: 'fleet:status',
   description:
-    'Show one fleet\'s identity (title, description, current leader) plus its live roster — who is in the fleet and what each member is doing right now — with the roster split as `memberCount` VISIBLE desktop su members / `beeCount` background autonomous-loop bees (WI-1764). Also reports `runningBees`: background bees running in the whole workspace — a fleet with 0 members while runningBees>0 means cup:spawn (bees) was used where fleet:launch-on-plan (desktop members) was meant. Optionally include harness-scoped completion integrity stats so progress reads can separate genuine completions from dedup churn. Under host load, a slow sub-read (presence/assignments/completion-stats/bee-counts) degrades to a fallback instead of hanging the whole call — a degraded response still returns promptly, with `degraded:true` + `degradedLegs` naming exactly which reads timed out/failed (WI-3818). The per-fleet analog of coord:presence.',
+    'Show one fleet\'s identity (title, description, current leader plus its liveness/vacancy signal) plus its live roster — who is in the fleet and what each member is doing right now — with the roster split as `memberCount` VISIBLE desktop su members / `beeCount` background autonomous-loop bees (WI-1764). Also reports `runningBees`: background bees running in the whole workspace — a fleet with 0 members while runningBees>0 means cup:spawn (bees) was used where fleet:launch-on-plan (desktop members) was meant. Optionally include harness-scoped completion integrity stats so progress reads can separate genuine completions from dedup churn. Under host load, a slow sub-read (presence/assignments/completion-stats/bee-counts) degrades to a fallback instead of hanging the whole call — a degraded response still returns promptly, with `degraded:true` + `degradedLegs` naming exactly which reads timed out/failed (WI-3818). The per-fleet analog of coord:presence.',
   guidance: {
     when: 'Inspecting a specific fleet — its leader and live members — before joining it or handing it a plan.',
     notWhen: 'For the catalog of ALL fleets with availability, use fleet:list.',
@@ -175,6 +175,18 @@ export default defineTool({
     const liveRoster = roster.filter((m) => !['ended', 'suspect', 'draining'].includes(m.sessionState ?? ''));
     const { members: memberCount } = splitFleetRosterCounts(liveRoster);
 
+    // The registry's leader is durable, while its liveness belongs to the roster.
+    // Keep the authoritative `leader` id unchanged, but surface the joined state so
+    // a dead leader cannot look like an active authority to members. A missing roster
+    // row is UNKNOWN (not vacancy); only an explicit ended/recorded verdict is positive
+    // evidence that the slot is gone. A null registry leader is an explicit vacancy.
+    const leaderMember = fleet.leaderOwnerId
+      ? roster.find((member) => member.agentId === fleet.leaderOwnerId)
+      : undefined;
+    const leaderSessionState = leaderMember?.sessionState ?? null;
+    const leaderVacant =
+      fleet.leaderOwnerId == null || ['ended', 'recorded'].includes(leaderSessionState ?? '');
+
     // agent-launch-resume-primitives P-006 / D-006: there is deliberately NO
     // "resume the fleet" verb — any single verb has to GUESS which dead members to
     // revive (all of them? only the ones that died this hour? not the one killed two
@@ -213,6 +225,8 @@ export default defineTool({
       title: fleet.title,
       description: fleet.description,
       leader: fleet.leaderOwnerId,
+      leaderSessionState,
+      leaderVacant,
       // P-009 (H4): the typed control state — 'winding-down' means members must
       // checkpoint + release and pull no new work until fleet:resume.
       controlState: fleet.controlState,

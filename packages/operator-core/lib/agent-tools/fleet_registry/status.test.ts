@@ -99,6 +99,34 @@ describe('fleet:status', () => {
     expect(h.getCompletionIntegrityStats).not.toHaveBeenCalled();
   });
 
+  it('joins the durable leader id with roster liveness and marks an ended leader slot vacant', async () => {
+    h.listFleetRosterDiagnosed.mockResolvedValueOnce({
+      entries: [
+        {
+          agentId: 'su-leader',
+          agentRole: 'su',
+          fleetRole: 'leader',
+          alive: false,
+          sessionState: 'ended',
+        },
+        {
+          agentId: 'su-member',
+          agentRole: 'su',
+          fleetRole: 'member',
+          alive: true,
+          sessionState: 'live',
+        },
+      ],
+      degradedLegs: [],
+    });
+
+    const out = parse(await invoke({ fleet: 'rocket' }));
+
+    expect(out.leader).toBe('su-leader');
+    expect(out.leaderSessionState).toBe('ended');
+    expect(out.leaderVacant).toBe(true);
+  });
+
   it('reports memberCount from the roster (presence) and beeCount from the nursery, plus workspace runningBees (WI-1764 #4 / WI-1813)', async () => {
     h.listFleetRosterDiagnosed.mockResolvedValueOnce({
       entries: [
