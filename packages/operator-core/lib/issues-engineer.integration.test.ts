@@ -140,6 +140,11 @@ beforeAll(async () => {
   process.env.PAPERCUSP_WORKSPACE_ID = PINNED_WS; // see PINNED_WS note above
   db = await createFreshPgDb('engineer-issues');
   await db.sql.unsafe(HARNESS_FEATURES_CONSOLIDATED_DDL);
+  // Exercise the parked companion migration against the hand-rolled fixture. This keeps the
+  // integration surface honest about the error that a release still using the compatibility
+  // view receives, while the production setIssueState path below proves the base-table writer
+  // bypasses that guard.
+  await db.sql.unsafe(readMigration('798-repair-engineer-issues-terminal-error.sql.PENDING-CODE-DEPLOY'));
   // WI-5267: mirrorWorkItemBlockingEdge (dbos/work-item-deps-store.ts) writes to
   // harness_shared.work_item_deps on any blocking-edge test path — this file never
   // applied the DDL for it (unlike the sibling work-items-claim-issue-scope-reread
@@ -297,6 +302,18 @@ describe('engineer issues surface (real PG)', () => {
     expect(stillOpen?.state).toBe('open');
     expect(stillOpen?.assignee).toBe('agB');
     expect(stillOpen?.assignedAt).toBeTruthy();
+  });
+
+  it('EI-20202629116790410: stale compatibility-view terminal writes are actionable, while the base writer closes', async () => {
+    const { id } = await issues.createIssue({ title: 'stale writer diagnostic', createdBy: 'agA' });
+
+    await expect(
+      db.sql`UPDATE harness_shared.engineer_issues SET state = 'resolved' WHERE issue_id = ${id}`,
+    ).rejects.toThrow(/this release still uses the compatibility-view writer/);
+    expect((await issues.getIssue(id))?.state).toBe('open');
+
+    const resolved = await issues.setIssueState(id, 'resolved', 'agA', 'integration-test completion');
+    expect(resolved?.state).toBe('resolved');
   });
 
   it('close→resolved reaches a mention-mode subscriber (Lifecycle + D-006)', async () => {
