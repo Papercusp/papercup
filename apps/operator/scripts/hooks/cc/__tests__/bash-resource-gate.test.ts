@@ -18,7 +18,16 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 // The audited pairs, so the pre-filter guard reads each pair's VERDICT rather
 // than inferring enforceability from a fixture filename.
-import { ALL_PAIRS } from '@papercusp/operator-core/lib/bash-substitution/pairs/index';
+//
+// BASH_GATE_PAIRS, not ALL_PAIRS: this file tests the SHELL gate, whose
+// pre-filter only ever sees shell atoms. ALL_PAIRS also carries the SQL corpus
+// (pairs/sql-reads.ts), whose atoms are raw SELECTs that reach a different
+// surface entirely — feeding them to the shell pre-filter asserts a routing
+// this gate is not responsible for and cannot perform. The SQL corpus has its
+// own guard in bash-substitution/sql-corpus.test.ts, so narrowing here loses no
+// coverage. Widening this back to ALL_PAIRS reds the gate the moment any
+// non-bash corpus gains an enforceable pair.
+import { BASH_GATE_PAIRS } from '@papercusp/operator-core/lib/bash-substitution/pairs/index';
 
 const SCRIPT = resolve(dirname(fileURLToPath(import.meta.url)), '..', 'pretooluse-bash-resource-gate.sh');
 
@@ -3946,7 +3955,7 @@ describe('substitution pre-filter', () => {
   // without making it a load canary.
   it('every atom behind an ENFORCEABLE verdict passes the pre-filter', { timeout: 300_000 }, async () => {
     const enforceable = new Set(
-      ALL_PAIRS.filter((p) => p.expectedVerdict !== 'not-a-substitute').map(
+      BASH_GATE_PAIRS.filter((p) => p.expectedVerdict !== 'not-a-substitute').map(
         (p) => `${p.id}.sample.json`,
       ),
     );
