@@ -134,11 +134,11 @@ export function makeSetResolver(kind: string, load: () => Promise<string[]>): En
 /**
  * THE UNIT-TIER RAIL — why a database reach is refused here rather than merely timed out.
  *
- * `registerPapercuspEntityResolvers()` runs at MODULE SCOPE (bottom of this file), so
- * merely IMPORTING this module arms the real, DB-backed loaders process-wide. Nothing
- * calls that function explicitly — production depends entirely on the import side effect.
- * The consequence is that the live loader is the default a unit test silently INHERITS:
- * it never opts in, so it never thinks to opt out.
+ * `registerPapercuspEntityResolvers()` still runs at MODULE SCOPE (bottom of this file),
+ * so merely IMPORTING this module arms a registration process-wide. Its default is now
+ * environment-aware: production gets the real DB-backed loaders, while the unit tier gets
+ * hermetic empty enum loaders. A test or integration harness that genuinely needs the live
+ * registry must opt in with `{ mode: 'live' }` (or the documented env escape hatch).
  *
  * Measured 2026-08-12 (EI-20248980966812937): `entity-resolvers-papercusp.test.ts` →
  * "does not publish a pot enum" called `applyEntityRefEnums('pot')`, whose registered
@@ -174,13 +174,13 @@ export function makeSetResolver(kind: string, load: () => Promise<string[]>): En
  * that made the original red so expensive to triage.
  */
 function assertNotUnitTier(): void {
-  if (!process.env.VITEST || process.env.PAPERCUSP_ALLOW_DB_IN_TESTS) return;
+  if (!process.env.VITEST || process.env.PAPERCUSP_ALLOW_DB_IN_TESTS === '1') return;
   // Survives applyEntityRefEnums' deliberate fail-open catch. Keep the marker string
   // stable — the recurrence guard asserts on it.
   console.error(
     '[entity-resolvers-papercusp] UNIT-TIER DB REACH REFUSED — a unit test reached the ' +
       'live org database through an entity loader. See the thrown error below for the fix ' +
-      '(bind a stub loader). This warning exists because the enum overlay fails open and ' +
+      '(bind a stub loader or opt into live mode explicitly). This warning exists because the enum overlay fails open and ' +
       'would otherwise swallow that error, letting the test pass silently.',
   );
   throw new Error(

@@ -197,12 +197,12 @@ describe('registration mode', () => {
 /**
  * THE RECURRENCE GUARD for EI-20248980966812937.
  *
- * The one-file fix above (binding a stub in the test that happened to fail) does not
- * protect the CLASS: `registerPapercuspEntityResolvers()` runs at module scope, so the
- * real DB-backed loaders are what a unit test silently INHERITS. The next test to touch
- * `pot`/`harness` without stubbing would re-arm a gate leg that fails on database load
- * rather than on code — a false red, not reproducible from the diff, that pins `main`
- * for the whole fleet.
+ * The one-file fix above (binding a stub in the test that happened to fail) did not
+ * protect the CLASS: before the unit-aware registration seam, the module-scope call
+ * silently armed real DB-backed loaders for every unit test. The default is now safe,
+ * and this guard explicitly re-arms live wiring to keep the dangerous path falsifiable.
+ * A future test that opts into `live` without the integration tier's DB allowance must
+ * fail deterministically rather than hang on a database load and pin `main`.
  *
  * What this asserts is the RAIL, not the symptom: reaching the live DB from the unit tier
  * is refused deterministically and instantly, and says so on a channel that survives the
@@ -210,15 +210,15 @@ describe('registration mode', () => {
  */
 describe('unit-tier DB rail (EI-20248980966812937)', () => {
   /**
-   * Re-arm PRODUCTION wiring before each case. This is load-bearing, and the reason is
-   * itself an instance of the bug class: `setEntityEnum` mutates a MODULE-SCOPED registry,
-   * so the stub bound by "does not publish a pot enum" above outlives that test.
+   * Re-arm LIVE wiring before each case. This is load-bearing, and the reason is itself
+   * an instance of the bug class: `setEntityEnum` mutates a MODULE-SCOPED registry, so
+   * the stub bound by "does not publish a pot enum" above outlives that test.
    * `invalidateEntityCache()` clears the cached VALUES, not the REGISTRATION — so without
    * this, these cases silently inherit the stub, never reach the DB, and pass while
    * asserting nothing. (Observed exactly that on the first run: 36ms, zero output.)
    *
    * A guard that passes because the dangerous path was never taken is worse than no guard,
-   * so re-registering the real loaders is what makes these assertions falsifiable.
+   * so explicit live registration is what makes these assertions falsifiable.
    */
   beforeEach(() => {
     // Live DB-backed registration is explicit: production gets it from the
