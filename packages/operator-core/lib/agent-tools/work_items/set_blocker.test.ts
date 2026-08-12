@@ -37,6 +37,10 @@ beforeEach(() => {
 });
 
 describe('work_items:set_blocker', () => {
+  it('opts out of the ambient workspace transaction', () => {
+    expect((tool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+
   it('persists an event blocker, parks the item, and returns the push-based await key', async () => {
     const item = {
       id: 'WI-1',

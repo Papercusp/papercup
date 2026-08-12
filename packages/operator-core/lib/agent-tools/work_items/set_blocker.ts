@@ -57,6 +57,11 @@ export default defineTool({
   },
   capability: 'work_items:write',
   requirePrincipal: false,
+  // This handler only performs independent work-item/mode operations and never
+  // reads ctx.tx. Do not hold an ambient workspace transaction while those
+  // operations wait on the database; tools:invoke callers otherwise consume a
+  // pool slot for the whole handler lifetime.
+  skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES],
   args: z
     .object({
