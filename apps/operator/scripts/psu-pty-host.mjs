@@ -2198,10 +2198,6 @@ function codexTurnResubmitCrDelay(env = process.env) {
 export function controlWritesForAgent(decoded, agent, env = process.env) {
   if (decoded.mode === 'raw' || decoded.mode === 'osc') return controlWrites(decoded);
   if (decoded.mode === 'reset') return resetWritesForAgent(decoded, agent, env);
-  const normalized = String(agent || '').trim().toLowerCase();
-  if (normalized !== 'codex') {
-    return controlWrites(decoded, turnSubmitCrDelayForAgent(agent, env));
-  }
   return [
     { data: decoded.data, delayMs: 0 },
     { data: '\r', delayMs: turnSubmitCrDelayForAgent(agent, env) },
