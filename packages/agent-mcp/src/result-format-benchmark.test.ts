@@ -176,8 +176,6 @@ describe('Tier-3 token benchmark — read (headerless CSV) + write (positional r
     // What the model EMITS as tool args, keyed vs positional. Output tokens are
     // the expensive side, so trimming the emitted args is the higher-value win.
     const cases: Array<{ label: string; keyed: Record<string, unknown>; row: string }> = [
-      { label: 'work_items:set_state', keyed: { id: 'WI-42', state: 'passed', harness: 'papercup' }, row: 'WI-42,passed,papercup' },
-      { label: 'work_items:set_state (no harness)', keyed: { id: 'WI-42', state: 'passed' }, row: 'WI-42,passed' },
       { label: 'work_items:claim', keyed: { id: 'WI-128', assignee: 'su-ab533', harness: 'papercup' }, row: 'WI-128,su-ab533,papercup' },
     ];
     let totKeyed = 0;

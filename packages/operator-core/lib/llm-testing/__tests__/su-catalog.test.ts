@@ -89,10 +89,14 @@ describe('SU_CATALOG load-bearing invariants (what the scenarios assert)', () =>
     }
   });
 
-  it('work_items:set_state is advertised positionally (single `row` arg)', () => {
+  it('work_items:set_state is advertised with keyed lifecycle args', () => {
     const e = SU_CATALOG.find((e) => e.name === 'work_items:set_state')!;
     const props = (e.input as { properties?: Record<string, unknown> }).properties ?? {};
-    expect(Object.keys(props)).toEqual(['row']);
+    expect(props).toHaveProperty('id');
+    expect(props).toHaveProperty('state');
+    expect(props).toHaveProperty('completionRef');
+    expect(props).toHaveProperty('assumptions');
+    expect(props).not.toHaveProperty('row');
   });
 
   it('audit:list documents its self-describing TOON read contract (EI-136)', () => {

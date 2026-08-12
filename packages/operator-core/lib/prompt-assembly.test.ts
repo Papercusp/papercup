@@ -292,11 +292,11 @@ describe('renderWireSchemasSection — the "## Wire schemas" legend (P-003)', ()
       properties: { id: { type: 'string' }, state: { enum: ['todo', 'done'] } },
     },
   };
-  const setStateArgs = {
+  const claimArgs = {
     type: 'object',
     additionalProperties: false,
-    required: ['id', 'state'],
-    properties: { id: { type: 'string' }, state: { type: 'string' }, harness: { type: 'string' } },
+    required: ['id'],
+    properties: { id: { type: 'string' }, assignee: { type: 'string' }, harness: { type: 'string' } },
   };
 
   it('renders read + write column lines for the configured registry tools', async () => {
@@ -308,22 +308,22 @@ describe('renderWireSchemasSection — the "## Wire schemas" legend (P-003)', ()
       outputJsonSchema: flatArrayOut,
     });
     mockTools.push({
-      expose: { mcp: { name: 'work_items:set_state' } },
-      description: 'set state',
+      expose: { mcp: { name: 'work_items:claim' } },
+      description: 'claim',
       capabilities: [],
-      inputSchema: setStateArgs,
+      inputSchema: claimArgs,
     });
     configurePrePromptRegistry([
       { name: 'audit:list', read: 'csv' },
-      { name: 'work_items:set_state', write: 'positional' },
+      { name: 'work_items:claim', write: 'positional' },
     ]);
     const { renderWireSchemasSection } = await import('./prompt-assembly');
     const out = renderWireSchemasSection();
     expect(out).toContain('## Wire schemas');
     expect(out).toContain('`audit:list`');
     expect(out).toContain('read → id:id, state:todo|done');
-    expect(out).toContain('`work_items:set_state`');
-    expect(out).toContain('write ← id:id, state:str, harness:str?');
+    expect(out).toContain('`work_items:claim`');
+    expect(out).toContain('write ← id:id, assignee:str?, harness:str?');
     clearPrePromptRegistry();
   });
 

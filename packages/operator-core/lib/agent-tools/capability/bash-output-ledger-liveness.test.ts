@@ -17,7 +17,7 @@
  * TaskRow + an injected probe function, no PG, no subprocess.
  */
 import { describe, it, expect } from 'vitest';
-import { diagnoseFromLedger } from './bash_output';
+import { diagnoseFromLedger, terminalStatusFromLedger } from './bash_output';
 import type { TaskRow } from '../../task-manager/types';
 
 function fakeRow(overrides: Partial<TaskRow> = {}): TaskRow {
@@ -119,5 +119,29 @@ describe('diagnoseFromLedger (EI-18759519171684432)', () => {
       return 'linux:boot-abc:1';
     });
     expect(called).toBe(false);
+  });
+});
+
+describe('terminalStatusFromLedger (EI-20232536598731015)', () => {
+  it('preserves a durable clean exit as normal completed BashOutput status', () => {
+    expect(terminalStatusFromLedger(fakeRow({ state: 'exited', exitCode: 0 }))).toEqual({
+      status: 'completed',
+      exitCode: 0,
+    });
+  });
+
+  it('does not turn a non-zero or unobserved terminal row into success', () => {
+    expect(terminalStatusFromLedger(fakeRow({ state: 'exited', exitCode: 1 }))).toEqual({
+      status: 'failed',
+      exitCode: 1,
+    });
+    expect(terminalStatusFromLedger(fakeRow({ state: 'ended_unobserved', exitCode: null }))).toEqual({
+      status: 'failed',
+      exitCode: null,
+    });
+  });
+
+  it('returns null while the durable row is still live', () => {
+    expect(terminalStatusFromLedger(fakeRow({ state: 'running' }))).toBeNull();
   });
 });

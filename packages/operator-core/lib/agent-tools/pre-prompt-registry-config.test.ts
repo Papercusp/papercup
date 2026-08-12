@@ -1,13 +1,10 @@
 /**
  * pre-prompt-registry-config.test.ts — the host config of which tools get Tier-3
  * prompt-declared column schemas. Two load-bearing invariants: (1) entry names are
- * UNIQUE (the registry is keyed by name; a dup makes lookup ambiguous), and (2) the
- * work_items:* write defaults are `write:'positional'` — LIVE since 2026-07-06,
- * when the P-013 emit-correctness gate passed (su-S07 verdict=pass with a distinct
- * judge, positional assert 6/6; su-S08 3/3 — see
- * definetool-token-reduction-uncovered-surfaces-2026-07-06 P-001/P-002). This test
- * now pins the flipped default so a silent regression back to 'off' (losing the
- * ~4-5× output-token write win) fails loudly.
+ * UNIQUE (the registry is keyed by name; a dup makes lookup ambiguous), and (2)
+ * only fixed-shape writes opt into `write:'positional'`. `work_items:set_state`
+ * stays keyed because its terminal branch requires completion evidence and
+ * assumptions that do not fit a single CSV row.
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/pre-prompt-registry-config.test.ts
  */
@@ -25,16 +22,11 @@ describe('PRE_PROMPT_REGISTRY', () => {
     expect(new Set(names).size).toBe(names.length); // no duplicates
   });
 
-  it('keeps the work_items:* write defaults POSITIONAL (P-013 gate passed 2026-07-06)', () => {
-    for (const name of ['work_items:set_state', 'work_items:claim']) {
-      const e = PRE_PROMPT_REGISTRY.find((x) => x.name === name);
-      expect(e, name).toBeDefined();
-      // The gate passed (su-S07 pass w/ distinct judge; positional assert 6/6;
-      // su-S08 3/3) — positional write is the live default. A silent regression
-      // back to 'off' loses the ~4-5× output-token write win; an intentional
-      // rollback must update this pin with its reason.
-      expect(e?.write).toBe('positional');
-    }
+  it('keeps claim positional but leaves set_state keyed-only for terminal evidence', () => {
+    const setState = PRE_PROMPT_REGISTRY.find((x) => x.name === 'work_items:set_state');
+    expect(setState, 'set_state must not advertise a row that cannot carry terminal evidence').toBeUndefined();
+    const claim = PRE_PROMPT_REGISTRY.find((x) => x.name === 'work_items:claim');
+    expect(claim?.write).toBe('positional');
   });
 
   it('serves the audit:list read as self-describing TOON, never a headerless positional body (EI-136)', () => {
@@ -53,37 +45,27 @@ describe('PRE_PROMPT_REGISTRY', () => {
     ).toBe(false);
   });
 
-  it('hardens the work_items:* misalignment guard with columnOverrides (D-007 residual, EI-7927)', () => {
-    const setState = PRE_PROMPT_REGISTRY.find((e) => e.name === 'work_items:set_state');
-    expect(setState?.columnOverrides?.id?.pattern).toBe('^(WI|F|EI)-\\d+$');
-    // The state vocabulary must be non-trivial (covers both families' native
-    // states + every cross-dialect alias) and include a representative token
-    // from each source it's unioned from, so a future alias added upstream is
-    // still covered without anyone having to remember to touch this file.
-    const stateVocab = setState?.columnOverrides?.state?.enumValues ?? [];
-    for (const token of ['open', 'resolved', 'closed', 'todo', 'passed', 'deprecated', 'done', 'wip', 'needs-human']) {
-      expect(stateVocab, `expected "${token}" in the derived state vocabulary`).toContain(token);
-    }
-
+  it('hardens the positional work-item claim id with columnOverrides (D-007 residual, EI-7927)', () => {
     const claim = PRE_PROMPT_REGISTRY.find((e) => e.name === 'work_items:claim');
     expect(claim?.columnOverrides?.id?.pattern).toBe('^(WI|F|EI)-\\d+$');
   });
 
-  it('advertises real work_items bulk schemas as row+keyed oneOf, not inert keyed-only fallback (WI-3260)', () => {
-    for (const [name, expectedOrder] of [
-      ['work_items:set_state', 'id, state, harness?'],
-      ['work_items:claim', 'id, assignee?, harness?'],
-    ] as const) {
-      const projected = lookupByMcpName(name);
-      expect(projected, name).toBeDefined();
-      const advertised = advertisedArgsSchema(name, projected!.inputSchema as Record<string, unknown>);
-      const oneOf = (advertised as { oneOf?: unknown[] }).oneOf;
-      expect(oneOf, name).toHaveLength(2);
-      const row = oneOf![0] as { properties?: Record<string, { description?: string }> };
-      expect(row.properties?.row?.description).toContain(expectedOrder);
-      const keyed = oneOf![1] as { properties?: Record<string, unknown> };
-      expect(keyed.properties).toHaveProperty('ids');
-      expect(keyed.properties).toHaveProperty('items');
-    }
+  it('advertises claim as row+keyed while set_state stays on its full keyed schema (WI-3260)', () => {
+    const claim = lookupByMcpName('work_items:claim');
+    expect(claim).toBeDefined();
+    const claimAdvertised = advertisedArgsSchema('work_items:claim', claim!.inputSchema as Record<string, unknown>);
+    const claimOneOf = (claimAdvertised as { oneOf?: unknown[] }).oneOf;
+    expect(claimOneOf).toHaveLength(2);
+    const row = claimOneOf![0] as { properties?: Record<string, { description?: string }> };
+    expect(row.properties?.row?.description).toContain('id, assignee?, harness?');
+
+    const setState = lookupByMcpName('work_items:set_state');
+    expect(setState).toBeDefined();
+    const setStateAdvertised = advertisedArgsSchema('work_items:set_state', setState!.inputSchema as Record<string, unknown>);
+    const setStateProperties = (setStateAdvertised as { properties?: Record<string, unknown> }).properties;
+    expect(setStateProperties).not.toHaveProperty('row');
+    expect(JSON.stringify(setStateAdvertised)).not.toContain('positional');
+    expect(setStateProperties).toHaveProperty('completionRef');
+    expect(setStateProperties).toHaveProperty('assumptions');
   });
 });

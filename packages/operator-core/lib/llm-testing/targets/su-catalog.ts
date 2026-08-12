@@ -157,20 +157,20 @@ export const SU_CATALOG: ReadonlyArray<SuCatalogEntry> = [
     input: obj({ id: { type: 'string' }, summary: { type: 'string' } }, ['id']),
   },
   {
-    // POSITIONAL write tool (token-efficient-agent-io P-008): advertised as a
-    // single `row` string, exactly as the real `advertisedArgsSchema` produces.
-    // The column order lives in the `row` description (the prompt-declared
-    // schema) — the P-013 gate measures whether the model emits a correct row.
+    // KEYED lifecycle write: the real schema has conditional terminal evidence
+    // (`completionRef` + `assumptions`) that cannot fit a positional row.
     name: 'work_items:set_state',
-    description: 'Set a work-item state. POSITIONAL: call with a single `row` arg = comma-separated VALUES in column order id,state,harness? (e.g. "WI-42,passed").',
+    description:
+      'Set a work-item state with keyed args { id, state, harness? }. Terminal states require completionRef and assumptions; prefer work_items:complete for terminal evidence.',
     input: obj(
       {
-        row: {
-          type: 'string',
-          description: 'Comma-separated VALUES in column order: id, state, harness?. Omit trailing optional columns.',
-        },
+        id: { type: 'string' },
+        state: { type: 'string' },
+        harness: { type: 'string' },
+        completionRef: { type: 'string' },
+        assumptions: { oneOf: [{ type: 'array', items: { type: 'string' } }, { const: 'none' }] },
       },
-      ['row'],
+      ['id', 'state'],
     ),
   },
   // --- harness / status ---

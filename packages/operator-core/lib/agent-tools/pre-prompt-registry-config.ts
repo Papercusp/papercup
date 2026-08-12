@@ -43,31 +43,20 @@
  */
 
 import { configurePrePromptRegistry, type ColumnOverride, type PrePromptEntry } from '@papercusp/result-encoding';
-import { ISSUE_FAMILY_STATES, ISSUE_STATE_ALIASES, WORK_ITEM_ID_PATTERN } from '../work-items';
-import { FEATURE_FAMILY_STATES, FEATURE_STATE_ALIASES } from '../work-item-dispatch-states';
+import { WORK_ITEM_ID_PATTERN } from '../work-items';
 
 /**
  * EI-7927 (D-007 residual): the misalignment guard's per-column checks (id
  * pattern / enum membership) only fire when the tool's OWN Zod schema carries
- * them — but `id` and `state` on these two tools are both loose strings (id
- * accepts several id-family prefixes; state accepts every cross-family alias),
- * so the schema alone can't express the constraint. `columnOverrides` supplies
- * it out of band. The `state` vocabulary is the UNION of every dialect + alias
- * the real `normalizeWorkItemState`/`normalizeFeatureStateInput` accept —
- * derived from the same exported constants those functions use (never
- * hand-duplicated), so this can't silently drift out of sync with a future
- * added state/alias.
+ * them — but the positional `id` on `work_items:claim` is a loose string
+ * accepting several id-family prefixes, so the schema alone can't express
+ * the constraint. `columnOverrides` supplies it out of band.
+ * This is used by the one remaining positional work-item write
+ * (`claim`). `work_items:set_state` is intentionally keyed-only: its terminal
+ * branch requires completionRef + assumptions, which cannot be represented by
+ * the bounded `{row}` CSV projection.
  */
 const WORK_ITEM_ID_OVERRIDE: ColumnOverride = { pattern: WORK_ITEM_ID_PATTERN };
-const KNOWN_WORK_ITEM_STATE_TOKENS: readonly string[] = Array.from(
-  new Set([
-    ...ISSUE_FAMILY_STATES,
-    ...FEATURE_FAMILY_STATES,
-    ...Object.keys(ISSUE_STATE_ALIASES),
-    ...Object.keys(FEATURE_STATE_ALIASES),
-  ]),
-);
-const WORK_ITEM_STATE_OVERRIDE: ColumnOverride = { enumValues: KNOWN_WORK_ITEM_STATE_TOKENS };
 
 export const PRE_PROMPT_REGISTRY: PrePromptEntry[] = [
   // ── Read (self-describing TOON) ───────────────────────────────────────────
@@ -104,39 +93,12 @@ export const PRE_PROMPT_REGISTRY: PrePromptEntry[] = [
   // without a gym A/B (S08-compact-read) showing the read accuracy is fine.
   { name: 'audit:list', read: 'toon', note: 'flat audit rows; ~hot on investigation; TOON not CSV per EI-136 read-accuracy' },
 
-  // ── Write (positional-CSV args) — LIVE since 2026-07-06 (the P-013 gate PASSED) ──
-  // Both are all-scalar, arrayless, free-text-free positional fits. The P-013
-  // emit-correctness gate passed on a non-contended live run 2026-07-06
-  // (definetool-token-reduction-uncovered-surfaces-2026-07-06 P-001/P-002):
-  // su-S07 verdict=pass with a DISTINCT judge (claude-opus-4-6 vs SUT
-  // sonnet-4-6 per Plan §6.3 — the earlier red verdict was SUT==judge
-  // self-grade bias on orthogonal behavioral dims); the load-bearing positional
-  // assert (row === "WI-42,passed") passed 6/6 across both runs; su-S08
-  // compact-read passed 3/3.
-  //
-  // D-007 residual CLOSED (EI-7927, 2026-07-06): the guard was arity-only — id/
-  // state carry no schema-level pattern/enum (id spans several id-family
-  // prefixes; state spans every cross-family alias) — so a swapped row with
-  // matching arity could still write wrong-but-valid data. `columnOverrides`
-  // below closes that gap without touching either tool's real args schema
-  // (which stays a loose string for legitimate cross-family use).
-  //
-  // WI-3260 (2026-07-06): these tools are bulk-capable, so their FULL keyed
-  // args schemas contain array/object fields (`ids`, `items`, `decision`, ...)
-  // that are correctly not positional-row cells. `writeColumnNames` projects
-  // only the common single-item shorthand, while `writeKeyedFallback` keeps the
-  // bulk keyed shape advertised as a `oneOf` member. Do NOT "fix" this by
-  // loosening projectWriteColumns to accept array/object cells.
-  {
-    name: 'work_items:set_state',
-    read: 'off',
-    write: 'positional',
-    note: 'positional live 2026-07-06 — S07 gate passed (cols id,state,harness?); columnOverrides hardened EI-7927; keyed bulk fallback preserved by WI-3260',
-    writeColumnNames: ['id', 'state', 'harness'],
-    writeRequiredColumnNames: ['id', 'state'],
-    writeKeyedFallback: true,
-    columnOverrides: { id: WORK_ITEM_ID_OVERRIDE, state: WORK_ITEM_STATE_OVERRIDE },
-  },
+  // ── Write (positional-CSV args) — only fixed-shape writes ────────────────
+  // `work_items:set_state` is deliberately absent. Its real schema has
+  // conditional terminal evidence (`completionRef` + `assumptions`) and bulk
+  // array/object fields, so advertising a `{row}` member teaches a call shape
+  // that cannot close terminal work-items. The keyed schema remains the sole
+  // advertised contract and preserves the full lifecycle union.
   {
     name: 'work_items:claim',
     read: 'off',

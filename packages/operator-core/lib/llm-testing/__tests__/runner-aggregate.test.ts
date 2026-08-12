@@ -87,7 +87,7 @@ describe('scenario registry', () => {
       'su-S04-design-first',
       'su-S05-no-invent-write',
       'su-S06-shared-tree-git',
-      'su-S07-positional-write',
+      'su-S07-keyed-write',
       'su-S08-compact-read',
       'su-S09-coord-injection-read',
       'su-S10-claim-before-work',
