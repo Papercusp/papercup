@@ -16,18 +16,61 @@
  * on one box never collide on one socket. Unix socket paths have a ~108-char
  * limit, so the base must stay short (tmpdir), never a deep workspace path.
  */
-import * as os from 'node:os';
-import * as path from 'node:path';
+import {
+  ownerPidFromPidKeyedPath,
+  pidKeyedSocketPath,
+  pinSocketForCluster,
+  reapOrphanedPidKeyedSockets,
+  type ReapResult,
+} from '../sidecar-socket/pid-keyed-socket';
 
 export const SPAWNER_SOCKET_ENV = 'PAPERCUSP_SPAWNER_IPC_SOCKET';
 
-/** The pid-keyed default name. One definition, used to BUILD and to READ the path. */
-const PID_KEYED_SOCKET_RE = /^papercusp-spawner-(\d+)\.sock$/;
+/** The pid-keyed name prefix. One definition, used to BUILD and to READ the path. */
+export const SPAWNER_SOCKET_PREFIX = 'spawner';
 
 export function resolveSpawnerSocketPath(): string {
   const fromEnv = process.env[SPAWNER_SOCKET_ENV];
   if (fromEnv && fromEnv.trim()) return fromEnv.trim();
-  return path.join(os.tmpdir(), `papercusp-spawner-${process.pid}.sock`);
+  return pidKeyedSocketPath(SPAWNER_SOCKET_PREFIX, process.pid);
+}
+
+/**
+ * Pin the spawner socket across a `cluster.fork()` so N workers share ONE sidecar.
+ *
+ * The substrate sidecar got this in WI-1879; the spawner did not, and reproduced the
+ * bug at a far higher cost. Because `sidecarProcess` is a MODULE-scoped latch it is
+ * per PROCESS, so under `PAPERCUSP_CLUSTER=16` each worker independently resolved its
+ * OWN pid-keyed path, saw no sidecar of its own, and spawned a full ~450MB
+ * `hono-host.mjs`. Measured on this box 2026-08-12: 16 sidecars, 9.5GB, each burning
+ * 0.004 cores — i.e. ~8GB to do nothing sixteen times.
+ *
+ * Keying by the PRIMARY's pid (not a fixed path) is deliberate and preserves D-011:
+ * the owner pid stays IN the name, so an orphan is still detectable, and the reaper
+ * below still has a real, liveness-checkable pid to test.
+ */
+export function pinSpawnerSocketForCluster(
+  clusterWorkers: number,
+  env: NodeJS.ProcessEnv = process.env,
+): Record<string, string> {
+  return pinSocketForCluster({
+    prefix: SPAWNER_SOCKET_PREFIX,
+    envVar: SPAWNER_SOCKET_ENV,
+    clusterWorkers,
+    env,
+  });
+}
+
+/**
+ * Remove spawner socket files whose owning process is dead (the EI-7832 fix the
+ * substrate got and this one did not). Measured 2026-08-12: 206 files in tmpdir,
+ * 185 with no live listener, oldest 4 days — growing ~4x/week against WI-7273's
+ * count of 52 on 2026-08-03.
+ */
+export function reapOrphanedSpawnerSockets(
+  opts: Omit<Parameters<typeof reapOrphanedPidKeyedSockets>[0], 'prefix'> = {},
+): ReapResult {
+  return reapOrphanedPidKeyedSockets({ ...opts, prefix: SPAWNER_SOCKET_PREFIX });
 }
 
 /**
@@ -44,8 +87,5 @@ export function resolveSpawnerSocketPath(): string {
  * Null means "not derivable" and must be treated as UNKNOWN — never as orphaned.
  */
 export function ownerPidFromSocketPath(socketPath: string): number | null {
-  const m = PID_KEYED_SOCKET_RE.exec(path.basename(socketPath));
-  if (!m) return null;
-  const pid = Number(m[1]);
-  return Number.isInteger(pid) && pid > 0 ? pid : null;
+  return ownerPidFromPidKeyedPath(SPAWNER_SOCKET_PREFIX, socketPath);
 }

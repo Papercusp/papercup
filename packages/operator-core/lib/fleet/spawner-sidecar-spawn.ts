@@ -18,6 +18,7 @@ import * as fs from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { StringDecoder } from 'node:string_decoder';
 import { resolveSpawnerSocketPath, SPAWNER_SOCKET_ENV } from './spawner-socket-path';
+import { probeUnixSocketAlive } from '../sidecar-socket/pid-keyed-socket';
 import {
   resolveSidecarSpawnPlan,
   gracefulStopChild,
@@ -39,6 +40,23 @@ let sidecarProcess: ChildProcess | null = null;
 let sidecarScopeUnit: string | null = null;
 let sidecarReady = false;
 const readyWaiters: (() => void)[] = [];
+
+/**
+ * Set when this process ADOPTED a sibling's sidecar instead of spawning its own
+ * (see the cross-process adoption block in `spawnSpawnerSidecar`).
+ *
+ * Kept distinct from `sidecarProcess` on purpose: we hold NO child here, so every
+ * lifecycle path that acts on a child must skip an adopted sidecar. Stopping it
+ * would kill a sidecar our SIBLINGS are still using, and auto-respawning it would
+ * recreate exactly the fan-out this adoption exists to prevent. The owner of a
+ * sidecar is the process that spawned it; an adopter is only ever a client.
+ */
+let adoptedSocketPath: string | null = null;
+
+/** True when this process is using a sidecar it did not spawn. */
+export function hasAdoptedSpawnerSidecar(): boolean {
+  return adoptedSocketPath !== null;
+}
 
 // EI-19479764372783341: `managedSpawn` is ASYNC (it probes systemd scope support
 // and writes the ledger row before exec), where the raw `spawn()` it replaced was
@@ -134,6 +152,30 @@ export async function spawnSpawnerSidecar(socketPath?: string): Promise<void> {
   // See `spawnInFlight` — a spawn that has passed the check above but not yet
   // assigned `sidecarProcess`. Join it rather than starting a second one.
   if (spawnInFlight) return spawnInFlight;
+
+  // ── CROSS-PROCESS ADOPTION (plan spawner-sidecar-cluster-fanout-2026-08-12) ──
+  //
+  // Every guard above this line is MODULE-scoped, i.e. per PROCESS: `sidecarProcess`
+  // and `spawnInFlight` can only ever see spawns made by THIS process. Under
+  // `node:cluster` that is not the relevant scope. Each of N workers is a separate
+  // process with its own fresh `sidecarProcess = null`, so each one independently
+  // concluded it had to spawn a sidecar — and a sidecar is a full `hono-host.mjs`.
+  // Measured on this box 2026-08-12 under PAPERCUSP_CLUSTER=16: 16 sidecars, 9.5GB,
+  // each at 0.004 cores. The in-process guards were all working perfectly; they were
+  // simply answering a question about the wrong population.
+  //
+  // With the path pinned across the fork (pinSpawnerSocketForCluster), all workers
+  // resolve the SAME socket, so a live listener means a sibling already did this work
+  // and we ADOPT it instead of spawning a duplicate. `getSpawnerIpcClient` dials that
+  // same path, so an adopting worker is fully functional with no child of its own.
+  //
+  // This is a connect probe, not `existsSync`: a stale socket FILE routinely outlives
+  // its server here (that is what the reaper exists for), so presence proves nothing.
+  const probeSocket = socketPath ?? resolveSpawnerSocketPath();
+  if (await probeUnixSocketAlive(probeSocket)) {
+    adoptedSocketPath = probeSocket;
+    return;
+  }
 
   spawnInFlight = spawnSpawnerSidecarInner(socketPath).finally(() => {
     spawnInFlight = null;
@@ -356,7 +398,28 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
     });
 
     child.stderr?.on('data', (chunk: Buffer) => {
-      console.warn('[spawner-sidecar-err]', chunk.toString().trim());
+      const text = chunk.toString().trim();
+      // BIND-RACE LOSER (plan spawner-sidecar-cluster-fanout-2026-08-12, P-003).
+      //
+      // The adoption probe closes the common case, but it cannot close the window
+      // between "probe found nothing" and "our child finished binding": with the
+      // socket path now SHARED across cluster workers, two workers can both probe an
+      // empty path and both spawn. Exactly one wins the bind; the other's child dies
+      // EADDRINUSE. That is a SUCCESS for the cluster — a sidecar is now serving the
+      // shared path — so treating it as a crash is doubly wrong: it logs a scary
+      // error for a healthy outcome, and it burns the respawn budget re-losing the
+      // same race (EI-19982828461130670 recorded exactly this EADDRINUSE killing the
+      // sidecar). Mark it deliberate so the `exit` handler below neither warns nor
+      // schedules a respawn, and record the adoption.
+      if (text.includes('EADDRINUSE')) {
+        deliberateStop = true;
+        adoptedSocketPath = resolvedSocket;
+        console.log(
+          `[spawner-sidecar] lost the bind race for ${resolvedSocket} — a sibling is serving it; adopting theirs.`,
+        );
+        return;
+      }
+      console.warn('[spawner-sidecar-err]', text);
     });
 
     child.on('error', (err) => {
@@ -376,6 +439,22 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
       sidecarProcess = null;
       sidecarScopeUnit = null;
       sidecarReady = false;
+
+      // Bind-race loser: our child exited because a SIBLING already owns the shared
+      // socket, which the stderr handler above detected and recorded. The awaited
+      // handshake will now never arrive, so settle the promise HERE rather than let
+      // it sit until the 10s startup timeout and reject — the sidecar this caller
+      // asked for does exist, it simply belongs to a sibling. Without this, a losing
+      // worker reports "Spawner sidecar startup timeout" 10s later and degrades its
+      // agent-spawn path for a condition that is actually success.
+      if (adoptedSocketPath) {
+        clearTimeout(timeout);
+        resolve();
+        for (const waiter of readyWaiters) waiter();
+        readyWaiters.length = 0;
+        return;
+      }
+
       scheduleRespawn(resolvedSocket);
     });
   });
@@ -407,6 +486,12 @@ export function _setSpawnerSidecarProcessForTests(proc: ChildProcess | null): vo
  * Kill the sidecar gracefully.
  */
 export async function stopSpawnerSidecar(): Promise<void> {
+  // An ADOPTED sidecar belongs to a sibling process that is very likely still using
+  // it — dropping our client reference is the only correct "stop" here. Killing it
+  // would take out a sidecar we do not own. The `!sidecarProcess` return below
+  // already achieves that (an adopter holds no child); clearing the flag is what
+  // lets a later spawnSpawnerSidecar() re-probe instead of believing it still has one.
+  adoptedSocketPath = null;
   if (!sidecarProcess || sidecarProcess.killed) return;
   deliberateStop = true;
   if (respawnTimer) {
