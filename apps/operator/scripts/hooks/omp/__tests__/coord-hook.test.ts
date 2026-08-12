@@ -4639,7 +4639,13 @@ describe('ttyCandidates + writeOscTitle — the OMP twin of pc_tty.py (WI-3665)'
 
   it('resolves false — never throws — when no terminal accepts the write (headless bee)', async () => {
     await expect(
-      writeOscTitle('\x1b]0;x\x07', { PAPERCUSP_TTY: '/nonexistent/x.tty' }),
+      // Inject candidates so the assertion is stable when the test runner itself has a
+      // controlling /dev/tty (a PTY must not turn this headless case into a false green).
+      writeOscTitle(
+        '\x1b]0;x\x07',
+        { PAPERCUSP_TTY: '/nonexistent/x.tty' },
+        ['/nonexistent/x.tty'],
+      ),
     ).resolves.toBe(false);
   });
 

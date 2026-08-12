@@ -2570,11 +2570,17 @@ async function ttyOwnedByUs(path: string, sid: string, env: Partial<NodeJS.Proce
  * EI-10377: the PAPERCUSP_TTY candidate specifically is skipped when its claim now names a
  * different session — see ttyOwnedByUs.
  */
-export async function writeOscTitle(osc: string, env: Partial<NodeJS.ProcessEnv> = process.env): Promise<boolean> {
+export async function writeOscTitle(
+  osc: string,
+  env: Partial<NodeJS.ProcessEnv> = process.env,
+  candidatePaths: readonly string[] = ttyCandidates(env),
+): Promise<boolean> {
   if (osc.length === 0) return false;
   const sid = (env.PAPERCUSP_SID ?? '').trim();
   const ownedPath = (env.PAPERCUSP_TTY ?? '').trim();
-  for (const path of ttyCandidates(env)) {
+  // `candidatePaths` is an injection seam for tests that must model a headless process
+  // deterministically. Production callers use the ordered ttyCandidates(env) default.
+  for (const path of candidatePaths) {
     if (path === ownedPath && !(await ttyOwnedByUs(path, sid, env))) continue;
     try {
       const fh = await fsp.open(path, 'w');
