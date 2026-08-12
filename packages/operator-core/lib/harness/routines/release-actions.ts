@@ -271,15 +271,21 @@ export interface CheckpointVerdict {
   logPath?: string;
   /** EI-13288: structural mirror of green-checkpoint.ts's `RedTriage & { tip }` (stale-candidate
    *  re-triage, 2026-07-10). Present on the not-green path whenever the CLI could re-run the named
-   *  failing files at a newer tip. When `classification === 'stale-candidate'` the CLI's OWN
-   *  re-test already PROVED these exact files pass at `tip` — the auto-refire cap was reached
-   *  before that tip could be confirmed green by a full suite, so this red's failing-test names
-   *  must not be reported as a trustworthy, currently-reproducing verdict (see
-   *  gate-verdict-freshness.ts Rule 3). Never used to change the gate's green/red decision. */
+   *  failing files at a newer tip. When `classification === 'stale-candidate'` AND
+   *  `autoRefire === false`, the CLI's OWN re-test already PROVED these exact files pass at `tip`
+   *  and the refire was blocked, so this red's failing-test names must not be reported as a
+   *  trustworthy, currently-reproducing verdict (see gate-verdict-freshness.ts Rule 3). An
+   *  auto-refiring pass is an intermediate verdict that is about to be superseded; persisting its
+   *  stale-cap fields would falsely tell readers that the cap was already reached. Never used to
+   *  change the gate's green/red decision. */
   retriage?: {
     classification: 'real-red' | 'stale-candidate' | 'unknown';
     tip: string | null;
     detail: string;
+    /** Structural mirror of RedTriage.autoRefire. Optional for old CLI payloads; absent is not
+     *  proof that the cap was reached, so callers must fail closed before persisting stale fields. */
+    autoRefire?: boolean;
+    refireBlockedBy?: 'cap-disabled' | 'charged-budget' | 'absolute-ceiling' | 'deadline' | null;
   };
   /** isolation-retry-resilience-2026-07-19 (EI-15849): the load-flake / worker-crash
    *  absorption attempt's own human-readable verdict note, persisted REGARDLESS of
@@ -919,7 +925,13 @@ export async function trackGateStall(
   from?: string | null,
   /** EI-13288: the CLI's own stale-candidate re-triage verdict (see CheckpointVerdict.retriage
    *  above), when the caller has one. */
-  retriage?: { classification: 'real-red' | 'stale-candidate' | 'unknown'; tip: string | null; detail: string },
+  retriage?: {
+    classification: 'real-red' | 'stale-candidate' | 'unknown';
+    tip: string | null;
+    detail: string;
+    autoRefire?: boolean;
+    refireBlockedBy?: 'cap-disabled' | 'charged-budget' | 'absolute-ceiling' | 'deadline' | null;
+  },
   /** EI-19405864032365760: the verdict's own prose (`CheckpointVerdict.summary`). Only read on the
    *  `migrations-pending` noop path, where it is the ONLY place the pending migration is named. */
   summary?: string | null,
@@ -1257,14 +1269,14 @@ export async function trackGateStall(
     // MATTERS: a RED is what misdirects (it dispatches the release-fixer at the tests it names), so
     // a red MUST carry the provenance that lets a reader judge whether it is still true.
     // EI-13288: the CLI's own re-triage already re-ran these EXACT named failing files at a
-    // newer tip and they PASSED — the auto-refire cap was reached before a full suite could
-    // confirm that tip green, so this verdict's failing-test names are proven-unreliable AT
-    // RECORD TIME, not merely aged. Persist that alongside the (still-recorded, for the streak/
-    // history) failingTests, so a reader (gate-verdict-freshness Rule 3) can tell "still broken"
-    // from "the gate's own evidence says this doesn't reproduce at `tip`" without re-running
-    // anything. Cleared whenever this red's retriage was NOT stale-candidate, so a stale note
-    // from an earlier red in the same streak can never outlive the verdict that produced it.
+    // newer tip and they PASSED. Persist that evidence only when the refire was actually
+    // BLOCKED (`autoRefire === false`). An auto-refiring pass is recorded before recursion so
+    // a crashed refire still leaves a verdict, but it is an intermediate verdict — writing its
+    // stale-cap fields would make gate-verdict-freshness claim "the auto-refire cap was reached"
+    // while the rescue is still running (EI-20243738214569472). Missing autoRefire is treated as
+    // unknown for this safety-critical field: an old CLI cannot prove the cap was reached.
     const retriageStale = retriage?.classification === 'stale-candidate';
+    const retriageBlocked = retriageStale && retriage?.autoRefire === false;
     next = {
       consecutiveReds,
       lastGreenAt,
@@ -1275,8 +1287,8 @@ export async function trackGateStall(
       failingTests: (failingTests ?? []).slice(0, 20),
       observedAt: Date.now(),
       observedCandidate: candidate?.slice(0, 12) ?? null,
-      retriageStaleTip: retriageStale ? (retriage!.tip?.slice(0, 12) ?? null) : null,
-      retriageDetail: retriageStale ? retriage!.detail : null,
+      retriageStaleTip: retriageBlocked ? (retriage!.tip?.slice(0, 12) ?? null) : null,
+      retriageDetail: retriageBlocked ? retriage!.detail : null,
       // WI-7482: the two fields above are stale-ONLY by design (paired + cleared together, per
       // the note above), which left a reader unable to distinguish the three non-stale outcomes:
       // the gate re-ran the red at tip and it genuinely reproduced (`real-red`); the gate could

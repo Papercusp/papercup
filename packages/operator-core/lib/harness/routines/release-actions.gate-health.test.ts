@@ -382,6 +382,8 @@ describe('trackGateStall persists retriage staleness into gate_health (EI-13288)
     classification: 'stale-candidate' as const,
     tip: '6d9aff3704c9c5937a0ffe13e139021d9101cff3',
     detail: '2 failing file(s) PASS at tip 6d9aff37 — the red is stale; refire cap reached',
+    autoRefire: false,
+    refireBlockedBy: 'charged-budget' as const,
   };
 
   it('persists retriageStaleTip/retriageDetail on a RED tick classified stale-candidate', async () => {
@@ -397,6 +399,41 @@ describe('trackGateStall persists retriage staleness into gate_health (EI-13288)
     // The streak still counts this tick — retriage staleness qualifies the FAILING-TEST NAMES,
     // it does not relax the gate's held/not-held decision (the bug's own requirement #4).
     expect(written!.consecutiveReds).toBe(1);
+  });
+
+  it('does NOT persist stale-cap fields while the stale candidate is still auto-refiring', async () => {
+    seededGh = { consecutiveReds: 0, stallAlerted: false, lastGreenAt: Date.now() };
+
+    await trackGateStall(ctx, 'not-green', 'deadbeefcafe', ['pkgA/foo.test.ts'], null, {
+      classification: 'stale-candidate',
+      tip: '6d9aff3704c9c5937a0ffe13e139021d9101cff3',
+      detail: '2 failing file(s) PASS at tip 6d9aff37 — auto-refiring; cap not reached',
+      autoRefire: true,
+      refireBlockedBy: null,
+    });
+
+    const written = lastGateHealthWrite();
+    expect(written).not.toBeNull();
+    expect(written!.retriageStaleTip).toBeNull();
+    expect(written!.retriageDetail).toBeNull();
+    // Keep the classification for additive diagnostics; only the Rule-3 stale-cap pair is
+    // suppressed until the producer proves the refire was blocked.
+    expect(written!.retriageClassification).toBe('stale-candidate');
+  });
+
+  it('fails closed for a legacy stale-candidate payload that omits the autoRefire flag', async () => {
+    seededGh = { consecutiveReds: 0, stallAlerted: false, lastGreenAt: Date.now() };
+
+    await trackGateStall(ctx, 'not-green', 'deadbeefcafe', ['pkgA/foo.test.ts'], null, {
+      classification: 'stale-candidate',
+      tip: '6d9aff3704c9c5937a0ffe13e139021d9101cff3',
+      detail: '2 failing file(s) PASS at tip 6d9aff37 — legacy payload',
+    });
+
+    const written = lastGateHealthWrite();
+    expect(written).not.toBeNull();
+    expect(written!.retriageStaleTip).toBeNull();
+    expect(written!.retriageDetail).toBeNull();
   });
 
   it('does NOT persist retriage fields for a genuinely real-red (no phantom note on a true break)', async () => {
