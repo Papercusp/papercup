@@ -101,9 +101,12 @@ export async function loadDispatchAdoptionSample(opts: {
       count(*) FILTER (WHERE tool_name = ${DISPATCH_TOOL})                       AS dispatch_calls,
       count(DISTINCT coord_owner_id) FILTER (WHERE tool_name = ${DISPATCH_TOOL}) AS dispatch_agents,
       count(*) FILTER (WHERE tool_name = ${SEND_TOOL})                           AS send_calls,
-      (SELECT min(invoked_at) FROM harness_shared.tool_invocations)              AS oldest_retained
+      (SELECT min(invoked_at)
+         FROM harness_shared.tool_invocations
+        WHERE harness_shared.is_agent_coord_owner_id(coord_owner_id, role))      AS oldest_retained
       FROM harness_shared.tool_invocations
      WHERE tool_name IN (${DISPATCH_TOOL}, ${SEND_TOOL})
+       AND harness_shared.is_agent_coord_owner_id(coord_owner_id, role)
        AND invoked_at >= now() - make_interval(days => ${requestedWindowDays})
   `;
 

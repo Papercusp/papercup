@@ -190,17 +190,21 @@ describe('findStaleDeclarations', () => {
     // preserve precision. Without the coercion `calls === 0` would be false for
     // "0" and every zero-call verb — the entire point of this census — would be
     // silently misclassified as having calls.
+    let query = '';
     const adoptionMap = await loadCoordBehaviourAdoption({
       workspaceId: 'papercusp-workspace',
       windowDays: 7,
-      getSql: () => (async () =>
-        [
+      getSql: () => ((strings: TemplateStringsArray) => {
+        query = strings.join('');
+        return (async () => [
           { tool_name: 'coord:send', calls: '1645', callers: '95' },
           { tool_name: 'coord:read', calls: '15', callers: '6' },
-        ]) as never,
+        ]) as never;
+      }) as never,
     });
     expect(adoptionMap.get('coord:send')).toEqual({ calls: 1645, callers: 95 });
     expect(typeof adoptionMap.get('coord:read')?.calls).toBe('number');
+    expect(query).toContain('harness_shared.is_agent_coord_owner_id(coord_owner_id, role)');
   });
 
   it('returns an empty map when the window has no coordination calls', async () => {

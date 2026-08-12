@@ -239,6 +239,7 @@ async function main() {
                 count(DISTINCT coord_owner_id)::int AS callers
            FROM harness_shared.tool_invocations
           WHERE tool_name = $1
+            AND harness_shared.is_agent_coord_owner_id(coord_owner_id, role)
             AND invoked_at > now() - ($2 || ' days')::interval
             ${filter}`,
         [s.tool, String(s.windowDays)],
@@ -249,7 +250,8 @@ async function main() {
       // traffic in the window before believing a zero means anything.
       const [t] = await sql.unsafe(
         `SELECT count(*)::int AS total FROM harness_shared.tool_invocations
-          WHERE invoked_at > now() - ($1 || ' days')::interval`,
+          WHERE harness_shared.is_agent_coord_owner_id(coord_owner_id, role)
+            AND invoked_at > now() - ($1 || ' days')::interval`,
         [String(s.windowDays)],
       );
       rows.push({

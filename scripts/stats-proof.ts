@@ -200,9 +200,11 @@ async function main(): Promise<void> {
       SELECT
         (SELECT count(*) FROM harness_shared.tool_invocations
           WHERE workspace_id = ${WORKSPACE}
+            AND harness_shared.is_agent_coord_owner_id(coord_owner_id, role)
             AND invoked_at > now() - make_interval(days => ${WINDOW_DAYS})) AS tool_calls,
         (SELECT count(DISTINCT coord_owner_id) FROM harness_shared.tool_invocations
           WHERE workspace_id = ${WORKSPACE}
+            AND harness_shared.is_agent_coord_owner_id(coord_owner_id, role)
             AND invoked_at > now() - make_interval(days => ${WINDOW_DAYS})) AS agents,
         (SELECT count(*) FROM harness_shared.coord_event_log
           WHERE workspace_id = ${WORKSPACE}

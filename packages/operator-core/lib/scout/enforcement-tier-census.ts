@@ -421,9 +421,10 @@ export async function loadCoordBehaviourAdoption(opts: {
     SELECT tool_name,
            count(*)                       AS calls,
            count(DISTINCT coord_owner_id) AS callers
-      FROM harness_shared.tool_invocations
+     FROM harness_shared.tool_invocations
      WHERE workspace_id = ${opts.workspaceId}
        AND tool_name LIKE ${COORD_TOOL_PREFIX + '%'}
+       AND harness_shared.is_agent_coord_owner_id(coord_owner_id, role)
        AND invoked_at >= now() - make_interval(days => ${opts.windowDays})
      GROUP BY tool_name
   `;

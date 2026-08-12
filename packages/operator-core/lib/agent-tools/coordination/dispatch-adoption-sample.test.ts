@@ -20,11 +20,13 @@ const daysBefore = (n: number): string =>
   new Date(NOW.getTime() - n * 86_400_000).toISOString();
 
 /** A fake `sql` tag returning one row — the shape the sampler's single query yields. */
-function fakeSql(row: Record<string, unknown> | null) {
-  return () =>
-    (async () => (row ? [row] : [])) as unknown as {
+function fakeSql(row: Record<string, unknown> | null, capture?: (query: string) => void) {
+  return (strings: TemplateStringsArray) => {
+    capture?.(strings.join(''));
+    return (async () => (row ? [row] : [])) as unknown as {
       <T>(strings: TemplateStringsArray, ...values: unknown[]): Promise<T>;
     };
+  };
 }
 
 describe('loadDispatchAdoptionSample — the window it publishes is the window it can prove', () => {
@@ -135,5 +137,25 @@ describe('loadDispatchAdoptionSample — the window it publishes is the window i
     // nonsense rate instead of an error.
     expect(reading!.sample.dispatchCalls).toBe(12);
     expect(reading!.sample.sendCalls).toBe(3_000);
+  });
+
+  it('uses the canonical agent-owner predicate for every sampled count', async () => {
+    let query = '';
+    await loadDispatchAdoptionSample({
+      now: NOW,
+      getSql: fakeSql(
+        {
+          dispatch_calls: 1,
+          dispatch_agents: 1,
+          send_calls: 1,
+          oldest_retained: daysBefore(20),
+        },
+        (captured) => {
+          query = captured;
+        },
+      ),
+    });
+
+    expect(query).toContain('harness_shared.is_agent_coord_owner_id(coord_owner_id, role)');
   });
 });
