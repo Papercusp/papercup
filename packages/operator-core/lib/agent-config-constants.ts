@@ -391,18 +391,36 @@ export function composeLaunchModelSpec(model?: string | null, effort?: string | 
  * fallback is the server-side second source.
  */
 export function modelSpecFromArgv(argv: unknown): string | null {
+  return flagValueFromArgv(argv, 'model');
+}
+
+/**
+ * Read a `--<flag>=<value>` launch flag off a recorded argv, across BOTH shapes
+ * `adv_sessions.launch_argv` actually stores. Generalized out of `modelSpecFromArgv` so a second
+ * flag cannot ship with a copy of pass 1 alone and inherit the exact bug pass 2 exists to fix
+ * (`--account` was the second caller; see `accountFromArgv`).
+ *
+ * `flag` is a bare name (`'model'`, `'account'`) and is interpolated into a regex, so keep it to
+ * literal identifiers — it is not a user-supplied pattern.
+ *
+ * Returns null when the flag was not recorded. That means "launched without it", NOT "unknown":
+ * a caller that must distinguish those two cannot do it from argv alone (an EMPTY argv is the
+ * unknown case, and it is the CALLER's job to check for it — see `readModelSpec`).
+ */
+export function flagValueFromArgv(argv: unknown, flag: string): string | null {
   if (!Array.isArray(argv)) return null;
   // PASS 1 — argv as TOKENS. The shape every psu/fleet launch records:
   // ["psu", "--no-picker", "--model=sonnet[1m]:high", …]. Authoritative, so it
   // runs first and its answer is never second-guessed by pass 2.
+  const eq = `--${flag}=`;
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (typeof a !== 'string') continue;
-    if (a.startsWith('--model=')) {
-      const v = a.slice('--model='.length).trim();
+    if (a.startsWith(eq)) {
+      const v = a.slice(eq.length).trim();
       if (v) return unquoteArgValue(v);
     }
-    if (a === '--model' && typeof argv[i + 1] === 'string') {
+    if (a === `--${flag}` && typeof argv[i + 1] === 'string') {
       const v = (argv[i + 1] as string).trim();
       if (v) return unquoteArgValue(v);
     }
@@ -424,15 +442,35 @@ export function modelSpecFromArgv(argv: unknown): string | null {
   //
   // The value may be QUOTED, because the greeting is shell text and the emitter
   // single-quotes it (console-launcher's `shellSafeModelSpec`).
+  const embedded = new RegExp(`--${flag}[=\\s]+('[^']*'|"[^"]*"|[^\\s;'"]+)`);
   for (const a of argv) {
     if (typeof a !== 'string') continue;
-    const m = /--model[=\s]+('[^']*'|"[^"]*"|[^\s;'"]+)/.exec(a);
+    const m = embedded.exec(a);
     if (m) {
       const v = unquoteArgValue(m[1].trim());
       if (v) return v;
     }
   }
   return null;
+}
+
+/**
+ * The `--account=` a session was LAUNCHED with, read off its recorded argv.
+ *
+ * Exists because the ACCT chat pill was telling the owner it could not know this ("a static
+ * --account= pin set at spawn, which this control cannot read") while `launchArgv` sat in the very
+ * same context object the MODEL pill parses. Worse than the missing information: a
+ * `--account=default` session bypasses the inference gateway entirely, so a dynamic pool pin
+ * CANNOT reach it — and the pill was still offering every pool account as a clickable row. That
+ * click reports success (the durable pin really is written) while the session keeps routing exactly
+ * as before, which is the false-reassurance shape this plan exists to remove.
+ *
+ * Returns the raw value — a LAUNCH_ACCOUNT_MODES member (`'default'` / `'auto'`) or a pool id — or
+ * null when no `--account` was recorded, which for psu means the launch opened the interactive
+ * picker rather than that any particular account was chosen.
+ */
+export function accountFromArgv(argv: unknown): string | null {
+  return flagValueFromArgv(argv, 'account');
 }
 
 /** Strip one layer of matching shell quotes from a recorded argument value.

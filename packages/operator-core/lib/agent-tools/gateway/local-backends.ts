@@ -8,7 +8,13 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
-import { activeWorkspaceId } from '../../workspace-registry';
+// Local backends are a per-workspace DURABLE registry, so register/list/remove all resolve
+// through `resolveConcreteWorkspaceId`: the `'*'` superuser READ sentinel is not a storable
+// workspace value, and the `x ?? ctx.workspaceId ?? … ?? activeWorkspaceId()` form these three
+// sites used lets a truthy `'*'` win so the fallback never fires. Register-under-'*' +
+// list-from-concrete is the same invisible-write / unremovable-row shape as the account-pin bug
+// (EI-20208335287200289), and list must resolve identically to the writes or it cannot see them.
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import {
   registerLocalBackend,
   listLocalBackends,
@@ -54,7 +60,7 @@ export const gatewayLocalBackendRegisterTool = defineTool({
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
   }),
   async handler({ id, kind, baseUrl, models, maxConcurrent, enabled, workspace }, ctx) {
-    const ws = workspace ?? ctx?.workspaceId ?? ctx?.principal?.workspaceId ?? activeWorkspaceId();
+    const ws = resolveConcreteWorkspaceId(workspace, ctx?.workspaceId, ctx?.principal?.workspaceId);
     try {
       const backend = await registerLocalBackend({ id, kind, baseUrl, models, maxConcurrent, enabled, workspaceId: ws });
       const live = await applyLive();
@@ -82,7 +88,7 @@ export const gatewayLocalBackendListTool = defineTool({
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
   }),
   async handler({ workspace }, ctx) {
-    const ws = workspace ?? ctx?.workspaceId ?? ctx?.principal?.workspaceId ?? activeWorkspaceId();
+    const ws = resolveConcreteWorkspaceId(workspace, ctx?.workspaceId, ctx?.principal?.workspaceId);
     try {
       const backends = await listLocalBackends({ workspaceId: ws });
       return ok({ backends });
@@ -110,7 +116,7 @@ export const gatewayLocalBackendRemoveTool = defineTool({
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
   }),
   async handler({ id, workspace }, ctx) {
-    const ws = workspace ?? ctx?.workspaceId ?? ctx?.principal?.workspaceId ?? activeWorkspaceId();
+    const ws = resolveConcreteWorkspaceId(workspace, ctx?.workspaceId, ctx?.principal?.workspaceId);
     try {
       const removed = await removeLocalBackend(id, { workspaceId: ws });
       const live = removed ? await applyLive() : { appliedLive: false };

@@ -41,6 +41,7 @@
  * no-op in a nicer costume.
  */
 import { fetchSyncQuery } from '@papercusp/sync';
+import { accountFromArgv } from '@papercusp/operator-core/lib/agent-config-constants';
 import { registerChatModeAction } from './registry';
 import type { ChatActionContext, ChatModeOption } from './types';
 
@@ -52,6 +53,28 @@ const ACCOUNT_DEFAULT = '__default';
 /** What `current()` reports when the roster says there is no dynamic pin. Not a
  *  pool account id, and `__`-prefixed for the same reason. */
 const ACCOUNT_UNPINNED = '__unpinned';
+
+/**
+ * The `--account=` this session was LAUNCHED with, or null when the argv records none, or
+ * `undefined` when there is no argv to read (an older roster payload — UNKNOWN, per D-005 §5).
+ *
+ * The same `launchArgv` the MODEL pill parses, so this costs no extra fetch. It exists because
+ * a `--account=default` session BYPASSES the inference gateway, which means a dynamic pool pin
+ * cannot reach it: `accounts:pin` writes the pin, returns ok, and the session keeps routing
+ * exactly as before. Offering those rows as clickable was a control whose success message was
+ * indistinguishable from its no-op (EI-20208335287200289).
+ *
+ * Exported for test.
+ */
+export function readLaunchAccount(ctx: ChatActionContext): string | null | undefined {
+  const argv = (ctx as { launchArgv?: unknown }).launchArgv;
+  if (argv === undefined) return undefined;
+  /* An EMPTY argv is UNKNOWN, not "no --account" — adv-roster's active tier is
+     `launchArgv: adv?.launchArgv ?? []`, so a session with no launch record at all arrives as
+     `[]` and carries no evidence either way. Same reading as readModelSpec, deliberately. */
+  if (Array.isArray(argv) && argv.length === 0) return undefined;
+  return accountFromArgv(argv);
+}
 
 /** The pin as the roster row carries it (adv-roster's `accountPin`). */
 export interface CtxAccountPin {
@@ -117,13 +140,25 @@ export async function postAccountPin(
 
 /** The menu, given the live pool. Pure — exported so the row set is testable
  *  without a fetch. */
-export function accountOptions(pool: AccountPoolRow[]): ChatModeOption[] {
+export function accountOptions(pool: AccountPoolRow[], launchAccount?: string | null): ChatModeOption[] {
   const accounts = [...pool].sort((a, b) => (a.label ?? a.id).localeCompare(b.label ?? b.id));
+  /* A `--account=default` session bypasses the gateway, so NOTHING routed through the gateway can
+     re-route it: both the pool rows and Auto are guaranteed no-ops for it. They stay VISIBLE with
+     the real reason rather than being hidden — a menu that silently drops rows misreports what the
+     control does, and the owner needs to learn that a respawn is the lever. `undefined`
+     (unknown argv) is deliberately NOT treated as gateway-free: disabling the whole menu on an
+     absence would be the same unsourced guess D-005 §5 forbids in the other direction. */
+  const gatewayFree = launchAccount === 'default';
+  const gatewayFreeHint =
+    'This session was launched --account=default, which bypasses the inference gateway — a live pin cannot reach it. Respawn it to change accounts.';
   return [
     {
       id: ACCOUNT_AUTO,
       label: 'Auto (gateway routing)',
-      hint: 'The gateway picks an available account for each call and fails over when one is rate-limited. Clears any pin on this session.',
+      ...(gatewayFree ? { disabled: true } : {}),
+      hint: gatewayFree
+        ? gatewayFreeHint
+        : 'The gateway picks an available account for each call and fails over when one is rate-limited. Clears any pin on this session.',
     },
     {
       id: ACCOUNT_DEFAULT,
@@ -138,13 +173,18 @@ export function accountOptions(pool: AccountPoolRow[]): ChatModeOption[] {
     ...accounts.map((a) => ({
       id: a.id,
       label: a.label ?? a.id,
+      ...(gatewayFree ? { disabled: true } : {}),
       /* `available:false` is a live capacity fact, not a reason to hide the
          account: pinning to a rate-paused account is a legitimate thing to
          choose (it recovers), and a menu that silently drops accounts would
          misreport the pool. Say it instead. */
-      hint: [a.provider, a.available === false ? 'rate-limited or usage-walled right now' : null]
-        .filter(Boolean)
-        .join(' · ') || undefined,
+      hint:
+        (gatewayFree
+          ? [gatewayFreeHint]
+          : [a.provider, a.available === false ? 'rate-limited or usage-walled right now' : null]
+        )
+          .filter(Boolean)
+          .join(' · ') || undefined,
     })),
   ];
 }
@@ -169,17 +209,23 @@ registerChatModeAction({
   current: (ctx) => {
     const pin = readAccountPin(ctx);
     if (!pin) {
-      return {
-        value: 'auto',
-        optionId: ACCOUNT_UNPINNED,
-        on: false,
-        /* Deliberately not claiming "this session is on auto". No DYNAMIC pin is
-           all this layer can see: a session launched `--account=<id>` carries a
-           static spawn pin, and `--account=default` bypasses the gateway. Both
-           are invisible here, so the tooltip says what is actually known. */
-        title:
-          'No account pin on this session — it uses the routing it was launched with (gateway auto, or a static --account= pin set at spawn, which this control cannot read).',
-      };
+      /* Still not claiming "this session is on auto" — no DYNAMIC pin is all `accountPin` can say.
+         But the STATIC spawn pin is no longer unknowable: it is in the launch argv already on this
+         same ctx. Reporting it is the difference between a control that says "I cannot read this"
+         and one that reads it — and for `--account=default` it is the difference between offering
+         a pin that cannot take effect and saying why. */
+      const launched = readLaunchAccount(ctx);
+      const title =
+        launched === 'default'
+          ? 'Launched --account=default — this session bypasses the inference gateway entirely, so it cannot be re-pinned live. Respawn it to change accounts.'
+          : launched === 'auto'
+            ? 'Launched --account=auto and carries no pin — the gateway picks an available account per call and fails over.'
+            : launched
+              ? `Launched --account=${launched} (a static spawn pin) and carries no DYNAMIC pin — pinning here overrides that routing for this session.`
+              : /* null (no --account recorded) or undefined (no argv to read) collapse here: in
+                   neither case do we know the launch routing, so the tooltip claims nothing. */
+                'No account pin on this session — it uses the routing it was launched with (gateway auto, or a static --account= pin set at spawn that this session recorded no argv for).';
+      return { value: 'auto', optionId: ACCOUNT_UNPINNED, on: false, title };
     }
     return {
       value: pin.account,
@@ -197,7 +243,11 @@ registerChatModeAction({
   searchPlaceholder: 'Search accounts…',
   /* Async + LAZY: resolved by the bar on menu open, so a popup nobody re-routes
      pays no `accounts.pool` query (types.ts's `options` doc). */
-  options: async () => accountOptions(await fetchSyncQuery<AccountPoolRow>({ queryName: 'accounts.pool', args: {} })),
+  options: async (ctx) =>
+    accountOptions(
+      await fetchSyncQuery<AccountPoolRow>({ queryName: 'accounts.pool', args: {} }),
+      readLaunchAccount(ctx),
+    ),
   set: async (ctx, optionId) => {
     const agent = ctx.sessionOwnerId;
     /* Belt and braces with the bar's own `disabled` handling: the un-settable
@@ -209,6 +259,15 @@ registerChatModeAction({
       );
     }
     if (optionId === ACCOUNT_UNPINNED) return; // already the current state
+    /* Same belt-and-braces for the gateway-free case, and here it is load-bearing rather than
+       defensive: `accounts:pin` WOULD return ok for a --account=default session (the durable pin
+       really is written) while the session keeps bypassing the gateway. Refusing loudly is the
+       only way this control can avoid reporting a success that changes nothing. */
+    if (readLaunchAccount(ctx) === 'default') {
+      throw new Error(
+        'This session was launched --account=default, which bypasses the inference gateway — a pin would be saved but could never take effect. Respawn the session to change its account.',
+      );
+    }
     if (optionId === ACCOUNT_AUTO) {
       await postAccountPin('unpin', { agent });
       return;

@@ -8,7 +8,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { setOwnerPin, clearOwnerPin } from '../../deployment/account-owner-pins';
 
 /** Localhost base of the running gateway. Read PER-CALL (not at module load) so tests can point it at a
@@ -17,6 +17,22 @@ const gwBase = () => `http://127.0.0.1:${Number(process.env.PAPERCUSP_GATEWAY_PO
 const ok = (p: Record<string, unknown>) => ({ content: [{ type: 'text' as const, text: JSON.stringify({ ok: true, ...p }) }] });
 const fail = (p: Record<string, unknown>) => ({ content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, ...p }) }] });
 const errMsg = (e: unknown) => (e instanceof Error ? e.message : String(e)).slice(0, 200);
+
+/**
+ * Owner pins are a per-workspace DURABLE WRITE, so both legs below resolve through
+ * `resolveConcreteWorkspaceId` — the shared helper that treats the `'*'` superuser
+ * READ sentinel as "not concrete" and falls through to the active workspace.
+ *
+ * These two sites used the `x ?? ctx.workspaceId ?? … ?? activeWorkspaceId()` form that helper's
+ * doc-comment names as buggy: a truthy `'*'` wins and the fallback never fires. The admin proxy
+ * (`/api/admin/accounts/:verb`) re-dispatches in-process with a synthesized `?superuser=1` ctx and
+ * forwards no `workspace`, so `_mcp-handler`'s `workspaceId || '*'` supplied `'*'` and the pin
+ * landed under `workspace_id='*'` — a bucket nothing reads, since `adv-roster.ts` reads
+ * `getOwnerPinsMap(activeWorkspaceId())`. The ACCT pill therefore reported `ok:true,
+ * appliedLive:true` and then kept rendering "no pin", and unpin — scoped to that same empty
+ * bucket — could not clear the pins that really existed (EI-20208335287200289; same class as
+ * EI-3409 / WI-892).
+ */
 
 export const gatewayStatusTool = defineTool({
   name: 'gateway:status',
@@ -75,7 +91,7 @@ export const accountsPinTool = defineTool({
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
   }),
   async handler({ agent, account, hard, workspace }, ctx) {
-    const ws = workspace ?? ctx?.workspaceId ?? ctx?.principal?.workspaceId ?? activeWorkspaceId();
+    const ws = resolveConcreteWorkspaceId(workspace, ctx?.workspaceId, ctx?.principal?.workspaceId);
     try {
       const cfg = (await fetch(`${gwBase()}/admin/config`, { signal: AbortSignal.timeout(5000) })
         .then((r) => r.json())
@@ -127,7 +143,7 @@ export const accountsUnpinTool = defineTool({
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
   }),
   async handler({ agent, workspace }, ctx) {
-    const ws = workspace ?? ctx?.workspaceId ?? ctx?.principal?.workspaceId ?? activeWorkspaceId();
+    const ws = resolveConcreteWorkspaceId(workspace, ctx?.workspaceId, ctx?.principal?.workspaceId);
     try {
       const cleared = await clearOwnerPin(ws, agent); // durable clear first
       const r = await fetch(`${gwBase()}/admin/owner-pin`, {
