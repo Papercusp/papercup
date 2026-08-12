@@ -574,6 +574,28 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
       expect(out.checks[0]).toEqual({ claim: 'gate is green', recheck: 'state:read', verified: 'saw 30/30 pass' });
     });
 
+    it('maps descriptive label/name rows to `claim` while preserving an explicit claim', () => {
+      const out = parse({
+        checks: [
+          { label: 'labelled claim', status: 'verified', evidence: 'observed labelled claim' },
+          { name: 'named claim' },
+          {
+            claim: 'canonical claim',
+            label: 'ignored label',
+            name: 'ignored name',
+            status: 'verified',
+            evidence: 'observed canonical claim',
+          },
+        ],
+      }) as { checks: { claim: string; verified?: string }[] };
+
+      expect(out.checks).toEqual([
+        { claim: 'labelled claim', verified: 'observed labelled claim' },
+        { claim: 'named claim' },
+        { claim: 'canonical claim', verified: 'observed canonical claim' },
+      ]);
+    });
+
     it('does NOT invent a verification: a not-yet-verified status maps to no `verified` at all (stays PREDICTED)', () => {
       const out = parse({ checks: [{ claim: 'deploy landed', status: 'predicted' }] }) as {
         checks: { claim: string; verified?: string }[];
