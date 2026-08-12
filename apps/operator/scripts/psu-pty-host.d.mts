@@ -527,6 +527,17 @@ export function startupOutputReady(agent: any, output: any): boolean;
  * OMP launches a descendant process; signalling only node-pty's immediate child
  * can let that target survive after the host exits. The direct child signal is
  * retained as a cross-platform fallback (negative group pids are POSIX-only). */
+/**
+ * node-pty's NUMERIC signal -> its name ('SIGHUP'), or null when there was no signal.
+ *
+ * WI-38054. node-pty reports a signal death as `{ exitCode: 0, signal: N }`; the number
+ * alone is unreadable in a database row, and `0`/undefined must map to null rather than
+ * to a spurious signal name — a session that exited normally must not acquire one.
+ *
+ * Resolved from `os.constants.signals` rather than a hardcoded table so it stays correct
+ * across platforms (the numbers differ) instead of confidently naming the wrong signal.
+ */
+export function signalNameFromCode(signal: any): string | null;
 export function killPtyProcessTree(child: any, signal?: string, kill?: (pid: number, signal?: string | number) => true): boolean;
 /** Status of the /mcp dialog row naming `name`: 'connected' | 'not-connected' |
  *  'unknown' | null (row doesn't name it). Negative markers are checked FIRST;
@@ -822,7 +833,10 @@ export function injectTurn(sock: any, text: any): Promise<any>;
  * @param {string} o.ownerId            coord ownerId (PAPERCUSP_SID) — the discovery key
  * @param {number|string} [o.advSessionId]  adv_sessions row id, when known
  * @param {object} [o.io]               { stdin, stdout } override (tests); default process.*
- * @param {(code:number)=>void} [o.onExit]  exit handler; default process.exit
+ * @param {(code:number, killedBySignal:string|null)=>void} [o.onExit]  exit handler;
+ *   default process.exit. `killedBySignal` is the signal NAME when the child was killed
+ *   (WI-38054) and null on a voluntary exit — it is the only thing distinguishing the
+ *   two, because node-pty reports a signal death with exitCode 0.
  * @param {boolean} [o.bridgeTty]       force the TTY bridge on/off; default = stdin.isTTY
  * @param {string} [o.kickoffFile]      server-owned session-port seed (never a CLI arg)
  * @param {object} [o.sessionPort]      { renderedHash } for the managed seed
@@ -837,7 +851,7 @@ export function hostThroughPty(o: {
     ownerId: string;
     advSessionId?: string | number | undefined;
     io?: object | undefined;
-    onExit?: ((code: number) => void) | undefined;
+    onExit?: ((code: number, killedBySignal: string | null) => void) | undefined;
     bridgeTty?: boolean | undefined;
     kickoffFile?: string | undefined;
     sessionPort?: object | undefined;
