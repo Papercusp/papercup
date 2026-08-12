@@ -383,3 +383,50 @@ describe("detail:true — content out, evidence-of-content IN", () => {
     expect(wi(loud).detailOmitted).toMatchObject({ posts: 7 });
   });
 });
+
+describe("threadLimit — bounded diagnostic thread stays consumable", () => {
+  it("keeps the bounded window, counts it, and marks large post bodies", () => {
+    const threadWindow = {
+      posts: Array.from({ length: 6 }, (_, i) => ({
+        id: i + 1,
+        thread_id: "thread-1",
+        author_id: "su-peer",
+        body: "B".repeat(800),
+        created_ts: `2026-08-12T10:0${i}:00.000Z`,
+      })),
+      total: 12,
+      topics: ["release-gate"],
+      createdAt: "2026-08-12T09:00:00.000Z",
+    };
+    const out = shapeWorkItemsGet(envelope([row({ threadWindow })]), "trimmed") as Envelope;
+    const thread = out.results[0].threadWindow as Record<string, any>;
+
+    expect(thread.shown).toBe(5);
+    expect(thread.total).toBe(12);
+    expect(thread.posts[0].id).toBe(2);
+    expect(thread.posts[0].bodyTruncated).toBe(true);
+    expect(thread.posts[0].bodyChars).toBe(800);
+    expect(thread.posts[0].body).toMatch(/TRUNCATED/);
+    expect(out._shapeNote?.dropped).toEqual(
+      expect.arrayContaining(["threadWindow.posts", "threadWindow.postBodies"]),
+    );
+  });
+
+  it("does not invent a missing-comment warning for a measured empty thread", () => {
+    const out = shapeWorkItemsGet(
+      envelope([
+        row({
+          threadWindow: { posts: [], total: 0, topics: [], createdAt: "2026-08-12T09:00:00.000Z" },
+        }),
+      ]),
+      "trimmed",
+    ) as Envelope;
+    expect(out.results[0].threadWindow).toMatchObject({ shown: 0, total: 0, posts: [] });
+    expect(out._shapeNote).toBeUndefined();
+  });
+
+  it("preserves an explicit failed bounded read instead of rendering silence", () => {
+    const out = shapeWorkItemsGet(envelope([row({ threadWindow: null, threadWindowReadFailed: true })]), "trimmed") as Envelope;
+    expect(out.results[0]).toMatchObject({ threadWindow: null, threadWindowReadFailed: true });
+  });
+});
