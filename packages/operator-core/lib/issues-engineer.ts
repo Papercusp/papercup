@@ -820,6 +820,8 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
 
 export interface ListIssuesFilter {
   state?: IssueState;
+  /** Case-insensitive literal substring matched against title + body. */
+  q?: string;
   scope?: string;
   assignee?: string;
   /** Durable delegator filter (collapse-delegate D-002): items this owner assigned. */
@@ -1070,6 +1072,11 @@ function likePrefixPattern(prefix: string): string {
   return `${prefix.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 }
 
+/** WI-<work-item-list-q>: escape LIKE metacharacters for literal substring matching. */
+function likeContainsPattern(query: string): string {
+  return `%${query.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+}
+
 // Issue-family terminal states for the P-005 audit are imported from the canonical
 // work-item-dispatch-states module (EI-18653071581558556 — this was a local literal;
 // the same set hand-copied elsewhere had already drifted).
@@ -1260,6 +1267,7 @@ export function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
 
 export async function listIssues(filter: ListIssuesFilter = {}): Promise<EngineerIssue[]> {
   const { sql } = getOrgPg();
+  const q = filter.q?.trim();
   // Kind gate: an explicit single `kind`, else an explicit `kinds` set, else the
   // default = ISSUE_KINDS (bug|change) so `task` work-items never surface as issues.
   const kindSet: readonly IssueStoreKind[] = filter.kind ? [filter.kind] : (filter.kinds ?? ISSUE_KINDS);
@@ -1306,6 +1314,7 @@ export async function listIssues(filter: ListIssuesFilter = {}): Promise<Enginee
      WHERE workspace_id = ${issuesScopeWorkspace()}
        AND kind = ANY(${kindSet as string[]}::text[])
        AND ${filter.state ? sql`state = ${filter.state}` : sql`TRUE`}
+       AND ${q ? sql`(COALESCE(title, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\' OR COALESCE(body, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\')` : sql`TRUE`}
        AND ${filter.scope ? sql`scope = ${filter.scope}` : sql`TRUE`}
        AND ${filter.assignee ? sql`assignee = ${filter.assignee}` : sql`TRUE`}
        AND ${filter.assignedBy ? sql`assigned_by = ${filter.assignedBy}` : sql`TRUE`}

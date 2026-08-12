@@ -620,6 +620,8 @@ export const FEATURE_COLS = `feature_id, item_kind, harness_slug, title, summary
 // ── Reads ─────────────────────────────────────────────────────────────────────────
 export interface ListWorkItemsFilter {
   harness?: string;
+  /** Case-insensitive literal substring matched against title + body/summary. */
+  q?: string;
   kind?: WorkItemKind;
   state?: string;
   /** Filter to items assigned to this agent (feature → taken_by; issue → assignee). */
@@ -766,9 +768,15 @@ function featureFamilyKindClause(sql: OrgSql, workspaceId: string) {
        ))`;
 }
 
+/** Escape LIKE metacharacters so a free-text list query remains a literal substring. */
+function likeContainsPattern(query: string): string {
+  return `%${query.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+}
+
 /** Cross-kind list. Default = top-level items only (chunks surface under their parent, D-004). */
 export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<WorkItem[]> {
   const { sql } = getOrgPg();
+  const q = filter.q?.trim();
   const limit = Math.min(filter.limit ?? 100, WORK_ITEMS_MAX_LIMIT);
   // assignedBy is an issue-family-only concept, so it excludes all feature rows.
   const wantFeature = (!filter.kind || familyOf(filter.kind) === 'feature') && !filter.assignedBy;
@@ -780,9 +788,10 @@ export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<W
     const rows = await sql<FeatureRowDb[]>`
       SELECT ${sql.unsafe(FEATURE_COLS)}
         FROM harness_shared.harness_features_consolidated
-       WHERE ${featureFamilyKindClause(sql, ws)}
+         WHERE ${featureFamilyKindClause(sql, ws)}
          AND workspace_id = ${ws}
          AND ${filter.harness ? sql`harness_slug = ${filter.harness}` : sql`TRUE`}
+         AND ${q ? sql`(COALESCE(title, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\' OR COALESCE(summary, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\')` : sql`TRUE`}
          AND ${filter.kind && familyOf(filter.kind) === 'feature' ? sql`item_kind = ${filter.kind}` : sql`TRUE`}
          AND ${filter.state ? sql`status = ${filter.state}` : sql`TRUE`}
          AND ${filter.assignee ? sql`taken_by = ${filter.assignee}` : sql`TRUE`}
@@ -837,6 +846,7 @@ export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<W
       kinds: filter.kind && familyOf(filter.kind) === 'issue' ? undefined : ISSUE_FAMILY_KINDS,
       scope: filter.harness ? `harness:${filter.harness}` : undefined,
       state: (filter.state as IssueState) || undefined,
+      q,
       assignee: filter.assignee,
       assignedBy: filter.assignedBy,
       // WI-3649: mirror the feature branch's admissibleOnly gate (line ~530) so
