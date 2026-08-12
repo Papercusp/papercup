@@ -11,7 +11,7 @@
  * round-trip fails open fast instead of touching a live operator.
  */
 import { describe, it, expect, beforeAll, afterAll, beforeEach, afterEach } from 'vitest';
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { execFile, execFileSync, spawn, spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
@@ -115,6 +115,85 @@ function runGate(
     timeout: 15_000,
   });
   return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status };
+}
+
+/**
+ * Async twin of `runGate`, for sweeps that spawn the hook hundreds of times (WI-38077).
+ *
+ * `runGate` is `spawnSync` deliberately and MUST stay that way — the stub-operator
+ * describe below depends on it blocking this process's event loop. But that also
+ * means a sweep over N payloads costs N x the hook's full startup, strictly
+ * serially. The hook is ~150ms per call (220KB of Python re-compiled per
+ * invocation, plus a urllib import and a refused TCP connect), so the 430-atom
+ * pre-filter sweep alone measured 58.6s — 37% of this entire file.
+ *
+ * Those spawns are independent and read-only: each one asks the hook about one
+ * atom and reads only stderr. Nothing shares state, so serial execution buys
+ * nothing. This runs them through a bounded pool instead.
+ *
+ * Use this ONLY for such sweeps. Anything that needs the event loop blocked —
+ * or that talks to the in-process stub operator — must keep using `runGate`.
+ */
+function runGateAsync(
+  payload: unknown,
+  env: Record<string, string> = {},
+): Promise<{ stdout: string; stderr: string; status: number | null }> {
+  ensureGateCredentials();
+  return new Promise((resolvePromise) => {
+    const child = execFile(
+      'bash',
+      [SCRIPT],
+      {
+        encoding: 'utf8',
+        env: {
+          PATH: process.env.PATH ?? '',
+          HOME: fakeHome,
+          PAPERCUSP_SID: nextSid(),
+          PAPERCUSP_OPERATOR_URL: 'http://127.0.0.1:1', // dead port — fail-open fast
+          PC_HEAVY_LOAD1_OVERRIDE: '0',
+          ...env,
+        },
+        timeout: 15_000,
+      },
+      (err, stdout, stderr) => {
+        const code = (err as { code?: unknown } | null)?.code;
+        resolvePromise({
+          stdout: stdout ?? '',
+          stderr: stderr ?? '',
+          status: typeof code === 'number' ? code : 0,
+        });
+      },
+    );
+    child.stdin?.end(typeof payload === 'string' ? payload : JSON.stringify(payload));
+  });
+}
+
+/**
+ * Bounded-concurrency map, preserving input order in the result.
+ *
+ * The cap is the point: each task spawns a CPU-bound Python process, and this
+ * repo's suites run on a box shared with the rest of the fleet. Unbounded
+ * `Promise.all` over 430 atoms would fork 430 interpreters at once. The total
+ * CPU work is identical either way — only the wall time and the peak process
+ * count change — so a small pool captures nearly all the win at a fraction of
+ * the peak footprint.
+ */
+async function mapWithConcurrency<T, R>(
+  items: readonly T[],
+  limit: number,
+  fn: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, async () => {
+    for (;;) {
+      const index = next++;
+      if (index >= items.length) return;
+      results[index] = await fn(items[index] as T);
+    }
+  });
+  await Promise.all(workers);
+  return results;
 }
 
 /**
@@ -3854,7 +3933,7 @@ describe('substitution pre-filter', () => {
   // EI-19296218202371307), sailing past the 60s default exactly when the
   // fleet is busiest. 5× the measured worst keeps the guard exhaustive
   // without making it a load canary.
-  it('every atom behind an ENFORCEABLE verdict passes the pre-filter', { timeout: 300_000 }, () => {
+  it('every atom behind an ENFORCEABLE verdict passes the pre-filter', { timeout: 300_000 }, async () => {
     const enforceable = new Set(
       ALL_PAIRS.filter((p) => p.expectedVerdict !== 'not-a-substitute').map(
         (p) => `${p.id}.sample.json`,
@@ -3867,15 +3946,24 @@ describe('substitution pre-filter', () => {
     // guard vacuously green.
     expect(files.length, 'a fixture is missing for some enforceable pair').toBe(enforceable.size);
 
-    const missed: string[] = [];
-    for (const file of files) {
+    // Flatten first, then sweep through a bounded pool. These probes are
+    // independent and read-only (each reads only stderr), so the original
+    // nested serial loop cost 430 x the hook's full ~150ms startup — 58.6s,
+    // 37% of this file — for no isolation benefit. See `runGateAsync`.
+    const probes = files.flatMap((file) => {
       const fixture = JSON.parse(readFileSync(join(FIXTURE_DIR, file), 'utf8')) as {
         sample: { atom: string }[];
       };
-      for (const { atom } of fixture.sample) {
-        if (!reachedOperator(runGate(bashCmd(atom)))) missed.push(`${file}: ${atom}`);
-      }
-    }
+      return fixture.sample.map(({ atom }) => ({ file, atom }));
+    });
+
+    const outcomes = await mapWithConcurrency(probes, 8, async ({ file, atom }) => ({
+      file,
+      atom,
+      reached: reachedOperator(await runGateAsync(bashCmd(atom))),
+    }));
+
+    const missed = outcomes.filter((o) => !o.reached).map((o) => `${o.file}: ${o.atom}`);
     expect(missed, `pre-filter dropped atoms a registry rule claims:\n${missed.join('\n')}`).toEqual(
       [],
     );
