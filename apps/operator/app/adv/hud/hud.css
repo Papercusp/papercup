@@ -786,6 +786,8 @@
 }
 
 .hud__card:hover { border-color: var(--border-strong); background: var(--bg-raised); }
+.hud__card--chat-unavailable { cursor: default; }
+.hud__card--chat-unavailable:hover { border-color: var(--border); background: var(--bg); }
 
 /* ── Per-card ACTION (goals-tab-improvement-2026-08-09 P-016) ─────────────────
    The card is itself a <button> whenever it has a destination, so a control that
