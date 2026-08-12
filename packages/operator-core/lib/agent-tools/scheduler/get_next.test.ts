@@ -115,6 +115,14 @@ import claimNextTool from '../work_items/claim_next';
 import { CLAIM_STATES_ALLOWLIST } from '../../work-items';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 
+function handlerPayload(out: {
+  data?: unknown;
+  content?: Array<{ text?: string }>;
+}): Record<string, unknown> {
+  if (out.data !== undefined) return out.data as Record<string, unknown>;
+  return JSON.parse(out.content?.[0]?.text ?? '{}') as Record<string, unknown>;
+}
+
 beforeEach(() => {
   reconcileFleetScopeClaimsM.mockImplementation(async () => ({
     scope: scopeState.scope,
@@ -559,6 +567,43 @@ describe('a successful claim declares the caller intent (EI-20099413453852234)',
     });
   });
 
+  it('publishes the complete committed claim through structuredContent for programmatic callers', async () => {
+    const { dispatchProjectedTool, lookupByMcpName } = await import('@papercusp/agent-mcp');
+    const projected = lookupByMcpName('scheduler:get_next')!;
+    const dispatched = await dispatchProjectedTool(
+      projected,
+      'scheduler:get_next',
+      { harness: 'papercusp' },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'ws-1',
+        harnessSlug: 'papercusp',
+        runId: 'scheduler-structured-test',
+        role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp',
+        requestedFormat: 'json',
+        requestedStructured: true,
+        tx: vi.fn(async () => []),
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    expect(projected.outputJsonSchema?.type).toBe('object');
+    expect(dispatched.result?.structuredContent).toMatchObject({
+      ok: true,
+      claimReceipt: {
+        committed: true,
+        workItemId: 'WI-4242',
+      },
+      workItem: { id: 'WI-4242' },
+    });
+  });
+
   it('passes live peer lock paths into the atomic placement rank, excluding its own locks', async () => {
     liveLockedPathsM.mockResolvedValueOnce(['packages/operator-core/lib/hot.ts']);
     await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
@@ -572,9 +617,10 @@ describe('a successful claim declares the caller intent (EI-20099413453852234)',
   it('routes a legacy/pre-envelope bug through the cheap validation lane at claim time', async () => {
     getNextM.mockResolvedValue({ workItem: { id: 'WI-4242', title: 'Fix the flaky thing', kind: 'bug' } });
     const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
-      content: Array<{ text: string }>;
+      data?: unknown;
+      content?: Array<{ text: string }>;
     };
-    expect(JSON.parse(out.content[0]!.text)).toMatchObject({
+    expect(handlerPayload(out)).toMatchObject({
       ok: true,
       workItem: { id: 'WI-4242' },
       freshness: {
@@ -588,9 +634,10 @@ describe('a successful claim declares the caller intent (EI-20099413453852234)',
   it('does not attach bug-freshness routing to a non-bug claim', async () => {
     getNextM.mockResolvedValue({ workItem: { id: 'WI-4243', title: 'Improve the flow', kind: 'change' } });
     const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
-      content: Array<{ text: string }>;
+      data?: unknown;
+      content?: Array<{ text: string }>;
     };
-    expect(JSON.parse(out.content[0]!.text)).not.toHaveProperty('freshness');
+    expect(handlerPayload(out)).not.toHaveProperty('freshness');
   });
 
   // THE REGRESSION CASE, and the reason this is a read-modify-write rather than a bare write.
@@ -618,17 +665,19 @@ describe('a successful claim declares the caller intent (EI-20099413453852234)',
   it('still returns the claim when the presence write throws', async () => {
     writePresenceM.mockRejectedValue(new Error('presence pool exhausted'));
     const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
-      content: Array<{ text: string }>;
+      data?: unknown;
+      content?: Array<{ text: string }>;
     };
-    expect(JSON.parse(out.content[0]!.text)).toMatchObject({ workItem: { id: 'WI-4242' } });
+    expect(handlerPayload(out)).toMatchObject({ workItem: { id: 'WI-4242' } });
   });
 
   it('still returns the claim when the presence READ throws', async () => {
     getPresenceM.mockRejectedValue(new Error('presence read failed'));
     const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
-      content: Array<{ text: string }>;
+      data?: unknown;
+      content?: Array<{ text: string }>;
     };
-    expect(JSON.parse(out.content[0]!.text)).toMatchObject({ workItem: { id: 'WI-4242' } });
+    expect(handlerPayload(out)).toMatchObject({ workItem: { id: 'WI-4242' } });
   });
 
   it('declares nothing on a MISS — an empty pull leaves the existing intent alone', async () => {
