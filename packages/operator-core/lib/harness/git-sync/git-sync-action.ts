@@ -10,9 +10,11 @@
  *     for the whole commit→submodule-push→pointer-bump→push sequence, so a peer
  *     agent's in-flight git work doesn't race. Held by a peer → skip this tick
  *     (back-pressure). An UNREGISTERED extra resource → skip with a loud log (a
- *     deliberate coordination surface — never auto-registered). SU-lock infra
- *     unavailable → proceed unlocked (the engine's per-routine dedup already
- *     prevents git-sync racing itself; rollout is gated).
+ *     deliberate coordination surface — never auto-registered). Every fire uses
+ *     a unique lock owner so scheduled and manual paths contend even though
+ *     both are represented by the `system:git-sync` action. SU-lock infra
+ *     unavailable → proceed unlocked (the existing fail-open behavior remains
+ *     an explicit degraded mode, with the next tick retrying the lock).
  *   - RUNTIME GATE (git-sync-any-hive P-008, action half): before anything else,
  *     a routine row pointing at a hive home / remote-hive view / non-local
  *     deployment / vanished or non-git checkout NO-OPS with a logged reason and a
@@ -23,6 +25,7 @@
  *     the open escalation (one resolver per harness). A clean sync clears the escalation.
  *   - Records `{ last_synced_at, last_status, head_sha }` onto the routine's metadata.
  */
+import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { getOrgPg } from '@papercusp/db-org';
 import { getFlag } from '@papercusp/flags/server';
@@ -148,6 +151,16 @@ import { parsePapercuspTrailers, recordCommitAttribution, type CommitAttribution
 
 const GIT_SYNC_OWNER = 'system:git-sync';
 const LOCK_TTL_SEC = 600;
+
+/**
+ * Resource locks coalesce a same-owner acquire into a lease refresh. That is
+ * correct for one long-lived caller, but the cron and `git-sync:run` paths both
+ * identify themselves as `system:git-sync`; sharing that owner would let two
+ * fires enter the same checkout concurrently. Keep the stable identity for
+ * broadcasts, but give every fire its own lock owner so the resource store's
+ * different-owner conflict path provides real single-flight protection.
+ */
+const newGitSyncLockOwner = (): string => `${GIT_SYNC_OWNER}:${randomUUID()}`;
 /**
  * The `harness_escalations` row key for ALL git-sync escalations is
  * `(harness_slug, 'git-sync')` — a CONSTANT phase, deliberately NOT the lifecycle
@@ -298,11 +311,11 @@ interface AcquireOutcome {
   blockedReason?: string;
 }
 
-async function releaseAll(cd: string, acquired: string[]): Promise<void> {
+async function releaseAll(cd: string, owner: string, acquired: string[]): Promise<void> {
   for (const resource of acquired.reverse()) {
     try {
-      await inWorkspaceTxn(cd, GIT_SYNC_OWNER, (tx) =>
-        tryReleaseResource(tx, { coordinationDomain: cd, owner: GIT_SYNC_OWNER, resource }));
+      await inWorkspaceTxn(cd, owner, (tx) =>
+        tryReleaseResource(tx, { coordinationDomain: cd, owner, resource }));
     } catch {
       /* best-effort: TTL reaps it anyway */
     }
@@ -317,7 +330,13 @@ export { acquireWithContentionRetry } from '../../agent-tools/locks/contention-r
 
 /** Acquire `git-sync:<slug>` (auto-registered) + every extra resource exclusively,
  *  or signal held/error (releasing partials). */
-async function acquireLocks(cd: string, slug: string, resources: string[], acquired: string[]): Promise<AcquireOutcome> {
+async function acquireLocks(
+  cd: string,
+  slug: string,
+  resources: string[],
+  acquired: string[],
+  owner: string,
+): Promise<AcquireOutcome> {
   const perSlug = gitSyncResourceName(slug);
   for (const resource of resources) {
     let r: { ok: boolean; reason?: string };
@@ -326,14 +345,14 @@ async function acquireLocks(cd: string, slug: string, resources: string[], acqui
       // workspace-lock contention spike delays — but does not multi-minute-stall —
       // the commit, instead of skipping the tick outright.
       r = await acquireWithContentionRetry(() =>
-        inWorkspaceTxn(cd, GIT_SYNC_OWNER, async (tx) => {
+        inWorkspaceTxn(cd, owner, async (tx) => {
           // Auto-register ONLY the per-slug name, in the same txn as its acquire.
           if (resource === perSlug) await registerGitSyncResource(tx as SqlTag, slug);
           return tryAcquireResource(tx, {
             coordinationDomain: cd,
             resource,
             mode: 'exclusive',
-            owner: GIT_SYNC_OWNER,
+            owner,
             ownerLabel: `git-sync:${slug}`,
             reason: `auto-commit ${slug}`,
             ttlSec: LOCK_TTL_SEC,
@@ -347,13 +366,13 @@ async function acquireLocks(cd: string, slug: string, resources: string[], acqui
       console.warn(
         `[git-sync] lock ${contended ? 'contended after retries' : 'infra unavailable'} (${resource}): ${e instanceof Error ? e.message : e}`,
       );
-      await releaseAll(cd, acquired);
+      await releaseAll(cd, owner, acquired);
       acquired.length = 0;
       return { state: 'error' };
     }
     if (!r.ok) {
       // A peer holds it (or an extra name is unregistered) — skip this tick, retry next.
-      await releaseAll(cd, acquired);
+      await releaseAll(cd, owner, acquired);
       acquired.length = 0;
       return { state: 'held', blockedOn: resource, blockedReason: r.reason };
     }
