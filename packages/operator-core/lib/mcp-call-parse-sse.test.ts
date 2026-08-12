@@ -4,7 +4,7 @@ import { describe, expect, it } from 'vitest';
 // papercusp-su MCP client drops (EI-1740 / EI-1750). Root scripts/** route into
 // this workspace for test selection (EI-19346163916263067).
 // @ts-expect-error — plain .mjs script, no type declarations
-import { parseSse } from '../../../scripts/mcp-call.mjs';
+import { parseSse, resolveCandidatePorts } from '../../../scripts/mcp-call.mjs';
 
 const RESULT_FRAME = (payload: unknown, id: number | string = 1) =>
   `event: message\ndata: ${JSON.stringify({
@@ -96,5 +96,27 @@ describe('mcp-call parseSse', () => {
   it('returns non-content results verbatim', () => {
     const raw = `event: message\ndata: ${JSON.stringify({ jsonrpc: '2.0', id: 1, result: { plain: true } })}\n`;
     expect(parseSse(raw)).toEqual({ result: { plain: true } });
+  });
+});
+
+describe('mcp-call operator port selection', () => {
+  it('EI-20227417720625568: an explicit --port is a fail-closed single-port pin', () => {
+    expect(resolveCandidatePorts({ port: '3170' }, { PAPERCUSP_HONO_PORT: '3999' })).toEqual({
+      configuredPort: '3170',
+      candidatePorts: ['3170'],
+      pinned: true,
+    });
+  });
+
+  it('retains canonical recovery fallback for a stale inherited port hint', () => {
+    expect(resolveCandidatePorts({}, { PAPERCUSP_HONO_PORT: '3170' })).toEqual({
+      configuredPort: '3170',
+      candidatePorts: ['3170', '3070'],
+      pinned: false,
+    });
+  });
+
+  it('refuses malformed explicit pins instead of silently selecting another operator', () => {
+    expect(() => resolveCandidatePorts({ port: 'nope' }, {})).toThrow(/--port must be an integer/);
   });
 });

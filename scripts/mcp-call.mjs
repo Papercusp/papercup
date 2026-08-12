@@ -11,7 +11,7 @@
  * writes attribute correctly.
  *
  * Usage:
- *   node scripts/mcp-call.mjs <tool> [jsonArgs] [--client <id>] [--workspace <ws>] [--harness <h>] [--raw]
+ *   node scripts/mcp-call.mjs <tool> [jsonArgs] [--client <id>] [--workspace <ws>] [--harness <h>] [--port <n>] [--raw]
  * Examples:
  *   node scripts/mcp-call.mjs coord:whoami
  *   node scripts/mcp-call.mjs work_items:get '{"id":"EI-1750"}' --harness papercup
@@ -83,10 +83,29 @@ export function parseSse(raw, requestId = 1) {
   };
 }
 
+/** Resolve the operator ports to try. An explicit CLI port is a fail-closed pin;
+ * the inherited environment hint retains its recovery fallback to canonical. */
+export function resolveCandidatePorts(flags = {}, env = process.env) {
+  const CANONICAL_PORT = '3070';
+  if (flags.port !== undefined) {
+    const pinned = String(flags.port).trim();
+    if (!/^\d+$/.test(pinned) || Number(pinned) < 1 || Number(pinned) > 65535) {
+      throw new Error(`--port must be an integer from 1 to 65535 (received ${JSON.stringify(flags.port)})`);
+    }
+    return { configuredPort: pinned, candidatePorts: [pinned], pinned: true };
+  }
+  const configuredPort = env.PAPERCUSP_HONO_PORT ?? CANONICAL_PORT;
+  return {
+    configuredPort: String(configuredPort),
+    candidatePorts: [...new Set([String(configuredPort), CANONICAL_PORT])],
+    pinned: false,
+  };
+}
+
 async function main() {
   const { tool, jsonArgs, flags } = parseArgs(process.argv.slice(2));
   if (!tool || tool === '--help' || tool === '-h') {
-    console.error('usage: node scripts/mcp-call.mjs <ns:verb> [jsonArgs] [--client <id>] [--workspace <ws>] [--harness <h>] [--raw]');
+    console.error('usage: node scripts/mcp-call.mjs <ns:verb> [jsonArgs] [--client <id>] [--workspace <ws>] [--harness <h>] [--port <n>] [--raw]');
     process.exit(tool ? 0 : 2);
   }
   let tok;
@@ -114,9 +133,7 @@ async function main() {
   // inherits the same stale port, the primary and its fallback fail together and the
   // symptom reads as "the server is down" while the server is answering in ~4ms.
   // So: try the configured port, then the canonical one, and say exactly what happened.
-  const CANONICAL_PORT = 3070;
-  const configuredPort = process.env.PAPERCUSP_HONO_PORT ?? String(CANONICAL_PORT);
-  const candidatePorts = [...new Set([String(configuredPort), String(CANONICAL_PORT)])];
+  const { configuredPort, candidatePorts, pinned } = resolveCandidatePorts(flags);
 
   const init = {
     method: 'POST',
@@ -133,7 +150,7 @@ async function main() {
   for (const port of candidatePorts) {
     try {
       res = await fetch(`http://localhost:${port}/api/mcp?${qs}`, init);
-      if (port !== String(configuredPort)) {
+      if (!pinned && port !== String(configuredPort)) {
         console.error(
           `mcp-call: WARNING — nothing was listening on PAPERCUSP_HONO_PORT=${configuredPort}; ` +
             `reached the operator on the canonical port ${port} instead. Your environment's port is ` +
@@ -150,6 +167,7 @@ async function main() {
   if (!res) {
     console.error(
       `mcp-call: could not reach the operator MCP endpoint. Tried port(s): ${attempts.join(', ')}.\n` +
+        (pinned ? `  Port ${configuredPort} was explicitly pinned with --port, so no fallback was attempted.\n` : '') +
         `  Nothing is listening there — but a HEALTHY operator on a DIFFERENT port is the common\n` +
         `  case, so do not read this as a dead server. Find the live port:\n` +
         `    ss -ltn | grep -E ':(3070|3170)'   # then: PAPERCUSP_HONO_PORT=<live port> re-run\n` +
