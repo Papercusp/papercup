@@ -307,7 +307,9 @@ function checksSpec() {
         'ASSERTED claim from a VERIFIED one. Carry-forward semantics: OMITTED preserves the existing rows (a ' +
         'plain rewrite never silently drops them) and [] clears them. With `append: true` a supplied list is ' +
         `UNIONED onto the carried set (supplied wins on matching claim text), but capped at ` +
-        `${CARRY_NOTE_MAX_CHECKS}: an overflow EVICTS THE CARRIED TAIL, so an additive write CAN drop rows. ` +
+        `${CARRY_NOTE_MAX_CHECKS}: an overflow would evict the carried tail, so an additive write refuses atomically ` +
+        'before it can drop rows. Retire stale rows with a plain replace first, or append without `checks` to leave ' +
+        'the carried set untouched. ' +
         'WITHOUT append a supplied list REPLACES the set: send the FULL set you want stored, ' +
         'because any stored claim you leave out is DROPPED — that is how you RETIRE a stale check. A supplied ' +
         'row whose claim text matches a stored one inherits that row\'s recheck/verified/sinceMs when you omit ' +
@@ -335,7 +337,8 @@ const itemSpec = z.object({
       'future pickup uses. A missing `checkpoint` is allowed with `checks` as an additive, body-preserving patch. ' +
       'Otherwise append requires a non-blank `checkpoint` (append + clear is contradictory — rejected, not silently ' +
       'treated as a clear). Bounded to the 32000-char cap: the OLDEST content is trimmed first if the join would ' +
-      'overflow it.',
+      `overflow it. A checks union that would exceed the ${CARRY_NOTE_MAX_CHECKS}-row cap is refused before the write, so an additive ` +
+      'append never evicts carried checks; retire stale rows with a plain replace first or omit `checks`.',
   ),
   confirmShrink: looseBoolean().describe(
     'EI-18140632570924965: a plain replace (no append) that would shrink a substantial prior checkpoint by ' +
@@ -354,7 +357,7 @@ export default defineTool({
     'Your transcript does NOT carry across a task boundary / re-spawn; the checkpoint is your continuity, ' +
     "re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; `append:true` joins instead. " +
     'Writes are verify-read. A plain replace shrinking a substantial checkpoint >50% is retried as a safe append, ' +
-    'while an append with a disagreeing pre-read is BLOCKED; refusals carry `errorCode` + recovery args. ' +
+    'while an append with a disagreeing pre-read or an overflowing checks union is BLOCKED; refusals carry `errorCode` + recovery args. ' +
     'Refuses a peer-held item (`not_holder`).',
   guidance: {
     when:
@@ -746,15 +749,23 @@ export default defineTool({
                   // tool's separate pre-read above — so disagreement between the two is
                   // exactly the failure signature: the write path resolves the item, the
                   // (different) read path used to build the join does not.
-                  (_priorNote, priorLen) =>
-                    priorLen > 500 && (appendPriorRaw === null || appendPriorRaw.length === 0)
-                      ? `append_base_unreadable — the append pre-read returned ${appendPreReadFailed ? 'an error' : 'nothing'} ` +
+                  (_priorNote, priorLen) => {
+                    if (priorLen > 500 && (appendPriorRaw === null || appendPriorRaw.length === 0)) {
+                      return `append_base_unreadable — the append pre-read returned ${appendPreReadFailed ? 'an error' : 'nothing'} ` +
                         `while the current checkpoint is ${priorLen} chars (read authoritatively at write time, inside ` +
                         'the same locked transaction as this write). Appending now would silently REPLACE it instead of ' +
                         'joining — refusing the write rather than losing it. Retry (a transient read/key mismatch is the ' +
                         'likely cause), pass { harness } explicitly, or pass { confirmShrink: true } to force the replace ' +
-                        'if that is actually intended.'
-                      : null
+                        'if that is actually intended.';
+                    }
+                    const overflowCount = appendChecksOverflowCount(_priorNote, suppliedChecks);
+                    return overflowCount > 0
+                      ? `append_checks_overflow — the supplied checks would union to more than the ${CARRY_NOTE_MAX_CHECKS}-row cap ` +
+                        `(${overflowCount} carried row(s) would be evicted). Refusing the additive write before it changes ` +
+                        'the checkpoint. Retire stale rows with a plain replace first, or retry this append without `checks` ' +
+                        '(or with `checks: []`) to preserve the carried set.'
+                      : null;
+                  }
                 : undefined,
           ...depsOpt,
         });
@@ -801,8 +812,11 @@ export default defineTool({
             // because this option also serves append_base_unreadable failures.
             recovery: {
               append: {
-                args: { append: true },
-                description: 'Join this submitted checkpoint onto the existing note and preserve its prior content.',
+                args: errorCode === 'append_checks_overflow' ? { append: true, checks: [] } : { append: true },
+                description:
+                  errorCode === 'append_checks_overflow'
+                    ? 'Retry as an additive body-only append (omit checks or pass checks: []) after separately retiring stale rows if needed.'
+                    : 'Join this submitted checkpoint onto the existing note and preserve its prior content.',
               },
               replace: {
                 args: { append: false, confirmShrink: true },

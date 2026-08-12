@@ -1370,16 +1370,33 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
          * "re-send the FULL set" is unachievable at the cap, because the full set is by
          * definition larger than `.max(CARRY_NOTE_MAX_CHECKS)` and the call is rejected.
          *
-         * This guard therefore pins the DIAGNOSIS, not just the drop: a note that
-         * reintroduces the replace framing (or the impossible remedy) on an append fails
-         * here, even though the eviction it describes is unchanged and deliberate.
+         * The guard therefore prevents the loss, not just diagnoses it: the authoritative
+         * locked prior is checked before the append transform can evict its carried tail.
          */
-        it('at the cap, append EVICTS the carried tail and says CAP EVICTION — never the replace text', async () => {
+        it('at the cap, append refuses the overflowing union atomically instead of evicting the carried tail', async () => {
           const atCap = Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({
             claim: `PEER-${String(i + 1).padStart(2, '0')} holds`,
             recheck: `probe ${i + 1}`,
           }));
           await seed(atCap);
+          const prior = await lastStored();
+          if (prior === null) throw new Error('seed did not produce a prior checkpoint');
+          let writes = 0;
+
+          // Model the real store contract: the guard runs against the authoritative
+          // locked prior, and a blocked result performs no write.
+          setWorkItemCheckpointWithPrior.mockImplementation(
+            async (
+              _ref: unknown,
+              _incoming: string | null | undefined,
+              opts?: { guard?: (priorNote: string | null, priorLength: number) => string | null },
+            ) => {
+              const blockedReason = opts?.guard?.(prior, prior.length) ?? undefined;
+              if (blockedReason) return { stored: prior, priorLength: prior.length, blockedReason };
+              writes += 1;
+              return { stored: prior, priorLength: prior.length };
+            },
+          );
 
           const r = (await one({
             id: 'WI-7',
@@ -1389,30 +1406,17 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
               { claim: 'MINE-A holds', verified: 'measured' },
               { claim: 'MINE-B holds', verified: 'measured' },
             ],
-          })) as { ok: boolean; checks: number; checksDropped?: string[]; checksDroppedNote?: string };
+          })) as { ok: boolean; error: string; errorCode: string; recovery: { append: unknown } };
 
-          // The write still succeeds and the set stays bounded.
-          expect(r.ok).toBe(true);
-          expect(r.checks).toBe(CARRY_NOTE_MAX_CHECKS);
-
-          // Supplied rows are kept; the OLDEST carried rows are the ones evicted.
-          const stored = await lastStored();
-          expect(stored).toContain('MINE-A holds');
-          expect(stored).toContain('MINE-B holds');
-          expect(r.checksDropped).toHaveLength(2);
-          expect(r.checksDropped).toEqual([
-            `PEER-${String(CARRY_NOTE_MAX_CHECKS - 1).padStart(2, '0')} holds`,
-            `PEER-${String(CARRY_NOTE_MAX_CHECKS).padStart(2, '0')} holds`,
-          ]);
-
-          // The DIAGNOSIS is the point of this test.
-          expect(r.checksDroppedNote).toContain('CAP EVICTION');
-          // Never the replace framing — that cause did not occur on this path.
-          expect(r.checksDroppedNote).not.toContain('REPLACES the stored set');
-          // Never the unachievable remedy: re-sending the full set is over the cap.
-          expect(r.checksDroppedNote).not.toMatch(/Re-send the FULL set/i);
-          // It must point at the remedy that actually works.
-          expect(r.checksDroppedNote).toMatch(/RETIRE/);
+          // The additive write is refused before the transform can evict rows.
+          expect(r.ok).toBe(false);
+          expect(r.errorCode).toBe('append_checks_overflow');
+          expect(r.error).toContain('append_checks_overflow');
+          expect(r.error).toContain(`${CARRY_NOTE_MAX_CHECKS}-row cap`);
+          expect(r.error).toMatch(/RETIRE stale rows|without `checks`/i);
+          expect(r.recovery.append).toMatchObject({ args: { append: true, checks: [] } });
+          expect(writes).toBe(0);
+          expect(await lastStored()).toBe(prior);
         });
 
         it('PLAIN (non-append) replace is UNCHANGED — retiring a stale check still works', async () => {
