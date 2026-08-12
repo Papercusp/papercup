@@ -114,6 +114,7 @@ import { probeWakeReachability } from '../../events/await/wake-reachability';
 import { findLiveHost } from '../../events/await/psu-pty-discovery';
 import { resolveHomePotSlug } from '../pot/_resolve';
 import { decideDefaultCarry, computeLoopOverwriteNote, resolveBlockedBackoff } from './arm';
+import { mockResolvedOnceTyped, mockResolvedTyped, mockReturnOnceTyped } from '../../testing/typed-mock';
 
 const materializeM = vi.mocked(materializeLoop);
 const buildPromptM = vi.mocked(buildLoopWakePrompt);
@@ -149,7 +150,7 @@ beforeEach(() => {
   claimM.mockResolvedValue(null as never);
   classifyM.mockReturnValue({ reason: 'gated', holder: null } as never);
   getWiM.mockResolvedValue(null as never);
-  admitM.mockResolvedValue({ allowed: true, scoped: false } as never);
+  mockResolvedTyped(admitM, { allowed: true, scoped: false });
   // EI-18221784742583615: default no prior loop ⇒ no overwrite note (every existing test).
   priorLoopM.mockResolvedValue(null as never);
   // EI-19447204017443244: default no live wake-awaits (the 'none' rendering).
@@ -214,13 +215,32 @@ describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm tim
   const claimedRow = { id: 'X', assignee: 'su-caller-own-id' };
 
   it('EI-20123870155538062: refuses an out-of-spec auto-claim before mutation, but still arms the loop', async () => {
-    admitM.mockResolvedValue({
+    mockResolvedTyped(admitM, {
       allowed: false,
       scoped: true,
       code: 'fleet_scope_violation',
       reason: "work-item WI-OUT does not match fleet spec 'fleet-x@rev7'",
-      scope: {} as never,
-    } as never);
+      scope: {
+        ownerId: 'su-caller-own-id',
+        fleetSlug: 'fleet-x',
+        fleetRole: 'member',
+        workspaceId: 'ws-1',
+        record: {
+          source: 'fleet',
+          spec: {
+            specVersion: '1.0',
+            specId: 'fleet-x',
+            revision: 7,
+            view: { filter: { field: 'id', op: 'in', value: ['WI-OUT'] } },
+            rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+          },
+          revision: 7,
+          updatedBy: null,
+          updatedAt: null,
+          fleetSlug: 'fleet-x',
+        },
+      },
+    });
 
     const b = body(await call({ workItem: 'WI-OUT' }));
 
@@ -322,7 +342,7 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
   it('EI-20185529721601434: resolves a workspace-scoped wildcard session to its formal home pot', async () => {
     const { resolvePotHomeSlug } = await import('../../pot/wake');
     homePotM.mockResolvedValueOnce('workspace-home');
-    vi.mocked(resolvePotHomeSlug).mockReturnValueOnce('workspace-home' as never);
+    mockReturnOnceTyped(potHomeM, 'workspace-home');
     const out = await tool.handler(
       { intervalSec: 120, goal: 'g' } as never,
       { harnessSlug: '*', workspaceId: 'ws-1' } as never,
@@ -334,8 +354,22 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
   });
 
   it('EI-20211399000978706: reuses the concrete harness persisted by coord:orient before workspace-home fallback', async () => {
-    briefM.mockResolvedValueOnce({ harnessSlug: 'oriented-harness' } as never);
-    potHomeM.mockReturnValueOnce('oriented-harness' as never);
+    mockResolvedOnceTyped(briefM, {
+      ownerId: 'su-caller-own-id',
+      workspaceId: 'ws-1',
+      ownerLabel: 'su · caller',
+      source: 'test',
+      intent: '',
+      currentPlanSlug: null,
+      currentFiles: [],
+      harnessSlug: 'oriented-harness',
+      potSlug: null,
+      goalId: null,
+      nativeSessionId: null,
+      firstSeenAt: '2026-01-01T00:00:00.000Z',
+      updatedAt: '2026-01-01T00:00:00.000Z',
+    });
+    mockReturnOnceTyped(potHomeM, 'oriented-harness');
     const out = await tool.handler(
       { intervalSec: 120, goal: 'g' } as never,
       { harnessSlug: '*', workspaceId: 'ws-1' } as never,

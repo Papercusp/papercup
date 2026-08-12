@@ -12,6 +12,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
+import { mockImplementationTyped, mockReturnOnceTyped, mockReturnTyped } from '../../../testing/typed-mock';
 
 // EI-20130618357432548: keep the REAL constants (notably ADMIN_COORD_UI_OWNER) via
 // importOriginal. A bare factory replaces the whole module, so send.ts's
@@ -145,7 +146,7 @@ beforeEach(() => {
   n = 0;
   // each send mints a fresh msg_id; echo the resolved `to` back on the envelope
   sendM.mockImplementation(async (_id, opts: { to: string[] }) => ({ to: opts.to, msg_id: `m${++n}`, ts: `t${n}` }) as never);
-  unresolvedAudienceM.mockReturnValue([] as never);
+  mockReturnTyped(unresolvedAudienceM, []);
   // recipients resolve 1:1 by default (no unknowns)
   resolveM.mockImplementation(async (to: readonly string[]) => ({ resolved: to, unknown: [], ambiguous: [] }) as never);
   // wake-on-reply flag ON by default; no original message by default
@@ -820,8 +821,14 @@ describe('coord:send zero-recipient audience (EI-6874)', () => {
   });
 
   it('a partial audience miss is reported without hiding the valid recipient', async () => {
-    unresolvedAudienceM.mockReturnValueOnce(['@fleet-leader:owl-field-guide-goal-drain'] as never);
-    sendM.mockImplementationOnce(async () => ({ to: ['su-live'], msg_id: 'm1', ts: 't1' }) as never);
+    mockReturnOnceTyped(unresolvedAudienceM, ['@fleet-leader:owl-field-guide-goal-drain']);
+    mockImplementationTyped(sendM, async () => ({
+      from: 'me',
+      to: ['su-live'],
+      kind: 'message',
+      msg_id: 'm1',
+      ts: 't1',
+    }));
     const b = await body({
       to: ['@fleet-leader:owl-field-guide-goal-drain', 'su-live'],
       summary: 'status',

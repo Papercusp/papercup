@@ -89,7 +89,7 @@ describe('wakeRecipients wake-mode gate (hive-agent-tabs D-005, graduated by sta
   });
 
   it('the delivery-ladder rescue wake FIRES in manual mode so the detector cannot be muted by the pause', async () => {
-    vi.mocked(resolveWakeMode).mockResolvedValue('manual' as never);
+    mockResolvedTyped(vi.mocked(resolveWakeMode), 'manual');
     const r = await wakeRecipients(['s-1'], {
       source: 'system:delivery-ladder',
       summary: 'delivery-ladder rescue',

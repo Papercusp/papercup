@@ -6,6 +6,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/locks/release.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mockResolvedOnceTyped, mockResolvedTyped } from '../../testing/typed-mock';
 
 vi.mock('./identity', () => ({ readIdentity: vi.fn(() => ({ ownerId: 'me', ownerLabel: 'Me', coordinationDomain: 'dom' })) }));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me' })) }));
@@ -90,9 +91,12 @@ describe('locks:release handler', () => {
     vi.useFakeTimers();
     try {
       const contended = { name: 'WorkspaceContendedError', pgCode: '55P03' };
-      routeM
-        .mockRejectedValueOnce(contended)
-        .mockResolvedValueOnce({ value: { ok: true, released: ['a.ts'] }, via: 'local-authority', scope: 'harness-x' } as never);
+      routeM.mockRejectedValueOnce(contended);
+      mockResolvedOnceTyped(routeM, {
+        value: { ok: true, released: ['a.ts'] },
+        via: 'local-authority',
+        scope: 'harness-x',
+      });
 
       const pending = call({ lock_id: '11111111-1111-1111-1111-111111111111' });
       await vi.runAllTimersAsync();
@@ -111,9 +115,8 @@ describe('locks:release handler', () => {
       const contended = { name: 'WorkspaceContendedError', pgCode: '57014' };
       routeM.mockRejectedValue(new Error('authority route unavailable'));
       const tryReleaseM = vi.mocked((await import('./su-lock-store')).tryRelease);
-      tryReleaseM
-        .mockRejectedValueOnce(contended)
-        .mockResolvedValue({ released: ['a.ts'] } as never);
+      tryReleaseM.mockRejectedValueOnce(contended);
+      mockResolvedTyped(tryReleaseM, { released: ['a.ts'] });
 
       const pending = call({ lock_id: '11111111-1111-1111-1111-111111111111' });
       await vi.runAllTimersAsync();

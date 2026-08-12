@@ -9,6 +9,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/work_items/update.test.ts
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mockImplementationTyped, mockResolvedTyped } from '../../testing/typed-mock';
 
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me' })) }));
 vi.mock('../../work-items', () => ({
@@ -18,7 +19,7 @@ vi.mock('../../work-items', () => ({
   explainIssueClaimFloors: vi.fn(),
 }));
 
-import { updateWorkItem, mergeWorkItemPayload, linkWorkItem, explainIssueClaimFloors } from '../../work-items';
+import { updateWorkItem, mergeWorkItemPayload, linkWorkItem, explainIssueClaimFloors, type WorkItem } from '../../work-items';
 const updM = vi.mocked(updateWorkItem);
 const mergeM = vi.mocked(mergeWorkItemPayload);
 const linkM = vi.mocked(linkWorkItem);
@@ -28,6 +29,40 @@ const tool = (await import('./update')).default;
 type Out = { data: any };
 const body = async (args: Record<string, unknown>) =>
   ((await tool.handler(args as never, {} as never)) as Out).data;
+
+const workItemFixture = (over: Partial<WorkItem> = {}): WorkItem => ({
+  id: 'WI-1',
+  kind: 'bug',
+  family: 'issue',
+  harness: 'papercup',
+  title: 'test item',
+  summary: '',
+  state: 'open',
+  assignee: null,
+  takenAt: null,
+  lastProgressAt: null,
+  assignedBy: null,
+  createdBy: null,
+  severity: null,
+  goalId: null,
+  parent: null,
+  payload: null,
+  origin: null,
+  auditVerdict: null,
+  verifiedAuthorGithubUserId: null,
+  rank: null,
+  rankWriter: null,
+  rankUpdatedAt: null,
+  priority: null,
+  terminalOwner: null,
+  terminalCompletionRef: null,
+  terminalCompletionEvidence: null,
+  completionAuthority: null,
+  createdAt: '2026-01-01T00:00:00.000Z',
+  updatedAt: '2026-01-01T00:00:00.000Z',
+  closedAt: null,
+  ...over,
+});
 
 beforeEach(() => vi.clearAllMocks());
 
@@ -46,7 +81,7 @@ describe('work_items:update handler (bulk keyed-array)', () => {
   });
 
   it('passes a goal attribution through for an existing item', async () => {
-    updM.mockResolvedValue({ ok: true, item: { id: 'EI-1', goalId: 'goal-a' } } as never);
+    mockResolvedTyped(updM, { ok: true, item: workItemFixture({ id: 'EI-1', goalId: 'goal-a' }) });
     const b = await body({ id: 'EI-1', goal: 'goal-a' });
     expect(updM).toHaveBeenCalledWith(
       'EI-1',
@@ -58,12 +93,12 @@ describe('work_items:update handler (bulk keyed-array)', () => {
   });
 
   it('backfills payload.plan_item and its coverage edge for an existing item', async () => {
-    updM.mockResolvedValue({ ok: true, item: { id: 'EI-1', harness: 'papercusp' } } as never);
-    mergeM.mockResolvedValue({
+    mockResolvedTyped(updM, { ok: true, item: workItemFixture({ id: 'EI-1', harness: 'papercusp' }) });
+    mockResolvedTyped(mergeM, workItemFixture({
       id: 'EI-1',
       harness: 'papercusp',
       payload: { plan_item: { plan_slug: 'plan-a', item_id: 'P-004', harness_slug: 'papercusp' } },
-    } as never);
+    }));
     const b = await body({
       id: 'EI-1',
       plan_item: { slug: 'plan-a', item: 'P-004' },
@@ -84,11 +119,13 @@ describe('work_items:update handler (bulk keyed-array)', () => {
   });
 
   it('applies plan_item to a feature-family item instead of refusing the family-agnostic stamp', async () => {
-    updM.mockResolvedValue({ ok: false, reason: 'unsupported_family' } as never);
-    mergeM.mockResolvedValue({
+    mockResolvedTyped(updM, { ok: false, reason: 'unsupported_family' });
+    mockResolvedTyped(mergeM, workItemFixture({
       id: 'F-1',
+      kind: 'feature',
+      family: 'feature',
       payload: { plan_item: { plan_slug: 'plan-a', item_id: 'P-002', harness_slug: 'papercusp' } },
-    } as never);
+    }));
     const b = await body({ id: 'F-1', harness: 'papercusp', plan_item: { slug: 'plan-a', item: 'P-002' } });
     expect(mergeM).toHaveBeenCalledWith(
       'F-1',
@@ -105,7 +142,7 @@ describe('work_items:update handler (bulk keyed-array)', () => {
   });
 
   it('fans out the top-level goal default while preserving a per-item clear', async () => {
-    updM.mockImplementation(async (id: string) => ({ ok: true, item: { id } }) as never);
+    mockImplementationTyped(updM, async (id) => ({ ok: true, item: workItemFixture({ id }) }));
     await body({ goal: 'goal-a', items: [{ id: 'EI-1' }, { id: 'EI-2', goal: null }] });
     expect(updM).toHaveBeenNthCalledWith(1, 'EI-1', expect.objectContaining({ goal: 'goal-a' }), 'me', expect.any(Object));
     expect(updM).toHaveBeenNthCalledWith(2, 'EI-2', expect.objectContaining({ goal: null }), 'me', expect.any(Object));

@@ -2,22 +2,54 @@
  * mocked here; core lifecycle and atomic row semantics live in
  * conversations-core.test.ts. */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { mockResolvedTyped } from '../../../testing/typed-mock';
 
 vi.mock('../identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me' })) }));
 vi.mock('../conversations', () => ({ supersedeConversation: vi.fn() }));
 
 import { supersedeConversation } from '../conversations';
+import type { ConversationRow } from '../conversations-store';
+import type { OpenConversationResult } from '../conversations-core';
 const supersedeM = vi.mocked(supersedeConversation);
 const tool = (await import('./conversations-supersede')).default;
 
 type Out = { data: any };
 const body = async (args: unknown) => (((await tool.handler(args as never, {} as never)) as Out).data);
 
+const conversationFixture = (over: Partial<ConversationRow> = {}): ConversationRow => ({
+  id: 'conv-old',
+  kind: 'question',
+  scope: 'operator',
+  harness_slug: null,
+  asker_id: 'me',
+  title: null,
+  body: 'question',
+  state: 'open',
+  accepted_answer: null,
+  accepted_post_id: null,
+  capture_target: null,
+  promoted_issue_id: null,
+  superseded_by: null,
+  created_ts: '2026-01-01T00:00:00.000Z',
+  updated_ts: '2026-01-01T00:00:00.000Z',
+  resolved_ts: null,
+  superseded_ts: null,
+  ...over,
+});
+
+const openConversationFixture = (over: Partial<OpenConversationResult> = {}): OpenConversationResult => ({
+  conversation: conversationFixture(),
+  thread_id: 'thr-conv-new',
+  topics: [],
+  delivered: 0,
+  ...over,
+});
+
 beforeEach(() => vi.clearAllMocks());
 
 describe('conversations:supersede handler', () => {
   it('maps a lifecycle error to the item instead of failing the whole call', async () => {
-    supersedeM.mockResolvedValue({ error: 'already_superseded' } as never);
+    mockResolvedTyped(supersedeM, { error: 'already_superseded' });
     const result = await body({
       id: 'conv-old',
       replacement: { body: 'corrected question' },
@@ -27,11 +59,15 @@ describe('conversations:supersede handler', () => {
   });
 
   it('returns the RETRACTED pointer and replacement thread id', async () => {
-    supersedeM.mockResolvedValue({
-      conversation: { id: 'conv-old', state: 'superseded', superseded_by: 'conv-new' },
-      replacement: { conversation: { id: 'conv-new', state: 'open' }, thread_id: 'thr-conv-new' },
+    mockResolvedTyped(supersedeM, {
+      conversation: conversationFixture({ state: 'superseded', superseded_by: 'conv-new' }),
+      replacement: openConversationFixture({
+        conversation: conversationFixture({ id: 'conv-new', state: 'open' }),
+        thread_id: 'thr-conv-new',
+        delivered: 2,
+      }),
       delivered: 2,
-    } as never);
+    });
     const result = await body({
       id: 'conv-old',
       replacement: { body: 'corrected question', topics: ['release'] },
