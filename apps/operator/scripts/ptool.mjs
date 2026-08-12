@@ -372,17 +372,42 @@ export function prettyText(text) {
 /** Prefer the complete structured result requested by ptool, then fall back to
  *  flattening an MCP tools/call result's `content[]` into one text blob.
  *  Content text may carry result-door truncation markers and is therefore a
- *  human-readable fallback, not the scripting authority. Pure. */
-export function resultToText(result) {
+ *  human-readable fallback, not the scripting authority. Pure.
+ *  @param {any} result
+ *  @param {{raw?: boolean}} [options]
+ */
+export function resultToText(result, { raw = false } = {}) {
   if (result && Object.prototype.hasOwnProperty.call(result, 'structuredContent')) {
     const structuredText = JSON.stringify(result.structuredContent);
     if (typeof structuredText === 'string') return structuredText;
   }
 
   const parts = Array.isArray(result?.content) ? result.content : [];
+  const textParts = parts
+    .filter((c) => c && c.type === 'text' && typeof c.text === 'string')
+    .map((c) => c.text);
   const contentText = parts
     .map((c) => (c && c.type === 'text' && typeof c.text === 'string' ? c.text : JSON.stringify(c)))
     .join('\n');
+
+  // MCP guidance is appended as a separate text item (for example, the
+  // `See also:` block on loop:status). It is useful in the interactive
+  // display, but contaminates stdout for `ptool --raw | jq`. If the joined
+  // body is not JSON, recover the first complete JSON text item as the
+  // scripting payload. Sanitize before parsing because tool text can contain
+  // literal control characters (see sanitizeJsonText below).
+  if (raw) {
+    const primaryJson = textParts.find((text) => {
+      try {
+        JSON.parse(sanitizeJsonText(text));
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    if (primaryJson !== undefined) return primaryJson;
+  }
+
   return contentText;
 }
 
@@ -397,16 +422,19 @@ function readToken() {
 }
 
 /** Build the `tools/call` params for a ptool invocation. Pure and exported so
- *  the `_meta.structured` opt-in is regression-tested without opening a
- *  transport (EI-13245): the MCP SDK's `Client.callTool` throws "has an
- *  output schema but did not return structured content" for ANY tool that
- *  advertises an `outputSchema` in `tools/list` unless the caller's
- *  `_meta.structured` flag asks the host to fill `structuredContent` — the
- *  operator's MCP host leaves it empty by default (token-sensitive agent
- *  callers opt in explicitly, P-010). ptool is a human/scripting CLI, not a
- *  token-metered LLM session, so it always asks. */
-export function buildCallToolParams(toolName, callArgs) {
-  return { name: toolName, arguments: callArgs, _meta: { structured: true } };
+ *  the MCP result negotiation is regression-tested without opening a
+ *  transport. Object-rooted output schemas need `_meta.structured` because
+ *  the MCP SDK validates their structured response field (EI-13245). Array-
+ *  rooted tools deliberately omit `outputSchema` because MCP requires
+ *  `structuredContent` to be an object; ask those tools for JSON text instead
+ *  so ptool still emits a lossless scripting payload. */
+export function buildCallToolParams(toolName, callArgs, { outputSchema } = {}) {
+  const objectRooted = outputSchema?.type === 'object';
+  return {
+    name: toolName,
+    arguments: callArgs,
+    _meta: objectRooted ? { structured: true } : { format: 'json' },
+  };
 }
 
 // `tools/list` is a recovery prerequisite for every named ptool call, but it
@@ -650,7 +678,7 @@ async function collectArgs(inputSchema) {
 
 /** Print the result of a tools/call, or its error. Returns the exit code. */
 export function printResult(result, { raw }) {
-  const text = resultToText(result);
+  const text = resultToText(result, { raw });
   if (!text.trim()) {
     console.error('ptool: operator returned an empty MCP result; no content or structuredContent was received');
     return 1;
@@ -815,7 +843,7 @@ async function main() {
 
     const result = await callToolWithPressureRetry(
       client,
-      buildCallToolParams(toolName, callArgs),
+      buildCallToolParams(toolName, callArgs, { outputSchema: tool.outputSchema }),
       { timeoutMs: timeoutForTool(toolName) },
     );
     const code = printResult(result, { raw: args.raw });

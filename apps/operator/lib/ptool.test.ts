@@ -470,9 +470,15 @@ describe('ptool buildCallToolParams', () => {
   // EI-13245: the MCP SDK's Client.callTool throws "has an output schema but
   // did not return structured content" for any tool that advertises an
   // outputSchema unless the caller opts in via `_meta.structured` — the host
-  // only fills structuredContent when explicitly asked. ptool must always ask.
-  it('always requests structuredContent via _meta.structured', () => {
-    const params = buildCallToolParams('work_items:burn_down', { harness: 'papercusp', ids: ['WI-1'] });
+  // only fills structuredContent when explicitly asked. Array-rooted tools are
+  // the opposite case: MCP's structuredContent validator rejects an array, so
+  // ptool asks for lossless JSON text instead.
+  it('requests structuredContent for an object-rooted output schema', () => {
+    const params = buildCallToolParams(
+      'work_items:burn_down',
+      { harness: 'papercusp', ids: ['WI-1'] },
+      { outputSchema: { type: 'object' } },
+    );
     expect(params).toEqual({
       name: 'work_items:burn_down',
       arguments: { harness: 'papercusp', ids: ['WI-1'] },
@@ -480,11 +486,19 @@ describe('ptool buildCallToolParams', () => {
     });
   });
 
-  it('preserves the args object identity/shape for tools with no args', () => {
+  it('requests JSON text for an array-rooted list result', () => {
+    expect(buildCallToolParams('work_items:list', { harness: 'papercusp' }, { outputSchema: { type: 'array' } })).toEqual({
+      name: 'work_items:list',
+      arguments: { harness: 'papercusp' },
+      _meta: { format: 'json' },
+    });
+  });
+
+  it('requests JSON text when a tool has no output schema', () => {
     expect(buildCallToolParams('harness:list', {})).toEqual({
       name: 'harness:list',
       arguments: {},
-      _meta: { structured: true },
+      _meta: { format: 'json' },
     });
   });
 });
