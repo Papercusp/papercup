@@ -91,6 +91,59 @@ export interface TimelineEntry {
 }
 
 /**
+ * Keep the lossless timeline object available as MCP structuredContent for
+ * programmatic callers (ptool / MCP clients that request `_meta.structured`).
+ * The human-facing text body is still subject to the ordinary result door, but
+ * a large postmortem page must not become an invalid JSON prefix for a caller
+ * that asked for machine-readable output.
+ */
+const timelineResultSchema = z.object({
+  ok: z.boolean(),
+  owner: z.string(),
+  since: z.string(),
+  until: z.string(),
+  filters: z.record(z.string(), z.unknown()),
+  stamp_coverage: z.object({
+    goal_scoped: z.boolean(),
+    assumption_sets_resolved: z.number().int().nonnegative(),
+    assumptions_observed: z.number().int().nonnegative(),
+    assumption_coverage: z.enum([
+      'not-goal-scoped', 'no-stamp', 'producer-unbuilt', 'none-for-owner', 'observed',
+    ]),
+    assumption_zero_reason: z.string().optional(),
+    zero_reason: z.string().optional(),
+  }),
+  raw_count: z.number().int().nonnegative(),
+  count: z.number().int().nonnegative(),
+  hasMore: z.boolean(),
+  nextCursor: z.string().optional(),
+  audit_summary: z.object({
+    total_tool_calls: z.number().int().nonnegative(),
+    automatic_calls: z.number().int().nonnegative(),
+    agent_calls: z.number().int().nonnegative(),
+    automatic_share: z.number().min(0).max(1),
+    classification: z.object({
+      automatic_tools: z.array(z.string()),
+      rule: z.string(),
+    }),
+  }),
+  entries: z.array(z.object({
+    kind: z.enum(['turn', 'tool', 'coord']),
+    ts: z.string(),
+    ref: z.string(),
+    text: z.string(),
+    tool_name: z.string().nullable().optional(),
+    status: z.string().nullable().optional(),
+    auto: z.boolean().optional(),
+    repeat_count: z.number().int().positive().optional(),
+    oldest_ts: z.string().optional(),
+    goal_ref: z.string().nullable().optional(),
+    assumption_set_id: z.union([z.number(), z.string()]).nullable().optional(),
+    assumption_count: z.number().int().nonnegative().optional(),
+  })),
+});
+
+/**
  * P-024 (c): which assumption watermarks a page needs resolved — DISTINCT, and
  * only from `tool` rows that actually carry one.
  *
@@ -263,6 +316,7 @@ export default defineTool({
     group_repeated: z.boolean().optional().describe('Collapse identical entries in the returned window and add repeat_count/oldest_ts. Default false.'),
     cursor: z.string().min(1).max(512).optional().describe('Opaque nextCursor from a prior sessions:timeline call with the same filters.'),
   }),
+  result: timelineResultSchema,
   async handler(args, ctx) {
     if (!(await sessionSearchEnabled())) return disabledResult();
     const workspaceId = ctx.workspaceId ?? '';
