@@ -318,6 +318,30 @@ async function settleCoordWatermark(ownerId: string): Promise<string | null> {
   });
   if (!next) return null;
   await writeWatermark(ownerId, { messages_since_ts: next });
+  // EI-9389, relocated here from `coord:watermark-set` by plan
+  // fleet-deltas-leader-primitives-2026-07-10 (D-014) when that verb was retired.
+  //
+  // A bulk `coord:inbox` read has already shown this agent every message up to
+  // `next`, but any `coord:send { wake:true }` delivery queued for those SAME
+  // messages while the agent was busy still sits pending/parked on its standing
+  // inbox-wake key — each one would burn a full billable resume turn
+  // re-delivering traffic already read and acted on. Settling at the
+  // "I have now seen everything up to X" signal closes that.
+  //
+  // THIS SEAM IS STRICTLY BETTER THAN THE OLD ONE, not merely equivalent. The
+  // docstring above explains that `coord:watermark-set` had exactly one caller,
+  // the OMP hook's `onTurnEnd` — so on a non-OMP fleet (Claude Code, Codex) this
+  // settle NEVER RAN. `journal:record-turn` fires at every turn end on every
+  // CLI, so the coalescing now covers clients that never had it.
+  //
+  // Best-effort by design: an advisory cleanup must never fail the watermark
+  // write above, which has already succeeded.
+  try {
+    const { settleCaughtUpInboxWakeDeliveries } = await import('./events/await/store');
+    await settleCaughtUpInboxWakeDeliveries({ subscriberId: ownerId, cutoffTs: next });
+  } catch {
+    /* advisory only — the cursor advance stands regardless */
+  }
   return next;
 }
 

@@ -13,6 +13,7 @@ import {
   configureWatermarkStore,
   resetWatermarkStore,
   readWatermark,
+  writeWatermark,
   emptyWatermark,
 } from '../watermarks';
 import { sendMessage } from '../messages';
@@ -76,7 +77,6 @@ import { boundInboxEntries } from '../tools/inbox';
 import ackTool from '../tools/ack';
 import threadTool from '../tools/thread';
 import watermarkTool from '../tools/watermark';
-import watermarkSetTool from '../tools/watermark-set';
 import escalateTool from '../tools/escalate';
 import escalationsTool from '../tools/escalations';
 import resolveTool from '../tools/resolve';
@@ -171,39 +171,26 @@ describe('coord:ack', () => {
 // ── C3: the watermark HANDLERS (the store watermarks.ts is tested separately;
 // these pin the tool wrappers — identity resolution + the partial-patch path +
 // the envelope shape). Run over an InMemoryWatermarkStore.
-describe('coord:watermark-set (the turn-end advance handler)', () => {
-  it('routes each *_since_ts arg + subscriptions_fired into writeWatermark under the right key', async () => {
-    const res = await run(watermarkSetTool, {
-      messages_since_ts: '2026-06-16T10:00:00.000Z',
-      escalations_since_ts: '2026-06-16T11:00:00.000Z',
-      plan_events_since_ts: '2026-06-16T12:00:00.000Z',
-      subscriptions_fired: ['m1', 'm2'],
-    });
-    const body = parse(res);
-    expect(body.ok).toBe(true);
-    expect(body.owner_id).toBe('me'); // from the mocked identity
-    // The handler's envelope carries the persisted watermark…
-    expect(body.watermark).toMatchObject({
-      messages_since_ts: '2026-06-16T10:00:00.000Z',
-      escalations_since_ts: '2026-06-16T11:00:00.000Z',
-      plan_events_since_ts: '2026-06-16T12:00:00.000Z',
-      subscriptions_fired: ['m1', 'm2'],
-    });
-    // …and it actually reached the store under the caller's owner id.
-    expect(await readWatermark('me')).toMatchObject({
-      messages_since_ts: '2026-06-16T10:00:00.000Z',
-      subscriptions_fired: ['m1', 'm2'],
-    });
-  });
-
-  it('is a partial patch — omitted fields are absent from the write, keeping their prior value', async () => {
-    // Seed two cursors.
-    await run(watermarkSetTool, {
+// ── `coord:watermark-set` RETIRED — plan fleet-deltas-leader-primitives-2026-07-10,
+// D-014. It was the client-REPORTED cursor write, with exactly one caller (the OMP
+// hook's `onTurnEnd`), which meant no Claude/Codex session ever wrote the cursor at
+// all. Both pointers it carried now settle SERVER-side from the authoritative read
+// receipt: `messages_since_ts` at `journal:record-turn` (turn-end-tracking-io.ts,
+// which fires on every CLI), and plan-events via the server-side read cursors.
+//
+// Its two cases here tested the tool's ARG ROUTING and its partial-patch behaviour.
+// Arg routing died with the args. The partial-patch property belongs to
+// `writeWatermark` itself, not to the deleted wrapper, so it is pinned directly —
+// otherwise retiring the verb would silently drop a real invariant, which is how a
+// deletion quietly widens the blast radius of the NEXT change.
+describe('writeWatermark — partial patch (survives the coord:watermark-set retirement)', () => {
+  it('is a partial patch — omitted fields keep their prior value', async () => {
+    await writeWatermark('me', {
       messages_since_ts: '2026-06-16T10:00:00.000Z',
       escalations_since_ts: '2026-06-16T11:00:00.000Z',
     });
-    // A second call carrying ONLY messages_since_ts must not clobber escalations.
-    await run(watermarkSetTool, { messages_since_ts: '2026-06-16T20:00:00.000Z' });
+    // A second write carrying ONLY messages_since_ts must not clobber escalations.
+    await writeWatermark('me', { messages_since_ts: '2026-06-16T20:00:00.000Z' });
     const wm = await readWatermark('me');
     expect(wm.messages_since_ts).toBe('2026-06-16T20:00:00.000Z'); // advanced
     expect(wm.escalations_since_ts).toBe('2026-06-16T11:00:00.000Z'); // preserved
@@ -212,7 +199,7 @@ describe('coord:watermark-set (the turn-end advance handler)', () => {
 
 describe('coord:watermark (the turn-start read handler)', () => {
   it('reads the caller\'s persisted watermark + carries owner_id in the envelope', async () => {
-    await run(watermarkSetTool, { messages_since_ts: '2026-06-16T09:00:00.000Z' });
+    await writeWatermark('me', { messages_since_ts: '2026-06-16T09:00:00.000Z' });
     const body = parse(await run(watermarkTool));
     expect(body.owner_id).toBe('me');
     expect(body.watermark.messages_since_ts).toBe('2026-06-16T09:00:00.000Z');

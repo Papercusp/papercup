@@ -135,7 +135,9 @@ export const UNTIERED_BASELINE: ReadonlySet<string> = new Set([
   'coord:wake',
   'coord:wake-mode',
   'coord:watermark',
-  'coord:watermark-set',
+  // 'coord:watermark-set' RETIRED (plan fleet-deltas-leader-primitives-2026-07-10,
+  // D-014) — the verb no longer exists, so its baseline entry is a legitimate
+  // SHRINK, not a suppression. Both cursors it wrote now settle server-side.
 ]);
 
 /**

@@ -840,20 +840,23 @@ export async function onTurnStart(ctx?: unknown): Promise<TurnStartResult> {
   return attached; // operator is up — a genuine transient failure
 }
 
-/** Fired once per turn end. Persists the watermark pointers staged by
- *  onTurnStart via coord:watermark-set (attached only — a detached turn
- *  stages nothing). No-op when nothing was surfaced. */
+/** Fired once per turn end.
+ *
+ *  The client-reported watermark write is RETIRED (plan
+ *  fleet-deltas-leader-primitives-2026-07-10, D-004 ruling 1 / D-014). This used
+ *  to call `coord:watermark-set` with pointers staged by onTurnStart. Both
+ *  cursors now settle SERVER-side and are derived from the authoritative read
+ *  receipt rather than reported by the client:
+ *    - `messages_since_ts` settles at `journal:record-turn`
+ *      (turn-end-tracking-io.ts), which fires at every turn end on EVERY CLI —
+ *      not just OMP — and which now also carries the EI-9389 inbox-wake
+ *      delivery coalescing that used to ride the retired verb;
+ *    - plan-events delivery rides the server-side read cursors.
+ *
+ *  Kept as an explicit no-op rather than deleted: it is part of the OMP hook's
+ *  published lifecycle surface, and a hook the adapter calls must exist. */
 export async function onTurnEnd(): Promise<void> {
-  const wm = _pendingWatermark;
   _pendingWatermark = {};
-  if (wm.messages === undefined && wm.plan_events === undefined) return;
-  // Detached stages no watermark (onTurnStartDetached clears it), so reaching
-  // here means attached — persist via the operator. No filesystem fallback
-  // any more (coord-channels-pg-port P-010).
-  await callMcpTool('coord:watermark-set', {
-    ...(wm.messages !== undefined ? { messages_since_ts: wm.messages } : {}),
-    ...(wm.plan_events !== undefined ? { plan_events_since_ts: wm.plan_events } : {}),
-  });
 }
 
 /* `pollInboxDelta` (the LEGACY direct mid-turn poll) was removed with the

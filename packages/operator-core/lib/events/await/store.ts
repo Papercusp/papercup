@@ -976,15 +976,17 @@ export async function ackDelivery(input: {
 /**
  * Settle PENDING/PARKED deliveries on the caller's OWN standing inbox-wake key
  * that were queued at-or-before a cutoff the caller has now read past — the
- * coord:watermark-set counterpart of `ackDelivery` (EI-9389). The standing
+ * turn-end-settle counterpart of `ackDelivery` (EI-9389). The standing
  * inbox-wake await (`once = false`) is matched but never consumed by
  * `fireAwaitsForKey`, so every `coord:send {wake:true}` while the recipient is
  * busy queues its OWN delivery row, independent of the recipient's inbox READ
  * cursor. A later bulk `coord:inbox` read already shows all of those messages,
  * but the queued delivery rows don't know that — each still fires a full
  * (billable) resume turn once the recipient goes idle, even for traffic
- * already seen and acted on. Settling them here — at `coord:watermark-set`,
- * the canonical "I've now seen everything up to X" signal — closes that gap
+ * already seen and acted on. Settling them at the server-side turn-end cursor
+ * settle (`turn-end-tracking-io.ts`, the canonical "I've now seen everything up
+ * to X" signal — it moved there from the retired `coord:watermark-set` under
+ * plan fleet-deltas-leader-primitives-2026-07-10 D-014) closes that gap
  * the same way `ackDelivery` does for a single delivery: `delivered`,
  * channel `'coalesced'` (no turn burned, WAKE_TURN_CHANNELS-excluded), never
  * touching another subscriber's rows (subscriber_id-scoped, like ackDelivery).
@@ -1001,7 +1003,7 @@ export async function settleCaughtUpInboxWakeDeliveries(input: {
   const rows = await sql`
     UPDATE harness_shared.event_wake_deliveries
        SET status = 'delivered', channel = 'coalesced', delivered_at = now(),
-           last_error = 'caught up via coord:watermark-set — already seen in a bulk coord:inbox read (EI-9389)'
+           last_error = 'caught up at turn-end cursor settle — already seen in a bulk coord:inbox read (EI-9389)'
      WHERE workspace_id = ${ws} AND subscriber_id = ${input.subscriberId}
        AND event_key = ${key}
        AND status IN ('pending', 'parked')
