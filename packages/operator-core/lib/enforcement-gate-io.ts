@@ -20,6 +20,15 @@ import {
   type GateBoundary,
 } from './enforcement-gate';
 import type { CarryBrief } from './carry-brief';
+import {
+  REFUSAL_MARKER_TTL_MS,
+  wasRecentlyRefused,
+  markRefused,
+  clearRefused,
+  __resetRefusalMarkers,
+} from './flush-refusal-marker';
+
+export { REFUSAL_MARKER_TTL_MS, wasRecentlyRefused, markRefused, clearRefused, __resetRefusalMarkers };
 
 /** Total budget for the whole gate (detect + fallback writes) — advisory work
  *  riding a seam that must not slow down or fail because of it. */
@@ -47,47 +56,11 @@ export function flushGateBudgetMs(): number {
  *  window that STILL has tripwires is "the agent still won't flush" ⇒ mechanical
  *  fallback. Long enough to span a loop wake (60s) and an agent's own re-read;
  *  short enough that a much-later, unrelated boundary starts fresh at `refuse`. */
-export const REFUSAL_MARKER_TTL_MS = 10 * 60_000;
-
 /** Is the gate enabled? Default ON; PAPERCUSP_FLUSH_GATE in {off,0,false,no}
  *  disables it (operational reversibility without a redeploy). */
 export function flushGateEnabled(): boolean {
   const v = (process.env.PAPERCUSP_FLUSH_GATE ?? '').trim().toLowerCase();
   return !(v === 'off' || v === '0' || v === 'false' || v === 'no');
-}
-
-// ── The in-process refusal marker ────────────────────────────────────────────
-// Per (boundary, ownerId). In-memory by design: a process restart that forgets a
-// marker costs at most one extra refusal (the agent flushes or retries), never a
-// strand — so a durable store would be strictly more machinery for no safety gain.
-
-const refusals = new Map<string, number>();
-
-function markerKey(boundary: GateBoundary, ownerId: string): string {
-  return `${boundary}:${ownerId}`;
-}
-
-/** True if this owner was refused at this boundary within the TTL. */
-export function wasRecentlyRefused(boundary: GateBoundary, ownerId: string, nowMs: number = Date.now()): boolean {
-  const at = refusals.get(markerKey(boundary, ownerId));
-  return typeof at === 'number' && nowMs - at <= REFUSAL_MARKER_TTL_MS;
-}
-
-/** Record a refusal (opportunistically evicts expired markers so the map can't grow). */
-export function markRefused(boundary: GateBoundary, ownerId: string, nowMs: number = Date.now()): void {
-  for (const [k, at] of refusals) if (nowMs - at > REFUSAL_MARKER_TTL_MS) refusals.delete(k);
-  refusals.set(markerKey(boundary, ownerId), nowMs);
-}
-
-/** Clear an owner's marker at a boundary (called once the fallback has fired, so
- *  the NEXT boundary for this owner starts fresh at `refuse`). */
-export function clearRefused(boundary: GateBoundary, ownerId: string): void {
-  refusals.delete(markerKey(boundary, ownerId));
-}
-
-/** For tests: drop all markers. */
-export function __resetRefusalMarkers(): void {
-  refusals.clear();
 }
 
 // ── The mechanical fallback writer ───────────────────────────────────────────
@@ -224,16 +197,16 @@ async function runFlushGateInner(input: {
     brief = input.brief;
   }
   const tripwires = detectFlushTripwires(brief, nowMs);
-  const alreadyRefused = wasRecentlyRefused(input.boundary, input.ownerId, nowMs);
+  const alreadyRefused = await wasRecentlyRefused(input.boundary, input.ownerId, nowMs);
   const verdict = decideFlushGate({ tripwires, alreadyRefused });
 
   if (verdict === 'clear') {
     // A clean boundary retires any stale marker so the next real one starts fresh.
-    if (alreadyRefused) clearRefused(input.boundary, input.ownerId);
+    if (alreadyRefused) await clearRefused(input.boundary, input.ownerId);
     return { verdict, tripwires };
   }
   if (verdict === 'refuse') {
-    markRefused(input.boundary, input.ownerId, nowMs);
+    await markRefused(input.boundary, input.ownerId, nowMs);
     return { verdict, tripwires, refusalText: renderFlushRefusal(input.boundary, tripwires) };
   }
   // mechanical-fallback: write durable state, then let the caller proceed.
@@ -247,6 +220,6 @@ async function runFlushGateInner(input: {
     brief,
     nowMs,
   });
-  clearRefused(input.boundary, input.ownerId);
+  await clearRefused(input.boundary, input.ownerId);
   return { verdict, tripwires, fallback };
 }
