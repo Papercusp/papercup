@@ -49,6 +49,8 @@ export type RecipeUnresolvedCause =
   | { kind: 'dynamic-scope-args'; tool: string }
   /** A coordination call embeds a sender/cursor that can be stale outside its original wake. */
   | { kind: 'volatile-coordination-args'; tool: string; keys: string[] }
+  /** A work-item claim names a fixed assignee that this authority model cannot validate. */
+  | { kind: 'fixed-claim-assignee'; tool: string }
   /** Tools were referenced but NO call could be statically resolved (dynamic/unsupported access form). */
   | { kind: 'unparsable-call-form'; tool: null };
 
@@ -212,6 +214,29 @@ function inspectCall(
   }
 
   collectArgs(call.tool, call.args, out);
+
+  // `work_items:claim` still supports the compact positional write form used by
+  // Tier-3 prompt encoding: { row: "<id>,<assignee>,<harness>" }. The generic
+  // authority collector cannot see identities hidden in that CSV string, so
+  // extract the item + harness here. A fixed assignee is deliberately not
+  // reusable: the authority model has no live target-agent dimension, and
+  // recommending it to another session could silently assign the claim away
+  // from the caller.
+  if (normalizedTool === 'workitems:claim') {
+    const args = asRecord(call.args);
+    const row = args?.row;
+    if (typeof row === 'string') {
+      const [id, assignee, harness] = row.split(',').map((part) => part.trim());
+      add(out.items, id);
+      add(out.harnesses, harness);
+      if (assignee) return { kind: 'fixed-claim-assignee', tool: call.tool };
+    }
+    const assignee = args?.assignee;
+    if (typeof assignee === 'string' && assignee.trim()) {
+      return { kind: 'fixed-claim-assignee', tool: call.tool };
+    }
+  }
+
   if (OPAQUE_TOOLS.has(normalizedTool)) {
     return { kind: 'opaque-tool', tool: call.tool };
   }
@@ -471,6 +496,13 @@ function unresolvedReason(cause: RecipeUnresolvedCause | null | undefined): stri
         'when reused in a later wake — no authority proof can safely revalidate a momentary conversation cursor. ' +
         'Rewrite the recipe to derive the current sender/cursor from live context, or run the script directly via ' +
         'code:run; until then it is not safely reusable through recipes:run.'
+      );
+    case 'fixed-claim-assignee':
+      return (
+        `the recipe script calls \`${cause.tool}\` with a fixed work-item assignee, but the authority proof ` +
+        'has no target-agent dimension to verify that assignment against the current session — the recipe could ' +
+        'silently claim work for a different agent. Remove the explicit assignee and let the live caller identity ' +
+        'own the claim, or run the script directly via code:run.'
       );
     case 'unparsable-call-form':
       return (

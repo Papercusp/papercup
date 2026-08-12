@@ -173,6 +173,34 @@ describe('recipe recommendation authority (P-008)', () => {
     })).resolves.toMatchObject({ proof: { version: 1 }, refs: { items: ['P-006'] } });
   });
 
+  it('captures positional work-item claim rows and rejects fixed assignees (EI-20238127178875631)', async () => {
+    const rowScript = `return await tools.workItems.claim({ row: 'WI-38077,,papercusp' });`;
+    const descriptor = await deriveRecipeAuthority(rowScript);
+    expect(descriptor).toMatchObject({
+      bound: true,
+      unresolved: false,
+      refs: { items: ['WI-38077'], harnesses: ['papercusp'] },
+    });
+
+    await expect(buildRecipeAuthorityRecommendation({
+      script: rowScript,
+      updatedAt: '2026-08-12T09:00:00.000Z',
+      context: { harness: 'papercusp', items: ['WI-38078'] },
+    })).resolves.toBeNull();
+
+    const fixedAssigneeScript = `return await tools.workItems.claim({ row: 'WI-38077,su-497dd000-243c-41f3-8cd4-c44756c81694,papercusp' });`;
+    await expect(deriveRecipeAuthority(fixedAssigneeScript)).resolves.toMatchObject({
+      refs: { items: ['WI-38077'], harnesses: ['papercusp'] },
+      unresolved: true,
+      unresolvedCause: { kind: 'fixed-claim-assignee', tool: 'workItems.claim' },
+    });
+    await expect(buildRecipeAuthorityRecommendation({
+      script: fixedAssigneeScript,
+      updatedAt: '2026-08-12T09:00:00.000Z',
+      context: { harness: 'papercusp', items: ['WI-38077'] },
+    })).resolves.toBeNull();
+  });
+
   it('allows truly generic recipes without an authority proof', async () => {
     await expect(validateRecipeAuthorityProof({
       script: `return await tools.gateway.status({});`,
