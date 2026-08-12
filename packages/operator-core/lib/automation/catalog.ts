@@ -425,14 +425,15 @@ export function collapseFanOut(rows: readonly AutomationRoutine[]): AutomationRo
     }
     const active = group.some((g) => g.active);
     const liveness = worst(group);
+    const armedState = worstArmed(group);
     out.push({
       ...head,
       active,
       liveness,
-      armedState: worstArmed(group),
+      armedState,
       needsAttention: routineNeedsAttention({
         liveness,
-        armedState: worstArmed(group),
+        armedState,
         control: head.control,
         active,
         spend: head.spend,
