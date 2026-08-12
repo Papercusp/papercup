@@ -76,6 +76,47 @@ export function scoutPoolAffirmativelyExhausted(snapshot: ScoutPoolSnapshot): bo
   return claudeSaidZero && !scoutRoutableProviders(snapshot).codexAvailable;
 }
 
+/** One provider entry from the gateway's `/admin/config`, in either reported shape. */
+interface GatewayProviderConfig {
+  configured?: unknown;
+  cliAccountCount?: unknown;
+}
+
+/**
+ * Find one provider's config in `/admin/config.providers`, which the gateway reports as an
+ * ARRAY of `{ id, configured, cliAccountCount, … }` entries.
+ *
+ * WHY THIS EXISTS (WI-38225 — measured live 2026-08-12, not theorised): this module used to
+ * do `config.providers?.codex`, typed as a keyed object. `providers` is a LIST, so that
+ * expression is `undefined` on EVERY probe — which set `codexConfigured: false`
+ * unconditionally, regardless of the gateway's actual answer. The consequence was not a
+ * cosmetic flag: `codexAvailable` is `codexConfigured && …`, so it could never be true,
+ * `resolveScoutModel` could never select the codex fallback, and Scout was left with exactly
+ * ONE usable route — dying whenever the claude pool emptied while a healthy, configured codex
+ * account sat unused. Every failing tick recorded the tell:
+ * `{ healthyAccounts: 0, codexHealthyAccounts: 1, codexConfigured: false }` — the count read
+ * from `/stats` was right, and only the flag that gates the fallback was wrong.
+ *
+ * BOTH SHAPES are accepted deliberately. The array is what this gateway returns today; the
+ * keyed object is what the old type asserted, and a probe that silently disables a provider
+ * when the shape moves is precisely the failure being fixed. An unknown shape yields
+ * `undefined`, which keeps the caller's existing "not configured" reading rather than
+ * inventing availability.
+ */
+function findProviderConfig(providers: unknown, id: string): GatewayProviderConfig | undefined {
+  if (Array.isArray(providers)) {
+    return providers.find(
+      (entry): entry is GatewayProviderConfig & { id: string } =>
+        typeof entry === 'object' && entry !== null && (entry as { id?: unknown }).id === id,
+    );
+  }
+  if (typeof providers === 'object' && providers !== null) {
+    const entry = (providers as Record<string, unknown>)[id];
+    return typeof entry === 'object' && entry !== null ? (entry as GatewayProviderConfig) : undefined;
+  }
+  return undefined;
+}
+
 /**
  * Probe the localhost pacing gateway's pool state without changing any routing state.
  * Returns `undefined` when either probe fails or times out (~1s) — the TRISTATE unknown,
@@ -91,10 +132,8 @@ export async function readScoutPoolSnapshot(fetchImpl: typeof fetch = fetch): Pr
     ]);
     if (!statsRes.ok || !configRes.ok) return undefined;
     const stats = (await statsRes.json()) as { healthyAccounts?: unknown; codexHealthyAccounts?: unknown };
-    const config = (await configRes.json()) as {
-      providers?: { codex?: { configured?: unknown; cliAccountCount?: unknown } };
-    };
-    const codex = config.providers?.codex;
+    const config = (await configRes.json()) as { providers?: unknown };
+    const codex = findProviderConfig(config.providers, 'codex');
     return {
       probedAtMs: Date.now(),
       ...(typeof stats.healthyAccounts === 'number' ? { healthyAccounts: stats.healthyAccounts } : {}),
