@@ -46,7 +46,13 @@ export const realJcoTranspiler: Transpiler = async (wasmBytes, outputDir) => {
   // a variable: Vite resolves literal dynamic imports during the browser
   // bundle even with @vite-ignore, defeating this optional-dependency seam.
   const jcoSpecifier: string = '@bytecodealliance/jco';
-  let jco: typeof import('@bytecodealliance/jco');
+  // Typed `unknown`, NOT `typeof import('@bytecodealliance/jco')`: a type-level
+  // import resolves the module at COMPILE time, which defeats the very
+  // optional-peerDep seam this file exists to provide (tsc fails with TS2307
+  // wherever jco isn't installed — the normal case, per the header). Nothing is
+  // lost: the annotation was already discarded on the next statement, which
+  // re-casts to Record<string, unknown> and validates the API shape at runtime.
+  let jco: unknown;
   try {
     jco = await import(
       /* @vite-ignore */ /* turbopackIgnore: true */ /* webpackIgnore: true */ jcoSpecifier
