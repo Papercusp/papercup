@@ -1181,6 +1181,59 @@ export function computeLoopCadence(input: {
 }
 
 /**
+ * Minimum arm-relative fires before a cadence observation can be called sustained. A single
+ * slow turn is expected to inflate `cadenceRatio` because pure loops re-arm after the turn
+ * settles; the advisory needs several observed fires before it says anything.
+ */
+export const CADENCE_DRIFT_MIN_FIRES = 3;
+
+/** A four-times interval is a diagnostic hint, not an outage verdict. */
+export const CADENCE_DRIFT_RATIO_THRESHOLD = 4;
+
+/**
+ * Pure advisory verdict for a loop whose observed cadence is persistently slower than configured.
+ *
+ * This deliberately requires independent arm-relative opportunity, fire, and gap evidence. The
+ * cadence ratio alone is observational and can be high during a legitimate long turn. The result
+ * is consumed by the stalled-loop sweep only as an advisory signal: it must never disarm or re-arm
+ * a loop, and it intentionally remains separate from `computeTurnsStalled`.
+ */
+export function computeCadenceDrift(input: {
+  active: boolean;
+  intervalSec: number | null;
+  firesSinceArm: number;
+  expectedFiresSinceArm: number | null;
+  cadenceRatio: number | null;
+  longestObservedGapSec: number | null;
+}): boolean {
+  const intervalSec = input.intervalSec;
+  if (!input.active || intervalSec == null || !Number.isFinite(intervalSec) || intervalSec <= 0) return false;
+
+  const firesSinceArm = Number.isFinite(input.firesSinceArm) ? Math.max(0, input.firesSinceArm) : 0;
+  if (firesSinceArm < CADENCE_DRIFT_MIN_FIRES) return false;
+
+  const expected = input.expectedFiresSinceArm;
+  const ratio = input.cadenceRatio;
+  const longestGap = input.longestObservedGapSec;
+  if (
+    expected == null ||
+    !Number.isFinite(expected) ||
+    expected < CADENCE_DRIFT_MIN_FIRES ||
+    expected - firesSinceArm < CADENCE_DRIFT_MIN_FIRES ||
+    ratio == null ||
+    !Number.isFinite(ratio) ||
+    ratio < CADENCE_DRIFT_RATIO_THRESHOLD ||
+    longestGap == null ||
+    !Number.isFinite(longestGap) ||
+    longestGap < intervalSec * CADENCE_DRIFT_RATIO_THRESHOLD
+  ) {
+    return false;
+  }
+
+  return true;
+}
+
+/**
  * Read an owner's loop status (NULL if none). A lean shape rather than the full
  * RoutineRow — and it correctly reads the parked sentinel: postgres-js parses
  * `next_fire_at='infinity'::timestamptz` to an invalid Date, so we detect parked

@@ -158,6 +158,7 @@ import {
   rearmFireStarvedLoop,
   reviveDisarmedLoop,
   computeLifecycleBackoff,
+  computeCadenceDrift,
   type LoopStatus,
 } from './loop';
 import { autoPauseLoopRoutine } from './loop-cost-cap';
@@ -494,6 +495,12 @@ export interface StalledLoopsSweepResult {
    * owners that are visibly working.
    */
   revivedAfterDisarm: string[];
+  /**
+   * Owners whose active loop has sustained configured-vs-observed cadence drift. This is an
+   * advisory-only signal: unlike `paused`, it never changes routine state and never participates
+   * in the `turnsStalled` disarm decision.
+   */
+  cadenceDrift: string[];
   dryRun: boolean;
 }
 
@@ -736,6 +743,18 @@ export async function sweepStalledLoops(
   const statuses: Map<string, LoopStatus> = hasActiveLoops
     ? await getStatuses([...routineIdByOwner.keys()], { sql })
     : new Map<string, LoopStatus>();
+
+  // Cadence is observational: a pure loop re-arms after its turn settles, so a long turn can
+  // legitimately inflate the ratio. Keep this verdict independent from turnsStalled and use it
+  // only for a one-shot advisory below; the irreversible action loop still checks turnsStalled.
+  const cadenceDriftDetails = [...routineIdByOwner.keys()]
+    .map((ownerId) => {
+      const status = statuses.get(ownerId);
+      if (!status || !computeCadenceDrift(status)) return null;
+      return { ownerId, status };
+    })
+    .filter((value): value is { ownerId: string; status: LoopStatus } => value != null);
+  const cadenceDrift = cadenceDriftDetails.map(({ ownerId }) => ownerId);
 
   // EI-19966210024116714: one batch read of the owners' OWN session scopes, for the disarm reason
   // below. Deliberately hoisted out of the per-owner loop — it is a single indexed SELECT for the
@@ -1480,6 +1499,31 @@ export async function sweepStalledLoops(
     });
   }
 
+  // Cadence drift is a diagnostic condition, not a liveness verdict. Emit one ambient notice for
+  // the workspace so operators can inspect scheduler/turn duration without turning a slow loop
+  // into an irreversible pause. The one-shot condition avoids an inbox storm while the same
+  // sustained episode remains visible; the condition resolver can close it once the signal clears.
+  if (cadenceDriftDetails.length > 0 && !dryRun) {
+    await broadcast({
+      summary:
+        `${cadenceDriftDetails.length} active engine loop(s) on ${ws} show sustained cadence drift ` +
+        `(advisory only; no loop was paused).`,
+      body:
+        cadenceDriftDetails
+          .map(({ ownerId, status }) =>
+            `${ownerId}: ratio=${status.cadenceRatio}, firesSinceArm=${status.firesSinceArm}, ` +
+            `expected=${status.expectedFiresSinceArm}, longestGapSec=${status.longestObservedGapSec}`,
+          )
+          .join('\n') +
+        `\n\nThis signal requires multiple fires plus a large observed gap. Pure loops re-arm after ` +
+        `turn completion, so a long-running turn can inflate the ratio; inspect scheduler and ` +
+        `turn duration before treating it as a defect. Cadence drift never disarms or re-arms a loop.`,
+      category: 'loop-cadence-advisory',
+      conditionKey: `loop-cadence-drift:${ws}`,
+      oneShot: true,
+    });
+  }
+
   return {
     checked: rows.length,
     paused: stalledOwners.length,
@@ -1493,6 +1537,7 @@ export async function sweepStalledLoops(
     disarmedUnaddressableHarness,
     vetoedByToolActivity,
     revivedAfterDisarm,
+    cadenceDrift,
     dryRun,
   };
 }

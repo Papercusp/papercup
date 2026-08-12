@@ -51,6 +51,7 @@ import {
   autoArmFleetMemberLoop,
   getLoopStatuses,
   computeLoopCadence,
+  computeCadenceDrift,
   LOOP_WAKE_ACTION,
   LOOP_INTERVAL_FLOOR_SEC,
   countAgentToolCallsInWindow,
@@ -957,6 +958,28 @@ describe('computeLoopCadence (EI-20217869515819188 — configured vs observed ca
         nowMs: armedAtMs,
       }).longestObservedGapSec,
     ).toBeNull();
+  });
+});
+
+describe('computeCadenceDrift (EI-20247200923975596 — advisory sustained drift)', () => {
+  const base = {
+    active: true,
+    intervalSec: 60,
+    firesSinceArm: 5,
+    expectedFiresSinceArm: 62,
+    cadenceRatio: 12.13396,
+    longestObservedGapSec: 1207.28,
+  };
+
+  it('flags multiple fires with missed opportunities, a slow ratio, and a corroborating gap', () => {
+    expect(computeCadenceDrift(base)).toBe(true);
+  });
+
+  it('stays quiet for startup, normal cadence, missing history, or inactive loops', () => {
+    expect(computeCadenceDrift({ ...base, firesSinceArm: 2 })).toBe(false);
+    expect(computeCadenceDrift({ ...base, expectedFiresSinceArm: 7, cadenceRatio: 1.4 })).toBe(false);
+    expect(computeCadenceDrift({ ...base, longestObservedGapSec: null })).toBe(false);
+    expect(computeCadenceDrift({ ...base, active: false })).toBe(false);
   });
 });
 

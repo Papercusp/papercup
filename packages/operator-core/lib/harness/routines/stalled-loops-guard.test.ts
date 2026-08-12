@@ -135,6 +135,7 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
       disarmedUnaddressableHarness: [],
       vetoedByToolActivity: [],
       revivedAfterDisarm: [],
+      cadenceDrift: [],
       dryRun: false,
     });
     expect(getStatuses).not.toHaveBeenCalled();
@@ -178,6 +179,46 @@ describe('sweepStalledLoops (WI-6639 — act on turnsStalled instead of leaving 
     expect(call?.body).toContain('su-dead1');
     expect(call?.body).toContain('su-dead2');
     expect(call?.body).not.toContain('su-ok');
+  });
+
+  it('reports sustained cadence drift as an advisory without pausing a healthy loop', async () => {
+    const sql = fakeSql([{ id: 'rt-slow', target_owner_id: 'su-slow' }]);
+    const getStatuses = vi.fn(async () =>
+      new Map([
+        [
+          'su-slow',
+          status({
+            ownerId: 'su-slow',
+            turnsStalled: false,
+            firesSinceArm: 5,
+            expectedFiresSinceArm: 62,
+            effectiveIntervalSec: 728.0376,
+            cadenceRatio: 12.13396,
+            longestObservedGapSec: 1207.28,
+          }),
+        ],
+      ]),
+    );
+    const autoPause = vi.fn(async () => {});
+    const broadcast = vi.fn<BroadcastFn>(async () => true);
+
+    const res = await sweepStalledLoops(
+      { sql, workspaceId: 'ws' },
+      { getStatuses, autoPause, broadcast, probeReachability: reach(false) },
+    );
+
+    expect(res.cadenceDrift).toEqual(['su-slow']);
+    expect(res.paused).toBe(0);
+    expect(autoPause).not.toHaveBeenCalled();
+    expect(broadcast).toHaveBeenCalledTimes(1);
+    expect(broadcast).toHaveBeenCalledWith(
+      expect.objectContaining({
+        category: 'loop-cadence-advisory',
+        conditionKey: 'loop-cadence-drift:ws',
+        oneShot: true,
+      }),
+    );
+    expect(broadcast.mock.calls[0]?.[0].summary).toContain('advisory only');
   });
 
   it('no stalled owners → no auto-pause and no broadcast at all', async () => {
