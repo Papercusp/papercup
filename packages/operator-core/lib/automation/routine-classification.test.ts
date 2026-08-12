@@ -231,10 +231,20 @@ describe('isClockDriven — who can be judged late', () => {
 });
 
 describe('routineNeedsAttention', () => {
-  const base = { liveness: 'running', control: 'routine', active: true, spend: 'none' } as const;
+  const base = {
+    liveness: 'running',
+    armedState: 'armed',
+    control: 'routine',
+    active: true,
+    spend: 'none',
+  } as const;
 
   it('flags a stalled row', () => {
     expect(routineNeedsAttention({ ...base, liveness: 'stalled' })).toBe(true);
+  });
+
+  it('flags a row whose armed state is unknown', () => {
+    expect(routineNeedsAttention({ ...base, armedState: 'unknown' })).toBe(true);
   });
 
   it('flags a flag-gated row that is off — the switch is the owner’s', () => {

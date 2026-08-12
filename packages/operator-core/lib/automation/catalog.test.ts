@@ -223,6 +223,15 @@ describe('collapseFanOut', () => {
     expect(out[0]!.needsAttention).toBe(true);
   });
 
+  it('flags a collapsed row when any install has an unknown armed state', () => {
+    const out = collapseFanOut([
+      row({ name: 'gateway-watchdog-poll', installSlug: 'a', armedState: 'armed' }),
+      row({ name: 'gateway-watchdog-poll', installSlug: 'b', armedState: 'unknown' }),
+    ]);
+    expect(out[0]!.armedState).toBe('unknown');
+    expect(out[0]!.needsAttention).toBe(true);
+  });
+
   it('is active when any install is active', () => {
     const out = collapseFanOut([
       row({ name: 'git-sync', installSlug: 'a', active: false, liveness: 'dormant' }),

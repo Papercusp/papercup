@@ -493,11 +493,16 @@ export function routineLiveness({
  */
 export function routineNeedsAttention(input: {
   liveness: RoutineLiveness;
+  armedState: RoutineArmedState;
   control: RoutineControl;
   active: boolean;
   spend: RoutineSpend | 'unknown';
 }): boolean {
   if (input.liveness === 'stalled') return true;
+  // An unverifiable armed state must not present as a healthy schedule. External
+  // rows use `active = armed !== false`, so without this check `armed: null`
+  // becomes a running, attention-free row despite never having been verified.
+  if (input.armedState === 'unknown') return true;
   if (input.control === 'flag' && !input.active) return true;
   // An unclassified handler only matters if it can actually fire — an ACTIVE row
   // dispatching to an action nobody registered is a silent no-op the owner should
