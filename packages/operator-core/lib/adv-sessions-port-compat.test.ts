@@ -19,7 +19,18 @@ describe('adv_sessions port-column rollout compatibility (WI-4936)', () => {
     (sql as unknown as { begin: (fn: (tx: unknown) => unknown) => unknown }).begin = async (
       fn: (tx: unknown) => unknown,
     ) => fn(sql);
-    vi.doMock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql }) }));
+    // SPREAD the real module and override ONLY getOrgPg. A hand-listed factory
+    // ({ getOrgPg }) strands the moment adv-sessions reaches for any OTHER
+    // db-org export: the import throws `No "X" export is defined on the mock`,
+    // warnUnlessMissingTable swallows it, and the assertions below see an EMPTY
+    // query — indistinguishable from "the SQL lost its to_jsonb() guard". That
+    // is exactly how this test broke on DEFAULT_TX_ACQUIRE_DEADLINE_MS (which
+    // boundedOrgTxn began reading), holding the release gate. Spreading keeps a
+    // future export from re-breaking it.
+    vi.doMock('@papercusp/db-org', async (importOriginal) => ({
+      ...(await importOriginal<Record<string, unknown>>()),
+      getOrgPg: () => ({ sql }),
+    }));
     vi.doMock('./workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
     return sql;
   }
