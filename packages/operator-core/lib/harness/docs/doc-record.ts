@@ -18,13 +18,81 @@
  * source — it never silently downgrades to plain generated.
  */
 
-import { getOrgPg } from '@papercusp/db-org';
+import { getOrgPg, withWorkspace } from '@papercusp/db-org';
 import { resolveWorkspaceForHarness } from '../workspace-for-harness';
 import { deriveFrontmatterIndex, sha256 } from './authored-doc-projection';
 import type { SubjectRef } from './subject-ref';
 
 export type DocSource = 'generated' | 'manual' | 'augmented';
 export type DocStatus = 'fresh' | 'stale' | 'review' | 'untracked' | 'unknown';
+
+export type DocPartKind = 'invariant' | 'pointer' | 'recipe' | 'prose';
+
+export interface HarnessDocPart {
+  workspaceId: string;
+  harnessSlug: string;
+  docId: string;
+  partKey: string;
+  kind: DocPartKind;
+  body: string;
+  ordinal: number;
+  tombstone: boolean;
+  origin: string;
+  author: string | null;
+  fedTs: number;
+  fedHlc: string | null;
+  createdAt: number;
+  updatedAt: number;
+  clientScope: string[];
+  projectRank: number;
+  targetSection: string | null;
+  rationalePartKey: string | null;
+}
+
+export interface SetDocPartInput {
+  harnessSlug: string;
+  docId: string;
+  partKey: string;
+  workspaceId?: string;
+  kind?: DocPartKind;
+  body?: string;
+  ordinal?: number;
+  tombstone?: boolean;
+  author?: string | null;
+  clientScope?: string[];
+  projectRank?: number;
+  targetSection?: string | null;
+  rationalePartKey?: string | null;
+}
+
+export interface DocPartValidationInput {
+  partKey: string;
+  kind: string;
+  clientScope: readonly string[];
+  targetSection: string | null;
+  rationalePartKey: string | null;
+}
+
+/**
+ * Mirror every CHECK on migration 781's harness_doc_parts table before the write.
+ * Keeping this pure makes the safety rail testable without a live database and
+ * turns a database constraint failure into a useful per-item tool error.
+ */
+export function validateDocPart(input: DocPartValidationInput): string | null {
+  if (!['invariant', 'pointer', 'recipe', 'prose'].includes(input.kind)) {
+    return `${input.partKey}: kind must be one of invariant, pointer, recipe, prose`;
+  }
+  if (input.clientScope.length > 0 && input.targetSection === null) {
+    return `${input.partKey}: projected parts require targetSection`;
+  }
+  if (input.rationalePartKey !== null && input.kind !== 'recipe') {
+    return `${input.partKey}: rationalePartKey is only valid for recipe parts`;
+  }
+  if (input.kind === 'prose' && input.clientScope.length > 0) {
+    return `${input.partKey}: prose parts cannot project to a client`;
+  }
+  return null;
+}
 
 export interface HarnessDocRecord {
   workspaceId: string;
