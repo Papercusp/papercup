@@ -1,7 +1,9 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildAutomaticCallAuditSummary,
+  buildBoundedTimelineResponse,
   groupRepeatedTimelineEntries,
+  SESSION_TIMELINE_RESPONSE_BUDGET_CHARS,
   type TimelineEntry,
 } from './timeline';
 
@@ -54,5 +56,95 @@ describe('sessions:timeline automatic-versus-agent audit summary', () => {
       automatic_calls: 0,
       agent_calls: 0,
     }).automatic_share).toBe(0);
+  });
+});
+
+describe('sessions:timeline response-door shaping', () => {
+  it('returns valid bounded JSON and a cursor for an oversized page', () => {
+    const rows: TimelineEntry[] = Array.from({ length: 100 }, (_, index) => ({
+      kind: 'tool',
+      ts: `2026-07-13T07:00:${String(index % 60).padStart(2, '0')}Z`,
+      ref: String(index),
+      text: `tool-${index} ${'same-content '.repeat(24)}`,
+      tool_name: 'dev:pg_query',
+      status: 'ok',
+      auto: false,
+    }));
+    const shaped = buildBoundedTimelineResponse(
+      {
+        ok: true,
+        owner: 'su-self',
+        since: '2026-07-13T06:00:00Z',
+        until: '2026-07-13T08:00:00Z',
+        filters: { include_auto: false, group_repeated: false },
+        stamp_coverage: {
+          goal_scoped: false,
+          assumption_sets_resolved: 0,
+          assumptions_observed: 0,
+          assumption_coverage: 'not-goal-scoped',
+        },
+        audit_summary: {
+          total_tool_calls: 100,
+          automatic_calls: 0,
+          agent_calls: 100,
+          automatic_share: 0,
+          classification: {
+            automatic_tools: [],
+            rule: 'test',
+          },
+        },
+      },
+      rows,
+      false,
+      true,
+      0,
+      (offset) => `cursor-${offset}`,
+    );
+    const parsed = JSON.parse(shaped.text) as {
+      entries: TimelineEntry[];
+      count: number;
+      raw_count: number;
+      hasMore: boolean;
+      nextCursor?: string;
+      entriesTruncated?: { reason: string };
+    };
+
+    expect(shaped.text.length).toBeLessThanOrEqual(SESSION_TIMELINE_RESPONSE_BUDGET_CHARS);
+    expect(parsed.entries).toHaveLength(shaped.count);
+    expect(parsed.count).toBeGreaterThan(0);
+    expect(parsed.count).toBeLessThan(rows.length);
+    expect(parsed.raw_count).toBe(parsed.count);
+    expect(parsed.hasMore).toBe(true);
+    expect(parsed.nextCursor).toBe(`cursor-${parsed.raw_count}`);
+    expect(parsed.entriesTruncated).toMatchObject({ reason: 'response_budget' });
+  });
+
+  it('advances by raw rows after a grouped prefix is trimmed', () => {
+    const rows: TimelineEntry[] = [
+      ...Array.from({ length: 20 }, (_, index) => ({
+        kind: 'tool' as const,
+        ts: `2026-07-13T07:00:${String(index).padStart(2, '0')}Z`,
+        ref: String(index),
+        text: `repeat-${index % 2} ${'same-content '.repeat(18)}`,
+        tool_name: 'coord:inbox',
+        status: 'ok',
+        auto: true,
+      })),
+    ];
+    const shaped = buildBoundedTimelineResponse(
+      { ok: true, owner: 'su-self' },
+      rows,
+      true,
+      true,
+      10,
+      (offset) => `cursor-${offset}`,
+      900,
+    );
+    const parsed = JSON.parse(shaped.text) as { raw_count: number; nextCursor?: string; entries: TimelineEntry[] };
+
+    expect(parsed.raw_count).toBe(shaped.rawCount);
+    expect(parsed.nextCursor).toBe(`cursor-${10 + parsed.raw_count}`);
+    expect(parsed.entries.length).toBe(shaped.entries.length);
+    expect(parsed.entries.every((entry) => entry.repeat_count !== undefined)).toBe(true);
   });
 });

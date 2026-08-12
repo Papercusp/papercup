@@ -13,6 +13,13 @@ import { sessionSearchEnabled, disabledResult, refreshLiveSessionsBeforeRead } f
 import { decodeSessionCursor, encodeSessionCursor, sessionCursorFingerprint } from './cursor';
 
 const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
+
+/**
+ * Keep the model-facing JSON body below the result door. The timeline can
+ * still be read losslessly by paging with `nextCursor`; this cap only limits
+ * the text block that has to fit in one agent turn.
+ */
+export const SESSION_TIMELINE_RESPONSE_BUDGET_CHARS = 4_800;
 // Re-exported (EI-19984789589075138 / EI-19986796515232861) from the dependency-free
 // automatic-tool-names.ts so other evidence-of-work checks — e.g. the cold-wake
 // un-checkpointed-work banner (su-cold-loop.ts / loop.ts's countAgentToolCallsInWindow) —
@@ -117,6 +124,13 @@ const timelineResultSchema = z.object({
   count: z.number().int().nonnegative(),
   hasMore: z.boolean(),
   nextCursor: z.string().optional(),
+  entriesTruncated: z.object({
+    requested: z.number().int().nonnegative(),
+    returned: z.number().int().nonnegative(),
+    raw_requested: z.number().int().nonnegative(),
+    raw_returned: z.number().int().nonnegative(),
+    reason: z.literal('response_budget'),
+  }).optional(),
   audit_summary: z.object({
     total_tool_calls: z.number().int().nonnegative(),
     automatic_calls: z.number().int().nonnegative(),
@@ -277,6 +291,110 @@ export function groupRepeatedTimelineEntries(rows: TimelineEntry[]): TimelineEnt
     existing.oldest_ts = row.ts;
   }
   return [...grouped.values()];
+}
+
+export interface BoundedTimelineResponse {
+  text: string;
+  entries: TimelineEntry[];
+  rawCount: number;
+  count: number;
+  hasMore: boolean;
+  nextCursor?: string;
+  entriesTruncated?: {
+    requested: number;
+    returned: number;
+    raw_requested: number;
+    raw_returned: number;
+    reason: 'response_budget';
+  };
+}
+
+/**
+ * Serialize a timeline page without allowing the result door to cut JSON in
+ * half. We trim a RAW prefix, then group that prefix (when requested), so the
+ * cursor always advances over exactly the rows represented by the response.
+ */
+export function buildBoundedTimelineResponse(
+  base: Record<string, unknown>,
+  pageRows: TimelineEntry[],
+  groupRepeated: boolean,
+  sourceHasMore: boolean,
+  offset: number,
+  cursorForOffset: (nextOffset: number) => string | undefined,
+  budget = SESSION_TIMELINE_RESPONSE_BUDGET_CHARS,
+): BoundedTimelineResponse {
+  const fullEntries = groupRepeated ? groupRepeatedTimelineEntries(pageRows) : pageRows;
+
+  for (let rawCount = pageRows.length; rawCount >= 0; rawCount -= 1) {
+    const candidateRows = pageRows.slice(0, rawCount);
+    const entries = groupRepeated ? groupRepeatedTimelineEntries(candidateRows) : candidateRows;
+    const truncated = rawCount < pageRows.length;
+    const hasMore = sourceHasMore || truncated;
+    const nextCursor = hasMore ? cursorForOffset(offset + rawCount) : undefined;
+    const entriesTruncated = truncated
+      ? {
+          requested: fullEntries.length,
+          returned: entries.length,
+          raw_requested: pageRows.length,
+          raw_returned: rawCount,
+          reason: 'response_budget' as const,
+        }
+      : undefined;
+    const payload = {
+      ...base,
+      raw_count: rawCount,
+      count: entries.length,
+      hasMore,
+      ...(nextCursor ? { nextCursor } : {}),
+      ...(entriesTruncated ? { entriesTruncated } : {}),
+      entries,
+    };
+    const text = JSON.stringify(payload);
+    if (text.length <= budget) {
+      return {
+        text,
+        entries,
+        rawCount,
+        count: entries.length,
+        hasMore,
+        ...(nextCursor ? { nextCursor } : {}),
+        ...(entriesTruncated ? { entriesTruncated } : {}),
+      };
+    }
+  }
+
+  // The envelope is intentionally small and every TimelineEntry is bounded by
+  // the SELECT projections above, so the zero-row candidate should fit. Keep a
+  // total fallback for future schema growth rather than returning invalid JSON.
+  const hasMore = pageRows.length > 0 || sourceHasMore;
+  const nextCursor = hasMore ? cursorForOffset(offset) : undefined;
+  const entriesTruncated = pageRows.length > 0
+    ? {
+        requested: fullEntries.length,
+        returned: 0,
+        raw_requested: pageRows.length,
+        raw_returned: 0,
+        reason: 'response_budget' as const,
+      }
+    : undefined;
+  const fallbackPayload = {
+    ...base,
+    raw_count: 0,
+    count: 0,
+    hasMore,
+    ...(nextCursor ? { nextCursor } : {}),
+    ...(entriesTruncated ? { entriesTruncated } : {}),
+    entries: [],
+  };
+  return {
+    text: JSON.stringify(fallbackPayload),
+    entries: [],
+    rawCount: 0,
+    count: 0,
+    hasMore,
+    ...(nextCursor ? { nextCursor } : {}),
+    ...(entriesTruncated ? { entriesTruncated } : {}),
+  };
 }
 
 export default defineTool({
@@ -466,10 +584,6 @@ export default defineTool({
       anyAssumptionExists,
     });
 
-    const entries = args.group_repeated ? groupRepeatedTimelineEntries(pageRows) : pageRows;
-    const nextCursor = hasMore
-      ? encodeSessionCursor('sessions:timeline', offset + pageRows.length, fingerprint, { since, until })
-      : undefined;
     const [auditRow = { total_tool_calls: 0, automatic_calls: 0, agent_calls: 0 }] = await ctx.tx<AutomaticCallAuditRow[]>`
       SELECT count(*)::int AS total_tool_calls,
              count(*) FILTER (WHERE tool_name = ANY(${[...AUTOMATIC_TOOL_NAMES]}::text[]))::int AS automatic_calls,
@@ -480,57 +594,61 @@ export default defineTool({
          AND (${args.tool ?? null}::text IS NULL OR tool_name = ${args.tool ?? null})
          AND (${args.status ?? null}::text IS NULL OR COALESCE(NULLIF(metadata_json->>'effectiveStatus', ''), status) = ${args.status ?? null})
     `;
-    return {
-      content: [{
-        type: 'text' as const,
-        text: JSON.stringify({
-          ok: true,
-          owner,
-          since,
-          until,
-          filters: {
-            ...(kinds ? { kinds } : {}),
-            ...(args.tool ? { tool: args.tool } : {}),
-            ...(args.status ? { status: args.status } : {}),
-            ...(args.goalRef ? { goalRef: args.goalRef } : {}),
-            include_auto: includeAuto,
-            group_repeated: args.group_repeated ?? false,
-          },
-          // P-024 ACCEPTANCE / D-046 FLOOR: adoption of this read is measured on
-          // the goalRef filter, and if it is never passed it is P-009's STAMP
-          // that gets cut, not this projection. Reporting the resolution here
-          // makes an empty goal-scoped read self-describing: goal_scoped tells
-          // you the filter ran, assumption_sets_resolved tells you whether any
-          // watermark was actually expanded — so `count: 0` can never be read as
-          // "this agent did nothing under that goal" when it really means "no
-          // call ever carried that goal_ref".
-          stamp_coverage: {
-            goal_scoped: Boolean(args.goalRef),
-            assumption_sets_resolved: assumptionSetsResolved,
-            // P-015: the counts alone cannot say what a zero MEANS, so the
-            // verdict ships with them. Without this, a page of cleanly-resolved
-            // zeros reads as "this agent assumed nothing" when the truth is that
-            // nothing can assume anything yet (WI-6465).
-            assumptions_observed: assumptionsObserved,
-            assumption_coverage: assumptionVerdict,
-            ...(ASSUMPTION_COVERAGE_REASONS[assumptionVerdict]
-              ? { assumption_zero_reason: ASSUMPTION_COVERAGE_REASONS[assumptionVerdict] }
-              : {}),
-            ...(args.goalRef && pageRows.length === 0
-              ? {
-                  zero_reason:
-                    'no tool call in this window carried that goal_ref — either the agent never held it, or the calls predate the P-009 stamp',
-                }
-              : {}),
-          },
-          raw_count: pageRows.length,
-          count: entries.length,
-          hasMore,
-          ...(nextCursor ? { nextCursor } : {}),
-          audit_summary: buildAutomaticCallAuditSummary(auditRow),
-          entries,
-        }),
-      }],
+    // P-024 ACCEPTANCE / D-046 FLOOR: adoption of this read is measured on
+    // the goalRef filter, and if it is never passed it is P-009's STAMP
+    // that gets cut, not this projection. Reporting the resolution here
+    // makes an empty goal-scoped read self-describing: goal_scoped tells
+    // you the filter ran, assumption_sets_resolved tells you whether any
+    // watermark was actually expanded — so `count: 0` can never be read as
+    // "this agent did nothing under that goal" when it really means "no
+    // call ever carried that goal_ref".
+    const baseResponse = {
+      ok: true,
+      owner,
+      since,
+      until,
+      filters: {
+        ...(kinds ? { kinds } : {}),
+        ...(args.tool ? { tool: args.tool } : {}),
+        ...(args.status ? { status: args.status } : {}),
+        ...(args.goalRef ? { goalRef: args.goalRef } : {}),
+        include_auto: includeAuto,
+        group_repeated: args.group_repeated ?? false,
+      },
+      stamp_coverage: {
+        goal_scoped: Boolean(args.goalRef),
+        assumption_sets_resolved: assumptionSetsResolved,
+        // P-015: the counts alone cannot say what a zero MEANS, so the
+        // verdict ships with them. Without this, a page of cleanly-resolved
+        // zeros reads as "this agent assumed nothing" when the truth is that
+        // nothing can assume anything yet (WI-6465).
+        assumptions_observed: assumptionsObserved,
+        assumption_coverage: assumptionVerdict,
+        ...(ASSUMPTION_COVERAGE_REASONS[assumptionVerdict]
+          ? { assumption_zero_reason: ASSUMPTION_COVERAGE_REASONS[assumptionVerdict] }
+          : {}),
+        ...(args.goalRef && pageRows.length === 0
+          ? {
+              zero_reason:
+                'no tool call in this window carried that goal_ref — either the agent never held it, or the calls predate the P-009 stamp',
+            }
+          : {}),
+      },
+      audit_summary: buildAutomaticCallAuditSummary(auditRow),
     };
+    const bounded = buildBoundedTimelineResponse(
+      baseResponse,
+      pageRows,
+      args.group_repeated ?? false,
+      hasMore,
+      offset,
+      (nextOffset) => encodeSessionCursor(
+        'sessions:timeline',
+        nextOffset,
+        fingerprint,
+        { since, until },
+      ),
+    );
+    return { content: [{ type: 'text' as const, text: bounded.text }] };
   },
 });
