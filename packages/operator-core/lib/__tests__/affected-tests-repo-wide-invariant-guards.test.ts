@@ -820,7 +820,15 @@ describe('affected-tests: the host-suite skip is DECLARED and verified, never as
       rawCount,
     );
     expect(guards.length).toBeGreaterThanOrEqual(10);
-    expect(guards.every((g) => g.script.startsWith('lint:'))).toBe(true);
+    // Shape, not namespace. This asserted `startsWith('lint:')` until the registry took its
+    // first non-lint entry (`gen:authored-docs:check` — a projected-doc drift check, which is
+    // a repo-wide invariant like any other and belongs here). That made a CALIBRATION fail for
+    // a correct registration, which is the worst failure mode a calibration has: it reads as
+    // "the parse broke" while the parse is fine, and the cheap way out is to weaken it to
+    // nothing. What the calibration actually needs to prove is that the parse yielded real npm
+    // script names rather than garbage or [], so pin THAT — a namespaced `<group>:<name>` — and
+    // let the registry grow a new namespace without a false red.
+    expect(guards.every((g) => /^[a-z][\w-]*:[\w:-]+$/.test(g.script))).toBe(true);
   });
 
   /**
