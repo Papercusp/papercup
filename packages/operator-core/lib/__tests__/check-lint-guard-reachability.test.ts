@@ -607,7 +607,7 @@ describe('scanScopeSources — the runner is not what the guard scans (WI-38290)
       enforcingTestPaths: [SUBJECT],
       workspaceDirs: ['apps/operator', 'packages/operator-core'],
       implSource: scanScopeSources([RUNNER, SUBJECT])
-        .map((p) => (p === RUNNER ? RUNNER_SRC : SUBJECT_SRC))
+        .map((p: string) => (p === RUNNER ? RUNNER_SRC : SUBJECT_SRC))
         .join('\n'),
     });
     expect(fixed.verdict).not.toBe('partial');
