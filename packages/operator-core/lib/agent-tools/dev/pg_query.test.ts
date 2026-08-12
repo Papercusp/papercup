@@ -56,6 +56,12 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     expect((pgQueryTool as unknown as { skipResultDoor?: string }).skipResultDoor).toBe('programmatic-caller');
   });
 
+  it('documents the unwrapped root shape for code:run callers', () => {
+    const returns = (pgQueryTool as unknown as { guidance?: { returns?: string } }).guidance?.returns;
+    expect(returns).toContain('{ rowCount, truncated, fields, elapsedMs, rows }');
+    expect(returns).toContain('there is no `result.content` MCP envelope');
+  });
+
   it('returns a relation description as structured data for transport-safe shaping', async () => {
     const description = {
       relation: 'harness_shared.tool_invocations',

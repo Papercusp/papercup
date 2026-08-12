@@ -95,6 +95,8 @@ export default defineTool({
     chaining:
       'Check a table\'s shape first with `describe: "schema.table"` (or a glob) instead of `psql -c "\\d …"`. ' +
       'Use `EXPLAIN (FORMAT TEXT) SELECT …` for a bounded planner diagnostic; its explained statement must be SELECT/WITH…SELECT. Alias duplicate output columns (the row cap wraps ordinary queries in a subquery). Pass `maxRows` to widen the cap; if `truncated`, tighten WHERE/LIMIT instead of raising it blindly.',
+    returns:
+      '{ rowCount, truncated, fields, elapsedMs, rows } for `sql`; in `code:run`, nested calls are unwrapped to this root object, so read `result.rows`/`result.fields` directly — there is no `result.content` MCP envelope. `describe` returns `{ relation, kind, columns, indexes, constraints }` (or `{ pattern, relationCount, relations }` for a glob).',
     seeAlso: [
       'work_items:claimable (what issue-family work is claimable RIGHT NOW — the SSOT claim floors as a tool; a raw status=open query is not claimability)',
       'plans:list (plan directory, recency filters, and groupBy/aggregateOnly counts — instead of hand-written SQL over harness_plans)',
