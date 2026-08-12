@@ -23,7 +23,9 @@
  * finding the breakage is not the hard part — vitest already names it perfectly, at the
  * exact export and mock. The hard part is KNOWING TO RUN those tests. This guard does the
  * one thing nothing else does: it notices FROM THE DIFF that you just made the specific
- * kind of edit that strands mockers, and names the small set of files to run. Re-deriving
+ * kind of edit that strands mockers, and names the small set of files to run. It covers
+ * both a newly added runtime export and a newly added runtime import from a workspace
+ * package (the latter is how a bare `@papercusp/sync` mock escaped this guard). Re-deriving
  * "would it actually throw" here would be a second, worse vitest — and unnecessary,
  * because RUNNING the named tests is USUALLY the decisive answer.
  *
@@ -258,23 +260,34 @@ export function diffAddedRuntimeImports(beforeText, afterText, fileName = 'f.ts'
 }
 
 /**
- * Test files that mock `modulePath` with an ENUMERATING factory.
+ * Test files that mock `modulePath` or one of `moduleSpecifiers` with an ENUMERATING factory.
  *
- * `modulePath` is repo-relative and extensionless, matching resolveSpec's output, so the
- * comparison is between two values produced by the same resolver rather than between a
- * path and a hand-normalised string.
+ * `modulePath` is repo-relative and extensionless, matching resolveSpec's output, while
+ * bare package specifiers are compared as raw strings. An optional per-run `cache` keeps
+ * repeated triggers from reparsing the same test file.
  */
-export function findEnumeratingMockers({ modulePath, moduleSpecifiers = [], testFiles = [], read }) {
+export function findEnumeratingMockers({ modulePath, moduleSpecifiers = [], testFiles = [], read, cache }) {
   const hits = [];
   const needle = modulePath ? modulePath.split('/').pop() : null;
   const specifiers = new Set(moduleSpecifiers);
   for (const path of testFiles) {
-    const text = read(path);
-    if (text === null || text === undefined) continue;
+    let entry = cache?.get(path);
+    if (!entry) {
+      const text = read(path);
+      if (text === null || text === undefined) {
+        if (cache) cache.set(path, null);
+        continue;
+      }
+      entry = { text, calls: null };
+      cache?.set(path, entry);
+    }
+    if (!entry) continue;
+    const { text } = entry;
     // Cheap substring pre-filter before parsing, mirroring collectCandidateFiles in the
-    // sibling guard: a test that never mentions the basename cannot mock it relatively.
+    // sibling guard: a test that never mentions the basename/specifier cannot mock it.
     if (needle && !text.includes(needle) && ![...specifiers].some((s) => text.includes(s))) continue;
-    for (const call of analyzeMockCalls(text, path)) {
+    if (!entry.calls) entry.calls = analyzeMockCalls(text, path);
+    for (const call of entry.calls) {
       if (call.form !== 'full-replacement') continue;
       const relativeMatch = modulePath && resolveSpec(path, call.spec) === modulePath;
       const bareMatch = specifiers.has(call.spec);
@@ -474,6 +487,7 @@ function main() {
   const findings = [];
   if (changed.length || changedImporters.length) {
     const testFiles = gitTestFiles();
+    const mockCallCache = new Map();
     const read = (f) => {
       try {
         return readFileSync(resolve(ROOT, f), 'utf8');
@@ -482,7 +496,7 @@ function main() {
       }
     };
     for (const c of changed) {
-      const mockers = findEnumeratingMockers({ modulePath: moduleKeyFor(c.file), testFiles, read });
+      const mockers = findEnumeratingMockers({ modulePath: moduleKeyFor(c.file), testFiles, read, cache: mockCallCache });
       if (mockers.length) findings.push({ ...c, mockers });
     }
     for (const importer of changedImporters) {
@@ -491,6 +505,7 @@ function main() {
           moduleSpecifiers: [added.specifier],
           testFiles,
           read,
+          cache: mockCallCache,
         });
         if (mockers.length) {
           findings.push({
