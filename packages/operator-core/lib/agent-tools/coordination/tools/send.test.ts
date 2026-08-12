@@ -12,7 +12,13 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
-import { mockImplementationTyped, mockReturnOnceTyped, mockReturnTyped } from '../../../testing/typed-mock';
+import {
+  mockImplementationTyped,
+  mockResolvedOnceTyped,
+  mockResolvedTyped,
+  mockReturnOnceTyped,
+  mockReturnTyped,
+} from '../../../testing/typed-mock';
 
 // EI-20130618357432548: keep the REAL constants (notably ADMIN_COORD_UI_OWNER) via
 // importOriginal. A bare factory replaces the whole module, so send.ts's
@@ -140,6 +146,20 @@ const lookupEndedSessionsM = vi.mocked(lookupEndedSessions);
 const flagM = vi.mocked(getFlag);
 const tool = (await import('./send')).default;
 
+/**
+ * A COMPLETE `CoordEnvelope` fixture, derived from `getMessageById`'s OWN return type so a
+ * newly-required wire field reds HERE at compile time rather than at runtime in some
+ * unrelated peer's gate run — the exact trap `check-mock-cast-escape` ratchets against
+ * (WI-6673 / EI-19282401068515102). Only the fields a test actually asserts on need
+ * naming; `ts`/`kind` are supplied so the fixture satisfies the real interface.
+ */
+type Envelope = NonNullable<Awaited<ReturnType<typeof getMessageById>>>;
+const envelope = (over: Partial<Envelope> & Pick<Envelope, 'msg_id' | 'from' | 'to'>): Envelope => ({
+  ts: 't0',
+  kind: 'message',
+  ...over,
+});
+
 type Out = { data: any };
 const body = async (args: unknown) => (((await tool.handler(args as never, {} as never)) as Out).data);
 const bodyWithCtx = async (args: unknown, ctx: unknown) =>
@@ -164,10 +184,10 @@ beforeEach(() => {
   }));
   mockReturnTyped(unresolvedAudienceM, []);
   // recipients resolve 1:1 by default (no unknowns)
-  resolveM.mockImplementation(async (to: readonly string[]) => ({ resolved: to, unknown: [], ambiguous: [] }) as never);
+  mockImplementationTyped(resolveM, async (to) => ({ resolved: [...to], unknown: [], ambiguous: [] }));
   // wake-on-reply flag ON by default; no original message by default
-  flagM.mockResolvedValue(true as never);
-  getByIdM.mockResolvedValue(null as never);
+  mockResolvedTyped(flagM, true);
+  mockResolvedTyped(getByIdM, null);
   // P-001: no shared Hive in the workspace by default (un-scoped sends stay local)
   fedScopeM.mockResolvedValue({ kind: 'none' } as never);
   // P-007: no remote sessions by default
@@ -564,14 +584,14 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     expect(opts.extra?.wakeOnReply).toBeUndefined();
 
     // a reply pointing at an original that DID NOT opt in must not wake
-    getByIdM.mockResolvedValueOnce({ msg_id: 'orig', from: 'peer', to: ['me'] } as never);
+    mockResolvedOnceTyped(getByIdM, envelope({ msg_id: 'orig', from: 'peer', to: ['me'] }));
     const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'orig' });
     expect(wakeM).not.toHaveBeenCalled();
     expect(b.results[0].replyWake).toBeUndefined();
   });
 
   it('a reply to an opted-in directed message fires an optimistic wake to the ORIGINAL sender', async () => {
-    getByIdM.mockResolvedValueOnce({ msg_id: 'orig', from: 'peer', to: ['me'], wakeOnReply: true } as never);
+    mockResolvedOnceTyped(getByIdM, envelope({ msg_id: 'orig', from: 'peer', to: ['me'], wakeOnReply: true }));
     wakeM.mockResolvedValueOnce({ targets: ['peer'], keys: [], woken: 1, staged: 0, stagedTargets: [] } as never);
     const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'orig' });
     expect(wakeM).toHaveBeenCalledTimes(1);
@@ -581,7 +601,7 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
 
   it('a reply whose sender IS the original sender does NOT self-wake', async () => {
     // original was sent BY 'me' (the current identity) → never self-wake
-    getByIdM.mockResolvedValueOnce({ msg_id: 'orig', from: 'me', to: ['peer'], wakeOnReply: true } as never);
+    mockResolvedOnceTyped(getByIdM, envelope({ msg_id: 'orig', from: 'me', to: ['peer'], wakeOnReply: true }));
     const b = await body({ to: ['peer'], summary: 'reply to my own', related_msg_id: 'orig' });
     expect(wakeM).not.toHaveBeenCalled();
     expect(b.results[0].replyWake).toBeUndefined();
@@ -594,7 +614,7 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     // deliveries → two wasted wake-pump turns for ONE message (EI-14760: deliveries
     // #22831/#22832 on the same await, ~31ms apart, for one send). Now the redundant
     // reply-wake folds into the authoritative deliver-and-wake fan (env.to).
-    getByIdM.mockResolvedValueOnce({ msg_id: 'orig', from: 'peer', to: ['me'], wakeOnReply: true } as never);
+    mockResolvedOnceTyped(getByIdM, envelope({ msg_id: 'orig', from: 'peer', to: ['me'], wakeOnReply: true }));
     wakeM.mockResolvedValue({ targets: ['peer'], keys: [], woken: 1, staged: 0, stagedTargets: [] } as never);
     const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'orig', wake: 'required' });
     // Exactly ONE inbox-wake fan — the deliver-and-wake fan for env.to. The reply-wake
@@ -610,7 +630,7 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     // reply directed to `peer`, but the ORIGINAL message came from a third party `asker`
     // who is NOT in `to` — the reply-wake to `asker` is genuinely needed and must still
     // fire alongside the directed wake to `peer` (the fold must not over-apply).
-    getByIdM.mockResolvedValueOnce({ msg_id: 'orig', from: 'asker', to: ['me'], wakeOnReply: true } as never);
+    mockResolvedOnceTyped(getByIdM, envelope({ msg_id: 'orig', from: 'asker', to: ['me'], wakeOnReply: true }));
     wakeM.mockResolvedValue({ targets: ['x'], keys: [], woken: 1, staged: 0, stagedTargets: [] } as never);
     const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'orig', wake: 'required' });
     expect(wakeM).toHaveBeenCalledTimes(2);
@@ -630,7 +650,7 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
   });
 
   it('EI-18663224517726594: the reply-wake fan (waking the ORIGINAL sender when a third party replies) also carries the reply\'s own msg_id', async () => {
-    getByIdM.mockResolvedValueOnce({ msg_id: 'orig', from: 'asker', to: ['me'], wakeOnReply: true } as never);
+    mockResolvedOnceTyped(getByIdM, envelope({ msg_id: 'orig', from: 'asker', to: ['me'], wakeOnReply: true }));
     wakeM.mockResolvedValueOnce({ targets: ['asker'], keys: [], woken: 1, staged: 0, stagedTargets: [] } as never);
     const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'orig' });
     expect(wakeM).toHaveBeenCalledTimes(1);
@@ -645,7 +665,7 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     const opts = sendM.mock.calls[0][1] as { extra?: Record<string, unknown> };
     expect(opts.extra?.wakeOnReply).toBeUndefined();
     // reply to an opted-in original: still no wake while the flag is OFF
-    getByIdM.mockResolvedValueOnce({ msg_id: 'orig', from: 'peer', to: ['me'], wakeOnReply: true } as never);
+    mockResolvedOnceTyped(getByIdM, envelope({ msg_id: 'orig', from: 'peer', to: ['me'], wakeOnReply: true }));
     const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'orig' });
     expect(wakeM).not.toHaveBeenCalled();
     expect(b.results[0].replyWake).toBeUndefined();
@@ -675,7 +695,7 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
   });
 
   it('WI-5072: a RESOLVED related_msg_id is fetched ONCE — validation result is reused by the reply-wake', async () => {
-    getByIdM.mockResolvedValueOnce({ msg_id: 'orig', from: 'peer', to: ['me'], wakeOnReply: true } as never);
+    mockResolvedOnceTyped(getByIdM, envelope({ msg_id: 'orig', from: 'peer', to: ['me'], wakeOnReply: true }));
     wakeM.mockResolvedValueOnce({ targets: ['peer'], keys: [], woken: 1, staged: 0, stagedTargets: [] } as never);
     const b = await body({ to: ['peer'], summary: 'my reply', related_msg_id: 'orig' });
     expect(b.results[0].ok).toBe(true);
@@ -690,8 +710,8 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
   // and before this fix there was structurally no way to ever satisfy it once the
   // original sender was gone (coord:send always refused with unknown_recipient).
   it('EI-18145: replying to the original sender of related_msg_id who is now GONE from the roster still sends (closes the loop)', async () => {
-    getByIdM.mockResolvedValueOnce({ msg_id: 'orig', from: 'ghost-sender', to: ['me'] } as never);
-    resolveM.mockResolvedValueOnce({ resolved: [], unknown: ['ghost-sender'], ambiguous: [] } as never);
+    mockResolvedOnceTyped(getByIdM, envelope({ msg_id: 'orig', from: 'ghost-sender', to: ['me'] }));
+    mockResolvedOnceTyped(resolveM, { resolved: [], unknown: ['ghost-sender'], ambiguous: [] });
     const b = await body({ to: ['ghost-sender'], summary: 'closing this out', related_msg_id: 'orig' });
     expect(b.results[0]).toMatchObject({ ok: true, recipients_gone: ['ghost-sender'] });
     expect(b.results[0].error).toBeUndefined();
@@ -703,10 +723,10 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
 
   it('EI-20244789166273442: a resolver-supported short alias still closes a reply after the original sender ends', async () => {
     const endedOwner = 'su-93a3872a-1f16-4af5-9e31-2c7b6d4e8f90';
-    getByIdM.mockResolvedValueOnce({ msg_id: 'orig', from: endedOwner, to: ['me'] } as never);
+    mockResolvedOnceTyped(getByIdM, envelope({ msg_id: 'orig', from: endedOwner, to: ['me'] }));
     // The alias would resolve while the sender was live, but the ended owner
     // has been reaped from the roster by the time this reply is sent.
-    resolveM.mockResolvedValueOnce({ resolved: [], unknown: ['93a3872a'], ambiguous: [] } as never);
+    mockResolvedOnceTyped(resolveM, { resolved: [], unknown: ['93a3872a'], ambiguous: [] });
     const b = await body({ to: ['93a3872a'], summary: 'closing this out', related_msg_id: 'orig' });
     expect(b.results[0]).toMatchObject({ ok: true, recipients_gone: [endedOwner] });
     expect(sendM).toHaveBeenCalledTimes(1);
@@ -716,8 +736,8 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
   });
 
   it('EI-18145: an unknown recipient UNRELATED to related_msg_id.from still hard-refuses (the exemption is scoped, not blanket)', async () => {
-    getByIdM.mockResolvedValueOnce({ msg_id: 'orig', from: 'ghost-sender', to: ['me'] } as never);
-    resolveM.mockResolvedValueOnce({ resolved: [], unknown: ['some-other-ghost'], ambiguous: [] } as never);
+    mockResolvedOnceTyped(getByIdM, envelope({ msg_id: 'orig', from: 'ghost-sender', to: ['me'] }));
+    mockResolvedOnceTyped(resolveM, { resolved: [], unknown: ['some-other-ghost'], ambiguous: [] });
     const b = await body({ to: ['some-other-ghost'], summary: 'hi', related_msg_id: 'orig' });
     expect(b.results[0]).toMatchObject({ ok: false, error: 'unknown_recipient', unknown_recipients: ['some-other-ghost'] });
     // EI-20232430036029410: when a related reply cannot be delivered to the
@@ -728,18 +748,18 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
   });
 
   it('EI-18145: a genuinely unknown recipient with NO related_msg_id still hard-refuses (unchanged baseline)', async () => {
-    resolveM.mockResolvedValueOnce({ resolved: [], unknown: ['ghost'], ambiguous: [] } as never);
+    mockResolvedOnceTyped(resolveM, { resolved: [], unknown: ['ghost'], ambiguous: [] });
     const b = await body({ to: ['ghost'], summary: 'hi' });
     expect(b.results[0]).toMatchObject({ ok: false, error: 'unknown_recipient', unknown_recipients: ['ghost'] });
     expect(sendM).not.toHaveBeenCalled();
   });
 
   it('EI-19343900550313022: a MIXED valid+unknown `to` list still refuses whole (all-or-nothing by design), but the message names the stranded valid recipients + the items[] escape hatch', async () => {
-    resolveM.mockResolvedValueOnce({
+    mockResolvedOnceTyped(resolveM, {
       resolved: ['bee-1', 'bee-2'],
       unknown: ['fabricated-ghost'],
       ambiguous: [],
-    } as never);
+    });
     const b = await body({ to: ['bee-1', 'bee-2', 'fabricated-ghost'], summary: 'hi all' });
     expect(b.results[0]).toMatchObject({ ok: false, error: 'unknown_recipient', unknown_recipients: ['fabricated-ghost'] });
     expect(b.results[0].message).toMatch(/2 OTHER, VALID recipient/);
@@ -748,7 +768,7 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
   });
 
   it('a single unknown recipient with no other valid ones does NOT carry the mixed-list hint', async () => {
-    resolveM.mockResolvedValueOnce({ resolved: [], unknown: ['ghost'], ambiguous: [] } as never);
+    mockResolvedOnceTyped(resolveM, { resolved: [], unknown: ['ghost'], ambiguous: [] });
     const b = await body({ to: ['ghost'], summary: 'hi' });
     expect(b.results[0].message).not.toMatch(/OTHER, VALID recipient/);
   });
@@ -759,11 +779,11 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
       fleetSlug: 'nonp2p-bug-drain-luna-max-0811',
       fleetRole: 'member',
     });
-    resolveM.mockResolvedValueOnce({
+    mockResolvedOnceTyped(resolveM, {
       resolved: [],
       unknown: [endedLeaderSession],
       ambiguous: [],
-    } as never);
+    });
 
     const b = await body({ to: [endedLeaderSession], summary: 'escalate this issue' });
 
