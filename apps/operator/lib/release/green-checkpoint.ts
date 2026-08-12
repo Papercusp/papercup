@@ -324,6 +324,17 @@ export interface CheckpointDeps {
    *  null when it can't be computed (caller then declines the salvage, never guesses).
    *  Pure git+graph, NO test run, so the prefix scan is cheap. Optional + injected. */
   affectedWorkspacesForRange?(from: string, to: string): Promise<string[] | null>;
+  /** WI-38218 (root cause WI-38216): the changed FILE paths for the diff `from..to`,
+   *  submodule gitlinks EXPANDED (`changedFilesRecursive`), or null when it can't be
+   *  computed (caller then falls back to workspace granularity, never guesses).
+   *
+   *  Why this exists: the prefix scan used to ask only "does this prefix touch the
+   *  failing WORKSPACE". For a HUB package (@papercusp/operator-core) essentially every
+   *  commit touches it, so the scan broke at commit 1 and the salvage declined for 22h
+   *  straight. File granularity is the discriminating question — and it is CHEAPER than
+   *  the workspace resolver (a git diff, not a node graph walk). Optional + injected, so
+   *  a stub that omits it keeps the old workspace behaviour exactly. */
+  changedFilesForRange?(from: string, to: string): Promise<string[] | null>;
   /** WI-2997 (EI-7443 follow-up, item 3): per-file 7d historical flake stats for
    *  the CURRENTLY failing test files, so the not-green broadcast/escalate can
    *  show flake-vs-regression immediately instead of the release-fixer
@@ -1365,10 +1376,19 @@ export interface GateLineage {
  * skipped: `extractFailingTests` also emits bare workspace NAMES (`@papercusp/web`).
  *
  * A suffix match is deliberately tolerant: two workspaces sharing a relative path
- * (`lib/index.test.ts`) could over-name a file. That is the right error direction —
- * this value is diagnostic only (it never gates, and never feeds `classifyRedAgainstTip`,
- * which decides real-red/stale from a real re-run at tip), and its note already tells
- * the reader to verify. Silence was the expensive failure; a spare candidate is cheap.
+ * (`lib/index.test.ts`) could over-name a file. That is the right error direction for
+ * BOTH of its callers, which is why the same tolerance is safe in each:
+ *
+ *  - DIAGNOSTIC (the lineage note): a spare candidate is cheap and the note already tells
+ *    the reader to verify. Silence was the expensive failure.
+ *  - GATING (WI-38218, the longest-green-prefix scan in `tryLongestGreenPrefix`): this DOES
+ *    now gate. Over-naming means the scan sees a failing file implicated EARLIER, so it
+ *    stops the prefix SOONER — strictly more conservative, never a longer prefix than the
+ *    truth. And the prefix it picks is confirm-run green before `main` moves, so even an
+ *    under-conservative match cannot promote an unproven commit.
+ *
+ * It still never feeds `classifyRedAgainstTip`, which decides real-red/stale from a real
+ * re-run at tip.
  */
 export function matchFailingFilesToChanged(failing: string[], changed: string[]): string[] {
   const out = new Set<string>();
@@ -3669,17 +3689,77 @@ async function tryLongestGreenPrefix(
   // failure signature. File-path entries (FAIL <file>) and the build sentinel won't
   // match a workspace name, so they fall out — if nothing localizes, we decline.
   const failingWs = new Set(fullAffected.filter((w) => failingSig.has(w)));
-  if (failingWs.size === 0) return null; // failure not workspace-localizable → hold
 
-  // Longest prefix (oldest-first) whose cumulative affected set avoids every failing ws.
+  // WI-38218 (root cause diagnosed by su-f14e191f, WI-38216): LOCATE AT FILE GRANULARITY
+  // when the failure signature carries paths.
+  //
+  // The scan below asks, per prefix, "does this prefix implicate the failure?" It used to
+  // ask that ONLY at WORKSPACE granularity, which has ~zero discriminating power when the
+  // failing workspace is a HUB: essentially every commit touches @papercusp/operator-core,
+  // so the loop broke at iteration 1, `prefixTip` stayed null, and the salvage declined.
+  // Measured 2026-08-12: `main` pinned at one sha for ~22h across 16 red runs, and only 4
+  // of 258 persisted checkpoint logs EVER emitted a `partial-green-gate:` line. The one
+  // mechanism built to stop a red tip hostaging a clean prefix was structurally inert.
+  //
+  // Two guards were doing this, in opposite directions, so BOTH move together:
+  //   - workspace-shaped reds died at the loop (hub touches everything);
+  //   - path-shaped reds ("FAIL <file>") died even EARLIER, because a file path never
+  //     matches a workspace NAME, so `failingWs` came back empty and we declined here.
+  // We now decline only when the red is localizable by NEITHER file NOR workspace.
+  //
+  // SAFETY — this cannot promote a bad prefix. The design is cheap-locate-then-CONFIRM:
+  // the chosen prefix is re-run green below and HELD if it fails. A relaxed locate can
+  // therefore only ever cost one confirm suite; it can never advance `main` to something
+  // unproven, so the "always tested-green" invariant is untouched. What we trade away is
+  // the workspace resolver's reverse-DEPENDENCY reasoning: a commit that changes a
+  // dependency of a failing test (without touching the test file) may now be included,
+  // and the confirm run is what catches it. That is the intended trade — a spent confirm
+  // suite is recoverable, 22h of frozen deploys is not.
+  //
+  // COST: strictly cheaper than what it replaces — one `git diff --name-only` per prefix
+  // instead of one `affected-tests.mjs` graph walk per prefix.
+  // The extra `includes('/')` is load-bearing, NOT belt-and-braces. `pathShapedFailing`
+  // only excludes WORKSPACE names (it filters the `@` prefix), because its original caller
+  // is diagnostic. A GATE ID (`lint:tsc`) is neither a workspace name nor a path, so it
+  // survives that filter — and since it can never equal a changed FILE, it would make the
+  // scan below match nothing and silently authorise the MAXIMAL prefix, i.e. the loosest
+  // possible answer arrived at by vacuous truth. Requiring a path separator keeps the
+  // locate honest: a red we cannot express as files falls back to workspace granularity
+  // rather than quietly skipping every commit in the range.
+  const failingPaths = pathShapedFailing(failingTests).filter((f) => f.includes('/'));
+  const locateByFile = failingPaths.length > 0 && !!deps.changedFilesForRange;
+  if (failingWs.size === 0 && !locateByFile) return null; // localizable by neither → hold
+  deps.log(
+    `partial-green-gate: locating at ${locateByFile ? 'FILE' : 'workspace'} granularity ` +
+      `(${locateByFile ? `${failingPaths.length} failing path(s)` : `failing ws: ${[...failingWs].join(', ')}`})`,
+  );
+
+  // Longest prefix (oldest-first) whose cumulative diff avoids implicating the failure.
   let prefixTip: string | null = null;
   for (const sha of commits.slice(0, -1)) { // exclude the red tip itself
-    const aff = await deps.affectedWorkspacesForRange(lastReady, sha);
-    if (!aff) break; // can't compute this prefix → stop at the last clean one
-    if (aff.some((w) => failingWs.has(w))) break; // this commit (cumulatively) touches a failing ws
+    if (locateByFile) {
+      const files = await deps.changedFilesForRange!(lastReady, sha);
+      if (!files) break; // can't compute this prefix → stop at the last clean one
+      // Shape-tolerant match (vitest reports workspace-relative, git repo-relative) —
+      // the SAME matcher the lineage note uses, so the two cannot drift.
+      if (matchFailingFilesToChanged(failingPaths, files).length > 0) break;
+    } else {
+      const aff = await deps.affectedWorkspacesForRange(lastReady, sha);
+      if (!aff) break; // can't compute this prefix → stop at the last clean one
+      if (aff.some((w) => failingWs.has(w))) break; // this commit (cumulatively) touches a failing ws
+    }
     prefixTip = sha; // clean so far — extend the prefix
   }
-  if (!prefixTip) return null; // the very first new commit already implicates a failing ws
+  if (!prefixTip) {
+    // WI-38218: say WHY. "the first new commit already implicates the failure" is a
+    // legitimate outcome, but it is the same silent null as "the salvage never ran",
+    // which is exactly the ambiguity WI-38207 had to fix by reading the source.
+    deps.log(
+      `partial-green-gate: no salvageable prefix — the first commit after ${lastReady.slice(0, 8)} already ` +
+        `implicates the failure at ${locateByFile ? 'FILE' : 'workspace'} granularity`,
+    );
+    return null;
+  }
 
   // CONFIRM the prefix is itself green before FF-ing `main` to it (the invariant guard).
   deps.log(
@@ -6815,6 +6895,21 @@ export function realCheckpointDeps(
         .filter((l) => l.startsWith(prefix))
         .map((l) => l.slice(prefix.length).trim())
         .filter(Boolean);
+    },
+    // WI-38218: the changed FILE paths for `from..to`, submodule gitlinks EXPANDED.
+    // `changedFilesRecursive` (not `changedFiles`) for the EI-19365565179927273 reason:
+    // a superproject diff reports a submodule bump as the bare gitlink DIRECTORY, so a
+    // submodule test path would never match and the prefix scan would wrongly extend
+    // past a commit that did implicate the failure. Returns null on any failure so the
+    // caller falls back to workspace granularity — "couldn't compute" must never be
+    // read as "nothing changed", which would over-extend the prefix.
+    async changedFilesForRange(from, to) {
+      try {
+        const changed = await changedFilesRecursive(cfg.integrationRoot, from, to);
+        return changed.files;
+      } catch {
+        return null;
+      }
     },
     // PAPERCUSP_MAIN_PUSH_OK=1 — green-checkpoint is the ONE writer allowed past
     // the pre-push guard on `main` (bin/git-hooks/pre-push). Everyone else's

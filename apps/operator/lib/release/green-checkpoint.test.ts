@@ -4689,6 +4689,10 @@ describe('runGreenCheckpoint — longest-green-prefix (P-016)', () => {
   function partialDeps(opts: {
     candidateFailingTests?: string[];
     affected: Record<string, string[]>; // sha → affected workspace names for that prefix's range
+    // WI-38218: sha → changed FILE paths for that prefix's range. `null` models "the diff
+    // could not be computed". OMITTING the key entirely models a deps stub with no
+    // changedFilesForRange at all, which must fall back to workspace granularity.
+    changedFiles?: Record<string, string[] | null>;
     commits: string[]; // lastReady..candidate, OLDEST-FIRST full shas
     confirmGreen: boolean;
   }): { deps: CheckpointDeps; calls: string[] } {
@@ -4712,6 +4716,15 @@ describe('runGreenCheckpoint — longest-green-prefix (P-016)', () => {
       clearEscalation: async () => { calls.push('clearEscalation'); },
       commitsInRange: async () => { calls.push('commitsInRange'); return opts.commits; },
       affectedWorkspacesForRange: async (_from, to) => { calls.push(`affected:${to.slice(0, 7)}`); return opts.affected[to] ?? []; },
+      ...(opts.changedFiles
+        ? {
+            changedFilesForRange: async (_from: string, to: string) => {
+              calls.push(`files:${to.slice(0, 7)}`);
+              const v = opts.changedFiles![to];
+              return v === undefined ? [] : v; // undefined ⇒ "range touched nothing relevant"; null ⇒ "could not compute"
+            },
+          }
+        : {}),
       log: () => {},
     };
     return { deps, calls };
@@ -4728,6 +4741,101 @@ describe('runGreenCheckpoint — longest-green-prefix (P-016)', () => {
     const c4 = await commit('c', '4', 'c4'); // touches ws "failing" (the red tip)
     return { c1, c2, c3, c4 };
   }
+
+  // WI-38218 (root cause WI-38216): the salvage used to locate ONLY at workspace
+  // granularity, which is structurally blind when the failing workspace is a HUB —
+  // @papercusp/operator-core is touched by essentially every commit, so the scan broke at
+  // commit 1 and declined. Measured 2026-08-12: `main` pinned for ~22h / 16 red runs, and
+  // only 4 of 258 persisted checkpoint logs ever emitted a `partial-green-gate:` line.
+  describe('WI-38218: locate at FILE granularity', () => {
+    const HUB = '@papercusp/operator-core';
+    const FAILING = 'packages/operator-core/lib/broken.test.ts';
+
+    it('salvages a prefix for a HUB-package red, where workspace granularity is structurally blind', async () => {
+      const { c2, c3, c4 } = await chain();
+      const { deps, calls } = partialDeps({
+        candidateFailingTests: [FAILING],
+        // The hub sits in EVERY prefix's affected set — the real-world shape that froze main.
+        affected: { [c2]: [HUB], [c3]: [HUB], [c4]: [HUB] },
+        changedFiles: {
+          [c2]: ['packages/operator-core/lib/unrelated-a.ts'],
+          [c3]: ['packages/operator-core/lib/unrelated-b.ts'],
+          [c4]: ['packages/operator-core/lib/unrelated-b.ts', FAILING], // the tip implicates
+        },
+        commits: [c2, c3, c4],
+        confirmGreen: true,
+      });
+      const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+      expect(r).toMatchObject({ advanced: true, reason: 'advanced-prefix', advancedTo: c3 });
+      expect(await revParse(repo, 'ready')).toBe(c3);
+      expect(calls).toContain(`files:${c2.slice(0, 7)}`); // located by FILE...
+      expect(calls).not.toContain(`affected:${c2.slice(0, 7)}`); // ...not by workspace
+    });
+
+    it('stops the prefix AT the commit touching the failing file — never extends past it', async () => {
+      const { c1, c2, c3, c4 } = await chain();
+      const { deps } = partialDeps({
+        candidateFailingTests: [FAILING],
+        affected: { [c2]: [HUB], [c3]: [HUB], [c4]: [HUB] },
+        changedFiles: { [c2]: [FAILING], [c3]: [], [c4]: [] }, // the FIRST new commit implicates
+        commits: [c2, c3, c4],
+        confirmGreen: true,
+      });
+      const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+      expect(r.advanced).toBe(false);
+      expect(await revParse(repo, 'ready')).toBe(c1); // held — no partial advance
+    });
+
+    it('a diff that CANNOT be computed stops at the last clean prefix — null is never read as "nothing changed"', async () => {
+      const { c2, c3, c4 } = await chain();
+      const { deps } = partialDeps({
+        candidateFailingTests: [FAILING],
+        affected: { [c2]: [HUB], [c3]: [HUB], [c4]: [HUB] },
+        changedFiles: { [c2]: ['x/unrelated.ts'], [c3]: null, [c4]: [] }, // c3's diff unavailable
+        commits: [c2, c3, c4],
+        confirmGreen: true,
+      });
+      const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+      // Stops at c2 (the last prefix it could actually verify) rather than treating the
+      // unavailable c3 diff as clean and over-extending.
+      expect(r).toMatchObject({ advanced: true, advancedTo: c2 });
+      expect(await revParse(repo, 'ready')).toBe(c2);
+    });
+
+    it('falls back to workspace granularity when changedFilesForRange is not wired', async () => {
+      const { c1, c2, c3, c4 } = await chain();
+      const { deps, calls } = partialDeps({
+        candidateFailingTests: [FAILING],
+        affected: { [c2]: [HUB], [c3]: [HUB], [c4]: [HUB] },
+        // no `changedFiles` key ⇒ the dep is absent, exactly like an older stub
+        commits: [c2, c3, c4],
+        confirmGreen: true,
+      });
+      const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+      // A path-shaped signature localizes to no WORKSPACE, so the old behaviour declines.
+      expect(r.advanced).toBe(false);
+      expect(await revParse(repo, 'ready')).toBe(c1);
+      expect(calls.some((c) => c.startsWith('files:'))).toBe(false);
+    });
+
+    it('a GATE ID (lint:tsc) does NOT count as a file path — it must not vacuously authorise the maximal prefix', async () => {
+      const { c1, c2, c3, c4 } = await chain();
+      const { deps, calls } = partialDeps({
+        candidateFailingTests: ['lint:tsc'], // not @-prefixed, but not a path either
+        affected: { [c2]: [HUB], [c3]: [HUB], [c4]: [HUB] },
+        changedFiles: { [c2]: ['x/a.ts'], [c3]: ['x/b.ts'], [c4]: ['x/c.ts'] },
+        commits: [c2, c3, c4],
+        confirmGreen: true,
+      });
+      const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+      // If `lint:tsc` were treated as a path it would match NO changed file, so every
+      // commit would look clean and the scan would hand back the maximal prefix (c3) on
+      // vacuous truth. It must fall back to workspace granularity and decline instead.
+      expect(calls.some((c) => c.startsWith('files:'))).toBe(false);
+      expect(r.advanced).toBe(false);
+      expect(await revParse(repo, 'ready')).toBe(c1);
+    });
+  });
 
   it('advances `main` to the longest GREEN prefix and holds the red tip', async () => {
     const { c2, c3, c4 } = await chain();
