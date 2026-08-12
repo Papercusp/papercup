@@ -88,6 +88,10 @@ beforeEach(() => {
 });
 
 describe('fleet:status', () => {
+  it('opts out of the dispatcher ambient workspace transaction', () => {
+    expect((statusTool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+
   it('returns the live roster without completion stats when no harness is requested', async () => {
     const out = parse(await invoke({ fleet: 'rocket' }));
     expect(out.ok).toBe(true);

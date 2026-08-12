@@ -708,6 +708,11 @@ export default defineTool({
   },
   capability: 'work_items:read',
   requirePrincipal: false,
+  // EI-20228676874653267: this placement read resolves its own workspace and
+  // DB accessors and never reads ctx.tx. Holding an ambient transaction across
+  // the roster/decorations fan-out consumes an org-app slot for the whole call
+  // and can strand concurrent fleet-control reads at acquire deadline.
+  skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES],
   args: z.object({
     agent: z

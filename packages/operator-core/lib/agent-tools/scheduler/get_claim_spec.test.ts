@@ -10,6 +10,10 @@ import getClaimSpecTool from './get_claim_spec';
 const args = (getClaimSpecTool as { args: ZodTypeAny }).args;
 
 describe('scheduler:get_claim_spec — args', () => {
+  it('opts out of the dispatcher ambient workspace transaction', () => {
+    expect((getClaimSpecTool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+
   it('accepts cupId alone', () => {
     expect(args.safeParse({ cupId: 'su-bee-1' }).success).toBe(true);
   });

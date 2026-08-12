@@ -93,6 +93,11 @@ export default defineTool({
   },
   capability: 'fleet:status',
   requirePrincipal: false,
+  // EI-20228676874653267: this supervision read owns its DB accessors and
+  // never reads ctx.tx. Do not retain the dispatcher's ambient transaction
+  // across the roster/optional-leg fan-out; it pins an org-app slot and can
+  // starve subsequent control-plane calls under fleet load.
+  skipWorkspaceTx: true,
   agentRoles: [...SU_ROLES, 'cup'],
   args: z.object({
     fleet: z.string().min(1).describe('The fleet slug (from fleet:list).'),

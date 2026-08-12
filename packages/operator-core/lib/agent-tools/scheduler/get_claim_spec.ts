@@ -32,6 +32,11 @@ export default defineTool({
   },
   capability: 'work_items:read',
   requirePrincipal: false,
+  // EI-20228676874653267: this read uses the claim-spec store's own DB access
+  // and never reads ctx.tx. Keeping the dispatcher's ambient transaction open
+  // while resolving the spec pins an org-app pool slot and lets concurrent
+  // fleet-control reads queue behind the 45s acquisition deadline.
+  skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES],
   args: z
     .object({
