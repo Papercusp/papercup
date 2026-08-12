@@ -15,7 +15,13 @@
  */
 import { describe, it, expect } from 'vitest';
 // @ts-expect-error batch-watchdog.mjs is a standalone Node script without declarations.
-import { resolveBatchTimeoutMs, isWatchdogTimeout } from '../../../../scripts/lib/batch-watchdog.mjs';
+import {
+  resolveBatchTimeoutMs,
+  isWatchdogTimeout,
+  parseBatchProgress,
+  classifyBatchProgress,
+  formatBatchProgress,
+} from '../../../../scripts/lib/batch-watchdog.mjs';
 
 describe('resolveBatchTimeoutMs', () => {
   it('defaults when unset', () => {
@@ -69,5 +75,63 @@ describe('isWatchdogTimeout', () => {
     const tight = { ...OPTS, slackMs: 0 };
     expect(isWatchdogTimeout({ signal: 'SIGKILL', status: null, elapsedMs: 1_199_999 }, tight)).toBe(false);
     expect(isWatchdogTimeout({ signal: 'SIGKILL', status: null, elapsedMs: 1_200_000 }, tight)).toBe(true);
+  });
+});
+
+describe('parseBatchProgress', () => {
+  it('counts only Vitest per-file completion rows, deduplicates paths, and ignores path mentions', () => {
+    const progress = parseBatchProgress(
+      [
+        'FAIL lib/not-a-rollup.test.ts',
+        '  ✓ lib/first.test.ts (2 tests) 12ms',
+        'stack mentions lib/second.test.ts but did not complete it',
+        '  ✓ lib/first.test.ts (2 tests) 12ms',
+        '  ❯ lib/second.test.ts (3 tests | 1 failed) 20ms',
+      ].join('\n'),
+    );
+    expect(progress.completedFiles).toBe(2);
+    expect(progress.completionRows).toBe(3);
+    expect(progress.completedFilePaths).toEqual(['lib/first.test.ts', 'lib/second.test.ts']);
+    expect(progress.lastCompletedFile).toBe('lib/second.test.ts');
+    expect(progress.lastDurationMs).toBe(20);
+  });
+
+  it('strips ANSI and reads the Vitest total when a summary exists', () => {
+    const progress = parseBatchProgress(
+      '\u001b[32m  ✓\u001b[39m lib/one.test.ts (1 test) \u001b[2m3ms\u001b[22m\n' +
+        '\u001b[2mTest Files\u001b[22m  1 passed (1)',
+    );
+    expect(progress.available).toBe(true);
+    expect(progress.completedFiles).toBe(1);
+    expect(progress.totalFiles).toBe(1);
+  });
+
+  it('preserves unavailable output so a streamed TTY run is not mistaken for zero progress', () => {
+    const progress = parseBatchProgress(null);
+    expect(progress.available).toBe(false);
+    expect(progress.completedFiles).toBe(0);
+    expect(classifyBatchProgress(progress)).toBe('unknown');
+    expect(formatBatchProgress(progress)).toContain('UNKNOWN');
+  });
+});
+
+describe('classifyBatchProgress', () => {
+  it('reports captured completion rows as observed, not as a spin', () => {
+    const progress = parseBatchProgress('  ✓ lib/one.test.ts (1 test) 9ms');
+    expect(classifyBatchProgress(progress)).toBe('progress-observed');
+    expect(formatBatchProgress(progress)).toContain('do not infer a spin');
+  });
+
+  it('does not assert a spin when no completed row was captured', () => {
+    const progress = parseBatchProgress('RUN v4.1.8 /repo\ncollecting...');
+    expect(classifyBatchProgress(progress)).toBe('no-progress-observed');
+    expect(formatBatchProgress(progress)).toContain('cannot infer a spin');
+  });
+
+  it('supports a live timestamp when the caller has one', () => {
+    const progress = parseBatchProgress('  ✓ lib/one.test.ts (1 test) 9ms');
+    expect(classifyBatchProgress(progress, { lastProgressAgeMs: 500 })).toBe('advancing');
+    expect(classifyBatchProgress(progress, { lastProgressAgeMs: 20_000 })).toBe('stalled');
+    expect(formatBatchProgress(progress, 'stalled')).toContain('spin is now a supported hypothesis');
   });
 });

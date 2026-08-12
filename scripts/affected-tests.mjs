@@ -39,7 +39,13 @@ import {
 } from './lib/vitest-summary.mjs';
 import { emptySuiteGuardArgs } from './lib/empty-suite-guard.mjs';
 import { applyWorkerCapEnv } from './lib/worker-cap.mjs';
-import { resolveBatchTimeoutMs, isWatchdogTimeout } from './lib/batch-watchdog.mjs';
+import {
+  resolveBatchTimeoutMs,
+  isWatchdogTimeout,
+  parseBatchProgress,
+  classifyBatchProgress,
+  formatBatchProgress,
+} from './lib/batch-watchdog.mjs';
 import { classifyTaskExit, isGatingFailure } from './lib/task-exit-class.mjs';
 import { detectCargoTermination } from './lib/cargo-result.mjs';
 // EI-10542: this runner interleaves its own header/status lines (fd 1/2) with
@@ -1691,23 +1697,22 @@ for (const t of tasks) {
     // files right into the wall. Observed 2026-08-12: operator-core reported 3302 of
     // 4063 files with the last ones passing in 9-15ms each — a timeout, reported as
     // a spin, which cost a real investigation.
-    const capturedOut = typeof r.stdout === 'string' ? r.stdout : '';
-    const filesSeen = capturedOut ? new Set(capturedOut.match(/[\w./-]+\.test\.ts/g) ?? []).size : null;
-    const progress =
-      filesSeen == null
-        ? `progress UNKNOWN (output was streamed, not captured) — check the run log before assuming a spin`
-        : filesSeen > 0
-          ? `${filesSeen} test file(s) had already reported when the bound fired`
-          : `NO test file ever reported — consistent with a wedge before/at the first file`;
+    // A path mention is not progress: only Vitest's per-file rollup rows prove
+    // that a file completed. Also preserve null for streamed TTY output; turning
+    // it into an empty string would falsely report "no progress" and invite a
+    // spin diagnosis from evidence this process never captured.
+    const capturedOut =
+      typeof r.stdout === 'string' || typeof r.stderr === 'string'
+        ? `${r.stdout ?? ''}${r.stderr ?? ''}`
+        : null;
+    const progressEvidence = parseBatchProgress(capturedOut);
+    const progress = formatBatchProgress(progressEvidence, classifyBatchProgress(progressEvidence));
     errSync(
       `\n>>> ${t.ws.name} :: ${t.script} WATCHDOG-KILLED after ${(r.__elapsedMs / 60000).toFixed(1)}m with no exit ` +
         `(AFFECTED_BATCH_TIMEOUT_MS=${BATCH_TIMEOUT_MS}ms fired). NOT retrying. ${progress}. ` +
-        `TWO CAUSES, distinguish before investigating: (1) THE SUITE IS SIMPLY LONGER THAN THE BOUND — ` +
-        `files kept completing up to the kill; the fix is the bound (or the suite's duration), NOT a hunt for a ` +
-        `bad file. (2) A SYNCHRONOUSLY-SPINNING test blocks its own event loop so vitest's testTimeout cannot fire ` +
-        `(EI-19370814345784324) — progress STOPS and one file never finishes; find it by re-running this ` +
-        `workspace's suites individually, or compare utime/stime on the worker process next time it is caught ` +
-        `live (EI-19371039618090828) — a tight syscall loop is system-time-dominated.`,
+        `A synchronously-spinning test remains a hypothesis only when a live progress signal shows progress ` +
+        `stopped; captured output without timing must not be used to assert a spin ` +
+        `(EI-19370814345784324).`,
     );
   } else if (
     retryFailed &&
