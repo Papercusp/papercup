@@ -19,18 +19,89 @@
  * never cross tenants, and scoping would silently strand rows written under a
  * different partition (the raw-SQL-plan-reads trap inverted).
  *
- * SAFETY: refuses (without `force`) while the from-id still shows a FRESH
- * presence heartbeat — rebinding a LIVE peer's identity steals its loop and
- * claims. The relaunch case this exists for has a dead predecessor whose beats
- * stopped at death; anything beating within the window is treated as alive.
+ * SAFETY: refuses (without `force`) while the from-id resolves to a LIVE-ish
+ * `sessionState` through the shared liveness oracle — rebinding a live peer's
+ * identity steals its loop and claims.
+ *
+ * ⚠ This guard used to read the RAW HEARTBEAT AGE (`heartbeat_at` within a
+ * 180s window ⇒ "live"), and that was wrong in the exact case the module was
+ * written for. A heartbeat is process-keepalive freshness, NOT a liveness
+ * verdict: a session that has ENDED keeps a warm beat for up to
+ * PRESENCE_STALE_MS, so the canonical relaunch — predecessor dead seconds ago,
+ * live successor holding a new sid — hit `from_appears_live` and could only be
+ * repaired with `force:true`. Putting the HAPPY PATH behind the override
+ * taught callers to pass `force` reflexively, which hollowed the guard out for
+ * the case it actually exists to protect (a genuinely live peer). Gating on
+ * the derived `sessionState` instead makes the legitimate rebind need no
+ * force, and keeps `force` meaningful. See REBIND_BLOCKING_SESSION_STATES.
  */
 import type { Sql } from 'postgres';
 import { getOrgPg } from '@papercusp/db-org';
 import { loopRoutineId, loopRoutineName } from '../../harness/routines/loop';
 import { WORK_ITEM_NON_REQUEUE_STATES } from '../../work-items-stale-claims';
+// TYPE-ONLY (erased at runtime): the liveness oracle statically pulls
+// presence.ts, adv-sessions and psu-pty-discovery, and this module is imported
+// by hermetic unit tests and the recovery hook's HTTP path. The runtime edge is
+// a dynamic import inside `defaultResolveLiveness` below — the same
+// keep-it-off-the-static-graph discipline readPeerRelations uses for its IO deps.
+import type { SessionState } from './presence-wakeability';
 
-/** Presence beats fresher than this mark the from-id as live (refuse sans force). */
-export const REBIND_FROM_LIVE_WINDOW_MS = 180_000;
+/**
+ * Derived from-id states that BLOCK an unforced rebind. Each one means the old
+ * id can still take a turn (`live`), can be woken into one (`parked`), is
+ * winding down with a wake still armed (`draining`), or is authoritatively
+ * alive per the session log (`recorded`).
+ *
+ * `ended` and `suspect` are DELIBERATELY absent: they are precisely the states
+ * this module exists to repair. A warm-dead predecessor — heartbeat still
+ * fresh, turn over, inbox-wake await cancelled — derives `ended`, and an
+ * abruptly-killed one (await stranded, beat warm) derives `suspect`/`ended`
+ * via the oracle's pid probe + PRESENCE_DEAD_MS ceiling. Both now rebind with
+ * NO force.
+ */
+export const REBIND_BLOCKING_SESSION_STATES = ['live', 'parked', 'draining', 'recorded'] as const;
+
+/** The liveness facts this guard acts on — a projection of the oracle's verdict. */
+export interface FromLivenessVerdict {
+  sessionState: SessionState;
+  /** RAW heartbeat freshness. Reported for diagnosis; NEVER the gate (see header). */
+  heartbeatFresh?: boolean;
+}
+
+/**
+ * Resolve the from-id's verdict through THE shared oracle, so this guard cannot
+ * drift from what coord:presence / fleet:status / the send-miss path report for
+ * the same agent (presence-derivation-unification-2026-07-17 D-001: one
+ * derivation, many lenses). `hydratePerId` fills heartbeat/stale/host/pid/source
+ * from the subject's own presence row, which is what enables the pid probe.
+ */
+async function defaultResolveLiveness(
+  from: string,
+  hints: { claimsHeld: boolean; nowMs: number },
+): Promise<FromLivenessVerdict | null> {
+  const { resolveSessionStates } = await import('./liveness-oracle');
+  const verdicts = await resolveSessionStates([{ ownerId: from, claimsHeld: hints.claimsHeld }], {
+    nowMs: hints.nowMs,
+    hydratePerId: true,
+  });
+  const v = verdicts.get(from);
+  return v ? { sessionState: v.sessionState, heartbeatFresh: v.heartbeatFresh } : null;
+}
+
+/**
+ * Does the from-id still hold a claim? Read through the caller's OWN `sql` (the
+ * surfaces below re-key these very rows). It only separates `suspect` from
+ * `ended` — both permit the rebind — but the derived state is REPORTED to the
+ * caller, and a state asserted from an input we never looked at is the same
+ * class of false claim this work-item was filed about.
+ */
+async function readClaimsHeld(sql: Sql, f: string): Promise<boolean> {
+  const rows = await sql<Array<{ held: boolean }>>`
+    SELECT (EXISTS (SELECT 1 FROM harness_shared.work_item_claims WHERE owner = ${f})
+         OR EXISTS (SELECT 1 FROM harness_shared.plan_item_claims WHERE owner = ${f})) AS held
+  `;
+  return rows[0]?.held === true;
+}
 
 export interface RebindSurfaceResult {
   surface: string;
@@ -50,8 +121,12 @@ export interface RebindIdentityResult {
   from: string;
   to: string;
   refused?: 'bad_args' | 'from_appears_live';
-  /** Age of the from-id's last presence beat when refused as live. */
-  fromHeartbeatAgoMs?: number;
+  /** The from-id's derived sessionState when the guard resolved one (null =
+   *  the oracle returned no verdict, so the guard failed OPEN — see header). */
+  fromSessionState?: SessionState | null;
+  /** RAW heartbeat freshness of the from-id. Diagnostic ONLY — a warm beat on
+   *  an `ended` session is exactly why this is not the gate. */
+  fromHeartbeatFresh?: boolean;
   surfaces: RebindSurfaceResult[];
   totalMoved: number;
 }
