@@ -41,6 +41,7 @@ import type { ParsedPlan } from './parser';
 import { parsePromotePolicy, type ParsePromoteResult } from './promote-policy';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { detectUnparsedItemLines } from './item-parse-feedback';
+import { TERMINAL_NOW_STAMP_MARK } from './terminal-now-stamp';
 
 const argsSchema = z.object({
   slug: z.string().optional().describe('Lint one plan (full report: errors + warnings). Omit for all plans (bounded summary).'),
@@ -279,6 +280,46 @@ export async function lintParsed(
           `This plan looks complete (${why}) but its status is '${status}'. ` +
           `If it is finished, flip it with plans:set-plan-status status=shipped; otherwise record what is still ` +
           `outstanding in the \`## Now\` block. A finished plan left '${status}' keeps reading as live work (EI-205).`,
+      });
+    }
+  }
+
+  // WI-38303: the MIRROR of the rule above. That one fires when the Now reads
+  // done but the status is still draft/ready; this one fires when the status is
+  // TERMINAL but the `## Now` still issues instructions. Measured 2026-08-12:
+  // 277 non-archived papercusp plans (224 shipped + 53 superseded) still carry a
+  // `**Next:**` that directs work, and two agents were sent to redo finished work
+  // by exactly that in one session — the work-item title, the Now block and the
+  // Next all agreed with each other, and only the frontmatter was true.
+  //
+  // plans:set-plan-status now stamps the Now block on a terminal flip, so a
+  // freshly-shipped plan self-silences (the stamp is the falsifier below). This
+  // rule covers what the stamp cannot: the pre-existing corpus, and the
+  // whole-document writers (plans:set-content / set-content-chunk) that can set a
+  // terminal status without going through the status verb. Those two already gate
+  // writes on lint, which is why the guard belongs HERE rather than as a
+  // post-hoc rewrite of content the caller deliberately authored.
+  //
+  // Low-FP by the same construction as its mirror: it reads only the
+  // self-referential `next`, and any of the ordinary ways of writing "nothing
+  // left" suppress it.
+  if (status === 'shipped' || status === 'superseded') {
+    const nowNext = (parsed.now?.next ?? '').replace(/[*_`]/g, '').trim();
+    const alreadyStamped = (parsed.now?.raw ?? '').includes(TERMINAL_NOW_STAMP_MARK);
+    const readsAsClosed =
+      /^(?:none|nothing|n\/a|no\b|[—-]\s*$)/i.test(nowNext) ||
+      /\b(?:shipped|complete|completed|closed|superseded|no\s+further|nothing\s+(?:outstanding|left|remaining))\b/i.test(
+        nowNext,
+      );
+    if (nowNext && !alreadyStamped && !readsAsClosed) {
+      report.warnings.push({
+        level: 'warning',
+        code: 'terminal_status_stale_now',
+        message:
+          `This plan is '${status}' but its \`## Now\` block still directs work ("${nowNext.slice(0, 80)}${nowNext.length > 80 ? '…' : ''}"). ` +
+          `The Now block is the most-read field on a plan, so a finished plan that still issues instructions sends the ` +
+          `next agent to redo work that is already done. Rewrite it with plans:set-now, or re-run the terminal flip via ` +
+          `plans:set-plan-status, which stamps the block automatically (WI-38303).`,
       });
     }
   }
