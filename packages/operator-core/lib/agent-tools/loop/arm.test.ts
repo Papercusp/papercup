@@ -408,7 +408,7 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
     priorLoopM.mockResolvedValueOnce({ ...priorLoop(), harnessSlug: 'papercusp' } as never);
     briefM.mockResolvedValueOnce(null);
     homePotM.mockResolvedValueOnce(null);
-    potHomeM.mockReturnValue(null as never);
+    potHomeM.mockReturnValueOnce('papercusp').mockReturnValue(null as never);
 
     const out = await tool.handler(
       { intervalSec: 120, goal: 're-arm the existing loop' } as never,
