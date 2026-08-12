@@ -98,6 +98,10 @@ describe('coord:orient args', () => {
     expect(orientTool.args.safeParse({ memoryLimit: 0 }).success).toBe(true);
   });
 
+  it('accepts inboxLimit=0 for a lean bootstrap', () => {
+    expect(orientTool.args.safeParse({ inboxLimit: 0 }).success).toBe(true);
+  });
+
   it('accepts recipesLimit=0 for a lean bootstrap', () => {
     expect(orientTool.args.safeParse({ recipesLimit: 0 }).success).toBe(true);
   });
@@ -392,6 +396,13 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     const r = await composeOrient({ intent: 'lean bootstrap', memoryLimit: 0 }, call, 'me');
     expect(r.memory).toBeUndefined();
     expect(calls.some(({ name }) => name === 'memory:search')).toBe(false);
+  });
+
+  it('accepts inboxLimit=0 and skips the duplicate inbox read', async () => {
+    const { call, calls } = fakeCall({ ...CORE });
+    const r = await composeOrient({ harness: 'h', inboxLimit: 0 }, call, 'me');
+    expect(r.inbox).toEqual({ summary: undefined, recent: undefined, entries: undefined });
+    expect(calls.some(({ name }) => name === 'coord:inbox')).toBe(false);
   });
 
   it('with `intent`: folds a memory recall + relevant recipes AND declares the intent (full bootstrap in one call)', async () => {

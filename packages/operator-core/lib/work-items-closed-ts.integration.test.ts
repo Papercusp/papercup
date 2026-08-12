@@ -80,13 +80,6 @@ const WS = 'ws-closed-ts';
  */
 const BASE_DDL = `
   CREATE TABLE harness_shared.work_items (
-    -- WI-38326: FEATURE_COLS projects these five claim-spec filter columns; a fixture
-    -- missing them fails that projection with "column does not exist" (D-014 debt).
-    tags jsonb,
-    source_plan_slug text,
-    source_plan_item_ids text[],
-    redundancy integer,
-    expected_cost_cents bigint,
     workspace_id            text   NOT NULL,
     feature_id              text   NOT NULL,
     item_kind               text   NOT NULL,
@@ -133,7 +126,10 @@ describe('work_items.closed_ts (migration 698)', () => {
     db = await createFreshPgDb('closedts');
     sql = db.sql;
     await sql.unsafe(BASE_DDL);
-    await applyMigrationsForTest(sql, ['698-work-items-closed-ts.sql'], {
+    await applyMigrationsForTest(sql, [
+      '698-work-items-closed-ts.sql',
+      '777-work-items-embedding-recipe-discriminator.sql',
+    ], {
       label: 'work-items-closed-ts',
       knownInapplicable: KNOWN_INAPPLICABLE,
     });
@@ -287,7 +283,10 @@ describe('work_items.closed_ts (migration 698)', () => {
   });
 
   it('is idempotent — re-applying 698 changes nothing and does not double-append', async () => {
-    await applyMigrationsForTest(sql, ['698-work-items-closed-ts.sql'], {
+    await applyMigrationsForTest(sql, [
+      '698-work-items-closed-ts.sql',
+      '777-work-items-embedding-recipe-discriminator.sql',
+    ], {
       label: 're-apply',
       knownInapplicable: KNOWN_INAPPLICABLE,
     });
