@@ -161,10 +161,7 @@ export async function acquireTrackedClaudeSource(source: AdvSessionRow): Promise
   if (source.agent !== 'claude' || source.role != null) throw new Error('V1 ports require a tracked plain Claude SU source');
   if (!source.sessionId || !source.coordOwnerId || !source.cwd) throw new Error('source is missing tracked Claude identity/cwd');
   if (source.endedAt) {
-    return readCanonicalClaudeArchive(
-      { workspaceId: source.workspaceId, sessionId: source.sessionId },
-      pgSessionArchiveStore(),
-    );
+    return readCanonicalClaudeArchive({ sessionId: source.sessionId }, pgSessionArchiveStore());
   }
   const path = await findCanonicalClaudeLiveJsonl(sessionClaudeConfigDir(source.coordOwnerId), source.sessionId);
   return readStableLiveJsonl(path);

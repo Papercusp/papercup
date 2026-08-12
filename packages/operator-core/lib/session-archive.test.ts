@@ -12,7 +12,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtemp, mkdir, readFile, rm, symlink, truncate, writeFile } from 'node:fs/promises';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, relative } from 'node:path';
 import {
@@ -152,6 +152,51 @@ describe('archive workspace key — the WRITER and every READER must agree (WI-3
     const store = new WorkspaceKeyedStore();
     await archiveSession({ sourceKind: 'claude', sessionId: SID, sessionRoot: root }, store);
     expect(await store.readStamp('claude', SID, 'papercusp-workspace')).toBeNull();
+  });
+});
+
+describe('archive key — CLASS guard: no production reader may key by a workspace SLUG (WI-38236)', () => {
+  // Fixing the /adv/sessions/resumable call site was not enough: re-probing every
+  // archive-store call site found the SAME mismatch in session-port/source.ts,
+  // where the archive branch runs exactly when the source session has ENDED — so
+  // a cross-backend port of an ended session always threw "canonical Claude
+  // archive not found". Two instances of one class means the class needs the
+  // guard, not each instance. Writers key by (source_kind, session_id) under
+  // WS_DEFAULT; any reader passing a workspace slug silently matches nothing.
+  const readerFiles = [
+    'endpoint-route/routes/adv/sessions.ts',
+    'session-port/source.ts',
+    'session-archive-read.ts',
+    'session-archive-reconciler.ts',
+    'session-dir-gc.ts',
+  ];
+
+  it('no reader passes a workspace slug to readStamp/readFiles', () => {
+    const offenders: string[] = [];
+    for (const rel of readerFiles) {
+      const src = readFileSync(join(__dirname, rel), 'utf8');
+      for (const m of src.matchAll(/\.(readStamp|readFiles)\(([^)]*)\)/g)) {
+        const args = m[2].split(',').map((a) => a.trim());
+        // A third argument is only legitimate when it is explicitly defaulted to
+        // WS_DEFAULT by the caller (the writer-symmetric form used inside
+        // session-archive.ts itself, which is not in this reader set).
+        if (args.length >= 3 && !/WS_DEFAULT/.test(args[2])) {
+          offenders.push(`${rel}: ${m[0]}`);
+        }
+      }
+    }
+    expect(offenders).toEqual([]);
+  });
+
+  it('CONTROL: the same scan DOES flag a workspace-slug third argument', () => {
+    // Falsifiability: proves the matcher above can actually see the defect,
+    // rather than passing because the regex never matches anything.
+    const sample = `const stamp = await store.readStamp('claude', key.sessionId, key.workspaceId);`;
+    const hits = [...sample.matchAll(/\.(readStamp|readFiles)\(([^)]*)\)/g)].filter((m) => {
+      const args = m[2].split(',').map((a) => a.trim());
+      return args.length >= 3 && !/WS_DEFAULT/.test(args[2]);
+    });
+    expect(hits).toHaveLength(1);
   });
 });
 

@@ -80,11 +80,20 @@ export async function readStableLiveJsonl(
  * Ambiguity is a hard error: concatenating multiple cwd/project transcripts
  * silently changes branch semantics and is never an acceptable fallback. */
 export async function readCanonicalClaudeArchive(
-  key: { workspaceId: string; sessionId: string },
+  key: { sessionId: string },
   store: SessionArchiveStore,
   maxBytes = MAX_SESSION_PORT_SOURCE_BYTES,
 ): Promise<StableSource> {
-  const stamp = await store.readStamp('claude', key.sessionId, key.workspaceId);
+  // Key by (source_kind, session_id) ONLY — the same key archive-at-death WRITES.
+  // This previously passed the adv row's `workspaceId` ('papercusp-workspace'),
+  // which can never match: the archive ref carries no workspaceId, so every row
+  // lands under WS_DEFAULT (measured 2026-08-12: 17,147 rows, 100% 'default').
+  // This branch runs exactly when the source session has ENDED — i.e. precisely
+  // the sessions that ARE archived — so a cross-backend port of an ended session
+  // always threw 'canonical Claude archive not found'. Same defect as the
+  // /adv/sessions/resumable `hasArchive` lookup (WI-38236); found by re-probing
+  // every archive-store call site after fixing that one.
+  const stamp = await store.readStamp('claude', key.sessionId);
   if (!stamp) throw new Error('canonical Claude archive not found');
   const primary = stamp.manifest.filter(
     (entry) =>
@@ -94,7 +103,7 @@ export async function readCanonicalClaudeArchive(
   if (primary.length !== 1) throw new Error(`canonical Claude archive is ${primary.length ? 'ambiguous' : 'missing'}`);
   const manifest = primary[0];
   if (manifest.bytes_raw > maxBytes) throw new Error(`archive source ${manifest.bytes_raw} exceeds ${maxBytes} byte cap`);
-  const rows = await store.readFiles('claude', key.sessionId, key.workspaceId);
+  const rows = await store.readFiles('claude', key.sessionId);
   const row = rows.find((candidate) => candidate.relpath === manifest.relpath);
   if (!row) throw new Error('canonical Claude archive file row missing');
   if (row.bytes_raw !== manifest.bytes_raw || row.sha256 !== manifest.sha256) {
