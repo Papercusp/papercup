@@ -13,8 +13,15 @@
  * instead. That is only safe because D-005 replaced the preflight with two
  * BINDING ceilings the machine enforces. So this form is not a preferences pane:
  * it is the only place a human sets the number that stops a goal agent from
- * launching an unbounded fleet, which is why the ceilings sit first and an unset
- * ceiling says "unlimited" out loud rather than rendering as a blank field.
+ * launching an unbounded fleet, which is why the ceilings sit first.
+ *
+ * EACH CEILING HAS THREE STATES, AND THE FORM MUST KEEP THEM APART (D-015).
+ * Blank means "the owner has not pinned one" and resolves to the SYSTEM DEFAULT;
+ * "No ceiling" is a deliberate opt-out; a number is that number. Before the
+ * defaults existed, blank WAS unlimited and this file said so out loud. Now the
+ * most dangerous state and the most common one would both render as an empty box,
+ * so the opt-out gets its own control and every field states in words which of
+ * the three it is currently in.
  *
  * WHY IT WRITES THROUGH goals:update. The same reasoning admin/goals.ts gives for
  * proxying rather than hand-writing: `goals:update` merges partial fields, so
@@ -34,20 +41,25 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useQueryState, parseAsBoolean } from 'nuqs';
 import { toast } from 'sonner';
+import { Checkbox } from '@/app/harness/Checkbox';
 import { Select } from '@/app/harness/Select';
 import type {
+  GoalDetailLaunchDefaults,
   GoalDetailLaunchOptions,
   GoalDetailLaunchSettings,
 } from './goal-detail-model';
 import {
+  ceilingHint,
   emptyRoleForm,
   formToSettings,
   isSettingsDirty,
+  isUnlimited,
   settingsSummary,
   settingsToForm,
   PROFILE_CHOICE_FIELDS,
   PROFILE_FIELDS,
   PROFILE_FIELD_LABEL,
+  UNLIMITED,
   type LaunchProfileForm,
   type LaunchRoleForm,
   type LaunchSettingsForm,
@@ -95,6 +107,76 @@ async function saveLaunchSettings(
   if (body?.degraded) {
     throw new Error(body.degradedReasons?.join('; ') || 'the write reported itself degraded');
   }
+}
+
+/**
+ * One ceiling, with all three of its states reachable (D-015).
+ *
+ * A bare number input could only express two of them. Blank now means "use the
+ * system default" and no-ceiling is an explicit choice, so the opt-out needs its
+ * own control — and the hint line underneath has to say which of the three the
+ * field is currently in, since the most dangerous state (deliberately unlimited)
+ * and the most common one (unset) would otherwise both render as an empty box.
+ */
+function CeilingField({
+  id,
+  label,
+  noun,
+  value,
+  fallback,
+  disabled,
+  onChange,
+}: {
+  id: string;
+  label: string;
+  /** What the ceiling counts, for the hint sentence: "agents" / "agents per fleet". */
+  noun: string;
+  value: string;
+  /** The system default this resolves to when blank. Absent on a pre-D-015 payload. */
+  fallback: number | undefined;
+  disabled: boolean;
+  onChange: (next: string) => void;
+}) {
+  const unlimited = isUnlimited(value);
+  const hint = ceilingHint(value, fallback, noun);
+  return (
+    <div className="hud-goal__set-field">
+      <label className="hud-goal__set-label" htmlFor={id}>
+        {label}
+      </label>
+      <input
+        id={id}
+        className="hud-goal__set-in"
+        type="number"
+        min={1}
+        max={1000}
+        step={1}
+        /* An unlimited ceiling shows an EMPTY number box (it cannot hold the
+           word), which is why the checkbox beside it carries the state and the
+           hint says so in words. */
+        value={unlimited ? '' : value}
+        disabled={disabled || unlimited}
+        placeholder={fallback == null ? '' : String(fallback)}
+        onChange={(e) => onChange(e.target.value)}
+      />
+      <label className="hud-goal__set-check" htmlFor={`${id}-unlimited`}>
+        {/* The shared primitive, not a native <input type="checkbox"> — that is
+            an ENFORCED design lint here, not a preference. */}
+        <Checkbox
+          id={`${id}-unlimited`}
+          checked={unlimited}
+          disabled={disabled}
+          ariaLabel={`${label}: no ceiling`}
+          /* Unchecking returns the field to BLANK, not to a number: the owner
+             has expressed "not unlimited", not "this specific ceiling". Blank
+             then resolves to the system default, which is the safe landing. */
+          onChange={(next) => onChange(next ? UNLIMITED : '')}
+        />
+        <span>No ceiling</span>
+      </label>
+      {hint ? <p className="hud-goal__set-hint">{hint}</p> : null}
+    </div>
+  );
 }
 
 function ProfileFields({
@@ -162,13 +244,19 @@ export default function GoalSettingsSection({
   settings,
   settingsInvalid,
   options,
+  defaults,
 }: {
   goalId: string;
-  /** Null = nothing pinned (the launch default), NOT an error. */
+  /** Null = nothing pinned, which since D-015 means the SYSTEM DEFAULT ceilings
+   *  apply — not that the goal is ungoverned. NOT an error either way. */
   settings: GoalDetailLaunchSettings | null | undefined;
   /** Non-null = the stored document is unreadable, so NO ceiling is in force. */
   settingsInvalid?: string | null;
   options?: GoalDetailLaunchOptions | null;
+  /** What an unpinned ceiling resolves to, from the server (D-015). Absent on a
+   *  payload that predates it — the editor then says nothing about defaults
+   *  rather than printing a number it would have to keep in step by hand. */
+  defaults?: GoalDetailLaunchDefaults | null;
 }) {
   // Expansion state in the URL, per the repo's nuqs rule — which also makes the
   // editor reachable from the agent → UI control surface, since anything in
@@ -253,7 +341,7 @@ export default function GoalSettingsSection({
     }
   }, [busy, form, goalId]);
 
-  const summary = settingsSummary(settings);
+  const summary = settingsSummary(settings, defaults);
 
   return (
     <section className="hud-goal__section" data-testid="goal-settings-section">
@@ -274,7 +362,8 @@ export default function GoalSettingsSection({
           may keep launching. */}
       <p className="hud-goal__note">
         What this goal’s agent may launch. The ceilings count EVERY live session on the goal, fleet
-        members included, and a launch that would breach one is refused.
+        members included, and a launch that would breach one is refused. Leave a ceiling blank to
+        use the system default; tick “No ceiling” to let this goal run unbounded.
       </p>
 
       {settingsInvalid ? (
@@ -295,36 +384,24 @@ export default function GoalSettingsSection({
       ) : (
         <div className="hud-goal__set">
           <div className="hud-goal__set-grid">
-            <label className="hud-goal__set-field" htmlFor={`gs-${goalId}-maxAgents`}>
-              <span className="hud-goal__set-label">Max agents</span>
-              <input
-                id={`gs-${goalId}-maxAgents`}
-                className="hud-goal__set-in"
-                type="number"
-                min={1}
-                max={1000}
-                step={1}
-                value={form.maxAgents}
-                disabled={busy}
-                placeholder="unlimited"
-                onChange={(e) => setForm((f) => ({ ...f, maxAgents: e.target.value }))}
-              />
-            </label>
-            <label className="hud-goal__set-field" htmlFor={`gs-${goalId}-maxPerFleet`}>
-              <span className="hud-goal__set-label">Max per fleet</span>
-              <input
-                id={`gs-${goalId}-maxPerFleet`}
-                className="hud-goal__set-in"
-                type="number"
-                min={1}
-                max={1000}
-                step={1}
-                value={form.maxPerFleet}
-                disabled={busy}
-                placeholder="unlimited"
-                onChange={(e) => setForm((f) => ({ ...f, maxPerFleet: e.target.value }))}
-              />
-            </label>
+            <CeilingField
+              id={`gs-${goalId}-maxAgents`}
+              label="Max agents"
+              noun="agents"
+              value={form.maxAgents}
+              fallback={defaults?.maxAgents}
+              disabled={busy}
+              onChange={(next) => setForm((f) => ({ ...f, maxAgents: next }))}
+            />
+            <CeilingField
+              id={`gs-${goalId}-maxPerFleet`}
+              label="Max per fleet"
+              noun="agents in any one fleet"
+              value={form.maxPerFleet}
+              fallback={defaults?.maxPerFleet}
+              disabled={busy}
+              onChange={(next) => setForm((f) => ({ ...f, maxPerFleet: next }))}
+            />
           </div>
 
           <h4 className="hud-goal__set-h">Default launch profile</h4>

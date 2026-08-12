@@ -1402,6 +1402,29 @@
   opacity: 0.55;
 }
 
+/* The ceiling opt-out (D-015). Sits under its number input rather than beside
+   it: the field is already narrow in the two-up grid, and a control that means
+   "ignore the box above" reads better below the box than crowded against it. */
+.hud-goal__set-check {
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 4px;
+  font-size: 10px;
+  color: var(--fg-mute);
+  cursor: pointer;
+}
+
+/* Which of the three states this ceiling is in, in words. Deliberately not
+   styled as an alarm — an unlimited ceiling may be a considered choice, and the
+   line's job is to make the state legible, not to argue with it. */
+.hud-goal__set-hint {
+  margin: 3px 0 0;
+  font-size: 10px;
+  line-height: 1.35;
+  color: var(--fg-mute);
+}
+
 .hud-goal__set-h {
   margin: 12px 0 0;
   font-size: 11px;

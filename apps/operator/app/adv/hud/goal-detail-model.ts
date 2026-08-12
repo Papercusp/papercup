@@ -179,12 +179,22 @@ export interface GoalDetailLaunchProfile {
   contextSize?: string;
 }
 
+/**
+ * One stored ceiling, in its three meaningful states (D-015).
+ *
+ * Absent/null is NOT "no ceiling" — it is "the owner has not pinned one", which
+ * resolves to the system default. No-ceiling is the explicit literal, and the
+ * editor has to keep the two distinguishable or it shows an ungoverned goal and
+ * a defaulted one identically.
+ */
+export type GoalDetailCeiling = number | 'unlimited';
+
 /** The document stored on the goal — D-005's two ceilings plus the profiles. */
 export interface GoalDetailLaunchSettings {
-  /** Ceiling over EVERY live session associated with this goal. Null/absent = none. */
-  maxAgents?: number | null;
+  /** Ceiling over EVERY live session. Absent/null = the system default. */
+  maxAgents?: GoalDetailCeiling | null;
   /** Ceiling on any ONE fleet pursuing it. Composes with maxAgents. */
-  maxPerFleet?: number | null;
+  maxPerFleet?: GoalDetailCeiling | null;
   defaults?: GoalDetailLaunchProfile;
   roles?: Record<string, GoalDetailLaunchProfile>;
 }
@@ -197,6 +207,20 @@ export interface GoalDetailLaunchOptions {
   contextSize?: readonly string[];
 }
 
+/**
+ * The ceilings a goal that pins nothing launches under, shipped by the resolver
+ * from `GOAL_LAUNCH_DEFAULTS` (D-015).
+ *
+ * Shipped rather than re-declared for the same reason `launchSettingsOptions` is
+ * (D-011): a number hand-spelled in the editor is a second declaration of a value
+ * the server owns, and it would fall silently out of step — showing "default 12"
+ * next to a field the resolver is enforcing at some other number.
+ */
+export interface GoalDetailLaunchDefaults {
+  maxAgents: number;
+  maxPerFleet: number;
+}
+
 export interface GoalDetailInput {
   goal: GoalDetailGoalInput | null;
   /** Null = nothing pinned, which is the launch default and NOT an error. */
@@ -207,6 +231,9 @@ export interface GoalDetailInput {
    *  things about whether the owner's limit is holding. */
   launchSettingsInvalid?: string | null;
   launchSettingsOptions?: GoalDetailLaunchOptions | null;
+  /** Absent = a payload from before D-015; the editor then says nothing about
+   *  defaults rather than inventing numbers it would have to keep in step. */
+  launchSettingsDefaults?: GoalDetailLaunchDefaults | null;
   /** Empty array = none; absent/null = a payload from before P-017. */
   subGoals?: GoalDetailSubGoalInput[] | null;
   /** Set only when the open goal is itself a subdirective. */

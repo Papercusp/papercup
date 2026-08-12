@@ -22,6 +22,23 @@
  * argv that silently drops it") a property of the shape rather than a rule
  * someone has to remember.
  *
+ * THE CEILINGS HAVE SYSTEM DEFAULTS (D-015). They did not, originally, and the
+ * gap was not "the numbers are unset" — it was that an unset pair DISABLED
+ * enforcement outright: with both null, `needsCount` was false, the headcount was
+ * never taken, and nothing could be refused. So D-004's removal of the capacity
+ * preflight left maximal parallelism running against no governor at all on every
+ * goal nobody had hand-edited (9 of 11 when this was found, including all three
+ * active ones). Migration 786's column comment had promised "NULL = none declared
+ * = system defaults" from the start; {@link GOAL_LAUNCH_DEFAULTS} is the first
+ * thing to actually supply them.
+ *
+ * WHY IN THE RESOLVER AND NOT AT CREATE TIME. A default written into the row by
+ * `goals:create` reaches only goals created after it ships — i.e. none of the
+ * rows that were exposed, which is the entire point of having one. Resolving here
+ * governs every goal on the next launch, and keeps a NULL column meaning exactly
+ * one thing ("the owner has not pinned this") rather than two. Same shape as
+ * DEFAULT_RATE_LIMIT_CONFIG: a seeded default that any stored value overrides.
+ *
  * WHY THE CEILINGS FAIL OPEN. A ceiling that cannot be READ does not refuse the
  * launch; it reports itself degraded and lets the launch through. This is a
  * governor over the owner's own fleet, not a security boundary, and the failure
@@ -80,6 +97,73 @@ export const LAUNCH_PROFILE_OPTIONS = {
   contextSize: LAUNCH_PROFILE_CONTEXT_SIZES,
 } as const;
 
+/**
+ * The system ceilings a goal that has pinned nothing launches under (D-015).
+ *
+ * These are not round numbers; they are what the GOAL contract in modes/registry
+ * obliges a goal to be running, added up:
+ *
+ *   1  the goal agent itself
+ *   4  the standing drain fleet (leader + 3) the contract requires per goal,
+ *      "always maintained, not spun up on demand"
+ *   3  a plan fleet (leader + 2)
+ *   3  a SECOND plan fleet, concurrent — the row that makes "parallelize hard"
+ *      true rather than merely permitted
+ *   1  one judge: a GRADE or TEST agent
+ *  ──
+ *  12
+ *
+ * The floor matters more than the number. A goal cannot satisfy its own contract
+ * below EIGHT (goal agent + drain fleet + one plan fleet), so a default under
+ * that would make the default itself a bug — the goal agent refused while
+ * establishing the standing drain fleet it was ordered to maintain. 12 is that
+ * floor plus one more concurrent plan fleet.
+ *
+ * `maxPerFleet` is a leader + 4. Past that, members on one plan increasingly
+ * touch the same files and serialize on the locks, so the fan-out buys
+ * contention rather than throughput. It also composes: 12 over 5 means a goal
+ * CANNOT pile everything into one fleet and must spread across two or three,
+ * which is what D-004 asks for in prose.
+ */
+export const GOAL_LAUNCH_DEFAULTS = {
+  maxAgents: 12,
+  maxPerFleet: 5,
+} as const;
+
+/**
+ * The explicit "no ceiling" a goal may declare (D-015, owner-directed).
+ *
+ * Once absent means "use the system default", ungoverned has to be SAYABLE — and
+ * as a self-describing literal rather than a sentinel number, because the value
+ * an owner reads back has to distinguish "deliberately unlimited" from "nobody
+ * set this". `0` was never available (it parses as "forbid every launch") and a
+ * magic 1000 would be indistinguishable from a very large deliberate ceiling.
+ */
+export const UNLIMITED_CEILING = 'unlimited' as const;
+
+/** A stored ceiling: a hard number, or the explicit opt-out. */
+export type GoalCeiling = number | typeof UNLIMITED_CEILING;
+
+const ceilingSchema = z
+  .union([z.number().int().positive().max(1000), z.literal(UNLIMITED_CEILING)])
+  .nullable()
+  .optional();
+
+/**
+ * One stored ceiling → the number to enforce, or null for genuinely no ceiling.
+ *
+ * The three-way distinction is the whole point, and collapsing any two of them
+ * reintroduces the bug this replaced:
+ *   absent / null  → the owner has not pinned one  → the system default
+ *   'unlimited'    → the owner pinned "no ceiling" → null (nothing enforced)
+ *   a number       → that number
+ */
+export function resolveCeiling(stored: GoalCeiling | null | undefined, fallback: number): number | null {
+  if (stored === UNLIMITED_CEILING) return null;
+  if (typeof stored === 'number') return stored;
+  return fallback;
+}
+
 /** The launch knobs a goal can pin, per role or as its across-the-board default. */
 export const launchProfileSchema = z
   .object({
@@ -103,22 +187,14 @@ export type LaunchProfile = z.infer<typeof launchProfileSchema>;
  */
 export const goalLaunchSettingsSchema = z
   .object({
-    maxAgents: z
-      .number()
-      .int()
-      .positive()
-      .max(1000)
-      .nullable()
-      .optional()
-      .describe('D-005: ceiling over EVERY live session associated with this goal, fleet members included'),
-    maxPerFleet: z
-      .number()
-      .int()
-      .positive()
-      .max(1000)
-      .nullable()
-      .optional()
-      .describe('D-005: ceiling on any ONE fleet pursuing this goal; composes with maxAgents'),
+    maxAgents: ceilingSchema.describe(
+      `D-005: ceiling over EVERY live session associated with this goal, fleet members included. ` +
+        `Omit for the system default (${GOAL_LAUNCH_DEFAULTS.maxAgents}); '${UNLIMITED_CEILING}' for no ceiling at all`,
+    ),
+    maxPerFleet: ceilingSchema.describe(
+      `D-005: ceiling on any ONE fleet pursuing this goal; composes with maxAgents. ` +
+        `Omit for the system default (${GOAL_LAUNCH_DEFAULTS.maxPerFleet}); '${UNLIMITED_CEILING}' for no ceiling at all`,
+    ),
     defaults: launchProfileSchema.optional(),
     roles: z.record(z.string().min(1).max(64), launchProfileSchema).optional(),
   })
@@ -401,12 +477,16 @@ export async function resolveGoalLaunchForGoal(args: {
   if (settingsError) degradedReasons.push(`launch settings not applied: ${settingsError}`);
 
   const effective = foldLaunchProfile(settings, args.role, args.requested);
+  // D-015: an unpinned ceiling resolves to the SYSTEM DEFAULT, not to null.
+  // Only an explicit 'unlimited' still lands on null here.
   const ceilings = {
-    maxAgents: settings?.maxAgents ?? null,
-    maxPerFleet: settings?.maxPerFleet ?? null,
+    maxAgents: resolveCeiling(settings?.maxAgents, GOAL_LAUNCH_DEFAULTS.maxAgents),
+    maxPerFleet: resolveCeiling(settings?.maxPerFleet, GOAL_LAUNCH_DEFAULTS.maxPerFleet),
   };
 
   // Only pay for the count when a ceiling actually exists to check it against.
+  // Since D-015 that is the normal case — it goes false only for a goal that has
+  // explicitly declared BOTH ceilings unlimited.
   const needsCount = ceilings.maxAgents != null || ceilings.maxPerFleet != null;
   let headcount: GoalHeadcount = { total: 0, fleet: args.fleetSlug ? 0 : null };
   if (needsCount) {
@@ -424,6 +504,11 @@ export async function resolveGoalLaunchForGoal(args: {
   // module header): refusing every launch on a transient count failure would take
   // out the whole workspace, including whatever would fix it.
   const enforceable = needsCount && !degradedReasons.some((r) => r.startsWith('ceiling not enforced'));
+  // Name the SOURCE of the number in the refusal. The first time a default fires
+  // it refuses a launch against a ceiling the owner never typed, and "raise
+  // maxAgents" sends them looking for a value that is not in the panel.
+  const provenance = (pinned: unknown): string =>
+    pinned == null ? ' (the system default — this goal has not pinned one)' : '';
   let refusal: GoalLaunchRefusal | null = null;
   if (enforceable) {
     if (ceilings.maxAgents != null && headcount.total + count > ceilings.maxAgents) {
@@ -433,9 +518,9 @@ export async function resolveGoalLaunchForGoal(args: {
         current: headcount.total,
         requested: count,
         message:
-          `goal ${goalId} allows ${ceilings.maxAgents} concurrent agent(s); ${headcount.total} live, ` +
-          `so launching ${count} more would exceed it. Raise maxAgents in the goal's launch settings, ` +
-          `or wind down finished sessions first.`,
+          `goal ${goalId} allows ${ceilings.maxAgents} concurrent agent(s)${provenance(settings?.maxAgents)}; ` +
+          `${headcount.total} live, so launching ${count} more would exceed it. Raise maxAgents in the goal's ` +
+          `launch settings (or set it to '${UNLIMITED_CEILING}'), or wind down finished sessions first.`,
       };
     } else if (
       ceilings.maxPerFleet != null &&
@@ -448,9 +533,10 @@ export async function resolveGoalLaunchForGoal(args: {
         current: headcount.fleet ?? 0,
         requested: count,
         message:
-          `goal ${goalId} allows ${ceilings.maxPerFleet} agent(s) per fleet; fleet ${args.fleetSlug} has ` +
-          `${headcount.fleet ?? 0} live, so launching ${count} more would exceed it. Raise maxPerFleet in the ` +
-          `goal's launch settings, or split the work across another fleet (it still counts against maxAgents).`,
+          `goal ${goalId} allows ${ceilings.maxPerFleet} agent(s) per fleet${provenance(settings?.maxPerFleet)}; ` +
+          `fleet ${args.fleetSlug} has ${headcount.fleet ?? 0} live, so launching ${count} more would exceed it. ` +
+          `Raise maxPerFleet in the goal's launch settings, or split the work across another fleet (it still ` +
+          `counts against maxAgents).`,
       };
     }
   }

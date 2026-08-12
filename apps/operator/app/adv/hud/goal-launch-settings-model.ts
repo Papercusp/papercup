@@ -19,7 +19,23 @@
  * blank input emits NO KEY, and a profile with no keys emits no profile.
  */
 
-import type { GoalDetailLaunchProfile, GoalDetailLaunchSettings } from './goal-detail-model';
+import type {
+  GoalDetailLaunchDefaults,
+  GoalDetailLaunchProfile,
+  GoalDetailLaunchSettings,
+} from './goal-detail-model';
+
+/**
+ * The explicit "no ceiling" value, matching the server's `UNLIMITED_CEILING`.
+ *
+ * The one string this file spells that the server also spells. It is a wire
+ * CONSTANT, not a closed set the way the profile options are, so shipping it in
+ * the payload would be ceremony — but it is pinned by
+ * `goal-launch-settings-unlimited-literal.test.ts`, which compares the two
+ * spellings directly, so a rename on either side fails rather than silently
+ * producing a form value the validator rejects.
+ */
+export const UNLIMITED = 'unlimited';
 
 /** One profile's fields, as the form holds them: strings, blank for unset. */
 export interface LaunchProfileForm {
@@ -129,20 +145,52 @@ function formToProfile(f: LaunchProfileForm): GoalDetailLaunchProfile | null {
 /**
  * A ceiling field, parsed the way the schema will judge it.
  *
- * Returns `undefined` for blank (no ceiling — the field is omitted) and a
- * PROBLEM for anything the schema would reject, rather than sending it and
- * letting the save fail with a zod message the owner has to decode. `0` is
+ * THREE outcomes, because the field has three meanings (D-015):
+ *   blank        → `undefined`, the key is omitted → the SYSTEM DEFAULT applies
+ *   'unlimited'  → the explicit opt-out → no ceiling enforced
+ *   a number     → that ceiling
+ *
+ * Blank stopped meaning "unlimited" when the defaults landed, and the two states
+ * now sit at opposite ends of the same field — so they must not collapse. That is
+ * why no-ceiling is a value the form carries rather than the absence of one.
+ *
+ * A PROBLEM comes back for anything the schema would reject, rather than sending
+ * it and letting the save fail with a zod message the owner has to decode. `0` is
  * rejected explicitly: it is the one wrong value that looks deliberate, and it
  * would mean "this goal may run no agents at all".
  */
-function parseCeiling(raw: string, label: string): { value?: number; problem?: string } {
+function parseCeiling(raw: string, label: string): { value?: number | typeof UNLIMITED; problem?: string } {
   const t = raw.trim();
   if (!t) return {};
-  if (!/^\d+$/.test(t)) return { problem: `${label} must be a whole number.` };
+  if (t.toLowerCase() === UNLIMITED) return { value: UNLIMITED };
+  if (!/^\d+$/.test(t)) return { problem: `${label} must be a whole number, or “${UNLIMITED}”.` };
   const n = Number(t);
   if (n < 1) return { problem: `${label} must be at least 1 — 0 would forbid every launch.` };
   if (n > 1000) return { problem: `${label} may not exceed 1000.` };
   return { value: n };
+}
+
+/** Is this ceiling field currently set to the explicit no-ceiling? */
+export function isUnlimited(raw: string): boolean {
+  return raw.trim().toLowerCase() === UNLIMITED;
+}
+
+/**
+ * What one ceiling field resolves to, said in words for the owner.
+ *
+ * The editor's job here is to make a BLANK field legible. Blank is the state an
+ * owner is most likely to misread — it looks like nothing is in force, and since
+ * D-015 it is the state where the system's own number is.
+ */
+export function ceilingHint(
+  raw: string,
+  fallback: number | undefined,
+  noun: string,
+): string {
+  if (isUnlimited(raw)) return `No ceiling — this goal may run unlimited ${noun}.`;
+  const t = raw.trim();
+  if (t) return '';
+  return fallback == null ? '' : `Unset — the system default of ${fallback} applies.`;
 }
 
 export interface SettingsDocumentResult {
@@ -241,13 +289,31 @@ function stableJson(v: unknown): string {
  * The one-line summary the section header shows when the editor is collapsed.
  *
  * Says what is IN FORCE, not how many keys are set: "3 agents max" is the fact
- * the owner came to check. An unset ceiling is stated as unlimited rather than
- * omitted, because the absence of a limit is the thing most worth seeing.
+ * the owner came to check.
+ *
+ * THE THREE STATES STAY DISTINGUISHABLE HERE (D-015), because this line is the
+ * only one most visits read. An unpinned ceiling reports the system default it
+ * resolves to and says it is a default; a deliberately ungoverned goal reports
+ * "No agent ceiling". Collapsing those two — which is what this said before the
+ * defaults existed — would print the same words for a goal the system is holding
+ * at 12 and a goal running unbounded.
  */
-export function settingsSummary(s: GoalDetailLaunchSettings | null | undefined): string {
+export function settingsSummary(
+  s: GoalDetailLaunchSettings | null | undefined,
+  defaults?: GoalDetailLaunchDefaults | null,
+): string {
   const parts: string[] = [];
-  parts.push(s?.maxAgents == null ? 'No agent ceiling' : `Max ${s.maxAgents} agent${s.maxAgents === 1 ? '' : 's'}`);
-  if (s?.maxPerFleet != null) parts.push(`${s.maxPerFleet}/fleet`);
+  const agents = s?.maxAgents;
+  if (agents === UNLIMITED) parts.push('No agent ceiling');
+  else if (typeof agents === 'number') parts.push(`Max ${agents} agent${agents === 1 ? '' : 's'}`);
+  else if (defaults) parts.push(`Max ${defaults.maxAgents} agents (default)`);
+  else parts.push('Agent ceiling unset');
+
+  const perFleet = s?.maxPerFleet;
+  if (perFleet === UNLIMITED) parts.push('no fleet ceiling');
+  else if (typeof perFleet === 'number') parts.push(`${perFleet}/fleet`);
+  else if (defaults) parts.push(`${defaults.maxPerFleet}/fleet (default)`);
+
   const pinned = s?.defaults ? Object.keys(s.defaults).length : 0;
   if (pinned) parts.push(`${pinned} default${pinned === 1 ? '' : 's'}`);
   const roles = s?.roles ? Object.keys(s.roles).length : 0;

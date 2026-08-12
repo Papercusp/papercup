@@ -1110,6 +1110,7 @@ export default function GoalDetailPanel({
                 settings={data?.launchSettings}
                 settingsInvalid={data?.launchSettingsInvalid}
                 options={data?.launchSettingsOptions}
+                defaults={data?.launchSettingsDefaults}
               />
             ) : null}
 

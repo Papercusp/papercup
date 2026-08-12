@@ -20,6 +20,8 @@ import { GOAL_SPEND_SNAPSHOT_SOURCE, goalSpend } from '@papercusp/db-org';
 import type { Sql } from 'postgres';
 import { killCriterionProblem } from '@papercusp/operator-core/lib/goals/kill-criterion';
 import {
+  GOAL_LAUNCH_DEFAULTS,
+  UNLIMITED_CEILING,
   goalLaunchSettingsSchema,
   writeGoalLaunchSettings,
 } from '@papercusp/operator-core/lib/goal-launch-settings';
@@ -87,7 +89,10 @@ export default defineTool({
       .nullable()
       .optional()
       .describe(
-        'per-goal launch ceilings + profile ({ maxAgents, maxPerFleet, defaults, roles }) — the numbers every launch for this goal is checked against. Pass null to clear back to unlimited/unpinned; omit to leave untouched.',
+        'per-goal launch ceilings + profile ({ maxAgents, maxPerFleet, defaults, roles }) — the numbers every launch for this goal is checked against. ' +
+          `Each ceiling takes a number, or "${UNLIMITED_CEILING}" for no ceiling at all; OMITTING one applies the system default ` +
+          `(${GOAL_LAUNCH_DEFAULTS.maxAgents} agents / ${GOAL_LAUNCH_DEFAULTS.maxPerFleet} per fleet), which is NOT the same as unlimited. ` +
+          'Pass null to clear the whole document back to those defaults; omit to leave untouched.',
       ),
   }),
   async handler(args, ctx) {

@@ -546,7 +546,9 @@ export async function resolveGoalDetail(args: {
   // Dynamic like its neighbour above, and for the same reason: this module is
   // imported by callers that must not pay for the store's server dependencies at
   // module load. The TYPE it validates into is imported statically (erased).
-  const { parseGoalLaunchSettings, LAUNCH_PROFILE_OPTIONS } = await import('../goal-launch-settings');
+  const { parseGoalLaunchSettings, LAUNCH_PROFILE_OPTIONS, GOAL_LAUNCH_DEFAULTS } = await import(
+    '../goal-launch-settings'
+  );
   const { sql } = getOrgPg();
   const { workspaceId, goalId, activityLimit = 40 } = args;
   // Same cut as resolveGoalsList — see the note there.
@@ -832,12 +834,18 @@ export async function resolveGoalDetail(args: {
 
     return {
       goal,
-      /** Null = none declared, which is the launch default (no ceiling, no pinned
-       *  profile) and NOT an error. */
+      /** Null = none declared, and NOT an error. Since D-015 that means the
+       *  SYSTEM DEFAULT ceilings (shipped below), not no ceiling — a goal that is
+       *  deliberately ungoverned says so with an explicit 'unlimited'. */
       launchSettings,
       /** Non-null when the stored document could not be read — the ceilings are
        *  therefore NOT being enforced, which the panel must say out loud. */
       launchSettingsInvalid,
+      /** What an UNPINNED ceiling actually resolves to (D-015). Shipped for the
+       *  same reason as the option lists below: the editor must be able to say
+       *  "default 12" without hand-spelling a number the resolver owns and can
+       *  change underneath it. */
+      launchSettingsDefaults: GOAL_LAUNCH_DEFAULTS,
       /** The closed sets the editor may offer, from the schema's own constants
        *  (D-011): shipped rather than re-spelled client-side so the form cannot
        *  drift from the validator. */
