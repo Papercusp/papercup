@@ -77,6 +77,7 @@ async function allocate(): Promise<{
   path?: string;
   arm_path?: string;
   arm_command?: string;
+  requested_from_harness?: string;
 }> {
   const res = (await tool.handler({} as never, CTX)) as { content: { text: string }[] };
   return JSON.parse(res.content[0]!.text);
@@ -153,6 +154,21 @@ describe('db:next-migration allocator (§A1)', () => {
     const r = await allocate();
     expect(r.ok).toBe(true);
     expect(r.number).toBe(150); // GREATEST(fsMax 137, reserved 149) + 1
+  });
+
+  it('EI-20213083520776566: accepts a harness-scoped coding call without partitioning the workspace-global allocation', async () => {
+    const res = (await tool.handler(
+      { harness: 'papercusp', name: 'scoped-call' } as never,
+      CTX,
+    )) as { content: { text: string }[] };
+    const out = JSON.parse(res.content[0]!.text) as {
+      ok: boolean;
+      number?: number;
+      requested_from_harness?: string;
+    };
+    expect(out.ok).toBe(true);
+    expect(out.number).toBe(151); // same global reservation sequence, not a per-harness counter
+    expect(out.requested_from_harness).toBe('papercusp');
   });
 
   it('filesystem-max is respected: an unreserved on-disk NNN-*.sql higher than any reservation bumps the number', async () => {

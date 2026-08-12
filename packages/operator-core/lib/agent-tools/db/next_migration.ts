@@ -99,6 +99,13 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   args: z.object({
+    harness: z
+      .string()
+      .max(120)
+      .optional()
+      .describe(
+        'Accepted scope hint for harness-scoped coding sessions. Migration numbers and their reservation ledger are workspace-global, so this does not partition allocation by harness.',
+      ),
     name: z
       .string()
       .optional()
@@ -163,6 +170,7 @@ export default defineTool({
       arm_path: armPath,
       arm_command: `mv ${draftPath} ${armPath}`,
       reserved_by: ownerLabel,
+      ...(args.harness ? { requested_from_harness: args.harness } : {}),
       note: `Reserved. Write + iterate the migration at ${draftPath} (a ".DRAFT" suffix). The runner only ever applies files matching *.sql, so this draft is INVISIBLE to boot auto-apply / db:migrate / the green-checkpoint preflight while you edit it — including any deliberate temporary both-ways guard-test mutation. Once it's ready and tested, ARM it for auto-apply with: ${`mv ${draftPath} ${armPath}`}`,
     });
   },
