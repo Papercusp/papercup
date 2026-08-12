@@ -23,7 +23,9 @@ import {
   fleetOscFromEnv,
   turnSubmitCrDelayForAgent,
   makeIdleGate,
+  makeComposerWedgeDetector,
   makeOwnerComposerGate,
+  makeOwnerInputDetector,
   makeActivityTracker,
   makeAgentBusyGate,
   makeCarryRearmController,
@@ -890,9 +892,9 @@ describe('makeOwnerComposerGate (EI-20199370837439455 staged-input safety)', () 
     // Captured 2026-08-12 from a real gnome-terminal (VTE 7600) by writing the
     // query and reading the raw reply back off the pty:
     //   XTVERSION `ESC [ > 0 q`  ->  1b50 3e7c 5654 4528 3736 3030 29 1b5c
-    const VTE_XTVERSION_REPLY = 'P>|VTE(7600)\\';
-    const VTE_DA3_REPLY = 'P!|7E565445\\';
-    const VTE_DECRQSS_REPLY = 'P0$r\\';
+    const VTE_XTVERSION_REPLY = '\u001bP>|VTE(7600)\u001b\\';
+    const VTE_DA3_REPLY = '\u001bP!|7E565445\u001b\\';
+    const VTE_DECRQSS_REPLY = '\u001bP0$r\u001b\\';
 
     it('does not invent owner text from the live VTE XTVERSION reply', () => {
       const g = makeOwnerComposerGate({ capMs: 100 });
@@ -909,10 +911,10 @@ describe('makeOwnerComposerGate (EI-20199370837439455 staged-input safety)', () 
         VTE_XTVERSION_REPLY,
         VTE_DA3_REPLY,
         VTE_DECRQSS_REPLY,
-        '_Gi=1,a=q;OK\\', // APC  (kitty graphics)
-        '^status message\\', // PM
-        'Xsome string\\', // SOS
-        ']11;rgb:0000/0000/0000', // OSC terminated by BEL
+        '\u001b_Gi=1,a=q;OK\u001b\\', // APC  (kitty graphics)
+        '\u001b^status message\u001b\\', // PM
+        '\u001bXsome string\u001b\\', // SOS
+        '\u001b]11;rgb:0000/0000/0000\u0007', // OSC terminated by BEL
       ]) {
         g.observe(reply);
       }
@@ -954,7 +956,7 @@ describe('makeOwnerComposerGate (EI-20199370837439455 staged-input safety)', () 
       expect(g.pendingAgeMs()).toBe(60_000);
       expect(g.ownerQuietMs()).toBe(60_000);
 
-      g.observe(''); // Ctrl-U cancels the line
+      g.observe('\u0015'); // Ctrl-U cancels the line
       expect(g.pendingAgeMs()).toBe(0);
     });
   });
@@ -969,23 +971,82 @@ describe('makeOwnerComposerGate (EI-20199370837439455 staged-input safety)', () 
   describe('makeOwnerInputDetector (terminal replies are not owner presence)', () => {
     it('rejects terminal-authored string sequences', () => {
       const d = makeOwnerInputDetector();
-      expect(d.sawOwnerInput('P>|VTE(7600)\\')).toBe(false);
-      expect(d.sawOwnerInput(']11;rgb:0000/0000/0000')).toBe(false);
+      expect(d.sawOwnerInput('\u001bP>|VTE(7600)\u001b\\')).toBe(false);
+      expect(d.sawOwnerInput('\u001b]11;rgb:0000/0000/0000\u0007')).toBe(false);
     });
 
     it('rejects a reply even when it is split one byte per read', () => {
       const d = makeOwnerInputDetector();
-      const seen = [...'P>|VTE(7600)\\'].map((c) => d.sawOwnerInput(c));
+      const seen = [...'\u001bP>|VTE(7600)\u001b\\'].map((c) => d.sawOwnerInput(c));
       expect(seen.some(Boolean)).toBe(false);
     });
 
+    it('never fires for a line the owner is actually editing', () => {
+      // The whole point is to stay silent while a person types. Each defer here
+      // sees a DIFFERENT length, which is what a human looks like.
+      const d = makeComposerWedgeDetector({ minDefers: 3, minQuietMs: 1_000 });
+      for (const pendingLength of [4, 5, 6, 7, 8, 9]) {
+        expect(d.note({ pendingLength, ownerQuietMs: 60_000 })).toBeNull();
+      }
+    });
+
+    it('stays silent while the owner is merely slow', () => {
+      const d = makeComposerWedgeDetector({ minDefers: 3, minQuietMs: 300_000 });
+      // Unchanged line, but bytes arrived recently — they stepped away for a
+      // moment, they did not vanish.
+      expect(d.note({ pendingLength: 11, ownerQuietMs: 2_000 })).toBeNull();
+      expect(d.note({ pendingLength: 11, ownerQuietMs: 9_000 })).toBeNull();
+      expect(d.note({ pendingLength: 11, ownerQuietMs: 30_000 })).toBeNull();
+    });
+
+    it('reports a phantom line: unchanged length, no owner byte ever seen', () => {
+      // This is the shape of the live incident — a constant 11-char staged line
+      // (VTE's `>|VTE(7600)`) deferring every wake with no keystroke behind it.
+      const d = makeComposerWedgeDetector({ minDefers: 3, minQuietMs: 300_000 });
+      expect(d.note({ pendingLength: 11, ownerQuietMs: Infinity })).toBeNull();
+      expect(d.note({ pendingLength: 11, ownerQuietMs: Infinity })).toBeNull();
+      const report = d.note({ pendingLength: 11, ownerQuietMs: Infinity, pendingAgeMs: 7_200_000 });
+      expect(report).toMatchObject({
+        pendingLength: 11,
+        consecutiveDefers: 3,
+        ownerQuietMs: null,
+        ownerBytesEverSeen: false,
+        pendingAgeMs: 7_200_000,
+      });
+    });
+
+    it('reports once per episode, then re-arms when the line changes', () => {
+      const d = makeComposerWedgeDetector({ minDefers: 2, minQuietMs: 1_000 });
+      expect(d.note({ pendingLength: 11, ownerQuietMs: Infinity })).toBeNull();
+      expect(d.note({ pendingLength: 11, ownerQuietMs: Infinity })).not.toBeNull();
+      // A wedged host must not log this on every single wake.
+      expect(d.note({ pendingLength: 11, ownerQuietMs: Infinity })).toBeNull();
+      expect(d.note({ pendingLength: 11, ownerQuietMs: Infinity })).toBeNull();
+      // A new staged line is a new episode and may be reported again.
+      expect(d.note({ pendingLength: 12, ownerQuietMs: Infinity })).toBeNull();
+      expect(d.note({ pendingLength: 12, ownerQuietMs: Infinity })).not.toBeNull();
+    });
+
+    it('also catches a REAL owner who walked away mid-line', () => {
+      // Not a false positive: the agent is just as stuck, so this is worth
+      // saying out loud even though a human really did type the line.
+      const d = makeComposerWedgeDetector({ minDefers: 2, minQuietMs: 300_000 });
+      expect(d.note({ pendingLength: 24, ownerQuietMs: 900_000 })).toBeNull();
+      expect(d.note({ pendingLength: 24, ownerQuietMs: 960_000 })).toMatchObject({
+        ownerBytesEverSeen: true,
+        ownerQuietMs: 960_000,
+      });
+    });
+  });
+
+  describe('makeOwnerInputDetector: real keystrokes still count', () => {
     it('still accepts real keystrokes, including navigation keys', () => {
       // Deliberately conservative: CSI/SS3 are ambiguous (a human pressing Left
       // and a cursor-position reply are the same bytes), so they keep counting
       // as owner input exactly as before this fix.
       expect(makeOwnerInputDetector().sawOwnerInput('hello')).toBe(true);
-      expect(makeOwnerInputDetector().sawOwnerInput('[D')).toBe(true);
-      expect(makeOwnerInputDetector().sawOwnerInput('OP')).toBe(true);
+      expect(makeOwnerInputDetector().sawOwnerInput('\u001b[D')).toBe(true);
+      expect(makeOwnerInputDetector().sawOwnerInput('\u001bOP')).toBe(true);
       expect(makeOwnerInputDetector().sawOwnerInput('\r')).toBe(true);
     });
   });

@@ -776,6 +776,58 @@ export function makeOwnerInputDetector() {
 }
 
 /**
+ * Detect a composer that is no longer tracking a real person (WI-38156).
+ *
+ * The parser fix above removes the KNOWN phantom source; this exists for the
+ * next unknown one. The original incident was silent for hours — 532 deferrals
+ * across 9h, one session dead for 2h — because each individual defer is
+ * perfectly legitimate ("the owner is mid-line, don't corrupt their input"),
+ * and nothing ever asked the follow-up question: has that same untouched line
+ * been blocking wakes all morning?
+ *
+ * The signature that separates a phantom from a person: the staged length
+ * never changes AND no owner-authored byte has arrived for a long time. A real
+ * person who walked away mid-line trips this too — which is CORRECT. The agent
+ * is equally stuck either way, and somebody should be told.
+ *
+ * Pure (no clock, no I/O — the caller supplies the measurements); exported for
+ * tests.
+ */
+export function makeComposerWedgeDetector({ minDefers = 3, minQuietMs = 5 * 60_000 } = {}) {
+  let consecutive = 0;
+  let lastLength = -1;
+  let reported = false;
+  return {
+    /**
+     * Record one deferral. Returns a report payload the first time a wedge is
+     * suspected for a given staged line, otherwise null (so a wedged host logs
+     * once per episode instead of once per wake).
+     */
+    note({ pendingLength, ownerQuietMs = Infinity, pendingAgeMs = 0 } = {}) {
+      if (pendingLength !== lastLength) {
+        // The line moved, so somebody is editing it. Start the count over.
+        lastLength = pendingLength;
+        consecutive = 1;
+        reported = false;
+        return null;
+      }
+      consecutive += 1;
+      if (reported || consecutive < minDefers || ownerQuietMs < minQuietMs) return null;
+      reported = true;
+      return {
+        pendingLength,
+        consecutiveDefers: consecutive,
+        pendingAgeMs,
+        ownerQuietMs: ownerQuietMs === Infinity ? null : ownerQuietMs,
+        // The single most diagnostic fact, and the one that took a live pty
+        // capture to establish the first time: no owner byte was EVER seen.
+        ownerBytesEverSeen: ownerQuietMs !== Infinity,
+      };
+    },
+  };
+}
+
+/**
  * Track a bridged owner's line-editor state separately from keystroke activity.
  * The idle gate only knows that typing stopped; it cannot tell whether the
  * owner pressed Enter. Injecting a wake into a quiet-but-unsubmitted line
@@ -2626,50 +2678,29 @@ export function hostThroughPty(o) {
   // classifier that misses chunks mis-reads the tail of a split reply as text.
   const ownerInputDetector = makeOwnerInputDetector();
 
-  // Wedge detector (WI-38156). The parser fix removes the KNOWN phantom source;
-  // this exists for the next unknown one. The original incident was silent —
-  // 532 deferrals across 9h, one session dead for 2h — because a defer is
-  // individually legitimate ("the owner is typing") and nothing ever asked
-  // whether the same untouched line had been blocking wakes all morning.
-  //
-  // The signature of a phantom, as distinct from a person: the staged length
-  // never changes AND no owner-authored byte has arrived for a long time. A
-  // real person who walks away mid-line trips this too — which is correct, the
-  // agent is equally stuck either way and someone should be told.
-  const WEDGE_MIN_DEFERS = positiveNumber(env.PAPERCUSP_PSU_PTY_WEDGE_MIN_DEFERS, 3);
-  const WEDGE_MIN_QUIET_MS = positiveNumber(env.PAPERCUSP_PSU_PTY_WEDGE_QUIET_MS, 5 * 60_000);
-  let wedgeDefers = 0;
-  let wedgeLength = -1;
-  let wedgeReported = false;
+  const wedgeDetector = makeComposerWedgeDetector({
+    minDefers: positiveNumber(env.PAPERCUSP_PSU_PTY_WEDGE_MIN_DEFERS, 3),
+    minQuietMs: positiveNumber(env.PAPERCUSP_PSU_PTY_WEDGE_QUIET_MS, 5 * 60_000),
+  });
   const noteOwnerInputDefer = (pendingLength) => {
-    if (pendingLength !== wedgeLength) {
-      // The line moved: a person is editing it. Start the count over.
-      wedgeLength = pendingLength;
-      wedgeDefers = 1;
-      wedgeReported = false;
-      return;
-    }
-    wedgeDefers += 1;
-    const quietMs = ownerComposerGate.ownerQuietMs();
-    if (wedgeReported || wedgeDefers < WEDGE_MIN_DEFERS || quietMs < WEDGE_MIN_QUIET_MS) return;
-    wedgeReported = true;
-    const detail = {
+    const wedge = wedgeDetector.note({
       pendingLength,
-      consecutiveDefers: wedgeDefers,
+      ownerQuietMs: ownerComposerGate.ownerQuietMs(),
       pendingAgeMs: ownerComposerGate.pendingAgeMs(),
-      ownerQuietMs: quietMs === Infinity ? null : quietMs,
-      // The single most diagnostic fact, and the one that took a live capture
-      // to establish the first time: no owner byte has EVER been seen here.
-      ownerBytesEverSeen: quietMs !== Infinity,
-    };
-    appendHostEvent(ownerId, 'owner-composer-wedge-suspected', detail);
+    });
+    if (!wedge) return;
+    appendHostEvent(ownerId, 'owner-composer-wedge-suspected', wedge);
     try {
       process.stderr.write(
-        `psu-pty-host: ⚠ COMPOSER WEDGE SUSPECTED for ${ownerId} — ${wedgeDefers} consecutive ` +
+        `psu-pty-host: COMPOSER WEDGE SUSPECTED for ${ownerId} — ${wedge.consecutiveDefers} consecutive ` +
           `wake deferrals against an unchanged ${pendingLength}-char staged line, ` +
-          `${detail.ownerBytesEverSeen ? `idle ${Math.round(quietMs / 1000)}s` : 'and NO owner keystroke has ever been seen'}. ` +
-          `This agent is not receiving wakes. If nobody is typing here, it is a phantom ` +
-          `(see WI-38156) — press Ctrl-U in this window to clear it.\n`,
+          `${
+            wedge.ownerBytesEverSeen
+              ? `idle ${Math.round(wedge.ownerQuietMs / 1000)}s`
+              : 'and NO owner keystroke has ever been seen here'
+          }. ` +
+          `This agent is NOT receiving wakes. If nobody is typing in this window it is a phantom ` +
+          `staged line (WI-38156) — press Ctrl-U here to clear it.\n`,
       );
     } catch {
       /* diagnostic only */
