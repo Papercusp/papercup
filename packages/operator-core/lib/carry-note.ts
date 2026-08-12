@@ -224,13 +224,16 @@ export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryAr
   // Only these read as an affirmative verification; anything else (predicted,
   // pending, unknown, false, …) must stay PREDICTED rather than be upgraded.
   const statusVerified = /^(verified|true|pass(ed)?|confirmed|done|ok|✓)$/i.test(status);
+  const booleanVerified = typeof r.verified === 'boolean' ? r.verified : undefined;
 
-  if (typeof r.verified === 'boolean') {
+  if (booleanVerified !== undefined) {
     // A boolean was never storable — it is the flag-vs-evidence confusion. `true`
-    // keeps whatever evidence came with it; `false` is simply PREDICTED.
+    // keeps real evidence that came with it; `false` is simply PREDICTED, even if a
+    // contradictory/stray evidence field is also present. The explicit boolean is
+    // the caller's verdict, so a malformed companion field must not override it.
     const was = r.verified;
     delete r.verified;
-    if (was && (evidence || status)) r.verified = evidence || status;
+    if (was && evidence) r.verified = evidence;
     repairs.push({
       field: `${path}.verified`,
       kind: 'renamed',
@@ -243,7 +246,10 @@ export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryAr
   if (hasEvidence || hasStatus) {
     delete r.status;
     delete r.evidence;
-    if (r.verified === undefined) {
+    // When a boolean was supplied, it is authoritative: only `true` with a real
+    // evidence string above can become VERIFIED. Without the boolean compatibility
+    // shape, retain the older lossless `{status, evidence}` repair.
+    if (r.verified === undefined && booleanVerified === undefined) {
       if (evidence) r.verified = evidence;
       else if (statusVerified) r.verified = status;
     }
