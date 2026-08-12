@@ -8,7 +8,7 @@
 
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { readIdentity } from './identity';
+import { readFileLockIdentity } from './identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryCancelWait } from './su-lock-store';
 import { bulkContent, runBulk } from '../_bulk';
@@ -34,7 +34,7 @@ export default defineTool({
       message: 'pass `ticket_id` or `ticket_ids`',
     }),
   async handler(args, ctx) {
-    const { ownerId, coordinationDomain } = readIdentity(ctx);
+    const { ownerId, coordinationDomain } = readFileLockIdentity(ctx);
     const ticketIds = Array.from(new Set([...(args.ticket_id ? [args.ticket_id] : []), ...(args.ticket_ids ?? [])]));
     const env = await runBulk(
       ticketIds,

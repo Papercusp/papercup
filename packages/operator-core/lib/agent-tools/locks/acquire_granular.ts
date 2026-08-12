@@ -12,7 +12,7 @@
 
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { readIdentity } from './identity';
+import { readFileLockIdentity } from './identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { tryAcquireGranular, validatePath } from './su-lock-store';
 import { notifyPlanLockChange } from './notify-lock-change';
@@ -50,7 +50,7 @@ export default defineTool({
     ttl_sec: z.number().int().positive().max(MAX_TTL_SEC).optional(),
   }),
   async handler(args, ctx) {
-    const { ownerId, ownerLabel, coordinationDomain } = readIdentity(ctx);
+    const { ownerId, ownerLabel, coordinationDomain } = readFileLockIdentity(ctx);
     // Root ("") is legal here (the harness node); validate any non-root path the
     // same way file locks do (reject absolute / traversal / over-long).
     if (args.path !== '') {

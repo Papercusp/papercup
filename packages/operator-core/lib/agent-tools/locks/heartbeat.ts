@@ -7,7 +7,7 @@
 
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { readIdentity } from './identity';
+import { readFileLockIdentity } from './identity';
 import { SuLocksCoordinator } from './coordinator';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 
@@ -34,7 +34,7 @@ export default defineTool({
       message: 'pass `lock_id` or `lock_ids`',
     }),
   async handler(args, ctx) {
-    const { ownerId, ownerLabel, coordinationDomain } = readIdentity(ctx);
+    const { ownerId, ownerLabel, coordinationDomain } = readFileLockIdentity(ctx);
     const ttlSec = args.ttl_sec ?? DEFAULT_TTL_SEC;
 
     // Dispatch through the shared FileClaimCoordinator interface

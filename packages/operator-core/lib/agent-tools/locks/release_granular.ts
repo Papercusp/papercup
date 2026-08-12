@@ -8,7 +8,7 @@
 
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { readIdentity } from './identity';
+import { readFileLockIdentity } from './identity';
 import { inWorkspaceTxn } from './in-workspace-txn';
 import { releaseGranular } from './su-lock-store';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
@@ -38,7 +38,7 @@ export default defineTool({
       message: 'pass lock_id for one, or lock_ids:[…] for many',
     }),
   async handler(args, ctx) {
-    const { ownerId, coordinationDomain } = readIdentity(ctx);
+    const { ownerId, coordinationDomain } = readFileLockIdentity(ctx);
     const lockIds = mergeIds(args.lock_id, args.lock_ids);
     const env = await runBulk(
       lockIds,

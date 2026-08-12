@@ -23,7 +23,7 @@ import {
   type InvokeEnvelope,
 } from '../../bash-substitution/invoke-envelope';
 import { getSubstitutionRows } from '../../bash-substitution/registry';
-import { readIdentity } from './identity';
+import { readFileLockIdentity } from './identity';
 import { checkBashCommand } from './resource-command-match';
 
 /**
@@ -97,7 +97,7 @@ export default defineTool({
     command: z.string().min(1).max(32000),
   }),
   async handler(args, ctx) {
-    const { ownerId, coordinationDomain } = readIdentity(ctx);
+    const { ownerId, coordinationDomain } = readFileLockIdentity(ctx);
     const workspaceId =
       ctx.workspaceId && ctx.workspaceId !== '*' ? ctx.workspaceId : activeWorkspaceId();
 
