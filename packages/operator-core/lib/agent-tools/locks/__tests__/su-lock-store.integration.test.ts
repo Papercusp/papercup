@@ -613,12 +613,13 @@ describe('readQueue', () => {
   it('returns active locks with sorted ahead_count over waiters', async () => {
     const ws = nextWs();
     // Hold a path so waiters queue.
-    await inWorkspaceTxn(ws, 'h', (tx) =>
+    const holder = await inWorkspaceTxn(ws, 'h', (tx) =>
       tryAcquire(tx, {
         coordinationDomain: ws, owner: 'h', ownerLabel: 'H',
         paths: ['q.ts'], intent: 'h', ttlSec: 60,
       }),
     );
+    if (!holder.ok) throw new Error('holder acquire should succeed');
     const w1 = await inWorkspaceTxn(ws, 'first', (tx) =>
       tryInsertWaiter(tx, {
         coordinationDomain: ws, owner: 'first', ownerLabel: 'F',
@@ -639,6 +640,7 @@ describe('readQueue', () => {
     const q = await readQueue(getTxPool(), { coordinationDomain: ws });
     expect(q.active_locks).toHaveLength(1);
     expect(q.active_locks[0].path).toBe('q.ts');
+    expect(q.active_locks[0].lock_id).toBe(holder.lock_id);
     expect(q.waiting).toHaveLength(2);
     expect(q.waiting[0].ticket_id).toBe(w1.ticket_id);
     expect(q.waiting[0].ahead_count).toBe(0);

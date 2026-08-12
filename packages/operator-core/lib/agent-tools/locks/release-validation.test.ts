@@ -35,4 +35,13 @@ describe('locks:release UUID validation', () => {
       items: { type: 'string', format: 'uuid' },
     });
   });
+
+  it('documents that paths is only a filter for an explicit lock id', () => {
+    const jsonSchema = tool.args.toJSONSchema();
+
+    expect(jsonSchema.properties?.paths).toMatchObject({
+      description: expect.stringContaining('paths alone cannot select a lock'),
+    });
+    expect(tool.description).toContain('`paths` only filters a selected lock_id');
+  });
 });

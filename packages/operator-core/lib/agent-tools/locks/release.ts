@@ -44,11 +44,11 @@ const lockIdSchema = z.string().uuid({
 export default defineTool({
   name: 'locks:release',
   description:
-    'Release one or many held lock sets. Single: pass lock_id (with optional paths filter) or all_mine=true. Many: pass lock_ids:[…]. Fires the grant cascade for waiting agents.',
+    'Release one or many held lock sets. Single: pass lock_id (with optional paths filter) or all_mine=true. Many: pass lock_ids:[…]. `paths` only filters a selected lock_id; it cannot select a lock by itself. Fires the grant cascade for waiting agents.',
   guidance: {
-    when: 'Immediately after the edit is committed. Release several selected lock sets at once via lock_ids:[…]. On context loss / restart, call with all_mine=true to release everything.',
+    when: 'Immediately after the edit is committed. Release several selected lock sets at once via lock_ids:[…]. On context loss / restart, call with all_mine=true to release everything. If recovering from locks:queue, pass the active row\'s lock_id; paths is only an optional filter.',
     notWhen: 'Mid-edit. The lock should outlive the edit by enough that no other agent races between release and PR merge.',
-    chaining: 'locks:acquire → edit → locks:release { lock_id } or { lock_ids:[…] }. Or: session-end → locks:release { all_mine: true }.',
+    chaining: 'locks:acquire → edit → locks:release { lock_id } or { lock_ids:[…] }. If the lock id was lost, locks:queue → select your active row\'s lock_id → locks:release { lock_id }. Or: session-end → locks:release { all_mine: true }.',
     seeAlso: [
       'locks:release_granular (for a subtree/directory lock)',
       'locks:release_resource (for a named-resource lock)',
@@ -61,7 +61,10 @@ export default defineTool({
   args: z.object({
     lock_id: lockIdSchema.optional(),
     lock_ids: z.array(lockIdSchema).min(1).max(200).optional(),
-    paths: z.array(z.string()).optional(),
+    paths: z
+      .array(z.string())
+      .optional()
+      .describe('optional path filter applied to the selected lock_id; paths alone cannot select a lock'),
     coordination_domain: z
       .string()
       .min(1)
@@ -97,7 +100,7 @@ export default defineTool({
             type: 'text' as const,
             text: JSON.stringify({
               ok: false,
-              error: 'locks:release requires lock_id or all_mine=true',
+              error: 'locks:release requires lock_id or all_mine=true; paths is only a filter and cannot select a lock by itself',
             }),
           },
         ],

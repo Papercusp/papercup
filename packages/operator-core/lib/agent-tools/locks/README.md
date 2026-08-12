@@ -14,10 +14,10 @@ via `?client=` URL param.
 | Tool | What it does |
 |---|---|
 | `locks:acquire` | Atomic multi-path claim. Returns `{ok, lock_id, expires_ts, held}` or `{ok: false, busy: [...]}`. |
-| `locks:release` | Free locks + run cascade. Pass `lock_id` (with optional `paths` filter) or `all_mine: true`. |
+| `locks:release` | Free locks + run cascade. Pass `lock_id` (with optional `paths` filter) or `all_mine: true`; `paths` alone cannot select a lock. |
 | `locks:heartbeat` | Extend a lock's TTL. `extended: false` means it was already stolen. |
 | `locks:cancel_wait` | (Phase 2 — waiter cancellation; no-op until wait subsystem ships.) |
-| `locks:queue` | Read-only inspection. Active locks + pending waiters + (optional) terminal waiters from the last 24h. |
+| `locks:queue` | Read-only inspection. Active locks include `lock_id` for recovery, plus pending waiters and (optional) terminal waiters from the last 24h. |
 
 Defaults: `ttl_sec=1200` (20 min), max `ttl_sec=3600` (1 h), max
 `paths.length=50`, max `intent` 200 chars.

@@ -124,6 +124,7 @@ describe('adv-agent-detail import boundary', () => {
 
 function lock(overrides: Partial<ActiveLockRow> = {}): ActiveLockRow {
   return {
+    lock_id: '11111111-1111-1111-1111-111111111111',
     path: 'a.ts',
     owner: 'su-1',
     owner_label: 'su · su-1',

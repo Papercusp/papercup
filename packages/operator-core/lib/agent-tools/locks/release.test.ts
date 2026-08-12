@@ -96,6 +96,14 @@ describe('locks:release handler', () => {
     expect(String(b.error)).toMatch(/either all_mine=true or selected/);
   });
 
+  it('rejects paths without a lock selector before touching the store', async () => {
+    const b = body(await call({ paths: ['src/a.ts'] }));
+    expect(b).toMatchObject({ ok: false });
+    expect(String(b.error)).toMatch(/requires lock_id or all_mine=true/);
+    expect(String(b.error)).toMatch(/paths is only a filter/);
+    expect(routeM).not.toHaveBeenCalled();
+  });
+
   it('retries a transient workspace contention before returning the release result', async () => {
     vi.useFakeTimers();
     try {
