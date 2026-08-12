@@ -579,9 +579,9 @@ export default defineTool({
   name: 'scheduler:get_next',
   profile: 'engineer',
   description:
-    'Self-select via your claim SPEC: atomically claims the next eligible item under global floors + spec filter/rank, SKIP LOCKED. Outside a fleet, no spec uses default ordering (warned). A fleet member without an inherited spec fails closed (windDown:true), never into generic backlog. Returns the item plus spec provenance, or a diagnosed miss.',
+    'Atomically claim the next eligible item under global floors plus the stored claim-spec filter/rank (SKIP LOCKED). A fleet member without an inherited spec fails closed (windDown:true); a non-fleet caller without a spec uses warned default ordering. Returns the claimed item or a diagnosed miss; specId and revision are result provenance, not request arguments.',
   guidance: {
-    when: 'A self-pulling cup or su fleet member needs its next item. Use the Mug/leader claim spec instead of scanning the frontier. Pass only { harness, heldPaths?, states?, rigAvailable? }; never pass specId, revision, fleet, workspace, or claimSpec. claimedUnder reports the inherited spec.',
+    when: 'A self-pulling cup or su fleet member pulls from the Mug/leader spec instead of scanning. Pass { harness, heldPaths?, states?, rigAvailable? }; do NOT pass specId, revision, fleet, workspace, or claimSpec; claimedUnder reports it.',
     notWhen:
       'Coding-factory roles are pushed a FEATURE_ID and do not self-pull. For a specific id use work_items:claim; for plain non-fleet oldest-first use work_items:claim_next.',
     chaining:
