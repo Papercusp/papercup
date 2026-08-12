@@ -83,6 +83,8 @@ describe('envelope format + parse', () => {
     expect(isTurnOrigin('wake-pump')).toBe(true);
     expect(isTurnOrigin('self-compaction')).toBe(true);
     expect(isTurnOrigin('session-port')).toBe(true);
+    expect(isTurnOrigin('role-prompt')).toBe(true);
+    expect(isTurnOrigin('resume-smoke')).toBe(true);
     expect(isTurnOrigin('coord-inject:su-abc')).toBe(true);
     expect(isTurnOrigin('coord-inject:')).toBe(false);
     expect(isTurnOrigin('owner')).toBe(false);

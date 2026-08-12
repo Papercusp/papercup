@@ -91,6 +91,7 @@ import { lintInstructionText, type InstructionLintReport } from './instruction-l
 import { readSuperuserToken } from './superuser-token';
 import { papercuspPathForWorkspace } from './papercusp-root';
 import { canonicalCoordRole } from './agent-tools/coordination/roles';
+import { tagTurnForInjection } from './turn-provenance/turn-provenance';
 
 export interface BuildRoleLaunchSpecInput {
   /** Pipeline/kernel role id (worker, validator, reviewer, …). */
@@ -325,6 +326,14 @@ export async function buildRoleLaunchSpec(input: BuildRoleLaunchSpecInput): Prom
     promptText = ws.text;
     promptFile = ws.promptFile;
   }
+
+  // P-002 enrollment: the role prompt is delivered by the launcher through a
+  // system-prompt file, but native CLI transcript adapters can persist that
+  // content as a user-shaped row.  Enroll the exact bytes with the sid minted
+  // above before the caller materializes the file.  The ledger write is
+  // fail-soft by contract; the envelope still prevents a clean prompt from
+  // falling through to the owner-interactive residual at ingest.
+  promptText = tagTurnForInjection({ sid, origin: 'role-prompt', text: promptText }).taggedText;
 
   // 3. Signed role-scoped MCP URL — same param set + signing key the
   //    orchestrator's writeSignedSpawnMcp uses, so the MCP handler's

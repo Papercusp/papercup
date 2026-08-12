@@ -7,6 +7,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const assembleRolePromptMock = vi.fn();
+const tagTurnForInjectionMock = vi.fn(({ text, sid, origin }: { text: string; sid: string; origin: string }) => ({
+  taggedText: text,
+  envelope: `⟦turn-origin:${origin} nonce:testnonce12345678⟧`,
+  nonce: 'testnonce12345678',
+  origin,
+  ledgerWritten: true,
+}));
 const resolvePromptFileMock = vi.fn((_ctx: unknown, role: string): string | null =>
   role === 'planner' ? '/h/prompts/planner.md' : null,
 );
@@ -36,6 +43,9 @@ vi.mock('./spawn-signing', () => ({
     params.set('sig', 'TESTSIG');
     return { exp: 9999999999, sig: 'TESTSIG' };
   }),
+}));
+vi.mock('./turn-provenance/turn-provenance', () => ({
+  tagTurnForInjection: (...args: unknown[]) => tagTurnForInjectionMock(...(args as [{ text: string; sid: string; origin: string }])),
 }));
 vi.mock('./spawn-config', () => ({
   resolveProjectDir: vi.fn(async (slug: string) => `/registry/${slug}`),
@@ -113,6 +123,11 @@ describe('buildRoleLaunchSpec', () => {
         projectDir: '/registry/papercup',
       }),
     );
+    expect(tagTurnForInjectionMock).toHaveBeenCalledWith({
+      sid: spec.sid,
+      origin: 'role-prompt',
+      text: 'WORKER PROMPT BODY',
+    });
     expect(spec.promptText).toBe('WORKER PROMPT BODY');
     expect(spec.runId).toBe('worker-F-001-123');
     expect(spec.cwd).toBe('/proj/papercup');
