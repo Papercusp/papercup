@@ -2026,6 +2026,12 @@ export interface StaleProtectiveHoldCandidate {
   kettleStarted: boolean;
   /** directiveSuggestsResume(directive) — explicit resume OR a work-commanding directive. */
   workCommanded: boolean;
+  /** Whether the pot has ANY steering directive text at all (EI-18653608066559541).
+   *  Distinct from `workCommanded`, which is a keyword heuristic OVER that text:
+   *  `workCommanded:false` conflates two opposite situations — a directive that
+   *  asserts the pause is intentional ("in force until lifted"), and NO directive,
+   *  which documents nothing. Only the second is undetectable drift. */
+  directivePresent: boolean;
   /** first ~140 chars of the directive, for the body. */
   directiveHead: string;
   /** newest tick's frontier depth. */
@@ -2047,7 +2053,24 @@ export function staleProtectiveHoldSignalsFromCandidates(
 ): WatchdogSignal[] {
   const signals: WatchdogSignal[] = [];
   for (const c of cands) {
-    if (!c.workCommanded) continue;
+    // EI-18653608066559541: this gate used to be a bare `if (!c.workCommanded) continue`,
+    // which made the whole detector blind to the failure it exists to catch. Every
+    // input to `workCommanded` is a keyword heuristic over the directive TEXT
+    // (directiveSuggestsResume), and `directiveSuggestsResume(null) === false` on
+    // its first line — so a pot held with NO directive at all was skipped here
+    // before any evidence (frontier depth, hours since placement, kettle silence)
+    // was ever weighed. That is precisely the pause-that-outlived-its-author shape
+    // (EI-16537 class): the LESS a hold documents itself, the more certainly the
+    // old gate ignored it.
+    //
+    // An UNDOCUMENTED hold is therefore its own entry condition. Note the two are
+    // mutually exclusive by construction — a null directive can never be
+    // work-commanding — so this widens the detector without double-reporting.
+    // A directive that asserts the pause is intentional ("in force until lifted")
+    // still yields workCommanded:false WITH directivePresent:true, and is still
+    // correctly ignored: that hold documents itself.
+    const undocumentedHold = !c.directivePresent;
+    if (!c.workCommanded && !undocumentedHold) continue;
     const potStale =
       c.potHeld &&
       c.frontierDepth > 0 &&
@@ -2061,18 +2084,36 @@ export function staleProtectiveHoldSignalsFromCandidates(
       c.kettleHoursSinceFire >= minHoldHours;
     if (!potStale && !kettleStale) continue;
     const holdKind = potStale && kettleStale ? 'pot+kettle' : potStale ? 'pot-pause' : 'kettle-pause';
+    const evidence =
+      `Evidence: frontier_depth=${c.frontierDepth}, ` +
+      `last placement ${c.hoursSinceLastPlacement == null ? 'none in 24h' : `~${Math.round(c.hoursSinceLastPlacement)}h ago`}, ` +
+      `kettle last fired ${c.kettleHoursSinceFire == null ? 'never/no row' : `~${Math.round(c.kettleHoursSinceFire)}h ago`}.`;
+    // The undocumented-hold leg gets its OWN key and wording: the original text
+    // asserts the hold "contradicts its work-commanding directive", which would be
+    // a plain falsehood here — there is no directive to contradict. A separate key
+    // also keeps the two legs deduping independently in the signal store.
     signals.push({
       source: 'stale-protective-hold' as const,
-      key: `stale-protective-hold:${c.installSlug}:${holdKind}`,
-      title: `Stale protective hold on pot ${c.installSlug} (${holdKind}) contradicts its work-commanding directive`,
-      body:
-        `Watchdog signal (stale-protective-hold, EI-13022 class): pot "${c.installSlug}" has a standing hold ` +
-        `(${holdKind}: potHeld=${c.potHeld}, kettleStarted=${c.kettleStarted}) while its steering directive commands ` +
-        `active work ("${c.directiveHead}"). Evidence: frontier_depth=${c.frontierDepth}, ` +
-        `last placement ${c.hoursSinceLastPlacement == null ? 'none in 24h' : `~${Math.round(c.hoursSinceLastPlacement)}h ago`}, ` +
-        `kettle last fired ${c.kettleHoursSinceFire == null ? 'never/no row' : `~${Math.round(c.kettleHoursSinceFire)}h ago`}. ` +
-        `A hold is a legit owner control — do NOT auto-resume; reconcile deliberately: either lift it ` +
-        `(pot:set-steering { pauseNewWork:false } / kettle:start) or update the directive to say the pause is intended.`,
+      key: undocumentedHold
+        ? `stale-protective-hold:${c.installSlug}:undocumented-${holdKind}`
+        : `stale-protective-hold:${c.installSlug}:${holdKind}`,
+      title: undocumentedHold
+        ? `Stale UNDOCUMENTED hold on pot ${c.installSlug} (${holdKind}) — no directive records why it exists`
+        : `Stale protective hold on pot ${c.installSlug} (${holdKind}) contradicts its work-commanding directive`,
+      body: undocumentedHold
+        ? `Watchdog signal (stale-protective-hold, EI-18653608066559541 class): pot "${c.installSlug}" has a standing ` +
+          `hold (${holdKind}: potHeld=${c.potHeld}, kettleStarted=${c.kettleStarted}) with NO steering directive at all, ` +
+          `so nothing on record says who paused it, when, or why — and work is visibly piling up behind it. ${evidence} ` +
+          `This is the pause-that-outlived-its-author shape (EI-16537 class), which the older text-matching gate could ` +
+          `not see: with no directive there is no wording to contradict. A hold is a legit owner control — do NOT ` +
+          `auto-resume. Reconcile deliberately, EITHER lift it (pot:set-steering { pauseNewWork:false } / kettle:start) ` +
+          `OR document it (pot:set-steering { directive: "<why this pause stands>" }) — documenting it is what stops ` +
+          `this signal, so an intentional long-lived pause silences it by becoming accountable rather than by being ignored.`
+        : `Watchdog signal (stale-protective-hold, EI-13022 class): pot "${c.installSlug}" has a standing hold ` +
+          `(${holdKind}: potHeld=${c.potHeld}, kettleStarted=${c.kettleStarted}) while its steering directive commands ` +
+          `active work ("${c.directiveHead}"). ${evidence} ` +
+          `A hold is a legit owner control — do NOT auto-resume; reconcile deliberately: either lift it ` +
+          `(pot:set-steering { pauseNewWork:false } / kettle:start) or update the directive to say the pause is intended.`,
       severity: 'major' as const,
       kind: 'bug' as const,
       scope: `harness:${c.installSlug}`,
@@ -2128,6 +2169,9 @@ export async function collectStaleProtectiveHoldSignals(
         potHeld: isPausedNow(steering, Date.now()),
         kettleStarted: started,
         workCommanded: directiveSuggestsResume(steering.directive),
+        // getOwnerSteering already normalizes a blank/whitespace directive to null,
+        // so this is a true "is there any recorded reason for the hold" bit.
+        directivePresent: steering.directive != null,
         directiveHead: (steering.directive ?? '').slice(0, 140),
         frontierDepth: Number(r.frontier_depth ?? 0),
         hoursSinceLastPlacement: r.hours_since_placement == null ? null : Number(r.hours_since_placement),
