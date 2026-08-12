@@ -64,16 +64,18 @@ TITLE_TTY="${PAPERCUSP_OBJECTIVE_TTY:-/dev/tty}"
 # substitution. Kept in a function so the SYNC + DETACHED paths share one body; the
 # `|| true` at the call sites keeps any crash fail-open.
 set_title() {
-  python3 - "$OPERATOR_URL" "$TOKEN" "${PAPERCUSP_SID:-fixture}" "${PAPERCUSP_OBJECTIVE_FIXTURE:-}" "$TITLE_TTY" "${PAPERCUSP_MODEL:-}" "$(dirname "$0")" <<'PYEOF'
+  python3 - "$OPERATOR_URL" "$TOKEN" "${PAPERCUSP_SID:-fixture}" "${PAPERCUSP_OBJECTIVE_FIXTURE:-}" "$TITLE_TTY" "${PAPERCUSP_MODEL:-}" "$INPUT" "$(dirname "$0")" <<'PYEOF'
 import json, os, re, sys, urllib.request, urllib.parse
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
 operator_url, token, me, fixture, title_tty = sys.argv[1:6]
 model_spec = sys.argv[6] if len(sys.argv) > 6 else ''  # PAPERCUSP_MODEL launch spec — codex/omp have no live model object
+stdin_raw = sys.argv[7] if len(sys.argv) > 7 else ''  # PostToolUse payload carries Claude's native session_id
 # Shared tty resolution (WI-3665) — see pc_tty.py. Sits beside this script in both the
 # repo and the installed runtime dir, so $0's dirname resolves it either way.
-sys.path.insert(0, sys.argv[7] if len(sys.argv) > 7 else os.path.dirname(os.path.abspath(__file__)))
-from pc_tty import write_osc_title  # noqa: E402  (path must be primed first)
+sys.path.insert(0, sys.argv[8] if len(sys.argv) > 8 else os.path.dirname(os.path.abspath(__file__)))
+from pc_tty import coordination_owner_id, write_osc_title  # noqa: E402  (path must be primed first)
+me = coordination_owner_id(stdin_raw, os.environ)
 HTTP_TIMEOUT = 1.5
 
 
@@ -316,7 +318,14 @@ try:
     # PAPERCUSP_TTY (the owning terminal, survives a setsid'd spawn) → /dev/tty (the
     # controlling terminal, which Codex's child hooks still have). Control chars are
     # stripped inside. A piped/headless session matches nothing → fail open, no title.
-    write_osc_title(title, extra_first=('PAPERCUSP_OBJECTIVE_TTY',))
+    # Keep the tty ownership check aligned with the resolved coordination owner
+    # used for the glance request; a stale ambient SID must not reject our own
+    # terminal claim after a client self-reexec.
+    write_osc_title(
+        title,
+        env={**os.environ, 'PAPERCUSP_SID': me},
+        extra_first=('PAPERCUSP_OBJECTIVE_TTY',),
+    )
     # 💡 tip notice — stdout is reserved for this additionalContext JSON.
     emit_notice(disp)
 except Exception:

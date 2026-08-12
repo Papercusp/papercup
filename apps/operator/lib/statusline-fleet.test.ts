@@ -201,6 +201,31 @@ describe('statusline-fleet render (fixture mode)', () => {
     expect(out).not.toContain('a21353');
   });
 
+  it('uses the native session owner binding when PAPERCUSP_SID has drifted', () => {
+    const home = mkdtempSync(join(tmpdir(), 'statusline-owner-home-'));
+    const owners = join(home, '.papercusp', 'psu-session-owners');
+    const nativeId = '0123abcd-1234-5678-9abc-def012345678';
+    mkdirSync(owners, { recursive: true });
+    writeFileSync(join(owners, nativeId), JSON.stringify({ v: 1, ownerId: 'su-real-owner' }));
+    try {
+      const out = render(
+        {
+          ok: true,
+          wake: { default: 'auto', stagedTotal: 0, stagedOwners: 0 },
+          bees: { running: 0 },
+          activity: [],
+          tips: [],
+        },
+        { HOME: home, PAPERCUSP_SID: 'su-stale-owner' },
+        JSON.stringify({ session_id: nativeId }),
+      );
+      expect(out).toContain('◇ su-real');
+      expect(out).not.toContain('su-stale');
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
   it('self.objective renders as a leading 🔭 segment ahead of the fleet shorthand', () => {
     const out = render({
       ok: true,

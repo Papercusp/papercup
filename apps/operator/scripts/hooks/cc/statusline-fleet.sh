@@ -72,7 +72,7 @@ stdin_raw = sys.argv[5] if len(sys.argv) > 5 else ''  # Claude's piped session J
 # runtime dir (~/.papercusp/hooks/cc, copied together by install-standalone-mcp.sh).
 # Resolving it off $0's dirname is what makes one copy serve both.
 sys.path.insert(0, sys.argv[6] if len(sys.argv) > 6 else os.path.dirname(os.path.abspath(__file__)))
-from pc_tty import write_osc_title  # noqa: E402  (path must be primed first)
+from pc_tty import coordination_owner_id, write_osc_title  # noqa: E402  (path must be primed first)
 HTTP_TIMEOUT = 1.5
 ACTIVITY_WINDOW = 12  # rows for the peer-glance scan
 GATEWAY_URL = os.environ.get('PAPERCUSP_GATEWAY_URL', 'http://127.0.0.1:8788')
@@ -82,6 +82,12 @@ GLANCE_CACHE_DIR = os.environ.get(
     'PAPERCUSP_STATUSLINE_CACHE_DIR',
     os.path.join(os.environ.get('XDG_RUNTIME_DIR') or tempfile.gettempdir(), 'papercusp-statusline-glance'),
 )
+
+# Claude's internal re-exec can leave PAPERCUSP_SID spelling a fresh/unregistered
+# id while the native session's coordination owner remains stable. Resolve the
+# title/glance caller through psu-session-owners when the hook payload names the
+# native session, with the ambient SID as the fail-open fallback.
+me = coordination_owner_id(stdin_raw, os.environ)
 
 
 def call_tool(name, args):
@@ -507,7 +513,10 @@ def set_title(title):
                 fh.write(''.join(c for c in title if ord(c) >= 32 and c not in '\x07\x1b'))
         except Exception:
             pass
-    write_osc_title(title)
+    # Keep the tty ownership check aligned with the same resolved owner used for
+    # the glance request. A stale ambient SID must not make a valid title write
+    # look like a foreign claim on the owned terminal.
+    write_osc_title(title, env={**os.environ, 'PAPERCUSP_SID': me})
 
 
 def lead():
