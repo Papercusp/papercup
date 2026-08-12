@@ -53,6 +53,8 @@ import {
   formatLoadSuspectMarker,
 } from './lib/load-suspect.mjs';
 import { detectCargoTermination } from './lib/cargo-result.mjs';
+// D-021: the serial phase's own cost, measured per-run. See scripts/lib/serial-phase.mjs.
+import { formatSerialPhaseSummary } from './lib/serial-phase.mjs';
 // EI-10542: this runner interleaves its own header/status lines (fd 1/2) with
 // child suite output written synchronously via `stdio: 'inherit'`. On a non-TTY
 // fd (the gate captures to a pipe/file) `console.*` is async-buffered and flushes
@@ -2102,44 +2104,12 @@ for (const t of tasks) {
 }
 
 // ── D-021: what the SERIAL phase above actually costs ────────────────────────
-// The loop is strictly serial — `for (const t of tasks)` around a BLOCKING spawnSync — so
-// exactly one workspace suite runs at a time however idle the box is. This states the price,
-// because "is serialization worth attacking here" was previously answerable only by a figure
-// nobody could source.
-//
-// `ceilingX` is an UPPER BOUND, not a forecast: run concurrently, the phase still cannot finish
-// faster than its LONGEST leg, so serialMs/longestMs is the most perfect parallelism could ever
-// buy. It deliberately ignores the host contention that is the whole reason the fork cap exists
-// (WI-3792/WI-5621 — the box melted twice), so read it as "is this lever big enough to pull",
-// never as a promised speedup. Emitted every run, so the answer is measured per-run rather than
-// inherited: a number this cheap to re-measure should never be quoted from memory.
-//
-// Deliberately NOT a field on AFFECTED_TESTS_RESULT: that line's shape is pinned by
-// affected-tests-result-line.test.ts and parsed by green-checkpoint, and widening a VERDICT
-// contract to carry a MEASUREMENT is how measurements come to be read as verdicts — the same
-// reasoning that keeps the load-suspect marker separate.
-//
-// `--print-affected` runs zero tasks, so this emits nothing there and the two tests pinning that
-// path's marker-less output stay satisfied by construction rather than by an explicit exemption.
-if (serialLegs.length) {
-  const serialMs = serialLegs.reduce((n, leg) => n + leg.ms, 0);
-  const longest = serialLegs.reduce((a, b) => (b.ms > a.ms ? b : a));
-  const ceiling = longest.ms > 0 ? serialMs / longest.ms : 1;
-  const secs = (ms) => (ms / 1000).toFixed(1);
-  outSync(
-    `\nAFFECTED_TESTS_PHASE legs=${serialLegs.length} serialMs=${serialMs} ` +
-      `longestMs=${longest.ms} ceilingX=${ceiling.toFixed(2)}`,
-  );
-  outSync(`  serial phase: ${secs(serialMs)}s across ${serialLegs.length} leg(s), one at a time`);
-  outSync(`  longest leg:  ${secs(longest.ms)}s — ${longest.name}`);
-  outSync(
-    `  ceiling:      ${ceiling.toFixed(2)}x — the most perfect parallelism could buy here ` +
-      `(bounded by the longest leg; ignores host contention)`,
-  );
-  for (const leg of [...serialLegs].sort((a, b) => b.ms - a.ms).slice(0, 5)) {
-    outSync(`    ${secs(leg.ms).padStart(7)}s  ${leg.name}`);
-  }
-}
+// Emitted every run, so the answer is re-measured rather than inherited — a number this cheap to
+// re-measure should never be quoted from memory. `--print-affected` runs zero tasks, so this
+// emits nothing there and the tests pinning that path's marker-less output stay satisfied by
+// construction rather than by an explicit exemption. Arithmetic + wording live in the helper
+// (see its header for why `ceilingX` is a BOUND and not a forecast).
+for (const line of formatSerialPhaseSummary(serialLegs)) outSync(line);
 
 // ── P-009: Wire cargo tests into the same cadence as vitest/playwright ────────
 // Run the Rust/cargo native suite reporter after all vitest tasks complete.
