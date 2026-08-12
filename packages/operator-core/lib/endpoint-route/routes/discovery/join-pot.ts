@@ -2,7 +2,7 @@
  * POST /api/discovery/join-pot — join a discovered hive AS A HIVE
  * (hive-from-repo-hardening-2026-06-11 P-007 / D-007).
  *
- * Body: { potId, title?, hivePubkey?, memberLinks: string[] }
+ * Body: { potId, title?, hivePubkey?, ownerDevicePubkey?, memberLinks: string[] }
  * Composes the existing per-member-link join for every link, then
  * materializes the joiner-side registry VIEW (a `remote_hive`-flagged
  * kind:'hive' entry + hive_slug on the joined members) so the Harnesses tab
@@ -21,7 +21,13 @@ export default defineTool({
   auth: 'loopback',
   timeoutSec: 600,
   async handler(req) {
-    let body: { potId?: string; title?: string; hivePubkey?: unknown; memberLinks?: unknown } = {};
+    let body: {
+      potId?: string;
+      title?: string;
+      hivePubkey?: unknown;
+      ownerDevicePubkey?: unknown;
+      memberLinks?: unknown;
+    } = {};
     try {
       body = (await req.json()) as typeof body;
     } catch {
@@ -62,11 +68,25 @@ export default defineTool({
     } catch {
       /* best-effort — directory wiring never blocks the join itself */
     }
+    // WI-38343: forward the caller's VERIFIED owner-device binding. `joinHiveAsView`
+    // stamps (hive_pubkey, owner_device_pubkey) onto the registry view, which is the
+    // DETERMINISTIC leg the substrate's owner-bootstrap admit resolves from in every
+    // process (hive-membership-store.ts leg 0 / Brief-3). Without it this join-BY-ID
+    // path had no source at all: `opts.ownerDevicePubkey` was never supplied, a
+    // join-by-id caller's member links don't carry the binding, and the local-directory
+    // fallback is empty on a fresh joiner — so the view went unstamped and admission
+    // fell back on directory TIMING, the exact race Brief-3 removed. Live-reproduced on
+    // the 2-machine gate rig: `owner-resolve → ownerDevice=<null>` on the joiner, the
+    // owner's announce conclusively rejected `binding_invalid`, and because announces
+    // are never re-delivered the A→B stall is PERMANENT (0 pot_members, never converged).
     const res = await joinHiveAsView({
       potId,
       ...(typeof body.title === 'string' && body.title.trim() ? { title: body.title.trim() } : {}),
       ...(typeof body.hivePubkey === 'string' && body.hivePubkey.trim()
         ? { hivePubkey: body.hivePubkey.trim() }
+        : {}),
+      ...(typeof body.ownerDevicePubkey === 'string' && body.ownerDevicePubkey.trim()
+        ? { ownerDevicePubkey: body.ownerDevicePubkey.trim() }
         : {}),
       memberLinks,
       workspaceId,

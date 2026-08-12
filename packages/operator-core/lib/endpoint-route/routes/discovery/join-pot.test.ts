@@ -117,6 +117,45 @@ describe('POST /api/discovery/join-pot (Gap 9)', () => {
     expect(joinHiveAsView.mock.calls[0][0]).toMatchObject({ hivePubkey: 'pubkey==' });
   });
 
+  // WI-38343: the owner-device binding is what the substrate's owner-bootstrap
+  // admit resolves from (hive-membership-store leg 0 / Brief-3, the DETERMINISTIC
+  // leg). This join-BY-ID route never forwarded one, and a join-by-id caller has
+  // no other source: its member links need not carry the binding, and the
+  // local-directory fallback is empty on a fresh joiner. Live-reproduced on the
+  // 2-machine gate rig — `owner-resolve → ownerDevice=<null>` on the joiner, the
+  // owner's announce conclusively rejected `binding_invalid`, and since announces
+  // are never re-delivered the A→B stall is PERMANENT (0 pot_members).
+  describe('owner-device binding (WI-38343)', () => {
+    it('forwards an optional ownerDevicePubkey so the joiner can stamp the binding without directory timing', async () => {
+      await post({ potId: 'acme', ownerDevicePubkey: '  ownerdev==  ', memberLinks: [LINK] });
+      expect(joinHiveAsView.mock.calls[0][0]).toMatchObject({ ownerDevicePubkey: 'ownerdev==' });
+    });
+
+    it.each([
+      ['blank', '   '],
+      ['empty', ''],
+      ['non-string', 42],
+    ])('omits a %s ownerDevicePubkey rather than forwarding a junk binding', async (_l, v) => {
+      await post({ potId: 'acme', ownerDevicePubkey: v, memberLinks: [LINK] });
+      expect(joinHiveAsView.mock.calls[0][0]).not.toHaveProperty('ownerDevicePubkey');
+    });
+
+    it('forwards hivePubkey and ownerDevicePubkey together — the pair the owner-bootstrap admit needs', async () => {
+      const { status } = await post({
+        potId: 'shop-hive',
+        hivePubkey: 'HIVEPUB==',
+        ownerDevicePubkey: 'OWNERDEV==',
+        memberLinks: [LINK],
+      });
+      expect(status).toBe(200);
+      expect(joinHiveAsView.mock.calls[0][0]).toMatchObject({
+        potId: 'shop-hive',
+        hivePubkey: 'HIVEPUB==',
+        ownerDevicePubkey: 'OWNERDEV==',
+      });
+    });
+  });
+
   it('accepts the WI-931 offer shape — { potId, memberLinks, hivePubkey } a fresh hive now yields — and forwards it (no 400)', async () => {
     // The memberLinks + hivePubkey the from-repo `created` response now surfaces
     // (hive-publish-from-repo PublishCreatedHiveOutcome) are exactly this route's
