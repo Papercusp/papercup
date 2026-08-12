@@ -480,7 +480,21 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       -- Migration 803 appended parent_id to the engineer_issues VIEW and
       -- ISSUE_COLS now selects it unconditionally. The rig's issue table is a
       -- real fixture, so it needs the nullable text column for that read path.
-      ADD COLUMN IF NOT EXISTS parent_id text;
+      ADD COLUMN IF NOT EXISTS parent_id text,
+      -- Same EI-10579 drift class again: migration 815
+      -- (expose-claim-spec-fields-on-engineer-issues-view) appended the five
+      -- claim-spec columns below to the engineer_issues VIEW and ISSUE_COLS now
+      -- selects them unconditionally, so the rig's REAL engineer_issues table
+      -- 42703'd on every getWorkItem / setWorkItemPriority issue-family probe.
+      -- On the real schema these live on the work_items base table; the rig
+      -- never writes them, they only have to EXIST for the SELECT. Types match
+      -- the real columns -- do not "simplify" source_plan_item_ids to text or
+      -- expected_cost_cents to integer.
+      ADD COLUMN IF NOT EXISTS tags jsonb,
+      ADD COLUMN IF NOT EXISTS source_plan_slug text,
+      ADD COLUMN IF NOT EXISTS source_plan_item_ids text[],
+      ADD COLUMN IF NOT EXISTS redundancy integer,
+      ADD COLUMN IF NOT EXISTS expected_cost_cents bigint;
   `);
 
   // WI-1644 (part 4): migration 432 (work-item-completion-integrity, POST-379 —
