@@ -158,6 +158,43 @@ describe('findTopRecipeForWake', () => {
     expect(hit).toBeNull();
   });
 
+  it('skips an entity-bound recipe and falls through to an unbound candidate', async () => {
+    const boundScript =
+      "return await tools.work_items.complete({ id: 'EI-OTHER', completion: { summary: 'done' } });";
+    const hit = await findTopRecipeForWake('close the verified item', {
+      sql: stubSql([
+        { id: 'r-wrong-item', title: 'Close item', script: boundScript, run_count: 1, sim: 0.91 },
+        {
+          id: 'r-unbound',
+          title: 'Read verification state',
+          script: 'return await tools.docs.search({ query: "verification" });',
+          run_count: 4,
+          sim: 0.74,
+        },
+      ]),
+      embedder: okEmbedder,
+    });
+    expect(hit).toEqual({
+      id: 'r-unbound',
+      title: 'Read verification state',
+      runCount: 4,
+      sim: 0.74,
+    });
+  });
+
+  it('returns null when every candidate clearing the floor is entity-bound', async () => {
+    const boundScript =
+      "return await tools.work_items.claim({ id: 'EI-OTHER', harness: 'papercusp' });";
+    expect(
+      await findTopRecipeForWake('claim the next item', {
+        sql: stubSql([
+          { id: 'r-bound', title: 'Claim item', script: boundScript, run_count: 1, sim: 0.88 },
+        ]),
+        embedder: okEmbedder,
+      }),
+    ).toBeNull();
+  });
+
   it('does not walk past a candidate that misses the floor even if a later row would resolve', async () => {
     const unresolvedScript = 'return await tools.call("dev:pg_query", { sql: "SELECT 1" });';
     const hit = await findTopRecipeForWake('do the thing', {

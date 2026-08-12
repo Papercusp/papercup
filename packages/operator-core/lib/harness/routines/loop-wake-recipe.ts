@@ -75,8 +75,8 @@ export interface FindTopRecipeDeps {
 }
 
 /** How many cosine-ranked candidates to consider before giving up — lets the
- *  authority-unresolved skip (WI-4946) fall through to the next-best hit
- *  instead of surfacing a recipe that recipes:run can never execute. */
+ *  authority-unresolved or entity-bound skip fall through to the next-best hit
+ *  instead of surfacing a recipe that recipes:run cannot safely execute here. */
 const CANDIDATE_LIMIT = 5;
 
 /**
@@ -137,13 +137,20 @@ export async function findTopRecipeForWake(
       // ORDER BY cosine distance ⇒ sim is non-increasing across rows — once one
       // row misses the floor, every later row misses it too.
       if (!Number.isFinite(sim) || sim < LOOP_WAKE_RECIPE_SIM_FLOOR) break;
-      let unresolved = false;
+      let unsafeForWake = false;
       try {
-        unresolved = (await deriveRecipeAuthority(row.script ?? '')).unresolved;
+        const authority = await deriveRecipeAuthority(row.script ?? '');
+        // A loop wake carries checkpoint prose, not the authoritative live
+        // fleet/plan/item/resource context required to prove a bound recipe is
+        // reusable for THIS unit. Recommending it by raw cosine alone can point
+        // at a script that claims or completes a different work item. Fail
+        // closed and leave bound recommendations to recipes:search, which does
+        // receive and validate live entity context.
+        unsafeForWake = authority.unresolved || authority.bound;
       } catch {
-        unresolved = true; // fail closed: an unparsable script isn't recommendable either
+        unsafeForWake = true; // fail closed: an unparsable script isn't recommendable either
       }
-      if (unresolved) continue;
+      if (unsafeForWake) continue;
       const runCount = typeof row.run_count === 'number' ? row.run_count : parseInt(row.run_count, 10) || 0;
       return { id: row.id, title: row.title, runCount, sim };
     }
