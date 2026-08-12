@@ -125,10 +125,28 @@ describe('formToSettings', () => {
     expect(r.settings).toEqual({ maxAgents: 3, maxPerFleet: 2 });
   });
 
-  it('refuses a non-numeric ceiling', () => {
+  it('refuses a non-numeric ceiling, and names the one word that IS allowed', () => {
     const r = formToSettings(form({ maxAgents: 'three' }));
     expect(r.settings).toBeNull();
-    expect(r.problems).toEqual(['Max agents must be a whole number.']);
+    expect(r.problems).toHaveLength(1);
+    expect(r.problems[0]).toContain('whole number');
+    // The message has to mention the opt-out, or an owner who wants no ceiling
+    // has no way to discover the word from the error they just triggered.
+    expect(r.problems[0]).toContain('unlimited');
+  });
+
+  it('accepts the unlimited literal as a ceiling value (D-015)', () => {
+    const r = formToSettings(form({ maxAgents: 'unlimited' }));
+    expect(r.problems).toEqual([]);
+    expect(r.settings).toEqual({ maxAgents: 'unlimited' });
+  });
+
+  it('emits NOTHING for a blank ceiling — blank is "defaulted", never "unlimited"', () => {
+    // The two states meet in this one field, so this pins the half that would
+    // otherwise regress silently: a blank field must not serialize as an
+    // opt-out, or every unedited goal would save itself ungoverned.
+    const r = formToSettings(form({ maxAgents: '', maxPerFleet: '' }));
+    expect(r.settings).toBeNull();
   });
 
   it('refuses a zero ceiling, naming what it would do', () => {
@@ -223,9 +241,30 @@ describe('isSettingsDirty', () => {
 });
 
 describe('settingsSummary', () => {
-  it('states an unset ceiling as unlimited rather than omitting it', () => {
-    // The absence of a limit is the thing most worth seeing.
-    expect(settingsSummary(null)).toBe('No agent ceiling');
+  const DEFAULTS = { maxAgents: 12, maxPerFleet: 5 };
+
+  it('states the DEFAULT an unset ceiling resolves to, and marks it as a default', () => {
+    // Before D-015 this line read "No agent ceiling", which was true then and is
+    // a lie now: an unpinned goal is governed. The summary is the only line most
+    // visits read, so a stale reading here is the one that would keep an owner
+    // believing their goal is unbounded when it is not (or vice versa).
+    const s = settingsSummary(null, DEFAULTS);
+    expect(s).toContain('Max 12 agents');
+    expect(s).toContain('default');
+  });
+
+  it('reserves "No agent ceiling" for a DELIBERATE opt-out', () => {
+    expect(settingsSummary({ maxAgents: 'unlimited' }, DEFAULTS)).toContain('No agent ceiling');
+  });
+
+  it('never renders unset and unlimited as the same sentence', () => {
+    expect(settingsSummary(null, DEFAULTS)).not.toBe(settingsSummary({ maxAgents: 'unlimited' }, DEFAULTS));
+  });
+
+  it('says the ceiling is unset — not that it is 12 — when no defaults were shipped', () => {
+    // A pre-D-015 payload carries no defaults. Printing a number here would be
+    // the editor inventing the very value D-011 says it must be told.
+    expect(settingsSummary(null)).toBe('Agent ceiling unset');
   });
 
   it('leads with the ceiling in force', () => {

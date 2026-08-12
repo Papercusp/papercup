@@ -360,6 +360,7 @@ describe('goals.* resolvers against real SQL', () => {
       launchSettings: { maxAgents?: number; defaults?: { model?: string } } | null;
       launchSettingsInvalid: string | null;
       launchSettingsOptions: { agent?: readonly string[] };
+      launchSettingsDefaults: { maxAgents?: number; maxPerFleet?: number } | null;
     };
 
     expect(out.launchSettings).toEqual({ maxAgents: 3, defaults: { model: 'sonnet' } });
@@ -368,6 +369,13 @@ describe('goals.* resolvers against real SQL', () => {
     // the write refuses (D-011). Asserted as non-empty rather than by literal
     // membership: the point is that the list ARRIVES, not what is in it today.
     expect(out.launchSettingsOptions.agent?.length).toBeGreaterThan(0);
+    // Same reasoning one field over (D-015): the editor says "default 12" only
+    // because the server told it 12. If this stops arriving the panel silently
+    // reverts to describing a blank ceiling as nothing-in-force — the exact
+    // misreading the defaults were added to end. Asserted as PRESENT and
+    // positive rather than by value, so tuning the numbers is not a test edit.
+    expect(out.launchSettingsDefaults?.maxAgents).toBeGreaterThan(0);
+    expect(out.launchSettingsDefaults?.maxPerFleet).toBeGreaterThan(0);
   });
 
   it('reports an UNREADABLE settings document instead of rendering it as “none”', async () => {
