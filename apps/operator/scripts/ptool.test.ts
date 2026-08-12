@@ -5,6 +5,7 @@ import {
   printResult,
   PTOOL_CALL_TOOL_TIMEOUT_MS,
   PTOOL_GIT_SYNC_RUN_TIMEOUT_MS,
+  PTOOL_TRUNCATED_RESULT_MESSAGE,
   resultToText,
   sanitizeJsonText,
   shouldPrintRawResult,
@@ -89,9 +90,11 @@ describe('ptool result formatting', () => {
       };
       expect(printResult(result, { raw: true })).toBe(1);
       expect(log).not.toHaveBeenCalled();
-      expect(error).toHaveBeenCalledWith(
-        'ptool: operator result was truncated before a complete JSON payload; narrow the query before piping to jq',
-      );
+      expect(error).toHaveBeenCalledWith(PTOOL_TRUNCATED_RESULT_MESSAGE);
+      expect(PTOOL_TRUNCATED_RESULT_MESSAGE).toContain('may have executed');
+      expect(PTOOL_TRUNCATED_RESULT_MESSAGE).toContain('verify its state before retrying');
+      expect(PTOOL_TRUNCATED_RESULT_MESSAGE).not.toContain('narrow the query');
+      expect(PTOOL_TRUNCATED_RESULT_MESSAGE).not.toContain('jq');
     } finally {
       log.mockRestore();
       error.mockRestore();

@@ -429,6 +429,16 @@ export function resultToText(result, { raw = false } = {}) {
  */
 const RESULT_DOOR_TRUNCATION_RE = /\[result-door:[\s\S]{0,2000}\btruncated\b/i;
 
+/**
+ * A result-door truncation only tells ptool that the operator's reply is not
+ * machine-readable. The tool call may already have executed, which is
+ * especially important for writes: retrying blindly can duplicate a
+ * non-idempotent mutation. Keep the recovery instruction about execution
+ * uncertainty rather than inventing a query/jq pipeline that may not exist.
+ */
+export const PTOOL_TRUNCATED_RESULT_MESSAGE =
+  'ptool: operator reply was truncated before a complete JSON payload; the tool call may have executed — verify its state before retrying.';
+
 function isInvalidTruncatedJson(text) {
   if (!RESULT_DOOR_TRUNCATION_RE.test(text)) return false;
   try {
@@ -722,9 +732,7 @@ export function printResult(result, { raw }) {
     return 1;
   }
   if (raw && isInvalidTruncatedJson(safeText)) {
-    console.error(
-      'ptool: operator result was truncated before a complete JSON payload; narrow the query before piping to jq',
-    );
+    console.error(PTOOL_TRUNCATED_RESULT_MESSAGE);
     return 1;
   }
   console.log(raw ? safeText : prettyText(safeText));
