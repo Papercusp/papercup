@@ -851,8 +851,18 @@ export function mergeCarryRows(opts: {
   /**
    * P-013 — how a supplied row list combines with the carried set.
    *
-   * `'merge'` (DEFAULT at the checkpoint tool boundaries): supplied rows UPSERT onto
-   * the carried set; unmentioned rows survive.
+   * ⚠ THIS FUNCTION DEFAULTS TO `'replace'`. The merge default is a property of the
+   * TOOL BOUNDARY, not of this helper: `loop:checkpoint` and `work_items:checkpoint`
+   * each resolve `rowsMode ?? 'merge'` from their own args and pass the result down
+   * EXPLICITLY. Defaulting here as well would apply that default twice — which is
+   * exactly how it regressed once already: the boundaries kept behaving correctly (so
+   * no live symptom appeared) while every direct caller silently lost replace
+   * semantics, and with them the whole EI-19463731740128181 drop report, since a merge
+   * drops nothing by construction. Callers that want merge must ASK for it.
+   *
+   * `'replace'` (default): the supplied list REPLACES the carried set. Rows the caller
+   * left out are dropped — and named in `droppedWalls`/`droppedChecks`. The only way
+   * to retire a row, and the only mode under which `[]` clears.
    *
    * `'merge'`: supplied rows UPSERT onto the carried set by {@link carryRowKey} —
    * carried rows the caller did not mention SURVIVE. Turns "add one row" from a

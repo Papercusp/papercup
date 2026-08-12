@@ -1203,13 +1203,16 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       });
     });
 
-    it('checks:[] clears the rows explicitly', async () => {
+    // P-013 (EI-20281899810081153) moved the DEFAULT to rowsMode:'merge' on BOTH
+    // checkpoint tools, under which an empty list is a documented NO-OP — the tool says
+    // so in its own `rowsModeNote`. Clearing is therefore an explicit-replace act now.
+    it("checks:[] under rowsMode:'replace' clears the rows explicitly", async () => {
       withPrior(null);
       await one({ id: 'WI-7', checkpoint: 'body', checks: [{ claim: 'X holds', recheck: 'probe X' }] });
       const prior = await lastStored();
 
       withPrior(prior);
-      const r = await one({ id: 'WI-7', checkpoint: 'body', checks: [] });
+      const r = await one({ id: 'WI-7', checkpoint: 'body', checks: [], rowsMode: 'replace' });
       const stored = await lastStored();
       expect(stored).not.toContain('## Checks');
       expect(stored).not.toContain('X holds');
@@ -1360,7 +1363,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       const prior = await lastStored();
 
       withPrior(prior);
-      const r = await one({ id: 'WI-7', checks: [] });
+      const r = await one({ id: 'WI-7', checks: [], rowsMode: 'replace' });
       expect(r.ok).toBe(true);
       const stored = await lastStored();
       expect(stored).toContain('the body worth keeping');
@@ -1442,6 +1445,9 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         const r = (await one({
           id: 'WI-7',
           checks: [{ claim: 'A holds', recheck: 'probe A', verified: 'ran it, holds' }],
+          // Post-P-013 the drop only happens under an EXPLICIT replace — which is
+          // precisely when it still has to be announced.
+          rowsMode: 'replace',
         })) as { ok: boolean; checks: number; checksDropped?: string[]; checksDroppedNote?: string };
 
         expect(r.ok).toBe(true);
@@ -1638,6 +1644,7 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
           const r = (await one({
             id: 'WI-7',
             checks: [{ claim: 'A holds', recheck: 'probe A' }],
+            rowsMode: 'replace',
           })) as { ok: boolean; checks: number; checksDropped?: string[] };
 
           expect(r.ok).toBe(true);
@@ -1704,7 +1711,10 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         const prior = await lastStored();
 
         withPrior(prior);
-        const r = (await one({ id: 'WI-7', checks: [] })) as { ok: boolean; checksDropped?: string[] };
+        const r = (await one({ id: 'WI-7', checks: [], rowsMode: 'replace' })) as {
+          ok: boolean;
+          checksDropped?: string[];
+        };
         expect(r.ok).toBe(true);
         expect(r.checksDropped).toEqual(['A holds']);
       });

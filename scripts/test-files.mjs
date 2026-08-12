@@ -44,6 +44,73 @@ applyWorkerCapEnv({ cores: availableParallelism(), load1: loadavg()[0] });
 const UNIT_CONFIG_RE = /^vitest\.config\.(?:[cm]?[jt]s)$/;
 const INTEGRATION_CONFIG_RE = /^vitest\.integration\.config\.(?:[cm]?[jt]s)$/;
 
+// `release:trace` reports paths relative to the workspace that owns each test, while the
+// root-level `test:file` command is normally invoked with repo-relative paths. Keep the
+// package-relative compatibility lookup deliberately narrow: only concrete npm workspaces
+// declared by the root manifest are candidates, and a path that exists in more than one
+// workspace is refused instead of being routed arbitrarily.
+const workspaceDirsCache = new Map();
+
+function workspaceDirs(root) {
+  const cached = workspaceDirsCache.get(root);
+  if (cached) return cached;
+
+  let patterns;
+  try {
+    const packageJson = JSON.parse(readFileSync(resolve(root, 'package.json'), 'utf8'));
+    patterns = Array.isArray(packageJson.workspaces)
+      ? packageJson.workspaces
+      : packageJson.workspaces?.packages;
+  } catch {
+    patterns = [];
+  }
+  if (!Array.isArray(patterns)) patterns = [];
+
+  const dirs = [];
+  for (const pattern of patterns) {
+    if (typeof pattern !== 'string') continue;
+    if (pattern.endsWith('/*')) {
+      const parent = resolve(root, pattern.slice(0, -2));
+      let entries;
+      try {
+        entries = readdirSync(parent);
+      } catch {
+        continue;
+      }
+      for (const entry of entries) {
+        if (entry.startsWith('.') || !existsSync(resolve(parent, entry, 'package.json'))) continue;
+        dirs.push(resolve(parent, entry));
+      }
+    } else if (existsSync(resolve(root, pattern, 'package.json'))) {
+      dirs.push(resolve(root, pattern));
+    }
+  }
+
+  const result = [...new Set(dirs)];
+  workspaceDirsCache.set(root, result);
+  return result;
+}
+
+function isWithinRoot(candidate, root) {
+  const rootRelative = relative(root, candidate);
+  return rootRelative !== '..' && !rootRelative.startsWith(`..${sep}`) && !isAbsolute(rootRelative);
+}
+
+function resolveRequestedTestFile(file, root) {
+  const direct = resolve(root, file);
+  if (existsSync(direct) || isAbsolute(file) || file.split(/[\\/]/).includes('..')) return direct;
+
+  const candidates = workspaceDirs(root)
+    .map((dir) => resolve(dir, file))
+    .filter((candidate) => isWithinRoot(candidate, root) && existsSync(candidate))
+    .sort();
+  if (candidates.length > 1) {
+    const listed = candidates.map((candidate) => relative(root, candidate)).join(', ');
+    throw new Error(`requested test file is ambiguous across workspaces: ${file} (${listed})`);
+  }
+  return candidates[0] ?? direct;
+}
+
 function configsIn(dir) {
   try {
     return readdirSync(dir).filter((name) => UNIT_CONFIG_RE.test(name) || INTEGRATION_CONFIG_RE.test(name));
@@ -72,7 +139,8 @@ function isVitestPackageDir(dir) {
 }
 
 export function discoverVitestRoute(file, root = REPO_ROOT) {
-  const absolute = resolve(root, file);
+  root = resolve(root);
+  const absolute = resolveRequestedTestFile(file, root);
   if (!existsSync(absolute)) throw new Error(`requested test file does not exist: ${relative(root, absolute)}`);
   const rootRelative = relative(root, absolute);
   if (rootRelative.startsWith(`..${sep}`) || rootRelative === '..' || isAbsolute(rootRelative)) {

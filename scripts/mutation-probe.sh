@@ -74,10 +74,12 @@
 #
 # The guard command runs twice: once against the original file with
 # PAPERCUSP_MUTATION_PHASE=baseline, then against the mutant with
-# PAPERCUSP_MUTATION_PHASE=mutant. A baseline failure is a harness error, not a
-# caught mutant. During the mutant run, exit 1 is the guard-failed/caught
-# convention; every other nonzero exit is treated as a harness error because a
-# shell/test crash must never be reported as falsifiability evidence.
+# PAPERCUSP_MUTATION_PHASE=mutant. PAPERCUSP_MUTATION_PROBE marks both child
+# runs so the shared test-runs reporter can keep deliberate probe outcomes out
+# of the health ledger. A baseline failure is a harness error, not a caught
+# mutant. During the mutant run, exit 1 is the guard-failed/caught convention;
+# every other nonzero exit is treated as a harness error because a shell/test
+# crash must never be reported as falsifiability evidence.
 #
 set -uo pipefail
 
@@ -209,6 +211,11 @@ run_guard() {
   log "running $label: $cmd"
   (
     export PAPERCUSP_MUTATION_PHASE="$phase"
+    # A deliberate baseline/mutant result is falsifiability evidence, not a
+    # measurement of the repository's health. Keep the marker scoped to the
+    # supervised child so it reaches every test process without leaking into
+    # the caller's environment.
+    export PAPERCUSP_MUTATION_PROBE=1
     eval "$cmd"
   ) >"$output" 2>&1 &
   CHILD=$!

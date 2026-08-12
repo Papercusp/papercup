@@ -114,6 +114,21 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     expect(read()).toBe(ORIGINAL);
   });
 
+  it('marks both supervised guard phases so deliberate results stay out of health evidence', () => {
+    const markerLog = join(dir, 'marker.log');
+    const { code } = runProbeIO([
+      '--file',
+      subject,
+      '--mutate',
+      's/beta/BETA/',
+      '--test',
+      `printf '%s=%s\\n' "$PAPERCUSP_MUTATION_PHASE" "$PAPERCUSP_MUTATION_PROBE" >> "${markerLog}"; if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then exit 1; fi; test -f {}`,
+    ]);
+    expect(code).toBe(0);
+    expect(readFileSync(markerLog, 'utf8').trim().split('\n').sort()).toEqual(['baseline=1', 'mutant=1']);
+    expect(read()).toBe(ORIGINAL);
+  });
+
   it('REFUSES a mutation that changed nothing (exit 2) instead of reporting a false weakness', () => {
     // A no-op mutation is the quiet killer of this technique: the "mutant" is
     // identical to the original, so any guard passes and the probe would

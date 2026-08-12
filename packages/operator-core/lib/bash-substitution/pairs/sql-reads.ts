@@ -37,6 +37,8 @@ import {
   testRunsCallFromQuery,
   issuesListCallFromQuery,
   gateHealthCallFromQuery,
+  workItemsGetCallFromQuery,
+  workItemsListCallFromQuery,
 } from './sql-reads-helpers';
 import type { CoverageResult, SqlSubstitutionPair } from '../types';
 
@@ -326,10 +328,18 @@ export const testRunsHistory: SqlSubstitutionPair = {
  *
  * So the pair claims only what the verb genuinely serves — a text search (`q`,
  * over title+body) and the typed state/assignee/scope/severity slices — and the
- * by-id remainder is left to SQL rather than mis-routed. `work_items:get { id }`
- * covers the ORDINARY fields of a single item and is the better call for those,
- * but it does not surface the terminal/authority columns those queries exist to
- * read, so it is named in the caveat rather than claimed as an equivalence.
+ * by-id remainder is left to SQL rather than mis-routed by THIS pair.
+ *
+ * ⚠ CORRECTION (EI-20285223214931386, 2026-08-12). This comment used to end:
+ * "`work_items:get { id }` covers the ORDINARY fields of a single item … but it
+ * does not surface the terminal/authority columns those queries exist to read."
+ * That is FALSE. Measured on closed item EI-20285616516435031, `work_items:get`
+ * returns `terminalOwner`, `terminalCompletionRef`, `terminalCompletionEvidence`
+ * and `completionAuthority` populated (a CLOSED item was used deliberately — on
+ * an open row those fields are null, and a null cannot tell you whether a field
+ * is projected at all). The by-id forensic read IS servable, and that one wrong
+ * premise is what made the largest cluster on the box look unroutable for as
+ * long as it stood. It is now claimed by `sql.work-items-by-id` below.
  *
  * A `state IN (…)` / `state NOT IN (…)` predicate is excluded too: `state` is a
  * single enum arg here, and the corpus's "everything not terminal" queries need
@@ -437,6 +447,161 @@ export const gateHealthRead: SqlSubstitutionPair = {
   },
 };
 
+/**
+ * The WHERE clause alone, so a `payload->` PREDICATE can be told apart from a
+ * `payload->` PROJECTION. The distinction is the difference between a question
+ * the verb cannot ask and a column it simply returns, and a regex over the whole
+ * atom cannot see it: `(payload->'_completionEvidence' IS NOT NULL) AS has_evidence`
+ * is a projection, and `WHERE payload->>'lane' = 'observation'` is a filter.
+ */
+function whereClauseOf(atom: string): string {
+  return /\bwhere\b([\s\S]*?)(?:\bgroup\s+by\b|\border\s+by\b|\blimit\b|$)/i.exec(atom)?.[1] ?? '';
+}
+
+/** A `payload->…` used as a FILTER (not merely projected). */
+function hasPayloadPredicate(atom: string): boolean {
+  return /\bpayload\s*(?:->>?|\?)/i.test(whereClauseOf(atom));
+}
+
+/**
+ * P-009 follow-on (EI-20285223214931386) — the BY-ID read of a single work item:
+ * `SELECT feature_id, status, taken_by, terminal_owner, authority FROM
+ * harness_shared.work_items WHERE workspace_id='…' AND feature_id='EI-…'`.
+ *
+ * `work_items` is the largest uncovered cluster the P-008 census measured on its
+ * FIRST live run — i.e. the audit found something real on day one, which is the
+ * point of it.
+ *
+ * ── WHY THIS IS CLASS C, NOT CLASS A ────────────────────────────────────────
+ * Both verbs have existed all along. What never existed was the ROUTING ROW, and
+ * the same document that lacked it carried a HAND-WRITTEN row pointing at
+ * `work_items:list` — so CLAUDE.md advised a route the PreToolUse gate knew
+ * nothing about, while the census correctly reported the relation uncovered.
+ * Capability and reachability are separate failures; closing the first is what
+ * makes it easy to believe you have closed the second.
+ *
+ * ── THE CORRECTION THIS PAIR CARRIES ────────────────────────────────────────
+ * `engineerIssuesSearch` above states that `work_items:get { id }` "does not
+ * surface the terminal/authority columns those queries exist to read". Measured
+ * false on closed item EI-20285616516435031: `terminalOwner`,
+ * `completionAuthority:'committed'` and `closedAt` all come back populated. That
+ * single wrong premise is what made the dominant cluster look unservable.
+ */
+export const workItemsById: SqlSubstitutionPair = {
+  id: 'sql.work-items-by-id',
+  intentLabel: 'work-item-by-id',
+  corpus: 'sql',
+  relation: 'work_items',
+  // Requires an id predicate; the search pair below forbids one, so the two
+  // partition this relation's traffic rather than competing for it.
+  // The `where…payload->` lookahead excludes a payload PREDICATE while still
+  // claiming a payload PROJECTION — the verb returns the whole payload at
+  // payloadTier:'full', so projecting one is served and filtering on one is not.
+  // D-008 sets the bar at 100% coverage, so an atom `cover()` must refuse is one
+  // this shape may not claim in the first place.
+  sqlShape:
+    /^(?!.*\bjoin\b)(?!.*\b(?:count|sum|avg|min|max)\s*\()(?!.*\bgroup\s+by\b)(?!.*\bsource_plan_slug\b)(?!.*\bwhere\b[\s\S]*\bpayload\s*(?:->|->>|\?))(?=.*\b(?:feature_id|id)\s*(?:=\s*'|in\s*\())/is,
+  toolName: 'work_items:get',
+  advisoryText:
+    "work_items:get { id } — or { ids: [...] } for up to 100 at once — returns the whole row: state, assignee, severity, kind, parent, createdAt/updatedAt/closedAt AND the forensic columns (terminalOwner, terminalCompletionRef, terminalCompletionEvidence, completionAuthority), plus the holder, checkpoint and priorWork warnings raw SQL cannot show you. ⚠ The DEFAULT tier DROPS `payload` and `summary`; pass payloadTier:'full' for those (framework-reserved, so a schema-validating client sends it via tools:invoke). A `payload->` PREDICATE, a `source_plan_slug` slice, an aggregate or a JOIN still wants SQL.",
+  routing: {
+    want: 'one work-item (or up to 100) by id, including its terminal/authority columns',
+    use: '`work_items:get { id }` / `{ ids: [...] }` — whole row incl. terminalOwner, completionAuthority, plus holder + checkpoint; add payloadTier:"full" for payload/summary',
+    insteadOf:
+      "a hand-written `SELECT … FROM work_items WHERE feature_id='EI-…'`. ⚠ `payload->` PREDICATES, `source_plan_slug` slices, aggregates and JOINs stay SQL",
+  },
+  expectedVerdict: 'equivalent',
+  cover(atom: string): CoverageResult {
+    if (hasPayloadPredicate(atom)) {
+      // The id already selects the row, so `get` would return one the SQL's
+      // extra predicate may have filtered OUT — a superset, and a misleading one.
+      return { covered: false, reason: 'filters on a payload-> path; work_items:get selects by id only' };
+    }
+    const call = workItemsGetCallFromQuery(atom);
+    if (!call) return { covered: false, reason: 'no id literal to translate (or more ids than the 100-per-call ceiling)' };
+    return { covered: true, expression: call };
+  },
+};
+
+/**
+ * The SEARCH / SLICE read: finding work-items by title text, state, kind or
+ * assignee — the shape CLAUDE.md's hand-written storage-policy row has pointed at
+ * `work_items:list` all along without the gate ever knowing.
+ *
+ * ⚠ The translation ALWAYS emits `includeObservations: true`. `work_items:list`
+ * excludes `payload.lane:'observation'` rows by default (D-005) — ~2,700 of them
+ * — while the raw SELECT it replaces returns them. Without the flag the rendered
+ * call answers with FEWER rows than the query asked for: a silent narrowing, the
+ * over-claim D-006 exists to forbid.
+ */
+export const workItemsSearch: SqlSubstitutionPair = {
+  id: 'sql.work-items-search',
+  intentLabel: 'work-item-search',
+  corpus: 'sql',
+  relation: 'work_items',
+  // Excluded because the verb cannot ASK them, not because they render awkwardly:
+  // a TIME predicate (no time-window arg — translating without it would WIDEN the
+  // answer), `source_plan_slug` (no arg at all), and an id predicate (that is the
+  // by-id pair above, and `list` has no id filter).
+  // Four further exclusions, each a question the verb cannot ASK — and three of
+  // the four were found by READING the rendered calls, not by any coverage count:
+  //  - an OR of several text fragments (`q` is one substring per call) — 9 of the
+  //    first 20 sampled atoms, every one silently flattened to its first fragment;
+  //  - a `lane` predicate (there is an include-observations BOOLEAN, no lane filter);
+  //  - a `payload->` predicate (no payload filter);
+  //  - an `item_kind IN (…)` list (`kind` takes one value per call).
+  sqlShape:
+    /^(?!.*\bjoin\b)(?!.*\b(?:count|sum|avg|min|max)\s*\()(?!.*\bgroup\s+by\b)(?!.*\bsource_plan_slug\b)(?!.*\b(?:feature_id|id)\s*(?:=\s*'|in\s*\())(?!.*\b(?:created_at|updated_at|closed_at|created_ts|updated_ts|closed_ts)\s*[<>])(?!.*\bwhere\b[\s\S]*\bpayload\s*(?:->|->>|\?))(?!.*\blane\s*(?:=|<>|!=|\s+in\s*\())(?!.*\bitem_kind\s+in\s*\()(?!.*\b(?:title|summary)\s+i?like\s*'[^']*'[\s\S]*\bor\b[\s\S]*\b(?:title|summary)\s+i?like\s*')(?=.*\b(?:title\s+i?like|summary\s+i?like|status\s*=\s*'|state\s*=\s*'|item_kind\s*=\s*'|taken_by\s*=\s*'|assignee\s*=\s*'|(?:completion_)?authority\s*=\s*'))/is,
+  toolName: 'work_items:list',
+  advisoryText:
+    "work_items:list { q, state, kind, assignee, harness, completionAuthority, limit } reads a filtered slice with server-side filters. ⚠ `q` is a literal substring over title AND body/summary, so a title-only ILIKE routes to a SUPERSET. ⚠ It EXCLUDES observation-lane rows by default — pass includeObservations:true to match what a raw SELECT returns. No id filter (that is work_items:get), no time-window arg and no source_plan_slug filter, so a created_at slice, a plan-slug slice, a kind IN-list, a payload-> predicate, an aggregate or a JOIN still wants SQL.",
+  routing: {
+    want: 'a filtered work-item / issue slice by text, state, kind or assignee',
+    use: '`work_items:list { q, state, kind, assignee, limit }` — add includeObservations:true to match a raw SELECT, and completionAuthority to list under-evidenced closes',
+    insteadOf:
+      "`SELECT … FROM work_items WHERE title ILIKE '%x%'`. ⚠ `q` spans title AND summary (a superset); no id, time-window or source_plan_slug filter, so those slices, kind IN-lists, payload-> predicates, aggregates and JOINs stay SQL",
+  },
+  expectedVerdict: 'equivalent',
+  cover(atom: string): CoverageResult {
+    if (hasPayloadPredicate(atom)) {
+      return { covered: false, reason: 'filters on a payload-> path; work_items:list has no payload filter' };
+    }
+    // ⚠ Found by READING the rendered calls, not by the coverage count. The
+    // corpus shape is `WHERE lane = 'observation'` — asking for ONLY observation
+    // rows. `includeObservations` is a boolean that ADDS them to the ordinary
+    // backlog; there is no observations-only mode, so every rendering of this
+    // shape is wrong in one direction or the other (omit the flag → none of the
+    // rows asked for; pass it → the backlog as well). Not servable, so not claimed.
+    if (/\blane\s*(?:=|<>|!=|\s+in\s*\()/i.test(whereClauseOf(atom))) {
+      return { covered: false, reason: 'filters by lane; work_items:list has an include-observations boolean, not a lane filter' };
+    }
+    // ⚠ Also found by reading: 9 of 20 sampled atoms OR several text fragments
+    // together. `q` is ONE substring per call, so rendering the first fragment
+    // answers a strictly narrower question than the one asked — the same silent
+    // narrowing recorded in fact `substitution-pair-narrowing-over-claim`, and
+    // the reason `engineerIssuesSearch` carries this identical guard.
+    if (/\b(?:title|summary)\s+i?like\s*'[^']*'[\s\S]*\bor\b[\s\S]*\b(?:title|summary)\s+i?like\s*'/i.test(atom)) {
+      return { covered: false, reason: 'ORs several text fragments; `q` is one substring per call' };
+    }
+    if (inListCount(atom, 'item_kind') > 1) {
+      return { covered: false, reason: 'an IN-list of kinds; `kind` takes one value per call' };
+    }
+    const call = workItemsListCallFromQuery(atom);
+    if (!call) return { covered: false, reason: 'no text fragment or typed slice to translate into work_items:list args' };
+    if (/\btitle\s+i?like/i.test(atom) && !/\bsummary\s+i?like/i.test(atom)) {
+      // A superset is acceptable only when the reader can SEE that it is one.
+      return { covered: true, expression: `${call} // q matches title AND summary — a superset of a title-only ILIKE` };
+    }
+    return { covered: true, expression: call };
+  },
+};
+
+/** Count of `'literal'` entries in an `IN ( … )` list for `column`. */
+function inListCount(atom: string, column: string): number {
+  const list = new RegExp(String.raw`\b${column}\s+in\s*\(([^)]*)\)`, 'i').exec(atom)?.[1];
+  return list ? [...list.matchAll(/'([^']+)'/g)].length : 0;
+}
+
 export const SQL_READ_PAIRS: SqlSubstitutionPair[] = [
   informationSchemaColumns,
   informationSchemaTables,
@@ -444,4 +609,6 @@ export const SQL_READ_PAIRS: SqlSubstitutionPair[] = [
   testRunsHistory,
   engineerIssuesSearch,
   gateHealthRead,
+  workItemsById,
+  workItemsSearch,
 ];

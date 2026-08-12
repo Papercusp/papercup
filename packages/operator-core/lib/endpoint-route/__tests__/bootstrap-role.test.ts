@@ -530,7 +530,16 @@ describe('bootstrap-role — P-013/D-022 retired-tier gate (the psu --role conso
     expect(res.status).toBe(403);
     const json = await res.json();
     expect(json.code).toBe('mug_kettle_retired');
-    expect(json.flag).toBe('papercusp-mug-kettle-system');
+    // WI-38263: the refusal used to carry `flag: 'papercusp-mug-kettle-system'` and tell the
+    // caller to "flip the flag ON in /admin/features". P-068 DELETED that flag, so the
+    // prescribed remedy could not be followed — the door named a control that does not exist.
+    // Asserting the old field made this test CERTIFY the drift, so the test moved, not the code.
+    expect(json.retired).toBe('permanent');
+    expect(json.flag).toBeUndefined();
+    // A binding needle, not a shape check: the refusal must never again prescribe an
+    // impossible remedy. This fails if anyone reintroduces flip-the-flag wording here.
+    expect(String(json.error)).not.toMatch(/flip the flag|re-enable the tier|\/admin\/features/i);
+    expect(String(json.error)).toMatch(/no longer a flag to flip/i);
     // Refused BEFORE any launch work — no spec built, no session recorded.
     expect(buildRoleLaunchSpecMock).not.toHaveBeenCalled();
     expect(recordAdvSessionMock).not.toHaveBeenCalled();

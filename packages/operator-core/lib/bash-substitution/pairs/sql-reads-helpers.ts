@@ -417,11 +417,17 @@ export function workItemsGetCallFromQuery(atom: string): string | null {
   const harness = literalAfter(atom, 'harness_slug');
   if (harness) args.push(['harness', JSON.stringify(harness)]);
 
-  // A `payload->` projection is served, but ONLY at the full payload tier: the
+  // A payload/summary read is served, but ONLY at the full payload tier: the
   // default (trimmed) tier DROPS `workItem.payload` and `workItem.summary`, so
-  // rendering the bare call for a query that reads a payload path would hand back
-  // a row missing the very field the query exists to read.
-  if (/\bpayload\s*(?:->|->>|\?)/i.test(atom) || /\bsummary\b/i.test(atom)) {
+  // rendering the bare call for a query that reads either would hand back a row
+  // missing the very field the query exists to read.
+  //
+  // ⚠ Match `payload` ANYWHERE, not just `payload->`. Caught by reading the
+  // rendered calls: `SELECT jsonb_object_keys(payload) … WHERE feature_id='…'`
+  // reads the payload through a function call with no arrow in it, so an
+  // arrow-anchored test silently emitted the trimmed call for a query whose
+  // entire purpose was the payload.
+  if (/\bpayload\b/i.test(atom) || /\bsummary\b/i.test(atom)) {
     args.push(['payloadTier', JSON.stringify('full')]);
   }
 
@@ -477,10 +483,17 @@ export function workItemsListCallFromQuery(atom: string): string | null {
 
   if (args.length === 0) return null;
 
-  // See the banner: the default EXCLUDES observation-lane rows that the raw
-  // SELECT returns. Only a query that already excludes them may omit the flag.
-  const excludesObservations = /\blane\b[^,)]*'observation'|payload\s*->>?\s*'lane'/i.test(atom);
-  if (!excludesObservations) args.push(['includeObservations', 'true']);
+  // See the banner. This flag is UNCONDITIONAL: the raw SELECT being replaced
+  // returns observation-lane rows and the verb's default drops them.
+  //
+  // ⚠ An earlier version omitted the flag whenever the query mentioned `lane`,
+  // reasoning that such a query "already handles observations". That was exactly
+  // backwards for the shape the corpus actually contains — `WHERE lane =
+  // 'observation'` asks for ONLY observations, so omitting the flag rendered a
+  // call returning NONE of them. `cover()` now refuses a lane predicate outright
+  // (the verb has an include/exclude boolean, not a lane filter), which is why
+  // there is no longer a case in which omitting this flag is correct.
+  args.push(['includeObservations', 'true']);
 
   const limit = limitOf(atom);
   if (limit !== null) args.push(['limit', String(limit)]);

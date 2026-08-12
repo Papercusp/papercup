@@ -304,9 +304,10 @@ export function planCanarySlaCheck(
 async function canaryTierRetired(label: string): Promise<boolean> {
   if (await mugKettleSystemEnabled()) return false;
   console.log(
-    `[${label}] mug/kettle/cup tier is RETIRED (flag papercusp-mug-kettle-system is OFF) — ` +
+    `[${label}] mug/kettle/cup tier is RETIRED, permanently — ` +
       `skipping: this canary measures whether a CUP carries queued work end-to-end, and no cup can spawn, ` +
-      `so every verdict would be a false alarm. Flip the flag ON to restore the detector.`,
+      `so every verdict would be a false alarm. This detector is NOT restorable: the escape hatch ` +
+      `(papercusp-mug-kettle-system) was deleted in P-068, so reviving it means measuring a different subject.`,
   );
   return true;
 }

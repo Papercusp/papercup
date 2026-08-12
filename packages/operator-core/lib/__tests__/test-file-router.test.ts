@@ -37,6 +37,34 @@ describe('test-files router', () => {
     expect(route.requested).toBe('src/strict-args.test.ts');
   });
 
+  it('resolves a release-trace package-relative path to its unique owning workspace', () => {
+    const route = discoverVitestRoute('lib/__tests__/check-lint-guard-reachability.test.ts');
+    expect(route.absolute).toBe(resolve(REPO_ROOT, 'packages/operator-core/lib/__tests__/check-lint-guard-reachability.test.ts'));
+    expect(route.cwd).toBe(resolve(REPO_ROOT, 'packages/operator-core'));
+    expect(route.config).toBe('vitest.config.ts');
+    expect(route.requested).toBe('lib/__tests__/check-lint-guard-reachability.test.ts');
+  });
+
+  it('refuses an ambiguous package-relative path instead of choosing a workspace arbitrarily', () => {
+    const root = mkdtempSync(join(tmpdir(), 'test-file-router-workspaces-'));
+    try {
+      writeFileSync(join(root, 'package.json'), JSON.stringify({ workspaces: ['packages/*'] }));
+      for (const name of ['first', 'second']) {
+        const dir = join(root, 'packages', name);
+        mkdirSync(join(dir, 'lib'), { recursive: true });
+        writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: `@fixture/${name}` }));
+        writeFileSync(join(dir, 'vitest.config.ts'), 'export default {};\n');
+        writeFileSync(join(dir, 'lib', 'same.test.ts'), '');
+      }
+
+      expect(() => discoverVitestRoute('lib/same.test.ts', root)).toThrow(
+        /ambiguous across workspaces.*packages\/first.*packages\/second/,
+      );
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
   // EI-18822211427354845: every group used to receive the SAME `--outputFile`, so each
   // group's report overwrote the previous one and only the last survived — the caller
   // then reported one group as the whole run (`failed:0, failures:[]` for a red tree).

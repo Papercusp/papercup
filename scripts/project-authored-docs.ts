@@ -131,6 +131,15 @@ interface DocRow {
   content: string;
   content_hash: string;
   content_mode: string;
+  /**
+   * Lifecycle marker (migration 814). NULL = live; non-NULL = deliberately removed.
+   *
+   * Before this column existed, liveness was inferred from FILE PRESENCE — every mode
+   * below intersects rows with `listCorpusDocs()`, so a row with no file was silently
+   * treated as deleted. That inference is unavailable to `--materialize`, whose whole
+   * job is to run where no files exist yet, which is why the column had to come first.
+   */
+  retired_at: string | null;
 }
 
 async function connect(): Promise<{ query: (q: string, v?: unknown[]) => Promise<{ rows: DocRow[] }>; end: () => Promise<void> }> {
@@ -151,7 +160,7 @@ export async function readAuthoredRows(
 ): Promise<Map<string, DocRow>> {
   const scoped = section !== null;
   const { rows } = await client.query(
-    `SELECT doc_id, content, content_hash, content_mode
+    `SELECT doc_id, content, content_hash, content_mode, retired_at
        FROM harness_shared.harness_docs
       WHERE workspace_id = $1 AND harness_slug = $2
         AND content_mode = 'authored'${scoped ? ' AND doc_id LIKE $3' : ''}
@@ -182,6 +191,30 @@ export async function writeContent(
   );
 }
 
+/**
+ * Mark a row retired (soft delete — `content` is deliberately kept, so the doc stays
+ * searchable and recoverable). Idempotent: a row already retired keeps its ORIGINAL
+ * timestamp and reason, so re-running the backfill can never rewrite history or make a
+ * long-dead doc look freshly removed.
+ */
+export async function retireRow(
+  client: { query: (q: string, v?: unknown[]) => Promise<unknown> },
+  docId: string,
+  reason: string,
+): Promise<void> {
+  await client.query(
+    `UPDATE harness_shared.harness_docs
+        SET retired_at = now(), retired_reason = $4, updated_at = now()
+      WHERE workspace_id = $1 AND harness_slug = $2 AND doc_id = $3
+        AND retired_at IS NULL`,
+    [WORKSPACE_ID, HARNESS_SLUG, docId, reason],
+  );
+}
+
+/** The reason recorded by the one-time `--retire-orphans` backfill. */
+export const BACKFILL_RETIRE_REASON =
+  'backfill (P-009, migration 814): no file on disk while the working tree was still the liveness oracle';
+
 const fmt = (n: number): string => n.toLocaleString('en-US');
 
 async function main(): Promise<number> {
@@ -190,9 +223,20 @@ async function main(): Promise<number> {
   const ingest = argv.includes('--ingest');
   const reconcile = argv.includes('--reconcile');
   const check = argv.includes('--check');
+  const retireOrphans = argv.includes('--retire-orphans');
+  const materialize = argv.includes('--materialize');
+  const outArg = argv.find((a) => a.startsWith('--out='))?.slice('--out='.length) ?? null;
 
   if (write && ingest) {
     console.error('✗ --write and --ingest are opposite directions; run them separately.');
+    return 2;
+  }
+  if ([write, ingest, retireOrphans, materialize].filter(Boolean).length > 1) {
+    console.error('✗ --write / --ingest / --retire-orphans / --materialize are separate modes; run one at a time.');
+    return 2;
+  }
+  if (outArg !== null && !materialize) {
+    console.error('✗ --out= only applies to --materialize.');
     return 2;
   }
 
@@ -221,7 +265,13 @@ async function main(): Promise<number> {
   try {
     client = await connect();
   } catch (err) {
-    if (!write && !ingest) {
+    // `--retire-orphans` and `--materialize` are held to the SAME rule as --write/--ingest,
+    // for the same reason: both mutate (rows, and the tree). A materialize that silently
+    // no-ops because PG was unreachable is the worst failure of the set — today it leaves
+    // the committed corpus in place and looks fine, but once P-009's untracking lands the
+    // same silent skip produces an EMPTY docs site from a build that exited 0. A caller who
+    // genuinely wants the fall-back-to-committed-files behaviour must choose it explicitly.
+    if (!write && !ingest && !retireOrphans && !materialize) {
       console.log(
         `project-authored-docs: SKIPPED — Postgres unreachable, so corpus drift cannot be measured here.\n` +
           `  This is NOT a pass: nothing was checked. Re-run where the operator DB is reachable.\n` +

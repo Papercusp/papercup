@@ -129,14 +129,18 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect((tool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });
 
-  it('documents the destructive default and the additive rowsMode escape hatch', () => {
+  // The default flipped to merge (see the P-013 block below), so what the tool must
+  // document flipped with it: the preserving default, and the explicit REPLACE that is
+  // now the only way to retire a row. An agent that cannot find the retirement path in
+  // the description has no way to drop a stale check at all.
+  it('documents the preserving default and the explicit rowsMode retirement path', () => {
     const description = (tool as unknown as { description?: string }).description ?? '';
     const guidance = (tool as unknown as { guidance?: { when?: string } }).guidance?.when ?? '';
     expect(description).toContain("rowsMode:'replace'");
     expect(description).toContain("rowsMode:'merge'");
     expect(description).toMatch(/empty list with replace/i);
-    expect(guidance).toContain("rowsMode:'merge'");
-    expect(guidance).toMatch(/default replace mode drops omitted rows/i);
+    expect(guidance).toContain("rowsMode:'replace'");
+    expect(guidance).toMatch(/default merge mode preserves them/i);
   });
 
   it('guides cold-carry authors to anchor owner directives and completed actions', () => {
@@ -381,10 +385,13 @@ describe('loop:checkpoint — the P-006 walls merge (commitments cleared explici
     expect(written).not.toContain('old next step');
   });
 
-  it('walls:[] is the one true clear — with a blank note the whole row clears', async () => {
+  // Post-P-013 the empty list is a NO-OP under the merge default (the tool says so in
+  // its own rowsModeNote), so the clear has to be asked for: replace + []. That is the
+  // point of the change — a commitment can no longer be cleared incidentally.
+  it("walls:[] under rowsMode:'replace' is the one true clear — with a blank note the whole row clears", async () => {
     getLoopCarryNote.mockResolvedValue(PRIOR_WITH_WALL);
     setLoopCarryNote.mockResolvedValue(null);
-    const b = body(await call({ note: '', walls: [] }));
+    const b = body(await call({ note: '', walls: [], rowsMode: 'replace' }));
     expect(setLoopCarryNote).toHaveBeenCalledWith(expect.anything(), '');
     expect(b).toMatchObject({ ok: true, cleared: true, walls: 0 });
   });
@@ -400,9 +407,9 @@ describe('loop:checkpoint — the P-006 walls merge (commitments cleared explici
     expect(written).toContain('- capital arming pending owner decision (since ');
   });
 
-  it('a walls-ONLY write keeps the prior narrative body and replaces the walls set', async () => {
+  it("a walls-ONLY write keeps the prior narrative body and, under rowsMode:'replace', replaces the walls set", async () => {
     getLoopCarryNote.mockResolvedValue(PRIOR_WITH_WALL);
-    const b = body(await call({ walls: [{ claim: 'new wall', recheck: 'check-it' }] }));
+    const b = body(await call({ walls: [{ claim: 'new wall', recheck: 'check-it' }], rowsMode: 'replace' }));
     const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
     expect(written).toContain('## Next action\nold next step'); // body carried forward
     expect(written).toContain('- new wall — re-check: check-it');
@@ -761,7 +768,10 @@ describe('loop:checkpoint — a dropped row is REPORTED, never silent (EI-194637
         { claim: 'deploy landed', recheck: 'curl :3070/api/health' },
       ]),
     );
-    const b = body(await call({ did: 'progress', checks: [{ claim: 'a brand new claim' }] }));
+    // Post-P-013 the drop only happens under an EXPLICIT replace — which is exactly when
+    // it still has to be announced: an agent that asked to retire one stale row must be
+    // told which others went with it.
+    const b = body(await call({ did: 'progress', checks: [{ claim: 'a brand new claim' }], rowsMode: 'replace' }));
 
     expect(b.ok).toBe(true); // the write SUCCEEDS — this reports a loss, never a refusal
     expect(b.checks).toBe(1);
@@ -773,7 +783,9 @@ describe('loop:checkpoint — a dropped row is REPORTED, never silent (EI-194637
     getLoopCarryNote.mockResolvedValue(
       buildPrior([], [{ claim: 'owner must ratify the cutover' }, { claim: 'awaiting capital arming' }]),
     );
-    const b = body(await call({ did: 'progress', walls: [{ claim: 'awaiting capital arming' }] }));
+    const b = body(
+      await call({ did: 'progress', walls: [{ claim: 'awaiting capital arming' }], rowsMode: 'replace' }),
+    );
 
     expect(b.walls).toBe(1);
     expect(b.wallsDropped).toEqual(['owner must ratify the cutover']);
@@ -827,15 +839,28 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
     expect(b.rowsMode).toBe('merge');
   });
 
-  it('CONTROL — the identical call WITHOUT rowsMode still drops them (default is unchanged)', async () => {
-    // Guards the default: a regression flipping merge on for everyone would make the
-    // merge test above pass while silently removing the only way to retire a row.
+  // The default is now MERGE (EI-20281899810081153: "rowsMode:'merge' as the default for
+  // additive checks on both checkpoint tools. Explicit rowsMode:'replace' remains the
+  // retirement path"). This pair replaces the old CONTROL, which pinned the opposite —
+  // it asserted the default "is unchanged" and so became the thing that had to change.
+  // Both halves are kept deliberately: one proves the preserving default, the other
+  // proves retirement is still REACHABLE, which is the property that flip could break.
+  it('DEFAULT — the identical call WITHOUT rowsMode now PRESERVES the carried three', async () => {
     getLoopCarryNote.mockResolvedValue(buildPrior(THREE));
     const b = body(await call({ did: 'progress', checks: [{ claim: 'a brand new claim' }] }));
 
+    expect(b.checks).toBe(4);
+    expect(b.checksDropped).toBeUndefined();
+  });
+
+  it("CONTROL — retirement is still reachable: rowsMode:'replace' drops the omitted rows and says so", async () => {
+    // Guards the OTHER direction: a change that made merge unconditional would make the
+    // test above pass while silently removing the only way to retire a stale row.
+    getLoopCarryNote.mockResolvedValue(buildPrior(THREE));
+    const b = body(await call({ did: 'progress', checks: [{ claim: 'a brand new claim' }], rowsMode: 'replace' }));
+
     expect(b.checks).toBe(1);
     expect(b.checksDropped).toHaveLength(3);
-    expect(b.rowsMode).toBeUndefined(); // absent on the default path — reply shape unchanged
   });
 
   it('merges WALLS under the same flag', async () => {

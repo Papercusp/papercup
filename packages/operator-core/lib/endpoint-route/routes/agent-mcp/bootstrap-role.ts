@@ -212,12 +212,13 @@ const post = defineTool({
           {
             status: 'error',
             code: 'mug_kettle_retired',
-            flag: 'papercusp-mug-kettle-system',
+            retired: 'permanent',
             error:
-              `Cannot launch role="${role}" — the Mug/Kettle/Cup tier is RETIRED ` +
-              `(flag papercusp-mug-kettle-system is OFF, which is the delivered state). ` +
+              `Cannot launch role="${role}" — the Mug/Kettle/Cup tier is RETIRED, permanently. ` +
               `Launch an su fleet instead — fleet:launch-on-plan. ` +
-              `To re-enable the tier for testing, flip the flag ON in /admin/features.`,
+              `There is no longer a flag to flip: the reversible escape hatch ` +
+              `(papercusp-mug-kettle-system) was deleted in P-068, which is how that flag ` +
+              `was always specified to graduate.`,
           },
           403,
         );
