@@ -267,18 +267,24 @@ describe('retrying across a holder recycle', () => {
   });
 
   it('aborts an in-flight request when the specific holder disappears', async () => {
-    let holderGone = false;
+    let replacementActive = false;
     let realStarted!: () => void;
     const started = new Promise<void>((resolve) => {
       realStarted = resolve;
     });
     let aborted = false;
-    const sibling = { port: 3271, pid: 4271, startedAt: 1 };
-    const listSiblingsImpl = (async () => (holderGone ? [] : [sibling])) as never;
+    let realCalls = 0;
+    const original = { port: 3271, pid: 4271, startedAt: 1 };
+    const replacement = { port: 3271, pid: 5271, startedAt: 2 };
+    const listSiblingsImpl = (async () => [replacementActive ? replacement : original]) as never;
     const fetchImpl = (async (_url: string, init: { body: string; signal: AbortSignal }) => {
       const body = JSON.parse(init.body) as Record<string, unknown>;
       if (body.probeOnly === true) {
         return { ok: true, status: 200, json: async () => ({ ok: true, booted: true, probeOnly: true }) };
+      }
+      realCalls += 1;
+      if (realCalls > 1) {
+        return { ok: true, status: 200, json: async () => ({ ok: true, appended: true, coversUpTo: 11 }) };
       }
       realStarted();
       return await new Promise<never>((_resolve, reject) => {
@@ -297,15 +303,17 @@ describe('retrying across a holder recycle', () => {
       ...base,
       listSiblingsImpl,
       fetchImpl,
-      retryBudgetMs: 0,
+      retryBudgetMs: 1_000,
+      retryDelayMs: 0,
       holderLivenessIntervalMs: 1,
     });
     await started;
-    holderGone = true;
+    replacementActive = true;
     const out = await request;
 
-    expect(out).toMatchObject({ kind: 'failed', transport: true });
+    expect(out).toMatchObject({ kind: 'produced', port: replacement.port, coversUpTo: 11 });
     expect(aborted).toBe(true);
+    expect(realCalls).toBe(2);
   });
 
   it('CONTROL: the same recycle KILLS the cut when retry is disabled', async () => {

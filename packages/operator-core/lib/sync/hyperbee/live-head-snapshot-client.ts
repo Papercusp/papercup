@@ -309,8 +309,6 @@ export async function waitForLiveOperatorHoldingHive(inp: {
   readonly probeTimeoutMs?: number;
   readonly retryBudgetMs?: number;
   readonly retryDelayMs?: number;
-  /** How often to re-check the discovered holder while the POST is in flight. */
-  readonly holderLivenessIntervalMs?: number;
   readonly fetchImpl?: FetchLike;
   readonly listSiblingsImpl?: typeof listSiblingOperators;
   readonly findHolderImpl?: typeof findLiveOperatorHoldingHive;
@@ -393,6 +391,8 @@ export async function requestLiveOperatorHeadSnapshot(inp: {
   /** Total time to keep re-attempting. 0 disables retry (one shot). */
   readonly retryBudgetMs?: number;
   readonly retryDelayMs?: number;
+  /** How often to re-check the discovered holder while the POST is in flight. */
+  readonly holderLivenessIntervalMs?: number;
   readonly fetchImpl?: FetchLike;
   readonly listSiblingsImpl?: typeof listSiblingOperators;
   readonly sleepImpl?: (ms: number) => Promise<void>;
