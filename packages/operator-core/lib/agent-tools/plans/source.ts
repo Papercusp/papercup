@@ -841,6 +841,53 @@ export async function listPlanRows(
  *  columns only. What `plans:list` renders from (audit P-042). */
 export type PlanIndexRow = Omit<PlanRow, 'content'>;
 
+type PlanIndexFilterOpts = {
+  includeArchived?: boolean;
+  status?: string;
+  limit?: number;
+  includeInstances?: boolean;
+  template?: string;
+  templateSlug?: string;
+  createdSince?: string;
+  updatedSince?: string;
+};
+
+/**
+ * Keep every optional index-list predicate parameterized in the same order.
+ *
+ * The old conditional fragments omitted parameters for unset filters. That
+ * made the same logical `harness_plans` read produce a different SQL text for
+ * each combination of archived/status/instance/recency/limit options, which
+ * fragmented PostgreSQL's plan/statistics cache. Boolean gates let us retain
+ * the existing semantics while binding a stable parameter layout; NULL LIMIT
+ * is PostgreSQL's `LIMIT ALL`.
+ */
+function normalizePlanIndexFilterValues(opts: PlanIndexFilterOpts) {
+  const status = opts.status || null;
+  const template = opts.template || null;
+  const templateSlug = opts.templateSlug || null;
+  const createdSince = opts.createdSince || null;
+  const updatedSince = opts.updatedSince || null;
+
+  return {
+    includeArchived: opts.includeArchived === true,
+    statusActive: status !== null,
+    status,
+    // A templateSlug selector is itself an instance selector, matching the
+    // old conditional fragment's implicit includeInstances behavior.
+    includeInstances: opts.includeInstances === true || templateSlug !== null,
+    templateActive: template !== null,
+    template,
+    templateSlugActive: templateSlug !== null,
+    templateSlug,
+    createdSinceActive: createdSince !== null,
+    createdSince,
+    updatedSinceActive: updatedSince !== null,
+    updatedSince,
+    limit: typeof opts.limit === 'number' && opts.limit > 0 ? opts.limit : null,
+  };
+}
+
 /**
  * Index-only listing: every projection column, never the content blob, with
  * the archived/status filters pushed into SQL and an optional LIMIT
@@ -909,8 +956,7 @@ export async function listPlanIndexRows(
   const { workspaceId, harnessSlug } = await resolvePlanScope(opts);
   try {
     const rows = await withWorkspace(workspaceId, async (tx) => {
-      const archivedFilter = opts.includeArchived ? tx`` : tx`AND archived = false`;
-      const statusFilter = opts.status ? tx`AND status = ${opts.status}` : tx``;
+      const filters = normalizePlanIndexFilterValues(opts);
       // Hide per-run instance plans (Option C, D-003) by default — they are reached
       // via the template's Runs history, not the main plan directory. A templateSlug
       // filter (P-005) is itself an instance selector, so it overrides the hiding.
