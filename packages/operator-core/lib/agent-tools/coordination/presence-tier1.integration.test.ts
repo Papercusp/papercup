@@ -38,8 +38,11 @@ describe('fetchPresenceTier1 (live PG)', () => {
   });
   afterEach(cleanup);
 
-  it('joins claims + active await + wake-mode by ownerId; model null with no spawn', async () => {
-    if (!ready) return;
+  it('joins claims + active await + wake-mode by ownerId; model null with no spawn', async (ctx) => {
+    if (!ready) {
+      ctx.skip();
+      return;
+    }
     const { sql } = getOrgPg();
     await sql`
       INSERT INTO harness_shared.plan_item_claims
@@ -65,8 +68,11 @@ describe('fetchPresenceTier1 (live PG)', () => {
     expect(e!.model).toBeNull(); // no running spawned_agents row for this owner
   });
 
-  it('an unclaimed owner gets empty defaults (no rows, inherits the global default wake mode)', async () => {
-    if (!ready) return;
+  it('an unclaimed owner gets empty defaults (no rows, inherits the global default wake mode)', async (ctx) => {
+    if (!ready) {
+      ctx.skip();
+      return;
+    }
     const map = await fetchPresenceTier1([OWNER]); // nothing seeded for OWNER this case
     const e = map.get(OWNER);
     expect(e).toBeDefined();
@@ -80,8 +86,11 @@ describe('fetchPresenceTier1 (live PG)', () => {
     expect(e!.wakeMode).toBe(await getDefaultWakeMode());
   });
 
-  it('empty ownerIds short-circuits to an empty map', async () => {
-    if (!ready) return;
+  it('empty ownerIds short-circuits to an empty map', async (ctx) => {
+    if (!ready) {
+      ctx.skip();
+      return;
+    }
     expect((await fetchPresenceTier1([])).size).toBe(0);
   });
 
@@ -96,8 +105,11 @@ describe('fetchPresenceTier1 (live PG)', () => {
   // against the PRODUCER can, so the jsonb path, the terminal filter and the ref
   // format are asserted against live PG here.
   // ---------------------------------------------------------------------------
-  it('derives plan-item occupancy from a held work-item stamp, EXCLUDING terminal work', async () => {
-    if (!ready) return;
+  it('derives plan-item occupancy from a held work-item stamp, EXCLUDING terminal work', async (ctx) => {
+    if (!ready) {
+      ctx.skip();
+      return;
+    }
     const { sql } = getOrgPg();
     // Three held work-items: one live+stamped (occupies), one DONE+stamped (does
     // not — the work is finished, so it blocks nobody), one live but unstamped
@@ -127,8 +139,11 @@ describe('fetchPresenceTier1 (live PG)', () => {
     expect(e!.claimedItems).toEqual([]);
   });
 
-  it('OMITS claimedPlanItemRefs entirely when the owner occupies nothing (no empty-array payload cost)', async () => {
-    if (!ready) return;
+  it('OMITS claimedPlanItemRefs entirely when the owner occupies nothing (no empty-array payload cost)', async (ctx) => {
+    if (!ready) {
+      ctx.skip();
+      return;
+    }
     const { sql } = getOrgPg();
     await sql`
       INSERT INTO harness_shared.work_items
