@@ -25,6 +25,8 @@ import {
   readClaimConcurrency,
 } from '../../scheduler/claim-spec-store';
 import { CLAIM_STATES_ALLOWLIST } from '../../work-items';
+import { getBuildInfo } from '../../build-info';
+import { assessClaimFreshness, type ClaimFreshnessVerdict } from '../../work-item-claim-freshness';
 import { holderContextReader, resolveHolderAdvisoryMap } from '../coordination/holder-advisory';
 import type { CellReader } from '../../cell-registry';
 import { loadHarnessRegistry } from '../../harness-registry';
@@ -808,6 +810,7 @@ export default defineTool({
     // the render-time FALLBACK for an item created before that wiring landed.
     // Hint only — never blocks, never overrides a stamped value.
     let routingHint: unknown;
+    let freshness: ClaimFreshnessVerdict | null = null;
     if (res?.workItem) {
       const wi = res.workItem as { title?: string; summary?: string; payload?: unknown };
       const existing =
@@ -815,6 +818,12 @@ export default defineTool({
           ? (wi.payload as Record<string, unknown>).routingHint
           : undefined;
       routingHint = existing ?? matchRoutingGateHint(wi.title) ?? undefined;
+      const build = getBuildInfo();
+      freshness = assessClaimFreshness(wi.payload, {
+        headSha: build.sha,
+        runtimeSha: build.sha,
+        runtimeVersion: build.version,
+      });
     }
     // Claim-time recall port (memory-delivery-unification-2026-07-12 P-008 /
     // D-006): on a hit, piggyback a targeted memory recall for the claimed
@@ -1047,6 +1056,7 @@ export default defineTool({
                   ok: true,
                   workItem: res.workItem,
                   claimedUnder: res.claimedUnder,
+                  ...(freshness ? { freshness } : {}),
                   ...(warning ? { warning } : {}),
                   ...(routingHint ? { routingHint } : {}),
                   ...(memory ? { memory } : {}),

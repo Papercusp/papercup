@@ -369,6 +369,21 @@ describe('a successful claim declares the caller intent (EI-20099413453852234)',
     });
   });
 
+  it('routes a legacy/pre-envelope bug through the cheap validation lane at claim time', async () => {
+    const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
+      content: Array<{ text: string }>;
+    };
+    expect(JSON.parse(out.content[0]!.text)).toMatchObject({
+      ok: true,
+      workItem: { id: 'WI-4242' },
+      freshness: {
+        lane: 'validation',
+        likelyStale: true,
+        reasons: ['no freshness envelope (pre-envelope or unknown-generation report)'],
+      },
+    });
+  });
+
   // THE REGRESSION CASE, and the reason this is a read-modify-write rather than a bare write.
   // PgPresenceStore's ON CONFLICT sets `current_plan_slug = EXCLUDED.current_plan_slug` — a BARE
   // assignment — so a write that omits it CLEARS it. Without this test a naive implementation

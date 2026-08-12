@@ -43,6 +43,8 @@ import { type InjectEvent } from './agent-tools/coordination/fanout-delivery';
 import { coordScopeWorkspace } from './agent-tools/coordination/log';
 import { fanoutForObject } from './sync/hyperbee/fanout-projection';
 import { boundedOrgTxn } from './pg-bounded-txn';
+import { getBuildInfo } from './build-info';
+import { createBugFreshnessEnvelope } from './work-item-claim-freshness';
 import { resolveProject } from './harness-core';
 import { mintFixFeatureRow } from './promote-issue';
 import type { Issue as PipelineIssue } from './harness/issue-types';
@@ -700,6 +702,25 @@ export interface CreateIssueInput {
 /** Create an issue: insert, tag topics, auto-subscribe the author, fan out. */
 export async function createIssue(input: CreateIssueInput): Promise<EngineerIssue> {
   const created = nowIso();
+  const inputPayload = input.payload ? { ...input.payload } : {};
+  const storageKind = input.kind ?? 'bug';
+  if (storageKind === 'bug' && inputPayload.freshnessEnvelope == null) {
+    const build = getBuildInfo();
+    const probation = inputPayload.toolFailureProbation as
+      | { directEvidence?: boolean; report?: { schemaRevision?: string } }
+      | undefined;
+    inputPayload.freshnessEnvelope = createBugFreshnessEnvelope({
+      now: created,
+      sourceSha: build.sha,
+      runtimeSha: build.sha,
+      reporterSession: input.createdBy ?? null,
+      reporterRuntimeVersion: build.version,
+      toolSchemaVersion: probation?.report?.schemaRevision ?? null,
+      lastSuccessfulReproductionAt: probation?.directEvidence ? created : null,
+      deployBuildIdentity: build.sha ? `${build.sha}@${build.version}` : build.version,
+      linkedFixRefs: [],
+    });
+  }
   // unified-work-item-ledger P-001: a harness-attributable item must never be
   // silently filed operator-global via a missing/blank harness. operator stays
   // valid only as the EXPLICIT default; a malformed `harness:` (empty slug) throws.
@@ -735,7 +756,7 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
       VALUES (${issuesScopeWorkspace()}, ${id}, ${input.kind ?? 'bug'}, ${scope}, ${safeTitle}, ${safeBody ?? ''},
               ${input.severity ?? 'minor'}, ${input.source ?? 'engineer'}, 'open', ${input.assignee ?? null},
               ${input.assignedBy ?? null}, ${input.assignedBy ? created : null},
-              ${input.payload != null ? JSON.stringify(input.payload) : null}::text::jsonb, ${input.foundDuring ?? null},
+              ${Object.keys(inputPayload).length > 0 ? JSON.stringify(inputPayload) : null}::text::jsonb, ${input.foundDuring ?? null},
               ${input.createdBy ?? null}, ${input.signalOrigin ?? DEFAULT_SIGNAL_ORIGIN}, ${created}, ${created})
       RETURNING ${tx.unsafe(ISSUE_COLS)}`;
     const inserted = toIssue(rows[0]);
