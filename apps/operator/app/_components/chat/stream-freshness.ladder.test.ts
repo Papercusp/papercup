@@ -46,6 +46,7 @@ import { readFileSync } from 'node:fs';
 import { createResilientEventSource, DEFAULT_ZOMBIE_TIMEOUT_MS } from '@papercusp/sse';
 import { classifyStreamFreshness, STREAM_SILENCE_STALE_MS } from './stream-freshness';
 import type { ResilientEventSourceStatus } from '@papercusp/sse';
+import { FakeEventSource, latestEventSource as latest } from './fake-event-source.testkit';
 
 // ── The server rung, read from the route that actually writes it ─────────────
 //
@@ -96,36 +97,11 @@ describe('staleness ladder — the three rungs must stay ordered', () => {
 
 // ── Reachability against the REAL transport ─────────────────────────────────
 //
-// Only the EventSource *transport* is faked (there is no EventSource in the
-// Node/jsdom test env, and the network is not where the bug lived). Everything
+// Only the EventSource *transport* is faked (`./fake-event-source.testkit`,
+// shared with the hook-level test so both drive one identical fake). Everything
 // that decides the outcome is real: the real wrapper, its real zombie watchdog
 // at its real default timeout, the real `signal()` wiring that feeds BOTH
 // timers, and the real classifier at its real threshold.
-
-interface FakeListenerEntry { type: string; fn: (ev: unknown) => void; }
-
-class FakeEventSource {
-  static instances: FakeEventSource[] = [];
-  readonly url: string;
-  readonly listeners: FakeListenerEntry[] = [];
-  closed = false;
-  readyState = 0;
-
-  constructor(url: string) {
-    this.url = url;
-    FakeEventSource.instances.push(this);
-  }
-  addEventListener(type: string, fn: (ev: unknown) => void) { this.listeners.push({ type, fn }); }
-  removeEventListener() { /* not exercised */ }
-  close() { this.closed = true; this.readyState = 2; }
-
-  fire(type: string, data: unknown = '') {
-    for (const e of this.listeners) if (e.type === type) e.fn({ data, type });
-  }
-  fireOpen() { this.readyState = 1; this.fire('open'); }
-}
-
-const latest = () => FakeEventSource.instances[FakeEventSource.instances.length - 1];
 
 describe('the "stale" rung is REACHABLE by the real transport', () => {
   beforeEach(() => {
