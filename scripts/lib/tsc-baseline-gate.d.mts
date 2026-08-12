@@ -379,7 +379,7 @@ export function diagnosticLinesForFiles(tscOutput: string, files: Iterable<strin
  * Pure (no I/O) so the wording is unit-testable — the wording is the whole feature, mirroring
  * `formatAttributionHeadline` / `formatNewFileGuidance`.
  *
- * @param {{file: string, baseline: number, current: number, delta: number}} row - The gate entry.
+ * @param {{file: string, baseline: number, current: number, delta: number, dirty?: boolean}} row - The gate entry.
  * @param {string[]} lines - Already-capped diagnostic lines for this file (compiler order).
  * @returns {string[]} Indented lines to print beneath the row; empty when nothing was quoted.
  */
@@ -388,6 +388,7 @@ export function formatRegressedFileDiagnostics(row: {
     baseline: number;
     current: number;
     delta: number;
+    dirty?: boolean;
 }, lines: string[]): string[];
 /**
  * Last commit time (epoch seconds) per path. Fail-SOFT per file: anything unreadable maps to
@@ -884,9 +885,10 @@ export type PerFileGateEntry = {
      */
     delta: number;
     /**
-     * - Set only on `newFiles`, and only when the dirty set could be read:
-     * the file is uncommitted in the shared working tree, i.e. a peer is very likely mid-edit
-     * (EI-19278299775574199). `undefined` means UNKNOWN, never "clean" — see
+     * - Set when the dirty set could be read: the file is uncommitted in
+     * the shared working tree, i.e. a peer is very likely mid-edit (EI-19278299775574199). On a
+     * regression this is populated only for an unscoped/bare run, where a dirty row is otherwise
+     * reported as an unhedged failure. `undefined` means UNKNOWN, never "clean" — see
      * `partitionNewFilesByLiveEdit`.
      */
     dirty?: boolean | undefined;

@@ -894,6 +894,7 @@ export function resumeEnvFor(session: any, { mintSid, fork }?: {
     fork?: boolean | undefined;
 }): {
     PAPERCUSP_ADV_SESSION_ID?: string | undefined;
+    PAPERCUSP_HARNESS_SLUG?: any;
     PAPERCUSP_WORKSPACE?: any;
     PAPERCUSP_AGENT: any;
     PAPERCUSP_SID: any;
@@ -1629,12 +1630,13 @@ export function shouldSilenceClaudeTitle({ agent, ownsTty, env, home, readFile, 
  * "am I beating for a corpse?": it already runs every 60s, already talks to the operator,
  * and already dies with this process.
  *
- * The server answers ONLY on an explicit 'recorded' verdict (see terminalSessionVerdict in
- * bootstrap-su.ts for why 'ended' and absence are both unsafe: `!wakeable ⇒ 'ended'` makes
- * a healthy fresh session look dead, and the oracle signals UNKNOWN by omission). This side
- * adds two more conservative gates — consecutive confirmations and a minimum uptime — and
- * RESETS the streak on any non-terminal or failed beat. Every degraded path keeps psu
- * alive: the failure mode is a zombie that lingers, never a live agent that is killed.
+ * The server answers ONLY on positive ended-session evidence (see terminalSessionVerdict in
+ * bootstrap-su.ts). The liveness oracle's `sessionState:'recorded'` means a LIVE recorded
+ * session that is not wake-dispatchable (`ended_at IS NULL`), so it must never terminate
+ * this launcher. This side adds two more conservative gates — consecutive confirmations
+ * and a minimum uptime — and RESETS the streak on any non-terminal or failed beat. Every
+ * degraded path keeps psu alive: the failure mode is a zombie that lingers, never a live
+ * agent that is killed.
  */
 export function startSupervisorBeat(ownerId: any, { fetchImpl, intervalMs, operatorUrl, token, setIntervalImpl, tty, beatsToExit, minUptimeMs, uptimeMsFn, onTerminalSession, }?: {
     fetchImpl?: typeof fetch | undefined;
