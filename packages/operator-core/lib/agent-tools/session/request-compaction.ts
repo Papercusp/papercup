@@ -43,6 +43,8 @@ import { markRespawnExpected } from '../../carry-respawn-marker';
 import { readPriorRespawnOutcome, priorRespawnNote } from '../../carry-respawn-outcome';
 import { bumpSessionEpoch } from '../../memory/session-epoch-ledger';
 import { getOrgPg } from '@papercusp/db-org';
+import { getLoopStatus } from '../../harness/routines/loop';
+import { getLoopCarryNoteWithMeta } from '../../carry-note';
 
 // Re-exported for back-compat: the flush-integrity detector + its shape now live
 // in enforcement-gate.ts (the single source shared with the P-016 enforcement
@@ -197,6 +199,33 @@ export default defineTool({
     const identity = resolveAgentIdentity(ctx);
     const host = findLiveHost(identity.ownerId);
     if (!host) {
+      // EI-20211379927723290: an event-resumed Codex loop has no persistent
+      // psu-pty host by design. A cold loop already provides the same
+      // deterministic boundary on the next settled wake; accept that path only
+      // when its durable carry-note exists, so this never discards unflushed
+      // state or pretends an unarmed session can respawn itself.
+      const loop = await getLoopStatus(identity.ownerId).catch(() => null);
+      if (loop?.active && loop.carry === 'cold' && loop.harnessSlug) {
+        const carry = await getLoopCarryNoteWithMeta({
+          harness: loop.harnessSlug,
+          ownerId: identity.ownerId,
+          workspaceId: identity.workspaceId,
+        });
+        if (carry.note) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify({
+                  ok: true,
+                  respawn: 'cold-loop-settle',
+                  note: 'No psu-pty host is required: end this turn now. The armed cold loop will start the next wake in fresh context from the verified loop:checkpoint carry-note.',
+                }),
+              },
+            ],
+          };
+        }
+      }
       return {
         content: [
           {

@@ -80,6 +80,18 @@ vi.mock('../../events/await/psu-pty-discovery', () => ({
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-caller', ownerLabel: 'su · caller' })),
 }));
+const getLoopStatus = vi.fn();
+vi.mock('../../harness/routines/loop', () => ({
+  getLoopStatus: (...a: unknown[]) => getLoopStatus(...a),
+}));
+const getLoopCarryNoteWithMeta = vi.fn();
+vi.mock('../../carry-note', async () => {
+  const actual = await vi.importActual<typeof import('../../carry-note')>('../../carry-note');
+  return {
+    ...actual,
+    getLoopCarryNoteWithMeta: (...a: unknown[]) => getLoopCarryNoteWithMeta(...a),
+  };
+});
 // EI-8987: buildCarryBrief drives both the default focus AND the stale-checkpoint
 // warning. Mocked with a default empty brief; individual tests override per-case.
 const buildCarryBrief = vi.fn();
@@ -160,6 +172,8 @@ beforeEach(() => {
   buildCarryBrief.mockResolvedValue(emptyBrief);
   buildOwnerRespawnLaunchSpec.mockResolvedValue(closedSpec);
   contextWindowForOwner.mockResolvedValue(null);
+  getLoopStatus.mockResolvedValue(null);
+  getLoopCarryNoteWithMeta.mockResolvedValue({ note: null, updatedAtMs: null });
   provDir = mkdtempSync(join(tmpdir(), 'reqcomp-prov-'));
   process.env.PAPERCUSP_TURN_PROVENANCE_DIR = provDir;
 });
@@ -337,6 +351,23 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     const out = await call({ focus: 'x' });
     expect(out.isError).toBe(true);
     expect(body(out)).toMatchObject({ ok: false, error: 'no_live_pty_host' });
+    expect(injectIntoHost).not.toHaveBeenCalled();
+  });
+
+  it('event-resumed Codex on an armed cold loop settles into its verified carry-note without a psu-pty host', async () => {
+    findLiveHost.mockReturnValue(null);
+    getLoopStatus.mockResolvedValue({
+      active: true,
+      carry: 'cold',
+      harnessSlug: 'papercusp',
+    });
+    getLoopCarryNoteWithMeta.mockResolvedValue({
+      note: '## Next action\ncontinue',
+      updatedAtMs: Date.now(),
+    });
+    const out = await call({ focus: 'x' });
+    expect(out.isError).toBeUndefined();
+    expect(body(out)).toMatchObject({ ok: true, respawn: 'cold-loop-settle' });
     expect(injectIntoHost).not.toHaveBeenCalled();
   });
 
