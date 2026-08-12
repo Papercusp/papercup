@@ -487,6 +487,68 @@ async function buildMissDiagnosis(args: {
   }
 }
 
+/**
+ * WI-20202324455243251: assemble a successful self-pull response in the order the
+ * result-door should preserve. The door keeps the PREFIX of an oversized serialized
+ * result, so the claim-time governing decisions must precede the bulky work-item
+ * echo. They are the one advisory block that can change whether the claimed work is
+ * valid; losing them to a tail cut makes a partial response look complete.
+ *
+ * Keep this pure and exported so the regression test exercises the production
+ * assembly rather than a mirrored fixture. The remaining fields retain their former
+ * order and conditional presence.
+ */
+export function assembleSchedulerClaimResult(legs: {
+  workItem: unknown;
+  claimedUnder: unknown;
+  freshness?: unknown;
+  warning?: unknown;
+  routingHint?: unknown;
+  memory?: unknown;
+  checkpoint?: unknown;
+  checkpointAgeMs?: unknown;
+  checkpointWarning?: unknown;
+  checkpointBgJobWarning?: unknown;
+  priorWork?: unknown;
+  priorWorkWarning?: unknown;
+  planDecisions?: readonly unknown[] | null;
+  planDecisionsNote?: string | null;
+  premises?: unknown;
+  premisesNote?: string | null;
+}): Record<string, unknown> {
+  return {
+    ok: true,
+    // Keep this before workItem: result-door truncation is prefix-preserving, and
+    // governing decisions are safety-critical while the work-item echo is bulky.
+    ...(legs.planDecisions
+      ? { planDecisions: legs.planDecisions, planDecisionsNote: legs.planDecisionsNote as string }
+      : {}),
+    workItem: legs.workItem,
+    claimedUnder: legs.claimedUnder,
+    ...(legs.freshness ? { freshness: legs.freshness } : {}),
+    ...(legs.warning ? { warning: legs.warning } : {}),
+    ...(legs.routingHint ? { routingHint: legs.routingHint } : {}),
+    ...(legs.memory ? { memory: legs.memory } : {}),
+    ...(legs.checkpoint
+      ? {
+          checkpoint: legs.checkpoint,
+          checkpointAgeMs: legs.checkpointAgeMs,
+          checkpointWarning:
+            legs.checkpointWarning ??
+            'A PRIOR holder left an in-flight checkpoint on this item — it may already be DONE or partly done. Read it before building: verify against the tree/tests first, do not assume greenfield (EI-529).',
+          ...(legs.checkpointBgJobWarning ? { checkpointBgJobWarning: legs.checkpointBgJobWarning } : {}),
+        }
+      : {}),
+    ...(legs.priorWork
+      ? {
+          priorWork: legs.priorWork,
+          priorWorkWarning: legs.priorWorkWarning,
+        }
+      : {}),
+    ...(legs.premises ? { premises: legs.premises, premisesNote: legs.premisesNote } : {}),
+  };
+}
+
 export default defineTool({
   name: 'scheduler:get_next',
   profile: 'engineer',
@@ -1110,49 +1172,30 @@ export default defineTool({
           type: 'text' as const,
           text: JSON.stringify(
             res
-              ? {
-                  ok: true,
+              ? assembleSchedulerClaimResult({
                   workItem: res.workItem,
                   claimedUnder: res.claimedUnder,
-                  ...(freshness ? { freshness } : {}),
-                  ...(warning ? { warning } : {}),
-                  ...(routingHint ? { routingHint } : {}),
-                  ...(memory ? { memory } : {}),
-                  ...(checkpointHint
-                    ? {
-                        checkpoint: checkpointHint.checkpoint,
-                        checkpointAgeMs: checkpointHint.checkpointAgeMs,
-                        checkpointWarning:
-                          'A PRIOR holder left an in-flight checkpoint on this item — it may already be DONE or partly done. Read it before building: verify against the tree/tests first, do not assume greenfield (EI-529).',
-                        ...(bgJobWarning.detected ? { checkpointBgJobWarning: bgJobWarning.reason } : {}),
-                      }
-                    : {}),
-                  ...(priorWorkHint
-                    ? {
-                        priorWork: priorWorkHint.priorWork,
-                        priorWorkWarning: priorWorkHint.priorWorkWarning,
-                      }
-                    : {}),
-                  ...(planDecisions
-                    ? {
-                        planDecisions: planDecisions.decisions,
-                        // EI-19396519606401168: this note used to be built from
-                        // the POST-CAP length, so a capped brief announced itself
-                        // as the complete set ("8 governing decision(s) recorded"
-                        // on a plan with 25). Say the true total and, when capped,
-                        // say plainly that the rest are NOT shown — a claimer who
-                        // is about to violate a ruling it was never handed is the
-                        // exact failure this brief exists to prevent.
-                        // EI-19387745408924340: rendered via the shared helper so
-                        // this wording cannot drift from work_items:claim /
-                        // claim_next's copies of the same note.
-                        planDecisionsNote: planDecisionsNote as string,
-                      }
-                    : {}),
-                  ...(premises
-                    ? { premises: premises.rendered, premisesNote: premises.note }
-                    : {}),
-                }
+                  freshness,
+                  warning,
+                  routingHint,
+                  memory,
+                  checkpoint: checkpointHint?.checkpoint,
+                  checkpointAgeMs: checkpointHint?.checkpointAgeMs,
+                  checkpointWarning: checkpointHint
+                    ? 'A PRIOR holder left an in-flight checkpoint on this item — it may already be DONE or partly done. Read it before building: verify against the tree/tests first, do not assume greenfield (EI-529).'
+                    : undefined,
+                  checkpointBgJobWarning: bgJobWarning.detected ? bgJobWarning.reason : undefined,
+                  priorWork: priorWorkHint?.priorWork,
+                  priorWorkWarning: priorWorkHint?.priorWorkWarning,
+                  // EI-19396519606401168: this note used to be built from the
+                  // POST-CAP length, so a capped brief announced itself as the
+                  // complete set. The shared helper still renders the true total
+                  // and says when older decisions are not shown.
+                  planDecisions: planDecisions?.decisions,
+                  planDecisionsNote,
+                  premises: premises?.rendered,
+                  premisesNote: premises?.note,
+                })
               : invalidHarnessKnownSlugs
                 ? {
                     ok: false,
