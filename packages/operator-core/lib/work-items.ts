@@ -2303,8 +2303,9 @@ export async function setWorkItemState(
   if (!opts.skipCompletionGate && isSettledWorkItemState(state) && isTransportOnlyIdentity(opts.by)) {
     throw new Error(
       `completion-integrity: work_item '${id}' → '${state}' rejected — '${opts.by}' is a transport-only ` +
-        `identity with no live completion owner. Retry through a connected agent session or pass an ` +
-        `explicit --client <ownerId>.`,
+        `identity with no live completion owner. Retry through a connected agent session. For an ` +
+        `HTTP/MCP loopback replay, add ?client=<ownerId> to the /api/mcp URL; CLI callers may ` +
+        `pass --client <ownerId>.`,
     );
   }
   // EI-7422: refuse to silently REOPEN an item that is already terminally

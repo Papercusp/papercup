@@ -2052,8 +2052,9 @@ export async function setIssueState(
     if (isTransportOnlyIdentity(by)) {
       throw new Error(
         `completion-integrity: issue '${id}' → '${state}' rejected — '${by}' is a transport-only ` +
-          `identity with no live completion owner. Retry through a connected agent session or pass an ` +
-          `explicit --client <ownerId>.`,
+          `identity with no live completion owner. Retry through a connected agent session. For an ` +
+          `HTTP/MCP loopback replay, add ?client=<ownerId> to the /api/mcp URL; CLI callers may ` +
+          `pass --client <ownerId>.`,
       );
     }
     if (!by || !by.trim()) {

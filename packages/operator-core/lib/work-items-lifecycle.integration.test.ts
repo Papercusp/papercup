@@ -297,13 +297,13 @@ describe('P-004 — completion authority round-trips through both family views',
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'transport issue', harness: 'papercup', createdBy: 'agA' });
     await expect(
       wi.setWorkItemState(bug.id, 'resolved', { by: 'su-loopback', completionRef: 'recovery completion' }),
-    ).rejects.toThrow(/transport-only identity/);
+    ).rejects.toThrow(/transport-only identity.*\?client=<ownerId>.*--client <ownerId>/s);
     expect((await wi.getWorkItem(bug.id, 'papercup'))?.state).toBe('open');
 
     const feature = await wi.createWorkItem({ kind: 'feature', title: 'transport feature', harness: 'papercup', createdBy: 'agA' });
     await expect(
       wi.setWorkItemState(feature.id, 'passed', { by: 'mcp-call-12345', completionRef: 'recovery completion' }),
-    ).rejects.toThrow(/transport-only identity/);
+    ).rejects.toThrow(/transport-only identity.*\?client=<ownerId>.*--client <ownerId>/s);
     expect((await wi.getWorkItem(feature.id, 'papercup'))?.state).not.toBe('passed');
   });
 
