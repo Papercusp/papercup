@@ -620,6 +620,14 @@ const SCHEMA_COLUMN_REDIRECTS: ReadonlyArray<{
       '`output_size` (bytes), and `metadata_json` (transport metadata); select those physical columns or use ' +
       'the covering activity/tool-log read for call output and metadata',
   },
+  {
+    relation: 'tool_invocations',
+    missing: 'request_origin',
+    message:
+      'telemetry origin is split across `call_origin` (who chose the call) and ' +
+      '`call_origin_source` (declared versus derived); request metadata, when needed, is nested under ' +
+      '`metadata_json` at `requestOrigin`',
+  },
 ];
 
 /**

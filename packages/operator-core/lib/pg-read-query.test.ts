@@ -1356,6 +1356,18 @@ describe('buildSchemaColumnRedirect (known physical-column vocabulary)', () => {
     expect(out).toContain('harness_shared.tool_invocations');
   });
 
+  it('redirects the removed request_origin guess to the live call-origin columns', () => {
+    const out = buildSchemaColumnRedirect(
+      'SELECT request_origin FROM harness_shared.tool_invocations LIMIT 1',
+      'column "request_origin" does not exist',
+    );
+    expect(out).toContain('call_origin');
+    expect(out).toContain('call_origin_source');
+    expect(out).toContain('metadata_json');
+    expect(out).toContain('requestOrigin');
+    expect(out).toContain('harness_shared.tool_invocations');
+  });
+
   it('does not redirect result_json for an unrelated relation', () => {
     expect(
       buildSchemaColumnRedirect(
