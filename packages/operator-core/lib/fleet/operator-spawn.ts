@@ -1289,7 +1289,13 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
       await recordProactiveDisposition({
         workspaceId: input.workspaceId,
         harnessSlug: slug,
-        decisionInput: { action: 'cup:spawn', riskTier: 'low', authority: 'system', reversibility: 'reversible' },
+        // `fleet:spawn-agent` names what this ENGINE does, not the retired verb
+        // that used to be its only caller (P-059 retired `cup:spawn`; the engine
+        // is shared by capability:launch-agent + fleet:launch-on-plan and is
+        // untouched). Category is unchanged: `^fleet:` matches the SAME
+        // `cat:fleet` → agent-lifecycle rule that `^cup:` did, so autonomy
+        // gating does not move. An unmapped action would default to never-auto.
+        decisionInput: { action: 'fleet:spawn-agent', riskTier: 'low', authority: 'system', reversibility: 'reversible' },
         why: `model tier ${spawnModelTier ?? 'default'} for ${role}`,
         links,
         metadata: { modelTier: spawnModelTier ?? null, modelSpec: spawnModelSpec ?? null, role },

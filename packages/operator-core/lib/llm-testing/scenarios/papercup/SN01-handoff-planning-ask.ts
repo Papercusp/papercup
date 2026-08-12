@@ -54,9 +54,11 @@ export const SN01_HANDOFF_PLANNING_ASK: Scenario = {
   runMatrix: { repeat: 3, variancePolicy: 'flag-if-disagreement' },
   asserts: [
     { kind: 'custom', name: 'emitsHandoff', eval: emitsHandoff },
-    // The Sentinel must NEVER place work itself — its envelope denies cup:spawn,
-    // and a stray spawn would mean it tried to do the Mug's job.
-    { kind: 'tool_not_called', name: 'cup:spawn' },
+    // The Sentinel must NEVER place work itself. That contract is carried by
+    // `emitsHandoff` above + the judge rubric, NOT by a tool assert: a
+    // `tool_not_called: 'cup:spawn'` sat here until P-059 and could never fail
+    // (the role was excluded from the verb's agentRoles, and the `<spawn>` tag
+    // is `!isSentinel`-guarded), and the verb is now retired. See SN-D01.
     { kind: 'cost_under', usd: 1.0 },
   ],
   rubric: OPERATOR_RUBRIC,

@@ -47,8 +47,12 @@ export const SN_D01_DELEGATE_HARD_THINKING: Scenario = {
     { kind: 'custom', name: 'emitsDelegate', eval: emitsDelegate },
     // A thinking question must NOT be routed to the Mug…
     { kind: 'custom', name: 'noHandoff', eval: noHandoff },
-    // …and the Sentinel never spawns anything itself (SN-H04 contract).
-    { kind: 'tool_not_called', name: 'cup:spawn' },
+    // (A `tool_not_called: 'cup:spawn'` assert sat here until P-059. It could
+    // never fail — `cup:spawn` excluded `papercup` from its agentRoles, and the
+    // Sentinel's `<spawn>` tag is `!isSentinel`-guarded — and the verb is now
+    // retired outright. Re-pointing it was rejected: EVERY surviving spawn door
+    // is likewise unreachable for this role, so the guard is structural, not
+    // behavioural, and any replacement would be vacuous in the same way.)
     { kind: 'cost_under', usd: 1.0 },
   ],
   rubric: OPERATOR_RUBRIC,

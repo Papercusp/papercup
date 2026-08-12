@@ -96,8 +96,13 @@ const CATEGORY_RULES: Rule<ActionEvent, AutonomyCategory>[] = [
   // ── agent-lifecycle — hive: overrides (cross_grant/declare-wake/ask*) handled above/below ──
   { id: 'cat:hive-ask', on: TRIGGER, when: { action: { matches: '^pot:(ask|request_work|asks)' } }, fire: 'escalations', meta: { reason: 'asks another hive (a cross-hive question)' } },
   { id: 'cat:fleet', on: TRIGGER, when: { action: { matches: '^fleet:' } }, fire: 'agent-lifecycle', meta: { reason: 'spawn / cancel / drain / admit / supervise an agent' } },
-  // cup:spawn (WI-1764 #3 renamed fleet:spawn → cup:spawn) places a background
+  // cup:spawn (WI-1764 #3 renamed fleet:spawn → cup:spawn) placed a background
   // autonomous-loop bee — same agent-lifecycle category as the fleet: verbs it split from.
+  // ⚠ KEPT DELIBERATELY THOUGH NO `cup:*` TOOL REMAINS (P-059 retired cup:spawn,
+  // the last one). This rule is matched against the `action` STRING, and the
+  // decision ledger holds historical rows stamped `cup:spawn`; deleting the rule
+  // would re-categorize those to null, which the gate reads as never-auto. A rule
+  // that matches no LIVE verb still classifies the past correctly.
   { id: 'cat:bee', on: TRIGGER, when: { action: { matches: '^cup:' } }, fire: 'agent-lifecycle', meta: { reason: 'spawn a background autonomous-loop bee (nursery placement)' } },
   { id: 'cat:hive', on: TRIGGER, when: { action: { matches: '^pot:' } }, fire: 'agent-lifecycle', meta: { reason: 'hive (swarm of agents) lifecycle' } },
   { id: 'cat:new-subagent-approve', on: TRIGGER, when: { action: { matches: '^new_subagent:approve' } }, fire: 'agent-lifecycle', meta: { reason: 'approves a new subagent spawn' } },

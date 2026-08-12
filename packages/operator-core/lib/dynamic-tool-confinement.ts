@@ -53,7 +53,17 @@ export const DYNAMIC_TOOL_FORBIDDEN_CAPABILITY_GLOBS: readonly string[] = [
   'platform:contribute',
   'secrets:*',
   'processes:kill',
-  'cup:spawn',
+  // The "spawning fleet" leg of the floor above. This was `cup:spawn` alone
+  // until P-059 retired that verb with the Mug/Kettle/Cup tier; dropping it
+  // without a replacement would have NARROWED the floor to nothing on this
+  // axis, because the surviving spawn doors were never listed beside it. They
+  // are now — deny-widening is the safe direction for a no-escalation floor.
+  // ⚠ Despite the constant's name these entries are matched as TOOL NAMES
+  // (`capability:grant_role`, `processes:kill` and `tools:scaffold` are all
+  // tools) — an entry naming a `capability:` FIELD value would match nothing.
+  'capability:launch-agent',
+  'fleet:launch-on-plan',
+  'fleet:place_batch',
 ];
 
 export interface ConfinedEnvelope {

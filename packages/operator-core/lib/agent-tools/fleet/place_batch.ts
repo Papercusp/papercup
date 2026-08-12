@@ -130,16 +130,18 @@ export default defineTool({
   description:
     'Place a whole batch of ready work onto the fleet in ONE wake: ranks each task↔bee by affinity (explicit-intent > file-overlap > recent-activity > queue-similarity), then warm-injects onto warm bees / fresh-spawns into free slots / queues the overflow — up to the fleet ceiling. The Mug\'s serial placement loop, collapsed to one call. Pass `tasks` (your importance-ranked frontier) or a `harness` to pull its open backlog; `dry_run` returns the plan without acting.',
   guidance: {
-    when: 'You (the Mug) have surveyed + ranked the ready frontier and want to place several tasks at once instead of looping cup:spawn/coord:send per task. Pass the ranked work-item ids as `tasks` (importance order) — the tool fans them across free slots + warm cups by affinity in one turn.',
+    when: 'You (the Mug) have surveyed + ranked the ready frontier and want to place several tasks at once instead of placing one task per turn. Pass the ranked work-item ids as `tasks` (importance order) — the tool fans them across free slots + warm cups by affinity in one turn.',
     notWhen:
-      'Placing a SINGLE task (just cup:spawn or coord:send), or you have not yet surveyed the frontier (work_items:list + fleet:assignments first). Not a survey tool — it acts. Use dry_run:true to preview the plan.',
+      'Placing a SINGLE task (just coord:send), or you have not yet surveyed the frontier (work_items:list + fleet:assignments first). Not a survey tool — it acts. Use dry_run:true to preview the plan.',
     chaining:
       'work_items:list (the frontier) + fleet:assignments (bee load) → fleet:place_batch { tasks } → fleet:tree to watch the fresh spawns; an await_event in the result means re-run for the deferred tail on a freed slot.',
   },
   capability: 'work_items:write',
   // tool-call-batching-wrappers-2026-06-21 P-011 — composite marker: replaces the
-  // per-task cup:spawn / coord:send placement loop (drives the catalog back-pointer).
-  replaces: ['cup:spawn', 'coord:send'],
+  // per-task placement loop (drives the catalog back-pointer). `cup:spawn` was the
+  // other half of that pair until P-059 retired it; a back-pointer to a verb that
+  // no longer resolves is a dead link in the catalog, so only coord:send remains.
+  replaces: ['coord:send'],
   requirePrincipal: false,
   // Placement is the Queen's (or operator's) surface — same carve-out as cup:spawn:
   // the worker-bee + the watch-only sentinel are excluded (they don't place agents).

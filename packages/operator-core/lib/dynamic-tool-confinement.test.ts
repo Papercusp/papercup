@@ -41,7 +41,12 @@ describe('P-003 adversarial — NO CAPABILITY MINTING / ESCALATION', () => {
     'platform:contribute',
     'secrets:read',
     'processes:kill',
-    'cup:spawn',
+    // The spawn leg. Was `cup:spawn` until P-059 retired that verb; these are
+    // the surviving spawn doors it was replaced by in the floor, so the
+    // "a confined dynamic tool may never spawn" property is still pinned.
+    'capability:launch-agent',
+    'fleet:launch-on-plan',
+    'fleet:place_batch',
   ]) {
     it(`a tool declaring "${mint}" is REJECTED at derivation (mints_capability)`, () => {
       const r = deriveDynamicToolEnvelope({ capabilities: ['intel:read', mint] });

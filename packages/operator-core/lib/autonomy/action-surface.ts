@@ -379,10 +379,12 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     category: 'agent-lifecycle',
     reversibility: 'reversible',
     authority: 'system',
-    queenVerbs: ['cup:spawn'],
+    queenVerbs: ['capability:launch-agent', 'fleet:launch-on-plan'],
     humanSurface: 'Fleet controls',
     coverage: 'covered',
-    notes: 'Reversible: a spawned agent can be cancelled/drained. Cost is governed separately by spend-budget.',
+    notes:
+      'Reversible: a spawned agent can be cancelled/drained. Cost is governed separately by spend-budget. ' +
+      '(Was cup:spawn until P-059 retired the nursery-cup tier; these are the surviving spawn doors.)',
   },
   {
     id: 'lifecycle.cancel-drain-agent',
@@ -430,10 +432,12 @@ export const ACTION_SURFACE: readonly HumanDrivingAction[] = [
     category: 'agent-lifecycle',
     reversibility: 'reversible',
     authority: 'system',
-    queenVerbs: ['cup:spawn'],
+    queenVerbs: ['capability:launch-agent', 'fleet:launch-on-plan'],
     humanSurface: 'Spawn settings (queen-model-tier-selection)',
     coverage: 'partial',
-    notes: 'Model tier is a spawn parameter on cup:spawn rather than a standalone verb; finer per-spawn tier control may warrant a dedicated knob. Reversible (next spawn can differ).',
+    notes:
+      'Model tier is a parameter on the spawn verbs rather than a standalone verb; finer per-spawn tier control may warrant a dedicated knob. Reversible (next spawn can differ). ' +
+      '(Was cup:spawn until P-059 retired the nursery-cup tier.)',
   },
 
   // ── credentials & auth (PROTECTED) ────────────────────────────────────────────────

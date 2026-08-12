@@ -1039,12 +1039,11 @@ import './fleet/tree';
 import './fleet/supervise';
 import './fleet/admit';
 import './fleet/governor';
-// cup:spawn — the operator→bee launch verb over the same durable nursery
-// (Brief 4, agent-briefs-2026-06-05; renamed from fleet:spawn per WI-1764 #3 so
-// the namespace encodes the substrate: cup:* = the autonomous mug↔cup loop,
-// fleet:* = visible desktop su members). chat <spawn> tags, the operator brain's
-// tool call, and the admin HTTP trigger all land in spawnAgentInHarness.
-import './cup/spawn';
+// (cup:spawn retired here by P-059 — the nursery-cup placement verb went with
+// the Mug/Kettle/Cup tier; `_retired/mug-kettle-deciders/`. This emptied the
+// `cup/` tool group, so there is no cup:* namespace left. The SURVIVING spawn
+// doors are capability:launch-agent and fleet:launch-on-plan; the engine they
+// all shared, spawnAgentInHarness, is untouched and still live.)
 // fleet:assignments — the canonical "who's on what" state query over the
 // fleet_assignment view (state-not-chat-fleet-state-2026-06-05 D-002).
 import './fleet/assignments';

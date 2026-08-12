@@ -37,12 +37,10 @@ const propMaxLength = (tool: { args: unknown }, prop: string): unknown => {
 };
 
 describe('brief-carrying fields are normalized to LIMITS.BRIEF', () => {
-  it('cup:spawn { brief } is a softText — no hard maxLength (clamped handler-side to LIMITS.BRIEF)', async () => {
-    const tool = (await import('./cup/spawn')).default as unknown as { args: unknown };
-    // softText never advertises a maxLength (JSON-Schema-representable); the
-    // cap is enforced by clampText(args.brief, LIMITS.BRIEF) in the handler.
-    expect(propMaxLength(tool, 'brief')).toBeUndefined();
-  });
+  // (A `cup:spawn { brief }` case led this list until P-059 retired that tool.
+  // Narrowed, not deleted — the surviving subjects below still carry the
+  // property. `fleet:place_batch` next is the same softText assertion, so the
+  // mechanism this file exists to pin is still exercised.)
 
   it('fleet:place_batch { brief } is a softText — no hard maxLength (clamped handler-side to LIMITS.BRIEF)', async () => {
     const tool = (await import('./fleet/place_batch')).default as unknown as { args: unknown };

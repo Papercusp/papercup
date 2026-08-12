@@ -182,17 +182,18 @@ describe('P-010 tool gate: the shared refusal', () => {
  * honours. The restore contract MOVES from the flag to
  * `_retired/mug-kettle-deciders/RESTORE.md`, which records every row removed
  * here so that a restore re-adds it. Removed so far: pot:survey,
- * kettle:declare-wake, kettle:start, kettle:pause (P-059) — the last two took
- * the whole `agent-tools/overwatch/` directory with them, so there is no longer
- * an overwatch tool group for a future row to live in.
+ * kettle:declare-wake, kettle:start, kettle:pause, cup:spawn (P-059) — and two
+ * of those retirements emptied a whole tool group, so there is no longer an
+ * `agent-tools/overwatch/` NOR an `agent-tools/cup/` directory for a future row
+ * to live in. `cup:spawn` was the last `cup:*` verb, so that namespace is gone.
  */
 const GATED: Array<{ name: string; load: () => Promise<{ default: unknown }>; args: Record<string, unknown> }> = [
   // D-017 actuators — the refusal is harm-prevention.
   { name: 'pot:start', load: () => import('./pot/start'), args: { harness: 'papercusp' } },
   { name: 'pot:wake', load: () => import('./pot/wake'), args: { harness: 'papercusp', reason: 't' } },
-  { name: 'cup:spawn', load: () => import('./cup/spawn'), args: { harness: 'papercusp', role: 'coder' } },
-  // (kettle:start and kettle:declare-wake retired here by P-059 — see the note
-  // above this list. kettle:pause retired from EXCLUDED for the same reason.)
+  // (kettle:start, kettle:declare-wake and cup:spawn retired here by P-059 — see
+  // the note above this list. kettle:pause retired from EXCLUDED for the same
+  // reason. cup:spawn's retirement emptied the `cup/` tool group entirely.)
   // D-048 tier surfaces. set-steering is the one true actuator of the four (it
   // writes, then requestUrgentPotWake); the rest are reads whose zero-valued
   // answers would misreport a retired tier as a healthy idle one.
