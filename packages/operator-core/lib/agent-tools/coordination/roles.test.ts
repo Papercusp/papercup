@@ -53,7 +53,8 @@ describe('COORD_ROLES', () => {
 
   test('AUTH INVARIANT (pot-rename P2): COORD_ROLES + the read-mostly exclusion admit mug but exclude cup/papercup/kettle', () => {
     // Every Queen-only write tool (fleet/place_batch, gym/*, experiment/*,
-    // computer/*-desktop, cup/spawn) imports QUEEN_PLACEMENT_ROLES (EI-145 part 2 —
+    // computer/*-desktop) imports QUEEN_PLACEMENT_ROLES (EI-145 part 2 —
+    // `cup/spawn` was in this list until P-059 retired it —
     // previously each re-derived the identical inline filter; now ONE shared array,
     // so this single test holding is enough for every site to hold in lockstep —
     // no more "the tool files carry the literal verbatim; grep keeps them in sync").
