@@ -20,6 +20,7 @@ const H = vi.hoisted(() => ({
 }));
 
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: () => ({ data: H.accounts, loading: H.loading, error: null }),
 }));
 

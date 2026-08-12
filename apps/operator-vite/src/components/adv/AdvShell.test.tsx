@@ -71,6 +71,7 @@ let projectRows: unknown[] | undefined = [];
 let projectsError: Error | null = null;
 const invalidateSpy = vi.fn();
 vi.mock('@papercusp/sync', async () => ({
+  onSyncBusEvent: () => () => {},
   // WI-6948: TasksRunningPill loads its panel via lazyWithRetry, which THIS package
   // re-exports (operator-core/lib/lazy-with-retry is a pure re-export). A factory that
   // omits it makes the re-export `undefined` and the whole suite dies with

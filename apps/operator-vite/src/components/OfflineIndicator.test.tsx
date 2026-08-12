@@ -17,6 +17,7 @@ import { toast } from 'sonner';
 const H = vi.hoisted(() => ({ offline: false }));
 
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncConnectivity: () => ({ offline: H.offline }),
 }));
 vi.mock('sonner', () => ({ toast: { error: vi.fn(), dismiss: vi.fn() } }));

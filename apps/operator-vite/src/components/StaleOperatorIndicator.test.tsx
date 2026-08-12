@@ -13,6 +13,7 @@ import { toast } from 'sonner';
 const H = vi.hoisted(() => ({ stale: false, queryNames: [] as string[] }));
 
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncStaleOperator: () => ({ stale: H.stale, queryNames: H.queryNames }),
 }));
 vi.mock('sonner', () => ({ toast: { error: vi.fn(), dismiss: vi.fn() } }));

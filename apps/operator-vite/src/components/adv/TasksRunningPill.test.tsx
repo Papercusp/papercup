@@ -30,6 +30,7 @@ const H = vi.hoisted(() => ({
 }));
 
 vi.mock('@papercusp/sync', async () => ({
+  onSyncBusEvent: () => () => {},
   // WI-6948: this component loads its panel via lazyWithRetry, re-exported from this
   // package — the mock must supply it or the component throws at module init.
   lazyWithRetry: (await import('react')).lazy,

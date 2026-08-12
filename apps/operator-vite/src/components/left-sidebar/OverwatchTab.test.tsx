@@ -34,6 +34,7 @@ vi.mock('nuqs', () => ({
 }));
 
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: (opts: { queryName: string }) => ({
     ...(opts.queryName === 'overwatch.snapshot' ? H.snapshotResult : H.controlResult),
     invalidate: () => H.invalidated.push(opts.queryName),

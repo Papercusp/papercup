@@ -20,7 +20,7 @@ const H = vi.hoisted(() => ({
   result: { data: [] as unknown[], loading: false, error: null as unknown },
 }));
 
-vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => H.result }));
+vi.mock('@papercusp/sync', () => ({ onSyncBusEvent: () => () => {}, useSyncQuery: () => H.result }));
 // Lexicon resolver mocked to ECHO its key (t('pot') → 'pot') — isolates this
 // test from the flag hook; classic pack renders 'Pots'/'Pot' at runtime
 // (restore-pot-lexicon P-005).

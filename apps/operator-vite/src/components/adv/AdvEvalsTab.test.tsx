@@ -42,6 +42,7 @@ const H = vi.hoisted(() => ({
 }));
 const blank = () => ({ data: [] as unknown[], loading: false, fetching: false, error: null, invalidate: vi.fn() });
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName }: { queryName: string }) => H.results[queryName] ?? blank(),
   useSyncMutate: (path: string, restFallback: (args: unknown) => Promise<unknown>) => {
     H.mutatePaths.push(path);

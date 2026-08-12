@@ -10,7 +10,7 @@ import { computeFacets } from '@papercusp/facets';
 
 // Match the sibling test's mocks so importing the module is cheap + side-effect-free.
 import { vi } from 'vitest';
-vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => ({ data: [{ active: [] }] }) }));
+vi.mock('@papercusp/sync', () => ({ onSyncBusEvent: () => () => {}, useSyncQuery: () => ({ data: [{ active: [] }] }) }));
 vi.mock('@/app/coord/presence-ui', () => ({ LivenessDot: () => null }));
 vi.mock('@/app/harness/AgentInspectorModal', () => ({ default: () => null }));
 vi.mock('@/app/harness/AgentThinkingStream', () => ({ ThinkingDot: () => null }));

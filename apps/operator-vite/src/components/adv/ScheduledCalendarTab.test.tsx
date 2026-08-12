@@ -40,6 +40,7 @@ vi.mock('@/app/harness/Tooltip', () => ({
 }));
 
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: (opts: { queryName: string }) => {
     if (opts.queryName === 'plans.scheduledOccurrences')
       return { data: H.occurrences, loading: false, invalidate: vi.fn() };

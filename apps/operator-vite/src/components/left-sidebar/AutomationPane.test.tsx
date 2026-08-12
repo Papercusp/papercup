@@ -36,6 +36,7 @@ vi.mock('nuqs', () => ({
 }));
 
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: (opts: { queryName: string }) => ({
     ...H.catalogResult,
     invalidate: () => H.invalidated.push(opts.queryName),

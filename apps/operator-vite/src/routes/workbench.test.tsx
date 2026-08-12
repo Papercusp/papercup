@@ -51,6 +51,7 @@ vi.mock('@/app/harness/dock/HarnessDock', () => ({
 // before render (the resolver's projects[] row shape); the route reads `data`.
 let projectRows: unknown[] | undefined = [];
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName }: { queryName: string }) =>
     queryName === 'harnessProjects.lite' ? { data: projectRows } : { data: undefined },
 }));

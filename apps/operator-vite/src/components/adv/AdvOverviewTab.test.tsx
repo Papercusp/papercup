@@ -92,6 +92,7 @@ let reportsResult: { data?: unknown[]; loading?: boolean } = { data: [], loading
 const syncEnabled: Record<string, boolean | undefined> = {};
 const syncArgs: Record<string, unknown> = {};
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: ({
     queryName,
     args,

@@ -40,6 +40,7 @@ let runRows: unknown[] = [];
 const syncEnabled: Record<string, boolean | undefined> = {};
 const syncArgs: Record<string, unknown> = {};
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: ({
     queryName,
     args,

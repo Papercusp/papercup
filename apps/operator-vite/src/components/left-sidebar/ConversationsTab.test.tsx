@@ -39,6 +39,7 @@ const H = vi.hoisted(() => ({
 }));
 const blank = () => ({ data: [] as unknown[], loading: false, fetching: false, error: null as unknown, invalidate: vi.fn() });
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName, enabled }: { queryName: string; enabled?: boolean }) =>
     enabled === false ? blank() : (H.results[queryName] ?? blank()),
 }));

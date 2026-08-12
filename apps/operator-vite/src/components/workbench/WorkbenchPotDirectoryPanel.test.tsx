@@ -20,6 +20,7 @@ vi.mock('@/app/harness/dock/panel-registry', () => ({
 let dirRows: unknown[] | undefined = [];
 const invalidateSpy = vi.fn();
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName }: { queryName: string }) => {
     if (queryName === 'network.hiveDirectory') {
       return { data: dirRows, error: null, invalidate: invalidateSpy };

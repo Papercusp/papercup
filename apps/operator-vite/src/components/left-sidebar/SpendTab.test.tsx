@@ -23,6 +23,7 @@ const H = vi.hoisted(() => ({
 }));
 
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: (opts: { queryName: string; enabled?: boolean }) => {
     H.queried.push({ queryName: opts.queryName, enabled: opts.enabled });
     return { ...H.catalogResult, invalidate: () => {} };

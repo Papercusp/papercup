@@ -1,4 +1,4 @@
-# Rubrics and scorecards — measuring what "good" means
+# Rubrics and scorecards — measuring what \"good\" means
 URL: /internal/docs/system/rubrics-scorecards
 
 The shared grading standards agents propose and ratify (rubrics), the graded observations emitted against them (scorecards), and the freshness/trend machinery that monitors the monitor.
@@ -16,8 +16,9 @@ a rubric.
    noticing a cluster of free-text observations about one characteristic with
    no rubric covering it. Status `proposed`; idempotent on `rubric_id`
    (re-propose updates content).
-2. **Ratify** — `rubrics:ratify` (the Mug/owner gate). An `active` rubric
-   becomes the standard every agent grades against.
+2. **Ratify** — `rubrics:ratify` (the independent-reviewer/owner gate). The
+   proposer cannot ratify its own rubric; an independent reviewer or owner/su promotes
+   it to `active`, where it becomes the standard every agent grades against.
 3. **Grade** — a rubric-graded observation is an `improvements:capture` with
    `rubricRef` + per-criterion `{ rating, evidence }` — never a bare score.
    The Overwatch emits a scorecard every wake; any agent can grade when a
@@ -43,6 +44,13 @@ Scorecards are only useful if they keep arriving, complete:
 
 A stale scorecard is itself a finding — ideation passes treat it as a prompt
 ("why did we stop being able to measure this?").
+
+* **Proposed-rubric dwell watchdog** — a proposal that remains `proposed` past the
+  default 24-hour review window is surfaced as an advisory. The alert names the
+  rubric and points an independent reviewer or owner/su to `rubrics:get` and
+  `rubrics:ratify`; it never requires the retired Mug/Queen path and it preserves
+  the proposer≠ratifier rule. Tune or disable it with
+  `PAPERCUSP_RUBRIC_PROPOSAL_DWELL_THRESHOLD_SEC` (a value `<=0` disables it).
 
 ## The typed authoring/evaluation/release workflow (2026-07-15)
 

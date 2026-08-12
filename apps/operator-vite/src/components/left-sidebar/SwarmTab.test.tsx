@@ -41,6 +41,7 @@ const H = vi.hoisted(() => ({
 // from `null` it would type the whole field as null and reject one.
 const blank = () => ({ data: [] as unknown[], loading: false, fetching: false, error: null as unknown, invalidate: vi.fn() });
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName }: { queryName: string }) => H.results[queryName] ?? blank(),
 }));
 // The lexicon resolver is mocked to ECHO its key (so t('fleet') → 'fleet') —

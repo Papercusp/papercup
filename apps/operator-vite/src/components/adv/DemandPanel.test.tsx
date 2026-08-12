@@ -12,6 +12,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 
 let demandResult: Record<string, unknown> = { data: [], loading: false, fetching: false, error: null, invalidate: vi.fn() };
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: () => demandResult,
 }));
 

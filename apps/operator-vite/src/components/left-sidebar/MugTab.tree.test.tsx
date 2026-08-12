@@ -28,6 +28,7 @@ const H = vi.hoisted(() => ({
 }));
 
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: (opts: { queryName: string }) => {
     if (opts.queryName === 'harnessProjects.lite') return H.projectsResult;
     if (opts.queryName === 'agentConfig.modelTiersBaseline') return H.modelTiersResult;

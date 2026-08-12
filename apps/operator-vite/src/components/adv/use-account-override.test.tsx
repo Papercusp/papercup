@@ -12,6 +12,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 const { syncRows, invalidateSpy } = vi.hoisted(() => ({ syncRows: [] as unknown[], invalidateSpy: vi.fn() }));
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: () => ({ data: syncRows, loading: false, fetching: false, error: null, invalidate: invalidateSpy }),
 }));
 

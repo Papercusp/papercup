@@ -24,6 +24,7 @@ const H = vi.hoisted(() => ({
   useSyncQuery: vi.fn((..._args: unknown[]) => ({ data: H.policy, loading: false, error: null })),
 }));
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: (...args: unknown[]) => H.useSyncQuery(...args),
 }));
 vi.mock('@papercusp/flags/client', () => ({ useFlag: () => H.armed }));

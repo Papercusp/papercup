@@ -54,6 +54,7 @@ vi.mock('nuqs', () => ({
 let projectRows: unknown[] | undefined = [];
 let projectsError: Error | null = null;
 vi.mock('@papercusp/sync', async () => ({
+  onSyncBusEvent: () => () => {},
   // WI-6948: see AdvShell.test.tsx — TasksRunningPill's lazyWithRetry is re-exported
   // from this package, so a factory omitting it breaks the suite at import time.
   lazyWithRetry: (await import('react')).lazy,

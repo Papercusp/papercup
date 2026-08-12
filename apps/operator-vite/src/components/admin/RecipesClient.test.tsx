@@ -66,6 +66,7 @@ const CANDIDATES_ENVELOPE = {
 let recipesResult: Record<string, unknown>;
 let candidatesResult: Record<string, unknown>;
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: (opts: { queryName: string }) =>
     opts.queryName === 'codeRecipes' ? recipesResult : candidatesResult,
 }));

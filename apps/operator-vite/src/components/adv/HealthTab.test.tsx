@@ -15,6 +15,7 @@ import { nuqsParsers } from '@papercusp/test-config/nuqs-mock';
 // ── @papercusp/sync: reassign a single result object per test (sibling pattern). ──
 let syncResult: Record<string, unknown> = { data: undefined, loading: true, fetching: true, error: null, invalidate: vi.fn() };
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: () => syncResult,
 }));
 

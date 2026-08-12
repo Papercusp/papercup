@@ -24,7 +24,7 @@ vi.mock('@/lib/flag-hooks', () => ({ useFlag: () => true }));
 vi.mock('@/lib/useLexicon', () => ({
   useLexicon: () => (k: string) => ({ pot: 'Hive', cupboard: 'Comb', hive: 'Hive' })[k] ?? k,
 }));
-vi.mock('@papercusp/sync', () => ({ useSyncQuery: () => ({ data: undefined, error: undefined, isLoading: false }) }));
+vi.mock('@papercusp/sync', () => ({ onSyncBusEvent: () => () => {}, useSyncQuery: () => ({ data: undefined, error: undefined, isLoading: false }) }));
 vi.mock('@/app/adv/harnesses/useViewer', () => ({ useViewer: () => ({ viewer: null }), isViewer: () => false }));
 vi.mock('sonner', () => ({ toast: { success: vi.fn(), error: vi.fn() } }));
 vi.mock('@/app/harness/EntryGithubSearchForm', () => ({ EntryGithubSearchForm: () => <div data-testid="gh-search" /> }));

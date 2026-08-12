@@ -21,6 +21,7 @@ const H = vi.hoisted(() => ({
   ] as unknown[],
 }));
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: () => ({ data: H.tiers, loading: false, error: null }),
 }));
 vi.mock('@/app/harness/Select', () => ({

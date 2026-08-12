@@ -150,18 +150,50 @@ export function findRepoRoot(filePath, exists = existsSync) {
 }
 
 /**
- * BUDGET / HARD_CAP straight out of the production module, by AST — never
- * hardcoded here. Returns null when either is absent or non-numeric, which the
- * caller treats as "fail open" rather than substituting a default.
+ * The `new Set<string>([...])` members of ALLOW_OVER_BUDGET, or null when the
+ * declaration is absent or cannot be read statically.
+ *
+ * null means UNKNOWN, never "empty". The distinction is load-bearing for the
+ * blocking sibling: an unknown exemption list must fail open (deny nothing)
+ * rather than deny an edit to a tool that may be grandfathered.
+ */
+function readAllowOverBudget(ts, decl) {
+  const init = decl.initializer;
+  if (!init || !ts.isNewExpression(init)) return null;
+  if (!ts.isIdentifier(init.expression) || init.expression.text !== 'Set') return null;
+  const args = init.arguments;
+  if (!args || args.length === 0) return []; // `new Set<string>()` — empty, and known to be
+  const arr = args[0];
+  if (!ts.isArrayLiteralExpression(arr)) return null;
+  const out = [];
+  for (const el of arr.elements) {
+    const v = staticStringValue(ts, el);
+    if (v === null) return null; // one unmeasurable member poisons the whole list
+    out.push(v);
+  }
+  return out;
+}
+
+/**
+ * BUDGET / HARD_CAP / ALLOW_OVER_BUDGET straight out of the production module,
+ * by AST — never hardcoded here. Returns null when either number is absent or
+ * non-numeric, which the caller treats as "fail open" rather than substituting
+ * a default. `allowOverBudget` is `string[]` when it could be read and `null`
+ * when it could not (see readAllowOverBudget).
  */
 export function readBudgets(ts, sourceText) {
   const sf = ts.createSourceFile('tool-guidance-budget.ts', sourceText, ts.ScriptTarget.Latest, true);
   const found = {};
+  let allowOverBudget = null;
   for (const stmt of sf.statements) {
     if (!ts.isVariableStatement(stmt)) continue;
     for (const decl of stmt.declarationList.declarations) {
       if (!ts.isIdentifier(decl.name) || !decl.initializer) continue;
       const name = decl.name.text;
+      if (name === 'ALLOW_OVER_BUDGET') {
+        allowOverBudget = readAllowOverBudget(ts, decl);
+        continue;
+      }
       if (name !== 'BUDGET' && name !== 'HARD_CAP') continue;
       if (!ts.isNumericLiteral(decl.initializer)) continue;
       found[name] = Number(decl.initializer.text);
@@ -169,7 +201,7 @@ export function readBudgets(ts, sourceText) {
   }
   if (typeof found.BUDGET !== 'number' || typeof found.HARD_CAP !== 'number') return null;
   if (!Number.isFinite(found.BUDGET) || !Number.isFinite(found.HARD_CAP)) return null;
-  return found;
+  return { BUDGET: found.BUDGET, HARD_CAP: found.HARD_CAP, allowOverBudget };
 }
 
 /**

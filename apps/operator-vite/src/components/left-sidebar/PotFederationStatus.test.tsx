@@ -24,6 +24,7 @@ import { cleanup, render, screen } from '@testing-library/react';
 let fedRows: unknown[] | undefined;
 let fedError: Error | null = null;
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName }: { queryName: string }) => {
     if (queryName === 'network.federationStatus') {
       return { data: fedRows, error: fedError, invalidate: () => {} };

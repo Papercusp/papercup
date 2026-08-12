@@ -25,6 +25,7 @@ const syncFixtures = vi.hoisted(() => ({
 }));
 
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName, enabled = true }: { queryName: string; enabled?: boolean }) => ({
     data: !enabled
       ? undefined

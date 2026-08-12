@@ -14,6 +14,7 @@ import { cleanup, render, fireEvent } from '@testing-library/react';
 // Mock the sync layer: one call per queryName, in hook-call order.
 const syncData: Record<string, unknown[]> = {};
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: ({ queryName }: { queryName: string }) => ({ data: syncData[queryName] ?? [] }),
 }));
 // resolveHomeHive lives in its own light module now (WI-4778 — the heavy MugTab
