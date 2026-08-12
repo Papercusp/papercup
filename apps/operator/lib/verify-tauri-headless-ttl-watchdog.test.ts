@@ -108,9 +108,22 @@ describe('EI-18805100008031244 — verify-tauri-headless --boot-only TTL self-wa
   });
 
   it('exports VERIFY_TAURI_HEARTBEAT and documents the refresh + disable knobs to the caller', () => {
-    const printed = src.match(/cat <<EOF\nexport VERIFY_TAURI_PID[\s\S]*?\nEOF/)?.[0];
-    expect(printed).toBeTruthy();
-    expect(printed).toMatch(/export VERIFY_TAURI_HEARTBEAT=\$HEARTBEAT_FILE/);
-    expect(printed).toMatch(/touch "\$WORK\/\.heartbeat"/);
+    const envWriter = src.match(
+      /write_boot_only_env_script\(\) \{[\s\S]*?BOOT_ONLY_ENV_SCRIPT/,
+    )?.[0];
+    expect(envWriter).toBeTruthy();
+    expect(envWriter).toContain("printf 'VERIFY_TAURI_HEARTBEAT=%q\\n' \"$HEARTBEAT_FILE\"");
+    expect(envWriter).toContain(
+      'export VERIFY_TAURI_SCOPE_ENABLED VERIFY_TAURI_SCOPE_UNIT VERIFY_TAURI_HEARTBEAT',
+    );
+    expect(envWriter).toContain('verify_tauri_assert_owned');
+
+    // --boot-only exposes only a source command for the private env file; the
+    // heartbeat refresh and TTL-disable knobs remain documented alongside it.
+    expect(src).toContain("printf 'source %q\\n' \"$BOOT_ONLY_ENV\"");
+    expect(src).toContain('chmod 600 "$BOOT_ONLY_ENV"');
+    expect(src).toContain('touch "$WORK/.heartbeat"');
+    expect(src).toContain('VERIFY_TAURI_BOOT_ONLY_TTL_MIN');
+    expect(src).not.toMatch(/cat <<EOF\nexport VERIFY_TAURI_PID/);
   });
 });
