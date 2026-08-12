@@ -56,6 +56,12 @@ afterEach(() => {
 });
 
 describe('capability:bash — result shape for a code:run script (EI-20066912585022608)', () => {
+  it('routes operator database reads away from psql because shell credentials are scrubbed', () => {
+    const guidance = (bashTool as unknown as { guidance?: { notWhen?: string } }).guidance;
+    expect(guidance?.notWhen).toContain('dev:pg_query');
+    expect(guidance?.notWhen).toContain('strips database credential environment variables');
+  });
+
   it('gives a code-mode caller an OBJECT whose output field carries the real output', async () => {
     const r = await bash.handler({ command: 'echo HELLO-SHAPE-PROBE' }, makeCtx({ codeMode: true }));
 

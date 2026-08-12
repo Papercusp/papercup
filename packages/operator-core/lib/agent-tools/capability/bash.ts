@@ -44,7 +44,7 @@ export default defineTool({
   guidance: {
     when: 'Run any shell command — build, test, git status, file inspection, scripts. For a command that runs longer than ~1–2 min (build, test suite, dev server), pass run_in_background:true and poll capability:bash_output. A background job still has a wall-clock deadline (4h default, 12h max) and is SIGTERMed then SIGKILLed at it — the launch result names the deadline; raise `timeout` for a longer job.',
     notWhen:
-      'To read/write/edit a single file, prefer capability:read / capability:write / capability:edit (they coordinate the file lock and mirror the native editors). For git, prefer capability:git.',
+      'To read/write/edit a single file, prefer capability:read / capability:write / capability:edit (they coordinate the file lock and mirror the native editors). For read-only queries against the operator PostgreSQL database, use dev:pg_query { sql | describe } instead of psql: capability:bash intentionally strips database credential environment variables. For git, prefer capability:git.',
     chaining:
       'run_in_background:true → returns a bash_id → capability:bash_output { bash_id } to read incremental output → capability:bash_kill { bash_id } to stop. Never push (git push is refused).',
     seeAlso: [
