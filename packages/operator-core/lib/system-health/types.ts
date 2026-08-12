@@ -897,12 +897,19 @@ export interface ScoutHealth {
    *  backlog and `allUngraded` only WITH its label; see scout/ungraded-scope.ts. */
   grading: {
     gradedInWindow: number;
-    /** Ungraded + artifact still open + at/after the D-013 epoch floor, all origins. */
+    /** Ungraded + artifact still open + at/after that origin's epoch floor, all origins. */
     actionable: number;
     /** The same, split by producer — su-ideate and scout drain differently. */
     actionableByOrigin: Record<string, number>;
     /** Every ungraded row, any origin/outcome/age. Never render this unlabelled. */
     allUngraded: number;
+    /**
+     * D-014: the forward-only floor APPLIED to each origin in this census. Published
+     * because the counts above are meaningless without it — scout's actionable backlog
+     * drops from 592 to a handful the day its own floor lands, and a reader without the
+     * floor cannot tell that from a producer that stopped filing or a broken query.
+     */
+    epochMsByOrigin: Record<string, number>;
   } | null;
   /**
    * Learning-loop authorship provenance divergence (WI-6338): how far apart the

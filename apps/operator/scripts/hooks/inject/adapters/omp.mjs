@@ -181,4 +181,42 @@ export function render(_port, text, _event) {
 /** @type {{client:'omp'}} */
 export const client = 'omp';
 
-export default { client, portForEvent, parse, render };
+/**
+ * SEAM (P-002 audit): this is the client that HAD the defect, so the declaration
+ * records what it is now and what it must never go back to.
+ *
+ * OMP loads hooks in-process, so there is no stdout the runtime merges for us —
+ * the artifact has to hand the text to the runtime through some API, and WHICH
+ * API is the entire safety question. It previously used
+ * `sendMessage(..., { deliverAs: 'followUp' })`, carrying a comment asserting
+ * that a followUp "queues the context after the current action instead of
+ * cancelling an in-flight tool call." It does precisely the opposite: any queued
+ * message makes the agent loop discard the tool calls it was about to run and
+ * synthesise "Skipped due to pending system advisory". 13/13 measured.
+ *
+ * It now returns the block FROM a `tool_result` handler, whose returned content
+ * the runtime merges into that tool result — the additive property claude and
+ * codex get from stdout, reached through omp's module seam. The delivery POINT
+ * is unchanged (a followUp queued at turn_end already surfaced at the start of
+ * the next turn — the very turn whose call it was killing); only the
+ * cancellation is gone.
+ *
+ * ⛔ `deliverAs: 'nextTurn'` is NOT an alternative. It looks like the obvious
+ * repair and is strictly worse: while streaming it lands in a deferred buffer
+ * whose ONLY drain is a later turn-triggering delivery, so it would trade a
+ * loud, countable tax for a silent hole.
+ *
+ * @type {import('../ports.mjs').DeliverySeam}
+ */
+export const deliverySeam = {
+  mechanism: 'tool-result-merge',
+  artifact: 'apps/operator/scripts/hooks/omp/inject-hook.ts (pi.on("tool_result") return value)',
+  evidence:
+    "Read from the pi runtime's own bundle, not from API names: sendCustomMessage routes a " +
+    'followUp to agent.followUp(), and the agent loop discards pending tool calls whenever a ' +
+    'message is queued. emitToolResult merges a handler\'s returned content into the tool ' +
+    'result instead. Measured before the fix: 13 cancellations, 13 immediately preceded by ' +
+    'one of our blocks, no other cause.',
+};
+
+export default { client, portForEvent, parse, render, deliverySeam };

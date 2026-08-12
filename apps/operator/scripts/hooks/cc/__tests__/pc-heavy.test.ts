@@ -51,6 +51,51 @@ const baseEnv = (extra: Record<string, string> = {}): NodeJS.ProcessEnv => ({
   ...extra,
 });
 
+/**
+ * Wait for an OBSERVABLE STATE instead of guessing a wall-clock duration.
+ *
+ * Every `await sleep(500) // let it grab the slot` in a concurrency suite is a bet that 500ms is
+ * simultaneously ENOUGH (or the test flakes) and NOT MUCH MORE than needed (or the suite is slow).
+ * On this box both halves are wrong at once: a fixed wait sized on an idle machine is too short
+ * under 40 concurrent agents, and pure overhead the rest of the time. Polling the real state is
+ * strictly better on both axes — it returns in ~10ms when the box is idle and still waits as long
+ * as genuinely needed when it is loaded.
+ *
+ * The timeout is a FAILURE, never a silent fall-through: a state that never arrives must fail the
+ * test loudly rather than let the assertion below run against a world that never got set up.
+ */
+async function waitFor(label: string, predicate: () => boolean, timeoutMs = 15_000): Promise<void> {
+  const started = Date.now();
+  for (;;) {
+    if (predicate()) return;
+    if (Date.now() - started >= timeoutMs) {
+      throw new Error(
+        `waitFor(${JSON.stringify(label)}) timed out after ${timeoutMs}ms — the state never arrived. ` +
+          'This is a real failure, not a slow box: the assertions after it would have run against ' +
+          'an unprepared world.',
+      );
+    }
+    await new Promise((r) => setTimeout(r, 10));
+  }
+}
+
+/**
+ * How many of `slots` slot-files are currently flocked BY SOMEONE ELSE.
+ *
+ * Probes the same primitive pc-heavy.sh itself uses (`flock -n` on `$PC_HEAVY_DIR/slot.$i`,
+ * pc-heavy.sh:774) rather than inferring occupancy from a lockfile's existence — the slot file is
+ * created on open and outlives the holder, so presence proves nothing and absence proves nothing.
+ * A failed non-blocking acquire is the only honest evidence that a slot is held.
+ */
+function heldSlotCount(slotsDir: string, slots: number): number {
+  let held = 0;
+  for (let i = 0; i < slots; i += 1) {
+    const probe = spawnSync('flock', ['-n', join(slotsDir, `slot.${i}`), 'true'], { stdio: 'ignore' });
+    if (probe.status !== 0) held += 1;
+  }
+  return held;
+}
+
 function runSync(args: string[], env: Record<string, string> = {}, cwd?: string) {
   // cwd: dir — a fresh, non-git tmpdir per test, so the tree-state token's
   // git-status probe (EI-18688348461605365) naturally no-ops unless a test
