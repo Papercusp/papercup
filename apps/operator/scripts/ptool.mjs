@@ -1061,7 +1061,7 @@ function printCatalog(grouped, filter) {
   }
 }
 
-const USAGE = `ptool — call any Papercusp defineTool endpoint from the terminal.
+export const PTOOL_USAGE = `ptool — call any Papercusp defineTool endpoint from the terminal.
 
   ptool                         interactive: pick service → endpoint → args
   ptool <group:verb>            skip the pickers, prompt for that tool's args
@@ -1130,7 +1130,7 @@ async function pickEndpoint(tools) {
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   if (args.help) {
-    console.log(USAGE);
+    console.log(PTOOL_USAGE);
     return;
   }
   const operatorUrl = args.url || OPERATOR_URL;

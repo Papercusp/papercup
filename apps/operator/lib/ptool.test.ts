@@ -25,6 +25,7 @@ import {
   shouldPrintRawResult,
   resolveTokenPath,
   PTOOL_TRUNCATED_RESULT_MESSAGE,
+  PTOOL_USAGE,
 } from '../scripts/ptool.mjs';
 
 describe('ptool parseArgs', () => {
@@ -111,6 +112,15 @@ describe('ptool parseArgs', () => {
       tool: 'code:run',
       script: '-',
     });
+  });
+});
+
+describe('ptool usage guidance', () => {
+  it('makes quoting-safe JSON the primary scripting path', () => {
+    expect(PTOOL_USAGE).toContain('ptool <group:verb> --json - <<\'EOF\'');
+    expect(PTOOL_USAGE).toContain('ptool <group:verb> --json-file payload.json');
+    expect(PTOOL_USAGE).toContain('especially loop:checkpoint checks/walls');
+    expect(PTOOL_USAGE).toContain('cannot safely carry an apostrophe');
   });
 });
 
