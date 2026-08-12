@@ -5,8 +5,8 @@
 // allocating the growing memory, with low overhead + tiny output.
 //
 // Usage: node scripts/leak-sample.mjs <pid> [durationMs] [inspectorPort]
-import WebSocket from 'ws';
 import { setTimeout as sleep } from 'node:timers/promises';
+import { closeInspector, createCdpClient, discoverInspector } from './cdp-inspector.mjs';
 
 const pid = Number(process.argv[2]);
 const durationMs = Number(process.argv[3] || 45000);
@@ -18,38 +18,37 @@ try { process.kill(pid, 'SIGUSR1'); } catch (e) { console.error('SIGUSR1 failed:
 await sleep(1200);
 
 // 2) discover the inspector ws url (Node picks startPort, or next free)
-async function findWs() {
-  for (let port = startPort; port < startPort + 6; port++) {
-    try {
-      const r = await fetch(`http://127.0.0.1:${port}/json/list`, { signal: AbortSignal.timeout(1500) });
-      const list = await r.json();
-      const t = list.find((x) => x.webSocketDebuggerUrl);
-      if (t) return t.webSocketDebuggerUrl;
-    } catch { /* try next */ }
-  }
-  return null;
+let inspector = null;
+for (let i = 0; i < 8 && !inspector; i += 1) {
+  inspector = await discoverInspector({ startPort });
+  if (!inspector) await sleep(700);
 }
-let wsUrl = null;
-for (let i = 0; i < 8 && !wsUrl; i++) { wsUrl = await findWs(); if (!wsUrl) await sleep(700); }
-if (!wsUrl) { console.error('could not find inspector ws url (SIGUSR1 may need --inspect support)'); process.exit(1); }
-console.error('inspector:', wsUrl);
+if (!inspector) { console.error('could not find inspector ws url (SIGUSR1 may need --inspect support)'); process.exit(1); }
+console.error('inspector:', inspector.wsUrl);
 
-const ws = new WebSocket(wsUrl, { maxPayload: 1024 * 1024 * 1024 });
-let id = 0;
-const pending = new Map();
-const send = (method, params) => new Promise((res, rej) => { const i = ++id; pending.set(i, { res, rej }); ws.send(JSON.stringify({ id: i, method, params })); });
-ws.on('message', (buf) => {
-  const m = JSON.parse(buf.toString());
-  if (m.id && pending.has(m.id)) { const p = pending.get(m.id); pending.delete(m.id); m.error ? p.rej(new Error(m.error.message)) : p.res(m.result); }
-});
-await new Promise((r) => ws.on('open', r));
+const client = createCdpClient(inspector.wsUrl);
+await client.connect();
 
-await send('HeapProfiler.enable');
-await send('HeapProfiler.startSampling', { samplingInterval: 16384 });
-console.error(`sampling ${durationMs}ms ...`);
-await sleep(durationMs);
-const { profile } = await send('HeapProfiler.stopSampling');
-ws.close();
+let profile;
+let samplingError = null;
+try {
+  await client.send('HeapProfiler.enable');
+  await client.send('HeapProfiler.startSampling', { samplingInterval: 16384 });
+  console.error(`sampling ${durationMs}ms ...`);
+  await sleep(durationMs);
+  ({ profile } = await client.send('HeapProfiler.stopSampling'));
+} catch (error) {
+  samplingError = error;
+}
+
+let closeError = null;
+try {
+  await closeInspector(client, inspector.port);
+} catch (error) {
+  closeError = error;
+}
+if (samplingError) throw samplingError;
+if (closeError) throw closeError;
 
 // 3) aggregate self-allocated bytes per call frame (function@file:line)
 const bySite = new Map();
