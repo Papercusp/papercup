@@ -1205,6 +1205,28 @@ MAX_BOOT_ATTEMPTS="${VERIFY_TAURI_MAX_BOOT_ATTEMPTS:-2}"
 port_lost_to_squatter() {
   grep -qE "fatal uncaughtException.*EADDRINUSE.*:$DEV_PORT\b" "$LOG" 2>/dev/null
 }
+
+# Cargo's markers arrive COLORIZED. tauri's DevCommand invokes
+# `cargo run --no-default-features --color always --`, and `--color always`
+# forces SGR escapes even when stdout is a file rather than a TTY, so the
+# binary-start line lands in $LOG as:
+#
+#     \e[1m\e[92m     Running\e[0m `/path/to/debug/papercusp-desktop`
+#
+# The original predicate here was `grep -qE "Running .*papercusp-desktop"`,
+# which requires a LITERAL SPACE after "Running" — but the next byte is ESC.
+# It could therefore NEVER match, at any budget: every run burned the whole
+# BUILD_TIMEOUT and died with "desktop binary did not start ... (cargo build
+# phase)" while the desktop was up and serving. Raising the budget only made
+# the same failure take longer (measured: 300s -> 1200s changed nothing but
+# the wall clock).
+#
+# Strip SGR sequences before matching rather than loosening the regex, so this
+# stays correct wherever cargo chooses to place the escapes.
+strip_ansi() { sed -e 's/\x1b\[[0-9;]*[a-zA-Z]//g'; }
+desktop_binary_started() {
+  strip_ansi < "$LOG" 2>/dev/null | grep -qE "Running[[:space:]]+.*papercusp-desktop"
+}
 while :; do
   BOOT_ATTEMPTS=$((BOOT_ATTEMPTS + 1))
   write_and_launch_tauri
@@ -1216,7 +1238,7 @@ while :; do
   log "waiting up to ${BUILD_TIMEOUT}s for the desktop binary to start (pid=$TAURI_PID, log=$LOG, attempt=$BOOT_ATTEMPTS/$MAX_BOOT_ATTEMPTS)"
   BUILD_ELAPSED=0
   PORT_LOST=0
-  until grep -qE "Running .*papercusp-desktop" "$LOG" 2>/dev/null; do
+  until desktop_binary_started; do
     if port_lost_to_squatter; then PORT_LOST=1; break; fi
     kill -0 "$TAURI_PID" 2>/dev/null || boot_failure_diag "tauri dev exited before the desktop binary started"
     [ "$BUILD_ELAPSED" -ge "$BUILD_TIMEOUT" ] && boot_failure_diag "desktop binary did not start within ${BUILD_TIMEOUT}s (cargo build phase)"
