@@ -86,6 +86,19 @@ const COVERED_TABLES = [
   'work_items',
   'harness_plans',
   'engineer_issues',
+  // ⚠ `schema_migrations` and `test_runs` BELONG HERE and are deliberately NOT
+  // here yet — plan `sql-escape-tool-routing-2026-08-12` P-009, tracked as
+  // WI-38272. Both earned an authoritative verb in tranche 2 (`db:migrations`,
+  // `testing:runs`), audited against frozen corpus evidence in
+  // `bash-substitution/pairs/sql-reads.ts`. Adding them was measured and surfaces
+  // 7 real violations in agent-insights docs written before those verbs existed.
+  //
+  // They are held out because this lint is a GATING CI step
+  // (.github/workflows/test.yml, no continue-on-error), so widening it in the
+  // same change would red the gate for the whole fleet until 7 docs are
+  // rewritten — and those are .mdx PROJECTIONS of Postgres, so each needs a
+  // `docs:author` pass, not an edit. Widen this list in the SAME change that
+  // lands those rewrites, never before.
 ];
 
 /** A SELECT … FROM <covered table> — the "run this" shape. Matched over a
@@ -158,7 +171,14 @@ const TOOL_FOR = {
   work_items: 'work_items:claimable (claim floors) / work_items:list (filtered slice)',
   work_items_claimable: 'work_items:claimable — the view is NOT the claim verdict',
   harness_plans: 'plans:list (filters, groupBy/aggregateOnly) / plans:items',
-  engineer_issues: 'work_items:list / improvements:capture',
+  // issues:list has NO id filter (D-006), so a by-id read is work_items:get —
+  // naming only the list verb here would send an author to a verb that cannot
+  // express the read they are documenting.
+  engineer_issues: 'issues:list (text/state slices) / work_items:get (a single item by id)',
+  // Kept in step with COVERED_TABLES above: these two are staged for WI-38272 so
+  // the message is ready the moment the table entry lands.
+  schema_migrations: 'db:migrations — and it returns a verdict where an empty result is ambiguous',
+  test_runs: "testing:runs — typed status enum, so a doc cannot teach status='failed' (which never matches)",
 };
 
 const PATHSPECS = [
@@ -265,6 +285,9 @@ function lineOffset(src, lineno) {
  */
 export function classifyHit({ file, lineno, content, rawSrc }) {
   if (isTestFile(file) || !rawSrc) return null;
+  // Read from RAW: the markers are HTML comments, and a masked read could blank
+  // them exactly as it would blank a justification marker.
+  if (inGeneratedRegion(rawSrc, lineno)) return null;
   const src = detectionText(file, rawSrc);
   const lines = src.split('\n');
 
@@ -351,6 +374,24 @@ if (RUN_AS_MAIN && process.argv.includes('--self-test')) {
       'apps/operator-docs/src/content/docs/agent-insights/x.mdx',
       `Run this to see the queue:\n\n\`\`\`sql\n${SQL}\n\`\`\`\n`,
       4,
+      'work_items',
+    ],
+    // [FALSIFIES + ANCHOR] the generated-region exemption, as a PAIR. The same
+    // snippet is fed twice and must be classified DIFFERENTLY, so neither case
+    // can pass by accident: exempting everything would break case 8, and
+    // exempting nothing would break case 7.
+    [
+      'a gen:tool-routing row is exempt — its whole third column is counter-example SQL, and the block is machine-written',
+      'CLAUDE.md',
+      `# guide\n\n<!-- BEGIN GENERATED gen:tool-routing — do not edit by hand -->\n| want | use | not |\n|---|---|---|\n| open items | \`work_items:list\` | ${SQL} |\n<!-- END GENERATED gen:tool-routing -->\n`,
+      6,
+      null,
+    ],
+    [
+      'the SAME snippet OUTSIDE the generated block still reports (the exemption is a region, not a file)',
+      'CLAUDE.md',
+      `# guide\n\n<!-- BEGIN GENERATED gen:tool-routing — do not edit by hand -->\n| want | use | not |\n<!-- END GENERATED gen:tool-routing -->\n\nHand-written advice: run ${SQL}\n`,
+      7,
       'work_items',
     ],
   ];
