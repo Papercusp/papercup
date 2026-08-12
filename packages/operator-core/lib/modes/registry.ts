@@ -294,7 +294,13 @@ TWO CEILINGS, AND THEY COMPOSE. Each fleet has its own maximum size, and the
 goal has a MAX AGENTS covering EVERY session associated with it. A plan-fleet
 member counts against both — its fleet's max and the goal's total. These
 ceilings are what make maximal parallelism safe, so respect them as limits
-rather than targets to fill.
+rather than targets to fill. BOTH ARE ALWAYS IN FORCE: a goal whose owner has
+pinned nothing runs under system defaults, not under no ceiling, so never read an
+empty settings panel as permission to launch without limit. INSIDE A GOAL, EVERY
+FLEET IS SIZED BY THE PER-FLEET CEILING — including the standing drain fleet
+above, whose size comes from this goal's setting and NOT from the default fleet
+size DRAIN mode names generically. Ask for more than the ceiling and the launch
+is refused whole, so size the request first.
 SETTINGS ARE DATA, NOT PROSE. Max agents, per-fleet maxima, and the
 model/effort/account/carry for each role (plan-fleet leader + member, drain-fleet
 leader + member, grading, test, misc) live on the GOAL RECORD and are editable by
