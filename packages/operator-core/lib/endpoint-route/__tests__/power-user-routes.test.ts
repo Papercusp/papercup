@@ -14,6 +14,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { randomBytes } from 'node:crypto';
+import { setEntityEnum } from '@papercusp/tooldef';
 // Populate the projected-tool REGISTRY so the tools/list profile-gate test
 // below sees the real catalog. (Sibling tool tests import this too; relying on
 // registerAllRoutes → catchall to transitively load it is fragile.)
@@ -375,6 +376,14 @@ describe('GET /api/agent-bundle', () => {
 /* ─── 4. POST /api/mcp?power_user=1 (tools/list profile gate) ─────────── */
 
 describe('POST /api/mcp?power_user=1 (tools/list profile gate)', () => {
+  // tools/list applies every entity-enum loader while building advertised schemas.
+  // This suite is unit-tier: bind empty loaders so profile filtering exercises the
+  // real route without inheriting the production DB-backed pot/harness loaders.
+  beforeEach(() => {
+    setEntityEnum('pot', async () => []);
+    setEntityEnum('harness', async () => []);
+  });
+
   async function freshAccessToken(): Promise<string> {
     const res = await postJson('/api/agent-tokens/power-user', {});
     const j = (await res.json()) as { access_token: string };
