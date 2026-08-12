@@ -71,6 +71,10 @@ import {
   VITEST_TEST_FILE_SOURCE,
   parseFailingFilesLine,
 } from '../../../../scripts/lib/vitest-summary.mjs';
+// Keep rescue command resolution aligned with the affected-test runner. These packages are
+// deliberately outside the root npm workspaces (the lockfile carries them as standalone links),
+// so `npm --workspace <name>` cannot address them from the superproject root.
+import { STANDALONE_PACKAGE_DIRS } from '../../../../scripts/lib/test-runner-classes.mjs';
 // EI-19395755190419540 — the orchestrator's stdout tags, DEFINED one layer down so the log
 // PARSER (operator-core) and this EMITTER can share one literal across the package boundary.
 // Imported (not merely re-exported) because `log()` below calls orchestratorStdoutTag() on
@@ -2324,6 +2328,62 @@ export interface FailingFile {
   workspace: string;
   /** The test file path as vitest reports it (workspace-relative, e.g. `lib/foo.test.ts`). */
   file: string;
+}
+
+/** The npm invocation used to run a workspace-scoped test or rescue script. */
+export interface WorkspaceTestInvocation {
+  cmd: 'npm';
+  args: string[];
+  cwd: string;
+}
+
+/**
+ * Resolve a workspace label emitted by the affected runner to the directory that owns it.
+ *
+ * Most packages are root npm workspaces and must be addressed with `--workspace` from the
+ * superproject. The affected runner also intentionally selects standalone packages (currently
+ * the desktop submodule, sse, and file-claim) that are not root workspaces. For those, npm must
+ * run from the package directory, otherwise it fails before executing the named test with
+ * "No workspaces found". The package-name lookup keeps this driven by package.json rather than
+ * by a special case for `@papercusp/desktop`.
+ */
+export function resolveWorkspaceTestInvocation(
+  rootDir: string,
+  workspace: string,
+  forwardedArgs: readonly string[],
+): WorkspaceTestInvocation {
+  const standaloneDir = STANDALONE_PACKAGE_DIRS.find((dir) => {
+    if (!existsSync(path.join(rootDir, dir, 'package.json'))) return false;
+    try {
+      const pkg = JSON.parse(readFileSync(path.join(rootDir, dir, 'package.json'), 'utf8')) as { name?: unknown };
+      return pkg.name === workspace || dir === workspace;
+    } catch {
+      // A malformed package.json cannot be a valid standalone target. Fall through to the
+      // root-workspace command, which preserves the existing fail-closed execution path.
+      return false;
+    }
+  });
+  if (standaloneDir) {
+    return {
+      cmd: 'npm',
+      args: ['run', 'test', '--', ...forwardedArgs],
+      cwd: path.join(rootDir, standaloneDir),
+    };
+  }
+  return {
+    cmd: 'npm',
+    args: ['run', 'test', '--workspace', workspace, '--', ...forwardedArgs],
+    cwd: rootDir,
+  };
+}
+
+/** Resolve a workspace-scoped non-test script using the same standalone-package mapping. */
+function resolveWorkspaceScriptInvocation(rootDir: string, workspace: string, script: string): WorkspaceTestInvocation {
+  const testInvocation = resolveWorkspaceTestInvocation(rootDir, workspace, []);
+  if (testInvocation.cwd !== rootDir) {
+    return { cmd: 'npm', args: ['run', script], cwd: testInvocation.cwd };
+  }
+  return { cmd: 'npm', args: ['run', script, '-w', workspace], cwd: rootDir };
 }
 
 /** One file's verdict from the DIAGNOSTIC per-file split of a failed tip re-run.
