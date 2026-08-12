@@ -657,20 +657,19 @@ export default defineTool({
           timeoutMs,
           durationMs,
           // The whole point of the clamp: a timeout must hand back a WORKING next step, not a
-          // dead end. `capability:inspect` already runs a detached, uncapped typecheck and its
-          // `onlyPaths` does server-side filtering to just the files you changed — which is the
-          // real answer for a project this size (EI-18776865728050036).
+          // dead end. The repo's operator-core baseline gate is the reachable full-project
+          // fallback; keep the hint on that canonical entrypoint rather than suggesting a
+          // detached tool that is unavailable from every su session.
           hint:
             `hit the ${(timeoutMs / 1000).toFixed(0)}s foreground cap (held below the ~55s MCP transport limit so you get this instead of an opaque CONNECTION_CLOSED). ` +
             `CHEAPEST NEXT STEP (one call): re-run scoped to your own files — ` +
             `build:typecheck { project: '${relative(root, resolved) || '.'}', files: ['<your changed files>'], scopeToFiles: true }. ` +
             `That compiles only those files + their import graph; cost tracks YOUR import graph, not the project (measured: leaf 2.6s, hub 63s), so it fixes this for a leaf file but a hub can still time out. ` +
             `It also does NOT see errors your change caused in files that do not import yours. ` +
-            `For the full project-wide answer, run it detached instead: ` +
-            // EI-19331889744736428: `capability:inspect`'s `package` is a CWD, so it needs the
-            // DIRECTORY holding tsconfig.json — NOT `resolved` (a tsconfig PATH, this tool's own
-            // `project` convention). Passing the path there fails with an opaque `spawn ENOTDIR`.
-            `capability:inspect { check: 'typecheck', package: '${relative(root, dirname(resolved)) || '.'}', run_in_background: true, onlyPaths: ['<your changed files>'] }, then poll capability:bash_output. ` +
+            `For the full project-wide answer, run the repo's operator-core baseline gate instead: ` +
+            `npm run lint:tsc -- --files=path/to/changed.ts,path/to/another.ts. ` +
+            `This uses the configured heap and per-file baseline, while the explicit file list ` +
+            `avoids attributing a peer's dirty working-tree edits to you. ` +
             `Do NOT fall back to a hand-rolled \`npx tsc\`: \`-p .\` checks ZERO files here, and piping a real run through \`head\`/\`grep\` truncates PATH-ORDERED output, so your file can be silently absent and read as clean.`,
           output: outcome.output.slice(-2000),
         },

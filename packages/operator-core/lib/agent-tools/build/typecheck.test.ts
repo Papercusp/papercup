@@ -296,21 +296,20 @@ describe('EI-18776865728050036 — no FOREGROUND subprocess tool may declare a b
 });
 
 /**
- * EI-19331889744736428: `capability:inspect`'s `package` arg is a CWD, so it needs the
- * DIRECTORY holding tsconfig.json. `resolved` here is the tsconfig PATH (this tool's own
- * `project` convention — see `resolveProjectPath`), so the timeout hint must wrap it in
- * `dirname(...)` before handing it to `capability:inspect`. Reusing `resolved` bare — the
- * regression this guards against — is exactly the shape that fails with an opaque `spawn
- * ENOTDIR` (confirmed live: EI-19332092038566982, 6/6 sampled watchdog failures).
+ * EI-20269996848904497: timeout recovery must use a route reachable from su.
+ * `capability:inspect` and `capability:bash_output` are not exposed on that surface; the
+ * repo's operator-core `lint:tsc` entrypoint is the canonical full-project fallback.
  */
-describe('EI-19331889744736428: the capability:inspect timeout hint passes a DIRECTORY, not a tsconfig path', () => {
-  it("the hint's `package` argument wraps `resolved` in dirname(...)", () => {
+describe('EI-20269996848904497: the timeout hint names the reachable operator-core gate', () => {
+  it('uses explicit lint:tsc file scoping and no unreachable detached-tool route', () => {
     const src = readFileSync(join(__dirname, 'typecheck.ts'), 'utf8');
-    const hintLine = src.split('\n').find((l) => l.includes("capability:inspect { check: 'typecheck'"));
-    expect(hintLine, 'the capability:inspect hint line must exist in the timeout branch').toBeDefined();
-    expect(hintLine).toMatch(/package: '\$\{relative\(root, dirname\(resolved\)\)/);
-    // The regression itself: the old wrong shape passed `resolved` (the tsconfig FILE) bare.
-    expect(hintLine).not.toMatch(/package: '\$\{relative\(root, resolved\)/);
+    const timeoutStart = src.indexOf('if (outcome.timedOut)');
+    const diagnosticsStart = src.indexOf('const diagnostics = parseTscDiagnostics(outcome.output);', timeoutStart);
+    const timeoutBranch = src.slice(timeoutStart, diagnosticsStart);
+    expect(timeoutStart).toBeGreaterThanOrEqual(0);
+    expect(diagnosticsStart).toBeGreaterThan(timeoutStart);
+    expect(timeoutBranch).toMatch(/npm run lint:tsc -- --files=path\/to\/changed\.ts,path\/to\/another\.ts/);
+    expect(timeoutBranch).not.toMatch(/capability:(inspect|bash_output)/);
   });
 });
 
