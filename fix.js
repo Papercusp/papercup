@@ -1,4 +1,4 @@
 const fs = require('fs');
-let content = fs.readFileSync('packages/operator-core/lib/trace-vite-externalized.test.ts', 'utf8');
-content = content.replace(/import \{.*?\} from '\.\.\/\.\.\/\.\.\/scripts\/trace-vite-externalized\.mjs';/s, `// eslint-disable-next-line import/no-relative-packages\nimport {\n  reachableStatic,\n  computeEagerExternalized,\n  shortestStaticChain,\n  decideEager,\n  ALLOWED_EAGER_BUILTINS,\n  parseJsonFileArg,\n// @ts-expect-error — the .mjs script has no declaration file\n} from '../../../scripts/trace-vite-externalized.mjs';`);
-fs.writeFileSync('packages/operator-core/lib/trace-vite-externalized.test.ts', content);
+let content = fs.readFileSync('packages/operator-core/lib/search/refill-prose-vectors-727.test.ts', 'utf8');
+content = content.replace(/\/\/ @ts-ignore — pure JS script, no \.d\.ts\nimport \{ classifyPass \} from '\.\.\/\.\.\/\.\.\/\.\.\/scripts\/refill-prose-vectors-727\.mjs';/s, `// eslint-disable-next-line @typescript-eslint/ban-ts-comment\nimport {\n  classifyPass,\n// @ts-expect-error — pure JS script\n} from '../../../../scripts/refill-prose-vectors-727.mjs';`);
+fs.writeFileSync('packages/operator-core/lib/search/refill-prose-vectors-727.test.ts', content);
