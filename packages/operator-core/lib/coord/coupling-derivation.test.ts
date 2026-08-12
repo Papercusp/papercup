@@ -205,7 +205,7 @@ describe('deriveCouplingsFromRoster ∘ resolveCoupledPeers — the union contra
       {
         ownerId: 'su-peer',
         source: 'derived',
-        derivedBecause: 'both awaiting gate:1; you both hold locks in x.ts',
+        derivedBecause: 'both awaiting gate:1; you are both working in x.ts',
         // D-087: the typed half survives END-TO-END, derivation through union —
         // asserted here on the real path, not only on hand-built rows.
         derivedRelations: ['awaits', 'holds-a-lock-on'],
@@ -297,13 +297,13 @@ describe('deriveCouplingsFromHeldFiles', () => {
       'su-me',
       held({ 'su-me': ['a/x.ts'], 'su-peer': ['a/x.ts', 'b/y.ts'], 'su-other': ['c/z.ts'] }),
     );
-    expect(derived).toEqual([{ ownerId: 'su-peer', relation: 'holds-a-lock-on', because: 'you both hold locks in a/x.ts' }]);
+    expect(derived).toEqual([{ ownerId: 'su-peer', relation: 'holds-a-lock-on', because: 'you are both working in a/x.ts' }]);
   });
 
   it('bounds how many shared paths it names and counts the rest', () => {
     const paths = ['a.ts', 'b.ts', 'c.ts', 'd.ts'];
     const derived = deriveCouplingsFromHeldFiles('su-me', held({ 'su-me': paths, 'su-peer': paths }));
-    expect(derived[0]?.because).toBe('you both hold locks in a.ts, b.ts (+2 more shared paths)');
+    expect(derived[0]?.because).toBe('you are both working in a.ts, b.ts (+2 more shared paths)');
   });
 
   it('is empty when the caller holds nothing (no self entry ⇒ no overlap)', () => {
@@ -520,7 +520,7 @@ describe('deriveCouplings (orchestrator)', () => {
     });
     expect(derived.map((d) => d.because)).toEqual([
       'both awaiting gate:1',
-      'you both hold locks in x.ts',
+      'you are both working in x.ts',
       'your P-005 is blocked by P-003, which they hold',
       'recent coord exchange',
     ]);
@@ -529,7 +529,7 @@ describe('deriveCouplings (orchestrator)', () => {
     const peers = resolveCoupledPeers('su-me', derived, []);
     expect(peers).toHaveLength(1);
     expect(peers[0]?.derivedBecause).toBe(
-      'both awaiting gate:1; you both hold locks in x.ts; your P-005 is blocked by P-003, which they hold; recent coord exchange',
+      'both awaiting gate:1; you are both working in x.ts; your P-005 is blocked by P-003, which they hold; recent coord exchange',
     );
   });
 
