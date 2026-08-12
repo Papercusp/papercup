@@ -292,6 +292,45 @@ async function lookupSpawnedRole(cupId: string): Promise<string | null> {
   }
 }
 
+/**
+ * EI-20079462322478221: a claim-spec write is a control-plane change, so it must
+ * wake a member parked on the value-derived `work-item:claimable` filter even
+ * when no future claimable payload can satisfy that old snapshot. The event
+ * engine owns the atomic await claim + durable delivery; this seam only resolves
+ * the affected subscribers. A fleet target uses the live fleet audience so a
+ * departed owner is never accidentally woken after it joins another fleet.
+ *
+ * Best-effort by design: the spec write is already durable and scheduler:get_next
+ * remains authoritative. A roster/await-plane failure is surfaced to the caller,
+ * rather than turning a successful spec write into a false failure.
+ */
+export async function wakeClaimableAwaitersAfterSpecChange(input: {
+  cupId: string;
+  fleet?: string;
+  specId?: string | null;
+  revision?: number | null;
+}): Promise<{ woken: number; warning?: string }> {
+  try {
+    const subscriberIds = input.fleet
+      ? await (await import('../coordination/audience-host')).hostAudienceResolvers.listFleetMembers(input.fleet)
+      : [input.cupId];
+    const { wakeClaimableAwaitersForSubscribers } = await import('../../events/await/engine');
+    return {
+      woken: await wakeClaimableAwaitersForSubscribers({
+        subscriberIds,
+        specId: input.specId,
+        revision: input.revision,
+      }),
+    };
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    return {
+      woken: 0,
+      warning: `claim-spec revision stored, but parked claimable awaiters could not be woken: ${detail}`,
+    };
+  }
+}
+
 export default defineTool({
   name: 'scheduler:set_claim_spec',
   profile: 'engineer',
@@ -375,15 +414,26 @@ export default defineTool({
     // and no admission preview; the store's DELETE tombstones any hive-federated row.
     if (args.clear) {
       const { clearClaimSpec, fleetSpecBeeKey } = await import('../../scheduler/claim-spec-store');
-      const targetBeeId = args.fleet ? fleetSpecBeeKey(args.fleet.trim()) : (args.cupId as string);
+      const fleetSlug = args.fleet?.trim();
+      const targetBeeId = fleetSlug ? fleetSpecBeeKey(fleetSlug) : (args.cupId as string);
       const cleared = await clearClaimSpec({
         cupId: targetBeeId,
         workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
       });
+      const wake = cleared.cleared
+        ? await wakeClaimableAwaitersAfterSpecChange({
+            cupId: targetBeeId,
+            fleet: fleetSlug,
+            specId: null,
+            revision: null,
+          })
+        : { woken: 0 };
       return {
         data: {
           ...cleared,
-          target: args.fleet ? { fleet: args.fleet.trim(), beeKey: targetBeeId } : { cupId: targetBeeId },
+          claimableAwaitersWoken: wake.woken,
+          ...(wake.warning ? { warning: wake.warning } : {}),
+          target: fleetSlug ? { fleet: fleetSlug, beeKey: targetBeeId } : { cupId: targetBeeId },
         },
       };
     }
@@ -526,6 +576,12 @@ export default defineTool({
       updatedBy: ident.ownerId,
       potSlug,
     });
+    const wake = await wakeClaimableAwaitersAfterSpecChange({
+      cupId: targetBeeId,
+      fleet: args.fleet?.trim(),
+      specId: validated.spec.specId,
+      revision: res.revision ?? null,
+    });
 
     // Best-effort inert-spec guard (coding-hive-bee-vs-coding-factory-scoper-2026-06-23): a claim
     // spec only STEERS a SELF-PULLING agent (a coding-hive bee, the queen, or an su fleet
@@ -565,6 +621,10 @@ export default defineTool({
     if (roleWarning) {
       // Append — never clobber the store's WI-1564 strand warning.
       out.warning = out.warning ? `${out.warning as string}\n${roleWarning}` : roleWarning;
+    }
+    out.claimableAwaitersWoken = wake.woken;
+    if (wake.warning) {
+      out.warning = out.warning ? `${out.warning as string}\n${wake.warning}` : wake.warning;
     }
 
     // EI-6079: best-effort wakeability check, same advisory-only posture as the

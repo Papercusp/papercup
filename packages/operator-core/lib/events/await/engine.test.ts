@@ -25,6 +25,9 @@ const h = vi.hoisted(() => ({
     recordKeyFire: vi.fn(async () => {}),
     cancelAwaitsForSubscribersOnKeys: vi.fn(async () => 0),
     listActiveAwaitsForKey: vi.fn(async (_key: string): Promise<AwaitRow[]> => []),
+    claimSpecificOnceAwaits: vi.fn(async (ids: number[]): Promise<AwaitRow[]> =>
+      ids.map((id) => awaitRow({ id })),
+    ),
     cancelAwaitsByIds: vi.fn(async () => 0),
   },
   executeWake: vi.fn(
@@ -69,8 +72,14 @@ vi.mock('../../agent-tools/coordination/inbox-read-freshness', () => ({
   lastInboxReadAtBatch: h.lastInboxReadAtBatch,
 }));
 
-const { emitAwaitedEvent, pumpWakeDeliveries, cancelSupersededCandidateAwaits, isInboxWakeGroupRedundant } =
-  await import('./engine');
+const {
+  emitAwaitedEvent,
+  pumpWakeDeliveries,
+  cancelSupersededCandidateAwaits,
+  isInboxWakeGroupRedundant,
+  setAutoPumpEnabledForTests,
+  wakeClaimableAwaitersForSubscribers,
+} = await import('./engine');
 
 function awaitRow(over: Partial<AwaitRow> = {}): AwaitRow {
   return {
@@ -178,6 +187,94 @@ describe('emitAwaitedEvent', () => {
     const r = await emitAwaitedEvent({ key: 'k', to: ['su-x'] });
     expect(r.ok).toBe(true);
     expect(r.msgId).toBeNull();
+  });
+});
+
+describe('wakeClaimableAwaitersForSubscribers — EI-20079462322478221', () => {
+  it('claims only targeted one-shot wake awaits and delivers the spec-change hint', async () => {
+    const previousAutoPump = setAutoPumpEnabledForTests(false);
+    try {
+      h.store.listActiveAwaitsForKey.mockResolvedValueOnce([
+        awaitRow({
+          id: 11,
+          eventKey: 'work-item:claimable',
+          subscriberId: 'su-target',
+          once: true,
+          policy: 'wake',
+          payloadFilter: { kind: { equals: 'bug' } },
+        }),
+        awaitRow({
+          id: 12,
+          eventKey: 'work-item:claimable',
+          subscriberId: 'su-peer',
+          once: true,
+          policy: 'wake',
+        }),
+        awaitRow({
+          id: 13,
+          eventKey: 'work-item:claimable',
+          subscriberId: 'su-target',
+          once: false,
+          policy: 'wake',
+        }),
+        awaitRow({
+          id: 14,
+          eventKey: 'work-item:claimable',
+          subscriberId: 'su-target',
+          once: true,
+          policy: 'notify',
+        }),
+      ]);
+      h.store.claimSpecificOnceAwaits.mockResolvedValueOnce([
+        awaitRow({
+          id: 11,
+          eventKey: 'work-item:claimable',
+          subscriberId: 'su-target',
+          once: true,
+          policy: 'wake',
+        }),
+      ]);
+
+      const woken = await wakeClaimableAwaitersForSubscribers({
+        subscriberIds: ['su-target', 'su-target'],
+        specId: 'bugs-lane',
+        revision: 7,
+      });
+
+      expect(woken).toBe(1);
+      expect(h.store.listActiveAwaitsForKey).toHaveBeenCalledWith('work-item:claimable');
+      expect(h.store.claimSpecificOnceAwaits).toHaveBeenCalledWith([11], 'claim-spec-revision');
+      expect(h.store.insertDeliveries).toHaveBeenCalledWith({
+        awaits: [expect.objectContaining({ id: 11, subscriberId: 'su-target' })],
+        payload: { reason: 'claim-spec-revision', specId: 'bugs-lane', revision: 7 },
+        summary: 'Claim spec bugs-lane@7 changed; re-run scheduler:get_next to re-evaluate the live lane.',
+        source: 'scheduler:set_claim_spec',
+      });
+    } finally {
+      setAutoPumpEnabledForTests(previousAutoPump);
+    }
+  });
+
+  it('does not enqueue a delivery when the atomic await claim loses a race', async () => {
+    const previousAutoPump = setAutoPumpEnabledForTests(false);
+    try {
+      h.store.listActiveAwaitsForKey.mockResolvedValueOnce([
+        awaitRow({ id: 21, eventKey: 'work-item:claimable', subscriberId: 'su-target', once: true, policy: 'wake' }),
+      ]);
+      h.store.claimSpecificOnceAwaits.mockResolvedValueOnce([]);
+
+      await expect(
+        wakeClaimableAwaitersForSubscribers({ subscriberIds: ['su-target'], specId: 'lane', revision: 2 }),
+      ).resolves.toBe(0);
+      expect(h.store.insertDeliveries).not.toHaveBeenCalled();
+    } finally {
+      setAutoPumpEnabledForTests(previousAutoPump);
+    }
+  });
+
+  it('is a no-op for an empty target set', async () => {
+    await expect(wakeClaimableAwaitersForSubscribers({ subscriberIds: [] })).resolves.toBe(0);
+    expect(h.store.listActiveAwaitsForKey).not.toHaveBeenCalled();
   });
 });
 

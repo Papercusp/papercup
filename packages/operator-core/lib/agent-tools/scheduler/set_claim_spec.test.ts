@@ -7,14 +7,50 @@
  * to an allowlist of the coding-FACTORY push-pipeline roles, so ONLY a genuine factory
  * push-role trips it. These assertions pin that role-awareness.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
 import setClaimSpecTool, {
   claimSpecInertWarning,
   claimSpecWakeabilityWarning,
   previewClaimSpecAdmission,
+  wakeClaimableAwaitersAfterSpecChange,
 } from './set_claim_spec';
 import type { ClaimSpec } from '../../scheduler/claim-spec';
+
+const wakeClaimableAwaitersForSubscribers = vi.hoisted(() => vi.fn());
+
+// The helper is dynamically imported by the tool so its wake-plane dependency can
+// fail soft after the durable spec write. Keep this test focused on the target
+// resolution and forwarding contract without opening a real await/event store.
+vi.mock('../../events/await/engine', () => ({
+  wakeClaimableAwaitersForSubscribers: (...args: unknown[]) => wakeClaimableAwaitersForSubscribers(...args),
+}));
+
+describe('wakeClaimableAwaitersAfterSpecChange — EI-20079462322478221', () => {
+  it('forwards a direct member target and spec revision to the event engine', async () => {
+    wakeClaimableAwaitersForSubscribers.mockResolvedValueOnce(1);
+
+    await expect(
+      wakeClaimableAwaitersAfterSpecChange({ cupId: 'su-target', specId: 'bugs-lane', revision: 7 }),
+    ).resolves.toEqual({ woken: 1 });
+    expect(wakeClaimableAwaitersForSubscribers).toHaveBeenCalledWith({
+      subscriberIds: ['su-target'],
+      specId: 'bugs-lane',
+      revision: 7,
+    });
+  });
+
+  it('turns an event-plane failure into an actionable warning without throwing', async () => {
+    wakeClaimableAwaitersForSubscribers.mockRejectedValueOnce(new Error('await store unavailable'));
+
+    await expect(
+      wakeClaimableAwaitersAfterSpecChange({ cupId: 'su-target', specId: 'bugs-lane', revision: 8 }),
+    ).resolves.toEqual({
+      woken: 0,
+      warning: 'claim-spec revision stored, but parked claimable awaiters could not be woken: await store unavailable',
+    });
+  });
+});
 
 describe('published claim-spec guidance — WI-37997 severity ordering', () => {
   it('advertises the safe ordinal severity_rank term and a critical-first issue example', () => {
