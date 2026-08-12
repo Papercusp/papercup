@@ -95,6 +95,23 @@ export function claimSpecWakeabilityWarning(cupId: string, wakeable: boolean | n
   );
 }
 
+/**
+ * Resolve the hive scope for a claim-spec write. An explicit harness argument
+ * is the target scope even when tools:invoke is dispatched from an unscoped
+ * (`*`) operator context; otherwise inherit the concrete ambient harness.
+ * Keeping this precedence in one helper makes direct and wrapped calls agree.
+ */
+export function resolveClaimSpecPotSlug(
+  explicitHarness: string | undefined,
+  ambientHarness: unknown,
+): string | undefined {
+  const explicit = explicitHarness?.trim();
+  if (explicit && explicit !== '*') return explicit;
+  if (typeof ambientHarness !== 'string') return undefined;
+  const ambient = ambientHarness.trim();
+  return ambient && ambient !== '*' ? ambient : undefined;
+}
+
 export interface ClaimSpecAdmissionPreview {
   mode: 'dynamic' | 'fixed-cohort';
   checked: boolean;
@@ -442,11 +459,10 @@ export default defineTool({
       return { data: { ok: false, errors: validated.errors } };
     }
     const ctxHarnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
-    const ctxHarness =
-      typeof ctxHarnessRaw === 'string' && ctxHarnessRaw && ctxHarnessRaw !== '*' ? ctxHarnessRaw : undefined;
+    const resolvedHarness = resolveClaimSpecPotSlug(args.harness, ctxHarnessRaw);
     const admission = await previewClaimSpecAdmission({
       spec: validated.spec,
-      harness: args.harness ?? ctxHarness,
+      harness: resolvedHarness,
       assignee: ident.ownerId,
     });
     if (admission.errors.length > 0) {
@@ -501,7 +517,7 @@ export default defineTool({
         const { activeWorkspaceId } = await import('../../workspace-registry');
         const wsForCount =
           ident.workspaceId && ident.workspaceId !== '*' ? ident.workspaceId : activeWorkspaceId();
-        const countScope = { workspaceId: wsForCount, harness: args.harness ?? ctxHarness ?? null };
+        const countScope = { workspaceId: wsForCount, harness: resolvedHarness ?? null };
         const current = await previewSpecPoolEffect(validated.spec, countScope);
         // Effective-BEFORE at the same target key (bee row → fleet inheritance → default).
         // 'default' means nobody authored this lane — narrowing from default is normal
@@ -549,16 +565,14 @@ export default defineTool({
 
     // P-016 (cross-machine-coord-parity): federate the spec when the queen is in a
     // single shared-hive workspace, so a bee pulling on ANOTHER machine sees it.
-    // ctx harness wins (a harness-scoped queen); else the workspace's one shared
-    // hive; else null (operator-scope / local-only — today's behavior). Best-effort:
+    // An explicit harness wins (including when tools:invoke is dispatched from an
+    // unscoped operator context); else inherit the concrete ctx harness; else the
+    // workspace's one shared hive; else null (operator-scope / local-only — today's
+    // behavior). Best-effort:
     // a scope-resolve failure degrades to local (never blocks the spec write).
-    let potSlug: string | null = null;
+    let potSlug: string | null = resolvedHarness ?? null;
     try {
-      const ctxHarnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
-      const ctxHarness =
-        typeof ctxHarnessRaw === 'string' && ctxHarnessRaw && ctxHarnessRaw !== '*' ? ctxHarnessRaw : undefined;
-      if (ctxHarness) potSlug = ctxHarness;
-      else if (ident.workspaceId && ident.workspaceId !== '*') {
+      if (!potSlug && ident.workspaceId && ident.workspaceId !== '*') {
         const scope = await resolveWorkspaceHiveScope(ident.workspaceId);
         if (scope.kind === 'one') potSlug = scope.homeSlug;
       }

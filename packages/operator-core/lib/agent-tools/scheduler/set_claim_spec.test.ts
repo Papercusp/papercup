@@ -13,6 +13,7 @@ import setClaimSpecTool, {
   claimSpecInertWarning,
   claimSpecWakeabilityWarning,
   previewClaimSpecAdmission,
+  resolveClaimSpecPotSlug,
   wakeClaimableAwaitersAfterSpecChange,
 } from './set_claim_spec';
 import type { ClaimSpec } from '../../scheduler/claim-spec';
@@ -157,6 +158,25 @@ describe('claimSpecWakeabilityWarning — EI-6079 warm-inject-miss advisory', ()
   it('names the cupId so the operator can act on it', () => {
     const w = claimSpecWakeabilityWarning('bee-abc123', false);
     expect(w).toContain('bee-abc123');
+  });
+});
+
+describe('resolveClaimSpecPotSlug — EI-20240600109414261 direct/tools:invoke parity', () => {
+  it('uses an explicit harness for both direct and tools:invoke-style unscoped calls', () => {
+    const direct = resolveClaimSpecPotSlug('papercusp', 'papercusp');
+    const viaInvoke = resolveClaimSpecPotSlug('papercusp', '*');
+
+    expect(direct).toBe('papercusp');
+    expect(viaInvoke).toBe(direct);
+  });
+
+  it('falls back to a concrete ambient harness when no explicit override is supplied', () => {
+    expect(resolveClaimSpecPotSlug(undefined, 'papercusp')).toBe('papercusp');
+    expect(resolveClaimSpecPotSlug(undefined, '*')).toBeUndefined();
+  });
+
+  it('does not treat the wildcard sentinel as a hive scope', () => {
+    expect(resolveClaimSpecPotSlug('*', 'papercusp')).toBe('papercusp');
   });
 });
 
