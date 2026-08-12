@@ -617,6 +617,7 @@ describe('P-010 blind-source collectors (watchdog-robustness)', () => {
       potHeld: true,
       kettleStarted: false,
       workCommanded: true,
+      directivePresent: true,
       directiveHead: 'Run the full Mug→Cup→Kettle→Blender loop. Place and complete real work',
       frontierDepth: 38,
       hoursSinceLastPlacement: 36,
@@ -632,8 +633,12 @@ describe('P-010 blind-source collectors (watchdog-robustness)', () => {
     expect(signals[0].kind).toBe('bug');
     expect(signals[0].body).toContain('do NOT auto-resume');
 
-    // No work-commanding directive → an intentional pause, never a signal.
-    expect(staleProtectiveHoldSignalsFromCandidates([{ ...base, workCommanded: false }])).toHaveLength(0);
+    // A directive that EXISTS but does not command work → a self-documenting,
+    // intentional pause ("in force until lifted"), never a signal. NOTE this case
+    // keeps directivePresent:true — that is the whole distinction below.
+    expect(
+      staleProtectiveHoldSignalsFromCandidates([{ ...base, workCommanded: false, directivePresent: true }]),
+    ).toHaveLength(0);
     // Hold present but placements are recent (< minHoldHours) → not yet stale.
     expect(
       staleProtectiveHoldSignalsFromCandidates([
@@ -656,6 +661,58 @@ describe('P-010 blind-source collectors (watchdog-robustness)', () => {
         { ...base, kettleStarted: true, kettleHoursSinceFire: null, windowHours: 0.5, hoursSinceLastPlacement: null },
       ]),
     ).toHaveLength(0);
+  });
+
+  it('stale-protective-hold (EI-18653608066559541): an UNDOCUMENTED hold fires even with no directive to contradict', () => {
+    // The gap: `workCommanded` is a keyword heuristic over directive TEXT, and
+    // directiveSuggestsResume(null) is false — so the pre-fix gate skipped a pot
+    // held with NO directive before weighing any evidence. The less a hold
+    // documented itself, the more certainly the detector ignored it.
+    const undocumented = {
+      installSlug: 'papercusp',
+      potHeld: true,
+      kettleStarted: false,
+      workCommanded: false, // necessarily false: a null directive can never command work
+      directivePresent: false, // ← the whole point: nothing records WHY this hold exists
+      directiveHead: '',
+      frontierDepth: 38,
+      hoursSinceLastPlacement: 36,
+      windowHours: 24,
+      kettleHoursSinceFire: 31,
+    };
+    const signals = staleProtectiveHoldSignalsFromCandidates([undocumented]);
+    expect(signals).toHaveLength(1);
+    expect(signals[0].key).toBe('stale-protective-hold:papercusp:undocumented-pot+kettle');
+    // It must NOT claim a directive it does not have — the original wording
+    // ("contradicts its work-commanding directive") would be a plain falsehood.
+    expect(signals[0].title).not.toContain('work-commanding');
+    expect(signals[0].body).toContain('NO steering directive at all');
+    // The remedy must include DOCUMENTING the pause, not only lifting it.
+    expect(signals[0].body).toContain('directive:');
+    expect(signals[0].body).toContain('do NOT');
+
+    // CONTROL (so the case above cannot pass vacuously): identical evidence, but a
+    // directive EXISTS and asserts the pause is intentional → still silent. This is
+    // what separates "undocumented" from the pre-existing "not work-commanding".
+    expect(
+      staleProtectiveHoldSignalsFromCandidates([{ ...undocumented, directivePresent: true }]),
+    ).toHaveLength(0);
+
+    // CONTROL: the evidence gate still governs the new leg — an undocumented hold
+    // with nothing piling up behind it is not drift, it is just a quiet pot.
+    expect(
+      staleProtectiveHoldSignalsFromCandidates([
+        { ...undocumented, frontierDepth: 0, kettleHoursSinceFire: null },
+      ]),
+    ).toHaveLength(0);
+
+    // The two legs must not double-report: they are mutually exclusive by
+    // construction, so a documented work-commanding hold keeps its ORIGINAL key.
+    const documented = staleProtectiveHoldSignalsFromCandidates([
+      { ...undocumented, workCommanded: true, directivePresent: true, directiveHead: 'Place and complete real work' },
+    ]);
+    expect(documented).toHaveLength(1);
+    expect(documented[0].key).toBe('stale-protective-hold:papercusp:pot+kettle');
   });
 
   it('stuck-plan: one signal per stuck plan, keyed by harness+plan', () => {
