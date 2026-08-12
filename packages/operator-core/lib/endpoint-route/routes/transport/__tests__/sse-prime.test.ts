@@ -18,6 +18,22 @@ function sseResponse(body: ReadableStream<Uint8Array> | null): Response {
   });
 }
 
+async function readWithTimeout<T>(read: Promise<T>, timeoutMs: number, message: string): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      read,
+      new Promise<never>((_, reject) => {
+        timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+      }),
+    ]);
+  } finally {
+    // A fast read wins the race in the normal case; clear its rejected timeout
+    // so it cannot fire in a later test when workers are reused.
+    if (timer) clearTimeout(timer);
+  }
+}
+
 describe('primeSseResponse', () => {
   it('prepends an SSE comment as the FIRST chunk, then forwards the original chunks', async () => {
     const enc = new TextEncoder();
@@ -48,10 +64,7 @@ describe('primeSseResponse', () => {
     const inner = new ReadableStream<Uint8Array>({ start() {/* never enqueues */} });
     const primed = primeSseResponse(sseResponse(inner));
     const reader = primed.body!.getReader();
-    const first = await Promise.race([
-      reader.read(),
-      new Promise<never>((_, rej) => setTimeout(() => rej(new Error('priming byte never arrived')), 1000)),
-    ]);
+    const first = await readWithTimeout(reader.read(), 1000, 'priming byte never arrived');
     expect(new TextDecoder().decode(first.value!)).toBe(':stream-open\n\n');
     await reader.cancel();
   });
@@ -145,11 +158,8 @@ describe('primeSseResponse', () => {
     expect(dec.decode(first.value!)).toBe(':stream-open\n\n'); // prime first
 
     // The NEXT chunk must be a keepalive comment (arrives ~10ms later), not a hang.
-    const second = await Promise.race([
-      reader.read(),
-      new Promise<never>((_, rej) => setTimeout(() => rej(new Error('no keepalive within 1s')), 1000)),
-    ]);
-    expect(dec.decode((second as ReadableStreamReadResult<Uint8Array>).value!)).toBe(': keepalive\n\n');
+    const second = await readWithTimeout(reader.read(), 1000, 'no keepalive within 1s');
+    expect(dec.decode(second.value!)).toBe(': keepalive\n\n');
     await reader.cancel();
   });
 
