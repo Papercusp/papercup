@@ -528,6 +528,47 @@ describe('trackGateStall persists candidate staleness into gate_health (EI-19329
       return { ok: false, stdout: '' };
     };
 
+  /** HERMETIC ROOT PIN — this describe must not depend on WHICH CHECKOUT it runs in.
+   *
+   *  The two trackGateStall cases below reach the staleness measurement through
+   *  `integrationRootForDiagnostic()`, which returns `null` when `resolveIntegrationRoot`
+   *  refuses the tree. That resolver derives `resolve(cwd,'..','..')` and vitest runs
+   *  operator-core with cwd `<tree>/packages/operator-core`, so the basename it judges is the
+   *  CHECKOUT NAME: "papercusp" resolves fine, "papercusp-checkpoint" is refused. The
+   *  production caller gates the measurement on a non-null root, so an unpinned run inside
+   *  the checkpoint checkout records nulls and both assertions below fail — GREEN in the
+   *  shared tree, RED in the only tree the gate actually runs its own suite in (observed:
+   *  green-checkpoint red on candidate 53f4676f, 2026-08-12).
+   *
+   *  Pinning it HERE, and only here, is deliberate. These cases are about staleness fields
+   *  surviving the whole-object gate_health replace (EI-19329732364513693 / EI-7472) — root
+   *  RESOLUTION is not their subject, so inheriting it from the ambient checkout is the bug.
+   *  ⚠ Do NOT hoist this pin to the file scope to "fix" other failures: the describe at the
+   *  bottom of this file deliberately CLEARS the var to exercise the refusal path, and a
+   *  global pin would mask every other test's sensitivity to the guard this file exists to
+   *  protect. The value is arbitrary — the git runner is faked, so the root is never read. */
+  const PINNED_ROOT = '/tmp/papercusp-gate-health-fixture-root';
+  let savedRootForStaleness: string | undefined;
+
+  beforeEach(() => {
+    savedRootForStaleness = process.env.PAPERCUSP_INTEGRATION_ROOT;
+    process.env.PAPERCUSP_INTEGRATION_ROOT = PINNED_ROOT;
+  });
+
+  afterEach(() => {
+    if (savedRootForStaleness === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+    else process.env.PAPERCUSP_INTEGRATION_ROOT = savedRootForStaleness;
+  });
+
+  // CALIBRATION: proves the pin above is actually load-bearing. If the resolver ever stops
+  // consulting the env pin, this fails LOUDLY here rather than letting the two cases below
+  // start depending on the ambient checkout name again without anyone noticing.
+  it('the env pin is what resolves the root (premise of the two persistence cases below)', () => {
+    expect(resolveIntegrationRoot(process.env, '/tmp/papercusp-checkpoint/packages/operator-core')).toBe(
+      PINNED_ROOT,
+    );
+  });
+
   it('measureCandidateStaleness reads the commit time and the distance behind tip', async () => {
     const out = await measureCandidateStaleness(
       '/repo',
