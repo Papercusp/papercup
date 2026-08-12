@@ -2,6 +2,7 @@ import { describe, it, expect } from 'vitest';
 import {
   promoteToolSequences,
   renderSequenceFiling,
+  selectMaximalSequenceCandidates,
   sequenceWatchdogKey,
   SEQUENCE_PROMOTION_SOURCE,
   SEQUENCE_PROMOTION_KILL_ENV,
@@ -124,6 +125,54 @@ describe('sequenceWatchdogKey — the coalesce identity', () => {
   it('is stable for the same sequence and distinct across sequences', () => {
     expect(sequenceWatchdogKey(candidate())).toBe(sequenceWatchdogKey(candidate({ occurrences: 999, windowStreak: 1 })));
     expect(sequenceWatchdogKey(candidate({ id: 'seq-other' }))).not.toBe(sequenceWatchdogKey(candidate()));
+  });
+});
+
+describe('selectMaximalSequenceCandidates — the nested-prefix recurrence guard', () => {
+  it('keeps the broadest graduated prefix and suppresses shorter ladder entries', () => {
+    const short = candidate({
+      id: 'code-run--code-run',
+      toolsUsed: ['code:run', 'code:run'],
+      label: 'code:run → code:run',
+    });
+    const medium = candidate({
+      id: 'code-run--code-run--code-run',
+      toolsUsed: ['code:run', 'code:run', 'code:run'],
+      label: 'code:run → code:run → code:run',
+    });
+    const broad = candidate({
+      id: 'code-run--code-run--code-run--code-run',
+      toolsUsed: ['code:run', 'code:run', 'code:run', 'code:run'],
+      label: 'code:run → code:run → code:run → code:run',
+    });
+
+    const result = selectMaximalSequenceCandidates([short, medium, broad]);
+
+    expect(result.kept.map((c) => c.id)).toEqual([broad.id]);
+    expect(result.suppressed.map((c) => c.id)).toEqual([short.id, medium.id]);
+  });
+
+  it('does not suppress a sequence that only shares an interior or suffix run', () => {
+    const prefix = candidate({
+      id: 'a--b',
+      toolsUsed: ['a', 'b'],
+      label: 'a → b',
+    });
+    const extension = candidate({
+      id: 'a--b--c',
+      toolsUsed: ['a', 'b', 'c'],
+      label: 'a → b → c',
+    });
+    const interior = candidate({
+      id: 'x--a--b--y',
+      toolsUsed: ['x', 'a', 'b', 'y'],
+      label: 'x → a → b → y',
+    });
+
+    const result = selectMaximalSequenceCandidates([prefix, extension, interior]);
+
+    expect(result.kept.map((c) => c.id)).toEqual([extension.id, interior.id]);
+    expect(result.suppressed.map((c) => c.id)).toEqual([prefix.id]);
   });
 });
 

@@ -85,6 +85,8 @@ export interface PromoteToolSequencesResult {
   filed: string[];
   /** Sequence ids the capture path declined as duplicates — the coalesce working. */
   coalesced: string[];
+  /** Sequence ids suppressed because a longer graduated sequence is their strict prefix extension. */
+  suppressed: string[];
   /** Mined but still accruing evidence. */
   heldForEvidence: number;
   /**
@@ -100,6 +102,45 @@ export interface PromoteToolSequencesResult {
 /** Stable cross-sweep identity for one sequence — the coalesce key. */
 export function sequenceWatchdogKey(candidate: PersistentToolSequenceCandidate): string {
   return `${SEQUENCE_PROMOTION_SOURCE}:${candidate.id}`;
+}
+
+/**
+ * Keep only maximal graduated sequences for filing.
+ *
+ * The generic miner already removes many subsumed patterns, but its support
+ * ratio intentionally keeps a shorter run when overlapping occurrences make it
+ * look independently useful. That is the wrong boundary for promotion: a
+ * repeated-call ladder such as `code:run → code:run`, then three, four, and
+ * five calls can otherwise occupy one queue row per prefix even though the
+ * longer stable run is the actionable evidence. A strict PREFIX rule is
+ * deliberately narrower than arbitrary substring suppression: a sequence that
+ * merely shares a suffix or an interior step remains a distinct candidate.
+ *
+ * The selection is deterministic and preserves input order among representatives.
+ * Graduated evidence is returned separately by the caller; only the suppressed
+ * ids are excluded from capture.
+ */
+export function selectMaximalSequenceCandidates(
+  candidates: readonly PersistentToolSequenceCandidate[],
+): {
+  kept: PersistentToolSequenceCandidate[];
+  suppressed: PersistentToolSequenceCandidate[];
+} {
+  const isStrictPrefix = (prefix: readonly string[], longer: readonly string[]): boolean =>
+    prefix.length < longer.length && prefix.every((tool, index) => tool === longer[index]);
+
+  const suppressed = candidates.filter((candidate, index) =>
+    candidates.some(
+      (other, otherIndex) =>
+        index !== otherIndex && isStrictPrefix(candidate.toolsUsed, other.toolsUsed),
+    ),
+  );
+  const suppressedIndexes = new Set(suppressed.map((candidate) => candidates.indexOf(candidate)));
+
+  return {
+    kept: candidates.filter((candidate, index) => !suppressedIndexes.has(index)),
+    suppressed,
+  };
 }
 
 /**
@@ -135,6 +176,9 @@ export function renderSequenceFiling(c: PersistentToolSequenceCandidate): {
     'If it should NOT collapse, resolve with the reason: that is a real answer, and it stops',
     'the pattern being re-proposed.',
     '',
+    'The promotion guard files only maximal sequences: a graduated sequence that is a strict',
+    'prefix of a longer graduated sequence is suppressed in favor of the broader evidence.',
+    '',
     `_Source: ${SEQUENCE_PROMOTION_SOURCE} · sequence id \`${c.id}\`_`,
   ].join('\n');
   return { title, body };
@@ -152,12 +196,22 @@ export async function promoteToolSequences(
 ): Promise<PromoteToolSequencesResult> {
   const log = deps.log ?? (() => {});
   if (process.env[SEQUENCE_PROMOTION_KILL_ENV] === 'off') {
-    return { graduated: [], filed: [], coalesced: [], heldForEvidence: 0, truncated: false, dryRun: false, disabled: true };
+    return {
+      graduated: [],
+      filed: [],
+      coalesced: [],
+      suppressed: [],
+      heldForEvidence: 0,
+      truncated: false,
+      dryRun: false,
+      disabled: true,
+    };
   }
 
   const mined = await graduateToolSequences(sql, opts);
+  const selected = selectMaximalSequenceCandidates(mined.graduated);
   const maxFilings = Math.max(0, opts.maxFilings ?? DEFAULT_MAX_FILINGS);
-  const toFile = mined.graduated.slice(0, maxFilings);
+  const toFile = selected.kept.slice(0, maxFilings);
 
   const filed: string[] = [];
   const coalesced: string[] = [];
@@ -194,6 +248,7 @@ export async function promoteToolSequences(
     graduated: mined.graduated,
     filed,
     coalesced,
+    suppressed: selected.suppressed.map((c) => c.id),
     heldForEvidence: mined.stats.heldForEvidence,
     truncated: mined.stats.truncated,
     dryRun: !!opts.dryRun,
@@ -277,6 +332,7 @@ export interface PromoteEverywhereResult {
   targets: PromotionTarget[];
   filed: number;
   coalesced: number;
+  suppressed: number;
   graduated: number;
   heldForEvidence: number;
   /** Any workspace whose read hit the row ceiling — see PromoteToolSequencesResult. */
@@ -298,7 +354,16 @@ export async function promoteToolSequencesEverywhere(
 ): Promise<PromoteEverywhereResult> {
   const log = deps.log ?? (() => {});
   if (process.env[SEQUENCE_PROMOTION_KILL_ENV] === 'off') {
-    return { targets: [], filed: 0, coalesced: 0, graduated: 0, heldForEvidence: 0, truncated: false, disabled: true };
+    return {
+      targets: [],
+      filed: 0,
+      coalesced: 0,
+      suppressed: 0,
+      graduated: 0,
+      heldForEvidence: 0,
+      truncated: false,
+      disabled: true,
+    };
   }
 
   const spanHours = (opts.windows ?? 7) * (opts.windowHours ?? 24);
@@ -312,6 +377,7 @@ export async function promoteToolSequencesEverywhere(
     targets,
     filed: 0,
     coalesced: 0,
+    suppressed: 0,
     graduated: 0,
     heldForEvidence: 0,
     truncated: false,
@@ -329,6 +395,7 @@ export async function promoteToolSequencesEverywhere(
       );
       out.filed += r.filed.length;
       out.coalesced += r.coalesced.length;
+      out.suppressed += r.suppressed.length;
       out.graduated += r.graduated.length;
       out.heldForEvidence += r.heldForEvidence;
       out.truncated ||= r.truncated;

@@ -1010,7 +1010,8 @@ async function recipeHygieneTick(): Promise<void> {
         console.log(
           `[recipe-hygiene] tool-sequences: ${r.sequences.graduated} graduated across ` +
             `${r.sequences.targets.length} workspace(s) → filed ${r.sequences.filed}, ` +
-            `coalesced ${r.sequences.coalesced}, ${r.sequences.heldForEvidence} still accruing evidence`,
+            `coalesced ${r.sequences.coalesced}, suppressed ${r.sequences.suppressed} nested prefix candidate(s), ` +
+            `${r.sequences.heldForEvidence} still accruing evidence`,
         );
       }
       // Say it whether or not anything graduated: a truncated read makes a degraded
