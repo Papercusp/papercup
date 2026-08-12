@@ -196,7 +196,16 @@ describe('postgres.ts model tracks the real dev:pg_query (D-015)', () => {
     expectArgSurface(
       devPgQuery,
       'dev:pg_query',
-      ['describe', 'maxRows', 'sql', 'timeoutMs'],
+      [
+        // Policy opt-in for a deliberate cross-tenant read of the same operator
+        // database; it is not a database/connection selector and therefore does
+        // not widen this pair to the excluded $PGURL/scratch-database atoms.
+        'allowUnscoped',
+        'describe',
+        'maxRows',
+        'sql',
+        'timeoutMs',
+      ],
       'psqlSelectRead is deliberately NARROWED to a literal operator-Postgres connection because this tool has no ' +
         'database selector — 289 corpus atoms target $ODDS_DB/$PGURL/scratch databases and are excluded so agents ' +
         'are never nudged into silently querying the WRONG DATABASE. A connection/database arg would make those ' +
