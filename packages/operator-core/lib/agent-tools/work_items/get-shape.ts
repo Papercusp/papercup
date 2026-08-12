@@ -33,14 +33,26 @@
  * per-field caps that look fine for one row silently blow the 30k
  * PAYLOAD_TIER_HARD_CEILING_CHARS at a hundred — which force-applies this same
  * shaper again and, on failing to shrink, falls back to the very generic
- * projection this file exists to avoid. So we walk a DEGRADATION LADDER and emit
- * the first rung that actually fits, measured rather than assumed. Rung 1 is
- * generous enough that the single-item post-respawn read — the case that matters —
- * always keeps its checkpoint whole.
+ * projection this file exists to avoid. The shaped result also goes through the
+ * MCP result door, whose baked universal floor is only ~6k chars. So we walk a
+ * DEGRADATION LADDER and emit the first rung that actually fits the stricter
+ * result-door budget, measured rather than assumed. Rung 1 is still generous
+ * enough that a normal single-item post-respawn read keeps its checkpoint whole.
  */
 
-/** Comfortably under PAYLOAD_TIER_HARD_CEILING_CHARS (30_000), leaving envelope room. */
-const TIER_TARGET_CHARS = { trimmed: 20_000, standard: 26_000 } as const;
+import { CHARS_PER_TOKEN_ESTIMATE } from "../../context-doors";
+import { RESULT_DOOR_TOKENS } from "../../result-door";
+
+/**
+ * The shaper has no caller identity, so it cannot resolve a per-session door
+ * override. Use the baked universal floor: this keeps the default path below
+ * the enforced door, while the result door itself remains the authoritative
+ * enforcement point for any runtime override (including a stricter one).
+ */
+export const RESULT_DOOR_BUDGET_CHARS = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
+
+/** Both payload tiers must fit the same MCP per-result door. */
+const TIER_TARGET_CHARS = { trimmed: RESULT_DOOR_BUDGET_CHARS, standard: RESULT_DOOR_BUDGET_CHARS } as const;
 
 /**
  * Each rung: how many rows get the FULL projection (the rest degrade to an
