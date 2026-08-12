@@ -39,8 +39,8 @@
     "llm-test": "tsx bin/llm-test.ts"
   },
   "dependencies": {
-    "@assistant-ui/react": "^0.12.25",
     "@anthropic-ai/sdk": "^0.81.0",
+    "@assistant-ui/react": "^0.12.25",
     "@azure/identity": "^4.13.1",
     "@azure/search-documents": "^12.2.0",
     "@blocknote/core": "^0.51.3",
@@ -224,6 +224,8 @@
     "vaul": "^1.1.2",
     "vditor": "^3.11.2",
     "verdict-cli": "^0.1.1",
+    "winston": "^3.19.0",
+    "winston-transport": "^4.9.0",
     "ws": "^8.18.0",
     "zod": "^4.4.2"
   },
