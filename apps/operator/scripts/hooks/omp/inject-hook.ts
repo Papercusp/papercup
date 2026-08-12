@@ -386,14 +386,116 @@ export function runDispatcher(
   });
 }
 
+/**
+ * ── WHY MID-TURN CONTEXT IS NOT SENT AS A MESSAGE (EI-20212277790978719) ──
+ *
+ * This used to be `pi.sendMessage(..., { deliverAs: 'followUp' })`, on the
+ * belief — stated in the comment that lived on that call — that a followUp
+ * "queues the context after the current action instead of cancelling an
+ * in-flight tool call". MEASUREMENT SAYS THE OPPOSITE, and it is not subtle.
+ *
+ * In the pi runtime, a QUEUED message makes the agent loop DISCARD the tool
+ * calls it was about to execute and hand the model a synthetic result instead:
+ *
+ *     "Skipped due to pending system advisory. Do not count this skipped result
+ *      as completed work or verification. After the advisory is handled on the
+ *      next step, retry the skipped tool if it is still needed."
+ *
+ * (dist/cli.js — the skipped-result builder maps source 'system' to "pending
+ * system advisory" and stamps details.source = 'interrupt_skipped'.) followUp
+ * and steer differ only in WHICH queue; both are interrupts. Measured on one
+ * Gemini su session (adv_session 14830, 770 records, 225 tool results): 17
+ * injections, 13 cancelled tool calls, and 13/13 of those cancellations were
+ * immediately followed by one of our blocks — no cancellation had any other
+ * cause. 9 of the 13 were re-issued verbatim on the next turn. Reproduced
+ * across 8 omp transcripts; one 78-line session paid 12 cancellations for 11
+ * injections. The model was not distracted by the CONTENT (0 of 77 injected
+ * pointers were ever resolved by a tool call) — it was interrupted, and then
+ * spent reasoning re-deriving why its action had vanished, in one case
+ * concluding its whole tool-calling convention was wrong.
+ *
+ * ⛔ `deliverAs: 'nextTurn'` IS NOT THE FIX EITHER, and this is the trap to
+ * know about: while the agent is streaming, nextTurn pushes onto a deferred
+ * buffer whose ONLY drain is a later `triggerTurn: true` delivery. There is
+ * exactly one call site for that drain in the bundle. So nextTurn would trade
+ * a loud, countable tax for a SILENT HOLE — strictly worse, because nothing
+ * would report it.
+ *
+ * The seam that actually appends without interrupting is `tool_result`: its
+ * handler results are merged into the tool result itself (`emitToolResult`
+ * applies a returned `content`/`details`/`isError`), which is precisely what
+ * claude's PostToolUse additionalContext does. So the block rides IN a tool
+ * result the model was going to read anyway. Nothing is queued, so nothing can
+ * be cancelled, and nothing depends on a drain.
+ *
+ * The delivery POINT is unchanged: a followUp queued at turn_end was already
+ * being surfaced at the start of the next turn (that is the turn whose tool
+ * call it cancelled). It now arrives at the same place, minus the cancellation.
+ */
+interface PendingMidTurn {
+  text: string;
+  at: number;
+}
+
+/** Stash awaiting a tool result to ride in on. Module scope is correct here:
+ *  omp loads this hook once per session, in-process. */
+let PENDING_MID_TURN: PendingMidTurn | null = null;
+
+/** A recall block is advisory and perishable. If no tool result has appeared in
+ *  this long, the turn it described is ancient — drop it rather than inject
+ *  stale context. */
+export const PENDING_MAX_AGE_MS = 5 * 60_000;
+
+/** Newest wins: a later turn's recall supersedes an undelivered earlier one, so
+ *  the stash can never grow or replay a backlog. */
+export function stashMidTurn(text: string, now: number = Date.now()): void {
+  PENDING_MID_TURN = { text, at: now };
+}
+
+/** Take-and-clear. Returns null when nothing is stashed or the stash is stale —
+ *  either way the stash is empty afterwards. */
+export function takeMidTurn(now: number = Date.now()): string | null {
+  const pending = PENDING_MID_TURN;
+  PENDING_MID_TURN = null;
+  if (!pending) return null;
+  if (now - pending.at > PENDING_MAX_AGE_MS) return null;
+  return pending.text;
+}
+
+/** Test seam — reset module state between cases. */
+export function clearMidTurnStash(): void {
+  PENDING_MID_TURN = null;
+}
+
+/**
+ * APPEND the block to a tool result's content, preserving whatever was there.
+ *
+ * `emitToolResult` REPLACES content with what we return, so dropping the
+ * original here would silently eat the tool's actual output — a far worse bug
+ * than the one this file is fixing. Both omp content shapes are handled: a bare
+ * string, and the (TextContent | ImageContent)[] array form.
+ */
+export function appendBlock(content: unknown, text: string): unknown {
+  if (typeof content === 'string') return `${content}\n\n${text}`;
+  if (Array.isArray(content)) return [...content, { type: 'text', text }];
+  // No content at all (or an unexpected shape): emit the block alone rather
+  // than fabricating a wrapper around something we do not understand.
+  return [{ type: 'text', text }];
+}
+
 /** Minimal structural view of the omp HookAPI surface this module uses. Kept
  *  local so the hook stays self-contained (it is loaded by omp, not by the
- *  operator, and must not import operator or omp types). */
+ *  operator, and must not import operator or omp types).
+ *
+ *  `sendMessage` is declared but DELIBERATELY UNUSED — see the block above.
+ *  Every option it takes (steer / followUp / nextTurn) either interrupts the
+ *  agent loop or can silently drop the message. It stays in the type as a
+ *  signpost: if you are about to reach for it to deliver context, don't. */
 interface OmpHookApi {
   on(event: string, handler: (event: unknown, ctx?: unknown) => Promise<unknown> | unknown): void;
   sendMessage(
     message: { customType: string; content: string; display?: boolean },
-    options?: { triggerTurn?: boolean; deliverAs?: 'steer' | 'followUp' },
+    options?: { triggerTurn?: boolean; deliverAs?: 'steer' | 'followUp' | 'nextTurn' },
   ): void;
 }
 
@@ -420,16 +522,30 @@ export default function register(pi: OmpHookApi): void {
     }
   });
 
-  // MID-TURN. `turn_end` carries the whole turn's toolResults[], matching
-  // claude's once-per-BATCH PostToolBatch shape (`tool_result` would fire per
-  // individual call). Deliver as a followUp so OMP queues the context after
-  // the current action instead of steering/cancelling an in-flight tool call.
-  // This matches the coord hook's non-interrupting mid-turn delivery.
+  // MID-TURN, FETCH HALF. `turn_end` carries the whole turn's toolResults[],
+  // matching claude's once-per-BATCH PostToolBatch shape (`tool_result` fires
+  // per individual call and carries no tool INPUT, so it would mis-shape the
+  // digest — adapter D-002). So turn_end still BUILDS the request; it just no
+  // longer DELIVERS it. See PENDING_MID_TURN for the delivery half.
   pi.on('turn_end', async (event: unknown) => {
     try {
       const text = await runDispatcher('mid-turn', 'turn_end', event, { selfDir });
       if (!text) return;
-      pi.sendMessage({ customType: CUSTOM_TYPE, content: text, display: false }, { deliverAs: 'followUp' });
+      stashMidTurn(text);
+    } catch {
+      return;
+    }
+  });
+
+  // MID-TURN, DELIVERY HALF. Ride the stashed block in on the next tool result.
+  // Cheap when nothing is stashed (no subprocess, no allocation) — which is the
+  // overwhelming majority of tool results.
+  pi.on('tool_result', async (event: unknown) => {
+    try {
+      const text = takeMidTurn();
+      if (!text) return;
+      const content = (event as { content?: unknown } | null)?.content;
+      return { content: appendBlock(content, text) };
     } catch {
       return;
     }

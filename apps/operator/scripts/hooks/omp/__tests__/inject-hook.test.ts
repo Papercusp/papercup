@@ -32,12 +32,17 @@ import adapter, { portForEvent, parse, render } from '../../inject/adapters/omp.
 import register, {
   MISS_LOG_BASENAME,
   MISS_LOG_MAX_BYTES,
+  PENDING_MAX_AGE_MS,
   PORT_TIMEOUT_MS,
   SUBPROCESS_KILL_MARGIN_MS,
+  appendBlock,
+  clearMidTurnStash,
   noteInjectionMiss,
   papercuspHomeDir,
   resolveDispatcherPath,
   runDispatcher,
+  stashMidTurn,
+  takeMidTurn,
   shouldSkip,
 } from '../inject-hook';
 
@@ -526,34 +531,135 @@ describe('inject-hook — runDispatcher', () => {
   });
 });
 
-describe('inject-hook — event registration delivery', () => {
-  it('delivers mid-turn context as followUp so it cannot cancel an in-flight tool call', async () => {
+// ── mid-turn delivery (EI-20212277790978719) ────────────────────────────────
+//
+// The bug this block exists to prevent, stated so it cannot be re-argued from
+// first principles the way it was the first time: in the pi runtime ANY queued
+// message (steer OR followUp) makes the agent loop DISCARD the tool calls it
+// was about to run and hand the model "Skipped due to pending system advisory
+// … retry the skipped tool if it is still needed". Measured on one Gemini su
+// session: 17 injections, 13 cancelled tool calls, 13/13 of those cancellations
+// immediately preceded by one of our blocks. `deliverAs:'nextTurn'` is not the
+// escape — while streaming it lands in a buffer whose only drain is a later
+// triggerTurn delivery, i.e. a silent hole instead of a loud tax.
+//
+// So mid-turn context must ride IN a tool result (the `tool_result` seam, whose
+// returned content the runtime merges), never in a message.
+
+describe('inject-hook — mid-turn delivery rides in a tool result, never a message', () => {
+  const withEcho = async (fn: (handlers: Map<string, (event: unknown) => Promise<unknown> | unknown>, sent: unknown[]) => Promise<void>) => {
     const previousEnv = { ...process.env };
     Object.assign(process.env, envWith(echoDispatcher));
+    clearMidTurnStash();
     try {
       const handlers = new Map<string, (event: unknown) => Promise<unknown> | unknown>();
-      const sent: Array<{ message: { customType: string; content: string }; options?: { deliverAs?: string } }> = [];
+      const sent: unknown[] = [];
       register({
         on: (event, handler) => handlers.set(event, handler),
         sendMessage: (message, options) => sent.push({ message, options }),
       });
-
-      const turnEnd = handlers.get('turn_end');
-      expect(turnEnd).toBeDefined();
-      await turnEnd!({ type: 'turn_end', toolResults: [{ toolCallId: 'call-1' }] });
-
-      expect(sent).toEqual([
-        {
-          message: { customType: 'papercusp-context', content: 'INJECTED CONTEXT', display: false },
-          options: { deliverAs: 'followUp' },
-        },
-      ]);
+      await fn(handlers, sent);
     } finally {
+      clearMidTurnStash();
       for (const key of Object.keys(process.env)) {
         if (!(key in previousEnv)) delete process.env[key];
       }
       Object.assign(process.env, previousEnv);
     }
+  };
+
+  it('CALIBRATION (must pass or every assertion below is vacuous): turn_end really does fetch a block', async () => {
+    await withEcho(async handlers => {
+      const turnEnd = handlers.get('turn_end');
+      expect(turnEnd).toBeDefined();
+      await turnEnd!({ type: 'turn_end', toolResults: [{ toolCallId: 'call-1' }] });
+      // Observed through the delivery seam, since that is the only way out now.
+      const toolResult = handlers.get('tool_result');
+      expect(toolResult).toBeDefined();
+      expect(await toolResult!({ content: 'ORIGINAL' })).toEqual({ content: 'ORIGINAL\n\nINJECTED CONTEXT' });
+    });
+  });
+
+  it('NEVER queues a message — the regression that cancelled 13 tool calls', async () => {
+    await withEcho(async (handlers, sent) => {
+      await handlers.get('turn_end')!({ type: 'turn_end', toolResults: [{ toolCallId: 'call-1' }] });
+      await handlers.get('tool_result')!({ content: 'ORIGINAL' });
+      expect(sent).toEqual([]);
+    });
+  });
+
+  it('appends to array content instead of replacing it (emitToolResult REPLACES what we return)', async () => {
+    await withEcho(async handlers => {
+      await handlers.get('turn_end')!({ type: 'turn_end', toolResults: [{ toolCallId: 'call-1' }] });
+      expect(await handlers.get('tool_result')!({ content: [{ type: 'text', text: 'REAL OUTPUT' }] })).toEqual({
+        content: [{ type: 'text', text: 'REAL OUTPUT' }, { type: 'text', text: 'INJECTED CONTEXT' }],
+      });
+    });
+  });
+
+  it('delivers to exactly ONE tool result — the stash is take-and-clear', async () => {
+    await withEcho(async handlers => {
+      await handlers.get('turn_end')!({ type: 'turn_end', toolResults: [{ toolCallId: 'call-1' }] });
+      const toolResult = handlers.get('tool_result')!;
+      expect(await toolResult({ content: 'FIRST' })).toEqual({ content: 'FIRST\n\nINJECTED CONTEXT' });
+      expect(await toolResult({ content: 'SECOND' })).toBeUndefined();
+    });
+  });
+
+  it('returns undefined when nothing is stashed, so an untouched result stays untouched', async () => {
+    await withEcho(async handlers => {
+      expect(await handlers.get('tool_result')!({ content: 'ORIGINAL' })).toBeUndefined();
+    });
+  });
+});
+
+describe('inject-hook — mid-turn stash', () => {
+  it('newest wins: a later turn supersedes an undelivered earlier block', () => {
+    clearMidTurnStash();
+    stashMidTurn('OLD', 1_000);
+    stashMidTurn('NEW', 2_000);
+    expect(takeMidTurn(2_001)).toBe('NEW');
+    expect(takeMidTurn(2_002)).toBeNull();
+  });
+
+  it('drops a stash older than the max age rather than injecting stale context', () => {
+    clearMidTurnStash();
+    stashMidTurn('STALE', 1_000);
+    expect(takeMidTurn(1_000 + PENDING_MAX_AGE_MS + 1)).toBeNull();
+  });
+
+  it('CONTROL: the same stash one millisecond INSIDE the window is delivered', () => {
+    // Calibration for the case above — without this, a takeMidTurn stubbed to
+    // `return null` would pass the staleness test for the wrong reason.
+    clearMidTurnStash();
+    stashMidTurn('FRESH', 1_000);
+    expect(takeMidTurn(1_000 + PENDING_MAX_AGE_MS)).toBe('FRESH');
+  });
+
+  it('a taken stash is cleared even when it was stale (no zombie replay)', () => {
+    clearMidTurnStash();
+    stashMidTurn('STALE', 1_000);
+    expect(takeMidTurn(1_000 + PENDING_MAX_AGE_MS + 1)).toBeNull();
+    expect(takeMidTurn(1_000 + PENDING_MAX_AGE_MS + 2)).toBeNull();
+  });
+});
+
+describe('inject-hook — appendBlock', () => {
+  it('preserves string content', () => {
+    expect(appendBlock('tool said this', 'BLOCK')).toBe('tool said this\n\nBLOCK');
+  });
+
+  it('preserves every part of array content, including images it does not understand', () => {
+    expect(appendBlock([{ type: 'image', data: 'x' }, { type: 'text', text: 'out' }], 'BLOCK')).toEqual([
+      { type: 'image', data: 'x' },
+      { type: 'text', text: 'out' },
+      { type: 'text', text: 'BLOCK' },
+    ]);
+  });
+
+  it('emits the block alone for absent/unknown content rather than fabricating a wrapper', () => {
+    expect(appendBlock(undefined, 'BLOCK')).toEqual([{ type: 'text', text: 'BLOCK' }]);
+    expect(appendBlock({ weird: true }, 'BLOCK')).toEqual([{ type: 'text', text: 'BLOCK' }]);
   });
 });
 
