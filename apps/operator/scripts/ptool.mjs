@@ -171,6 +171,17 @@ export function shouldPrintInvocationLine(jsonKind) {
   return jsonKind == null;
 }
 
+/**
+ * Scripted JSON calls must keep stdout machine-parseable. The MCP response may
+ * contain advisory text after its primary JSON content, so every explicit JSON
+ * input uses the raw extractor even when the caller did not spell `--raw`.
+ * Interactive calls retain the existing pretty human-readable output unless
+ * `--raw` was explicitly requested.
+ */
+export function shouldPrintRawResult(jsonKind, raw) {
+  return Boolean(raw || jsonKind != null);
+}
+
 /* ─── catalog grouping (pure — exported for tests) ────────────────────── */
 
 /** The service a tool belongs to — the segment before the first `:`
@@ -850,7 +861,7 @@ async function main() {
       buildCallToolParams(toolName, callArgs, { outputSchema: tool.outputSchema }),
       { timeoutMs: timeoutForTool(toolName) },
     );
-    const code = printResult(result, { raw: args.raw });
+    const code = printResult(result, { raw: shouldPrintRawResult(jsonKind, args.raw) });
     if (code !== 0) process.exitCode = code;
   } finally {
     await client.close().catch(() => {});

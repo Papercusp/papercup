@@ -21,6 +21,7 @@ import {
   resolveWorkspaceScope,
   jsonSourceKind,
   shouldPrintInvocationLine,
+  shouldPrintRawResult,
 } from '../scripts/ptool.mjs';
 
 describe('ptool parseArgs', () => {
@@ -167,6 +168,14 @@ describe('ptool invocation output mode (EI-20202581520430575)', () => {
     expect(shouldPrintInvocationLine('inline')).toBe(false);
     expect(shouldPrintInvocationLine('file')).toBe(false);
     expect(shouldPrintInvocationLine('stdin')).toBe(false);
+  });
+
+  it('routes every scripted JSON source through the raw extractor even without --raw', () => {
+    expect(shouldPrintRawResult('inline', false)).toBe(true);
+    expect(shouldPrintRawResult('file', false)).toBe(true);
+    expect(shouldPrintRawResult('stdin', false)).toBe(true);
+    expect(shouldPrintRawResult(null, false)).toBe(false);
+    expect(shouldPrintRawResult(null, true)).toBe(true);
   });
 });
 
@@ -519,5 +528,15 @@ describe('ptool prettyText / resultToText', () => {
   it('renders non-text content parts as JSON', () => {
     const result = { content: [{ type: 'image', data: 'x' }] };
     expect(resultToText(result)).toBe('{"type":"image","data":"x"}');
+  });
+
+  it('raw extraction drops MCP guidance appended after a complete JSON content item', () => {
+    const result = {
+      content: [
+        { type: 'text', text: '{"ok":true,"state":"done"}' },
+        { type: 'text', text: 'See also: work_items:get' },
+      ],
+    };
+    expect(resultToText(result, { raw: true })).toBe('{"ok":true,"state":"done"}');
   });
 });
