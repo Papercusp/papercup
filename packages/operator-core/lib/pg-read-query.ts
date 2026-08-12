@@ -592,6 +592,55 @@ export function buildDerivedColumnRedirect(rawSql: string, errorMessage: string)
 }
 
 /**
+ * A small registry for physical-column names that are routinely confused with
+ * the platform vocabulary. Unlike a derived-column redirect, these values are
+ * real columns on the relation; the failure is that the caller used the name
+ * from a different projection/table family. Keep this separate from
+ * `DERIVED_COLUMN_REDIRECTS` so the error does not claim a stored value is
+ * computed at read time.
+ */
+const SCHEMA_COLUMN_REDIRECTS: ReadonlyArray<{
+  relation: string;
+  missing: string;
+  actual: string;
+  scope: string;
+}> = [
+  {
+    relation: 'routines',
+    missing: 'harness_slug',
+    actual: 'install_slug',
+    scope: 'workspace_id',
+  },
+];
+
+/**
+ * Turn a 42703 caused by a known cross-table vocabulary mismatch into an
+ * actionable retry hint. This deliberately handles only a single referenced
+ * relation: with joins, the same missing name can be valid on another table and
+ * a false redirect is worse than the generic `knownColumns` payload.
+ */
+export function buildSchemaColumnRedirect(rawSql: string, errorMessage: string): string | null {
+  const column = parseMissingColumnName(errorMessage);
+  if (!column) return null;
+
+  const referenced = extractReferencedTables(rawSql);
+  if (referenced.length !== 1) return null;
+
+  const relation = bareTableName(referenced[0]);
+  const hit = SCHEMA_COLUMN_REDIRECTS.find(
+    (entry) => entry.relation === relation && entry.missing === column,
+  );
+  if (!hit) return null;
+
+  return (
+    `⚠ \`${hit.missing}\` is not a column on ${referenced[0]} — this relation uses ` +
+    `\`${hit.actual}\` as its installation key. Retry with \`${hit.actual}\` and scope ` +
+    `by \`${hit.scope}\` as well. ` +
+    '(live schema contract; see harness_shared.routines)'
+  );
+}
+
+/**
  * The failing column name out of a 42703. PG spells it two ways: `column
  * "session_state" does not exist` (bare) and `column p.session_state does not
  * exist` (qualified by alias — unquoted).

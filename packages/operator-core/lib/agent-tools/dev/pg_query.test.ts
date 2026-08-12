@@ -123,6 +123,25 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     });
   });
 
+  it('adds an actionable routines schema redirect alongside knownColumns', async () => {
+    pgReadQueryMock.mockRejectedValue(
+      Object.assign(new Error('column "harness_slug" does not exist'), { code: '42703' }),
+    );
+    describeColumnsMock.mockResolvedValue([
+      { table: 'harness_shared.routines', columns: ['install_slug: text', 'workspace_id: text'] },
+    ]);
+    const res = await pgQueryTool.handler(
+      {
+        sql: "SELECT harness_slug FROM harness_shared.routines WHERE workspace_id = 'ws'",
+      } as never,
+      {} as never,
+    );
+    expect(payloadOf(res as never)).toMatchObject({
+      code: '42703',
+      schemaColumn: expect.stringContaining('install_slug'),
+    });
+  });
+
   it('a non-42703 error gets no column lookup; a failing lookup still returns the error', async () => {
     pgReadQueryMock.mockRejectedValue(Object.assign(new Error('syntax error'), { code: '42601' }));
     const res = await pgQueryTool.handler({ sql: 'SELEC 1' } as never, {} as never);

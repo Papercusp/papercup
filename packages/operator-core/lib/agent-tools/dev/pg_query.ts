@@ -22,6 +22,7 @@ import {
   buildNativeToolAttributionAdvisory,
   buildSplitCompletionEvidenceAdvisory,
   buildSilentNullPathAdvisory,
+  buildSchemaColumnRedirect,
   buildTenantScopeAdvisory,
   buildDerivedColumnRedirect,
   buildJsonbPathRedirect,
@@ -293,6 +294,8 @@ export default defineTool({
         // The redirect names the real surface AND the fallback to avoid.
         const redirect = buildDerivedColumnRedirect(sql, info.message);
         if (redirect) payload.derivedColumn = redirect;
+        const schemaColumn = buildSchemaColumnRedirect(sql, info.message);
+        if (schemaColumn) payload.schemaColumn = schemaColumn;
         // P-015: the same failure one level down. `knownColumns` answers "what
         // columns exist", which is the wrong answer when the name the caller
         // guessed is a KEY inside a jsonb column rather than a column — the

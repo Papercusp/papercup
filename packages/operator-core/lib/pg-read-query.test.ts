@@ -19,6 +19,7 @@ import {
   buildSplitCompletionEvidenceAdvisory,
   buildDerivedColumnRedirect,
   buildJsonbPathRedirect,
+  buildSchemaColumnRedirect,
   parseMissingColumnName,
   clearTenantScopeSchemaCache,
   classifyTenantPrescription,
@@ -1244,6 +1245,36 @@ describe('parseMissingColumnName (the ONE 42703 name parser)', () => {
   it('CONTROL: an unrelated error yields null rather than a plausible-looking guess', () => {
     expect(parseMissingColumnName('relation "nope" does not exist')).toBeNull();
     expect(parseMissingColumnName('syntax error at or near "FROM"')).toBeNull();
+  });
+});
+
+describe('buildSchemaColumnRedirect (known physical-column vocabulary)', () => {
+  it('names install_slug for the routines table when harness_slug is guessed', () => {
+    const out = buildSchemaColumnRedirect(
+      "SELECT harness_slug FROM harness_shared.routines WHERE workspace_id = 'ws'",
+      'column "harness_slug" does not exist',
+    );
+    expect(out).toContain('install_slug');
+    expect(out).toContain('workspace_id');
+    expect(out).toContain('harness_shared.routines');
+  });
+
+  it('stays silent for joined relations where the missing name may belong elsewhere', () => {
+    expect(
+      buildSchemaColumnRedirect(
+        'SELECT harness_slug FROM harness_shared.routines r JOIN harness_shared.harness_plans p ON true',
+        'column "harness_slug" does not exist',
+      ),
+    ).toBeNull();
+  });
+
+  it('stays silent for unrelated relations', () => {
+    expect(
+      buildSchemaColumnRedirect(
+        'SELECT harness_slug FROM harness_shared.harness_plans',
+        'column "harness_slug" does not exist',
+      ),
+    ).toBeNull();
   });
 });
 
