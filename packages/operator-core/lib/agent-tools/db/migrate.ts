@@ -310,11 +310,29 @@ export default defineTool({
       ),
   }),
   async handler(args, ctx) {
+    // Validate the file before the dry-run/lock branches and retain the exact
+    // bytes for the apply hash. A missing file used to be swallowed here, then
+    // read again inside guardResource's callback, where ENOENT escaped as an
+    // opaque handler error after the caller had already acquired the schema
+    // lock (EI-20208885180481722).
+    let sqlText: string;
+    try {
+      sqlText = readFileSync(args.file, 'utf8');
+    } catch (err) {
+      return json({
+        ok: false,
+        applied: false,
+        reason: 'migration_file_unreadable',
+        file: args.file,
+        error: err instanceof Error ? err.message : String(err),
+        note: 'The migration file could not be read; no lock was acquired and no SQL was applied.',
+      });
+    }
+
     // The boot runner performs the same check through its beforeApply hook.
     // Keep db:migrate fail-closed too: it is the sanctioned manual applier and
     // must not provide a route around the release-before-schema ordering rule.
     try {
-      const sqlText = readFileSync(args.file, 'utf8');
       const sqlDir = path.dirname(path.resolve(args.file));
       const guard = verifyPendingCodeDeployMigration({
         filename: path.basename(args.file),
@@ -501,7 +519,7 @@ export default defineTool({
         // — `\i` (not `-f`) so the file still runs through psql's full
         // meta-command interpreter (dollar-quotes, DO blocks, COPY), keeping
         // the perf:allow A4 rationale below intact.
-        const sha256 = createHash('sha256').update(readFileSync(args.file, 'utf8')).digest('hex');
+        const sha256 = createHash('sha256').update(sqlText).digest('hex');
         const filenameLiteral = path.basename(args.file).replace(/'/g, "''");
         // WI-6381: the caller-opted-in wide wait (see args.lock_timeout_sec's
         // description above) — falls back to the EI-9417 default when omitted,

@@ -125,6 +125,28 @@ describe('db:migrate — dry run', () => {
     expect(out.dry_run).toBe(true);
     expect(h.spawnSync).not.toHaveBeenCalled();
   });
+
+  it('returns a structured unreadable-file result before acquiring the lock', async () => {
+    const error = Object.assign(new Error(`ENOENT: no such file or directory, open '${FILE}'`), { code: 'ENOENT' });
+    h.readFileSync.mockImplementation(() => {
+      throw error;
+    });
+
+    const out = parse(
+      await (migrateTool as never as { handler: Function }).handler({ file: FILE, confirm: true }, CTX),
+    );
+
+    expect(out).toMatchObject({
+      ok: false,
+      applied: false,
+      reason: 'migration_file_unreadable',
+      file: FILE,
+    });
+    expect(out.error).toContain('ENOENT');
+    expect(out.note).toContain('no lock was acquired');
+    expect(h.guardResource).not.toHaveBeenCalled();
+    expect(h.spawnSync).not.toHaveBeenCalled();
+  });
 });
 
 describe('db:migrate — skipWorkspaceTx (EI-18733783500981433)', () => {
