@@ -79,7 +79,8 @@ describe('code:run registration (B-CX-2A)', () => {
 
   it('documents JavaScript escaping for shell backslash-zero commands', () => {
     const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
-    const scriptDescription = (tool?.args as { shape?: { script?: { description?: string } } })?.shape?.script?.description ?? '';
+    const scriptDescription =
+      (tool?.inputSchema as { properties?: { script?: { description?: string } } })?.properties?.script?.description ?? '';
     expect(scriptDescription).toContain("tr '\\\\0' ' '");
     expect(scriptDescription).toContain('two backslashes in the script source');
     expect(scriptDescription).toContain('a NUL and is rejected before bash runs');
