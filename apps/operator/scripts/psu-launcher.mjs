@@ -1812,28 +1812,80 @@ export function mintCarryRespawnArgs(
     home = homedir(),
     agent = 'claude',
     personaFile = null,
+    codexHome = null,
   } = {},
 ) {
   const text = String(systemPromptAddendum ?? '').trim();
   if (!text) throw new Error('carry-respawn requires a non-empty system-prompt addendum');
-  // Carry-respawn is claude-only, so the mint may synthesize --session-id for a
-  // resume-launched argv (see mintRecycleArgs); nativeId can then only be null
-  // for a genuinely non-claude agent hint.
+  const normalizedAgent = String(agent ?? '').trim().toLowerCase();
+  // Claude rotates its native id and consumes the carry through
+  // --append-system-prompt-file. Codex has no equivalent CLI flag; its system
+  // prompt is CODEX_HOME/AGENTS.md, handled below. OMP still has no managed
+  // carry-respawn consumer.
   // `personaFile` (P-002) rides through to mintRecycleArgs, which owns the
   // --system-prompt-file swap — the copy-through it fixes lives there, so both
   // respawn modes (carry AND plain recycle) get the fresh render from one code
   // path. This function stays PURE: the network call that produces personaFile is
   // the caller's, where its failure can be caught and fail-softed.
   const rotated = mintRecycleArgs(args, { mintId, agent, personaFile });
-  if (!rotated.nativeId) throw new Error('carry-respawn requires a Claude --session-id launch');
   const dir = join(home, '.papercusp', 'launch-context');
   mkdirSync(dir, { recursive: true, mode: 0o700 });
-  const key = String(ownerId || rotated.nativeId)
+  const key = String(ownerId || rotated.nativeId || 'unknown')
     .replace(/[^a-zA-Z0-9._-]/g, '_')
     .slice(0, 200);
-  const launchContextPath = join(dir, `carry-${key || rotated.nativeId}.md`);
+  const launchContextPath = join(dir, `carry-${key || rotated.nativeId || 'unknown'}.md`);
   writeFileSync(launchContextPath, `${text}\n`, { mode: 0o600 });
   chmodSync(launchContextPath, 0o600);
+
+  if (normalizedAgent === 'codex') {
+    const targetHome = String(codexHome ?? '').trim();
+    if (!targetHome) throw new Error('Codex carry-respawn requires CODEX_HOME');
+    const agentsPath = join(targetHome, 'AGENTS.md');
+    const basePath = join(targetHome, '.papercusp-carry-base-AGENTS.md');
+
+    // Snapshot the launch-time prompt ONCE, then replace (never accumulate) the
+    // managed carry section on each successor. A fleet member can respawn many
+    // times; appending to the previous AGENTS.md would grow context without
+    // bound and replay stale checkpoints.
+    let baseText;
+    if (existsSync(basePath)) {
+      baseText = readFileSync(basePath, 'utf8');
+    } else {
+      baseText = readFileSync(agentsPath, 'utf8');
+      writeFileSync(basePath, baseText, { mode: 0o600 });
+      chmodSync(basePath, 0o600);
+    }
+    const nextAgents = [
+      baseText.trimEnd(),
+      '',
+      '---',
+      '## Managed carry checkpoint',
+      '',
+      text,
+      '',
+    ].join('\n');
+    const tmp = `${agentsPath}.${process.pid}.carry.tmp`;
+    writeFileSync(tmp, nextAgents, { mode: 0o600 });
+    chmodSync(tmp, 0o600);
+    renameSync(tmp, agentsPath);
+    chmodSync(agentsPath, 0o600);
+
+    // A carry-respawn is a FRESH Codex thread. Drop the original launch's
+    // positional kickoff and any resume/fork subcommand; preserving either
+    // replays stale work or collides with the predecessor's active-writer lock.
+    const strippedKickoff = stripKickoffPositional(args);
+    const subcommandAt = strippedKickoff.findIndex((arg) => arg === 'resume' || arg === 'fork');
+    return {
+      args: subcommandAt >= 0 ? strippedKickoff.slice(0, subcommandAt) : strippedKickoff,
+      nativeId: null,
+      launchContextPath,
+      codexAgentsPath: agentsPath,
+    };
+  }
+
+  if (normalizedAgent !== 'claude' || !rotated.nativeId) {
+    throw new Error('carry-respawn is supported only for Claude and Codex launches');
+  }
   return {
     args: [...rotated.args, '--append-system-prompt-file', launchContextPath],
     nativeId: rotated.nativeId,

@@ -660,7 +660,17 @@ export function makeIdleGate({ idleMs = DEFAULT_IDLE_MS, capMs = DEFAULT_IDLE_WA
 export function makeOwnerComposerGate({ capMs = DEFAULT_IDLE_WAIT_CAP_MS } = {}) {
   let pending = false;
   let lineLength = 0;
-  let inEscape = false;
+  // Terminal-emulator replies share stdin with real owner keystrokes. Codex's
+  // TUI emits cursor/device-status queries and the terminal answers with CSI
+  // sequences such as ESC [ 12 ; 40 R. The old boolean escape parser treated
+  // `[` itself as the final byte, then counted `12;40R` as owner text. Every
+  // visible Codex fleet terminal therefore acquired a phantom staged line and
+  // held carry-respawn at the owner-composer safety gate forever.
+  //
+  // Track the introducer form so the WHOLE control sequence is ignored. This
+  // covers the stdin-side reply families terminals actually emit (CSI, OSC,
+  // and SS3) without weakening the real-text guard.
+  let escapeMode = null;
   const waiters = new Set();
 
   const setPending = (next) => {
@@ -675,13 +685,36 @@ export function makeOwnerComposerGate({ capMs = DEFAULT_IDLE_WAIT_CAP_MS } = {})
     const text = Buffer.isBuffer(data) ? data.toString('utf8') : String(data ?? '');
     for (let i = 0; i < text.length; i += 1) {
       const code = text.charCodeAt(i);
-      if (inEscape) {
-        // CSI/SS3 and other terminal escape sequences end at a final byte.
-        if (code >= 0x40 && code <= 0x7e) inEscape = false;
+      if (escapeMode === 'esc') {
+        if (code === 0x5b) escapeMode = 'csi'; // ESC [
+        else if (code === 0x5d) escapeMode = 'osc'; // ESC ]
+        else if (code === 0x4f) escapeMode = 'ss3'; // ESC O
+        else escapeMode = null; // ordinary two-byte ESC sequence
+        continue;
+      }
+      if (escapeMode === 'csi') {
+        // ECMA-48 CSI: parameter/intermediate bytes, then one final byte.
+        if (code >= 0x40 && code <= 0x7e) escapeMode = null;
+        continue;
+      }
+      if (escapeMode === 'ss3') {
+        // SS3 is ESC O plus one final key byte.
+        escapeMode = null;
+        continue;
+      }
+      if (escapeMode === 'osc') {
+        if (code === 0x07) escapeMode = null; // BEL terminator
+        else if (code === 0x1b) escapeMode = 'osc-esc';
+        continue;
+      }
+      if (escapeMode === 'osc-esc') {
+        // OSC's other terminator is ST (ESC \\). A non-ST byte keeps the OSC
+        // open; it is still terminal control data, never owner-authored text.
+        escapeMode = code === 0x5c ? null : 'osc';
         continue;
       }
       if (code === 0x1b) {
-        inEscape = true;
+        escapeMode = 'esc';
         continue;
       }
       if (code === 0x0d || code === 0x0a || code === 0x03 || code === 0x15) {
@@ -712,7 +745,7 @@ export function makeOwnerComposerGate({ capMs = DEFAULT_IDLE_WAIT_CAP_MS } = {})
     },
     markSubmitted() {
       lineLength = 0;
-      inEscape = false;
+      escapeMode = null;
       setPending(false);
     },
     /** Wait for an owner submit/cancel, bounded so a parked line cannot wedge a host. */
@@ -3849,6 +3882,7 @@ export function hostThroughPty(o) {
               ownerId,
               agent: env.PAPERCUSP_AGENT,
               personaFile,
+              codexHome: env.CODEX_HOME,
             })
           : mintRecycleArgs(args, { agent: env.PAPERCUSP_AGENT, personaFile });
         recycleArgs = minted.args;

@@ -857,6 +857,28 @@ describe('makeIdleGate (P-013 mid-keystroke safety)', () => {
 });
 
 describe('makeOwnerComposerGate (EI-20199370837439455 staged-input safety)', () => {
+  it('ignores complete terminal reply sequences instead of inventing owner text', () => {
+    const g = makeOwnerComposerGate({ capMs: 100 });
+
+    // Codex asks the terminal for cursor/device state; replies arrive on the
+    // same stdin stream as human keystrokes. The old parser stopped at `[`, so
+    // each payload below left phantom text pending and blocked carry-respawn.
+    g.observe('\u001b[12;40R'); // cursor-position report
+    g.observe('\u001b[?1;2c'); // device-attributes report
+    g.observe('\u001b[200~\u001b[201~'); // bracketed-paste markers
+    g.observe('\u001bOP'); // SS3 key report
+    g.observe('\u001b]0;terminal title\u0007'); // OSC + BEL
+    g.observe('\u001b]0;terminal title\u001b\\'); // OSC + ST
+
+    expect(g.hasPending()).toBe(false);
+    expect(g.pendingLength()).toBe(0);
+
+    // The control-sequence filter must not weaken the actual safety contract.
+    g.observe('owner text');
+    expect(g.hasPending()).toBe(true);
+    expect(g.pendingLength()).toBe(10);
+  });
+
   it('keeps quiet owner text pending until an explicit submit or cancel', () => {
     const g = makeOwnerComposerGate({ capMs: 100 });
     g.observe('put yourself on auto mode');

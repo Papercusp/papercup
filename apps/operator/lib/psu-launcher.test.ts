@@ -3878,22 +3878,60 @@ describe('mintCarryRespawnArgs (P-018 deterministic successor launch context)', 
     expect(out.args).not.toContain(stale);
   });
 
-  it('fails before any respawn when the carry is empty or the agent is not claude', () => {
+  it('fails before any respawn when the carry is empty or the agent has no managed carry consumer', () => {
     expect(() =>
       mintCarryRespawnArgs(['claude', '--session-id', UUID], {
         systemPromptAddendum: '  ',
         home,
       }),
     ).toThrow(/non-empty/);
-    // Carry-respawn is claude-only; a non-claude agent hint refuses (the argv
-    // alone no longer decides — a resume-launched claude has no --session-id).
+    // OMP has no managed carry consumer. Codex is covered separately below.
     expect(() =>
       mintCarryRespawnArgs(['omp'], {
         systemPromptAddendum: 'carry',
         home,
         agent: 'omp',
       }),
-    ).toThrow(/--session-id/);
+    ).toThrow(/Claude and Codex/);
+  });
+
+  it('restarts Codex as a fresh thread and layers the carry into CODEX_HOME/AGENTS.md', () => {
+    const codexHome = join(home, 'codex-home');
+    mkdirSync(codexHome, { recursive: true });
+    writeFileSync(join(codexHome, 'AGENTS.md'), '# Base persona\n', { mode: 0o600 });
+    const kickoff = '⟦turn-origin:fleet-kickoff nonce:12345678⟧\nBegin draining.';
+
+    const first = mintCarryRespawnArgs(
+      ['--dangerously-bypass-hook-trust', '-m', 'gpt-5.6-luna', kickoff],
+      {
+        systemPromptAddendum: 'first deterministic carry',
+        ownerId: 'su-codex-carry',
+        home,
+        agent: 'codex',
+        codexHome,
+      },
+    );
+    expect(first.nativeId).toBeNull();
+    expect(first.args).toEqual(['--dangerously-bypass-hook-trust', '-m', 'gpt-5.6-luna']);
+    expect(readFileSync(join(codexHome, 'AGENTS.md'), 'utf8')).toContain('first deterministic carry');
+    expect(readFileSync(join(codexHome, '.papercusp-carry-base-AGENTS.md'), 'utf8')).toBe('# Base persona\n');
+    expect(statSync(join(codexHome, 'AGENTS.md')).mode & 0o777).toBe(0o600);
+
+    const second = mintCarryRespawnArgs(
+      ['--dangerously-bypass-hook-trust', '-m', 'gpt-5.6-luna', 'resume', UUID],
+      {
+        systemPromptAddendum: 'second deterministic carry',
+        ownerId: 'su-codex-carry',
+        home,
+        agent: 'codex',
+        codexHome,
+      },
+    );
+    expect(second.args).toEqual(['--dangerously-bypass-hook-trust', '-m', 'gpt-5.6-luna']);
+    const agents = readFileSync(join(codexHome, 'AGENTS.md'), 'utf8');
+    expect(agents).toContain('# Base persona');
+    expect(agents).toContain('second deterministic carry');
+    expect(agents).not.toContain('first deterministic carry');
   });
 
   it('mints a successor for a RESUME-launched claude argv (no --session-id to rotate — synthesized)', () => {
