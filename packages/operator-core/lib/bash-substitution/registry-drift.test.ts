@@ -18,7 +18,7 @@
 import { describe, expect, it } from 'vitest';
 import { loadPairFixtures } from './corpus';
 import type { SubstitutionRow } from './match';
-import { ALL_PAIRS } from './pairs';
+import { BASH_GATE_PAIRS } from './pairs';
 import { diffRegistry, expectedRows, formatDrift, type ExpectedRow } from './registry-drift';
 
 /** A seeded row that agrees with `want` on every compared field. */
@@ -36,11 +36,11 @@ function rowFor(want: ExpectedRow, overrides: Partial<SubstitutionRow> = {}): Su
 }
 
 describe('expectedRows', () => {
-  const expected = expectedRows(loadPairFixtures(ALL_PAIRS));
+  const expected = expectedRows(loadPairFixtures(BASH_GATE_PAIRS));
 
   it('derives one row per audited pair', () => {
-    expect(expected).toHaveLength(ALL_PAIRS.length);
-    expect(new Set(expected.map((e) => e.intentLabel)).size).toBe(ALL_PAIRS.length);
+    expect(expected).toHaveLength(BASH_GATE_PAIRS.length);
+    expect(new Set(expected.map((e) => e.intentLabel)).size).toBe(BASH_GATE_PAIRS.length);
   });
 
   /**
@@ -49,7 +49,7 @@ describe('expectedRows', () => {
    * against another and can never detect that the evidence moved.
    */
   it('recomputes the verdict from the frozen sample rather than copying expectedVerdict', () => {
-    for (const pair of ALL_PAIRS) {
+    for (const pair of BASH_GATE_PAIRS) {
       const row = expected.find((e) => e.intentLabel === pair.intentLabel);
       expect(row, `${pair.id} produced no expected row`).toBeDefined();
       expect(row!.equivalenceVerdict).toBe(pair.expectedVerdict);
@@ -57,7 +57,7 @@ describe('expectedRows', () => {
   });
 
   it('carries the pattern SOURCE and FLAGS separately, as the registry stores them', () => {
-    for (const pair of ALL_PAIRS) {
+    for (const pair of BASH_GATE_PAIRS) {
       const row = expected.find((e) => e.intentLabel === pair.intentLabel)!;
       expect(row.bashPattern).toBe(pair.bashPattern.source);
       expect(row.advisoryText).toBe(pair.advisoryText);
@@ -66,7 +66,7 @@ describe('expectedRows', () => {
 });
 
 describe('diffRegistry', () => {
-  const expected = expectedRows(loadPairFixtures(ALL_PAIRS));
+  const expected = expectedRows(loadPairFixtures(BASH_GATE_PAIRS));
 
   it('reports NO drift when the table matches the pairs', () => {
     expect(diffRegistry(expected, expected.map((e) => rowFor(e)))).toEqual([]);
@@ -175,7 +175,7 @@ describe('diffRegistry', () => {
 });
 
 describe('formatDrift', () => {
-  const expected = expectedRows(loadPairFixtures(ALL_PAIRS));
+  const expected = expectedRows(loadPairFixtures(BASH_GATE_PAIRS));
 
   it('says so plainly when the registry is clean', () => {
     expect(formatDrift([])).toMatch(/^✓ bash_tool_substitutions matches the audited pairs/);

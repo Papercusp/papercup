@@ -23,7 +23,7 @@ import {
   type SubstitutionRow,
 } from './match';
 import { loadPairFixtures } from './corpus';
-import { ALL_PAIRS } from './pairs';
+import { BASH_GATE_PAIRS } from './pairs';
 
 /** A registry row with sane defaults, overridable per test. */
 function row(over: Partial<SubstitutionRow> = {}): SubstitutionRow {
@@ -136,7 +136,7 @@ describe('registry pattern compilation', () => {
     // The DB accepts `^i?m?s?u?$` — alphabet, no repeats, canonical order.
     // `RegExp.prototype.flags` is spec'd to emit in that order, so anything
     // read off a real regex passes; this asserts the normaliser preserves it.
-    for (const pair of ALL_PAIRS) {
+    for (const pair of BASH_GATE_PAIRS) {
       const stored = normalizeRegistryFlags(pair.bashPattern.flags);
       expect(stored, `${pair.id} flags "${stored}"`).toMatch(/^i?m?s?u?$/);
     }
@@ -149,7 +149,7 @@ describe('every seeded pair survives the registry round-trip', () => {
   // database columns, and this asserts those are the same regex. Without it,
   // widening a pair's flags silently changes what enforcement matches while
   // every existing test stays green.
-  const fixtures = loadPairFixtures(ALL_PAIRS);
+  const fixtures = loadPairFixtures(BASH_GATE_PAIRS);
 
   for (const { pair, fixture } of fixtures) {
     it(`${pair.id} matches identically before and after storage`, () => {

@@ -19,7 +19,7 @@ import type { OrgTestDb } from '../../test/_org-test-db';
 import { loadPairFixtures } from './corpus';
 import { MIN_POPULATION_ATOMS, MIN_POPULATION_SESSIONS, MIN_SAMPLE_SIZE } from './equivalence';
 import { promoteEarnedRows, seedSubstitutionRegistry } from './seed';
-import { ALL_PAIRS } from './pairs';
+import { BASH_GATE_PAIRS } from './pairs';
 import { POLICY_INTENT_PREFIX } from './types';
 
 const { createOrgTestDb } = await import('../../test/_org-test-db');
@@ -40,11 +40,11 @@ describe('seedSubstitutionRegistry (real PG)', () => {
   it('seeds every audited pair, deriving the verdict from its committed sample', async () => {
     const outcomes = await seedSubstitutionRegistry({
       workspaceId: WORKSPACE,
-      fixtures: loadPairFixtures(ALL_PAIRS),
+      fixtures: loadPairFixtures(BASH_GATE_PAIRS),
       client: db.adminSql,
     });
 
-    expect(outcomes).toHaveLength(ALL_PAIRS.length);
+    expect(outcomes).toHaveLength(BASH_GATE_PAIRS.length);
     expect(outcomes.every((o) => o.inserted)).toBe(true);
 
     const rows = (await db.adminSql`
@@ -55,13 +55,13 @@ describe('seedSubstitutionRegistry (real PG)', () => {
        ORDER BY intent_label
     `) as unknown as Array<Record<string, unknown>>;
 
-    expect(rows).toHaveLength(ALL_PAIRS.length);
+    expect(rows).toHaveLength(BASH_GATE_PAIRS.length);
     for (const row of rows) {
       expect(row.advisory_text).toBeTruthy();
       // The frozen population count feeds Phase 5's before/after measurement.
       expect(Number(row.baseline_calls)).toBeGreaterThan(0);
 
-      const pair = ALL_PAIRS.find((candidate) => candidate.intentLabel === row.intent_label);
+      const pair = BASH_GATE_PAIRS.find((candidate) => candidate.intentLabel === row.intent_label);
       expect(pair, `${String(row.intent_label)} has no source pair`).toBeDefined();
 
       // Evidence floor — assert the SAME two-branch admissibility `auditPair`
@@ -104,7 +104,7 @@ describe('seedSubstitutionRegistry (real PG)', () => {
   });
 
   it('seeds a below-floor policy row as unaudited instead of deriving a verdict', async () => {
-    const pair = ALL_PAIRS.find((candidate) => candidate.policyTier !== undefined)!;
+    const pair = BASH_GATE_PAIRS.find((candidate) => candidate.policyTier !== undefined)!;
     const fixture = loadPairFixtures([pair])[0].fixture;
     expect(pair.expectedVerdict).toBe('unaudited');
     expect(fixture.sample.length).toBeLessThan(MIN_SAMPLE_SIZE);
@@ -136,7 +136,7 @@ describe('seedSubstitutionRegistry (real PG)', () => {
     // unlike an ordinary row's tier — re-seeding must re-assert it. Otherwise a
     // row seeded BEFORE the declaration sits at `observe` forever and the policy
     // is enforced nowhere, which is this file's whole reason for existing.
-    const policyPairs = ALL_PAIRS.filter((p) => p.policyTier !== undefined);
+    const policyPairs = BASH_GATE_PAIRS.filter((p) => p.policyTier !== undefined);
     expect(policyPairs.length).toBeGreaterThan(0);
 
     for (const pair of policyPairs) {
@@ -149,7 +149,7 @@ describe('seedSubstitutionRegistry (real PG)', () => {
 
     await seedSubstitutionRegistry({
       workspaceId: WORKSPACE,
-      fixtures: loadPairFixtures(ALL_PAIRS),
+      fixtures: loadPairFixtures(BASH_GATE_PAIRS),
       client: db.adminSql,
     });
 
@@ -194,7 +194,7 @@ describe('seedSubstitutionRegistry (real PG)', () => {
     // `unaudited` is an honest absence of a derived verdict, not a failing
     // audit. Only derived non-equivalent verdicts must carry failure evidence;
     // the below-floor policy row intentionally stores an empty array.
-    const nonEquivalent = ALL_PAIRS.filter(
+    const nonEquivalent = BASH_GATE_PAIRS.filter(
       (p) => p.expectedVerdict !== 'equivalent' && p.expectedVerdict !== 'unaudited',
     );
     for (const pair of nonEquivalent) {
@@ -207,7 +207,7 @@ describe('seedSubstitutionRegistry (real PG)', () => {
   it('re-seeding UPDATES in place rather than duplicating a rule', async () => {
     const again = await seedSubstitutionRegistry({
       workspaceId: WORKSPACE,
-      fixtures: loadPairFixtures(ALL_PAIRS),
+      fixtures: loadPairFixtures(BASH_GATE_PAIRS),
       client: db.adminSql,
     });
     expect(again.every((o) => o.inserted)).toBe(false);
@@ -215,12 +215,12 @@ describe('seedSubstitutionRegistry (real PG)', () => {
     const [{ count }] = (await db.adminSql`
       SELECT count(*)::int AS count FROM harness_shared.bash_tool_substitutions WHERE workspace_id = ${WORKSPACE}
     `) as unknown as Array<{ count: number }>;
-    expect(count).toBe(ALL_PAIRS.length);
+    expect(count).toBe(BASH_GATE_PAIRS.length);
   });
 
   it('never demotes a rule that an observation window already promoted', async () => {
     // Simulate P-020 promoting one rule to `advise` after its window.
-    const target = ALL_PAIRS[0].intentLabel;
+    const target = BASH_GATE_PAIRS[0].intentLabel;
     await db.adminSql`
       UPDATE harness_shared.bash_tool_substitutions
          SET tier = 'advise', false_positive_count = 3
@@ -229,7 +229,7 @@ describe('seedSubstitutionRegistry (real PG)', () => {
 
     await seedSubstitutionRegistry({
       workspaceId: WORKSPACE,
-      fixtures: loadPairFixtures(ALL_PAIRS),
+      fixtures: loadPairFixtures(BASH_GATE_PAIRS),
       client: db.adminSql,
     });
 
@@ -278,7 +278,7 @@ describe('seedSubstitutionRegistry (real PG)', () => {
       }>;
 
       const heldLabels = new Set(
-        ALL_PAIRS.filter((p) => p.holdAtObserve !== undefined).map((p) => p.intentLabel),
+        BASH_GATE_PAIRS.filter((p) => p.holdAtObserve !== undefined).map((p) => p.intentLabel),
       );
 
       for (const r of rows) {
@@ -307,7 +307,7 @@ describe('seedSubstitutionRegistry (real PG)', () => {
     it('a filed false positive pauses that row’s promotion', async () => {
       // P-020's safety valve: "Any agent may file a false-positive against a row
       // and that pauses its promotion." Worth nothing if it lives only in prose.
-      const target = ALL_PAIRS.find((p) => p.expectedVerdict === 'equivalent')!.intentLabel;
+      const target = BASH_GATE_PAIRS.find((p) => p.expectedVerdict === 'equivalent')!.intentLabel;
       await db.adminSql`
         UPDATE harness_shared.bash_tool_substitutions
            SET false_positive_count = 1
@@ -325,7 +325,7 @@ describe('seedSubstitutionRegistry (real PG)', () => {
     });
 
     it('never promotes a pair that holds itself at observe, whatever its verdict', async () => {
-      const heldPairs = ALL_PAIRS.filter((p) => p.holdAtObserve !== undefined);
+      const heldPairs = BASH_GATE_PAIRS.filter((p) => p.holdAtObserve !== undefined);
       expect(heldPairs.length).toBeGreaterThan(0); // D-011's git-read row
 
       const outcomes = await promoteEarnedRows({ workspaceId: WORKSPACE, apply: true, client: db.adminSql });
@@ -344,7 +344,7 @@ describe('seedSubstitutionRegistry (real PG)', () => {
       // The exact incident: a verdict-only promotion swept the held git-read row
       // into `advise`. Declining to promote it next time is not enough — nothing
       // else in the system ever demotes, so the drift would be permanent.
-      const held = ALL_PAIRS.find((p) => p.holdAtObserve !== undefined)!;
+      const held = BASH_GATE_PAIRS.find((p) => p.holdAtObserve !== undefined)!;
       await db.adminSql`
         UPDATE harness_shared.bash_tool_substitutions
            SET tier = 'advise', promoted_at = now()
@@ -381,7 +381,7 @@ describe('seedSubstitutionRegistry (real PG)', () => {
     // The anti-drift latch: a pair whose recorded verdict disagrees with what
     // its sample computes must never reach the table, because D-001's gate
     // would then rest on a claim no evidence supports.
-    const [{ pair, fixture }] = loadPairFixtures([ALL_PAIRS[0]]);
+    const [{ pair, fixture }] = loadPairFixtures([BASH_GATE_PAIRS[0]]);
     const lying = { ...pair, expectedVerdict: 'not-a-substitute' as const };
 
     await expect(
