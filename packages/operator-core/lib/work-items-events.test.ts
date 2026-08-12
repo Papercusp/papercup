@@ -5,7 +5,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { emitUnblockedOnEdgeRemoved, emitWorkItemSettledEvents, isSettledWorkItem, liveAssigneeProbe, liveBlockedState, liveSettledProbe, workItemIdFromRef } from './work-items-events';
+import { emitUnblockedOnEdgeRemoved, emitWorkItemSettledEvents, isSettledWorkItem, liveAssigneeProbe, liveBlockedState, liveSettledProbe, reconcileCriticalWorkItemAlert, selectCriticalWorkItemAlerts, workItemIdFromRef } from './work-items-events';
 import type { WorkItem } from './work-items';
 
 const wi = (over: Partial<WorkItem> = {}): WorkItem => ({
@@ -71,6 +71,62 @@ describe('helpers', () => {
   });
 });
 
+describe('critical work-item alert reconciliation (EI-20271572335296930)', () => {
+  it.each(['done', 'dropped'])('resolves the exact creation alert when an item is %s', async (state) => {
+    const listOpen = vi.fn(async () => [
+      { msg_id: 'announce-1', subjectSignature: 'critical-wi-alert:WI-1' },
+      // A settled id mentioned by a different alert is context, not its subject.
+      { msg_id: 'watchdog-1', subjectSignature: 'watchdog:queue' },
+    ]);
+    const resolveBatch = vi.fn(async () => ({ resolved: 1 }));
+
+    await reconcileCriticalWorkItemAlert(
+      wi({ id: 'WI-1', state, severity: 'critical' }),
+      { listOpen, resolveBatch },
+    );
+
+    expect(resolveBatch).toHaveBeenCalledWith([
+      {
+        msg_id: 'announce-1',
+        choice: 'work-item-settled',
+        resolver: 'system:work-item-settle',
+        note: 'WI-1 settled; its creation alert is no longer an active owner-facing condition',
+      },
+    ]);
+  });
+
+  it('matches the subject signature, never an arbitrary mention of the item id', () => {
+    expect(
+      selectCriticalWorkItemAlerts(
+        [
+          { msg_id: 'subject', subjectSignature: 'critical-wi-alert:WI-9' },
+          { msg_id: 'mention', subjectSignature: 'incident:WI-9-is-context' },
+        ],
+        'WI-9',
+      ).map((open) => open.msg_id),
+    ).toEqual(['subject']);
+  });
+
+  it('does not read or resolve for a non-terminal item or without a matching alert', async () => {
+    const listOpen = vi.fn(async () => [
+      { msg_id: 'other', subjectSignature: 'critical-wi-alert:WI-2' },
+    ]);
+    const resolveBatch = vi.fn(async () => ({ resolved: 0 }));
+
+    await reconcileCriticalWorkItemAlert(
+      wi({ id: 'WI-1', state: 'open', severity: 'critical' }),
+      { listOpen, resolveBatch },
+    );
+    await reconcileCriticalWorkItemAlert(
+      wi({ id: 'WI-1', state: 'done', severity: 'critical' }),
+      { listOpen, resolveBatch },
+    );
+
+    expect(listOpen).toHaveBeenCalledOnce();
+    expect(resolveBatch).not.toHaveBeenCalled();
+  });
+});
+
 describe('emitWorkItemSettledEvents', () => {
   beforeEach(() => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
@@ -89,6 +145,18 @@ describe('emitWorkItemSettledEvents', () => {
     const arg = (emit.mock.calls[0] as unknown as [{ key: string; to: string[] }])[0];
     expect(arg.key).toBe('work-item:done:WI-1');
     expect(arg.to.sort()).toEqual(['su-grand', 'su-parent']);
+  });
+
+  it('runs critical-alert reconciliation as an independent settle leg', async () => {
+    const emit = vi.fn(async () => ({ ok: true as const, key: '', woken: 0, notified: [], msgId: null, waiters: 0 }));
+    const reconcile = vi.fn(async () => {});
+    await emitWorkItemSettledEvents(wi({ severity: 'critical' }), {
+      emit: emit as never,
+      reconcileCriticalWorkItemAlert: reconcile,
+      listOut: vi.fn(async () => []) as never,
+      listIn: vi.fn(async () => []) as never,
+    });
+    expect(reconcile).toHaveBeenCalledWith(expect.objectContaining({ id: 'WI-1', severity: 'critical', state: 'resolved' }));
   });
 
   it('fires work-item:unblocked for a dependent whose LAST blocker settled, targeted at its claimant', async () => {

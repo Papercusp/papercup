@@ -46,6 +46,7 @@ import { planSlugOfWorkItem, staticTagsOfWorkItem } from './scheduler/claim-spec
 // fanoutForObject is lazy-imported inside the default seam below so this module
 // keeps no static edge to the fan-out projection (cycle-safe).
 import type { InjectEvent } from './agent-tools/coordination/fanout-delivery';
+import type { BatchResolveItem } from './agent-tools/coordination/escalations';
 
 // WI-4034 DEFECT 2 (single-source the settled predicate): these used to be a
 // SEPARATE, hand-duplicated literal set here that happened to still agree with
@@ -397,6 +398,10 @@ export interface SettledEventsDeps {
   /** P-010: inject-notify a fix-target's subscribers. Default = fanoutForObject
    *  (lazy-imported to avoid a static import cycle); tests inject a stub. */
   notifySubscribers?: NotifySubscribers;
+  /** EI-20271572335296930: reconcile the exact owner-facing alert created for
+   *  this critical item. Tests inject the resolver; production lazy-imports the
+   *  escalation adapter so the settle event module stays cycle-safe. */
+  reconcileCriticalWorkItemAlert?: (wi: WorkItem) => Promise<void>;
 }
 
 /** Inject-notify the subscribers of an object (P-010) — the fanoutForObject shape. */
@@ -407,6 +412,59 @@ type NotifySubscribers = (object: ObjectRef, ev: InjectEvent) => Promise<number>
 async function defaultNotifySubscribers(object: ObjectRef, ev: InjectEvent): Promise<number> {
   const { fanoutForObject } = await import('./sync/hyperbee/fanout-projection');
   return fanoutForObject(object, ev);
+}
+
+const CRITICAL_WORK_ITEM_ALERT_PREFIX = 'critical-wi-alert:';
+const CRITICAL_WORK_ITEM_ALERT_RESOLVER = 'system:work-item-settle';
+
+type OpenCriticalWorkItemAlert = {
+  msg_id: string;
+  subjectSignature?: unknown;
+};
+
+type CriticalWorkItemAlertDeps = {
+  listOpen?: () => Promise<readonly OpenCriticalWorkItemAlert[]>;
+  resolveBatch?: (items: readonly BatchResolveItem[]) => Promise<unknown>;
+};
+
+/**
+ * Select only the alert whose SUBJECT is this item. Do not match arbitrary
+ * mentions: watchdog escalations legitimately cite settled work-item ids as
+ * context for a newer incident (EI-20271572335296930's correction).
+ */
+export function selectCriticalWorkItemAlerts(
+  opens: readonly OpenCriticalWorkItemAlert[],
+  workItemId: string,
+): OpenCriticalWorkItemAlert[] {
+  const subject = `${CRITICAL_WORK_ITEM_ALERT_PREFIX}${workItemId}`;
+  return opens.filter((open) => open.subjectSignature === subject);
+}
+
+/**
+ * Resolve the exact critical-item creation alert after the item settles. The
+ * operation is idempotent and intentionally does not touch other escalation
+ * kinds, including cards whose prose merely mentions this item's id.
+ */
+export async function reconcileCriticalWorkItemAlert(
+  wi: Pick<WorkItem, 'id' | 'family' | 'state' | 'severity'>,
+  deps: CriticalWorkItemAlertDeps = {},
+): Promise<void> {
+  if (!isSettledWorkItem(wi) || wi.severity !== 'critical') return;
+
+  const adapter = await import('./agent-tools/coordination/escalations');
+  const listOpen = deps.listOpen ?? (async () => (await adapter.listEscalations({ status: 'open' })) as OpenCriticalWorkItemAlert[]);
+  const resolveBatch = deps.resolveBatch ?? adapter.resolveEscalationsBatch;
+  const matches = selectCriticalWorkItemAlerts(await listOpen(), wi.id);
+  if (matches.length === 0) return;
+
+  await resolveBatch(
+    matches.map((open) => ({
+      msg_id: open.msg_id,
+      choice: 'work-item-settled',
+      resolver: CRITICAL_WORK_ITEM_ALERT_RESOLVER,
+      note: `${wi.id} settled; its creation alert is no longer an active owner-facing condition`,
+    })),
+  );
 }
 
 /**
@@ -699,6 +757,17 @@ export async function emitWorkItemSettledEvents(wi: WorkItem, deps: SettledEvent
   const listIn = deps.listIn ?? blockingEdgeReader.listIn;
   const listInMany = resolveListInMany(deps);
   const notifySubscribers = deps.notifySubscribers ?? defaultNotifySubscribers;
+  const reconcileCriticalAlert = deps.reconcileCriticalWorkItemAlert ?? reconcileCriticalWorkItemAlert;
+
+  // A critical item creation alert is about the item's live existence, so it
+  // must leave the owner's attention surface when the item reaches a terminal
+  // state. Keep this in its own fail-soft scope: alert cleanup is valuable, but
+  // a coordination read/write must never make a settled-item notification fail.
+  try {
+    await reconcileCriticalAlert(wi);
+  } catch (e) {
+    failSoft(`critical-alert-reconcile for ${wi.id}`, e);
+  }
 
   // P-008 (linking-notify-family-hardening) durability split: the done-emit and
   // the unblocked loop each run in their OWN fail-soft scope. A single try used
