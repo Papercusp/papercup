@@ -326,30 +326,12 @@ const PROBES = buildProbes();
  * Adding a field here is therefore never the way to make a NEW divergence go away: a new one is a
  * regression in a seam that has already burned four fleets, and it must be FIXED.
  */
-// WI-38326 fixed FOUR of the five original entries (tags, plan, redundancy, est_cost):
-// FEATURE_COLS now projects those columns and claim-spec-match.ts resolves each from the same
-// logical source FIELD_MAP filters on.
-//
-// `plan_item` is DELIBERATELY still listed, and the reason is the one this allowlist exists to
-// make visible. Resolving it column-first made the two evaluators AGREE and was a live
-// regression: measured 2026-08-12 on papercusp-workspace (48,982 rows), `source_plan_item_ids`
-// is populated on ONE row while `payload->'plan_item'` is populated on 3,390 — with the column
-// empty on all 3,390. So column-only resolution agrees with SQL by making both sides blind to
-// where plan-item provenance actually lives, and 5 LIVE claim specs filter on this field. An
-// entry here is therefore NOT always "the JS side is wrong": here the JS side is the CORRECT
-// one and the SQL side needs the payload leg (FIELD_MAP.plan_item -> COALESCE, as `plan` and
-// `tags` already do). Removing this entry by degrading the JS side would pass this suite and
-// quietly re-break admission for those specs.
-const KNOWN_FIELD_SOURCE_DIVERGENCES: Array<{ field: FilterLeaf['field']; workItem: string; why: string }> = [
-  {
-    field: 'plan_item',
-    workItem: 'WI-38326',
-    why:
-      'SQL reads the bare source_plan_item_ids COLUMN (populated on 1 of 48,982 rows); JS reads '
-      + "payload->'plan_item' (populated on 3,390, column empty on all of them). The JS side is "
-      + 'the correct one — fix by teaching FIELD_MAP the payload leg, NOT by making JS column-only.',
-  },
-];
+// WI-38326 fixed the original source-split entries (tags, plan, redundancy, est_cost), and
+// EI-20288961198837165 healed the final one (`plan_item`). The SQL FIELD_MAP and the real JS
+// WorkItem projection now both resolve physical column provenance first, then the payload
+// plan-item object, then the legacy payload array. Keep this list empty: the property below
+// must exercise every field, including both payload-only and column-only plan-item rows.
+const KNOWN_FIELD_SOURCE_DIVERGENCES: Array<{ field: FilterLeaf['field']; workItem: string; why: string }> = [];
 
 const EXCLUDED_FIELDS = new Set(KNOWN_FIELD_SOURCE_DIVERGENCES.map((d) => d.field));
 
@@ -509,6 +491,18 @@ describe('WI-5995 — the SQL compiler and the JS evaluator agree on every (fiel
         + `one claim path and refuses it on the other:\n\n${disagreements.join('\n')}\n`,
     ).toEqual([]);
   }, 120_000);
+
+  it('EI-20288961198837165 resolves both payload-only and column-only plan-item provenance', async () => {
+    const filter: FilterLeaf = { field: 'plan_item', op: 'in', value: ['P-002', 'P-003'] };
+    const admitted = await sqlAdmits(filter);
+    const subj = await subjects();
+
+    expect([...admitted].sort()).toEqual(['F-column-only', 'F-payload-only']);
+    expect(matchesClaimSpecFilter(subj.get('F-column-only')!, filter)).toBe(true);
+    expect(matchesClaimSpecFilter(subj.get('F-payload-only')!, filter)).toBe(true);
+    expect(matchesClaimSpecFilter(subj.get('F-agree')!, filter)).toBe(false);
+    expect(matchesClaimSpecFilter(subj.get('F-absent')!, filter)).toBe(false);
+  });
 });
 
 describe('EI-20288042426947475 — issue-family projection parity', () => {
