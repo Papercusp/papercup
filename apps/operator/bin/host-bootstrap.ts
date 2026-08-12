@@ -751,9 +751,14 @@ export function runBootstrap(): void {
           import('@papercusp/tooldef'),
           import('@papercusp/operator-core/lib/endpoint-ipc-discovery'),
         ]);
-        // Populate the projection registry (defineTool side-effects) before
-        // reading expose.ipc off it.
-        await import('@papercusp/operator-core/lib/agent-tools');
+        // The host handler's endpoint-route graph imports `agent-tools/index`
+        // before runBootstrap() runs, so the registry is already populated.
+        // Do not import it again through the package alias here: in isolated
+        // tsx sidecars the route-relative and package-alias specifiers can
+        // evaluate the same tool module twice. `rubrics:propose` then throws
+        // ToolRegistrationError before endpoint IPC publishes discovery.
+        // Keep this bootstrap consumer read-only; the route graph owns the
+        // registry's defineTool side effects.
         // Registry-driven IPC allowlist: a tool is IPC-eligible iff it declares
         // `expose: { ipc: true }` (must be self-contained — every safety check
         // + persistence side-effect in the tool, not the route). `sys:http` —

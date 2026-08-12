@@ -22,6 +22,10 @@ import { readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const bootSrc = readFileSync(join(__dirname, 'host-bootstrap.ts'), 'utf8');
+const agentToolsCatchallSrc = readFileSync(
+  join(__dirname, '../../../packages/operator-core/lib/endpoint-route/routes/agent-tools/catchall.ts'),
+  'utf8',
+);
 
 /** Each guard, with the module it lives in — both must appear at the boot site. */
 const STARTUP_GUARDS: Array<{ fn: string; module: string; catches: string }> = [
@@ -88,6 +92,17 @@ describe('host-bootstrap wires every startup guard', () => {
   it('calls agentCmdBootWarning() at boot — else a host with no AGENT_CMD/CLAUDE silently falls back to the broken omp -p default', () => {
     expect(bootSrc).toContain('agentCmdBootWarning');
     expect(bootSrc).toMatch(/agentCmdBootWarning\s*\(/);
+  });
+});
+
+describe('host-bootstrap keeps one owner for the endpoint IPC tool registry', () => {
+  it('does not re-import the agent-tools barrel through a second module specifier', () => {
+    expect(bootSrc).not.toContain("import('@papercusp/operator-core/lib/agent-tools')");
+    expect(bootSrc).toContain('listAllProjectedTools()');
+  });
+
+  it('keeps the endpoint route graph as the registry side-effect owner', () => {
+    expect(agentToolsCatchallSrc).toContain("import '../../../agent-tools/index';");
   });
 });
 
