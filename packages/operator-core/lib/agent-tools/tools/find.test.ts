@@ -145,8 +145,12 @@ describe('handler — dynamic activation (dynamic-tool-surface-2026-07-01)', () 
     expect(activated).toHaveLength(1);
     expect(activated[0]).toEqual(out.hits.map((h) => h.tool));
     expect(out.activated).toBe(true);
-    // The guidance flips to "call directly" once activated.
-    expect(out.howToCall).toContain('call the one you want directly');
+    // EI-20224177038218883: server activation cannot prove the client consumed
+    // list_changed and materialized a same-turn wrapper. Lead with the one path
+    // that is immediately callable on every client.
+    expect(out.howToCall).toContain('tools:invoke');
+    expect(out.howToCall).toContain('does NOT guarantee');
+    expect(out.howToCall).not.toContain('call the one you want directly');
   });
 
   it('never breaks discovery when activation throws — hits still returned', async () => {

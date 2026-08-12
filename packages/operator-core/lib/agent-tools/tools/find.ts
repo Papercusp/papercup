@@ -195,9 +195,9 @@ export default defineTool({
     notWhen:
       'The tool is already in your core set or you know its exact name — just call it. For a full permission-annotated dump use agent_tools:list.',
     chaining:
-      'tools:find("<intent>") → READ `activated`. true ⇒ call the top tool directly. false ⇒ call ' +
-      'tools:invoke { name:"<colon-form name>", args } — a direct call fails not-found, and ToolSearch ' +
-      'cannot resolve a colon-form name (it only matches the client-mangled id).',
+      'tools:find("<intent>") → call the top hit through tools:invoke in the SAME turn. `activated:true` ' +
+      'means the server surface grew and requested a client refresh; it does not guarantee this client has ' +
+      'materialized a direct-call wrapper yet. After a refresh/next turn, direct calls may work.',
     returns:
       '{ query, count, semantic: "on"|"warming"|"lexical-only", activated (were the hits added to YOUR live tool surface), hits: [{ tool, description, argSchema, returns (the tool\'s declared response shape, or null if it has not declared one), via }], howToCall }',
     seeAlso: [
@@ -264,8 +264,9 @@ export default defineTool({
             query: args.query,
             count: hits.length,
             semantic,
-            // true ⇒ the matches were added to your live tool surface this call
-            // (a seeded session); call the one you want directly next.
+            // true ⇒ the server-side session allowlist grew and emitted the
+            // standard list_changed request. It cannot prove the client has
+            // consumed that notification and materialized wrappers yet.
             activated,
             hits: hits.map((h) => ({
               tool: h.tool,
@@ -284,10 +285,11 @@ export default defineTool({
             // a failure. An agent that follows the instruction in order pays a
             // guaranteed wasted call. Lead with the working path instead.
             howToCall: activated
-              ? 'The matched tools are now ACTIVE for your session — call the one you want directly. ' +
-                'If that errors "tool not found", do NOT guess name variants: call ' +
-                'tools:invoke {name:"<exact tool name from hits>", args:{...}} — it runs any catalog tool ' +
-                'without loading. tools:invoke works on every client including omp (server-side dispatch).'
+              ? 'activated:true means the SERVER surface grew and requested a client tool-list refresh; ' +
+                'it does NOT guarantee your client has materialized a direct-call wrapper in this same turn. ' +
+                'Call tools:invoke {name:"<exact tool name from hits>", args:{...}} now — it works immediately ' +
+                'on every client via server-side dispatch. After the client refreshes (often next turn), the ' +
+                'direct wrapper may also be available.'
               : 'activated:false — these tools are NOT on your live tool surface, so a direct call will ' +
                 'fail with unknown/not-found. Call them with ' +
                 'tools:invoke {name:"<exact tool name from hits>", args:{...}} — server-side dispatch under ' +
