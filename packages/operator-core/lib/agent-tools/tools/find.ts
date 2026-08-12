@@ -127,16 +127,38 @@ function objectProperties(node: JsonSchemaNode): { properties: Record<string, un
   return null;
 }
 
-function nestedFieldNames(node: JsonSchemaNode): string {
+/** Keep the compact result useful without letting recursive schemas consume it. */
+const MAX_NESTED_SCHEMA_DEPTH = 4;
+
+function nestedObjectProperties(node: JsonSchemaNode): { properties: Record<string, unknown>; required: Set<string> } | null {
   const direct = objectProperties(node);
-  const arrayNodes = [node, ...schemaNodes(node)].filter((candidate) => candidate.type === 'array');
-  const item = arrayNodes
-    .map((candidate) => candidate.items)
-    .find((value): value is JsonSchemaNode => !!value && typeof value === 'object');
-  const nested = direct ?? (item ? objectProperties(item) : null);
+  if (direct) return direct;
+
+  for (const candidate of [node, ...schemaNodes(node)]) {
+    if (!candidate.items || typeof candidate.items !== 'object' || Array.isArray(candidate.items)) continue;
+    const item = objectProperties(candidate.items as JsonSchemaNode);
+    if (item) return item;
+  }
+  return null;
+}
+
+function nestedFieldNames(node: JsonSchemaNode, depth: number): string {
+  if (depth >= MAX_NESTED_SCHEMA_DEPTH) return '';
+  const nested = nestedObjectProperties(node);
   if (!nested) return '';
-  const names = Object.keys(nested.properties).map((name) => `${name}${nested.required.has(name) ? '' : '?'}`);
+  const names = Object.entries(nested.properties).map(([name, raw]) => {
+    const child = raw && typeof raw === 'object' && !Array.isArray(raw) ? raw as JsonSchemaNode : {};
+    const shape = schemaShape(child, depth);
+    return `${name}${nested.required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}`;
+  });
   return names.length > 0 ? `{${names.join(',')}}` : '';
+}
+
+function schemaShape(node: JsonSchemaNode, depth: number): string {
+  const type = schemaType(node);
+  const bound = schemaBound(node);
+  const nested = nestedFieldNames(node, depth + 1);
+  return `${type}${bound}${nested}`;
 }
 
 /**
@@ -152,9 +174,8 @@ export function compactSchemaForResult(inputSchema: unknown): string | null {
   const required = new Set<string>(Array.isArray(root.required) ? root.required.filter((v): v is string => typeof v === 'string') : []);
   const parts = Object.entries(props as Record<string, unknown>).map(([name, raw]) => {
     const node = raw && typeof raw === 'object' ? raw as JsonSchemaNode : {};
-    const type = schemaType(node);
-    const nested = nestedFieldNames(node);
-    return `${name}${required.has(name) ? '' : '?'}${type ? `:${type}${schemaBound(node)}${nested}` : nested}`;
+    const shape = schemaShape(node, 0);
+    return `${name}${required.has(name) ? '' : '?'}${shape ? `:${shape}` : ''}`;
   });
   if (parts.length === 0) return null;
   const text = parts.join('; ');

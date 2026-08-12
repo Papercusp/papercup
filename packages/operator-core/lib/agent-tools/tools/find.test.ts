@@ -202,7 +202,7 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
     };
 
     const compact = compactSchemaForResult(schema);
-    expect(compact).toContain('body?:string|array(1-20){text,couldNotDetermine?}');
+    expect(compact).toContain('body?:string|array(1-20){text:string,couldNotDetermine?:array{what:string,note?:string}}');
     expect(compact).toContain('expects?:enum(ack|answer|action|none)');
     expect(compact).not.toContain('description');
   });
