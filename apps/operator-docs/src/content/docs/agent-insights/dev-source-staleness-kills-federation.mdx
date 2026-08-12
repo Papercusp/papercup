@@ -4,19 +4,16 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: A stale dev-source tree runs old code against a newer-migrated DB — and silently kills federation
-description: Why the packaged desktop app can boot week-old operator code against a shared Postgres the newer bundle already migrated (hives→pots, mig-557), producing nothing but scattered "relation does not exist" errors and a dead p2p/federation plane — how to detect it, and the two guards that now prevent it.
+title: "A stale dev-source tree runs old code against a newer-migrated DB — and silently kills federation"
+description: "Why the packaged desktop app can boot week-old operator code against a shared Postgres the newer bundle already migrated (hives→pots, mig-557), producing nothing but scattered \"relation does not exist\" errors and a dead p2p/federation plane — how to detect it, and the two guards that now prevent it."
+type: Insight
 discovered: 2026-07-16
-tags: [dev-source, federation, p2p, hive-git, migrations, schema-drift, desktop, WI-4070, WI-5066, WI-5050]
+tags: ["dev-source", "federation", "p2p", "hive-git", "migrations", "schema-drift", "desktop", "WI-4070", "WI-5066", "WI-5050"]
 status: active
 documents:
-  - apps/operator/lib/dev-source-extract.ts
-  - packages/operator-core/lib/migration-drift.ts
-  - packages/operator-core/lib/db-boot-migrate.ts
-type: Insight
-generated:
-  by: agent
-  at: 2026-07-16
+  - "apps/operator/lib/dev-source-extract.ts"
+  - "packages/operator-core/lib/migration-drift.ts"
+  - "packages/operator-core/lib/db-boot-migrate.ts"
 ---
 
 ## TL;DR
@@ -77,7 +74,8 @@ stale against the schema**.
 2. **Compare the code's migration cap to the DB's.**
    - Code (dev-source tree): `ls .../dev-source/... db-sql | tail` **or** the
      bundle's `sidecar/db-sql/ | sort -n | tail`.
-   - DB: `SELECT max(filename) FROM harness_shared.schema_migrations`.
+   - DB: `db:migrations { limit: 1 }` — it sorts by migration number DESC by
+     default, so the single row it returns IS the DB cap.
    - Code cap **\<** DB cap ⇒ this operator is stale.
 3. **Check the extracted tree's age** vs the installed bundle. A `dev-source`
    whose `packages/operator-core/lib/sync/` still contains `hive-git/` (renamed

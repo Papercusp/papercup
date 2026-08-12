@@ -6,16 +6,13 @@
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "A papercup-staging-api restart does NOT boot-apply migrations"
 description: ":3170 is a secondary host (PAPERCUSP_BACKGROUND_WORKERS=0) and skips the A1 boot-apply by design — apply pending sql/*.sql via the runner directly, not by restarting staging"
+type: Insight
 discovered: 2026-06-12
 status: active
 documents:
-  - apps/operator/bin/host-bootstrap.ts
-  - packages/operator-core/lib/db-boot-migrate.ts
-  - packages/operator-core/lib/embedded-pg-discovery.ts
-type: Insight
-generated:
-  by: agent
-  at: 2026-06-12
+  - "apps/operator/bin/host-bootstrap.ts"
+  - "packages/operator-core/lib/db-boot-migrate.ts"
+  - "packages/operator-core/lib/embedded-pg-discovery.ts"
 ---
 
 ## The trap
@@ -75,8 +72,14 @@ Afterwards regenerate the pulled schema:
 Don't trust the restart, and don't trust `db:check_drift` alone — it resolves
 the **serving** operator's sql dir, which for `:3070` is the *release* checkout
 (your staging-tree migration isn't even on that disk yet, so it can't show as
-`missing`). Query the DB:
+`missing`). Ask the ledger directly:
 
-```sql
-SELECT filename FROM harness_shared.schema_migrations WHERE filename LIKE '241%';
 ```
+db:migrations { like: "241" }
+```
+
+A bare number is a PREFIX match. Prefer it over a hand-written `filename LIKE
+'241%'` query against the ledger table: when nothing matches, the verb returns a
+VERDICT — pending, draft-not-armed, or no-such-migration — where the raw query
+returns zero rows, and zero rows cannot tell you which of those three you are
+looking at. That distinction is the whole question this section asks.
