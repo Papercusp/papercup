@@ -73,7 +73,33 @@ type JsonSchemaNode = {
 
 function schemaNodes(node: JsonSchemaNode): JsonSchemaNode[] {
   const unions = [node.anyOf, node.oneOf].find(Array.isArray);
-  return unions ? (unions as unknown[]).filter((n): n is JsonSchemaNode => !!n && typeof n === 'object') : [];
+  const branches = unions
+    ? (unions as unknown[]).filter((n): n is JsonSchemaNode => !!n && typeof n === 'object')
+    : [];
+
+  // Some strict Zod schemas deliberately include permissive branches solely so
+  // `superRefine` can replace their generic error with teaching text.  Those
+  // branches are still present in the generated JSON Schema even though the
+  // handler rejects them: shapeTaughtArray, for example, emits a bounded strict
+  // array alongside a bare string and an untyped `array` catch-all.  Returning
+  // those branches from discovery tells callers that an invalid value is
+  // callable (`array|string`) and hides the fact that the nested object fields
+  // are the accepted shape.  The compact projection should describe the
+  // callable branch, not the validation-only refusal branches.
+  const hasTeachingArrayShape = branches.some((branch) =>
+    branch.type === 'array' && (branch.minItems != null || branch.maxItems != null),
+  );
+  if (!hasTeachingArrayShape) return branches;
+
+  const isBareString = (branch: JsonSchemaNode): boolean =>
+    branch.type === 'string' && Object.keys(branch).every((key) => key === 'type' || key === 'description');
+  const isUntypedArrayCatchall = (branch: JsonSchemaNode): boolean => {
+    if (branch.type !== 'array' || branch.minItems != null || branch.maxItems != null) return false;
+    if (!branch.items || typeof branch.items !== 'object' || Array.isArray(branch.items)) return false;
+    return Object.keys(branch.items as Record<string, unknown>).every((key) => key === 'description');
+  };
+  const callableBranches = branches.filter((branch) => !isBareString(branch) && !isUntypedArrayCatchall(branch));
+  return callableBranches.length > 0 ? callableBranches : branches;
 }
 
 function schemaType(node: JsonSchemaNode): string {

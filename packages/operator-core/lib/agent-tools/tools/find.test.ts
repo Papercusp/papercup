@@ -190,7 +190,27 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
                 type: 'object',
                 properties: {
                   text: { type: 'string' },
-                  couldNotDetermine: { type: 'array', items: { type: 'object', properties: { what: { type: 'string' }, note: { type: 'string' } }, required: ['what'] } },
+                  premises: {
+                    anyOf: [
+                      { type: 'array', maxItems: 20, items: { type: 'string', minLength: 1 } },
+                      { type: 'string' },
+                      { type: 'array', items: {} },
+                    ],
+                  },
+                  youMayNotKnow: {
+                    anyOf: [
+                      { type: 'array', maxItems: 20, items: { type: 'object', properties: { ref: { type: 'string' }, provenance: { type: 'string', enum: ['computed', 'authored'] } }, required: ['ref', 'provenance'] } },
+                      { type: 'string' },
+                      { type: 'array', items: {} },
+                    ],
+                  },
+                  couldNotDetermine: {
+                    anyOf: [
+                      { type: 'array', maxItems: 20, items: { type: 'object', properties: { what: { type: 'string' }, note: { type: 'string' } }, required: ['what'] } },
+                      { type: 'string' },
+                      { type: 'array', items: {} },
+                    ],
+                  },
                 },
                 required: ['text'],
               },
@@ -202,9 +222,24 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
     };
 
     const compact = compactSchemaForResult(schema);
-    expect(compact).toContain('body?:string|array(1-20){text:string,couldNotDetermine?:array{what:string,note?:string}}');
+    expect(compact).toContain('body?:array(1-20){text:string,premises?:array(≤20),youMayNotKnow?:array(≤20){ref:string,provenance:enum(computed|authored)},couldNotDetermine?:array(≤20){what:string,note?:string}}');
     expect(compact).toContain('expects?:enum(ack|answer|action|none)');
+    expect(compact).not.toContain('body?:string|');
+    expect(compact).not.toContain('premises?:array|string');
+    expect(compact).not.toContain('youMayNotKnow?:array|string');
+    expect(compact).not.toContain('couldNotDetermine?:array|string');
     expect(compact).not.toContain('description');
+  });
+
+  it('keeps ordinary unions intact when they are not teaching-only array branches', () => {
+    const compact = compactSchemaForResult({
+      type: 'object',
+      properties: {
+        value: { anyOf: [{ type: 'boolean' }, { type: 'string', enum: ['yes', 'no'] }] },
+      },
+    });
+
+    expect(compact).toContain('value?:boolean|enum(yes|no)');
   });
 
   it('returns valid bounded JSON and marks omitted hits', () => {
