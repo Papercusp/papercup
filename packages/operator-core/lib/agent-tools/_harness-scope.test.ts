@@ -36,12 +36,15 @@ describe('stripCallerOperatorScope (EI-20186804943808838)', () => {
   it('handles an absent context and an absent harness without inventing keys', () => {
     expect(stripCallerOperatorScope(undefined)).toEqual({});
     expect(stripCallerOperatorScope(null)).toEqual({});
-    // Bound to a variable deliberately: a fresh literal with no `harness` key gives the
-    // generic no inference candidate, so TS falls back to the constraint and reports `plan`
-    // as an excess property. The variable keeps the case honest — an ABSENT harness key,
-    // not `harness: undefined`, which is a different input.
-    const noHarness = { plan: 'p' };
+    // Typed to match the REAL caller shape (recipes:search's zod-inferred context: `harness`
+    // declared optional, simply absent at runtime). The annotation is load-bearing, not
+    // decoration — an untyped `{ plan: 'p' }` literal shares no properties with the
+    // all-optional constraint, so TS's weak-type check rejects it (TS2559) even though the
+    // call is valid. This keeps the case honest: an ABSENT harness key, which is a different
+    // input from `harness: undefined`.
+    const noHarness: { harness?: string; plan: string } = { plan: 'p' };
     expect(stripCallerOperatorScope(noHarness)).toEqual({ plan: 'p' });
+    expect('harness' in noHarness).toBe(false);
   });
   it('removes the key entirely rather than setting it undefined (so a later spread can supply it)', () => {
     // The call site spreads server-derived values AFTER this; a surviving `harness: undefined`
