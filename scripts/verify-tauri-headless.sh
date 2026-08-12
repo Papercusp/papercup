@@ -127,8 +127,12 @@
 #                                VERIFY_TAURI_ISOLATED_DB=1.
 #   PAPERCUSP_REPO_DIR          repo root (default: derived from this script)
 #   VERIFY_TAURI_DISPLAY_NUM    Xvfb display number (default: auto-picked, >=90)
-#   VERIFY_TAURI_TIMEOUT        seconds to wait for the bridge (default 180 —
-#                                a cold/changed src-tauri rebuild is slower)
+#   VERIFY_TAURI_TIMEOUT        seconds to wait for the bridge AFTER the desktop
+#                                binary starts (default 180)
+#   VERIFY_TAURI_BUILD_TIMEOUT  seconds to wait for cargo to start the desktop
+#                                binary (default 300 — cold/changed src-tauri
+#                                builds are intentionally outside the bridge
+#                                readiness budget)
 #   VERIFY_TAURI_DOM_TIMEOUT    seconds VERIFY_TAURI_POLL waits for a DOM
 #                                assertion after navigation (default 30)
 #   VERIFY_TAURI_DOM_POLL_INTERVAL
@@ -203,6 +207,11 @@ TAURI_OWNER_SID="${PAPERCUSP_SID:-}"
 TAURI_LAUNCH_PROVENANCE="agent:$TAURI_OWNER_SID"
 
 TIMEOUT="${VERIFY_TAURI_TIMEOUT:-180}"
+# EI-20229366113827667: cargo compilation and bridge readiness are separate
+# phases. A cold Rust build can consume most of the bridge budget before the
+# desktop process even exists, so give the build its own bounded clock and
+# start TIMEOUT only after Cargo emits its Running ... papercusp-desktop marker.
+BUILD_TIMEOUT="${VERIFY_TAURI_BUILD_TIMEOUT:-300}"
 # EI-11641: pin the isolated verify sidecar's memory-watchdog high-water mark. The
 # sidecar boots the full operator (substrate + the DBOS routines tick that
 # dev-operator-ifneeded.sh enables), so its FRESH-boot RSS is background-primary-
@@ -1200,25 +1209,47 @@ while :; do
   BOOT_ATTEMPTS=$((BOOT_ATTEMPTS + 1))
   write_and_launch_tauri
 
-  log "waiting up to ${TIMEOUT}s for the dev bridge (pid=$TAURI_PID, log=$LOG, attempt=$BOOT_ATTEMPTS/$MAX_BOOT_ATTEMPTS)"
-  ELAPSED=0
+  # EI-20229366113827667: keep cargo/build time out of the bridge-readiness
+  # budget. Cargo's Running marker is the first point at which the desktop
+  # binary has started; before it, a healthy cold build can legitimately take
+  # longer than the 180s bridge timeout.
+  log "waiting up to ${BUILD_TIMEOUT}s for the desktop binary to start (pid=$TAURI_PID, log=$LOG, attempt=$BOOT_ATTEMPTS/$MAX_BOOT_ATTEMPTS)"
+  BUILD_ELAPSED=0
   PORT_LOST=0
-  until grep -q "dev bridge listening" "$LOG" 2>/dev/null; do
-    # EI-19446616147360269: detect the lost port HERE, INSIDE the wait — this check
-    # used to live only AFTER this loop, which made it unreachable in the exact
-    # failure it was written for. Losing the bind is precisely what PREVENTS
-    # "dev bridge listening" from ever appearing, so the loop could only ever leave
-    # via one of the two boot_failure_diag calls below, both of which exit 1. The
-    # re-pick branch below was therefore dead code for a bind-time squatter: measured
-    # 2026-08-03 (work=/tmp/verify-tauri-headless.6Pb3fG) the run burned ~4min, never
-    # wrote a tauri.attempt1.log, and never tried a second port. Checked BEFORE the
-    # liveness/timeout probes so a sidecar that died OF this cause routes to the
-    # re-pick instead of to a fatal.
+  until grep -qE "Running .*papercusp-desktop" "$LOG" 2>/dev/null; do
     if port_lost_to_squatter; then PORT_LOST=1; break; fi
-    kill -0 "$TAURI_PID" 2>/dev/null || boot_failure_diag "tauri dev exited before the bridge came up"
-    [ "$ELAPSED" -ge "$TIMEOUT" ] && boot_failure_diag "bridge did not come up within ${TIMEOUT}s"
-    sleep 2; ELAPSED=$((ELAPSED + 2))
+    kill -0 "$TAURI_PID" 2>/dev/null || boot_failure_diag "tauri dev exited before the desktop binary started"
+    [ "$BUILD_ELAPSED" -ge "$BUILD_TIMEOUT" ] && boot_failure_diag "desktop binary did not start within ${BUILD_TIMEOUT}s (cargo build phase)"
+    sleep 2; BUILD_ELAPSED=$((BUILD_ELAPSED + 2))
   done
+
+  if [ "$PORT_LOST" = 0 ]; then
+    # The bridge clock starts at zero only after the binary-start marker. Keep
+    # the existing bridge wait loop and bind-race handling intact so a sidecar
+    # squatter is still retried during either phase.
+    log "waiting up to ${TIMEOUT}s for the dev bridge (pid=$TAURI_PID, log=$LOG, attempt=$BOOT_ATTEMPTS/$MAX_BOOT_ATTEMPTS; desktop binary started after ${BUILD_ELAPSED}s)"
+    ELAPSED=0
+    until grep -q "dev bridge listening" "$LOG" 2>/dev/null; do
+      # EI-19446616147360269: detect the lost port HERE, INSIDE the wait — this check
+      # used to live only AFTER this loop, which made it unreachable in the exact
+      # failure it was written for. Losing the bind is precisely what PREVENTS
+      # "dev bridge listening" from ever appearing, so the loop could only ever
+      # leave via one of the two boot_failure_diag calls below, both of which exit 1.
+      # The re-pick branch below was therefore dead code for a bind-time squatter:
+      # measured 2026-08-03 (work=/tmp/verify-tauri-headless.6Pb3fG) the run burned
+      # ~4min, never wrote a tauri.attempt1.log, and never tried a second port.
+      # Checked BEFORE the liveness/timeout probes so a sidecar that died OF this
+      # cause routes to the re-pick instead of to a fatal.
+      if port_lost_to_squatter; then PORT_LOST=1; break; fi
+      kill -0 "$TAURI_PID" 2>/dev/null || boot_failure_diag "tauri dev exited before the bridge came up"
+      [ "$ELAPSED" -ge "$TIMEOUT" ] && boot_failure_diag "bridge did not come up within ${TIMEOUT}s after the desktop binary started"
+      sleep 2; ELAPSED=$((ELAPSED + 2))
+    done
+  else
+    # Preserve the bind-race retry diagnostic's elapsed value when the sidecar
+    # lost its port while cargo was still compiling.
+    ELAPSED="$BUILD_ELAPSED"
+  fi
 
   if [ "$PORT_LOST" = 1 ]; then
     # Surface it on OUR stdout: the caller otherwise sees only "waiting up to 180s
