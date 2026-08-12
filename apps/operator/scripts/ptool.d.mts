@@ -121,19 +121,21 @@ export function resultToText(result: any, { raw }?: {
     raw?: boolean;
 }): any;
 /** Build the `tools/call` params for a ptool invocation. Pure and exported so
- *  the `_meta.structured` opt-in is regression-tested without opening a
- *  transport (EI-13245): the MCP SDK's `Client.callTool` throws "has an
- *  output schema but did not return structured content" for ANY tool that
- *  advertises an `outputSchema` in `tools/list` unless the caller's
- *  `_meta.structured` flag asks the host to fill `structuredContent` — the
- *  operator's MCP host leaves it empty by default (token-sensitive agent
- *  callers opt in explicitly, P-010). ptool is a human/scripting CLI, not a
- *  token-metered LLM session, so it always asks. */
-export function buildCallToolParams(toolName: any, callArgs: any): {
+ *  the MCP result negotiation is regression-tested without opening a
+ *  transport. Object-rooted output schemas need `_meta.structured` because
+ *  the MCP SDK validates their structured response field (EI-13245). Array-
+ *  rooted tools deliberately omit `outputSchema` because MCP requires
+ *  `structuredContent` to be an object; ask those tools for JSON text instead
+ *  so ptool still emits a lossless scripting payload. */
+export function buildCallToolParams(toolName: any, callArgs: any, { outputSchema }?: {}): {
     name: any;
     arguments: any;
     _meta: {
         structured: boolean;
+        format?: undefined;
+    } | {
+        format: string;
+        structured?: undefined;
     };
 };
 export function timeoutForTool(toolName: any): 60000 | 30000;
