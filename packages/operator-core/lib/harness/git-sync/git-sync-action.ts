@@ -95,6 +95,7 @@ import { STAGING_REF } from '../../sync/pot-git/integrator';
 // one layer more costly because this state GATES A TAKEOVER rather than merely
 // reporting. Read that module's header before adding a field or a writer.
 import {
+  isIntegratorNamespaceBacklogged,
   nextIntegratorProgressState,
   shouldPreemptStalledIntegrator,
   type PriorIntegratorProgressState,
@@ -3112,6 +3113,40 @@ async function runIntegratorLeg(slug: string, workspaceId: string): Promise<void
           if (counted.code === 0) {
             const n = Number.parseInt(counted.stdout.trim(), 10);
             integratorBacklogCommits = Number.isFinite(n) ? n : null;
+          }
+        }
+
+        // Namespace presence proves only that a peer has participated in this
+        // repo. It does not prove that the peer currently has work to merge.
+        // Exclude a peer whose staging namespace is readable and at canonical;
+        // otherwise the deterministic election can repeatedly choose an idle
+        // authority while another peer holds the unintegrated commits. Keep a
+        // peer on measurement failures so a transient git read cannot make the
+        // election disappear (the helper's fail-open contract).
+        for (const peerDevicePubkey of [...eligibleDevices]) {
+          if (peerDevicePubkey === actor.devicePubkey) continue;
+          try {
+            const peerNamespaceSha = await readNamespaceRef(repoPath, peerDevicePubkey, STAGING_REF);
+            let peerBacklogCommits: number | null = null;
+            if (peerNamespaceSha) {
+              const counted = await defaultRunGit(
+                ['rev-list', '--count', `${canonicalSha}..${peerNamespaceSha}`],
+                repoPath,
+              );
+              if (counted.code === 0) {
+                const n = Number.parseInt(counted.stdout.trim(), 10);
+                peerBacklogCommits = Number.isFinite(n) ? n : null;
+              }
+            }
+            if (!isIntegratorNamespaceBacklogged({
+              namespaceSha: peerNamespaceSha,
+              canonicalSha,
+              aheadCommits: peerBacklogCommits,
+            })) {
+              eligibleDevices.delete(peerDevicePubkey);
+            }
+          } catch {
+            /* retain a capable peer when its backlog measurement is unavailable */
           }
         }
       }

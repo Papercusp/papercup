@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   DEFAULT_INTEGRATOR_STALL_PREEMPT_MS,
+  isIntegratorNamespaceBacklogged,
   nextIntegratorProgressState,
   shouldPreemptStalledIntegrator,
   type IntegratorProgressState,
@@ -9,6 +10,26 @@ import {
 const T0 = 1_700_000_000_000;
 const SHA_A = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
 const SHA_B = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+
+describe('isIntegratorNamespaceBacklogged', () => {
+  it('does not admit a peer whose namespace ref is absent', () => {
+    expect(isIntegratorNamespaceBacklogged({ namespaceSha: null, canonicalSha: SHA_A, aheadCommits: 3 })).toBe(false);
+  });
+
+  it('excludes a peer whose namespace is at or behind canonical', () => {
+    expect(isIntegratorNamespaceBacklogged({ namespaceSha: SHA_A, canonicalSha: SHA_A, aheadCommits: 0 })).toBe(false);
+    expect(isIntegratorNamespaceBacklogged({ namespaceSha: SHA_A, canonicalSha: SHA_B, aheadCommits: 0 })).toBe(false);
+  });
+
+  it('keeps a peer with verified unintegrated commits eligible', () => {
+    expect(isIntegratorNamespaceBacklogged({ namespaceSha: SHA_B, canonicalSha: SHA_A, aheadCommits: 2 })).toBe(true);
+  });
+
+  it('fails open when canonical or the ahead count cannot be measured', () => {
+    expect(isIntegratorNamespaceBacklogged({ namespaceSha: SHA_B, canonicalSha: null, aheadCommits: null })).toBe(true);
+    expect(isIntegratorNamespaceBacklogged({ namespaceSha: SHA_B, canonicalSha: SHA_A, aheadCommits: null })).toBe(true);
+  });
+});
 
 describe('nextIntegratorProgressState', () => {
   it('never reports a stall on the first-ever observation (no cold-start alarm)', () => {

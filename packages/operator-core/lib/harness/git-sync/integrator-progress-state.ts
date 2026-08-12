@@ -90,6 +90,29 @@ export interface IntegratorProgressTickFacts {
 }
 
 /**
+ * Whether a peer's namespace has work that makes it a useful integrator
+ * candidate for the current canonical ref.
+ *
+ * Namespace presence proves only that the peer has participated in this repo;
+ * it does not prove that the peer currently has anything to integrate. Keeping
+ * an idle peer in the deterministic election can put the lease on a machine
+ * whose namespace is at canonical while another peer's namespace is ahead.
+ *
+ * Measurement is deliberately fail-open: an unreadable canonical ref or an
+ * unsuccessful ahead-count must not eject a capable peer from candidacy. A
+ * readable namespace with a verified zero count is the only negative verdict.
+ */
+export function isIntegratorNamespaceBacklogged(input: {
+  namespaceSha: string | null;
+  canonicalSha: string | null;
+  aheadCommits: number | null;
+}): boolean {
+  if (input.namespaceSha == null) return false;
+  if (input.canonicalSha == null || input.aheadCommits == null) return true;
+  return input.aheadCommits > 0;
+}
+
+/**
  * Default stall budget before a non-advancing lease-holder loses candidacy: 2h.
  *
  * DERIVATION (not a guess — the shape of this number is the whole risk):
