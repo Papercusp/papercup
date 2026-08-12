@@ -220,6 +220,8 @@
     "lint:no-undrained-stdout-exit:report": "node scripts/check-undrained-stdout-exit.mjs --report",
     "lint:typeless-reexport": "node scripts/check-typeless-reexport-trap.mjs",
     "lint:full-replacement-mocks": "node scripts/check-full-replacement-mocks.mjs",
+    "lint:no-unreachable-tier-mock": "node scripts/check-unreachable-tier-mock.mjs",
+    "lint:no-unreachable-tier-mock:list": "node scripts/check-unreachable-tier-mock.mjs --list",
     "lint:systemd-startlimit-placement": "node scripts/check-systemd-startlimit-placement.mjs",
     "lint:no-proc-path-fixture": "node scripts/check-no-proc-path-fixture.mjs",
     "lint:no-raw-block-edge": "node scripts/check-no-raw-block-edge.mjs",
