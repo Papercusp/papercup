@@ -54,19 +54,26 @@ every sharp edge that cost an hour:
   parent session takes QEMU down with it; `setsid … & disown` or a
   user-level systemd unit). SSH: `ssh -i ~/.ssh/papercup-vm-win -p 2223
   user@127.0.0.1`. SPICE viewer on `:5931` for pixels.
-- **Build**: `papercusp-desktop/bin/build-windows-on-vm.sh` does the whole
-  lane — pack (D-006 exclusions live in its tar step) → scp → clean extract →
-  `npm install` + `npx tauri build --no-bundle` + **ISCC (Inno Setup 6.5.2+)**
-  under vcvars64 → collect → **host-side** `tauri signer sign` (updater `.sig`).
-  It builds BOTH roles (Papercusp GUI + Papercusp Server) and packs each with
-  Inno (template `src-tauri/windows/inno/papercusp.iss`, output collected to
-  `src-tauri/target/windows-vm/bundle/inno/`), NOT Tauri's bundler. **(Changed
+- **Build — RETIRED; this step no longer runs on the VM.** The lane's build
+  step *was* `papercusp-desktop/bin/build-windows-on-vm.sh`, which **no longer
+  exists** (WI-5651). Windows artifacts are now cross-compiled on Linux by
+  `papercusp-desktop/bin/build-windows-cross.sh` — no VM, no scp — and
+  `WITH_WINDOWS=1` drives it (see `papercusp-desktop/SHIPPING.md` § Windows).
+  *What the VM script did, preserved because the packaging decisions it
+  encodes still govern the shipped artifact:* pack (D-006 exclusions lived in
+  its tar step) → scp → clean extract → `npm install` + `npx tauri build
+  --no-bundle` + **ISCC (Inno Setup 6.5.2+)** under vcvars64 → collect →
+  **host-side** `tauri signer sign` (updater `.sig`). It built BOTH roles
+  (Papercusp GUI + Papercusp Server) and packed each with Inno (template
+  `src-tauri/windows/inno/papercusp.iss`), NOT Tauri's bundler. **(Changed
   2026-07-06, WI-3172: cut over from Tauri's NSIS bundle to Inno Setup — see
-  sharp edge §5 for why.)** Authenticode signing is in-VM via
+  sharp edge §5 for why.)** Authenticode signing was in-VM via
   `WINDOWS_SIGN_*` / `WINDOWS_CERT_*` env (D-004; unset ⇒ unsigned dev/dogfood
-  build); the minisign updater `.sig` is still minted host-side (the private
-  key never leaves this box), though the Windows auto-updater itself is PENDING
-  REWORK post-Inno-cutover — it expected the NSIS artifact (WI-3172).
+  build) — for how signing works **now**, see
+  [windows-authenticode-signing-runbook](/internal/docs/agent-insights/windows-authenticode-signing-runbook),
+  not this bullet. The minisign updater `.sig` is still minted host-side (the
+  private key never leaves this box), though the Windows auto-updater itself is
+  PENDING REWORK post-Inno-cutover — it expected the NSIS artifact (WI-3172).
 - **Install silently**: `Start-Process -FilePath …-setup.exe -ArgumentList
   "/VERYSILENT","/SUPPRESSMSGBOXES","/NORESTART" -Wait`. **NOT `/S`** — see
   sharp edge §23 (`/S` is the NSIS convention; this is now Inno Setup, and
@@ -218,14 +225,14 @@ every sharp edge that cost an hour:
     product second-launch bug (Start-Process launches persist; single-instance
     PASS_ALL). For a CDP/button-click E2E, launch the GUI with `Start-Process`
     (or keep the first-boot GUI alive), don't relaunch through the task.
-20. **Catch `cfg(windows)` Rust errors LOCALLY in ~40 s — don't spend a
-    15-25 min VM build to find a typo (WI-2215).** The desktop's ~68
+20. **Catch `cfg(windows)` Rust errors LOCALLY in ~40 s — don't spend a full
+    Windows build to find a typo (WI-2215).** The desktop's ~68
     `#[cfg(windows)]` / `#[cfg(target_os = "windows")]` regions (main.rs,
     wsl_setup.rs, native_console.rs, pty.rs, custom_protocol.rs,
     endpoint_ipc.rs, dev_bridge.rs, native_terminal.rs) do NOT compile under a
     plain `cargo check` on the Linux box — that target builds the
     `cfg(not(windows))` half, so a Windows-only type/import/borrow error is
-    invisible until the VM build. Run `bin/check-windows-cfg.sh` instead
+    invisible until the Windows build. Run `bin/check-windows-cfg.sh` instead
     (~40 s cold, ~4 s warm). It is `cargo xwin check --target
     x86_64-pc-windows-msvc -p papercusp-desktop`. **Why not a bare
     `cargo check --target x86_64-pc-windows-msvc`:** the graph pulls in `ring`
@@ -237,11 +244,20 @@ every sharp edge that cost an hour:
     linker is needed. One-time setup (the script prints the exact command for
     any missing piece): `rustup target add x86_64-pc-windows-msvc`,
     `sudo apt-get install -y --no-install-recommends clang lld llvm`,
-    `cargo install cargo-xwin`. `build-windows-on-vm.sh` runs it as an opt-out
-    pre-flight (`SKIP_WINDOWS_CFG_PRECHECK=1`) and aborts before the VM trip on
-    a compile error; it skips gracefully when the toolchain is absent. It is a
-    COMPILE check, not a build — a runnable `.exe` is still the VM's job, and
-    this is deliberately not in the green-checkpoint suite (needs the SDK).
+    `cargo install cargo-xwin`.
+
+    ⚠ **Nothing runs this check for you — it is MANUAL-ONLY, so run it
+    yourself before a Windows build.** The VM script used to invoke it as an
+    opt-out pre-flight and abort before the VM trip on a compile error; that
+    wiring died with `build-windows-on-vm.sh` (WI-5651). Two consequences a
+    reader of the older text would get wrong: the opt-out env var that text
+    documented — **`SKIP_WINDOWS_CFG_PRECHECK` — exists nowhere in the tree, so
+    setting it does nothing**, and `build-windows-cross.sh` does not call the
+    check either (verified 2026-08-12: the script has zero callers in any
+    `.sh`/`.ts`/`.mjs`; tracked as EI-20280298903194517). It still skips
+    gracefully when the toolchain is absent. It is a COMPILE check, not a
+    build — a runnable `.exe` now comes from `build-windows-cross.sh` — and it
+    is deliberately not in the green-checkpoint suite (needs the SDK).
 
 21. **`papercup-runtime` periodically wedges: `wsl --exec` silently returns
     empty output + exit 1 (sometimes 0), no stderr, no diagnostic** — hit
@@ -324,10 +340,16 @@ every sharp edge that cost an hour:
 
 ## Where the artifacts live
 
-- VM build dirs: `C:\Users\user\papercup-build-*` (su-44446 = the iteration
-  dir; `papercup-build-release` = the clean lane dir).
-- Collected host-side: `papercusp-desktop/src-tauri/target/windows-vm/bundle/inno/`
-  (was `bundle/nsis/` pre-WI-3172).
+- **Collected host-side (still current):**
+  `papercusp-desktop/src-tauri/target/windows-vm/bundle/inno/`. The
+  `windows-vm` path segment is now vestigial but the path itself is NOT stale —
+  `build-windows-cross.sh` sets exactly this as its `OUT_DIR` and
+  `release-local.sh` collects from it (verified 2026-08-12 at
+  `bin/build-windows-cross.sh:245`). Don't "fix" it to something else. (Was
+  `bundle/nsis/` pre-WI-3172.)
+- *VM-era, historical:* VM build dirs `C:\Users\user\papercup-build-*`
+  (su-44446 = the iteration dir; `papercup-build-release` = the clean lane
+  dir) — produced by the retired `build-windows-on-vm.sh`.
 - Installed app: `C:\Users\User\AppData\Local\Papercusp\`.
 - Boot log: `C:\Users\user\papercusp-bk.log`.
 
