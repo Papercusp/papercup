@@ -93,9 +93,14 @@ function walk(dir: string): string[] {
  * Reaches the gate module — by STATIC `from '…/_mug-kettle-gate'` or by DYNAMIC
  * `await import('…/_mug-kettle-gate')`.
  *
- * The dynamic arm is not hypothetical: `cup/spawn.ts` gates via `await import(...)`, and
- * a static-only detector silently omits it from the gated set — a false negative already
- * recorded once today against a different detector in this same migration. A tool missing
+ * The dynamic arm WAS load-bearing on a real file: `cup/spawn.ts` gated via
+ * `await import(...)`, and a static-only detector silently omitted it from the gated
+ * set — a false negative recorded against a different detector in this same migration.
+ * P-059 retired that tool, and as of this writing EVERY surviving gated tool imports
+ * the gate STATICALLY, so the dynamic arm currently matches nothing in-tree.
+ * It is KEPT deliberately: it costs one alternation, the shape is legal and was
+ * used here before, and a detector that only recognises the form today's files
+ * happen to use is exactly how the original false negative happened. A tool missing
  * from the gated set makes this whole guard quietly weaker rather than loud.
  */
 export const GATE_SPECIFIER = /(?:from|import)\s*\(?\s*['"][^'"\n]*_mug-kettle-gate['"]/;
@@ -170,7 +175,7 @@ describe('gate module detection — both import forms', () => {
     expect(GATE_SPECIFIER.test(`import { refuseIfMugKettleRetired } from '../_mug-kettle-gate';`)).toBe(true);
   });
 
-  it('matches a DYNAMIC import of the gate (the cup/spawn.ts form)', () => {
+  it('matches a DYNAMIC import of the gate (the form cup/spawn.ts used before P-059)', () => {
     expect(GATE_SPECIFIER.test(`const g = await import('../_mug-kettle-gate');`)).toBe(true);
   });
 
