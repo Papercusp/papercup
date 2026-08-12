@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   parseArgs,
   serviceOf,
@@ -12,6 +12,8 @@ import {
   resultToText,
   buildMcpUrl,
   buildCallToolParams,
+  isLoopPressureShed,
+  callToolWithPressureRetry,
   jsonSourceKind,
   shouldPrintInvocationLine,
 } from '../scripts/ptool.mjs';
@@ -125,6 +127,40 @@ describe('ptool invocation output mode (EI-20202581520430575)', () => {
     expect(shouldPrintInvocationLine('inline')).toBe(false);
     expect(shouldPrintInvocationLine('file')).toBe(false);
     expect(shouldPrintInvocationLine('stdin')).toBe(false);
+  });
+});
+
+describe('ptool loop-pressure admission retry (EI-20209060351693879)', () => {
+  it('recognizes only the pre-dispatch critical-pressure shed signal', () => {
+    expect(isLoopPressureShed(new Error('retryable: loop_pressure_critical'))).toBe(true);
+    expect(isLoopPressureShed(new Error('operator event loop critically saturated — request shed'))).toBe(true);
+    expect(isLoopPressureShed(new Error('tool failed after dispatch'))).toBe(false);
+  });
+
+  it('absorbs bounded pre-dispatch sheds and returns the eventual result', async () => {
+    const result = { content: [{ type: 'text', text: '{"ok":true}' }] };
+    const callTool = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('loop_pressure_critical'))
+      .mockRejectedValueOnce(new Error('operator event loop critically saturated'))
+      .mockResolvedValue(result);
+    const sleep = vi.fn(async () => {});
+
+    await expect(
+      callToolWithPressureRetry({ callTool }, { name: 'git-sync:run', arguments: {} }, { maxAttempts: 3, sleep }),
+    ).resolves.toBe(result);
+    expect(callTool).toHaveBeenCalledTimes(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
+  });
+
+  it('never retries an ambiguous error that may follow dispatch', async () => {
+    const error = new Error('transport closed after tools/call');
+    const callTool = vi.fn().mockRejectedValue(error);
+    const sleep = vi.fn(async () => {});
+
+    await expect(callToolWithPressureRetry({ callTool }, { name: 'x:y' }, { sleep })).rejects.toBe(error);
+    expect(callTool).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
   });
 });
 

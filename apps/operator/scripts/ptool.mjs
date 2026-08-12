@@ -316,6 +316,36 @@ export function buildCallToolParams(toolName, callArgs) {
   return { name: toolName, arguments: callArgs, _meta: { structured: true } };
 }
 
+/**
+ * P-010 admission control may reject a tools/call before dispatch when the
+ * operator event loop is critically saturated. That refusal is explicitly
+ * retry-safe: the tool never ran. Normal agent traffic traverses mcp-proxy,
+ * which absorbs this signal; ptool can connect directly to :3170 during
+ * staging/release recovery, so it must provide the same bounded absorption.
+ */
+export function isLoopPressureShed(error) {
+  const text = String(error?.message ?? error ?? '');
+  return /loop_pressure_critical|event loop critically saturated/i.test(text);
+}
+
+export async function callToolWithPressureRetry(
+  client,
+  params,
+  { maxAttempts = 30, retryDelayMs = 1_000, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {},
+) {
+  let lastError;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await client.callTool(params);
+    } catch (error) {
+      lastError = error;
+      if (!isLoopPressureShed(error) || attempt === maxAttempts) throw error;
+      await sleep(retryDelayMs);
+    }
+  }
+  throw lastError;
+}
+
 /** Build ptool's superuser MCP URL. Pure and exported so the identity contract
  *  is regression-tested without opening a transport. */
 export function buildMcpUrl(operatorUrl, { workspace, harness, client } = {}) {
@@ -595,7 +625,7 @@ async function main() {
       console.error(`→ ${toolName}  ${JSON.stringify(callArgs)}`);
     }
 
-    const result = await client.callTool(buildCallToolParams(toolName, callArgs));
+    const result = await callToolWithPressureRetry(client, buildCallToolParams(toolName, callArgs));
     const code = printResult(result, { raw: args.raw });
     if (code !== 0) process.exitCode = code;
   } finally {
