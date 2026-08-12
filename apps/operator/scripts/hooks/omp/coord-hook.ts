@@ -844,7 +844,7 @@ export async function onTurnStart(ctx?: unknown): Promise<TurnStartResult> {
  *
  *  The client-reported watermark write is RETIRED (plan
  *  fleet-deltas-leader-primitives-2026-07-10, D-004 ruling 1 / D-014). This used
- *  to call `coord:watermark-set` with pointers staged by onTurnStart. Both
+ *  to send client-reported cursor pointers staged by onTurnStart. Both
  *  cursors now settle SERVER-side and are derived from the authoritative read
  *  receipt rather than reported by the client:
  *    - `messages_since_ts` settles at `journal:record-turn`
