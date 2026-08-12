@@ -182,7 +182,9 @@ describe('dev:pg_query — P-005 guard wiring', () => {
 
   it('omits the advisory field entirely when neither guard fires', async () => {
     const res = await pgQueryTool.handler(
-      { sql: 'SELECT severity FROM harness_shared.engineer_issues' } as never,
+      // Keep this a genuinely uncovered read: engineer_issues is covered by
+      // the existing improvements:digest routing hint.
+      { sql: 'SELECT 1' } as never,
       {} as never,
     );
     expect(payloadOf(res as never)).not.toHaveProperty('advisory');
