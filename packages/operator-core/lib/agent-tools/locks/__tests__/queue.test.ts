@@ -39,6 +39,8 @@ describe('locks:queue tool metadata', () => {
     expect(tool.name).toBe('locks:queue');
     expect(tool.capability).toBe('locks:read');
     expect((tool.guidance?.when ?? '').length).toBeGreaterThan(0);
+    expect(tool.description).toContain('workspace-global diagnostic: omit harness');
+    expect(tool.guidance?.chaining).toContain('omit harness');
     expect(tool.args.safeParse({}).success).toBe(true);
     expect(tool.args.safeParse({ paths: ['a.ts'], owner: 'su-1', include_completed: true }).success).toBe(true);
     expect(tool.args.safeParse({ paths: 'a.ts' }).success).toBe(false);

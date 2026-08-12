@@ -13,10 +13,11 @@ import { holderContextReader, resolveHolderAdvisoryMap } from '../coordination/h
 export default defineTool({
   name: 'locks:queue',
   description:
-    'Read the active locks and pending waiters for a workspace. Optionally filter by paths (overlap) or owner. Pass include_completed=true to also return terminal waiters from the last 24h (diagnostics).',
+    'Read the active locks and pending waiters for a workspace. This is a workspace-global diagnostic: omit harness. Optionally filter by paths (overlap) or owner. Pass include_completed=true to also return terminal waiters from the last 24h (diagnostics). Accepted arguments are paths, owner, and include_completed.',
   guidance: {
     when: 'Diagnostics — "what are the other agents doing?" or "why am I blocked?". Cheap, MVCC read.',
     notWhen: 'Before every acquire — locks:acquire already returns busy context. Use queue when the user asks.',
+    chaining: 'Workspace-global diagnostic — omit harness; pass only paths?, owner?, or include_completed?.',
     seeAlso: [
       'locks:list (named-resource holders, not file-lock contention)',
       'coord:roster { view:"live" } (what the other agents are doing overall)',
