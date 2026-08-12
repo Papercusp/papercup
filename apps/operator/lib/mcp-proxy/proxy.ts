@@ -660,6 +660,7 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set([
   'coord:send',
   'loop:checkpoint',
   'tools:find',
+  'dev:service_health',
   'loop:arm',
   'improvements:capture',
   'locks:acquire',
@@ -680,7 +681,7 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set([
  * the failure that needs fixing, inspect lock ownership, release a lock held during an edit,
  * or preserve the successor state needed to resume after a task boundary, acquire/release a
  * file lock around an edit, inspect a
- * work-item during recovery, release a claim during recovery, or finish a work-item when
+ * work-item during recovery, release a claim during recovery, diagnose a service outage, or finish a work-item when
  * ordinary traffic has saturated the proxy. The MCP
  * client may send a canonical colon-form name or its `mcp__<server>__group_verb` advertisement
  * name; both are normalized through the shared tooldef helper before this narrow membership check.

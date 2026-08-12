@@ -866,13 +866,14 @@ describe('WI-35737: a departed client stops the retry loop', () => {
  *      32-89 minutes.
  */
 describe('EI-19305299022434394: admission control — shed with 429 before opening an upstream socket', () => {
-  it('recognizes fleet bootstrap, direct coordination, continuation checkpoints, scheduler claims, deferred discovery, loop arming, incident capture, file-lock inspection/cancellation/release, checkpoint writes, work-item inspection/release, and work-item completion as reserved control-plane traffic', () => {
+  it('recognizes fleet bootstrap, direct coordination, continuation checkpoints, scheduler claims, deferred discovery, service-health diagnostics, loop arming, incident capture, file-lock inspection/cancellation/release, checkpoint writes, work-item inspection/release, and work-item completion as reserved control-plane traffic', () => {
     const call = (name: string) => Buffer.from(JSON.stringify({ method: 'tools/call', params: { name } }));
     expect(isReservedControlPlaneCall(call('scheduler:get_next'))).toBe(true);
     expect(isReservedControlPlaneCall(call('coord:orient'))).toBe(true);
     expect(isReservedControlPlaneCall(call('coord:send'))).toBe(true);
     expect(isReservedControlPlaneCall(call('loop:checkpoint'))).toBe(true);
     expect(isReservedControlPlaneCall(call('tools:find'))).toBe(true);
+    expect(isReservedControlPlaneCall(call('dev:service_health'))).toBe(true);
     expect(isReservedControlPlaneCall(call('loop:arm'))).toBe(true);
     expect(isReservedControlPlaneCall(call('improvements:capture'))).toBe(true);
     expect(isReservedControlPlaneCall(call('locks:acquire'))).toBe(true);
@@ -944,7 +945,7 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     ])))).toBe(false);
   });
 
-  it.each(['scheduler:get_next', 'coord:orient', 'coord:send', 'loop:checkpoint', 'tools:find', 'loop:arm', 'improvements:capture', 'locks:acquire', 'locks:queue', 'locks:cancel_wait', 'locks:release', 'work_items:checkpoint', 'work_items:get', 'work_items:release', 'work_items:complete'])('admits %s from the reserve while ordinary calls shed', async (controlPlaneTool) => {
+  it.each(['scheduler:get_next', 'coord:orient', 'coord:send', 'loop:checkpoint', 'tools:find', 'dev:service_health', 'loop:arm', 'improvements:capture', 'locks:acquire', 'locks:queue', 'locks:cancel_wait', 'locks:release', 'work_items:checkpoint', 'work_items:get', 'work_items:release', 'work_items:complete'])('admits %s from the reserve while ordinary calls shed', async (controlPlaneTool) => {
     let releaseUpstream: () => void = () => {};
     const gate = new Promise<void>((resolve) => { releaseUpstream = resolve; });
     const upstream = track(http.createServer((_req, res) => void gate.then(() => res.end('{"result":"ok"}'))));
