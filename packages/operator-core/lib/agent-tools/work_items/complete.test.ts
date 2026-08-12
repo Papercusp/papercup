@@ -1332,9 +1332,9 @@ describe('work_items:complete (keyed-array)', () => {
 
   // ── assigneeMismatchWarning: wrong-id-grab footgun (EI-7264) ─────────────────────────────
   // A fast multi-wake loop's own tracking-task ids and peers' work-item ids flow through the
-  // same coord broadcast stream — nothing visually distinguishes them. WARN (never block) when
-  // the caller completing an item is not its current assignee, so a wrong-id grab is caught
-  // before it lands on someone else's active work.
+  // same coord broadcast stream — nothing visually distinguishes them. Record-only calls WARN
+  // when the caller is not its current assignee; terminal calls refuse before they can mutate
+  // someone else's active work.
   describe('assigneeMismatchWarning — wrong-id-grab footgun (EI-7264)', () => {
     it('warns when the item is currently assigned to someone else', async () => {
       getWorkItem.mockResolvedValue({ ...item, assignee: 'su-someone-else' });
@@ -1342,6 +1342,33 @@ describe('work_items:complete (keyed-array)', () => {
       expect(r.assigneeMismatchWarning).toMatch(/su-someone-else/);
       expect(r.assigneeMismatchWarning).toMatch(/su-tester/); // the caller's own id
       expect(r.assigneeMismatchWarning).toContain('F-12');
+    });
+
+    it('refuses a terminal close before writing completion or state when another agent owns the item', async () => {
+      getWorkItem.mockResolvedValue({ ...item, assignee: 'su-someone-else' });
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: { summary: 'must not close the peer item', tests: 'not run' },
+      });
+      expect(r.ok).toBe(false);
+      expect(r.error).toMatch(/refusing terminal completion/);
+      expect(r.error).toContain('su-someone-else');
+      expect(r.error).toContain('No completion record or state transition was written');
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+      expect(setWorkItemCheckpoint).not.toHaveBeenCalled();
+      expect(mergeWorkItemOutputPayload).not.toHaveBeenCalled();
+    });
+
+    it('also refuses issue terminal inference from completion.status when another agent owns the item', async () => {
+      getWorkItem.mockResolvedValue({ ...item, family: 'issue', kind: 'bug', state: 'open', assignee: 'su-someone-else' });
+      const r = await one({
+        id: 'F-12',
+        completion: { summary: 'must not infer-close the peer item', status: 'resolved', tests: 'not run' },
+      });
+      expect(r.ok).toBe(false);
+      expect(r.error).toMatch(/refusing terminal completion/);
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     });
 
     it('does NOT warn when the caller is the current assignee', async () => {

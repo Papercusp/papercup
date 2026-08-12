@@ -908,9 +908,10 @@ async function completeOne(
   // task each wake, while PEER fleet members' work-item ids flow through the exact same
   // coord broadcast stream — nothing visually distinguishes "an id I just created" from
   // "an id a peer just mentioned". A near-miss: an agent skipped its own create step and
-  // called complete on a peer's actively-held item, briefly flipping its state. WARN (never
-  // block — this tool's whole contract is record-and-warn, EI-24) when the caller is not the
-  // item's current assignee, so the caller catches a wrong-id grab before it lands elsewhere.
+  // called complete on a peer's actively-held item, briefly flipping its state. Record-only
+  // completions still WARN (this tool's record-and-warn contract, EI-24), but a terminal close
+  // refuses before any completion/state write when the caller is not the current assignee — a
+  // warning alone is too late once it clears the peer's claim.
   const assigneeMismatchWarning =
     existing.assignee && existing.assignee !== ident.ownerId
       ? `completing ${it.id} but it is currently assigned to '${existing.assignee}', not you ('${ident.ownerId}') — ` +
@@ -995,6 +996,26 @@ async function completeOne(
       ? rawCompletionStatus
       : undefined;
   const effectiveState = it.state ?? inferredCloseState;
+
+  // EI-20245220770262027: assigneeMismatchWarning used to be advisory even when this call
+  // requested a terminal transition. That let a wrong-id completion apply the state and clear
+  // the live assignee's claim. Refuse the close before the completion record is persisted; the
+  // current assignee can close it, or the caller can re-claim/reassign it through the normal
+  // handoff path first. Record-only completions remain available for observations.
+  const assigneeMismatchCloseRefusal =
+    Boolean(existing.assignee) &&
+    existing.assignee !== ident.ownerId &&
+    Boolean(effectiveState) &&
+    CLOSE_INTENT_STATES.has(String(effectiveState).trim().toLowerCase());
+  if (assigneeMismatchCloseRefusal) {
+    return {
+      ok: false,
+      id: it.id,
+      error:
+        `refusing terminal completion for '${it.id}': it is currently assigned to '${existing.assignee}', not you ('${ident.ownerId}'). ` +
+        'No completion record or state transition was written; have the current assignee complete it or re-claim/reassign it before closing.',
+    };
+  }
 
   // Optional explicit terminal transition. A failed state write must NEVER lose the
   // completion record (EI-24): catch, report it as `stateError`, still record + emit.
