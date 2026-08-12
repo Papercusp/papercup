@@ -255,11 +255,34 @@ function loadBaseline() {
   return { keys: new Set(raw.entries ?? []), raw };
 }
 
+/** Write a reviewed baseline as one atomic same-directory rename. */
+function writeBaselineAtomically(document) {
+  const tempPath = `${BASELINE_PATH}.${process.pid}.${randomUUID()}.tmp`;
+  try {
+    fs.writeFileSync(tempPath, `${JSON.stringify(document, null, 2)}\n`, {
+      encoding: 'utf8',
+      flag: 'wx',
+    });
+    fs.renameSync(tempPath, BASELINE_PATH);
+  } finally {
+    try { fs.unlinkSync(tempPath); } catch { /* rename already consumed it */ }
+  }
+}
+
 /* ── main ─────────────────────────────────────────────────────────────────────── */
 
 const argv = process.argv.slice(2);
 const has = (f) => argv.includes(f);
 const valOf = (f) => { const i = argv.indexOf(f); return i >= 0 ? argv[i + 1] : null; };
+
+if (has('--list') && has('--reseed')) {
+  console.error('check-ungated-mug-kettle: --list is read-only and cannot be combined with --reseed');
+  process.exit(2);
+}
+if (has('--reason') && !has('--reseed')) {
+  console.error('check-ungated-mug-kettle: --reason is only valid with --reseed');
+  process.exit(2);
+}
 
 // --check-file: single-file mode, the mutation-probe seam.
 //
@@ -361,6 +384,41 @@ const novel = findings.filter((f) => !baseline.has(keyOf(f)));
 const offenders = novel.filter((f) => !f.gated);
 const newlyGated = novel.filter((f) => f.gated);
 const stale = [...baseline].filter((k) => !findings.some((f) => keyOf(f) === k));
+
+if (has('--reseed')) {
+  const evaluation = evaluateBaselineReseed({
+    previousEntries: baselineRaw?.entries ?? [],
+    currentEntries: findings.map(keyOf),
+    reason: valOf('--reason') ?? '',
+  });
+
+  if (evaluation.reasonRequired && !evaluation.reason) {
+    console.error(
+      `check-ungated-mug-kettle: refusing to reseed a shrinking baseline ` +
+        `(${evaluation.previousEntryCount} → ${evaluation.nextEntryCount} unique entries) without --reason`,
+    );
+    if (evaluation.removedEntries.length) {
+      console.error(`  removed: ${evaluation.removedEntries.slice(0, 10).join(', ')}`);
+      if (evaluation.removedEntries.length > 10) {
+        console.error(`  …and ${evaluation.removedEntries.length - 10} more`);
+      }
+    }
+    process.exit(2);
+  }
+
+  const document = buildBaselineDocument({
+    baseline: baselineRaw ?? {},
+    currentEntries: findings.map(keyOf),
+    reason: evaluation.reason ?? '',
+  });
+  writeBaselineAtomically(document);
+  console.log(
+    `✓ baseline reseeded atomically (${evaluation.previousEntryCount} → ` +
+      `${evaluation.nextEntryCount} unique entries; removed ${evaluation.removedEntries.length}, ` +
+      `added ${evaluation.addedEntries.length})`,
+  );
+  process.exit(0);
+}
 
 if (has('--json')) {
   writeStdoutSync(JSON.stringify({
