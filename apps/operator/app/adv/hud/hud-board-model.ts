@@ -215,6 +215,16 @@ export interface HudRosterEntry {
    */
   sessionId?: string | null;
   ompThreadId?: string | null;
+  /**
+   * The session's OS pid, when the roster resolved one (adv-roster's
+   * `RosterEntry.pid`). Untyped here for the same reason as the two ids above —
+   * it has always ridden on the payload — and its absence had the same shape of
+   * consequence: SessionActionCtx declares `pid` as "supplied by
+   * SessionChatModal from the SAME advRoster.list entry", so
+   * /adv/sessions/focus was silently posting `pid: undefined` and resolving the
+   * window from advSessionId/windowId alone (EI-20209690740975295).
+   */
+  pid?: number | null;
 }
 
 /** How long a terminal-spawned launch may sit un-registered before the board
