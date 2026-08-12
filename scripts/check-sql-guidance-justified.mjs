@@ -86,19 +86,17 @@ const COVERED_TABLES = [
   'work_items',
   'harness_plans',
   'engineer_issues',
-  // ⚠ `schema_migrations` and `test_runs` BELONG HERE and are deliberately NOT
-  // here yet — plan `sql-escape-tool-routing-2026-08-12` P-009, tracked as
-  // WI-38272. Both earned an authoritative verb in tranche 2 (`db:migrations`,
-  // `testing:runs`), audited against frozen corpus evidence in
-  // `bash-substitution/pairs/sql-reads.ts`. Adding them was measured and surfaces
-  // 7 real violations in agent-insights docs written before those verbs existed.
-  //
-  // They are held out because this lint is a GATING CI step
-  // (.github/workflows/test.yml, no continue-on-error), so widening it in the
-  // same change would red the gate for the whole fleet until 7 docs are
-  // rewritten — and those are .mdx PROJECTIONS of Postgres, so each needs a
-  // `docs:author` pass, not an edit. Widen this list in the SAME change that
-  // lands those rewrites, never before.
+  // Landed 2026-08-12 with WI-38272, which rewrote the 7 pre-existing violations
+  // in the same change — the hold-out these two sat behind was never about the
+  // evidence (both earned an authoritative verb in tranche 2 of plan
+  // `sql-escape-tool-routing-2026-08-12`, audited against frozen corpus evidence
+  // in `bash-substitution/pairs/sql-reads.ts`) but about the ORDER: this lint is
+  // a GATING CI step (.github/workflows/test.yml, no continue-on-error), so
+  // widening it before the docs were rewritten would have red-pinned the fleet
+  // gate. Those docs are .mdx PROJECTIONS of Postgres, so each rewrite is a
+  // `docs:author` pass rather than a file edit.
+  'schema_migrations',
+  'test_runs',
 ];
 
 /** A SELECT … FROM <covered table> — the "run this" shape. Matched over a
@@ -175,8 +173,6 @@ const TOOL_FOR = {
   // naming only the list verb here would send an author to a verb that cannot
   // express the read they are documenting.
   engineer_issues: 'issues:list (text/state slices) / work_items:get (a single item by id)',
-  // Kept in step with COVERED_TABLES above: these two are staged for WI-38272 so
-  // the message is ready the moment the table entry lands.
   schema_migrations: 'db:migrations — and it returns a verdict where an empty result is ambiguous',
   test_runs: "testing:runs — typed status enum, so a doc cannot teach status='failed' (which never matches)",
 };
@@ -393,6 +389,25 @@ if (RUN_AS_MAIN && process.argv.includes('--self-test')) {
       `# guide\n\n<!-- BEGIN GENERATED gen:tool-routing — do not edit by hand -->\n| want | use | not |\n<!-- END GENERATED gen:tool-routing -->\n\nHand-written advice: run ${SQL}\n`,
       7,
       'work_items',
+    ],
+    // [ANCHOR] COVERED_TABLES MEMBERSHIP for the two tables added by WI-38272.
+    // A whole-corpus run is clean today, and a clean run is ALSO what an inert
+    // widening looks like — dropping either name from COVERED_TABLES silences
+    // every doc that teaches its SQL and reds nothing. These two cases fail
+    // instead. Kept as prose surfaces because that is where both live.
+    [
+      'schema_migrations is a covered table — its SQL in a doc reports (db:migrations is the verb)',
+      'apps/operator-docs/src/content/docs/agent-insights/x.mdx',
+      "Check it applied:\n\n```sql\nSELECT filename, applied_at FROM harness_shared.schema_migrations\n WHERE filename LIKE '%795%';\n```\n",
+      4,
+      'schema_migrations',
+    ],
+    [
+      'test_runs is a covered table — its SQL in a doc reports (testing:runs is the verb)',
+      'apps/operator-docs/src/content/docs/agent-insights/x.mdx',
+      "Find the reds:\n\n```sql\nSELECT file_path, status FROM harness_shared.test_runs WHERE status = 'failed';\n```\n",
+      4,
+      'test_runs',
     ],
   ];
   let failed = 0;
