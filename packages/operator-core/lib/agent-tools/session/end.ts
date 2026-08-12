@@ -97,6 +97,13 @@ export default defineTool({
     seeAlso: ['loop:end (stop the wake source first)', 'work_items:complete (release your claims first)'],
   },
   requirePrincipal: false,
+  // EI-20228659661229322: shutdown is a recovery/control-path operation that
+  // never reads ctx.tx. Do not hold an org-app transaction while checking the
+  // loop and sending the host shutdown request: under a saturated pool the
+  // ambient acquisition can strand the very session that is trying to exit.
+  // Privileged role callers therefore run tx-less; signed callers still use the
+  // short principal-synthesis probe enforced by the dispatch seam.
+  skipWorkspaceTx: true,
   agentRoles: [...AGENT_ROLES],
   args: z.object({
     reason: z

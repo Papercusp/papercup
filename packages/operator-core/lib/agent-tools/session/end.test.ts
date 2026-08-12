@@ -11,7 +11,13 @@
  * and must never be indistinguishable from a transport miss the caller should retry.
  */
 import { describe, it, expect } from 'vitest';
-import { shutdownNote } from './end';
+import endTool, { shutdownNote } from './end';
+
+it('opts out of the ambient workspace transaction for bounded shutdown', () => {
+  // session:end never reads ctx.tx and must remain callable by a privileged
+  // session even when every org-app pool slot is held by another call.
+  expect((endTool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+});
 
 describe('shutdownNote (WI-6638)', () => {
   const RESULTS = [
