@@ -1433,13 +1433,78 @@ fi
 # and is loaded only by the `omp-su` wrapper (step 4d) via `-e`. The
 # legacy auto-discovered copy is removed so plain `omp` no longer picks
 # it up.
+# OMP loads these TypeScript files outside the esbuild bundle. Copy the entry
+# point AND every sibling module, then run an install-side relative-import check
+# so a missing companion is reported before the next session can look inert.
+install_omp_hook_bundle() {
+  local source_dir="$1"
+  local destination_dir="$2"
+  local source_entry="$3"
+  local destination_entry="$4"
+  local source_file base destination_file
+  local found=0
+
+  mkdir -p "$destination_dir"
+  while IFS= read -r -d '' source_file; do
+    base="${source_file##*/}"
+    if [ "$base" = "$source_entry" ]; then
+      destination_file="${destination_dir}/${destination_entry}"
+      found=1
+    else
+      destination_file="${destination_dir}/${base}"
+    fi
+    cp "$source_file" "$destination_file"
+    chmod 644 "$destination_file"
+  done < <(find "$source_dir" -maxdepth 1 -type f -name '*.ts' -print0 | sort -z)
+
+  if [ "$found" -ne 1 ]; then
+    echo "! OMP hook bundle entry missing: ${source_dir}/${source_entry}" >&2
+    return 1
+  fi
+
+  if ! python3 - "$destination_dir" <<'PYEOF'
+import pathlib
+import re
+import sys
+
+root = pathlib.Path(sys.argv[1])
+pattern = re.compile(
+    r"\bfrom\s+['\"](\.[^'\"]+)['\"]|"
+    r"\bimport\s+['\"](\.[^'\"]+)['\"]|"
+    r"\bimport\s*\(\s*['\"](\.[^'\"]+)['\"]\s*\)"
+)
+unresolved = []
+for importer in sorted(root.glob('*.ts')):
+    text = importer.read_text(encoding='utf-8')
+    for match in pattern.finditer(text):
+        specifier = next((value for value in match.groups() if value), None)
+        if not specifier:
+            continue
+        raw = (importer.parent / specifier.split('?', 1)[0].split('#', 1)[0]).resolve()
+        stem = raw.with_suffix('') if raw.suffix else raw
+        candidates = [raw, raw.with_suffix('.ts'), stem.with_suffix('.ts'), stem / 'index.ts']
+        if not any(candidate.is_file() for candidate in candidates):
+            unresolved.append(f'{importer.name} -> {specifier}')
+
+if unresolved:
+    print(
+        '[install-standalone-mcp] OMP hook bundle load check FAILED: ' + '; '.join(unresolved),
+        file=sys.stderr,
+    )
+    raise SystemExit(1)
+PYEOF
+  then
+    echo "! OMP hook bundle load check failed under ${destination_dir}" >&2
+  fi
+}
+
 COORD_EXT_SRC="${SCRIPT_DIR}/hooks/omp/coord-hook.ts"
 COORD_EXT_DEST="${HOME}/.papercusp/papercusp-coord.ts"
 LEGACY_EXT="${OMP_CONFIG_DIR}/extensions/papercusp-coord.ts"
 if [ -f "$COORD_EXT_SRC" ]; then
-  cp "$COORD_EXT_SRC" "$COORD_EXT_DEST"
-  chmod 644 "$COORD_EXT_DEST"
-  echo "✓ Installed coordination extension to $COORD_EXT_DEST"
+  if install_omp_hook_bundle "${SCRIPT_DIR}/hooks/omp" "${HOME}/.papercusp" "coord-hook.ts" "papercusp-coord.ts"; then
+    echo "✓ Installed coordination extension bundle to $COORD_EXT_DEST"
+  fi
 else
   echo "! Expected coord extension at $COORD_EXT_SRC; skipping (coordination inactive in omp-su)"
 fi
@@ -1486,10 +1551,9 @@ else
   echo "! Context-injection dispatcher missing under ${INJECT_SRC_DIR}; skipping (turn-start/mid-turn injection inactive for ALL clients)"
 fi
 if [ -f "$OMP_INJECT_HOOK_SRC" ]; then
-  mkdir -p "${HOME}/.papercusp/hooks/omp"
-  cp "$OMP_INJECT_HOOK_SRC" "$OMP_INJECT_HOOK_DEST"
-  chmod 644 "$OMP_INJECT_HOOK_DEST"
-  echo "✓ Installed omp injection hook to $OMP_INJECT_HOOK_DEST"
+  if install_omp_hook_bundle "${SCRIPT_DIR}/hooks/omp" "${HOME}/.papercusp/hooks/omp" "inject-hook.ts" "inject-hook.ts"; then
+    echo "✓ Installed omp injection hook bundle to $OMP_INJECT_HOOK_DEST"
+  fi
 else
   echo "! omp injection hook missing under ${SCRIPT_DIR}/hooks/omp; skipping (omp injection inactive; claude/codex unaffected)"
 fi

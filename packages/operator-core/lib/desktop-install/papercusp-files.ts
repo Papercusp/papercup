@@ -210,28 +210,6 @@ async function ensureSecret(filePath: string, mint: () => string): Promise<{ val
   return { value, minted: true };
 }
 
-async function copyIfExists(src: string, dst: string): Promise<boolean> {
-  try {
-    const data = await fs.readFile(src);
-    // EI-18755593630003816: write-temp+rename, not a direct in-place fs.writeFile.
-    // This is the "sibling OMP hook path" the EI calls out — `dst` here is the OMP
-    // coord-hook extension (~/.papercusp/papercusp-coord.ts), installed on every psu
-    // launch/bootstrap on a box shared by every agent session, exactly like the CC
-    // hook scripts installClaudeHooks writes below. A plain writeFile truncates
-    // before writing, so a concurrent reader can observe a torn/partial file mid-write;
-    // rename(2) is atomic on the same filesystem, so a concurrent reader always sees
-    // either the whole old file or the whole new one, never a torn prefix.
-    const tmp = `${dst}.psu-install.${process.pid}.tmp`;
-    await fs.writeFile(tmp, data, { mode: 0o644 });
-    await fs.chmod(tmp, 0o644);
-    await fs.rename(tmp, dst);
-    return true;
-  } catch (e) {
-    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return false;
-    throw e;
-  }
-}
-
 const LOCAL_OMP_IMPORT_RE =
   /\bfrom\s+['"](\.[^'"]+)['"]|\bimport\s+['"](\.[^'"]+)['"]|\bimport\s*\(\s*['"](\.[^'"]+)['"]\s*\)/g;
 
@@ -591,7 +569,7 @@ function injectSharedBaseNotes(
  * Write the base playbook with the OMP tooling overlay spliced in at
  * the marker (or appended, if a pre-marker base is ever encountered).
  * Node port of `render_playbook` from install-standalone-mcp.sh.
- * Returns false when the base source is missing (matches copyIfExists).
+ * Returns false when the base source is missing.
  */
 async function writeSplicedPlaybook(baseSrc: string, dst: string): Promise<boolean> {
   let base: string;
