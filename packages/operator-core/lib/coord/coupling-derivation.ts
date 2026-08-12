@@ -282,9 +282,15 @@ function sharedLocksPhrase(shared: readonly string[]): string {
   const named = shared.slice(0, DERIVATION_LOCKS_NAMED);
   const rest = shared.length - named.length;
   const list = named.join(', ');
+  // ⚠ "working in", NOT "hold locks in". The source is held locks UNION in-flight
+  // waiter tickets (EI-20199756190949760): a mutual-exclusion table can never show
+  // two owners on one path, so co-interest is the only satisfiable predicate — and
+  // one side of an edge may be QUEUED for the path rather than holding it. Claiming
+  // both "hold locks" would be false for exactly the edges this signal now emits,
+  // which is a lie in the one signal the auto-coupling rubric grades for honesty.
   return rest > 0
-    ? `you both hold locks in ${list} (+${rest} more shared ${rest === 1 ? 'path' : 'paths'})`
-    : `you both hold locks in ${list}`;
+    ? `you are both working in ${list} (+${rest} more shared ${rest === 1 ? 'path' : 'paths'})`
+    : `you are both working in ${list}`;
 }
 
 /**
