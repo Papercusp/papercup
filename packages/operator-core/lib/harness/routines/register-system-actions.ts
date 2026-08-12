@@ -96,9 +96,12 @@
  *     ⚠ RETIRED + DISARMED (retire-mug-kettle-su-only-2026-08-09 P-051 / D-045):
  *     it (and `system:hive-canary-sla`) measure whether the AUTONOMOUS CUP LOOP
  *     carries queued work end-to-end — the only valid pass is a cup session — and
- *     no cup can spawn while `papercusp-mug-kettle-system` is OFF, so every tick
- *     could only file a false alarm. Both rows are `active=false` AND both actions
- *     now gate on `mugKettleSystemEnabled()`. Flip the flag ON to restore them.
+ *     no cup can spawn at all, so every tick could only file a false alarm. Both
+ *     rows are `active=false` AND both actions gate on `mugKettleSystemEnabled()`,
+ *     which P-068 made unconditionally false when it DELETED the
+ *     `papercusp-mug-kettle-system` flag. There is no flag to flip and no toggle
+ *     in /admin/features: the retirement is PERMANENT, so these canaries are not
+ *     restorable — reviving them means measuring a different subject.
  *   - `system:coord-probe-canary` + `system:coord-invariant-monitor` —
  *     coord-system-e2e-testing-2026-06-10 P-012/P-013 (Layer D). The live
  *     probe-pair verb-cycle canary (15 min, SLO'd, self-sweeping) and the
