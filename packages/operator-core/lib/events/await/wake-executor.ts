@@ -841,6 +841,11 @@ export function resumeCommandFor(handle: {
       bin: 'codex',
       args: [
         'exec',
+        // Machine-readable completion proof. A detached wake is not complete
+        // merely because the wrapper exits zero: the outcome classifier requires
+        // Codex's terminal `turn.completed` JSONL event and reopens/re-arms the
+        // delivery when the marker is missing or `turn.failed` is emitted.
+        '--json',
         '--dangerously-bypass-hook-trust',
         '--dangerously-bypass-approvals-and-sandbox',
         'resume',
@@ -1915,7 +1920,11 @@ export async function executeWake(d: DeliveryWork, deps: ExecuteWakeDeps = {}): 
       // its routine. The delivery is still 'delivered' the instant a PID lands — the
       // observation is asynchronous + additive, never on the delivery's hot path.
       const onExit = deps.onResumeTurnExit
-        ? (exit: ResumeTurnExitRaw) => deps.onResumeTurnExit!(d, exit)
+        ? (exit: ResumeTurnExitRaw) =>
+            deps.onResumeTurnExit!(
+              d,
+              resumeAgent === 'codex' ? { ...exit, outputProtocol: 'codex-jsonl' } : exit,
+            )
         : undefined;
       const pid2 = spawnDetached(resume.bin, resume.args, { cwd, env }, onExit);
       if (pid2) return { kind: 'delivered', channel: 'resume-headless' };

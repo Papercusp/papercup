@@ -37,10 +37,34 @@ export interface ResumeTurnExitRaw {
   stdoutTail: string;
   /** The last N bytes of stderr. */
   stderrTail: string;
+  /**
+   * Machine-readable stdout contract requested by the launcher. Codex resume
+   * turns use JSONL so an exit-0 process is not trusted unless it emitted the
+   * terminal `turn.completed` event.
+   */
+  outputProtocol?: 'codex-jsonl';
 }
 
 /** Survived (the turn ran to completion) vs died (with the classified failure). */
 export type ResumeTurnOutcome = { ok: true } | { ok: false; error: TurnError };
+
+/** Return the latest complete Codex terminal event from a bounded JSONL tail.
+ * The first line may be partial because the collector keeps only the last N
+ * bytes, so malformed/non-object lines are deliberately skipped. */
+function latestCodexTerminalEvent(stdoutTail: string): 'turn.completed' | 'turn.failed' | null {
+  const lines = stdoutTail.split(/\r?\n/);
+  for (let i = lines.length - 1; i >= 0; i -= 1) {
+    const line = lines[i]?.trim();
+    if (!line) continue;
+    try {
+      const event = JSON.parse(line) as { type?: unknown };
+      if (event.type === 'turn.completed' || event.type === 'turn.failed') return event.type;
+    } catch {
+      // A bounded tail can begin mid-event; later complete lines remain valid.
+    }
+  }
+  return null;
+}
 
 /**
  * Classify a detached resume turn's exit into survived-vs-died (P0a).
@@ -69,18 +93,50 @@ export type ResumeTurnOutcome = { ok: true } | { ok: false; error: TurnError };
  * A non-zero / signalled exit is a DEATH — classify it with the shared subprocess
  * taxonomy. The claude/codex CLIs print API errors (rate limit / usage limit / overload
  * / auth) to STDOUT (not stderr — see turn-error.ts), so both tails are passed and the
- * classifier folds stdout into its scan on a failed exit. The provider is always
- * `anthropic` (a resume turn is always a claude-code session).
+ * classifier folds stdout into its scan on a failed exit. Legacy/Claude resumes
+ * classify against `anthropic`; Codex JSONL resumes classify against `openai`.
  */
 export function classifyResumeTurnExit(raw: ResumeTurnExitRaw, now: number = Date.now()): ResumeTurnOutcome {
+  const provider = raw.outputProtocol === 'codex-jsonl' ? 'openai' : 'anthropic';
   if (raw.exitCode === 0 && !raw.signal) {
+    if (raw.outputProtocol === 'codex-jsonl') {
+      const terminal = latestCodexTerminalEvent(raw.stdoutTail);
+      if (terminal !== 'turn.completed') {
+        if (terminal === 'turn.failed') {
+          const error = classifySubprocessResult(
+            {
+              // Codex may report a protocol-level failure even when its wrapper
+              // exits zero. Force the failed-exit taxonomy so its JSONL error
+              // text is classified (rate limit/auth/etc.) rather than trusted.
+              exitCode: 1,
+              signal: null,
+              stderr: raw.stderrTail,
+              stdout: raw.stdoutTail,
+            },
+            provider,
+            now,
+          );
+          return { ok: false, error };
+        }
+        return {
+          ok: false,
+          error: {
+            class: 'malformed_output',
+            message: 'Codex resume exited 0 without the required turn.completed JSONL event',
+            provider,
+            retryable: true,
+            surfaceToUser: false,
+          },
+        };
+      }
+    }
     const wedge = classifyWedgeText(raw.stdoutTail);
     if (wedge) {
       const resetAt = wedge.reason === 'usage_limit' ? parseUsageResetMs(wedge.evidence, now) : undefined;
       const error: TurnError = {
         class: wedge.reason === 'auth_wall' ? 'auth' : 'usage_limit',
         message: wedge.evidence,
-        provider: 'anthropic',
+        provider,
         retryable: false,
         surfaceToUser: true,
         ...(resetAt !== undefined ? { resetAt } : {}),
@@ -96,7 +152,7 @@ export function classifyResumeTurnExit(raw: ResumeTurnExitRaw, now: number = Dat
       stderr: raw.stderrTail,
       stdout: raw.stdoutTail,
     },
-    'anthropic',
+    provider,
     now,
   );
   return { ok: false, error };

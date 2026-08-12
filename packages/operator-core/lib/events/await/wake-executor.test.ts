@@ -706,6 +706,7 @@ describe('resumeCommandFor', () => {
     expect(r!.bin).toBe('codex');
     expect(r!.args).toEqual([
       'exec',
+      '--json',
       '--dangerously-bypass-hook-trust',
       '--dangerously-bypass-approvals-and-sandbox',
       'resume',
@@ -1002,14 +1003,25 @@ describe('executeWake — the liveness ladder', () => {
   });
 
   it('exited codex → DETACHED `exec resume <uuid>` with CODEX_HOME, uuid recovered from the rollout (P-009)', async () => {
-    const spawnDetached = vi.fn(() => 5555);
+    let onExit:
+      | ((exit: { exitCode: number | null; signal: string | null; stdoutTail: string; stderrTail: string }) => void)
+      | undefined;
+    let observedExit: unknown;
+    const spawnDetached = vi.fn((_bin, _args, _options, exitHandler) => {
+      onExit = exitHandler;
+      return 5555;
+    });
+    const delivery = work({ wakeHandle: advHandle({ agent: 'codex', sessionId: null }) });
     const out = await executeWake(
       // codex carries no native id on the row — executeWake recovers it from the home.
-      work({ wakeHandle: advHandle({ agent: 'codex', sessionId: null }) }),
+      delivery,
       deps({
         alive: vi.fn(() => false),
         getSession: vi.fn(async () => session({ agent: 'codex', sessionId: null })) as never,
         spawnDetached,
+        onResumeTurnExit: (_d, exit) => {
+          observedExit = exit;
+        },
       }),
     );
     expect(out).toEqual({ kind: 'delivered', channel: 'resume-headless' });
@@ -1017,12 +1029,26 @@ describe('executeWake — the liveness ladder', () => {
       string, string[], { cwd: string; env: Record<string, string> },
     ];
     expect(bin).toBe('codex');
-    expect(args.slice(0, 4)).toEqual([
-      'exec', '--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', 'resume',
+    expect(args.slice(0, 5)).toEqual([
+      'exec', '--json', '--dangerously-bypass-hook-trust', '--dangerously-bypass-approvals-and-sandbox', 'resume',
     ]);
-    expect(args[4]).toBe(ROLLOUT_UUID); // recovered from the newest rollout
-    expect(args[5]).toContain('lock:grant:t-1'); // the wake turn text
+    expect(args[5]).toBe(ROLLOUT_UUID); // recovered from the newest rollout
+    expect(args[6]).toContain('lock:grant:t-1'); // the wake turn text
     expect(o.env.CODEX_HOME).toBe(join(CODEX_HOMES_DIR, 'session-42'));
+    expect(onExit).toBeTypeOf('function');
+    onExit!({
+      exitCode: 0,
+      signal: null,
+      stdoutTail: '{"type":"turn.completed","usage":{}}',
+      stderrTail: '',
+    });
+    expect(observedExit).toEqual({
+      exitCode: 0,
+      signal: null,
+      stdoutTail: '{"type":"turn.completed","usage":{}}',
+      stderrTail: '',
+      outputProtocol: 'codex-jsonl',
+    });
   });
 
   it('exited codex with NO recoverable home → park, never a bare --last (P-009)', async () => {

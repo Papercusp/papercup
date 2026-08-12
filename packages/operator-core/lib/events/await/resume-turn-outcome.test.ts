@@ -94,6 +94,64 @@ describe('classifyResumeTurnExit — survived vs died (P0a)', () => {
     expect(isRateLimitDeath(classifyResumeTurnExit(raw({ exitCode: 0 })))).toBe(false);
   });
 
+  describe('Codex JSONL completion contract', () => {
+    it('accepts exit 0 only when the bounded tail contains turn.completed', () => {
+      const out = classifyResumeTurnExit(
+        raw({
+          outputProtocol: 'codex-jsonl',
+          stdoutTail: [
+            '{"type":"thread.started","thread_id":"t-1"}',
+            '{"type":"turn.started"}',
+            '{"type":"turn.completed","usage":{"input_tokens":10,"output_tokens":2}}',
+          ].join('\n'),
+        }),
+      );
+      expect(out.ok).toBe(true);
+    });
+
+    it('rejects exit 0 when Codex stops after tool output without turn.completed', () => {
+      const out = classifyResumeTurnExit(
+        raw({
+          outputProtocol: 'codex-jsonl',
+          stdoutTail: [
+            '{"type":"turn.started"}',
+            '{"type":"item.completed","item":{"type":"command_execution","exit_code":0}}',
+          ].join('\n'),
+        }),
+      );
+      expect(out.ok).toBe(false);
+      if (!out.ok) {
+        expect(out.error.class).toBe('malformed_output');
+        expect(out.error.provider).toBe('openai');
+        expect(out.error.message).toContain('without the required turn.completed');
+      }
+    });
+
+    it('treats a turn.failed event as a death even if the Codex wrapper exits 0', () => {
+      const out = classifyResumeTurnExit(
+        raw({
+          outputProtocol: 'codex-jsonl',
+          stdoutTail: '{"type":"turn.failed","error":{"message":"429 Too Many Requests · Rate limited"}}',
+        }),
+      );
+      expect(out.ok).toBe(false);
+      if (!out.ok) {
+        expect(out.error.class).toBe('rate_limited');
+        expect(out.error.provider).toBe('openai');
+      }
+    });
+
+    it('ignores a partial first JSONL line when a complete terminal event follows it', () => {
+      const out = classifyResumeTurnExit(
+        raw({
+          outputProtocol: 'codex-jsonl',
+          stdoutTail: 'uncated-prefix"}\n{"type":"turn.completed","usage":{}}\n',
+        }),
+      );
+      expect(out.ok).toBe(true);
+    });
+  });
+
   describe('EI-13818 — a CLEAN exit is not always success (the leaderless-fleet bug)', () => {
     it('a clean exit whose tail is the verbatim session-limit message is a DEATH, not ok:true', () => {
       // The exact incident: 4 consecutive resume turns each printed this and exited 0 —
