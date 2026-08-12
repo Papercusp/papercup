@@ -866,14 +866,15 @@ describe('WI-35737: a departed client stops the retry loop', () => {
  *      32-89 minutes.
  */
 describe('EI-19305299022434394: admission control — shed with 429 before opening an upstream socket', () => {
-  it('EI-20220715105590670: recognizes only scheduler:get_next as reserved control-plane traffic', () => {
+  it('recognizes fleet bootstrap and scheduler claims as reserved control-plane traffic', () => {
     const call = (name: string) => Buffer.from(JSON.stringify({ method: 'tools/call', params: { name } }));
     expect(isReservedControlPlaneCall(call('scheduler:get_next'))).toBe(true);
+    expect(isReservedControlPlaneCall(call('coord:orient'))).toBe(true);
     expect(isReservedControlPlaneCall(call('work_items:get'))).toBe(false);
     expect(isReservedControlPlaneCall(Buffer.from('{bad json'))).toBe(false);
   });
 
-  it('EI-20220715105590670: admits scheduler:get_next from the reserve while ordinary calls shed', async () => {
+  it.each(['scheduler:get_next', 'coord:orient'])('admits %s from the reserve while ordinary calls shed', async (controlPlaneTool) => {
     let releaseUpstream: () => void = () => {};
     const gate = new Promise<void>((resolve) => { releaseUpstream = resolve; });
     const upstream = track(http.createServer((_req, res) => void gate.then(() => res.end('{"result":"ok"}'))));
@@ -889,12 +890,12 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     await new Promise((r) => setTimeout(r, 40));
     expect((await request(port(proxy), ordinaryBody)).status).toBe(429);
 
-    const schedulerBody = JSON.stringify({ method: 'tools/call', params: { name: 'scheduler:get_next', arguments: {} } });
-    const heldScheduler = request(port(proxy), schedulerBody);
+    const controlPlaneBody = JSON.stringify({ method: 'tools/call', params: { name: controlPlaneTool, arguments: {} } });
+    const heldControlPlane = request(port(proxy), controlPlaneBody);
     await new Promise((r) => setTimeout(r, 40));
     releaseUpstream();
     expect((await heldOrdinary).status).toBe(200);
-    expect((await heldScheduler).status).toBe(200);
+    expect((await heldControlPlane).status).toBe(200);
   });
 
   it('shouldShedForInFlight — sheds at the ceiling, never before it (pure)', () => {
