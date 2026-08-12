@@ -42,6 +42,7 @@ import type {
   LineSurface,
   ReadLinesOpts,
 } from '@papercusp/pubsub-substrate/event-log';
+import { withPgContentionRetry, type PgContentionRetryOptions } from './pg-retry';
 
 /** The coordination scope used when a host does not bind one. Matches the
  *  `'default'` fallback `PgPresenceStore` writes for a workspace-less agent. */
@@ -68,6 +69,8 @@ export interface PgCoordLogOptions {
    * serves every workspace.
    */
   getWorkspaceId?: () => string;
+  /** Optional retry tuning/dependency injection for transient PG contention. */
+  contentionRetry?: PgContentionRetryOptions;
 }
 
 /**
@@ -429,8 +432,9 @@ export class PgCoordLog implements CoordEventLog {
     writerKey: string,
     line: CoordEnvelope,
   ): Promise<number | null> {
-    await this.opts.ensureSchema();
-    const sql = this.opts.getSql();
+    return withPgContentionRetry(async () => {
+      await this.opts.ensureSchema();
+      const sql = this.opts.getSql();
     // `::text::jsonb` (not bare `::jsonb`): the explicit text cast forces
     // postgres-js to bind the JSON as a plain text param, so it stores a real
     // jsonb OBJECT under BOTH the operator runtime client (getOrgPg — where a
@@ -469,7 +473,8 @@ export class PgCoordLog implements CoordEventLog {
     // degrade to null rather than stamping a bad id.
     const raw = rows[0]?.id;
     const id = typeof raw === 'number' ? raw : Number(raw);
-    return Number.isFinite(id) ? id : null;
+      return Number.isFinite(id) ? id : null;
+    }, this.opts.contentionRetry);
   }
 
   async readLines(surface: LineSurface, _opts: ReadLinesOpts = {}): Promise<CoordEnvelope[]> {
