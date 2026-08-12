@@ -39,8 +39,85 @@ const ROOT = new URL('..', import.meta.url).pathname;
 /** The detector itself contains its own syntax examples and is therefore exempt. */
 export const ALLOWLIST = new Set(['scripts/check-no-raw-harness-sentinel.mjs']);
 
-/** Existing, measured candidates pending an audit. This set may only shrink. */
-export const BASELINE = new Set([]);
+/**
+ * Existing, measured candidates pending an audit. This set may only shrink.
+ *
+ * Measured at HEAD f0338f50b55fb0710f082c7883ecb2a37d0e88fe with `--list` on
+ * 2026-08-12. The issue deliberately did not claim these 68 sites were all
+ * defects: they are the population the detector now makes visible so each
+ * relation/call-site can be audited without silently growing the grandfather
+ * set. A source fingerprint makes a moved or rewritten site fail closed.
+ */
+export const BASELINE = new Set([
+  "libs/generic/tooldef/src/dispatch-stack.ts:360:predicate:const slug = ctx.harnessSlug?.trim();",
+  "libs/papercusp/packages/orchestrator/src/state-pg.ts:118:fallback:ON hfc.harness_slug = ${ctx.harnessSlug ?? ''}",
+  "libs/papercusp/packages/orchestrator/src/state-pg.ts:146:fallback:AND harness_slug  = ${ctx.harnessSlug ?? ''}",
+  "libs/papercusp/packages/orchestrator/src/state.ts:66:fallback:ctx.harnessSlug ??",
+  "packages/operator-core/lib/agent-tools/capability/bash.ts:111:predicate:const leasedDisplay = ctx.harnessSlug ? displayForHive(ctx.harnessSlug) : undefined;",
+  "packages/operator-core/lib/agent-tools/cell-reader-ctx.ts:50:identity-field:...(ctx.harnessSlug ? { harnessSlug: ctx.harnessSlug } : {}),",
+  "packages/operator-core/lib/agent-tools/cell-reader-ctx.ts:54:fallback:harnessSlug: ctx.harnessSlug ?? null,",
+  "packages/operator-core/lib/agent-tools/code/run.ts:992:fallback:harness: ctx.harnessSlug ?? null,",
+  "packages/operator-core/lib/agent-tools/conventions/governing.ts:92:fallback:const harness = (args.harness ?? ctx.harnessSlug ?? '').trim();",
+  "packages/operator-core/lib/agent-tools/coordination/coupled-topics-read.ts:72:identity-field:...(ctx.harnessSlug ? { harnessSlug: ctx.harnessSlug } : {}),",
+  "packages/operator-core/lib/agent-tools/coordination/identity.ts:367:fallback:? `${sysRole} · ${ctx.harnessSlug ?? 'system'}`",
+  "packages/operator-core/lib/agent-tools/datatypes/declare.ts:227:fallback:potSlug: ctx.harnessSlug ?? null,",
+  "packages/operator-core/lib/agent-tools/dev/pg_query.ts:150:identity-field:harnessSlug: ctx.harnessSlug,",
+  "packages/operator-core/lib/agent-tools/dev/why.ts:45:fallback:harnessSlug: args.harness ?? ctx.harnessSlug,",
+  "packages/operator-core/lib/agent-tools/events/watch.ts:241:fallback:const harnessSlug = ctx.harnessSlug ?? null;",
+  "packages/operator-core/lib/agent-tools/facts/assert.ts:271:identity-field:harnessSlug: ctx.harnessSlug,",
+  "packages/operator-core/lib/agent-tools/facts/scope-ctx.ts:56:identity-field:harnessSlug: ctx.harnessSlug,",
+  "packages/operator-core/lib/agent-tools/improvements/resolve.ts:86:fallback:harnessSlug: ctx.harnessSlug ?? null,",
+  "packages/operator-core/lib/agent-tools/recipes/run.ts:210:identity-field:...(ctx.harnessSlug ? { harness: ctx.harnessSlug } : {}),",
+  "packages/operator-core/lib/agent-tools/recipes/run.ts:303:fallback:harnessSlug: ctx.harnessSlug ?? null,",
+  "packages/operator-core/lib/agent-tools/recipes/search.ts:97:identity-field:...(ctx.harnessSlug ? { harness: ctx.harnessSlug } : {}),",
+  "packages/operator-core/lib/agent-tools/state/read.ts:116:fallback:harnessSlug: ctx.harnessSlug ?? undefined,",
+  "packages/operator-core/lib/agent-tools/state/read.ts:151:fallback:harnessSlug: ctx.harnessSlug ?? null,",
+  "packages/operator-core/lib/agent-tools/state/subscribe.ts:94:fallback:harnessSlug: ctx.harnessSlug ?? undefined,",
+  "packages/operator-core/lib/agent-tools/testing/flakiness.ts:40:fallback:const harnessSlug = args.harness ?? ctx.harnessSlug ?? undefined;",
+  "packages/operator-core/lib/agent-tools/testing/flakiness.ts:70:identity-field:{ ownerId: ident.ownerId, workspaceId: ctx.workspaceId, harnessSlug: ctx.harnessSlug },",
+  "packages/operator-core/lib/agent-tools/tools/define.ts:103:fallback:harnessSlug: ctx.harnessSlug ?? null,",
+  "packages/operator-core/lib/agent-tools/work_items/_create-core.ts:249:fallback:harness: args.harness ?? ctx.harnessSlug ?? undefined,",
+  "packages/operator-core/lib/agent-tools/work_items/_create-core.ts:274:fallback:harness: args.harness ?? ctx.harnessSlug ?? undefined,",
+  "packages/operator-core/lib/agent-tools/work_items/_create-core.ts:346:fallback:harnessSlug: args.harness ?? ctx.harnessSlug,",
+  "packages/operator-core/lib/agent-tools/work_items/_create-core.ts:405:fallback:const planItemStampHarness = harnessForItem ?? ctx.harnessSlug ?? undefined;",
+  "packages/operator-core/lib/agent-tools/work_items/arm-reversible-work-item.ts:151:fallback:harnessSlug: ctx.harnessSlug ?? prior.harness ?? null,",
+  "packages/operator-core/lib/agent-tools/work_items/create.ts:285:identity-field:const createCtx = { ownerId: ident.ownerId, workspaceId: ctx.workspaceId, harnessSlug: ctx.harnessSlug };",
+  "packages/operator-core/lib/agent-tools/work_items/create.ts:472:fallback:harness: s.harness ?? ctx.harnessSlug ?? null,",
+  "packages/operator-core/lib/agent-tools/work_items/update.ts:352:fallback:const planHarness = item.harness ?? it.harness ?? ctx.harnessSlug ?? undefined;",
+  "packages/operator-core/lib/agent-tools/work_items/update.ts:444:fallback:...planItemPayloadPatch(it.plan_item, it.harness ?? ctx.harnessSlug ?? undefined),",
+  "packages/operator-core/lib/agent-tools/work_items/update.ts:452:fallback:it.harness ?? ctx.harnessSlug ?? undefined,",
+  "packages/operator-core/lib/blueprint-steps/ops/calibration-resolve.ts:55:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/change-ledger-scan.ts:56:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/deferral-interest-refit.ts:58:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/fleet-ekg-scan.ts:78:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/graduation-scan.ts:68:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/hive-eval-gen.ts:60:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/iq-battery-gen.ts:60:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/memory-live-recall-canary.ts:52:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/memory-precision-bench.ts:53:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/negative-space-scan.ts:63:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/neologism-mine.ts:69:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/prompt-ablation.ts:61:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/red-queen-drill.ts:50:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/regret-mine.ts:68:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/scout-cycle.ts:83:fallback:const perHiveInstall = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/transfer-distill.ts:72:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/coord-ops/ops/compose.ts:130:identity-field:harness: ctx.harnessSlug,",
+  "packages/operator-core/lib/coord-ops/ops/thread-open.ts:35:fallback:harness: a.harness ?? ctx.harnessSlug,",
+  "packages/operator-core/lib/decision-ledger/emit.ts:141:fallback:harnessSlug: ctx.harnessSlug ?? null,",
+  "packages/operator-core/lib/deployment/frame-installer.ts:139:identity-field:harnessSlug: ctx.harnessSlug,",
+  "packages/operator-core/lib/deployment/headless-peer.ts:86:identity-field:harnessSlug: ctx.harnessSlug,",
+  "packages/operator-core/lib/endpoint-route/routes/plugins/catchall.ts:36:fallback:console.log(`[plugin-tool/http][${ctx.harnessSlug ?? '-'}/${ctx.role ?? '-'}/${ctx.spawnId ?? '-'}] ${line}`);",
+  "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts:1880:predicate:spawnRes.ctx.harnessSlug === '*' &&",
+  "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-slash-prompts.ts:135:identity-field:harness: ctx.harnessSlug,",
+  "packages/operator-core/lib/events/reaction-id.ts:33:identity-field:harnessSlug: ctx.harnessSlug,",
+  "packages/operator-core/lib/events/rules.ts:52:fallback:harness_slug: e.ctx.harnessSlug ?? undefined,",
+  "packages/operator-core/lib/fleet/bee-completion-reconcile.ts:162:identity-field:{ harnessSlug: ctx.harnessSlug, featureId: ctx.featureId, workspaceId: ctx.workspaceId },",
+  "packages/operator-core/lib/gym/control-plane.ts:706:identity-field:harnessSlug: ctx.harnessSlug,",
+  "packages/operator-core/lib/gym/control-plane.ts:721:identity-field:harnessSlug: ctx.harnessSlug,",
+  "packages/operator-core/lib/harness-ops/proxy.ts:58:identity-field:harnessSlug: ctx.harnessSlug,",
+  "packages/operator-core/lib/projected-tool-deps.ts:534:fallback:input.ctx.harnessSlug ?? \"\",",
+]);
 
 /** Vendored/generated/test files are not operator source and are not scanned. */
 export const isExcluded = (f) =>
@@ -55,7 +132,7 @@ export const isExcluded = (f) =>
   f.includes('/env-sidecars/') ||
   f.includes('/spa/assets/') ||
   f.includes('/holepunch-spike/') ||
-  /.(test|spec)\.[cm]?tsx?$/.test(f) ||
+  /\.(test|spec)\.[cm]?tsx?$/.test(f) ||
   !/\.(ts|tsx|mjs|cjs)$/.test(f);
 
 const CTX_HARNESS = /\bctx(?:\?\.)?\.harnessSlug\b/;
