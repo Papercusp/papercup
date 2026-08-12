@@ -288,6 +288,43 @@ function buildProbes(): Probe[] {
 
 const PROBES = buildProbes();
 
+// ────────────────────────────────────────────────────────────────────────────
+// The known-divergence allowlist — SHRINK-ONLY, and it PROVES it is shrink-only.
+// ────────────────────────────────────────────────────────────────────────────
+
+/**
+ * Fields whose two evaluators are KNOWN to resolve from different logical sources, filed as
+ * WI-38326 with the mechanism, the per-field counts and the live census. They are excluded from
+ * the agreement property below ONLY so this guard can land GREEN and start protecting every
+ * OTHER field today, instead of sitting red (and therefore ignored, or deleted) until a change
+ * to `WorkItem` + `FEATURE_COLS` + both row mappers is safe to make.
+ *
+ * ⚠ THIS IS NOT A PARKING LOT, AND THE MECHANISM THAT KEEPS IT HONEST IS THE TEST DIRECTLY
+ * BELOW IT: every field listed here MUST STILL DIVERGE. Fix one and that test goes red, naming
+ * the field and telling you to delete its entry. So an entry cannot outlive the defect it
+ * describes — the usual failure mode of a baseline list, where a fixed exclusion lingers and
+ * silently re-permits the very regression it was added for. The list can only shrink to empty.
+ *
+ * Adding a field here is therefore never the way to make a NEW divergence go away: a new one is a
+ * regression in a seam that has already burned four fleets, and it must be FIXED.
+ */
+// WI-38326 FIXED all five original entries — FEATURE_COLS now projects the columns, and
+// claim-spec-match.ts resolves each field from the same logical source FIELD_MAP filters on.
+// The list is deliberately left EMPTY rather than deleted: it is the seam a future divergence
+// gets parked in, and the test below asserts every entry STILL diverges, so an entry that gets
+// fixed fails the suite until it is removed. That is what keeps this from becoming a parking lot.
+const KNOWN_FIELD_SOURCE_DIVERGENCES: Array<{ field: FilterLeaf['field']; workItem: string; why: string }> = [];
+
+const EXCLUDED_FIELDS = new Set(KNOWN_FIELD_SOURCE_DIVERGENCES.map((d) => d.field));
+
+/** True when a probe touches an allowlisted field ANYWHERE in its tree. */
+function touchesExcludedField(node: FilterNode): boolean {
+  if ('field' in node) return EXCLUDED_FIELDS.has(node.field);
+  if ('all' in node) return node.all.some(touchesExcludedField);
+  if ('any' in node) return node.any.some(touchesExcludedField);
+  return touchesExcludedField(node.not);
+}
+
 beforeAll(async () => {
   db = await createFreshPgDb('sched-evaluator-parity');
   h.sql = db.sql;
@@ -355,12 +392,41 @@ describe('WI-5995 — the SQL compiler and the JS evaluator agree on every (fiel
     );
   });
 
+  it('every allowlisted field STILL diverges — a fixed one must be deleted from the list, not left to rot', async () => {
+    const subj = await subjects();
+    const stillDiverges = new Set<FilterLeaf['field']>();
+    // Attribute ONLY from single-field probes (a bare leaf, or a `not:`-wrapped leaf). A
+    // combinator probe mixes fields and cannot say which one dissented; the leaf probes cover
+    // every allowlisted field on their own, so nothing is lost by skipping them here.
+    const soleField = (f: FilterNode): FilterLeaf['field'] | null =>
+      'field' in f ? f.field : 'not' in f && 'field' in f.not ? f.not.field : null;
+
+    for (const p of PROBES) {
+      const field = soleField(p.filter);
+      if (field === null || !EXCLUDED_FIELDS.has(field)) continue;
+      const admitted = await sqlAdmits(p.filter);
+      for (const row of ROWS) {
+        if (admitted.has(row.id) !== matchesClaimSpecFilter(subj.get(row.id)!, p.filter)) {
+          stillDiverges.add(field);
+        }
+      }
+    }
+    const healed = KNOWN_FIELD_SOURCE_DIVERGENCES.filter((d) => !stillDiverges.has(d.field));
+    expect(
+      healed.map((d) => `${d.field} (${d.workItem})`),
+      'These fields are on the KNOWN_FIELD_SOURCE_DIVERGENCES allowlist but NO LONGER DIVERGE — '
+        + 'someone fixed them. DELETE their entries so the agreement property starts protecting them '
+        + 'again. Leaving a healed entry in place is exactly how a baseline list decays into a hole.',
+    ).toEqual([]);
+  }, 120_000);
+
   it('NO probe x row pair disagrees between the two engines', async () => {
     const subj = await subjects();
     expect(subj.size, 'every seeded row must map through the real projection').toBe(ROWS.length);
 
     const disagreements: string[] = [];
     for (const p of PROBES) {
+      if (touchesExcludedField(p.filter)) continue; // see KNOWN_FIELD_SOURCE_DIVERGENCES
       const admitted = await sqlAdmits(p.filter);
       for (const row of ROWS) {
         const sqlVerdict = admitted.has(row.id);

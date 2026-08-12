@@ -68,6 +68,21 @@ export function planSlugOfWorkItem(item: WorkItem): string | null {
   // `payload.plan_run.templateSlug` FIRST so both evaluators agree on the STABLE
   // template identity for a plan-run item, exactly mirroring the column's write-time
   // derivation above.
+  // WI-38326: the COLUMN itself, now that the projection carries it — FIELD_MAP's FIRST
+  // COALESCE leg, so this is the one ordering that mirrors SQL rather than approximating it.
+  //
+  // Note what this does to the `plan_run` check below: that leg was only ever a PROXY for this
+  // column. WI-5832 could not read `source_plan_slug`, so it reconstructed the value from the
+  // payload the column was WRITTEN from (`planRun?.templateSlug ?? planSlug`). Reading the
+  // column directly subsumes it — and is strictly better, because a row whose column and
+  // payload disagree (a rehome, a hand-edit, a backfill) now resolves the way SQL resolves it
+  // instead of the way the payload predicts it should have been written.
+  //
+  // The proxy STAYS as the next leg, and deleting it would be a regression: the issue-family
+  // projection does not carry this column (the `engineer_issues` view exposes none of the five
+  // — see WI-38326's follow-up), so for those rows `sourcePlanSlug` is undefined and WI-5832's
+  // fix must still govern.
+  if (typeof item.sourcePlanSlug === 'string' && item.sourcePlanSlug) return item.sourcePlanSlug;
   const planRun = record(payload.plan_run);
   if (typeof planRun.templateSlug === 'string' && planRun.templateSlug) return planRun.templateSlug;
   const planItem = record(payload.plan_item ?? payload.planItem);
@@ -86,6 +101,11 @@ export function planSlugOfWorkItem(item: WorkItem): string | null {
  * on exactly the same tag set. Returns `[]` when the item carries no tags.
  */
 export function staticTagsOfWorkItem(item: WorkItem): string[] {
+  // WI-38326: mirror FIELD_MAP's `COALESCE(tags, payload->'tags')` — COLUMN first, payload
+  // second. `item.tags` is undefined for a family whose projection does not carry the column
+  // (issue-family today), which must fall through to the payload leg; a column that is present
+  // but empty is a real answer and does NOT fall through, exactly as COALESCE treats '[]'.
+  if (item.tags != null) return item.tags.filter((t) => typeof t === 'string');
   return strings(record(item.payload).tags);
 }
 
@@ -116,11 +136,39 @@ export function claimSpecSubjectFromWorkItem(item: WorkItem, topicTags: string[]
     tags: [...new Set([...staticTagsOfWorkItem(item), ...topicTags])],
     paths: [...new Set([...strings(payload.paths), ...filePathPaths])],
     plan,
-    planItem: itemId ? [itemId] : strings(payload.source_plan_item_ids),
+    // WI-38326: `plan_item` and `est_cost` below differ from `tags`/`plan` above in a way that
+    // decides the resolution rule. FIELD_MAP gives tags/plan a real `COALESCE(col, payload…)`,
+    // so falling through to payload on a NULL column IS the SQL behaviour. It gives plan_item
+    // (`source_plan_item_ids`) and est_cost (`expected_cost_cents`) a BARE column with no
+    // payload leg — so once the projection carries the column, consulting payload would invent
+    // a match SQL does not make, re-opening this same divergence in the opposite direction.
+    // Hence: projected (not `undefined`) ⇒ the column governs alone, empty included.
+    planItem:
+      item.sourcePlanItemIds !== undefined
+        ? (item.sourcePlanItemIds ?? [])
+        : itemId
+          ? [itemId]
+          : strings(payload.source_plan_item_ids),
     age: Number.isFinite(createdMs) ? createdMs : null,
     riskTier: typeof payload.risk_tier === 'string' ? payload.risk_tier : null,
-    redundancy: finiteNumber(payload.redundancy),
-    estCost: finiteNumber(payload.est_cost ?? payload.expected_cost_cents),
+    // WI-38326: `COALESCE(redundancy, 1)`. The default is the whole fix for this field, not a
+    // tidy-up: the column is NULL on 25,698 of 25,698 live rows and `payload.redundancy` is
+    // populated on NONE, so SQL answered 1 for every row while JS answered null for every row —
+    // making `redundancy = 1` admit ALL on one path and NONE on the other. Defaulting here
+    // agrees with SQL on every row whose column is NULL, which is currently all of them, and
+    // matches the claim FLOORS (`redundancy IS NULL OR redundancy <= 1`).
+    // The `1` is COALESCE's, so it applies to a projected-but-NULL column WITHOUT consulting
+    // payload (SQL never does); the payload leg survives only for an unprojected family.
+    redundancy:
+      item.redundancy !== undefined
+        ? (item.redundancy ?? 1)
+        : (finiteNumber(payload.redundancy) ?? 1),
+    // WI-38326: bare `expected_cost_cents` column — see the plan_item note above for why a
+    // projected column must not fall through to payload.
+    estCost:
+      item.expectedCostCents !== undefined
+        ? item.expectedCostCents
+        : finiteNumber(payload.est_cost ?? payload.expected_cost_cents),
     assignee: item.assignee,
     // WI-6675 / WI-6674: read the TYPED accessor first. `WorkItem.severity` is already
     // mapped from the issue relation by work-items.ts (`severity: i.severity`), so taking

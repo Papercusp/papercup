@@ -239,6 +239,26 @@ export interface WorkItem {
    * (`get-next.ts`) reads the same column, so the two admission paths cannot diverge.
    */
   goalId: string | null;
+  /**
+   * WI-38326 — the five CLAIM-SPEC filter fields the SQL compiler reads as COLUMNS
+   * (get-next.ts FIELD_MAP: `tags`, `plan`, `plan_item`, `redundancy`, `est_cost`).
+   *
+   * OPTIONAL on purpose, and the reason is not style. Making any of these required would
+   * strand every hand-built `WorkItem` literal in the suite — the exact break
+   * EI-20088447516583546 recorded when `goalId` went in as required ahead of its projection
+   * (a COMMITTED tsc red). Optional also gives the resolution below its correct semantics:
+   * `undefined` means "this family's projection does not carry the column", which must fall
+   * back to the payload leg, whereas `null` means "the column is present and NULL".
+   *
+   * Feature-family only today. The `engineer_issues` VIEW exposes none of these five, so
+   * `issueToWorkItem` leaves them undefined and the payload fallback still governs there —
+   * see WI-38326's issue-family follow-up (needs a view migration, as `goal_id` needed 790).
+   */
+  tags?: string[] | null;
+  sourcePlanSlug?: string | null;
+  sourcePlanItemIds?: string[] | null;
+  redundancy?: number | null;
+  expectedCostCents?: number | null;
   /** Parent work-item id (a chunk's parent, D-004). */
   parent: string | null;
   payload: unknown | null;
@@ -550,6 +570,17 @@ export interface FeatureRowDb {
   /** WI-37711 — the goal this item was filed under (migration 785). Already exposed by the
    *  `harness_features_consolidated` view, so this needed no migration of its own. */
   goal_id: string | null;
+  // WI-38326 — the five claim-spec filter columns. All already exist on the base table
+  // (`tags` jsonb, `source_plan_slug` text, `source_plan_item_ids` text[], `redundancy` integer,
+  // `expected_cost_cents` bigint), so this needed no migration. `expected_cost_cents` is typed
+  // `number | string` deliberately: postgres-js hands a bigint back as a STRING, the same trap
+  // `coerceGithubUserId` exists for — a `number`-only type here would compile while silently
+  // comparing a string at runtime.
+  tags: unknown;
+  source_plan_slug: string | null;
+  source_plan_item_ids: string[] | null;
+  redundancy: number | string | null;
+  expected_cost_cents: number | string | null;
 }
 export function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
   const externalBlockers = readExternalBlockers(r.payload);
@@ -580,6 +611,17 @@ export function featureRowToWorkItem(r: FeatureRowDb): WorkItem {
     // harness_features_consolidated view (so this half needed no migration; only the
     // engineer_issues view did, migration 790).
     goalId: r.goal_id ?? null,
+    // WI-38326 — carry the five claim-spec filter columns onto the mapped shape so the JS
+    // evaluator resolves them from the SAME logical source the SQL compiler filters on.
+    // `tags` is jsonb: postgres-js parses it to a real array, but a hand-seeded row can hold a
+    // scalar or object, so narrow to string[] rather than trusting the column's shape.
+    tags: Array.isArray(r.tags) ? r.tags.filter((t): t is string => typeof t === 'string') : null,
+    sourcePlanSlug: r.source_plan_slug ?? null,
+    sourcePlanItemIds: Array.isArray(r.source_plan_item_ids) ? r.source_plan_item_ids : null,
+    // Numeric columns arrive as strings from postgres-js when the underlying type is bigint
+    // (`expected_cost_cents`), so coerce both rather than typing the runtime problem away.
+    redundancy: coerceFiniteNumber(r.redundancy),
+    expectedCostCents: coerceFiniteNumber(r.expected_cost_cents),
     parent: r.parent_id,
     payload: r.payload ?? null,
     ...(externalBlockers.length ? { externalBlockers } : {}),
@@ -611,11 +653,29 @@ function coerceGithubUserId(raw: number | string | null | undefined): number | n
   return Number.isFinite(n) ? n : null;
 }
 
+/** WI-38326 — same bigint-as-string coercion as above, for the numeric claim-spec filter
+ *  columns (`redundancy` integer, `expected_cost_cents` bigint). Kept separate from
+ *  `coerceGithubUserId` only because that one's name states a subject it no longer shares. */
+function coerceFiniteNumber(raw: number | string | null | undefined): number | null {
+  if (raw == null) return null;
+  const n = typeof raw === 'string' ? Number(raw) : raw;
+  return Number.isFinite(n) ? n : null;
+}
+
+// WI-38326: `tags, source_plan_slug, source_plan_item_ids, redundancy, expected_cost_cents` are
+// selected for the CLAIM-SPEC evaluator, not for display. The SQL compiler (get-next.ts FIELD_MAP)
+// filters on these five as COLUMNS; until they were projected here, `featureRowToWorkItem` could not
+// see them and `claimSpecSubjectFromWorkItem` was left reading a payload-only fallback — so one spec
+// admitted a row on the SQL path and refused it on the JS path (124 of 1600 probe x row verdict pairs
+// disagreed; `redundancy` on 100% of rows). Keep this list and FIELD_MAP's column legs in step: a
+// field the SQL side filters on by column and this projection omits is, by construction, invisible to
+// the JS evaluator. Guarded by claim-spec-evaluator-parity.integration.test.ts.
 export const FEATURE_COLS = `feature_id, item_kind, harness_slug, title, summary, status, taken_by,
   taken_at, last_progress_at,
   parent_id, payload, assignee_rank, rank_writer, rank_updated_at, feature_order, created_ts, updated_ts,
   origin, audit_verdict, verified_author_github_user_id, terminal_owner, terminal_completion_ref,
-  authority, closed_ts, goal_id`;
+  authority, closed_ts, goal_id,
+  tags, source_plan_slug, source_plan_item_ids, redundancy, expected_cost_cents`;
 
 // ── Reads ─────────────────────────────────────────────────────────────────────────
 export interface ListWorkItemsFilter {
