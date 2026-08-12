@@ -1886,11 +1886,7 @@ export function classifyLiveHostActivity(meta: any, { now, idleThresholdMs }?: {
 }): {
     state: string;
     lastActivityAt: number | null;
-    idleMs: null;
-} | {
-    state: string;
-    lastActivityAt: number;
-    idleMs: number;
+    idleMs: number | null;
 };
 /**
  * The bootstrap-su POST body that mints the NEW tracked row + native id for a
