@@ -96,7 +96,17 @@ import { buildCapacityReport } from '../../fleet/capacity-dispatch';
 import { readBeeProviderAvailability } from './capacity';
 import type { FleetBriefDelta } from '../../fleet-brief-delta';
 import { computeMemberIdleVerdict, summariseIdleCauses } from '../../fleet-member-idle-verdict';
+import type { MemberIdleCause } from '../../fleet-member-idle-verdict';
 import { computePoolReservation } from '../../fleet-pool-reservation';
+import { trimToByteBudget } from '../_bound-output';
+
+// EI-20226510994156306: a 50-member leader brief previously serialized ~66KB
+// before the transport's own result cap. Keep the detailed, verbose rows small;
+// the compact memberVerdicts index below preserves every member id + verdict so
+// a leader can still identify who needs a targeted follow-up after transport
+// trimming.
+const LEADER_BRIEF_MEMBER_DETAIL_BUDGET = 8_000;
+const LEADER_BRIEF_RESERVATION_DETAIL_BUDGET = 3_500;
 
 export interface LeaderBriefMember {
   agentId: string;
@@ -198,6 +208,32 @@ export interface LeaderBriefMember {
    *  get_next is productive). See computeSpinningAlert. */
   spinning?: true;
   isSelf?: true;
+}
+
+export interface LeaderBriefMemberVerdict {
+  agentId: string;
+  verdict: MemberVerdict | null;
+  idleCause: MemberIdleCause;
+}
+
+/**
+ * EI-20226510994156306: retain the complete member identity/verdict index even
+ * when the verbose `members` rows must be bounded for the MCP/ptool transport.
+ * This is deliberately pure and compact: the leader can use the ids to issue a
+ * narrow follow-up instead of treating a truncated full-tier fetch as a failure.
+ */
+export function compactLeaderBriefMemberVerdicts(
+  members: ReadonlyArray<{
+    agentId: string;
+    verdict: MemberVerdict | null;
+    idleVerdict: { cause: MemberIdleCause };
+  }>,
+): LeaderBriefMemberVerdict[] {
+  return members.map(({ agentId, verdict, idleVerdict }) => ({
+    agentId,
+    verdict,
+    idleCause: idleVerdict.cause,
+  }));
 }
 
 /**
@@ -2413,6 +2449,24 @@ export default defineTool({
       membersWithVerdict.map((m) => ({ agentId: m.agentId, idleCause: m.idleVerdict.cause })),
       { factor: poolCapacity?.factor ?? null, queueDepth: poolCapacity?.queueDepth ?? null },
     );
+    const memberVerdicts = compactLeaderBriefMemberVerdicts(membersWithVerdict);
+    const boundedMembers = trimToByteBudget(membersWithVerdict, LEADER_BRIEF_MEMBER_DETAIL_BUDGET);
+    const boundedReservationMembers = trimToByteBudget(
+      reservation.members,
+      LEADER_BRIEF_RESERVATION_DETAIL_BUDGET,
+    );
+    const reservationForResponse = {
+      ...reservation,
+      members: boundedReservationMembers.kept,
+      ...(boundedReservationMembers.truncated
+        ? {
+            membersTruncated: true,
+            membersReturned: boundedReservationMembers.kept.length,
+            membersHint:
+              'Reservation details are bounded for transport; use memberVerdicts for the complete member index.',
+          }
+        : {}),
+    };
     // P-022 / D-011: the wake-to-wake delta. Every field above this line is point-in-time,
     // which is what made "what changed since my last wake" a hand-reconstruction from
     // checkpoint prose. Boundary is REPORTED, never implied, and an axis with no baseline
@@ -2492,8 +2546,20 @@ export default defineTool({
         // P-024: included only when the pool is actually scarce. Under a healthy pool the plan
         // is "recommend nothing", and rendering that every wake would be one more always-present
         // block a leader learns to skip past.
-        ...(reservation.scarcity.scarce ? { reservation } : {}),
-        members: membersWithVerdict,
+        ...(reservation.scarcity.scarce ? { reservation: reservationForResponse } : {}),
+        // EI-20226510994156306: this compact index is intentionally complete even when the
+        // verbose member rows below are bounded. It is the stable recovery surface for a
+        // 50-member fleet: every id + verdict remains available without a full-tier fetch.
+        memberVerdicts,
+        members: boundedMembers.kept,
+        ...(boundedMembers.truncated
+          ? {
+              membersTruncated: true,
+              membersReturned: boundedMembers.kept.length,
+              membersHint:
+                'Verbose member rows are bounded for transport; use memberVerdicts for all ids/verdicts and narrow fleet:assignments { agent } for detail.',
+            }
+          : {}),
         ...(unownedCriticals.length > 0 ? { unownedCriticals } : {}),
         ...(unownedCriticalsFederated.length > 0
           ? {

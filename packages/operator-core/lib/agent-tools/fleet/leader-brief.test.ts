@@ -16,6 +16,7 @@ import {
   computeSpecAuthorshipAlert,
   computeSpinningAlert,
   computeStrandedFleetAlert,
+  compactLeaderBriefMemberVerdicts,
   decorateComposedParkedOn,
   FALSIFIER_FORBIDDEN_TOOLS,
   projectMember,
@@ -161,6 +162,23 @@ describe('selectLeaderBriefMembers (EI-11840)', () => {
     expect(census.counted).toBe(1);
     expect(census.withheld).toBe(0);
     expect(census.population).toContain('p2p-git');
+  });
+});
+
+describe('compactLeaderBriefMemberVerdicts (EI-20226510994156306)', () => {
+  it('keeps every member id and verdict available for a large-fleet recovery read', () => {
+    const members = Array.from({ length: 50 }, (_, i) => ({
+      agentId: `su-${i}`,
+      verdict: i % 2 === 0 ? ('monitoring' as const) : ('speaking' as const),
+      idleVerdict: { cause: i % 2 === 0 ? ('genuinely-idle' as const) : ('working' as const) },
+    }));
+
+    const index = compactLeaderBriefMemberVerdicts(members);
+
+    expect(index).toHaveLength(50);
+    expect(index[0]).toEqual({ agentId: 'su-0', verdict: 'monitoring', idleCause: 'genuinely-idle' });
+    expect(index[49]).toEqual({ agentId: 'su-49', verdict: 'speaking', idleCause: 'working' });
+    expect(new Set(index.map((row) => row.agentId)).size).toBe(50);
   });
 });
 
