@@ -856,6 +856,7 @@ async function lsofSeesOpenFile(path: string): Promise<boolean | null> {
   return await new Promise<boolean | null>((resolve) => {
     let settled = false;
     let stdout = '';
+    let timer: ReturnType<typeof setTimeout>;
     const finish = (value: boolean | null): void => {
       if (settled) return;
       settled = true;
@@ -868,7 +869,7 @@ async function lsofSeesOpenFile(path: string): Promise<boolean | null> {
     });
     child.once('error', () => finish(null));
     child.once('close', (code) => finish(code === 0 && stdout.trim().length > 0));
-    const timer = setTimeout(() => {
+    timer = setTimeout(() => {
       child.kill('SIGTERM');
       finish(null);
     }, 1000);
@@ -912,9 +913,10 @@ export async function scavengeStaleTempPacks(
   const packDir = join(gitDir, 'objects', 'pack');
   const removed: string[] = [];
   let bytesReclaimed = 0;
+  const nowMs = now();
 
   for (const entry of entries) {
-    if (entry.mtimeMs > now() - staleMs || entry.mtimeMs > now()) continue;
+    if (entry.mtimeMs > nowMs - staleMs || entry.mtimeMs > nowMs) continue;
     const path = join(packDir, entry.name);
     try {
       if (await tempPackHasReferences(gitDir, entry)) continue;
@@ -1574,6 +1576,15 @@ async function reconcileAndPushOneRepo(
     );
   }
 
+  const stale = await scavengeStaleTempPacks(runGit, repoPath, o.log, {
+    staleMs: o.staleTempPackMs,
+    isOpen: o.isTempPackOpen,
+  });
+  if (stale.removed.length > 0) {
+    o.log(
+      `[git-sync] ${repoPath}: stale tmp_pack cleanup; pruned ${stale.removed.length} unopened unreferenced file(s), reclaimed ${stale.bytesReclaimed} bytes`,
+    );
+  }
   const tempPacksBeforeFetch = await listTempPackFiles(runGit, repoPath);
   const fetch = await runGit(['fetch', remote, branch], repoPath);
   if (fetch.code !== 0) {
@@ -1748,6 +1759,8 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
     deletionGuard,
     readText,
     log,
+    staleTempPackMs: opts.staleTempPackMs ?? STALE_TEMP_PACK_MS,
+    isTempPackOpen: opts.isTempPackOpen,
   };
 
   const repo = opts.repoPath ?? (await projectDirForSlug(slug));

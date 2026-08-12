@@ -24,6 +24,8 @@ import {
   isIndexLockFailure,
   isTransientStatFailure,
   clearStaleIndexLock,
+  scavengeStaleTempPacks,
+  STALE_TEMP_PACK_MS,
   GIT_SYNC_BOT_EMAIL,
   GIT_SYNC_BOT_NAME,
   type RunGit,
@@ -465,6 +467,69 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(logs).toContain(
       `[git-sync] ${repo}: failed fetch cleanup; pruned 1 newly-created unreferenced tmp_pack file(s), reclaimed ${reclaimedBytes} bytes`,
     );
+  });
+
+  it('EI-20224214315801764: pre-fetch scavenger removes only old unopened unreferenced tmp_pack leftovers', async () => {
+    const packDir = join(repo, '.git', 'objects', 'pack');
+    mkdirSync(packDir, { recursive: true });
+    const now = Date.now();
+    const staleTmpPack = join(packDir, 'tmp_pack_crash-left');
+    const freshTmpPack = join(packDir, 'tmp_pack_live-fetch');
+    const openTmpPack = join(packDir, 'tmp_pack_open-by-fetch');
+    const referencedTmpPack = join(packDir, 'tmp_pack_has-index');
+    const directoryTmpPack = join(packDir, 'tmp_pack_directory');
+    writeFileSync(staleTmpPack, Buffer.alloc(4096, 1));
+    writeFileSync(freshTmpPack, Buffer.alloc(4096, 2));
+    writeFileSync(openTmpPack, Buffer.alloc(4096, 3));
+    writeFileSync(referencedTmpPack, Buffer.alloc(4096, 4));
+    writeFileSync(`${referencedTmpPack}.idx`, 'index sidecar');
+    mkdirSync(directoryTmpPack);
+    const oldSeconds = (now - 10 * 60_000) / 1000;
+    for (const path of [staleTmpPack, openTmpPack, referencedTmpPack]) utimesSync(path, oldSeconds, oldSeconds);
+    const logs: string[] = [];
+
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      config: cfg,
+      staleTempPackMs: 60_000,
+      isTempPackOpen: async (path) => path === openTmpPack,
+      log: (message) => logs.push(message),
+    });
+
+    expect(out.status).toBe('nothing');
+    expect(existsSync(staleTmpPack)).toBe(false);
+    expect(existsSync(freshTmpPack)).toBe(true); // below the age floor
+    expect(existsSync(openTmpPack)).toBe(true); // open-state proof is required
+    expect(existsSync(referencedTmpPack)).toBe(true); // the index sidecar is a reference
+    expect(existsSync(directoryTmpPack)).toBe(true); // regular-file proof is required
+    expect(logs).toContain(
+      `[git-sync] ${repo}: stale tmp_pack cleanup; pruned 1 unopened unreferenced file(s), reclaimed 4096 bytes`,
+    );
+  });
+
+  it('stale tmp_pack scavenger fails closed when open-state is unknown', async () => {
+    const packDir = join(repo, '.git', 'objects', 'pack');
+    mkdirSync(packDir, { recursive: true });
+    const staleTmpPack = join(packDir, 'tmp_pack_unknown-open-state');
+    writeFileSync(staleTmpPack, Buffer.alloc(32, 5));
+    const oldSeconds = (Date.now() - STALE_TEMP_PACK_MS - 60_000) / 1000;
+    utimesSync(staleTmpPack, oldSeconds, oldSeconds);
+
+    const realRunGit: RunGit = async (args, cwd) => {
+      const result = spawnSync('git', args, { cwd, encoding: 'utf8' });
+      return {
+        code: result.status ?? -1,
+        stdout: String(result.stdout ?? ''),
+        stderr: String(result.stderr ?? ''),
+      };
+    };
+    const out = await scavengeStaleTempPacks(realRunGit, repo, () => {}, {
+      staleMs: 60_000,
+      isOpen: async () => null,
+    });
+
+    expect(out).toEqual({ removed: [], bytesReclaimed: 0 });
+    expect(existsSync(staleTmpPack)).toBe(true);
   });
 
   it('on a divergent conflict: aborts to a CLEAN tree and reports conflicted files', async () => {
