@@ -693,6 +693,7 @@ export function buildFailureWarning(
   rejected: readonly { tool: string }[],
   uncertain: readonly { tool: string }[],
   stranded: readonly string[] = [],
+  inFlight: readonly { tool: string }[] = [],
 ): Record<string, string> {
   const countBy = (ms: readonly { tool: string }[]): Record<string, number> => {
     const by: Record<string, number> = {};
@@ -709,10 +710,10 @@ export function buildFailureWarning(
   // What actually LANDED = dispatched, minus everything that threw. (Subtract per-tool, so
   // the tally names the tools that really took effect — not the one that was rejected.)
   const landedBy = countBy(planned);
-  for (const m of [...rejected, ...uncertain]) {
+  for (const m of [...rejected, ...uncertain, ...inFlight]) {
     if (landedBy[m.tool]) landedBy[m.tool] -= 1;
   }
-  const landedCount = Math.max(planned.length - rejected.length - uncertain.length, 0);
+  const landedCount = Math.max(planned.length - rejected.length - uncertain.length - inFlight.length, 0);
 
   // Nothing took effect and nothing is in doubt: say so plainly. This is the case the old
   // warning got backwards, and the case an agent hits most.
@@ -744,6 +745,11 @@ export function buildFailureWarning(
   if (uncertain.length > 0) {
     parts.push(
       `${uncertain.length} threw mid-flight and MAY have landed (${tally(uncertain)})`,
+    );
+  }
+  if (inFlight.length > 0) {
+    parts.push(
+      `${inFlight.length} still IN FLIGHT when the script returned (${tally(inFlight)}) and may settle later`,
     );
   }
   const suffix =
@@ -854,29 +860,63 @@ export function shapeMutationEcho(
     };
   }
 
-  const { plannedMutations, okFalseMutations, rejectedMutations, uncertainMutations, ...rest } = result;
+  const { plannedMutations, writeAttempts, okFalseMutations, rejectedMutations, uncertainMutations, ...rest } = result;
   // Defensive: fixture results built by hand (tests predating this field) omit it entirely.
   const okFalseMutationsList = okFalseMutations ?? [];
   const rejected = rejectedMutations ?? [];
   const uncertain = uncertainMutations ?? [];
+  const attempts = writeAttempts ?? [];
+  const settledAttempts = attempts.filter((a) => a.disposition === 'settled');
+  const inFlightAttempts = attempts.filter((a) => a.disposition === 'in_flight');
+  const semanticRejectedAttempts = attempts.filter((a) => a.disposition === 'semantic_rejected');
   // EI-10951: `mutations.count` must count what LANDED, not what was dispatched — a
   // rejected call wrote nothing and reporting it as a mutation is the same lie as the
   // warning below. (A throw mid-flight stays counted: it may well have landed.)
   const landedByTool: Record<string, number> = {};
-  for (const m of plannedMutations) landedByTool[m.tool] = (landedByTool[m.tool] ?? 0) + 1;
-  for (const m of rejected) {
-    const n = (landedByTool[m.tool] ?? 0) - 1;
-    if (n > 0) landedByTool[m.tool] = n;
-    else delete landedByTool[m.tool];
+  const landedSource = attempts.length > 0 ? settledAttempts : plannedMutations;
+  for (const m of landedSource) landedByTool[m.tool] = (landedByTool[m.tool] ?? 0) + 1;
+  if (attempts.length === 0) {
+    for (const m of rejected) {
+      const n = (landedByTool[m.tool] ?? 0) - 1;
+      if (n > 0) landedByTool[m.tool] = n;
+      else delete landedByTool[m.tool];
+    }
   }
-  const landedCount = Math.max(plannedMutations.length - rejected.length, 0);
+  const landedCount = attempts.length > 0
+    ? settledAttempts.length
+    : Math.max(plannedMutations.length - rejected.length, 0);
+  const settledPrefixCount = attempts.findIndex((a) => a.disposition !== 'settled');
+  const dispositionIndexes = attempts.length > 0
+    ? Object.fromEntries(
+        ['settled', 'in_flight', 'semantic_rejected', 'rejected', 'uncertain']
+          .map((disposition) => [
+            disposition,
+            attempts.filter((a) => a.disposition === disposition).map((a) => a.index),
+          ])
+          .filter(([, indexes]) => (indexes as number[]).length > 0),
+      )
+    : undefined;
   return {
     ...rest,
     mutations: {
       count: landedCount,
       byTool: landedByTool,
       ...(rejected.length > 0 ? { rejectedCount: rejected.length, rejected } : {}),
-      note: 'effect:write calls executed; per-call args omitted to keep the result bounded — re-run with dryRun:true to preview them',
+      ...(attempts.length > 0
+        ? {
+            attemptedCount: attempts.length,
+            settledPrefixCount: settledPrefixCount === -1 ? attempts.length : settledPrefixCount,
+            dispositions: dispositionIndexes,
+            ...(inFlightAttempts.length > 0 ? { inFlightCount: inFlightAttempts.length } : {}),
+            ...(semanticRejectedAttempts.length > 0
+              ? { semanticRejectedCount: semanticRejectedAttempts.length }
+              : {}),
+          }
+        : {}),
+      note:
+        attempts.length > 0
+          ? 'count includes only write calls that settled successfully before code:run returned; disposition indexes are zero-based dispatch order and in_flight calls require verification before retry'
+          : 'effect:write calls executed; per-call args omitted to keep the result bounded — re-run with dryRun:true to preview them',
     },
     // EI-7174: a script_timeout (or any other ok:false — a thrown error, a worker crash) does
     // NOT undo write-effect calls the script already dispatched before the failure — dispatch()
@@ -894,7 +934,15 @@ export function shapeMutationEcho(
     // nothing (safe to re-run); `uncertain` = threw mid-flight and MAY have landed — the
     // only set that still earns the loud double-write warning.
     ...(!result.ok
-      ? buildFailureWarning(plannedMutations, rejected, uncertain, result.strandedWrites ?? [])
+      ? buildFailureWarning(
+          attempts.length > 0
+            ? attempts.filter((attempt) => attempt.disposition !== 'semantic_rejected')
+            : plannedMutations,
+          rejected,
+          uncertain,
+          result.strandedWrites ?? [],
+          inFlightAttempts,
+        )
       : {}),
     // EI-7669: a write-effect call can dispatch fine (no throw) yet report its OWN semantic
     // rejection (ok: false in its result body — e.g. work_items:set_state's completion-integrity

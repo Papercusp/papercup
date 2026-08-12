@@ -700,6 +700,35 @@ describe('code:run → mutation echo shaping (WI-1377)', () => {
     expect(shaped.warning).toEqual(expect.stringContaining('double-write'));
   });
 
+  it('timeout accounting reports the exact settled prefix and never labels an in-flight write as landed', () => {
+    const shaped = shapeMutationEcho({
+      ok: false,
+      error: 'script_timeout after 30000ms',
+      logs: [],
+      dryRun: false,
+      plannedMutations: [
+        { tool: 'coord:send', args: { to: ['agent-1'] } },
+        { tool: 'coord:send', args: { to: ['agent-2'] } },
+      ],
+      writeAttempts: [
+        { index: 0, tool: 'coord:send', disposition: 'settled' },
+        { index: 1, tool: 'coord:send', disposition: 'in_flight' },
+      ],
+    }) as Record<string, unknown>;
+
+    expect(shaped.mutations).toMatchObject({
+      count: 1,
+      byTool: { 'coord:send': 1 },
+      attemptedCount: 2,
+      settledPrefixCount: 1,
+      inFlightCount: 1,
+      dispositions: { settled: [0], in_flight: [1] },
+    });
+    expect(shaped.warning).toEqual(expect.stringContaining('1 write-effect call(s) already executed'));
+    expect(shaped.warning).toEqual(expect.stringContaining('1 still IN FLIGHT'));
+    expect(shaped.warning).toEqual(expect.stringContaining('may settle later'));
+  });
+
   it('ok:false with NO mutations dispatched carries no warning (nothing to guard against)', () => {
     const shaped = shapeMutationEcho({
       ok: false,
