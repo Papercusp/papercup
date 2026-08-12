@@ -79,6 +79,37 @@ describe('ensure-omp-su', () => {
     expect(readFileSync(wrapper, 'utf8')).toBe('#!/usr/bin/env bash\necho stale\n');
   });
 
+  it('installs the coord hook companion module when the phase-1 writer leaves bootstrap files absent', async () => {
+    const repoRoot = join(tmpHome, 'source');
+    const operatorApp = join(repoRoot, 'apps', 'operator');
+    const ompDir = join(operatorApp, 'scripts', 'hooks', 'omp');
+    mkdirSync(ompDir, { recursive: true });
+    writeFileSync(join(operatorApp, 'scripts', 'install-standalone-mcp.sh'), '#!/usr/bin/env bash\n');
+    writeFileSync(
+      join(ompDir, 'coord-hook.ts'),
+      "import { stashAdvisory } from './non-preempting-delivery';\nexport { stashAdvisory };\n",
+    );
+    writeFileSync(join(ompDir, 'non-preempting-delivery.ts'), 'export const stashAdvisory = () => {};\n');
+
+    const previousRepoRoot = process.env.PAPERCUSP_REPO_ROOT;
+    process.env.PAPERCUSP_REPO_ROOT = repoRoot;
+    try {
+      const mod = await import('./ensure-omp-su');
+      await mod.ensureOmpSuInstalled();
+
+      const installedRoot = join(tmpHome, '.papercusp');
+      expect(readFileSync(join(installedRoot, 'papercusp-coord.ts'), 'utf8')).toContain(
+        'non-preempting-delivery',
+      );
+      expect(readFileSync(join(installedRoot, 'non-preempting-delivery.ts'), 'utf8')).toContain(
+        'stashAdvisory',
+      );
+    } finally {
+      if (previousRepoRoot === undefined) delete process.env.PAPERCUSP_REPO_ROOT;
+      else process.env.PAPERCUSP_REPO_ROOT = previousRepoRoot;
+    }
+  });
+
   it('falls back to ~/.local/bin for the wrapper dir when omp is not on PATH (P-080 non-shell scan)', async () => {
     rmSync(fakeOmp); // no omp anywhere on the pinned PATH
     const mod = await import('./ensure-omp-su');

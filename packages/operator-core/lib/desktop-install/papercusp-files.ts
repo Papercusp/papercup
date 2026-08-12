@@ -210,6 +210,23 @@ async function ensureSecret(filePath: string, mint: () => string): Promise<{ val
   return { value, minted: true };
 }
 
+async function copyOmpFile(src: string, dst: string): Promise<boolean> {
+  try {
+    const data = await fs.readFile(src);
+    // OMP can load these files while another psu launch refreshes them. Keep
+    // the established temp-file + rename atomicity so a companion bundle is
+    // never observed as a torn source file.
+    const tmp = `${dst}.psu-install.${process.pid}.tmp`;
+    await fs.writeFile(tmp, data, { mode: 0o644 });
+    await fs.chmod(tmp, 0o644);
+    await fs.rename(tmp, dst);
+    return true;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return false;
+    throw e;
+  }
+}
+
 const LOCAL_OMP_IMPORT_RE =
   /\bfrom\s+['"](\.[^'"]+)['"]|\bimport\s+['"](\.[^'"]+)['"]|\bimport\s*\(\s*['"](\.[^'"]+)['"]\s*\)/g;
 
@@ -316,7 +333,7 @@ export async function installOmpHookBundle(opts: {
   const installed: string[] = [];
   for (const file of sourceFiles) {
     const destinationName = file === opts.entryFile ? destinationEntry : file;
-    if (await copyIfExists(path.join(opts.sourceDir, file), path.join(opts.destinationDir, destinationName))) {
+    if (await copyOmpFile(path.join(opts.sourceDir, file), path.join(opts.destinationDir, destinationName))) {
       installed.push(destinationName);
     }
   }

@@ -686,6 +686,29 @@ describe('installPapercuspFiles', () => {
     );
     expect(leftovers).toEqual([]);
   });
+
+  it('EI-20228871846415832: renamed coord entry installs its relative OMP companions', async () => {
+    const ompDir = path.join(tmpAppRoot, 'scripts', 'hooks', 'omp');
+    await fs.writeFile(
+      path.join(ompDir, 'coord-hook.ts'),
+      "import { stashAdvisory } from './non-preempting-delivery';\nexport { stashAdvisory };\n",
+    );
+    await fs.writeFile(
+      path.join(ompDir, 'non-preempting-delivery.ts'),
+      'export const stashAdvisory = () => {};\n',
+    );
+
+    const result = await installPapercuspFiles({ home: tmpHome, operatorAppRoot: tmpAppRoot });
+    const installRoot = path.join(tmpHome, '.papercusp');
+
+    expect(result.extensionWritten).toBe(true);
+    expect(await fs.readFile(path.join(installRoot, 'papercusp-coord.ts'), 'utf8')).toContain(
+      'non-preempting-delivery',
+    );
+    expect(await fs.readFile(path.join(installRoot, 'non-preempting-delivery.ts'), 'utf8')).toContain(
+      'stashAdvisory',
+    );
+  });
 });
 
 describe('renderSuPlaybook (psu-only-launch-unification P-011)', () => {

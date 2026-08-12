@@ -21,7 +21,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import * as path from 'node:path';
 
-import { installInjectionHooks } from './papercusp-files';
+import { installInjectionHooks, installOmpHookBundle } from './papercusp-files';
 import { INSTALLED_FROM_BASENAME, readInstallStamp } from './install-provenance';
 
 let root: string;
@@ -93,6 +93,47 @@ describe('installInjectionHooks — install provenance', () => {
 
     expect(stamp!.sourceDir).toBe(path.join(srcRoot, 'omp'));
     expect(stamp!.files).toEqual(['inject-hook.ts']);
+  });
+
+  it('installs relative OMP companions beside the injection importer and clears the load check', async () => {
+    await makeSources();
+    const ompSource = path.join(srcRoot, 'omp');
+    await fs.writeFile(
+      path.join(ompSource, 'inject-hook.ts'),
+      "import { stashAdvisory } from './non-preempting-delivery';\nexport { stashAdvisory };\n",
+    );
+    await fs.writeFile(path.join(ompSource, 'non-preempting-delivery.ts'), 'export const stashAdvisory = () => {};\n');
+
+    const installed = await installInjectionHooks(home, injectSrc);
+
+    expect(installed).toContain(path.join('omp', 'inject-hook.ts'));
+    expect(installed).toContain(path.join('omp', 'non-preempting-delivery.ts'));
+    expect(await fs.readFile(path.join(ompDest(), 'non-preempting-delivery.ts'), 'utf8')).toContain('stashAdvisory');
+    expect((await readInstallStamp(ompDest()))!.files).toEqual(
+      expect.arrayContaining(['inject-hook.ts', 'non-preempting-delivery.ts']),
+    );
+  });
+
+  it('reports an unresolved relative OMP import through the installer-side detector', async () => {
+    const ompSource = path.join(srcRoot, 'omp');
+    const destination = path.join(home, 'omp-dest');
+    await fs.mkdir(ompSource, { recursive: true });
+    await fs.writeFile(
+      path.join(ompSource, 'coord-hook.ts'),
+      "import './missing-companion';\nexport default {};\n",
+    );
+    const error = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    const result = await installOmpHookBundle({
+      sourceDir: ompSource,
+      entryFile: 'coord-hook.ts',
+      destinationDir: destination,
+      destinationEntry: 'papercusp-coord.ts',
+    });
+
+    expect(result.installed).toEqual(['papercusp-coord.ts']);
+    expect(result.unresolved).toEqual(['papercusp-coord.ts -> ./missing-companion']);
+    expect(error).toHaveBeenCalledWith(expect.stringContaining('OMP hook bundle load check FAILED'));
   });
 
   it('logs one greppable line naming hooks/inject and inject-hook', async () => {
