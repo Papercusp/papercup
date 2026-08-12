@@ -17,7 +17,7 @@
  * TaskRow + an injected probe function, no PG, no subprocess.
  */
 import { describe, it, expect } from 'vitest';
-import { diagnoseFromLedger, terminalStatusFromLedger } from './bash_output';
+import { confirmedAliveStopAdvice, diagnoseFromLedger, terminalStatusFromLedger } from './bash_output';
 import type { TaskRow } from '../../task-manager/types';
 
 function fakeRow(overrides: Partial<TaskRow> = {}): TaskRow {
@@ -39,6 +39,13 @@ function fakeRow(overrides: Partial<TaskRow> = {}): TaskRow {
 }
 
 describe('diagnoseFromLedger (EI-18759519171684432)', () => {
+  it('gives processes:kill the taskId-only handle, not the diagnostic systemd scope', () => {
+    expect(confirmedAliveStopAdvice()).toBe(
+      'To stop it, use processes:kill with the taskId below — never a bare kill.',
+    );
+    expect(confirmedAliveStopAdvice()).not.toContain('scopeUnit');
+  });
+
   it('reports no_ledger_row when no matching ledger row exists (job predates the ledger, or the write raced)', () => {
     expect(diagnoseFromLedger(null)).toEqual({ kind: 'no_ledger_row' });
   });

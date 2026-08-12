@@ -176,6 +176,14 @@ export type LedgerLivenessVerdict =
   | { kind: 'ledger_inconclusive' };
 
 /**
+ * `processes:kill` addresses a durable task by taskId. The systemd scope is
+ * diagnostic metadata returned by bash_output, not an accepted kill argument.
+ */
+export function confirmedAliveStopAdvice(): string {
+  return 'To stop it, use processes:kill with the taskId below — never a bare kill.';
+}
+
+/**
  * Explain a ledger-confirmed stranded job without overstating what confinement
  * guarantees. A `systemd-run --scope` payload is outside the operator service's
  * cgroup, but the `systemd-run` monitor remains the operator's child. A routine
@@ -513,7 +521,7 @@ export default defineTool({
                     'STILL RUNNING — verified just now via a process-identity re-probe against the durable task ' +
                     'ledger (immune to PID reuse), not a guess. Do NOT re-run capability:bash — that would start a ' +
                     `SECOND concurrent job and double the load. ${growthAdvice}${readPathAdvice}. To stop ` +
-                    'it, use processes:kill with the taskId/scopeUnit below — never a bare kill.',
+                    confirmedAliveStopAdvice(),
                   pid: ledgerVerdict.pid,
                   scope_unit: ledgerVerdict.scopeUnit,
                   task_id: ledgerVerdict.taskId,
