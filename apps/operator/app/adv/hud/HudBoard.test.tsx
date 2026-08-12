@@ -224,6 +224,68 @@ describe('HudBoard — sessions transcript search', () => {
       expect(queryByTestId('hud-session-search-status')).toBeNull();
     });
 
+    /* WI-37912. The server over-fetches a candidate pool, filters machine turns
+       out of it, then cuts to the page — but a boilerplate-heavy query can empty
+       the pool before the page fills (measured live: `loop wake` 16/30 with 74
+       hidden). The route's header accepts that short page ONLY because it is
+       disclosed, and for a while nothing rendered the disclosure: the field
+       reached the wire and stopped there. These pin the client half. */
+    describe('the owner-visibility filter discloses what it removed', () => {
+      it('reports hidden machine turns even when the slow pass added no sessions', () => {
+        // The case the old render condition missed entirely: transcriptExtra 0
+        // suppressed the whole status span, so a page that was 2/3 filtered
+        // showed nothing at all.
+        const { getByTestId } = renderBoard([entry()], {
+          onSessionQuery: vi.fn(),
+          sessionQuery: 'loop wake',
+          searchActive: true,
+          sessionSearching: false,
+          transcriptExtra: 0,
+          hiddenMachineHits: { count: 74, truncatedByLimit: false },
+        });
+        expect(getByTestId('hud-session-search-hidden').textContent).toBe('74 hidden');
+      });
+
+      // `truncatedByLimit` means the count was taken over a CAPPED pool, so it
+      // is a floor. Rendering it bare would present a bounded measurement as a
+      // total — the misread the marker exists to prevent.
+      it('marks a capped count as a FLOOR rather than a total', () => {
+        const { getByTestId } = renderBoard([entry()], {
+          onSessionQuery: vi.fn(),
+          sessionQuery: 'loop wake',
+          searchActive: true,
+          sessionSearching: false,
+          transcriptExtra: 3,
+          hiddenMachineHits: { count: 72, truncatedByLimit: true },
+        });
+        expect(getByTestId('hud-session-search-hidden').textContent).toBe(' · 72+ hidden');
+        expect(getByTestId('hud-session-search-status').textContent).toContain('+3 transcripts');
+      });
+
+      it('says nothing when the filter removed nothing, and never while still busy', () => {
+        const { queryByTestId, rerender, props } = renderBoard([entry()], {
+          onSessionQuery: vi.fn(),
+          sessionQuery: 'loop wake',
+          searchActive: true,
+          sessionSearching: false,
+          transcriptExtra: 0,
+          hiddenMachineHits: { count: 0, truncatedByLimit: false },
+        });
+        expect(queryByTestId('hud-session-search-hidden')).toBeNull();
+        expect(queryByTestId('hud-session-search-status')).toBeNull();
+        // A count that arrives mid-flight describes the PREVIOUS page; showing
+        // it beside a spinner would attribute it to the query being typed.
+        rerender(
+          <HudBoard
+            {...props}
+            sessionSearching
+            hiddenMachineHits={{ count: 74, truncatedByLimit: true }}
+          />,
+        );
+        expect(queryByTestId('hud-session-search-hidden')).toBeNull();
+      });
+    });
+
     // A board that is about to fill must not read as a final "no matches" —
     // that is the same misread as the empty-roster one above, one state later.
     /* Owner ask 2026-08-02, with a screenshot: a search for "harrier" returned

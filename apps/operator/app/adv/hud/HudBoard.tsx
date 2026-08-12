@@ -117,6 +117,8 @@ export interface HudBoardProps {
   /** How many sessions the transcript pass added BEYOND the instant matches —
    *  what waiting actually bought you. `null` = it has not answered yet. */
   transcriptExtra?: number | null;
+  /** WI-37912 — what the owner-visibility filter removed from this page. */
+  hiddenMachineHits?: { count: number; truncatedByLimit: boolean } | null;
   /**
    * Slot rendered at the right edge of the board header, before the
    * su-only toggle — the "+ New session" launch control
@@ -422,6 +424,7 @@ export default function HudBoard({
   searchActive = false,
   sessionSearching = false,
   transcriptExtra = null,
+  hiddenMachineHits = null,
   tab,
   onSelectTab,
   entityView,
@@ -536,7 +539,10 @@ export default function HudBoard({
 
                  It rides in HudSearchBox's `status` slot so it stays INSIDE the
                  control's wrap, exactly where it rendered before the extraction. */
-              searchActive && (sessionSearching || (transcriptExtra ?? 0) > 0) ? (
+              searchActive &&
+              (sessionSearching ||
+                (transcriptExtra ?? 0) > 0 ||
+                (hiddenMachineHits?.count ?? 0) > 0) ? (
                 <span
                   className={`hud__search-status${sessionSearching ? ' hud__search-status--busy' : ''}`}
                   data-testid="hud-session-search-status"
@@ -544,7 +550,35 @@ export default function HudBoard({
                 >
                   {sessionSearching
                     ? 'transcripts…'
-                    : `+${transcriptExtra} transcript${transcriptExtra === 1 ? '' : 's'}`}
+                    : (transcriptExtra ?? 0) > 0
+                      ? `+${transcriptExtra} transcript${transcriptExtra === 1 ? '' : 's'}`
+                      : null}
+                  {/* WI-37912 — the page can come back SHORT because the
+                      owner-visibility filter emptied the candidate pool before
+                      the page filled (`loop wake` measured 16/30 with 74
+                      hidden). The route discloses that; until this chip nothing
+                      rendered it, so the user saw an unexplained short page and
+                      had no way to tell "few matches" from "mostly filtered".
+
+                      The trailing `+` is not decoration: `truncatedByLimit`
+                      means the count was taken over a CAPPED pool, so it is a
+                      floor. Rendering it bare would present a bounded
+                      measurement as a total — the exact misread the route's own
+                      boundedness marker exists to prevent. */}
+                  {!sessionSearching && (hiddenMachineHits?.count ?? 0) > 0 ? (
+                    <span
+                      className="hud__search-status-hidden"
+                      data-testid="hud-session-search-hidden"
+                      title={
+                        `${hiddenMachineHits!.count}${hiddenMachineHits!.truncatedByLimit ? ' or more' : ''} matching turns are machine-authored ` +
+                        `(hook output, wake prompts, tool traces) and are not part of the owner's conversation, so they are not shown.`
+                      }
+                    >
+                      {(transcriptExtra ?? 0) > 0 ? ' · ' : ''}
+                      {hiddenMachineHits!.count}
+                      {hiddenMachineHits!.truncatedByLimit ? '+' : ''} hidden
+                    </span>
+                  ) : null}
                 </span>
               ) : null
             }

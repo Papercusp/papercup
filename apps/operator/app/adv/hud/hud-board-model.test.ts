@@ -1210,6 +1210,46 @@ describe('fetchTranscriptSearch', () => {
     expect(r.hits.get('su-aaa')?.more).toBe(0);
   });
 
+  /* WI-37912 — the client half of the owner-visibility disclosure. The route
+     emits `hiddenMachineHits` on every 200; nothing parsed it, so a page that
+     came back 2/3 filtered was indistinguishable from a page with few matches. */
+  it('carries the owner-visibility hidden count through to the caller', async () => {
+    const r = await fetchTranscriptSearch('loop wake', {
+      timeoutMs: 1000,
+      fetchImpl: (async () =>
+        ({
+          ok: true,
+          json: async () => ({
+            ok: true,
+            sessions: [session()],
+            hiddenMachineHits: { count: 74, truncatedByLimit: true },
+          }),
+        }) as unknown as Response) as unknown as typeof fetch,
+    });
+    expect(r.ok).toBe(true);
+    if (!r.ok) return;
+    expect(r.hiddenMachineHits).toEqual({ count: 74, truncatedByLimit: true });
+  });
+
+  /* An OLDER server predating the field must degrade to "nothing hidden" — a
+     missing disclosure, never a fabricated count on a page that was never
+     filtered. Same for a malformed/negative body: it is not evidence. */
+  it('degrades a missing or malformed hidden count to zero rather than guessing', async () => {
+    for (const bad of [undefined, null, {}, { count: -3 }, { count: 'lots' }]) {
+      const r = await fetchTranscriptSearch('theory', {
+        timeoutMs: 1000,
+        fetchImpl: (async () =>
+          ({
+            ok: true,
+            json: async () => ({ ok: true, sessions: [session()], hiddenMachineHits: bad }),
+          }) as unknown as Response) as unknown as typeof fetch,
+      });
+      expect(r.ok).toBe(true);
+      if (!r.ok) return;
+      expect(r.hiddenMachineHits).toEqual({ count: 0, truncatedByLimit: false });
+    }
+  });
+
   it('reports a TIMEOUT as an outcome, not a hang — the whole point of WI-7344', async () => {
     // Before the fix this awaited forever and the "searching transcripts…"
     // chip never cleared.
