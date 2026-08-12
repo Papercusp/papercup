@@ -143,6 +143,12 @@ describe('runRecurrenceEscalation — glue', () => {
     ...over,
   });
 
+  it('WI-9454: requests a per-scope read before grouping recurrence signatures', async () => {
+    const readItems = vi.fn(async () => []);
+    await runRecurrenceEscalation({}, baseDeps({ readItems }));
+    expect(readItems).toHaveBeenCalledWith({ windowPerScope: true });
+  });
+
   it('applies each action through the right edge', async () => {
     const updated: string[] = [];
     const captured: string[] = [];
