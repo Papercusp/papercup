@@ -198,6 +198,22 @@ describe('lintCarrySurfaceProvenance', () => {
       ).toBe('manual-owner-tag');
     });
 
+    it('EI-20234090473445932: does not flag a factual status report for a recorded directive', () => {
+      expect(
+        lintCarrySurfaceProvenance(
+          'Owner directive #9 remains open and was acknowledged, not falsely marked complete.',
+        ),
+      ).toEqual({ flagged: false, matches: [] });
+    });
+
+    it('EI-20234090473445932: does not flag neutral deferred-tool evidence about a directive', () => {
+      expect(
+        lintCarrySurfaceProvenance(
+          'The open owner directive was checked via orders:list; tools:invoke returned count=1 and row id=9.',
+        ),
+      ).toEqual({ flagged: false, matches: [] });
+    });
+
     it('a [turn:…] ref on the same line clears it, exactly like the bracket tag', () => {
       const r = lintCarrySurfaceProvenance(
         'owner directive 1: hold the deploy [turn:bf1881bc@2026-07-14T17:42:41.307Z]',

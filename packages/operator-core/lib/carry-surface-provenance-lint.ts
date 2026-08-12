@@ -204,6 +204,21 @@ const OWNER_ATTRIBUTION_RE =
  */
 const OWNER_DIRECTIVE_NOUN_RE = /\bowner\s+(?:directive|mandate)s?\b/i;
 
+/**
+ * EI-20234090473445932: a status/evidence sentence can mention a recorded owner
+ * directive without asserting that the current writer received owner authority.
+ * Keep this exclusion narrow: a numbered directive whose state is being reported,
+ * or an explicitly checked/listed directive, is factual runtime evidence. An
+ * imperative citation such as "owner directive 1: hold the deploy" still falls
+ * through to OWNER_DIRECTIVE_NOUN_RE and remains a manual-owner-tag warning.
+ */
+const OWNER_DIRECTIVE_STATUS_REFERENCE_RE =
+  /\b(?:owner\s+(?:directive|mandate)s?\s+#?\d+\s+(?:is|are|was|were|remains?|stays?|has\s+been|have\s+been)\s+(?:open|closed|pending|acknowledged|declined|resolved|completed|recorded)|(?:the\s+)?(?:open|closed|pending|current|existing|recorded)\s+owner\s+(?:directive|mandate)s?\b(?=[^.\n]*(?:is|are|was|were|remains?|stays?|checked|listed|returned|acknowledged|declined|resolved|completed|recorded|status|orders:list|tools:invoke)\b))/i;
+
+function isOwnerDirectiveStatusReference(line: string): boolean {
+  return OWNER_DIRECTIVE_STATUS_REFERENCE_RE.test(line);
+}
+
 /** Mirrors OWNER_TAG_MENTION_CONTEXT_RE's mention-vs-use distinction for the bracket
  *  tag, generalized to the noun phrase: a nearby word that reads as DOCUMENTING the
  *  convention ("never manufacture an owner directive", "the term owner directive")
@@ -406,6 +421,9 @@ export function lintCarrySurfaceProvenance(text: string | null | undefined): Pro
       continue;
     }
     if (OWNER_DIRECTIVE_NOUN_RE.test(line)) {
+      // EI-20234090473445932: factual status/runtime evidence about a recorded
+      // directive is not an assertion of owner authority by the current writer.
+      if (isOwnerDirectiveStatusReference(line)) continue;
       // EI-19393929983792049: same mention-vs-use split as the bracket tag above,
       // generalized to the noun phrase.
       if (isOwnerDirectiveNounQuotedForm(line)) continue; // definite quoting — never flag
