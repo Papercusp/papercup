@@ -801,6 +801,21 @@ describe('pc-heavy.sh — coalescing (EI-18685262961418231)', () => {
       expect(second.stderr).not.toContain('coalesced:'); // busted, not a stale replay
     });
 
+    it('a second edit to an already-dirty tracked file busts the cache even though git status is unchanged', () => {
+      const repo = gitRepo();
+      writeFileSync(join(repo, 'src.txt'), 'committed');
+      commitAll(repo);
+      writeFileSync(join(repo, 'src.txt'), 'dirty-version-one');
+
+      const first = runSync(['bash', '-c', 'cat src.txt'], { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' }, repo);
+      expect(first.stdout).toContain('dirty-version-one');
+      writeFileSync(join(repo, 'src.txt'), 'dirty-version-two');
+
+      const second = runSync(['bash', '-c', 'cat src.txt'], { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' }, repo);
+      expect(second.stderr).not.toContain('coalesced:');
+      expect(second.stdout).toContain('dirty-version-two');
+    });
+
     // EI-19424611266793426. The token used `--untracked-files=no`, so CREATING a file
     // did not move it. That gap is inverted against the error class agents re-run this
     // command to fix: a missing-module / missing-declaration error (TS7016, TS2307) is

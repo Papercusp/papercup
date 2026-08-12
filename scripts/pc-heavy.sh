@@ -582,9 +582,10 @@ if [ "$_coalesce_enabled" = 1 ]; then
   #       mtime+size folded in — covers `<tool> /path/to/script` directly,
   #       INCLUDING a script outside the git tree (e.g. /tmp/genfix.mts,
   #       the exact reported repro — git status can't see that edit at all).
-  #   (b) if cwd is inside a git worktree, one `git status --porcelain=v2
-  #       --branch` call (HEAD + tracked-file changes in one invocation) —
-  #       covers "I edited a repo-tracked file the command exercises".
+  #   (b) if cwd is inside a git worktree, hash `git status --porcelain=v2
+  #       --branch` together with the tracked worktree diff. Status covers HEAD,
+  #       paths, and untracked-file creation; the diff content is load-bearing for
+  #       a SECOND edit to an already-dirty file, whose status row does not change.
   #
   # (b) uses `--untracked-files=all`, NOT the cheaper-looking `=no` it carried
   # until EI-19424611266793426. `=no` made the token blind to file CREATION, and
@@ -624,7 +625,10 @@ if [ "$_coalesce_enabled" = 1 ]; then
       fi
     done
     if command -v git >/dev/null 2>&1; then
-      _git_state=$(git status --porcelain=v2 --branch --untracked-files=all 2>/dev/null)
+      _git_state=$({
+        git status --porcelain=v2 --branch --untracked-files=all 2>/dev/null
+        git diff --no-ext-diff --binary HEAD -- 2>/dev/null
+      } | sha1sum | cut -d' ' -f1)
       [ -n "$_git_state" ] && _tree_token="$_tree_token|$(printf '%s' "$_git_state" | sha1sum | cut -d' ' -f1)"
     fi
   fi
