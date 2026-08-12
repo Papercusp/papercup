@@ -63,19 +63,17 @@ export const CANONICAL_PAPERCUSP_HIVE_INVITE: CanonicalHiveInviteConst | null =
     ? { pubkeyBase64: CANONICAL_PUBKEY_BASE64, inviteSecret: CANONICAL_INVITE_SECRET }
     : null;
 
-/**
- * The TEAM allowlist for the canonical `papercusp` hive — GitHub LOGINS that the
- * owner-signed admission policy admits IN ADDITION to the owner (papercusp-hive-share.ts
- * goSharedHive). This is what makes the dogfood a real SHARED hive: every teammate who
- * installs auto-joins and federates content, while repos stay PRIVATE and non-allowlisted
- * installs are refused (dogfood-silent-canonical-hive-join D-001 / P-007).
+/*
+ * CANONICAL_HIVE_TEAM_ALLOWLIST MOVED OUT (WI-38322, 2026-08-12) → ./canonical-hive-team-allowlist
  *
- * POPULATED (P-007, 2026-06-29) by DERIVING from the live canonical-hive membership — the
- * GitHub identities VERIFIED in the `papercusp` hive (harness_shared.pot_members, binding_status
- * 'verified'): `aviynw` (the owner) + `papercupai` (the org/bot identity, a verified member across
- * all of this workspace's hives). These are the actual team, not guessed. `aviynw` is also auto-
- * merged as the owner in goSharedHive (dedup-safe). To add a NEW teammate: append their GitHub
- * login here. Empty ⇒ only the owner's own devices auto-merge. Logins are matched against each
- * peer's device-attestation-bound GitHub identity (not spoofable).
+ * It cannot live here. This module is client-reachable: papercusp-hive-join.ts imports
+ * CANONICAL_PAPERCUSP_HIVE_INVITE above, and a bundler pulls in the module WHOLE — so the
+ * team's real GitHub logins were being emitted into the client chunk
+ * (papercusp-hive-join-*.js, literally `W=["aviynw","papercupai"]`) and shipped in the
+ * sidecar SPA to everyone who downloaded the app. The allowlist authorises nothing on the
+ * client; admission is decided server-side in goSharedHive. Keeping the two constants in
+ * one file made a server-only secret-ish value ride along with a deliberately-public one.
+ *
+ * DO NOT re-add it here, or re-export it from here — either restores the leak. Server-side
+ * consumers import it directly from './canonical-hive-team-allowlist'.
  */
-export const CANONICAL_HIVE_TEAM_ALLOWLIST: readonly string[] = ['aviynw', 'papercupai'];

@@ -9,8 +9,11 @@ import { tmpdir } from 'node:os';
 // wins over the constant), so they are unaffected.
 vi.mock('./canonical-hive-invite', () => ({
   CANONICAL_PAPERCUSP_HIVE_INVITE: null,
-  CANONICAL_HIVE_TEAM_ALLOWLIST: [],
 }));
+// Team allowlist moved to its own SERVER-ONLY module (WI-38322): co-locating it with the
+// invite shipped the real team GitHub logins into the client bundle. Mocked separately here,
+// still to [], preserving this suite's existing behaviour.
+vi.mock('./canonical-hive-team-allowlist', () => ({ CANONICAL_HIVE_TEAM_ALLOWLIST: [] }));
 
 import {
   bootstrapPapercuspHive,

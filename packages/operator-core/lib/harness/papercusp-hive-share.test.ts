@@ -3,7 +3,11 @@ import { describe, it, expect, vi } from 'vitest';
 // The canonical invite is now COMMITTED (P-003), so goSharedHive's default canonicalSecret
 // returns the BAKED secret. Mock the constant to null here so the gist/random-secret tests
 // keep their pre-activation behaviour; the baked-secret tests pass `canonicalSecret` explicitly.
-vi.mock('./canonical-hive-invite', () => ({ CANONICAL_PAPERCUSP_HIVE_INVITE: null, CANONICAL_HIVE_TEAM_ALLOWLIST: [] }));
+vi.mock('./canonical-hive-invite', () => ({ CANONICAL_PAPERCUSP_HIVE_INVITE: null }));
+// The team allowlist lives in its own SERVER-ONLY module (WI-38322 — keeping it beside the
+// invite leaked the real team GitHub logins into the client bundle). Mock it separately, and
+// still to [], so these tests keep asserting the no-extra-teammates behaviour they always did.
+vi.mock('./canonical-hive-team-allowlist', () => ({ CANONICAL_HIVE_TEAM_ALLOWLIST: [] }));
 
 import {
   adoptSharedHiveIdentity,

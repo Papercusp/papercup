@@ -44,7 +44,7 @@ import {
   type OwnerHiveIdentity,
 } from './papercusp-shared-identity-gist';
 import { bakedCanonicalHiveInvite } from './papercusp-hive-join';
-import { CANONICAL_HIVE_TEAM_ALLOWLIST } from './canonical-hive-invite';
+import { CANONICAL_HIVE_TEAM_ALLOWLIST } from './canonical-hive-team-allowlist';
 
 /** State threaded from the BEFORE hook (adopt) to the AFTER hook (goShared). */
 export interface SharedHiveState {
