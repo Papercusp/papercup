@@ -106,6 +106,11 @@ export default defineTool({
   // consumes an app-pool slot while the independent read waits on the pool,
   // so concurrent dev:pg_query calls can deadlock behind withWorkspace.
   skipWorkspaceTx: true,
+  // EI-20244135937023756: ptool consumes this response as JSON. The generic
+  // result door appends a truncation footer to oversized relation descriptions,
+  // which makes the machine-readable JSON invalid instead of returning a
+  // parseable result that the caller can inspect or project.
+  skipResultDoor: 'programmatic-caller',
   agentRoles: ['operator', 'architect', 'debugger', 'cup', 'mug', 'scoper', 'reviewer', 'validator', 'worker'],
   args: z.object({
     sql: z

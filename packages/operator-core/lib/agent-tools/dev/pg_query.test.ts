@@ -52,6 +52,10 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     expect((pgQueryTool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });
 
+  it('keeps ptool JSON responses parseable when a relation description exceeds the result door', () => {
+    expect((pgQueryTool as unknown as { skipResultDoor?: string }).skipResultDoor).toBe('programmatic-caller');
+  });
+
   it('returns a relation description as structured data for transport-safe shaping', async () => {
     const description = {
       relation: 'harness_shared.tool_invocations',
