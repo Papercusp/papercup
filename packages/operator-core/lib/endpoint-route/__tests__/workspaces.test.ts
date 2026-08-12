@@ -15,6 +15,12 @@ vi.mock('@papercusp/agent-mcp', async (orig) => ({
   ...(await orig<typeof import('@papercusp/agent-mcp')>()),
   dispatchWorkspaceSwitch: vi.fn(async () => {}),
 }));
+vi.mock('../../workspace-registry', async (orig) => ({
+  ...(await orig<typeof import('../../workspace-registry')>()),
+  readRegistry: vi.fn(),
+  workspacesRoot: vi.fn(() => '/tmp/papercusp-workspaces'),
+  writeRegistry: vi.fn(),
+}));
 vi.mock('node:fs', async () => {
   const actual = await vi.importActual<typeof import('node:fs')>('node:fs');
   return {
@@ -23,6 +29,9 @@ vi.mock('node:fs', async () => {
     promises: {
       readFile: vi.fn(),
       writeFile: vi.fn(async () => {}),
+      mkdir: vi.fn(async () => {}),
+      rename: vi.fn(async () => {}),
+      rm: vi.fn(async () => {}),
     },
   };
 });
@@ -30,10 +39,13 @@ vi.mock('../telemetry', () => ({ recordRouteInvocation: vi.fn() }));
 
 import { dispatchWorkspaceSwitch } from '@papercusp/agent-mcp';
 import { promises as fs } from 'node:fs';
+import { readRegistry, writeRegistry } from '../../workspace-registry';
 
 import { registerRoute } from '../define-route';
 import type { RouteDefinition } from '../define-route';
 import type { ZodTypeAny } from 'zod';
+import workspaceRoutes from '../routes/workspaces/index';
+import workspaceById from '../routes/workspaces/by-id';
 import workspaceSwitch from '../routes/workspaces/switch';
 
 type AnyRoute = RouteDefinition<ZodTypeAny | undefined>;
@@ -48,18 +60,27 @@ const post = (body: object) => ({
   body: JSON.stringify(body),
   headers: { 'content-type': 'application/json' },
 });
+const patch = (body: object) => ({
+  method: 'PATCH',
+  body: JSON.stringify(body),
+  headers: { 'content-type': 'application/json' },
+});
+
+const registry = () => ({
+  current: 'ws-old',
+  workspaces: [
+    { id: 'ws-old', name: 'Old', createdAt: 1 },
+    { id: 'ws-new', name: 'New', createdAt: 2 },
+  ],
+});
 
 describe('POST /workspaces/switch — audit6 invariant', () => {
   beforeEach(() => {
     vi.mocked(dispatchWorkspaceSwitch).mockReset().mockResolvedValue(undefined);
+    vi.mocked(readRegistry).mockReset().mockReturnValue(registry());
+    vi.mocked(writeRegistry).mockReset();
     vi.mocked(fs.readFile).mockReset().mockResolvedValue(
-      JSON.stringify({
-        current: 'ws-old',
-        workspaces: [
-          { id: 'ws-old', name: 'Old', createdAt: 1 },
-          { id: 'ws-new', name: 'New', createdAt: 2 },
-        ],
-      }),
+      JSON.stringify(registry()),
     );
     vi.mocked(fs.writeFile).mockReset().mockResolvedValue(undefined);
   });
@@ -71,6 +92,26 @@ describe('POST /workspaces/switch — audit6 invariant', () => {
     await new Promise((r) => setTimeout(r, 5));
     expect(dispatchWorkspaceSwitch).toHaveBeenCalledWith('ws-old');
     expect(dispatchWorkspaceSwitch).not.toHaveBeenCalledWith('ws-new');
+    expect(writeRegistry).toHaveBeenCalledWith(expect.objectContaining({ current: 'ws-new' }));
+    expect(fs.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('workspace creation uses the shared atomic registry writer', async () => {
+    const res = await appWith(workspaceRoutes as AnyRoute[]).request('/workspaces', post({ name: 'Created' }));
+    expect(res.status).toBe(200);
+    expect(writeRegistry).toHaveBeenCalledWith(
+      expect.objectContaining({ current: 'ws-old', workspaces: expect.arrayContaining([expect.objectContaining({ id: 'created' })]) }),
+    );
+    expect(fs.writeFile).not.toHaveBeenCalled();
+  });
+
+  it('workspace rename uses the shared atomic registry writer', async () => {
+    const res = await appWith(workspaceById as AnyRoute[]).request('/workspaces/ws-old', patch({ name: 'Renamed' }));
+    expect(res.status).toBe(200);
+    expect(writeRegistry).toHaveBeenCalledWith(
+      expect.objectContaining({ workspaces: expect.arrayContaining([expect.objectContaining({ id: 'ws-old', name: 'Renamed' })]) }),
+    );
+    expect(fs.writeFile).not.toHaveBeenCalled();
   });
 
   it('alreadyCurrent: dispatchWorkspaceSwitch is NOT called', async () => {
