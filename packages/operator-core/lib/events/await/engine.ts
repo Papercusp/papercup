@@ -214,6 +214,61 @@ export interface EmitResult {
   eventSubscribers?: number;
 }
 
+/**
+ * EI-20079462322478221: a claimable await's payload_filter is intentionally a
+ * conservative snapshot of the member's claim-spec view.  A spec revision is
+ * a control-plane change, however, and must wake the member even when the next
+ * claimable event would not satisfy that old snapshot.  Target the affected
+ * subscribers, atomically consume their one-shot awaits, and enqueue the same
+ * durable delivery path as an ordinary event.
+ *
+ * The wake is only a HINT: scheduler:get_next remains authoritative on resume.
+ * Ordinary work-item emits still evaluate payload_filter normally, so this
+ * escape hatch cannot widen a member's claim path.
+ */
+export async function wakeClaimableAwaitersForSubscribers(input: {
+  subscriberIds: readonly string[];
+  specId?: string | null;
+  revision?: number | null;
+}): Promise<number> {
+  const subscribers = new Set(input.subscriberIds.filter((id) => typeof id === 'string' && id.length > 0));
+  if (subscribers.size === 0) return 0;
+
+  const active = await listActiveAwaitsForKey('work-item:claimable');
+  const candidateIds = active
+    .filter((row) => row.policy === 'wake' && row.once && subscribers.has(row.subscriberId))
+    .map((row) => row.id);
+  if (candidateIds.length === 0) return 0;
+
+  // The row-level claim is atomic, so a real claimable emit racing this control
+  // wake wins one row and the other path simply sees no pending await.
+  const fired = await claimSpecificOnceAwaits(candidateIds, 'claim-spec-revision');
+  if (fired.length === 0) return 0;
+
+  const ref = input.specId
+    ? `${input.specId}${input.revision == null ? '' : `@${input.revision}`}`
+    : 'the updated claim spec';
+  await insertDeliveries({
+    awaits: fired,
+    payload: {
+      reason: 'claim-spec-revision',
+      ...(input.specId ? { specId: input.specId } : {}),
+      ...(input.revision == null ? {} : { revision: input.revision }),
+    },
+    summary: `Claim spec ${ref} changed; re-run scheduler:get_next to re-evaluate the live lane.`,
+    source: 'scheduler:set_claim_spec',
+  });
+
+  // Keep the write path fast, as emitAwaitedEvent does. The durable delivery is
+  // already committed before this kick; a later sweep is the fallback if the
+  // detached pump cannot start immediately.
+  if (autoPumpEnabled) {
+    const ws = activeWorkspaceId();
+    void pumpWakeDeliveries(ws).catch((e) => log(`claim-spec wake pump failed: ${e instanceof Error ? e.message : e}`));
+  }
+  return fired.length;
+}
+
 export async function emitAwaitedEvent(opts: EmitAwaitedEventOpts): Promise<EmitResult> {
   const ws = opts.workspaceId ?? activeWorkspaceId();
 
