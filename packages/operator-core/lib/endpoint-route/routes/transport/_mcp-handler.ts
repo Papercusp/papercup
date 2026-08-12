@@ -100,6 +100,7 @@ import { isLoopbackRequest, isValidSuperuserBearer } from '../../../superuser-to
 import { workspaceForCoordOwner } from '../../../adv-sessions';
 import { activeWorkspaceId } from '../../../workspace-registry';
 import { loopPressure } from '../../../event-loop-lag-monitor';
+import { isEngineeringDocsSentinel } from '../../../agent-tools/_harness-scope';
 import { evaluateAdmission, ADMISSION_CONTROL_ENABLED } from './mcp-admission';
 import {
   classifyAndConsumeFailure,
@@ -1975,10 +1976,22 @@ const handler = createMcpHandler(
                   ? ((args as Record<string, unknown>).harness as string).trim()
                   : '';
               if (argHarness) {
+                // EI-20224778911207159: the engineering docs sentinel names
+                // Papercusp's static framework reference, not a tenant harness.
+                // docs:get/search/outline handlers already resolve it to the
+                // engineering surface and gate it to superusers; do not let the
+                // hive clamp reject the documented workspace-scoped route before
+                // those handlers can run. Keep the exemption tool-specific so a
+                // caller cannot use the literal "engineering" as a general
+                // cross-hive escape.
+                const isEngineeringDocsRead =
+                  isEngineeringDocsSentinel(argHarness) &&
+                  (toolName === 'docs:get' || toolName === 'docs:search' || toolName === 'docs:outline');
                 const escapes =
-                  argHarness === 'all' ||
-                  argHarness === '*' ||
-                  (await potHomeSlugForHarness(spawnRes.ctx.workspaceId, argHarness)) !== scopeHive;
+                  !isEngineeringDocsRead &&
+                  (argHarness === 'all' ||
+                    argHarness === '*' ||
+                    (await potHomeSlugForHarness(spawnRes.ctx.workspaceId, argHarness)) !== scopeHive);
                 if (escapes) {
                   return {
                     isError: true,

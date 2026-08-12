@@ -1203,6 +1203,19 @@ describe('scoped-superuser hive clamp', () => {
     expect(seen.at(-1)?.tool).toBe('gatingtest:scoped');
   });
 
+  it('flag ON: allows docs:get engineering sentinel through the hive clamp', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool(
+      'docs:get',
+      { harness: 'engineering', slugs: ['__gating_matrix_missing__'] },
+      hiveScoped(),
+    );
+    // The handler may return a normal per-slug not-found envelope, but the
+    // transport must not reject the static engineering docs surface as a
+    // foreign hive before docs:get can handle it.
+    expect(textOf(res)).not.toContain('harness_forbidden');
+  });
+
   // P-016/P-014b: confine the workspace-GLOBAL read surfaces per-hive. A `hive`
   // arg naming a DIFFERENT hive is a cross-hive read on ANY tool → rejected;
   // coord:presence's scope:'workspace'|'all' selector widens past the hive →
