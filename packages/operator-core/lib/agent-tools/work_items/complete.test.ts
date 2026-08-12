@@ -1939,6 +1939,24 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(out.addedTests).toBe(true);
     });
 
+    it('coerces array-valued aliases nested under verification before schema validation', () => {
+      const out = coerceCompletionShape({
+        summary: 's',
+        verification: {
+          testsRun: ['67 green', 'vitest'],
+          testResult: ['passed'],
+          filesChanged: 'packages/operator-core/lib/work-items.ts',
+          addedTests: 'true',
+        },
+      }) as { verification: Record<string, unknown> };
+      expect(out.verification).toEqual({
+        testsRun: '67 green; vitest',
+        testResult: 'passed',
+        filesChanged: ['packages/operator-core/lib/work-items.ts'],
+        addedTests: true,
+      });
+    });
+
     it('coerces structured filesChanged entries to their paths', () => {
       const out = coerceCompletionShape({
         summary: 'landed',
