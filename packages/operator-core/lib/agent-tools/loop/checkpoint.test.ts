@@ -100,7 +100,7 @@ vi.mock('../../bounded-timeout', () => ({
 const tool = (await import('./checkpoint')).default;
 // REAL (the carry-note mock above spreads importOriginal) — used to build prior notes
 // through the same renderer the store persists, rather than a drift-prone literal.
-const { mergeCarryRows, CARRY_NOTE_MAX_CHECKS } = await import('../../carry-note');
+const { mergeCarryRows, CARRY_NOTE_MAX_CHECKS, CARRY_ROW_ID_MAX } = await import('../../carry-note');
 
 type Out = { content: { text: string }[]; isError?: boolean };
 const parse = (x: unknown) => (tool.args as { parse: (x: unknown) => unknown }).parse(x);
@@ -584,6 +584,11 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
   });
 
   describe('soft caps are enforced by TRUNCATION, and every trim is reported', () => {
+    it('rejects an overlong row id instead of silently changing its merge identity', () => {
+      expect(() => parse({ did: 'progress', checks: [{ claim: 'c', id: 'x'.repeat(CARRY_ROW_ID_MAX) }] })).not.toThrow();
+      expect(() => parse({ did: 'progress', checks: [{ claim: 'c', id: 'x'.repeat(CARRY_ROW_ID_MAX + 1) }] })).toThrow();
+    });
+
     it('writes the note instead of rejecting it when a check row overruns, and reports the trim', async () => {
       const b = body(await call({ did: 'progress', checks: [{ claim: 'c', recheck: 'x'.repeat(360) }] }));
       expect(b.ok).toBe(true); // the whole note used to be discarded over this

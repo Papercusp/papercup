@@ -60,16 +60,18 @@ import { withBoundedTimeout } from '../../bounded-timeout';
 export const CONTINUATION_READ_BUDGET_MS = 5_000;
 
 /** P-013 — the optional stable row identity, shared by the walls and checks schemas
- *  (their contract is deliberately identical). Out-of-charset input is REPAIRED, not
- *  rejected, by `sanitizeCarryRowId` downstream; the loose `.max()` here is the same
- *  sanity backstop the row text fields use. */
+ *  (their contract is deliberately identical). The 40-character bound is a real
+ *  identity limit: rendered/parser anchors and `sanitizeCarryRowId` use the same
+ *  bound, so accepting a longer id here would silently change the merge key on write.
+ *  Out-of-charset input is still REPAIRED by `sanitizeCarryRowId`; overlong input is
+ *  rejected here before it can become a different identity. */
 const CARRY_ROW_ID_SCHEMA = z
   .string()
-  .max(CARRY_ROW_ID_MAX * CARRY_CAP_HARD_MULTIPLE)
+  .max(CARRY_ROW_ID_MAX)
   .optional()
   .describe(
     "Stable id for this row (e.g. 'gate-green'), independent of wording. Lets you RE-WORD the claim without " +
-      'losing its evidence/age, and is what rowsMode:\'merge\' upserts on. Omitted ⇒ identity is the claim text.',
+      'losing its evidence/age, and is what rowsMode:\'merge\' upserts on. Maximum 40 characters; longer ids are rejected so the identity is never silently changed. Omitted ⇒ identity is the claim text.',
   );
 
 /**
