@@ -3,8 +3,11 @@
  *
  * Pins the caching CONTRACT: a repeat call with the same read-dimensions HITS (readPlanEvents
  * runs once); a coord_event_log write busts it (the DEBOUNCED tag); a limit-only difference
- * SHARES the entry (limit is a presentation bound, not in the key); different since_ts /
+ * SHARES the entry (limit is a presentation bound, not in the key); different plan_slug /
  * workspace never share an entry; the CACHE_LAYER kill-switch disables caching.
+ *
+ * `since_ts` was a read dimension until D-013 R2 deleted the agent-facing parameter
+ * (plan fleet-deltas-leader-primitives-2026-07-10); it is now guarded as ABSENT.
  */
 import { beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { setFlagOverridesForTest } from "@papercusp/flags/test";
@@ -83,9 +86,23 @@ describe("coord:plan-events — cache wiring", () => {
     expect(M.readPlanEvents).toHaveBeenCalledTimes(1);
   });
 
-  it("different since_ts do NOT share an entry (read dimension)", async () => {
+  // D-013 R2 (plan fleet-deltas-leader-primitives-2026-07-10): the agent-facing
+  // `since_ts` was DELETED — measured at 0 uses across 1,548 calls in 7d, so no
+  // caller regressed. It used to be a cache read-dimension; these two guard the
+  // replacement contract so a re-add cannot slip back in unnoticed.
+  it("no longer declares an agent-facing since_ts (D-013 R2)", () => {
+    expect(Object.keys(tool.args.shape)).not.toContain("since_ts");
+  });
+
+  it("a stray since_ts does NOT fragment the cache (it is no longer a read dimension)", async () => {
     await run({ since_ts: "2026-06-23T00:00:00Z" });
     await run({ since_ts: "2026-06-23T01:00:00Z" });
+    expect(M.readPlanEvents).toHaveBeenCalledTimes(1);
+  });
+
+  it("different plan_slug do NOT share an entry (read dimension)", async () => {
+    await run({ plan_slug: "plan-a" });
+    await run({ plan_slug: "plan-b" });
     expect(M.readPlanEvents).toHaveBeenCalledTimes(2);
   });
 
