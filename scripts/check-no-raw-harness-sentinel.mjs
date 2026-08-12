@@ -48,8 +48,9 @@ export const ALLOWLIST = new Set(['scripts/check-no-raw-harness-sentinel.mjs']);
  * can be audited without silently growing the grandfather set. The capability:bash
  * site was subsequently fixed through the canonical resolver, shrinking the
  * pending baseline to 67. The facts:assert site was then fixed through the same
- * resolver, shrinking the pending baseline to 66. A source fingerprint makes a
- * moved or rewritten site fail closed.
+ * resolver, shrinking the pending baseline to 66. The work-items:update plan
+ * stamp sites were then fixed through the same resolver, shrinking it to 63.
+ * A source fingerprint makes a moved or rewritten site fail closed.
  */
 export const BASELINE = new Set([
   "libs/generic/tooldef/src/dispatch-stack.ts:360:predicate:const slug = ctx.harnessSlug?.trim();",
@@ -84,9 +85,6 @@ export const BASELINE = new Set([
   "packages/operator-core/lib/agent-tools/work_items/arm-reversible-work-item.ts:151:fallback:harnessSlug: ctx.harnessSlug ?? prior.harness ?? null,",
   "packages/operator-core/lib/agent-tools/work_items/create.ts:285:identity-field:const createCtx = { ownerId: ident.ownerId, workspaceId: ctx.workspaceId, harnessSlug: ctx.harnessSlug };",
   "packages/operator-core/lib/agent-tools/work_items/create.ts:472:fallback:harness: s.harness ?? ctx.harnessSlug ?? null,",
-  "packages/operator-core/lib/agent-tools/work_items/update.ts:352:fallback:const planHarness = item.harness ?? it.harness ?? ctx.harnessSlug ?? undefined;",
-  "packages/operator-core/lib/agent-tools/work_items/update.ts:444:fallback:...planItemPayloadPatch(it.plan_item, it.harness ?? ctx.harnessSlug ?? undefined),",
-  "packages/operator-core/lib/agent-tools/work_items/update.ts:452:fallback:it.harness ?? ctx.harnessSlug ?? undefined,",
   "packages/operator-core/lib/blueprint-steps/ops/calibration-resolve.ts:55:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
   "packages/operator-core/lib/blueprint-steps/ops/change-ledger-scan.ts:56:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
   "packages/operator-core/lib/blueprint-steps/ops/deferral-interest-refit.ts:58:fallback:const installSlug = ctx.harnessSlug ?? 'op';",

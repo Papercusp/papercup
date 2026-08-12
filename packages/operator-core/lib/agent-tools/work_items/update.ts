@@ -18,6 +18,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { clampText, hardText, softText, LIMITS } from '../limits';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { COORD_ROLES } from '../coordination/roles';
 import { planItemRef, PLAN_ITEM_KIND } from '../../issue-blocks-merge';
 import { updateWorkItem, mergeWorkItemPayload, explainIssueClaimFloors, linkWorkItem } from '../../work-items';
@@ -355,7 +356,7 @@ export default defineTool({
           // EI-20189734665644353: an existing item needs a member-writable plan stamp before
           // a plan-scoped fleet claim spec can admit it. Keep the public update shape aligned
           // with work_items:create { plan_item } and preserve the coverage edge as well.
-          const planHarness = item.harness ?? it.harness ?? ctx.harnessSlug ?? undefined;
+          const planHarness = resolveConcreteHarnessSlug(item.harness ?? it.harness, ctx) ?? undefined;
           const planPatch = planItemPayloadPatch(it.plan_item, planHarness);
           if (Object.keys(planPatch).length > 0) {
             const merged = await mergeWorkItemPayload(it.id, planPatch, { harness: it.harness });
@@ -445,9 +446,10 @@ export default defineTool({
         // forever — WI-3500 (8 placements) + WI-3496 (6) burned 14 spawns on work no single box can
         // finish, and `state=blocked` was the only (coarse, un-re-admittable) mitigation available.
         if (res.reason === 'unsupported_family') {
+          const planHarness = resolveConcreteHarnessSlug(it.harness, ctx) ?? undefined;
           const flagPatch = {
             ...payloadFlagPatch(it),
-            ...planItemPayloadPatch(it.plan_item, it.harness ?? ctx.harnessSlug ?? undefined),
+            ...planItemPayloadPatch(it.plan_item, planHarness),
           };
           if (Object.keys(flagPatch).length > 0) {
             const merged = await mergeWorkItemPayload(it.id, flagPatch, { harness: it.harness });
@@ -455,7 +457,7 @@ export default defineTool({
               await linkPlanItemCoverage(
                 it.id,
                 it.plan_item,
-                it.harness ?? ctx.harnessSlug ?? undefined,
+                planHarness,
                 ident.ownerId,
               );
               // A column edit requested ALONGSIDE the flag genuinely IS pipeline-owned: apply the

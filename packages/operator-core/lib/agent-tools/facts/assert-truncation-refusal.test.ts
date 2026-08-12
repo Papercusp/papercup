@@ -144,6 +144,15 @@ describe('facts:assert — pre-write truncation refusal (EI-18685042986450096)',
     expect(payload.truncated).toMatchObject({ storedChars: FACT_BODY_MAX_CHARS, droppedChars: 400 });
   });
 
+  it('does not default a harness scope to the operator wildcard sentinel', async () => {
+    await assertTool.handler(
+      { scope: 'harness', key: 'k-wildcard-scope', body: 'a scoped fact' } as never,
+      { isSuperuser: true, uiClientId: 'su-test-truncation-refusal', harnessSlug: '*' } as never,
+    );
+    expect(assertFactSpy).toHaveBeenCalledTimes(1);
+    expect(assertFactSpy.mock.calls[0][0]).toMatchObject({ scope: 'harness', scopeRef: null });
+  });
+
   it('the acceptTruncation arg description documents the escape hatch (P-007 regression guard stays visible)', () => {
     const description = assertTool.args.shape.acceptTruncation.description ?? '';
     expect(description).toMatch(/REFUSED/);
