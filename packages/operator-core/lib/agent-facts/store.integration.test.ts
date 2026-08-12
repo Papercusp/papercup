@@ -24,8 +24,10 @@ import {
   retractFact,
   findFactKeyElsewhere,
   foldFacts,
+  renderFactsFold,
   factVersions,
   FACTS_PER_SCOPE_CAP,
+  FACT_PERMANENT_EXPIRY,
   FACT_VOLATILE_MAX_TTL_SEC,
   listLapsedWallFacts,
   listConventionFacts,
@@ -1279,6 +1281,39 @@ describe('P-018 conventions — enforcement round-trip + cross-scope discovery',
   it('a structural convention persists with no floor', async () => {
     const f = await assertFact(conv({ enforcement: { tier: 'structural' } }), db.sql);
     expect(f.enforcement).toEqual({ tier: 'structural' });
+  });
+
+  it('defaults an unbounded convention to infinity and keeps it out of observation-cap eviction', async () => {
+    const permanent = await assertFact(conv(), db.sql);
+    expect(permanent.expiresAt).toBe(FACT_PERMANENT_EXPIRY);
+    expect(renderFactsFold([permanent])).toContain('(permanent');
+    const [stored] = await db.sql<{ expires_at: string }[]>`
+      SELECT expires_at::text
+        FROM harness_shared.agent_facts
+       WHERE workspace_id = ${WS} AND scope = 'workspace' AND key = 'migrations-via-runner'
+         AND superseded_at IS NULL`;
+    expect(stored.expires_at).toBe(FACT_PERMANENT_EXPIRY);
+
+    const bounded = await assertFact(conv({ key: 'bounded-convention', ttlSec: 3600 }), db.sql);
+    expect(bounded.expiresAt).not.toBe(FACT_PERMANENT_EXPIRY);
+
+    for (let i = 0; i < FACTS_PER_SCOPE_CAP + 5; i++) {
+      await assertFact(
+        {
+          scope: 'workspace',
+          key: `ordinary-${i}`,
+          body: `ordinary fact ${i}`,
+          kind: 'conclusion',
+          createdBy: 'su-int',
+          workspaceId: WS,
+          ttlSec: 30 * 86400,
+        },
+        db.sql,
+      );
+    }
+    expect((await listConventionFacts({ workspaceId: WS }, db.sql)).map((f) => f.key)).toEqual(
+      expect.arrayContaining(['migrations-via-runner', 'bounded-convention']),
+    );
   });
 
   it('REFUSES a floorless gate at the STORE, not just the tool layer', async () => {

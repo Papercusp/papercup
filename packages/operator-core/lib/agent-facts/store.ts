@@ -2071,7 +2071,9 @@ export function renderFactsFold(facts: readonly AgentFact[], now: number = Date.
   const lines = facts.map((f) => {
     const scope = f.scopeRef ? `${f.scope}:${f.scopeRef}` : f.scope;
     const aud = f.audienceScope ? ` ⊸${f.audienceScope}` : '';
-    const days = Math.max(0, Math.round((Date.parse(f.expiresAt) - now) / 86_400_000));
+    const expiry = isPermanentFactExpiry(f.expiresAt)
+      ? 'permanent'
+      : `expires ~${Math.max(0, Math.round((Date.parse(f.expiresAt) - now) / 86_400_000))}d`;
     const rendered = renderFactSrc(f);
     const src = rendered ? `, src ${rendered}` : '';
     // P-018: the MODALITY, which this fold previously dropped entirely — so a
@@ -2095,7 +2097,7 @@ export function renderFactsFold(facts: readonly AgentFact[], now: number = Date.
     // judged by its values"). Without it the fold says only "nobody could
     // determine this", which reads as an invitation to go determine it.
     const settles = f.kind === 'undecidable' && f.settledBy ? ` — SETTLED BY: ${f.settledBy}` : '';
-    return `• [${scope}${aud}] ${badge}${snapshot}${f.body}${settles} (expires ~${days}d${src}${cite})`;
+    return `• [${scope}${aud}] ${badge}${snapshot}${f.body}${settles} (${expiry}${src}${cite})`;
   });
   return `### Standing facts (deterministic — assert via facts:assert, retract when stale)\n${lines.join('\n')}`;
 }

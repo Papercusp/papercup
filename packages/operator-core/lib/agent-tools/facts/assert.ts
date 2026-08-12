@@ -1,7 +1,8 @@
 /**
- * facts:assert — upsert a standing fact: a deterministic, scoped, TTL'd
- * CONCLUSION that will be folded VERBATIM into every relevant future brief /
- * dossier / orient until it expires or is retracted
+ * facts:assert — upsert a standing fact: a deterministic, scoped CONCLUSION
+ * that will be folded VERBATIM into every relevant future brief / dossier /
+ * orient until it expires or is retracted. Declared conventions with no
+ * explicit TTL are unbounded; ordinary facts default to 7 days.
  * (queen-memory-hybrid-2026-07-02 L1b; D-001: harness/work_item scopes optional).
  *
  * THE LINE vs the other memory surfaces (put facts HERE, not there):
@@ -128,12 +129,12 @@ export default defineTool({
   name: 'facts:assert',
   capability: 'coord:write',
   description:
-    'Assert (upsert by key) a STANDING FACT — a durable, scoped conclusion folded VERBATIM into every relevant future brief/dossier/orient until it expires (default TTL 7d) or is retracted. Unlike memory:remember (fuzzy semantic recall), a fact is delivered deterministically. Re-asserting the same key refreshes body + TTL.',
+    'Assert (upsert by key) a STANDING FACT — a durable, scoped conclusion folded VERBATIM into every relevant future brief/dossier/orient until it expires (default TTL 7d for ordinary facts; kind:convention with no ttlSec is permanent) or is retracted. Unlike memory:remember (fuzzy semantic recall), a fact is delivered deterministically. Re-asserting the same key refreshes body + TTL.',
   guidance: {
     when:
       'You reached a durable CONCLUSION that should shape future turns — yours or your role\'s: "X is owner-residue, exclude it", "plan Y stalls on Z", "this harness\'s tests need Docker". Scope it as narrowly as true: workspace (global), role (all queens/bees/…), owner (just you), harness, or work_item.',
     notWhen:
-      `Ephemeral status (use coord), in-flight task progress (work_items:checkpoint), long-form knowledge (agent-insights doc), fuzzy background worth semantic recall (memory:remember). Not a dumping ground — ${FACT_BODY_MAX_CHARS}-char cap, per-scope cap ${FACTS_PER_SCOPE_CAP}, TTL mandatory. A fact is not a live measurement: do not pin changing counts or statuses as if they stay current; write the invariant conclusion plus a pointer to the live source/tool and how to remeasure at use time. If you must preserve a moving snapshot, pass subjectVolatile:true with the sample's measuredAt timestamp; the fold will mark it SNAPSHOT and cap its TTL at 15 minutes. If a number is intentionally historical, label it historical.`,
+      `Ephemeral status (use coord), in-flight task progress (work_items:checkpoint), long-form knowledge (agent-insights doc), fuzzy background worth semantic recall (memory:remember). Not a dumping ground — ${FACT_BODY_MAX_CHARS}-char cap, per-scope observation cap ${FACTS_PER_SCOPE_CAP}, and ordinary facts expire by default. Declared conventions are permanent when ttlSec is omitted; pass an explicit ttlSec when a convention should expire. A fact is not a live measurement: do not pin changing counts or statuses as if they stay current; write the invariant conclusion plus a pointer to the live source/tool and how to remeasure at use time. If you must preserve a moving snapshot, pass subjectVolatile:true with the sample's measuredAt timestamp; the fold will mark it SNAPSHOT and cap its TTL at 15 minutes. If a number is intentionally historical, label it historical.`,
     chaining:
       'facts:list { scope } to see what already stands (re-assert refreshes rather than duplicating); facts:retract when a fact stops being true — a stale fact folded verbatim is worse than none.',
     seeAlso: ['facts:retract', 'facts:list', 'memory:remember (fuzzy background instead)'],
@@ -244,7 +245,13 @@ export default defineTool({
       .describe(
         "P-018: HOW this convention is enforced (kind:'convention' only) — 'structural' (impossible to do wrong; no agent decision involved), 'gate' (refused at a chokepoint), or 'detector' (measured, never silently tolerated). gate/detector REQUIRE floor (a rate in (0,1]) + reviewBy: D-016 — \"a detector without a floor is prose exhortation in a costume\". 'structural' takes neither. There is deliberately no 'prompt' tier: a convention carried only by documentation omits this and reads as untiered.",
       ),
-    ttlSec: z.number().int().positive().max(90 * 24 * 3600).optional().describe('TTL seconds (default 7d, max 90d).'),
+    ttlSec: z
+      .number()
+      .int()
+      .positive()
+      .max(90 * 24 * 3600)
+      .optional()
+      .describe('TTL seconds (default 7d for ordinary facts; omitted kind:convention means permanent; max 90d).'),
     shareable: z.boolean().optional().describe('OPT-IN federation egress (F0-2): true = this fact may leave the pot over the substrate. Default false — facts are pot-private.'),
     acceptTruncation: z
       .boolean()
