@@ -4,6 +4,7 @@ vi.mock('../../work-items', () => ({
   searchWorkItems: vi.fn(),
 }));
 
+import { emptyLegs } from '@papercusp/search';
 import { searchWorkItems } from '../../work-items';
 import { mockResolvedOnceTyped } from '../../testing/typed-mock';
 import search, { projectWorkItemSearchMatch, shapeWorkItemsSearch } from './search';
@@ -82,8 +83,11 @@ describe('work_items:search bounded result projection', () => {
   it('returns structured data so the framework can shape the handler result', async () => {
     mockResolvedOnceTyped(searchMock, {
       items: [workItem({ summary: 'summary' })],
-      legs: { degraded: false },
-      applied: {},
+      // emptyLegs() rather than a hand-written `{ degraded: false }`: it is the library's own
+      // typed factory, so this fixture cannot drift when a leg field is added (which is exactly
+      // the strand the `as never` cast used to hide from tsc).
+      legs: emptyLegs(),
+      applied: { minScore: null, recency: false, policyRegistered: false },
     });
 
     const result = (await search.handler({ query: 'summary', semantic: false } as never, {} as never)) as {
