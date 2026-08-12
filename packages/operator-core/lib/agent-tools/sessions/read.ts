@@ -57,6 +57,25 @@ export default defineTool({
       ),
     limit: z.number().int().min(1).max(200).optional().describe('Max turns (default 40). No range args = the session TAIL (or HEAD with order:"asc").'),
   }),
+  // Keep the lossless object available as MCP structuredContent for programmatic
+  // callers (ptool / MCP clients that request `_meta.structured`). The text body
+  // still goes through the ordinary result door for model-facing calls, but a
+  // door-truncated JSON string is not a valid machine-readable response.
+  result: z.object({
+    ok: z.boolean(),
+    session_id: z.string(),
+    note: z.string().optional(),
+    turn_count: z.number().int().nonnegative(),
+    turns: z.array(
+      z.object({
+        turn_idx: z.number().int().nonnegative(),
+        speaker: z.string(),
+        owner: z.string().optional(),
+        ts: z.string().optional(),
+        text: z.string(),
+      }),
+    ),
+  }),
   async handler(args, ctx) {
     if (!(await sessionSearchEnabled())) return disabledResult();
     const workspaceId = ctx.workspaceId ?? '';
