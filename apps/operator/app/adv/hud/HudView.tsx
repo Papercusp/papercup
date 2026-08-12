@@ -63,6 +63,7 @@ import {
   type HudColumnId,
   type HudRosterEntry,
   type HudSearchHit,
+  type HudHiddenMachineHits,
   fetchTranscriptSearch,
 } from './hud-board-model';
 /* WI-37204 — the SAME id parser + field matcher the server's id leg runs
@@ -399,6 +400,11 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
   /** The top transcript match per session — the card excerpt AND the turn the
    *  modal opens on (owner ask 2026-08-02). */
   const [searchHits, setSearchHits] = useState<Map<string, HudSearchHit> | null>(null);
+  /* WI-37912: what the owner-visibility filter removed from the page the server
+     just returned. Null until a transcript pass answers; cleared on every reset
+     and on every failure path alongside `searchHits`, so a stale disclosure can
+     never outlive the results it described. */
+  const [searchHidden, setSearchHidden] = useState<HudHiddenMachineHits | null>(null);
   const [searching, setSearching] = useState(false);
   const [searchError, setSearchError] = useState<string | null>(null);
   const searchSeq = useRef(0);
@@ -441,6 +447,7 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
     if (q.length < 2) {
       setSearchOwners(null);
       setSearchHits(null);
+      setSearchHidden(null);
       setSearchError(null);
       setSearching(false);
       return;
@@ -1020,6 +1027,7 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
         searchActive={rawSessionQuery.trim().length > 0}
         sessionSearching={searching}
         transcriptExtra={transcriptExtra}
+        hiddenMachineHits={searchHidden}
         headerAction={
           <NewSessionLauncher
             onViewSessions={() => void setTab('sessions')}
