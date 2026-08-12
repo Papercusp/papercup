@@ -91,10 +91,15 @@
 #     VERIFY_TAURI_PID / VERIFY_TAURI_PORT / VERIFY_TAURI_DISPLAY exported,
 #     tears down (even on a failing assertion), and exits with the assertion
 #     command's own exit code. Example:
-#       scripts/verify-tauri-headless.sh -- bash -c '
-#         tauri-agent-tools eval --pid "$VERIFY_TAURI_PID" \
-#           "window.__TSR_ROUTER__?.navigate({ to: "/settings/p2p" })"
-#         "$VERIFY_TAURI_POLL" --selector body --text Peer --no-errors'
+#       scripts/verify-tauri-headless.sh -- bash -c "
+#         tauri-agent-tools eval --pid \"\$VERIFY_TAURI_PID\" \
+#           'window.__TSR_ROUTER__?.navigate({ to: \"/settings/p2p\" })'
+#         \"\$VERIFY_TAURI_POLL\" --selector body --text Peer --no-errors
+#       "
+#     The outer double-quoted script deliberately escapes its variables and
+#     keeps the JS expression in single quotes. A nested bash -c with an
+#     unescaped double-quoted JS argument strips the route/selector quotes
+#     before tauri-agent-tools sees them, producing an invalid assertion.
 #     VERIFY_TAURI_POLL retries a data-dependent DOM assertion after navigation
 #     (bounded by VERIFY_TAURI_DOM_TIMEOUT) instead of racing it with a fixed sleep.
 #
