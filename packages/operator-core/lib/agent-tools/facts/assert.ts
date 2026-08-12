@@ -420,7 +420,7 @@ export default defineTool({
       createdBy: identity.ownerId,
       ...(args.shareable !== undefined ? { shareable: args.shareable } : {}),
       ...(potHomeSlug ? { potHomeSlug } : {}),
-    });
+    }, ctx.tx);
     // P-009 / D-011: an ASSUMPTION advances this agent's assumption watermark,
     // which every subsequent tool call is stamped with. `fact.id` is the
     // append-versioned row id P-008(a) made immutable — that immutability is
