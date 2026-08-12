@@ -2,11 +2,12 @@
 /**
  * P-057 (retire-mug-kettle-su-only-2026-08-09) — SECOND METHOD for the lib/pot substrate split.
  *
- * WHY THIS EXISTS. D-047 records a standing requirement: "The census's own methodRisk note
- * (hand-rolled regex walker under-reports) still stands and still requires a second method
- * before any move list is executed." `scripts/measure-pot-substrate-split.mjs` is that regex
- * walker. This script answers the SAME question by a DIFFERENT method — a real TypeScript AST
- * parse — so that a disagreement localises a defect instead of confirming a shared blind spot.
+ * WHY THIS EXISTS. D-047 records a standing requirement for an independent verification method
+ * before any move list is executed. `scripts/measure-pot-substrate-split.mjs` now uses a
+ * TypeScript AST walker; this script answers the SAME question with a separately implemented AST
+ * parse so that a disagreement localises a defect instead of confirming a shared blind spot.
+ * The older primary implementation was a regex walker, and its historical failure modes remain
+ * documented below because they explain the cases this independent check must continue to cover.
  *
  * DEFINITIONS ARE DELIBERATELY IDENTICAL; ONLY THE METHOD DIFFERS. The tier-importer set
  * (D-048/D-049), the isTest predicate, the walk universe and the KEEP predicate
@@ -18,18 +19,17 @@
  * dangerous one (an under-reported importer is a live call site that gets classified MOVE and
  * breaks at runtime):
  *
- *   1. NAMESPACE IMPORTS. measure-pot-substrate-split.mjs:250 takes the non-braced import
- *      clause and tests it against /^[A-Za-z0-9_$]+$/. For `import * as pot from '../pot/wake'`
- *      the clause is `* as pot`, whose first segment is `*` — it fails the test and is dropped,
- *      so EVERY symbol reached as `pot.resolvePotHomeSlug()` contributes zero symbol evidence.
- *      Here: the namespace binding is resolved and every `binding.PROP` access in the file is
- *      credited to PROP.
+ *   1. NAMESPACE IMPORTS. The retired regex implementation took the non-braced import clause
+ *      and tested it against /^[A-Za-z0-9_$]+$/. For `import * as pot from '../pot/wake'` the
+ *      clause is `* as pot`, whose first segment is `*` — it was dropped, so EVERY symbol reached
+ *      as `pot.resolvePotHomeSlug()` contributed zero symbol evidence. Here: the namespace
+ *      binding is resolved and every `binding.PROP` access in the file is credited to PROP.
  *
- *   2. BARE / PACKAGE SPECIFIERS. measure-pot-substrate-split.mjs:147 returns null for any
- *      specifier not starting with '.', so `@papercusp/operator-core/lib/pot/x` is invisible.
- *      That script's own header notes three such importers existed (in gitignored scratch, so
- *      correctly excluded) — but nothing checks whether a TRACKED file does the same.
- *      Here: workspace package names are resolved to directories and bare specifiers land.
+ *   2. BARE / PACKAGE SPECIFIERS. The retired regex implementation returned null for any
+ *      specifier not starting with '.', so `@papercusp/operator-core/lib/pot/x` was invisible.
+ *      The original sample was in gitignored scratch (and was correctly excluded), but nothing
+ *      checked whether a TRACKED file did the same. Here: workspace package names are resolved
+ *      to directories and bare specifiers land.
  *
  *   3. RE-EXPORT CHAINS. `export * from '../pot/x'` and `export { a } from '../pot/x'` in a
  *      barrel re-publish pot symbols to consumers that never name lib/pot. The regex clause
@@ -59,7 +59,7 @@ const censusPath = args.includes('--census')
   : join(REPO, 'docs/pot-substrate-split-census.json');
 const outPath = args.includes('--json') ? resolve(args[args.indexOf('--json') + 1]) : null;
 
-// ── walk — identical universe to the regex census ───────────────────────────
+// ── walk — identical universe to the primary census ─────────────────────────
 function walk(dir, acc = []) {
   let entries;
   try {
@@ -320,7 +320,7 @@ for (const [symbol, defs] of exportsBySymbol) {
   if (live.length) astKeep.set(symbol, { definedIn: [...defs], live });
 }
 
-// ── diff against the regex census ──────────────────────────────────────────
+// ── diff against the primary census ────────────────────────────────────────
 let census = null;
 try {
   census = JSON.parse(readFileSync(censusPath, 'utf8'));
@@ -334,7 +334,7 @@ const astKeepSet = new Set(astKeep.keys());
 const onlyAst = [...astKeepSet].filter((s) => !censusKeep.has(s)).sort();
 const onlyCensus = [...censusKeep].filter((s) => !astKeepSet.has(s)).sort();
 
-console.log('SECOND METHOD (TypeScript AST) vs regex census');
+console.log('INDEPENDENT METHOD (TypeScript AST) vs primary census');
 console.log('='.repeat(72));
 console.log(`census keep:      ${censusKeep.size}`);
 console.log(`AST keep:         ${astKeepSet.size}`);
@@ -352,7 +352,7 @@ console.log(`  KEEP only in census (AST saw no live importer): ${onlyCensus.leng
 for (const s of onlyCensus) console.log(`   - ${s}`);
 
 console.log('');
-console.log('BLIND-SPOT EVIDENCE (forms the regex method cannot credit)');
+console.log('BLIND-SPOT EVIDENCE (historical regex method could not credit)');
 console.log(`  namespace imports of pot modules: ${namespaceEvidence.length}`);
 for (const e of namespaceEvidence.slice(0, 12)) console.log(`     ${e.file}  import * as ${e.binding} from '${e.spec}'`);
 console.log(`  bare-specifier pot imports:       ${bareSpecifierEvidence.length}`);

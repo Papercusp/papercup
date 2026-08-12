@@ -2,18 +2,15 @@
   "generatedBy": "scripts/measure-pot-substrate-split.mjs",
   "planItem": "P-056",
   "plan": "retire-mug-kettle-su-only-2026-08-09",
-  "generatedAt": "2026-08-10T17:25:27.453Z",
+  "generatedAt": "2026-08-12T03:51:28.883Z",
   "method": "Import specifiers are RESOLVED to absolute paths (extensionless + /index aware) and tested for containment in packages/operator-core/lib/pot — not string-matched on \"/pot/\", which both over- and under-matches. KEEP = at least one LIVE (non-test, non-retired-tier) importer outside lib/pot. ⚠ READ THIS BEFORE EXECUTING ANY BUCKET (D-047/D-049): until 2026-08-10 the predicate was \"at least one NON-TEST importer\", which answers IS IT SAFE TO MOVE — not IS IT SUBSTRATE. The two agree on most symbols, so the old keep bucket looked right while quietly counting retired-tier tools as substrate evidence. Importers are now split into `liveImporters` (real evidence) and `tierImporters` (a dead thing referencing another dead thing), and symbols whose ONLY non-test importers are tier land in `keepTierOnly` rather than `keep`.",
   "tierImporterSet": {
     "why": "D-048 ruled the middle-band pot tools tier-vs-container; D-049 established that GATING and CLASSIFICATION are independent, so this set is built on the ruling, not on the gate.",
     "derived": [
-      "packages/operator-core/lib/agent-tools/overwatch/declare_wake.ts",
-      "packages/operator-core/lib/agent-tools/overwatch/start.ts",
       "packages/operator-core/lib/agent-tools/pot/declare_wake.ts",
       "packages/operator-core/lib/agent-tools/pot/mug_efficiency.ts",
       "packages/operator-core/lib/agent-tools/pot/set_steering.ts",
       "packages/operator-core/lib/agent-tools/pot/start.ts",
-      "packages/operator-core/lib/agent-tools/pot/survey.ts",
       "packages/operator-core/lib/agent-tools/pot/wake.ts"
     ],
     "derivedRule": "any non-test file importing _mug-kettle-gate — gated, therefore dead at runtime, therefore tier. Self-maintaining.",
@@ -28,24 +25,24 @@
     }
   },
   "counts": {
-    "potSourceFiles": 30,
-    "exportedSymbols": 350,
-    "keep": 66,
-    "keepTierOnly": 23,
-    "move": 71,
-    "moveNeedsReview": 190,
-    "dynamicallyImportedPotModules": 17,
-    "externalNonTestImporterFiles": 59,
+    "potSourceFiles": 24,
+    "exportedSymbols": 311,
+    "keep": 65,
+    "keepTierOnly": 20,
+    "move": 59,
+    "moveNeedsReview": 167,
+    "dynamicallyImportedPotModules": 13,
+    "externalNonTestImporterFiles": 55,
     "externalTestImporterFiles": 9,
-    "externalNonTestDynamicImporterFiles": 29,
+    "externalNonTestDynamicImporterFiles": 26,
     "externalTestDynamicImporterFiles": 10
   },
-  "methodRisk": "HAND-ROLLED REGEX IMPORT WALKER. A prior dependency audit in this repo (2026-07-20) found exactly this technique UNDER-REPORTS imports — it missed a standard static import and falsely flagged live packages as orphans. Under-reporting is the DANGEROUS direction here: it inflates MOVE, and moving a still-imported symbol breaks the tree. Treat `move` as a CANDIDATE list requiring a second independent method (knip unused-exports, or gitnexus.query call-graph) before P-057 executes it. `keep` is the safe direction — a symbol proven to have an importer is not going to lose one by being measured badly.",
+  "methodRisk": "TYPESCRIPT AST IMPORT/EXPORT WALKER. The previous hand-rolled regex walker under-reported imports — it missed standard static imports, inline type modifiers, and bare/package specifiers — and falsely flagged live packages as orphans. Under-reporting is the DANGEROUS direction here: it inflates MOVE, and moving a still-imported symbol breaks the tree. Treat `move` as a CANDIDATE list requiring the independent AST verifier in scripts/verify-pot-substrate-ast.mjs before P-057 executes it. `keep` is the safe direction — a symbol proven to have an importer is not going to lose one by being measured badly.",
   "selfCheck": {
-    "expectedExternalNonTestImporters": 59,
-    "actual": 59,
+    "expectedExternalNonTestImporters": 55,
+    "actual": 55,
     "matches": true,
-    "note": "Baseline 59 (P-056 recorded 60 → 57 after excluding 3 gitignored scratch importers → 59 once bare/package specifiers resolved, EI-20087329768209149). A mismatch means the tree moved — reconcile BEFORE P-057 executes this list. A MATCH is weak evidence on its own: it compares this method against itself. Run scripts/verify-pot-substrate-ast.mjs for independent confirmation."
+    "note": "Baseline 55 (P-056 recorded 60 → 57 after excluding 3 gitignored scratch importers → 59 once bare/package specifiers resolved, EI-20087329768209149 → 55 after the P-059 retirements landed). A mismatch means the tree moved — reconcile BEFORE P-057 executes this list. A MATCH is weak evidence on its own: it compares this method against itself. Run scripts/verify-pot-substrate-ast.mjs for independent confirmation."
   },
   "keep": [
     {
@@ -205,32 +202,6 @@
       ]
     },
     {
-      "symbol": "CupTranscriptCaps",
-      "definedIn": [
-        "packages/operator-core/lib/pot/cup-transcript-cap.ts"
-      ],
-      "importers": [
-        "packages/operator-core/lib/harness/routines/bee-transcript-cap-action.ts"
-      ],
-      "externalNonTestImporters": 1,
-      "liveImporters": [
-        "packages/operator-core/lib/harness/routines/bee-transcript-cap-action.ts"
-      ]
-    },
-    {
-      "symbol": "CupTranscriptMetrics",
-      "definedIn": [
-        "packages/operator-core/lib/pot/cup-transcript-cap.ts"
-      ],
-      "importers": [
-        "packages/operator-core/lib/harness/routines/bee-transcript-cap-action.ts"
-      ],
-      "externalNonTestImporters": 1,
-      "liveImporters": [
-        "packages/operator-core/lib/harness/routines/bee-transcript-cap-action.ts"
-      ]
-    },
-    {
       "symbol": "cupWakeEfficiency",
       "definedIn": [
         "packages/operator-core/lib/pot/cup-wake-efficiency.ts"
@@ -239,9 +210,6 @@
         "packages/operator-core/lib/pot-eval/live-ops.ts"
       ],
       "externalNonTestImporters": 1,
-      "dynamicImporters": [
-        "packages/operator-core/lib/harness/routines/bee-transcript-cap-action.ts"
-      ],
       "liveImporters": [
         "packages/operator-core/lib/pot-eval/live-ops.ts"
       ]
@@ -255,9 +223,6 @@
         "packages/operator-core/lib/pot-eval/live-ops.ts"
       ],
       "externalNonTestImporters": 1,
-      "dynamicImporters": [
-        "packages/operator-core/lib/harness/routines/bee-transcript-cap-action.ts"
-      ],
       "liveImporters": [
         "packages/operator-core/lib/pot-eval/live-ops.ts"
       ]
@@ -271,9 +236,6 @@
         "packages/operator-core/lib/pot-eval/live-ops.ts"
       ],
       "externalNonTestImporters": 1,
-      "dynamicImporters": [
-        "packages/operator-core/lib/harness/routines/bee-transcript-cap-action.ts"
-      ],
       "liveImporters": [
         "packages/operator-core/lib/pot-eval/live-ops.ts"
       ]
@@ -476,9 +438,9 @@
       "externalNonTestImporters": 4,
       "dynamicImporters": [
         "apps/operator/test/dbos-sweep-glue.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/plans/__tests__/start-auto-flip.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/plans/__tests__/start-guard.test.ts",
         "packages/operator-core/lib/agent-tools/pot/set_steering.test.ts",
-        "packages/operator-core/lib/agent-tools/pot/survey-claim-order-check.test.ts",
-        "packages/operator-core/lib/agent-tools/pot/survey-workspace-scope.test.ts",
         "packages/operator-core/lib/dbos/durable-spawn.ts",
         "packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts",
         "packages/operator-core/lib/dbos/periodic-workflows.ts",
@@ -568,13 +530,11 @@
       ]
     },
     {
-      "symbol": "listStartedPots",
+      "symbol": "listBlenderMaintenanceScopes",
       "definedIn": [
         "packages/operator-core/lib/pot/started.ts"
       ],
       "importers": [
-        "packages/operator-core/lib/dbos/orchestrator-loop.ts",
-        "packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts",
         "packages/operator-core/lib/scout/draft-review-watchdog.ts",
         "packages/operator-core/lib/scout/outcome-refresh-sweep.ts",
         "packages/operator-core/lib/scout/ready-plan-autostart.ts",
@@ -582,12 +542,12 @@
         "packages/operator-core/lib/scout/ungraded-filings-watchdog.test.ts",
         "packages/operator-core/lib/scout/ungraded-filings-watchdog.ts"
       ],
-      "externalNonTestImporters": 6,
+      "externalNonTestImporters": 5,
       "dynamicImporters": [
         "apps/operator/test/dbos-sweep-glue.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/plans/__tests__/start-auto-flip.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/plans/__tests__/start-guard.test.ts",
         "packages/operator-core/lib/agent-tools/pot/set_steering.test.ts",
-        "packages/operator-core/lib/agent-tools/pot/survey-claim-order-check.test.ts",
-        "packages/operator-core/lib/agent-tools/pot/survey-workspace-scope.test.ts",
         "packages/operator-core/lib/dbos/durable-spawn.ts",
         "packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts",
         "packages/operator-core/lib/dbos/periodic-workflows.ts",
@@ -603,12 +563,83 @@
         "packages/operator-core/lib/system-health/compute.ts"
       ],
       "liveImporters": [
-        "packages/operator-core/lib/dbos/orchestrator-loop.ts",
         "packages/operator-core/lib/scout/draft-review-watchdog.ts",
         "packages/operator-core/lib/scout/outcome-refresh-sweep.ts",
         "packages/operator-core/lib/scout/ready-plan-autostart.ts",
         "packages/operator-core/lib/scout/signal-accumulator.ts",
         "packages/operator-core/lib/scout/ungraded-filings-watchdog.ts"
+      ]
+    },
+    {
+      "symbol": "listBlenderMaintenanceWorkspaceIds",
+      "definedIn": [
+        "packages/operator-core/lib/pot/started.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/scout/draft-review-watchdog.ts",
+        "packages/operator-core/lib/scout/outcome-refresh-sweep.ts",
+        "packages/operator-core/lib/scout/signal-accumulator.ts",
+        "packages/operator-core/lib/scout/ungraded-filings-watchdog.test.ts",
+        "packages/operator-core/lib/scout/ungraded-filings-watchdog.ts"
+      ],
+      "externalNonTestImporters": 4,
+      "dynamicImporters": [
+        "apps/operator/test/dbos-sweep-glue.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/plans/__tests__/start-auto-flip.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/plans/__tests__/start-guard.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/set_steering.test.ts",
+        "packages/operator-core/lib/dbos/durable-spawn.ts",
+        "packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts",
+        "packages/operator-core/lib/dbos/periodic-workflows.ts",
+        "packages/operator-core/lib/dbos/routines-workflow.ts",
+        "packages/operator-core/lib/endpoint-route/__tests__/bootstrap-role.test.ts",
+        "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-role.ts",
+        "packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts",
+        "packages/operator-core/lib/fleet/operator-spawn.ts",
+        "packages/operator-core/lib/scout/nudge-recipient.ts",
+        "packages/operator-core/lib/scout/signal-accumulator.test.ts",
+        "packages/operator-core/lib/severe-event-broadcast.ts",
+        "packages/operator-core/lib/sync-resolver/index.ts",
+        "packages/operator-core/lib/system-health/compute.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/scout/draft-review-watchdog.ts",
+        "packages/operator-core/lib/scout/outcome-refresh-sweep.ts",
+        "packages/operator-core/lib/scout/signal-accumulator.ts",
+        "packages/operator-core/lib/scout/ungraded-filings-watchdog.ts"
+      ]
+    },
+    {
+      "symbol": "listStartedPots",
+      "definedIn": [
+        "packages/operator-core/lib/pot/started.ts"
+      ],
+      "importers": [
+        "packages/operator-core/lib/dbos/orchestrator-loop.ts",
+        "packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts"
+      ],
+      "externalNonTestImporters": 1,
+      "dynamicImporters": [
+        "apps/operator/test/dbos-sweep-glue.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/plans/__tests__/start-auto-flip.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/plans/__tests__/start-guard.test.ts",
+        "packages/operator-core/lib/agent-tools/pot/set_steering.test.ts",
+        "packages/operator-core/lib/dbos/durable-spawn.ts",
+        "packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts",
+        "packages/operator-core/lib/dbos/periodic-workflows.ts",
+        "packages/operator-core/lib/dbos/routines-workflow.ts",
+        "packages/operator-core/lib/endpoint-route/__tests__/bootstrap-role.test.ts",
+        "packages/operator-core/lib/endpoint-route/routes/agent-mcp/bootstrap-role.ts",
+        "packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts",
+        "packages/operator-core/lib/fleet/operator-spawn.ts",
+        "packages/operator-core/lib/scout/nudge-recipient.ts",
+        "packages/operator-core/lib/scout/signal-accumulator.test.ts",
+        "packages/operator-core/lib/severe-event-broadcast.ts",
+        "packages/operator-core/lib/sync-resolver/index.ts",
+        "packages/operator-core/lib/system-health/compute.ts"
+      ],
+      "liveImporters": [
+        "packages/operator-core/lib/dbos/orchestrator-loop.ts"
       ]
     },
     {
@@ -652,14 +683,17 @@
       ],
       "importers": [
         "packages/operator-core/lib/agent-tools/_mug-kettle-gate.ts",
-        "packages/operator-core/lib/harness/routines/hive-canary-action.ts"
+        "packages/operator-core/lib/agent-tools/coordination/spawn-child.ts",
+        "packages/operator-core/lib/agent-tools/plans/start.ts",
+        "packages/operator-core/lib/harness/routines/hive-canary-action.ts",
+        "packages/operator-core/lib/scout/ready-plan-autostart.ts"
       ],
-      "externalNonTestImporters": 2,
+      "externalNonTestImporters": 5,
       "dynamicImporters": [
         "apps/operator/test/dbos-sweep-glue.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/plans/__tests__/start-auto-flip.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/plans/__tests__/start-guard.test.ts",
         "packages/operator-core/lib/agent-tools/pot/set_steering.test.ts",
-        "packages/operator-core/lib/agent-tools/pot/survey-claim-order-check.test.ts",
-        "packages/operator-core/lib/agent-tools/pot/survey-workspace-scope.test.ts",
         "packages/operator-core/lib/dbos/durable-spawn.ts",
         "packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts",
         "packages/operator-core/lib/dbos/periodic-workflows.ts",
@@ -676,7 +710,10 @@
       ],
       "liveImporters": [
         "packages/operator-core/lib/agent-tools/_mug-kettle-gate.ts",
-        "packages/operator-core/lib/harness/routines/hive-canary-action.ts"
+        "packages/operator-core/lib/agent-tools/coordination/spawn-child.ts",
+        "packages/operator-core/lib/agent-tools/plans/start.ts",
+        "packages/operator-core/lib/harness/routines/hive-canary-action.ts",
+        "packages/operator-core/lib/scout/ready-plan-autostart.ts"
       ]
     },
     {
@@ -706,16 +743,14 @@
         "packages/operator-core/lib/pot/mug-wake-efficiency.ts"
       ],
       "importers": [
-        "apps/operator-vite/src/components/adv/MugWakeEfficiencyPanel.tsx",
         "packages/operator-core/lib/pot-eval/live-ops.ts"
       ],
-      "externalNonTestImporters": 2,
+      "externalNonTestImporters": 1,
       "dynamicImporters": [
         "packages/operator-core/lib/sync-resolver/index.ts",
         "packages/operator-core/lib/system-health/compute.ts"
       ],
       "liveImporters": [
-        "apps/operator-vite/src/components/adv/MugWakeEfficiencyPanel.tsx",
         "packages/operator-core/lib/pot-eval/live-ops.ts"
       ]
     },
@@ -1275,9 +1310,6 @@
         "packages/operator-core/lib/agent-tools/loop/checkpoint.ts",
         "packages/operator-core/lib/agent-tools/loop/session_audit.ts",
         "packages/operator-core/lib/agent-tools/loop/soak_report.ts",
-        "packages/operator-core/lib/agent-tools/overwatch/declare_wake.ts",
-        "packages/operator-core/lib/agent-tools/overwatch/pause.ts",
-        "packages/operator-core/lib/agent-tools/overwatch/start.ts",
         "packages/operator-core/lib/agent-tools/pot/declare_wake.ts",
         "packages/operator-core/lib/agent-tools/pot/get_steering.ts",
         "packages/operator-core/lib/agent-tools/pot/mug_efficiency.ts",
@@ -1285,14 +1317,13 @@
         "packages/operator-core/lib/agent-tools/pot/set_steering.ts",
         "packages/operator-core/lib/agent-tools/pot/start.ts",
         "packages/operator-core/lib/agent-tools/pot/status.ts",
-        "packages/operator-core/lib/agent-tools/pot/survey.ts",
         "packages/operator-core/lib/agent-tools/pot/wake.ts",
         "packages/operator-core/lib/endpoint-route/routes/operator/hive-steering.ts",
         "packages/operator-core/lib/network-board/build-board.ts",
         "packages/operator-core/lib/overwatch/loop.ts",
         "packages/operator-core/lib/overwatch/snapshot.ts"
       ],
-      "externalNonTestImporters": 20,
+      "externalNonTestImporters": 16,
       "dynamicImporters": [
         "packages/operator-core/lib/agent-tools/loop/arm.test.ts",
         "packages/operator-core/lib/agent-tools/loop/checkpoint.test.ts",
@@ -1309,14 +1340,11 @@
         "packages/operator-core/lib/system-health/liveness-alarm.ts"
       ],
       "tierImporters": [
-        "packages/operator-core/lib/agent-tools/overwatch/declare_wake.ts",
-        "packages/operator-core/lib/agent-tools/overwatch/start.ts",
         "packages/operator-core/lib/agent-tools/pot/declare_wake.ts",
         "packages/operator-core/lib/agent-tools/pot/mug_efficiency.ts",
         "packages/operator-core/lib/agent-tools/pot/set_steering.ts",
         "packages/operator-core/lib/agent-tools/pot/start.ts",
         "packages/operator-core/lib/agent-tools/pot/status.ts",
-        "packages/operator-core/lib/agent-tools/pot/survey.ts",
         "packages/operator-core/lib/agent-tools/pot/wake.ts"
       ],
       "liveImporters": [
@@ -1324,7 +1352,6 @@
         "packages/operator-core/lib/agent-tools/loop/checkpoint.ts",
         "packages/operator-core/lib/agent-tools/loop/session_audit.ts",
         "packages/operator-core/lib/agent-tools/loop/soak_report.ts",
-        "packages/operator-core/lib/agent-tools/overwatch/pause.ts",
         "packages/operator-core/lib/agent-tools/pot/get_steering.ts",
         "packages/operator-core/lib/agent-tools/pot/pause.ts",
         "packages/operator-core/lib/endpoint-route/routes/operator/hive-steering.ts",
@@ -1344,19 +1371,6 @@
       "externalNonTestImporters": 1,
       "liveImporters": [
         "packages/operator-core/lib/goals/stop-fanout.ts"
-      ]
-    },
-    {
-      "symbol": "runCupTranscriptCapSweep",
-      "definedIn": [
-        "packages/operator-core/lib/pot/cup-transcript-cap.ts"
-      ],
-      "importers": [
-        "packages/operator-core/lib/harness/routines/bee-transcript-cap-action.ts"
-      ],
-      "externalNonTestImporters": 1,
-      "liveImporters": [
-        "packages/operator-core/lib/harness/routines/bee-transcript-cap-action.ts"
       ]
     },
     {
@@ -1405,9 +1419,9 @@
       "externalNonTestImporters": 2,
       "dynamicImporters": [
         "apps/operator/test/dbos-sweep-glue.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/plans/__tests__/start-auto-flip.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/plans/__tests__/start-guard.test.ts",
         "packages/operator-core/lib/agent-tools/pot/set_steering.test.ts",
-        "packages/operator-core/lib/agent-tools/pot/survey-claim-order-check.test.ts",
-        "packages/operator-core/lib/agent-tools/pot/survey-workspace-scope.test.ts",
         "packages/operator-core/lib/dbos/durable-spawn.ts",
         "packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts",
         "packages/operator-core/lib/dbos/periodic-workflows.ts",
@@ -1461,16 +1475,12 @@
         "packages/operator-core/lib/pot/survey.ts"
       ],
       "importers": [
-        "packages/operator-core/lib/agent-tools/pot/survey.ts",
         "packages/operator-core/lib/pot-eval/live-ops.ts"
       ],
-      "externalNonTestImporters": 2,
+      "externalNonTestImporters": 1,
       "dynamicImporters": [
         "packages/operator-core/lib/external-bench/hive-backlog-realqueen.ts",
         "packages/operator-core/lib/system-health/compute.ts"
-      ],
-      "tierImporters": [
-        "packages/operator-core/lib/agent-tools/pot/survey.ts"
       ],
       "liveImporters": [
         "packages/operator-core/lib/pot-eval/live-ops.ts"
@@ -1528,9 +1538,9 @@
       "externalNonTestImporters": 1,
       "dynamicImporters": [
         "apps/operator/test/dbos-sweep-glue.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/plans/__tests__/start-auto-flip.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/plans/__tests__/start-guard.test.ts",
         "packages/operator-core/lib/agent-tools/pot/set_steering.test.ts",
-        "packages/operator-core/lib/agent-tools/pot/survey-claim-order-check.test.ts",
-        "packages/operator-core/lib/agent-tools/pot/survey-workspace-scope.test.ts",
         "packages/operator-core/lib/dbos/durable-spawn.ts",
         "packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts",
         "packages/operator-core/lib/dbos/periodic-workflows.ts",
@@ -1690,32 +1700,6 @@
       ]
     },
     {
-      "symbol": "PlacementCandidate",
-      "definedIn": [
-        "packages/operator-core/lib/pot/placement-ranker.ts"
-      ],
-      "importers": [
-        "packages/operator-core/lib/agent-tools/pot/survey.ts"
-      ],
-      "externalNonTestImporters": 1,
-      "tierImporters": [
-        "packages/operator-core/lib/agent-tools/pot/survey.ts"
-      ]
-    },
-    {
-      "symbol": "placementRankerSpec",
-      "definedIn": [
-        "packages/operator-core/lib/pot/placement-ranker.ts"
-      ],
-      "importers": [
-        "packages/operator-core/lib/agent-tools/pot/survey.ts"
-      ],
-      "externalNonTestImporters": 1,
-      "tierImporters": [
-        "packages/operator-core/lib/agent-tools/pot/survey.ts"
-      ]
-    },
-    {
       "symbol": "potWakeFloorSec",
       "definedIn": [
         "packages/operator-core/lib/pot/wake.ts"
@@ -1828,9 +1812,9 @@
       "externalNonTestImporters": 1,
       "dynamicImporters": [
         "apps/operator/test/dbos-sweep-glue.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/plans/__tests__/start-auto-flip.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/plans/__tests__/start-guard.test.ts",
         "packages/operator-core/lib/agent-tools/pot/set_steering.test.ts",
-        "packages/operator-core/lib/agent-tools/pot/survey-claim-order-check.test.ts",
-        "packages/operator-core/lib/agent-tools/pot/survey-workspace-scope.test.ts",
         "packages/operator-core/lib/dbos/durable-spawn.ts",
         "packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts",
         "packages/operator-core/lib/dbos/periodic-workflows.ts",
@@ -1870,23 +1854,6 @@
       ],
       "tierImporters": [
         "packages/operator-core/lib/agent-tools/pot/status.ts"
-      ]
-    },
-    {
-      "symbol": "surveyWorkspace",
-      "definedIn": [
-        "packages/operator-core/lib/pot/survey.ts"
-      ],
-      "importers": [
-        "packages/operator-core/lib/agent-tools/pot/survey.ts"
-      ],
-      "externalNonTestImporters": 1,
-      "dynamicImporters": [
-        "packages/operator-core/lib/external-bench/hive-backlog-realqueen.ts",
-        "packages/operator-core/lib/system-health/compute.ts"
-      ],
-      "tierImporters": [
-        "packages/operator-core/lib/agent-tools/pot/survey.ts"
       ]
     },
     {
@@ -2285,29 +2252,6 @@
       ]
     },
     {
-      "symbol": "carryNoteHead",
-      "definedIn": [
-        "packages/operator-core/lib/pot/mug-brief-launch.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts",
-        "packages/operator-core/lib/sync-resolver/index.ts"
-      ]
-    },
-    {
-      "symbol": "checkCupSpawnHealth",
-      "definedIn": [
-        "packages/operator-core/lib/pot/cup-spawn-health-watchdog.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/dbos/bootstrap.ts"
-      ]
-    },
-    {
       "symbol": "checkpointDeclaresTerminal",
       "definedIn": [
         "packages/operator-core/lib/pot/placement-watchdog.ts"
@@ -2373,42 +2317,6 @@
       "externalNonTestImporters": 0,
       "dynamicImporters": [
         "packages/operator-core/lib/endpoint-route/routes/agent-chats/index.ts"
-      ]
-    },
-    {
-      "symbol": "computeMugBriefFloorView",
-      "definedIn": [
-        "packages/operator-core/lib/pot/mug-brief-launch.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts",
-        "packages/operator-core/lib/sync-resolver/index.ts"
-      ]
-    },
-    {
-      "symbol": "computeMugWakeBrief",
-      "definedIn": [
-        "packages/operator-core/lib/pot/mug-brief-launch.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts",
-        "packages/operator-core/lib/sync-resolver/index.ts"
-      ]
-    },
-    {
-      "symbol": "computePotPlacementSplit",
-      "definedIn": [
-        "packages/operator-core/lib/pot/mug-brief-launch.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts",
-        "packages/operator-core/lib/sync-resolver/index.ts"
       ]
     },
     {
@@ -2548,116 +2456,6 @@
       "externalNonTestImporters": 0,
       "dynamicImporters": [
         "packages/operator-core/lib/endpoint-route/routes/agent-chats/index.ts"
-      ]
-    },
-    {
-      "symbol": "CupSession",
-      "definedIn": [
-        "packages/operator-core/lib/pot/cup-wake-efficiency.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/harness/routines/bee-transcript-cap-action.ts"
-      ]
-    },
-    {
-      "symbol": "CupSpawnHealthResult",
-      "definedIn": [
-        "packages/operator-core/lib/pot/cup-spawn-health-watchdog.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/dbos/bootstrap.ts"
-      ]
-    },
-    {
-      "symbol": "CupSpawnHealthSnapshot",
-      "definedIn": [
-        "packages/operator-core/lib/pot/cup-spawn-health-watchdog.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/dbos/bootstrap.ts"
-      ]
-    },
-    {
-      "symbol": "CupSpawnHealthThresholds",
-      "definedIn": [
-        "packages/operator-core/lib/pot/cup-spawn-health-watchdog.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/dbos/bootstrap.ts"
-      ]
-    },
-    {
-      "symbol": "CupSpawnHealthVerdict",
-      "definedIn": [
-        "packages/operator-core/lib/pot/cup-spawn-health-watchdog.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/dbos/bootstrap.ts"
-      ]
-    },
-    {
-      "symbol": "CupSpawnRecord",
-      "definedIn": [
-        "packages/operator-core/lib/pot/cup-spawn-health-watchdog.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/dbos/bootstrap.ts"
-      ]
-    },
-    {
-      "symbol": "CupWakeEfficiencyDeps",
-      "definedIn": [
-        "packages/operator-core/lib/pot/cup-wake-efficiency.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/harness/routines/bee-transcript-cap-action.ts"
-      ]
-    },
-    {
-      "symbol": "CupWakeSample",
-      "definedIn": [
-        "packages/operator-core/lib/pot/cup-wake-efficiency.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/harness/routines/bee-transcript-cap-action.ts"
-      ]
-    },
-    {
-      "symbol": "CupWakeSampleRow",
-      "definedIn": [
-        "packages/operator-core/lib/pot/cup-wake-efficiency.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/harness/routines/bee-transcript-cap-action.ts"
-      ]
-    },
-    {
-      "symbol": "decideMugWakeMode",
-      "definedIn": [
-        "packages/operator-core/lib/pot/mug-warm-session.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/blueprint/blueprint-run-action.ts"
       ]
     },
     {
@@ -2809,17 +2607,6 @@
       ]
     },
     {
-      "symbol": "EMPTY_CUP_WAKE_EFFICIENCY",
-      "definedIn": [
-        "packages/operator-core/lib/pot/cup-wake-efficiency.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/harness/routines/bee-transcript-cap-action.ts"
-      ]
-    },
-    {
       "symbol": "EMPTY_MUG_WAKE_EFFICIENCY",
       "definedIn": [
         "packages/operator-core/lib/pot/mug-wake-efficiency.ts"
@@ -2841,17 +2628,6 @@
       "dynamicImporters": [
         "packages/operator-core/lib/derived-reads/producers.ts",
         "packages/operator-core/lib/sync-resolver/index.ts"
-      ]
-    },
-    {
-      "symbol": "evaluateCupSpawnHealth",
-      "definedIn": [
-        "packages/operator-core/lib/pot/cup-spawn-health-watchdog.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/dbos/bootstrap.ts"
       ]
     },
     {
@@ -2940,18 +2716,6 @@
       "dynamicImporters": [
         "packages/operator-core/lib/external-bench/hive-backlog-realqueen.ts",
         "packages/operator-core/lib/system-health/compute.ts"
-      ]
-    },
-    {
-      "symbol": "FloorViewFrontierItem",
-      "definedIn": [
-        "packages/operator-core/lib/pot/mug-brief-launch.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts",
-        "packages/operator-core/lib/sync-resolver/index.ts"
       ]
     },
     {
@@ -3045,9 +2809,9 @@
       "externalNonTestImporters": 0,
       "dynamicImporters": [
         "apps/operator/test/dbos-sweep-glue.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/plans/__tests__/start-auto-flip.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/plans/__tests__/start-guard.test.ts",
         "packages/operator-core/lib/agent-tools/pot/set_steering.test.ts",
-        "packages/operator-core/lib/agent-tools/pot/survey-claim-order-check.test.ts",
-        "packages/operator-core/lib/agent-tools/pot/survey-workspace-scope.test.ts",
         "packages/operator-core/lib/dbos/durable-spawn.ts",
         "packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts",
         "packages/operator-core/lib/dbos/periodic-workflows.ts",
@@ -3284,9 +3048,9 @@
       "externalNonTestImporters": 0,
       "dynamicImporters": [
         "apps/operator/test/dbos-sweep-glue.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/plans/__tests__/start-auto-flip.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/plans/__tests__/start-guard.test.ts",
         "packages/operator-core/lib/agent-tools/pot/set_steering.test.ts",
-        "packages/operator-core/lib/agent-tools/pot/survey-claim-order-check.test.ts",
-        "packages/operator-core/lib/agent-tools/pot/survey-workspace-scope.test.ts",
         "packages/operator-core/lib/dbos/durable-spawn.ts",
         "packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts",
         "packages/operator-core/lib/dbos/periodic-workflows.ts",
@@ -3311,9 +3075,9 @@
       "externalNonTestImporters": 0,
       "dynamicImporters": [
         "apps/operator/test/dbos-sweep-glue.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/plans/__tests__/start-auto-flip.integration.test.ts",
+        "packages/operator-core/lib/agent-tools/plans/__tests__/start-guard.test.ts",
         "packages/operator-core/lib/agent-tools/pot/set_steering.test.ts",
-        "packages/operator-core/lib/agent-tools/pot/survey-claim-order-check.test.ts",
-        "packages/operator-core/lib/agent-tools/pot/survey-workspace-scope.test.ts",
         "packages/operator-core/lib/dbos/durable-spawn.ts",
         "packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts",
         "packages/operator-core/lib/dbos/periodic-workflows.ts",
@@ -3348,51 +3112,6 @@
       ]
     },
     {
-      "symbol": "MUG_SESSION_MAX_AGE_MS",
-      "definedIn": [
-        "packages/operator-core/lib/pot/mug-warm-session.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/blueprint/blueprint-run-action.ts"
-      ]
-    },
-    {
-      "symbol": "MugBriefFloorView",
-      "definedIn": [
-        "packages/operator-core/lib/pot/mug-brief-launch.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts",
-        "packages/operator-core/lib/sync-resolver/index.ts"
-      ]
-    },
-    {
-      "symbol": "MugRebirthInputs",
-      "definedIn": [
-        "packages/operator-core/lib/pot/mug-warm-session.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/blueprint/blueprint-run-action.ts"
-      ]
-    },
-    {
-      "symbol": "MugWakeDecision",
-      "definedIn": [
-        "packages/operator-core/lib/pot/mug-warm-session.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/blueprint/blueprint-run-action.ts"
-      ]
-    },
-    {
       "symbol": "MugWakeEfficiencyDeps",
       "definedIn": [
         "packages/operator-core/lib/pot/mug-wake-efficiency.ts"
@@ -3402,17 +3121,6 @@
       "dynamicImporters": [
         "packages/operator-core/lib/sync-resolver/index.ts",
         "packages/operator-core/lib/system-health/compute.ts"
-      ]
-    },
-    {
-      "symbol": "MugWakeMode",
-      "definedIn": [
-        "packages/operator-core/lib/pot/mug-warm-session.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/blueprint/blueprint-run-action.ts"
       ]
     },
     {
@@ -3455,17 +3163,6 @@
       "dynamicImporters": [
         "packages/operator-core/lib/sync-resolver/index.ts",
         "packages/operator-core/lib/system-health/compute.ts"
-      ]
-    },
-    {
-      "symbol": "mugWarmWakeAttempt",
-      "definedIn": [
-        "packages/operator-core/lib/pot/mug-warm-session.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/blueprint/blueprint-run-action.ts"
       ]
     },
     {
@@ -3726,6 +3423,18 @@
       "externalNonTestImporters": 0,
       "dynamicImporters": [
         "packages/operator-core/lib/agent-tools/pot/_create.ts"
+      ]
+    },
+    {
+      "symbol": "POT_SURVEY_PLAN_READ_CONCURRENCY",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0,
+      "dynamicImporters": [
+        "packages/operator-core/lib/external-bench/hive-backlog-realqueen.ts",
+        "packages/operator-core/lib/system-health/compute.ts"
       ]
     },
     {
@@ -4444,17 +4153,6 @@
       ]
     },
     {
-      "symbol": "startCupSpawnHealthWatchdog",
-      "definedIn": [
-        "packages/operator-core/lib/pot/cup-spawn-health-watchdog.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0,
-      "dynamicImporters": [
-        "packages/operator-core/lib/dbos/bootstrap.ts"
-      ]
-    },
-    {
       "symbol": "stuckThresholdMs",
       "definedIn": [
         "packages/operator-core/lib/pot/throughput.ts"
@@ -4485,6 +4183,18 @@
     },
     {
       "symbol": "SurveyDeps",
+      "definedIn": [
+        "packages/operator-core/lib/pot/survey.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0,
+      "dynamicImporters": [
+        "packages/operator-core/lib/external-bench/hive-backlog-realqueen.ts",
+        "packages/operator-core/lib/system-health/compute.ts"
+      ]
+    },
+    {
+      "symbol": "surveyWorkspace",
       "definedIn": [
         "packages/operator-core/lib/pot/survey.ts"
       ],
@@ -4713,38 +4423,6 @@
   ],
   "move": [
     {
-      "symbol": "BriefCapacity",
-      "definedIn": [
-        "packages/operator-core/lib/pot/mug-brief.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0
-    },
-    {
-      "symbol": "BriefCup",
-      "definedIn": [
-        "packages/operator-core/lib/pot/mug-brief.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0
-    },
-    {
-      "symbol": "BriefEscalation",
-      "definedIn": [
-        "packages/operator-core/lib/pot/mug-brief.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0
-    },
-    {
-      "symbol": "BriefInboxItem",
-      "definedIn": [
-        "packages/operator-core/lib/pot/mug-brief.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0
-    },
-    {
       "symbol": "clusterInvalidCalls",
       "definedIn": [
         "packages/operator-core/lib/pot/session-audit.ts"
@@ -4817,41 +4495,33 @@
       "externalNonTestImporters": 0
     },
     {
-      "symbol": "CupTranscriptCapDeps",
+      "symbol": "CupSession",
       "definedIn": [
-        "packages/operator-core/lib/pot/cup-transcript-cap.ts"
+        "packages/operator-core/lib/pot/cup-wake-efficiency.ts"
       ],
       "importers": [],
       "externalNonTestImporters": 0
     },
     {
-      "symbol": "CupTranscriptCapReport",
+      "symbol": "CupWakeEfficiencyDeps",
       "definedIn": [
-        "packages/operator-core/lib/pot/cup-transcript-cap.ts"
+        "packages/operator-core/lib/pot/cup-wake-efficiency.ts"
       ],
       "importers": [],
       "externalNonTestImporters": 0
     },
     {
-      "symbol": "DEFAULT_CUP_TRANSCRIPT_CAPS",
+      "symbol": "CupWakeSample",
       "definedIn": [
-        "packages/operator-core/lib/pot/cup-transcript-cap.ts"
+        "packages/operator-core/lib/pot/cup-wake-efficiency.ts"
       ],
       "importers": [],
       "externalNonTestImporters": 0
     },
     {
-      "symbol": "DEFAULT_MUG_BRIEF_CAPS",
+      "symbol": "CupWakeSampleRow",
       "definedIn": [
-        "packages/operator-core/lib/pot/mug-brief.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0
-    },
-    {
-      "symbol": "DEFAULT_MUG_BRIEF_TEXT_CAPS",
-      "definedIn": [
-        "packages/operator-core/lib/pot/mug-brief.ts"
+        "packages/operator-core/lib/pot/cup-wake-efficiency.ts"
       ],
       "importers": [],
       "externalNonTestImporters": 0
@@ -4860,6 +4530,14 @@
       "symbol": "defaultResolveSelfPotMember",
       "definedIn": [
         "packages/operator-core/lib/pot/contribute-upstream.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "EMPTY_CUP_WAKE_EFFICIENCY",
+      "definedIn": [
+        "packages/operator-core/lib/pot/cup-wake-efficiency.ts"
       ],
       "importers": [],
       "externalNonTestImporters": 0
@@ -4884,30 +4562,6 @@
       "symbol": "FailedCallRow",
       "definedIn": [
         "packages/operator-core/lib/pot/session-audit.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0
-    },
-    {
-      "symbol": "floorFromSurvey",
-      "definedIn": [
-        "packages/operator-core/lib/pot/mug-brief.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0
-    },
-    {
-      "symbol": "freshContextRegimeDelta",
-      "definedIn": [
-        "packages/operator-core/lib/pot/cup-fresh-context-delta.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0
-    },
-    {
-      "symbol": "FreshContextRegimeDelta",
-      "definedIn": [
-        "packages/operator-core/lib/pot/cup-fresh-context-delta.ts"
       ],
       "importers": [],
       "externalNonTestImporters": 0
@@ -4977,38 +4631,6 @@
       "externalNonTestImporters": 0
     },
     {
-      "symbol": "MugBriefCaps",
-      "definedIn": [
-        "packages/operator-core/lib/pot/mug-brief.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0
-    },
-    {
-      "symbol": "MugBriefFloor",
-      "definedIn": [
-        "packages/operator-core/lib/pot/mug-brief.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0
-    },
-    {
-      "symbol": "MugBriefInput",
-      "definedIn": [
-        "packages/operator-core/lib/pot/mug-brief.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0
-    },
-    {
-      "symbol": "MugBriefTextCaps",
-      "definedIn": [
-        "packages/operator-core/lib/pot/mug-brief.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0
-    },
-    {
       "symbol": "normalizeErrorSignature",
       "definedIn": [
         "packages/operator-core/lib/pot/session-audit.ts"
@@ -5049,7 +4671,23 @@
       "externalNonTestImporters": 0
     },
     {
+      "symbol": "PlacementCandidate",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-ranker.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
       "symbol": "PlacementRankContext",
+      "definedIn": [
+        "packages/operator-core/lib/pot/placement-ranker.ts"
+      ],
+      "importers": [],
+      "externalNonTestImporters": 0
+    },
+    {
+      "symbol": "placementRankerSpec",
       "definedIn": [
         "packages/operator-core/lib/pot/placement-ranker.ts"
       ],
@@ -5145,22 +4783,6 @@
       "externalNonTestImporters": 0
     },
     {
-      "symbol": "RecycleDecision",
-      "definedIn": [
-        "packages/operator-core/lib/pot/cup-transcript-cap.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0
-    },
-    {
-      "symbol": "renderMugBrief",
-      "definedIn": [
-        "packages/operator-core/lib/pot/mug-brief.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0
-    },
-    {
       "symbol": "ResolvedTier",
       "definedIn": [
         "packages/operator-core/lib/pot/member-tier-gate.ts"
@@ -5241,14 +4863,6 @@
       "externalNonTestImporters": 0
     },
     {
-      "symbol": "shouldRecycleCupTranscript",
-      "definedIn": [
-        "packages/operator-core/lib/pot/cup-transcript-cap.ts"
-      ],
-      "importers": [],
-      "externalNonTestImporters": 0
-    },
-    {
       "symbol": "tierMeets",
       "definedIn": [
         "packages/operator-core/lib/pot/member-tiers.ts"
@@ -5283,17 +4897,15 @@
   ],
   "externalNonTestImporterFiles": [
     "apps/operator-vite/src/components/adv/LearningTab.tsx",
-    "apps/operator-vite/src/components/adv/MugWakeEfficiencyPanel.tsx",
     "packages/operator-core/lib/agent-state-divergence-sweep.ts",
     "packages/operator-core/lib/agent-tools/_mug-kettle-gate.ts",
+    "packages/operator-core/lib/agent-tools/coordination/spawn-child.ts",
     "packages/operator-core/lib/agent-tools/index.ts",
     "packages/operator-core/lib/agent-tools/loop/arm.ts",
     "packages/operator-core/lib/agent-tools/loop/checkpoint.ts",
     "packages/operator-core/lib/agent-tools/loop/session_audit.ts",
     "packages/operator-core/lib/agent-tools/loop/soak_report.ts",
-    "packages/operator-core/lib/agent-tools/overwatch/declare_wake.ts",
-    "packages/operator-core/lib/agent-tools/overwatch/pause.ts",
-    "packages/operator-core/lib/agent-tools/overwatch/start.ts",
+    "packages/operator-core/lib/agent-tools/plans/start.ts",
     "packages/operator-core/lib/agent-tools/platform/contribute.ts",
     "packages/operator-core/lib/agent-tools/platform/dogfood_verify.ts",
     "packages/operator-core/lib/agent-tools/platform/enable.ts",
@@ -5308,7 +4920,6 @@
     "packages/operator-core/lib/agent-tools/pot/set_steering.ts",
     "packages/operator-core/lib/agent-tools/pot/start.ts",
     "packages/operator-core/lib/agent-tools/pot/status.ts",
-    "packages/operator-core/lib/agent-tools/pot/survey.ts",
     "packages/operator-core/lib/agent-tools/pot/wake.ts",
     "packages/operator-core/lib/dbos/orchestrator-loop.ts",
     "packages/operator-core/lib/endpoint-route/routes/operator/hive-steering.ts",
@@ -5316,7 +4927,6 @@
     "packages/operator-core/lib/fleet/spawn-hydration-deps.ts",
     "packages/operator-core/lib/goals/stop-fanout.ts",
     "packages/operator-core/lib/harness/routines/autoloop-chronic-failure.ts",
-    "packages/operator-core/lib/harness/routines/bee-transcript-cap-action.ts",
     "packages/operator-core/lib/harness/routines/hive-canary-action.ts",
     "packages/operator-core/lib/harness/routines/learning-loop-health-sweep.ts",
     "packages/operator-core/lib/harness/routines/stale-routine-executor-watchdog.ts",
@@ -5343,25 +4953,12 @@
     "packages/operator-core/lib/wall-lapse-watchdog.ts"
   ],
   "dynamicallyImportedPotModules": {
-    "packages/operator-core/lib/pot/cup-spawn-health-watchdog.ts": [
-      "packages/operator-core/lib/dbos/bootstrap.ts"
-    ],
     "packages/operator-core/lib/pot/cup-wake-dossier.ts": [
       "packages/operator-core/lib/endpoint-route/routes/agent-chats/index.ts"
-    ],
-    "packages/operator-core/lib/pot/cup-wake-efficiency.ts": [
-      "packages/operator-core/lib/harness/routines/bee-transcript-cap-action.ts"
-    ],
-    "packages/operator-core/lib/pot/mug-brief-launch.ts": [
-      "packages/operator-core/lib/endpoint-route/routes/harness/spawn.ts",
-      "packages/operator-core/lib/sync-resolver/index.ts"
     ],
     "packages/operator-core/lib/pot/mug-wake-efficiency.ts": [
       "packages/operator-core/lib/sync-resolver/index.ts",
       "packages/operator-core/lib/system-health/compute.ts"
-    ],
-    "packages/operator-core/lib/pot/mug-warm-session.ts": [
-      "packages/operator-core/lib/blueprint/blueprint-run-action.ts"
     ],
     "packages/operator-core/lib/pot/placement-watchdog.ts": [
       "packages/operator-core/lib/dbos/routines-workflow.ts",
@@ -5387,9 +4984,9 @@
     ],
     "packages/operator-core/lib/pot/started.ts": [
       "apps/operator/test/dbos-sweep-glue.integration.test.ts",
+      "packages/operator-core/lib/agent-tools/plans/__tests__/start-auto-flip.integration.test.ts",
+      "packages/operator-core/lib/agent-tools/plans/__tests__/start-guard.test.ts",
       "packages/operator-core/lib/agent-tools/pot/set_steering.test.ts",
-      "packages/operator-core/lib/agent-tools/pot/survey-claim-order-check.test.ts",
-      "packages/operator-core/lib/agent-tools/pot/survey-workspace-scope.test.ts",
       "packages/operator-core/lib/dbos/durable-spawn.ts",
       "packages/operator-core/lib/dbos/orchestrator-tick-harnesses.test.ts",
       "packages/operator-core/lib/dbos/periodic-workflows.ts",

@@ -67,10 +67,10 @@ const CODE_EXT = ['.ts', '.tsx', '.mts', '.mjs'];
  * The gap changes ZERO keep/move verdicts: their only symbol, `computeCupWakeDossier`, is
  * KEEP regardless on an independent real importer (lib/fleet/spawn-hydration-deps.ts).
  */
-const EXPECTED_EXTERNAL_IMPORTERS = 59;
+const EXPECTED_EXTERNAL_IMPORTERS = 55;
 
 /**
- * RECONCILED AGAIN 2026-08-10, 57 → 59 (EI-20087329768209149). The tree did not drift and
+ * RECONCILED 2026-08-10, 57 → 59 (EI-20087329768209149). The tree did not drift and
  * nothing was added to it: the parser started SEEING two importers it had always been blind to.
  * `resolveSpecifier` used to `return null` for any specifier not starting with '.', so the two
  * apps/operator-vite consumers that reach lib/pot through the package name were dropped:
@@ -85,6 +85,12 @@ const EXPECTED_EXTERNAL_IMPORTERS = 59;
  * keep bucket was under-counted by 14 symbols. Agreement between two runs of one method is not
  * corroboration. The real guard is `scripts/verify-pot-substrate-ast.mjs`, an independently
  * written implementation that exits non-zero on disagreement; run THAT before executing a move.
+ *
+ * RECONCILED AGAIN 2026-08-12, 59 → 55. The source tree intentionally retired six old-tier
+ * importers (including pot/survey.ts) and added two live consumers while P-059 was landing;
+ * the net change is four fewer files. This is a real source-tree change, not parser drift, so
+ * the baseline moves with it. The current tree is 24 pot source files / 311 exports; a future
+ * mismatch still means the move list must be reconciled before P-057 executes it.
  */
 
 const args = process.argv.slice(2);
@@ -453,7 +459,6 @@ for (const t of [...gatedTierImporters]) {
 const TIER_MUST_INCLUDE = [
   'packages/operator-core/lib/agent-tools/pot/start.ts',
   'packages/operator-core/lib/agent-tools/pot/wake.ts',
-  'packages/operator-core/lib/agent-tools/pot/survey.ts',
   'packages/operator-core/lib/agent-tools/pot/declare_wake.ts',
   'packages/operator-core/lib/agent-tools/pot/set_steering.ts',
   'packages/operator-core/lib/agent-tools/pot/mug_efficiency.ts',
@@ -529,12 +534,12 @@ const artifact = {
     externalTestDynamicImporterFiles: externalTestDynamicImporterFiles.size,
   },
   methodRisk:
-    'HAND-ROLLED REGEX IMPORT WALKER. A prior dependency audit in this repo (2026-07-20) found exactly this technique UNDER-REPORTS imports — it missed a standard static import and falsely flagged live packages as orphans. Under-reporting is the DANGEROUS direction here: it inflates MOVE, and moving a still-imported symbol breaks the tree. Treat `move` as a CANDIDATE list requiring a second independent method (knip unused-exports, or gitnexus.query call-graph) before P-057 executes it. `keep` is the safe direction — a symbol proven to have an importer is not going to lose one by being measured badly.',
+    'TYPESCRIPT AST IMPORT/EXPORT WALKER. The previous hand-rolled regex walker under-reported imports — it missed standard static imports, inline type modifiers, and bare/package specifiers — and falsely flagged live packages as orphans. Under-reporting is the DANGEROUS direction here: it inflates MOVE, and moving a still-imported symbol breaks the tree. Treat `move` as a CANDIDATE list requiring the independent AST verifier in scripts/verify-pot-substrate-ast.mjs before P-057 executes it. `keep` is the safe direction — a symbol proven to have an importer is not going to lose one by being measured badly.',
   selfCheck: {
     expectedExternalNonTestImporters: EXPECTED_EXTERNAL_IMPORTERS,
     actual: externalImporterFiles.size,
     matches: externalImporterFiles.size === EXPECTED_EXTERNAL_IMPORTERS,
-    note: 'Baseline 59 (P-056 recorded 60 → 57 after excluding 3 gitignored scratch importers → 59 once bare/package specifiers resolved, EI-20087329768209149). A mismatch means the tree moved — reconcile BEFORE P-057 executes this list. A MATCH is weak evidence on its own: it compares this method against itself. Run scripts/verify-pot-substrate-ast.mjs for independent confirmation.',
+    note: 'Baseline 55 (P-056 recorded 60 → 57 after excluding 3 gitignored scratch importers → 59 once bare/package specifiers resolved, EI-20087329768209149 → 55 after the P-059 retirements landed). A mismatch means the tree moved — reconcile BEFORE P-057 executes this list. A MATCH is weak evidence on its own: it compares this method against itself. Run scripts/verify-pot-substrate-ast.mjs for independent confirmation.',
   },
   keep,
   keepTierOnly,
