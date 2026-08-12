@@ -119,6 +119,15 @@ function runGate(
       // test failed on the admission message). Tests OF the admission gate set
       // their own OVER/UNDER via the `...env` spread below, which wins.
       PC_HEAVY_LOAD1_OVERRIDE: '0',
+      // Same reasoning as the load pin above, one guard later (WI-5936): the
+      // native-bg-task advisory fires on a LONG backgrounded run that redirects
+      // to a file — which is the exact command shape the bg pipe/exit-code
+      // suites background on purpose. Left on, it occupies the single ADVISORY
+      // slot and reds ~12 expectAllow tests OF OTHER GUARDS. Pinning it off here
+      // keeps those assertions at full strength (blanket silence) instead of
+      // weakening them to "not THIS advisory"; the suite that tests the advisory
+      // itself turns it back on via the `...env` spread below, which wins.
+      PAPERCUSP_NATIVE_BG_ADVISORY: 'off',
       ...env,
     },
     timeout: 15_000,
@@ -2208,11 +2217,15 @@ describe('native bg task dies on carry-respawn (WI-5936 / EI-16611)', () => {
   const runBg = (command: string, extra: Record<string, unknown> = {}, env: Record<string, string> = {}) =>
     runGate(
       { tool_name: 'Bash', tool_input: { command, ...extra }, session_id: 's-nativebg', cwd: bgDir },
-      { HOME: bgHome, PAPERCUSP_SID: 'su-nativebg-test', ...env },
+      // This suite is the one that TESTS the advisory, so it turns the
+      // file-wide isolation pin back on.
+      { HOME: bgHome, PAPERCUSP_SID: 'su-nativebg-test', PAPERCUSP_NATIVE_BG_ADVISORY: 'on', ...env },
     );
 
-  it('fires a NON-BLOCKING teaching block on a run_in_background launch', () => {
-    const out = runBg(`sleep 60 > ${join(bgDir, 'a.log')} 2>&1`, { run_in_background: true });
+  it('fires a NON-BLOCKING teaching block on a LONG backgrounded run', () => {
+    const out = runBg(`npm run test:affected > ${join(bgDir, 'a.log')} 2>&1`, {
+      run_in_background: true,
+    });
     expect(out.status).toBe(0);
     const hso = JSON.parse(out.stdout).hookSpecificOutput;
     // Non-blocking is the contract: this teaches, it never denies.
@@ -2221,9 +2234,30 @@ describe('native bg task dies on carry-respawn (WI-5936 / EI-16611)', () => {
     expect(hso.additionalContext).toContain('capability:bash');
   });
 
+  it('is SILENT for a short backgrounded command — only strandable jobs are worth teaching about', () => {
+    // The proportionality rule. Fired on every backgrounded command, this
+    // advisory broke 22 sibling tests that (correctly) assert silence here.
+    expectAllow(runBg(`echo hello > ${join(bgDir, 'short.log')} 2>&1`, { run_in_background: true }));
+    expectAllow(runBg(`sleep 60 > ${join(bgDir, 'sleep.log')} 2>&1`, { run_in_background: true }));
+  });
+
+  it('is SILENT for a long run with no redirect — nothing to track, nothing to prove live later', () => {
+    // Keeps the launch advice and the cut-time detection over the SAME
+    // population: an untracked job could never be named at the cut anyway.
+    expectAllow(runBg('npm run test:affected', { run_in_background: true }));
+  });
+
+  it('respects the PAPERCUSP_NATIVE_BG_ADVISORY=off isolation switch', () => {
+    expectAllow(
+      runBg(`npm run test:affected > ${join(bgDir, 'off.log')} 2>&1`, { run_in_background: true }, {
+        PAPERCUSP_NATIVE_BG_ADVISORY: 'off',
+      }),
+    );
+  });
+
   it('stamps the OWNING SESSION on the ledger record (the half that makes it readable)', () => {
     const log = join(bgDir, 'stamped.log');
-    runBg(`sleep 60 > ${log} 2>&1`, { run_in_background: true });
+    runBg(`npm run test:affected > ${log} 2>&1`, { run_in_background: true });
     const ledger = JSON.parse(
       readFileSync(join(bgHome, '.papercusp', 'bg-output-tracking.json'), 'utf8'),
     );
@@ -2235,19 +2269,28 @@ describe('native bg task dies on carry-respawn (WI-5936 / EI-16611)', () => {
   });
 
   it('is say-once per session — a second launch does not re-teach', () => {
-    const first = runBg(`sleep 60 > ${join(bgDir, 'b.log')} 2>&1`, { run_in_background: true });
+    const first = runBg(`npm run test:affected > ${join(bgDir, 'b.log')} 2>&1`, {
+      run_in_background: true,
+    });
     expect(JSON.parse(first.stdout).hookSpecificOutput.additionalContext).toContain(
       'native background task advisory',
     );
-    expectAllow(runBg(`sleep 60 > ${join(bgDir, 'c.log')} 2>&1`, { run_in_background: true }));
+    expectAllow(
+      runBg(`npm run test:affected > ${join(bgDir, 'c.log')} 2>&1`, { run_in_background: true }),
+    );
   });
 
   it('never fires for a FOREGROUND command — the job dies only because it is backgrounded', () => {
-    expectAllow(runBg(`sleep 1 > ${join(bgDir, 'd.log')} 2>&1`));
+    expectAllow(runBg(`npm run test:affected > ${join(bgDir, 'd.log')} 2>&1`));
   });
 
   it('yields to a command-shape-specific bg advisory (a wrong RESULT outranks a general lesson)', () => {
-    const out = runBg(`npm run test:affected | tail -5`, { run_in_background: true });
+    // `tee` is BOTH a tracked redirect target and an exit-code-masking stage, so
+    // both advisories are genuinely eligible here — without that, this test
+    // would pass trivially rather than proving precedence.
+    const out = runBg(`npm run test:affected 2>&1 | tee ${join(bgDir, 'e.log')}`, {
+      run_in_background: true,
+    });
     const hso = JSON.parse(out.stdout).hookSpecificOutput;
     expect(hso.additionalContext).toContain('background-pipe exit-code advisory');
     expect(hso.additionalContext).not.toContain('native background task advisory');

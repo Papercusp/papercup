@@ -334,10 +334,20 @@ _gate_clamp_divisor() {
 #
 # SCOPE — deliberately narrow, three independent conditions, all required:
 #   1. phaseProtocol >= 2 AND phase is `isolating` or `delivering`. Those are the
-#      classifier phases (see _gate_clamp_divisor) and they last MINUTES, not the
-#      run's ~2.7h. Protocol 1 folded isolation inside `suite`, so refusing on
-#      `suite` would block the fleet for hours — the clamp already covers that
-#      case by throttling everything to /4.
+#      classifier phases (see _gate_clamp_divisor). Their duration is BOUNDED BY
+#      THE SIZE OF THE RED, not short: `delivering` RE-RUNS EVERY FAILING FILE to
+#      separate a real break from a load flake, so it scales with the break set.
+#      MEASURED 2026-08-12 (EI-20282438643454775): a genuine 4-file red held
+#      `delivering` >=19 min (phase stamped 22:27:07Z, still delivering at
+#      22:45Z) and had not cleared until between 22:45Z and 23:04Z — about half
+#      an hour. An earlier version of this comment asserted these phases "last
+#      MINUTES"; that is measured FALSE, and it mis-sizes waits. NEVER size a
+#      wait from this comment — read the live phase.json under
+#      ~/.papercusp/checkpoint-logs/.green-checkpoint-run-*.lock/.
+#      The narrow scope still holds, because even a half-hour classifier phase is
+#      far shorter than the run's ~2.7h. Protocol 1 folded isolation inside
+#      `suite`, so refusing on `suite` would block the fleet for hours — the
+#      clamp already covers that case by throttling everything to /4.
 #   2. The wrapped command is the BROAD SWEEP (`affected-tests.mjs`). A scoped
 #      `test:file` re-verify is NEVER refused — it is what this message tells you
 #      to run instead, so refusing it would make the advice unusable.

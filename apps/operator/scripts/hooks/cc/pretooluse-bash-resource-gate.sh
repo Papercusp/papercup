@@ -1790,10 +1790,19 @@ _NATIVE_BG_LONG_RE = re.compile(
     r'|scripts/pc-heavy\.sh|affected-tests\.mjs)\b',
     re.I,
 )
+#
+# Kill-switch mirrors the PC_HEAVY_ADMISSION=off convention already used in this
+# file. Its purpose is TEST ISOLATION, not an escape hatch: a sibling suite whose
+# subject is a DIFFERENT bg advisory asserts blanket silence, and without this it
+# would have to weaken that assertion to "not THIS advisory" — trading away real
+# strictness across ~12 tests to accommodate a newcomer. Switching this one off
+# there keeps their assertions exactly as strict as they were.
 try:
     if (tool_name.lower() == 'bash'
             and tool_input.get('run_in_background')
             and not ADVISORY
+            and os.environ.get(
+                'PAPERCUSP_NATIVE_BG_ADVISORY', 'on').strip().lower() not in ('off', '0', 'false', 'no')
             and _NATIVE_BG_LONG_RE.search(_strip_quotes_and_comments(command))
             and _bg_redirect_targets(_strip_quotes_and_comments(command), _bg_cwd)
             and _claim_advisory('native-bg-task-dies-on-respawn')):
