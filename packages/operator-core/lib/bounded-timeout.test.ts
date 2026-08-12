@@ -42,7 +42,8 @@ describe('withBoundedTimeout (WI-3818)', () => {
 
   it('degrades to the fallback with reason "error" when the work rejects', async () => {
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const p = withBoundedTimeout(Promise.reject(new Error('boom')), {
+    const error = new Error('boom');
+    const p = withBoundedTimeout(Promise.reject(error), {
       fallback: 'fallback-value',
       timeoutMs: 5000,
     });
@@ -52,6 +53,7 @@ describe('withBoundedTimeout (WI-3818)', () => {
     expect(result.degraded).toBe(true);
     expect(result.reason).toBe('error');
     expect(result.errorMessage).toBe('boom');
+    expect(result.error).toBe(error);
     expect(warnSpy).toHaveBeenCalledTimes(1);
     warnSpy.mockRestore();
   });

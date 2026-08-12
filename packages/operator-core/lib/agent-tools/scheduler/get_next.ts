@@ -32,6 +32,7 @@ import type { CellReader } from '../../cell-registry';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { cancelClaimableAwaits } from '../../events/await/store';
 import { withBoundedTimeout } from '../../bounded-timeout';
+import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 import { liveLockedPaths } from '../locks/live-lock-paths';
 
 /** The claimable-state subset diagnoseClaimNextMiss accepts (mirrors CLAIM_STATES_ALLOWLIST). */
@@ -158,6 +159,31 @@ export function getNextTimeoutResult(budgetMs = GET_NEXT_BUDGET_MS): {
       `idle-timeout abort (EI-18167154191955470). This is a RETRYABLE transient — the claim path ` +
       `is unchanged and a prior incident's immediate retry succeeded in ~2s. Retry now; if it ` +
       `persists, the account/PG pool may be saturated (see accounts:status / dev:rate_governor_status).`,
+  };
+}
+
+/**
+ * Return a structured retryable result for a bounded admin-pool transaction that hit a
+ * PostgreSQL statement/lock timeout. This is distinct from the JS watchdog result above:
+ * the database has already rejected the transaction, so preserving its typed message (and
+ * blocker hint, when available) gives the caller the actual contention diagnosis instead of
+ * converting it into a generic MCP `handler_error`.
+ */
+export function getNextContentionResult(error: OrgTxnTimeoutError): {
+  ok: false;
+  error: 'timeout';
+  retryable: true;
+  pgCode: string;
+  message: string;
+} {
+  return {
+    ok: false,
+    error: 'timeout',
+    retryable: true,
+    pgCode: error.pgCode,
+    message:
+      `scheduler:get_next claim hit transient PostgreSQL contention (${error.pgCode}): ${error.message}. ` +
+      'Retry now; the failed transaction was rolled back and no claim was returned.',
   };
 }
 
@@ -749,8 +775,15 @@ export default defineTool({
       { fallback: null, timeoutMs: GET_NEXT_BUDGET_MS, label: 'scheduler:get_next:claim' },
     );
     // A genuine underlying error surfaces loudly (preserving today's behavior where a thrown
-    // getNextForBee propagates), never degraded into a false "no claimable work" miss.
+    // getNextForBee propagates), never degraded into a false "no claimable work" miss. Typed
+    // PostgreSQL contention is the exception: it is a bounded, retryable condition and must
+    // not become a generic `handler_error` that strands the fleet pull loop (EI-20224136729541724).
     if (claim.degraded && claim.reason === 'error') {
+      if (claim.error instanceof OrgTxnTimeoutError) {
+        return {
+          content: [{ type: 'text' as const, text: JSON.stringify(getNextContentionResult(claim.error)) }],
+        };
+      }
       throw new Error(claim.errorMessage ?? 'scheduler:get_next claim failed');
     }
     // Budget exceeded: return the fast, retryable timeout miss instead of hanging to the abort.

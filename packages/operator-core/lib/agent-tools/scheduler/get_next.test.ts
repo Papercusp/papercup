@@ -109,6 +109,7 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
 import getNextTool, { GET_NEXT_BUDGET_MS } from './get_next';
 import claimNextTool from '../work_items/claim_next';
 import { CLAIM_STATES_ALLOWLIST } from '../../work-items';
+import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
 
 describe('scheduler:get_next ambient transaction reservation', () => {
   it('opts out because the self-pull handler owns its DB accessors', () => {
@@ -343,6 +344,27 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
     await expect(
       getNextTool.handler({ harness: 'papercusp' } as never, {} as never),
     ).rejects.toThrow(/pool exhausted: boom/);
+    warnSpy.mockRestore();
+  });
+
+  it('returns a retryable timeout for bounded PG contention instead of handler_error', async () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const contention = new OrgTxnTimeoutError('55P03', new Error('lock timeout'));
+    getNextM.mockRejectedValue(contention);
+
+    const out = (await getNextTool.handler({ harness: 'papercusp' } as never, {} as never)) as {
+      content: Array<{ text: string }>;
+    };
+    const b = JSON.parse(out.content[0]!.text);
+    expect(b).toMatchObject({
+      ok: false,
+      error: 'timeout',
+      retryable: true,
+      pgCode: '55P03',
+    });
+    expect(b.message).toContain('operator write timed out waiting for a row/advisory lock');
+    expect(b.message).toContain('Retry now');
+    expect(b.windDown).toBeUndefined();
     warnSpy.mockRestore();
   });
 });

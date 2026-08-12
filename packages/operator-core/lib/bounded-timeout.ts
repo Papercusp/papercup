@@ -28,6 +28,9 @@ export interface BoundedTimeoutResult<T> {
   reason?: 'timeout' | 'error';
   /** The error message, when `reason === 'error'`. */
   errorMessage?: string;
+  /** The original thrown value, when `reason === 'error'`. Internal callers may use this to
+   * distinguish a typed, retryable failure from an unexpected error without matching text. */
+  error?: unknown;
   elapsedMs: number;
 }
 
@@ -67,7 +70,14 @@ export async function withBoundedTimeout<T>(
     console.warn(
       `[bounded-timeout]${opts.label ? ` ${opts.label}` : ''} failed: ${errorMessage} — degrading to fallback`,
     );
-    return { value: opts.fallback, degraded: true, reason: 'error', errorMessage, elapsedMs: Date.now() - startedAt };
+    return {
+      value: opts.fallback,
+      degraded: true,
+      reason: 'error',
+      errorMessage,
+      error: err,
+      elapsedMs: Date.now() - startedAt,
+    };
   } finally {
     if (timer) clearTimeout(timer);
   }
