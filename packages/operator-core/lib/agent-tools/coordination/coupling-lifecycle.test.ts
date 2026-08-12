@@ -58,7 +58,7 @@ const codeOnly = (text: string): string =>
 const derivedEdge = (ownerId: string): DerivedCoupling => ({
   ownerId,
   relation: 'holds-a-lock-on',
-  because: 'you both hold locks in packages/operator-core',
+  because: 'you are both working in packages/operator-core',
 });
 
 /** A declared edge as `listCouplingsFor` returns it — normalized (least, greatest). */

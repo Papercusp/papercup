@@ -139,15 +139,15 @@ describe('resolveCoupledPeers — derived ∪ declared − suppressed', () => {
       'su-me',
       [
         { ownerId: 'su-peer', relation: 'awaits', because: 'both awaiting gate:1' },
-        { ownerId: 'su-peer', relation: 'holds-a-lock-on', because: 'you both hold locks in x.ts' },
-        { ownerId: 'su-peer', relation: 'holds-a-lock-on', because: 'you both hold locks in y.ts' },
+        { ownerId: 'su-peer', relation: 'holds-a-lock-on', because: 'you are both working in x.ts' },
+        { ownerId: 'su-peer', relation: 'holds-a-lock-on', because: 'you are both working in y.ts' },
       ],
       [],
     );
     expect(peers[0]?.derivedRelations).toEqual(['awaits', 'holds-a-lock-on']);
     // Both halves, not one or the other: the prose still accumulates every signal.
     expect(peers[0]?.derivedBecause).toBe(
-      'both awaiting gate:1; you both hold locks in x.ts; you both hold locks in y.ts',
+      'both awaiting gate:1; you are both working in x.ts; you are both working in y.ts',
     );
   });
 
