@@ -476,7 +476,11 @@ async function setupCellSchema(sql: postgres.Sql, opts: { workspaceId: string; h
       -- probe. On the real schema goal_id lives on the work_items base table and is
       -- written by stampGoalProvenance; the rig never writes it, it only must EXIST for
       -- the SELECT. Real column is text NULL.
-      ADD COLUMN IF NOT EXISTS goal_id text;
+      ADD COLUMN IF NOT EXISTS goal_id text,
+      -- Migration 803 appended parent_id to the engineer_issues VIEW and
+      -- ISSUE_COLS now selects it unconditionally. The rig's issue table is a
+      -- real fixture, so it needs the nullable text column for that read path.
+      ADD COLUMN IF NOT EXISTS parent_id text;
   `);
 
   // WI-1644 (part 4): migration 432 (work-item-completion-integrity, POST-379 —
