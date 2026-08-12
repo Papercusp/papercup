@@ -202,7 +202,35 @@ async function main(): Promise<number> {
   const sectionArg = argv.find((a) => a.startsWith('--section='))?.slice('--section='.length) ?? null;
 
   const docsRoot = resolveDocsRoot();
-  const client = await connect();
+
+  // ── NO-DB DEGRADE, read-only modes ONLY ────────────────────────────────────────────
+  // `--check` is a DRIFT DETECTOR, and a detector has to be runnable everywhere the thing
+  // it detects can change — which means inside `test:affected`, which also runs in GitHub
+  // CI where there is no papercusp Postgres. Without this branch the check exits 1 on the
+  // connection failure, so wiring it anywhere off-box would fail EVERY run and teach the
+  // fleet to ignore it — the same "informational leg that is always red" flap D-002/D-009
+  // already cost this repo once. Skipping cleanly is what makes the guard WIREABLE; the
+  // precedent is `gen-doc-plans-index.ts`, which catches an unreachable DB and exits 0.
+  //
+  // ⚠ DELIBERATELY NOT extended to --write / --ingest. Those MUTATE (the tree or the rows),
+  // and a mutation that silently no-ops because its database was unreachable is a worse
+  // failure than a loud one: the caller believes 873 files were projected when nothing was.
+  // A skipped CHECK under-reports drift for one run; a skipped WRITE corrupts the premise
+  // every later run is judged against.
+  let client: Awaited<ReturnType<typeof connect>>;
+  try {
+    client = await connect();
+  } catch (err) {
+    if (!write && !ingest) {
+      console.log(
+        `project-authored-docs: SKIPPED — Postgres unreachable, so corpus drift cannot be measured here.\n` +
+          `  This is NOT a pass: nothing was checked. Re-run where the operator DB is reachable.\n` +
+          `  reason: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return 0;
+    }
+    throw err;
+  }
   let failed = false;
   try {
     const rows = await readAuthoredRows(client, sectionArg);
