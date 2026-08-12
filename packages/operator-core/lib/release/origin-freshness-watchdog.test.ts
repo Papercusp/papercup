@@ -358,3 +358,90 @@ describe('WI-5791 — the blindness alarm reaches a surface someone reads, witho
     expect(broadcasts.resolved).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * EI-20285011147862697 — the publish-health pass covers pots that have NO origin.
+ *
+ * The origin pass gates on `github_remote` and `mode === 'bridged'`. Both are correct
+ * as ORIGIN preconditions, but each `continue`d past the whole body, including the
+ * publish-refusal signal — which needs no origin, because it reads the pot's own
+ * `own_head_publish` self-report. Measured on 2026-08-12: 3 pots were bridged while 42
+ * had a publish leg, so 39 legs were judged by nothing, and the one pot actually wedged
+ * (papercusp-desktop, refused:'secrets', ~41h / 189 consecutive refusals) was in the
+ * unwatched majority and never got the alarm it earned after 3 sweeps.
+ *
+ * The entry below is that pot's exact shape: NO github_remote, and mode defaulting to
+ * 'legacy'. Note this test is only meaningful because those two facts hold — if a future
+ * change makes such a pot reach the origin pass, this stops testing the gap it was
+ * written for.
+ */
+describe('EI-20285011147862697 — a publish refusal on an origin-less pot still alarms', () => {
+  /** papercusp-desktop's shape: publishes p2p, has no GitHub mirror, mode is legacy. */
+  const ORIGINLESS_ENTRY = { slug: 'papercusp/papercusp-desktop', self_repo: true };
+
+  const REFUSING_PUBLISH_ROW = {
+    publish_refused: 'secrets',
+    publish_backlog_remains: 'false',
+    publish_published_sha: null,
+    publish_head_sha: 'd'.repeat(40),
+    of_publish_refused_sweeps: 5, // past the 3-sweep threshold
+    of_publish_backlog_sweeps: 0,
+    of_alerted: false,
+    of_alerted_cause: null,
+  };
+
+  it('alarms, naming the refusal — and does NOT claim an origin it does not have', async () => {
+    const check = await freshWatchdog();
+    registries.byWorkspace.set('papercusp-workspace', [ORIGINLESS_ENTRY]);
+    // deliberately NOT set to 'bridged' — the mock defaults it to 'legacy'
+    const { sql } = makeSql({
+      workspaceIds: ['papercusp-workspace'],
+      // ZERO bridged pots: the only pot here is legacy/origin-less. This must stay 0 or
+      // the WI-5791 blindness alarm correctly fires ("bridged pots exist but the origin
+      // pass checked none") and masks what this test is actually asserting. Origin
+      // coverage of 0 is CORRECT in this world — that is the whole point of the pass.
+      bridgedPots: 0,
+      routineRow: REFUSING_PUBLISH_ROW,
+    });
+
+    const res = await check(sql, {});
+
+    // The origin pass could not judge it; the publish pass did.
+    expect(res.checked).toBe(0);
+    expect(res.publishChecked).toBe(1);
+    expect(res.alarmed).toContain('papercusp/papercusp-desktop');
+
+    // The alarm names the REFUSAL, not an origin-behind story (the WI-6643 property,
+    // which must hold on this pass too or the alarm describes the wrong subsystem).
+    expect(broadcasts.alarm).toHaveBeenCalledTimes(1);
+    const payload = broadcasts.alarm.mock.calls[0]![0] as { summary: string; body: string };
+    expect(`${payload.summary} ${payload.body}`).toMatch(/REFUS/i);
+    expect(`${payload.summary} ${payload.body}`).toMatch(/secrets/i);
+
+    // An origin-less pot must never be reported as origin-behind: there is no origin to
+    // be behind, and manufacturing one is the exact false reading this file keeps
+    // re-learning (the 2026-07-20 wrong-branch wedge).
+    const notified = notify.attention.mock.calls[0]![0] as {
+      data: { aheadCountStale: boolean; tipAgeStale: boolean; publishRefusalCode: string };
+    };
+    expect(notified.data.aheadCountStale).toBe(false);
+    expect(notified.data.tipAgeStale).toBe(false);
+    expect(notified.data.publishRefusalCode).toBe('secrets');
+  });
+
+  it('stays silent while the publish leg is healthy (the pass is not just always-on)', async () => {
+    const check = await freshWatchdog();
+    registries.byWorkspace.set('papercusp-workspace', [ORIGINLESS_ENTRY]);
+    const { sql } = makeSql({
+      workspaceIds: ['papercusp-workspace'],
+      bridgedPots: 0, // see the note above — a legacy-only world has no origin coverage to miss
+      routineRow: { ...REFUSING_PUBLISH_ROW, publish_refused: null, of_publish_refused_sweeps: 0 },
+    });
+
+    const res = await check(sql, {});
+
+    expect(res.publishChecked).toBe(1); // it WAS judged — this is not silence-by-skipping
+    expect(res.alarmed).toHaveLength(0);
+    expect(broadcasts.alarm).not.toHaveBeenCalled();
+  });
+});
