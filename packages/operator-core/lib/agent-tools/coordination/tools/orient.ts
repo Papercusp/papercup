@@ -2084,6 +2084,11 @@ export default defineTool({
   // the compound tool's real budget so a healthy server-side orientation is
   // not reported as an unrecoverable request_timeout to a new member.
   timeoutSec: 120,
+  // EI-20224868271541667: coord:orient owns its coordination/admin reads and
+  // never uses ctx.tx. Holding the ambient org-app workspace transaction
+  // across its sequential folds pins a pool slot and can deadlock the
+  // bootstrap behind the same pool pressure it is meant to diagnose.
+  skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES],
   args: z.object({
     harness: z

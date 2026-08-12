@@ -55,6 +55,10 @@ describe('coord:orient args', () => {
     expect((orientTool as { timeoutSec?: number }).timeoutSec).toBeGreaterThan(55);
   });
 
+  it('does not retain the ambient workspace transaction across coordination folds', () => {
+    expect((orientTool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+
   it('accepts an explicit null planSlug for planless lanes', () => {
     expect(
       orientTool.args.safeParse({ intent: 'planless wake', planSlug: null, planItems: [] }).success,
