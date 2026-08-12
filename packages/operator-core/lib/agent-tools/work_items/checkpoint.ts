@@ -148,6 +148,7 @@ import {
   CARRY_CAP_HARD_MULTIPLE,
   CARRY_NOTE_MAX_CHECKS,
   CARRY_ROW_SOFT_CAPS,
+  carryRowKey,
   coerceCarryRowShape,
   type CarryArgRepair,
   normalizeCheckEntries,
@@ -160,6 +161,21 @@ import {
  *  accidental collision between two DIFFERENT checkpoint bodies is not a real concern. */
 function shortHash(text: string): string {
   return createHash('sha256').update(text, 'utf8').digest('hex').slice(0, 12);
+}
+
+/** Count the rows an additive checks write needs before normalization applies its cap. */
+function appendChecksOverflowCount(
+  priorNote: string | null,
+  suppliedChecks: ReadonlyArray<{ id?: string; claim: string }> | undefined,
+): number {
+  if (suppliedChecks === undefined) return 0;
+  const priorChecks = splitCarryNoteChecks(priorNote).checks;
+  const unionKeys = new Set(
+    [...suppliedChecks, ...priorChecks]
+      .filter((row) => (row.claim ?? '').trim().length > 0)
+      .map((row) => carryRowKey(row)),
+  );
+  return Math.max(0, unionKeys.size - CARRY_NOTE_MAX_CHECKS);
 }
 
 /**
