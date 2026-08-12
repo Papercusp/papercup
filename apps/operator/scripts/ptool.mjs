@@ -41,7 +41,10 @@
  * the MCP `client=` identity. That makes it a safe transport fallback when a
  * client has connected to papercusp-su but deferred every MCP tool schema:
  * calls still belong to the current session rather than the shared
- * `su-loopback` fallback identity.
+ * `su-loopback` fallback identity. Workspace scope is resolved from the
+ * explicit flag first, then the session environment/path, so a warm-loop wake
+ * whose shell lost `PAPERCUSP_WORKSPACE` does not silently fall back to the
+ * default workspace.
  */
 import { readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -108,6 +111,36 @@ export function parseArgs(argv) {
     }
   }
   return out;
+}
+
+/**
+ * Resolve the workspace scope for a ptool session. An explicit CLI flag wins;
+ * otherwise mirror the OMP coordination hook's session-local resolution:
+ * `PAPERCUSP_WORKSPACE`, then the workspace name embedded in
+ * `PAPERCUSP_HOME`/cwd. Returning null when no tracked scope is available is
+ * deliberate — ptool must never guess a tenant. Pure when `env` and `cwd` are
+ * supplied; both are injectable for tests.
+ */
+export function resolveWorkspaceScope({ workspace = null, env = process.env, cwd } = {}) {
+  const explicit = typeof workspace === 'string' ? workspace.trim() : '';
+  if (explicit) return explicit;
+
+  const fromEnv = typeof env?.PAPERCUSP_WORKSPACE === 'string' ? env.PAPERCUSP_WORKSPACE.trim() : '';
+  if (fromEnv) return fromEnv;
+
+  let currentDir = typeof cwd === 'string' ? cwd : '';
+  if (!currentDir) {
+    try {
+      currentDir = process.cwd();
+    } catch {
+      currentDir = '';
+    }
+  }
+  for (const candidate of [env?.PAPERCUSP_HOME ?? '', currentDir]) {
+    const match = String(candidate).match(/\.papercusp-workspaces[\\/]([^\\/]+)/);
+    if (match?.[1] && match[1] !== '.papercusp') return match[1];
+  }
+  return null;
 }
 
 /**
@@ -422,7 +455,7 @@ async function connect(operatorUrl, { workspace, harness } = {}, { timeoutMs } =
     throw new Error(`no superuser token at ~/.papercusp/superuser-token — is the operator installed? (run apps/operator/scripts/install-standalone-mcp.sh)`);
   }
   const url = buildMcpUrl(operatorUrl, {
-    workspace,
+    workspace: resolveWorkspaceScope({ workspace }),
     harness,
     client: process.env.PAPERCUSP_SID,
   });
@@ -608,10 +641,11 @@ async function main() {
     return;
   }
   const operatorUrl = args.url || OPERATOR_URL;
+  const workspace = resolveWorkspaceScope({ workspace: args.workspace });
   const client = await connectWithLocalRetry(
     connect,
     operatorUrl,
-    { workspace: args.workspace, harness: args.harness },
+    { workspace, harness: args.harness },
   );
   try {
     const tools = await listAllTools(client);
@@ -660,7 +694,7 @@ async function main() {
     } else {
       callArgs = await collectArgs(tool.inputSchema);
     }
-    callArgs = mergeConvenienceArgs(callArgs, { workspace: args.workspace, harness: args.harness }, tool.inputSchema);
+    callArgs = mergeConvenienceArgs(callArgs, { workspace, harness: args.harness }, tool.inputSchema);
 
     // Interactive confirmation (only when we prompted — a scripted --json/
     // --json-file/stdin call is non-interactive by intent).

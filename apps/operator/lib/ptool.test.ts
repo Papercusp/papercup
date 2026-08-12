@@ -15,6 +15,7 @@ import {
   isLoopPressureShed,
   callToolWithPressureRetry,
   connectWithLocalRetry,
+  resolveWorkspaceScope,
   jsonSourceKind,
   shouldPrintInvocationLine,
 } from '../scripts/ptool.mjs';
@@ -88,6 +89,41 @@ describe('ptool parseArgs', () => {
     const a = parseArgs(['x:y', '--json', '-']);
     expect(a.json).toBe('-');
     expect(a.tool).toBe('x:y');
+  });
+});
+
+describe('ptool workspace scope', () => {
+  it('prefers an explicit workspace flag over session-derived scope', () => {
+    expect(
+      resolveWorkspaceScope({
+        workspace: '  explicit-workspace  ',
+        env: { PAPERCUSP_WORKSPACE: 'env-workspace' },
+        cwd: '/tmp/.papercusp-workspaces/cwd-workspace/.papercusp',
+      }),
+    ).toBe('explicit-workspace');
+  });
+
+  it('uses PAPERCUSP_WORKSPACE when the CLI flag is absent', () => {
+    expect(resolveWorkspaceScope({ env: { PAPERCUSP_WORKSPACE: '  env-workspace ' }, cwd: '/tmp' })).toBe('env-workspace');
+  });
+
+  it('recovers the workspace from PAPERCUSP_HOME after a warm wake drops PAPERCUSP_WORKSPACE', () => {
+    expect(
+      resolveWorkspaceScope({
+        env: { PAPERCUSP_HOME: '/home/agent/.papercusp-workspaces/papercusp-workspace/.papercusp' },
+        cwd: '/tmp/repo',
+      }),
+    ).toBe('papercusp-workspace');
+  });
+
+  it('also recovers from a workspace-scoped cwd', () => {
+    expect(
+      resolveWorkspaceScope({ env: {}, cwd: '/home/agent/.papercusp-workspaces/ws-9/.papercusp' }),
+    ).toBe('ws-9');
+  });
+
+  it('does not guess a workspace outside a tracked workspace path', () => {
+    expect(resolveWorkspaceScope({ env: {}, cwd: '/tmp/repo' })).toBeNull();
   });
 });
 
