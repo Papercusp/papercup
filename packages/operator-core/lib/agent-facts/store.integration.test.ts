@@ -22,6 +22,7 @@ import { createFreshPgDb, applyMigrationsForTest, type FreshPgDb } from '../../t
 import {
   assertFact,
   retractFact,
+  findFactKeyMatches,
   findFactKeyElsewhere,
   foldFacts,
   renderFactsFold,
@@ -866,6 +867,48 @@ describe('findFactKeyElsewhere (EI-19328780288425209 — the retract-scope-miss 
       db.sql,
     );
     expect(hits).toEqual([]);
+  });
+});
+
+describe('findFactKeyMatches (EI-20246178086794269 — key-only retract resolution)', () => {
+  it('returns one current identity for a unique key and both identities when the key is ambiguous', async () => {
+    await assertFact(
+      { scope: 'owner', scopeRef: 'su-key-only', key: 'key-only-unique', body: 'b', createdBy: 'su-int', workspaceId: WS },
+      db.sql,
+    );
+    await assertFact(
+      { scope: 'owner', scopeRef: 'su-key-only', key: 'key-only-shared', body: 'b', createdBy: 'su-int', workspaceId: WS },
+      db.sql,
+    );
+    await assertFact(
+      { scope: 'harness', scopeRef: 'papercusp', key: 'key-only-shared', body: 'b', createdBy: 'su-int', workspaceId: WS },
+      db.sql,
+    );
+
+    const unique = await findFactKeyMatches({ key: 'key-only-unique', workspaceId: WS }, db.sql);
+    expect(unique).toHaveLength(1);
+    expect(unique[0]).toMatchObject({ scope: 'owner', scopeRef: 'su-key-only' });
+
+    const ambiguous = await findFactKeyMatches({ key: 'key-only-shared', workspaceId: WS }, db.sql);
+    expect(ambiguous).toHaveLength(2);
+    expect(new Set(ambiguous.map((row) => `${row.scope}:${row.scopeRef}`))).toEqual(
+      new Set(['owner:su-key-only', 'harness:papercusp']),
+    );
+  });
+
+  it('ignores retracted and superseded copies when resolving a key', async () => {
+    await assertFact(
+      { scope: 'owner', scopeRef: 'su-key-history', key: 'key-only-history', body: 'old', createdBy: 'su-int', workspaceId: WS },
+      db.sql,
+    );
+    await assertFact(
+      { scope: 'owner', scopeRef: 'su-key-history', key: 'key-only-history', body: 'current', createdBy: 'su-int', workspaceId: WS },
+      db.sql,
+    );
+
+    const matches = await findFactKeyMatches({ key: 'key-only-history', workspaceId: WS }, db.sql);
+    expect(matches).toHaveLength(1);
+    expect(matches[0]).toMatchObject({ scope: 'owner', scopeRef: 'su-key-history' });
   });
 });
 
