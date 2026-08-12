@@ -573,6 +573,13 @@ export function fleetScopeLeaderRemedy(
       `without the spec being malformed. Re-steer the fleet to a live plan (or another positive filter) with ` +
       `scheduler:set_claim_spec; do not keep bumping this revision for individual rows. `
     : '';
+  const laneAction = retiredPlans?.length
+    ? `RE-STEER the fleet lane in ONE call: ` +
+      `scheduler:set_claim_spec { fleet: "${fleetSlug}", spec: { … a revision bump of ${specRef} ` +
+      `whose view.filter points at a live plan (or another positive filter) and admits this work } }`
+    : `WIDEN the fleet lane in ONE call: ` +
+      `scheduler:set_claim_spec { fleet: "${fleetSlug}", spec: { … a revision bump of ${specRef} ` +
+      `whose view.filter admits this work } }`;
   const routeElsewhereNote =
     liveRouteTarget === false
       ? `Do NOT rely on "route the work elsewhere" — no other live agent (leader or member) was found in fleet ` +
@@ -584,9 +591,7 @@ export function fleetScopeLeaderRemedy(
     // per-row advice that follows it — a leader who reads only the first sentence must not
     // walk away with "bump a revision for this row" when the spec matches nothing.
     `${retiredPlanNote}${fleetScopeClassRefusalNote(classRefusal)}` +
-    `To let this member self-claim it, WIDEN the fleet lane in ONE call: ` +
-    `scheduler:set_claim_spec { fleet: "${fleetSlug}", spec: { … a revision bump of ${specRef} ` +
-    `whose view.filter admits this work } } — the member picks it up on its next scheduler:get_next, ` +
+    `To let this member self-claim it, ${laneAction} — the member picks it up on its next scheduler:get_next, ` +
     `no re-dispatch. ${routeElsewhereNote}`
   );
 }

@@ -1409,6 +1409,8 @@ describe('fleet scope assignment admission (P-016)', () => {
       expect(remedy).toMatch(/terminal/);
       expect(remedy).toMatch(/scheduler:set_claim_spec/);
       expect(remedy).toMatch(/do not keep bumping this revision/i);
+      expect(remedy).toMatch(/RE-STEER the fleet lane/);
+      expect(remedy).not.toMatch(/WIDEN the fleet lane/);
     });
 
     it('fleetScopeLeaderRemedy names scheduler:set_claim_spec, the fleet slug, and the current spec ref (unambiguous, not "@N") for a scope violation', () => {
