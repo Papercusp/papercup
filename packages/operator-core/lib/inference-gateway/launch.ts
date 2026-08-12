@@ -397,13 +397,21 @@ function makeOrgDisallowedDeactivator(
         orphanSuffix;
       // 1. PERSISTENTLY remove the dead account (survives gateway/bg-host restarts; the in-memory pause did not).
       try {
-        const [{ loadAccountPool, saveAccountPool }, { removeAccount }] = await Promise.all([
+        const [{ updateAccountPool }, { removeAccount }] = await Promise.all([
           import('../deployment/account-pool-store'),
           import('../deployment/account-pool'),
         ]);
-        const pool = await loadAccountPool(ws);
-        if (pool.accounts.some((a) => a.id === accountId)) {
-          await saveAccountPool(removeAccount(pool, accountId), ws);
+        // Atomic RMW (WI-38164). A load-then-blind-save here is especially bad: this runs
+        // in the GATEWAY process, which is the pool's highest-frequency writer (a usage
+        // window per account per 30s), so its snapshot is the one most likely to be
+        // flushed over somebody else's registration.
+        let removed = false;
+        await updateAccountPool((pool) => {
+          if (!pool.accounts.some((a) => a.id === accountId)) return pool;
+          removed = true;
+          return removeAccount(pool, accountId);
+        }, ws);
+        if (removed) {
           log('error', `inference-gateway: PERSISTENTLY removed org-disabled account '${accountId}' from the pool (${consecutive} consecutive org-disallowed 403s)`);
         }
       } catch (e) {
