@@ -476,6 +476,11 @@ describe('docs:get slug coercion (WI-1985)', () => {
 });
 
 describe('docs:search handler', () => {
+  it('opts out of the ambient workspace transaction during filesystem and semantic search', async () => {
+    const tool = (await import('../search')).default;
+    expect((tool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+
   it('harness_required gate fires with no engine call', async () => {
     mockRegistry([]);
     const tool = (await import('../search')).default;

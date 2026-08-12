@@ -187,6 +187,11 @@ export default defineTool({
   },
   capability: 'docs:read',
   requirePrincipal: false,
+  // EI-20224875931864258: docs search spends most of its handler in filesystem and
+  // semantic-ranking work, while its PG leg uses the admin pool lazily. Holding the
+  // ambient workspace transaction across that work pins org-app pool slots and lets a
+  // search burst starve unrelated workspace calls at the 45s acquisition deadline.
+  skipWorkspaceTx: true,
   agentRoles: [...SU_ROLES, 'papercup-deep'],
   modality: ['text'],
   rolesQuota: {
