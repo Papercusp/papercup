@@ -71,11 +71,10 @@ export const STRANDED_LOG_TAIL_BYTES = 8_000;
  * a proxy for the job's own start time) so the caller can tell a genuine operator
  * restart apart from the job's OWN process dying independently — see
  * `diagnoseStrandedCause`. */
-export function strandedJobLookup(
-  bashId: string,
-  stateDir: string | undefined,
-): { logPath: string; sizeBytes: number; tail: string; birthtimeMs: number } | null {
-  const logPath = join(scratchDir(stateDir), `bash-${bashId}.log`);
+export type StrandedJobLog = { logPath: string; sizeBytes: number; tail: string; birthtimeMs: number };
+
+/** Read a known spill-log path without reconstructing it from this worker's stateDir. */
+export function strandedJobLookupAtPath(logPath: string): StrandedJobLog | null {
   try {
     const st = statSync(logPath);
     if (!st.isFile()) return null;
@@ -85,6 +84,11 @@ export function strandedJobLookup(
   } catch {
     return null;
   }
+}
+
+export function strandedJobLookup(bashId: string, stateDir: string | undefined): StrandedJobLog | null {
+  const logPath = join(scratchDir(stateDir), `bash-${bashId}.log`);
+  return strandedJobLookupAtPath(logPath);
 }
 
 /**
@@ -266,6 +270,28 @@ export function filterOutputLines(chunk: string, filter: string | undefined): { 
 
 type RecoveredJobStatus = Exclude<BashStatus, 'running'>;
 
+/** Translate a terminal task-ledger row into the normal BashOutput status shape. */
+export function terminalStatusFromLedger(
+  row: TaskRow | null,
+): { status: RecoveredJobStatus; exitCode: number | null } | null {
+  if (!row || !isTerminalState(row.state)) return null;
+  switch (row.state) {
+    case 'exited':
+      return { status: row.exitCode === 0 ? 'completed' : 'failed', exitCode: row.exitCode ?? null };
+    case 'killed':
+      return { status: 'killed', exitCode: row.exitCode ?? null };
+    case 'timed_out':
+      return { status: 'timed_out', exitCode: row.exitCode ?? null };
+    case 'stranded':
+    case 'ended_unobserved':
+      // These states prove the task is over but deliberately carry no trustworthy
+      // shell exit code. Preserve the error path instead of manufacturing success.
+      return { status: 'failed', exitCode: row.exitCode ?? null };
+    default:
+      return null;
+  }
+}
+
 export interface StrandedJobLogInspection {
   terminal: { status: RecoveredJobStatus; exitCode: number | null } | null;
   output: string;
@@ -404,13 +430,32 @@ export default defineTool({
   async handler(args, ctx) {
     const job = getJob(args.bash_id);
     if (!job) {
-      const stranded = strandedJobLookup(args.bash_id, ctx.stateDir);
-      if (stranded) {
-        const strandedLog = inspectStrandedJobLog(stranded.tail, args.filter);
+      // The JOBS map is worker-local in the clustered operator. Pin the durable
+      // lookup to this request's workspace before deciding that the id is gone;
+      // otherwise a clean exit on a sibling worker is misread as an unknown job.
+      const workspaceId =
+        ctx.workspaceId && ctx.workspaceId !== '*'
+          ? ctx.workspaceId
+          : ctx.principal?.workspaceId && ctx.principal.workspaceId !== '*'
+            ? ctx.principal.workspaceId
+            : undefined;
+      const ledgerRow = await getTaskByBashJobId(
+        args.bash_id,
+        workspaceId ? { workspaceId } : {},
+      ).catch(() => null);
+      const ledgerVerdict = diagnoseFromLedger(ledgerRow);
+      const stranded =
+        strandedJobLookup(args.bash_id, ctx.stateDir) ??
+        (ledgerRow?.logPath ? strandedJobLookupAtPath(ledgerRow.logPath) : null);
+      if (stranded || ledgerRow) {
+        const strandedLog: StrandedJobLogInspection = stranded
+          ? inspectStrandedJobLog(stranded.tail, args.filter)
+          : { terminal: null, output: '' };
         const strandedOutput = {
           output_tail: strandedLog.output,
           ...(strandedLog.filterError ? { filter_error: strandedLog.filterError } : {}),
         };
+        const recoveredLogPath = stranded?.logPath ?? ledgerRow?.logPath ?? undefined;
 
         // EI-20230176152308336: the durable JOB END marker is stronger than a
         // stale/non-terminal task-ledger row. The marker is appended from the
@@ -429,8 +474,8 @@ export default defineTool({
                   status: strandedLog.terminal.status,
                   exit_code: strandedLog.terminal.exitCode,
                   running: false,
-                  total_bytes: stranded.sizeBytes,
-                  log_path: stranded.logPath,
+                  ...(stranded ? { total_bytes: stranded.sizeBytes } : {}),
+                  ...(recoveredLogPath ? { log_path: recoveredLogPath } : {}),
                   recovered_from_log_marker: true,
                   ...strandedOutput,
                   output: strandedLog.output,
@@ -439,14 +484,6 @@ export default defineTool({
             ],
           };
         }
-
-        // EI-18759519171684432: before asserting anything about the JOB's real OS
-        // liveness, consult the durable task-manager ledger — it survives exactly
-        // the failure (in-memory JOBS map entry gone) that got us into this branch,
-        // and can CONFIRM liveness via a pid+processIdentity re-probe (immune to PID
-        // reuse) instead of guessing from operator uptime alone.
-        const ledgerRow = await getTaskByBashJobId(args.bash_id).catch(() => null);
-        const ledgerVerdict = diagnoseFromLedger(ledgerRow);
 
         if (ledgerVerdict.kind === 'confirmed_alive') {
           // EI-19915289191989412: the "log tail will keep growing" promise below is
@@ -480,8 +517,8 @@ export default defineTool({
                   pid: ledgerVerdict.pid,
                   scope_unit: ledgerVerdict.scopeUnit,
                   task_id: ledgerVerdict.taskId,
-                  log_path: stranded.logPath,
-                  total_bytes_written: stranded.sizeBytes,
+                  ...(recoveredLogPath ? { log_path: recoveredLogPath } : {}),
+                  ...(stranded ? { total_bytes_written: stranded.sizeBytes } : {}),
                   ...strandedOutput,
                 }),
               },
@@ -491,6 +528,32 @@ export default defineTool({
         }
 
         if (ledgerVerdict.kind === 'confirmed_dead') {
+          const terminal = terminalStatusFromLedger(ledgerRow);
+          // A durable `exited`/0 row is authoritative success evidence even when
+          // this worker missed both the live handle and the end-marker read. The
+          // old branch treated every terminal row as job_process_gone, causing
+          // successful Vitest/typecheck jobs to be reported as errors (EI-20232536598731015).
+          if (terminal?.status === 'completed') {
+            return {
+              content: [
+                {
+                  type: 'text' as const,
+                  text: JSON.stringify({
+                    ok: true,
+                    bash_id: args.bash_id,
+                    status: terminal.status,
+                    exit_code: terminal.exitCode,
+                    running: false,
+                    ...(stranded ? { total_bytes: stranded.sizeBytes } : {}),
+                    ...(recoveredLogPath ? { log_path: recoveredLogPath } : {}),
+                    recovered_from_ledger: true,
+                    ...strandedOutput,
+                    output: strandedLog.output,
+                  }),
+                },
+              ],
+            };
+          }
           const exitDetail =
             (ledgerVerdict.exitCode !== null ? ` exit code ${ledgerVerdict.exitCode}` : '') +
             (ledgerVerdict.exitReason ? `: ${ledgerVerdict.exitReason}` : '');
@@ -527,9 +590,29 @@ export default defineTool({
                     "This job's in-memory tracking is gone, and the durable task ledger CONFIRMS it actually ended " +
                     `(state=${ledgerVerdict.state}${exitDetail}) — not a guess.${strandedAdvice ?? ''} Re-run ` +
                     'capability:bash if you still need the result; check output_tail below for how far it got.',
-                  log_path: stranded.logPath,
-                  total_bytes_written: stranded.sizeBytes,
+                  ...(recoveredLogPath ? { log_path: recoveredLogPath } : {}),
+                  ...(stranded ? { total_bytes_written: stranded.sizeBytes } : {}),
                   ...strandedOutput,
+                }),
+              },
+            ],
+            isError: true,
+          };
+        }
+
+        // Without a surviving log there is no safe uptime-based fallback. The
+        // ledger above has already had the chance to prove alive/dead; preserve
+        // the existing unknown-id response rather than dereferencing a missing
+        // birth time or inventing a restart cause.
+        if (!stranded) {
+          return {
+            content: [
+              {
+                type: 'text' as const,
+                text: JSON.stringify({
+                  ok: false,
+                  reason: 'unknown_bash_id',
+                  advice: 'No surviving output log is available for this background job. Re-run with capability:bash if you still need the result.',
                 }),
               },
             ],
@@ -564,7 +647,7 @@ export default defineTool({
                 ok: false,
                 reason: cause,
                 advice,
-                log_path: stranded.logPath,
+                log_path: recoveredLogPath,
                 total_bytes_written: stranded.sizeBytes,
                 ...strandedOutput,
               }),
