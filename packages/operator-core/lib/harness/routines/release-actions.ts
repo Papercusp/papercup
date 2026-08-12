@@ -447,6 +447,67 @@ export function buildCheckpointDetail(v: CheckpointVerdict): Record<string, unkn
  * Returns true when the verdict was recorded; false when it is not a verdict at all (a `skipped-*`
  * outcome — the run that HOLDS the lock is producing the real one and records it itself).
  */
+/**
+ * WI-38150 — PRE-BIND the self-heal module graph before the long suite runs.
+ *
+ * The gate's two self-heal paths — the release-red NOTIFY and the release-fixer DISPATCH —
+ * are reached through `await import(...)` at the very END of a run that has by then been
+ * executing for 30-55 minutes against the LIVE, MUTATING staging checkout. git-sync commits
+ * the whole tree every few minutes, so those late imports can bind a module graph assembled
+ * from two different states of the same tree. Nothing throws until the last import resolves,
+ * and what it throws is a bare `does not provide an export named 'X'`.
+ *
+ * Observed 2026-08-12 (run started 06:34:21Z, failed 07:02Z): BOTH self-heal paths died on
+ * `The requested module './agent-tools/coordination/identity' does not provide an export
+ * named 'isTransportOnlyIdentity'` — an export added to the tree at 06:55:16Z, 21 minutes
+ * INTO the run. The gate was on its 12th consecutive red at the time. So the one code path
+ * that only ever executes when the gate is red is the path that was broken, and it took the
+ * notifier down with it: no repair, and no report that no repair had happened.
+ *
+ * Binding these modules HERE — at the start of the action, before a single test has run —
+ * makes the self-heal graph coherent as of run start, which is the same tree state the rest
+ * of the run was cut from. It cannot fix a genuinely-missing export, and it is not meant to:
+ * it removes the WINDOW, so a self-healer that would work at run start still works at run end.
+ *
+ * Deliberately NOT silent. A prebind failure is a PREDICTION that the self-healer is already
+ * dead for this run, delivered while there is still time to act on it — the opposite of the
+ * failure above, which was discovered hours later by reading a log.
+ */
+let selfHealPrebound: Promise<void> | null = null;
+export function prebindSelfHealModules(): Promise<void> {
+  // Idempotent per process: several runs (and the stale-red auto-refire, which recurses in
+  // the SAME process) share one binding — re-importing a bound module is a no-op anyway, but
+  // caching keeps the "PREBOUND"/"PREBIND FAILED" line to one per process rather than per pass.
+  if (selfHealPrebound) return selfHealPrebound;
+  selfHealPrebound = (async () => {
+    const results = await Promise.allSettled([
+      import('../../attention-notify'),
+      import('../../blueprint/launch-blueprint'),
+      import('../../dev-data'),
+      import('../../severe-event-broadcast'),
+      import('../../coord/gate-ownership'),
+    ]);
+    const failed = results.flatMap((r) =>
+      r.status === 'rejected' ? [r.reason instanceof Error ? r.reason.message : String(r.reason)] : [],
+    );
+    if (failed.length > 0) {
+      console.warn(
+        `${orchestratorStdoutTag()} SELF-HEAL PREBIND FAILED (${failed.length}/${results.length}) — ` +
+          `the release-red notify and/or release-fixer dispatch for THIS run will not launch, so a red ` +
+          `gate will go unreported AND unrepaired. Fix before trusting this run's outcome: ${failed.join(' | ')}`,
+      );
+      return;
+    }
+    console.log(`${orchestratorStdoutTag()} self-heal modules prebound (${results.length}) — notify + fixer dispatch are launchable`);
+  })();
+  return selfHealPrebound;
+}
+
+/** Test seam: forget the cached prebind so a test can exercise the failure path. */
+export function __resetSelfHealPrebindForTest(): void {
+  selfHealPrebound = null;
+}
+
 export async function recordCheckpointVerdict(
   target: GateVerdictTarget,
   verdict: CheckpointVerdict,
@@ -479,6 +540,11 @@ export async function recordCheckpointVerdict(
  * suite can't wedge the routines tick.
  */
 registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
+  // WI-38150: bind the self-heal graph NOW, while the tree still matches the state this run is
+  // about to judge. By the time the suite ends (30-55min) the checkout has moved under us, and a
+  // late `await import` of the notify/dispatch path can bind across the mutation and throw. Awaited
+  // rather than fired-and-forgotten so the diagnostic lands BEFORE the suite's output buries it.
+  await prebindSelfHealModules();
   // per-hive-git-and-release-gate P-010: route a per-hive routine to ITS OWN checkout /
   // branches / greenCmd. Operator-home (papercusp) → default root + empty overlay = EXACT
   // current behavior (regression-safe). A non-gated installSlug (gate disabled / no repo) →
