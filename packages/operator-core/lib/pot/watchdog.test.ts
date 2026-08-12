@@ -29,11 +29,24 @@ const setPotStarted = vi.fn();
 // P-007 (retire-mug-kettle-su-only-2026-08-09): the watchdog now shares ONE
 // tier predicate with the started bit. It MUST be present in this mock — a
 // partial vi.mock factory makes the whole suite fail to COLLECT, with an error
-// naming neither the new import nor the change that added it. Defaulted to
-// `true` (tier enabled) so every pre-existing case below keeps exercising the
-// live-tier behaviour it was written for; the retirement cases live in
-// mug-kettle-engine-gate.test.ts.
-const mugKettleSystemEnabled = vi.fn(async () => true);
+// naming neither the new import nor the change that added it.
+//
+// ⚠ WI-38314 — THE DEFAULT IS `false`, MATCHING PRODUCTION. The real predicate
+// (`pot/started.ts`) is a hard `return false` since P-068/D-098 deleted the flag
+// it used to read; no input can make it true. This mock defaulted to `true`, so
+// the file's DEFAULT was a state production cannot reach and twelve cases below
+// read as ordinary live coverage while exercising a body the sweep gate makes
+// unreachable. That is invisible at the call site — which is the defect: the
+// assertions pass, so nothing says the coverage is of a dead branch.
+//
+// Every case that still needs the tier OPEN now says so LOCALLY (the two
+// describes below re-open it in their own beforeEach, with the reason), so the
+// unreachable-body coverage is labelled rather than inherited. This mirrors
+// `placement-watchdog.test.ts`, which already keeps its delivery-body cases
+// behind an explicit local re-open beside the absence assertion they calibrate.
+// Retiring those bodies (and these cases with them) is WI-38240's sweep — tests
+// die WITH their code, per D-098's "per-file, with tests", never before it.
+const mugKettleSystemEnabled = vi.fn(async () => false);
 vi.mock('./started', () => ({
   getPotStarted: (...a: unknown[]) => getPotStarted(...a),
   listStartedPots: (...a: unknown[]) => listStartedPots(...a),
@@ -110,6 +123,12 @@ const unarmed = () => {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  // WI-38314: re-assert PRODUCTION truth before every case. `vi.clearAllMocks()`
+  // clears calls but NOT implementations, so a `mockResolvedValue(true)` set by
+  // one tier-open case would otherwise persist silently into every later case in
+  // file order — turning a labelled local re-open back into an invisible default,
+  // which is the exact defect this file was fixed for.
+  mugKettleSystemEnabled.mockResolvedValue(false);
   fires.length = 0;
   demandRow = { todo_items: 0, started_plans: 0 };
   midTurnRows = [];
@@ -292,15 +311,44 @@ describe('potTurnEndCheck (P-009) + potBootCheck (P-010)', () => {
       { workspaceId: WS, installSlug: 'h1' },
       { workspaceId: WS, installSlug: 'h2' },
     ]);
+    // WI-38314: `potBootCheck` opens with `clearRetiredTierWakes()`, which under
+    // the REAL (retired) predicate deletes any surviving routine row and warns.
+    // The file-wide `unarmed()` helper models "not armed" as an INACTIVE row
+    // (`{ active: false }`) — truthy, so the clear finds something to delete and
+    // the warn fails the suite under fail-on-console. Model it as NO ROW instead
+    // (`getPotTimeWake` returns null when the routine is absent — see wake.ts),
+    // which is the state a booting host is actually in here and makes the clear
+    // the no-op this case assumes. This was invisible while the tier mock was
+    // defaulted ON: the clear returned early and never touched the row.
+    getPotTimeWake.mockResolvedValue(null);
     const res = await potBootCheck();
     expect(res).toHaveLength(2);
     expect(res.every((r) => r.outcome === 'armed')).toBe(true);
   });
 });
 
-describe('potWatchdogSweep (P-011 / D-003: every condition gates)', () => {
+/**
+ * ⚠ TIER-OPEN COVERAGE (WI-38314). Every case in this describe exercises the
+ * sweep BODY, which `potWatchdogSweep` reaches only past
+ * `if (!(await mugKettleSystemEnabled())) { await clearRetiredTierWakes(); return }`
+ * (watchdog.ts) — and the real predicate is a hard `false`, so production always
+ * takes the early return. These cases therefore pin a body that is currently
+ * UNREACHABLE, and they are kept deliberately for the same reason
+ * placement-watchdog.test.ts keeps its delivery-body cases: the "arms nothing
+ * once the tier is retired" assertion in the P-007 describe below is worth
+ * something only if the thing asserted absent is known to work when permitted.
+ *
+ * The gate is re-opened HERE rather than inherited from the file default, so the
+ * label travels with the coverage. When WI-38240 deletes the sweep body, this
+ * whole describe goes with it — that is the intended coupling, not collateral.
+ */
+describe('potWatchdogSweep (P-011 / D-003: every condition gates) — tier forced OPEN', () => {
   const stale = () =>
     readPotWakeState.mockResolvedValue({ subscriptions: [], lastWakeAt: NOW - (watchdogStaleSec() + 60) * 1_000 });
+
+  beforeEach(() => {
+    mugKettleSystemEnabled.mockResolvedValue(true);
+  });
 
   it('no started hives → nothing', async () => {
     listStartedWorkspaceLoops.mockResolvedValue([]);
@@ -373,6 +421,12 @@ describe('K1 workspace-loop de-dup (workspace-scoped-coordination P-003)', () =>
     readPotWakeState.mockResolvedValue({ subscriptions: [], lastWakeAt: NOW - (watchdogStaleSec() + 60) * 1_000 });
 
   it('the sweep consumes the DE-DUPED workspace-loop set, not the raw per-pot set (ON ⇒ one loop)', async () => {
+    // WI-38314: tier forced OPEN for this case ONLY — `potWatchdogSweep` returns
+    // before reading either set while the tier is retired, so without this the
+    // assertion below would pass against an empty early return and prove nothing
+    // about de-duplication. Its sibling case (boot check) needs no re-open: that
+    // path gates on `getPotStarted`, which this file mocks directly.
+    mugKettleSystemEnabled.mockResolvedValue(true);
     // Simulate flag ON: listStartedPots would return N per-pot rows, but the
     // de-duped liveness set collapses to ONE workspace loop — the sweep must run
     // exactly once, not N times.
@@ -397,9 +451,16 @@ describe('K1 workspace-loop de-dup (workspace-scoped-coordination P-003)', () =>
       { workspaceId: WS, installSlug: 'pot-b' },
     ]);
     listStartedWorkspaceLoops.mockResolvedValue([{ workspaceId: WS, installSlug: 'papercusp' }]);
+    getPotTimeWake.mockResolvedValue(null); // nothing to clear — see the case above
     const res = await potBootCheck();
     expect(res).toHaveLength(1);
-    expect(listStartedWorkspaceLoops).toHaveBeenCalledTimes(1);
+    // WI-38314: TWO reads, not one, and both on the DE-DUPED accessor —
+    // `potBootCheck` calls `clearRetiredTierWakes()` (which reads the same set)
+    // before its arming pass, and under the real retired predicate that clear no
+    // longer returns early. The load-bearing claim of this case is unchanged and
+    // is the line below: the raw per-pot accessor is never consulted, so a
+    // workspace with N pot rows still yields ONE loop.
+    expect(listStartedWorkspaceLoops).toHaveBeenCalledTimes(2);
     expect(listStartedPots).not.toHaveBeenCalled();
   });
 });

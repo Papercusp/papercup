@@ -5,7 +5,7 @@
  * daily-canary stall). Pure tests for the act-decision + the env tunables; the IO
  * deps are mocked only so importing ./watchdog has no load-time side effects.
  */
-import { describe, it, expect, afterEach, vi } from 'vitest';
+import { describe, it, expect, afterEach, beforeEach, vi } from 'vitest';
 
 vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: () => Promise.resolve([]) }) }));
 vi.mock('./wake', () => ({
@@ -20,13 +20,22 @@ vi.mock('./started', () => ({
   setPotStarted: vi.fn(),
   // P-007 (retire-mug-kettle-su-only-2026-08-09): pausedPotRecoverySweep now
   // gates on the tier predicate — a retired tier is a DELIBERATE pause, so
-  // auto-resume must not run against it. Held `true` here so these cases keep
-  // testing the live-tier recovery behaviour they were written for; the
-  // retired-tier case lives in watchdog.test.ts.
-  // Omitting it does not fail loudly: the sweep's own try/catch swallows the
-  // "No mugKettleSystemEnabled export" error into a console.warn, so every
-  // assertion below silently sees an EMPTY result set instead of a real one.
-  mugKettleSystemEnabled: vi.fn(async () => true),
+  // auto-resume must not run against it. The retired-tier case lives in
+  // watchdog.test.ts.
+  // It MUST be present in this factory: omitting it does not fail loudly, because
+  // the sweep's own try/catch swallows the "No mugKettleSystemEnabled export"
+  // error into a console.warn, so every assertion below would silently see an
+  // EMPTY result set instead of a real one.
+  //
+  // ⚠ WI-38314 — DEFAULTS TO `false`, MATCHING PRODUCTION. The real predicate is
+  // a hard `return false` (P-068/D-098 deleted the flag it read), so `true` was a
+  // state no input can produce. Held `true` file-wide, it made the five sweep-body
+  // cases below read as ordinary live coverage while pinning a body the sweep's
+  // own gate makes unreachable. The two sweep describes now re-open the tier in
+  // their OWN beforeEach, so the label travels with the coverage instead of being
+  // inherited invisibly. The pure-predicate describes (shouldActOnPausedPot,
+  // effectiveAutoResumeForPause, tunables) never needed it — they call no gate.
+  mugKettleSystemEnabled: vi.fn(async () => false),
 }));
 vi.mock('../harness-registry', () => ({
   loadHarnessRegistry: vi.fn(async () => ({
@@ -50,7 +59,21 @@ import {
   effectiveAutoResumeForPause,
 } from './watchdog';
 import { declarePotTimeWake } from './wake';
-import { listPausedPots, setPotStarted } from './started';
+import { listPausedPots, mugKettleSystemEnabled, setPotStarted } from './started';
+
+/**
+ * WI-38314: re-open the retirement gate for a sweep-body case, and say why.
+ * `pausedPotRecoverySweep` opens with `if (!(await mugKettleSystemEnabled())) return results`
+ * (watchdog.ts) and the real predicate is a hard `false`, so production always
+ * takes that early return. Every case that drives the sweep body therefore pins
+ * currently-UNREACHABLE code, and is kept deliberately: watchdog.ts's own
+ * "auto-resume does not run against a retired tier" assertion is worth something
+ * only if the resume is known to work when the tier is permitted. Deleting these
+ * belongs with deleting the body itself (WI-38240) — tests die WITH their code.
+ */
+const openRetirementGateForSweepBody = () => {
+  (mugKettleSystemEnabled as unknown as ReturnType<typeof vi.fn>).mockResolvedValue(true);
+};
 import { loadHarnessRegistry } from '../harness-registry';
 
 const HOUR = 3_600_000;
@@ -95,7 +118,8 @@ describe('effectiveAutoResumeForPause (WI-3261 — owner-reported: "I keep pausi
   });
 });
 
-describe('pausedPotRecoverySweep — stale registry residue (EI-8177)', () => {
+describe('pausedPotRecoverySweep — stale registry residue (EI-8177) — tier forced OPEN', () => {
+  beforeEach(openRetirementGateForSweepBody);
   afterEach(() => {
     vi.clearAllMocks();
     delete process.env.PAPERCUSP_POT_PAUSED_RECOVERY_SEC;
@@ -126,7 +150,8 @@ describe('pausedPotRecoverySweep — stale registry residue (EI-8177)', () => {
   });
 });
 
-describe('pausedPotRecoverySweep — scope correctness under WORKSPACE_COORDINATION (WI-3309, the Mug auto-unpause RECURRENCE)', () => {
+describe('pausedPotRecoverySweep — scope correctness under WORKSPACE_COORDINATION (WI-3309, the Mug auto-unpause RECURRENCE) — tier forced OPEN', () => {
+  beforeEach(openRetirementGateForSweepBody);
   afterEach(() => {
     vi.clearAllMocks();
     wsCoordOn = false;
