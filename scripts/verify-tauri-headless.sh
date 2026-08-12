@@ -22,6 +22,15 @@
 # exactly this reason; setting CLUSTER_WORKERS ourselves would silently shadow
 # that safety pin).
 #
+# EI-20200818150345989: a bridge PID discovered by `tauri-agent-tools probe` is
+# not proof that it belongs to an agent. The owner's live desktop can expose a
+# healthy bridge on the same box, and driving it is destructive. Every verifier
+# launched from a tracked su session therefore carries both the existing
+# PAPERCUSP_SID and a dedicated launch-provenance marker. The bridge handoff
+# below matches both markers from the target process's own /proc environ before
+# exporting VERIFY_TAURI_PID; an unowned or owner-launched bridge is never handed
+# to the assertion command.
+#
 # ⚠️  WHAT IS **NOT** ISOLATED — READ THIS BEFORE YOU CLICK ANYTHING (EI-10387)
 #
 #   ISOLATED:      the X display, the devUrl port, the pty port, the sidecar
@@ -159,6 +168,11 @@
 #                                promises not to sit unattended past that). Set to
 #                                a huge value to disable reclaiming and only skip,
 #                                as before.
+#   PAPERCUSP_SID                required tracked agent/session identity. The
+#                                verifier refuses to hand back an unattributed
+#                                bridge when this is unset; this is the provenance
+#                                anchor that distinguishes an agent rig from the
+#                                owner's live desktop.
 set -uo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -168,6 +182,18 @@ DESKTOP_DIR="$REPO_DIR/papercusp-desktop"
 source "$DESKTOP_DIR/bin/lib/federation-asserts.sh"   # reuse fed_pick_free_port
 
 [ -d "$DESKTOP_DIR" ] || { echo "FATAL: $DESKTOP_DIR not found — set PAPERCUSP_REPO_DIR" >&2; exit 1; }
+
+# Do not create a rig that cannot be attributed to the caller. PAPERCUSP_SID is
+# already the session's durable coordination identity; reusing it avoids a
+# second identity source and lets the target process prove which agent launched
+# it.
+TAURI_OWNER_SID="${PAPERCUSP_SID:-}"
+[ -n "$TAURI_OWNER_SID" ] || {
+  echo "FATAL: PAPERCUSP_SID is unset — refusing to launch an unattributed Tauri verifier." >&2
+  echo "       Run this from a tracked agent session so the returned bridge cannot be confused with the owner's desktop." >&2
+  exit 1
+}
+TAURI_LAUNCH_PROVENANCE="agent:$TAURI_OWNER_SID"
 
 TIMEOUT="${VERIFY_TAURI_TIMEOUT:-180}"
 # EI-11641: pin the isolated verify sidecar's memory-watchdog high-water mark. The
@@ -925,6 +951,7 @@ cd "$DESKTOP_DIR"
 exec env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 GDK_BACKEND=x11 DISPLAY=":$DISPLAY_NUM" \\
   OPERATOR_DEV_PORT="$DEV_PORT" OPERATOR_DEV_PTY_PORT="$PTY_PORT" \\
   PAPERCUSP_DEV_API_TARGET="$DEV_PORT" PAPERCUSP_NATIVE_TERMINAL=0 \\
+  PAPERCUSP_SID="$TAURI_OWNER_SID" PAPERCUSP_TAURI_LAUNCH_PROVENANCE="$TAURI_LAUNCH_PROVENANCE" \\
   PAPERCUSP_MEMORY_WATCHDOG_LIMIT_MB=$MEMORY_LIMIT_MB \\
   $SPA_ENV_LINE \\
   $ISOLATED_ENV_LINE \\
@@ -1105,7 +1132,9 @@ for _ in $(seq 1 10); do
   BRIDGE_PID="$(pgrep -f "debug/papercusp-desktop" 2>/dev/null | while read -r p; do
     env_p="$(tr '\0' '\n' < "/proc/$p/environ" 2>/dev/null)" || continue
     grep -q "^DISPLAY=:$DISPLAY_NUM\$" <<<"$env_p" || continue
-    grep -q "^OPERATOR_DEV_PORT=$DEV_PORT\$" <<<"$env_p" && echo "$p"
+    grep -q "^OPERATOR_DEV_PORT=$DEV_PORT\$" <<<"$env_p" || continue
+    grep -qxF "PAPERCUSP_SID=$TAURI_OWNER_SID" <<<"$env_p" || continue
+    grep -qxF "PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$TAURI_LAUNCH_PROVENANCE" <<<"$env_p" && echo "$p"
   done | head -1)"
   [ -n "$BRIDGE_PID" ] && break
   sleep 1
@@ -1113,15 +1142,30 @@ done
 # NEVER fall back to a pid we have not proven is ours: a wrong --pid drives a
 # peer's shell. If our own webview can't be identified, that IS the failure.
 [ -n "$BRIDGE_PID" ] || {
-  echo "FATAL: no papercusp-desktop process carries our DISPLAY=:$DISPLAY_NUM + OPERATOR_DEV_PORT=$DEV_PORT." >&2
-  echo "       Refusing to hand back an unverified pid (it could be a peer's instance — WI-4342). Tail:" >&2
+  echo "FATAL: no papercusp-desktop process carries our display/port AND launch provenance." >&2
+  echo "       Expected DISPLAY=:$DISPLAY_NUM, OPERATOR_DEV_PORT=$DEV_PORT, PAPERCUSP_SID=$TAURI_OWNER_SID." >&2
+  echo "       Refusing to hand back an unverified pid (it could be the owner's or a peer's instance). Tail:" >&2
   tail -20 "$LOG" >&2
   exit 1
 }
 
+# Re-read the selected process after the polling loop. This is the decisive
+# handoff check: the PID and its provenance must still agree at the instant we
+# expose it to the caller, not merely at an earlier probe iteration.
+BRIDGE_ENVIRON="$(tr '\0' '\n' < "/proc/$BRIDGE_PID/environ" 2>/dev/null || true)"
+if ! grep -qxF "PAPERCUSP_SID=$TAURI_OWNER_SID" <<<"$BRIDGE_ENVIRON" \
+  || ! grep -qxF "PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$TAURI_LAUNCH_PROVENANCE" <<<"$BRIDGE_ENVIRON"; then
+  echo "FATAL: selected bridge pid=$BRIDGE_PID lost the expected launch provenance before handoff." >&2
+  echo "       Refusing to expose it to tauri-agent-tools; resolve a fresh agent-owned rig." >&2
+  exit 1
+fi
+log "bridge provenance verified: owner=$TAURI_LAUNCH_PROVENANCE pid=$BRIDGE_PID display=:$DISPLAY_NUM port=$DEV_PORT"
+
 export VERIFY_TAURI_PID="$BRIDGE_PID"
 export VERIFY_TAURI_PORT="$DEV_PORT"
 export VERIFY_TAURI_DISPLAY=":$DISPLAY_NUM"
+export VERIFY_TAURI_OWNER_SID="$TAURI_OWNER_SID"
+export VERIFY_TAURI_LAUNCH_PROVENANCE="$TAURI_LAUNCH_PROVENANCE"
 export VERIFY_TAURI_LOG="$LOG"
 # EI-19444780917356384: these two were exported ONLY on the --boot-only path, so
 # in assertion (`--`) mode the freshness guard this script documents at boot
@@ -1388,6 +1432,8 @@ if [ "${1:-}" = "--boot-only" ]; then
 export VERIFY_TAURI_PID=$VERIFY_TAURI_PID
 export VERIFY_TAURI_PORT=$VERIFY_TAURI_PORT
 export VERIFY_TAURI_DISPLAY=$VERIFY_TAURI_DISPLAY
+export VERIFY_TAURI_OWNER_SID=$VERIFY_TAURI_OWNER_SID
+export VERIFY_TAURI_LAUNCH_PROVENANCE=$VERIFY_TAURI_LAUNCH_PROVENANCE
 export VERIFY_TAURI_LOG=$VERIFY_TAURI_LOG
 export VERIFY_TAURI_POLL=$VERIFY_TAURI_POLL
 export VERIFY_TAURI_STOP=$WORK/stop.sh
