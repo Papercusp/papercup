@@ -20,9 +20,9 @@ const DEFAULT_TIMEOUT_MS = 30_000;
 export default defineTool({
   name: 'capability:fetch',
   description:
-    'Make an outbound HTTP(S) request and return status, headers, and (truncated) body. Body beyond the byte cap spills to a file. The sandbox egress policy bounds which hosts are reachable.',
+    'Make an outbound HTTP(S) request and return status, headers, and (truncated) body. Body beyond the byte cap spills to a file. The sandbox egress policy bounds which hosts are reachable. For MCP streamable-HTTP POSTs, send Accept: application/json, text/event-stream; application/json alone returns 406.',
   guidance: {
-    when: 'Fetch a URL — an API, a raw file, a docs page. For rich page-to-markdown extraction prefer the fetch_plus / firecrawl plugin tools when available.',
+    when: 'Fetch a URL — an API, a raw file, a docs page. For MCP streamable-HTTP POSTs, set Accept: application/json, text/event-stream (application/json alone returns 406). For rich page-to-markdown extraction prefer the fetch_plus / firecrawl plugin tools when available.',
     notWhen: 'Reading a local file — use capability:read. Running a network CLI — use capability:bash (curl/wget).',
     chaining: 'Standalone. Large bodies spill to a log path you can capability:read.',
   },

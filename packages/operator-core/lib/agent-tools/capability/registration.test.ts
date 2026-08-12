@@ -48,6 +48,12 @@ describe('capability tool registration', () => {
     }
   });
 
+  it('documents the dual Accept header required by MCP streamable HTTP', () => {
+    const tool = lookupByMcpName('capability:fetch');
+    expect(tool!.description).toContain('application/json, text/event-stream');
+    expect(tool!.guidance?.when).toContain('application/json alone returns 406');
+  });
+
   it('keeps background output polling out of ambient workspace transactions', () => {
     const tool = lookupByMcpName('capability:bash_output');
     expect((tool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
