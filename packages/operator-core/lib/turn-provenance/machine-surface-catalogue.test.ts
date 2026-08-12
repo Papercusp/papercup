@@ -93,6 +93,44 @@ describe('machine-surface catalogue — predicates', () => {
     ).toBe(false);
   });
 
+  /* ── WI-38157: the head anchor is not enough when the PREFIX is shared. ────
+     The mid-sentence case above passed all along, because the pattern is
+     head-anchored. What it could not catch is an owner turn that legitimately
+     BEGINS with the same words and then continues into a question. That matched
+     the old prefix pattern and the predicate returned an empty string, so the
+     owner's question was suppressed outright — the unrecoverable direction.
+
+     The fix was to match the full machine sentence rather than its prefix, which
+     is lossless: measured over the whole corpus, the loose prefix and the full
+     sentence both match 3,434 rows, so nothing stopped being hidden.
+
+     Note what is NOT the fix. The obvious remedy — "hide only if the turn is
+     substantially just the banner" — fails open on every real machine row: the
+     genuine turn is the banner PLUS the entire compaction summary, never under
+     ~1,000 chars. The `HIDES` case below is deliberately long for that reason,
+     so anyone reaching for a length/ratio test sees it fail here first. */
+  it('KEEPS an owner turn that BEGINS with the compaction preamble and then asks about it', () => {
+    expect(
+      isUnenrolledMachineSurface(
+        'This session is being continued from a previous conversation -- what does that mean?',
+      ),
+    ).toBe(false);
+    expect(
+      isUnenrolledMachineSurface(
+        'This session is being continued from a previous conversation, apparently. Why am I seeing it twice?',
+      ),
+    ).toBe(false);
+  });
+
+  it('still HIDES the real banner, which is the full sentence followed by the summary', () => {
+    const REAL_MACHINE_TURN =
+      'This session is being continued from a previous conversation that ran out of context. ' +
+      'The summary below covers the earlier portion of the conversation.\n\nSummary:\n' +
+      `${'1. Primary Request and Intent: ...\n'.repeat(40)}`;
+    expect(REAL_MACHINE_TURN.length).toBeGreaterThan(1000);
+    expect(isUnenrolledMachineSurface(REAL_MACHINE_TURN)).toBe(true);
+  });
+
   it('KEEPS an owner asking about the interrupt marker', () => {
     expect(
       isUnenrolledMachineSurface(
