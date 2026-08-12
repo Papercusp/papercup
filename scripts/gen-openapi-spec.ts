@@ -12,11 +12,17 @@
  *   Run:  npm run gen:openapi           (write .papercusp/openapi.json)
  *         npm run gen:openapi -- --check (fail if the written artifact is stale)
  *
- * ON-DEMAND, NOT committed or CI-gated — same stance + reasons as
- * gen-tool-catalog.ts (cold-imports the full ~300-tool registry; churns on every
- * tool change fleet-wide). The renderer (Scalar / starlight-openapi) is the P-005
- * Starlight-site decision, which remains owner-gated; this generator just makes
- * the spec a one-command artifact when that lands.
+ * ON-DEMAND, NOT committed or CI-gated — `.papercusp/openapi.json` is GITIGNORED
+ * (.gitignore:101), and --check treats a MISSING file as stale, so this can never
+ * be a blocking gate: a fresh checkout has no artifact to compare against. The
+ * `gen:openapi:check` npm alias was retired 2026-08-12 (WI-38239) for exactly that
+ * reason — it was a guard-shaped declaration over a file that is not in the repo.
+ * The check form above still works; it appends the flag to the writer alias.
+ * ⚠ gen-tool-catalog.ts is NOT the same case, despite this header once claiming the
+ * same stance: its artifact IS tracked, so its drift invariant is real.
+ * The renderer (Scalar / starlight-openapi) is the P-005 Starlight-site decision,
+ * which remains owner-gated; this generator just makes the spec a one-command
+ * artifact when that lands.
  */
 import { readFileSync, writeFileSync } from 'node:fs';
 import { join, dirname } from 'node:path';

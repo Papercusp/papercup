@@ -13,13 +13,23 @@
  *   Run:  npx tsx scripts/gen-tool-catalog.ts          (write .papercusp/tool-catalog.json)
  *         npx tsx scripts/gen-tool-catalog.ts --check  (fail if the written artifact is stale)
  *
- * ON-DEMAND for now — NOT committed or CI-gated. Two reasons (revisit post-launch):
- *   1. it cold-imports the FULL ~300-tool registry, which is repeatedly broken
- *      mid-flight by concurrent tool refactors on the shared tree (an unreliable
- *      CI gate today); and
- *   2. the catalog changes on every tool add/remove across the fleet, so a committed
- *      297KB snapshot would churn + conflict constantly. The stable, low-churn
- *      derived surfaces (BORROWABLE, the testing-domains contract) ARE CI-gated.
+ * ⚠ CORRECTED 2026-08-12 (WI-38239) — this header used to say the artifact was "NOT
+ * committed", and a sibling generator's header cited that claim to justify its own
+ * stance. MEASURED against the tree, it is FALSE: `.papercusp/tool-catalog.json` IS
+ * TRACKED (1.1MB, not gitignored). Reason 2 below described the intent, and the tree
+ * went the other way — so a real committed artifact has a real drift invariant here,
+ * and `gen:tool-catalog:check` is a genuine wire candidate (it sits in this repo's
+ * ACKNOWLEDGED_UNREACHABLE set), NOT the category error its openapi sibling was.
+ *
+ * NOT CI-gated, and reason 1 is what still blocks wiring it — it cold-imports the
+ * FULL ~300-tool registry, which is repeatedly broken mid-flight by concurrent tool
+ * refactors on the shared tree (an unreliable CI gate today, and the documented
+ * reason the doc-projections umbrella needed a per-child SIGKILL timeout). That is a
+ * COST objection, so measure it on a quiet box before deciding. Reason 2 — the
+ * catalog churns on every tool add/remove fleet-wide — is an argument against
+ * committing it at all, which is a separate call from whether to guard what IS
+ * committed today. The stable, low-churn derived surfaces (BORROWABLE, the
+ * testing-domains contract) ARE CI-gated.
  *
  * Importing the agent-tools barrel registers every operator-core + agent-mcp tool
  * (side-effect imports); `listAllProjectedTools()` then reads the populated registry.
