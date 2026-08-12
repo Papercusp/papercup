@@ -412,7 +412,9 @@ describe('captureImprovement — native kind + paths (close-loop D-002)', () => 
   it('seeds a successor checkpoint for an atomically claimed improvement', async () => {
     const checkpoints: Array<{ id: string; text: string }> = [];
     const d = deps({
-      setCheckpoint: async (id, text) => checkpoints.push({ id, text }),
+      setCheckpoint: async (id, text) => {
+        checkpoints.push({ id, text });
+      },
     });
 
     await captureImprovement(
