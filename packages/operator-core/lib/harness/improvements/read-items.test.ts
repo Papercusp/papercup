@@ -151,6 +151,34 @@ describe('readImprovementItems', () => {
     expect(seen).toMatchObject({ topic: IMPROVEMENT_TOPIC, state: 'open' });
   });
 
+  it('WI-9454: windows the newest rows independently for every discovered scope', async () => {
+    const scopeCalls: ListIssuesFilter[] = [];
+    const items = await readImprovementItems(
+      { windowPerScope: true, limit: 2 },
+      {
+        listScopes: async (filter) => {
+          expect(filter).toMatchObject({ topic: IMPROVEMENT_TOPIC, signalOrigins: ['organic'] });
+          return ['operator', 'harness:foo'];
+        },
+        listIssues: async (filter) => {
+          scopeCalls.push(filter);
+          return [
+            issue({ id: `${filter.scope}-1`, title: `${filter.scope} issue`, scope: filter.scope }),
+          ];
+        },
+      },
+    );
+
+    expect(scopeCalls).toHaveLength(2);
+    expect(scopeCalls).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ topic: IMPROVEMENT_TOPIC, scope: 'operator', limit: 2 }),
+        expect.objectContaining({ topic: IMPROVEMENT_TOPIC, scope: 'harness:foo', limit: 2 }),
+      ]),
+    );
+    expect(items.map((item) => item.scope).sort()).toEqual(['harness:foo', 'operator']);
+  });
+
   it('(P-010) filters by harness scope when harnessSlug is provided', async () => {
     const allIssues = [
       issue({ id: 'EI-1', title: 'a bug', kind: 'bug', scope: 'operator' }),
