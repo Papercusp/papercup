@@ -14,6 +14,7 @@ import {
   buildCallToolParams,
   isLoopPressureShed,
   callToolWithPressureRetry,
+  connectWithLocalRetry,
   jsonSourceKind,
   shouldPrintInvocationLine,
 } from '../scripts/ptool.mjs';
@@ -160,6 +161,36 @@ describe('ptool loop-pressure admission retry (EI-20209060351693879)', () => {
 
     await expect(callToolWithPressureRetry({ callTool }, { name: 'x:y' }, { sleep })).rejects.toBe(error);
     expect(callTool).toHaveBeenCalledTimes(1);
+    expect(sleep).not.toHaveBeenCalled();
+  });
+});
+
+describe('ptool local operator connect retry (EI-20207246136942518)', () => {
+  it('absorbs a bounded localhost restart window before any tool dispatch', async () => {
+    const client = { close: vi.fn() };
+    const connectOnce = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('fetch failed'))
+      .mockRejectedValueOnce(new Error('ECONNREFUSED'))
+      .mockResolvedValue(client);
+    const sleep = vi.fn(async () => {});
+
+    await expect(
+      connectWithLocalRetry(connectOnce, 'http://127.0.0.1:3170', { harness: 'papercusp' }, { maxAttempts: 3, sleep }),
+    ).resolves.toBe(client);
+    expect(connectOnce).toHaveBeenCalledTimes(3);
+    expect(sleep).toHaveBeenCalledTimes(2);
+  });
+
+  it('does not retry a remote operator connection failure', async () => {
+    const error = new Error('fetch failed');
+    const connectOnce = vi.fn().mockRejectedValue(error);
+    const sleep = vi.fn(async () => {});
+
+    await expect(
+      connectWithLocalRetry(connectOnce, 'https://operator.example.test', {}, { sleep }),
+    ).rejects.toBe(error);
+    expect(connectOnce).toHaveBeenCalledTimes(1);
     expect(sleep).not.toHaveBeenCalled();
   });
 });

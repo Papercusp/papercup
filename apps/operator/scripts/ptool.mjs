@@ -346,6 +346,33 @@ export async function callToolWithPressureRetry(
   throw lastError;
 }
 
+/**
+ * A local operator restart can make the initial MCP handshake race the brief
+ * socket-down window. Retrying the connection is safe because no tool has been
+ * dispatched yet; never extend this to a tools/call transport failure, whose
+ * mutation status is ambiguous.
+ */
+export async function connectWithLocalRetry(
+  connectOnce,
+  operatorUrl,
+  scope,
+  { maxAttempts = 30, retryDelayMs = 1_000, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {},
+) {
+  const hostname = new URL(operatorUrl).hostname;
+  const local = hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
+  let lastError;
+  for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    try {
+      return await connectOnce(operatorUrl, scope);
+    } catch (error) {
+      lastError = error;
+      if (!local || attempt === maxAttempts) throw error;
+      await sleep(retryDelayMs);
+    }
+  }
+  throw lastError;
+}
+
 /** Build ptool's superuser MCP URL. Pure and exported so the identity contract
  *  is regression-tested without opening a transport. */
 export function buildMcpUrl(operatorUrl, { workspace, harness, client } = {}) {
@@ -561,7 +588,11 @@ async function main() {
     return;
   }
   const operatorUrl = args.url || OPERATOR_URL;
-  const client = await connect(operatorUrl, { workspace: args.workspace, harness: args.harness });
+  const client = await connectWithLocalRetry(
+    connect,
+    operatorUrl,
+    { workspace: args.workspace, harness: args.harness },
+  );
   try {
     const tools = await listAllTools(client);
     const grouped = groupTools(tools);
