@@ -60,6 +60,10 @@ describe('coord:orient args', () => {
       orientTool.args.safeParse({ intent: 'planless wake', planSlug: null, planItems: [] }).success,
     ).toBe(true);
   });
+
+  it('accepts claimableLimit=0 for a lean bootstrap', () => {
+    expect(orientTool.args.safeParse({ claimableLimit: 0 }).success).toBe(true);
+  });
 });
 
 function fakeCall(handlers: Record<string, (args: Record<string, unknown>) => unknown>): {
@@ -312,6 +316,14 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     await composeOrient({ claimableState: 'wip', claimableLimit: 5, inboxLimit: 3 }, call, 'me');
     expect(calls[1].args).toMatchObject({ state: 'wip', limit: 5 });
     expect(calls[2].args).toMatchObject({ limit: 3 });
+  });
+
+  it('accepts claimableLimit=0 and skips backlog legs without a false truncation', async () => {
+    const { call, calls } = fakeCall({ ...CORE });
+    const r = await composeOrient({ harness: 'h', claimableLimit: 0 }, call, 'me');
+    expect(r.claimable).toEqual([]);
+    expect(r.claimableTruncated).toBeUndefined();
+    expect(calls.some(({ name }) => name === 'work_items:claimable' || name === 'work_items:list')).toBe(false);
   });
 
   it('with `intent`: folds a memory recall + relevant recipes AND declares the intent (full bootstrap in one call)', async () => {
@@ -569,6 +581,16 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
   it('skips the fleet catch-up for a non-fleet caller (no catch-up call, field absent)', async () => {
     const { call, calls } = fakeCall({ ...CORE }); // CORE whoami → fleetSlug null
     const r = await composeOrient({}, call, 'me');
+    expect(calls.some((c) => c.name === 'coord:catch-up')).toBe(false);
+    expect(r.fleetCatchUp).toBeUndefined();
+  });
+
+  it('accepts legacy includeCatchup as an alias for includeFleetCatchUp', async () => {
+    const { call, calls } = fakeCall({
+      ...CORE,
+      'coord:whoami': () => ({ fleetSlug: 'backend' }),
+    });
+    const r = await composeOrient({ includeCatchup: false }, call, 'me');
     expect(calls.some((c) => c.name === 'coord:catch-up')).toBe(false);
     expect(r.fleetCatchUp).toBeUndefined();
   });

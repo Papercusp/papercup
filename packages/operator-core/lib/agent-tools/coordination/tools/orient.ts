@@ -835,6 +835,12 @@ export async function composeOrient(
     // EI-8300: a monitor tick doesn't self-select work — skip the claimable read
     // entirely (no round-trip), not just cap its output.
     list = [];
+  } else if (claimableLimit === 0) {
+    // EI-20224338630649725: zero is an explicit "do not enumerate backlog" request
+    // used by recovery/bootstrap callers. The underlying claimable/list tools require
+    // a positive limit, so skip both legs rather than forwarding an invalid zero and
+    // turning a deliberately lean orient into an argument error.
+    list = [];
   } else if (!args.harness) {
     list = await listLane({});
   } else {
@@ -962,7 +968,7 @@ export async function composeOrient(
     const shown = claimable.length;
     // The FETCH was bounded (pre-observe count), which is the honest signal for
     // "there may be more" — `claimable` itself is post-filter and reads short.
-    const fetchHitLimit = claimableRaw.length >= claimableLimit;
+    const fetchHitLimit = claimableLimit > 0 && claimableRaw.length >= claimableLimit;
     if (typeof claimableOracleTotal === 'number' && claimableOracleTotal > shown) {
       claimableTruncated = {
         shown,
@@ -2086,7 +2092,7 @@ export default defineTool({
       .optional()
       .describe('Scope assignments + claimable + recall + declare to this harness.'),
     claimableState: z.string().max(40).optional().describe("Work-item state for the claimable list (default 'open' — the unified claimable token)."),
-    claimableLimit: z.number().int().positive().max(100).optional().describe('Max claimable items (default 20).'),
+    claimableLimit: z.number().int().nonnegative().max(100).optional().describe('Max claimable items (default 20; 0 skips backlog enumeration).'),
     inboxLimit: z.number().int().positive().max(50).optional().describe('Max recent inbox entries (default 10).'),
     mode: z
       .enum(['full', 'monitor'])
