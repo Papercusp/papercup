@@ -408,6 +408,88 @@ export function prettyText(text) {
   }
 }
 
+/**
+ * Find a complete JSON value at the start of a text block. The MCP result
+ * door can append its guidance/truncation notice to the SAME text item as an
+ * otherwise-complete JSON payload, so parsing the whole item is too strict.
+ * A structurally complete root is safe to return; an actually truncated
+ * object/array never reaches a closing root and remains fail-closed. Pure.
+ */
+function completeJsonPrefix(text) {
+  if (typeof text !== 'string') return null;
+  const start = text.search(/\S/);
+  if (start < 0) return null;
+  const first = text[start];
+
+  // Object/array roots need a structural scan so braces inside quoted values
+  // and nested containers do not masquerade as the document boundary.
+  if (first === '{' || first === '[') {
+    const stack = [first === '{' ? '}' : ']'];
+    let inString = false;
+    let escaped = false;
+    for (let i = start + 1; i < text.length; i += 1) {
+      const ch = text[i];
+      if (inString) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === '"') inString = false;
+        continue;
+      }
+      if (ch === '"') {
+        inString = true;
+        continue;
+      }
+      if (ch === '{') stack.push('}');
+      else if (ch === '[') stack.push(']');
+      else if (ch === '}' || ch === ']') {
+        if (stack.at(-1) !== ch) return null;
+        stack.pop();
+        if (stack.length === 0) {
+          const candidate = text.slice(start, i + 1);
+          try {
+            JSON.parse(candidate);
+            return candidate;
+          } catch {
+            return null;
+          }
+        }
+      }
+    }
+    return null;
+  }
+
+  // JSON string roots are uncommon for tool results, but escaped quotes must
+  // not terminate the value early.
+  if (first === '"') {
+    let escaped = false;
+    for (let i = start + 1; i < text.length; i += 1) {
+      const ch = text[i];
+      if (escaped) escaped = false;
+      else if (ch === '\\') escaped = true;
+      else if (ch === '"') {
+        const candidate = text.slice(start, i + 1);
+        try {
+          JSON.parse(candidate);
+          return candidate;
+        } catch {
+          return null;
+        }
+      }
+    }
+    return null;
+  }
+
+  // Scalar roots end at the first whitespace before any appended guidance.
+  const end = text.search(/\s/, start + 1);
+  const candidate = text.slice(start, end < 0 ? text.length : end);
+  try {
+    JSON.parse(candidate);
+    return candidate;
+  } catch {
+    return null;
+  }
+}
+
 /** Prefer the complete structured result requested by ptool, then fall back to
  *  flattening an MCP tools/call result's `content[]` into one text blob.
  *  Content text may carry result-door truncation markers and is therefore a
@@ -437,14 +519,23 @@ export function resultToText(result, { raw = false } = {}) {
   // literal control characters (see sanitizeJsonText below).
   if (raw) {
     const primaryJson = textParts.find((text) => {
+      const sanitized = sanitizeJsonText(text);
       try {
-        JSON.parse(sanitizeJsonText(text));
+        JSON.parse(sanitized);
         return true;
       } catch {
-        return false;
+        return completeJsonPrefix(sanitized) !== null;
       }
     });
-    if (primaryJson !== undefined) return primaryJson;
+    if (primaryJson !== undefined) {
+      const sanitized = sanitizeJsonText(primaryJson);
+      try {
+        JSON.parse(sanitized);
+        return sanitized;
+      } catch {
+        return completeJsonPrefix(sanitized) ?? primaryJson;
+      }
+    }
   }
 
   return contentText;
