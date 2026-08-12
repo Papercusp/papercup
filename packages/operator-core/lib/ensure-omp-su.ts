@@ -57,7 +57,10 @@ function isOnPath(bin: string): boolean {
 
 function runOmpConfig(args: string[]): Promise<void> {
   return new Promise((resolve, reject) => {
-    execFile('omp', args, { stdio: 'ignore' }, (error) => {
+    // `execFile` captures output by default; the callback intentionally ignores it.
+    // Its typed options do not support `stdio` (unlike `spawn`), so passing that
+    // runtime-only option made the operator typecheck red without changing behavior.
+    execFile('omp', args, (error) => {
       if (error) reject(error);
       else resolve();
     });

@@ -43,6 +43,8 @@ import {
 
 const ADAPTER_DIR = join(dirname(fileURLToPath(import.meta.url)), '..', 'adapters');
 
+type DeliveryMechanismSpec = { canPreempt: boolean; why: string };
+
 /** Every adapter that exists on disk — not a hardcoded list, so a new client
  *  cannot opt out of this guard by simply not being mentioned here. */
 async function loadAllAdapters(): Promise<Array<{ file: string; mod: any }>> {
@@ -150,7 +152,9 @@ describe('the seam validator actually rejects the dangerous shapes', () => {
     // The pre-empting entries are kept deliberately: a new adapter author
     // reaches for exactly those, and a named mechanism carrying its own verdict
     // teaches better than an absence they would have to infer.
-    for (const [name, spec] of Object.entries(DELIVERY_MECHANISMS)) {
+    for (const [name, spec] of Object.entries(
+      DELIVERY_MECHANISMS as Record<string, DeliveryMechanismSpec>,
+    )) {
       expect(typeof spec.canPreempt, `${name}.canPreempt`).toBe('boolean');
       expect(spec.why.length, `${name}.why must explain the verdict`).toBeGreaterThan(40);
     }

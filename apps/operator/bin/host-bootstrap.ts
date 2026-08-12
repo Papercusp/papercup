@@ -236,7 +236,10 @@ export function runBootstrap(): void {
     // empty-output check (fleet/invoke-outcome.ts) already classifies the
     // resulting no-turn fire as failed/infra_loss rather than a silent `done`;
     // this is the earlier, cheaper signal.
-    const warning = agentCmdBootWarning(process.env);
+    const warning = agentCmdBootWarning({
+      AGENT_CMD: process.env.AGENT_CMD,
+      CLAUDE: process.env.CLAUDE,
+    });
     if (warning) console.warn(`[agent-config] ${warning}`);
   })();
 
@@ -584,14 +587,30 @@ export function runBootstrap(): void {
   ) {
     const armEnvOperators = setTimeout(() => {
       void (async () => {
+        // Keep a local fallback because the canonical formatter is loaded by the
+        // module import below; if that import fails, the failure path still needs
+        // to emit the machine-readable terminal marker.
+        let formatEnvOperatorPass2Result: (input: {
+          status: 'ran' | 'skipped' | 'failed';
+          spawned?: number;
+          skipped?: number;
+          reason?: string;
+        }) => string = ({ status, spawned, skipped, reason }) => {
+          const fields = [`[env-operators] PASS2_RESULT status=${status}`];
+          if (spawned !== undefined) fields.push(`spawned=${spawned}`);
+          if (skipped !== undefined) fields.push(`skipped=${skipped}`);
+          if (reason !== undefined) fields.push(`reason=${reason}`);
+          return fields.join(' ');
+        };
         try {
           const {
-            formatEnvOperatorPass2Result,
+            formatEnvOperatorPass2Result: canonicalFormatEnvOperatorPass2Result,
             launchEnvOperators,
             isTransientSkip,
           } = await import(
             '@papercusp/operator-core/lib/harness/env-operator-launcher'
           );
+          formatEnvOperatorPass2Result = canonicalFormatEnvOperatorPass2Result;
           // [WI-3330] Launch the BUNDLED env operators (prod:3070/staging:3170/
           // release) FIRST — they need no source tree, so a fresh install gets them
           // within seconds instead of waiting out the ~8-10min first-boot source
