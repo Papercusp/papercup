@@ -100,7 +100,13 @@ vi.mock('../../bounded-timeout', () => ({
 const tool = (await import('./checkpoint')).default;
 // REAL (the carry-note mock above spreads importOriginal) — used to build prior notes
 // through the same renderer the store persists, rather than a drift-prone literal.
-const { mergeCarryRows, CARRY_NOTE_MAX_CHECKS, CARRY_NOTE_MAX_WALLS, CARRY_ROW_ID_MAX } = await import('../../carry-note');
+const {
+  mergeCarryRows,
+  CARRY_CAP_HARD_MULTIPLE,
+  CARRY_NOTE_MAX_CHECKS,
+  CARRY_NOTE_MAX_WALLS,
+  CARRY_ROW_ID_MAX,
+} = await import('../../carry-note');
 
 type Out = { content: { text: string }[]; isError?: boolean };
 const parse = (x: unknown) => (tool.args as { parse: (x: unknown) => unknown }).parse(x);
@@ -623,9 +629,44 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
   });
 
   describe('soft caps are enforced by TRUNCATION, and every trim is reported', () => {
-    it('rejects an overlong row id instead of silently changing its merge identity', () => {
+    it('accepts a bounded overlong row id but still rejects an absurdly long one at the input boundary', () => {
       expect(() => parse({ did: 'progress', checks: [{ claim: 'c', id: 'x'.repeat(CARRY_ROW_ID_MAX) }] })).not.toThrow();
-      expect(() => parse({ did: 'progress', checks: [{ claim: 'c', id: 'x'.repeat(CARRY_ROW_ID_MAX + 1) }] })).toThrow();
+      expect(() => parse({ did: 'progress', checks: [{ claim: 'c', id: 'x'.repeat(CARRY_ROW_ID_MAX + 1) }] })).not.toThrow();
+      expect(() =>
+        parse({
+          did: 'progress',
+          checks: [{ claim: 'c', id: 'x'.repeat(CARRY_ROW_ID_MAX * CARRY_CAP_HARD_MULTIPLE + 1) }],
+        }),
+      ).toThrow();
+    });
+
+    it('reports a long-id identity repair and stores the bounded merge identity', async () => {
+      const longId = 'x'.repeat(CARRY_ROW_ID_MAX + 1);
+      const b = body(await call({ did: 'progress', checks: [{ claim: 'c', id: longId }] }));
+      expect(b.ok).toBe(true);
+      expect(b.repairs).toHaveLength(1);
+      expect(b.repairs[0]).toMatchObject({ field: 'checks[0].id', kind: 'truncated' });
+      expect(b.repairs[0].detail).toContain(`${longId.length} chars`);
+      expect(b.repairs[0].detail).toContain(`${CARRY_ROW_ID_MAX} chars`);
+      const [, written] = setLoopCarryNote.mock.calls[0] as [unknown, string];
+      expect(written).toContain(`[#${'x'.repeat(CARRY_ROW_ID_MAX)}]`);
+    });
+
+    it('accepts recovery rows past the stored cap and reports the supplied overflow', async () => {
+      const checks = Array.from({ length: CARRY_NOTE_MAX_CHECKS + 1 }, (_, i) => ({ claim: `supplied ${i + 1}` }));
+      expect(() =>
+        parse({
+          did: 'progress',
+          checks: Array.from({ length: CARRY_NOTE_MAX_CHECKS * CARRY_CAP_HARD_MULTIPLE + 1 }, (_, i) => ({
+            claim: `too many ${i + 1}`,
+          })),
+        }),
+      ).toThrow();
+      const b = body(await call({ did: 'progress', checks }));
+      expect(b.ok).toBe(true);
+      expect(b.checks).toBe(CARRY_NOTE_MAX_CHECKS);
+      expect(b.checksOverflowed).toEqual([`supplied ${CARRY_NOTE_MAX_CHECKS + 1}`]);
+      expect(b.overflowNote).toContain('NOT stored');
     });
 
     it('writes the note instead of rejecting it when a check row overruns, and reports the trim', async () => {

@@ -40,6 +40,7 @@ import {
   CARRY_CAP_HARD_MULTIPLE,
   CARRY_ROW_ID_MAX,
   coerceCarryRowShape,
+  sanitizeCarryRowId,
   truncateCarryField,
   type CarryArgRepair,
 } from '../../carry-note';
@@ -61,17 +62,17 @@ export const CONTINUATION_READ_BUDGET_MS = 5_000;
 
 /** P-013 — the optional stable row identity, shared by the walls and checks schemas
  *  (their contract is deliberately identical). The 40-character bound is a real
- *  identity limit: rendered/parser anchors and `sanitizeCarryRowId` use the same
- *  bound, so accepting a longer id here would silently change the merge key on write.
- *  Out-of-charset input is still REPAIRED by `sanitizeCarryRowId`; overlong input is
- *  rejected here before it can become a different identity. */
+ *  STORED identity limit: rendered/parser anchors and `sanitizeCarryRowId` use the
+ *  same bound. The input backstop is deliberately looser so a recovery payload can
+ *  be repaired at the handler boundary and told that its identity changed. */
+const CARRY_ROW_ID_INPUT_HARD_MAX = CARRY_ROW_ID_MAX * CARRY_CAP_HARD_MULTIPLE;
 const CARRY_ROW_ID_SCHEMA = z
   .string()
-  .max(CARRY_ROW_ID_MAX)
+  .max(CARRY_ROW_ID_INPUT_HARD_MAX)
   .optional()
   .describe(
     "Stable id for this row (e.g. 'gate-green'), independent of wording. Lets you RE-WORD the claim without " +
-      'losing its evidence/age, and is what rowsMode:\'merge\' upserts on. Maximum 40 characters; longer ids are rejected so the identity is never silently changed. Omitted ⇒ identity is the claim text.',
+      'losing its evidence/age, and is what rowsMode:\'merge\' upserts on. Stored identities are limited to 40 characters; bounded longer inputs are repaired and reported, while inputs over the hard backstop are rejected. Omitted ⇒ identity is the claim text.',
   );
 
 /**
@@ -237,7 +238,7 @@ export default defineTool({
                   .describe('A concrete command a successor runs to re-check it.'),
               }),
             )
-            .max(CARRY_NOTE_MAX_WALLS),
+            .max(CARRY_NOTE_MAX_WALLS * CARRY_CAP_HARD_MULTIPLE),
         )
         .optional()
         .describe(
@@ -301,7 +302,7 @@ export default defineTool({
                     'boolean flag to set.',
                 ),
             }),
-          ).max(CARRY_NOTE_MAX_CHECKS),
+          ).max(CARRY_NOTE_MAX_CHECKS * CARRY_CAP_HARD_MULTIPLE),
         )
         .optional()
         .describe(
@@ -413,12 +414,28 @@ export default defineTool({
       const v = fields[key];
       if (typeof v === 'string') fields[key] = truncateCarryField(v, CARRY_TEXT_SOFT_CAP, key, repairs);
     }
-    const capRows = <T extends { claim: string; recheck?: string; verified?: string }>(
+    const capRows = <T extends { id?: string; claim: string; recheck?: string; verified?: string }>(
       rows: T[] | undefined,
       label: string,
     ): T[] | undefined =>
       rows?.map((row, i) => {
         const out = { ...row };
+        if (typeof out.id === 'string') {
+          const originalId = out.id;
+          const normalizedId = sanitizeCarryRowId(originalId);
+          if (normalizedId !== originalId) {
+            const overStoredLimit = originalId.length > CARRY_ROW_ID_MAX;
+            repairs.push({
+              field: `${label}[${i}].id`,
+              kind: overStoredLimit ? 'truncated' : 'renamed',
+              detail: overStoredLimit
+                ? `${originalId.length} chars normalized to ${normalizedId?.length ?? 0} chars (stored ids max ${CARRY_ROW_ID_MAX}) — write it shorter to preserve the full identity`
+                : `id normalized to ${normalizedId ?? 'no stable id'} — use only letters, numbers, ., _, :, and - to keep the merge identity stable`,
+            });
+          }
+          if (normalizedId) out.id = normalizedId;
+          else delete out.id;
+        }
         out.claim = truncateCarryField(out.claim, CARRY_ROW_SOFT_CAPS.claim, `${label}[${i}].claim`, repairs);
         if (typeof out.recheck === 'string')
           out.recheck = truncateCarryField(out.recheck, CARRY_ROW_SOFT_CAPS.recheck, `${label}[${i}].recheck`, repairs);
