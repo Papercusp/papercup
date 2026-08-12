@@ -675,6 +675,44 @@ export function isLoopPressureShed(error) {
   return /loop_pressure_critical|event loop critically saturated/i.test(text);
 }
 
+function errorDetail(error) {
+  if (error instanceof Error) {
+    const message = error.message || error.name || String(error);
+    const cause = error.cause;
+    if (cause && cause !== error) {
+      const code = typeof cause.code === 'string' ? cause.code : '';
+      const causeMessage = typeof cause.message === 'string' ? cause.message : '';
+      const detail = [code, causeMessage].filter(Boolean).join(': ');
+      if (detail && !message.includes(detail)) return `${message} (cause: ${detail})`;
+    }
+    return message;
+  }
+  if (typeof error === 'string') return error;
+  try {
+    const serialized = JSON.stringify(error);
+    return serialized === undefined ? String(error) : serialized;
+  } catch {
+    return String(error);
+  }
+}
+
+/**
+ * Format a tools/call failure without implying that the call did not run.
+ * Stream transport failures can arrive after the operator has dispatched the
+ * tool, so callers must verify mutation state before replaying the payload.
+ * The one known pre-dispatch refusal (loop-pressure shedding) is called out
+ * separately because that signal is safe to retry and cannot have executed.
+ * Pure — exported for focused diagnostics tests.
+ */
+export function formatToolCallFailure(toolName, error) {
+  const name = typeof toolName === 'string' && toolName ? toolName : '(unknown tool)';
+  const detail = errorDetail(error);
+  if (isLoopPressureShed(error)) {
+    return `ptool: tools/call ${name} was rejected before dispatch: ${detail}; no tool execution occurred.`;
+  }
+  return `ptool: tools/call ${name} failed: ${detail}; the tool call may have executed — verify its state before retrying. Do not blindly retry a mutation.`;
+}
+
 export async function callToolWithPressureRetry(
   client,
   params,
@@ -1082,11 +1120,18 @@ async function main() {
       console.error(`→ ${toolName}  ${JSON.stringify(callArgs)}`);
     }
 
-    const result = await callToolWithPressureRetry(
-      client,
-      buildCallToolParams(toolName, callArgs, { outputSchema: tool.outputSchema }),
-      { timeoutMs: timeoutForTool(toolName) },
-    );
+    let result;
+    try {
+      result = await callToolWithPressureRetry(
+        client,
+        buildCallToolParams(toolName, callArgs, { outputSchema: tool.outputSchema }),
+        { timeoutMs: timeoutForTool(toolName) },
+      );
+    } catch (error) {
+      console.error(formatToolCallFailure(toolName, error));
+      process.exitCode = 1;
+      return;
+    }
     const code = printResult(result, { raw: shouldPrintRawResult(inputKind, args.raw) });
     if (code !== 0) process.exitCode = code;
   } finally {
