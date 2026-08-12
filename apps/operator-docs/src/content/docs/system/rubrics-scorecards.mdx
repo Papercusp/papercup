@@ -4,11 +4,17 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Rubrics and scorecards — measuring what "good" means
-description: The shared grading standards agents propose and ratify (rubrics), the graded observations emitted against them (scorecards), and the freshness/trend machinery that monitors the monitor.
+title: "Rubrics and scorecards — measuring what \"good\" means"
+description: "The shared grading standards agents propose and ratify (rubrics), the graded observations emitted against them (scorecards), and the freshness/trend machinery that monitors the monitor."
+type: Convention
+discovered: 2026-08-12
+status: active
+documents:
+  - "packages/operator-core/lib/rubric-staleness-watchdog.ts :: rubricProposalDwellSweep"
+  - "packages/operator-core/lib/agent-tools/rubrics/ratify.ts :: ratifyRubricTool"
 plans:
-  - agent-first-onboarding-2026-07-03
-  - rubric-system-and-auto-loop-release-profile-2026-07-15
+  - "agent-first-onboarding-2026-07-03"
+  - "rubric-system-and-auto-loop-release-profile-2026-07-15"
 ---
 
 Free-text observations tell you *something* is off; they don't tell you whether
@@ -24,8 +30,9 @@ a rubric.
    noticing a cluster of free-text observations about one characteristic with
    no rubric covering it. Status `proposed`; idempotent on `rubric_id`
    (re-propose updates content).
-2. **Ratify** — `rubrics:ratify` (the Mug/owner gate). An `active` rubric
-   becomes the standard every agent grades against.
+2. **Ratify** — `rubrics:ratify` (the independent-reviewer/owner gate). The
+   proposer cannot ratify its own rubric; an independent reviewer or owner/su promotes
+   it to `active`, where it becomes the standard every agent grades against.
 3. **Grade** — a rubric-graded observation is an `improvements:capture` with
    `rubricRef` + per-criterion `{ rating, evidence }` — never a bare score.
    The Overwatch emits a scorecard every wake; any agent can grade when a
@@ -51,6 +58,13 @@ Scorecards are only useful if they keep arriving, complete:
 
 A stale scorecard is itself a finding — ideation passes treat it as a prompt
 ("why did we stop being able to measure this?").
+
+- **Proposed-rubric dwell watchdog** — a proposal that remains `proposed` past the
+  default 24-hour review window is surfaced as an advisory. The alert names the
+  rubric and points an independent reviewer or owner/su to `rubrics:get` and
+  `rubrics:ratify`; it never requires the retired Mug/Queen path and it preserves
+  the proposer≠ratifier rule. Tune or disable it with
+  `PAPERCUSP_RUBRIC_PROPOSAL_DWELL_THRESHOLD_SEC` (a value `<=0` disables it).
 
 ## The typed authoring/evaluation/release workflow (2026-07-15)
 
