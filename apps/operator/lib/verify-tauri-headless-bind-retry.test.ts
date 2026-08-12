@@ -48,8 +48,11 @@ describe('EI-18734124566158657 — verify-tauri-headless retries once on a bind-
   it('factors launch.sh generation + exec into a reusable function so a retry can re-run it', () => {
     const fn = src.match(/write_and_launch_tauri\(\) \{([\s\S]*?)\n\}/)?.[1];
     expect(fn).toBeTruthy();
-    expect(fn).toMatch(/setsid "\$WORK\/launch\.sh" >"\$LOG" 2>&1 &/);
-    expect(fn).toMatch(/TAURI_PID=\$!/);
+    // The launcher is routed through start_verify_process so Linux runs escape
+    // the operator service cgroup while non-systemd hosts retain the setsid
+    // process-group fallback. The returned client pid is the teardown handle.
+    expect(fn).toContain('TAURI_SCOPE_UNIT="${VERIFY_SCOPE_BASE}-tauri-${BOOT_ATTEMPTS}"');
+    expect(fn).toContain('TAURI_PID="$(start_verify_process "$TAURI_SCOPE_UNIT" "$LOG" "$WORK/launch.sh")"');
     // Uses the CURRENT DEV_PORT/PTY_PORT at call time (not a value baked in once),
     // so a re-pick before the retry call actually changes what gets launched.
     expect(fn).toMatch(/OPERATOR_DEV_PORT="\$DEV_PORT" OPERATOR_DEV_PTY_PORT="\$PTY_PORT"/);
