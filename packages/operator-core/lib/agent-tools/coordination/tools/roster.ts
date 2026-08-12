@@ -33,7 +33,28 @@ import { listFleetAssignments, groupByAgent, orphanedClaims, stalledClaims } fro
 import { reconcileWakeability } from '../../fleet/assignments';
 import { resolveConcreteWorkspaceId } from '../../../workspace-registry';
 import { resolveAgentIdentity } from '../identity';
-import { shapeCoordPresence } from './presence-shape';
+import { PRESENCE_TIER_CAPS, shapeCoordPresence } from './presence-shape';
+
+/**
+ * Explicit liveness is a deliberately cheap row shape, but it is still
+ * unbounded by cardinality.  A large workspace can therefore overflow the
+ * result door even though every individual row is narrow; the door's marker
+ * would then be inserted into the JSON text and make the response unparsable.
+ * Reuse the established trimmed roster cap as the conservative, transport-safe
+ * page size.  Callers can target an owner (or use the ids lens) to recover the
+ * rest without paying for the full presence rows.
+ */
+export const EXPLICIT_LIVENESS_ROW_CAP = PRESENCE_TIER_CAPS.trimmed.rows;
+
+export function capExplicitLivenessRows(
+  rows: readonly (Record<string, unknown> | string)[],
+): { rows: (Record<string, unknown> | string)[]; truncated: boolean } {
+  const truncated = rows.length > EXPLICIT_LIVENESS_ROW_CAP;
+  return {
+    rows: truncated ? rows.slice(0, EXPLICIT_LIVENESS_ROW_CAP) : [...rows],
+    truncated,
+  };
+}
 
 /**
  * WI-6658/WI-6662: did the CALLER apply an explicit `project`/`states` lens?
@@ -216,6 +237,9 @@ export default defineTool({
       const marked = markSelfRows(snapshot.active, self);
       const { rows: filtered, unknownStateExcluded } = filterRosterRowsByState(marked, args.states);
       const projected = projectRosterRows(filtered, projection);
+      const livenessPage =
+        projection === 'liveness' ? capExplicitLivenessRows(projected) : { rows: projected, truncated: false };
+      const emitted = livenessPage.rows;
       const lensed = projection !== 'full' || (args.states?.length ?? 0) > 0;
 
       // WI-6665: the re-poll etag is computed over the rows we are ABOUT TO
@@ -260,18 +284,32 @@ export default defineTool({
       }
 
       const output = {
+        ...(livenessPage.truncated
+          ? {
+              activeTruncated: {
+                shown: emitted.length,
+                censusCount: projected.length,
+                truncatedByLimit: true as const,
+                limit: EXPLICIT_LIVENESS_ROW_CAP,
+                more: 'narrow with owner/states, or use project:"ids" for the complete owner-id set',
+              },
+            }
+          : {}),
         ...snapshot,
         etag: viewEtag,
         view: view === 'live' ? 'live' : 'members',
         ...(self ? { self } : {}),
-        active: projected,
+        active: emitted,
         ...(lensed
           ? {
               projection: {
                 project: projection,
                 ...(args.states?.length ? { states: args.states } : {}),
-                returned: projected.length,
+                returned: emitted.length,
                 ofActive: snapshot.active.length,
+                ...(livenessPage.truncated
+                  ? { truncatedByLimit: true as const, limit: EXPLICIT_LIVENESS_ROW_CAP }
+                  : {}),
                 ...(unknownStateExcluded ? { unknownStateExcluded } : {}),
               },
             }

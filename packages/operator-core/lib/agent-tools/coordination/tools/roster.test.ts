@@ -7,7 +7,9 @@
  */
 
 import { describe, it, expect, beforeEach, vi } from 'vitest';
-import rosterTool from './roster';
+import { CHARS_PER_TOKEN_ESTIMATE } from '../../../context-doors';
+import { RESULT_DOOR_TOKENS } from '../../../result-door';
+import rosterTool, { EXPLICIT_LIVENESS_ROW_CAP } from './roster';
 
 // Mock dependencies
 vi.mock('../presence-snapshot', async (importOriginal) => ({
@@ -29,26 +31,36 @@ vi.mock('../presence-snapshot', async (importOriginal) => ({
     potId: args.hive ?? 'test-hive',
   })),
   assemblePresenceSnapshot: vi.fn(async (resolved, opts) => {
-    const allActive = [
-      {
-        ownerId: 'agent-1',
-        ownerLabel: 'bee · agent-1',
-        sessionState: 'live',
-        wakeable: true,
-        fleetSlug: 'fleet-a',
-        fleetRole: 'member',
-        onDesktop: true,
-      },
-      {
-        ownerId: 'agent-2',
-        ownerLabel: 'su · agent-2',
-        sessionState: 'parked',
-        wakeable: true,
-        fleetSlug: 'fleet-b',
-        fleetRole: 'member',
-        onDesktop: false,
-      },
-    ];
+    const allActive = opts?.detail
+      ? Array.from({ length: 130 }, (_, i) => ({
+          ownerId: `agent-${i}`,
+          ownerLabel: `su · agent-${i}`,
+          sessionState: i % 2 === 0 ? 'live' : 'parked',
+          wakeable: true,
+          fleetSlug: 'fleet-a',
+          fleetRole: 'member',
+          onDesktop: i % 2 === 0,
+        }))
+      : [
+          {
+            ownerId: 'agent-1',
+            ownerLabel: 'bee · agent-1',
+            sessionState: 'live',
+            wakeable: true,
+            fleetSlug: 'fleet-a',
+            fleetRole: 'member',
+            onDesktop: true,
+          },
+          {
+            ownerId: 'agent-2',
+            ownerLabel: 'su · agent-2',
+            sessionState: 'parked',
+            wakeable: true,
+            fleetSlug: 'fleet-b',
+            fleetRole: 'member',
+            onDesktop: false,
+          },
+        ];
     // Honor the targeted `owner` lookup like the real assemblePresenceSnapshot,
     // which applies selectRosterRows(rows, owner) → matchesOwner (exact ownerId/
     // label, else substring either-way). Without this the mock returns every row
@@ -262,6 +274,32 @@ describe('coord:roster', () => {
           fleetRole: 'member',
         }),
       );
+    });
+
+    it('caps an oversized explicit liveness page before the result door can corrupt JSON', async () => {
+      const { raw, output } = await call(
+        { view: 'members', project: 'liveness', include_detail: true },
+        { workspaceId: 'test-ws' },
+      );
+
+      const active = output.active as Array<Record<string, unknown>>;
+      expect(active).toHaveLength(EXPLICIT_LIVENESS_ROW_CAP);
+      expect(output.activeTruncated).toMatchObject({
+        shown: EXPLICIT_LIVENESS_ROW_CAP,
+        censusCount: 130,
+        truncatedByLimit: true,
+        limit: EXPLICIT_LIVENESS_ROW_CAP,
+      });
+      expect(output.projection).toMatchObject({
+        project: 'liveness',
+        returned: EXPLICIT_LIVENESS_ROW_CAP,
+        ofActive: 130,
+        truncatedByLimit: true,
+        limit: EXPLICIT_LIVENESS_ROW_CAP,
+      });
+      expect(active[0]).toEqual({ ownerId: 'agent-0', sessionState: 'live' });
+      expect(raw.content[0]!.text.length).toBeLessThan(RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE);
+      expect(() => JSON.parse(raw.content[0]!.text)).not.toThrow();
     });
   });
 
