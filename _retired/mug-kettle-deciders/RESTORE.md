@@ -307,8 +307,9 @@ confused with this tool.** It is the shared spawn ENGINE; `cup:spawn` was one of
 doors onto it. The survivors — `capability:launch-agent` and `fleet:launch-on-plan` — call
 the same engine and are untouched.
 
-**Live-tree edits a restore must undo — TWELVE. Numbers 5–9 are the ones a name-grep of the
-moved file does NOT find, because each is a pointer *into* the retired surface.**
+**Live-tree edits a restore must undo — THIRTEEN. Numbers 5–9 are the ones a name-grep of the
+moved file does NOT find, because each is a pointer *into* the retired surface; number 13 landed
+LATER, after the two invariants below caught what this slice's own verification missed.**
 
 1. `agent-tools/index.ts` — `import './cup/spawn';` (was `:1047`) replaced by a comment. A
    restore that returns the file but not this line silently restores nothing.
@@ -373,6 +374,24 @@ moved file does NOT find, because each is a pointer *into* the retired surface.*
     dependency entry) · `libs/papercusp/.../orchestrator/src/invoke.ts:645` (the queen tool kit).
     ⚠ The last two live in the **`libs/papercusp` SUBMODULE** — their restore is a submodule
     commit, not a superproject one.
+
+13. **`operator-mcp-tools.ts` — the `mcp__agentmcp__` chat-surface allowlist entry — AND its
+    assertion in `operator-mcp-tools.test.ts`.** ⚠ **This was MISSED by the original slice and
+    red-pinned the shared gate.** Naming an unregistered tool in that allowlist is not inert: it
+    is a PROMISE to the chat surface that the tool is callable, and it broke two invariants at
+    once — `tool-auth-gating` ("every operator-converse allowedTool resolves in the core
+    registry") and `tools-md-sync` ("every allowedTool has a catalog entry"). The entry was
+    removed first; that alone then broke a THIRD test, `operator-mcp-tools.test.ts:30`, which
+    still asserted the entry was PRESENT. It was inverted into a retirement regression guard
+    (`does NOT expose the retired cup-spawn nursery verb`), matching the existing work-item-mail
+    precedent in that same file, so a re-introduction now fails next to its rationale instead of
+    as two mystery reds elsewhere. **A restore must undo BOTH halves** — re-add the allowlist
+    entry AND flip that guard back to a presence check, or the guard will fail the restore.
+    ⚠⚠ **Do NOT write the full `mcp__agentmcp__` + `cup:spawn` token anywhere in
+    `operator-mcp-tools.ts`, even in a comment saying it was removed.** `tools-md-sync` builds
+    the allowlist by regexing that file's source text (`allowedToolsSource`), and a regex cannot
+    tell a live contract from prose about one — a comment mentioning the prefixed name silently
+    re-adds the tool. The token IS safe in the test file: nothing harvests it.
 
 ⚠ **`mug-kettle-gate-strands-suite.test.ts`'s dynamic-import arm lost its only real subject.**
 Its comment cited `cup/spawn.ts` as proof the dynamic `await import('…/_mug-kettle-gate')`
