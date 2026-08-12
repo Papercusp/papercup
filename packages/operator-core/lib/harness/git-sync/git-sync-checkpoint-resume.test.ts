@@ -310,6 +310,18 @@ describe('WI-1416 git subprocess hang guard', () => {
       //   total 500ms vs deadline 300ms -> STILL FALSIFIABLE: drop the refresh and the child is
       //   killed at 300ms, 200ms short of finishing, so a real regression still fails here.
       // Load only stretches the total, which strengthens falsifiability rather than eroding it.
+      //
+      // WI-38338 addendum: su-ead0a reports this 6x budget has ALREADY been beaten on this box.
+      // Before re-tuning it, note the constraint is THREE-WAY, not one deadline:
+      //     gap  <  idle deadline  <  total runtime  <  hard ceiling
+      // (idle > gap = jitter tolerance; idle < total = falsifiability; total < ceiling or the
+      // ceiling kills the healthy child and fails this test for the WRONG reason). Load stretches
+      // gap and total together while the deadlines stay fixed, so the lever that buys tolerance
+      // without breaking falsifiability is the ITERATION COUNT (which lifts total), not the idle
+      // deadline alone. Raising idle alone eventually crosses total and silently guts the test.
+      // Whoever re-tunes this: attach your reproduction — it passed 3/3 here (runIds 75fa3b0e,
+      // 56f8c179, ca54dfcb) in a 5-file parallel run, so the numbers should come from a run that
+      // actually reproduces the failure rather than from guesswork.
       writeFileSync(
         fakeGit,
         '#!/bin/sh\nprintf "%s\\n" "$@" > "$PWD/argv"\ni=0\nwhile test "$i" -lt 10; do echo "progress $i" >&2; sleep 0.05; i=$((i + 1)); done\n',
@@ -335,7 +347,10 @@ describe('WI-1416 git subprocess hang guard', () => {
       else process.env.PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS = oldHardTimeout;
       rmSync(cwd, { recursive: true, force: true });
     }
-  });
+    // WI-38338: ~500ms nominal against vitest's 5000ms default is only 10x, and the budget above
+    // has already been beaten at 6x — so the DEADLINE was a live flake vector of its own here,
+    // independent of the timing budget. Pinned explicitly; this changes no timing semantics.
+  }, 20_000);
 
   it('still kills an endlessly-chatty network child at the independent hard ceiling', async () => {
     // WI-38338 — TIMING BUDGET, do not re-tighten. This is the SIBLING of the WI-38223 fix above
