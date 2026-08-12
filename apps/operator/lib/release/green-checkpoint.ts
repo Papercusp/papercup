@@ -7335,7 +7335,7 @@ if (require.main === module) {
   // release/checkpoint checkout that nothing selected. The refusal lives here, not in
   // releaseConfig(), because ~37 callers (rollback, deploy-cli) share that constructor and
   // must not be taken down to protect the gate.
-  console.log(`[green-checkpoint] ${integrationRootEvidence()}`);
+  console.log(`${orchestratorStdoutTag()} ${integrationRootEvidence()}`);
   assertGateableIntegrationRoot();
   const cfg = releaseConfig();
   const arg = (f: string) => {

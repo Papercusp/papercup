@@ -12,7 +12,10 @@
  * axis sends N DISTINCT messages in one call. Both return the house envelope
  * { ok, results:[{ ok, to, msg_id? … | error }], counts } — each result
  * self-describes its `to` (+ returned msg_id); one failed message never fails the
- * rest. All routing/recipient-resolve/wake/endTurn logic runs PER message.
+ * rest. When any message fails, this tool also adds `partial:true` and a
+ * `deliveryFailureWarning` so the shared bulk envelope's execution-level `ok:true`
+ * cannot be mistaken for successful delivery. All routing/recipient-resolve/wake/
+ * endTurn logic runs PER message.
  */
 
 import { z } from 'zod';
@@ -69,7 +72,7 @@ import { resolveRecipients, isSelectorOrWildcard, remoteSessionsByOwnerId } from
 import { resolveWorkspaceHiveScope, resolveSharedHiveDisambiguation } from '../federation-scope';
 import { COORD_ROLES } from '../roles';
 import { forceEndTurn } from '../../turn/interrupt';
-import { runBulk, bulkContent, type BulkItemResult } from '../../_bulk';
+import { runBulk, bulkContent, type BulkEnvelope, type BulkItemResult } from '../../_bulk';
 import { cellTranscriptionHint } from '../../../cell-transcription-detector';
 import {
   messageBodyArg,
@@ -1626,9 +1629,9 @@ async function effectiveFederationScope(
 export default defineTool({
   name: 'coord:send',
   description:
-    'Send coordination messages. Single: {to, summary, expects, body?}; `summary` is REQUIRED as the one-line inbox headline, while `body` is optional long-form detail. Distinct messages: items:[…]. `to` accepts ownerIds, ["*"] for fleet scope, or ["human"]. `expects` is required: ack|answer|action|none. `why` is a structured envelope field: { goalRef, note? }, not prose. Directed action/answer messages require `forYouBecause` on a body section. `wake` re-invokes sleeping recipients (`required` reports misses; `optimistic` needs `backstop`). Returns per-message {ok, to, msg_id|error} counts.',
+    'Send coordination messages. Single: {to, summary, expects, body?}; `summary` is REQUIRED as the one-line inbox headline, while `body` is optional long-form detail. Distinct messages: items:[…]. `to` accepts ownerIds, ["*"] for fleet scope, or ["human"]. `expects` is required: ack|answer|action|none. `why` is a structured envelope field: { goalRef, note? }, not prose. Directed action/answer messages require `forYouBecause` on a body section. `wake` re-invokes sleeping recipients (`required` reports misses; `optimistic` needs `backstop`). Returns per-message {ok, to, msg_id|error} counts; when any message fails, top-level `partial:true` and `deliveryFailureWarning` call out that envelope `ok:true` only means the batch ran, not that every message was delivered.',
   guidance: {
-    when: 'Share context or ask. Include `to`, `summary` (REQUIRED one-line inbox headline), and `expects`; use `body` for optional detail. Directed action/answer messages need `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack, and none are exempt. Use items:[…] for distinct messages. `why` is `{ goalRef, note? }` — goal REF, never prose. `premises` is an ARRAY OF REF STRINGS, not objects: `premises: ["WI-1234#completion"]` (unlike `forYouBecause`, which is the object field). `youMayNotKnow` and `couldNotDetermine` are typed object arrays: `youMayNotKnow: [{ ref, provenance }]` (for example, `[{ ref: "..." }]`) and `couldNotDetermine: [{ what, note? }]` (for example, `[{ what: "..." }]`), not a string or array of strings. wake:\'required\' reports misses; wake:\'optimistic\' needs `backstop`.',
+    when: 'Share context or ask. Directed action/answer messages need `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack and none are exempt. The field SHAPES that are routinely got wrong: `premises` is an array of REF STRINGS (`["WI-1234#completion"]`), while `youMayNotKnow: [{ ref, provenance }]` and `couldNotDetermine: [{ what, note? }]` are arrays of OBJECTS — never bare strings.',
     notWhen: 'Human reply: speak. File lock: locks:acquire. Ambient note: omit wake. One message to many: to:[…]; distinct messages: items:[…]. Work transfer: coord:handoff.',
     seeAlso: [
       'coord:handoff (transfer WORK, not just a message)',
@@ -2058,6 +2061,32 @@ export default defineTool({
         keyOf: (msg) => ({ to: msg.to }),
       },
     );
+    // The shared bulk contract deliberately keeps `ok:true` at the envelope level:
+    // it means the batch executed, while `results[].ok` / `counts.failed` describe
+    // each item's outcome. That distinction is easy to miss on a direct coord:send
+    // call, where a thrown persistence error (for example a transient PG lock
+    // timeout) becomes a nested `{ ok:false }` and otherwise looks like success.
+    // Keep the generic contract unchanged, but make this delivery-specific tool
+    // failure impossible to mistake for a clean send.
+    const failed = env.results.filter((result) => !result.ok);
+    if (failed.length > 0) {
+      const errors = failed
+        .map((result) => (typeof result.error === 'string' ? result.error : 'unknown delivery error'))
+        .filter((error, index, all) => all.indexOf(error) === index)
+        .slice(0, 3)
+        .join('; ');
+      const warning =
+        `coord:send completed the batch, but ${failed.length} message${failed.length === 1 ? '' : 's'} ` +
+        `failed delivery (counts.failed:${env.counts.failed}). Top-level ok:true only means the batch ran — ` +
+        `do not assume every message was delivered; inspect results[].ok and retry or re-dispatch the failed ` +
+        `message${failed.length === 1 ? '' : 's'} as appropriate.` +
+        (errors ? ` Failure detail: ${errors}` : '');
+      return bulkContent({
+        ...env,
+        partial: true,
+        deliveryFailureWarning: warning,
+      });
+    }
     return bulkContent(env);
   },
 });
