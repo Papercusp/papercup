@@ -12,6 +12,7 @@
  * Vitest args may follow the file list directly or after an explicit `--` separator.
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -645,6 +646,279 @@ export function aggregateGroupResults(groupResults) {
   };
 }
 
+/**
+ * EI-18681435059177620 — A TEST RESULT IS ONLY EVIDENCE WHEN IT NAMES THE FILE STATE IT DESCRIBED.
+ *
+ * This is a SHARED, concurrently-edited checkout by design (CLAUDE.md § branch discipline: no
+ * branches, no worktrees, git-sync sweeps the whole tree on a schedule). A test result is therefore
+ * a measurement of a MOVING TARGET, and nothing in the result used to record which target it
+ * measured. The reported incident: three measurements of ONE file inside 25 minutes each described
+ * a different state of it, and each was cited as though it described "the file" — producing a
+ * fleet-critical false alarm ("DO NOT SHIP", hardened into a `facts:assert`) and then a false
+ * all-clear ("the detach fixes it", already stale when posted). Every number was true. Only
+ * mtime+git forensics by the original reporter caught either one.
+ *
+ * ⚠ THE DIRTY FLAG ALONE CANNOT CATCH THE MEASURED CASE, which is why these snapshots carry a
+ * CONTENT FINGERPRINT and not just a clean/dirty bit. In the incident's second measurement the file
+ * was dirty BEFORE the run and dirty AFTER it — what changed was its CONTENT (`runGatedDelivery`
+ * was written 4 minutes after the run that "tested" it). A dirty→dirty transition is invisible to
+ * `git status`, so a status-only stamp would have reported that run as correctly described and
+ * reproduced the exact failure it was built to prevent.
+ *
+ * SCOPE, stated on the banner itself because overclaiming here is the same defect one level up:
+ * this covers the paths the caller NAMED. An edit to any other module in their import graph
+ * invalidates the result just as thoroughly and is NOT measured (finding that set would mean
+ * resolving the graph — far past "two git calls" — and a stamp that silently implied whole-graph
+ * coverage would be worse than none).
+ *
+ * Diagnostics MUST never affect the real run: every git call is guarded, and an unmeasurable state
+ * is reported as `unknown`, NEVER as `clean`. Reporting an unmeasured path as clean would
+ * manufacture exactly the false confidence this exists to remove.
+ */
+const PROVENANCE_UNKNOWN = 'unknown';
+
+/**
+ * Content fingerprint of one file — the drift primitive. `null` for missing/unreadable, which
+ * `diffProvenanceSnapshots` treats as "cannot compare", never as "unchanged".
+ */
+export function fileFingerprint(absolute) {
+  try {
+    return createHash('sha1').update(readFileSync(absolute)).digest('hex').slice(0, 12);
+  } catch {
+    return null;
+  }
+}
+
+/** Short HEAD sha, or null when git cannot answer (never a fabricated value). */
+function gitHeadSha(root) {
+  try {
+    const res = run('git', ['rev-parse', '--short=10', 'HEAD'], { cwd: root });
+    if (res.error || res.status !== 0) return null;
+    const sha = (res.stdout ?? '').trim();
+    return sha === '' ? null : sha;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Per-path working-tree state for exactly the paths asked about.
+ *
+ * `-z` (NUL-separated) deliberately over plain `--porcelain`: porcelain QUOTES and escapes paths
+ * containing spaces/unicode, so a text parse silently mis-keys those paths and reports them clean.
+ * Rename records emit a second NUL-terminated field (the source path) which carries no `XY ` status
+ * prefix — those are skipped rather than parsed as a path, so a rename can never be read as a
+ * status line for some other file.
+ */
+function gitPathStates(absolutePaths, root) {
+  const states = new Map(absolutePaths.map((abs) => [abs, PROVENANCE_UNKNOWN]));
+  if (absolutePaths.length === 0) return states;
+  let res;
+  try {
+    res = run('git', ['status', '--porcelain', '-z', '--', ...absolutePaths], { cwd: root });
+  } catch {
+    return states;
+  }
+  if (res.error || res.status !== 0) return states; // unmeasured stays `unknown`, never `clean`
+  // git answered for every requested path, so anything it did not name is genuinely clean.
+  for (const abs of absolutePaths) states.set(abs, 'clean');
+  for (const record of (res.stdout ?? '').split('\0')) {
+    if (record.length < 4) continue;
+    const code = record.slice(0, 2);
+    const reported = record.slice(3);
+    if (!/^[ MADRCU?!]{2}$/.test(code)) continue; // a rename's source field — not a status record
+    const abs = resolve(root, reported);
+    if (!states.has(abs)) continue;
+    states.set(abs, code === '??' ? 'untracked' : 'dirty');
+  }
+  return states;
+}
+
+/** Added/deleted line counts vs HEAD (staged + unstaged), for the paths git can diff. */
+function gitLineDeltas(absolutePaths, root) {
+  const deltas = new Map();
+  if (absolutePaths.length === 0) return deltas;
+  let res;
+  try {
+    res = run('git', ['diff', '--numstat', 'HEAD', '--', ...absolutePaths], { cwd: root });
+  } catch {
+    return deltas;
+  }
+  if (res.error || res.status !== 0) return deltas;
+  for (const line of (res.stdout ?? '').split('\n')) {
+    const match = /^(\d+|-)\t(\d+|-)\t(.+)$/.exec(line);
+    if (!match) continue;
+    const abs = resolve(root, match[3]);
+    deltas.set(abs, {
+      added: match[1] === '-' ? null : Number(match[1]),
+      deleted: match[2] === '-' ? null : Number(match[2]),
+    });
+  }
+  return deltas;
+}
+
+/**
+ * Snapshot the provenance of the NAMED paths. Deduped and order-stable so the pre-run and post-run
+ * snapshots are directly comparable entry-for-entry.
+ */
+export function snapshotProvenance(absolutePaths, root = REPO_ROOT) {
+  const unique = [...new Set(absolutePaths)];
+  const states = gitPathStates(unique, root);
+  const deltas = gitLineDeltas(unique, root);
+  return {
+    head: gitHeadSha(root),
+    entries: unique.map((absolute) => ({
+      absolute,
+      path: relative(root, absolute) || absolute,
+      state: states.get(absolute) ?? PROVENANCE_UNKNOWN,
+      fingerprint: fileFingerprint(absolute),
+      ...(deltas.get(absolute) ?? { added: null, deleted: null }),
+    })),
+  };
+}
+
+/** `[DIRTY +30/-0]` / `[clean]` / `[UNTRACKED]` / `[state UNKNOWN]` — the per-path suffix. */
+function stateLabel(entry) {
+  if (entry.state === 'clean') return '[clean]';
+  if (entry.state === 'untracked') return '[UNTRACKED — exists only on this box]';
+  if (entry.state === PROVENANCE_UNKNOWN) return '[state UNKNOWN — git could not be read]';
+  const counts =
+    typeof entry.added === 'number' && typeof entry.deleted === 'number'
+      ? ` +${entry.added}/-${entry.deleted}`
+      : '';
+  return `[DIRTY${counts}]`;
+}
+
+/**
+ * The banner, isolated from I/O so the part that can be WRONG IN A COSTLY WAY — what a pasted
+ * result claims about itself — is unit testable (the tested-decision / untested-orchestration split
+ * every other helper in this file follows).
+ *
+ * @param {{ head: string|null, entries: object[] }} snapshot
+ * @param {string} phase `pre-run` or `post-run`
+ */
+export function formatProvenanceBanner(snapshot, phase) {
+  const entries = snapshot.entries ?? [];
+  const unreproducible = entries.filter((e) => e.state === 'dirty' || e.state === 'untracked');
+  const unknown = entries.filter((e) => e.state === PROVENANCE_UNKNOWN);
+  const head = snapshot.head ?? PROVENANCE_UNKNOWN;
+  const lines = [
+    `TEST_FILE_PROVENANCE head=${head} testedPaths=${entries.length} ` +
+      `uncommitted=${unreproducible.length} unknown=${unknown.length} phase=${phase}`,
+    `  HEAD         : ${head}`,
+  ];
+  entries.forEach((entry, index) => {
+    lines.push(`  ${index === 0 ? 'tested files :' : '              '} ${entry.path}  ${stateLabel(entry)}`);
+  });
+  lines.push(
+    '  scope        : the NAMED paths above only — an edit to any OTHER module in their import ' +
+      'graph invalidates this result just as thoroughly and is NOT measured here',
+  );
+  if (unreproducible.length > 0) {
+    lines.push(
+      `  ⚠ ${unreproducible.length} of ${entries.length} tested path(s) carry uncommitted changes — this result ` +
+        'describes LOCAL state and is not reproducible by anyone else. Cite it with this stamp or not at all.',
+    );
+  }
+  if (unknown.length > 0) {
+    lines.push(
+      `  ⚠ ${unknown.length} path(s) could not be measured — treat their state as UNKNOWN, not as clean.`,
+    );
+  }
+  return lines.join('\n');
+}
+
+/**
+ * Did the ground move under the run? Compares the pre-run and post-run snapshots.
+ *
+ * A `null` fingerprint on EITHER side is "cannot compare", never "unchanged" — a file that became
+ * unreadable mid-run is precisely the case where a silent `unchanged` would be a lie.
+ */
+export function diffProvenanceSnapshots(before, after) {
+  const afterByPath = new Map((after?.entries ?? []).map((e) => [e.absolute, e]));
+  const changed = [];
+  const uncomparable = [];
+  for (const prior of before?.entries ?? []) {
+    const now = afterByPath.get(prior.absolute);
+    if (!now) continue;
+    if (prior.fingerprint === null || now.fingerprint === null) {
+      uncomparable.push({ path: prior.path, reason: now.fingerprint === null ? 'unreadable after the run' : 'unreadable before the run' });
+      continue;
+    }
+    if (prior.fingerprint !== now.fingerprint) changed.push({ path: prior.path });
+  }
+  const headMoved =
+    before?.head != null && after?.head != null && before.head !== after.head
+      ? { from: before.head, to: after.head }
+      : null;
+  return { changed, uncomparable, headMoved, drifted: changed.length > 0 };
+}
+
+/**
+ * The drift warning, or null when nothing moved.
+ *
+ * ⚠ DELIBERATELY DOES NOT CHANGE THE EXIT CODE, and that is a judgment call worth stating. A tested
+ * file changing mid-run genuinely means the verdict describes neither the before nor the after
+ * state — but this exit code is consumed by gates, and turning a correct green into a red on a
+ * DIAGNOSTIC signal would make this a new false-RED generator. False reds are expensive here too:
+ * on 2026-08-12 six consecutive gate reds were all stale tree churn and zero were standing defects.
+ * So the drift rides on the RESULT line instead (`provenance=drifted`), which makes it impossible
+ * to paste the verdict WITHOUT its caveat — the item's actual goal — while leaving the pass/fail
+ * bit meaning exactly what it always meant.
+ */
+export function formatProvenanceDrift(diff) {
+  if (!diff || (diff.changed.length === 0 && diff.uncomparable.length === 0 && !diff.headMoved)) return null;
+  const lines = [];
+  if (diff.changed.length > 0 || diff.uncomparable.length > 0) {
+    lines.push(
+      `TEST_FILE_PROVENANCE_DRIFT changed=${diff.changed.length} uncomparable=${diff.uncomparable.length} ` +
+        `headMoved=${diff.headMoved ? `${diff.headMoved.from}->${diff.headMoved.to}` : 'no'}; ` +
+        'a tested path CHANGED WHILE THIS RUN WAS EXECUTING — the result below describes NEITHER the ' +
+        'state it started on nor the state on disk now. Re-run before citing it as evidence.',
+    );
+    for (const c of diff.changed) lines.push(`  ~ ${c.path} — content changed mid-run`);
+    for (const u of diff.uncomparable) lines.push(`  ? ${u.path} — ${u.reason}; drift UNKNOWN`);
+  } else {
+    // HEAD moved but no tested path changed: git-sync sweeps this tree on a schedule, so this is
+    // routine and must NOT be dressed up as drift — say plainly that the measurement still stands.
+    lines.push(
+      `TEST_FILE_PROVENANCE_HEAD_MOVED from=${diff.headMoved.from} to=${diff.headMoved.to}; ` +
+        'no tested path changed content, so this result still describes the files it measured ' +
+        '(git-sync commits this shared tree on a schedule — a moving HEAD alone is routine).',
+    );
+  }
+  return lines.join('\n');
+}
+
+/**
+ * The fields appended to the terminal `TEST_FILE_RESULT` / `TEST_FILE_DRYRUN` line.
+ *
+ * This placement is the load-bearing half of the fix, for the reason already learned twice in this
+ * file (EI-19462803905923939 / EI-19467022057492490): the terminal marker line is the LAST thing a
+ * `| tail -N` reads — the idiom CLAUDE.md prescribes throughout — and it is the one line agents
+ * actually paste into a work-item or a coord message. A banner printed only at the top scrolls out
+ * of exactly the excerpt that gets quoted as evidence.
+ *
+ * `provenance` is three-state on purpose, mirroring this file's other three-state guards: `stamped`
+ * (measured, nothing moved), `drifted` (a tested path changed mid-run), `unknown` (git unreadable —
+ * NOT a clean bill).
+ */
+export function provenanceResultFields(snapshot, diff) {
+  const entries = snapshot?.entries ?? [];
+  const unknown = entries.filter((e) => e.state === PROVENANCE_UNKNOWN).length;
+  const uncommitted = entries.filter((e) => e.state === 'dirty' || e.state === 'untracked').length;
+  const verdict =
+    diff?.drifted || (diff?.uncomparable?.length ?? 0) > 0
+      ? 'drifted'
+      : snapshot?.head == null || unknown > 0
+        ? PROVENANCE_UNKNOWN
+        : 'stamped';
+  return (
+    `head=${snapshot?.head ?? PROVENANCE_UNKNOWN} ` +
+    `uncommittedPaths=${uncommitted}/${entries.length} provenance=${verdict}`
+  );
+}
+
 function parseCli(argv) {
   const separator = argv.indexOf('--');
   // Keep the explicit separator form, but also accept the way npm users naturally forward
@@ -690,6 +964,11 @@ export function main(argv = process.argv.slice(2)) {
   const groups = groupRoutes(routes);
   const nameFilter = nameFilterFrom(vitestArgs);
   console.log(`TEST_FILE_ROUTE requested=${routes.length} groups=${groups.length}`);
+  // EI-18681435059177620: stamp WHAT IS ABOUT TO BE MEASURED before measuring it. Printed up front
+  // as well as at the end because a run that is killed, hung, or timed out by its caller still has
+  // to say which state it was describing — that partial log is exactly the one that gets pasted.
+  const provenanceBefore = snapshotProvenance(routes.map((route) => route.absolute));
+  console.log(formatProvenanceBanner(provenanceBefore, 'pre-run'));
   // EI-13535: every group runs UNCONDITIONALLY — a mismatch or failure in one workspace's group
   // must never abandon the OTHER groups a multi-workspace request spans (see aggregateGroupResults
   // doc for the full incident). Each iteration always records its outcome and moves on; the final
@@ -914,10 +1193,20 @@ export function main(argv = process.argv.slice(2)) {
   // by construction, instead of requiring every caller to also parse `status=`.
   if (dry) {
     console.log(
-      `TEST_FILE_DRYRUN requested=${summary.requested} executed=0 matched=${summary.matched} status=dry-run`,
+      `TEST_FILE_DRYRUN requested=${summary.requested} executed=0 matched=${summary.matched} status=dry-run ` +
+        `${provenanceResultFields(provenanceBefore, null)}`,
     );
     return 0;
   }
+
+  // EI-18681435059177620: re-measure AFTER the run. This is the half that would have caught the
+  // reported incident automatically — a tested file edited while the suite was executing leaves a
+  // verdict that describes neither state, and until now nothing said so.
+  const provenanceAfter = snapshotProvenance(routes.map((route) => route.absolute));
+  const provenanceDiff = diffProvenanceSnapshots(provenanceBefore, provenanceAfter);
+  const driftMarker = formatProvenanceDrift(provenanceDiff);
+  if (driftMarker) console.error(driftMarker);
+  console.log(formatProvenanceBanner(provenanceAfter, 'post-run'));
 
   // The invariant the line below now carries. Unreachable today — a zero/partial match is refused
   // per-group above, and `executed` is derived from that matched set — which is precisely why it
@@ -968,8 +1257,13 @@ export function main(argv = process.argv.slice(2)) {
   }
 
   const status = summary.anyFailed ? 'failed' : 'passed';
+  // The provenance fields describe the state this result MEASURED (the pre-run snapshot), not
+  // whatever is on disk now; `provenance=drifted` is what says those two differ. Appended AFTER
+  // `status=` so every existing consumer keeps parsing unchanged — the doc-claims anchor registry
+  // pins `TEST_FILE_RESULT requested=` as the first field, and every reader tokenises `status=`.
   console.log(
-    `TEST_FILE_RESULT requested=${summary.requested} executed=${summary.executed} matched=${summary.matched} status=${status}`,
+    `TEST_FILE_RESULT requested=${summary.requested} executed=${summary.executed} matched=${summary.matched} ` +
+      `status=${status} ${provenanceResultFields(provenanceBefore, provenanceDiff)}`,
   );
   return summary.anyFailed ? 1 : 0;
 }
