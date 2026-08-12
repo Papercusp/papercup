@@ -27,8 +27,9 @@
  * The three rungs, and what each inequality protects:
  *
  *   SESSION_STREAM_HEARTBEAT_MS (15s)        ── the server's beat
- *     ×2 <  STREAM_SILENCE_STALE_MS (35s)    ── "this view may be behind"
- *         <  DEFAULT_ZOMBIE_TIMEOUT_MS (45s) ── the transport gives up
+ *     ×2 <  STREAM_SILENCE_STALE_MS (31s)    ── "this view may be behind"
+ *         <  desktop IPC ceiling (32s)       ── endpoint IPC gives up
+ *         <  DEFAULT_ZOMBIE_TIMEOUT_MS (45s) ── generic transport gives up
  *
  *   LEFT  inequality violated → FALSE ALARMS. Healthy idle streams get a stale
  *         banner, and a banner that is usually wrong is ignored exactly when it
@@ -43,7 +44,11 @@
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { readFileSync } from 'node:fs';
-import { createResilientEventSource, DEFAULT_ZOMBIE_TIMEOUT_MS } from '@papercusp/sse';
+import {
+  createResilientEventSource,
+  DEFAULT_ZOMBIE_TIMEOUT_MS,
+  DESKTOP_IPC_STREAM_IDLE_TIMEOUT_MS,
+} from '@papercusp/sse';
 import { classifyStreamFreshness, STREAM_SILENCE_STALE_MS } from './stream-freshness';
 import type { ResilientEventSourceStatus } from '@papercusp/sse';
 import { FakeEventSource, latestEventSource as latest } from './fake-event-source.testkit';
@@ -57,6 +62,11 @@ import { FakeEventSource, latestEventSource as latest } from './fake-event-sourc
 // the NEW value instead of silently drifting.
 const STREAMS_ROUTE_URL = new URL(
   '../../../../../packages/operator-core/lib/endpoint-route/routes/harness/streams.ts',
+  import.meta.url,
+);
+
+const ENDPOINT_IPC_URL = new URL(
+  '../../../../../papercusp-desktop/src-tauri/src/endpoint_ipc.rs',
   import.meta.url,
 );
 
@@ -74,10 +84,36 @@ function readServerHeartbeatMs(): number {
   return Number(m[1].replace(/_/g, ''));
 }
 
+/**
+ * Read the desktop writer's stream budget from its source, not from a copied
+ * comment or a second hand-maintained constant. The explicit expression is a
+ * guard too: changing the Rust budget formula makes this test fail loudly so
+ * the UI mirror is re-derived rather than drifting.
+ */
+function readDesktopIpcStreamIdleTimeoutMs(): number {
+  const src = readFileSync(ENDPOINT_IPC_URL, 'utf8');
+  const heartbeat = /const IPC_STREAM_HEARTBEAT_INTERVAL_MS:\s*u64\s*=\s*([\d_]+)\s*;/.exec(src);
+  const watchdog = /const IPC_WATCHDOG_CHECK_INTERVAL_MS:\s*u64\s*=\s*([\d_]+)\s*;/.exec(src);
+  const formula = /const IPC_STREAM_IDLE_TIMEOUT_MS:\s*u64\s*=\s*IPC_STREAM_HEARTBEAT_INTERVAL_MS\s*\*\s*2\s*\+\s*IPC_WATCHDOG_CHECK_INTERVAL_MS\s*;/.exec(src);
+  if (!heartbeat || !watchdog || !formula) {
+    throw new Error(
+      'The endpoint IPC stream timeout writer changed shape. Update this source pin and the TS mirror together — do not hand-lower the UI threshold.',
+    );
+  }
+  return Number(heartbeat[1].replace(/_/g, '')) * 2 + Number(watchdog[1].replace(/_/g, ''));
+}
+
 describe('staleness ladder — the three rungs must stay ordered', () => {
-  it('the stale threshold sits BELOW the transport watchdog (else it is dead code)', () => {
-    // The regression that shipped: 60_000 >= 45_000.
-    expect(STREAM_SILENCE_STALE_MS).toBeLessThan(DEFAULT_ZOMBIE_TIMEOUT_MS);
+  it('mirrors the desktop IPC writer’s effective stream ceiling', () => {
+    expect(DESKTOP_IPC_STREAM_IDLE_TIMEOUT_MS).toBe(readDesktopIpcStreamIdleTimeoutMs());
+  });
+
+  it('the stale threshold sits BELOW every transport ceiling (else it is dead code)', () => {
+    // The regression that shipped: 60_000 >= 45_000. Desktop IPC is now the
+    // tighter ceiling, so asserting only against the generic wrapper would
+    // bless a threshold that the shipping target can never reach.
+    const effectiveCeilingMs = Math.min(DEFAULT_ZOMBIE_TIMEOUT_MS, DESKTOP_IPC_STREAM_IDLE_TIMEOUT_MS);
+    expect(STREAM_SILENCE_STALE_MS).toBeLessThan(effectiveCeilingMs);
   });
 
   it('the stale threshold sits ABOVE two server heartbeats (else it false-alarms)', () => {
@@ -88,10 +124,12 @@ describe('staleness ladder — the three rungs must stay ordered', () => {
   });
 
   it('leaves a usable window between the two rungs', () => {
-    // If the rungs are only milliseconds apart the state is technically
-    // reachable but never actually seen by a human. Require a real window.
-    const windowMs = DEFAULT_ZOMBIE_TIMEOUT_MS - STREAM_SILENCE_STALE_MS;
-    expect(windowMs).toBeGreaterThanOrEqual(5_000);
+    // The one-second margin is deliberate: the desktop writer is the binding
+    // ceiling, and any larger hand-picked gap would spend the heartbeat grace
+    // that keeps a healthy idle stream from false-alarming.
+    const effectiveCeilingMs = Math.min(DEFAULT_ZOMBIE_TIMEOUT_MS, DESKTOP_IPC_STREAM_IDLE_TIMEOUT_MS);
+    const windowMs = effectiveCeilingMs - STREAM_SILENCE_STALE_MS;
+    expect(windowMs).toBe(1_000);
   });
 });
 

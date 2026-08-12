@@ -51,16 +51,22 @@
  * PURE → unit-tested, no React, no clock of its own (the caller passes `nowMs`).
  */
 
+import { DEFAULT_ZOMBIE_TIMEOUT_MS, DESKTOP_IPC_STREAM_IDLE_TIMEOUT_MS } from '@papercusp/sse';
+
 /** The transport's own status, as `createResilientEventSource` publishes it. */
 export type TransportStatus = 'idle' | 'connecting' | 'open' | 'failing' | 'closed';
 
 /**
  * How long the pane tolerates total silence from an ostensibly-open stream
- * before it says so.
+ * before it says so. The desktop endpoint-IPC watchdog is tighter than the
+ * generic EventSource watchdog, so derive this from the minimum ceiling rather
+ * than hand-copying one transport's default.
  *
- * ⚠ THIS MUST STAY STRICTLY BELOW THE TRANSPORT'S ZOMBIE TIMEOUT
- * (`DEFAULT_ZOMBIE_TIMEOUT_MS`, 45 s). `stream-freshness.test.ts` fails if it
- * does not, because the ordering is the whole ballgame:
+ * ⚠ THIS MUST STAY STRICTLY BELOW EVERY TRANSPORT CEILING. The generic
+ * EventSource wrapper uses `DEFAULT_ZOMBIE_TIMEOUT_MS` (45 s), while the
+ * desktop endpoint-IPC writer uses `DESKTOP_IPC_STREAM_IDLE_TIMEOUT_MS`
+ * (32 s). The ladder test pins both, because the ordering is the whole
+ * ballgame:
  *
  * This value shipped at 60 s — deliberately "just past the watchdog", on the
  * reasoning that silence outliving BOTH timers is the strongest evidence the
@@ -72,13 +78,18 @@ export type TransportStatus = 'idle' | 'connecting' | 'open' | 'failing' | 'clos
  * and a successful reconnect re-signals and resets the age. `transport ===
  * 'open'` together with 60 s of silence is a state the runtime cannot produce.
  *
- * So the two timers are a LADDER, not a belt-and-braces pair, and this is the
- * FIRST rung: at 35 s the server (15 s heartbeat) has missed two in a row —
- * enough to be real, not jitter — and we say the view may be behind. At 45 s the
- * transport gives up and the banner escalates to `'reconnecting'`. Raise this at
- * or above 45 s and the first rung silently disappears again.
+ * So the timers are a LADDER, not a belt-and-braces pair. Leave a one-second
+ * margin below the effective ceiling: at 31 s the server (15 s heartbeat) has
+ * missed two in a row — enough to be real, not jitter — and we say the view may
+ * be behind. At 32 s desktop IPC gives up and the banner escalates to
+ * `'reconnecting'`; the generic wrapper's 45 s watchdog remains a later guard.
+ * Raise this to or above either runtime's ceiling and the first rung silently
+ * disappears again.
  */
-export const STREAM_SILENCE_STALE_MS = 35_000;
+const STREAM_SILENCE_STALE_MARGIN_MS = 1_000;
+export const STREAM_SILENCE_STALE_MS =
+  Math.min(DEFAULT_ZOMBIE_TIMEOUT_MS, DESKTOP_IPC_STREAM_IDLE_TIMEOUT_MS) -
+  STREAM_SILENCE_STALE_MARGIN_MS;
 
 export interface StreamFreshnessInput {
   /** The transport's status. `undefined` when the caller has not wired it. */
