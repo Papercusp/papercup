@@ -28,6 +28,7 @@ import { promisify } from 'node:util';
 import { gitSidecarEnabled, runGitViaSpawnerSidecar } from '../fleet/git-via-sidecar';
 import { probeHttpReachable } from '../escalating-http-probe';
 import { activeWorkspaceId, readRegistry } from '../workspace-registry';
+import { operatorHomeHarnessSlug } from '../harness/operator-home-harness';
 import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { notifySyncInvalidate } from '../sync-sse';
@@ -811,6 +812,51 @@ export function deadRoutineOverdueMsForCiWindow(
 }
 
 /**
+ * EI-20258981691947730: the install slug of the RELEASE pipeline — the install whose
+ * `green-checkpoint` / `release-trigger` routine rows and `green_checkpoint`
+ * pipeline_events this operator owns.
+ *
+ * Deliberately the SAME resolver those routines are REGISTERED under
+ * (`release-checkpoint-launch.ts`'s `operatorHomeHarnessSlug()`), so the identity used
+ * to WRITE a routine row is by construction the identity used to READ it back. It is
+ * sync + env-pure, so unlike the pot-registry read it can never throw and leave the
+ * caller with a null identity.
+ *
+ * This is NOT `potSlug` (the Queen panel's "first STARTED pot, else hives[0].slug"),
+ * which answers a different question and measured `'sb-devboard-hive'` on this install
+ * at 2026-08-12T14:50:44Z. Passing that as the release identity broke the WI-5839
+ * stale-paused protection BOTH ways:
+ *   - FALSE NEGATIVE (armed, not yet fired): should the release install's OWN
+ *     green-checkpoint / release-trigger ever be paused, it would fail the install-match
+ *     and be demoted from critical to advisory — i.e. the one alarm this protection
+ *     exists to raise was disarmed for the only install it matters on. Not observed
+ *     firing because papercusp's green-checkpoint happened to be active throughout
+ *     (measured 2026-08-12T15:15:33Z, next 16:15Z); the disarm is structural, not latent
+ *     on a condition.
+ *   - FALSE POSITIVE (intermittent): when the pot-registry read threw, `potSlug` went
+ *     null, `installKnown` went false, and {@link computeStalePausedRoutines}' DELIBERATE
+ *     fail-open (compute.test.ts "falls back to…", do not tighten it) paged OTHER pots'
+ *     abandoned green-checkpoints as ours — observed 2026-08-12T13:57Z as a BLOCKER
+ *     "deploy pipeline may be silently stopped" about `ei665-verify-x1` /
+ *     `ei669-repro-su-b621d`, neither of which is this install.
+ *
+ * Independently corroborated from the data side (su-b207479d, 2026-08-12T15:18Z): of the
+ * 17 `green-checkpoint`/`release-trigger` rows in this workspace, EXACTLY ONE carries a
+ * `release-trigger` — install_slug='papercusp', active — and the only two INACTIVE
+ * green-checkpoints are the decommissioned repro installs this alarm was paging about.
+ * That agrees with `operatorHomeHarnessSlug()`, which is preferred here because it is the
+ * WRITE-side identity (an invariant by construction) rather than a currently-true
+ * uniqueness property of the rows.
+ *
+ * Note a registry-liveness filter is NOT an alternative fix: `ei669-repro-su-b621d` is
+ * still REGISTERED despite being abandoned, so "exclude installs that no longer exist"
+ * catches only half the offenders. Identity, not liveness, is the discriminator.
+ */
+export function releaseInstallSlug(): string {
+  return operatorHomeHarnessSlug();
+}
+
+/**
  * DB-reading wrapper around {@link deadRoutineOverdueMsForCiWindow}: resolves BOTH probes
  * (the cheap file-based run-lock check + the most recent `green_checkpoint` pipeline_event)
  * and folds them into the threshold `readDeadRoutines` should use right now.
@@ -821,7 +867,7 @@ export function deadRoutineOverdueMsForCiWindow(
  * never the widened one. Absence of a clean "checkpoint is active" signal must never SUPPRESS
  * the dead-routine alarm; it can only fail to widen it.
  */
-export async function resolveDeadRoutineOverdueMs(sql: Sql, potSlug: string | null, now: number): Promise<number> {
+export async function resolveDeadRoutineOverdueMs(sql: Sql, installSlug: string | null, now: number): Promise<number> {
   try {
     const [{ integrationRoot }, { isCheckpointRunLockHeldCheap }] = await Promise.all([
       import('../release-deploy-launch'),
@@ -829,10 +875,10 @@ export async function resolveDeadRoutineOverdueMs(sql: Sql, potSlug: string | nu
     ]);
     const lock = isCheckpointRunLockHeldCheap(integrationRoot());
     let recentCheckpointEventAgeMs: number | null = null;
-    if (!lock.held && potSlug) {
+    if (!lock.held && installSlug) {
       const rows = await sql<Array<{ created_at: Date }>>`
         SELECT created_at FROM harness_shared.pipeline_events
-         WHERE kind = 'green_checkpoint' AND install_slug = ${potSlug}
+         WHERE kind = 'green_checkpoint' AND install_slug = ${installSlug}
          ORDER BY created_at DESC LIMIT 1`;
       if (rows[0]) recentCheckpointEventAgeMs = Math.max(0, now - new Date(rows[0].created_at).getTime());
     }
@@ -1083,7 +1129,9 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
     // WI-4310: widen the overdue window while a green-checkpoint run's known, self-recovering
     // resource footprint is active or just finished — see resolveDeadRoutineOverdueMs's doc
     // comment. Fail-soft: any probe error keeps the tight base threshold (never suppresses).
-    const deadRoutineOverdueMs = await resolveDeadRoutineOverdueMs(sql, potSlug, ctx.now);
+    // EI-20258981691947730: the RELEASE install, not the Queen panel's potSlug — see
+    // releaseInstallSlug() for why passing potSlug read this install as 'sb-devboard-hive'.
+    const deadRoutineOverdueMs = await resolveDeadRoutineOverdueMs(sql, releaseInstallSlug(), ctx.now);
     const deadCensus = await readDeadRoutines(sql, deadRoutineOverdueMs);
     const deadRoutineNames = deadCensus.names;
     // WI-5839 / EI-18654017982759582 items 2+3: stale/unexplained PAUSED routines —
@@ -1097,7 +1145,7 @@ async function collectWorkFeed(ctx: HealthCtx): Promise<HealthPanel<WorkFeedHeal
     let stalePaused: StalePausedRoutine[] = [];
     let stalePausedUnreadable = false;
     try {
-      stalePaused = await readStalePausedRoutines(sql, potSlug, ctx.ws);
+      stalePaused = await readStalePausedRoutines(sql, releaseInstallSlug(), ctx.ws);
     } catch {
       stalePausedUnreadable = true; /* leave empty — the dead-routine signal above still computes */
     }

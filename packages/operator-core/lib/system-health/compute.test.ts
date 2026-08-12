@@ -5,7 +5,7 @@
  * isolation) directly — no DB. The full DB-backed `computeSystemHealth` is
  * exercised live by the ~30s tick + the sync-resolver dispatch test.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { makeOpenImprovementsReader, dedupeInFlight, panelSafe, computeEscalationsHealth, probeGatewayHealthz, observationRole, overwatchScorecardSkipped, scoutHealthVerdict, suIdeateVerdict, crossesProvenanceDivergenceThreshold, PROVENANCE_DIVERGENCE_WARN_THRESHOLD, splitAutoEligibleStuck, tallyPlans, toolEfficiencyStatus, countStuckFrontier, isLiveRigOnlyFrontierTitle, computeAccountsAvailable, computeProjectionFreshestAgeMs, computeStalePausedRoutines, deadRoutineOverdueMsForCiWindow, summarizeDeadRoutines, FLEET_BLOCKING_ROUTINE_NAMES, mergeHealthPanels, systemHealthGitSidecarEnabled, type EscalationAgingInput, type StalePausedRoutineInput } from './compute';
 import { queenPlacementStalled, countLeadingZeroTokenWakes } from './thresholds';
 import { PANEL_LABELS, PANEL_ORDER } from './types';
@@ -558,6 +558,46 @@ describe('computeStalePausedRoutines — stale/unexplained routine pause detecto
       expect(r).toHaveLength(1);
       expect(r[0]).toMatchObject({ name: 'scout-cycle', critical: false });
     });
+  });
+});
+
+describe('releaseInstallSlug — the health tick asks about the RELEASE install, not the Queen panel pot (EI-20258981691947730)', () => {
+  const ENV = 'PAPERCUSP_POT_HOME_SLUG';
+  let saved: string | undefined;
+  beforeEach(() => { saved = process.env[ENV]; });
+  afterEach(() => { if (saved === undefined) delete process.env[ENV]; else process.env[ENV] = saved; });
+
+  it('resolves the SAME identity the green-checkpoint routine is registered under', async () => {
+    const { releaseInstallSlug } = await import('./compute');
+    const { operatorHomeHarnessSlug } = await import('../harness/operator-home-harness');
+    // release-checkpoint-launch.ts registers the routine row with operatorHomeHarnessSlug().
+    // Reading it back under any OTHER identity is the whole defect, so the two must agree.
+    process.env[ENV] = 'some-other-home';
+    expect(releaseInstallSlug()).toBe(operatorHomeHarnessSlug());
+    expect(releaseInstallSlug()).toBe('some-other-home');
+  });
+
+  it('never returns null/empty — the pot-registry read could throw, this cannot', async () => {
+    const { releaseInstallSlug } = await import('./compute');
+    delete process.env[ENV];
+    const slug = releaseInstallSlug();
+    expect(typeof slug).toBe('string');
+    expect(slug.length).toBeGreaterThan(0);
+  });
+
+  // WIRING guard. The defect was never in computeStalePausedRoutines (its install-scoping
+  // and its deliberate fail-open are both correct and separately tested above) — it was that
+  // computeSystemHealth handed it the WRONG VARIABLE: `potSlug`, resolved as "first STARTED
+  // pot, else hives[0].slug", which measured 'sb-devboard-hive' on this install. No pure unit
+  // test over the detector can catch a caller passing a plausible-but-wrong identity, so the
+  // call sites themselves are what gets pinned here.
+  it('computeSystemHealth passes releaseInstallSlug() — not potSlug — to BOTH install-scoped readers', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const src = await readFile(new URL('./compute.ts', import.meta.url), 'utf8');
+    expect(src).toMatch(/readStalePausedRoutines\(\s*sql,\s*releaseInstallSlug\(\)/);
+    expect(src).toMatch(/resolveDeadRoutineOverdueMs\(\s*sql,\s*releaseInstallSlug\(\)/);
+    expect(src).not.toMatch(/readStalePausedRoutines\(\s*sql,\s*potSlug/);
+    expect(src).not.toMatch(/resolveDeadRoutineOverdueMs\(\s*sql,\s*potSlug/);
   });
 });
 
