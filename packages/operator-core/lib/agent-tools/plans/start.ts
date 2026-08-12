@@ -6,8 +6,8 @@
  * ⚠ THE op_status WRITE IS GATED (retire-mug-kettle-su-only-2026-08-09 P-047 /
  * D-010). op_status ('started' | 'paused') is the OPERATIONAL axis — the
  * "pickable by the orchestrator" bit — and it retires with the Mug/Kettle tier.
- * While `FLAGS.MUG_KETTLE_SYSTEM` is OFF (the DELIVERED state, polarity inverted
- * per D-016) this tool does everything it always did EXCEPT write op_status:
+ * P-068 DELETED `FLAGS.MUG_KETTLE_SYSTEM`, so the retirement is PERMANENT — there
+ * is no flag left to flip. This tool does everything it always did EXCEPT write op_status:
  * terminal check, start gate, draft→'ready' auto-approve, and `promotePlanItems`
  * all still run. The verb is NOT refused, deliberately — promotion is what fills
  * the su queue, and gating the mechanism instead of the writer is exactly why
@@ -61,7 +61,7 @@ const argsSchema = z.object({
 export default defineTool({
   name: 'plans:start',
   description:
-    "Approve a plan and start its item-promotion path. Starting IS the approval signal — a draft plan is auto-advanced to 'ready'. Re-starting is a no-op. While papercusp-mug-kettle-system is OFF the retired op_status axis is not written.",
+    "Approve a plan and start its item-promotion path. Starting IS the approval signal — a draft plan is auto-advanced to 'ready'. Re-starting is a no-op. The retired op_status axis is never written (P-068 deleted the flag).",
   guidance: {
     when: 'An agent is asked to begin work on a specific plan — this starts its item-promotion path into work-items.',
     notWhen:

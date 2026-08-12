@@ -150,9 +150,9 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   // up in fleet:tree and is cancellable with fleet:cancel.
   //
   // ⚠ The cup-spawn entry WAS listed here and has been REMOVED. The
-  // Mug/Kettle/cup nursery tier is retired behind `papercusp-mug-kettle-system`,
-  // whose default-OFF *is* the delivered end state, so `cup:spawn` no longer
-  // registers and every call REFUSES. Naming an unregistered tool in an allowlist
+  // Mug/Kettle/cup nursery tier is PERMANENTLY retired: P-068 DELETED
+  // `papercusp-mug-kettle-system`, so there is no flag to flip — `cup:spawn` no
+  // longer registers and every call REFUSES. Naming an unregistered tool in an allowlist
   // is not inert: it red-pinned two invariants at once — tool-auth-gating's "every
   // operator-converse allowedTool resolves in the core registry" and tools-md-sync's
   // "every allowedTool has a catalog entry (no drift)" — because an allowlist entry
