@@ -44,7 +44,7 @@
  */
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { renderHook, act } from '@testing-library/react';
+import { renderHook, act, cleanup } from '@testing-library/react';
 import {
   FakeEventSource,
   latestEventSource as latest,
@@ -82,6 +82,10 @@ describe('useAgentThinkingStream — the silence watchdog', () => {
     vi.useFakeTimers();
   });
   afterEach(() => {
+    // Unmount explicitly: every mounted hook holds a standing SSE registration,
+    // and the fourth one in a file trips the sse-budget warning (which this
+    // suite fails on). RTL's auto-cleanup does not run under this config.
+    cleanup();
     vi.useRealTimers();
     vi.unstubAllGlobals();
   });
@@ -112,29 +116,52 @@ describe('useAgentThinkingStream — the silence watchdog', () => {
     expect(view.freshness()).toBe('stale');
   });
 
-  it('re-arms on every signal — the edge tracks the LAST beat, not the connect', () => {
-    // A one-shot watchdog armed at connect would fire once, early, and then
-    // never again — so a stream that goes quiet an hour into a session would
-    // never raise the banner. That failure is invisible to the test above,
-    // which never sends a second signal.
+  it('never false-alarms on a healthy stream, however long it stays open', () => {
+    // ── THE REGRESSION THIS FILE WAS WRITTEN TO CATCH ──────────────────────
+    //
+    // The hook first shipped publishing the last-signal timestamp to STATE and,
+    // to keep renders cheap, publishing it only on a transition — so on a
+    // healthy stream it froze at the connect time while heartbeats kept
+    // arriving. The classifier runs during render against `Date.now()`, so from
+    // 35s after connect EVERY render reported 'stale' on a perfectly healthy
+    // stream. The renders that surfaced it were mostly transcript updates: the
+    // banner appeared at the exact moment the pane proved it was live.
+    //
+    // Note what could NOT catch this. The ladder test asserts this same
+    // "heartbeats alone keep it fresh" property — but against its own inline
+    // `onSignal: () => { lastSignalAt = Date.now() }`, i.e. a hypothetical
+    // consumer that publishes every signal. It was green throughout. Only
+    // driving the REAL hook shows what the real pane would render.
     const view = renderStream();
     act(() => { latest().fireOpen(); });
+    const afterOpen = view.renderCount();
 
-    act(() => {
-      vi.advanceTimersByTime(30_000);
-      latest().fire('heartbeat', '{"tsMs":1}');
-    });
-    const afterBeat = view.renderCount();
+    // Six beats at the server's real 15s cadence — 90s, far past the 35s rung.
+    for (let i = 0; i < 6; i += 1) {
+      act(() => {
+        vi.advanceTimersByTime(15_000);
+        latest().fire('heartbeat', `{"tsMs":${i}}`);
+      });
+      // The pane re-renders for its own reasons constantly — a transcript
+      // entry, a parent update — and THAT is when the banner gets computed.
+      // Forcing one here is the faithful reproduction: it is the unrelated
+      // render that used to surface the false alarm.
+      view.rerender();
+      expect(view.freshness()).toBe('fresh');
+    }
+    // And it stays cheap: the ONLY renders were the six we forced. A steady
+    // heartbeat on an already-fresh stream must cost zero, or it undoes the
+    // burst coalescing this hook exists for.
+    expect(view.renderCount()).toBe(afterOpen + 6);
 
-    // Now 34_999ms of silence — which is ALSO 64_999ms after the connect, well
-    // past a watchdog that was never re-armed. Neither a render nor a verdict
-    // change may happen here.
+    // The watchdog tracks the LAST beat, not the connect: a one-shot armed at
+    // connect would have fired 55s ago and never re-armed.
     act(() => { vi.advanceTimersByTime(STREAM_SILENCE_STALE_MS - 1); });
-    expect(view.renderCount()).toBe(afterBeat);
+    expect(view.renderCount()).toBe(afterOpen + 6);
     expect(view.freshness()).toBe('fresh');
 
     act(() => { vi.advanceTimersByTime(1); });
-    expect(view.renderCount()).toBeGreaterThan(afterBeat);
+    expect(view.renderCount()).toBeGreaterThan(afterOpen + 6);
     expect(view.freshness()).toBe('stale');
   });
 

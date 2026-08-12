@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { createResilientEventSource } from '@papercusp/sse';
 import { STREAM_SILENCE_STALE_MS, type TransportStatus } from '../_components/chat/stream-freshness';
 import { TONE } from './theme';
@@ -121,9 +121,36 @@ export function useAgentThinkingStream(slug: string, phase: string, runId: strin
    * IDLE agent from reading as a broken stream.
    */
   const [transport, setTransport] = useState<TransportStatus>('idle');
-  const [lastSignalAt, setLastSignalAt] = useState<number | null>(null);
-  /** Bumped by the silence watchdog purely to force a re-render at the stale
-   *  edge — see the transition rules where it is set. */
+  /**
+   * Wall-clock of the last inbound signal, in a REF — read at render time, never
+   * published to state.
+   *
+   * ⚠ This was `useState` and it made the banner FALSE-ALARM on every busy pane
+   * (caught by AgentThinkingStream.staleness.test.tsx). The reasoning that broke
+   * it is worth keeping: publishing on every heartbeat would re-render four
+   * times a minute forever, and — worse — a `setState` per inbound `event` would
+   * undo the burst coalescing above (K renders per 1Hz burst, the measured
+   * 20-65ms tasks that queued behind keystrokes). So the code published only on
+   * a TRANSITION and let the value go stale in between.
+   *
+   * But the consumer classifies freshness from this timestamp DURING RENDER
+   * (SessionChatModal.tsx). A timestamp that stops advancing while the stream is
+   * perfectly healthy is read as silence: 35s after connect, ANY render — most
+   * often the very transcript update proving the stream is alive — showed "this
+   * conversation may be behind". A banner that is usually wrong is ignored by
+   * the time it is finally right, which is the one failure this detector was
+   * built to avoid.
+   *
+   * A ref resolves it with no trade-off at all: the write costs nothing (so
+   * bursts stay coalesced), and a render always reads the CURRENT value rather
+   * than a snapshot of one. What state is still needed for is forcing a render
+   * at the two moments the verdict actually flips — see `staleTick`.
+   */
+  const lastSignalRef = useRef<number | null>(null);
+  /** Bumped purely to force a re-render when the freshness verdict FLIPS: the
+   *  silence watchdog tripping, and the first signal after it recovers. Without
+   *  the recovery bump a quiet-then-healthy stream would keep the banner up,
+   *  because a heartbeat alone changes nothing this component renders. */
   const [, setStaleTick] = useState(0);
   useEffect(() => {
     setStatus('connecting');
@@ -131,7 +158,7 @@ export function useAgentThinkingStream(slug: string, phase: string, runId: strin
     setThinking(false);
     setAnchor(null);
     setTransport('idle');
-    setLastSignalAt(null);
+    lastSignalRef.current = null;
     // The one-shot `backfill` is sent ONCE per connection — if it arrives
     // corrupted (e.g. the stream dropped mid-event and resumed), nothing in-band
     // ever re-sends it and the pane would wedge on "connecting…" while small
@@ -181,18 +208,19 @@ export function useAgentThinkingStream(slug: string, phase: string, runId: strin
     // setState on every call — that would re-render the whole transcript four
     // times a minute forever. Two rules make this cheap AND correct:
     //
-    //  1. Only publish on a TRANSITION (first signal, or stale -> fresh). A
-    //     steady heartbeat on an already-fresh stream costs nothing.
-    //  2. The stale edge publishes a COUNTER, not the timestamp. Re-publishing
-    //     the timestamp would be a same-value setState, which React bails out
-    //     of — no re-render, no banner, at exactly the moment the banner is the
-    //     entire point. The counter always changes, so the component re-derives
-    //     freshness against a current `Date.now()`.
+    //  1. The timestamp goes in a REF, so recording it costs no render at all.
+    //     A render always reads the current value; there is no published
+    //     snapshot to go stale behind the stream's back (see `lastSignalRef`).
+    //  2. State is bumped only when the VERDICT flips — the stale edge, and the
+    //     first signal after it. It is a COUNTER, never the timestamp:
+    //     re-publishing a timestamp can be a same-value setState, which React
+    //     bails out of — no re-render, no banner, at exactly the moment the
+    //     banner is the entire point. The counter always changes, so the
+    //     component re-derives freshness against a current `Date.now()`.
     //
     // The timer is a re-armed WATCHDOG, not a poll: it fires once per silence
     // window and is cancelled by the next signal, so a healthy stream never
     // reaches it. (setInterval would be a bare timer and is banned here.)
-    let lastSignalMs: number | null = null;
     let staleTimer: ReturnType<typeof setTimeout> | null = null;
     let markedStale = false;
     const clearStaleWatchdog = () => {
@@ -208,9 +236,9 @@ export function useAgentThinkingStream(slug: string, phase: string, runId: strin
     const onSignal = () => {
       const wasStale = markedStale;
       markedStale = false;
-      const first = lastSignalMs === null;
-      lastSignalMs = Date.now();
-      if (first || wasStale) setLastSignalAt(lastSignalMs);
+      const first = lastSignalRef.current === null;
+      lastSignalRef.current = Date.now();
+      if (first || wasStale) setStaleTick((n) => n + 1);
       armStaleWatchdog();
     };
 
@@ -262,7 +290,7 @@ export function useAgentThinkingStream(slug: string, phase: string, runId: strin
   }, [slug, phase, runId, streamUrl]);
   // `transport` + `lastSignalAt` are the staleness detector's inputs; callers
   // pass them to `classifyStreamFreshness` rather than re-deriving liveness.
-  return { events, status, thinking, anchor, transport, lastSignalAt };
+  return { events, status, thinking, anchor, transport, lastSignalAt: lastSignalRef.current };
 }
 
 /** Format an entry's ISO timestamp as a compact local `HH:MM:SS`, or null when
