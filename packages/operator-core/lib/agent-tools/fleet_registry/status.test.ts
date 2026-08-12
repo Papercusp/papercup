@@ -33,15 +33,20 @@ vi.mock('../coordination/identity', () => ({
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws' }));
 
-import statusTool, { reconcileFleetStatusLiveness } from './status';
+import statusTool, {
+  FLEET_STATUS_TIER_CAPS,
+  reconcileFleetStatusLiveness,
+  shapeFleetStatus,
+} from './status';
 import type { FleetRosterEntry } from '../../fleet/fleet-roster';
 
 const CTX = { workspaceId: 'ws', role: 'operator' } as never;
-const parse = (res: { content: { text: string }[] }) => JSON.parse(res.content[0].text);
+const parse = (res: { content?: { text: string }[]; data?: unknown }) =>
+  res.data ?? JSON.parse(res.content?.[0]?.text ?? '{}');
 const invoke = (args: Record<string, unknown>) =>
   (
     statusTool as unknown as {
-      handler: (a: unknown, c: unknown) => Promise<{ content: { text: string }[] }>;
+      handler: (a: unknown, c: unknown) => Promise<{ content?: { text: string }[]; data?: unknown }>;
     }
   ).handler(args, CTX);
 
@@ -93,7 +98,11 @@ describe('fleet:status', () => {
   });
 
   it('returns the live roster without completion stats when no harness is requested', async () => {
-    const out = parse(await invoke({ fleet: 'rocket' }));
+    const result = await invoke({ fleet: 'rocket' });
+    expect(result).toMatchObject({
+      data: expect.objectContaining({ ok: true, members: expect.any(Array) }),
+    });
+    const out = parse(result);
     expect(out.ok).toBe(true);
     expect(out.completionStats).toBeUndefined();
     expect(h.getCompletionIntegrityStats).not.toHaveBeenCalled();
@@ -339,6 +348,71 @@ describe('fleet:status', () => {
       const out = parse(await invoke({ fleet: 'rocket', harness: 'papercusp' }));
       expect(out.degraded).toBeUndefined();
       expect(out.degradedLegs).toBeUndefined();
+    });
+  });
+});
+
+describe('fleet:status payload-tier shaping', () => {
+  it('bounds oversized rosters and keeps leader/non-runnable rows visible', () => {
+    const source = [
+      { agentId: 'su-live-0', sessionState: 'live', intent: 'ordinary' },
+      { agentId: 'su-leader', sessionState: 'live', intent: 'leader work' },
+      { agentId: 'su-ended', sessionState: 'ended', intent: 'recover me', resumable: true },
+      ...Array.from({ length: 24 }, (_, i) => ({ agentId: `su-live-${i + 1}`, sessionState: 'live' })),
+    ];
+
+    const out = shapeFleetStatus(
+      {
+        ok: true,
+        slug: 'rocket',
+        leaderId: 'su-leader',
+        controlState: 'winding-down',
+        memberCount: 25,
+        members: source,
+      },
+      'trimmed',
+    ) as { controlState: string; members: Array<Record<string, unknown>>; members_note: string };
+
+    expect(out.controlState).toBe('winding-down');
+    expect(out.members).toHaveLength(FLEET_STATUS_TIER_CAPS.trimmed.members + 1);
+    expect(out.members.map((m) => m.agentId)).toContain('su-leader');
+    expect(out.members.map((m) => m.agentId)).toContain('su-ended');
+    expect(out.members.at(-1)).toMatchObject({ agentId: '(truncated)' });
+    expect(out.members_note).toContain('roster capped at');
+  });
+
+  it('retains the liveness decision core and exposes both tier registrations', () => {
+    const out = shapeFleetStatus(
+      {
+        members: [
+          {
+            agentId: 'su-ended',
+            label: 'A'.repeat(400),
+            intent: 'B'.repeat(400),
+            sessionState: 'ended',
+            heartbeatFresh: true,
+            resumable: true,
+            endedAt: '2026-08-12T10:00:00Z',
+            resumeHint: 'launch fresh',
+          },
+        ],
+      },
+      'standard',
+    ) as { members: Array<Record<string, unknown>> };
+    const row = out.members[0];
+
+    expect(row).toMatchObject({
+      agentId: 'su-ended',
+      heartbeatFresh: true,
+      sessionState: 'ended',
+      resumable: true,
+      endedAt: '2026-08-12T10:00:00Z',
+    });
+    expect(String(row.label).length).toBeLessThanOrEqual(FLEET_STATUS_TIER_CAPS.standard.label);
+    expect(String(row.intent).length).toBeLessThanOrEqual(FLEET_STATUS_TIER_CAPS.standard.intent);
+    expect((statusTool as unknown as { shape: { trimmed?: unknown; standard?: unknown } }).shape).toEqual({
+      trimmed: expect.any(Function),
+      standard: expect.any(Function),
     });
   });
 });

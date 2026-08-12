@@ -35,6 +35,120 @@ import { json, resolveFleetCaller, ROUTING_LADDER } from './_shared';
 const FLEET_STATUS_OPTIONAL_LEG_TIMEOUT_MS = 6_000;
 
 /**
+ * fleet:status payload tiers (context-trimming-tiers-2026-07-01 P-022).
+ *
+ * The registry roster is intentionally lossless for full-tier callers, but a
+ * normal model-facing read must not send one unbounded row per historical/live
+ * member through the result door. Keep the control/liveness decision core on
+ * every row, cap the roster, and make the cut explicit so a leader can narrow
+ * or request the full tier when it needs a particular member's resume detail.
+ */
+export const FLEET_STATUS_TIER_CAPS = {
+  trimmed: { members: 16, label: 80, intent: 100, doing: 80, resumeHint: 180 },
+  standard: { members: 24, label: 140, intent: 180, doing: 120, resumeHint: 300 },
+} as const;
+
+type FleetStatusTier = keyof typeof FLEET_STATUS_TIER_CAPS;
+
+const clipFleetStatus = (value: unknown, max: number): string | null =>
+  typeof value === 'string' ? (value.length > max ? `${value.slice(0, max - 1)}…` : value) : null;
+
+const isNonRunnableFleetMember = (row: unknown): boolean => {
+  const state = (row as { sessionState?: unknown } | null | undefined)?.sessionState;
+  return state === 'ended' || state === 'suspect' || state === 'draining';
+};
+
+/**
+ * Shape the status read after the handler has produced its complete roster.
+ * Leader and non-runnable rows are selected before ordinary live rows when a
+ * cap is needed: a truncated monitor read must retain the rows that determine
+ * whether leadership is available and whether a member needs recovery.
+ */
+export function shapeFleetStatus(data: unknown, tier: FleetStatusTier): unknown {
+  const d = data as ({ members?: unknown[]; leaderId?: unknown } & Record<string, unknown>) | null | undefined;
+  if (!d || !Array.isArray(d.members)) return data;
+  const caps = FLEET_STATUS_TIER_CAPS[tier];
+
+  const projectMember = (row: unknown): Record<string, unknown> => {
+    const r = (row ?? {}) as Record<string, unknown>;
+    const sessionState = typeof r.sessionState === 'string' ? r.sessionState : null;
+    const base = {
+      agentId: r.agentId ?? null,
+      label: clipFleetStatus(r.label, caps.label),
+      fleetRole: r.fleetRole ?? null,
+      intent: clipFleetStatus(r.intent, caps.intent),
+      // Keep the liveness verdict and its raw heartbeat signal together. A
+      // fresh heartbeat with an ended session is deliberately not runnable.
+      heartbeatFresh: typeof r.heartbeatFresh === 'boolean' ? r.heartbeatFresh : null,
+      sessionState,
+      lastActiveSecAgo: typeof r.lastActiveSecAgo === 'number' ? r.lastActiveSecAgo : null,
+      doing: clipFleetStatus(r.doing, caps.doing),
+      load: typeof r.load === 'number' ? r.load : null,
+    };
+
+    if (sessionState === 'ended' || sessionState === 'suspect') {
+      return {
+        ...base,
+        resumable: r.resumable === true,
+        endedAt: typeof r.endedAt === 'string' ? r.endedAt : null,
+        endedBy: typeof r.endedBy === 'string' ? r.endedBy : null,
+        ...(tier === 'standard'
+          ? {
+              resumeHint: clipFleetStatus(r.resumeHint, caps.resumeHint),
+              endedAtCaveat: clipFleetStatus(r.endedAtCaveat, caps.resumeHint),
+            }
+          : {}),
+      };
+    }
+
+    if (tier === 'standard') {
+      return {
+        ...base,
+        ...(typeof r.lastToolCallAt === 'string' ? { lastToolCallAt: r.lastToolCallAt } : {}),
+      };
+    }
+    return base;
+  };
+
+  const source = d.members;
+  const selected =
+    source.length <= caps.members
+      ? source
+      : (() => {
+          const prioritized = [
+            ...source.filter((row) => row && (row as { agentId?: unknown }).agentId === d.leaderId),
+            ...source.filter(isNonRunnableFleetMember),
+            ...source,
+          ];
+          const seen = new Set<unknown>();
+          return prioritized.filter((row) => {
+            if (seen.has(row)) return false;
+            seen.add(row);
+            return true;
+          });
+        })().slice(0, caps.members);
+
+  const members = selected.map(projectMember);
+  if (source.length > caps.members) {
+    members.push({
+      ...projectMember({}),
+      agentId: '(truncated)',
+      intent: `showing ${caps.members} of ${source.length} — narrow by member or use payloadTier:"full" for the complete roster`,
+    });
+  }
+
+  return {
+    ...d,
+    members,
+    ...(source.length > caps.members
+      ? {
+          members_note: `roster capped at ${caps.members} of ${source.length}; leader and non-runnable rows prioritized`,
+        }
+      : {}),
+  };
+}
+
+/**
  * Reconcile fleet:status's member census with the local psu host authority.
  *
  * `coord_presence` heartbeats can outlive a visible terminal session, leaving a
@@ -110,6 +224,12 @@ export default defineTool({
         'Optional harness slug for progress reporting. When provided, the result includes `completionStats` so genuine completions are separated from dedup/unverified terminal rows.',
       ),
   }),
+  // Context-trimming tiers keep the supervision decision core while bounding
+  // the roster. Full-tier callers retain the lossless handler response.
+  shape: {
+    standard: (data) => shapeFleetStatus(data, 'standard'),
+    trimmed: (data) => shapeFleetStatus(data, 'trimmed'),
+  },
   async handler(args, ctx) {
     const { workspaceId } = resolveFleetCaller(ctx);
     const fleet = await getFleet(workspaceId, args.fleet);
@@ -234,7 +354,8 @@ export default defineTool({
         resumableByOwner = new Map();
       }
     }
-    return json({
+    return {
+      data: {
       ok: true,
       slug: fleet.fleetSlug,
       title: fleet.title,
@@ -307,6 +428,7 @@ export default defineTool({
       // roster/counts above may be incomplete (a slow leg fell back rather than
       // hanging); `degradedLegs` names exactly which ones.
       ...(degradedLegs.length > 0 ? { degraded: true, degradedLegs } : {}),
-    });
+      },
+    };
   },
 });
