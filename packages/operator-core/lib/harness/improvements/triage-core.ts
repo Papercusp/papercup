@@ -80,9 +80,17 @@ export interface ApplyTriageResult {
   lifecycle?: IdeaLifecyclePayload;
   /** True when decision='reject' closed the issue (it left the open queue). */
   closed?: boolean;
-  /** Present when the EVIDENCE-STALENESS GUARD downgraded an incoming place→gate
-   *  (EI-18696839552593260). `requestedDecision` is what the caller asked for. */
-  evidenceDowngrade?: { requestedDecision: TriageDecision; citedIds: string[]; staleIds: string[] };
+  /** Present when an evidence guard downgraded an incoming place→gate.
+   *  `requestedDecision` is what the caller asked for. Unresolved and same-role
+   *  citations are integrity failures; stale citations are the older staleness
+   *  guard's contradiction signal. */
+  evidenceDowngrade?: {
+    requestedDecision: TriageDecision;
+    citedIds: string[];
+    staleIds: string[];
+    unresolvedIds?: string[];
+    circularIds?: string[];
+  };
   /** Present when the CODE-EXISTENCE GUARD downgraded an incoming place→gate
    *  (EI-18801316749542776). `requestedDecision` is what the caller asked for. */
   existenceDowngrade?: { requestedDecision: TriageDecision; tokens: string[]; matches: CodeExistenceMatch[] };
@@ -130,35 +138,82 @@ const TERMINAL_ISSUE_STATES = new Set(['resolved', 'closed']);
  * never blocks anything (returns stale:false); it only ever recommends a
  * place→gate DOWNGRADE (never a reject — mirrors the scheduled triage pass's
  * existing "never reject automatically" conservatism, improvement-actions.ts),
- * and only when EVERY resolvable citation is terminal-with-evidence (an idea
- * citing even one still-open item keeps its premise live).
+ * and only when EVERY citation resolves to terminal-with-evidence. An
+ * unresolved citation keeps the premise unverified rather than being silently
+ * ignored; citation integrity is enforced by the companion inspection below.
  */
-export async function evidenceStalenessCheck(
-  issue: Pick<EngineerIssue, 'id' | 'title' | 'body'>,
-  deps: Pick<TriageCoreDeps, 'getIssue'>,
-): Promise<{ stale: boolean; citedIds: string[]; staleIds: string[] }> {
-  const citedIds = extractCitedIds(`${issue.title ?? ''} ${issue.body ?? ''}`).filter((id) => id !== issue.id);
-  if (citedIds.length === 0) return { stale: false, citedIds: [], staleIds: [] };
+type EvidenceIssue = Pick<EngineerIssue, 'id' | 'title' | 'body'> & { payload?: EngineerIssue['payload'] };
 
+interface EvidenceCitationInspection {
+  citedIds: string[];
+  staleIds: string[];
+  unresolvedIds: string[];
+  circularIds: string[];
+  lookupFailedIds: string[];
+  stale: boolean;
+}
+
+function sourceRoleOf(issue: { payload?: EngineerIssue['payload'] }): string | undefined {
+  const payload = issue.payload && typeof issue.payload === 'object' ? (issue.payload as Record<string, unknown>) : {};
+  return typeof payload.sourceRole === 'string' ? payload.sourceRole : undefined;
+}
+
+/**
+ * Resolve every cited work-item before a place decision can treat the citations
+ * as evidence. A missing row is a concrete integrity failure; a resolver error
+ * remains fail-open because transient datastore blindness is not proof of a
+ * missing incident. Same-role generated ideas are circular evidence rather than
+ * incidents, even when they happen to be terminal.
+ */
+async function inspectEvidenceCitations(
+  issue: EvidenceIssue,
+  deps: Pick<TriageCoreDeps, 'getIssue'>,
+): Promise<EvidenceCitationInspection> {
+  const citedIds = extractCitedIds(`${issue.title ?? ''} ${issue.body ?? ''}`).filter((id) => id !== issue.id);
   const staleIds: string[] = [];
-  let resolvedCount = 0;
+  const unresolvedIds: string[] = [];
+  const circularIds: string[] = [];
+  const lookupFailedIds: string[] = [];
+  const resolvedIds: string[] = [];
+  const sourceRole = sourceRoleOf(issue);
+
   for (const id of citedIds) {
     let cited: EngineerIssue | null = null;
     try {
       cited = await deps.getIssue(id);
     } catch {
+      lookupFailedIds.push(id);
       continue; // best-effort — a lookup failure never blocks the decision
     }
-    if (!cited) continue; // a citation that doesn't resolve to a real item proves nothing
-    resolvedCount += 1;
+    if (!cited) {
+      unresolvedIds.push(id);
+      continue;
+    }
+    resolvedIds.push(id);
+    if (sourceRole && sourceRole !== 'human' && sourceRoleOf(cited) === sourceRole) {
+      circularIds.push(id);
+    }
     if (TERMINAL_ISSUE_STATES.has(cited.state) && cited.terminalCompletionRef) {
       staleIds.push(id);
     }
   }
-  // Stale only when every citation that COULD be resolved is terminal-with-evidence
-  // — an idea citing at least one still-open (or unresolvable) item keeps its premise live.
-  const stale = resolvedCount > 0 && staleIds.length === resolvedCount;
-  return { stale, citedIds, staleIds };
+
+  // A stale verdict is meaningful only when the complete citation set was
+  // resolved. Otherwise the missing/failed lookup is itself the uncertainty.
+  const stale =
+    resolvedIds.length > 0 &&
+    unresolvedIds.length === 0 &&
+    lookupFailedIds.length === 0 &&
+    staleIds.length === resolvedIds.length;
+  return { citedIds, staleIds, unresolvedIds, circularIds, lookupFailedIds, stale };
+}
+
+export async function evidenceStalenessCheck(
+  issue: EvidenceIssue,
+  deps: Pick<TriageCoreDeps, 'getIssue'>,
+): Promise<{ stale: boolean; citedIds: string[]; staleIds: string[] }> {
+  const check = await inspectEvidenceCitations(issue, deps);
+  return { stale: check.stale, citedIds: check.citedIds, staleIds: check.staleIds };
 }
 
 /* ─── Code-existence pre-check (EI-18801316749542776) ──────────────────────────── *
@@ -328,14 +383,39 @@ export async function applyTriageDecision(
   let evidenceDowngrade: ApplyTriageResult['evidenceDowngrade'];
   if (decision === 'place') {
     try {
-      const check = await evidenceStalenessCheck(issue, deps);
-      if (check.stale) {
-        evidenceDowngrade = { requestedDecision: decision, citedIds: check.citedIds, staleIds: check.staleIds };
+      const check = await inspectEvidenceCitations(issue, deps);
+      const integrityFailure = check.unresolvedIds.length > 0 || check.circularIds.length > 0;
+      if (check.stale || integrityFailure) {
+        evidenceDowngrade = {
+          requestedDecision: decision,
+          citedIds: check.citedIds,
+          staleIds: check.staleIds,
+          ...(check.unresolvedIds.length ? { unresolvedIds: check.unresolvedIds } : {}),
+          ...(check.circularIds.length ? { circularIds: check.circularIds } : {}),
+        };
         decision = 'gate';
+        const guardReasons: string[] = [];
+        if (check.unresolvedIds.length) {
+          guardReasons.push(
+            `EVIDENCE-INTEGRITY GUARD (EI-19450720466036446): cited item(s) ` +
+              `(${check.unresolvedIds.join(', ')}) did not resolve to work items`,
+          );
+        }
+        if (check.circularIds.length) {
+          guardReasons.push(
+            `EVIDENCE-INTEGRITY GUARD (EI-19450720466036446): same-role generated idea(s) ` +
+              `(${check.circularIds.join(', ')}) are circular evidence, not incident records`,
+          );
+        }
+        if (check.stale) {
+          guardReasons.push(
+            `EVIDENCE-STALENESS GUARD (EI-18696839552593260): every cited item ` +
+              `(${check.staleIds.join(', ')}) is already resolved/closed with a completion ref; this idea's ` +
+              `premise may already be contradicted by its own cited evidence`,
+          );
+        }
         reason =
-          `${input.reason} — EVIDENCE-STALENESS GUARD (EI-18696839552593260): every cited item ` +
-          `(${check.staleIds.join(', ')}) is already resolved/closed with a completion ref; this idea's ` +
-          `premise may already be contradicted by its own cited evidence. Downgraded place→gate for ` +
+          `${input.reason} — ${guardReasons.join('; ')}. Downgraded place→gate for ` +
           `human/Queen re-verification before auto-implementing.`;
       }
     } catch {

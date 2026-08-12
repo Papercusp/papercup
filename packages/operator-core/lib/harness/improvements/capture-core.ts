@@ -50,6 +50,7 @@ import {
 import { getRubric, autoRatifyRubricOnFirstScorecard, type Rubric } from '../../rubrics';
 import { titleSimilarity, titleContainment, recallAlreadyDecided, type AlreadyDecidedRecall } from './digest';
 import { initializeIdeaLifecycle } from './lifecycle';
+import { extractCitedIds } from './triage';
 import { DEFAULT_SIGNAL_ORIGIN, effectiveOrigin, type SignalOrigin } from './provenance';
 import { isFlakeKey } from '../../calibration/types';
 
@@ -326,9 +327,64 @@ export interface CaptureDeps {
 const defaultDeps: CaptureDeps = {
   searchIssues: searchIssuesForDedup,
   createIssue,
+  getIssue,
   loadRubric: getRubric,
   autoRatifyRubric: autoRatifyRubricOnFirstScorecard,
 };
+
+/**
+ * Capture-time provenance for work-item references in a Scout proposal.
+ *
+ * This is deliberately metadata rather than a hard capture rejection: a
+ * transient resolver outage must not lose a generated signal. Triage performs
+ * the authoritative fresh check before admitting `place`; this record makes
+ * the capture-time result inspectable and tells downstream readers whether a
+ * missing citation was actually checked or merely could not be resolved.
+ */
+export interface EvidenceIntegrityPayload {
+  citedIds: string[];
+  resolvedIds: string[];
+  unresolvedIds: string[];
+  circularIds: string[];
+  lookupFailedIds: string[];
+  checked: boolean;
+}
+
+/** Resolve a Scout proposal's cited work-item ids at capture time (best-effort). */
+export async function validateScoutEvidenceCitations(
+  text: string,
+  resolveIssue?: (id: string) => Promise<EngineerIssue | null>,
+): Promise<EvidenceIntegrityPayload | undefined> {
+  const citedIds = extractCitedIds(text);
+  if (citedIds.length === 0) return undefined;
+
+  const result: EvidenceIntegrityPayload = {
+    citedIds,
+    resolvedIds: [],
+    unresolvedIds: [],
+    circularIds: [],
+    lookupFailedIds: [],
+    checked: Boolean(resolveIssue),
+  };
+  if (!resolveIssue) return result;
+
+  for (const id of citedIds) {
+    try {
+      const cited = await resolveIssue(id);
+      if (!cited) {
+        result.unresolvedIds.push(id);
+        continue;
+      }
+      result.resolvedIds.push(id);
+      const payload = cited.payload && typeof cited.payload === 'object' ? (cited.payload as Record<string, unknown>) : {};
+      if (payload.sourceRole === 'Scout') result.circularIds.push(id);
+    } catch {
+      // A resolver outage is recorded for observability but remains fail-open.
+      result.lookupFailedIds.push(id);
+    }
+  }
+  return result;
+}
 
 /** The native column kind for a capture: feature is a payload refinement of change. */
 export function storageKindOf(kind: ImprovementKind): 'bug' | 'change' {
@@ -408,6 +464,7 @@ export async function captureImprovement(
   // origin participate in dedup + decided-recall — a drill row deduping against an
   // organic capture (or vice versa) would let synthetic signals suppress real ones.
   const isObservation = input.lane === 'observation';
+  const sourceRole = input.sourceRole ?? 'human';
   // Rubric-grading evidence gate (rubric-driven-observations-2026-06-20 D-002):
   // FAIL FAST — a structured observation whose ratings lack evidence (or whose
   // ratings block names no rubric) is a contract violation, rejected before any
@@ -649,7 +706,6 @@ export async function captureImprovement(
   // the work/triage pipeline by construction — no topic:IMPROVEMENT_TOPIC reader sees them.
   const baseTopic = isObservation ? OBSERVATION_TOPIC : IMPROVEMENT_TOPIC;
   const topics = [baseTopic, ...(input.subTopic ? [input.subTopic] : [])];
-  const sourceRole = input.sourceRole ?? 'human';
   if (sourceRole !== 'human') {
     topics.push(`improvement-source:${sourceRole}`);
   }
@@ -769,6 +825,18 @@ export async function captureImprovement(
   if (input.filedByRole) payload.filedByRole = input.filedByRole;
   // Structured-field seam (D-005): the observation's { kind, scope, confidence, refs }.
   if (input.payloadExtra) Object.assign(payload, input.payloadExtra);
+
+  // EI-19450720466036446: generated Scout proposals must resolve their cited
+  // work-items before those citations can be treated as incident evidence.
+  // Keep capture fail-open (metadata records resolver failures); triage makes
+  // the fresh place→gate decision from the live rows.
+  if (!isObservation && sourceRole === 'Scout') {
+    const evidenceIntegrity = await validateScoutEvidenceCitations(
+      `${input.title}\n${input.body ?? ''}`,
+      deps.getIssue,
+    );
+    if (evidenceIntegrity) payload.evidenceIntegrity = evidenceIntegrity;
+  }
 
   const issue = await deps.createIssue({
     title: input.title,

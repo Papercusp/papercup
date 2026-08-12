@@ -188,11 +188,24 @@ describe('evidence-staleness guard (EI-18696839552593260) — place downgrades t
     expect(res.decision).toBe('place');
   });
 
-  it('leaves place alone when a citation does not resolve to a real item', async () => {
+  it('downgrades place→gate when a citation does not resolve to a real item', async () => {
     const idea = issueOf({ id: 'i12', body: 'Regression per EI-999999 (deleted/renumbered).' });
     const deps = depsOf(idea, { 'EI-999999': null });
     const res = await applyTriageDecision({ id: 'i12', decision: 'place', reason: 'x' }, deps);
-    expect(res.decision).toBe('place');
+    expect(res.decision).toBe('gate');
+    expect(res.evidenceDowngrade?.unresolvedIds).toEqual(['EI-999999']);
+    expect((deps.merged[0].ideaLifecycle as Record<string, unknown>).triageReason).toContain('EVIDENCE-INTEGRITY GUARD');
+    expect(deps.merged[0].needsHuman).toBe(true);
+  });
+
+  it('downgrades same-role Scout citations because ideas are not incident evidence', async () => {
+    const cited = issueOf({ id: 'EI-105', payload: { sourceRole: 'Scout' } });
+    const idea = issueOf({ id: 'i-circular', body: 'Known false-fire incident: EI-105.', payload: { sourceRole: 'Scout' } });
+    const deps = depsOf(idea, { 'EI-105': cited });
+    const res = await applyTriageDecision({ id: 'i-circular', decision: 'place', reason: 'Scout proposal' }, deps);
+    expect(res.decision).toBe('gate');
+    expect(res.evidenceDowngrade?.circularIds).toEqual(['EI-105']);
+    expect((deps.merged[0].ideaLifecycle as Record<string, unknown>).triageReason).toContain('circular evidence');
   });
 
   it('never downgrades a non-place decision', async () => {
