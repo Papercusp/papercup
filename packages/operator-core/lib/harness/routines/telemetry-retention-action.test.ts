@@ -369,6 +369,9 @@ describe('system:telemetry-retention action', () => {
     await action!(ctx({ targets: [], reindex_enabled: true, reindex_now: true }));
 
     expect(guardResourceMock).toHaveBeenCalledTimes(DEFAULT_REINDEX_TARGETS.length);
+    for (const [lockSpec] of guardResourceMock.mock.calls) {
+      expect(lockSpec).toMatchObject({ resource: 'db-schema' });
+    }
     expect(sqlUnsafeMock).toHaveBeenCalledWith(
       expect.stringContaining('REINDEX INDEX CONCURRENTLY harness_shared.'),
     );

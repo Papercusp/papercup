@@ -152,7 +152,7 @@ export async function reindexBloatedIndexes(
         console.log(`[telemetry-retention] reindex: rebuilt ${qualified}`);
       } else {
         console.warn(
-          `[telemetry-retention] reindex: skipped ${qualified} (db:migrate ${outcome.reason ?? 'busy'}) — will retry next cadence`,
+        `[telemetry-retention] reindex: skipped ${qualified} (db-schema ${outcome.reason ?? 'busy'}) — will retry next cadence`,
         );
       }
     } catch (err) {
@@ -301,7 +301,7 @@ registerSystemAction('telemetry-retention', async (ctx: SystemActionCtx) => {
               workspaceId: ctx.workspaceId,
               userId: null,
             },
-            resource: 'db:migrate',
+            resource: 'db-schema',
             mode: 'exclusive',
             maxDrainSec: 30,
             reason,
