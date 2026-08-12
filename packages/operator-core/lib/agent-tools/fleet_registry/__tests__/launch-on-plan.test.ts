@@ -659,6 +659,9 @@ describe('composeMemberLaunchContext / renderMemberBaseline', () => {
     // explicitly told NOT to use work_items:claim_next as its pull loop.
     expect(md).toContain('scheduler:get_next');
     expect(md).toContain('NOT `work_items:claim_next`');
+    expect(md).toContain("scheduler:get_next { harness: '<your-harness>' }");
+    expect(md).toContain('do NOT pass `specId`, `revision`, `fleet`, `workspace`, or `claimSpec`');
+    expect(md).toContain('`claimedUnder`');
     // The bee pull-discipline: leader steers WHICH item via the claim-spec; pickup is the member's;
     // no self-prioritizing by scanning the raw frontier.
     expect(md).toContain('scheduler:set_claim_spec');

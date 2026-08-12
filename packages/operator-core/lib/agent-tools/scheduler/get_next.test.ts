@@ -122,6 +122,26 @@ const TOOLS: Array<{ name: string; args: ZodTypeAny }> = [
   { name: 'work_items:claim_next', args: (claimNextTool as { args: ZodTypeAny }).args },
 ];
 
+describe('scheduler:get_next claim-spec identity is inherited (EI-20225786201327575)', () => {
+  it('teaches the accepted call shape and keeps spec identity read-only', () => {
+    const tool = getNextTool as { args: ZodTypeAny; description?: string; guidance?: { when?: string } };
+    expect(tool.description).toContain('specId and revision are result provenance, not request arguments');
+    expect(tool.guidance?.when).toContain('do NOT pass specId, revision, fleet, workspace, or claimSpec');
+    expect(tool.guidance?.when).toContain('claimedUnder');
+
+    for (const [field, value] of [
+      ['specId', 'nonp2p-bug-drain-headless-0812'],
+      ['revision', 1],
+      ['fleet', 'nonp2p-bug-drain-headless-0812'],
+      ['workspace', 'papercusp-workspace'],
+      ['claimSpec', { specId: 'lane', revision: 1 }],
+    ] as const) {
+      const result = tool.args.safeParse({ harness: 'papercusp', [field]: value });
+      expect(result.success, `scheduler:get_next must reject undeclared ${field}`).toBe(false);
+    }
+  });
+});
+
 describe('pull-tool `states` arg is clamped to the claimable allowlist (WI-1912)', () => {
   it('exposes the expected allowlist (open/failing — feature `todo` retired, floors + terminals excluded)', () => {
     expect([...CLAIM_STATES_ALLOWLIST]).toEqual(['open', 'failing']);
