@@ -32,6 +32,7 @@ import {
   readFleetPauseState,
   diagnoseFleetScopeCooldownMiss,
 } from '../../scheduler/fleet-scope-admission';
+import { getClaimTimeRetractionAdvisory } from './retraction-advisory';
 
 export default defineTool({
   name: 'work_items:claim_next',
@@ -291,13 +292,14 @@ export default defineTool({
       c: unknown,
       // `payload` included (superset of the memory-port shape) so the same extraction
       // also feeds the plan-decisions port below without a second unwrap.
-    ): { id?: string; title?: string; summary?: string; harness?: string | null; payload?: unknown } | null =>
+    ): { id?: string; title?: string; summary?: string; harness?: string | null; state?: string | null; payload?: unknown } | null =>
       c && typeof c === 'object'
         ? (('workItem' in c ? (c as { workItem: unknown }).workItem : c) as {
             id?: string;
             title?: string;
             summary?: string;
             harness?: string | null;
+            state?: string | null;
             payload?: unknown;
           })
         : null;
@@ -338,6 +340,7 @@ export default defineTool({
       await cancelClaimableAwaits(assignee).catch(() => 0);
       const memory = await recallFor([wiOf(claimed)]);
       const planDecisionsResult = await planDecisionsFor(wiOf(claimed));
+      const retractionAdvisory = await getClaimTimeRetractionAdvisory(wiOf(claimed), args.harness);
       return {
         content: [
           {
@@ -348,6 +351,7 @@ export default defineTool({
               ...(planDecisionsResult
                 ? { planDecisions: planDecisionsResult.decisions, planDecisionsNote: planDecisionsResult.note }
                 : {}),
+              ...(retractionAdvisory ? { retractionWarning: retractionAdvisory.retractionWarning } : {}),
             }),
           },
         ],
@@ -380,9 +384,14 @@ export default defineTool({
     const claimedWithDecisions = await Promise.all(
       claimed.map(async (c) => {
         const planDecisionsResult = await planDecisionsFor(wiOf(c));
-        return planDecisionsResult
-          ? { ...c, planDecisions: planDecisionsResult.decisions, planDecisionsNote: planDecisionsResult.note }
-          : c;
+        const retractionAdvisory = await getClaimTimeRetractionAdvisory(wiOf(c), args.harness);
+        return {
+          ...c,
+          ...(planDecisionsResult
+            ? { planDecisions: planDecisionsResult.decisions, planDecisionsNote: planDecisionsResult.note }
+            : {}),
+          ...(retractionAdvisory ? { retractionWarning: retractionAdvisory.retractionWarning } : {}),
+        };
       }),
     );
     return {

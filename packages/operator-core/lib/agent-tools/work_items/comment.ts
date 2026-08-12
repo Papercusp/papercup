@@ -17,6 +17,7 @@ import { commentWorkItem, getWorkItem, isSettledWorkItemState } from '../../work
 import { runBulk, bulkContent } from '../_bulk';
 import { hardText, LIMITS } from '../limits';
 import { unresolvedRefsInBody, unresolvedRefsWarning } from './unresolved-refs';
+import { RETRACTION_LIKE_RE, RETRACTION_STATE_HINT } from './retraction-advisory';
 
 /**
  * EI-10897: `comment` is an ACCEPTED ALIAS for `body` (the SAME field).
@@ -125,23 +126,6 @@ const COMPLETION_STATE_HINT =
  * unacceptable for precisely that form-blindness, so it never does: the
  * exclusion stays keyed to the terminal state the author sets deliberately.
  */
-const RETRACTION_LIKE_RE =
-  /\b(retracting\s+this|i\s+retract\b|retraction\s+by\s+the\s+filer|(?:central|core)\s+premise\s+is\s+(?:wrong|false|invalid)|premise\s+(?:is|was)\s+(?:wrong|false|invalid|disproven)|do\s+not\s+act\s+on\s+(?:it|this)\s+as\s+written|(?:finding|analysis|diagnosis|conclusion|claim)\s+(?:is|was)\s+(?:wrong|false|incorrect|disproven|disproved)|superseding\s+this\s+(?:item|finding))/i;
-
-/** A soft, non-blocking reminder attached when a retraction-shaped post lands on
- *  a still-open item. Deliberately conditional ("if this retracts the item's
- *  premise") because retracting ONE clause of a still-valid item is legitimate
- *  and common — the nudge must not read as an instruction to drop every item
- *  whose thread contains a correction. */
-const RETRACTION_STATE_HINT =
-  'This reads like a retraction, but the item is still non-terminal — a retraction in a comment does ' +
-  'NOT retract anything the queue can see, so scheduler:get_next keeps serving this item AT ITS ORIGINAL ' +
-  'SEVERITY and the next claimer sees the badge, not your correction. If this retracts the item\'s premise, ' +
-  'call work_items:set_state { state:\'dropped\', completionRef:\'retracted: premise disproven\', ' +
-  'assumptions:\'none\' } (terminal — removes it from work_items:claimable AND scheduler:get_next). ' +
-  'Use completionRef for the caller-facing evidence and assumptions:\'none\' when no recorded fact supports ' +
-  'the close.';
-
 export default defineTool({
   name: 'work_items:comment',
   profile: 'engineer',

@@ -49,6 +49,7 @@ import {
   diagnoseFleetScopeFeatureFamilyMatch,
   diagnoseFleetScopeTerminalExhaustion,
 } from '../../scheduler/fleet-scope-admission';
+import { getClaimTimeRetractionAdvisory } from '../work_items/retraction-advisory';
 
 /**
  * EI-20099413453852234 — declare the caller's intent for the item it just claimed.
@@ -573,6 +574,7 @@ export function assembleSchedulerClaimResult(legs: {
   checkpointAgeMs?: unknown;
   checkpointWarning?: unknown;
   checkpointBgJobWarning?: unknown;
+  retractionWarning?: string | null;
   priorWork?: unknown;
   priorWorkWarning?: unknown;
   planDecisions?: readonly unknown[] | null;
@@ -602,6 +604,7 @@ export function assembleSchedulerClaimResult(legs: {
     // prefix-preserving, while the claim has already committed before this
     // response is rendered.
     claimReceipt,
+    ...(legs.retractionWarning ? { retractionWarning: legs.retractionWarning } : {}),
     // Keep this before workItem: result-door truncation is prefix-preserving, and
     // governing decisions are safety-critical while the work-item echo is bulky.
     ...(legs.planDecisions
@@ -1200,6 +1203,7 @@ export default defineTool({
     // this surfaces what THIS item's text assumes — and an unverified absence premise
     // is the measured way a claimant builds something that already exists.
     let premises: import('../../premises-claim-port').ClaimTimePremisesBrief | null = null;
+    let retractionWarning: string | null = null;
     if (res?.workItem) {
       const wi = res.workItem as {
         payload?: unknown;
@@ -1207,7 +1211,7 @@ export default defineTool({
         title?: string | null;
         summary?: string | null;
       };
-      [[planDecisions, planDecisionsNote], premises] = await Promise.all([
+      [[planDecisions, planDecisionsNote], premises, retractionWarning] = await Promise.all([
         import('../../plan-decisions-claim-port')
           .then(async (m) => {
             const brief = await m.getClaimTimePlanDecisions({
@@ -1226,6 +1230,9 @@ export default defineTool({
               workspaceId: ident.workspaceId,
             }),
           )
+          .catch(() => null),
+        getClaimTimeRetractionAdvisory(wi, wi.harness ?? args.harness)
+          .then((advisory) => advisory?.retractionWarning ?? null)
           .catch(() => null),
       ]);
     }
@@ -1349,6 +1356,7 @@ export default defineTool({
             ? 'A PRIOR holder left an in-flight checkpoint on this item — it may already be DONE or partly done. Read it before building: verify against the tree/tests first, do not assume greenfield (EI-529).'
             : undefined,
           checkpointBgJobWarning: bgJobWarning.detected ? bgJobWarning.reason : undefined,
+          retractionWarning,
           priorWork: priorWorkHint?.priorWork,
           priorWorkWarning: priorWorkHint?.priorWorkWarning,
           // EI-19396519606401168: this note used to be built from the

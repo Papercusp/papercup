@@ -42,6 +42,7 @@ import { getClaimTimePriorWorkHint, priorWorkWarning } from '../../work-item-pri
 import { planItemClaimCollision } from '../../scheduler/plan-item-claim-collision';
 import { detectBgJobCheckpointClaim } from '../../checkpoint-bg-job-claim';
 import { ANY_FAMILY_TERMINAL_STATES } from '../../work-item-dispatch-states';
+import { getClaimTimeRetractionAdvisory } from './retraction-advisory';
 // TYPE-only: erased at runtime, so it adds no import edge and cannot reintroduce an ESM
 // cycle with the scheduler (the VALUE side is dynamically imported at its use site below,
 // the same way fleet:leader-brief reaches this store).
@@ -446,7 +447,7 @@ async function claimOne(
     // independent read; no reason to pay a serial round-trip) and is fail-soft for the reason
     // given on readUnresolvedDepBlockers: saying nothing here asserts nothing.
     let checkpointReadFailed = false;
-    const [hint, priorRaw, laneCollision, unresolvedBlockers, premises, planDecisionsResult] = await Promise.all([
+    const [hint, priorRaw, laneCollision, unresolvedBlockers, premises, planDecisionsResult, retractionAdvisory] = await Promise.all([
       getClaimTimeCheckpointHint({
         harness: workItem.harness ?? it.harness ?? null,
         workItemId: it.id,
@@ -490,6 +491,7 @@ async function claimOne(
           return brief ? { decisions: brief.decisions, note: m.renderPlanDecisionsNote(brief) } : null;
         })
         .catch(() => null),
+      getClaimTimeRetractionAdvisory(workItem, workItem.harness ?? it.harness ?? undefined),
     ]);
     const blockedWarning = blockedClaimWarning(unresolvedBlockers);
     const concurrencyWarning = concurrencyClaimWarning(concurrency, it.id);
@@ -517,6 +519,7 @@ async function claimOne(
             'A PRIOR holder left an in-flight checkpoint on this item — it may already be DONE or partly done. Read it before building: verify against the tree/tests first, do not assume greenfield (EI-529).',
           ...(bgJobWarning.detected ? { checkpointBgJobWarning: bgJobWarning.reason } : {}),
           ...(terminalWarning ? { terminalWarning } : {}),
+          ...(retractionAdvisory ? { retractionWarning: retractionAdvisory.retractionWarning } : {}),
           ...(blockedWarning ? { blockedWarning, blockedBy: unresolvedBlockers } : {}),
           ...(concurrencyWarning
             ? {
@@ -540,6 +543,7 @@ async function claimOne(
           id: it.id,
           workItem,
           ...(terminalWarning ? { terminalWarning } : {}),
+          ...(retractionAdvisory ? { retractionWarning: retractionAdvisory.retractionWarning } : {}),
           ...(blockedWarning ? { blockedWarning, blockedBy: unresolvedBlockers } : {}),
           ...(concurrencyWarning
             ? {
