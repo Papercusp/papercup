@@ -113,10 +113,14 @@ describe('EI-18805100008031244 — verify-tauri-headless --boot-only TTL self-wa
     )?.[0];
     expect(envWriter).toBeTruthy();
     expect(envWriter).toContain("printf 'VERIFY_TAURI_HEARTBEAT=%q\\n' \"$HEARTBEAT_FILE\"");
-    expect(envWriter).toContain(
+    const privateEnvBody = src.match(
+      /cat <<'BOOT_ONLY_ENV_SCRIPT'[\s\S]*?\nBOOT_ONLY_ENV_SCRIPT/,
+    )?.[0];
+    expect(privateEnvBody).toBeTruthy();
+    expect(privateEnvBody).toContain(
       'export VERIFY_TAURI_SCOPE_ENABLED VERIFY_TAURI_SCOPE_UNIT VERIFY_TAURI_HEARTBEAT',
     );
-    expect(envWriter).toContain('verify_tauri_assert_owned');
+    expect(privateEnvBody).toContain('verify_tauri_assert_owned');
 
     // --boot-only exposes only a source command for the private env file; the
     // heartbeat refresh and TTL-disable knobs remain documented alongside it.
