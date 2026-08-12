@@ -38,7 +38,12 @@ import { DEFAULT_CENSUS_WINDOW_DAYS } from './sql-read-census-action';
 
 const SLUG = process.env.SQL_READ_CENSUS_ROUTINE_SLUG ?? operatorHomeHarnessSlug();
 export const SQL_READ_CENSUS_ROUTINE_NAME = 'sql-read-census';
-/** 04:17 UTC nightly — clear of :15/:35/:45 and of the :00 cluster. */
+/**
+ * 04:17 HOST-LOCAL nightly — clear of :15/:35/:45 and of the :00 cluster.
+ * NOT UTC: `computeNextFireAt` evaluates the crontab in the host timezone, so on
+ * this box (EDT) this fires at 08:17Z. Verified against the seeded row's
+ * next_fire_at rather than assumed. Say local, mean local.
+ */
 const CRON = '0 17 4 * * *';
 
 async function main(): Promise<void> {
@@ -71,7 +76,7 @@ async function main(): Promise<void> {
   `;
   console.log(
     `[seed-sql-read-census-routine] seeded "${name}" for "${SLUG}" (ws=${ws}, active=${active}) — ` +
-      `nightly 04:17 UTC census of dev:pg_query reads vs the routing pair registry. ` +
+      `nightly 04:17 host-local (08:17Z here) census of dev:pg_query reads vs the routing pair registry. ` +
       (active ? 'Cadence LIVE.' : 'Inactive — enable with the routines admin.'),
   );
   await sql.end({ timeout: 5 });
