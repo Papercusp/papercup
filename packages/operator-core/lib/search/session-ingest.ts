@@ -686,8 +686,17 @@ export const FILE_ADAPTERS: FileAdapter[] = [
   },
   {
     sourceKind: 'omp',
-    // ~/.omp/agent/sessions/<munged-cwd>/<ts>_<uuid>.jsonl
-    roots: () => [{ root: join(HOME, '.omp', 'agent', 'sessions'), dirDepth: 1 }],
+    roots: () => [
+      // ~/.omp/agent/sessions/<munged-cwd>/<ts>_<uuid>.jsonl
+      { root: join(HOME, '.omp', 'agent', 'sessions'), dirDepth: 1 },
+      // psu isolation dir — a psu-launched OMP agent gets a PER-SESSION omp home and
+      // never writes to ~/.omp, so without this root every psu OMP transcript is
+      // invisible to the index (EI-20212281439039808). The claude adapter above has
+      // carried its psu root for a while; this pair must not drift again — guarded by
+      // session-ingest-psu-roots.test.ts.
+      // ~/.papercusp/su-omp-homes/session-<advSessionId>/agent/sessions/<munged-cwd>/<ts>_<uuid>.jsonl
+      { root: join(HOME, '.papercusp', 'su-omp-homes'), dirDepth: 4 },
+    ],
     parseLine: parseOmpLine,
     classifyLine: classifyOmpLine,
     meta: (filePath) => {
