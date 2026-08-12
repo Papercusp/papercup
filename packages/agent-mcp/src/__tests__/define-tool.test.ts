@@ -254,6 +254,54 @@ describe('defineTool', () => {
       expect(hint.length).toBeGreaterThan(0);
       expect(hint.length).toBeLessThan(1800);
     });
+
+    it('puts a complete accepted example before verbose nested descriptions', async () => {
+      const verbose = 'Long field guidance that must come after the compact accepted example. '.repeat(40);
+      defineTool({
+        name: 'operator:verbose_nested_hint_probe',
+        description: 'verbose nested-field schema-hint probe',
+        capability: 'operator:scan',
+        requirePrincipal: false,
+        agentRoles: ['operator'],
+        args: z.object({
+          checks: z.array(
+            z.object({
+              claim: z.string().describe(verbose),
+              id: z.string().optional().describe(verbose),
+              recheck: z.string().optional().describe(verbose),
+              verified: z.string().optional().describe(verbose),
+            }),
+          ),
+        }),
+        async handler() {
+          return { content: [{ type: 'text', text: 'should not run' }] };
+        },
+      });
+      const tool = lookupByMcpName('operator:verbose_nested_hint_probe')!;
+      const result = await dispatchProjectedTool(
+        tool,
+        'operator:verbose_nested_hint_probe',
+        { checks: [{ key: 'x', probe: 'y' }] },
+        {
+          log: () => {},
+          signal: new AbortController().signal,
+          progress: () => {},
+          emit: () => {},
+          workspaceId: 'default',
+          role: 'operator',
+          runId: 'run_T',
+        },
+        {},
+      );
+
+      expect(result.ok).toBe(false);
+      const message = result.error?.message ?? '';
+      const example =
+        'e.g. {"claim":"<string>","id":"<string>","recheck":"<string>","verified":"<string>"}';
+      expect(message).toContain(example);
+      expect(message).toContain('(required: claim; optional: id, recheck, verified)');
+      expect(message.indexOf(example)).toBeLessThan(message.indexOf('verbose schema:'));
+    });
   });
 
   it('appends the FULL args schema to invalid_args failures (P-004, code-run-batch-adoption)', async () => {
