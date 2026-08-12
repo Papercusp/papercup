@@ -657,16 +657,18 @@ export function shouldShedForInFlight(currentInFlight: number, maxInFlight: numb
 const RESERVED_CONTROL_PLANE_TOOLS = new Set([
   'scheduler:get_next',
   'coord:orient',
+  'coord:send',
   'loop:checkpoint',
   'tools:find',
   'loop:arm',
   'improvements:capture',
 ].map(normalizeMcpName));
 
-/** Fleet bootstrap, continuation checkpoints, scheduler claims, deferred tool discovery, loop
- * arming, and incident capture are liveness/control-plane traffic: if they cannot run, workers
- * cannot orient, persist a safe wake boundary, drain the queue generating proxy load, recover a
- * missing tool surface, keep themselves alive, or file the failure that needs fixing. The MCP
+/** Fleet bootstrap, direct coordination delivery, continuation checkpoints, scheduler claims,
+ * deferred tool discovery, loop arming, and incident capture are liveness/control-plane traffic:
+ * if they cannot run, workers cannot orient, wake a blocker, persist a safe wake boundary, drain
+ * the queue generating proxy load, recover a missing tool surface, keep themselves alive, or file
+ * the failure that needs fixing. The MCP
  * client may send a canonical colon-form name or its `mcp__<server>__group_verb` advertisement
  * name; both are normalized through the shared tooldef helper before this narrow membership check.
  * Keep the reserved set deliberately narrow. */
