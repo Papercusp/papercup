@@ -81,7 +81,7 @@ describe('scoutOutcomeRefreshSweep — orchestration (injected deps, no PG)', ()
     ...over,
   });
 
-  it('refreshes every started workspace and reports no stale-pending when clean', async () => {
+  it('refreshes Scout and su-ideate outcomes for every started workspace and reports no stale-pending when clean', async () => {
     const d = deps();
     const results = await scoutOutcomeRefreshSweep(d);
     expect(results).toEqual([
@@ -97,7 +97,13 @@ describe('scoutOutcomeRefreshSweep — orchestration (injected deps, no PG)', ()
         reason: 'refreshed, no stale-pending',
       },
     ]);
-    expect(d.refreshScoutOutcomes).toHaveBeenCalledWith({ workspaceId: 'ws1', harnessSlug: 'papercusp' });
+    expect(d.refreshScoutOutcomes).toHaveBeenCalledTimes(2);
+    expect(d.refreshScoutOutcomes).toHaveBeenNthCalledWith(1, { workspaceId: 'ws1', harnessSlug: 'papercusp' });
+    expect(d.refreshScoutOutcomes).toHaveBeenNthCalledWith(2, {
+      workspaceId: 'ws1',
+      harnessSlug: 'papercusp',
+      origin: 'su-ideate',
+    });
     expect(d.recordFire).not.toHaveBeenCalled();
     expect(d.openEscalation).not.toHaveBeenCalled();
   });
@@ -111,7 +117,7 @@ describe('scoutOutcomeRefreshSweep — orchestration (injected deps, no PG)', ()
     });
     const results = await scoutOutcomeRefreshSweep(d);
     expect(results).toHaveLength(1);
-    expect(d.refreshScoutOutcomes).toHaveBeenCalledTimes(1);
+    expect(d.refreshScoutOutcomes).toHaveBeenCalledTimes(2);
   });
 
   it('alerts (both channels) when ideas sit stale-pending and no recent fire exists', async () => {

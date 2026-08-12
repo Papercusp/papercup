@@ -16,10 +16,11 @@
  * counting — the fix here is the same shape: a routines-tick sweep
  * independent of the thing it used to be coupled to.
  *
- * (a) DECOUPLE: this sweep calls refreshScoutOutcomes for every started pot's
- *     workspace on its own in-process-throttled cadence (default 15min — much
- *     cheaper than a full Scout cycle, so a much shorter floor is safe),
- *     wholly independent of whether Scout is currently cycling.
+ * (a) DECOUPLE: this sweep calls refreshScoutOutcomes for both the Scout and
+ *     su-ideate origin partitions in every started pot's workspace on its own
+ *     in-process-throttled cadence (default 15min — much cheaper than a full
+ *     Scout cycle, so a much shorter floor is safe), wholly independent of
+ *     whether Scout is currently cycling.
  * (b) ESCALATE: after a refresh, count routed ideas whose outcome is STILL
  *     NULL/'pending' with a stale (or absent) `outcome_checked_at` — a refresh
  *     running does not itself guarantee an idea resolves (e.g. an abandoned
@@ -194,7 +195,17 @@ export async function scoutOutcomeRefreshSweep(
       if (seenWorkspaces.has(workspaceId)) continue;
       seenWorkspaces.add(workspaceId);
       try {
-        await (deps.refreshScoutOutcomes ?? refreshScoutOutcomes)({ workspaceId, harnessSlug: installSlug });
+        const refresh = deps.refreshScoutOutcomes ?? refreshScoutOutcomes;
+        // EI-20200291159802681: the default origin is 'scout'. Calling only the
+        // default here left every su-ideate row permanently unchecked even
+        // though this cadence-independent sweep kept the Scout partition fresh.
+        // The two origin partitions are disjoint, so refresh them together. The
+        // routed-ledger's D-003 guard ensures the su pass updates only its idea
+        // cache and can never write Scout lens weights.
+        await Promise.all([
+          refresh({ workspaceId, harnessSlug: installSlug }),
+          refresh({ workspaceId, harnessSlug: installSlug, origin: 'su-ideate' }),
+        ]);
 
         let stalePendingCount = 0;
         let alerted = false;
