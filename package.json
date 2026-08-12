@@ -287,6 +287,7 @@
     "typecheck:operator-core": "npm --workspace @papercusp/operator-core run typecheck --",
     "lint:vite-externalized": "node scripts/check-vite-externalized-warnings.mjs",
     "trace:vite-externalized": "node scripts/trace-vite-externalized.mjs",
+    "trace:vite-externalized:json-file": "node scripts/trace-vite-externalized.mjs --json-file",
     "lint:vite-eager": "node scripts/trace-vite-externalized.mjs --check",
     "lint:boundary-check": "node scripts/check-transitive-boundary.mjs",
     "lint:migrations": "node scripts/lint-migrations.mjs",

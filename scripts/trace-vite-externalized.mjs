@@ -26,10 +26,13 @@
  * The graph logic is pure + unit-tested (check-vite-externalized-warnings has no build to mock);
  * see trace-vite-externalized.test.ts.
  *
- * Usage:  npm run trace:vite-externalized            # full report
- *         npm run trace:vite-externalized -- --json  # machine-readable
+ * Usage:  npm run trace:vite-externalized                         # full report
+ *         npm run trace:vite-externalized -- --json               # machine-readable stdout
+ *         npm run trace:vite-externalized:json-file -- /tmp/report.json
+ *                                                                  # machine-readable file
  */
 import { isBuiltin, createRequire } from 'node:module';
+import { writeFile } from 'node:fs/promises';
 import { resolve, relative, dirname } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -122,8 +125,35 @@ export function shortestStaticChain(eagerRoots, staticEdges, target) {
   return null;
 }
 
+/**
+ * Parse the optional machine-readable output path. The path is deliberately a separate
+ * argument so `npm run` lifecycle text can never be written into the report itself.
+ * @param {string[]} args
+ * @returns {string|null}
+ */
+export function parseJsonFileArg(args) {
+  const matches = args
+    .map((arg, index) => ({ arg, index }))
+    .filter(({ arg }) => arg === '--json-file' || arg.startsWith('--json-file='));
+  if (matches.length === 0) return null;
+  if (matches.length > 1) throw new Error('--json-file may be specified only once');
+
+  const { arg, index } = matches[0];
+  const path = arg.startsWith('--json-file=') ? arg.slice('--json-file='.length) : args[index + 1];
+  if (!path || (arg === '--json-file' && path.startsWith('--'))) {
+    throw new Error('--json-file requires a path argument');
+  }
+  return path;
+}
+
+/** Write one complete, parseable report document. */
+export async function writeJsonReport(path, report) {
+  await writeFile(path, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+}
+
 async function main() {
   const jsonOut = process.argv.includes('--json');
+  const jsonFile = parseJsonFileArg(process.argv.slice(2));
   const checkMode = process.argv.includes('--check');
   const appRequire = createRequire(APP_DIR + '/package.json');
   const { build } = await import(appRequire.resolve('vite'));
@@ -203,6 +233,11 @@ async function main() {
       };
     }),
   };
+
+  if (jsonFile) {
+    await writeJsonReport(jsonFile, report);
+    console.error(`JSON trace report written to ${jsonFile}`);
+  }
 
   if (checkMode) {
     const { ok, violations, allowed } = decideEager({ eager });

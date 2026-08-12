@@ -8,10 +8,24 @@
  * boundary sits in a lazy chunk and is harmless. Pure functions imported directly (same pattern
  * as check-vite-externalized-warnings.test.ts / lint-tsc.test.ts).
  */
+import { execFileSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 // eslint-disable-next-line import/no-relative-packages
 // @ts-expect-error — the .mjs script has no declaration file (same as test-file-router.test.ts).
-import { reachableStatic, computeEagerExternalized, shortestStaticChain, decideEager, ALLOWED_EAGER_BUILTINS } from '../../../scripts/trace-vite-externalized.mjs';
+import {
+  reachableStatic,
+  computeEagerExternalized,
+  shortestStaticChain,
+  decideEager,
+  ALLOWED_EAGER_BUILTINS,
+  parseJsonFileArg,
+} from '../../../scripts/trace-vite-externalized.mjs';
+
+const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../..');
 
 // A miniature SPA graph. main → {buffer-polyfill, __root}; __root → provider → reducer →
 // {safe-leaf, run-script}. lazyRoute/server-blob are reached ONLY via a dynamic (await import)
@@ -120,4 +134,34 @@ describe('shortestStaticChain', () => {
   it('returns null when the target is not statically reachable', () => {
     expect(shortestStaticChain(eagerRoots, staticEdges, '/lib/server-blob.ts')).toBeNull();
   });
+});
+
+describe('trace CLI JSON-file contract', () => {
+  it('requires a path for --json-file', () => {
+    expect(() => parseJsonFileArg(['--json-file'])).toThrow('--json-file requires a path argument');
+    expect(parseJsonFileArg(['--json-file', '/tmp/report.json'])).toBe('/tmp/report.json');
+  });
+
+  it('writes parseable JSON through the npm wrapper, whose lifecycle text stays outside the file', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'trace-vite-json-file-'));
+    const reportPath = path.join(dir, 'report.json');
+    try {
+      execFileSync('npm', ['run', 'trace:vite-externalized:json-file', '--', reportPath], {
+        cwd: ROOT,
+        encoding: 'utf8',
+        timeout: 180_000,
+      });
+
+      const report = JSON.parse(readFileSync(reportPath, 'utf8')) as {
+        entries?: unknown;
+        eagerReachableModules?: unknown;
+        eagerExternalized?: unknown;
+      };
+      expect(Array.isArray(report.entries)).toBe(true);
+      expect(report.eagerReachableModules).toEqual(expect.any(Number));
+      expect(Array.isArray(report.eagerExternalized)).toBe(true);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 240_000);
 });
