@@ -20,6 +20,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { guardResource } from '../locks/resource-lock-guard';
 import { inWorkspaceTxn } from '../locks/in-workspace-txn';
 import { getHarnessAdminUrl } from '../../embedded-pg-discovery';
+import { resolveDeployedReleaseRoot, verifyPendingCodeDeployMigration } from '../../migration-deploy-guard';
 // Local bindings for this module's own use — the `export { … } from` below
 // re-exports the same names for existing importers but creates no local binding.
 import { isRetryableLockFailure, lockRetryBackoffMs } from '../../pg-retryable-failure';
@@ -309,6 +310,31 @@ export default defineTool({
       ),
   }),
   async handler(args, ctx) {
+    // The boot runner performs the same check through its beforeApply hook.
+    // Keep db:migrate fail-closed too: it is the sanctioned manual applier and
+    // must not provide a route around the release-before-schema ordering rule.
+    try {
+      const sqlText = readFileSync(args.file, 'utf8');
+      const sqlDir = path.dirname(path.resolve(args.file));
+      const guard = verifyPendingCodeDeployMigration({
+        filename: path.basename(args.file),
+        sqlText,
+        releaseRoot: resolveDeployedReleaseRoot(sqlDir),
+      });
+      if (!guard.ok) {
+        return json({
+          ok: false,
+          applied: false,
+          reason: 'pending_code_deploy_not_ready',
+          file: args.file,
+          note: guard.error,
+        });
+      }
+    } catch {
+      // Preserve db:migrate's existing dry-run / psql error behavior for a
+      // missing or unreadable path; the deployed-code guard only applies to a
+      // file whose body can actually identify itself as parked.
+    }
     if (!args.confirm) {
       return json({
         ok: true,

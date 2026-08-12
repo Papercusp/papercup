@@ -46,6 +46,7 @@ import {
 import { getHarnessAdminUrl } from './embedded-pg-discovery';
 import { isRetryableLockFailure } from './pg-retryable-failure';
 import { checkMigrationDrift, resolveSqlDir, sqlDirCandidates } from './migration-drift';
+import { resolveDeployedReleaseRoot, verifyPendingCodeDeployMigration } from './migration-deploy-guard';
 import { sendMessage } from './agent-tools/coordination/messages';
 import type { AgentIdentity } from './agent-tools/coordination/identity';
 import { readFile, writeFile, mkdir } from 'node:fs/promises';
@@ -203,6 +204,22 @@ export async function applyPendingMigrationsNow(): Promise<BootMigrateResult | n
     return null;
   }
 
+  // A parked code/data migration remains recognizable after its filename is
+  // armed because the SQL body carries both PENDING-CODE-DEPLOY and
+  // REQUIRES-DEPLOYED markers. Check the release checkout's git HEAD at the
+  // runner's last safe point before the file can execute. The callback runs
+  // only for files absent from schema_migrations, so an already-applied file
+  // is never re-blocked merely because its companion later moved on.
+  const deployedReleaseRoot = resolveDeployedReleaseRoot(sqlDir);
+  const guardPendingMigration = (file: string, sqlText: string): void => {
+    const verdict = verifyPendingCodeDeployMigration({
+      filename: file,
+      sqlText,
+      releaseRoot: deployedReleaseRoot,
+    });
+    if (!verdict.ok) throw new Error(`[migration-deploy-guard] ${verdict.error}`);
+  };
+
   // A DEDICATED max:1 client — the runner applies each file as a raw
   // `BEGIN; <ddl>; COMMIT;` via .unsafe(), which postgres-js rejects with
   // UNSAFE_TRANSACTION on a pooled (max>1) connection (it can't guarantee the
@@ -255,6 +272,7 @@ export async function applyPendingMigrationsNow(): Promise<BootMigrateResult | n
         sqlDir,
         continueOnError: true,
         skipFile,
+        beforeApply: guardPendingMigration,
         log: (s) => console.log(`[boot-migrate] ${s}`),
       });
       appliedCount += pass.appliedCount;
