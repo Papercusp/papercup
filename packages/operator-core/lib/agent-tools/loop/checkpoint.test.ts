@@ -123,6 +123,14 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect((tool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });
 
+  it('guides cold-carry authors to anchor owner directives and completed actions', () => {
+    const guidance = (tool as unknown as { guidance?: { when?: string } }).guidance;
+    expect(guidance?.when).toContain('[turn:<session>@<iso-ts>]');
+    expect(guidance?.when).toMatch(/same-line/i);
+    expect(guidance?.when).toMatch(/never invent a ref/i);
+    expect(guidance?.when).toContain('[self-imposed]');
+  });
+
   it('structured fields → renderCarryNote, keyed by caller ownerId + ctx harness (the loopScope the wake executor reads)', async () => {
     const b = body(await call({ did: 'wired producer', left: 'run tests', insight: 'inject wraps note', next: 'vitest' }));
     expect(b).toMatchObject({ ok: true, harness: 'papercusp', ownerId: 'su-caller', cleared: false });

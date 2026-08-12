@@ -157,7 +157,10 @@ export default defineTool({
       "Before you end a turn on a COLD loop (carry:'cold'): persist what the next cold wake needs — " +
       'what you did, what is left, the key non-obvious insight, and the single next action. Keep it COMPRESSED ' +
       '(facts, not a transcript). Until the first checkpoint exists a cold loop silently stays WARM (P-006 ' +
-      'no-anchor guard), and one that stops checkpointing keeps restarting from a stale note.',
+      'no-anchor guard), and one that stops checkpointing keeps restarting from a stale note. For provenance-safe ' +
+      'authoring, put a same-line [turn:<session>@<iso-ts>] ref on any owner directive or completed coordination ' +
+      'action, citing the turn where it actually happened; never invent a ref. If the source is not the owner, ' +
+      'say so with [self-imposed], [peer:<sid>], or [inferred] rather than rephrasing it as owner authority.',
     notWhen:
       "A WARM loop (carry:'warm', the default) carries its live transcript across wakes and needs no carry-note. " +
       'Not for work-item state — that is work_items:checkpoint.',
