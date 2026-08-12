@@ -1,8 +1,9 @@
 /**
- * EI-20202324455243251 — scheduler:get_next must deliver governing decisions
- * before the bulky work-item echo. The result-door keeps the serialized prefix,
- * so this test exercises the real scheduler assembly with the real door and
- * proves the decision list survives in context rather than only in the spill.
+ * EI-20243251614343957 — scheduler:get_next must deliver a committed claim
+ * receipt and governing decisions before the bulky work-item echo. The result-door
+ * keeps the serialized prefix, so this test exercises the real scheduler assembly
+ * with the real door and proves the caller can reconcile a destructive claim rather
+ * than blindly retrying after a truncation.
  */
 import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -19,6 +20,7 @@ import { assembleSchedulerClaimResult } from './get_next';
 const BUDGET_CHARS = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
 const RUN_ID = '11111111-2222-4333-8444-555555555557';
 const DECISION_MARKER = 'EI-20202324455243251-GOVERNING-DECISION-SURVIVED';
+const CLAIM_MARKER = 'EI-20243251614343957';
 
 let sandbox: string;
 let previousScratchRoot: string | undefined;
@@ -50,7 +52,7 @@ function doorify(result: Record<string, unknown>) {
 
 function bulkyWorkItem() {
   return {
-    id: 'EI-20202324455243251',
+    id: CLAIM_MARKER,
     title: 'The result-door truncates scheduler:get_next planDecisions',
     summary: filler(BUDGET_CHARS * 2),
     payload: { evidence: filler(BUDGET_CHARS / 2) },
@@ -74,8 +76,9 @@ describe('scheduler:get_next claim-time decisions survive the result-door', () =
       claimedUnder: { specId: 'nonp2p-bug-drain-luna-max-0811', revision: 1 },
     });
 
-    expect(Object.keys(assembled).slice(0, 4)).toEqual([
+    expect(Object.keys(assembled).slice(0, 5)).toEqual([
       'ok',
+      'claimReceipt',
       'planDecisions',
       'planDecisionsNote',
       'workItem',
@@ -84,6 +87,7 @@ describe('scheduler:get_next claim-time decisions survive the result-door', () =
     const doored = doorify(assembled);
     expect(doored.content).toHaveLength(2); // the bulky echo still exercises the door
     const kept = (doored.content[0] as { text: string }).text;
+    expect(kept).toContain('"claimReceipt":{"committed":true,"workItemId":"EI-20243251614343957"');
     expect(kept).toContain(DECISION_MARKER);
     expect(kept).toContain('planDecisionsNote');
   });

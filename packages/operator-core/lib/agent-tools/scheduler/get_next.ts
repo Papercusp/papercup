@@ -549,11 +549,12 @@ async function buildMissDiagnosis(args: {
 }
 
 /**
- * WI-20202324455243251: assemble a successful self-pull response in the order the
+ * EI-20243251614343957: assemble a successful self-pull response in the order the
  * result-door should preserve. The door keeps the PREFIX of an oversized serialized
- * result, so the claim-time governing decisions must precede the bulky work-item
- * echo. They are the one advisory block that can change whether the claimed work is
- * valid; losing them to a tail cut makes a partial response look complete.
+ * result, so the committed claim receipt and claim-time governing decisions must
+ * precede the bulky work-item echo. A self-pull is destructive before this response
+ * is serialized; if the tail is cut, the caller must still know which item was
+ * committed and must not blindly retry get_next.
  *
  * Keep this pure and exported so the regression test exercises the production
  * assembly rather than a mirrored fixture. The remaining fields retain their former
@@ -577,8 +578,28 @@ export function assembleSchedulerClaimResult(legs: {
   premises?: unknown;
   premisesNote?: string | null;
 }): Record<string, unknown> {
+  const workItemRecord =
+    legs.workItem && typeof legs.workItem === 'object'
+      ? (legs.workItem as { id?: unknown })
+      : null;
+  const claimSpecRecord =
+    legs.claimedUnder && typeof legs.claimedUnder === 'object'
+      ? (legs.claimedUnder as { specId?: unknown; revision?: unknown })
+      : null;
+  const workItemId = typeof workItemRecord?.id === 'string' && workItemRecord.id.length > 0 ? workItemRecord.id : null;
+  const claimReceipt = {
+    committed: true,
+    ...(workItemId ? { workItemId } : {}),
+    ...(typeof claimSpecRecord?.specId === 'string' ? { specId: claimSpecRecord.specId } : {}),
+    ...(typeof claimSpecRecord?.revision === 'number' ? { revision: claimSpecRecord.revision } : {}),
+  };
+
   return {
     ok: true,
+    // This compact receipt must remain first: result-door truncation is
+    // prefix-preserving, while the claim has already committed before this
+    // response is rendered.
+    claimReceipt,
     // Keep this before workItem: result-door truncation is prefix-preserving, and
     // governing decisions are safety-critical while the work-item echo is bulky.
     ...(legs.planDecisions
