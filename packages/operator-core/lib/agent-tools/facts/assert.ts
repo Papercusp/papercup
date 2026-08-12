@@ -135,7 +135,7 @@ export default defineTool({
     when:
       'You reached a durable CONCLUSION that should shape future turns — yours or your role\'s: "X is owner-residue, exclude it", "plan Y stalls on Z", "this harness\'s tests need Docker". Scope it as narrowly as true: workspace (global), role (all queens/bees/…), owner (just you), harness, or work_item.',
     notWhen:
-      `Ephemeral status (coord), in-flight progress (work_items:checkpoint), long-form knowledge (agent-insights), or fuzzy recall (memory:remember). Keep facts under ${FACT_BODY_MAX_CHARS} chars; ordinary facts expire, while conventions without ttlSec are permanent. Do not pin changing counts/statuses: store the invariant plus a live-source pointer. For a necessary moving sample, pass subjectVolatile:true and measuredAt; it becomes a ≤15-minute SNAPSHOT. Label intentional history as historical.`,
+      `Ephemeral status (coord), in-flight progress (work_items:checkpoint), long-form knowledge (agent-insights), or fuzzy recall (memory:remember). Keep facts under ${FACT_BODY_MAX_CHARS} chars; the per-scope cap ${FACTS_PER_SCOPE_CAP} evicts the lowest-ranked live fact. Ordinary facts expire, while conventions without ttlSec are permanent. Do not pin changing counts/statuses: store the invariant plus a live-source pointer. For a necessary moving sample, pass subjectVolatile:true and measuredAt; it becomes a ≤15-minute SNAPSHOT. Label intentional history as historical.`,
     chaining:
       'facts:list { scope } to see what already stands (re-assert refreshes rather than duplicating); facts:retract when a fact stops being true — a stale fact folded verbatim is worse than none.',
     seeAlso: ['facts:retract', 'facts:list', 'memory:remember (fuzzy background instead)'],
