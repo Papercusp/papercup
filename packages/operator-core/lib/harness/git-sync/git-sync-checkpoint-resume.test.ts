@@ -300,20 +300,31 @@ describe('WI-1416 git subprocess hang guard', () => {
       const bin = join(cwd, 'bin');
       mkdirSync(bin);
       const fakeGit = join(bin, 'git');
+      // WI-38223 — TIMING BUDGET, do not re-tighten. This test asserts a REFRESH property, so
+      // it needs the child to outlive the idle deadline; that only works if the deadline sits
+      // comfortably ABOVE the inter-output gap and comfortably BELOW the child's total runtime.
+      // The original 80ms gap against a 120ms deadline left 40ms for scheduler jitter and went
+      // red on a box running six concurrent vitest workers (the guard killed a healthy child,
+      // so `r.code` was -1). Budget now: 50ms gap · 300ms idle deadline · ~500ms total.
+      //   gap 50ms  vs deadline 300ms -> 250ms of jitter tolerance (a 6x ratio)
+      //   total 500ms vs deadline 300ms -> STILL FALSIFIABLE: drop the refresh and the child is
+      //   killed at 300ms, 200ms short of finishing, so a real regression still fails here.
+      // Load only stretches the total, which strengthens falsifiability rather than eroding it.
       writeFileSync(
         fakeGit,
-        '#!/bin/sh\nprintf "%s\\n" "$@" > "$PWD/argv"\ni=0\nwhile test "$i" -lt 5; do echo "progress $i" >&2; sleep 0.08; i=$((i + 1)); done\n',
+        '#!/bin/sh\nprintf "%s\\n" "$@" > "$PWD/argv"\ni=0\nwhile test "$i" -lt 10; do echo "progress $i" >&2; sleep 0.05; i=$((i + 1)); done\n',
       );
       chmodSync(fakeGit, 0o755);
       process.env.PATH = `${bin}:${oldPath ?? ''}`;
       process.env.PAPERCUSP_SPAWNER_SIDECAR = '0';
-      process.env.PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS = '2000';
+      // Above the ~500ms total with room for the whole run to stretch several-fold under load.
+      process.env.PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS = '5000';
 
       const started = Date.now();
-      const r = await runGitBounded(['fetch', 'origin', 'main'], cwd, 120);
+      const r = await runGitBounded(['fetch', 'origin', 'main'], cwd, 300);
       expect(Date.now() - started).toBeGreaterThanOrEqual(300);
       expect(r.code).toBe(0);
-      expect(r.stderr).toContain('progress 4');
+      expect(r.stderr).toContain('progress 9');
       expect(readFileSync(join(cwd, 'argv'), 'utf8').split('\n')).toContain('--progress');
     } finally {
       if (oldPath === undefined) delete process.env.PATH;
