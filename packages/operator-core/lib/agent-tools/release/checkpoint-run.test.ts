@@ -71,6 +71,7 @@ afterEach(() => {
   vi.doUnmock('../../release-checkpoint-launch');
   vi.doUnmock('../../release/in-flight-retriage');
   vi.doUnmock('../../db-boot-migrate');
+  vi.doUnmock('../../coord/gate-ownership');
 });
 
 /**
