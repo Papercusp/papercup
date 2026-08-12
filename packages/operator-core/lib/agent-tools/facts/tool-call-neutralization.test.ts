@@ -17,9 +17,9 @@
  * a fact's `body`, and it was persisted verbatim — no complaint, no
  * neutralization, silently replayed into every orient for the fact's TTL.
  *
- * Same hermetic-mocking shape as assert-truncation-refusal.test.ts: the one
- * PG-touching call (`assertFact`) is stubbed so the write is asserted
- * POSITIVELY against the spy rather than relying on ambient DB
+ * Same hermetic-mocking shape as assert-truncation-refusal.test.ts: the
+ * PG-touching write boundary (`assertFact`) and bounded transaction wrapper
+ * are stubbed so the write is asserted POSITIVELY against the spy rather than relying on ambient DB
  * (un)reachability — facts:assert really does write live rows on this dev
  * box when unmocked, and they fold verbatim into every future orient.
  */
@@ -27,11 +27,19 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AgentFact, AssertFactInput } from '../../agent-facts/store';
 
 const assertFactSpy = vi.hoisted(() => vi.fn<(input: AssertFactInput) => Promise<AgentFact>>());
+const boundedTxnHarness = vi.hoisted(() => {
+  const boundedTx = { query: vi.fn(), marker: 'bounded-org-txn' };
+  return {
+    boundedTx,
+    boundedOrgTxn: vi.fn(async (fn: (tx: typeof boundedTx) => Promise<unknown>) => fn(boundedTx)),
+  };
+});
 
 vi.mock('../../agent-facts/store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../agent-facts/store')>();
   return { ...actual, assertFact: assertFactSpy };
 });
+vi.mock('../../pg-bounded-txn', () => ({ boundedOrgTxn: boundedTxnHarness.boundedOrgTxn }));
 
 import assertTool from './assert';
 import { clampFactBody } from '../../agent-facts/store';
@@ -63,6 +71,8 @@ describe('facts:assert — tool-call-lookalike neutralization (EI-19972486772917
   beforeEach(() => {
     assertFactSpy.mockReset();
     assertFactSpy.mockImplementation(async (input) => fakeStoredFact(input));
+    boundedTxnHarness.boundedOrgTxn.mockReset();
+    boundedTxnHarness.boundedOrgTxn.mockImplementation(async (fn) => fn(boundedTxnHarness.boundedTx));
   });
 
   it('neutralizes a leaked <invoke>/<parameter> blob in body before it reaches the store', async () => {

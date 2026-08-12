@@ -16,9 +16,10 @@
  *   2. worse, a real WRITE — the un-isolated handler wrote live rows into
  *      harness_shared.agent_facts on every run, and facts fold VERBATIM into
  *      every future orient as binding context.
- * So the write path is stubbed at its ONE PG-touching call, `assertFact`, and
- * the no-write claim is asserted POSITIVELY against that spy instead of being
- * implied by a missing DB. `assertFact` really is the only IO in the handler:
+ * So the write path is stubbed at its PG-touching boundary, `assertFact`, and
+ * its bounded transaction wrapper; the no-write claim is asserted POSITIVELY
+ * against that spy instead of being implied by a missing DB. `assertFact` is
+ * the only store IO in the handler:
  * resolveAgentIdentity is pure (ctx-derived), and carryProvenanceFields
  * short-circuits with zero IO for bodies carrying no directive shapes or
  * [turn:…] refs (stampCarrySurfaceProvenance's early return) — as these
@@ -29,6 +30,13 @@ import type { AgentFact, AssertFactInput } from '../../agent-facts/store';
 
 const assertFactSpy = vi.hoisted(() => vi.fn<(input: AssertFactInput) => Promise<AgentFact>>());
 const resolveFactFederationSlugSpy = vi.hoisted(() => vi.fn<() => Promise<string | null>>());
+const boundedTxnHarness = vi.hoisted(() => {
+  const boundedTx = { query: vi.fn(), marker: 'bounded-org-txn' };
+  return {
+    boundedTx,
+    boundedOrgTxn: vi.fn(async (fn: (tx: typeof boundedTx) => Promise<unknown>) => fn(boundedTx)),
+  };
+});
 
 vi.mock('../../agent-facts/store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../agent-facts/store')>();
@@ -41,6 +49,7 @@ vi.mock('../../agent-facts/store', async (importOriginal) => {
     resolveFactFederationSlug: resolveFactFederationSlugSpy,
   };
 });
+vi.mock('../../pg-bounded-txn', () => ({ boundedOrgTxn: boundedTxnHarness.boundedOrgTxn }));
 
 import assertTool from './assert';
 import { FACT_BODY_MAX_CHARS, clampFactBody } from '../../agent-facts/store';
@@ -93,6 +102,8 @@ describe('facts:assert — pre-write truncation refusal (EI-18685042986450096)',
     assertFactSpy.mockImplementation(async (input) => fakeStoredFact(input));
     resolveFactFederationSlugSpy.mockReset();
     resolveFactFederationSlugSpy.mockResolvedValue(null);
+    boundedTxnHarness.boundedOrgTxn.mockReset();
+    boundedTxnHarness.boundedOrgTxn.mockImplementation(async (fn) => fn(boundedTxnHarness.boundedTx));
   });
 
   it('REFUSES an over-cap body with no acceptTruncation — names the overage + previews the exact dropped tail', async () => {
