@@ -879,6 +879,117 @@ describe('makeOwnerComposerGate (EI-20199370837439455 staged-input safety)', () 
     expect(g.pendingLength()).toBe(10);
   });
 
+  /**
+   * WI-38156. The test above enumerated the families that had bitten us (CSI,
+   * OSC, SS3) rather than the closed ECMA-48 set, so DCS stayed unhandled — and
+   * the bug recurred the moment a TUI asked gnome-terminal for its version.
+   * These cases pin the WHOLE set, and use bytes captured from a live terminal
+   * rather than bytes reconstructed from the spec.
+   */
+  describe('string-type control sequences (WI-38156 DCS/APC/PM/SOS)', () => {
+    // Captured 2026-08-12 from a real gnome-terminal (VTE 7600) by writing the
+    // query and reading the raw reply back off the pty:
+    //   XTVERSION `ESC [ > 0 q`  ->  1b50 3e7c 5654 4528 3736 3030 29 1b5c
+    const VTE_XTVERSION_REPLY = 'P>|VTE(7600)\\';
+    const VTE_DA3_REPLY = 'P!|7E565445\\';
+    const VTE_DECRQSS_REPLY = 'P0$r\\';
+
+    it('does not invent owner text from the live VTE XTVERSION reply', () => {
+      const g = makeOwnerComposerGate({ capMs: 100 });
+      g.observe(VTE_XTVERSION_REPLY);
+      // The regression counted `>|VTE(7600)` as 11 characters of owner text,
+      // which nothing could clear, so every wake deferred with owner-input-cap.
+      expect(g.pendingLength()).toBe(0);
+      expect(g.hasPending()).toBe(false);
+    });
+
+    it('ignores every string-sequence family, terminated by ST or BEL', () => {
+      const g = makeOwnerComposerGate({ capMs: 100 });
+      for (const reply of [
+        VTE_XTVERSION_REPLY,
+        VTE_DA3_REPLY,
+        VTE_DECRQSS_REPLY,
+        '_Gi=1,a=q;OK\\', // APC  (kitty graphics)
+        '^status message\\', // PM
+        'Xsome string\\', // SOS
+        ']11;rgb:0000/0000/0000', // OSC terminated by BEL
+      ]) {
+        g.observe(reply);
+      }
+      expect(g.pendingLength()).toBe(0);
+      expect(g.hasPending()).toBe(false);
+    });
+
+    it('ignores replies split across chunk boundaries, one byte at a time', () => {
+      // A pty read can split anywhere. A parser that resynchronises only on a
+      // whole chunk counts the tail of a sequence as text.
+      const g = makeOwnerComposerGate({ capMs: 100 });
+      for (const ch of `${VTE_XTVERSION_REPLY}${VTE_DA3_REPLY}`) g.observe(ch);
+      expect(g.pendingLength()).toBe(0);
+      expect(g.hasPending()).toBe(false);
+    });
+
+    it('still stages real owner text that arrives after a reply', () => {
+      const g = makeOwnerComposerGate({ capMs: 100 });
+      g.observe(VTE_XTVERSION_REPLY);
+      g.observe('put yourself on auto mode');
+      expect(g.hasPending()).toBe(true);
+      expect(g.pendingLength()).toBe(25);
+      g.observe('\r');
+      expect(g.hasPending()).toBe(false);
+    });
+
+    it('reports staged-line age and owner quiet time so a wedge is falsifiable', () => {
+      let clock = 1_000;
+      const g = makeOwnerComposerGate({ capMs: 100, now: () => clock });
+
+      // A terminal reply must leave NO trace: nothing staged, and no evidence
+      // that an owner byte was ever seen.
+      g.observe(VTE_XTVERSION_REPLY);
+      expect(g.pendingAgeMs()).toBe(0);
+      expect(g.ownerQuietMs()).toBe(Infinity);
+
+      g.observe('hi');
+      clock += 60_000;
+      expect(g.pendingAgeMs()).toBe(60_000);
+      expect(g.ownerQuietMs()).toBe(60_000);
+
+      g.observe(''); // Ctrl-U cancels the line
+      expect(g.pendingAgeMs()).toBe(0);
+    });
+  });
+
+  /**
+   * WI-38156, second defect: onStdin stamped idleGate/lastInputAt/owner-presence
+   * before classifying the bytes, so a terminal's own reply forged owner
+   * presence — and because shutdownRefusalReason treats any lastInputAt > 0 as
+   * 'human-attended' permanently, every bridged agent session became
+   * un-shutdownable by tooling.
+   */
+  describe('makeOwnerInputDetector (terminal replies are not owner presence)', () => {
+    it('rejects terminal-authored string sequences', () => {
+      const d = makeOwnerInputDetector();
+      expect(d.sawOwnerInput('P>|VTE(7600)\\')).toBe(false);
+      expect(d.sawOwnerInput(']11;rgb:0000/0000/0000')).toBe(false);
+    });
+
+    it('rejects a reply even when it is split one byte per read', () => {
+      const d = makeOwnerInputDetector();
+      const seen = [...'P>|VTE(7600)\\'].map((c) => d.sawOwnerInput(c));
+      expect(seen.some(Boolean)).toBe(false);
+    });
+
+    it('still accepts real keystrokes, including navigation keys', () => {
+      // Deliberately conservative: CSI/SS3 are ambiguous (a human pressing Left
+      // and a cursor-position reply are the same bytes), so they keep counting
+      // as owner input exactly as before this fix.
+      expect(makeOwnerInputDetector().sawOwnerInput('hello')).toBe(true);
+      expect(makeOwnerInputDetector().sawOwnerInput('[D')).toBe(true);
+      expect(makeOwnerInputDetector().sawOwnerInput('OP')).toBe(true);
+      expect(makeOwnerInputDetector().sawOwnerInput('\r')).toBe(true);
+    });
+  });
+
   it('keeps quiet owner text pending until an explicit submit or cancel', () => {
     const g = makeOwnerComposerGate({ capMs: 100 });
     g.observe('put yourself on auto mode');

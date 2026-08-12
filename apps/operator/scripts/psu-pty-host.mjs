@@ -647,6 +647,135 @@ export function makeIdleGate({ idleMs = DEFAULT_IDLE_MS, capMs = DEFAULT_IDLE_WA
 }
 
 /**
+ * ECMA-48 "string" control sequences: an introducer, an arbitrary payload, and
+ * a String Terminator (ST = ESC \, or BEL for OSC). Their payloads are TERMINAL
+ * DATA — a reply the emulator wrote in answer to a query the TUI made — and are
+ * NEVER owner-authored text.
+ *
+ * This is deliberately the CLOSED ECMA-48 set rather than the families we have
+ * been bitten by. Enumerating observed families is what caused this bug to
+ * recur: the CSI/OSC/SS3 handling below was added for Codex's cursor-report
+ * replies (EI-20199370837439455), which left DCS unhandled — so when the TUI
+ * asked gnome-terminal for its version (XTVERSION, `CSI > 0 q`) and VTE replied
+ * `ESC P > | VTE(7600) ESC \`, the parser fell through to "ordinary two-byte
+ * ESC sequence" and counted `>|VTE(7600)` as ELEVEN characters of owner text.
+ * Nothing clears a staged line except CR/LF/Ctrl-C/Ctrl-U, so every bridged
+ * host wedged permanently and deferred every wake with `owner-input-cap`
+ * (WI-38156: 532 deferrals in 9h; one session sat dead for 2h).
+ */
+const STRING_SEQUENCE_INTRODUCERS = new Set([
+  0x50, // ESC P — DCS (XTVERSION, DA3 and DECRQSS replies)
+  0x58, // ESC X — SOS
+  0x5d, // ESC ] — OSC (window title, color queries)
+  0x5e, // ESC ^ — PM
+  0x5f, // ESC _ — APC (kitty graphics)
+]);
+
+/**
+ * Split a terminal byte stream into ZONES so that "is this byte owner-authored
+ * text?" is answered in exactly one place. Stateful across chunks: a reply can
+ * be split over two reads, and a stateless classifier would mis-read the tail
+ * of a sequence as owner text — the same failure one level up.
+ *
+ * Each byte is reported as one of:
+ *   'text'   — outside any escape sequence (owner keystrokes live here)
+ *   'esc'    — a bare ESC whose family is not yet known (the next byte decides)
+ *   'csi'    — inside ESC [ … ; also produced by arrow/function keys, so this
+ *              zone is AMBIGUOUS: a human pressing Left and a terminal
+ *              answering a cursor query are indistinguishable here.
+ *   'ss3'    — inside ESC O …; ambiguous for the same reason (keypad keys).
+ *   'string' — inside a string sequence; UNAMBIGUOUSLY terminal-authored.
+ *
+ * Pure (no I/O); exported for tests.
+ */
+export function makeAnsiZoneScanner() {
+  let escapeMode = null;
+  return {
+    /** Feed a chunk; `onByte(code, zone)` is called once per byte, in order. */
+    scan(data, onByte) {
+      const text = Buffer.isBuffer(data) ? data.toString('utf8') : String(data ?? '');
+      for (let i = 0; i < text.length; i += 1) {
+        const code = text.charCodeAt(i);
+        if (escapeMode === 'esc') {
+          if (code === 0x5b) escapeMode = 'csi'; // ESC [
+          else if (code === 0x4f) escapeMode = 'ss3'; // ESC O
+          else if (STRING_SEQUENCE_INTRODUCERS.has(code)) escapeMode = 'string';
+          else escapeMode = null; // ordinary two-byte ESC sequence
+          onByte(code, escapeMode === 'string' ? 'string' : escapeMode || 'csi');
+          continue;
+        }
+        if (escapeMode === 'csi') {
+          // ECMA-48 CSI: parameter/intermediate bytes, then one final byte.
+          if (code >= 0x40 && code <= 0x7e) escapeMode = null;
+          onByte(code, 'csi');
+          continue;
+        }
+        if (escapeMode === 'ss3') {
+          // SS3 is ESC O plus one final key byte.
+          escapeMode = null;
+          onByte(code, 'ss3');
+          continue;
+        }
+        if (escapeMode === 'string') {
+          if (code === 0x07) escapeMode = null; // BEL terminator (OSC)
+          else if (code === 0x1b) escapeMode = 'string-esc';
+          onByte(code, 'string');
+          continue;
+        }
+        if (escapeMode === 'string-esc') {
+          // The other terminator is ST (ESC \). A non-ST byte keeps the string
+          // open; it is still terminal data, never owner-authored text.
+          escapeMode = code === 0x5c ? null : 'string';
+          onByte(code, 'string');
+          continue;
+        }
+        if (code === 0x1b) {
+          escapeMode = 'esc';
+          // The family is not known until the NEXT byte, so this one is its own
+          // zone. Attributing it to a family here is what made a DCS reply read
+          // as owner input: its leading ESC was counted before `P` disclosed
+          // that everything following was terminal data.
+          onByte(code, 'esc');
+          continue;
+        }
+        onByte(code, 'text');
+      }
+    },
+    /** Drop any half-parsed sequence (used when the composer is force-reset). */
+    reset() {
+      escapeMode = null;
+    },
+  };
+}
+
+/**
+ * Does this stdin chunk contain anything a HUMAN could have produced?
+ *
+ * Used to keep terminal replies out of the owner-presence signals. It is
+ * deliberately conservative: only the unambiguous 'string' zone is treated as
+ * definitely-not-human, so arrow keys, function keys and keypad input (CSI/SS3)
+ * still count as owner activity exactly as they did before. The one behaviour
+ * given up is a LONE Escape keypress followed by nothing else, ever — its
+ * family never resolves, and paying that to stop every terminal reply forging
+ * owner presence is the right trade.
+ *
+ * Stateful across chunks — construct one per stdin stream.
+ */
+export function makeOwnerInputDetector() {
+  const scanner = makeAnsiZoneScanner();
+  return {
+    /** true when the chunk could be owner-authored; false = pure terminal reply. */
+    sawOwnerInput(data) {
+      let human = false;
+      scanner.scan(data, (_code, zone) => {
+        if (zone !== 'string' && zone !== 'esc') human = true;
+      });
+      return human;
+    },
+  };
+}
+
+/**
  * Track a bridged owner's line-editor state separately from keystroke activity.
  * The idle gate only knows that typing stopped; it cannot tell whether the
  * owner pressed Enter. Injecting a wake into a quiet-but-unsubmitted line
@@ -657,82 +786,51 @@ export function makeIdleGate({ idleMs = DEFAULT_IDLE_MS, capMs = DEFAULT_IDLE_WA
  * fallback is to keep a line pending until an explicit submit/cancel arrives;
  * a false defer is safe, while appending machine bytes to owner text is not.
  */
-export function makeOwnerComposerGate({ capMs = DEFAULT_IDLE_WAIT_CAP_MS } = {}) {
+export function makeOwnerComposerGate({ capMs = DEFAULT_IDLE_WAIT_CAP_MS, now = Date.now } = {}) {
   let pending = false;
   let lineLength = 0;
-  // Terminal-emulator replies share stdin with real owner keystrokes. Codex's
-  // TUI emits cursor/device-status queries and the terminal answers with CSI
-  // sequences such as ESC [ 12 ; 40 R. The old boolean escape parser treated
-  // `[` itself as the final byte, then counted `12;40R` as owner text. Every
-  // visible Codex fleet terminal therefore acquired a phantom staged line and
-  // held carry-respawn at the owner-composer safety gate forever.
-  //
-  // Track the introducer form so the WHOLE control sequence is ignored. This
-  // covers the stdin-side reply families terminals actually emit (CSI, OSC,
-  // and SS3) without weakening the real-text guard.
-  let escapeMode = null;
+  const scanner = makeAnsiZoneScanner();
   const waiters = new Set();
+  // Wedge forensics (WI-38156). A staged line that never changes and receives
+  // no further owner bytes is the signature of a phantom: a real person either
+  // finishes the line or abandons it. Recording WHEN it was staged and when it
+  // last moved is what makes "this host is stuck" falsifiable from the event
+  // log instead of a 2h silent halt nobody notices.
+  let pendingSinceMs = 0;
+  let lastOwnerByteMs = 0;
 
   const setPending = (next) => {
     pending = next;
     if (!pending) {
+      pendingSinceMs = 0;
       for (const resolve of waiters) resolve({ deferred: false });
       waiters.clear();
+    } else if (!pendingSinceMs) {
+      pendingSinceMs = now();
     }
   };
 
   const observe = (data) => {
-    const text = Buffer.isBuffer(data) ? data.toString('utf8') : String(data ?? '');
-    for (let i = 0; i < text.length; i += 1) {
-      const code = text.charCodeAt(i);
-      if (escapeMode === 'esc') {
-        if (code === 0x5b) escapeMode = 'csi'; // ESC [
-        else if (code === 0x5d) escapeMode = 'osc'; // ESC ]
-        else if (code === 0x4f) escapeMode = 'ss3'; // ESC O
-        else escapeMode = null; // ordinary two-byte ESC sequence
-        continue;
-      }
-      if (escapeMode === 'csi') {
-        // ECMA-48 CSI: parameter/intermediate bytes, then one final byte.
-        if (code >= 0x40 && code <= 0x7e) escapeMode = null;
-        continue;
-      }
-      if (escapeMode === 'ss3') {
-        // SS3 is ESC O plus one final key byte.
-        escapeMode = null;
-        continue;
-      }
-      if (escapeMode === 'osc') {
-        if (code === 0x07) escapeMode = null; // BEL terminator
-        else if (code === 0x1b) escapeMode = 'osc-esc';
-        continue;
-      }
-      if (escapeMode === 'osc-esc') {
-        // OSC's other terminator is ST (ESC \\). A non-ST byte keeps the OSC
-        // open; it is still terminal control data, never owner-authored text.
-        escapeMode = code === 0x5c ? null : 'osc';
-        continue;
-      }
-      if (code === 0x1b) {
-        escapeMode = 'esc';
-        continue;
-      }
+    scanner.scan(data, (code, zone) => {
+      // Only bytes OUTSIDE an escape sequence can be owner-typed text.
+      if (zone !== 'text') return;
+      lastOwnerByteMs = now();
       if (code === 0x0d || code === 0x0a || code === 0x03 || code === 0x15) {
         // Enter/newline submits; Ctrl-C and Ctrl-U cancel the current line.
         lineLength = 0;
         setPending(false);
-        continue;
+        return;
       }
       if (code === 0x08 || code === 0x7f) {
         lineLength = Math.max(0, lineLength - 1);
         setPending(lineLength > 0);
-        continue;
+        return;
       }
       if (code === 0x09 || code >= 0x20) {
         lineLength += 1;
         setPending(true);
       }
-    }
+    });
   };
 
   return {
@@ -743,9 +841,17 @@ export function makeOwnerComposerGate({ capMs = DEFAULT_IDLE_WAIT_CAP_MS } = {})
     pendingLength() {
       return lineLength;
     },
+    /** How long the current line has been staged (0 when nothing is pending). */
+    pendingAgeMs(t = now()) {
+      return pendingSinceMs ? t - pendingSinceMs : 0;
+    },
+    /** How long since ANY owner-authored byte arrived (Infinity when never). */
+    ownerQuietMs(t = now()) {
+      return lastOwnerByteMs ? t - lastOwnerByteMs : Infinity;
+    },
     markSubmitted() {
       lineLength = 0;
-      escapeMode = null;
+      scanner.reset();
       setPending(false);
     },
     /** Wait for an owner submit/cancel, bounded so a parked line cannot wedge a host. */
@@ -2514,6 +2620,61 @@ export function hostThroughPty(o) {
   const ownerComposerGate = makeOwnerComposerGate({
     capMs: positiveNumber(env.PAPERCUSP_PSU_PTY_IDLE_CAP_MS, DEFAULT_IDLE_WAIT_CAP_MS),
   });
+  // Separate scanner over the SAME stdin stream (WI-38156). It must be fed every
+  // chunk unconditionally — including while a machine turn queues owner input —
+  // so its escape state machine stays in step with the real byte stream; a
+  // classifier that misses chunks mis-reads the tail of a split reply as text.
+  const ownerInputDetector = makeOwnerInputDetector();
+
+  // Wedge detector (WI-38156). The parser fix removes the KNOWN phantom source;
+  // this exists for the next unknown one. The original incident was silent —
+  // 532 deferrals across 9h, one session dead for 2h — because a defer is
+  // individually legitimate ("the owner is typing") and nothing ever asked
+  // whether the same untouched line had been blocking wakes all morning.
+  //
+  // The signature of a phantom, as distinct from a person: the staged length
+  // never changes AND no owner-authored byte has arrived for a long time. A
+  // real person who walks away mid-line trips this too — which is correct, the
+  // agent is equally stuck either way and someone should be told.
+  const WEDGE_MIN_DEFERS = positiveNumber(env.PAPERCUSP_PSU_PTY_WEDGE_MIN_DEFERS, 3);
+  const WEDGE_MIN_QUIET_MS = positiveNumber(env.PAPERCUSP_PSU_PTY_WEDGE_QUIET_MS, 5 * 60_000);
+  let wedgeDefers = 0;
+  let wedgeLength = -1;
+  let wedgeReported = false;
+  const noteOwnerInputDefer = (pendingLength) => {
+    if (pendingLength !== wedgeLength) {
+      // The line moved: a person is editing it. Start the count over.
+      wedgeLength = pendingLength;
+      wedgeDefers = 1;
+      wedgeReported = false;
+      return;
+    }
+    wedgeDefers += 1;
+    const quietMs = ownerComposerGate.ownerQuietMs();
+    if (wedgeReported || wedgeDefers < WEDGE_MIN_DEFERS || quietMs < WEDGE_MIN_QUIET_MS) return;
+    wedgeReported = true;
+    const detail = {
+      pendingLength,
+      consecutiveDefers: wedgeDefers,
+      pendingAgeMs: ownerComposerGate.pendingAgeMs(),
+      ownerQuietMs: quietMs === Infinity ? null : quietMs,
+      // The single most diagnostic fact, and the one that took a live capture
+      // to establish the first time: no owner byte has EVER been seen here.
+      ownerBytesEverSeen: quietMs !== Infinity,
+    };
+    appendHostEvent(ownerId, 'owner-composer-wedge-suspected', detail);
+    try {
+      process.stderr.write(
+        `psu-pty-host: ⚠ COMPOSER WEDGE SUSPECTED for ${ownerId} — ${wedgeDefers} consecutive ` +
+          `wake deferrals against an unchanged ${pendingLength}-char staged line, ` +
+          `${detail.ownerBytesEverSeen ? `idle ${Math.round(quietMs / 1000)}s` : 'and NO owner keystroke has ever been seen'}. ` +
+          `This agent is not receiving wakes. If nobody is typing here, it is a phantom ` +
+          `(see WI-38156) — press Ctrl-U in this window to clear it.\n`,
+      );
+    } catch {
+      /* diagnostic only */
+    }
+  };
   let machineTurnActive = false;
   let queuedOwnerInput = [];
   // Mid-turn inject gate (coord-wake-mid-turn-2026-06-30): reads the SAME
@@ -3058,12 +3219,20 @@ export function hostThroughPty(o) {
       const releaseInject = msg.gated ? await injectMutex.acquire() : null;
       let deferMutexRelease = false;
       const deferForOwnerInput = (reason) => {
+        const pendingLength = ownerComposerGate.pendingLength();
         const extra = {
           mode: msg.mode,
           reason,
-          pendingLength: ownerComposerGate.pendingLength(),
+          pendingLength,
+          // WI-38156 forensics. A phantom line is distinguishable from a real
+          // one by these two numbers alone: a person either finishes a line or
+          // abandons it, so a line staged for a long time whose length never
+          // moves and which has received no owner byte since is not a person.
+          pendingAgeMs: ownerComposerGate.pendingAgeMs(),
+          ownerQuietMs: ownerComposerGate.ownerQuietMs(),
         };
         appendHostEvent(ownerId, 'turn-deferred-for-owner-input', extra);
+        noteOwnerInputDefer(pendingLength);
         try {
           process.stderr.write(
             `psu-pty-host: ${msg.mode} DEFERRED for ${ownerId} (${reason}) — ` +
@@ -3631,14 +3800,25 @@ export function hostThroughPty(o) {
   }
   if (typeof stdin.resume === 'function') stdin.resume();
   const onStdin = (d) => {
-    idleGate.touch();
-    activity.touchInput();
-    // owner-presence-human-turn-signal-2026-07-11 P-003: a real human keystroke into
-    // a bridged terminal → stamp owner presence (throttled, fire-and-forget). Gated on
-    // bridgeTty so only a genuine interactive TTY (never a headless piped session)
-    // reports. Socket-injected agent wakes bypass stdin, so they never reach here.
-    if (bridgeTty) reportOwnerHumanTurn();
     const input = d.toString('utf8');
+    // WI-38156: a bridged terminal answers the TUI's capability queries on the
+    // SAME stdin that carries owner keystrokes, so "bytes arrived on stdin" is
+    // NOT "a human is here". Classify first — an emulator's own reply must not
+    // forge any of the three owner signals below, and `lastInputAt` in
+    // particular is permanent: one reply makes shutdownRefusalReason answer
+    // 'human-attended' for the life of the session, so every agent-launched
+    // bridged host becomes un-shutdownable by tooling.
+    // Conservative by construction: only unambiguous terminal-authored string
+    // sequences are filtered, so arrow/function/keypad keys still count.
+    if (ownerInputDetector.sawOwnerInput(input)) {
+      idleGate.touch();
+      activity.touchInput();
+      // owner-presence-human-turn-signal-2026-07-11 P-003: a real human keystroke into
+      // a bridged terminal → stamp owner presence (throttled, fire-and-forget). Gated on
+      // bridgeTty so only a genuine interactive TTY (never a headless piped session)
+      // reports. Socket-injected agent wakes bypass stdin, so they never reach here.
+      if (bridgeTty) reportOwnerHumanTurn();
+    }
     if (bridgeTty) {
       if (machineTurnActive) {
         // The machine turn owns the current text→CR gap. Replay these bytes only
