@@ -45,10 +45,10 @@
 import { z } from 'zod';
 import { spawn } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, readdirSync } from 'node:fs';
 import { mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import {
   boundTestRunPayload,
@@ -67,6 +67,85 @@ import {
  *  makes that budget the tool's own rather than something each agent re-picks. */
 const DEFAULT_TIMEOUT_MS = 300_000;
 const MAX_TIMEOUT_MS = 900_000;
+
+type TestFilePathResolution =
+  | { ok: true; files: string[] }
+  | { ok: false; path: string; matches: string[] };
+
+/**
+ * Expand the root package's declared workspace directories. The repository's root workspace
+ * patterns are either concrete directories or one-level trailing `/*` globs; keeping this
+ * discovery local avoids importing a task runner that would execute work at module load time.
+ */
+function declaredWorkspaceDirs(root: string): string[] {
+  try {
+    const pkg = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8')) as {
+      workspaces?: string[] | { packages?: string[] };
+    };
+    const patterns = Array.isArray(pkg.workspaces) ? pkg.workspaces : pkg.workspaces?.packages ?? [];
+    const dirs = new Set<string>();
+    for (const pattern of patterns) {
+      if (typeof pattern !== 'string' || !pattern) continue;
+      const normalized = pattern.replace(/\\/g, '/');
+      if (normalized.endsWith('/*') && !normalized.slice(0, -2).includes('*')) {
+        const base = normalized.slice(0, -2);
+        const baseDir = join(root, base);
+        for (const entry of readdirSync(baseDir, { withFileTypes: true })) {
+          if (entry.isDirectory() && existsSync(join(baseDir, entry.name, 'package.json'))) {
+            dirs.add(`${base}/${entry.name}`);
+          }
+        }
+        continue;
+      }
+      if (!normalized.includes('*') && existsSync(join(root, normalized, 'package.json'))) {
+        dirs.add(normalized);
+      }
+    }
+    return [...dirs];
+  } catch {
+    return [];
+  }
+}
+
+function isInsideRoot(root: string, candidate: string): boolean {
+  const rel = relative(root, candidate);
+  return rel === '' || (!rel.startsWith(`..${sep}`) && rel !== '..' && !isAbsolute(rel));
+}
+
+/**
+ * Accept the two path vocabularies exposed by the release pipeline:
+ * repo-root-relative paths (the router's native contract) and paths relative to exactly one
+ * declared npm workspace (the gate's `{ workspace, file }` contract). A workspace-relative
+ * spelling is expanded only when the file exists in one workspace; multiple matches are refused
+ * before any test process starts so a caller cannot verify an unintended file.
+ */
+export function normalizeTestFilePaths(
+  files: string[],
+  root: string,
+  workspaceDirs: string[] = declaredWorkspaceDirs(root),
+): TestFilePathResolution {
+  const normalized: string[] = [];
+  for (const file of files) {
+    if (isAbsolute(file)) {
+      normalized.push(file);
+      continue;
+    }
+
+    const rootCandidate = resolve(root, file);
+    if (isInsideRoot(root, rootCandidate) && existsSync(rootCandidate)) {
+      normalized.push(file);
+      continue;
+    }
+
+    const matches = workspaceDirs
+      .map((dir) => resolve(root, dir, file))
+      .filter((candidate) => isInsideRoot(root, candidate) && existsSync(candidate))
+      .map((candidate) => relative(root, candidate).split(sep).join('/'));
+    if (matches.length > 1) return { ok: false, path: file, matches };
+    normalized.push(matches.length === 1 ? matches[0] : file);
+  }
+  return { ok: true, files: normalized };
+}
 
 /** Router exit codes (scripts/test-files.mjs `main`): 2 = route/launch error,
  *  1 = a refused false-green OR a genuine test failure, 0 = clean pass. */
@@ -132,7 +211,7 @@ function runRouter(args: string[], cwd: string, env: NodeJS.ProcessEnv, timeoutM
 export default defineTool({
   name: 'testing:run',
   description:
-    'Run exact Vitest files through the repo router (scripts/test-files.mjs) and return a DISTILLED result — { passed, failed, skipped, files, failures:[{file,test,message}], durationMs, runId, root } — instead of raw reporter output you have to tail/grep. `root` is the resolved workspace root the run actually executed in (WI-7189: a run against the wrong tree used to be silent — check `root` if a result looks stale or surprising, e.g. it names a clone under .papercusp-workspaces/clones/ instead of the canonical staging checkout). Routes each file to its owning workspace config and hard-refuses a zero/partial-match false-green run (error `route_error`), or a resolved root that is not a papercusp checkout at all (error `invalid_root`). `failed` is always the TRUE total; `failures` is a bounded sample of it, so when `failuresTruncated` is set read `failuresOmitted`, never `failures.length`. Stamps PAPERCUSP_TEST_RUN_GROUP so the run correlates in harness_shared.test_runs.',
+    'Run exact Vitest files through the repo router (scripts/test-files.mjs) and return a DISTILLED result — { passed, failed, skipped, files, failures:[{file,test,message}], durationMs, runId, root } — instead of raw reporter output you have to tail/grep. Accepts repo-root-relative, absolute, or an existing file path relative to exactly one declared npm workspace; ambiguous workspace-relative paths are refused before execution. `root` is the resolved workspace root the run actually executed in (WI-7189: a run against the wrong tree used to be silent — check `root` if a result looks stale or surprising, e.g. it names a clone under .papercusp-workspaces/clones/ instead of the canonical staging checkout). Routes each file to its owning workspace config and hard-refuses a zero/partial-match false-green run (error `route_error`), or a resolved root that is not a papercusp checkout at all (error `invalid_root`). `failed` is always the TRUE total; `failures` is a bounded sample of it, so when `failuresTruncated` is set read `failuresOmitted`, never `failures.length`. Stamps PAPERCUSP_TEST_RUN_GROUP so the run correlates in harness_shared.test_runs.',
   guidance: {
     when: 'You edited code and want to know whether specific test files pass, and which tests failed and why. The default way to run named test files.',
     notWhen: 'Running everything your edits affected (use `npm run test:affected` — not covered here), a non-Vitest suite (cargo/playwright), or when you genuinely need raw reporter output.',
@@ -148,7 +227,7 @@ export default defineTool({
   agentRoles: [...AGENT_ROLES],
   args: z.object({
     files: z.array(z.string().min(1)).min(1).max(50)
-      .describe('Test file paths (repo-root-relative or absolute). Each is routed to its owning workspace + Vitest config; a path matching zero tests fails the call rather than passing vacuously.'),
+      .describe('Test file paths (repo-root-relative, absolute, or relative to exactly one declared npm workspace). Each is routed to its owning workspace + Vitest config; ambiguous workspace-relative paths and paths matching zero tests fail the call rather than passing vacuously.'),
     testNamePattern: z.string().min(1).max(200).optional()
       .describe("Run only tests whose full name matches (Vitest `-t`). Use to re-run ONE failing test from a previous result's `failures[].test`. A pattern matching ZERO tests is REFUSED (`name_filter_no_match`), never reported as a pass — vitest merely skips them all and exits 0."),
     timeoutMs: z.number().int().min(1000).max(MAX_TIMEOUT_MS).optional()
@@ -205,6 +284,22 @@ export default defineTool({
         },
       };
     }
+    const pathResolution = normalizeTestFilePaths(args.files, root);
+    if (!pathResolution.ok) {
+      return {
+        data: {
+          ok: false,
+          runId,
+          root,
+          error: 'ambiguous_workspace_path',
+          path: pathResolution.path,
+          matches: pathResolution.matches,
+          hint:
+            `workspace-relative test path ${JSON.stringify(pathResolution.path)} exists in multiple declared ` +
+            `workspaces (${pathResolution.matches.join(', ')}). Re-run with a repo-root-relative or absolute path.`,
+        },
+      };
+    }
     // EI-18776865728050036 — same clamp as build:typecheck, for the same reason: this tool is
     // dispatched FOREGROUND over an MCP transport that hard-caps a call at ~55s (EI-6073), so a
     // suite slower than that had the call killed before the `error:'timeout'` branch below could
@@ -219,7 +314,7 @@ export default defineTool({
       if (args.testNamePattern) vitestArgs.push('-t', args.testNamePattern);
 
       const outcome = await runRouter(
-        [...args.files, '--', ...vitestArgs],
+        [...pathResolution.files, '--', ...vitestArgs],
         root,
         // The reporter inside the child reads this and stamps run_group_id, so
         // the run's per-file rows are findable afterwards. We write no rows here.

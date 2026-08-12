@@ -23,10 +23,10 @@
  * path is identical for pass and fail (same spawn, same report, same distil).
  */
 import { describe, it, expect } from 'vitest';
-import { mkdtemp, readdir, readFile, realpath, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, realpath, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import runTool from '../run';
+import runTool, { normalizeTestFilePaths } from '../run';
 
 /**
  * Invoke the tool's raw handler. Called directly (rather than through the MCP
@@ -69,6 +69,7 @@ async function body(p: ReturnType<typeof call>): Promise<RunResult> {
 
 /** A small, stable, PG-free unit suite in this package — a real green target. */
 const GREEN_TARGET = 'packages/operator-core/lib/testing-flakiness.test.ts';
+const OPERATOR_CORE_RELATIVE_GREEN_TARGET = 'lib/testing-flakiness.test.ts';
 
 /**
  * A name-filter fragment that DOES match inside GREEN_TARGET. Deliberately its top-level
@@ -129,6 +130,37 @@ describe('testing:run (integration)', () => {
     const routerScript = await readFile(join(out.root as string, 'scripts', 'test-files.mjs'), 'utf8').catch(() => null);
     expect(routerScript).not.toBeNull();
   }, 180_000);
+
+  it('accepts a workspace-relative test path and expands it before routing', async () => {
+    const out = await body(call({ files: [OPERATOR_CORE_RELATIVE_GREEN_TARGET] }));
+
+    expect(out.ok).toBe(true);
+    expect(out.failed).toBe(0);
+    expect(out.files).toBe(1);
+    expect(out.passed).toBeGreaterThan(0);
+  }, 180_000);
+
+  it('refuses a workspace-relative path that exists in multiple workspaces', async () => {
+    const fixture = await mkdtemp(join(tmpdir(), 'papercusp-testing-run-ambiguous-'));
+    try {
+      await mkdir(join(fixture, 'packages', 'one'), { recursive: true });
+      await mkdir(join(fixture, 'packages', 'two'), { recursive: true });
+      await writeFile(join(fixture, 'packages', 'one', 'shared.test.ts'), '');
+      await writeFile(join(fixture, 'packages', 'two', 'shared.test.ts'), '');
+
+      expect(normalizeTestFilePaths(
+        ['shared.test.ts'],
+        fixture,
+        ['packages/one', 'packages/two'],
+      )).toEqual({
+        ok: false,
+        path: 'shared.test.ts',
+        matches: ['packages/one/shared.test.ts', 'packages/two/shared.test.ts'],
+      });
+    } finally {
+      await rm(fixture, { recursive: true, force: true });
+    }
+  });
 
   // EI-18822211427354845 — THE case this suite was missing, and the only one that
   // can exhibit the bug. The router runs ONE `vitest run` per owning workspace
