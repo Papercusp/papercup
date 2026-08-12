@@ -835,8 +835,10 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
   if (role === 'worker' && !input.chunkId) {
     return fail(
       'spawn rejected: role="worker" requires a chunk id — that\'s the coding-FACTORY pipeline ' +
-        '(scoper→worker, push-based). For a coding-hive worker that self-pulls its work via a ' +
-        'claim-spec (scheduler:get_next), spawn role="cup" instead.',
+        '(scoper→worker, push-based). For a self-pulling worker that claims its own work via a ' +
+        'claim-spec (scheduler:get_next), launch an su fleet — fleet:launch-on-plan. ' +
+        '(This used to say role="cup"; that tier is RETIRED and every cup spawn is refused below, ' +
+        'so pointing callers at it sent them into a guaranteed rejection — P-068.)',
     );
   }
 
@@ -863,8 +865,9 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
           '(scoper→architect→worker→validator→…) — these are normally PUSHED a FEATURE_ID by the ' +
           'orchestrator spine (NEXT_SCOPER/NEXT_ARCHITECT/… all carry FEATURE_ID), so spawning one with no ' +
           'pushed-feature context (no featureId, no FEATURE_ID= extra, no chunkId) has nothing to do. ' +
-          'If you meant a coding-HIVE worker that self-pulls its work via a claim-spec ' +
-          '(scheduler:set_claim_spec + scheduler:get_next), that is role="cup", NOT a factory role. ' +
+          'If you meant a self-pulling worker that claims its own work via a claim-spec ' +
+          '(scheduler:set_claim_spec + scheduler:get_next), that is an su fleet ' +
+          '(fleet:launch-on-plan), NOT a factory role — the cup tier this used to name is RETIRED. ' +
           'To genuinely run the factory pipeline, push the FEATURE_ID (pass featureId / a FEATURE_ID= extra).',
       );
     }
