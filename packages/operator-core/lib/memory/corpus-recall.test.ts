@@ -13,6 +13,7 @@ import {
   corpusQueryText,
   corpusTerms,
   handleRefOfHit,
+  relativeAgeLabel,
   renderCorpusBlock,
   selectCorpusLines,
   sessionIdOfHit,
@@ -220,6 +221,33 @@ describe('selectCorpusLines', () => {
     expect(lines[0].line).toContain('work-item WI-6512');
     expect(lines[0].handle.resolve).toBe("work_items:get { id: 'WI-6512' }");
     expect(lines[0].line).toContain("work_items:get { id: 'WI-6512' }");
+  });
+
+  it('uses relative age and marks a pointer from a different work-item', () => {
+    const now = Date.parse('2026-08-12T12:00:00.000Z');
+    expect(relativeAgeLabel('2026-08-12T11:48:00.000Z', now)).toBe('12m ago');
+    expect(relativeAgeLabel('2026-08-12T00:00:00.000Z', now)).toBe('12h ago');
+
+    const { lines } = selectCorpusLines({
+      hits: [wi({ sourceId: 'WI-38041', ts: '2026-08-12T00:00:00.000Z' })],
+      queryText: QUERY,
+      declaredWorkItemId: 'WI-38148',
+      now,
+    });
+    expect(lines[0]!.line).toContain('different work-item from current WI-38148');
+    expect(lines[0]!.line).toContain('12h ago');
+    expect(lines[0]!.line).not.toContain('2026-08-12');
+  });
+
+  it('does not mark a pointer whose subject matches the declared work-item', () => {
+    const { lines } = selectCorpusLines({
+      hits: [wi({ sourceId: 'wi-6512', ts: '2026-08-12T11:59:30.000Z' })],
+      queryText: QUERY,
+      declaredWorkItemId: 'WI-6512',
+      now: Date.parse('2026-08-12T12:00:00.000Z'),
+    });
+    expect(lines[0]!.line).not.toContain('different work-item');
+    expect(lines[0]!.line).toContain('just now');
   });
 
   it('renders a session handle as a sessions:search call carrying the matched terms', () => {

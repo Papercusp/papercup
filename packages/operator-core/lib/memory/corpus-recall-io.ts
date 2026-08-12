@@ -184,6 +184,8 @@ export interface CorpusRecallInput {
    * hits carry native transcript uuids).
    */
   excludeOwnerId?: string | null;
+  /** The caller's active work-item, used to disambiguate related pointers. */
+  declaredWorkItemId?: string | null;
   /** Handle refs already delivered to this agent. */
   knownRefs?: ReadonlySet<string>;
   maxItems?: number;
@@ -728,6 +730,9 @@ export async function recallCorpusContext(
         return mine;
       };
 
+      // One clock for both cascade stages keeps labels stable when stage 2 runs.
+      const renderNow = Date.now();
+
       const select = async (
         hits: CorpusHit[],
         // MUST be the query that RETRIEVED these hits — per stage, not per leg.
@@ -749,9 +754,11 @@ export async function recallCorpusContext(
           queryText: queryUsed,
           excludeSessionIds: await ownSessionIdsAmong(hits),
           harnessSlugs: input.harnessSlugs ?? [],
+          declaredWorkItemId: input.declaredWorkItemId,
           knownRefs: opts.knownRefs,
           maxItems: opts.maxItems,
           budgetChars: opts.budgetChars,
+          now: renderNow,
         });
 
       // ── Stage 1: today's AND query, unchanged. ──

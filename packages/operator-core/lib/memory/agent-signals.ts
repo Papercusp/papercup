@@ -690,3 +690,33 @@ export async function resolveAgentSignalsForOwner(opts: {
     return undefined;
   }
 }
+
+/**
+ * Resolve only the caller's current work-item id for injection ports that do
+ * not already carry the full structured agent signals (notably PostToolBatch).
+ * This keeps the pointer disambiguation read to the claim query instead of
+ * paying for the trajectory query as well. Best-effort and deadline-bounded:
+ * a missing scope marker must never suppress or delay the pointer leg.
+ */
+export async function resolveClaimedWorkItemIdForOwner(opts: {
+  ownerId: string;
+  workspaceId: string;
+  deadlineMs?: number;
+}): Promise<string | undefined> {
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { sql } = getOrgPg();
+    const item = await withMemoryTimeout(
+      pgAgentSignalsSource(sql, {
+        ownerId: opts.ownerId,
+        workspaceId: opts.workspaceId,
+      }).claimedItem(),
+      'agent-current-work-item',
+      opts.deadlineMs ?? 500,
+    );
+    const id = item?.id?.trim();
+    return id || undefined;
+  } catch {
+    return undefined;
+  }
+}

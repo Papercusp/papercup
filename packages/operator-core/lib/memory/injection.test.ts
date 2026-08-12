@@ -1477,6 +1477,23 @@ describe('corpus leg carries its own retrieval health (P-001)', () => {
     expect(passed).not.toHaveProperty('excludeSessionId');
   });
 
+  it('hands the corpus leg the caller’s active work-item scope for pointer labels', async () => {
+    corpusIoResult = oneLine({ embedderAvailable: true });
+    useBackend(mockBackend([{ id: 'm1', text: 'alpha' }]));
+    await buildMemoryContextBlock({
+      userId: 'u1',
+      workspaceId: 'ws',
+      queryContext: 'why did the corpus leg return that',
+      session: {
+        sessionId: 'su-scope',
+        port: 'mid-turn',
+        currentWorkItemId: 'WI-38148',
+      },
+    });
+    const passed = recallCorpusContext.mock.calls.at(-1)?.[0] ?? {};
+    expect(passed).toMatchObject({ declaredWorkItemId: 'WI-38148' });
+  });
+
   it('WARNS when the leg ran BM25-only, and throttles the re-warn', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     try {

@@ -149,6 +149,8 @@ export interface MemoryInjectionInput {
     epoch?: number;
     /** Which injection moment this is (initialize/turn-start/compact/brief/claim/create). */
     port?: string;
+    /** Active work-item scope for pointer disambiguation on ports without signals. */
+    currentWorkItemId?: string | null;
     /**
      * WHICH TUI is receiving this injection — 'claude' | 'codex' | 'omp'
      * (migration 770 / codex-context-injection-parity-2026-08-09 P-005).
@@ -700,6 +702,9 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
       const queryText = retrievalQueryText(query);
       if (!queryText.trim()) return null;
 
+      const declaredWorkItemId =
+        query.agentSignals?.workItem?.id?.trim() || input.session?.currentWorkItemId?.trim() || null;
+
       const { recallCorpusContext } = await import('./corpus-recall-io');
       const { CORPUS_BLOCK_HEADING } = await import('./corpus-recall');
 
@@ -722,6 +727,7 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
         queryText,
         workspaceId: input.workspaceId,
         harnessSlugs: input.harnessSlugs ?? [],
+        declaredWorkItemId,
         // ⚠ This value is the caller's coord ownerId (`su-xxxx…`), NOT a native
         // transcript session id — `session.sessionId` is the per-agent epoch-dedup
         // identity, as claim-port.ts spells out. It used to be passed as

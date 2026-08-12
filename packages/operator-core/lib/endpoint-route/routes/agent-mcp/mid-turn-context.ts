@@ -967,11 +967,19 @@ const midTurnContext = defineTool({
         }
       }
 
-      const [{ buildMemoryContextBlock }, { getSessionUserOrDefault }] = await Promise.all([
+      const [
+        { buildMemoryContextBlock },
+        { getSessionUserOrDefault },
+        { resolveClaimedWorkItemIdForOwner },
+      ] = await Promise.all([
         import('../../../memory/injection'),
         import('../../../auth'),
+        import('../../../memory/agent-signals'),
       ]);
-      const user = await getSessionUserOrDefault().catch(() => null);
+      const [user, currentWorkItemId] = await Promise.all([
+        getSessionUserOrDefault().catch(() => null),
+        resolveClaimedWorkItemIdForOwner({ ownerId: owner, workspaceId }).catch(() => undefined),
+      ]);
       // ⚠ P-006 / D-046's human-turn tail is DELIBERATELY NOT WIRED HERE either —
       // this is the mirror of the turn-start call site, and it is held back for the
       // same measured reason (plan decision D-047). If it is ever wired, compose it
@@ -996,6 +1004,7 @@ const midTurnContext = defineTool({
           session: {
             sessionId: owner,
             port: 'mid-turn',
+            currentWorkItemId,
             ...(typeof body.client === 'string' && body.client ? { client: body.client } : {}),
           },
           budgetChars: MID_TURN_BUDGET_CHARS,

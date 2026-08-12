@@ -22,9 +22,14 @@
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 
-const { buildMemoryContextBlockMock, recordInjectionCoverageMock } = vi.hoisted(() => ({
+const {
+  buildMemoryContextBlockMock,
+  recordInjectionCoverageMock,
+  resolveClaimedWorkItemIdForOwnerMock,
+} = vi.hoisted(() => ({
   buildMemoryContextBlockMock: vi.fn(),
   recordInjectionCoverageMock: vi.fn(),
+  resolveClaimedWorkItemIdForOwnerMock: vi.fn(),
 }));
 
 // Same relative specifiers the source's dynamic imports use (colocated).
@@ -33,6 +38,9 @@ vi.mock('../../../memory/injection', () => ({
 }));
 vi.mock('../../../memory/injection-delivery-coverage', () => ({
   recordInjectionCoverage: recordInjectionCoverageMock,
+}));
+vi.mock('../../../memory/agent-signals', () => ({
+  resolveClaimedWorkItemIdForOwner: resolveClaimedWorkItemIdForOwnerMock,
 }));
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' }));
 vi.mock('../../../auth', () => ({ getSessionUserOrDefault: async () => ({ id: 'u-1' }) }));
@@ -71,6 +79,7 @@ const firstCall = () => buildMemoryContextBlockMock.mock.calls[0]![0] as Record<
 beforeEach(() => {
   buildMemoryContextBlockMock.mockReset().mockResolvedValue('MEM');
   recordInjectionCoverageMock.mockReset();
+  resolveClaimedWorkItemIdForOwnerMock.mockReset().mockResolvedValue(undefined);
 });
 
 /** Every coverage event recorded this test, flattened across calls. */
@@ -185,6 +194,19 @@ describe('mid-turn-context — the cost properties', () => {
     expect(firstCall()).toMatchObject({
       session: { sessionId: 'sess-port', port: 'mid-turn' },
       harnessSlugs: ['papercusp'],
+    });
+  });
+
+  it('passes the active work-item scope so related pointers are visibly disambiguated', async () => {
+    resolveClaimedWorkItemIdForOwnerMock.mockResolvedValue('WI-38148');
+    await post({ owner: 'sess-scope', tool: 'Grep', toolInput: { pattern: 'grader' } });
+
+    expect(resolveClaimedWorkItemIdForOwnerMock).toHaveBeenCalledWith({
+      ownerId: 'sess-scope',
+      workspaceId: 'ws-test',
+    });
+    expect(firstCall()).toMatchObject({
+      session: { sessionId: 'sess-scope', port: 'mid-turn', currentWorkItemId: 'WI-38148' },
     });
   });
 

@@ -155,6 +155,10 @@ export interface SelectCorpusInput {
   harnessSlugs?: readonly string[];
   /** Handle refs the agent already carries (dedup across injection moments). */
   knownRefs?: ReadonlySet<string>;
+  /** The work-item the caller has declared as its current scope, when known. */
+  declaredWorkItemId?: string | null;
+  /** Render clock, injected for deterministic tests and paired stage labels. */
+  now?: number | Date;
   /** Max lines admitted. */
   maxItems?: number;
   /** Char budget for the admitted lines. */
@@ -498,13 +502,57 @@ function resolveCall(kind: CorpusHandle['kind'], ref: string, terms: string[]): 
   return `sessions:search { session: '${sid}', query: '${q}' }`;
 }
 
-/** A short label for the hit's date, when it has one. PURE. */
-function dateLabel(ts: CorpusHit['ts']): string {
-  if (ts === undefined || ts === null) return '';
-  const d = ts instanceof Date ? ts : new Date(ts);
-  const ms = d.getTime();
-  if (!Number.isFinite(ms)) return '';
-  return ` · ${d.toISOString().slice(0, 10)}`;
+/** Resolve the timestamp representations SearchHit permits. PURE. */
+function timestampMs(value: unknown): number | null {
+  if (value === undefined || value === null) return null;
+  const ms = value instanceof Date ? value.getTime() : new Date(value as string | number).getTime();
+  return Number.isFinite(ms) ? ms : null;
+}
+
+/**
+ * Render a relative age instead of a bare calendar date. A date-only label is
+ * misleading around midnight: a turn from twelve hours ago can display as
+ * "today" and read like current state. PURE when `now` is supplied; the
+ * default is for production callers that do not need a deterministic clock.
+ */
+export function relativeAgeLabel(
+  ts: CorpusHit['ts'],
+  now: number | Date = Date.now(),
+): string {
+  const at = timestampMs(ts);
+  const current = timestampMs(now);
+  if (at === null || current === null) return '';
+
+  const delta = current - at;
+  const future = delta < 0;
+  const age = Math.abs(delta);
+  if (age < 60_000) return future ? 'in <1m' : 'just now';
+
+  const units: ReadonlyArray<[number, string]> = [
+    [365 * 24 * 60 * 60 * 1000, 'y'],
+    [30 * 24 * 60 * 60 * 1000, 'mo'],
+    [7 * 24 * 60 * 60 * 1000, 'w'],
+    [24 * 60 * 60 * 1000, 'd'],
+    [60 * 60 * 1000, 'h'],
+    [60 * 1000, 'm'],
+  ];
+  const [unitMs, suffix] = units.find(([size]) => age >= size) ?? units.at(-1)!;
+  const count = Math.max(1, Math.floor(age / unitMs));
+  const label = `${count}${suffix}`;
+  return future ? `in ${label}` : `${label} ago`;
+}
+
+/** A short relative-age label for the hit, when its timestamp is usable. */
+function dateLabel(ts: CorpusHit['ts'], now: number): string {
+  const age = relativeAgeLabel(ts, now);
+  return age ? ` · ${age}` : '';
+}
+
+/** Mark a work-item pointer that is not about the caller's declared item. */
+function workItemContextLabel(ref: string, declaredWorkItemId: string | null): string {
+  const current = declaredWorkItemId?.trim();
+  if (!current || ref.trim().toUpperCase() === current.toUpperCase()) return '';
+  return ` · different work-item from current ${current}`;
 }
 
 /**
@@ -558,6 +606,8 @@ export function selectCorpusLines(input: SelectCorpusInput): SelectCorpusResult 
   const budget = input.budgetChars ?? CORPUS_BUDGET_CHARS;
   const harnessSlugs = input.harnessSlugs ?? [];
   const known = input.knownRefs ?? new Set<string>();
+  const renderNow = timestampMs(input.now) ?? Date.now();
+  const declaredWorkItemId = input.declaredWorkItemId?.trim() || null;
   const queryTerms = new Set(corpusTerms(input.queryText));
   const dropped: CorpusDrop[] = [];
 
@@ -618,9 +668,13 @@ export function selectCorpusLines(input: SelectCorpusInput): SelectCorpusResult 
       query: terms.slice(0, 6),
       resolve: resolveCall(kind, ref, terms),
     };
-    const label = kind === 'work-item' ? `work-item ${ref}` : `session ${ref}`;
+    const context =
+      kind === 'work-item' ? workItemContextLabel(ref, declaredWorkItemId) : '';
+    const label = kind === 'work-item'
+      ? `work-item ${ref}${context}`
+      : `session ${ref}`;
     const teaser = oneLine(hitText(hit)).slice(0, CORPUS_TEASER_MAX_CHARS);
-    const line = `- [${label}${dateLabel(hit.ts)}] ${teaser} → ${handle.resolve}`;
+    const line = `- [${label}${dateLabel(hit.ts, renderNow)}] ${teaser} → ${handle.resolve}`;
     // WI-6870: no first-entry exemption — the teaser already caps hitText, but the
     // label/date/resolve wrapper around it can still push a single line over budget
     // (measured 945 chars against a 900 budget); the exemption let that first entry
