@@ -788,9 +788,15 @@ if [ "$_coalesce_enabled" = 1 ]; then
       _leader_id > "$_c_lockdir/pid" 2>/dev/null || true
       _do_cache_write=1
       # Also sweep the leader's in-progress output temps (EI-19368312145172418):
-      # a leader killed mid-run would otherwise leave a `.part` behind. Unset
-      # here, so this is a no-op on every path that never becomes a leader.
-      trap 'rm -rf "$_c_lockdir" 2>/dev/null; rm -f "$_c_out_tmp" "$_c_err_tmp" 2>/dev/null' EXIT
+      # a leader killed mid-run would otherwise leave a `.part` behind. Both are
+      # still UNSET at this point — they are assigned only once the leader
+      # actually runs — and `set -u` (above) makes expanding an unset name an
+      # ABORT, not the intended no-op. So they must be expanded with `:-`: a
+      # leader killed while still QUEUED otherwise dies printing
+      # "line 1: _c_out_tmp: unbound variable", which reads as a fault in the
+      # caller's own command, and the trap aborts partway through its cleanup
+      # list rather than running all of it (WI-38277, observed live).
+      trap 'rm -rf "$_c_lockdir" 2>/dev/null; rm -f "${_c_out_tmp:-}" "${_c_err_tmp:-}" 2>/dev/null' EXIT
       break
     fi
     # Reclaim an ABANDONED lock. Unlike the flock slots above, a plain mkdir
