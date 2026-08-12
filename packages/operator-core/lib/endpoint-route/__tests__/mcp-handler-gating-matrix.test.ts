@@ -29,6 +29,7 @@ import { createRequire } from 'node:module';
 import { afterAll, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import type { UnifiedToolContext } from '@papercusp/agent-mcp';
+import { setEntityEnum } from '@papercusp/tooldef';
 import { _resetVerifiedSpawns } from '../../spawn-signing';
 
 const h = vi.hoisted(() => {
@@ -531,6 +532,15 @@ beforeEach(() => {
   txlessRoleProbeSeen.length = 0;
   delete process.env.PAPERCUSP_REQUIRE_SPAWN_SIG;
   _resetVerifiedSpawns(); // every case reuses spawn='spawn-1' — isolate the real verified-spawn tracker per test
+
+  // tools/list applies every registered entity-enum loader while building the
+  // advertised schemas. This is a unit-tier handler test: keep the route
+  // assertions independent of the production DB-backed pot/harness loaders.
+  // The loaders are over-cap anyway, so empty stubs preserve the published
+  // schema while preventing a swallowed unit-tier DB reach from red-pinning
+  // the suite.
+  setEntityEnum('pot', async () => []);
+  setEntityEnum('harness', async () => []);
 });
 
 /* ─── caller-specified result projection (P-020 / D-041) ────────────────── */
