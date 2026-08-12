@@ -58,14 +58,27 @@ export type TransportStatus = 'idle' | 'connecting' | 'open' | 'failing' | 'clos
  * How long the pane tolerates total silence from an ostensibly-open stream
  * before it says so.
  *
- * The server heartbeats every 15 s and the transport's own zombie watchdog
- * force-reconnects at 45 s, so this sits just past the watchdog: if the stream
- * were merely jittery, the transport would have already rebuilt it and told us
- * via `'failing'`. Silence that outlives BOTH means the pane is looking at
- * something no longer being fed, which is precisely the state the owner could
- * not see.
+ * ⚠ THIS MUST STAY STRICTLY BELOW THE TRANSPORT'S ZOMBIE TIMEOUT
+ * (`DEFAULT_ZOMBIE_TIMEOUT_MS`, 45 s). `stream-freshness.test.ts` fails if it
+ * does not, because the ordering is the whole ballgame:
+ *
+ * This value shipped at 60 s — deliberately "just past the watchdog", on the
+ * reasoning that silence outliving BOTH timers is the strongest evidence the
+ * pane is looking at something no longer being fed. That reasoning is exactly
+ * backwards, and it made `'stale'` DEAD CODE from the first commit
+ * (EI-20265888603098901). One `signal()` seam feeds both timers, so the
+ * transport's fires FIRST: at 45 s it closes the socket and publishes
+ * `'failing'`, `classifyStreamFreshness` returns `'reconnecting'` on that alone,
+ * and a successful reconnect re-signals and resets the age. `transport ===
+ * 'open'` together with 60 s of silence is a state the runtime cannot produce.
+ *
+ * So the two timers are a LADDER, not a belt-and-braces pair, and this is the
+ * FIRST rung: at 35 s the server (15 s heartbeat) has missed two in a row —
+ * enough to be real, not jitter — and we say the view may be behind. At 45 s the
+ * transport gives up and the banner escalates to `'reconnecting'`. Raise this at
+ * or above 45 s and the first rung silently disappears again.
  */
-export const STREAM_SILENCE_STALE_MS = 60_000;
+export const STREAM_SILENCE_STALE_MS = 35_000;
 
 export interface StreamFreshnessInput {
   /** The transport's status. `undefined` when the caller has not wired it. */

@@ -11,7 +11,8 @@
  *     gets ignored exactly when it is finally right.
  * So "quiet agent is not a broken stream" gets its own explicit case.
  */
-import { describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { createResilientEventSource, DEFAULT_ZOMBIE_TIMEOUT_MS } from '@papercusp/sse';
 import {
   STREAM_SILENCE_STALE_MS,
   classifyStreamFreshness,
@@ -137,5 +138,137 @@ describe('streamFreshnessMessage', () => {
   it('stays silent for the states that need no banner', () => {
     expect(streamFreshnessMessage('fresh')).toBeNull();
     expect(streamFreshnessMessage('unknown')).toBeNull();
+  });
+});
+
+/* ── REACHABILITY (EI-20265888603098901) ────────────────────────────────────
+ *
+ * Every test above injects `{ transport, lastSignalAtMs }` by hand, and that is
+ * precisely why they all passed while `'stale'` was dead code from the first
+ * commit. A pure classifier tested by injection answers "given this state, what
+ * do you say?" — it CANNOT answer "can the system ever be in this state?", and
+ * the unreachable combination is the easiest one of all to construct by hand.
+ *
+ * The bug: `'stale'` needs `transport === 'open'` plus 60 s of silence, but one
+ * `signal()` seam drove both timers, so the transport's 45 s zombie watchdog
+ * always fired first, flipped the status to `'failing'`, and the classifier
+ * returned `'reconnecting'` on that alone. The banner written for the owner's
+ * actual incident could never render.
+ *
+ * So this block drives the REAL transport (its real watchdog, its real status
+ * transitions) against the REAL classifier, and substitutes only the React
+ * plumbing. Run it against `STREAM_SILENCE_STALE_MS = 60_000` and it fails —
+ * which is the point.
+ */
+class FakeEventSource {
+  static instances: FakeEventSource[] = [];
+  readonly listeners: { type: string; fn: (ev: unknown) => void }[] = [];
+  readyState = 0;
+  constructor(readonly url: string) { FakeEventSource.instances.push(this); }
+  addEventListener(type: string, fn: (ev: unknown) => void) { this.listeners.push({ type, fn }); }
+  close() { this.readyState = 2; }
+  fireOpen() {
+    this.readyState = 1;
+    for (const e of this.listeners) if (e.type === 'open') e.fn({ data: '', type: 'open' });
+  }
+}
+
+describe('the stale rung is REACHABLE against the real transport', () => {
+  beforeEach(() => { FakeEventSource.instances = []; });
+  afterEach(() => { vi.useRealTimers(); });
+
+  it('is ordered below the transport zombie timeout, or it can never fire', () => {
+    // The structural tie. Without this, the two constants live in different
+    // packages with nothing relating them, and either can be moved into an
+    // unreachable configuration without a single test going red.
+    expect(STREAM_SILENCE_STALE_MS).toBeLessThan(DEFAULT_ZOMBIE_TIMEOUT_MS);
+    // ...and far enough above the 15 s server heartbeat that ONE dropped beat is
+    // not enough to cry wolf. A false alarm on an idle agent is the worse error.
+    expect(STREAM_SILENCE_STALE_MS).toBeGreaterThan(2 * 15_000);
+  });
+
+  it('says stale on a silent-but-open stream, then escalates to reconnecting', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+
+    let transport: TransportStatus | undefined;
+    let lastSignalAtMs: number | null = null;
+    createResilientEventSource({
+      url: 'http://x/sse',
+      handlers: {},
+      eventSourceCtor: FakeEventSource as unknown as typeof EventSource,
+      onStatusChange: (s) => { transport = s as TransportStatus; },
+      onSignal: () => { lastSignalAtMs = Date.now(); },
+    });
+    FakeEventSource.instances.at(-1)!.fireOpen();
+
+    const verdict = () => classifyStreamFreshness({ transport, lastSignalAtMs, nowMs: Date.now() });
+    expect(transport).toBe('open');
+    expect(verdict()).toBe('fresh');
+
+    // Total silence from here — not even a heartbeat.
+    vi.advanceTimersByTime(STREAM_SILENCE_STALE_MS);
+    expect(transport).toBe('open'); // the transport has NOT given up yet...
+    expect(verdict()).toBe('stale'); // ...so this rung is the one the owner sees.
+
+    // The transport then gives up, and the banner escalates rather than vanishing.
+    vi.advanceTimersByTime(DEFAULT_ZOMBIE_TIMEOUT_MS - STREAM_SILENCE_STALE_MS);
+    expect(verdict()).toBe('reconnecting');
+  });
+
+  /* The CONTROL for the two tests above. A guard that has never failed is a
+   * guard you have not tested — but the honest way to prove this one bites is
+   * not to hand-mutate the constant (the shared tree is swept into commits every
+   * few minutes, so a mutation window is a committed mutant waiting to happen).
+   * Instead this pins the DEFECT itself, permanently: at the 60 s the detector
+   * shipped with, the precondition `'stale'` requires is already gone. If some
+   * later change makes this pass, the transport's escalation has moved and the
+   * ordering above needs re-deriving, not re-blessing. */
+  it('CONTROL: at the shipped 60s mark the transport has already escalated, which is why it was dead', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+
+    let transport: TransportStatus | undefined;
+    let lastSignalAtMs: number | null = null;
+    createResilientEventSource({
+      url: 'http://x/sse',
+      handlers: {},
+      eventSourceCtor: FakeEventSource as unknown as typeof EventSource,
+      onStatusChange: (s) => { transport = s as TransportStatus; },
+      onSignal: () => { lastSignalAtMs = Date.now(); },
+    });
+    FakeEventSource.instances.at(-1)!.fireOpen();
+
+    vi.advanceTimersByTime(60_000);
+    // `'stale'` needs transport === 'open'. It is not, and cannot be, at 60 s.
+    expect(transport).not.toBe('open');
+    expect(classifyStreamFreshness({ transport, lastSignalAtMs, nowMs: Date.now() })).toBe('reconnecting');
+  });
+
+  it('never fires on a merely-idle agent, because heartbeats are signals', () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(NOW);
+
+    let transport: TransportStatus | undefined;
+    let lastSignalAtMs: number | null = null;
+    createResilientEventSource({
+      url: 'http://x/sse',
+      handlers: {},
+      eventSourceCtor: FakeEventSource as unknown as typeof EventSource,
+      onStatusChange: (s) => { transport = s as TransportStatus; },
+      onSignal: () => { lastSignalAtMs = Date.now(); },
+    });
+    const es = FakeEventSource.instances.at(-1)!;
+    es.fireOpen();
+
+    // An agent doing nothing for five minutes, on a perfectly healthy stream:
+    // the server still heartbeats every 15 s and the wrapper routes those
+    // through the same `signal()` seam.
+    for (let i = 0; i < 20; i++) {
+      vi.advanceTimersByTime(15_000);
+      for (const e of es.listeners) if (e.type === 'heartbeat') e.fn({ data: '', type: 'heartbeat' });
+    }
+    expect(transport).toBe('open');
+    expect(classifyStreamFreshness({ transport, lastSignalAtMs, nowMs: Date.now() })).toBe('fresh');
   });
 });
