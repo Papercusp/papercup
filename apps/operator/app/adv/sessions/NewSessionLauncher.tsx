@@ -171,6 +171,12 @@ export const FLEET_SELECT_NEW = '__new_fleet__';
 export const ACCOUNT_SELECT_DEFAULT = 'default';
 export const CONTEXT_SELECT_NATIVE = '__native_context__';
 export const MODE_SELECT_NONE = '__no_mode__';
+/**
+ * New-session launches are always headless (WI-37871), so an unbound session
+ * needs an actionable posture instead of opening an inert terminal-less agent.
+ * Interactive remains available as an explicit opt-out in the picker.
+ */
+export const NEW_SESSION_DEFAULT_MODE = 'auto';
 
 /** Fleet rows: "no fleet" (psu's own first row + default), "create a new fleet…"
  *  previewing the colour it would get, then every durable fleet with its bound
@@ -223,8 +229,8 @@ export function buildAccountOptions(
   ];
 }
 
-/** Launch-MODE rows (P-042 / D-067) — "Interactive" (send nothing, the historical
- *  behaviour) then every mode the registry marks `launchable`.
+/** Launch-MODE rows (P-042 / D-067) — "Interactive" (send nothing, the explicit
+ * opt-out) then every mode the registry marks `launchable`.
  *
  *  Rendered FROM the registry rather than a local list on purpose: launch-su
  *  validates against that same `LAUNCHABLE_MODE_IDS`, so this picker cannot
@@ -237,7 +243,7 @@ export function buildModeOptions(): ComboboxOption[] {
     {
       value: MODE_SELECT_NONE,
       label: 'Interactive',
-      detail: 'Default — confirm before acting',
+      detail: 'Explicit opt-out — confirm before acting',
     },
     ...launchableModes().map((m) => ({
       value: m.id,
@@ -420,7 +426,7 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
   const [contextSize, setContextSize] = useState(CONTEXT_SELECT_NATIVE);
   // P-042 — the launch posture. Local useState like its siblings: a mid-edit
   // draft of the next launch, not a shareable view.
-  const [mode, setMode] = useState(MODE_SELECT_NONE);
+  const [mode, setMode] = useState(NEW_SESSION_DEFAULT_MODE);
 
   // psu's OWN option source — see use-su-launch-options' header. Keyed to the
   // backend the picked model implies, because pool pinning is per-backend.
@@ -524,8 +530,11 @@ export default function NewSessionLauncher({ className, onLaunched }: NewSession
         account: account || ACCOUNT_SELECT_DEFAULT,
         contextSize:
           contextSize === CONTEXT_SELECT_NATIVE ? undefined : (contextSize as 'full' | 'trimmed'),
-        // P-042 / D-067 — the launch posture. "Interactive" sends null, which is
-        // byte-identical to a pre-feature launch. launch-su maps the rest onto
+        // P-042 / D-067 — the launch posture. New sessions default to AUTO because
+        // this control is always headless; an inert headless session has no
+        // interactive terminal or loop source. "Interactive" sends null, which is
+        // byte-identical to a pre-feature launch and remains an explicit opt-out.
+        // launch-su maps the rest onto
         // psu's argv and bootstrap-su writes the durable agent_modes row, so a
         // session launched in DRAIN is ALREADY in DRAIN on turn 1 — no one has
         // to type it, and it survives compaction.
