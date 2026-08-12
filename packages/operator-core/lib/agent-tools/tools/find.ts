@@ -43,6 +43,160 @@ import { findTools, type Embedder } from '../../cupboard/tool-find';
 import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 
 /**
+ * The result-door is a per-tool-result budget, not a per-field budget. A
+ * discovery hit can therefore be perfectly valid in isolation and still make
+ * the whole `tools:find` response unparseable when several hits carry verbose
+ * schemas. Keep the ranking corpus rich, but project the response through a
+ * compact structural schema and a conservative byte budget.
+ */
+export const DISCOVERY_RESULT_MAX_BYTES = 5_000;
+const DISCOVERY_DESCRIPTION_MAX_CHARS = 320;
+const DISCOVERY_SCHEMA_MAX_CHARS = 2_200;
+
+type JsonSchemaNode = {
+  type?: unknown;
+  enum?: unknown;
+  properties?: unknown;
+  required?: unknown;
+  items?: unknown;
+  anyOf?: unknown;
+  oneOf?: unknown;
+  minItems?: unknown;
+  maxItems?: unknown;
+  minimum?: unknown;
+  maximum?: unknown;
+  exclusiveMinimum?: unknown;
+  exclusiveMaximum?: unknown;
+  minLength?: unknown;
+  maxLength?: unknown;
+};
+
+function schemaNodes(node: JsonSchemaNode): JsonSchemaNode[] {
+  const unions = [node.anyOf, node.oneOf].find(Array.isArray);
+  return unions ? (unions as unknown[]).filter((n): n is JsonSchemaNode => !!n && typeof n === 'object') : [];
+}
+
+function schemaType(node: JsonSchemaNode): string {
+  const enumValues = Array.isArray(node.enum)
+    ? node.enum.filter((v): v is string | number | boolean =>
+        typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean',
+      )
+    : [];
+  if (enumValues.length > 0) return `enum(${enumValues.join('|')})`;
+  if (typeof node.type === 'string') return node.type;
+  const unionTypes = [...new Set(schemaNodes(node).map(schemaType).filter(Boolean))];
+  return unionTypes.join('|');
+}
+
+function schemaBound(node: JsonSchemaNode): string {
+  const nodes = [node, ...schemaNodes(node)];
+  const numberValue = (value: unknown): number | null =>
+    typeof value === 'number' && Number.isFinite(value) ? value : null;
+  const lower = nodes
+    .map((n) =>
+      numberValue(n.minimum) ??
+      numberValue(n.exclusiveMinimum) ??
+      numberValue(n.minLength) ??
+      numberValue(n.minItems),
+    )
+    .find((value): value is number => value != null);
+  const upper = nodes
+    .map((n) =>
+      numberValue(n.maximum) ??
+      numberValue(n.exclusiveMaximum) ??
+      numberValue(n.maxLength) ??
+      numberValue(n.maxItems),
+    )
+    .find((value): value is number => value != null);
+  return lower != null && upper != null
+    ? `(${lower}-${upper})`
+    : upper != null
+      ? `(≤${upper})`
+      : lower != null
+        ? `(≥${lower})`
+        : '';
+}
+
+function objectProperties(node: JsonSchemaNode): { properties: Record<string, unknown>; required: Set<string> } | null {
+  const candidates = [node, ...schemaNodes(node)];
+  for (const candidate of candidates) {
+    if (!candidate.properties || typeof candidate.properties !== 'object' || Array.isArray(candidate.properties)) continue;
+    const required = new Set<string>(Array.isArray(candidate.required) ? candidate.required.filter((v): v is string => typeof v === 'string') : []);
+    return { properties: candidate.properties as Record<string, unknown>, required };
+  }
+  return null;
+}
+
+function nestedFieldNames(node: JsonSchemaNode): string {
+  const direct = objectProperties(node);
+  const arrayNodes = [node, ...schemaNodes(node)].filter((candidate) => candidate.type === 'array');
+  const item = arrayNodes
+    .map((candidate) => candidate.items)
+    .find((value): value is JsonSchemaNode => !!value && typeof value === 'object');
+  const nested = direct ?? (item ? objectProperties(item) : null);
+  if (!nested) return '';
+  const names = Object.keys(nested.properties).map((name) => `${name}${nested.required.has(name) ? '' : '?'}`);
+  return names.length > 0 ? `{${names.join(',')}}` : '';
+}
+
+/**
+ * Render only the structural part of a JSON schema for the returned hit. The
+ * full descriptions remain in the search corpus; this projection is what a
+ * caller needs to form a valid next call without overflowing the result door.
+ */
+export function compactSchemaForResult(inputSchema: unknown): string | null {
+  if (!inputSchema || typeof inputSchema !== 'object') return null;
+  const root = inputSchema as JsonSchemaNode;
+  const props = root.properties;
+  if (!props || typeof props !== 'object' || Array.isArray(props)) return null;
+  const required = new Set<string>(Array.isArray(root.required) ? root.required.filter((v): v is string => typeof v === 'string') : []);
+  const parts = Object.entries(props as Record<string, unknown>).map(([name, raw]) => {
+    const node = raw && typeof raw === 'object' ? raw as JsonSchemaNode : {};
+    const type = schemaType(node);
+    const nested = nestedFieldNames(node);
+    return `${name}${required.has(name) ? '' : '?'}${type ? `:${type}${schemaBound(node)}${nested}` : nested}`;
+  });
+  if (parts.length === 0) return null;
+  const text = parts.join('; ');
+  return text.length <= DISCOVERY_SCHEMA_MAX_CHARS
+    ? text
+    : `${text.slice(0, DISCOVERY_SCHEMA_MAX_CHARS - 1)}…`;
+}
+
+function boundedText(value: string | null, maxChars: number): string | null {
+  if (value == null || value.length <= maxChars) return value;
+  return `${value.slice(0, maxChars - 1)}…`;
+}
+
+export interface DiscoveryResultHit {
+  tool: string;
+  description: string | null;
+  argSchema: string | null;
+  via: string;
+}
+
+/** Keep the result valid and useful when the caller asks for many hits. */
+export function boundDiscoveryHits(
+  base: Omit<Record<string, unknown>, 'hits' | 'count' | 'truncated'>,
+  hits: DiscoveryResultHit[],
+): { hits: DiscoveryResultHit[]; truncated: boolean } {
+  const kept: DiscoveryResultHit[] = [];
+  for (const hit of hits) {
+    const candidate = [...kept, hit];
+    const projected = {
+      ...base,
+      count: candidate.length,
+      totalMatches: hits.length,
+      truncated: candidate.length < hits.length,
+      hits: candidate,
+    };
+    if (Buffer.byteLength(JSON.stringify(projected), 'utf8') > DISCOVERY_RESULT_MAX_BYTES && kept.length > 0) break;
+    kept.push(hit);
+  }
+  return { hits: kept, truncated: kept.length < hits.length };
+}
+
+/**
  * Build the live corpus from the projected-tool registry: name + description +
  * guidance.when + arg-schema text. The arg-schema text makes a tool's PARAMETERS
  * searchable/embeddable (so "set a flag by key" can match `flags:set`'s `key`
@@ -55,10 +209,13 @@ export function buildCorpus(): {
   embedText: Map<string, string>;
   /** EI-10882: name → the tool's declared RESPONSE shape (guidance.returns). */
   returnsByTool: Map<string, string>;
+  /** name → raw schema, used to project a compact schema in the response. */
+  schemaByTool: Map<string, unknown>;
 } {
   const corpus: ToolDiscoveryEntry[] = [];
   const embedText = new Map<string, string>();
   const returnsByTool = new Map<string, string>();
+  const schemaByTool = new Map<string, unknown>();
   for (const tool of listAllProjectedTools()) {
     if (!tool.expose.mcp) continue;
     const name = tool.expose.mcp.name;
@@ -66,6 +223,7 @@ export function buildCorpus(): {
     const argSchema = schemaToText(tool.inputSchema);
     const returns = (tool.guidance as { returns?: string } | undefined)?.returns?.trim();
     if (returns) returnsByTool.set(name, returns);
+    schemaByTool.set(name, tool.inputSchema);
     // Fold the "when to use" line into the searchable text — it's the richest
     // intent signal for both legs (lexical description weight + the embedding).
     const description = [tool.description, when].filter(Boolean).join(' ').trim() || null;
@@ -80,7 +238,7 @@ export function buildCorpus(): {
     } as unknown as ToolDiscoveryEntry);
     embedText.set(name, [name, tool.description, when, argSchema].filter(Boolean).join('\n'));
   }
-  return { corpus, embedText, returnsByTool };
+  return { corpus, embedText, returnsByTool, schemaByTool };
 }
 
 // ── Boot-time embedding index over the full catalog (module-scoped cache) ─────
@@ -220,7 +378,7 @@ export default defineTool({
     limit: z.number().int().positive().max(25).optional(),
   }),
   async handler(args, ctx) {
-    const { corpus, embedText, returnsByTool } = buildCorpus();
+    const { corpus, embedText, schemaByTool } = buildCorpus();
     const embedder = await getEmbedder();
     // Self-heal: rebuild if boot warm didn't run or the catalog drifted. Non-
     // blocking — this call uses whatever index is ready right now.
@@ -256,45 +414,48 @@ export default defineTool({
     //   lexical-only — no embedder configured/available → graceful degrade.
     const semantic: 'on' | 'warming' | 'lexical-only' =
       embIndex != null && embIndex.size > 0 ? 'on' : embedder ? 'warming' : 'lexical-only';
+    const projectedHits = hits.map((h) => ({
+      tool: h.tool,
+      description: boundedText(h.description, DISCOVERY_DESCRIPTION_MAX_CHARS),
+      argSchema: compactSchemaForResult(schemaByTool.get(h.tool)) ?? boundedText(h.argSchema, DISCOVERY_SCHEMA_MAX_CHARS),
+      via: h.via,
+    }));
+    const howToCall = activated
+      ? 'activated:true means the SERVER surface grew and requested a client tool-list refresh; ' +
+        'it does NOT guarantee your client has materialized a direct-call wrapper in this same turn. ' +
+        'Call tools:invoke {name:"<exact tool name from hits>", args:{...}} now — it works immediately ' +
+        'on every client via server-side dispatch. After the client refreshes (often next turn), the ' +
+        'direct wrapper may also be available.'
+      : 'activated:false — these tools are NOT on your live tool surface, so a direct call will ' +
+        'fail with unknown/not-found. Call them with ' +
+        'tools:invoke {name:"<exact tool name from hits>", args:{...}} — server-side dispatch under ' +
+        "the tool's real (colon-form) name; works on every client, needs no load step. " +
+        'Do NOT try ToolSearch on the colon name — it only resolves the client-mangled id.';
+    const bounded = boundDiscoveryHits(
+      { query: args.query, semantic, activated, howToCall, totalMatches: hits.length },
+      projectedHits,
+    );
     return {
       content: [
         {
           type: 'text',
           text: JSON.stringify({
             query: args.query,
-            count: hits.length,
+            count: bounded.hits.length,
+            totalMatches: hits.length,
+            truncated: bounded.truncated,
             semantic,
             // true ⇒ the server-side session allowlist grew and emitted the
             // standard list_changed request. It cannot prove the client has
             // consumed that notification and materialized wrappers yet.
             activated,
-            hits: hits.map((h) => ({
-              tool: h.tool,
-              description: h.description,
-              argSchema: h.argSchema,
-              // EI-10882: the RESPONSE shape, so a caller can write a code:run
-              // batch over this tool WITHOUT first calling it once just to learn
-              // the field names. `null` is an honest "not declared" — call once and
-              // inspect — never a silent omission the caller mistakes for "no body".
-              returns: returnsByTool.get(h.tool) ?? null,
-              via: h.via,
-            })),
+            hits: bounded.hits,
             // EI-10885: when activation did NOT happen, the old text still LED with
             // "Call the tool directly" — the one path that cannot work on this
             // surface — and relegated the path that always works to a fallback after
             // a failure. An agent that follows the instruction in order pays a
             // guaranteed wasted call. Lead with the working path instead.
-            howToCall: activated
-              ? 'activated:true means the SERVER surface grew and requested a client tool-list refresh; ' +
-                'it does NOT guarantee your client has materialized a direct-call wrapper in this same turn. ' +
-                'Call tools:invoke {name:"<exact tool name from hits>", args:{...}} now — it works immediately ' +
-                'on every client via server-side dispatch. After the client refreshes (often next turn), the ' +
-                'direct wrapper may also be available.'
-              : 'activated:false — these tools are NOT on your live tool surface, so a direct call will ' +
-                'fail with unknown/not-found. Call them with ' +
-                'tools:invoke {name:"<exact tool name from hits>", args:{...}} — server-side dispatch under ' +
-                "the tool's real (colon-form) name; works on every client, needs no load step. " +
-                'Do NOT try ToolSearch on the colon name — it only resolves the client-mangled id.',
+            howToCall,
           }),
         },
       ],
