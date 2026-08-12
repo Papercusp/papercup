@@ -614,7 +614,7 @@ export default defineTool({
   name: 'scheduler:get_next',
   profile: 'engineer',
   description:
-    'Atomically claim the next eligible item under global floors plus the stored claim-spec filter/rank (SKIP LOCKED). A fleet member without an inherited spec fails closed (windDown:true); a non-fleet caller without a spec uses warned default ordering. Returns the claimed item or a diagnosed miss; specId and revision are result provenance, not request arguments.',
+    'Atomically claim the next eligible item under global floors plus the stored claim-spec filter/rank (SKIP LOCKED). A fleet member without an inherited spec fails closed (windDown:true); a non-fleet caller without a spec uses warned default ordering. Returns the claimed item or a diagnosed miss. A successful claim also declares the caller\'s WI-/EI- intent; specId and revision are result provenance, not request arguments.',
   guidance: {
     when: 'A self-pulling cup or su fleet member pulls from the Mug/leader spec instead of scanning. Pass { harness, heldPaths?, states?, rigAvailable? }; do NOT pass specId, revision, fleet, workspace, or claimSpec; claimedUnder reports it. This call returns at most one claim and has no `limit` argument.',
     notWhen:

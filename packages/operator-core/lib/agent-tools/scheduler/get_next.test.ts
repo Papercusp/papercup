@@ -143,6 +143,7 @@ describe('scheduler:get_next claim-spec identity is inherited (EI-20225786201327
   it('teaches the accepted call shape and keeps spec identity read-only', () => {
     const tool = getNextTool as { args: ZodTypeAny; description?: string; guidance?: { when?: string } };
     expect(tool.description).toContain('specId and revision are result provenance, not request arguments');
+    expect(tool.description).toContain("successful claim also declares the caller's WI-/EI- intent");
     expect(tool.guidance?.when).toContain('do NOT pass specId, revision, fleet, workspace, or claimSpec');
     expect(tool.guidance?.when).toContain('claimedUnder');
 

@@ -96,6 +96,16 @@ const parse = (r: { content: Array<{ text: string }> }): Record<string, unknown>
   JSON.parse(r.content[0].text);
 const ctx = {} as never;
 
+describe('coord:declare-intent scheduler work-item bridge', () => {
+  it('documents that items is P-NNN-only and scheduler claims declare WI/EI intent', () => {
+    const tool = declareIntentTool as { description?: string; guidance?: { when?: string } };
+    const contract = `${tool.description ?? ''}\n${tool.guidance?.when ?? ''}`;
+    expect(contract).toContain('P-NNN form only');
+    expect(contract).toContain('scheduler:get_next');
+    expect(contract).toContain('WI-/EI-');
+  });
+});
+
 /** A plan row whose Stage-3 structured index carries the given item ids. */
 const rowWithItems = (ids: string[]): Record<string, unknown> => ({
   items: ids.map((id) => ({
