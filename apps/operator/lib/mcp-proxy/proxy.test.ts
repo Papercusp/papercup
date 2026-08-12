@@ -875,6 +875,7 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     expect(isReservedControlPlaneCall(call('tools:find'))).toBe(true);
     expect(isReservedControlPlaneCall(call('loop:arm'))).toBe(true);
     expect(isReservedControlPlaneCall(call('improvements:capture'))).toBe(true);
+    expect(isReservedControlPlaneCall(call('locks:acquire'))).toBe(true);
     expect(isReservedControlPlaneCall(call('locks:queue'))).toBe(true);
     expect(isReservedControlPlaneCall(call('locks:cancel_wait'))).toBe(true);
     expect(isReservedControlPlaneCall(call('locks:release'))).toBe(true);
@@ -891,6 +892,10 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     ['Claude MCP-advertised form', 'mcp__papercusp-su__scheduler_get_next'],
     ['MCP-advertised form with underscore server slug', 'mcp__papercusp_su__scheduler_get_next'],
     ['canonical locks:queue form', 'locks:queue'],
+    ['canonical locks:acquire form', 'locks:acquire'],
+    ['underscore locks:acquire form', 'locks_acquire'],
+    ['Claude MCP-advertised locks:acquire form', 'mcp__papercusp-su__locks_acquire'],
+    ['MCP-advertised locks:acquire form with underscore server slug', 'mcp__papercusp_su__locks_acquire'],
     ['underscore locks:queue form', 'locks_queue'],
     ['Claude MCP-advertised locks:queue form', 'mcp__papercusp-su__locks_queue'],
     ['MCP-advertised locks:queue form with underscore server slug', 'mcp__papercusp_su__locks_queue'],
@@ -939,7 +944,7 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     ])))).toBe(false);
   });
 
-  it.each(['scheduler:get_next', 'coord:orient', 'coord:send', 'loop:checkpoint', 'tools:find', 'loop:arm', 'improvements:capture', 'locks:queue', 'locks:cancel_wait', 'locks:release', 'work_items:checkpoint', 'work_items:get', 'work_items:release', 'work_items:complete'])('admits %s from the reserve while ordinary calls shed', async (controlPlaneTool) => {
+  it.each(['scheduler:get_next', 'coord:orient', 'coord:send', 'loop:checkpoint', 'tools:find', 'loop:arm', 'improvements:capture', 'locks:acquire', 'locks:queue', 'locks:cancel_wait', 'locks:release', 'work_items:checkpoint', 'work_items:get', 'work_items:release', 'work_items:complete'])('admits %s from the reserve while ordinary calls shed', async (controlPlaneTool) => {
     let releaseUpstream: () => void = () => {};
     const gate = new Promise<void>((resolve) => { releaseUpstream = resolve; });
     const upstream = track(http.createServer((_req, res) => void gate.then(() => res.end('{"result":"ok"}'))));

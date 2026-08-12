@@ -662,6 +662,7 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set([
   'tools:find',
   'loop:arm',
   'improvements:capture',
+  'locks:acquire',
   'locks:queue',
   'locks:cancel_wait',
   'locks:release',
@@ -677,7 +678,8 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set([
  * if they cannot run, workers cannot orient, wake a blocker, persist a safe wake boundary, drain
  * the queue generating proxy load, recover a missing tool surface, keep themselves alive, file
  * the failure that needs fixing, inspect lock ownership, release a lock held during an edit,
- * or preserve the successor state needed to resume after a task boundary, inspect a
+ * or preserve the successor state needed to resume after a task boundary, acquire/release a
+ * file lock around an edit, inspect a
  * work-item during recovery, release a claim during recovery, or finish a work-item when
  * ordinary traffic has saturated the proxy. The MCP
  * client may send a canonical colon-form name or its `mcp__<server>__group_verb` advertisement
