@@ -38,7 +38,13 @@ import {
   type CheckpointEligibilityWaitReceipt,
 } from '../../release-checkpoint-launch';
 import { integrationRoot } from '../../release-deploy-launch';
-import { attributeRetriageToRun, describeRefireBudget, readInFlightRetriage } from '../../release/in-flight-retriage';
+import {
+  attributeRetriageToRun,
+  describeRefireBudget,
+  describeRunnerCodeFreshness,
+  readInFlightRetriage,
+  readRunnerCodeCommittedAtMs,
+} from '../../release/in-flight-retriage';
 import { caveat, describeRefusal, isRefusedAnswer, refuseAnswer, withFieldReliability } from '../../field-reliability';
 import { applyPendingMigrationsNow } from '../../db-boot-migrate';
 import {
@@ -655,6 +661,19 @@ export default defineTool({
       // Only trust it for THIS run: a marker written before this run started belongs to an
       // earlier one, and reporting it would silence a genuinely new red with a stale rescue.
       const liveRetriage = retriage && retriage.belongsToRun !== false ? retriage : null;
+      // EI-20265492291034092 (wiring WI-38224's verdict to its highest-harm reader): the marker
+      // answers "which CANDIDATE is this run judging"; this answers the orthogonal question
+      // "can this run's verdict even reflect the runner code in the tree?". They fail in opposite
+      // directions, which is why the second one matters here: a run whose candidate is advancing
+      // correctly still produces PRE-FIX verdicts when its process booted before a green-checkpoint
+      // fix was committed, because the auto-refire recurses IN-PROCESS. Read without this, the
+      // stand-down note above says "the gate is repairing itself" while the red the caller is
+      // staring at comes from code that predates their fix — and the natural next move is to
+      // re-fix an already-correct guard. Only computed when a marker exists: `runnerBootedAtMs`
+      // lives on the marker, so there is nothing to compare against otherwise.
+      const runnerFreshness = liveRetriage
+        ? describeRunnerCodeFreshness(liveRetriage.marker, await readRunnerCodeCommittedAtMs(integrationRoot()))
+        : null;
       // P-001 (plan agent-epistemics-2026-08-02): preferring the marker was necessary but not
       // sufficient. When the marker is ABSENT and the run is `held_externally`, the only candidate
       // left is `a.candidate` — the checkpoint checkout's live HEAD, re-read after the fact
@@ -770,6 +789,20 @@ export default defineTool({
                     /** null ⇒ this run's start time was unreadable, so we cannot PROVE the marker
                      *  is this run's. The stand-down advice holds either way; the attribution does not. */
                     belongs_to_this_run: liveRetriage.belongsToRun,
+                    /** WI-38224 / EI-20265492291034092 — about the JUDGE, not the candidate.
+                     *  `stale` ⇒ this run's process booted BEFORE the gate runner's own code was
+                     *  last committed, so it is executing pre-fix runner code and its verdict is
+                     *  NOT evidence a landed green-checkpoint fix failed. `unknown` is NOT `fresh`:
+                     *  it means one of the two instants was unreadable. */
+                    runner_code_freshness: runnerFreshness
+                      ? {
+                          verdict: runnerFreshness.verdict,
+                          note: runnerFreshness.note,
+                          behind_by_ms: runnerFreshness.behindByMs,
+                          runner_booted_at_ms: runnerFreshness.runnerBootedAtMs,
+                          runner_code_committed_at_ms: runnerFreshness.runnerCodeCommittedAtMs,
+                        }
+                      : null,
                   }
                 : null,
               note: liveRetriage
@@ -784,6 +817,13 @@ export default defineTool({
                   (liveRetriage.marker.failingFiles.length > 0
                     ? `The ${liveRetriage.marker.failingFiles.length} file(s) it named (${liveRetriage.marker.failingFiles.slice(0, 4).join(', ')}${liveRetriage.marker.failingFiles.length > 4 ? ', …' : ''}) already PASSED at tip — do not go fix them. `
                     : '') +
+                  // Only `stale` reaches the prose. `fresh` and `unknown` are carried in
+                  // `in_flight_retriage.runner_code_freshness` and would be pure noise on a
+                  // healthy reply — same principle as the field-reliability spread above. `stale`
+                  // is the one verdict whose absence from the note costs a caller real work: it
+                  // is precisely when the run looks self-repairing AND its verdict cannot reflect
+                  // the fix they just landed, so the note must say so where they are reading.
+                  (runnerFreshness?.verdict === 'stale' ? `${runnerFreshness.note} ` : '') +
                   `Verify your own change against ${liveRetriage.marker.refiringCandidate.slice(0, 12)}, not ` +
                   `${liveRetriage.marker.fromCandidate.slice(0, 12)}, which this run has already discarded. ` +
                   `pid/started_at stay FIXED across a refire, so an advancing candidate under an unchanged ` +

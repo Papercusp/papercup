@@ -338,3 +338,57 @@ export async function readInFlightRetriage(installSlug?: string): Promise<Stored
     return null;
   }
 }
+
+/**
+ * The runner file whose boot-pinned module graph {@link describeRunnerCodeFreshness} is about.
+ * Repo-relative on purpose: the same path resolves in the integration tree and in any checkout a
+ * caller hands us, and it is the file whose commit instant the doc-comment above prescribes.
+ */
+export const GATE_RUNNER_SOURCE_PATH = 'apps/operator/lib/release/green-checkpoint.ts';
+
+/** Injectable seam so {@link readRunnerCodeCommittedAtMs} is testable without a git tree.
+ *  Returns raw stdout (a `%ct` epoch-seconds line), or null when the read failed. */
+export type GitCommitTimeReader = (root: string, relPath: string) => string | null;
+
+/**
+ * The IMPURE half of the runner-freshness read: when was the gate runner's own source last
+ * COMMITTED in `root`? Pairs with {@link describeRunnerCodeFreshness}, which stays pure and takes
+ * this as an argument.
+ *
+ * `%ct` (committer date, epoch SECONDS) is the right instant, not author date: git-sync commits a
+ * swept tree, so author time can predate the commit that actually put the code where the runner
+ * would have loaded it. Scaled to ms so it compares directly against `runnerBootedAtMs`.
+ *
+ * Best-effort, exactly like {@link readInFlightRetriage}: ANY failure — no git, untracked file,
+ * unreadable root — answers `null`, which drives the verdict to `unknown` rather than to a false
+ * `fresh`. Never throws into a caller whose real job is something else.
+ */
+export async function readRunnerCodeCommittedAtMs(
+  root?: string | null,
+  readCommitTime?: GitCommitTimeReader,
+): Promise<number | null> {
+  try {
+    let repo = root ?? null;
+    if (!repo) {
+      const { integrationRoot } = await import('../release-deploy-launch');
+      repo = integrationRoot();
+    }
+    if (!repo) return null;
+    let raw: string | null;
+    if (readCommitTime) {
+      raw = readCommitTime(repo, GATE_RUNNER_SOURCE_PATH);
+    } else {
+      const { spawnSync } = await import('node:child_process');
+      const out = spawnSync(
+        'git',
+        ['-C', repo, 'log', '-1', '--format=%ct', '--', GATE_RUNNER_SOURCE_PATH],
+        { encoding: 'utf8', timeout: 5_000 },
+      );
+      raw = out.status === 0 ? String(out.stdout ?? '') : null;
+    }
+    const sec = Number(String(raw ?? '').trim());
+    return Number.isFinite(sec) && sec > 0 ? sec * 1000 : null;
+  } catch {
+    return null;
+  }
+}

@@ -17,6 +17,8 @@ import {
   parseInFlightRetriage,
   IN_FLIGHT_RETRIAGE_MAX_AGE_MS,
   describeRunnerCodeFreshness,
+  readRunnerCodeCommittedAtMs,
+  GATE_RUNNER_SOURCE_PATH,
   RUNNER_PROCESS_BOOTED_AT_MS,
 } from './in-flight-retriage';
 
@@ -248,5 +250,62 @@ describe('describeRunnerCodeFreshness — is this verdict even capable of reflec
     expect(parsedLegacy).not.toBeNull();
     expect(parsedLegacy?.runnerBootedAtMs).toBeUndefined();
     expect(describeRunnerCodeFreshness(parsedLegacy, Date.now()).verdict).toBe('unknown');
+  });
+});
+
+/**
+ * EI-20265492291034092 — the IMPURE half. `describeRunnerCodeFreshness` is only as good as the
+ * commit instant handed to it, and every failure mode of THAT read has to land on `null` (=>
+ * verdict 'unknown'), never on a number that reads as a positive freshness claim.
+ */
+describe('readRunnerCodeCommittedAtMs — every failed read must answer null, never a plausible number', () => {
+  const SEC = 1_786_540_000;
+
+  it('scales git %ct (epoch SECONDS) to ms — the unit describeRunnerCodeFreshness compares against', async () => {
+    const got = await readRunnerCodeCommittedAtMs('/repo', () => `${SEC}\n`);
+    expect(got).toBe(SEC * 1000);
+    // Calibration: the scaled value is directly comparable to a boot instant in ms. Without the
+    // ×1000 this reads as 1970 and EVERY run would look 'fresh' — the exact false-positive the
+    // verdict exists to prevent.
+    expect(describeRunnerCodeFreshness({ runnerBootedAtMs: SEC * 1000 - 60_000 }, got).verdict).toBe('stale');
+  });
+
+  it('asks git for the RUNNER file specifically, in the root it was given', async () => {
+    const seen: { root: string; rel: string }[] = [];
+    await readRunnerCodeCommittedAtMs('/some/root', (root, rel) => {
+      seen.push({ root, rel });
+      return `${SEC}`;
+    });
+    expect(seen).toEqual([{ root: '/some/root', rel: GATE_RUNNER_SOURCE_PATH }]);
+    expect(GATE_RUNNER_SOURCE_PATH).toBe('apps/operator/lib/release/green-checkpoint.ts');
+  });
+
+  it.each([
+    ['read failed', null],
+    ['untracked / no commits (empty stdout)', ''],
+    ['whitespace only', '  \n'],
+    ['not a number', 'fatal: not a git repository'],
+    ['zero', '0'],
+    ['negative', '-5'],
+  ])('answers null on %s — which drives the verdict to unknown, not fresh', async (_label, stdout) => {
+    const got = await readRunnerCodeCommittedAtMs('/repo', () => stdout as string | null);
+    expect(got).toBeNull();
+    expect(describeRunnerCodeFreshness({ runnerBootedAtMs: Date.now() }, got).verdict).toBe('unknown');
+  });
+
+  it('never throws into its caller — a reader that explodes answers null', async () => {
+    await expect(
+      readRunnerCodeCommittedAtMs('/repo', () => {
+        throw new Error('git missing');
+      }),
+    ).resolves.toBeNull();
+  });
+
+  it('⭐ CONTROL — a reader wrong by the SECONDS/MS factor is CAUGHT, so these tests can fail', async () => {
+    // Permanent mutant: the same reading without the scale. If this ever stops reading 'fresh',
+    // the assertions above have stopped measuring the unit at all.
+    const unscaled = SEC;
+    expect(describeRunnerCodeFreshness({ runnerBootedAtMs: SEC * 1000 - 60_000 }, unscaled).verdict).toBe('fresh');
+    expect(unscaled).not.toBe(await readRunnerCodeCommittedAtMs('/repo', () => `${SEC}`));
   });
 });
