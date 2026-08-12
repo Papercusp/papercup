@@ -31,7 +31,12 @@ import { z } from 'zod';
 import { existsSync, readdirSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { detectPapercupRoot } from '../../harness/register-papercusp';
-import { assumptionsArg, resolveDeclaredAssumptions, TERMINAL_CLOSE_RECOVERY_HINT } from './_assumptions';
+import {
+  assumptionsArg,
+  ASSUMPTIONS_REQUIRED_MESSAGE,
+  resolveDeclaredAssumptions,
+  TERMINAL_CLOSE_RECOVERY_HINT,
+} from './_assumptions';
 import { nonAssumptionKindAdvisory } from '../../agent-facts/assumptions';
 import type { StoredAssumptionDeclaration } from '../../coord-lifecycle/records';
 import { defineTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
@@ -202,15 +207,14 @@ const itemSpec = z.object({
    */
   outputPayload: z.unknown().optional(),
   /**
-   * P-017 (b) gate #2 / D-016 / D-050 — REQUIRED on every item.
+   * P-017 (b) gate #2 / D-016 / D-050 — REQUIRED for close-intent items.
    *
-   * Unconditional here, unlike work_items:set_state (where only the TERMINAL branch
-   * carries it): this tool ALWAYS writes the terminal completion record
-   * (terminal_owner + terminalCompletionRef — which is why reopening one later needs
-   * `force:true`), even on a call that deliberately omits `state` and so does not
-   * flip lifecycle. The commitment is the completion record, not the state change.
+   * A record-only completion deliberately omits `state` and only records/emits a
+   * progress note (D-004), so it is not a terminal commitment and must remain callable
+   * without an assumption declaration. The handler enforces the required declaration
+   * once it knows the effective state, including the issue-family status inference.
    */
-  assumptions: assumptionsArg,
+  assumptions: assumptionsArg.optional(),
 });
 
 type CompleteItem = z.infer<typeof itemSpec>;
@@ -997,6 +1001,15 @@ async function completeOne(
       : undefined;
   const effectiveState = it.state ?? inferredCloseState;
 
+  // D-050 applies to the commitment made by a terminal close, not to D-004's
+  // record-only progress note. Keep this check at handler time because the close
+  // intent can be inferred from completion.status after the schema has parsed.
+  const closeIntentRequested =
+    Boolean(effectiveState) && CLOSE_INTENT_STATES.has(String(effectiveState).trim().toLowerCase());
+  if (closeIntentRequested && it.assumptions === undefined) {
+    return { ok: false, id: it.id, error: ASSUMPTIONS_REQUIRED_MESSAGE };
+  }
+
   // EI-20245220770262027: assigneeMismatchWarning used to be advisory even when this call
   // requested a terminal transition. That let a wrong-id completion apply the state and clear
   // the live assignee's claim. Refuse the close before the completion record is persisted; the
@@ -1062,8 +1075,6 @@ async function completeOne(
   // still built + returned below (EI-24: the narrative is never lost), it just
   // cannot land the CLOSE. This is a deliberate, narrow exception to this file's
   // usual record-and-warn discipline — see isBackedLiveDroveUiClaim's doc comment.
-  const closeIntentRequested =
-    Boolean(effectiveState) && CLOSE_INTENT_STATES.has(String(effectiveState).trim().toLowerCase());
   const completionEvidenceForGate = completionEvidenceFromRecord(it.completion);
   // A structured duplicate close is an administrative disposition: its claim is that
   // this item is superseded by the named survivor, not that the verifier covered every
@@ -1167,19 +1178,21 @@ async function completeOne(
   // write-up. `set_state` has no narrative to lose, so it throws.
   let resolvedAssumptions: StoredAssumptionDeclaration | undefined;
   let assumptionsError: string | undefined;
-  try {
-    resolvedAssumptions = await resolveDeclaredAssumptions({
-      declared: it.assumptions,
-      workItemId: it.id,
-      ownerId: ident.ownerId,
-      // EI-18806393166489384: `it.harness` is the caller's OPTIONAL arg, so a
-      // close that did not redundantly name the harness resolved no harness
-      // scope at all. The resolver now derives it when absent, but pass the row
-      // we already fetched above so the common path costs no extra read.
-      harnessSlug: it.harness ?? existing.harness,
-    });
-  } catch (e) {
-    assumptionsError = e instanceof Error ? e.message : String(e);
+  if (it.assumptions !== undefined) {
+    try {
+      resolvedAssumptions = await resolveDeclaredAssumptions({
+        declared: it.assumptions,
+        workItemId: it.id,
+        ownerId: ident.ownerId,
+        // EI-18806393166489384: `it.harness` is the caller's OPTIONAL arg, so a
+        // close that did not redundantly name the harness resolved no harness
+        // scope at all. The resolver now derives it when absent, but pass the row
+        // we already fetched above so the common path costs no extra read.
+        harnessSlug: it.harness ?? existing.harness,
+      });
+    } catch (e) {
+      assumptionsError = e instanceof Error ? e.message : String(e);
+    }
   }
   // EI-19298742806956600: WARN-ONLY — a cited key that resolves fine but was never
   // asserted as an assumption (kind:'assumption' or legacy confidence:'suspected').
@@ -1779,10 +1792,10 @@ export default defineTool({
             completion: completionSpec.optional(),
             /** Optional kind-specific structured output (single-complete shorthand). */
             outputPayload: z.unknown().optional(),
-            /** REQUIRED for the single-item form; bulk calls use per-item declarations. */
-            assumptions: assumptionsArg.describe(
-              'REQUIRED for a single-item terminal close: pass "none" or an array of facts:assert keys.',
-            ),
+            /** Required only when this single item requests a terminal close. */
+            assumptions: assumptionsArg
+              .optional()
+              .describe('Required for a terminal close; omit for record-only completions. Pass "none" or fact keys.'),
             // Keep the union's handler type uniform while ensuring a bulk payload
             // cannot accidentally parse through this branch and have `items` stripped.
             items: z.never().optional(),
@@ -1807,7 +1820,9 @@ export default defineTool({
             /** Optional single-item fields are retained for backwards-compatible bulk envelopes. */
             completion: completionSpec.optional(),
             outputPayload: z.unknown().optional(),
-            assumptions: assumptionsArg.optional().describe('ignored for items[]; pass assumptions on every item'),
+            assumptions: assumptionsArg
+              .optional()
+              .describe('Required for a terminal close; omit for record-only completions. Pass "none" or fact keys.'),
             items: z
               .array(itemSpec)
               .min(1)
@@ -1856,11 +1871,7 @@ export default defineTool({
             state: args.state,
             completion: args.completion!,
             outputPayload: args.outputPayload,
-            // P-017 (b) gate #2: the refine above guarantees this is present on the
-            // shorthand axis, so the assertion is safe — but it must be threaded HERE or
-            // the declaration the gate just forced would be collected and then dropped on
-            // the floor for every single-complete call.
-            assumptions: args.assumptions!,
+            assumptions: args.assumptions,
           },
         ];
     const env = await runBulk(list, (it) => completeOne(it, ident, ctx), { keyOf: (it) => ({ id: it.id }) });

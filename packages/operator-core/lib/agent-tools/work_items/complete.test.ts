@@ -89,13 +89,12 @@ describe('work_items:complete — prompt budget (EI-20189722405308981)', () => {
 });
 
 /**
- * P-017 (b) gate #2 / D-050: `assumptions` is now REQUIRED on every commitment-class
- * call. These ~100 tests are about completion semantics, not about the new gate, so the
- * helper supplies the field exactly as a real caller must — keeping each test testing
- * what it was written to test. A test that passes only because the helper filled a
- * required field is fine; a GATE that passes only because of that would not be, so the
- * gate has its own dedicated raw-schema tests at the bottom of this file which never
- * go through this helper.
+ * P-017 (b) gate #2 / D-050: `assumptions` is REQUIRED for terminal close intent, but
+ * not for D-004 record-only completions. These ~100 tests are about completion semantics,
+ * not about the gate, so the helper supplies the field exactly as a real caller must for
+ * close-shaped cases — keeping each test testing what it was written to test. The
+ * conditional gate has dedicated raw-schema and handler tests which never go through
+ * this helper.
  */
 const withAssumptions = (x: unknown): unknown => {
   if (typeof x !== 'object' || x === null) return x;
@@ -121,6 +120,12 @@ const env = async (x: unknown) => {
 };
 /** The single (n=1) result item — the dual-arity verb wraps it in the bulk envelope. */
 const one = async (x: unknown) => (await env(x)).results[0];
+const parseRaw = (x: unknown) => (complete.args as { parse: (x: unknown) => unknown }).parse(x);
+const envRaw = async (x: unknown) => {
+  const res = (await complete.handler(parseRaw(x) as never, ctx)) as Out;
+  return res.data;
+};
+const oneRaw = async (x: unknown) => (await envRaw(x)).results[0];
 
 const item = { id: 'F-12', kind: 'feature', family: 'feature', state: 'in_progress', harness: 'papercup' };
 
@@ -2547,7 +2552,41 @@ describe('work_items:complete input coercion (EI-7031)', () => {
     });
   });
 
-  describe('published JSON schema (tools/list projection) is unchanged by the preprocess wrappers', () => {
+  describe('conditional assumptions gate (D-004 record-only vs terminal close)', () => {
+    const openIssue = { ...item, id: 'WI-1', family: 'issue', state: 'open' };
+
+    it('accepts a direct record-only completion without assumptions', async () => {
+      getWorkItem.mockResolvedValue(openIssue);
+
+      const r = await oneRaw({ id: 'WI-1', completion: { summary: 'progress note' } });
+
+      expect(r.ok).toBe(true);
+      expect(r.error).toBeUndefined();
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
+    it('rejects a direct terminal close without assumptions before writing state', async () => {
+      getWorkItem.mockResolvedValue(openIssue);
+
+      const r = await oneRaw({ id: 'WI-1', state: 'resolved', completion: { summary: 'closed' } });
+
+      expect(r.ok).toBe(false);
+      expect(r.error).toContain('a terminal close requires `assumptions`');
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
+    it('applies the same gate to an inferred issue terminal close', async () => {
+      getWorkItem.mockResolvedValue(openIssue);
+
+      const r = await oneRaw({ id: 'WI-1', completion: { summary: 'closed', status: 'resolved' } });
+
+      expect(r.ok).toBe(false);
+      expect(r.error).toContain('a terminal close requires `assumptions`');
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('published JSON schema (tools/list projection) preserves conditional assumptions', () => {
     it('still advertises id / completion / items in both single and bulk object branches', () => {
       const json = z.toJSONSchema(complete.args as never) as {
         anyOf?: Array<{ properties?: Record<string, unknown> }>;
@@ -2562,39 +2601,55 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       }
     });
 
-    it('surfaces the required assumptions declaration in the published schema (EI-20191275803505578)', () => {
+    it('documents that assumptions are required only for terminal closes', () => {
       const json = z.toJSONSchema(complete.args as never) as {
         anyOf?: Array<{ required?: string[]; properties?: Record<string, { description?: string }> }>;
         oneOf?: Array<{ required?: string[]; properties?: Record<string, { description?: string }> }>;
       };
       const branches = json.anyOf ?? json.oneOf ?? [];
-      const single = branches.find((branch) => branch.required?.includes('assumptions'));
-      const description = single?.properties?.assumptions?.description ?? '';
-      expect(description).toContain('REQUIRED');
-      expect(description).toContain('"none"');
-      expect(description).toContain('facts:assert keys');
+      const descriptions = branches.map((branch) => branch.properties?.assumptions?.description ?? '').join('\n');
+      expect(descriptions).toContain('terminal close');
+      expect(descriptions).toContain('record-only');
     });
 
-    it('structurally requires assumptions for a single item while retaining per-item bulk declarations (EI-20224758239853458)', () => {
+    it('accepts record-only single and bulk calls while retaining per-item close declarations', () => {
       const json = z.toJSONSchema(complete.args as never) as {
         anyOf?: Array<{ required?: string[]; properties?: Record<string, unknown> }>;
         oneOf?: Array<{ required?: string[]; properties?: Record<string, unknown> }>;
       };
       const branches = json.anyOf ?? json.oneOf ?? [];
-      const single = branches.find((branch) => branch.required?.includes('assumptions'));
-      const bulk = branches.find((branch) => branch.required?.includes('items'));
+      // The single branch retains an optional `items: never` discriminator so
+      // the handler can keep a uniform parsed type. Distinguish it from the
+      // bulk branch by the array shape, not by property presence.
+      const isBulkBranch = (branch: (typeof branches)[number]) =>
+        (branch.properties?.items as { type?: unknown } | undefined)?.type === 'array';
+      const single = branches.find((branch) => !isBulkBranch(branch));
+      const bulk = branches.find(isBulkBranch);
 
       expect(branches).toHaveLength(2);
-      expect(single?.required).toContain('assumptions');
+      expect(single?.required ?? []).not.toContain('assumptions');
       expect(single?.properties).toHaveProperty('completion');
       expect(bulk?.required).toContain('items');
 
-      const missingAssumptions = (complete.args as { safeParse: (x: unknown) => { success: boolean } }).safeParse({
+      const recordOnly = (complete.args as { safeParse: (x: unknown) => { success: boolean } }).safeParse({
+        id: 'WI-1',
+        completion: { summary: 'progress note' },
+      });
+      expect(recordOnly.success).toBe(true);
+
+      // Presence is conditional on lifecycle intent, so the handler (not zod) owns
+      // the terminal-close refusal after status inference and top-level state fallback.
+      const terminalWithoutAssumptions = (complete.args as { safeParse: (x: unknown) => { success: boolean } }).safeParse({
         id: 'WI-1',
         state: 'resolved',
         completion: { summary: 'fixed' },
       });
-      expect(missingAssumptions.success).toBe(false);
+      expect(terminalWithoutAssumptions.success).toBe(true);
+
+      const bulkRecordOnly = (complete.args as { safeParse: (x: unknown) => { success: boolean } }).safeParse({
+        items: [{ id: 'WI-1', completion: { summary: 'progress note' } }],
+      });
+      expect(bulkRecordOnly.success).toBe(true);
 
       const bulkWithPerItemAssumptions = (
         complete.args as { safeParse: (x: unknown) => { success: boolean } }
