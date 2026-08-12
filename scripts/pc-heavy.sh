@@ -137,6 +137,12 @@
 # design and must not abort the script.
 set -uo pipefail
 
+# Bash parses a function body in full before executing it. Keep the wrapper's
+# dispatch path in one body so a git-sync rewrite cannot change the bytes bash
+# reads between two top-level commands during a long-running invocation
+# (EI-20227475180704442).
+main() {
+
 # Strip an optional leading `--` separating flags from the command.
 if [ "${1:-}" = "--" ]; then shift; fi
 if [ "$#" -eq 0 ]; then
@@ -991,3 +997,6 @@ fi
 
 "${_runner[@]}" "$@"
 exit $?
+}
+
+main "$@"

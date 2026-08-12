@@ -274,6 +274,43 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     expect(r.status).toBe(2);
   });
 
+  it('EI-20227475180704442: snapshots the wrapper before a rewrite can corrupt bash parsing', async () => {
+    // A top-level sleep gives the test a causal window: the old script executes
+    // the sleep before parsing the rest of the file, while the function-wrapped
+    // script must parse the complete body before the marker can be printed.
+    const fixture = join(dir, 'pc-heavy-rewrite.sh');
+    const marker = '[pc-heavy-test] parser window';
+    const source = readFileSync(PC_HEAVY, 'utf8');
+    writeFileSync(
+      fixture,
+      source.replace('set -uo pipefail\n', `set -uo pipefail\nprintf '%s\\n' '${marker}' >&2\nsleep 0.4\n`),
+      { mode: 0o755 },
+    );
+
+    const child = spawn('bash', [fixture, 'bash', '-c', 'printf stable'], {
+      env: baseEnv({ PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE: '0' }),
+      cwd: dir,
+    });
+    const stdout = createTextCollector(child.stdout);
+    const stderr = createTextCollector(child.stderr);
+    const exited = new Promise<number | null>((resolve) => child.on('exit', (code) => resolve(code)));
+
+    try {
+      await untilStderr(child, stderr, (text) => text.includes(marker), 'parser-window marker', 10_000);
+      // This is deliberately invalid shell. If bash is still reading the file
+      // after the marker, the old incremental parser sees it and exits 2. A
+      // function body has already been parsed in full, so the running process
+      // remains unaffected by this rewrite.
+      writeFileSync(fixture, `${readFileSync(fixture, 'utf8')}\n"`);
+
+      expect(await exited).toBe(0);
+      expect(stdout.text().trim()).toBe('stable');
+      expect(stderr.text()).not.toMatch(/unexpected EOF|syntax error/i);
+    } finally {
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
+    }
+  }, 20_000);
+
   it('caps concurrency at PC_HEAVY_SLOTS (2 slots, 4 jobs → max 2 simultaneous)', async () => {
     const jobs = 4;
     const slots = 2;
