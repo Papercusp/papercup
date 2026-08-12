@@ -46,7 +46,8 @@
  *
  * ── USAGE ─────────────────────────────────────────────────────────────────────
  *   node scripts/check-ungated-mug-kettle.mjs              # the guard (exit 1 = new ungated door)
- *   node scripts/check-ungated-mug-kettle.mjs --list       # measured population (re-seed the baseline from THIS, never a hand grep)
+ *   node scripts/check-ungated-mug-kettle.mjs --list       # read-only measured population
+ *   node scripts/check-ungated-mug-kettle.mjs --reseed --reason "..."  # atomically write a reviewed population
  *   node scripts/check-ungated-mug-kettle.mjs --json
  *   node scripts/check-ungated-mug-kettle.mjs --check-file <path>   # ONE file — the falsifiability seam
  *   node scripts/check-ungated-mug-kettle.mjs --check-file <path> --full   # …incl. census families
@@ -65,6 +66,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { randomUUID } from 'node:crypto';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 // This file's --list/--json output is emitted at ESM TOP LEVEL, where `return` is not
@@ -74,6 +76,7 @@ import { fileURLToPath } from 'node:url';
 // silently shrink it. See scripts/check-undrained-stdout-exit.mjs.
 import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
 import { writeStdoutSync } from './lib/write-stdout-sync.mjs';
+import { buildBaselineDocument, evaluateBaselineReseed } from './lib/mug-kettle-baseline.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const BASELINE_PATH = path.join(REPO_ROOT, 'scripts', 'ungated-mug-kettle-baseline.json');
