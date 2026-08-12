@@ -23,6 +23,47 @@ import { listBeeRuns, summarizeBeeRuns, applyHealthyLoopExemption } from '../../
 import { getLoopStatuses } from '../../harness/routines/loop';
 import { deriveLoopMonitorState } from '../fleet/assignments';
 
+/**
+ * A busy fleet can have dozens of live runs. Keep the default agent-facing
+ * view parseable and useful, while preserving the complete read for callers
+ * that explicitly request payloadTier:'full' (or narrow with { harness/cup }).
+ * The result door is a transport guard, not a safe place to discover that a
+ * hand-built JSON body was cut in the middle of an array.
+ */
+export const RUNNING_PAYLOAD_TIER_CEILING_CHARS = 12_000;
+const RUNNING_TIER_CAPS = { trimmed: 12, standard: 24 } as const;
+
+const clipRunningText = (value: unknown, max: number): string | null =>
+  typeof value === 'string' ? (value.length > max ? `${value.slice(0, max - 1)}…` : value) : null;
+
+export function shapeSchedulerRunning(data: unknown, tier: keyof typeof RUNNING_TIER_CAPS): unknown {
+  if (!data || typeof data !== 'object') return data;
+  const source = data as { ok?: unknown; summary?: unknown; runs?: unknown };
+  if (!Array.isArray(source.runs)) return data;
+
+  const cap = RUNNING_TIER_CAPS[tier];
+  const runs = source.runs.slice(0, cap).map((value) => {
+    if (!value || typeof value !== 'object') return value;
+    const run = { ...(value as Record<string, unknown>) };
+    if ('title' in run) run.title = clipRunningText(run.title, 240);
+    if ('idleReason' in run) run.idleReason = clipRunningText(run.idleReason, 180);
+    return run;
+  });
+
+  return {
+    ok: source.ok ?? true,
+    summary: source.summary ?? null,
+    runs,
+    ...(source.runs.length > cap
+      ? {
+          runsTruncated: true,
+          runsReturned: runs.length,
+          runsHint: `showing ${runs.length} of ${source.runs.length} live runs — narrow with { harness }/{ cup }, or request payloadTier:'full'`,
+        }
+      : {}),
+  };
+}
+
 export default defineTool({
   name: 'scheduler:running',
   profile: 'engineer',
@@ -41,6 +82,16 @@ export default defineTool({
     ],
   },
   capability: 'work_items:read',
+  // scheduler:running is model-facing, but its default view is deliberately
+  // shaped below a finite ceiling. Skip the generic result door so an explicit
+  // full-tier read is still a complete JSON envelope rather than a prefix plus
+  // a truncation footer (the model can follow runsHint or narrow the query).
+  skipResultDoor: 'oversize-by-design',
+  payloadTierCeilingChars: RUNNING_PAYLOAD_TIER_CEILING_CHARS,
+  shape: {
+    standard: (data) => shapeSchedulerRunning(data, 'standard'),
+    trimmed: (data) => shapeSchedulerRunning(data, 'trimmed'),
+  },
   requirePrincipal: false,
   agentRoles: [...COORD_ROLES],
   args: z.object({
@@ -67,7 +118,14 @@ export default defineTool({
     // already applies (decorateLoopMonitorStates) — a batch-claiming bee whose engine loop
     // is actively monitored is not "abandoned" just because it hasn't checkpointed every
     // held item. Presentation-layer only; the underlying `stalled` SQL truth is untouched.
-    const stalledBees = [...new Set(runs0.filter((r) => r.activity === 'stalled').map((r) => r.bee).filter(Boolean))];
+    const stalledBees = [
+      ...new Set(
+        runs0
+          .filter((r) => r.activity === 'stalled')
+          .map((r) => r.bee)
+          .filter(Boolean),
+      ),
+    ];
     let runs = runs0;
     if (stalledBees.length > 0) {
       const loopStatuses = await getLoopStatuses(stalledBees);
@@ -77,9 +135,11 @@ export default defineTool({
       if (hasHealthyMonitor.size > 0) runs = applyHealthyLoopExemption(runs0, hasHealthyMonitor);
     }
     return {
-      content: [
-        { type: 'text' as const, text: JSON.stringify({ ok: true, summary: summarizeBeeRuns(runs), runs: runs.map(({ bee, ...rest }) => ({ cup: bee, ...rest })) }) },
-      ],
+      data: {
+        ok: true,
+        summary: summarizeBeeRuns(runs),
+        runs: runs.map(({ bee, ...rest }) => ({ cup: bee, ...rest })),
+      },
     };
   },
 });

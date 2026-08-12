@@ -32,6 +32,7 @@ vi.mock('../../harness/routines/loop', () => ({ getLoopStatuses: vi.fn() }));
 import { listFleetAssignments, type FleetAssignmentRow } from '../../fleet/assignments';
 import { getClaimSpecHeadsForBees } from '../../scheduler/claim-spec-store';
 import { getLoopStatuses, type LoopStatus } from '../../harness/routines/loop';
+import { RUNNING_PAYLOAD_TIER_CEILING_CHARS, shapeSchedulerRunning } from './running';
 
 const mockList = vi.mocked(listFleetAssignments);
 const mockSpecs = vi.mocked(getClaimSpecHeadsForBees);
@@ -59,9 +60,9 @@ function healthyLoop(over: Partial<LoopStatus> = {}): LoopStatus {
   } as unknown as LoopStatus;
 }
 
-type Out = { content: { text: string }[]; isError?: boolean };
+type Out = { content?: { text: string }[]; data?: unknown; isError?: boolean };
 const body = (o: Out) =>
-  JSON.parse(o.content[0]!.text) as {
+  (o.data ?? JSON.parse(o.content?.[0]?.text ?? '{}')) as {
     ok: boolean;
     summary: { total: number; progressing: number; idle: number; stalled: number; dead: number };
     runs: Array<Record<string, unknown>>;
@@ -102,6 +103,28 @@ beforeEach(() => {
 });
 
 describe('scheduler:running handler — the live-execution view', () => {
+  it('bounds the default payload before the result door can cut JSON', () => {
+    const toolDef = tool as unknown as {
+      skipResultDoor?: string;
+      payloadTierCeilingChars?: number;
+    };
+    expect(toolDef.skipResultDoor).toBe('oversize-by-design');
+    expect(toolDef.payloadTierCeilingChars).toBe(RUNNING_PAYLOAD_TIER_CEILING_CHARS);
+
+    const shaped = shapeSchedulerRunning(
+      {
+        ok: true,
+        summary: { total: 13 },
+        runs: Array.from({ length: 13 }, (_, i) => ({ cup: `su-${i}`, title: 'x'.repeat(300) })),
+      },
+      'trimmed',
+    ) as { runs: Array<Record<string, unknown>>; runsTruncated?: boolean; runsHint?: string };
+    expect(shaped.runs).toHaveLength(12);
+    expect(shaped.runsTruncated).toBe(true);
+    expect(shaped.runsHint).toContain('13 live runs');
+    expect(String(shaped.runs[0]!.title)).toHaveLength(240);
+  });
+
   it('surfaces a seeded running cup: current item + spec specId@revision + progress + lease/heartbeat + idle reason', async () => {
     // A bee mid-run, no item-scoped progress yet (grace window) → an idle/blocked reason, under
     // a Queen-authored spec at revision 7.
@@ -130,9 +153,7 @@ describe('scheduler:running handler — the live-execution view', () => {
     expect(summary).toMatchObject({ total: 1, progressing: 0, idle: 1 });
 
     // read off the LIVE state, workspace-scoped — not a separate store
-    expect(mockList).toHaveBeenCalledWith(
-      expect.objectContaining({ workspaceId: 'ws-1', activeOnly: true }),
-    );
+    expect(mockList).toHaveBeenCalledWith(expect.objectContaining({ workspaceId: 'ws-1', activeOnly: true }));
     expect(mockSpecs).toHaveBeenCalledWith(['su-bee'], 'ws-1');
   });
 
