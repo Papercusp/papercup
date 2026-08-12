@@ -27,10 +27,8 @@ import {
 import { CLAIM_STATES_ALLOWLIST } from '../../work-items';
 import { getBuildInfo } from '../../build-info';
 import { assessClaimFreshness, type ClaimFreshnessVerdict } from '../../work-item-claim-freshness';
-import { holderContextReader, resolveHolderAdvisoryMap } from '../coordination/holder-advisory';
 import { getSessionBrief } from '../../session-brief';
 import { resolveConcreteHarnessSlug } from '../_harness-scope';
-import type { CellReader } from '../../cell-registry';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { cancelClaimableAwaits } from '../../events/await/store';
 import { withBoundedTimeout } from '../../bounded-timeout';
@@ -345,9 +343,6 @@ async function buildMissDiagnosis(args: {
   harness: string;
   states?: string[];
   rigAvailable?: boolean;
-  /** P-027: the MISSING caller's reader, for the already-taken floor's holder
-   *  advisory. Null (or an unattributable caller) simply omits the advisory. */
-  reader?: CellReader | null;
 }): Promise<{ error: string; diagnosis?: unknown; floors?: unknown }> {
   const STATIC = 'no claimable work-item matched your spec within the floors';
   try {
@@ -432,31 +427,14 @@ async function buildMissDiagnosis(args: {
         rigAvailable: args.rigAvailable,
       });
       const refused = attributed.filter((a) => !a.admissible);
-      // P-027 / D-055 A2 — the `already-taken` floor is the one refusal in this
-      // list caused by ANOTHER AGENT rather than by the row itself, so it is the
-      // only one where "should I wait for them?" is a real question. Decorate
-      // exactly those rows with the holder's goal; every other floor is untouched.
-      //
-      // ⚠ ADVISORY, AND AFTER THE FACT. `attributed`/`refused` are already decided
-      // — nothing here can make a floored id admissible. Resolution is total and
-      // one-per-DISTINCT-holder, so a leader's spec naming twenty ids held by one
-      // peer costs one resolution, and a dead store costs only the advisory.
-      const takenRows = attributed.filter((a) => a.refusedBy === 'already-taken' && a.heldBy);
-      if (takenRows.length > 0 && args.reader) {
-        const advisory = await resolveHolderAdvisoryMap(
-          takenRows.map((a) => a.heldBy),
-          args.reader,
-        );
-        floors = attributed.map((a) => {
-          if (a.refusedBy !== 'already-taken' || !a.heldBy) return a;
-          // D-094: subtract THIS id, so a holder is never reported as also
-          // competing on the very row whose refusal is being explained.
-          const holderContext = advisory.forRow(a.heldBy, a.id);
-          return holderContext ? { ...a, holderContext } : a;
-        });
-      } else {
-        floors = attributed;
-      }
+      // EI-20268301668126253: keep scheduler miss diagnostics data-plane-only.
+      // The already-decided floor rows are sufficient to explain the miss. The
+      // optional holder annotation fans out through holder-goal reads and
+      // agent_facts folds, so running it from this hot self-select surface can
+      // amplify the same shared-pool contention that caused the miss. Other
+      // friction surfaces retain the shared holder advisory; scheduler:get_next
+      // deliberately omits this non-authoritative decoration.
+      floors = attributed;
       if (refused.length === ids.length) {
         // The whole tranche is floored — the leader's spec is the thing that needs fixing, and
         // saying so plainly is the entire point of this diagnosis.
@@ -1293,9 +1271,6 @@ export default defineTool({
               harness: args.harness,
               states: args.states,
               rigAvailable: args.rigAvailable,
-              // P-027: guarded — an unattributable caller gets no advisory rather
-              // than a failed miss-diagnosis.
-              reader: holderContextReader(ctx as Parameters<typeof holderContextReader>[0]),
             }),
             {
               fallback: {

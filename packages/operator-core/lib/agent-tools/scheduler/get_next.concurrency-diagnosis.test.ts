@@ -27,6 +27,7 @@ const getClaimSpecRecordM = vi.hoisted(() => vi.fn());
 // internals are refactored further.
 const readClaimConcurrencyM = vi.hoisted(() => vi.fn());
 const getNextForBeeM = vi.hoisted(() => vi.fn());
+const resolveHolderAdvisoryMapM = vi.hoisted(() => vi.fn());
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-member', workspaceId: 'ws-1' }),
@@ -60,6 +61,14 @@ vi.mock('../../work-items', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   diagnoseClaimNextMiss: diagnoseM,
   explainIssueClaimFloors: explainFloorsM,
+}));
+// EI-20268301668126253: scheduler miss diagnosis must not fan out into holder
+// goal/agent_facts reads. Keep a mock at the boundary so a future reintroduction
+// of this optional decoration fails this focused regression instead of silently
+// restoring the contention amplifier.
+vi.mock('../coordination/holder-advisory', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  resolveHolderAdvisoryMap: resolveHolderAdvisoryMapM,
 }));
 
 import getNextTool from './get_next';
@@ -181,6 +190,34 @@ describe('scheduler:get_next miss diagnosis is concurrency-aware (EI-12095)', ()
     expect(b.error).toMatch(/the backlog is NOT drained: 26 unclaimed/);
     expect(b.diagnosis).toMatchObject({ drained: false, pendingUnclaimed: 26, readyUnclaimed: 26 });
     expect(diagnoseM).toHaveBeenCalledOnce();
+  });
+
+  it('does not fan out holder advisories while explaining an already-taken floor', async () => {
+    getClaimSpecRecordM.mockResolvedValue({
+      source: 'cup',
+      spec: {
+        specId: 'x',
+        revision: 1,
+        limits: { maxConcurrentClaims: 1 },
+        view: { filter: { all: [{ field: 'id', op: 'in', value: ['EI-held'] }] } },
+      },
+      revision: 1,
+      updatedBy: null,
+      updatedAt: null,
+    });
+    readClaimConcurrencyM.mockResolvedValue(
+      evaluateClaimConcurrency({ activeClaims: [], maxConcurrentClaims: 1 }),
+    );
+    explainFloorsM.mockResolvedValue([
+      { id: 'EI-held', admissible: false, refusedBy: 'already-taken', heldBy: 'su-holder' },
+    ]);
+
+    const b = await callMiss();
+
+    expect(b.floors).toEqual([
+      { id: 'EI-held', admissible: false, refusedBy: 'already-taken', heldBy: 'su-holder' },
+    ]);
+    expect(resolveHolderAdvisoryMapM).not.toHaveBeenCalled();
   });
 
   it('defaults maxConcurrentClaims to 1 when the spec omits `limits` (matches getNextForBee)', async () => {
