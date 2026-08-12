@@ -60,6 +60,14 @@ export const AUTO_CLOSE_ELIGIBLE_SOURCES: ReadonlySet<string> = new Set([
   // progresses (or is freed/reclaimed) the stalled signal simply stops, so its
   // absence reliably means resolution.
   'stalled-claim',
+  // WI-38327: collectBridgeNeedsOwnerSignals re-derives its whole predicate from PG every
+  // tick (the escalation row's needs_owner flag JOINed against the attention_notifications
+  // audit) and caches/latches nothing, so a quiet tick means one of the two genuine
+  // resolutions: the block cleared, or the owner rail now holds a record of it. The second
+  // is permanent — the EXISTS is cause-matched with no time window, so once the alarm
+  // lands it keeps matching for the life of that episode rather than ageing back into a
+  // violation. A THROWING tick is not an absent one: the sweep counts ran-ticks only.
+  'bridge-needs-owner-unalerted',
   // EI-5994: collectLoopStalledSignals filters `r.active = true` — once the dead-owner
   // reaper (loop-unreachable-guard / autoPauseLoopRoutine) deactivates the routine, this
   // signal STOPS firing immediately and unconditionally (not just recency-gated), so its
