@@ -16,6 +16,7 @@ import type { ChatActionContext, ChatModeAction, ChatModeOption } from './types'
 
 const fetchSyncQueryMock = vi.fn();
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   fetchSyncQuery: (...args: unknown[]) => fetchSyncQueryMock(...args) as unknown,
 }));
 
