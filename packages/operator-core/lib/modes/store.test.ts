@@ -444,11 +444,14 @@ describe('implication cascade (D-003)', () => {
     expect(rows.find((r) => r.mode === 'auto')!.subject).toBeNull();
   });
 
-  it("carries the implying write's ownerDirected onto implied rows, so a peer cannot clear an owner-directed GOAL's AUTO", async () => {
+  it('does not forge owner-directed provenance on implied rows', async () => {
     await enterGoal({ ownerDirected: true });
-    expect((await getModes(WS, ME, m.sql)).find((r) => r.mode === 'auto')!.ownerDirected).toBe(true);
+    const rows = await getModes(WS, ME, m.sql);
+    expect(rows.find((r) => r.mode === 'goal')!.ownerDirected).toBe(true);
+    expect(rows.find((r) => r.mode === 'auto')!.ownerDirected).toBe(false);
+    expect(rows.find((r) => r.mode === 'ideate')!.ownerDirected).toBe(false);
     const peerClear = await setMode({ workspaceId: WS, ownerId: ME, modeId: 'auto', enabled: false, reason: 'peer clears', setBy: PEER, sql: m.sql });
-    expect(peerClear.stickyConflict).toBe(true);
+    expect(peerClear).toMatchObject({ ok: true, stickyConflict: undefined });
   });
 
   it('a mode with no implications reports none (no empty `implied` noise)', async () => {
@@ -539,12 +542,13 @@ describe('reconcileImpliedModes (WI-37856) — repairs the stored population, no
     expect(by.goal).toBe(ME); // untouched — the reconcile only ever ADDS
   });
 
-  it('inherits owner_directed from the row that implies it, so a peer cannot overwrite what the owner effectively set', async () => {
+  it('does not forge owner-directed provenance when reconciling implied rows', async () => {
     seedPreCascade('goal', { subject: 'g-1', ownerDirected: true });
     await reconcileImpliedModes({ workspaceId: WS, ownerId: ME, sql: m.sql });
     const rows = await getModes(WS, ME, m.sql);
-    expect(rows.find((r) => r.mode === 'auto')?.ownerDirected).toBe(true);
-    expect(rows.find((r) => r.mode === 'ideate')?.ownerDirected).toBe(true);
+    expect(rows.find((r) => r.mode === 'goal')?.ownerDirected).toBe(true);
+    expect(rows.find((r) => r.mode === 'auto')?.ownerDirected).toBe(false);
+    expect(rows.find((r) => r.mode === 'ideate')?.ownerDirected).toBe(false);
   });
 
   it('is idempotent — a second pass writes nothing and audits nothing (safe to call on every bootstrap)', async () => {

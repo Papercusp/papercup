@@ -249,7 +249,6 @@ async function applyImpliedModes(
     modeId: string;
     reason: string;
     setBy: string;
-    ownerDirected: boolean;
   },
 ): Promise<ImpliedModeOutcome[]> {
   const out: ImpliedModeOutcome[] = [];
@@ -272,12 +271,17 @@ async function applyImpliedModes(
     }
     const axisKey = axisKeyFor(def);
     const reason = `implied by '${o.modeId}' — ${o.reason}`;
+    /* An implied row is DERIVED posture, not a second owner instruction. The
+       triggering mode may be owner-directed, but copying that bit would claim
+       the owner explicitly directed every mode in the cascade and would arm
+       the owner-sticky guard on rows the owner never named. */
+    const impliedOwnerDirected = false;
     try {
       const inserted = await sql`
         INSERT INTO harness_shared.agent_modes
           (workspace_id, owner_id, axis_key, mode, reason, set_by, owner_directed, set_at, subject)
         VALUES (${o.workspaceId}, ${o.ownerId}, ${axisKey}, ${def.id}, ${reason},
-                ${o.setBy}, ${o.ownerDirected}, now(), ${null})
+                ${o.setBy}, ${impliedOwnerDirected}, now(), ${null})
         ON CONFLICT (workspace_id, owner_id, axis_key) DO NOTHING
         RETURNING mode`;
       if (inserted.length) {
@@ -286,7 +290,7 @@ async function applyImpliedModes(
         // agent in AUTO" has to answer "the goal cascade", not nothing.
         await audit(sql, {
           workspaceId: o.workspaceId, ownerId: o.ownerId, axisKey,
-          oldMode: null, newMode: def.id, reason, setBy: o.setBy, ownerDirected: o.ownerDirected,
+          oldMode: null, newMode: def.id, reason, setBy: o.setBy, ownerDirected: impliedOwnerDirected,
         });
         out.push({ mode: def.id, status: 'set' });
         continue;
@@ -360,9 +364,10 @@ export const RECONCILE_SET_BY = 'mode-implies-reconcile';
  *     writes nothing and reports `already-on`. Safe on a hot path.
  *   - NEVER DISPLACES. A deliberately-chosen `cold-auto` still satisfies
  *     "implies auto" and is left exactly as it is.
- *   - INHERITS `ownerDirected` from the row that implies it: an implication of
- *     an owner-directed mode is itself owner-directed, and flattening that to
- *     false would let a peer overwrite a posture the owner effectively set.
+ *   - DERIVED rows never inherit `ownerDirected` from the row that implies
+ *     them: an owner-directed GOAL does not mean the owner explicitly named
+ *     AUTO or IDEATE. If an implied posture needs sticky protection, that is a
+ *     separate policy from the provenance bit and must be represented as such.
  *
  * NOT MIRRORED ON EXIT, for the same reason the cascade is not (see above).
  */
@@ -387,7 +392,6 @@ export async function reconcileImpliedModes(o: {
         modeId: row.mode,
         reason: `reconciled: '${row.mode}' was already held when its implications were declared`,
         setBy: o.setBy ?? RECONCILE_SET_BY,
-        ownerDirected: row.ownerDirected,
       })),
     );
   }
@@ -470,7 +474,7 @@ export async function setMode(opts: SetModeOpts): Promise<SetModeResult> {
          would naturally make to fix it would be the one call that does nothing. */
       const implied = await applyImpliedModes(sql, {
         workspaceId: opts.workspaceId, ownerId: opts.ownerId, modeId: def.id,
-        reason: opts.reason, setBy: opts.setBy, ownerDirected,
+        reason: opts.reason, setBy: opts.setBy,
       });
       if (implied.some((i) => i.status === 'set')) await notifyAgentOrdersChanged(opts.ownerId);
       return { ok: true, noop: true, mode: def, ...(implied.length ? { implied } : {}) };
@@ -495,7 +499,7 @@ export async function setMode(opts: SetModeOpts): Promise<SetModeResult> {
   // UI briefly rendering an agent in GOAL with an empty autonomy axis.
   const implied = await applyImpliedModes(sql, {
     workspaceId: opts.workspaceId, ownerId: opts.ownerId, modeId: def.id,
-    reason: opts.reason, setBy: opts.setBy, ownerDirected,
+    reason: opts.reason, setBy: opts.setBy,
   });
   // WI-6974: same as the clear branch — a set / auto-switch / reason-refresh is a
   // real orders change for THIS owner. Both `noop` early-returns above are already
