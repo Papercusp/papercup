@@ -141,17 +141,39 @@ export const ALL_AGENT_MCP_TOOLS: readonly string[] = [
   'mcp__agentmcp__memory:forget',
   'mcp__agentmcp__memory:update',
 
-  // Spawn primitive — cup:spawn over the durable nursery
-  // (harness_shared.spawned_agents), Brief 4 of agent-briefs-2026-06-05.
-  // Replaces the @papercupai/orchestrator-spawn plugin's orchestrator_*
-  // tools, which were dead on this surface (the plugin is not installed,
-  // and the standalone agent-mcp server never ran the plugin loader —
-  // every call returned "tool not found"). These are BUILT-IN tools, so
-  // they exist on every surface; what's spawned shows up in fleet:tree
-  // and is cancellable with fleet:cancel.
-  'mcp__agentmcp__cup:spawn',
+  // Spawn primitives over the durable nursery (harness_shared.spawned_agents),
+  // Brief 4 of agent-briefs-2026-06-05. These replaced the
+  // @papercupai/orchestrator-spawn plugin's orchestrator_* tools, which were dead
+  // on this surface (the plugin is not installed, and the standalone agent-mcp
+  // server never ran the plugin loader — every call returned "tool not found").
+  // They are BUILT-IN tools, so they exist on every surface; what's spawned shows
+  // up in fleet:tree and is cancellable with fleet:cancel.
+  //
+  // ⚠ The cup-spawn entry WAS listed here and has been REMOVED. The
+  // Mug/Kettle/cup nursery tier is retired behind `papercusp-mug-kettle-system`,
+  // whose default-OFF *is* the delivered end state, so `cup:spawn` no longer
+  // registers and every call REFUSES. Naming an unregistered tool in an allowlist
+  // is not inert: it red-pinned two invariants at once — tool-auth-gating's "every
+  // operator-converse allowedTool resolves in the core registry" and tools-md-sync's
+  // "every allowedTool has a catalog entry (no drift)" — because an allowlist entry
+  // is a PROMISE to the chat surface that the tool is callable. Do NOT re-add it to
+  // fix a "missing spawn tool" symptom; the supported fan-out is a FLEET
+  // (`fleet:launch-on-plan`), and re-registering a retired tool would resurrect the
+  // tier the owner deliberately switched off.
+  //
+  // ⚠⚠ AND DO NOT WRITE THE FULL `mcp__agentmcp__` + `cup:spawn` TOKEN ANYWHERE IN
+  // THIS FILE, EVEN IN A COMMENT SAYING IT IS REMOVED. tools-md-sync.test.ts builds
+  // the allowlist by REGEXING THIS FILE'S SOURCE TEXT
+  // (`src.matchAll(/mcp__agentmcp__([a-zA-Z0-9_:.\-]+)/g)`), and a regex cannot tell
+  // a live contract from prose ABOUT the contract — so a comment mentioning the
+  // prefixed name silently re-adds the tool and the two invariants stay red. Cost me
+  // a full re-run when I first documented this removal; the name is deliberately
+  // written unprefixed above so it stays greppable by a human without being harvested.
+  //
   // One-wake BATCH placement (queen-autonomous-execution B-07): affinity-ranked
-  // fan of spawn + warm-inject across the fleet in a single call.
+  // fan of spawn + warm-inject across the fleet in a single call. Retained because
+  // it still resolves in the registry — the audit flagged ONLY cup:spawn, so this
+  // removal is scoped to what is actually orphaned rather than to the whole tier.
   'mcp__agentmcp__fleet:place_batch',
   // Live inference-pool capacity for sizing placement (queen-capacity-aware-dispatch P-003):
   // bee-tier dispatchBudget + per-tier caps + saturation — the read that mirrors place_batch's clamp.
