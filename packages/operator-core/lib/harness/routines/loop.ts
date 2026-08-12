@@ -735,8 +735,8 @@ export interface LoopStatus {
    *  marker lands at kill-time — by construction after the last loop:checkpoint write. Feeding
    *  it to the cold-wake staleness check reported the kill instant as "you completed a turn at
    *  …". Measured 2026-08-02 over 7d: 525 of 1,351 markers (38.9%, 118 owners) sat further than
-  *  the check's 5-min floor from that owner's last real turn. Use THIS field for any
-  *  "was a turn produced after T" test; never fall back to `lastTurnAt` for it. */
+   *  the check's 5-min floor from that owner's last real turn. Use THIS field for any
+   *  "was a turn produced after T" test; never fall back to `lastTurnAt` for it. */
   lastRealTurnAt: string | null;
   /**
    * Cadence observability for the current arm. `expectedFiresSinceArm` is the number of
