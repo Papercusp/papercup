@@ -254,7 +254,33 @@ export default defineTool({
       .describe(
         'built-in kind (feature, chunk, bug, change, task) OR a workspace-registered generic-kind datatype',
       ),
-    state: z.string().max(40).optional(),
+    state: z
+      .union([z.string().max(40), z.array(z.string().max(40)).max(20)])
+      .optional()
+      .describe(
+        "WI-38339: ONE state, or an ARRAY of states (matches any of them). An empty array is NO filter, never 'match nothing'. For the dominant question — everything still open — prefer `notTerminal`, which cannot drift as the terminal spellings change.",
+      ),
+    notTerminal: z
+      .boolean()
+      .optional()
+      .describe(
+        "WI-38339: exclude every state terminal in EITHER family (done/passed/resolved/closed/deprecated/dropped), derived from the canonical union rather than a copied list. The 'everything not finished' filter agents otherwise hand-write as `status NOT IN (…)` in raw SQL.",
+      ),
+    createdSince: z
+      .string()
+      .max(40)
+      .optional()
+      .describe("ISO timestamp — rows created at or after it (INCLUSIVE, like plans:list)."),
+    updatedSince: z
+      .string()
+      .max(40)
+      .optional()
+      .describe("ISO timestamp — rows updated at or after it (INCLUSIVE, like plans:list)."),
+    sourcePlanSlug: z
+      .string()
+      .max(120)
+      .optional()
+      .describe("Only rows produced by this plan — 'what work came out of <plan>'."),
     assignee: z
       .string()
       .max(120)
@@ -350,6 +376,11 @@ export default defineTool({
     // checkpoint" immediately before a session:request-compaction, and only the
     // compaction tripwire caught it. A wrong empty list is not recoverable by the
     // caller; a hard error would have been, but silence was worse than either.
+    // WI-38339: the tool takes `state` as one value OR an array (the ergonomic surface);
+    // the store keeps them as two fields, because every existing read site there casts
+    // the single-valued `state`. Split once, here, so neither side carries a union.
+    const stateOne = typeof args.state === "string" ? args.state : undefined;
+    const stateMany = Array.isArray(args.state) ? args.state : undefined;
     const selfOwnerId = (): string => resolveAgentIdentity(ctx).ownerId;
     const assignee =
       args.assignee === "self"
@@ -366,7 +397,17 @@ export default defineTool({
           harness: args.harness ?? null,
           q: q ?? null,
           kind: args.kind ?? null,
-          state: args.state ?? null,
+          state: stateOne ?? null,
+          // WI-38339 ⚠ EVERY filter arg must appear in this key. It is hand-enumerated,
+          // so an arg added above but forgotten here does not fail — it silently serves
+          // ANOTHER caller's cached rows for a different filter, which is unfalsifiable
+          // from the result. `states` is order-insensitive (it compiles to `= ANY(…)`),
+          // so it is sorted to keep the key stable across equivalent calls.
+          states: stateMany ? [...stateMany].sort().join(",") : null,
+          notTerminal: args.notTerminal === true,
+          createdSince: args.createdSince ?? null,
+          updatedSince: args.updatedSince ?? null,
+          sourcePlanSlug: args.sourcePlanSlug ?? null,
           assignee: assignee ?? null,
           parent: args.parent ?? null,
           includeChildren: args.includeChildren === true,
@@ -389,7 +430,12 @@ export default defineTool({
           harness: args.harness,
           q,
           kind: args.kind as WorkItemKind | undefined,
-          state: args.state,
+          state: stateOne,
+          states: stateMany,
+          notTerminal: args.notTerminal,
+          createdSince: args.createdSince,
+          updatedSince: args.updatedSince,
+          sourcePlanSlug: args.sourcePlanSlug,
           assignee,
           parent: args.parent,
           includeChildren: args.includeChildren,

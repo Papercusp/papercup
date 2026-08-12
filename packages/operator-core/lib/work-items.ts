@@ -62,6 +62,7 @@ import {
 import { frontierPlacementKindClause } from './datatype-frontier-placement';
 import { hasGenericKind } from './datatype-registry-store';
 import {
+  ANY_FAMILY_TERMINAL_STATES,
   FEATURE_NON_REQUEUE_STATES,
   FEATURE_TERMINAL_STATES,
   normalizeFeatureStateInput,
@@ -693,6 +694,40 @@ export interface ListWorkItemsFilter {
   q?: string;
   kind?: WorkItemKind;
   state?: string;
+  /**
+   * WI-38339 — `state` as a SET, for the question a single value cannot ask. Measured
+   * over 7d of real agent SQL on this box: 46 hand-written statements filtered
+   * `state`/`status` with IN / NOT IN, the dominant one being "everything not terminal".
+   *
+   * ADDITIVE rather than widening {@link state} to `string | string[]`: every existing
+   * read site casts that field (`filter.state as IssueState`), and several pass it
+   * straight into `status = ${…}`, so a union type would have to be re-checked at each
+   * one — a wide blast radius for no gain. `states` ANDs with `state` when both are set.
+   * Empty array = NO filter, never "match nothing".
+   */
+  states?: readonly string[];
+  /**
+   * WI-38339 — "everything still live": excludes every state terminal in EITHER family,
+   * DERIVED from {@link ANY_FAMILY_TERMINAL_STATES} (never re-listed — that constant's
+   * header records why: hand-copied terminal sets drifted and scored ~88% of finished
+   * units as stranded, because every consumer reads "not in the set ⇒ still active").
+   */
+  notTerminal?: boolean;
+  /**
+   * WI-38339 — INCLUSIVE (`>=`) created/updated window, matching `plans:list`'s
+   * established `createdSince`/`updatedSince`. 61 hand-written statements over the 7d
+   * window carried a time predicate, against a tool with no time argument at all.
+   *
+   * ⚠ The issue family's pre-existing `createdAfter` is EXCLUSIVE (`>`) and is
+   * deliberately NOT reused: mapping this onto it would make ONE list call apply
+   * different boundary semantics per family — an inconsistency invisible in the result.
+   */
+  createdSince?: string;
+  /** ISO timestamp — rows updated at or after it (INCLUSIVE). See {@link createdSince}. */
+  updatedSince?: string;
+  /** WI-38339 — "what work came out of this plan" (37 hand-written statements/7d).
+   *  Both relations carry the column: features `source_plan_slug`, issues the same. */
+  sourcePlanSlug?: string;
   /** Filter to items assigned to this agent (feature → taken_by; issue → assignee). */
   assignee?: string;
   /** Filter to items this owner delegated (collapse-delegate D-002). Issue-family only. */
@@ -843,6 +878,58 @@ function likeContainsPattern(query: string): string {
 }
 
 /** Cross-kind list. Default = top-level items only (chunks surface under their parent, D-004). */
+/**
+ * WI-38339 — the SHAPE filters (state SET / notTerminal / created+updated window /
+ * source plan) as ONE fragment for the FEATURE relation, mirroring
+ * {@link issueShapeWhereSql} for the issue relation.
+ *
+ * TWO separate builders, on purpose: the relations spell these columns differently
+ * (`harness_features_consolidated` uses status / created_ts / updated_ts;
+ * `engineer_issues` uses state / created_at / updated_at), so a single shared builder
+ * would need a column map per caller — more moving parts than the two it replaces.
+ * What they DO share is the semantics, which is where drift would actually hurt: both
+ * derive notTerminal from ANY_FAMILY_TERMINAL_STATES and both use INCLUSIVE `>=`, so
+ * one work_items:list call cannot apply different boundaries to its two families.
+ *
+ * Called by listWorkItems AND both COUNT companions (the WI-5512 parity rule): a
+ * predicate applied to the list but missed by a count makes "N of TOTAL" quietly
+ * wrong — numerator honest, denominator not, and no error to notice.
+ *
+ * Returns `TRUE` when nothing is set, so a call site can AND it unconditionally.
+ */
+function featureShapeWhereSql(sql: OrgSql, filter: ListWorkItemsFilter) {
+  // An EMPTY `states` array is NO filter, never "match nothing": `= ANY('{}')` is false
+  // for every row, so an empty list would return zero rows — indistinguishable from a
+  // genuine empty result, which is the direction a caller cannot detect.
+  const states = filter.states && filter.states.length > 0 ? filter.states : null;
+  return sql`
+    ${states ? sql`status = ANY(${states as string[]}::text[])` : sql`TRUE`}
+    AND ${
+      filter.notTerminal
+        ? sql`NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))`
+        : sql`TRUE`
+    }
+    AND ${filter.createdSince ? sql`created_ts >= ${filter.createdSince}::timestamptz` : sql`TRUE`}
+    AND ${filter.updatedSince ? sql`updated_ts >= ${filter.updatedSince}::timestamptz` : sql`TRUE`}
+    AND ${filter.sourcePlanSlug ? sql`source_plan_slug = ${filter.sourcePlanSlug}` : sql`TRUE`}`;
+}
+
+/**
+ * WI-38339 — the new SHAPE filters as they cross into the ISSUE family. One place, so
+ * the three delegating call sites (listIssues / countIssues / countIssuesByState) cannot
+ * thread different subsets of them — the same parity hazard the SQL helpers close, one
+ * layer up.
+ */
+function issueShapeFilterArgs(filter: ListWorkItemsFilter) {
+  return {
+    states: filter.states,
+    notTerminal: filter.notTerminal,
+    createdSince: filter.createdSince,
+    updatedSince: filter.updatedSince,
+    sourcePlanSlug: filter.sourcePlanSlug,
+  };
+}
+
 export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<WorkItem[]> {
   const { sql } = getOrgPg();
   const q = filter.q?.trim();
@@ -863,6 +950,7 @@ export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<W
          AND ${q ? sql`(COALESCE(title, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\' OR COALESCE(summary, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\')` : sql`TRUE`}
          AND ${filter.kind && familyOf(filter.kind) === 'feature' ? sql`item_kind = ${filter.kind}` : sql`TRUE`}
          AND ${filter.state ? sql`status = ${filter.state}` : sql`TRUE`}
+         AND ${featureShapeWhereSql(sql, filter)}
          AND ${filter.assignee ? sql`taken_by = ${filter.assignee}` : sql`TRUE`}
          AND ${
            filter.parent
@@ -915,6 +1003,7 @@ export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<W
       kinds: filter.kind && familyOf(filter.kind) === 'issue' ? undefined : ISSUE_FAMILY_KINDS,
       scope: filter.harness ? `harness:${filter.harness}` : undefined,
       state: (filter.state as IssueState) || undefined,
+      ...issueShapeFilterArgs(filter),
       q,
       assignee: filter.assignee,
       assignedBy: filter.assignedBy,
@@ -960,6 +1049,7 @@ export async function countWorkItems(filter: ListWorkItemsFilter = {}): Promise<
          AND ${filter.harness ? sql`harness_slug = ${filter.harness}` : sql`TRUE`}
          AND ${filter.kind && familyOf(filter.kind) === 'feature' ? sql`item_kind = ${filter.kind}` : sql`TRUE`}
          AND ${filter.state ? sql`status = ${filter.state}` : sql`TRUE`}
+         AND ${featureShapeWhereSql(sql, filter)}
          AND ${filter.assignee ? sql`taken_by = ${filter.assignee}` : sql`TRUE`}
          AND ${
            filter.parent
@@ -1008,6 +1098,7 @@ export async function countWorkItems(filter: ListWorkItemsFilter = {}): Promise<
       kinds: filter.kind && familyOf(filter.kind) === 'issue' ? undefined : ISSUE_FAMILY_KINDS,
       scope: filter.harness ? `harness:${filter.harness}` : undefined,
       state: (filter.state as IssueState) || undefined,
+      ...issueShapeFilterArgs(filter),
       assignee: filter.assignee,
       assignedBy: filter.assignedBy,
       // WI-5512: countWorkItems' issue-family call never threaded this through, even
@@ -1072,6 +1163,7 @@ export async function countWorkItemsByState(filter: ListWorkItemsFilter = {}): P
          AND ${filter.harness ? sql`harness_slug = ${filter.harness}` : sql`TRUE`}
          AND ${filter.kind && familyOf(filter.kind) === 'feature' ? sql`item_kind = ${filter.kind}` : sql`TRUE`}
          AND ${filter.state ? sql`status = ${filter.state}` : sql`TRUE`}
+         AND ${featureShapeWhereSql(sql, filter)}
          AND ${filter.assignee ? sql`taken_by = ${filter.assignee}` : sql`TRUE`}
          AND ${
            filter.parent
@@ -1100,6 +1192,7 @@ export async function countWorkItemsByState(filter: ListWorkItemsFilter = {}): P
       kinds: filter.kind && familyOf(filter.kind) === 'issue' ? undefined : ISSUE_FAMILY_KINDS,
       scope: filter.harness ? `harness:${filter.harness}` : undefined,
       state: (filter.state as IssueState) || undefined,
+      ...issueShapeFilterArgs(filter),
       assignee: filter.assignee,
       assignedBy: filter.assignedBy,
       admissibleOnly: filter.admissibleOnly,
