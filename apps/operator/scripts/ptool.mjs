@@ -321,9 +321,19 @@ export function prettyText(text) {
  *  Non-text parts are rendered as their JSON. Pure. */
 export function resultToText(result) {
   const parts = Array.isArray(result?.content) ? result.content : [];
-  return parts
+  const contentText = parts
     .map((c) => (c && c.type === 'text' && typeof c.text === 'string' ? c.text : JSON.stringify(c)))
     .join('\n');
+  if (contentText.trim()) return contentText;
+
+  // EI-20218995388404497: an MCP host may satisfy an output schema with
+  // structuredContent and omit content[]. Do not turn that valid result into
+  // an apparently successful blank stdout response.
+  if (result && Object.prototype.hasOwnProperty.call(result, 'structuredContent')) {
+    const structuredText = JSON.stringify(result.structuredContent);
+    if (typeof structuredText === 'string') return structuredText;
+  }
+  return contentText;
 }
 
 /* ─── runtime (impure) ────────────────────────────────────────────────── */
@@ -551,8 +561,12 @@ async function collectArgs(inputSchema) {
 }
 
 /** Print the result of a tools/call, or its error. Returns the exit code. */
-function printResult(result, { raw }) {
+export function printResult(result, { raw }) {
   const text = resultToText(result);
+  if (!text.trim()) {
+    console.error('ptool: operator returned an empty MCP result; no content or structuredContent was received');
+    return 1;
+  }
   if (result?.isError) {
     console.error('✗ tool returned an error:');
     console.error(raw ? text : prettyText(text));
