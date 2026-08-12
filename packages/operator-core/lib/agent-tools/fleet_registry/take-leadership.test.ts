@@ -81,7 +81,11 @@ beforeEach(() => {
   vi.clearAllMocks();
   h.resolveAgentIdentity.mockReturnValue({ ownerId: 'su-bob', workspaceId: 'ws' });
   h.getFleet.mockResolvedValue(fleet());
-  h.setFleetLeader.mockResolvedValue(undefined);
+  // setFleetLeader now returns the updated fleet record (or null when the CAS
+  // fence detects a superseding leader). The handler exercises the real shared
+  // takeFleetLeadership effect, so a void mock is interpreted as a superseded
+  // transfer and masks the recolor assertions with the wrong failure.
+  h.setFleetLeader.mockResolvedValue(fleet({ leaderOwnerId: 'su-bob' }));
   h.heartbeatPresence.mockResolvedValue(undefined);
   h.setPresenceFleet.mockResolvedValue(undefined);
   h.fetchPresenceFleet.mockResolvedValue(new Map());
@@ -100,7 +104,7 @@ describe('fleet:take-leadership — recolors the caller terminal (WI-1351), not 
     expect(h.recolorViaPty).toHaveBeenCalledWith('su-bob', oscRecolorSequence(FOREST));
     expect(h.resolveFleetScheme).toHaveBeenCalledWith(expect.objectContaining({ fleetSlug: 'rocket' }));
     // ...and the leadership transfer itself still happened.
-    expect(h.setFleetLeader).toHaveBeenCalledWith('ws', 'rocket', 'su-bob');
+    expect(h.setFleetLeader).toHaveBeenCalledWith('ws', 'rocket', 'su-bob', undefined, null);
     expect(h.setPresenceFleet).toHaveBeenCalledWith('ws', 'su-bob', 'rocket', 'leader');
     expect(out).toMatchObject({ leader: 'su-bob', scheme: 'forest' });
   });
@@ -110,7 +114,7 @@ describe('fleet:take-leadership — recolors the caller terminal (WI-1351), not 
     const out = parse(await invoke({ fleet: 'rocket' }));
     expect(out.ok).toBe(true);
     expect(out.leader).toBe('su-bob');
-    expect(h.setFleetLeader).toHaveBeenCalledWith('ws', 'rocket', 'su-bob');
+    expect(h.setFleetLeader).toHaveBeenCalledWith('ws', 'rocket', 'su-bob', undefined, null);
   });
 
   it('a recolor THROW is swallowed — the transfer already committed', async () => {
