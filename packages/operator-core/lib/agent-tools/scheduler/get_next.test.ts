@@ -11,6 +11,7 @@
  */
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
 import type { ZodTypeAny } from 'zod';
+import { BUDGET, promptWeight } from '../tool-guidance-budget';
 
 const scopeState = vi.hoisted(() => ({ scope: null as any, quarantinedIds: [] as string[], windingDown: false, pauseReason: null as string | null }));
 const getNextM = vi.hoisted(() => vi.fn());
@@ -139,6 +140,12 @@ describe('scheduler:get_next claim-spec identity is inherited (EI-20225786201327
       const result = tool.args.safeParse({ harness: 'papercusp', [field]: value });
       expect(result.success, `scheduler:get_next must reject undeclared ${field}`).toBe(false);
     }
+  });
+});
+
+describe('scheduler:get_next prompt guidance budget (EI-20226961413829051)', () => {
+  it('stays within the shared non-grandfathered prompt-weight budget', () => {
+    expect(promptWeight(getNextTool as Parameters<typeof promptWeight>[0])).toBeLessThanOrEqual(BUDGET);
   });
 });
 
