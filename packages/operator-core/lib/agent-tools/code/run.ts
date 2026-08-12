@@ -249,11 +249,12 @@ export default defineTool({
     // child call had no naming signal at all.
     const shownResult = shapeCodeRunLogs(annotateChildFailureWarning(shapeMutationEcho(result)));
 
+    const similarRecipePayload = similarRecipes.length > 0 ? shapeCodeRunSimilarRecipes(similarRecipes) : {};
     const payload =
       similarRecipes.length > 0 || facadeHelp || fieldMissHelp || sleepCapHelp
         ? {
             ...shownResult,
-            ...(similarRecipes.length > 0 ? { similarRecipes } : {}),
+            ...similarRecipePayload,
             ...(facadeHelp ? { facadeHelp } : {}),
             ...(fieldMissHelp ? { fieldMissHelp } : {}),
             ...(sleepCapHelp ? { sleepCapHelp } : {}),
@@ -460,6 +461,57 @@ const DRY_RUN_MUTATION_SAMPLE_LIMIT = 12;
 const DRY_RUN_MUTATION_SAMPLE_PER_TOOL_LIMIT = 3;
 const CODE_RUN_LOG_LINE_LIMIT = 80;
 const CODE_RUN_LOG_LINE_CHAR_BUDGET = 1_000;
+/**
+ * The result-door budget is shared by the whole code:run response, including the script's
+ * summary. Keep the advisory recipe fold at the same small default as coord:orient. The exact
+ * authority proof remains available in runArgs; description/toolsUsed and the duplicate top-level
+ * authority are discovery metadata that recipes:get / recipes:run do not need here.
+ */
+const CODE_RUN_SIMILAR_RECIPE_LIMIT = 3;
+const CODE_RUN_RECIPE_TITLE_CAP = 120;
+
+export function shapeCodeRunSimilarRecipes(recipes: readonly SimilarRecipe[]): {
+  similarRecipes: Array<{
+    id: string;
+    title: string;
+    runCount: number;
+    similarity: number;
+    authorityRefs: SimilarRecipe['authorityRefs'];
+    runArgs: SimilarRecipe['runArgs'];
+  }>;
+  similarRecipesTruncated?: {
+    shown: number;
+    truncatedByLimit: true;
+    limit: number;
+    more: string;
+  };
+} {
+  const shown = recipes.slice(0, CODE_RUN_SIMILAR_RECIPE_LIMIT).map((recipe) => ({
+    id: recipe.id,
+    title:
+      recipe.title.length > CODE_RUN_RECIPE_TITLE_CAP
+        ? `${recipe.title.slice(0, CODE_RUN_RECIPE_TITLE_CAP - 1)}…`
+        : recipe.title,
+    runCount: recipe.runCount,
+    similarity: recipe.similarity,
+    authorityRefs: recipe.authorityRefs,
+    runArgs: recipe.runArgs,
+  }));
+
+  return {
+    similarRecipes: shown,
+    ...(recipes.length > shown.length
+      ? {
+          similarRecipesTruncated: {
+            shown: shown.length,
+            truncatedByLimit: true as const,
+            limit: CODE_RUN_SIMILAR_RECIPE_LIMIT,
+            more: 'recipes:search { query, limit } for more matches; recipes:get { id } for a full recipe',
+          },
+        }
+      : {}),
+  };
+}
 
 const ANSI_OSC_PATTERN = /\x1B\][\s\S]*?(?:\x07|\x1B\\)/g;
 const ANSI_CSI_PATTERN = /\x1B\[[0-?]*[ -/]*[@-~]/g;

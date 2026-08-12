@@ -51,7 +51,13 @@ vi.mock('../coordination/identity', async (importOriginal) => ({
   resolveAgentIdentity: () => ({ ownerId: 'owner-x' }),
 }));
 
-import { shapeCodeRunLogs, shapeMutationEcho, annotateChildFailureWarning, bindInnerDispatch } from './run'; // named import ALSO runs the side-effect: registers code:run (AFTER the mocks are hoisted)
+import {
+  shapeCodeRunLogs,
+  shapeMutationEcho,
+  annotateChildFailureWarning,
+  bindInnerDispatch,
+  shapeCodeRunSimilarRecipes,
+} from './run'; // named import ALSO runs the side-effect: registers code:run (AFTER the mocks are hoisted)
 
 /**
  * B-CX-2A: the code:run tool registers into the projected registry, is marked write-effect
@@ -156,6 +162,68 @@ describe('code:run → recipe capture (P-003)', () => {
       sanitizedLines: 1,
       droppedAfterLimit: 0,
     });
+  });
+});
+
+describe('code:run → similarRecipes result shaping', () => {
+  const authority = {
+    version: 1 as const,
+    revision: 'revision-1',
+    context: { workspace: 'ws-test', fleet: 'fleet-test', harness: 'alpha' },
+  };
+  const recipe = (index: number) => ({
+    id: `recipe-${index}`,
+    title: `Recipe ${index} ${'x'.repeat(140)}`,
+    description: 'a description that is intentionally not part of the compact result',
+    runCount: index,
+    toolsUsed: ['coord:send', 'work_items:get'],
+    similarity: 0.9 - index / 100,
+    authority,
+    authorityRefs: { workspaces: [], fleets: [], plans: [], harnesses: [], items: [], resources: [] },
+    runArgs: { id: `recipe-${index}`, authority },
+  });
+
+  it('keeps the exact runArgs while omitting duplicate advisory fields and capping the list', () => {
+    const shaped = shapeCodeRunSimilarRecipes([recipe(1), recipe(2), recipe(3), recipe(4), recipe(5)]);
+
+    expect(shaped.similarRecipes).toHaveLength(3);
+    expect(shaped.similarRecipes[0]).toEqual({
+      id: 'recipe-1',
+      title: `Recipe 1 ${'x'.repeat(110)}…`,
+      runCount: 1,
+      similarity: 0.89,
+      authorityRefs: { workspaces: [], fleets: [], plans: [], harnesses: [], items: [], resources: [] },
+      runArgs: { id: 'recipe-1', authority },
+    });
+    expect(shaped.similarRecipes[0]).not.toHaveProperty('description');
+    expect(shaped.similarRecipes[0]).not.toHaveProperty('toolsUsed');
+    expect(shaped.similarRecipes[0]).not.toHaveProperty('authority');
+    expect(shaped.similarRecipesTruncated).toEqual({
+      shown: 3,
+      truncatedByLimit: true,
+      limit: 3,
+      more: 'recipes:search { query, limit } for more matches; recipes:get { id } for a full recipe',
+    });
+  });
+
+  it('uses the bounded shape in the agent-facing code:run payload', async () => {
+    captureRecipeMock.mockResolvedValueOnce({ similarRecipes: [recipe(1), recipe(2), recipe(3), recipe(4)] } as never);
+    const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
+    if (!tool) throw new Error('code:run not registered');
+
+    const res = await tool.fn({ script: 'return { delivered: true };' }, {
+      log: () => {},
+      workspaceId: 'ws-test',
+      harnessSlug: 'alpha',
+      role: 'su',
+      isSuperuser: true,
+      uiClientId: 'su-test',
+    } as never);
+    const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+
+    expect(payload.summary).toEqual({ delivered: true });
+    expect(payload.similarRecipes).toHaveLength(3);
+    expect(payload.similarRecipesTruncated).toMatchObject({ shown: 3, limit: 3 });
   });
 });
 
