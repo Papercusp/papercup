@@ -167,6 +167,18 @@ describe('improvements:capture tool envelope', () => {
     });
   });
 
+  it("normalizes the common top-level harness spelling to the canonical capture scope", async () => {
+    await callTool({ title: 'scoped capture', kind: 'bug', harness: 'papercusp' });
+    expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({ scope: 'harness:papercusp' }));
+  });
+
+  it('rejects conflicting canonical scope and harness alias values', async () => {
+    await expect(
+      callTool({ title: 'conflicting scope', kind: 'bug', scope: 'harness:one', harness: 'two' }),
+    ).rejects.toThrow(/conflicting capture scopes/);
+    expect(mockCapture).not.toHaveBeenCalled();
+  });
+
   it('returns the core result verbatim in the tool envelope', async () => {
     mockCapture.mockResolvedValue({ ok: true, id: 'EI-42', created: true, duplicateOf: null } as unknown as Awaited<
       ReturnType<typeof captureImprovement>
@@ -468,6 +480,11 @@ describe('improvements:capture kind coercion (WI-1974)', () => {
 
     it('kind:null parses (was: expected one of bug|change|feature)', () => {
       expect(() => parse({ title: 't', kind: null })).not.toThrow();
+    });
+
+    it('accepts the top-level harness compatibility alias and keeps the slug available to the handler', () => {
+      const p = parse({ title: 'scoped bug', kind: 'bug', harness: 'papercusp' });
+      expect(p.harness).toBe('papercusp');
     });
 
     it('an observation sub-kind parses to a lane:observation record', () => {

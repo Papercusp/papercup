@@ -203,6 +203,22 @@ function looseBoolean() {
 const CHECKPOINT_CAP = 32000;
 const TRUNCATION_MARKER = '…[older checkpoint content truncated]…\n';
 
+/**
+ * P-013 compatibility: `rowsMode` controls only supplied check rows. The
+ * default keeps the existing replace semantics (needed to retire stale rows),
+ * while `merge` makes an additive check update without also appending the body.
+ */
+function rowsModeSpec() {
+  return z
+    .enum(['replace', 'merge'])
+    .optional()
+    .describe(
+      "P-013: how supplied `checks` rows are applied. `replace` (default) retires omitted rows; `merge` unions " +
+        "supplied rows onto the carried set, so an incremental check update cannot drop unmentioned rows. `merge` + " +
+        "`checks:[]` is a no-op; use `replace` + `checks:[]` to clear rows.",
+    );
+}
+
 /** EI-9036: join an addendum onto the prior checkpoint text, bounded to CHECKPOINT_CAP.
  *  Trims from the FRONT (oldest content) when the join would overflow, so the newest
  *  addendum — the part the caller just wrote and cares most about right now — is never
@@ -344,6 +360,7 @@ const itemSpec = z.object({
     'EI-18140632570924965: a plain replace (no append) that would shrink a substantial prior checkpoint by ' +
       'more than half is preserved by an automatic append. Pass true to confirm a destructive replacement.',
   ),
+  rowsMode: rowsModeSpec(),
   dependsOn: dependsOnSpec(),
   checks: checksSpec(),
 });
@@ -358,7 +375,7 @@ export default defineTool({
     "re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; `append:true` joins instead. " +
     'Writes are verify-read. A plain replace shrinking a substantial checkpoint >50% is retried as a safe append, ' +
     'while an append with a disagreeing pre-read or an overflowing checks union is BLOCKED; refusals carry `errorCode` + recovery args. ' +
-    'Refuses a peer-held item (`not_holder`).',
+    'Refuses a peer-held item (`not_holder`). `rowsMode:"merge"` is the additive check-row form when the body should still replace.',
   guidance: {
     when:
       'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your ' +
@@ -408,6 +425,9 @@ export default defineTool({
       confirmShrink: looseBoolean().describe(
         'single shorthand default for `confirmShrink` (EI-18140632570924965), also the items[] default.',
       ),
+      rowsMode: rowsModeSpec().describe(
+        'single shorthand default for `rowsMode`; also the items[] default. `merge` unions supplied checks without appending the body.',
+      ),
       checks: checksSpec(),
       dependsOn: dependsOnSpec(),
     })
@@ -426,6 +446,7 @@ export default defineTool({
             harness: args.harness,
             append: args.append,
             confirmShrink: args.confirmShrink,
+            rowsMode: args.rowsMode,
             dependsOn: args.dependsOn,
           },
         ];
@@ -493,6 +514,7 @@ export default defineTool({
         // CLEAR), except when checks are supplied: that is an additive checks-only
         // patch and must preserve the narrative body.
         const wantsAppend = it.append ?? args.append ?? false;
+        const rowsMode = it.rowsMode ?? args.rowsMode ?? 'replace';
         const rawSuppliedChecks = it.checks ?? args.checks;
         const isChecksOnlyPatch = it.checkpoint === undefined && rawSuppliedChecks !== undefined;
         // P-007: `dependsOn` is tri-state at the store (undefined ⇒ preserve the
@@ -631,6 +653,11 @@ export default defineTool({
         // `append:true` makes this body-less metadata patch additive too: supplied
         // checks are UNIONED rather than replacing the carried set.
         const isBodyPreservingPatch = isChecksOnlyPatch || isDependencyOnlyPatch;
+        // `rowsMode:'merge'` is additive for a body write and for the checks-only
+        // patch shape. An explicit clear remains a true clear, preserving the
+        // work_items:complete cleanup contract.
+        const additiveRowsMode = rowsMode === 'merge' && (isChecksOnlyPatch || !isClear);
+        const additiveChecks = wantsAppend || additiveRowsMode;
         // A CLEAR wipes the checks too, UNLESS the caller supplied some in the same
         // call. This is a DELIBERATE divergence from loop:checkpoint, where checks
         // survive a note clear: work_items:complete clears the checkpoint as terminal
@@ -704,7 +731,7 @@ export default defineTool({
                 const effectiveChecks =
                   suppliedChecks === undefined
                     ? undefined
-                    : wantsAppend || preservePriorOnShrink
+                    : additiveChecks || preservePriorOnShrink
                       ? [...suppliedChecks, ...prior]
                       : suppliedChecks;
                 const merged =
@@ -736,7 +763,7 @@ export default defineTool({
                       'Pass { append: true } to join onto the existing checkpoint instead, or { confirmShrink: true } ' +
                       'if this replace is intentional.'
                     : null
-              : wantsAppend && !wantsConfirmShrink
+              : additiveChecks && !wantsConfirmShrink
                 ? // WI-7190: `append:true` used to arm NO guard at all — "the one mode whose
                   // whole contract is 'never lose the existing text' was the mode with no
                   // shrink protection." Confirmed live: the tool's own pre-read
@@ -750,7 +777,7 @@ export default defineTool({
                   // exactly the failure signature: the write path resolves the item, the
                   // (different) read path used to build the join does not.
                   (_priorNote, priorLen) => {
-                    if (priorLen > 500 && (appendPriorRaw === null || appendPriorRaw.length === 0)) {
+                    if (wantsAppend && priorLen > 500 && (appendPriorRaw === null || appendPriorRaw.length === 0)) {
                       return `append_base_unreadable — the append pre-read returned ${appendPreReadFailed ? 'an error' : 'nothing'} ` +
                         `while the current checkpoint is ${priorLen} chars (read authoritatively at write time, inside ` +
                         'the same locked transaction as this write). Appending now would silently REPLACE it instead of ' +
@@ -758,11 +785,11 @@ export default defineTool({
                         'likely cause), pass { harness } explicitly, or pass { confirmShrink: true } to force the replace ' +
                         'if that is actually intended.';
                     }
-                    const overflowCount = appendChecksOverflowCount(_priorNote, suppliedChecks);
+                    const overflowCount = additiveChecks ? appendChecksOverflowCount(_priorNote, suppliedChecks) : 0;
                     return overflowCount > 0
                       ? `append_checks_overflow — the supplied checks would union to more than the ${CARRY_NOTE_MAX_CHECKS}-row cap ` +
                         `(${overflowCount} carried row(s) would be evicted). Refusing the additive write before it changes ` +
-                        'the checkpoint. Retire stale rows with a plain replace first, or retry this append without `checks` ' +
+                        `the checkpoint. Retire stale rows with a plain replace first, or retry ${wantsAppend ? 'this append' : "rowsMode:'merge'"} without \`checks\` ` +
                         '(or with `checks: []`) to preserve the carried set.'
                       : null;
                   }
@@ -812,7 +839,12 @@ export default defineTool({
             // because this option also serves append_base_unreadable failures.
             recovery: {
               append: {
-                args: errorCode === 'append_checks_overflow' ? { append: true, checks: [] } : { append: true },
+                args:
+                  errorCode === 'append_checks_overflow'
+                    ? additiveRowsMode && !wantsAppend
+                      ? { rowsMode: 'merge', checks: [] }
+                      : { append: true, checks: [] }
+                    : { append: true },
                 description:
                   errorCode === 'append_checks_overflow'
                     ? 'Retry as an additive body-only append (omit checks or pass checks: []) after separately retiring stale rows if needed.'
@@ -911,8 +943,8 @@ export default defineTool({
           ...(droppedCheckClaims.length
             ? {
                 checksDropped: droppedCheckClaims.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)),
-                checksDroppedNote: wantsAppend
-                  ? `CAP EVICTION, not a replace: \`append\` UNIONED your ${suppliedChecks?.length ?? 0} row(s) onto ` +
+                checksDroppedNote: additiveChecks
+                  ? `CAP EVICTION, not a replace: ${wantsAppend ? '`append`' : "`rowsMode:'merge'`"} UNIONED your ${suppliedChecks?.length ?? 0} row(s) onto ` +
                     `the stored set, the union exceeded the ${CARRY_NOTE_MAX_CHECKS}-row cap, and ` +
                     `${droppedCheckClaims.length} CARRIED row(s) were evicted from the tail (supplied rows are kept ` +
                     `first). Re-sending the full set CANNOT fix this — that set is over the cap and would be ` +
@@ -999,6 +1031,14 @@ export default defineTool({
                 const declared = detectPauseDeclaration(stored);
                 return declared ? { pauseNotEnforcedWarning: pauseNotEnforcedWarning(declared) } : {};
               })()
+            : {}),
+          ...(rowsMode !== 'replace' ? { rowsMode } : {}),
+          ...(rowsMode === 'merge' && additiveRowsMode && rawSuppliedChecks?.length === 0
+            ? {
+                rowsModeNote:
+                  "rowsMode:'merge' treats an empty `checks` list as a NO-OP — carried rows are untouched. Use " +
+                  "rowsMode:'replace' with checks:[] to clear them.",
+              }
             : {}),
         };
       },

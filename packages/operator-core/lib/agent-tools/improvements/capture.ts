@@ -262,6 +262,13 @@ export default defineTool({
           .describe(
             "Pot scope. OMIT (recommended) → the item files under the workspace platform Pot; pass 'harness:<slug>' to scope it to a specific Pot. (An omitted/'operator'/workspace-global scope auto-homes to the platform Pot — you do NOT need to pass 'harness:papercusp' by hand.)",
           ),
+        harness: z
+          .string()
+          .max(80)
+          .optional()
+          .describe(
+            "Compatibility alias for the common per-call harness spelling. `harness:'foo'` is normalized to `scope:'harness:foo'`; prefer `scope:'harness:foo'` for new calls.",
+          ),
         // EI-10943: was `z.string().max(120)` — a HARD reject. Overrunning it bounced the
         // WHOLE capture (the finding is lost, and the agent gets the entire args schema
         // dumped back at it) over a provenance LABEL the tool only stores and echoes, into
@@ -568,6 +575,17 @@ export default defineTool({
       typeof ctxHarnessRaw === 'string' && ctxHarnessRaw && ctxHarnessRaw !== '*' ? ctxHarnessRaw : undefined;
     const ctxWorkspaceRaw = (ctx as { workspaceId?: unknown }).workspaceId;
     const ctxWorkspace = typeof ctxWorkspaceRaw === 'string' ? ctxWorkspaceRaw : undefined;
+    const harnessScope = args.harness?.trim()
+      ? args.harness.trim().startsWith('harness:')
+        ? args.harness.trim()
+        : `harness:${args.harness.trim()}`
+      : undefined;
+    if (args.scope && harnessScope && args.scope !== harnessScope) {
+      throw new Error(
+        `conflicting capture scopes: scope '${args.scope}' does not match compatibility harness '${args.harness}' (${harnessScope})`,
+      );
+    }
+    const captureScope = args.scope ?? harnessScope;
     if (args.observation?.rubricRef && args.rubricRef && args.observation.rubricRef !== args.rubricRef) {
       throw new ObservationEvidenceError(
         'conflicting rubricRef values: pass the scorecard once under observation.rubricRef (preferred) or top-level rubricRef (compatibility alias)',
@@ -687,7 +705,7 @@ export default defineTool({
         body: args.body,
         severity: args.severity as IssueSeverity | undefined,
         subTopic: args.subTopic,
-        scope: args.scope,
+        scope: captureScope,
         foundDuring,
         paths: args.paths,
         force: args.force,
@@ -715,8 +733,8 @@ export default defineTool({
           ? {
               assignee: resolvedAssignee,
               setCheckpoint: async (workItemId: string, checkpoint: string) => {
-                const scopedHarness = args.scope?.startsWith('harness:')
-                  ? args.scope.slice('harness:'.length)
+                const scopedHarness = captureScope?.startsWith('harness:')
+                  ? captureScope.slice('harness:'.length)
                   : ctxHarness;
                 await setWorkItemCheckpoint(
                   {
@@ -750,7 +768,7 @@ export default defineTool({
       ) {
         const featureId = captured.issue.id;
         const ledgerHarness =
-          ctxHarness ?? (args.scope?.startsWith('harness:') ? args.scope.slice('harness:'.length) : 'papercusp');
+          ctxHarness ?? (captureScope?.startsWith('harness:') ? captureScope.slice('harness:'.length) : 'papercusp');
         try {
           await recordRoutedIdea({
             origin: 'su-ideate',
@@ -824,7 +842,7 @@ export default defineTool({
                 `${id.ownerLabel} tagged you on improvement ${captured.issue.id}: ${captured.issue.title ?? args.title}` +
                 (args.body ? `\n\n${args.body.slice(0, 600)}` : '') +
                 `\n\n— it's on your radar: work_items:get ${captured.issue.id} (comment / claim there).`,
-              harnessSlug: args.scope?.startsWith('harness:') ? args.scope.slice('harness:'.length) : undefined,
+              harnessSlug: captureScope?.startsWith('harness:') ? captureScope.slice('harness:'.length) : undefined,
             }).catch(() => null)
           : null;
       // P-007/D-010: report-only cheapExperiment gap (see describeExperimentGap above).

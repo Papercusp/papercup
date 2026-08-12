@@ -1147,6 +1147,66 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(r.checks).toBe(2);
     });
 
+    describe("P-013 rowsMode:'merge' compatibility", () => {
+      it("accepts rowsMode:'merge' in the single and bulk shapes", () => {
+        expect(() => parse({ id: 'WI-7', checkpoint: 'body', rowsMode: 'merge' })).not.toThrow();
+        expect(() =>
+          parse({ items: [{ id: 'WI-7', checkpoint: 'body', rowsMode: 'merge' }] }),
+        ).not.toThrow();
+      });
+
+      it("merges supplied checks while replacing the body, without dropping carried rows", async () => {
+        withPrior(null);
+        await one({
+          id: 'WI-7',
+          checkpoint: 'first body',
+          checks: [
+            { claim: 'A holds', recheck: 'probe A' },
+            { claim: 'B holds', recheck: 'probe B', verified: 'saw B' },
+          ],
+        });
+        const prior = await lastStored();
+
+        withPrior(prior);
+        const r = (await one({
+          id: 'WI-7',
+          checkpoint: 'rewritten body',
+          rowsMode: 'merge',
+          checks: [{ claim: 'C holds', recheck: 'probe C' }],
+        })) as { ok: boolean; rowsMode?: string; checks: number; checksDropped?: string[] };
+        const stored = await lastStored();
+
+        expect(r).toMatchObject({ ok: true, rowsMode: 'merge', checks: 3 });
+        expect(r.checksDropped).toBeUndefined();
+        expect(stored).toContain('rewritten body');
+        expect(stored).not.toContain('first body');
+        expect(stored).not.toContain('\n\n---\n');
+        expect(stored).toContain('A holds');
+        expect(stored).toContain('B holds');
+        expect(stored).toContain('C holds');
+      });
+
+      it("treats rowsMode:'merge' with checks:[] as a no-op and reports the mode", async () => {
+        withPrior(null);
+        await one({ id: 'WI-7', checkpoint: 'first body', checks: [{ claim: 'A holds', recheck: 'probe A' }] });
+        const prior = await lastStored();
+
+        withPrior(prior);
+        const r = (await one({
+          id: 'WI-7',
+          checkpoint: 'updated body',
+          rowsMode: 'merge',
+          checks: [],
+        })) as { ok: boolean; rowsMode?: string; rowsModeNote?: string; checks: number };
+        const stored = await lastStored();
+
+        expect(r).toMatchObject({ ok: true, rowsMode: 'merge', checks: 1 });
+        expect(r.rowsModeNote).toContain('NO-OP');
+        expect(stored).toContain('updated body');
+        expect(stored).toContain('A holds');
+      });
+    });
+
     it('EI-19447043119380534: a checks-only patch that CLEARS the rows (checks:[]) still keeps the body', async () => {
       withPrior(null);
       await one({ id: 'WI-7', checkpoint: 'the body worth keeping', checks: [{ claim: 'X holds', recheck: 'probe X' }] });
