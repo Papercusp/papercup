@@ -18,7 +18,12 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { parseReportBlock, type ReportBlock } from '@papercusp/chat-protocol';
-import { resolveAgentIdentity, ADMIN_COORD_UI_OWNER, type AgentIdentity } from '../identity';
+import {
+  resolveAgentIdentity,
+  deriveFleetMembership,
+  ADMIN_COORD_UI_OWNER,
+  type AgentIdentity,
+} from '../identity';
 import { ownerChatWakePayloadFields } from '../owner-chat-turn';
 import {
   classifyUnknownRecipients,
@@ -661,7 +666,7 @@ async function sendOne(
           const classified = await classifyUnknownRecipients(trulyUnknown, (ids) =>
             lookupEndedSessions(ids, identity.workspaceId),
           );
-          roleHint = roleAddressingGuidance(classified) ?? '';
+          roleHint = roleAddressingGuidance(classified, deriveFleetMembership().fleetSlug) ?? '';
         } catch {
           roleHint = '';
         }

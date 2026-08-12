@@ -107,4 +107,20 @@ describe('the guidance itself', () => {
       ]) ?? '';
     expect(text).toContain('2 of these ids');
   });
+
+  it('adds the durable fleet-leader selector when the sender has named-fleet membership', () => {
+    const text =
+      roleAddressingGuidance(
+        [{ id: INCIDENT_ID, kind: 'session-shaped' }],
+        'nonp2p-bug-drain-luna-max-0811',
+      ) ?? '';
+    expect(text).toContain('@fleet-leader:nonp2p-bug-drain-luna-max-0811');
+    expect(text).toContain('fleet registry');
+    expect(text).toContain('@role:<slot>');
+  });
+
+  it('does not invent a fleet selector when no fleet membership is available', () => {
+    const text = roleAddressingGuidance([{ id: INCIDENT_ID, kind: 'session-shaped' }]) ?? '';
+    expect(text).not.toContain('@fleet-leader:');
+  });
 });

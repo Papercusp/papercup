@@ -153,6 +153,7 @@ export async function classifyUnknownRecipients(
  */
 export function roleAddressingGuidance(
   classified: readonly ClassifiedUnknownRecipient[],
+  fleetSlug?: string | null,
 ): string | null {
   const mortal = classified.filter((c) => c.kind === 'ended' || c.kind === 'session-shaped');
   if (mortal.length === 0) return null;
@@ -167,8 +168,16 @@ export function roleAddressingGuidance(
         : ' That session has ENDED — this is not a typo, and no send to it can ever succeed again.'
       : ' An id of that shape names ONE SESSION, which is mortal — if it is not in the roster it has almost certainly ended rather than been mistyped.';
 
+  const namedFleet = fleetSlug?.trim();
+  const fleetRoute = namedFleet
+    ? ` If you are escalating within fleet \`${namedFleet}\`, address its current leader directly: ` +
+      `\`@fleet-leader:${namedFleet}\`. That selector resolves the fleet registry's live leader ` +
+      'and survives this leader session ending or being replaced.'
+    : '';
+
   return (
     ` 🔑 ${subject} names a SESSION, not a standing responsibility.${death}` +
+    fleetRoute +
     ' If you are addressing WHO OWNS A SUBSYSTEM (or "whoever runs X") rather than that one' +
     ' person, address the ROLE instead: `@role:<slot>`. A role selector resolves to whoever' +
     ' holds it live AND parks for the next spawn if nobody does, so it cannot hard-refuse the' +

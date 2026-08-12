@@ -23,6 +23,11 @@ import { mockImplementationTyped, mockReturnOnceTyped, mockReturnTyped } from '.
 vi.mock('../identity', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../identity')>()),
   resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me', workspaceId: 'ws1' })),
+  deriveFleetMembership: vi.fn(() => ({ fleetSlug: null, fleetRole: null })),
+}));
+vi.mock('../dead-session-recipient-guidance', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../dead-session-recipient-guidance')>()),
+  lookupEndedSessions: vi.fn(async () => new Map()),
 }));
 vi.mock('../messages', () => ({
   sendMessage: vi.fn(),
@@ -111,6 +116,8 @@ import { describeMissedRecipients } from '../recipient-liveness';
 import { resolveWorkspaceHiveScope } from '../federation-scope';
 import { getPresence } from '../presence';
 import { fetchPresenceFleet } from '../presence-fleet';
+import { deriveFleetMembership } from '../identity';
+import { lookupEndedSessions } from '../dead-session-recipient-guidance';
 import { getFlag } from '@papercusp/flags/server';
 import { deriveBasedOn } from '../based-on';
 import { resolvePremiseStamps } from '../premise-resolve';
@@ -128,6 +135,8 @@ const livenessM = vi.mocked(describeMissedRecipients);
 const fedScopeM = vi.mocked(resolveWorkspaceHiveScope);
 const getPresenceM = vi.mocked(getPresence);
 const fetchPresenceFleetM = vi.mocked(fetchPresenceFleet);
+const deriveFleetMembershipM = vi.mocked(deriveFleetMembership);
+const lookupEndedSessionsM = vi.mocked(lookupEndedSessions);
 const flagM = vi.mocked(getFlag);
 const tool = (await import('./send')).default;
 
@@ -159,6 +168,8 @@ beforeEach(() => {
   remoteMapM.mockResolvedValue(new Map<string, number>() as never);
   // P-004: non-fleeted by default → a bare '*' stays a literal hive broadcast.
   fetchPresenceFleetM.mockResolvedValue(new Map() as never);
+  deriveFleetMembershipM.mockReturnValue({ fleetSlug: null, fleetRole: null });
+  lookupEndedSessionsM.mockResolvedValue(new Map());
   // D-084: nothing traceable read by default, so an ordinary send is unchanged.
   basedOnM.mockResolvedValue([] as never);
   // WI-6731: no premises resolved by default, so an ordinary send is unchanged.
@@ -733,6 +744,30 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     resolveM.mockResolvedValueOnce({ resolved: [], unknown: ['ghost'], ambiguous: [] } as never);
     const b = await body({ to: ['ghost'], summary: 'hi' });
     expect(b.results[0].message).not.toMatch(/OTHER, VALID recipient/);
+  });
+
+  it('EI-20252202491571252: a stale session refusal names the current fleet leader selector', async () => {
+    const endedLeaderSession = 'su-ce1406c1-8159-45fb-a569-41bc2f1aeb3b';
+    deriveFleetMembershipM.mockReturnValueOnce({
+      fleetSlug: 'nonp2p-bug-drain-luna-max-0811',
+      fleetRole: 'member',
+    });
+    resolveM.mockResolvedValueOnce({
+      resolved: [],
+      unknown: [endedLeaderSession],
+      ambiguous: [],
+    } as never);
+
+    const b = await body({ to: [endedLeaderSession], summary: 'escalate this issue' });
+
+    expect(b.results[0]).toMatchObject({
+      ok: false,
+      error: 'unknown_recipient',
+      unknown_recipients: [endedLeaderSession],
+    });
+    expect(b.results[0].message).toContain('@fleet-leader:nonp2p-bug-drain-luna-max-0811');
+    expect(lookupEndedSessionsM).toHaveBeenCalledWith([endedLeaderSession], 'ws1');
+    expect(sendM).not.toHaveBeenCalled();
   });
 });
 
