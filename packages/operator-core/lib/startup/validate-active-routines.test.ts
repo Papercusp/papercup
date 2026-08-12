@@ -418,6 +418,161 @@ describe('validateActiveRoutines — unregistered system-action handlers (EI-193
     // (which logs only on `ok`) prints nothing at all.
     const logged = consoleSpy.mock.calls.map((c) => String(c[0]));
     expect(logged.some((l) => l.includes('NO REGISTERED HANDLER'))).toBe(true);
+    // EI-18685043834332306: a first sighting is still FATAL, and now carries the facts that
+    // let a reader tell it apart from the ten-thousandth.
+    expect(logged.some((l) => l.startsWith('[routine-validation] FATAL'))).toBe(true);
+    expect(logged.some((l) => l.includes('[CHANGED: 1 NEW'))).toBe(true);
     consoleSpy.mockRestore();
+  });
+});
+
+/**
+ * EI-18685043834332306 — the two FATALs whose remedy is a human or code change fired
+ * identically on their first occurrence and their ten-thousandth, which teaches every reader
+ * to filter the line out (exactly how EI-10733 rotted for 30 days behind a working detector).
+ *
+ * The property under test is the TRANSITION rule: FATAL is reserved for a change in the SET of
+ * offenders, and an identical recurrence collapses to one chronic line that still carries the
+ * full evidence. Evidence is de-escalated, never dropped.
+ */
+describe('routine-validation FATAL recurrence aging (EI-18685043834332306)', () => {
+  const mockWs = 'papercusp-workspace';
+  const OFFENDER = {
+    install_slug: 'papercusp',
+    name: 'sweep-stalled-loops',
+    workspace_id: mockWs,
+    target_role: 'system:sweep-stalled-loops',
+    reschedule_interval_sec: null,
+    target_owner_id: null,
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    registeredRef.current = new Set<string>(); // the handler is missing — the row itself is fine
+    vi.mocked(workspaceRegistry.activeWorkspaceId).mockReturnValue(mockWs);
+    vi.mocked(harnessCore.resolveProject).mockResolvedValue({ slug: 'papercusp' } as any);
+  });
+  afterEach(() => vi.clearAllMocks());
+
+  it('collapses an UNCHANGED offender set to one chronic warn instead of a fresh FATAL', async () => {
+    const now = Date.now();
+    const mockSql = vi
+      .fn()
+      // 1. the active-routines SELECT
+      .mockResolvedValueOnce([OFFENDER])
+      // 2. readRoutineValidationMarks — this offender is already marked, i.e. chronic
+      .mockResolvedValueOnce([
+        {
+          install_slug: 'papercusp',
+          name: 'sweep-stalled-loops',
+          mark: { firstSeenMs: now - 7_200_000, lastSeenMs: now - 90_000, occurrences: 41 },
+        },
+      ])
+      // 3. claimRoutineValidationWave — we win the wave, so we own the report
+      .mockResolvedValueOnce([{ name: 'sweep-stalled-loops' }])
+      // 4. clearRoutineValidationMarks — nothing resolved, so the set did NOT shrink
+      .mockResolvedValueOnce([]);
+    mockOrgPgSql(vi.mocked(dbOrg.getOrgPg), mockSql);
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await enforceActiveRoutines();
+
+    const warned = warnSpy.mock.calls.map((c) => String(c[0]));
+    // The word FATAL itself has to flip, not just the suffix — otherwise the line still READS
+    // as fatal at a glance and the whole "distinguishable" ask fails.
+    expect(warned.some((l) => l.startsWith('[routine-validation] CHRONIC'))).toBe(true);
+    expect(warned.some((l) => l.includes('42nd consecutive check'))).toBe(true);
+    // Evidence is de-escalated, never dropped: the chronic line still names the condition.
+    expect(warned.some((l) => l.includes('NO REGISTERED HANDLER'))).toBe(true);
+    expect(errorSpy.mock.calls.map((c) => String(c[0]))).not.toContain(
+      expect.stringContaining('[routine-validation] FATAL'),
+    );
+    expect(errorSpy).not.toHaveBeenCalled();
+
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it('stays SILENT when a peer worker in the same boot wave already claimed the report', async () => {
+    // The ~15-identical-lines-per-second complaint in this file's header. The pause path
+    // solves its half with predicate serialization; this is the same trick for a condition
+    // that has no naturally self-limiting predicate.
+    const now = Date.now();
+    const mockSql = vi
+      .fn()
+      .mockResolvedValueOnce([OFFENDER])
+      .mockResolvedValueOnce([])
+      // claim matches 0 rows — a peer got there first
+      .mockResolvedValueOnce([])
+      // the disambiguating re-read: a mark INSIDE the wave window proves the peer is reporting
+      .mockResolvedValueOnce([
+        {
+          install_slug: 'papercusp',
+          name: 'sweep-stalled-loops',
+          mark: { firstSeenMs: now - 1_000, lastSeenMs: now - 1_000, occurrences: 7 },
+        },
+      ]);
+    mockOrgPgSql(vi.mocked(dbOrg.getOrgPg), mockSql);
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await enforceActiveRoutines();
+
+    expect(errorSpy).not.toHaveBeenCalled();
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it('FAILS OPEN: a lost wave with NO peer mark re-emits the un-aged FATAL', async () => {
+    // 0 rows from the wave gate is ambiguous — a peer won, OR the row never matched at all
+    // (identity drift, row deleted mid-boot). Only the first means someone else is reporting.
+    // Read the second as "silent" and the alarm vanishes with no error anywhere.
+    const mockSql = vi
+      .fn()
+      .mockResolvedValueOnce([OFFENDER])
+      .mockResolvedValueOnce([])
+      .mockResolvedValueOnce([]) // claim lost
+      .mockResolvedValueOnce([]); // ...and no peer mark appeared
+    mockOrgPgSql(vi.mocked(dbOrg.getOrgPg), mockSql);
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await enforceActiveRoutines();
+
+    const logged = errorSpy.mock.calls.map((c) => String(c[0]));
+    expect(logged.some((l) => l.startsWith('[routine-validation] FATAL'))).toBe(true);
+    expect(logged.some((l) => l.includes('NO REGISTERED HANDLER'))).toBe(true);
+    // It says so, rather than inventing recurrence facts it does not have.
+    expect(logged.some((l) => l.includes('episode row not matchable'))).toBe(true);
+
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
+  });
+
+  it('FAILS OPEN: a storage fault re-emits the un-aged FATAL rather than losing the alarm', async () => {
+    const mockSql = vi
+      .fn()
+      .mockResolvedValueOnce([OFFENDER])
+      .mockRejectedValue(new Error('relation "harness_shared.routines" does not exist'));
+    mockOrgPgSql(vi.mocked(dbOrg.getOrgPg), mockSql);
+
+    const errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    await enforceActiveRoutines();
+
+    const logged = errorSpy.mock.calls.map((c) => String(c[0]));
+    expect(logged.some((l) => l.startsWith('[routine-validation] FATAL'))).toBe(true);
+    expect(logged.some((l) => l.includes('aging unavailable'))).toBe(true);
+    expect(warnSpy.mock.calls.map((c) => String(c[0])).some((l) => l.includes('recurrence aging unavailable'))).toBe(true);
+
+    errorSpy.mockRestore();
+    warnSpy.mockRestore();
   });
 });
