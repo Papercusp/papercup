@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { describe, expect, it, vi } from 'vitest';
 import {
   buildAgentLaunchCommand,
@@ -379,6 +380,13 @@ describe('resolveResumeTarget', () => {
     const r = await resolveResumeTarget({});
     expect(r.ok).toBe(false);
     expect(r).toMatchObject({ error: 'not_found' });
+  });
+
+  it('falls back from an indexed native id to the session_turns owner when adv_sessions.session_id is null', () => {
+    const source = readFileSync(new URL('./agent-launch-core.ts', import.meta.url), 'utf8');
+    expect(source).toContain('FROM harness_shared.session_turns');
+    expect(source).toContain('coord_owner_id = (SELECT owner FROM indexed_owner)');
+    expect(source).toContain('sessionId: row.sessionId ?? sessionId!');
   });
 });
 

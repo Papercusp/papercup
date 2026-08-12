@@ -171,16 +171,25 @@ export async function resolveResumeTarget(ref: {
   // (see advSessionsByCoordOwner's note), so a workspace predicate could only
   // drop valid rows.
   const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
+    WITH indexed_owner AS (
+      SELECT owner
+        FROM harness_shared.session_turns
+       WHERE ${sessionId ? sql`session_id = ${sessionId}` : sql`FALSE`}
+         AND owner IS NOT NULL
+       ORDER BY ingested_at DESC
+       LIMIT 1
+    )
     SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
            window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code,
            ended_by
       FROM harness_shared.adv_sessions
      WHERE ${
        sessionId
-         ? sql`session_id = ${sessionId}`
+         ? sql`session_id = ${sessionId}
+                 OR coord_owner_id = (SELECT owner FROM indexed_owner)`
          : sql`coord_owner_id LIKE ${agentId + '%'}`
      }
-     ORDER BY started_at DESC
+     ORDER BY ${sessionId ? sql`(session_id = ${sessionId}) DESC,` : sql``} started_at DESC
      LIMIT 1
   `;
   if (!rows.length) {
@@ -193,7 +202,7 @@ export async function resolveResumeTarget(ref: {
     };
   }
   const row: AdvSessionRow = mapAdvSessionRow(rows[0]);
-  if (!row.sessionId) {
+  if (!row.sessionId && !sessionId) {
     return {
       ok: false,
       error: 'no_native_session_id',
@@ -206,7 +215,11 @@ export async function resolveResumeTarget(ref: {
   const host: PsuPtyHost | null = row.coordOwnerId ? findLiveHost(row.coordOwnerId) : null;
   return {
     ok: true,
-    sessionId: row.sessionId,
+    // Codex cannot be born with a caller-selected native id, so its adv row
+    // legitimately carries NULL. session_turns indexes the rollout uuid and
+    // its coord owner; when that exact-pin fallback found the row, preserve the
+    // requested native id instead of degrading to the interactive picker.
+    sessionId: row.sessionId ?? sessionId!,
     ownerId: row.coordOwnerId,
     agent: row.agent,
     cwd: row.cwd,
