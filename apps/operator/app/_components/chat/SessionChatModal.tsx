@@ -126,6 +126,8 @@ import PanelToggleButton, { PANEL_TOOLBAR_BUTTON_STYLE } from './PanelToggleButt
  *  (importing it would drag PG/node builtins into the SPA bundle). */
 interface RosterPayload {
   active: HudRosterEntry[];
+  /** Terminal adv-session rows. These are historical evidence, not live peers. */
+  ended?: Array<{ coordOwnerId?: string | null; endedAt?: string | null }>;
   pending?: HudRosterEntry[];
   /** WI-6376's launch-record tier: sessions whose launch is durably recorded but
    *  which have not registered in the roster yet. WI-6440 reads it here so the
@@ -1102,6 +1104,16 @@ export default function SessionChatModal({
     return (payload.starting ?? []).find((e) => e.ownerId === sessionOwnerId) ?? null;
   }, [actionRoster.data, sessionOwnerId]);
 
+  // `active`/`pending`/`starting` answer whether an owner is live or booting;
+  // the terminal tier is the separate historical answer. Keeping it separate
+  // prevents an ended owner from falling through to the same "not found" copy
+  // as an id that has never existed.
+  const endedEntry = useMemo<{ coordOwnerId?: string | null; endedAt?: string | null } | null>(() => {
+    const payload = actionRoster.data?.[0];
+    if (!payload || !sessionOwnerId) return null;
+    return (payload.ended ?? []).find((e) => e.coordOwnerId === sessionOwnerId) ?? null;
+  }, [actionRoster.data, sessionOwnerId]);
+
   // The modal's resolver is intentionally Claude-first, but a live Codex/OMP
   // roster row is not a missing Claude session. Keep the agent kind as the
   // authoritative discriminator so the popup cannot blame liveness or mount
@@ -1111,6 +1123,11 @@ export default function SessionChatModal({
     !chatSupported && actionRosterEntry?.agent?.trim()
       ? actionRosterEntry.agent.trim().toLowerCase()
       : null;
+
+  const rosterReady = actionRoster.data?.[0] != null && actionRoster.error == null;
+  const agentKnown = Boolean(actionRosterEntry || startingEntry || endedEntry || resolved);
+  const unknownSession = rosterReady && !resolving && resolveError == null && !agentKnown;
+  const sessionEnded = Boolean(endedEntry) || resolved?.active === false;
 
   // ── WI-6367: the "starting up" window ──────────────────────────────────────
   // True while THIS modal is showing a session that has neither registered in
@@ -1123,7 +1140,8 @@ export default function SessionChatModal({
   // handshake with the caller.
   const launchedByThisView =
     pendingLaunch != null && sessionOwnerId != null && pendingLaunch.ownerId === sessionOwnerId;
-  const startingUp = !resolved && !actionRosterEntry && (launchedByThisView || startingEntry != null);
+  const startingUp =
+    !resolved && !actionRosterEntry && !endedEntry && (launchedByThisView || startingEntry != null);
 
   // WI-6821: the server OBSERVED this launch die (terminal process gone, never
   // registered) rather than inferring it from elapsed time. Server-derived on
@@ -1230,8 +1248,8 @@ export default function SessionChatModal({
     if (fleetPeers != null) return false;
     const payload = actionRoster.data?.[0];
     if (!payload) return false;
-    return isUnknownSession(payload.active ?? [], sessionOwnerId);
-  }, [fleetPeers, actionRoster.data, sessionOwnerId]);
+    return unknownSession && isUnknownSession(payload.active ?? [], sessionOwnerId);
+  }, [fleetPeers, actionRoster.data, sessionOwnerId, unknownSession]);
 
   /* Room-aware default, following the NEWER of the two precedents in this file
      (Orders' D-009, not the dossier's flat withDefault(true)) — and it matters
@@ -1416,13 +1434,13 @@ export default function SessionChatModal({
             // the status band — so the pill and that percentage cannot disagree
             // about which limit is in force.
             //
-            // `?? null` is correct HERE, unlike accountPin/launchArgv above:
-            // ContextLimitAction.currentLimit() reads any non-number as "no
-            // explicit limit" and renders 'auto', so undefined and null are
-            // already the same reading on this axis. Omitting the key entirely
-            // is what made the pill read 'auto' for EVERY session, including
-            // ones with a real stored limit (EI-20207719407463922).
-            compactionLimit: actionRosterEntry?.compactionLimit ?? null,
+            // Preserve the roster value exactly, including `undefined` for an
+            // older/partial payload. Omitting the key entirely made the pill
+            // read 'auto' for EVERY session, including ones with a real stored
+            // limit (EI-20207719407463922); preserving the raw value keeps the
+            // action context honest and leaves unknown distinct from an
+            // explicit null for future axis readers.
+            compactionLimit: actionRosterEntry?.compactionLimit,
           }
         : null,
     [sessionOwnerId, ownerLabel, actionRosterEntry, resolved],
@@ -1534,6 +1552,7 @@ export default function SessionChatModal({
             <AgentOrders
               ownerId={sessionOwnerId ?? ''}
               enabled={ordersVisible}
+              ownerKnown={unknownSession ? false : rosterReady ? agentKnown : undefined}
               onClose={() => void setOrdersOpen(false)}
             />
           </div>
@@ -1748,6 +1767,10 @@ export default function SessionChatModal({
                   : "This session hasn't come online. The launch may have failed — try launching it again."
                 : 'Starting up — waiting for this session to come online…'}
           </div>
+        ) : unknownSession ? (
+          <div style={BANNER_STYLE} data-testid="session-chat-unknown-session">
+            No agent with this id was found in the current roster or session history.
+          </div>
         ) : !resolved ? (
           <div style={BANNER_STYLE}>No recent Claude session found for this agent.</div>
         ) : streamUrl && sessionOwnerId ? (
@@ -1897,6 +1920,9 @@ export default function SessionChatModal({
               // WI-6821: and the rail must not keep saying "starting up" about a
               // launch the banner beside it already reports as dead.
               launchFailed={launchFailed}
+              sessionEnded={sessionEnded}
+              sessionEndedAt={endedEntry?.endedAt ?? null}
+              unknownSession={unknownSession}
               onClose={() => void setDossierOpen(false)}
             />
           </div>
@@ -1938,7 +1964,7 @@ export default function SessionChatModal({
                   </button>
                 </header>
                 <div className="pc-peers__empty" role="status">
-                  This session isn’t in the current roster — its id may be truncated or stale, so
+                  No agent with this id was found in the current roster or session history, so
                   fleet peers can’t be shown.
                 </div>
               </div>
