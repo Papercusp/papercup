@@ -773,6 +773,41 @@ describe('session:request-compaction — P-016 flush-enforcement gate', () => {
     expect(b.note).toContain('WI-300 (40m old)');
   });
 
+  it('P-016: a stale-checkpoint retry gets the bounded mechanical fallback instead of stranding compaction', async () => {
+    const fortyMinAgo = Date.now() - 40 * 60_000;
+    buildCarryBrief.mockResolvedValue({
+      ...emptyBrief,
+      heldItems: [
+        {
+          id: 'WI-303',
+          title: 'long-running',
+          body: null,
+          harness: 'papercup',
+          checkpoint: 'old flush',
+          checkpointUpdatedAtMs: fortyMinAgo,
+        },
+      ],
+    });
+
+    const first = body(await call({ focus: 'x' }));
+    expect(first).toMatchObject({ ok: false, error: 'flush-required' });
+    expect(first.tripwires).toEqual([
+      expect.objectContaining({ kind: 'stale-checkpoint', subject: 'WI-303' }),
+    ]);
+    expect(injectIntoHost).not.toHaveBeenCalled();
+
+    // The safety refusal is intentionally one-shot: if the caller cannot refresh
+    // the stale note before retrying, the gate writes a mechanical fallback and
+    // proceeds so context shedding can never become a permanent strand.
+    const second = body(await call({ focus: 'x' }));
+    expect(second).toMatchObject({ ok: true, requested: true });
+    expect(second.mechanicalFallback).toBeDefined();
+    expect(second.staleCheckpoints).toEqual([
+      expect.objectContaining({ id: 'WI-303', reason: 'stale' }),
+    ]);
+    expect(injectIntoHost).toHaveBeenCalledTimes(1);
+  });
+
   it('P-003: a FRESH checkpoint (within the stale window) is not flagged', async () => {
     buildCarryBrief.mockResolvedValue({
       ...emptyBrief,
