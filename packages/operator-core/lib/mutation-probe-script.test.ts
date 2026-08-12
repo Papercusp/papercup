@@ -139,7 +139,7 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
       '--mutate',
       's|if (x > 0) {|if (false) {|',
       '--test',
-      'grep -q "^beta$" {}',
+      'test -s {}',
     ]);
     expect(code).toBe(2);
     // The cause, not just "changed NOTHING".
