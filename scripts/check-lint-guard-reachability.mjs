@@ -185,15 +185,16 @@ export const ACKNOWLEDGED_UNREACHABLE = new Map([
   // was: wiring 8 rotted guards in one commit is the fleet-reddening move this
   // script's own header warns against. The ratchet is what this buys immediately —
   // a NEWLY orphaned gen:*:check now fails the build on the commit that orphans it.
-  [
-    'gen:authored-docs:check',
-    'drift gate for the 873-doc PG-canonical corpus (plan claude-md-projection-from-pg-2026-08-10). ' +
-      'MEASURED CONSEQUENCE 2026-08-12: 4 projected docs were hand-edited and sat drifted ~20h with ' +
-      'nothing reporting it. Needs PG, so GitHub CI cannot run it meaningfully (it exits 1 when the ' +
-      'DB is unreachable rather than degrading like gen:doc-plans-index:check) — the wire-or-retire ' +
-      'call is WHERE, not whether. Do not gate it on green-checkpoint without deciding whether doc ' +
-      'drift should block code deploys for the whole fleet.',
-  ],
+  // `gen:authored-docs:check` USED TO SIT HERE and is now GONE from this set — the SECOND
+  // graduation, and the first from the gen:* family this census only started seeing hours
+  // earlier. It is now REGISTERED in REPO_WIDE_INVARIANT_GUARDS (scripts/affected-tests.mjs),
+  // keyed on apps/operator-docs/src/content/docs/** + the projector, so a hand-edit to a
+  // projected doc attaches it to that very change. Two enabling fixes made registration honest
+  // rather than theatre: project-authored-docs.ts now SKIPS cleanly with no DB (so it does not
+  // fail every CI run), and operator-core declares the script the registration names.
+  // Left as a comment rather than silently deleted, exactly like the graduation above: entries
+  // here are debts to pay, not a parking lot. Watermark 22 → 21 with it — the only direction
+  // it may move once a population widening has been paid for.
   ['gen:claude-md-manifest:check', 'logic-test only; deepen to a real-tree assertion'],
   ['gen:compaction:check', 'pending wire-or-retire decision'],
   ['gen:doc-projections:check', 'pending wire-or-retire decision; sibling per-page gen:doc-*:check are CI-wired'],
@@ -222,7 +223,7 @@ export const ACKNOWLEDGED_UNREACHABLE = new Map([
  * build rather than landing here. Raising it again to park a newly-rotted guard would be
  * precisely the abuse the sibling `KNOWN_DARK_FLAGS` rule exists to stop.
  */
-export const UNREACHABLE_HIGH_WATERMARK = 22;
+export const UNREACHABLE_HIGH_WATERMARK = 21;
 
 /**
  * Guards that ARE enforced, but only over PART of what they scan (EI-19461064447747454).
