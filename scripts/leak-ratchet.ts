@@ -24,6 +24,16 @@
  *   0  held      — the run exercised files and nothing is above baseline
  *   1  regressed — a lens on some file, or a post-mortem fire, is above baseline
  *   2  no data   — the run recorded nothing, or --update was refused
+ *   3  unadopted — no baseline file exists yet, so nothing could be judged
+ *
+ * 3 exists for the same reason 2 does, one level up. Comparing a real run against
+ * an ABSENT baseline is arithmetically identical to comparing it against an empty
+ * one: every leaking file is "not in the baseline", so the honest-looking verdict
+ * is `regressed` with one finding per pre-existing leak. That is absence rendered
+ * as a verdict — it accuses the run of regressions that predate the baseline and
+ * would send whoever wired this in to go fix leaks nobody ever promised were gone.
+ * So the file's existence is checked HERE, at the boundary that knows about files;
+ * compareToBaseline stays pure and keeps treating an empty baseline as empty.
  *
  * --update lowers numbers and removes entries. It cannot add one and there is no
  * flag that makes it: a newly-leaking file is a regression to fix, not a row to
@@ -80,7 +90,8 @@ const report = relativizeReport(
   REPO_ROOT,
 );
 const staleSpan = describeStaleSpan(report, MAX_SINGLE_RUN_SPAN_MS);
-const baseline = parseBaseline(existsSync(baselinePath) ? readFileSync(baselinePath, 'utf8') : null);
+const baselineExists = existsSync(baselinePath);
+const baseline = parseBaseline(baselineExists ? readFileSync(baselinePath, 'utf8') : null);
 const result = compareToBaseline(report, baseline);
 
 if (seed) {
@@ -107,6 +118,28 @@ if (seed) {
     `seeded ${baselinePath} from ${report.denominator.observed} observed file(s): ${Object.keys(seeded.baseline.files).length} leaking file(s), ${Object.keys(seeded.baseline.postMortemFires).length} post-mortem fire(s)\n`,
   );
   process.exit(0);
+}
+
+// Everything below judges the run AGAINST the baseline, so an absent baseline
+// makes every verdict below meaningless rather than merely empty. --seed is the
+// one mode that legitimately runs without one, and it has already returned.
+if (!baselineExists) {
+  const scope = [
+    Number.isFinite(sinceMinutes) ? `--since-minutes ${sinceMinutes}` : null,
+    flagValue(argv, '--dir') ? `--dir ${dir}` : null,
+  ]
+    .filter(Boolean)
+    .join(' ');
+  if (json) {
+    process.stdout.write(`${JSON.stringify({ dir, baselinePath, verdict: 'unadopted', observedFiles: report.denominator.observed }, null, 2)}\n`);
+  } else {
+    process.stderr.write(
+      `no baseline at ${baselinePath}: nothing has been adopted, so this run cannot be judged.\n` +
+        `This is NOT a pass and NOT a regression — the ${report.denominator.observed} file(s) observed were compared against nothing.\n` +
+        `Adopt one from a run you trust: npm run leaks:ratchet -- ${scope ? `${scope} ` : ''}--seed\n`,
+    );
+  }
+  process.exit(3);
 }
 
 if (staleSpan) process.stderr.write(`⚠ ${staleSpan}. Scope with --since-minutes <N> or a dedicated --dir.\n`);
