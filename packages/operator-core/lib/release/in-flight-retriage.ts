@@ -42,6 +42,15 @@ import type { GateVerdictTarget } from './gate-verdict-target';
  *  (a crashed/orphaned run that never reached its final write), not a genuinely long refire. */
 export const IN_FLIGHT_RETRIAGE_MAX_AGE_MS = 3 * 60 * 60_000;
 
+/**
+ * WI-38224: wall-clock ms at which THIS PROCESS booted — the instant its module graph was fixed.
+ *
+ * Derived from `process.uptime()` rather than module-load time on purpose: a module can be loaded
+ * long after boot (lazily, or through a second module record), and it is the PROCESS's age that
+ * bounds which code it can possibly be running. Evaluated once, so it never drifts.
+ */
+export const RUNNER_PROCESS_BOOTED_AT_MS = Date.now() - Math.round(process.uptime() * 1000);
+
 /** What a currently-running stale-candidate auto-refire tells a concurrent reader about itself. */
 export interface InFlightRetriageInfo {
   /** The candidate the CACHED red (`gate_health.lastFrom` / the verdict a reader has in hand) was
@@ -68,6 +77,24 @@ export interface InFlightRetriageInfo {
   /** The hard ceiling on `totalRefires`; with every rescue succeeding this, not `maxRefires`, is
    *  what eventually stops the run. */
   absoluteCeiling?: number;
+  /** WI-38224: wall-clock ms at which the gate RUNNER PROCESS booted.
+   *
+   *  Every other field here describes the CANDIDATE — the code being judged. This one describes
+   *  the JUDGE, and it is the only field that can answer "is this verdict even capable of
+   *  reflecting the runner fix that just landed?".
+   *
+   *  It matters because `runGreenCheckpoint` recurses IN-PROCESS on an auto-refire (same pid — see
+   *  green-checkpoint.ts's own note at the recursion site). The refire re-cuts onto a NEWER
+   *  candidate, so every candidate-shaped field here advances and the run looks like it is tracking
+   *  tip; the runner's own module graph does not, because Node loaded it once at boot. A fix
+   *  committed to green-checkpoint.ts after that instant therefore cannot take effect in this run
+   *  no matter how many times it refires — and without this stamp there is nothing in the marker a
+   *  reader could use to notice, so a still-red gate reads as "the fix didn't work" and invites
+   *  someone to re-fix an already-correct guard. Pair it with {@link describeRunnerCodeFreshness}.
+   *
+   *  Optional: a marker written before WI-38224 carries none, which reads as `unknown`, never as
+   *  fresh. */
+  runnerBootedAtMs?: number;
 }
 
 /** The shape persisted to `gate_health.inFlightRetriage` — `InFlightRetriageInfo` plus the
@@ -129,6 +156,80 @@ export function parseInFlightRetriage(raw: unknown, nowMs: number = Date.now()):
     ...(typeof r.charged === 'boolean' ? { charged: r.charged } : {}),
     ...(typeof r.totalRefires === 'number' ? { totalRefires: r.totalRefires } : {}),
     ...(typeof r.absoluteCeiling === 'number' ? { absoluteCeiling: r.absoluteCeiling } : {}),
+    // WI-38224 — same rule as the three above: carried here or it never reaches a reader.
+    ...(typeof r.runnerBootedAtMs === 'number' ? { runnerBootedAtMs: r.runnerBootedAtMs } : {}),
+  };
+}
+
+/** What {@link describeRunnerCodeFreshness} tells a reader about the JUDGE (not the candidate). */
+export interface RunnerCodeFreshness {
+  /** `stale` ⇒ the runner's own code was committed AFTER this run's process booted, so the run
+   *  cannot be executing it. `fresh` ⇒ the runner booted at or after its last code commit.
+   *  `unknown` ⇒ one of the two instants is missing — never collapse this to `fresh`. */
+  verdict: 'stale' | 'fresh' | 'unknown';
+  /** Ready to surface verbatim; on `stale` it carries the operative warning, not just the fact. */
+  note: string;
+  /** How far the runner's code moved past its own process boot. Positive only when `stale`. */
+  behindByMs: number | null;
+  runnerBootedAtMs: number | null;
+  runnerCodeCommittedAtMs: number | null;
+}
+
+/**
+ * PURE. Is this run's verdict even CAPABLE of reflecting the runner code currently in the tree?
+ *
+ * The question this exists to kill: a gate stays red after a correct fix to green-checkpoint.ts
+ * lands, and every available signal points at the fix — the marker shows the run refiring onto
+ * newer and newer candidates, the fix is committed, the tests pass — so the natural reading is
+ * "the fix did not work" and the natural next move is to re-fix an already-correct guard. The
+ * actual mechanism is that the auto-refire recurses IN-PROCESS: the candidate advances, the
+ * runner's module graph cannot, because Node loaded it at boot. A run that booted before the fix
+ * commit will keep producing pre-fix verdicts until it ends, and the NEXT run — a fresh process —
+ * picks the fix up on its own. Nothing is broken; the verdict is just older than it looks.
+ *
+ * Deliberately takes the runner's last-commit instant as an ARGUMENT rather than shelling out to
+ * git: this stays pure and unit-testable, and the caller already knows which runner file it cares
+ * about (`TZ=UTC git log -1 --format=%cI -- apps/operator/lib/release/green-checkpoint.ts`).
+ *
+ * ⚠ A missing input yields `unknown`, never `fresh` — an unstamped marker (written before
+ * WI-38224) must not read as a positive freshness claim.
+ */
+export function describeRunnerCodeFreshness(
+  marker: Pick<StoredInFlightRetriage, 'runnerBootedAtMs'> | null | undefined,
+  runnerCodeCommittedAtMs: number | null | undefined,
+): RunnerCodeFreshness {
+  const bootedAt = typeof marker?.runnerBootedAtMs === 'number' ? marker.runnerBootedAtMs : null;
+  const committedAt = typeof runnerCodeCommittedAtMs === 'number' ? runnerCodeCommittedAtMs : null;
+  if (bootedAt == null || committedAt == null) {
+    const missing = bootedAt == null ? 'the marker carries no runnerBootedAtMs (written before WI-38224, or by a path that does not stamp it)' : 'no runner-code commit instant was supplied';
+    return {
+      verdict: 'unknown',
+      note: `Runner-code freshness UNKNOWN — ${missing}. Do NOT read this as fresh: an unstamped run may still be executing gate code older than the tree's.`,
+      behindByMs: null,
+      runnerBootedAtMs: bootedAt,
+      runnerCodeCommittedAtMs: committedAt,
+    };
+  }
+  if (committedAt > bootedAt) {
+    const behindByMs = committedAt - bootedAt;
+    const mins = Math.max(1, Math.round(behindByMs / 60_000));
+    return {
+      verdict: 'stale',
+      note:
+        `⚠ RUNNER CODE IS STALE — this run's process booted ${new Date(bootedAt).toISOString()}, but the gate runner's own code was last committed ${new Date(committedAt).toISOString()} (${mins}m later). ` +
+        `The auto-refire recurses IN-PROCESS, so every refire in this run executes the runner code the process booted with: a fix committed after boot CANNOT take effect here, however many newer candidates it re-cuts onto. ` +
+        `Read this run's verdict as coming from PRE-FIX runner code — it is NOT evidence the fix failed, and re-fixing the guard is the wrong move. The next run is a fresh process and picks the fix up on its own.`,
+      behindByMs,
+      runnerBootedAtMs: bootedAt,
+      runnerCodeCommittedAtMs: committedAt,
+    };
+  }
+  return {
+    verdict: 'fresh',
+    note: `Runner code is fresh — the process booted ${new Date(bootedAt).toISOString()}, at or after its own last code commit ${new Date(committedAt).toISOString()}, so this run's verdict reflects the runner code in the tree.`,
+    behindByMs: null,
+    runnerBootedAtMs: bootedAt,
+    runnerCodeCommittedAtMs: committedAt,
   };
 }
 

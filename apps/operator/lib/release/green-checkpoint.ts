@@ -49,6 +49,9 @@ import {
   type RangeChangeSet,
 } from './git-ops';
 import { quietCutSecFromEnv } from '@papercusp/operator-core/lib/release/quiet-cut';
+// WI-38224: a plain constant, so a STATIC import is correct here even though this file otherwise
+// prefers dynamic ones — it must be evaluated in THIS process to describe THIS process.
+import { RUNNER_PROCESS_BOOTED_AT_MS } from '@papercusp/operator-core/lib/release/in-flight-retriage';
 // EI-20063423357086565 — the uncommitted-working-tree reader, reused rather than re-derived:
 // it includes untracked files and deliberately avoids porcelain's whitespace-sensitive
 // column parse. See `failingFilesUncommitted` below.
@@ -226,6 +229,12 @@ export interface CheckpointDeps {
     /** Refires performed this run, charged or not — the counter bounded by the absolute ceiling. */
     totalRefires?: number;
     absoluteCeiling?: number;
+    /** WI-38224: when THIS runner process booted. Every other field here describes the candidate
+     *  being judged; this one describes the judge, and it is what lets a reader tell a verdict
+     *  produced by pre-fix runner code from one that actually exercised the fix. The refire below
+     *  recurses in-process, so this stays put while the candidate fields advance — which is the
+     *  whole point. See `describeRunnerCodeFreshness` in @papercusp/operator-core. */
+    runnerBootedAtMs?: number;
   }): Promise<void>;
   /**
    * EI-19326481022404981: called right alongside `recordInFlightRetriage`, BEFORE the
@@ -4587,6 +4596,10 @@ export async function runGreenCheckpoint(
             charged: verdict.chargeRefire,
             totalRefires: next.totalRefires,
             absoluteCeiling: refireAbsoluteCeiling(autoRefireCapFromEnv()),
+            // WI-38224: stamped on EVERY refire publish, not just the first — the value is constant
+            // by construction (the refire recurses in-process), and that constancy beside advancing
+            // candidate fields is exactly the signal a reader needs.
+            runnerBootedAtMs: RUNNER_PROCESS_BOOTED_AT_MS,
           })
           .catch(() => {});
         // EI-19326481022404981: this run is about to ABANDON `candidate` for `tip` — retire
@@ -4644,6 +4657,9 @@ export async function runGreenCheckpoint(
               charged: verdict.chargeRefire,
               totalRefires: next.totalRefires,
               absoluteCeiling: refireAbsoluteCeiling(autoRefireCapFromEnv()),
+              // WI-38224 — see the sibling publish site above; both arms must stamp it, or the
+              // gate-id rescue arm silently produces unstamped markers that read as `unknown`.
+              runnerBootedAtMs: RUNNER_PROCESS_BOOTED_AT_MS,
             })
             .catch(() => {});
           // EI-19326481022404981: same rationale as the test-file rescue arm above — this

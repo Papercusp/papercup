@@ -16,6 +16,8 @@ import {
   describeRefireBudget,
   parseInFlightRetriage,
   IN_FLIGHT_RETRIAGE_MAX_AGE_MS,
+  describeRunnerCodeFreshness,
+  RUNNER_PROCESS_BOOTED_AT_MS,
 } from './in-flight-retriage';
 
 const NOW = Date.parse('2026-07-26T02:00:00Z');
@@ -163,5 +165,88 @@ describe('attributeRetriageToRun', () => {
     expect(attributeRetriageToRun(marker, {})?.belongsToRun).toBeNull();
     expect(attributeRetriageToRun(marker, undefined)?.belongsToRun).toBeNull();
     expect(attributeRetriageToRun(marker, { started_at: 'not-a-date' })?.belongsToRun).toBeNull();
+  });
+});
+
+/**
+ * WI-38224 — the JUDGE's own freshness, as opposed to the candidate's.
+ *
+ * Every other field on the marker describes the code being judged. `runnerBootedAtMs` describes
+ * the code doing the judging, and it exists because `runGreenCheckpoint` recurses IN-PROCESS on an
+ * auto-refire: the candidate fields advance onto newer and newer tips while the runner's module
+ * graph stays pinned to whatever was on disk at boot. A fix committed to green-checkpoint.ts after
+ * that instant cannot take effect in the run, so a gate that stays red after a correct fix looks
+ * exactly like a fix that did not work — and the cheap next move is to re-fix a correct guard.
+ *
+ * Run: cd packages/operator-core && npx vitest run lib/release/in-flight-retriage.test.ts
+ */
+describe('describeRunnerCodeFreshness — is this verdict even capable of reflecting the fix?', () => {
+  const BOOT = Date.parse('2026-08-12T15:40:14Z');
+
+  it('⭐ reports STALE when the runner\'s code was committed AFTER its process booted', () => {
+    const fix = Date.parse('2026-08-12T15:55:33Z'); // 15m after boot — the real WI-38218 case
+    const f = describeRunnerCodeFreshness({ runnerBootedAtMs: BOOT }, fix);
+    expect(f.verdict).toBe('stale');
+    expect(f.behindByMs).toBe(fix - BOOT);
+    // The note must carry the OPERATIVE warning, not merely the timestamps: its whole job is to
+    // stop the reader concluding the fix failed.
+    expect(f.note).toMatch(/NOT evidence the fix failed/i);
+    expect(f.note).toMatch(/next run/i);
+  });
+
+  it('⭐ reports FRESH when the process booted at or after its own last code commit', () => {
+    expect(describeRunnerCodeFreshness({ runnerBootedAtMs: BOOT }, BOOT - 60_000).verdict).toBe('fresh');
+    // Boundary: committed at the same instant is NOT stale — the process can have loaded it.
+    expect(describeRunnerCodeFreshness({ runnerBootedAtMs: BOOT }, BOOT).verdict).toBe('fresh');
+  });
+
+  it('⭐ answers UNKNOWN (never fresh) when either instant is missing — an unstamped marker is not a freshness claim', () => {
+    expect(describeRunnerCodeFreshness({}, Date.now()).verdict).toBe('unknown');
+    expect(describeRunnerCodeFreshness({ runnerBootedAtMs: BOOT }, null).verdict).toBe('unknown');
+    expect(describeRunnerCodeFreshness(null, null).verdict).toBe('unknown');
+    expect(describeRunnerCodeFreshness(undefined, undefined).note).toMatch(/Do NOT read this as fresh/i);
+  });
+
+  /**
+   * CONTROL — a deliberately-wrong implementation, kept permanently so the assertions above are
+   * proven to be capable of failing. The natural wrong version compares the wrong direction (asking
+   * whether the runner booted after the commit and calling THAT stale); it must not satisfy the
+   * stale case. Without this, all three tests above would also pass against a function that always
+   * returned 'stale'.
+   */
+  it('⭐ CONTROL: a reversed-comparison implementation FAILS the stale case, so the assertions bite', () => {
+    const reversed = (bootedAt: number, committedAt: number) => (bootedAt > committedAt ? 'stale' : 'fresh');
+    const fix = Date.parse('2026-08-12T15:55:33Z');
+    expect(reversed(BOOT, fix)).toBe('fresh'); // the wrong answer …
+    expect(describeRunnerCodeFreshness({ runnerBootedAtMs: BOOT }, fix).verdict).toBe('stale'); // … and the right one
+  });
+
+  /**
+   * CALIBRATION — the control above only means something if the real subject is wired to a real
+   * process. Derived from process.uptime(), so it must be in the past and no older than the process.
+   */
+  it('RUNNER_PROCESS_BOOTED_AT_MS describes THIS process — in the past, and consistent with its uptime', () => {
+    const now = Date.now();
+    expect(RUNNER_PROCESS_BOOTED_AT_MS).toBeLessThanOrEqual(now);
+    expect(now - RUNNER_PROCESS_BOOTED_AT_MS).toBeLessThanOrEqual(Math.ceil(process.uptime() * 1000) + 5_000);
+  });
+
+  it('⭐ parseInFlightRetriage CARRIES runnerBootedAtMs — the field is dropped unless the explicit literal lists it', () => {
+    const raw = {
+      fromCandidate: 'aaaaaaa',
+      refiringCandidate: 'bbbbbbb',
+      refireAttempt: 0,
+      maxRefires: 2,
+      failingFiles: [],
+      observedAtMs: Date.now(),
+      runnerBootedAtMs: BOOT,
+    };
+    expect(parseInFlightRetriage(raw)?.runnerBootedAtMs).toBe(BOOT);
+    // …and a pre-WI-38224 marker parses fine, simply without the field (=> 'unknown', not 'fresh').
+    const { runnerBootedAtMs: _omitted, ...legacy } = raw;
+    const parsedLegacy = parseInFlightRetriage(legacy);
+    expect(parsedLegacy).not.toBeNull();
+    expect(parsedLegacy?.runnerBootedAtMs).toBeUndefined();
+    expect(describeRunnerCodeFreshness(parsedLegacy, Date.now()).verdict).toBe('unknown');
   });
 });
