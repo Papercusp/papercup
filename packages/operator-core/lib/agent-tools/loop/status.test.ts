@@ -62,6 +62,26 @@ describe('loop:status — ambient workspace transaction safety (EI-2022929284875
   });
 });
 
+describe('loop:status owner-scoped argument contract (EI-20232692935534790)', () => {
+  it('makes the intentional owner-only scope explicit and rejects misleading harness input', () => {
+    const tool = statusTool as unknown as {
+      description?: string;
+      guidance?: { when?: string };
+      args: {
+        safeParse: (value: unknown) => { success: boolean };
+        shape: { ownerId?: { description?: string } };
+      };
+    };
+
+    expect(tool.description).toMatch(/owner-scoped/i);
+    expect(tool.description).toMatch(/does not take a `harness` argument/i);
+    expect(tool.guidance?.when).toMatch(/do not pass `harness`/i);
+    expect(tool.args.shape.ownerId?.description).toMatch(/owner-scoped/i);
+    expect(tool.args.safeParse({ ownerId: 'another-owner' }).success).toBe(true);
+    expect(tool.args.safeParse({ harness: 'papercusp' }).success).toBe(false);
+  });
+});
+
 beforeEach(() => {
   _resetStoreIdentityForTests();
   getLoopStatusMock.mockReset();
