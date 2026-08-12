@@ -1,6 +1,6 @@
 /**
- * spawn-child's op_status writer is GATED (P-071 / D-063, plan
- * retire-mug-kettle-su-only-2026-08-09).
+ * spawn-child's op_status writer is permanently retired (P-071 / D-063,
+ * P-068 / D-098, plan retire-mug-kettle-su-only-2026-08-09).
  *
  * `buildDefaultSpawnChildDeps().startPlan` is the promote-time entry to the
  * RETIRED plan operational axis: it wrote `op_status='started'` on a freshly
@@ -11,9 +11,9 @@
  *
  * Two properties, and the second is the one that rots:
  *   1. RETIRED ⇒ no write at all (not "a write that no-ops").
- *   2. CALIBRATION ⇒ with the tier flag ON the write still happens. Without this
- *      a gate hard-wired to refuse would satisfy every assertion here while
- *      making the tier untestable — `case: 'cutover'` means REVERSIBLE.
+ *   2. PERMANENT ⇒ the former tier flag cannot re-enable the write. The flag
+ *      was deleted by P-068; keeping the old flag-store mock here makes an
+ *      accidental resurrection of that escape hatch observable.
  *
  * This mocks `@papercusp/flags/server` rather than `pot/started`, deliberately:
  * mocking `mugKettleSystemEnabled` would prove only that spawn-child calls a
@@ -26,7 +26,7 @@
  */
 import { describe, it, expect, beforeEach, vi } from 'vitest';
 
-/** The tier flag's answer, per test. `null` ⇒ the flag store throws. */
+/** The former tier flag's answer, per test. `null` ⇒ the flag store throws. */
 const TIER = vi.hoisted(() => ({ on: false as boolean | null }));
 vi.mock('@papercusp/flags/server', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -94,21 +94,22 @@ describe('spawn-child startPlan — the retired op_status axis', () => {
     expect(SQL.calls).toEqual([]);
   });
 
-  it('CALIBRATION: with the tier flag ON the write still happens (the gate is reversible)', async () => {
+  it('PERMANENT: an old flag-store ON answer cannot re-enable the write', async () => {
     TIER.on = true;
     SQL.rows = [{ op_status: 'started' }];
-    await expect(startPlan()).resolves.toBe('started');
-    expect(SQL.calls).toHaveLength(1);
-    expect(SQL.calls[0]).toMatch(/SET\s+op_status/);
-    expect(SCOPE.calls).toBe(1);
+    await expect(startPlan()).resolves.toBe('axis_retired');
+    expect(SQL.calls, 'permanent retirement must not reach PG').toEqual([]);
+    expect(SCOPE.calls, 'permanent retirement precedes the scope lookup').toBe(0);
   });
 
-  it('CALIBRATION: a matched-nothing UPDATE is plan_not_found, never the retirement', async () => {
-    // The distinction P-071 exists for: both are falsy, but only this one is a
-    // partial failure the caller should warn about and a re-promote can fix.
+  it('PERMANENT: missing rows cannot turn retirement into plan_not_found', async () => {
+    // `plan_not_found` is only reachable on the removed live-axis path. Keep
+    // the old empty-row fixture so a future reactivation cannot hide behind a
+    // different result shape.
     TIER.on = true;
     SQL.rows = [];
-    await expect(startPlan()).resolves.toBe('plan_not_found');
-    expect(SQL.calls).toHaveLength(1);
+    await expect(startPlan()).resolves.toBe('axis_retired');
+    expect(SQL.calls).toEqual([]);
+    expect(SCOPE.calls).toBe(0);
   });
 });
