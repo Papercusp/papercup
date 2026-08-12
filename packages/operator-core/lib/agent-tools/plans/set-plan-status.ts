@@ -159,6 +159,23 @@ export function flipPlanFrontmatterStatus(
   return { newBody: newFm + rest, oldStatus };
 }
 
+/**
+ * WI-38047 / D-015: best-effort caller ownerId for the no-self-ratification guard.
+ * `resolveAgentIdentity` THROWS on an unattributable ctx — the guard then FAILS OPEN
+ * (null ownerId ⇒ no originator comparison), which is exactly the rule D-012 set for
+ * the sibling self-grade guard: an unattributed caller cannot be a PROVEN
+ * self-ratification, and an attribution miss must never block a legitimate
+ * cross-author approval. Elsewhere in this file identity is resolved unguarded, on
+ * paths that already ran the write; this one runs BEFORE it and must not throw there.
+ */
+function resolveRatifierOwnerId(ctx: unknown): string | null {
+  try {
+    return resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId;
+  } catch {
+    return null;
+  }
+}
+
 export default defineTool({
   name: 'plans:set-plan-status',
   description:
@@ -198,6 +215,27 @@ export default defineTool({
               error: gate.code ?? 'acceptance_gate_failed',
               message: gate.message,
               ...(gate.rubricId ? { rubricId: gate.rubricId } : {}),
+            };
+          }
+        }
+        // Ratification gate (blender-su-grade-integration-2026-08-11 D-015, WI-38047):
+        // a `ready` flip IS the approval on the scout rail — ready-plan-autostart
+        // promotes the draft's items straight into the claimable pool with no second
+        // gate — so a steward may never ratify a draft whose idea it filed itself.
+        // Mirrors blender:grade-idea's no-self-grade refusal (D-012), including its
+        // fail-open-on-unattributable rule. Silent for non-scout plans.
+        if (status === 'ready') {
+          const gate = await evaluateScoutRatificationGate({
+            planSlug: slug,
+            callerOwnerId: resolveRatifierOwnerId(ctx),
+          });
+          if (!gate.satisfied) {
+            return {
+              ok: false as const,
+              slug,
+              error: gate.code ?? 'ratification_gate_failed',
+              message: gate.message,
+              ...(gate.ideaId ? { ideaId: gate.ideaId } : {}),
             };
           }
         }
