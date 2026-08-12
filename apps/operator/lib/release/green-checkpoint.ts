@@ -1384,6 +1384,34 @@ export function pathShapedFailing(failing: string[]): string[] {
   return failing.filter((f) => !!f && !f.startsWith('@'));
 }
 
+/**
+ * The exact INVERSE of `matchFailingFilesToChanged`: the path-shaped failing entries that
+ * matched NOTHING in the range (EI-20215068298600724).
+ *
+ * Why this exists at all: the staleness signal is computed per-file but was REPORTED as one
+ * whole-line verdict, so a single matched file made the line say "2 presumptively STALE" and
+ * say nothing whatsoever about the other five — which readers then treated as real. The fix
+ * for a failing test normally lands in the SUBJECT it covers, not in the test file, so the
+ * unmatched set is precisely where already-fixed reds hide, and it is the set an agent most
+ * needs named.
+ *
+ * Measured on candidate d7d7f6de (2026-08-12): the line flagged 2 of 7; the tip re-run found
+ * 5 of 7 already green. All 3 missed ones had their fix in a subject the intersection cannot
+ * see, and one of the three (`unknown-tool-referral.test.ts`, fixed in `omp/coord-hook.ts`)
+ * crossed a WORKSPACE boundary — so no workspace-containment heuristic would have caught it
+ * either. Naming the unmatched set and calling it UNDETERMINED does catch all three, because
+ * it is driven by "the range changed something else", which was true in every case.
+ *
+ * Shares `pathShapedFailing` and the same suffix-matching rule as its sibling ON PURPOSE:
+ * derived from the same two primitives, the matched and unmatched sets cannot drift into
+ * overlapping or jointly-missing a file. Returns the entries in the vocabulary they were
+ * REPORTED in (vitest's workspace-relative), because an unmatched entry has no changed path
+ * to source a repo-relative spelling from — unlike the matched set, which returns git's.
+ */
+export function unmatchedFailingFiles(failing: string[], changed: string[]): string[] {
+  return pathShapedFailing(failing).filter((f) => !changed.some((c) => c === f || c.endsWith(`/${f}`)));
+}
+
 /** Pure formatter — the ONE line the verdict leads with. Kept separate from the
  *  git reads so the exact wording is unit-testable without a repo. */
 export function formatGateLineageLine(lineage: GateLineage): string {
