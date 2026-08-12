@@ -127,6 +127,27 @@ function integrationRoot(): string {
   return resolveIntegrationRoot();
 }
 
+/** The integration tree for a READ-ONLY DIAGNOSTIC, or `null` when it cannot be resolved.
+ *
+ *  `resolveIntegrationRoot` is deliberately FAIL-CLOSED: it THROWS on a release/checkpoint
+ *  checkout so a gate/deploy run can never silently act on the wrong tree. That is right for
+ *  the gating and deploy paths — and wrong for the two best-effort diagnostics below, both of
+ *  which are documented to degrade (nulls / fail-open) rather than fail a routine tick.
+ *
+ *  Those sites passed `integrationRoot()` as a call ARGUMENT, which puts a SYNCHRONOUS throw
+ *  OUTSIDE the `.catch()` that implements their fail-safe — the promise never exists, so the
+ *  handler never runs. Once the guard landed, that turned the gate's OWN unit runs red: vitest
+ *  executes operator-core with cwd `<tree>/packages/operator-core`, so the `../..` fallback
+ *  resolves to `…/papercusp-checkpoint` inside the checkpoint tree and the resolver refuses.
+ *  Diagnostics ask for the root through here; the gating/deploy paths keep the throw. */
+function integrationRootForDiagnostic(): string | null {
+  try {
+    return integrationRoot();
+  } catch {
+    return null;
+  }
+}
+
 /** One line of run-scoped evidence: WHICH tree this gate run is judging, and HOW that was
  *  decided. The guard above stops the catastrophic case (a release/checkpoint checkout);
  *  this makes the merely-SURPRISING case legible — an explicit `PAPERCUSP_INTEGRATION_ROOT`
@@ -1093,12 +1114,16 @@ export async function trackGateStall(
   // common case — not thinking to derive it at all — stops costing a wild-goose chase).
   // Fail-safe: nulls on any git error. Deliberately AFTER the 'noop' early-return above, which
   // leaves gate_health untouched and must not pay for a git call it will never record.
-  const staleness: CandidateStaleness = candidate
-    ? await measureCandidateStaleness(integrationRoot(), candidate, gitRunner ?? defaultGitCheckRunner).catch(() => ({
-        candidateCommittedAt: null,
-        commitsBehindTip: null,
-      }))
-    : { candidateCommittedAt: null, commitsBehindTip: null };
+  // The root itself is part of the fail-safe: an unresolvable integration tree yields the same
+  // nulls a git error does, instead of throwing out of the tick before `.catch()` can apply.
+  const stalenessRoot = candidate ? integrationRootForDiagnostic() : null;
+  const staleness: CandidateStaleness =
+    candidate && stalenessRoot
+      ? await measureCandidateStaleness(stalenessRoot, candidate, gitRunner ?? defaultGitCheckRunner).catch(() => ({
+          candidateCommittedAt: null,
+          commitsBehindTip: null,
+        }))
+      : { candidateCommittedAt: null, commitsBehindTip: null };
   let next: Record<string, unknown>;
   if (gateClass === 'reset') {
     if (!isGreen) {
@@ -1740,9 +1765,12 @@ async function dispatchReleaseFixer(ctx: GateVerdictTarget, candidate: string, f
   // instead of a wasted fixer spawn. Best-effort: a check failure (e.g. no repo at
   // integrationRoot(), transient git error) treats the candidate as NOT stale (fails open
   // to the pre-existing dispatch behavior) rather than silently swallowing a real red gate.
-  const staleCheck = await checkReleaseFixerCandidateStale(integrationRoot(), candidate).catch(
-    () => ({ candidateExists: true, candidatePromoted: false }) satisfies ReleaseFixerCandidateStaleCheck,
-  );
+  const fixerRoot = integrationRootForDiagnostic();
+  const staleCheck: ReleaseFixerCandidateStaleCheck = fixerRoot
+    ? await checkReleaseFixerCandidateStale(fixerRoot, candidate).catch(
+        () => ({ candidateExists: true, candidatePromoted: false }) satisfies ReleaseFixerCandidateStaleCheck,
+      )
+    : { candidateExists: true, candidatePromoted: false };
   if (isStaleReleaseFixerCandidate(staleCheck)) {
     console.log(
       `${orchestratorStdoutTag()} release-fixer dispatch skipped for ${candidate.slice(0, 8)}: stale candidate ` +

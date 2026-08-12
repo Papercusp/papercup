@@ -222,6 +222,44 @@ describe('WI-38241: integration-root provenance + the gate-only refusal', () => 
     expect(line).toContain('source=script-repo');
   });
 
+  /* WI-38250 — this line is emitted by TWO independent implementations: this one, and
+   * packages/operator-core/lib/harness/routines/release-actions.ts's same-named
+   * integrationRootEvidence(). They have DIFFERENT resolvers and different fallbacks
+   * (script-repo here, cwd-fallback there), yet both used to return a byte-identical
+   * `integration root: <root> (source=<source>)`, emitted through the same
+   * orchestratorStdoutTag() prefix. `source` does not separate them in the case that
+   * matters: production sets PAPERCUSP_INTEGRATION_ROOT explicitly, so BOTH print
+   * `source=PAPERCUSP_INTEGRATION_ROOT` and the log cannot say which resolver spoke.
+   *
+   * That is not cosmetic. The two can DISAGREE (different fallbacks), and a log showing
+   * two identically-formatted lines with different roots and no attribution is strictly
+   * worse than no line — it is the same unanswerable-from-the-log question that made the
+   * 2026-08-12 freeze cost hours. Pin the emitter tag on BOTH sides; the sibling assertion
+   * lives in release-actions.test.ts. */
+  it('names its EMITTER, so the log can attribute the root to the resolver that chose it', () => {
+    const env = { PAPERCUSP_INTEGRATION_ROOT: `${WS}/papercusp` };
+    const line = integrationRootEvidence({}, env);
+    expect(line).toContain('emitter=gate-cli');
+    // ...and must NOT claim the operator-core dispatcher's identity. If this ever passes,
+    // the two emitters have converged again and attribution is silently lost.
+    expect(line).not.toContain('emitter=routine-dispatcher');
+  });
+
+  /* The assertion above is only meaningful if an UNTAGGED line would fail it. A permanent
+   * wrong-implementation control proves that, without mutating the shared tree — a probe
+   * that edits the real file races git-sync's sweep, which commits whatever is on disk when
+   * it ticks, so the mutant lands committed even when nothing goes wrong. */
+  it('the emitter pin is FALSIFIABLE — the pre-WI-38250 format fails it', () => {
+    const untagged = (root: string, source: string) => `integration root: ${root} (source=${source})`;
+    const legacy = untagged(`${WS}/papercusp`, 'PAPERCUSP_INTEGRATION_ROOT');
+    // the exact string both emitters used to return: indistinguishable, and it must FAIL
+    expect(legacy).not.toContain('emitter=');
+    // calibration — the control is only a control if the REAL subject passes the same check
+    expect(integrationRootEvidence({}, { PAPERCUSP_INTEGRATION_ROOT: `${WS}/papercusp` })).toContain(
+      'emitter=',
+    );
+  });
+
   /* The gate wiring lives in green-checkpoint.ts's `if (require.main === module)` CLI block,
    * which by construction NEVER runs under vitest — so all 320 of that file's tests can pass
    * while the guard is not wired at all. Pin the call sites in source. */

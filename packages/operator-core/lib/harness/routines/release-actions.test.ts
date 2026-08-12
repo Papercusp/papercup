@@ -1337,6 +1337,39 @@ describe('EI-20263854732193595: resolveIntegrationRoot fails closed on release/c
     );
   });
 
+  /* WI-38250 — the SIBLING half of the emitter pin. apps/operator/lib/release/release-config.ts
+   * exports a same-named integrationRootEvidence() with a DIFFERENT resolver and a different
+   * fallback (script-repo vs this one's cwd-fallback), and both used to return a byte-identical
+   * `integration root: <root> (source=<source>)` through the same orchestratorStdoutTag() prefix.
+   * `source` does not separate them where it counts: production sets PAPERCUSP_INTEGRATION_ROOT
+   * explicitly, so both print source=PAPERCUSP_INTEGRATION_ROOT and the log cannot attribute the
+   * root to a resolver. Since the two CAN disagree, an unattributable line is worse than none.
+   * The other half of this pin lives in apps/operator/lib/release/release-config.test.ts. */
+  it('names its EMITTER, so the log can attribute the root to the resolver that chose it', () => {
+    const line = integrationRootEvidence(
+      { PAPERCUSP_INTEGRATION_ROOT: `${WS}/papercusp` },
+      `${WS}/papercusp/apps/operator`,
+    );
+    expect(line).toContain('emitter=routine-dispatcher');
+    // ...and must NOT claim the gate CLI's identity — convergence would silently lose attribution.
+    expect(line).not.toContain('emitter=gate-cli');
+  });
+
+  /* Falsifiability, without mutating the shared tree: a probe that edits the real file races
+   * git-sync's tree-wide sweep and can land the mutant committed even when nothing fails. A
+   * permanent wrong-implementation control proves the pin bites. */
+  it('the emitter pin is FALSIFIABLE — the pre-WI-38250 format fails it', () => {
+    const untagged = (root: string, source: string) => `integration root: ${root} (source=${source})`;
+    expect(untagged(`${WS}/papercusp`, 'PAPERCUSP_INTEGRATION_ROOT')).not.toContain('emitter=');
+    // calibration — a control is only a control if the REAL subject passes the same check
+    expect(
+      integrationRootEvidence(
+        { PAPERCUSP_INTEGRATION_ROOT: `${WS}/papercusp` },
+        `${WS}/papercusp/apps/operator`,
+      ),
+    ).toContain('emitter=');
+  });
+
   /* A builder nobody calls emits no evidence, which is indistinguishable from the bug
    * this closes. Pin the CALL SITE in the checkpoint action, not just the function.
    *

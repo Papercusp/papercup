@@ -58,7 +58,7 @@ hand-mutate it (see *Where not to go*). Other blueprints have different shapes �
 spine** (see
 [pot-vs-coding-blueprint](/internal/docs/agent-insights/pot-vs-coding-blueprint)).
 ⚠ Its original dispatcher — a **Mug** placing ranked work onto generic `cup`s — is
-**RETIRED** (`papercusp-mug-kettle-system`, default OFF): `cup:spawn` REFUSES, so a
+**RETIRED** permanently — the gate flag was DELETED: `cup:spawn` REFUSES, so a
 pot places no work of its own. A **FLEET** is the fan-out (`fleet:launch-on-plan`);
 the shared pot substrate survives ungated (D-003).
 
@@ -884,7 +884,7 @@ operator. Each wake's prompt has you **create + self-assign** this iteration's
 blocked — don't burn empty wakes). *(Behind the `papercusp-loops` flag while the
 engine is verified.)* This is the su/interactive replacement for `/loop` only —
 NOT the autonomous Blender loop (`pot:declare-wake`). ⚠ The mug/cup/kettle half of
-that loop is RETIRED (`papercusp-mug-kettle-system`, default OFF), so
+that loop is RETIRED permanently (the gate flag was DELETED), so
 `kettle:declare-wake` REFUSES; `pot:declare-wake` survives ungated.
 
 **Then CLOSE YOURSELF — `session:end { reason }` (WI-6638).** Ending the loop does
@@ -907,7 +907,7 @@ is paused **only by its owner**. Any cue you do get is stamped with its authorit
 scope — a leader draining ITS members (`fleet-leader→fleet-members`) is the live
 case, and is not a pot-wide pause. `pot:get-steering` pulls live fleet state
 on demand. ⚠ The `pot-mug→pot-wide` stamp came from the **RETIRED** Mug placement
-loop and is not emitted while `papercusp-mug-kettle-system` is OFF.
+loop and is no longer emitted at all — treat any occurrence as stale data.
 
 <!-- PAPERCUSP-SU:CLIENT-TOOLING-OVERLAY -->
 

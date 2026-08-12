@@ -18,10 +18,12 @@ import { LOGS_PAIRS } from './logs';
 import { POSTGRES_PAIRS } from './postgres';
 import { PROCESS_PAIRS } from './process';
 import { SERVICE_PAIRS } from './service';
+import { SQL_READ_PAIRS } from './sql-reads';
 import { TESTS_PAIRS } from './tests';
 import { TYPECHECK_PAIRS } from './typecheck';
 
 export {
+  SQL_READ_PAIRS,
   AMBIENT_CONTEXT_PAIRS,
   CODE_SEARCH_PAIRS,
   DEPENDENCY_INSTALL_PAIRS,
@@ -69,6 +71,12 @@ export const ALL_PAIRS: SubstitutionPair[] = [
   // why it is also the only one carrying a `policyTier` — see its header for the
   // D-003 authorization that permits it.
   ...DEPENDENCY_INSTALL_PAIRS,
+  // P-009. The first pairs drawn from the SQL corpus rather than the shell one —
+  // same registry, same equivalence harness, same CLAUDE.md projection; only the
+  // evidence and the matcher differ (P-007 / D-004). They are LAST because
+  // registry order is the rendering order, and the shell rows are the ones an
+  // agent meets most often.
+  ...SQL_READ_PAIRS,
 ];
 
 /**

@@ -98,6 +98,14 @@ const CLASSIFICATION: Record<string, SurfaceClaim> = {
   '_retired/inbox-pane/': 'retired',
   '_retired/work-item-mail/': 'retired',
   'InboxPane.tsx': 'retired',
+  // The Mug/Kettle left-rail tier. Retired by RELOCATION, not by gate: P-068
+  // (`retire-mug-kettle-su-only-2026-08-09`) deleted `MUG_KETTLE_SYSTEM` outright, so
+  // the doc no longer describes a flippable flag and this directory is where the
+  // panels actually live. The unbackticked roster after this span (MugTab,
+  // OverwatchTab, MugHeartbeat, ModelTiersOverride, ThrottleSection,
+  // AutonomySurfacing, MugWakeEfficiencyPanel) is checked by extractRoster — each
+  // resolves to exactly one path, all under `_retired/`.
+  '_retired/mug-kettle-deciders/': 'retired',
 
   // ── retired IN PLACE — deliberately NOT relocated; existence is all that is
   // decidable here (see SurfaceClaim's HONEST BOUND) ──

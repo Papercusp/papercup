@@ -99,10 +99,36 @@ export function sqlAtomize(rawSql: string): string[] {
 export function sqlPairClaimsAtom(pair: SqlSubstitutionPair, atom: string): boolean {
   const read = plainSingleRelationRead(atom);
   if (!read) return false;
-  if (read.relation !== pair.relation) return false;
+  if (!relationMatches(pair.relation, read)) return false;
   if (!pair.sqlShape) return true;
   const stateless = new RegExp(pair.sqlShape.source, pair.sqlShape.flags.replace(/[gy]/g, ''));
   return stateless.test(atom);
+}
+
+/**
+ * Does the relation this query reads match the one the pair names?
+ *
+ * A pair may name the relation BARE (`schema_migrations`) or SCHEMA-QUALIFIED
+ * (`information_schema.columns`), and the difference is meaningful rather than
+ * stylistic:
+ *
+ *  - BARE is right for a papercusp table, where a query may or may not write the
+ *    `harness_shared.` prefix and both spellings are the same read. Matching bare
+ *    against bare is what makes those one population instead of two.
+ *  - QUALIFIED is right when the SCHEMA is the whole point. `information_schema`
+ *    has a table literally called `columns` and another called `tables`; a bare
+ *    match on those names would claim any query against a user table that
+ *    happened to share one, and route it to a tool that answers about catalog
+ *    metadata. A pair may therefore demand the qualifier, and pays for it by
+ *    matching only the qualified spelling — which for `information_schema` is the
+ *    only spelling that resolves anyway.
+ *
+ * Deliberately NOT done with `sqlShape`: a shape that tested the schema prefix
+ * would be a relation test wearing a narrowing filter's clothes, i.e. the second
+ * extractor D-003 forbids.
+ */
+function relationMatches(declared: string, read: { relation: string; asWritten: string }): boolean {
+  return declared.includes('.') ? declared.toLowerCase() === read.asWritten.toLowerCase() : declared === read.relation;
 }
 
 /** How far back the corpus reader looks when the caller does not say. */
