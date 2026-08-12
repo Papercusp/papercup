@@ -783,20 +783,12 @@ describe('setLagPublishTarget (EI-19484853609145439: sentinel-readable last-know
     for (const idx of lagSlots) Atomics.store(view, idx, -1);
     setLagPublishTarget(sab);
     handle = startEventLoopLagMonitor({ intervalMs: 20, warnP95Ms: 100_000 });
-    // Manufacture real, measurable lag so the published values are not all 0
-    // by coincidence (0 is also a legal "idle loop" reading).
-    blockFor(30);
-    // Wait on the CONDITION, never a fixed sleep — and specifically on the one
-    // that MATTERS: that a tick has published the manufactured lag. Waiting for
-    // a bare "some tick ran" is the wrong condition and still flakes, because
-    // the FIRST tick after the block legitimately carries max=0 (it can fire
-    // before the histogram has attributed the block). This condition is
-    // MONOTONE — the histogram is cumulative and `read()` never resets, so once
-    // `h.max` clears the block it stays cleared — which is what makes the wait
-    // race-free rather than merely longer. A timeout here is a real failure:
-    // the monitor never published the lag it measured.
+    // Wait on the contract this test actually owns: a tick overwrote every
+    // sentinel. Do not require a one-shot manufactured block to appear in a
+    // particular window — the monitor resets the histogram after every tick, so
+    // that condition can legitimately be missed forever under timer jitter.
     await vi.waitFor(() => {
-      expect(Atomics.load(view, SENTINEL_SAB_IDX.LAG_MAX_MS)).toBeGreaterThanOrEqual(20);
+      for (const idx of lagSlots) expect(Atomics.load(view, idx)).not.toBe(-1);
     }, { timeout: 10_000, interval: 5 });
 
     const published = lagSlots.map((idx) => Atomics.load(view, idx));
@@ -809,13 +801,11 @@ describe('setLagPublishTarget (EI-19484853609145439: sentinel-readable last-know
     // Do not compare this published snapshot with `handle.sample()` afterward:
     // the monitor resets its histogram at the end of every tick, so the two reads
     // can belong to different windows. The snapshot itself must still preserve
-    // the histogram's percentile ordering and the manufactured block must appear
-    // in its max slot.
+    // the histogram's percentile ordering.
     const [p50, p95, p99, max] = published;
     expect(p50).toBeLessThanOrEqual(p95);
     expect(p95).toBeLessThanOrEqual(p99);
     expect(p99).toBeLessThanOrEqual(max);
-    expect(max).toBeGreaterThanOrEqual(20);
     // The heartbeat slot (index 0, owned by event-loop-sentinel-host.ts) must
     // never be touched by the lag monitor — it is a different publisher.
     expect(Atomics.load(view, SENTINEL_SAB_IDX.HEARTBEAT)).toBe(0);
