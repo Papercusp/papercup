@@ -42,6 +42,10 @@ import { STALE_PLAN_CLAIM_GRACE_MS } from '../../plan-items/stale-claims';
 import { checkMigrationDrift } from '../../migration-drift';
 import { findIssuesByWatchdogKeys } from '../../issues-engineer';
 import { captureImprovement, type CaptureImprovementResult, type ImprovementKind } from './capture-core';
+// WI-38327: the threshold the bridge's own alarm decider debounces on. Imported so the
+// guard cannot drift from the thing it guards (github-divergence.ts has 4 static imports,
+// all types/pg — no cycle, no import-graph cost).
+import { GITHUB_BRIDGE_NEEDS_OWNER_MIN_SWEEPS } from '../../sync/pot-git/github-divergence';
 import { sourceFilesWorkItem } from './signal-lane';
 import { effectiveOrigin, type SignalOrigin } from './provenance';
 import {
@@ -83,6 +87,12 @@ export type WatchdogSource =
   | 'insight-staleness'
   // hive-loop invariant monitors (hive-loop-e2e-testing-2026-06-10 P-010):
   | 'stalled-feature' | 'orphaned-spawn' | 'escalation-spike'
+  // WI-38327: git-sync's GitHub bridge has marked its OWN state owner-gated
+  // (`github_bridge.needs_owner`) and no owner-rail notification carrying that
+  // condition key exists. The recurrence guard for the ~26h/899-commit egress
+  // block — see collectBridgeNeedsOwnerSignals for why the falsifier is the
+  // attention_notifications audit row and not the escalation's own latch.
+  | 'bridge-needs-owner-unalerted'
   // agent-activity-liveness-truth-2026-06-21 P-007 (D-001/D-004, folds EI-2311):
   // a work-item CLAIM held by a LIVE holder that has made NO item-scoped progress
   // for far past the window (fleet_assignment.stalled). The LOUD recurrence guard
@@ -2527,6 +2537,139 @@ export async function collectEscalationSignals(sql: Sql, workspaceId: string): P
   return escalationSignalsFromRows(rows);
 }
 
+/**
+ * WI-38327 — the RECURRENCE GUARD for the github-bridge owner-gated egress block.
+ *
+ * THE INCIDENT: git-sync recorded a hard, permanent push rejection perfectly
+ * (`github_bridge.needs_owner = true`, machine-readable, correct) and told nobody.
+ * 899 commits — the whole fleet's ~17h of work — existed only on one box for ~26h,
+ * because the escalation was written to `harness_shared.harness_escalations` and
+ * NOTHING pages off that table. The fix (github-divergence.ts) added the two
+ * missing rails: notifyAttention + broadcastSevereEvent beside the row. This is
+ * the invariant that makes the fix STAY fixed.
+ *
+ * ── WHY THIS IS NOT `unresolved-escalation` ───────────────────────────────────
+ * `collectEscalationSignals` above fires on ANY escalation row lacking supervisor
+ * notes, and it asks a TRIAGE question ("has a human written a note?"). It fires
+ * identically whether or not an owner-facing alarm was ever raised, and it clears
+ * the moment someone adds a note even if no alarm ever existed. This collector
+ * asks the DELIVERY question — did the owner rail actually receive this? — which
+ * is the one the incident turned on and the one nothing else can answer.
+ *
+ * ── THE FALSIFIER IS THE OWNER RAIL, NOT THE LATCH ────────────────────────────
+ * A guard that only read `needs_owner_alerted` back out of the escalation body
+ * would be self-referential: `recordDivergenceVerdict` persists that latch and
+ * THEN delivers, with both delivery legs in their own try/catch (deliberately —
+ * see WI-38327's design note 1). So a latch reading `alerted: true` is the
+ * writer's INTENT, not evidence of delivery. The real evidence is the
+ * `harness_shared.attention_notifications` audit row, which `notifyAttention`
+ * records BEFORE attempting either channel (WI-36644) and which therefore exists
+ * iff the owner rail was genuinely reached. Matching on the CAUSE as well as the
+ * conditionKey is what lets this work with no time window at all: the cause
+ * string is stable for the life of one episode, so a three-week block matches its
+ * own three-week-old notification instead of ageing out into a false violation.
+ *
+ * ── FAIL-CLOSED ON A MISSING LATCH, DELIBERATELY ──────────────────────────────
+ * A `needs_owner: true` row carrying NO latch fields at all is treated as past
+ * the threshold rather than as "not yet debounced". That is the pre-fix shape
+ * (and, more importantly, the shape a future regression would reintroduce by
+ * dropping the latch), so reading it as benign is exactly how this guard would
+ * fail open — silent precisely when the thing it guards has been removed. The
+ * cost of the other direction is one early capture during a deploy window.
+ */
+export const BRIDGE_NEEDS_OWNER_CONDITION_PREFIX = 'github-bridge-needs-owner:';
+
+interface BridgeNeedsOwnerRow {
+  harness_slug: string;
+  /** `escalation.needs_owner_cause` — null when the row predates the latch. */
+  cause: string | null;
+  /** `escalation.needs_owner_sweeps` — null when the row predates the latch. */
+  sweeps: number | string | null;
+  /** `escalation.needs_owner_alerted` — the writer's INTENT, not proof of delivery. */
+  alerted: boolean | null;
+  /** Did the owner rail actually record this alarm? The load-bearing column. */
+  owner_alerted: boolean;
+}
+
+/** Pure: un-paged owner-gated bridge blocks → signals. */
+export function bridgeNeedsOwnerSignalsFromRows(rows: BridgeNeedsOwnerRow[]): WatchdogSignal[] {
+  return rows
+    .filter((r) => !r.owner_alerted)
+    .filter((r) => {
+      // No latch at all ⇒ fail closed (see the header). With a latch, debounce on it.
+      if (r.sweeps == null) return true;
+      const sweeps = typeof r.sweeps === 'string' ? Number.parseInt(r.sweeps, 10) : r.sweeps;
+      return Number.isFinite(sweeps) && sweeps >= GITHUB_BRIDGE_NEEDS_OWNER_MIN_SWEEPS;
+    })
+    .map((r) => ({
+      source: 'bridge-needs-owner-unalerted' as const,
+      key: `bridge-needs-owner:${r.harness_slug}`,
+      title: `GitHub bridge is owner-gated on ${r.harness_slug} with no owner-facing alarm`,
+      body:
+        `Watchdog signal (bridge-needs-owner-unalerted): git-sync's GitHub bridge for harness ` +
+        `${r.harness_slug} has recorded needs_owner=true — it has named its OWN state as ` +
+        `owner-gated — but no owner-rail notification carrying condition key ` +
+        `"${BRIDGE_NEEDS_OWNER_CONDITION_PREFIX}${r.harness_slug}" was ever recorded in ` +
+        `harness_shared.attention_notifications.\n\n` +
+        `Nothing reaches the one party who can clear this, so commits accumulate locally with ` +
+        `no second copy anywhere (WI-38327: 899 commits / ~17h of fleet work, unseen for ~26h).\n\n` +
+        `Latch state on the escalation row: alerted=${r.alerted ?? '(absent)'}, ` +
+        `sweeps=${r.sweeps ?? '(absent)'}, cause=${r.cause ?? '(absent)'}.\n` +
+        (r.sweeps == null
+          ? `The latch fields are ABSENT — either this row predates the WI-38327 fix, or that ` +
+            `fix has regressed and recordDivergenceVerdict is no longer maintaining the latch.\n`
+          : r.alerted
+            ? `The latch says it DID alert, so the alarm decision fired and the delivery leg ` +
+              `swallowed its failure — check notifyAttention's rail, not the decider.\n`
+            : `The latch says it has NOT alerted despite passing the ` +
+              `${GITHUB_BRIDGE_NEEDS_OWNER_MIN_SWEEPS}-sweep threshold — the decider itself is not firing.\n`),
+      severity: 'critical' as const,
+      kind: 'bug' as const,
+      scope: `harness:${r.harness_slug}`,
+      findingClass: 'egress-alarm:owner-gated-unpaged',
+    }));
+}
+
+/**
+ * bridge-needs-owner-unalerted: a github-bridge escalation the routine ITSELF marked
+ * owner-gated, with no matching owner-rail notification. Zero rows == satisfied.
+ */
+export async function collectBridgeNeedsOwnerSignals(sql: Sql, workspaceId: string): Promise<WatchdogSignal[]> {
+  const rows = await sql<BridgeNeedsOwnerRow[]>`
+    WITH gated AS (
+      SELECT e.harness_slug,
+             e.mtime_ms,
+             (e.escalation::jsonb)->>'needs_owner_cause' AS cause,
+             (e.escalation::jsonb)->>'needs_owner_sweeps' AS sweeps,
+             ((e.escalation::jsonb)->>'needs_owner_alerted')::boolean AS alerted
+        FROM harness_shared.harness_escalations e
+       WHERE e.workspace_id = ${workspaceId}
+         AND e.phase = 'github-bridge'
+         AND e.escalation IS NOT NULL
+         AND jsonb_typeof(e.escalation::jsonb) = 'object'
+         AND ((e.escalation::jsonb)->>'needs_owner') = 'true'
+    )
+    SELECT g.harness_slug, g.cause, g.sweeps, g.alerted,
+           EXISTS (
+             SELECT 1
+               FROM harness_shared.attention_notifications n
+              WHERE n.workspace_id = ${workspaceId}
+                AND n.data->>'conditionKey' = ${BRIDGE_NEEDS_OWNER_CONDITION_PREFIX} || g.harness_slug
+                -- Cause-matched, so ONE episode matches its own alarm however old it is,
+                -- and a NEW cause (a different owner-actionable signal) is not covered by
+                -- the previous episode's page. A latch-less row cannot cause-match, so it
+                -- falls back to the conditionKey alone rather than firing on that basis.
+                AND (g.cause IS NULL OR n.data->>'cause' = g.cause)
+           ) AS owner_alerted
+      FROM gated g
+     -- Deterministic membership under the cap (EI-19417016857494865): oldest first, slug
+     -- as a total-order tiebreak, so a still-violating harness can never drop out of one
+     -- tick and reappear the next — the property an absence-based auto-close depends on.
+     ORDER BY g.mtime_ms ASC, g.harness_slug ASC
+     LIMIT 50`;
+  return bridgeNeedsOwnerSignalsFromRows(rows);
+}
+
 interface CircuitOpenRow {
   harness_slug: string;
   role: string;
@@ -3225,6 +3368,13 @@ export async function defaultPapercuspCollectors(
     { name: 'papercusp-failed-spawn', collect: () => collectFailedSpawnSignals(getOrgPg().sql, opts) },
     { name: 'papercusp-expired-lease', collect: () => collectExpiredLeaseSignals(getOrgPg().sql, opts) },
     { name: 'papercusp-unresolved-escalation', collect: () => collectEscalationSignals(getOrgPg().sql, workspaceId) },
+    // WI-38327 recurrence guard: the GitHub bridge marked itself owner-gated and the
+    // owner rail has no record of it. Distinct from unresolved-escalation above, which
+    // asks a triage question (are there supervisor notes?) rather than a delivery one.
+    {
+      name: 'papercusp-bridge-needs-owner-unalerted',
+      collect: () => collectBridgeNeedsOwnerSignals(getOrgPg().sql, workspaceId),
+    },
     { name: 'papercusp-fire-circuit-open', collect: () => collectCircuitOpenSignals(getOrgPg().sql, workspaceId) },
     // loop-wake-rate-limit-robustness P1b: an engine loop parked-stalled with a dead/undelivered
     // wake turn (the early, visible signal before the ≥30min stuck-park backstop recovers it).
@@ -3444,6 +3594,9 @@ const HARNESS_SCOPED_WATCHDOG_SOURCES: ReadonlySet<WatchdogSource> = new Set([
   'stalled-feature', 'unresolved-escalation', 'escalation-spike', 'orphaned-spawn',
   'failed-spawn', 'stuck-plan', 'smoke-fail', 'fire-circuit-open', 'ship-link-stuck',
   'governor-starvation',
+  // bridge-needs-owner-unalerted is per-harness (scope harness:<slug>): a torn-down
+  // benchmark instance's un-paged bridge block is test debris, not an improvement.
+  'bridge-needs-owner-unalerted',
   // zero-promotion is per-plan/per-harness: a torn-down benchmark instance's
   // started plan firing is test debris, not an improvement (P-006 dedup class).
   'zero-promotion',
