@@ -1563,6 +1563,55 @@ describe('unified work_items surface (real PG)', () => {
     expect(onlyBugs).toHaveLength(1);
   });
 
+  it('list q matches title and body/summary across both families in SQL', async () => {
+    const H = 'q-filter-h';
+    const featureTitle = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'title-only-marker feature',
+      summary: 'feature prose',
+      harness: H,
+      createdBy: 'agA',
+    });
+    const featureBody = await wi.createWorkItem({
+      kind: 'feature',
+      title: 'feature with body marker',
+      summary: 'body-only-marker feature',
+      harness: H,
+      createdBy: 'agA',
+    });
+    const issueTitle = await wi.createWorkItem({
+      kind: 'bug',
+      title: 'title-only-marker issue',
+      summary: 'issue prose',
+      harness: H,
+      createdBy: 'agA',
+    });
+    const issueBody = await wi.createWorkItem({
+      kind: 'bug',
+      title: 'issue with body marker',
+      summary: 'body-only-marker issue',
+      harness: H,
+      createdBy: 'agA',
+    });
+
+    expect((await wi.listWorkItems({ harness: H, q: 'title-only-marker' })).map((w) => w.id).sort()).toEqual(
+      [featureTitle.id, issueTitle.id].sort(),
+    );
+    expect((await wi.listWorkItems({ harness: H, q: 'body-only-marker' })).map((w) => w.id).sort()).toEqual(
+      [featureBody.id, issueBody.id].sort(),
+    );
+
+    // q is a literal substring, so LIKE metacharacters cannot widen the result.
+    const literal = await wi.createWorkItem({
+      kind: 'bug',
+      title: 'literal 100%_marker',
+      summary: 'literal query control',
+      harness: H,
+      createdBy: 'agA',
+    });
+    expect((await wi.listWorkItems({ harness: H, q: '100%_marker' })).map((w) => w.id)).toEqual([literal.id]);
+  });
+
   it('set_state dispatches: feature → status; issue → state', async () => {
     const feat = await wi.createWorkItem({ kind: 'feature', title: 'f', harness: 'papercup', createdBy: 'agA' });
     const bug = await wi.createWorkItem({ kind: 'bug', title: 'b', harness: 'papercup', createdBy: 'agA' });
