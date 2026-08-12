@@ -535,6 +535,17 @@ export default defineTool({
     // have to discover and repeat a concrete slug (EI-20185529721601434). Keep
     // the synchronous resolver as a fallback for legacy env-only sessions and
     // explicit concrete selectors.
+    // EI-20245033088778955: tools:invoke may dispatch this re-arm through a
+    // wildcard transport context even though the owner already has a durable
+    // loop installed under a concrete harness. Read the existing routine before
+    // resolving the new scope so a scope-less re-arm preserves that install_slug
+    // instead of returning no_harness (or silently moving the loop home).
+    let prior: PriorLoopFacts | null = null;
+    try {
+      prior = await readActiveLoopFacts(ownerId);
+    } catch (e) {
+      console.warn(`[loop:arm] prior-loop read failed (falling back to default carry resolution): ${e instanceof Error ? e.message : e}`);
+    }
     const isConcreteHarness = (value?: string | null): boolean => {
       const trimmed = value?.trim().toLowerCase();
       return Boolean(trimmed && trimmed !== '*' && trimmed !== 'all');
@@ -553,6 +564,9 @@ export default defineTool({
       if (isConcreteHarness(brief?.harnessSlug)) {
         harness = resolvePotHomeSlug(brief!.harnessSlug!, undefined);
       }
+    }
+    if (onlyWorkspaceScope && !harness && isConcreteHarness(prior?.harnessSlug)) {
+      harness = resolvePotHomeSlug(prior!.harnessSlug!, undefined);
     }
     if (onlyWorkspaceScope && !harness) {
       try {
@@ -677,23 +691,6 @@ export default defineTool({
     const intervalSec = backoff.intervalSec;
 
     // EI-18792078711601844 — read the prior loop this arm is about to UPSERT over
-    // BEFORE computing carry, so a re-arm with `carry` omitted can PRESERVE it
-    // instead of silently recomputing a fresh default. loop:arm is an upsert keyed
-    // on (owner, name): the playbook's own prescribed remedy for a blocked loop —
-    // "re-loop:arm with a larger intervalSec" — passes only intervalSec, and before
-    // this fix that omission reset carry to whatever resolveDefaultCarry() computes
-    // NOW (which can legitimately differ from the loop's actual current carry, e.g.
-    // host-discovery flakiness, a flag flip mid-run), silently converting a bounded
-    // cold loop into an unbounded warm one. Reused below for the overwrite-note
-    // comparison too (was previously fetched twice). Best-effort: a read failure
-    // here must not fail the arm — falls back to the pre-fix default-resolution path.
-    let prior: PriorLoopFacts | null = null;
-    try {
-      prior = await readActiveLoopFacts(ownerId);
-    } catch (e) {
-      console.warn(`[loop:arm] prior-loop read failed (falling back to default carry resolution): ${e instanceof Error ? e.message : e}`);
-    }
-
     // B (cold-with-carry-activation-2026-07-20): an unspecified carry on a FRESH arm
     // (no active prior loop for this owner) RESOLVES a default — 'cold' for an
     // unattended headless session, 'warm' otherwise (see resolveDefaultCarry). An

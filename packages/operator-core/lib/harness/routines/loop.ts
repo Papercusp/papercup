@@ -1515,6 +1515,8 @@ export async function countAgentToolCallsInWindow(
 export interface PriorLoopFacts {
   active: boolean;
   intervalSec: number | null;
+  /** The concrete harness namespace the existing routine is installed under. */
+  harnessSlug: string | null;
   /** The current payload_template.kickoff — the arm-time goal comparison substrate. */
   kickoff: string;
   fireCount: number;
@@ -1532,6 +1534,7 @@ export async function readActiveLoopFacts(
     Array<{
       active: boolean;
       reschedule_interval_sec: number | null;
+      install_slug: string | null;
       payload_template: Record<string, unknown> | null;
       fire_count: number | null;
       armed_at: string | null;
@@ -1554,6 +1557,7 @@ export async function readActiveLoopFacts(
   return {
     active: Boolean(r.active),
     intervalSec: r.reschedule_interval_sec == null ? null : Number(r.reschedule_interval_sec),
+    harnessSlug: typeof r.install_slug === 'string' ? r.install_slug : null,
     kickoff: typeof pt.kickoff === 'string' ? pt.kickoff : '',
     fireCount: r.fire_count == null ? 0 : Number(r.fire_count),
     carry: pt.carry === 'cold' ? 'cold' : 'warm',

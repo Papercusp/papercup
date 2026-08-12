@@ -401,6 +401,26 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
     expect(buildPromptM).toHaveBeenCalledWith(expect.objectContaining({ harness: 'oriented-harness' }));
   });
 
+  it('EI-20245033088778955: reuses an existing routine install scope through a wildcard tools:invoke context', async () => {
+    // A tools:invoke re-dispatch can rebuild the target ctx with harnessSlug='*'.
+    // When this is a re-arm of an existing routine, its install_slug is the
+    // authoritative scope and must beat the missing workspace-home fallback.
+    priorLoopM.mockResolvedValueOnce({ ...priorLoop(), harnessSlug: 'papercusp' } as never);
+    briefM.mockResolvedValueOnce(null);
+    homePotM.mockResolvedValueOnce(null);
+    potHomeM.mockReturnValue(null as never);
+
+    const out = await tool.handler(
+      { intervalSec: 120, goal: 're-arm the existing loop' } as never,
+      { harnessSlug: '*', workspaceId: 'ws-1' } as never,
+    ) as Out;
+    const b = body(out);
+
+    expect(b).toMatchObject({ ok: true, loop: { harness: 'papercusp' } });
+    expect(buildPromptM).toHaveBeenCalledWith(expect.objectContaining({ harness: 'papercusp' }));
+    expect(homePotM).not.toHaveBeenCalled();
+  });
+
   // EI-7734 regression: every superuser/operator-scope session sets ctx.harnessSlug='*'
   // (the wildcard sentinel, _harness-scope.ts). A raw `args.harness ?? ctx.harnessSlug ?? …`
   // chain would let that truthy '*' win outright — bypassing resolvePotHomeSlug's own
