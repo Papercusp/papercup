@@ -111,7 +111,10 @@ export type IntegrationRootSource = 'override' | 'PAPERCUSP_INTEGRATION_ROOT' | 
  *  rather than from anything anyone asked for. */
 export function describeIntegrationRoot(
   overrides: Partial<ReleaseConfig> = {},
-  env: NodeJS.ProcessEnv = process.env,
+  // `Record<string, string | undefined>` rather than NodeJS.ProcessEnv: these functions read
+  // exactly one key, and under apps/operator's tsconfig a bare `{}` is not assignable to
+  // ProcessEnv — which would force every caller and test to fabricate an env object.
+  env: Record<string, string | undefined> = process.env,
   /** Injectable ONLY so the derived branch is reachable from a test: `scriptRepoRoot()` reads
    *  this file's own location, so without a seam the refusal below could never be shown to
    *  fire — and a guard that has never fired is not a guard. */
@@ -135,7 +138,10 @@ export function isNonGateableCheckout(root: string): boolean {
  *  release copy and none could cheaply refute it (EI-20263854732193595). */
 export function integrationRootEvidence(
   overrides: Partial<ReleaseConfig> = {},
-  env: NodeJS.ProcessEnv = process.env,
+  // `Record<string, string | undefined>` rather than NodeJS.ProcessEnv: these functions read
+  // exactly one key, and under apps/operator's tsconfig a bare `{}` is not assignable to
+  // ProcessEnv — which would force every caller and test to fabricate an env object.
+  env: Record<string, string | undefined> = process.env,
   deriveRoot: () => string = scriptRepoRoot,
 ): string {
   const { root, source } = describeIntegrationRoot(overrides, env, deriveRoot);
@@ -158,7 +164,10 @@ export function integrationRootEvidence(
  */
 export function assertGateableIntegrationRoot(
   overrides: Partial<ReleaseConfig> = {},
-  env: NodeJS.ProcessEnv = process.env,
+  // `Record<string, string | undefined>` rather than NodeJS.ProcessEnv: these functions read
+  // exactly one key, and under apps/operator's tsconfig a bare `{}` is not assignable to
+  // ProcessEnv — which would force every caller and test to fabricate an env object.
+  env: Record<string, string | undefined> = process.env,
   deriveRoot: () => string = scriptRepoRoot,
 ): void {
   const { root, source } = describeIntegrationRoot(overrides, env, deriveRoot);
