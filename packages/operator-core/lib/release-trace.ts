@@ -19,6 +19,13 @@ export interface ReleaseTraceGate {
   fireStaleReason: string | null;
   verdictStale: boolean;
   verdictStaleReason: string | null;
+  /**
+   * The candidate the checkpoint verdict actually judged. This is independent of
+   * GitHub/origin visibility: the green-checkpoint runs against the local
+   * integration root, so a candidate can be gate-tested before the bridge publishes
+   * it to origin/staging.
+   */
+  observedCandidate?: string | null;
   /** EI-18672078222841101: who already owns this red (see `GateRedOwnership`). Optional so
    *  an unwired/legacy caller renders exactly as before. This is the surface that matters
    *  most: `release:trace` is what an agent reads when it decides whether to investigate,
@@ -82,6 +89,14 @@ function sameSha(a: string | null | undefined, b: string | null | undefined): bo
   return left === right || left.startsWith(right) || right.startsWith(left);
 }
 
+function gateJudgedTarget(input: Pick<ReleaseTraceInput, 'position' | 'gate'>): boolean {
+  // `position.gate` is the canonical projection for direct callers. The explicit
+  // input field is preferred when the agent-tool wrapper supplies the same snapshot,
+  // while the fallback keeps older callers safe during the field rollout.
+  const observedCandidate = input.gate.observedCandidate ?? input.position.gate.observedCandidate;
+  return sameSha(input.position.targetSha, observedCandidate);
+}
+
 export function classifyReleaseWake(
   targetSha: string | null,
   wakes: ReleaseTraceWake[],
@@ -142,6 +157,7 @@ function applicableConstraints(input: ReleaseTraceInput): ReleaseTraceConstraint
   const { position, deploy, gate } = input;
   const constraints: ReleaseTraceConstraint[] = [];
   const add = (code: string, blocking: boolean, summary: string) => constraints.push({ code, blocking, summary });
+  const targetWasGateTested = gateJudgedTarget(input);
 
   if (!position.targetSha) add('target-unresolved', true, 'The requested path/SHA did not resolve to a commit.');
   if (position.dirtyUncommitted) {
@@ -161,7 +177,9 @@ function applicableConstraints(input: ReleaseTraceInput): ReleaseTraceConstraint
     add(
       'not-on-origin-staging',
       true,
-      'The target commit is not present on origin/staging, so the green gate cannot test it.',
+      targetWasGateTested
+        ? `The target commit is not present on origin/staging, but the local green-checkpoint already judged this exact candidate; origin visibility is a separate public-release requirement.`
+        : 'The target commit is not present on origin/staging, so the green gate cannot test it.',
     );
   }
   if (gate.verdictStale) {
@@ -212,6 +230,7 @@ function applicableConstraints(input: ReleaseTraceInput): ReleaseTraceConstraint
 function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
   const { position, deploy, gate, pipeline, workItem } = input;
   const targetSha = position.targetSha;
+  const targetWasGateTested = gateJudgedTarget(input);
   if (!targetSha) {
     return {
       name: 'dev:pipeline_position',
@@ -242,7 +261,7 @@ function safeNextVerb(input: ReleaseTraceInput): ReleaseTraceNextVerb | null {
         }
       : null;
   }
-  if (!position.positions.onStaging) {
+  if (!position.positions.onStaging && !targetWasGateTested) {
     return {
       name: 'git-sync:await',
       args: { sha: targetSha },

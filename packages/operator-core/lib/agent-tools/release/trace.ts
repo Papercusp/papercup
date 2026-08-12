@@ -129,6 +129,10 @@ export default defineTool({
           fireStaleReason: snapshot.gate.fireStaleReason,
           verdictStale: snapshot.gate.verdictStale,
           verdictStaleReason: snapshot.gate.verdictStaleReason,
+          // The checkpoint judges the local integration root. Preserve the exact
+          // candidate so release:trace can distinguish gate eligibility from the
+          // separate origin/GitHub publication leg.
+          observedCandidate: snapshot.gate.observedCandidate,
           // EI-18672078222841101: who already owns this red. Unlike `failingTests` above
           // this is NOT blanked on a stale verdict — `describeGateRedOwnership` renders the
           // staleness itself ('verdict-stale'), which is exactly the case that misled a

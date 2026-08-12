@@ -315,6 +315,78 @@ describe('buildReleaseTrace', () => {
     expect(out.nextVerb?.name).toBe('testing:flakiness');
   });
 
+  it('uses exact local gate provenance before directing recovery to origin/staging', () => {
+    const out = buildReleaseTrace(
+      input({
+        position: position({
+          positions: { committedLocal: true, onStaging: false, inMain: false, deployed: false },
+          gate: { ...position().gate, observedCandidate: sha },
+        }),
+        gate: {
+          state: 'gate-red',
+          authoritative: true,
+          consecutiveReds: 1,
+          failingTests: ['x.test.ts'],
+          fireStale: false,
+          fireStaleReason: null,
+          verdictStale: false,
+          verdictStaleReason: null,
+          observedCandidate: sha,
+        },
+      }),
+    );
+
+    expect(out.gate.observedCandidate).toBe(sha);
+    expect(out.constraints.find((c) => c.code === 'not-on-origin-staging')?.summary).toContain(
+      'local green-checkpoint already judged',
+    );
+    expect(out.constraints.find((c) => c.code === 'not-on-origin-staging')?.summary).not.toContain(
+      'cannot test it',
+    );
+    expect(out.nextVerb?.name).toBe('testing:flakiness');
+  });
+
+  it('keeps stale exact-candidate recovery on the gate path, not the publication wait path', () => {
+    const out = buildReleaseTrace(
+      input({
+        position: position({
+          positions: { committedLocal: true, onStaging: false, inMain: false, deployed: false },
+          gate: { ...position().gate, observedCandidate: sha },
+        }),
+        gate: {
+          state: 'gate-verdict-stale',
+          authoritative: false,
+          consecutiveReds: 5,
+          failingTests: [],
+          fireStale: false,
+          fireStaleReason: null,
+          verdictStale: true,
+          verdictStaleReason: 'stale candidate was re-tested at tip',
+          observedCandidate: sha,
+        },
+      }),
+    );
+
+    expect(out.nextVerb).toMatchObject({ name: 'release:checkpoint-run' });
+    expect(out.nextVerb?.name).not.toBe('git-sync:await');
+  });
+
+  it('still awaits origin/staging when no verdict covers the requested candidate', () => {
+    const out = buildReleaseTrace(
+      input({
+        position: position({
+          positions: { committedLocal: true, onStaging: false, inMain: false, deployed: false },
+          gate: { ...position().gate, observedCandidate: 'b'.repeat(40) },
+        }),
+      }),
+    );
+
+    expect(out.constraints.find((c) => c.code === 'not-on-origin-staging')?.summary).toContain(
+      'cannot test it',
+    );
+    expect(out.nextVerb).toMatchObject({ name: 'git-sync:await', args: { sha } });
+  });
+
   // EI-18672078222841101 — the stampede. Three agents read a red here within 15 minutes and
   // each was told to go classify the failures, with nothing saying a fixer already held them.
   describe('a red that someone already owns', () => {
