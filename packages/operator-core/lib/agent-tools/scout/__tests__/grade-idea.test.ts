@@ -260,7 +260,7 @@ describe('D-012 no-self-grade guard (su-ideate-learning-substrate-2026-07-10 WI-
     const deps = fakeDeps({ readCreatedBy: vi.fn(async () => SELF) });
     const out = await runGradeIdea({ ideaId: 'idea-1', grade: 5, feedback: 'love my own idea' }, { ownerId: SELF }, deps);
 
-    expect(out).toEqual({ applied: false, reason: 'no-self-grade', gradedBy: 'owner', ideaId: 'idea-1', idea: null });
+    expect(out).toEqual({ applied: false, reason: 'no-self-grade', gradedBy: SELF, ideaId: 'idea-1', idea: null });
     // The pollution the guard exists to prevent never happens: no ledger write,
     // no read-back, no revision wake fed by a self-authored grade.
     expect(deps.readCreatedBy).toHaveBeenCalledWith('idea-1');
