@@ -1,5 +1,18 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import type { CarryBrief } from './carry-brief';
+const refusalMarks = vi.hoisted(() => new Map<string, number>());
+vi.mock('./flush-refusal-marker', () => ({
+  REFUSAL_MARKER_TTL_MS: 10 * 60_000,
+  wasRecentlyRefused: async (boundary: string, ownerId: string, nowMs = Date.now()) =>
+    (refusalMarks.get(`${boundary}:${ownerId}`) ?? -1) >= nowMs,
+  markRefused: async (boundary: string, ownerId: string, nowMs = Date.now()) => {
+    refusalMarks.set(`${boundary}:${ownerId}`, nowMs + 10 * 60_000);
+  },
+  clearRefused: async (boundary: string, ownerId: string) => {
+    refusalMarks.delete(`${boundary}:${ownerId}`);
+  },
+  __resetRefusalMarkers: async () => { refusalMarks.clear(); },
+}));
 import {
   REFUSAL_MARKER_TTL_MS,
   flushGateEnabled,
@@ -34,8 +47,8 @@ function unflushedBrief(): CarryBrief {
   });
 }
 
-beforeEach(() => {
-  __resetRefusalMarkers();
+beforeEach(async () => {
+  await __resetRefusalMarkers();
   // Hermetic against host load (WI-5582): runFlushGate races the inner work against
   // a bounded-timeout budget (default 4s). On an event-loop-starved green-checkpoint
   // host that 4s wall clock once beat the instant mocked inner work, degrading the
@@ -43,27 +56,27 @@ beforeEach(() => {
   // Raise the budget far past any plausible starvation so the deadline never fires.
   process.env.PAPERCUSP_FLUSH_GATE_BUDGET_MS = '600000';
 });
-afterEach(() => {
-  __resetRefusalMarkers();
+afterEach(async () => {
+  await __resetRefusalMarkers();
   delete process.env.PAPERCUSP_FLUSH_GATE;
   delete process.env.PAPERCUSP_FLUSH_GATE_BUDGET_MS;
 });
 
 describe('refusal markers', () => {
-  it('records and reads a refusal within the TTL, and clears it', () => {
-    expect(wasRecentlyRefused('compaction', 'su-a', NOW)).toBe(false);
-    markRefused('compaction', 'su-a', NOW);
-    expect(wasRecentlyRefused('compaction', 'su-a', NOW)).toBe(true);
+  it('records and reads a refusal within the TTL, and clears it', async () => {
+    expect(await wasRecentlyRefused('compaction', 'su-a', NOW)).toBe(false);
+    await markRefused('compaction', 'su-a', NOW);
+    expect(await wasRecentlyRefused('compaction', 'su-a', NOW)).toBe(true);
     // a different boundary / owner is independent
-    expect(wasRecentlyRefused('handoff', 'su-a', NOW)).toBe(false);
-    expect(wasRecentlyRefused('compaction', 'su-b', NOW)).toBe(false);
-    clearRefused('compaction', 'su-a');
-    expect(wasRecentlyRefused('compaction', 'su-a', NOW)).toBe(false);
+    expect(await wasRecentlyRefused('handoff', 'su-a', NOW)).toBe(false);
+    expect(await wasRecentlyRefused('compaction', 'su-b', NOW)).toBe(false);
+    await clearRefused('compaction', 'su-a');
+    expect(await wasRecentlyRefused('compaction', 'su-a', NOW)).toBe(false);
   });
 
-  it('expires a marker past the TTL', () => {
-    markRefused('compaction', 'su-a', NOW);
-    expect(wasRecentlyRefused('compaction', 'su-a', NOW + REFUSAL_MARKER_TTL_MS + 1)).toBe(false);
+  it('expires a marker past the TTL', async () => {
+    await markRefused('compaction', 'su-a', NOW);
+    expect(await wasRecentlyRefused('compaction', 'su-a', NOW + REFUSAL_MARKER_TTL_MS + 1)).toBe(false);
   });
 });
 
@@ -110,7 +123,7 @@ describe('runFlushGate ladder', () => {
     expect(first.refusalText).toContain('WI-7');
     expect(first.tripwires[0].kind).toBe('missing-checkpoint');
     // marker is now set
-    expect(wasRecentlyRefused('compaction', 'su-d', NOW)).toBe(true);
+    expect(await wasRecentlyRefused('compaction', 'su-d', NOW)).toBe(true);
 
     // retry with the SAME unflushed brief → the system writes the fallback + proceeds
     const second = await runFlushGate(args);
@@ -120,11 +133,11 @@ describe('runFlushGate ladder', () => {
     // an array either way, and the verdict/marker transition is what matters here.
     expect(Array.isArray(second.fallback?.checkpointedItems)).toBe(true);
     // the marker is retired after the fallback fires
-    expect(wasRecentlyRefused('compaction', 'su-d', NOW)).toBe(false);
+    expect(await wasRecentlyRefused('compaction', 'su-d', NOW)).toBe(false);
   });
 
   it('retires a stale marker when the boundary comes back clean (flush happened)', async () => {
-    markRefused('compaction', 'su-e', NOW);
+    await markRefused('compaction', 'su-e', NOW);
     const out = await runFlushGate({
       boundary: 'compaction',
       ownerId: 'su-e',
@@ -135,7 +148,7 @@ describe('runFlushGate ladder', () => {
       nowMs: NOW,
     });
     expect(out.verdict).toBe('clear');
-    expect(wasRecentlyRefused('compaction', 'su-e', NOW)).toBe(false);
+    expect(await wasRecentlyRefused('compaction', 'su-e', NOW)).toBe(false);
   });
 
   it('is a no-op (clear) when disabled by env, even with tripwires', async () => {
