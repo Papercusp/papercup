@@ -151,14 +151,19 @@ function describeEgress(egress: AccountEgress | undefined): string {
   return egress?.proxyUrl ?? (egress?.localAddress ? `src ${egress.localAddress}` : 'default-egress');
 }
 
-function timeoutError(phase: string): Error {
-  const error = new Error(`${CAPACITY_PROBE_TIMEOUT_ERROR} during ${phase}`);
-  error.name = 'CapacityProbeTimeoutError';
-  return error;
+class CapacityProbeTimeoutError extends Error {
+  constructor(readonly phase: string) {
+    super(`${CAPACITY_PROBE_TIMEOUT_ERROR} during ${phase}`);
+    this.name = 'CapacityProbeTimeoutError';
+  }
 }
 
-function isTimeoutError(error: unknown): boolean {
-  return error instanceof Error && error.name === 'CapacityProbeTimeoutError';
+function timeoutError(phase: string): CapacityProbeTimeoutError {
+  return new CapacityProbeTimeoutError(phase);
+}
+
+function isTimeoutError(error: unknown): error is CapacityProbeTimeoutError {
+  return error instanceof CapacityProbeTimeoutError;
 }
 
 /** Bound an operation that has no cancellation seam of its own (credential refresh or dispatcher import). */
@@ -267,12 +272,14 @@ export async function probeAccountCapacity(
       failures.push(`${route}: ${CAPACITY_PROBE_TIMEOUT_ERROR} during egress dispatcher`);
       break;
     }
+    let phase = 'egress dispatcher';
     try {
       const dispatcher = await withDeadline(
         () => buildDispatcher(egress),
         routeTimeoutMs,
         'egress dispatcher',
       );
+      phase = 'fetch';
       const fetchTimeoutMs = remainingMs(deadlineAt, now);
       if (fetchTimeoutMs <= 0) throw timeoutError('fetch');
       const ac = new AbortController();
@@ -319,7 +326,7 @@ export async function probeAccountCapacity(
       }
       failures.push(`${route}: HTTP ${res.status} carried no anthropic-ratelimit-unified-* header`);
     } catch (e) {
-      failures.push(`${route}: ${describeProbeError(e, isTimeoutError(e) ? 'fetch' : 'egress dispatcher', deadlineAt, now)}`);
+      failures.push(`${route}: ${describeProbeError(e, phase, deadlineAt, now)}`);
       if (isTimeoutError(e) || now() >= deadlineAt) break;
     }
   }

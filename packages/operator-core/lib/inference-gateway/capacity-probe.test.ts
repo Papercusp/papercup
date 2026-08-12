@@ -6,8 +6,11 @@
  *   - a FAILED probe must never look like an unwall (that would strand the fleet on a capped account);
  *   - a 429 must still be read as signal (it carries the real reset), not thrown away as an error.
  */
-import { describe, it, expect, vi } from 'vitest';
+import { afterEach, describe, it, expect, vi } from 'vitest';
 import {
+  CAPACITY_PROBE_ACCOUNT_TIMEOUT_MS,
+  CAPACITY_PROBE_NOT_STARTED_ERROR,
+  CAPACITY_PROBE_TIMEOUT_ERROR,
   parseCapacityHeaders,
   provesUnwall,
   storedWindows,
@@ -38,6 +41,8 @@ const okDeps = (headers: Record<string, string>, status = 200) => ({
   resolveToken: async () => 'tok',
   buildDispatcher: async () => undefined,
 });
+
+afterEach(() => vi.useRealTimers());
 
 describe('parseCapacityHeaders', () => {
   it('maps the unified 5h + 7d headers into the projection shape', () => {
@@ -125,6 +130,54 @@ describe('storedWindows', () => {
 });
 
 describe('probeAccountCapacity', () => {
+  it('bounds a hanging credential resolution to the account deadline', async () => {
+    vi.useFakeTimers();
+    const pending = probeAccountCapacity(
+      acct('hung-credential', { utilization7d: 1.0 }),
+      {
+        resolveToken: () => new Promise<string>(() => undefined),
+        buildDispatcher: async () => undefined,
+      },
+      FULL,
+    );
+
+    await vi.advanceTimersByTimeAsync(CAPACITY_PROBE_ACCOUNT_TIMEOUT_MS);
+    const result = await pending;
+
+    expect(result).toMatchObject({
+      accountId: 'hung-credential',
+      attempted: true,
+      ok: false,
+      windows: {},
+      unwalls: false,
+    });
+    expect(result.error).toBe(`${CAPACITY_PROBE_TIMEOUT_ERROR} during credential resolution`);
+  });
+
+  it('bounds a hanging dispatcher construction to the remaining account deadline', async () => {
+    vi.useFakeTimers();
+    const pending = probeAccountCapacity(
+      acct('hung-dispatcher', { utilization7d: 1.0 }),
+      {
+        resolveToken: async () => 'tok',
+        buildDispatcher: () => new Promise<undefined>(() => undefined),
+      },
+      FULL,
+    );
+
+    await vi.advanceTimersByTimeAsync(CAPACITY_PROBE_ACCOUNT_TIMEOUT_MS);
+    const result = await pending;
+
+    expect(result).toMatchObject({
+      accountId: 'hung-dispatcher',
+      attempted: true,
+      ok: false,
+      windows: {},
+      unwalls: false,
+    });
+    expect(result.error).toBe(`default-egress: ${CAPACITY_PROBE_TIMEOUT_ERROR} during egress dispatcher`);
+  });
+
   it('reads a 200 response`s unified headers and reports the unwall', async () => {
     const a = acct('walled', { utilization7d: 1.0, windowResetAt7d: 999 });
     const r = await probeAccountCapacity(a, okDeps({ 'anthropic-ratelimit-unified-7d-utilization': '0.04' }), FULL);
@@ -247,6 +300,46 @@ describe('probeAccountCapacity', () => {
 });
 
 describe('probeCapacityForAccounts', () => {
+  it('bounds the whole sweep and emits deterministic no-reading rows for accounts not started', async () => {
+    vi.useFakeTimers();
+    const accounts = ['a', 'b', 'c', 'd', 'e'].map((id) => acct(id, { utilization7d: 1.0 }));
+    const pending = probeCapacityForAccounts(
+      accounts,
+      { timeoutMs: 1_000 },
+      {
+        resolveToken: () => new Promise<string>(() => undefined),
+        buildDispatcher: async () => undefined,
+      },
+    );
+
+    await vi.advanceTimersByTimeAsync(1_000);
+    const out = await pending;
+
+    expect(out.map((result) => result.accountId)).toEqual(['a', 'b', 'c', 'd', 'e']);
+    expect(out.slice(0, 3).every((result) => result.attempted === true)).toBe(true);
+    expect(out.slice(0, 3).every((result) => result.error === `${CAPACITY_PROBE_TIMEOUT_ERROR} during credential resolution`)).toBe(true);
+    expect(out.slice(3)).toEqual([
+      expect.objectContaining({
+        accountId: 'd',
+        attempted: false,
+        ok: false,
+        windows: {},
+        before: storedWindows(accounts[3]),
+        unwalls: false,
+        error: CAPACITY_PROBE_NOT_STARTED_ERROR,
+      }),
+      expect.objectContaining({
+        accountId: 'e',
+        attempted: false,
+        ok: false,
+        windows: {},
+        before: storedWindows(accounts[4]),
+        unwalls: false,
+        error: CAPACITY_PROBE_NOT_STARTED_ERROR,
+      }),
+    ]);
+  });
+
   it('skips non-claude providers (codex has no unified-window dialect)', async () => {
     const accounts = [acct('claude-a'), acct('codex-a', {}, { provider: 'codex' })];
     const out = await probeCapacityForAccounts(accounts, {}, okDeps({ 'anthropic-ratelimit-unified-7d-utilization': '0.1' }));
