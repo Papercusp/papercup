@@ -198,6 +198,19 @@ describe('work_items:set_state — aliased/requestedState/appliedState on every 
   });
 });
 
+describe('work_items:set_state — terminal timeout recovery guidance (EI-20234204782129196)', () => {
+  it('names the assumptions declaration when set_state is used after a completion timeout', () => {
+    const description = (tool as { description?: string }).description ?? '';
+    const guidance = (tool as { guidance?: { when?: string; chaining?: string } }).guidance;
+    const text = `${description}\n${guidance?.when ?? ''}\n${guidance?.chaining ?? ''}`;
+    expect(text).toContain('completionRef');
+    expect(text).toContain('assumptions');
+    expect(text).toContain('"none"');
+    expect(text).toContain('facts:assert keys');
+    expect(text).toContain('work_items:complete times out');
+  });
+});
+
 /**
  * P-005 / D-006 — the terminal-state evidence requirement is STRUCTURAL.
  *
