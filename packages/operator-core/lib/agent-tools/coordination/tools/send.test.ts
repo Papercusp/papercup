@@ -1440,11 +1440,19 @@ describe('coord:send structured-body gate (owner directive 2026-07-28 — the st
     expect(primaryGuidance).toMatch(/not a string or array of strings/i);
   });
 
+  it('publishes the premise ref-string shape in primary coord:send guidance', () => {
+    const primaryGuidance = [tool.description, tool.guidance?.when].filter(Boolean).join('\n');
+    expect(primaryGuidance).toContain('premises');
+    expect(primaryGuidance).toContain('premises: ["WI-1234#completion"]');
+    expect(primaryGuidance).toMatch(/premises.*array.*ref strings.*not objects/i);
+  });
+
   it('publishes the exact authored entry shapes in the body guidance', () => {
     const schema = z.toJSONSchema(tool.args) as {
       properties?: { body?: { description?: string } };
     };
     const bodyDescription = schema.properties?.body?.description ?? '';
+    expect(bodyDescription).toContain('premises: ["WI-1234#completion"]');
     expect(bodyDescription).toContain('youMayNotKnow: [{ ref:');
     expect(bodyDescription).toContain('provenance: "authored"');
     expect(bodyDescription).toContain('couldNotDetermine: [{ what:');
