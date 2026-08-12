@@ -40,7 +40,7 @@ const FEED_SUMMARY_BUDGET = 10_000;
 export default defineTool({
   name: 'coord:feed',
   description:
-    'Read the COMPLETE coordination stream across every agent and channel — messages, acks, notifies, broadcasts, handoffs, escalations, resolutions, plan events — newest-first with a next-page cursor. Filter by kinds, owner (matches sender OR recipient; broadcasts match any owner), plan_slug, free-text `q` (over summary/body/from/to), and a since_ts/before_ts time window. before_ts is the pagination cursor (pass back the returned `nextCursor`). Returns `{ count, total, by_kind, next_cursor, rows }`; each row is the raw envelope plus `surface` (messages|escalations|handoffs|plan-events) and a derived `broadcast` flag. A row carrying `superseded_by` was CORRECTED by its own sender — follow that msg_id to the current claim before acting on the row.',
+    'Read the COMPLETE coordination stream across every agent and channel — messages, acks, notifies, broadcasts, handoffs, escalations, resolutions, plan events — newest-first with a next-page cursor. Filter by kinds, owner (matches sender OR recipient; broadcasts match any owner), plan_slug, free-text `q` (over summary/body/from/to), and a since/before time window. `since` is the preferred timestamp filter; legacy `since_ts` remains accepted. before_ts is the pagination cursor (pass back the returned `nextCursor`). Returns `{ count, total, by_kind, next_cursor, rows }`; each row is the raw envelope plus `surface` (messages|escalations|handoffs|plan-events) and a derived `broadcast` flag. A row carrying `superseded_by` was CORRECTED by its own sender — follow that msg_id to the current claim before acting on the row.',
   guidance: {
     when:
       'You need the full fleet-wide coordination timeline — auditing what agents said to each other, tracing a broadcast/handoff/escalation chain, or backing an observer UI. The all-traffic counterpart to the per-owner coord:inbox.',
@@ -72,6 +72,10 @@ export default defineTool({
       .optional()
       .describe('Restrict to envelopes addressed to this audience selector (@fleet:<slug> / @topic:<slug> / @plan:<slug> / @object:… / @file:… / *) — the audience-keyed HISTORY read. Catches up on everything sent to a fleet/topic even though your id was never in the resolved recipient list. (Members use coord:catch-up for the low-tier, membership-checked version.)'),
     q: z.string().optional().describe('Case-insensitive substring over summary/body/from/to/plan_slug.'),
+    since: z
+      .string()
+      .optional()
+      .describe('Preferred strictly-later-than ISO timestamp (older bound). Use this instead of legacy since_ts.'),
     since_ts: z.string().optional().describe('Strictly later than this ISO timestamp (older bound).'),
     before_ts: z
       .string()
@@ -103,7 +107,9 @@ export default defineTool({
       plan_slug: args.plan_slug,
       audience: args.audience,
       q: args.q,
-      since_ts: args.since_ts,
+      // Keep the historical snake_case field wire-compatible while making the
+      // surrounding coordination API's `since` convention available to callers.
+      since_ts: args.since ?? args.since_ts,
       before_ts: args.before_ts,
       limit: args.limit ?? AGENT_FEED_DEFAULT,
       token_budget: args.token_budget,
