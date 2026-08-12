@@ -141,6 +141,7 @@ describe('capability:bash — result shape for a code:run script (EI-20066912585
     expect(typeof fgSeen).toBe('object');
     // Both carry the launch/run facts under the same names.
     expect(bgSeen.ok).toBe(true);
+    expect(typeof bgSeen.task_id).toBe('string');
     expect(fgSeen.ok).toBe(true);
     expect(bgSeen.cwd).toBe(STATE);
     expect(fgSeen.cwd).toBe(STATE);

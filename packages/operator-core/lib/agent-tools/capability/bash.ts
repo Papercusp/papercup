@@ -8,9 +8,11 @@
  *
  * Foreground: streams output, enforces a short wall-clock timeout, returns the
  * (head+tail-trimmed-if-large) combined output + the spill-log path.
- * Background: returns a `bash_id` immediately; read incremental output with
- * `capability:bash_output` and stop it with `capability:bash_kill` — the way a
- * 5-minute build is run without holding one blocking request.
+ * Background: returns a `bash_id` and durable `task_id` immediately; read
+ * incremental output with `capability:bash_output` and stop it with
+ * `capability:bash_kill` — the way a 5-minute build is run without holding one
+ * blocking request. The task id remains observable through the task ledger if
+ * the operator restarts and its in-memory bash-job map is lost.
  *
  * BOTH modes have a deadline; they do NOT share one (WI-6677). The background
  * default is hours, not the foreground's two minutes, because a background job
@@ -46,7 +48,7 @@ export default defineTool({
     notWhen:
       'To read/write/edit a single file, prefer capability:read / capability:write / capability:edit (they coordinate the file lock and mirror the native editors). For read-only queries against the operator PostgreSQL database, use dev:pg_query { sql | describe } instead of psql: capability:bash intentionally strips database credential environment variables. For git, prefer capability:git.',
     chaining:
-      'run_in_background:true → returns a bash_id → capability:bash_output { bash_id } to read incremental output → capability:bash_kill { bash_id } to stop. Never push (git push is refused).',
+      'run_in_background:true → returns a bash_id plus durable task_id → capability:bash_output { bash_id } to read incremental output → capability:bash_kill { bash_id } to stop. Never push (git push is refused).',
     seeAlso: [
       'capability:bash_output (read a backgrounded run\'s output)',
       'capability:bash_kill (kill a backgrounded run)',
@@ -137,6 +139,7 @@ export default defineTool({
             text: JSON.stringify({
               ok: true,
               bash_id: job.id,
+              task_id: job.taskId,
               status: 'running',
               cwd,
               log_path: job.logPath,

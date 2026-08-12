@@ -4,7 +4,23 @@
  * security-load-bearing part is the PURE command construction + path validation,
  * which is what these cover — proving the agent can never inject a shell command.
  */
-import { describe, expect, it } from 'vitest';
+import { mkdirSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { describe, expect, it, vi } from 'vitest';
+
+// The response contract is independent of child-process execution. Keep this
+// regression deterministic by replacing only the launcher while preserving the
+// real command-resolution and cwd validation paths below.
+vi.mock('./bash-jobs', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./bash-jobs')>()),
+  startBackground: vi.fn(),
+}));
+vi.mock('./exec-sandbox', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./exec-sandbox')>()),
+  capabilityExecSandboxEnabled: vi.fn(async () => false),
+}));
+
 import {
   resolveInspectCommand,
   resolveTypecheckCwd,
@@ -15,8 +31,27 @@ import {
   FOREGROUND_TIMEOUT_CEILING_MS,
   MCP_TRANSPORT_CAP_MS,
 } from './inspect';
+import inspectTool from './inspect';
+import { startBackground } from './bash-jobs';
 
 const BASE = '/repo';
+const INSPECT_STATE = mkdtempSync(join(tmpdir(), 'cap-inspect-response-'));
+const INSPECT_PACKAGE = join(INSPECT_STATE, 'pkg');
+mkdirSync(INSPECT_PACKAGE);
+
+type ToolResultish = { content: Array<{ text: string }>; isError?: boolean };
+type Tool = { handler: (a: unknown, c: unknown) => Promise<ToolResultish> };
+const inspect = inspectTool as unknown as Tool;
+
+function inspectCtx() {
+  return {
+    projectDir: INSPECT_STATE,
+    stateDir: INSPECT_STATE,
+    signal: new AbortController().signal,
+    emit: () => {},
+    role: 'cup',
+  } as never;
+}
 
 describe('resolveInspectCommand — verb mapping', () => {
   it('typecheck requires a package', () => {
@@ -65,6 +100,33 @@ describe('resolveInspectCommand — verb mapping', () => {
 
   it('path is rejected for typecheck', () => {
     expect(resolveInspectCommand({ check: 'typecheck', package: 'p', path: 'x' }, BASE).ok).toBe(false);
+  });
+});
+
+describe('capability:inspect — background launch response', () => {
+  it('returns the durable task_id alongside the in-memory bash_id', async () => {
+    vi.mocked(startBackground).mockReturnValue({
+      id: 'bash-response-probe',
+      taskId: 'task-response-probe',
+      logPath: '/tmp/bash-response-probe.log',
+    } as never);
+
+    const result = await inspect.handler(
+      { check: 'test', package: 'pkg', run_in_background: true },
+      inspectCtx(),
+    );
+    const payload = JSON.parse(result.content[0].text) as Record<string, unknown>;
+
+    expect(payload).toMatchObject({
+      ok: true,
+      bash_id: 'bash-response-probe',
+      task_id: 'task-response-probe',
+      status: 'running',
+    });
+    expect(vi.mocked(startBackground)).toHaveBeenCalledWith(
+      expect.objectContaining({ command: 'npx vitest run', cwd: INSPECT_PACKAGE }),
+      expect.any(Number),
+    );
   });
 });
 

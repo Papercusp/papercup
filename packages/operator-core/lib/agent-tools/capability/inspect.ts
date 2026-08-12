@@ -290,7 +290,7 @@ export default defineTool({
     notWhen:
       'To READ a file use capability:read; to SEARCH use the Grep tool. To run an arbitrary or mutating command you need capability:bash (gated — escalate if you truly need it). This tool runs ONLY tsc --noEmit / tests, never a free-form command.',
     chaining:
-      'capability:read / Grep (inspect) → capability:inspect (typecheck/test to CONFIRM) → report a VERIFIED diagnosis. For a long suite pass run_in_background:true and poll capability:bash_output.',
+      'capability:read / Grep (inspect) → capability:inspect (typecheck/test to CONFIRM) → report a VERIFIED diagnosis. For a long suite pass run_in_background:true and poll capability:bash_output; the launch response includes bash_id plus durable task_id.',
     seeAlso: [
       'capability:read (raw file content)',
       'capability:bash (arbitrary / mutating command — gated)',
@@ -390,6 +390,7 @@ export default defineTool({
             text: JSON.stringify({
               ok: true,
               bash_id: job.id,
+              task_id: job.taskId,
               status: 'running',
               check: args.check,
               command,
