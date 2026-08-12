@@ -56,6 +56,7 @@ import {
   isUnlimited,
   settingsSummary,
   settingsToForm,
+  GOAL_LAUNCH_ROLE_OPTIONS,
   PROFILE_CHOICE_FIELDS,
   PROFILE_FIELDS,
   PROFILE_FIELD_LABEL,
@@ -419,8 +420,9 @@ export default function GoalSettingsSection({
 
           <h4 className="hud-goal__set-h">Per-role profiles</h4>
           <p className="hud-goal__note">
-            Override the defaults for one role. More specific than the defaults, less than what a
-            launch explicitly asks for.
+            Override the defaults for one launch slot — the JOB an agent is launched to do, not its
+            psu persona. More specific than the defaults, less than what a launch explicitly asks
+            for.
           </p>
           {form.roles.length === 0 ? (
             <p className="hud-goal__empty">No per-role profiles — every role uses the defaults.</p>
@@ -430,15 +432,36 @@ export default function GoalSettingsSection({
                 <div className="hud-goal__set-rolehead">
                   <label className="hud-goal__set-field" htmlFor={`gs-${goalId}-${r.key}-role`}>
                     <span className="hud-goal__set-label">Role</span>
-                    <input
+                    {/*
+                      D-016 (WI-38048): a SELECT, not a text box. These keys are a
+                      closed contract vocabulary; the old free-text field invited
+                      a psu persona (its placeholder read “e.g. engineer”), which
+                      is not a launch slot and bound nothing.
+                      A stored doc written before the vocabulary closed can still
+                      carry such a value, so an unrecognised one is kept as a
+                      disabled option rather than silently re-pointed at a real
+                      slot the owner never chose — it stays visible, and
+                      `formToSettings` refuses it by name on save.
+                    */}
+                    <select
                       id={`gs-${goalId}-${r.key}-role`}
                       className="hud-goal__set-in"
                       value={r.role}
                       disabled={busy}
-                      placeholder="e.g. engineer"
-                      maxLength={64}
                       onChange={(e) => setRoleField(r.key, 'role', e.target.value)}
-                    />
+                    >
+                      <option value="">Choose a launch slot…</option>
+                      {r.role && !GOAL_LAUNCH_ROLE_OPTIONS.some((o) => o.value === r.role) ? (
+                        <option value={r.role} disabled>
+                          {r.role} (not a launch slot)
+                        </option>
+                      ) : null}
+                      {GOAL_LAUNCH_ROLE_OPTIONS.map((o) => (
+                        <option key={o.value} value={o.value}>
+                          {o.label}
+                        </option>
+                      ))}
+                    </select>
                   </label>
                   <button
                     type="button"

@@ -19,6 +19,12 @@
  * blank input emits NO KEY, and a profile with no keys emits no profile.
  */
 
+import {
+  GOAL_LAUNCH_ROLES,
+  isGoalLaunchRole,
+  type GoalLaunchRole,
+} from '@papercusp/operator-core/lib/goal-launch-settings';
+
 import type {
   GoalDetailLaunchDefaults,
   GoalDetailLaunchProfile,
@@ -88,6 +94,38 @@ export const PROFILE_FIELD_LABEL: Record<ProfileField, string> = {
   carry: 'Carry',
   contextSize: 'Context',
 };
+
+/**
+ * D-016 (WI-38048): the role field is a CLOSED set, so the form renders it as a
+ * select — never free text.
+ *
+ * This is the UI half of that ruling, and without it the server half is a
+ * regression rather than a fix: `roles` is now keyed by the launch-slot
+ * vocabulary, so a hand-typed name is REFUSED by the schema. Before, the same
+ * typed name was accepted and bound nothing — the failure the ruling exists to
+ * kill — but an owner who can only reach the setting through a text box with no
+ * way to discover the eight legal values has simply traded a silent
+ * mis-binding for an unexplained save error. A select makes the vocabulary the
+ * only thing you can express.
+ *
+ * `Record<GoalLaunchRole, …>` is deliberately exhaustive: a ninth slot added to
+ * `GOAL_LAUNCH_ROLES` fails THIS typecheck until it is given a label, so the
+ * picker cannot silently fall behind the contract it is supposed to present.
+ */
+export const GOAL_LAUNCH_ROLE_LABEL: Record<GoalLaunchRole, string> = {
+  goal: 'Goal agent (the goal’s own driver)',
+  'plan-fleet-leader': 'Plan fleet — leader',
+  'plan-fleet-member': 'Plan fleet — member',
+  'drain-fleet-leader': 'Drain fleet — leader',
+  'drain-fleet-member': 'Drain fleet — member',
+  grading: 'Grading',
+  test: 'Test',
+  misc: 'Misc',
+};
+
+/** The slots the picker offers, in contract order. */
+export const GOAL_LAUNCH_ROLE_OPTIONS: readonly { value: GoalLaunchRole; label: string }[] =
+  GOAL_LAUNCH_ROLES.map((value) => ({ value, label: GOAL_LAUNCH_ROLE_LABEL[value] }));
 
 let roleKeySeq = 0;
 function nextRoleKey(): string {
@@ -244,6 +282,18 @@ export function formToSettings(form: LaunchSettingsForm): SettingsDocumentResult
       // Object keys collapse, so the later row would silently overwrite the
       // earlier one and the owner would see one row where they typed two.
       problems.push(`Role “${role}” appears twice.`);
+      continue;
+    }
+    if (!isGoalLaunchRole(role)) {
+      // D-016 (WI-38048): the server schema refuses an unknown key, so without
+      // this the owner's only signal is a raw validation error naming a zod
+      // path. Documents written before the vocabulary closed can also carry a
+      // free-text key (a psu persona like `engineer`), and they load into this
+      // form — so this refusal is reachable from a stored doc, not just from a
+      // fresh typo, and it has to name the legal values to be actionable.
+      problems.push(
+        `Role “${role}” is not a launch slot. Pick one of: ${GOAL_LAUNCH_ROLES.join(', ')}.`,
+      );
       continue;
     }
     seen.add(role);

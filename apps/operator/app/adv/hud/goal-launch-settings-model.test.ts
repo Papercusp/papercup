@@ -11,6 +11,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   launchProfileSchema,
+  GOAL_LAUNCH_ROLES,
   LAUNCH_PROFILE_OPTIONS,
 } from '@papercusp/operator-core/lib/goal-launch-settings';
 import {
@@ -19,6 +20,7 @@ import {
   isSettingsDirty,
   settingsSummary,
   settingsToForm,
+  GOAL_LAUNCH_ROLE_OPTIONS,
   PROFILE_CHOICE_FIELDS,
   PROFILE_FIELDS,
   PROFILE_FIELD_LABEL,
@@ -171,7 +173,7 @@ describe('formToSettings', () => {
   });
 
   it('refuses a named role that pins nothing, rather than silently dropping it', () => {
-    const r = formToSettings(form({ roles: [{ ...emptyRoleForm(), role: 'engineer' }] }));
+    const r = formToSettings(form({ roles: [{ ...emptyRoleForm(), role: 'grading' }] }));
     expect(r.problems[0]).toContain('pins no settings');
   });
 
@@ -179,8 +181,8 @@ describe('formToSettings', () => {
     const r = formToSettings(
       form({
         roles: [
-          { ...emptyRoleForm(), role: 'engineer', model: 'a' },
-          { ...emptyRoleForm(), role: 'engineer', model: 'b' },
+          { ...emptyRoleForm(), role: 'grading', model: 'a' },
+          { ...emptyRoleForm(), role: 'grading', model: 'b' },
         ],
       }),
     );
@@ -192,10 +194,10 @@ describe('formToSettings', () => {
     const r = formToSettings(
       form({
         maxAgents: '4',
-        roles: [{ ...emptyRoleForm(), role: 'engineer', effort: 'high' }],
+        roles: [{ ...emptyRoleForm(), role: 'grading', effort: 'high' }],
       }),
     );
-    expect(r.settings).toEqual({ maxAgents: 4, roles: { engineer: { effort: 'high' } } });
+    expect(r.settings).toEqual({ maxAgents: 4, roles: { grading: { effort: 'high' } } });
   });
 
   it('round-trips a document unchanged', () => {
@@ -203,9 +205,56 @@ describe('formToSettings', () => {
       maxAgents: 5,
       maxPerFleet: 2,
       defaults: { agent: 'claude', model: 'sonnet' },
-      roles: { engineer: { effort: 'high' } },
+      roles: { 'plan-fleet-member': { effort: 'high' } },
     };
     expect(formToSettings(settingsToForm(doc)).settings).toEqual(doc);
+  });
+});
+
+/**
+ * D-016 (WI-38048): the form may only emit keys the server can BIND.
+ *
+ * The bug this closes was not a rejected save — it was an ACCEPTED one. A
+ * profile keyed by a psu persona (`engineer`, `su`) stored fine, read back into
+ * the panel as configured, and bound nothing at launch. Narrowing the server
+ * schema turns that silence into a refusal, and these tests pin the two halves
+ * that make the refusal usable: it happens HERE, in terms the owner can act on,
+ * and it names the legal vocabulary.
+ */
+describe('D-016 — role keys are launch slots, not psu personas', () => {
+  it('refuses a psu persona as a role key, naming the legal slots', () => {
+    const r = formToSettings(
+      form({ roles: [{ ...emptyRoleForm(), role: 'engineer', effort: 'high' }] }),
+    );
+    expect(r.settings).toBeNull();
+    expect(r.problems[0]).toContain('is not a launch slot');
+    // The message must carry the vocabulary: the field is the owner's only
+    // route to it, so a refusal that does not list the slots is a dead end.
+    expect(r.problems[0]).toContain('plan-fleet-member');
+  });
+
+  it.each(GOAL_LAUNCH_ROLES)('accepts the launch slot %s', (slot) => {
+    const r = formToSettings(form({ roles: [{ ...emptyRoleForm(), role: slot, effort: 'high' }] }));
+    expect(r.problems).toEqual([]);
+    expect(r.settings).toEqual({ roles: { [slot]: { effort: 'high' } } });
+  });
+
+  it('offers every slot in the picker, so none is unreachable from the panel', () => {
+    // The guard against the real regression: closing the vocabulary server-side
+    // while the picker offers a subset would leave a slot bindable in principle
+    // and unauthorable in practice.
+    expect(GOAL_LAUNCH_ROLE_OPTIONS.map((o) => o.value)).toEqual([...GOAL_LAUNCH_ROLES]);
+    for (const o of GOAL_LAUNCH_ROLE_OPTIONS) expect(o.label.trim()).not.toBe('');
+  });
+
+  it('still LOADS a legacy free-text key so the owner can see and fix it', () => {
+    // Reading is deliberately tolerant: a document written before the
+    // vocabulary closed must render, or the owner faces a panel that silently
+    // omits the row they need to correct.
+    const f = settingsToForm({ roles: { engineer: { effort: 'high' } } });
+    expect(f.roles[0]!.role).toBe('engineer');
+    // ...and saving it unchanged is what surfaces the problem.
+    expect(formToSettings(f).problems[0]).toContain('is not a launch slot');
   });
 });
 

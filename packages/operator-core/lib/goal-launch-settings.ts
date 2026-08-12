@@ -241,7 +241,7 @@ export const goalLaunchSettingsSchema = z
      * prevent. Measured before narrowing: 0 of 12 goals carried a `roles` key,
      * so no stored document is invalidated by closing this set.
      */
-    roles: z.record(z.enum(GOAL_LAUNCH_ROLES), launchProfileSchema).optional(),
+    roles: z.partialRecord(z.enum(GOAL_LAUNCH_ROLES), launchProfileSchema).optional(),
   })
   .strict();
 

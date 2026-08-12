@@ -2360,7 +2360,13 @@ export default defineTool({
     const goalLaunch = await resolveGoalLaunch({
       workspaceId,
       launcherOwnerId: ownerId,
-      role: args.role?.trim() || null,
+      // D-016 (WI-38048): the launch SLOT, not psu `--role`. This door opens the
+      // MEMBERS of a plan fleet, so that is the slot whose profile applies, and
+      // the folded result rides down as fleetDefaults below. Passing `args.role`
+      // here — psu's persona selector, `su` for ~every session — was the bug:
+      // `settings.roles` is keyed by contract slot, so the lookup matched nothing
+      // and every profile the owner configured was silently ignored.
+      goalRole: 'plan-fleet-member',
       fleetSlug,
       count: openCount,
       requested: {
