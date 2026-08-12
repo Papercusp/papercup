@@ -201,11 +201,12 @@ export function truncateCarryField(v: string, cap: number, field: string, repair
 /**
  * Repair one incoming `checks`/`walls` row IN THE ARGUMENT SHAPE, before validation.
  *
- * Handles the single most common wrong shape agents reach for: `{claim, recheck,
- * status, evidence}` instead of `{claim, recheck, verified}`. Measured across 6 days
- * of transcripts, `evidence` (57×) and `status` (40×) were by far the top rejected
- * undeclared keys — and the tool's own description already warns against that exact
- * shape, so documenting it has demonstrably not stopped it.
+ * Handles the common wrong shapes agents reach for: `{claim, recheck, status,
+ * evidence}` instead of `{claim, recheck, verified}`, and the documented-looking
+ * `{claim, probe, verified}` alias where `probe` is intended to mean `recheck`.
+ * Measured across 6 days of transcripts, `evidence` (57×) and `status` (40×) were
+ * by far the top rejected undeclared keys; the probe alias is handled here too so
+ * a caller's concrete falsification command is not discarded at the schema boundary.
  *
  * `verified` semantics are preserved exactly: it is an EVIDENCE STRING whose mere
  * presence renders the row VERIFIED, and whose absence renders it PREDICTED. So a
@@ -217,7 +218,26 @@ export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryAr
   const r = { ...(row as Record<string, unknown>) };
   const hasStatus = 'status' in r;
   const hasEvidence = 'evidence' in r;
-  if (!hasStatus && !hasEvidence && typeof r.verified !== 'boolean') return row;
+  const hasProbe = 'probe' in r;
+  if (!hasStatus && !hasEvidence && !hasProbe && typeof r.verified !== 'boolean') return row;
+
+  if (hasProbe) {
+    // `recheck` is the canonical field, but `probe` is the natural/documented
+    // synonym callers use for the command that tests a carried claim. Preserve
+    // an explicitly supplied canonical value when both are present, while always
+    // removing the undeclared alias before strict schema validation.
+    const probe = r.probe;
+    const hadRecheck = 'recheck' in r;
+    delete r.probe;
+    if (!hadRecheck) r.recheck = probe;
+    repairs.push({
+      field: `${path}.probe`,
+      kind: 'renamed',
+      detail:
+        'the documented `probe` key is accepted as an alias for `recheck`; ' +
+        (hadRecheck ? 'the canonical recheck value was kept' : 'the probe value was mapped to recheck'),
+    });
+  }
 
   const evidence = typeof r.evidence === 'string' ? r.evidence.trim() : '';
   const status = typeof r.status === 'string' ? r.status.trim() : '';
