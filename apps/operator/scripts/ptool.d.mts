@@ -34,6 +34,18 @@ export function resolveWorkspaceScope({ workspace, env, cwd }?: {
     env?: NodeJS.ProcessEnv | undefined;
 }): any;
 /**
+ * Resolve the MCP payload tier for a ptool session. Direct ptool invocations
+ * do not inherit psu's URL interpolation, so they must carry the same bounded
+ * default themselves. `PAPERCUSP_CONTEXT_TIER=full` is the explicit escape
+ * hatch for callers that need the unshaped response. Pure when `env` is
+ * supplied; values are passed through so the server remains the authority for
+ * the supported tier vocabulary.
+ */
+export function resolveContextTier({ contextTier, env }?: {
+    contextTier?: null | undefined;
+    env?: NodeJS.ProcessEnv | undefined;
+}): any;
+/**
  * Decide where a ptool invocation's JSON args payload comes from, given
  * parsed args. Pure — the actual file/stdin read is impure and lives in
  * `main()`; this just picks the source so the branching is testable without
@@ -205,9 +217,11 @@ export function connectWithLocalRetry(connectOnce: any, operatorUrl: any, scope:
     attemptTimeoutMs?: number | undefined;
     sleep?: ((ms: any) => Promise<any>) | undefined;
 }): Promise<any>;
-/** Build ptool's superuser MCP URL. Pure and exported so the identity contract
- *  is regression-tested without opening a transport. */
-export function buildMcpUrl(operatorUrl: any, { workspace, harness, client }?: {}): URL;
+/** Build ptool's superuser MCP URL. Pure and exported so the identity and
+ * payload-tier contracts are regression-tested without opening a transport. */
+export function buildMcpUrl(operatorUrl: any, { workspace, harness, client, contextTier, }?: {
+    contextTier?: string | undefined;
+}): URL;
 /** List every tool, following pagination if the server returns a cursor. */
 export function listAllTools(client: any, { timeoutMs }?: {
     timeoutMs?: number | undefined;
@@ -223,7 +237,7 @@ export function printResult(result: any, { raw }: {
  * non-idempotent mutation. Keep the recovery instruction about execution
  * uncertainty rather than inventing a query/jq pipeline that may not exist.
  */
-export const PTOOL_TRUNCATED_RESULT_MESSAGE: "ptool: operator reply was truncated before a complete JSON payload; the tool call may have executed \u2014 verify its state before retrying.";
+export const PTOOL_TRUNCATED_RESULT_MESSAGE: string;
 export const PTOOL_LIST_TOOLS_TIMEOUT_MS: 10000;
 export const PTOOL_CALL_TOOL_TIMEOUT_MS: 30000;
 export const PTOOL_GIT_SYNC_RUN_TIMEOUT_MS: 60000;
