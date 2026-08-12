@@ -152,6 +152,7 @@ describe('scheduler:get_next claim-spec identity is inherited (EI-20225786201327
       ['fleet', 'nonp2p-bug-drain-headless-0812'],
       ['workspace', 'papercusp-workspace'],
       ['claimSpec', { specId: 'lane', revision: 1 }],
+      ['limit', 1],
     ] as const) {
       const result = tool.args.safeParse({ harness: 'papercusp', [field]: value });
       expect(result.success, `scheduler:get_next must reject undeclared ${field}`).toBe(false);
