@@ -17,6 +17,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import { z } from 'zod';
 
 vi.mock('./identity', () => ({ readIdentity: vi.fn(() => ({ ownerId: 'me', ownerLabel: 'Me', coordinationDomain: 'dom' })) }));
 vi.mock('./coordination-domain', () => ({ resolveExplicitFileLockDomain: vi.fn((requested: string | undefined, fallback: string) => requested ?? fallback) }));
@@ -99,6 +100,18 @@ describe('locks:acquire — outcome branches', () => {
     expect(guidance).toMatch(/lacks lock hooks/);
     expect(guidance).not.toMatch(/automatic on every client/);
     expect(guidance).not.toMatch(/single incidental edit needs no manual call/);
+  });
+
+  it('publishes coordination_domain as an absolute canonical checkout root, not a workspace slug', () => {
+    const description = tool.args.shape.coordination_domain.description ?? '';
+    expect(description).toMatch(/absolute canonical repository checkout root/i);
+    expect(description).toMatch(/not a harness\/workspace slug/i);
+    expect(description).toMatch(/e\.g\. \/workspace\/papercusp/i);
+
+    const published = z.toJSONSchema(tool.args as never) as {
+      properties?: { coordination_domain?: { description?: string } };
+    };
+    expect(published.properties?.coordination_domain?.description).toBe(description);
   });
 
   it('rejects malformed paths before attempting acquire', async () => {

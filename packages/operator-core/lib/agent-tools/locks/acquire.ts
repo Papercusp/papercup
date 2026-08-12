@@ -125,7 +125,9 @@ export default defineTool({
       .min(1)
       .max(4096)
       .optional()
-      .describe('physical repository root supplied by a client edit hook when its operator checkout differs from the edited tree'),
+      .describe(
+        'absolute canonical repository checkout root (not a harness/workspace slug) supplied by a client edit hook when its operator checkout differs from the edited tree, e.g. /workspace/papercusp',
+      ),
     external_paths: z
       .array(z.string().min(1))
       .max(50)
