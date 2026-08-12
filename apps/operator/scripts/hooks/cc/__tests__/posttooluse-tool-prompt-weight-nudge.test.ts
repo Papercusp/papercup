@@ -52,7 +52,7 @@ type Hook = {
   weighToolsInSource: (ts: unknown, src: string, file?: string) => Array<{ name: string; weight: number }>;
   violationsFor: (
     tools: Array<{ name: string; weight: number }>,
-    b: { BUDGET: number; HARD_CAP: number },
+    b: { BUDGET: number; HARD_CAP: number; allowOverBudget?: string[] | null },
   ) => Array<{ name: string; weight: number; hardCap: boolean; limit: number; cutAtLeast: number }>;
   formatNudge: (v: ReturnType<Hook['violationsFor']>) => string;
   nudgeFor: (p: string) => string;
