@@ -6,23 +6,21 @@
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
 title: "A writer that re-derives its own (workspace, harness) key is the bug — three shipped generations of it"
 description: "harness_plans is keyed on (workspace_id, harness_slug, plan_slug). Every plan READER resolves that key through resolvePlanScope; four WRITERS resolved it themselves. Each fix replaced one wrong derivation with another wrong derivation — DEFAULT_WORKSPACE_ID, then activeWorkspaceId(), then the un-collapsed ctx slug — because the bug was never the value, it was having a second resolution path at all. Includes the live repro and the one-line rule."
-discovered: 2026-07-25
-tags: [multi-tenant, workspace-scope, harness-plans, plans, hive, resolve-plan-scope, silent-no-op, bug-class, write-path]
-documents:
-  - packages/operator-core/lib/agent-tools/plans/_write-scope.ts
-  - packages/operator-core/lib/agent-tools/plans/source.ts
-  - packages/operator-core/lib/agent-tools/plans/set-priority.ts
-  - packages/operator-core/lib/agent-tools/plans/pause.ts
-  - packages/operator-core/lib/agent-tools/plans/start.ts
-  - packages/operator-core/lib/agent-tools/plans/set-archived.ts
-  - packages/operator-core/lib/agent-tools/plans/plan-start-state.ts
-  - packages/operator-core/lib/harness/routines/arm-plan-schedule.ts
-plans:
-  - owner-plans-single-pane-2026-07-17
 type: Insight
-generated:
-  by: agent
-  at: 2026-07-25
+discovered: 2026-08-12
+tags: ["multi-tenant", "workspace-scope", "harness-plans", "plans", "hive", "resolve-plan-scope", "silent-no-op", "bug-class", "write-path"]
+status: active
+documents:
+  - "packages/operator-core/lib/agent-tools/plans/_write-scope.ts"
+  - "packages/operator-core/lib/agent-tools/plans/source.ts"
+  - "packages/operator-core/lib/agent-tools/plans/set-priority.ts"
+  - "packages/operator-core/lib/agent-tools/plans/pause.ts"
+  - "packages/operator-core/lib/agent-tools/plans/start.ts"
+  - "packages/operator-core/lib/agent-tools/plans/set-archived.ts"
+  - "packages/operator-core/lib/agent-tools/plans/plan-start-state.ts"
+  - "packages/operator-core/lib/harness/routines/arm-plan-schedule.ts"
+plans:
+  - "owner-plans-single-pane-2026-07-17"
 ---
 
 ## The rule
@@ -107,6 +105,7 @@ never trust the tool's own `ok`:
 POST /api/admin/plans/set-priority  { slug: <plan>, priority: 777 }
   → { ok: true, priority: 777 }
 
+-- sql-snippet-justified: one-off post-write probe of the tenant key; no plans tool exposes this exact write/read zero-row diagnostic.
 SELECT op_priority FROM harness_shared.harness_plans WHERE plan_slug = <plan>
   → 777        ✅ fixed
   → NULL       ❌ the classic: ok:true over a 0-row write

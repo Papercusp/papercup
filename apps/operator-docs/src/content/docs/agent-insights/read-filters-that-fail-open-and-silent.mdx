@@ -4,19 +4,16 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Read-side filters fail OPEN and SILENT — seven times, the filter watched a different slot than the writer populated
-description: A recurring defect class on this box - a read-side check (a claim-spec leg, an audit predicate, a batch runner, an inclusion check) inspects a different slot, scope, or column than the write side populates. It never errors; it just matches nothing, or matches a subset, and returns a plausible-looking green. An AND-filter is the perfect hiding place because the surviving legs still remove things, so the output stays believable. Includes the detection heuristic and the per-instance probe.
-discovered: 2026-07-27
-tags: [agent-traps, claim-spec, work-items, testing, release-gate, audits, fail-open]
+title: "Read-side filters fail OPEN and SILENT — seven times, the filter watched a different slot than the writer populated"
+description: "A recurring defect class on this box - a read-side check (a claim-spec leg, an audit predicate, a batch runner, an inclusion check) inspects a different slot, scope, or column than the write side populates. It never errors; it just matches nothing, or matches a subset, and returns a plausible-looking green. An AND-filter is the perfect hiding place because the surviving legs still remove things, so the output stays believable. Includes the detection heuristic and the per-instance probe."
+type: Insight
+discovered: 2026-08-12
+tags: ["agent-traps", "claim-spec", "work-items", "testing", "release-gate", "audits", "fail-open"]
 status: active
 documents:
-  - packages/operator-core/lib/agent-tools/testing/run.ts
-  - packages/operator-core/lib/agent-tools/work_items/list.ts
-  - packages/operator-core/lib/agent-tools/scheduler/get_next.ts
-type: Insight
-generated:
-  by: agent
-  at: 2026-07-27
+  - "packages/operator-core/lib/agent-tools/testing/run.ts"
+  - "packages/operator-core/lib/agent-tools/work_items/list.ts"
+  - "packages/operator-core/lib/agent-tools/scheduler/get_next.ts"
 ---
 
 import { Aside } from '@astrojs/starlight/components';
@@ -66,6 +63,7 @@ was true of the id-exclusion leg and blind to the dead tag leg. Write the claim 
 the slot it reads is non-empty in the real data:
 
 ```sql
+-- sql-snippet-justified: one-off cross-slot forensic probe; no tool exposes this column-versus-payload population comparison.
 -- the probe that exposed instance 1 in one call
 SELECT count(*) FILTER (WHERE tags IS NOT NULL)   AS tags_column,
        count(*) FILTER (WHERE payload ? 'tags')   AS payload_tags

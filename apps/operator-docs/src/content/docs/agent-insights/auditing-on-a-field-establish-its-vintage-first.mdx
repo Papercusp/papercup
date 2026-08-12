@@ -4,12 +4,11 @@
 # Edit the doc with docs:author { overwrite: true } — a hand-edit here is REFUSED by
 # the next projection (it cannot tell your edit from corruption), so it blocks the
 # whole corpus instead of shipping. See agent-insights/authoring-docs-pg-canonical.
-title: Auditing on a field's absence? Establish its vintage first
-description: A query over historical rows silently assumes the schema meant the same thing across the whole window. It usually did not — and absence is the direction that fails toward accusing a colleague.
+title: "Auditing on a field's absence? Establish its vintage first"
+description: "A query over historical rows silently assumes the schema meant the same thing across the whole window. It usually did not — and absence is the direction that fails toward accusing a colleague."
 type: Insight
-generated:
-  by: agent
-  at: 2026-07-27
+discovered: 2026-08-12
+status: active
 ---
 
 ## The one-line rule
@@ -19,6 +18,7 @@ was written.** Then scope the query to that window. A field that did not exist
 cannot be evidence of anything.
 
 ```sql
+-- sql-snippet-justified: one-off vintage audit; no tool exposes this per-field, per-day schema-history diagnostic.
 -- Run this BEFORE the audit, not after someone disputes it.
 SELECT to_timestamp(updated_ts/1000)::date AS day,
        count(*)                                        AS rows,
