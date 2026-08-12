@@ -30,7 +30,7 @@
 import { describe, it, expect } from 'vitest';
 import { join } from 'node:path';
 
-import { runPostSuiteLegs, type CheckpointExec } from './green-checkpoint';
+import { runPostSuiteLegs, isRerunnableGateEntry, type CheckpointExec } from './green-checkpoint';
 
 /** Repo root: apps/operator/lib/release/ -> ../../../.. */
 const ROOT = join(import.meta.dirname, '..', '..', '..', '..');
@@ -167,5 +167,64 @@ describe('green-checkpoint post-suite legs — verdict coverage', () => {
     expect(legs.lintNoRawSetinterval.status).toBe('failed');
     expect(legs.ok).toBe(false);
     expect(legs.failingSignatures).toContain('lint:no-raw-setinterval');
+  });
+
+  /* ── the tip rescue must be able to re-run every signature this file can emit ──────────
+   *
+   * EI-19992136440423793. Reddening the gate (the sweeps above) and being able to MEASURE
+   * whether that red is stale are two different properties, and only the first was guarded.
+   * `nonTestGateIdsFrom` admits a failing entry only if it is a NON_TEST_GATE_SCRIPTS key or a
+   * self-describing `<ws> :: lint:<name>` task id — and it is ALL-OR-NOTHING (`ids.every`), so
+   * ONE unadmitted signature vetoes the tip re-run for every admissible sibling beside it.
+   *
+   * A ROOT-level lint leg is admissible only by hand-registration, so adding one is a silent
+   * two-step: wire the leg (guarded above) and remember to register it (guarded by NOTHING
+   * until now). Measured cost of the gap on 2026-08-12: `lint:no-raw-setinterval` was wired but
+   * unregistered, so a red on ['lint:mock-cast-escape','lint:no-raw-setinterval'] — whose
+   * offending bare setInterval() was ALREADY removed at tip — could not be re-verified, and the
+   * gate reached 19 consecutive reds with `main` frozen behind it.
+   *
+   * Property-anchored like its siblings: the signatures are DISCOVERED by failing each script in
+   * turn, so a new leg is covered the moment it is wired, with no edit here. */
+  const RESCUE_EXCLUDED = new Set([
+    // Not a gate id and not re-runnable by construction: the CANDIDATE's package.json could not
+    // be read, so there is no script to re-run. Re-running anything at tip would answer a
+    // different question than the one the red asked.
+    'package.json-unreadable',
+  ]);
+
+  it('every failing-signature a leg can emit is re-runnable by the tip rescue', async () => {
+    const { invokedScripts } = await runLegs(null);
+    const scripts = [...new Set(invokedScripts)];
+
+    const signatures = new Set<string>();
+    for (const script of scripts) {
+      const { legs } = await runLegs(script);
+      for (const sig of legs.failingSignatures ?? []) signatures.add(sig);
+    }
+
+    // ANTI-VACUITY, twice over. An empty/tiny signature set would make the assertion below pass
+    // while proving nothing (the same "green because nothing was measured" shape this file
+    // exists to catch), and a predicate that returned true for everything would too.
+    expect(signatures.size).toBeGreaterThan(5);
+    expect(isRerunnableGateEntry('lint:deliberately-not-registered-anywhere')).toBe(false);
+
+    const unrescuable = [...signatures].filter(
+      (sig) => !isRerunnableGateEntry(sig) && !RESCUE_EXCLUDED.has(sig),
+    );
+
+    expect(
+      unrescuable,
+      `These leg failing-signatures cannot be re-run at tip, so a red naming ANY of them is ` +
+        `unmeasurable for staleness — and because nonTestGateIdsFrom() is all-or-nothing, each ` +
+        `one also VETOES the rescue for every admissible signature failing beside it:\n` +
+        `${JSON.stringify(unrescuable, null, 2)}\n\n` +
+        `Fix by registering each in NON_TEST_GATE_SCRIPTS (green-checkpoint.ts). A root lint ` +
+        `script qualifies on that registry's own bar: one fast, deterministic, repo-wide script ` +
+        `with no PG or network dependency. If a signature genuinely cannot be re-verified that ` +
+        `way, add it to RESCUE_EXCLUDED above WITH the reason it is not re-runnable — never ` +
+        `delete this check, which is the only thing standing between a new lint leg and another ` +
+        `un-rescuable red streak.`,
+    ).toEqual([]);
   });
 });
