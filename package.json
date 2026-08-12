@@ -101,6 +101,7 @@
     "doctor:deps": "node scripts/check-declared-deps-extracted.mjs",
     "doctor:fixed-but-open": "node scripts/check-fixed-but-open.mjs",
     "census:leaks": "tsx scripts/leak-census.ts",
+    "leaks:ratchet": "tsx scripts/leak-ratchet.ts",
     "stats:proof": "tsx scripts/stats-proof.ts",
     "audit:dark-flags": "tsx scripts/audit-dark-flags-live-state.ts",
     "tokens": "style-dictionary build --config design-tokens/style-dictionary.config.mjs",
