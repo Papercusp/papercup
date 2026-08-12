@@ -3879,7 +3879,33 @@ export function reservedPlanLaneExclusionSql(
            -- change becomes claimable after it. op_status is nullable, but a NULL only makes the
            -- IN NULL and the row unmatched by EXISTS — i.e. not reserved — which is the intended
            -- reading for a plan that was never started, not a NULL-poisoned exclusion.
-           AND (p.op_status IN ('started', 'paused') OR p.status = 'active')
+           --
+           -- WI-38258: the lifecycle leg is qualified by "template_slug IS NULL" — i.e. it does
+           -- NOT apply to a per-run INSTANCE plan (template@run-token, minted by system:plan-run).
+           -- That mint is a DEADLOCK BY CONSTRUCTION otherwise: it inserts the instance at
+           -- status='active' AND stamps each minted work-item's payload.plan_item at that same
+           -- instance, so this floor reserves the item for the instance's driving agent — and a
+           -- scheduled run HAS no driving agent, by design ("the harness's existing dispatcher
+           -- executes those work_items — no second execution engine",
+           -- harness/routines/plan-run-action.ts:12-21). The plan stays 'active' because its item
+           -- never completes; the item is unclaimable because the plan is 'active'. Neither side
+           -- can move first. Measured 2026-08-12: of the 52 instance plans ever minted here, the 2
+           -- that carried items had BOTH items stuck todo/unclaimed (one for 18h); the other 50
+           -- minted zero items and so never reached the floor — and were bulk-flipped to
+           -- 'superseded' by hand in a single minute 17 days after their runs, which is the
+           -- absence of any self-clearing exit path stated as evidence.
+           --
+           -- ⚠ It is the LIFECYCLE leg only. op_status IN ('started','paused') still reserves an
+           -- instance, so an agent that DOES deliberately drive one (plans:start on the instance)
+           -- keeps its lane — the reservation now tracks an actual occupant rather than the mere
+           -- act of minting. "template_slug IS NOT NULL" is the established column-level test for
+           -- "per-run instance, not an ordinary plan", already used by plan-acceptance-gate.ts:65,
+           -- rubrics.ts (5 sites) and plans:list (source.ts:985, D-003) — never a slug-shape match
+           -- on the @run- token.
+           AND (
+             p.op_status IN ('started', 'paused')
+             OR (p.status = 'active' AND p.template_slug IS NULL)
+           )
       )
       OR EXISTS (
         SELECT 1 FROM harness_shared.plan_item_claims c

@@ -388,6 +388,11 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
   -- op_status here is not a harmless subset — it makes every claim-floor test that sets up
   -- a genuinely RUNNING plan fail at INSERT with 'column "op_status" does not exist', which
   -- reads like a broken test rather than a stale fixture (EI-19409397800537963).
+  -- ⚠ template_slug is load-bearing for the same reason (WI-38258): it is the column that
+  -- distinguishes a per-run INSTANCE plan (minted by system:plan-run, non-NULL back-pointer to
+  -- its template) from an ordinary plan, and the floor's lifecycle leg is qualified by it so a
+  -- scheduled run's own items are not reserved for a driving agent that never exists. Omitting
+  -- it makes every claim-floor query fail at 'column "template_slug" does not exist'.
   CREATE TABLE IF NOT EXISTS harness_shared.harness_plans (
     workspace_id text NOT NULL DEFAULT 'default',
     harness_slug text NOT NULL DEFAULT 'papercup',
@@ -397,6 +402,7 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
     op_started_at timestamptz,
     op_updated_at timestamptz,
     items jsonb,
+    template_slug text,
     PRIMARY KEY (workspace_id, harness_slug, plan_slug)
   );
   -- Pre-existing fixture rows predate op_status; ALTER keeps an older fixture application
@@ -412,6 +418,7 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
   -- the migration itself fail to apply with 'column "items" does not exist', which reads like a
   -- broken migration rather than a stale fixture.
   ALTER TABLE harness_shared.harness_plans ADD COLUMN IF NOT EXISTS items jsonb;
+  ALTER TABLE harness_shared.harness_plans ADD COLUMN IF NOT EXISTS template_slug text;
   -- Mirrors libs/papercusp/libs/db/sql/141-plan-item-claims.sql column-for-column (checks/COMMENT/
   -- GRANTs intentionally omitted — superset-only, no-enforcement fixture stance).
   CREATE TABLE IF NOT EXISTS harness_shared.plan_item_claims (
