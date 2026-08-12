@@ -946,6 +946,44 @@ describe('release:checkpoint-run routes to the state plane (P-002)', () => {
       expect(tools.some((t) => t.startsWith(name))).toBe(true);
     }
   });
+
+  it('routes a live condition_claimed refusal to current status, the exact work item, and its holder', async () => {
+    const { ptrs } = await load();
+    const p = ptrs(
+      JSON.stringify({
+        ok: false,
+        launched: false,
+        reason: 'condition_claimed',
+        work_item: 'WI-38026',
+        taken_by: 'su-live-holder',
+      }),
+    );
+
+    expect(p.some((x) => x.tool === 'release:deploy' && x.selector?.includes("op: 'status'"))).toBe(true);
+    expect(
+      p.some((x) => x.tool === 'state:read' && x.selector?.includes('gate.greenCheckpoint.ownership')),
+    ).toBe(true);
+    expect(p.find((x) => x.tool === 'work_items:get')?.selector).toBe("{ id: 'WI-38026' }");
+    const handoff = p.find((x) => x.tool === 'coord:send');
+    expect(handoff?.selector).toContain("to: ['su-live-holder']");
+    expect(handoff?.selector).toContain("expects: 'answer'");
+    expect(handoff?.selector).toContain("wake: 'required'");
+  });
+
+  it('keeps the direct holder pointer when the condition_claimed refusal is TOON-rendered', async () => {
+    const { ptrs } = await load();
+    const p = ptrs(
+      'ok: false\nlaunched: false\nreason: condition_claimed_liveness_confirmed\nwork_item: WI-38026\ntaken_by: su-ambiguous-holder',
+    );
+    expect(p.find((x) => x.tool === 'work_items:get')?.selector).toBe("{ id: 'WI-38026' }");
+    expect(p.find((x) => x.tool === 'coord:send')?.selector).toContain("to: ['su-ambiguous-holder']");
+  });
+
+  it('does not invent a direct selector when a claimed refusal omits its identifiers', async () => {
+    const { ptrs } = await load();
+    const p = ptrs(JSON.stringify({ ok: false, launched: false, reason: 'condition_claimed' }));
+    expect(p.some((x) => x.tool === 'work_items:get' || x.tool === 'coord:send')).toBe(false);
+  });
 });
 
 /**

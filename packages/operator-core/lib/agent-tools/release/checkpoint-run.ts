@@ -82,13 +82,32 @@ export default defineTool({
      * the auto-refire and costs a full ~55min suite.
      */
     seeAlso: (result) => {
-      const j = readJsonResult<{ already_running?: boolean; launched?: boolean }>(result);
+      const j = readJsonResult<{
+        already_running?: boolean;
+        launched?: boolean;
+        reason?: string;
+        work_item?: string | null;
+        taken_by?: string | null;
+      }>(result);
       // Same TOON/serialization rail as dev:pipeline_position: seeAlso runs on the
       // SERIALIZED result, so a JSON-only gate can silently never fire. Fail open.
       const text = result.content?.find((c) => c.type === 'text')?.text ?? '';
+      const serializedField = (key: string): string | null => {
+        const match = new RegExp(
+          `\\b${key}\\b\\s*["']?\\s*:\\s*(?:"([^"]*)"|'([^']*)'|([^\\s,}\\]]+))`,
+          'i',
+        ).exec(text);
+        const value = match?.[1] ?? match?.[2] ?? match?.[3] ?? null;
+        return value && value !== 'null' ? value : null;
+      };
       const verdictIsComing =
         (j?.already_running ?? /\balready_running\b["']?\s*:\s*true/.test(text)) ||
         (j?.launched ?? /\blaunched\b["']?\s*:\s*true/.test(text));
+      const refusalReason = j?.reason ?? serializedField('reason');
+      const conditionClaimed =
+        refusalReason === 'condition_claimed' || refusalReason === 'condition_claimed_liveness_confirmed';
+      const workItem = j?.work_item ?? serializedField('work_item');
+      const takenBy = j?.taken_by ?? serializedField('taken_by');
 
       const out: SeeAlsoEntry[] = [
         'release:deploy (deploy the now-green pin — op:status then op:trigger)',
@@ -109,6 +128,53 @@ export default defineTool({
               'wait for the verdict to change instead of polling or re-firing — a re-fire during a rescue discards it and costs a full suite',
           },
         );
+      }
+      if (conditionClaimed) {
+        out.push(
+          {
+            tool: 'release:deploy',
+            selector: "{ op: 'status' }",
+            reason:
+              'the refusal does not carry the current gate/run status — re-read it before deciding whether another fire or an override is justified',
+          },
+          {
+            tool: 'state:read',
+            selector: "{ cell: 'gate.greenCheckpoint.verdict' }",
+            reason:
+              'the gate verdict can change while the claimed rescue continues — re-read the authoritative status before acting on this refusal',
+          },
+          {
+            tool: 'state:read',
+            selector: "{ cell: 'gate.greenCheckpoint.ownership' }",
+            reason:
+              'the claim and holder liveness can change after this response — re-read the current ownership before taking the incident',
+          },
+        );
+
+        // Only materialize direct selectors when the serialized result contains the exact
+        // identifiers. A malformed or partial envelope must not turn a guidance pointer into
+        // an invented recipient or an unsafe selector.
+        const safeWorkItem =
+          typeof workItem === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(workItem) ? workItem : null;
+        const safeTakenBy =
+          typeof takenBy === 'string' && /^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$/.test(takenBy) ? takenBy : null;
+        if (safeWorkItem) {
+          out.push({
+            tool: 'work_items:get',
+            selector: `{ id: '${safeWorkItem}' }`,
+            reason:
+              "read the holder's durable checkpoint/thread before re-deriving the gate rescue or claiming duplicate work",
+          });
+        }
+        if (safeTakenBy) {
+          out.push({
+            tool: 'coord:send',
+            selector:
+              `{ to: ['${safeTakenBy}'], body: [{ text: 'Ask for the current gate rescue/verdict status${safeWorkItem ? ` for ${safeWorkItem}` : ''}.' }], expects: 'answer', wake: 'required' }`,
+            reason:
+              'hand the live gate owner a direct status request and wake them when needed instead of reconstructing the rescue from a stale refusal',
+          });
+        }
       }
       return out;
     },
