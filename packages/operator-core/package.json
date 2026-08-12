@@ -34,7 +34,7 @@
     "lint:no-ungated-mug-kettle": "node ../../scripts/check-ungated-mug-kettle.mjs",
     "lint:green-checkpoint-tag": "node ../../scripts/check-green-checkpoint-tag.mjs",
     "lint:declarations-fresh": "tsx ../../scripts/gen-declarations.ts --check",
-    "typecheck": "node ../../scripts/lint-tsc.mjs"
+    "typecheck": "bash ../../scripts/pc-heavy.sh node ../../scripts/lint-tsc.mjs"
   },
   "dependencies": {
     "@huggingface/transformers": "^4.2.0",
