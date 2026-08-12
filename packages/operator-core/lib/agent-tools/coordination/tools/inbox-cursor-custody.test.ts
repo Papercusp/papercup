@@ -65,6 +65,12 @@ describe("EI-20224626485772812 — direct coord:inbox argument naming", () => {
     // schema above remains the enforcement surface for rejecting it.
     expect(JSON.stringify(tool.guidance ?? {})).not.toMatch(/includeRead/i);
   });
+
+  it("documents that free-text q belongs to coord:feed, not coord:inbox", () => {
+    expect(tool.description).toMatch(/free-text `q` is not an inbox argument/i);
+    expect(tool.description).toMatch(/use `coord:feed`.*query matching/i);
+    expect(Object.keys(tool.args.shape)).not.toContain("q");
+  });
 });
 
 describe("coord:inbox — agent-facing since_ts is deleted (D-013 R2)", () => {
