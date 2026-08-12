@@ -150,16 +150,15 @@ export default defineTool({
     "Write or clear the su AUTO loop carry-note read by a COLD wake after reset/recycle; " +
     'the live transcript does not survive. Pass { did, left, insight, next } or raw { note }; ' +
     'blank/null clears. The note is keyed by ownerId. Supplying { walls } or { checks } uses ' +
-    "rowsMode:'replace' by default (the supplied list is the complete new set); use " +
-    "rowsMode:'merge' to add/update rows without dropping unmentioned carried rows, and use " +
-    'an empty list with replace to clear that row set. Returns { ok, harness, ownerId, cleared, length, verified, ' +
+    "rowsMode:'merge' by default (supplied rows add/update without dropping unmentioned carried rows); use " +
+    "rowsMode:'replace' to retire omitted rows, and use an empty list with replace to clear that row set. Returns { ok, harness, ownerId, cleared, length, verified, " +
     'contentHash, walls, checks }; writes verify-read.',
   guidance: {
     when:
       "At the end of a COLD loop turn, store compressed facts (did, left, insight, next), not a transcript. " +
       'Add a same-line [turn:<session>@<iso-ts>] ref for owner directives or completed coordination actions; ' +
       'never invent a ref. Mark non-owner sources [self-imposed], [peer:<sid>], or [inferred]. When updating one wall/check, ' +
-      "pass rowsMode:'merge' or resend the full current set: the default replace mode drops omitted rows. Pair with " +
+      "pass rowsMode:'replace' only when retiring omitted rows; the default merge mode preserves them. Pair with " +
       'work_items:checkpoint because a loop note can be lost if the session dies.',
     notWhen:
       "WARM loops (carry:'warm', the default) carry the live transcript and need no note. " +
@@ -248,8 +247,8 @@ export default defineTool({
             "Compact claim strings are accepted (`walls: ['owner approval']`) and mapped losslessly to `{ claim }`; " +
             'a JSON-encoded array is accepted for stale wire manifests. ' +
             'OMITTED ⇒ existing walls CARRY FORWARD (a rewrite or note-clear never drops them); a supplied list ' +
-            "REPLACES (pass rowsMode:'merge' to upsert instead), so pass the full current set (dropped ones come " +
-            'back as `wallsDropped`); [] clears.',
+            "REPLACES (the default is rowsMode:'merge', which upserts instead), so pass the full current set (dropped ones come " +
+            'back as `wallsDropped`) only when retiring rows; [] clears under replace.',
         ),
       checks: z
         .preprocess(
@@ -307,16 +306,17 @@ export default defineTool({
             'a boolean — a claim OMITTING `verified` renders PREDICTED, a successor must run its recheck before ' +
             'relying on it. Put hash/id/timestamp expectations HERE, never in Left prose. Same carry-forward ' +
             'semantics as walls: OMITTED ⇒ carried; a supplied list REPLACES, so re-send the FULL set you want ' +
-            "kept (dropped claims come back as `checksDropped`) or pass rowsMode:'merge'; [] clears.",
+            "kept (dropped claims come back as `checksDropped`). The default rowsMode:'merge' preserves omitted rows; " +
+            "pass rowsMode:'replace' to retire them; [] clears under replace.",
         ),
       rowsMode: z
         .enum(['replace', 'merge'])
         .optional()
         .describe(
-          "How a supplied walls/checks list combines with the carried set. 'replace' (default) — the list IS the " +
-            "new set, so rows you omit are DROPPED (the only way to retire one). 'merge' — rows UPSERT by `id` " +
+          "How a supplied walls/checks list combines with the carried set. 'merge' (default) — rows UPSERT by `id` " +
             '(else by exact claim text) and unmentioned rows SURVIVE, so adding/updating ONE row needs only that ' +
-            "row. Under 'merge' a [] list is a no-op, never a clear.",
+            "row. 'replace' makes the list the new set and is the only retirement path. Under 'merge' a [] list is a " +
+            'no-op, never a clear.',
         ),
       ownerId: z
         .string()
@@ -462,7 +462,7 @@ export default defineTool({
     const hasNoteWrite = hasStructured || args.note !== undefined;
     // P-013: replace stays the DEFAULT — it is the only way to retire a stale row, and
     // silently switching every existing caller to merge would make a clear impossible.
-    const rowsMode = args.rowsMode ?? 'replace';
+    const rowsMode = args.rowsMode ?? 'merge';
 
     // WI-6813: the walls/checks merge runs INSIDE the row's locked transaction (the
     // `transform` seam), not out here. The caller-side read → merge → write it
@@ -789,7 +789,7 @@ export default defineTool({
               ? {
                   rowsModeNote:
                     "rowsMode:'merge' treats an empty list as a NO-OP, not a clear — the carried rows are " +
-                    "untouched. To clear, re-send with rowsMode:'replace' (the default) and [].",
+                    "untouched. To clear, re-send with rowsMode:'replace' and [].",
                 }
               : {}),
             /**
@@ -813,7 +813,7 @@ export default defineTool({
                         `${droppedChecks.length} CARRIED row(s) were evicted from the tail (supplied rows are kept ` +
                         `first). Re-sending the full set CANNOT fix this — that set is over the cap and would be ` +
                         `rejected as invalid_input. To keep them: RETIRE rows you no longer need in a separate ` +
-                        `plain write (rowsMode:'replace', the default), then merge; or pass no \`checks\` at all to ` +
+                        `plain write (rowsMode:'replace'), then merge; or pass no \`checks\` at all to ` +
                         `leave the stored rows untouched.`
                       : `a supplied \`checks\` list REPLACES the carried set — ${droppedChecks.length} carried ` +
                         `claim(s) were not in this write and are now gone. To restore: re-send them (a re-sent claim ` +
@@ -835,7 +835,7 @@ export default defineTool({
                         `${droppedWalls.length} CARRIED owner-gated commitment(s) were evicted from the tail ` +
                         `(supplied rows are kept first). Re-sending the full set CANNOT fix this — that set is over ` +
                         `the cap and would be rejected as invalid_input. To keep them: RETIRE rows you no longer need ` +
-                        `in a separate plain write (rowsMode:'replace', the default), then merge; or pass no ` +
+                        `in a separate plain write (rowsMode:'replace'), then merge; or pass no ` +
                         '`walls` at all to leave the stored rows untouched.'
                       : `a supplied \`walls\` list REPLACES the carried set — ${droppedWalls.length} carried ` +
                         `owner-gated commitment(s) were not in this write and are now gone. Re-send the FULL set, ` +
@@ -859,7 +859,7 @@ export default defineTool({
                   overflowNote:
                     `the row cap (${CARRY_NOTE_MAX_CHECKS} checks / ${CARRY_NOTE_MAX_WALLS} walls) cut ` +
                     `${overflowChecks.length + overflowWalls.length} row(s) YOU supplied — they were NOT stored. ` +
-                    `Retire a carried row first (re-send the set you want under the default rowsMode:'replace'), ` +
+                    `Retire a carried row first (re-send the set you want under rowsMode:'replace'), ` +
                     `then add the new one.`,
                 }
               : {}),

@@ -205,17 +205,18 @@ const TRUNCATION_MARKER = '…[older checkpoint content truncated]…\n';
 
 /**
  * P-013 compatibility: `rowsMode` controls only supplied check rows. The
- * default keeps the existing replace semantics (needed to retire stale rows),
- * while `merge` makes an additive check update without also appending the body.
+ * default is merge so a subset update cannot silently retire carried rows;
+ * explicit `replace` remains the retirement path. `merge` makes an additive
+ * check update without also appending the body.
  */
 function rowsModeSpec() {
   return z
     .enum(['replace', 'merge'])
     .optional()
     .describe(
-      "P-013: how supplied `checks` rows are applied. `replace` (default) retires omitted rows; `merge` unions " +
+      "P-013: how supplied `checks` rows are applied. `merge` (default) unions " +
         "supplied rows onto the carried set, so an incremental check update cannot drop unmentioned rows. `merge` + " +
-        "`checks:[]` is a no-op; use `replace` + `checks:[]` to clear rows.",
+        "`checks:[]` is a no-op; use explicit `replace` + `checks:[]` to clear rows.",
     );
 }
 
@@ -326,8 +327,9 @@ function checksSpec() {
         `${CARRY_NOTE_MAX_CHECKS}: an overflow would evict the carried tail, so an additive write refuses atomically ` +
         'before it can drop rows. Retire stale rows with a plain replace first, or append without `checks` to leave ' +
         'the carried set untouched. ' +
-        'WITHOUT append a supplied list REPLACES the set: send the FULL set you want stored, ' +
-        'because any stored claim you leave out is DROPPED — that is how you RETIRE a stale check. A supplied ' +
+        "WITHOUT append, `rowsMode:'merge'` (the default) unions the supplied list with the carried set; use explicit " +
+        "`rowsMode:'replace'` to send the FULL set you want stored, because any stored claim you leave out is DROPPED — " +
+        'that is how you RETIRE a stale check. A supplied ' +
         'row whose claim text matches a stored one inherits that row\'s recheck/verified/sinceMs when you omit ' +
         'them, so re-sending a claim never loses its evidence. Rows dropped come back as `checksDropped`.',
     );
@@ -375,7 +377,7 @@ export default defineTool({
     "re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; `append:true` joins instead. " +
     'Writes are verify-read — a suspicious shrink is retried as a safe append, a disagreeing append is BLOCKED, ' +
     'and every refusal carries `errorCode` + recovery args. ' +
-    'Refuses a peer-held item (`not_holder`). `rowsMode:"merge"` is the additive check-row form when the body should still replace.',
+    'Refuses a peer-held item (`not_holder`). `rowsMode:"merge"` is the default additive check-row form when the body should still replace; use `rowsMode:"replace"` to retire rows.',
   guidance: {
     when:
       'At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your ' +
@@ -514,7 +516,7 @@ export default defineTool({
         // CLEAR), except when checks are supplied: that is an additive checks-only
         // patch and must preserve the narrative body.
         const wantsAppend = it.append ?? args.append ?? false;
-        const rowsMode = it.rowsMode ?? args.rowsMode ?? 'replace';
+        const rowsMode = it.rowsMode ?? args.rowsMode ?? 'merge';
         const rawSuppliedChecks = it.checks ?? args.checks;
         const isChecksOnlyPatch = it.checkpoint === undefined && rawSuppliedChecks !== undefined;
         // P-007: `dependsOn` is tri-state at the store (undefined ⇒ preserve the
@@ -1036,7 +1038,7 @@ export default defineTool({
           ...(rowsMode === 'merge' && additiveRowsMode && rawSuppliedChecks?.length === 0
             ? {
                 rowsModeNote:
-                  "rowsMode:'merge' treats an empty `checks` list as a NO-OP — carried rows are untouched. Use " +
+                  "rowsMode:'merge' (the default) treats an empty `checks` list as a NO-OP — carried rows are untouched. Use " +
                   "rowsMode:'replace' with checks:[] to clear them.",
               }
             : {}),
