@@ -8,7 +8,8 @@
  * fails before the run when any requested file matched zero tests, and then runs the
  * exact matched files. One command therefore works from any directory in the repo.
  *
- * Usage: npm run test:file -- path/to/a.test.ts [path/to/b.test.ts] [-- <vitest args>]
+ * Usage: npm run test:file -- path/to/a.test.ts [path/to/b.test.ts] [<vitest args>]
+ * Vitest args may follow the file list directly or after an explicit `--` separator.
  */
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
@@ -646,8 +647,22 @@ export function aggregateGroupResults(groupResults) {
 
 function parseCli(argv) {
   const separator = argv.indexOf('--');
-  const own = separator >= 0 ? argv.slice(0, separator) : argv;
-  const vitestArgs = separator >= 0 ? argv.slice(separator + 1) : [];
+  // Keep the explicit separator form, but also accept the way npm users naturally forward
+  // options (`test:file -- file -t pattern`). Once the first option appears, the remainder is
+  // Vitest's argv; `--dry` is this router's own option and may still appear before it.
+  const firstVitestArg = separator < 0
+    ? argv.findIndex((arg) => arg !== '--dry' && arg.startsWith('-'))
+    : -1;
+  const own = separator >= 0
+    ? argv.slice(0, separator)
+    : firstVitestArg >= 0
+      ? argv.slice(0, firstVitestArg)
+      : argv;
+  const vitestArgs = separator >= 0
+    ? argv.slice(separator + 1)
+    : firstVitestArg >= 0
+      ? argv.slice(firstVitestArg)
+      : [];
   const dry = own.includes('--dry');
   const files = own.filter((arg) => arg !== '--dry');
   return { dry, files, vitestArgs };

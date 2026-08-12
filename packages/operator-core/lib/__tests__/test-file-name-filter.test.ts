@@ -275,6 +275,13 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
     expect(linesFrom(logSpy)).toMatch(/TEST_FILE_RESULT .*status=passed/);
   });
 
+  it('forwards Vitest flags placed directly after the file list', () => {
+    stubVitest(REAL_ROWS.partial);
+    expect(main([FILE, '-t', 'rejects'])).toBe(0);
+    expect(spawnSyncMock.mock.calls[1]?.[1]).toEqual(expect.arrayContaining(['-t', 'rejects']));
+    expect(linesFrom(logSpy)).toMatch(/TEST_FILE_RESULT .*status=passed/);
+  });
+
   // Non-vacuousness: every assertion above would also hold if the new check refused EVERY run.
   // Pin that an ordinary no-filter run is untouched.
   it('leaves a run with no name filter alone', () => {
