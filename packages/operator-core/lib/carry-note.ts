@@ -892,7 +892,7 @@ export function mergeCarryRows(opts: {
   const priorCheckParts = splitCarryNoteChecks(priorParts.body);
   const rawParts = splitCarryNoteWalls(opts.baseNote ?? '');
   const rawCheckParts = splitCarryNoteChecks(rawParts.body);
-  const merging = opts.mode !== 'replace';
+  const merging = opts.mode === 'merge';
   /** What the CALLER actually offered this write, before the merge pre-pass folds the
    *  prior set in — the only list against which "your row did not fit" is decidable. */
   const suppliedWalls = opts.walls ?? (rawParts.walls.length > 0 ? rawParts.walls : undefined);
