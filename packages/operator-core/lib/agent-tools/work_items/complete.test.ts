@@ -1382,8 +1382,30 @@ describe('work_items:complete (keyed-array)', () => {
       expect(r.ok).toBe(true); // warn-only: the completion is still recorded
       expect(r.typeEvidenceWarning).toMatch(/NEVER typechecks/);
       expect(r.typeEvidenceWarning).toContain('F-12');
-      // It names the runnable command with the caller's OWN files substituted in.
-      expect(r.typeEvidenceWarning).toContain('--files=lib/agent-tools/dev/cache_stats.ts');
+      // It names the runnable command with the caller's OWN files substituted in, normalized
+      // to the repo-relative form expected by the root lint gate.
+      expect(r.typeEvidenceWarning).toContain('--files=packages/operator-core/lib/agent-tools/dev/cache_stats.ts');
+    });
+
+    it('routes apps/operator files to the owning lint:tsc:operator gate', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: {
+          summary: 'fixed the proxy admission path',
+          verifiedHow: 'unit',
+          testsRun: 'testing:run proxy.test.ts',
+          testResult: '112 passed / 0 failed',
+          filesChanged: ['apps/operator/lib/mcp-proxy/proxy.ts', 'apps/operator/lib/mcp-proxy/proxy.test.ts'],
+        },
+      });
+      expect(r.typeEvidenceWarning).toContain(
+        'npm run lint:tsc:operator -- --files=apps/operator/lib/mcp-proxy/proxy.ts,apps/operator/lib/mcp-proxy/proxy.test.ts',
+      );
+      expect(r.typeEvidenceWarning).not.toContain(
+        'npm run lint:tsc -- --files=apps/operator/lib/mcp-proxy',
+      );
     });
 
     it('stays silent when the caller already cited a typecheck', async () => {

@@ -80,6 +80,7 @@ import { FEATURE_TERMINAL_STATES, normalizeFeatureStateInput } from '../../work-
 import { setWorkItemCheckpoint } from '../../work-item-checkpoint';
 import { unresolvedRefsInBody, unresolvedRefsWarning } from './unresolved-refs';
 import { fireReactionInProcess } from '../../events';
+import { discoverSiblingTypecheckGates, gateCoveringFile } from '../../../../../scripts/lib/tsc-baseline-gate.mjs';
 import {
   isPlaneGapItem,
   preflightPlaneCloseLive,
@@ -315,6 +316,92 @@ function hasIntentionalTestNameFilterProof(
 const TYPECHECKED_SOURCE_RE = /\.(?:[cm]?ts|tsx)$/i;
 /** Any mention of a real type check, in the caller's OWN evidence prose. */
 const TYPECHECK_MENTION_RE = /\b(?:tsc|typecheck|type-check|lint:tsc|build:typecheck)\b/i;
+
+type TypecheckGate = { npmScript: string; prefixes: string[] };
+
+/**
+ * The sibling-gate roster is stable for the life of the process, and completion warnings can
+ * fire on every unit in a busy drain. Cache the discovery per repo root so a warning does not
+ * repeatedly import every lint:tsc CLI. A failed discovery is deliberately not cached: a
+ * transient filesystem/import problem must not permanently downgrade later warnings to the
+ * generic command.
+ */
+let siblingTypecheckGatesCache: { root: string; gates: TypecheckGate[] } | undefined;
+
+async function siblingTypecheckGates(root: string): Promise<TypecheckGate[]> {
+  if (siblingTypecheckGatesCache?.root === root) return siblingTypecheckGatesCache.gates;
+  try {
+    const discovered = await discoverSiblingTypecheckGates(root);
+    siblingTypecheckGatesCache = { root, gates: discovered.gates };
+    return discovered.gates;
+  } catch {
+    // This is an advisory warning on an already-recorded completion. Never make the completion
+    // fail because gate discovery could not read/import one of the sibling CLIs.
+    return [];
+  }
+}
+
+/**
+ * Completion evidence historically accepted both repo-relative paths and paths relative to the
+ * operator-core package. Gate declarations are repo-relative, so resolve the latter against a
+ * covered prefix when the caller did not include its package directory. Only use an existing
+ * candidate: guessing a prefix for a fabricated path would make the warning look more certain
+ * than the evidence allows.
+ */
+function repoRelativeTypecheckFile(root: string, file: string, gates: TypecheckGate[]): string | null {
+  const raw = String(file).replace(/^\.\//, '');
+  const normalized = nodePath.isAbsolute(raw)
+    ? nodePath.relative(root, raw).split(nodePath.sep).join('/')
+    : raw.split(nodePath.sep).join('/');
+  if (gateCoveringFile(gates, normalized)) return normalized;
+
+  const prefixes = [...new Set(gates.flatMap((gate) => gate.prefixes))].sort(
+    (a, b) => b.length - a.length,
+  );
+  for (const prefix of prefixes) {
+    if (!prefix || normalized.startsWith(prefix)) continue;
+    const candidate = `${prefix}${normalized}`;
+    if (existsSync(nodePath.resolve(root, candidate)) && gateCoveringFile(gates, candidate)) return candidate;
+  }
+  return null;
+}
+
+/**
+ * Return runnable per-file typecheck commands, routed through the gate that actually owns each
+ * path. The old warning always printed operator-core's `lint:tsc` command; that command refuses
+ * `apps/operator/*` as out of scope even though the sibling `lint:tsc:operator` gate covers it.
+ * Keep the generic fallback for a packaged install or an uncovered workspace, where no honest
+ * repository gate can be derived.
+ */
+async function typecheckCommandsForFiles(files: string[]): Promise<string> {
+  const fallback = `npm run lint:tsc -- --files=${files.join(',')}  (files outside packages/operator-core need ` +
+    `their own project: npx tsc --noEmit -p <workspace>/tsconfig.json)`;
+  const root = detectPapercupRoot();
+  if (!root) return fallback;
+
+  const gates = await siblingTypecheckGates(root);
+  const grouped = new Map<string, string[]>();
+  const uncovered: string[] = [];
+  for (const file of files) {
+    const repoFile = repoRelativeTypecheckFile(root, file, gates);
+    const gate = repoFile ? gateCoveringFile(gates, repoFile) : null;
+    if (!gate) {
+      uncovered.push(file);
+      continue;
+    }
+    const group = grouped.get(gate.npmScript) ?? [];
+    group.push(repoFile!);
+    grouped.set(gate.npmScript, group);
+  }
+
+  const commands = [...grouped].map(([npmScript, paths]) => `npm run ${npmScript} -- --files=${paths.join(',')}`);
+  if (uncovered.length > 0) {
+    commands.push(
+      `npx tsc --noEmit -p <workspace>/tsconfig.json  (no repository lint:tsc gate was resolved for: ${uncovered.join(', ')})`,
+    );
+  }
+  return commands.length > 0 ? commands.join('; ') : fallback;
+}
 
 /**
  * EI-19454554361062529 — a green suite is not weak evidence about types; it is
@@ -1231,6 +1318,9 @@ async function completeOne(
   // TYPES. Same evidence extraction as every other check above, so it can never
   // disagree with what the caller actually supplied.
   const typeEvidenceGap = typeEvidenceGapInCompletion(completionEvidenceForGate);
+  const typecheckCommands = typeEvidenceGap
+    ? await typecheckCommandsForFiles(typeEvidenceGap.tsFiles)
+    : undefined;
   const typeEvidenceWarning = typeEvidenceGap
     ? `completion for ${it.id} rests on a TEST RUN (\`verifiedHow: '${completionEvidenceForGate?.verifiedHow}'\`) and ` +
       `changed ${typeEvidenceGap.tsFiles.length} TypeScript file(s), but cites no typecheck. Vitest transforms via ` +
@@ -1238,8 +1328,7 @@ async function completeOne(
       `file can be fully green and fully broken at once. Measured 2026-08-03: a bug was correctly fixed and closed on ` +
       `"8 passed / 0 failed" while that same file carried 11 COMMITTED type errors that lint:tsc called "a standing red ` +
       `that WILL red the fleet" — nothing in the run could have shown it. If this close asserts the code COMPILES, run: ` +
-      `npm run lint:tsc -- --files=${typeEvidenceGap.tsFiles.join(',')}  (files outside packages/operator-core need ` +
-      `their own project: npx tsc --noEmit -p <workspace>/tsconfig.json). If it only asserts BEHAVIOUR, ignore this.`
+      `${typecheckCommands}. If it only asserts BEHAVIOUR, ignore this.`
     : undefined;
 
   // P-007 (owner-visibility-provenance-2026-08-11): on the OWNER-VISIBILITY SURFACE a green
