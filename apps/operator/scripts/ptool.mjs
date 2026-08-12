@@ -18,7 +18,8 @@
  * so it resolves `@inquirer/prompts` + the MCP SDK from the operator's
  * node_modules; the on-PATH `ptool` shim (install-standalone-mcp.sh) is a
  * one-liner exec'ing this file by absolute path; `PAPERCUSP_OPERATOR_URL`
- * overrides the host; the token is read from `~/.papercusp/superuser-token`.
+ * overrides the host; the token is read from `--token-file`, then
+ * `PAPERCUSP_MCP_TOKEN_FILE`, then `~/.papercusp/superuser-token`.
  *
  * Interactive:  ptool
  *               ptool <group:verb>                 # skip the pickers, prompt args
@@ -80,6 +81,7 @@ export function parseArgs(argv) {
     harness: null,
     raw: false,
     url: null,
+    tokenFile: null,
     help: false,
   };
   // Value-bearing flags accept BOTH `--flag=value` and `--flag value`. Map a
@@ -93,6 +95,7 @@ export function parseArgs(argv) {
     '--workspace': 'workspace',
     '--harness': 'harness',
     '--url': 'url',
+    '--token-file': 'tokenFile',
   };
   let sawList = false;
   for (let i = 0; i < argv.length; i++) {
@@ -570,9 +573,25 @@ function isInvalidTruncatedJson(text) {
 
 /* ─── runtime (impure) ────────────────────────────────────────────────── */
 
-function readToken() {
+/** Resolve the bearer-token file in precedence order. Pure and injectable for
+ * tests: an explicit CLI path wins over the environment, which wins over the
+ * normal per-home token. */
+export function resolveTokenPath({ tokenFile = null, env = process.env, home = homedir() } = {}) {
+  const explicit = typeof tokenFile === 'string' ? tokenFile.trim() : '';
+  if (explicit) return explicit;
+
+  const fromEnv = typeof env?.PAPERCUSP_MCP_TOKEN_FILE === 'string'
+    ? env.PAPERCUSP_MCP_TOKEN_FILE.trim()
+    : '';
+  if (fromEnv) return fromEnv;
+
+  return join(home, '.papercusp', 'superuser-token');
+}
+
+function readToken({ tokenFile = null, env = process.env, home = homedir() } = {}) {
+  const tokenPath = resolveTokenPath({ tokenFile, env, home });
   try {
-    return readFileSync(join(homedir(), '.papercusp', 'superuser-token'), 'utf8').trim();
+    return readFileSync(tokenPath, 'utf8').trim();
   } catch {
     return '';
   }
@@ -731,12 +750,13 @@ export function buildMcpUrl(operatorUrl, { workspace, harness, client } = {}) {
  *  it works regardless of whether the host also honors a per-call `workspace`
  *  arg (the newer EI-30 path). The flags are ALSO merged into the args object
  *  (mergeConvenienceArgs) for tools that take `workspace` as a genuine filter. */
-async function connect(operatorUrl, { workspace, harness } = {}, { timeoutMs } = {}) {
+async function connect(operatorUrl, { workspace, harness, tokenFile } = {}, { timeoutMs } = {}) {
   const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
   const { StreamableHTTPClientTransport } = await import('@modelcontextprotocol/sdk/client/streamableHttp.js');
-  const token = readToken();
+  const tokenPath = resolveTokenPath({ tokenFile });
+  const token = readToken({ tokenFile });
   if (!token) {
-    throw new Error(`no superuser token at ~/.papercusp/superuser-token — is the operator installed? (run apps/operator/scripts/install-standalone-mcp.sh)`);
+    throw new Error(`no superuser token at ${tokenPath} — is the operator installed? (run apps/operator/scripts/install-standalone-mcp.sh)`);
   }
   const url = buildMcpUrl(operatorUrl, {
     workspace: resolveWorkspaceScope({ workspace }),
@@ -902,6 +922,7 @@ Flags:
   --script-file <path>            direct code:run JavaScript source (quoting-free)
   --workspace <ws>                scope the session (needed for harness:*, features:*, …)
   --harness <slug>                scope the session to a harness
+  --token-file <path>             bearer token file (default $PAPERCUSP_MCP_TOKEN_FILE or ~/.papercusp/superuser-token)
   --raw                           print the raw result text (no JSON pretty-print)
   --url=<http://host:port>        operator URL (default $PAPERCUSP_OPERATOR_URL or :3070)
   -h, --help                      this help
@@ -948,7 +969,7 @@ async function main() {
   const client = await connectWithLocalRetry(
     connect,
     operatorUrl,
-    { workspace, harness: args.harness },
+    { workspace, harness: args.harness, tokenFile: args.tokenFile },
   );
   try {
     const tools = await listAllTools(client);
