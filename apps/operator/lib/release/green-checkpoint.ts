@@ -3723,6 +3723,50 @@ export function formatGatePromotionTrailer(v: {
   return `\nGATE_PROMOTION candidate=${v.candidate.slice(0, 12)} green=${v.green} promoted=${v.promoted} reason=${v.reason}${to}\n`;
 }
 
+/**
+ * Render the canonical red-gate attribution line shared by the real-deps log writer and the
+ * orchestration fallback.  The real-deps writer runs before `runGreen` returns, so the line
+ * survives a process that is interrupted after the suite log is created but before the caller
+ * can append its verdict block (EI-19995300915348764).  Keep the zero-entry form explicit:
+ * silence makes an unattributed red look like a green or a flake.
+ */
+export function formatGateHeldByNote(failingTests: readonly string[] | undefined): string {
+  const maxEntries = 40;
+  const entries = failingTests ?? [];
+  return (
+    `\n\nGATE_HELD_BY count=${entries.length} ` +
+    `attribution=${entries.length ? 'attributed' : 'unattributed'} ` +
+    `truncated=${entries.length > maxEntries} ` +
+    `entries=${JSON.stringify(entries.slice(0, maxEntries))}` +
+    (entries.length
+      ? `\n(post-suite LEG signatures AND failing TEST files, combined — this is the list the gate held the release on)`
+      : `\n(the gate decided RED but produced NO attributable leg signature or failing test file — this is NOT "nothing held it". Read this log's own leg output; see the empty-failingTests red noted at green-checkpoint.ts ~L1048.)`)
+  );
+}
+
+/** Return true only for the canonical line, not an incidental GATE_HELD_BY mention in suite output. */
+function hasGateHeldByLine(logPath: string): boolean {
+  try {
+    return /^GATE_HELD_BY count=\d+ /m.test(readFileSync(logPath, 'utf8'));
+  } catch {
+    return false;
+  }
+}
+
+/** Best-effort early publication for the red attribution that triage depends on. */
+function appendGateHeldByIfMissing(
+  logPath: string | undefined,
+  failingTests: readonly string[] | undefined,
+  log?: (s: string) => void,
+): void {
+  if (!logPath || hasGateHeldByLine(logPath)) return;
+  try {
+    appendFileSync(logPath, formatGateHeldByNote(failingTests));
+  } catch (e) {
+    log?.(`warn: GATE_HELD_BY line not published to ${logPath}: ${e instanceof Error ? e.message : e}`);
+  }
+}
+
 /** Append the promotion trailer to THIS pass's verdict log. Best-effort and fail-soft — the
  *  same contract as the header write it completes ("the gate verdict must not depend on
  *  logging"), so a stamp failure is logged and never thrown. Called once per PASS: a stale-red
@@ -4155,16 +4199,7 @@ export async function runGreenCheckpoint(
     // that way) — so the LEG route cannot yield an empty list. The SUITE route derives
     // entries by PARSING output via extractFailingTests, which L1048 records returning []
     // on a genuine red. That is the case that used to go silent.
-    const MAX_HELD_BY = 40;
-    const heldByEntries = failingTests ?? [];
-    const heldByNote =
-      `\n\nGATE_HELD_BY count=${heldByEntries.length} ` +
-      `attribution=${heldByEntries.length ? 'attributed' : 'unattributed'} ` +
-      `truncated=${heldByEntries.length > MAX_HELD_BY} ` +
-      `entries=${JSON.stringify(heldByEntries.slice(0, MAX_HELD_BY))}` +
-      (heldByEntries.length
-        ? `\n(post-suite LEG signatures AND failing TEST files, combined — this is the list the gate held the release on)`
-        : `\n(the gate decided RED but produced NO attributable leg signature or failing test file — this is NOT "nothing held it". Read this log's own leg output; see the empty-failingTests red noted at green-checkpoint.ts ~L1048.)`);
+    const heldByNote = formatGateHeldByNote(failingTests);
     // EI-19370028836452003: the per-candidate log is WRITTEN by runGreen (see the
     // writeFileSync ~line 4550) BEFORE this verdict block runs, so the file named
     // `...-cand-<X>.log` never contained X's OWN lineage / already-fixed-since /
@@ -4187,6 +4222,10 @@ export async function runGreenCheckpoint(
     // logging.
     if (logPath) {
       try {
+        // realCheckpointDeps publishes GATE_HELD_BY before returning. Keep this fallback for
+        // injected/legacy deps and for a log whose early publication failed, but never append a
+        // duplicate canonical line when the durable writer already got there.
+        const heldByNoteForLog = hasGateHeldByLine(logPath) ? '' : heldByNote;
         appendFileSync(
           logPath,
           defangCapturedResultMarkers(
@@ -4195,7 +4234,7 @@ export async function runGreenCheckpoint(
               // WI-9613: the cause goes BEFORE the staleness/lineage notes — a triager
               // reading top-down should learn WHAT held the gate before being told
               // whether it might already be fixed.
-              heldByNote +
+              heldByNoteForLog +
               lineageNote +
               alreadyFixedNote +
               historicalFlakeNote +
@@ -6420,6 +6459,11 @@ export function realCheckpointDeps(
       // cwd to re-run it in). Recomputed from the raw output, not `failingTests`, because
       // the re-triage needs the {workspace,file} pair, not the flat signature.
       const failingFiles = green ? [] : parseFailingFilesByWorkspace(signatureOutput);
+      // Publish the gate's canonical red attribution while we are still inside the real-deps
+      // runner. The orchestration caller appends richer notes later, but a self-watchdog,
+      // supervisor loss, or other interruption between this return and that append must not
+      // erase the only structured answer to "what held the gate?" (EI-19995300915348764).
+      if (!green) appendGateHeldByIfMissing(logPath, failingTests, log);
       return {
         green,
         summary,

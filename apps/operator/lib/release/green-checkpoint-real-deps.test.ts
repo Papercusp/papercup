@@ -258,6 +258,27 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
     expect(calls).toHaveLength(2);
   });
 
+  it('EI-19995300915348764: publishes GATE_HELD_BY before returning a real red', async () => {
+    const before = new Set(readdirSync(tmpLogDir));
+    const { exec } = makeExec([
+      { code: 0 },
+      { code: 1, stdout: 'operator-core/lib/broken.ts: TS2322' },
+    ]);
+
+    const r = await realCheckpointDeps(cfg, exec).runGreen(typecheckTree, null);
+
+    expect(r.green).toBe(false);
+    const written = readdirSync(tmpLogDir).filter((f) => !before.has(f));
+    expect(written).toHaveLength(1);
+    const body = readFileSync(join(tmpLogDir, written[0]), 'utf8');
+    // This line is written by realCheckpointDeps.runGreen itself, before the orchestration
+    // layer can append its richer verdict block or be interrupted by a watchdog.
+    const heldByLine = body.split('\n').find((line) => line.startsWith('GATE_HELD_BY count='));
+    expect(heldByLine).toBeDefined();
+    expect(heldByLine).toContain('count=1');
+    expect(heldByLine).toContain('entries=["lint:tsc"]');
+  });
+
   // WI-6841: `lint:tsc` resolves to packages/operator-core alone, so the EIGHT typecheck
   // gates libs/papercusp packages had earned (libs/db, file-claim, blueprint-distribution,
   // harness, harness/docs-viewer, locks, gitnexus-bridge at a strict zero + orchestrator on a
