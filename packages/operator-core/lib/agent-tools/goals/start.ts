@@ -354,7 +354,7 @@ export default defineTool({
     const goalLaunch = await resolveGoalLaunchForGoal({
       workspaceId,
       goalId: id,
-      role: 'goal',
+      goalRole: 'goal',
       requested: {
         ...(args.agent ? { agent: args.agent as 'claude' | 'codex' | 'omp' } : {}),
         ...(args.account ? { account: args.account } : {}),

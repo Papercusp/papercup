@@ -74,7 +74,12 @@ async function topUpOneFleet(workspaceId: string, fleetSlug: string): Promise<vo
     const goalLaunch = await resolveGoalLaunch({
       workspaceId,
       launcherOwnerId: fleet.leaderOwnerId ?? '',
-      role: config.role ?? null,
+      // D-016 (WI-38048): `config.role` is psu `--role`, a persona — NOT a launch
+      // slot, so it must not key the goal's profiles. The governor refills an
+      // existing fleet without knowing whether it is a plan or drain fleet, so it
+      // has no slot to name and folds no role layer. Ceilings are unaffected:
+      // they never depended on a role.
+      goalRole: null,
       fleetSlug,
       count: deficit,
     });

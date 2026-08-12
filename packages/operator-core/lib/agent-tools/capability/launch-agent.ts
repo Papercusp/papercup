@@ -41,7 +41,7 @@ import { papercuspPathForWorkspace } from '../../papercusp-root';
 import { fleetSlugFromName, getFleetScheme } from '../../agent-fleets-store';
 import { fetchPresenceFleet } from '../coordination/presence-fleet';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { resolveGoalLaunch, foldLaunchProfile } from '../../goal-launch-settings';
+import { resolveGoalLaunch } from '../../goal-launch-settings';
 import { resolveSpawnHostOperatorBaseUrl } from '../../mcp-base-url';
 import {
   buildAgentLaunchCommand,
@@ -346,10 +346,9 @@ export default defineTool({
     const goalLaunch = await resolveGoalLaunch({
       workspaceId,
       launcherOwnerId: callerOwnerId ?? '',
-      // No role at the BATCH level — this tool has no top-level `role`, and the
-      // ceilings do not depend on one. Per-member role profiles are folded below,
-      // off the settings this call already fetched (no extra query).
-      role: null,
+      // No slot at the BATCH level — this tool has no top-level launch slot, and
+      // the ceilings do not depend on one (D-016).
+      goalRole: null,
       fleetSlug,
       count,
       requested: {
@@ -376,22 +375,21 @@ export default defineTool({
     };
     const foldedConfigs: FleetMemberDefaults[] = Array.from({ length: count }, (_v, i) => {
       if (isResume) return flatBase;
-      // Layer the goal's per-ROLE profile between the goal defaults (already in
-      // flatBase) and this member's own spec, so precedence stays
-      // member > goal-role > goal-defaults > system.
-      const role = memberSpecs[i]?.role ?? null;
-      const roleProfile = role ? foldLaunchProfile(goalLaunch.settings, role) : null;
-      const withRole: FleetMemberDefaults = roleProfile
-        ? {
-            ...flatBase,
-            ...(roleProfile.agent ? { agent: roleProfile.agent } : {}),
-            ...(roleProfile.account ? { account: roleProfile.account } : {}),
-            ...(roleProfile.model ? { model: roleProfile.model } : {}),
-            ...(roleProfile.effort ? { effort: roleProfile.effort } : {}),
-            ...(roleProfile.contextSize ? { contextSize: roleProfile.contextSize } : {}),
-          }
-        : flatBase;
-      return foldMemberSpec(withRole, memberSpecs[i]);
+      // D-016 (WI-38048): this used to fold `settings.roles[memberSpecs[i].role]`
+      // — i.e. it looked the goal's launch profiles up by psu `--role`. That is
+      // the defect, not a feature that was lost here: a launch SLOT is a function
+      // (plan-fleet-member, grading, …) while `--role` is a persona, and persona
+      // is `su` for ~all sessions, so the lookup matched nothing while making the
+      // panel read as configured. This generic door is handed psu roles and no
+      // slot, so it folds NO role layer — absent beats wrong.
+      //
+      // Slot binding is not lost, it moved to the door that KNOWS its slot:
+      // fleet_registry/launch-on-plan resolves with `goalRole:'plan-fleet-member'`
+      // and passes the folded profile down as fleetDefaults, and goals/start
+      // resolves with `goalRole:'goal'`. If a caller ever needs per-member slot
+      // pinning here, add an explicit `goalRole` to MemberSpec — do NOT reinstate
+      // the `--role` lookup.
+      return foldMemberSpec(flatBase, memberSpecs[i]);
     });
     // ── P-002: preflight the backend in the env the WINDOW will receive ───────
     //

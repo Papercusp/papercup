@@ -28,6 +28,8 @@ import {
   goalLaunchSettingsSchema,
   launchProfileSchema,
   foldLaunchProfile,
+  GOAL_LAUNCH_ROLES,
+  isGoalLaunchRole,
   readGoalLaunchSettings,
   writeGoalLaunchSettings,
   resolveCeiling,
@@ -99,7 +101,7 @@ describe('goalLaunchSettingsSchema', () => {
       maxAgents: 12,
       maxPerFleet: 4,
       defaults: { agent: 'claude', model: 'sonnet', effort: 'high', carry: 'warm' },
-      roles: { reviewer: { model: 'opus', effort: 'xhigh', account: 'auto' } },
+      roles: { grading: { model: 'opus', effort: 'xhigh', account: 'auto' } },
     };
     expect(goalLaunchSettingsSchema.safeParse(doc).success).toBe(true);
   });
@@ -113,7 +115,7 @@ describe('goalLaunchSettingsSchema', () => {
 
   it('rejects an unknown key inside a role profile too', () => {
     expect(
-      goalLaunchSettingsSchema.safeParse({ roles: { dev: { modle: 'opus' } } }).success,
+      goalLaunchSettingsSchema.safeParse({ roles: { grading: { modle: 'opus' } } }).success,
     ).toBe(false);
   });
 
@@ -151,39 +153,106 @@ describe('goalLaunchSettingsSchema', () => {
 describe('foldLaunchProfile', () => {
   const settings: GoalLaunchSettings = {
     defaults: { model: 'sonnet', effort: 'medium', carry: 'warm' },
-    roles: { reviewer: { model: 'opus' } },
+    roles: { grading: { model: 'opus' } },
   };
 
-  it('layers role over defaults', () => {
-    expect(foldLaunchProfile(settings, 'reviewer')).toEqual({
+  it('layers the slot profile over defaults', () => {
+    expect(foldLaunchProfile(settings, 'grading')).toEqual({
       model: 'opus',
       effort: 'medium',
       carry: 'warm',
     });
   });
 
-  it('falls back to defaults for a role with no profile', () => {
-    expect(foldLaunchProfile(settings, 'builder').model).toBe('sonnet');
+  it('falls back to defaults for a slot with no profile', () => {
+    expect(foldLaunchProfile(settings, 'test').model).toBe('sonnet');
   });
 
   it('lets an explicit caller request beat the stored policy', () => {
     // The settings are standing policy; a value the caller just chose
     // deliberately for THIS launch is not something policy should override.
-    expect(foldLaunchProfile(settings, 'reviewer', { model: 'haiku' }).model).toBe('haiku');
+    expect(foldLaunchProfile(settings, 'grading', { model: 'haiku' }).model).toBe('haiku');
   });
 
   it('leaves an unset key ABSENT so the composer applies the system default', () => {
     // Not `account: undefined` and not an invented value — absent, so
     // buildAgentLaunchCommand reaches defaultLaunchAccount() as it does today.
-    expect('account' in foldLaunchProfile(settings, 'reviewer')).toBe(false);
+    expect('account' in foldLaunchProfile(settings, 'grading')).toBe(false);
   });
 
   it('ignores empty strings from a half-filled form', () => {
-    expect(foldLaunchProfile(settings, 'reviewer', { model: '' }).model).toBe('opus');
+    expect(foldLaunchProfile(settings, 'grading', { model: '' }).model).toBe('opus');
   });
 
   it('returns an empty profile when a goal has no settings at all', () => {
-    expect(foldLaunchProfile(null, 'reviewer')).toEqual({});
+    expect(foldLaunchProfile(null, 'grading')).toEqual({});
+  });
+});
+
+describe('D-016 / WI-38048 — profiles bind by launch SLOT, never by psu --role', () => {
+  // THE DEFECT THIS PINS. `roles` used to take free-text keys and the launch
+  // doors looked them up by psu `--role`. Persona is `su` for ~every session
+  // (measured: 121 of 124 live), so a profile the owner configured for a
+  // contract slot matched nothing — the panel read as configured while every
+  // launch ignored it. Both halves are asserted here: a psu role can no longer
+  // be STORED, and a real slot actually BINDS.
+
+  it('accepts every slot the GOAL contract enumerates', () => {
+    // Guards the count too: the contract lists SEVEN slots and goals:start uses
+    // an eighth (`goal`). WI-38048's own prose said "six" — building to that
+    // number silently refuses two slots that are already in use.
+    expect(GOAL_LAUNCH_ROLES).toHaveLength(8);
+    for (const slot of GOAL_LAUNCH_ROLES) {
+      const r = goalLaunchSettingsSchema.safeParse({ roles: { [slot]: { model: 'opus' } } });
+      expect(r.success, `slot ${slot} should be storable`).toBe(true);
+    }
+  });
+
+  it('REFUSES a psu --role as a profile key — the exact key the old doors passed', () => {
+    // `su` is what launch-on-plan / launch-agent / fleet-headcount-action all
+    // fed the lookup. Storing it has to fail at WRITE time, because a stored
+    // key that binds nothing is indistinguishable from a working setting.
+    expect(goalLaunchSettingsSchema.safeParse({ roles: { su: { model: 'opus' } } }).success).toBe(
+      false,
+    );
+    expect(goalLaunchSettingsSchema.safeParse({ roles: { scout: { model: 'opus' } } }).success).toBe(
+      false,
+    );
+  });
+
+  it('REFUSES free-text keys generally, so a typo cannot masquerade as a slot', () => {
+    for (const key of ['reviewer', 'builder', 'dev', 'plan-fleet-membr', '']) {
+      expect(
+        goalLaunchSettingsSchema.safeParse({ roles: { [key]: { model: 'opus' } } }).success,
+        `key ${JSON.stringify(key)} must not be storable`,
+      ).toBe(false);
+    }
+  });
+
+  it('BINDS: a slot profile reaches the effective launch knobs, not just the document', () => {
+    // D-016's verification standard — prove BINDING, not WRITING. The old code
+    // saved this document perfectly well and bound none of it.
+    const settings: GoalLaunchSettings = {
+      defaults: { model: 'sonnet' },
+      roles: {
+        'plan-fleet-member': { model: 'opus', effort: 'xhigh' },
+        'drain-fleet-member': { model: 'haiku' },
+      },
+    };
+    expect(foldLaunchProfile(settings, 'plan-fleet-member')).toEqual({
+      model: 'opus',
+      effort: 'xhigh',
+    });
+    // and the slots do not bleed into one another
+    expect(foldLaunchProfile(settings, 'drain-fleet-member').model).toBe('haiku');
+    expect(foldLaunchProfile(settings, 'grading').model).toBe('sonnet');
+  });
+
+  it('isGoalLaunchRole separates a slot from a persona', () => {
+    expect(isGoalLaunchRole('plan-fleet-leader')).toBe(true);
+    expect(isGoalLaunchRole('goal')).toBe(true);
+    expect(isGoalLaunchRole('su')).toBe(false);
+    expect(isGoalLaunchRole(undefined)).toBe(false);
   });
 });
 
@@ -524,14 +593,16 @@ describe('resolveGoalLaunch — degradation is REPORTED, never silent', () => {
 });
 
 describe('resolveGoalLaunch — profile hand-down', () => {
-  it('hands down the per-role profile the goal declared', async () => {
+  it('hands down the per-SLOT profile the goal declared', async () => {
+    // D-016: keyed by launch slot. Before that, this passed psu `--role` and so
+    // only ever bound for a goal whose owner had guessed a psu role string.
     const r = await resolveGoalLaunch({
       workspaceId: WS,
       launcherOwnerId: 'su-goal',
-      role: 'reviewer',
+      goalRole: 'grading',
       sql: mockSql({
         modeSubject: { 'su-goal': 'g1' },
-        settings: { g1: { defaults: { model: 'sonnet', carry: 'warm' }, roles: { reviewer: { model: 'opus' } } } },
+        settings: { g1: { defaults: { model: 'sonnet', carry: 'warm' }, roles: { grading: { model: 'opus' } } } },
       }),
     });
     expect(r.effective).toEqual({ model: 'opus', carry: 'warm' });

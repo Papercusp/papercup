@@ -164,7 +164,45 @@ export function resolveCeiling(stored: GoalCeiling | null | undefined, fallback:
   return fallback;
 }
 
-/** The launch knobs a goal can pin, per role or as its across-the-board default. */
+/**
+ * The CLOSED set of launch SLOTS a goal can pin a profile for (D-016, WI-38048).
+ *
+ * A slot is a FUNCTION, not a persona. That distinction is the whole fix: a
+ * plan-fleet leader and a drain-fleet member both run persona `su`, so keying
+ * these profiles on psu `--role` (which is `su` for 121 of 124 live sessions)
+ * could never express the contract — every profile the owner configured bound
+ * nothing. `role` now means only "which persona prompt to load"; `goalRole`
+ * means "which launch slot", and the two never share a spelling again.
+ *
+ * Keeping this closed is what makes a wrong key a WRITE-time refusal instead of
+ * a stored setting that reads as configured and is silently ignored — the same
+ * intent as this schema's `.strict()`, one level up.
+ *
+ * The list is taken from the GOAL contract's own enumeration in
+ * `modes/registry.ts` ("plan-fleet leader + member, drain-fleet leader +
+ * member, grading, test, misc") PLUS `goal`, which `goals:start` already passes
+ * for the goal's own agent. Note that is EIGHT: WI-38048's prose says "six",
+ * and building to that number refuses two slots that are already in use.
+ */
+export const GOAL_LAUNCH_ROLES = [
+  'goal',
+  'plan-fleet-leader',
+  'plan-fleet-member',
+  'drain-fleet-leader',
+  'drain-fleet-member',
+  'grading',
+  'test',
+  'misc',
+] as const;
+
+export type GoalLaunchRole = (typeof GOAL_LAUNCH_ROLES)[number];
+
+/** True for a string that is a real, bindable launch slot. */
+export function isGoalLaunchRole(value: unknown): value is GoalLaunchRole {
+  return typeof value === 'string' && (GOAL_LAUNCH_ROLES as readonly string[]).includes(value);
+}
+
+/** The launch knobs a goal can pin, per slot or as its across-the-board default. */
 export const launchProfileSchema = z
   .object({
     agent: z.enum(LAUNCH_PROFILE_AGENTS).optional(),
@@ -196,7 +234,14 @@ export const goalLaunchSettingsSchema = z
         `Omit for the system default (${GOAL_LAUNCH_DEFAULTS.maxPerFleet}); '${UNLIMITED_CEILING}' for no ceiling at all`,
     ),
     defaults: launchProfileSchema.optional(),
-    roles: z.record(z.string().min(1).max(64), launchProfileSchema).optional(),
+    /**
+     * D-016: keyed by the CLOSED launch-slot vocabulary, never by psu `--role`.
+     * Free-text keys were accepted before and bound nothing, which is precisely
+     * the "reads as configured while doing nothing" state `.strict()` exists to
+     * prevent. Measured before narrowing: 0 of 12 goals carried a `roles` key,
+     * so no stored document is invalidated by closing this set.
+     */
+    roles: z.record(z.enum(GOAL_LAUNCH_ROLES), launchProfileSchema).optional(),
   })
   .strict();
 
@@ -379,13 +424,13 @@ export async function goalHeadcount(args: {
  */
 export function foldLaunchProfile(
   settings: GoalLaunchSettings | null,
-  role: string | null | undefined,
+  goalRole: GoalLaunchRole | null | undefined,
   requested?: LaunchProfile | null,
 ): LaunchProfile {
   const out: LaunchProfile = {};
   const layers: Array<LaunchProfile | undefined> = [
     settings?.defaults,
-    role ? settings?.roles?.[role] : undefined,
+    goalRole ? settings?.roles?.[goalRole] : undefined,
     requested ?? undefined,
   ];
   for (const layer of layers) {
@@ -411,7 +456,12 @@ export async function resolveGoalLaunch(args: {
   workspaceId: string;
   /** The owner id of the agent DOING the launching — the goal is derived from it. */
   launcherOwnerId: string;
-  role?: string | null;
+  /**
+   * D-016: the launch SLOT this spawn fills, NOT psu `--role`. Pass null when
+   * the door cannot determine one — an absent role layer is correct, whereas a
+   * psu role here silently mis-binds (that was WI-38048).
+   */
+  goalRole?: GoalLaunchRole | null;
   fleetSlug?: string | null;
   /** How many agents this launch will start. Default 1. */
   count?: number;
@@ -449,7 +499,8 @@ export async function resolveGoalLaunch(args: {
 export async function resolveGoalLaunchForGoal(args: {
   workspaceId: string;
   goalId: string | null;
-  role?: string | null;
+  /** D-016: the launch SLOT, not psu `--role`. See {@link resolveGoalLaunch}. */
+  goalRole?: GoalLaunchRole | null;
   fleetSlug?: string | null;
   count?: number;
   requested?: LaunchProfile | null;
@@ -464,7 +515,7 @@ export async function resolveGoalLaunchForGoal(args: {
     return {
       goalId: null,
       settings: null,
-      effective: foldLaunchProfile(null, args.role, args.requested),
+      effective: foldLaunchProfile(null, args.goalRole, args.requested),
       ceilings: { maxAgents: null, maxPerFleet: null },
       headcount: { total: 0, fleet: args.fleetSlug ? 0 : null },
       refusal: null,
@@ -476,7 +527,7 @@ export async function resolveGoalLaunchForGoal(args: {
   const { settings, error: settingsError } = await readGoalLaunchSettings(goalId, args.sql);
   if (settingsError) degradedReasons.push(`launch settings not applied: ${settingsError}`);
 
-  const effective = foldLaunchProfile(settings, args.role, args.requested);
+  const effective = foldLaunchProfile(settings, args.goalRole, args.requested);
   // D-015: an unpinned ceiling resolves to the SYSTEM DEFAULT, not to null.
   // Only an explicit 'unlimited' still lands on null here.
   const ceilings = {
