@@ -352,6 +352,44 @@ function relatedProjects(byBucket: string[][], requested: string): string[] {
 }
 
 /**
+ * Build the recovery guidance for a foreground timeout.
+ *
+ * A first project-wide timeout can be usefully narrowed to the caller's files,
+ * but a timeout from an already-scoped run proves that the requested import
+ * graph is itself too large. Recommending another scoped run in that branch
+ * sends callers into a deterministic retry loop (EI-20277722187795413).
+ */
+export function buildTimeoutHint(project: string, timeoutMs: number, alreadyScoped: boolean): string {
+  const prefix =
+    `hit the ${(timeoutMs / 1000).toFixed(0)}s foreground cap (held below the ~55s MCP transport limit so you get this instead of an opaque CONNECTION_CLOSED). `;
+
+  if (alreadyScoped) {
+    return (
+      prefix +
+      `SCOPED RUN ALSO TIMED OUT, so this import graph is too large for the foreground cap; re-running the same scoped check will repeat the timeout. ` +
+      `Run the repo's operator-core baseline gate instead: ` +
+      `npm run lint:tsc -- --files=path/to/changed.ts,path/to/another.ts. ` +
+      `This uses the configured heap and per-file baseline, while the explicit file list ` +
+      `avoids attributing a peer's dirty working-tree edits to you. ` +
+      `Do NOT fall back to a hand-rolled \`npx tsc\`: \`-p .\` checks ZERO files here, and piping a real run through \`head\`/\`grep\` truncates PATH-ORDERED output, so your file can be silently absent and read as clean.`
+    );
+  }
+
+  return (
+    prefix +
+    `CHEAPEST NEXT STEP (one call): re-run scoped to your own files — ` +
+    `build:typecheck { project: '${project || '.'}', files: ['<your changed files>'], scopeToFiles: true }. ` +
+    `That compiles only those files + their import graph; cost tracks YOUR import graph, not the project (measured: leaf 2.6s, hub 63s), so it fixes this for a leaf file but a hub can still time out. ` +
+    `It also does NOT see errors your change caused in files that do not import yours. ` +
+    `For the full project-wide answer, run the repo's operator-core baseline gate instead: ` +
+    `npm run lint:tsc -- --files=path/to/changed.ts,path/to/another.ts. ` +
+    `This uses the configured heap and per-file baseline, while the explicit file list ` +
+    `avoids attributing a peer's dirty working-tree edits to you. ` +
+    `Do NOT fall back to a hand-rolled \`npx tsc\`: \`-p .\` checks ZERO files here, and piping a real run through \`head\`/\`grep\` truncates PATH-ORDERED output, so your file can be silently absent and read as clean.`
+  );
+}
+
+/**
  * EI-19297428004790873 — build a throwaway tsconfig that checks ONLY the given files
  * and their import graph, so a project too big to typecheck inline under fleet load
  * still has a fast, HONEST answer.
@@ -657,20 +695,9 @@ export default defineTool({
           timeoutMs,
           durationMs,
           // The whole point of the clamp: a timeout must hand back a WORKING next step, not a
-          // dead end. The repo's operator-core baseline gate is the reachable full-project
-          // fallback; keep the hint on that canonical entrypoint rather than suggesting a
-          // detached tool that is unavailable from every su session.
-          hint:
-            `hit the ${(timeoutMs / 1000).toFixed(0)}s foreground cap (held below the ~55s MCP transport limit so you get this instead of an opaque CONNECTION_CLOSED). ` +
-            `CHEAPEST NEXT STEP (one call): re-run scoped to your own files — ` +
-            `build:typecheck { project: '${relative(root, resolved) || '.'}', files: ['<your changed files>'], scopeToFiles: true }. ` +
-            `That compiles only those files + their import graph; cost tracks YOUR import graph, not the project (measured: leaf 2.6s, hub 63s), so it fixes this for a leaf file but a hub can still time out. ` +
-            `It also does NOT see errors your change caused in files that do not import yours. ` +
-            `For the full project-wide answer, run the repo's operator-core baseline gate instead: ` +
-            `npm run lint:tsc -- --files=path/to/changed.ts,path/to/another.ts. ` +
-            `This uses the configured heap and per-file baseline, while the explicit file list ` +
-            `avoids attributing a peer's dirty working-tree edits to you. ` +
-            `Do NOT fall back to a hand-rolled \`npx tsc\`: \`-p .\` checks ZERO files here, and piping a real run through \`head\`/\`grep\` truncates PATH-ORDERED output, so your file can be silently absent and read as clean.`,
+          // dead end. A first project-wide timeout can try the cheap scoped path; once that
+          // path itself timed out, lead with the reachable baseline gate instead of looping.
+          hint: buildTimeoutHint(relative(root, resolved) || '.', timeoutMs, args.scopeToFiles === true),
           output: outcome.output.slice(-2000),
         },
       };

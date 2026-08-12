@@ -33,6 +33,7 @@ import buildTypecheck, {
   suggestProjects,
   runTsc,
   buildScopedTsconfig,
+  buildTimeoutHint,
   ambientTypePackages,
   projectDeclaresTypes,
 } from './typecheck';
@@ -308,8 +309,27 @@ describe('EI-20269996848904497: the timeout hint names the reachable operator-co
     const timeoutBranch = src.slice(timeoutStart, diagnosticsStart);
     expect(timeoutStart).toBeGreaterThanOrEqual(0);
     expect(diagnosticsStart).toBeGreaterThan(timeoutStart);
-    expect(timeoutBranch).toMatch(/npm run lint:tsc -- --files=path\/to\/changed\.ts,path\/to\/another\.ts/);
+    expect(timeoutBranch).toMatch(/buildTimeoutHint\(.*args\.scopeToFiles/);
+    expect(src).toMatch(/npm run lint:tsc -- --files=path\/to\/changed\.ts,path\/to\/another\.ts/);
     expect(timeoutBranch).not.toMatch(/capability:(inspect|bash_output)/);
+  });
+});
+
+describe('EI-20277722187795413: scoped timeout guidance escalates instead of looping', () => {
+  it('leads with the baseline gate after an already-scoped run timed out', () => {
+    const hint = buildTimeoutHint('packages/operator-core/tsconfig.json', 50_000, true);
+
+    expect(hint).toContain('SCOPED RUN ALSO TIMED OUT');
+    expect(hint).toContain('npm run lint:tsc -- --files=path/to/changed.ts,path/to/another.ts');
+    expect(hint).not.toContain('scopeToFiles');
+    expect(hint).not.toContain('CHEAPEST NEXT STEP');
+  });
+
+  it('still offers the scoped run after a first project-wide timeout', () => {
+    const hint = buildTimeoutHint('packages/operator-core/tsconfig.json', 50_000, false);
+
+    expect(hint).toContain('CHEAPEST NEXT STEP');
+    expect(hint).toContain('scopeToFiles: true');
   });
 });
 
