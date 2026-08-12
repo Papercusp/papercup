@@ -44,8 +44,8 @@ const FLEET_STATUS_OPTIONAL_LEG_TIMEOUT_MS = 6_000;
  * or request the full tier when it needs a particular member's resume detail.
  */
 export const FLEET_STATUS_TIER_CAPS = {
-  trimmed: { members: 16, label: 80, intent: 100, doing: 80, resumeHint: 180 },
-  standard: { members: 24, label: 140, intent: 180, doing: 120, resumeHint: 300 },
+  trimmed: { members: 8, label: 80, intent: 100, doing: 80, resumeHint: 180 },
+  standard: { members: 12, label: 140, intent: 180, doing: 120, resumeHint: 300 },
 } as const;
 
 type FleetStatusTier = keyof typeof FLEET_STATUS_TIER_CAPS;
