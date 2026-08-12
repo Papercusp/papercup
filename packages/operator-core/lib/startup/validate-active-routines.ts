@@ -31,6 +31,16 @@ import { getOrgPg } from '@papercusp/db-org';
 import { resolveProject } from '../harness-core';
 import { isReservedHarnesslessRoutineHost } from '../harness/routines/routine-host';
 import { activeWorkspaceId } from '../workspace-registry';
+import {
+  EMPTY_INSTALL_SLUG,
+  episodeSeverity,
+  nextEpisodeMark,
+  parseEpisodeMark,
+  renderRecurrence,
+  summarizeEpisode,
+  type EpisodeMark,
+  type RoutineValidationFatalClass,
+} from './routine-validation-episode';
 
 export interface RoutineValidationResult {
   ok: boolean;
@@ -225,10 +235,11 @@ async function findUnregisteredSystemActions(
 /** The operator-facing message for a dead system-action routine — names the exact one-line fix. */
 function formatUnregisteredSystemActions(
   missing: ReadonlyArray<{ installSlug: string; routineName: string; action: string }>,
+  severity: 'fatal' | 'chronic' = 'fatal',
 ): string {
   const names = [...new Set(missing.map((m) => m.action))];
   return (
-    `[routine-validation] FATAL: ${missing.length} ACTIVE routine(s) target a system action with ` +
+    `[routine-validation] ${severity === 'fatal' ? 'FATAL' : 'CHRONIC'}: ${missing.length} ACTIVE routine(s) target a system action with ` +
     `NO REGISTERED HANDLER: ${names.map((n) => `system:${n}`).join(', ')}. Each fire logs ` +
     `"no handler registered … skipping" and does NOTHING — the routine is silently dead, at its ` +
     `full cadence, indefinitely. Almost always a missing side-effect import in ` +
@@ -313,6 +324,245 @@ export async function pauseUnregisteredRoutine(
   `;
 }
 
+/**
+ * How long one boot WAVE is considered to last, for coalescing the ~15 worker processes that
+ * each boot independently and each call this. See `claimRoutineValidationWave`.
+ */
+export const ROUTINE_VALIDATION_WAVE_MS = 60_000;
+
+/** Stable identity of an offending routine row, used as the episode key. */
+export function routineEpisodeKey(r: { installSlug: string; routineName: string }): string {
+  return `${r.installSlug}/${r.routineName}`;
+}
+
+/**
+ * Read every episode mark currently persisted for one FATAL class in this workspace.
+ *
+ * Deliberately reads ALL marked rows, not just the current offenders: the rows that are
+ * marked but NO LONGER offending are what tells us the offender set SHRANK, which is half of
+ * the transition test (see `routine-validation-episode.ts`).
+ */
+export async function readRoutineValidationMarks(
+  sql: ReturnType<typeof getOrgPg>['sql'],
+  workspaceId: string,
+  cls: RoutineValidationFatalClass,
+): Promise<Array<{ key: string; mark: EpisodeMark | null }>> {
+  const rows = await sql<Array<{ install_slug: string; name: string; mark: unknown }>>`
+    SELECT COALESCE(NULLIF(install_slug, ''), ${EMPTY_INSTALL_SLUG}) AS install_slug,
+           name,
+           metadata->'validation'->${cls}::text AS mark
+      FROM harness_shared.routines
+     WHERE workspace_id = ${workspaceId}
+       AND jsonb_exists(metadata->'validation', ${cls}::text)
+  `;
+  return rows.map((r) => ({
+    key: routineEpisodeKey({ installSlug: r.install_slug, routineName: r.name }),
+    mark: parseEpisodeMark(r.mark),
+  }));
+}
+
+/**
+ * THE WAVE GATE. Try to become the one process that reports this class for this boot wave.
+ *
+ * Every operator worker boots independently and calls `enforceActiveRoutines` independently —
+ * there is no shared coordinator, which is why the header's "~15 identical FATAL lines in the
+ * same second" complaint exists. The PAUSE path already solves its half with predicate
+ * serialization (`WHERE active = true`); this is the same trick for a condition that has no
+ * naturally-self-limiting predicate: the winner is whoever commits the first mark whose
+ * previous `lastSeenMs` is older than one wave. Under READ COMMITTED every later process
+ * re-evaluates against the updated row, matches 0 rows, and stays silent.
+ *
+ * This also makes `occurrences` mean "distinct boot waves that observed it" rather than
+ * "processes that logged it" — a 15x inflation that would make the count worthless.
+ *
+ * ⚠ THE `::bigint` CASTS ARE LOAD-BEARING — do not remove them (WI-37757). `jsonb_build_object`
+ * takes "any" arguments, so Postgres cannot infer a type for a bare parameter and the whole
+ * statement fails to PREPARE. Mocked-sql unit tests are blind to that BY CONSTRUCTION; only
+ * the sibling integration test can see it.
+ *
+ * ⚠ The `CASE WHEN … ~ '^[0-9]+$'` guard is also load-bearing. `->>` yields TEXT, and a
+ * corrupt or hand-edited mark would abort the statement on the cast — taking the whole guard
+ * down, which is the failure this module exists to prevent, one level up. `CASE` evaluates its
+ * conditions in order (unlike `WHERE` predicates, which are unordered), so the regex fence
+ * genuinely protects the cast here. A non-numeric mark reads as 0 and therefore re-alarms.
+ */
+export async function claimRoutineValidationWave(
+  sql: ReturnType<typeof getOrgPg>['sql'],
+  args: {
+    workspaceId: string;
+    installSlug: string;
+    routineName: string;
+    cls: RoutineValidationFatalClass;
+    mark: EpisodeMark;
+    waveCutoffMs: number;
+  },
+): Promise<boolean> {
+  const rows = await sql<Array<{ name: string }>>`
+    UPDATE harness_shared.routines
+       SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
+             'validation',
+             COALESCE(metadata->'validation', '{}'::jsonb) || jsonb_build_object(
+               ${args.cls}::text,
+               jsonb_build_object(
+                 'firstSeenMs', ${args.mark.firstSeenMs}::bigint,
+                 'lastSeenMs', ${args.mark.lastSeenMs}::bigint,
+                 'occurrences', ${args.mark.occurrences}::bigint
+               )
+             )
+           ),
+           updated_at = now()
+     WHERE workspace_id = ${args.workspaceId}
+       AND COALESCE(NULLIF(install_slug, ''), ${EMPTY_INSTALL_SLUG}) = ${args.installSlug}
+       AND name = ${args.routineName}
+       AND CASE
+             WHEN (metadata->'validation'->${args.cls}::text->>'lastSeenMs') ~ '^[0-9]+$'
+               THEN (metadata->'validation'->${args.cls}::text->>'lastSeenMs')::bigint
+             ELSE 0
+           END < ${args.waveCutoffMs}::bigint
+    RETURNING name
+  `;
+  return rows.length > 0;
+}
+
+/**
+ * Write one offender's mark unconditionally. Only ever called by the process that already WON
+ * the wave gate above, so it cannot double-count.
+ */
+export async function writeRoutineValidationMark(
+  sql: ReturnType<typeof getOrgPg>['sql'],
+  args: {
+    workspaceId: string;
+    installSlug: string;
+    routineName: string;
+    cls: RoutineValidationFatalClass;
+    mark: EpisodeMark;
+  },
+): Promise<void> {
+  await sql`
+    UPDATE harness_shared.routines
+       SET metadata = COALESCE(metadata, '{}'::jsonb) || jsonb_build_object(
+             'validation',
+             COALESCE(metadata->'validation', '{}'::jsonb) || jsonb_build_object(
+               ${args.cls}::text,
+               jsonb_build_object(
+                 'firstSeenMs', ${args.mark.firstSeenMs}::bigint,
+                 'lastSeenMs', ${args.mark.lastSeenMs}::bigint,
+                 'occurrences', ${args.mark.occurrences}::bigint
+               )
+             )
+           ),
+           updated_at = now()
+     WHERE workspace_id = ${args.workspaceId}
+       AND COALESCE(NULLIF(install_slug, ''), ${EMPTY_INSTALL_SLUG}) = ${args.installSlug}
+       AND name = ${args.routineName}
+  `;
+}
+
+/**
+ * Drop marks from rows that are no longer offending. The returned count is what tells the
+ * summary that the offender set SHRANK — and it keeps a fixed routine from carrying a stale
+ * episode forever, so the mark's lifetime is bounded by the condition it describes.
+ *
+ * An EMPTY `currentKeys` correctly clears every mark for the class: no offenders means the
+ * condition is fully resolved.
+ */
+export async function clearRoutineValidationMarks(
+  sql: ReturnType<typeof getOrgPg>['sql'],
+  workspaceId: string,
+  cls: RoutineValidationFatalClass,
+  currentKeys: readonly string[],
+): Promise<number> {
+  const rows = await sql<Array<{ name: string }>>`
+    UPDATE harness_shared.routines
+       SET metadata = jsonb_set(
+             metadata, '{validation}', (metadata->'validation') - ${cls}::text
+           ),
+           updated_at = now()
+     WHERE workspace_id = ${workspaceId}
+       AND jsonb_exists(metadata->'validation', ${cls}::text)
+       AND (COALESCE(NULLIF(install_slug, ''), ${EMPTY_INSTALL_SLUG}) || '/' || name)
+             <> ALL(${currentKeys as string[]}::text[])
+    RETURNING name
+  `;
+  return rows.length;
+}
+
+/**
+ * Age one FATAL class and return the line to emit, or null when another worker in this same
+ * boot wave already owns the report.
+ *
+ * Emits FATAL only on a TRANSITION (the offender set gained or lost a member) and collapses an
+ * identical recurrence to a single chronic line — EI-18685043834332306. Fail-open: any storage
+ * fault falls back to emitting the un-aged FATAL, because losing the alarm is strictly worse
+ * than losing its recurrence facts.
+ */
+async function ageFatalClass(
+  workspaceId: string,
+  cls: RoutineValidationFatalClass,
+  offenders: ReadonlyArray<{ installSlug: string; routineName: string }>,
+  nowMs: number,
+): Promise<{ severity: 'fatal' | 'chronic'; recurrence: string } | null> {
+  try {
+    const { sql } = getOrgPg();
+    const sorted = [...offenders].sort((a, b) =>
+      routineEpisodeKey(a) < routineEpisodeKey(b) ? -1 : 1,
+    );
+    const currentKeys = sorted.map(routineEpisodeKey);
+
+    const persisted = await readRoutineValidationMarks(sql, workspaceId, cls);
+    const priorByKey = new Map(persisted.map((p) => [p.key, p.mark]));
+
+    // The wave gate rides on the lexicographically-first offender, so every worker in the
+    // wave races the SAME row and exactly one wins.
+    const gateRow = sorted[0];
+    const gateKey = routineEpisodeKey(gateRow);
+    const won = await claimRoutineValidationWave(sql, {
+      workspaceId,
+      installSlug: gateRow.installSlug,
+      routineName: gateRow.routineName,
+      cls,
+      mark: nextEpisodeMark(priorByKey.get(gateKey) ?? null, nowMs),
+      waveCutoffMs: nowMs - ROUTINE_VALIDATION_WAVE_MS,
+    });
+    if (!won) {
+      // 0 rows is AMBIGUOUS and the two readings have opposite correct responses:
+      //   (a) a peer in this same wave already marked it  -> stay silent (the report is theirs)
+      //   (b) the row never matched at all (identity drift, row deleted mid-boot)
+      //                                                   -> the alarm would vanish SILENTLY
+      // Distinguish them by re-reading: a peer's win leaves a mark inside the wave window.
+      // No fresh mark means nobody is reporting this, so fail OPEN and emit un-aged. Losing
+      // the recurrence facts is strictly cheaper than losing the alarm.
+      const after = await readRoutineValidationMarks(sql, workspaceId, cls);
+      const gateMark = after.find((m) => m.key === gateKey)?.mark ?? null;
+      if (gateMark && gateMark.lastSeenMs >= nowMs - ROUTINE_VALIDATION_WAVE_MS) return null;
+      return { severity: 'fatal', recurrence: 'recurrence unknown (episode row not matchable)' };
+    }
+
+    for (const r of sorted.slice(1)) {
+      await writeRoutineValidationMark(sql, {
+        workspaceId,
+        installSlug: r.installSlug,
+        routineName: r.routineName,
+        cls,
+        mark: nextEpisodeMark(priorByKey.get(routineEpisodeKey(r)) ?? null, nowMs),
+      });
+    }
+
+    const cleared = await clearRoutineValidationMarks(sql, workspaceId, cls, currentKeys);
+    const summary = summarizeEpisode(
+      currentKeys.map((key) => ({ key, prior: priorByKey.get(key) ?? null })),
+      cleared,
+    );
+    return { severity: episodeSeverity(summary), recurrence: renderRecurrence(summary, nowMs) };
+  } catch (e) {
+    console.warn(
+      `[routine-validation] recurrence aging unavailable for ${cls} ` +
+        `(${e instanceof Error ? e.message : e}) — reporting un-aged`,
+    );
+    return { severity: 'fatal', recurrence: 'recurrence unknown (aging unavailable)' };
+  }
+}
+
 export async function enforceActiveRoutines(workspaceId?: string): Promise<EnforceActiveRoutinesResult> {
   const ws = workspaceId ?? activeWorkspaceId();
   const result = await validateActiveRoutines(ws, { silent: true });
@@ -357,15 +607,34 @@ export async function enforceActiveRoutines(workspaceId?: string): Promise<Enfor
   // `ok`) prints NOTHING and the dead routine stays invisible, which is the bug itself.
   // Deliberately NOT auto-healed: unlike an unregistered harness, there is no DB flip that
   // fixes a missing import, and pausing the row would erase the only evidence.
+  // EI-18685043834332306: both of the classes below are aged before emission. They are the two
+  // FATALs whose remedy is a human or code change, so neither can resolve its own premise and
+  // both otherwise fire identically on their first occurrence and their ten-thousandth. FATAL
+  // is now reserved for a TRANSITION (the offender set gained or lost a member); an unchanged
+  // set collapses to one chronic line that still carries the full recurrence facts.
+  const nowMs = Date.now();
   if (result.unregisteredSystemActions.length > 0) {
-    console.error(formatUnregisteredSystemActions(result.unregisteredSystemActions));
+    const aged = await ageFatalClass(ws, 'unregistered-system-action', result.unregisteredSystemActions, nowMs);
+    if (aged) {
+      const line =
+        `${formatUnregisteredSystemActions(result.unregisteredSystemActions, aged.severity)} ` +
+        `[${aged.recurrence}]`;
+      if (aged.severity === 'fatal') console.error(line);
+      else console.warn(line);
+    }
   }
   if (stillProblematic.length > 0) {
-    console.error(
-      `[routine-validation] FATAL: ${stillProblematic.length} active routine(s) target unregistered ` +
-      `harness(es) and could NOT be auto-deactivated (a blank install_slug is a data-integrity bug in ` +
-      `the row itself, not harness drift — fix the row directly): ${JSON.stringify(stillProblematic)}`,
-    );
+    const aged = await ageFatalClass(ws, 'unpauseable-routine', stillProblematic, nowMs);
+    if (aged) {
+      const line =
+        `[routine-validation] ${aged.severity === 'fatal' ? 'FATAL' : 'CHRONIC'}: ` +
+        `${stillProblematic.length} active routine(s) target unregistered ` +
+        `harness(es) and could NOT be auto-deactivated (a blank install_slug is a data-integrity bug in ` +
+        `the row itself, not harness drift — fix the row directly): ${JSON.stringify(stillProblematic)} ` +
+        `[${aged.recurrence}]`;
+      if (aged.severity === 'fatal') console.error(line);
+      else console.warn(line);
+    }
   }
 
   return { ...result, autoDeactivated };
