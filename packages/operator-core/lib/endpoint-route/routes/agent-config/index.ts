@@ -31,7 +31,7 @@ export default [
     async handler() {
       const cfg = await readAgentConfig();
       const { listResumableSessions } = await import('../../../adv-sessions');
-      const { readCodexHomeDiagnostics } = await import('../../../role-codex-home');
+      const { readCodexHomeDiagnostics } = await import('../../../codex-home-diagnostics');
       const latestCodexSession = (await listResumableSessions(50)).find((s) => s.agent === 'codex') ?? null;
       return Response.json({
         config: cfg,

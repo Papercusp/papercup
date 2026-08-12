@@ -20,6 +20,10 @@
 import { resolveNamedQueryV2, NAME_NOT_FOUND } from '../../../sync-resolver';
 import { observeResolve } from '../../../sync-resolver/resolve-observability';
 import { resourceDeltaConfig } from '../../../sync-resolver/resource-delta-config';
+import {
+  diagnoseStaleOperatorModuleLink,
+  STALE_OPERATOR_MODULE_LINK_CODE,
+} from '../../../stale-operator-error';
 import { negotiateRowsDelta } from '@papercusp/tooldef';
 import { defineTool } from '@papercusp/agent-mcp';
 import { serializeJsonResponse } from '../../../cpu-task-worker';
@@ -147,7 +151,21 @@ export default defineTool({
       });
     } catch (err: any) {
       const msg = err?.message ?? String(err);
-      return Response.json({ error: msg, name }, { status: 500 });
+      // ESM link failures happen before the optional resolver module evaluates,
+      // so a try/catch inside that leg cannot protect this boundary. Diagnose
+      // the stale-process class here, where every sync query already converges.
+      const staleDiagnosis = diagnoseStaleOperatorModuleLink(name, err);
+      return Response.json(
+        staleDiagnosis
+          ? {
+              error: staleDiagnosis.message,
+              name,
+              code: STALE_OPERATOR_MODULE_LINK_CODE,
+              staleOperator: true,
+            }
+          : { error: msg, name },
+        { status: 500 },
+      );
     }
   },
 });

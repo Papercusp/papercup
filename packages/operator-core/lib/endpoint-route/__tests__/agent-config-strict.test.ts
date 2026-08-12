@@ -46,7 +46,7 @@ vi.mock('../../agent-bin-detect', () => ({
 vi.mock('../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../adv-sessions')>()), endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
   listResumableSessions: (limit?: number) => listResumableSessionsMock(limit),
 }));
-vi.mock('../../role-codex-home', () => ({
+vi.mock('../../codex-home-diagnostics', () => ({
   readCodexHomeDiagnostics: (sessionKey: string | number) => readCodexHomeDiagnosticsMock(sessionKey),
 }));
 

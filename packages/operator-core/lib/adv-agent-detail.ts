@@ -36,7 +36,9 @@ import {
   coalesceRepeatedBroadcasts,
 } from './agent-tools/coordination/inbox-visibility';
 import { collectRetractedIds, suppressRetracted } from './agent-tools/coordination/retraction';
-import { readCodexHomeDiagnostics, type CodexHomeDiagnostics } from './role-codex-home';
+// Read-only dossier diagnostics live outside role-codex-home so this cold path
+// does not link the Codex spawn/TOML builder into every agent-detail request.
+import { readCodexHomeDiagnostics, type CodexHomeDiagnostics } from './codex-home-diagnostics';
 // The admission funnel's stage vocabulary, so the dossier's drop breakdown is
 // named and explained from the SAME source the write path records against.
 import { ADMISSION_STAGES, ADMISSION_STAGE_SHORT_WHY } from './memory/recall-stats';
