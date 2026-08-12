@@ -292,6 +292,102 @@ two buttons throw, or two tools no surface can reach.
 except that they are now pointers to verbs that no longer resolve, which is tracked as that
 slice's work, not silently accepted here.
 
+## `cup:spawn` — the nursery placement verb (P-059, D-085/D-086)
+
+`packages/operator-core/lib/agent-tools/cup/spawn.ts` + `spawn.test.ts`. Gated at `:163`
+(`refuseIfMugKettleRetired`) ⇒ already dead at retirement. **This emptied
+`agent-tools/cup/` — the directory is gone, and `cup:spawn` was the last `cup:*` verb, so
+that whole tool namespace no longer exists.**
+
+⛔ **`spawnAgentInHarness` (`lib/fleet/operator-spawn.ts`) is NOT retired and must not be
+confused with this tool.** It is the shared spawn ENGINE; `cup:spawn` was one of three
+doors onto it. The survivors — `capability:launch-agent` and `fleet:launch-on-plan` — call
+the same engine and are untouched.
+
+**Live-tree edits a restore must undo — TWELVE. Numbers 5–9 are the ones a name-grep of the
+moved file does NOT find, because each is a pointer *into* the retired surface.**
+
+1. `agent-tools/index.ts` — `import './cup/spawn';` (was `:1047`) replaced by a comment. A
+   restore that returns the file but not this line silently restores nothing.
+2. `agent-tools/mug-kettle-tool-gate.test.ts` — the `cup:spawn` GATED row removed per D-080
+   (the restore contract for its flag-ON reversibility is THIS file), and the header's
+   "removed so far" list extended.
+3. `scripts/ungated-mug-kettle-baseline.json` — **TEN rows dropped** (D-084). Three for the
+   moved file (`role-door|spawn|…` · `spawn-role|cup|…` · `tool|cup:spawn|…`) and seven
+   `tool|cup:spawn|…papercup/SN*.ts` rows for the scenario asserts removed in #10.
+4. `agent-tools/fleet/place_batch.ts` — `replaces: ['cup:spawn','coord:send']` → `['coord:send']`,
+   and two `guidance` strings stopped naming the verb. Guidance ships to agents, so a stale
+   pointer there is a live wrong instruction (and the edit SHRANK prompt weight, the safe
+   direction).
+5. **`__tests__/effect-marker-audit.test.ts` — `'cup:spawn'` dropped from `SUFFIX_MUTATORS`.**
+   That list `expect(tool).toBeDefined()`s every name at `:69`, so leaving it would have
+   **hard-failed the shared gate** on a tool that no longer registers. Nothing in the moved
+   file points here.
+6. **`dynamic-tool-confinement.ts` — the no-escalation floor.** `'cup:spawn'` was its ONLY
+   spawn entry; it was replaced by `capability:launch-agent`, `fleet:launch-on-plan`,
+   `fleet:place_batch` rather than deleted, because deleting it would have silently
+   NARROWED the floor to nothing on the axis its own header claims ("spawning fleet").
+   ⚠ Despite the constant being named `…_CAPABILITY_GLOBS`, its entries are matched as TOOL
+   NAMES (`processes:kill`, `tools:scaffold`, `capability:grant_role` are all tools) — an
+   entry naming a `capability:` FIELD value would match nothing. `dynamic-tool-confinement.test.ts`
+   moved in lockstep (it asserts each floor entry is rejected AND recognised).
+7. `autonomy/action-surface.ts` — TWO `queenVerbs: ['cup:spawn']` entries
+   (`lifecycle.spawn-agent`, `lifecycle.model-tier`) re-pointed to the surviving doors.
+   Re-pointed, not emptied: an empty `queenVerbs` would assert the action surface has NO
+   coverage for spawning, which is false.
+8. `fleet/operator-spawn.ts:1292` — the decision-ledger `action: 'cup:spawn'` re-keyed to
+   `'fleet:spawn-agent'`, which names the ENGINE rather than a retired caller. ⚠ Chosen so
+   the category does not move: `^fleet:` hits the SAME `cat:fleet` → `agent-lifecycle` rule
+   that `^cup:` did. An UNMAPPED action defaults to never-auto, which would have quietly
+   changed autonomy gating.
+9. `autonomy/capability-category-map.ts` — the `cat:bee` rule (`^cup:`) **KEPT DELIBERATELY**
+   though no `cup:*` verb remains. It is matched against the `action` STRING and the decision
+   ledger holds historical rows stamped `cup:spawn`; deleting it would re-categorize those to
+   null (never-auto).
+10. **Seven `papercup` LLM scenarios** (`SN01`, `SN-D01`–`D03`, `SN-H04`, `H05`, `H07`) — the
+    `{ kind: 'tool_not_called', name: 'cup:spawn' }` assert removed from each.
+    ⚠ **Do not restore these believing they were coverage.** Measured at retirement, they
+    could never fail, for TWO independent structural reasons: `cup:spawn`'s
+    `agentRoles: QUEEN_PLACEMENT_ROLES` **excluded `papercup`**, so the verb was never in the
+    role's tool surface; and the Sentinel's `<spawn>` tag is guarded
+    `if (!isSentinel && parsed.spawns.length)` in `agent-tools/operator/converse.ts`, which
+    also calls `spawnAgentInHarness` DIRECTLY rather than the tool, so it could not register
+    as a `cup:spawn` call either. They were vacuous BEFORE this retirement, not because of it.
+    Re-pointing was considered and rejected: every surviving spawn door is likewise
+    unreachable for `papercup`, so any replacement is vacuous in the same way. The contract
+    they appeared to carry lives in `emitsHandoff` / `noDelegate` and the judge rubric.
+11. Three tests NARROWED, not deleted (D-080 — a shared test keeps its surviving subjects):
+    `agent-tools/brief-limit-normalization.test.ts` (its `cup:spawn { brief }` softText case;
+    `fleet:place_batch` next to it asserts the same mechanism) ·
+    `endpoint-route/routes/transport/bee-tool-boundary.test.ts` (its `CANNOT_ROLE` row; the two
+    `gym/*` rows exercise the same two-gate property) ·
+    `endpoint-route/routes/transport/role-principal-caps.test.ts` (**TWO** tests — the sentinel
+    carve-out test kept its envelope-belt half, the overwatch test kept its `gym:judge` half;
+    both were renamed to match what they now assert).
+12. Prose pointers swept: `agent-tools/coordination/roles.test.ts` (a PRESENT-tense claim that
+    `cup/spawn` imports `QUEEN_PLACEMENT_ROLES`, now false) · `agent-tools/mug-kettle-gate-strands-suite.test.ts`
+    (see below) · `libs/papercusp/.../blueprints/coding/blueprint.yaml` (the `- cup:spawn`
+    dependency entry) · `libs/papercusp/.../orchestrator/src/invoke.ts:645` (the queen tool kit).
+    ⚠ The last two live in the **`libs/papercusp` SUBMODULE** — their restore is a submodule
+    commit, not a superproject one.
+
+⚠ **`mug-kettle-gate-strands-suite.test.ts`'s dynamic-import arm lost its only real subject.**
+Its comment cited `cup/spawn.ts` as proof the dynamic `await import('…/_mug-kettle-gate')`
+form was "not hypothetical". Measured after this slice: **every** surviving gated tool
+(`pot/{start,wake,declare_wake,mug_efficiency,set_steering}`) imports the gate STATICALLY, so
+that arm now matches nothing in-tree. The arm was KEPT and the comment rewritten to say so —
+a detector that only recognises the form today's files happen to use is how the original
+false negative happened. Restoring `cup/spawn.ts` makes the claim live again.
+
+**What deliberately did NOT change:** `agent-tools/coordination/roles.ts`'s historical note
+still lists `cup/spawn` among the ~10 files that once re-spread the inline role filter — that
+is an explicitly PAST-tense claim and remains true. The `cup:spawn` literals in
+`operator-sentinel-handoff.test.ts` / `operator-converse-tags.test.ts` are `<handoff_to_mug
+capability="…">` TAG-ATTRIBUTE fixtures (an opaque approval key, a different namespace), and
+the `llm-testing/targets/{mug,overwatch}.ts` bait tool-defs + the `OW01`/`OW02` scenarios are
+self-contained in the test harness rather than resolved against the live catalog — those
+belong to the `lib/overwatch/` slice, per the precedent set for `kettle:declare-wake`.
+
 <!-- Later P-059 slices append rows here. Keep the "why it retired" column
      evidence-bearing (importer count at retirement), not just a restatement
      of the file name. -->
