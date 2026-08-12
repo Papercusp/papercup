@@ -175,7 +175,7 @@ describe('facts:assert — pre-write truncation refusal (EI-18685042986450096)',
     resolveFactFederationSlugSpy.mockResolvedValue('hive-home');
     await assertTool.handler(
       { scope: 'workspace', key: 'k-routable-shareable', body: 'share me', shareable: true } as never,
-      { ...ctx, harnessSlug: 'member-harness' } as never,
+      { isSuperuser: true, uiClientId: 'su-test-truncation-refusal', harnessSlug: 'member-harness' } as never,
     );
     expect(resolveFactFederationSlugSpy).toHaveBeenCalledWith('member-harness');
     expect(assertFactSpy).toHaveBeenCalledTimes(1);
