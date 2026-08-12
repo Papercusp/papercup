@@ -1274,6 +1274,24 @@ function findCodexRollout(root, id) {
   return null;
 }
 
+/**
+ * Does this codex sessions root hold ANY rollout at all — i.e. would `codex resume --last`
+ * find something? The by-uuid sibling {@link findCodexRollout} cannot answer for a row with
+ * no recorded `session_id`, and that is the majority case: measured 2026-08-12, 127 of the
+ * 241 most recent codex rows had no session_id AND no rollout on disk (128 had no CODEX_HOME
+ * directory at all). Those are launches that died before persisting a first turn, and the
+ * picker offered every one of them because "no id to check" was read as "assume resumable".
+ * Exported for tests.
+ */
+export function codexHomeHasAnyRollout(root) {
+  for (const e of safeReaddir(root)) {
+    const p = join(root, e.name);
+    if (e.isDirectory()) { if (codexHomeHasAnyRollout(p)) return true; }
+    else if (e.name.endsWith('.jsonl')) return true;
+  }
+  return false;
+}
+
 function findOmpTranscript(root, id) {
   for (const entry of safeReaddir(root)) {
     const path = join(root, entry.name);
@@ -1938,8 +1956,10 @@ export function claudeSessionTranscriptFile(id, { home = homedir(), configDir = 
  *     shared ~/.claude) must hold `projects/<dir>/<sid>.jsonl`.
  *   - claude, no sessionId (pre-native-id rows) → resume falls back to
  *     `--continue` (most-recent-in-cwd) — not verifiable by id, keep.
- *   - codex + known sessionId + adv row id → the per-session CODEX_HOME must
- *     hold the rollout file; without a row id there is no home to check — keep.
+ *   - codex + adv row id → the per-session CODEX_HOME must hold the rollout named by
+ *     sessionId, or (when no sessionId was recorded) ANY rollout, since that resume runs
+ *     `codex resume --last` inside that same isolated home. Without a row id there is no
+ *     home to check — keep.
  *   - omp → the thread store isn't path-indexed here — keep.
  * Pure-ish (reads FS); `home` injectable for tests; exported for tests.
  */
@@ -1952,8 +1972,15 @@ export function sessionHasTranscript(session, { home = homedir() } = {}) {
     return claudeStoreHasSession(session.sessionId, { home, configDir });
   }
   if (session.agent === 'codex') {
-    if (!session.sessionId || session.id == null) return true;
+    // No adv row id ⇒ no tracked home to look in ⇒ genuinely unverifiable, keep.
+    if (session.id == null) return true;
     const sessionsRoot = trackedCodexSessionsRoot(session, home);
+    // No recorded session_id is NOT unverifiable: resume runs `codex resume --last` against
+    // this row's own isolated CODEX_HOME (resumeArgsFor + the CODEX_HOME pin in launchResume),
+    // so "is there anything to resume" is exactly "does that home hold a rollout" — which we
+    // can just look at. Keeping the blanket `return true` here filled the picker with launches
+    // that die on selection (measured: over half of recent codex rows).
+    if (!session.sessionId) return codexHomeHasAnyRollout(sessionsRoot);
     return Boolean(findCodexRollout(sessionsRoot, session.sessionId));
   }
   if (session.agent === 'omp') {
@@ -7301,9 +7328,14 @@ async function resumeFlow(args = {}) {
     let lastModel = null;
     try { lastModel = lastActiveModelFor(s); } catch { /* row stays model-less */ }
     const lineage = resumeSessionLineageLabel(s);
+    // The age shown is LAST-ACTIVE, not started (WI-38226). `startedAt` is bumped to now() by
+    // every reactivation, so it reads as "3m ago" for a session that resumed and then sat idle,
+    // while a session that has been working for hours reads as the oldest thing in the list —
+    // exactly inverted from what someone scanning for "the one I was just in" needs. The server
+    // orders by the same key it hands back here, so the ages now descend down the list.
     return {
       name:
-        `${s.id != null ? `#${s.id}  ·  ` : ''}${s.agent}${lastModel ? ` (${lastModel})` : ''}  ·  ${s.planSlug ? `plan ${s.planSlug}` : 'no plan'}  ·  ${s.cwd}  ·  ${fmtAge(s.startedAt)}` +
+        `${s.id != null ? `#${s.id}  ·  ` : ''}${s.agent}${lastModel ? ` (${lastModel})` : ''}  ·  ${s.planSlug ? `plan ${s.planSlug}` : 'no plan'}  ·  ${s.cwd}  ·  ${fmtAge(s.lastActiveAt || s.startedAt)}` +
         `${lineage ? `  · ${lineage}` : ''}${s.endedAt ? '' : '  · active'}`,
       value: s,
     };

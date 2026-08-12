@@ -120,6 +120,26 @@ export interface AdvSessionRow {
   launchedAt: string | null;
   startedAt: string;
   /**
+   * When this session was last DOING something — set only by the queries that compute it
+   * ({@link listResumableSessions}); every other query leaves it undefined.
+   *
+   * ⚠ Read this, NOT {@link startedAt}, when you mean "most recently worked in". `startedAt`
+   * is neither a birth time nor an activity time: it is the time of the last (RE)ACTIVATION,
+   * because `reactivateAdvSession` / `reactivateAdvSessionByOwner` bump it to `now()` whenever
+   * an ended row comes back to life. So a session that has been running and busy for ten hours
+   * straight (never ended ⇒ never reactivated) keeps a ten-hour-old `startedAt` and sorts BELOW
+   * a session that merely resumed a minute ago and has done nothing since. Ordering a
+   * human-facing "recent sessions" list by `startedAt` is therefore wrong in the one case the
+   * list exists for — measured 2026-08-12: 53 of the 74 codex sessions that had been active in
+   * the past hour sat outside the top 30 by `startedAt`, the worst at rank 233.
+   *
+   * Derived as the GREATEST of `startedAt`, `coord_presence.last_active_at`, and the session
+   * owner's newest `tool_invocations.invoked_at` — so it degrades to `startedAt` rather than
+   * going null when both activity sources are missing. (`first_seen_at` is the immutable birth
+   * column if you want the true launch time.)
+   */
+  lastActiveAt?: string | null;
+  /**
    * When this row was marked ended — WHICH IS NOT NECESSARILY WHEN THE SESSION ENDED.
    *
    * Read `endedBy` before reasoning from this. Only `endedBy === 'self'` makes this an
@@ -237,6 +257,9 @@ export function mapAdvSessionRow(r: {
   launch_argv?: string[] | null;
   launched_at?: string | Date | null;
   started_at: string | Date;
+  /** Optional — only {@link listResumableSessions} computes it; every other SELECT omits it
+   *  and it maps to undefined rather than being faked from `started_at`. */
+  last_active_at?: string | Date | null;
   ended_at: string | Date | null;
   exit_code: number | null;
   /** Optional so a SELECT that omits it maps to null = UNKNOWN provenance, which is
@@ -271,6 +294,9 @@ export function mapAdvSessionRow(r: {
     launchedAt: toIsoTimestamp(r.launched_at ?? null),
     label: r.label,
     startedAt: toIsoTimestamp(r.started_at)!,
+    // Only present on queries that compute it; `undefined` (not startedAt) so a caller
+    // can tell "this query did not measure activity" from "it measured, and it is old".
+    ...(r.last_active_at === undefined ? {} : { lastActiveAt: toIsoTimestamp(r.last_active_at) }),
     endedAt: toIsoTimestamp(r.ended_at),
     exitCode: r.exit_code,
     endedBy: (r.ended_by as AdvSessionEndedBy | null) ?? null,
@@ -1195,13 +1221,58 @@ export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
 }
 
 /**
- * Recent psu-tracked sessions (agent + cwd present), most-recent first,
- * across ALL workspaces — the data the `psu --resume` picker walks. Unlike
- * listAdvSessions this is NOT workspace-scoped (you may want to resume a
- * session launched in a different workspace) and includes ended rows
- * (resume revives them).
+ * How many of EACH backend's most-recently-active sessions are guaranteed a place in
+ * {@link listResumableSessions}'s result, on top of the global recency slice.
+ *
+ * Without a per-agent floor the result is whatever the busiest backend leaves room for, and
+ * "busiest" here is not close: 13.3k claude rows vs 1.1k codex vs 261 omp on this box. A
+ * flat top-N is then a lottery the quiet backends lose, and the picker they feed shows the
+ * owner a list with a whole CLI missing and no indication anything was withheld.
  */
-export async function listResumableSessions(limit = 30): Promise<AdvSessionRow[]> {
+const RESUMABLE_PER_AGENT_FLOOR = 12;
+
+/**
+ * How far back the candidate pool reaches for ENDED sessions. Never-ended rows are pooled
+ * in full regardless (see the query), so this only bounds the archaeology — the cost knob,
+ * not the correctness knob.
+ */
+const RESUMABLE_SCAN_LIMIT = 300;
+
+/**
+ * Recent psu-tracked sessions (agent + cwd present), MOST-RECENTLY-ACTIVE first, across ALL
+ * workspaces — the data the `psu --resume` picker walks. Unlike listAdvSessions this is NOT
+ * workspace-scoped (you may want to resume a session launched in a different workspace) and
+ * includes ended rows (resume revives them).
+ *
+ * Two things this query does that a plain `ORDER BY started_at DESC LIMIT n` did not, both
+ * from the same owner report (2026-08-12, WI-38226: "psu --resume is not listing any codex
+ * sessions... there were active codex sessions in that window"):
+ *
+ * 1. IT ORDERS BY ACTIVITY, NOT BY `started_at`. `started_at` is mutable — `reactivateAdvSession`
+ *    and `reactivateAdvSessionByOwner` set it to `now()` when an ended row comes back — so it
+ *    means "last (re)activation", which is neither birth (`first_seen_at`) nor activity. A
+ *    session running and busy for hours never reactivates, so it sinks below sessions that
+ *    resumed a minute ago and did nothing since. Measured at the time of the report: 53 of the
+ *    74 codex sessions active within the past hour ranked OUTSIDE the top 30 by `started_at`,
+ *    the worst at rank 233 — i.e. the column was hiding sessions BECAUSE they had been working.
+ *    The activity key is the GREATEST of `started_at`, the owner's `coord_presence.last_active_at`,
+ *    and the owner's newest `tool_invocations.invoked_at`. Both extra sources are needed:
+ *    coord_presence is TTL-reaped (only 28 of 129 live claude candidates still had a row), while
+ *    tool_invocations is pruned to ~14d but covered 129/129 of them — together they rescued 229
+ *    of 400 candidates that presence alone would have left ranked by `started_at`.
+ *
+ * 2. IT GUARANTEES EVERY BACKEND A PLACE, via {@link RESUMABLE_PER_AGENT_FLOOR} — see there.
+ *
+ * The candidate pool is every never-ended row (bounded and small — 315 when this was written —
+ * and the population whose `started_at` is least trustworthy, since a long-running session's
+ * is oldest exactly when its activity is newest) UNION the {@link RESUMABLE_SCAN_LIMIT} most
+ * recent ended ones. Measured 198ms against the live table, no slower than the flat scan it
+ * replaced (the pre-existing non-sargable `port_status` predicate already forced a full scan).
+ */
+export async function listResumableSessions(
+  limit = 30,
+  { perAgentFloor = RESUMABLE_PER_AGENT_FLOOR, scanLimit = RESUMABLE_SCAN_LIMIT } = {},
+): Promise<AdvSessionRow[]> {
   try {
     const { sql } = getOrgPg();
     const rows = await sql<
@@ -1222,25 +1293,76 @@ export async function listResumableSessions(limit = 30): Promise<AdvSessionRow[]
         coord_owner_id: string | null;
         session_id: string | null;
         started_at: string | Date;
+        last_active_at: string | Date;
         ended_at: string | Date | null;
         exit_code: number | null;
       }>
     >`
-      SELECT id, workspace_id,
-             -- launch_spec was added after the resumable-session surface. Reading
-             -- through to_jsonb keeps this query parse-safe on a pre-migration
-             -- operator; absent launch_spec then correctly means no harness scope.
-             to_jsonb(a)->'launch_spec'->>'harnessSlug' AS harness_slug,
+      WITH pool AS (
+        -- Never-ended rows in full: small, bounded, and the set a started_at-ordered scan
+        -- gets most wrong (a session busy for 10h has the OLDEST started_at of any live one).
+          SELECT a.id
+            FROM harness_shared.adv_sessions a
+           WHERE a.agent IS NOT NULL
+             AND a.cwd IS NOT NULL
+             -- to_jsonb(row)->key is parse-safe before migration 611: a missing
+             -- key is NULL, while pending post-migration ports remain hidden.
+             AND COALESCE(to_jsonb(a)->>'port_status', 'delivered') = 'delivered'
+             AND a.ended_at IS NULL
+        UNION
+          -- …plus the most recent ended rows. GREATEST(started_at, ended_at) because a row
+          -- that ended AFTER its last reactivation is most recent at its end, not its start.
+          SELECT id FROM (
+            SELECT a.id
+              FROM harness_shared.adv_sessions a
+             WHERE a.agent IS NOT NULL
+               AND a.cwd IS NOT NULL
+               AND COALESCE(to_jsonb(a)->>'port_status', 'delivered') = 'delivered'
+             ORDER BY GREATEST(a.started_at, COALESCE(a.ended_at, a.started_at)) DESC
+             LIMIT ${scanLimit}
+          ) recent
+      ),
+      scored AS (
+        SELECT a.id, a.workspace_id,
+               -- launch_spec was added after the resumable-session surface. Reading
+               -- through to_jsonb keeps this query parse-safe on a pre-migration
+               -- operator; absent launch_spec then correctly means no harness scope.
+               to_jsonb(a)->'launch_spec'->>'harnessSlug' AS harness_slug,
+               a.plan_slug, a.agent, a.role, a.feature, a.mode, a.terminal_bin, a.pid,
+               a.window_id, a.omp_thread_id, a.label, a.cwd, a.coord_owner_id, a.session_id,
+               a.started_at, a.ended_at, a.exit_code, a.ended_by, a.ended_signal,
+               -- GREATEST, not COALESCE: each source is a LOWER BOUND on activity that can be
+               -- missing or stale independently, so the newest evidence wins and a session with
+               -- no evidence at all degrades to started_at instead of dropping to NULL.
+               GREATEST(
+                 a.started_at,
+                 COALESCE(pr.last_active_at, a.started_at),
+                 COALESCE(ti.last_tool, a.started_at)
+               ) AS last_active_at
+          FROM harness_shared.adv_sessions a
+          JOIN pool ON pool.id = a.id
+          LEFT JOIN harness_shared.coord_presence pr ON pr.owner_id = a.coord_owner_id
+          -- Indexed by tool_invocations_coord_owner_idx (coord_owner_id, invoked_at DESC),
+          -- so this is a per-candidate index max, not a scan of the 680k-row 3-day window.
+          LEFT JOIN LATERAL (
+            SELECT max(t.invoked_at) AS last_tool
+              FROM harness_shared.tool_invocations t
+             WHERE t.coord_owner_id = a.coord_owner_id
+          ) ti ON true
+      ),
+      ranked AS (
+        SELECT *,
+               ROW_NUMBER() OVER (ORDER BY last_active_at DESC) AS global_rn,
+               ROW_NUMBER() OVER (PARTITION BY agent ORDER BY last_active_at DESC) AS agent_rn
+          FROM scored
+      )
+      SELECT id, workspace_id, harness_slug,
              plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal
-        FROM harness_shared.adv_sessions a
-       WHERE agent IS NOT NULL
-         AND cwd IS NOT NULL
-         -- to_jsonb(row)->key is parse-safe before migration 611: a missing
-         -- key is NULL, while pending post-migration ports remain hidden.
-         AND COALESCE(to_jsonb(a)->>'port_status', 'delivered') = 'delivered'
-       ORDER BY started_at DESC
-       LIMIT ${limit}
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
+             started_at, last_active_at, ended_at, exit_code, ended_by, ended_signal
+        FROM ranked
+       WHERE global_rn <= ${limit} OR agent_rn <= ${perAgentFloor}
+       ORDER BY last_active_at DESC
     `;
     return rows.map(mapAdvSessionRow);
   } catch (e) {

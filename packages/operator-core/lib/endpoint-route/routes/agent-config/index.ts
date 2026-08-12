@@ -32,6 +32,11 @@ export default [
       const cfg = await readAgentConfig();
       const { listResumableSessions } = await import('../../../adv-sessions');
       const { readCodexHomeDiagnostics } = await import('../../../codex-home-diagnostics');
+      // `.find(agent === 'codex')` relies on listResumableSessions' PER-AGENT FLOOR to include
+      // codex rows at all. Before that floor existed this silently reported `codexDiagnostics:
+      // null` whenever claude happened to fill the window — a "no codex session exists" answer
+      // to what was really "the window was full" (WI-38226). The list is activity-ordered, so
+      // the first hit is the most recently ACTIVE codex session, not the most recently launched.
       const latestCodexSession = (await listResumableSessions(50)).find((s) => s.agent === 'codex') ?? null;
       return Response.json({
         config: cfg,
