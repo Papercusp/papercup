@@ -26,10 +26,27 @@ import {
  * universal ~1500-token result door on a broad harness read (EI-20242506233119355).
  * A later live probe showed that eight rows can still overflow when the rows carry
  * stale-source metadata (EI-20245738587790330). Four rows leave enough headroom for
- * the wrapper and per-fact metadata while callers that need a wider census can still
- * pass an explicit `limit`.
+ * the wrapper and per-fact metadata; explicit limits are clamped to this same
+ * result-door-safe ceiling.
  */
 export const FACTS_LIST_DEFAULT_LIMIT = 4;
+/** Keep caller-supplied pages inside the same result-door-safe row ceiling. */
+export const FACTS_LIST_MAX_LIMIT = FACTS_LIST_DEFAULT_LIMIT;
+
+/** Clamp a caller's page size to the result-door-safe row ceiling. PURE. */
+export function clampFactsListLimit(limit?: number): number {
+  if (limit === undefined || !Number.isFinite(limit)) return FACTS_LIST_DEFAULT_LIMIT;
+  return Math.max(1, Math.min(Math.floor(limit), FACTS_LIST_MAX_LIMIT));
+}
+
+/** Tell callers when their explicit page size was reduced for result-door safety. PURE. */
+export function factsListLimitDisclosure(limit?: number): Record<string, unknown> | undefined {
+  if (limit === undefined) return undefined;
+  const applied = clampFactsListLimit(limit);
+  return applied < limit
+    ? { limitCapped: { requested: limit, applied, reason: 'result_door_budget' } }
+    : undefined;
+}
 /** Excerpt width — enough to identify a fact + decide whether to retract it. */
 export const FACTS_LIST_EXCERPT_CHARS = 180;
 export const FACTS_LIST_EXCERPT_NOTE =
@@ -175,7 +192,13 @@ export default defineTool({
     scope_ref: z.string().max(120).optional().describe('Alias for scopeRef (EI-7371) — prefer scopeRef.'),
     ref: z.string().max(120).optional().describe('Alias for scopeRef (EI-7371) — prefer scopeRef.'),
     harness: z.string().max(120).optional().describe('Alias for scopeRef when scope:"harness" (EI-7371) — prefer scopeRef.'),
-    limit: z.number().int().positive().max(100).optional().describe(`Max facts (default ${FACTS_LIST_DEFAULT_LIMIT}).`),
+    limit: z
+      .number()
+      .int()
+      .positive()
+      .max(100)
+      .optional()
+      .describe(`Max facts (default ${FACTS_LIST_DEFAULT_LIMIT}; explicit values are capped at ${FACTS_LIST_MAX_LIMIT} for the result-door budget).`),
     full: z
       .boolean()
       .optional()
@@ -222,14 +245,16 @@ export default defineTool({
         scope: args.scope,
         scopeRef: scopeRef ?? null,
         key,
-        limit: args.limit ?? FACTS_LIST_DEFAULT_LIMIT,
+        limit: clampFactsListLimit(args.limit),
       });
+      const limitDisclosure = factsListLimitDisclosure(args.limit);
       return {
         data: {
           ok: true,
           mode: 'versions',
           key,
           count: versions.length,
+          ...(limitDisclosure ?? {}),
           ...(args.full !== true ? { excerpted: true, note: FACTS_LIST_EXCERPT_NOTE } : {}),
           // `current: true` is the reader's anchor — without it a history list
           // reads as N equally-valid claims, which is the confusion versioning
@@ -272,7 +297,7 @@ export default defineTool({
     }
     const facts = await listFacts(
       { scope: args.scope, scopeRef: scopeRef ?? null },
-      { limit: args.limit ?? FACTS_LIST_DEFAULT_LIMIT },
+      { limit: clampFactsListLimit(args.limit) },
     );
     // EI-10947: flag facts whose source work-item has CLOSED — facts:list is where an
     // agent goes "hunting a stale fact to retract" (see guidance), so this is exactly
@@ -300,10 +325,12 @@ export default defineTool({
     // to a file. The irony that hurt: the one read that shows you your stale facts was
     // the one that blew up. Excerpt by default, exactly as work_items:list already does.
     const rows = annotated.map((f) => projectFact(f, args.full === true));
+    const limitDisclosure = factsListLimitDisclosure(args.limit);
     return {
       data: {
         ok: true,
         count: rows.length,
+        ...(limitDisclosure ?? {}),
         ...(args.full !== true ? { excerpted: true, note: FACTS_LIST_EXCERPT_NOTE } : {}),
         facts: rows,
       },

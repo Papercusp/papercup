@@ -15,6 +15,9 @@ import factsListTool, {
   findLiveFactVersion,
   FACTS_LIST_EXCERPT_CHARS,
   FACTS_LIST_DEFAULT_LIMIT,
+  FACTS_LIST_MAX_LIMIT,
+  clampFactsListLimit,
+  factsListLimitDisclosure,
 } from './list';
 import { clampFactBody, FACT_BODY_MAX_CHARS, type AgentFact } from '../../agent-facts/store';
 import { CHARS_PER_TOKEN_ESTIMATE } from '../../context-doors';
@@ -133,6 +136,17 @@ describe('truncationField — facts:assert must not report a lossy write as clea
 });
 
 describe('projectFact — facts:list must stay inside the output budget (EI-10948)', () => {
+  it('clamps explicit page sizes to the result-door-safe ceiling and discloses the clamp', () => {
+    expect(clampFactsListLimit()).toBe(FACTS_LIST_DEFAULT_LIMIT);
+    expect(clampFactsListLimit(1)).toBe(1);
+    expect(clampFactsListLimit(FACTS_LIST_MAX_LIMIT)).toBe(FACTS_LIST_MAX_LIMIT);
+    expect(clampFactsListLimit(100)).toBe(FACTS_LIST_MAX_LIMIT);
+    expect(factsListLimitDisclosure(FACTS_LIST_MAX_LIMIT)).toBeUndefined();
+    expect(factsListLimitDisclosure(100)).toEqual({
+      limitCapped: { requested: 100, applied: FACTS_LIST_MAX_LIMIT, reason: 'result_door_budget' },
+    });
+  });
+
   it('excerpts a long body and says so, instead of returning 500 chars per row', () => {
     const row = projectFact(fact('z'.repeat(500)), false);
     expect(String(row.body)).toHaveLength(FACTS_LIST_EXCERPT_CHARS + 1); // + the '…'
