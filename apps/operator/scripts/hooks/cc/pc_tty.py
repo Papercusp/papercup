@@ -53,10 +53,70 @@ build, or the registry directory is unreadable) fails OPEN, matching the
 pre-existing behavior for a session that predates this check.
 """
 
+import json
 import os
 import re
 
-__all__ = ['strip_control', 'tty_candidates', 'tty_owned_by_us', 'osc_title', 'write_osc_title']
+__all__ = [
+    'strip_control',
+    'coordination_owner_id',
+    'tty_candidates',
+    'tty_owned_by_us',
+    'osc_title',
+    'write_osc_title',
+]
+
+
+def coordination_owner_id(input_raw='', env=None):
+    """Resolve the coordination owner for a hook invocation.
+
+    ``PAPERCUSP_SID`` is the normal source, but a Claude self-reexec can rebuild
+    that environment value while the native session and coordination row retain
+    their original owner. Claude hook payloads include the native ``session_id``;
+    psu-launcher records its born owner in the durable per-session index. Prefer
+    that binding, then the adv-session binding, and finally fall back to the
+    ambient SID for older launches or non-psu callers.
+
+    This is deliberately fail-open: a cosmetic title/inbox hook must keep
+    working when the index is absent, unreadable, or malformed.
+    """
+    env = os.environ if env is None else env
+    fallback = (env.get('PAPERCUSP_SID') or '').strip()
+    native_id = ''
+    try:
+        payload = json.loads(input_raw or '')
+        if isinstance(payload, dict):
+            raw = payload.get('session_id')
+            if isinstance(raw, str):
+                native_id = raw.strip()
+    except Exception:
+        pass
+
+    keys = []
+    if native_id:
+        keys.append(native_id)
+    adv_id = (env.get('PAPERCUSP_ADV_SESSION_ID') or '').strip()
+    if adv_id:
+        keys.append(f'adv-{adv_id}')
+
+    root = (env.get('PAPERCUSP_SESSION_OWNERS_DIR') or '').strip()
+    if not root:
+        root = os.path.join(os.path.expanduser('~'), '.papercusp', 'psu-session-owners')
+    for key in keys:
+        # Native session ids are UUIDs and adv ids are numeric. Refuse path-like
+        # input even though this is a local hook, so a malformed event cannot
+        # make the title reader escape the owner-index directory.
+        if not key or os.path.basename(key) != key:
+            continue
+        try:
+            with open(os.path.join(root, key)) as fh:
+                parsed = json.load(fh)
+            owner = parsed.get('ownerId') if isinstance(parsed, dict) else None
+            if isinstance(owner, str) and owner.strip():
+                return owner.strip()
+        except Exception:
+            continue
+    return fallback
 
 
 def _tty_claims_dir(env):
