@@ -148,7 +148,12 @@ async function readHistory(workspaceId: string, ranOn: string): Promise<PriorCen
       FROM harness_shared.sql_read_census
      WHERE workspace_id = ${workspaceId}
        AND ran_on < ${ranOn}::date
-       AND ran_on >= ${ranOn}::date - ${CENSUS_HISTORY_DAYS}
+       -- The ::integer cast is LOAD-BEARING, not decoration. Without it Postgres
+       -- resolves the untyped bind against 'date - date -> integer' rather than
+       -- 'date - integer -> date', and the whole predicate fails at runtime with
+       -- "operator does not exist: date >= integer". Caught only by the live run --
+       -- the pure tests never reach SQL (WI-38296).
+       AND ran_on >= ${ranOn}::date - ${CENSUS_HISTORY_DAYS}::integer
      ORDER BY ran_on
   `) as unknown as Array<{
     ran_on: string;

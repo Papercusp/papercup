@@ -444,7 +444,9 @@ import './hive-git-gc-action';
 // nothing to stage dark.
 import './corpus-term-df-action';
 // sql-escape-tool-routing-2026-08-12 P-008: `system:sql-read-census` — the nightly
-// (tier:'durable', 04:17 UTC) deterministic census of raw `dev:pg_query` reads against
+// (tier:'durable', 04:17 host-local = 08:17 UTC here; the cron is evaluated in the host
+// timezone, verified from the seeded row's next_fire_at) deterministic census of raw
+// `dev:pg_query` reads against
 // the tool-routing pair registry. No LLM and no daily agent turn: measured volume swings
 // 10 -> 3,474 calls/day, so an agent would confirm "nothing changed" on most days at full
 // turn cost. Wakes an agent ONLY on a threshold crossing — an uncovered cluster past N

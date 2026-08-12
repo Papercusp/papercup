@@ -3,7 +3,14 @@
  * P-008) — `system:sql-read-census` → `sql-read-census-action.ts`, the nightly
  * deterministic audit of raw-SQL reads against the tool-routing pair registry.
  *
- * Nightly at 04:17 UTC. Off the hour and off :15/:35/:45 on purpose: the box runs
+ * Nightly at 04:17 HOST-LOCAL — which is 08:17 UTC on this box (EDT). Verified
+ * rather than assumed: the seeded row came back with next_fire_at 08:17Z, so
+ * `computeNextFireAt` evaluates the crontab in the host timezone, NOT in UTC. Say
+ * local, mean local. (The census's own `ran_on` grain is a UTC calendar date via
+ * utcDate() — a different clock, and deliberately so: the row is keyed by the day
+ * it measures, not by the operator's wall time.)
+ *
+ * Off the hour and off :15/:35/:45 on purpose: the box runs
  * green-checkpoint at :15, gitnexus-reindex at :35 and cargo-test at :45, and a
  * census that reads a 7-day slice of `tool_invocations` has no reason to share a
  * tick minute with any of them.
