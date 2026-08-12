@@ -25,6 +25,8 @@ import { promises as fs, existsSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import { parseFrontmatterBlock } from '@papercusp/docs-engine';
+import { stringify as stringifyYaml } from 'yaml';
 import { resolveHarnessDocPaths } from '../../harness/docs/harness-repo';
 import { safeJoinUnderRoot } from '../../harness/docs/doc-fs';
 import { anchorManualDoc } from '../../harness/docs/manual-anchor';
@@ -192,6 +194,12 @@ export interface FrontmatterInput {
   documents: string[];
   plans: string[];
   sidebarOrder?: number;
+  /** Explicit normative classification. Omitted means no classification on a new doc. */
+  normative?: boolean;
+  /** Explicit convention surface(s) governed by this doc. */
+  governs?: string[];
+  /** Existing top-level frontmatter carried through an overwrite. */
+  preservedFrontmatter?: Record<string, unknown>;
   /**
    * OKF v0.2's ONE mandatory field (`lint:okf-conformance` fails a doc without it).
    *
@@ -208,6 +216,21 @@ export interface FrontmatterInput {
 /** The OKF `type:` for a doc, defaulted by section. */
 export const DEFAULT_DOC_TYPE = 'Insight';
 
+/**
+ * Read the existing frontmatter mapping before an overwrite.
+ *
+ * `docs:author` owns only the fields it can intentionally edit. The rest of a document's
+ * top-level metadata is still authored data, so replacing the generated block must carry it
+ * forward. Use the shared parser rather than a second YAML/frontmatter implementation; the
+ * `dates:'string'` option is load-bearing because this mapping is about to be round-tripped.
+ */
+export function parseExistingFrontmatter(existingContent: string | null | undefined): Record<string, unknown> {
+  if (!existingContent) return {};
+  const source = existingContent.startsWith('\uFEFF') ? existingContent.slice(1) : existingContent;
+  const parsed = parseFrontmatterBlock(source, { dates: 'string' });
+  return parsed.ok && parsed.data ? parsed.data : {};
+}
+
 /** YAML double-quoted scalar — JSON.stringify is a valid YAML flow scalar. */
 function yamlStr(s: string): string {
   return JSON.stringify(s);
@@ -216,23 +239,53 @@ function yamlStr(s: string): string {
 /** Build the full frontmatter block (including the wrapping --- lines). */
 export function buildFrontmatter(fm: FrontmatterInput): string {
   const lines: string[] = ['---'];
+  const emittedKeys = new Set<string>();
   lines.push(`title: ${yamlStr(fm.title)}`);
+  emittedKeys.add('title');
   lines.push(`description: ${yamlStr(fm.description)}`);
+  emittedKeys.add('description');
   lines.push(`type: ${fm.type}`);
+  emittedKeys.add('type');
   lines.push(`discovered: ${fm.discovered}`);
+  emittedKeys.add('discovered');
   if (fm.tags.length) lines.push(`tags: [${fm.tags.map(yamlStr).join(', ')}]`);
+  if (fm.tags.length) emittedKeys.add('tags');
   lines.push(`status: ${fm.status}`);
+  emittedKeys.add('status');
   if (fm.documents.length) {
     lines.push('documents:');
     for (const d of fm.documents) lines.push(`  - ${yamlStr(d)}`);
+    emittedKeys.add('documents');
   }
   if (fm.plans.length) {
     lines.push('plans:');
     for (const p of fm.plans) lines.push(`  - ${yamlStr(p)}`);
+    emittedKeys.add('plans');
   }
   if (typeof fm.sidebarOrder === 'number' && Number.isFinite(fm.sidebarOrder)) {
     lines.push('sidebar:');
     lines.push(`  order: ${Math.trunc(fm.sidebarOrder)}`);
+    emittedKeys.add('sidebar');
+  }
+  if (typeof fm.normative === 'boolean') {
+    lines.push(`normative: ${fm.normative}`);
+    emittedKeys.add('normative');
+  }
+  if (fm.governs !== undefined) {
+    if (fm.governs.length) {
+      lines.push('governs:');
+      for (const governed of fm.governs) lines.push(`  - ${yamlStr(governed)}`);
+    } else {
+      lines.push('governs: []');
+    }
+    emittedKeys.add('governs');
+  }
+  // Preserve every top-level key that this writer did not emit. This is intentionally
+  // generic: the next metadata field added to the corpus must not require another point fix.
+  for (const [key, value] of Object.entries(fm.preservedFrontmatter ?? {})) {
+    if (emittedKeys.has(key)) continue;
+    const serialized = stringifyYaml({ [key]: value }, { lineWidth: 0 }).trimEnd();
+    if (serialized) lines.push(serialized);
   }
   lines.push('---');
   return lines.join('\n');
