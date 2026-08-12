@@ -47,6 +47,7 @@ import {
   ownershipNeedsLivenessConfirmation,
 } from '../../coord/gate-ownership';
 import { resolveAgentIdentity } from '../coordination/identity';
+import { wakeRecipients } from '../coordination/inbox-wake';
 import { clampText, LIMITS, softText } from '../limits';
 
 export default defineTool({
@@ -237,11 +238,10 @@ export default defineTool({
     // straight through to launch with nothing recorded. Observed live 2026-08-12T01:35Z on
     // WI-38026, whose holder went `suspect` while still making tool calls.
     //
-    // What lands here is OBSERVABILITY, deliberately not the required-wake. Sending a wake and
-    // treating a miss as abandonment changes what the fleet's only manual verdict lever DOES, and
-    // it belongs in its own atomic change with its own test — not smuggled into a stamping fix.
-    // Until then the ambiguous case is at least VISIBLE instead of indistinguishable from
-    // "nobody holds this".
+    // EI-20209536730887204 follow-up: the ambiguous verdict now gets the REQUIRED confirmation
+    // its helper has always prescribed. A delivered wake proves a live peer can still receive
+    // coordination, so stand down; a miss fails open, preserving this rail's foundational rule
+    // that an uncertain coordination signal must never wedge the fleet's only verdict lever.
     //
     // Carried to the launch stamp below rather than stamped here, because that seam is
     // OVERWRITE-not-merge (see the EI-20031402866608444 note): a second ctx.metadata() call on a
@@ -254,8 +254,11 @@ export default defineTool({
       // block an agent from re-firing its own gate. Unknown identity ⇒ fail open, like every
       // other unknown on this rail.
       let callerOwnerId: string | null = null;
+      let callerWorkspaceId: string | undefined;
       try {
-        callerOwnerId = resolveAgentIdentity(ctx).ownerId;
+        const caller = resolveAgentIdentity(ctx);
+        callerOwnerId = caller.ownerId;
+        callerWorkspaceId = caller.workspaceId ?? undefined;
       } catch {
         callerOwnerId = null;
       }
@@ -316,11 +319,54 @@ export default defineTool({
           ],
         };
       }
-      // Not a stand-down, but not a clean "nobody holds this" either. `true` ⇒ a holder exists
-      // whose liveness the oracle calls AMBIGUOUS (`draining`/`suspect`), so this launch is
-      // proceeding against work a peer may still be doing. Recorded, not blocked — see the note
-      // above this `if` for why the required-wake is deliberately a separate change.
       ownershipLivenessAmbiguous = ownershipNeedsLivenessConfirmation(ownership) === true;
+      if (
+        ownershipLivenessAmbiguous &&
+        ownership.takenBy &&
+        callerOwnerId &&
+        ownership.takenBy !== callerOwnerId
+      ) {
+        const wake = await wakeRecipients([ownership.takenBy], {
+          summary:
+            `release:checkpoint-run is confirming ambiguous ownership of ${ownership.workItem ?? ownership.eventKey} ` +
+            'before another gate suite launches',
+          source: 'release:checkpoint-run',
+          workspaceId: callerWorkspaceId,
+        });
+        if (wake.woken > 0) {
+          ctx.metadata?.({
+            standDown: 'condition_claimed_liveness_confirmed',
+            standDownWorkItem: ownership.workItem,
+            standDownTakenBy: ownership.takenBy,
+            standDownHolderSessionState: ownership.holderSessionState,
+            standDownWakeCount: wake.woken,
+            ...(args.reason != null ? { fireReason: clampText(args.reason, LIMITS.SHORT_TITLE) } : {}),
+          });
+          return {
+            content: [
+              {
+                type: 'text',
+                text: JSON.stringify({
+                  ok: false,
+                  launched: false,
+                  reason: 'condition_claimed_liveness_confirmed',
+                  work_item: ownership.workItem,
+                  taken_by: ownership.takenBy,
+                  holder_session_state: ownership.holderSessionState,
+                  wake_confirmed: true,
+                  woken: wake.woken,
+                  note:
+                    `NOT launched: ${ownership.workItem ?? ownership.eventKey} is claimed by ${ownership.takenBy}. ` +
+                    `The presence oracle reported '${ownership.holderSessionState}', which is ambiguous rather than dead, ` +
+                    `and a required wake just reached ${wake.woken} live waiter(s). That delivery confirms the peer can still ` +
+                    'receive coordination, so firing another ~55min gate suite would pile onto active work. Read the item and ' +
+                    'coordinate with its holder; pass force:true only when you intentionally override this coordination rail.',
+                }),
+              },
+            ],
+          };
+        }
+      }
     }
     // EI-20025784115349280: the containment verdict below (L~479) is assembled ENTIRELY from
     // values `launchDetachedCheckpoint` computes ~29 lines BEFORE it spawns — so when the answer

@@ -72,6 +72,8 @@ afterEach(() => {
   vi.doUnmock('../../release/in-flight-retriage');
   vi.doUnmock('../../db-boot-migrate');
   vi.doUnmock('../../coord/gate-ownership');
+  vi.doUnmock('../coordination/inbox-wake');
+  vi.doUnmock('../coordination/identity');
 });
 
 /**
@@ -1062,6 +1064,128 @@ describe('pre-launch exclusion gate: the spawn, not the reply (EI-20025784115349
       standDownTakenBy: 'su-live-holder',
       standDownHolderSessionState: 'live',
       fireReason: 'gate red',
+    });
+  });
+
+  it('EI-20209536730887204: a delivered required wake confirms an ambiguous holder and prevents launch', async () => {
+    const launchSpy = mockLaunch();
+    const ownership = {
+      eventKey: 'gate-red-streak:papercusp',
+      workItem: 'WI-38026',
+      claimState: 'held',
+      unknown: null,
+      takenBy: 'su-ambiguous-holder',
+      takenAt: '2026-08-12T02:00:00.000Z',
+      expiresAt: null,
+      holderSessionState: 'suspect',
+      duplicates: [],
+      thread: { recent: [], total: 0 },
+    };
+    vi.doMock('../../coord/gate-ownership', () => ({
+      readGateOwnership: vi.fn(async () => ownership),
+      shouldStandDownForLivePeer: vi.fn(() => false),
+      ownershipNeedsLivenessConfirmation: vi.fn(() => true),
+    }));
+    vi.doMock('../coordination/identity', () => ({
+      resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-caller', workspaceId: 'papercusp-workspace' })),
+    }));
+    const wakeRecipients = vi.fn(async () => ({
+      targets: ['su-ambiguous-holder'],
+      keys: ['coord:inbox-wake:su-ambiguous-holder'],
+      woken: 1,
+      staged: 0,
+      stagedTargets: [],
+      fanoutCapped: [],
+    }));
+    vi.doMock('../coordination/inbox-wake', () => ({ wakeRecipients }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const metadata = vi.fn();
+    const ctx = {
+      log: vi.fn(),
+      signal: new AbortController().signal,
+      progress: vi.fn(),
+      role: 'operator',
+      uiClientId: 'su-caller',
+      workspaceId: 'papercusp-workspace',
+      metadata,
+    } as never;
+    const b = parse((await tool.handler({ reason: 'gate red' }, ctx)) as never);
+
+    expect(wakeRecipients).toHaveBeenCalledWith(
+      ['su-ambiguous-holder'],
+      expect.objectContaining({ source: 'release:checkpoint-run', workspaceId: 'papercusp-workspace' }),
+    );
+    expect(launchSpy).not.toHaveBeenCalled();
+    expect(b).toMatchObject({
+      ok: false,
+      launched: false,
+      reason: 'condition_claimed_liveness_confirmed',
+      wake_confirmed: true,
+      woken: 1,
+    });
+    expect(metadata).toHaveBeenCalledWith({
+      standDown: 'condition_claimed_liveness_confirmed',
+      standDownWorkItem: 'WI-38026',
+      standDownTakenBy: 'su-ambiguous-holder',
+      standDownHolderSessionState: 'suspect',
+      standDownWakeCount: 1,
+      fireReason: 'gate red',
+    });
+  });
+
+  it('EI-20209536730887204: a missed required wake fails open and records the ambiguous launch', async () => {
+    const launchSpy = mockLaunch();
+    const ownership = {
+      eventKey: 'gate-red-streak:papercusp',
+      workItem: 'WI-38026',
+      claimState: 'held',
+      unknown: null,
+      takenBy: 'su-ambiguous-holder',
+      takenAt: '2026-08-12T02:00:00.000Z',
+      expiresAt: null,
+      holderSessionState: 'draining',
+      duplicates: [],
+      thread: { recent: [], total: 0 },
+    };
+    vi.doMock('../../coord/gate-ownership', () => ({
+      readGateOwnership: vi.fn(async () => ownership),
+      shouldStandDownForLivePeer: vi.fn(() => false),
+      ownershipNeedsLivenessConfirmation: vi.fn(() => true),
+    }));
+    vi.doMock('../coordination/identity', () => ({
+      resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-caller', workspaceId: 'papercusp-workspace' })),
+    }));
+    const wakeRecipients = vi.fn(async () => ({
+      targets: ['su-ambiguous-holder'],
+      keys: ['coord:inbox-wake:su-ambiguous-holder'],
+      woken: 0,
+      staged: 0,
+      stagedTargets: [],
+      fanoutCapped: [],
+    }));
+    vi.doMock('../coordination/inbox-wake', () => ({ wakeRecipients }));
+
+    const { default: tool } = await import('./checkpoint-run');
+    const metadata = vi.fn();
+    const ctx = {
+      log: vi.fn(),
+      signal: new AbortController().signal,
+      progress: vi.fn(),
+      role: 'operator',
+      uiClientId: 'su-caller',
+      workspaceId: 'papercusp-workspace',
+      metadata,
+    } as never;
+    const b = parse((await tool.handler({}, ctx)) as never);
+
+    expect(wakeRecipients).toHaveBeenCalledTimes(1);
+    expect(launchSpy).toHaveBeenCalledTimes(1);
+    expect(b).toMatchObject({ ok: true, launched: true });
+    expect(metadata).toHaveBeenCalledTimes(1);
+    expect(metadata.mock.calls[0][0]).toMatchObject({
+      ownershipLivenessAmbiguous: true,
+      preLaunchExclusion: 'passed',
     });
   });
 
