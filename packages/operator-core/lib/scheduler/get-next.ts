@@ -345,7 +345,23 @@ function compileLeaf(sql: OrgSql, leaf: FilterLeaf) {
         return sql`EXISTS (SELECT 1 FROM jsonb_array_elements_text(COALESCE(${col}, '[]'::jsonb)) e WHERE e = ANY(${arr}::text[]))`;
       }
       // = / != against a json array: compare membership-equality of the WHOLE set.
-      if (leaf.op === '!=') return sql`NOT (${col} ? ${String(v)})`;
+      //
+      // WI-5995: COALESCE the membership test to false BEFORE negating, exactly as
+      // `compileFilter`'s `not` branch does (EI-13306) and as the text-array `!=` branch
+      // below already did via `COALESCE(col, ARRAY[]::text[])`. Without it, a row whose
+      // tags/paths are absent yields `NULL ? 'x'` = NULL, `NOT NULL` = NULL, and the WHERE
+      // clause DROPS the row — the same silent-starvation shape EI-13306 fixed for scalars,
+      // surviving here because `!=` is a LEAF op and never passes through that `not` branch.
+      // The scalar `!=` comment below asserts "the ARRAY branches above already do [admit]":
+      // that was true of text-array and FALSE of json-array, which is the gap this closes.
+      // Measured on the live backlog (2026-08-12, 25,698 open issue-family rows in
+      // papercusp-workspace): `tags != 'p2p-release'` admitted 33 rows; null-safe it admits
+      // 25,691 — a 778x collapse of the claimable pool, from a spec that validates clean.
+      // `paths != 'x'` was the same shape: 1,472 admitted of 25,698 (24,226 rows carry no
+      // paths at all). The JS evaluator has always admitted these (its subject projects an
+      // absent array to `[]`, so `!actual.includes(v)` is true), so this was also a live
+      // divergence between the two evaluators of one spec language.
+      if (leaf.op === '!=') return sql`NOT COALESCE((${col} ? ${String(v)}), false)`;
       return sql`${col} ? ${String(v)}`;
     }
     case 'text-array': {
