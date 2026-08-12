@@ -1628,7 +1628,11 @@ export function runBootstrap(): void {
     })();
 
   // DBOS Transact durable-jobs substrate (dbos-durable-jobs-2026-05-31).
-  // Gated by PAPERCUSP_DBOS_ENABLE=1; default OFF. Dynamic import so the host
+  // Gated by BOTH backgroundWorkersEnabled() and PAPERCUSP_DBOS_ENABLE=1; both
+  // are required before this process can register DBOS routines. The routines
+  // flag checked inside dbosRoutinesActive() is only the inner workflow-selection
+  // predicate after startDbos() is reached; it is not a host-registration gate.
+  // PAPERCUSP_DBOS_ENABLE=1 is default OFF. Dynamic import so the host
   // doesn't require @dbos-inc/dbos-sdk when the flag is off. This is the LIVE
   // boot path (the Hono host) — the retired instrumentation-node.ts also has
   // this block, but startDbos() is globalThis-idempotent so a double-call is a

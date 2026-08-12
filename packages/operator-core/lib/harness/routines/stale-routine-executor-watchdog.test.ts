@@ -92,7 +92,7 @@ describe('evaluateExecutorStaleness — the pure decider', () => {
     expect(v.reason).toContain('nothing has moved');
   });
 
-  it('STALE past the threshold with a genuine boot-commit-vs-HEAD divergence — names both shas + the work-item', () => {
+  it('STALE past the threshold with a genuine boot-commit-vs-HEAD divergence — reports code drift and restart, not a claim race', () => {
     const boot = 'd'.repeat(40);
     const head = 'e'.repeat(40);
     const now = BOOT + 7 * 3_600_000; // 7h uptime, matches the measured incident
@@ -109,6 +109,10 @@ describe('evaluateExecutorStaleness — the pure decider', () => {
     expect(v.reason).toContain(head.slice(0, 10));
     expect(v.reason).toContain('EI-19409061552037718');
     expect(v.reason).toContain('7h');
+    expect(v.reason).toContain('not loaded by this process');
+    expect(v.reason).toContain('Restart this host');
+    expect(v.reason).not.toContain('claim race');
+    expect(v.reason).not.toContain('HALF-APPLIED');
     expect(v.ageMs).toBe(now - BOOT);
   });
 });

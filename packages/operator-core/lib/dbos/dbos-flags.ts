@@ -105,6 +105,13 @@ export function dbosBackupActive(env: DbosEnv = process.env): boolean {
  * the master orchestrator switch (PAPERCUSP_DBOS_ORCHESTRATOR=0 also turns it off).
  * Opt-in is also the safe default: a host restart won't auto-fire stale/unknown
  * routines (e.g. the dormant git-sync routine seeded inactive) unsupervised.
+ *
+ * Registration boundary: this predicate selects the routines workflow only after
+ * DBOS has been launched. `host-bootstrap.ts` separately requires
+ * `backgroundWorkersEnabled()` and `PAPERCUSP_DBOS_ENABLE=1` before calling
+ * `startDbos()`. Do not infer that a process claims routines from this flag alone;
+ * request-only hosts can carry `PAPERCUSP_DBOS_ROUTINES=1` without registering a
+ * routines executor.
  */
 export function dbosRoutinesActive(env: DbosEnv = process.env): boolean {
   return dbosOrchestratorActive(env) && env.PAPERCUSP_DBOS_ROUTINES === '1';

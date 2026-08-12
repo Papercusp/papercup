@@ -5,6 +5,7 @@ import {
   dbosPeriodicTimersActive,
   dbosProvisionActive,
   dbosBackupActive,
+  dbosRoutinesActive,
   dbosCurationActive,
   dbosPlanRenderActive,
 } from './dbos-flags';
@@ -75,6 +76,14 @@ describe('dbosBackupActive — opt-in (P-011), off until explicitly =1', () => {
     expect(dbosBackupActive({ PAPERCUSP_DBOS_BACKUP: '1', PAPERCUSP_DBOS_ORCHESTRATOR: '0' })).toBe(false));
   test('BACKUP=0 → inactive', () =>
     expect(dbosBackupActive({ PAPERCUSP_DBOS_BACKUP: '0' })).toBe(false));
+});
+
+describe('dbosRoutinesActive — inner workflow-selection predicate', () => {
+  test('unset → inactive', () => expect(dbosRoutinesActive({})).toBe(false));
+  test('ROUTINES=1 → active once a launched DBOS host reaches bootstrap', () =>
+    expect(dbosRoutinesActive({ PAPERCUSP_DBOS_ROUTINES: '1' })).toBe(true));
+  test('ORCHESTRATOR=0 forces routines off', () =>
+    expect(dbosRoutinesActive({ PAPERCUSP_DBOS_ROUTINES: '1', PAPERCUSP_DBOS_ORCHESTRATOR: '0' })).toBe(false));
 });
 
 describe('dbosCurationActive — curator-operator P0, opt-in, off until =1', () => {

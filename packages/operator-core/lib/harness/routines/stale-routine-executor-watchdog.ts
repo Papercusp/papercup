@@ -1,9 +1,9 @@
 /**
  * stale-routine-executor-watchdog.ts — EI-19409061552037718: a long-lived host
  * with PAPERCUSP_DBOS_ROUTINES=1 silently keeps executing scheduled routines with
- * FROZEN code (loaded once at process start, never reloaded), so every routine
- * fix committed since that process's boot is HALF-APPLIED for as long as it
- * keeps winning `claimDueRoutine`'s per-tick race against a fresher host.
+ * FROZEN code (loaded once at process start, never reloaded), so routine fixes
+ * committed since that process's boot are not loaded by that process until it is
+ * restarted.
  *
  * MEASURED 2026-08-03: a 7h-stale desktop-dev operator (:3270, PAPERCUSP_HONO_PORT
  * unset there but PAPERCUSP_DBOS_ROUTINES=1) kept firing condition-staleness-alarm
@@ -12,9 +12,9 @@
  * escalation rows vs 2 post-fix ones in 24h, both shapes minted AFTER the fix
  * landed. `routines-workflow.ts`'s own doc comment already documents this as
  * "SAFE from double-fire" (claimDueRoutine's conditional next_fire_at advance is a
- * real per-tick single-flight guard) — and it is: the defect here is never two
- * processes racing the SAME tick, it is successive ticks alternating between a
- * fresh and a stale host, with the stale one's wins running dead logic.
+ * real per-tick single-flight guard). This watchdog has no visibility into a
+ * different process or which process handled a particular tick; its evidence is
+ * only this process's boot-time code snapshot versus the current tree.
  *
  * Two remedies were on the table (see the work-item): (a) refuse to CLAIM a
  * routine from a stale process, or (b) make the staleness LOUD instead of silent.
@@ -161,8 +161,7 @@ export function evaluateExecutorStaleness(input: ExecutorStalenessInput): Execut
     reason:
       `this process has run ${ageHours}h with PAPERCUSP_DBOS_ROUTINES=1, code loaded at boot commit ` +
       `${input.bootCommit.slice(0, 10)}, while this checkout's tree HEAD has since moved to ` +
-      `${input.currentCommit.slice(0, 10)} — every scheduled-routine fix committed since boot is HALF-APPLIED ` +
-      `while this process keeps winning claimDueRoutine's per-tick race with frozen code ` +
+      `${input.currentCommit.slice(0, 10)} — scheduled-routine fixes committed since boot are not loaded by this process ` +
       `(EI-19409061552037718). Restart this host to pick up current code, or, if it no longer needs to run ` +
       `routines, unset PAPERCUSP_DBOS_ROUTINES on it.`,
     ageMs,
@@ -202,7 +201,7 @@ async function raiseExecutorStalenessAlarm(opts: {
       const { notifyAttention } = await import('../../attention-notify');
       await notifyAttention({
         kind: 'intervention',
-        title: `Stale routine executor (${identity}) is half-applying every routine fix`,
+        title: `Stale routine executor (${identity}) is running code older than the checkout`,
         body: verdict.reason,
         importance: 'urgent',
         workspaceId,
@@ -216,8 +215,9 @@ async function raiseExecutorStalenessAlarm(opts: {
     const { broadcastSevereEvent } = await import('../../severe-event-broadcast');
     await broadcastSevereEvent({
       summary:
-        `stale routine executor (${identity}) has run ${ageHours}h on frozen code with PAPERCUSP_DBOS_ROUTINES=1 — ` +
-        `every routine fix committed since its boot is silently half-applied whenever it wins a claim race.`,
+        `stale routine executor (${identity}) has run ${ageHours}h with code from its boot while ` +
+        `PAPERCUSP_DBOS_ROUTINES=1 and the checkout has moved — scheduled-routine fixes committed since boot ` +
+        `are not loaded by this process; restart the host to pick up current code.`,
       body:
         `${verdict.reason}\n\nDo NOT kill/duplicate a tauri-dev-supervised process to "fix" this (CLAUDE.md: that has ` +
         `already taken the owner's live desktop down once) — this needs an owner-coordinated restart of THAT host, ` +
