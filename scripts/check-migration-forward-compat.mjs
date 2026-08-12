@@ -207,6 +207,9 @@ export function isEnforcedMigrationFile(file) {
  * True when a filename is an armed migration or a parked migration artifact.
  * The main lint uses this instead of `endsWith('.sql')` so a DRAFT can reach the
  * dependency check while destructive-DDL enforcement remains limited to armed SQL.
+ *
+ * @param {string} file
+ * @returns {boolean}
  */
 export function isMigrationArtifactFile(file) {
   return file.endsWith('.sql') || PARKED_SUFFIXES.some((suffix) => file.endsWith(`.sql${suffix}`));
@@ -474,21 +477,21 @@ function main() {
 
   if (offenders.length > 0 || draftOffenders.length > 0) {
     if (offenders.length > 0) {
-    console.error('Forward-incompatible migration(s): destructive DDL with no FORWARD-COMPAT acknowledgment.\n');
-    console.error('The database migrates NOW; :3070 keeps running the older release checkout until the');
-    console.error('next commit -> green-checkpoint -> deploy cycle finishes. Destructive DDL therefore');
-    console.error('breaks code that is still live.\n');
-    for (const { file, hits } of offenders) {
-      console.error(`  ${file}`);
-      for (const h of hits) console.error(`      [${h.id}] ${h.why}`);
-    }
-    console.error('\nFix by splitting into expand/contract:');
-    console.error('  1. EXPAND  - add the new index/column; ship and DEPLOY the code that uses it.');
-    console.error('  2. CONTRACT - a LATER migration drops the old one, once no deployed release uses it.');
-    console.error('\nOr, if the deployed release genuinely does not touch it, record why in the migration:');
-    console.error('  -- FORWARD-COMPAT: <why the currently-deployed release does not use this>');
-    console.error('\nBackground: EI-18797473716313783 (migration 689 dropped an ON CONFLICT arbiter and');
-    console.error('broke facts:assert fleet-wide for ~3 hours).');
+      console.error('Forward-incompatible migration(s): destructive DDL with no FORWARD-COMPAT acknowledgment.\n');
+      console.error('The database migrates NOW; :3070 keeps running the older release checkout until the');
+      console.error('next commit -> green-checkpoint -> deploy cycle finishes. Destructive DDL therefore');
+      console.error('breaks code that is still live.\n');
+      for (const { file, hits } of offenders) {
+        console.error(`  ${file}`);
+        for (const h of hits) console.error(`      [${h.id}] ${h.why}`);
+      }
+      console.error('\nFix by splitting into expand/contract:');
+      console.error('  1. EXPAND  - add the new index/column; ship and DEPLOY the code that uses it.');
+      console.error('  2. CONTRACT - a LATER migration drops the old one, once no deployed release uses it.');
+      console.error('\nOr, if the deployed release genuinely does not touch it, record why in the migration:');
+      console.error('  -- FORWARD-COMPAT: <why the currently-deployed release does not use this>');
+      console.error('\nBackground: EI-18797473716313783 (migration 689 dropped an ON CONFLICT arbiter and');
+      console.error('broke facts:assert fleet-wide for ~3 hours).');
     }
     if (draftOffenders.length > 0) {
       console.error('\nDraft migration(s) already referenced by source before they were armed:\n');

@@ -23,7 +23,7 @@ export function isEnforcedMigrationFile(file: any): boolean;
  * The main lint uses this instead of `endsWith('.sql')` so a DRAFT can reach the
  * dependency check while destructive-DDL enforcement remains limited to armed SQL.
  */
-export function isMigrationArtifactFile(file: any): any;
+export function isMigrationArtifactFile(file: any): boolean;
 /** True when `file` is an enforced migration that has not been armed yet. */
 export function isDraftMigrationFile(file: any): boolean;
 /**
