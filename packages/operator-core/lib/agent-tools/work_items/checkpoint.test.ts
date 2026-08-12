@@ -1088,6 +1088,82 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(r2.checks).toBe(1);
     });
 
+    describe('P-013 parity: a checks row carries the same optional stable `id` loop:checkpoint accepts', () => {
+      it('accepts `id` on a checks row instead of rejecting the WHOLE call as invalid_args', () => {
+        // The regression: the storage/merge/render layer below already keyed rows by
+        // `id` (carryRowKey), but THIS tool's strict schema rejected the field — so the
+        // same payload was valid on loop:checkpoint and invalid_args here, and every
+        // sibling row in the call was discarded with it.
+        expect(() =>
+          parse({ id: 'WI-7', checkpoint: 'body', checks: [{ id: 'gate-green', claim: 'gate is green' }] }),
+        ).not.toThrow();
+      });
+
+      it('CONTROL: the row schema is still STRICT — an undeclared field is rejected', () => {
+        // Without this, the assertion above would also pass if `id` were merely being
+        // silently stripped as an unknown key, which is a different (and worse) bug.
+        expect(() =>
+          parse({ id: 'WI-7', checkpoint: 'body', checks: [{ claim: 'x', notAField: 'y' }] }),
+        ).toThrow();
+      });
+
+      it('uses the id as the row IDENTITY, so re-wording a claim under the same id keeps ONE row', async () => {
+        withPrior(null);
+        await one({
+          id: 'WI-7',
+          checkpoint: 'body',
+          checks: [{ id: 'gate-green', claim: 'gate is green', recheck: 'probe gate' }],
+        });
+        const prior = await lastStored();
+
+        withPrior(prior);
+        const r = await one({
+          id: 'WI-7',
+          checkpoint: 'body',
+          rowsMode: 'merge',
+          checks: [{ id: 'gate-green', claim: 'gate is green at HEAD', recheck: 'probe gate', verified: 'saw green' }],
+        });
+        const stored = await lastStored();
+        expect(r.checks).toBe(1);
+        expect(stored).toContain('gate is green at HEAD');
+        expect(stored).not.toContain('gate is green\n');
+      });
+
+      it('agrees with loop:checkpoint on the id bound at BOTH edges, so the contracts cannot drift again', async () => {
+        const { CARRY_ROW_ID_MAX, CARRY_CAP_HARD_MULTIPLE } = await import('../../carry-note');
+        const hardMax = CARRY_ROW_ID_MAX * CARRY_CAP_HARD_MULTIPLE;
+        const loopCheckpoint = (await import('../loop/checkpoint')).default as {
+          args: { parse: (x: unknown) => unknown };
+        };
+        const wiVerdict = (id: string) => {
+          try {
+            parse({ id: 'WI-7', checkpoint: 'body', checks: [{ id, claim: 'c' }] });
+            return 'accepted';
+          } catch {
+            return 'rejected';
+          }
+        };
+        const loopVerdict = (id: string) => {
+          try {
+            (loopCheckpoint.args as { parse: (x: unknown) => unknown }).parse({ checks: [{ id, claim: 'c' }] });
+            return 'accepted';
+          } catch {
+            return 'rejected';
+          }
+        };
+        // Both edges: at the bound and one char over. Asserting only the accept side
+        // would pass against a schema with no bound at all.
+        for (const [len, expected] of [
+          [hardMax, 'accepted'],
+          [hardMax + 1, 'rejected'],
+        ] as const) {
+          const id = 'a'.repeat(len);
+          expect(wiVerdict(id)).toBe(expected);
+          expect(loopVerdict(id)).toBe(expected);
+        }
+      });
+    });
+
     it('checks:[] clears the rows explicitly', async () => {
       withPrior(null);
       await one({ id: 'WI-7', checkpoint: 'body', checks: [{ claim: 'X holds', recheck: 'probe X' }] });

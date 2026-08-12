@@ -140,6 +140,7 @@ import { setWorkItemCheckpointWithPrior, getWorkItemCheckpoint } from '../../wor
 import { SUPPORTED_DEP_KINDS } from '../../freshness/resolvers';
 import { markFeatureProgress, markIssueProgress, isClaimHoldParked } from '../../work-items';
 import { lookupWorkItem } from './_lookup';
+import { CARRY_ROW_ID_SCHEMA } from '../_carry-row-id';
 import { detectPauseDeclaration, pauseNotEnforcedWarning } from '../../carry-note-pause-declaration';
 import { runBulk, bulkContent } from '../_bulk';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
@@ -292,6 +293,14 @@ function checksSpec() {
             // durable state at the moment its session ended. Measured over a 6-day window:
             // 6 of the 9 schema rejections on this tool were exactly this, 32,967 chars.
             // Same fix as WI-7264 landed for loop:checkpoint, reusing its helpers.
+            //
+            // P-013 parity: `id` is the SAME schema loop:checkpoint's rows use (see
+            // ../_carry-row-id). The storage/merge/render layer below already keyed
+            // rows by it (`carryRowKey`), so only this strict schema was rejecting it
+            // — the same payload was valid on one carry surface and `invalid_args` on
+            // the other, which is also what made coerceCarryRowShape's key -> id
+            // repair inert here.
+            id: CARRY_ROW_ID_SCHEMA,
             claim: z
               .string()
               .min(1)
@@ -375,8 +384,7 @@ export default defineTool({
     'Single: { id, checkpoint? }. Many: items:[{ id, checkpoint?, harness? }]. ' +
     'Your transcript does NOT carry across a task boundary / re-spawn; the checkpoint is your continuity, ' +
     "re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; `append:true` joins instead. " +
-    'Writes are verify-read — a suspicious shrink is retried as a safe append, a disagreeing append is BLOCKED, ' +
-    'and every refusal carries `errorCode` + recovery args. ' +
+    'Writes are verify-read — a suspicious shrink can be BLOCKED; see `returns`. ' +
     'Refuses a peer-held item (`not_holder`). `rowsMode:"merge"` is the default additive check-row form when the body should still replace; use `rowsMode:"replace"` to retire rows.',
   guidance: {
     when:
@@ -387,13 +395,15 @@ export default defineTool({
       'Mid-task scratch the live transcript already holds; never dump file contents or tool output. Not an edit ' +
       'channel: use work_items:update for the body, work_items:comment for a note. Not for a peer\'s item — claim it, or comment instead.',
     chaining:
-      'Call before work_items:complete / on yield; blank clears a stale note. For a concise successor addendum to a ' +
-      'detailed prior note, pass append:true. For an intentional full replacement, include confirmShrink:true. ' +
+      'Call before work_items:complete / on yield; blank clears a stale note. ' +
       'Doubles as a liveness pulse — a claim held through long local-only tool use can go presence-stale and be reclaimed.',
     returns:
       'Returns { ok, results:[{ ok, id, harness, cleared, length, contentHash, verified, storedHead, by | error }], counts }. ' +
+      'Every write is verify-read: a suspicious shrink is retried as a safe append, a disagreeing append is BLOCKED, ' +
+      'and every refusal carries `errorCode` + recovery args. ' +
       'A blocked write carries `errorCode` (`shrink_blocked` / `append_base_unreadable`) plus structured `recovery` args: ' +
-      '`append:true` to preserve prior content, or `append:false, confirmShrink:true` for an intentional full replacement. ' +
+      '`append:true` to preserve prior content (also the form for a concise successor addendum to a detailed prior note), ' +
+      'or `append:false, confirmShrink:true` for an intentional full replacement. ' +
       'A verify-read miss is `checkpoint_verify_failed`.',
   },
   capability: 'work_items:write',

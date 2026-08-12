@@ -23,6 +23,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolvePotHomeSlug } from '../../pot/wake';
+import { CARRY_ROW_ID_SCHEMA } from '../_carry-row-id';
 import {
   lintUncheckedExternalClaims,
   mergeCarryRows,
@@ -61,19 +62,9 @@ import { withBoundedTimeout } from '../../bounded-timeout';
 export const CONTINUATION_READ_BUDGET_MS = 5_000;
 
 /** P-013 — the optional stable row identity, shared by the walls and checks schemas
- *  (their contract is deliberately identical). The 40-character bound is a real
- *  STORED identity limit: rendered/parser anchors and `sanitizeCarryRowId` use the
- *  same bound. The input backstop is deliberately looser so a recovery payload can
- *  be repaired at the handler boundary and told that its identity changed. */
-const CARRY_ROW_ID_INPUT_HARD_MAX = CARRY_ROW_ID_MAX * CARRY_CAP_HARD_MULTIPLE;
-const CARRY_ROW_ID_SCHEMA = z
-  .string()
-  .max(CARRY_ROW_ID_INPUT_HARD_MAX)
-  .optional()
-  .describe(
-    "Stable id for this row (e.g. 'gate-green'), independent of wording. Lets you RE-WORD the claim without " +
-      'losing its evidence/age, and is what rowsMode:\'merge\' upserts on. Stored identities are limited to 40 characters; bounded longer inputs are repaired and reported, while inputs over the hard backstop are rejected. Omitted ⇒ identity is the claim text.',
-  );
+ *  (their contract is deliberately identical) AND by work_items:checkpoint's checks
+ *  rows, which is why it lives in ../_carry-row-id rather than here: the two tools'
+ *  schemas were copies once, and they drifted. See that module for the bound rationale. */
 
 /**
  * Normalize the compact row shorthand accepted by walls and checks. A row
