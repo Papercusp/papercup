@@ -131,6 +131,18 @@ export function coerceCompletionShape(raw: unknown): unknown {
     }
   }
 
+  // Some callers describe changed files as `{ path, change }` records. The
+  // completion contract stores paths only because downstream resolution and
+  // audit code treats every entry as a string. Keep the useful path and drop
+  // the presentation-only description. Invalid records remain unchanged so
+  // schema validation rejects them instead of recording "[object Object]".
+  if (Array.isArray(out.filesChanged)) {
+    out.filesChanged = out.filesChanged.map((entry) => {
+      if (!isPlainObject(entry) || typeof entry.path !== 'string' || !entry.path.trim()) return entry;
+      return entry.path.trim();
+    });
+  }
+
   // string-typed fields: an array becomes a joined string.
   for (const f of STRING_FIELDS) {
     const val = out[f];

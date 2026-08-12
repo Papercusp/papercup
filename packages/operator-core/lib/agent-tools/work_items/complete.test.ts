@@ -1852,6 +1852,21 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(out.addedTests).toBe(true);
     });
 
+    it('coerces structured filesChanged entries to their paths', () => {
+      const out = coerceCompletionShape({
+        summary: 'landed',
+        filesChanged: [
+          { path: 'packages/operator-core/lib/work-items.ts', change: 'updated completion handling' },
+          'packages/operator-core/lib/agent-tools/work_items/complete.ts',
+        ],
+      }) as { filesChanged: unknown };
+
+      expect(out.filesChanged).toEqual([
+        'packages/operator-core/lib/work-items.ts',
+        'packages/operator-core/lib/agent-tools/work_items/complete.ts',
+      ]);
+    });
+
     it('an array in a string-typed field is joined (the "tests: expected string, received array")', () => {
       const out = coerceCompletionShape({ summary: 's', tests: ['67 green', 'vitest'] }) as { tests: unknown };
       expect(out.tests).toBe('67 green; vitest');
