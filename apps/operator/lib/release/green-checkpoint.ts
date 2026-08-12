@@ -1962,11 +1962,32 @@ export function describeSkippedRetriage(input: {
   }
   // The residual case, and the one worth naming precisely: we had failures but could turn none of
   // them into something re-runnable. A cargo/desktop task and a worker-pool crash both land here.
+  //
+  // EI-19992136440423793: name WHICH entries were unclassifiable rather than implying none were.
+  // `nonTestGateIdsFrom` is all-or-nothing, so a set that is mostly re-runnable still lands here
+  // — and the old wording ("none is a known non-test gate id (<every entry>)") then stated the
+  // OPPOSITE of the truth about the registered ones. Measured 2026-08-12: the line read "none is
+  // a known non-test gate id (lint:mock-cast-escape, lint:no-raw-setinterval)" when the first of
+  // those two was registered and re-runnable; the reader's next move is to go register a gate
+  // that is already registered, while the actual veto — the unregistered sibling — goes unnamed.
+  const unclassifiable = failingTests.filter((e) => !isRerunnableGateEntry(e));
+  const rerunnable = failingTests.filter((e) => isRerunnableGateEntry(e));
+  if (rerunnable.length > 0 && unclassifiable.length > 0) {
+    return (
+      `tip re-run SKIPPED (rescue VETOED): ${rerunnable.length} of ${failingTests.length} failing ` +
+      `entries ARE re-runnable at tip ${tip.slice(0, 8)} (${rerunnable.slice(0, 5).join(', ')}), but ` +
+      `${unclassifiable.length} could not be turned into anything re-runnable ` +
+      `(${unclassifiable.slice(0, 5).join(', ')}). The rescue is all-or-nothing, so NONE were ` +
+      're-verified. To re-arm it, register the unrecognised id(s) in NON_TEST_GATE_SCRIPTS (a root ' +
+      'lint script qualifies when it is fast, deterministic and repo-wide). Staleness was NOT ' +
+      'measured: this red may or may not still reproduce.'
+    );
+  }
   return (
     `tip re-run SKIPPED: none of the ${failingTests.length} failing entr${failingTests.length === 1 ? 'y' : 'ies'} ` +
     `could be turned into something re-runnable at tip ${tip.slice(0, 8)} — no failing entry resolved to a ` +
     `{workspace,file} pair, and none is a known non-test gate id` +
-    (failingTests.length ? ` (${failingTests.slice(0, 5).join(', ')})` : '') +
+    (unclassifiable.length ? ` (${unclassifiable.slice(0, 5).join(', ')})` : '') +
     '. Staleness was NOT measured: this red may or may not still reproduce.'
   );
 }
@@ -2085,6 +2106,17 @@ export const NON_TEST_GATE_SCRIPTS: Record<string, string[]> = {
   // deterministic, repo-wide, and cheap (~2s against a ~55min suite).
   'lint:tsc:orchestrator': ['lint:tsc:orchestrator'],
   'lint:migrations': ['lint:migrations'],
+  // EI-19992136440423793: the sibling of lint:migrations, and unregistered until a red on
+  // 2026-08-12 proved the cost. One fast, deterministic, repo-wide node script with no PG or
+  // network dependency — the header's own bar, already met by the entry above it.
+  'lint:migration-forward-compat': ['lint:migration-forward-compat'],
+  // EI-19992136440423793: the two remaining tsc legs. `lint:tsc` and `lint:tsc:orchestrator`
+  // were registered; these two run the SAME kind of check over the other two tree scopes and
+  // were left out by omission, not by judgement. Omitting them is not merely a missed rescue:
+  // `nonTestGateIdsFrom` is all-or-nothing (`ids.every`), so ONE unregistered leg in the
+  // failing set vetoes the rescue for every registered leg beside it.
+  'lint:tsc:papercusp-libs': ['lint:tsc:papercusp-libs'],
+  'lint:tsc:workspaces': ['lint:tsc:workspaces'],
   'lint:identity-leak': ['lint:no-owner-name-tags', 'lint:no-box-identity', 'lint:no-identity-literals'],
   'lint:design-primitives': ['lint:design-primitives'],
   'lint:no-control-bytes': ['lint:no-control-bytes'],
@@ -2100,6 +2132,14 @@ export const NON_TEST_GATE_SCRIPTS: Record<string, string[]> = {
   // script with no PG or network dependency, so a red a peer has since fixed by classifying
   // the timer is cheap to re-verify at tip instead of red-pinning the fleet.
   'lint:timer-classification': ['lint:timer-classification'],
+  // EI-19992136440423793: the leg whose omission PROVABLY froze the gate on 2026-08-12.
+  // Candidate 13a91a1b redded on ['lint:mock-cast-escape', 'lint:no-raw-setinterval']. The
+  // first IS registered; this one was not, so `ids.every(isRerunnableGateEntry)` returned []
+  // and NO rescue ran for either. The red was stale — the offending bare setInterval() in
+  // packages/operator-core/lib/harness/git-sync/git-sync-action.ts was already removed at tip
+  // — but nothing measured that, and the streak reached 19 consecutive reds. Same bar as its
+  // siblings: one fast, deterministic, repo-wide node script, no PG or network.
+  'lint:no-raw-setinterval': ['lint:no-raw-setinterval'],
   // P-020: the agent-state plane's standing probes. Deterministic and repo-wide like the
   // rest, so the same auto-refire applies. NOTE the census + ratchet legs are PG-backed, so
   // a re-verify at tip re-reads live state — which is correct here: if the producer resumed
