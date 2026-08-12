@@ -1651,6 +1651,50 @@ describe('work_items:complete (keyed-array)', () => {
       });
       expect(r.skippedTestsWarning).toMatch(/1 test\(s\) SKIPPED/);
     });
+
+    it('does NOT warn for the documented unfiltered + -t execution-proof pair', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: {
+          summary: 'fixed it',
+          testsRun: 'npm run test:file -- packages/operator-core/lib/foo.test.ts',
+          testResult:
+            'UNFILTERED packages/operator-core/lib/foo.test.ts: 72 passed, 0 skipped; ' +
+            'FILTERED packages/operator-core/lib/foo.test.ts -- -t EI-19447204017443244: 11 passed | 61 skipped',
+        },
+      });
+      expect(r.skippedTestsWarning).toBeUndefined();
+    });
+
+    it('recognizes the long testNamePattern spelling for the same proof', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: {
+          summary: 'fixed it',
+          testsRun: 'testing:run --testNamePattern=EI-12 foo.test.ts',
+          testResult: 'full run: 9 passed, 0 skipped; filtered run: 1 passed | 8 skipped',
+        },
+      });
+      expect(r.skippedTestsWarning).toBeUndefined();
+    });
+
+    it('STILL warns when a name-filter run has no clean unfiltered counterpart', async () => {
+      getWorkItem.mockResolvedValue(item);
+      const r = await one({
+        id: 'F-12',
+        state: 'passed',
+        completion: {
+          summary: 'fixed it',
+          testsRun: 'npm run test:file -- foo.test.ts -- -t EI-12',
+          testResult: '11 passed | 61 skipped',
+        },
+      });
+      expect(r.skippedTestsWarning).toMatch(/61 test\(s\) SKIPPED/);
+    });
   });
 
   // ── EI-13687: a bare-string `completion` warns LOUDLY (names the dropped fields + the

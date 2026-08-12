@@ -250,6 +250,42 @@ export function skippedTestsMentionedInEvidence(
   return undefined;
 }
 
+/**
+ * EI-19454705610327667 — the repo's prescribed non-vacuity proof runs the same
+ * file twice: once unfiltered, then once with Vitest's `-t` name filter so the
+ * newly-added test is proven to execute. The filtered run reports every
+ * non-matching test as SKIPPED, which is expected and is not the same signal as
+ * a skipped assertion left in an otherwise unfiltered run.
+ *
+ * Keep this deliberately conservative. A name-filter token by itself is not
+ * enough: the caller must also record an explicitly unfiltered/full run with
+ * zero skips in the same evidence bundle. That preserves the warning for a
+ * filter-only completion, where the skipped count could still hide a real
+ * disabled test.
+ *
+ * PURE — unit-tested without PG.
+ */
+function hasIntentionalTestNameFilterProof(
+  evidence: Pick<CompletionVerificationEvidence, 'testsRun' | 'testResult'> | undefined,
+): boolean {
+  if (!evidence) return false;
+  const prose = `${evidence.testsRun ?? ''}\n${evidence.testResult ?? ''}`;
+
+  // Vitest accepts both the short CLI spelling and the long spelling surfaced
+  // by testing:run. The boundary prevents prose such as "-test" from counting
+  // as a filter invocation.
+  const hasNameFilter = /(?:^|[\s`'"(])(?:-t\b|--testNamePattern\b|--test-name-pattern\b)(?:\s+|=)/i.test(
+    prose,
+  );
+  if (!hasNameFilter) return false;
+
+  // Require the clean count to be labelled as the unfiltered/full run and keep
+  // the window bounded so a clean result from an unrelated command cannot
+  // accidentally bless a filtered run's skipped count.
+  const cleanRun = /\b(?:unfiltered|full(?:\s+(?:suite|file|run))?|without\s+(?:a\s+)?(?:test[- ]name\s+)?filter|no\s+(?:test[- ]name\s+)filter)\b[\s\S]{0,180}?\b0\s+(?:tests?\s+)?skip(?:ped|s)?\b|\b0\s+(?:tests?\s+)?skip(?:ped|s)?\b[\s\S]{0,180}?\b(?:unfiltered|full(?:\s+(?:suite|file|run))?|without\s+(?:a\s+)?(?:test[- ]name\s+)?filter|no\s+(?:test[- ]name\s+)filter)\b/i;
+  return cleanRun.test(prose);
+}
+
 /** Source files whose correctness a test run says nothing about. */
 const TYPECHECKED_SOURCE_RE = /\.(?:[cm]?ts|tsx)$/i;
 /** Any mention of a real type check, in the caller's OWN evidence prose. */
@@ -1155,7 +1191,7 @@ async function completeOne(
   // the SAME evidence extraction as everything else above (completionEvidenceForGate)
   // so it can never disagree with what the caller actually supplied.
   const skippedTestsMention = skippedTestsMentionedInEvidence(completionEvidenceForGate);
-  const skippedTestsWarning = skippedTestsMention
+  const skippedTestsWarning = skippedTestsMention && !hasIntentionalTestNameFilterProof(completionEvidenceForGate)
     ? `completion for ${it.id} reports ${skippedTestsMention.count} test(s) SKIPPED in \`${skippedTestsMention.source}\` — a skip reads as part of a green summary ("N passed | M skipped") but the skipped assertion(s) never actually ran (EI-19380332459719944: this exact shape — "8 passed | 1 skipped" — read as a clean pass and nearly shipped a false verification on a critical item). If the skip PRE-DATES this change and is unrelated to what this completion verifies, no action needed. If it's a skip left over from unblocking the gate (yours or a peer's), un-skip it and re-run before trusting this as evidence that the skipped assertion(s) pass.`
     : undefined;
 
