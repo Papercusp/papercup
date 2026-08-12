@@ -104,3 +104,6 @@ export const AUTO_CLOSE_ELIGIBLE_SOURCES: ReadonlySet<string> = new Set([
   // open, so draining one merely clears the way for the next.
   'routine-failure',
 ]);
+
+/** The same evidence window used by the auto-close sweep and its claim floor. */
+export const AUTO_CLOSE_DEFAULT_MIN_TICKS = 6;

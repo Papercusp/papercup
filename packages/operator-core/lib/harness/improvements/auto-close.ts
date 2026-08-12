@@ -57,8 +57,11 @@ import type { CompletionVerificationEvidence } from '../../coord-lifecycle/recor
 // Imported AND re-exported: a bare `export { X } from '...'` re-export does NOT bind X in this
 // module's scope, and `decideAutoClose` below uses it directly (the membership test that decides
 // whether a quiet tick may close an item). Keep both lines together.
-import { AUTO_CLOSE_ELIGIBLE_SOURCES } from './auto-close-sources';
-export { AUTO_CLOSE_ELIGIBLE_SOURCES };
+import {
+  AUTO_CLOSE_DEFAULT_MIN_TICKS,
+  AUTO_CLOSE_ELIGIBLE_SOURCES,
+} from './auto-close-sources';
+export { AUTO_CLOSE_DEFAULT_MIN_TICKS, AUTO_CLOSE_ELIGIBLE_SOURCES };
 
 /** The minimal shape the pure decision needs (an EngineerIssue maps onto it). */
 export interface AutoCloseCandidate {
@@ -100,7 +103,6 @@ export interface AutoCloseOptions {
   redTestGreenWindowHours?: number;
 }
 
-export const AUTO_CLOSE_DEFAULT_MIN_TICKS = 6;
 export const AUTO_CLOSE_DEFAULT_MIN_AGE_MS = 90 * 60_000;
 
 export interface AutoCloseDecision {
