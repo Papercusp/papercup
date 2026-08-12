@@ -802,6 +802,62 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       f === '.papercusp/docs.json',
   },
   {
+    // WI-38239 — `gen:compaction:check` was one of the 8 orphaned `gen:*:check` guards the
+    // census widening exposed (it ran on NO blocking path). It is the ONLY real-tree assertion
+    // that the shipped compaction floor renders: compaction-strategy.test.ts exercises
+    // renderCompactionStrategy over `mkdtemp` FIXTURES only, so a suite pass says nothing about
+    // whether the actual `apps/operator/prompts/papercusp-compaction.base.md` still renders.
+    //
+    // That gap is not hypothetical. This is the file every psu session's compaction floor is
+    // built from, and both failures it detects are silent today. MEASURED against a COPY of the
+    // real prompts dir (tier-2 probe, tree untouched), the two branches are NOT symmetric:
+    //   - missing/empty base  → renderer returns '' → exit 1. Reachable from CONTENT, and the
+    //     install then writes NO strategy at all. Proven: deleting the base flipped the verdict
+    //     while the unmutated copy passed.
+    //   - PAPERCUSP-COMPACTION:CLIENT-OVERLAY marker survives → exit 1. NOT reachable from
+    //     content — spliceAtMarker is `split(marker).join(content)`, so it replaces EVERY
+    //     occurrence (a planted duplicate marker did not survive). This branch fires only if the
+    //     splice implementation itself regresses, which is why splice-tooling-overlay.ts is in
+    //     `appliesTo` below rather than the prompts alone.
+    //
+    // Cheap by construction: a two-file read + a string splice, no DB and no network, so it is
+    // runnable in GitHub CI exactly as it is here.
+    workspace: '@papercusp/operator-core',
+    script: 'gen:compaction:check',
+    // No hostSuiteRatchet: compaction-strategy.test.ts is fixture-only (mkdtemp) and never
+    // references gen-compaction.ts, so no suite run implies this has executed over the real
+    // prompts dir. Declaring one would be the phantom ratchet the registry test forbids.
+    appliesTo: (f) =>
+      f === 'apps/operator/prompts/papercusp-compaction.base.md' ||
+      f === 'apps/operator/prompts/papercusp-compaction.claude.md' ||
+      f === 'scripts/gen-compaction.ts' ||
+      // The renderer and the splice/marker it depends on — the "overlay marker survived" half
+      // of the check is a property of these two files, not of the prompts.
+      f === 'packages/operator-core/lib/desktop-install/papercusp-files.ts' ||
+      f === 'packages/operator-core/lib/desktop-install/splice-tooling-overlay.ts',
+  },
+  {
+    // WI-38239 — `gen:knowledge-packs:check`, same orphan cohort. The builtin packs' shared
+    // items must stay byte-identical to their canonical `coding` source (sync-map.json);
+    // hand-editing a mirror silently strands the other side.
+    //
+    // MEASURED, and it is why this is registered UNCONDITIONALLY rather than ratcheted:
+    // pack-sync.test.ts asserts the same invariant over the real tree, and a pack edit does
+    // today pull @papercusp/operator-core in (probed: editing knowledge-packs/work/*.md selects
+    // it). But that coverage is an artifact of the dependency graph, not a declared premise —
+    // precisely the assumption whose quiet breakage this registry already recorded once
+    // (declaring @papercusp/db-org on operator-core silently disabled lint:migration-forward-compat).
+    // A ratchet is also unavailable honestly: pack-sync.test.ts RE-IMPLEMENTS the comparison
+    // rather than exercising gen-knowledge-packs.mjs, so the ratchet assertion would reject it.
+    // Attaching unconditionally is the fail-safe direction that test's own message prescribes,
+    // and the duplicate cost is a handful of file reads.
+    workspace: '@papercusp/operator-core',
+    script: 'gen:knowledge-packs:check',
+    appliesTo: (f) =>
+      f.startsWith('libs/papercusp/packages/harness/knowledge-packs/') ||
+      f === 'scripts/gen-knowledge-packs.mjs',
+  },
+  {
     // WI-38312 — `lint:sidecar-fallback-reported` (EI-20281745253229841) shipped enforcing
     // NOTHING: its only coverage was a logic-test of its predicate over fixtures, so
     // lint:guard-reachability went red for every agent whose change mapped into

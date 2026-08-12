@@ -210,10 +210,13 @@ export const ACKNOWLEDGED_UNREACHABLE = new Map([
   // The MODULE stays and is load-bearing — `extractParts` / `projectionSourceProblem` are imported
   // by load-claude-md-doc-parts.mjs, split-claude-md-rule-evidence.mjs and three suites; only the
   // `:check` CLI alias retires. Watermark 21 → 20 with it.
-  ['gen:compaction:check', 'pending wire-or-retire decision'],
+  // WIRED 2026-08-12 (WI-38239), watermark 20 → 18: gen:compaction:check and
+  // gen:knowledge-packs:check are both registered in REPO_WIDE_INVARIANT_GUARDS
+  // (scripts/affected-tests.mjs) with narrow appliesTo sets and NO hostSuiteRatchet —
+  // see the rationale on each entry. Paying this set down means REGISTERING a guard,
+  // never re-parking it here.
   ['gen:doc-projections:check', 'pending wire-or-retire decision; sibling per-page gen:doc-*:check are CI-wired'],
   ['gen:fleet-lessons:check', 'pending wire-or-retire decision'],
-  ['gen:knowledge-packs:check', 'pending wire-or-retire decision'],
   ['gen:openapi:check', 'pending wire-or-retire decision'],
   ['gen:tool-catalog:check', 'heavy full-registry import, fleet-fragile (same reason its doc sibling is CI-informational); pending decision'],
 ]);
@@ -237,7 +240,7 @@ export const ACKNOWLEDGED_UNREACHABLE = new Map([
  * build rather than landing here. Raising it again to park a newly-rotted guard would be
  * precisely the abuse the sibling `KNOWN_DARK_FLAGS` rule exists to stop.
  */
-export const UNREACHABLE_HIGH_WATERMARK = 20;
+export const UNREACHABLE_HIGH_WATERMARK = 18;
 
 /**
  * Guards that ARE enforced, but only over PART of what they scan (EI-19461064447747454).
