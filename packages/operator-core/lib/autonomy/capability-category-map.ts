@@ -95,6 +95,7 @@ const CATEGORY_RULES: Rule<ActionEvent, AutonomyCategory>[] = [
 
   // ── agent-lifecycle — hive: overrides (cross_grant/declare-wake/ask*) handled above/below ──
   { id: 'cat:hive-ask', on: TRIGGER, when: { action: { matches: '^pot:(ask|request_work|asks)' } }, fire: 'escalations', meta: { reason: 'asks another hive (a cross-hive question)' } },
+  { id: 'cat:launch-agent', on: TRIGGER, when: { action: { matches: '^capability:launch-agent$' } }, fire: 'agent-lifecycle', meta: { reason: 'launches an ad-hoc agent or resumes/forks an existing agent' } },
   { id: 'cat:fleet', on: TRIGGER, when: { action: { matches: '^fleet:' } }, fire: 'agent-lifecycle', meta: { reason: 'spawn / cancel / drain / admit / supervise an agent' } },
   // cup:spawn (WI-1764 #3 renamed fleet:spawn → cup:spawn) placed a background
   // autonomous-loop bee — same agent-lifecycle category as the fleet: verbs it split from.
