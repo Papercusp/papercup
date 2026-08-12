@@ -4665,13 +4665,32 @@ export async function runGreenCheckpoint(
     // so its signature is a phantom — salvaging a "longest clean prefix" from it would spend
     // a second full suite under-advancing `main` around a failure that does not exist. We
     // only reach here on a stale red when the refire cap is spent; holding is then correct.
+    // WI-38207: this path MUST state a disposition on every branch. Three of them used to
+    // be silent — `lastReady` falsy, the gate disabled, and a null return from
+    // tryLongestGreenPrefix ("found no salvageable prefix"). With only the stale-red skip and
+    // the error path logging, a run that never attempted a salvage and a run that attempted
+    // one and found nothing produced BYTE-IDENTICAL logs: zero lines. Measured 2026-08-12,
+    // `main` sat at one sha for 22h across 16 red runs and no log in any of them could say
+    // whether the one mechanism designed to prevent that (longest-green-prefix FF) had even
+    // run. Diagnosing an inert safety net must not require reading its source to discover it
+    // cannot report itself. Logging only — no branch condition changes.
     const staleRed = retriage?.classification === 'stale-candidate';
+    const partialGreenEnabled = partialGreenGateEnabledFromEnv();
     if (staleRed) {
       deps.log('partial-green-gate: skipped — red is a STALE candidate (passes at tip); its failure signature is a phantom');
+    } else if (!lastReady) {
+      deps.log(`partial-green-gate: skipped — no ${cfg.releaseRef} base to salvage a prefix from (lastReady unset)`);
+    } else if (!partialGreenEnabled) {
+      deps.log('partial-green-gate: skipped — disabled by PAPERCUSP_PARTIAL_GREEN_GATE=0');
     }
-    if (lastReady && !staleRed && partialGreenGateEnabledFromEnv()) {
+    if (lastReady && !staleRed && partialGreenEnabled) {
+      deps.log(
+        `partial-green-gate: attempting longest-green-prefix salvage between ${lastReady.slice(0, 8)} and candidate ${candidate.slice(0, 8)}`,
+      );
+      let salvageErrored = false;
       const partial = await tryLongestGreenPrefix(cfg, deps, lastReady, candidate, failingTests, !!opts.noPush).catch(
         (e) => {
+          salvageErrored = true;
           deps.log(`partial-green-gate: errored, holding (${e instanceof Error ? e.message : e})`);
           return null;
         },
@@ -4695,6 +4714,14 @@ export async function runGreenCheckpoint(
         // (red) tip. Without this the log's `green=false` reads as "nothing shipped".
         stampPromotion(partial.advanced, partial.reason, partial.advancedTo);
         return partial;
+      }
+      // WI-38207: the silent branch that mattered most. A null here means the salvage RAN and
+      // found no green prefix — an entirely different operator situation from "it never ran",
+      // and previously indistinguishable from it in the log.
+      if (!salvageErrored) {
+        deps.log(
+          `partial-green-gate: no salvageable green prefix between ${lastReady.slice(0, 8)} and candidate ${candidate.slice(0, 8)} — holding ${cfg.releaseRef}`,
+        );
       }
     }
 

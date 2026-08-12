@@ -4839,6 +4839,48 @@ describe('runGreenCheckpoint — longest-green-prefix (P-016)', () => {
     expect(await revParse(repo, 'ready')).toBe(c1);
     expect(calls).not.toContain('commitsInRange'); // the salvage path never ran
   });
+
+  // WI-38207: the salvage path must STATE ITS DISPOSITION on every branch. Measured
+  // 2026-08-12: `main` sat at one sha for 22h across 16 red runs, and not one log could say
+  // whether this mechanism had run, because "never attempted" and "attempted, found nothing"
+  // both emitted zero lines. These assert the log, not the promotion decision — an inert
+  // safety net that cannot report itself is the failure being guarded against.
+  it('WI-38207: logs "no salvageable green prefix" when the salvage RAN and found nothing', async () => {
+    const { c1, c2, c3, c4 } = await chain();
+    const { deps } = partialDeps({
+      candidateFailingTests: ['@ws/failing'],
+      affected: { [c2]: ['@ws/other'], [c3]: ['@ws/other'], [c4]: ['@ws/failing'] },
+      commits: [c2, c3, c4],
+      confirmGreen: false, // the confirm suite fails ⇒ tryLongestGreenPrefix returns null
+    });
+    const lines: string[] = [];
+    deps.log = (s: string) => { lines.push(s); };
+    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    expect(await revParse(repo, 'ready')).toBe(c1); // still held — behaviour unchanged
+    const dispositions = lines.filter((l) => l.includes('partial-green-gate:'));
+    expect(dispositions.length).toBeGreaterThan(0);
+    expect(dispositions.some((l) => l.includes('no salvageable green prefix'))).toBe(true);
+    // and it must be distinguishable from the never-ran case
+    expect(dispositions.some((l) => l.includes('skipped'))).toBe(false);
+  });
+
+  it('WI-38207: logs a distinct "skipped — disabled" disposition when opted out', async () => {
+    process.env.PAPERCUSP_PARTIAL_GREEN_GATE = '0';
+    const { c2, c3, c4 } = await chain();
+    const { deps } = partialDeps({
+      candidateFailingTests: ['@ws/failing'],
+      affected: { [c2]: ['@ws/other'], [c3]: ['@ws/other'], [c4]: ['@ws/failing'] },
+      commits: [c2, c3, c4],
+      confirmGreen: true,
+    });
+    const lines: string[] = [];
+    deps.log = (s: string) => { lines.push(s); };
+    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+    const dispositions = lines.filter((l) => l.includes('partial-green-gate:'));
+    expect(dispositions.some((l) => l.includes('disabled by PAPERCUSP_PARTIAL_GREEN_GATE=0'))).toBe(true);
+    // the opted-out run must NOT claim it looked for a prefix
+    expect(dispositions.some((l) => l.includes('no salvageable green prefix'))).toBe(false);
+  });
 });
 
 describe('quiet-cut — never judge a tip younger than the quiet window (2026-07-01)', () => {
