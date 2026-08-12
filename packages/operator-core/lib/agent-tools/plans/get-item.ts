@@ -83,6 +83,7 @@ export default defineTool({
   },
   capability: 'plans:read',
   requirePrincipal: false,
+  skipWorkspaceTx: true,
   // overwatch reads plan items (read-only) to ground its nudges, like plans:items.
   agentRoles: [...SU_ROLES, 'kettle'],
   modality: ['text'],

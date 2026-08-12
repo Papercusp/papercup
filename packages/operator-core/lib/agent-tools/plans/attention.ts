@@ -135,6 +135,7 @@ export default defineTool({
   },
   capability: "plans:read",
   requirePrincipal: false,
+  skipWorkspaceTx: true,
   // Sentinel-as-Herald: the Herald reads "what needs the user's eye on the plans"
   // to suggest what to work on next (paired with its plans:read cap). It only
   // READS here — acting on an item is still file-a-work_item + nudge-the-Queen.

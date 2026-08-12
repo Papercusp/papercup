@@ -70,6 +70,7 @@ export default defineTool({
   },
   capability: 'plans:read',
   requirePrincipal: false,
+  skipWorkspaceTx: true,
   agentRoles: [...SU_ROLES, 'kettle'],
   modality: ['text'],
   args: argsSchema,

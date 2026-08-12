@@ -145,6 +145,7 @@ export default defineTool({
   },
   capability: "plans:read",
   requirePrincipal: false,
+  skipWorkspaceTx: true,
   // + overwatch (overwatch-role-2026-06-15 B-01): reads plan items to detect stalled work.
   // + worker/cup (EI-939): a pipeline/hive worker needs a read path to a checkbox-style
   // roadmap plan's items before it can safely mark progress — see plans:get's ALL_ROLES

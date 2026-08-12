@@ -180,6 +180,7 @@ export default defineTool({
   },
   capability: 'plans:read',
   requirePrincipal: false,
+  skipWorkspaceTx: true,
   // + overwatch (overwatch-role-2026-06-15 B-01): searches plans to ground its nudges.
   agentRoles: [...SU_ROLES, 'kettle'],
   modality: ['text'],

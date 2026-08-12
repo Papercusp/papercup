@@ -55,6 +55,7 @@ export default defineTool({
   // readers stay read. B-CX-EFFECT audit.
   effect: 'write',
   requirePrincipal: false,
+  skipWorkspaceTx: true,
   agentRoles: [...SU_ROLES],
   modality: ['text'],
   args: argsSchema,

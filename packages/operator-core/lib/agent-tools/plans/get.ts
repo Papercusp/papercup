@@ -312,6 +312,7 @@ export default defineTool({
   },
   capability: "plans:read",
   requirePrincipal: false,
+  skipWorkspaceTx: true,
   agentRoles: [...ALL_ROLES],
   modality: ["text"],
   args: argsSchema,
