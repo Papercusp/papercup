@@ -243,6 +243,12 @@ export default defineTool({
   },
   capability: 'coord:write',
   requirePrincipal: false,
+  // EI-20228048404089857: this handler never reads ctx.tx and awaits mode,
+  // fact, control-anchor, delivery, and wake operations. Retaining the
+  // ambient workspace transaction across those independent control-plane
+  // awaits pins an org-app pool slot and can make mode:set time out under
+  // fleet load. See ProjectedTool.skipWorkspaceTx.
+  skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES],
   args: z.object({
     mode: z.enum(MODE_IDS as [string, ...string[]]).describe('the mode id'),
