@@ -49,8 +49,7 @@ const BASELINE = join(REPO_ROOT, 'scripts/ungated-mug-kettle-baseline.json');
  * whole scan at module scope, so it cannot be imported for its constants alone. The
  * controls below are what stop this mirror from drifting silently.
  */
-const isTestFile = (p: string): boolean =>
-  /\.(test|spec)\.[cm]?[jt]sx?$/.test(p) || p.includes('/__tests__/');
+const isTestFile = (p: string): boolean => /\.(test|spec)\.[cm]?[jt]sx?$/.test(p) || p.includes('/__tests__/');
 
 /** Extension-less basenames of the tracked .ts/.tsx non-test files the census can see. */
 let cachedBases: string[] | null = null;
