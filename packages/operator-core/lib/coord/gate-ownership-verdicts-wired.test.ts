@@ -33,6 +33,39 @@ const VERDICT_HELPERS = [
   'shouldStandDownForLivePeer',
 ] as const;
 
+/**
+ * Does this file actually IMPORT `symbol` from gate-ownership.ts?
+ *
+ * ⚠ THIS IS THE LOAD-BEARING FILTER, and it exists because the first version of this guard
+ * was itself a false green — the exact defect it polices, in the policing code.
+ *
+ * A bare name match counts PROSE. `cell-registrations.ts` carries a long doc-string that
+ * discusses `ownershipContradicted()` and `ownershipNeedsLivenessConfirmation()` by name,
+ * inside a quoted string, in call-shaped form. Name-matching (and even `symbol(`-shaped
+ * matching) scored that documentation as a production call site, so `ownershipContradicted`
+ * — which nothing has ever called — was certified WIRED by the guard written to catch
+ * exactly that. Documentation describing a helper is the single most likely text to mention
+ * it, so the naive detector fails hardest precisely where the risk is highest.
+ *
+ * An import cannot be faked by prose: a string literal does not create a binding.
+ */
+function importsSymbolFromModule(relPath: string, symbol: string): boolean {
+  let src = '';
+  try {
+    src = readFileSync(join(REPO_ROOT, relPath), 'utf8');
+  } catch {
+    return false;
+  }
+  // Import blocks are routinely multi-line, so match the braces across newlines.
+  const importBlocks = src.matchAll(/import\s*(?:type\s*)?\{([^}]*)\}\s*from\s*['"]([^'"]+)['"]/gs);
+  for (const [, names, spec] of importBlocks) {
+    if (!spec.includes('gate-ownership')) continue;
+    const imported = names.split(',').map((n) => n.trim().split(/\s+as\s+/)[0]?.trim());
+    if (imported.includes(symbol)) return true;
+  }
+  return false;
+}
+
 function directProductionCallSites(symbol: string): string[] {
   let out = '';
   try {
@@ -51,6 +84,8 @@ function directProductionCallSites(symbol: string): string[] {
       // the definition itself, any test, and THIS guard are not production callers
       .filter((f) => !f.endsWith(`coord/${MODULE}`))
       .filter((f) => !/\.test\.tsx?$/.test(f))
+      // …and a mention is not a call. See importsSymbolFromModule.
+      .filter((f) => importsSymbolFromModule(f, symbol))
   );
 }
 
@@ -112,6 +147,22 @@ describe('gate-ownership verdict helpers are WIRED, not merely correct', () => {
     // everything (a wrong cwd, a broken --include) would make every assertion above pass for the
     // wrong reason — the same false-green shape this guard exists to catch.
     expect(productionCallSites('ownershipDefinitelyNotARealHelperName')).toHaveLength(0);
+  });
+
+  it('CONTROL: a file that only MENTIONS a helper in prose is not a call site', () => {
+    // The regression control for this guard's own first false green, and the reason it is
+    // falsifiable without ever mutating the shared tree: cell-registrations.ts genuinely
+    // discusses these helpers by name — in call-shaped form — inside a doc-string, and
+    // genuinely does not import them. If someone reverts the import filter, THIS reds first
+    // and names the reason, instead of the guard quietly going back to certifying dead code.
+    const PROSE_ONLY = 'packages/operator-core/lib/cell-registrations.ts';
+    const src = readFileSync(join(REPO_ROOT, PROSE_ONLY), 'utf8');
+    // Calibration: if the prose ever stops naming the helper, this control proves nothing.
+    expect(src, `${PROSE_ONLY} no longer mentions the helper — pick another prose fixture`).toContain(
+      'ownershipContradicted(',
+    );
+    expect(importsSymbolFromModule(PROSE_ONLY, 'ownershipContradicted')).toBe(false);
+    expect(directProductionCallSites('ownershipContradicted')).not.toContain(PROSE_ONLY);
   });
 
   it('recognizes the live-holder verdict through the production-wired stand-down wrapper', () => {

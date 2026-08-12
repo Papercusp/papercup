@@ -45,6 +45,7 @@ import {
   readGateOwnership,
   shouldStandDownForLivePeer,
   ownershipNeedsLivenessConfirmation,
+  ownershipContradicted,
 } from '../../coord/gate-ownership';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { wakeRecipients } from '../coordination/inbox-wake';
@@ -247,6 +248,11 @@ export default defineTool({
     // OVERWRITE-not-merge (see the EI-20031402866608444 note): a second ctx.metadata() call on a
     // path that continues would wipe every preLaunchExclusion key.
     let ownershipLivenessAmbiguous = false;
+    // A claim whose holder the oracle CONFIRMS dead (`ended`). The stand-down rail already
+    // lets these through — `POSITIVELY_LIVE` maps `ended` to false — so this changes no
+    // behaviour. It records WHY the launch was allowed past a still-`held` claim, which is
+    // otherwise indistinguishable from "no claim at all" in the metadata.
+    let ownershipAbandoned = false;
     if (!args.force) {
       const ownership = await readGateOwnership();
       // Resolving the CALLER can throw (a power-user ctx missing its uiClientId). If we cannot
@@ -320,6 +326,7 @@ export default defineTool({
         };
       }
       ownershipLivenessAmbiguous = ownershipNeedsLivenessConfirmation(ownership) === true;
+      ownershipAbandoned = ownershipContradicted(ownership);
       if (
         ownershipLivenessAmbiguous &&
         ownership.takenBy &&
@@ -434,6 +441,9 @@ export default defineTool({
       // Present only when true, so `metadata_json ? 'ownershipLivenessAmbiguous'` cleanly selects
       // the launches that went ahead against an ambiguous holder.
       ...(ownershipLivenessAmbiguous ? { ownershipLivenessAmbiguous: true } : {}),
+      // Same ride-the-stamp reason. Selects the launches that proceeded past a claim whose
+      // holder was CONFIRMED dead — the signal that a work-item is orphaned, not unclaimed.
+      ...(ownershipAbandoned ? { ownershipAbandoned: true } : {}),
       preLaunchExclusion: preflight.refuse
         ? waitReceipt
           ? 'scheduled'
