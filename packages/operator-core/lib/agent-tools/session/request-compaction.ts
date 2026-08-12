@@ -209,7 +209,7 @@ export default defineTool({
         const carry = await getLoopCarryNoteWithMeta({
           harness: loop.harnessSlug,
           ownerId: identity.ownerId,
-          workspaceId: identity.workspaceId,
+          workspaceId: identity.workspaceId ?? undefined,
         });
         if (carry.note) {
           return {
