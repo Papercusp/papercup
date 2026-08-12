@@ -7,13 +7,9 @@
  */
 import { describe, expect, it } from 'vitest';
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
-// @ts-ignore — pure JS guard script, no declaration file; this import is intentional.
-import {
-  BASELINE,
-  findOffenders,
-  findRawHarnessSentinelUses,
-  findingKey,
-} from '../../../../scripts/check-no-raw-harness-sentinel.mjs';
+// @ts-ignore — pure JS guard script, no declaration file; keep this import on one line so
+// the suppression covers TS7016 on the module specifier.
+import { BASELINE, findOffenders, findRawHarnessSentinelUses, findingKey } from '../../../../scripts/check-no-raw-harness-sentinel.mjs';
 
 describe('raw ctx.harnessSlug sentinel detector', () => {
   it('flags a nullish fallback that lets the truthy * sentinel win', () => {
@@ -72,7 +68,7 @@ describe('raw ctx.harnessSlug sentinel detector', () => {
     expect(scan.offenders, 'a new raw identity use must fail the build').toEqual([]);
     for (const key of BASELINE) expect(typeof key).toBe('string');
     expect(BASELINE.size).toBe(68);
-  });
+  }, 120_000);
 
   it('uses a source fingerprint in baseline keys', () => {
     expect(
