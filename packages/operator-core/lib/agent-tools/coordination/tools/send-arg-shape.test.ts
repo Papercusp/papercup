@@ -46,6 +46,20 @@ describe('EI-20223353810864057 — primary coord:send guidance names required su
       expect(text).toMatch(/inbox headline/i);
     }
   });
+
+  it('also exposes the conditional requirement on the summary property schema', () => {
+    // The top-level summary property is structurally optional because items[]
+    // calls omit the single-message fields. Its property description must still
+    // teach deferred callers that summary is required for the single form.
+    const argsOut = (sendTool.args as unknown as {
+      out: { shape: Record<string, { description?: string }> };
+    }).out;
+    const summaryDescription = argsOut.shape.summary?.description ?? '';
+
+    expect(summaryDescription).toMatch(/REQUIRED for the single-message form/i);
+    expect(summaryDescription).toMatch(/items/);
+    expect(summaryDescription).toMatch(/body.*does not replace/i);
+  });
 });
 
 /** Every issue message from a failed parse, joined — order-independent matching. */
