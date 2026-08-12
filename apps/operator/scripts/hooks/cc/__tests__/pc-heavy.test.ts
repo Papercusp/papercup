@@ -357,7 +357,10 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       // under test is that it STARTS after the scoped bound instead of sitting in
       // the semaphore for the broad default's 900 seconds.
       expect(r.stderr).toContain('[pc-heavy] slot acquired — starting real work');
-      expect(waited).toBeGreaterThanOrEqual(900);
+      // pc-heavy derives the deadline from integer-second `date` output and
+      // polls every 500ms, so a one-second bound can expire in ~500-1000ms
+      // depending on where the process lands within the current second.
+      expect(waited).toBeGreaterThanOrEqual(500);
       expect(waited).toBeLessThan(5000);
     } finally {
       killGroup(holder);
