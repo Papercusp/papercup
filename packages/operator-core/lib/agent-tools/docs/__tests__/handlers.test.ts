@@ -313,6 +313,11 @@ describe("docs:outline handler — 'engineering' sentinel (EI-18894866320087268)
 });
 
 describe('docs:get handler', () => {
+  it('opts out of the ambient workspace transaction during registry and filesystem reads', async () => {
+    const tool = (await import('../get')).default;
+    expect((tool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+
   it('harness_required gate fires (no arg, ctx "*") with no engine call', async () => {
     mockRegistry([]);
     const tool = (await import('../get')).default;

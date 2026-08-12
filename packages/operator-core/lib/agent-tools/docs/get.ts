@@ -140,6 +140,12 @@ export default defineTool({
   },
   capability: 'docs:read',
   requirePrincipal: false,
+  // EI-20248604619263256: docs:get spends its handler in registry/filesystem reads
+  // and never consumes ctx.tx. Holding the ambient workspace transaction while
+  // loadHarnessRegistry waits on the org-app pool lets saturated callers queue for
+  // the same pool slot they are needlessly retaining. Match docs:search and release
+  // that slot before the handler starts its own lazy reads.
+  skipWorkspaceTx: true,
   agentRoles: [...SU_ROLES, 'papercup-deep'],
   modality: ['text'],
   rolesQuota: {
@@ -187,4 +193,3 @@ export default defineTool({
     return { content: [{ type: 'text' as const, text: JSON.stringify({ ...response, surface: resolved.surface }) }] };
   },
 });
-
