@@ -41,8 +41,36 @@
  * much to pattern-match precisely, and precision isn't the point: the point
  * is "don't trust this claim without checking."
  */
+/**
+ * WI-38297 — WIDENED, because the original alternation MISSED the single most common
+ * real-world phrasing and therefore never fired on the items it was built to catch.
+ * `background` was only recognized when IMMEDIATELY followed by job/task/process/
+ * verification, but agents overwhelmingly write "<cmd> running in background (bash id
+ * <id>)" — the noun never appears. Measured 2026-08-12 against the actual stranded
+ * checkpoints:
+ *
+ *   "test:affected running in background (bash id bx76day3h) — will report+complete
+ *    once it finishes."                        WI-5895, open 17 days   → MISSED
+ *   "tsc --noEmit running in background to confirm no type errors;
+ *    awaiting result before considering this done."   WI-3561, 34 days → MISSED
+ *   "read task id bf5ryqqze output when it lands. If green -> complete"
+ *                                              WI-3578, 34 days       → MISSED
+ *
+ * So every pickup-path warning (work_items:get / claim / scheduler:get_next) stayed
+ * silent on exactly the checkpoints whose promised result could never arrive. Added:
+ * bare "in (the) background", and the `bash id` / `task id` job-handle forms — a
+ * checkpoint citing a bash/task id is citing a reference that cannot outlive its
+ * author's process, which is the whole point.
+ *
+ * Widening is the right direction for THIS classifier specifically (see the header):
+ * it is warn-only and deliberately broad, so a false positive costs a verification the
+ * reader should do anyway, while a false negative costs a 17-day strand. The negative
+ * controls that keep it honest ("this task is about…", "filed a follow-up job in the
+ * queue") are pinned in checkpoint-bg-job-claim.test.ts and still hold — `task[_ -]?id`
+ * cannot match "task identifier" (the trailing \b rejects it).
+ */
 const BG_JOB_REFERENCE_RE =
-  /\b(bg\s*jobs?|background\s+(?:job|task|process|verification)s?|run_in_background|in[- ]?flight\s+(?:verification|job|task)s?)\b/i;
+  /\b(?:bg\s*jobs?|background\s+(?:job|task|process|verification)s?|in\s+(?:the\s+)?background|run_in_background|bash[_\s-]?id|task[_\s-]?id|in[- ]?flight\s+(?:verification|job|task)s?)\b/i;
 
 export interface BgJobCheckpointWarning {
   /** True when the checkpoint text cites a background job/task as evidence. */

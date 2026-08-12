@@ -32,6 +32,50 @@ describe('detectBgJobCheckpointClaim (EI-18654296679612119 — unverifiable bg-j
     expect(detectBgJobCheckpointClaim('two in flight jobs remain').detected).toBe(true);
   });
 
+  // WI-38297 — the three checkpoints that ACTUALLY stranded their items. Each was MISSED
+  // by the original alternation (it required background to be followed immediately by
+  // job/task/process/verification), so every pickup-path warning stayed silent on exactly
+  // the notes promising a result that could never arrive. These are verbatim shapes, kept
+  // permanently: they are the calibration cases proving the widened regex still earns its
+  // keep, and a future narrowing that reintroduces the gap fails HERE with the item id and
+  // the days-stranded cost attached.
+  describe('the real stranded-checkpoint phrasings (WI-38297)', () => {
+    it('flags "<cmd> running in background (bash id <id>)" — WI-5895, sat open 17 days', () => {
+      expect(
+        detectBgJobCheckpointClaim(
+          'Fix implemented + committed. test:affected running in background (bash id bx76day3h) to confirm ' +
+            'no other suite depended on the old silent-swallow behavior — will report+complete once it finishes.',
+        ).detected,
+      ).toBe(true);
+    });
+
+    it('flags "running in background to confirm …; awaiting result" — WI-3561, sat open 34 days', () => {
+      expect(
+        detectBgJobCheckpointClaim(
+          'tsc --noEmit running in background to confirm no type errors in touched files; ' +
+            'awaiting result before considering this done.',
+        ).detected,
+      ).toBe(true);
+    });
+
+    it('flags a bare "task id <id> output when it lands" job handle — WI-3578, sat open 34 days', () => {
+      expect(
+        detectBgJobCheckpointClaim('read task id bf5ryqqze output when it lands. If green -> complete.').detected,
+      ).toBe(true);
+    });
+
+    it('flags the underscored/hyphenated handle spellings', () => {
+      expect(detectBgJobCheckpointClaim('see bash_id 29e05531-f6b for the verdict').detected).toBe(true);
+      expect(detectBgJobCheckpointClaim('see bash-id 29e05531 for the verdict').detected).toBe(true);
+    });
+
+    // The widening must not swallow ordinary prose that merely contains the word.
+    it('does NOT flag "task identifier" or a non-job use of the word background', () => {
+      expect(detectBgJobCheckpointClaim('the task identifier is stable across respawns').detected).toBe(false);
+      expect(detectBgJobCheckpointClaim('background reading: see the design doc before starting').detected).toBe(false);
+    });
+  });
+
   it('does NOT flag an ordinary checkpoint with no background-job claim', () => {
     const r = detectBgJobCheckpointClaim(
       'Read the bug body, not yet started. Next: open the two hinted files and find the right seam.',
