@@ -595,6 +595,7 @@ export default defineTool({
         // and a bare { id } with no checks still clears, which is the contract
         // work_items:complete's terminal cleanup and "blank clears a stale note" rely on.
         const isChecksOnlyPatch = it.checkpoint === undefined && suppliedChecks !== undefined && !wantsAppend;
+        const isBodyPreservingPatch = isChecksOnlyPatch || isDependencyOnlyPatch;
         // A CLEAR wipes the checks too, UNLESS the caller supplied some in the same
         // call. This is a DELIBERATE divergence from loop:checkpoint, where checks
         // survive a note clear: work_items:complete clears the checkpoint as terminal
@@ -612,7 +613,7 @@ export default defineTool({
         // inferable only by diffing a count you would have to have recorded beforehand.
         let droppedCheckClaims: string[] = [];
         const checksTransform =
-          suppliedChecks !== undefined || !isClear
+          suppliedChecks !== undefined || !isClear || isDependencyOnlyPatch
             ? (priorNote: string | null, incoming: string | null | undefined) => {
                 const priorSplit = splitCarryNoteChecks(priorNote);
                 const prior = priorSplit.checks;
@@ -623,7 +624,7 @@ export default defineTool({
                 // EI-19447043119380534: on a checks-only patch the caller supplied no body
                 // at all, so the STORED one is the body — read authoritatively here, inside
                 // the store's locked transaction, so a concurrent writer cannot interleave.
-                const body = isChecksOnlyPatch ? priorSplit.body : incomingBody;
+                const body = isBodyPreservingPatch ? priorSplit.body : incomingBody;
                 // EI-19944669306930709: under `append: true` the supplied rows are
                 // UNIONED onto the carried set instead of replacing it. `append` is an
                 // explicit declaration that this write is ADDITIVE, and it governed only

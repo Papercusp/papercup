@@ -1037,6 +1037,32 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(r.checks).toBe(0);
     });
 
+    it('EI-20232161144151845: a dependency-only patch preserves the body and bypasses shrink protection', async () => {
+      withPrior(null);
+      await one({
+        id: 'WI-7',
+        checkpoint: 'the detailed checkpoint body that must survive a metadata-only dependency correction '.repeat(18),
+      });
+      const prior = await lastStored();
+      expect(prior!.length).toBeGreaterThan(500);
+
+      withPrior(prior);
+      const r = await one({ id: 'WI-7', dependsOn: ['work-item:WI-38026'] });
+      expect(r.ok).toBe(true);
+      expect(r.cleared).not.toBe(true);
+      // No shortened body was sent to the store; the locked transform carries the
+      // existing narrative forward while the dependency metadata is restamped.
+      expect(await lastStored()).toBe(prior);
+      const call = setWorkItemCheckpointWithPrior.mock.calls.at(-1) as [
+        unknown,
+        unknown,
+        { guard?: unknown; dependsOn?: string[] },
+      ];
+      expect(call[1]).toBeUndefined();
+      expect(call[2]).toMatchObject({ dependsOn: ['work-item:WI-38026'] });
+      expect(call[2].guard).toBeUndefined();
+    });
+
     it('EI-19447043119380534: an EXPLICIT clear (checkpoint:null) alongside checks still wipes the body — deliberate intent stays reachable', async () => {
       withPrior(null);
       await one({ id: 'WI-7', checkpoint: 'body to be discarded', checks: [{ claim: 'X holds', recheck: 'probe X' }] });
