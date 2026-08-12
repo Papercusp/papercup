@@ -1557,6 +1557,50 @@ export function buildNativeToolAttributionAdvisory(rawSql: string): string | nul
 }
 
 /**
+ * Flag the seconds-as-milliseconds epoch trap on tool-invocation recency reads
+ * (EI-20261119579595975).
+ *
+ * PostgreSQL's `to_timestamp()` accepts epoch SECONDS. A caller that has an
+ * epoch-seconds value such as `1786547705.088` and divides it by 1000 because
+ * it was thinking in epoch milliseconds silently moves the cutoff to January
+ * 1970. A query over `invoked_at` then returns historical rows and can make a
+ * wake-attribution claim look proven when it is not.
+ *
+ * This is deliberately narrow: it only fires for the tool_invocations table,
+ * an invoked_at read, and a numeric literal in the epoch-seconds range divided
+ * by 1000. A genuine epoch-milliseconds literal is ~1000x larger and remains
+ * valid. Dynamic expressions and parameter values are left to the caller,
+ * because this builder cannot establish their units without inventing a fact.
+ */
+export function buildEpochUnitAdvisory(rawSql: string): string | null {
+  const tables = extractReferencedTables(rawSql);
+  if (!tables.some((t) => bareTableName(t) === 'tool_invocations')) return null;
+
+  const stripped = stripSqlLiteralsAndComments(rawSql);
+  if (!/\binvoked_at\b/i.test(stripped)) return null;
+
+  // Current and near-future epoch seconds are 10–11 digits; epoch
+  // milliseconds are 12–13 digits. Keep the bounds broad enough for old and
+  // far-future timestamps without warning on ordinary numeric expressions.
+  const epochSecondsLiteral =
+    /\bto_timestamp\s*\(\s*(\d+(?:\.\d+)?(?:e[+-]?\d+)?)\s*\/\s*1000(?:\.0+)?\s*\)/gi;
+  for (let match = epochSecondsLiteral.exec(stripped); match; match = epochSecondsLiteral.exec(stripped)) {
+    const value = Number(match[1]);
+    if (!Number.isFinite(value) || value < 100_000_000 || value >= 100_000_000_000) continue;
+    return (
+      '⚠ epoch-unit ambiguity: this tool_invocations query divides an epoch-seconds-sized value by 1000 ' +
+      'before passing it to to_timestamp(), moving the cutoff to 1970 and allowing historical rows to ' +
+      'masquerade as post-event calls. PostgreSQL to_timestamp() expects epoch seconds; divide by 1000 ' +
+      'only when the source is epoch milliseconds. Prefer an ISO timestamptz literal, or assert ' +
+      'min(invoked_at) is after the intended event before reporting wake attribution. ' +
+      '(EI-20261119579595975).'
+    );
+  }
+
+  return null;
+}
+
+/**
  * Resolve a caller-supplied scope value to a REAL id, or `undefined` if it is absent OR the
  * `'*'` wildcard sentinel (`_harness-scope.ts`: every su/operator-scope call sets
  * `ctx.harnessSlug = '*'`, and the same convention applies to `ctx.workspaceId`). Suggesting a

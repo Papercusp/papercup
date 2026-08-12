@@ -17,6 +17,7 @@ import {
   buildClaimabilityAdvisory,
   buildCorpusNamespaceAdvisory,
   buildNativeToolAttributionAdvisory,
+  buildEpochUnitAdvisory,
   buildSplitCompletionEvidenceAdvisory,
   buildDerivedColumnRedirect,
   buildToolRoutingAdvisory,
@@ -1685,6 +1686,47 @@ describe('buildSplitCompletionEvidenceAdvisory — one evidence surface read as 
     expect(
       buildSplitCompletionEvidenceAdvisory('SELECT terminal_completion_ref FROM harness_shared.harness_plans'),
     ).toBeNull();
+  });
+});
+
+describe('buildEpochUnitAdvisory (EI-20261119579595975 — seconds divided as milliseconds)', () => {
+  const TOOL_INVOCATIONS = 'harness_shared.tool_invocations';
+
+  it('warns on an epoch-seconds literal divided by 1000 in an invoked_at read', () => {
+    const advisory = buildEpochUnitAdvisory(
+      `SELECT min(invoked_at) FROM ${TOOL_INVOCATIONS} ` +
+        'WHERE invoked_at >= to_timestamp(1786547705.088/1000.0)',
+    );
+    expect(advisory).toContain('epoch-unit ambiguity');
+    expect(advisory).toContain('ISO timestamptz literal');
+    expect(advisory).toContain('min(invoked_at)');
+  });
+
+  it('stays silent when the literal is genuinely epoch milliseconds', () => {
+    expect(
+      buildEpochUnitAdvisory(
+        `SELECT min(invoked_at) FROM ${TOOL_INVOCATIONS} ` +
+          'WHERE invoked_at >= to_timestamp(1786547705088/1000.0)',
+      ),
+    ).toBeNull();
+  });
+
+  it.each([
+    ['a different relation', 'harness_shared.work_items'],
+    ['a parameterized value', 'harness_shared.tool_invocations'],
+  ])('stays silent for %s', (_label, relation) => {
+    const sql =
+      relation === TOOL_INVOCATIONS
+        ? `SELECT invoked_at FROM ${relation} WHERE invoked_at >= to_timestamp(epoch_ms/1000)`
+        : `SELECT invoked_at FROM ${relation} WHERE invoked_at >= to_timestamp(1786547705.088/1000.0)`;
+    expect(buildEpochUnitAdvisory(sql)).toBeNull();
+  });
+
+  it('ignores the trap text when it appears inside a string or comment', () => {
+    const sql =
+      `SELECT invoked_at FROM ${TOOL_INVOCATIONS} ` +
+      "WHERE note = 'to_timestamp(1786547705.088/1000.0)' -- to_timestamp(1786547705.088/1000.0)";
+    expect(buildEpochUnitAdvisory(sql)).toBeNull();
   });
 });
 

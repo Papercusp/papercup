@@ -151,6 +151,22 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     expect(payloadOf(res as never).advisory).toContain('always-NULL accessor');
   });
 
+  it('attaches the epoch-unit advisory to a tool_invocations recency read', async () => {
+    const sql =
+      'SELECT min(invoked_at) FROM harness_shared.tool_invocations ' +
+      'WHERE invoked_at >= to_timestamp(1786547705.088/1000.0)';
+    const res = await pgQueryTool.handler({ sql, allowUnscoped: true } as never, {} as never);
+    expect(payloadOf(res as never).advisory).toContain('epoch-unit ambiguity');
+  });
+
+  it('does not warn for an epoch-milliseconds literal', async () => {
+    const sql =
+      'SELECT min(invoked_at) FROM harness_shared.tool_invocations ' +
+      'WHERE invoked_at >= to_timestamp(1786547705088/1000.0)';
+    const res = await pgQueryTool.handler({ sql, allowUnscoped: true } as never, {} as never);
+    expect(payloadOf(res as never)).not.toHaveProperty('advisory');
+  });
+
   it('COMPOSES both advisories — neither masks the other', async () => {
     // A query can be both wrongly-scoped AND wrongly-accessed; reporting only
     // one would send the agent back for a second round-trip on the same query.

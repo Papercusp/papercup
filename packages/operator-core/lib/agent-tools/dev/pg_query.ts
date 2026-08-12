@@ -19,6 +19,7 @@ import {
   pgReadQuery,
   extractPgErrorInfo,
   buildClaimabilityAdvisory,
+  buildEpochUnitAdvisory,
   buildCorpusNamespaceAdvisory,
   buildNativeToolAttributionAdvisory,
   buildSplitCompletionEvidenceAdvisory,
@@ -200,6 +201,15 @@ export default defineTool({
         );
       }
       const result = await pgReadQuery(sql, { maxRows: args.maxRows, timeoutMs: args.timeoutMs });
+      // EI-20261119579595975: an epoch-seconds literal divided by 1000 before
+      // to_timestamp() moves an invoked_at cutoff to 1970 and can make
+      // historical tool calls look like post-wake evidence.
+      let epochUnitAdvisory: string | null = null;
+      try {
+        epochUnitAdvisory = buildEpochUnitAdvisory(sql);
+      } catch {
+        epochUnitAdvisory = null;
+      }
       // WI-6674: an accessor that is always-NULL on the relation queried. Not
       // folded into the tenant advisory because it is a different failure —
       // that one warns the answer may be from the wrong TENANT, this one warns
@@ -264,6 +274,7 @@ export default defineTool({
       }
       const advisory =
         [
+          epochUnitAdvisory,
           claimabilityAdvisory,
           nullPathAdvisory,
           splitEvidenceAdvisory,
