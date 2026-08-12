@@ -115,6 +115,29 @@ describe('OperatorChat (operator sidebar chat wrapper)', () => {
     expect(screen.getByTestId('empty-body').textContent).toMatch(/passive mode/i);
   });
 
+  it('hides and guards the composer when the counterparty cannot receive messages', () => {
+    const onSend = vi.fn();
+    render(
+      <OperatorChat
+        {...baseProps({
+          onSend,
+          composerDisabled: true,
+          composerDisabledMessage: 'This session has ended — relaunch or resume the agent.',
+        })}
+      />,
+    );
+
+    expect(lastProps.hideInput).toBe(true);
+    expect(screen.getByTestId('empty-body').textContent).toContain('session has ended');
+    expect(screen.getByTestId('session-chat-composer-unavailable').textContent).toContain('relaunch or resume');
+
+    // The prop also guards the wrapper's submit callback, so a stale child
+    // event cannot send after the session becomes non-wakeable.
+    fireEvent.change(screen.getByTestId('input'), { target: { value: '  stale send  ' } });
+    fireEvent.click(screen.getByTestId('submit'));
+    expect(onSend).not.toHaveBeenCalled();
+  });
+
   it('defaults the empty-state title + composer placeholder to "Papercup"', () => {
     render(<OperatorChat {...baseProps({ passive: false })} />);
     expect(lastProps.emptyState.title).toBe('Papercup');

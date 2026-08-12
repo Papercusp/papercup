@@ -54,6 +54,10 @@ interface Props {
   peerBusy?: boolean;
   /** True while in passive mode — input still accepts text; no auto-replies. */
   passive: boolean;
+  /** Disable the composer when the counterparty cannot receive a message. */
+  composerDisabled?: boolean;
+  /** Copy shown when the composer is disabled (for example, relaunch guidance). */
+  composerDisabledMessage?: string;
   /** Called with the user's message when they submit. */
   onSend: (content: string) => void;
   /**
@@ -206,7 +210,8 @@ export function OperatorChat({
   messages, busy, peerBusy, passive, onSend, onGenerateIdeas, banner, error,
   onLoadEarlier, hasMoreEarlier, loadingEarlier, focusAnchor, focusIndex, onAnswerChoice,
   conversationId, workspaceId, agentName = 'Papercup', onDrillIn, canDrillIn,
-  renderAvatar, paneIcon, footer, harnessSlug,
+  renderAvatar, paneIcon, footer, harnessSlug, composerDisabled = false,
+  composerDisabledMessage,
 }: Props) {
   // chat-ref-pills-2026-07-26 P-008 / D-002: this is the seam where a
   // WI-/EI-/F-/P- ref pill's click actually DOES something. ChatConversation
@@ -305,11 +310,16 @@ export function OperatorChat({
   }, []);
 
   const submit = useCallback(() => {
+    if (composerDisabled) return;
     const text = input.trim();
     if (!text) return;
     setInput('');
     onSend(text);
-  }, [input, onSend]);
+  }, [composerDisabled, input, onSend]);
+
+  const unavailableCopy =
+    composerDisabledMessage ??
+    'This session cannot receive messages. Relaunch or resume the agent to continue.';
 
   // Tool-card dispatch via the chat-cards registry (phase-4 T2.1).
   // The registry maps tool names → renderers; we supply only the
@@ -404,6 +414,11 @@ export function OperatorChat({
         error={error}
         banner={
           <>
+            {composerDisabled ? (
+              <div className="oracle-session-composer-unavailable" data-testid="session-chat-composer-unavailable" role="status">
+                {unavailableCopy}
+              </div>
+            ) : null}
             {banner}
             {conversationId && workspaceId && (
               <PendingCardsBar conversationId={conversationId} workspaceId={workspaceId} />
@@ -412,7 +427,9 @@ export function OperatorChat({
         }
         emptyState={{
           title: agentName,
-          body: passive
+          body: composerDisabled
+            ? unavailableCopy
+            : passive
             ? 'In passive mode. Type below to wake them.'
             : 'Tell me what you want to inspect, scan, or unblock.',
           // WI-6503: the pane's own mark, not a hard-coded Papercup cup. See
@@ -439,7 +456,7 @@ export function OperatorChat({
                     type="button"
                     className="op-chat-empty-row"
                     onClick={() => setInput(prompt)}
-                    disabled={busy}
+                    disabled={busy || composerDisabled}
                     aria-label={`${title}: ${hint}. Draft this prompt.`}
                   >
                     <span className="op-chat-empty-row-title">{title}</span>
@@ -451,10 +468,11 @@ export function OperatorChat({
           ) : undefined,
         }}
         labelForRole={NO_ROLE_LABEL}
-        inputPlaceholder={passive ? `Type to wake ${agentName}…` : `Reply to ${agentName}…`}
+        inputPlaceholder={composerDisabled ? unavailableCopy : passive ? `Type to wake ${agentName}…` : `Reply to ${agentName}…`}
         inputValue={input}
         onInputChange={setInput}
         onSubmit={submit}
+        hideInput={composerDisabled}
         composerExtra={
           onGenerateIdeas ? (
             <Tooltip label="Generate ideas" side="top" align="center">
@@ -467,7 +485,7 @@ export function OperatorChat({
                 type="button"
                 aria-label="Generate ideas"
                 onClick={onGenerateIdeas}
-                disabled={busy || input.trim() !== ''}
+                disabled={busy || composerDisabled || input.trim() !== ''}
                 className="pc-button op-chat-ideas-button"
               >
                 <Lightbulb aria-hidden="true" className="oracle-send-icon" />
