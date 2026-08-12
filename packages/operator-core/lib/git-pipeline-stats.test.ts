@@ -11,6 +11,7 @@ import {
   pinProvenGateCorrection,
   mapActiveRun,
   pickRetriageVerdict,
+  projectGreenCheckpointFireFreshness,
   type RawGateCounters,
 } from './git-pipeline-stats';
 import type { PipelineEventRow } from './harness/git-sync/pipeline-events';
@@ -68,6 +69,26 @@ describe('toRoutineInfo', () => {
       next_fire_at: null,
     });
     expect(info).toMatchObject({ name: 'release-trigger', active: false, cron: null, lastFiredAtMs: null, nextFireAtMs: null });
+  });
+});
+
+describe('projectGreenCheckpointFireFreshness', () => {
+  it('does not project verdict staleness as a non-firing routine', () => {
+    expect(
+      projectGreenCheckpointFireFreshness({
+        fireStale: false,
+        reason: 'no GREEN verdict in ~13h',
+      }),
+    ).toEqual({ fireStale: false, fireStaleReason: null });
+  });
+
+  it('keeps the fire-specific reason when the routine itself is stale', () => {
+    expect(
+      projectGreenCheckpointFireFreshness({
+        fireStale: true,
+        reason: 'the routine has not FIRED in ~4h',
+      }),
+    ).toEqual({ fireStale: true, fireStaleReason: 'the routine has not FIRED in ~4h' });
   });
 });
 

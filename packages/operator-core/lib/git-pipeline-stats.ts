@@ -451,6 +451,26 @@ export interface RawGateCounters {
 }
 
 /**
+ * Project the green-checkpoint watchdog's combined verdict onto the
+ * fire-specific fields exposed by the pipeline snapshot.
+ *
+ * `evaluateGreenStall().stalled` is intentionally the union of two different
+ * signals: the routine stopped firing (`fireStale`) and no GREEN verdict was
+ * observed (`verdictStale`).  The snapshot's `fireStale` field is consumed as
+ * a direct answer to "is the routine firing?", so storing the union there
+ * turns a healthy ticker with a stale verdict into a false "NOT FIRING".
+ */
+export function projectGreenCheckpointFireFreshness(verdict: {
+  fireStale: boolean;
+  reason: string | null;
+}): { fireStale: boolean; fireStaleReason: string | null } {
+  return {
+    fireStale: verdict.fireStale,
+    fireStaleReason: verdict.fireStale ? verdict.reason : null,
+  };
+}
+
+/**
  * EI-13714 — PURE: decide whether the raw cached gate counters (`consecutiveReds` / `stalled` /
  * `failingTests` / `firstRedAtMs`, straight off the `gate_health` blob) must be corrected before
  * being reported anywhere, given the verdict-freshness rule that fired (if any).
@@ -573,8 +593,9 @@ export async function gitPipelineSnapshot(
         },
         Date.now(),
       );
-      gcFireStale = v.stalled;
-      gcFireStaleReason = v.reason;
+      const fireFreshness = projectGreenCheckpointFireFreshness(v);
+      gcFireStale = fireFreshness.fireStale;
+      gcFireStaleReason = fireFreshness.fireStaleReason;
     } catch {
       // best-effort — a freshness probe must never break the snapshot read.
     }

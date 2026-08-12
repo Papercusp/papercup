@@ -1765,6 +1765,28 @@ describe('computeStages: position x health', () => {
     expect(stage(s, 'gate').detail).toMatch(/paused/);
   });
 
+  it('keeps a firing-but-verdict-stale gate separate from a non-firing gate', () => {
+    const s = computeStages(
+      input({
+        gate: {
+          stalled: false,
+          consecutiveReds: 0,
+          lastGreenAtMs: 1,
+          fireStale: false,
+          fireStaleReason: null,
+          verdictStale: true,
+          verdictStaleReason: 'no GREEN verdict in ~13h',
+          verdictStaleReasonCode: null,
+          candidateAgeMs: null,
+          commitsBehindTip: null,
+          observedCandidate: null,
+          inconclusive: null,
+        },
+      }),
+    );
+    expect(stage(s, 'gate')).toMatchObject({ health: 'advancing', detail: null });
+  });
+
   it('a red gate is `stalled` and framed as yours to fix, not a queue to wait in', () => {
     const s = computeStages(
       input({ gate: { stalled: true, consecutiveReds: 3, lastGreenAtMs: 1, fireStale: false, fireStaleReason: null, verdictStale: false, verdictStaleReason: null, verdictStaleReasonCode: null, candidateAgeMs: null, commitsBehindTip: null, observedCandidate: null, inconclusive: null } }),
