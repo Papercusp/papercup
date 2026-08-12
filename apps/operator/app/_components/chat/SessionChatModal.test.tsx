@@ -617,6 +617,56 @@ describe('SessionChatModal', () => {
       expect(dot?.getAttribute('aria-label')).toBe('ended agent');
     });
 
+    it.each([
+      {
+        state: 'live',
+        liveness: 'live',
+        placeholder: /Reply to su · live-1/i,
+        dotLiveness: 'live',
+      },
+      {
+        state: 'parked',
+        // A parked session may retain a fresh heartbeat; sessionState is the
+        // authoritative value for both the status chip and composer affordance.
+        liveness: 'live',
+        placeholder: /Type to wake su · live-1/i,
+        dotLiveness: 'idle',
+      },
+    ])('maps $state to the matching composer affordance', async ({ state, liveness, placeholder, dotLiveness }) => {
+      seedRoster([
+        {
+          ownerId: 'su-live-1',
+          liveness,
+          sessionState: state,
+          modes: [],
+          claims: [],
+          currentFiles: [],
+          openAwait: null,
+        },
+      ]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(
+        <SessionChatModal
+          sessionOwnerId="su-live-1"
+          ownerLabel="su · live-1"
+          onClose={vi.fn()}
+        />,
+      );
+      await waitFor(() => expect(captured).not.toBeNull());
+      act(() => {
+        captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'hi' }]));
+      });
+
+      const band = await waitFor(() => screen.getByTestId('session-chat-state-header'));
+      const status = band.querySelector(`[data-session-state="${state}"]`);
+      expect(status).toBeTruthy();
+      expect(status!.textContent).toContain(state);
+      expect(status!.getAttribute('title')).toContain(`Session state: ${state}`);
+      expect(status!.querySelector('[role="img"]')?.getAttribute('data-liveness')).toBe(dotLiveness);
+      expect(screen.getByPlaceholderText(placeholder)).toBeTruthy();
+      expect(screen.queryByTestId('session-chat-composer-unavailable')).toBeNull();
+    });
+
     it('never renders the always-armed inbox-wake as a blocked-on gate (isInfrastructureAwait)', async () => {
       seedRoster([
         {

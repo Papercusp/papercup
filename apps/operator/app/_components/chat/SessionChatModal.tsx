@@ -1368,6 +1368,15 @@ export default function SessionChatModal({
             sessionId: resolved?.session_id ?? null,
             advSessionId: actionRosterEntry?.advSessionId ?? null,
             windowId: actionRosterEntry?.windowId ?? null,
+            // SessionActionCtx declares these two as "supplied by
+            // SessionChatModal from the SAME advRoster.list entry" and they were
+            // not (EI-20209690740975295): `focusWindow` posts
+            // { advSessionId, windowId, pid } and was always sending
+            // pid: undefined, and `resumableSessionId` falls back
+            // sessionId ?? ompThreadId — so an omp session with no resolved
+            // Claude transcript id silently offered no Resume at all.
+            ompThreadId: actionRosterEntry?.ompThreadId ?? null,
+            pid: actionRosterEntry?.pid ?? null,
             // P-005: the mode pills read their CURRENT value from here. Same
             // roster row the status band renders, so the pill and the rest of
             // the surface cannot disagree about what is set — and it costs no
@@ -1391,6 +1400,18 @@ export default function SessionChatModal({
             // renders as "default". Defaulting here would make a session whose
             // row has not arrived assert it is on the backend default.
             launchArgv: actionRosterEntry?.launchArgv,
+            // P-004: the CTX (token-limit) pill's current value, off the SAME
+            // roster row whose `compactionLimit` is the `ctx N%` denominator in
+            // the status band — so the pill and that percentage cannot disagree
+            // about which limit is in force.
+            //
+            // `?? null` is correct HERE, unlike accountPin/launchArgv above:
+            // ContextLimitAction.currentLimit() reads any non-number as "no
+            // explicit limit" and renders 'auto', so undefined and null are
+            // already the same reading on this axis. Omitting the key entirely
+            // is what made the pill read 'auto' for EVERY session, including
+            // ones with a real stored limit (EI-20207719407463922).
+            compactionLimit: actionRosterEntry?.compactionLimit ?? null,
           }
         : null,
     [sessionOwnerId, ownerLabel, actionRosterEntry, resolved],
