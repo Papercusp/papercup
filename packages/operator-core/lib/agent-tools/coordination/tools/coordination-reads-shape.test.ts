@@ -9,7 +9,11 @@
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/coordination/tools/coordination-reads-shape.test.ts
  */
 import { describe, expect, it, vi } from "vitest";
-import { PRESENCE_TIER_CAPS, shapeCoordPresence } from "./presence-shape";
+import {
+  PRESENCE_RESPONSE_BUDGET_CHARS,
+  PRESENCE_TIER_CAPS,
+  shapeCoordPresence,
+} from "./presence-shape";
 import {
   ASSIGNMENTS_TIER_CAPS,
   shapeFleetAssignments,
@@ -118,14 +122,19 @@ describe("shapeCoordPresence (P-022)", () => {
         more: string;
       };
     };
-    expect(out.active).toHaveLength(cap + 1);
-    expect(out.activeTruncated).toEqual({
-      shown: cap,
+    expect(out.active.length).toBeLessThanOrEqual(cap + 1);
+    expect(out.active.length).toBeGreaterThan(1);
+    expect(out.activeTruncated).toMatchObject({
+      shown: out.active.length - 1,
       censusCount: cap + 5,
       truncatedByLimit: true,
       limit: cap,
       more: expect.stringContaining('coord:presence { owner }'),
     });
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(PRESENCE_RESPONSE_BUDGET_CHARS);
+    if (out.activeTruncated.reason === "response_budget") {
+      expect(out.active[out.active.length - 1].intent).toContain("response budget");
+    }
     // The disclosure is serialized before the long roster, so it is not hidden
     // behind the result-door's tail clipping.
     expect(Object.keys(out).indexOf("activeTruncated")).toBeLessThan(
@@ -136,6 +145,27 @@ describe("shapeCoordPresence (P-022)", () => {
     expect(notice.intent).toContain('payloadTier:"full"');
     const keys = Object.keys(out.active[0]).sort();
     for (const row of out.active) expect(Object.keys(row).sort()).toEqual(keys);
+  });
+
+  it("keeps detailed/cursor reads below the result-door budget", () => {
+    const big = {
+      ...snapshot,
+      active: Array.from({ length: 130 }, (_, i) => ({
+        ...rosterRow(i),
+        heldFiles: Array.from({ length: 12 }, (_, n) => `packages/file-${n}.ts`),
+        cursor: { terms: Array.from({ length: 20 }, (_, n) => `term-${n}`) },
+      })),
+    };
+    const out = shapeCoordPresence(big, "trimmed") as {
+      active: Record<string, unknown>[];
+      activeTruncated: { reason?: string; shown: number };
+    };
+
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(PRESENCE_RESPONSE_BUDGET_CHARS);
+    expect(out.activeTruncated.reason).toBe("response_budget");
+    expect(out.activeTruncated.shown).toBe(out.active.length - 1);
+    expect(out.active[0]).not.toHaveProperty("heldFiles");
+    expect(out.active[0]).not.toHaveProperty("cursor");
   });
 
   it("non-conforming data passes through", () => {

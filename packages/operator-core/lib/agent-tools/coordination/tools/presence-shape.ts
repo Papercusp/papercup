@@ -22,6 +22,14 @@ export const PRESENCE_TIER_CAPS = {
   standard: { rows: 80, intent: 160, note: 60 },
 } as const;
 
+/**
+ * Keep a tier-shaped presence read below the per-result door. The door's
+ * default is ~6,000 characters, but it must also append its own disclosure
+ * when a result is over budget. Leaving this headroom means the shaped body
+ * remains complete JSON/TOON for ptool and other machine-facing callers.
+ */
+export const PRESENCE_RESPONSE_BUDGET_CHARS = 4_800;
+
 type PresenceTier = keyof typeof PRESENCE_TIER_CAPS;
 
 const clip = (s: unknown, n: number): string | null =>
@@ -82,15 +90,6 @@ export function shapeCoordPresence(data: unknown, tier: PresenceTier): unknown {
     };
   };
 
-  const truncated = d.active.length > c.rows;
-  const rows = d.active.slice(0, c.rows).map(project);
-  if (truncated) {
-    rows.push({
-      ...project({}),
-      ownerId: "(truncated)",
-      intent: `showing ${c.rows} of ${d.active.length} — narrow with owner/hive/scope, or payloadTier:"full"`,
-    });
-  }
   // P-031 leg (d): the opt-in `expanded[]` coupling block rides at top level, so
   // it survives `{...d}` untouched — but its per-entry `intent` is copied from a
   // base row, and at a trimmed/standard tier those rows had their intent clipped.
@@ -108,19 +107,80 @@ export function shapeCoordPresence(data: unknown, tier: PresenceTier): unknown {
   // this disclosure BEFORE the roster so it survives a result-door clip that
   // cuts through the long `active[]` value. `censusCount` is measured from the
   // complete snapshot presented to this shaper, never from the capped output.
-  const activeTruncated = truncated
-    ? {
-        shown: c.rows,
-        censusCount: d.active.length,
-        truncatedByLimit: true as const,
-        limit: c.rows,
-        more: 'coord:presence { owner } for a targeted liveness lookup; payloadTier:"full" for the complete roster',
-      }
-    : undefined;
-  return {
-    ...(activeTruncated ? { activeTruncated } : {}),
-    ...d,
-    active: rows,
-    ...(expanded ? { expanded } : {}),
+  //
+  // The tier row cap alone is not enough: 40 projected rows with long intents
+  // can still land just under the 30KB payload-tier ceiling but just over the
+  // ~6KB result door. That made the door append its footer to a JSON/TOON body
+  // and left ptool with no parseable document. Trim whole rows until the
+  // serialized body has deliberate headroom, and disclose that the cut was
+  // budget-driven rather than pretending the tier row cap was the only limit.
+  const baseData = { ...d };
+  delete baseData.active;
+  delete baseData.activeTruncated;
+  const projectedRows = d.active.slice(0, c.rows).map(project);
+  const serializeLength = (value: unknown): number => {
+    try {
+      return JSON.stringify(value)?.length ?? Number.POSITIVE_INFINITY;
+    } catch {
+      return Number.POSITIVE_INFINITY;
+    }
   };
+  const maxRows = projectedRows.length;
+  const expandedRows = expanded ?? [];
+  const build = (shown: number, shownExpanded: number): Record<string, unknown> => {
+    const rows = projectedRows.slice(0, shown);
+    const truncated = shown < d.active.length;
+    const budgetTruncated = shown < maxRows;
+    const expandedBudgetTruncated = expanded !== undefined && shownExpanded < expanded.length;
+    if (truncated) {
+      rows.push({
+        ...project({}),
+        ownerId: "(truncated)",
+        intent: budgetTruncated
+          ? `showing ${shown} of ${d.active.length} — response budget; narrow with owner/hive/scope, or payloadTier:"full"`
+          : `showing ${c.rows} of ${d.active.length} — narrow with owner/hive/scope, or payloadTier:"full"`,
+      });
+    }
+    const activeTruncated = truncated
+      ? {
+          shown,
+          censusCount: d.active.length,
+          truncatedByLimit: true as const,
+          limit: c.rows,
+          ...(budgetTruncated ? { reason: "response_budget" as const } : {}),
+          more: 'coord:presence { owner } for a targeted liveness lookup; payloadTier:"full" for the complete roster',
+        }
+      : undefined;
+    return {
+      ...(activeTruncated ? { activeTruncated } : {}),
+      ...baseData,
+      active: rows,
+      ...(expanded !== undefined ? { expanded: expandedRows.slice(0, shownExpanded) } : {}),
+      ...(expandedBudgetTruncated
+        ? {
+            expandedTruncated: {
+              shown: shownExpanded,
+              total: expanded.length,
+              reason: "response_budget" as const,
+            },
+          }
+        : {}),
+    };
+  };
+
+  let shown = maxRows;
+  let shownExpanded = expandedRows.length;
+  let out = build(shown, shownExpanded);
+  // Coupling is useful context, but the live roster is the primary presence
+  // contract. Trim the appended expansion first so a large default-on
+  // coupling block cannot consume the entire budget and leave active[] empty.
+  while (serializeLength(out) > PRESENCE_RESPONSE_BUDGET_CHARS && shownExpanded > 0) {
+    shownExpanded -= 1;
+    out = build(shown, shownExpanded);
+  }
+  while (shown > 0 && serializeLength(out) > PRESENCE_RESPONSE_BUDGET_CHARS) {
+    shown -= 1;
+    out = build(shown, shownExpanded);
+  }
+  return out;
 }

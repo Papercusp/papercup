@@ -17,7 +17,7 @@
 
 import { describe, it, expect } from 'vitest';
 import roster from './roster';
-import { PRESENCE_TIER_CAPS } from './presence-shape';
+import { PRESENCE_RESPONSE_BUDGET_CHARS, PRESENCE_TIER_CAPS } from './presence-shape';
 
 type Shaper = (data: unknown) => unknown;
 const shape = (roster as unknown as { shape?: { standard?: Shaper; trimmed?: Shaper } }).shape;
@@ -65,9 +65,18 @@ describe('coord:roster payload-tier shape (WI-6662)', () => {
   });
 
   it('projects and caps an unlensed live read at the trimmed tier', () => {
-    const out = shape!.trimmed!(fullSnapshot(130)) as { active: Record<string, unknown>[] };
-    // capped (+1 for the visible truncation notice row)
-    expect(out.active.length).toBe(PRESENCE_TIER_CAPS.trimmed.rows + 1);
+    const out = shape!.trimmed!(fullSnapshot(130)) as {
+      active: Record<string, unknown>[];
+      activeTruncated: { shown: number; reason?: string };
+    };
+    // capped (+1 for the visible truncation notice row), with an additional
+    // serialized-response budget when the tier cap itself would overflow the
+    // result door.
+    expect(out.active.length).toBeLessThanOrEqual(PRESENCE_TIER_CAPS.trimmed.rows + 1);
+    expect(out.active.length).toBeGreaterThan(1);
+    expect(out.activeTruncated.shown).toBe(out.active.length - 1);
+    expect(out.activeTruncated.reason).toBe('response_budget');
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(PRESENCE_RESPONSE_BUDGET_CHARS);
     // projected to the dispatch core — the heavy env fields are gone
     expect(out.active[0]).not.toHaveProperty('host');
     expect(out.active[0]).not.toHaveProperty('pid');
@@ -103,10 +112,9 @@ describe('coord:roster payload-tier shape (WI-6662)', () => {
     expect(JSON.stringify(out).length).toBeLessThanOrEqual(JSON.stringify(input).length);
   });
 
-  it('a lensed read stays cheaper than the tier-shaped unlensed one', () => {
+  it('a lensed read stays cheaper than the full unlensed one', () => {
     const lensed = shape!.trimmed!(lensedSnapshot(130));
-    const shaped = shape!.trimmed!(fullSnapshot(130));
-    expect(JSON.stringify(lensed).length).toBeLessThan(JSON.stringify(shaped).length);
+    expect(JSON.stringify(lensed).length).toBeLessThan(JSON.stringify(fullSnapshot(130)).length);
   });
 
   it('passes view=claims through untouched (it has no active[])', () => {
