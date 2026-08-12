@@ -14,6 +14,7 @@ const M = vi.hoisted(() => ({
   listPlanRows: vi.fn(async () => [] as unknown[]),
   getPlanRow: vi.fn(async () => null as unknown),
   planItemsForRow: vi.fn(() => [] as unknown[]),
+  getAllPlanItemCoverage: vi.fn(async () => new Map()),
   ctxToPlanSourceOpts: vi.fn(async () => ({ harnessSlug: "papercup" })),
 }));
 
@@ -33,6 +34,10 @@ vi.mock("../../issue-blocks-merge", async (orig) => {
     ...actual,
     getAllBlockedPlanItems: vi.fn(async () => new Map<string, string[]>()),
   };
+});
+vi.mock("../../plan-item-coverage", async (orig) => {
+  const actual = await orig<typeof import("../../plan-item-coverage")>();
+  return { ...actual, getAllPlanItemCoverage: M.getAllPlanItemCoverage };
 });
 
 import tool from "./items";
@@ -58,8 +63,8 @@ const ctx = (workspaceId: string): never =>
 const run = async (
   args: Record<string, unknown>,
   workspaceId = "ws-items",
-): Promise<void> => {
-  await tool.handler(args as never, ctx(workspaceId));
+): Promise<unknown> => {
+  return tool.handler(args as never, ctx(workspaceId));
 };
 
 beforeEach(async () => {
@@ -67,6 +72,8 @@ beforeEach(async () => {
   resetCachedReadStatsForTests();
   __setCachedReadEnabledForTests(true);
   M.listPlanRows.mockClear();
+  M.getAllPlanItemCoverage.mockReset();
+  M.getAllPlanItemCoverage.mockResolvedValue(new Map());
   setFlagOverridesForTest({ [CACHE_LAYER]: true });
   await _refreshCacheLayerForTests();
 });
@@ -128,5 +135,54 @@ describe("plans:items — cache wiring", () => {
     await run({ actionable: true });
     await run({ actionable: true });
     expect(M.listPlanRows).toHaveBeenCalledTimes(3);
+  });
+
+  it("refreshes coverage on a plan-cache hit instead of replaying stale liveness", async () => {
+    const planItem = {
+      id: "P-001",
+      text: "live coverage",
+      storedStatus: "todo",
+      importance: "normal",
+      blockedBy: [],
+      decisionRefs: [],
+      phase: "Phase 1",
+      lineNumber: 0,
+      rawLine: "",
+      effectiveStatus: "todo",
+      unresolvedBlockers: [],
+      needsHuman: false,
+      staleBlockedHint: null,
+    };
+    M.listPlanRows.mockResolvedValue([{
+      planSlug: "coverage-plan",
+      archived: false,
+      isLegacy: false,
+      status: "active",
+      content: "",
+      created: "2026-08-01T00:00:00.000Z",
+    }]);
+    M.planItemsForRow.mockReturnValue([planItem]);
+    const coverage = (level: "held-not-live" | "full") => new Map([
+      ["coverage-plan#P-001", {
+        ref: "coverage-plan#P-001",
+        links: [],
+        directlyClaimed: false,
+        directHolder: null,
+        directActivity: null,
+        holder: null,
+        level,
+        workers: [],
+        lastActivityAt: null,
+      }],
+    ]);
+    M.getAllPlanItemCoverage.mockResolvedValueOnce(coverage("held-not-live"));
+    const first = await run({}) as { data: { items: Array<{ coverage?: { level: string } }> } };
+    expect(first.data.items[0]?.coverage?.level).toBe("held-not-live");
+
+    M.getAllPlanItemCoverage.mockResolvedValueOnce(coverage("full"));
+    const second = await run({}) as { data: { items: Array<{ coverage?: { level: string } }> } };
+    expect(second.data.items[0]?.coverage?.level).toBe("full");
+    expect(M.listPlanRows).toHaveBeenCalledTimes(1);
+    expect(M.getAllPlanItemCoverage).toHaveBeenCalledTimes(2);
   });
 });

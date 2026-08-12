@@ -180,11 +180,14 @@ export default defineTool({
     }
     const specTriadOpts = { flagEnabled: specTriadFlag, epoch: specTriadEpoch() };
 
-    // Cache the cross-plan aggregation (cache-expensive-tool-reads-round2-2026-06-23
-    // P-002). plans:items is the LARGEST read payload measured (37KB / p95 2s); its read
-    // is PURE + non-principal (depends only on workspace+harness+args — `needsHuman` keys
-    // on the DERIVED item band, not the caller). Same family + tags as plans:list/get; the
-    // 45s SWR backstops the un-triggered coord_links issue-block overlay.
+    // Cache the cross-plan plan/status aggregation (cache-expensive-reads-round2-2026-06-23
+    // P-002). plans:items is the LARGEST read payload measured (37KB / p95 2s); its plan
+    // projection is PURE + non-principal (depends only on workspace+harness+args —
+    // `needsHuman` keys on the DERIVED item band, not the caller). The coverage overlay is
+    // deliberately applied below, outside this cache: it folds fleet claims and liveness,
+    // which change independently of the plan tables. Caching it made a stale
+    // `held-not-live` verdict survive while coord:presence reported the holder live
+    // (EI-20227161050679465).
     const cached = await cachedRead(
       ctx as CachedReadCtx,
       {
@@ -231,16 +234,6 @@ export default defineTool({
           // Non-fatal — no issue-block overlay.
         }
 
-        // Coverage rollup (work→plan_item edges + direct plan-item claim), hoisted out
-        // of the loop like the issue-block overlay. Non-fatal — degrades to no overlay
-        // so a coord_links/fleet outage never fails the read.
-        let coverage = new Map<string, PlanItemCoverage>();
-        try {
-          coverage = await getAllPlanItemCoverage();
-        } catch {
-          // Non-fatal — no coverage overlay.
-        }
-
         for (const row of planRows) {
           if (row.isLegacy) continue;
           if (isTerminalPlanHiddenFromCrossPlan(row.status, args)) continue;
@@ -281,17 +274,12 @@ export default defineTool({
             // `storedStatus === 'needs-human'` while unarmed (D-007).
             if (args.needsHuman && !item.needsHuman) continue;
             if (args.status && item.effectiveStatus !== args.status) continue;
-            const cov = coverage.get(planItemRef(row.planSlug, item.id));
             rows.push({
               plan: row.planSlug,
               archived: row.archived,
               item,
               ...(blockingIssues[item.id]
                 ? { blockedByIssues: blockingIssues[item.id] }
-                : {}),
-              ...(cov ? { coverage: compactCoverage(cov) } : {}),
-              ...(cov && isCoverageDivergent(item.effectiveStatus, cov.level)
-                ? { coverageDivergence: true as const }
                 : {}),
               ...(triad.gated ? { specTriadMissing: triad.missing } : {}),
             });
@@ -325,7 +313,30 @@ export default defineTool({
         isError: true,
       };
     }
-    const rows = cached.rows;
+    // Coverage rollup (work→plan_item edges + direct plan-item claim) is a live
+    // coordination read, not plan content. Refresh it on every call so a plan-table
+    // cache hit cannot replay a liveness verdict from before a claim or heartbeat
+    // changed. This also strips coverage fields from an entry created by an older
+    // handler version before applying the fresh overlay.
+    let coverage = new Map<string, PlanItemCoverage>();
+    try {
+      coverage = await getAllPlanItemCoverage();
+    } catch {
+      // Non-fatal — no coverage overlay.
+    }
+    const rows = cached.rows.map((row) => {
+      const freshRow = { ...row };
+      delete freshRow.coverage;
+      delete freshRow.coverageDivergence;
+      const cov = coverage.get(planItemRef(row.plan, row.item.id));
+      return {
+        ...freshRow,
+        ...(cov ? { coverage: compactCoverage(cov) } : {}),
+        ...(cov && isCoverageDivergent(row.item.effectiveStatus, cov.level)
+          ? { coverageDivergence: true as const }
+          : {}),
+      };
+    });
 
     ctxAny.metadata?.({
       count: rows.length,
