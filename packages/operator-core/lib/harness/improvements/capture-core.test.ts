@@ -45,11 +45,14 @@ function existing(p: Partial<EngineerIssue> & { id: string; title: string }): En
   };
 }
 
-function deps(opts: { found?: EngineerIssue[] } = {}): CaptureDeps & { created: CreateIssueInput[] } {
+function deps(
+  opts: { found?: EngineerIssue[]; setCheckpoint?: CaptureDeps['setCheckpoint'] } = {},
+): CaptureDeps & { created: CreateIssueInput[] } {
   const created: CreateIssueInput[] = [];
   return {
     created,
     searchIssues: async () => opts.found ?? [],
+    setCheckpoint: opts.setCheckpoint,
     createIssue: async (input) => {
       created.push(input);
       return existing({ id: 'EI-100', title: input.title, kind: (input.kind as 'bug' | 'change') ?? 'bug' });
@@ -404,6 +407,34 @@ describe('captureImprovement — native kind + paths (close-loop D-002)', () => 
     await captureImprovement({ title: 'nicer thing two', kind: 'change' }, d);
     expect(d.created[0].severity).toBe('major');
     expect(d.created[1].severity).toBe('minor');
+  });
+
+  it('seeds a successor checkpoint for an atomically claimed improvement', async () => {
+    const checkpoints: Array<{ id: string; text: string }> = [];
+    const d = deps({
+      setCheckpoint: async (id, text) => checkpoints.push({ id, text }),
+    });
+
+    await captureImprovement(
+      { title: 'claimed capture needs continuity', kind: 'bug', assignee: 'su-a', createdBy: 'su-a' },
+      d,
+    );
+
+    expect(checkpoints).toHaveLength(1);
+    expect(checkpoints[0]).toMatchObject({ id: 'EI-100' });
+    expect(checkpoints[0].text).toContain('no implementation work has started');
+  });
+
+  it('keeps the capture successful when checkpoint seeding fails', async () => {
+    const d = deps({ setCheckpoint: async () => { throw new Error('checkpoint store unavailable'); } });
+
+    const result = await captureImprovement(
+      { title: 'claimed capture survives checkpoint outage', kind: 'bug', assignee: 'su-a', createdBy: 'su-a' },
+      d,
+    );
+
+    expect(result.created).toBe(true);
+    expect(result.issue?.id).toBe('EI-100');
   });
 });
 

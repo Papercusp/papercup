@@ -20,6 +20,8 @@ import { notifyAgents } from '../coordination/notify-agents';
 import { issueRef, linkIssue, type IssueSeverity } from '../../issues-engineer';
 import { captureImprovement } from '../../harness/improvements/capture-core';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
+import { setWorkItemCheckpoint } from '../../work-item-checkpoint';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { noveltyPriorArt } from '../../scout/novelty-precheck';
 import { readRunningGeneration } from '../../scout/generation-watermark';
 import { recordRoutedIdea } from '../../scout/routed-ledger';
@@ -564,6 +566,8 @@ export default defineTool({
     const ctxHarnessRaw = (ctx as { harnessSlug?: unknown }).harnessSlug;
     const ctxHarness =
       typeof ctxHarnessRaw === 'string' && ctxHarnessRaw && ctxHarnessRaw !== '*' ? ctxHarnessRaw : undefined;
+    const ctxWorkspaceRaw = (ctx as { workspaceId?: unknown }).workspaceId;
+    const ctxWorkspace = typeof ctxWorkspaceRaw === 'string' ? ctxWorkspaceRaw : undefined;
     if (args.observation?.rubricRef && args.rubricRef && args.observation.rubricRef !== args.rubricRef) {
       throw new ObservationEvidenceError(
         'conflicting rubricRef values: pass the scorecard once under observation.rubricRef (preferred) or top-level rubricRef (compatibility alias)',
@@ -660,6 +664,7 @@ export default defineTool({
       : undefined;
     const effectiveKind = toolFailureKind ?? args.kind ?? 'change';
     const effectiveLane = normalizedToolFailure && !normalizedToolFailure.direct ? 'observation' : args.lane;
+    const resolvedAssignee = resolveSelfLiteral(args.assign_to, id.ownerId);
     const toolFailureProbation = normalizedToolFailure
       ? {
           state: normalizedToolFailure.direct ? ('promoted' as const) : ('probation' as const),
@@ -706,7 +711,24 @@ export default defineTool({
         createdBy: id.ownerId,
         // WI-5950: resolve the 'self' literal here (same seam work_items:create uses) so the
         // core always receives a concrete ownerId and never has to know about caller identity.
-        assignee: resolveSelfLiteral(args.assign_to, id.ownerId),
+        ...(resolvedAssignee
+          ? {
+              assignee: resolvedAssignee,
+              setCheckpoint: async (workItemId: string, checkpoint: string) => {
+                const scopedHarness = args.scope?.startsWith('harness:')
+                  ? args.scope.slice('harness:'.length)
+                  : ctxHarness;
+                await setWorkItemCheckpoint(
+                  {
+                    harness: scopedHarness ?? null,
+                    workItemId,
+                    workspaceId: resolveConcreteWorkspaceId(ctxWorkspace),
+                  },
+                  checkpoint,
+                );
+              },
+            }
+          : {}),
         filedByRole,
         source,
       });

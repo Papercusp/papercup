@@ -285,6 +285,12 @@ export interface CaptureImprovementResult {
 export interface CaptureDeps {
   searchIssues: (query: string, limit?: number) => Promise<EngineerIssue[]>;
   createIssue: (input: CreateIssueInput) => Promise<EngineerIssue>;
+  /**
+   * Seed the successor-visible checkpoint for an atomically self-claimed item.
+   * Optional so watchdog/system captures and PG-free callers can omit the side effect.
+   * A checkpoint failure must never lose the capture itself.
+   */
+  setCheckpoint?: (workItemId: string, checkpoint: string) => Promise<void>;
   /** Load a rubric's criteria for the P-014a scorecard-completeness gate + the P-002
    *  rating-value gate (criterion/rubric ratingScale). OPTIONAL — the gate falls back to
    *  the real getRubric; injectable so tests can stub it (or omit it → PG-free tests skip
@@ -854,6 +860,18 @@ export async function captureImprovement(
     signalOrigin: origin,
     payload: Object.keys(payload).length > 0 ? payload : undefined,
   });
+  // WI-20261780231648564: improvements:capture can atomically claim an item for the
+  // current agent, but request-compaction's flush gate requires every same-turn claim
+  // to have a successor-visible checkpoint. Seed a minimal handoff immediately after
+  // the create; this is deliberately fail-open so a transient checkpoint-store failure
+  // cannot turn a durable capture into a lost filing.
+  if (input.assignee && !isObservation && deps.setCheckpoint) {
+    await deps.setCheckpoint(
+      issue.id,
+      'Created and claimed by improvements:capture; no implementation work has started. ' +
+        'Verify the title/body against current HEAD, then reproduce before editing.',
+    ).catch(() => {});
+  }
   // Push the right Learning-tab feed (operator-learning-tab-2026-06-09 P-002 /
   // observations P-044). Fire-and-forget via a lazy import so the pure, PG-free
   // capture core (+ its unit tests) never statically depend on the SSE layer.
