@@ -6,6 +6,7 @@
  */
 import { describe, expect, it } from 'vitest';
 
+// @ts-ignore -- runtime reporter module intentionally tested from TypeScript.
 import {
   classifyCargoRun,
   detectCargoTermination,
