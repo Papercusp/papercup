@@ -9,6 +9,7 @@
 import { describe, expect, it } from 'vitest';
 import assertTool, { truncationField } from './assert';
 import factsListTool, {
+  FACTS_LIST_EXCERPT_NOTE,
   projectFact,
   isLiveFact,
   findLiveFactVersion,
