@@ -6,11 +6,18 @@
  * import + some `process.exit`, so they can't share one process). Honors the
  * gating tier (D-002): a DETERMINISTIC projector that fails (or, under --check,
  * drifts) fails this runner; an ADVISORY one (heavy import / PG-dependent) only
- * warns. CI gates the deterministic three individually; this is the local
- * one-shot "regenerate / verify everything".
+ * warns. This is the local one-shot "regenerate / verify everything".
  *
- *   npm run gen:doc-projections          # regenerate all five pages
- *   npm run gen:doc-projections:check    # verify (gating three + advisory two)
+ *   npm run gen:doc-projections                      # regenerate all five pages
+ *   npx tsx scripts/gen-doc-projections.ts --check   # local pre-push sweep
+ *
+ * ⚠ THE `--check` SWEEP IS A CONVENIENCE, NOT THE GATE, and has no npm alias on
+ * purpose (retired 2026-08-12, WI-38239). CI runs each of the five children
+ * INDIVIDUALLY at its own tier — the gating TWO fail the build, the advisory
+ * three run under `continue-on-error` (.github/workflows/test.yml:194-211) — so
+ * an umbrella declaration was a guard-shaped npm script that nothing ran and
+ * that could add no coverage, while costing a five-child spawn (including the
+ * fleet-fragile full-registry tool-catalog import) on every hop that ran it.
  */
 import { spawnSync } from 'node:child_process';
 import { join } from 'node:path';

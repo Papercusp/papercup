@@ -215,10 +215,45 @@ export const ACKNOWLEDGED_UNREACHABLE = new Map([
   // (scripts/affected-tests.mjs) with narrow appliesTo sets and NO hostSuiteRatchet —
   // see the rationale on each entry. Paying this set down means REGISTERING a guard,
   // never re-parking it here.
-  ['gen:doc-projections:check', 'pending wire-or-retire decision; sibling per-page gen:doc-*:check are CI-wired'],
+  // RETIRED 2026-08-12 (WI-38239), watermark 18 → 17: `gen:doc-projections:check` was a pure
+  // CONVENIENCE UMBRELLA over five per-page projectors, and every one of those five is already
+  // DECLARED and ENFORCED individually, at exactly the tier the umbrella claims for it
+  // (.github/workflows/test.yml:194-211 — blueprint-catalog + role-registry gating, and
+  // insights-index + tool-catalog + plans-index under `continue-on-error: true`). So it added
+  // zero coverage, while wiring it would have run all five on every matching change, including
+  // the heavy full-registry tool-catalog import that is CI-informational precisely because it is
+  // fleet-fragile (it once hung the umbrella outright — see the agent-tools-registry-import-
+  // never-exits insight, which is why the umbrella grew its per-child SIGKILL timeout).
+  // ⚠ It was NOT retired for being toothless — a note from an earlier wake of mine claimed it
+  // "exits 0 while printing drift", and that is only true of the ADVISORY three. A gating child
+  // that drifts DOES set `gatingFailure` and exit 1 (gen-doc-projections.ts:53-62). Registering
+  // it would have been redundant, not theatre; the honest reason to retire is duplication + cost.
+  // Retired = the npm declaration is gone (package.json), so it leaves the census population.
+  // The SCRIPT stays: `gen:doc-projections` (the writer) is the local one-shot regenerate, and
+  // its `--check` code path is still reachable as `npx tsx scripts/gen-doc-projections.ts --check`
+  // for a local pre-push sweep — it is simply no longer a DECLARED guard nothing runs.
   ['gen:fleet-lessons:check', 'pending wire-or-retire decision'],
-  ['gen:openapi:check', 'pending wire-or-retire decision'],
-  ['gen:tool-catalog:check', 'heavy full-registry import, fleet-fragile (same reason its doc sibling is CI-informational); pending decision'],
+  // RETIRED 2026-08-12 (WI-38239), watermark 17 → 16: `gen:openapi:check` asserted a drift
+  // invariant over an artifact that IS NOT IN THE REPO. `.papercusp/openapi.json` is GITIGNORED
+  // (.gitignore:101) and untracked, and the generator's own header states the stance deliberately
+  // ("ON-DEMAND, NOT committed or CI-gated"). Its --check treats a MISSING file as stale and exits
+  // 1 (gen-openapi-spec.ts:129-139), so putting it on any blocking path would red-pin every fresh
+  // checkout — the artifact does not exist there until someone runs the writer. That is not
+  // enforcement debt a successor can pay down; there is no repo-level invariant to guard.
+  // Nothing is lost: the generator's OWN documented check form is `npm run gen:openapi -- --check`,
+  // which appends the flag to the surviving writer alias and never used this one.
+  //
+  // ⚠ `gen:tool-catalog:check` LOOKS like the same case AND IS NOT — do not retire it by analogy.
+  // gen-openapi-spec.ts's header claims "same stance + reasons as gen-tool-catalog.ts", and
+  // gen-tool-catalog.ts's header claims its artifact is "NOT committed". MEASURED 2026-08-12
+  // against the tree, that claim is FALSE: `.papercusp/tool-catalog.json` is TRACKED (1.1MB, last
+  // committed a101156ae1) and is not ignored. So there IS a real committed artifact with a real
+  // drift invariant, and this guard is a genuine WIRE candidate, not a category error. What still
+  // blocks it is cost, not meaning: it cold-imports the full ~300-tool registry, which is the
+  // documented reason its doc sibling is CI-informational and the reason the projections umbrella
+  // needed a per-child SIGKILL timeout. Measure it on a quiet box before wiring; the stale header
+  // claim is corrected in that file.
+  ['gen:tool-catalog:check', 'artifact IS committed, so a real invariant; blocked on cost — heavy full-registry import, needs a quiet-box measurement before wiring'],
 ]);
 
 /**
@@ -240,7 +275,7 @@ export const ACKNOWLEDGED_UNREACHABLE = new Map([
  * build rather than landing here. Raising it again to park a newly-rotted guard would be
  * precisely the abuse the sibling `KNOWN_DARK_FLAGS` rule exists to stop.
  */
-export const UNREACHABLE_HIGH_WATERMARK = 18;
+export const UNREACHABLE_HIGH_WATERMARK = 16;
 
 /**
  * Guards that ARE enforced, but only over PART of what they scan (EI-19461064447747454).
