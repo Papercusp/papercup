@@ -1528,6 +1528,73 @@ describe('long-foreground-exec advisory (coord-delivery-residual-gaps P-003)', (
   });
 });
 
+describe('foreground shell-backgrounding advisory (EI-20202551640426512)', () => {
+  const bashWithInput = (tool_input: Record<string, unknown>, tool = 'Bash') => ({
+    tool_name: tool,
+    tool_input,
+    session_id: 's-shell-backgrounding',
+  });
+
+  const expectShellBackgroundingAdvisory = (out: { stdout: string; status: number | null }) => {
+    expect(out.status).toBe(0);
+    const hso = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hso.permissionDecision).toBe('allow'); // soft — command proceeds
+    expect(hso.additionalContext).toContain('foreground shell-backgrounding advisory');
+    expect(hso.additionalContext).toContain('capability:bash_output');
+    expect(hso.additionalContext).toContain('120s');
+  };
+
+  it('fires for the live nohup + trailing-& failure shape', () => {
+    expectShellBackgroundingAdvisory(
+      runGate(
+        bashWithInput({
+          command: 'nohup npm run lint:tsc > /tmp/tsc.log 2>&1 &',
+        }),
+      ),
+    );
+  });
+
+  it('fires for a plain shell background operator without nohup', () => {
+    expectShellBackgroundingAdvisory(
+      runGate(bashWithInput({ command: 'npm run test:affected > /tmp/test.log 2>&1 &' })),
+    );
+  });
+
+  it('uses an explicitly requested timeout when naming the wrapper deadline', () => {
+    const out = runGate(
+      bashWithInput({ command: 'nohup npm run build &', timeout: 300_000 }),
+    );
+    expect(JSON.parse(out.stdout).hookSpecificOutput.additionalContext).toContain('300s');
+  });
+
+  it('is silent when the native same-session background mode is used', () => {
+    expectAllow(
+      runGate(
+        bashWithInput({ command: 'nohup npm run lint:tsc > /tmp/tsc.log 2>&1 &', run_in_background: true }),
+      ),
+    );
+  });
+
+  it('does not false-positive on quoted ampersands or Bash &> redirection', () => {
+    expectAllow(runGate(bashWithInput({ command: "printf '%s\\n' '&'" })));
+    expectAllow(runGate(bashWithInput({ command: 'npm run lint:tsc &> /tmp/tsc.log' })));
+  });
+
+  it('does NOT nudge codex shells, which have no native background primitive here', () => {
+    for (const tool of ['exec_command', 'local_shell', 'shell']) {
+      expectAllow(runGate(bashWithInput({ command: 'nohup npm run lint:tsc > /tmp/tsc.log 2>&1 &' }, tool)));
+    }
+  });
+
+  it('a deny gate still WINS over the advisory', () => {
+    const out = runGate(
+      { tool_name: 'Bash', tool_input: { command: 'crontab -e; nohup npm run build &' }, session_id: 's-test' },
+      AGENT,
+    );
+    expect(JSON.parse(out.stdout).hookSpecificOutput.permissionDecision).toBe('deny');
+  });
+});
+
 describe('background-pipe exit-code trap advisory (EI-8871/EI-14065)', () => {
   // A backgrounded `cmd | tail/head/grep` reports the PIPE's last-stage exit
   // code in the completion notification, not the real command's — soft nudge

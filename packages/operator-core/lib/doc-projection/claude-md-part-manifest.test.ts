@@ -27,7 +27,7 @@ type Manifest = {
   contentMode: string;
   snapshotChars: number;
   snapshotBytes: number;
-  summary: { projectedChars: number; totalParts: number };
+  summary: { projectedChars: number; totalParts: number; needsReview: number };
   parts: Part[];
 };
 

@@ -522,6 +522,53 @@ def _strip_quotes_and_comments(s):
         i += 1
     return ''.join(out)
 
+# ── Foreground shell-backgrounding advisory (EI-20202551640426512) ────────
+# A foreground capability:bash call that embeds `nohup` or an unquoted shell
+# background operator (`&`) is not actually detached from the capability
+# wrapper. When that wrapper reaches its deadline, the child can die with it;
+# the wrapper's exit code, a vanished PID, and a partial redirect log can then
+# all look like successful completion. The native `run_in_background` mode is
+# the supported same-session detach and reports the job's real result through
+# capability:bash_output.
+#
+# This is deliberately advisory-only: the command still proceeds exactly as
+# issued. The quote-aware normalizer keeps prose such as `echo "a & b"` and
+# Bash's `&>` redirect from producing a misleading warning.
+#
+# Two established launch wrappers are intentionally exempt: `pc-heavy.sh`
+# owns the self-throttled verification lifecycle, and `bin/vm-federation.sh`
+# is the repo's explicit VM launcher. Their detached forms are covered by
+# dedicated hook regressions and are not foreground result claims.
+try:
+    if tool_name.lower() == 'bash' and not tool_input.get('run_in_background'):
+        _foreground_bg_cmd = _strip_quotes_and_comments(command)
+        _has_shell_bg = bool(re.search(r'(?<![&>])&(?![&>])', _foreground_bg_cmd))
+        _has_detach_wrapper = bool(re.search(r'\b(?:nohup|setsid)\b', _foreground_bg_cmd))
+        _established_detach = bool(re.search(r'(?:scripts/)?pc-heavy\.sh\b|(?:\./)?bin/vm-federation\.sh\b', _foreground_bg_cmd))
+        if (_has_shell_bg or _has_detach_wrapper) and not _established_detach:
+            _deadline = tool_input.get('timeout')
+            _deadline_text = (
+                f'{int(_deadline / 1000)}s'
+                if isinstance(_deadline, (int, float)) and _deadline > 0
+                else 'the default 120s'
+            )
+            _shape = []
+            if _has_detach_wrapper:
+                _shape.append('`nohup`/`setsid`')
+            if _has_shell_bg:
+                _shape.append('a shell background operator `&`')
+            ADVISORY = (
+                'foreground shell-backgrounding advisory (EI-20202551640426512): this '
+                f'foreground Bash call contains {" and ".join(_shape)}, but the capability '
+                f'wrapper still owns {_deadline_text} and may terminate the child with it. '
+                'A wrapper exit code, vanished PID, or partial log is not proof that the '
+                'job finished successfully. For long work use `run_in_background: true` '
+                'and read the real result from `capability:bash_output`. Advisory only; '
+                'this command is proceeding as issued.'
+            )
+except Exception:
+    pass  # advisory must never wedge a command
+
 # ══ SCANNABLE COMMAND — the shared normalizer every DENY guard matches through ══
 #
 # EI-19294800751120438. Before this existed, every deny-guard in this file
