@@ -44,6 +44,25 @@ describe("EI-20224626485772812 — direct coord:inbox argument naming", () => {
     expect(JSON.stringify(tool.guidance ?? {})).toMatch(/pass `limit`/i);
     expect(JSON.stringify(tool.guidance ?? {})).toMatch(/`inboxLimit` belongs to the `coord:orient` wrapper/i);
   });
+
+  it("enumerates the supported direct filters and rejects the stale includeRead key", () => {
+    const keys = Object.keys(tool.args.shape);
+    for (const accepted of [
+      "kinds",
+      "from",
+      "limit",
+      "include_ambient",
+      "includeAmbient",
+      "include_intents",
+      "max_body_chars",
+      "unanswered_only",
+    ]) {
+      expect(keys).toContain(accepted);
+    }
+    expect(keys).not.toContain("includeRead");
+    expect(tool.args.safeParse({ includeRead: false }).success).toBe(false);
+    expect(JSON.stringify(tool.guidance ?? {})).toMatch(/`includeRead` is not supported/i);
+  });
 });
 
 describe("coord:inbox — agent-facing since_ts is deleted (D-013 R2)", () => {
