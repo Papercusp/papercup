@@ -18,6 +18,8 @@ import { join } from 'node:path';
 import { homedir } from 'node:os';
 import { createHash } from 'node:crypto';
 
+import { CLAUDE_CODE_CLIENT_ID, CLAUDE_OAUTH_DEFAULTS } from '@papercusp/papercusp-shared/agent';
+
 export interface OAuthProviderConfig {
   clientId: string;
   clientSecret: string;
@@ -158,7 +160,7 @@ export function makeGithubProvider(config: OAuthProviderConfig): OAuthProvider {
  * name every existing consumer imports — one definition, no second copy to go stale the way
  * EI-553's did.
  */
-export { CLAUDE_CODE_CLIENT_ID, CLAUDE_OAUTH_DEFAULTS } from '@papercusp/papercusp-shared/agent';
+export { CLAUDE_CODE_CLIENT_ID, CLAUDE_OAUTH_DEFAULTS };
 
 export interface ClaudeProviderConfig {
   clientId?: string;
