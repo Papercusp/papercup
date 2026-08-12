@@ -357,6 +357,48 @@ describe('applyResultProjection — safety contracts', () => {
     expect(out.content).toEqual(errorResult.content);
     expect(reportOf(out).applied).toBe(false);
   });
+
+  it('retains a semantic write failure outcome when pick names only success fields', () => {
+    const failedWrite = { ok: false, id: 'WI-1', error: 'not_found' };
+    const out = applyResultProjection(
+      textResult(JSON.stringify(failedWrite)),
+      spec({ pick: ['id'] }),
+      { effect: 'write' },
+    );
+
+    expect(JSON.parse(bodyText(out))).toEqual({ id: 'WI-1', ok: false, error: 'not_found' });
+    expect(footerOf(out)).toContain('write outcome retained implicitly');
+  });
+
+  it('retains top-level and per-row failure signals in a partial bulk write', () => {
+    const partialWrite = {
+      ok: true,
+      results: [{ ok: false, id: 'WI-1', error: 'not_found' }],
+      counts: { ok: 0, failed: 1 },
+    };
+    const out = applyResultProjection(
+      textResult(JSON.stringify(partialWrite)),
+      spec({ pick: ['results[].id'] }),
+      { effect: 'write' },
+    );
+
+    expect(JSON.parse(bodyText(out))).toEqual({
+      ok: true,
+      results: [{ id: 'WI-1', ok: false, error: 'not_found' }],
+      counts: { ok: 0, failed: 1 },
+    });
+  });
+
+  it('does not change read projection semantics', () => {
+    const result = { ok: false, id: 'WI-1', error: 'not_found' };
+    const out = applyResultProjection(
+      textResult(JSON.stringify(result)),
+      spec({ pick: ['id'] }),
+      { effect: 'read' },
+    );
+
+    expect(JSON.parse(bodyText(out))).toEqual({ id: 'WI-1' });
+  });
 });
 
 /**

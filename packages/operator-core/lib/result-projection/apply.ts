@@ -270,11 +270,45 @@ export function applyPick(body: unknown, paths: string[]): { picked: unknown; un
   return { picked: acc === undefined ? {} : acc, unmatched };
 }
 
+/**
+ * Return the outcome paths that are present in a write result.  The paths are
+ * discovered from the actual envelope rather than blindly appended: not every
+ * write uses the keyed-array contract, and a successful bulk row normally has
+ * no `error` property to retain.
+ */
+function writeOutcomePickPaths(body: unknown): string[] {
+  if (!isPlainObject(body)) return [];
+
+  const paths: string[] = [];
+  for (const key of ['ok', 'error', 'counts'] as const) {
+    if (Object.prototype.hasOwnProperty.call(body, key)) paths.push(key);
+  }
+
+  const results = body.results;
+  if (Array.isArray(results)) {
+    const rows = results.filter(isPlainObject);
+    if (rows.some((row) => Object.prototype.hasOwnProperty.call(row, 'ok'))) {
+      paths.push('results[].ok');
+    }
+    if (rows.some((row) => Object.prototype.hasOwnProperty.call(row, 'error'))) {
+      paths.push('results[].error');
+    }
+  }
+  return paths;
+}
+
 // ── the stage ─────────────────────────────────────────────────────────────────
 
 export interface ApplyProjectionOpts {
   /** Canonical tool name — names the tool in the in-band footer. */
   toolName?: string;
+  /**
+   * The tool's declared side-effect class. Write results retain their outcome
+   * envelope even when the caller's pick names only success fields, because a
+   * semantic write failure is commonly a resolved, ordinary JSON result rather
+   * than an MCP `isError` transport envelope.
+   */
+  effect?: 'read' | 'write';
 }
 
 function pct(part: number, whole: number): string {
@@ -416,21 +450,45 @@ export function applyResultProjection<T extends ProjectableResult>(
             'the text was passed to `pipe` unchanged. Use `pipe` line operators for text results.',
         );
       } else {
-        const { picked, unmatched } = applyPick(json.parsed, spec.pick);
-        if (unmatched.length === spec.pick.length) {
+        // A write can fail semantically while still resolving with a normal
+        // result body (`{ ok:false, error }`) or a bulk envelope whose top-level
+        // `ok` is true but whose row/count fields report failure.  A caller that
+        // picks only success fields must never be allowed to project away that
+        // outcome.  Retain only fields that exist in this particular envelope so
+        // ordinary write responses without the house outcome shape do not gain
+        // spurious unmatched-path warnings.
+        const implicitWritePaths =
+          opts.effect === 'write'
+            ? writeOutcomePickPaths(json.parsed).filter((path) => !spec.pick!.includes(path))
+            : [];
+        const pickPaths = [...spec.pick, ...implicitWritePaths];
+        const { picked, unmatched } = applyPick(json.parsed, pickPaths);
+        const requestedUnmatched = unmatched.filter((path) => !implicitWritePaths.includes(path));
+        const implicitRetained = implicitWritePaths.filter((path) => !unmatched.includes(path));
+        if (requestedUnmatched.length === spec.pick.length) {
           note(
-            `pick matched NOTHING (${unmatched.join(', ')}) — body left unprojected rather than ` +
+            `pick matched NOTHING (${requestedUnmatched.join(', ')}) — body left unprojected rather than ` +
               `returning an empty object. Check the real shape with a smaller path first.`,
           );
         } else {
-          if (unmatched.length > 0) {
+          if (requestedUnmatched.length > 0) {
             // The PARTIAL miss is the dangerous one and the case P-015 names:
             // the matched path shrinks the body dramatically, the footer reports
             // a large saving, and the field the caller actually came for is
             // silently absent. Loud, and — via `degraded` — ahead of the number.
             note(
-              `pick path(s) matched nothing: ${unmatched.join(', ')} — those field(s) are ABSENT ` +
+              `pick path(s) matched nothing: ${requestedUnmatched.join(', ')} — those field(s) are ABSENT ` +
                 `from the body below, which is otherwise a normal-looking result.`,
+            );
+          }
+          if (implicitRetained.length > 0) {
+            // This is an intentional, non-degrading addition to the caller's
+            // selection: it makes the write outcome observable without making
+            // every write projection look like a warning.
+            note(
+              `write outcome retained implicitly: ${implicitRetained.join(', ')} — ` +
+                'projection cannot hide whether the mutation succeeded.',
+              false,
             );
           }
           working = JSON.stringify(picked, null, 2);

@@ -1389,7 +1389,7 @@ async function buildMcpToolContext(
       dispatchProjectedToolToMcp(target, canonicalName, dispatchToolArgs, ctx, PROJECTED_DEPS),
     )) as McpCallResult;
     return projectionSpec
-      ? applyResultProjection(dispatched, projectionSpec, { toolName: canonicalName })
+      ? applyResultProjection(dispatched, projectionSpec, { toolName: canonicalName, effect: target.effect })
       : dispatched;
   };
   const builtCtx: UnifiedToolContext = {
@@ -2330,7 +2330,7 @@ const handler = createMcpHandler(
                 )) as McpCallResult,
                 }),
                 projectionSpec,
-                { toolName },
+                { toolName, effect: projected?.effect },
               );
               // EI-19386201256023240: a tool whose documented/near-exclusive
               // caller is a programmatic client (a shell hook `json.loads`-ing
