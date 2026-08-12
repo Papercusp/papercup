@@ -46,7 +46,8 @@ vi.mock('../search/embedder', () => ({
   interactiveEmbedAcquireBudgetMs: vi.fn(() => 1000),
 }));
 
-const tool = (await import('./search')).default;
+const searchModule = await import('./search');
+const tool = searchModule.default;
 
 const argsSchema = tool.args as {
   safeParse: (value: unknown) => { success: boolean };
@@ -56,7 +57,10 @@ interface ParsedResult {
   ok: boolean;
   mode: string;
   total_hits: number;
+  hasMore: boolean;
+  nextCursor?: string;
   hint?: string;
+  resultsTruncated?: { requested: number; returned: number; reason: string };
   results: unknown[];
 }
 
@@ -111,5 +115,56 @@ describe('sessions:search EI-18877285731929394 — verbatim 0-hit hint', () => {
     expect(parsed.mode).toBe('hybrid');
     expect(parsed.total_hits).toBe(0);
     expect(parsed.hint).toBeUndefined();
+  });
+});
+
+describe('sessions:search response-door shaping', () => {
+  it('returns valid bounded JSON and a cursor when many same-block hits include windows', async () => {
+    const text = 'same-content-block '.repeat(80);
+    const rows = Array.from({ length: 11 }, (_, index) => ({
+      source_kind: 'claude',
+      session_id: `session-${index}`,
+      turn_idx: index,
+      speaker: 'assistant',
+      owner: 'su-self',
+      harness_slug: null,
+      ts: null,
+      text,
+    }));
+    const windowRows = rows.slice(0, 5).map(({ turn_idx, speaker, ts, text: windowText }) => ({
+      turn_idx,
+      speaker,
+      ts,
+      text: windowText,
+    }));
+    const tx = vi.fn(async (strings: readonly string[]) => {
+      const sql = strings.join(' ');
+      if (sql.includes('left(text, 700)')) return rows;
+      if (sql.includes('left(text, 512)')) return [];
+      if (sql.includes('SELECT turn_idx, speaker')) return windowRows;
+      return [];
+    });
+
+    const res = await callTool({
+      query: 'same-content-block',
+      mode: 'verbatim',
+      limit: 10,
+      context: 2,
+    }, tx);
+    const raw = res.content[0].text;
+    const parsed = JSON.parse(raw) as ParsedResult;
+
+    expect(raw.length).toBeLessThanOrEqual(searchModule.SESSION_SEARCH_RESPONSE_BUDGET_CHARS);
+    expect(parsed.ok).toBe(true);
+    expect(parsed.total_hits).toBe(parsed.results.length);
+    expect(parsed.results.length).toBeGreaterThan(0);
+    expect(parsed.results.length).toBeLessThan(10);
+    expect(parsed.hasMore).toBe(true);
+    expect(parsed.nextCursor).toBeDefined();
+    expect(parsed.resultsTruncated).toMatchObject({ reason: 'response_budget' });
+    expect(parsed.results[0]).toMatchObject({
+      provenance: { session_id: 'session-0', source_kind: 'claude' },
+      readMore: { tool: 'sessions:read' },
+    });
   });
 });

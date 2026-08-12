@@ -29,6 +29,62 @@ import { resolveHitTurnOrigins, turnOriginKey, unknownTurnOrigin } from './turn-
 
 const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
 
+/**
+ * Keep the serialized body below the baked result door (1500 tokens ≈ 6000
+ * characters). This is deliberately a little lower than the door: the door
+ * must see complete JSON, and callers commonly pipe this response to jq.
+ */
+export const SESSION_SEARCH_RESPONSE_BUDGET_CHARS = 4_800;
+const SESSION_SEARCH_TEXT_CHARS = 320;
+const SESSION_SEARCH_WINDOW_TURN_CHARS = 280;
+const SEARCH_TRUNCATION_MARKER = '…[truncated]';
+
+interface SearchOutput {
+  source: string;
+  provenance: Record<string, unknown>;
+  excerpt: string;
+  highlight?: string;
+  score: number;
+  window?: WindowTurn[];
+  readMore?: { tool: string; args: Record<string, unknown> };
+}
+
+function clipSearchText(value: string, maxChars: number): string {
+  if (value.length <= maxChars) return value;
+  if (maxChars <= SEARCH_TRUNCATION_MARKER.length) return value.slice(0, maxChars);
+  return `${value.slice(0, maxChars - SEARCH_TRUNCATION_MARKER.length)}${SEARCH_TRUNCATION_MARKER}`;
+}
+
+function shapeSearchOutput(result: SearchOutput): SearchOutput {
+  return {
+    ...result,
+    excerpt: clipSearchText(result.excerpt, SESSION_SEARCH_TEXT_CHARS),
+    ...(result.highlight
+      ? { highlight: clipSearchText(result.highlight, SESSION_SEARCH_TEXT_CHARS) }
+      : {}),
+    ...(result.window
+      ? {
+          window: result.window.map((turn) => ({
+            ...turn,
+            text: clipSearchText(turn.text, SESSION_SEARCH_WINDOW_TURN_CHARS),
+          })),
+        }
+      : {}),
+  };
+}
+
+/** Last-resort shape: preserve the coordinates/readMore pointer even if one
+ * hit's surrounding window alone would consume the response budget. */
+function minimizeSearchOutput(result: SearchOutput): SearchOutput {
+  return {
+    source: result.source,
+    provenance: result.provenance,
+    excerpt: '[result content omitted to keep the response valid JSON; use readMore]',
+    score: result.score,
+    ...(result.readMore ? { readMore: result.readMore } : {}),
+  };
+}
+
 export default defineTool({
   name: 'sessions:search',
   crossWorkspace: true,
@@ -164,11 +220,8 @@ export default defineTool({
       }
     }
 
-    const hasMore = mode === 'verbatim' ? hits.length > limit : hits.length > offset + limit;
+    const sourceHasMore = mode === 'verbatim' ? hits.length > limit : hits.length > offset + limit;
     const pageHits = mode === 'verbatim' ? hits.slice(0, limit) : hits.slice(offset, offset + limit);
-    const nextCursor = hasMore
-      ? encodeSessionCursor('sessions:search', offset + pageHits.length, fingerprint, { until: snapshotUntil })
-      : undefined;
 
     // EI-18862790811651475: a 0-hit session:'self' search is CONFIDENCE-BUILDING —
     // it reads as "I checked and there is nothing", not "the query missed". When
@@ -221,7 +274,7 @@ export default defineTool({
     }
 
     // Hydrate ±context windows only for this page.
-    const out = [];
+    const out: SearchOutput[] = [];
     for (const h of pageHits) {
       const turnOrigin = h.source === 'session_turn'
         ? turnOrigins.get(turnOriginKey({ sourceKind: h.sourceKind, sessionId: h.sessionId, turnIdx: h.turnIdx }))
@@ -234,10 +287,18 @@ export default defineTool({
       let window: WindowTurn[] | undefined;
       if (h.source === 'session_turn' && context > 0) {
         try {
-          window = await hydrateWindow(ctx.tx, workspaceId, h.sourceKind, h.sessionId, h.turnIdx, context);
+          window = await hydrateWindow(
+            ctx.tx,
+            workspaceId,
+            h.sourceKind,
+            h.sessionId,
+            h.turnIdx,
+            context,
+            SESSION_SEARCH_WINDOW_TURN_CHARS,
+          );
         } catch { /* window is a bonus, never fail the search */ }
       }
-      out.push({
+      out.push(shapeSearchOutput({
         source: h.source,
         provenance: h.source === 'session_turn'
           ? { source_kind: h.sourceKind, session_id: h.sessionId, turn_idx: h.turnIdx,
@@ -252,41 +313,96 @@ export default defineTool({
         ...(h.source === 'session_turn'
           ? { readMore: { tool: 'sessions:read', args: { session: h.sessionId, source_kind: h.sourceKind, around: h.turnIdx, context: 10 } } }
           : {}),
-      });
+      }));
+    }
+
+    const baseResponse: Record<string, unknown> = {
+      ok: true,
+      query: args.query,
+      mode,
+      window: { until: snapshotUntil },
+      ...(resolvedSelfSession
+        ? { self_session: { source_kind: resolvedSelfSession.sourceKind, session_id: resolvedSelfSession.sessionId } }
+        : {}),
+      ...(args.session === 'self' && !resolvedSelfSession
+        ? { note: "session:'self' could not be pinned to a live transcript — degraded to an owner-filtered search." }
+        : {}),
+      // EI-18877285731929394: verbatim mode is exact-substring (ILIKE), so a
+      // paraphrased/multi-word "what I remember" query — exactly what the
+      // compaction-recovery doc's own example encourages — silently returns 0
+      // hits even when the content exists, and a 0-hit result reads exactly
+      // like "it never happened" rather than "your query wasn't a literal
+      // quote". Surface the fallback right where the false negative occurs,
+      // not just in prose docs an agent may not re-read mid-recovery.
+      ...(mode === 'verbatim' && pageHits.length === 0
+        ? {
+            hint:
+              "0 hits: verbatim mode matches only an exact, contiguous, case-insensitive substring — a paraphrase or multi-word description of what you remember will NOT match even if the content exists. Retry with mode:'hybrid' (meaning-based, the default) to search by concept, or narrow query to the exact short phrase you expect verbatim in the transcript. Do not read this 0 as \"it didn't happen\".",
+          }
+        : {}),
+      ...(zeroHitCaveat ? { zeroHitCaveat } : {}),
+    };
+
+    const cursorFor = (resultCount: number, more: boolean): string | undefined => more
+      ? encodeSessionCursor('sessions:search', offset + resultCount, fingerprint, { until: snapshotUntil })
+      : undefined;
+    const serializeResponse = (
+      results: SearchOutput[],
+      more: boolean,
+      nextCursor: string | undefined,
+      truncated: boolean,
+    ): string => JSON.stringify({
+      ...baseResponse,
+      total_hits: results.length,
+      hasMore: more,
+      ...(nextCursor ? { nextCursor } : {}),
+      ...(truncated
+        ? {
+            resultsTruncated: {
+              requested: out.length,
+              returned: results.length,
+              reason: 'response_budget',
+            },
+          }
+        : {}),
+      results,
+    });
+
+    // The result door can only preserve a complete JSON body when the tool
+    // shapes it before the door sees it. Return a prefix that fits and advance
+    // the cursor by exactly that prefix, so omitted hits remain pageable.
+    let responseText = serializeResponse(
+      out,
+      sourceHasMore,
+      cursorFor(out.length, sourceHasMore),
+      false,
+    );
+    let selected = false;
+    for (let count = out.length; count >= 1; count -= 1) {
+      const results = out.slice(0, count);
+      const more = sourceHasMore || count < out.length;
+      const candidate = serializeResponse(results, more, cursorFor(count, more), count < out.length);
+      if (candidate.length <= SESSION_SEARCH_RESPONSE_BUDGET_CHARS) {
+        responseText = candidate;
+        selected = true;
+        break;
+      }
+    }
+
+    // A single hit can still carry unusually large identifiers or provenance.
+    // Keep its session coordinate and readMore pointer, but never fall back to
+    // an over-door, invalid JSON response.
+    if (!selected && out.length > 0) {
+      const results = [minimizeSearchOutput(out[0])];
+      const more = sourceHasMore || out.length > 1;
+      const candidate = serializeResponse(results, more, cursorFor(1, more), true);
+      responseText = candidate.length <= SESSION_SEARCH_RESPONSE_BUDGET_CHARS
+        ? candidate
+        : serializeResponse([], true, cursorFor(0, true), true);
     }
 
     return {
-      content: [{
-        type: 'text' as const,
-        text: JSON.stringify({
-          ok: true,
-          query: args.query,
-          mode,
-          total_hits: out.length,
-          hasMore,
-          window: { until: snapshotUntil },
-          ...(nextCursor ? { nextCursor } : {}),
-          ...(resolvedSelfSession ? { self_session: { source_kind: resolvedSelfSession.sourceKind, session_id: resolvedSelfSession.sessionId } } : {}),
-          ...(args.session === 'self' && !resolvedSelfSession
-            ? { note: "session:'self' could not be pinned to a live transcript — degraded to an owner-filtered search." }
-            : {}),
-          // EI-18877285731929394: verbatim mode is exact-substring (ILIKE), so a
-          // paraphrased/multi-word "what I remember" query — exactly what the
-          // compaction-recovery doc's own example encourages — silently returns 0
-          // hits even when the content exists, and a 0-hit result reads exactly
-          // like "it never happened" rather than "your query wasn't a literal
-          // quote". Surface the fallback right where the false negative occurs,
-          // not just in prose docs an agent may not re-read mid-recovery.
-          ...(mode === 'verbatim' && out.length === 0
-            ? {
-                hint:
-                  "0 hits: verbatim mode matches only an exact, contiguous, case-insensitive substring — a paraphrase or multi-word description of what you remember will NOT match even if the content exists. Retry with mode:'hybrid' (meaning-based, the default) to search by concept, or narrow query to the exact short phrase you expect verbatim in the transcript. Do not read this 0 as \"it didn't happen\".",
-              }
-            : {}),
-          ...(zeroHitCaveat ? { zeroHitCaveat } : {}),
-          results: out,
-        }),
-      }],
+      content: [{ type: 'text' as const, text: responseText }],
     };
   },
 });
