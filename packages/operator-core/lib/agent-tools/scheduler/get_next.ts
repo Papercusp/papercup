@@ -569,6 +569,12 @@ export default defineTool({
   },
   capability: 'work_items:write',
   requirePrincipal: false,
+  // EI-20219220087119072: this self-pull handler never reads ctx.tx. Its claim,
+  // scope-reconciliation, and miss-diagnosis legs use their own DB accessors and
+  // can await several independent reads; retaining the dispatcher's ambient
+  // workspace transaction pins an org-app pool slot for the whole call and lets
+  // fleet contention starve subsequent scheduler pulls at the acquisition seam.
+  skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES],
   args: z.object({
     harness: z
