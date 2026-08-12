@@ -1,9 +1,11 @@
 /**
- * psu-launcher-env-sanitize.test.ts (EI-8868/EI-8877) — the fleet-wide recurrence
- * guard for the npm-run-lifecycle env leak that poisons every psu-launched agent's
- * vitest/npx resolution (and, via harness_shared.test_runs, the fleet's "red-test"
+ * psu-launcher-env-sanitize.test.ts (EI-8868/EI-8877/WI-37487) — the fleet-wide
+ * recurrence guard for inherited launch-environment pollution that poisons every
+ * psu-launched agent's vitest/npx resolution or routes unrelated work through an
+ * operator-only sidecar (and, via harness_shared.test_runs, the fleet's "red-test"
  * watchdog signal — see EI-8828/EI-8840). Proves `sanitizeInheritedEnv` strips the
- * dangerous npm_* lifecycle vars + release-tree PATH segments, and ONLY those.
+ * dangerous npm_* lifecycle vars, release-tree PATH segments, and operator-only
+ * sidecar toggles while preserving ordinary session state.
  *
  * Run: cd apps/operator && npx vitest run scripts/psu-launcher-env-sanitize.test.ts
  */
@@ -75,5 +77,18 @@ describe('sanitizeInheritedEnv (EI-8868/EI-8877)', () => {
     const out = sanitizeInheritedEnv({ npm_config_local_prefix: '/x' });
     expect(out.PATH).toBeUndefined();
     expect(out.npm_config_local_prefix).toBeUndefined();
+  });
+
+  it('strips operator-only sidecar toggles before launching an independent agent (WI-37487)', () => {
+    const clean = sanitizeInheritedEnv({
+      PAPERCUSP_DEV_DEPLOY_SPAWN_SIDECAR: '1',
+      PAPERCUSP_SYSTEM_HEALTH_SPAWN_SIDECAR: '1',
+      PAPERCUSP_HARNESS_SLUG: 'papercusp',
+      HOME: '/home/dev',
+    });
+    expect(clean.PAPERCUSP_DEV_DEPLOY_SPAWN_SIDECAR).toBeUndefined();
+    expect(clean.PAPERCUSP_SYSTEM_HEALTH_SPAWN_SIDECAR).toBeUndefined();
+    expect(clean.PAPERCUSP_HARNESS_SLUG).toBe('papercusp');
+    expect(clean.HOME).toBe('/home/dev');
   });
 });

@@ -5558,6 +5558,14 @@ export function sanitizeInheritedEnv(env) {
     'PAPERCUSP_CODEX_GATEWAY',
     ACCOUNT_ROUTING_MODE_ENV,
     'CLAUDE_CODE_OAUTH_TOKEN',
+    // WI-37487: these are operator-service-only performance toggles from
+    // WI-7160. A psu process may itself be launched from an operator shell,
+    // but its child is an independent agent session; inheriting these flags
+    // makes unrelated agent tests and tools route through the operator's
+    // sidecar path. The explicit launch envelope can still opt a child in if
+    // a future launch contract requires it.
+    'PAPERCUSP_DEV_DEPLOY_SPAWN_SIDECAR',
+    'PAPERCUSP_SYSTEM_HEALTH_SPAWN_SIDECAR',
   ]) {
     delete out[key];
   }
