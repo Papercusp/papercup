@@ -276,7 +276,12 @@ function makeRoleResolver(): EntityResolver {
  * cap so a big set publishes, price it first: an enum is re-serialized into
  * every arg site of every tool naming the kind, in every session.
  */
-export function registerPapercuspEntityResolvers(): void {
+export function registerPapercuspEntityResolvers(
+  options: PapercuspEntityRegistrationOptions = {},
+): void {
+  const mode = options.mode ?? defaultEntityRegistrationMode();
+  const entityEnum = mode === 'unit' ? EMPTY_ENTITY_ENUM : undefined;
+
   setEntityResolver('pot', makeSetResolver('pot', loadPots));
   setEntityResolver('harness', makeSetResolver('harness', loadHarnessSlugs));
   setEntityResolver('role', makeRoleResolver());
@@ -284,8 +289,8 @@ export function registerPapercuspEntityResolvers(): void {
   // Registered even though they are over-cap today: the cap is enforced inside
   // the overlay, so these publish nothing now and start publishing on their own
   // once the P-006/P-007 backfill collapses harness_slug onto the pot registry.
-  setEntityEnum('pot', loadPots);
-  setEntityEnum('harness', loadHarnessSlugs);
+  setEntityEnum('pot', entityEnum ?? loadPots);
+  setEntityEnum('harness', entityEnum ?? loadHarnessSlugs);
   setEntityEnum('role', loadRoles, {
     maxValues: 80,
     openPattern: NAMESPACED_ROLE.source,

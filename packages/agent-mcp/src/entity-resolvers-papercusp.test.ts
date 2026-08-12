@@ -154,6 +154,46 @@ describe('over-cap vocabularies publish nothing', () => {
   });
 });
 
+describe('registration mode', () => {
+  afterEach(() => {
+    // Keep later tests on the normal unit-tier registration. A live registration
+    // is intentionally opt-in and is only used by the recurrence guard below.
+    registerPapercuspEntityResolvers({ mode: 'unit' });
+    invalidateEntityCache();
+  });
+
+  it('defaults pot and harness enum loading to hermetic unit loaders', async () => {
+    registerPapercuspEntityResolvers();
+    const schema = z.object({ pot: entityRef('pot'), harness: entityRef('harness') });
+    const out = await applyEntityRefEnums(schema, z.toJSONSchema(schema) as Record<string, unknown>);
+    const properties = out.properties as Record<string, Record<string, unknown>>;
+
+    // Empty enum loaders are a deliberate no-op in the advertised schema. Most
+    // importantly, this path cannot acquire a database connection from a unit
+    // test merely because a tool schema contains an entityRef.
+    expect(properties.pot.enum).toBeUndefined();
+    expect(properties.pot.anyOf).toBeUndefined();
+    expect(properties.harness.enum).toBeUndefined();
+    expect(properties.harness.anyOf).toBeUndefined();
+  });
+
+  it('allows an explicit live registration for recurrence and integration tests', async () => {
+    registerPapercuspEntityResolvers({ mode: 'live' });
+    const errors: string[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => {
+      errors.push(a.map(String).join(' '));
+    });
+
+    try {
+      const schema = z.object({ pot: entityRef('pot') });
+      await applyEntityRefEnums(schema, z.toJSONSchema(schema) as Record<string, unknown>);
+      expect(errors.join('\n')).toContain('UNIT-TIER DB REACH REFUSED');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+});
+
 /**
  * THE RECURRENCE GUARD for EI-20248980966812937.
  *
@@ -181,7 +221,9 @@ describe('unit-tier DB rail (EI-20248980966812937)', () => {
    * so re-registering the real loaders is what makes these assertions falsifiable.
    */
   beforeEach(() => {
-    registerPapercuspEntityResolvers();
+    // Live DB-backed registration is explicit: production gets it from the
+    // module-scope default, while unit tests must opt in to test this rail.
+    registerPapercuspEntityResolvers({ mode: 'live' });
     invalidateEntityCache();
   });
 
