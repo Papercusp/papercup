@@ -21,11 +21,13 @@
  */
 import { realpathSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import { dirname, isAbsolute } from 'node:path';
+import { homedir } from 'node:os';
+import { dirname, isAbsolute, join } from 'node:path';
 import { hasValidGitEntry } from './valid-git-entry';
 import { activeWorkspaceId } from '../../workspace-registry';
 
 let _domain: string | null = null;
+let _fileDomain: string | null = null;
 
 /** Walk up from `start` to the nearest ancestor containing a VALID `.git` entry
  *  (gitlink file OR git dir with HEAD — see valid-git-entry.ts: a stray empty
