@@ -72,6 +72,24 @@ beforeEach(() => {
 });
 
 describe('work_items:get — planItemBlocked field (EI-13715)', () => {
+  it('starts independent enrichment reads concurrently (EI-20220772039692003)', async () => {
+    getWorkItem.mockResolvedValue(baseItem());
+    let releaseCheckpoint!: (value: { checkpoint: null; updatedAtMs: null }) => void;
+    getWorkItemCheckpointWithMeta.mockImplementation(
+      () => new Promise((resolve) => { releaseCheckpoint = resolve; }),
+    );
+
+    const pending = one({ id: 'F-100' });
+    await vi.waitFor(() => expect(getWorkItemCheckpointWithMeta).toHaveBeenCalledOnce());
+
+    // The plan lookup must begin while the checkpoint read is still pending. A
+    // serial handler waits here and fails this assertion, recreating the additive
+    // pool-queue latency that pushed staging reads past the client deadline.
+    expect(planItemLaneBlockReason).toHaveBeenCalledOnce();
+    releaseCheckpoint({ checkpoint: null, updatedAtMs: null });
+    await expect(pending).resolves.toMatchObject({ ok: true, id: 'F-100' });
+  });
+
   it('surfaces planItemBlocked when the linked plan-item lane is still effectively blocked', async () => {
     getWorkItem.mockResolvedValue(baseItem());
     planItemLaneBlockReason.mockResolvedValue({

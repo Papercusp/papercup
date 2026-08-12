@@ -189,12 +189,31 @@ export default defineTool({
         // silently re-created the exact conclusion EI-7252 above added this field to prevent
         // (a reader wrongly concluding in-flight state was lost) — and worse, fed an emphatic
         // prose assertion downstream via `hasCheckpoint` (see priorWork below).
-        const checkpointRead = await getWorkItemCheckpointWithMeta({
-          harness: workItem.harness,
-          workItemId: workItem.id,
-        })
-          .then((r) => ({ checkpoint: r.checkpoint, updatedAtMs: r.updatedAtMs, readFailed: false }))
-          .catch(() => ({ checkpoint: null, updatedAtMs: null, readFailed: true }));
+        // EI-20220772039692003: these five enrichments are independent. Awaiting them
+        // serially made their pool-acquisition queue time additive under checkpoint
+        // load: the base item read succeeded, but the complete tool call crossed the
+        // client's 15s deadline. Start them together so latency is bounded by the
+        // slowest enrichment rather than their sum. Each leg keeps its existing
+        // fail-soft fallback, so concurrency does not widen the failure surface.
+        const [checkpointRead, planItemBlocked, claimCollision, decoratedRows, priorWorkRaw] = await Promise.all([
+          getWorkItemCheckpointWithMeta({
+            harness: workItem.harness,
+            workItemId: workItem.id,
+          })
+            .then((r) => ({ checkpoint: r.checkpoint, updatedAtMs: r.updatedAtMs, readFailed: false }))
+            .catch(() => ({ checkpoint: null, updatedAtMs: null, readFailed: true })),
+          planItemLaneBlockReason(workItem).catch(() => null),
+          planItemClaimCollision(workItem).catch(() => null),
+          attachHolderContext(
+            [{ assignee: workItem.assignee ?? null, state: workItem.state ?? null }],
+            reader,
+          ).catch(() => [undefined]),
+          getClaimTimePriorWorkHint({
+            harness: workItem.harness,
+            workItemId: workItem.id,
+          }).catch(() => null),
+        ]);
+        const [decorated] = decoratedRows;
         const { checkpoint, updatedAtMs: checkpointUpdatedAtMs, readFailed: checkpointReadFailed } = checkpointRead;
         const checkpointAgeMs = checkpointUpdatedAtMs != null ? Math.max(0, Date.now() - checkpointUpdatedAtMs) : null;
         // EI-15184: RELATIVE checkpoint staleness. `checkpointAgeMs` above is
@@ -245,14 +264,12 @@ export default defineTool({
         // / claim_next / scheduler:get_next already enforce, here too — read-only,
         // fails open (null on no back-pointer, lookup error, or a clear lane), cheap
         // (one plan-row read, only when the item actually carries the back-pointer).
-        const planItemBlocked = await planItemLaneBlockReason(workItem).catch(() => null);
         // P-006 (agent-trap-guards-2026-07-26): "holding the linked work-item is not
         // holding the plan item" — surface it when the linked plan item's live claim
         // has diverged from this work-item's own assignee, so an agent mid-execution
         // can see the item is no longer (solely) theirs instead of discovering it only
         // at close time via a plan-item claim conflict. Fails open (undefined) on any
         // lookup error or when there is no divergence.
-        const claimCollision = await planItemClaimCollision(workItem).catch(() => null);
         // EI-18654296679612119: the checkpoint may cite a background job/task as evidence of
         // in-flight or completed work — that bookkeeping lives in the WRITER'S own process/shell
         // and can die silently across a session teardown / loop-carry respawn / compaction with
@@ -264,19 +281,11 @@ export default defineTool({
         // the ordinary read — not only when a claim is REFUSED. A lens onto the
         // shared P-026 projection, gated by `getCell('agent.goal', reader)`;
         // total, so a failure costs this field and never the read.
-        const [decorated] = await attachHolderContext(
-          [{ assignee: workItem.assignee ?? null, state: workItem.state ?? null }],
-          reader,
-        ).catch(() => [undefined]);
         // P-001 (fleet-leadership-continuity-and-actuation-2026-08-01): the read-side twin of the
         // claim-time guard. `checkpoint` above answers "what did the prior holder SAY"; this
         // answers "was there a prior holder AT ALL" — which is the only question left when the
         // checkpoint is empty, and the one that distinguishes a worked-then-released item from a
         // never-started one. Fail-soft: a lookup miss just omits the field.
-        const priorWorkRaw = await getClaimTimePriorWorkHint({
-          harness: workItem.harness,
-          workItemId: workItem.id,
-        }).catch(() => null);
         // WI-6737: `'unknown'` when the checkpoint read above FAILED — never `false`, which
         // priorWorkWarning renders as the categorical "NO checkpoint was ever written".
         const priorWork = priorWorkRaw
