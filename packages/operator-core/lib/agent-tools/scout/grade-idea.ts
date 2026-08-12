@@ -6,9 +6,9 @@
  * Two invariants live HERE rather than in any prompt:
  *
  *   - `gradedBy` is DERIVED from the caller, never caller-supplied (D-004):
- *     a Queen spawn ctx grades as 'Queen'; every other allowed surface — the
- *     admin UI tool proxy, SU/psu sessions, operator chat — acts on the
- *     owner's behalf and grades as 'owner'.
+ *     a Queen spawn ctx grades as 'Queen'; an identified SU/psu agent grades
+ *     under its resolved ownerId; only an unidentifiable human-surface call
+ *     falls back to the literal 'owner'.
  *   - The idea key is `ideaId` OR the routed artifact's change-feed ref
  *     `routedRef` ("plan:<slug>" | "wi:<id>" | "gym:<id>"), exactly one
  *     (D-007): the Queen triages routed artifacts and holds only the ref;
@@ -40,11 +40,14 @@ export type GradedBy = GradeRoutedIdeaInput['gradedBy'];
 
 /**
  * C-3: derive grader attribution from the caller — never from args. The Queen's
- * spawn ctx carries role 'queen'; every other surface this tool admits (admin
- * UI proxy, SU sessions, operator chat) is the owner acting directly or by proxy.
+ * spawn ctx carries role 'mug'. Identified agent callers retain their resolved
+ * ownerId so autonomous grades cannot consume the human owner's sovereign slot;
+ * an unidentifiable human-surface call is the only literal 'owner' fallback.
  */
-export function deriveGradedBy(ctx: { role?: string } | undefined): GradedBy {
-  return ctx?.role === 'mug' ? 'Queen' : 'owner';
+export function deriveGradedBy(ctx: { role?: string; ownerId?: string | null } | undefined): GradedBy {
+  if (ctx?.role === 'mug') return 'Queen';
+  const ownerId = ctx?.ownerId?.trim();
+  return ownerId || 'owner';
 }
 
 /** Post-write summary of the graded ledger row, returned to the caller (C-3). */
@@ -506,12 +509,12 @@ function resolveCallerOwnerId(ctx: ResolveIdentityCtx | undefined): string | nul
 export default defineTool({
   name: 'blender:grade-idea',
   description:
-    "Grade a routed Blender idea 1–5 with optional feedback (≤2000 chars). Grades steer Blender's learning: fractional win credit in the lens weights + the critique primed into next cycles' ideator prompts. Key by ideaId or routedRef. On a su-ideate filing, a grade ≤3 with feedback wakes the originator to revise or defend (higher grades + feedback deliver an unwoken FYI) — best-effort, reported as revisionWake.",
+    "Grade a routed Blender idea 1–5 with optional feedback (≤2000 chars). Grades steer learning: fractional win credit in lens weights + critique primed into later ideator prompts. Key by ideaId or routedRef. On a su-ideate filing, a grade ≤3 with feedback wakes the originator to revise or defend (higher grades + feedback deliver an unwoken FYI) — best-effort, reported as revisionWake.",
   capability: 'harness:write',
   guidance: {
     when: "You want to score a routed Blender idea 1–5 (optional one-line critique) so Blender learns which lenses to favor. Key by ideaId (Blender view / learning.scout snapshot callers) or by routedRef — the routed artifact's change-feed ref 'plan:<slug>' | 'wi:<id>' | 'gym:<id>' — when you hold the artifact but not the ideaId (the Mug's triage path: grade each ungraded routed draft).",
     notWhen:
-      'Not an accept/reject of the routed artifact — a grade is a pure learning signal; the draft proceeds through normal triage regardless. Never pass grader attribution: gradedBy is derived from the caller role (Mug vs owner surface).',
+      'Not an accept/reject of the routed artifact — a grade is a pure learning signal; the draft proceeds through normal triage regardless. Never pass grader attribution: gradedBy is derived from the caller identity (Mug, resolved agent ownerId, or the human owner surface).',
     chaining:
       "Nothing to chain: weights update on the next refreshScoutOutcomes pass and feedback enters ideator priming automatically. A su-ideate grade with feedback auto-notifies the originator (revisionWake in the result: ≤3 wakes them to revise or defend, >3 is an unwoken FYI). applied:false + reason 'owner-grade-sovereign' (Mug regrading an owner-graded row) is expected, not an error — owner grades are sovereign; the returned summary carries the standing grade.",
   },
