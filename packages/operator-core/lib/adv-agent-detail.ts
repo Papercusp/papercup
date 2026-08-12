@@ -14,11 +14,7 @@
  */
 
 import { readAckedMsgIds, readInvolvingOwner } from './agent-tools/coordination/messages';
-import {
-  ownerVisiblePromptText,
-  OWNER_CHAT_TURN_ORIGIN,
-} from './agent-tools/coordination/owner-chat-turn';
-import { envelopePatternSql } from './turn-provenance/envelope-grammar';
+import { ownerVisiblePromptText } from './agent-tools/coordination/owner-chat-turn';
 import { readWatermark, pickUnreadCursor } from './agent-tools/coordination/watermarks';
 import { lastInboxReadAtBatch } from './agent-tools/coordination/inbox-read-freshness';
 import { listHandoffs, type HandoffWithAcceptance } from './agent-tools/coordination/handoffs';
@@ -1966,8 +1962,17 @@ export async function resolvePushedRefTitles(
            ORDER BY session_id,
              CASE
                WHEN text IS NULL OR btrim(text) = '' THEN 1
-               WHEN text ~ ${envelopePatternSql(OWNER_CHAT_TURN_ORIGIN)} THEN 0
-               WHEN text ~ ${envelopePatternSql()} THEN 1
+               -- ⚠ These two patterns are POSIX (Postgres) dialect, and they are
+               -- LITERAL on purpose: interpolating them would bind them as
+               -- parameters, which (a) hides the ordering rule from this query's
+               -- unit test, whose fake tag captures only the SQL text, and
+               -- (b) risks "could not determine data type of parameter" on an
+               -- untyped text-tilde-parameter comparison (WI-37757, same codebase).
+               -- They are NOT unpoliced: envelope-grammar-cross-language.test.ts
+               -- reads them out of this file and asserts they equal
+               -- envelopePatternSql(OWNER_CHAT_TURN_ORIGIN) / envelopePatternSql().
+               WHEN text ~ '^[[:space:]]*⟦turn-origin:coord-inject:owner nonce:[a-f0-9]{8,64}⟧' THEN 0
+               WHEN text ~ '^[[:space:]]*⟦turn-origin:[A-Za-z0-9:._@-]+ nonce:[a-f0-9]{8,64}⟧' THEN 1
                WHEN btrim(text) LIKE 'Stop hook feedback:%' THEN 1
                ELSE 0
              END,
