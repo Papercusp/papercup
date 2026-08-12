@@ -611,16 +611,23 @@ export function mintRecycleArgs(args?: any[], { mintId, agent, personaFile }?: {
  * 0600 launch-context file, and layer it onto the fresh child. The original argv
  * is the input on every respawn, so generated carry flags never accumulate.
  */
-export function mintCarryRespawnArgs(args?: any[], { systemPromptAddendum, ownerId, mintId, home, agent, personaFile, }?: {
+export function mintCarryRespawnArgs(args?: any[], { systemPromptAddendum, ownerId, mintId, home, agent, personaFile, codexHome, }?: {
     ownerId?: null | undefined;
     mintId?: (() => `${string}-${string}-${string}-${string}-${string}`) | undefined;
     home?: string | undefined;
     agent?: string | undefined;
     personaFile?: null | undefined;
+    codexHome?: null | undefined;
 }): {
+    args: string[];
+    nativeId: null;
+    launchContextPath: string;
+    codexAgentsPath: string;
+} | {
     args: any[];
     nativeId: `${string}-${string}-${string}-${string}-${string}`;
     launchContextPath: string;
+    codexAgentsPath?: undefined;
 };
 /**
  * Does claude's OWN store hold a transcript for this session id? A tracked
