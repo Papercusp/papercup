@@ -663,6 +663,7 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set([
   'loop:arm',
   'improvements:capture',
   'locks:queue',
+  'locks:cancel_wait',
   'locks:release',
   'work_items:checkpoint',
   'work_items:complete',
@@ -672,7 +673,7 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set([
 
 /** Fleet bootstrap, direct coordination delivery, continuation checkpoints, scheduler claims,
  * deferred tool discovery, loop arming, incident capture, file-lock inspection,
- * file-lock release, and continuation checkpoint writes are liveness/control-plane traffic:
+ * file-lock cancellation/release, and continuation checkpoint writes are liveness/control-plane traffic:
  * if they cannot run, workers cannot orient, wake a blocker, persist a safe wake boundary, drain
  * the queue generating proxy load, recover a missing tool surface, keep themselves alive, file
  * the failure that needs fixing, inspect lock ownership, release a lock held during an edit,
