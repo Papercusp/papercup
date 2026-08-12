@@ -76,15 +76,13 @@ const CARRY_ROW_ID_SCHEMA = z
   );
 
 /**
- * EI-20207367072280826: a wall is often authored as a compact claim string
- * (`walls: ['waiting for owner approval']`) while the persisted form needs a
- * row object. This mapping is lossless for the string shorthand: the value is
- * the claim and there is no optional metadata to discard. Also accept a JSON
- * encoded array from a stale manifest-pinned client, matching the checks
- * field's wire repair. Object rows stay untouched so genuinely undeclared
- * fields still fail the strict schema instead of being silently dropped.
+ * Normalize the compact row shorthand accepted by walls and checks. A row
+ * string is losslessly the claim itself, while a JSON-encoded array supports
+ * stale manifest-pinned clients that serialized the whole field. Object rows
+ * stay untouched so genuinely undeclared fields still fail the strict schema
+ * instead of being silently dropped.
  */
-function normalizeWallInput(value: unknown): unknown {
+function normalizeCompactRowInput(value: unknown): unknown {
   let rows: unknown = value;
   if (typeof rows === 'string') {
     const trimmed = rows.trim();
@@ -94,10 +92,14 @@ function normalizeWallInput(value: unknown): unknown {
     } catch {
       rows = [rows];
     }
-    // A JSON string is still a compact one-wall shorthand, not an array.
+    // A JSON string is still a compact one-row shorthand, not an array.
     if (typeof rows === 'string') rows = [rows];
   }
   return Array.isArray(rows) ? rows.map((row) => (typeof row === 'string' ? { claim: row } : row)) : rows;
+}
+
+function normalizeWallInput(value: unknown): unknown {
+  return normalizeCompactRowInput(value);
 }
 
 /**
@@ -253,18 +255,11 @@ export default defineTool({
         .preprocess(
           // EI-302-class wire coercion (proven live the night this shipped): a session
           // whose manifest-pinned schema predates this field sends the array as a JSON
-          // STRING — parse it instead of rejecting the write. Malformed ⇒ leave as-is
-          // so zod reports the real shape error.
+          // STRING — parse it instead of rejecting the write. Compact claim strings
+          // are the same lossless shorthand as walls. Non-array JSON values remain
+          // invalid; ordinary strings are treated as the scalar shorthand.
           (v) => {
-            let rows: unknown = v;
-            if (typeof rows === 'string') {
-              try {
-                const parsed = JSON.parse(rows);
-                rows = Array.isArray(parsed) ? parsed : rows;
-              } catch {
-                return v;
-              }
-            }
+            const rows = normalizeCompactRowInput(v);
             // WI-7264: repair the wrong-but-obvious row SHAPE rather than rejecting the
             // whole note over it. `{claim, recheck, status, evidence}` is what agents
             // actually reach for — `evidence` (57×) and `status` (40×) were the top two
@@ -306,7 +301,8 @@ export default defineTool({
         )
         .optional()
         .describe(
-          'Carried CHECKS — claims about EXTERNAL STATE as {claim, recheck, verified?} rows (the non-owner analog ' +
+          'Carried CHECKS — claims about EXTERNAL STATE as {claim, recheck, verified?} rows (compact claim strings ' +
+            'are accepted and mapped to {claim}; the non-owner analog ' +
             'of walls; renders a ## Checks section every wake). `verified` is a STRING (evidence, ≤300 chars), never ' +
             'a boolean — a claim OMITTING `verified` renders PREDICTED, a successor must run its recheck before ' +
             'relying on it. Put hash/id/timestamp expectations HERE, never in Left prose. Same carry-forward ' +

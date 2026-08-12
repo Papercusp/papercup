@@ -591,6 +591,21 @@ describe("WI-7264: repair-don't-refuse — an oversized or wrong-shaped sub-fiel
       expect(f.checks[0]).not.toHaveProperty('verified');
     });
 
+    it('maps compact check claim strings to lossless `{ claim }` rows', () => {
+      const out = parse({ checks: ['gate is green', 'main is at abc123'] }) as { checks: { claim: string }[] };
+      expect(out.checks).toEqual([{ claim: 'gate is green' }, { claim: 'main is at abc123' }]);
+    });
+
+    it('accepts scalar and JSON-encoded check strings from stale wire manifests', () => {
+      expect(parse({ checks: 'gate is green' })).toMatchObject({ checks: [{ claim: 'gate is green' }] });
+      expect(parse({ checks: '["gate is green"]' })).toMatchObject({ checks: [{ claim: 'gate is green' }] });
+    });
+
+    it('writes compact check strings through the normal typed row path', async () => {
+      const b = body(await call({ did: 'progress', checks: ['gate is green'] }));
+      expect(b).toMatchObject({ ok: true, checks: 1 });
+    });
+
     it('does NOT coerce that shape onto walls — a wall has no `verified`, so the only mapping would DROP data', () => {
       // Deliberate asymmetry with checks. Coercing here would have to discard the
       // caller's `evidence` (there is nowhere lossless to put it), which is precisely
