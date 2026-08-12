@@ -20,10 +20,11 @@ const loadHarnessRegistryMock = vi.hoisted(() => vi.fn());
 const hiveGitRepoPathMock = vi.hoisted(() => vi.fn());
 const pathExistsMock = vi.hoisted(() => vi.fn());
 const defaultRunGitMock = vi.hoisted(() => vi.fn());
+const runGithubBridgeTickMock = vi.hoisted(() => vi.fn());
 /** The routines row the leg reads its watermarks from. A non-null `wb_sha` is what
  *  arms the catch-up pin at all — without it the pin is skipped for an unrelated
  *  reason and the test would pass vacuously. */
-const sqlMock = vi.hoisted(() => vi.fn());
+const sqlMock = vi.hoisted(() => Object.assign(vi.fn(), { unsafe: vi.fn() }));
 
 vi.mock('../../harness-registry', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -40,6 +41,10 @@ vi.mock('../../sync/pot-git/storage', async (importOriginal) => ({
   hiveGitRepoPath: hiveGitRepoPathMock,
   pathExists: pathExistsMock,
   defaultRunGit: defaultRunGitMock,
+}));
+vi.mock('../../sync/pot-git/github-bridge-tick', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  runGithubBridgeTick: runGithubBridgeTickMock,
 }));
 
 import { runGithubBridgeLeg } from './git-sync-action';
@@ -62,6 +67,7 @@ beforeEach(() => {
   hiveGitRepoPathMock.mockReturnValue(BARE);
   // wb_sha present ⇒ the pin is armed. prev_egress_head/last_admitted are irrelevant here.
   sqlMock.mockResolvedValue([{ la: null, wb_sha: 'a'.repeat(40), prev_egress_head: null }]);
+  sqlMock.unsafe.mockReset();
   defaultRunGitMock.mockResolvedValue({ code: 0, stdout: '', stderr: '' });
 });
 
@@ -172,5 +178,57 @@ describe('runGithubBridgeLeg — EI-18751829787526583: a STALE-but-present canon
     } finally {
       warnSpy.mockRestore();
     }
+  });
+});
+
+describe('runGithubBridgeLeg — owner-actionable egress failures', () => {
+  it('promotes a non-transient bridge rejection into top-level routine failure metadata', async () => {
+    loadHarnessRegistryMock.mockResolvedValue({
+      projects: [
+        {
+          slug: SLUG,
+          hive_slug: SLUG,
+          self_repo: true,
+          github_remote: 'https://github.com/acme/shop.git',
+          // A fork avoids the live upstream permission probe; the bridge tick is mocked below.
+          fork_remote: 'https://github.com/me/shop.git',
+        },
+      ],
+    });
+    pathExistsMock.mockResolvedValue(false);
+    runGithubBridgeTickMock.mockResolvedValue({
+      ran: true,
+      egressTarget: 'fork',
+      ingressed: { updated: 0, upToDate: 1, nonFF: 0, absent: 0 },
+      admissions: [],
+      lastAdmitted: null,
+      egress: { pushed: 0, upToDate: 0, rejectedNonFF: 0, blockedSecrets: 0 },
+      egressHead: null,
+      verdict: {
+        action: 'escalate',
+        needsOwner: true,
+        signals: [{ kind: 'bridge-egress-unreachable', errors: ['workflow scope missing'], transient: false }],
+        detail:
+          'github-bridge divergence: GitHub rejected the staging push because the OAuth App lacks workflow scope; ' +
+          'fix the remote account/credential or destination before expecting off-box progress.',
+      },
+      errors: ['egress: push refs/heads/staging: GitHub rejected the workflow file: workflow scope missing'],
+    });
+
+    await runGithubBridgeLeg(SLUG, WS);
+
+    const [, params] = sqlMock.unsafe.mock.calls.at(-1) as [string, unknown[]];
+    const metadata = JSON.parse(params[2] as string) as Record<string, unknown>;
+    expect(metadata).toMatchObject({
+      last_status: 'error',
+      last_error: expect.stringContaining('workflow scope'),
+      last_errors: ['egress: push refs/heads/staging: GitHub rejected the workflow file: workflow scope missing'],
+      github_bridge: expect.objectContaining({
+        divergence: 'escalate',
+        needs_owner: true,
+        errors: ['egress: push refs/heads/staging: GitHub rejected the workflow file: workflow scope missing'],
+      }),
+    });
+    expect(metadata.last_error).toEqual(expect.stringContaining('fix the remote account/credential'));
   });
 });

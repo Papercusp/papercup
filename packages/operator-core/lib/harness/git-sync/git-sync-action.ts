@@ -1823,7 +1823,26 @@ export async function runGithubBridgeLeg(slug: string, workspaceId: string): Pro
       expectedCanonicalSha: wbSha,
     });
 
+    // A bridge egress rejection is reported by the bridge escalation writer, but
+    // this leg runs AFTER recordOutcome (which may have recorded a clean commit
+    // tick). Promote owner-actionable bridge verdicts into the routine's primary
+    // health metadata too; otherwise a missing GitHub workflow scope leaves
+    // `last_status: synced` + `last_error: null` beside a red github_bridge row.
+    // Self-healing bridge residues (for example a stale canonical ref) stay in
+    // github_bridge only and must not turn the whole git-sync tick red.
+    const ownerActionableBridgeFailure = outcome.verdict.action === 'escalate' && outcome.verdict.needsOwner;
+    const bridgeError = ownerActionableBridgeFailure
+      ? outcome.verdict.detail || outcome.errors.join('; ') || 'github-bridge owner action required'
+      : null;
+
     await patchRoutineMetadata(slug, workspaceId, {
+      ...(bridgeError
+        ? {
+            last_status: 'error',
+            last_error: bridgeError,
+            last_errors: outcome.errors.slice(0, 10),
+          }
+        : {}),
       github_bridge: {
         at: Date.now(),
         ran: outcome.ran,
