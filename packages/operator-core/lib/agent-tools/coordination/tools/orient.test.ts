@@ -94,6 +94,14 @@ describe('coord:orient args', () => {
     expect(orientTool.args.safeParse({ claimableLimit: 0 }).success).toBe(true);
   });
 
+  it('accepts memoryLimit=0 for a lean bootstrap', () => {
+    expect(orientTool.args.safeParse({ memoryLimit: 0 }).success).toBe(true);
+  });
+
+  it('accepts recipesLimit=0 for a lean bootstrap', () => {
+    expect(orientTool.args.safeParse({ recipesLimit: 0 }).success).toBe(true);
+  });
+
   it('keeps every in-process fold classified and outside the ambient workspace transaction', () => {
     const source = readFileSync(new URL('./orient.ts', import.meta.url), 'utf8');
     const called = [...source.matchAll(/\bcall\('([^']+)'/g)].map((match) => match[1]);
@@ -370,6 +378,16 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect(r.claimable).toEqual([]);
     expect(r.claimableTruncated).toBeUndefined();
     expect(calls.some(({ name }) => name === 'work_items:claimable' || name === 'work_items:list')).toBe(false);
+  });
+
+  it('accepts memoryLimit=0 and skips the memory recall leg', async () => {
+    const { call, calls } = fakeCall({
+      ...CORE,
+      'coord:declare-intent': () => ({ ok: true }),
+    });
+    const r = await composeOrient({ intent: 'lean bootstrap', memoryLimit: 0 }, call, 'me');
+    expect(r.memory).toBeUndefined();
+    expect(calls.some(({ name }) => name === 'memory:search')).toBe(false);
   });
 
   it('with `intent`: folds a memory recall + relevant recipes AND declares the intent (full bootstrap in one call)', async () => {
@@ -2489,6 +2507,16 @@ describe('EI-20113865649946366: orient discloses its own trims (two-directional)
   });
 
   describe('recipes', () => {
+    it('recipesLimit=0 skips the optional recipe search fold', async () => {
+      const { call, calls } = fakeCall({
+        ...CORE,
+        'recipes:search': () => ({ ok: true, recipes: [{ id: 'should-not-run' }] }),
+      });
+      const r = await composeOrient({ intent: 'batch some tools', recipesLimit: 0 }, call, 'me');
+      expect(calls.some((c) => c.name === 'recipes:search')).toBe(false);
+      expect(r.recipes).toBeUndefined();
+    });
+
     it('discloses a full page and a clipped title', async () => {
       const { call } = fakeCall({
         ...CORE,

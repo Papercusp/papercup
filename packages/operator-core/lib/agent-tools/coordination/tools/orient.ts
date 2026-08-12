@@ -1123,8 +1123,8 @@ export async function composeOrient(
   // when `intent`/`memoryQuery` is set — declare-intent (below) still fires, so peers
   // still see the caller's status.
   const memQuery = monitor ? undefined : (args.memoryQuery ?? args.intent);
-  if (memQuery) {
-    const memLimit = Math.min(args.memoryLimit ?? 5, MEMORY_HITS_CAP);
+  const memLimit = Math.min(args.memoryLimit ?? 5, MEMORY_HITS_CAP);
+  if (memQuery && memLimit > 0) {
     try {
       const mem = (await call('memory:search', {
         query: memQuery,
@@ -1680,8 +1680,12 @@ export async function composeOrient(
   // never breaks orientation. COMPACT: id/title/runCount/similarity only.
   // EI-8300: skipped entirely on a monitor tick.
   const recipeQuery = monitor ? undefined : (args.intent ?? args.memoryQuery);
-  if (recipeQuery && args.includeRecipes !== false) {
-    const recLimit = Math.min(args.recipesLimit ?? RECIPES_DEFAULT, RECIPES_CAP);
+  const recLimit = Math.min(args.recipesLimit ?? RECIPES_DEFAULT, RECIPES_CAP);
+  // EI-20233111263340661: zero is the explicit lean-payload cap, matching the
+  // memoryLimit/claimableLimit controls. Do not forward zero to recipes:search;
+  // that sub-tool requires a positive limit, and the caller asked to skip this
+  // optional fold rather than pay a round-trip only to receive no rows.
+  if (recipeQuery && args.includeRecipes !== false && recLimit > 0) {
     try {
       const rec = (await call('recipes:search', {
         query: recipeQuery,
@@ -2159,7 +2163,7 @@ export default defineTool({
       .max(40)
       .optional()
       .describe('Plan items to claim as your lane (used with `intent` + `planSlug`).'),
-    memoryLimit: z.number().int().positive().max(10).optional().describe('Max memory hits to fold (default 5).'),
+    memoryLimit: z.number().int().nonnegative().max(10).optional().describe('Max memory hits to fold (default 5; 0 skips memory recall).'),
     includePlanEvents: z.boolean().optional().describe('Fold the recent plan-events delta (default true).'),
     planEventsSince: z.string().optional().describe('Only plan-events strictly after this ISO timestamp.'),
     includeRecipes: z
@@ -2169,10 +2173,10 @@ export default defineTool({
     recipesLimit: z
       .number()
       .int()
-      .positive()
+      .nonnegative()
       .max(5)
       .optional()
-      .describe('Max relevant recipes to surface (default 3).'),
+      .describe('Max relevant recipes to surface (default 3; 0 skips recipe search).'),
     includeFleetCatchUp: z
       .boolean()
       .optional()
