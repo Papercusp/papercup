@@ -1349,7 +1349,7 @@ describe('coord:send structured-body gate (owner directive 2026-07-28 — the st
     expect(primaryGuidance).toContain('youMayNotKnow');
     expect(primaryGuidance).toContain('{ ref, provenance }');
     expect(primaryGuidance).toContain('[{ ref:');
-    expect(primaryGuidance).toMatch(/not strings or arrays of strings/i);
+    expect(primaryGuidance).toMatch(/not a string or array of strings/i);
   });
 
   it('publishes the exact authored entry shapes in the body guidance', () => {
