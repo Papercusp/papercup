@@ -1860,6 +1860,7 @@ export async function runTscBaselineGate({
           cwd: root,
           encoding: 'utf-8',
           maxBuffer: 64 * 1024 * 1024,
+          stdio: ['ignore', 'pipe', 'inherit'],
           env: tscChildEnv({
             PC_HEAVY_COALESCE_SEC: process.env.PC_HEAVY_COALESCE_SEC ?? '420',
             ...(freshAfter === null ? {} : { PC_HEAVY_FRESH_AFTER: String(freshAfter) }),

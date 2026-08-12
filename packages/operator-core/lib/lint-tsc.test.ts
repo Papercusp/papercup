@@ -1558,6 +1558,41 @@ describe('the gate REPORT actually prints the diagnostics (wiring, EI-1945421106
     expect(out).toContain('PRE-DATE');
     expect(out).not.toContain('every error above is new');
   });
+
+  it('forwards pc-heavy stderr while preserving captured compiler output', () => {
+    const root = mkdtempSync(join(tmpdir(), 'tsc-gate-stderr-'));
+    try {
+      mkdirSync(join(root, 'scripts'));
+      writeFileSync(
+        join(root, 'scripts', 'pc-heavy.sh'),
+        '#!/usr/bin/env bash\nprintf "%s\\n" "pc-heavy: waiting for compile slot" >&2\nexec "$@"\n',
+      );
+      writeFileSync(join(root, 'tsc-output.txt'), `${TSC_LINES}\n`);
+      writeFileSync(join(root, 'baseline.json'), JSON.stringify({ files: { 'lib/a.ts': 0 } }));
+      writeFileSync(
+        join(root, 'run.mjs'),
+        `import { runTscBaselineGate } from ${JSON.stringify(GATE)};\n` +
+          `await runTscBaselineGate({\n` +
+          `  root: ${JSON.stringify(root)},\n` +
+          `  tscCommand: ${JSON.stringify(`cat ${join(root, 'tsc-output.txt')}`)},\n` +
+          `  baselineFile: ${JSON.stringify(join(root, 'baseline.json'))},\n` +
+          `  label: 'test',\n` +
+          `  argv: ['--files=lib/a.ts'],\n` +
+          `});\n`,
+      );
+      let out = '';
+      try {
+        execFileSync('node', [join(root, 'run.mjs')], { encoding: 'utf-8', stdio: 'pipe' });
+      } catch (e: any) {
+        out = `${e.stdout ?? ''}${e.stderr ?? ''}`;
+      }
+      expect(out).toContain('pc-heavy: waiting for compile slot');
+      expect(out).toContain('lib/a.ts: 0 → 2');
+      expect(out).toContain("Type 'string' is not assignable to type 'number'");
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
 });
 
 describe('a crashed tsc with non-empty garbage output must NOT read as clean (WI-37485)', () => {
