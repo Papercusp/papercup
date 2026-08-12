@@ -105,6 +105,15 @@ export default defineTool({
     when: 'See the system routines and their cadence/active state before retuning or pausing one (e.g. inspect the git-sync / green-checkpoint / release-trigger schedule). Pass rollup:true for a per-group count/active/last-fire summary instead of scrolling hundreds of raw rows. Investigating a routine that has not fired? Read `paused` BEFORE concluding it is stalled: non-null means someone deliberately paused it and it carries { reason, by, at }. A bare active:false with paused:null is the one that warrants investigation.',
     notWhen: 'To CHANGE a routine, use routines:set. For a harness blueprint autoloop, use autoloop:status. To manage group metadata or bulk pause/resume a group, use routines:group-set (also routines:list { rollup:true } for the group view).',
     chaining: 'routines:set to retune or pause a routine you find here (use its exact name + installSlug). routines:list { rollup:true } for group metadata + review-due status.',
+    // P-002: response documentation lives HERE, not in `when`/`description` —
+    // those are prompt-weight budgeted and this tool is already near the cap
+    // (the budget guard refused the first attempt to put it in `when`).
+    returns: [
+      'Each row: { installSlug, name, triggerKind, cron, targetRole, active, nextFireAt, lastFiredAt, group, paused, health }.',
+      '`paused` — non-null means a DELIBERATE hold, carrying { reason, by, at }. Read it before calling a routine stalled; a bare active:false with paused:null is the one worth investigating.',
+      '`health` — the operational half of the routine row, null when the row carries none of it. Includes `gate_health` on the green-checkpoint routine (the live in-flight-retriage marker, observed candidate and consecutive-red count), plus last_status / last_error / consecutive_error_ticks / fire_count / armed_at where present.',
+      'THIS IS THE GATE-HEALTH READ: `health.gate_health` is what 112 agents were hand-writing `SELECT metadata->\'gate_health\' FROM harness_shared.routines` for. No raw SQL needed. For the deploy-position question ("is my change live, what is blocking it") use dev:pipeline_position instead — different question.',
+    ].join(' '),
     seeAlso: [
       'routines:set (retune / pause a routine)',
       'routines:list (rollup:true — group metadata + review-due rollup)',

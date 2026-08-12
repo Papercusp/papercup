@@ -115,6 +115,64 @@ describe('routines:list', () => {
     });
   });
 
+  /**
+   * P-002 (sql-escape-tool-routing-2026-08-12). The sibling of the pause tests
+   * above, and the same defect one field family over: this tool already SELECTs
+   * `metadata`, so 112 distinct agents hand-writing
+   * `SELECT metadata->'gate_health' FROM harness_shared.routines` (722 calls in
+   * 14 days — the largest raw-SQL cluster in the audit) were querying a row it
+   * had already fetched and thrown away.
+   */
+  it('surfaces gate_health on the green-checkpoint routine (P-002 — the 112-agent cluster)', async () => {
+    sqlMock.mockResolvedValue([
+      {
+        install_slug: 'papercusp',
+        name: 'green-checkpoint',
+        trigger_kind: 'cron',
+        trigger_config: { cron: '0 0 * * * *' },
+        target_role: 'system:green-checkpoint',
+        active: true,
+        next_fire_at: new Date('2026-08-12T17:00:00Z'),
+        last_fired_at: new Date('2026-08-12T16:00:00Z'),
+        metadata: {
+          gate_health: { inFlightRetriage: null, observedCandidate: 'abc123', consecutiveReds: 3 },
+          last_status: 'red',
+          consecutive_error_ticks: 2,
+          fire_count: 411,
+          pause: null,
+        },
+      },
+    ]);
+    const b = body(await listTool.handler({} as never, { role: 'su' } as never));
+    expect(b.routines[0].health).toMatchObject({
+      gate_health: { observedCandidate: 'abc123', consecutiveReds: 3 },
+      last_status: 'red',
+      consecutive_error_ticks: 2,
+      fire_count: 411,
+    });
+  });
+
+  it('reports health:null for a routine carrying no operational metadata — the field stays cheap', async () => {
+    // The projection must not turn every ordinary row into a bag of nulls: the
+    // trimmed payload is what an agent sees by default, and this tool lists
+    // hundreds of rows.
+    sqlMock.mockResolvedValue([
+      {
+        install_slug: 'papercusp',
+        name: 'plain',
+        trigger_kind: 'cron',
+        trigger_config: { cron: '0 0 * * * *' },
+        target_role: 'system:plain',
+        active: true,
+        next_fire_at: null,
+        last_fired_at: null,
+        metadata: { armed_at: null, some_unrelated_key: 'x' },
+      },
+    ]);
+    const b = body(await listTool.handler({} as never, { role: 'su' } as never));
+    expect(b.routines[0].health).toBeNull();
+  });
+
   it('reports paused:null for an inactive routine with NO pause record — the case that IS worth investigating', async () => {
     // The distinction is the whole point: this row and the one above are both
     // active:false, and only the pause record tells them apart.
