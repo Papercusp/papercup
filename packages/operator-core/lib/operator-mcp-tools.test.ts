@@ -27,7 +27,6 @@ describe('ALL_AGENT_MCP_TOOLS', () => {
   });
 
   it('contains the fleet spawn primitives (Brief 4 — replaced the dead orchestrator_* plugin tools)', () => {
-    expect(ALL_AGENT_MCP_TOOLS).toContain('mcp__agentmcp__cup:spawn');
     expect(ALL_AGENT_MCP_TOOLS).toContain('mcp__agentmcp__fleet:tree');
     expect(ALL_AGENT_MCP_TOOLS).toContain('mcp__agentmcp__fleet:cancel');
     // The plugin-era names must NOT come back — they were dead on this
@@ -35,6 +34,26 @@ describe('ALL_AGENT_MCP_TOOLS', () => {
     for (const t of ALL_AGENT_MCP_TOOLS) {
       expect(t).not.toMatch(/orchestrator_(spawn|poll|list_active|cancel)/);
     }
+  });
+
+  // The Mug/Kettle/cup nursery tier retired 2026-08-12 (P-059,
+  // retire-mug-kettle-su-only-2026-08-09). The cup-spawn entry was dropped from
+  // ALL_AGENT_MCP_TOOLS because naming an UNREGISTERED tool in an allowlist is a
+  // promise to the chat surface that it is callable — it red-pinned two unrelated
+  // invariants at once (tool-auth-gating's "every allowedTool resolves in the core
+  // registry" and tools-md-sync's "every allowedTool has a catalog entry"). This
+  // assertion USED to be a presence check in the test above; inverting it into a
+  // regression guard — the same shape as the work-item mail retirement below — means
+  // a re-introduction fails loudly HERE, next to the reason, instead of surfacing as
+  // two mystery reds elsewhere. Do NOT "fix" a missing-spawn-tool symptom by re-adding
+  // it: the supported fan-out is a FLEET (`fleet:launch-on-plan`), and re-registering
+  // would resurrect a tier the owner deliberately switched off.
+  //
+  // Safe to write the prefixed name HERE (unlike in operator-mcp-tools.ts, where a
+  // mere mention in a COMMENT re-adds the tool): tools-md-sync harvests the allowlist
+  // from `allowedToolsSource: operator-mcp-tools.ts` only, and nothing reads this file.
+  it('does NOT expose the retired cup-spawn nursery verb', () => {
+    expect(ALL_AGENT_MCP_TOOLS).not.toContain('mcp__agentmcp__cup:spawn');
   });
 
   it('uses underscore between server and tool (claude-code convention)', () => {
