@@ -363,6 +363,30 @@ if [ -z "$DISPLAY_NUM" ]; then
 fi
 [ "$DISPLAY_NUM" -ge 2 ] || { echo "FATAL: refusing display :$DISPLAY_NUM — too close to a real seat" >&2; exit 1; }
 
+# EI-20227529270079601 / EI-9748 Route A: `setsid` creates a new session and
+# process group, but it does NOT escape the spawning operator service's cgroup.
+# A systemd KillMode=control-group restart would otherwise terminate every
+# long-lived verifier process together. Reuse the product headless-spawn shape:
+# a transient user scope is a sibling of the operator service, and the shared
+# papercusp slice keeps an un-enrolled verifier scope discoverable/reapable.
+VERIFY_SCOPE_SLICE="papercusp-agent-session.slice"
+VERIFY_SCOPE_BASE="papercup-tauri-verify-${DISPLAY_NUM}-$$"
+VERIFY_SCOPE_ENABLED=0
+if [ "$(uname -s 2>/dev/null || true)" = "Linux" ] && command -v systemd-run >/dev/null 2>&1; then
+  # Probe the actual user manager, rather than trusting the binary to be on PATH
+  # (containers often ship systemd-run without a usable user bus). A failed probe
+  # keeps the cross-platform fallback, but is named loudly and paired with the
+  # boot-only provenance/liveness check below.
+  if systemd-run --user --scope --quiet --collect --unit="${VERIFY_SCOPE_BASE}-probe" --slice="$VERIFY_SCOPE_SLICE" -- true >/dev/null 2>&1; then
+    VERIFY_SCOPE_ENABLED=1
+    log "verifier cgroup isolation enabled: transient user scopes under $VERIFY_SCOPE_SLICE (base=${VERIFY_SCOPE_BASE})"
+  else
+    log "WARNING: systemd-run is present but the user-scope probe failed — verifier processes remain in the launcher cgroup; use VERIFY_TAURI_LIVENESS_CHECK before every drive (EI-20227529270079601)."
+  fi
+else
+  log "WARNING: no usable Linux systemd user scope — verifier processes use the process-group fallback; use VERIFY_TAURI_LIVENESS_CHECK before every drive (EI-20227529270079601)."
+fi
+
 # Ports are DERIVED FROM THE DISPLAY, not picked independently (WI-4342).
 # fed_pick_free_port only proves a port is free RIGHT NOW, but our sidecar binds
 # it minutes later (cargo/tauri boot). The advisory lock closes the same-host
@@ -449,6 +473,24 @@ log "contention: $(contention_summary)"
 
 # ── teardown (always runs; scoped to exactly what THIS invocation started) ──
 XVFB_PID="" OPENBOX_PID="" TAURI_PID="" PORT_LOCK_KEEPER_PID="" ISOLATED_PG_PID=""
+TAURI_SCOPE_UNIT=""
+
+# Launch a long-lived verifier process in the sibling user scope when Route A is
+# available. The caller keeps the systemd-run client PID as the process-group
+# handle; `--scope` keeps the payload in that group with inherited stdio/env, and
+# the generated stop script also stops the named scopes for a cgroup-complete
+# teardown. The plain `setsid` branch is only for hosts without a usable user
+# manager (macOS/bare containers).
+start_verify_process() {
+  local unit="$1" output="$2"
+  shift 2
+  if [ "$VERIFY_SCOPE_ENABLED" = 1 ]; then
+    setsid systemd-run --user --scope --quiet --collect --unit="$unit" --slice="$VERIFY_SCOPE_SLICE" -- "$@" >"$output" 2>&1 &
+  else
+    setsid "$@" >"$output" 2>&1 &
+  fi
+  echo "$!"
+}
 write_freshness_check_script() {
   # EI-17134: the frozen SPA snapshot (below, EI-10364) is copied ONCE at boot and
   # never re-reads the shared dist — by design, so the fleet's `vite build --watch`
@@ -508,9 +550,57 @@ exit 0
 FRESH
   chmod +x "$WORK/check-freshness.sh"
 }
+
+# EI-20227529270079601: a boot-only caller otherwise discovers a dead rig only
+# when tauri-agent-tools prints "No bridge found" and lists OTHER agents' bridges.
+# This check is cheap, verifies PID ownership from /proc, and gives the caller an
+# unambiguous stop/reboot instruction instead of inviting it to drive a peer.
+write_liveness_check_script() {
+  cat > "$WORK/check-live.sh" <<LIVE_CHECK
+#!/usr/bin/env bash
+set -uo pipefail
+PID="$BRIDGE_PID"
+LOG="$LOG"
+EXPECTED_DISPLAY=":$DISPLAY_NUM"
+EXPECTED_PORT="$DEV_PORT"
+EXPECTED_SID="$TAURI_OWNER_SID"
+EXPECTED_PROVENANCE="$TAURI_LAUNCH_PROVENANCE"
+SCOPE_UNIT="${TAURI_SCOPE_UNIT:+$TAURI_SCOPE_UNIT.scope}"
+
+if ! kill -0 "\$PID" 2>/dev/null; then
+  echo "FATAL: verifier bridge PID \$PID is gone at \$(date -u +%FT%TZ) — inspect \$LOG and boot a fresh rig; do not attach to another bridge." >&2
+  exit 1
+fi
+ENV_P="\$(tr '\0' '\n' < "/proc/\$PID/environ" 2>/dev/null || true)"
+if ! grep -qxF "DISPLAY=\$EXPECTED_DISPLAY" <<<"\$ENV_P" \
+  || ! grep -qxF "OPERATOR_DEV_PORT=\$EXPECTED_PORT" <<<"\$ENV_P" \
+  || ! grep -qxF "PAPERCUSP_SID=\$EXPECTED_SID" <<<"\$ENV_P" \
+  || ! grep -qxF "PAPERCUSP_TAURI_LAUNCH_PROVENANCE=\$EXPECTED_PROVENANCE" <<<"\$ENV_P"; then
+  echo "FATAL: verifier bridge PID \$PID no longer carries this rig's launch provenance — PID may have been reused; refusing to drive another bridge. Inspect \$LOG and boot a fresh rig." >&2
+  exit 1
+fi
+if [ -n "\$SCOPE_UNIT" ] && command -v systemctl >/dev/null 2>&1; then
+  SCOPE_STATE="\$(systemctl --user show "\$SCOPE_UNIT" -p ActiveState --value 2>/dev/null || true)"
+  if [ -n "\$SCOPE_STATE" ] && [ "\$SCOPE_STATE" != active ]; then
+    echo "FATAL: verifier scope \$SCOPE_UNIT is \$SCOPE_STATE while PID \$PID was expected alive — inspect \$LOG and boot a fresh rig." >&2
+    exit 1
+  fi
+fi
+echo "verifier bridge alive: pid=\$PID display=\$EXPECTED_DISPLAY port=\$EXPECTED_PORT"
+LIVE_CHECK
+  chmod +x "$WORK/check-live.sh"
+}
+
 write_stop_script() {
   cat > "$WORK/stop.sh" <<STOP
 #!/usr/bin/env bash
+# EI-20227529270079601 / EI-9748 Route A: stop sibling scopes first so no
+# detached descendant survives the process-group teardown below.
+if [ "$VERIFY_SCOPE_ENABLED" = 1 ] && command -v systemctl >/dev/null 2>&1; then
+  [ -n "$TAURI_SCOPE_UNIT" ] && systemctl --user stop --no-block "${TAURI_SCOPE_UNIT}.scope" >/dev/null 2>&1 || true
+  systemctl --user stop --no-block "${VERIFY_SCOPE_BASE}-openbox.scope" >/dev/null 2>&1 || true
+  systemctl --user stop --no-block "${VERIFY_SCOPE_BASE}-xvfb.scope" >/dev/null 2>&1 || true
+fi
 # EI-11559: do NOT force-kill the port-lock keeper here — killing it releases the
 # advisory flock IMMEDIATELY, while the sidecar (its own process group) still holds
 # the display-derived port. Instead we tear down the display/app and let the keeper
@@ -622,13 +712,11 @@ teardown() {
 # live outside the launcher's terminal session. Without setsid, closing a PTY
 # kills Xvfb; WebKit then exits with XIO and the "ready" desktop disappears
 # before the caller's first tauri-agent-tools command (WI-4975).
-setsid Xvfb ":$DISPLAY_NUM" -screen 0 1920x1080x24 -nolisten tcp >"$WORK/xvfb.log" 2>&1 &
-XVFB_PID=$!
+XVFB_PID="$(start_verify_process "${VERIFY_SCOPE_BASE}-xvfb" "$WORK/xvfb.log" Xvfb ":$DISPLAY_NUM" -screen 0 1920x1080x24 -nolisten tcp)"
 trap teardown EXIT INT TERM
 sleep 1
 DISPLAY=":$DISPLAY_NUM" xdpyinfo >/dev/null 2>&1 || { echo "FATAL: Xvfb :$DISPLAY_NUM never came up — see $WORK/xvfb.log" >&2; exit 1; }
-setsid env DISPLAY=":$DISPLAY_NUM" openbox >"$WORK/openbox.log" 2>&1 &
-OPENBOX_PID=$!
+OPENBOX_PID="$(start_verify_process "${VERIFY_SCOPE_BASE}-openbox" "$WORK/openbox.log" env DISPLAY=":$DISPLAY_NUM" openbox)"
 
 # ── real-GPU GL check (agent-e2e.mdx §15.4: bare Xvfb has no GL → WebKitGTK
 # never paints → every screenshot is blank white regardless of DOM content).
@@ -963,8 +1051,8 @@ exec env -u WAYLAND_DISPLAY XDG_SESSION_TYPE=x11 GDK_BACKEND=x11 DISPLAY=":$DISP
   ${LAUNCH_PREFIX[*]} npm run tauri -- dev --no-watch --config '$TAURI_CONFIG'
 LAUNCH
   chmod +x "$WORK/launch.sh"
-  setsid "$WORK/launch.sh" >"$LOG" 2>&1 &
-  TAURI_PID=$!
+  TAURI_SCOPE_UNIT="${VERIFY_SCOPE_BASE}-tauri-${BOOT_ATTEMPTS}"
+  TAURI_PID="$(start_verify_process "$TAURI_SCOPE_UNIT" "$LOG" "$WORK/launch.sh")"
 }
 
 # EI-18734124566158657: the advisory port lock (pick_and_lock_ports, above)
@@ -1073,6 +1161,9 @@ while :; do
   if [ "$BOOT_ATTEMPTS" -lt "$MAX_BOOT_ATTEMPTS" ]; then
     log "EADDRINUSE racing :$DEV_PORT at bind-time (attempt $BOOT_ATTEMPTS/$MAX_BOOT_ATTEMPTS) — tearing down this attempt and re-picking a fresh port once (EI-18734124566158657). Box contention right now: $(contention_summary)."
     [ -n "$TAURI_PID" ] && { kill -TERM -- -$TAURI_PID 2>/dev/null; sleep 1; kill -9 -- -$TAURI_PID 2>/dev/null; }
+    if [ "$VERIFY_SCOPE_ENABLED" = 1 ] && command -v systemctl >/dev/null 2>&1; then
+      systemctl --user stop --no-block "${TAURI_SCOPE_UNIT}.scope" >/dev/null 2>&1 || true
+    fi
     mv "$LOG" "$WORK/tauri.attempt${BOOT_ATTEMPTS}.log" 2>/dev/null || true
     fed_release_port_locks
     PORT_BASE=$((DEV_PORT + 1))
@@ -1172,6 +1263,10 @@ export VERIFY_TAURI_DISPLAY=":$DISPLAY_NUM"
 export VERIFY_TAURI_OWNER_SID="$TAURI_OWNER_SID"
 export VERIFY_TAURI_LAUNCH_PROVENANCE="$TAURI_LAUNCH_PROVENANCE"
 export VERIFY_TAURI_LOG="$LOG"
+write_liveness_check_script
+export VERIFY_TAURI_LIVENESS_CHECK="$WORK/check-live.sh"
+export VERIFY_TAURI_SCOPE_ENABLED="$VERIFY_SCOPE_ENABLED"
+export VERIFY_TAURI_SCOPE_UNIT="${TAURI_SCOPE_UNIT:+$TAURI_SCOPE_UNIT.scope}"
 # EI-19444780917356384: these two were exported ONLY on the --boot-only path, so
 # in assertion (`--`) mode the freshness guard this script documents at boot
 # ("run: bash $VERIFY_TAURI_FRESHNESS_CHECK") was literally unreachable — an
@@ -1207,6 +1302,9 @@ esac
 deadline=$((SECONDS + timeout))
 last_output=""
 while :; do
+  if [ -n "${VERIFY_TAURI_LIVENESS_CHECK:-}" ] && ! bash "$VERIFY_TAURI_LIVENESS_CHECK" >/dev/null; then
+    exit 1
+  fi
   if last_output="$(tauri-agent-tools check --pid "$VERIFY_TAURI_PID" "$@" 2>&1)"; then
     [ -n "$last_output" ] && printf '%s\n' "$last_output"
     exit 0
@@ -1236,6 +1334,9 @@ HEALTH_TIMEOUT="${VERIFY_TAURI_HEALTH_TIMEOUT:-15}"
 HEALTH_DEADLINE=$((SECONDS + HEALTH_TIMEOUT))
 HEALTH_JSON=""
 while :; do
+  if ! bash "$VERIFY_TAURI_LIVENESS_CHECK" >/dev/null; then
+    exit 1
+  fi
   HEALTH_JSON="$(tauri-agent-tools eval --pid "$BRIDGE_PID" "
     Promise.all([
       fetch('/api/health').then(r => r.status).catch(e => 'ERR:' + e.message),
@@ -1444,6 +1545,9 @@ export VERIFY_TAURI_POLL=$VERIFY_TAURI_POLL
 export VERIFY_TAURI_STOP=$WORK/stop.sh
 export VERIFY_TAURI_FRESHNESS_CHECK=$WORK/check-freshness.sh
 export VERIFY_TAURI_SPA_DIST=$SPA_DIST
+export VERIFY_TAURI_LIVENESS_CHECK=$WORK/check-live.sh
+export VERIFY_TAURI_SCOPE_ENABLED=$VERIFY_SCOPE_ENABLED
+export VERIFY_TAURI_SCOPE_UNIT=${TAURI_SCOPE_UNIT:+$TAURI_SCOPE_UNIT.scope}
 export VERIFY_TAURI_HEARTBEAT=$HEARTBEAT_FILE
 # TTL watchdog (EI-18805100008031244): this instance self-terminates ${BOOT_ONLY_TTL_MIN} min
 # after the last heartbeat refresh (0 = disabled; set VERIFY_TAURI_BOOT_ONLY_TTL_MIN
@@ -1453,6 +1557,8 @@ export VERIFY_TAURI_HEARTBEAT=$HEARTBEAT_FILE
 # trusting a re-check/reload against THIS instance — the SPA snapshot is frozen
 # (EI-10364) and will never pick up the edit; this warns loudly if it drifted:
 #   bash "$WORK/check-freshness.sh"
+# before every tauri-agent-tools eval/check/click/type/capture:
+#   bash "$WORK/check-live.sh"
 # tear down when done — NEVER leave this running unattended (WI-2115: a
 # leaked isolated instance/display starves the next run):
 #   "$WORK/stop.sh"
