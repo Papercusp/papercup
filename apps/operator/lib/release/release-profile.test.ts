@@ -317,7 +317,13 @@ describe('deployStalenessGateComponent — real adapter, injected git-ops', () =
 describe('buildPapercuspReleaseProfile / evaluatePapercuspReleaseProfile — end to end', () => {
   const healthyDeps = {
     listRubrics: async () => [rubric()],
-    readRunningGeneration: async () => ({ deployedSha: 'gen-sha-1', hostStartedAt: null }),
+    readRunningGeneration: async () => ({
+      deployedSha: 'gen-sha-1',
+      hostStartedAt: null,
+      bootHeadSha: null,
+      scoutCodeHash: null,
+      staleHost: true,
+    }),
   };
   const healthyGateOpts = {
     deps: {
@@ -436,7 +442,13 @@ describe('buildAutoloopReleaseProfile / evaluateAutoloopReleaseProfile — the P
     },
   };
   const healthyDeps = {
-    readRunningGeneration: async () => ({ deployedSha: 'gen-sha-1', hostStartedAt: null }),
+    readRunningGeneration: async () => ({
+      deployedSha: 'gen-sha-1',
+      hostStartedAt: null,
+      bootHeadSha: null,
+      scoutCodeHash: null,
+      staleHost: true,
+    }),
     getRubric: async (ref: string) => rubric({ rubricId: ref }),
   };
   const healthyScorecard = scorecardRow({ gradedGeneration: { deployedSha: 'gen-sha-1', hostStartedAt: null } });
