@@ -8,8 +8,9 @@
  *   2. Discovery file at ~/.papercusp/embedded-pg.json — written by the
  *      desktop's Rust main when embedded-pg comes up. Lets a `npm run dev`
  *      operator share state with a running desktop.
- *   3. Fallback: native PG on :5432 with the standard harness_admin creds.
- *      Preserves zero-config dev for users who don't run the desktop.
+ *   3. Fallback: native PG on PAPERCUSP_PG_PORT (when set) or :5432 with the
+ *      standard harness_admin creds. Preserves zero-config dev for users who
+ *      don't run the desktop while keeping isolated workers on their own PG.
  *
  * This module is the Papercusp-specific *configuration* of the generic
  * @papercusp/embedded-pg-discovery resolver (P-003 of
@@ -19,6 +20,19 @@ import { resolvePgUrl } from '@papercusp/embedded-pg-discovery';
 import { join } from 'node:path';
 
 const NATIVE_FALLBACK = 'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp';
+
+/**
+ * Match the connection layer's isolated-process fallback. A worker launched
+ * before its discovery file is written still has PAPERCUSP_PG_PORT, and must
+ * not fall through to the shared native :5432 instance.
+ */
+function nativeFallbackUrl(): string {
+  const port = Number(process.env.PAPERCUSP_PG_PORT);
+  if (Number.isInteger(port) && port > 0 && port <= 65_535) {
+    return `postgresql://harness_admin:harness_admin_pwd@localhost:${port}/papercusp`;
+  }
+  return NATIVE_FALLBACK;
+}
 
 /**
  * EI-13917: the generic resolver (by design, domain-free) resolves a
@@ -63,8 +77,11 @@ export function getHarnessAdminUrlWithSource(): { url: string; source: string } 
 
   const { url, source } = resolvePgUrl({
     envVars: ['HARNESS_ADMIN_DATABASE_URL', 'DATABASE_URL', 'PAPERCUSP_PG_URL'],
-    discoveryFile: { path: discoveryFilePath() },
-    fallbackUrl: NATIVE_FALLBACK,
+    // Isolated test/gate workers set this lever so a stale box-wide discovery
+    // file cannot reroute them away from their own embedded Postgres.
+    discoveryFile:
+      process.env.PAPERCUSP_SKIP_PG_DISCOVERY === '1' ? undefined : { path: discoveryFilePath() },
+    fallbackUrl: nativeFallbackUrl(),
   });
 
   // Preserve the historical source label for the native fallback so any

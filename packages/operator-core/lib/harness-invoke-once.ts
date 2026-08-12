@@ -432,8 +432,9 @@ export function buildInvokeOnce(spec: InvokeOnceSpec): {
     // INHERITED DATABASE_URL (agent shells export the box's shared native :5432)
     // must NEVER reroute spawned workers to the shared PG — that is exactly how a
     // "fresh, isolated" from-repo smoke read the tower's pre-existing directory/
-    // binding state. getHarnessAdminUrl() honors PAPERCUSP_PG_PORT, so isolated
-    // processes resolve to their OWN embedded PG.
+    // binding state. getHarnessAdminUrl() honors PAPERCUSP_PG_PORT in its native
+    // fallback (and PAPERCUSP_SKIP_PG_DISCOVERY=1 bypasses stale discovery), so
+    // isolated processes resolve to their OWN embedded PG.
     DATABASE_URL:
       (process.env.PAPERCUSP_PG_PORT ? '' : process.env.DATABASE_URL) || getHarnessAdminUrl(),
     // The orchestrator's pg-bootstrap (which the spawned invoke-once subprocess runs)

@@ -4,7 +4,7 @@
  * 'native-fallback', passes other sources through, and caches the resolution
  * (one resolve until reset). The generic resolver is mocked.
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 const resolvePgUrl = vi.fn();
 vi.mock('@papercusp/embedded-pg-discovery', () => ({
@@ -20,7 +20,11 @@ import {
 beforeEach(() => {
   _resetHarnessAdminUrlCacheForTests();
   resolvePgUrl.mockReset();
+  vi.stubEnv('PAPERCUSP_PG_PORT', undefined as unknown as string);
+  vi.stubEnv('PAPERCUSP_SKIP_PG_DISCOVERY', undefined as unknown as string);
 });
+
+afterEach(() => vi.unstubAllEnvs());
 
 describe('getHarnessAdminUrlWithSource', () => {
   it('passes through a non-fallback source', () => {
@@ -32,6 +36,47 @@ describe('getHarnessAdminUrlWithSource', () => {
   it("relabels the generic 'fallback' to 'native-fallback'", () => {
     resolvePgUrl.mockReturnValue({ url: 'postgres://localhost:5432/papercusp', source: 'fallback' });
     expect(getHarnessAdminUrlWithSource().source).toBe('native-fallback');
+  });
+
+  it('uses PAPERCUSP_PG_PORT for an isolated native fallback', () => {
+    vi.stubEnv('PAPERCUSP_PG_PORT', '19532');
+    resolvePgUrl.mockImplementation((config: { fallbackUrl: string }) => ({
+      url: config.fallbackUrl,
+      source: 'fallback',
+    }));
+
+    expect(getHarnessAdminUrlWithSource()).toEqual({
+      url: 'postgresql://harness_admin:harness_admin_pwd@localhost:19532/papercusp',
+      source: 'native-fallback',
+    });
+  });
+
+  it('skips discovery when PAPERCUSP_SKIP_PG_DISCOVERY=1', () => {
+    vi.stubEnv('PAPERCUSP_SKIP_PG_DISCOVERY', '1');
+    resolvePgUrl.mockImplementation((config: { fallbackUrl: string }) => ({
+      url: config.fallbackUrl,
+      source: 'fallback',
+    }));
+
+    expect(getHarnessAdminUrlWithSource()).toEqual({
+      url: 'postgresql://harness_admin:harness_admin_pwd@localhost:5432/papercusp',
+      source: 'native-fallback',
+    });
+    expect(resolvePgUrl).toHaveBeenCalledWith(
+      expect.objectContaining({ discoveryFile: undefined }),
+    );
+  });
+
+  it('re-resolves the isolated fallback when PAPERCUSP_PG_PORT changes', () => {
+    resolvePgUrl.mockImplementation((config: { fallbackUrl: string }) => ({
+      url: config.fallbackUrl,
+      source: 'fallback',
+    }));
+    vi.stubEnv('PAPERCUSP_PG_PORT', '19532');
+    expect(getHarnessAdminUrl()).toContain(':19532/');
+    vi.stubEnv('PAPERCUSP_PG_PORT', '19533');
+    expect(getHarnessAdminUrl()).toContain(':19533/');
+    expect(resolvePgUrl).toHaveBeenCalledTimes(2);
   });
 
   it('caches the resolution (resolves once until reset)', () => {
