@@ -6,7 +6,7 @@
  * layer from becoming an outage: a load failure must PROPAGATE (so the dispatch
  * step fails open) and must never be cached as an empty set.
  */
-import { afterEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import {
   applyEntityRefEnums,
@@ -15,7 +15,11 @@ import {
   resolveEntityRefs,
   setEntityEnum,
 } from '@papercusp/tooldef';
-import { invalidateEntityCache, makeSetResolver } from './entity-resolvers-papercusp';
+import {
+  invalidateEntityCache,
+  makeSetResolver,
+  registerPapercuspEntityResolvers,
+} from './entity-resolvers-papercusp';
 
 afterEach(() => invalidateEntityCache());
 
@@ -147,5 +151,92 @@ describe('over-cap vocabularies publish nothing', () => {
     const node = (out.properties as Record<string, Record<string, unknown>>).pot;
     expect(node.enum).toBeUndefined();
     expect(node.anyOf).toBeUndefined();
+  });
+});
+
+/**
+ * THE RECURRENCE GUARD for EI-20248980966812937.
+ *
+ * The one-file fix above (binding a stub in the test that happened to fail) does not
+ * protect the CLASS: `registerPapercuspEntityResolvers()` runs at module scope, so the
+ * real DB-backed loaders are what a unit test silently INHERITS. The next test to touch
+ * `pot`/`harness` without stubbing would re-arm a gate leg that fails on database load
+ * rather than on code — a false red, not reproducible from the diff, that pins `main`
+ * for the whole fleet.
+ *
+ * What this asserts is the RAIL, not the symptom: reaching the live DB from the unit tier
+ * is refused deterministically and instantly, and says so on a channel that survives the
+ * enum overlay's deliberate fail-open catch.
+ */
+describe('unit-tier DB rail (EI-20248980966812937)', () => {
+  /**
+   * Re-arm PRODUCTION wiring before each case. This is load-bearing, and the reason is
+   * itself an instance of the bug class: `setEntityEnum` mutates a MODULE-SCOPED registry,
+   * so the stub bound by "does not publish a pot enum" above outlives that test.
+   * `invalidateEntityCache()` clears the cached VALUES, not the REGISTRATION — so without
+   * this, these cases silently inherit the stub, never reach the DB, and pass while
+   * asserting nothing. (Observed exactly that on the first run: 36ms, zero output.)
+   *
+   * A guard that passes because the dangerous path was never taken is worse than no guard,
+   * so re-registering the real loaders is what makes these assertions falsifiable.
+   */
+  beforeEach(() => {
+    registerPapercuspEntityResolvers();
+    invalidateEntityCache();
+  });
+
+  it('refuses a live-DB reach from the unit tier, loudly, instead of hanging on the pool', async () => {
+    // Deliberately DO NOT stub the loader: this is precisely the mistake being guarded.
+    // The registered `pot` enum loader reads harness_shared.pots.
+    const errors: string[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => {
+      errors.push(a.map(String).join(' '));
+    });
+
+    try {
+      const schema = z.object({ pot: entityRef('pot') });
+      const started = Date.now();
+      const out = await applyEntityRefEnums(schema, z.toJSONSchema(schema) as Record<string, unknown>);
+      const elapsedMs = Date.now() - started;
+
+      // 1. The overlay still fails OPEN — discovery must never break. No enum published.
+      const node = (out.properties as Record<string, Record<string, unknown>>).pot;
+      expect(node.enum).toBeUndefined();
+
+      // 2. It was REFUSED, not merely slow. The original failure was a 5s vitest timeout
+      //    on a connection acquire; anything in that neighbourhood means the rail did not
+      //    fire and we are back to a load-sensitive gate leg. Deliberately generous so
+      //    this cannot itself become a flaky, load-sensitive assertion — the gap it is
+      //    distinguishing is ~0ms vs ~5000ms, so a wide bound still separates them.
+      expect(elapsedMs).toBeLessThan(1000);
+
+      // 3. The diagnosis SURVIVED the fail-open catch. Without this channel the refusal
+      //    is invisible and the test passes for the wrong reason — which is the failure
+      //    mode this whole item is about.
+      expect(errors.join('\n')).toContain('UNIT-TIER DB REACH REFUSED');
+    } finally {
+      spy.mockRestore();
+    }
+  });
+
+  it('names the concrete fix, so a triager is not left hunting a phantom regression', async () => {
+    // The original red cost real hours precisely because it carried no signal about its
+    // cause: an anonymous 5s timeout in a file unchanged for three weeks. A rail that
+    // refuses without saying how to proceed would repeat that mistake more quickly.
+    const errors: string[] = [];
+    const spy = vi.spyOn(console, 'error').mockImplementation((...a: unknown[]) => {
+      errors.push(a.map(String).join(' '));
+    });
+
+    try {
+      const schema = z.object({ pot: entityRef('pot') });
+      await applyEntityRefEnums(schema, z.toJSONSchema(schema) as Record<string, unknown>);
+      const all = errors.join('\n');
+      expect(all).toContain('UNIT-TIER DB REACH REFUSED');
+      // It must point at the remedy, not merely complain that something was refused.
+      expect(all.toLowerCase()).toContain('stub');
+    } finally {
+      spy.mockRestore();
+    }
   });
 });

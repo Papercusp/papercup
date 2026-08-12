@@ -96,8 +96,77 @@ export function makeSetResolver(kind: string, load: () => Promise<string[]>): En
   };
 }
 
+/**
+ * THE UNIT-TIER RAIL — why a database reach is refused here rather than merely timed out.
+ *
+ * `registerPapercuspEntityResolvers()` runs at MODULE SCOPE (bottom of this file), so
+ * merely IMPORTING this module arms the real, DB-backed loaders process-wide. Nothing
+ * calls that function explicitly — production depends entirely on the import side effect.
+ * The consequence is that the live loader is the default a unit test silently INHERITS:
+ * it never opts in, so it never thinks to opt out.
+ *
+ * Measured 2026-08-12 (EI-20248980966812937): `entity-resolvers-papercusp.test.ts` →
+ * "does not publish a pot enum" called `applyEntityRefEnums('pot')`, whose registered
+ * loader is `loadPots`, which reads `harness_shared.pots`. With the org pool starved the
+ * connection ACQUIRE never completed, vitest hit its 5s default, and the red PINNED THE
+ * RELEASE GATE for the whole fleet. Neither the test nor its subject had changed since
+ * 2026-07-19 — so the red was not reproducible from the diff, and triage went hunting a
+ * regression in a file nobody had touched in three weeks.
+ *
+ * That is the whole defect class: a unit-tier test that fails on DATABASE LOAD rather
+ * than on code. Note `statement_timeout` cannot save you — it bounds server-side
+ * execution once a connection is already open, and the hang is upstream of that, in the
+ * acquire.
+ *
+ * So this THROWS instead of waiting. A timeout would still be a load-sensitive gate leg,
+ * just a faster one; refusing outright makes the failure deterministic, instant, and
+ * self-explaining. It is placed in `sql()` — the single funnel both DB-backed loaders
+ * (`loadPots`, `loadHarnessSlugs`) already share — so a loader added later inherits the
+ * rail without anyone remembering it exists.
+ *
+ * Escape hatch: an INTEGRATION-tier test that genuinely needs the real registry sets
+ * `PAPERCUSP_ALLOW_DB_IN_TESTS=1`. That is the tier where a live DB belongs.
+ *
+ * ⚠ WHY THIS ALSO WARNS ON A CHANNEL THE THROW CANNOT REACH. `applyEntityRefEnums`
+ * FAILS OPEN by design — it catches an enumerator's error and simply publishes no enum,
+ * because "discovery must never break" (libs/generic/tooldef/src/entity-ref.ts, and the
+ * test that pins it: "fails open when an enumerator throws"). That contract is correct
+ * and this rail does not fight it. But it means the throw below is SWALLOWED on the enum
+ * path: the test stops hanging (the gate red is fixed, which is the point) and then
+ * passes silently, teaching nobody. So emit the diagnosis on a channel the swallow
+ * cannot eat. Without this, the fix would be invisible in exactly the situation it
+ * exists for, which is the same "a bounded measurement rendered as a clean pass" trap
+ * that made the original red so expensive to triage.
+ */
+function assertNotUnitTier(): void {
+  if (!process.env.VITEST || process.env.PAPERCUSP_ALLOW_DB_IN_TESTS) return;
+  // Survives applyEntityRefEnums' deliberate fail-open catch. Keep the marker string
+  // stable — the recurrence guard asserts on it.
+  console.error(
+    '[entity-resolvers-papercusp] UNIT-TIER DB REACH REFUSED — a unit test reached the ' +
+      'live org database through an entity loader. See the thrown error below for the fix ' +
+      '(bind a stub loader). This warning exists because the enum overlay fails open and ' +
+      'would otherwise swallow that error, letting the test pass silently.',
+  );
+  throw new Error(
+    'entity-resolvers-papercusp: a UNIT-tier test reached the live org database via an ' +
+      'entity enum/resolver loader (loadPots / loadHarnessSlugs read harness_shared). ' +
+      'Refused deliberately: this exact path red-pinned the release gate for the whole ' +
+      'fleet when the org pool was starved (EI-20248980966812937), and a DB-load-sensitive ' +
+      'unit test is a false red nobody can reproduce from the diff.\n' +
+      "FIX: bind a stub loader in the test — setEntityEnum('pot', async () => [...]) or " +
+      "setEntityResolver('pot', ...) — and invalidateEntityCache() in afterEach. The real " +
+      'subject of these assertions is almost never WHICH rows exist (the pot/harness enums ' +
+      'are over-cap and publish nothing regardless), so a stub tests exactly what the ' +
+      'assertion claims to test.\n' +
+      'If this genuinely IS an integration test that needs the live registry, set ' +
+      'PAPERCUSP_ALLOW_DB_IN_TESTS=1 — but put it in the integration tier, not here.',
+  );
+}
+
 /** Lazily reach the org DB — importing it is side-effect-free, so this stays cheap. */
 async function sql() {
+  assertNotUnitTier();
   const { getOrgPg } = await import('@papercusp/db-org');
   return getOrgPg().sql;
 }
