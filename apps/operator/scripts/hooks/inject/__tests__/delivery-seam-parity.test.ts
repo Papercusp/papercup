@@ -35,6 +35,7 @@ import { readdir } from 'node:fs/promises';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+// @ts-ignore -- runtime .mjs module; covered by this parity test.
 import {
   DELIVERY_MECHANISMS,
   validateDeliverySeam,
