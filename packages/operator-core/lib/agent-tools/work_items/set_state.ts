@@ -27,6 +27,7 @@ import {
   hasAssumptionDeclaration,
   resolveDeclaredAssumptions,
   ASSUMPTIONS_REQUIRED_MESSAGE,
+  TERMINAL_CLOSE_RECOVERY_HINT,
 } from './_assumptions';
 import { nonAssumptionKindAdvisory } from '../../agent-facts/assumptions';
 import {
@@ -112,10 +113,10 @@ export default defineTool({
   name: 'work_items:set_state',
   profile: 'engineer',
   description:
-    'Set lifecycle state for one OR many work-items. Unified states are open|wip|blocked|needs-human|done|dropped; legacy aliases fold to the unified state with terminal_reason preserved. Issue needs-human/blocked writes exclude from self-select; plan-linked feature blocking must use plans:set-status. Reopening a completed item requires `force:true`. Supports { id, state }, { ids:[…], state }, or heterogeneous items[]. Results include aliased/requestedState/appliedState — inspect appliedState, not only ok.',
+    'Set lifecycle state for one OR many work-items. Unified states are open|wip|blocked|needs-human|done|dropped; legacy aliases fold to the unified state with terminal_reason preserved. Terminal states require both completionRef and an explicit assumptions declaration (`"none"` or an array of facts:assert keys). Issue needs-human/blocked writes exclude from self-select; plan-linked feature blocking must use plans:set-status. Reopening a completed item requires `force:true`. Supports { id, state }, { ids:[…], state }, or heterogeneous items[]. Results include aliased/requestedState/appliedState — inspect appliedState, not only ok.',
   guidance: {
-    when: 'Use for lifecycle changes. Prefer work_items:complete for terminal evidence. Batch with { ids:[…], state } or items[]. Plan-linked feature blocks use plans:set-status; needs-human/blocked exclude from self-select. Before `force:true`, read terminalOwner/ref.',
-    chaining: 'work_items:claim → … → work_items:set_state { state }.',
+    when: `Use for lifecycle changes. Prefer work_items:complete for terminal evidence. Batch with { ids:[…], state } or items[]. Plan-linked feature blocks use plans:set-status; needs-human/blocked exclude from self-select. Before \`force:true\`, read terminalOwner/ref. ${TERMINAL_CLOSE_RECOVERY_HINT}`,
+    chaining: 'work_items:claim → … → work_items:set_state { state, completionRef, assumptions }.',
     seeAlso: [
       'work_items:complete (terminal state WITH a structured completion record)',
       'plans:set-status { item, status:"blocked" } (the source-of-truth park for plan-linked feature items)',
