@@ -266,6 +266,48 @@ describe('retrying across a holder recycle', () => {
     });
   });
 
+  it('aborts an in-flight request when the specific holder disappears', async () => {
+    let holderGone = false;
+    let realStarted!: () => void;
+    const started = new Promise<void>((resolve) => {
+      realStarted = resolve;
+    });
+    let aborted = false;
+    const sibling = { port: 3271, pid: 4271, startedAt: 1 };
+    const listSiblingsImpl = (async () => (holderGone ? [] : [sibling])) as never;
+    const fetchImpl = (async (_url: string, init: { body: string; signal: AbortSignal }) => {
+      const body = JSON.parse(init.body) as Record<string, unknown>;
+      if (body.probeOnly === true) {
+        return { ok: true, status: 200, json: async () => ({ ok: true, booted: true, probeOnly: true }) };
+      }
+      realStarted();
+      return await new Promise<never>((_resolve, reject) => {
+        init.signal.addEventListener(
+          'abort',
+          () => {
+            aborted = true;
+            reject(new Error('holder disappeared; request aborted'));
+          },
+          { once: true },
+        );
+      });
+    }) as never;
+
+    const request = requestLiveOperatorHeadSnapshot({
+      ...base,
+      listSiblingsImpl,
+      fetchImpl,
+      retryBudgetMs: 0,
+      holderLivenessIntervalMs: 1,
+    });
+    await started;
+    holderGone = true;
+    const out = await request;
+
+    expect(out).toMatchObject({ kind: 'failed', transport: true });
+    expect(aborted).toBe(true);
+  });
+
   it('CONTROL: the same recycle KILLS the cut when retry is disabled', async () => {
     // Without this the test above passes just as happily against a build that never
     // retries at all — the fake would simply not get asked a second time.

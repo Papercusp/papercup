@@ -61,6 +61,15 @@ export const DEFAULT_HEAD_SNAPSHOT_RETRY_BUDGET_MS = 10 * 60_000;
  */
 export const DEFAULT_HEAD_SNAPSHOT_RETRY_DELAY_MS = 15_000;
 
+/**
+ * How often an in-flight snapshot asks whether the exact holder is still alive.
+ *
+ * A head snapshot can take minutes, so checking only before the POST is not enough:
+ * the holder can disappear after discovery and leave the request burning the whole
+ * retry budget before the caller gets a chance to discover its replacement.
+ */
+export const DEFAULT_HEAD_SNAPSHOT_HOLDER_LIVENESS_INTERVAL_MS = 5_000;
+
 export interface LiveHeadSnapshotProduced {
   readonly kind: 'produced';
   readonly port: number;
@@ -175,6 +184,7 @@ async function post(
   sibling: SiblingOperator,
   body: Record<string, unknown>,
   timeoutMs: number,
+  signal?: AbortSignal,
 ): Promise<HeadSnapshotReply | { __transportError: string; __status?: number }> {
   try {
     // The route declares `path: '/internal/substrate/head-snapshot'`; the host mounts
@@ -182,7 +192,9 @@ async function post(
     // managed-timers. HEAD_SNAPSHOT_PATH carries the prefix so this stays one string.
     const res = await fetchImpl(`http://127.0.0.1:${sibling.port}${HEAD_SNAPSHOT_PATH}`, {
       method: 'POST',
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: signal
+        ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)])
+        : AbortSignal.timeout(timeoutMs),
       headers: { 'content-type': 'application/json', accept: 'application/json' },
       body: JSON.stringify(body),
     });
@@ -297,6 +309,8 @@ export async function waitForLiveOperatorHoldingHive(inp: {
   readonly probeTimeoutMs?: number;
   readonly retryBudgetMs?: number;
   readonly retryDelayMs?: number;
+  /** How often to re-check the discovered holder while the POST is in flight. */
+  readonly holderLivenessIntervalMs?: number;
   readonly fetchImpl?: FetchLike;
   readonly listSiblingsImpl?: typeof listSiblingOperators;
   readonly findHolderImpl?: typeof findLiveOperatorHoldingHive;
@@ -449,6 +463,7 @@ async function attemptHeadSnapshot(inp: {
   readonly timeoutMs?: number;
   readonly fetchImpl?: FetchLike;
   readonly listSiblingsImpl?: typeof listSiblingOperators;
+  readonly holderLivenessIntervalMs?: number;
   readonly warn?: (msg: string) => void;
 }): Promise<LiveHeadSnapshotOutcome> {
   const fetchImpl = (inp.fetchImpl ?? (globalThis.fetch as unknown as FetchLike)) as FetchLike;
@@ -456,12 +471,34 @@ async function attemptHeadSnapshot(inp: {
   if (found.kind !== 'holder') return found;
   const holder = found.sibling;
 
-  const reply = await post(
-    fetchImpl,
+  // A full snapshot can occupy the holder for minutes. Watch the identity we
+  // discovered while the POST is in flight so a dead/replaced holder becomes a
+  // normal retryable transport failure instead of consuming the whole retry budget.
+  const requestController = new AbortController();
+  const stopWatching = watchHolderLiveness({
+    ...inp,
     holder,
-    { workspaceId: inp.workspaceId, hive: inp.hive },
-    inp.timeoutMs ?? DEFAULT_HEAD_SNAPSHOT_TIMEOUT_MS,
-  );
+    onLost: (replacement) => {
+      inp.warn?.(
+        `[head-snapshot] holder ${holder.pid}@${holder.port} disappeared while the snapshot ` +
+          `request was in flight (${describeHolderLoss(replacement, holder)}); aborting to retry.`,
+      );
+      requestController.abort();
+    },
+  });
+
+  let reply: Awaited<ReturnType<typeof post>>;
+  try {
+    reply = await post(
+      fetchImpl,
+      holder,
+      { workspaceId: inp.workspaceId, hive: inp.hive },
+      inp.timeoutMs ?? DEFAULT_HEAD_SNAPSHOT_TIMEOUT_MS,
+      requestController.signal,
+    );
+  } finally {
+    stopWatching();
+  }
   if (isTransportError(reply)) {
     return { kind: 'failed', port: holder.port, error: reply.__transportError, transport: true };
   }
@@ -483,5 +520,85 @@ async function attemptHeadSnapshot(inp: {
     chunkCount: Number(reply.chunkCount) || 0,
     rowCount: Number(reply.rowCount) || 0,
     elapsedMs: Number(reply.elapsedMs) || 0,
+  };
+}
+
+function sameHolder(a: SiblingOperator, b: SiblingOperator): boolean {
+  return a.port === b.port && a.pid === b.pid && a.startedAt === b.startedAt;
+}
+
+function describeHolderLoss(found: FindHiveHolderOutcome, previous: SiblingOperator): string {
+  if (found.kind === 'holder') {
+    return `a replacement holder is ${found.sibling.pid}@${found.sibling.port} ` +
+      `(previously ${previous.pid}@${previous.port})`;
+  }
+  return found.probed.length === 0
+    ? 'no operator-shaped sibling remains'
+    : `no matching holder among [${found.probed.join(', ')}]`;
+}
+
+/**
+ * Monitor one specific holder until the request completes or its process identity
+ * changes. The timer is intentionally local to this long-lived HTTP request; it is
+ * not a datastore polling loop, and it stops as soon as the POST settles.
+ */
+function watchHolderLiveness(inp: {
+  readonly workspaceId: string;
+  readonly hive: string;
+  readonly holder: SiblingOperator;
+  readonly probeTimeoutMs?: number;
+  readonly fetchImpl?: FetchLike;
+  readonly listSiblingsImpl?: typeof listSiblingOperators;
+  readonly holderLivenessIntervalMs?: number;
+  readonly onLost: (found: FindHiveHolderOutcome) => void;
+}): () => void {
+  let stopped = false;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const intervalMs = inp.holderLivenessIntervalMs ?? DEFAULT_HEAD_SNAPSHOT_HOLDER_LIVENESS_INTERVAL_MS;
+
+  const check = async (): Promise<void> => {
+    if (stopped) return;
+    const found = await findLiveOperatorHoldingHive({
+      workspaceId: inp.workspaceId,
+      hive: inp.hive,
+      probeTimeoutMs: inp.probeTimeoutMs,
+      fetchImpl: inp.fetchImpl,
+      listSiblingsImpl: inp.listSiblingsImpl,
+    });
+    if (stopped) return;
+    if (found.kind !== 'holder' || !sameHolder(found.sibling, inp.holder)) {
+      stopped = true;
+      inp.onLost(found);
+      return;
+    }
+    timer = setTimeout(() => {
+      void check().catch(() => {
+        // A failed liveness probe is treated as holder loss. The outer request
+        // retry will run a fresh discovery instead of leaving a dead POST in flight.
+        if (!stopped) {
+          stopped = true;
+          inp.onLost({
+            kind: 'no-holder',
+            answered: [],
+            probed: [inp.holder.port],
+            staleBuild: [],
+          });
+        }
+      });
+    }, intervalMs);
+  };
+
+  timer = setTimeout(() => {
+    void check().catch(() => {
+      if (!stopped) {
+        stopped = true;
+        inp.onLost({ kind: 'no-holder', answered: [], probed: [inp.holder.port], staleBuild: [] });
+      }
+    });
+  }, intervalMs);
+
+  return () => {
+    stopped = true;
+    if (timer !== undefined) clearTimeout(timer);
   };
 }

@@ -1236,6 +1236,25 @@ describe('scoped-superuser hive clamp', () => {
     expect(textOf(res)).not.toContain('harness_forbidden');
   });
 
+  it('flag ON: allows docs:author engineering sentinel through the hive clamp', async () => {
+    h.scopedClampFlag.value = true;
+    const res = await callTool(
+      'docs:author',
+      {
+        harness: 'engineering',
+        // Invalid slug stops in the pure handler validation before any file or
+        // canonical-row write, while still proving the transport clamp lets the
+        // engineering authoring surface through.
+        slug: 'invalid/slug',
+        title: 'gating matrix probe',
+        description: 'gating matrix probe',
+        body: 'gating matrix probe',
+      },
+      hiveScoped(),
+    );
+    expect(textOf(res)).not.toContain('harness_forbidden');
+  });
+
   // P-016/P-014b: confine the workspace-GLOBAL read surfaces per-hive. A `hive`
   // arg naming a DIFFERENT hive is a cross-hive read on ANY tool → rejected;
   // coord:presence's scope:'workspace'|'all' selector widens past the hive →
