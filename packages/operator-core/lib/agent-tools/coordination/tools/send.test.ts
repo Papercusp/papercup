@@ -1336,6 +1336,14 @@ describe('coord:send structured-body gate (owner directive 2026-07-28 — the st
     expect(schema.properties?.why?.description ?? '').toMatch(/goal REF not prose/i);
   });
 
+  it('publishes the directed forYouBecause requirement in primary coord:send guidance', () => {
+    const primaryGuidance = [tool.description, tool.guidance?.when].filter(Boolean).join('\n');
+    expect(primaryGuidance).toContain('forYouBecause');
+    expect(primaryGuidance).toContain('{ relation, ref?, note? }');
+    expect(primaryGuidance).toMatch(/directed.*action.*answer/i);
+    expect(primaryGuidance).toMatch(/broadcasts.*human.*ack.*none.*exempt/i);
+  });
+
   it('publishes the structured couldNotDetermine citation shape in primary coord:send guidance', () => {
     const primaryGuidance = [tool.description, tool.guidance?.when].filter(Boolean).join('\n');
     expect(primaryGuidance).toContain('couldNotDetermine');
