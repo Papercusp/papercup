@@ -794,11 +794,19 @@ export default defineTool({
               ? {
                   checksDropped: droppedChecks.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)),
                   checksDroppedNote:
-                    `a supplied \`checks\` list REPLACES the carried set — ${droppedChecks.length} carried ` +
-                    `claim(s) were not in this write and are now gone. To restore: re-send them (a re-sent claim ` +
-                    `inherits its prior recheck/verified). To AVOID this next time, pass rowsMode:'merge' — ` +
-                    `unmentioned rows then survive and you send only the rows you are changing; give a row an ` +
-                    `\`id\` if you expect to re-word its claim.`,
+                    rowsMode === 'merge'
+                      ? `CAP EVICTION, not a replace: rowsMode:'merge' UNIONED your ${effectiveChecks?.length ?? 0} ` +
+                        `row(s) onto the carried set, the union exceeded the ${CARRY_NOTE_MAX_CHECKS}-row cap, and ` +
+                        `${droppedChecks.length} CARRIED row(s) were evicted from the tail (supplied rows are kept ` +
+                        `first). Re-sending the full set CANNOT fix this — that set is over the cap and would be ` +
+                        `rejected as invalid_input. To keep them: RETIRE rows you no longer need in a separate ` +
+                        `plain write (rowsMode:'replace', the default), then merge; or pass no \`checks\` at all to ` +
+                        `leave the stored rows untouched.`
+                      : `a supplied \`checks\` list REPLACES the carried set — ${droppedChecks.length} carried ` +
+                        `claim(s) were not in this write and are now gone. To restore: re-send them (a re-sent claim ` +
+                        `inherits its prior recheck/verified). To AVOID this next time, pass rowsMode:'merge' — ` +
+                        `unmentioned rows then survive and you send only the rows you are changing; give a row an ` +
+                        `\`id\` if you expect to re-word its claim.`,
                 }
               : {}),
             /** Same contract for WALLS — and a dropped wall is worse than a dropped check:
@@ -808,9 +816,17 @@ export default defineTool({
               ? {
                   wallsDropped: droppedWalls.map((c) => (c.length > 300 ? `${c.slice(0, 300)}…` : c)),
                   wallsDroppedNote:
-                    `a supplied \`walls\` list REPLACES the carried set — ${droppedWalls.length} carried ` +
-                    `owner-gated commitment(s) were not in this write and are now gone. Re-send the FULL set, ` +
-                    `pass no \`walls\` at all, or use rowsMode:'merge' so unmentioned rows survive.`,
+                    rowsMode === 'merge'
+                      ? `CAP EVICTION, not a replace: rowsMode:'merge' UNIONED your ${effectiveWalls?.length ?? 0} ` +
+                        `row(s) onto the carried set, the union exceeded the ${CARRY_NOTE_MAX_WALLS}-row cap, and ` +
+                        `${droppedWalls.length} CARRIED owner-gated commitment(s) were evicted from the tail ` +
+                        `(supplied rows are kept first). Re-sending the full set CANNOT fix this — that set is over ` +
+                        `the cap and would be rejected as invalid_input. To keep them: RETIRE rows you no longer need ` +
+                        `in a separate plain write (rowsMode:'replace', the default), then merge; or pass no ` +
+                        '`walls` at all to leave the stored rows untouched.'
+                      : `a supplied \`walls\` list REPLACES the carried set — ${droppedWalls.length} carried ` +
+                        `owner-gated commitment(s) were not in this write and are now gone. Re-send the FULL set, ` +
+                        `pass no \`walls\` at all, or use rowsMode:'merge' so unmentioned rows survive.`,
                 }
               : {}),
             /**

@@ -798,8 +798,8 @@ describe('row identity + merge mode — a loss made VISIBLE is not yet a loss AV
     });
   });
 
-  describe('overflowChecks — a merge must not eat a NEW row silently', () => {
-    it('reports the supplied row the cap cut, instead of dropping it behind a full set', () => {
+  describe('merge-cap eviction — supplied rows win only when the union overflows', () => {
+    it('keeps the supplied row and evicts the carried tail', () => {
       const merged = mergeCarryRows({
         priorNote: priorNoteWith(Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => check(i + 1))),
         baseNote: 'body',
@@ -807,15 +807,14 @@ describe('row identity + merge mode — a loss made VISIBLE is not yet a loss AV
         hasNoteWrite: true,
         mode: 'merge',
       });
-      // Carried rows hold their slots, so it is the caller's NEW row that falls off...
+      // Supplied rows move first only because the union exceeds the cap.
       expect(merged.checks).toHaveLength(CARRY_NOTE_MAX_CHECKS);
-      expect(merged.checks.map((c) => c.claim)).not.toContain('one row past the cap');
-      expect(merged.droppedChecks).toEqual([]);
-      // ...and the caller is TOLD, rather than left to diff a count they never recorded.
-      expect(merged.overflowChecks).toEqual(['one row past the cap']);
+      expect(merged.checks.map((c) => c.claim)).toContain('one row past the cap');
+      expect(merged.droppedChecks).toEqual([`claim ${CARRY_NOTE_MAX_CHECKS}`]);
+      expect(merged.overflowChecks).toEqual([]);
     });
 
-    it('reports a supplied WALL the cap cut', () => {
+    it('keeps a supplied WALL and evicts the carried tail', () => {
       const merged = mergeCarryRows({
         priorNote: priorNoteWith([], Array.from({ length: CARRY_NOTE_MAX_WALLS }, (_, i) => wall(i + 1))),
         baseNote: 'body',
@@ -823,7 +822,9 @@ describe('row identity + merge mode — a loss made VISIBLE is not yet a loss AV
         hasNoteWrite: true,
         mode: 'merge',
       });
-      expect(merged.overflowWalls).toEqual(['one wall past the cap']);
+      expect(merged.walls.map((w) => w.claim)).toContain('one wall past the cap');
+      expect(merged.droppedWalls).toEqual([`wall ${CARRY_NOTE_MAX_WALLS}`]);
+      expect(merged.overflowWalls).toEqual([]);
     });
 
     it('is EMPTY on an ordinary write — it must not cry wolf on every checkpoint', () => {

@@ -100,7 +100,7 @@ vi.mock('../../bounded-timeout', () => ({
 const tool = (await import('./checkpoint')).default;
 // REAL (the carry-note mock above spreads importOriginal) — used to build prior notes
 // through the same renderer the store persists, rather than a drift-prone literal.
-const { mergeCarryRows, CARRY_NOTE_MAX_CHECKS, CARRY_ROW_ID_MAX } = await import('../../carry-note');
+const { mergeCarryRows, CARRY_NOTE_MAX_CHECKS, CARRY_NOTE_MAX_WALLS, CARRY_ROW_ID_MAX } = await import('../../carry-note');
 
 type Out = { content: { text: string }[]; isError?: boolean };
 const parse = (x: unknown) => (tool.args as { parse: (x: unknown) => unknown }).parse(x);
@@ -794,16 +794,31 @@ describe("loop:checkpoint — rowsMode:'merge' and row ids make the drop avoidab
     expect(b.rowsModeNote).toContain("rowsMode:'replace'");
   });
 
-  it('reports a supplied row the cap CUT — merge must not eat a new row silently', async () => {
+  it('keeps supplied rows and reports CAP EVICTION of the carried tail', async () => {
     getLoopCarryNote.mockResolvedValue(
       buildPrior(Array.from({ length: CARRY_NOTE_MAX_CHECKS }, (_, i) => ({ claim: `carried ${i + 1}` }))),
     );
     const b = body(await call({ did: 'progress', checks: [{ claim: 'one row past the cap' }], rowsMode: 'merge' }));
 
     expect(b.checks).toBe(CARRY_NOTE_MAX_CHECKS);
-    expect(b.checksDropped).toBeUndefined(); // nothing CARRIED was lost...
-    expect(b.checksOverflowed).toEqual(['one row past the cap']); // ...but the new row was
-    expect(b.overflowNote).toContain('NOT stored');
+    expect(b.checksDropped).toEqual([`carried ${CARRY_NOTE_MAX_CHECKS}`]);
+    expect(b.checksOverflowed).toBeUndefined();
+    expect(b.checksDroppedNote).toContain('CAP EVICTION');
+    expect(b.checksDroppedNote).not.toContain('REPLACES the carried set');
+    expect(b.checksDroppedNote).not.toMatch(/re-send the full set/i);
+    expect(b.checksDroppedNote).toMatch(/RETIRE/);
+  });
+
+  it('uses the same CAP EVICTION diagnosis for supplied walls', async () => {
+    getLoopCarryNote.mockResolvedValue(
+      buildPrior([], Array.from({ length: CARRY_NOTE_MAX_WALLS }, (_, i) => ({ claim: `carried wall ${i + 1}` }))),
+    );
+    const b = body(await call({ did: 'progress', walls: [{ claim: 'new wall' }], rowsMode: 'merge' }));
+
+    expect(b.walls).toBe(CARRY_NOTE_MAX_WALLS);
+    expect(b.wallsDropped).toEqual([`carried wall ${CARRY_NOTE_MAX_WALLS}`]);
+    expect(b.wallsDroppedNote).toContain('CAP EVICTION');
+    expect(b.wallsDroppedNote).not.toContain('REPLACES the carried set');
   });
 
   it('says nothing about overflow on an ordinary write', async () => {

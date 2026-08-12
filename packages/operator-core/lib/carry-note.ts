@@ -777,10 +777,10 @@ export function mergeCarryRows(opts: {
    * lost from the PRIOR set and therefore cannot see this: a caller who sends 13 rows
    * into a 12-row cap silently loses the 13th.
    *
-   * Pre-existing (the cap always worked this way), but `mode:'merge'` makes it far
-   * likelier to fire — carried rows hold their slots, so it is the caller's NEW row
-   * that falls off the end. Shipping a merge mode that silently eats new rows would
-   * re-create, on the additive path, the very silence the mode exists to remove.
+   * Pre-existing (the cap always worked this way). On `mode:'merge'`, overflow is
+   * ordered supplied-first, so the carried tail is evicted and these arrays normally
+   * remain empty; they still report supplied rows that overflow a merge with no prior
+   * rows (or any other path where a supplied row itself cannot fit).
    */
   overflowWalls: string[];
   /** Supplied CHECK claims the row cap cut. Same contract as {@link overflowWalls}. */
@@ -797,10 +797,14 @@ export function mergeCarryRows(opts: {
   const suppliedChecks = opts.checks ?? (rawCheckParts.checks.length > 0 ? rawCheckParts.checks : undefined);
   const walls =
     opts.walls !== undefined
-      ? normalizeWallEntries(upsertOntoPrior(opts.walls, priorParts.walls, merging), priorParts.walls, opts.nowMs)
+      ? normalizeWallEntries(
+          upsertOntoPrior(opts.walls, priorParts.walls, merging, CARRY_NOTE_MAX_WALLS),
+          priorParts.walls,
+          opts.nowMs,
+        )
       : rawParts.walls.length > 0
         ? normalizeWallEntries(
-            upsertOntoPrior(rawParts.walls, priorParts.walls, merging),
+            upsertOntoPrior(rawParts.walls, priorParts.walls, merging, CARRY_NOTE_MAX_WALLS),
             priorParts.walls,
             opts.nowMs,
           )
@@ -808,13 +812,13 @@ export function mergeCarryRows(opts: {
   const checks =
     opts.checks !== undefined
       ? normalizeCheckEntries(
-          upsertOntoPrior(opts.checks, priorCheckParts.checks, merging),
+          upsertOntoPrior(opts.checks, priorCheckParts.checks, merging, CARRY_NOTE_MAX_CHECKS),
           priorCheckParts.checks,
           opts.nowMs,
         )
       : rawCheckParts.checks.length > 0
         ? normalizeCheckEntries(
-            upsertOntoPrior(rawCheckParts.checks, priorCheckParts.checks, merging),
+            upsertOntoPrior(rawCheckParts.checks, priorCheckParts.checks, merging, CARRY_NOTE_MAX_CHECKS),
             priorCheckParts.checks,
             opts.nowMs,
           )
@@ -841,17 +845,29 @@ export function mergeCarryRows(opts: {
  * append, so a merge does not reshuffle a note the author reads every wake. Under
  * `replace` (or an empty prior) this is the identity function.
  *
- * Note the cap still applies afterwards — a merge that overflows
- * {@link CARRY_NOTE_MAX_CHECKS} loses the overflow, and those rows surface through the
- * ordinary `droppedChecks` report rather than vanishing.
+ * Note the cap still applies afterwards. When the merge union fits, the existing
+ * carried-first order is preserved so ordinary notes do not reshuffle. When the union
+ * overflows the cap, supplied rows move first so normalization evicts the carried tail
+ * rather than the row the caller just supplied; that eviction surfaces through the
+ * ordinary `droppedChecks` report.
  */
 function upsertOntoPrior<T extends { id?: string; claim: string }>(
   supplied: ReadonlyArray<T>,
   prior: ReadonlyArray<{ id?: string; claim: string }>,
   merging: boolean,
+  maxRows: number,
 ): ReadonlyArray<T | { id?: string; claim: string }> {
   if (!merging || prior.length === 0) return supplied;
   const suppliedByKey = new Map(supplied.map((r) => [carryRowKey(r), r] as const));
+  const suppliedKeys = new Set(suppliedByKey.keys());
+  const unionKeys = new Set([...prior.map(carryRowKey), ...suppliedKeys]);
+
+  // Preserve the established carried-first order while the union fits. Once the cap
+  // would evict a row, prefer the caller's supplied rows and let the carried tail yield.
+  // This is intentionally conditional: reordering every additive write would make
+  // otherwise stable carry notes churn on every wake.
+  if (unionKeys.size > maxRows) return [...supplied, ...prior.filter((p) => !suppliedKeys.has(carryRowKey(p)))];
+
   const out: Array<T | { id?: string; claim: string }> = [];
   const used = new Set<string>();
   for (const p of prior) {
