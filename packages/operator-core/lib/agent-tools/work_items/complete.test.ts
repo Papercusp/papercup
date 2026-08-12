@@ -2489,6 +2489,14 @@ describe('work_items:complete input coercion (EI-7031)', () => {
       expect(text).toContain('not inside');
     });
 
+    it('documents preserving assumptions when recovering a terminal close after timeout (EI-20234204782129196)', () => {
+      const guidance = ((complete as { guidance?: { seeAlso?: string[] } }).guidance?.seeAlso ?? []).join('\n');
+      expect(guidance).toContain('work_items:complete times out');
+      expect(guidance).toContain('work_items:set_state as the fallback');
+      expect(guidance).toContain('assumptions');
+      expect(guidance).toContain('completionRef');
+    });
+
     it('accepts the documented nested verification shape while keeping completion fields outside it', () => {
       const schema = complete.args as { safeParse: (x: unknown) => { success: boolean; error?: { issues: Array<{ message: string }> } } };
       const valid = schema.safeParse({

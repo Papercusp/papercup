@@ -31,7 +31,7 @@ import { z } from 'zod';
 import { existsSync, readdirSync } from 'node:fs';
 import * as nodePath from 'node:path';
 import { detectPapercupRoot } from '../../harness/register-papercusp';
-import { assumptionsArg, resolveDeclaredAssumptions } from './_assumptions';
+import { assumptionsArg, resolveDeclaredAssumptions, TERMINAL_CLOSE_RECOVERY_HINT } from './_assumptions';
 import { nonAssumptionKindAdvisory } from '../../agent-facts/assumptions';
 import type { StoredAssumptionDeclaration } from '../../coord-lifecycle/records';
 import { defineTool, type UnifiedToolContext } from '@papercusp/agent-mcp';
@@ -1657,7 +1657,7 @@ export default defineTool({
       'work_items:set_state (change state without recording a completion)',
       'coord:send (a note/question that is not a completion)',
       'improvements:capture (file the friction the reflect step surfaced)',
-      'Finish is idempotent: after a timeout, re-check with work_items:get or retry the same completion.',
+      `Finish is idempotent: after a timeout, re-check with work_items:get or retry the same completion. ${TERMINAL_CLOSE_RECOVERY_HINT}`,
       'For batches, inspect each result and counts.failed; top-level ok only means the batch ran.',
     ],
   },
