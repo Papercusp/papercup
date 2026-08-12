@@ -2060,6 +2060,45 @@ describe('EI-19409397800537963 — the reserved-plan-lane floor keys on op_statu
   });
 });
 
+// WI-38258 — a scheduled plan run used to be DEADLOCKED BY CONSTRUCTION. `system:plan-run`
+// mints its instance plan at status='active' and stamps every minted work-item's
+// payload.plan_item at that same instance, so the lifecycle leg of this floor reserved the run's
+// own items for the instance's driving agent — which a scheduled run never has ("no second
+// execution engine", plan-run-action.ts:16). The plan stayed 'active' because its item never
+// completed; the item was unclaimable because the plan was 'active'.
+//
+// The fix qualifies the LIFECYCLE leg with `template_slug IS NULL`. The two tests below pin the
+// two halves that must not drift apart: minting alone no longer reserves, but an instance someone
+// deliberately STARTED still does — so this is a narrowing of the floor, not a hole in it.
+describe('WI-38258 — a per-run instance plan does not reserve its own minted items', () => {
+  it('does NOT reserve an item on a lifecycle-active INSTANCE plan (the deadlock)', async () => {
+    // Exactly what system:plan-run writes: status='active', op_status NULL, template_slug set.
+    await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status, template_slug)
+                 VALUES ('default', 'papercup', 'wi-38258-tpl@run-1786557604333', 'active', 'wi-38258-tpl')`;
+    const minted = await wi.createWorkItem({
+      kind: 'feature', title: 'scheduled-run minted item', harness: 'papercup', createdBy: 'system:plan-run',
+      payload: { plan_item: { plan_slug: 'wi-38258-tpl@run-1786557604333', item_id: 'P-001' } },
+    });
+
+    const list = await wi.listWorkItems({ harness: 'papercup', kind: 'feature', admissibleOnly: true });
+    expect(list.some((w) => w.id === minted.id)).toBe(true);
+    expect((await wi.claimNextWorkItem({ harness: 'papercup', assignee: 'bee-run' }))?.id).toBe(minted.id);
+  });
+
+  it('STILL reserves an instance plan someone actually started (op_status, the retained leg)', async () => {
+    await db.sql`INSERT INTO harness_shared.harness_plans (workspace_id, harness_slug, plan_slug, status, op_status, template_slug)
+                 VALUES ('default', 'papercup', 'wi-38258-tpl@run-1786557604334', 'active', 'started', 'wi-38258-tpl')`;
+    const driven = await wi.createWorkItem({
+      kind: 'feature', title: 'driven instance item', harness: 'papercup', createdBy: 'system:plan-run',
+      payload: { plan_item: { plan_slug: 'wi-38258-tpl@run-1786557604334', item_id: 'P-001' } },
+    });
+
+    expect(await wi.claimNextWorkItem({ harness: 'papercup', assignee: 'bee-driven' })).toBeNull();
+    const list = await wi.listWorkItems({ harness: 'papercup', kind: 'feature', admissibleOnly: true });
+    expect(list.some((w) => w.id === driven.id)).toBe(false);
+  });
+});
+
 // WI-5512: countWorkItems' feature-family COUNT query never applied admissibleOnly at
 // all (not even G2 autoPickableWhereSql) — so a caller pairing listWorkItems({
 // admissibleOnly:true }) for the claimable rows with countWorkItems({ ...same filter })
