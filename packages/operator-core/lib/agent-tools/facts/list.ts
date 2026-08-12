@@ -21,8 +21,13 @@ import {
   OPERATIVE_CLAUSE_MAX_CLAUSES_DEFAULT,
 } from '../../operative-clause';
 
-/** EI-10948: was 50 × (500-char body + a 160-char provenance quote) ≈ 56k chars. */
-export const FACTS_LIST_DEFAULT_LIMIT = 25;
+/**
+ * EI-10948 removed the old 50-row blow-up, but 25 excerpted rows still exceed the
+ * universal ~1500-token result door on a broad harness read (EI-20242506233119355).
+ * Eight rows leave enough headroom for the wrapper and per-fact metadata while callers
+ * that need a wider census can still pass an explicit `limit`.
+ */
+export const FACTS_LIST_DEFAULT_LIMIT = 8;
 /** Excerpt width — enough to identify a fact + decide whether to retract it. */
 export const FACTS_LIST_EXCERPT_CHARS = 180;
 export const FACTS_LIST_EXCERPT_NOTE =

@@ -16,6 +16,8 @@ import factsListTool, {
   FACTS_LIST_DEFAULT_LIMIT,
 } from './list';
 import { clampFactBody, FACT_BODY_MAX_CHARS, type AgentFact } from '../../agent-facts/store';
+import { CHARS_PER_TOKEN_ESTIMATE } from '../../context-doors';
+import { RESULT_DOOR_TOKENS } from '../../result-door';
 
 const fact = (body: string, extra: Partial<AgentFact> = {}): AgentFact => ({
   scope: 'harness',
@@ -156,13 +158,22 @@ describe('projectFact — facts:list must stay inside the output budget (EI-1094
     expect(row.stale).toEqual(stale);
   });
 
-  it('a default-limit page of worst-case facts fits the budget that used to blow up', () => {
-    // The live failure: 50 rows × ~1.1k chars = 55,842 chars → hard error, spilled to a file.
+  it('a default-limit page of worst-case facts fits the universal result door', () => {
+    // The live failure: 25 excerpted rows still exceeded the ~1500-token door and the
+    // caller received a JSON body cut before its closing brace (EI-20242506233119355).
     const rows = Array.from({ length: FACTS_LIST_DEFAULT_LIMIT }, () =>
       projectFact(fact('z'.repeat(500)), false),
     );
-    const chars = JSON.stringify(rows).length;
-    expect(chars).toBeLessThan(12_000);
+    const payload = {
+      ok: true,
+      count: rows.length,
+      excerpted: true,
+      note: FACTS_LIST_EXCERPT_NOTE,
+      facts: rows,
+    };
+    const serialized = JSON.stringify(payload);
+    expect(serialized).toMatch(/^\{[\s\S]*\}$/);
+    expect(serialized.length).toBeLessThan(RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE);
   });
 });
 
