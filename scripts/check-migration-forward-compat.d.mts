@@ -23,15 +23,26 @@ export function isEnforcedMigrationFile(file: any): boolean;
  * The main lint uses this instead of `endsWith('.sql')` so a DRAFT can reach the
  * dependency check while destructive-DDL enforcement remains limited to armed SQL.
  */
-export function isMigrationArtifactFile(file: any): boolean;
+export function isMigrationArtifactFile(file: any): any;
 /** True when `file` is an enforced migration that has not been armed yet. */
 export function isDraftMigrationFile(file: any): boolean;
-/** Extract column identifiers introduced by an ALTER TABLE ADD COLUMN statement. */
+/**
+ * Extract column identifiers introduced by an ALTER TABLE ADD COLUMN statement.
+ * Comments are masked first, while SQL string bodies remain visible so a real
+ * EXECUTE statement inside a DO block is still checked. This intentionally covers
+ * the narrow, mechanically decidable class behind EI-20208711931756460.
+ */
 export function addedColumnsFor(sqlText: any): string[];
 /**
- * Find source files that already reference columns introduced by a parked migration.
+ * Find source files that already reference columns introduced by a parked
+ * migration. `sourceFiles` is injectable so unit tests can prove the detector on
+ * small fixtures without writing into the shared checkout.
+ *
+ * @param {string} sqlText
+ * @param {Array<{file: string, text: string}>} sourceFiles
+ * @returns {{ columns: string[], references: Array<{column: string, file: string, line: number}> }}
  */
-export function findDraftColumnReferences(sqlText: any, sourceFiles?: Array<{
+export function findDraftColumnReferences(sqlText: string, sourceFiles?: Array<{
     file: string;
     text: string;
 }>): {
@@ -51,6 +62,22 @@ export function findDraftColumnReferences(sqlText: any, sourceFiles?: Array<{
  * the run stays green while no longer checking anything. (WI-9573)
  */
 export const SQL_DIR_REL: "libs/papercusp/libs/db/sql";
+/**
+ * A migration is authored in a parked filename before it is armed. The runner
+ * intentionally ignores these suffixes, but the authoring-time dependency guard
+ * must not: this is the exact window in which code can start naming a column that
+ * the shared database does not have yet.
+ */
+export const PARKED_SUFFIXES: string[];
+/**
+ * Production source roots searched for references to columns added by parked
+ * migrations. Keep this explicit: scanning generated output, docs, or dependency
+ * trees would turn a cheap authoring guard into a noisy repository grep.
+ *
+ * Exported so the affected-tests router can mirror the exact domain and attach the
+ * guard when either the parked migration OR a source consumer changes.
+ */
+export const SOURCE_ROOTS: string[];
 /**
  * Migrations are immutable once applied, so historical files can never be fixed.
  * Enforce from the first migration authored after this guard landed.
@@ -73,7 +100,3 @@ export const ENFORCE_FROM: 693;
  * `forward-compat-authoring-nudge.test.ts` pins that.
  */
 export const ACK_MARKER: RegExp;
-/** Parked migration suffixes that are invisible to the runner while being authored. */
-export const PARKED_SUFFIXES: string[];
-/** Production source roots searched for parked-migration column consumers. */
-export const SOURCE_ROOTS: string[];

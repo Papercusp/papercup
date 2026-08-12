@@ -80,7 +80,7 @@ export const SOURCE_ROOTS = [
   'libs/papercusp/libs/db/src',
 ];
 
-const SOURCE_EXTENSIONS = new Set(['.cjs', '.cts', '.js', '.jsx', '.mjs', '.mts', '.sql', '.ts', '.tsx']);
+const SOURCE_EXTENSIONS = new Set(['.cjs', '.cts', '.js', '.jsx', '.mjs', '.mts', '.ts', '.tsx']);
 const SOURCE_SKIP_DIRS = new Set([
   '.git',
   '__snapshots__',

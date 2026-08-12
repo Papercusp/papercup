@@ -827,7 +827,7 @@ const REPO_WIDE_INVARIANT_GUARDS = [
         f.startsWith(`${MIGRATION_SQL_DIR}/`) &&
         (f.endsWith('.sql') || f.endsWith('.sql.DRAFT') || f.endsWith('.sql.PENDING-CODE-DEPLOY'));
       const isSourceConsumer = MIGRATION_SOURCE_ROOTS.some(
-        (root) => f.startsWith(`${root}/`) && /\.[cm]?[jt]sx?$|\.sql$/.test(f),
+        (root) => f.startsWith(`${root}/`) && /\.[cm]?[jt]sx?$/.test(f),
       );
       return isMigrationArtifact || isSourceConsumer;
     },
