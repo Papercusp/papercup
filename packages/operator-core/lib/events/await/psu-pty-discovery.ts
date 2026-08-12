@@ -343,14 +343,22 @@ export function findLiveHost(
  *  These are exactly the two refusal branches request-compaction returns. */
 export type SelfCompactionUnavailableReason = 'no_live_pty_host' | 'host_predates_carry_respawn';
 
-export interface SelfCompactionAvailability {
-  /** Can `session:request-compaction` actually succeed for this owner RIGHT NOW? */
-  available: boolean;
-  /** The refusal request-compaction would return (null when available). */
-  reason: SelfCompactionUnavailableReason | null;
-  /** The resolved host, when one was found (present even when it predates carry-respawn). */
-  host: PsuPtyHost | null;
-}
+/** Discriminated on `available` so the AVAILABLE case narrows `host` to non-null —
+ *  request-compaction's own handler consumes this and then uses the host. */
+export type SelfCompactionAvailability =
+  | {
+      /** Can `session:request-compaction` actually succeed for this owner RIGHT NOW? */
+      available: true;
+      reason: null;
+      host: PsuPtyHost;
+    }
+  | {
+      available: false;
+      /** The refusal request-compaction would return. */
+      reason: SelfCompactionUnavailableReason;
+      /** The resolved host, when one was found (present even when it predates carry-respawn). */
+      host: PsuPtyHost | null;
+    };
 
 /**
  * CAN this session self-compact? (EI-20209826138488049.)
@@ -369,6 +377,15 @@ export interface SelfCompactionAvailability {
  * host then burned its last turn on a call that could only fail. Both consumers now
  * evaluate THIS function, so the advice is true by construction rather than by two
  * places agreeing to stay in sync.
+ *
+ * ⚠ SCOPE: this answers "can a carry-respawn be DRIVEN THROUGH A HOST", which is the
+ * whole of request-compaction's HOST gate but not the whole of its handler. That
+ * handler additionally accepts an armed COLD loop holding a verified carry-note as an
+ * equivalent boundary (EI-20211379927723290) and answers `ok:true respawn:'cold-loop-settle'`
+ * — a path this sync predicate cannot see, since it needs async loop + carry-note reads.
+ * Unreachable from the continuation gate's escalation (that branch fires only when
+ * rewakeGuaranteed is false, i.e. NO loop is armed), and the advice degrades safely
+ * elsewhere: "arm a wake / end the turn" is what the cold-loop path prescribes anyway.
  */
 export function selfCompactionAvailability(
   ownerId: string,

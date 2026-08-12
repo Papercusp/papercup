@@ -70,13 +70,26 @@ vi.mock('@papercusp/db-org', async () => {
 
 const findLiveHost = vi.fn();
 const injectIntoHost = vi.fn();
-vi.mock('../../events/await/psu-pty-discovery', () => ({
-  findLiveHost: (...a: unknown[]) => findLiveHost(...a),
-  injectIntoHost: (...a: unknown[]) => injectIntoHost(...a),
+vi.mock('../../events/await/psu-pty-discovery', () => {
   // Keep the REAL caps predicate so the gating logic is exercised honestly.
-  hostSupports: (host: { caps?: string[] } | null | undefined, cap: string) =>
-    Array.isArray(host?.caps) && host!.caps!.includes(cap),
-}));
+  const hostSupports = (host: { caps?: string[] } | null | undefined, cap: string) =>
+    Array.isArray(host?.caps) && host!.caps!.includes(cap);
+  return {
+    findLiveHost: (...a: unknown[]) => findLiveHost(...a),
+    injectIntoHost: (...a: unknown[]) => injectIntoHost(...a),
+    hostSupports,
+    // The handler now reads its host gate through this shared predicate
+    // (EI-20209826138488049). Composed here from the SAME two primitives the real
+    // one composes, so every per-test host fixture still drives the gate unchanged.
+    selfCompactionAvailability: (ownerId: string) => {
+      const host = findLiveHost(ownerId) as { caps?: string[] } | null | undefined;
+      if (!host) return { available: false, reason: 'no_live_pty_host', host: null };
+      if (!hostSupports(host, 'carry-respawn'))
+        return { available: false, reason: 'host_predates_carry_respawn', host };
+      return { available: true, reason: null, host };
+    },
+  };
+});
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: vi.fn(() => ({ ownerId: 'su-caller', ownerLabel: 'su · caller' })),
 }));

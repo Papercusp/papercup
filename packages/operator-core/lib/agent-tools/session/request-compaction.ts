@@ -27,7 +27,7 @@
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { findLiveHost, injectIntoHost, hostSupports } from '../../events/await/psu-pty-discovery';
+import { injectIntoHost, selfCompactionAvailability } from '../../events/await/psu-pty-discovery';
 import { tagTurnForInjection } from '../../turn-provenance/turn-provenance';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
 import { buildOwnerRespawnLaunchSpec } from '../../carry-respawn';
@@ -197,8 +197,13 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
-    const host = findLiveHost(identity.ownerId);
-    if (!host) {
+    // EI-20209826138488049: the host gate is read through the SHARED predicate the
+    // continuation gate / context gauge / inbox use to decide whether to RECOMMEND
+    // self-compaction — so a recommendation and this refusal cannot drift apart.
+    // The cold-loop escape below stays here: it is a handler-level equivalent
+    // boundary, not part of "is a host available".
+    const availability = selfCompactionAvailability(identity.ownerId);
+    if (!availability.available && availability.reason === 'no_live_pty_host') {
       // EI-20211379927723290: an event-resumed Codex loop has no persistent
       // psu-pty host by design. A cold loop already provides the same
       // deterministic boundary on the next settled wake; accept that path only
@@ -244,7 +249,7 @@ export default defineTool({
     // host that predates the carry-respawn capability. Fresh launches always
     // carry it; a stale host rides until the hard wall, where the improvements
     // watchdog's death detector ("Prompt is too long") recovers the session.
-    if (!hostSupports(host, 'carry-respawn')) {
+    if (!availability.available) {
       return {
         content: [
           {
@@ -259,6 +264,7 @@ export default defineTool({
         isError: true,
       };
     }
+    const host = availability.host;
     // ONE best-effort brief build feeds both the default-focus derivation AND the
     // EI-8987 stale-checkpoint warning below (was two separate buildCarryBrief
     // calls before this pass).
