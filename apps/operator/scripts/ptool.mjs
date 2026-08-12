@@ -8,7 +8,8 @@
  *
  * It talks to the operator over the SAME superuser surface the engineer
  * shells use — the MCP transport at `/api/mcp?superuser=1` (loopback +
- * the `~/.papercusp/superuser-token` bearer). That transport already
+ * the `PAPERCUSP_HOME/superuser-token` (or `~/.papercusp/superuser-token`)
+ * bearer). That transport already
  * exposes every projected `defineTool` with its `inputSchema` and runs at
  * operator tier (role/capability/quota gates bypassed), so ptool needs no
  * server-side support: discovery (`tools/list`) and invocation
@@ -19,7 +20,8 @@
  * node_modules; the on-PATH `ptool` shim (install-standalone-mcp.sh) is a
  * one-liner exec'ing this file by absolute path; `PAPERCUSP_OPERATOR_URL`
  * overrides the host; the token is read from `--token-file`, then
- * `PAPERCUSP_MCP_TOKEN_FILE`, then `~/.papercusp/superuser-token`.
+ * `PAPERCUSP_MCP_TOKEN_FILE`, then `PAPERCUSP_HOME/superuser-token`, then
+ * `~/.papercusp/superuser-token`.
  *
  * Interactive:  ptool
  *               ptool <group:verb>                 # skip the pickers, prompt args
@@ -596,8 +598,9 @@ function isInvalidTruncatedJson(text) {
 /* ─── runtime (impure) ────────────────────────────────────────────────── */
 
 /** Resolve the bearer-token file in precedence order. Pure and injectable for
- * tests: an explicit CLI path wins over the environment, which wins over the
- * normal per-home token. */
+ * tests: an explicit CLI path wins over the environment, then the isolated
+ * `PAPERCUSP_HOME` root used by packaged operators, then the normal per-home
+ * token. */
 export function resolveTokenPath({ tokenFile = null, env = process.env, home = homedir() } = {}) {
   const explicit = typeof tokenFile === 'string' ? tokenFile.trim() : '';
   if (explicit) return explicit;
@@ -606,6 +609,13 @@ export function resolveTokenPath({ tokenFile = null, env = process.env, home = h
     ? env.PAPERCUSP_MCP_TOKEN_FILE.trim()
     : '';
   if (fromEnv) return fromEnv;
+
+  // Packaged and isolated operators set PAPERCUSP_HOME to the directory that
+  // owns operator.json, embedded-pg.json, and superuser-token. Falling back to
+  // homedir() here sends the host user's token to an isolated endpoint, which
+  // is rejected as superuser_invalid_bearer even though the endpoint is live.
+  const isolatedHome = typeof env?.PAPERCUSP_HOME === 'string' ? env.PAPERCUSP_HOME.trim() : '';
+  if (isolatedHome) return join(isolatedHome, 'superuser-token');
 
   return join(home, '.papercusp', 'superuser-token');
 }
@@ -992,7 +1002,7 @@ Flags:
   --script-file <path>            direct code:run JavaScript source (quoting-free)
   --workspace <ws>                scope the session (needed for harness:*, features:*, …)
   --harness <slug>                scope the session to a harness
-  --token-file <path>             bearer token file (default $PAPERCUSP_MCP_TOKEN_FILE or ~/.papercusp/superuser-token)
+  --token-file <path>             bearer token file (default $PAPERCUSP_MCP_TOKEN_FILE, $PAPERCUSP_HOME/superuser-token, or ~/.papercusp/superuser-token)
   PAPERCUSP_CONTEXT_TIER=full     explicit escape hatch for unshaped MCP payloads (default: trimmed)
   --raw                           print the raw result text (no JSON pretty-print)
   --url=<http://host:port>        operator URL (default $PAPERCUSP_OPERATOR_URL or :3070)

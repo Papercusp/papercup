@@ -130,6 +130,13 @@ describe('ptool token path', () => {
     })).toBe('/tmp/env-token');
   });
 
+  it('uses the isolated PAPERCUSP_HOME token for packaged operators', () => {
+    expect(resolveTokenPath({
+      env: { PAPERCUSP_HOME: '  /tmp/isolated/.papercusp  ' },
+      home: '/tmp/home',
+    })).toBe('/tmp/isolated/.papercusp/superuser-token');
+  });
+
   it('falls back to the standard per-home token path', () => {
     expect(resolveTokenPath({ env: {}, home: '/tmp/home' })).toBe('/tmp/home/.papercusp/superuser-token');
   });
