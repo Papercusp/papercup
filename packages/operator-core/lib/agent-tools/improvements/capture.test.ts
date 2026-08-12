@@ -403,6 +403,25 @@ describe('improvements:capture — observation strict/fail-loud (P-012)', () => 
     expect(JSON.stringify(r.success ? [] : r.error!.issues)).toContain('rubricReff');
   });
 
+  it('keeps provenance server-authored and documents the supported attribution paths (EI-20271029497680025)', () => {
+    const guidance = captureTool.guidance as { notWhen?: string };
+    expect(guidance.notWhen).toMatch(/Do not pass internal provenance fields/);
+    expect(guidance.notWhen).toMatch(/createdBy/);
+    expect(guidance.notWhen).toMatch(/sourceRole/);
+    expect(guidance.notWhen).toMatch(/assign_to:"self"/);
+    expect(guidance.notWhen).toMatch(/observation\.refs/);
+
+    const r = argsSchema.safeParse({
+      title: 'caller-supplied provenance must fail loud',
+      kind: 'bug',
+      createdBy: 'spoofed-owner',
+      sourceRole: 'Scout',
+    });
+    expect(r.success).toBe(false);
+    expect(JSON.stringify(r.success ? [] : r.error!.issues)).toContain('createdBy');
+    expect(JSON.stringify(r.success ? [] : r.error!.issues)).toContain('sourceRole');
+  });
+
   it('REJECTS an unknown observation field (was silently stripped — su-2a0b4) and names the key', () => {
     const r = argsSchema.safeParse({
       title: 'scorecard against a newer schema',
