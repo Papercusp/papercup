@@ -479,6 +479,63 @@ export function formatFailingFilesLine({ runToken, entries = [], unattributed = 
 }
 
 /**
+ * Parse the canonical, machine-readable break-set line emitted by
+ * {@link formatFailingFilesLine}.
+ *
+ * This is intentionally separate from the runner-specific parsers above. The line is the
+ * affected runner's authoritative union of Vitest, node --test, selftest, Astro, and declared
+ * failure formats; a consumer that re-parses child output can miss a runner it does not speak.
+ * Return `null` when no valid canonical line is present so callers can preserve their legacy
+ * parser as a compatibility fallback. A valid line with `files=[]` returns `[]`: that is a
+ * deliberate "the run could not name files" result, not absence of the line.
+ *
+ * @param {string} text
+ * @returns {Array<{workspace: string, file: string}>|null}
+ */
+export function parseFailingFilesLine(text) {
+  if (!text) return null;
+  const plain = stripVitestAnsi(text);
+  let parsed = null;
+  for (const line of plain.split(/\r?\n/)) {
+    if (!new RegExp(`^\\s*${AFFECTED_TESTS_FAILING_FILES_TOKEN}\\s+run=\\S+\\s+`).test(line)) continue;
+    const filesAt = line.indexOf('files=');
+    const unattributedAt = filesAt >= 0 ? line.indexOf(' unattributed=', filesAt + 'files='.length) : -1;
+    if (filesAt < 0 || unattributedAt < 0) continue;
+    let files;
+    try {
+      files = JSON.parse(line.slice(filesAt + 'files='.length, unattributedAt).trim());
+    } catch {
+      continue;
+    }
+    if (!Array.isArray(files)) continue;
+    const seen = new Set();
+    const entries = [];
+    for (const entry of files) {
+      if (
+        !entry ||
+        typeof entry !== 'object' ||
+        typeof entry.workspace !== 'string' ||
+        typeof entry.file !== 'string' ||
+        !entry.workspace.trim() ||
+        !entry.file.trim()
+      ) {
+        continue;
+      }
+      const workspace = entry.workspace.trim();
+      const file = entry.file.trim();
+      const key = `${workspace}\u0000${file}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      entries.push({ workspace, file });
+    }
+    // The outer affected runner prints its summary after child output. Keep the last valid
+    // line so a nested fixture invocation cannot mask the run-level break set.
+    parsed = entries;
+  }
+  return parsed;
+}
+
+/**
  * Attribute ONE failed task to the test files that broke it.
  *
  * Returns either files or a REASON it has none — never a bare empty list, because the

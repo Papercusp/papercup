@@ -95,6 +95,7 @@ import {
 } from './green-checkpoint';
 import { git, revParse, advanceReady } from './git-ops';
 import { releaseConfig } from './release-config';
+import { formatFailingFilesLine } from '../../../../scripts/lib/vitest-summary.mjs';
 
 let repo: string;
 async function commit(file: string, content: string, msg: string): Promise<string> {
@@ -3707,6 +3708,22 @@ describe('parseFailingFilesByWorkspace (load-flake isolation)', () => {
   it('returns [] on empty / non-vitest output (build break)', () => {
     expect(parseFailingFilesByWorkspace('')).toEqual([]);
     expect(parseFailingFilesByWorkspace('=== SPA BUILD FAILED (@papercusp/operator-vite) ===\nerror TS2304')).toEqual([]);
+  });
+
+  it('uses the affected runner break-set for node --test output that has no Vitest rows', () => {
+    const file = 'test/build-desktop-sidecar-lock.test.js';
+    const out = [
+      '>>> @papercusp/desktop :: npm run test',
+      'ℹ fail 1',
+      `test at ${file}:11:1`,
+      '✖ every cargo build closes the sidecar flock fd before sccache can daemonize (3.4ms)',
+      formatFailingFilesLine({
+        runToken: '3655179-735cdb19',
+        entries: [{ workspace: '@papercusp/desktop', file }],
+      }),
+      'AFFECTED_TESTS_RESULT status=failed tasks=1 failed=1',
+    ].join('\n');
+    expect(parseFailingFilesByWorkspace(out)).toEqual([{ workspace: '@papercusp/desktop', file }]);
   });
 
   // 2026-07-17 phantom-workspace incident: the gate captures each task's stdout/stderr and

@@ -69,6 +69,7 @@ import {
   vitestSummaryFailRow,
   vitestSuiteFailRow,
   VITEST_TEST_FILE_SOURCE,
+  parseFailingFilesLine,
 } from '../../../../scripts/lib/vitest-summary.mjs';
 // EI-19395755190419540 — the orchestrator's stdout tags, DEFINED one layer down so the log
 // PARSER (operator-core) and this EMITTER can share one literal across the package boundary.
@@ -2399,6 +2400,13 @@ export function parseFailingFilesByWorkspace(fullOutput: string): FailingFile[] 
   //
   // Anchored on an `@`-prefixed package name so the runner's other `>>>` chatter (e.g.
   // `>>> Running cargo tests (P-009: …)`) still cannot be mistaken for a section header.
+  // The affected runner's own `AFFECTED_TESTS_FAILING_FILES` line is authoritative and already
+  // unions every runner format it executed. Prefer it when present: node --test failures name
+  // their file as `test at …`, not as a Vitest `FAIL`/`❯` row, so re-parsing child output here
+  // otherwise returns [] and makes the stale-candidate rescue structurally skip the real file.
+  const canonical = parseFailingFilesLine(fullOutput);
+  if (canonical) return canonical;
+
   const HEADER = /^\s*>>>\s+(@\S+)\s+(?:::\s+npm run\b|FAILED\b)/;
   // Unflagged: both are applied per-line with `.exec` below, so no `lastIndex` state.
   const SUMMARY_FAIL = vitestSummaryFailRow();

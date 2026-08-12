@@ -302,6 +302,24 @@ export function formatFailingFilesLine({ runToken, entries, unattributed, transf
     transformCulprits?: string[];
 }): string;
 /**
+ * Parse the canonical, machine-readable break-set line emitted by
+ * {@link formatFailingFilesLine}.
+ *
+ * This is intentionally separate from the runner-specific parsers above. The line is the
+ * affected runner's authoritative union of Vitest, node --test, selftest, Astro, and declared
+ * failure formats; a consumer that re-parses child output can miss a runner it does not speak.
+ * Return `null` when no valid canonical line is present so callers can preserve their legacy
+ * parser as a compatibility fallback. A valid line with `files=[]` returns `[]`: that is a
+ * deliberate "the run could not name files" result, not absence of the line.
+ *
+ * @param {string} text
+ * @returns {Array<{workspace: string, file: string}>|null}
+ */
+export function parseFailingFilesLine(text: string): Array<{
+    workspace: string;
+    file: string;
+}> | null;
+/**
  * Attribute ONE failed task to the test files that broke it.
  *
  * Returns either files or a REASON it has none — never a bare empty list, because the
