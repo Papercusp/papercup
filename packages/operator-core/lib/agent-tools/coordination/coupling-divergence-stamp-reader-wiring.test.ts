@@ -34,13 +34,24 @@ type SourcesOpts = {
 // `vi.fn(() => ({}))` types `mock.calls` as an EMPTY tuple, so `calls[0][0]`
 // is a compile error (TS2493) — invisible to vitest, which is type-blind.
 const couplingSourcesFor = vi.fn((_opts: SourcesOpts) => ({}));
-const lockCoordinationDomain = vi.fn(() => '/repo/root');
+// WI-38252 moved the subject from `lockCoordinationDomain` (the tree whose code
+// this process loaded) to `fileLockCoordinationDomain` (the tree agents EDIT).
+// The spy must name the function the subject ACTUALLY calls: spying on the old
+// one does not fail loudly, it just stops observing anything.
+const fileLockCoordinationDomain = vi.fn(() => '/repo/root');
 
 vi.mock('./coupling-sources', () => ({
   couplingSourcesFor: (opts: SourcesOpts) => couplingSourcesFor(opts),
 }));
-vi.mock('../locks/coordination-domain', () => ({
-  lockCoordinationDomain: () => lockCoordinationDomain(),
+// PARTIAL mock (WI-38278). A whole-module literal factory silently strands the
+// moment production imports an export it does not declare — vitest then throws
+// `No "<name>" export is defined on the mock` from inside the subject, which
+// reads as a subject failure rather than a stale test. Spreading the real module
+// means only the ONE function under control is overridden and the factory cannot
+// fall behind `coordination-domain` again.
+vi.mock('../locks/coordination-domain', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../locks/coordination-domain')>()),
+  fileLockCoordinationDomain: () => fileLockCoordinationDomain(),
 }));
 vi.mock('./presence-snapshot', () => ({
   resolvePresenceScope: async () => ({}),
@@ -61,8 +72,8 @@ const firstCallOpts = (): SourcesOpts | undefined => couplingSourcesFor.mock.cal
 describe('EI-20042650315152947 — the send path must request the lock-hold source', () => {
   beforeEach(() => {
     couplingSourcesFor.mockClear();
-    lockCoordinationDomain.mockClear();
-    lockCoordinationDomain.mockReturnValue('/repo/root');
+    fileLockCoordinationDomain.mockClear();
+    fileLockCoordinationDomain.mockReturnValue('/repo/root');
   });
 
   it('passes a coordinationDomain, so heldFiles is actually built', async () => {
@@ -86,7 +97,7 @@ describe('EI-20042650315152947 — the send path must request the lock-hold sour
   });
 
   it('degrades fail-soft when the domain cannot be resolved — never fails a send', async () => {
-    lockCoordinationDomain.mockImplementation(() => {
+    fileLockCoordinationDomain.mockImplementation(() => {
       throw new Error('no repo root');
     });
 

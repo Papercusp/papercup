@@ -104,8 +104,14 @@ describe('the census reaches the paths that ACTUALLY execute', () => {
       resolveCoupledPeers: () => [],
       DERIVED_COUPLING_RELATIONS: [],
     }));
-    vi.doMock('../agent-tools/locks/coordination-domain', () => ({
-      lockCoordinationDomain: () => '/repo',
+    // PARTIAL mock (WI-38278): spreading the real module means this factory
+    // cannot strand when the subject starts importing another export from it —
+    // a whole-module literal factory throws `No "<name>" export is defined on
+    // the mock` from inside the subject, which reads as a subject failure.
+    // `fileLockCoordinationDomain` is the one the reader calls (WI-38252).
+    vi.doMock('../agent-tools/locks/coordination-domain', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('../agent-tools/locks/coordination-domain')>()),
+      fileLockCoordinationDomain: () => '/repo',
     }));
     // The stub stands in for the real derivation and simply exercises whatever
     // sink it was handed — that is precisely the wiring under test.
@@ -270,8 +276,14 @@ describe('negative controls — the positive assertions above are not vacuous', 
       resolveCoupledPeers: () => [],
       DERIVED_COUPLING_RELATIONS: [],
     }));
-    vi.doMock('../agent-tools/locks/coordination-domain', () => ({
-      lockCoordinationDomain: () => '/repo',
+    // PARTIAL mock (WI-38278): spreading the real module means this factory
+    // cannot strand when the subject starts importing another export from it —
+    // a whole-module literal factory throws `No "<name>" export is defined on
+    // the mock` from inside the subject, which reads as a subject failure.
+    // `fileLockCoordinationDomain` is the one the reader calls (WI-38252).
+    vi.doMock('../agent-tools/locks/coordination-domain', async (importOriginal) => ({
+      ...(await importOriginal<typeof import('../agent-tools/locks/coordination-domain')>()),
+      fileLockCoordinationDomain: () => '/repo',
     }));
     vi.doMock('./coupling-derivation', () => ({
       // Accepts the sink and ignores it — a derivation that does not observe.
