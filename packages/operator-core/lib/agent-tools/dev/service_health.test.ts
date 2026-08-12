@@ -94,6 +94,10 @@ describe("dev:service_health handler", () => {
     expect((tool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });
 
+  it("keeps ptool JSON responses parseable when the service snapshot exceeds the result door", () => {
+    expect((tool as { skipResultDoor?: string }).skipResultDoor).toBe("programmatic-caller");
+  });
+
   it("documents the canonical staging unit read after dev:restart", () => {
     const when = (tool as { guidance?: { when?: string } }).guidance?.when ?? "";
     expect(when).toContain('dev:restart { target:"staging" }');

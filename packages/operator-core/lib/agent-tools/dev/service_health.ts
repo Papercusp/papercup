@@ -496,6 +496,10 @@ export default defineTool({
   // Keeping the ambient workspace transaction open while those probes run pins
   // an org-app pool slot and lets concurrent health checks saturate the pool.
   skipWorkspaceTx: true,
+  // EI-20244125997858314: ptool consumes this response as JSON. The complete
+  // service/supervision snapshot can exceed the generic result door, whose
+  // truncation footer would turn the machine-readable body into invalid JSON.
+  skipResultDoor: "programmatic-caller",
   requirePrincipal: false,
   agentRoles: [
     "scoper",
