@@ -46,6 +46,10 @@ describe('locks:queue tool metadata', () => {
     expect(tool.args.safeParse({ paths: ['a.ts'], owner: 'su-1', include_completed: true }).success).toBe(true);
     expect(tool.args.safeParse({ paths: 'a.ts' }).success).toBe(false);
   });
+
+  it('keeps ptool JSON responses parseable when the queue snapshot exceeds the result door', () => {
+    expect((tool as { skipResultDoor?: string }).skipResultDoor).toBe('programmatic-caller');
+  });
 });
 
 describe('locks:queue handler', () => {

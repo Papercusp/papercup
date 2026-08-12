@@ -30,6 +30,10 @@ export default defineTool({
   // queue is saturated; a queued org-app acquisition makes self-verification
   // fail before the diagnostic handler can run.
   skipWorkspaceTx: true,
+  // EI-20246680224449070: ptool consumes this diagnostic as JSON. The generic
+  // result door appends a truncation footer to a large queue snapshot, which
+  // would turn the machine-readable body into invalid JSON.
+  skipResultDoor: 'programmatic-caller',
   agentRoles: [...AGENT_ROLES],
   args: z.object({
     paths: z.array(z.string()).optional(),
