@@ -454,8 +454,29 @@ export function rollUpTranscriptSearch(
 /** Outcome of one transcript-search round-trip. `timedOut` is deliberately its
  *  own field rather than folded into `message`: the caller must be able to tell
  *  "the operator is wedged" from "the query was rejected" without string-matching. */
+/**
+ * What the owner-visibility filter removed from THIS page, as reported by the
+ * route's `hiddenMachineHits`.
+ *
+ * WI-37912 shipped this in two halves and only the server half landed: the
+ * route over-fetches a candidate pool, filters machine-authored turns out of
+ * it, and cuts to the page — but a boilerplate-heavy query can still exhaust
+ * the pool before the page fills (measured live 2026-08-12: `loop wake` 16/30
+ * with 74 hidden, `checkpoint` 18/30 with 72 hidden). The route's own header
+ * accepts a short page ONLY because it is disclosed; nothing read this field,
+ * so the disclosure reached the wire and stopped there, leaving the silently
+ * short page the item was filed about. This type is the client half.
+ *
+ * `truncatedByLimit` marks `count` as a FLOOR taken over a capped pool, never
+ * a total — render it as such, or a bounded measurement reads as a real count.
+ */
+export interface HudHiddenMachineHits {
+  count: number;
+  truncatedByLimit: boolean;
+}
+
 export type HudTranscriptSearchOutcome =
-  | ({ ok: true } & HudTranscriptSearchResult)
+  | ({ ok: true; hiddenMachineHits: HudHiddenMachineHits } & HudTranscriptSearchResult)
   | { ok: false; timedOut: boolean; message: string };
 
 /**
@@ -500,6 +521,7 @@ export async function fetchTranscriptSearch(
       ok?: boolean;
       sessions?: HudTranscriptSearchSession[];
       error?: string;
+      hiddenMachineHits?: { count?: number; truncatedByLimit?: boolean } | null;
     };
     if (!r.ok || body.ok === false) {
       return {
@@ -508,7 +530,17 @@ export async function fetchTranscriptSearch(
         message: body.error ?? `search failed (${r.status})`,
       };
     }
-    return { ok: true, ...rollUpTranscriptSearch(body.sessions) };
+    /* A MISSING field degrades to "nothing hidden" (renders no chip) rather
+       than to a guess. That deliberately makes an older server — one that
+       predates `hiddenMachineHits` — indistinguishable from a page with
+       nothing filtered. It is the safe direction: the failure is a missing
+       disclosure, not a fabricated count on a page that was never filtered. */
+    const rawHidden = body.hiddenMachineHits;
+    const hiddenMachineHits: HudHiddenMachineHits = {
+      count: typeof rawHidden?.count === 'number' && rawHidden.count > 0 ? rawHidden.count : 0,
+      truncatedByLimit: rawHidden?.truncatedByLimit === true,
+    };
+    return { ok: true, hiddenMachineHits, ...rollUpTranscriptSearch(body.sessions) };
   } catch (e) {
     if (ctl.signal.reason === timeoutReason) {
       return {
