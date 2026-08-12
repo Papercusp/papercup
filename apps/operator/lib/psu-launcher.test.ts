@@ -1043,7 +1043,7 @@ describe('writeOmpSessionConfigDir (WI-1282 + weak-model-tool-tier — OMP per-s
   });
 });
 
-const processEnv = (values: Record<string, string>): NodeJS.ProcessEnv => values;
+const processEnv = (values: Record<string, string>): NodeJS.ProcessEnv => values as NodeJS.ProcessEnv;
 
 describe('ompCoreToolNames (PAPERCUSP_OMP_TOOLS_EXCLUDE — spine trim escape hatch)', () => {
   it('returns the full spine when the env var is unset/empty', () => {
