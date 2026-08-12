@@ -1649,6 +1649,7 @@ if [ "${1:-}" = "--boot-only" ]; then
   # private to this run and re-checks caller/target provenance when sourced;
   # no raw export block can be reconstructed from a shared log.
   printf 'source %q\n' "$BOOT_ONLY_ENV"
+  cat <<EOF
 # TTL watchdog (EI-18805100008031244): this instance self-terminates ${BOOT_ONLY_TTL_MIN} min
 # after the last heartbeat refresh (0 = disabled; set VERIFY_TAURI_BOOT_ONLY_TTL_MIN
 # before boot to change it). A legitimately long-running session must heartbeat:
@@ -1662,6 +1663,7 @@ if [ "${1:-}" = "--boot-only" ]; then
 # tear down when done — NEVER leave this running unattended (WI-2115: a
 # leaked isolated instance/display starves the next run):
 #   "$WORK/stop.sh"
+EOF
   exit 0
 fi
 
