@@ -415,41 +415,49 @@ export async function captureFactDependencies(
   const wanted = dedupeCells(cells);
   if (wanted.length === 0) return [];
   const observedAt = new Date().toISOString();
-  const out: FactDependency[] = [];
-  for (const cell of wanted) {
-    const subject = subjects?.[cell];
-    let obs: CurrentCellObservation;
-    try {
-      obs = await observeCell(cell, reader, env, subject);
-    } catch {
-      // readCell is documented TOTAL, but this is a write path on a shared
-      // table: a belt here costs nothing and a thrown assert costs a fact.
-      obs = { unknown: 'resolver-failed' };
-    }
-    out.push({
-      cell,
-      // Persisted so the re-read asks the SAME question — see FactDependency.subject.
-      ...(subject ? { subject } : {}),
-      observedAt,
-      ...(obs.digest
-        ? {
-            digest: obs.digest,
-            ...(obs.observed ? { observed: obs.observed } : {}),
-            // P-021 — the material ANCHOR. Without one stored at assert time
-            // there is nothing to compare a later material answer against, so
-            // the re-read correctly degrades to the loud reading.
-            ...(obs.materialDigest
-              ? {
-                  materialDigest: obs.materialDigest,
-                  ...(obs.material ? { material: obs.material } : {}),
-                  ...(obs.materialPath ? { materialPath: obs.materialPath } : {}),
-                }
-              : {}),
-          }
-        : { unknown: (obs.unknown ?? 'resolver-failed') as FactDependency['unknown'] }),
-    });
-  }
-  return out;
+  // These are independent read-only resolver calls. Dispatch them together so
+  // two slow cells cost roughly the slower read, not the sum of both reads —
+  // the serial loop let a pair of otherwise healthy dependencies outlive the
+  // caller's request timeout and made the fact assertion look like it failed.
+  // Keep the fail-soft boundary PER CELL: one resolver failure must still be
+  // recorded as unknown without discarding the other observations.
+  const observations = await Promise.all(
+    wanted.map(async (cell) => {
+      const subject = subjects?.[cell];
+      let obs: CurrentCellObservation;
+      try {
+        obs = await observeCell(cell, reader, env, subject);
+      } catch {
+        // readCell is documented TOTAL, but this is a write path on a shared
+        // table: a belt here costs nothing and a thrown assert costs a fact.
+        obs = { unknown: 'resolver-failed' };
+      }
+      return { cell, subject, obs };
+    }),
+  );
+
+  return observations.map(({ cell, subject, obs }) => ({
+    cell,
+    // Persisted so the re-read asks the SAME question — see FactDependency.subject.
+    ...(subject ? { subject } : {}),
+    observedAt,
+    ...(obs.digest
+      ? {
+          digest: obs.digest,
+          ...(obs.observed ? { observed: obs.observed } : {}),
+          // P-021 — the material ANCHOR. Without one stored at assert time
+          // there is nothing to compare a later material answer against, so
+          // the re-read correctly degrades to the loud reading.
+          ...(obs.materialDigest
+            ? {
+                materialDigest: obs.materialDigest,
+                ...(obs.material ? { material: obs.material } : {}),
+                ...(obs.materialPath ? { materialPath: obs.materialPath } : {}),
+              }
+            : {}),
+        }
+      : { unknown: (obs.unknown ?? 'resolver-failed') as FactDependency['unknown'] }),
+  }));
 }
 
 /**

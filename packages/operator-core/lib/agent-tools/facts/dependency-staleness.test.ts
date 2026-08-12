@@ -7,16 +7,24 @@
  * branch of it — including the two that must NOT collapse into each other
  * ("unchanged" vs "could not tell") — is directly exercisable.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   canonicalJson,
   digestCellValue,
   renderObservedValue,
   evaluateDependencyStaleness,
   observationKey,
+  captureFactDependencies,
   type CurrentCellObservation,
 } from './dependency-staleness';
 import { FACT_DEPENDENCY_OBSERVED_CHARS, type FactDependency } from '../../agent-facts/store';
+
+const readCellSpy = vi.hoisted(() => vi.fn());
+
+vi.mock('../../cell-read', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../../cell-read')>();
+  return { ...actual, readCell: readCellSpy };
+});
 
 const dep = (over: Partial<FactDependency> = {}): FactDependency => ({
   cell: 'pipeline.myChange',
@@ -172,6 +180,35 @@ describe('evaluateDependencyStaleness', () => {
   it('carries observedAt onto each verdict so a reader can see HOW OLD the anchor is', () => {
     const v = evaluateDependencyStaleness([dep()], now({}));
     expect(v?.deps[0].observedAt).toBe('2026-07-27T00:00:00.000Z');
+  });
+});
+
+describe('captureFactDependencies — independent reads share the request budget', () => {
+  it('starts every declared cell read before waiting for any one slow resolver', async () => {
+    readCellSpy.mockReset();
+    const started: string[] = [];
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => {
+      release = resolve;
+    });
+    readCellSpy.mockImplementation(async (cell: string) => {
+      started.push(cell);
+      await gate;
+      return { status: 'value', cell, value: cell } as never;
+    });
+
+    const pending = captureFactDependencies(['slow-a', 'slow-b'], {} as never, {} as never);
+    try {
+      // A serial implementation starts only slow-a here and makes the second
+      // dependency pay the full first resolver latency again.
+      expect(started).toEqual(['slow-a', 'slow-b']);
+    } finally {
+      release();
+    }
+
+    const dependencies = await pending;
+    expect(dependencies.map((dependency) => dependency.cell)).toEqual(['slow-a', 'slow-b']);
+    expect(dependencies.every((dependency) => dependency.digest)).toBe(true);
   });
 });
 
