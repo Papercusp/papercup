@@ -81,6 +81,9 @@ const OBSERVED_END_WRITERS: ReadonlySet<AdvSessionEndedBy> = new Set(['self', 's
 export interface AdvSessionRow {
   id: number;
   workspaceId: string;
+  /** Harness scope persisted in the resolved su launch spec, when available.
+   *  Older rows and pre-migration databases omit it and remain workspace-only. */
+  harnessSlug?: string | null;
   planSlug: string | null;
   /** Which agent CLI backs this session; null for pre-*-su rows. */
   agent: SuAgent | null;
@@ -214,6 +217,7 @@ export function toIsoTimestamp(value: string | Date | null | undefined): string 
 export function mapAdvSessionRow(r: {
   id: number;
   workspace_id: string;
+  harness_slug?: string | null;
   plan_slug: string | null;
   agent: string | null;
   role: string | null;
@@ -249,6 +253,7 @@ export function mapAdvSessionRow(r: {
   return {
     id: r.id,
     workspaceId: r.workspace_id,
+    harnessSlug: r.harness_slug ?? null,
     planSlug: r.plan_slug,
     agent: (r.agent as SuAgent | null) ?? null,
     role: r.role ?? null,
@@ -1143,6 +1148,7 @@ export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
       Array<{
         id: number;
         workspace_id: string;
+        harness_slug?: string | null;
         plan_slug: string | null;
         agent: string | null;
         role: string | null;
@@ -1220,7 +1226,12 @@ export async function listResumableSessions(limit = 30): Promise<AdvSessionRow[]
         exit_code: number | null;
       }>
     >`
-      SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
+      SELECT id, workspace_id,
+             -- launch_spec was added after the resumable-session surface. Reading
+             -- through to_jsonb keeps this query parse-safe on a pre-migration
+             -- operator; absent launch_spec then correctly means no harness scope.
+             to_jsonb(a)->'launch_spec'->>'harnessSlug' AS harness_slug,
+             plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal
         FROM harness_shared.adv_sessions a
        WHERE agent IS NOT NULL
@@ -1968,4 +1979,3 @@ export async function advSessionsByIdToken(
     return [];
   }
 }
-

@@ -1846,17 +1846,19 @@ describe('psu-launcher arg parsing', () => {
     });
   });
 
-  it('resumeEnvFor: identity + workspace scope SURVIVE a tracked resume (psu-workspace-scoping fix)', () => {
+  it('resumeEnvFor: identity + workspace + harness scope SURVIVE a tracked resume', () => {
     // coordOwnerId is re-exported as PAPERCUSP_SID (wake-executor semantics —
     // a fresh SID orphaned the old one's locks/awaits and detached the adv
     // row); workspaceId rides out as PAPERCUSP_WORKSPACE so the MCP url/header
-    // carriers re-scope the resumed session.
+    // carriers re-scope the resumed session. Harness scope comes from the
+    // resolved launch spec on the resumable row, not from ambient env.
     expect(
-      resumeEnvFor({ agent: 'claude', id: 7, coordOwnerId: 'su-abc', workspaceId: 'ws1' }),
+      resumeEnvFor({ agent: 'claude', id: 7, coordOwnerId: 'su-abc', workspaceId: 'ws1', harnessSlug: 'papercusp' }),
     ).toEqual({
       PAPERCUSP_AGENT: 'claude',
       PAPERCUSP_SID: 'su-abc',
       PAPERCUSP_WORKSPACE: 'ws1',
+      PAPERCUSP_HARNESS_SLUG: 'papercusp',
       PAPERCUSP_ADV_SESSION_ID: '7',
     });
   });
@@ -1954,13 +1956,14 @@ describe('psu-launcher arg parsing', () => {
     // live original's locks/presence/wakes. Workspace scope still carries over.
     expect(
       resumeEnvFor(
-        { agent: 'claude', id: 7, coordOwnerId: 'su-abc', workspaceId: 'ws1' },
+        { agent: 'claude', id: 7, coordOwnerId: 'su-abc', workspaceId: 'ws1', harnessSlug: 'papercusp' },
         { mintSid: () => 'su-fork', fork: true },
       ),
     ).toEqual({
       PAPERCUSP_AGENT: 'claude',
       PAPERCUSP_SID: 'su-fork',
       PAPERCUSP_WORKSPACE: 'ws1',
+      PAPERCUSP_HARNESS_SLUG: 'papercusp',
     });
   });
 

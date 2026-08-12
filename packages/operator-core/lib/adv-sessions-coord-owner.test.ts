@@ -91,6 +91,22 @@ describe('adv-sessions coord_owner_id wiring (P-001/P-003)', () => {
     expect(values).toContain(10); // limit
   });
 
+  it('listResumableSessions restores harness scope from the persisted launch spec', async () => {
+    const sql = mockSql(async () => [dbRow({
+      id: 12,
+      harness_slug: 'papercusp',
+      launch_spec: { v: 1, workspaceId: 'ws1', harnessSlug: 'papercusp' },
+    })]);
+    const mod = await import('./adv-sessions');
+    const rows = await mod.listResumableSessions();
+    expect(rows[0]?.harnessSlug).toBe('papercusp');
+
+    const strings = sql.mock.calls[0]?.[0] as TemplateStringsArray | undefined;
+    const query = strings ? Array.from(strings).join(' ? ') : '';
+    expect(query).toContain("'launch_spec'");
+    expect(query).toContain("'harnessSlug'");
+  });
+
   /*
    * WI-6510 regression guard. `launch_argv` is OPTIONAL on `AdvSessionDbRow`
    * ("only the pending-launch query SELECTs it"), so removing it from this
