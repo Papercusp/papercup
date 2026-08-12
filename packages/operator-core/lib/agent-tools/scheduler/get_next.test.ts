@@ -26,6 +26,9 @@ const loadHarnessRegistryM = vi.hoisted(() => vi.fn(async () => ({ projects: reg
 // touch real PG, and so tests below can assert it was invoked (self-scoped, by ownerId).
 const cancelClaimableAwaitsM = vi.hoisted(() => vi.fn(async () => 0));
 const liveLockedPathsM = vi.hoisted(() => vi.fn(async () => [] as string[]));
+const getFlagM = vi.hoisted(() => vi.fn(async () => true));
+const reconcileFleetScopeClaimsM = vi.hoisted(() => vi.fn());
+const readFleetPauseStateM = vi.hoisted(() => vi.fn());
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-member', workspaceId: 'ws-1' }),
@@ -60,15 +63,15 @@ vi.mock('../coordination/presence', async (importOriginal) => ({
 }));
 vi.mock('@papercusp/flags/server', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
-  getFlag: vi.fn(async () => true),
+  getFlag: getFlagM,
 }));
 vi.mock('../../scheduler/claim-spec-store', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../scheduler/claim-spec-store')>();
   return { ...actual, getNextForBee: getNextM };
 });
 vi.mock('../../scheduler/fleet-scope-admission', () => ({
-  reconcileFleetScopeClaims: vi.fn(async () => ({ scope: scopeState.scope, quarantinedIds: scopeState.quarantinedIds })),
-  readFleetPauseState: vi.fn(async () => ({ windingDown: scopeState.windingDown, reason: scopeState.pauseReason })),
+  reconcileFleetScopeClaims: reconcileFleetScopeClaimsM,
+  readFleetPauseState: readFleetPauseStateM,
   // EI-13520: real fn returns null (no cooldown-diagnosis signal) by default — these tests
   // don't exercise the cooldown-attribution path, only fleetScopedMiss's existing shapes.
   diagnoseFleetScopeCooldownMiss: vi.fn(async () => null),
@@ -111,6 +114,18 @@ import getNextTool, { GET_NEXT_BUDGET_MS } from './get_next';
 import claimNextTool from '../work_items/claim_next';
 import { CLAIM_STATES_ALLOWLIST } from '../../work-items';
 import { OrgTxnTimeoutError } from '../../pg-bounded-txn';
+
+beforeEach(() => {
+  reconcileFleetScopeClaimsM.mockImplementation(async () => ({
+    scope: scopeState.scope,
+    quarantinedIds: scopeState.quarantinedIds,
+  }));
+  readFleetPauseStateM.mockImplementation(async () => ({
+    windingDown: scopeState.windingDown,
+    reason: scopeState.pauseReason,
+  }));
+  getFlagM.mockResolvedValue(true);
+});
 
 describe('scheduler:get_next ambient transaction reservation', () => {
   it('opts out because the self-pull handler owns its DB accessors', () => {
@@ -393,6 +408,77 @@ describe('scheduler:get_next bounds the claim path against a silent hang (EI-181
     expect(b.message).toContain('Retry now');
     expect(b.windDown).toBeUndefined();
     warnSpy.mockRestore();
+  });
+});
+
+// EI-20228674494907304: the first timeout was observed after a fleet spec revision wake, but
+// the old watchdog began only at getNextForBee. These tests isolate every pre-claim await so a
+// reconciliation, pause-state, flag, or lock-plane stall cannot regress into a 300s MCP hang.
+describe('scheduler:get_next bounds every pre-claim await (EI-20228674494907304)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    scopeState.scope = null;
+    scopeState.quarantinedIds = [];
+    scopeState.windingDown = false;
+    scopeState.pauseReason = null;
+    registryState.projects = [{ slug: 'papercusp' }];
+    loadHarnessRegistryM.mockImplementation(async () => ({ projects: registryState.projects }));
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  async function expectPreflightTimeout() {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const p = getNextTool.handler({ harness: 'papercusp' } as never, {} as never) as Promise<{
+      content: Array<{ text: string }>;
+    }>;
+    await vi.advanceTimersByTimeAsync(GET_NEXT_BUDGET_MS + 100);
+    const out = await p;
+    const body = JSON.parse(out.content[0]!.text);
+    expect(body).toMatchObject({
+      ok: false,
+      error: 'timeout',
+      retryable: true,
+      phase: 'preflight',
+      budgetMs: GET_NEXT_BUDGET_MS,
+    });
+    expect(body.message).toContain('No claim was attempted');
+    expect(getNextM).not.toHaveBeenCalled();
+    expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('scheduler:get_next:preflight exceeded'));
+    warnSpy.mockRestore();
+  }
+
+  it('bounds fleet-scope reconciliation before any claim attempt', async () => {
+    reconcileFleetScopeClaimsM.mockImplementation(() => new Promise(() => {}));
+    await expectPreflightTimeout();
+  });
+
+  it('bounds the paused-fleet control-state read before any claim attempt', async () => {
+    scopeState.scope = {
+      ownerId: 'su-member',
+      fleetSlug: 'bugs',
+      fleetRole: 'member',
+      record: { source: 'fleet', spec: { specId: 'bugs-rev1', revision: 1 } },
+    };
+    reconcileFleetScopeClaimsM.mockResolvedValue({ scope: scopeState.scope, quarantinedIds: [] });
+    readFleetPauseStateM.mockImplementation(() => new Promise(() => {}));
+    await expectPreflightTimeout();
+  });
+
+  it('bounds the scheduler flag read before any claim attempt', async () => {
+    reconcileFleetScopeClaimsM.mockResolvedValue({ scope: null, quarantinedIds: [] });
+    getFlagM.mockImplementation(() => new Promise(() => {}));
+    await expectPreflightTimeout();
+  });
+
+  it('bounds the live lock-plane snapshot before any claim attempt', async () => {
+    reconcileFleetScopeClaimsM.mockResolvedValue({ scope: null, quarantinedIds: [] });
+    getFlagM.mockResolvedValue(true);
+    liveLockedPathsM.mockImplementation(() => new Promise(() => {}));
+    await expectPreflightTimeout();
   });
 });
 

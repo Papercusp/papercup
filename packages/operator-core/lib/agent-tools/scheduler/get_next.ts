@@ -163,6 +163,41 @@ export function getNextTimeoutResult(budgetMs = GET_NEXT_BUDGET_MS): {
 }
 
 /**
+ * EI-20228674494907304: the claim watchdog does not cover the fleet/preflight reads that run
+ * before `getNextForBee` starts. A stalled reconciliation, pause-state, flag, or lock snapshot
+ * therefore used to leave the whole tool silent until the MCP client's 300s idle timeout. Keep
+ * this result distinct from the claim-path timeout so callers know no claim was attempted.
+ */
+export function getNextPreflightTimeoutResult(
+  budgetMs = GET_NEXT_BUDGET_MS,
+  reason: 'timeout' | 'error' = 'timeout',
+  errorMessage?: string,
+): {
+  ok: false;
+  error: 'timeout';
+  retryable: true;
+  phase: 'preflight';
+  budgetMs: number;
+  message: string;
+} {
+  const detail =
+    reason === 'error' && errorMessage
+      ? ` failed before the claim path: ${errorMessage}`
+      : ` exceeded its ${budgetMs}ms internal budget`;
+  return {
+    ok: false,
+    error: 'timeout',
+    retryable: true,
+    phase: 'preflight',
+    budgetMs,
+    message:
+      `scheduler:get_next pre-claim setup${detail} (fleet reconciliation, pause-state, flag, or ` +
+      `lock snapshot) and returned a fast retryable error instead of hanging until the MCP ` +
+      `client's 300s idle-timeout abort. No claim was attempted; retry now.`,
+  };
+}
+
+/**
  * Return a structured retryable result for a bounded admin-pool transaction that hit a
  * PostgreSQL statement/lock timeout. This is distinct from the JS watchdog result above:
  * the database has already rejected the transaction, so preserving its typed message (and
@@ -681,65 +716,113 @@ export default defineTool({
     // pickup. The sweep is batch-shaped (one pass, one leader alert), so a dead
     // lane cannot drip one stale claim per wake. Only fleet MEMBERS are scoped;
     // leaders supervise rather than consume the member lane.
-    const reconciliation = await reconcileFleetScopeClaims({
-      ownerId: ident.ownerId,
-      workspaceId: ident.workspaceId,
-      identity: ident,
-    });
-    if (reconciliation.scope?.record.source === 'default') {
+    //
+    // EI-20228674494907304: all of these reads precede the claim watchdog. Run them under one
+    // shared budget so a pool stall in any preflight leg cannot leave the MCP request silent for
+    // 300s. A single budget also prevents four sequential 30s leg budgets from stretching the
+    // caller's failure window to 120s. The timeout fallback is deliberately fail-closed: without
+    // a resolved fleet scope it is unsafe to continue into the generic claim path.
+    type PreflightState =
+      | {
+          kind: 'scoped-miss';
+          reconciliation: Awaited<ReturnType<typeof reconcileFleetScopeClaims>>;
+        }
+      | {
+          kind: 'paused';
+          reconciliation: Awaited<ReturnType<typeof reconcileFleetScopeClaims>>;
+          pause: Awaited<ReturnType<typeof readFleetPauseState>>;
+        }
+      | {
+          kind: 'ready';
+          reconciliation: Awaited<ReturnType<typeof reconcileFleetScopeClaims>>;
+          specOn: boolean;
+          contendedPaths: string[];
+        };
+    const preflight = await withBoundedTimeout<PreflightState | null>(
+      async () => {
+        const reconciliation = await reconcileFleetScopeClaims({
+          ownerId: ident.ownerId,
+          workspaceId: ident.workspaceId,
+          identity: ident,
+        });
+        if (reconciliation.scope?.record.source === 'default') {
+          return { kind: 'scoped-miss', reconciliation };
+        }
+        // EI-12832: a paused fleet (control_state='winding-down') floors the SELECT side too —
+        // a member woken during the pause must stand down, not pull the next item (even one
+        // its spec matches). The by-id claim path is gated at admission; this closes the
+        // self-select sibling seam with the same durable-control-state read.
+        if (reconciliation.scope) {
+          const pause = await readFleetPauseState(reconciliation.scope, ident.workspaceId);
+          if (pause.windingDown) return { kind: 'paused', reconciliation, pause };
+        }
+        // SCHEDULER_SPEC_CLAIM kill-switch (default ON; fail-open): OFF ⇒ ignore the bee's stored
+        // spec and claim by the DEFAULT ordering (a no-breakage degrade to claim_next behavior).
+        // A fleet member is the exception: scope is a correctness boundary, not a feature
+        // preference, so the kill-switch may disable scheduler steering but cannot widen a
+        // member into the generic backlog.
+        const specOn = await getFlag(FLAGS.SCHEDULER_SPEC_CLAIM, ident.ownerId).catch(() => true);
+        // P-015: authoritative lock-plane snapshot, holders only and excluding this
+        // caller. Fail-soft is implemented by liveLockedPaths; cap the SQL parameter so
+        // a pathological lock storm cannot inflate a claim request without bound.
+        const contendedPaths = (await liveLockedPaths({ excludeOwner: ident.ownerId })).slice(0, 500);
+        return { kind: 'ready', reconciliation, specOn, contendedPaths };
+      },
+      { fallback: null, timeoutMs: GET_NEXT_BUDGET_MS, label: 'scheduler:get_next:preflight' },
+    );
+    if (preflight.degraded || !preflight.value) {
       return {
         content: [
           {
             type: 'text' as const,
             text: JSON.stringify(
-              fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds, { harness: args.harness }),
+              getNextPreflightTimeoutResult(GET_NEXT_BUDGET_MS, preflight.reason, preflight.errorMessage),
             ),
           },
         ],
       };
     }
-    // EI-12832: a paused fleet (control_state='winding-down') floors the SELECT side too —
-    // a member woken during the pause must stand down, not pull the next item (even one
-    // its spec matches). The by-id claim path is gated at admission; this closes the
-    // self-select sibling seam with the same durable-control-state read.
-    if (reconciliation.scope) {
-      const pause = await readFleetPauseState(reconciliation.scope, ident.workspaceId);
-      if (pause.windingDown) {
-        // EI-15777: a member parked on `events:await('work-item:claimable')` from
-        // BEFORE the pause is otherwise still woken by a peer's compliant
-        // stand-down release (the admission gate only refuses the CLAIM, not the
-        // wake itself) — a full session-resume cycle wasted every time, the
-        // "post-mission wake churn" this closes. Retire the caller's own standing
-        // claimable await(s) right here so no future release re-wakes them for a
-        // pull they're forbidden to make anyway. Self/subscriber-scoped + best-effort,
-        // same posture as the successful-claim cancel below.
-        const claimableAwaitsCancelled = await cancelClaimableAwaits(ident.ownerId).catch(() => 0);
-        return {
-          content: [
-            {
-              type: 'text' as const,
-              text: JSON.stringify(
-                fleetScopedMiss(reconciliation.scope, reconciliation.quarantinedIds, {
-                  pausedReason: pause.reason,
-                  claimableAwaitsCancelled,
-                  harness: args.harness,
-                }),
-              ),
-            },
-          ],
-        };
-      }
+    const preflightState = preflight.value;
+    if (preflightState.kind === 'scoped-miss') {
+      const { reconciliation } = preflightState;
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(
+              fleetScopedMiss(reconciliation.scope!, reconciliation.quarantinedIds, { harness: args.harness }),
+            ),
+          },
+        ],
+      };
     }
-    // SCHEDULER_SPEC_CLAIM kill-switch (default ON; fail-open): OFF ⇒ ignore the bee's stored
-    // spec and claim by the DEFAULT ordering (a no-breakage degrade to claim_next behavior).
-    // A fleet member is the exception: scope is a correctness boundary, not a feature
-    // preference, so the kill-switch may disable scheduler steering but cannot widen a
-    // member into the generic backlog.
-    const specOn = await getFlag(FLAGS.SCHEDULER_SPEC_CLAIM, ident.ownerId).catch(() => true);
-    // P-015: authoritative lock-plane snapshot, holders only and excluding this
-    // caller. Fail-soft is implemented by liveLockedPaths; cap the SQL parameter so
-    // a pathological lock storm cannot inflate a claim request without bound.
-    const contendedPaths = (await liveLockedPaths({ excludeOwner: ident.ownerId })).slice(0, 500);
+    if (preflightState.kind === 'paused') {
+      const { reconciliation, pause } = preflightState;
+      // EI-15777: a member parked on `events:await('work-item:claimable')` from
+      // BEFORE the pause is otherwise still woken by a peer's compliant
+      // stand-down release (the admission gate only refuses the CLAIM, not the
+      // wake itself) — a full session-resume cycle wasted every time, the
+      // "post-mission wake churn" this closes. Retire the caller's own standing
+      // claimable await(s) right here so no future release re-wakes them for a
+      // pull they're forbidden to make anyway. Self/subscriber-scoped + best-effort,
+      // same posture as the successful-claim cancel below.
+      const claimableAwaitsCancelled = await cancelClaimableAwaits(ident.ownerId).catch(() => 0);
+      return {
+        content: [
+          {
+            type: 'text' as const,
+            text: JSON.stringify(
+              fleetScopedMiss(reconciliation.scope!, reconciliation.quarantinedIds, {
+                pausedReason: pause.reason,
+                claimableAwaitsCancelled,
+                harness: args.harness,
+              }),
+            ),
+          },
+        ],
+      };
+    }
+    const { reconciliation, specOn, contendedPaths } = preflightState;
     // EI-18167154191955470: the atomic claim is the heaviest single DB op in this path — an
     // UPDATE ... FOR UPDATE SKIP LOCKED that must acquire both a pool connection and a row lock,
     // the most likely place to block under PG pool saturation. Bound it so a stall fails FAST
