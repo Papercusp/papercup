@@ -79,6 +79,7 @@ describe('buildCheckpointSystemdArgv', () => {
   it('targets the manual unit, bounds runtime, and runs the green-checkpoint CLI in the tree root', () => {
     const argv = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin:/bin');
     expect(argv).toContain(`--unit=${checkpointUnitForRoot('/tree')}`); // per-root (2026-07-01): cross-root manual gates no longer serialize
+    expect(argv).toContain('--no-block');
     expect(argv).toContain(`--property=RuntimeMaxSec=${CHECKPOINT_MAX_RUNTIME_SEC}`);
     expect(CHECKPOINT_MAX_RUNTIME_SEC).toBeGreaterThanOrEqual(3 * 60 * 60);
     expect(argv).toContain('--working-directory=/tree');

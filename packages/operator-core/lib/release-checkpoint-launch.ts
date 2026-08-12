@@ -930,6 +930,7 @@ export function buildCheckpointSystemdArgv(
     : [];
   return [
     '--user',
+    '--no-block',
     '--collect',
     `--unit=${checkpointUnitForRoot(root)}`,
     `--property=RuntimeMaxSec=${CHECKPOINT_MAX_RUNTIME_SEC}`,
