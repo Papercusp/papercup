@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import type { CarryBrief } from './carry-brief';
 const refusalMarks = vi.hoisted(() => new Map<string, number>());
 vi.mock('./flush-refusal-marker', () => ({
