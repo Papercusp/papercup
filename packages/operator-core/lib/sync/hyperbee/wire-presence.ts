@@ -27,7 +27,11 @@ import {
   type PresenceIdentity,
   type PresenceState,
 } from './presence-announce';
-import { resolveLocalAnnounceIdentity } from './local-announce-identity';
+import {
+  resolveLocalAnnounceIdentity,
+  resolveLocalAnnounceIdentityFromHiveMembers,
+  type LocalAnnounceIdentity,
+} from './local-announce-identity';
 import { signWithDeviceKey } from '../../identity/sign-with-device-key';
 import { machineFingerprint } from '../../identity/device-keychain-id';
 import { canonicalHiveHomeSlug } from '../../hive-federation';
@@ -202,8 +206,16 @@ export async function wirePresenceAnnounceForHarness(
     potSlug = null;
   }
 
+  // WI-38328: the LAST swallowed identity-resolution cause, so `onIdentityUnresolved`
+  // can name it. Without this the warning could only guess, and a permanent GitHub
+  // refusal read as a transient auth gap for the whole life of the process.
+  let lastIdentityError: unknown = null;
   const resolveIdentity =
-    opts.resolveIdentity ?? (() => defaultResolvePresenceIdentity(handle));
+    opts.resolveIdentity ??
+    (() =>
+      defaultResolvePresenceIdentity(handle, potSlug, (err) => {
+        lastIdentityError = err;
+      }));
 
   // EI-18761517980514694: the RUNNER-election capability bit stamped on every
   // announce. Re-resolved per announce (behind a 60s cache in the resolver) rather
@@ -290,10 +302,22 @@ export async function wirePresenceAnnounceForHarness(
     // entirely silent state, and (before that fix) a permanent one. Surface both
     // edges. Fired per ATTEMPT, so already throttled by identityRetryMs.
     onIdentityUnresolved: (attempt) => {
+      // WI-38328: report the actual cause. A GitHub-side REFUSAL (e.g. gist
+      // creation 422 on an account with no verified email) is permanent, not a
+      // transient auth gap, and no number of retries will clear it — saying so is
+      // the difference between a fixable line and a misleading one.
+      const cause =
+        lastIdentityError instanceof Error
+          ? lastIdentityError.message
+          : lastIdentityError != null
+            ? String(lastIdentityError)
+            : null;
       console.warn(
         `[wire-presence] no swarm identity for ${handle.workspaceId}::${handle.harnessSlug} ` +
           `(attempt ${attempt}) — announcing NOTHING; this node is invisible to peers. ` +
-          `Expected on a gh-unauthenticated box; otherwise the device identity/keychain failed to resolve. ` +
+          `Neither the durable local Hive binding nor live GitHub identity resolution succeeded` +
+          (cause ? ` — cause: ${cause}` : '') +
+          `. Expected on a gh-unauthenticated box; otherwise the device identity/keychain failed to resolve. ` +
           `Retrying periodically.`,
       );
     },
@@ -415,8 +439,9 @@ const SESSION_ANNOUNCE_REFRESH_MS =
 
 /** Build the gossip WRITER half for this booted handle (P-004): the device
  *  signer + this machine's current-row provider (the hello snapshot + each
- *  broadcast beat). Undefined when gh is unauthenticated — then there is
- *  nothing to announce on either plane. */
+ *  broadcast beat). Undefined when NEITHER the durable local Hive binding nor
+ *  live GitHub identity resolution succeeds — then there is nothing to announce
+ *  on either plane. */
 async function buildGossipWriter(
   handle: PresenceWireHandle,
   getState: () => PresenceState,
@@ -426,7 +451,9 @@ async function buildGossipWriter(
   resolveActiveRoutines: () => Promise<readonly string[] | null>,
 ): Promise<PresenceGossipWriter | undefined> {
   try {
-    const id = await resolveLocalAnnounceIdentity({ logCoreKeyHex: handle.ownLog.keyHex });
+    // WI-38328: durable-first, exactly like the announce loop — the writer needs
+    // only the keychain id (to sign), the pubkey and the gh user id, never a gist.
+    const id = await resolvePresenceAnnounceIdentity(handle, potSlug);
     const now = opts.now ?? Date.now;
     const machineLabel = machineFingerprint();
     return {
@@ -475,22 +502,82 @@ async function buildGossipWriter(
   }
 }
 
+/**
+ * WI-38328 — resolve the identity the presence planes announce under, preferring
+ * the DURABLE local binding over a live GitHub round-trip.
+ *
+ * Both presence planes need only `{ githubUserId, devicePubkeyBase64, keychainId }`.
+ * Neither carries `attestationGistId` — `PresenceIdentity` has no such field, and
+ * every consumer of it lives in boot.ts's swarm-JOIN announce frame. But
+ * `resolveLocalAnnounceIdentity` resolves the attestation gist MANDATORILY, via a
+ * live `ensureAttestationGist` WRITE, and throws when GitHub refuses. So presence
+ * used to hard-depend on the success of a call whose result it discards.
+ *
+ * That is not hypothetical: a GitHub account with no VERIFIED EMAIL cannot create
+ * gists at all (422 `{"resource":"Gist","field":"user","message":"user must have a
+ * verified email"}`), which is an account-level condition, so every retry fails
+ * identically and the node stays invisible to peers FOREVER — observed on the
+ * local-matrix rig, 8/8 retries across both topics, blocking WI-5481's soak from
+ * running a single cycle. Gist-restricted org/EMU accounts and a plain GitHub gist
+ * outage land in the same place.
+ *
+ * `resolveLocalAnnounceIdentityFromHiveMembers` already resolves exactly this from
+ * the local `hive_members` projection + OS keychain, and boot.ts:4355 already
+ * PREFERS it on the swarm-JOIN path for the same reason ("lets known Hive members
+ * rejoin the swarm during a GitHub outage without weakening admission"). Presence
+ * simply never called it. Admission is unweakened here too: the fallback resolves
+ * only when a durable membership row already names THIS device's existing pubkey
+ * (it never generates a key), and peers still verify the announce signature.
+ */
+async function resolveKnownHiveMemberPresenceIdentity(
+  handle: Pick<PresenceWireHandle, 'workspaceId'>,
+  potSlug: string | null,
+): Promise<LocalAnnounceIdentity | null> {
+  if (!potSlug) return null; // non-Hive harness → no durable roster to resolve against
+  try {
+    const { listHiveMembersForLocalPot } = await import('../../federated-pot-scope');
+    const members = await listHiveMembersForLocalPot(handle.workspaceId, potSlug);
+    return await resolveLocalAnnounceIdentityFromHiveMembers({ members });
+  } catch {
+    return null; // projection unreadable → fall through to the live resolver
+  }
+}
+
+/** Durable-first presence identity: the local Hive binding, else the live
+ *  GitHub-backed resolver (first-time / non-Hive announces). Throws only when
+ *  NEITHER path resolves, so the caller can report the real reason. */
+async function resolvePresenceAnnounceIdentity(
+  handle: Pick<PresenceWireHandle, 'workspaceId' | 'ownLog'>,
+  potSlug: string | null,
+): Promise<LocalAnnounceIdentity> {
+  const known = await resolveKnownHiveMemberPresenceIdentity(handle, potSlug);
+  if (known) return known;
+  return resolveLocalAnnounceIdentity({ logCoreKeyHex: handle.ownLog.keyHex });
+}
+
 /** The default presence-identity resolver for a booted handle: this machine's
- *  github user + device pubkey + machine fingerprint, or null when gh is
- *  unauthenticated (then we never announce/tombstone — no-op). Shared by the
- *  announce loop and the leave tombstone. */
+ *  github user + device pubkey + machine fingerprint, or null when neither the
+ *  durable local binding nor gh can resolve one (then we never announce/tombstone
+ *  — no-op). Shared by the announce loop and the leave tombstone.
+ *
+ *  `noteError` receives the swallowed cause so the caller can name it instead of
+ *  guessing — this catch is why a permanent GitHub-side refusal was reported for
+ *  months as an unqualified "gh-unauthenticated box". */
 async function defaultResolvePresenceIdentity(
-  handle: Pick<PresenceWireHandle, 'ownLog'>,
+  handle: Pick<PresenceWireHandle, 'workspaceId' | 'ownLog'>,
+  potSlug: string | null = null,
+  noteError?: (err: unknown) => void,
 ): Promise<PresenceIdentity | null> {
   try {
-    const id = await resolveLocalAnnounceIdentity({ logCoreKeyHex: handle.ownLog.keyHex });
+    const id = await resolvePresenceAnnounceIdentity(handle, potSlug);
     return {
       githubUserId: id.githubUserId,
       devicePubkey: id.devicePubkeyBase64,
       machineLabel: machineFingerprint(),
     };
-  } catch {
-    return null; // gh unauthenticated → nothing to announce/retract
+  } catch (err) {
+    noteError?.(err);
+    return null; // no durable binding and gh unauthenticated → nothing to announce/retract
   }
 }
 
@@ -523,7 +610,18 @@ export async function publishPresenceTombstoneForHarness(
   opts: PublishPresenceTombstoneOpts = {},
 ): Promise<boolean> {
   if (!handle.swarm) return false; // private/local → no peers to tell
-  const resolveIdentity = opts.resolveIdentity ?? (() => defaultResolvePresenceIdentity(handle));
+  // WI-38328: resolve the home Hive slug so the tombstone can use the same
+  // durable-first identity path as the announce loop. A node that could not
+  // ANNOUNCE without GitHub could not RETRACT without it either, which left a
+  // departed peer's presence row to age out by TTL instead of dropping promptly.
+  let tombstonePotSlug: string | null = null;
+  try {
+    tombstonePotSlug = await canonicalHiveHomeSlug(handle.workspaceId, handle.harnessSlug);
+  } catch {
+    tombstonePotSlug = null;
+  }
+  const resolveIdentity =
+    opts.resolveIdentity ?? (() => defaultResolvePresenceIdentity(handle, tombstonePotSlug));
   let identity: PresenceIdentity | null;
   try {
     identity = await resolveIdentity();
