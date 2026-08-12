@@ -1224,6 +1224,165 @@ export function buildClaimabilityAdvisory(rawSql: string): string | null {
   );
 }
 
+/**
+ * The relation → covering-tool map behind {@link buildToolRoutingAdvisory}
+ * (plan `sql-escape-tool-routing-2026-08-12`, P-001).
+ *
+ * ⚠ WHY THIS EXISTS WHEN `seeAlso` ALREADY DOES. `dev:pg_query` declares a
+ * static `seeAlso` list (shipped budget-free by
+ * `claimable-read-tool-and-sql-encapsulation-audit-2026-07-21` P-004). That was
+ * the right call for prompt weight, but it is emitted IDENTICALLY on every call
+ * regardless of the query — so an agent reading `harness_shared.routines` is
+ * told about `work_items:claimable`. Measured 2026-08-12 over 14 days
+ * (`harness_shared.tool_invocations`, workspace `papercusp-workspace`): 15,854
+ * calls from 381 distinct agents, 98.6% SUCCEEDING. This is not a failure
+ * signal — agents route around the catalog successfully, which is exactly why
+ * it went unnoticed. ~286 of those agents were hand-querying relations that
+ * already had a good covering tool.
+ *
+ * So the nudge channel already fires ~15.9k times; it was simply never aimed.
+ * This registry aims it.
+ *
+ * ⚠ EVERY VERB HERE WAS VERIFIED AGAINST THE LIVE TOOL REGISTRY, not recalled.
+ * Routing an agent to a phantom verb is strictly worse than the raw SQL it
+ * replaces: the SQL works, and the phantom costs a round trip and teaches a
+ * name that does not exist. When adding a row, confirm the verb resolves
+ * (`agent_tools:list` / the `defineTool` name — note some are declared with
+ * DOUBLE quotes, so a single-quote grep under-reports and reads as absence).
+ *
+ * ⚠ `gives` states what the TOOL adds over the raw read — the reason to switch.
+ * A row that cannot say that does not belong here: "there is also a tool" is
+ * noise on a hot path, and an advisory nobody acts on trains agents to skim
+ * past the ones that matter.
+ */
+interface ToolRoute {
+  /** The verb(s) that answer this relation's hot read. */
+  tool: string;
+  /** What the tool adds over reading the table directly. */
+  gives: string;
+}
+
+export const TOOL_ROUTING_BY_TABLE: Record<string, ToolRoute> = {
+  work_items: {
+    tool: 'work_items:list / work_items:get',
+    gives: 'server-side filters, batch id fetch, and the payload/threads projection',
+  },
+  harness_plans: {
+    tool: 'plans:list / plans:get / plans:items',
+    gives: 'recency filters, groupBy/aggregateOnly counts, and section-scoped reads',
+  },
+  routines: {
+    tool: 'routines:list',
+    gives: 'cadence + active state + the deliberate-pause record { reason, by, at }, and rollup:true for the per-group view',
+  },
+  coord_presence: {
+    tool: 'coord:presence / fleet:assignments',
+    gives: "the derived sessionState verdict — the raw heartbeat columns here are NOT liveness (a warm-dead session reads heartbeatFresh:true, sessionState:'ended')",
+  },
+  agent_presence: {
+    tool: 'coord:presence',
+    gives: 'the one shared liveness oracle every surface derives from',
+  },
+  coord_event_log: {
+    tool: 'coord:feed / coord:catch-up',
+    gives: 'audience-scoped history with membership gating, instead of raw envelope rows',
+  },
+  coord_messages: {
+    tool: 'coord:feed / coord:catch-up',
+    gives: 'audience-scoped history with membership gating',
+  },
+  coord_thread_posts: {
+    tool: 'coord:catch-up',
+    gives: 'the bounded per-audience catch-up rather than a raw post scan',
+  },
+  tool_invocations: {
+    tool: 'activity:tool-log / dev:telemetry / dev:tool_cooccurrence',
+    gives: 'per-tool rollups (count, error rate, p50/p95) and the compact per-session call log',
+  },
+  adv_sessions: {
+    tool: 'sessions:search / sessions:timeline',
+    gives: 'hybrid semantic search over transcripts, tolerant of a paraphrase',
+  },
+  session_turns: {
+    tool: 'sessions:search / sessions:timeline',
+    gives: 'hybrid semantic search with surrounding context',
+  },
+  session_briefs: {
+    tool: 'sessions:search',
+    gives: 'meaning-based retrieval instead of a substring scan',
+  },
+  agent_facts: {
+    tool: 'facts:list',
+    gives: 'scope resolution + TTL/retraction handling, so a stale fact is not read as standing',
+  },
+  engineer_issues: {
+    tool: 'improvements:digest',
+    gives: 'scored + deduped triage with the auto-eligible / needs-human split',
+  },
+  task_ledger: {
+    tool: 'processes:list',
+    gives: 'provenance — who launched it, for which work-item, and what it costs',
+  },
+  memory_canonical: {
+    tool: 'memory:search',
+    gives: 'embedding recall rather than a literal match over stored text',
+  },
+  goals: {
+    tool: 'goals:list / goals:get',
+    gives: 'the goal record with its rationale, kill-criteria and attached pots',
+  },
+  harness_registry: {
+    tool: 'harness:status',
+    gives: 'live status for one or many harnesses in one call',
+  },
+  pipeline_events: {
+    tool: 'dev:pipeline_position / release:trace',
+    gives: "blockedOn + nextAction + per-stage health — a boolean per stage cannot say whether that stage is MOVING",
+  },
+};
+
+/**
+ * "A tool already answers this read" — the aimed replacement for the static
+ * `seeAlso` footer (P-001).
+ *
+ * ⚠ DELIBERATELY CONSERVATIVE: fires ONLY on a single-relation, non-analytic
+ * read. `dev:pg_query` exists for genuinely ad-hoc analysis, and that traffic is
+ * CORRECT — a cross-table join or a group-by is the tool working as intended, so
+ * nudging it would be both wrong and, at ~15.9k calls, expensive noise. The
+ * shape this targets is the one the audit actually found: a plain
+ * `SELECT … FROM <one covered table> WHERE …`, which is what an agent writes
+ * when it does not know the verb exists.
+ *
+ * Returns null (stays silent) when the caller is already going through a
+ * dedicated advisory for that relation, so the specific warning is never
+ * crowded by the generic one.
+ */
+export function buildToolRoutingAdvisory(rawSql: string): string | null {
+  const tables = extractReferencedTables(rawSql);
+  if (tables.length !== 1) return null;
+
+  const bare = bareTableName(tables[0]);
+  const route = TOOL_ROUTING_BY_TABLE[bare];
+  if (!route) return null;
+
+  const stripped = stripSqlLiteralsAndComments(rawSql);
+
+  // Analytic shapes are this tool's legitimate job — say nothing.
+  if (/\bgroup\s+by\b/i.test(stripped)) return null;
+  if (/\bover\s*\(/i.test(stripped)) return null;
+  if (/\b(?:count|sum|avg|min|max|percentile_cont|array_agg|jsonb_agg|string_agg)\s*\(/i.test(stripped)) return null;
+  if (/\bexplain\b/i.test(stripped)) return null;
+  // A join against a second relation the extractor folded away (a lateral, a
+  // set-returning function) is still analysis, not a plain read.
+  if (/\bjoin\b|\blateral\b|\bunion\b|\bintersect\b|\bexcept\b/i.test(stripped)) return null;
+
+  // Let the dedicated claimability advisory own the work_items claim shape —
+  // it says something strictly more specific than "there is a list tool".
+  if (bare === 'work_items' && buildClaimabilityAdvisory(rawSql)) return null;
+
+  return `ⓘ a tool covers this read: ${route.tool} — ${route.gives}. Raw SQL stays correct for genuinely ad-hoc analysis (a join, a group-by, a one-off slice); this fired because the query is a plain single-table read.`;
+}
+
 /** Native client tools — the ones an agent here actually edits code with. None is ever an MCP
  *  tool, so none can appear in `tool_invocations` (EI-20103748074297088). */
 const NATIVE_CLIENT_TOOLS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit', 'Read', 'Bash', 'Glob', 'Grep'];
