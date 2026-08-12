@@ -23,16 +23,18 @@ import {
 // its key=vals[0] (or none). Enough to exercise the get/set/resolve paths.
 function fakeKv() {
   const store = new Map<string, string>();
+  const descriptions = new Map<string, string>();
   const sql = vi.fn((strings: TemplateStringsArray, ...vals: unknown[]) => {
     const q = strings.join('§');
     if (q.includes('INSERT')) {
       store.set(String(vals[0]), String(vals[1]));
+      descriptions.set(String(vals[0]), String(vals[2]));
       return Promise.resolve([] as unknown[]);
     }
     const v = store.get(String(vals[0])); // SELECT value WHERE key = vals[0]
     return Promise.resolve(v === undefined ? [] : [{ value: v }]);
   });
-  return { sql, store };
+  return { sql, store, descriptions };
 }
 
 let kv: ReturnType<typeof fakeKv>;
@@ -108,9 +110,16 @@ describe('ensureFleetMemberWakeAuto — fleet-member wake immunity (WI-2185)', (
   });
   it('setWakeMode carries a custom description when given', async () => {
     await setWakeMode('s-x', 'auto', 'because WI-2185');
-    // The INSERT upsert stores value under the agent key regardless of description;
-    // the description rides along to the KV write (asserted via the store value).
     expect(kv.store.get('wake_mode:agent:s-x')).toBe('auto');
+    expect(kv.descriptions.get('wake_mode:agent:s-x')).toBe('because WI-2185');
+  });
+
+  it('updates the durable description when a mode changes again', async () => {
+    await setDefaultWakeMode('manual', 'fencing stale leader');
+    expect(kv.descriptions.get('wake_mode:default')).toBe('fencing stale leader');
+
+    await setDefaultWakeMode('auto', 'replacement leader is live');
+    expect(kv.descriptions.get('wake_mode:default')).toBe('replacement leader is live');
   });
 });
 

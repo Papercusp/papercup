@@ -53,7 +53,10 @@ async function writeSetting(key: string, value: string, description: string): Pr
   await sql`
     INSERT INTO harness_shared.operator_settings (key, value, description, updated_at, workspace_id)
     VALUES (${key}, ${value}, ${description}, ${Date.now()}, ${activeWorkspaceId()})
-    ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+    ON CONFLICT (key) DO UPDATE SET
+      value = EXCLUDED.value,
+      description = EXCLUDED.description,
+      updated_at = EXCLUDED.updated_at
   `;
 }
 
@@ -75,9 +78,13 @@ export async function getDefaultWakeMode(): Promise<WakeMode> {
  * against a hammering caller wasting real PG writes, and is a no-regret change
  * regardless of whether the specific caller is ever pinned down.
  */
-export async function setDefaultWakeMode(mode: WakeMode): Promise<void> {
+export async function setDefaultWakeMode(mode: WakeMode, description?: string): Promise<void> {
   if ((await getDefaultWakeMode()) === mode) return;
-  await writeSetting(DEFAULT_KEY, mode, 'Global default agent wake mode (hive-agent-tabs P-015 / D-005).');
+  await writeSetting(
+    DEFAULT_KEY,
+    mode,
+    description ?? 'Global default agent wake mode (hive-agent-tabs P-015 / D-005).',
+  );
 }
 
 /** This agent's per-agent override, or null when unset (→ falls back to default). */
