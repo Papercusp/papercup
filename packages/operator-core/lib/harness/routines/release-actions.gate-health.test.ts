@@ -12,7 +12,7 @@
  * `@papercusp/db-org` that overrides only the lazy `getOrgPg`, preserving every
  * other export so the release-actions import graph still resolves).
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
 // EI-19329732364513693: trackGateStall now measures candidate staleness via git whenever a
 // candidate is passed. Keep this file HERMETIC — without this mock, every existing test that
@@ -83,7 +83,13 @@ vi.mock('../../severe-event-broadcast', async (importOriginal) => ({
   broadcastSevereEventResolved: (r: Record<string, unknown>) => broadcastSevereEventResolved(r),
 }));
 
-import { trackGateStall, measureCandidateStaleness, gateRedStreakBroadcast, type GitCheckRunner } from './release-actions';
+import {
+  trackGateStall,
+  measureCandidateStaleness,
+  gateRedStreakBroadcast,
+  resolveIntegrationRoot,
+  type GitCheckRunner,
+} from './release-actions';
 import { gateRedStreakConditionKey } from '../../coord/gate-ownership';
 import { releaseCheckpointConfig } from '../../release-checkpoint-config';
 import type { SystemActionCtx } from './system-actions';
@@ -698,6 +704,96 @@ describe('trackGateStall records an inconclusive ABORT without counting it as a 
     const written = lastGateHealthWrite();
     expect(written).not.toBeNull();
     expect(written!.inconclusive).toBeNull();
+    expect(written!.consecutiveReds).toBe(0);
+  });
+});
+
+/**
+ * The gate must survive running inside its OWN checkout.
+ *
+ * `resolveIntegrationRoot` is fail-CLOSED by design: it throws when the cwd-derived root is a
+ * release/checkpoint checkout, so a gate/deploy run can never silently act on the wrong tree
+ * (EI-20263854732193595). But `trackGateStall`'s candidate-staleness step passed
+ * `integrationRoot()` as a call ARGUMENT — a SYNCHRONOUS throw, evaluated before the promise
+ * its `.catch()` guards ever exists — so the documented "any git error yields nulls rather
+ * than throwing" contract could not apply to it.
+ *
+ * That combination red-pinned the gate on its own suite: vitest runs operator-core with cwd
+ * `<tree>/packages/operator-core`, so inside `…/papercusp-checkpoint` the `../..` fallback
+ * resolves to the checkpoint checkout and the resolver refuses — failing every test here that
+ * passes a candidate, in the one tree where green-checkpoint actually executes them.
+ *
+ * These pin the CONTRACT (a health tick still records, with null staleness) rather than the
+ * call shape, so any future refactor that puts a throw back outside the fail-safe fails here.
+ */
+describe('trackGateStall survives an unresolvable integration root (gate running in its own checkout)', () => {
+  const CHECKPOINT_CWD = '/tmp/papercusp-checkpoint/packages/operator-core';
+  let cwdSpy: ReturnType<typeof vi.spyOn> | null = null;
+  let savedRoot: string | undefined;
+
+  beforeEach(() => {
+    savedRoot = process.env.PAPERCUSP_INTEGRATION_ROOT;
+    // The explicit env pin short-circuits the guard — clear it so the cwd fallback is what runs.
+    delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+    cwdSpy = vi.spyOn(process, 'cwd').mockReturnValue(CHECKPOINT_CWD);
+  });
+
+  afterEach(() => {
+    cwdSpy?.mockRestore();
+    cwdSpy = null;
+    if (savedRoot === undefined) delete process.env.PAPERCUSP_INTEGRATION_ROOT;
+    else process.env.PAPERCUSP_INTEGRATION_ROOT = savedRoot;
+  });
+
+  // CALIBRATION: proves the premise. Without this, a guard that stopped refusing would make
+  // every assertion below pass vacuously — the test would still be green while testing nothing.
+  it('the guard really does refuse this cwd (premise of the tests below)', () => {
+    expect(() => resolveIntegrationRoot(process.env, process.cwd())).toThrow(/refusing to gate/);
+  });
+
+  it('⭐ records a RED tick instead of throwing, with staleness degraded to nulls', async () => {
+    seededGh = { consecutiveReds: 0, stallAlerted: false };
+
+    await expect(trackGateStall(ctx, 'not-green', 'cafebabe1234', ['pkgA/foo.test.ts'])).resolves.not.toThrow();
+
+    const written = lastGateHealthWrite();
+    expect(written).not.toBeNull();
+    expect(written!.consecutiveReds).toBe(1);
+    // The tick is recorded WITHOUT the optional diagnostic — never at the cost of the tick.
+    expect(written!.candidateCommittedAt).toBeNull();
+    expect(written!.commitsBehindTip).toBeNull();
+  });
+
+  // CONTROL (permanent, pure): the defect was never about git or about the guard — it was the
+  // CALL SHAPE. A synchronous throw in an argument happens before the callee returns a promise,
+  // so the callee's own `.catch()` cannot see it. Kept here so the fix's shape is falsifiable
+  // without mutating the shared tree: revert the call sites and the ⭐ tests above go red.
+  it('control: a sync throw in an ARGUMENT escapes that call’s own .catch()', async () => {
+    const refuse = (): string => {
+      throw new Error('refusing to gate /tmp/papercusp-checkpoint');
+    };
+    const measure = async (_root: string): Promise<string> => 'measured';
+
+    // OLD shape — `.catch()` is attached to a promise that is never created.
+    await expect((async () => measure(refuse()).catch(() => 'fallback'))()).rejects.toThrow(/refusing to gate/);
+
+    // FIXED shape — resolve the root first, then decide; the fallback is reachable.
+    let root: string | null;
+    try {
+      root = refuse();
+    } catch {
+      root = null;
+    }
+    await expect((async () => (root ? measure(root).catch(() => 'fallback') : 'fallback'))()).resolves.toBe('fallback');
+  });
+
+  it('⭐ records a GREEN tick instead of throwing', async () => {
+    seededGh = { consecutiveReds: 3, stallAlerted: false };
+
+    await expect(trackGateStall(ctx, 'advanced', 'cafebabe1234')).resolves.not.toThrow();
+
+    const written = lastGateHealthWrite();
+    expect(written).not.toBeNull();
     expect(written!.consecutiveReds).toBe(0);
   });
 });
