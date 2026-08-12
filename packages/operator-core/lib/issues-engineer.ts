@@ -695,7 +695,7 @@ export interface CreateIssueInput {
    * Explicit id — used by the unified work_items:create path to mint a
    * kind-independent WI-NNN id (D-008). Omit for the legacy issues:create path,
    * which allocates the next EI-<n>.
-  */
+   */
   id?: string;
 }
 
