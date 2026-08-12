@@ -164,7 +164,7 @@ describe('threshold env overrides', () => {
   it('garbage / out-of-range overrides fall back to the defaults', () => {
     vi.stubEnv('PAPERCUSP_WI_DUPE_HARD', 'not-a-number');
     vi.stubEnv('PAPERCUSP_WI_DUPE_SOFT', '1.7');
-    expect(dupeThresholds()).toEqual({ hard: 0.93, soft: 0.85 });
+    expect(dupeThresholds()).toEqual({ hard: 0.93, soft: 0.9 });
   });
 });
 

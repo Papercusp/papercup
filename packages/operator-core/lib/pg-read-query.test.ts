@@ -16,6 +16,7 @@ import {
   buildClaimabilityAdvisory,
   buildCorpusNamespaceAdvisory,
   buildNativeToolAttributionAdvisory,
+  buildSplitCompletionEvidenceAdvisory,
   buildDerivedColumnRedirect,
   buildJsonbPathRedirect,
   parseMissingColumnName,
@@ -1538,5 +1539,54 @@ describe('buildNativeToolAttributionAdvisory — native tools are absent from to
 
     expect(buildCorpusNamespaceAdvisory(trap2)).toBeTruthy();
     expect(buildNativeToolAttributionAdvisory(trap2)).toBeNull();
+  });
+});
+
+/**
+ * WI-38056 / EI-20203674337042683. The regression this locks down is not
+ * hypothetical: the query in the first case is the one the WI-38045 fleet audit
+ * actually ran, and its confident empty produced a published finding that did not
+ * exist plus a downgraded grade for an agent whose work was fine.
+ */
+describe('buildSplitCompletionEvidenceAdvisory — one evidence surface read as "no evidence"', () => {
+  const EI = 'harness_shared.engineer_issues';
+
+  it('fires on the audit query that read ONLY payload evidence', () => {
+    const advisory = buildSplitCompletionEvidenceAdvisory(
+      `SELECT issue_id, payload->'_completionEvidence' AS ev FROM ${EI} WHERE state = 'dropped'`,
+    );
+    expect(advisory).toBeTruthy();
+    expect(advisory).toContain('terminal_completion_ref');
+  });
+
+  it('fires the other way too — only terminal_completion_ref', () => {
+    const advisory = buildSplitCompletionEvidenceAdvisory(
+      `SELECT issue_id, terminal_completion_ref FROM ${EI} WHERE state = 'done'`,
+    );
+    expect(advisory).toBeTruthy();
+    expect(advisory).toContain('_completionEvidence');
+  });
+
+  it('stays SILENT when both surfaces are read — the query cannot under-report', () => {
+    expect(
+      buildSplitCompletionEvidenceAdvisory(
+        `SELECT payload->'_completionEvidence' AS ev, terminal_completion_ref FROM ${EI}`,
+      ),
+    ).toBeNull();
+  });
+
+  it('warns that terminal_reason is a vocabulary token, not a reason', () => {
+    const advisory = buildSplitCompletionEvidenceAdvisory(
+      `SELECT issue_id, terminal_reason FROM ${EI} WHERE state = 'dropped'`,
+    );
+    expect(advisory).toBeTruthy();
+    expect(advisory).toContain('vocabulary token');
+  });
+
+  it('does not fire on a query that reads neither surface, or on another table', () => {
+    expect(buildSplitCompletionEvidenceAdvisory(`SELECT issue_id, title FROM ${EI}`)).toBeNull();
+    expect(
+      buildSplitCompletionEvidenceAdvisory('SELECT terminal_completion_ref FROM harness_shared.harness_plans'),
+    ).toBeNull();
   });
 });

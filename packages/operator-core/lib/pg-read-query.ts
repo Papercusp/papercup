@@ -1268,8 +1268,15 @@ export function buildSplitCompletionEvidenceAdvisory(rawSql: string): string | n
   const tables = extractReferencedTables(rawSql);
   if (!tables.some((t) => ['work_items', 'engineer_issues'].includes(bareTableName(t)))) return null;
 
+  // The two surfaces are probed differently ON PURPOSE. `terminal_completion_ref`
+  // and `terminal_reason` are IDENTIFIERS, so they are matched against the
+  // literal-and-comment-stripped body. `_completionEvidence` is a jsonb KEY and is
+  // therefore only ever written inside a quoted literal — stripping literals
+  // deletes exactly the thing being looked for, which silently inverted this
+  // advisory (it stayed quiet on the single-surface read it exists for, and fired
+  // on the two-surface read it must not).
   const body = stripSqlLiteralsAndComments(rawSql);
-  const readsPayloadEvidence = /_completionEvidence/i.test(body);
+  const readsPayloadEvidence = /_completionEvidence/i.test(rawSql);
   const readsTerminalRef = /\bterminal_completion_ref\b/i.test(body);
   const readsTerminalReason = /\bterminal_reason\b/i.test(body);
   if (!readsPayloadEvidence && !readsTerminalRef && !readsTerminalReason) return null;
