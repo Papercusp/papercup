@@ -111,7 +111,12 @@ beforeEach(() => {
   // The serve-path cases deliberately end in a MISS (getNextForBee -> null): what they assert is
   // that the claim path was REACHED, not that an item came back. missResult() reads this
   // diagnosis, so it needs a real shape or the miss renderer throws before the assertion runs.
-  diagnoseM.mockResolvedValue({ drained: true, pendingUnclaimed: 0, readyUnclaimed: 0 });
+  diagnoseM.mockResolvedValue({
+    drained: true,
+    pendingUnclaimed: 0,
+    readyUnclaimed: 0,
+    flagReadError: null,
+  });
 });
 
 describe('work_items:claim_next context-pressure gate (WI-5940)', () => {
