@@ -310,6 +310,22 @@ describe('resume + fork (D-004/D-007)', () => {
     expect(spawnConsoleMock).not.toHaveBeenCalled();
   });
 
+  it('fails loudly and records the failure when a visible resume opens no live agent (EI-20264752821998735)', async () => {
+    resolveResumeTargetMock.mockResolvedValue(dead);
+    verifyResumeStartedMock.mockResolvedValue({ started: false });
+
+    const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' } }, ctx);
+
+    expect(isError(res)).toBe(true);
+    expect(textOf(res)).toContain('RESUME UNVERIFIED');
+    expect(textOf(res)).toContain('NO live agent registered');
+    expect(recordAgentLaunchResultMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        summary: expect.objectContaining({ mode: 'resume', resumeVerified: false }),
+      }),
+    );
+  });
+
   it('refuses to resume one session N times (fork is the run-alongside path)', async () => {
     const res = await launchAgent.handler({ resume: { agentId: 'su-a1a71' }, count: 3 }, ctx);
     expect(isError(res)).toBe(true);
