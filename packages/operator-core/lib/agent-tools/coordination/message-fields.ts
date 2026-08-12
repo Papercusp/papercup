@@ -652,7 +652,8 @@ const whyArg = z
   .describe(
     'ENVELOPE (one per message — one message serves one goal). WHY you are sending this, as a ' +
       'goal REF not prose (D-011), so the receiver can query the goal\'s LIVE state instead of ' +
-      'trusting your snapshot of it. `note` carries any prose.',
+      'trusting your snapshot of it. Shape: { goalRef: "<goal ref>", note?: "<optional prose>" }. ' +
+      '`note` carries any prose.',
   );
 
 /**

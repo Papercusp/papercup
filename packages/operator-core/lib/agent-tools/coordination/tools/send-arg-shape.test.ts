@@ -61,6 +61,24 @@ describe('EI-20223353810864057 — primary coord:send guidance names required su
     expect(summaryDescription).toMatch(/items/);
     expect(summaryDescription).toMatch(/body.*does not replace/i);
   });
+
+  it('teaches the structured why shape on every user-facing schema surface', () => {
+    const description = String((sendTool as { description?: unknown }).description ?? '');
+    const when = String(
+      ((sendTool as { guidance?: { when?: unknown } }).guidance?.when ?? ''),
+    );
+    const schema = z.toJSONSchema(sendTool.args) as {
+      properties?: { why?: { description?: string } };
+    };
+    const whyDescription = schema.properties?.why?.description ?? '';
+
+    for (const text of [description, when, whyDescription]) {
+      expect(text).toMatch(/why/i);
+      expect(text).toMatch(/goalRef/);
+      expect(text).toMatch(/note\?/);
+    }
+    expect(whyDescription).toMatch(/not prose/i);
+  });
 });
 
 /** Every issue message from a failed parse, joined — order-independent matching. */
