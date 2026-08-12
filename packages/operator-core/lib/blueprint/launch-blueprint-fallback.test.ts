@@ -31,6 +31,8 @@ vi.mock('../loopback-fetch', async (importActual) => ({
 }));
 // DBOS inactive → goes straight to fire-and-forget fallback.
 vi.mock('../dbos/dbos-flags', () => ({ dbosOrchestratorActive: vi.fn(() => false) }));
+// Keep no-turn classification deterministic without probing a live gateway.
+vi.mock('../inference-gateway/observability', () => ({ gatewayWholesaleThrottled: vi.fn(async () => false) }));
 
 import { getOrgPg } from '@papercusp/db-org';
 import { recordSpawn, finishSpawn } from '../fleet/spawn-tree';
@@ -128,6 +130,44 @@ describe('defaultFire fallback — durable spawn row (WI-108)', () => {
       status: 'failed',
       errorMessage: fetchErr.message,
     });
+    warn.mockRestore();
+  });
+
+  it('opens the durable release-fixer escalation when a release-fix launch times out before its first turn', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.mocked(loopbackFetch).mockResolvedValue(new Response(JSON.stringify({
+      ok: false,
+      exitCode: 143,
+      timedOut: true,
+      agentOutput: '',
+      rawStdoutTail: '[08:16:17 invoke-once received termination signal — aborting agent',
+    }), { status: 200 }));
+
+    await fireLaunchBlueprint('release-fix', {
+      ...opts,
+      bodyExtra: {
+        releaseFixerContext: {
+          candidate: 'deadbeefcafe0123',
+          failingTests: ['lib/gate.test.ts'],
+        },
+      },
+    });
+    await vi.waitFor(() => expect(finishSpawn).toHaveBeenCalledOnce());
+
+    const sqlTexts = mockSql.mock.calls.map((args) => {
+      const strings = args[0] as TemplateStringsArray | string | undefined;
+      return Array.isArray(strings) ? strings.join(' ') : String(strings);
+    });
+    expect(sqlTexts.some((text) => text.includes('INSERT INTO harness_shared.harness_escalations'))).toBe(true);
+    const escalationCall = mockSql.mock.calls.find((args) => {
+      const strings = args[0] as TemplateStringsArray | string | undefined;
+      return (Array.isArray(strings) ? strings.join(' ') : String(strings)).includes(
+        'INSERT INTO harness_shared.harness_escalations',
+      );
+    });
+    expect(escalationCall).toBeDefined();
+    expect(escalationCall).toContain('green-checkpoint-release-fixer-no-turn');
+    expect(finishSpawn.mock.calls[0]![1]).toMatchObject({ status: 'failed' });
     warn.mockRestore();
   });
 

@@ -16,8 +16,9 @@
  * checkpoint log, which is what let two agents independently discover + fix the
  * same two breaches within ~10 minutes of each other, unaware of one another.
  *
- * Gated `!process.env.VITEST`: the dedicated gate test (tool-guidance-budget.test.ts)
- * asserts this deliberately, and `vitest-fail-on-console` would otherwise turn a
+ * Gated `!process.env.VITEST`: the dedicated gate test
+ * (`packages/operator-core/lib/__tests__/tool-guidance-budget.test.ts`) asserts this
+ * deliberately, and `vitest-fail-on-console` would otherwise turn a
  * warn here into a failure of every UNRELATED suite that imports the catalog,
  * re-creating the very "one edit reds everyone" blast radius this fix exists to
  * shrink. In the operator process (no vitest) it is a plain, visible log line.

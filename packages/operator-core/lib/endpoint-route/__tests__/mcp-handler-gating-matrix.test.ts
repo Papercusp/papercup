@@ -69,6 +69,8 @@ const h = vi.hoisted(() => {
     ),
     /** Every workspace id the (mocked) withWorkspace opened a tx for. */
     withWorkspaceCalls: [] as string[],
+    /** Make the next workspace acquisition fail before the callback starts. */
+    failNextWorkspaceAcquire: false,
     /**
      * EI-19301511582594101 seam. postgres-js `sql.begin` COMMITs when its callback
      * resolves, so a failing COMMIT surfaces as a rejection from withWorkspace
@@ -152,6 +154,21 @@ vi.mock('@papercusp/db-org', async (importOriginal) => {
     getOrgPg: () => ({ sql: h.fakeSql }),
     withWorkspace: async <T>(ws: string, fn: (tx: unknown) => Promise<T>): Promise<T> => {
       h.withWorkspaceCalls.push(ws);
+      if (h.failNextWorkspaceAcquire) {
+        h.failNextWorkspaceAcquire = false;
+        const Deadline = actual.DbCallDeadlineError as new (
+          label: string,
+          deadlineMs: number,
+          elapsedMs: number,
+          pool?: string,
+        ) => Error & { retryable: boolean };
+        const error = new Deadline('withWorkspace:acquire(app)', 45_000, 45_000, 'org-app');
+        // The real constructor derives this from the acquire registry. The
+        // mock does not open a pool, so mark this synthetic error as the
+        // measured pool-pressure case the retry wrapper is meant to handle.
+        Object.defineProperty(error, 'retryable', { value: true });
+        throw error;
+      }
       const out = await fn(h.fakeTx);
       // The COMMIT happens HERE — after the callback resolves — which is why a
       // receipt persisted inside the callback could outlive a write that never
@@ -1557,6 +1574,16 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
     expect(call.ctx.gateBypass).toEqual({ role: false, capability: false, quota: false });
     // P-022: the request-scoped workspace ALS is pinned for the handler.
     expect(call.alsWorkspace).toBe('ws-test');
+  });
+
+  it('EI-20241887270783191: retries a measured pre-handler pool deadline without rerunning the handler', async () => {
+    h.failNextWorkspaceAcquire = true;
+    const res = await callTool('gatingtest:scoped', { a: 1 }, extraFor(signedUrl({ spawn: 'spawn-retry' })));
+    expect(res.isError).toBeUndefined();
+    expect(textOf(res)).toBe('gatingtest:scoped-ok');
+    expect(h.withWorkspaceCalls).toEqual(['ws-test', 'ws-test']);
+    expect(seen).toHaveLength(1);
+    expect(seen[0]?.args).toEqual({ a: 1 });
   });
 
   it('delta proxy: a generic repeated MCP read sends an internal cursor and reconstructs a full result', async () => {

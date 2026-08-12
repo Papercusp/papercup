@@ -32,7 +32,7 @@ import {
 } from '../../release/gate-verdict-target';
 import { releaseCheckpointConfig } from '../../release-checkpoint-config';
 import { describeGateRedOwnership, gateFailureSignature, type GateRedOwnership } from '../../release/gate-red-ownership';
-import { releaseFixerSpawnAlive } from '../../release/fixer-liveness';
+import { RELEASE_FIXER_NO_TURN_PHASE, releaseFixerSpawnAlive } from '../../release/fixer-liveness';
 // WI-37605: narrate under the RESOLVED tag, never a hardcoded '[green-checkpoint]'. This module's
 // own suite (release-actions*.test.ts) drives these code paths, and vitest captures their stdout
 // verbatim into the gate's persisted verdict log — so a hardcoded prefix emits a line
@@ -1082,6 +1082,19 @@ export async function trackGateStall(
     } catch (e) {
       console.warn(`${orchestratorStdoutTag()} stall escalation clear failed: ${e instanceof Error ? e.message : e}`);
     }
+    // A no-turn fixer escalation belongs to the same red episode. Clear it on the first
+    // genuinely green verdict so a later reader cannot mistake the old dead launch for a
+    // current gate failure. This uses the existing escalation table/phase surface and is
+    // deliberately idempotent like the stall clear above.
+    try {
+      await sql.unsafe(
+        `UPDATE harness_shared.harness_escalations SET escalation = NULL, mtime_ms = $2
+          WHERE harness_slug = $1 AND phase = $3 AND escalation IS NOT NULL`,
+        [ctx.installSlug, Date.now(), RELEASE_FIXER_NO_TURN_PHASE],
+      );
+    } catch (e) {
+      console.warn(`${orchestratorStdoutTag()} release-fixer no-turn escalation clear failed: ${e instanceof Error ? e.message : e}`);
+    }
     // P-005: CLOSE the red-streak condition — the bridge settles the owning work-item
     // on this broadcast, so a missed resolve leaks one permanently-open incident item
     // per episode (D-011's leak, which is exactly what the bridge's `settle: true`
@@ -1765,6 +1778,12 @@ async function dispatchReleaseFixer(ctx: GateVerdictTarget, candidate: string, f
         `green-checkpoint held \`main\`: candidate ${candidate.slice(0, 8)} failed the gate suite. Read the newest ~/.papercusp/checkpoint-logs/*.log, reproduce the failing test(s) locally to classify regression-vs-flake, then fix the code or de-flake (hermetic > tier-out > accountable quarantine). Do NOT push — the next checkpoint re-verifies.` +
         (flakeAnnotation ? `\n\n${flakeAnnotation}` : ''),
       extra: ['--green-checkpoint-red', JSON.stringify({ candidate })],
+      bodyExtra: {
+        releaseFixerContext: {
+          candidate: candidate.slice(0, 12),
+          failingTests: (failingTests ?? []).slice(0, 20),
+        },
+      },
       // P-010: the fixer's reproduce→classify→fix loop (maxTurns 30) needs far more than
       // the old 280s; the invoke-route ceiling is 1200s. 900s. The liveness-aware dedup
       // re-dispatches promptly if this fixer dies, so a long timeout is no longer a 2h gap.

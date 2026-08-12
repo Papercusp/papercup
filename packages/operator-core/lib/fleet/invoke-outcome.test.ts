@@ -15,6 +15,29 @@ describe('agentProducedTurn — the shared no-turn rule (docs-audit #1)', () => 
     expect(r.detail).toContain('h/queen');
   });
 
+  it('makes a timed-out no-turn actionable without guessing whether the launcher or gateway caused it', () => {
+    const r = agentProducedTurn(
+      JSON.stringify({
+        ok: false,
+        exitCode: 143,
+        timedOut: true,
+        agentOutput: '',
+        rawStdoutTail:
+          '[08:01:19 prompt-budget role=release-fixer total=63586 substrate=3572 history=0 playbook=0]\n' +
+          '[08:16:17 invoke-once received termination signal — aborting agent',
+      }),
+      'papercusp/release-fixer',
+    );
+    expect(r.ran).toBe(false);
+    expect(r.failureClass).toBe('infra_loss');
+    expect(r.detail).toContain('timed out before producing a turn');
+    expect(r.detail).toContain('prompt-budget role=release-fixer total=63586');
+    expect(r.detail).toContain('launcher termination record');
+    expect(r.detail).toContain('account/gateway telemetry');
+    expect(r.detail).not.toContain('more often');
+    expect(r.detail).not.toContain('gateway stall/429 storm');
+  });
+
   it('includes bounded raw stdout tail when a no-turn child left CLI diagnostics', () => {
     const r = agentProducedTurn(
       JSON.stringify({

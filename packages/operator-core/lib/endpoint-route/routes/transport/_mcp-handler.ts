@@ -1112,17 +1112,23 @@ async function dispatchWithSynthesizedTx<T>(
   if (dispatchNeedsTx(spawnCtx)) {
     const ctxWs = spawnCtx.workspaceId;
     return runWithWorkspaceIfConcrete(ctxWs, () =>
-      withWorkspace(ctxWs, async (tx) => {
-        const ctx: UnifiedToolContext = {
-          ...baseCtx,
-          tx,
-          principal: await synthesizeDispatchPrincipal(tx, spawnCtx),
-        };
-        // EI-18803497769946984: this is the ONE branch that holds a transaction open
-        // for the whole handler, so it is the only one that can trip the 60s idle
-        // timeout. Name the tool while we still can.
-        return warnIfHoldingWorkspaceTxTooLong(tool.name ?? '<unnamed tool>', run(ctx));
-      }),
+      // A deadline from withWorkspace fires before its callback starts, so a
+      // retry here cannot repeat the tool handler or any of its side effects.
+      // Only retry when the DB layer measured decisive pool pressure; an
+      // ambiguous/dead-endpoint deadline remains terminal for this attempt.
+      retryOnRetryableDbDeadline(() =>
+        withWorkspace(ctxWs, async (tx) => {
+          const ctx: UnifiedToolContext = {
+            ...baseCtx,
+            tx,
+            principal: await synthesizeDispatchPrincipal(tx, spawnCtx),
+          };
+          // EI-18803497769946984: this is the ONE branch that holds a transaction open
+          // for the whole handler, so it is the only one that can trip the 60s idle
+          // timeout. Name the tool while we still can.
+          return warnIfHoldingWorkspaceTxTooLong(tool.name ?? '<unnamed tool>', run(ctx));
+        }),
+      ),
     );
   }
   return runWithWorkspaceIfConcrete(spawnCtx.workspaceId, () => run(baseCtx));

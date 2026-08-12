@@ -53,6 +53,10 @@ import { dbosOrchestratorActive } from './dbos-flags';
 import { dbosStarted } from './bootstrap';
 import { loopbackFetch } from '../loopback-fetch';
 import { agentProducedTurn, type SpawnFailureClass } from '../fleet/invoke-outcome';
+import {
+  isReleaseFixerNoTurnFailure,
+  recordReleaseFixerNoTurnEscalation,
+} from '../release/fixer-liveness';
 import type { Db } from '../fleet/pg-stores';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 
@@ -825,6 +829,33 @@ export async function durableSpawnFireImpl(input: DurableSpawnFireInput): Promis
       fireResult.failureClass === 'usage_limit'
     ) {
       await recordControlPlaneCodexUsageLimit(input, initialFireBody);
+    }
+  }
+
+  // The durable path must leave the same durable signal as launch-blueprint's fallback:
+  // a release-fixer that produced no turn did not diagnose the red gate. Keep this outside
+  // the fire step so an escalation-write problem cannot trigger another DBOS recovery.
+  if (
+    rec?.childRole === 'release-fixer' &&
+    permanentMsg &&
+    isReleaseFixerNoTurnFailure(permanentMsg)
+  ) {
+    const releaseFixerContext = initialFireBody.releaseFixerContext as
+      | { candidate?: unknown; failingTests?: unknown }
+      | undefined;
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const opened = await recordReleaseFixerNoTurnEscalation(getOrgPg().sql, {
+      installSlug: rec.harnessSlug ?? parseInvokeTarget(input)?.harnessSlug ?? '',
+      workspaceId: rec.workspaceId,
+      spawnId,
+      candidate: typeof releaseFixerContext?.candidate === 'string' ? releaseFixerContext.candidate : null,
+      failingTests: Array.isArray(releaseFixerContext?.failingTests)
+        ? releaseFixerContext.failingTests.filter((test): test is string => typeof test === 'string')
+        : [],
+      errorMessage: permanentMsg,
+    });
+    if (opened) {
+      console.warn(`[durable-spawn] release-fixer no-turn escalation opened (${input.label ?? spawnId})`);
     }
   }
 

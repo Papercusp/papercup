@@ -5222,9 +5222,34 @@ export async function runPostSuiteLegs(
   const legs = legsNotRun('not reached');
   const outputs: string[] = [];
   const failingSignatures: string[] = [];
-  /** Short-circuit reason once a leg has failed — every later leg records THIS, so the
-   *  verdict says "not run because typecheck failed", never a bare skip. */
+  /**
+   * HARD halt only — a corrupt/unreadable candidate tree (WI-6056). Continuing past that
+   * is meaningless (every later leg would fail for the same reason), so it still skips the
+   * rest and every later leg records THIS as its skipReason.
+   */
   let haltedBy: string | undefined;
+  /**
+   * SOFT failures — a lint/typecheck leg that FAILED on a readable tree (WI-38185).
+   *
+   * These deliberately do NOT halt the chain. Each of these legs is a fast, deterministic,
+   * repo-wide script, and halting on the first one meant a single ~55min gate run could
+   * report AT MOST ONE of them while every later leg recorded "not run". Measured
+   * 2026-08-12 at tip b4b6deb746: FOUR were red simultaneously (no-box-identity,
+   * no-identity-literals, mock-cast-escape, timer-classification), so discovering them all
+   * would have taken >=4 sequential cycles (~4h) — on a tree where ~120 agents keep
+   * committing. That latency, not any single persistent defect, is what a multi-hour red
+   * streak is made of.
+   *
+   * This is the SAME rule the identity-leak leg already applies to its own three sub-lints
+   * ("all 3 must run and every failure must be visible in one verdict instead of
+   * whack-a-mole across builds", green-checkpoint-real-deps.test.ts) — applied ACROSS legs
+   * rather than only within one.
+   *
+   * A red is still a red: `legs.ok` below fails on ANY leg with status 'failed', and the
+   * EXPENSIVE leg (the SPA build) is still skipped the moment anything has failed, so this
+   * buys diagnosis without paying for a build that cannot ship.
+   */
+  const softFailures: string[] = [];
 
   // WI-4493: `test:affected` is an esbuild/Vitest gate and does not typecheck
   // operator-core. The Papercusp root's `lint:tsc` ratchet catches new per-file
@@ -5247,7 +5272,7 @@ export async function runPostSuiteLegs(
     const typecheck = await exec('npm', ['run', 'lint:tsc'], { cwd: treeDir, env, allowNonZero: true, heavy: true });
     legs.typecheck = { status: typecheck.code === 0 ? 'passed' : 'failed' };
     if (typecheck.code !== 0) {
-      haltedBy = 'lint:tsc failed';
+      softFailures.push('lint:tsc');
       failingSignatures.push('lint:tsc');
       // WI-37527: the banner must not out-claim its evidence. `lint:tsc` exits non-zero for
       // causes that produce NO `error TS\d+` at all — a V8 heap OOM (WI-37503), a config
@@ -5303,7 +5328,7 @@ export async function runPostSuiteLegs(
     });
     legs.typecheckPapercuspLibs = { status: libsTypecheck.code === 0 ? 'passed' : 'failed' };
     if (libsTypecheck.code !== 0) {
-      haltedBy = 'lint:tsc:papercusp-libs failed';
+      softFailures.push('lint:tsc:papercusp-libs');
       failingSignatures.push('lint:tsc:papercusp-libs');
       outputs.push(
         '\n\n=== LIBS/PAPERCUSP TYPECHECK FAILED (npm run lint:tsc:papercusp-libs) — a type regression in a libs/papercusp package blocks the release ===\n' +
@@ -5359,7 +5384,7 @@ export async function runPostSuiteLegs(
     });
     legs.typecheckWorkspaces = { status: workspacesTypecheck.code === 0 ? 'passed' : 'failed' };
     if (workspacesTypecheck.code !== 0) {
-      haltedBy = 'lint:tsc:workspaces failed';
+      softFailures.push('lint:tsc:workspaces');
       failingSignatures.push('lint:tsc:workspaces');
       outputs.push(
         '\n\n=== WORKSPACE TYPECHECK FAILED (npm run lint:tsc:workspaces) — a type regression in an apps/*, packages/* or libs/generic/* package blocks the release ===\n' +
@@ -5419,7 +5444,7 @@ export async function runPostSuiteLegs(
     });
     legs.typecheckOrchestrator = { status: orchestratorTypecheck.code === 0 ? 'passed' : 'failed' };
     if (orchestratorTypecheck.code !== 0) {
-      haltedBy = 'lint:tsc:orchestrator failed';
+      softFailures.push('lint:tsc:orchestrator');
       failingSignatures.push('lint:tsc:orchestrator');
       outputs.push(
         '\n\n=== ORCHESTRATOR TYPECHECK FAILED (npm run lint:tsc:orchestrator) — this package is gated at a STRICT ZERO, so any named file here is a NEW type error, never pre-existing baseline noise ===\n' +
@@ -5455,7 +5480,7 @@ export async function runPostSuiteLegs(
     const migrations = await exec('npm', ['run', 'lint:migrations'], { cwd: treeDir, env, allowNonZero: true });
     legs.lintMigrations = { status: migrations.code === 0 ? 'passed' : 'failed' };
     if (migrations.code !== 0) {
-      haltedBy = 'lint:migrations failed';
+      softFailures.push('lint:migrations');
       failingSignatures.push('lint:migrations');
       outputs.push(
         '\n\n=== MIGRATION LINT FAILED (npm run lint:migrations) — committed migration-file discipline / unreserved migration number ===\n' +
@@ -5485,7 +5510,7 @@ export async function runPostSuiteLegs(
     const forwardCompat = await exec('npm', ['run', 'lint:migration-forward-compat'], { cwd: treeDir, env, allowNonZero: true });
     legs.lintMigrationForwardCompat = { status: forwardCompat.code === 0 ? 'passed' : 'failed' };
     if (forwardCompat.code !== 0) {
-      haltedBy = 'lint:migration-forward-compat failed';
+      softFailures.push('lint:migration-forward-compat');
       failingSignatures.push('lint:migration-forward-compat');
       outputs.push(
         '\n\n=== MIGRATION FORWARD-COMPAT LINT FAILED (npm run lint:migration-forward-compat) — destructive DDL with no FORWARD-COMPAT acknowledgment (EI-18797473716313783 class) ===\n' +
@@ -5545,7 +5570,7 @@ export async function runPostSuiteLegs(
         ? { status: 'skipped', skipReason: 'candidate provides none of the 3 identity-leak lint scripts' }
         : { status: 'passed' };
     if (identityFailures.length) {
-      haltedBy = 'identity-leak lints failed';
+      softFailures.push('lint:identity-leak');
       failingSignatures.push('lint:identity-leak');
       outputs.push(
         '\n\n=== IDENTITY-LEAK LINTS FAILED (WI-4776 class — owner-name tag / box path / box identity literal committed to tracked source) ===' +
@@ -5584,7 +5609,7 @@ export async function runPostSuiteLegs(
     const designPrimitives = await exec('npm', ['run', 'lint:design-primitives'], { cwd: treeDir, env, allowNonZero: true });
     legs.lintDesignPrimitives = { status: designPrimitives.code === 0 ? 'passed' : 'failed' };
     if (designPrimitives.code !== 0) {
-      haltedBy = 'lint:design-primitives failed';
+      softFailures.push('lint:design-primitives');
       failingSignatures.push('lint:design-primitives');
       outputs.push(
         '\n\n=== DESIGN PRIMITIVES LINT FAILED (npm run lint:design-primitives) — global token/primitive scan, independent of the affected set ===\n' +
@@ -5618,7 +5643,7 @@ export async function runPostSuiteLegs(
     const controlBytes = await exec('npm', ['run', 'lint:no-control-bytes'], { cwd: treeDir, env, allowNonZero: true });
     legs.lintNoControlBytes = { status: controlBytes.code === 0 ? 'passed' : 'failed' };
     if (controlBytes.code !== 0) {
-      haltedBy = 'lint:no-control-bytes failed';
+      softFailures.push('lint:no-control-bytes');
       failingSignatures.push('lint:no-control-bytes');
       outputs.push(
         '\n\n=== RAW CONTROL BYTES LINT FAILED (npm run lint:no-control-bytes) — a byte that makes git diff and ugrep skip the file silently ===\n' +
@@ -5657,7 +5682,7 @@ export async function runPostSuiteLegs(
     const guardReach = await exec('npm', ['run', 'lint:guard-reachability'], { cwd: treeDir, env, allowNonZero: true });
     legs.lintGuardReachability = { status: guardReach.code === 0 ? 'passed' : 'failed' };
     if (guardReach.code !== 0) {
-      haltedBy = 'lint:guard-reachability failed';
+      softFailures.push('lint:guard-reachability');
       failingSignatures.push('lint:guard-reachability');
       outputs.push(
         '\n\n=== GUARD REACHABILITY LINT FAILED (npm run lint:guard-reachability) — a guard that is neither wired nor retired rots silently and its green gets quoted as evidence ===\n' +
@@ -5694,7 +5719,7 @@ export async function runPostSuiteLegs(
     const mockCast = await exec('npm', ['run', 'lint:mock-cast-escape'], { cwd: treeDir, env, allowNonZero: true });
     legs.lintMockCastEscape = { status: mockCast.code === 0 ? 'passed' : 'failed' };
     if (mockCast.code !== 0) {
-      haltedBy = 'lint:mock-cast-escape failed';
+      softFailures.push('lint:mock-cast-escape');
       failingSignatures.push('lint:mock-cast-escape');
       outputs.push(
         '\n\n=== MOCK FIXTURE CAST ESCAPE RATCHET LINT FAILED (npm run lint:mock-cast-escape) — `as never`/`as any` on a mock setter defeats the fixture type check, so a fixture stales silently and fails at RUNTIME in a file your change never touched ===\n' +
@@ -5740,7 +5765,7 @@ export async function runPostSuiteLegs(
     });
     legs.lintTimerClassification = { status: timerClass.code === 0 ? 'passed' : 'failed' };
     if (timerClass.code !== 0) {
-      haltedBy = 'lint:timer-classification failed';
+      softFailures.push('lint:timer-classification');
       failingSignatures.push('lint:timer-classification');
       outputs.push(
         '\n\n=== TIMER CLASSIFICATION LINT FAILED (npm run lint:timer-classification) — a new recurring timer landed without a D-004 push-don\'t-poll classification ===\n' +
@@ -5781,7 +5806,7 @@ export async function runPostSuiteLegs(
     });
     legs.lintNoRawSetinterval = { status: noRawSetinterval.code === 0 ? 'passed' : 'failed' };
     if (noRawSetinterval.code !== 0) {
-      haltedBy = 'lint:no-raw-setinterval failed';
+      softFailures.push('lint:no-raw-setinterval');
       failingSignatures.push('lint:no-raw-setinterval');
       outputs.push(
         // NB: do NOT write `managedSetInterval` immediately followed by `(` in this
@@ -5882,7 +5907,7 @@ export async function runPostSuiteLegs(
         ? { status: 'skipped', skipReason: 'candidate provides none of the 6 agent-state-plane lint scripts' }
         : { status: 'passed' };
     if (planeFailures.length) {
-      haltedBy = 'agent-state-plane lints failed';
+      softFailures.push('lint:plane-integrity');
       failingSignatures.push('lint:plane-integrity');
       outputs.push(
         '\n\n=== AGENT-STATE-PLANE LINTS FAILED (P-020 — a producer stopped writing, a declared field lost its consumer, or a plane guard regressed) ===' +
@@ -5904,8 +5929,14 @@ export async function runPostSuiteLegs(
   // and let the gate = the hive's test suite. Hardcoding the workspace here made
   // `npm --workspace @papercusp/operator-vite run build` die with "No workspaces found" on
   // every per-hive gate, holding that hive's `main` forever (oddsmith).
-  if (haltedBy) {
-    legs.build = { status: 'skipped', skipReason: haltedBy };
+  // WI-38185: the build is the one EXPENSIVE leg, so it still short-circuits on ANY prior
+  // failure — the cheap legs above now all run (to diagnose the whole red in one pass), but
+  // paying for a full SPA bundle on a candidate that already cannot ship would be waste.
+  if (haltedBy || softFailures.length) {
+    legs.build = {
+      status: 'skipped',
+      skipReason: haltedBy ?? `not run because ${softFailures.join(', ')} failed`,
+    };
   } else if (!spaWorkspace) {
     legs.build = { status: 'skipped', skipReason: 'hive declares no SPA build workspace' };
   } else {

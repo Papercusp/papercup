@@ -720,6 +720,33 @@ describe('durableSpawnFireImpl — fleet:tree visibility (EI-403 round-2)', () =
     expect(String(fin.errorMessage)).toContain('infra_loss');
   });
 
+  it('opens the durable release-fixer escalation when no turn is produced', async () => {
+    h.loopbackFetch.mockResolvedValue(okBody({
+      ok: false,
+      exitCode: 143,
+      agentOutput: '',
+      timedOut: true,
+      rawStdoutTail: '[08:16:17 invoke-once received termination signal — aborting agent',
+    }));
+    await durableSpawnFireImpl({
+      url: 'http://x/api/harness/papercusp/invoke?role=release-fixer&ws=papercusp-workspace',
+      body: {
+        kickoff: 'gate red',
+        releaseFixerContext: { candidate: 'deadbeefcafe0123', failingTests: ['lib/gate.test.ts'] },
+      },
+      idempotencyKey: 'release-fixer-no-turn',
+      label: 'papercusp/release-fixer',
+      spawnRecord: { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', childRole: 'release-fixer' },
+    });
+    const sqlTexts = h.sql.mock.calls.map((args) => {
+      const strings = args[0] as TemplateStringsArray | string | undefined;
+      return Array.isArray(strings) ? strings.join(' ') : String(strings);
+    });
+    expect(sqlTexts.some((text) => text.includes('INSERT INTO harness_shared.harness_escalations'))).toBe(true);
+    expect(h.sql.mock.calls.some((args) => args.includes('green-checkpoint-release-fixer-no-turn'))).toBe(true);
+    expect(h.finishSpawn.mock.calls[0]![1]).toMatchObject({ status: 'failed' });
+  });
+
   it('records `failed` + capacity_shed (RETRYABLE → THROWS) when a clean mid-turn exit-1 coincides with a wholesale-throttled gateway (P-006)', async () => {
     h.getFlag.mockResolvedValue(false); // leave this test on the legacy post-invoke classifier path.
     h.gatewayThrottled.value = true; // the gateway pool was all-throttled at death

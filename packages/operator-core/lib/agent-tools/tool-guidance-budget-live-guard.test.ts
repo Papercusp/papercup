@@ -39,6 +39,10 @@ describe('reading the live registry throws on an unregistered/partial catalog (E
     listAllProjectedToolsMock.mockReturnValue([]);
     expect(() => namedToolWeights()).toThrow(/only 0 tool\(s\)/);
     expect(() => namedToolWeights()).toThrow(/outside the vitest bootstrap/);
+    expect(() => namedToolWeights()).toThrow(
+      /npm run test:file -- packages\/operator-core\/lib\/__tests__\/tool-guidance-budget\.test\.ts packages\/operator-core\/lib\/agent-tools\/tool-guidance-budget-live-guard\.test\.ts/,
+    );
+    expect(() => namedToolWeights()).not.toThrow(/lib\/agent-tools\/tool-guidance-budget\.test\.ts/);
   });
 
   it('namedToolWeights() throws on an implausibly-small (partial barrel registration) catalog', () => {

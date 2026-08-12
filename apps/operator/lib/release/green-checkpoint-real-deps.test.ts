@@ -218,6 +218,21 @@ writeFileSync(
 );
 afterAll(() => rmSync(identityLintTree, { recursive: true, force: true }));
 
+// WI-38185: a candidate tree providing TWO independent cheap legs (design-primitives and
+// no-control-bytes) so a red in the FIRST can be shown not to hide a red in the SECOND.
+const twoCheapLintTree = mkdtempSync(join(tmpdir(), 'green-cp-two-cheap-lint-tree-'));
+writeFileSync(
+  join(twoCheapLintTree, 'package.json'),
+  JSON.stringify({
+    name: 'cp-two-cheap-lint-fixture',
+    scripts: {
+      'lint:design-primitives': 'node scripts/check-design-primitives.mjs',
+      'lint:no-control-bytes': 'node scripts/check-no-control-bytes.mjs',
+    },
+  }),
+);
+afterAll(() => rmSync(twoCheapLintTree, { recursive: true, force: true }));
+
 // WI-6056: a candidate tree whose package.json EXISTS but is corrupt/truncated — the
 // freshly-materialised checkpoint tree can genuinely land in this state (a partial copy /
 // interrupted write), and it must NOT read the same as "this hive opts out of every leg".
@@ -525,6 +540,37 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
   // corrupt/partial candidate tree (a real, reachable state: it is freshly materialised
   // on every checkpoint run) would silently skip every optional leg and still report
   // green. checkNpmScript's 'unreadable' result must instead fail the leg loudly.
+  // WI-38185: the leg chain used to halt on the FIRST failing lint, so one ~55min gate run
+  // could report at most ONE cheap red while every later leg recorded "not run" — measured
+  // 2026-08-12 with FOUR cheap legs red at once, which would have needed >=4 sequential
+  // cycles just to discover. The cheap legs must now all run and all report, exactly as the
+  // identity-leak leg already does for its own three sub-lints.
+  it('WI-38185: a failing cheap lint does NOT hide the next one — both run, both are named, build still skipped', async () => {
+    // suite green → design-primitives FAILS → no-control-bytes FAILS (must still run).
+    const { exec, calls } = makeExec([
+      { code: 0 },
+      { code: 1, stdout: 'design-primitives violation in apps/operator/app/foo.tsx' },
+      { code: 1, stdout: 'control byte U+0007 in packages/operator-core/lib/bar.ts' },
+    ]);
+    const r = await realCheckpointDeps(cfg, exec).runGreen(twoCheapLintTree, 'base-sha');
+
+    expect(r.green).toBe(false);
+    // BOTH legs ran — the second is the one that used to be skipped as "not run".
+    expect(calls.map((c) => c.args.join(' '))).toEqual([
+      'run test:affected',
+      'run lint:design-primitives',
+      'run lint:no-control-bytes',
+    ]);
+    // BOTH are named in the one verdict, so the fleet can fix them in parallel.
+    expect(r.failingTests).toContain('lint:design-primitives');
+    expect(r.failingTests).toContain('lint:no-control-bytes');
+    expect(r.summary).toContain('design-primitives violation');
+    expect(r.summary).toContain('control byte');
+    // …but the EXPENSIVE leg is still short-circuited: 3 calls, no SPA build.
+    expect(calls).toHaveLength(3);
+    expect(calls.some((c) => c.args.includes('@papercusp/operator-vite'))).toBe(false);
+  });
+
   it('WI-6056: distinguishes a corrupt/unreadable package.json from a legitimate script-absent hive', () => {
     expect(checkNpmScript(corruptPkgJsonTree, 'lint:tsc')).toBe('unreadable');
     expect(checkNpmScript(cpTree, 'lint:tsc')).toBe('absent'); // valid package.json, just no such script

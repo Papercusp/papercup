@@ -12,6 +12,85 @@
 import type postgres from 'postgres';
 import { STALE_MS } from '../liveness';
 
+/** The durable escalation phase for a release-fixer that died before its first turn. */
+export const RELEASE_FIXER_NO_TURN_PHASE = 'green-checkpoint-release-fixer-no-turn';
+
+export interface ReleaseFixerNoTurnEscalationInput {
+  installSlug: string;
+  workspaceId: string;
+  spawnId: string;
+  candidate?: string | null;
+  failingTests?: readonly string[] | null;
+  errorMessage: string;
+  nowMs?: number;
+}
+
+/**
+ * The classifier's no-turn wording is deliberately shared by all spawn paths. Keep this
+ * predicate here too, so the release-fixer escalation does not grow a second parser for
+ * invoke-outcome's diagnostics.
+ */
+export function isReleaseFixerNoTurnFailure(errorMessage: string | null | undefined): boolean {
+  return typeof errorMessage === 'string' && /(?:produced no turn|before (?:it )?producing a turn|before it produced a turn)/i.test(errorMessage);
+}
+
+/** Pure, bounded payload for the existing `harness_escalations` surface. */
+export function releaseFixerNoTurnEscalationBody(opts: ReleaseFixerNoTurnEscalationInput): string {
+  const candidate = typeof opts.candidate === 'string' ? opts.candidate.slice(0, 12) : null;
+  const failingTests = (opts.failingTests ?? []).filter((test): test is string => typeof test === 'string').slice(0, 20);
+  const errorMessage = opts.errorMessage.slice(-1600);
+  const timedOut = /timedOut=true|timed out before/i.test(opts.errorMessage);
+  return JSON.stringify({
+    kind: 'release-fixer-no-turn',
+    harness_slug: opts.installSlug,
+    workspace_id: opts.workspaceId,
+    spawnId: opts.spawnId,
+    candidate,
+    failingTests,
+    timedOut,
+    emitted_at: opts.nowMs ?? Date.now(),
+    detail:
+      `release-fixer ${opts.spawnId} produced no turn${timedOut ? ' before the invoke timeout expired' : ''}; ` +
+      `the release gate remains red and this launch did not provide a diagnosis. Inspect the launcher ` +
+      `termination record plus account/gateway telemetry, then allow the liveness-aware dispatcher to ` +
+      `send a fresh fixer after the cause is understood.`,
+    errorMessage,
+  });
+}
+
+/**
+ * Persist a no-turn escalation idempotently on the existing escalation table. Returns true
+ * only when this call opened a previously-clear row; callers can use that edge for a single
+ * log/notification without turning repeated retries into an alert storm.
+ */
+export async function recordReleaseFixerNoTurnEscalation(
+  sql: postgres.Sql,
+  opts: ReleaseFixerNoTurnEscalationInput,
+): Promise<boolean> {
+  try {
+    const prior = (await sql<Array<{ escalation?: string | null }>>`
+      SELECT escalation FROM harness_shared.harness_escalations
+        WHERE harness_slug = ${opts.installSlug} AND phase = ${RELEASE_FIXER_NO_TURN_PHASE}
+        LIMIT 1
+    `) as Array<{ escalation?: string | null }>;
+    await sql`
+      INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
+      VALUES (${opts.installSlug}, ${RELEASE_FIXER_NO_TURN_PHASE}, ${releaseFixerNoTurnEscalationBody(opts)}, ${opts.nowMs ?? Date.now()}, ${opts.workspaceId})
+      ON CONFLICT (harness_slug, phase)
+      DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms
+    `;
+    return !prior[0]?.escalation;
+  } catch (error) {
+    // A diagnostic escalation must never turn a failed fixer into a second workflow failure.
+    console.warn(
+      `[release-fixer] no-turn escalation write failed (${opts.installSlug}/${opts.spawnId}): ${
+        error instanceof Error ? error.message : String(error)
+      }`,
+    );
+    return false;
+  }
+}
+
 /**
  * Is the recorded release-fixer spawn still ALIVE — `running`/`restarting` with a
  * heartbeat inside the shared STALE_MS window (the SAME liveness definition the

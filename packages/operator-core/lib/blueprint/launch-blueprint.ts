@@ -40,6 +40,10 @@ import { dbosOrchestratorActive } from '../dbos/dbos-flags';
 import { operatorApiBase } from '../operator-api-base';
 import { recordSpawn, finishSpawn } from '../fleet/spawn-tree';
 import { agentProducedTurn } from '../fleet/invoke-outcome';
+import {
+  isReleaseFixerNoTurnFailure,
+  recordReleaseFixerNoTurnEscalation,
+} from '../release/fixer-liveness';
 import { heartbeatSpawns, recordSpawnPid, SPAWN_HEARTBEAT_INTERVAL_MS } from '../fleet/spawn-reclaim';
 import { managedSetInterval, type ManagedHandle } from '@papercusp/scheduled-registry';
 import type { DurableSpawnFireInput } from '../dbos/durable-spawn';
@@ -629,6 +633,28 @@ const defaultFire: LaunchFireFn = async ({
       }
       if (status === 'failed') {
         console.warn(`[launch-blueprint] fire not green (${installSlug}/${role}): ${errorMessage}`);
+      }
+      // A release-fixer that returns no turn is not merely a failed child row: it left the
+      // red gate without a diagnosis. Reuse the durable escalation table so the next reader
+      // sees the failure immediately, while the liveness-aware dispatcher remains the retry
+      // mechanism. This runs for both timeout and pre-turn auth/context/infra failures.
+      if (blueprintId === 'release-fix' && isReleaseFixerNoTurnFailure(errorMessage)) {
+        const releaseFixerContext = bodyExtra?.releaseFixerContext as
+          | { candidate?: unknown; failingTests?: unknown }
+          | undefined;
+        const opened = await recordReleaseFixerNoTurnEscalation(pg.sql, {
+          installSlug,
+          workspaceId,
+          spawnId,
+          candidate: typeof releaseFixerContext?.candidate === 'string' ? releaseFixerContext.candidate : null,
+          failingTests: Array.isArray(releaseFixerContext?.failingTests)
+            ? releaseFixerContext.failingTests.filter((test): test is string => typeof test === 'string')
+            : [],
+          errorMessage: errorMessage ?? 'release-fixer produced no turn',
+        });
+        if (opened) {
+          console.warn(`[launch-blueprint] release-fixer no-turn escalation opened (${installSlug}/${spawnId})`);
+        }
       }
       void finishSpawn(pg.sql, {
         spawnId,

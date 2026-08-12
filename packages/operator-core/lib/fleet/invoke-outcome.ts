@@ -4,9 +4,9 @@ import { OUTER_ACTIVITY_ECHO_MARKER } from '@papercusp/orchestrator';
  * invoke-outcome — the ONE rule for "did a spawned agent actually run a turn?"
  *
  * HTTP 200 from the /invoke route does NOT mean the agent ran. The fire holds the
- * connection for the whole run, so on an unstable/restarting launcher host — or
- * (more often) an upstream gateway stall / 429 storm killing the agent MID-TURN —
- * the route returns an ok-shaped response while the agent never emitted a turn
+ * connection for the whole run, so a launcher timeout, host interruption, or an
+ * upstream gateway failure can return an ok-shaped response while the agent never
+ * emitted a turn
  * (the ~3s/0-token wakes that were recorded `done` → silent placement/scorecard/
  * doc-heal stalls). Both spawn-fire paths must judge a fire the SAME way:
  *   - durable-spawn (dbos/durable-spawn.ts) — the orchestrator/queen/bee/worker path.
@@ -232,6 +232,18 @@ export function agentProducedTurn(
       detail: ` ${label} was SHED mid-turn by an all-accounts gateway throttle (capacity_shed — RETRYABLE, NOT a host fault): exit 1, empty stderr, timedOut=false, and the gateway pool was wholesale-throttled (paused/rejected) at death — the GENUINE all-accounts 429 storm that never surfaces as a 429 (agent-insights/rate-limit-is-usually-account-routing-not-capacity Fault #5). Retry through the paced gateway when capacity returns; do NOT hunt a host bug.`,
     };
   }
+  if (b.timedOut === true) {
+    return {
+      ran: false,
+      failureClass: 'infra_loss',
+      detail: ` ${label} timed out before producing a turn (ok=${String(b.ok)}, exitCode=${String(
+        b.exitCode,
+      )}, timedOut=true, outLen=${out.trim().length}${rawStdoutDetail(
+        b.rawStdoutTail,
+      )}) — the invoke timeout expired before the agent emitted a turn; the cause is not established by this response. Inspect the launcher termination record together with account/gateway telemetry and the spawn record before attributing the failure; recorded failed, not done`,
+    };
+  }
+
   return {
     ran: false,
     failureClass: 'infra_loss',
@@ -239,6 +251,6 @@ export function agentProducedTurn(
       b.exitCode,
     )}, timedOut=${String(b.timedOut)}, outLen=${out.trim().length}${rawStdoutDetail(
       b.rawStdoutTail,
-    )}) — agent died before emitting a turn: a dead/restarting launcher host OR (more often) an upstream gateway stall/429 storm killing the agent MID-TURN (the transcript shows a normal run that stops on its 2nd call) — see agent-insights/rate-limit-is-usually-account-routing-not-capacity Fault #5; recorded failed, not done`,
+    )}) — the no-turn cause is unresolved by this response; inspect launcher liveness, account/gateway telemetry, and the spawn record before attributing it; recorded failed, not done`,
   };
 }
