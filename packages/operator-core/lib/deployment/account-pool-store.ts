@@ -23,7 +23,7 @@ import {
   snapshotGovernors,
   DEFAULT_ACCOUNT_ACTIVE_ENV,
 } from '@papercusp/papercusp-shared/agent';
-import { readOperatorState, writeOperatorState } from '../operator-state-pg';
+import { readOperatorState, updateOperatorState } from '../operator-state-pg';
 import { activeWorkspaceId } from '../workspace-registry';
 import { readOpusBudgetPolicy } from '../opus-budget-policy';
 import { readScalePolicy } from '../scale-policy';

@@ -42,6 +42,30 @@ let sidecarReady = false;
 const readyWaiters: (() => void)[] = [];
 
 /**
+ * Signal the sidecar's OWN scope — not just the `systemd-run` client.
+ *
+ * EI-20200233989444731. For a CONFINED task `managedSpawn` returns the systemd-run
+ * CLIENT; the real payload runs in a sibling `pc-<taskId>.scope`. Signalling the
+ * client alone can leave that payload running in a scope nobody holds a reference
+ * to any more — which is exactly how a live process becomes an "unaccounted
+ * cgroup" in the task-manager alarm. The scope unit is minted and returned by our
+ * own managed spawn, so addressing it is identity-preserving: it cannot reach a
+ * recycled pid the way a bare `kill(pid)` can.
+ *
+ * SYNCHRONOUS on purpose — the call sites are a process-exit hook and a timer
+ * callback, neither of which has an async turn left to await. Best-effort by
+ * design: the caller's own client-signal remains the unconfined fallback.
+ */
+function killOwnedScope(scopeUnit: string | null, signal: 'SIGTERM' | 'SIGKILL' = 'SIGTERM'): void {
+  if (!scopeUnit) return;
+  try {
+    execFileSync('systemctl', ['--user', 'kill', `--signal=${signal}`, scopeUnit], { stdio: 'ignore' });
+  } catch {
+    /* best effort — an unconfined sidecar has no scope to signal. */
+  }
+}
+
+/**
  * Set when this process ADOPTED a sibling's sidecar instead of spawning its own
  * (see the cross-process adoption block in `spawnSpawnerSidecar`).
  *
@@ -362,8 +386,16 @@ async function spawnSpawnerSidecarInner(socketPath?: string): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const timeout = setTimeout(() => {
       if (!sidecarReady && sidecarProcess) {
+        // EI-20200233989444731: kill the SCOPE first. This path then drops the only
+        // reference we hold (`sidecarProcess = null`), so a payload that survived a
+        // client-only signal here would be orphaned with nothing left to stop it —
+        // a live process in a scope no ledger row claims, i.e. the "unaccounted
+        // cgroup" the task-manager alarm reports. A sidecar that missed its 10s
+        // handshake is exactly the case most likely to still be mid-startup.
+        killOwnedScope(sidecarScopeUnit);
         sidecarProcess.kill();
         sidecarProcess = null;
+        sidecarScopeUnit = null;
       }
       reject(new Error('Spawner sidecar startup timeout'));
     }, 10000);
@@ -507,19 +539,7 @@ export async function stopSpawnerSidecar(): Promise<void> {
     respawnTimer = null;
   }
   const proc = sidecarProcess;
-  const scopeUnit = sidecarScopeUnit;
-  // `managedSpawn` returns the systemd-run client when confined; signalling
-  // that client alone can leave the payload alive in its sibling scope. The
-  // scope unit is generated and returned by our own managed spawn, so this is
-  // the cgroup-safe identity-preserving kill path. It is synchronous on
-  // purpose: the exit hook below has no async turn left to await.
-  if (scopeUnit) {
-    try {
-      execFileSync('systemctl', ['--user', 'kill', '--signal=SIGTERM', scopeUnit], { stdio: 'ignore' });
-    } catch {
-      /* best effort; the client signal below remains the unconfined fallback */
-    }
-  }
+  killOwnedScope(sidecarScopeUnit);
   await gracefulStopChild(proc, { timeoutMs: 5000, kill: (sig) => proc.kill(sig) });
   sidecarProcess = null;
   sidecarScopeUnit = null;

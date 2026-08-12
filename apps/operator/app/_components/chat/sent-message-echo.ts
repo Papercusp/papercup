@@ -79,13 +79,45 @@ function emit(): void {
   for (const l of listeners) l();
 }
 
+/**
+ * ⚠ EVERY MUTATION BELOW IS COPY-ON-WRITE, AND THAT IS LOAD-BEARING — not style.
+ *
+ * `emit()` re-renders the subscriber, but re-rendering is only half of what the
+ * consumer needs. `SessionChatModal` does:
+ *
+ *     const echoes   = useSentEchoes(sessionOwnerId);
+ *     const messages = useMemo(() => mergeSentEchoes(mapped.messages, echoes),
+ *                              [mapped.messages, echoes]);
+ *
+ * `useMemo` compares its deps by REFERENCE. So a store that pushed into the same
+ * array handed back an identical `echoes` on the render it had just triggered,
+ * the memo stayed stale, and the new message never reached the transcript — the
+ * component re-rendered and displayed exactly what it displayed before.
+ *
+ * MEASURED before the fix: the FIRST send to an agent rendered (undefined → a new
+ * array, so the reference did change), and the 2nd and every later send to that
+ * same agent in one page session did not, nor did a `failed` echo un-render. It
+ * self-healed only when an unrelated transcript event happened to change
+ * `mapped.messages` — so the visible symptom was an intermittent "I sent it and
+ * the chat didn't update", worst exactly when the agent is parked or dead and no
+ * further transcript event is coming to rescue it.
+ *
+ * Writing a fresh array on every mutation makes the change observable to any
+ * memo/effect keyed on the snapshot. `getSnapshot` is still the version COUNTER
+ * (see `version` above), so this costs no extra store churn and cannot spin
+ * `useSyncExternalStore`. Guarded by "hands back a NEW array reference on every
+ * mutation" in sent-message-echo.test.ts — do not reintroduce an in-place `push`
+ * or field assignment here.
+ */
+
 /** Record a send as it is dispatched. Returns the echo id, for `settleSentEcho`. */
 export function recordSentEcho(ownerId: string, text: string): string {
   const id = `echo-${++seq}`;
-  const list = byOwner.get(ownerId) ?? [];
-  list.push({ id, text, atMs: Date.now(), delivery: 'sending' });
+  const prev = byOwner.get(ownerId) ?? EMPTY;
+  // Copy-on-write (see the note above): a NEW array, never a push into `prev`.
+  const next = [...prev, { id, text, atMs: Date.now(), delivery: 'sending' as const }];
   // Drop from the FRONT: the newest sends are the ones still being looked for.
-  byOwner.set(ownerId, list.length > PER_OWNER_CAP ? list.slice(list.length - PER_OWNER_CAP) : list);
+  byOwner.set(ownerId, next.length > PER_OWNER_CAP ? next.slice(next.length - PER_OWNER_CAP) : next);
   emit();
   return id;
 }
@@ -96,7 +128,13 @@ export function settleSentEcho(ownerId: string, id: string, delivery: EchoDelive
   if (!list) return;
   const found = list.find((e) => e.id === id);
   if (!found || found.delivery === delivery) return;
-  found.delivery = delivery;
+  // Copy-on-write, for the same reason as above: replacing the one changed entry
+  // in a NEW array, rather than assigning `found.delivery` in place. An in-place
+  // assignment left a `failed` send sitting in the conversation looking delivered.
+  byOwner.set(
+    ownerId,
+    list.map((e) => (e.id === id ? { ...e, delivery } : e)),
+  );
   emit();
 }
 

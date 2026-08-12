@@ -376,6 +376,19 @@ export async function writeOperatorState<T>(
  *
  * Encrypted tables: decrypt → mutate → re-encrypt happens inside the same
  * transaction so the row stays consistent.
+ *
+ * ⚠ The mutator MUST be pure + synchronous. It runs while this workspace's row is
+ * held under `FOR UPDATE`, so every concurrent writer of the same row is blocked
+ * for its duration — awaiting IO in there converts a microsecond lock into a
+ * request-latency-long one, and (worse) invites a lock-ordering deadlock.
+ *
+ * WI-38164: the row is INSERTed-if-missing BEFORE the `SELECT … FOR UPDATE`.
+ * Without that, the very first write to a workspace locks NOTHING (there is no row
+ * to lock), so two concurrent first-writers both read `defaultValue`, both mutate
+ * from empty, and the second `ON CONFLICT DO UPDATE` silently discards the first —
+ * the same lost-update this function exists to prevent, only at row birth. The
+ * pre-insert is `DO NOTHING`, so the loser of that race simply blocks and then
+ * reads the winner's row like any other concurrent caller.
  */
 export async function updateOperatorState<T>(
   table: StateTable,
@@ -389,6 +402,13 @@ export async function updateOperatorState<T>(
   const key = isEncrypted ? getDbEncryptionKey() : null;
 
   const updated = (await sql.begin(async (tx) => {
+    // Materialize the row so the FOR UPDATE below has something to lock (see the
+    // doc comment). An existing row is untouched by DO NOTHING.
+    await tx`
+      INSERT INTO ${tx(`harness_shared.${table}`)} (workspace_id, payload, updated_at)
+      VALUES (${ws}, '{}'::jsonb, 0)
+      ON CONFLICT (workspace_id) DO NOTHING
+    `;
     let current: T;
     if (isEncrypted && key !== null) {
       const rows = await tx<{ plaintext: T | null }[]>`
