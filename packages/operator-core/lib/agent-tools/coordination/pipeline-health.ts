@@ -54,6 +54,8 @@ export interface OrientPipeline {
   rootCause?: string;
   /** What this means for the caller's work. Present only when not all-ok. */
   note?: string;
+  /** Runtime-vs-staging freshness warning; present only when the process is not current. */
+  diagnosticVintage?: PipelineHealth['diagnosticVintage'];
   checkedAtMs: number;
 }
 
@@ -112,7 +114,12 @@ export function toOrientPipeline(health: PipelineHealth, nowMs: number = Date.no
     deploy: deployBehind ? 'behind' : 'current',
     checkedAtMs: health.generatedAtMs,
   };
-  if (gateOk && !deployBehind) return out; // all clear: two fields, nothing more.
+  if (gateOk && !deployBehind) {
+    if (health.diagnosticVintage.status !== 'current') {
+      out.diagnosticVintage = health.diagnosticVintage;
+    }
+    return out;
+  }
 
   if (health.consecutiveReds > 0) out.consecutiveReds = health.consecutiveReds;
   if (!gateOk && health.lastGreenAtMs != null) {
@@ -136,6 +143,9 @@ export function toOrientPipeline(health: PipelineHealth, nowMs: number = Date.no
         : health.gateVerdictDisjointFromLedger
           ? PIPELINE_DISJOINT_NOTE
           : PIPELINE_RED_NOTE;
+  if (health.diagnosticVintage.status !== 'current') {
+    out.diagnosticVintage = health.diagnosticVintage;
+  }
   return out;
 }
 

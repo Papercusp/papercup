@@ -35,6 +35,15 @@ const health = (over: Partial<PipelineHealth> = {}): PipelineHealth => ({
   greenPinBehindStaging: 0,
   deployedBehindGreenPin: 0,
   recentFailingFiles: [],
+  diagnosticVintage: {
+    processSha: null,
+    stagingHeadSha: null,
+    greenPinSha: null,
+    status: 'unknown',
+    processMatchesStaging: null,
+    processMatchesGreenPin: null,
+    warning: 'Diagnostic build freshness is UNKNOWN',
+  },
   rootCause: null,
   ...over,
 });
@@ -49,6 +58,25 @@ describe('toOrientPipeline — what a waking agent is told', () => {
     expect(out.note).toBeUndefined();
     expect(out.rootCause).toBeUndefined();
     expect(out.failingFiles).toBeUndefined();
+  });
+
+  it('surfaces stale diagnostic vintage even when the pipeline itself is green', () => {
+    const out = toOrientPipeline(
+      health({
+        diagnosticVintage: {
+          processSha: '1111111aaaaaaa',
+          stagingHeadSha: '2222222bbbbbbb',
+          greenPinSha: '2222222bbbbbbb',
+          status: 'stale',
+          processMatchesStaging: false,
+          processMatchesGreenPin: false,
+          warning: 'guidance may predate current fixes',
+        },
+      }),
+      NOW,
+    )!;
+    expect(out.diagnosticVintage?.status).toBe('stale');
+    expect(out.diagnosticVintage?.warning).toContain('predate current fixes');
   });
 
   it('an UNKNOWN gate folds NOTHING — silence, never a false green', () => {
