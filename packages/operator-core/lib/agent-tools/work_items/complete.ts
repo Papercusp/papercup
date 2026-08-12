@@ -67,6 +67,10 @@ import {
   type CompletionVerificationEvidence,
 } from '../../coord-lifecycle/records';
 import { isBackedLiveDroveUiClaim, verifyLiveDroveUiArtifacts } from '../../completion-audit';
+import {
+  liveDriveAcceptanceGap,
+  liveDriveAcceptanceMessage,
+} from '../../turn-provenance/owner-visible-surface-acceptance';
 import { authorityForCompletion, countsTowardBurnDown } from '../../work-item-completion-authority';
 import { renderCompletion } from '../../coord-lifecycle/render';
 import { renderReflectStep } from '../../harness/improvements/friction-markers';
@@ -1166,6 +1170,18 @@ async function completeOne(
       `their own project: npx tsc --noEmit -p <workspace>/tsconfig.json). If it only asserts BEHAVIOUR, ignore this.`
     : undefined;
 
+  // P-007 (owner-visibility-provenance-2026-08-11): on the OWNER-VISIBILITY SURFACE a green
+  // unit suite is close to zero evidence, because the fixture asserts the predicate against
+  // text the AUTHOR invented — so code and fixture share the author's blind spot and the test
+  // cannot surprise them. SOFT warning, not a hard reject: complete.ts records-and-warns by
+  // contract (D-005/EI-24 above); the tier that genuinely REFUSES is setWorkItemState's
+  // completion-integrity gate. Same evidence extraction as every check above, so it can never
+  // disagree with what the caller actually supplied.
+  const liveDriveGap = liveDriveAcceptanceGap(completionEvidenceForGate);
+  const liveDriveEvidenceWarning = liveDriveGap
+    ? liveDriveAcceptanceMessage(it.id, liveDriveGap)
+    : undefined;
+
   // EI-20093150500083378: `filesChanged` is the one evidence field nothing challenged, and
   // it is the one most often written from memory rather than observation. Same evidence
   // extraction as every check above, so it can never disagree with what the caller supplied.
@@ -1447,6 +1463,7 @@ async function completeOne(
     ...(verificationWarning ? { verificationWarning } : {}),
     ...(skippedTestsWarning ? { skippedTestsWarning } : {}),
     ...(typeEvidenceWarning ? { typeEvidenceWarning } : {}),
+    ...(liveDriveEvidenceWarning ? { liveDriveEvidenceWarning } : {}),
     ...(unresolvedPathsWarning ? { unresolvedPathsWarning } : {}),
     ...(unresolvedRefsWarningText ? { unresolvedRefsWarning: unresolvedRefsWarningText } : {}),
     ...(assigneeMismatchWarning ? { assigneeMismatchWarning } : {}),
