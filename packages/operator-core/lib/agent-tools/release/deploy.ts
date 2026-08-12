@@ -40,8 +40,18 @@ import { readDeployStatus, launchDetachedDeploy, type DeployStatus } from '../..
 import { currentDiagnosticVintage } from '../../diagnostic-vintage';
 import { fireGitSyncNow } from '../../harness/git-sync/git-sync-action';
 import { operatorHomeHarnessSlug } from '../../harness/operator-home-harness';
+import { withBoundedTimeout, type BoundedTimeoutResult } from '../../bounded-timeout';
 
 const json = (payload: unknown) => ({ content: [{ type: 'text' as const, text: JSON.stringify(payload) }] });
+
+/**
+ * The status operation is a liveness diagnostic, so it must return a terminal
+ * envelope before the MCP client's transport deadline even when one of its
+ * read-only dependencies stalls under load. The underlying read is not
+ * cancellable; withBoundedTimeout deliberately degrades the caller while
+ * swallowing the late result/rejection.
+ */
+export const RELEASE_STATUS_READ_TIMEOUT_MS = 20_000;
 
 /** Append a forensic audit_log row for a manual deploy invocation. Fire-and-forget; never
  *  throws (the deploy already fired) — mirrors flag-audit.ts's canonical full-column shape. */
@@ -93,6 +103,32 @@ function statusBrief(s: DeployStatus) {
     canTriggerGreen: s.canTriggerGreen,
     recommendation: s.recommendation,
   };
+}
+
+async function readStatusBounded(): Promise<BoundedTimeoutResult<DeployStatus | null>> {
+  return withBoundedTimeout(() => readDeployStatus(), {
+    fallback: null,
+    timeoutMs: RELEASE_STATUS_READ_TIMEOUT_MS,
+    label: 'release:deploy:status',
+  });
+}
+
+function statusUnavailable(op: 'status' | 'trigger' | 'force', read: BoundedTimeoutResult<DeployStatus | null>) {
+  const timedOut = read.reason === 'timeout';
+  return json({
+    ok: false,
+    op,
+    error: {
+      code: timedOut ? 'status_timeout' : 'status_unavailable',
+      message: timedOut
+        ? `release status did not complete within ${RELEASE_STATUS_READ_TIMEOUT_MS}ms; retry the read before taking a deploy action`
+        : `release status could not be read${read.errorMessage ? `: ${read.errorMessage}` : ''}`,
+      retryable: true,
+      elapsedMs: read.elapsedMs,
+      ...(timedOut ? { timeoutMs: RELEASE_STATUS_READ_TIMEOUT_MS } : {}),
+    },
+    status: null,
+  });
 }
 
 export default defineTool({
@@ -169,8 +205,14 @@ export default defineTool({
   ]),
   async handler(args, ctx) {
     // ── status: read-only, always allowed ──
+    // EI-20262656218311418: readDeployStatus fans out to PG/systemd and can outlive the MCP
+    // transport. Return a structured, retryable envelope instead of allowing an empty response.
+    const statusRead = await readStatusBounded();
+    if (statusRead.degraded || !statusRead.value) {
+      return statusUnavailable(args.op, statusRead);
+    }
+    let status = statusRead.value;
     if (args.op === 'status') {
-      const status = await readDeployStatus();
       return json({
         ok: true,
         op: 'status',
@@ -189,15 +231,16 @@ export default defineTool({
     // force-deploy-ships-stale-staging asymmetry). Best-effort (never block the deploy on it),
     // then re-read status because staging HEAD may have advanced (force resolves stagingHeadSha).
     // A dry-run (confirm absent/false) does NOT commit — it only previews.
-    let status = await readDeployStatus();
+    // Reuse the bounded read above; a second unbounded read would both redeclare `status`
+    // and recreate the transport-timeout failure this guard is meant to prevent.
     if ((args as { confirm?: boolean }).confirm === true) {
       // Wrap the WHOLE step (slug resolution + fire + re-read) — it must NEVER fail the deploy.
       try {
         await fireGitSyncNow(operatorHomeHarnessSlug(), activeWorkspaceId());
-        const refreshed = await readDeployStatus();
-        if (refreshed) status = refreshed;
+        const refreshed = await readStatusBounded();
+        if (!refreshed.degraded && refreshed.value) status = refreshed.value;
       } catch (e) {
-         
+
         console.warn('[release:deploy] pre-deploy git-sync fire failed (continuing with current staging):', (e as Error)?.message);
       }
     }

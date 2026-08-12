@@ -5,7 +5,7 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/release/deploy.test.ts
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DeployStatus } from '../../release-deploy-launch';
 
 vi.mock('../../release-deploy-launch', () => ({
@@ -47,7 +47,9 @@ vi.mock('../../harness/operator-home-harness', async (importOriginal) => ({
 import { readDeployStatus, launchDetachedDeploy } from '../../release-deploy-launch';
 const statusM = vi.mocked(readDeployStatus);
 const launchM = vi.mocked(launchDetachedDeploy);
-const tool = (await import('./deploy')).default;
+const deployModule = await import('./deploy');
+const tool = deployModule.default;
+const RELEASE_STATUS_READ_TIMEOUT_MS = deployModule.RELEASE_STATUS_READ_TIMEOUT_MS;
 
 type Out = { content: { text: string }[] };
 const body = (o: unknown) => JSON.parse((o as Out).content[0]!.text);
@@ -127,6 +129,10 @@ beforeEach(() => {
   launchM.mockResolvedValue({ launched: true, unit: 'papercup-auto-deploy', mode: 'trigger', argv: [], logPath: '/tmp/x.log' });
 });
 
+afterEach(() => {
+  vi.useRealTimers();
+});
+
 describe('release:deploy — status', () => {
   it('returns the full status read-only (no launch)', async () => {
     statusM.mockResolvedValue(mkStatus({ state: 'gate-red', canTriggerGreen: false }));
@@ -138,6 +144,42 @@ describe('release:deploy — status', () => {
       greenPinSha: 'greenpin0',
     });
     expect(b.diagnosticVintage.warning).toContain('Verify any nextVerb');
+    expect(launchM).not.toHaveBeenCalled();
+  });
+
+  it('returns a structured retryable error when the status read rejects', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    statusM.mockRejectedValue(new Error('pipeline snapshot unavailable'));
+    const b = body(await tool.handler({ op: 'status' } as never, { role: 'cup' } as never));
+    expect(b).toMatchObject({
+      ok: false,
+      op: 'status',
+      error: { code: 'status_unavailable', retryable: true },
+      status: null,
+    });
+    expect(b.error.message).toContain('pipeline snapshot unavailable');
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('pipeline snapshot unavailable'));
+    expect(launchM).not.toHaveBeenCalled();
+  });
+
+  it('returns a bounded structured error when the status read hangs', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    statusM.mockImplementation(() => new Promise<DeployStatus>(() => {}));
+    const pending = tool.handler({ op: 'status' } as never, { role: 'cup' } as never);
+    await vi.advanceTimersByTimeAsync(RELEASE_STATUS_READ_TIMEOUT_MS);
+    const b = body(await pending);
+    expect(b).toMatchObject({
+      ok: false,
+      op: 'status',
+      error: {
+        code: 'status_timeout',
+        retryable: true,
+        timeoutMs: RELEASE_STATUS_READ_TIMEOUT_MS,
+      },
+      status: null,
+    });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('exceeded 20000ms'));
     expect(launchM).not.toHaveBeenCalled();
   });
 });
