@@ -50,7 +50,7 @@ export default defineTool({
   name: 'dev:pg_query',
   profile: 'engineer',
   description:
-    'Run a read-only SELECT / WITH…SELECT against the operator Postgres (canonical store: plans, work-items, issues, tool_invocations, scorecards, …), or pass `describe` to inspect a relation\'s columns/indexes/constraints (psql `\\d` equivalent). Read-only enforced; 5s statement_timeout; rows capped. `timeoutMs` bounds the WHOLE call (connect + acquire + execute), so a hung acquire (pool exhaustion, mid-call operator restart) fails fast with reason "call_timeout". bigint/int8 columns (e.g. queryid) come back as exact-precision STRINGS, never rounded.',
+    'Run a read-only SELECT / WITH…SELECT against the operator Postgres (canonical store: plans, work-items, issues, tool_invocations, scorecards, …), or pass `describe` to inspect a relation\'s columns/indexes/constraints (psql `\\d` equivalent). Filtered reads of tenant-scoped tables are refused unless they include a workspace_id/harness_slug predicate; deliberate cross-tenant reads must pass `allowUnscoped: true`. Read-only enforced; 5s statement_timeout; rows capped. `timeoutMs` bounds the WHOLE call (connect + acquire + execute), so a hung acquire (pool exhaustion, mid-call operator restart) fails fast with reason "call_timeout". bigint/int8 columns (e.g. queryid) come back as exact-precision STRINGS, never rounded.',
   capability: 'intel:read',
   guidance: {
     when:
@@ -99,6 +99,13 @@ export default defineTool({
       .describe(
         'Bounds the WHOLE call — connect/acquire + statement_timeout + execute (default 5000, max 30000). A hung connection acquire (e.g. the operator restarting mid-call) now fails fast around this bound instead of hanging past it.',
       ),
+    allowUnscoped: z
+      .boolean()
+      .optional()
+      .default(false)
+      .describe(
+        'Explicitly allow a filtered read of a tenant-scoped table without a workspace_id/harness_slug predicate. Use only for deliberate cross-tenant analysis; the response retains the tenant-scope advisory.',
+      ),
   }),
   async handler(args, ctx) {
     // `describe` is the `\d` path (P-011): a psql CLIENT meta-command has no
@@ -133,14 +140,22 @@ export default defineTool({
     const sql = args.sql;
 
     try {
-      const result = await pgReadQuery(sql, { maxRows: args.maxRows, timeoutMs: args.timeoutMs });
-      // P-005(b): tenant-scope advisory on a filtered read of a multi-tenant
-      // table with no workspace_id/harness_slug predicate — the silent
-      // wrong-tenant match footgun. Advisory only; never blocks the result.
+      // EI-20200627264509977: scope-check BEFORE executing. The old advisory was
+      // attached after pgReadQuery had already returned the potentially
+      // cross-tenant rows, so it diagnosed the unsafe read without preventing
+      // it. Deliberate fleet-wide analysis remains possible, but only through
+      // an explicit call-site opt-in that is visible in tool telemetry.
       const tenantAdvisory = await buildTenantScopeAdvisory(sql, {
         workspaceId: ctx.workspaceId,
         harnessSlug: ctx.harnessSlug,
       }).catch(() => null);
+      if (tenantAdvisory && !args.allowUnscoped) {
+        return jsonError(
+          'tenant_scope_required',
+          `${tenantAdvisory} Add the tenant predicate(s), or pass allowUnscoped: true for a deliberate cross-tenant read.`,
+        );
+      }
+      const result = await pgReadQuery(sql, { maxRows: args.maxRows, timeoutMs: args.timeoutMs });
       // WI-6674: an accessor that is always-NULL on the relation queried. Not
       // folded into the tenant advisory because it is a different failure —
       // that one warns the answer may be from the wrong TENANT, this one warns

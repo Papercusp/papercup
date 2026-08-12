@@ -36,17 +36,30 @@ beforeEach(() => {
 });
 
 describe('dev:pg_query — P-005 guard wiring', () => {
-  it('attaches the tenant-scope advisory to a successful result', async () => {
+  it('refuses an unscoped tenant read before executing it', async () => {
     advisoryMock.mockResolvedValue('⚠ tenant scope: …');
     const res = await pgQueryTool.handler(
       { sql: 'SELECT 1' } as never,
       { workspaceId: 'ws-1', harnessSlug: 'h-1' } as never,
     );
-    expect(payloadOf(res as never)).toMatchObject({ advisory: '⚠ tenant scope: …', rowCount: 1 });
+    expect((res as { isError?: boolean }).isError).toBe(true);
+    expect(payloadOf(res as never)).toMatchObject({ reason: 'tenant_scope_required' });
+    expect(String(payloadOf(res as never).error)).toContain('allowUnscoped: true');
+    expect(pgReadQueryMock).not.toHaveBeenCalled();
     expect(advisoryMock).toHaveBeenCalledWith('SELECT 1', {
       workspaceId: 'ws-1',
       harnessSlug: 'h-1',
     });
+  });
+
+  it('runs an explicitly allowed cross-tenant read and retains the advisory', async () => {
+    advisoryMock.mockResolvedValue('⚠ tenant scope: …');
+    const res = await pgQueryTool.handler(
+      { sql: 'SELECT 1', allowUnscoped: true } as never,
+      { workspaceId: 'ws-1', harnessSlug: 'h-1' } as never,
+    );
+    expect(payloadOf(res as never)).toMatchObject({ advisory: '⚠ tenant scope: …', rowCount: 1 });
+    expect(pgReadQueryMock).toHaveBeenCalledOnce();
   });
 
   it('omits the advisory field when the guard finds nothing (or throws)', async () => {
@@ -65,7 +78,7 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     "SELECT count(*) FROM harness_shared.engineer_issues WHERE payload->'_ei'->>'severity' = 'critical'";
 
   it('attaches the always-NULL-accessor advisory to a successful result', async () => {
-    const res = await pgQueryTool.handler({ sql: NULL_PATH_SQL } as never, {} as never);
+    const res = await pgQueryTool.handler({ sql: NULL_PATH_SQL, allowUnscoped: true } as never, {} as never);
     expect(payloadOf(res as never).advisory).toContain('always-NULL accessor');
   });
 
@@ -73,7 +86,10 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     // A query can be both wrongly-scoped AND wrongly-accessed; reporting only
     // one would send the agent back for a second round-trip on the same query.
     advisoryMock.mockResolvedValue('⚠ tenant scope: …');
-    const res = await pgQueryTool.handler({ sql: NULL_PATH_SQL } as never, {} as never);
+    const res = await pgQueryTool.handler(
+      { sql: NULL_PATH_SQL, allowUnscoped: true } as never,
+      {} as never,
+    );
     const advisory = String(payloadOf(res as never).advisory);
     expect(advisory).toContain('always-NULL accessor');
     expect(advisory).toContain('tenant scope');
