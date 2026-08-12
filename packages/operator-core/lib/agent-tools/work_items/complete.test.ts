@@ -2296,25 +2296,58 @@ describe('work_items:complete input coercion (EI-7031)', () => {
   });
 
   describe('published JSON schema (tools/list projection) is unchanged by the preprocess wrappers', () => {
-    it('still advertises id / completion / items as object properties', () => {
+    it('still advertises id / completion / items in both single and bulk object branches', () => {
       const json = z.toJSONSchema(complete.args as never) as {
-        type?: string;
-        properties?: Record<string, unknown>;
+        anyOf?: Array<{ properties?: Record<string, unknown> }>;
+        oneOf?: Array<{ properties?: Record<string, unknown> }>;
       };
-      expect(json.type).toBe('object');
-      expect(json.properties).toHaveProperty('id');
-      expect(json.properties).toHaveProperty('completion');
-      expect(json.properties).toHaveProperty('items');
+      const branches = json.anyOf ?? json.oneOf ?? [];
+      expect(branches).toHaveLength(2);
+      for (const branch of branches) {
+        expect(branch.properties).toHaveProperty('id');
+        expect(branch.properties).toHaveProperty('completion');
+        expect(branch.properties).toHaveProperty('items');
+      }
     });
 
     it('surfaces the required assumptions declaration in the published schema (EI-20191275803505578)', () => {
       const json = z.toJSONSchema(complete.args as never) as {
-        properties?: Record<string, { description?: string }>;
+        anyOf?: Array<{ required?: string[]; properties?: Record<string, { description?: string }> }>;
+        oneOf?: Array<{ required?: string[]; properties?: Record<string, { description?: string }> }>;
       };
-      const description = json.properties?.assumptions?.description ?? '';
+      const branches = json.anyOf ?? json.oneOf ?? [];
+      const single = branches.find((branch) => branch.required?.includes('assumptions'));
+      const description = single?.properties?.assumptions?.description ?? '';
       expect(description).toContain('REQUIRED');
       expect(description).toContain('"none"');
       expect(description).toContain('facts:assert keys');
+    });
+
+    it('structurally requires assumptions for a single item while retaining per-item bulk declarations (EI-20224758239853458)', () => {
+      const json = z.toJSONSchema(complete.args as never) as {
+        anyOf?: Array<{ required?: string[]; properties?: Record<string, unknown> }>;
+        oneOf?: Array<{ required?: string[]; properties?: Record<string, unknown> }>;
+      };
+      const branches = json.anyOf ?? json.oneOf ?? [];
+      const single = branches.find((branch) => branch.required?.includes('assumptions'));
+      const bulk = branches.find((branch) => branch.required?.includes('items'));
+
+      expect(branches).toHaveLength(2);
+      expect(single?.required).toContain('assumptions');
+      expect(single?.properties).toHaveProperty('completion');
+      expect(bulk?.required).toContain('items');
+
+      const missingAssumptions = (complete.args as { safeParse: (x: unknown) => { success: boolean } }).safeParse({
+        id: 'WI-1',
+        state: 'resolved',
+        completion: { summary: 'fixed' },
+      });
+      expect(missingAssumptions.success).toBe(false);
+
+      const bulkWithPerItemAssumptions = (complete.args as { safeParse: (x: unknown) => { success: boolean } }).safeParse({
+        items: [{ id: 'WI-1', state: 'resolved', assumptions: 'none', completion: { summary: 'fixed' } }],
+      });
+      expect(bulkWithPerItemAssumptions.success).toBe(true);
     });
   });
 

@@ -33,9 +33,7 @@ import * as nodePath from 'node:path';
 import { detectPapercupRoot } from '../../harness/register-papercusp';
 import {
   assumptionsArg,
-  hasAssumptionDeclaration,
   resolveDeclaredAssumptions,
-  ASSUMPTIONS_REQUIRED_MESSAGE,
 } from './_assumptions';
 import { nonAssumptionKindAdvisory } from '../../agent-facts/assumptions';
 import type { StoredAssumptionDeclaration } from '../../coord-lifecycle/records';
@@ -146,6 +144,38 @@ const TERMINAL_WORK_ITEM_STATES = new Set<string>(SETTLED_WORK_ITEM_STATES);
  * state and NOT landing terminal is a failed close, and must report ok:false.
  */
 const CLOSE_INTENT_STATES = new Set([...TERMINAL_WORK_ITEM_STATES, 'done', 'complete', 'completed', 'dropped']);
+
+const COMPLETE_CLOSE_SHAPE_MESSAGE =
+  'to CLOSE a work-item, pass { id, state, assumptions: "none"|[fact keys], completion: { summary } } ' +
+  '(or items:[{ id, state, assumptions: "none"|[fact keys], completion: { summary } }] for many) — ' +
+  '`state` is the terminal lifecycle (issue: "resolved"|"closed"; feature: "passed"|"deprecated") ' +
+  'and is REQUIRED to actually close it: a completion with no `state` only records the note, ' +
+  'the item stays claimable. `assumptions` is also REQUIRED; pass "none" when no recorded fact ' +
+  'supports the close (see work_items:set_state to change state alone, without a completion record).';
+
+/**
+ * A union's default error collapses every branch into "Invalid input", hiding
+ * the actionable contract that the previous shared object emitted. Preserve
+ * strict unknown-key diagnostics, and otherwise retain the full close shape.
+ */
+function firstUnrecognizedKeyMessage(value: unknown): string | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  if (Array.isArray(value)) {
+    for (const nested of value) {
+      const message = firstUnrecognizedKeyMessage(nested);
+      if (message) return message;
+    }
+    return undefined;
+  }
+  const record = value as { code?: unknown; message?: unknown; errors?: unknown };
+  if (record.code === 'unrecognized_keys' && typeof record.message === 'string') return record.message;
+  if (!Array.isArray(record.errors)) return undefined;
+  for (const nested of record.errors) {
+    const message = firstUnrecognizedKeyMessage(nested);
+    if (message) return message;
+  }
+  return undefined;
+}
 
 /**
  * EI-20190168400283197: setWorkItemState rejects a terminal transition when the
@@ -1604,59 +1634,72 @@ export default defineTool({
   // args, no `completion` wrapper — the 22× "pass { id, completion } …" reject) by
   // gathering them into `completion` BEFORE the object parse strips unknown keys.
   // A well-formed { id, completion } / items:[…] call is returned unchanged.
+  //
+  // P-017 (b) / EI-20224758239853458: keep the single and bulk envelopes as
+  // separate schema branches. The old shared object made `assumptions` optional
+  // in the published JSON schema so the bulk form could omit the top-level field,
+  // even though the single-item runtime refine required it. The union exposes the
+  // requirement structurally while retaining per-item assumptions for bulk calls.
   args: z.preprocess(
     gatherFlatCompletion,
-    z
-      .object({
-        id: z.string().min(1).optional().describe('single-complete shorthand: the work-item id (use with `completion`)'),
-        harness: z.string().max(80).optional().describe('default harness for the inline id / items that omit one'),
-        /** Optional terminal state to also set. Like `harness`, it is the DEFAULT for
-         *  items:[…] entries that omit their own `state` (EI-18661904412177717). */
-        state: z.string().min(1).max(40).optional(),
-        /** The structured completion record (single-complete shorthand). */
-        completion: completionSpec.optional(),
-        /** Optional kind-specific structured output (single-complete shorthand). */
-        outputPayload: z.unknown().optional(),
-        /** P-017 (b) gate #2: `.optional()` ONLY so an items[]-only call need not carry
-         *  one; the single-complete shorthand's requirement is closed by the refine below. */
-        assumptions: assumptionsArg
-          .optional()
-          .describe(
-            'REQUIRED for a single-item terminal close: pass "none" or an array of facts:assert keys; ' +
-              'omit only when using items[] with per-item assumptions.',
+    z.union(
+      [
+      z
+        .object({
+          id: z.string().min(1).optional().describe('single-complete shorthand: the work-item id (use with `completion`)'),
+          harness: z.string().max(80).optional().describe('default harness for the inline id / items that omit one'),
+          /** Optional terminal state to also set. */
+          state: z.string().min(1).max(40).optional(),
+          /** The structured completion record (single-complete shorthand). */
+          completion: completionSpec.optional(),
+          /** Optional kind-specific structured output (single-complete shorthand). */
+          outputPayload: z.unknown().optional(),
+          /** REQUIRED for the single-item form; bulk calls use per-item declarations. */
+          assumptions: assumptionsArg.describe(
+            'REQUIRED for a single-item terminal close: pass "none" or an array of facts:assert keys.',
           ),
-        items: z
-          .array(itemSpec)
-          .min(1)
-          .max(100)
-          .optional()
-          .describe(
-            'complete many work-items at once — each { id, completion, assumptions, state?, harness? }; ' +
-              'an omitted per-item state/harness falls back to the top-level one',
-          ),
-      })
-      .refine((a) => (a.items?.length ?? 0) > 0 || (Boolean(a.id) && Boolean(a.completion)), {
-        // EI-6999: the first shape error a caller hits should state the FULL
-        // minimal shape needed to actually CLOSE an item, not just "you're
-        // missing `completion`" — a caller who fixes that alone still hits a
-        // SECOND round-trip discovering `completion.summary` is required, then
-        // a THIRD discovering `completion` alone never changes lifecycle state
-        // (a bare `completion` records the note but leaves the item claimable
-        // — pass `state` too to actually close it). Say all of it up front.
-        message:
-          'to CLOSE a work-item, pass { id, state, assumptions: "none"|[fact keys], completion: { summary } } ' +
-          '(or items:[{ id, state, assumptions: "none"|[fact keys], completion: { summary } }] for many) — ' +
-          '`state` is the terminal lifecycle (issue: "resolved"|"closed"; feature: "passed"|"deprecated") ' +
-          'and is REQUIRED to actually close it: a completion with no `state` only records the note, ' +
-          'the item stays claimable. `assumptions` is also REQUIRED; pass "none" when no recorded fact ' +
-          'supports the close (see work_items:set_state to change state alone, without a completion record).',
-      })
-      // P-017 (b) gate #2 / D-050 — the same rule itemSpec enforces for items[], closed
-      // for the single-complete shorthand so the gate cannot simply relocate to it.
-      .refine((a) => (a.items?.length ?? 0) > 0 || hasAssumptionDeclaration(a.assumptions), {
-        path: ['assumptions'],
-        message: ASSUMPTIONS_REQUIRED_MESSAGE,
-      }),
+          // Keep the union's handler type uniform while ensuring a bulk payload
+          // cannot accidentally parse through this branch and have `items` stripped.
+          items: z.never().optional(),
+        })
+        .strict()
+        .refine((a) => Boolean(a.id) && Boolean(a.completion), {
+          // EI-6999: the first shape error a caller hits should state the FULL
+          // minimal shape needed to actually CLOSE an item, not just "you're
+          // missing `completion`" — a caller who fixes that alone still hits a
+          // SECOND round-trip discovering `completion.summary` is required, then
+          // a THIRD discovering `completion` alone never changes lifecycle state
+          // (a bare `completion` records the note but leaves the item claimable
+          // — pass `state` too to actually close it). Say all of it up front.
+          message: COMPLETE_CLOSE_SHAPE_MESSAGE,
+        }),
+      z
+        .object({
+          id: z.string().min(1).optional(),
+          harness: z.string().max(80).optional().describe('default harness for the inline id / items that omit one'),
+          /** Optional terminal state to apply to items that omit their own. */
+          state: z.string().min(1).max(40).optional(),
+          /** Optional single-item fields are retained for backwards-compatible bulk envelopes. */
+          completion: completionSpec.optional(),
+          outputPayload: z.unknown().optional(),
+          assumptions: assumptionsArg.optional().describe('ignored for items[]; pass assumptions on every item'),
+          items: z
+            .array(itemSpec)
+            .min(1)
+            .max(100)
+            .describe(
+              'complete many work-items at once — each { id, completion, assumptions, state?, harness? }; ' +
+                'an omitted per-item state/harness falls back to the top-level one',
+            ),
+        })
+        .strict(),
+      ],
+      {
+        error: (issue) => ({
+          message: firstUnrecognizedKeyMessage(issue) ?? COMPLETE_CLOSE_SHAPE_MESSAGE,
+        }),
+      },
+    ),
   ),
   // context-trimming-tiers P-025 (write-echo diet): trimmed/standard sessions
   // get a compact workItem ref per result instead of the full echoed row;
