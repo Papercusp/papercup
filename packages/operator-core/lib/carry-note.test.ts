@@ -251,6 +251,93 @@ describe('checks — external-state claims with probes (cold-carry-system-harden
     expect(canonicalRepairs[0]?.detail).toContain('canonical claim value was kept');
   });
 
+  /**
+   * The claim-bearing aliases beyond label/name, and the `key`->`id` alias. Each
+   * shape here is a REAL rejected row from the 14-day census of
+   * `checks.N.claim: expected string, received undefined` — the schema strips
+   * these keys, so before this repair the caller's own claim text was destroyed
+   * and the row then failed validation for the field it had just lost.
+   */
+  it('maps the measured text/body/summary claim aliases and the key->id alias', () => {
+    for (const alias of ['text', 'body', 'summary'] as const) {
+      const repairs: CarryArgRepair[] = [];
+      expect(coerceCarryRowShape({ [alias]: 'aliased claim', status: 'verified' }, 'checks[0]', repairs)).toEqual({
+        claim: 'aliased claim',
+        verified: 'verified',
+      });
+      expect(repairs.some((r) => r.field === `checks[0].${alias}` && r.kind === 'renamed')).toBe(true);
+    }
+
+    // `key` is an IDENTITY alias, not a claim alias: it must land on `id` and
+    // leave the claim text alone.
+    const keyRepairs: CarryArgRepair[] = [];
+    expect(coerceCarryRowShape({ key: 'gate-green', recheck: 'git rev-parse main', status: 'pending', text: 'main is green' }, 'checks[1]', keyRepairs)).toEqual({
+      claim: 'main is green',
+      id: 'gate-green',
+      recheck: 'git rev-parse main',
+    });
+    expect(keyRepairs.some((r) => r.field === 'checks[1].key')).toBe(true);
+
+    // An explicit canonical value always wins over its alias.
+    const bothRepairs: CarryArgRepair[] = [];
+    expect(coerceCarryRowShape({ id: 'canonical', key: 'ignored' }, 'checks[2]', bothRepairs)).toEqual({
+      claim: 'canonical',
+      id: 'canonical',
+    });
+    expect(bothRepairs.some((r) => r.detail.includes('canonical id was kept'))).toBe(true);
+  });
+
+  /**
+   * The failure this whole coercion exists to prevent, at its sharpest: `claim`
+   * is the ONE required field, so a single under-specified row used to reject the
+   * entire write — discarding did/left/insight/next and every sibling row, and
+   * leaving a cold wake with no note at all. A row that named itself falls back
+   * to that identity instead.
+   */
+  it('falls back to the row id as the claim rather than rejecting the whole note', () => {
+    const repairs: CarryArgRepair[] = [];
+    // The exact filed shape (EI-20283352640488384): {id, status, evidence}.
+    const coerced = coerceCarryRowShape(
+      { id: 'tsc-clean', status: 'verified', evidence: 'TSC_EXIT=0 at 21:40Z' },
+      'checks[0]',
+      repairs,
+    ) as Record<string, unknown>;
+    expect(coerced).toEqual({ id: 'tsc-clean', claim: 'tsc-clean', verified: 'TSC_EXIT=0 at 21:40Z' });
+    // Degraded, but REPORTED — the silent-drop failure (EI-18723223344390510) is
+    // exactly what must not recur here.
+    expect(repairs.some((r) => r.field === 'checks[0].claim' && r.detail.includes('no claim text was supplied'))).toBe(
+      true,
+    );
+
+    // …and the identity may itself arrive under the `key` alias.
+    expect(coerceCarryRowShape({ key: 'deploy-live', evidence: 'sha matches' }, 'checks[1]', [])).toEqual({
+      id: 'deploy-live',
+      claim: 'deploy-live',
+      verified: 'sha matches',
+    });
+  });
+
+  /**
+   * The guard on the repair: a row with NO claim text and NO identity has nothing
+   * to fall back to, so it must still fail validation loudly. Inventing a claim
+   * there would turn a caller's mistake into a silently fabricated carried claim.
+   */
+  it('does not invent a claim for a row carrying neither claim text nor an identity', () => {
+    const repairs: CarryArgRepair[] = [];
+    const coerced = coerceCarryRowShape({ status: 'verified', evidence: 'some evidence' }, 'checks[0]', repairs) as Record<
+      string,
+      unknown
+    >;
+    expect(coerced.claim).toBeUndefined();
+    expect(coerced).toEqual({ verified: 'some evidence' });
+
+    // A row already in the canonical shape is returned untouched, with no repairs.
+    const untouched: CarryArgRepair[] = [];
+    const canonical = { claim: 'already correct', recheck: 'run it', verified: 'saw it' };
+    expect(coerceCarryRowShape(canonical, 'checks[1]', untouched)).toBe(canonical);
+    expect(untouched).toEqual([]);
+  });
+
   it('newly-supplied verified evidence gets an instant stamped; inherited evidence keeps its own (fold #5)', () => {
     const now = Date.parse('2026-07-19T05:00:00.000Z');
     const fresh = normalizeCheckEntries(

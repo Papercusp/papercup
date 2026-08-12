@@ -199,12 +199,33 @@ export function truncateCarryField(v: string, cap: number, field: string, repair
 }
 
 /**
+ * Descriptive keys callers reach for instead of the canonical `claim`, in the
+ * order one is chosen when several are present.
+ *
+ * Re-measured 2026-08-12 over 14 days of REJECTED checkpoint rows (the
+ * `checks.N.claim: expected string, received undefined` class): `text` (8 rows),
+ * `body` (4) and `summary` (1) sat alongside the already-handled `label` (10)
+ * and `name` (2). Every one of them is STRIPPED by the row schema, so without
+ * this list the caller's claim text is destroyed and the row then fails
+ * validation for the missing field it just lost.
+ */
+const CARRY_CLAIM_ALIASES = ['label', 'name', 'text', 'body', 'summary'] as const;
+
+/**
+ * Keys callers reach for instead of the canonical row `id`. `key` appeared on 15
+ * rejected rows in the same census. Unmapped it is stripped, which silently
+ * loses the identity `rowsMode:'merge'` upserts on.
+ */
+const CARRY_ID_ALIASES = ['key'] as const;
+
+/**
  * Repair one incoming `checks`/`walls` row IN THE ARGUMENT SHAPE, before validation.
  *
- * Handles the common wrong shapes agents reach for: `{label/name, status,
- * evidence}` or `{claim, recheck, status, evidence}` instead of `{claim,
- * recheck, verified}`, and the documented-looking `{claim, probe, verified}`
- * alias where `probe` is intended to mean `recheck`.
+ * Handles the common wrong shapes agents reach for: `{label/name/text/body/summary,
+ * status, evidence}` or `{claim, recheck, status, evidence}` instead of `{claim,
+ * recheck, verified}`, the documented-looking `{claim, probe, verified}`
+ * alias where `probe` is intended to mean `recheck`, `key` for `id`, and a row
+ * that carries an identity + evidence but no claim text at all.
  * Measured across 6 days of transcripts, `evidence` (57×) and `status` (40×) were
  * by far the top rejected undeclared keys; the probe alias is handled here too so
  * a caller's concrete falsification command is not discarded at the schema boundary.
@@ -217,41 +238,68 @@ export function truncateCarryField(v: string, cap: number, field: string, repair
 export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryArgRepair[]): unknown {
   if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
   const r = { ...(row as Record<string, unknown>) };
-  const hasLabel = 'label' in r;
-  const hasName = 'name' in r;
+  const claimAliases = CARRY_CLAIM_ALIASES.filter((k) => k in r);
+  const idAliases = CARRY_ID_ALIASES.filter((k) => k in r);
   const hasStatus = 'status' in r;
   const hasEvidence = 'evidence' in r;
   const hasProbe = 'probe' in r;
-  if (!hasLabel && !hasName && !hasStatus && !hasEvidence && !hasProbe && typeof r.verified !== 'boolean') {
+  // A row with an identity but no claim text is repairable too (see the
+  // claim-from-id fallback below), so it must not short-circuit out here.
+  const claimlessWithIdentity = !('claim' in r) && ('id' in r || idAliases.length > 0);
+  if (
+    !claimAliases.length &&
+    !idAliases.length &&
+    !hasStatus &&
+    !hasEvidence &&
+    !hasProbe &&
+    !claimlessWithIdentity &&
+    typeof r.verified !== 'boolean'
+  ) {
     return row;
   }
 
-  if (hasLabel || hasName) {
+  if (claimAliases.length) {
     // `claim` is canonical. When a caller supplies both the canonical field and
     // one of these descriptive aliases, preserve the explicit claim and only
     // remove the undeclared aliases before strict schema validation. If neither
-    // is canonical, prefer `label` (the observed wire shape) over `name`.
-    const alias = hasLabel ? 'label' : 'name';
+    // is canonical, the first alias in CARRY_CLAIM_ALIASES order wins.
+    const alias = claimAliases[0];
     const aliasValue = r[alias];
-    if (!('claim' in r)) r.claim = aliasValue;
-    if (hasLabel) delete r.label;
-    if (hasName) delete r.name;
+    const hadCanonicalClaim = 'claim' in r;
+    for (const k of claimAliases) delete r[k];
+    if (!hadCanonicalClaim) r.claim = aliasValue;
     repairs.push({
       field: `${path}.${alias}`,
       kind: 'renamed',
       detail:
         `the descriptive \`${alias}\` key is accepted as an alias for \`claim\`; ` +
-        ('claim' in (row as Record<string, unknown>)
-          ? 'the canonical claim value was kept'
-          : 'the alias value was mapped to claim'),
+        (hadCanonicalClaim ? 'the canonical claim value was kept' : 'the alias value was mapped to claim'),
     });
-    if (hasLabel && hasName) {
+    for (const dropped of claimAliases.slice(1)) {
       repairs.push({
-        field: `${path}.name`,
+        field: `${path}.${dropped}`,
         kind: 'renamed',
-        detail: 'the undeclared `name` alias was removed; `label` was selected when no canonical claim was supplied',
+        detail: `the undeclared \`${dropped}\` alias was removed; \`${alias}\` was selected when no canonical claim was supplied`,
       });
     }
+  }
+
+  if (idAliases.length) {
+    // Same contract one field over: without this the alias is STRIPPED by the
+    // row schema, silently losing the identity that rowsMode:'merge' upserts on
+    // and that lets a claim be re-worded without orphaning its evidence.
+    const alias = idAliases[0];
+    const aliasValue = r[alias];
+    const hadCanonicalId = 'id' in r;
+    for (const k of idAliases) delete r[k];
+    if (!hadCanonicalId) r.id = aliasValue;
+    repairs.push({
+      field: `${path}.${alias}`,
+      kind: 'renamed',
+      detail:
+        `the \`${alias}\` key is accepted as an alias for the row \`id\`; ` +
+        (hadCanonicalId ? 'the canonical id was kept' : 'the alias value was mapped to id'),
+    });
   }
 
   if (hasProbe) {
@@ -313,6 +361,28 @@ export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryAr
         r.verified === undefined ? 'kept as PREDICTED' : 'evidence preserved'
       }); pass {claim, recheck, verified} directly next time`,
     });
+  }
+
+  // LAST RESORT — a row that named itself but never stated its claim (measured:
+  // 9 rejected rows shaped `{id|key, status, evidence}`). `claim` is the one
+  // required field, so without this the row fails validation and takes the WHOLE
+  // note down with it: did/left/insight/next and every sibling row are discarded
+  // over one under-specified entry, leaving a cold wake with no note at all.
+  // Falling back to the identity is the reciprocal of the id field's own
+  // documented rule ("omitted ⇒ identity is the claim text"), and it is reported,
+  // never silent — the row renders degraded rather than vanishing.
+  if (typeof r.claim !== 'string' || !r.claim.trim()) {
+    const identity = typeof r.id === 'string' ? r.id.trim() : '';
+    if (identity) {
+      r.claim = identity;
+      repairs.push({
+        field: `${path}.claim`,
+        kind: 'renamed',
+        detail:
+          `no claim text was supplied — the row id \`${identity}\` was used as the claim so the note still writes; ` +
+          'state the claim concretely in `claim` next time',
+      });
+    }
   }
   return r;
 }
@@ -759,9 +829,9 @@ export function normalizeCheckEntries(
  * necessary but NOT sufficient — the report lands AFTER the write, so the rows are
  * already gone by the time you read it. Two additions make the loss AVOIDABLE:
  *
- *  1. `mode: 'merge'` — supplied rows upsert onto the carried set; unmentioned rows
+   *  1. `mode: 'merge'` (the default at both checkpoint tool boundaries) — supplied rows upsert onto the carried set; unmentioned rows
  *     survive. The natural "add one row to my carried set" write stops being
- *     destructive. `replace` remains the default (it is the only way to retire a row).
+   *     destructive. Explicit `replace` remains the only way to retire a row.
  *  2. A row `id` — identity independent of WORDING (see {@link carryRowKey}). Without
  *     it, tightening a claim's phrasing makes it a NEW row: it loses the evidence and
  *     `sinceMs` it had inherited, and the old wording reads to the drop-report as a
@@ -781,9 +851,8 @@ export function mergeCarryRows(opts: {
   /**
    * P-013 — how a supplied row list combines with the carried set.
    *
-   * `'replace'` (DEFAULT, unchanged semantics): the supplied list IS the new set;
-   * carried rows it omits are dropped. The only way to retire a stale row, which is
-   * why it stays the default.
+   * `'merge'` (DEFAULT at the checkpoint tool boundaries): supplied rows UPSERT onto
+   * the carried set; unmentioned rows survive.
    *
    * `'merge'`: supplied rows UPSERT onto the carried set by {@link carryRowKey} —
    * carried rows the caller did not mention SURVIVE. Turns "add one row" from a
@@ -823,7 +892,7 @@ export function mergeCarryRows(opts: {
   const priorCheckParts = splitCarryNoteChecks(priorParts.body);
   const rawParts = splitCarryNoteWalls(opts.baseNote ?? '');
   const rawCheckParts = splitCarryNoteChecks(rawParts.body);
-  const merging = opts.mode === 'merge';
+  const merging = opts.mode !== 'replace';
   /** What the CALLER actually offered this write, before the merge pre-pass folds the
    *  prior set in — the only list against which "your row did not fit" is decidable. */
   const suppliedWalls = opts.walls ?? (rawParts.walls.length > 0 ? rawParts.walls : undefined);
