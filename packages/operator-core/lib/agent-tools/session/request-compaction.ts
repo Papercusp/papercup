@@ -194,6 +194,16 @@ export default defineTool({
       .describe(
         'Deprecated no-op: a carry-respawn always resumes (the successor launches with a first prompt). Accepted for wire-compat with older callers.',
       ),
+    // EI-20250117090491411: older carry instructions called this boundary
+    // with respawn:true. The boundary always respawns now, so preserve that
+    // legacy wire shape as an explicit no-op instead of rejecting a stale
+    // carried caller before the handler can run.
+    respawn: z
+      .boolean()
+      .optional()
+      .describe(
+        'Deprecated no-op: a carry-respawn is always requested. Accepted for wire-compat with older callers.',
+      ),
     continueNote: hintString(1000)
       .optional()
       .describe(

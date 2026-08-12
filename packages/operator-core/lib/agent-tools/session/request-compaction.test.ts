@@ -374,6 +374,13 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     expect(b).toMatchObject({ ok: true, respawn: 'queued' });
   });
 
+  it('legacy respawn:true is a wire-compat no-op: stale carry callers still queue the cut (EI-20250117090491411)', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    const b = body(await call({ focus: 'x', respawn: true }));
+    expect(injected().mode).toBe('carry-respawn');
+    expect(b).toMatchObject({ ok: true, respawn: 'queued' });
+  });
+
   it('no live psu-pty host → clean no_live_pty_host error, nothing injected', async () => {
     findLiveHost.mockReturnValue(null);
     const out = await call({ focus: 'x' });
