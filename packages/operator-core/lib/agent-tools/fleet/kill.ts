@@ -46,7 +46,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { activeWorkspaceId } from '../../workspace-registry';
 import { findLiveHost, type PsuPtyHost } from '../../events/await/psu-pty-discovery';
-import { clearPresence } from '../coordination/presence';
+import { clearPresence, PRESENCE_STALE_MS } from '../coordination/presence';
 import { mergeIds, runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
 import { softText, clampText } from '../limits';
 import { readProcessIdentity } from '../../process-identity';
@@ -75,6 +75,11 @@ export interface ProcInfo {
 export interface KillDeps {
   /** Live psu-pty host for a coord ownerId (null = no live interactive session). */
   findHost?: (ownerId: string) => PsuPtyHost | null;
+  /** Fresh presence for a session that is alive but has no operator-managed
+   *  host handle (currently OMP hook sessions). */
+  findLiveUnmanaged?: (
+    ownerId: string,
+  ) => Promise<LiveUnmanagedSession | null> | LiveUnmanagedSession | null;
   /** Read a pid's ppid/cmdline/environ; null when the pid is gone. */
   readProc?: (pid: number) => ProcInfo | null;
   /** Send a signal; true when delivered. */
@@ -103,17 +108,22 @@ export interface KillOneInput {
   reason: string;
 }
 
+export interface LiveUnmanagedSession {
+  source: string;
+  heartbeatAt: string | null;
+}
+
 export interface KillOneResult {
   ok: boolean;
   target: string;
-  kind?: 'desktop' | 'nursery';
+  kind?: 'desktop' | 'nursery' | 'unmanaged';
   killed?: boolean;
   signal?: 'SIGTERM' | 'SIGKILL';
   /** 'closed' | 'left-open' (close_terminal:false) | 'none' (headless) | 'not-found'. */
   terminal?: 'closed' | 'left-open' | 'none' | 'not-found';
   cancelled?: string[];
   processes_aborted?: number;
-  code?: 'self_kill_refused' | 'not_found';
+  code?: 'self_kill_refused' | 'not_found' | 'live_unmanaged';
   error?: string;
 }
 
@@ -252,6 +262,32 @@ export async function killOne(input: KillOneInput, deps: KillDeps): Promise<Kill
   // ── leg 2: desktop interactive psu session ──
   const host = deps.findHost?.(input.target) ?? null;
   if (!host) {
+    // OMP-hook sessions declare presence directly but do not have a psu-pty
+    // discovery socket for fleet:kill to own. Do not mistake that missing
+    // process handle for death: preserving the fresh presence row is safer
+    // than clearing a live, wakeable peer. The current-turn stop primitive is
+    // turn:interrupt; a peer cannot safely SIGTERM an unmanaged OMP process.
+    const unmanaged = await Promise.resolve(deps.findLiveUnmanaged?.(input.target) ?? null).catch(() => null);
+    if (unmanaged) {
+      await audit('fleet.kill_unmanaged', input.target, {
+        reason: input.reason,
+        source: unmanaged.source,
+        heartbeat_at: unmanaged.heartbeatAt ?? undefined,
+      });
+      return {
+        ok: false,
+        target: input.target,
+        kind: 'unmanaged',
+        killed: false,
+        terminal: 'not-found',
+        code: 'live_unmanaged',
+        error:
+          `live ${unmanaged.source} session has no managed psu-pty host; no signal was sent and ` +
+          'its presence was preserved. Safe stop for its current turn: `turn:interrupt` ' +
+          '`{ owner, mode: "force", reason }` (the session remains resumable).',
+      };
+    }
+
     // A dead host can leave a fresh heartbeat/inbox-wake row behind. Remove
     // that stale roster entry once the authoritative host lookup says it is
     // gone; the structured result remains not_found because it was already
@@ -412,6 +448,44 @@ async function cancelNurseryTarget(
   return { spawn_id: res.rootSpawnId, cancelled: res.cancelled.map((c) => c.spawnId), processes_aborted };
 }
 
+/**
+ * OMP hook sessions run in the caller's process rather than behind the
+ * operator's psu-pty host. Their coord_presence row is the only live signal
+ * fleet:kill can inspect, and it is intentionally used only to avoid the
+ * destructive false-negative path above — never as a permission to signal a
+ * pid owned by an unrelated process.
+ */
+async function findLiveUnmanagedSession(
+  ownerId: string,
+  workspaceId: string,
+): Promise<LiveUnmanagedSession | null> {
+  try {
+    const { sql } = getOrgPg();
+    const cutoff = new Date(Date.now() - PRESENCE_STALE_MS).toISOString();
+    const rows = await sql<Array<{ source: string; heartbeat_at: Date | string | null }>>`
+      SELECT source, heartbeat_at
+        FROM harness_shared.coord_presence
+       WHERE owner_id = ${ownerId}
+         AND workspace_id = ${workspaceId}
+         AND source = 'omp-hook-session'
+         AND heartbeat_at >= ${cutoff}
+       LIMIT 1
+    `;
+    const row = rows[0];
+    if (!row) return null;
+    const heartbeatAt = row.heartbeat_at == null
+      ? null
+      : row.heartbeat_at instanceof Date
+        ? row.heartbeat_at.toISOString()
+        : new Date(row.heartbeat_at).toISOString();
+    return { source: row.source, heartbeatAt };
+  } catch {
+    // A failed liveness read must not block the existing not-found cleanup
+    // path; the next fleet:kill/roster read can retry it.
+    return null;
+  }
+}
+
 export default defineTool({
   name: 'fleet:kill',
   profile: 'engineer',
@@ -464,6 +538,7 @@ export default defineTool({
     const closeTerminal = args.close_terminal !== false;
     const deps: KillDeps = {
       findHost: (ownerId) => findLiveHost(ownerId),
+      findLiveUnmanaged: (ownerId) => findLiveUnmanagedSession(ownerId, workspaceId),
       cancelNursery: (target, why) => cancelNurseryTarget(target, why, workspaceId, actor),
       clearPresence: (ownerId) => clearPresence(ownerId),
       markSessionEnded: (id, signal) => markAdvSessionEnded(Number(id), null, 'signal', { signal }),

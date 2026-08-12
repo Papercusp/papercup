@@ -223,6 +223,39 @@ describe('killOne', () => {
     expect(r.error).toContain('terminal_pids'); // the stale-window hint
     expect(cleared).toBe('su-ghost');
   });
+
+  it('reports live_unmanaged for a fresh OMP-hook presence without clearing it', async () => {
+    let cleared = false;
+    const audits: Array<{ action: string; subject: string }> = [];
+    const deps: KillDeps = {
+      cancelNursery: async () => null,
+      findHost: () => null,
+      findLiveUnmanaged: async () => ({
+        source: 'omp-hook-session',
+        heartbeatAt: '2026-08-12T08:10:00.000Z',
+      }),
+      clearPresence: async () => {
+        cleared = true;
+      },
+      audit: async (action, subject) => {
+        audits.push({ action, subject });
+      },
+    };
+
+    const r = await killOne({ actor: 'su-me', target: 'su-omp', closeTerminal: true, reason: 'wind-down' }, deps);
+
+    expect(r).toMatchObject({
+      ok: false,
+      target: 'su-omp',
+      kind: 'unmanaged',
+      killed: false,
+      code: 'live_unmanaged',
+      terminal: 'not-found',
+    });
+    expect(r.error).toContain('turn:interrupt');
+    expect(cleared).toBe(false);
+    expect(audits).toEqual([{ action: 'fleet.kill_unmanaged', subject: 'su-omp' }]);
+  });
 });
 
 describe('closeTerminalPid (orphaned windows)', () => {
