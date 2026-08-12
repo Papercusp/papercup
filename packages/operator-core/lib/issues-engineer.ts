@@ -136,6 +136,8 @@ export interface EngineerIssue {
   lastProgressAt: string | null;
   /** Kind-specific data (collapse-delegate D-001): a task's {agentSessionId,origin,backend}. */
   payload: unknown | null;
+  /** Parent work-item id for duplicate/child relationships across issue-family rows. */
+  parent: string | null;
   /** Federation provenance from the physical work_items row. */
   origin: string | null;
   foundDuring: string | null;
@@ -471,6 +473,8 @@ interface IssueRowDb {
   closed_ts: unknown;
   /** WI-37711 — exposed on the engineer_issues view by migration 790. */
   goal_id: string | null;
+  /** Parent work-item id, appended to the engineer_issues view by migration 803. */
+  parent_id: string | null;
 }
 // EI-18691099450966094: delegates to the shared pg-timestamp helper — a raw
 // Postgres-text timestamptz (e.g. "2026-07-26 03:34:43.647148-04") must be
@@ -494,6 +498,7 @@ function toIssue(r: IssueRowDb): EngineerIssue {
     assignedAt: tsIsoOrNull(r.assigned_at),
     lastProgressAt: tsIsoOrNull(r.last_progress_at),
     payload: r.payload ?? null,
+    parent: r.parent_id,
     origin: r.origin ?? 'local',
     foundDuring: r.found_during,
     linkedFeatureId: r.linked_feature_id,
@@ -522,7 +527,8 @@ function toIssue(r: IssueRowDb): EngineerIssue {
 export const ISSUE_COLS = `issue_id, kind, scope, title, body, severity, source, state, assignee,
   assigned_by, assigned_at, last_progress_at, payload, found_during, linked_feature_id, created_by,
   origin, signal_origin, assignee_rank, rank_writer, rank_updated_at, terminal_owner,
-  terminal_completion_ref, authority, feature_order, created_at, updated_at, closed_ts, goal_id`;
+  terminal_completion_ref, authority, feature_order, created_at, updated_at, closed_ts, goal_id,
+  parent_id`;
 
 /**
  * ISSUE_COLS with `body` replaced by a NULL of the same type — for the readers that
@@ -562,7 +568,7 @@ export const ISSUE_ROW_DB_KEYS = [
   'assigned_by', 'assigned_at', 'last_progress_at', 'payload', 'origin', 'found_during',
   'linked_feature_id', 'created_by', 'signal_origin', 'assignee_rank', 'rank_writer',
   'rank_updated_at', 'terminal_owner', 'terminal_completion_ref', 'authority', 'feature_order',
-  'created_at', 'updated_at', 'closed_ts', 'goal_id',
+  'created_at', 'updated_at', 'closed_ts', 'goal_id', 'parent_id',
 ] as const;
 type IssueRowDbKeysUnion = (typeof ISSUE_ROW_DB_KEYS)[number];
 type MissingFromTuple = Exclude<keyof IssueRowDb, IssueRowDbKeysUnion>;
@@ -688,6 +694,8 @@ export interface CreateIssueInput {
   assignedBy?: string;
   /** Kind-specific data (collapse-delegate D-001): a task's resume metadata. */
   payload?: unknown;
+  /** Parent work-item id for duplicate/child relationships (null clears on update). */
+  parent?: string | null;
   /** Learning-signal provenance (frontier P-002/D-002). Default 'organic'; only
    *  frontier loops (vaccination drills, replay, shadow ablation) pass non-organic. */
   signalOrigin?: SignalOrigin;
@@ -752,12 +760,14 @@ export async function createIssue(input: CreateIssueInput): Promise<EngineerIssu
     const rows = await tx<IssueRowDb[]>`
       INSERT INTO harness_shared.engineer_issues
         (workspace_id, issue_id, kind, scope, title, body, severity, source, state, assignee,
-         assigned_by, assigned_at, payload, found_during, created_by, signal_origin, created_at, updated_at)
+         assigned_by, assigned_at, payload, found_during, created_by, signal_origin, created_at, updated_at,
+         parent_id)
       VALUES (${issuesScopeWorkspace()}, ${id}, ${input.kind ?? 'bug'}, ${scope}, ${safeTitle}, ${safeBody ?? ''},
               ${input.severity ?? 'minor'}, ${input.source ?? 'engineer'}, 'open', ${input.assignee ?? null},
               ${input.assignedBy ?? null}, ${input.assignedBy ? created : null},
               ${Object.keys(inputPayload).length > 0 ? JSON.stringify(inputPayload) : null}::text::jsonb, ${input.foundDuring ?? null},
-              ${input.createdBy ?? null}, ${input.signalOrigin ?? DEFAULT_SIGNAL_ORIGIN}, ${created}, ${created})
+              ${input.createdBy ?? null}, ${input.signalOrigin ?? DEFAULT_SIGNAL_ORIGIN}, ${created}, ${created},
+              ${input.parent ?? null})
       RETURNING ${tx.unsafe(ISSUE_COLS)}`;
     const inserted = toIssue(rows[0]);
     // WI-8848: the topic tags + the author subscription commit in the SAME txn as the
@@ -1735,6 +1745,8 @@ export interface UpdateIssuePatch {
   kind?: IssueKind;
   foundDuring?: string | null;
   linkedFeatureId?: string | null;
+  /** Parent work-item id for duplicate/child relationships; null clears the edge. */
+  parent?: string | null;
   by?: string;
   /** Skip the subscribe→inject fan-out (cosmetic edits like a generated title). */
   silent?: boolean;
@@ -1791,6 +1803,7 @@ export async function updateIssue(
       kind = ${patch.kind ?? sql`kind`},
       found_during = ${patch.foundDuring !== undefined ? patch.foundDuring : sql`found_during`},
       linked_feature_id = ${patch.linkedFeatureId !== undefined ? patch.linkedFeatureId : sql`linked_feature_id`},
+      parent_id = ${patch.parent !== undefined ? patch.parent : sql`parent_id`},
       origin = 'local',
       updated_at = now()
     WHERE workspace_id = ${issuesScopeWorkspace()} AND issue_id = ${id}

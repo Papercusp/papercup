@@ -485,7 +485,7 @@ export function issueToWorkItem(i: EngineerIssue): WorkItem {
     // selects it, so the issue family (the one a goal-scoped drain fleet actually claims)
     // now carries its goal into matchesWorkItemClaimSpec instead of resolving null forever.
     goalId: i.goalId,
-    parent: null,
+    parent: i.parent,
     payload: i.payload ?? null,
     ...(externalBlockers.length ? { externalBlockers } : {}),
     rank: i.assigneeRank,
@@ -1552,7 +1552,7 @@ export interface CreateWorkItemInput {
   summary?: string;
   harness?: string;
   severity?: IssueSeverity; // issue-family
-  parent?: string; // feature-family (a chunk's parent)
+  parent?: string; // parent work-item id (feature-family chunk or issue-family duplicate/child)
   payload?: unknown; // kind-specific data (feature-family + issue-family `task`)
   topics?: string[];
   /**
@@ -1676,6 +1676,7 @@ export async function createWorkItem(input: CreateWorkItemInput): Promise<WorkIt
       createdBy: input.createdBy,
       assignee: input.assignee,
       assignedBy: input.assignedBy,
+      parent: input.parent,
       payload: input.payload,
     });
     const created = issueToWorkItem(issue);
@@ -6443,6 +6444,8 @@ export interface UpdateWorkItemPatch {
   kind?: IssueKind;
   foundDuring?: string | null;
   linkedFeatureId?: string | null;
+  /** Parent work-item id for issue-family duplicate/child relationships; null clears it. */
+  parent?: string | null;
   /** WI-37892 — adopt this existing item into a goal's drain lane, or clear with null. */
   goal?: string | null;
   /** EI-8497: bypass the fat-finger body-shrink guard (see updateIssue) — pass true
@@ -6480,7 +6483,8 @@ function hasIssueFieldPatch(patch: UpdateWorkItemPatch): boolean {
     patch.severity !== undefined ||
     patch.kind !== undefined ||
     patch.foundDuring !== undefined ||
-    patch.linkedFeatureId !== undefined
+    patch.linkedFeatureId !== undefined ||
+    patch.parent !== undefined
   );
 }
 

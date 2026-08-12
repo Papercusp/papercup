@@ -91,6 +91,7 @@ function hasColumnEdit(it: {
   kind?: unknown;
   foundDuring?: unknown;
   linkedFeatureId?: unknown;
+  parent?: unknown;
 }): boolean {
   return (
     it.title !== undefined ||
@@ -98,7 +99,8 @@ function hasColumnEdit(it: {
     it.severity !== undefined ||
     it.kind !== undefined ||
     it.foundDuring !== undefined ||
-    it.linkedFeatureId !== undefined
+    it.linkedFeatureId !== undefined ||
+    it.parent !== undefined
   );
 }
 
@@ -121,6 +123,7 @@ const FIELDS = {
   // z.toJSONSchema for the entire catalog — see limits.ts.)
   foundDuring: softText(LIMITS.LABEL).nullable().optional(),
   linkedFeatureId: z.string().max(80).nullable().optional(),
+  parent: z.string().max(80).nullable().optional().describe('parent work-item id for duplicate/child relationships; null clears the edge'),
   // WI-37892: a goal is a shared work-item field, not issue-family metadata. Passing a
   // goal adopts an existing item into that goal's drain lane; null clears the edge.
   goal: z
@@ -220,7 +223,7 @@ export default defineTool({
   name: 'work_items:update',
   profile: 'engineer',
   description:
-    "Edit one OR many work-items' title/body/severity/kind/found-during/linked feature/goal/plan_item/needsTwoMachineRig/needsHuman; notifies subscribers. Single: { id, …fields }; many: items:[{ id, …fields }]. Returns per-item { ok, id, item? | error }; missing items do not fail the batch. Goal and plan_item are family-agnostic: pass an id to adopt it into a goal drain lane or plan-scoped fleet lane (plan_item is { slug, item }), or null to clear the goal. Other field edits are issue-family-only (bug/change/task); features remain pipeline-owned. Body shrink is rejected unless confirmShrink:true (EI-8497). needsTwoMachineRig toggles payload.needs_2_machine_rig and self-select eligibility (WI-2796); needsHuman toggles the issue review gate. (State → work_items:set_state; structural decisions → work_items:amend; tags → work_items:tag; comments → work_items:comment.)",
+    "Edit one OR many work-items' title/body/severity/kind/found-during/linked feature/parent/goal/plan_item/needsTwoMachineRig/needsHuman; notifies subscribers. Single: { id, …fields }; many: items:[{ id, …fields }]. Returns per-item { ok, id, item? | error }; missing items do not fail the batch. Goal and plan_item are family-agnostic; parent is the duplicate/child relation and null clears it. Other field edits are issue-family-only (bug/change/task); features remain pipeline-owned. Body shrink is rejected unless confirmShrink:true (EI-8497). needsTwoMachineRig toggles payload.needs_2_machine_rig and self-select eligibility (WI-2796); needsHuman toggles the issue review gate. (State → work_items:set_state; structural decisions → work_items:amend; tags → work_items:tag; comments → work_items:comment.)",
   guidance: {
     when: 'Refine filed work-items: clarify text, re-rate severity, correct kind (bug↔change controls lane), attach a feature, adopt/clear a goal, or backfill plan_item provenance for a plan-scoped lane. Batch via items:[…].',
     notWhen: 'Use set_state for lifecycle, amend for structural decisions, comment for notes, or tag for topics.',
@@ -240,7 +243,7 @@ export default defineTool({
         .max(200)
         .optional()
         .describe(
-          'update many work-items at once — each { id, …fields }. A top-level field (title/body/severity/kind/foundDuring/linkedFeatureId/goal/plan_item/harness) is the DEFAULT applied to every item that omits its own (EI-7639) — pass it once instead of repeating it per item.',
+          'update many work-items at once — each { id, …fields }. A top-level field (title/body/severity/kind/foundDuring/linkedFeatureId/parent/goal/plan_item/harness) is the DEFAULT applied to every item that omits its own (EI-7639) — pass it once instead of repeating it per item.',
         ),
       harness: z.string().max(80).optional().describe('default harness for the inline id / items that omit one'),
     })
@@ -279,6 +282,7 @@ export default defineTool({
             LIMITS.LABEL,
           ),
           linkedFeatureId: it.linkedFeatureId !== undefined ? it.linkedFeatureId : args.linkedFeatureId,
+          parent: it.parent !== undefined ? it.parent : args.parent,
           goal: it.goal !== undefined ? it.goal : args.goal,
           plan_item: it.plan_item !== undefined ? it.plan_item : args.plan_item,
           confirmShrink: it.confirmShrink ?? args.confirmShrink,
@@ -300,6 +304,7 @@ export default defineTool({
             kind: args.kind,
             foundDuring: clampText(args.foundDuring, LIMITS.LABEL),
             linkedFeatureId: args.linkedFeatureId,
+            parent: args.parent,
             goal: args.goal,
             plan_item: args.plan_item,
             confirmShrink: args.confirmShrink,
@@ -320,6 +325,7 @@ export default defineTool({
             kind: it.kind,
             foundDuring: it.foundDuring,
             linkedFeatureId: it.linkedFeatureId,
+            parent: it.parent,
             goal: it.goal,
             confirmShrink: it.confirmShrink,
           },
