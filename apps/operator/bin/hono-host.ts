@@ -611,6 +611,14 @@ if (clusterWorkers > 1) {
 // dogfood-substrate-boot-history route always degraded to `source:'main-fallback'`
 // with an empty ring on every clustered host; found during P-059 / WI-1837).
 const substrateSocketWorkerEnv = sidecarMode ? {} : pinSubstrateSocketForCluster(clusterWorkers);
+// Same pin for the SPAWNER sidecar (plan spawner-sidecar-cluster-fanout-2026-08-12).
+// The substrate got this in WI-1879; the spawner did not, and paid far more for it:
+// its "already spawned" latch is module-scoped (per PROCESS), so each of N cluster
+// workers resolved its OWN pid-keyed path, found nothing, and spawned a full ~450MB
+// hono-host of its own. Measured 2026-08-12 at PAPERCUSP_CLUSTER=16: 16 sidecars,
+// 9.5GB, 0.004 cores each. Pinning makes every worker resolve the PRIMARY's path, so
+// the adoption probe in spawnSpawnerSidecar finds the sibling's sidecar and reuses it.
+const spawnerSocketWorkerEnv = sidecarMode ? {} : pinSpawnerSocketForCluster(clusterWorkers);
 // EI-8810: in sidecar mode the divert above already started the sidecar server
 // (which keeps the process alive) — the host boot below must not run at all.
 const clusterHandle = sidecarMode ? null : startCluster({
