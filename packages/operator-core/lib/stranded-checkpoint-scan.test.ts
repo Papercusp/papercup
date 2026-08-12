@@ -116,18 +116,62 @@ describe('CONTROL CASES — the measured false positives (WI-38297)', () => {
    * If you improve the classifier so one of these stops matching, that is a genuine win
    * — delete it from this list and say so. Do NOT delete the list.
    */
-  const knownFalsePositives = [
-    'READ THREAD POST 56018 FIRST — it FALSIFIES the leading hypotheses with measurements.\n\nSTATE: open, claimed. ⛔ DO NOT CLOSE on the strength of the instrumentation shipped.',
-    'CLAIMED 03:27Z, no code written yet. Read the item body in full — it is unusually well-diagnosed; do not re-derive it.',
-    'DUPLICATE LEADER ITEM — do not resume separately. WI-38071 links duplicates → WI-37891.',
+  /**
+   * VERBATIM excerpts, including the substring that actually fired — established by
+   * running each marker against the real notes and printing the match with its context.
+   * Paraphrases are worthless as controls here: an earlier draft of this suite used
+   * tidied-up versions of these heads and they did NOT match, because the deciding text
+   * sat thousands of characters below the part a human would quote.
+   */
+  const knownFalsePositives: ReadonlyArray<readonly [string, string]> = [
+    [
+      'EI-19474857043229377 — "closed" describes a sub-QUESTION, not the item',
+      'READ THREAD POST 56018 FIRST — it FALSIFIES the leading hypotheses with measurements.\n\n' +
+        'STATE: open, claimed. ⛔ DO NOT CLOSE on the strength of the instrumentation shipped ' +
+        'below — the deciding leg is still UNIDENTIFIED.\n\n' +
+        'Everything above is a snapshot from 08-04 whose central open question is now CLOSED.\n\n' +
+        '**THE DECIDING LEG IS `cupPlaceableFrontier`.**',
+    ],
+    [
+      'EI-20034001963934568 — "flipped done" describes ANOTHER plan\'s item',
+      'CLAIMED 03:27Z, no code written yet. Read the item body in full — it is unusually ' +
+        'well-diagnosed; do not re-derive it.\n\n' +
+        'goal-mode-2026-08-07 P-001 → WORKSPACE PER GOAL, recorded as D-027, item flipped done. ' +
+        "That plan's Phase 1 is unblocked and its downstream items are claimable.",
+    ],
+    [
+      'WI-38071 — a duplicate, not finished work',
+      'DUPLICATE LEADER ITEM — do not resume separately. WI-38071 links duplicates → WI-37891.',
+    ],
   ];
 
-  it.each(knownFalsePositives.map((cp, i) => [i, cp] as const))(
-    'still matches known false positive #%i (why this surface never auto-closes)',
-    (_i, cp) => {
-      expect(checkpointDeclaresTerminal(cp)).toBe(true);
-    },
-  );
+  it.each(knownFalsePositives)('still matches known false positive: %s', (_label, cp) => {
+    expect(checkpointDeclaresTerminal(cp)).toBe(true);
+  });
+
+  /**
+   * THE MECHANISM, pinned separately because it is the actionable half.
+   *
+   * Five of the six markers are anchored (`^…`) or structurally specific. The sixth —
+   * the `<verb> to <terminal-state>` alternation — is NOT anchored, so it fires on a
+   * terminal statement made about SOMETHING OTHER THAN THE ITEM, anywhere in a long
+   * checkpoint. Measured offsets in the two real notes above: 2,818 and 13,364 chars in.
+   * Both anchored markers were clean.
+   *
+   * This is why the fix is NOT "tighten the regex" from inside this scan: the predicate
+   * is shared with the pot placement watchdog's stale-open reconcile, where the
+   * false-positive cost is different (it suppresses a re-place page). Restricting the
+   * unanchored marker to the note head would likely kill both of these, and is worth
+   * doing deliberately, with the watchdog's own cases re-verified — not as a side effect
+   * of a triage read.
+   */
+  it('the imprecision comes from the ONE unanchored marker, firing deep in the note', () => {
+    const aboutSomethingElse = `${'context. '.repeat(200)}the open question is now CLOSED.`;
+    expect(checkpointDeclaresTerminal(aboutSomethingElse)).toBe(true);
+    // …while the anchored markers cannot fire from mid-text at all.
+    expect(checkpointDeclaresTerminal(`${'context. '.repeat(200)}TERMINAL — done here.`)).toBe(false);
+    expect(checkpointDeclaresTerminal(`${'context. '.repeat(200)}WI-4480 PASSED 2026-07-17.`)).toBe(false);
+  });
 
   it('matches genuine completion declarations too (the calibration case)', () => {
     // Without this, the assertions above would also pass if the predicate matched
@@ -160,7 +204,10 @@ describe('ranking — oldest strand first (WI-38297)', () => {
       [
         row({
           issue_id: 'FRESH-BG',
-          note: 'P-001 DONE + VERIFIED. test:affected running in background (bash id bx76day3h).',
+          // WI-5895's real phrasing: the strand as it is actually created.
+          note:
+            'WI-5895 DONE — fix committed. test:affected running in background (bash id bx76day3h) ' +
+            'to confirm no other suite depended on the old behavior — will report+complete once it finishes.',
           updated_ts: String(daysAgo(0)),
         }),
         row({ issue_id: 'OLD-STRAND', updated_ts: String(daysAgo(30)) }),
