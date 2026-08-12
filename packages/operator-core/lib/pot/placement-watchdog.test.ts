@@ -4,7 +4,7 @@
  * dead/stalled cup), P-021 (cursed-item breaker mirrors replanStrikes), and
  * P-023 (reconcile "steer, don't dispatch" WITH the completion mandate).
  */
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 const { wakeRecipients, sendMessage, getFlag, mugKettleSystemEnabled } = vi.hoisted(() => ({
   wakeRecipients: vi
     .fn()
@@ -158,10 +158,11 @@ describe('wakeMug — the retirement gate (P-037)', () => {
   beforeEach(() => {
     wakeRecipients.mockClear();
     sendMessage.mockClear();
+    mugKettleSystemEnabled.mockResolvedValue(false);
   });
 
-  it('delivers NEITHER leg once the tier is retired (flag OFF)', async () => {
-    getFlag.mockResolvedValue(false);
+  it('delivers NEITHER leg once the tier is retired', async () => {
+    mugKettleSystemEnabled.mockResolvedValue(false);
     await wakeMug({
       workspaceId: 'ws-1',
       mugOwner: 'stale-owner-123',
@@ -176,8 +177,8 @@ describe('wakeMug — the retirement gate (P-037)', () => {
   // CALIBRATION. Without this, the assertions above would also pass if the
   // mocks were simply never reachable — the failure mode that makes a guard
   // look strong while testing nothing.
-  it('CALIBRATION: the identical call still delivers both legs while the tier is enabled', async () => {
-    getFlag.mockResolvedValue(true);
+  it('CALIBRATION: the identical call still delivers both legs when the gate is forced open', async () => {
+    mugKettleSystemEnabled.mockResolvedValue(true);
     await wakeMug({
       workspaceId: 'ws-1',
       mugOwner: 'stale-owner-123',
@@ -189,16 +190,22 @@ describe('wakeMug — the retirement gate (P-037)', () => {
     expect(sendMessage).toHaveBeenCalledTimes(1);
   });
 
-  it('FAILS CLOSED: an unreadable flag is treated as retired, never as runnable', async () => {
+  // The retirement is now STRUCTURAL, not flag-conditional. The predecessor of
+  // this case stubbed `getFlag` to reject and asserted wakeMug fell closed —
+  // that could only ever fail once the flag was deleted, because `wakeMug` no
+  // longer reads a flag by any path. What replaced the flag read is a hardcoded
+  // `false`, so the property worth pinning is that the REAL predicate (not the
+  // mock this file installs) cannot report the tier as runnable — which is what
+  // makes every absence assertion above hold in production rather than only
+  // under a mock this test controls.
+  it('the REAL predicate is unconditionally retired — no flag backend can re-open it', async () => {
+    const actual = await vi.importActual<typeof import('./started')>('./started');
+    expect(await actual.mugKettleSystemEnabled()).toBe(false);
+    getFlag.mockResolvedValue(true);
+    expect(await actual.mugKettleSystemEnabled()).toBe(false);
     getFlag.mockRejectedValue(new Error('flag backend unreachable'));
-    await wakeMug({
-      workspaceId: 'ws-1',
-      mugOwner: 'stale-owner-123',
-      summary: 'unreadable flag',
-      source: 'scout-draft-review',
-    });
-    expect(wakeRecipients).not.toHaveBeenCalled();
-    expect(sendMessage).not.toHaveBeenCalled();
+    expect(await actual.mugKettleSystemEnabled()).toBe(false);
+    getFlag.mockResolvedValue(true);
   });
 });
 

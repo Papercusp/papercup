@@ -2,7 +2,6 @@ import { useCallback, useEffect, useState } from 'react';
 import { Square, Play } from 'lucide-react';
 import { toast } from 'sonner';
 import { useSyncQuery } from '@papercusp/sync';
-import { useFlag } from '@papercusp/flags/client';
 import { FLAGS } from '@papercusp/flags';
 import { useLexicon } from '@/lib/useLexicon';
 import { Tooltip } from '@/app/harness/Tooltip';

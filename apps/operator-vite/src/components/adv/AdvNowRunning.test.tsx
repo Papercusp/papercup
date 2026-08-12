@@ -70,13 +70,14 @@ vi.mock('@papercusp/sync', () => ({
 // copy from the THE_HIVE flag hook; classic pack renders 'Pot'/'Brain'/'Cup(s)'
 // at runtime (restore-pot-lexicon P-006).
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
-// Mug/Kettle/Cup retirement flag (retire-mug-kettle-su-only-2026-08-09 P-043).
-// POLARITY IS INVERTED: false = tier RETIRED (the shipped default), true = the
-// reversible testing escape hatch. Defaults to true so the pre-existing
-// Start/Stop coverage keeps exercising the live-tier path; the retirement
-// assertions flip it per-test.
-let tierLive = true;
-vi.mock('@papercusp/flags/client', () => ({ useFlag: () => tierLive }));
+// Mug/Kettle/Cup retirement (retire-mug-kettle-su-only-2026-08-09 P-043 → P-068).
+// This mock used to carry a mutable `tierLive` the retirement cases flipped. It
+// no longer can: P-068 deleted the flag and the component's read of it, so the
+// component calls no flag hook at all and a `tierLive` toggle drove NOTHING —
+// which silently made the D-010 absence case below pass for the wrong reason.
+// The stub is retained only for transitive importers, pinned to the shipped
+// truth (retired); the retirement is now asserted structurally, not by a toggle.
+vi.mock('@papercusp/flags/client', () => ({ useFlag: () => false }));
 
 import { toast } from 'sonner';
 import AdvNowRunning from './AdvNowRunning';
@@ -100,7 +101,6 @@ beforeEach(() => {
   runRows = [];
   runToolCalls = [];
   runToolResponse = { ok: true, result: { content: [{ text: JSON.stringify({ ok: true }) }] } };
-  tierLive = true;
   toastMock.success.mockReset();
   toastMock.error.mockReset();
   vi.stubGlobal(
@@ -138,10 +138,12 @@ describe('AdvNowRunning', () => {
     expect(screen.queryByText(/Stop pot/)).toBeNull();
   });
 
-  it('stopped hive → Start button, no Active label', async () => {
+  it('stopped hive → is-stopped bar, no Start affordance, no Active label', async () => {
     const { container } = render(<AdvNowRunning slug="pot-a" />);
-    expect(await screen.findByText('Start pot')).toBeTruthy();
+    // Wait for the bar itself so this cannot pass merely because nothing rendered yet.
+    await waitFor(() => expect(container.querySelector('.pc-advshell__harness-bar')).toBeTruthy());
     expect(container.querySelector('.pc-advshell__harness-bar')?.className).toContain('is-stopped');
+    expect(screen.queryByText('Start pot')).toBeNull();
     expect(screen.queryByText(/Active —/)).toBeNull();
   });
 
@@ -153,28 +155,13 @@ describe('AdvNowRunning', () => {
     expect(screen.queryByText(/Active —/)).toBeNull(); // the "Active — N running" label is gone
   });
 
-  it('Start fires pot:start via the palette bridge and flips to waiting-for-agent', async () => {
-    render(<AdvNowRunning slug="pot-a" />);
-    fireEvent.click(await screen.findByText('Start pot'));
-    await waitFor(() =>
-      expect(runToolCalls).toEqual([
-        { name: 'pot:start', args: { harness: 'hive-1' }, confirmed: true },
-      ]),
-    );
-    await waitFor(() => expect(toastMock.success).toHaveBeenCalledWith('pot started', expect.anything()));
-    // Optimistic active → the Stop control replaces Start (no per-agent label anymore).
-    expect(await screen.findByText('Stop pot')).toBeTruthy();
-    expect(screen.queryByText('Start pot')).toBeNull();
-  });
-
-  it('a refused pot:start surfaces toast.error and stays stopped', async () => {
-    runToolResponse = { ok: false, error: 'governor gate closed' };
-    render(<AdvNowRunning slug="pot-a" />);
-    fireEvent.click(await screen.findByText('Start pot'));
-    await waitFor(() => expect(toastMock.error).toHaveBeenCalledWith('Start failed', expect.anything()));
-    expect(screen.getByText('Start pot')).toBeTruthy();
-    expect(screen.queryByText(/Active —/)).toBeNull();
-  });
+  // P-068/D-098: the two `pot:start` click-path cases that lived here (the happy
+  // path and the refused-start toast) are GONE, not retargeted. Their subject —
+  // a Start button — is removed unconditionally, so there is no affordance left
+  // to click and no way to force one back: unlike a flag-gated seam, there is no
+  // predicate a test can stub. Their surviving assertion (that no Start renders)
+  // is owned by the D-010 case below. The component's now-unreachable start
+  // handler is dead code tracked by WI-38240, not by a test that cannot run it.
 
   it('Stop confirms, then fires pot:pause with drainCups', async () => {
     hiveRows = [{ slug: 'hive-1', started: true }];
@@ -220,7 +207,6 @@ describe('AdvNowRunning', () => {
   // pass equally on the unsafe variant that also removes Stop and strands a
   // running tier with no way to wind it down.
   it('tier retired: no Start button on a stopped pot (D-010)', async () => {
-    tierLive = false;
     hiveRows = [{ slug: 'hive-1', started: false }];
     render(<AdvNowRunning slug="pot-a" />);
     // Wait for the bar itself so this cannot pass merely because nothing rendered yet.
@@ -229,7 +215,6 @@ describe('AdvNowRunning', () => {
   });
 
   it('tier retired: a STILL-STARTED pot keeps a working Stop (D-017)', async () => {
-    tierLive = false;
     hiveRows = [{ slug: 'hive-1', started: true }];
     render(<AdvNowRunning slug="pot-a" />);
     fireEvent.click(await screen.findByText('Stop pot'));
