@@ -292,6 +292,8 @@ export interface BuildCarryBriefOpts {
     harnessSlug: string;
     active: boolean;
     intervalSec: number | null;
+    /** Persisted loop lifecycle; optional on test seams for legacy fixtures. */
+    carry?: 'warm' | 'cold';
     /** EI-20072281215342526: the MISSION. Optional on the seam (not on `LoopStatus`,
      *  where it is required) so an existing test stub keeps compiling — a stub that
      *  omits it is stating "this test does not exercise the goal", which is honest,

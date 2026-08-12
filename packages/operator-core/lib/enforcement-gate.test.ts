@@ -66,7 +66,7 @@ describe('detectFlushTripwires', () => {
     expect(t.find((x) => x.kind === 'missing-checkpoint')?.subject).toBe('WI-A');
   });
 
-  it('emits armed-loop-no-carry-note when the loop is active with no note', () => {
+  it('emits armed-loop-no-carry-note when a COLD loop is active with no note', () => {
     const t = detectFlushTripwires(
       brief({ loop: { harness: 'papercusp', active: true, intervalSec: 60, carry: 'cold', goal: null, carryNote: '  ', carryNoteUpdatedAtMs: null } }),
       NOW,
@@ -75,7 +75,7 @@ describe('detectFlushTripwires', () => {
     expect(t[0]).toMatchObject({ kind: 'armed-loop-no-carry-note', subject: 'papercusp' });
   });
 
-  it('does NOT flag an armed loop that HAS a carry-note', () => {
+  it('does NOT flag an armed COLD loop that HAS a carry-note', () => {
     const t = detectFlushTripwires(
       brief({ loop: { harness: 'papercusp', active: true, intervalSec: 60, carry: 'cold', goal: null, carryNote: '## Next\ngo', carryNoteUpdatedAtMs: NOW } }),
       NOW,

@@ -30,7 +30,7 @@
  *       "past soft threshold" condition is satisfied by BEING at the seam — the
  *       missing/stale tripwires above ARE the unflushed state at that threshold. No
  *       token gauge is read here (D-001).
- *   - "armed loop without loop:checkpoint" → 'armed-loop-no-carry-note'.
+ *   - "armed COLD loop without loop:checkpoint" → 'armed-loop-no-carry-note'.
  */
 import type { CarryBrief } from './carry-brief';
 
@@ -103,8 +103,9 @@ export interface FlushTripwire {
 
 /**
  * The flush tripwires present at a boundary: missing/stale held-item checkpoints
- * (via {@link staleCheckpointWarnings}) plus an armed loop carrying no
- * loop:checkpoint note. Pure; empty when the brief is clean or unavailable.
+ * (via {@link staleCheckpointWarnings}) plus an armed COLD loop carrying no
+ * loop:checkpoint note. Warm loops carry their transcript and are not flagged.
+ * Pure; empty when the brief is clean or unavailable.
  */
 export function detectFlushTripwires(brief: CarryBrief | null, nowMs: number = Date.now()): FlushTripwire[] {
   if (!brief) return [];
