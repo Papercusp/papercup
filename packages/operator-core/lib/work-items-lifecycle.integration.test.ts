@@ -349,6 +349,15 @@ describe('P-006 held-open guard — non-holder terminal transitions refuse', () 
     expect(still?.state).toBe('open');
   });
 
+  it('a held-open refusal leads with the holder self-clear path before force overrides', async () => {
+    const bug = await heldBug('leader-1', 'blocked');
+    await expect(
+      wi.setWorkItemState(bug.id, 'resolved', { by: 'transport-alias', completionRef: 'looks stale' }),
+    ).rejects.toThrow(
+      /If this is your own hold, clear it first without force:.*work_items:hold_open.*clear: true.*no force needed/s,
+    );
+  });
+
   it('the HOLDER closing their own held item passes the guard', async () => {
     const bug = await heldBug('leader-1');
     const done = await wi.setWorkItemState(bug.id, 'resolved', { by: 'leader-1', completionRef: 'holder closes' });

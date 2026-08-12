@@ -2459,9 +2459,14 @@ export async function setWorkItemState(
     // and complete is the tool most callers are holding when they hit this. An error that names
     // an arg the caller's tool does not accept is worse than one that names nothing: it sends
     // them to pass a flag that is silently dropped, and the item stays open.
+    // EI-20212312963549018: the caller can reach this branch through a transport identity
+    // alias even when the hold is theirs. Lead with the unprivileged self-clear path so the
+    // refusal does not teach a holder to use a leader override against their own hold.
     throw new Error(
       `work_item '${id}' is HELD OPEN by ${heldOpen.by}${heldOpen.reason ? ` ("${heldOpen.reason}")` : ''} — ` +
         `closing it into '${state}' requires the holder. ` +
+        `If this is your own hold, clear it first without force: ` +
+        `work_items:hold_open { id: '${id}', clear: true } — no force needed, then close normally. ` +
         `If the hold is STALE (holder gone/finished), CLEAR it first: ` +
         `work_items:hold_open { id: '${id}', clear: true, force: true, reason: '<why it is stale>' } ` +
         `(leader override — audited, and the holder is notified), then close normally. ` +
