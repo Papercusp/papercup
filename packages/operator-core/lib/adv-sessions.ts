@@ -42,17 +42,41 @@ function warnUnlessMissingTable(e: unknown, label: string): void {
 export const NATIVE_SESSION_ID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 /**
- * Who wrote a row's `ended_at` (migration 735).
+ * Who wrote a row's `ended_at` (migration 735), and whether the exit was VOLUNTARY
+ * (migration 800).
  *
- * - `'self'`       — the session's own exit was observed and reported. `ended_at` IS the end time.
- * - `'reaper'`     — idle-session-reaper noticed a process that was already gone.
- * - `'reconciler'` — reconcileDeadTerminalLaunches noticed a dead terminal launch.
- * - `'cleanup'`    — an administrative close (e.g. a session-port target whose preparation
- *                    expired). No exit was ever observed because the session never ran.
+ * TWO ORTHOGONAL AXES live in this one column, and conflating them is what made a
+ * mass reap invisible (WI-38054). Read them separately:
  *
- * For everything except `'self'`, `ended_at` is the NOTICE/CLOSE time, not the end time.
+ * | value          | `ended_at` is...  | the exit was...                        |
+ * |----------------|-------------------|----------------------------------------|
+ * | `'self'`       | the real end time | voluntary                              |
+ * | `'signal'`     | the real end time | INVOLUNTARY — killed by `ended_signal` |
+ * | `'reaper'`     | a NOTICE time     | unknown; already gone when noticed     |
+ * | `'reconciler'` | a NOTICE time     | unknown; already gone when noticed     |
+ * | `'cleanup'`    | a CLOSE time      | never ran                              |
+ * | `null`         | unknown           | unknown (legacy, pre-735)              |
+ *
+ * ⚠ `'signal'` is an OBSERVATION, so it groups with `'self'` on the TIME axis and
+ * against it on the VOLUNTARY axis. Use {@link isObserverEndedSession} for the first
+ * question and {@link isInvoluntaryEnd} for the second — never `!== 'self'` for both,
+ * which is the shortcut that produced the original wrong answer.
+ *
+ * WHY `'signal'` AND NOT `'reaped'`: the reporting parent observes only "my child died
+ * from signal N". It cannot know whether the sender was a host restart, an owner's
+ * Ctrl-C, a peer's `processes:kill`, or the OOM killer. Naming it after a cause nothing
+ * observed would re-commit the very over-attribution this column exists to prevent.
  */
-export type AdvSessionEndedBy = 'self' | 'reaper' | 'reconciler' | 'cleanup';
+export type AdvSessionEndedBy = 'self' | 'signal' | 'reaper' | 'reconciler' | 'cleanup';
+
+/**
+ * The writers whose `ended_at` is a REAL end time because a live parent watched the
+ * process go, as opposed to a sweeper stamping `now()` on noticing a corpse.
+ *
+ * Declared once so the two axes can never drift apart again: every "is this timestamp
+ * trustworthy?" check reads this set, and nothing re-derives it from `!== 'self'`.
+ */
+const OBSERVED_END_WRITERS: ReadonlySet<AdvSessionEndedBy> = new Set(['self', 'signal']);
 
 export interface AdvSessionRow {
   id: number;
@@ -114,16 +138,31 @@ export interface AdvSessionRow {
    * Whoever writes it inherits the SAME provenance gap {@link endedAt} has (P-015,
    * WI-7126/EI-19375527037368001): when {@link isObserverEndedSession} is true for this row,
    * this NULL is an observer's absence-of-evidence, not evidence of a clean exit — do not
-   * render it as "exited cleanly" or "code unknown but healthy". No live tool surface exposes
-   * `exitCode` today; if you add one, caveat it the same way {@link advSessionEndedAtCaveat}
-   * caveats `endedAt` before returning it as an observation.
+   * render it as "exited cleanly" or "code unknown but healthy". Pass it through
+   * {@link advSessionExitCodeCaveat} before exposing it, the same way
+   * {@link advSessionEndedAtCaveat} guards `endedAt`.
+   *
+   * ⚠ A NON-null `0` is the more dangerous case, and it is NOT hypothetical (WI-38054):
+   * node-pty reports a signal death as `{ exitCode: 0, signal: N }`, so a KILLED session
+   * carries a zero that looks exactly like a clean exit. Check {@link endedBy} — a
+   * `'signal'` row's `exitCode` is a placeholder and carries no status at all.
    */
   exitCode: number | null;
   /**
-   * Who wrote {@link endedAt}. `null` = legacy row (migration 735) — provenance UNKNOWN,
-   * which is NOT the same as 'self' and must not be read as it.
+   * Who wrote {@link endedAt}, and whether the exit was voluntary. `null` = legacy row
+   * (migration 735) — provenance UNKNOWN, which is NOT the same as 'self' and must not
+   * be read as it. See {@link AdvSessionEndedBy} for the two-axis table.
    */
   endedBy: AdvSessionEndedBy | null;
+  /**
+   * The signal that killed this session (e.g. `'SIGHUP'`), when {@link endedBy} is
+   * `'signal'`; `null` for every other writer (enforced by a CHECK, migration 800).
+   *
+   * This is the ONLY field that can contradict a signal row's misleading `exitCode: 0`,
+   * which is why it is persisted rather than derived — the discarding of this exact
+   * value is what let a mass reap read as two voluntary exits.
+   */
+  endedSignal: string | null;
   /** Cross-backend session-port lineage. A port target remains hidden from
    * resumable surfaces until portStatus='delivered'. */
   portId?: string | null;
@@ -199,6 +238,9 @@ export function mapAdvSessionRow(r: {
   /** Optional so a SELECT that omits it maps to null = UNKNOWN provenance, which is
    *  treated as un-attributed (caveated), never as a clean 'self' exit. */
   ended_by?: string | null;
+  /** Optional for the same reason as {@link ended_by}: a SELECT that omits it maps to
+   *  null, which reads as "no signal recorded" rather than inventing one. */
+  ended_signal?: string | null;
   port_id?: string | null;
   port_source_adv_session_id?: number | string | null;
   port_status?: string | null;
@@ -227,6 +269,7 @@ export function mapAdvSessionRow(r: {
     endedAt: toIsoTimestamp(r.ended_at),
     exitCode: r.exit_code,
     endedBy: (r.ended_by as AdvSessionEndedBy | null) ?? null,
+    endedSignal: r.ended_signal ?? null,
     portId: r.port_id ?? null,
     portSourceAdvSessionId: r.port_source_adv_session_id == null ? null : Number(r.port_source_adv_session_id),
     portStatus: r.port_status ?? null,
@@ -324,7 +367,7 @@ export async function listPendingWorkbenchLaunches(
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
-             display, launch_argv, launched_at, started_at, ended_at, exit_code, ended_by
+             display, launch_argv, launched_at, started_at, ended_at, exit_code, ended_by, ended_signal
         FROM harness_shared.adv_sessions
        WHERE display = 'workbench'
          AND launched_at IS NULL
@@ -505,7 +548,7 @@ export async function listStartingTerminalLaunches(
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
-             display, launch_argv, launched_at, started_at, ended_at, exit_code, ended_by
+             display, launch_argv, launched_at, started_at, ended_at, exit_code, ended_by, ended_signal
         FROM harness_shared.adv_sessions
        WHERE display = ${DISPLAY_TERMINAL_LAUNCH}
          AND (ended_at IS NULL OR session_id IS NULL)
@@ -691,7 +734,56 @@ export async function setAdvSessionOmpThreadId(id: number, ompThreadId: string):
  * NOT as 'self' — absence of attribution is not evidence of a clean exit.
  */
 export function isObserverEndedSession(row: Pick<AdvSessionRow, 'endedAt' | 'endedBy'>): boolean {
-  return row.endedAt != null && row.endedBy !== 'self';
+  if (row.endedAt == null) return false;
+  // ⚠ NOT `!== 'self'`. A 'signal' row was watched by its live parent, so its timestamp
+  // is every bit as good as a self-report — it is the VOLUNTARINESS that differs, and
+  // that question belongs to isInvoluntaryEnd. Collapsing the two axes here would make
+  // every killed session's end time read as an unreliable NOTICE time, which is a fresh
+  // wrong answer rather than a fix (WI-38054).
+  return !OBSERVED_END_WRITERS.has(row.endedBy as AdvSessionEndedBy);
+}
+
+/**
+ * Was this session KILLED rather than allowed to exit?
+ *
+ * The question `ended_by`'s original single axis could not answer, and the one the
+ * owner actually needed: a reaped agent and a finished agent looked identical.
+ *
+ * Deliberately FALSE for the sweeper writers. A `'reaper'` row means "the process was
+ * already gone when we looked" — we genuinely do not know whether it was killed or
+ * exited, and answering `true` would assert a cause nobody observed. Only `'signal'`,
+ * where a live parent watched the kill land, is a positive observation of one.
+ */
+export function isInvoluntaryEnd(row: Pick<AdvSessionRow, 'endedBy'>): boolean {
+  return row.endedBy === 'signal';
+}
+
+/**
+ * The caveat for a row's `exit_code`, or `null` when the number means what it says.
+ *
+ * MEASURED against the real node-pty in this tree: killing a child with SIGHUP yields
+ * `{ exitCode: 0, signal: 1 }`. The zero is a placeholder, not a status — so a KILLED
+ * session carries the most persuasive possible evidence of a clean exit. Two of the
+ * owner's agents were read as voluntary exits on exactly that zero (WI-38054).
+ *
+ * Pass the result through {@link withFieldReliability}, which is a no-op for an empty
+ * caveat list, so healthy rows gain no noise.
+ */
+export function advSessionExitCodeCaveat(
+  row: Pick<AdvSessionRow, 'endedAt' | 'endedBy' | 'exitCode'>,
+  field = 'exitCode',
+): FieldCaveat | null {
+  if (row.endedBy !== 'signal') return null;
+  return caveat({
+    field,
+    reliability: 'inferred',
+    cannotAnswer: 'did this session exit cleanly?',
+    insteadRead: 'ended_signal — the signal that killed it; this exit code is a placeholder',
+    because:
+      'node-pty reports a signal death as exitCode 0 with the signal in a separate field, ' +
+      'so a killed session records the same 0 a clean exit does. Measured 2026-08-12 (WI-38054): ' +
+      'two owner-launched agents killed by a sidecar restart both recorded exit 0.',
+  });
 }
 
 /**
@@ -730,9 +822,20 @@ export function advSessionEndedAtCaveat(
  *   'last recorded … — that is when the reaper NOTICED it was gone, not when it ended'
  *   'end time unknown'                               — never ended, or no timestamp
  */
-export function describeSessionEndTime(row: Pick<AdvSessionRow, 'endedAt' | 'endedBy'>): string {
+export function describeSessionEndTime(
+  row: Pick<AdvSessionRow, 'endedAt' | 'endedBy'> & Partial<Pick<AdvSessionRow, 'endedSignal'>>,
+): string {
   if (row.endedAt == null) return 'end time unknown';
   if (row.endedBy === 'self') return `ended ${row.endedAt}`;
+  if (row.endedBy === 'signal') {
+    // Both halves are load-bearing. The TIME is a real observation, so state it plainly
+    // — hedging it would destroy the "several agents died in the same second" signature
+    // that is the only way a mass reap is currently detectable. The KILL is the half
+    // that must never be droppable, so it leads the clause. Name the signal when we
+    // have it and stay silent when we do not, rather than inventing a plausible one.
+    const bySignal = row.endedSignal ? ` by ${row.endedSignal}` : '';
+    return `KILLED${bySignal} at ${row.endedAt} — an observed end time, but NOT a voluntary exit`;
+  }
   const who = row.endedBy ?? 'an unrecorded writer';
   return `last recorded ${row.endedAt} — that is when ${who} NOTICED it was gone, not when it ended`;
 }
@@ -744,17 +847,29 @@ export function describeSessionEndTime(row: Pick<AdvSessionRow, 'endedAt' | 'end
  * its `ended_at` is an observation, and that ambiguity is what made a sweep look like a
  * mass kill (WI-7126). Pass `'self'` ONLY when this process actually observed the
  * session's own exit.
+ *
+ * ⚠ AND ONLY WHEN THAT EXIT WAS VOLUNTARY. Observing a child die is not the same as the
+ * child choosing to die: if it was killed, pass `'signal'` with `opts.signal`, not
+ * `'self'`. Reporting a kill as `'self'` is what silently reaped two of the owner's
+ * agents (WI-38054) — and because node-pty hands a signal death an `exitCode` of 0, the
+ * resulting row actively asserts a clean exit instead of merely failing to describe one.
  */
 export async function markAdvSessionEnded(
   id: number,
   exitCode: number | null,
   endedBy: AdvSessionEndedBy,
+  opts: { signal?: string | null } = {},
 ): Promise<void> {
   try {
     const { sql } = getOrgPg();
+    // The CHECK (migration 800) allows a signal name ONLY on a 'signal' row; normalise
+    // here so a caller that passes both can never trip a constraint violation on the
+    // telemetry path, which is best-effort and must never throw into an exiting session.
+    const endedSignal = endedBy === 'signal' ? (opts.signal ?? null) : null;
     const r = await sql`
       UPDATE harness_shared.adv_sessions
-         SET ended_at = now(), exit_code = ${exitCode}, ended_by = ${endedBy}
+         SET ended_at = now(), exit_code = ${exitCode}, ended_by = ${endedBy},
+             ended_signal = ${endedSignal}
        WHERE id = ${id} AND ended_at IS NULL
        RETURNING id
     `;
@@ -1033,7 +1148,7 @@ export async function listAdvSessions(limit = 100): Promise<AdvSessionRow[]> {
       }>
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by,
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal,
              to_jsonb(a)->>'port_id' AS port_id,
              to_jsonb(a)->>'port_source_adv_session_id' AS port_source_adv_session_id,
              to_jsonb(a)->>'port_status' AS port_status,
@@ -1088,7 +1203,7 @@ export async function listResumableSessions(limit = 30): Promise<AdvSessionRow[]
       }>
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal
         FROM harness_shared.adv_sessions a
        WHERE agent IS NOT NULL
          AND cwd IS NOT NULL
@@ -1145,7 +1260,7 @@ export async function getAdvSession(id: number): Promise<AdvSessionRow | null> {
       }>
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by,
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal,
              to_jsonb(a)->>'port_id' AS port_id,
              to_jsonb(a)->>'port_source_adv_session_id' AS port_source_adv_session_id,
              to_jsonb(a)->>'port_status' AS port_status,
@@ -1172,7 +1287,7 @@ export async function getAdvSessionInWorkspace(id: number, workspaceId: string):
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id,
-             started_at, ended_at, exit_code, ended_by,
+             started_at, ended_at, exit_code, ended_by, ended_signal,
              to_jsonb(a)->>'port_id' AS port_id,
              to_jsonb(a)->>'port_source_adv_session_id' AS port_source_adv_session_id,
              to_jsonb(a)->>'port_status' AS port_status,
@@ -1259,7 +1374,7 @@ export async function advSessionsByCoordOwner(limit = 500): Promise<Map<string, 
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
              window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, launch_argv,
-             started_at, ended_at, exit_code, ended_by
+             started_at, ended_at, exit_code, ended_by, ended_signal
         FROM harness_shared.adv_sessions
        WHERE coord_owner_id IS NOT NULL
        ORDER BY started_at DESC
@@ -1312,7 +1427,7 @@ export async function listRecordedLiveSessions(
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT DISTINCT ON (coord_owner_id)
              id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal
         FROM harness_shared.adv_sessions
        WHERE ended_at IS NULL
          AND coord_owner_id IS NOT NULL
@@ -1477,7 +1592,7 @@ export async function latestAdvSessionByCoordOwner(coordOwnerId: string): Promis
     const { sql } = getOrgPg();
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal
         FROM harness_shared.adv_sessions
        WHERE coord_owner_id = ${coordOwnerId}
        ORDER BY started_at DESC
@@ -1512,7 +1627,7 @@ export async function latestLiveAdvSessionByLabel(
     const cutoffIso = new Date(Date.now() - RECORDED_LIVE_MAX_AGE_MS).toISOString();
     const rows = await sql<Array<Parameters<typeof mapAdvSessionRow>[0]>>`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal
         FROM harness_shared.adv_sessions
        WHERE label = ${label}
          AND workspace_id = ${workspaceId}
@@ -1578,7 +1693,7 @@ export async function listEndedAdvSessions(
       }>
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal
         FROM harness_shared.adv_sessions
        WHERE ended_at IS NOT NULL
          -- Match the transcript handles understood by endedSessionStreamUrl:
@@ -1755,7 +1870,7 @@ export async function advSessionsByTranscriptHandles(
       }>
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal
         FROM harness_shared.adv_sessions
        WHERE (${sessionIds}::text[] IS NOT NULL AND session_id = ANY(${sessionIds}::text[]))
           OR (${ompThreadIds}::text[] IS NOT NULL AND omp_thread_id = ANY(${ompThreadIds}::text[]))
@@ -1821,7 +1936,7 @@ export async function advSessionsByIdToken(
       }>
     >`
       SELECT id, workspace_id, plan_slug, agent, role, feature, mode, terminal_bin, pid,
-             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by
+             window_id, omp_thread_id, label, cwd, coord_owner_id, session_id, started_at, ended_at, exit_code, ended_by, ended_signal
         FROM harness_shared.adv_sessions
        WHERE lower(coord_owner_id) LIKE ${pattern}
           OR lower(session_id)     LIKE ${pattern}
