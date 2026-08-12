@@ -119,6 +119,39 @@ export function coerceCompletionShape(raw: unknown): unknown {
 
   const out: Record<string, unknown> = { ...raw };
 
+  // The public completion contract exposes the same verification aliases both at the
+  // top level and under `verification`. Normalize the nested object before the strict
+  // CompletionVerificationEvidenceSchema sees it; otherwise an LLM-shaped array such as
+  // `verification.testsRun: ['suite', 'green']` is rejected even though the top-level
+  // `testsRun` form is already rescued by STRING_FIELDS (EI-20234587310739072).
+  if (isPlainObject(out.verification)) {
+    const verification: Record<string, unknown> = { ...out.verification };
+    for (const f of ['testsRun', 'testResult', 'verifiedHow', 'summary'] as const) {
+      const value = verification[f];
+      if (Array.isArray(value)) verification[f] = joinToString(value) || undefined;
+    }
+    const filesChanged = verification.filesChanged;
+    if (typeof filesChanged === 'string') {
+      const s = filesChanged.trim();
+      verification.filesChanged = s ? [s] : undefined;
+    } else if (filesChanged != null && !Array.isArray(filesChanged)) {
+      verification.filesChanged = [filesChanged];
+    }
+    if (Array.isArray(verification.filesChanged)) {
+      verification.filesChanged = verification.filesChanged.map((entry) => {
+        if (!isPlainObject(entry) || typeof entry.path !== 'string' || !entry.path.trim()) return entry;
+        return entry.path.trim();
+      });
+    }
+    const addedTests = verification.addedTests;
+    if (typeof addedTests === 'string') {
+      const s = addedTests.trim().toLowerCase();
+      if (['true', 'yes', 'y', '1'].includes(s)) verification.addedTests = true;
+      if (['false', 'no', 'n', '0'].includes(s)) verification.addedTests = false;
+    }
+    out.verification = verification;
+  }
+
   // array-typed fields: a lone scalar becomes a 1-element array (lossless, no splitting).
   for (const f of ARRAY_FIELDS) {
     const val = out[f];
