@@ -32,6 +32,9 @@ const getPotTimeWake =
   vi.fn<() => Promise<{ active: boolean; nextFireAt: Date | null; lastFiredAt: Date | null } | null>>();
 const fireLaunchBlueprint = vi.fn(async () => ({ role: 'operator', kind: 'role' as const }));
 const listReactionRules = vi.fn<() => Array<{ id: string }>>(() => []);
+const readPotSoakReport = vi.fn<(...args: unknown[]) => Promise<Record<string, unknown> | null>>(
+  async () => ({ potSlug: 'papercusp', ready: true }),
+);
 const mugWakeEfficiency = vi.fn<() => Promise<Record<string, unknown>>>();
 
 vi.mock('../../pot/wake', async (importOriginal) => {
@@ -55,6 +58,10 @@ vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-test' 
 vi.mock('../../events/registry', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
   listReactionRules: () => listReactionRules(),
+}));
+vi.mock('../../pot/soak-report', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  readPotSoakReport: (...a: unknown[]) => readPotSoakReport(...a),
 }));
 vi.mock('@papercusp/db-org', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -123,6 +130,7 @@ beforeEach(() => {
   readPotWakeState.mockResolvedValue({ subscriptions: [] });
   getPotTimeWake.mockResolvedValue(null);
   listReactionRules.mockReturnValue([]);
+  readPotSoakReport.mockResolvedValue({ potSlug: 'papercusp', ready: true });
 });
 afterEach(() => {
   for (const k of ENV) {
@@ -477,6 +485,23 @@ describe('pot:status', () => {
     expect(getPotTimeWake).not.toHaveBeenCalled();
     expect(res.subscriptions).toEqual([]);
     expect(res.floorSec).toBe(60);
+  });
+
+  it('never-settling soak report is bounded and marked as timed out', async () => {
+    vi.useFakeTimers();
+    try {
+      readPotSoakReport.mockImplementation(() => new Promise(() => {}));
+
+      const pending = tool.handler({ harness: 'papercup' }, ctx());
+      await vi.advanceTimersByTimeAsync(10_000);
+      const res = parse(await pending);
+
+      expect(res.ok).toBe(true);
+      expect(res.soakReport).toBeNull();
+      expect(res.soakReportTimedOut).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });
 
