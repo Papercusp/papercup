@@ -38,8 +38,18 @@ export function loadFixture(pairId: string): CorpusFixture {
   return JSON.parse(readFileSync(join(FIXTURE_DIR, `${pairId}.sample.json`), 'utf8')) as CorpusFixture;
 }
 
-/** Pair every given pair with its committed sample. */
-export function loadPairFixtures(pairs: SubstitutionPair[]): Array<{ pair: SubstitutionPair; fixture: CorpusFixture }> {
+/**
+ * Pair every given pair with its committed sample.
+ *
+ * Generic in the pair type so a caller that narrowed to one corpus (the shell
+ * gate's `BASH_GATE_PAIRS`) keeps that narrowing through the load — otherwise
+ * every downstream consumer would have to re-prove a fact the caller already
+ * established, or, worse, widen back to the union and reach for a matcher the
+ * pair may not carry.
+ */
+export function loadPairFixtures<T extends SubstitutionPair>(
+  pairs: T[],
+): Array<{ pair: T; fixture: CorpusFixture }> {
   return pairs.map((pair) => ({ pair, fixture: loadFixture(pair.id) }));
 }
 

@@ -1341,33 +1341,47 @@ export const TOOL_ROUTING_BY_TABLE: Record<string, ToolRoute> = {
   },
 };
 
+/** A query that reads exactly one relation and does nothing analytic with it. */
+export interface PlainSingleRelationRead {
+  /** The bare relation name — `harness_shared.work_items` → `work_items`. */
+  relation: string;
+  /** The relation exactly as the query wrote it, schema qualifier and all. */
+  asWritten: string;
+}
+
 /**
- * "A tool already answers this read" — the aimed replacement for the static
- * `seeAlso` footer (P-001).
+ * THE answer to "what single relation does this query plainly read" — and
+ * deliberately the ONLY one in the tree.
  *
- * ⚠ DELIBERATELY CONSERVATIVE: fires ONLY on a single-relation, non-analytic
- * read. `dev:pg_query` exists for genuinely ad-hoc analysis, and that traffic is
- * CORRECT — a cross-table join or a group-by is the tool working as intended, so
- * nudging it would be both wrong and, at ~15.9k calls, expensive noise. The
- * shape this targets is the one the audit actually found: a plain
- * `SELECT … FROM <one covered table> WHERE …`, which is what an agent writes
- * when it does not know the verb exists.
+ * Two consumers need this judgement and they must not disagree: the in-tool
+ * routing advisory below (P-001), and the SQL corpus atomizer that decides which
+ * substitution pair claims a sampled query
+ * (`bash-substitution/sql-corpus.ts`, P-007). A second implementation would be a
+ * second answer to "what does this query read", so the advisory an agent sees at
+ * the point of the query and the audit that decides whether that advisory is
+ * EARNED could drift — which is the D-001 failure ("a routing advisory must never
+ * out-run the tool's actual coverage") re-created one layer down.
  *
- * Returns null (stays silent) when the caller is already going through a
- * dedicated advisory for that relation, so the specific warning is never
- * crowded by the generic one.
+ * ⚠ DELIBERATELY CONSERVATIVE, and the conservatism is the point. `dev:pg_query`
+ * exists for genuinely ad-hoc analysis, and that traffic is CORRECT — a
+ * cross-table join or a group-by is the tool working as intended. The shape this
+ * recognises is the one the audit actually found: a plain
+ * `SELECT … FROM <one table> WHERE …`, which is what an agent writes when it does
+ * not know the verb exists.
+ *
+ * Returns null for anything else, including a query whose relations the regex
+ * extractor could not resolve. Silence on an unparseable query is the correct
+ * failure direction for both consumers: the advisory says nothing, and the
+ * corpus atom goes unclaimed rather than being attributed to a pair that never
+ * covered it.
  */
-export function buildToolRoutingAdvisory(rawSql: string): string | null {
+export function plainSingleRelationRead(rawSql: string): PlainSingleRelationRead | null {
   const tables = extractReferencedTables(rawSql);
   if (tables.length !== 1) return null;
 
-  const bare = bareTableName(tables[0]);
-  const route = TOOL_ROUTING_BY_TABLE[bare];
-  if (!route) return null;
-
   const stripped = stripSqlLiteralsAndComments(rawSql);
 
-  // Analytic shapes are this tool's legitimate job — say nothing.
+  // Analytic shapes are `dev:pg_query`'s legitimate job — no verb covers them.
   if (/\bgroup\s+by\b/i.test(stripped)) return null;
   if (/\bover\s*\(/i.test(stripped)) return null;
   if (/\b(?:count|sum|avg|min|max|percentile_cont|array_agg|jsonb_agg|string_agg)\s*\(/i.test(stripped)) return null;
@@ -1375,6 +1389,30 @@ export function buildToolRoutingAdvisory(rawSql: string): string | null {
   // A join against a second relation the extractor folded away (a lateral, a
   // set-returning function) is still analysis, not a plain read.
   if (/\bjoin\b|\blateral\b|\bunion\b|\bintersect\b|\bexcept\b/i.test(stripped)) return null;
+
+  return { relation: bareTableName(tables[0]), asWritten: tables[0] };
+}
+
+/**
+ * "A tool already answers this read" — the aimed replacement for the static
+ * `seeAlso` footer (P-001).
+ *
+ * ⚠ DELIBERATELY CONSERVATIVE: fires ONLY on a single-relation, non-analytic
+ * read — see {@link plainSingleRelationRead}, which is where that judgement
+ * lives and which the P-007 SQL corpus atomizer shares, so the advisory and the
+ * audit that earns it cannot drift apart.
+ *
+ * Returns null (stays silent) when the caller is already going through a
+ * dedicated advisory for that relation, so the specific warning is never
+ * crowded by the generic one.
+ */
+export function buildToolRoutingAdvisory(rawSql: string): string | null {
+  const read = plainSingleRelationRead(rawSql);
+  if (!read) return null;
+
+  const bare = read.relation;
+  const route = TOOL_ROUTING_BY_TABLE[bare];
+  if (!route) return null;
 
   // Let the dedicated claimability advisory own the work_items claim shape —
   // it says something strictly more specific than "there is a list tool".

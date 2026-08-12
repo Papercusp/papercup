@@ -26,7 +26,8 @@
  */
 
 import { compileRegistryPattern, normalizeRegistryFlags } from './match';
-import { assertPolicyTier } from './types';
+import { sqlPairClaimsAtom } from './sql-corpus';
+import { assertPolicyTier, corpusOf, isSqlPair, patternFlagsOf, patternSourceOf } from './types';
 import type {
   CoverageResult,
   EquivalenceVerdict,
@@ -94,8 +95,20 @@ export interface SamplePopulation {
 /** Cap on stored failing cases: enough to act on, small enough for a jsonb column. */
 const MAX_FAILING_CASES = 25;
 
-/** Select the atoms from a corpus that a pair's pattern claims. */
+/**
+ * Select the atoms from a corpus that a pair claims.
+ *
+ * Dispatches on the pair's CORPUS (P-007), because "does this pair claim this
+ * atom" is a different question in each: a shell atom is claimed by a regex over
+ * its text, a SQL atom by the relation it plainly reads. Both routes go through
+ * the same shared judgement their enforcement path uses — see below and
+ * {@link sqlPairClaimsAtom} — so neither can earn a verdict under one rule and be
+ * enforced under another.
+ */
 export function matchingAtoms(pair: SubstitutionPair, corpus: SampledCommand[]): SampledCommand[] {
+  if (isSqlPair(pair)) {
+    return corpus.filter((entry) => sqlPairClaimsAtom(pair, entry.atom));
+  }
   // Compiled through the SAME helper every enforcement consumer uses, so a
   // verdict can never be earned under one regex and enforced under another
   // (WI-5998: the flags used to be dropped on the way into the registry, which
@@ -190,8 +203,9 @@ export function auditPair(
   return {
     pairId: pair.id,
     intentLabel: pair.intentLabel,
-    bashPattern: pair.bashPattern.source,
-    bashPatternFlags: normalizeRegistryFlags(pair.bashPattern.flags),
+    corpus: corpusOf(pair),
+    bashPattern: patternSourceOf(pair),
+    bashPatternFlags: normalizeRegistryFlags(patternFlagsOf(pair)),
     toolName: pair.toolName,
     verdict,
     sampleSize: sample.length,

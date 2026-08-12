@@ -34,6 +34,7 @@
 import { readFileSync } from 'node:fs';
 import { atomHead, atomizePipeline } from './atomize';
 import { ALL_PAIRS } from './pairs';
+import { isBashPair } from './types';
 import type { SubstitutionPair } from './types';
 
 /** The five dispositions of P-005. */
@@ -226,9 +227,19 @@ function servesItsMatch(pair: SubstitutionPair): boolean {
   return pair.expectedVerdict === 'equivalent';
 }
 
-/** Does any pair's pattern claim this atom? Returns the first match. */
+/**
+ * Does any pair's pattern claim this atom? Returns the first match.
+ *
+ * SQL pairs are skipped rather than rejected at the type level, because the
+ * caller legitimately hands this the WHOLE registry (`ALL_PAIRS`) — this census
+ * scans shell atoms, and a pair matched by the relation a query reads has nothing
+ * to say about one. Skipping is silent by design: a SQL pair failing to claim a
+ * shell atom is not a gap in the census, it is the corpora being different
+ * corpora (P-007).
+ */
 function matchingPair(atom: string, pairs: SubstitutionPair[]): SubstitutionPair | null {
   for (const pair of pairs) {
+    if (!isBashPair(pair)) continue;
     // Patterns are authored with /g in places; a stateful regex would skip every
     // other match when reused across a 142k-atom scan (the classic lastIndex bug).
     const stateless = new RegExp(pair.bashPattern.source, pair.bashPattern.flags.replace(/g/g, ''));

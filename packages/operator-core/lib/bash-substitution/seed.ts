@@ -51,16 +51,22 @@
 import { getOrgPg } from '@papercusp/db-org';
 import { auditPair, matchingAtoms, maxTierFor, meetsAuditFloor } from './equivalence';
 import { normalizeRegistryFlags } from './match';
-import { ALL_PAIRS } from './pairs';
-import { assertPolicyTier } from './types';
+import { ALL_PAIRS, BASH_GATE_PAIRS } from './pairs';
+import { assertPolicyTier, patternFlagsOf, patternSourceOf } from './types';
 import type { CorpusFixture } from './corpus';
-import type { PairAudit, SubstitutionPair } from './types';
+import type { BashSubstitutionPair, PairAudit } from './types';
 
 type OrgSql = ReturnType<typeof getOrgPg>['sql'];
 
 /** A pair plus the frozen sample its verdict is derived from. */
 export interface PairWithFixture {
-  pair: SubstitutionPair;
+  /**
+   * SHELL pairs only. This seeder writes `harness_shared.bash_tool_substitutions`,
+   * which the PreToolUse hooks match against raw shell commands — a SQL pair has
+   * no shell pattern to match, so it is excluded at the TYPE level rather than
+   * filtered at runtime. See `BASH_GATE_PAIRS` for the full argument (P-007).
+   */
+  pair: BashSubstitutionPair;
   fixture: CorpusFixture;
 }
 
@@ -95,7 +101,7 @@ async function upsertPair(
   sql: OrgSql,
   workspaceId: string,
   audit: PairAudit,
-  pair: SubstitutionPair,
+  pair: BashSubstitutionPair,
   fixture: CorpusFixture,
 ): Promise<boolean> {
   const rows = (await sql`
@@ -287,7 +293,7 @@ export async function seedSubstitutionRegistry(opts: {
  * too small to derive an equivalence verdict. Ordinary pairs continue through
  * `auditPair` and therefore still throw when they fall below the evidence floor.
  */
-function auditForSeed(pair: SubstitutionPair, fixture: CorpusFixture): PairAudit {
+function auditForSeed(pair: BashSubstitutionPair, fixture: CorpusFixture): PairAudit {
   if (meetsAuditFloor(fixture.sample.length, fixture)) {
     return auditPair(pair, fixture.sample, fixture);
   }
@@ -303,8 +309,9 @@ function auditForSeed(pair: SubstitutionPair, fixture: CorpusFixture): PairAudit
   return {
     pairId: pair.id,
     intentLabel: pair.intentLabel,
-    bashPattern: pair.bashPattern.source,
-    bashPatternFlags: normalizeRegistryFlags(pair.bashPattern.flags),
+    corpus: 'bash',
+    bashPattern: patternSourceOf(pair),
+    bashPatternFlags: normalizeRegistryFlags(patternFlagsOf(pair)),
     toolName: pair.toolName,
     verdict: 'unaudited',
     sampleSize: sample.length,
@@ -315,5 +322,11 @@ function auditForSeed(pair: SubstitutionPair, fixture: CorpusFixture): PairAudit
   };
 }
 
-/** The pairs this seeder knows about — re-exported so callers need one import. */
-export { ALL_PAIRS };
+/**
+ * The pairs this seeder knows about — re-exported so callers need one import.
+ *
+ * Seed FROM `BASH_GATE_PAIRS`: the registry table is the shell gate's.
+ * `ALL_PAIRS` stays exported because `promoteEarnedRows` reads `holdAtObserve`
+ * across every corpus.
+ */
+export { ALL_PAIRS, BASH_GATE_PAIRS };

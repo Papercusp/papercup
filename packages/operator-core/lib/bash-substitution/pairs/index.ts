@@ -7,7 +7,8 @@
  * automatically both.
  */
 
-import type { SubstitutionPair } from '../types';
+import { isBashPair } from '../types';
+import type { BashSubstitutionPair, SubstitutionPair } from '../types';
 import { AMBIENT_CONTEXT_PAIRS } from './ambient-context';
 import { CODE_SEARCH_PAIRS } from './code-search';
 import { DEPENDENCY_INSTALL_PAIRS } from './dependency-install';
@@ -69,3 +70,25 @@ export const ALL_PAIRS: SubstitutionPair[] = [
   // D-003 authorization that permits it.
   ...DEPENDENCY_INSTALL_PAIRS,
 ];
+
+/**
+ * The pairs the SHELL GATE enforces — everything in {@link ALL_PAIRS} drawn from
+ * the bash corpus (plan `sql-escape-tool-routing-2026-08-12`, P-007).
+ *
+ * WHY THIS SPLIT EXISTS. `harness_shared.bash_tool_substitutions` is not a
+ * generic registry that happens to be named after bash: it is read by the two
+ * PreToolUse hooks, whose input is a raw SHELL COMMAND, and matched by
+ * `matchCommandToSubstitutions`, which atomizes that command and tests each
+ * pattern against the pieces. A SQL pair has no shell pattern to test — its
+ * matcher is a relation resolved out of a query — so seeding one would put a row
+ * in front of a matcher that cannot evaluate it. Not a crash; something worse: a
+ * row that is silently never enforced while looking, in the table, exactly like
+ * one that is.
+ *
+ * So the corpora part company HERE, at the one place a pair reaches the gate.
+ * They stay together everywhere the machinery is genuinely shared — the
+ * equivalence harness, the fixtures, the report, and the CLAUDE.md routing table,
+ * which deliberately renders BOTH (an agent reading "use this verb instead"
+ * should not have to know which corpus taught us that).
+ */
+export const BASH_GATE_PAIRS: BashSubstitutionPair[] = ALL_PAIRS.filter(isBashPair);

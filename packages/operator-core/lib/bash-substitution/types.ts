@@ -34,6 +34,22 @@ export type SubstitutionTier =
   /** Hard block. Reserved for rules that already existed independently. */
   | 'deny';
 
+/**
+ * WHICH CORPUS a pair's evidence is drawn from, and therefore what an "atom"
+ * means for it (plan `sql-escape-tool-routing-2026-08-12`, P-007 / D-003).
+ *
+ *  - `bash` — an atom is ONE normalised shell command (`sed -n '1,80p' file`),
+ *    drawn from the session transcripts and matched by a regex over its text.
+ *  - `sql`  — an atom is ONE normalised query, drawn from `dev:pg_query`'s own
+ *    `tool_invocations` rows and matched by the RELATION it plainly reads.
+ *
+ * The registry is one registry with two corpora rather than two parallel
+ * auditors: census, equivalence, replay, report and the CLAUDE.md routing
+ * projection are all corpus-agnostic already, and duplicating them would
+ * duplicate the drift they exist to prevent.
+ */
+export type SubstitutionCorpus = 'bash' | 'sql';
+
 /** One real command atom drawn from the audit corpus — the evidence unit. */
 export interface SampledCommand {
   /** Session that issued it (`su-…`) — lets a verdict be traced to source. */
@@ -60,8 +76,9 @@ export interface CoverageResult {
 }
 
 /**
- * A candidate (bash pattern → tool) substitution, plus the CAPABILITY ENVELOPE
- * that decides coverage.
+ * Everything a substitution pair carries REGARDLESS of corpus — plus the
+ * CAPABILITY ENVELOPE that decides coverage. The two corpus variants below add
+ * only the matcher; see {@link SubstitutionPair}.
  *
  * `cover()` is the heart of the harness. It must model what the tool can
  * ACTUALLY express — its real args and real limits, read from the tool
@@ -70,13 +87,11 @@ export interface CoverageResult {
  * `equivalent` verdict that unlocks enforcement and then blocks agents with no
  * alternative, which is the exact failure D-001 exists to prevent.
  */
-export interface SubstitutionPair {
+interface SubstitutionPairCommon {
   /** Stable registry id, e.g. `file-read.sed-range`. */
   id: string;
   /** The intent an advisory speaks about, e.g. `file-range-read`. */
   intentLabel: string;
-  /** Matched against a single normalised atom. */
-  bashPattern: RegExp;
   /** The tool that should have served it, e.g. `capability:read`. */
   toolName: string;
   /** Shown to the agent at tier `advise`/`deny`. */
@@ -187,6 +202,103 @@ export interface SubstitutionPair {
   replayEnvelope?: AnswerEnvelope;
 }
 
+/**
+ * A pair whose evidence is SHELL COMMANDS — the original and still the common
+ * case. `corpus` is optional here and nowhere else, so every pair written before
+ * P-007 keeps its exact declaration and the diff that introduced a second corpus
+ * touched no evidence.
+ */
+export interface BashSubstitutionPair extends SubstitutionPairCommon {
+  corpus?: 'bash';
+  /** Matched against a single normalised shell atom. */
+  bashPattern: RegExp;
+  relation?: never;
+  sqlShape?: never;
+}
+
+/**
+ * A pair whose evidence is SQL — real `dev:pg_query` calls (P-007).
+ *
+ * WHY A RELATION RATHER THAN A REGEX. D-003 rules that the SQL atomizer must
+ * reuse P-001's relation extraction rather than write a second one, and a
+ * hand-written `/\bfrom\s+(?:harness_shared\.)?routines\b/i` on each pair would
+ * be exactly that second extractor — twenty of them, each free to disagree with
+ * the advisory the agent actually sees. So a SQL pair NAMES its relation and the
+ * matcher resolves it through `plainSingleRelationRead`, the one shared answer to
+ * "what does this query read".
+ *
+ * The ATOM is still the whole normalised query, not the relation string. That
+ * distinction is load-bearing and is where this refines D-003's wording: `cover()`
+ * receives the atom, and a pair must be able to judge whether the routed verb can
+ * express THIS query's shape — its predicates, its ordering, its jsonb paths.
+ * D-001 §3 requires precisely that judgement ("replay the corpus subset for that
+ * relation and confirm the new verb covers the real shapes"), and a bare relation
+ * name carries none of it: every query against a table would look identical, and
+ * every verdict would be `equivalent` by construction.
+ */
+export interface SqlSubstitutionPair extends SubstitutionPairCommon {
+  corpus: 'sql';
+  /** The BARE relation this pair speaks about, e.g. `schema_migrations`. */
+  relation: string;
+  /**
+   * OPTIONAL further narrowing on the normalised query text, for a relation whose
+   * traffic splits into shapes with different answers (one verb covers the
+   * migration-number lookups, another the drift check). Absent = the pair claims
+   * every plain read of its relation.
+   *
+   * This is a NARROWING filter, never a relation test — writing the table name
+   * into it would reintroduce the second extractor this design refuses.
+   */
+  sqlShape?: RegExp;
+  bashPattern?: never;
+}
+
+/**
+ * A candidate (pattern → tool) substitution from EITHER corpus.
+ *
+ * Discriminated on `corpus` so a corpus-blind read cannot compile: every consumer
+ * that reaches for a pattern must say which corpus it means, which is what keeps
+ * a SQL pair out of the shell gate and a bash pair out of the query advisory.
+ */
+export type SubstitutionPair = BashSubstitutionPair | SqlSubstitutionPair;
+
+/** Which corpus this pair draws evidence from. `bash` is the default. */
+export function corpusOf(pair: SubstitutionPair): SubstitutionCorpus {
+  return pair.corpus ?? 'bash';
+}
+
+/** Narrow to the shell corpus. */
+export function isBashPair(pair: SubstitutionPair): pair is BashSubstitutionPair {
+  return corpusOf(pair) === 'bash';
+}
+
+/** Narrow to the SQL corpus. */
+export function isSqlPair(pair: SubstitutionPair): pair is SqlSubstitutionPair {
+  return corpusOf(pair) === 'sql';
+}
+
+/**
+ * The pattern STRING a registry row / audit record stores for this pair.
+ *
+ * For a bash pair that is the regex source, exactly as before. For a SQL pair it
+ * is a `relation:<name>` key (plus the narrowing shape when one is declared) —
+ * readable, stable, and deliberately NOT a regex, because nothing may recompile
+ * it and match it against a shell atom. SQL pairs are not written to
+ * `harness_shared.bash_tool_substitutions` at all (see `seed.ts`); this exists so
+ * an audit RECORD can name what it audited without inventing a fake pattern.
+ */
+export function patternSourceOf(pair: SubstitutionPair): string {
+  if (isSqlPair(pair)) {
+    return pair.sqlShape ? `relation:${pair.relation} shape:${pair.sqlShape.source}` : `relation:${pair.relation}`;
+  }
+  return pair.bashPattern.source;
+}
+
+/** The regex flags a bash pair was audited with; empty for a SQL pair. */
+export function patternFlagsOf(pair: SubstitutionPair): string {
+  return isSqlPair(pair) ? '' : pair.bashPattern.flags;
+}
+
 /** The prefix an `intentLabel` must carry to be allowed a {@link SubstitutionPair.policyTier}. */
 export const POLICY_INTENT_PREFIX = 'policy-violation:';
 
@@ -260,7 +372,17 @@ export interface FailingCase {
 export interface PairAudit {
   pairId: string;
   intentLabel: string;
-  /** `bashPattern.source` — the string the registry stores. */
+  /**
+   * Which corpus this verdict was earned against (P-007).
+   *
+   * Carried on the RECORD rather than looked up from the pair, because a report
+   * or a drift check reads audits long after the pair is out of scope — and a
+   * bash verdict and a SQL verdict are not comparable quantities. Defaulted
+   * nowhere: an audit that cannot say which corpus it measured is the ambiguity
+   * this field exists to remove.
+   */
+  corpus: SubstitutionCorpus;
+  /** {@link patternSourceOf} — the string the registry stores. */
   bashPattern: string;
   /**
    * `bashPattern.flags`, minus the stateful ones — the registry's companion

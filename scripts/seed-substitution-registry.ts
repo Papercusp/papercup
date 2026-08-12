@@ -32,7 +32,7 @@
  * `lib/bash-substitution/pairs/**`.
  */
 import { loadPairFixtures } from '../packages/operator-core/lib/bash-substitution/corpus';
-import { ALL_PAIRS } from '../packages/operator-core/lib/bash-substitution/pairs';
+import { BASH_GATE_PAIRS } from '../packages/operator-core/lib/bash-substitution/pairs';
 import { fetchSubstitutionRows } from '../packages/operator-core/lib/bash-substitution/registry';
 import {
   diffRegistry,
@@ -47,7 +47,9 @@ const PROMOTE = process.argv.includes('--promote');
 const APPLY = process.argv.includes('--apply');
 
 async function main(): Promise<void> {
-  const fixtures = loadPairFixtures(ALL_PAIRS);
+  // BASH_GATE_PAIRS, not ALL_PAIRS: this seeds the SHELL gate's registry, and a
+  // SQL pair has no shell pattern for the PreToolUse matcher to test (P-007).
+  const fixtures = loadPairFixtures(BASH_GATE_PAIRS);
 
   // `--promote` is P-020's staged promotion (observe → advise) as a repeatable
   // command rather than a hand-written UPDATE. Dry-run unless --apply, and the
