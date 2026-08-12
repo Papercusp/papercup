@@ -126,6 +126,19 @@ describe('db:migrate — dry run', () => {
     expect(h.spawnSync).not.toHaveBeenCalled();
   });
 
+  it('does not require the migration file to be readable for a dry run', async () => {
+    h.readFileSync.mockImplementation(() => {
+      throw new Error(`ENOENT: no such file or directory, open '${FILE}'`);
+    });
+
+    const out = parse(await (migrateTool as never as { handler: Function }).handler({ file: FILE }, CTX));
+
+    expect(out).toMatchObject({ ok: true, dry_run: true, would_run: expect.stringContaining(FILE) });
+    expect(h.readFileSync).not.toHaveBeenCalled();
+    expect(h.guardResource).not.toHaveBeenCalled();
+    expect(h.spawnSync).not.toHaveBeenCalled();
+  });
+
   it('returns a structured unreadable-file result before acquiring the lock', async () => {
     const error = Object.assign(new Error(`ENOENT: no such file or directory, open '${FILE}'`), { code: 'ENOENT' });
     h.readFileSync.mockImplementation(() => {

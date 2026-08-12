@@ -310,6 +310,15 @@ export default defineTool({
       ),
   }),
   async handler(args, ctx) {
+    if (!args.confirm) {
+      return json({
+        ok: true,
+        dry_run: true,
+        would_run: `psql <admin-url> -v ON_ERROR_STOP=1 -f ${args.file}`,
+        note: 'Pass confirm:true to acquire exclusive(db-schema), drain, then apply. The real apply also requires PAPERCUSP_ALLOW_DB_MIGRATE=1.',
+      });
+    }
+
     // Validate the file before the dry-run/lock branches and retain the exact
     // bytes for the apply hash. A missing file used to be swallowed here, then
     // read again inside guardResource's callback, where ENOENT escaped as an
@@ -353,15 +362,6 @@ export default defineTool({
       // missing or unreadable path; the deployed-code guard only applies to a
       // file whose body can actually identify itself as parked.
     }
-    if (!args.confirm) {
-      return json({
-        ok: true,
-        dry_run: true,
-        would_run: `psql <admin-url> -v ON_ERROR_STOP=1 -f ${args.file}`,
-        note: 'Pass confirm:true to acquire exclusive(db-schema), drain, then apply. The real apply also requires PAPERCUSP_ALLOW_DB_MIGRATE=1.',
-      });
-    }
-
     const { ownerId, ownerLabel, coordinationDomain } = readIdentity(ctx);
     const coordIdentity = resolveAgentIdentity(ctx);
     const enabled = process.env.PAPERCUSP_ALLOW_DB_MIGRATE === '1';
