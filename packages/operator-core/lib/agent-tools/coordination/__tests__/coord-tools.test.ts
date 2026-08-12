@@ -133,6 +133,12 @@ describe('boundInboxEntries (EI-1752)', () => {
 });
 
 describe('coord:thread', () => {
+  it('documents that an inbox msg_id is passed as root_msg_id', () => {
+    const guidance = `${String(threadTool.description)} ${JSON.stringify(threadTool.guidance ?? {})}`;
+    expect(guidance).toMatch(/inbox.*msg_id.*root_msg_id/i);
+    expect(guidance).toMatch(/no [`']?msg_id[`']? argument/i);
+  });
+
   it('reconstructs the thread rooted at a message (root + its ack)', async () => {
     const m = await sendMessage(id('alice'), { to: ['*'], summary: 'heads up' });
     await sendMessage(id('bob'), { to: ['alice'], kind: 'ack', related_msg_id: m.msg_id });

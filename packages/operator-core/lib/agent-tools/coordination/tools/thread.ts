@@ -12,9 +12,9 @@ import { COORD_ROLES } from '../roles';
 export default defineTool({
   name: 'coord:thread',
   description:
-    'Reconstruct a coord thread rooted at `root_msg_id` — every entry connected via the `related_msg_id` chain, sorted by ts ascending.',
+    'Reconstruct a coord thread rooted at `root_msg_id`; pass the inbox entry\'s `msg_id` value as `root_msg_id` (there is no `msg_id` argument). Entries connected via `related_msg_id` are sorted by ts ascending.',
   guidance: {
-    when: 'You want the full conversation around a coord message (replies, acks, resolutions).',
+    when: 'You want the full conversation around a coord message (replies, acks, resolutions). Use the exact `msg_id` from coord:inbox or coord:read as the `root_msg_id` argument.',
     notWhen: 'For a fresh inbox sweep — use coord:inbox.',
   },
   capability: 'coord:read',
