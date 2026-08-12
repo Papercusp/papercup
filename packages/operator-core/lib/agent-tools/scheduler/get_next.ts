@@ -28,6 +28,8 @@ import { CLAIM_STATES_ALLOWLIST } from '../../work-items';
 import { getBuildInfo } from '../../build-info';
 import { assessClaimFreshness, type ClaimFreshnessVerdict } from '../../work-item-claim-freshness';
 import { holderContextReader, resolveHolderAdvisoryMap } from '../coordination/holder-advisory';
+import { getSessionBrief } from '../../session-brief';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import type { CellReader } from '../../cell-registry';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { cancelClaimableAwaits } from '../../events/await/store';
@@ -712,13 +714,31 @@ export default defineTool({
     // A session already knows its harness; making the caller restate it bought
     // nothing. Cross-harness pulls still work by passing it explicitly, so this
     // widens behaviour without removing any.
-    const ctxHarness = (ctx as { harnessSlug?: unknown }).harnessSlug;
-    const resolvedHarness =
-      rawArgs.harness ?? (typeof ctxHarness === 'string' && ctxHarness.trim() ? ctxHarness.trim() : undefined);
+    const ident = resolveAgentIdentity(ctx);
+    const ctxHarness = (ctx as { harnessSlug?: string | null }).harnessSlug;
+    const explicitHarness = typeof rawArgs.harness === 'string' ? rawArgs.harness.trim() : '';
+    let resolvedHarness = resolveConcreteHarnessSlug(rawArgs.harness, { harnessSlug: ctxHarness });
+    // WI-20256839898955733 — the transport uses '*' as the unscoped sentinel, even
+    // after coord:orient has established the caller's concrete harness in its durable
+    // session brief. Treating that sentinel as a real slug makes the miss path report
+    // `harness_not_found` for '*', so a fleet member cannot self-pull without repeating
+    // the harness on every wake. Read the brief only when no concrete arg/context exists;
+    // an explicit '*' remains a deliberate invalid single-harness scope.
+    if (!explicitHarness && !resolvedHarness) {
+      const brief = await getSessionBrief({ ownerId: ident.ownerId }).catch(() => null);
+      const briefWorkspace = brief?.workspaceId?.trim();
+      const identityWorkspace = ident.workspaceId?.trim();
+      if (
+        brief &&
+        (!identityWorkspace || !briefWorkspace || identityWorkspace === briefWorkspace)
+      ) {
+        resolvedHarness = resolveConcreteHarnessSlug(brief.harnessSlug, undefined) ?? undefined;
+      }
+    }
     if (!resolvedHarness) {
-      // Only reachable from a session with no harness binding at all (unscoped
-      // operator / cross-workspace). Say which of the two is missing rather than
-      // re-emitting the bare zod complaint the five filings were about.
+      // Reachable from an unscoped operator/cross-workspace session with no durable
+      // harness brief, or from an explicit wildcard. Say which scope is missing rather
+      // than passing '*' downstream and misreporting it as an unregistered harness.
       return {
         content: [
           {
@@ -739,7 +759,6 @@ export default defineTool({
     // alternative (renaming ~15 call sites) would also have caught the unrelated
     // `args.harness` inside buildMissDiagnosis, which has its own `args` param.
     const args = { ...rawArgs, harness: resolvedHarness };
-    const ident = resolveAgentIdentity(ctx);
     // P-016: reconcile ALL incompatible pre-existing claims before the next
     // pickup. The sweep is batch-shaped (one pass, one leader alert), so a dead
     // lane cannot drip one stale claim per wake. Only fleet MEMBERS are scoped;

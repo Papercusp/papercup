@@ -15,6 +15,10 @@ import { BUDGET, promptWeight } from '../tool-guidance-budget';
 
 const scopeState = vi.hoisted(() => ({ scope: null as any, quarantinedIds: [] as string[], windingDown: false, pauseReason: null as string | null }));
 const getNextM = vi.hoisted(() => vi.fn());
+const getSessionBriefM = vi.hoisted(() => vi.fn(async () => null as {
+  workspaceId?: string | null;
+  harnessSlug?: string | null;
+} | null));
 // EI-16057: registry contents the harness-existence gate checks against — 'papercusp'
 // is the only registered slug by default so every pre-existing test (which all pass
 // `harness: 'papercusp'`) keeps resolving; the dedicated describe block below swaps
@@ -32,6 +36,9 @@ const readFleetPauseStateM = vi.hoisted(() => vi.fn());
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-member', workspaceId: 'ws-1' }),
+}));
+vi.mock('../../session-brief', () => ({
+  getSessionBrief: getSessionBriefM,
 }));
 vi.mock('../../harness-registry', async (importOriginal) => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -190,6 +197,7 @@ describe('scheduler:get_next derives harness from the bound session (WI-38059)',
     registryState.projects = [{ slug: 'papercusp' }];
     loadHarnessRegistryM.mockImplementation(async () => ({ projects: registryState.projects }));
     getNextM.mockResolvedValue(null);
+    getSessionBriefM.mockResolvedValue(null);
   });
 
   it('advertises an optional harness and passes the bound session harness to the claim path', async () => {
@@ -210,6 +218,32 @@ describe('scheduler:get_next derives harness from the bound session (WI-38059)',
   it('returns a typed harness_required error when neither the call nor session supplies one', async () => {
     const out = (await getNextTool.handler({}, {} as never)) as { content: Array<{ text: string }>; isError?: boolean };
     const body = JSON.parse(out.content[0]!.text);
+
+    expect(body).toMatchObject({ ok: false, error: 'harness_required' });
+    expect(out.isError).toBe(true);
+    expect(getNextM).not.toHaveBeenCalled();
+  });
+
+  it('resolves the durable session harness when transport context carries the unscoped sentinel', async () => {
+    getSessionBriefM.mockResolvedValue({ workspaceId: 'ws-1', harnessSlug: 'papercusp' });
+
+    const out = (await getNextTool.handler({}, { harnessSlug: '*' } as never)) as {
+      content: Array<{ text: string }>;
+    };
+    const body = JSON.parse(out.content[0].text);
+
+    expect(body).toMatchObject({ ok: false, windDown: true });
+    expect(getSessionBriefM).toHaveBeenCalledWith({ ownerId: 'su-member' });
+    expect(getNextM).toHaveBeenCalledOnce();
+    expect(getNextM.mock.calls[0]?.[0]).toMatchObject({ harness: 'papercusp' });
+  });
+
+  it('does not pass the unscoped sentinel downstream when no durable harness exists', async () => {
+    const out = (await getNextTool.handler({}, { harnessSlug: '*' } as never)) as {
+      content: Array<{ text: string }>;
+      isError?: boolean;
+    };
+    const body = JSON.parse(out.content[0].text);
 
     expect(body).toMatchObject({ ok: false, error: 'harness_required' });
     expect(out.isError).toBe(true);
