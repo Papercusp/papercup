@@ -41,6 +41,19 @@ describe('scheduler:get_claim_spec — args', () => {
     }
   });
 
+  it('accepts a bounded history window', () => {
+    expect(args.safeParse({ fleet: 'my-fleet', history: 5 }).success).toBe(true);
+    expect(args.safeParse({ cupId: 'su-bee-1', history: 1 }).success).toBe(true);
+  });
+
+  it('rejects a history window outside the bound (an unbounded read of a jsonb column)', () => {
+    for (const history of [0, -1, 21, 2.5]) {
+      expect(args.safeParse({ fleet: 'my-fleet', history }).success, `accepted ${history}`).toBe(
+        false,
+      );
+    }
+  });
+
   it('guidance warns fleet callers about the selector-only contract', () => {
     const when = getClaimSpecTool.guidance?.when ?? '';
     expect(when).toMatch(/selector-only/i);
