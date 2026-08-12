@@ -11,7 +11,7 @@
  * writes attribute correctly.
  *
  * Usage:
- *   node scripts/mcp-call.mjs <tool> [jsonArgs] [--client <id>] [--workspace <ws>] [--harness <h>] [--port <n>] [--raw]
+ *   node scripts/mcp-call.mjs <tool> [jsonArgs] [--client <id>|--client=<id>] [--workspace <ws>|--workspace=<ws>] [--harness <h>|--harness=<h>] [--port <n>|--port=<n>] [--raw]
  * Examples:
  *   node scripts/mcp-call.mjs coord:whoami
  *   node scripts/mcp-call.mjs work_items:get '{"id":"EI-1750"}' --harness papercup
@@ -29,15 +29,21 @@ import { pathToFileURL } from 'node:url';
 /** The JSON-RPC id we send; parseSse selects the frame that answers it. */
 const REQUEST_ID = 1;
 
-function parseArgs(argv) {
+export function parseArgs(argv) {
   const flags = {};
   const pos = [];
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
     if (a.startsWith('--')) {
-      const key = a.slice(2);
-      if (key === 'raw') flags.raw = true;
-      else flags[key] = argv[++i];
+      const rawKey = a.slice(2);
+      const equalsAt = rawKey.indexOf('=');
+      const key = equalsAt === -1 ? rawKey : rawKey.slice(0, equalsAt);
+      if (key === 'raw') {
+        if (equalsAt !== -1) throw new Error('--raw does not take a value');
+        flags.raw = true;
+      } else {
+        flags[key] = equalsAt === -1 ? argv[++i] : rawKey.slice(equalsAt + 1);
+      }
     } else pos.push(a);
   }
   return { tool: pos[0], jsonArgs: pos[1], flags };
@@ -105,7 +111,7 @@ export function resolveCandidatePorts(flags = {}, env = process.env) {
 async function main() {
   const { tool, jsonArgs, flags } = parseArgs(process.argv.slice(2));
   if (!tool || tool === '--help' || tool === '-h') {
-    console.error('usage: node scripts/mcp-call.mjs <ns:verb> [jsonArgs] [--client <id>] [--workspace <ws>] [--harness <h>] [--port <n>] [--raw]');
+    console.error('usage: node scripts/mcp-call.mjs <ns:verb> [jsonArgs] [--client <id>|--client=<id>] [--workspace <ws>|--workspace=<ws>] [--harness <h>|--harness=<h>] [--port <n>|--port=<n>] [--raw]');
     process.exit(tool ? 0 : 2);
   }
   let tok;
