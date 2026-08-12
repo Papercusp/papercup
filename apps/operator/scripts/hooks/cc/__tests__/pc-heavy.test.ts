@@ -368,7 +368,7 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       cwd: dir,
       detached: true,
     });
-    await new Promise((r) => setTimeout(r, 500)); // let the holder grab the only slot
+    await waitFor('holder grabs the only slot', () => heldSlotCount(dir, 1) === 1);
     try {
       const r = runSync(['bash', '-c', 'echo got-it'], { PC_HEAVY_SLOTS: '1', PC_HEAVY_TIMEOUT_SEC: '20' });
       expect(r.status).toBe(0);
@@ -400,7 +400,7 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       cwd: dir,
       detached: true,
     });
-    await new Promise((r) => setTimeout(r, 500)); // let the holder grab the only slot
+    await waitFor('holder grabs the only slot', () => heldSlotCount(dir, 1) === 1);
     try {
       const r = runSync(['bash', '-c', 'echo got-it'], {
         PC_HEAVY_SLOTS: '1',
