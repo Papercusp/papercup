@@ -7,7 +7,7 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { cleanup, render } from '@testing-library/react';
-import { LivenessDot, livenessFromHeartbeat } from '../presence-ui';
+import { LivenessDot, livenessForSessionState, livenessFromHeartbeat, normalizeSessionState } from '../presence-ui';
 
 afterEach(cleanup);
 
@@ -24,6 +24,34 @@ describe('LivenessDot', () => {
 
     rerender(<LivenessDot liveness="stale" />);
     expect(getByRole('img').getAttribute('data-liveness')).toBe('stale');
+  });
+
+  it('uses the authoritative session state when heartbeat freshness disagrees', () => {
+    const { getByRole } = render(<LivenessDot liveness="live" sessionState="ended" />);
+    const dot = getByRole('img');
+    expect(dot.getAttribute('data-session-state')).toBe('ended');
+    expect(dot.getAttribute('data-liveness')).toBe('stale');
+    expect(dot.getAttribute('aria-label')).toBe('ended agent');
+    expect(dot.getAttribute('title')).toBe('Session state: ended');
+  });
+});
+
+describe('session-state liveness mapping', () => {
+  it.each([
+    ['live', 'live'],
+    ['parked', 'idle'],
+    ['draining', 'stale'],
+    ['suspect', 'stale'],
+    ['ended', 'stale'],
+    ['recorded', 'idle'],
+  ] as const)('maps %s to the %s dot tone', (state, expected) => {
+    expect(livenessForSessionState(state)).toBe(expected);
+  });
+
+  it('rejects an unknown or missing roster state so heartbeat fallback remains possible', () => {
+    expect(normalizeSessionState('future-state')).toBeNull();
+    expect(normalizeSessionState(null)).toBeNull();
+    expect(normalizeSessionState('parked')).toBe('parked');
   });
 });
 
