@@ -123,6 +123,16 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     expect((tool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
   });
 
+  it('documents the destructive default and the additive rowsMode escape hatch', () => {
+    const description = (tool as unknown as { description?: string }).description ?? '';
+    const guidance = (tool as unknown as { guidance?: { when?: string } }).guidance?.when ?? '';
+    expect(description).toContain("rowsMode:'replace'");
+    expect(description).toContain("rowsMode:'merge'");
+    expect(description).toMatch(/empty list with replace/i);
+    expect(guidance).toContain("rowsMode:'merge'");
+    expect(guidance).toMatch(/default replace mode drops omitted rows/i);
+  });
+
   it('guides cold-carry authors to anchor owner directives and completed actions', () => {
     const guidance = (tool as unknown as { guidance?: { when?: string } }).guidance;
     expect(guidance?.when).toContain('[turn:<session>@<iso-ts>]');

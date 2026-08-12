@@ -146,15 +146,18 @@ export default defineTool({
   description:
     "Write or clear the su AUTO loop carry-note read by a COLD wake after reset/recycle; " +
     'the live transcript does not survive. Pass { did, left, insight, next } or raw { note }; ' +
-    'blank/null clears. The note is keyed by ownerId; { walls } and { checks } persist across ' +
-    'rewrites until replaced. Returns { ok, harness, ownerId, cleared, length, verified, ' +
+    'blank/null clears. The note is keyed by ownerId. Supplying { walls } or { checks } uses ' +
+    "rowsMode:'replace' by default (the supplied list is the complete new set); use " +
+    "rowsMode:'merge' to add/update rows without dropping unmentioned carried rows, and use " +
+    'an empty list with replace to clear that row set. Returns { ok, harness, ownerId, cleared, length, verified, ' +
     'contentHash, walls, checks }; writes verify-read.',
   guidance: {
     when:
       "At the end of a COLD loop turn, store compressed facts (did, left, insight, next), not a transcript. " +
       'Add a same-line [turn:<session>@<iso-ts>] ref for owner directives or completed coordination actions; ' +
-      'never invent a ref. Mark non-owner sources [self-imposed], [peer:<sid>], or [inferred]. Pair with work_items:checkpoint ' +
-      'because a loop note can be lost if the session dies.',
+      'never invent a ref. Mark non-owner sources [self-imposed], [peer:<sid>], or [inferred]. When updating one wall/check, ' +
+      "pass rowsMode:'merge' or resend the full current set: the default replace mode drops omitted rows. Pair with " +
+      'work_items:checkpoint because a loop note can be lost if the session dies.',
     notWhen:
       "WARM loops (carry:'warm', the default) carry the live transcript and need no note. " +
       'Use work_items:checkpoint for work-item state.',
