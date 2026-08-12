@@ -24,12 +24,15 @@ vi.mock('../../scheduler/claim-spec-store', () => ({
 import getNextTool from './get_next';
 
 type ToolDef = {
-  handler: (args: unknown, ctx?: unknown) => Promise<{ content: Array<{ text: string }> }>;
+  handler: (args: unknown, ctx?: unknown) => Promise<{
+    content?: Array<{ text: string }>;
+    data?: Record<string, unknown>;
+  }>;
 };
 
 async function callGetNext(args: Record<string, unknown> = { harness: 'papercusp' }) {
   const res = await (getNextTool as unknown as ToolDef).handler(args, {});
-  return JSON.parse(res.content[0].text) as Record<string, unknown>;
+  return (res.data ?? JSON.parse(res.content![0].text)) as Record<string, unknown>;
 }
 
 describe('scheduler:get_next default-spec warning (EI-8579)', () => {
