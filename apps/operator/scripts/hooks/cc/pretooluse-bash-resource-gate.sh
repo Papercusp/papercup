@@ -98,6 +98,14 @@ raw, operator_url, token, agent_id = sys.argv[1:5]
 # advisory only decorates commands every gate already passed.
 ADVISORY = None
 
+# `_shell_write_guard` runs before the cd + restore-path advisory below, but a
+# variable-driven restore can match both. Keep its soft notice pending until
+# the more specific cwd-drift check has had a chance to choose the message (or
+# prove the restore is safely scoped/anchored). This avoids the generic notice
+# masking a specific advisory, while preserving it for ordinary variable-write
+# commands.
+_PENDING_SHELL_WRITE_ADVISORY = None
+
 # ── Say-once advisory suppression (context-injection-audit P-020, D-030+D-031) ──
 #
 # This gate is a STATELESS function of the current command, so before this it
@@ -2826,7 +2834,7 @@ def _relative_target_cd_note(raw_target, pos, clean, has_paren):
 
 
 def _shell_write_guard():
-    global ADVISORY
+    global ADVISORY, _PENDING_SHELL_WRITE_ADVISORY
     _canon = _canonical_tree_root()
     if not _canon:
         return
@@ -2999,7 +3007,7 @@ def _shell_write_guard():
             _saw_unresolvable_inplace_target = True
 
     if _saw_unresolvable_inplace_target and not ADVISORY:
-        ADVISORY = (
+        _PENDING_SHELL_WRITE_ADVISORY = (
             'shell-write guard notice (EI-19966359020779598, extends '
             'EI-18664655909328670): this command runs an in-place-rewrite/`tee`/`cp` '
             'construct whose target is a shell variable, `~`, or a glob — not a '
@@ -3179,6 +3187,33 @@ try:
                     '<that one file>` instead of a /tmp copy. Advisory only; this command is '
                     'proceeding as issued.'
                 )
+except Exception:
+    pass  # advisory must never wedge a command
+
+# The shell-write scanner deliberately runs first because a literal target can
+# deny immediately. Its computed-target notice is softer, though, and a
+# command can also match the more specific cd + restore-path advisory. Let the
+# latter win; for its two documented safe forms (a subshell or an absolute
+# restore anchor), keep both advisories silent. Only suppress when a restore
+# operation follows a cd, so an unrelated command substitution/paren elsewhere
+# cannot hide a useful shell-write notice.
+try:
+    if _PENDING_SHELL_WRITE_ADVISORY and not ADVISORY:
+        _pending_cd_clean = _quote_preserve_tokens(_strip_heredoc_bodies(command))
+        _pending_cd_m = re.search(
+            r'(?:\A|[;(\n]|&&|\|\|)\s*cd\s+', _pending_cd_clean
+        )
+        _pending_restore_after_cd = bool(
+            _pending_cd_m
+            and re.search(r'\b(?:cp|mv)\b', _pending_cd_clean[_pending_cd_m.end():])
+        )
+        _pending_restore_is_safe = bool(
+            _pending_restore_after_cd
+            and (('(' in command or ')' in command)
+                 or _ABS_ANCHOR_ASSIGN_RE.search(command))
+        )
+        if not _pending_restore_is_safe:
+            ADVISORY = _PENDING_SHELL_WRITE_ADVISORY
 except Exception:
     pass  # advisory must never wedge a command
 
