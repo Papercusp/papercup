@@ -28,11 +28,16 @@ const h = vi.hoisted(() => ({
   admitSpawn: vi.fn(async () => ({ admitted: true })),
 }));
 
-vi.mock('@papercusp/db-org', () => ({
-  getOrgPg: () => ({ sql: h.sql }),
-  // locks/configure.ts calls this at import time (WI-832); the narrow mock must ship it.
-  setAdminPoolStatementTimeoutProvider: () => {},
-}));
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('@papercusp/db-org')>();
+  return {
+    ...actual,
+    getOrgPg: () => ({ sql: h.sql }),
+    // locks/configure.ts calls this at import time (WI-832); override it without
+    // hiding generated schema exports imported by autoloop and future consumers.
+    setAdminPoolStatementTimeoutProvider: () => {},
+  };
+});
 vi.mock('../../../workspace-registry', () => ({ activeWorkspaceId: () => h.ws }));
 vi.mock('../../coordination/messages', () => ({ sendMessage: h.sendMessage }));
 vi.mock('../../../fleet/governor', () => ({ admitSpawn: h.admitSpawn }));
