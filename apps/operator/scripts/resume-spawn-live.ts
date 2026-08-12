@@ -212,6 +212,7 @@ function codexLeg(): Leg {
   if (!onPath('codex')) return { agent: 'codex', status: 'skip', detail: 'codex not on PATH' };
   if (!isCodexAuthed()) return { agent: 'codex', status: 'skip', detail: 'no ~/.codex/auth.json' };
 
+  const sid = `smoke-${randomUUID()}`;
   // A minimal per-session CODEX_HOME: just the ChatGPT OAuth symlink (the resume
   // rung doesn't need MCP; writeSuCodexHome's full home is exercised elsewhere).
   const codexHome = mkdtempSync(join(tmpdir(), 'resume-smoke-codex-home-'));
@@ -220,7 +221,12 @@ function codexLeg(): Leg {
     if (existsSync(realAuth)) symlinkSync(realAuth, join(codexHome, 'auth.json'));
   } catch { /* best-effort */ }
   const cwd = mkdtempSync(join(tmpdir(), 'resume-smoke-codex-'));
-  const env = { ...process.env, CODEX_HOME: codexHome };
+  const provenanceDir = mkdtempSync(join(tmpdir(), 'resume-smoke-provenance-'));
+  const env = {
+    ...process.env,
+    CODEX_HOME: codexHome,
+    PAPERCUSP_TURN_PROVENANCE_DIR: provenanceDir,
+  };
 
   const sessionsRoot = join(codexHome, 'sessions');
   const rolloutLines = () => {
@@ -235,9 +241,13 @@ function codexLeg(): Leg {
   try {
     // 1. Fresh headless session.
     log('  codex: launching a fresh exec session…');
+    const launchText = tagSmokeTurn(sid, 'Reply with the single word READY.', provenanceDir);
+    if (!launchText) {
+      return { agent: 'codex', status: 'fail', detail: 'turn-provenance ledger write failed before fresh launch' };
+    }
     const launch = run(
       'codex',
-      ['exec', '--dangerously-bypass-approvals-and-sandbox', 'Reply with the single word READY.'],
+      ['exec', '--dangerously-bypass-approvals-and-sandbox', launchText],
       { cwd, env },
     );
     if (launch.code !== 0) {
@@ -254,7 +264,11 @@ function codexLeg(): Leg {
     const before = rolloutLines();
 
     // 2. Resume via the REAL wake-executor builder (`codex exec … resume <uuid>`).
-    const cmd = resumeCommandFor({ agent: 'codex', sessionId, ompThreadId: null }, 'Reply with the single word AGAIN.');
+    const resumeText = tagSmokeTurn(sid, 'Reply with the single word AGAIN.', provenanceDir);
+    if (!resumeText) {
+      return { agent: 'codex', status: 'fail', detail: 'turn-provenance ledger write failed before resume' };
+    }
+    const cmd = resumeCommandFor({ agent: 'codex', sessionId, ompThreadId: null }, resumeText);
     if (!cmd) return { agent: 'codex', status: 'fail', detail: 'resumeCommandFor returned null for a codex session with a sessionId' };
     log(`  codex: resuming via \`${cmd.bin} ${cmd.args.filter((a) => !a.startsWith('Reply')).join(' ')} <text>\``);
     const resume = run(cmd.bin, cmd.args, { cwd, env });
@@ -272,6 +286,7 @@ function codexLeg(): Leg {
   } finally {
     rmSync(codexHome, { recursive: true, force: true });
     rmSync(cwd, { recursive: true, force: true });
+    rmSync(provenanceDir, { recursive: true, force: true });
   }
 }
 
