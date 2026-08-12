@@ -143,7 +143,7 @@ async function main() {
   try {
     const hook = JSON.parse(await readStdin(250));
     const tool = hook.tool_name || '';
-    if (tool !== 'Edit' && tool !== 'Write' && tool !== 'MultiEdit') return done();
+    if (!isFileWritingTool(tool)) return done();
     const filePath = (hook.tool_input || {}).file_path || '';
     if (!filePath) return done();
 
@@ -158,6 +158,37 @@ async function main() {
 function bypassed() {
   const v = process.env[BYPASS_ENV];
   return v === '1' || v === 'true';
+}
+
+/**
+ * Does this tool_name WRITE a file's bytes? The native three are not the whole
+ * set, and assuming they were left a hole this guard was built to close.
+ *
+ * This fleet also exposes `capability:edit` / `capability:write` as MCP tools
+ * (`mcp__<server>__capability_edit`). They take the SAME `file_path` argument
+ * and do the SAME thing under a different tool_name, so a name-keyed check that
+ * listed only Edit/Write/MultiEdit let every one of them through silently.
+ *
+ * MEASURED, not theorised (2026-08-12): four projected docs under
+ * apps/operator-docs/src/content/docs were hand-edited within ~20h WHILE this
+ * guard was live, registered, and correctly denying native Edits against those
+ * exact paths — `project-authored-docs.ts --check` went from exit 0 to exit 1
+ * with 4 drifted files. Replaying the hook by hand confirmed the split: a
+ * tool_name of `Edit` denies, `mcp__papercusp-su__capability_edit` on the same
+ * path is allowed.
+ *
+ * The server segment is deliberately NOT pinned — renaming the MCP server must
+ * not quietly re-open the hole. Matching is on the verb suffix only.
+ *
+ * NOT closed by this (still the documented, accepted gap in the header): a
+ * write that is not a tool call at all — `capability:bash` with `sed -i`, a
+ * heredoc, `node -e`, or any other process. PreToolUse cannot see those, and
+ * the structural backstop (the next projection refuses to overwrite drift)
+ * remains what actually enforces the invariant.
+ */
+export function isFileWritingTool(tool) {
+  if (tool === 'Edit' || tool === 'Write' || tool === 'MultiEdit') return true;
+  return /(?:^|__)capability_(?:edit|write|multi_?edit)$/i.test(tool || '');
 }
 
 /** The file's first HEADER_LINES lines, or null when absent/unreadable
@@ -273,6 +304,31 @@ function selfTest() {
     if (!ok) failed = true;
     process.stdout.write(`${ok ? 'ok' : 'FAIL'} — ${c.name}\n`);
   }
-  process.stdout.write(failed ? 'SELF-TEST FAILED\n' : `ok — ${cases.length} cases\n`);
+
+  // ── which TOOL NAMES the guard inspects at all ─────────────────────────────
+  // A marker predicate that is perfect is still worthless on a tool_name the
+  // guard skips before it ever reads the file — the hole measured 2026-08-12.
+  const toolCases = [
+    { name: 'native Edit', tool: 'Edit', expect: true },
+    { name: 'native Write', tool: 'Write', expect: true },
+    { name: 'native MultiEdit', tool: 'MultiEdit', expect: true },
+    { name: 'MCP capability:edit (the measured bypass)', tool: 'mcp__papercusp-su__capability_edit', expect: true },
+    { name: 'MCP capability:write (the measured bypass)', tool: 'mcp__papercusp-su__capability_write', expect: true },
+    { name: 'MCP server renamed — must still match', tool: 'mcp__some-other-server__capability_write', expect: true },
+    // must NOT fire — these do not write the target's bytes
+    { name: 'capability:read', tool: 'mcp__papercusp-su__capability_read', expect: false },
+    { name: 'capability:bash (documented accepted gap, not a tool-name miss)', tool: 'mcp__papercusp-su__capability_bash', expect: false },
+    { name: 'Read', tool: 'Read', expect: false },
+    { name: 'a tool merely CONTAINING the word edit', tool: 'mcp__x__plans_edit', expect: false },
+    { name: 'empty / absent tool_name', tool: '', expect: false },
+  ];
+  for (const c of toolCases) {
+    const ok = isFileWritingTool(c.tool) === c.expect;
+    if (!ok) failed = true;
+    process.stdout.write(`${ok ? 'ok' : 'FAIL'} — tool: ${c.name}\n`);
+  }
+
+  const total = cases.length + toolCases.length;
+  process.stdout.write(failed ? 'SELF-TEST FAILED\n' : `ok — ${total} cases\n`);
   process.exit(failed ? 1 : 0);
 }

@@ -84,6 +84,44 @@ describe('pretooluse-generated-file-edit-guard — falsifiability in both direct
     expect(runHook(edit(generated, 'Read')).denied).toBe(false);
   });
 
+  // ── the MCP twins of Edit/Write — a MEASURED hole, not a hypothetical ───────
+  // The native three are not the whole set of file-writing tools on this fleet:
+  // `capability:edit` / `capability:write` arrive as `mcp__<server>__capability_*`
+  // with the SAME `file_path` argument and do the SAME thing. A tool-name check
+  // listing only Edit/Write/MultiEdit skipped them before it ever read the file.
+  //
+  // Measured 2026-08-12: four projected docs under apps/operator-docs were
+  // hand-edited within ~20h WHILE this guard was live, registered, and correctly
+  // denying native Edits to those exact paths (project-authored-docs.ts --check
+  // went exit 0 -> exit 1, 4 drifted). Replaying the hook by hand showed the
+  // split precisely: `Edit` denied, `mcp__papercusp-su__capability_edit` allowed.
+  it.each([
+    'mcp__papercusp-su__capability_edit',
+    'mcp__papercusp-su__capability_write',
+    // The server segment is deliberately unpinned — renaming the MCP server must
+    // not quietly re-open the hole.
+    'mcp__some-other-server__capability_write',
+  ])('DENIES %s to a generated file (the measured bypass)', (tool) => {
+    expect(runHook(edit(generated, tool)).denied).toBe(true);
+  });
+
+  it('still ALLOWS the MCP twins on a hand-authored file', () => {
+    // The control for the block above: proves those cases pass because the FILE
+    // declares itself generated, not because the new matcher denies everything
+    // whose name contains "capability_".
+    expect(runHook(edit(handAuthored, 'mcp__papercusp-su__capability_edit')).denied).toBe(false);
+  });
+
+  it('does not police MCP tools that do not write the target file', () => {
+    // capability:bash stays OUT on purpose: shell writes are the documented,
+    // accepted gap (PreToolUse cannot see `sed -i`), and the structural backstop
+    // — the next projection refusing to overwrite drift — is what covers it.
+    expect(runHook(edit(generated, 'mcp__papercusp-su__capability_read')).denied).toBe(false);
+    expect(runHook(edit(generated, 'mcp__papercusp-su__capability_bash')).denied).toBe(false);
+    // A tool merely CONTAINING "edit" is not a file write.
+    expect(runHook(edit(generated, 'mcp__papercusp-su__plans_edit')).denied).toBe(false);
+  });
+
   // P-011's second half — "it must BLOCK a hand-edit and ALLOW a projector write" —
   // stated in the only vocabulary this hook has. A projector run is a Bash tool call
   // (or no tool call at all: the generator writes via node:fs), never Edit/Write, so
