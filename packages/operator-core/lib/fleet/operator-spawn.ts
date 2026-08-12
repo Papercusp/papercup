@@ -889,9 +889,10 @@ export async function spawnAgentInHarness(input: OperatorSpawnInput): Promise<Op
     if (!(await mugKettleSystemEnabled())) {
       return fail(
         `spawn rejected: role="${role}" belongs to the Mug/Kettle/Cup tier, which is RETIRED ` +
-          `(flag papercusp-mug-kettle-system is OFF, which is the delivered state). ` +
-          `Launch an su fleet instead — fleet:launch-on-plan. ` +
-          `To re-enable the tier for testing, flip the flag ON in /admin/features.`,
+          `permanently. Launch an su fleet instead — fleet:launch-on-plan. ` +
+          `There is no longer a flag to flip: the reversible escape hatch ` +
+          `(papercusp-mug-kettle-system) was deleted in P-068, which is how that flag ` +
+          `was always specified to graduate.`,
       );
     }
   }

@@ -61,17 +61,21 @@ vi.mock('./plans-api', async (importOriginal) => ({
 }));
 
 /**
- * P-047 (retire-mug-kettle-su-only-2026-08-09): the Start half of the Start/Pause
- * button is gated on FLAGS.MUG_KETTLE_SYSTEM, whose default is OFF — so the
- * unmocked useFlag fallback (FLAG_DEFAULTS) would hide Start and red every
- * assertion below with a signature naming neither the flag nor the gate. Pin the
- * tier ON for the pre-retirement contract; the retired shape has its own block at
- * the foot of this file.
+ * P-047 / P-068 (retire-mug-kettle-su-only-2026-08-09): the Start half of the
+ * Start/Pause button used to be gated on FLAGS.MUG_KETTLE_SYSTEM, so this file
+ * pinned the tier ON to exercise the pre-retirement contract and kept the retired
+ * shape in its own block. P-068/D-098 DELETED that flag: Start is unreachable in
+ * every flag state, so the pinned-ON contract no longer exists to test and the
+ * cases that covered it went with it (P-061's rule — behaviour tests follow their
+ * subject).
+ *
+ * Every flag is now forced ON, which makes the surviving "no Start" assertions a
+ * TRIPWIRE rather than a restatement of a default: the button must stay absent in
+ * the most permissive flag state the app can reach.
  */
-const F = vi.hoisted(() => ({ mugKettleOn: true }));
 vi.mock('@/lib/flag-hooks', async (importOriginal) => ({
   ...(await importOriginal<typeof import('@/lib/flag-hooks')>()),
-  useFlag: (key: string) => (key === 'papercusp-mug-kettle-system' ? F.mugKettleOn : true),
+  useFlag: () => true,
 }));
 
 import PlanActions, { previewNextDecisionId, previewNextItemId, writeError, parseRefList } from './PlanActions';
@@ -118,7 +122,7 @@ describe('PlanActions component', () => {
     );
     return cb;
   }
-  beforeEach(() => { vi.clearAllMocks(); approveMock.mockResolvedValue({ ok: true }); F.mugKettleOn = true; });
+  beforeEach(() => { vi.clearAllMocks(); approveMock.mockResolvedValue({ ok: true }); });
   afterEach(cleanup);
 
   it('shows Approve for a draft (no Start)', () => {
@@ -127,10 +131,12 @@ describe('PlanActions component', () => {
     expect(screen.queryByRole('button', { name: /Start Plan/ })).toBeNull();
   });
 
-  it('shows Start + Demote for a ready plan', () => {
+  it('shows Demote — and NO Start — for a ready plan', () => {
     renderActions({ planStatus: 'ready' });
-    expect(screen.getByRole('button', { name: /Start Plan/ })).toBeTruthy();
+    // CALIBRATION: the action bar rendered, so the null below is the gate and not
+    // a component that failed to mount.
     expect(screen.getByRole('button', { name: /Demote to Draft/ })).toBeTruthy();
+    expect(screen.queryByRole('button', { name: /Start Plan/ })).toBeNull();
   });
 
   it('shows Pause for a started plan', () => {
@@ -147,7 +153,6 @@ describe('PlanActions component', () => {
   // before this landed. Deleting the asymmetry is the tempting "cleanup" — it
   // would leave those plans dispatchable forever.
   it('retired tier: no Start button for a ready plan', () => {
-    F.mugKettleOn = false;
     renderActions({ planStatus: 'ready' });
     expect(screen.queryByRole('button', { name: /Start Plan/ })).toBeNull();
     // The rest of the action bar is untouched — this gate is about one axis,
@@ -156,7 +161,6 @@ describe('PlanActions component', () => {
   });
 
   it('retired tier: KEEPS Pause for an already-started plan', () => {
-    F.mugKettleOn = false;
     renderActions({ planStatus: 'ready', startStatus: 'started' });
     expect(screen.getByRole('button', { name: /Pause Plan/ })).toBeTruthy();
   });
@@ -177,54 +181,25 @@ describe('PlanActions component', () => {
     expect(cb.onOptimisticStatus).toHaveBeenLastCalledWith('draft');
   });
 
-  it('starts a ready plan', async () => {
-    const cb = renderActions({ planStatus: 'ready' });
-    fireEvent.click(screen.getByRole('button', { name: /Start Plan/ }));
-    await waitFor(() => expect(startMock).toHaveBeenCalled());
-    expect(cb.onStartStatusChange).toHaveBeenCalledWith('started');
-  });
-
-  // plan-structured-inputs-2026-08-01 P-013. The start gate refuses with a 200 body
-  // carrying { error: 'plan_inputs_not_ready' }, NOT an HTTP error — so before this
-  // branch existed the UI reported "Plan started" and flipped to Pause for a plan
-  // that never started. These two pin the halves of that fix.
-  it('surfaces a refused start and does NOT report it as started', async () => {
-    startMock.mockResolvedValueOnce({
-      ok: false,
-      error: 'plan_inputs_not_ready',
-      code: 'missing_required',
-      slug: 'proj',
-      missing: ['harness', 'paths'],
-      issues: [],
-      source: 'input-schema',
-      hint: 'Required inputs not supplied: harness, paths.',
-    } as never);
-    const cb = renderActions({ planStatus: 'ready' });
-    fireEvent.click(screen.getByRole('button', { name: /Start Plan/ }));
-    await waitFor(() => expect(toastError).toHaveBeenCalled());
-    // The missing field NAMES are what the human can act on, so they must appear.
-    expect(String(toastError.mock.calls[0]?.[0])).toContain('harness, paths');
-    expect(cb.onStartStatusChange).not.toHaveBeenCalled();
-    expect(cb.onStartRefused).toHaveBeenCalled();
-  });
-
-  it('falls back to the refusal hint when nothing is merely missing', async () => {
-    startMock.mockResolvedValueOnce({
-      ok: false,
-      error: 'plan_inputs_not_ready',
-      code: 'bad_schema',
-      slug: 'proj',
-      missing: [],
-      issues: [],
-      source: 'input-schema',
-      hint: 'This plan\'s input_schema is not compilable.',
-    } as never);
-    const cb = renderActions({ planStatus: 'ready' });
-    fireEvent.click(screen.getByRole('button', { name: /Start Plan/ }));
-    await waitFor(() => expect(toastError).toHaveBeenCalled());
-    expect(String(toastError.mock.calls[0]?.[0])).toContain('not compilable');
-    expect(cb.onStartStatusChange).not.toHaveBeenCalled();
-  });
+  // THREE START-PATH CASES WERE DELETED HERE (P-068 / D-098): 'starts a ready plan',
+  // plus the two plan-structured-inputs-2026-08-01 P-013 cases that pinned the
+  // refusal branch ('surfaces a refused start and does NOT report it as started',
+  // 'falls back to the refusal hint when nothing is merely missing').
+  //
+  // All three began by clicking `/Start Plan/`. That button is now unreachable in
+  // every flag state — the tier flag that used to reveal it no longer exists — so
+  // the cases were unsatisfiable by construction rather than broken, and no mock
+  // arrangement can restore them. P-061's rule applies: behaviour tests follow
+  // their subject.
+  //
+  // ⚠ WHAT THIS MEANS FOR THE P-013 FIX, so it is not read as coverage silently
+  // lost: the refusal branch it guarded (a 200 body carrying
+  // { error: 'plan_inputs_not_ready' }, which the UI once mis-reported as a
+  // successful start) is still LIVE SERVER-SIDE — `plans:start` is gated, not
+  // deleted. What is gone is this component's ability to reach it. The handler's
+  // start half in PlanActions.tsx is now dead code, tracked for removal with the
+  // rest of the unreachable UI (D-098 follow-up), and the server-side contract
+  // keeps its own coverage.
 
   it('launches a workbench agent', async () => {
     renderActions();
