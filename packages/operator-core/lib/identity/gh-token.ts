@@ -46,6 +46,7 @@ const GH_AUTH_STATUS_TIMEOUT_MS = 5_000;
 type CachedToken = {
   token: string;
   fetchedAt: number;
+  githubLogin: string | null;
 };
 
 type Cache = { __ghAuthToken?: CachedToken | null };
@@ -68,7 +69,7 @@ export type GhTokenResult =
  */
 export async function getGhAuthToken(): Promise<GhTokenResult> {
   const cached = _g.__ghAuthToken;
-  if (cached && cached.token) {
+  if (cached && cached.token && cached.githubLogin === selectedGithubLogin()) {
     return { kind: 'ok', token: cached.token };
   }
   return refreshGhAuthToken();
@@ -81,18 +82,34 @@ export async function getGhAuthToken(): Promise<GhTokenResult> {
 export async function refreshGhAuthToken(): Promise<GhTokenResult> {
   _g.__ghAuthToken = null;
   try {
-    const { stdout } = await execFile('gh', ['auth', 'token'], {
+    const githubLogin = selectedGithubLogin();
+    const args = ['auth', 'token'];
+    if (githubLogin) args.push('--user', githubLogin);
+    const { stdout } = await execFile('gh', args, {
       timeout: GH_AUTH_TOKEN_TIMEOUT_MS,
     });
     const token = stdout.trim();
     if (!token) {
       return { kind: 'error', error: { kind: 'not_authenticated' } };
     }
-    _g.__ghAuthToken = { token, fetchedAt: Date.now() };
+    _g.__ghAuthToken = { token, fetchedAt: Date.now(), githubLogin };
     return { kind: 'ok', token };
   } catch (err: unknown) {
     return { kind: 'error', error: classifyGhError(err) };
   }
+}
+
+/**
+ * Select one of gh CLI's already-authenticated accounts without putting its
+ * credential in this process's environment. Federation drills run multiple
+ * sidecars under one OS user, so relying on gh's single active account would
+ * collapse both peers onto the same identity. The login is non-secret; the gh
+ * subprocess retrieves the corresponding token directly from gh's credential
+ * store and the token exists only in this process's memory/cache.
+ */
+function selectedGithubLogin(): string | null {
+  const value = process.env.PAPERCUSP_GITHUB_LOGIN?.trim();
+  return value || null;
 }
 
 /**

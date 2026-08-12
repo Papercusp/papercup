@@ -72,6 +72,7 @@ function scriptThrow(message: string) {
 
 beforeEach(() => {
   clearGhAuthTokenCache();
+  delete process.env.PAPERCUSP_GITHUB_LOGIN;
   execImpl = async () => ({ stdout: '', stderr: '' });
 });
 
@@ -91,6 +92,33 @@ describe('getGhAuthToken — ok result', () => {
     const b = await getGhAuthToken();
     expect(b).toEqual({ kind: 'ok', token: 'gho_cached' });
     expect(exec).toHaveBeenCalledTimes(1);
+  });
+
+  it('selects a named gh account without receiving its token through the environment', async () => {
+    process.env.PAPERCUSP_GITHUB_LOGIN = 'aviynw';
+    const exec = scriptOk('gho_named\n');
+    const r = await getGhAuthToken();
+    expect(r).toEqual({ kind: 'ok', token: 'gho_named' });
+    expect(exec).toHaveBeenCalledWith(
+      'gh',
+      ['auth', 'token', '--user', 'aviynw'],
+      expect.objectContaining({ timeout: 3_000 }),
+    );
+  });
+
+  it('does not reuse a cached token after the selected gh account changes', async () => {
+    process.env.PAPERCUSP_GITHUB_LOGIN = 'papercupai';
+    scriptOk('gho_first_account\n');
+    await getGhAuthToken();
+    process.env.PAPERCUSP_GITHUB_LOGIN = 'aviynw';
+    const secondExec = scriptOk('gho_second_account\n');
+    const r = await getGhAuthToken();
+    expect(r).toEqual({ kind: 'ok', token: 'gho_second_account' });
+    expect(secondExec).toHaveBeenCalledWith(
+      'gh',
+      ['auth', 'token', '--user', 'aviynw'],
+      expect.objectContaining({ timeout: 3_000 }),
+    );
   });
 });
 
