@@ -63,6 +63,7 @@ describe('getAgentLocks lock-domain scope (WI-5979)', () => {
     readQueueSpy.mockResolvedValue({
       active_locks: [
         {
+          lock_id: 'lock-foreign-domain',
           path: 'packages/operator-core/lib/sync-resolver/index.ts',
           owner: 'su-1',
           owner_label: 'su · su-1',
