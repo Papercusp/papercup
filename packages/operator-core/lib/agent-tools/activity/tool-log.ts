@@ -15,6 +15,20 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { toolCallRowsFor } from '../../tool-call-log-store';
 import { dedupeToolCalls, renderToolCallLog } from '../../tool-call-log';
 
+/**
+ * The activity ledger stores `created_at` as timestamptz. Keep these public
+ * boundaries explicit and canonical so a relative duration such as `-15 min`
+ * cannot reach PostgreSQL and fail as a structural handler error.
+ */
+const isoBoundary = z
+  .string()
+  .datetime({ offset: true })
+  .describe('Absolute ISO 8601 timestamp (for example, 2026-08-12T18:00:00Z); relative durations are not supported.');
+
+function normalizeIsoBoundary(value: string | undefined): string | undefined {
+  return value === undefined ? undefined : new Date(value).toISOString();
+}
+
 export default defineTool({
   name: 'activity:tool-log',
   profile: 'engineer',
@@ -22,7 +36,7 @@ export default defineTool({
     "Compact deterministic tool-call log for a session or owner: one short line per call (tool + primary target + ✓/✗), consecutive same-tool runs collapsed ×N, over-budget history decayed to per-tool counts + top-K touched files/commands (error lines survive longest). Rendered from the same ledger activity:recent reads, at a fraction of the tokens — the post-compaction / peer-catch-up view of what a session actually did.",
   capability: 'activity:read',
   guidance: {
-    when: "You want the cheap chronological picture of what a session DID (yours pre-compaction, or a peer's) — not the full row stream. Pass owner:'self' for your own trail; since to window it.",
+    when: "You want the cheap chronological picture of what a session DID (yours pre-compaction, or a peer's) — not the full row stream. Pass owner:'self' for your own trail; use absolute ISO 8601 timestamps for since/until to window it (relative durations such as '-15 min' are not supported).",
     notWhen: 'For raw rows with detail payloads use `activity:recent`; for the agent-authored turn notes use `journal:recent`.',
     seeAlso: ['activity:recent (raw ledger rows)', 'journal:recent (per-turn journal notes)'],
   },
@@ -34,10 +48,10 @@ export default defineTool({
     owner: z.string().min(1).max(256).optional(),
     /** Scope to one native session id. */
     session_id: z.string().min(1).max(256).optional(),
-    /** Only calls strictly after this ISO timestamp. */
-    since: z.string().max(64).optional(),
-    /** Only calls at or before this ISO timestamp. */
-    until: z.string().max(64).optional(),
+    /** Only calls strictly after this absolute ISO timestamp. Relative durations are not supported. */
+    since: isoBoundary.optional(),
+    /** Only calls at or before this absolute ISO timestamp. Relative durations are not supported. */
+    until: isoBoundary.optional(),
     /** Itemized-line budget; older successes decay first (default 40). */
     max_lines: z.number().int().min(5).max(200).optional(),
     /** Touched-set size on the decay line (default 8). */
@@ -54,8 +68,8 @@ export default defineTool({
     const rows = await toolCallRowsFor({
       ownerId: ownerId ?? undefined,
       sessionId: args.session_id,
-      sinceIso: args.since,
-      untilIso: args.until,
+      sinceIso: normalizeIsoBoundary(args.since),
+      untilIso: normalizeIsoBoundary(args.until),
     });
     const calls = dedupeToolCalls(rows);
     const log = renderToolCallLog(rows, { maxLines: args.max_lines, topK: args.top_k });
