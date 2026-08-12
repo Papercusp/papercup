@@ -713,6 +713,12 @@ export default defineTool({
   // the roster/decorations fan-out consumes an org-app slot for the whole call
   // and can strand concurrent fleet-control reads at acquire deadline.
   skipWorkspaceTx: true,
+  // Fleet assignment responses are intentionally bounded to a placement-sized
+  // payload, but can still exceed the generic result door when include_stale
+  // exposes a large roster. The response remains structured JSON for ptool and
+  // the model-facing reader can follow the payload's truncation hints instead
+  // of receiving a JSON prefix plus a prose result-door footer.
+  skipResultDoor: 'oversize-by-design',
   agentRoles: [...COORD_ROLES],
   args: z.object({
     agent: z

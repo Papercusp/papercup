@@ -75,6 +75,12 @@ it('fleet:assignments opts out of the dispatcher ambient workspace transaction',
   expect((fleetAssignmentsTool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
 });
 
+it('fleet:assignments keeps oversized include_stale JSON intact for structured callers', () => {
+  expect((fleetAssignmentsTool as { skipResultDoor?: string }).skipResultDoor).toBe(
+    'oversize-by-design',
+  );
+});
+
 describe('reconcileWakeability (EI-6077)', () => {
   it('the exact EI-6077 evidence: heartbeat-alive but no live inbox-wake await → sessionState ended, alive downgraded', async () => {
     const agent = baseAgent({ alive: true });
