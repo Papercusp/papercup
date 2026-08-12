@@ -479,10 +479,12 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
           setSearchError(outcome.message);
           setSearchOwners(new Set());
           setSearchHits(null);
+          setSearchHidden(null);
           return;
         }
         setSearchOwners(outcome.owners);
         setSearchHits(outcome.hits);
+        setSearchHidden(outcome.hiddenMachineHits);
       } catch (e) {
         /* Only a supersede/unmount abort reaches here — fetchTranscriptSearch
            converts a TIMEOUT into an `ok:false, timedOut:true` outcome above
@@ -493,6 +495,7 @@ export default function HudView({ workspaceId = null }: { workspaceId?: string |
         setSearchError(e instanceof Error ? e.message : 'search failed');
         setSearchOwners(new Set());
         setSearchHits(null);
+        setSearchHidden(null);
       } finally {
         if (seq === searchSeq.current) setSearching(false);
       }
