@@ -371,6 +371,16 @@ export function resumeArgsFor(session: any, { coordExtPath, injectHookPath, fork
     args: any[];
 };
 /**
+ * Does this codex sessions root hold ANY rollout at all — i.e. would `codex resume --last`
+ * find something? The by-uuid sibling {@link findCodexRollout} cannot answer for a row with
+ * no recorded `session_id`, and that is the majority case: measured 2026-08-12, 127 of the
+ * 241 most recent codex rows had no session_id AND no rollout on disk (128 had no CODEX_HOME
+ * directory at all). Those are launches that died before persisting a first turn, and the
+ * picker offered every one of them because "no id to check" was read as "assume resumable".
+ * Exported for tests.
+ */
+export function codexHomeHasAnyRollout(root: any): boolean;
+/**
  * WI-3884: scan ALL tracked per-session CODEX_HOMEs
  * (`~/.papercusp/su-codex-homes/session-<advId>/sessions`) for a rollout uuid.
  * resolveTrackedResumeSession only scans the homes of the RESUMABLE WINDOW
@@ -662,8 +672,10 @@ export function claudeSessionTranscriptFile(id: any, { home, configDir }?: {
  *     shared ~/.claude) must hold `projects/<dir>/<sid>.jsonl`.
  *   - claude, no sessionId (pre-native-id rows) → resume falls back to
  *     `--continue` (most-recent-in-cwd) — not verifiable by id, keep.
- *   - codex + known sessionId + adv row id → the per-session CODEX_HOME must
- *     hold the rollout file; without a row id there is no home to check — keep.
+ *   - codex + adv row id → the per-session CODEX_HOME must hold the rollout named by
+ *     sessionId, or (when no sessionId was recorded) ANY rollout, since that resume runs
+ *     `codex resume --last` inside that same isolated home. Without a row id there is no
+ *     home to check — keep.
  *   - omp → the thread store isn't path-indexed here — keep.
  * Pure-ish (reads FS); `home` injectable for tests; exported for tests.
  */
