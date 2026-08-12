@@ -25,21 +25,90 @@
  *   2. TERMINALITY — is the routed artifact still open? A filing whose artifact already
  *                    landed or was dropped (`outcome` set and not 'pending') cannot be
  *                    usefully graded; counting it inflates a backlog nobody can drain.
- *   3. EPOCH FLOOR — D-013 grading is FORWARD-ONLY. Rows routed before the floor are
- *                    deliberately excluded, not forgotten. A count that omits the floor
- *                    silently re-imports the whole pre-epoch corpus.
+ *   3. EPOCH FLOOR — grading is FORWARD-ONLY, and the floor is PER-ORIGIN (D-014).
+ *                    Rows routed before their origin's floor are deliberately excluded,
+ *                    not forgotten. A count that omits the floor silently re-imports the
+ *                    whole pre-epoch corpus — and a count that applies ONE origin's floor
+ *                    to every origin draws the line in a place nobody chose for the
+ *                    others. That second failure shipped: until D-014 this module took a
+ *                    single `epochMs` and system-health passed the su-ideate floor for
+ *                    scout too, which excluded 8 of 1,088 scout rows (0.7%) and left a
+ *                    592-row "actionable" backlog produced by an unchosen boundary.
  *
  * THE RULE: a single scalar named `ungraded` is banned on any surface a human reads.
  * Return `UngradedBreakdown` instead — it cannot be rendered without saying which
  * population it describes, which is the only thing that actually prevents the drift.
- * `ungraded-scope.guard.test.ts` fails the build if a new raw `human_grade IS NULL`
- * predicate appears outside this module.
+ * The recurrence guard in `ungraded-scope.test.ts` fails the build if a new raw
+ * `human_grade IS NULL` predicate appears outside this module.
  */
 
 import type { Sql } from 'postgres';
 
 /** The producers that file into `harness_shared.scout_routed_ideas`. */
 export type UngradedOrigin = 'su-ideate' | 'scout' | 'drill';
+
+/**
+ * D-013 su-ideate enablement floor: only rows routed after the ungraded-filings
+ * watchdog shipped are ever nudged — the 85-row pre-P-006 corpus belongs to the
+ * outcome-backfill sweep, never to triage nudges.
+ *
+ * OWNED HERE, not by the watchdog that introduced it: this module is the one place
+ * that answers "which floor applies to which origin", and a floor defined next to its
+ * first consumer is how the single-epoch bug below happened in the first place.
+ * `ungraded-filings-watchdog.ts` re-exports this name for its own row selection.
+ */
+export const SU_IDEATE_UNGRADED_EPOCH_MS = Date.parse('2026-07-11T00:00:00Z');
+
+/**
+ * D-014 scout floor [owner 2026-08-11, interactive] — forward-only from the day the
+ * ruling landed.
+ *
+ * WHY A SECOND CONSTANT INSTEAD OF REUSING THE SU-IDEATE ONE. Until D-014 this module
+ * took a SINGLE `epochMs` and `system-health/compute.ts` passed the su-ideate floor for
+ * EVERY origin. That is not a conservative default — it is a line drawn in a place
+ * chosen for a different producer's corpus. Measured on the live table 2026-08-12: of
+ * 1,088 ungraded scout rows only EIGHT predate the su-ideate floor, so it excluded 0.7%
+ * and left 592 "actionable" — a backlog nobody had decided to own, produced by a
+ * boundary nobody had chosen for scout.
+ *
+ * The owner's rationale for putting scout's line at today: grading is a TEACHING signal
+ * back to the producer, and a grade on a weeks-old idea teaches nothing because the
+ * context that produced it is gone — full token cost, near-zero learning. The historical
+ * corpus is not dropped; it settles through outcome-backfill, and the ~30-row sample
+ * taken before the cut confirmed 84% of it had already become open work-items that stand
+ * on their own merits (WI-38083).
+ */
+export const SCOUT_UNGRADED_EPOCH_MS = Date.parse('2026-08-12T00:00:00Z');
+
+/**
+ * Which forward-only floor applies to which producer. A census is only interpretable
+ * alongside the policy it was taken against, so `UngradedBreakdown` carries this too.
+ */
+export interface UngradedEpochPolicy {
+  /** Per-origin floors. An origin absent here falls back to `fallbackMs`. */
+  byOrigin: Readonly<Record<string, number>>;
+  /** The floor for any origin not named above — including origins added later. */
+  fallbackMs: number;
+}
+
+/**
+ * The shipped policy. A new producer inherits `fallbackMs` (the oldest, most inclusive
+ * floor) rather than silently disappearing behind a floor chosen for someone else —
+ * over-counting a new origin is recoverable, silently excluding it is not.
+ */
+export const DEFAULT_UNGRADED_EPOCH_POLICY: UngradedEpochPolicy = {
+  byOrigin: {
+    'su-ideate': SU_IDEATE_UNGRADED_EPOCH_MS,
+    scout: SCOUT_UNGRADED_EPOCH_MS,
+  },
+  fallbackMs: SU_IDEATE_UNGRADED_EPOCH_MS,
+};
+
+/** PURE: the floor this row's producer is judged against. */
+export function epochMsForOrigin(policy: UngradedEpochPolicy, origin: string): number {
+  const floor = policy.byOrigin[origin];
+  return typeof floor === 'number' && Number.isFinite(floor) ? floor : policy.fallbackMs;
+}
 
 /** One routed-idea row, reduced to the fields the scope decision needs. */
 export interface UngradedRowLike {
@@ -66,13 +135,21 @@ export type UngradedBucket = 'graded' | 'actionable' | 'terminal' | 'pre-epoch';
  * Order matters and is deliberate: a graded row is never counted anywhere else, and a
  * pre-epoch row is excluded even when its artifact is still open (the floor is a policy
  * boundary, not a staleness heuristic).
+ *
+ * D-014: the row's ORIGIN selects which floor it is judged against. Origin still does
+ * not create a bucket of its own — every row lands in exactly one of the four, and the
+ * `allUngraded === actionable + preEpoch + terminal` accounting below still holds — but
+ * two rows with the same timestamp CAN now bucket differently when their producers have
+ * different floors. That is the intended effect, not a leak of the origin axis into
+ * eligibility: each producer is judged against the line chosen for it.
  */
 export function classifyUngraded(
   row: UngradedRowLike,
-  opts: { epochMs: number },
+  opts: { policy: UngradedEpochPolicy },
 ): UngradedBucket {
   if (row.humanGrade !== null && row.humanGrade !== undefined) return 'graded';
-  if (!Number.isFinite(row.routedAtMs) || row.routedAtMs < opts.epochMs) return 'pre-epoch';
+  const epochMs = epochMsForOrigin(opts.policy, row.origin);
+  if (!Number.isFinite(row.routedAtMs) || row.routedAtMs < epochMs) return 'pre-epoch';
   if (row.outcome !== null && row.outcome !== 'pending') return 'terminal';
   return 'actionable';
 }
@@ -93,8 +170,13 @@ export interface UngradedBreakdown {
   allUngraded: number;
   /** Why the two differ. `allUngraded === actionable + preEpoch + terminal` always. */
   excluded: { preEpoch: number; terminal: number };
-  /** The floor this census was taken against, so a stored result stays interpretable. */
-  epochMs: number;
+  /**
+   * The floors this census was taken against, so a stored result stays interpretable.
+   * Carries the whole POLICY rather than one number: with per-origin floors (D-014) a
+   * single `epochMs` on a multi-origin census is not a summary, it is a wrong answer to
+   * "which line was drawn here" for every origin but one.
+   */
+  policy: UngradedEpochPolicy;
 }
 
 interface BreakdownRow {
@@ -113,7 +195,7 @@ const n = (v: number | string | null | undefined): number => Math.max(0, Number(
  */
 export function summarizeUngraded(
   rows: readonly BreakdownRow[],
-  epochMs: number,
+  policy: UngradedEpochPolicy,
 ): UngradedBreakdown {
   const actionableByOrigin: Record<string, number> = {};
   let actionable = 0;
@@ -128,7 +210,7 @@ export function summarizeUngraded(
     preEpoch += n(r.pre_epoch);
     terminal += n(r.terminal);
   }
-  return { actionableByOrigin, actionable, allUngraded, excluded: { preEpoch, terminal }, epochMs };
+  return { actionableByOrigin, actionable, allUngraded, excluded: { preEpoch, terminal }, policy };
 }
 
 /**
@@ -142,31 +224,47 @@ export function summarizeUngraded(
  */
 export async function readUngradedBreakdown(
   sql: Sql,
-  args: { workspaceId: string; harnessSlug?: string; epochMs: number },
+  args: { workspaceId: string; harnessSlug?: string; policy: UngradedEpochPolicy },
 ): Promise<UngradedBreakdown> {
-  const { workspaceId, harnessSlug, epochMs } = args;
+  const { workspaceId, harnessSlug, policy } = args;
+  // D-014: each row is judged against ITS OWN producer's floor. Resolving `epoch_ms`
+  // once per row in the CTE — rather than repeating a CASE in all four FILTERs — is
+  // what keeps this mirroring `epochMsForOrigin` instead of drifting from it, and the
+  // jsonb lookup means a policy gaining an origin needs no SQL change at all.
+  const floors = JSON.stringify(policy.byOrigin);
+  const fallback = policy.fallbackMs;
   const rows = harnessSlug
     ? await sql<BreakdownRow[]>`
+        WITH scoped AS (
+          SELECT origin, human_grade, outcome, routed_at,
+                 coalesce((${floors}::jsonb ->> origin)::bigint, ${fallback}::bigint) AS epoch_ms
+            FROM harness_shared.scout_routed_ideas
+           WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+        )
         SELECT origin,
-               count(*) FILTER (WHERE human_grade IS NULL AND routed_at >= ${epochMs}
+               count(*) FILTER (WHERE human_grade IS NULL AND routed_at >= epoch_ms
                                   AND (outcome IS NULL OR outcome = 'pending'))::int AS actionable,
                count(*) FILTER (WHERE human_grade IS NULL)::int AS all_ungraded,
-               count(*) FILTER (WHERE human_grade IS NULL AND routed_at < ${epochMs})::int AS pre_epoch,
-               count(*) FILTER (WHERE human_grade IS NULL AND routed_at >= ${epochMs}
+               count(*) FILTER (WHERE human_grade IS NULL AND routed_at < epoch_ms)::int AS pre_epoch,
+               count(*) FILTER (WHERE human_grade IS NULL AND routed_at >= epoch_ms
                                   AND outcome IS NOT NULL AND outcome <> 'pending')::int AS terminal
-          FROM harness_shared.scout_routed_ideas
-         WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+          FROM scoped
          GROUP BY origin`
     : await sql<BreakdownRow[]>`
+        WITH scoped AS (
+          SELECT origin, human_grade, outcome, routed_at,
+                 coalesce((${floors}::jsonb ->> origin)::bigint, ${fallback}::bigint) AS epoch_ms
+            FROM harness_shared.scout_routed_ideas
+           WHERE workspace_id = ${workspaceId}
+        )
         SELECT origin,
-               count(*) FILTER (WHERE human_grade IS NULL AND routed_at >= ${epochMs}
+               count(*) FILTER (WHERE human_grade IS NULL AND routed_at >= epoch_ms
                                   AND (outcome IS NULL OR outcome = 'pending'))::int AS actionable,
                count(*) FILTER (WHERE human_grade IS NULL)::int AS all_ungraded,
-               count(*) FILTER (WHERE human_grade IS NULL AND routed_at < ${epochMs})::int AS pre_epoch,
-               count(*) FILTER (WHERE human_grade IS NULL AND routed_at >= ${epochMs}
+               count(*) FILTER (WHERE human_grade IS NULL AND routed_at < epoch_ms)::int AS pre_epoch,
+               count(*) FILTER (WHERE human_grade IS NULL AND routed_at >= epoch_ms
                                   AND outcome IS NOT NULL AND outcome <> 'pending')::int AS terminal
-          FROM harness_shared.scout_routed_ideas
-         WHERE workspace_id = ${workspaceId}
+          FROM scoped
          GROUP BY origin`;
-  return summarizeUngraded(rows, epochMs);
+  return summarizeUngraded(rows, policy);
 }

@@ -2391,17 +2391,19 @@ async function collectScout(ctx: HealthCtx): Promise<HealthPanel<ScoutHealth>> {
       // terminality or epoch filter — 1,103 against an actionable backlog of 15. It now
       // reads the ONE definition (scout/ungraded-scope.ts), which cannot hand back an
       // unlabelled scalar.
-      const [{ readUngradedBreakdown }, { suIdeateUngradedConfig }] = await Promise.all([
-        import('../scout/ungraded-scope'),
-        import('../scout/ungraded-filings-watchdog'),
-      ]);
+      const { readUngradedBreakdown, DEFAULT_UNGRADED_EPOCH_POLICY } = await import(
+        '../scout/ungraded-scope'
+      );
       const rows = await sql<Array<{ graded: number }>>`
         SELECT (count(*) FILTER (WHERE graded_at IS NOT NULL AND graded_at > now() - interval '24 hours'))::int AS graded
           FROM harness_shared.scout_routed_ideas
          WHERE workspace_id = ${ctx.ws}`;
+      // D-014: the floor is per-origin. This surface used to pass the su-ideate floor
+      // for EVERY origin — the reason scout showed a 592-row "actionable" backlog
+      // against a line chosen for a different producer's corpus.
       const breakdown = await readUngradedBreakdown(sql, {
         workspaceId: ctx.ws,
-        epochMs: suIdeateUngradedConfig().epochMs,
+        policy: DEFAULT_UNGRADED_EPOCH_POLICY,
       });
       grading = {
         gradedInWindow: rows[0]?.graded ?? 0,

@@ -62,6 +62,7 @@ import {
 import { resolveMugOwner } from '../pot/placement-watchdog';
 import { deliverScoutNudge } from './nudge-recipient';
 import { claimWatchdogFire, recentWatchdogFires } from '../pot/watchdog';
+import { SU_IDEATE_UNGRADED_EPOCH_MS } from './ungraded-scope';
 
 // ── tunables (env-overridable, like scoutDraftReviewStaleSec) ─────────────────
 
@@ -105,8 +106,13 @@ export function suIdeateUngradedConfig(): SuIdeateUngradedConfig {
 
 /** D-013 enablement-epoch floor: only rows routed AFTER the watchdog shipped are
  *  ever nudged — the pre-existing su-ideate corpus (85 rows at sizing) belongs to
- *  the P-016 backfill sweep (outcomes), never to triage nudges. */
-export const SU_IDEATE_UNGRADED_EPOCH_MS = Date.parse('2026-07-11T00:00:00Z');
+ *  the P-016 backfill sweep (outcomes), never to triage nudges.
+ *
+ *  DEFINED IN `ungraded-scope.ts`, re-exported here for its long-standing importers.
+ *  D-014 added a SECOND floor (scout's), and two floors living next to two different
+ *  consumers is precisely the drift that module exists to prevent — so it owns both
+ *  and this file borrows one. Changing the su-ideate floor means editing it there. */
+export { SU_IDEATE_UNGRADED_EPOCH_MS };
 
 /** D-013 batch cap: one fire names at most this many filings (oldest first), so
  *  even a future pile-up arrives in triage as a bounded, workable batch. */
