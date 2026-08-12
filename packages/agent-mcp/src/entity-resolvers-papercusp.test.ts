@@ -13,6 +13,7 @@ import {
   collectEntityRefs,
   entityRef,
   resolveEntityRefs,
+  setEntityEnum,
 } from '@papercusp/tooldef';
 import { invalidateEntityCache, makeSetResolver } from './entity-resolvers-papercusp';
 
@@ -132,6 +133,15 @@ describe('role — the published, open vocabulary', () => {
  */
 describe('over-cap vocabularies publish nothing', () => {
   it('does not publish a pot enum', async () => {
+    // The subject here is the CAP DECISION — whether an over-cap set publishes —
+    // so it depends on the set's SIZE, never on which pots really exist. Bind a
+    // stub over-cap loader: the registered one reads harness_shared.pots, which
+    // turned this unit test into a live PG read. It then hung for vitest's full
+    // 5s timeout and red-pinned the release gate whenever the org pool was
+    // starved (measured 2026-08-12: a bare count(*) on that table could not
+    // complete inside 8s). A unit test must not be able to fail because the
+    // database is busy.
+    setEntityEnum('pot', async () => Array.from({ length: 200 }, (_, i) => `pot-${i}`));
     const schema = z.object({ pot: entityRef('pot') });
     const out = await applyEntityRefEnums(schema, z.toJSONSchema(schema) as Record<string, unknown>);
     const node = (out.properties as Record<string, Record<string, unknown>>).pot;
