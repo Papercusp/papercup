@@ -76,6 +76,33 @@ function resultText(content) {
 const byKind = new Map(); // kind -> {chars, blocks}
 const byTool = new Map(); // tool -> {useChars, resultChars, calls, results}
 const perSession = []; // {file, chars}
+const byInjector = new Map(); // injector -> {chars, blocks, host:*}
+const injected = { chars: 0, blocks: 0, hostResidual: 0 };
+
+/**
+ * The papercusp-authored markers that open an injected span, injector -> marker.
+ *
+ * These are the ONLY handle available: injected context is spliced into ordinary
+ * `text` and `tool_result` blocks, so nothing in the transcript's own structure
+ * distinguishes it from the human's prose or a tool's real output.
+ *
+ * ⚠ THIS TABLE GOES STALE SILENTLY. Renaming a header in the injection path
+ * stops it matching here with no error — the bytes then land in the reported
+ * unattributed remainder instead of disappearing, which is why that remainder
+ * is printed as a first-class number rather than dropped.
+ */
+const INJECT_MARKERS = [
+  ['related-context', '### Related context (pointers'],
+  ['related-context', '## Related context (pointers'],
+  ['mem0-recall', '## Relevant memory'],
+  ['mem0-recall', '## Possibly relevant'],
+  ['hook-additional-context', 'hook additional context'],
+  ['system-reminder', '<system-reminder>'],
+  ['turn-provenance', '⟦turn-provenance⟧'],
+  ['ctrl-transition', '⟦CTRL:transition⟧'],
+  ['coord-delta', '[coord+'],
+  ['presence-roster', '[presence ⟲'],
+];
 let files = 0;
 let lines = 0;
 let badLines = 0;
@@ -98,6 +125,54 @@ for (const root of ROOTS) {
     files += 1;
     const idToName = new Map();
     let sessionChars = 0;
+    /**
+     * Attribute the papercusp-INJECTED slice of a block's text to its injector.
+     *
+     * Each marker opens a block that runs to the next blank-line-separated
+     * marker or to end-of-text, so the injected span is measured from its
+     * marker to the next one rather than assumed to be the whole block — the
+     * human's own prose frequently sits in the SAME text block, and charging
+     * their sentence to the injector would overstate exactly what we are here
+     * to measure.
+     *
+     * ⚠ REPORTS ITS OWN COVERAGE. Marker matching is a heuristic over authored
+     * strings: a renamed header silently stops matching and its bytes migrate
+     * into `injectedUnattributed` rather than vanishing. That counter is the
+     * falsifier — if it grows, the marker table is stale, and a share computed
+     * without reading it is a share computed over an unknown population.
+     */
+    // eslint-disable-next-line no-inner-declarations
+    function attributeInjected(text, host) {
+      const hits = [];
+      for (const [injector, marker] of INJECT_MARKERS) {
+        let from = 0;
+        for (;;) {
+          const at = text.indexOf(marker, from);
+          if (at < 0) break;
+          hits.push({ at, injector });
+          from = at + marker.length;
+        }
+      }
+      if (!hits.length) return;
+      hits.sort((x, y) => x.at - y.at);
+      let injectedTotal = 0;
+      for (let i = 0; i < hits.length; i += 1) {
+        const start = hits[i].at;
+        const end = i + 1 < hits.length ? hits[i + 1].at : text.length;
+        const span = Math.max(0, end - start);
+        injectedTotal += span;
+        bump(byInjector, hits[i].injector, 'chars', span);
+        bump(byInjector, hits[i].injector, 'blocks', 1);
+        bump(byInjector, hits[i].injector, `host:${host}`, span);
+      }
+      injected.chars += injectedTotal;
+      injected.blocks += 1;
+      injected[`host:${host}`] = (injected[`host:${host}`] || 0) + injectedTotal;
+      // Everything BEFORE the first marker in a block carrying injected content
+      // is the genuine non-injected remainder (the human's prose, the tool's
+      // real output). Tracked so the injected share always has a denominator.
+      injected.hostResidual += hits[0].at;
+    }
     const rl = createInterface({ input: createReadStream(file, { encoding: 'utf8' }), crlfDelay: Infinity });
     for await (const line of rl) {
       if (!line.trim()) continue;
@@ -109,6 +184,35 @@ for (const root of ROOTS) {
         badLines += 1;
         continue;
       }
+      // ── INJECTED CONTEXT arrives as its OWN record type, not as a content
+      // block, and was therefore invisible to this scan entirely (measured on a
+      // live transcript: 66 `attachment` records / 91,872 bytes, ~70% of the
+      // file's bytes unattributed). Unlike the in-text case these are
+      // STRUCTURALLY labelled — `attachment.type === 'hook_additional_context'`
+      // with `hookName`/`hookEvent` — so they are attributed from the schema
+      // rather than by marker heuristics, and the injector name is exact.
+      //
+      // These ARE a sibling category here (their own records), so they add to
+      // the kind totals rather than slicing them — they are real context bytes
+      // that no previous run of this script counted at all.
+      if (rec.type === 'attachment') {
+        const a = rec.attachment;
+        if (!a || typeof a !== 'object') continue;
+        const body = Array.isArray(a.content) ? a.content.join('') : typeof a.content === 'string' ? a.content : '';
+        const chars = body.length;
+        if (!chars) continue;
+        const injector = a.hookName || a.hookEvent || a.type || '(unnamed-attachment)';
+        bump(byKind, 'injected_context', 'chars', chars);
+        bump(byKind, 'injected_context', 'blocks', 1);
+        bump(byInjector, String(injector), 'chars', chars);
+        bump(byInjector, String(injector), 'blocks', 1);
+        bump(byInjector, String(injector), 'host:attachment', chars);
+        injected.chars += chars;
+        injected.blocks += 1;
+        injected['host:attachment'] = (injected['host:attachment'] || 0) + chars;
+        sessionChars += chars;
+        continue;
+      }
       const msg = rec?.message;
       if (!msg || (rec.type !== 'user' && rec.type !== 'assistant')) continue;
       const content = msg.content;
@@ -117,8 +221,18 @@ for (const root of ROOTS) {
         if (!b || typeof b !== 'object') continue;
         let kind = b.type;
         let chars = 0;
-        if (kind === 'text') chars = typeof b.text === 'string' ? b.text.length : 0;
-        else if (kind === 'thinking') chars = typeof b.thinking === 'string' ? b.thinking.length : 0;
+        if (kind === 'text') {
+          chars = typeof b.text === 'string' ? b.text.length : 0;
+          // INJECTED-CONTEXT attribution. Papercusp authors these blocks and
+          // splices them into turns, so they are indistinguishable from the
+          // human's own prose by BLOCK TYPE — they are `text` like anything
+          // else. They are separated here by their own stable authored markers.
+          //
+          // ⚠ Deliberately measured as a SLICE OF `text`, never as a sibling
+          // kind: double-counting it against the kind totals would inflate the
+          // denominator every share is computed from.
+          if (typeof b.text === 'string' && b.text.length) attributeInjected(b.text, 'text');
+        } else if (kind === 'thinking') chars = typeof b.thinking === 'string' ? b.thinking.length : 0;
         else if (kind === 'tool_use') {
           chars = (b.name?.length || 0) + (b.input ? JSON.stringify(b.input).length : 0);
           if (b.id && b.name) idToName.set(b.id, b.name);
@@ -135,6 +249,11 @@ for (const root of ROOTS) {
           // original), which is why this is a shape heuristic and is reported
           // as one: leading `{`/`[` after trim, plus the kept head's line count.
           const text = typeof b.content === 'string' ? b.content : resultText(b.content);
+          // PostToolUse / PostToolBatch additionalContext rides INSIDE tool
+          // results, so the injected slice has to be measured here too — a
+          // text-blocks-only pass would miss the per-tool-batch injections
+          // entirely, which is the highest-frequency injector we have.
+          if (text) attributeInjected(text, 'tool_result');
           const at = text.indexOf('[result-door:');
           if (at >= 0) {
             doorFooters.total += 1;
@@ -168,6 +287,39 @@ const kinds = [...byKind.entries()]
     pct: total ? +((100 * (r.chars || 0)) / total).toFixed(2) : 0,
   }))
   .sort((a, b) => b.chars - a.chars);
+// INJECTED-CONTEXT roll-up. `injected.chars` is a SLICE of the kind totals
+// (it lives inside `text` and `tool_result`), never an addition to them — so
+// its share is taken against the same `total` every other share uses.
+const injectors = [...byInjector.entries()]
+  .map(([injector, r]) => ({
+    injector,
+    spans: r.blocks || 0,
+    chars: r.chars || 0,
+    estTokens: Math.round((r.chars || 0) / CPT),
+    pctOfAll: total ? +((100 * (r.chars || 0)) / total).toFixed(2) : 0,
+    inText: r['host:text'] || 0,
+    inToolResult: r['host:tool_result'] || 0,
+  }))
+  .sort((a, b) => b.chars - a.chars);
+// COVERAGE, stated on the aggregate rather than left to the reader: how much of
+// the text sharing a block with injected content was NOT claimed by any marker.
+// A rising residual means the marker table has drifted from the injectors.
+const injectedSummary = {
+  chars: injected.chars,
+  estTokens: Math.round(injected.chars / CPT),
+  pctOfAllContent: total ? +((100 * injected.chars) / total).toFixed(2) : 0,
+  blocksCarryingInjection: injected.blocks,
+  inTextChars: injected['host:text'] || 0,
+  inToolResultChars: injected['host:tool_result'] || 0,
+  unattributedHostChars: injected.hostResidual,
+  markerCoveragePct: injected.chars + injected.hostResidual
+    ? +((100 * injected.chars) / (injected.chars + injected.hostResidual)).toFixed(2)
+    : 0,
+  caveat:
+    'injected.* is a SLICE of byKind (text + tool_result), not a sibling category — do not add it to the kind totals. ' +
+    'Attribution is by authored marker string: unattributedHostChars is the non-injected remainder of blocks that carried ' +
+    'injection, and a rising value means the marker table has drifted from the injection path.',
+};
 const toolResultTotal = [...byTool.values()].reduce((a, r) => a + (r.resultChars || 0), 0);
 const toolsTop = [...byTool.entries()]
   .map(([tool, r]) => ({
@@ -216,6 +368,8 @@ const summary = {
   totalEstTokens: Math.round(total / CPT),
   perSessionEstTokens: { n: sessionTokens.length, p50: q(0.5), p90: q(0.9), p99: q(0.99), max: q(1) },
   byKind: kinds,
+  injected: injectedSummary,
+  byInjector: injectors,
   toolUseTotalChars: toolUseTotal,
   topToolsByResultChars: toolsTop,
   topToolsByUseChars: toolsTopByUse,
