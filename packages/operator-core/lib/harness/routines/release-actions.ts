@@ -45,8 +45,14 @@ import { RELEASE_FIXER_NO_TURN_PHASE, releaseFixerSpawnAlive } from '../../relea
 // does not — it lives in operator-core (checkpoint-log-tags.ts, moved down by
 // EI-19395755190419540), i.e. in THIS package, so the funnel is a plain relative import.
 import { orchestratorStdoutTag } from '../../release/checkpoint-log-tags';
+import { greenCheckpointDbPoolEnv } from '../../release/checkpoint-db-pool';
 import { buildIsolatedScopeArgv, SCOPE_LAUNCH_FAILURE_RE } from '../../systemd-scope';
 import type { FlakeSuspect } from '../../dev-data';
+
+// Kept as exports from this historical module for callers/tests that already
+// use the release-actions config surface. The implementation is shared with
+// the detached manual launcher in release/checkpoint-db-pool.ts.
+export { DEFAULT_GREEN_CHECKPOINT_DB_POOL_MAX, resolveGreenCheckpointDbPoolMax } from '../../release/checkpoint-db-pool';
 
 // Re-exported for backward compatibility — release-actions.test.ts imports
 // buildIsolatedScopeArgv from THIS module. The pure builder itself now lives in
@@ -227,23 +233,6 @@ function runScript(
  * This bump UNWEDGES the gate; it does not remove that deeper cost.
  */
 export const GREEN_CHECKPOINT_SUITE_TIMEOUT_MS = 120 * 60_000;
-
-/**
- * Keep the checkpoint runner's postgres.js pools separate from the host's generic
- * operator pool sizing. The suite is already process/cgroup-isolated, but inheriting
- * a large host pool lets its test workers consume the same finite PG connection
- * budget as routinesTick. Two suite forks need only a small per-process pool; this
- * default leaves headroom for the scheduler and remains hot-tunable for a box with
- * a different measured connection budget.
- */
-export const DEFAULT_GREEN_CHECKPOINT_DB_POOL_MAX = 2;
-
-export function resolveGreenCheckpointDbPoolMax(): number {
-  const configured = Number(process.env.PAPERCUSP_CHECKPOINT_DB_POOL_MAX);
-  return Number.isFinite(configured) && configured > 0
-    ? Math.max(1, Math.floor(configured))
-    : DEFAULT_GREEN_CHECKPOINT_DB_POOL_MAX;
-}
 
 /**
  * A green-checkpoint run's result, as the CLI reports it on its result-marker line.
@@ -599,7 +588,7 @@ registerSystemAction('green-checkpoint', async (ctx: SystemActionCtx) => {
       // WI-4310: the suite's child process must not inherit a large host pool and
       // starve routinesTick's shared org-admin pool. The checkpoint-specific knob
       // is intentionally translated to the db package's standard pool override.
-      PAPERCUSP_DB_POOL_MAX: String(resolveGreenCheckpointDbPoolMax()),
+      ...greenCheckpointDbPoolEnv(),
     },
     // Isolate the multi-GB suite in its own transient scope/cgroup so its memory
     // never counts against (or OOM-kills) the bg-host cage that runs the hive loop.

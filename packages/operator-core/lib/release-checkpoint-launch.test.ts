@@ -90,6 +90,24 @@ describe('buildCheckpointSystemdArgv', () => {
     expect(inner).toContain('> /tmp/cp.log 2>&1');
   });
 
+  it('WI-4310: forwards the dedicated DB pool cap into the detached checkpoint unit', () => {
+    const previous = process.env.PAPERCUSP_CHECKPOINT_DB_POOL_MAX;
+    try {
+      delete process.env.PAPERCUSP_CHECKPOINT_DB_POOL_MAX;
+      expect(buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin:/bin')).toContain(
+        '--setenv=PAPERCUSP_DB_POOL_MAX=2',
+      );
+
+      process.env.PAPERCUSP_CHECKPOINT_DB_POOL_MAX = '3.9';
+      expect(buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin:/bin')).toContain(
+        '--setenv=PAPERCUSP_DB_POOL_MAX=3',
+      );
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCUSP_CHECKPOINT_DB_POOL_MAX;
+      else process.env.PAPERCUSP_CHECKPOINT_DB_POOL_MAX = previous;
+    }
+  });
+
   it('does NOT forward the partial-green-gate flag by default (whole-batch, back-compat)', () => {
     const inner = buildCheckpointSystemdArgv('/tree', '/tmp/cp.log', '/usr/bin:/bin').at(-1)!;
     expect(inner).not.toContain('PAPERCUSP_PARTIAL_GREEN_GATE');

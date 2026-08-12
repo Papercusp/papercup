@@ -31,6 +31,7 @@ import { appendFileSync, closeSync, openSync, readFileSync, readSync, statSync }
 import { homedir } from 'node:os';
 import * as path from 'node:path';
 import { integrationRoot, tsxBin, type SpawnLike } from './release-deploy-launch';
+import { greenCheckpointDbPoolSetenvArgs } from './release/checkpoint-db-pool';
 import { isFixtureLogLine } from './release/checkpoint-log-tags';
 import { quietCutSecFromEnv } from './release/quiet-cut';
 import { gateVerdictEnv, type GateVerdictTarget } from './release/gate-verdict-target';
@@ -936,6 +937,7 @@ export function buildCheckpointSystemdArgv(
     `--property=RuntimeMaxSec=${CHECKPOINT_MAX_RUNTIME_SEC}`,
     `--working-directory=${root}`,
     `--setenv=PATH=${pathEnv}`,
+    ...greenCheckpointDbPoolSetenvArgs(),
     ...verdictEnv,
     'bash',
     '-c',
