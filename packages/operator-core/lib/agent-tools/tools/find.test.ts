@@ -14,6 +14,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
+import releaseTrace from '../release/trace';
 
 // Force lexical-only: buildQueryEmbedder resolves to null (unconfigured embedder).
 vi.mock('../search/embedder', () => ({
@@ -136,6 +137,16 @@ describe('buildCorpus (live registry → corpus + embed text)', () => {
     expect(entry?.argSchema).toContain('path?:string');
     expect(entry?.argSchema).toContain('sha?:string');
     expect(schemaByTool.get(name)).toMatchObject({ anyOf: expect.any(Array) });
+  });
+
+  it('exposes the actual release:trace path-or-sha requirements to discovery', () => {
+    expect(releaseTrace.name).toBe('release:trace');
+    const { corpus, schemaByTool } = buildCorpus();
+    const entry = corpus.find((candidate) => candidate.tool === 'release:trace');
+    expect(entry?.argSchema).toContain('one-of:path|sha');
+    expect(entry?.argSchema).toContain('path?:string');
+    expect(entry?.argSchema).toContain('sha?:string');
+    expect(schemaByTool.get('release:trace')).toMatchObject({ anyOf: expect.any(Array) });
   });
 });
 

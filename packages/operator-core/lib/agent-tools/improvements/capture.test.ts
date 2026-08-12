@@ -310,6 +310,32 @@ describe('improvements:capture — observation strict/fail-loud (P-012)', () => 
     }
   ).args;
 
+  it('accepts the documented structured toolFailure payload (EI-20242355653715593)', () => {
+    const r = argsSchema.safeParse({
+      title: 'improvements:capture rejected a tool failure report',
+      kind: 'bug',
+      toolFailure: {
+        toolName: 'improvements:capture',
+        errorCode: 'invalid_args',
+        status: 'error',
+        message: 'unrecognized key: toolFailure',
+        schemaRevision: '7511ab5b86',
+        fieldPath: 'toolFailure',
+        runtimeVersion: 'operator-2026-08-12',
+      },
+    });
+    expect(r.success).toBe(true);
+    if (r.success) {
+      expect(r.data).toMatchObject({
+        toolFailure: {
+          toolName: 'improvements:capture',
+          errorCode: 'invalid_args',
+          fieldPath: 'toolFailure',
+        },
+      });
+    }
+  });
+
   it('accepts a known observation (kind/scope/confidence/refs)', () => {
     const r = argsSchema.safeParse({
       title: 'friction note',
