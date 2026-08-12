@@ -14,6 +14,7 @@ import { cleanup, render, screen, fireEvent } from '@testing-library/react';
 afterEach(() => cleanup());
 
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: () => ({
     data: [],
     loading: false,
