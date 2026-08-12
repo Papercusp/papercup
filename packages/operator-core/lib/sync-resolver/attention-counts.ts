@@ -65,6 +65,43 @@ export interface AttentionCounts {
 }
 
 /**
+ * The sync dispatcher has a 10s outer resolver deadline, while the shared
+ * `plans:attention` cached read deliberately allows a 45s cold build before
+ * degrading. The always-mounted badge must choose a graceful value before the
+ * outer deadline can turn that slow-but-recoverable read into HTTP 500.
+ */
+export const ATTENTION_COUNTS_FALLBACK_MS = 8_000;
+
+const DEADLINE = Symbol('attention-counts-deadline');
+
+/**
+ * Resolve an attention-derived read with a caller-facing deadline. The
+ * underlying operation is intentionally not cancelled: cachedRead's
+ * single-flight build can finish and warm the next caller. A real rejection
+ * remains an error; only the deadline takes the supplied graceful fallback.
+ */
+export async function withDeadlineFallback<T>(
+  operation: Promise<T>,
+  deadlineMs: number,
+  fallback: () => T | Promise<T>,
+): Promise<T> {
+  operation.catch(() => {});
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<typeof DEADLINE>((resolve) => {
+    timer = setTimeout(() => resolve(DEADLINE), deadlineMs);
+    if (timer && typeof (timer as { unref?: () => void }).unref === 'function') {
+      (timer as { unref: () => void }).unref();
+    }
+  });
+  try {
+    const result = await Promise.race([operation, timeout]);
+    return result === DEADLINE ? await fallback() : result;
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/**
  * The tier of an attention item, with the wire-lag fallback.
  *
  * MUST stay identical to `effectiveTier` in

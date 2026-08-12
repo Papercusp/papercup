@@ -3301,8 +3301,20 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   'plans.attentionCounts': {
     resolve: async () => {
       const { callPlansRead } = await import('../agent-tools/plans/read-dispatch');
-      const r = (await callPlansRead('attention', {})) as { groups?: unknown[] };
-      const { deriveAttentionCounts } = await import('./attention-counts');
+      const {
+        ATTENTION_COUNTS_FALLBACK_MS,
+        deriveAttentionCounts,
+        withDeadlineFallback,
+      } = await import('./attention-counts');
+      // The underlying attention aggregation has a 45s cachedRead deadline, but
+      // this sync resolver has a 10s outer deadline. Return the badge's graceful
+      // empty value first so a slow cold build cannot surface as HTTP 500; the
+      // single-flight build continues warming the shared cache for the next poll.
+      const r = await withDeadlineFallback(
+        callPlansRead('attention', {}) as Promise<{ groups?: unknown[] }>,
+        ATTENTION_COUNTS_FALLBACK_MS,
+        () => ({ groups: [] }),
+      );
       return [deriveAttentionCounts(Array.isArray(r?.groups) ? r.groups : [])];
     },
   },
