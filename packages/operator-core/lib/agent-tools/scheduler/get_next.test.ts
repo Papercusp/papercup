@@ -24,6 +24,7 @@ const loadHarnessRegistryM = vi.hoisted(() => vi.fn(async () => ({ projects: reg
 // `work-item:claimable` await(s) — mock the store call so these unit tests never
 // touch real PG, and so tests below can assert it was invoked (self-scoped, by ownerId).
 const cancelClaimableAwaitsM = vi.hoisted(() => vi.fn(async () => 0));
+const liveLockedPathsM = vi.hoisted(() => vi.fn(async () => [] as string[]));
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-member', workspaceId: 'ws-1' }),
@@ -34,6 +35,9 @@ vi.mock('../../harness-registry', async (importOriginal) => ({
 }));
 vi.mock('../../events/await/store', () => ({
   cancelClaimableAwaits: cancelClaimableAwaitsM,
+}));
+vi.mock('../locks/live-lock-paths', () => ({
+  liveLockedPaths: liveLockedPathsM,
 }));
 // EI-20099413453852234: a successful claim now declares the caller's intent, which is a
 // presence WRITE — mocked here for the same reason as cancelClaimableAwaits above, so these
@@ -367,6 +371,16 @@ describe('a successful claim declares the caller intent (EI-20099413453852234)',
     expect(writePresenceM.mock.calls[0]![1]).toMatchObject({
       intent: 'WI-4242: Fix the flaky thing',
     });
+  });
+
+  it('passes live peer lock paths into the atomic placement rank, excluding its own locks', async () => {
+    liveLockedPathsM.mockResolvedValueOnce(['packages/operator-core/lib/hot.ts']);
+    await getNextTool.handler({ harness: 'papercusp' } as never, {} as never);
+    expect(liveLockedPathsM).toHaveBeenCalledWith({ excludeOwner: 'su-member' });
+    expect(getNextM).toHaveBeenCalledWith(expect.objectContaining({
+      cupId: 'su-member',
+      contendedPaths: ['packages/operator-core/lib/hot.ts'],
+    }));
   });
 
   it('routes a legacy/pre-envelope bug through the cheap validation lane at claim time', async () => {

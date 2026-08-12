@@ -98,6 +98,12 @@ export interface BeeContext {
   assignee: string;
   /** Paths this bee already holds open — the `affinity` rank-term input (D-001). */
   heldPaths?: string[];
+  /**
+   * Repo paths held by OTHER live agents right now. Candidate items whose declared
+   * payload.paths overlap these are soft-demoted behind independent work. They are
+   * never excluded: if every candidate conflicts, the best conflicting item still wins.
+   */
+  contendedPaths?: string[];
   /** The bee's model class (`model_fit`, descoped-neutral until P-004). */
   model?: string;
   /** Current load (accepted for vocabulary completeness; neutral today). */
@@ -1881,6 +1887,36 @@ function compileRankExpr(
 export function compileRank(sql: OrgSql, spec: ClaimSpec, bee: BeeContext) {
   const terms = spec.rank.terms;
 
+  // Fleet-member DX P-015: put a SOFT live-lock conflict bit ahead of the authored
+  // rank. This is placement affinity, not admission: an item with incomplete/no path
+  // metadata scores zero (no invented conflict), and a known-conflicting item remains
+  // selectable when no independent candidate exists. The input is a bounded snapshot
+  // taken by scheduler:get_next immediately before the atomic claim; every later pull
+  // re-reads the lock plane, so release automatically restores the normal rank.
+  const contended = (bee.contendedPaths ?? [])
+    .filter((p) => typeof p === 'string' && p.trim().length > 0)
+    .map((p) => p.trim())
+    .slice(0, 500);
+  const withLockPlacement = (base: SqlFragment): SqlFragment => {
+    if (contended.length === 0) return base;
+    const conflict = sql`CASE WHEN EXISTS (
+      SELECT 1
+        FROM jsonb_array_elements_text(
+          CASE WHEN jsonb_typeof(payload->'paths') = 'array'
+            THEN payload->'paths'
+            ELSE '[]'::jsonb
+          END
+        ) ip
+       WHERE EXISTS (
+         SELECT 1 FROM unnest(${contended}::text[]) lp
+          WHERE ip = lp
+             OR strpos(ip, rtrim(lp, '/') || '/') = 1
+             OR strpos(lp, rtrim(ip, '/') || '/') = 1
+       )
+    ) THEN 1 ELSE 0 END`;
+    return sql`${conflict} ASC, ${base}`;
+  };
+
   if (spec.rank.mode === 'weighted') {
     // Σ wᵢ·termᵢ — only terms that compile to a numeric value contribute, which this
     // now ENFORCES rather than merely asserting: a non-numeric term is dropped here
@@ -1901,17 +1937,17 @@ export function compileRank(sql: OrgSql, spec: ClaimSpec, bee: BeeContext) {
         return sql`(${w} * ${dirSign})`;
       })
       .filter((c): c is SqlFragment => c != null);
-    if (contribs.length === 0) return sql`created_ts ASC`;
+    if (contribs.length === 0) return withLockPlacement(sql`created_ts ASC`);
     const sum = contribs.reduce((acc, c) => sql`${acc} + ${c}`);
-    return sql`(${sum}) DESC, created_ts ASC`;
+    return withLockPlacement(sql`(${sum}) DESC, created_ts ASC`);
   }
 
   // lexicographic: each term ASC/DESC in order, then the total-order tiebreaker.
   const orderings = terms.map((t) => compileTermOrdering(sql, t, bee)).filter((o): o is SqlFragment => o != null);
-  if (orderings.length === 0) return sql`created_ts ASC`;
+  if (orderings.length === 0) return withLockPlacement(sql`created_ts ASC`);
   const joined = orderings.reduce((acc, o) => sql`${acc}, ${o}`);
   // created_ts ASC as the final tiebreaker (skip if already the last bare term).
-  return sql`${joined}, created_ts ASC`;
+  return withLockPlacement(sql`${joined}, created_ts ASC`);
 }
 
 /** One lexicographic term → `<col> ASC|DESC NULLS LAST`, honoring inversion. */

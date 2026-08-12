@@ -17,7 +17,7 @@ import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { DEFAULT_CLAIM_SPEC, validateClaimSpec, isIdOnlySelector, type ClaimSpec } from './claim-spec';
 import { buildP2pLaneFence } from './p2p-lane-fence';
 import { getNextWorkItem, type GetNextResult } from './get-next';
-import { releaseWorkItem, type OrgSql } from '../work-items';
+import { releaseWorkItem, type OrgSql, type WorkItem } from '../work-items';
 import { planItemLaneBlockReason } from './plan-item-lane-guard';
 import { maybeEmitFleetIdleDrain } from './fleet-idle-drain';
 import { matchesWorkItemClaimSpec } from './claim-spec-match';
@@ -514,6 +514,8 @@ export async function getNextForBee(args: {
   workspaceId?: string;
   harness: string;
   heldPaths?: string[];
+  /** Live paths held by peers; used only for soft placement down-ranking. */
+  contendedPaths?: string[];
   swarmId?: string;
   excludeRedundant?: boolean;
   states?: string[];
@@ -617,7 +619,11 @@ export async function getNextForBee(args: {
   // authoritative backstop for surfacing why nothing was eligible.
   const MAX_PLAN_LANE_ATTEMPTS = 5;
   for (let attempt = 0; attempt < MAX_PLAN_LANE_ATTEMPTS; attempt += 1) {
-    const result = await getNextWorkItem(record.spec, { assignee: args.cupId, heldPaths: args.heldPaths }, {
+    const result = await getNextWorkItem(record.spec, {
+      assignee: args.cupId,
+      heldPaths: args.heldPaths,
+      contendedPaths: args.contendedPaths,
+    }, {
       harness: args.harness,
       // WI-5261: thread the caller's already-resolved workspace through explicitly —
       // getNextWorkItem's tiers otherwise re-derive it via activeWorkspaceId(), which
@@ -681,6 +687,10 @@ export async function getNextForBee(args: {
           // larger change than this detector-only ticket scopes for. issue-family rows are
           // served ONLY by tier 3; feature-family rows by tiers 1/2.
           tier: result.workItem.family === 'issue' ? 'issue-tier3' : 'feature-tier1-2',
+          lockAwarePlacement: {
+            peerHeldPathCount: args.contendedPaths?.length ?? 0,
+            selectedConflict: workItemConflictsWithPaths(result.workItem, args.contendedPaths ?? []),
+          },
         },
       });
       return { ...result, specSource: record.source };
@@ -736,6 +746,23 @@ export async function getNextForBee(args: {
     });
   }
   return null;
+}
+
+function workItemConflictsWithPaths(item: WorkItem, contendedPaths: string[]): boolean {
+  const payload = item.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
+    ? item.payload as Record<string, unknown>
+    : {};
+  const itemPaths = Array.isArray(payload.paths)
+    ? payload.paths.filter((p): p is string => typeof p === 'string' && p.trim().length > 0)
+    : [];
+  const normalize = (p: string) => p.trim().replace(/^\.\//, '').replace(/\/+$/, '');
+  return itemPaths.some((rawItemPath) => {
+    const itemPath = normalize(rawItemPath);
+    return contendedPaths.some((rawHeldPath) => {
+      const heldPath = normalize(rawHeldPath);
+      return itemPath === heldPath || itemPath.startsWith(`${heldPath}/`) || heldPath.startsWith(`${itemPath}/`);
+    });
+  });
 }
 
 /**

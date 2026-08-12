@@ -288,6 +288,34 @@ describe('get_next — spec filter + rank selects the correct item', () => {
     expect(r?.workItem.id).toBe('F-near');
   });
 
+  it('soft-demotes a known lock-conflicting candidate behind independent work', async () => {
+    await seedFeature('F-hot', { paths: ['libs/sync/queue.ts'], featureOrder: 1, createdTs: 10 });
+    await seedFeature('F-independent', { paths: ['apps/ui/page.tsx'], featureOrder: 9, createdTs: 20 });
+    const s = spec({
+      specVersion: '1.0',
+      specId: 'lock-aware-placement',
+      revision: 1,
+      view: {},
+      rank: { mode: 'lexicographic', terms: [{ expr: 'priority', dir: 'desc' }] },
+    });
+    const r = await getNextWorkItem(
+      s,
+      { assignee: 'bee-1', contendedPaths: ['libs/sync/queue.ts'] },
+      { harness: H },
+    );
+    expect(r?.workItem.id).toBe('F-independent');
+  });
+
+  it('never hard-excludes a lock-conflicting item when it is the only candidate', async () => {
+    await seedFeature('F-only-hot', { paths: ['libs/sync/queue.ts'], createdTs: 10 });
+    const r = await getNextWorkItem(
+      DEFAULT_CLAIM_SPEC,
+      { assignee: 'bee-1', contendedPaths: ['libs/sync'] },
+      { harness: H },
+    );
+    expect(r?.workItem.id).toBe('F-only-hot');
+  });
+
   it('a glob filter on paths (payload) matches by path prefix', async () => {
     await seedFeature('F-sync-lib', { paths: ['libs/sync/index.ts'], createdTs: 10 });
     await seedFeature('F-ui', { paths: ['apps/ui/page.tsx'], createdTs: 5 });

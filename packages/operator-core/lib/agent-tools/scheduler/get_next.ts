@@ -32,6 +32,7 @@ import type { CellReader } from '../../cell-registry';
 import { loadHarnessRegistry } from '../../harness-registry';
 import { cancelClaimableAwaits } from '../../events/await/store';
 import { withBoundedTimeout } from '../../bounded-timeout';
+import { liveLockedPaths } from '../locks/live-lock-paths';
 
 /** The claimable-state subset diagnoseClaimNextMiss accepts (mirrors CLAIM_STATES_ALLOWLIST). */
 type ClaimNextStates = ('open' | 'failing')[] | undefined;
@@ -641,6 +642,10 @@ export default defineTool({
     // preference, so the kill-switch may disable scheduler steering but cannot widen a
     // member into the generic backlog.
     const specOn = await getFlag(FLAGS.SCHEDULER_SPEC_CLAIM, ident.ownerId).catch(() => true);
+    // P-015: authoritative lock-plane snapshot, holders only and excluding this
+    // caller. Fail-soft is implemented by liveLockedPaths; cap the SQL parameter so
+    // a pathological lock storm cannot inflate a claim request without bound.
+    const contendedPaths = (await liveLockedPaths({ excludeOwner: ident.ownerId })).slice(0, 500);
     // EI-18167154191955470: the atomic claim is the heaviest single DB op in this path — an
     // UPDATE ... FOR UPDATE SKIP LOCKED that must acquire both a pool connection and a row lock,
     // the most likely place to block under PG pool saturation. Bound it so a stall fails FAST
@@ -662,6 +667,7 @@ export default defineTool({
         workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
         harness: args.harness,
         heldPaths: args.heldPaths,
+        contendedPaths,
         states: args.states,
         rigAvailable: args.rigAvailable,
         ignoreStoredSpec: !specOn && !reconciliation.scope,
@@ -776,6 +782,7 @@ export default defineTool({
             workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
             harness: args.harness,
             heldPaths: args.heldPaths,
+            contendedPaths,
             states: args.states,
             rigAvailable: args.rigAvailable,
             ignoreStoredSpec: !specOn && !reconciliation.scope,
@@ -830,6 +837,7 @@ export default defineTool({
               workspaceId: resolveClaimSpecWorkspace(ident.workspaceId),
               harness: args.harness,
               heldPaths: args.heldPaths,
+              contendedPaths,
               states: args.states,
               rigAvailable: args.rigAvailable,
               ignoreStoredSpec: !specOn && !reconciliation.scope,
