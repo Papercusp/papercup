@@ -7,6 +7,7 @@
  */
 
 import { describe, expect, it, vi } from 'vitest';
+import { mockResolvedTyped } from '../../../testing/typed-mock';
 
 vi.mock('../../../task-manager/enabled', () => ({
   isTaskManagerEnabled: vi.fn(async () => true),
@@ -27,7 +28,8 @@ function makeTx() {
 describe('processes:list structured output', () => {
   it('advertises an object result and preserves a large task inventory', async () => {
     const { listTasks } = await import('../../../task-manager/store');
-    vi.mocked(listTasks).mockResolvedValue(
+    mockResolvedTyped(
+      vi.mocked(listTasks),
       Array.from({ length: 25 }, (_, i) => ({
         taskId: `task-${i}`,
         workspaceId: 'default',
@@ -40,7 +42,7 @@ describe('processes:list structured output', () => {
         planSlug: null,
         parentTaskId: null,
         confined: true,
-        state: 'running',
+        state: 'running' as const,
         startedAt: '2026-08-12T09:00:00.000Z',
         lastSeenAt: '2026-08-12T09:00:00.000Z',
         lastMemoryBytes: 1024,
@@ -54,7 +56,7 @@ describe('processes:list structured output', () => {
         exitReason: null,
         logPath: null,
         detail: {},
-      })) as never,
+      })),
     );
 
     const dispatched = await dispatchProjectedTool(
