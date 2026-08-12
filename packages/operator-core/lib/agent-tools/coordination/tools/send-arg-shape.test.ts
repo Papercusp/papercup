@@ -34,6 +34,20 @@ import { describe, expect, it } from 'vitest';
 
 import sendTool, { itemSpec } from './send';
 
+describe('EI-20223353810864057 — primary coord:send guidance names required summary', () => {
+  it('describes summary as the required inbox headline on both guidance surfaces', () => {
+    const description = String((sendTool as { description?: unknown }).description ?? '');
+    const when = String(
+      ((sendTool as { guidance?: { when?: unknown } }).guidance?.when ?? ''),
+    );
+
+    for (const text of [description, when]) {
+      expect(text).toMatch(/summary[^.]{0,100}required/i);
+      expect(text).toMatch(/inbox headline/i);
+    }
+  });
+});
+
 /** Every issue message from a failed parse, joined — order-independent matching. */
 function refusal(args: unknown): string {
   const r = sendTool.args.safeParse(args);
