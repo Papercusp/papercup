@@ -38,6 +38,27 @@ export interface PresenceTier1 {
    *  process as `suspect` until claim cleanup finishes. Not emitted in the
    *  compact presence payload. */
   workItemClaims?: string[];
+  /** PLAN-QUALIFIED refs (`<plan_slug>#<item_id>`, {@link planItemRef}) of the plan
+   *  items this owner occupies through a held, NON-TERMINAL work-item carrying a
+   *  `payload.plan_item` stamp — the plan-item lane the fleet actually records
+   *  (EI-20200393414409502).
+   *
+   *  ⚠ WHY THIS EXISTS BESIDE `claimedItems`, WHICH LOOKS LIKE IT ALREADY ANSWERS IT.
+   *  `claimedItems` comes SOLELY from `plan_item_claims`, and that surface is ~6x less
+   *  used here than work-item claims: measured 2026-08-11, 5 agents held a live
+   *  plan-item claim while 31 held work-items, and ZERO plans had the two co-holders
+   *  `blocks-me` needs — so the relation reported a permanent, error-free zero for the
+   *  whole 14-day census window while 6 plans had co-located agents and blocked items.
+   *  Deriving occupancy from the stamp is what makes that signal reachable at all.
+   *
+   *  OMITTED (not `[]`) when the owner occupies nothing, so `pick` drops it from the
+   *  emitted row and the common case costs zero payload bytes.
+   *
+   *  Refs are FULLY QUALIFIED on purpose: a bare `P-003` is plan-local, so comparing
+   *  one across plans couples two agents over an identifier collision. Qualifying them
+   *  is also what lets a peer count as "on my plan" through work it holds there even
+   *  when it declares a different `currentPlanSlug`. */
+  claimedPlanItemRefs?: string[];
   /** Model tier the agent runs on (opus/sonnet/haiku…), or null. */
   model: string | null;
   /** True iff the agent is parked on an events:await (blocked-on). */
