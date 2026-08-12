@@ -28,6 +28,14 @@ describe('parseFactRef — the three live forms', () => {
     });
   });
 
+  it('parses a workspace-scoped ref without a scopeRef segment', () => {
+    expect(parseFactRef('fact:workspace:gate-integration-root-is-explicit-env')).toEqual({
+      scope: 'workspace',
+      key: 'gate-integration-root-is-explicit-env',
+      version: undefined,
+    });
+  });
+
   it('parses the bare form', () => {
     expect(parseFactRef('fact:desktop-ipc-rollback-lever-is-dead-in-webview')).toEqual({
       key: 'desktop-ipc-rollback-lever-is-dead-in-webview',
@@ -134,6 +142,24 @@ describe('resolvePremiseStamps', () => {
     const probes: PremiseProbes = { workItem: async () => ({ exists: false }) };
     const [stamp] = await resolvePremiseStamps(['WI-9999#completion'], probes);
     expect(stamp!.status).toBe('unresolvable');
+  });
+
+  it('resolves a workspace-scoped fact citation whose scopeRef is null', async () => {
+    const probes: PremiseProbes = {
+      fact: async (parsed) => {
+        expect(parsed).toEqual({
+          scope: 'workspace',
+          key: 'gate-integration-root-is-explicit-env',
+          version: undefined,
+        });
+        return { exists: true, supersededAt: null };
+      },
+    };
+    const [stamp] = await resolvePremiseStamps(
+      ['fact:workspace:gate-integration-root-is-explicit-env'],
+      probes,
+    );
+    expect(stamp!.status).toBe('holds');
   });
 
   // THE GUARANTEE D-026 correction 2 actually asks for, pinned executably.

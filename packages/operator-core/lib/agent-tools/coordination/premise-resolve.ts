@@ -121,6 +121,18 @@ export function parseFactRef(ref: string): ParsedFactRef | null {
   }
 
   const segments = rest.split(':');
+  // Workspace facts are global to the workspace, so their canonical citation
+  // deliberately omits a scopeRef: `fact:workspace:<key>`. Keep the whole
+  // remaining tail as the key, matching factCitationRef/parseAssumptionRef;
+  // treating this two-segment form as a bare key makes a real workspace fact
+  // look dangling to the premise stamp resolver.
+  if (segments.length >= 2 && segments[0] === 'workspace') {
+    return {
+      scope: 'workspace',
+      key: segments.slice(1).join(':'),
+      version,
+    };
+  }
   if (segments.length >= 3 && FACT_SCOPE_NAMES.has(segments[0]!)) {
     return {
       scope: segments[0],
