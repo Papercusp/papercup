@@ -45,6 +45,7 @@ import { Tooltip } from '../../harness/Tooltip';
 import { OperatorChat } from '../OperatorChat';
 import { useAgentThinkingStream } from '../../harness/AgentThinkingStream';
 import { mapSessionTimeline } from './session-transcript-mapping';
+import { classifyStreamFreshness, streamFreshnessMessage } from './stream-freshness';
 import { mergeSentEchoes, useSentEchoes } from './sent-message-echo';
 /* D-011: the session resolve, the SSE url builder and the send state machine
    were extracted here so the goal popup can host this same conversation
@@ -693,7 +694,7 @@ export function LiveSessionChat({
    *  trusting it (see the `focusIndex` memo below). */
   focusTerm?: string | null;
 }) {
-  const { events, status, thinking, anchor } = useAgentThinkingStream('', '', '', streamUrl);
+  const { events, status, thinking, anchor, transport, lastSignalAt } = useAgentThinkingStream('', '', '', streamUrl);
 
   // P-012: the SAME advRoster.list sync query the HUD/Sessions roster read
   // (shared cache, no new endpoint) — narrowed to this session's owner so the
@@ -810,11 +811,33 @@ export function LiveSessionChat({
   // branding.
   const paneIcon = (rosterEntry?.agent ? AGENT_MARKS[rosterEntry.agent] : undefined) ?? Terminal;
 
+  /* Is what the reader is looking at actually CURRENT? (P-003 of
+     gui-chat-pane-repaint-2026-08-12.)
+
+     The ladder below used to have no answer for that. `status` only reaches
+     'error' after the transport racks up three consecutive failures with zero
+     successful opens, so a connection that keeps half-recovering — and one the
+     transport still calls open that has quietly stopped delivering — both
+     rendered a frozen transcript with NOTHING to distinguish it from a live
+     one. That is what turned "the pane went deaf" into the owner's reasonable
+     but wrong reading, "my message was never sent".
+
+     `Date.now()` is read during render on purpose: the verdict is a function of
+     elapsed time, and the hook re-renders us at the stale edge precisely so this
+     is re-evaluated then. */
+  const freshness = classifyStreamFreshness({ transport, lastSignalAtMs: lastSignalAt, nowMs: Date.now() });
+  const freshnessNote = streamFreshnessMessage(freshness);
+
   let banner: ReactNode = null;
   if (status === 'connecting' && events.length === 0) {
     banner = <div style={BANNER_STYLE}>Connecting to the live session…</div>;
   } else if (status === 'error') {
     banner = <div style={ERROR_BANNER_STYLE}>Lost the live connection — retrying…</div>;
+  } else if (freshnessNote) {
+    /* Above the empty-session branch: a pane that is behind may ALSO look empty,
+       and "no conversation yet" would then be a confident false statement about
+       the agent rather than an honest one about our connection to it. */
+    banner = <div style={ERROR_BANNER_STYLE} data-stream-freshness={freshness}>{freshnessNote}</div>;
   } else if (status === 'live' && messages.length === 0) {
     banner = <div style={BANNER_STYLE}>No conversation text in this session yet.</div>;
   }
