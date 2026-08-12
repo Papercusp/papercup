@@ -355,3 +355,135 @@ export function gateHealthCallFromQuery(atom: string): string | null {
 
   return renderCall('routines:list', args);
 }
+
+/** Every `'literal'` inside an `IN ( … )` list for `column`. */
+function inListFor(atom: string, column: string): string[] {
+  const list = new RegExp(String.raw`\b${column}\s+in\s*\(([^)]*)\)`, 'i').exec(atom)?.[1];
+  return list ? [...list.matchAll(/'([^']+)'/g)].map((m) => m[1]!) : [];
+}
+
+/** `work_items:get` takes 1–100 ids per call (get.ts `ids`: maxItems 100). */
+export const WORK_ITEMS_GET_MAX_IDS = 100;
+
+/**
+ * The BY-ID forensic read — the dominant `work_items` shape by a wide margin:
+ * `SELECT feature_id, status, taken_by, terminal_owner, authority,
+ * (payload->'_completionEvidence' IS NOT NULL) AS has_evidence FROM
+ * harness_shared.work_items WHERE workspace_id = '…' AND harness_slug = '…' AND
+ * feature_id = 'EI-…'`.
+ *
+ * Measured over the 14d corpus: id predicates account for ~743 of 1,404 plain
+ * single-relation atoms (`feature_id` 617, bare `id` 126) across 191 agents.
+ * (The census reports this relation smaller because it runs a 7-DAY window —
+ * `DEFAULT_CENSUS_WINDOW_DAYS = 7`. Same relation, half the window; do not
+ * "reconcile" the two into a discrepancy.)
+ *
+ * ⚠ THIS PAIR EXISTS BECAUSE A SIBLING PAIR'S REASONING WAS WRONG. The
+ * `engineerIssuesSearch` comment above states that `work_items:get { id }` "does
+ * not surface the terminal/authority columns those queries exist to read". That
+ * is FALSE against the live verb, and it is the single claim that would have
+ * talked this pair out of existing. Measured on CLOSED item
+ * EI-20285616516435031: `terminalOwner`, `completionAuthority: 'committed'` and
+ * `closedAt` all come back populated. A closed item was used deliberately — on an
+ * OPEN row those fields are null, and a null is not evidence about whether a
+ * field is projected.
+ *
+ * Column mapping (SQL → verb): `feature_id`/`id` → `id`, `status` → `state`,
+ * `taken_by` → `assignee`, `item_kind` → `kind`, `harness_slug` → `harness`,
+ * `terminal_owner` → `terminalOwner`, `authority` → `completionAuthority`.
+ */
+export function workItemsGetCallFromQuery(atom: string): string | null {
+  const ids = [
+    ...inListFor(atom, 'feature_id'),
+    ...inListFor(atom, 'id'),
+    ...((id) => (id ? [id] : []))(literalAfter(atom, 'feature_id') ?? literalAfter(atom, 'id')),
+  ];
+  // De-duplicate: `feature_id = 'X'` and a same-atom `id IN ('X')` are one item.
+  const unique = [...new Set(ids)];
+  if (unique.length === 0) return null;
+  // Beyond the verb's own batch ceiling the substitution stops being one call,
+  // so it is not one this pair may claim.
+  if (unique.length > WORK_ITEMS_GET_MAX_IDS) return null;
+
+  const args: Array<[string, string]> = [];
+  args.push(
+    unique.length === 1
+      ? ['id', JSON.stringify(unique[0])]
+      : ['ids', `[${unique.map((id) => JSON.stringify(id)).join(', ')}]`],
+  );
+
+  // `harness_slug` is a real narrowing here: ids are unique per harness only, and
+  // `get` takes `harness` precisely to disambiguate a repeated feature id.
+  const harness = literalAfter(atom, 'harness_slug');
+  if (harness) args.push(['harness', JSON.stringify(harness)]);
+
+  // A `payload->` projection is served, but ONLY at the full payload tier: the
+  // default (trimmed) tier DROPS `workItem.payload` and `workItem.summary`, so
+  // rendering the bare call for a query that reads a payload path would hand back
+  // a row missing the very field the query exists to read.
+  if (/\bpayload\s*(?:->|->>|\?)/i.test(atom) || /\bsummary\b/i.test(atom)) {
+    args.push(['payloadTier', JSON.stringify('full')]);
+  }
+
+  return renderCall('work_items:get', args);
+}
+
+/**
+ * The SEARCH / SLICE read: `SELECT feature_id, status, taken_by, title FROM
+ * harness_shared.work_items WHERE harness_slug='papercusp' AND title ILIKE
+ * '%census%' AND status='open'`.
+ *
+ * ⚠⚠ `includeObservations: true` IS EMITTED ON EVERY CALL, AND IT IS THE WHOLE
+ * REASON THIS TRANSLATION IS SAFE. `work_items:list` EXCLUDES
+ * `payload.lane:'observation'` rows BY DEFAULT (D-005) — roughly 2,700 of them
+ * open at any time — while the raw `SELECT` this pair replaces returns them.
+ * Omitting the flag would render a call that silently answers with FEWER rows
+ * than the query asked for, which is the narrowing over-claim D-006 forbids and
+ * the exact failure recorded in fact `substitution-pair-narrowing-over-claim`.
+ * The flag is dropped ONLY when the query itself excludes the observation lane.
+ */
+export function workItemsListCallFromQuery(atom: string): string | null {
+  const args: Array<[string, string]> = [];
+
+  // `q` is a literal substring over title AND body/summary (list.ts:242), so a
+  // title-only ILIKE routes to a SUPERSET. Stated in the expression, never hidden.
+  const q = likePatternFor(atom, 'title') ?? likePatternFor(atom, 'summary');
+  if (q) args.push(['q', JSON.stringify(q.replace(/%/g, ''))]);
+
+  // The DB column is `status`; the verb's arg is `state`. Both spellings appear
+  // in the corpus and mean the same thing here.
+  const state = literalAfter(atom, 'status') ?? literalAfter(atom, 'state');
+  if (state) args.push(['state', JSON.stringify(state.toLowerCase())]);
+
+  // `item_kind` → `kind`. An IN-list of kinds is NOT translatable: `kind` takes
+  // one value per call, so rendering the first would narrow the answer.
+  if (inListFor(atom, 'item_kind').length === 0) {
+    const kind = literalAfter(atom, 'item_kind') ?? literalAfter(atom, 'kind');
+    if (kind) args.push(['kind', JSON.stringify(kind.toLowerCase())]);
+  }
+
+  const assignee = literalAfter(atom, 'taken_by') ?? literalAfter(atom, 'assignee');
+  if (assignee) args.push(['assignee', JSON.stringify(assignee)]);
+
+  const harness = literalAfter(atom, 'harness_slug');
+  if (harness) args.push(['harness', JSON.stringify(harness)]);
+
+  // The completion-authority judgement is a first-class filter, so an
+  // `authority = 'proposed'` slice is served rather than left to SQL.
+  const authority = /\b(?:completion_)?authority\s*=\s*'(committed|proposed|validated|pending_human|invalid)'/i.exec(
+    atom,
+  )?.[1];
+  if (authority) args.push(['completionAuthority', JSON.stringify(authority.toLowerCase())]);
+
+  if (args.length === 0) return null;
+
+  // See the banner: the default EXCLUDES observation-lane rows that the raw
+  // SELECT returns. Only a query that already excludes them may omit the flag.
+  const excludesObservations = /\blane\b[^,)]*'observation'|payload\s*->>?\s*'lane'/i.test(atom);
+  if (!excludesObservations) args.push(['includeObservations', 'true']);
+
+  const limit = limitOf(atom);
+  if (limit !== null) args.push(['limit', String(limit)]);
+
+  return renderCall('work_items:list', args);
+}
