@@ -8,8 +8,10 @@
  * SYNC-cached read of it over the env defaults, so every consumer sees the override without each
  * becoming async. Empty store ⇒ env/baked defaults ⇒ byte-identical.
  *
- * The cache is refreshed on boot + on every write (same-process immediate). Cross-process freshness is
- * boot-bounded — fine for these operational thresholds. Registers a runtime-config override concern.
+ * The cache is refreshed on first use + reload signals + a periodic timer + every write (same-process
+ * immediate). The import stays pure: no DB read starts until a sync reader arms the lazy refresh.
+ * Cross-process freshness is bounded by the periodic timer. Registers a runtime-config override
+ * concern.
  *
  * NOTE (D-005): placement AFFINITY weights are homed in pot:set-steering, NOT here — this carries only
  * the watchdog/liveness/health thresholds. (Work-distribution + system-health alarm thresholds can be
@@ -20,8 +22,10 @@
  * 350-operator-hive-control-policy.sql) is real schema and stays as-is — that rename is P-009
  * (DB rename), scoped separately and intentionally LAST in this plan.
  */
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { readOperatorState, writeOperatorState } from './operator-state-pg';
 import { registerOverrideConcern, type OverrideEntry } from './config-overrides/registry';
+import { lazyFlagRefresh } from './lazy-flag-refresh';
 
 export interface PotControlPolicy {
   breakerThreshold?: number;
@@ -43,6 +47,7 @@ let cached: PotControlPolicy = {};
 
 /** The current override (sync) — overlaid by placementConfig() over its env defaults. */
 export function placementOverride(): PotControlPolicy {
+  armPotControlPolicyRefresh();
   return cached;
 }
 
@@ -53,7 +58,23 @@ export async function refreshPotControlPolicy(): Promise<void> {
     /* keep the last value (empty at boot ⇒ env defaults) — never throw on the config path */
   }
 }
-void refreshPotControlPolicy();
+
+// The policy is not flag-gated, but it still needs the same import-safe lazy boot/reload wiring as
+// the flag-backed config caches. Omitting `keys` means the shared flag-bus reload signal (key=null)
+// refreshes this store without making any individual flag a dependency of the policy.
+const armPotControlPolicyRefresh = lazyFlagRefresh(refreshPotControlPolicy, {
+  unpopulated: {
+    kind: 'not-flag-gated',
+    serves:
+      'the empty policy override, so placementConfig() continues to use its baked/env defaults until the first async refresh completes',
+  },
+});
+
+// Bounded cross-process freshness. The managed registry keeps this timer visible to schedule
+// inventory and owns its lifecycle; it never performs work during module evaluation.
+managedSetInterval('config-refresh:pot-control-policy', 60_000, () => refreshPotControlPolicy(), {
+  category: 'cache',
+});
 
 export async function readPotControlPolicy(): Promise<PotControlPolicy> {
   return (await readOperatorState<PotControlPolicy>('operator_pot_control_policy')) ?? {};
