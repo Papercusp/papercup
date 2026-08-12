@@ -249,19 +249,19 @@ export function buildFrontmatter(fm: FrontmatterInput): string {
   lines.push(`discovered: ${fm.discovered}`);
   emittedKeys.add('discovered');
   if (fm.tags.length) lines.push(`tags: [${fm.tags.map(yamlStr).join(', ')}]`);
-  if (fm.tags.length) emittedKeys.add('tags');
+  emittedKeys.add('tags');
   lines.push(`status: ${fm.status}`);
   emittedKeys.add('status');
   if (fm.documents.length) {
     lines.push('documents:');
     for (const d of fm.documents) lines.push(`  - ${yamlStr(d)}`);
-    emittedKeys.add('documents');
   }
+  emittedKeys.add('documents');
   if (fm.plans.length) {
     lines.push('plans:');
     for (const p of fm.plans) lines.push(`  - ${yamlStr(p)}`);
-    emittedKeys.add('plans');
   }
+  emittedKeys.add('plans');
   if (typeof fm.sidebarOrder === 'number' && Number.isFinite(fm.sidebarOrder)) {
     lines.push('sidebar:');
     lines.push(`  order: ${Math.trunc(fm.sidebarOrder)}`);
@@ -349,6 +349,11 @@ const argsSchema = z.object({
     ),
   tags: z.union([z.string(), z.array(z.string())]).optional().describe('Topic tags (frontmatter `tags`). A PROCEDURAL ordered-steps doc is the RUNBOOK genre: tag it `runbook`, end the slug `-runbook`, and say "runbook" in title/description so docs:search ranks it (agent-insights/runbooks-convention).'),
   plans: z.union([z.string(), z.array(z.string())]).optional().describe('Related plan slugs (frontmatter `plans`).'),
+  normative: z.boolean().optional().describe('Optional OKF normative classification. On overwrite, omitted preserves the existing value.'),
+  governs: z
+    .union([z.string(), z.array(z.string())])
+    .optional()
+    .describe('Convention surface(s) this doc governs. On overwrite, omitted preserves the existing value.'),
   section: z
     .string()
     .optional()
@@ -428,11 +433,6 @@ export default defineTool({
       return err(`doc_exists — ${docId} already exists; pass overwrite:true to replace it, or edit it with capability:edit`);
     }
 
-    const documents = normalizeList(args.documents);
-    if (!documents.length) {
-      warnings.push('no `documents` provided — the doc is NOT drift-tracked; pass `documents` (files/symbols it covers) so the drift sweep can flag it when that code changes.');
-    }
-
     const stripCheck = stripLeadingFrontmatter(args.body);
     if (stripCheck.stripped) {
       warnings.push('a leading --- frontmatter block in `body` was stripped — frontmatter is generated from the args; pass body content only.');
@@ -441,16 +441,50 @@ export default defineTool({
     const existingContent = args.overwrite
       ? await getAuthoredDocContent(harnessSlug, docId).catch(() => null)
       : null;
+    const existingFrontmatter = parseExistingFrontmatter(existingContent);
+    const documents = args.documents === undefined ? normalizeList(existingFrontmatter.documents) : normalizeList(args.documents);
+    if (!documents.length) {
+      warnings.push('no `documents` provided — the doc is NOT drift-tracked; pass `documents` (files/symbols it covers) so the drift sweep can flag it when that code changes.');
+    }
+    const inheritedString = (key: string): string | undefined => {
+      const value = existingFrontmatter[key];
+      return typeof value === 'string' && value.trim() ? value.trim() : undefined;
+    };
+    const inheritedSidebarOrder = (() => {
+      const sidebar = existingFrontmatter.sidebar;
+      if (!sidebar || typeof sidebar !== 'object' || Array.isArray(sidebar)) return undefined;
+      const order = (sidebar as Record<string, unknown>).order;
+      return typeof order === 'number' && Number.isFinite(order) ? Math.trunc(order) : undefined;
+    })();
+    const inheritedNormative = typeof existingFrontmatter.normative === 'boolean' ? existingFrontmatter.normative : undefined;
+    const inheritedGoverns = Object.prototype.hasOwnProperty.call(existingFrontmatter, 'governs')
+      ? normalizeList(existingFrontmatter.governs)
+      : undefined;
     const fm: FrontmatterInput = {
       title: args.title.trim(),
       description: args.description.trim(),
       discovered: discoveredForWrite(existingContent),
-      status: args.status ?? 'active',
-      type: (args.type ?? '').trim() || DEFAULT_DOC_TYPE,
-      tags: normalizeList(args.tags),
+      status: args.status ?? inheritedString('status') ?? 'active',
+      type: (args.type ?? inheritedString('type') ?? '').trim() || DEFAULT_DOC_TYPE,
+      tags: args.tags === undefined ? normalizeList(existingFrontmatter.tags) : normalizeList(args.tags),
       documents,
-      plans: normalizeList(args.plans),
-      ...(typeof args.sidebarOrder === 'number' ? { sidebarOrder: args.sidebarOrder } : {}),
+      plans: args.plans === undefined ? normalizeList(existingFrontmatter.plans) : normalizeList(args.plans),
+      ...(typeof args.sidebarOrder === 'number'
+        ? { sidebarOrder: args.sidebarOrder }
+        : inheritedSidebarOrder !== undefined
+          ? { sidebarOrder: inheritedSidebarOrder }
+          : {}),
+      ...(args.normative !== undefined
+        ? { normative: args.normative }
+        : inheritedNormative !== undefined
+          ? { normative: inheritedNormative }
+          : {}),
+      ...(args.governs !== undefined
+        ? { governs: normalizeList(args.governs) }
+        : inheritedGoverns !== undefined
+          ? { governs: inheritedGoverns }
+          : {}),
+      preservedFrontmatter: existingFrontmatter,
     };
     const content = composeDoc(fm, args.body);
 

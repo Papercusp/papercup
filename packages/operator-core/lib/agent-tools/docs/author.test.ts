@@ -14,6 +14,7 @@ import {
   normalizeList,
   buildFrontmatter,
   composeDoc,
+  parseExistingFrontmatter,
   todayIso,
   discoveredForWrite,
   resolveAuthorHarness,
@@ -212,17 +213,18 @@ describe('normalizeList', () => {
   });
 });
 
+const base: FrontmatterInput = {
+  title: 'A title: with a colon',
+  description: 'one line desc',
+  discovered: '2026-06-30',
+  status: 'active',
+  type: 'Insight',
+  tags: [],
+  documents: [],
+  plans: [],
+};
+
 describe('buildFrontmatter', () => {
-  const base: FrontmatterInput = {
-    title: 'A title: with a colon',
-    description: 'one line desc',
-    discovered: '2026-06-30',
-    status: 'active',
-      type: 'Insight',
-    tags: [],
-    documents: [],
-    plans: [],
-  };
 
   it('quotes title/description (colons stay valid YAML) and emits required keys', () => {
     const fm = buildFrontmatter(base);
@@ -254,6 +256,86 @@ describe('buildFrontmatter', () => {
     expect(fm).toContain('documents:\n  - "packages/a/b.ts"\n  - "packages/a/b.ts :: fn"');
     expect(fm).toContain('plans:\n  - "my-plan-2026-06-30"');
     expect(fm).toContain('sidebar:\n  order: 13');
+  });
+});
+
+describe('overwrite frontmatter preservation', () => {
+  const existing = `---
+title: "Existing convention"
+description: "Existing description"
+type: Convention
+discovered: 2026-07-01
+tags: [old-tag]
+status: current
+documents:
+  - "packages/existing.ts"
+plans:
+  - existing-plan
+sidebar:
+  order: 7
+normative: true
+governs:
+  - an existing convention
+generated:
+  by: agent
+  at: 2026-07-01
+---
+
+# Existing body
+`;
+
+  it('parses persisted frontmatter dates as strings and keeps unknown mappings', () => {
+    const parsed = parseExistingFrontmatter(existing);
+    expect(parsed.discovered).toBe('2026-07-01');
+    expect(parsed.generated).toEqual({ by: 'agent', at: '2026-07-01' });
+  });
+
+  it('restores explicit normative/governs while preserving undeclared metadata on overwrite', () => {
+    const preservedFrontmatter = parseExistingFrontmatter(existing);
+    const content = composeDoc(
+      {
+        ...base,
+        status: 'current',
+        type: 'Convention',
+        tags: normalizeList(preservedFrontmatter.tags),
+        documents: normalizeList(preservedFrontmatter.documents),
+        plans: normalizeList(preservedFrontmatter.plans),
+        sidebarOrder: 7,
+        normative: true,
+        governs: normalizeList(preservedFrontmatter.governs),
+        preservedFrontmatter,
+      },
+      '# Re-authored body',
+    );
+    const parsed = parseExistingFrontmatter(content);
+    expect(parsed.normative).toBe(true);
+    expect(parsed.governs).toEqual(['an existing convention']);
+    expect(parsed.generated).toEqual({ by: 'agent', at: '2026-07-01' });
+    expect(parsed.status).toBe('current');
+    expect(parsed.sidebar).toEqual({ order: 7 });
+  });
+
+  it('lets explicit false and empty lists clear inherited owned fields', () => {
+    const preservedFrontmatter = parseExistingFrontmatter(existing);
+    const content = composeDoc(
+      {
+        ...base,
+        normative: false,
+        governs: [],
+        tags: [],
+        documents: [],
+        plans: [],
+        preservedFrontmatter,
+      },
+      '# Re-authored body',
+    );
+    const parsed = parseExistingFrontmatter(content);
+    expect(parsed.normative).toBe(false);
+    expect(parsed.governs).toEqual([]);
+    expect(parsed.tags).toBeUndefined();
+    expect(parsed.documents).toBeUndefined();
+    expect(parsed.plans).toBeUndefined();
+    expect(parsed.generated).toEqual({ by: 'agent', at: '2026-07-01' });
   });
 });
 
