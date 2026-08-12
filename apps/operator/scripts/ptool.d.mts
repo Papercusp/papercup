@@ -156,15 +156,20 @@ export function prettyText(text: any): string;
 export function resultToText(result: any, { raw }?: {
     raw?: boolean;
 }): any;
-/** Resolve the bearer-token file in precedence order. Pure and injectable for
- * tests: an explicit CLI path wins over the environment, then the isolated
- * `PAPERCUSP_HOME` root used by packaged operators, then the normal per-home
- * token. */
-export function resolveTokenPath({ tokenFile, env, home }?: {
+/** Resolve the bearer-token files in precedence order. Pure and injectable for
+ * tests: an explicit CLI path wins over the environment. When an isolated
+ * `PAPERCUSP_HOME` is configured, its token is preferred, but the normal
+ * per-home token remains a fallback when the isolated file is absent. A su
+ * session can carry the workspace-scoped HOME even though the shared
+ * superuser bearer still lives at `~/.papercusp/superuser-token` (EI-202457).
+ */
+export function resolveTokenPaths({ tokenFile, env, home }?: {
     tokenFile?: null | undefined;
     env?: NodeJS.ProcessEnv | undefined;
     home?: string | undefined;
-}): any;
+}): any[];
+/** Resolve the first bearer-token candidate for callers that need one path. */
+export function resolveTokenPath(options?: {}): any;
 /** Build the `tools/call` params for a ptool invocation. Pure and exported so
  *  the MCP result negotiation is regression-tested without opening a
  *  transport. Object-rooted output schemas need `_meta.structured` because
