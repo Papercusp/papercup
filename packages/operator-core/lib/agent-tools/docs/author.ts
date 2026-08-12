@@ -29,6 +29,7 @@ import { resolveHarnessDocPaths } from '../../harness/docs/harness-repo';
 import { safeJoinUnderRoot } from '../../harness/docs/doc-fs';
 import { anchorManualDoc } from '../../harness/docs/manual-anchor';
 import { applyProjectionBanner } from '../../harness/docs/authored-doc-projection';
+import { getAuthoredDocContent } from '../../harness/docs/doc-record';
 import { resolveHarnessScope, isEngineeringDocsSentinel } from '../_harness-scope';
 
 // ── Pure helpers (exported for unit tests — these encode the footgun-prevention) ──
@@ -220,6 +221,14 @@ export function todayIso(now: Date = new Date()): string {
   return now.toISOString().slice(0, 10);
 }
 
+/** Preserve a valid canonical vintage on overwrite; stamp today only for creation/legacy gaps. */
+export function discoveredForWrite(existingContent: string | null | undefined, today = todayIso()): string {
+  if (!existingContent) return today;
+  const yaml = /^﻿?---[ \t]*\r?\n([\s\S]*?)\r?\n---[ \t]*(?:\r?\n|$)/.exec(existingContent)?.[1];
+  const discovered = yaml?.match(/^discovered:\s*["']?(\d{4}-\d{2}-\d{2})["']?\s*$/m)?.[1];
+  return discovered ?? today;
+}
+
 /** Assemble the full .mdx file content from frontmatter + body. */
 export function composeDoc(fm: FrontmatterInput, rawBody: string): string {
   const { body } = stripLeadingFrontmatter(rawBody);
@@ -352,10 +361,13 @@ export default defineTool({
       warnings.push('a leading --- frontmatter block in `body` was stripped — frontmatter is generated from the args; pass body content only.');
     }
 
+    const existingContent = args.overwrite
+      ? await getAuthoredDocContent(harnessSlug, docId).catch(() => null)
+      : null;
     const fm: FrontmatterInput = {
       title: args.title.trim(),
       description: args.description.trim(),
-      discovered: todayIso(),
+      discovered: discoveredForWrite(existingContent),
       status: args.status ?? 'active',
       type: (args.type ?? '').trim() || DEFAULT_DOC_TYPE,
       tags: normalizeList(args.tags),

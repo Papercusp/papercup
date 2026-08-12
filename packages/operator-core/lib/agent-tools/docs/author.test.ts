@@ -15,6 +15,7 @@ import {
   buildFrontmatter,
   composeDoc,
   todayIso,
+  discoveredForWrite,
   resolveAuthorHarness,
   descriptionLengthWarning,
   DESCRIPTION_RECOMMENDED_MAX,
@@ -278,6 +279,18 @@ describe('todayIso', () => {
   it('formats YYYY-MM-DD', () => {
     expect(todayIso(new Date('2026-06-30T12:34:56Z'))).toBe('2026-06-30');
     expect(/^\d{4}-\d{2}-\d{2}$/.test(todayIso())).toBe(true);
+  });
+});
+
+describe('discoveredForWrite (EI-20090410833629115)', () => {
+  it('preserves the original discovered vintage when re-authoring canonical content', () => {
+    const existing = '---\ntitle: "Old"\ndiscovered: 2026-07-27\nstatus: active\n---\n\nBody\n';
+    expect(discoveredForWrite(existing, '2026-08-12')).toBe('2026-07-27');
+  });
+
+  it('stamps today for creation or malformed legacy frontmatter', () => {
+    expect(discoveredForWrite(null, '2026-08-12')).toBe('2026-08-12');
+    expect(discoveredForWrite('---\ntitle: old\n---\n', '2026-08-12')).toBe('2026-08-12');
   });
 });
 

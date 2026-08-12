@@ -120,6 +120,21 @@ export async function getDocRecord(
   return rows[0] ? rowToRecord(rows[0]) : null;
 }
 
+/** Canonical authored prose for one doc, or null when absent/unpopulated. */
+export async function getAuthoredDocContent(
+  harnessSlug: string,
+  docId: string,
+  workspaceId?: string,
+): Promise<string | null> {
+  workspaceId = await resolveWorkspaceForHarness(harnessSlug, workspaceId);
+  const { sql } = getOrgPg();
+  const rows = await sql<{ content: string | null }[]>`
+    SELECT content FROM harness_shared.harness_docs
+     WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug} AND doc_id = ${docId}
+     LIMIT 1`;
+  return typeof rows[0]?.content === 'string' && rows[0].content.length > 0 ? rows[0].content : null;
+}
+
 /** All doc records for a harness, keyed by doc_id. */
 export async function listDocRecords(
   harnessSlug: string,
