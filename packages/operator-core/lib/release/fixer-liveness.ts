@@ -31,7 +31,8 @@ export interface ReleaseFixerNoTurnEscalationInput {
  * invoke-outcome's diagnostics.
  */
 export function isReleaseFixerNoTurnFailure(errorMessage: string | null | undefined): boolean {
-  return typeof errorMessage === 'string' && /(?:produced no turn|before (?:it )?producing a turn|before it produced a turn)/i.test(errorMessage);
+  return typeof errorMessage === 'string' &&
+    /(?:produced no turn|before producing a turn|before (?:the agent|it) produced a turn)/i.test(errorMessage);
 }
 
 /** Pure, bounded payload for the existing `harness_escalations` surface. */

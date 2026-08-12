@@ -29,6 +29,7 @@ describe('release-fixer no-turn escalation', () => {
   it('recognizes both generic and timeout-specific no-turn diagnostics', () => {
     expect(isReleaseFixerNoTurnFailure('infra_loss: produced no turn (timedOut=false)')).toBe(true);
     expect(isReleaseFixerNoTurnFailure('context_overflow: before it produced a turn')).toBe(true);
+    expect(isReleaseFixerNoTurnFailure('auth_error: before the agent produced a turn')).toBe(true);
     expect(isReleaseFixerNoTurnFailure('invoke HTTP 503')).toBe(false);
   });
 });
