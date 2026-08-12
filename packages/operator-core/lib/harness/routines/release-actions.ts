@@ -143,7 +143,7 @@ export function integrationRootEvidence(
 ): string {
   const root = resolveIntegrationRoot(env, cwd);
   const source = env.PAPERCUSP_INTEGRATION_ROOT ? 'PAPERCUSP_INTEGRATION_ROOT' : 'cwd-fallback';
-  return `integration root: ${root} (source=${source})`;
+  return `integration root: ${root} (source=${source}, emitter=routine-dispatcher)`;
 }
 
 function tsxBin(root: string): string {

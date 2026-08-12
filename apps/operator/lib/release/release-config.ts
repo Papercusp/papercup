@@ -145,7 +145,7 @@ export function integrationRootEvidence(
   deriveRoot: () => string = scriptRepoRoot,
 ): string {
   const { root, source } = describeIntegrationRoot(overrides, env, deriveRoot);
-  return `integration root: ${root} (source=${source})`;
+  return `integration root: ${root} (source=${source}, emitter=gate-cli)`;
 }
 
 /**
