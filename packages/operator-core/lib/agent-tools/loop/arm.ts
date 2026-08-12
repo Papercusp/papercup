@@ -377,6 +377,14 @@ export default defineTool({
   },
   capability: 'routines:write',
   requirePrincipal: false,
+  // EI-20224334803038640: the handler owns several independent DB scopes
+  // (harness resolution, prior-loop reads, optional work-item claiming,
+  // routine materialization, and wake reachability). Holding the dispatcher's
+  // ambient workspace transaction across those awaits pins an org-app pool
+  // slot for the whole arm and can make subsequent loop:arm calls wait until
+  // the 45s acquisition deadline. The handler never reads ctx.tx, so keep the
+  // ambient transaction out of the long orchestration path.
+  skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES],
   args: z.object({
     ownerId: z

@@ -136,6 +136,12 @@ const wakeAwaitsM = vi.mocked((await import('../../events/await/store')).listWak
 const resolveWsM = vi.mocked((await import('../../harness-core')).resolveWorkspaceForHarnessSlugIn);
 const tool = (await import('./arm')).default;
 
+describe('loop:arm — ambient workspace transaction safety (EI-20224334803038640)', () => {
+  it('opts out because the handler owns its independent DB scopes', () => {
+    expect((tool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+});
+
 type Out = { content: { text: string }[] };
 const call = (args: Record<string, unknown>) =>
   tool.handler({ intervalSec: 120, goal: 'g', ...args } as never, { harnessSlug: 'papercusp' } as never) as Promise<Out>;
