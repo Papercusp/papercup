@@ -160,6 +160,8 @@ export interface OrientArgs {
   /** Fold a bounded catch-up slice of YOUR fleet's audience-history when you belong to a
    *  named fleet — the auto "what did my fleet say while I was away" at wake (default true). */
   includeFleetCatchUp?: boolean;
+  /** Back-compat alias for the stale camelcase spelling includeFleetCatchup. */
+  includeFleetCatchup?: boolean;
   /** Back-compat alias for includeFleetCatchUp (EI-20224878072252879). */
   includeCatchup?: boolean;
   /** Max fleet catch-up messages to fold (default 8, hard-capped 25). */
@@ -1553,7 +1555,7 @@ export async function composeOrient(
     }
   }
 
-  const includeFleetCatchUp = args.includeFleetCatchUp ?? args.includeCatchup;
+  const includeFleetCatchUp = args.includeFleetCatchUp ?? args.includeFleetCatchup ?? args.includeCatchup;
   if (!monitor && (includeFleetCatchUp !== false || args.includeFleetHealth !== false)) {
     if (fleetSlug && includeFleetCatchUp !== false) {
       try {
@@ -2183,6 +2185,10 @@ export default defineTool({
       .describe(
         "Fold a bounded catch-up of YOUR fleet's audience-history when you're in a named fleet (default true).",
       ),
+    includeFleetCatchup: z
+      .boolean()
+      .optional()
+      .describe('Deprecated alias for includeFleetCatchUp; accepted for compatibility with stale guidance using the older camelcase spelling.'),
     includeCatchup: z
       .boolean()
       .optional()

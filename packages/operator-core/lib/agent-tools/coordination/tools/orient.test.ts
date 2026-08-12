@@ -659,6 +659,16 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
     expect(r.fleetCatchUp).toBeUndefined();
   });
 
+  it('accepts stale includeFleetCatchup casing as an alias for includeFleetCatchUp', async () => {
+    const { call, calls } = fakeCall({
+      ...CORE,
+      'coord:whoami': () => ({ fleetSlug: 'backend' }),
+    });
+    const r = await composeOrient({ includeFleetCatchup: false }, call, 'me');
+    expect(calls.some((c) => c.name === 'coord:catch-up')).toBe(false);
+    expect(r.fleetCatchUp).toBeUndefined();
+  });
+
   it('best-effort: a failing fleet catch-up degrades to null, not a thrown orient', async () => {
     const { call } = fakeCall({
       ...CORE,
