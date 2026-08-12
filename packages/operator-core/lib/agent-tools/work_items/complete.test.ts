@@ -1451,6 +1451,25 @@ describe('work_items:complete (keyed-array)', () => {
       expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     });
 
+    // EI-20223460482316333 + 4 sibling filings on 2026-08-12: the refusal named the
+    // CONCEPT but not the field path or the shape, so an agent who fully agreed with the
+    // gate still could not comply without opening complete.ts. A refusal a caller cannot
+    // act on is a wall, not a gate — this asserts the message stays actionable on its own.
+    it('names the exact field path and BOTH enforced rules, so the refusal is actionable without reading this file', async () => {
+      getWorkItem.mockResolvedValue(verificationItem);
+      const r = await one({ id: 'WI-verify', state: 'resolved', completion: universalCompletion });
+
+      const message = String(r.verificationCoverageError);
+      // the path an agent must actually write to
+      expect(message).toContain('completion.verification.coverage');
+      // rule 1 — a partition, not a sample: every bucket named
+      for (const bucket of ['population', 'checked', 'notChecked', 'notApplicable', 'residue']) {
+        expect(message).toContain(bucket);
+      }
+      // rule 2 — the explicit zero-residue form, which omission never satisfies
+      expect(message).toContain("residue:['none']");
+    });
+
     it('accepts a universal verification close when every population entry has a status and residue', async () => {
       getWorkItem.mockResolvedValue(verificationItem);
       setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...verificationItem, state: 'resolved' }));

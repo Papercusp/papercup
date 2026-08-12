@@ -963,7 +963,14 @@ async function completeOne(
     claimsUniversalVerification(it.completion) &&
     !hasEnumeratedVerificationCoverage(completionEvidenceForGate?.coverage);
   const verificationCoverageError = verificationCoverageGap
-    ? `REJECTED — ${it.id} is a verification-shaped item making a universal coverage claim, but its completion has no valid enumerated coverage. Name the population, assign every entry to checked/notChecked/notApplicable, and state residue explicitly (use residue:['none'] when none). Re-open/keep the item open and re-send the completion with that coverage record; do not claim "every/all/nothing" from a partial pass.`
+    ? // EI-20223460482316333 / EI-20224260070669261 / EI-20225113964896785 /
+      // EI-20225202699515538 / EI-20222447336206097 — five agents filed the SAME
+      // friction on 2026-08-12 alone: the refusal named the *concept* ("enumerated
+      // coverage") but never the FIELD PATH or the shape, so a caller who agreed with
+      // it still could not comply without reading this file. A refusal that cannot be
+      // acted on is a wall, not a gate. The exact path + the two rules that actually
+      // fail (total partition, non-empty residue) are now in the message itself.
+      `REJECTED — ${it.id} is a verification-shaped item making a universal coverage claim, but its completion has no valid enumerated coverage. Pass it at completion.verification.coverage = { population: string[], checked: string[], notChecked: string[], notApplicable: string[], residue: string[] }. TWO RULES, both enforced: (1) EVERY population entry must appear VERBATIM in exactly one of checked/notChecked/notApplicable — a partition, not a sample; (2) residue must be NON-EMPTY — pass residue:['none'] to state zero residue explicitly, since omitting it is never read as complete coverage. Re-open/keep the item open and re-send the completion with that coverage record; do not claim "every/all/nothing" from a partial pass.`
     : undefined;
   // P-004: the whole decision, in one call. `completionEvidenceFromRecord` returning
   // `undefined` (no evidence fields supplied at all) and returning a PARTIAL object
