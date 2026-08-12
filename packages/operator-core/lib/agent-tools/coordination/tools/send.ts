@@ -288,7 +288,11 @@ const summaryArg = z
     error:
       'coord:send needs `summary`: a one-line headline of the message (what the recipient sees in their inbox).',
   })
-  .min(1, '`summary` must be a non-empty one-line headline.');
+  .min(1, '`summary` must be a non-empty one-line headline.')
+  .describe(
+    'REQUIRED for the single-message form (when `items` is omitted); omit only when sending via `items:[…]`. ' +
+      'One-line inbox headline — `body` is optional long-form detail and does not replace it.',
+  );
 
 const backstopArg = z
   .string()
