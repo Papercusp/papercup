@@ -352,27 +352,23 @@ const PRE_INVERSION_DEFAULT_OFF: ReadonlySet<string> = new Set<string>([
   // out as still-dark) and ratchet the watermark 14 → 13 in the same change.
   'papercusp-conversations-rail-tab',
   //
-  // 2026-08-09 (retire-mug-kettle-su-only-2026-08-09 P-006, owner-directed: "the rest
-  // of the cup/mug/kettle system should be retired") — papercusp-mug-kettle-system.
-  // A DECLARED darkening, so it belongs in this snapshot; but read its polarity before
-  // you act on it, because it is the INVERSE of every other entry here.
+  // 2026-08-12 (retire-mug-kettle-su-only-2026-08-09 P-068 / D-098): the entry for
+  // `papercusp-mug-kettle-system` was REMOVED from this snapshot, because the flag
+  // itself was deleted from the registry. Count 33 → 32 → 31 as a REGISTRY DELETION,
+  // not a graduation: nothing was flipped ON.
   //
-  // For every flag above, OFF means "the new thing is not on yet" and graduation means
-  // flipping it ON. For this one OFF *IS* the delivered state — the Mug + Kettle +
-  // Cup/nursery tier retired, su + GOAL mode the only way to drive the app. ON is the
-  // reversible TESTING escape hatch. So the usual sweep reflex ("finished work ships
-  // ON — remove it from the dark set") would here silently UN-RETIRE the whole tier,
-  // with nothing erroring: the mug loop, kettle loop and cup placement would simply
-  // come back. It graduates when D-004's Stage 2/3 land (separate the shared pot
-  // substrate, then move the deciders to _retired/) and the flag is DELETED — not when
-  // it is flipped on. D-008 deferred those stages as cleanup, so expect this entry to
-  // outlive the usual review cadence; that is intended, not neglect.
+  // Read that carefully, because it is the one case this snapshot's usual reasoning
+  // gets backwards. Every other entry here is OFF meaning "not on yet", so removing
+  // one means it shipped ON. This flag's polarity was INVERTED — OFF *was* the
+  // delivered state (the Mug/Kettle/Cup tier retired) and ON was a reversible testing
+  // escape hatch — so removing it means the opposite: the escape hatch is gone and the
+  // retirement is permanent. The gates it fed did NOT go with it; `pot/started.ts`'s
+  // `mugKettleSystemEnabled()` is now a hard `false` feeding the same ~20 call sites.
   //
-  // Count 32 → 33. Parking subset + DARK_FLAGS_HIGH_WATERMARK UNCHANGED at 14: this is
-  // `case: 'cutover'` (a kill switch), and cutover/owner-authority entries are not
-  // rationed by the parking budget — so no graduation trade was owed for the slot.
-  // The polarity + case are pinned by libs/flags/src/mug-kettle-cutover-flag.test.ts.
-  'papercusp-mug-kettle-system',
+  // Parking subset + DARK_FLAGS_HIGH_WATERMARK UNCHANGED at 14: it was `case: 'cutover'`
+  // (a kill switch), and cutover/owner-authority entries were never rationed by the
+  // parking budget — so removing it frees no slot and owes no trade.
+  // The deletion is pinned by libs/flags/src/mug-kettle-cutover-flag.test.ts.
 ]);
 
 // DARK_FLAGS_REVIEW_BY (the re-review deadline) and DARK_FLAGS_HIGH_WATERMARK (the

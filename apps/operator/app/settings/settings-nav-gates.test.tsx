@@ -62,41 +62,42 @@ const renderNav = () => render(<SettingsLayout>{null}</SettingsLayout>);
 const autonomyLink = () =>
   document.querySelector('nav a[href="/settings/autonomy"]');
 
-describe('settings nav — /settings/autonomy takes BOTH gates (P-011 / D-021)', () => {
-  it('is listed when both flags are on', () => {
-    flagValues[FLAGS.MUG_AUTONOMY_SETTINGS] = true;
-    flagValues[FLAGS.MUG_KETTLE_SYSTEM] = true;
-    renderNav();
-    // SHOW CONTROL for every hide-assertion below: proves the query, the nav and
-    // the fixture can produce this link at all. Without it a null is equally
-    // satisfied by a nav that failed to render.
-    expect(autonomyLink()).not.toBeNull();
+describe('settings nav — /settings/autonomy is permanently hidden (P-011 / D-021, P-068 / D-098)', () => {
+  // This block used to assert a two-flag AND, with a SHOW CONTROL that turned both
+  // ON to prove the link was producible. P-068 deleted the tier flag and the entry
+  // is now hard `false`, so the link can never be shown and that control is gone.
+  //
+  // A hide-assertion with no show control is the vacuity trap, so the calibration
+  // moved to a DIFFERENT flag-gated entry: /settings/p2p. If `flagValues` no longer
+  // reached `linkAllowed` at all — a broken fixture, a renamed key, a nav that threw
+  // — the p2p case below would fail, and only then is the autonomy null evidence.
+  const p2pLink = () => document.querySelector('nav a[href="/settings/p2p"]');
+
+  it('CALIBRATION: the flag map still drives the nav (a different gated entry toggles)', () => {
+    flagValues[FLAGS.P2P] = true;
+    const on = renderNav();
+    expect(p2pLink()).not.toBeNull();
     expect(screen.getByRole('navigation', { name: 'Settings pages' })).toBeTruthy();
+    on.unmount();
+
+    flagValues[FLAGS.P2P] = false;
+    renderNav();
+    expect(p2pLink()).toBeNull();
   });
 
-  it('is hidden when the Mug/Kettle tier is retired, even with the page flag ON', () => {
+  it('stays hidden with its own page flag ON — no flag state can bring it back', () => {
+    // The strongest form the deletion allows: the surviving half of the old AND is
+    // forced ON, and the entry is still absent.
     flagValues[FLAGS.MUG_AUTONOMY_SETTINGS] = true;
-    flagValues[FLAGS.MUG_KETTLE_SYSTEM] = false;
-    renderNav();
-    expect(autonomyLink()).toBeNull();
-    // CALIBRATION — the rest of the nav must still be there, or the null above
-    // would just mean "nothing rendered". Only this one entry is gated.
-    expect(document.querySelector('nav a[href="/settings/profile"]')).not.toBeNull();
-  });
-
-  it('is hidden by its own page flag, even with the tier ON (the pre-existing gate still works)', () => {
-    flagValues[FLAGS.MUG_AUTONOMY_SETTINGS] = false;
-    flagValues[FLAGS.MUG_KETTLE_SYSTEM] = true;
     renderNav();
     expect(autonomyLink()).toBeNull();
     expect(document.querySelector('nav a[href="/settings/profile"]')).not.toBeNull();
   });
 
-  it('leaves ungated entries alone when the tier is retired', () => {
-    flagValues[FLAGS.MUG_KETTLE_SYSTEM] = false;
+  it('leaves ungated entries alone — the retirement does not leak', () => {
     renderNav();
-    // The retirement must not leak into unrelated pages — a gate that hides more
-    // than its one entry would pass the assertions above for the wrong reason.
+    // A gate that hid more than its one entry would satisfy the assertion above
+    // for entirely the wrong reason.
     expect(document.querySelector('nav a[href="/settings/profile"]')).not.toBeNull();
     expect(document.querySelector('nav a[href="/settings/api-keys"]')).not.toBeNull();
   });

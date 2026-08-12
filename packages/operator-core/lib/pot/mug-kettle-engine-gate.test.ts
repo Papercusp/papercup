@@ -68,13 +68,21 @@ beforeEach(() => {
 });
 
 describe('P-007 engine gate: getPotStarted while the mug/kettle tier is retired', () => {
-  it('CALIBRATION — tier ENABLED: a started row still reads as started', async () => {
-    tierFlag = true;
-    await expect(getPotStarted('ws', 'papercusp')).resolves.toBe(true);
-    // Without this case, a `return false` stub would satisfy every other
-    // assertion in this file — the gate must remain reversible for testing,
-    // which is the entire justification for it being `case: 'cutover'`.
-    expect(selectCount).toBeGreaterThan(0);
+  // This used to be "CALIBRATION — tier ENABLED: a started row still reads as
+  // started", flipping the flag ON to prove a `return false` stub could not satisfy
+  // the rest of the file. P-068/D-098 deleted the flag: `mugKettleSystemEnabled()`
+  // IS now a permanent `false`, so that case cannot be built and the property it
+  // proved (reversibility) is deliberately gone.
+  //
+  // The vacuity risk it covered is REAL and survives, so it is replaced rather than
+  // dropped. The short-circuit test below asserts `selectCount === 0`, which a
+  // broken SQL mock would satisfy just as happily as a working short-circuit — so
+  // the calibration now proves the COUNTER ITSELF is wired, by driving the mocked
+  // sql directly. Only then is a zero downstream evidence.
+  it('CALIBRATION: the selectCount instrument really increments (so a 0 below means something)', async () => {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    await getOrgPg().sql`SELECT value FROM harness_shared.operator_settings WHERE key = 'probe'`;
+    expect(selectCount).toBe(1);
   });
 
   it('tier RETIRED: resolves false even though the row says started', async () => {
@@ -99,11 +107,15 @@ describe('P-007 engine gate: getPotStarted while the mug/kettle tier is retired'
     // retired. Only one of those costs money and surprises the owner.
   });
 
-  it('mugKettleSystemEnabled tracks the flag in both directions', async () => {
-    tierFlag = true;
-    await expect(mugKettleSystemEnabled()).resolves.toBe(true);
-    tierFlag = false;
-    await expect(mugKettleSystemEnabled()).resolves.toBe(false);
+  it('mugKettleSystemEnabled is PERMANENTLY false — no flag state can re-enable the tier', async () => {
+    // Inverts the old "tracks the flag in both directions" assertion, which was the
+    // point of the flag and is now exactly what must NOT be true (P-068/D-098).
+    // The flag store is still mocked here, so this drives every answer it could
+    // give — including the throw — and pins that NONE of them reaches the caller.
+    for (const state of [true, false, null] as const) {
+      tierFlag = state;
+      await expect(mugKettleSystemEnabled()).resolves.toBe(false);
+    }
   });
 
   it('a pot with NO started row stays false regardless of the tier flag', async () => {
