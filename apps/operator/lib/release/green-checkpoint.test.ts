@@ -4874,6 +4874,7 @@ describe('runGreenCheckpoint — longest-green-prefix (P-016)', () => {
     changedFiles?: Record<string, string[] | null>;
     commits: string[]; // lastReady..candidate, OLDEST-FIRST full shas
     confirmGreen: boolean;
+    logPath?: string;
   }): { deps: CheckpointDeps; calls: string[] } {
     const calls: string[] = [];
     let runGreenN = 0;
@@ -4883,10 +4884,19 @@ describe('runGreenCheckpoint — longest-green-prefix (P-016)', () => {
         runGreenN++;
         if (runGreenN === 1) {
           calls.push('runGreen:candidate');
-          return { green: false, summary: 'red', failingTests: opts.candidateFailingTests };
+          return {
+            green: false,
+            summary: 'red',
+            failingTests: opts.candidateFailingTests,
+            ...(opts.logPath ? { logPath: opts.logPath } : {}),
+          };
         }
         calls.push('runGreen:confirm');
-        return { green: opts.confirmGreen, summary: opts.confirmGreen ? 'all pass' : 'still red' };
+        return {
+          green: opts.confirmGreen,
+          summary: opts.confirmGreen ? 'all pass' : 'still red',
+          ...(opts.logPath ? { logPath: opts.logPath } : {}),
+        };
       },
       advance: (c) => { calls.push(`advance:${c.slice(0, 7)}`); return advanceReady(repo, c, 'ready'); },
       push: async () => { calls.push('push'); },
@@ -5055,6 +5065,48 @@ describe('runGreenCheckpoint — longest-green-prefix (P-016)', () => {
     // candidate (c4) before this run's final hold-result is returned.
     const setupCalls = calls.filter((c) => c.startsWith('setup:'));
     expect(setupCalls[setupCalls.length - 1]).toBe(`setup:${c4.slice(0, 7)}`);
+  });
+
+  it('EI-20273247083807948: persists failed-confirm salvage narration in the parent candidate log', async () => {
+    const { c3, c4 } = await chain();
+    const logPath = join(repo, 'candidate-red.log');
+    writeFileSync(logPath, 'CANDIDATE SUITE BODY\n');
+    const { deps } = partialDeps({
+      candidateFailingTests: ['@ws/failing'],
+      affected: { [c4]: ['@ws/failing'] }, // c3 is the clean prefix selected for confirmation
+      commits: [c3, c4],
+      confirmGreen: false,
+      logPath,
+    });
+
+    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    const body = readFileSync(logPath, 'utf8');
+    expect(body).toContain('CANDIDATE SUITE BODY');
+    expect(body).toContain(`partial-green-gate: candidate ${c4.slice(0, 8)} red`);
+    expect(body).toContain(`partial-green-gate: prefix ${c3.slice(0, 8)} did NOT confirm green`);
+    expect(body).not.toContain('✅ partial-green-gate:');
+  });
+
+  it('EI-20273247083807948: persists successful-confirm salvage narration in the parent candidate log', async () => {
+    const { c3, c4 } = await chain();
+    const logPath = join(repo, 'candidate-red.log');
+    writeFileSync(logPath, 'CANDIDATE SUITE BODY\n');
+    const { deps } = partialDeps({
+      candidateFailingTests: ['@ws/failing'],
+      affected: { [c4]: ['@ws/failing'] }, // c3 is the clean prefix selected for confirmation
+      commits: [c3, c4],
+      confirmGreen: true,
+      logPath,
+    });
+
+    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    const body = readFileSync(logPath, 'utf8');
+    expect(body).toContain('CANDIDATE SUITE BODY');
+    expect(body).toContain(`partial-green-gate: candidate ${c4.slice(0, 8)} red`);
+    expect(body).toContain(`✅ partial-green-gate: ready advanced`);
+    expect(body).toContain(`→ ${c3.slice(0, 8)}`);
   });
 
   it('holds when the FIRST new commit already implicates a failing workspace (no clean prefix)', async () => {
