@@ -24,6 +24,7 @@ import {
   shouldPrintInvocationLine,
   shouldPrintRawResult,
   resolveTokenPath,
+  PTOOL_TRUNCATED_RESULT_MESSAGE,
 } from '../scripts/ptool.mjs';
 
 describe('ptool parseArgs', () => {
@@ -241,6 +242,15 @@ describe('ptool invocation output mode (EI-20202581520430575)', () => {
     expect(shouldPrintRawResult('stdin', false)).toBe(true);
     expect(shouldPrintRawResult(null, false)).toBe(false);
     expect(shouldPrintRawResult(null, true)).toBe(true);
+  });
+});
+
+describe('ptool truncation recovery guidance (EI-20242487440417233)', () => {
+  it('exposes the bounded-read projection path instead of only saying to retry', () => {
+    expect(PTOOL_TRUNCATED_RESULT_MESSAGE).toContain('dispatch-level `projection`');
+    expect(PTOOL_TRUNCATED_RESULT_MESSAGE).toContain('results[].id');
+    expect(PTOOL_TRUNCATED_RESULT_MESSAGE).toContain('payloadTier:"full"');
+    expect(PTOOL_TRUNCATED_RESULT_MESSAGE).toContain('verify its state before retrying');
   });
 });
 

@@ -153,7 +153,7 @@ export default defineTool({
     when:
       "At the end of a COLD loop turn, store compressed facts (did, left, insight, next), not a transcript. " +
       'Add a same-line [turn:<session>@<iso-ts>] ref for owner directives or completed coordination actions; ' +
-      'mark non-owner sources [self-imposed], [peer:<sid>], or [inferred]. Pair with work_items:checkpoint ' +
+      'never invent a ref. Mark non-owner sources [self-imposed], [peer:<sid>], or [inferred]. Pair with work_items:checkpoint ' +
       'because a loop note can be lost if the session dies.',
     notWhen:
       "WARM loops (carry:'warm', the default) carry the live transcript and need no note. " +

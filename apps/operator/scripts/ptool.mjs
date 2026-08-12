@@ -50,7 +50,9 @@
  * `su-loopback` fallback identity. Workspace scope is resolved from the
  * explicit flag first, then the session environment/path, so a warm-loop wake
  * whose shell lost `PAPERCUSP_WORKSPACE` does not silently fall back to the
- * default workspace.
+ * default workspace. MCP payloads use the trimmed context tier by default,
+ * matching psu launches; set `PAPERCUSP_CONTEXT_TIER=full` for the explicit
+ * unshaped-payload escape hatch.
  */
 import { readFileSync, realpathSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -153,6 +155,24 @@ export function resolveWorkspaceScope({ workspace = null, env = process.env, cwd
     if (match?.[1] && match[1] !== '.papercusp') return match[1];
   }
   return null;
+}
+
+/**
+ * Resolve the MCP payload tier for a ptool session. Direct ptool invocations
+ * do not inherit psu's URL interpolation, so they must carry the same bounded
+ * default themselves. `PAPERCUSP_CONTEXT_TIER=full` is the explicit escape
+ * hatch for callers that need the unshaped response. Pure when `env` is
+ * supplied; values are passed through so the server remains the authority for
+ * the supported tier vocabulary.
+ */
+export function resolveContextTier({ contextTier = null, env = process.env } = {}) {
+  const explicit = typeof contextTier === 'string' ? contextTier.trim() : '';
+  if (explicit) return explicit;
+
+  const fromEnv = typeof env?.PAPERCUSP_CONTEXT_TIER === 'string'
+    ? env.PAPERCUSP_CONTEXT_TIER.trim()
+    : '';
+  return fromEnv || 'trimmed';
 }
 
 /**
@@ -559,7 +579,9 @@ const RESULT_DOOR_TRUNCATION_RE = /\[result-door:[\s\S]{0,2000}\btruncated\b/i;
  * uncertainty rather than inventing a query/jq pipeline that may not exist.
  */
 export const PTOOL_TRUNCATED_RESULT_MESSAGE =
-  'ptool: operator reply was truncated before a complete JSON payload; the tool call may have executed — verify its state before retrying.';
+  'ptool: operator reply was truncated before a complete JSON payload; the tool call may have executed — verify its state before retrying. ' +
+  'For a large read, retry with a dispatch-level `projection` in the JSON args (for example `{"projection":{"pick":["results[].id","results[].state"]}}`) to bound the response; ' +
+  'use `payloadTier:"full"` only when you need the unshaped detail and it fits the transport.';
 
 function isInvalidTruncatedJson(text) {
   if (!RESULT_DOOR_TRUNCATION_RE.test(text)) return false;
@@ -729,14 +751,20 @@ export async function connectWithLocalRetry(
   throw lastError;
 }
 
-/** Build ptool's superuser MCP URL. Pure and exported so the identity contract
- *  is regression-tested without opening a transport. */
-export function buildMcpUrl(operatorUrl, { workspace, harness, client } = {}) {
+/** Build ptool's superuser MCP URL. Pure and exported so the identity and
+ * payload-tier contracts are regression-tested without opening a transport. */
+export function buildMcpUrl(operatorUrl, {
+  workspace,
+  harness,
+  client,
+  contextTier = 'trimmed',
+} = {}) {
   const url = new URL(operatorUrl + '/api/mcp');
   url.searchParams.set('superuser', '1');
   if (workspace) url.searchParams.set('workspace', workspace);
   if (harness) url.searchParams.set('harness', harness);
   if (client) url.searchParams.set('client', client);
+  if (contextTier) url.searchParams.set('ctx_tier', contextTier);
   return url;
 }
 
@@ -762,6 +790,7 @@ async function connect(operatorUrl, { workspace, harness, tokenFile } = {}, { ti
     workspace: resolveWorkspaceScope({ workspace }),
     harness,
     client: process.env.PAPERCUSP_SID,
+    contextTier: resolveContextTier(),
   });
   const transport = new StreamableHTTPClientTransport(url, {
     requestInit: { headers: { Authorization: `Bearer ${token}` } },
@@ -923,6 +952,7 @@ Flags:
   --workspace <ws>                scope the session (needed for harness:*, features:*, …)
   --harness <slug>                scope the session to a harness
   --token-file <path>             bearer token file (default $PAPERCUSP_MCP_TOKEN_FILE or ~/.papercusp/superuser-token)
+  PAPERCUSP_CONTEXT_TIER=full     explicit escape hatch for unshaped MCP payloads (default: trimmed)
   --raw                           print the raw result text (no JSON pretty-print)
   --url=<http://host:port>        operator URL (default $PAPERCUSP_OPERATOR_URL or :3070)
   -h, --help                      this help
