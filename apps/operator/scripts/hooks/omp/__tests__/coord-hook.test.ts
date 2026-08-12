@@ -160,9 +160,9 @@ import {
   drainSubstitutionAdvisory,
   type InboxEntry,
 } from '../coord-hook';
-// The audited pairs, so the pre-filter guard below can read each pair's VERDICT
+// The audited shell pairs, so the pre-filter guard below can read each pair's VERDICT
 // instead of inferring enforceability from a fixture filename.
-import { ALL_PAIRS } from '@papercusp/operator-core/lib/bash-substitution/pairs/index';
+import { BASH_GATE_PAIRS } from '@papercusp/operator-core/lib/bash-substitution/pairs/index';
 import { clearAdvisoryStash, takeAdvisories } from '../non-preempting-delivery';
 
 // ── native-scheduler lockout (native-scheduler-lockout-2026-06-09 P-010) ─────
@@ -5307,10 +5307,13 @@ describe('substitutionPrefilterHit (OMP pre-filter — decides who pays the roun
   });
 
   // THE ANTI-DRIFT GUARD, and the reason the heads live in a hand-written set:
-  // a registry pair whose verb is missing from it is enforced nowhere while
-  // every other test in this file stays green. Replays the REAL atoms behind
-  // every recorded equivalence verdict — the same frozen corpus those verdicts
-  // were computed from. Add a pair without adding its verb and this goes red.
+  // a shell registry pair whose verb is missing from it is enforced nowhere
+  // while every other test in this file stays green. Replays the REAL shell
+  // atoms behind each recorded equivalence verdict — the same frozen corpus those
+  // verdicts were computed from. SQL-corpus pairs are deliberately not included:
+  // fixtures contain raw SELECT statements, not shell atoms, and they never
+  // reach this OMP shell pre-filter. Add a shell pair without adding its verb
+  // and this goes red.
   //
   // Scoped to the ENFORCEABLE pairs. A `not-a-substitute` pair (P-008's
   // `ps`/`pgrep`) is dropped by `matchCommandToSubstitutions` unconditionally
@@ -5321,7 +5324,7 @@ describe('substitutionPrefilterHit (OMP pre-filter — decides who pays the roun
   // drift from what the matcher actually enforces.
   it('every atom behind an ENFORCEABLE equivalence verdict passes the pre-filter', () => {
     const enforceable = new Set(
-      ALL_PAIRS.filter((p) => p.expectedVerdict !== 'not-a-substitute').map(
+      BASH_GATE_PAIRS.filter((p) => p.expectedVerdict !== 'not-a-substitute').map(
         (p) => `${p.id}.sample.json`,
       ),
     );
