@@ -201,6 +201,14 @@ export interface OriginFreshnessWatchdogResult {
    * pass, so a caller can treat its presence as a defect signal.
    */
   blind?: boolean;
+  /**
+   * EI-20285011147862697 — how many pots the PUBLISH-HEALTH pass judged (the pots the
+   * origin pass skipped because they have no origin). Reported separately from
+   * `checked` on purpose: the two passes cover different populations, and collapsing
+   * them into one number is what let 3-of-3 origin coverage read as whole-plane health
+   * while 39 publish legs went unwatched.
+   */
+  publishChecked?: number;
 }
 
 /**
@@ -287,6 +295,13 @@ export async function checkOriginFreshness(
       for (const entry of projects) targets.push({ workspaceId: wsId, entry });
     }
 
+    // EI-20285011147862697: which entries the ORIGIN pass actually evaluated. Every
+    // `continue` below is an ORIGIN precondition, but each one skips the whole body —
+    // including the two publish signals, which need no origin. The publish-health pass
+    // after this loop picks up whatever the origin pass dropped, and this is how it
+    // knows which those are.
+    const originCheckedSlugs = new Set<string>();
+
     for (const { workspaceId, entry } of targets) {
       if (!entry.github_remote) continue; // nothing to be "origin"-fresh against
       const potHomeSlug = potHomeSlugOf(entry);
@@ -301,6 +316,7 @@ export async function checkOriginFreshness(
       if (mode !== 'bridged') continue; // legacy covered elsewhere; p2p-only has no origin
 
       out.checked += 1;
+      originCheckedSlugs.add(entry.slug);
       const repoKey = canonicalRepoKey(entry);
       const repoPath = hiveGitRepoPath(potHomeSlug, repoKey);
       if (!existsSync(repoPath)) {
@@ -661,6 +677,191 @@ export async function checkOriginFreshness(
             `[origin-freshness-watchdog] cleared a STRANDED escalation for ${entry.slug} (alerted flag was already false)`,
           );
         }
+      }
+    }
+
+    // ── EI-20285011147862697 — the PUBLISH-HEALTH pass ────────────────────────────
+    //
+    // Deliberately separate from the origin pass above. All four `continue` gates at
+    // the top of that loop (github_remote, potHomeSlug, mode resolution, mode ===
+    // 'bridged') are ORIGIN preconditions and are correct AS SUCH: with no GitHub
+    // remote and no bridged mode there is genuinely no origin to be fresh against.
+    // But each of them skips the ENTIRE body — including the publish-REFUSAL (WI-5738)
+    // and publish-BACKLOG (WI-6996) signals, neither of which needs an origin at all.
+    // Both read `metadata.own_head_publish.*` off the pot's own git-sync routine row,
+    // which exists for every pot that publishes p2p.
+    //
+    // MEASURED 2026-08-12 (papercusp-workspace): 3 pots are `bridged` while 42 carry an
+    // own_head_publish leg — so 39 publish legs were evaluated by NOTHING, and the one
+    // pot actually wedged (papercusp/papercusp-desktop, refused:'secrets', ~41h / 189
+    // consecutive refusals) sat in that unwatched majority, reporting itself honestly on
+    // every tick into a void. It should have alarmed after 3 sweeps; it never got one.
+    //
+    // The zero-coverage self-report below could not catch it either: its denominator was
+    // `countBridgedPots()` — the SAME narrow population — so 3-of-3 read as full
+    // coverage. That is why this is a coverage fix and not merely a louder warning.
+    //
+    // This pass evaluates ONLY the two publish signals, only for pots the origin pass
+    // dropped, and writes only keys that pass does not own for them — so it cannot
+    // regress the bridged pots that work today.
+    for (const { workspaceId, entry } of targets) {
+      if (originCheckedSlugs.has(entry.slug)) continue; // the origin pass already judged it
+      const potHomeSlug = potHomeSlugOf(entry);
+      if (!potHomeSlug) continue; // cannot frame an alert without a pot home
+
+      const rows = await sql<
+        {
+          publish_refused: string | null;
+          publish_backlog_remains: string | null;
+          publish_published_sha: string | null;
+          publish_head_sha: string | null;
+          of_publish_refused_sweeps: number | null;
+          of_publish_backlog_sweeps: number | null;
+          of_alerted: boolean | null;
+          of_alerted_cause: string | null;
+        }[]
+      >`
+        SELECT metadata->'own_head_publish'->>'refused' AS publish_refused,
+               metadata->'own_head_publish'->>'backlogRemains' AS publish_backlog_remains,
+               metadata->'own_head_publish'->>'publishedSha' AS publish_published_sha,
+               metadata->'own_head_publish'->>'sha' AS publish_head_sha,
+               COALESCE((metadata->>'of_publish_refused_sweeps')::int, 0) AS of_publish_refused_sweeps,
+               COALESCE((metadata->>'of_publish_backlog_sweeps')::int, 0) AS of_publish_backlog_sweeps,
+               COALESCE((metadata->>'of_alerted')::boolean, false) AS of_alerted,
+               metadata->>'of_alerted_cause' AS of_alerted_cause
+          FROM harness_shared.routines
+         WHERE install_slug = ${entry.slug}
+           AND target_role = 'system:git-sync'
+           AND metadata->'own_head_publish' IS NOT NULL
+         LIMIT 1`;
+      const row = rows[0];
+      if (!row) continue; // no publish leg on this pot — nothing to judge
+
+      out.publishChecked = (out.publishChecked ?? 0) + 1;
+
+      const publishRefusalCode = row.publish_refused ?? null;
+      const publishRefusedSweeps = publishRefusalCode ? (row.of_publish_refused_sweeps ?? 0) + 1 : 0;
+      const publishHasBacklog = row.publish_backlog_remains === 'true';
+      const publishBacklogSweeps = publishHasBacklog ? (row.of_publish_backlog_sweeps ?? 0) + 1 : 0;
+      if (
+        publishRefusedSweeps !== (row.of_publish_refused_sweeps ?? 0) ||
+        publishBacklogSweeps !== (row.of_publish_backlog_sweeps ?? 0)
+      ) {
+        await sql`
+          UPDATE harness_shared.routines
+             SET metadata = COALESCE(metadata, '{}'::jsonb)
+                   || jsonb_build_object(
+                        'of_publish_refused_sweeps', ${publishRefusedSweeps}::int,
+                        'of_publish_backlog_sweeps', ${publishBacklogSweeps}::int),
+                 updated_at = now()
+           WHERE install_slug = ${entry.slug} AND target_role = 'system:git-sync'`;
+      }
+
+      // Origin signals are deliberately null: this pot HAS no origin, so inferring one
+      // would manufacture exactly the false reading this whole file keeps re-learning.
+      // evaluateOriginFreshness computes the publish signals first and independently of
+      // every origin inference (see its WI-5738 / WI-6996 comments), so a refusal alarms
+      // on its own here.
+      const verdict = evaluateOriginFreshness(
+        {
+          aheadCount: null,
+          originTipAgeMs: null,
+          publishRefusedSweeps,
+          publishRefusalCode,
+          publishBacklogSweeps,
+          publishBacklogCommits: null,
+          integratorBacklogSweeps: 0,
+          integratorBacklogCommits: null,
+        },
+        opts,
+      );
+      const framing = describeOriginFreshnessAlert(verdict, {
+        slug: entry.slug,
+        potHomeSlug,
+        publishRefusalCode,
+        publishBacklogCommits: null,
+        integratorBacklogCommits: null,
+      });
+
+      const alerted = row.of_alerted ?? false;
+      const alertedCause = row.of_alerted_cause ?? null;
+
+      if (verdict.state === 'stale') {
+        if (alerted && alertedCause === framing.cause) continue; // one-shot until recovery
+
+        const flip = await sql`
+          UPDATE harness_shared.routines
+             SET metadata = COALESCE(metadata, '{}'::jsonb)
+                   || jsonb_build_object('of_alerted', true, 'of_alerted_cause', ${framing.cause}::text),
+                 updated_at = now()
+           WHERE install_slug = ${entry.slug}
+             AND target_role = 'system:git-sync'
+             AND (COALESCE((metadata->>'of_alerted')::boolean, false) = false
+                  OR COALESCE(metadata->>'of_alerted_cause', '') IS DISTINCT FROM ${framing.cause}::text)`;
+        if (flip.count !== 1) continue; // another process won the flip
+
+        try {
+          const { notifyAttention } = await import('../attention-notify');
+          await notifyAttention({
+            kind: 'intervention',
+            title: framing.title,
+            body: `${entry.slug} (p2p hive ${potHomeSlug}, no origin): ${verdict.reason}.`,
+            importance: 'urgent',
+            workspaceId,
+            data: {
+              cause: framing.cause,
+              aheadCountStale: false,
+              tipAgeStale: false,
+              publishRefused: verdict.publishRefused,
+              publishRefusalCode,
+            },
+          });
+        } catch (e) {
+          console.warn(`[origin-freshness-watchdog] notify failed: ${e instanceof Error ? e.message : e}`);
+        }
+
+        await broadcastSevereEvent({
+          summary: framing.summary,
+          body: `${verdict.reason}\n\n${framing.whyItMatters}`,
+          category: 'severe-event',
+          conditionKey: `origin-freshness:${entry.slug}`,
+          oneShot: true,
+        });
+
+        try {
+          await sql`
+            INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
+            VALUES (${entry.slug}, ${WATCHDOG_PHASE}, ${JSON.stringify({
+              kind: WATCHDOG_KIND,
+              harness_slug: entry.slug,
+              pot_home_slug: potHomeSlug,
+              aheadCount: null,
+              originTipAgeHrs: null,
+              emitted_at: now,
+              detail: `origin-freshness watchdog (publish-health pass): ${verdict.reason}`,
+            })}, ${now}, ${workspaceId})
+            ON CONFLICT (harness_slug, phase)
+            DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms`;
+        } catch (e) {
+          console.warn(`[origin-freshness-watchdog] escalation write failed: ${e instanceof Error ? e.message : e}`);
+        }
+        out.alarmed.push(entry.slug);
+        console.warn(`[origin-freshness-watchdog] ALARM ${entry.slug} (publish-health): ${verdict.reason}`);
+      } else if (alerted) {
+        await sql`
+          UPDATE harness_shared.harness_escalations
+             SET escalation = NULL, mtime_ms = ${now}
+           WHERE harness_slug = ${entry.slug}
+             AND phase = ${WATCHDOG_PHASE}
+             AND escalation IS NOT NULL`;
+        await sql`
+          UPDATE harness_shared.routines
+             SET metadata = (COALESCE(metadata, '{}'::jsonb) || '{"of_alerted":false}'::jsonb)
+                   - 'of_alerted_cause',
+                 updated_at = now()
+           WHERE install_slug = ${entry.slug} AND target_role = 'system:git-sync'`;
+        recoveredForBroadcast.push({ slug: entry.slug, cause: normalizeAlertedCause(alertedCause) });
+        out.recovered.push(entry.slug);
       }
     }
 

@@ -1218,6 +1218,29 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     appliesTo: (f) => /\.[cm]?[jt]sx?$/.test(f),
   },
   {
+    // WI-38314 — the UNREACHABLE-TIER MOCK class: a test whose mock DEFAULT supplies a
+    // constant source predicate as the opposite constant, so every case in the file starts
+    // in a state production cannot reach. Sibling of the vacuous-flag-guard entry above and
+    // registered for the same reason, but the asymmetry it closes is different: that one
+    // catches a knob that drives nothing, this one catches a knob that drives a branch
+    // nothing can enter. Neither can see the other's defect.
+    //
+    // BOTH directions matter, so this is deliberately not a test-file-only predicate. The
+    // defect appears when a TEST adds an impossible default — and, the harder direction,
+    // when a SOURCE predicate COLLAPSES to a constant (a flag deletion, exactly what P-068
+    // did to `mugKettleSystemEnabled`) and every pre-existing mock of it silently becomes
+    // dead coverage without one test file changing. `pot/started.ts` is the file that
+    // changed in the motivating case, and it is not a test.
+    //
+    // ~14s measured over 1,915 mocking test files plus the source sweep for constant
+    // predicates — the heaviest entry here, but it runs only when a .ts/.tsx path changes
+    // in an operator-core-affected run.
+    workspace: '@papercusp/operator-core',
+    script: 'lint:no-unreachable-tier-mock',
+    hostSuiteRatchet: 'packages/operator-core/lib/unreachable-tier-mock-guard.test.ts',
+    appliesTo: (f) => /\.[cm]?[jt]sx?$/.test(f),
+  },
+  {
     // WI-37605 — the D-034 shape again, and this one straddles the boundary in BOTH
     // directions, which is why neither workspace's own suite can hold it. The invariant
     // ("no executable line hardcodes the green-checkpoint production tag") is violated in
