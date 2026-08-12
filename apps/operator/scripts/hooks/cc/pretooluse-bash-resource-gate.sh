@@ -1767,10 +1767,35 @@ except Exception:
 # from this specific command and outrank a general teaching block. The real
 # backstop is the compaction seam itself, which reads the session-stamped
 # ledger written above and names any still-live job at the moment of the cut.
+#
+# NARROWED to the jobs that can actually BE stranded, rather than every
+# backgrounded command. Two conditions, both load-bearing:
+#   (a) the command REDIRECTS to a file — that is exactly the set the ledger can
+#       record and the compaction seam can later prove live via an open fd, so
+#       launch-time advice and cut-time detection cover the same population
+#       instead of drifting apart; and
+#   (b) the command is a LONG-RUNNING shape (test/build/typecheck runner). The
+#       documented failure is a 16-55min release-gate run, not `echo hello &`.
+# Without (a)+(b) this fired on every session's first backgrounded command —
+# measured: it broke 22 sibling gate tests that assert silence for short
+# backgrounded commands, which is the suite correctly reporting that the
+# advisory was too broad to be proportionate.
+_NATIVE_BG_LONG_RE = re.compile(
+    r'\b(?:(?:npx\s+|pnpm\s+|bunx\s+)?vitest'
+    r'|(?:npx\s+)?tsc'
+    r'|npm\s+(?:run\s+)?test(?::[\w-]+)?'
+    r'|npm\s+run\s+(?:build|lint:tsc|lint)'
+    r'|turbo\s+run\s+(?:test|build|typecheck)'
+    r'|jest|playwright|cargo\s+(?:build|test)'
+    r'|scripts/pc-heavy\.sh|affected-tests\.mjs)\b',
+    re.I,
+)
 try:
     if (tool_name.lower() == 'bash'
             and tool_input.get('run_in_background')
             and not ADVISORY
+            and _NATIVE_BG_LONG_RE.search(_strip_quotes_and_comments(command))
+            and _bg_redirect_targets(_strip_quotes_and_comments(command), _bg_cwd)
             and _claim_advisory('native-bg-task-dies-on-respawn')):
         ADVISORY = (
             'native background task advisory (WI-5936 / EI-16611): this job runs in the '
