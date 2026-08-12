@@ -27,6 +27,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { join } from 'node:path';
+import { managedSetInterval } from '@papercusp/scheduled-registry';
 import { getOrgPg } from '@papercusp/db-org';
 import { getFlag } from '@papercusp/flags/server';
 import { FLAGS } from '@papercusp/flags';
@@ -377,16 +378,20 @@ function startLockHeartbeat(
     }
   };
 
-  const timer = setInterval(() => {
-    if (inFlight) return;
-    inFlight = refresh().finally(() => {
-      inFlight = null;
-    });
-  }, LOCK_HEARTBEAT_INTERVAL_MS);
-  timer.unref?.();
+  const timer = managedSetInterval(
+    `git-sync-lock-heartbeat:${slug}`,
+    LOCK_HEARTBEAT_INTERVAL_MS,
+    () => {
+      if (inFlight) return;
+      inFlight = refresh().finally(() => {
+        inFlight = null;
+      });
+    },
+    { category: 'ephemeral-harness', classification: 'must-sample' },
+  );
 
   return async () => {
-    clearInterval(timer);
+    timer.stop();
     if (inFlight) await inFlight;
   };
 }

@@ -11,8 +11,9 @@ vi.mock('../../work-items', () => ({ getWorkItem: vi.fn(), setWorkItemStateWithA
 vi.mock('../../scheduler/plan-item-lane-guard', () => ({ resolvePlanItemStamp: vi.fn() }));
 vi.mock('./arm-reversible-work-item', () => ({ planWorkItemArm: vi.fn(async () => null), commitWorkItemArm: vi.fn() }));
 
-import { getWorkItem, setWorkItemStateWithAliasInfo } from '../../work-items';
+import { getWorkItem, setWorkItemStateWithAliasInfo, type WorkItem } from '../../work-items';
 import { resolvePlanItemStamp } from '../../scheduler/plan-item-lane-guard';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 import { planWorkItemArm } from './arm-reversible-work-item';
 const getM = vi.mocked(getWorkItem);
 const setM = vi.mocked(setWorkItemStateWithAliasInfo);
@@ -27,6 +28,38 @@ const body = async (args: unknown) => (((await tool.handler(args as never, {} as
 function noAlias(id: string, state: string) {
   return { workItem: { id, state }, aliased: false, requestedState: state, appliedState: state } as never;
 }
+
+const workItem = (overrides: Partial<WorkItem> & Pick<WorkItem, 'id' | 'state'>): WorkItem => ({
+  kind: 'feature',
+  family: 'feature',
+  harness: 'papercusp',
+  title: 'Plan-linked work',
+  summary: '',
+  assignee: null,
+  takenAt: null,
+  lastProgressAt: null,
+  assignedBy: null,
+  createdBy: null,
+  severity: null,
+  goalId: null,
+  parent: null,
+  payload: {},
+  origin: 'local',
+  auditVerdict: null,
+  verifiedAuthorGithubUserId: null,
+  rank: null,
+  rankWriter: null,
+  rankUpdatedAt: null,
+  priority: null,
+  terminalOwner: null,
+  terminalCompletionRef: null,
+  terminalCompletionEvidence: null,
+  completionAuthority: null,
+  createdAt: '2026-08-12T00:00:00.000Z',
+  updatedAt: '2026-08-12T00:00:00.000Z',
+  closedAt: null,
+  ...overrides,
+});
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -87,7 +120,7 @@ describe('work_items:set_state handler (keyed-array)', () => {
   });
 
   it('refuses direct blocked writes for plan-linked work-items and points to the plan source of truth', async () => {
-    getM.mockResolvedValue({ id: 'WI-plan', family: 'feature', payload: {}, harness: 'papercusp' } as never);
+    mockResolvedTyped(getM, workItem({ id: 'WI-plan', state: 'wip' }));
     planStampM.mockResolvedValue({ plan_slug: 'plan-slug', item_ids: ['P-015'] });
 
     const b = await body({ id: 'WI-plan', state: 'blocked' });

@@ -5,6 +5,7 @@ vi.mock('../../work-items', () => ({
 }));
 
 import { searchWorkItems } from '../../work-items';
+import { mockResolvedOnceTyped } from '../../testing/typed-mock';
 import search, { projectWorkItemSearchMatch, shapeWorkItemsSearch } from './search';
 
 const searchMock = vi.mocked(searchWorkItems);
@@ -79,11 +80,11 @@ describe('work_items:search bounded result projection', () => {
   });
 
   it('returns structured data so the framework can shape the handler result', async () => {
-    searchMock.mockResolvedValueOnce({
+    mockResolvedOnceTyped(searchMock, {
       items: [workItem({ summary: 'summary' })],
       legs: { degraded: false },
       applied: {},
-    } as never);
+    });
 
     const result = (await search.handler({ query: 'summary', semantic: false } as never, {} as never)) as {
       data: { ok: boolean; count: number; items: Array<Record<string, unknown>>; legs: unknown };

@@ -29,7 +29,13 @@ import {
 const { getRecipeMock, recordRecipeRunMock, runOrchestrationMock, orgSqlMock, resourceSqlMock } = vi.hoisted(() => ({
   getRecipeMock: vi.fn(),
   recordRecipeRunMock: vi.fn(async () => {}),
-  runOrchestrationMock: vi.fn(async () => ({ ok: true, summary: { done: true }, logs: [], dryRun: false, plannedMutations: [] })),
+  runOrchestrationMock: vi.fn<typeof import('@papercusp/agent-mcp').runToolOrchestration>(async () => ({
+    ok: true,
+    summary: { done: true },
+    logs: [],
+    dryRun: false,
+    plannedMutations: [],
+  })),
   orgSqlMock: vi.fn(),
   resourceSqlMock: vi.fn(),
 }));
@@ -252,7 +258,7 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
         read: 'windDown',
         available: ['workItem', 'claimedUnder'],
       }],
-    } as never);
+    });
 
     const res = await findTool('recipes:run').fn({ id: 'field-miss' }, mkCtx('worker'));
     const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);

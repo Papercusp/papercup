@@ -5,7 +5,7 @@ import { listAllProjectedTools } from '@papercusp/agent-mcp';
 // maybeCaptureRecipe lazy-imports these; replace them so no PG / embedder /
 // registry is touched and we can assert captureRecipe was invoked on success.
 const { captureRecipeMock } = vi.hoisted(() => ({
-  captureRecipeMock: vi.fn(async () => null),
+  captureRecipeMock: vi.fn<typeof import('./capture-recipe').captureRecipe>(async () => null),
 }));
 vi.mock('./capture-recipe', () => ({
   captureRecipe: captureRecipeMock,
@@ -207,7 +207,29 @@ describe('code:run → similarRecipes result shaping', () => {
   });
 
   it('uses the bounded shape in the agent-facing code:run payload', async () => {
-    captureRecipeMock.mockResolvedValueOnce({ similarRecipes: [recipe(1), recipe(2), recipe(3), recipe(4)] } as never);
+    captureRecipeMock.mockResolvedValueOnce({
+      row: {
+        id: 'captured-recipe',
+        title: 'Captured recipe',
+        description: 'Captured during the test',
+        script: 'return { delivered: true };',
+        potSlug: 'alpha',
+        authorRole: 'su',
+        toolsUsed: [],
+        runCount: 1,
+        successCount: 1,
+        lastRunAt: null,
+        status: 'active',
+        promotedTool: null,
+        mergedInto: null,
+        tags: [],
+        hasEmbedding: false,
+        createdBy: 'owner-x',
+        createdAt: '2026-08-12T00:00:00.000Z',
+        updatedAt: '2026-08-12T00:00:00.000Z',
+      },
+      similarRecipes: [recipe(1), recipe(2), recipe(3), recipe(4)],
+    });
     const tool = listAllProjectedTools().find((t) => t.expose.mcp?.name === 'code:run');
     if (!tool) throw new Error('code:run not registered');
 
