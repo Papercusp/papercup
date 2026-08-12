@@ -62,11 +62,17 @@ describe('deriveGradedBy (C-3: attribution from caller, never args)', () => {
     expect(deriveGradedBy({ role: 'mug' })).toBe('Queen');
   });
 
-  it("maps every owner surface (no role / superuser proxy / other agent roles) to 'owner'", () => {
+  it('preserves an identified agent caller ownerId for attribution', () => {
+    expect(deriveGradedBy({ role: 'operator', ownerId: 'su-steward-1' })).toBe('su-steward-1');
+    expect(deriveGradedBy({ role: 'worker', ownerId: 'su-worker-2' })).toBe('su-worker-2');
+  });
+
+  it("maps an unidentifiable human surface (no role or ownerId) to 'owner'", () => {
     expect(deriveGradedBy(undefined)).toBe('owner');
     expect(deriveGradedBy({})).toBe('owner');
     expect(deriveGradedBy({ role: 'operator' })).toBe('owner');
     expect(deriveGradedBy({ role: 'worker' })).toBe('owner');
+    expect(deriveGradedBy({ role: 'operator', ownerId: '   ' })).toBe('owner');
   });
 });
 
@@ -123,6 +129,26 @@ describe('runGradeIdea', () => {
     const out = await runGradeIdea({ ideaId: 'idea-1', grade: 2 }, undefined, deps);
     expect(deps.gradeRoutedIdea).toHaveBeenCalledWith({ ideaId: 'idea-1', grade: 2, gradedBy: 'owner' });
     expect(out.gradedBy).toBe('owner');
+  });
+
+  it('writes the resolved su caller ownerId for an identified agent grade', async () => {
+    const deps = fakeDeps({
+      readIdeaSummary: vi.fn(async () => summary({ gradedBy: 'su-steward-1' })),
+    });
+    const out = await runGradeIdea(
+      { ideaId: 'idea-1', grade: 3, feedback: 'measured critique' },
+      { role: 'operator', ownerId: 'su-steward-1' },
+      deps,
+    );
+
+    expect(deps.gradeRoutedIdea).toHaveBeenCalledWith({
+      ideaId: 'idea-1',
+      grade: 3,
+      feedback: 'measured critique',
+      gradedBy: 'su-steward-1',
+    });
+    expect(out.gradedBy).toBe('su-steward-1');
+    expect(out.idea?.gradedBy).toBe('su-steward-1');
   });
 
   it('omits the feedback key entirely when not supplied (a regrade without feedback clears it in C-2)', async () => {

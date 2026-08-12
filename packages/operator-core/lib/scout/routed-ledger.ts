@@ -250,9 +250,11 @@ export interface GradeRoutedIdeaInput {
   feedback?: string;
   /**
    * Grader attribution (D-004). The tool layer (C-3) DERIVES this from the
-   * caller role — it is never caller-supplied input.
+   * caller identity — it is never caller-supplied input. 'owner' is reserved
+   * for an unidentifiable human-surface grade; identified agents write their
+   * resolved ownerId, while the Mug writes the legacy 'Queen' label.
    */
-  gradedBy: 'owner' | 'Queen';
+  gradedBy: string;
 }
 
 /** Result of {@link gradeRoutedIdea}. */
@@ -490,9 +492,8 @@ export async function readRoutedIdeas(opts: ScoutLedgerOpts = {}): Promise<Route
   }
   return rows.map((r) => {
     // C-1 → C-1b: the grade fields are optional on the provenance — absent =
-    // ungraded. graded_by is gated to the seam's vocabulary ('owner' | 'Queen',
-    // the only values gradeRoutedIdea writes); an unknown attribution drops the
-    // field but keeps the grade.
+    // ungraded. Preserve every non-empty graded_by value: identified SU callers
+    // write their ownerId, while legacy rows may contain 'owner' or 'Queen'.
     const gradedAt = r.graded_at ? tsToIso(r.graded_at) : undefined;
     const originalIssueRef = r.routed_ref.startsWith('wi:') ? r.routed_ref.slice(3) : null;
     const feedbackRevisions = originalIssueRef ? revisionsByOriginal.get(originalIssueRef) ?? [] : [];
@@ -520,7 +521,7 @@ export async function readRoutedIdeas(opts: ScoutLedgerOpts = {}): Promise<Route
       routedAt: epochMsToIso(r.routed_at),
       ...(r.human_grade != null ? { humanGrade: Number(r.human_grade) } : {}),
       ...(r.human_feedback ? { humanFeedback: r.human_feedback } : {}),
-      ...(r.graded_by === 'owner' || r.graded_by === 'Queen' ? { gradedBy: r.graded_by } : {}),
+      ...(r.graded_by ? { gradedBy: r.graded_by } : {}),
       ...(gradedAt ? { gradedAt } : {}),
       ...(r.created_by ? { createdBy: r.created_by } : {}),
       ...(feedbackRevisions.length > 0

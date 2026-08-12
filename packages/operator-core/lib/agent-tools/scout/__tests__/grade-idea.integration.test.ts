@@ -98,6 +98,17 @@ describe('blender:grade-idea by bare work-item id (EI-15389, real PG)', () => {
     expect(Number(row!.human_grade)).toBe(2);
   });
 
+  it('an identified su caller writes its ownerId, leaving the literal owner for human grades', async () => {
+    const out = await runGradeIdea(
+      { ideaId: 'SP-002', grade: 4, feedback: 'steward signal' },
+      { role: 'operator', ownerId: 'su-steward-grade-1' },
+    );
+    expect(out.applied).toBe(true);
+    expect(out.gradedBy).toBe('su-steward-grade-1');
+    const row = await humanGradeOf('scout-1784334639774:scout-idea-analogical-2-1');
+    expect(row!.graded_by).toBe('su-steward-grade-1');
+  });
+
   it('a bare id whose row is keyed DIRECTLY by that id (su re-route) still resolves', async () => {
     const out = await runGradeIdea({ ideaId: 'EI-888', grade: 5, feedback: 'love it' }, { role: 'mug' });
     expect(out.applied).toBe(true);

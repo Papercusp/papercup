@@ -114,8 +114,8 @@ export interface RoutedIdeaProvenance {
   humanGrade?: number;
   /** Grader's free-text critique (ledger `human_feedback`) — the priming channel's payload, not used by the weight math. */
   humanFeedback?: string;
-  /** Who graded: the owner's grade is sovereign over the Queen's (D-004; enforced in the write seam). */
-  gradedBy?: 'owner' | 'Queen';
+  /** Who graded: the owner's grade is sovereign over agent grades (D-004; enforced in the write seam). */
+  gradedBy?: string;
   /** ISO timestamp of the grade (ledger `graded_at`). */
   gradedAt?: string;
   /**
