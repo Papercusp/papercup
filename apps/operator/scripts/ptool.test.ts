@@ -1,5 +1,4 @@
 import { describe, expect, it, vi } from 'vitest';
-// @ts-ignore -- runtime CLI module intentionally tested from TypeScript.
 import {
   callToolWithPressureRetry,
   printResult,

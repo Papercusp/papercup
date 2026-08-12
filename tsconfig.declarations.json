@@ -150,6 +150,10 @@
     // Registering all three is what keeps the emitted set and the tracked set equal.
     "apps/operator/scripts/psu-launcher.mjs",
     "apps/operator/scripts/psu-pty-host.mjs",
+    // EI-20228184337467634 — ptool.mjs is imported by TypeScript tests; register
+    // its runtime dependency too so the complete CLI import surface is typed.
+    "apps/operator/scripts/ptool.mjs",
+    "apps/operator/scripts/operator-discovery.mjs",
     "packages/operator-core/lib/model-context-budget.mjs",
     "apps/operator/scripts/hooks/cc/posttooluse-migration-forward-compat-nudge.mjs",
     "apps/operator/scripts/hooks/cc/posttooluse-no-proc-path-fixture-nudge.mjs"
