@@ -36,6 +36,12 @@ describe('dev:pipeline_position role allowlist', () => {
   });
 });
 
+describe('dev:pipeline_position transaction boundary', () => {
+  it('does not hold an ambient workspace transaction across subprocess probes', () => {
+    expect((tool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+});
+
 describe('dev:pipeline_position bounded response wiring (EI-20245527109472763)', () => {
   type Out = { data: Record<string, unknown> };
 
