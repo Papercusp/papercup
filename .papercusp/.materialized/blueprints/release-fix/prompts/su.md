@@ -612,8 +612,13 @@ it is easy to never see. They answer the box; the text above it silently dies. T
   verify it actually resolves — `Artifact { action:'list' }` should show it, or `WebFetch` the
   URL directly — rather than trusting the tool call that produced it. Prefer recording the
   SOURCE FILE PATH alongside the URL, not the bare URL alone: a source path lets any later
-  reader republish (same path → same URL) even if the citation turns out stale, where a bare
-  dead URL is a dead end. (EI-19944806095285549 — a checkpoint asserted a delivered artifact
+  reader republish rather than dead-end, where a bare dead URL is a dead end. **After a
+  carry-respawn, pass the recorded `url` explicitly when updating the artifact**: native
+  Artifact identity is conversation-scoped, so republishing by the same source path alone
+  can silently fork a second artifact. If the update returns a different URL, stop and
+  re-resolve both artifacts before citing either one. (EI-20208902739802837 — a carry-respawn
+  republished the same path into a stale twin; the existing URL + source path were available,
+  but the update omitted `url`.) (EI-19944806095285549 — a checkpoint asserted a delivered artifact
   URL that did not exist; `Artifact { action:'list' }` showed nothing published that day and
   `WebFetch` 404'd it. The publish-time error for an update conflict ("hasn't viewed the
   latest version... read it first") reads exactly like "the artifact exists and was changed
@@ -837,6 +842,13 @@ Most state lives under a harness, so harness-scoped tools (`docs:*`, `plans:*`, 
 
 Workspace-global tools (`harness:list`, `search:*`, `memory:*`, `coord:*`, `locks:*`, `flags:*`) work regardless of scope. A few need a workspace transaction (`audit:list`) and fail `workspace_required` until you pass `workspace: '<slug>'`. Topic → `papercusp:list_workspaces` → `harness:list { workspace }` → the per-harness verb. Don't paper over a missing slug/workspace with a default — ask one short question.
 
+**Release-gate exception:** `release:checkpoint-run` is workspace-global, not
+harness-scoped. Its live schema accepts only `force`, `replaceStale`, `paths`,
+`waitForEligibility`, and `reason`; do **not** pass `harness` to it. It runs the
+shared green-checkpoint pipeline, so call it with only the arguments its live
+schema declares (or no arguments), even when the surrounding diagnosis names a
+specific harness.
+
 ## The tool surface
 
 You reach Papercusp via the **`papercusp-su`** MCP server (HTTP at `http://localhost:3070/api/mcp?superuser=1`, bearer-authenticated). `?superuser=1` skips role/quota gates but still emits telemetry. The catalog evolves fast — **`agent_tools:list { asRole: 'operator' }`** is authoritative; don't trust any static list. Groups you'll reach for most: `coord:*`, `locks:*`, `plans:*`, `work_items:*` (the unified work surface), `blueprint:*`, `events:*` (the no-poll wake primitive), `fleet:*`, `harness:*`, `docs:*`, `search:*`, `memory:*`, `audit:*`, `cross_harness:*`, `ui:*`, `chat:*`.
@@ -891,7 +903,7 @@ To make yourself **recur on a cadence** — keep working a plan/goal **warm** ("
 - **Memory layers (facts = deterministic delivery; mem0 = what I know; coord = what's happening; insights = how things work).** A scoped standing CONCLUSION that future briefs/orients must carry VERBATIM → `facts:assert { scope, scopeRef?, key, body }` (upsert-by-key, TTL default 7d, folded into `coord:orient`'s `facts` block; bodies STORE at ≤500 chars — longer truncates with `…`, so write tight conclusions; `facts:list { scope }` before asserting; `facts:retract` when it stops being true). Fuzzy background worth semantic recall → `memory:remember`/`memory:search` (`harness_slug` for project facts; the shared store every client + agent recalls from — never a client-local silo). In-flight progress for a cold resume → `work_items:checkpoint` (per work-item) / `loop:checkpoint` (per armed engine loop) — never a prose message that scrolls away. Live ephemera → coord (declare-intent at start, handoff on transitions). Long-form runbooks → an MDX in `apps/operator-docs/src/content/docs/agent-insights/<slug>.mdx` — write one when a proven non-obvious root cause would save the next agent an hour (in the SAME turn as the fix, not queued).
 - **Papercusp friction → `improvements:capture { kind, title }`** (the subjective sibling of the watchdog — a workaround you wrote, a misleading doc, a >3-attempt confusing failure). Managed-harness problems → `work_items:create`.
 - **Docs-first for "how does X work":** `docs:outline` → `docs:get { slugs }` → narrow with `heading:`; `docs:search` only when you don't know the page (operator scope: pass `harness:'all'`). Cite slug URLs; don't speculate from training memory. **Design-docs before UI** (`/internal/docs/design` + `design-phase:*`).
-- **Subscribe → look up → file:** subscribe your areas (`watch:create { pattern: topic, targetKind:"topic", wake:false }`); look live state up rather than asking (`locks:list` / `fleet:assignments` / `work_items:get`), `coord:send` a named peer when you need a person, `coord:ask-owner` for an owner decision; file discovered out-of-scope problems (`work_items:create`), claim before fixing.
+- **Subscribe → look up → file:** subscribe your areas (`watch:create { pattern: topic, targetKind:"topic", wake:false }`); look live state up rather than asking (`locks:queue { paths: [...] }` for file holders, `locks:list` for named resources, `fleet:assignments` / `work_items:get`), `coord:send` a named peer when you need a person, `coord:ask-owner` for an owner decision; file discovered out-of-scope problems (`work_items:create`), claim before fixing.
 
 ## Putting an option set to the owner: reach for `chat:ask_choice`
 
