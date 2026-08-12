@@ -883,10 +883,18 @@ function likeContainsPattern(query: string): string {
  * source plan) as ONE fragment for the FEATURE relation, mirroring
  * {@link issueShapeWhereSql} for the issue relation.
  *
- * TWO separate builders, on purpose: the relations spell these columns differently
- * (`harness_features_consolidated` uses status / created_ts / updated_ts;
- * `engineer_issues` uses state / created_at / updated_at), so a single shared builder
- * would need a column map per caller — more moving parts than the two it replaces.
+ * TWO separate builders, on purpose — and the reason is stronger than naming. The two
+ * relations differ in the column TYPE, not just the spelling:
+ *
+ *   harness_features_consolidated : status / created_ts / updated_ts  → BIGINT epoch-ms
+ *   engineer_issues               : state  / created_at / updated_at  → timestamptz
+ *
+ * So the SAME inclusive `>=` window compiles to two different comparisons, and the
+ * feature side must convert the caller's ISO instant to epoch-ms. Writing
+ * `created_ts >= '…'::timestamptz` there is not a subtle mistake but a hard Postgres
+ * error (no bigint >= timestamptz operator) — invisible to tsc, which cannot see inside
+ * a SQL template. Verified against information_schema rather than inferred from the
+ * `_ts`/`_at` suffix, which is the tell but not the proof.
  * What they DO share is the semantics, which is where drift would actually hurt: both
  * derive notTerminal from ANY_FAMILY_TERMINAL_STATES and both use INCLUSIVE `>=`, so
  * one work_items:list call cannot apply different boundaries to its two families.
@@ -909,8 +917,16 @@ function featureShapeWhereSql(sql: OrgSql, filter: ListWorkItemsFilter) {
         ? sql`NOT (status = ANY(${ANY_FAMILY_TERMINAL_STATES as string[]}::text[]))`
         : sql`TRUE`
     }
-    AND ${filter.createdSince ? sql`created_ts >= ${filter.createdSince}::timestamptz` : sql`TRUE`}
-    AND ${filter.updatedSince ? sql`updated_ts >= ${filter.updatedSince}::timestamptz` : sql`TRUE`}
+    AND ${
+      filter.createdSince
+        ? sql`created_ts >= (EXTRACT(EPOCH FROM ${filter.createdSince}::timestamptz) * 1000)::bigint`
+        : sql`TRUE`
+    }
+    AND ${
+      filter.updatedSince
+        ? sql`updated_ts >= (EXTRACT(EPOCH FROM ${filter.updatedSince}::timestamptz) * 1000)::bigint`
+        : sql`TRUE`
+    }
     AND ${filter.sourcePlanSlug ? sql`source_plan_slug = ${filter.sourcePlanSlug}` : sql`TRUE`}`;
 }
 
