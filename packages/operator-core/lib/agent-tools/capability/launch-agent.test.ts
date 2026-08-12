@@ -29,6 +29,16 @@ vi.mock('../../console-launcher', () => ({
   })),
 }));
 
+// launch-agent's mode matrix is about command composition and spawn routing. The
+// backend PATH preflight and startup probes have their own focused suites
+// (backend-bin-resolve.test.ts and agent-launch-verification.test.ts); keep those
+// infrastructure probes deterministic here so this test does not depend on the
+// host's installed backend or spend 30s polling a real PG-backed session ledger.
+vi.mock('../../backend-bin-resolve.mjs', async (orig) => ({
+  ...(await orig<Record<string, unknown>>()),
+  preflightBackendLaunch: vi.fn(() => ({ ok: true })),
+}));
+
 // Typed against the REAL SpawnConsoleResult (type-only import — not mocked away)
 // so the mocks cannot silently drift from the spawn contract again (WI-4488: the
 // EI-8289 display/desktopEnvResolvedVia refactor left inferred-shape mocks stale).
@@ -83,6 +93,19 @@ vi.mock('../coordination/identity', () => ({
 // The shared core: the resolver + idempotency ledger hit PG, so they are stubbed;
 // the pure command builders/injectors run FOR REAL (they are what we're pinning).
 const resolveResumeTargetMock = vi.fn();
+// Both mocks are CALLED with one argument below, so they must DECLARE one —
+// a zero-arg vi.fn() is a TS2554 the vitest run cannot see (esbuild strips types,
+// so the suite stays green while the file is type-broken). Same shape as the
+// claimAgentLaunchMock/recordAgentLaunchResultMock pair further down.
+const verifyFreshLaunchStartedMock = vi.fn(async (_args: unknown) => ({
+  // agentStarted is deliberately THREE-state (true | false | null) per D-004 —
+  // null means "not yet determinable", which is the stub's honest answer.
+  agentStarted: null,
+  waitedMs: 0,
+  sessions: [],
+  note: 'test launch verification stub',
+}));
+const verifyResumeStartedMock = vi.fn(async (_ownerId: unknown) => ({ started: true }));
 const claimAgentLaunchMock = vi.fn(
   async (
     _opts: unknown,
@@ -97,6 +120,8 @@ const recordAgentLaunchResultMock = vi.fn(async (_opts: unknown) => {});
 vi.mock('../../agent-launch-core', async (orig) => ({
   ...(await orig<Record<string, unknown>>()),
   resolveResumeTarget: (ref: unknown) => resolveResumeTargetMock(ref as never),
+  verifyFreshLaunchStarted: (args: unknown) => verifyFreshLaunchStartedMock(args as never),
+  verifyResumeStarted: (ownerId: unknown) => verifyResumeStartedMock(ownerId as never),
   claimAgentLaunch: (o: unknown) => claimAgentLaunchMock(o),
   recordAgentLaunchResult: (o: unknown) => recordAgentLaunchResultMock(o),
 }));
