@@ -10,6 +10,7 @@
  */
 import { createHash } from 'node:crypto';
 import { checkScript, ensureParseCheckReady, type StaticToolCall } from '@papercusp/tooldef';
+import { isAllHarnessSentinel } from './agent-tools/_harness-scope';
 
 export interface RecipeAuthorityRefs {
   workspaces: string[];
@@ -276,19 +277,50 @@ export function recipeAuthorityContextFromDescriptor(
   });
 }
 
+/**
+ * EI-20186804943808838 / EI-12692: `'*'` (friendly alias `'all'`) is the canonical
+ * operator/superuser scope sentinel — `http-projection` sets `ctx.harnessSlug = '*'` on
+ * EVERY superuser/operator-scope call (see `agent-tools/_harness-scope.ts`, which the
+ * sibling call sites that thread ctx into a real predicate already guard against). It
+ * means "every harness in this workspace", so a session carrying it IS inside the lane of
+ * any concrete-harness recipe. Comparing it with `===` locked every su session out of every
+ * harness-bound recipe — unrepairably, since the rejection lands on the server-derived live
+ * context that no caller-supplied proof can influence.
+ *
+ * Honoured ONLY for a SERVER-DERIVED context (the live session scope, and the search context
+ * the recommender builds from it) — NEVER for the caller-carried proof, where a hand-written
+ * `'*'` would otherwise be a skeleton key. That asymmetry is the security property, so this
+ * defaults to the strict comparison: a new call site cannot opt into the loose one by
+ * accident, only deliberately. It is also deliberately confined to the HARNESS scalar —
+ * workspace is a tenant boundary and stays strict even under operator scope.
+ */
+export interface RecipeAuthorityMatchOptions {
+  /** Treat the operator-scope `'*'`/`'all'` harness sentinel as satisfying a concrete
+   *  harness binding. Pass ONLY for a server-derived context. */
+  operatorScope?: boolean;
+}
+
 export function recipeAuthorityMatches(
   descriptor: RecipeAuthorityDescriptor,
   context: RecipeAuthorityContext = {},
+  options: RecipeAuthorityMatchOptions = {},
 ): boolean {
   if (descriptor.unresolved) return false;
   const c = normalizeRecipeAuthorityContext(context);
-  const scalar = (required: readonly string[], actual: string | null | undefined): boolean =>
-    required.length === 0 || (Boolean(actual) && required.every((value) => value === actual));
+  const scalar = (
+    required: readonly string[],
+    actual: string | null | undefined,
+    allowOperatorScope = false,
+  ): boolean =>
+    required.length === 0 ||
+    (Boolean(actual) &&
+      ((allowOperatorScope && isAllHarnessSentinel(actual)) ||
+        required.every((value) => value === actual)));
   return (
     scalar(descriptor.refs.workspaces, c.workspace) &&
     scalar(descriptor.refs.fleets, c.fleet) &&
     scalar(descriptor.refs.plans, c.plan) &&
-    scalar(descriptor.refs.harnesses, c.harness) &&
+    scalar(descriptor.refs.harnesses, c.harness, options.operatorScope === true) &&
     (descriptor.refs.items.length === 0 || hasAll(descriptor.refs.items, c.items ?? [])) &&
     (descriptor.refs.resources.length === 0 || hasAll(descriptor.refs.resources, c.resources ?? []))
   );
@@ -314,18 +346,36 @@ export function recipeRevision(script: string, updatedAt: string): string {
   return createHash('sha256').update(updatedAt).update('\0').update(script).digest('hex');
 }
 
+/**
+ * A proof records WHICH LANE it authorizes, and the caller-side check that revalidates it is
+ * deliberately strict. So an operator-scope caller must not be handed a proof that merely
+ * echoes `'*'` back — it would be rejected by that strict check on the very next hop. Under
+ * operator scope the authorized lane is the recipe's OWN harness, so resolve the sentinel to
+ * that concrete slug. A recipe binding several distinct harnesses has no single lane to name
+ * and is left untouched (a multi-harness scalar can never satisfy `every`, so it stays
+ * unmatchable exactly as before).
+ */
+function resolveOperatorScopeLane(
+  descriptor: RecipeAuthorityDescriptor,
+  context: RecipeAuthorityContext = {},
+): RecipeAuthorityContext {
+  if (!isAllHarnessSentinel(context.harness) || descriptor.refs.harnesses.length !== 1) return context;
+  return { ...context, harness: descriptor.refs.harnesses[0] };
+}
+
 export async function buildRecipeAuthorityRecommendation(input: {
   script: string;
   updatedAt: string;
   context?: RecipeAuthorityContext;
 }): Promise<RecipeAuthorityRecommendation | null> {
   const descriptor = await deriveRecipeAuthority(input.script);
-  if (!recipeAuthorityMatches(descriptor, input.context)) return null;
+  // Server-derived: this context is built from the live session, not caller input.
+  if (!recipeAuthorityMatches(descriptor, input.context, { operatorScope: true })) return null;
   return {
     proof: {
       version: 1,
       revision: recipeRevision(input.script, input.updatedAt),
-      context: normalizeRecipeAuthorityContext(input.context),
+      context: normalizeRecipeAuthorityContext(resolveOperatorScopeLane(descriptor, input.context)),
     },
     refs: descriptor.refs,
   };
@@ -463,7 +513,9 @@ export async function validateRecipeAuthorityProof(input: {
         resources: [],
       },
     };
-    if (!recipeAuthorityMatches(scalarDescriptor, input.liveContext)) {
+    // Server-derived live scope (presence + ctx), so the operator-scope sentinel is
+    // trustworthy here. The proof check above stays STRICT — see recipeAuthorityMatches.
+    if (!recipeAuthorityMatches(scalarDescriptor, input.liveContext, { operatorScope: true })) {
       return fail('authority_entity_mismatch');
     }
   }

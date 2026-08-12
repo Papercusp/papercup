@@ -3,6 +3,7 @@ import {
   buildRecipeAuthorityRecommendation,
   deriveRecipeAuthority,
   recipeRevision,
+  recipeAuthorityMatches,
   recipeAuthorityMatchesLiveRefs,
   validateRecipeAuthorityProof,
 } from './recipe-authority';
@@ -149,6 +150,93 @@ describe('recipe recommendation authority (P-008)', () => {
       script: `return await tools.gateway.status({});`,
       updatedAt: '2026-07-13T12:00:00.000Z',
     })).resolves.toMatchObject({ ok: true, descriptor: { bound: false } });
+  });
+
+  // EI-20186804943808838 / EI-12692: `http-projection` sets `ctx.harnessSlug = '*'` for EVERY
+  // superuser/operator-scope call (the documented HARNESS_ALL sentinel — see
+  // agent-tools/_harness-scope.ts). Both recipes:search and recipes:run thread that ctx value
+  // straight into the authority context, where the scalar comparison was a strict `===`. So for
+  // every su session — the population recipe reuse exists to serve — a recipe binding a concrete
+  // harness was UNREACHABLE, in a way no caller could repair: search refused to issue a proof
+  // (buildRecipeAuthorityRecommendation returned null) and run rejected on the LIVE context, which
+  // is server-derived and therefore immune to any proof the caller supplies. Filed twice, a month
+  // apart, against the same recipe.
+  describe('operator-scope wildcard harness (EI-20186804943808838)', () => {
+    const harnessScript = `return await tools.scheduler.getNext({ harness: 'papercusp' });`;
+    const updatedAt = '2026-07-10T16:14:16.826Z';
+
+    it('lets an operator-scope session run a harness-bound recipe end to end', async () => {
+      // The exact broken flow: search issues the proof, run validates it against the live ctx.
+      const recommendation = await buildRecipeAuthorityRecommendation({
+        script: harnessScript,
+        updatedAt,
+        context: { workspace: 'papercusp-workspace', harness: '*' },
+      });
+      expect(recommendation).not.toBeNull();
+
+      await expect(validateRecipeAuthorityProof({
+        script: harnessScript,
+        updatedAt,
+        proof: recommendation!.proof,
+        liveContext: { workspace: 'papercusp-workspace', harness: '*' },
+      })).resolves.toMatchObject({ ok: true });
+    });
+
+    it('accepts the friendly `all` spelling of the same sentinel', async () => {
+      const recommendation = await buildRecipeAuthorityRecommendation({
+        script: harnessScript,
+        updatedAt,
+        context: { harness: 'all' },
+      });
+      expect(recommendation).not.toBeNull();
+    });
+
+    // CONTROLS — the wildcard must not become a skeleton key. Each of these asserts the
+    // widening stopped exactly where it was supposed to.
+    it('still rejects a CALLER-CARRIED proof that claims wildcard scope', async () => {
+      // The live context is server-derived and trustworthy; the proof is not. A caller who
+      // hand-builds `harness:'*'` must not thereby authorize a concrete-harness recipe.
+      await expect(validateRecipeAuthorityProof({
+        script: harnessScript,
+        updatedAt,
+        proof: { version: 1, revision: recipeRevision(harnessScript, updatedAt), context: { harness: '*' } },
+        liveContext: { harness: 'papercusp' },
+      })).resolves.toMatchObject({ ok: false, error: 'authority_entity_mismatch' });
+    });
+
+    it('still rejects a live session scoped to a DIFFERENT concrete harness', async () => {
+      await expect(validateRecipeAuthorityProof({
+        script: harnessScript,
+        updatedAt,
+        proof: { version: 1, revision: recipeRevision(harnessScript, updatedAt), context: { harness: 'papercusp' } },
+        liveContext: { harness: 'some-other-harness' },
+      })).resolves.toMatchObject({ ok: false, error: 'authority_entity_mismatch' });
+    });
+
+    // CALIBRATION. The two controls above assert a REJECTION, and a rejection also happens
+    // when nothing is wired up at all — so on their own they could pass vacuously. This pins
+    // that the strict/loose distinction is real and load-bearing: the very same descriptor and
+    // wildcard context that the strict comparison REJECTS is ACCEPTED once operator scope is
+    // opted into. If a future edit passes `operatorScope: true` at the caller-carried proof
+    // check, that is exactly the mutation this makes the controls above catch.
+    it('separates strict from operator-scope matching (proves the controls are not vacuous)', async () => {
+      const descriptor = await deriveRecipeAuthority(harnessScript);
+      expect(recipeAuthorityMatches(descriptor, { harness: '*' })).toBe(false);
+      expect(recipeAuthorityMatches(descriptor, { harness: '*' }, { operatorScope: true })).toBe(true);
+      // ...and operator scope is not a blanket pass: a wrong concrete harness still fails.
+      expect(recipeAuthorityMatches(descriptor, { harness: 'nope' }, { operatorScope: true })).toBe(false);
+    });
+
+    it('does NOT extend the wildcard to workspace — that is a tenant boundary', async () => {
+      const wsScript = `return await tools.workItems.get({ id: 'WI-1', workspace: 'other-workspace' });`;
+      const descriptor = await deriveRecipeAuthority(wsScript);
+      expect(descriptor.refs.workspaces).toEqual(['other-workspace']);
+      await expect(buildRecipeAuthorityRecommendation({
+        script: wsScript,
+        updatedAt,
+        context: { workspace: '*' },
+      })).resolves.toBeNull();
+    });
   });
 
   // EI-12057: a recipe composing another recipe via `tools.recipes.run(...)` fails
