@@ -303,13 +303,17 @@ describe('wakeTurnText', () => {
   // CONSUMED late — a continuously-busy recipient's OWN periodic coord:inbox
   // polling may already have surfaced + handled the quoted message before the
   // injected wake turn is drained. So an inbox-wake key gets a self-identifying
-  // reconciliation NOTE telling the woken agent to reconcile against coord:inbox
-  // before re-doing possibly-already-handled mail; every OTHER key is untouched.
-  it('EI-16648: an inbox-wake key stamps the reconcile-against-coord:inbox note', () => {
+  // reconciliation NOTE telling the woken agent to reconcile against the
+  // cursor-free coord:inbox VIEW before re-doing possibly-already-handled mail;
+  // every OTHER key is untouched. D-013 keeps the agent-facing cursor out of
+  // coord:inbox, so this note must never reintroduce a since_ts call shape.
+  it('EI-16648/D-013: an inbox-wake key stamps the cursor-free coord:inbox note', () => {
     const t = wakeTurnText(work({ eventKey: 'coord:inbox-wake:su-abc' }));
     expect(t).toContain('coord:inbox-wake:su-abc'); // base wake still present
     expect(t).toContain('NOTE (inbox-wake)');
     expect(t).toContain('reconcile against coord:inbox');
+    expect(t).toContain("coord:inbox's cursor-free VIEW");
+    expect(t).not.toContain('since_ts');
     expect(t).toContain('do NOT re-do handled mail');
     expect(t).not.toContain('\n'); // still a single collapsed line
   });

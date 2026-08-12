@@ -449,9 +449,11 @@ export function wakeTurnText(d: DeliveryWork): string {
   // keys ONLY, stamp a self-identifying reconciliation instruction (the EI-15799
   // precedent for the analogous stale cold-loop-wake delivery) — keep the quoted
   // body (useful when genuinely new) but tell the agent to reconcile against
-  // coord:inbox before trusting it. Every non-inbox-wake key is byte-identical.
+  // coord:inbox before trusting it. The agent-facing inbox is a cursor-free
+  // VIEW (D-013); only the delivery hook owns an internal floor. Every
+  // non-inbox-wake key is byte-identical.
   const inboxWakeReconcile = d.eventKey.startsWith(COORD_INBOX_WAKE_PREFIX)
-    ? ' NOTE (inbox-wake): the quoted message may ALREADY have been surfaced + handled by your own coord:inbox polling before this wake was consumed — reconcile against coord:inbox { since_ts: <your last read> } and do NOT re-do handled mail or trust the quoted body as necessarily new.'
+    ? ' NOTE (inbox-wake): the quoted message may ALREADY have been surfaced + handled by your own coord:inbox read before this wake was consumed — reconcile against coord:inbox\'s cursor-free VIEW and do NOT re-do handled mail or trust the quoted body as necessarily new.'
     : '';
   // P-006 (fleet-member-dx, EI-9018): `d.id` is the DELIVERY-LOG row id, not a
   // wake count — unlabeled "wake #12672" next to a loop's own "wake #5" read as
