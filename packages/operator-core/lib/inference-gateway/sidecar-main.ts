@@ -20,8 +20,9 @@
  *   ANTHROPIC_BASE_URL_UPSTREAM    override the upstream (default https://api.anthropic.com)
  *   PAPERCUSP_GATEWAY_HARD_STOP_MS hard drain ceiling before force-exit (default 12000, < TimeoutStopSec)
  *   PAPERCUSP_GATEWAY_LOG          durable lifecycle log path (default ~/.papercusp/gateway.log)
+ *   PAPERCUSP_GATEWAY_LOG_MAX_BYTES rotate the lifecycle log at this size (default 8 MiB)
  */
-import { appendFileSync, mkdirSync } from 'node:fs';
+import { appendFileSync, mkdirSync, renameSync, rmSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { installFlagOverrideStore } from '../flag-override-store';
@@ -47,17 +48,56 @@ function logFilePath(): string {
   return process.env.PAPERCUSP_GATEWAY_LOG || join(homedir(), '.papercusp', 'gateway.log');
 }
 
-let logDirEnsured = false;
+const DEFAULT_GATEWAY_LOG_MAX_BYTES = 8 * 1024 * 1024;
+
+function logMaxBytes(): number {
+  const configured = Number(process.env.PAPERCUSP_GATEWAY_LOG_MAX_BYTES);
+  return Number.isFinite(configured) && configured > 0
+    ? Math.max(1024, Math.floor(configured))
+    : DEFAULT_GATEWAY_LOG_MAX_BYTES;
+}
+
+let logDirEnsuredFor: string | undefined;
+
+/** Keep the journald-independent fallback bounded. A normal rotation retains one
+ * previous segment; a pre-existing oversized file is discarded instead of being
+ * renamed into an equally unbounded backup. All failures remain fail-soft in the
+ * caller because durable logging must never take down the gateway. */
+function rotateGatewayLogIfNeeded(path: string, incomingBytes: number): void {
+  let currentBytes: number;
+  try {
+    currentBytes = statSync(path).size;
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') return;
+    throw e;
+  }
+
+  const maxBytes = logMaxBytes();
+  if (currentBytes + incomingBytes <= maxBytes) return;
+
+  const rotatedPath = `${path}.1`;
+  rmSync(rotatedPath, { force: true });
+  if (currentBytes > maxBytes) {
+    // Upgrade/self-heal path: never preserve a legacy runaway file as the backup.
+    rmSync(path, { force: true });
+    return;
+  }
+  renameSync(path, rotatedPath);
+}
+
 /** Durable lifecycle log line (console + append-file). Exported so bin.ts's fatal catch reuses it. */
 export function gatewayLogLine(m: string): void {
   const line = `[inference-gateway ${new Date().toISOString()}] ${m}`;
   console.log(line);
   try {
-    if (!logDirEnsured) {
-      mkdirSync(dirname(logFilePath()), { recursive: true });
-      logDirEnsured = true;
+    const path = logFilePath();
+    if (logDirEnsuredFor !== path) {
+      mkdirSync(dirname(path), { recursive: true });
+      logDirEnsuredFor = path;
     }
-    appendFileSync(logFilePath(), line + '\n');
+    const record = line + '\n';
+    rotateGatewayLogIfNeeded(path, Buffer.byteLength(record));
+    appendFileSync(path, record);
   } catch {
     /* durable log unavailable (perm/disk) — console.log remains the fallback; never let logging crash boot/shutdown */
   }
