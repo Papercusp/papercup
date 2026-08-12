@@ -8,6 +8,9 @@
  *    the host PROJECTED_DEPS — a compound can only compose tools the agent could call
  *    directly. A regression that dropped ctx/deps would bypass role/capability/quota
  *    gates.
+ *  - CROSS-WORKSPACE BINDING: crossWorkspace sub-calls receive the admin handle and
+ *    synthesized principal used by the direct MCP dispatcher, while preserving the
+ *    in-process transport and telemetry surface.
  *  - TRANSPORT STAMP: the re-dispatch is IN-PROCESS, so ctx.transport becomes
  *    'in_process' (never the caller's 'mcp') — that keeps the sub-result lossless JSON
  *    instead of the agent-facing TOON that unwrap can't JSON.parse (the
@@ -30,13 +33,25 @@ import { encode } from '@papercusp/result-encoding';
 const mocks = vi.hoisted(() => ({
   lookupByMcpName: vi.fn(),
   dispatchProjectedTool: vi.fn(),
+  getOrgPg: vi.fn(() => ({ sql: { __admin: true } })),
+  synthesizeDispatchPrincipal: vi.fn(async (_tx: unknown, spawnCtx: { workspaceId: string; role: string }) => ({
+    slug: `system:${spawnCtx.role}`,
+    workspaceId: spawnCtx.workspaceId,
+    capabilities: new Set<string>(),
+  })),
+  runWithWorkspaceIfConcrete: vi.fn(async (_workspaceId: string | undefined, fn: () => unknown) => fn()),
 }));
 
 vi.mock('@papercusp/agent-mcp', () => ({
   lookupByMcpName: mocks.lookupByMcpName,
   dispatchProjectedTool: mocks.dispatchProjectedTool,
 }));
+vi.mock('@papercusp/db-org', () => ({ getOrgPg: mocks.getOrgPg }));
 vi.mock('../projected-tool-deps', () => ({ PROJECTED_DEPS: { __sentinel: 'projected-deps' } }));
+vi.mock('../workspace-als', () => ({ runWithWorkspaceIfConcrete: mocks.runWithWorkspaceIfConcrete }));
+vi.mock('../endpoint-route/routes/transport/role-principal-caps', () => ({
+  synthesizeDispatchPrincipal: mocks.synthesizeDispatchPrincipal,
+}));
 
 import { inProcessCall } from './_compound-dispatch';
 
@@ -52,6 +67,9 @@ afterEach(() => {
   vi.restoreAllMocks();
   mocks.lookupByMcpName.mockReset();
   mocks.dispatchProjectedTool.mockReset();
+  mocks.getOrgPg.mockClear();
+  mocks.synthesizeDispatchPrincipal.mockClear();
+  mocks.runWithWorkspaceIfConcrete.mockClear();
 });
 
 describe('inProcessCall — registration + gate routing', () => {
@@ -97,6 +115,45 @@ describe('inProcessCall — registration + gate routing', () => {
     expect(passedCtx.transport).toBe('in_process'); // NOT 'mcp' → no compact re-encode
     expect(passedCtx.who).toBe('caller'); // caller identity preserved
     expect(passedCtx.principal).toEqual({ id: 'p1' }); // gates still run against the caller
+  });
+
+  it('binds crossWorkspace sub-calls to the admin tx + synthesized principal', async () => {
+    const adminTx = { __admin: true };
+    const synthesizedPrincipal = {
+      slug: 'system:operator',
+      workspaceId: '*',
+      capabilities: new Set<string>(),
+    };
+    const crossWorkspaceTool = { name: 'memory:search', crossWorkspace: true };
+    const unscopedCtx = {
+      who: 'caller',
+      workspaceId: '*',
+      role: 'operator',
+      isSuperuser: true,
+    } as unknown as UnifiedToolContext;
+    mocks.getOrgPg.mockReturnValue({ sql: adminTx });
+    mocks.synthesizeDispatchPrincipal.mockResolvedValue(synthesizedPrincipal);
+    mocks.lookupByMcpName.mockReturnValue(crossWorkspaceTool);
+    mocks.dispatchProjectedTool.mockResolvedValue({ ok: true, result: { structuredContent: { ok: true } } });
+
+    await inProcessCall(unscopedCtx, { telemetrySurface: 'orient' })('memory:search', { query: 'q' });
+
+    expect(mocks.getOrgPg).toHaveBeenCalledTimes(1);
+    expect(mocks.synthesizeDispatchPrincipal).toHaveBeenCalledWith(adminTx, {
+      workspaceId: '*',
+      role: 'operator',
+      isSuperuser: true,
+    });
+    expect(mocks.runWithWorkspaceIfConcrete).toHaveBeenCalledWith('*', expect.any(Function));
+    const passedCtx = mocks.dispatchProjectedTool.mock.calls[0]![3] as Record<string, unknown>;
+    expect(passedCtx).toMatchObject({
+      who: 'caller',
+      workspaceId: '*',
+      transport: 'in_process',
+      tx: adminTx,
+      principal: synthesizedPrincipal,
+      telemetrySurface: 'orient',
+    });
   });
 
   // orient-recall-quality-2026-07-12 P-001: the opt-in telemetrySurface stamp — a

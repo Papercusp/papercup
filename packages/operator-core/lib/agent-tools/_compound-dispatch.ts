@@ -24,9 +24,12 @@ import {
   dispatchProjectedTool,
   type UnifiedToolContext,
 } from '@papercusp/agent-mcp';
+import { getOrgPg } from '@papercusp/db-org';
 import { decode, type ResultFormat } from '@papercusp/result-encoding';
 import { parseJsonWithTrailer } from '@papercusp/tooldef';
 import { PROJECTED_DEPS } from '../projected-tool-deps';
+import { runWithWorkspaceIfConcrete } from '../workspace-als';
+import { synthesizeDispatchPrincipal } from '../endpoint-route/routes/transport/role-principal-caps';
 
 /**
  * A self-identifying compact body prefixes its text with `format: <fmt>\n`
@@ -97,6 +100,10 @@ function unwrap(
  * Build the in-process `InnerCall` for a compound tool's handler, bound to the
  * caller's ctx. Each sub-call re-runs the full dispatch stack against that ctx, so
  * the agent can only compose tools it could call directly.
+ * Cross-workspace sub-calls mirror the direct MCP dispatcher: they receive the
+ * admin handle plus a synthesized principal before entering the dispatcher. This
+ * matters for unscoped superuser compounds such as coord:orient, whose caller ctx
+ * intentionally has neither a workspace transaction nor a principal.
  *
  * `opts.telemetrySurface` (orient-recall-quality-2026-07-12 P-001): stamp the
  * inner ctx with a recall-telemetry surface label so a compound's folded
@@ -163,7 +170,30 @@ export function inProcessCall(
   return async (name, args) => {
     const tool = lookupByMcpName(name);
     if (!tool) throw new Error(`compound: tool "${name}" is not registered`);
-    const r = await dispatchProjectedTool(tool, name, args, innerCtx, PROJECTED_DEPS);
+    let dispatchCtx = innerCtx;
+    if (tool.crossWorkspace === true) {
+      const { sql: adminTx } = getOrgPg();
+      const workspaceId = innerCtx.workspaceId ?? innerCtx.principal?.workspaceId ?? '';
+      dispatchCtx = {
+        ...innerCtx,
+        tx: adminTx,
+        principal: await synthesizeDispatchPrincipal(adminTx, {
+          workspaceId,
+          role: innerCtx.role ?? '',
+          isSuperuser: innerCtx.isSuperuser,
+        }),
+      };
+      return runWithWorkspaceIfConcrete(dispatchCtx.workspaceId, async () => {
+        const r = await dispatchProjectedTool(tool, name, args, dispatchCtx, PROJECTED_DEPS);
+        if (!r.ok) {
+          throw new Error(
+            `${name} failed [${r.error?.code ?? 'error'}]: ${r.error?.message ?? 'unknown error'}`,
+          );
+        }
+        return unwrap(r.result);
+      });
+    }
+    const r = await dispatchProjectedTool(tool, name, args, dispatchCtx, PROJECTED_DEPS);
     if (!r.ok) {
       throw new Error(
         `${name} failed [${r.error?.code ?? 'error'}]: ${r.error?.message ?? 'unknown error'}`,
