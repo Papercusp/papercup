@@ -347,6 +347,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:test-webview-reaper': { spend: 'none', why: 'Reaps leaked test webviews' },
   'system:orphaned-mcp-reaper': { spend: 'none', why: 'Reaps leaked agent-spawned playwright-mcp server processes' },
   'system:precompute-derived-reads': { spend: 'none', why: 'Refreshes derived read tables' },
+  'system:sql-read-census': {
+    spend: 'none',
+    why: 'Measures raw SQL reads and records threshold crossings — deterministic SQL/FS work, no model call',
+  },
   'system:interactive-usage-ingest': { spend: 'none', why: 'Tails local transcripts into usage samples (SQL/FS only)' },
   'system:task-reconcile': { spend: 'none', why: 'REPORT-ONLY kernel-vs-ledger reconcile — no kill/freeze path exists' },
   'system:token-weekly-report': { spend: 'none', why: 'Aggregates usage into a report (SQL/FS only)' },
