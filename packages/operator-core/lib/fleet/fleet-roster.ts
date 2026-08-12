@@ -84,6 +84,12 @@ export interface FleetFoldPresence {
   /** Supervisor-beat pid (WI-3898 P1) — enables the oracle's local kill(pid,0)
    *  probe, exactly like coord:presence (unification P-003). */
   pid?: number | null;
+  /**
+   * Terminal device reported by the visible psu launcher. A null/absent value
+   * identifies a headless member (or a row predating tty tracking), so it must
+   * not be treated as proof that a local psu host should exist.
+   */
+  tty?: string | null;
   federated?: boolean;
 }
 
@@ -105,6 +111,9 @@ export interface FleetRosterEntry extends AgentAssignment {
    *  longer masks an `ended` (dead) session behind a still-warm heartbeat. null for a
    *  federated peer / when the wakeability read is unavailable (state unknown). */
   sessionState: SessionState | null;
+  /** Terminal device from the visible psu launcher; null/absent means headless or
+   *  pre-tty tracking and is not a psu-host-cohort signal. */
+  tty?: string | null;
   /** EI-19407725333778711: will anything wake this member unprompted
    *  (`loop` | `event` | `none`)? Every other liveness field here describes the
    *  PRESENT; this is the only one that says whether the present ever ends.
@@ -248,6 +257,7 @@ export function foldFleetRoster(
       ownerLabel: p?.ownerLabel ?? base.label,
       source: p?.source ?? null,
       host: p?.host ?? null,
+      tty: p?.tty ?? null,
       startedAt: p?.startedAt ?? null,
       lastActiveAt: p?.lastActiveAt ?? null,
       agentRole: p?.agentRole ?? null,
@@ -316,6 +326,7 @@ export function foldFederatedSessionPresence(
       intent: r.intent ?? '',
       currentPlanSlug: r.plan_slug ?? null,
       host: r.machine_label,
+      tty: null,
       startedAt: null,
       heartbeatAt: iso,
       lastActiveAt: iso,
@@ -347,6 +358,7 @@ async function defaultReadFleetPresence(opts: { workspaceId?: string | null }): 
       intent: r.intent,
       currentPlanSlug: r.currentPlanSlug,
       host: r.host,
+      tty: r.tty,
       startedAt: r.startedAt,
       heartbeatAt: r.heartbeatAt,
       lastActiveAt: r.lastActiveAt,

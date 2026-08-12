@@ -14,8 +14,10 @@ import {
   splitFleetRosterCounts,
   countRunningFleetBees,
   countRunningWorkspaceBees,
+  type FleetRosterEntry,
   type FleetRosterDegradedLeg,
 } from '../../fleet/fleet-roster';
+import { applyPsuHostAuthority } from '../coordination/liveness-oracle';
 import { getCompletionIntegrityStats, type CompletionIntegrityStats } from '../../work-items';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import type { AdvSessionEndedBy } from '../../adv-sessions';
@@ -31,6 +33,29 @@ import { json, resolveFleetCaller, ROUTING_LADDER } from './_shared';
  * asks for — completionStats is the first thing to go missing under load.
  */
 const FLEET_STATUS_OPTIONAL_LEG_TIMEOUT_MS = 6_000;
+
+/**
+ * Reconcile fleet:status's member census with the local psu host authority.
+ *
+ * `coord_presence` heartbeats can outlive a visible terminal session, leaving a
+ * dead desktop member in the live roster. The liveness oracle already owns the
+ * rule for ending a hostless known psu cohort; fleet:status opts into that rule
+ * only for rows with a recorded tty. Headless su members intentionally have no
+ * tty (and may have no local psu-pty host between wakes), so applying the rule to
+ * every `agent_role:'su'` row would turn legitimate headless members into ghosts.
+ */
+export function reconcileFleetStatusLiveness(
+  roster: FleetRosterEntry[],
+  findHost?: (ownerId: string) => unknown | null,
+): FleetRosterEntry[] {
+  const visibleRoles = new Map<string, string>();
+  for (const member of roster) {
+    if (member.tty != null && member.agentRole != null && member.agentRole !== 'cup') {
+      visibleRoles.set(member.agentId, member.agentRole);
+    }
+  }
+  return applyPsuHostAuthority(roster, visibleRoles, findHost);
+}
 
 export default defineTool({
   name: 'fleet:status',
@@ -114,7 +139,7 @@ export default defineTool({
         label: 'fleet:status:beeCount',
       }),
     ]);
-    const roster = rosterResult.entries;
+    const roster = reconcileFleetStatusLiveness(rosterResult.entries);
     const completionStats = completionStatsResult.value;
     const runningBees = runningBeesResult.value;
     const beeCount = beeCountResult.value;

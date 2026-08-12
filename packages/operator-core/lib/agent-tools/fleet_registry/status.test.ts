@@ -33,7 +33,8 @@ vi.mock('../coordination/identity', () => ({
 }));
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws' }));
 
-import statusTool from './status';
+import statusTool, { reconcileFleetStatusLiveness } from './status';
+import type { FleetRosterEntry } from '../../fleet/fleet-roster';
 
 const CTX = { workspaceId: 'ws', role: 'operator' } as never;
 const parse = (res: { content: { text: string }[] }) => JSON.parse(res.content[0].text);
@@ -138,6 +139,60 @@ describe('fleet:status', () => {
     expect(out.members.map((m: { agentId: string }) => m.agentId).sort()).toEqual(
       ['s-bee1', 'su-dead1', 'su-dead2', 'su-live1', 'su-live2'].sort(),
     );
+  });
+
+  it('ends hostless visible rows while preserving headless su members and nursery cups', () => {
+    const roster = [
+      {
+        agentId: 'su-visible-live',
+        agentRole: 'su',
+        tty: '/dev/pts/11',
+        sessionState: 'live',
+        alive: true,
+      },
+      {
+        agentId: 'su-visible-dead',
+        agentRole: 'su',
+        tty: '/dev/pts/12',
+        sessionState: 'parked',
+        alive: true,
+      },
+      {
+        agentId: 'su-headless',
+        agentRole: 'su',
+        tty: null,
+        sessionState: 'live',
+        alive: true,
+      },
+      {
+        agentId: 'cup-without-pty',
+        agentRole: 'cup',
+        tty: '/dev/pts/13',
+        sessionState: 'live',
+        alive: true,
+      },
+    ] as unknown as FleetRosterEntry[];
+
+    reconcileFleetStatusLiveness(roster, (ownerId) =>
+      ownerId === 'su-visible-live' ? { host: 'local' } : null,
+    );
+
+    expect(roster.find((m) => m.agentId === 'su-visible-live')).toMatchObject({
+      sessionState: 'live',
+      alive: true,
+    });
+    expect(roster.find((m) => m.agentId === 'su-visible-dead')).toMatchObject({
+      sessionState: 'ended',
+      alive: false,
+    });
+    expect(roster.find((m) => m.agentId === 'su-headless')).toMatchObject({
+      sessionState: 'live',
+      alive: true,
+    });
+    expect(roster.find((m) => m.agentId === 'cup-without-pty')).toMatchObject({
+      sessionState: 'live',
+      alive: true,
+    });
   });
 
   it('includes harness completion stats when `harness` is provided', async () => {
