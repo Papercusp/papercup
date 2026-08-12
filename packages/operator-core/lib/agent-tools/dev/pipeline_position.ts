@@ -126,7 +126,7 @@ function compactPipelineResult(result: PipelinePosition, extras: JsonRecord, opt
   for (const field of [
     'input', 'submodule', 'submodulePin', 'targetSha', 'targetShortSha', 'targetSubject',
     'dirtyUncommitted', 'positions', 'positionsUnknown', 'positionsMarker', 'positionsNewerCommit',
-    'deployedSha', 'gitSyncLastStatus', 'blockedOn',
+    'deployedSha', 'verdictUnknown', 'gitSyncLastStatus', 'blockedOn',
   ]) {
     if (source[field] !== undefined) out[field] = compactPipelineValue(source[field], opts);
   }
@@ -178,7 +178,7 @@ function compactPipelineResult(result: PipelinePosition, extras: JsonRecord, opt
 function minimalPipelineResult(result: PipelinePosition, extras: JsonRecord, opts: { textChars: number; arrayLimit: number }): JsonRecord {
   const source = result as unknown as JsonRecord;
   const out: JsonRecord = {};
-  for (const field of ['input', 'targetSha', 'targetShortSha', 'dirtyUncommitted', 'positions', 'deployedSha', 'blockedOn']) {
+  for (const field of ['input', 'targetSha', 'targetShortSha', 'dirtyUncommitted', 'positions', 'deployedSha', 'verdictUnknown', 'blockedOn']) {
     if (source[field] !== undefined) out[field] = compactPipelineValue(source[field], opts);
   }
   const gate = compactPipelineGate(source.gate, opts);

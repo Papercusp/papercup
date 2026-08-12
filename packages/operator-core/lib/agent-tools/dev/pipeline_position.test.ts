@@ -69,6 +69,7 @@ describe('dev:pipeline_position bounded response wiring (EI-20245527109472763)',
     dirtyUncommitted: false,
     positions: { committedLocal: true, onStaging: true, inMain: true, deployed: true },
     deployedSha: 'sha0000001',
+    verdictUnknown: [{ leg: 'gate.consecutiveReds', unknown: { code: 'resolver-failed', detail: 'fixture' } }],
     gate: {
       stalled: false,
       consecutiveReds: 0,
@@ -98,6 +99,10 @@ describe('dev:pipeline_position bounded response wiring (EI-20245527109472763)',
       args: { path: PATH, marker },
     });
     expect(projection.omittedFields).toContain('gate.ownership.thread');
+    expect(projection.omittedFields).not.toContain('verdictUnknown');
+    expect(out.data.verdictUnknown).toEqual([
+      { leg: 'gate.consecutiveReds', unknown: { code: 'resolver-failed', detail: 'fixture' } },
+    ]);
     expect(JSON.stringify(out.data).length).toBeLessThanOrEqual(PIPELINE_POSITION_RESPONSE_BUDGET_CHARS);
   };
 
