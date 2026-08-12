@@ -22,6 +22,8 @@ vi.mock('../../network-board/build-board', () => ({
 const activeWorkspaceId = vi.fn(() => 'active-ws');
 vi.mock('../../workspace-registry', () => ({
   activeWorkspaceId: () => activeWorkspaceId(),
+  resolveConcreteWorkspaceId: (...candidates: Array<string | null | undefined>) =>
+    candidates.find((candidate) => typeof candidate === 'string' && candidate.trim() && candidate.trim() !== '*')?.trim() ?? activeWorkspaceId(),
 }));
 
 import tool from './board';

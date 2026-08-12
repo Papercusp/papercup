@@ -14,7 +14,12 @@
  */
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'default') }));
+vi.mock('../../workspace-registry', () => ({
+  activeWorkspaceId: vi.fn(() => 'default'),
+  resolveConcreteWorkspaceId: vi.fn((...candidates: Array<string | null | undefined>) =>
+    candidates.find((candidate) => typeof candidate === 'string' && candidate.trim() && candidate.trim() !== '*')?.trim() ?? 'default',
+  ),
+}));
 vi.mock('../../deployment/account-session-override', () => ({
   getAccountOverride: vi.fn(),
   setAccountOverride: vi.fn(),

@@ -13,7 +13,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { DeploymentConfigSchema } from '../../deployment/config-schema';
 import { loadHarnessRegistry, saveHarnessRegistry } from '../../harness-registry';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { isPotProject, resolvePot } from './_resolve';
 
 const text = (payload: Record<string, unknown>) => ({
@@ -60,8 +60,7 @@ export default defineTool({
       return text({ ok: false, error: 'nothing_to_update', message: 'Pass `deployment` and/or `configOverrides`.' });
     }
 
-    const workspaceId =
-      args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
     const reg = await loadHarnessRegistry(workspaceId);
     const idx = reg.projects.findIndex((p) => p.slug === args.slug && isPotProject(p));
     if (idx === -1) {

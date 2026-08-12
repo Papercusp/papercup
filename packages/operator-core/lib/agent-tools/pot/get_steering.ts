@@ -10,7 +10,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { resolvePotHomeSlug } from '../../pot/wake';
 import { getOwnerSteering, steeringLooksInconsistent, steeringModelSpecDrift } from '../../owner-steering';
 import { DEFAULT_MODEL_TIERS, type ModelTier } from '../../agent-config-constants';
@@ -45,7 +45,7 @@ export default defineTool({
     // into a misleading no_home_harness error.
   }).strict(),
   async handler(args, ctx) {
-    const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
     const installSlug = resolvePotHomeSlug(args.pot, ctx.harnessSlug ?? undefined);
     if (!installSlug) {
       return json({

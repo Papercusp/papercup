@@ -13,7 +13,12 @@ vi.mock('@papercusp/db-org', async (orig) => {
   return { ...actual, getOrgPg: () => ({ sql: {} }) };
 });
 vi.mock('../../calibration/store', () => ({ calibrationScores: vi.fn(), openBetCounts: vi.fn() }));
-vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-active') }));
+vi.mock('../../workspace-registry', () => ({
+  activeWorkspaceId: vi.fn(() => 'ws-active'),
+  resolveConcreteWorkspaceId: vi.fn((...candidates: Array<string | null | undefined>) =>
+    candidates.find((candidate) => typeof candidate === 'string' && candidate.trim() && candidate.trim() !== '*')?.trim() ?? 'ws-active',
+  ),
+}));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn() }));
 
 const mockScores = vi.mocked(calibrationScores);

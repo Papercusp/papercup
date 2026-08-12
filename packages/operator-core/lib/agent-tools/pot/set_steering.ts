@@ -16,7 +16,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { resolvePotHomeSlug } from '../../pot/wake';
 import { requestUrgentPotWake } from '../../pot/urgent-wake';
 import { setOwnerSteering, type OwnerSteeringPatch } from '../../owner-steering';
@@ -171,7 +171,7 @@ export default defineTool({
       'Drive the app with an su session (GOAL mode) instead.',
     );
     if (retired) return retired;
-    const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
     const installSlug = resolvePotHomeSlug(args.pot, ctx.harnessSlug ?? undefined);
     if (!installSlug) {
       return json({

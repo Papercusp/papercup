@@ -17,7 +17,10 @@ const h = vi.hoisted(() => ({
   resolveFederatedPotScope: vi.fn(),
 }));
 
-vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+vi.mock('../../workspace-registry', () => ({
+  resolveConcreteWorkspaceId: (...candidates: Array<string | null | undefined>) =>
+    candidates.find((candidate) => typeof candidate === 'string' && candidate.trim() && candidate.trim() !== '*')?.trim() ?? 'default',
+}));
 // hive-policy-store / hive-reports-store / hive-membership-store are OUT OF SCOPE for the
 // cup-lexicon rename (persisted-store identifiers) — mock the REAL module paths + export
 // names; only the local test-side aliases (h.getPotPolicy etc.) are renamed.

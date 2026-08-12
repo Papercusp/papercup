@@ -15,7 +15,12 @@ vi.mock('@papercusp/db-org', async (orig) => {
 });
 vi.mock('../../ablation/scoring', () => ({ buildDeadWeightReport: vi.fn() }));
 vi.mock('../../ablation/store', () => ({ listAblationRuns: vi.fn() }));
-vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-active') }));
+vi.mock('../../workspace-registry', () => ({
+  activeWorkspaceId: vi.fn(() => 'ws-active'),
+  resolveConcreteWorkspaceId: vi.fn((...candidates: Array<string | null | undefined>) =>
+    candidates.find((candidate) => typeof candidate === 'string' && candidate.trim() && candidate.trim() !== '*')?.trim() ?? 'ws-active',
+  ),
+}));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn() }));
 
 const mockBuild = vi.mocked(buildDeadWeightReport);

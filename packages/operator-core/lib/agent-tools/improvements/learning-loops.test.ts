@@ -24,7 +24,12 @@ vi.mock('@papercusp/db-org', async (orig) => ({
   })),
 }));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn(() => ({})) }));
-vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'default') }));
+vi.mock('../../workspace-registry', () => ({
+  activeWorkspaceId: vi.fn(() => 'default'),
+  resolveConcreteWorkspaceId: vi.fn((...candidates: Array<string | null | undefined>) =>
+    candidates.find((candidate) => typeof candidate === 'string' && candidate.trim() && candidate.trim() !== '*')?.trim() ?? 'default',
+  ),
+}));
 vi.mock('../../harness/operator-home-harness', () => ({ operatorHomeHarnessSlug: vi.fn(() => 'acme-home') }));
 vi.mock('../../blueprint/seed-learning-singletons', () => ({
   LEARNING_SINGLETONS: [{ blueprintId: 'calibration', legacyRoutine: 'calib-legacy' }],

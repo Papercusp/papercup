@@ -23,7 +23,10 @@ vi.mock('../../owner-steering', async (orig) => ({
 }));
 vi.mock('../../pot/urgent-wake', () => ({ requestUrgentPotWake: (...a: unknown[]) => requestUrgentPotWake(...(a as [])) }));
 vi.mock('../../pot/wake', () => ({ resolvePotHomeSlug: (...a: [string?, string?]) => resolvePotHomeSlug(...a) }));
-vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-active' }));
+vi.mock('../../workspace-registry', () => ({
+  resolveConcreteWorkspaceId: (...candidates: Array<string | null | undefined>) =>
+    candidates.find((candidate) => typeof candidate === 'string' && candidate.trim() && candidate.trim() !== '*')?.trim() ?? 'ws-active',
+}));
 vi.mock('../../sync-sse', () => ({ notifySyncInvalidate: (...a: unknown[]) => notifySyncInvalidate(...(a as [])) }));
 // TIER ENABLED for this suite (retire-mug-kettle-su-only-2026-08-09 P-010 / D-017):
 // pot:set-steering now opens with the retirement gate, so without this every write

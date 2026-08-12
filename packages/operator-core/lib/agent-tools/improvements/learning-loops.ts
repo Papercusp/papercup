@@ -13,7 +13,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { computeActivityLaneHealth, summarizeLearningLoopHealth } from '../../blueprint/learning-loop-health';
 
 export default defineTool({
@@ -51,7 +51,7 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
-    const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
     const { getOrgPg } = await import('@papercusp/db-org');
     const { sql } = getOrgPg();
     const nowMs = Date.now();

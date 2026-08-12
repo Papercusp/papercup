@@ -10,7 +10,11 @@ import { disabledPacksFor } from '../../knowledge-packs/manage';
 // projection (enabled from the disabled set, updateAvailable/availableVersion vs
 // the catalog) — learning-packs-2026-06-11 P-009.
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
-vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-active') }));
+vi.mock('../../workspace-registry', () => ({
+  resolveConcreteWorkspaceId: vi.fn((...candidates: Array<string | null | undefined>) =>
+    candidates.find((candidate) => typeof candidate === 'string' && candidate.trim() && candidate.trim() !== '*')?.trim() ?? 'ws-active',
+  ),
+}));
 vi.mock('../../knowledge-packs/load-packs', () => ({ listKnowledgePacks: vi.fn(), loadKnowledgePack: vi.fn() }));
 vi.mock('../../sync-resolver/learning-hive-read', () => ({ readHiveLearnings: vi.fn() }));
 vi.mock('../../memory/backend', () => ({ getMemoryBackend: vi.fn() }));

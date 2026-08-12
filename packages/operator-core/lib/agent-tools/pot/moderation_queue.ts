@@ -6,7 +6,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { listReports } from '../../hive-reports-store';
 
 const text = (payload: Record<string, unknown>) => ({
@@ -40,8 +40,7 @@ export default defineTool({
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
   }),
   async handler(args, ctx) {
-    const workspaceId =
-      args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
     const status = args.status === 'all' ? null : args.status;
     const rows = await listReports(workspaceId, args.pot, { status });
     return text({ ok: true, pot: args.pot, count: rows.length, reports: rows });

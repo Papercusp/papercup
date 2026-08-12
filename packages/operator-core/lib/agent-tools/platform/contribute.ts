@@ -32,7 +32,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { hardText, LIMITS } from '../limits';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { contributeUpstream } from '../../pot/contribute-upstream';
 import { PLATFORM_SELF_POT_SLUG } from '../../pot/enable-platform-mode';
 
@@ -130,8 +130,7 @@ export default defineTool({
       });
     }
 
-    const workspaceId =
-      args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
 
     const res = await contributeUpstream({
       kind: args.kind,

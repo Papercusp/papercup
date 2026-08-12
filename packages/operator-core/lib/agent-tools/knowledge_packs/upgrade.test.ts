@@ -10,7 +10,11 @@ import { getSessionUserOrDefault } from '../../auth';
 // review_required hold on clashing new items, and the apply path
 // (learning-packs-2026-06-11 P-013, D-003 never-clobber).
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
-vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-active') }));
+vi.mock('../../workspace-registry', () => ({
+  resolveConcreteWorkspaceId: vi.fn((...candidates: Array<string | null | undefined>) =>
+    candidates.find((candidate) => typeof candidate === 'string' && candidate.trim() && candidate.trim() !== '*')?.trim() ?? 'ws-active',
+  ),
+}));
 vi.mock('../../knowledge-packs/load-packs', () => ({ loadKnowledgePack: vi.fn() }));
 vi.mock('../../knowledge-packs/manage', () => ({ planPackUpgrade: vi.fn(), applyPackInstall: vi.fn() }));
 vi.mock('../../auth', () => ({ getSessionUserOrDefault: vi.fn() }));

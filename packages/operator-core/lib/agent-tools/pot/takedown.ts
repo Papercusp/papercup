@@ -11,7 +11,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { takedownContent, restoreContent } from '../../hive-moderation';
 
 const text = (payload: Record<string, unknown>) => ({
@@ -43,8 +43,7 @@ export default defineTool({
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
   }),
   async handler(args, ctx) {
-    const workspaceId =
-      args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
     const result = args.restore
       ? await restoreContent({ workspaceId, potHomeSlug: args.pot, contentRef: args.contentRef })
       : await takedownContent({ workspaceId, potHomeSlug: args.pot, contentRef: args.contentRef });

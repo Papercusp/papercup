@@ -9,7 +9,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { readRecentChanges } from '../../change-ledger/change-ledger';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 
 export default defineTool({
   name: 'change_ledger:list',
@@ -41,7 +41,7 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
-    const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
     const rows = await readRecentChanges(workspaceId, {
       limit: args.limit ?? 50,
       mutationClass: args.mutationClass,

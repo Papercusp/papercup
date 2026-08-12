@@ -15,7 +15,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { calibrationScores, openBetCounts } from '../../calibration/store';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 
 export default defineTool({
   name: 'calibration:summary',
@@ -48,7 +48,7 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
-    const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
     const { getOrgPg } = await import('@papercusp/db-org');
     const sql = getOrgPg().sql;
     const [scores, openBets] = await Promise.all([

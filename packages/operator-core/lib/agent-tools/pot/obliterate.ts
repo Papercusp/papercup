@@ -40,7 +40,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { papercuspRoot } from '../../papercusp-root';
 import { inProcessCall } from '../_compound-dispatch';
 
@@ -209,7 +209,7 @@ export default defineTool({
     }
 
     const slug = args.slug;
-    const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
     const call = inProcessCall(ctx);
     const steps: Record<string, unknown> = {};
 

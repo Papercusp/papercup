@@ -14,7 +14,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { buildDeadWeightReport } from '../../ablation/scoring';
 import { listAblationRuns } from '../../ablation/store';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 
 export default defineTool({
   name: 'ablation:report',
@@ -48,7 +48,7 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
-    const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
     const { sql } = getOrgPg();
     if (args.ruleKey) {
       const rows = await listAblationRuns(sql, workspaceId, { ruleKey: args.ruleKey, limit: args.limit ?? 20 });

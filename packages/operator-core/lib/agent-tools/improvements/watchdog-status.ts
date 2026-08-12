@@ -23,7 +23,7 @@ import {
   readOpenKeylessIssues,
   summarizeKeylessBacklog,
 } from '../../harness/improvements/keyless-ei-policy';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 
 export default defineTool({
   name: 'improvements:watchdog-status',
@@ -49,7 +49,7 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
-    const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
     const ticks = await readWatchdogStatus(workspaceId, args.limit ?? 10);
     const lastRan = ticks.find((t) => t.status === 'ran');
     // The auto-implement dispatch ledger (consume-edges P-010 / B-04): counts by

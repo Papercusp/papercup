@@ -10,7 +10,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { summarizeDecisionLedger } from '../../decision-ledger/read';
 import { getCompletionIntegrityStats } from '../../work-items';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 
 export default defineTool({
   name: 'decision_ledger:summary',
@@ -45,8 +45,7 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
-    const workspaceId =
-      args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
     const [summary, completionStats] = await Promise.all([
       summarizeDecisionLedger(workspaceId, {
         ...(args.layer ? { layer: args.layer } : {}),

@@ -15,7 +15,12 @@ vi.mock('../../change-ledger/mutation-calendar', async (orig) => {
   const actual = (await orig()) as typeof import('../../change-ledger/mutation-calendar');
   return { ...actual, computeMutationCalendar: vi.fn() };
 });
-vi.mock('../../workspace-registry');
+vi.mock('../../workspace-registry', () => ({
+  activeWorkspaceId: vi.fn(() => 'ws-active'),
+  resolveConcreteWorkspaceId: vi.fn((...candidates: Array<string | null | undefined>) =>
+    candidates.find((candidate) => typeof candidate === 'string' && candidate.trim() && candidate.trim() !== '*')?.trim() ?? 'ws-active',
+  ),
+}));
 vi.mock('../coordination/identity');
 
 const mockRead = vi.mocked(readRecentChanges);

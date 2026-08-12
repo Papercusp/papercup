@@ -22,7 +22,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { loadHarnessRegistry, saveHarnessRegistry, type ProjectEntry } from '../../harness-registry';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { instanceEntryToConfig } from '../../deployment/instance-config';
 import { POT_KIND } from '../pot/_resolve';
 
@@ -69,8 +69,7 @@ export default defineTool({
       return text({ ok: false, error: 'nothing_to_update', message: 'Pass at least one key in `configOverrides`.' });
     }
 
-    const workspaceId =
-      args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
     const reg = await loadHarnessRegistry(workspaceId);
     const idx = reg.projects.findIndex((p) => p.slug === args.slug);
     if (idx === -1) {

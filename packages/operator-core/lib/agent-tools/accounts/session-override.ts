@@ -9,7 +9,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import {
   getAccountOverride,
   setAccountOverride,
@@ -44,7 +44,7 @@ export const accountsSetSessionOverrideTool = defineTool({
     clear: z.boolean().optional().describe('Wipe every axis — both lists AND the default — back to no steer.'),
   }),
   async handler(args, ctx) {
-    const ws = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const ws = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
     const patch: AccountSessionOverridePatch = {};
     if (args.forcedAccounts !== undefined) patch.forcedAccounts = args.forcedAccounts;
     if (args.excludeAccounts !== undefined) patch.excludeAccounts = args.excludeAccounts;
@@ -91,7 +91,7 @@ export const accountsGetSessionOverrideTool = defineTool({
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
   }),
   async handler(args, ctx) {
-    const ws = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const ws = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
     return json({ ok: true, override: await getAccountOverride(ws) });
   },
 });

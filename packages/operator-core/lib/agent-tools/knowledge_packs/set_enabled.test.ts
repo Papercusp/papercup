@@ -8,7 +8,11 @@ import { setPackEnabled } from '../../knowledge-packs/manage';
 // envelope keyed by hive+pack, and a partial-failure case
 // (learning-packs-2026-06-11 P-009; bulk-endpoint-standardization-2026-06-21).
 vi.mock('@papercusp/flags/server', () => ({ getFlag: vi.fn() }));
-vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-active') }));
+vi.mock('../../workspace-registry', () => ({
+  resolveConcreteWorkspaceId: vi.fn((...candidates: Array<string | null | undefined>) =>
+    candidates.find((candidate) => typeof candidate === 'string' && candidate.trim() && candidate.trim() !== '*')?.trim() ?? 'ws-active',
+  ),
+}));
 vi.mock('../../knowledge-packs/manage', () => ({ setPackEnabled: vi.fn() }));
 
 const mockFlag = vi.mocked(getFlag);

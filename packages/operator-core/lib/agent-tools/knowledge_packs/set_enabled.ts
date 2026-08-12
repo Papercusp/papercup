@@ -12,7 +12,7 @@
  */
 import { z } from 'zod';
 import { defineTool, entityRef } from '@papercusp/agent-mcp';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { FLAG_OFF, knowledgePacksEnabled, text } from './_shared';
 import { runBulk, bulkContent } from '../_bulk';
 
@@ -63,7 +63,7 @@ export default defineTool({
     ),
   async handler(args, ctx) {
     if (!(await knowledgePacksEnabled())) return text(FLAG_OFF);
-    const workspaceId = args.workspace ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
     const { setPackEnabled } = await import('../../knowledge-packs/manage');
 
     const list: FlipItem[] = args.items?.length

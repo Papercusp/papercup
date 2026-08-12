@@ -10,7 +10,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { isCanonicalHiveOwner } from '../../hive-identity';
 import { setReportStatus } from '../../hive-reports-store';
 import { runBulk, bulkContent } from '@papercusp/agent-mcp/_bulk';
@@ -54,8 +54,7 @@ export default defineTool({
       message: 'pass `{ reportId, status }` (one) or `items:[{ reportId, status }]` (many)',
     }),
   async handler(args, ctx) {
-    const workspaceId =
-      args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
     // Owner gate (once for the batch): the CANONICAL owner, not merely "holds a key".
     const isOwner = await isCanonicalHiveOwner(workspaceId, args.pot).catch(() => false);
     if (!isOwner) {

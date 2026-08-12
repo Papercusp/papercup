@@ -9,7 +9,12 @@ import { resolveAgentIdentity } from '../coordination/identity';
 // conversion, mutationClass pass-through, and the { workspaceId, count, changes }
 // envelope (self-learning-frontier P-004 / FB-02).
 vi.mock('../../change-ledger/change-ledger');
-vi.mock('../../workspace-registry');
+vi.mock('../../workspace-registry', () => ({
+  activeWorkspaceId: vi.fn(() => 'ws-active'),
+  resolveConcreteWorkspaceId: vi.fn((...candidates: Array<string | null | undefined>) =>
+    candidates.find((candidate) => typeof candidate === 'string' && candidate.trim() && candidate.trim() !== '*')?.trim() ?? 'ws-active',
+  ),
+}));
 vi.mock('../coordination/identity');
 
 const mockRead = vi.mocked(readRecentChanges);

@@ -13,7 +13,7 @@
  */
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 
 const text = (payload: Record<string, unknown>) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(payload) }],
@@ -48,7 +48,7 @@ export default defineTool({
     workspace: z.string().max(120).optional(),
   }),
   async handler(args, ctx) {
-    const workspaceId = args.workspace ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
 
     if (!args.listingId && !args.githubUrl) {
       return text({ ok: false, error: 'listingId or githubUrl required' });

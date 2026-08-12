@@ -15,7 +15,12 @@ import type { WatchdogTickStatusRow, CollectorStatus } from '../../harness/impro
 // graceful-degradation-to-null path (watchdog-audit-2026-06-09 P-010).
 vi.mock('../../harness/improvements/watchdog');
 vi.mock('../../harness/improvements/dispatch-ledger');
-vi.mock('../../workspace-registry');
+vi.mock('../../workspace-registry', () => ({
+  activeWorkspaceId: vi.fn(() => 'ws-active'),
+  resolveConcreteWorkspaceId: vi.fn((...candidates: Array<string | null | undefined>) =>
+    candidates.find((candidate) => typeof candidate === 'string' && candidate.trim() && candidate.trim() !== '*')?.trim() ?? 'ws-active',
+  ),
+}));
 vi.mock('../coordination/identity');
 
 const mockReadTicks = vi.mocked(readWatchdogStatus);

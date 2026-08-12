@@ -10,7 +10,12 @@ import { resolveAgentIdentity } from '../coordination/identity';
 // { workspaceId, summary } envelope (B-13 / P-113).
 vi.mock('../../decision-ledger/read', () => ({ readDecisionLedger: vi.fn(), summarizeDecisionLedger: vi.fn() }));
 vi.mock('../../work-items', () => ({ getCompletionIntegrityStats: vi.fn() }));
-vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-active') }));
+vi.mock('../../workspace-registry', () => ({
+  activeWorkspaceId: vi.fn(() => 'ws-active'),
+  resolveConcreteWorkspaceId: vi.fn((...candidates: Array<string | null | undefined>) =>
+    candidates.find((candidate) => typeof candidate === 'string' && candidate.trim() && candidate.trim() !== '*')?.trim() ?? 'ws-active',
+  ),
+}));
 vi.mock('../coordination/identity', () => ({ resolveAgentIdentity: vi.fn() }));
 
 const mockSummarize = vi.mocked(summarizeDecisionLedger);

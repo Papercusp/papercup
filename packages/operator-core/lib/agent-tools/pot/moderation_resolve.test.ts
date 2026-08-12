@@ -11,7 +11,10 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const h = vi.hoisted(() => ({ isCanonicalPotOwner: vi.fn(), setReportStatus: vi.fn() }));
-vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: () => 'default' }));
+vi.mock('../../workspace-registry', () => ({
+  resolveConcreteWorkspaceId: (...candidates: Array<string | null | undefined>) =>
+    candidates.find((candidate) => typeof candidate === 'string' && candidate.trim() && candidate.trim() !== '*')?.trim() ?? 'default',
+}));
 // hive-identity.ts / hive-reports-store.ts are OUT OF SCOPE for the cup-lexicon
 // rename (persisted-store modules) — mock the REAL module paths + export names.
 vi.mock('../../hive-identity', () => ({ isCanonicalHiveOwner: h.isCanonicalPotOwner }));

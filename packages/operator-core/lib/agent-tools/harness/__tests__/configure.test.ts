@@ -41,7 +41,10 @@ describe('harness:configure', () => {
       loadHarnessRegistry: vi.fn(async () => ({ projects })),
       saveHarnessRegistry,
     }));
-    vi.doMock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-active' }));
+    vi.doMock('../../../workspace-registry', () => ({
+      resolveConcreteWorkspaceId: (...candidates: Array<string | null | undefined>) =>
+        candidates.find((candidate) => typeof candidate === 'string' && candidate.trim() && candidate.trim() !== '*')?.trim() ?? 'ws-active',
+    }));
     vi.doMock('../../coordination/identity', () => ({
       resolveAgentIdentity: () => ({ source: 'principal' }),
     }));
@@ -66,7 +69,10 @@ describe('harness:configure', () => {
       loadHarnessRegistry: vi.fn(async () => ({ projects })),
       saveHarnessRegistry: vi.fn(),
     }));
-    vi.doMock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-active' }));
+    vi.doMock('../../../workspace-registry', () => ({
+      resolveConcreteWorkspaceId: (...candidates: Array<string | null | undefined>) =>
+        candidates.find((candidate) => typeof candidate === 'string' && candidate.trim() && candidate.trim() !== '*')?.trim() ?? 'ws-active',
+    }));
     vi.doMock('../../coordination/identity', () => ({
       resolveAgentIdentity: () => ({ source: 'principal' }),
     }));
@@ -89,7 +95,10 @@ describe('harness:configure', () => {
       loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
       saveHarnessRegistry: vi.fn(),
     }));
-    vi.doMock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-active' }));
+    vi.doMock('../../../workspace-registry', () => ({
+      resolveConcreteWorkspaceId: (...candidates: Array<string | null | undefined>) =>
+        candidates.find((candidate) => typeof candidate === 'string' && candidate.trim() && candidate.trim() !== '*')?.trim() ?? 'ws-active',
+    }));
     vi.doMock('../../coordination/identity', () => ({
       resolveAgentIdentity: () => ({ source: 'principal' }),
     }));
@@ -109,7 +118,10 @@ describe('harness:configure', () => {
       loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
       saveHarnessRegistry: vi.fn(),
     }));
-    vi.doMock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-active' }));
+    vi.doMock('../../../workspace-registry', () => ({
+      resolveConcreteWorkspaceId: (...candidates: Array<string | null | undefined>) =>
+        candidates.find((candidate) => typeof candidate === 'string' && candidate.trim() && candidate.trim() !== '*')?.trim() ?? 'ws-active',
+    }));
     vi.doMock('../../coordination/identity', () => ({
       resolveAgentIdentity: () => ({ source: 'principal' }),
     }));
@@ -129,7 +141,10 @@ describe('harness:configure', () => {
       loadHarnessRegistry: vi.fn(async () => ({ projects: [] })),
       saveHarnessRegistry: vi.fn(),
     }));
-    vi.doMock('../../../workspace-registry', () => ({ activeWorkspaceId: () => 'ws-active' }));
+    vi.doMock('../../../workspace-registry', () => ({
+      resolveConcreteWorkspaceId: (...candidates: Array<string | null | undefined>) =>
+        candidates.find((candidate) => typeof candidate === 'string' && candidate.trim() && candidate.trim() !== '*')?.trim() ?? 'ws-active',
+    }));
     vi.doMock('../../coordination/identity', () => ({
       resolveAgentIdentity: () => ({ source: 'fleet-spawn' }),
     }));

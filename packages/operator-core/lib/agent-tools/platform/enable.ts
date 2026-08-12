@@ -19,7 +19,7 @@ import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import {
   enablePlatformMode,
   PAPERCUSP_CANONICAL_REPO_URL,
@@ -104,8 +104,7 @@ export default defineTool({
       });
     }
 
-    const workspaceId =
-      args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
     const res = await enablePlatformMode({
       workspaceId,
       ...(args.repoUrl ? { repoUrl: args.repoUrl } : {}),

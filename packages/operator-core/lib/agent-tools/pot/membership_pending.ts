@@ -9,7 +9,7 @@
 import { z } from 'zod';
 import { defineTool, entityRef } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { listPendingJoins } from '../../hive-pending-joins-store';
 import { resolveFederatedPotScope } from '../../federated-pot-scope';
 
@@ -44,8 +44,7 @@ export default defineTool({
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
   }),
   async handler(args, ctx) {
-    const workspaceId =
-      args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
     const status = args.status === 'all' ? null : args.status; // undefined ⇒ store default 'pending'
     // WI-6318: hive_pending_joins is a `hiveScoped` projection, persisted under the
     // OWNER-authored slug. `args.pot` is a tool argument, so on a joiner it is the LOCAL

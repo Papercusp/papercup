@@ -10,7 +10,7 @@ import { resolveAgentIdentity } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
 import { readRecentChanges } from '../../change-ledger/change-ledger';
 import { computeMutationCalendar, DEFAULT_LIVE_WINDOW_MS } from '../../change-ledger/mutation-calendar';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 
 export default defineTool({
   name: 'change_ledger:calendar',
@@ -34,7 +34,7 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     resolveAgentIdentity(ctx);
-    const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
     const liveWindowMs = args.liveWindowDays != null ? args.liveWindowDays * 86_400_000 : DEFAULT_LIVE_WINDOW_MS;
     // Read window = 4× the liveness window so first/last per class carry real
     // history context, bounded by the read cap.

@@ -17,7 +17,7 @@ import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { sendMessage } from '../coordination/messages';
 import { CUE_AUTHORITY_FIELD, hiveWideCueAuthority } from '../coordination/cue-authority';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { resolvePotHomeSlug } from '../../pot/wake';
 import { pausePotState } from '../../pot/pause-core';
 
@@ -58,7 +58,7 @@ export default defineTool({
       .describe('Explicitly set the GLOBAL wake-mode to manual so autonomous wakes stage for owner review; default preserves the current mode.'),
   }),
   async handler(args, ctx) {
-    const workspaceId = args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
     const installSlug = resolvePotHomeSlug(args.harness, ctx.harnessSlug);
     if (!installSlug) {
       return {

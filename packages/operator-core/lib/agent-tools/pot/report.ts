@@ -9,7 +9,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { resolveHiveWorkspaceId } from '../../hive-store';
 import { getHivePolicy } from '../../hive-policy-store';
 import { resolveLocalGithubIdentity } from '../../identity/resolve-local-github-identity';
@@ -61,8 +61,7 @@ export default defineTool({
     workspace: z.string().max(120).optional().describe('Workspace id (default: ctx / active workspace).'),
   }),
   async handler(args, ctx) {
-    const ambientWorkspaceId =
-      args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const ambientWorkspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
     // WI-5334/WI-5321/WI-5061: same ambient-workspace-mismatch family as
     // authorHivePolicy/policy-set.ts — a JOINED member's ambient workspaceId can
     // differ from whatever partition the Hive's own row (and this member's

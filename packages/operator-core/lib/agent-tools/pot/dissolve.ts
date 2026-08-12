@@ -28,7 +28,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { getOrgPg } from '@papercusp/db-org';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAgentIdentity } from '../coordination/identity';
-import { activeWorkspaceId } from '../../workspace-registry';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import { listFleetAssignments } from '../../fleet/assignments';
 import { cancelSubtree } from '../../fleet/nursery';
 import { clearPotTimeWake } from '../../pot/wake';
@@ -95,8 +95,7 @@ export default defineTool({
       });
     }
 
-    const workspaceId =
-      args.workspace ?? ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
+    const workspaceId = resolveConcreteWorkspaceId(args.workspace, ctx.workspaceId, ctx.principal?.workspaceId);
     const pot = await resolvePot(args.slug, workspaceId);
     if (!pot) {
       return text({
