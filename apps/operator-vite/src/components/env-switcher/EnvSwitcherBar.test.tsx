@@ -21,6 +21,7 @@ let mockPipelineResult: Record<string, unknown> = {
   data: [{}], loading: false, fetching: false, error: null, invalidate: vi.fn(), transport: 'POLL',
 };
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: () => mockPipelineResult,
 }));
 
