@@ -106,6 +106,30 @@ describe('D-001 write-time HLC — a LOCAL write (mig-314 stamp) beats a higher-
     expect(c > future).toBe(true); // a later local stamp causally-follows the recv'd op
   });
 
+  it('an open caller transaction does not block another connection from stamping or receiving HLCs (WI-38304)', async () => {
+    const peer = postgres(db.url, { max: 1, onnotice: () => {}, prepare: false });
+    try {
+      await sql.begin(async (outer) => {
+        const held = (await outer<{ h: string }[]>`SELECT harness_shared.hlc_now() AS h`)[0].h;
+
+        // The pre-813 implementation held hlc_clock(id=1) FOR UPDATE until this
+        // outer transaction committed. This peer call then hit lock_timeout even
+        // though hlc_now() itself had returned. The sequence-backed clock keeps
+        // its short ratchet independent of the caller's transaction lifetime.
+        const stamped = await peer.begin(async (p) => {
+          await p.unsafe(`SET LOCAL lock_timeout = '1s'`);
+          const next = (await p<{ h: string }[]>`SELECT harness_shared.hlc_now() AS h`)[0].h;
+          await p`SELECT harness_shared.hlc_recv(${next})`;
+          return next;
+        });
+
+        expect(stamped > held).toBe(true);
+      });
+    } finally {
+      await peer.end({ timeout: 5 });
+    }
+  });
+
   it('recv of an ABSURD-future HLC (beyond the ε drift clamp) does NOT ratchet the clock (WI-1672 / mig-460)', async () => {
     // The poisoning defense: a remote frontier >10min ahead of wall-now is
     // outside the hive's ±5min admission skew contract, so hlc_recv REFUSES to
