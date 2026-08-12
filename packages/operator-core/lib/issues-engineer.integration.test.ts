@@ -202,6 +202,25 @@ describe('engineer issues surface (real PG)', () => {
     expect(got?.title).toBe('shop freezes');
   });
 
+  it('preserves issue-family duplicate/child parent through create, read, update, and clear (EI-20018021869343311)', async () => {
+    const parent = await issues.createIssue({ title: 'canonical defect', createdBy: 'agA' });
+    const child = await issues.createIssue({
+      title: 'duplicate report',
+      createdBy: 'agB',
+      parent: parent.id,
+    });
+
+    expect(child.parent).toBe(parent.id);
+    expect((await issues.getIssue(child.id))?.parent).toBe(parent.id);
+
+    const retained = issues.updateIssue(child.id, { parent: parent.id, silent: true });
+    expect((await retained)?.parent).toBe(parent.id);
+
+    const cleared = issues.updateIssue(child.id, { parent: null, silent: true });
+    expect((await cleared)?.parent).toBeNull();
+    expect((await issues.getIssue(child.id))?.parent).toBeNull();
+  });
+
   it('stamps generation freshness on new bugs while leaving non-bug payloads alone (P-014)', async () => {
     const bug = await issues.createIssue({
       title: 'freshly observed defect',

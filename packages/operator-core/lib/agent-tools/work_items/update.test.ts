@@ -92,6 +92,25 @@ describe('work_items:update handler (bulk keyed-array)', () => {
     expect(b.results[0]).toMatchObject({ ok: true, id: 'EI-1', item: { goalId: 'goal-a' } });
   });
 
+  it('passes duplicate/child parent links through, including an explicit clear', async () => {
+    mockImplementationTyped(updM, async (id) => ({ ok: true, item: workItemFixture({ id }) }));
+    await body({ items: [{ id: 'EI-child', parent: 'EI-parent' }, { id: 'EI-duplicate', parent: null }] });
+    expect(updM).toHaveBeenNthCalledWith(
+      1,
+      'EI-child',
+      expect.objectContaining({ parent: 'EI-parent' }),
+      'me',
+      expect.any(Object),
+    );
+    expect(updM).toHaveBeenNthCalledWith(
+      2,
+      'EI-duplicate',
+      expect.objectContaining({ parent: null }),
+      'me',
+      expect.any(Object),
+    );
+  });
+
   it('backfills payload.plan_item and its coverage edge for an existing item', async () => {
     mockResolvedTyped(updM, { ok: true, item: workItemFixture({ id: 'EI-1', harness: 'papercusp' }) });
     mockResolvedTyped(mergeM, workItemFixture({
@@ -116,6 +135,22 @@ describe('work_items:update handler (bulk keyed-array)', () => {
       { harness: 'papercusp', by: 'me' },
     );
     expect(b.results[0]).toMatchObject({ ok: true, item: { payload: { plan_item: expect.any(Object) } } });
+  });
+
+  it('does not stamp a plan item or coverage edge with the operator wildcard', async () => {
+    mockResolvedTyped(updM, { ok: true, item: workItemFixture({ id: 'EI-operator', harness: null }) });
+    const result = (await tool.handler(
+      { id: 'EI-operator', plan_item: { slug: 'plan-a', item: 'P-operator' } } as never,
+      { harnessSlug: '*' } as never,
+    )) as Out;
+    expect(mergeM).not.toHaveBeenCalled();
+    expect(linkM).toHaveBeenCalledWith(
+      'EI-operator',
+      { kind: 'plan_item', ref: 'plan-a#P-operator' },
+      'relates',
+      { harness: undefined, by: 'me' },
+    );
+    expect(result.data).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
   });
 
   it('applies plan_item to a feature-family item instead of refusing the family-agnostic stamp', async () => {

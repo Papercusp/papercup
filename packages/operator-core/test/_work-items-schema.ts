@@ -243,7 +243,9 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
       -- that names the COLUMN and never the stale fixture, and test:affected cannot select
       -- this file because the migration diff never touches it. Found 2026-08-10 (WI-37774)
       -- when 11/11 of a BRAND-NEW test file failed for a reason unrelated to what it tested.
-      goal_id
+      goal_id,
+      -- EI-20018021869343311 / migration 803: issue-family duplicate/child edge.
+      parent_id
     FROM harness_shared.work_items WHERE item_kind IN ('bug', 'change', 'task');
   CREATE OR REPLACE FUNCTION harness_shared.engineer_issues_view_dml() RETURNS trigger LANGUAGE plpgsql AS $ei_dml$
   DECLARE v_slug text; v_ei jsonb; v_payload jsonb; v_updated int;
@@ -313,8 +315,8 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
       -- UPDATE ... SET authority = ... through the view was silently DROPPED: no error,
       -- no warning, no write. Anything added to work_items that the issue family must be
       -- able to write has to be added to all three places in this function.
-      INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, title, summary, status, taken_by, taken_at, item_kind, origin, author_pubkey, assignee_rank, rank_writer, rank_updated_at, fed_ts, fed_hlc, ts, created_ts, updated_ts, payload, terminal_owner, terminal_completion_ref, last_progress_at, authority)
-      VALUES (COALESCE(NEW.workspace_id,'default'), v_slug, NEW.issue_id, NEW.title, COALESCE(NEW.body,''), COALESCE(NEW.state,'open'), NEW.assignee, NEW.assigned_at, COALESCE(NEW.kind,'bug'), COALESCE(NEW.origin,'local'), NEW.author_pubkey, NEW.assignee_rank, NEW.rank_writer, NEW.rank_updated_at, NEW.fed_ts, NEW.fed_hlc, (extract(epoch FROM COALESCE(NEW.updated_at,now()))*1000)::bigint, (extract(epoch FROM COALESCE(NEW.created_at,now()))*1000)::bigint, (extract(epoch FROM COALESCE(NEW.updated_at,now()))*1000)::bigint, v_payload || jsonb_build_object('_ei', v_ei), NEW.terminal_owner, NEW.terminal_completion_ref, NEW.last_progress_at, NEW.authority);
+      INSERT INTO harness_shared.work_items (workspace_id, harness_slug, feature_id, title, summary, status, taken_by, taken_at, item_kind, origin, author_pubkey, assignee_rank, rank_writer, rank_updated_at, fed_ts, fed_hlc, ts, created_ts, updated_ts, payload, terminal_owner, terminal_completion_ref, last_progress_at, authority, parent_id)
+      VALUES (COALESCE(NEW.workspace_id,'default'), v_slug, NEW.issue_id, NEW.title, COALESCE(NEW.body,''), COALESCE(NEW.state,'open'), NEW.assignee, NEW.assigned_at, COALESCE(NEW.kind,'bug'), COALESCE(NEW.origin,'local'), NEW.author_pubkey, NEW.assignee_rank, NEW.rank_writer, NEW.rank_updated_at, NEW.fed_ts, NEW.fed_hlc, (extract(epoch FROM COALESCE(NEW.updated_at,now()))*1000)::bigint, (extract(epoch FROM COALESCE(NEW.created_at,now()))*1000)::bigint, (extract(epoch FROM COALESCE(NEW.updated_at,now()))*1000)::bigint, v_payload || jsonb_build_object('_ei', v_ei), NEW.terminal_owner, NEW.terminal_completion_ref, NEW.last_progress_at, NEW.authority, NEW.parent_id);
       RETURN NEW;
     ELSE
       -- Mig 499: release-cooldown provenance (mirrors the feature-family release stamp) —
@@ -325,7 +327,7 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
         -- WI-2990/WI-3006 (migration 509): thread last_progress_at through the view's
         -- UPDATE path (parity with the app-side markIssueProgress direct base-table write).
         last_progress_at = NEW.last_progress_at,
-        item_kind=COALESCE(NEW.kind,'bug'), origin=COALESCE(NEW.origin,'local'), author_pubkey=NEW.author_pubkey, assignee_rank=NEW.assignee_rank, rank_writer=NEW.rank_writer, rank_updated_at=NEW.rank_updated_at, fed_ts=NEW.fed_ts, fed_hlc=NEW.fed_hlc, updated_ts=(extract(epoch FROM COALESCE(NEW.updated_at,now()))*1000)::bigint, payload=(v_payload - '_ei') || jsonb_build_object('_ei', v_ei), terminal_owner=NEW.terminal_owner, terminal_completion_ref=NEW.terminal_completion_ref, authority=NEW.authority
+        item_kind=COALESCE(NEW.kind,'bug'), origin=COALESCE(NEW.origin,'local'), author_pubkey=NEW.author_pubkey, assignee_rank=NEW.assignee_rank, rank_writer=NEW.rank_writer, rank_updated_at=NEW.rank_updated_at, fed_ts=NEW.fed_ts, fed_hlc=NEW.fed_hlc, updated_ts=(extract(epoch FROM COALESCE(NEW.updated_at,now()))*1000)::bigint, payload=(v_payload - '_ei') || jsonb_build_object('_ei', v_ei), terminal_owner=NEW.terminal_owner, terminal_completion_ref=NEW.terminal_completion_ref, authority=NEW.authority, parent_id=NEW.parent_id
       WHERE workspace_id=OLD.workspace_id AND harness_slug=OLD.base_harness_slug AND feature_id=OLD.issue_id AND item_kind=OLD.kind
         -- 655 (claim-race guard): re-verify ownership against the CURRENT taken_by
         -- (fresh, at lock-acquisition time), not the OLD pre-commit snapshot the
