@@ -64,7 +64,7 @@
  *    being checked and has no tool expression.
  */
 
-import type { CoverageResult, ReplayToolCall, SubstitutionPair } from '../types';
+import type { CoverageResult, ReplayToolCall, BashSubstitutionPair } from '../types';
 
 /** Mirrors `build:typecheck`'s `project` length bound (pinned by model-drift.test.ts). */
 export const BUILD_TYPECHECK_MAX_PROJECT = 400;
@@ -308,7 +308,7 @@ function coverTypecheckCommand(parsed: ParsedTypecheckCommand): CoverageResult {
  * agent gets structured diagnostics instead of a log to pipe through `grep`,
  * AND a run that checked nothing is refused instead of reported as clean.
  */
-export const tscProjectTypecheck: SubstitutionPair = {
+export const tscProjectTypecheck: BashSubstitutionPair = {
   id: 'typecheck.tsc-project',
   intentLabel: 'typecheck-a-project',
   bashPattern: new RegExp(
@@ -350,7 +350,7 @@ export const tscProjectTypecheck: SubstitutionPair = {
 };
 
 /** Every pair in the typecheck family, in registry order. */
-export const TYPECHECK_PAIRS: SubstitutionPair[] = [tscProjectTypecheck];
+export const TYPECHECK_PAIRS: BashSubstitutionPair[] = [tscProjectTypecheck];
 
 /** Exported for the model-drift guard (D-015): the flags cover() treats as expressible. */
 export const EXPRESSIBLE_FLAGS = ['--noEmit', '-p', '--project', '--incremental', '--pretty'] as const;

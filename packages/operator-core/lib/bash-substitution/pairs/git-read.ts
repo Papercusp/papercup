@@ -70,7 +70,7 @@
  * as plan D-011.
  */
 
-import type { CoverageResult, SubstitutionPair } from '../types';
+import type { CoverageResult, BashSubstitutionPair } from '../types';
 
 /**
  * Read-only git subcommands seen in the corpus, plus their close relatives.
@@ -189,7 +189,7 @@ export function gitSubcommand(atom: string): string | null {
  * verdict drops off `equivalent`, and the test fails loudly instead of quietly
  * advising a substitution that cannot be performed.
  */
-export const gitReadPassthrough: SubstitutionPair = {
+export const gitReadPassthrough: BashSubstitutionPair = {
   id: 'git-read.passthrough',
   intentLabel: 'git-state-read',
   bashPattern: new RegExp(
@@ -288,4 +288,4 @@ export const GIT_WRITE_FINDING = {
 } as const;
 
 /** Every pair in the git-read family, in registry order. */
-export const GIT_READ_PAIRS: SubstitutionPair[] = [gitReadPassthrough];
+export const GIT_READ_PAIRS: BashSubstitutionPair[] = [gitReadPassthrough];

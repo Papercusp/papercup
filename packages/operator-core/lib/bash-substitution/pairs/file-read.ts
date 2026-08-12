@@ -34,7 +34,7 @@
  *  • One `file_path` per call; `-c`/byte windows have no expression.
  */
 
-import type { AnswerEnvelope, CoverageResult, ReplayToolCall, SubstitutionPair } from '../types';
+import type { AnswerEnvelope, CoverageResult, ReplayToolCall, BashSubstitutionPair } from '../types';
 
 /**
  * How to strip `capability:read`'s framing to reach the file content (P-021).
@@ -76,7 +76,7 @@ const CAPABILITY_READ_ENVELOPE: AnswerEnvelope = {
  * until the harness replays commands the registry says are not covered.
  */
 function readRewrite(
-  pair: Pick<SubstitutionPair, 'cover'>,
+  pair: Pick<BashSubstitutionPair, 'cover'>,
   atom: string,
   args: (parsed: ParsedAtom) => Record<string, unknown> | null,
 ): ReplayToolCall | null {
@@ -305,7 +305,7 @@ function checkByteWindow(parsed: ParsedAtom): CoverageResult | null {
  * The pattern requires a trailing operand so the piped `… | sed -n '1,200p'`
  * stdin-filter form (which has no tool expression) falls outside it.
  */
-export const sedRangeRead: SubstitutionPair = {
+export const sedRangeRead: BashSubstitutionPair = {
   id: 'file-read.sed-range',
   intentLabel: 'file-range-read',
   bashPattern: readPattern(String.raw`sed\s+-n\s+['"]?\s*\d+\s*,\s*\d+\s*p['"]?\s+${SINGLE_FILE_OPERAND}`),
@@ -363,7 +363,7 @@ export const sedRangeRead: SubstitutionPair = {
  * form, so per D-008 they fall outside the pattern rather than being claimed and
  * then quietly mis-expressed (they were, on 32 real atoms).
  */
-export const catFileRead: SubstitutionPair = {
+export const catFileRead: BashSubstitutionPair = {
   id: 'file-read.cat-file',
   intentLabel: 'file-whole-read',
   bashPattern: readPattern(String.raw`cat\s+(?:(?:-n|--number)\s+)?${SINGLE_FILE_OPERAND}`),
@@ -413,7 +413,7 @@ export const catFileRead: SubstitutionPair = {
  * `limit`. The pattern requires a file operand so the dominant `… | head -20`
  * pipe-filter form is excluded.
  */
-export const headFileRead: SubstitutionPair = {
+export const headFileRead: BashSubstitutionPair = {
   id: 'file-read.head',
   intentLabel: 'file-head-read',
   bashPattern: readPattern(String.raw`head\s+(?:-n\s*\d+\s+|-\d+\s+)?${SINGLE_FILE_OPERAND}`),
@@ -469,7 +469,7 @@ export const headFileRead: SubstitutionPair = {
  * now takes `tail: N`. Streaming (`tail -f`) and byte windows (`-c`) remain
  * outside the pattern — they are different intents, not missing coverage.
  */
-export const tailFileRead: SubstitutionPair = {
+export const tailFileRead: BashSubstitutionPair = {
   id: 'file-read.tail',
   intentLabel: 'file-tail-read',
   // `-f`/`--follow` and `-c` are excluded by the pattern: a stream follow and a
@@ -517,4 +517,4 @@ export const tailFileRead: SubstitutionPair = {
 };
 
 /** Every pair in the file-read family, in registry order. */
-export const FILE_READ_PAIRS: SubstitutionPair[] = [sedRangeRead, catFileRead, headFileRead, tailFileRead];
+export const FILE_READ_PAIRS: BashSubstitutionPair[] = [sedRangeRead, catFileRead, headFileRead, tailFileRead];

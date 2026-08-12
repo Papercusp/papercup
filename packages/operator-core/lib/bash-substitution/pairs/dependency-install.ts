@@ -56,7 +56,7 @@
  * not claimed. It should be — but not at the price of a pattern nobody
  * inheriting this row can read.
  */
-import type { CoverageResult, SubstitutionPair } from '../types';
+import type { CoverageResult, BashSubstitutionPair } from '../types';
 
 /**
  * The verb, then ONLY flags / redirects / a trailing `&`, to end of atom.
@@ -82,7 +82,7 @@ const WHOLE_TREE_REIFY =
  */
 const NON_MUTATING = /--dry-run\b|--prefix\b/;
 
-export const unsafeDependencyInstall: SubstitutionPair = {
+export const unsafeDependencyInstall: BashSubstitutionPair = {
   id: 'deps.unsafe-install',
   // The `policy-violation:` prefix is load-bearing, not decorative — see the
   // header. It is the DB-level marker that this row's tier was authorized by a
@@ -141,4 +141,4 @@ export const unsafeDependencyInstall: SubstitutionPair = {
   },
 };
 
-export const DEPENDENCY_INSTALL_PAIRS: SubstitutionPair[] = [unsafeDependencyInstall];
+export const DEPENDENCY_INSTALL_PAIRS: BashSubstitutionPair[] = [unsafeDependencyInstall];

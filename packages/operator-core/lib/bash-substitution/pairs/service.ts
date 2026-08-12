@@ -96,7 +96,7 @@
  *   That scarcity is itself the finding — see `SERVICE_LIFECYCLE_WRITE_FINDING`.
  */
 
-import type { CoverageResult, SubstitutionPair } from '../types';
+import type { CoverageResult, BashSubstitutionPair } from '../types';
 
 /**
  * Local ports `dev:service_health` actually probes, with the `services[]` entry
@@ -368,7 +368,7 @@ export function systemctlScope(atom: string): 'user' | 'system' {
  * it documents why a unit cannot be REGISTERED, which is still true and is a
  * different claim from "the tool cannot report its state".
  */
-export const systemctlIsActive: SubstitutionPair = {
+export const systemctlIsActive: BashSubstitutionPair = {
   id: 'service.systemctl-is-active',
   intentLabel: 'unit-liveness-query',
   bashPattern: /^systemctl\s+(?:--\S+\s+)*(?:is-active|is-failed)\b/,
@@ -498,7 +498,7 @@ export const HEALTH_PAYLOAD_FINDING = {
  * and `:3170` is not in `HEALTH_ENDPOINTS`, so the documented workflow has no
  * tool form and 80 curl atoms went to bash because there was nowhere else to go.
  */
-export const curlHealthProbe: SubstitutionPair = {
+export const curlHealthProbe: BashSubstitutionPair = {
   id: 'service.curl-health-probe',
   intentLabel: 'local-service-health-probe',
   bashPattern: buildProbedPortCurlPattern(),
@@ -597,7 +597,7 @@ export const curlHealthProbe: SubstitutionPair = {
  * the two: every one of the 16 distinct real `ss` shapes in the corpus is
  * `ss -<flags>`, while an assignment is always followed by `=`.
  */
-export const listeningPorts: SubstitutionPair = {
+export const listeningPorts: BashSubstitutionPair = {
   id: 'service.listening-ports',
   intentLabel: 'listening-socket-query',
   // P-014: LISTEN-ness is part of the CLAIM, not something cover() rejects
@@ -745,4 +745,4 @@ export const SOCKET_STATE_FINDING = {
 } as const;
 
 /** Every pair in the service family, in registry order. */
-export const SERVICE_PAIRS: SubstitutionPair[] = [systemctlIsActive, curlHealthProbe, listeningPorts];
+export const SERVICE_PAIRS: BashSubstitutionPair[] = [systemctlIsActive, curlHealthProbe, listeningPorts];

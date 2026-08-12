@@ -34,7 +34,7 @@
  * replaced, because it returns plausible rows instead of an error.
  */
 
-import type { CoverageResult, SubstitutionPair } from '../types';
+import type { CoverageResult, BashSubstitutionPair } from '../types';
 
 /**
  * A literal operator-Postgres connection. Either the URL form
@@ -68,7 +68,7 @@ function extractCommandArg(atom: string): string | null {
  * more than it buys. Coverage therefore judges the statement's HEAD, which is
  * exactly what decides whether `dev:pg_query` accepts it.
  */
-export const psqlSelectRead: SubstitutionPair = {
+export const psqlSelectRead: BashSubstitutionPair = {
   id: 'postgres.psql-select',
   intentLabel: 'operator-db-select',
   bashPattern: new RegExp(
@@ -126,7 +126,7 @@ export const psqlSelectRead: SubstitutionPair = {
  * inventing a second tool: it is the same capability (read the operator DB),
  * the same read-only envelope, and the same routing row.
  */
-export const psqlDescribe: SubstitutionPair = {
+export const psqlDescribe: BashSubstitutionPair = {
   id: 'postgres.psql-describe',
   intentLabel: 'operator-db-describe',
   // Only the RELATION-describing meta-commands: `\d`, `\d+`, `\dt`, `\dv`,
@@ -180,4 +180,4 @@ export const psqlDescribe: SubstitutionPair = {
 };
 
 /** Every pair in the postgres family, in registry order. */
-export const POSTGRES_PAIRS: SubstitutionPair[] = [psqlSelectRead, psqlDescribe];
+export const POSTGRES_PAIRS: BashSubstitutionPair[] = [psqlSelectRead, psqlDescribe];

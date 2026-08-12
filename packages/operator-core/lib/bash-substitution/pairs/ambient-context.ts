@@ -66,13 +66,13 @@
  * owns one atom; the existing pair keeps these.
  */
 
-import type { CoverageResult, SubstitutionPair } from '../types';
+import type { CoverageResult, BashSubstitutionPair } from '../types';
 
 /** `date` flags that mean "a DIFFERENT instant", not "now". Reading any of them
  *  is a conversion or a write, which no ambient field can serve.
  *
  *  Per D-008 these are excluded by PATTERN (the negative lookahead below), not
- *  by failing them in {@link SubstitutionPair.cover} — a request for a different
+ *  by failing them in {@link BashSubstitutionPair.cover} — a request for a different
  *  instant is a DIFFERENT QUESTION, not a case the ambient field fails to cover,
  *  and letting it reach `cover()` would drag the verdict to `needs-widening`
  *  over commands this pair never claimed. `cover()` keeps the same test as a
@@ -98,7 +98,7 @@ const DATE_READ_PATTERN =
  * rendering of that same instant — which is what makes this `equivalent`
  * rather than merely related.
  */
-export const clockRead: SubstitutionPair = {
+export const clockRead: BashSubstitutionPair = {
   id: 'ambient.date-read',
   intentLabel: 'current-time',
   bashPattern: DATE_READ_PATTERN,
@@ -142,7 +142,7 @@ export const clockRead: SubstitutionPair = {
  * load of ~80 is ~60% of a 128-core box, not the 6x oversubscription it would
  * appear to be against an effective count.
  */
-export const loadRead: SubstitutionPair = {
+export const loadRead: BashSubstitutionPair = {
   id: 'ambient.uptime',
   intentLabel: 'host-load',
   // Whole-command shape only: the verb, optionally with short flags, and nothing
@@ -176,7 +176,7 @@ export const loadRead: SubstitutionPair = {
  * more than once (max 6 times in one session — the answer could not have
  * changed between asks).
  */
-export const coreCountRead: SubstitutionPair = {
+export const coreCountRead: BashSubstitutionPair = {
   id: 'ambient.nproc',
   intentLabel: 'host-cores',
   bashPattern: /^nproc(?:\s+--all)?$/,
@@ -208,7 +208,7 @@ export const coreCountRead: SubstitutionPair = {
  * answers the follow-up a byte count cannot: whether the box is THRASHING —
  * the same PSI signal the watchdog alarms on.
  */
-export const memoryRead: SubstitutionPair = {
+export const memoryRead: BashSubstitutionPair = {
   id: 'ambient.free',
   intentLabel: 'host-memory',
   // Whole-command shape only. `free -s N` is a continuous poll — a stream, not a
@@ -236,4 +236,4 @@ export const memoryRead: SubstitutionPair = {
   },
 };
 
-export const AMBIENT_CONTEXT_PAIRS: SubstitutionPair[] = [clockRead, loadRead, coreCountRead, memoryRead];
+export const AMBIENT_CONTEXT_PAIRS: BashSubstitutionPair[] = [clockRead, loadRead, coreCountRead, memoryRead];

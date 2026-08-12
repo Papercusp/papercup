@@ -22,7 +22,7 @@
  * A ranked top-N is not a substitute for an exhaustive match set, and a
  * `cover()` claiming otherwise would produce a false `equivalent`, unlock
  * enforcement, and then nudge agents toward a tool that cannot answer them —
- * precisely the failure `SubstitutionPair.cover`'s docblock warns about.
+ * precisely the failure `BashSubstitutionPair.cover`'s docblock warns about.
  *
  * So this file claims exactly ONE shape, the one where the questions genuinely
  * coincide: DEFINITION LOOKUP — "where is symbol X defined". The tool is
@@ -65,7 +65,7 @@
  * they resolve — which is the same event that lifts the hold.
  */
 
-import type { CoverageResult, SubstitutionPair } from '../types';
+import type { CoverageResult, BashSubstitutionPair } from '../types';
 
 /**
  * The blocker that pins this pair to `observe`, recorded as DATA rather than
@@ -86,7 +86,7 @@ export const GITNEXUS_INDEX_FINDING = {
   probeAfter:
     "gitnexus.context { name: 'managedSetInterval', kind: 'Function', repo: 'papercusp' } → found at " +
     'libs/generic/scheduled-registry/src/index.ts:221-262 with 24 incoming callers; ' +
-    "{ name: 'SubstitutionPair', kind: 'Interface' } → found at " +
+    "{ name: 'BashSubstitutionPair', kind: 'Interface' } → found at " +
     'packages/operator-core/lib/bash-substitution/types.ts:72-157. Both claimed kinds verified.',
   refreshStep: 'npx gitnexus analyze . --skip-agents-md --name papercusp',
   /**
@@ -405,7 +405,7 @@ export function coverDefinitionLookup(parsed: ParsedGrepCommand): CoverageResult
  * across 38 of 88 sessions, 115 distinct spellings — comfortably over both the
  * `MIN_POPULATION_ATOMS` and `MIN_POPULATION_SESSIONS` floors.
  */
-export const gitnexusDefinitionLookup: SubstitutionPair = {
+export const gitnexusDefinitionLookup: BashSubstitutionPair = {
   id: 'code-search.definition-lookup',
   intentLabel: 'find-where-a-symbol-is-defined',
   bashPattern: new RegExp(
@@ -432,7 +432,7 @@ export const gitnexusDefinitionLookup: SubstitutionPair = {
 };
 
 /** Every pair in the code-search family, in registry order. */
-export const CODE_SEARCH_PAIRS: SubstitutionPair[] = [gitnexusDefinitionLookup];
+export const CODE_SEARCH_PAIRS: BashSubstitutionPair[] = [gitnexusDefinitionLookup];
 
 /** Exported for the model-drift guard (D-015). */
 export { EXPRESSIBLE_FLAGS, CODE_EXTENSIONS, REPO_ANCHORS };

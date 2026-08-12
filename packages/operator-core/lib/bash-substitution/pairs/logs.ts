@@ -47,7 +47,7 @@
  *    read is not a differently-spelled version of the same request.
  */
 
-import type { CoverageResult, ReplayToolCall, SubstitutionPair } from '../types';
+import type { CoverageResult, ReplayToolCall, BashSubstitutionPair } from '../types';
 import { JOURNAL_LEVELS, JOURNAL_READ_MAX_LIMIT, type JournalScope } from '../../journal-read';
 
 /** Mirrors `logs:read`'s `unit` array bound. Exported so `pairs/model-drift.test.ts`
@@ -290,7 +290,7 @@ export function coverJournalCommand(parsed: ParsedJournalCommand): CoverageResul
  * followed 70% of these commands becomes `grep`, so the non-matching lines are
  * never read at all rather than read and discarded.
  */
-export const unitJournalRead: SubstitutionPair = {
+export const unitJournalRead: BashSubstitutionPair = {
   id: 'logs.unit-journal',
   intentLabel: 'service-log-read',
   bashPattern: new RegExp(`^${EXCLUDE_UNEXPRESSIBLE}${REQUIRE_SCOPE}journalctl\\b`),
@@ -340,4 +340,4 @@ export const unitJournalRead: SubstitutionPair = {
 };
 
 /** Every pair in the service-log family, in registry order. */
-export const LOGS_PAIRS: SubstitutionPair[] = [unitJournalRead];
+export const LOGS_PAIRS: BashSubstitutionPair[] = [unitJournalRead];

@@ -50,7 +50,7 @@
  *    artifact the tool does not produce (see the note on that exclusion below).
  */
 
-import type { CoverageResult, ReplayToolCall, SubstitutionPair } from '../types';
+import type { CoverageResult, ReplayToolCall, BashSubstitutionPair } from '../types';
 
 /**
  * Mirrors `testing:run`'s `files` array bound. Exported so `pairs/model-drift.test.ts`
@@ -266,7 +266,7 @@ function expressionFor(parsed: ParsedTestCommand): string {
  * is how the `head` 200x over-read was found.
  */
 function rewriteTestCommand(
-  pair: Pick<SubstitutionPair, 'cover'>,
+  pair: Pick<BashSubstitutionPair, 'cover'>,
   atom: string,
   parse: (atom: string) => ParsedTestCommand,
 ): ReplayToolCall | null {
@@ -333,7 +333,7 @@ function coverTestCommand(parsed: ParsedTestCommand): CoverageResult {
  * family. Already correctly routed; what the tool changes is the RESULT the
  * agent gets back, which is where the measured cost actually sits.
  */
-export const routerTestFiles: SubstitutionPair = {
+export const routerTestFiles: BashSubstitutionPair = {
   id: 'tests.router-files',
   intentLabel: 'run-test-files',
   // `--` is permitted mid-list: the corpus contains the double-separator form
@@ -369,7 +369,7 @@ export const routerTestFiles: SubstitutionPair = {
  * Same tool call, but here the substitution also removes the root-level
  * zero-match false green described in this file's header.
  */
-export const rawVitestFiles: SubstitutionPair = {
+export const rawVitestFiles: BashSubstitutionPair = {
   id: 'tests.raw-vitest',
   // Distinct from `routerTestFiles`' label even though both route to the same
   // tool: `intentLabel` is the registry's KEY (it mirrors the
@@ -416,7 +416,7 @@ export const rawVitestFiles: SubstitutionPair = {
  * `tier_requires_equivalence` constraint, so no future promotion sweep can
  * quietly start nudging agents off a tool that has no replacement.
  */
-export const affectedTests: SubstitutionPair = {
+export const affectedTests: BashSubstitutionPair = {
   id: 'tests.affected',
   intentLabel: 'run-affected-tests',
   bashPattern: /^npm\s+run\s+test:affected/,
@@ -444,4 +444,4 @@ export const affectedTests: SubstitutionPair = {
 };
 
 /** Every pair in the test-running family, in registry order. */
-export const TESTS_PAIRS: SubstitutionPair[] = [routerTestFiles, rawVitestFiles, affectedTests];
+export const TESTS_PAIRS: BashSubstitutionPair[] = [routerTestFiles, rawVitestFiles, affectedTests];

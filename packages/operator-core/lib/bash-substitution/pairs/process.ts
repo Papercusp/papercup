@@ -68,7 +68,7 @@
  * enforcement) and route the intent through P-022's job lifecycle.
  */
 
-import type { CoverageResult, SubstitutionPair } from '../types';
+import type { CoverageResult, BashSubstitutionPair } from '../types';
 
 /**
  * The six cmdline classifiers in `listProcesses`, verbatim. Duplicated here
@@ -172,7 +172,7 @@ function pgrepPattern(atom: string): string | null {
  * instead of a bare `unknown_bash_id`. A native background id has no such path
  * and is simply dead after the boundary. Promise recoverability, never immunity.
  */
-export const psProcessQuery: SubstitutionPair = {
+export const psProcessQuery: BashSubstitutionPair = {
   id: 'process.ps-pgrep',
   intentLabel: 'host-job-liveness-query',
   bashPattern: /^(?:ps|pgrep)(?=\s|$)(?![^\n]*\b(?:run\.sh|omp|claude|paperclip|pty|next)\b)/,
@@ -228,4 +228,4 @@ export const psProcessQuery: SubstitutionPair = {
 };
 
 /** Every pair in the process family, in registry order. */
-export const PROCESS_PAIRS: SubstitutionPair[] = [psProcessQuery];
+export const PROCESS_PAIRS: BashSubstitutionPair[] = [psProcessQuery];
