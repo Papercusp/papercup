@@ -306,11 +306,17 @@ export async function lintParsed(
   if (status === 'shipped' || status === 'superseded') {
     const nowNext = (parsed.now?.next ?? '').replace(/[*_`]/g, '').trim();
     const alreadyStamped = (parsed.now?.raw ?? '').includes(TERMINAL_NOW_STAMP_MARK);
+    // ANCHORED AT THE OPENER, deliberately. A bare keyword search anywhere in
+    // the string is wrong in the one case that matters most: the real sentence
+    // that misled an agent was "Grade the rubric, then flip the plan to
+    // shipped." — an INSTRUCTION that happens to contain "shipped". Matching it
+    // as closure suppressed the warning on precisely the defect this rule
+    // exists to catch (caught by this rule's own test). Closure language only
+    // counts when the Next OPENS by declaring the plan finished.
     const readsAsClosed =
-      /^(?:none|nothing|n\/a|no\b|[—-]\s*$)/i.test(nowNext) ||
-      /\b(?:shipped|complete|completed|closed|superseded|no\s+further|nothing\s+(?:outstanding|left|remaining))\b/i.test(
-        nowNext,
-      );
+      /^(?:none|nothing|n\/a|nil|no\s|[—–-]\s*$|[—–-]\s)/i.test(nowNext) ||
+      /^(?:the\s+)?plan\s+is\s+(?:shipped|complete|completed|closed|superseded)/i.test(nowNext) ||
+      /^(?:shipped|complete|completed|closed|superseded|done)\b/i.test(nowNext);
     if (nowNext && !alreadyStamped && !readsAsClosed) {
       report.warnings.push({
         level: 'warning',
