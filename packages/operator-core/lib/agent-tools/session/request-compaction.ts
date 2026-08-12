@@ -166,7 +166,7 @@ function hintString(max: number) {
 export default defineTool({
   name: 'session:request-compaction',
   description:
-    'Compact THIS session now, at a clean stopping point (near your soft compaction limit). After this turn ends the harness cuts the process and respawns it on fresh context with the deterministic carry document as launch context (P-018 — native /compact is retired); the successor resumes automatically. Pass focus to name what to resume.',
+    'Compact THIS session now, at a clean stopping point (near your soft compaction limit). After this turn ends the harness cuts the process and respawns it on fresh context with the deterministic carry document as launch context (P-018 — native /compact is retired); the successor resumes automatically. Pass focus to name what to resume. Supported wire fields are focus, autoContinue, respawn, continueNote, and legacy reason (ignored).',
   capability: 'coord:write',
   guidance: {
     when: 'You are near your compaction limit AND at a clean stopping point (a finished unit of work — tests green, an edit landed, a decision logged).',
@@ -193,6 +193,16 @@ export default defineTool({
       .optional()
       .describe(
         'Deprecated no-op: a carry-respawn always resumes (the successor launches with a first prompt). Accepted for wire-compat with older callers.',
+      ),
+    // EI-20252809455491677: some generic boundary callers annotate the request
+    // with `reason`. This boundary has no reason-dependent behavior, but rejecting
+    // the annotation at the schema edge causes a needless failed compaction at the
+    // point where the caller most needs a reliable continuation path. Preserve the
+    // field as a bounded no-op so the accepted wire shape is explicit and stable.
+    reason: hintString(600)
+      .optional()
+      .describe(
+        'Deprecated no-op: an optional caller annotation accepted for wire compatibility; it does not affect carry assembly or the successor prompt.',
       ),
     // EI-20250117090491411: older carry instructions called this boundary
     // with respawn:true. The boundary always respawns now, so preserve that

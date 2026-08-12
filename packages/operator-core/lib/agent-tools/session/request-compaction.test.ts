@@ -374,6 +374,13 @@ describe('session:request-compaction — P-018/P-022 carry-respawn actuation', (
     expect(b).toMatchObject({ ok: true, respawn: 'queued' });
   });
 
+  it('legacy reason is a bounded wire-compat no-op: callers can annotate the request without blocking the cut (EI-20252809455491677)', async () => {
+    findLiveHost.mockReturnValue(carryHost);
+    const b = body(await call({ focus: 'x', reason: 'clean stopping point' }));
+    expect(injected().mode).toBe('carry-respawn');
+    expect(b).toMatchObject({ ok: true, respawn: 'queued' });
+  });
+
   it('legacy respawn:true is a wire-compat no-op: stale carry callers still queue the cut (EI-20250117090491411)', async () => {
     findLiveHost.mockReturnValue(carryHost);
     const b = body(await call({ focus: 'x', respawn: true }));
@@ -674,6 +681,8 @@ describe('session:request-compaction over-long hint truncation (EI-7032)', () =>
     };
     expect(json.properties?.focus?.type).toBe('string');
     expect(json.properties?.focus?.maxLength).toBe(600);
+    expect(json.properties?.reason?.type).toBe('string');
+    expect(json.properties?.reason?.maxLength).toBe(600);
     expect(json.properties?.continueNote?.maxLength).toBe(1000);
   });
 });
