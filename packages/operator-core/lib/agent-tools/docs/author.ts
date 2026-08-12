@@ -34,13 +34,35 @@ import { resolveHarnessScope, isEngineeringDocsSentinel } from '../_harness-scop
 
 // ── Pure helpers (exported for unit tests — these encode the footgun-prevention) ──
 
-/** Normalize/validate a doc slug → "<slug>" (no extension, kebab, single segment). */
-export function normalizeSlug(raw: string): { ok: true; slug: string } | { ok: false; error: string } {
+/**
+ * Normalize/validate a doc slug or canonical doc path.
+ *
+ * Read surfaces return page ids as `<section>/<slug>` (for example,
+ * `agent-insights/my-runbook`), and agents naturally hand that value to the
+ * write surface when updating the page. Keep the final segment as the slug
+ * and route the preceding path to `section`; a backslash is still rejected so
+ * this does not become a platform-specific filesystem path parser.
+ */
+export function normalizeSlug(
+  raw: string,
+): { ok: true; slug: string; section?: string } | { ok: false; error: string } {
   let s = raw.trim().toLowerCase();
   s = s.replace(/\.mdx?$/, ''); // tolerate a trailing .md/.mdx
   if (!s) return { ok: false, error: 'slug_required' };
-  if (s.includes('/') || s.includes('\\')) {
-    return { ok: false, error: 'slug_must_be_a_single_segment — put a subdir in `section`, not the slug' };
+  if (s.includes('\\')) {
+    return { ok: false, error: 'slug_must_use_forward_slashes — use `<section>/<slug>` for a canonical doc path' };
+  }
+  if (s.includes('/')) {
+    const parts = s.split('/');
+    const leaf = parts.pop() ?? '';
+    if (!leaf) return { ok: false, error: 'slug_required' };
+    const sectionRes = normalizeSection(parts.join('/'));
+    if (!sectionRes.ok) return sectionRes;
+    s = leaf;
+    if (!/^[a-z0-9][a-z0-9-]*$/.test(s)) {
+      return { ok: false, error: 'slug_must_be_kebab_case — lowercase letters, digits, and dashes only (e.g. my-new-insight)' };
+    }
+    return { ok: true, slug: s, section: sectionRes.section };
   }
   if (!/^[a-z0-9][a-z0-9-]*$/.test(s)) {
     return { ok: false, error: 'slug_must_be_kebab_case — lowercase letters, digits, and dashes only (e.g. my-new-insight)' };
@@ -243,7 +265,9 @@ const argsSchema = z.object({
     .string()
     .min(1)
     .max(120)
-    .describe('Kebab-case file slug (no extension, no slashes), e.g. "named-fleet-vs-ephemeral-swarm". Becomes <section>/<slug>.mdx.'),
+    .describe(
+      'Kebab-case file slug or canonical doc path (optional .md/.mdx; e.g. "named-fleet-vs-ephemeral-swarm" or "agent-insights/named-fleet-vs-ephemeral-swarm"). A path routes its subdirectory to section and becomes <section>/<slug>.mdx.',
+    ),
   title: z.string().min(1).max(200).describe('Human title (frontmatter `title`).'),
   description: z
     .string()
@@ -320,7 +344,7 @@ export default defineTool({
 
     const slugRes = normalizeSlug(args.slug);
     if (!slugRes.ok) return err(slugRes.error);
-    const sectionRes = normalizeSection(args.section);
+    const sectionRes = normalizeSection(args.section ?? slugRes.section);
     if (!sectionRes.ok) return err(sectionRes.error);
     const slug = slugRes.slug;
     const section = sectionRes.section;

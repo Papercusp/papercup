@@ -36,9 +36,13 @@ describe('normalizeSlug', () => {
     expect(normalizeSlug('foo.mdx')).toEqual({ ok: true, slug: 'foo' });
     expect(normalizeSlug('foo.md')).toEqual({ ok: true, slug: 'foo' });
   });
-  it('rejects a slug with a slash (that is what `section` is for)', () => {
-    const r = normalizeSlug('agent-insights/foo');
-    expect(r.ok).toBe(false);
+  it('routes a canonical section/slug path into section plus the final slug', () => {
+    expect(normalizeSlug('agent-insights/foo')).toEqual({ ok: true, slug: 'foo', section: 'agent-insights' });
+    expect(normalizeSlug('system/decisions/foo.mdx')).toEqual({ ok: true, slug: 'foo', section: 'system/decisions' });
+  });
+  it('rejects backslash paths rather than treating them as platform-specific sections', () => {
+    const r = normalizeSlug('agent-insights\\foo');
+    expect(r).toEqual({ ok: false, error: 'slug_must_use_forward_slashes — use `<section>/<slug>` for a canonical doc path' });
   });
   it('rejects non-kebab characters', () => {
     expect(normalizeSlug('foo_bar').ok).toBe(false);
