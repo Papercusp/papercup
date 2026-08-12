@@ -3898,12 +3898,16 @@ async function tryLongestGreenPrefix(
       if (!green) continue;
     }
 
-    if (!recoveryPrefix) {
+    // TypeScript cannot observe the assignment made inside the async probe closure and
+    // otherwise narrows recoveryPrefix to never after this guard. Reassert the closure's
+    // runtime contract locally: only a non-null confirmed prefix reaches the advance.
+    const recoveredPrefix = recoveryPrefix as string | null;
+    if (recoveredPrefix === null) {
       logPartialGreenGate(`partial-green-gate: prefix ${prefixTip.slice(0, 8)} did NOT confirm green — holding (no partial advance)`);
       return null; // affected reasoning was incomplete; stay safe
     }
 
-    prefixTip = recoveryPrefix;
+    prefixTip = recoveredPrefix;
     logPartialGreenGate(
       `partial-green-gate: recovered later green prefix ${prefixTip.slice(0, 8)} ` +
         `(after ${recoveryAttempts} additional confirm${recoveryAttempts === 1 ? '' : 's'})`,
