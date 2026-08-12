@@ -1343,6 +1343,27 @@ describe('buildSchemaColumnRedirect (known physical-column vocabulary)', () => {
       ),
     ).toBeNull();
   });
+
+  it('explains that tool_invocations stores output references and metadata, not result_json', () => {
+    const out = buildSchemaColumnRedirect(
+      'SELECT result_json FROM harness_shared.tool_invocations LIMIT 1',
+      'column "result_json" does not exist',
+    );
+    expect(out).toContain('output_ref');
+    expect(out).toContain('output_size');
+    expect(out).toContain('metadata_json');
+    expect(out).toContain('no inline result JSON');
+    expect(out).toContain('harness_shared.tool_invocations');
+  });
+
+  it('does not redirect result_json for an unrelated relation', () => {
+    expect(
+      buildSchemaColumnRedirect(
+        'SELECT result_json FROM harness_shared.action_executions',
+        'column "result_json" does not exist',
+      ),
+    ).toBeNull();
+  });
 });
 
 /**

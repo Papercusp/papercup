@@ -602,14 +602,23 @@ export function buildDerivedColumnRedirect(rawSql: string, errorMessage: string)
 const SCHEMA_COLUMN_REDIRECTS: ReadonlyArray<{
   relation: string;
   missing: string;
-  actual: string;
-  scope: string;
+  actual?: string;
+  scope?: string;
+  message?: string;
 }> = [
   {
     relation: 'routines',
     missing: 'harness_slug',
     actual: 'install_slug',
     scope: 'workspace_id',
+  },
+  {
+    relation: 'tool_invocations',
+    missing: 'result_json',
+    message:
+      'this ledger has no inline result JSON. Its output-related columns are `output_ref` (a reference), ' +
+      '`output_size` (bytes), and `metadata_json` (transport metadata); select those physical columns or use ' +
+      'the covering activity/tool-log read for call output and metadata',
   },
 ];
 
@@ -631,6 +640,11 @@ export function buildSchemaColumnRedirect(rawSql: string, errorMessage: string):
     (entry) => entry.relation === relation && entry.missing === column,
   );
   if (!hit) return null;
+
+  if (hit.message) {
+    return `⚠ \`${hit.missing}\` is not a column on ${referenced[0]} — ${hit.message}. ` +
+      `(live schema contract; see ${referenced[0]})`;
+  }
 
   return (
     `⚠ \`${hit.missing}\` is not a column on ${referenced[0]} — this relation uses ` +

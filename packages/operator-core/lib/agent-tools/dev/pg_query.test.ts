@@ -235,6 +235,27 @@ describe('dev:pg_query — P-005 guard wiring', () => {
     });
   });
 
+  it('redirects the legacy result_json guess to tool_invocations output columns', async () => {
+    pgReadQueryMock.mockRejectedValue(
+      Object.assign(new Error('column "result_json" does not exist'), { code: '42703' }),
+    );
+    describeColumnsMock.mockResolvedValue([
+      {
+        table: 'harness_shared.tool_invocations',
+        columns: ['output_ref: text', 'output_size: bigint', 'metadata_json: jsonb'],
+      },
+    ]);
+    const res = await pgQueryTool.handler(
+      { sql: 'SELECT result_json FROM harness_shared.tool_invocations LIMIT 1' } as never,
+      {} as never,
+    );
+    expect(payloadOf(res as never)).toMatchObject({
+      code: '42703',
+      schemaColumn: expect.stringContaining('output_ref'),
+    });
+    expect(String(payloadOf(res as never).schemaColumn)).toContain('no inline result JSON');
+  });
+
   it('a non-42703 error gets no column lookup; a failing lookup still returns the error', async () => {
     pgReadQueryMock.mockRejectedValue(Object.assign(new Error('syntax error'), { code: '42601' }));
     const res = await pgQueryTool.handler({ sql: 'SELEC 1' } as never, {} as never);
