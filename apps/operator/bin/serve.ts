@@ -1272,6 +1272,46 @@ export function readPgDiscoveryRecord(): { port?: unknown; pid?: unknown } | nul
 }
 
 /**
+ * Remove a discovery advertisement only when it still belongs to this serve
+ * process and (when present) this embedded-PG port. A newer serve can replace
+ * the file while an older shutdown is still draining; an unconditional unlink
+ * from that older shutdown would erase the newer process's live endpoint.
+ *
+ * Records written by this module always carry both `pid` and `port`. Requiring
+ * the pid here also means an older/malformed record is left for the reader's
+ * stale-file guard rather than being mistaken for ours.
+ */
+export function removeOwnedPgDiscoveryFile(
+  path: string,
+  ownerPid: number,
+  ownerPort?: number,
+): boolean {
+  let record: { pid?: unknown; port?: unknown };
+  try {
+    record = JSON.parse(readFileSync(path, "utf8"));
+  } catch {
+    return false;
+  }
+
+  if (Number(record?.pid) !== ownerPid) return false;
+  const advertisedPort = Number(record?.port);
+  if (
+    ownerPort !== undefined &&
+    Number.isInteger(advertisedPort) &&
+    advertisedPort !== ownerPort
+  ) {
+    return false;
+  }
+
+  try {
+    unlinkSync(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
  * WI-7462: may we take over the box-wide embedded-pg advertisement?
  *
  * Pure so the rule is unit-testable without booting Postgres. The single
@@ -1482,6 +1522,20 @@ async function main(): Promise<void> {
             /* already gone */
           }
         }
+        if (pg) {
+          // The primary owns the box-wide advertisement only when it was
+          // allowed to publish there. A refused publish uses the per-port
+          // record below; env-sidecar siblings must never touch the primary's
+          // global record.
+          if (!ENV_OPERATOR_ID) {
+            removeOwnedPgDiscoveryFile(EMBEDDED_PG_JSON, process.pid, pg.port);
+          }
+          removeOwnedPgDiscoveryFile(
+            join(PAPERCUSP_DIR, `embedded-pg.${pg.port}.json`),
+            process.pid,
+            pg.port,
+          );
+        }
         if (pg) sigintPostmasterSync(resolvedPgDataDir());
         releaseColdStartLock();
       },
@@ -1562,6 +1616,16 @@ async function main(): Promise<void> {
       }
     }) as unknown as { close?: () => void };
   } catch (e) {
+    if (pg) {
+      if (!ENV_OPERATOR_ID) {
+        removeOwnedPgDiscoveryFile(EMBEDDED_PG_JSON, process.pid, pg.port);
+      }
+      removeOwnedPgDiscoveryFile(
+        join(PAPERCUSP_DIR, `embedded-pg.${pg.port}.json`),
+        process.pid,
+        pg.port,
+      );
+    }
     releaseColdStartLock();
     if (pg) await pg.stop().catch(() => {});
     throw e;

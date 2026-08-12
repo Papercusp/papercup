@@ -924,6 +924,49 @@ describe("readPgDiscoveryRecord (WI-7462)", () => {
   });
 });
 
+describe("removeOwnedPgDiscoveryFile", () => {
+  const discovery = () => join(pcDir(), "embedded-pg.json");
+
+  afterEach(() => {
+    rmSync(discovery(), { force: true });
+  });
+
+  it("removes the current process's advertisement on shutdown", () => {
+    mkdirSync(pcDir(), { recursive: true });
+    writeFileSync(discovery(), JSON.stringify({ pid: 4242, port: 15084 }));
+
+    expect(serve.removeOwnedPgDiscoveryFile(discovery(), 4242, 15084)).toBe(true);
+    expect(statSync(discovery(), { throwIfNoEntry: false })).toBeUndefined();
+  });
+
+  it("leaves a newer process's advertisement intact", () => {
+    mkdirSync(pcDir(), { recursive: true });
+    writeFileSync(discovery(), JSON.stringify({ pid: 5252, port: 16084 }));
+
+    expect(serve.removeOwnedPgDiscoveryFile(discovery(), 4242, 15084)).toBe(false);
+    expect(JSON.parse(readFileSync(discovery(), "utf8"))).toEqual({
+      pid: 5252,
+      port: 16084,
+    });
+  });
+
+  it("leaves an advertisement whose port changed under the same pid", () => {
+    mkdirSync(pcDir(), { recursive: true });
+    writeFileSync(discovery(), JSON.stringify({ pid: 4242, port: 16085 }));
+
+    expect(serve.removeOwnedPgDiscoveryFile(discovery(), 4242, 15084)).toBe(false);
+    expect(statSync(discovery(), { throwIfNoEntry: false })).toBeDefined();
+  });
+
+  it("does not claim malformed or legacy records without a pid", () => {
+    mkdirSync(pcDir(), { recursive: true });
+    writeFileSync(discovery(), JSON.stringify({ port: 15084 }));
+    expect(serve.removeOwnedPgDiscoveryFile(discovery(), 4242, 15084)).toBe(false);
+    writeFileSync(discovery(), "not json");
+    expect(serve.removeOwnedPgDiscoveryFile(discovery(), 4242, 15084)).toBe(false);
+  });
+});
+
 describe("isPortAccepting", () => {
   it("is true for a live listener and false for a free port", async () => {
     const { createServer } = await import("node:net");
