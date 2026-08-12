@@ -355,6 +355,20 @@ export function runBootstrap(): void {
       const { validateDeclaredSingletons } = await import(
         '@papercusp/operator-core/lib/startup/validate-declared-singletons'
       );
+      // A packaged desktop's first boot validates before the asynchronous dogfood-hive
+      // bootstrap has had a chance to register its first project. In that known empty-
+      // workspace window, every @singleton row is absent by construction; running the
+      // detector here produces a misleading FATAL on a service that is serving normally.
+      // Defer only this recognized fresh-install case. Once any project exists, keep the
+      // detector loud so a genuinely established workspace cannot hide an unmaterialized
+      // learning loop behind the first-boot exception.
+      if (process.env.PAPERCUSP_DESKTOP === '1' && (await isLikelyFreshInstallGap())) {
+        console.log(
+          '[declared-singletons] startup validation deferred — fresh packaged install has no ' +
+            'registered project yet; retry after first-boot hive provisioning',
+        );
+        return;
+      }
       const r = await validateDeclaredSingletons();
       if (r.ok) console.log(`[declared-singletons] startup validation passed — ${r.checked} loop(s) materialized`);
       // The not-ok path already logged FATAL, naming each loop that will never run.

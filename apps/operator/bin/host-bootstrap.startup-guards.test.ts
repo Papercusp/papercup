@@ -85,6 +85,19 @@ describe('host-bootstrap wires every startup guard', () => {
     expect(catches.length).toBeGreaterThanOrEqual(STARTUP_GUARDS.length);
   });
 
+  it('defers declared-singleton validation during a fresh packaged install', () => {
+    // The packaged sidecar starts before the async dogfood-hive bootstrap can register its
+    // first project. Running the absence detector in that empty-workspace window emits a
+    // misleading FATAL even though the operator is healthy and serving. The defer must stay
+    // narrow: the normal validateDeclaredSingletons() call remains in the same boot block for
+    // established workspaces.
+    expect(bootSrc).toMatch(
+      /process\.env\.PAPERCUSP_DESKTOP\s*===\s*['"]1['"]\s*&&\s*\(await\s+isLikelyFreshInstallGap\(\)\)/,
+    );
+    expect(bootSrc).toContain('[declared-singletons] startup validation deferred');
+    expect(bootSrc).toMatch(/startup validation deferred[\s\S]*?return;[\s\S]*?validateDeclaredSingletons\(\)/);
+  });
+
   // [EI-727] Not a STARTUP_GUARDS entry (it doesn't live in its own startup/validate-*
   // module — it's a one-line pure predicate on agent-config.ts) but the same
   // called-not-just-imported wiring risk applies: a silently-orphaned boot warning is as
