@@ -199,6 +199,15 @@ export function timeoutForTool(toolName: any): 60000 | 30000;
  * staging/release recovery, so it must provide the same bounded absorption.
  */
 export function isLoopPressureShed(error: any): boolean;
+/**
+ * Format a tools/call failure without implying that the call did not run.
+ * Stream transport failures can arrive after the operator has dispatched the
+ * tool, so callers must verify mutation state before replaying the payload.
+ * The one known pre-dispatch refusal (loop-pressure shedding) is called out
+ * separately because that signal is safe to retry and cannot have executed.
+ * Pure — exported for focused diagnostics tests.
+ */
+export function formatToolCallFailure(toolName: any, error: any): string;
 export function callToolWithPressureRetry(client: any, params: any, { maxAttempts, retryDelayMs, timeoutMs, sleep, }?: {
     maxAttempts?: number | undefined;
     retryDelayMs?: number | undefined;
