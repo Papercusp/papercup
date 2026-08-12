@@ -89,6 +89,7 @@ import {
   contextPct,
   deriveBadges,
   formatAge,
+  hasSessionChatSurface,
   HUD_DEFAULT_THRESHOLDS,
   isInfrastructureAwait,
   shortHandle,
@@ -1101,6 +1102,16 @@ export default function SessionChatModal({
     return (payload.starting ?? []).find((e) => e.ownerId === sessionOwnerId) ?? null;
   }, [actionRoster.data, sessionOwnerId]);
 
+  // The modal's resolver is intentionally Claude-first, but a live Codex/OMP
+  // roster row is not a missing Claude session. Keep the agent kind as the
+  // authoritative discriminator so the popup cannot blame liveness or mount
+  // a Claude stream/composer for a different native session type.
+  const chatSupported = hasSessionChatSurface(actionRosterEntry?.agent);
+  const unsupportedChatAgent =
+    !chatSupported && actionRosterEntry?.agent?.trim()
+      ? actionRosterEntry.agent.trim().toLowerCase()
+      : null;
+
   // ── WI-6367: the "starting up" window ──────────────────────────────────────
   // True while THIS modal is showing a session that has neither registered in
   // the roster nor produced a transcript yet, and that we have positive evidence
@@ -1673,7 +1684,12 @@ export default function SessionChatModal({
         {actionRosterEntry ? (
           <SessionStateHeader entry={actionRosterEntry} onOpenDetail={scrollToDossierSection} />
         ) : null}
-        {resolving ? (
+        {unsupportedChatAgent ? (
+          <div style={BANNER_STYLE} data-testid="session-chat-unsupported-agent">
+            This agent runs on {unsupportedChatAgent}; the chat surface is available only for Claude
+            sessions.
+          </div>
+        ) : resolving ? (
           <div style={BANNER_STYLE}>Finding this agent's session…</div>
         ) : resolveError ? (
           // WI-5364: friendly headline first — the raw transport error (status
@@ -1833,7 +1849,7 @@ export default function SessionChatModal({
             inside what maximize paints — the owner asked for it in both modes.
             The only gate left is `actionCtx`, which is about whether there is a
             live session to act ON, not about layout. ── */}
-        {actionCtx && (
+        {actionCtx && chatSupported && (
           <>
             {/* Renders whatever askUserLocal card an action's params()/confirm
                 step opens (P-002 substrate) — the SAME renderer the
