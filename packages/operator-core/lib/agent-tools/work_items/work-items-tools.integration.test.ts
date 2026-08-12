@@ -294,6 +294,47 @@ describe('work_items:* tool surface — lifecycle (real PG)', () => {
     expect(onlyBugs.length).toBe(1);
   });
 
+  it('list exposes q in the schema and filters title/body across both families', async () => {
+    expect(listTool.args.safeParse({ q: 'tool-q-title-marker' }).success).toBe(true);
+    expect(listTool.args.safeParse({ q: 'x'.repeat(201) }).success).toBe(false);
+
+    const featureTitle = await createOne({
+      kind: 'feature',
+      title: 'tool-q-title-marker feature',
+      summary: 'feature prose',
+      harness: 'papercup',
+    });
+    const featureBody = await createOne({
+      kind: 'feature',
+      title: 'tool feature body',
+      summary: 'tool-q-body-marker feature',
+      harness: 'papercup',
+    });
+    const issueTitle = await createOne({
+      kind: 'bug',
+      title: 'tool-q-title-marker issue',
+      summary: 'issue prose',
+      harness: 'papercup',
+    });
+    const issueBody = await createOne({
+      kind: 'bug',
+      title: 'tool issue body',
+      summary: 'tool-q-body-marker issue',
+      harness: 'papercup',
+    });
+    const featureTitleId = (featureTitle.workItem as Record<string, unknown>).id as string;
+    const featureBodyId = (featureBody.workItem as Record<string, unknown>).id as string;
+    const issueTitleId = (issueTitle.workItem as Record<string, unknown>).id as string;
+    const issueBodyId = (issueBody.workItem as Record<string, unknown>).id as string;
+
+    expect((await listData({ harness: 'papercup', q: 'tool-q-title-marker' })).map((w) => w.id).sort()).toEqual(
+      [featureTitleId, issueTitleId].sort(),
+    );
+    expect((await listData({ harness: 'papercup', q: 'tool-q-body-marker' })).map((w) => w.id).sort()).toEqual(
+      [featureBodyId, issueBodyId].sort(),
+    );
+  });
+
   // EI-6506: work_items:list had no assignee/mine filter — a leader's "see your
   // work item" handoff was un-findable without raw PG. `assignee` filters by an
   // explicit id (feature → taken_by, issue → assignee, already supported by the
