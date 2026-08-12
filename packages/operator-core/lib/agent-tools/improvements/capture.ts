@@ -569,6 +569,21 @@ export default defineTool({
         'ratings were supplied twice: pass them once under observation.ratings (preferred) or top-level ratings (compatibility alias)',
       );
     }
+    // EI-20212184497318148: `notExercised` is scorecard shorthand, not a
+    // free-text caveat. Expanding it without a rubric manufactures synthetic
+    // ratings and then fails later with the technically-correct but misleading
+    // "ratings must name the rubric" error — making the caller believe it never
+    // supplied ratings at all. Fail at the shorthand boundary and name the
+    // missing prerequisite directly. The legacy top-level rubricRef alias is a
+    // valid prerequisite because it is normalized into the same observation.
+    if (
+      args.observation?.notExercised?.length &&
+      !(args.observation.rubricRef ?? args.rubricRef)?.trim()
+    ) {
+      throw new ObservationEvidenceError(
+        'observation.notExercised is scorecard shorthand and requires observation.rubricRef (or the top-level rubricRef compatibility alias)',
+      );
+    }
     const observationInput =
       args.observation || args.rubricRef || args.ratings
         ? {

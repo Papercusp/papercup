@@ -1072,6 +1072,39 @@ describe('improvements:capture — notExercised shorthand (rubric-system-improve
     expect(passed.payloadExtra?.observation?.ratings?.wake).toEqual({ rating: 'degraded', evidence: 'real signal' });
   });
 
+  it('rejects notExercised without a rubric at the shorthand boundary', async () => {
+    await expect(
+      callTool({
+        title: 'release-gate friction',
+        lane: 'observation',
+        observation: {
+          kind: 'friction',
+          notExercised: ['Whether the gate failure was related was not established.'],
+        },
+      }),
+    ).rejects.toThrow(/observation\.notExercised.*requires.*rubricRef/);
+    expect(mockCapture).not.toHaveBeenCalled();
+  });
+
+  it('accepts notExercised when the rubric uses the top-level compatibility alias', async () => {
+    await callTool({
+      title: 'legacy scoped scorecard',
+      lane: 'observation',
+      rubricRef: 'r',
+      observation: { notExercised: ['wake'] },
+    });
+    expect(mockCapture).toHaveBeenCalledWith(
+      expect.objectContaining({
+        payloadExtra: expect.objectContaining({
+          observation: expect.objectContaining({
+            rubricRef: 'r',
+            ratings: { wake: { rating: 'unknown', evidence: 'idle: not exercised by this run.' } },
+          }),
+        }),
+      }),
+    );
+  });
+
   it('the args schema accepts notExercised (strict observation object knows the key)', () => {
     const argsSchema = (
       captureTool as unknown as {
