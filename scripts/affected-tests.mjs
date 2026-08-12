@@ -769,6 +769,69 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     },
   },
   {
+    // WI-38239 — the drift detector for the PG-canonical authored-doc corpus (plan
+    // claude-md-projection-from-pg-2026-08-10). `scripts/project-authored-docs.ts` called this
+    // "a GATE" in its own header while NOTHING invoked it, and the cost was measured twice in
+    // one day: four projected docs hand-edited and drifted ~20h before anyone noticed, then
+    // testing/agent-e2e.mdx drifted AGAIN ~5h later. Both surfaced only by a hand-run command.
+    //
+    // Keyed on the CONTENT PATHS rather than on the projector, because the change this must
+    // catch is a hand-edit to a projected doc — the projector itself is usually untouched when
+    // the corpus drifts. The projector + its config attach too: a change to how projection is
+    // computed can drift all 873 files at once without any doc being edited.
+    //
+    // Narrow by design, and that narrowness is what makes it proportionate: it fires ONLY when
+    // a projected doc actually changes. A legitimate projector write leaves the file matching
+    // its PG row, so the check passes; the only red it can produce is a genuine hand-edit,
+    // whose remedy is one command (`--ingest --reconcile`, which preserves the edit into PG
+    // rather than clobbering it).
+    //
+    // Runnable off-box by construction: `--check` SKIPS cleanly (exit 0, and it says it checked
+    // nothing) when Postgres is unreachable, so attaching it here does not fail every GitHub CI
+    // run — see the no-DB degrade note in project-authored-docs.ts. That degrade is what makes
+    // registration honest rather than a permanently-red leg the fleet learns to ignore.
+    workspace: '@papercusp/operator-core',
+    script: 'gen:authored-docs:check',
+    // No hostSuiteRatchet: authored-doc-projection.test.ts unit-tests the projection HELPERS,
+    // it never execs `--check` over the real corpus, so no suite run implies this has executed.
+    appliesTo: (f) =>
+      f.startsWith('apps/operator-docs/src/content/docs/') ||
+      f === 'scripts/project-authored-docs.ts' ||
+      f === '.papercusp/docs.json',
+  },
+  {
+    // WI-38312 — `lint:sidecar-fallback-reported` (EI-20281745253229841) shipped enforcing
+    // NOTHING: its only coverage was a logic-test of its predicate over fixtures, so
+    // lint:guard-reachability went red for every agent whose change mapped into
+    // operator-core — an unattributed `failed=1` with zero failing FILES, which reads as
+    // "your change broke something" and sends each of them hunting in their own diff.
+    //
+    // It scans every tracked .ts, so anchoring it to operator-core's suite alone would
+    // rebuild the same blind spot one level down: a bad fallback added in ANY other
+    // workspace gets no local signal and first surfaces as a red fleet gate.
+    //
+    // Cost: ~0.8s (measured, 3 warm runs: 0.73/0.79/0.86). It was ~13s until this entry
+    // forced the question — it read all 5,434 eligible files when only 6 mention a sidecar
+    // entrypoint. A `git grep -l -F` prefilter does that selection in the index. The verdict
+    // is unchanged BY MEASUREMENT, not by argument: git grep missed 0 of the 6 files an
+    // exhaustive read found, and masking can only ever REMOVE matches, so the grep is a
+    // strict superset of what the masked check can accept.
+    workspace: '@papercusp/operator-core',
+    script: 'lint:sidecar-fallback-reported',
+    // The ratchet is real: the guard's own test execs this SAME script over the real
+    // tree, so when operator-core's suite runs it has genuinely already executed.
+    hostSuiteRatchet: 'packages/operator-core/lib/fleet/sidecar-fallback-reported-guard.test.ts',
+    // Mirrors the guard's own eligibility filter — an unreported fallback can only be
+    // introduced by a non-test .ts source, or by editing the guard/allowlist itself.
+    appliesTo: (f) =>
+      f === 'scripts/check-sidecar-fallback-reported.mjs' ||
+      (f.endsWith('.ts') &&
+        !f.endsWith('.test.ts') &&
+        !f.endsWith('.integration.test.ts') &&
+        !f.includes('/dist/') &&
+        !f.includes('node_modules')),
+  },
+  {
     // EI-19454727576364875 — a `lint:*` script is declared in a package.json, so editing a
     // package.json is the single edit that can ORPHAN a guard (add a script and wire it nowhere;
     // rename one a runner invokes by name; delete one a gate leg expects). The meta-guard that

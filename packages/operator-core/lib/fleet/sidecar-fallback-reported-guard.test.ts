@@ -18,21 +18,25 @@ import path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-// @ts-ignore — pure JS guard script, no .d.ts (same treatment as the sibling live-tree guards).
-import {
-  findUnreportedFallbacks,
-  scanTree,
-} from '../../../../scripts/check-sidecar-fallback-reported.mjs';
+// prettier-ignore
+// eslint-disable-next-line @typescript-eslint/ban-ts-comment
+// @ts-ignore — plain .mjs guard, no type declarations by design (same treatment as the sibling live-tree guards). Keep this import on ONE line: TS7016 is reported at the module-specifier, so a multi-line import moves the error off the line @ts-ignore covers.
+import { findUnreportedFallbacks, scanTree } from '../../../../scripts/check-sidecar-fallback-reported.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
 const GUARD = path.join(REPO_ROOT, 'scripts/check-sidecar-fallback-reported.mjs');
 
 /**
- * Measured 2026-08-12: the guard reads several thousand tracked .ts files. The floor
- * sits well under that on purpose — it catches a COLLAPSE of the scan (wrong root,
- * broken `git ls-files`, a submodule boundary), not ordinary census movement.
+ * Measured 2026-08-12: 5,434 eligible tracked .ts files ENUMERATED. The floor sits well
+ * under that on purpose — it catches a COLLAPSE of the scan (wrong root, broken
+ * `git ls-files`, a submodule boundary), not ordinary census movement.
+ *
+ * Note this is asserted against `enumerated`, NOT `scanned`. The guard prefilters with
+ * `git grep` and only READS the handful of files that mention a sidecar entrypoint, so
+ * `scanned` is legitimately ~6 and would make a useless floor. `enumerated` is the number
+ * that proves the guard is looking at a repository at all.
  */
-const MIN_SCANNED = 3_000;
+const MIN_ENUMERATED = 3_000;
 
 const compliant = `
   if (gitSidecarEnabled('PAPERCUSP_X_SPAWN_SIDECAR')) {
@@ -115,14 +119,18 @@ describe('check-sidecar-fallback-reported guard', () => {
  * every agent whose change mapped into @papercusp/operator-core.
  */
 describe('sidecar-fallback-reported guard — live verdict over the real tree', () => {
-  it('REACHED the tree: the scan examined a plausible number of files', () => {
-    const { scanned } = scanTree() as { scanned: number };
+  it('REACHED the tree: the enumeration covered a plausible number of files', () => {
+    const { enumerated } = scanTree() as { enumerated: number };
     // Asserted BEFORE the silence below, so a collapsed scan cannot masquerade as
     // a compliant repository.
-    expect(scanned).toBeGreaterThan(MIN_SCANNED);
+    expect(enumerated).toBeGreaterThan(MIN_ENUMERATED);
   });
 
-  it('found the call sites it exists to police — the scan is not silently filtering them all out', () => {
+  it('found the call sites it exists to police — the prefilter is not discarding them all', () => {
+    // The `git grep` prefilter is the one component that could silently reduce this
+    // guard to a no-op while every other assertion stayed green: a broken pattern
+    // yields zero candidates, zero violations, and a confident ✓. This is the check
+    // that fails when that happens.
     const { considered } = scanTree() as { considered: number };
     expect(considered).toBeGreaterThan(0);
   });
