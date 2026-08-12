@@ -87,6 +87,14 @@ const ALLOWLIST: Record<string, Classification> = {
   // The compat VIEW over cup_claim_specs (dropped in a later contract phase) —
   // re-keyed transitively via the base table's 'claim-spec' rebind surface.
   'bee_claim_specs.bee_id': { status: 'covered', surface: 'claim-spec' },
+  // Migration 810's retained history for the row above (EI-18677010014746233). COVERED,
+  // not exempt, even though it is append-only: this is the UNDO for a destructive spec
+  // write, so leaving it under a dead id makes `scheduler:get_claim_spec { cupId,
+  // history }` return an EMPTY window to the rebound agent — which reads as "no history"
+  // rather than "filed under the id you no longer are". Re-keyed by the same
+  // 'claim-spec' surface, deliberately as its LAST statement (the surface's own DELETE
+  // fires the retention trigger and writes one more ghost-keyed row).
+  'cup_claim_spec_revisions.bee_id': { status: 'covered', surface: 'claim-spec' },
   'event_awaits.subscriber_id': { status: 'covered', surface: 'awaits' },
   'plan_item_claims.owner': { status: 'covered', surface: 'plan-claims' },
   'work_item_claims.owner': { status: 'covered', surface: 'work-claims' },

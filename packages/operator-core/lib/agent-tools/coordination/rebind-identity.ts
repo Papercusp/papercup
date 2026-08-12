@@ -113,6 +113,11 @@ export interface RebindSurfaceResult {
   cancelled?: number;
   /** Append-only rows written (fleet membership facts). */
   appended?: number;
+  /** Retained-history rows re-keyed alongside their live row (claim-spec revisions,
+   *  migration 810). Counted separately from `moved` because it is a different
+   *  population: `moved` is live state the agent is about to act on, this is the
+   *  superseded versions behind it. Summing them would overstate what was re-homed. */
+  movedHistory?: number;
   error?: string;
 }
 
@@ -344,6 +349,27 @@ export async function rebindIdentity(
        WHERE bee_id = ${f} RETURNING bee_id
     `;
     r.moved = moved.length;
+    // The lane's HISTORY follows the lane (migration 810). Left behind, it would be
+    // orphaned under a dead id — and the failure is silent in the worst way: the
+    // rebound agent's `scheduler:get_claim_spec { cupId, history }` returns an EMPTY
+    // window, which reads as "this lane has no history" rather than "its history is
+    // filed under the id you no longer are". The undo would be missing for exactly
+    // the agent who just survived a fork.
+    //
+    // MUST RUN LAST in this block. The DELETE above fires migration 810's retention
+    // trigger, which writes a fresh revision row keyed on the GHOST's bee_id — so
+    // moving history any earlier would strand the row this very rebind just created.
+    // (The bee_id UPDATE above fires nothing: the trigger's WHEN clause tests spec
+    // and revision, neither of which a re-key touches.)
+    //
+    // No collision handling is needed here, unlike the parent's PK: revision history
+    // is deliberately keyed on a surrogate `id`, so both identities' rows coexist and
+    // interleave correctly under `ORDER BY superseded_at DESC`.
+    const movedHistory = await sql<Array<{ id: string }>>`
+      UPDATE harness_shared.cup_claim_spec_revisions SET bee_id = ${t}
+       WHERE bee_id = ${f} RETURNING id
+    `;
+    r.movedHistory = movedHistory.length;
   });
 
   // 7. Standing awaits (wakeOnReply etc.) — ACTIVE rows only; the event_key can

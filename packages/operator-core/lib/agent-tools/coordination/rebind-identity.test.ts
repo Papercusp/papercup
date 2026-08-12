@@ -41,6 +41,8 @@ interface FakeOpts {
   leaderSlugs?: string[];
   claimSpecDrop?: number;
   claimSpecMove?: number;
+  /** Retained claim-spec revision rows re-keyed (migration 810). */
+  claimSpecHistoryMove?: number;
   awaits?: Array<{ id: number; workspace_id: string; event_key: string }>;
   /** Rewritten event keys that already have an identical active to-await. */
   awaitDupKeys?: string[];
@@ -106,6 +108,12 @@ function fakeSql(opts: FakeOpts = {}) {
     }
     if (text.includes('UPDATE harness_shared.cup_claim_specs')) {
       return Promise.resolve(rows(opts.claimSpecMove, { bee_id: TO }));
+    }
+    // Distinct from the matcher above on purpose: 'cup_claim_spec_revisions' does NOT
+    // contain the substring 'cup_claim_specs' (the char after `spec` is `_`, not `s`),
+    // so the two never capture each other regardless of order.
+    if (text.includes('UPDATE harness_shared.cup_claim_spec_revisions')) {
+      return Promise.resolve(rows(opts.claimSpecHistoryMove, { id: '1' }));
     }
     if (text.includes('SELECT id, workspace_id, event_key FROM harness_shared.event_awaits')) {
       return Promise.resolve(opts.awaits ?? []);
@@ -395,6 +403,42 @@ describe('fleet membership (append-only) + leadership', () => {
     const noFleet = fakeSql({ fleetLatest: { workspace_id: 'coord-ws', owner_label: null, fleet_slug: null, fleet_role: null } });
     const res2 = await rebind(FROM, TO, noFleet);
     expect(surfaceOf(res2, 'fleet-membership').appended).toBeUndefined();
+  });
+});
+
+describe('claim-spec revision history follows the lane (migration 810, EI-18677010014746233)', () => {
+  it('re-keys the retained history, counted apart from the live row', async () => {
+    // Left behind, the history is orphaned under a dead id and the rebound agent's
+    // `scheduler:get_claim_spec { cupId, history }` returns an EMPTY window — which
+    // reads as "this lane has no history", not "it is filed under the id you no longer
+    // are". That is the undo for a destructive spec write going quietly missing for
+    // exactly the agent who just survived a fork.
+    const sql = fakeSql({ claimSpecMove: 1, claimSpecHistoryMove: 4 });
+    const res = await rebind(FROM, TO, sql);
+    expect(surfaceOf(res, 'claim-spec')).toMatchObject({ moved: 1, movedHistory: 4 });
+  });
+
+  it('moves history AFTER the live-side DELETE, so the row that DELETE creates is not stranded', async () => {
+    // ORDER IS LOAD-BEARING, and a reordering would look harmless. The surface's own
+    // DELETE (live-side-wins) fires migration 810's retention trigger, which writes ONE
+    // MORE revision row keyed on the GHOST id. Moving history before that runs leaves
+    // precisely the row this rebind just created behind.
+    const sql = fakeSql({ claimSpecDrop: 1, claimSpecHistoryMove: 2 });
+    await rebind(FROM, TO, sql);
+    const idx = (needle: string) => sql.calls.findIndex((c) => c.text.includes(needle));
+    const del = idx('DELETE FROM harness_shared.cup_claim_specs');
+    const history = idx('UPDATE harness_shared.cup_claim_spec_revisions');
+    expect(del, 'live-side DELETE not issued').toBeGreaterThan(-1);
+    expect(history, 'history re-key not issued').toBeGreaterThan(-1);
+    expect(history).toBeGreaterThan(del);
+  });
+
+  it('re-keys history unconditionally — not only when a live row moved', async () => {
+    // A CLEARED lane has no live row at all, and its history is the only thing left to
+    // recover. Gating the history move on `moved > 0` would skip exactly that case.
+    const sql = fakeSql({ claimSpecMove: 0, claimSpecDrop: 0, claimSpecHistoryMove: 3 });
+    const res = await rebind(FROM, TO, sql);
+    expect(surfaceOf(res, 'claim-spec')).toMatchObject({ moved: 0, movedHistory: 3 });
   });
 });
 
