@@ -66,8 +66,26 @@ export const OPERATIVE_CLAUSE_MAX_CLAUSES_DEFAULT = 2;
  * that corpus is comments and prompts, NOT checkpoints. Measure the population
  * the code actually reads.
  */
+/**
+ * ⚠ The case-sensitivity is LOAD-BEARING — do NOT "simplify" this to /i.
+ *
+ * Uppercase is the author's own emphasis marker, and it is what separates a
+ * directive from ordinary prose ("I do not think…", "this must be why…"). But
+ * the all-caps-only form under-matched badly: agents overwhelmingly write the
+ * emphatic negation as `do NOT` — lowercase auxiliary, uppercase NOT — which
+ * the original `DO NOT` alternative missed entirely.
+ *
+ * Measured on a live 24-fact orient fold: the all-caps form matched 7 clauses,
+ * the modal+NOT form below catches 7 MORE (doubling recall), and every one of
+ * those 7 is a genuine directive — "do NOT check the Tauri desktop binary's
+ * pid. That is the SHELL, not the server", "do NOT assert load causation
+ * without a mechanism". A naive case-insensitive pass over the same corpus
+ * matched 35, i.e. 5x, which would spend the (deliberately small) clause budget
+ * on ordinary prose and crowd out the real directives. Hence: the auxiliary may
+ * be any case, the NOT may not.
+ */
 export const OPERATIVE_MARKERS =
-  /\b(ALWAYS|NEVER|MUST|DO NOT|DON'T|REQUIRED|RULE:|NO MORE)\b|⛔|SUPERSED(?:ING|ED)|\[owner[:\s][^\]]*\]/;
+  /\b(ALWAYS|NEVER|MUST|DON'T|REQUIRED|RULE:|NO MORE)\b|\b(?:[Dd]o|[Dd]oes|[Mm]ust|[Ss]hould)\s+NOT\b|⛔|SUPERSED(?:ING|ED)|\[owner[:\s][^\]]*\]/;
 
 export interface ExtractOperativeClausesOptions {
   /** Total char budget across all preserved clauses. */

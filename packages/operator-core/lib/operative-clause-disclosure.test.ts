@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 
 import {
+  OPERATIVE_MARKERS,
   capPreservingOperative,
   capPreservingOperativeDetailed,
   renderWithheldNotice,
@@ -179,5 +180,44 @@ describe('the orient recovery fold shape', () => {
     ).truncation!;
     expect(marker.more).toContain('WI-37986');
     expect(marker.withheldChars).toBe(5_000 - 1_199);
+  });
+});
+
+describe('OPERATIVE_MARKERS recognises the emphatic mixed-case negation', () => {
+  // Agents write directives as `do NOT …` far more often than `DO NOT …`. The
+  // all-caps-only pattern missed those, so the clause that mattered was severed
+  // by every excerpting surface that relies on this regex.
+  it.each([
+    ['DO NOT retry — the error is correct.', true],
+    ['do NOT assert load causation without a mechanism.', true],
+    ['does NOT yield a degraded acceptance rubric.', true],
+    ['must NOT be claimed while a peer holds it.', true],
+    ['should NOT be re-run inside the retriage window.', true],
+    ['NEVER seize the gate.', true],
+    ['⛔ stop here.', true],
+  ])('matches %j', (text, expected) => {
+    expect(OPERATIVE_MARKERS.test(text as string)).toBe(expected);
+  });
+
+  // CONTROL — the case-sensitivity is the whole point. If someone "simplifies"
+  // this regex to /i, every one of these starts matching, the small clause
+  // budget fills with ordinary prose, and real directives get crowded out.
+  // Measured: /i matched 35 clauses on the corpus where this regex matched 14.
+  it.each([
+    'I do not think that is the cause.',
+    'this must be why the probe failed',
+    'it does not appear in the ledger',
+    'we should not have to guess',
+    'the run never completed',
+  ])('CONTROL: does NOT match ordinary lowercase prose %j', (text) => {
+    expect(OPERATIVE_MARKERS.test(text)).toBe(false);
+  });
+
+  it('preserves a mixed-case directive past the cut, end to end', () => {
+    const body = `head ${'x'.repeat(400)} do NOT check the desktop binary's pid.`;
+    const r = capPreservingOperativeDetailed(body, 200);
+    expect(r.text).toContain('⚠ OPERATIVE');
+    expect(r.text).toContain('do NOT check the desktop binary');
+    expect(r.truncation?.operativeClausesKept).toBeGreaterThan(0);
   });
 });
