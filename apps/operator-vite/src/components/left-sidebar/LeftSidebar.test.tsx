@@ -26,34 +26,24 @@ import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 // except MUG_KETTLE, so it is what turns Sentinel and Convos on, and the several
 // `= true` assignments below are load-bearing for THOSE tabs. Renamed rather than
 // removed precisely so the next reader does not delete them as overwatch residue.)
-// `mugKettleOn` is a THIRD knob, separate from the blanket for the same reason
-// `flags` is: a single boolean cannot express a real configuration. It defaults
-// to TRUE — the inverse of `blanketFlagOn` — because MUG_KETTLE_SYSTEM is the only
-// gate here whose OFF state removes the rail's DEFAULT tab, so letting the
-// blanket answer it would silently retire the Mug tier underneath every test
-// written before the gate existed. Those tests would not fail loudly; the
-// "defaults to OPEN on the Mug tab" and "snaps ?lst=overwatch back to Mug" cases
-// would just start asserting the retirement instead of their own subject
-// (retire-mug-kettle-su-only-2026-08-09 — the quiet vi.mock trap the plan warns
-// about). Defaulting it ON keeps every existing case testing what it was written
-// to test; the gate's own OFF behaviour is covered by its describe block below,
-// which sets this false explicitly.
-//
-// It is read BEFORE `flags` rather than after, so the wholesale `H.flags = {…}`
-// assignments several tests do cannot clobber it by omission.
+// (`mugKettleOn` was a THIRD knob here, defaulting TRUE, because
+// MUG_KETTLE_SYSTEM's OFF state removed the rail's DEFAULT tab — letting the
+// blanket answer it would have silently retired the Mug tier underneath every
+// test written before that gate existed. The knob is GONE as of 2026-08-12: the
+// Mug tab is RETIRED (P-063/D-096), LeftSidebar reads that flag NOWHERE, and a
+// knob attached to nothing is the "gate a deleted subject" shape this file keeps
+// warning about. The key itself is still pinned as MUG_KETTLE below, because the
+// retirement block sets it explicitly to prove a flip does NOT bring the tab
+// back.)
 const MUG_KETTLE = 'papercusp-mug-kettle-system';
 const H = vi.hoisted(() => ({
   blanketFlagOn: false,
-  mugKettleOn: true,
   flags: {} as Record<string, boolean>,
   pathname: '/adv',
 }));
 
 vi.mock('@papercusp/flags/client', () => ({
-  useFlag: (key: string) =>
-    key === 'papercusp-mug-kettle-system'
-      ? (H.flags[key] ?? H.mugKettleOn)
-      : (H.flags[key] ?? H.blanketFlagOn),
+  useFlag: (key: string) => H.flags[key] ?? H.blanketFlagOn,
 }));
 vi.mock('@/lib/router-compat/navigation', () => ({ usePathname: () => H.pathname }));
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
@@ -61,12 +51,16 @@ vi.mock('@papercusp/operator-core/lib/browser-workspace', () => ({
   wsLocalKey: (k: string) => `test:${k}`,
 }));
 // Stub the lazy tab panels with trivial markers — their own surfaces are tested
-// separately (MugTab).
+// separately.
 // (No './PotsTab' stub: this rail no longer mounts it at all — the Pots tab was
 // removed 2026-08-10 on owner directive. A stub here would hide a regression that
 // re-added the tab, the same reasoning as the SwarmTab/VoiceTab note below.)
 vi.mock('./AccountsTab', () => ({ default: () => <div data-testid="panel-accounts" /> }));
-vi.mock('./MugTab', () => ({ default: () => <div data-testid="panel-queen" /> }));
+// (No './MugTab' stub: that module RETIRED to _retired/mug-kettle-deciders/ with
+// the Mug/`queen` tab — P-063/D-096 — exactly as the OverwatchTab stub went
+// below. A vi.mock naming a module that no longer exists is the strand this repo
+// has been bitten by before, so it goes with the tab rather than lingering as a
+// harmless-looking line.)
 // (No './OverwatchTab' stub: that module RETIRED to _retired/mug-kettle-deciders/
 // with the Kettle tab — P-059/D-083. A vi.mock naming a module that no longer
 // exists is the strand this repo has been bitten by before, so it goes with the
@@ -106,7 +100,6 @@ beforeAll(() => {
 beforeEach(() => {
   localStorage.clear();
   H.blanketFlagOn = false;
-  H.mugKettleOn = true;
   H.flags = {};
   H.pathname = '/adv';
   document.body.className = '';
@@ -133,12 +126,17 @@ function renderRail(searchParams = '') {
 }
 
 describe('<LeftSidebar> shell', () => {
-  it('defaults to OPEN on the Mug tab (the owner-default Colony tab)', async () => {
+  // Was "defaults to OPEN on the Mug tab (the owner-default Colony tab)". Mug was
+  // the owner's default-open pick (2026-06-15) until it retired with its tier on
+  // 2026-08-12 — P-063/D-096. Accounts is TABS[0] and the new static nuqs
+  // default. The rail still defaults to OPEN, which is the half of this test that
+  // is about the rail rather than about which tab won.
+  it('defaults to OPEN on the Accounts tab (TABS[0], the new default)', async () => {
     renderRail();
     const rail = screen.getByTestId('left-sidebar');
     expect(rail.getAttribute('data-collapsed')).toBe('false');
-    expect(rail.getAttribute('data-tab')).toBe('queen');
-    expect(await screen.findByTestId('panel-queen')).toBeTruthy();
+    expect(rail.getAttribute('data-tab')).toBe('accounts');
+    expect(await screen.findByTestId('panel-accounts')).toBeTruthy();
   });
 
   // Pins the WHOLE owner-set order, not just the first pair (owner ask
@@ -171,7 +169,11 @@ describe('<LeftSidebar> shell', () => {
       // red'd, check whether your change meant to move a tab at all before
       // editing the expectation.)
       'operator',
-      'brain',
+      // ('brain' (the Mug) sat HERE, between Papercup and the Kettle, until
+      // 2026-08-12. RETIRED with its tier — P-063/D-096 — so like the Kettle
+      // below this is a removal from TABS itself, not a gated-OFF tab, and every
+      // entry after it shifts up one. If you are reading this because the test
+      // red'd, check whether your change meant to move a tab at all first.)
       // ('overwatch' (the Kettle) sat HERE, between Mug and Agents, until
       // 2026-08-11. RETIRED with its tier — P-059/D-083 — so unlike the gated-OFF
       // case this is a removal from TABS itself, and every entry after it shifts
@@ -229,7 +231,10 @@ describe('<LeftSidebar> shell', () => {
       // 'goal'/'blender'/'docs'/'tasks' as a RETIRED id: a stale `?lst=hives` no
       // longer matches the nuqs literal parser and falls through to the default.)
       'sentinel',
-      'queen',
+      // ('queen' was here — removed 2026-08-12 with the Mug tab (P-063/D-096).
+      // It joins 'overwatch'/'hives'/'goal'/'blender'/'docs'/'tasks' as a RETIRED
+      // id: a stale `?lst=queen` no longer matches the nuqs literal parser and
+      // falls through to the default tab, which is now 'accounts'.)
       // ('overwatch' was here — removed 2026-08-11 with the Kettle tab. It joins
       // 'hives'/'goal'/'blender'/'docs'/'tasks' as a RETIRED id: a stale
       // `?lst=overwatch` no longer matches the nuqs literal parser and falls
@@ -251,7 +256,11 @@ describe('<LeftSidebar> shell', () => {
     renderRail('?lst=system');
     expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('system');
     expect(await screen.findByTestId('panel-system')).toBeTruthy();
-    expect(screen.queryByTestId('panel-queen')).toBeNull();
+    // The DEFAULT panel must not also be mounted — this asserted `panel-queen`
+    // until 2026-08-12, which became vacuous when that tab was deleted
+    // (P-063/D-096); re-pointed at the new default so it still proves "only that
+    // panel" rather than passing because the subject cannot exist.
+    expect(screen.queryByTestId('panel-accounts')).toBeNull();
   });
 
   // A retired tab id must not resolve. `hives` joins goal/blender/docs/tasks: the
@@ -267,7 +276,10 @@ describe('<LeftSidebar> shell', () => {
     renderRail('?lsb=false');
     const rail = screen.getByTestId('left-sidebar');
     expect(rail.getAttribute('data-collapsed')).toBe('true');
-    expect(screen.queryByTestId('panel-queen')).toBeNull();
+    // The ACTIVE panel unmounts while collapsed. This named `panel-queen` until
+    // 2026-08-12 (P-063/D-096) — re-pointed at the new default tab so it still
+    // has a subject that could actually have mounted.
+    expect(screen.queryByTestId('panel-accounts')).toBeNull();
     // The collapsed expand-rail icon buttons are present.
     expect(screen.getByTestId('left-sidebar-rail-system')).toBeTruthy();
     // ...and the removed Pots icon is NOT (2026-08-10) — the collapsed rail is a
@@ -340,8 +352,10 @@ describe('<LeftSidebar> shell', () => {
     // The steering/settings tabs this rail kept are all still here. ('hives' left
     // this list on 2026-08-10 — the Pots tab was removed on owner directive, so
     // asserting it is KEPT would now be asserting the opposite of the intent.
-    // 'overwatch' left it on 2026-08-11 for the same reason — P-059/D-083.)
-    for (const kept of ['accounts', 'queen']) {
+    // 'overwatch' left it on 2026-08-11 for the same reason — P-059/D-083, and
+    // 'queen' on 2026-08-12 — P-063/D-096. Anchored on two UNGATED survivors so
+    // this cannot go silently unasserted the way a gated anchor could.)
+    for (const kept of ['accounts', 'agents']) {
       expect(screen.getByTestId(`left-sidebar-tab-${kept}`)).toBeTruthy();
     }
     // ...and Pots is gone from BOTH renderings, same as Fleet/Peers above.
@@ -353,7 +367,7 @@ describe('<LeftSidebar> shell', () => {
   // exists: the nuqs literal parser rejects it and falls back to the default.
   it('falls back to the default tab for a stale ?lst pointing at a moved tab (WI-5162)', () => {
     renderRail('?lst=swarm');
-    expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('queen');
+    expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('accounts');
   });
 
   // The Kettle tab was FLAG-GATED here (hidden/shown by OVERWATCH, with a
@@ -365,27 +379,21 @@ describe('<LeftSidebar> shell', () => {
   // a reflexive "restore the tab" change would break.
   it('no longer hosts a Kettle/Overwatch tab, with every flag forced on', () => {
     H.blanketFlagOn = true;
-    H.mugKettleOn = true;
-    H.flags = { 'papercusp-conversations-rail-tab': true };
+    H.flags = { [MUG_KETTLE]: true, 'papercusp-conversations-rail-tab': true };
     renderRail();
     expect(screen.queryByTestId('left-sidebar-tab-overwatch')).toBeNull();
     expect(screen.queryByTestId('left-sidebar-rail-overwatch')).toBeNull();
-    // Its former neighbours on both sides survive — the removal came out of the
-    // MIDDLE of TABS, so these are what a bad re-index would disturb.
-    expect(screen.getByTestId('left-sidebar-tab-queen')).toBeTruthy();
+    // Its surviving neighbours. Mug was the left-hand one until it retired in
+    // turn (P-063/D-096), so Accounts anchors that side now. The removal came out
+    // of the MIDDLE of TABS, so these are what a bad re-index would disturb.
+    expect(screen.getByTestId('left-sidebar-tab-accounts')).toBeTruthy();
     expect(screen.getByTestId('left-sidebar-tab-agents')).toBeTruthy();
   });
 
-  it('lands a bookmarked ?lst=overwatch on a real tab instead of a blank rail', async () => {
-    H.blanketFlagOn = true;
-    H.mugKettleOn = true;
-    renderRail('?lst=overwatch');
-    // 'overwatch' left TAB_IDS with its TABS entry, so parseAsStringLiteral now
-    // REJECTS it and `tab` reads the 'queen' default — no bespoke guard needed.
-    // This is the case that would strand an owner's bookmark on an empty body.
-    await waitFor(() => expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('queen'));
-    expect(await screen.findByTestId('panel-queen')).toBeTruthy();
-  });
+  // (The `?lst=overwatch` bookmark case moved into the tier-retirement block
+  // below, where it is asserted for BOTH retired ids through one it.each:
+  // `queen` joined `overwatch` in leaving TAB_IDS on 2026-08-12, so the two
+  // cases had become the same assertion with a different literal.)
 
   // 🎯 Goals left this rail on 2026-08-09 (owner: "remove the goals middle pane
   // tab entirely. We already have a goals tab inside the hud tab lets just use
@@ -400,9 +408,10 @@ describe('<LeftSidebar> shell', () => {
     expect(screen.queryByTestId('left-sidebar-rail-goal')).toBeNull();
     // Its former neighbours are both still here — the removal came out of the
     // MIDDLE of the array, so this is the pair most likely to be disturbed.
-    // (Goals' left-hand neighbour was the Kettle tab; when that retired in turn
-    // — P-059/D-083 — Mug became the surviving neighbour on that side.)
-    expect(screen.getByTestId('left-sidebar-tab-queen')).toBeTruthy();
+    // (Goals' left-hand neighbour was the Kettle tab; that retired in turn —
+    // P-059/D-083 — and then Mug did too — P-063/D-096 — so Accounts is the
+    // surviving anchor on that side.)
+    expect(screen.getByTestId('left-sidebar-tab-accounts')).toBeTruthy();
     expect(screen.getByTestId('left-sidebar-tab-agents')).toBeTruthy();
   });
 
@@ -413,7 +422,7 @@ describe('<LeftSidebar> shell', () => {
     // effect for `goal`, because nuqs's literal parser no longer accepts the
     // value at all — it never becomes the active tab in the first place.
     renderRail('?lst=goal');
-    expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('queen');
+    expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('accounts');
   });
 
   // ── 💬 Convos behind its testing flag (WI-37561) ─────────────────────────────
@@ -466,13 +475,15 @@ describe('<LeftSidebar> shell', () => {
     // bookmarked ?lst=conversations. Without the guard, `active` falls through to
     // visibleTabs[0] — Accounts — while ?lst= still reads `conversations`, so the
     // URL, `data-tab` and ui:get_state disagree with what is on screen.
-    it('snaps a bookmarked ?lst=conversations back to Mug while the flag is off', async () => {
+    // (Landed on Mug until 2026-08-12; the snap-back target followed `homeTab`
+    // to Accounts when the Mug tab retired — P-063/D-096.)
+    it('snaps a bookmarked ?lst=conversations back to Accounts while the flag is off', async () => {
       H.flags = { [CONVOS]: false };
       renderRail('?lst=conversations');
       await waitFor(() =>
-        expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('queen'),
+        expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('accounts'),
       );
-      expect(await screen.findByTestId('panel-queen')).toBeTruthy();
+      expect(await screen.findByTestId('panel-accounts')).toBeTruthy();
       expect(screen.queryByTestId('panel-conversations')).toBeNull();
     });
 
@@ -505,46 +516,56 @@ describe('<LeftSidebar> shell', () => {
   // land on Mug land now". Note the polarity: OFF is the shipped end state here,
   // so this block describes production and the rest of the file describes the
   // testing escape hatch.
-  describe('the Mug/Kettle tier gate', () => {
+  describe('the Mug/Kettle tier retirement (both tabs deleted, not gated)', () => {
     // Re-declared rather than shared with the Convos block above: the two gates
     // are independent, and the cross-gate test below is the only place they meet.
     const CONVOS_KEY = 'papercusp-conversations-rail-tab';
 
-    // This block covers the surviving HALF of the tier gate. The Kettle tab was
-    // the other half until 2026-08-11: it took BOTH this gate and its own
-    // OVERWATCH flag, and three cases here pinned that AND. All three are gone
-    // with the tab (P-059/D-083) rather than rewritten, because a flag-AND has no
-    // meaning once one operand's subject has been deleted — the tab's absence is
-    // now unconditional and is asserted as a tripwire above, not as gating.
-    // Mug remains genuinely flag-gated, so its cases stay exactly as they were.
-    it('hides Mug from both the tab strip and the collapsed icon rail while the tier is retired', () => {
+    // This block used to cover the surviving HALF of the tier gate. The Kettle
+    // tab was the other half until 2026-08-11: it took BOTH this gate and its
+    // own OVERWATCH flag, and three cases here pinned that AND. All three went
+    // with the tab (P-059/D-083) rather than being rewritten, because a flag-AND
+    // has no meaning once one operand's subject is deleted.
+    //
+    // Mug is now retired too — P-063/D-096 — so LeftSidebar reads
+    // FLAGS.MUG_KETTLE_SYSTEM NOWHERE and every flag-gating case here has lost
+    // its subject. They are REPLACED for the same reason the Kettle's were: a
+    // gating test whose subject has been deleted passes vacuously forever. The
+    // `H.mugKettleOn` knob that drove them went with the component's flag read.
+    //
+    // What protects the retirement instead is the tripwire shape: the tab must
+    // stay gone with EVERY flag forced on — including the tier flag, which still
+    // EXISTS (adv/AdvNowRunning.tsx reads it until P-068) and so can still be
+    // flipped by someone expecting the tab back.
+    it('no longer hosts a Mug/queen tab, with every flag forced on', () => {
       H.blanketFlagOn = true;
-      H.mugKettleOn = false;
+      H.flags = { [MUG_KETTLE]: true, [CONVOS_KEY]: true };
       renderRail();
       expect(screen.queryByTestId('left-sidebar-tab-queen')).toBeNull();
       expect(screen.queryByTestId('left-sidebar-rail-queen')).toBeNull();
-      // The ungated rail is otherwise intact — removing a tab from the middle
-      // must not disturb its neighbours on either side.
+      // The ungated rail is otherwise intact — the removal came out of the
+      // MIDDLE of TABS, so these neighbours are what a bad re-index disturbs.
       expect(screen.getByTestId('left-sidebar-tab-accounts')).toBeTruthy();
       expect(screen.getByTestId('left-sidebar-tab-agents')).toBeTruthy();
     });
 
-    it('shows it again the moment the testing flag is flipped on', () => {
-      H.blanketFlagOn = true;
-      H.mugKettleOn = true;
+    // ⚠ THE FLAG IS NOT AN UNDO — the UI counterpart of the contract D-080 set
+    // for retired TOOLS. Flipping papercusp-mug-kettle-system ON does not bring
+    // a deleted, unmounted surface back. This is the case that catches someone
+    // "re-enabling the Mug" by flipping the flag and believing it worked.
+    it('does not resurrect the Mug tab when the tier flag is flipped ON', () => {
+      H.flags = { [MUG_KETTLE]: true };
       renderRail();
-      expect(screen.getByTestId('left-sidebar-tab-queen')).toBeTruthy();
-      // The Kettle tab does NOT come back with it — the tier flag is a testing
-      // escape hatch for what survives, not an undo for what was retired.
-      expect(screen.queryByTestId('left-sidebar-tab-overwatch')).toBeNull();
+      expect(screen.queryByTestId('left-sidebar-tab-queen')).toBeNull();
+      expect(screen.queryByTestId('panel-queen')).toBeNull();
     });
 
-    // THE DEFAULT-TAB FIX. The nuqs default is a static 'queen', so a first load
-    // with no ?lst at all reads `queen` — a hidden tab. Without the snap-back the
-    // rail renders Accounts (via `active`'s ?? visibleTabs[0]) while data-tab and
-    // ui:get_state still say `queen`: the URL and the screen disagree.
-    it('lands a fresh load on Accounts instead of the hidden default Mug tab', async () => {
-      H.mugKettleOn = false;
+    // THE DEFAULT-TAB MOVE. The nuqs default was a static 'queen'; TAB_IDS is
+    // derived from TABS, so deleting the entry forced the default to 'accounts'
+    // in the same change (a 'queen' default no longer typechecks). A fresh load
+    // must land on a REAL tab with data-tab and the rendered panel agreeing —
+    // the URL-vs-screen disagreement this file keeps catching.
+    it('lands a fresh load on Accounts, the new static default', async () => {
       renderRail();
       await waitFor(() =>
         expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('accounts'),
@@ -553,69 +574,44 @@ describe('<LeftSidebar> shell', () => {
       expect(screen.queryByTestId('panel-queen')).toBeNull();
     });
 
-    it('snaps a bookmarked ?lst=queen back to Accounts while the tier is retired', async () => {
-      H.mugKettleOn = false;
-      renderRail('?lst=queen');
-      await waitFor(() =>
-        expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('accounts'),
-      );
-      expect(screen.queryByTestId('panel-queen')).toBeNull();
-    });
+    // Both retired ids now self-heal through the PARSER rather than a snap-back
+    // guard: neither is in TAB_IDS, so parseAsStringLiteral rejects the value and
+    // `tab` reads the 'accounts' default. Asserting them together is deliberate —
+    // they retired a day apart for the same reason, and a reflexive "add a guard
+    // for the stale deep link" change would be redundant with the parser.
+    it.each(['queen', 'overwatch'])(
+      'lands a bookmarked ?lst=%s on Accounts via the parser, not a guard',
+      async (stale) => {
+        H.blanketFlagOn = true;
+        renderRail(`?lst=${stale}`);
+        await waitFor(() =>
+          expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('accounts'),
+        );
+        // Not merely "the panel is absent" — vacuous once the tab is gone.
+        // Assert the rail rendered a REAL tab: stranding an owner's bookmark on
+        // an empty body is the failure that matters.
+        expect(screen.getByTestId('left-sidebar-tab-accounts')).toBeTruthy();
+      },
+    );
 
-    // Still true after the Kettle tab retired, but by a DIFFERENT mechanism, and
-    // the difference is worth stating: this used to be a snap-back guard reading
-    // `tab === 'overwatch'`. Now 'overwatch' is not in TAB_IDS at all, so the nuqs
-    // parser rejects it first and `tab` reads the 'queen' default — which the
-    // tier-retired branch then lands on Accounts. Two independent layers have to
-    // both hold for this to pass, which is why it is kept rather than folded into
-    // the tripwire above.
-    it('lands a bookmarked ?lst=overwatch on Accounts while the tier is retired', async () => {
-      H.blanketFlagOn = true;
-      H.mugKettleOn = false;
-      renderRail('?lst=overwatch');
-      await waitFor(() =>
-        expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('accounts'),
-      );
-      // Not merely "the overwatch panel is absent" — that is now vacuous. Assert
-      // the rail actually rendered a REAL tab, which is the failure that matters.
-      expect(screen.getByTestId('left-sidebar-tab-accounts')).toBeTruthy();
-    });
-
-    // The OTHER gates' snap-backs used to hardcode 'queen' as their landing. With
-    // the tier retired that target is itself hidden, so every one of them would
-    // have snapped a stale deep link onto a tab that is not on screen — the exact
-    // URL-vs-screen disagreement those snap-backs exist to prevent, reintroduced
-    // one level up. This is the regression `homeTab` exists to stop, and it is
-    // invisible unless a test crosses TWO gates at once.
-    it('lands the OTHER gates’ snap-backs on Accounts too, not on the hidden Mug tab', async () => {
-      H.mugKettleOn = false;
-      H.flags = { [CONVOS_KEY]: false };
-      renderRail('?lst=conversations');
-      await waitFor(() =>
-        expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('accounts'),
-      );
-      expect(screen.queryByTestId('panel-queen')).toBeNull();
-      expect(screen.queryByTestId('panel-conversations')).toBeNull();
-    });
-
-    // Same reasoning as the Convos gate: `queen`'s id must SURVIVE so the tier
-    // flag stays a flip rather than a code change, and so the snap-backs above are
-    // reachable (a deleted id would not parse, and the deep link would silently
-    // default).
-    //
-    // `overwatch` is the deliberate CONTRAST, and asserting both in one test is
-    // the point: it was in this list until 2026-08-11 for exactly the reason
-    // `queen` still is. Its retirement (P-059/D-083) is a DELETION, not a flag
-    // flip, so its id had to leave TAB_IDS with it — and pinning that absence here
-    // is what stops a later change "restoring" it by reflex on the strength of the
-    // sentence above.
-    it('keeps `queen` in TAB_IDS (a flag flip) but not `overwatch` (a deletion)', async () => {
+    // `queen` LEAVES TAB_IDS — the inversion this retirement turns on. It was
+    // pinned as PRESENT until 2026-08-12 precisely because the tier flag made it
+    // a flip rather than a code change. P-063/D-096 makes it a DELETION, so it
+    // follows `overwatch` and `goal` out of the list, and pinning the absence is
+    // what stops a later change restoring it by reflex.
+    it('drops both `queen` and `overwatch` from TAB_IDS (both are deletions now)', async () => {
       const { TAB_IDS } = await import('./LeftSidebar');
-      expect(TAB_IDS).toContain('queen');
+      expect(TAB_IDS).not.toContain('queen');
       expect(TAB_IDS).not.toContain('overwatch');
+      // Survivors pinned too, so this reds on a bad splice and not only a rename.
+      expect(TAB_IDS).toContain('accounts');
+      expect(TAB_IDS).toContain('agents');
     });
 
-    it('resolves a defined flag key against the real flags module, so the flip can work', async () => {
+    // The tier FLAG still exists and is still read elsewhere (adv/AdvNowRunning
+    // until P-068), so this stays: without it the tripwires above could pass
+    // against a typo'd key that gates nothing.
+    it('resolves the tier flag key against the real flags module', async () => {
       const { FLAGS } = await import('@papercusp/flags');
       expect(FLAGS.MUG_KETTLE_SYSTEM).toBe(MUG_KETTLE);
     });
@@ -645,7 +641,10 @@ describe('<LeftSidebar> shell', () => {
     renderRail('?lst=agents');
     expect(screen.getByTestId('left-sidebar').getAttribute('data-tab')).toBe('agents');
     expect(await screen.findByTestId('panel-agents')).toBeTruthy();
-    expect(screen.queryByTestId('panel-queen')).toBeNull();
+    // Re-pointed off `panel-queen` when that tab retired (P-063/D-096): the point
+    // is that the DEFAULT panel is not also mounted, which needs a subject that
+    // could actually mount.
+    expect(screen.queryByTestId('panel-accounts')).toBeNull();
   });
 
   it('opens the System tab from ?lst=system', async () => {
@@ -663,23 +662,29 @@ describe('<LeftSidebar> shell', () => {
   //
   // The old `if (kettle > -1)` guard existed because the Kettle was flag-gated.
   // Anchoring on a gated tab meant the adjacency silently went UNASSERTED whenever
-  // the gate was off — and with the tab now deleted that guard would have been
-  // false forever, leaving a test that passes while checking nothing. Mug is gated
-  // too, so the render below turns its tier on explicitly instead of guarding.
-  it('places Agents and System immediately after the Mug tab', () => {
+  // the gate was off — and with the tab deleted that guard would have been false
+  // forever, leaving a test that passes while checking nothing. The anchor is now
+  // an UNGATED tab, which removes that failure mode entirely rather than working
+  // around it by forcing a flag on.
+  it('places Agents and System immediately after the Papercup tab', () => {
     H.blanketFlagOn = true;
-    H.mugKettleOn = true;
     renderRail();
     const ids = Array.from(document.querySelectorAll('[role="tab"]')).map((el) =>
       el.getAttribute('data-testid'),
     );
-    const mug = ids.indexOf('left-sidebar-tab-queen');
+    // The anchor has walked LEFT twice as tabs retired out from under it: Kettle
+    // (P-059/D-083) → Mug (P-063/D-096) → Papercup, the surviving left-hand
+    // neighbour. Each time the ANCHOR moved rather than the assertion being
+    // dropped, because the owner's placement (2026-07-25) is about what
+    // Agents/System FOLLOW, and that constraint outlives whichever tab precedes
+    // them.
+    const anchor = ids.indexOf('left-sidebar-tab-sentinel');
     const agents = ids.indexOf('left-sidebar-tab-agents');
     const system = ids.indexOf('left-sidebar-tab-system');
-    expect(mug).toBeGreaterThan(-1);
+    expect(anchor).toBeGreaterThan(-1);
     expect(agents).toBeGreaterThan(-1);
     expect(system).toBe(agents + 1);
-    expect(agents).toBe(mug + 1);
+    expect(agents).toBe(anchor + 1);
   });
 
   // The retired ids must not silently resolve to something else — a stale

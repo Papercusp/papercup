@@ -475,6 +475,86 @@ package script enforces them (`verify-pot-substrate-ast.mjs` is a manual CLI). R
 survey to match a later tree would falsify the record it exists to preserve. Likewise the
 `scratchpad/lexicon-audit-2026-07-09/*` inventories and `junit.xml`.
 
+## `MugTab` + its four private panels — the owner's steering tab (P-063, D-094/D-095/D-096)
+
+Retired **2026-08-12**. TWELVE files from
+`apps/operator-vite/src/components/left-sidebar/`, all in one slice because they are
+one feature: MugTab was the owner's Queen steering panel, and the other four exist
+only inside it.
+
+| module | why it retired (measured at retirement) |
+|---|---|
+| `MugTab.tsx` (+ `MugTab.test.tsx`, `MugTab.tree.test.tsx`, `MugTab.derivation.test.ts`) | The tab itself — "the owner steers the workspace's HOME Queen WITHOUT an interactive session", writing `pot:set-steering` and waking a Queen that cannot run. **One non-test importer at retirement**: `LeftSidebar.tsx`, whose lazy import + `TABS` entry went with it. |
+| `MugHeartbeat.tsx` (+ test) | The Mug status indicator. **One importer: MugTab.** |
+| `ModelTiersOverride.tsx` (+ test) | The per-role model-tier session override. **One importer: MugTab.** |
+| `ThrottleSection.tsx` (+ test) | Cadence floor / `maxBees` / `idleActivities` knobs (`throttleActiveCount`, `IdleKind`, `IdleToggles`). **One importer: MugTab.** `maxBees` is a CUP count and the idle activities are Mug-loop activities, so every knob wrote steering nothing reads. |
+| `AutonomySurfacing.tsx` (+ test) | The `DecompMode` autonomy surface. **One importer: MugTab.** |
+
+The four panels were verified to have EXACTLY one importer each — MugTab — plus their
+own tests, by reference census over `apps`/`packages`/`libs` excluding `_retired/`.
+Retiring MugTab alone would have stranded them as dead code with green tests, which
+is the failure P-061 exists to catch.
+
+⚠ **TWO SIBLINGS WERE DELIBERATELY KEPT and are now UNMOUNTED** — do not "tidy" them
+away, and do not read their zero-importer state as an oversight. `PotSteeringTree.tsx`
+(+ `pot-steering-tree.ts`) and `useModelOverride.ts` are on **P-064**'s keep-list:
+that item ruled the ~14 MIXED components are pot-as-container / P2P federation
+surfaces which **D-003 + D-017 preserve**, to be renamed to the pot lexicon and NOT
+deleted (`HiveSteeringTree -> PotSteeringTree` is that rename). Their only importer
+was MugTab, so they have none now. Deleting them reverses P-064 and needs its own
+decision.
+
+⛔ **`adv/RedQueenPanel.tsx` is NOT here, though P-063's file list names it.** "Red
+Queen" is the evolutionary arms-race term for the **self-healing drill**, not the Mug —
+already ruled twice, by **D-020** (whose MUST-NOT-GATE section opens with this exact
+file) and **D-001** (owner-directed: the learning system stays INTACT), and stated in
+code at `adv/LearningTab.tsx:393-397` ("Do not retire them with the tier"). It was
+wrongly included in D-095 and **retracted in D-096**. `LearningTab.tsx` therefore
+needed NO edits in this slice.
+
+**Live-tree edits a restore must undo — SIX. Number 5 is the one a name-grep of the
+moved files does NOT find, and number 6 is the trap that would break the build.**
+
+1. `LeftSidebar.tsx` — the lazy import, the `TABS` entry (`id: 'queen'`, label
+   `t('brain')`), the `useFlag(FLAGS.MUG_KETTLE_SYSTEM)` read, the `visibleTabs` gate
+   leg, the `homeTab` ternary (now the constant `'accounts'`), the stale-`?lst=queen`
+   snap-back branch, and the `Coffee` lucide import (its only use was that entry).
+   **`FLAGS.MUG_KETTLE_SYSTEM` itself is NOT removed** — `adv/AdvNowRunning.tsx` still
+   reads it until P-068. Only this CONSUMER went.
+2. **`LeftSidebar.tsx:291` — the nuqs default moved `'queen'` -> `'accounts'`.** This
+   was FORCED, not cosmetic: `TabId`/`TAB_IDS` are DERIVED from the `TABS` array, so
+   deleting the entry drops `'queen'` from the union and a `'queen'` default no longer
+   typechecks. A restore must move it back or first load lands nowhere.
+3. `LeftSidebar.test.tsx` — the `vi.mock('./MugTab')` stub; the whole tier-gate
+   `describe` rewritten as a retirement block (tripwire with every flag forced on, a
+   "the flag is NOT an undo" case per the D-080 contract, the new-default case, and one
+   `it.each(['queen','overwatch'])` for the stale-bookmark parser path); the `TAB_IDS`
+   assertion **INVERTED** (`not.toContain('queen')`); the `H.mugKettleOn` harness knob
+   deleted with the component's flag read; two order lists; three `panel-queen` absence
+   assertions re-pointed at `panel-accounts` because they had become vacuous; and the
+   Agents/System adjacency anchor walked LEFT to Papercup (`sentinel`). 36 tests pass.
+4. `scripts/ungated-mug-kettle-baseline.json` — **THREE rows dropped** (D-084):
+   `tool|pot:set-steering|…/MugTab.tsx` · `ui|MugHeartbeat|…/MugHeartbeat.tsx` ·
+   `ui|MugTab|…/MugTab.tsx`. Verified with
+   `npm run test:file -- packages/operator-core/lib/mug-kettle-census-dangling-key.test.ts`.
+5. ⚠ **`ui|LeftSidebar|…/LeftSidebar.tsx` was deliberately KEPT in that baseline**, even
+   though the component no longer reads the tier flag. The census derives entries by
+   scanning source TEXT, and the tombstone comments left behind still name
+   `FLAGS.MUG_KETTLE_SYSTEM` — so the row still matches. Dropping it would make the
+   census exceed the shrink-only baseline and red the gate. Same for
+   `tool|pot:set-steering|…/useModelOverride.ts`, whose file survives.
+6. ⛔ **The dead CSS in `left-sidebar.styles.ts` was NOT removed, on purpose.** The five
+   blocks at (pre-change) `:857` OverwatchTab · `:937` MugTab+MugHeartbeat+
+   ModelTiersOverride · `:1023` MugHeartbeat · `:1050` ModelTiersOverride · `:1075`
+   ThrottleSection+AutonomySurfacing look like one contiguous ~275-line deletion and are
+   **not**: the `pc-queen__*` class family is SHARED with surviving components —
+   `PotSteeringTree.tsx`, `RailSection.tsx`, `PapercupTab.tsx`, `AutomationPane.tsx` and
+   `libs/generic/ui-primitives/src/override/{OverridableSetting.tsx,override.styles.ts}`
+   all use it. The prefixes that ARE provably unused (`pc-overwatch`, `pc-throttle`,
+   `pc-autonomy`, `pc-tiers`, `pc-heartbeat`) are interleaved with those shared rules, so
+   pruning needs per-class measurement rather than a range delete. Tracked as its own
+   follow-up; dead CSS is inert, a deleted shared class is a live visual regression.
+
 <!-- Later P-059 slices append rows here. Keep the "why it retired" column
      evidence-bearing (importer count at retirement), not just a restatement
      of the file name. -->

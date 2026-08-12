@@ -294,15 +294,17 @@ export default function LeftSidebar() {
   // lsb=false survived). A single setRail() write is atomic.
   const [{ lsb: open, lst: tab }, setRail] = useQueryStates({
     lsb: parseAsBoolean.withDefault(true),
-    // Mug is the DEFAULT-OPEN tab (owner's call 2026-06-15) — the steering
-    // panel is the first thing the owner reaches in the Colony sidebar.
-    // This default stays 'queen' even though the Mug tier is gated OFF by
-    // default: parseAsStringLiteral's default is STATIC (no hook may feed it),
-    // and the id must keep PARSING regardless so `?lst=queen` still resolves
-    // when the testing flag is on. The `homeTab` snap-back below is what turns
-    // this into a landing on Accounts while the tier is retired — same division
-    // of labour the overwatch/sentinel/convos gates already use.
-    lst: parseAsStringLiteral(TAB_IDS).withDefault('queen'),
+    // Accounts is the default-open tab. It was 'queen' — the Mug steering
+    // panel, the owner's call 2026-06-15 — until the Mug tab RETIRED on
+    // 2026-08-12 (P-063/D-096). That move was FORCED, not cosmetic:
+    // parseAsStringLiteral's default is STATIC and TAB_IDS is derived from
+    // TABS, so once the entry went a 'queen' default no longer typechecked.
+    // A stale `?lst=queen` now self-heals through the PARSER instead of a
+    // snap-back guard — the unknown id is rejected and falls back here — which
+    // is the same treatment `?lst=overwatch` has had since P-059/D-083.
+    // Accounts is TABS[0] and ungated, so it is also what `active`'s
+    // `?? visibleTabs[0]` renders: URL and screen agree with no hand-kept branch.
+    lst: parseAsStringLiteral(TAB_IDS).withDefault('accounts'),
   });
   const setOpen = (v: boolean) => void setRail({ lsb: v });
   const setTab = (v: TabId) => void setRail({ lst: v });
@@ -325,46 +327,32 @@ export default function LeftSidebar() {
   // Accounts — while `?lst=` still reads `conversations`, so the URL and the
   // rendered tab disagree and ui:get_state reports a tab that is not on screen.
   const conversationsOn = useFlag(FLAGS.CONVERSATIONS_RAIL_TAB);
-  // Mug + Kettle are gated as ONE tier (MUG_KETTLE_SYSTEM, DEFAULT OFF —
-  // retire-mug-kettle-su-only-2026-08-09; OFF is the DELIVERED end state, ON is
-  // the reversible testing escape hatch). Same hide-tab + snap-back treatment as
-  // the three above, with one difference that is the whole reason this is not a
-  // copy-paste: `queen` was the SNAP-BACK TARGET for every other gated tab and
-  // the nuqs default, so gating it turns all four landings into a landing on a
-  // hidden tab. `homeTab` below is what keeps that from happening.
-  //
-  // (`overwatch` used to take BOTH this gate and its own OVERWATCH flag. It is
-  // now retired from TABS entirely, so it needs no gate: a tab that does not
-  // exist cannot be resurrected by a flag.)
-  const mugKettleOn = useFlag(FLAGS.MUG_KETTLE_SYSTEM);
+  // (`queen` (Mug) and `overwatch` (Kettle) were BOTH gated here on
+  // FLAGS.MUG_KETTLE_SYSTEM. Both are now retired from TABS entirely — Kettle
+  // by P-059/D-083, Mug by P-063/D-096 — so neither needs a gate: a tab that
+  // does not exist cannot be resurrected by a flag. FLAGS.MUG_KETTLE_SYSTEM
+  // itself STAYS until P-068 — adv/AdvNowRunning.tsx still reads it — so what
+  // went here is a CONSUMER, not the flag.)
   const visibleTabs = TABS.filter(
     (x) =>
-      (x.id !== 'queen' || mugKettleOn) &&
       (x.id !== 'sentinel' || sentinelOn) &&
       (x.id !== 'conversations' || conversationsOn),
   );
-  // Where a hidden tab lands. Mug is the owner's default-open tab (2026-06-15)
-  // and stays so whenever the tier is on; with the tier retired it is not on
-  // screen at all, so the landing falls to Accounts — TABS[0] and ungated, which
-  // is also what `active`'s `?? visibleTabs[0]` already renders. Deriving the two
-  // from the same rule is the point: hardcoding 'queen' here while `active` fell
-  // through to Accounts is exactly the URL-vs-screen disagreement the comment
-  // above warns about, just with the flags inverted.
-  const homeTab: TabId = mugKettleOn ? 'queen' : 'accounts';
+  // Where a hidden tab lands: Accounts — TABS[0], ungated, and now the nuqs
+  // default too, which is what `active`'s `?? visibleTabs[0]` already renders.
+  // (This read `mugKettleOn ? 'queen' : 'accounts'` while the Mug tab existed;
+  // with that tab retired there is only one possible landing, so it is a
+  // constant. Kept as a named binding because three gates below read it.)
+  const homeTab: TabId = 'accounts';
   useEffect(() => {
     if (!sentinelOn && tab === 'sentinel') void setRail({ lst: homeTab });
     if (!conversationsOn && tab === 'conversations') void setRail({ lst: homeTab });
-    // The nuqs default is a static 'queen', so a first load with no ?lst reads
-    // `queen` even when the tier is retired — this is the branch that catches it
-    // as well as an explicit ?lst=queen deep link.
-    //
-    // A stale `?lst=overwatch` needs no branch of its own any more: 'overwatch'
-    // left TAB_IDS when its TABS entry was retired, so parseAsStringLiteral now
-    // REJECTS it and `tab` reads the 'queen' default — which this same branch
-    // then lands on homeTab. The deep link self-heals through the parser rather
-    // than through a guard that would have to be kept in sync by hand.
-    if (!mugKettleOn && tab === 'queen') void setRail({ lst: homeTab });
-  }, [sentinelOn, conversationsOn, mugKettleOn, homeTab, tab, setRail]);
+    // Stale `?lst=queen` and `?lst=overwatch` need no branch of their own: both
+    // ids left TAB_IDS when their TABS entries retired (Mug P-063/D-096, Kettle
+    // P-059/D-083), so parseAsStringLiteral REJECTS them and `tab` reads the
+    // 'accounts' default. Those deep links self-heal through the parser rather
+    // than through a guard that has to be kept in sync by hand.
+  }, [sentinelOn, conversationsOn, homeTab, tab, setRail]);
 
   const pathname = usePathname() ?? '';
   const chromeless = isChromelessPath(pathname);
