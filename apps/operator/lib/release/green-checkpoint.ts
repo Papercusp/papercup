@@ -2153,6 +2153,9 @@ export function describeRealRedAtTip(
 
 export const NON_TEST_GATE_SCRIPTS: Record<string, string[]> = {
   'lint:tsc': ['lint:tsc'],
+  // WI-38284: root scripts are a dedicated deterministic typecheck project, so a stale
+  // scripts red can be re-verified at tip without paying for the full suite.
+  'lint:tsc:scripts': ['lint:tsc:scripts'],
   // WI-7140: registered so a stale orchestrator red is re-verifiable at tip by the
   // auto-refire, exactly like lint:tsc. It qualifies on the header's own terms —
   // deterministic, repo-wide, and cheap (~2s against a ~55min suite).
@@ -3839,11 +3842,72 @@ async function tryLongestGreenPrefix(
     `partial-green-gate: candidate ${candidate.slice(0, 8)} red (failing ws: ${[...failingWs].join(', ')}); ` +
       `confirming longest clean prefix ${prefixTip.slice(0, 8)}`,
   );
+  const initialPrefixIndex = commits.indexOf(prefixTip);
   await deps.setupTree(prefixTip);
-  const confirm = await deps.runGreen(cfg.checkpointRoot, lastReady);
+  let confirm = await deps.runGreen(cfg.checkpointRoot, lastReady);
   if (!confirm.green) {
-    logPartialGreenGate(`partial-green-gate: prefix ${prefixTip.slice(0, 8)} did NOT confirm green — holding (no partial advance)`);
-    return null; // affected reasoning was incomplete; stay safe
+    // WI-38298: the cheap locator is deliberately conservative, but its first candidate
+    // can still be red because an unrelated failure predates the candidate's repair. Do
+    // not spend the full confirm suite and then give up: probe the next prefix first
+    // (forward), then use bounded binary probes farther toward the red tip. A confirmed
+    // green prefix is always safe to advance to; an unconfirmed prefix is never used.
+    const lastPrefixIndex = commits.length - 2; // the final entry is the known-red candidate
+    const maxRecoveryConfirms = 4; // bound worst-case extra full suites per gate run
+    let recoveryAttempts = 0;
+    let recoveryLeft = initialPrefixIndex + 1;
+    let recoveryPrefix: string | null = null;
+
+    logPartialGreenGate(
+      `partial-green-gate: prefix ${prefixTip.slice(0, 8)} did NOT confirm green — ` +
+        `attempting bounded forward/bisect recovery`,
+    );
+
+    const confirmLaterPrefix = async (index: number, strategy: 'forward' | 'bisect'): Promise<boolean> => {
+      const sha = commits[index];
+      logPartialGreenGate(
+        `partial-green-gate: ${strategy} recovery confirming later prefix ${sha.slice(0, 8)} ` +
+          `(attempt ${recoveryAttempts + 1}/${maxRecoveryConfirms})`,
+      );
+      await deps.setupTree(sha);
+      recoveryAttempts += 1;
+      const laterConfirm = await deps.runGreen(cfg.checkpointRoot, lastReady);
+      if (laterConfirm.green) {
+        recoveryPrefix = sha;
+        confirm = laterConfirm;
+        return true;
+      }
+      logPartialGreenGate(`partial-green-gate: later prefix ${sha.slice(0, 8)} did NOT confirm green — continuing recovery`);
+      return false;
+    };
+
+    // The immediate successor is the highest-value probe: it catches a repair that landed
+    // directly after the locator's conservative cut without paying for a binary search.
+    if (recoveryLeft <= lastPrefixIndex && recoveryAttempts < maxRecoveryConfirms) {
+      const forwardIndex = recoveryLeft;
+      await confirmLaterPrefix(forwardIndex, 'forward');
+      recoveryLeft = forwardIndex + 1;
+    }
+
+    // If the forward probe found green, bisect only the later range to opportunistically
+    // find a newer confirmed prefix. If it was red, the same search looks only farther
+    // forward, where a later repair can still make the prefix green.
+    while (recoveryLeft <= lastPrefixIndex && recoveryAttempts < maxRecoveryConfirms) {
+      const middle = recoveryLeft + Math.floor((lastPrefixIndex - recoveryLeft) / 2);
+      const green = await confirmLaterPrefix(middle, 'bisect');
+      recoveryLeft = middle + 1;
+      if (!green) continue;
+    }
+
+    if (!recoveryPrefix) {
+      logPartialGreenGate(`partial-green-gate: prefix ${prefixTip.slice(0, 8)} did NOT confirm green — holding (no partial advance)`);
+      return null; // affected reasoning was incomplete; stay safe
+    }
+
+    prefixTip = recoveryPrefix;
+    logPartialGreenGate(
+      `partial-green-gate: recovered later green prefix ${prefixTip.slice(0, 8)} ` +
+        `(after ${recoveryAttempts} additional confirm${recoveryAttempts === 1 ? '' : 's'})`,
+    );
   }
   const adv = await deps.advance(prefixTip);
   if (!adv.advanced) return null;
@@ -5404,6 +5468,8 @@ interface PostSuiteLegs {
   typecheckWorkspaces: LegOutcome;
   /** WI-7140: libs/papercusp/packages/orchestrator, at a STRICT ZERO baseline. */
   typecheckOrchestrator: LegOutcome;
+  /** WI-38284: root `scripts/*.ts` CLIs, which are load-bearing but outside every package project. */
+  typecheckScripts: LegOutcome;
   lintMigrations: LegOutcome;
   /** WI-6842: expand/contract discipline on destructive migration DDL (a migration
    *  applies to the SHARED DB immediately; the release checkout lags by a full
@@ -5450,6 +5516,7 @@ function legsNotRun(skipReason: string): PostSuiteLegs {
     typecheckPapercuspLibs: skipped,
     typecheckWorkspaces: skipped,
     typecheckOrchestrator: skipped,
+    typecheckScripts: skipped,
     lintMigrations: skipped,
     lintMigrationForwardCompat: skipped,
     lintIdentity: skipped,
@@ -5470,8 +5537,8 @@ function legsNotRun(skipReason: string): PostSuiteLegs {
  * WI-6053: every check that stands between a passing SUITE and a green verdict, in one
  * place, run as a unit.
  *
- * These five legs (typecheck · migrations lint · the 3 identity-leak lints ·
- * design-primitives lint · SPA build) were previously five inline blocks in runGreen, each
+ * These post-suite legs (four typecheck projects · migration lints · the 3 identity-leak lints ·
+ * design-primitives lint · SPA build) were previously inline blocks in runGreen, each
  * gated on `r.code === 0` — the raw SUITE exit code — while each `*Ok` flag defaulted to
  * `true`. That coupling was invisible and wrong: when the suite went red the legs all
  * skipped and kept their `true` defaults, and flake-absorption then set `green = true`
@@ -5738,6 +5805,42 @@ export async function runPostSuiteLegs(
         '\n\n=== ORCHESTRATOR TYPECHECK FAILED (npm run lint:tsc:orchestrator) — this package is gated at a STRICT ZERO, so any named file here is a NEW type error, never pre-existing baseline noise ===\n' +
           orchestratorTypecheck.stdout +
           orchestratorTypecheck.stderr,
+      );
+    }
+  }
+
+  // WI-38284: root `scripts/*.ts` contains load-bearing CLI entrypoints, including guards and
+  // release tooling, but was covered by no typecheck project. `tsconfig.declarations.json` is a
+  // hand-maintained declaration-emitter allowlist, not a project for every future TypeScript
+  // script; the dedicated no-emit project and baseline CLI are wired here so a new regression
+  // blocks promotion instead of waiting for somebody to run a scoped tsc by hand.
+  const scriptsTypecheckCheck = haltedBy ? null : checkNpmScript(treeDir, 'lint:tsc:scripts');
+  if (haltedBy) {
+    legs.typecheckScripts = { status: 'skipped', skipReason: haltedBy };
+  } else if (scriptsTypecheckCheck === 'unreadable') {
+    legs.typecheckScripts = { status: 'failed' };
+    haltedBy = 'package.json unreadable (checking for lint:tsc:scripts)';
+    failingSignatures.push('package.json-unreadable');
+    outputs.push(
+      `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for lint:tsc:scripts ===\n`,
+    );
+  } else if (scriptsTypecheckCheck === 'absent') {
+    legs.typecheckScripts = { status: 'skipped', skipReason: 'candidate provides no lint:tsc:scripts script' };
+  } else {
+    const scriptsTypecheck = await exec('npm', ['run', 'lint:tsc:scripts'], {
+      cwd: treeDir,
+      env,
+      allowNonZero: true,
+      heavy: true,
+    });
+    legs.typecheckScripts = { status: scriptsTypecheck.code === 0 ? 'passed' : 'failed' };
+    if (scriptsTypecheck.code !== 0) {
+      softFailures.push('lint:tsc:scripts');
+      failingSignatures.push('lint:tsc:scripts');
+      outputs.push(
+        '\n\n=== SCRIPTS TYPECHECK FAILED (npm run lint:tsc:scripts) — a type regression in a root scripts/*.ts CLI blocks the release ===\n' +
+          scriptsTypecheck.stdout +
+          scriptsTypecheck.stderr,
       );
     }
   }
@@ -6284,6 +6387,7 @@ export async function runPostSuiteLegs(
     legs.typecheckPapercuspLibs,
     legs.typecheckWorkspaces,
     legs.typecheckOrchestrator,
+    legs.typecheckScripts,
     legs.lintMigrations,
     legs.lintMigrationForwardCompat,
     legs.lintIdentity,

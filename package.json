@@ -287,6 +287,7 @@
     "lint:tsc:orchestrator": "bash scripts/pc-heavy.sh node scripts/lint-tsc-orchestrator.mjs",
     "lint:tsc:operator": "bash scripts/pc-heavy.sh node scripts/lint-tsc-operator.mjs",
     "lint:tsc:papercusp-libs": "bash scripts/pc-heavy.sh node scripts/lint-tsc-papercusp-libs.mjs",
+    "lint:tsc:scripts": "bash scripts/pc-heavy.sh node scripts/lint-tsc-scripts.mjs",
     "lint:tsc:workspaces": "bash scripts/pc-heavy.sh node scripts/lint-tsc-workspaces.mjs",
     "typecheck": "bash scripts/pc-heavy.sh node scripts/lint-tsc.mjs",
     "typecheck:operator-core": "npm --workspace @papercusp/operator-core run typecheck --",

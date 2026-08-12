@@ -1,0 +1,11 @@
+{
+  "$comment": "WI-38284 — root scripts are load-bearing TypeScript CLIs and must be checked by a dedicated no-emit project. This is intentionally separate from tsconfig.declarations.json, whose files list exists only to emit declarations for selected .mjs inputs.",
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": {
+    "types": ["node"],
+    "allowImportingTsExtensions": true,
+    "noEmit": true
+  },
+  "include": ["**/*.ts"],
+  "exclude": ["node_modules"]
+}

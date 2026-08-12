@@ -1,0 +1,8 @@
+{
+  "createdAt": "2026-08-12T00:00:00.000Z",
+  "updatedAt": "2026-08-12T00:00:00.000Z",
+  "description": "PER-FILE type-error baseline for the root scripts TypeScript project (WI-38284). A file whose current error count exceeds its baseline is a new attributed regression and gates lint:tsc:scripts. See scripts/lint-tsc-scripts.mjs and scripts/lib/tsc-baseline-gate.mjs.",
+  "note": "Seeded from a fresh `tsc -p scripts/tsconfig.json --noEmit --incremental false` snapshot after introducing the dedicated project. RATCHET-ONLY-DOWN per file on --update; raising a file is a deliberate hand-edit with justification.",
+  "errorCount": 0,
+  "files": {}
+}
