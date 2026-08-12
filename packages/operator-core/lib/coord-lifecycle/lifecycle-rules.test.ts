@@ -160,6 +160,33 @@ describe('emits: completion (on work_items:complete — the P0 emits field end-t
     expect(a?.args.to).not.toContain('*');
   });
 
+  it('targets the current fleet leader when the completion carries a stale concrete owner', () => {
+    const staleOwner = 'su-ended-launcher';
+    const ev = {
+      tool: 'work_items:complete',
+      args: { id: 'WI-STALE-OWNER', completion: { summary: 'fixed' } },
+      result: {
+        ok: true,
+        data: {
+          ok: true,
+          fleetSlug: 'current-fleet',
+          completion: {
+            workItem: 'WI-STALE-OWNER',
+            summary: 'fixed',
+            agent: staleOwner,
+          },
+        },
+      },
+      // A completion can retain the ended launcher identity while the fleet
+      // itself has a different live leader by delivery time.
+      ctx: { uiClientId: staleOwner },
+    };
+
+    const a = fireFor(ev, 'emits:work_items:complete#0');
+    expect(a?.args.to).toEqual(['@fleet-leader:current-fleet']);
+    expect(a?.args.to).not.toContain(staleOwner);
+  });
+
   it('does NOT fire the completion emit when no completion record came back', () => {
     const ev = {
       tool: 'work_items:complete',
