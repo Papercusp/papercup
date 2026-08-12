@@ -441,25 +441,54 @@ describe('buildAutoloopReleaseProfile / evaluateAutoloopReleaseProfile — the P
   };
   const healthyScorecard = scorecardRow({ gradedGeneration: { deployedSha: 'gen-sha-1', hostStartedAt: null } });
 
-  it('composes EXACTLY the fixed 7-rubric set + the deploy-staleness gate — never auto-discovery', async () => {
+  it('composes EXACTLY the fixed 4-rubric set + the deploy-staleness gate — never auto-discovery', async () => {
     const spec = await buildAutoloopReleaseProfile({
       deps: healthyDeps,
       gateOpts: healthyGateOpts,
       rubricOpts: { deps: { listScorecards: async () => [healthyScorecard] } },
     });
     expect(spec.profileRef).toBe(AUTOLOOP_RELEASE_PROFILE_REF);
-    expect(spec.components).toHaveLength(AUTOLOOP_COMPONENT_RUBRIC_REFS.length + 1); // 7 rubrics + 1 gate
+    expect(spec.components).toHaveLength(AUTOLOOP_COMPONENT_RUBRIC_REFS.length + 1); // 4 rubrics + 1 gate
     expect(AUTOLOOP_COMPONENT_RUBRIC_REFS).toEqual([
       'blender-release-readiness',
-      'mug-pot-coordination-health',
-      'cup-lifecycle-durability',
-      'kettle-supervision-health',
       'autonomy-owner-controls',
       'release-integrity-health',
       'production-soak-health',
     ]);
     const keys = spec.components.map((c) => c.key);
     for (const ref of AUTOLOOP_COMPONENT_RUBRIC_REFS) expect(keys).toContain(`rubric:${ref}`);
+    expect(keys).toContain('gate:deploy-staleness');
+  });
+
+  /**
+   * WI-5379 — a MANDATORY component that cannot be graded is a permanently-red gate, not a
+   * strict one. The Mug/Cup/Kettle tier was retired 2026-08-09 (its feature flag DELETED,
+   * cup:/kettle: tools now REFUSE), but its three component rubrics stayed `active` and
+   * mandatory here, each with ZERO complete scorecards ever recorded. This pins the removal
+   * so a future edit cannot silently re-admit a leg that grades a subsystem that no longer
+   * runs — the failure mode is invisible, because an ungradeable leg looks exactly like a
+   * leg that is merely awaiting its first scorecard.
+   */
+  it('does not gate the release on the RETIRED Mug/Cup/Kettle tier', async () => {
+    const retiredTierRubrics = [
+      'mug-pot-coordination-health',
+      'cup-lifecycle-durability',
+      'kettle-supervision-health',
+    ];
+    for (const ref of retiredTierRubrics) {
+      expect(AUTOLOOP_COMPONENT_RUBRIC_REFS as readonly string[]).not.toContain(ref);
+    }
+
+    const spec = await buildAutoloopReleaseProfile({
+      deps: healthyDeps,
+      gateOpts: healthyGateOpts,
+      rubricOpts: { deps: { listScorecards: async () => [healthyScorecard] } },
+    });
+    const keys = spec.components.map((c) => c.key);
+    for (const ref of retiredTierRubrics) expect(keys).not.toContain(`rubric:${ref}`);
+
+    // The surviving legs are still present — this removed the dead tier, not the gate.
+    expect(keys).toContain('rubric:blender-release-readiness');
     expect(keys).toContain('gate:deploy-staleness');
   });
 

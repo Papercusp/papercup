@@ -349,20 +349,39 @@ export async function evaluatePapercuspReleaseProfile(
 // above auto-discovers EVERY active releaseGating rubric in the workspace — which, now that
 // per-product rubrics exist (desktop-voice-release-readiness, papercup-chat-release-readiness,
 // mobile-app-release-readiness, …), would mix unrelated products into one monolithic GO/NO-GO.
-// The auto-loop product (Mug → Cup → Kettle → Blender) needs its OWN scoped profile: exactly
-// the blender leg (P-006) plus the 6 component rubrics P-007 ratified, plus the strict live
-// deploy-staleness gate P-006 already wired — nothing else auto-discovered in.
+// The auto-loop product needs its OWN scoped profile: the blender leg (P-006) plus the
+// still-live component rubrics P-007 ratified, plus the strict live deploy-staleness gate
+// P-006 already wired — nothing else auto-discovered in.
+//
+// NOTE (WI-5379, 2026-08-12): this profile was authored when the product was
+// "Mug → Cup → Kettle → Blender". The Mug/Cup/Kettle tier is RETIRED (2026-08-09); what
+// remains of the auto-loop is Blender + Scout plus the shared release/autonomy surface.
+// See AUTOLOOP_COMPONENT_RUBRIC_REFS below for the removed legs and why.
 
 export const AUTOLOOP_RELEASE_PROFILE_REF = 'papercusp-autoloop-public-release-readiness';
 
-/** The exact rubric refs this profile composes — Blender (P-006) + the 6 auto-loop
- *  component rubrics P-007 ratified. A fixed list, not auto-discovery: this profile is
- *  scoped to ONE product, not "every releaseGating rubric that happens to exist". */
+/** The exact rubric refs this profile composes — Blender (P-006) + the auto-loop
+ *  component rubrics P-007 ratified that still measure a LIVE subsystem. A fixed list,
+ *  not auto-discovery: this profile is scoped to ONE product, not "every releaseGating
+ *  rubric that happens to exist".
+ *
+ *  WI-5379 (2026-08-12): the Mug/Cup/Kettle tier was retired on 2026-08-09
+ *  (plan retire-mug-kettle-su-only-2026-08-09 D-001; the `papercusp-mug-kettle-system`
+ *  flag is DELETED, not merely default-OFF — libs/flags/src/types.ts:1081 — and
+ *  cup:spawn / kettle:* / curation:state-of-pot now REFUSE). Its three component
+ *  rubrics went with it:
+ *      mug-pot-coordination-health · cup-lifecycle-durability · kettle-supervision-health
+ *  They are removed here because a mandatory component that CANNOT be graded is not a
+ *  strict gate, it is a permanently-red one: each had ZERO complete scorecards on record
+ *  (measured 2026-08-12 over a 7-day window), and no honest scorecard was reachable —
+ *  the subsystem they grade no longer runs. Blender and Scout survive the retirement
+ *  (D-001) and `pot-coordination-health` is a DIFFERENT, still-live rubric covering the
+ *  shared pot substrate (D-003) — neither is affected.
+ *
+ *  Retiring a component here is deliberately a code change, not auto-discovery: the
+ *  fixed list is what stops a future subsystem from silently gating this release. */
 export const AUTOLOOP_COMPONENT_RUBRIC_REFS = [
   'blender-release-readiness',
-  'mug-pot-coordination-health',
-  'cup-lifecycle-durability',
-  'kettle-supervision-health',
   'autonomy-owner-controls',
   'release-integrity-health',
   'production-soak-health',
