@@ -271,7 +271,8 @@ export interface DeployStatus {
   /** EI-20234052054064013: the live green-checkpoint singleton probe. This is separate from
    *  completed gate-health metadata: an active run (including an in-process auto-refire) is
    *  authoritative evidence that a fresh verdict is already being produced. Null means the
-   *  snapshot was not probed, or the probe found no active run. */
+   *  snapshot was not probed (or the probe was unavailable); an object with `active:false` is
+   *  preserved when the probe explicitly reports idle. */
   checkpointRunInFlight: GitPipelineSnapshot['activeRun'];
   /** True iff `trigger` would do something safe + useful: there is green code ahead of the
    *  live deploy AND the gate is not currently red/wedged. */
