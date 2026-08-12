@@ -14,7 +14,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../identity';
-import { appendAck, readThread } from '../messages';
+import { appendAck, getMessageById } from '../messages';
 import { COORD_ROLES } from '../roles';
 import { runBulk, bulkContent } from '../../_bulk';
 
@@ -55,11 +55,10 @@ export default defineTool({
     const env = await runBulk(
       list,
       async (it) => {
-        // Find the original message (across all outboxes) so we can address the ack
-        // back at its sender. Uses readThread — slightly wider than needed but it's
-        // a single scan over a small directory.
-        const thread = await readThread(it.msg_id);
-        const target = thread.find((m) => m.msg_id === it.msg_id);
+        // Find the original message so we can address the ack
+        // back at its sender. This is an exact, indexed lookup on the PG backend;
+        // readThread would load and fold the entire messages surface for every ack.
+        const target = await getMessageById(it.msg_id);
         if (!target) {
           return { ok: false as const, msg_id: it.msg_id, error: 'unknown_msg_id', detail: `no coord message with msg_id=${it.msg_id}` };
         }

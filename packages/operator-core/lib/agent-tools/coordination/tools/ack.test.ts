@@ -1,6 +1,6 @@
 /**
  * ack.test.ts — the coord:ack HANDLER, bulk keyed-array contract
- * (bulk-endpoint-standardization-2026-06-21). readThread/appendAck mocked. Pins:
+ * (bulk-endpoint-standardization-2026-06-21). getMessageById/appendAck mocked. Pins:
  *   • single { msg_id } → one ok result self-describing its msg_id + ack ref;
  *   • msg_ids:[…] acks many;
  *   • an unknown msg_id fails only that item (error:'unknown_msg_id') — top-level
@@ -11,11 +11,11 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../identity', () => ({ resolveAgentIdentity: vi.fn(() => ({ ownerId: 'me' })) }));
-vi.mock('../messages', () => ({ appendAck: vi.fn(), readThread: vi.fn() }));
+vi.mock('../messages', () => ({ appendAck: vi.fn(), getMessageById: vi.fn() }));
 
-import { appendAck, readThread } from '../messages';
+import { appendAck, getMessageById } from '../messages';
 const appendM = vi.mocked(appendAck);
-const readM = vi.mocked(readThread);
+const getByIdM = vi.mocked(getMessageById);
 const tool = (await import('./ack')).default;
 
 type Out = { data: any };
@@ -26,7 +26,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   n = 0;
   // the original message exists, sent by 'peer'
-  readM.mockImplementation(async (id: string) => [{ msg_id: id, from: 'peer' }] as never);
+  getByIdM.mockImplementation(async (id: string) => ({ msg_id: id, from: 'peer' }) as never);
   appendM.mockImplementation(async () => ({ msg_id: `ack${++n}` }) as never);
 });
 
@@ -35,6 +35,7 @@ describe('coord:ack handler (bulk keyed-array)', () => {
     const b = await body({ msg_id: 'M-1' });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({ ok: true, msg_id: 'M-1', ack_msg_id: 'ack1', acked: 'M-1', acked_from: 'peer' });
+    expect(getByIdM).toHaveBeenCalledWith('M-1');
     expect(appendM).toHaveBeenCalledWith({ ownerId: 'me' }, 'M-1', 'peer');
   });
 
@@ -45,7 +46,7 @@ describe('coord:ack handler (bulk keyed-array)', () => {
   });
 
   it('one ok + one unknown msg_id: only the missing item fails, top-level ok stays true', async () => {
-    readM.mockImplementation(async (id: string) => (id === 'M-404' ? [] : ([{ msg_id: id, from: 'peer' }] as never)));
+    getByIdM.mockImplementation(async (id: string) => (id === 'M-404' ? null : ({ msg_id: id, from: 'peer' } as never)));
     const b = await body({ msg_ids: ['M-1', 'M-404'] });
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 1 } });
     expect(b.results[0]).toMatchObject({ ok: true, msg_id: 'M-1' });
