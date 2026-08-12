@@ -5,15 +5,26 @@
  * P-023 (reconcile "steer, don't dispatch" WITH the completion mandate).
  */
 import { describe, it, expect, vi, beforeEach } from 'vitest';
-const { wakeRecipients, sendMessage, getFlag } = vi.hoisted(() => ({
+const { wakeRecipients, sendMessage, getFlag, mugKettleSystemEnabled } = vi.hoisted(() => ({
   wakeRecipients: vi
     .fn()
     .mockResolvedValue({ targets: [], keys: [], woken: 0, staged: 0, stagedTargets: [], fanoutCapped: [] }),
   sendMessage: vi.fn().mockResolvedValue(undefined),
   getFlag: vi.fn().mockResolvedValue(true),
+  mugKettleSystemEnabled: vi.fn().mockResolvedValue(false),
 }));
 vi.mock('../agent-tools/coordination/inbox-wake', () => ({ wakeRecipients }));
 vi.mock('../agent-tools/coordination/messages', () => ({ sendMessage }));
+// `wakeMug` gates on `mugKettleSystemEnabled()`, NOT on a flag read — the
+// predicate is now hardcoded `false` (the tier is retired, not flag-gated), so
+// stubbing `getFlag` no longer reaches this seam. Mock the predicate itself:
+// that is the actual dependency, and it is the only way left to force the gate
+// open for the CALIBRATION below. Spread the original — `listStartedPots` is
+// imported from here too and the sweep tests need the real one.
+vi.mock('./started', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  mugKettleSystemEnabled,
+}));
 // Spread the original: this module also exports the flag-change bus and the
 // override store that other modules in the import graph wire up at load time.
 // Replacing the whole module would break them for a single stubbed reader.
@@ -58,10 +69,18 @@ const CFG: PlacementConfig = {
 const NOW = 1_000_000_000_000;
 
 describe('wakeMug (WI-2187 fresh-per-wake routing)', () => {
-  // The routing contract below is the behaviour WHILE the tier is runnable.
-  // Retirement (flag OFF) is asserted separately in the next describe.
+  // The routing contract below is the DELIVERY-BODY behaviour, reachable only
+  // with the retirement gate forced open. It is retained deliberately: the body
+  // is still live code, and it is what the next describe asserts is now
+  // unreachable — an absence assertion is only worth something if the thing
+  // being asserted absent is known to work when permitted.
   beforeEach(() => {
-    getFlag.mockResolvedValue(true);
+    wakeRecipients.mockClear();
+    sendMessage.mockClear();
+    mugKettleSystemEnabled.mockResolvedValue(true);
+  });
+  afterEach(() => {
+    mugKettleSystemEnabled.mockResolvedValue(false);
   });
 
   it('direct-wakes the concrete owner and parks the stable role with both identities', async () => {
