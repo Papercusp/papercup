@@ -523,7 +523,14 @@ describe("checkpoint:await already-judged latch (EI-18676650746298156 — deploy
 
   it("EI-20256713252259611: accepts a zero-second timeout for an immediate probe", () => {
     expect(
-      checkpointTool.args.safeParse({
+      // `definedTools.find()` narrows to { name, handler }, so `args` (the zod schema) is not on
+      // the inferred type. Cast locally — the same pattern this file already uses for
+      // `skipWorkspaceTx` above — rather than widening the shared tool type.
+      (
+        checkpointTool as unknown as {
+          args: { safeParse: (value: unknown) => { success: boolean } };
+        }
+      ).args.safeParse({
         candidateSha: "94c1234567890abcdef",
         timeout_sec: 0,
       }).success,
