@@ -1522,7 +1522,15 @@ const FRESH_RETRY_MAX_FILES = 15; // a broader red is a real regression, not a f
 // (generous for a legitimately slow full-workspace suite, but bounded), overridable for a
 // caller who knows a specific workspace runs long. See scripts/lib/batch-watchdog.mjs for
 // the (unit-tested) attribution logic itself.
-const BATCH_TIMEOUT_MS = resolveBatchTimeoutMs(process.env.AFFECTED_BATCH_TIMEOUT_MS, 20 * 60 * 1000);
+// 45m, not 20m (EI-20268851913189733). The bound must exceed the LARGEST workspace's
+// honest duration with headroom, or it stops being a watchdog and becomes a coin flip
+// on load. Measured 2026-08-12: operator-core reported 3302 of its 4063 test files
+// (81%) in 20.0m while still completing files at ~10ms each — i.e. it needs ~25m under
+// fleet load, so the old default truncated the biggest leg MID-RUN and reported it as
+// a wedge. green-checkpoint runs this same script and nothing overrides this env var,
+// so that was a latent red-pin for every deploy. Still far below the ~120m gate
+// ceiling this exists to protect, which is the bound that actually matters.
+const BATCH_TIMEOUT_MS = resolveBatchTimeoutMs(process.env.AFFECTED_BATCH_TIMEOUT_MS, 45 * 60 * 1000);
 const BATCH_KILL_SIGNAL = 'SIGKILL';
 
 // A PACKAGED install ships the whole suite (vitest, the test files, quarantine.txt,
@@ -1676,12 +1684,30 @@ for (const t of tasks) {
     // one bounded stall back into an unbounded-feeling one. Report it plainly and move on —
     // the next batch already proceeds either way (this is a per-batch bound, not a run-wide
     // one), so the gate stays attributable instead of a silent 2h hang.
+    // EI-20268851913189733: this message used to ASSERT the spin cause. It has two
+    // possible causes and it can TELL THEM APART from evidence it already holds, so
+    // it must not send the reader hunting a file that does not exist. A spin STALLS
+    // (progress stops, one file never finishes); an over-long suite keeps completing
+    // files right into the wall. Observed 2026-08-12: operator-core reported 3302 of
+    // 4063 files with the last ones passing in 9-15ms each — a timeout, reported as
+    // a spin, which cost a real investigation.
+    const capturedOut = typeof r.stdout === 'string' ? r.stdout : '';
+    const filesSeen = capturedOut ? new Set(capturedOut.match(/[\w./-]+\.test\.ts/g) ?? []).size : null;
+    const progress =
+      filesSeen == null
+        ? `progress UNKNOWN (output was streamed, not captured) — check the run log before assuming a spin`
+        : filesSeen > 0
+          ? `${filesSeen} test file(s) had already reported when the bound fired`
+          : `NO test file ever reported — consistent with a wedge before/at the first file`;
     errSync(
       `\n>>> ${t.ws.name} :: ${t.script} WATCHDOG-KILLED after ${(r.__elapsedMs / 60000).toFixed(1)}m with no exit ` +
-        `(EI-19370814345784324: a synchronously-spinning test blocks its own event loop, so vitest's testTimeout ` +
-        `cannot fire — AFFECTED_BATCH_TIMEOUT_MS=${BATCH_TIMEOUT_MS}ms fired instead). NOT retrying. Find the ` +
-        `offending file by re-running this workspace's suites individually, or compare utime/stime on the worker ` +
-        `process next time it's caught live (EI-19371039618090828) — a tight syscall loop is system-time-dominated.`,
+        `(AFFECTED_BATCH_TIMEOUT_MS=${BATCH_TIMEOUT_MS}ms fired). NOT retrying. ${progress}. ` +
+        `TWO CAUSES, distinguish before investigating: (1) THE SUITE IS SIMPLY LONGER THAN THE BOUND — ` +
+        `files kept completing up to the kill; the fix is the bound (or the suite's duration), NOT a hunt for a ` +
+        `bad file. (2) A SYNCHRONOUSLY-SPINNING test blocks its own event loop so vitest's testTimeout cannot fire ` +
+        `(EI-19370814345784324) — progress STOPS and one file never finishes; find it by re-running this ` +
+        `workspace's suites individually, or compare utime/stime on the worker process next time it is caught ` +
+        `live (EI-19371039618090828) — a tight syscall loop is system-time-dominated.`,
     );
   } else if (
     retryFailed &&
