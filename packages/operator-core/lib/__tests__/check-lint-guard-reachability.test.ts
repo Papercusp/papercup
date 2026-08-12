@@ -32,6 +32,7 @@ import {
   stripComments,
   computeCoverage,
   deriveScanScope,
+  scanScopeSources,
   workspaceOfPath,
   parseRepoWideRegistrations,
   parseRepoWideRegistrationPairs,
@@ -541,6 +542,107 @@ describe('computeCoverage', () => {
     expect(computeCoverage({ row: { ...testRow, blocking: false }, workspaceDirs: dirs }).verdict).toBe(
       'not-enforced',
     );
+  });
+});
+
+/* ── A SHARED TEST RUNNER IS NOT THE GUARD'S IMPLEMENTATION (WI-38290) ──────────
+ *
+ * Measured 2026-08-12. A peer added a `git ls-files` call to `scripts/test-files.mjs`
+ * for unrelated provenance reporting. Three guards merely INVOKE that runner
+ * (`lint:tool-prompts`, `lint:plane-guards`, `lint:design-primitives`); the coverage
+ * axis concatenated every resolved impl's source, so all three inherited scan scope
+ * `repo-wide` from the runner. `lint:tool-prompts` scored `partial` off it, and because
+ * the partial set is SHRINK-ONLY that red-pinned the green-checkpoint gate — over a
+ * guard whose own source had not changed at all.
+ *
+ * The cases below are permanent. The CONTROL encodes the old, wrong rule so this file
+ * would fail if anyone reinstated it; the CALIBRATION makes sure the narrowing did not
+ * simply blind the axis, which would make every other case here pass vacuously. */
+
+describe('scanScopeSources — the runner is not what the guard scans (WI-38290)', () => {
+  const RUNNER = 'scripts/test-files.mjs';
+  const SUBJECT = 'packages/operator-core/lib/__tests__/tools-md-sync.test.ts';
+  /** The exact literal the peer's change added to the shared runner. */
+  const RUNNER_SRC = "run('git', ['ls-files', '-z', '--', ...absolutePaths], { cwd: root })";
+  /** tools-md-sync.test.ts: readdirs a fixed prompts dir; enumerates nothing repo-wide. */
+  const SUBJECT_SRC = "const PROMPTS_DIR = join(REPO, 'apps/operator/prompts'); readdirSync(PROMPTS_DIR);";
+
+  it('keeps only the test subjects when a command names both a runner and its subjects', () => {
+    expect(scanScopeSources([RUNNER, SUBJECT])).toEqual([SUBJECT]);
+  });
+
+  it('returns the impl list unchanged when the guard has its own scanner', () => {
+    // `node scripts/check-x.mjs` — nothing to narrow, and narrowing to nothing would
+    // silently downgrade every self-implemented guard to `undetermined`.
+    expect(scanScopeSources(['scripts/check-x.mjs'])).toEqual(['scripts/check-x.mjs']);
+    expect(scanScopeSources([])).toEqual([]);
+  });
+
+  it('recognises every test-file shape this repo uses', () => {
+    const subjects = [
+      'packages/operator-core/lib/a.test.ts',
+      'apps/operator/app/_lints/b.test.tsx',
+      'packages/operator-core/lib/c.integration.test.ts',
+    ];
+    expect(scanScopeSources([RUNNER, ...subjects])).toEqual(subjects);
+  });
+
+  it('CONTROL: the old rule — read EVERY impl — reproduces the gate red', () => {
+    // Concatenating the runner in is what made the guard look repo-wide …
+    expect(deriveScanScope([RUNNER_SRC, SUBJECT_SRC].join('\n')).kind).toBe('repo-wide');
+    // … and `partial`, which the SHRINK-ONLY set turns into a build failure.
+    const naive = computeCoverage({
+      row: { name: 'lint:tool-prompts', tier: 'test', blocking: true, impls: [RUNNER, SUBJECT] },
+      enforcingTestPaths: [SUBJECT],
+      workspaceDirs: ['apps/operator', 'packages/operator-core'],
+      implSource: [RUNNER_SRC, SUBJECT_SRC].join('\n'),
+    });
+    expect(naive.verdict).toBe('partial');
+  });
+
+  it('the subject alone is NOT repo-wide, so the guard stops being scored partial', () => {
+    expect(deriveScanScope(SUBJECT_SRC).kind).not.toBe('repo-wide');
+    const fixed = computeCoverage({
+      row: { name: 'lint:tool-prompts', tier: 'test', blocking: true, impls: [RUNNER, SUBJECT] },
+      enforcingTestPaths: [SUBJECT],
+      workspaceDirs: ['apps/operator', 'packages/operator-core'],
+      implSource: scanScopeSources([RUNNER, SUBJECT])
+        .map((p) => (p === RUNNER ? RUNNER_SRC : SUBJECT_SRC))
+        .join('\n'),
+    });
+    expect(fixed.verdict).not.toBe('partial');
+  });
+
+  it('CALIBRATION: a test SUBJECT that really does enumerate the tree is still partial', () => {
+    // Without this, the narrowing could be hiding real partial coverage rather than
+    // fixing a false positive, and every case above would pass for the wrong reason.
+    const scanningSubject = 'packages/operator-core/lib/scans-everything.test.ts';
+    const c = computeCoverage({
+      row: { name: 'lint:scans', tier: 'test', blocking: true, impls: [RUNNER, scanningSubject] },
+      enforcingTestPaths: [scanningSubject],
+      workspaceDirs: ['apps/operator', 'packages/operator-core'],
+      implSource: scanScopeSources([RUNNER, scanningSubject])
+        .map(() => 'const { files } = listTrackedFiles(ROOT);')
+        .join('\n'),
+    });
+    expect(c.verdict).toBe('partial');
+  });
+
+  it('end-to-end: the census scores the WI-38290 shape without a partial entry', () => {
+    const census = buildReachabilityCensus({
+      scripts: { 'lint:tool-prompts': `bash scripts/pc-heavy.sh node ${RUNNER} ${SUBJECT}` },
+      corpora: corpora({ gate: "'lint:tool-prompts'" }),
+      coverage: {
+        enforcingTests: [{ path: SUBJECT, text: `runs ${SUBJECT}` }],
+        workspaceDirs: ['apps/operator', 'packages/operator-core'],
+        implSources: new Map([
+          [RUNNER, RUNNER_SRC],
+          [SUBJECT, SUBJECT_SRC],
+        ]),
+        repoWideRegistered: new Set<string>(),
+      },
+    });
+    expect(census.partiallyCovered).toHaveLength(0);
   });
 });
 

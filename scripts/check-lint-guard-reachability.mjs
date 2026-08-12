@@ -491,6 +491,39 @@ export function workspaceOfPath(file, workspaceDirs) {
   return best;
 }
 
+/** A test file, by the repo's own naming: `x.test.ts`, `x.test.tsx`, `x.integration.test.ts`. */
+const TEST_FILE_RE = /\.test\.[cm]?[jt]sx?$/;
+
+/**
+ * Which of a guard's resolved impl paths actually define WHAT IT SCANS.
+ *
+ * `resolveImplementationPaths` matches every code path a command mentions, which for a
+ * test-backed guard is the SUBJECT plus whatever RUNS it — e.g. `lint:tool-prompts` is
+ * `… node scripts/test-files.mjs packages/operator-core/lib/__tests__/tools-md-sync.test.ts`,
+ * yielding the shared runner AND the subject. Feeding both to `deriveScanScope` scans the
+ * runner's source for scan-shape evidence, which is a category error: a runner EXECUTES a
+ * guard, it is not part of what that guard covers.
+ *
+ * WHY THIS IS A CORRECTNESS BUG AND NOT A TIDINESS ONE (WI-38290, measured 2026-08-12): a
+ * peer added a `git ls-files` call to `scripts/test-files.mjs` for unrelated provenance
+ * reporting. `deriveScanScope` matches the argv literal `'ls-files'` anywhere in its input,
+ * so THREE guards that merely share that runner instantly inherited scope `repo-wide`;
+ * `lint:tool-prompts` scored `partial` off it and, the partial set being SHRINK-ONLY,
+ * red-pinned the green-checkpoint gate. The guard itself had not changed at all.
+ *
+ * So: when a command names test subjects, THEY are the implementation for scope purposes
+ * and every non-test entrypoint is a runner. With no test subject (`node scripts/check-x.mjs`)
+ * the impl list is already the implementation and is returned unchanged.
+ *
+ * Deliberately NOT applied to the enforcement axis (`classifyGuard`'s `mentions`, and the
+ * enforcing-test match): there, naming the runner path is how a guard is FOUND in a corpus,
+ * and narrowing it would hide real wiring. This narrows only what gets read for scan SHAPE.
+ */
+export function scanScopeSources(impls) {
+  const subjects = impls.filter((p) => TEST_FILE_RE.test(p));
+  return subjects.length ? subjects : impls;
+}
+
 /**
  * What a guard's implementation ENUMERATES. Derived by scanning the implementation, never
  * hand-declared — the same anti-drift property the tier classification relies on.
@@ -638,7 +671,11 @@ export function buildReachabilityCensus({
         row,
         enforcingTestPaths,
         workspaceDirs,
-        implSource: row.impls.map((p) => implSources.get(p) ?? '').join('\n'),
+        // SUBJECTS ONLY — a shared test runner's source is not evidence about what this
+        // guard scans. See scanScopeSources (WI-38290).
+        implSource: scanScopeSources(row.impls)
+          .map((p) => implSources.get(p) ?? '')
+          .join('\n'),
         repoWideRegistered,
       });
     }
