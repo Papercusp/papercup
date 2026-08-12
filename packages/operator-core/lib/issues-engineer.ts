@@ -1072,7 +1072,7 @@ function likePrefixPattern(prefix: string): string {
   return `${prefix.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 }
 
-/** WI-<work-item-list-q>: escape LIKE metacharacters for literal substring matching. */
+/** work-items:list q: escape LIKE metacharacters for literal substring matching. */
 function likeContainsPattern(query: string): string {
   return `%${query.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
 }
