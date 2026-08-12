@@ -101,6 +101,7 @@ import { liveSettledProbe, liveAssigneeProbe } from '../../work-items-events';
 import { planItemEffectiveStatus } from '../../plan-items/assignments';
 import { AWAIT_DEFAULT_TIMEOUT_SEC } from '../../events/await/types';
 import { extendOwnerClaimsForAwait } from '../../plan-items/claims';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 
 const ctx = { workspaceId: 'ws-x' } as unknown as Parameters<typeof awaitTool.handler>[1];
 const call = async (args: Record<string, unknown>) => {
@@ -327,7 +328,14 @@ describe('events:await wrapper defaults', () => {
     });
 
     it('a message with no gateRefs stamp is a loud no_gate_refs_on_msg', async () => {
-      vi.mocked(getMessageById).mockResolvedValue({ msg_id: 'm-2', summary: 'prose only' } as never);
+      mockResolvedTyped(vi.mocked(getMessageById), {
+        ts: '2026-01-01T00:00:00.000Z',
+        msg_id: 'm-2',
+        from: 'su-origin',
+        to: ['su-awaiter'],
+        kind: 'message',
+        summary: 'prose only',
+      });
       const out = await call({ fromMsg: 'm-2' });
       expect(out).toMatchObject({ ok: false, error: 'no_gate_refs_on_msg' });
       expect(registerAwait).not.toHaveBeenCalled();

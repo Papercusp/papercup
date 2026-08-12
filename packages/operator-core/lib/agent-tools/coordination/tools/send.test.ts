@@ -154,7 +154,14 @@ beforeEach(() => {
   vi.clearAllMocks();
   n = 0;
   // each send mints a fresh msg_id; echo the resolved `to` back on the envelope
-  sendM.mockImplementation(async (_id, opts: { to: string[] }) => ({ to: opts.to, msg_id: `m${++n}`, ts: `t${n}` }) as never);
+  mockImplementationTyped(sendM, async (identity, opts) => ({
+    ts: `t${++n}`,
+    msg_id: `m${n}`,
+    from: identity.ownerId,
+    to: [...opts.to],
+    kind: 'message',
+    summary: opts.summary,
+  }));
   mockReturnTyped(unresolvedAudienceM, []);
   // recipients resolve 1:1 by default (no unknowns)
   resolveM.mockImplementation(async (to: readonly string[]) => ({ resolved: to, unknown: [], ambiguous: [] }) as never);

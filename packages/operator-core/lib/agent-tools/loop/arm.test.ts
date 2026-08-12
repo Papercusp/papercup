@@ -75,7 +75,14 @@ vi.mock('../../events/await/store', () => ({
   listWakeAwaitsForSubscriber: vi.fn(async () => [] as Array<{ eventKey: string }>),
 }));
 vi.mock('../../events/await/wake-reachability', () => ({
-  probeWakeReachability: vi.fn(async () => ({ reachable: true, channel: 'inject', durableWhileAlive: true, summary: 'ok' })),
+  probeWakeReachability: vi.fn(async () => ({
+    reachable: true,
+    channel: 'psu-socket',
+    durableWhileAlive: true,
+    summary: 'ok',
+    awaitRepairable: false,
+    wouldBeChannel: null,
+  })),
 }));
 // EI-6878: @papercusp/db-org is a big package (transitively required by other
 // bootstrap code in this import graph via @papercusp/agent-mcp) — partial-mock it
@@ -114,7 +121,7 @@ import { probeWakeReachability } from '../../events/await/wake-reachability';
 import { findLiveHost } from '../../events/await/psu-pty-discovery';
 import { resolveHomePotSlug } from '../pot/_resolve';
 import { decideDefaultCarry, computeLoopOverwriteNote, resolveBlockedBackoff } from './arm';
-import { mockResolvedOnceTyped, mockResolvedTyped, mockReturnOnceTyped } from '../../testing/typed-mock';
+import { mockResolvedOnceTyped, mockResolvedTyped, mockReturnOnceTyped, mockReturnTyped } from '../../testing/typed-mock';
 
 const materializeM = vi.mocked(materializeLoop);
 const buildPromptM = vi.mocked(buildLoopWakePrompt);
@@ -150,9 +157,16 @@ const body = (o: Out) => JSON.parse(o.content[0]!.text);
 beforeEach(() => {
   vi.clearAllMocks();
   materializeM.mockResolvedValue({ name: 'loop-x', nextFireAt: new Date('2026-01-01T00:00:00Z') } as never);
-  probeM.mockResolvedValue({ reachable: true, channel: 'inject', durableWhileAlive: true, summary: 'ok' } as never);
+  mockResolvedTyped(probeM, {
+    reachable: true,
+    channel: 'psu-socket',
+    durableWhileAlive: true,
+    summary: 'ok',
+    awaitRepairable: false,
+    wouldBeChannel: null,
+  });
   // WI-2429 defaults: no goal-detected id, claim returns null (unheld → re-read path).
-  detectM.mockReturnValue(null as never);
+  mockReturnTyped(detectM, null);
   claimM.mockResolvedValue(null as never);
   classifyM.mockReturnValue({ reason: 'gated', holder: null } as never);
   getWiM.mockResolvedValue(null as never);
