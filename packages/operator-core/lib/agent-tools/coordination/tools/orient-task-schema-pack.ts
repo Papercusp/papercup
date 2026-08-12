@@ -158,9 +158,17 @@ export function buildTaskToolSchemaPack(
   const candidates: CandidateMap = new Map();
   const signals: string[] = [];
 
-  // The task lifecycle spine: orient once, inspect/checkpoint/finish the held
-  // unit. These are useful for every non-trivial task and intentionally tiny.
-  add(candidates, ['coord:orient', 'work_items:get', 'work_items:checkpoint', 'work_items:complete'], 100);
+  // The task lifecycle spine: orient once, explicitly redeclare the live lane,
+  // inspect/checkpoint/finish the held unit. `coord:orient` performs a best-effort
+  // declaration when intent is supplied, but a resumed client may still need the
+  // direct verb after compaction; keep it callable without a tools:find detour.
+  add(candidates, [
+    'coord:orient',
+    'coord:declare-intent',
+    'work_items:get',
+    'work_items:checkpoint',
+    'work_items:complete',
+  ], 100);
 
   const modes = [...new Set((input.modes ?? []).map((m) => m.toLowerCase()))].sort();
   for (const mode of modes) {

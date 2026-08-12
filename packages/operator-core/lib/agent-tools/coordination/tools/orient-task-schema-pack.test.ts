@@ -6,7 +6,7 @@ import {
 } from './orient-task-schema-pack';
 
 const ALL_NAMES = [
-  'coord:orient', 'coord:glance',
+  'coord:orient', 'coord:declare-intent', 'coord:glance',
   'work_items:get', 'work_items:checkpoint', 'work_items:complete', 'work_items:burn_down',
   'plans:get', 'plans:items', 'locks:acquire', 'locks:release',
   'loop:arm', 'loop:status', 'loop:checkpoint', 'loop:end',
@@ -44,6 +44,7 @@ describe('orient task tool-schema pack (P-006 / EI-11409)', () => {
     expect(pack.schemaVersion).toBe(TASK_SCHEMA_PACK_SCHEMA);
     expect(names).toEqual(expect.arrayContaining([
       'coord:orient',
+      'coord:declare-intent',
       'work_items:checkpoint',
       'loop:status',
       'loop:checkpoint',
