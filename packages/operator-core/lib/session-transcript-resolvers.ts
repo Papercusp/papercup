@@ -4,10 +4,18 @@
  * (claude resolution lives in claude-sessions.ts `findSessionTranscript`).
  *
  * Both resolvers are cheap bounded walks (a handful of readdirs, never an
- * all-owners sweep) and cache POSITIVE resolutions — a transcript path is
- * stable once written, so repeat opens cost one stat. Misses are NOT cached:
- * the thinking endpoint polls for a not-yet-written transcript (a live session
+ * all-owners sweep) and cache POSITIVE resolutions. Misses are NOT cached: the
+ * thinking endpoint polls for a not-yet-written transcript (a live session
  * pre-first-turn) and must see it the moment it appears.
+ *
+ * ⚠ The cache's validity rule DIFFERS BY WHAT THE KEY NAMES, and conflating the two
+ * is what caused EI-20219088862022620 (see CODEX_KEY_CACHE_TTL_MS below):
+ *   - a key naming ONE FILE (a rollout uuid, an omp thread id) — "stable once
+ *     written" holds, so an existence re-stat is a sufficient guard;
+ *   - a key naming a DIRECTORY TO SEARCH (`findCodexRolloutPath`'s adv-session id →
+ *     "the newest rollout in this CODEX_HOME") — the right answer MOVES to a new
+ *     file on every carry-respawn while the old one lives on, so existence proves
+ *     nothing and the entry must also expire.
  */
 
 import { promises as fs } from 'node:fs';
@@ -21,8 +29,45 @@ function defaultOmpSessionsRoot(): string {
   return join(homedir(), '.omp', 'agent', 'sessions');
 }
 
-const codexPathCache = new Map<string, string>();
-const ompPathCache = new Map<string, string>();
+interface CachedPath {
+  path: string;
+  /** When this resolution was computed — checked against {@link CODEX_KEY_CACHE_TTL_MS}. */
+  at: number;
+}
+
+const codexPathCache = new Map<string, CachedPath>();
+const ompPathCache = new Map<string, CachedPath>();
+
+/**
+ * EI-20219088862022620 / WI-38090 — how long a PER-HOME ("newest rollout in this
+ * CODEX_HOME") resolution may be reused before it is re-walked.
+ *
+ * The module header's premise — "a transcript path is stable once written" — is true
+ * for a key that names a FILE (a claude session_id, a rollout uuid) and FALSE for a key
+ * that names a DIRECTORY to search. `findCodexRolloutPath` is keyed by the adv-session
+ * id, which is STABLE ACROSS CARRY-RESPAWNS (a respawn reuses the same adv row and the
+ * same per-session CODEX_HOME) while the rollout FILE it must resolve to changes on
+ * every respawn. The old guard re-stat'd only the cached path, and since rollouts are
+ * never deleted that stat always succeeded — so the first resolution was pinned for the
+ * life of the process and every later generation was invisible.
+ *
+ * The damage was not a stale display: the compaction watchdog estimates context from
+ * this path, so after one carry-respawn it read a DEAD predecessor's frozen rollout as
+ * the live successor's usage. `coord_presence.context_tokens` froze at the dead value
+ * while `context_estimated_at` kept refreshing (a stale VALUE wearing a fresh
+ * TIMESTAMP), the watchdog cut live successors sitting at ~66k real tokens, and because
+ * the frozen number could never fall below the limit the WI-5075 respawn-streak guard
+ * concluded "the estimate never drops" and permanently suppressed BOTH enforcement
+ * rungs — leaving the real session to run unmonitored into "Prompt is too long".
+ * 48 sessions were reported over their ceiling, one at 2.7× its true usage.
+ *
+ * A TTL rather than no cache at all: the resolvers are called several times for the
+ * same owner within one watchdog sweep (estimate, window, carry-spec build) and by the
+ * roster's thinking poll, which is what the cache exists to collapse. 10s is far below
+ * the 2-minute sweep, so every sweep re-resolves, and it matches
+ * `isCodexSessionThinking`'s own `activeMs` window.
+ */
+const CODEX_KEY_CACHE_TTL_MS = 10_000;
 
 /**
  * WI-6794: the cache key MUST carry the ROOT that was searched, not just the
@@ -60,13 +105,19 @@ async function statMtime(p: string): Promise<number | null> {
  */
 export async function findCodexRolloutPath(
   sessionKey: string | number,
-  opts: { homeOverride?: string } = {},
+  opts: { homeOverride?: string; nowMs?: number } = {},
 ): Promise<string | null> {
+  const now = opts.nowMs ?? Date.now();
   const root = join(opts.homeOverride ?? codexHomeForSessionKey(sessionKey), 'sessions');
   const cacheKey = pathCacheKey('codex-key', sessionKey, root);
   const cached = codexPathCache.get(cacheKey);
   if (cached) {
-    if ((await statMtime(cached)) !== null) return cached;
+    // The path must still EXIST *and* the resolution must still be FRESH: this key names
+    // a home to search, not a file, so a carry-respawn silently changes the right answer
+    // while the cached file lives on forever (CODEX_KEY_CACHE_TTL_MS).
+    if (now - cached.at < CODEX_KEY_CACHE_TTL_MS && (await statMtime(cached.path)) !== null) {
+      return cached.path;
+    }
     codexPathCache.delete(cacheKey);
   }
   let best: { path: string; mtime: number } | null = null;
@@ -107,7 +158,7 @@ export async function findCodexRolloutPath(
       }
     }
   }
-  if (best) codexPathCache.set(cacheKey, best.path);
+  if (best) codexPathCache.set(cacheKey, { path: best.path, at: now });
   return best?.path ?? null;
 }
 
@@ -129,7 +180,10 @@ export async function findCodexRolloutPathByUuid(
   const cacheKey = pathCacheKey('codex-uuid', rolloutId, root);
   const cached = codexPathCache.get(cacheKey);
   if (cached) {
-    if ((await statMtime(cached)) !== null) return cached;
+    // No TTL here, deliberately: this key names ONE FILE by its uuid, so the correct
+    // answer cannot change while that file exists — unlike the per-home key above,
+    // whose answer moves to a new rollout on every carry-respawn (WI-38090).
+    if ((await statMtime(cached.path)) !== null) return cached.path;
     codexPathCache.delete(cacheKey);
   }
   const wanted = `-${rolloutId.toLowerCase()}.jsonl`;
@@ -158,7 +212,7 @@ export async function findCodexRolloutPathByUuid(
       }
     }
   }
-  if (best) codexPathCache.set(cacheKey, best.path);
+  if (best) codexPathCache.set(cacheKey, { path: best.path, at: Date.now() });
   return best?.path ?? null;
 }
 
@@ -204,7 +258,8 @@ export async function findOmpSessionPath(
   const cacheKey = pathCacheKey('omp', threadId, root);
   const cached = ompPathCache.get(cacheKey);
   if (cached) {
-    if ((await statMtime(cached)) !== null) return cached;
+    // Existence-only, like the uuid leg: the key names ONE file (`_<threadId>.jsonl`).
+    if ((await statMtime(cached.path)) !== null) return cached.path;
     ompPathCache.delete(cacheKey);
   }
   const suffix = `_${threadId}.jsonl`;
@@ -224,7 +279,7 @@ export async function findOmpSessionPath(
     for (const f of files) {
       if (f.endsWith(suffix)) {
         const p = join(root, dir, f);
-        ompPathCache.set(cacheKey, p);
+        ompPathCache.set(cacheKey, { path: p, at: Date.now() });
         return p;
       }
     }

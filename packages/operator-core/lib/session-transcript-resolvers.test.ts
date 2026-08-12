@@ -168,6 +168,152 @@ describe('WI-6794: a cached resolution never leaks across roots', () => {
   });
 });
 
+/**
+ * EI-20219088862022620 / WI-38090 — the recurrence guard for a CLASS that had been
+ * filed three times (WI-5075, EI-16310, EI-20219088862022620) with no closure ever
+ * leaving a test that fails when it returns: "the compaction watchdog's context
+ * estimate is pinned to a DEAD PREDECESSOR transcript and never tracks the live
+ * successor."
+ *
+ * The 2026-08-12 instance was NOT in the watchdog at all — it was here. `codexPathCache`
+ * is keyed by the adv-session id, which is STABLE across carry-respawns (a respawn reuses
+ * the same adv row and the same per-session CODEX_HOME) while the rollout FILE changes on
+ * every respawn. The cache was invalidated only when the cached file was DELETED, and
+ * rollouts are never deleted — so the first resolution was pinned for the life of the
+ * process and every successor generation was invisible. Downstream, coord_presence
+ * .context_tokens froze at a dead session's final reading while context_estimated_at kept
+ * refreshing, 48 live sessions were reported over their ceiling (one at 2.7× its true
+ * usage), and the WI-5075 respawn-streak guard read "the estimate never drops" as grounds
+ * to permanently suppress BOTH enforcement rungs, leaving real sessions to run into
+ * "Prompt is too long".
+ *
+ * The pre-existing "resolves the NEWEST rollout" test above could not catch it: it
+ * resolves ONCE against a cold cache, which is the only state in which the old code was
+ * correct. The defect only exists on the SECOND resolution, so the guard has to make two.
+ */
+describe('EI-20219088862022620: a per-home resolution follows a carry-respawn to the new rollout', () => {
+  /** Successive rollout generations in ONE codex home — what a carry-respawn produces. */
+  async function seedGeneration(home: string, name: string, ageMs = 0): Promise<string> {
+    const day = join(home, 'sessions', '2026', '08', '12');
+    await fs.mkdir(day, { recursive: true });
+    const p = join(day, `rollout-${name}.jsonl`);
+    await fs.writeFile(p, '{}\n');
+    if (ageMs > 0) {
+      const t = new Date(Date.now() - ageMs);
+      await fs.utimes(p, t, t);
+    }
+    return p;
+  }
+
+  it('returns the SUCCESSOR rollout once the cached resolution expires (the pinning bug)', async () => {
+    const home = await fs.mkdtemp(join(tmpdir(), 'codex-respawn-'));
+    try {
+      const predecessor = await seedGeneration(home, '2026-08-12T00-02-02-gen2', 60_000);
+      const t0 = 1_000_000;
+      // The watchdog's first sweep resolves — and CACHES — the predecessor.
+      expect(await findCodexRolloutPath('14976', { homeOverride: home, nowMs: t0 })).toBe(
+        predecessor,
+      );
+
+      // The watchdog carry-respawns the session. Codex writes a NEW rollout into the SAME
+      // home; the predecessor is left on disk forever, which is exactly why an
+      // existence-only guard cannot notice. The adv-session key does not change.
+      const successor = await seedGeneration(home, '2026-08-12T00-22-17-gen3');
+
+      // A later sweep MUST estimate from the successor. Before the fix this returned the
+      // predecessor for the life of the process — a dead session's frozen context size
+      // reported as the live successor's usage.
+      expect(
+        await findCodexRolloutPath('14976', { homeOverride: home, nowMs: t0 + 11_000 }),
+      ).toBe(successor);
+    } finally {
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('still serves the cached path WITHIN the TTL (the repeat-open win is not thrown away)', async () => {
+    const home = await fs.mkdtemp(join(tmpdir(), 'codex-ttl-'));
+    try {
+      const first = await seedGeneration(home, '2026-08-12T00-02-02-gen2', 60_000);
+      const t0 = 2_000_000;
+      expect(await findCodexRolloutPath('14976', { homeOverride: home, nowMs: t0 })).toBe(first);
+      await seedGeneration(home, '2026-08-12T00-22-17-gen3');
+      // One sweep calls this several times for the same owner (estimate, window, carry-spec
+      // build); those must not each re-walk the home.
+      expect(await findCodexRolloutPath('14976', { homeOverride: home, nowMs: t0 + 500 })).toBe(
+        first,
+      );
+    } finally {
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * FALSIFIABILITY CONTROL (repo discipline: "a guard test that has never failed is a
+   * guard you have not tested"). The subject is a module we import, so the tier-1 form
+   * applies — a deliberately-wrong implementation kept PERMANENTLY here, never a
+   * mutation of the shared tree (a probe that edits in-tree can be committed by the
+   * git-sync sweep even when nothing goes wrong).
+   *
+   * This is the EXACT pre-fix guard: cache the resolution, and re-serve it whenever the
+   * cached file still exists. It is what shipped, and it is why the bug was invisible —
+   * every individual step of it looks reasonable.
+   */
+  it('CONTROL: the pre-fix existence-only guard stays pinned to the predecessor', async () => {
+    const cache = new Map<string, string>();
+    async function resolveWithExistenceOnlyCache(key: string, home: string) {
+      const cached = cache.get(key);
+      if (cached) {
+        // The old invalidation rule, verbatim: does the cached file still exist?
+        try {
+          await fs.stat(cached);
+          return cached;
+        } catch {
+          cache.delete(key);
+        }
+      }
+      const fresh = await findCodexRolloutPath(key, { homeOverride: home, nowMs: Date.now() });
+      if (fresh) cache.set(key, fresh);
+      return fresh;
+    }
+
+    const home = await fs.mkdtemp(join(tmpdir(), 'codex-control-'));
+    try {
+      __resetTranscriptResolverCaches();
+      const predecessor = await seedGeneration(home, '2026-08-12T00-02-02-gen2', 60_000);
+      expect(await resolveWithExistenceOnlyCache('14976', home)).toBe(predecessor);
+
+      __resetTranscriptResolverCaches(); // isolate: only the CONTROL's cache is under test
+      const successor = await seedGeneration(home, '2026-08-12T00-22-17-gen3');
+
+      // The successor exists and is newest, and the control still hands back the dead one.
+      // If this assertion ever flips to toBe(successor), the control has stopped modelling
+      // the bug and the guard above is no longer known to discriminate.
+      expect(await resolveWithExistenceOnlyCache('14976', home)).toBe(predecessor);
+      expect(await resolveWithExistenceOnlyCache('14976', home)).not.toBe(successor);
+    } finally {
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+
+  it('the UUID leg keeps its no-TTL cache — its key names one FILE, not a home to search', async () => {
+    // Guards the distinction the fix rests on: blanket-TTLing every cache would be a
+    // pointless re-walk here, because a uuid-keyed answer cannot move while the file lives.
+    const home = await fs.mkdtemp(join(tmpdir(), 'codex-uuid-ttl-'));
+    const uuid = '019ff420-ebbd-7861-83c2-f5c7f04f4cc1';
+    try {
+      const day = join(home, 'sessions', '2026', '08', '12');
+      await fs.mkdir(day, { recursive: true });
+      const p = join(day, `rollout-2026-08-12T00-00-26-${uuid}.jsonl`);
+      await fs.writeFile(p, '{}\n');
+      expect(await findCodexRolloutPathByUuid(uuid, { homeOverride: home })).toBe(p);
+      expect(await findCodexRolloutPathByUuid(uuid, { homeOverride: home })).toBe(p);
+    } finally {
+      await fs.rm(home, { recursive: true, force: true });
+    }
+  });
+});
+
 // NOTE (WI-6794): a NUL byte from a mistyped template-literal separator landed
 // in this exact module while fixing the cache key, and it is invisible in an
 // editor while silently making grep/rg report "binary file matches". I started
