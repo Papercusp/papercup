@@ -1473,9 +1473,9 @@ export default defineTool({
   description:
     "Complete one or many work-items with structured evidence; the system renders and broadcasts it. Pass terminal `state` plus `assumptions` (`\"none\"` or facts:assert keys) to converge item, plan-item, claim, and checkpoint; without `state`, it only records. Check `finish.complete`/`stateWarning`.",
   guidance: {
-    when: 'After verification, pass `completion`, terminal `state`, and `assumptions` (`\"none\"` or fact keys). Use enum `verifiedHow`; put evidence in `testsRun`/`testResult`. Universal claims need `coverage`; live-UI closes need a cited artifact. Set `completion.duplicateOf` for duplicates.',
-    notWhen: 'Use coord:send for notes or work_items:set_state without completion evidence; do not send a summary.',
-    chaining: 'work_items:claim → work_items:complete { id, state, assumptions, completion }; `finish.complete:true` confirms convergence and emits to coord.',
+    when: 'After verification, pass `completion`, terminal `state`, and `assumptions` (`\"none\"` or fact keys); use `verifiedHow` and put evidence in `testsRun`/`testResult`. Add `coverage` for universal claims, a cited artifact for live-UI closes, and `completion.duplicateOf` for duplicates.',
+    notWhen: 'Use coord:send for notes; use work_items:set_state only with completion evidence; do not summarize.',
+    chaining: 'work_items:claim → work_items:complete { id, state, assumptions, completion }; `finish.complete:true` confirms convergence and emits.',
     seeAlso: [
       'work_items:set_state (change state without recording a completion)',
       'coord:send (a note/question that is not a completion)',

@@ -274,6 +274,9 @@ export type WatchdogSource =
   // its threshold window (default 6h) fires one debounced alert + escalation
   // (a release bar nobody is grading is a silent gate, not a green one).
   | 'rubric-staleness'
+  // WI-38044: a proposed rubric that outlives the independent-review dwell
+  // window without a proposer-independent ratifier.
+  | 'rubric-proposal-dwell'
   // session-turn-storage-2026-07-28 P-007 (D-005): the transcript-ingest lag
   // watchdog — an adapter sitting on unconsumed on-disk bytes past its
   // byte_offset for longer than the threshold. SOURCE-RELATIVE by design, not
