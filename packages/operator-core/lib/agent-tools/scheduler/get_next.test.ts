@@ -165,6 +165,48 @@ describe('scheduler:get_next prompt guidance budget (EI-20226961413829051)', () 
   });
 });
 
+describe('scheduler:get_next derives harness from the bound session (WI-38059)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    scopeState.scope = {
+      ownerId: 'su-member',
+      fleetSlug: 'bugs',
+      fleetRole: 'member',
+      record: { source: 'fleet', spec: { specId: 'bugs-rev4', revision: 4 } },
+    };
+    scopeState.quarantinedIds = [];
+    scopeState.windingDown = false;
+    scopeState.pauseReason = null;
+    registryState.projects = [{ slug: 'papercusp' }];
+    loadHarnessRegistryM.mockImplementation(async () => ({ projects: registryState.projects }));
+    getNextM.mockResolvedValue(null);
+  });
+
+  it('advertises an optional harness and passes the bound session harness to the claim path', async () => {
+    const tool = getNextTool as { args: ZodTypeAny; description?: string };
+    expect(tool.args.safeParse({}).success).toBe(true);
+    expect(tool.description).toContain('specId and revision are result provenance');
+
+    const out = (await getNextTool.handler({}, { harnessSlug: 'papercusp' } as never)) as {
+      content: Array<{ text: string }>;
+    };
+    const body = JSON.parse(out.content[0]!.text);
+
+    expect(body).toMatchObject({ ok: false, windDown: true });
+    expect(getNextM).toHaveBeenCalledOnce();
+    expect(getNextM.mock.calls[0]?.[0]).toMatchObject({ harness: 'papercusp' });
+  });
+
+  it('returns a typed harness_required error when neither the call nor session supplies one', async () => {
+    const out = (await getNextTool.handler({}, {} as never)) as { content: Array<{ text: string }>; isError?: boolean };
+    const body = JSON.parse(out.content[0]!.text);
+
+    expect(body).toMatchObject({ ok: false, error: 'harness_required' });
+    expect(out.isError).toBe(true);
+    expect(getNextM).not.toHaveBeenCalled();
+  });
+});
+
 describe('pull-tool `states` arg is clamped to the claimable allowlist (WI-1912)', () => {
   it('exposes the expected allowlist (open/failing — feature `todo` retired, floors + terminals excluded)', () => {
     expect([...CLAIM_STATES_ALLOWLIST]).toEqual(['open', 'failing']);
