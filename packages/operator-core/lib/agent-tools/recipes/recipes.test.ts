@@ -252,7 +252,7 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
         read: 'windDown',
         available: ['workItem', 'claimedUnder'],
       }],
-    });
+    } as never);
 
     const res = await findTool('recipes:run').fn({ id: 'field-miss' }, mkCtx('worker'));
     const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
