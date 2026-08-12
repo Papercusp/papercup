@@ -93,7 +93,8 @@ import type { TimeoutBehavior } from '../../events/await/types';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
 import { buildCapacityReport } from '../../fleet/capacity-dispatch';
-import { readBeeProviderAvailability } from './capacity';
+import type { AccountProvider } from '../../deployment/account-pool';
+import { providerForModel, readProviderAvailability } from './capacity';
 import type { FleetBriefDelta } from '../../fleet-brief-delta';
 import { computeMemberIdleVerdict, summariseIdleCauses } from '../../fleet-member-idle-verdict';
 import type { MemberIdleCause } from '../../fleet-member-idle-verdict';
@@ -262,10 +263,23 @@ export interface PoolDegradedState {
  * hand. Fails soft to `null` (UNKNOWN), never to "healthy" — an unread pool state must not
  * silence a real starvation signal, matching this file's `laneGating`/`fleetPaused` convention.
  */
-export async function readPoolDegradedState(): Promise<PoolDegradedState | null> {
+export function fleetCapacityProviderForModels(
+  models: ReadonlyArray<string | null | undefined>,
+): AccountProvider | null {
+  const providers = new Set(
+    models
+      .map((model) => providerForModel(model ?? undefined))
+      .filter((provider): provider is AccountProvider => provider != null),
+  );
+  return providers.size === 1 ? [...providers][0] : null;
+}
+
+export async function readPoolDegradedState(
+  provider: AccountProvider,
+): Promise<PoolDegradedState | null> {
   try {
-    const hr = await fetchGatewayHeadroom({ timeoutMs: 1500 });
-    const accountAvailability = await readBeeProviderAvailability();
+    const hr = await fetchGatewayHeadroom({ timeoutMs: 1500, provider });
+    const accountAvailability = await readProviderAvailability(provider);
     const report = buildCapacityReport(hr, { clampArmed: false, accountAvailability });
     return {
       poolExhausted: report.poolExhausted,
@@ -2154,10 +2168,13 @@ export default defineTool({
         return new Map();
       }
     })();
-    // WI-37161: read the live shared-inference-pool verdict BEFORE projecting members — same
-    // fail-soft-to-null discipline as fleetLaneHealth/fleetPause above (an unread pool state
-    // must not silence a real starvation signal, and must not fabricate a healthy one either).
-    const poolCapacity = await readPoolDegradedState();
+    // WI-37161 / EI-20243921934115652: read the live shared-inference-pool verdict BEFORE
+    // projecting members, scoped to THIS fleet's observed model provider. The old no-arg
+    // reader always used the legacy Claude pool, so a Codex fleet inherited Claude exhaustion
+    // and the brief told its leader not to wake 25 healthy Luna lanes. Mixed/unknown model
+    // families fail soft to UNKNOWN instead of borrowing either provider's capacity.
+    const capacityProvider = fleetCapacityProviderForModels(grouped.map((a) => a.model));
+    const poolCapacity = capacityProvider ? await readPoolDegradedState(capacityProvider) : null;
     const nowMs = Date.now();
     const members = grouped.map((a) =>
       projectMember(

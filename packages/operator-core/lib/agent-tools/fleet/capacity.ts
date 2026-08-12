@@ -34,7 +34,7 @@ export { buildCapacityReport, type CapacityReport } from '../../fleet/capacity-d
 const BEE_PROVIDER: AccountProvider = 'claude';
 
 /** Infer a provider only from model families with an unambiguous wire backend. */
-function providerForModel(model: string | undefined): AccountProvider | undefined {
+export function providerForModel(model: string | undefined): AccountProvider | undefined {
   const normalized = model?.trim().toLowerCase();
   if (!normalized) return undefined;
   if (/^(?:gpt(?:-|$)|o\d|codex(?:-|$)|openai(?:-|$))/.test(normalized)) return 'codex';

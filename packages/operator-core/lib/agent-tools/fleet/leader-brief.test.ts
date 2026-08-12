@@ -19,6 +19,7 @@ import {
   compactLeaderBriefMemberVerdicts,
   decorateComposedParkedOn,
   FALSIFIER_FORBIDDEN_TOOLS,
+  fleetCapacityProviderForModels,
   projectMember,
   reconcilePsuHostLiveness,
   resolveComposedParkedOn,
@@ -35,6 +36,21 @@ const NOW = Date.parse('2026-07-10T12:00:00.000Z');
 describe('fleet:leader-brief — ambient workspace transaction safety (EI-20192040030675541)', () => {
   it('opts out because the supervision read never uses ctx.tx', () => {
     expect((leaderBriefTool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+});
+
+describe('fleetCapacityProviderForModels (EI-20243921934115652)', () => {
+  it('scopes an all-Codex fleet to the Codex pool', () => {
+    expect(fleetCapacityProviderForModels(['gpt-5.6-luna', 'gpt-5.6-sol'])).toBe('codex');
+  });
+
+  it('keeps an all-Claude fleet on the Claude pool', () => {
+    expect(fleetCapacityProviderForModels(['claude-sonnet-4-5', 'opus'])).toBe('claude');
+  });
+
+  it('returns unknown for mixed or unmeasured fleets instead of borrowing a provider', () => {
+    expect(fleetCapacityProviderForModels(['gpt-5.6-luna', 'claude-sonnet-4-5'])).toBeNull();
+    expect(fleetCapacityProviderForModels([null, undefined])).toBeNull();
   });
 });
 
