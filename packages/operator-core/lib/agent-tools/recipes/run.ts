@@ -293,6 +293,25 @@ export default defineTool({
           timeoutMs: it.timeoutSec ? it.timeoutSec * 1000 : undefined,
         });
 
+        // EI-20224785432797349: code-mode tracks reads of fields that are absent from a
+        // child tool result. Treat those misses as a failed recipe reuse, even when the
+        // script itself returned normally with partial:false. Otherwise a saved recipe
+        // can keep reporting ok:true while its compact summary is silently populated with
+        // undefined values after a tool-schema change. The caller must update the recipe
+        // script before it is eligible for a successful reuse record again.
+        const fieldMisses = Array.isArray(result.fieldMisses) ? result.fieldMisses : [];
+        if (fieldMisses.length > 0) {
+          return {
+            ok: false,
+            id: it.id,
+            error: 'recipe_field_miss',
+            fieldMisses,
+            reason:
+              'the saved recipe read fields absent from current tool results; update the recipe script before reusing it',
+            result,
+          };
+        }
+
         // Record the REUSE (reused:true) on a successful, committing run — the
         // distinct-from-authored signal Phase-3 graduation reads. Best-effort: a
         // recording failure must not fail the run.

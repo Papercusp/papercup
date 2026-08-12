@@ -233,6 +233,38 @@ describe('recipes:run REUSE ENVELOPE invariant (P-006 / D-004)', () => {
     expect(runOrchestrationMock).not.toHaveBeenCalled();
   });
 
+  it('fails a recipe with stale field reads instead of recording a successful reuse', async () => {
+    getRecipeMock.mockResolvedValue({
+      id: 'field-miss', workspaceId: 'ws-test', potSlug: 'alpha', title: 'field miss', description: 'd',
+      script: 'return 1;', authorRole: 'operator', toolsUsed: [], runCount: 1, successCount: 1,
+      status: 'active', tags: [],
+    });
+    runOrchestrationMock.mockResolvedValueOnce({
+      ok: true,
+      summary: { done: true },
+      logs: [],
+      dryRun: false,
+      plannedMutations: [],
+      partial: false,
+      fieldMisses: [{
+        tool: 'scheduler:getNext',
+        path: '(root)',
+        read: 'windDown',
+        available: ['workItem', 'claimedUnder'],
+      }],
+    });
+
+    const res = await findTool('recipes:run').fn({ id: 'field-miss' }, mkCtx('worker'));
+    const payload = JSON.parse((res as { content: { text: string }[] }).content[0].text);
+    expect(payload.results[0]).toMatchObject({
+      ok: false,
+      id: 'field-miss',
+      error: 'recipe_field_miss',
+    });
+    expect(payload.results[0].fieldMisses).toHaveLength(1);
+    expect(recordRecipeRunMock).not.toHaveBeenCalled();
+  });
+
   it('returns not_found for a missing recipe per item (no orchestration) — bulk envelope', async () => {
     getRecipeMock.mockResolvedValue(null);
     const res = await findTool('recipes:run').fn({ id: 'nope' }, mkCtx('worker'));
