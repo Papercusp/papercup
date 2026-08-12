@@ -10,7 +10,14 @@ import { z } from 'zod';
 import { statSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { detectBufferingLastStage, getJob, readJobOutput, scratchDir, type BashJob } from './bash-jobs';
+import {
+  detectBufferingLastStage,
+  formatBufferingPipelineAdvice,
+  getJob,
+  readJobOutput,
+  scratchDir,
+  type BashJob,
+} from './bash-jobs';
 import { backgroundTypecheckVerdict } from './background-typecheck-verdict';
 import { coresBetween, readCgroupCpuSample, MIN_SAMPLE_GAP_MS } from './cgroup-cpu';
 import { getTaskByBashJobId } from '../../task-manager/store';
@@ -346,11 +353,9 @@ export default defineTool({
           const rawCommand = ledgerArgv && ledgerArgv.length > 0 ? ledgerArgv[ledgerArgv.length - 1] : undefined;
           const bufferingStage = rawCommand ? detectBufferingLastStage(rawCommand) : null;
           const growthAdvice = bufferingStage
-            ? `Keep polling capability:bash_output — but this job's last pipeline stage pipes through ` +
-              `\`${bufferingStage}\`, which BUFFERS its output, so \`total_bytes_written: 0\` here is NOT ` +
-              'evidence the job is stuck or produced nothing: expect the log to stay empty until it exits, ' +
-              'then poll for the "[capability:bash] JOB END" marker rather than for growing output'
+            ? formatBufferingPipelineAdvice(bufferingStage, 'tracking-lost')
             : 'Keep polling capability:bash_output (the log tail below will keep growing as it runs)';
+          const readPathAdvice = bufferingStage ? '' : ', or read log_path directly';
           return {
             content: [
               {
@@ -363,7 +368,7 @@ export default defineTool({
                     `${ledgerVerdict.scopeUnit ? `, systemd scope ${ledgerVerdict.scopeUnit}` : ''}) is CONFIRMED ` +
                     'STILL RUNNING — verified just now via a process-identity re-probe against the durable task ' +
                     'ledger (immune to PID reuse), not a guess. Do NOT re-run capability:bash — that would start a ' +
-                    `SECOND concurrent job and double the load. ${growthAdvice}, or read log_path directly. To stop ` +
+                    `SECOND concurrent job and double the load. ${growthAdvice}${readPathAdvice}. To stop ` +
                     'it, use processes:kill with the taskId/scopeUnit below — never a bare kill.',
                   pid: ledgerVerdict.pid,
                   scope_unit: ledgerVerdict.scopeUnit,

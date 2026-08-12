@@ -19,6 +19,7 @@ import {
   PC_HEAVY_SLOT_ACQUIRED_MARKER,
   __resetBashJobs,
   detectBufferingLastStage,
+  formatBufferingPipelineAdvice,
   formatJobLogEndMarker,
   getJob,
   killJob,
@@ -254,6 +255,24 @@ describe('detectBufferingLastStage (EI-19915289191989412)', () => {
 
   it('ignores a `|` inside a quoted argument', () => {
     expect(detectBufferingLastStage("echo 'a|b' | grep a")).toBeNull();
+  });
+});
+
+describe('formatBufferingPipelineAdvice (EI-20039247609786797)', () => {
+  it('launch advice names file redirection when tracking could be lost', () => {
+    const advice = formatBufferingPipelineAdvice('tail', 'launch');
+    expect(advice).toContain('If tracking is lost');
+    expect(advice).toContain('JOB END marker may never be written');
+    expect(advice).toContain('redirect output to a file you own');
+    expect(advice).toContain('cmd > /tmp/job.log 2>&1');
+  });
+
+  it('tracking-loss advice does not tell callers to keep polling buffered output', () => {
+    const advice = formatBufferingPipelineAdvice('tail', 'tracking-lost');
+    expect(advice).toContain('do not keep polling for growing output');
+    expect(advice).toContain('Read `log_path` directly');
+    expect(advice).toContain('redirect output to a file you own');
+    expect(advice).not.toContain('Keep polling capability:bash_output');
   });
 });
 
