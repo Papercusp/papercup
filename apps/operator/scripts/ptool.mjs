@@ -422,6 +422,17 @@ export const PTOOL_LIST_TOOLS_TIMEOUT_MS = 10_000;
 // long-running call by passing timeoutMs: 0 to the exported helper.
 export const PTOOL_CALL_TOOL_TIMEOUT_MS = 30_000;
 
+// `git-sync:run` is an acknowledged long-running call: its server handler
+// bounds the sync fire at 45s and may spend up to 5s each reading HEAD before
+// and after that fire. Keep the normal ptool liveness ceiling for ordinary
+// calls, but give this mutation enough time to return its durable `in_progress`
+// continuation instead of cutting the MCP request off at 30s.
+export const PTOOL_GIT_SYNC_RUN_TIMEOUT_MS = 60_000;
+
+export function timeoutForTool(toolName) {
+  return toolName === 'git-sync:run' ? PTOOL_GIT_SYNC_RUN_TIMEOUT_MS : PTOOL_CALL_TOOL_TIMEOUT_MS;
+}
+
 /**
  * P-010 admission control may reject a tools/call before dispatch when the
  * operator event loop is critically saturated. That refusal is explicitly
@@ -802,7 +813,11 @@ async function main() {
       console.error(`→ ${toolName}  ${JSON.stringify(callArgs)}`);
     }
 
-    const result = await callToolWithPressureRetry(client, buildCallToolParams(toolName, callArgs));
+    const result = await callToolWithPressureRetry(
+      client,
+      buildCallToolParams(toolName, callArgs),
+      { timeoutMs: timeoutForTool(toolName) },
+    );
     const code = printResult(result, { raw: args.raw });
     if (code !== 0) process.exitCode = code;
   } finally {
