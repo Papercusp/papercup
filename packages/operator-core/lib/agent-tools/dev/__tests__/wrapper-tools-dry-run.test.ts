@@ -24,10 +24,14 @@ describe('wrapper-tool dry runs', () => {
   });
 
   it('db:migrate without confirm is a dry run that takes no lock', async () => {
-    const res = await dbMigrate.handler({ file: '/tmp/x.sql' }, {} as never);
+    // db:migrate now validates readability before either the dry-run or lock
+    // branch. Use this test file as a stable readable input; its contents are
+    // never executed because confirm is omitted.
+    const file = new URL(import.meta.url).pathname;
+    const res = await dbMigrate.handler({ file }, {} as never);
     const out = textOf(res as never);
     expect(out.ok).toBe(true);
     expect(out.dry_run).toBe(true);
-    expect(out.would_run).toContain('/tmp/x.sql');
+    expect(out.would_run).toContain(file);
   });
 });
