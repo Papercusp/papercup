@@ -795,13 +795,24 @@ describe('session:request-compaction — P-016 flush-enforcement gate', () => {
   it('an armed loop with NO carry-note refuses, naming loop:checkpoint', async () => {
     buildCarryBrief.mockResolvedValue({
       ...emptyBrief,
-      loop: { harness: 'papercusp', active: true, intervalSec: 60, carryNote: null, carryNoteUpdatedAtMs: null },
+      loop: { harness: 'papercusp', active: true, intervalSec: 60, carry: 'cold', carryNote: null, carryNoteUpdatedAtMs: null },
     });
     const b = body(await call({ focus: 'x' }));
     expect(b.ok).toBe(false);
     expect(b.tripwires[0].kind).toBe('armed-loop-no-carry-note');
     expect(b.note).toContain('loop:checkpoint');
     expect(injectIntoHost).not.toHaveBeenCalled();
+  });
+
+  it('an armed WARM loop with NO carry-note does not hold compaction', async () => {
+    buildCarryBrief.mockResolvedValue({
+      ...emptyBrief,
+      loop: { harness: 'papercusp', active: true, intervalSec: 60, carry: 'warm', carryNote: null, carryNoteUpdatedAtMs: null },
+    });
+    const b = body(await call({ focus: 'x' }));
+    expect(b.ok).toBe(true);
+    expect(b.staleCheckpoints).toEqual([]);
+    expect(injectIntoHost).toHaveBeenCalledTimes(1);
   });
 
   it('buildCarryBrief throwing → fails soft to an empty staleCheckpoints list, never blocks the cut', async () => {

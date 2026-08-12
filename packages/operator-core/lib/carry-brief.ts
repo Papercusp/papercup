@@ -73,6 +73,12 @@ export interface CarryBrief {
     harness: string;
     active: boolean;
     intervalSec: number | null;
+    /**
+     * Persisted loop lifecycle. The current builder always supplies this from
+     * LoopStatus; optional keeps injected/legacy briefs readable while they
+     * roll forward to the mode-aware shape.
+     */
+    carry?: 'warm' | 'cold';
     /** EI-20072281215342526: the loop's GOAL — the agent's MISSION. Carried here
      *  because a carry-respawn renders no wake kickoff, which used to be the goal's
      *  only delivery channel; the successor therefore inherited its held work-items
@@ -499,6 +505,7 @@ export async function buildCarryBrief(
         harness: loop.harnessSlug,
         active: Boolean(loop.active),
         intervalSec: loop.intervalSec ?? null,
+        carry: loop.carry,
         goal: loop.goal ?? null,
         carryNote: meta.note,
         carryNoteUpdatedAtMs: meta.updatedAtMs,

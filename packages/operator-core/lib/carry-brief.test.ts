@@ -37,7 +37,7 @@ function fakeIssuesSql(rows: Array<{ issue_id: string; title: string | null; bod
 function fullOpts(overrides: Partial<BuildCarryBriefOpts> = {}): BuildCarryBriefOpts {
   return {
     workspaceId: 'ws-test',
-    getLoopStatusFn: async () => ({ harnessSlug: 'papercusp', active: true, intervalSec: 120 }),
+    getLoopStatusFn: async () => ({ harnessSlug: 'papercusp', active: true, intervalSec: 120, carry: 'cold' as const }),
     getLoopCarryNoteWithMetaFn: async () => ({
       note: '## Did\nlanded the thing\n\n## Next action\nship P-004',
       updatedAtMs: Date.now() - 5 * 60_000,
@@ -90,7 +90,7 @@ describe('buildCarryBrief — assembly + per-leg fail-soft', () => {
   it('assembles every section from the injected readers', async () => {
     const brief = await buildCarryBrief('su-abc', fullOpts());
     expect(brief.ownerId).toBe('su-abc');
-    expect(brief.loop).toMatchObject({ harness: 'papercusp', active: true, intervalSec: 120 });
+    expect(brief.loop).toMatchObject({ harness: 'papercusp', active: true, intervalSec: 120, carry: 'cold' });
     expect(brief.loop?.carryNote).toContain('ship P-004');
     expect(brief.loop?.carryNoteUpdatedAtMs).toBeTypeOf('number');
     expect(brief.heldItems.map((h) => h.id)).toEqual(['WI-3319']);

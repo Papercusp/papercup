@@ -125,9 +125,12 @@ export function detectFlushTripwires(brief: CarryBrief | null, nowMs: number = D
       });
     }
   }
-  // Armed loop with no carry-note: a cold wake reconstructs from the loop
-  // carry-note; an active loop with none means a cold successor starts blind.
-  if (brief.loop && brief.loop.active && !(brief.loop.carryNote ?? '').trim()) {
+  // Armed COLD loop with no carry-note: a cold wake reconstructs from the loop
+  // carry-note; an active WARM loop intentionally carries its transcript and
+  // does not require loop:checkpoint (the warm-loop contract). The mode comes
+  // from the persisted LoopStatus carried into CarryBrief; an absent mode in
+  // an injected/legacy brief fails open rather than inventing a requirement.
+  if (brief.loop && brief.loop.active && brief.loop.carry === 'cold' && !(brief.loop.carryNote ?? '').trim()) {
     out.push({
       kind: 'armed-loop-no-carry-note',
       subject: brief.loop.harness,
