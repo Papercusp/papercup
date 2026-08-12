@@ -311,6 +311,21 @@ describe("parent-death watch cannot go blind (EI-19486216732882752)", () => {
         delete process.env.PAPERCUSP_PARENT_DEATH_WATCH;
       }
     });
+
+    it("hands an orphaned packaged sidecar to its SIGTERM lifecycle handler", () => {
+      process.env.PAPERCUSP_DESKTOP = "1";
+      const signals: NodeJS.Signals[] = [];
+      serve.startSidecarParentDeathWatch(
+        {
+          expectedPpid: 2238351,
+          declaredByLauncher: true,
+          currentPpid: () => 2026497,
+          parentAlive: () => false,
+        },
+        (signal) => signals.push(signal),
+      );
+      expect(signals).toEqual(["SIGTERM"]);
+    });
   });
 });
 

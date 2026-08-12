@@ -377,6 +377,20 @@ export function startParentDeathWatch(
   );
 }
 
+/**
+ * Arm the parent-death watch for a packaged sidecar before its sidecar module
+ * is imported. Sidecar entrypoints own their graceful SIGTERM handlers, so the
+ * watch hands the signal back to the process instead of duplicating cleanup
+ * here. The signal callback is injectable for the lifecycle regression tests.
+ */
+export function startSidecarParentDeathWatch(
+  opts: Parameters<typeof startParentDeathWatch>[1] = {},
+  sendSignal: (signal: NodeJS.Signals) => void = (signal) =>
+    process.kill(process.pid, signal),
+): void {
+  startParentDeathWatch(() => sendSignal("SIGTERM"), opts);
+}
+
 /** Read the current operator.json discovery, or null. */
 export function readOperatorDiscovery(): OperatorDiscovery | null {
   try {
@@ -1340,6 +1354,19 @@ export function _shouldPublishGlobalPgDiscovery(args: {
 }
 
 async function main(): Promise<void> {
+  // The packaged sidecar branches below return before the normal operator
+  // shutdown handlers are installed. Arm the shared parent-death watch first;
+  // once the sidecar entrypoint is running, its SIGTERM handler receives this
+  // handoff and closes its own server/socket. If the parent is already gone,
+  // the immediate check exits this process before the sidecar can become an
+  // orphan.
+  const packagedSidecarMode =
+    process.env.PAPERCUSP_SUBSTRATE_SIDECAR_MODE === "1" ||
+    process.env.PAPERCUSP_SPAWNER_SIDECAR_MODE === "1" ||
+    process.env.PAPERCUSP_EMBED_SIDECAR_MODE === "1" ||
+    process.env.PAPERCUSP_GATEWAY_SIDECAR_MODE === "1";
+  if (packagedSidecarMode) startSidecarParentDeathWatch();
+
   // PACKAGED substrate-sidecar (P-006): the spawner re-execs THIS bundled
   // serve.mjs with PAPERCUSP_SUBSTRATE_SIDECAR_MODE=1 instead of `npx tsx`-ing a
   // .ts the bundle doesn't contain. Divert to the sidecar JSON-RPC server BEFORE
