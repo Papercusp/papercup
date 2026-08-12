@@ -219,6 +219,7 @@
     "lint:no-proc-path-fixture": "node scripts/check-no-proc-path-fixture.mjs",
     "lint:no-raw-block-edge": "node scripts/check-no-raw-block-edge.mjs",
     "lint:no-raw-install-slug": "node scripts/check-no-raw-install-slug-filter.mjs",
+    "lint:no-raw-harness-sentinel": "node scripts/check-no-raw-harness-sentinel.mjs",
     "lint:no-bespoke-state-read": "node scripts/check-no-bespoke-state-read.mjs",
     "lint:plane-producers": "node scripts/check-plane-producers.mjs",
     "lint:declared-consumed": "node scripts/check-declared-consumed.mjs",

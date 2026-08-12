@@ -338,6 +338,13 @@ jobs:
         if: ${{ !cancelled() }}
         run: npm run lint:no-raw-install-slug
 
+      # no-raw-harness-sentinel guard (EI-20204314840596901): operator-scope
+      # sessions carry ctx.harnessSlug='*'. A raw fallback, identity field, or
+      # non-sentinel predicate can silently address the wrong harness bucket.
+      - name: Lint no raw harness sentinel identity use
+        if: ${{ !cancelled() }}
+        run: npm run lint:no-raw-harness-sentinel
+
       # no-ungated-infinite-animation guard (hud-tab-public-release-2026-07-28 P-010 /
       # WI-6542): an `infinite` CSS animation on a selector that matches as soon as the
       # element renders keeps the whole 60fps repaint loop alive forever. Measured on the
