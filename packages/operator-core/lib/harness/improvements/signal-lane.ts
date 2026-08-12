@@ -64,6 +64,13 @@ export const METRIC_SOURCES: readonly string[] = [
  * both reviewable in one place; anything in neither list falls through to `defect`.
  */
 export const DEFECT_SOURCES: readonly string[] = [
+  // WI-38327. Listed EXPLICITLY even though `defect` is the fall-through default, because
+  // its nearest neighbours are both metrics ('unresolved-escalation', 'escalation-spike')
+  // and the distinction is the whole point: those measure how much escalation traffic is
+  // going untriaged, which no code edit fixes. This one names a BROKEN DELIVERY PATH — the
+  // bridge marked itself owner-gated and the owner rail has no record — which is a concrete
+  // defect in the alarm code, exactly what an auto-implement worker can patch.
+  'bridge-needs-owner-unalerted',
   'red-test',
   'smoke-fail',
   'migration-drift',

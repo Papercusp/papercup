@@ -51,14 +51,23 @@ let db: FreshPgDb;
 async function seedIssue(
   id: string,
   payload: Record<string, unknown> | null,
-  opts: { status?: string; takenBy?: string; lastReleasedBy?: string; lastReleasedAgoSec?: number } = {},
+  opts: {
+    status?: string;
+    takenBy?: string;
+    lastReleasedBy?: string;
+    lastReleasedAgoSec?: number;
+    /** WI-5939: how long ago the row was FILED. Default 0 = the epoch, i.e. far outside any
+     *  filing-grace window — so every pre-existing case here is untouched by that floor. */
+    createdAgoSec?: number;
+  } = {},
 ) {
   const status = opts.status ?? 'open';
+  const createdTs = opts.createdAgoSec === undefined ? 0 : Date.now() - opts.createdAgoSec * 1000;
   await db.sql`
     INSERT INTO harness_shared.work_items
       (harness_slug, feature_id, item_kind, status, taken_by, workspace_id,
        created_ts, updated_ts, title, payload, last_released_by, last_released_at)
-    VALUES (${H}, ${id}, 'change', ${status}, ${opts.takenBy ?? null}, ${WS}, 0, 0, ${'t ' + id},
+    VALUES (${H}, ${id}, 'change', ${status}, ${opts.takenBy ?? null}, ${WS}, ${createdTs}, 0, ${'t ' + id},
             ${payload ? db.sql.json(payload as postgres.JSONValue) : null}, ${opts.lastReleasedBy ?? null},
             ${
               opts.lastReleasedAgoSec !== undefined
@@ -175,6 +184,27 @@ describe('EI-13965 — aggregateIssueClaimExclusions counts each floor bucket fo
     const out = await aggregateIssueClaimExclusions(undefined, { harness: H, assignee: 'su-asking' });
     expect(out.matchedByFilter).toBe(3);
     expect(out.excluded.cooldown).toBe(1);
+  });
+
+  // WI-5939 — filing IS publishing. A row filed moments ago is held back from every agent
+  // EXCEPT its filer, and (the item's own acceptance) that exclusion reports under the
+  // EXISTING `cooldown` bucket rather than a new parallel one. This is the PREVIEW half of
+  // the floor; claim-issues-claimable.integration.test.ts pins the real claim door, and the
+  // two share one fragment (issueCooldownExclusionSql) precisely so they cannot drift.
+  it('applies the filing-grace floor to a PEER but never to the filer, under the cooldown bucket', async () => {
+    // Filed seconds ago by someone else — graced FOR US.
+    await seedIssue('WI-9611', { _ei: { created_by: 'su-the-filer' } }, { createdAgoSec: 5 });
+    // Filed seconds ago by US — the filer claims their own filing instantly.
+    await seedIssue('WI-9612', { _ei: { created_by: 'su-asking' } }, { createdAgoSec: 5 });
+    // Filed by someone else, but long enough ago that the window has cleared.
+    await seedIssue('WI-9613', { _ei: { created_by: 'su-the-filer' } }, { createdAgoSec: 10_000 });
+    // Fresh, but NO filer recorded — fail-OPEN: an unknown filer never gates the row.
+    await seedIssue('WI-9614', {}, { createdAgoSec: 5 });
+
+    const out = await aggregateIssueClaimExclusions(undefined, { harness: H, assignee: 'su-asking' });
+    expect(out.matchedByFilter).toBe(4);
+    expect(out.excluded.cooldown).toBe(1);
+    expect(out.claimable).toBe(3);
   });
 
   it('an item taken by someone else counts ONLY under `taken`, never double-counted under another floor', async () => {
