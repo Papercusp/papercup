@@ -487,8 +487,9 @@ export async function materializeLoop(
  * Unconditional (not source-scoped like the reaper's clear): ending the loop
  * makes ANY residual error moot, regardless of who recorded it.
  */
-export async function deactivateLoop(ownerId: string, opts: { sql?: Sql } = {}): Promise<boolean> {
+export async function deactivateLoop(ownerId: string, opts: { sql?: Sql; reason?: string } = {}): Promise<boolean> {
   const sql = opts.sql ?? getOrgPg().sql;
+  const reason = opts.reason?.trim() || 'loop:end — deactivated by its owner';
   const ended = await sql<
     Array<{
       id: string;
@@ -528,7 +529,7 @@ export async function deactivateLoop(ownerId: string, opts: { sql?: Sql } = {}):
       actor: 'loop-end',
       newNextFireAt: null,
       intervalSec: row.reschedule_interval_sec,
-      detail: { reason: 'loop:end — deactivated by its owner' },
+      detail: { reason },
     });
   }
   return ended.length > 0;

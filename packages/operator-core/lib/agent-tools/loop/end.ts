@@ -17,9 +17,9 @@ export default defineTool({
   name: 'loop:end',
   profile: 'engineer',
   description:
-    "End the loop on your own session (or another owner's, with `ownerId`) — stops the recurring warm wake. The routine is deactivated (history kept); re-arm anytime with loop:arm.",
+    "End the owner-scoped loop on your own session (or another owner's, with `ownerId`) — stops the recurring warm wake. The routine is deactivated (history kept); an optional `reason` is recorded in the transition log. This tool intentionally has no `harness` argument; loops are keyed by owner. Re-arm anytime with loop:arm.",
   guidance: {
-    when: 'Stop a loop you armed with loop:arm — the goal is done, you are blocked on something external, or the user says stop. Better to loop:end than burn empty wakes spinning.',
+    when: 'Stop a loop you armed with loop:arm — the goal is done, you are blocked on something external, or the user says stop. Pass `reason` when a durable stop explanation matters. This owner-scoped tool intentionally does not take `harness`. Better to loop:end than burn empty wakes spinning.',
     notWhen:
       'Pause the WHOLE autoloop / routines engine — that is autoloop:control. End the autonomous hive loop — that is pot:pause.',
     chaining: 'loop:arm to start; loop:status to check; loop:end to stop.',
@@ -38,6 +38,12 @@ export default defineTool({
       .max(120)
       .optional()
       .describe('End the loop for this owner id (default: yourself).'),
+    reason: z
+      .string()
+      .min(1)
+      .max(500)
+      .optional()
+      .describe('Optional durable reason for ending the loop; recorded in the loop transition log.'),
     acknowledgeOpenDirectives: z
       .boolean()
       .optional()
@@ -66,7 +72,7 @@ export default defineTool({
         };
       }
     }
-    const ended = await deactivateLoop(ownerId);
+    const ended = await deactivateLoop(ownerId, { reason: args.reason });
     const workspaceId = ctx.workspaceId ?? ctx.principal?.workspaceId ?? activeWorkspaceId();
     const control = ended
       ? await refreshControlAnchorAfterMutation({

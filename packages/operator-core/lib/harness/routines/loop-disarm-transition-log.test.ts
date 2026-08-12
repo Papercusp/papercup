@@ -1,6 +1,7 @@
 import { describe, it, expect, vi } from 'vitest';
 import { autoPauseLoopRoutine } from './loop-cost-cap';
 import { deactivateLoop, reviveDisarmedLoop } from './loop';
+import endTool from '../../agent-tools/loop/end';
 
 /**
  * WI-37571 — every loop DISARM must leave a durable row in the append-only transition log.
@@ -166,6 +167,35 @@ describe('WI-37571: loop disarms are recorded in routine_loop_transitions', () =
       // this row existed the durable record was identical (absent) for both.
       expect(rows[0]!.values).toContain('loop-end');
       expect(rows[0]!.values).toContain('su-145fd');
+    });
+
+    it('persists a caller-supplied stop reason instead of discarding it', async () => {
+      const sql = fakeSql();
+      await deactivateLoop('su-145fd', {
+        sql: sql as any,
+        reason: 'fleet lane drained; no further admitted work',
+      });
+      await flush();
+
+      const detail = sql.transitions()[0]!.values.find(
+        (v) => typeof v === 'string' && v.includes('fleet lane drained'),
+      ) as string;
+      expect(detail).toBeDefined();
+      expect(JSON.parse(detail).reason).toBe('fleet lane drained; no further admitted work');
+    });
+
+    it('accepts reason while keeping the owner-scoped no-harness contract explicit', () => {
+      const tool = endTool as unknown as {
+        description?: string;
+        guidance?: { when?: string };
+        args: { safeParse: (value: unknown) => { success: boolean } };
+      };
+
+      expect(tool.description).toMatch(/owner-scoped/i);
+      expect(tool.description).toMatch(/no `harness` argument/i);
+      expect(tool.guidance?.when).toMatch(/pass `reason`/i);
+      expect(tool.args.safeParse({ reason: 'goal complete' }).success).toBe(true);
+      expect(tool.args.safeParse({ harness: 'papercusp' }).success).toBe(false);
     });
 
     it('CONTROL: emits nothing — and returns false — when no active loop matched', async () => {
