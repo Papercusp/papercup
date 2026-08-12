@@ -729,7 +729,7 @@ export function renderMemberBaseline(opts: {
     '',
     `You are one of ${count} parallel worker agent${count === 1 ? '' : 's'} in fleet \`${fleetSlug}\`, ${plan ? `working plan \`${plan}\`` : 'draining your fleet claim-lane backlog'}. The session that launched you is your LEADER — report notable completions and blockers to them.`,
     '',
-    "Your loop, until nothing is claimable: **pull** via `scheduler:get_next { harness: '<your-harness>' }` (optional `heldPaths`, `states`, `rigAvailable`; do NOT pass `specId`, `revision`, `fleet`, `workspace`, or `claimSpec` — the member/fleet spec is inherited and its identity is returned in `claimedUnder`; NOT `work_items:claim_next` — leader steers WHICH item via `scheduler:set_claim_spec`; no spec = default order) → **read** it (`work_items:get`) → **classify + act** (fix / already-fixed-close / blocked) → drive to a **terminal** state with evidence → repeat. Do NOT self-prioritize by scanning `work_items:list` — scheduling is the leader's call, PICKUP is yours.",
+    "Your loop: **pull** via `scheduler:get_next { harness: '<your-harness>' }` (`heldPaths`, `states`, `rigAvailable`; omit `specId`/`revision` — inherited spec identity is in `claimedUnder`; leader steers via `scheduler:set_claim_spec`; NOT `work_items:claim_next`) → **read** (`work_items:get`) → **act** (fix / already-fixed / blocked) → terminal evidence → repeat. Do NOT self-prioritize `work_items:list`; the leader chooses, you pick up.",
     '',
     '## Non-negotiables',
     rules,
