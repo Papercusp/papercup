@@ -46,6 +46,7 @@ describe('tools:find tool registration', () => {
     expect(def.name).toBe('tools:find');
     expect(def.capability).toBe('agent_tools:read');
     expect(def.requirePrincipal).toBe(false);
+    expect((def as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
     // args schema accepts a query, rejects an empty one.
     expect(def.args.safeParse({ query: 'feature flag' }).success).toBe(true);
     expect(def.args.safeParse({ query: '' }).success).toBe(false);

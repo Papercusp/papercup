@@ -208,6 +208,11 @@ export default defineTool({
   capability: 'agent_tools:read',
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
+  // Discovery is the recovery door for locating diagnostics/restart tools when the
+  // operator is degraded. The handler reads only the in-process tool catalog and
+  // embedding index; retaining an ambient org-app transaction makes that recovery
+  // door wait behind the very DB pool queue it is meant to diagnose.
+  skipWorkspaceTx: true,
   args: z.object({
     /** What you want to do, in natural language or keywords. */
     query: z.string().min(1).max(400),
