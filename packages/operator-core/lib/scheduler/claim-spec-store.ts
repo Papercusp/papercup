@@ -775,7 +775,8 @@ function workItemConflictsWithPaths(item: WorkItem, contendedPaths: string[]): b
  */
 export interface ClaimSpecRecord {
   /** Which row answered: a per-bee spec always wins; 'fleet' when inherited via membership;
-   *  'default' when neither a per-bee nor a fleet spec exists (DEFAULT_CLAIM_SPEC applies). */
+   *  'fleet' also identifies a direct fleet-sentinel read; 'default' when neither a per-bee
+   *  nor a fleet spec exists (DEFAULT_CLAIM_SPEC applies). */
   source: 'cup' | 'fleet' | 'default';
   spec: ClaimSpec;
   revision: number | null;
@@ -829,6 +830,14 @@ export async function getClaimSpecRecord(
 ): Promise<ClaimSpecRecord> {
   const ws = args.workspaceId ?? DEFAULT_COORD_WORKSPACE;
   const sql = sqlOverride ?? getOrgPg().sql;
+  // A direct scheduler:get_claim_spec fleet read deliberately passes the fleet
+  // sentinel (`fleet:<slug>`) as cupId so the store can reuse its point lookup.
+  // Preserve that target identity in the returned record: treating the sentinel
+  // as an ordinary cup makes the read report source:'cup' and drops fleetSlug,
+  // which is indistinguishable from a per-member override to callers.
+  const directFleetSlug = args.cupId.startsWith('fleet:')
+    ? args.cupId.slice('fleet:'.length) || undefined
+    : undefined;
   const rows = (await sql`
     SELECT spec, revision, updated_by, updated_at, harness_slug
       FROM harness_shared.cup_claim_specs
@@ -843,12 +852,13 @@ export async function getClaimSpecRecord(
     const row = rows[0]!;
     const v = validateClaimSpec(row.spec);
     return {
-      source: 'cup',
+      source: directFleetSlug ? 'fleet' : 'cup',
       spec: v.ok && v.spec ? withColumnRevision(v.spec, row.revision) : DEFAULT_CLAIM_SPEC,
       revision: row.revision,
       updatedBy: row.updated_by,
       updatedAt: row.updated_at,
       harnessSlug: row.harness_slug,
+      ...(directFleetSlug ? { fleetSlug: directFleetSlug } : {}),
     };
   }
   // No per-bee row — try the fleet the bee belongs to (same inheritance getClaimSpec applies).

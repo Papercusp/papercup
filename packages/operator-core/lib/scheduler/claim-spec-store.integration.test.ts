@@ -200,7 +200,8 @@ describe('getClaimSpecRecord (EI-7678 — the READ verb behind scheduler:get_cla
     const fleetKey = fleetSpecBeeKey('drain-fleet-x');
     await setClaimSpec({ cupId: fleetKey, spec: DEFAULT_CLAIM_SPEC, updatedBy: 'leader-z' }, db.sql);
     const rec = await getClaimSpecRecord({ cupId: fleetKey }, db.sql);
-    expect(rec.source).toBe('cup'); // the sentinel row itself IS the "cup" row for this key
+    expect(rec.source).toBe('fleet');
+    expect(rec.fleetSlug).toBe('drain-fleet-x');
     expect(rec.updatedBy).toBe('leader-z');
   });
 });
