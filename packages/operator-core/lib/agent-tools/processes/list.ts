@@ -29,6 +29,46 @@ function ageSec(startedAt: string): number {
   return Number.isFinite(t) ? Math.max(0, Math.round((Date.now() - t) / 1000)) : 0;
 }
 
+const taskResultSchema = z.object({
+  ok: z.boolean(),
+  enabled: z.boolean().optional(),
+  reason: z.string().optional(),
+  counts: z.object({
+    total: z.number().int().nonnegative(),
+    byState: z.record(z.string(), z.number().int().nonnegative()),
+    byClass: z.record(z.string(), z.number().int().nonnegative()),
+  }),
+  // `live` is the reconciler's deliberately extensible diagnostic summary. Keep
+  // it lossless for structured callers rather than duplicating its evolving
+  // shape here; the human-facing text remains the same JSON envelope.
+  live: z.record(z.string(), z.unknown()).optional(),
+  tasks: z.array(
+    z.object({
+      taskId: z.string(),
+      class: z.string(),
+      title: z.string(),
+      state: z.string(),
+      launchedBy: z.string(),
+      workItemId: z.string().nullable().optional(),
+      planSlug: z.string().nullable().optional(),
+      parentTaskId: z.string().nullable().optional(),
+      rootTaskId: z.string(),
+      ageSec: z.number().int().nonnegative(),
+      rssMb: z.number().int().nonnegative().nullable(),
+      peakRssMb: z.number().int().nonnegative().nullable(),
+      cpuSec: z.number().int().nonnegative().nullable(),
+      pids: z.number().int().nonnegative().nullable(),
+      confined: z.boolean(),
+      scopeUnit: z.string().nullable().optional(),
+      memoryMaxMb: z.number().int().nonnegative().nullable(),
+      deadlineAt: z.string().nullable().optional(),
+      exitCode: z.number().int().nullable().optional(),
+      exitReason: z.string().nullable().optional(),
+      logPath: z.string().nullable().optional(),
+    }),
+  ),
+});
+
 export default defineTool({
   name: 'processes:list',
   profile: 'engineer',
@@ -67,6 +107,11 @@ export default defineTool({
       .describe('reconcile against the kernel before answering — authoritative, ~100ms slower, writes nothing'),
     limit: z.number().int().positive().max(2000).optional(),
   }),
+  // Keep the lossless object available as MCP structuredContent for programmatic
+  // callers (ptool / MCP clients that request `_meta.structured`). The text body
+  // still goes through the ordinary result door for model-facing calls, but a
+  // door-truncated JSON string is not a valid machine-readable response.
+  result: taskResultSchema,
   async handler(args) {
     // WI-6499: with the task manager flag-OFF nothing enrols, so the ledger is
     // frozen at whatever it last held. Serving those rows would be worse than
