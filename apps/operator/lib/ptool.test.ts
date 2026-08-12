@@ -23,6 +23,7 @@ import {
   scriptSourceKind,
   shouldPrintInvocationLine,
   shouldPrintRawResult,
+  resolveTokenPath,
 } from '../scripts/ptool.mjs';
 
 describe('ptool parseArgs', () => {
@@ -39,6 +40,7 @@ describe('ptool parseArgs', () => {
       harness: null,
       raw: false,
       url: null,
+      tokenFile: null,
       help: false,
     });
   });
@@ -54,8 +56,8 @@ describe('ptool parseArgs', () => {
 
   it('parses value flags in the space-separated form', () => {
     expect(parseArgs(['x:y', '--json', '{"a":1}']).json).toBe('{"a":1}');
-    const a = parseArgs(['x:y', '--workspace', 'ws1', '--harness', 'h', '--url', 'http://h:9']);
-    expect(a).toMatchObject({ tool: 'x:y', workspace: 'ws1', harness: 'h', url: 'http://h:9' });
+    const a = parseArgs(['x:y', '--workspace', 'ws1', '--harness', 'h', '--url', 'http://h:9', '--token-file', '/tmp/candidate-token']);
+    expect(a).toMatchObject({ tool: 'x:y', workspace: 'ws1', harness: 'h', url: 'http://h:9', tokenFile: '/tmp/candidate-token' });
   });
 
   it('does not mistake a value-flag argument for the tool name', () => {
@@ -65,13 +67,14 @@ describe('ptool parseArgs', () => {
   });
 
   it('parses convenience + control flags', () => {
-    const a = parseArgs(['x:y', '--workspace=ws1', '--harness=papercup', '--raw', '--url=http://h:9']);
+    const a = parseArgs(['x:y', '--workspace=ws1', '--harness=papercup', '--raw', '--url=http://h:9', '--token-file=/tmp/candidate-token']);
     expect(a).toMatchObject({
       tool: 'x:y',
       workspace: 'ws1',
       harness: 'papercup',
       raw: true,
       url: 'http://h:9',
+      tokenFile: '/tmp/candidate-token',
     });
   });
 
@@ -107,6 +110,33 @@ describe('ptool parseArgs', () => {
       tool: 'code:run',
       script: '-',
     });
+  });
+});
+
+describe('ptool token path', () => {
+  it('prefers an explicit token file over the environment', () => {
+    expect(resolveTokenPath({
+      tokenFile: '/tmp/explicit-token',
+      env: { PAPERCUSP_MCP_TOKEN_FILE: '/tmp/env-token' },
+      home: '/tmp/home',
+    })).toBe('/tmp/explicit-token');
+  });
+
+  it('uses PAPERCUSP_MCP_TOKEN_FILE when no CLI path is supplied', () => {
+    expect(resolveTokenPath({
+      env: { PAPERCUSP_MCP_TOKEN_FILE: '  /tmp/env-token  ' },
+      home: '/tmp/home',
+    })).toBe('/tmp/env-token');
+  });
+
+  it('falls back to the standard per-home token path', () => {
+    expect(resolveTokenPath({ env: {}, home: '/tmp/home' })).toBe('/tmp/home/.papercusp/superuser-token');
+  });
+
+  it('ignores blank overrides', () => {
+    expect(resolveTokenPath({ tokenFile: '  ', env: { PAPERCUSP_MCP_TOKEN_FILE: '  ' }, home: '/tmp/home' })).toBe(
+      '/tmp/home/.papercusp/superuser-token',
+    );
   });
 });
 
