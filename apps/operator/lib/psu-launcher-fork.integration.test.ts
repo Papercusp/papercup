@@ -224,7 +224,7 @@ describe('psu --resume --fork — server-side fork identity model (real PG)', ()
     const original = await recordOriginal();
     const fork = await mintFork(original);
 
-    await markAdvSessionEnded(fork.id, 0);
+    await markAdvSessionEnded(fork.id, 0, 'self');
 
     expect((await readRow(fork.id))!.ended_at).not.toBeNull();
     // The original keeps running — a fork's exit stamps only the fork's own row.
