@@ -31,8 +31,8 @@ const envelope = (msgId: string, body = 'x'.repeat(2615)) => ({
 });
 
 async function run(args: unknown) {
-  const res = (await tool.handler(args as never, {} as never)) as { content: { text: string }[] };
-  return JSON.parse(res.content[0].text);
+  const res = (await tool.handler(args as never, {} as never)) as { data?: unknown; content?: { text: string }[] };
+  return res.data ?? JSON.parse(res.content![0].text);
 }
 
 beforeEach(() => {
@@ -122,5 +122,49 @@ describe('coord:read', () => {
 
     expect(out).toMatchObject({ ok: true, found: false, message: null });
     expect(out.detail).toContain('NOT a full msg_id');
+  });
+});
+
+describe('coord:read structured response', () => {
+  it('preserves an oversized envelope through structuredContent', async () => {
+    resolveRef.mockResolvedValueOnce({
+      status: 'found',
+      msgId: 'mrh4rf15',
+      message: envelope('mrh4rf15'),
+      resolvedFrom: 'exact',
+    } as never);
+
+    const { dispatchProjectedTool, lookupByMcpName } = await import('@papercusp/agent-mcp');
+    const projected = lookupByMcpName('coord:read')!;
+    const dispatched = await dispatchProjectedTool(
+      projected,
+      'coord:read',
+      { msg_id: 'mrh4rf15' },
+      {
+        log: vi.fn(),
+        signal: new AbortController().signal,
+        progress: vi.fn(),
+        emit: vi.fn(),
+        workspaceId: 'default',
+        runId: 'coord-read-structured-test',
+        role: 'operator',
+        gateBypass: { role: true, capability: true, quota: true },
+        transport: 'mcp',
+        requestedFormat: 'json',
+        requestedStructured: true,
+        tx: vi.fn(async () => []),
+      },
+      {},
+    );
+
+    expect(dispatched.ok, JSON.stringify(dispatched)).toBe(true);
+    expect(projected.outputJsonSchema?.type).toBe('object');
+    expect(dispatched.result?.structuredContent).toMatchObject({
+      ok: true,
+      found: true,
+      msg_id: 'mrh4rf15',
+    });
+    const structured = dispatched.result?.structuredContent as { message: { body: string } };
+    expect(structured.message.body).toHaveLength(2615);
   });
 });

@@ -30,6 +30,25 @@ import { resolveMessageRef } from '../messages';
 import { projectAuthoredFields } from '../message-fields';
 import { COORD_ROLES } from '../roles';
 
+// Keep the complete envelope available as MCP structuredContent for programmatic
+// callers (ptool / MCP clients). The human-facing text projection still passes
+// through the ordinary result door, but a large message must not be serialized
+// into one text item that the door can cut in the middle.
+const coordReadResultSchema = z
+  .object({
+    ok: z.boolean(),
+    found: z.boolean(),
+    msg_id: z.string(),
+    resolved_msg_id: z.string().optional(),
+    resolved_from: z.literal('prefix').optional(),
+    error: z.literal('msg_id_ambiguous').optional(),
+    candidates: z.array(z.string()).optional(),
+    detail: z.string().optional(),
+    message: z.record(z.string(), z.unknown()).nullable(),
+    authored: z.record(z.string(), z.unknown()).optional(),
+  })
+  .passthrough();
+
 export default defineTool({
   name: 'coord:read',
   description:
@@ -44,6 +63,7 @@ export default defineTool({
   args: z.object({
     msg_id: z.string().min(1).describe('The coord message id to fetch in full (as seen on a coord:inbox/coord:feed entry, or returned by coord:send).'),
   }),
+  result: coordReadResultSchema,
   async handler(args) {
     // WI-6725: resolve, don't exact-match. A truncated id (the form that
     // circulates in prose) used to return a well-formed EMPTY result that read
@@ -63,38 +83,32 @@ export default defineTool({
     // (see projectAuthoredFields). This call read `.extra` until 2026-08-02 and so
     // returned `undefined` for every message ever fetched here.
     const authored = message ? projectAuthoredFields(message) : undefined;
-    return {
-      content: [
-        {
-          type: 'text' as const,
-          text: JSON.stringify({
-            ok: true,
-            found: message !== null,
-            msg_id: args.msg_id,
-            ...(resolution.status === 'found' && resolution.resolvedFrom === 'prefix'
-              ? {
-                  resolved_msg_id: resolution.msgId,
-                  resolved_from: 'prefix' as const,
-                  detail: `'${args.msg_id}' is a TRUNCATED msg_id — resolved by unique prefix to '${resolution.msgId}'. Cite the full id to look it up directly.`,
-                }
-              : {}),
-            ...(resolution.status === 'ambiguous'
-              ? {
-                  error: 'msg_id_ambiguous' as const,
-                  candidates: resolution.candidates,
-                  detail: `'${args.msg_id}' is a truncated msg_id matching ${resolution.candidates.length}+ messages — supply more of the id, or the full one from coord:inbox.`,
-                }
-              : {}),
-            ...(resolution.status === 'not-found' && resolution.looksTruncated
-              ? {
-                  detail: `No message id starts with '${args.msg_id}'. Note this is NOT a full msg_id (expected '<short>-0000-<32 hex>') — if you copied it out of prose it may have been truncated at the source.`,
-                }
-              : {}),
-            message,
-            ...(authored ? { authored } : {}),
-          }),
-        },
-      ],
+    const payload = {
+      ok: true,
+      found: message !== null,
+      msg_id: args.msg_id,
+      ...(resolution.status === 'found' && resolution.resolvedFrom === 'prefix'
+        ? {
+            resolved_msg_id: resolution.msgId,
+            resolved_from: 'prefix' as const,
+            detail: `'${args.msg_id}' is a TRUNCATED msg_id — resolved by unique prefix to '${resolution.msgId}'. Cite the full id to look it up directly.`,
+          }
+        : {}),
+      ...(resolution.status === 'ambiguous'
+        ? {
+            error: 'msg_id_ambiguous' as const,
+            candidates: resolution.candidates,
+            detail: `'${args.msg_id}' is a truncated msg_id matching ${resolution.candidates.length}+ messages — supply more of the id, or the full one from coord:inbox.`,
+          }
+        : {}),
+      ...(resolution.status === 'not-found' && resolution.looksTruncated
+        ? {
+            detail: `No message id starts with '${args.msg_id}'. Note this is NOT a full msg_id (expected '<short>-0000-<32 hex>') — if you copied it out of prose it may have been truncated at the source.`,
+          }
+        : {}),
+      message,
+      ...(authored ? { authored } : {}),
     };
+    return { data: payload };
   },
 });
