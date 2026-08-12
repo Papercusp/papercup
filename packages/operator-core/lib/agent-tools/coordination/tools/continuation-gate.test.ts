@@ -156,3 +156,73 @@ describe('re-wake guarantee escalation (kills the "the next wake re-opens the ga
     expect(v.guidance).not.toMatch(/SILENTLY HALT/);
   });
 });
+
+// EI-20209826138488049 / EI-20212450572990141: the escalation above used to
+// prescribe session:request-compaction FIRST — to sessions that structurally
+// cannot run it. A headless/autonomous member has no psu-pty host, so the call
+// refuses (no_live_pty_host) and the session spends its LAST turn discovering
+// that. The remedy is selected from the SAME predicate request-compaction
+// itself evaluates (selfCompactionAvailability), never a proxy for "is this
+// session headless".
+describe('remedy selection by self-compaction availability', () => {
+  const closedNoRewake = { contextPct: 80, unreadInbox: 0, rewakeGuaranteed: false as const };
+  const armIndex = (g: string) => g.search(/loop:arm/);
+  const compactIndex = (g: string) => g.search(/session:request-compaction/);
+
+  it('UNAVAILABLE ⇒ never prescribes the call that would refuse', () => {
+    const v = evaluateContinuationGate({ ...closedNoRewake, selfCompactionAvailable: false });
+    expect(v.selfCompactionAvailable).toBe(false);
+    expect(v.guidance).toMatch(/SILENTLY HALT/);
+    expect(v.guidance).toMatch(/loop:arm/);
+    // The whole point: the tool that CANNOT succeed here is named only to be
+    // RULED OUT — never offered as a remedy the session should reach for.
+    expect(v.guidance).toMatch(/NOT available to this session/);
+    expect(v.guidance).toMatch(/do not spend your last turn on it/);
+    expect(v.guidance).not.toMatch(/or SELF-COMPACT/);
+  });
+
+  it('AVAILABLE ⇒ offers both, and still leads with arming', () => {
+    const v = evaluateContinuationGate({ ...closedNoRewake, selfCompactionAvailable: true });
+    expect(v.selfCompactionAvailable).toBe(true);
+    expect(v.guidance).toMatch(/session:request-compaction/);
+    expect(v.guidance).toMatch(/loop:arm/);
+    expect(armIndex(v.guidance)).toBeLessThan(compactIndex(v.guidance));
+  });
+
+  it('UNKNOWN ⇒ non-breaking: both remedies, arming first, with the refusal named', () => {
+    const v = evaluateContinuationGate(closedNoRewake);
+    expect(v.selfCompactionAvailable).toBeNull();
+    expect(v.guidance).toMatch(/session:request-compaction/);
+    expect(armIndex(v.guidance)).toBeLessThan(compactIndex(v.guidance));
+    // unknown must WARN about the refusal rather than pretend the call is safe
+    expect(v.guidance).toMatch(/no_live_pty_host/);
+  });
+
+  it('arming leads in EVERY branch — the diagnosed condition is the missing re-wake, and only loop:arm removes it', () => {
+    for (const selfCompactionAvailable of [true, false, null]) {
+      const g = evaluateContinuationGate({ ...closedNoRewake, selfCompactionAvailable }).guidance;
+      expect(armIndex(g)).toBeGreaterThanOrEqual(0);
+      if (compactIndex(g) >= 0) expect(armIndex(g)).toBeLessThan(compactIndex(g));
+    }
+  });
+
+  it('availability only steers a CLOSED gate with no re-wake — never an open one', () => {
+    const open = evaluateContinuationGate({ contextPct: 30, unreadInbox: 0, rewakeGuaranteed: false, selfCompactionAvailable: false });
+    expect(open.shouldContinue).toBe(true);
+    expect(open.guidance).toMatch(/continuation gate OPEN/);
+    const guaranteed = evaluateContinuationGate({ contextPct: 80, unreadInbox: 0, rewakeGuaranteed: true, selfCompactionAvailable: false });
+    expect(guaranteed.guidance).toMatch(/the next wake re-opens the gate/);
+    // the verdict still REPORTS the reading it was given, in both cases
+    expect(open.selfCompactionAvailable).toBe(false);
+    expect(guaranteed.selfCompactionAvailable).toBe(false);
+  });
+
+  it('continuationGateFromReads passes selfCompactionAvailable through to the verdict', () => {
+    const base = { contextTokens: 80, compactionLimit: 100, unreadInbox: 0, rewakeGuaranteed: false as const };
+    expect(continuationGateFromReads({ ...base, selfCompactionAvailable: false }).selfCompactionAvailable).toBe(false);
+    expect(continuationGateFromReads({ ...base, selfCompactionAvailable: true }).selfCompactionAvailable).toBe(true);
+    expect(continuationGateFromReads(base).selfCompactionAvailable).toBeNull();
+    // and the pass-through actually reaches the guidance, not just the field
+    expect(continuationGateFromReads({ ...base, selfCompactionAvailable: false }).guidance).toMatch(/NOT available to this session/);
+  });
+});
