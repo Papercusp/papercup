@@ -43,6 +43,7 @@ import { readFileSync, realpathSync } from 'node:fs';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import * as path from 'node:path';
+import { stripCommentsAndStrings } from './lib/strip-comments-and-strings.mjs';
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -109,29 +110,84 @@ export function findUnreportedFallbacks(text) {
   return offenders;
 }
 
-/** Tracked .ts sources that mention a sidecar call at all. */
-export function findOffenders() {
-  const tracked = execFileSync('git', ['ls-files', '*.ts'], { cwd: ROOT, encoding: 'utf8' })
+/**
+ * Walk the real tree and return BOTH the verdict and how much was examined.
+ *
+ * The census (`scanned`) is the load-bearing half, not decoration: a scan that
+ * collapses — wrong root, broken `git ls-files`, a submodule boundary — returns
+ * zero offenders, which is byte-identical to a clean repository. Reporting the
+ * count lets the guard's test assert the scan REACHED the tree before it trusts
+ * the silence (the WI-10589 `scanTree` convention, shared with
+ * check-no-retired-imports.mjs and its siblings).
+ */
+export function scanTree() {
+  const eligible = (f) =>
+    !ALLOWLIST.has(f) &&
+    !BASELINE.has(f) &&
+    !f.includes('/dist/') &&
+    !f.includes('node_modules') &&
+    !/\.test\.ts$/.test(f) &&
+    !/\.integration\.test\.ts$/.test(f);
+
+  // The ENUMERATION is the collapse detector and must stay whole-tree: it is what proves
+  // the guard is looking at a repository at all. It costs nothing — no file is read.
+  const enumerated = execFileSync('git', ['ls-files', '*.ts'], { cwd: ROOT, encoding: 'utf8' })
     .split('\n')
-    .filter(Boolean);
+    .filter(Boolean)
+    .filter(eligible);
 
-  const out = [];
-  for (const f of tracked) {
-    if (ALLOWLIST.has(f) || BASELINE.has(f)) continue;
-    if (f.includes('/dist/') || f.includes('node_modules')) continue;
-    if (/\.test\.ts$/.test(f) || /\.integration\.test\.ts$/.test(f)) continue;
+  // Reading all ~5.4k of those cost ~13s, which is too expensive to attach to every
+  // changed .ts path — and it was pure waste: a handful of files mention a sidecar
+  // entrypoint at all. `git grep` does the same prefilter in the index, in one exec.
+  //
+  // This CANNOT change the verdict. The old loop demanded `masked.includes(call)` before
+  // examining a file, and masking only ever REMOVES text — so any file the masked check
+  // could accept must contain the literal in its raw bytes, which is exactly what this
+  // grep selects. The grep is a superset of the accepted set; masking still decides.
+  let candidates = [];
+  try {
+    candidates = execFileSync(
+      'git',
+      ['grep', '-l', '-F', ...SIDECAR_CALLS.flatMap((c) => ['-e', c]), '--', '*.ts'],
+      { cwd: ROOT, encoding: 'utf8' },
+    )
+      .split('\n')
+      .filter(Boolean)
+      .filter(eligible);
+  } catch (e) {
+    // `git grep` exits 1 for "no matches" — a legitimately clean tree, not a failure.
+    // Any other status is a real fault and must not read as compliance.
+    if (e?.status !== 1) throw e;
+  }
 
+  let scanned = 0; // files actually read and masked
+  let considered = 0; // of those, the ones that still mention a sidecar entrypoint in CODE
+  const violations = [];
+
+  for (const f of candidates) {
     let text;
     try {
       text = readFileSync(path.join(ROOT, f), 'utf8');
     } catch {
       continue;
     }
-    if (!SIDECAR_CALLS.some((c) => text.includes(c))) continue;
+    scanned++;
 
-    for (const o of findUnreportedFallbacks(text)) out.push({ file: f, ...o });
+    // Scan only executable source. The guard's own prose and string examples mention the
+    // sidecar entrypoints and reporter, but those mentions are not fallback call sites.
+    // The shared masker preserves offsets/newlines, so reported lines still point at source.
+    const masked = stripCommentsAndStrings(text, f);
+    if (!SIDECAR_CALLS.some((c) => masked.includes(c))) continue;
+    considered++;
+
+    for (const o of findUnreportedFallbacks(masked)) violations.push({ file: f, ...o });
   }
-  return out;
+  return { enumerated: enumerated.length, scanned, considered, violations };
+}
+
+/** Tracked .ts sources that mention a sidecar call at all. */
+export function findOffenders() {
+  return scanTree().violations;
 }
 
 function main() {

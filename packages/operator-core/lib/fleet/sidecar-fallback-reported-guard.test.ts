@@ -14,9 +14,25 @@
  * reason to touch a tracked file to prove falsifiability).
  */
 import { describe, it, expect } from 'vitest';
+import path from 'node:path';
+import { execFileSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
-// @ts-ignore — pure JS guard script, no .d.ts; imported for its predicate only.
-import { findUnreportedFallbacks } from '../../../../scripts/check-sidecar-fallback-reported.mjs';
+// @ts-ignore — pure JS guard script, no .d.ts (same treatment as the sibling live-tree guards).
+import {
+  findUnreportedFallbacks,
+  scanTree,
+} from '../../../../scripts/check-sidecar-fallback-reported.mjs';
+
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../../../..');
+const GUARD = path.join(REPO_ROOT, 'scripts/check-sidecar-fallback-reported.mjs');
+
+/**
+ * Measured 2026-08-12: the guard reads several thousand tracked .ts files. The floor
+ * sits well under that on purpose — it catches a COLLAPSE of the scan (wrong root,
+ * broken `git ls-files`, a submodule boundary), not ordinary census movement.
+ */
+const MIN_SCANNED = 3_000;
 
 const compliant = `
   if (gitSidecarEnabled('PAPERCUSP_X_SPAWN_SIDECAR')) {
@@ -84,5 +100,38 @@ describe('check-sidecar-fallback-reported guard', () => {
     const [first] = findUnreportedFallbacks(bad);
     expect(first?.line).toBeGreaterThan(0);
     expect(first?.call).toBe('runGitViaSpawnerSidecar');
+  });
+});
+
+/**
+ * The cases above prove the PREDICATE works; they run it over fixtures. That is
+ * classified ADVISORY (`logic-test`) by check-lint-guard-reachability.mjs, and
+ * deliberately so: a green logic test and a rotting guard are perfectly
+ * compatible states — the predicate can be flawless while nothing ever points it
+ * at the repository.
+ *
+ * These cases are what put the guard on a BLOCKING path (WI-38312). Without them
+ * the guard shipped enforcing nothing, and the reachability check went red for
+ * every agent whose change mapped into @papercusp/operator-core.
+ */
+describe('sidecar-fallback-reported guard — live verdict over the real tree', () => {
+  it('REACHED the tree: the scan examined a plausible number of files', () => {
+    const { scanned } = scanTree() as { scanned: number };
+    // Asserted BEFORE the silence below, so a collapsed scan cannot masquerade as
+    // a compliant repository.
+    expect(scanned).toBeGreaterThan(MIN_SCANNED);
+  });
+
+  it('found the call sites it exists to police — the scan is not silently filtering them all out', () => {
+    const { considered } = scanTree() as { considered: number };
+    expect(considered).toBeGreaterThan(0);
+  });
+
+  it('every sidecar-git fallback in the repository reports via noteSidecarFallback()', () => {
+    // Executes the guard exactly as the gate does. This invocation is what the
+    // reachability taxonomy counts as enforcement, and it is also the honest test:
+    // it asserts the SHIPPED entrypoint's verdict, not a re-implementation of it.
+    const out = execFileSync('node', [GUARD], { cwd: REPO_ROOT, encoding: 'utf8' });
+    expect(out).toMatch(/✓ every sidecar-git fallback reports via noteSidecarFallback\(\)/);
   });
 });
