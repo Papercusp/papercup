@@ -688,6 +688,10 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     resolveM.mockResolvedValueOnce({ resolved: [], unknown: ['some-other-ghost'], ambiguous: [] } as never);
     const b = await body({ to: ['some-other-ghost'], summary: 'hi', related_msg_id: 'orig' });
     expect(b.results[0]).toMatchObject({ ok: false, error: 'unknown_recipient', unknown_recipients: ['some-other-ghost'] });
+    // EI-20232430036029410: when a related reply cannot be delivered to the
+    // concrete recipient, the refusal must teach the durable coord:ack path
+    // instead of leaving the agent to rediscover it from the dead session.
+    expect(b.results[0].message).toContain('coord:ack { msg_id }');
     expect(sendM).not.toHaveBeenCalled();
   });
 
