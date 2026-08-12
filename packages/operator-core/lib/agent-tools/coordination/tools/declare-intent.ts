@@ -26,6 +26,10 @@
  * (plan_item_claims lease) and the caller's other claims in that plan
  * are released — one call = presence + structured claims, replacing the
  * prose-lane pattern ("X holds P-001..P-005") that nothing could read.
+ * An explicit empty `items` array is also valid without a plan slug: it
+ * declares the caller's new presence state without claiming or releasing a
+ * plan lane. This is the replacement-member re-declaration path; there is no
+ * plan scope to reconcile when the member has no current plan.
  * Omitting `items` leaves existing claims untouched (so a bare
  * re-declare never drops a lane claimed via plans:set-status wip).
  *
@@ -108,7 +112,7 @@ function broadIntentHint(intent: string, hasStructuredItems: boolean): string | 
 export default defineTool({
   name: 'coord:declare-intent',
   description:
-    'Declare current work: one-line intent, optional plan slug, P-NNN lane (auto-claimed), and files. `items` accepts plan ids in P-NNN form only; scheduler:get_next claims WI-/EI- work-items and declares their intent automatically, so do not pass those ids here. Peers see this via coord:presence / fleet:assignments. Omitted fields reset state except `items` and `current_files` (omission preserves; [] clears). A broad "all remaining items" intent without structured `items` returns advisory `overCoverageHint` (EI-5873).',
+    'Declare current work: one-line intent, optional plan slug, P-NNN lane (auto-claimed), and files. `items` accepts plan ids in P-NNN form only; scheduler:get_next claims WI-/EI- work-items and declares their intent automatically, so do not pass those ids here. A non-empty `items` lane requires a plan slug; an explicit empty `items: []` may be used without one for a replacement-member presence re-declaration and does not touch plan claims. Peers see this via coord:presence / fleet:assignments. Omitted fields reset state except `items` and `current_files` (omission preserves; [] clears). A broad "all remaining items" intent without structured `items` returns advisory `overCoverageHint` (EI-5873).',
   guidance: {
     when: 'Starting distinct work so peers see it. For a plan lane, pass P-NNN ids as `items` to claim it structurally. scheduler:get_next already declares claimed WI-/EI- intent; do not pass that work-item id as `items`. For broad "take everything remaining" work, enumerate items to expose overlap (EI-5873).',
     notWhen: 'Every turn — the OMP hook heartbeats automatically; call this when your intent changes.',
@@ -136,7 +140,7 @@ export default defineTool({
       .max(40)
       .optional()
       .describe(
-        'P-NNN plan items you are taking (your LANE) — each is auto-claimed; your other claims in this plan are released. Requires current_plan_slug. Pass [] to release your whole lane in the plan. Omit to leave claims untouched. WI-/EI- work-item ids belong to scheduler:get_next, not this field.',
+        'P-NNN plan items you are taking (your LANE) — each is auto-claimed; your other claims in this plan are released. A non-empty lane requires current_plan_slug. Pass [] with a plan to release your whole lane; pass [] without a plan for a replacement-member presence re-declaration that does not touch plan claims. Omit to leave claims untouched. WI-/EI- work-item ids belong to scheduler:get_next, not this field.',
       ),
     harness: z
       .string()
@@ -152,7 +156,11 @@ export default defineTool({
   }),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
-    if (args.items && !args.current_plan_slug) {
+    // An empty lane is meaningful even when this member has no plan scope: it
+    // is the replacement-member re-declaration path. Non-empty P-NNN lanes
+    // still require an explicit plan so claim reconciliation cannot silently
+    // target an unknown scope.
+    if (args.items && args.items.length > 0 && !args.current_plan_slug) {
       return {
         content: [
           {

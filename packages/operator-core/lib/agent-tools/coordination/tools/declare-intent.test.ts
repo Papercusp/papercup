@@ -207,6 +207,17 @@ describe('coord:declare-intent lane validation (EI-356)', () => {
     expect(String(res.error)).toMatch(/current_plan_slug/);
   });
 
+  it('an empty lane can re-declare presence without a plan slug for a replacement member', async () => {
+    const res = parse(await tool.handler({ intent: 'replacement work', items: [] }, ctx));
+    expect(res.ok).toBe(true);
+    expect(writePresence).toHaveBeenCalledTimes(1);
+    expect(writePresence.mock.calls[0][1]).toMatchObject({
+      intent: 'replacement work',
+      currentPlanSlug: null,
+    });
+    expect(reconcileDeclaredClaims).not.toHaveBeenCalled();
+  });
+
   it('the items-without-plan guard writes NOTHING — no presence row, no lane reconcile (P2-14)', async () => {
     // The guard short-circuits at handler top (declare-intent.ts:78-91) BEFORE
     // writePresence / reconcileDeclaredClaims, so a malformed call leaves no
