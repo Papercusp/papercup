@@ -66,7 +66,7 @@ beforeEach(() => {
   getWorkItem.mockReset();
   getWorkItemDetail.mockReset();
   getWorkItemThreadWindow.mockReset();
-  getWorkItemCheckpointWithMeta.mockReset();
+  getWorkItemCheckpointWithMeta.mockReset().mockResolvedValue({ checkpoint: null, updatedAtMs: null });
   // P-007: default to "no dependencies declared" so every pre-existing suite keeps
   // exercising the time-heuristic fallback; the override suite opts in explicitly.
   getWorkItemCheckpointFreshness.mockReset();
@@ -149,7 +149,6 @@ describe('work_items:get — checkpoint field', () => {
     expect(getWorkItem).toHaveBeenCalledWith('WI-12', undefined);
     expect(getWorkItemThreadWindow).toHaveBeenCalledWith('WI-12', 3, undefined);
     expect(getWorkItemDetail).not.toHaveBeenCalled();
-    console.log('DEBUG-WI12', r, getWorkItem.mock.results, getWorkItemThreadWindow.mock.results);
     expect(r).toMatchObject({
       ok: true,
       id: 'WI-12',
