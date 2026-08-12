@@ -41,6 +41,16 @@ import { mockOrgPgSql } from '../testing/mock-org-pg';
  * the property they guard was never in question. Assert the property directly instead: it
  * still fails loudly if a pause UPDATE ever appears, and no longer fails when it does not.
  */
+/**
+ * Stub `resolveProject` for rows whose `install_slug` is fine, so the harness leg passes and
+ * the leg actually under test is the only thing that can fail. The validator only reads this
+ * value for truthiness, so a slug-only stand-in is faithful — the cast lives here ONCE rather
+ * than at each call site (`lint:mock-cast-escape` is a shrink-only ratchet).
+ */
+function stubResolvedProject(slug: string): void {
+  vi.mocked(harnessCore.resolveProject).mockResolvedValue({ slug } as any);
+}
+
 function pausedARow(mockSql: { mock: { calls: unknown[][] } }): boolean {
   return mockSql.mock.calls.some((c) =>
     /SET\s+active\s*=\s*false/i.test(Array.isArray(c[0]) ? c[0].join(' ? ') : String(c[0])),
@@ -288,7 +298,7 @@ describe('validateActiveRoutines — unregistered system-action handlers (EI-193
     vi.mocked(workspaceRegistry.activeWorkspaceId).mockReturnValue(mockWs);
     // These rows carry a real install_slug, so the harness leg must pass for the
     // system-action leg to be the only thing under test.
-    vi.mocked(harnessCore.resolveProject).mockResolvedValue({ slug: 'papercusp' } as any);
+    stubResolvedProject('papercusp');
   });
   afterEach(() => vi.clearAllMocks());
 
@@ -450,7 +460,7 @@ describe('routine-validation FATAL recurrence aging (EI-18685043834332306)', () 
     vi.clearAllMocks();
     registeredRef.current = new Set<string>(); // the handler is missing — the row itself is fine
     vi.mocked(workspaceRegistry.activeWorkspaceId).mockReturnValue(mockWs);
-    vi.mocked(harnessCore.resolveProject).mockResolvedValue({ slug: 'papercusp' } as any);
+    stubResolvedProject('papercusp');
   });
   afterEach(() => vi.clearAllMocks());
 
