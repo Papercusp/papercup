@@ -193,6 +193,26 @@ describe('ptool local operator connect retry (EI-20207246136942518)', () => {
     expect(connectOnce).toHaveBeenCalledTimes(1);
     expect(sleep).not.toHaveBeenCalled();
   });
+
+  it('bounds a hung local handshake before retrying', async () => {
+    const client = { close: vi.fn() };
+    const connectOnce = vi
+      .fn()
+      .mockImplementationOnce(() => new Promise(() => {}))
+      .mockResolvedValue(client);
+    const sleep = vi.fn(async () => {});
+
+    await expect(
+      connectWithLocalRetry(connectOnce, 'http://127.0.0.1:3170', {}, {
+        maxAttempts: 2,
+        attemptTimeoutMs: 1,
+        sleep,
+      }),
+    ).resolves.toBe(client);
+    expect(connectOnce).toHaveBeenCalledTimes(2);
+    expect(connectOnce.mock.calls[0][2]).toEqual({ timeoutMs: 1 });
+    expect(sleep).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe('ptool serviceOf / groupTools', () => {

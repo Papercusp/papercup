@@ -356,18 +356,38 @@ export async function connectWithLocalRetry(
   connectOnce,
   operatorUrl,
   scope,
-  { maxAttempts = 30, retryDelayMs = 1_000, sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)) } = {},
+  {
+    maxAttempts = 30,
+    retryDelayMs = 1_000,
+    attemptTimeoutMs = 5_000,
+    sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms)),
+  } = {},
 ) {
   const hostname = new URL(operatorUrl).hostname;
   const local = hostname === '127.0.0.1' || hostname === 'localhost' || hostname === '::1';
   let lastError;
   for (let attempt = 1; attempt <= maxAttempts; attempt += 1) {
+    let timeout;
     try {
-      return await connectOnce(operatorUrl, scope);
+      const connection = connectOnce(
+        operatorUrl,
+        scope,
+        local ? { timeoutMs: attemptTimeoutMs } : undefined,
+      );
+      if (!local || !(attemptTimeoutMs > 0)) return await connection;
+      return await new Promise((resolve, reject) => {
+        timeout = setTimeout(
+          () => reject(new Error(`local operator connection attempt timed out after ${attemptTimeoutMs}ms`)),
+          attemptTimeoutMs,
+        );
+        Promise.resolve(connection).then(resolve, reject);
+      });
     } catch (error) {
       lastError = error;
       if (!local || attempt === maxAttempts) throw error;
       await sleep(retryDelayMs);
+    } finally {
+      if (timeout) clearTimeout(timeout);
     }
   }
   throw lastError;
@@ -394,7 +414,7 @@ export function buildMcpUrl(operatorUrl, { workspace, harness, client } = {}) {
  *  it works regardless of whether the host also honors a per-call `workspace`
  *  arg (the newer EI-30 path). The flags are ALSO merged into the args object
  *  (mergeConvenienceArgs) for tools that take `workspace` as a genuine filter. */
-async function connect(operatorUrl, { workspace, harness } = {}) {
+async function connect(operatorUrl, { workspace, harness } = {}, { timeoutMs } = {}) {
   const { Client } = await import('@modelcontextprotocol/sdk/client/index.js');
   const { StreamableHTTPClientTransport } = await import('@modelcontextprotocol/sdk/client/streamableHttp.js');
   const token = readToken();
@@ -411,7 +431,7 @@ async function connect(operatorUrl, { workspace, harness } = {}) {
   });
   const client = new Client({ name: 'ptool', version: '0.1.0' }, { capabilities: {} });
   try {
-    await client.connect(transport);
+    await client.connect(transport, timeoutMs > 0 ? { timeout: timeoutMs } : undefined);
   } catch (e) {
     throw new Error(
       `could not reach the operator at ${operatorUrl} (${e?.message || e}). ` +
