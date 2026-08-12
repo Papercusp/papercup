@@ -18,6 +18,7 @@ import type { ScoredIdea, Proposal, ScoutExperiment, ScoutLlmCall } from './type
 import { titleSimilarity } from '../harness/improvements/digest';
 import { parseLlmJson } from './llm-json';
 import { DEFAULT_SCOUT_RECOMBINE_MODEL } from './models';
+import { callScoutPhaseLlm, DEFAULT_SCOUT_RECOMBINE_TIMEOUT_MS } from './llm-deadline';
 
 /** Default recombine model — a touch stronger than the critic (it writes the
  *  proposal narrative + experiment). Overridable via RecombineOptions.model. */
@@ -120,6 +121,14 @@ export interface RecombineOptions extends PlanRecombinationOptions {
   projectContext?: string;
   model?: string;
   thinkingBudgetTokens?: number;
+  /** Per-call generation cap; <=0 disables the local cap. */
+  timeoutMs?: number;
+  /** Optional caller cancellation signal (the production runner composes its parent signal). */
+  signal?: AbortSignal;
+  /** Absolute deadline of the owning Scout cycle. */
+  cycleDeadlineMs?: number;
+  /** Test seam for the admission backstop grace. */
+  admissionBackstopGraceMs?: number;
 }
 
 export interface RecombineResult {
@@ -239,14 +248,22 @@ export async function recombineProposals(
         const thinkingBudgetTokens = opts.thinkingBudgetTokens ?? 2048;
         let res: Awaited<ReturnType<typeof deps.llmCall>>;
         try {
-          res = await deps.llmCall({
-            model: opts.model ?? DEFAULT_RECOMBINE_MODEL,
-            system,
-            messages: [{ role: 'user', content: user }],
-            responseFormat: 'json',
-            thinkingBudgetTokens,
-            // Server-side thinking headroom (EI-13119 class — see ideators.ts).
-            maxTokens: thinkingBudgetTokens + 8192,
+          res = await callScoutPhaseLlm({
+            llmCall: deps.llmCall,
+            phase: 'recombine',
+            timeoutMs: opts.timeoutMs ?? DEFAULT_SCOUT_RECOMBINE_TIMEOUT_MS,
+            signal: opts.signal,
+            cycleDeadlineMs: opts.cycleDeadlineMs,
+            admissionBackstopGraceMs: opts.admissionBackstopGraceMs,
+            input: {
+              model: opts.model ?? DEFAULT_RECOMBINE_MODEL,
+              system,
+              messages: [{ role: 'user', content: user }],
+              responseFormat: 'json',
+              thinkingBudgetTokens,
+              // Server-side thinking headroom (EI-13119 class — see ideators.ts).
+              maxTokens: thinkingBudgetTokens + 8192,
+            },
           });
         } catch (err) {
           return {

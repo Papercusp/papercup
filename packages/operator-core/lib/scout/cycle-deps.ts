@@ -756,12 +756,25 @@ export function buildScoutCycleDeps(
             novelty: scoutConfig.novelty,
             bucket: scoutConfig.buckets,
             // P-010: per-blueprint critic mission framing (default ⇒ byte-identical).
-            critic: { mission: scoutConfig.framing.criticMission, model: scoutConfig.models.critic },
+            critic: {
+              mission: scoutConfig.framing.criticMission,
+              model: scoutConfig.models.critic,
+              ...(ctx.deadlineMs !== undefined ? { cycleDeadlineMs: ctx.deadlineMs } : {}),
+            },
           },
         )
       ).critiques,
     recombine: async (scored, ctx) =>
-      (await recombineProposals(scored, { llmCall: ctx.llmCall }, { model: scoutConfig.models.recombine })).proposals,
+      (
+        await recombineProposals(
+          scored,
+          { llmCall: ctx.llmCall },
+          {
+            model: scoutConfig.models.recombine,
+            ...(ctx.deadlineMs !== undefined ? { cycleDeadlineMs: ctx.deadlineMs } : {}),
+          },
+        )
+      ).proposals,
     // The whole-system override realizes the P-005 split: a testable WHOLE-SYSTEM proposal
     // (genome's interacting wholes) routes to the InstanceSubject; a component idea stays on
     // the gym (HarnessSubject). plan/improvement/unhinted ideas are untouched.

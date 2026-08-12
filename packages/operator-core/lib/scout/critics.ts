@@ -28,6 +28,7 @@ import {
 import { corpusNoveltyHybrid } from './semantic-novelty-leg';
 import { parseLlmJson } from './llm-json';
 import { DEFAULT_SCOUT_CRITIC_MODEL } from './models';
+import { callScoutPhaseLlm, DEFAULT_SCOUT_CRITIC_TIMEOUT_MS } from './llm-deadline';
 
 /**
  * Default critic model — cheap on purpose (the plan: "a handful of ideators +
@@ -60,6 +61,14 @@ export interface CriticContext {
    * {@link DEFAULT_CRITIC_MISSION} (byte-identical to the pre-seam prompt).
    */
   mission?: string;
+  /** Per-call generation cap; <=0 disables the local cap. */
+  timeoutMs?: number;
+  /** Optional caller cancellation signal (the production runner composes its parent signal). */
+  signal?: AbortSignal;
+  /** Absolute deadline of the owning Scout cycle. */
+  cycleDeadlineMs?: number;
+  /** Test seam for the admission backstop grace. */
+  admissionBackstopGraceMs?: number;
 }
 
 export interface CriticRawScores {
@@ -151,17 +160,25 @@ export async function runCritic(
   const thinkingBudgetTokens = ctx.thinkingBudgetTokens ?? 1024;
   let res: Awaited<ReturnType<ScoutLlmCall>>;
   try {
-    res = await deps.llmCall({
-      model: ctx.model ?? DEFAULT_CRITIC_MODEL,
-      system,
-      messages: [{ role: 'user', content: user }],
-      responseFormat: 'json',
-      thinkingBudgetTokens,
-      // Headroom for SERVER-SIDE thinking (claude-5-family models emit it against
-      // this budget even though thinkingBudgetTokens is client-side fiction — see
-      // ideators.ts): a tight cap truncates the JSON mid-object → parseLlmJson null
-      // → feasibility 0 → every idea silently REVIEWED, never kept (EI-13119 class).
-      maxTokens: thinkingBudgetTokens + 8192,
+    res = await callScoutPhaseLlm({
+      llmCall: deps.llmCall,
+      phase: 'critic',
+      timeoutMs: ctx.timeoutMs ?? DEFAULT_SCOUT_CRITIC_TIMEOUT_MS,
+      signal: ctx.signal,
+      cycleDeadlineMs: ctx.cycleDeadlineMs,
+      admissionBackstopGraceMs: ctx.admissionBackstopGraceMs,
+      input: {
+        model: ctx.model ?? DEFAULT_CRITIC_MODEL,
+        system,
+        messages: [{ role: 'user', content: user }],
+        responseFormat: 'json',
+        thinkingBudgetTokens,
+        // Headroom for SERVER-SIDE thinking (claude-5-family models emit it against
+        // this budget even though thinkingBudgetTokens is client-side fiction — see
+        // ideators.ts): a tight cap truncates the JSON mid-object → parseLlmJson null
+        // → feasibility 0 → every idea silently REVIEWED, never kept (EI-13119 class).
+        maxTokens: thinkingBudgetTokens + 8192,
+      },
     });
   } catch (err) {
     // WI-4475: critiqueIdeas now fans every idea's critic call out CONCURRENTLY

@@ -1,13 +1,13 @@
 {
   "evidenceRef": "EI-20285223214931386, follow-on to plan sql-escape-tool-routing-2026-08-12 — buildSqlFixture(pair) over agent-authored dev:pg_query calls, 14d window, status=ok",
   "extractedAt": "2026-08-12",
-  "totalAtoms": 746,
+  "totalAtoms": 731,
   "totalSessions": 147,
   "sample": [
     {
-      "sid": "su-e15fb42f-6686-41e7-8368-37f5ec26ef3c",
-      "ts": "2026-08-03 13:44:10.264-04",
-      "atom": "SELECT checkpoint FROM harness_shared.work_items WHERE id = 'WI-8945'"
+      "sid": "su-e6ac4eb7-9966-4e03-8122-5d761aff294d",
+      "ts": "2026-08-01 20:15:24.721-04",
+      "atom": "SELECT DISTINCT harness_slug FROM harness_shared.work_items WHERE workspace_id='papercusp-workspace' ORDER BY 1 LIMIT 40"
     },
     {
       "sid": "su-89beac53-25ef-4a62-83b5-fb245c527cfb",
@@ -15,24 +15,24 @@
       "atom": "SELECT feature_id, item_kind, goal_id IS NOT NULL AS stamped, to_char(to_timestamp(created_ts/1000),'HH24:MI:SS') AS created, left(title,44) AS title FROM harness_shared.work_items WHERE workspace_id='papercusp-workspace' AND feature_id IN ('WI-37892','WI-37897','WI-37913','WI-37932','WI-37933','WI-37948') ORDER BY created_ts"
     },
     {
-      "sid": "su-f49ebf76-2d26-4eca-a124-6fdcb0b21c1f",
-      "ts": "2026-08-01 15:05:49.432-04",
-      "atom": "SELECT feature_id, kind, status, payload->'_ei'->>'severity' AS severity, assignee, left(title,70) AS title, updated_at FROM harness_shared.work_items WHERE harness_slug='papercusp' AND feature_id IN ('WI-6495','WI-6496','WI-6502','WI-6504','WI-6512','WI-6513','WI-6542','WI-6547','WI-6552','WI-6559','WI-6560','WI-6597','WI-6604','WI-6638','WI-6668','WI-6505','WI-6551') ORDER BY status, feature_id"
-    },
-    {
       "sid": "su-d3dd7eae-280b-47b7-b629-00c15072053f",
-      "ts": "2026-08-11 19:15:21.326-04",
-      "atom": "SELECT feature_id, payload->'observation'->>'rubricRef' AS rubric, jsonb_object_keys(payload->'observation'->'ratings') AS criterion, payload->'observation'->'ratings'->jsonb_object_keys(payload->'observation'->'ratings')->>'rating' AS rating FROM harness_shared.work_items WHERE workspace_id='papercusp-workspace' AND feature_id='EI-20200292636200463'"
+      "ts": "2026-08-11 19:09:02.816-04",
+      "atom": "SELECT feature_id, kind, status, left(regexp_replace(coalesce(summary,''), '\\s+', ' ', 'g'), 620) AS body FROM harness_shared.work_items WHERE workspace_id='papercusp-workspace' AND feature_id IN ('EI-20199404349971338','EI-20194761871611003','EI-20194761668526294','EI-20194761446931903','EI-20191666152269691','EI-20191500742062999','EI-20191482908659901','EI-20191442676357637','EI-20191406339204204') ORDER BY feature_id DESC"
     },
     {
-      "sid": "su-89beac53-25ef-4a62-83b5-fb245c527cfb",
-      "ts": "2026-08-11 23:50:28.882-04",
-      "atom": "SELECT feature_id, status, coalesce(taken_by,'(none)') AS holder, left(summary, 700) AS body FROM harness_shared.work_items WHERE harness_slug='papercusp' AND feature_id IN ('WI-38009','WI-6376','WI-36768','EI-20201718365911812') ORDER BY feature_id"
+      "sid": "su-83f46df7-9f59-4169-8eec-ddb13a6a3467",
+      "ts": "2026-08-11 15:44:29.076-04",
+      "atom": "SELECT feature_id, payload ? 'createdBy' AS has_createdby_key, payload->>'createdBy' AS created_by, goal_id, origin, left(payload::text, 220) AS payload_head FROM harness_shared.work_items WHERE workspace_id='papercusp-workspace' AND feature_id IN ('EI-20186439051235635','EI-20185819124341317','WI-37921')"
     },
     {
-      "sid": "su-1153548e-1455-47f5-b118-443e205f885b",
-      "ts": "2026-08-11 23:31:06.07-04",
-      "atom": "SELECT feature_id, status, item_kind, taken_by, terminal_owner, terminal_completion_ref, payload->'_completionEvidence'->>'verifiedHow' AS verified_how, payload->'_completionEvidence'->>'status' AS completion_status, updated_ts FROM harness_shared.work_items WHERE harness_slug = 'papercusp' AND workspace_id = 'papercusp-workspace' AND feature_id = 'EI-20205987082272857'"
+      "sid": "su-119d89f6-8690-4544-8727-2d19ae7f3121",
+      "ts": "2026-08-11 17:19:12.191-04",
+      "atom": "SELECT feature_id, status, coalesce(left(taken_by,12),'-') taken, to_char(to_timestamp(updated_ts/1000),'HH24:MI') upd, (payload->'_completionEvidence') IS NOT NULL AS has_ev, coalesce(authority,'-') auth, coalesce(terminal_completion_ref,'-') tref, left(coalesce(notes,''),60) AS ckpt FROM harness_shared.work_items WHERE feature_id IN ('WI-37953','WI-37954','WI-37955','WI-37956','WI-37957','WI-37958','WI-37965','WI-37966','WI-37908','WI-37914') ORDER BY feature_id"
+    },
+    {
+      "sid": "su-d41fe23c-ce13-4ecc-977e-4688dd915458",
+      "ts": "2026-08-11 20:02:32.617-04",
+      "atom": "SELECT feature_id, status, item_kind, taken_by, terminal_owner, left(COALESCE(terminal_completion_ref,''), 60) AS completion_ref, authority, to_timestamp(updated_ts/1000)::text AS updated FROM harness_shared.work_items WHERE workspace_id='papercusp-workspace' AND feature_id='WI-37988'"
     },
     {
       "sid": "su-89beac53-25ef-4a62-83b5-fb245c527cfb",
@@ -40,64 +40,64 @@
       "atom": "SELECT feature_id, status, length(notes) AS notes_len, left(notes, 700) AS notes, terminal_reason FROM harness_shared.work_items WHERE harness_slug='papercusp' AND feature_id IN ('WI-38009','WI-37956')"
     },
     {
-      "sid": "su-c12e553f-fe97-4c65-9e1b-12f65bff9332",
-      "ts": "2026-08-12 05:29:24.438-04",
-      "atom": "SELECT feature_id, status, taken_by, last_progress_at, to_timestamp(updated_ts / 1000.0) AS updated_at, left(coalesce(metadata->>'checkpoint',''), 1200) AS checkpoint FROM harness_shared.work_items WHERE feature_id = 'WI-38164'"
+      "sid": "su-0d1fbffd-67ed-487e-898f-1ce9dbaef157",
+      "ts": "2026-08-10 06:34:59.199-04",
+      "atom": "SELECT feature_id, status, taken_by, last_progress_at, left(title,55) AS title FROM harness_shared.work_items WHERE feature_id IN ('EI-20060640525290316','EI-20052638948246270','EI-20061064717463230')"
     },
     {
-      "sid": "su-1f60f82c-1bf0-4b6d-8938-2a866c92c064",
-      "ts": "2026-08-11 20:17:16.069-04",
-      "atom": "SELECT feature_id, status, taken_by, to_char(taken_at,'HH24:MI:SS') taken, to_char(last_progress_at,'HH24:MI:SS') prog, attempts, left(title,55) t FROM harness_shared.work_items WHERE workspace_id='papercusp-workspace' AND (taken_by='su-0e500929-04c4-4efb-97be-4b648c37467a' OR feature_id='WI-5481')"
+      "sid": "su-5e6cab06-0561-43f4-9e73-85b7a721e35c",
+      "ts": "2026-08-08 11:35:55.565-04",
+      "atom": "SELECT feature_id, status, taken_by, terminal_reason, to_timestamp(closed_ts/1000) AS closed, left(title,60) AS title FROM harness_shared.work_items WHERE harness_slug='papercusp' AND feature_id IN ('WI-5980','WI-6212','WI-5837','WI-5861','WI-5763','WI-6189','EI-18808621019872598') ORDER BY feature_id"
+    },
+    {
+      "sid": "su-bc6d5daa-6538-411a-be69-33743c36e4cc",
+      "ts": "2026-08-09 21:44:12.611-04",
+      "atom": "SELECT feature_id, status, terminal_reason, authority, left(summary, 300) AS body_head, length(summary) AS body_len FROM harness_shared.work_items WHERE workspace_id='papercusp-workspace' AND harness_slug='papercusp' AND feature_id='EI-20026000903745625'"
     },
     {
       "sid": "su-b9269a31-fa09-465f-8690-a04e6bb30470",
-      "ts": "2026-08-03 21:08:49.764-04",
-      "atom": "SELECT feature_id, status, terminal_reason, left(coalesce(completion_ref::text,'(null)'),500) AS completion_ref FROM harness_shared.work_items WHERE workspace_id='papercusp-workspace' AND feature_id IN ('EI-7821','EI-7667')"
+      "ts": "2026-08-03 21:11:35.479-04",
+      "atom": "SELECT feature_id, summary FROM harness_shared.work_items WHERE workspace_id='papercusp-workspace' AND feature_id IN ('EI-11527','EI-7603') ORDER BY feature_id"
     },
     {
-      "sid": "su-b9269a31-fa09-465f-8690-a04e6bb30470",
-      "ts": "2026-08-03 21:11:36.158-04",
-      "atom": "SELECT feature_id, summary FROM harness_shared.work_items WHERE workspace_id='papercusp-workspace' AND feature_id IN ('EI-9337','EI-9661') ORDER BY feature_id"
-    },
-    {
-      "sid": "su-cf94c150-6e65-474b-affd-718be583374e",
-      "ts": "2026-08-02 03:35:03.982-04",
-      "atom": "SELECT feature_id, title, to_timestamp(created_ts/1000.0) AS created, to_timestamp(closed_ts/1000.0) AS closed, status FROM harness_shared.work_items WHERE feature_id = 'WI-5837' AND workspace_id='papercusp-workspace' AND harness_slug='papercusp'"
+      "sid": "su-3a33606f-6d5a-4cf0-9af7-7948d869eb7b",
+      "ts": "2026-08-12 06:33:26.312-04",
+      "atom": "SELECT feature_id, title, summary, notes, payload, status, taken_by, completion_ref FROM harness_shared.work_items WHERE workspace_id = 'papercusp-workspace' AND harness_slug = 'papercusp' AND feature_id = 'EI-20242660447002993'"
     },
     {
       "sid": "su-e0359276-aef4-4b14-952a-a2a4e54def51",
-      "ts": "2026-08-10 00:02:41.138-04",
-      "atom": "SELECT id, kind, status, assignee, left(title,120) AS title, payload->'_ei'->>'severity' AS sev, updated_at FROM harness_shared.work_items WHERE id IN ('WI-37624','EI-20003751910636268','WI-37552')"
+      "ts": "2026-08-09 15:55:26.409-04",
+      "atom": "SELECT id, kind, status, assignee, payload->'_ei'->>'severity' AS severity, left(title, 90) AS title FROM harness_shared.work_items WHERE id IN ('EI-20003751910636268','WI-37505') AND workspace_id = 'papercusp-workspace'"
     },
     {
-      "sid": "su-119d89f6-8690-4544-8727-2d19ae7f3121",
-      "ts": "2026-08-11 17:15:06.971-04",
-      "atom": "SELECT id, state, left(coalesce(payload->>'_completionEvidence',''), 700) AS evidence, jsonb_array_length(coalesce(payload->'externalBlockers','[]'::jsonb)) AS blockers, payload ? 'terminal_completion_ref' AS has_tcr FROM harness_shared.work_items WHERE id IN ('WI-37954','WI-37956','WI-37908') ORDER BY id"
+      "sid": "su-4ac9f3f2-d039-4869-9f26-333f26f8a66d",
+      "ts": "2026-08-10 16:21:51.063-04",
+      "atom": "SELECT id, state, left(title,60) AS t, left(coalesce(payload->>'completion', payload->>'completion_note', payload->>'resolution',''),700) AS completion FROM harness_shared.work_items WHERE id IN ('EI-20092765275570648','EI-20092747134556939')"
     },
     {
-      "sid": "su-f49ebf76-2d26-4eca-a124-6fdcb0b21c1f",
-      "ts": "2026-08-01 16:27:15.437-04",
-      "atom": "SELECT jsonb_object_keys(payload) AS k FROM harness_shared.work_items WHERE feature_id='WI-6512' AND harness_slug='papercusp'"
+      "sid": "su-a80b0154-7891-4dc5-82e8-0bdc976c323f",
+      "ts": "2026-08-11 19:17:15.921-04",
+      "atom": "SELECT jsonb_object_keys(payload) AS payload_key FROM harness_shared.work_items WHERE feature_id = 'WI-37908' AND harness_slug = 'papercusp'"
     },
     {
-      "sid": "su-07374fbd-e848-4204-87aa-bb86a31e5a92",
-      "ts": "2026-08-08 13:52:22.51-04",
-      "atom": "SELECT left(summary, 3200) AS s FROM harness_shared.work_items WHERE feature_id='WI-6722' AND workspace_id='papercusp-workspace' AND harness_slug='papercusp'"
+      "sid": "su-ba688366-5b8c-4c66-8fbd-29c0685b0f79",
+      "ts": "2026-08-12 00:16:18.729-04",
+      "atom": "SELECT left(summary, 4200) AS summary FROM harness_shared.work_items WHERE workspace_id='papercusp-workspace' AND feature_id='WI-38066'"
     },
     {
-      "sid": "su-3a5df0ae-a3a6-43ce-a793-e60b5098c2b3",
-      "ts": "2026-08-03 00:01:28.555-04",
-      "atom": "SELECT payload->>'checkpoint' AS cp FROM harness_shared.work_items WHERE id='WI-7111'"
+      "sid": "su-7f4eb492-e372-4d10-8c67-56487fe1d732",
+      "ts": "2026-08-11 15:02:15.096-04",
+      "atom": "SELECT right(checkpoint, 12000) AS checkpoint_tail FROM harness_shared.work_items WHERE id = 'WI-37144'"
     },
     {
-      "sid": "su-e6ac4eb7-9966-4e03-8122-5d761aff294d",
-      "ts": "2026-08-02 12:28:31.853-04",
-      "atom": "SELECT substring(summary from 1 for 6000) AS body FROM harness_shared.work_items WHERE feature_id = 'EI-19346660748445728' AND harness_slug = 'papercusp'"
+      "sid": "su-4ca244e4-540e-4acc-bb67-9335192fc85f",
+      "ts": "2026-08-03 16:19:35.986-04",
+      "atom": "SELECT substring(summary from 1200 for 2600) AS tail FROM harness_shared.work_items WHERE id = 'EI-19463700807328229'"
     },
     {
       "sid": "su-3c892ab0-cbf1-411c-8a9c-32f013aaadc0",
-      "ts": "2026-08-11 16:36:16.028-04",
-      "atom": "select feature_id, kind, status, taken_by, title from harness_shared.work_items where feature_id in ('WI-37953','WI-37954','WI-37955','WI-37956','WI-37957','WI-37958','WI-37965') and workspace_id='papercusp-workspace' and harness_slug='papercusp' order by feature_id"
+      "ts": "2026-08-11 16:51:21.498-04",
+      "atom": "select feature_id, kind, status, taken_by, updated_at from harness_shared.work_items where feature_id in ('WI-37953','WI-37954','WI-37955','WI-37956','WI-37957','WI-37958','WI-37965') and workspace_id='papercusp-workspace' and harness_slug='papercusp' order by feature_id"
     },
     {
       "sid": "su-850348fc-05ea-4727-bacb-3eda9f0ba2d8",

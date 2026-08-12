@@ -174,4 +174,21 @@ describe('recombineProposals', () => {
       'elite:peer-b:module|sync|low:c2',
     ]);
   });
+
+  it('aborts a wedged downstream recombine call at its phase-local cap', async () => {
+    let seenSignal: AbortSignal | undefined;
+    const r = await recombineProposals(
+      [scored({ idea: idea({ id: 'wedged' }) })],
+      {
+        llmCall: async (opts) => {
+          seenSignal = opts.signal;
+          return await new Promise<never>(() => {});
+        },
+      },
+      { timeoutMs: 10 },
+    );
+    expect(seenSignal?.aborted).toBe(true);
+    expect(r.proposals).toHaveLength(0);
+    expect(r.dropped[0]?.errors.join(' ')).toContain('recombine timed out after 10ms');
+  });
 });

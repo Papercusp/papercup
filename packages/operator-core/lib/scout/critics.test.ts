@@ -7,7 +7,7 @@
  */
 import { describe, it, expect } from 'vitest';
 import type { Idea, ScoutLlmCall } from './types';
-import { buildCriticPrompt, critiqueIdea, critiqueIdeas, DEFAULT_CRITIC_MISSION } from './critics';
+import { buildCriticPrompt, critiqueIdea, critiqueIdeas, DEFAULT_CRITIC_MISSION, runCritic } from './critics';
 import type { CorpusEntry } from './critique-core';
 
 function idea(over: Partial<Idea> = {}): Idea {
@@ -66,6 +66,24 @@ describe('critiqueIdea', () => {
     const c = await critiqueIdea(idea(), [], { llmCall: brokenLlm });
     expect(c.feasibility).toBe(0);
     expect(c.verdict).not.toBe('keep');
+  });
+
+  it('aborts a wedged downstream critic call at its phase-local cap', async () => {
+    let seenSignal: AbortSignal | undefined;
+    const r = await runCritic(
+      idea(),
+      [],
+      { timeoutMs: 10 },
+      {
+        llmCall: async (opts) => {
+          seenSignal = opts.signal;
+          return await new Promise<never>(() => {});
+        },
+      },
+    );
+    expect(seenSignal?.aborted).toBe(true);
+    expect(r.feasibility).toBe(0);
+    expect(r.rationale).toContain('critic timed out after 10ms');
   });
 });
 
