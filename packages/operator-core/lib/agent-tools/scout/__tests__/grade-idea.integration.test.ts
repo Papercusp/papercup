@@ -13,7 +13,13 @@ import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import type { OrgTestDb } from '../../../../test/_org-test-db';
 
 const h = vi.hoisted(() => ({ sql: null as unknown }));
-vi.mock('@papercusp/db-org', () => ({ getOrgPg: () => ({ sql: h.sql }) }));
+// Keep db-org's generated schema exports intact: importing the projected
+// blender tool loads agent-mcp bootstrap, which reads generated.* at module
+// initialization. Only replace the PG handle used by this real-PG fixture.
+vi.mock('@papercusp/db-org', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@papercusp/db-org')>()),
+  getOrgPg: () => ({ sql: h.sql }),
+}));
 
 const { runGradeIdea } = await import('../grade-idea');
 const { recordRoutedIdea } = await import('../../../scout/routed-ledger');
