@@ -153,6 +153,9 @@ export interface McpProxyOptions {
    * Injectable so tests can drive shedding without spinning up hundreds of real connections.
    */
   maxInFlight?: number;
+  /** Slots kept available for scheduler control-plane pulls when ordinary tool traffic fills
+   * the proxy. The hard `maxInFlight` ceiling still applies to every request. */
+  controlPlaneReserve?: number;
   /**
    * EI-19305299022434394 — the absolute ceiling (ms) on how long a NON-idempotent forward
    * (a real tools/call: 'keyed' or 'opaque') may hold its upstream socket waiting for response
@@ -630,6 +633,7 @@ export function effectiveRetryWindowMs(url: string, windowMs: number): number {
  * at all.
  */
 export const DEFAULT_MAX_IN_FLIGHT = Number(process.env.PAPERCUSP_MCP_PROXY_MAX_IN_FLIGHT ?? 200);
+export const DEFAULT_CONTROL_PLANE_RESERVE = Number(process.env.PAPERCUSP_MCP_PROXY_CONTROL_PLANE_RESERVE ?? 8);
 /**
  * EI-19305299022434394 — see `McpProxyOptions.maxHoldMs`. 10 minutes is comfortably above any
  * legitimate tool's real runtime (`build:typecheck` ~160s, `capability:bash` ~120s) while still
@@ -647,6 +651,17 @@ export const DEFAULT_HEARTBEAT_INTERVAL_MS = Number(process.env.PAPERCUSP_MCP_PR
 export function shouldShedForInFlight(currentInFlight: number, maxInFlight: number): boolean {
   if (maxInFlight <= 0) return false;
   return currentInFlight >= maxInFlight;
+}
+
+/** Scheduler claims are liveness/control-plane traffic: if they cannot run, workers cannot
+ * drain the very queue that is generating proxy load. Keep this deliberately narrow. */
+export function isReservedControlPlaneCall(rawBody: Buffer): boolean {
+  try {
+    const message = JSON.parse(rawBody.toString('utf8')) as { method?: unknown; params?: { name?: unknown } };
+    return message.method === 'tools/call' && message.params?.name === 'scheduler:get_next';
+  } catch {
+    return false;
+  }
 }
 
 /** Build the proxy HTTP server (does NOT listen — caller invokes .listen, or use
@@ -673,6 +688,12 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
   // `inFlightStarts` maps a per-request sequence id to its start time so the heartbeat can
   // report how long the OLDEST outstanding forward has been held, not just a bare count.
   const maxInFlight = opts.maxInFlight ?? DEFAULT_MAX_IN_FLIGHT;
+  // An explicitly injected max is predominantly a test/embedding contract; preserve its old
+  // all-purpose semantics unless that caller also explicitly asks for a reserve.
+  const controlPlaneReserve = Math.max(
+    0,
+    opts.controlPlaneReserve ?? (opts.maxInFlight === undefined ? DEFAULT_CONTROL_PLANE_RESERVE : 0),
+  );
   const maxHoldMs = opts.maxHoldMs ?? DEFAULT_MAX_HOLD_MS;
   const inFlightStarts = new Map<number, number>();
   let nextInFlightId = 0;
@@ -778,17 +799,23 @@ export function createMcpProxy(opts: McpProxyOptions): http.Server {
         // this is what stops the congestion-collapse feedback loop the unbounded agent used to
         // create (3,450 simultaneous held requests, measured 2026-08-01).
         const inFlightNow = inFlightStarts.size;
-        if (shouldShedForInFlight(inFlightNow, maxInFlight)) {
+        const reservedControlPlane = isReservedControlPlaneCall(rawBody);
+        const admissionCeiling = reservedControlPlane
+          ? maxInFlight
+          : maxInFlight > 0
+            ? Math.max(1, maxInFlight - controlPlaneReserve)
+            : maxInFlight;
+        if (shouldShedForInFlight(inFlightNow, admissionCeiling)) {
           res.writeHead(429, { 'content-type': 'application/json', 'retry-after': '2' });
           res.end(
             JSON.stringify({
               error: 'mcp_proxy_overloaded',
-              detail: `proxy already has ${inFlightNow} request(s) in flight (max ${maxInFlight}) — shed before forwarding`,
+              detail: `proxy already has ${inFlightNow} request(s) in flight (admission max ${admissionCeiling}, hard max ${maxInFlight}) — shed before forwarding`,
               retryAfterSec: 2,
             }),
           );
           log(`shed request — ${inFlightNow} already in flight (max ${maxInFlight})`);
-          record({ kind: 'shed_max_in_flight', method: req.method, path: req.url, inFlight: inFlightNow, maxInFlight });
+          record({ kind: 'shed_max_in_flight', method: req.method, path: req.url, inFlight: inFlightNow, maxInFlight, admissionCeiling, reservedControlPlane });
           return;
         }
         const inFlightId = nextInFlightId++;
