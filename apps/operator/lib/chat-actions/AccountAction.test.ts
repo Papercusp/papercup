@@ -262,4 +262,28 @@ describe('--account=default is READ from the launch argv, not guessed at', () =>
   it('a STATIC pool pin at spawn is reported instead of claimed unreadable', () => {
     expect(axis().current(argvCtx(['psu', '--account=aviynw3'])).title).toMatch(/--account=aviynw3/);
   });
+
+  /* THE FIELD THIS SUITE NEVER ASSERTED, and the reason a wrong reading shipped.
+     `value` is the at-a-glance pill text; `title` is one click away. Every case above
+     checked the title, so `value: 'auto'` — hardcoded for all four unpinned branches —
+     was never exercised, and a --account=default session rendered "ACCT auto" live on
+     the rig: the OPPOSITE routing (gateway bypassed vs gateway-routed-with-failover).
+     A control that contradicts itself between its label and its own menu is worse than
+     one that says nothing, so these pin the label, not just the explanation. */
+  it('renders the LAUNCH account as the pill value — never a blanket "auto"', () => {
+    expect(axis().current(argvCtx(DEFAULT_ARGV)).value).toBe('default');
+    /* the shell-embedded argv shape must reach the same reading, or the label lies
+       on exactly the sessions the console launches (D-002). */
+    expect(axis().current(argvCtx(DEFAULT_ARGV_SHELL)).value).toBe('default');
+    expect(axis().current(argvCtx(['psu', '--account=auto'])).value).toBe('auto');
+    expect(axis().current(argvCtx(['psu', '--account=aviynw3'])).value).toBe('aviynw3');
+  });
+
+  it('says "unpinned" instead of claiming auto when the launch routing is UNKNOWN', () => {
+    /* undefined argv = we have no argv to read, which is not evidence of auto routing.
+       This is the same unknown-is-not-a-value rule the MODEL pill follows by omitting
+       itself; here the pill is already shown, so the value carries the honesty. */
+    expect(axis().current(argvCtx(undefined)).value).toBe('unpinned');
+    expect(axis().current(argvCtx([])).value).toBe('unpinned');
+  });
 });

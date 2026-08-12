@@ -225,7 +225,15 @@ registerChatModeAction({
               : /* null (no --account recorded) or undefined (no argv to read) collapse here: in
                    neither case do we know the launch routing, so the tooltip claims nothing. */
                 'No account pin on this session — it uses the routing it was launched with (gateway auto, or a static --account= pin set at spawn that this session recorded no argv for).';
-      return { value: 'auto', optionId: ACCOUNT_UNPINNED, on: false, title };
+      /* The VALUE is the at-a-glance reading, and it must not contradict the title.
+         Hardcoding 'auto' here asserted gateway-routed-with-failover for EVERY unpinned
+         session — including a `--account=default` one, whose routing is the exact
+         opposite (gateway BYPASSED). Live-measured on the rig: a --account=default
+         session rendered "ACCT auto" while its own menu rows explained it bypasses the
+         gateway. `launched` already carries the honest reading on every branch above;
+         when it is unknown, say so rather than defaulting to a routing claim. */
+      const value = launched ?? 'unpinned';
+      return { value, optionId: ACCOUNT_UNPINNED, on: false, title };
     }
     return {
       value: pin.account,
