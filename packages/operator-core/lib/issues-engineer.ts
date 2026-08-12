@@ -1171,9 +1171,13 @@ export function issueAdmissibleWhereSql(sql: OrgSql, aliased: boolean) {
             AND ${c}authority IS NULL
           )
         )
-        AND NOT jsonb_path_exists(
-          COALESCE(${c}payload, '{}'::jsonb),
-          '$.externalBlockers[*] ? (@.status == "active")'::jsonpath
+        AND NOT EXISTS (
+          SELECT 1
+            FROM jsonb_path_query(
+              COALESCE(${c}payload, '{}'::jsonb),
+              '$.externalBlockers[*]'::jsonpath
+            ) blocker
+           WHERE lower(COALESCE(blocker ->> 'status', '')) = 'active'
         )
         AND NOT (
           COALESCE(${c}payload, '{}'::jsonb) ? 'plan_item' AND (

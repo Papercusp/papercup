@@ -4066,9 +4066,13 @@ export function needsHumanExclusionSql(sql: OrgSql) {
  * blocker is explicitly cleared. Feature-family rows are also moved to their
  * native `blocked` state by work_items:set_blocker. */
 export function externalBlockersExclusionSql(sql: OrgSql) {
-  return sql`NOT jsonb_path_exists(
-    COALESCE(wi.payload, '{}'::jsonb),
-    '$.externalBlockers[*] ? (@.status == "active")'::jsonpath
+  return sql`NOT EXISTS (
+    SELECT 1
+      FROM jsonb_path_query(
+        COALESCE(wi.payload, '{}'::jsonb),
+        '$.externalBlockers[*]'::jsonpath
+      ) blocker
+     WHERE lower(COALESCE(blocker ->> 'status', '')) = 'active'
   )`;
 }
 

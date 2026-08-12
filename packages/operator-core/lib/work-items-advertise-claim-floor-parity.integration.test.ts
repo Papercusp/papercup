@@ -153,6 +153,18 @@ describe('admissibleOnly EXCLUDES a row with an ACTIVE external blocker (WI-3777
     expect(admissible).not.toContain('WI-BLOCKED');
   });
 
+  it('EI-20213672709897481: excludes legacy uppercase ACTIVE blockers too', async () => {
+    await seedIssue('WI-UPPERCASE-BLOCKED', {
+      payload: {
+        externalBlockers: [{ ref: '2-machine-rig', kind: 'runtime', status: 'ACTIVE', capability: 'physical-device' }],
+      },
+    });
+    expect(await allIds()).toContain('WI-UPPERCASE-BLOCKED');
+    expect(await advertisedIds()).not.toContain('WI-UPPERCASE-BLOCKED');
+    const [verdict] = await wi.explainIssueClaimFloors(H, ['WI-UPPERCASE-BLOCKED']);
+    expect(verdict).toMatchObject({ admissible: false, refusedBy: 'external-blocker' });
+  });
+
   it('a RESOLVED blocker does not exclude (only status=="active" gates)', async () => {
     await seedIssue('WI-CLEARED', {
       payload: { externalBlockers: [{ ref: 'mac-rig-vm', kind: 'runtime', status: 'resolved' }] },
