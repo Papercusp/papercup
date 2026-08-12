@@ -126,8 +126,32 @@ describe('EI-18805100008031244 — verify-tauri-headless --boot-only TTL self-wa
     // heartbeat refresh and TTL-disable knobs remain documented alongside it.
     expect(src).toContain("printf 'source %q\\n' \"$BOOT_ONLY_ENV\"");
     expect(src).toContain('chmod 600 "$BOOT_ONLY_ENV"');
-    expect(src).toContain('touch "$WORK/.heartbeat"');
-    expect(src).toContain('VERIFY_TAURI_BOOT_ONLY_TTL_MIN');
     expect(src).not.toMatch(/cat <<EOF\nexport VERIFY_TAURI_PID/);
+
+    // EI-20230870915613385 — assert the knobs are EMITTED, never merely PRESENT.
+    //
+    // This is the whole point of the guard and it is easy to get wrong. The
+    // regression it exists to catch deleted the `cat <<EOF` / `EOF` wrapper and
+    // left the body behind as dead shell comments: the caller received nothing,
+    // `bash -n` still passed, and every src-wide `toContain` still matched the
+    // text sitting inertly in a comment. A mutation probe confirmed a plain
+    // `expect(src).toContain('touch "$WORK/.heartbeat"')` SURVIVES that exact
+    // mutation — a guard that cannot fail on its own regression is not a guard.
+    //
+    // So extract the block the caller actually receives on stdout, anchored to
+    // the source-command line that precedes it, and assert INSIDE it.
+    const emitted = src.match(
+      /printf 'source %q\\n' "\$BOOT_ONLY_ENV"\n\s*cat <<EOF\n([\s\S]*?)\nEOF\n/,
+    )?.[1];
+    expect(emitted).toBeTruthy();
+    for (const knob of [
+      'touch "$WORK/.heartbeat"',
+      'bash "$WORK/check-freshness.sh"',
+      'bash "$WORK/check-live.sh"',
+      '"$WORK/stop.sh"',
+      'VERIFY_TAURI_BOOT_ONLY_TTL_MIN',
+    ]) {
+      expect(emitted).toContain(knob);
+    }
   });
 });
