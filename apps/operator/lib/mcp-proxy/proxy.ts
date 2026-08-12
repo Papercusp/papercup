@@ -665,6 +665,7 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set([
   'locks:queue',
   'locks:release',
   'work_items:checkpoint',
+  'work_items:complete',
 ].map(normalizeMcpName));
 
 /** Fleet bootstrap, direct coordination delivery, continuation checkpoints, scheduler claims,
@@ -673,7 +674,8 @@ const RESERVED_CONTROL_PLANE_TOOLS = new Set([
  * if they cannot run, workers cannot orient, wake a blocker, persist a safe wake boundary, drain
  * the queue generating proxy load, recover a missing tool surface, keep themselves alive, file
  * the failure that needs fixing, inspect lock ownership, release a lock held during an edit,
- * or preserve the successor state needed to resume after a task boundary. The MCP
+ * or preserve the successor state needed to resume after a task boundary, or finish a
+ * work-item when ordinary traffic has saturated the proxy. The MCP
  * client may send a canonical colon-form name or its `mcp__<server>__group_verb` advertisement
  * name; both are normalized through the shared tooldef helper before this narrow membership check.
  * Keep the reserved set deliberately narrow. */
