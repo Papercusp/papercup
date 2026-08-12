@@ -292,11 +292,10 @@ describe('reconcileLinkedWorkItemsForPlanItem (PG, EI-5925)', () => {
     expect(setWorkItemState).toHaveBeenCalledWith('F-mirror-1', 'passed', expect.anything());
   });
 
-  // EI-18677799334390930: when the triggering plans:set-status call resolved an
-  // attributable actor, the reconciler's completionRef names them — so a leader
-  // reading a `reconciler-sourced`-flagged reconcile close can route a correction to the
-  // real actor instead of broadcasting "who flipped this plan item?" to the fleet.
-  it('stamps the triggering actor onto the completionRef when available (EI-18677799334390930)', async () => {
+  // EI-18677799334390930: the triggering actor remains transient context only. A
+  // reconciler mirror is a proposed judgement, not independent completion evidence,
+  // so it must not manufacture a synthetic completionRef or persist the actor in one.
+  it('records proposed authority without manufacturing completion evidence (EI-18677799334390930)', async () => {
     stub({ id: 'WI-attributed', state: 'open', lastProgressAt: null });
     await edge({ plan: 'p1', item: 'P-005', srcRef: 'WI-attributed' });
 
@@ -307,12 +306,17 @@ describe('reconcileLinkedWorkItemsForPlanItem (PG, EI-5925)', () => {
       'resolved',
       expect.objectContaining({
         by: 'system:plan-item-reconcile',
-        completionRef: expect.stringContaining('(plan item flipped by su-abc123)'),
+        completionAuthority: 'proposed',
       }),
     );
+    const call = setWorkItemState.mock.calls.find(([id]) => id === 'WI-attributed') as unknown as
+      | [string, string, Record<string, unknown>]
+      | undefined;
+    expect(call?.[2]).not.toHaveProperty('completionRef');
+    expect(JSON.stringify(call?.[2])).not.toContain('su-abc123');
   });
 
-  it('leaves the completionRef unattributed when no triggering actor was resolved (the periodic sweep case)', async () => {
+  it('records proposed authority without a completionRef when no triggering actor was resolved (periodic sweep)', async () => {
     stub({ id: 'WI-unattributed', state: 'open', lastProgressAt: null });
     await edge({ plan: 'p1', item: 'P-P22', srcRef: 'WI-unattributed' });
 
@@ -321,8 +325,12 @@ describe('reconcileLinkedWorkItemsForPlanItem (PG, EI-5925)', () => {
     expect(setWorkItemState).toHaveBeenCalledWith(
       'WI-unattributed',
       'resolved',
-      expect.objectContaining({ completionRef: expect.not.stringContaining('flipped by') }),
+      expect.objectContaining({ completionAuthority: 'proposed' }),
     );
+    const call = setWorkItemState.mock.calls.find(([id]) => id === 'WI-unattributed') as unknown as
+      | [string, string, Record<string, unknown>]
+      | undefined;
+    expect(call?.[2]).not.toHaveProperty('completionRef');
   });
 
   // NOTE: the payload.plan_item STAMP backstop path (mirroring
@@ -546,8 +554,8 @@ describe('reconcileLinkedWorkItemsForPlanItem — dropped plan item (EI-14693)',
   });
 });
 
-describe('reconcileLinkedWorkItemsForPlanItem — cites plan decisions in completionRef (EI-19319970920449941)', () => {
-  it('cites the decision(s) that name this plan item via itemRefs, not a bare flip', async () => {
+describe('reconcileLinkedWorkItemsForPlanItem — plan decisions are not completion evidence (EI-19319970920449941)', () => {
+  it('does not copy plan decisions or their itemRefs into a completionRef', async () => {
     stub({ id: 'WI-evidenced', state: 'open', lastProgressAt: null });
     await edge({ plan: 'p1', item: 'P-020', srcRef: 'WI-evidenced' });
     h3.getPlanRow.mockResolvedValue({
@@ -564,19 +572,19 @@ describe('reconcileLinkedWorkItemsForPlanItem — cites plan decisions in comple
       'WI-evidenced',
       'resolved',
       expect.objectContaining({
-        completionRef: expect.stringContaining('evidence recorded on plan decision(s) D-002'),
+        completionAuthority: 'proposed',
       }),
     );
-    // The unrelated decision (no itemRefs match) must NOT be cited. (The mock's
-    // declared arity is [id, state] — cast to the real 3-arg call shape to index
-    // into the options object vitest still records at runtime.)
+    // Plan decisions are an audit trail for the plan, not independent verification
+    // of the mirrored work-item. Neither decision may reach the terminal write.
     const call = setWorkItemState.mock.calls.find(([id]) => id === 'WI-evidenced') as unknown as
-      | [string, string, { completionRef?: string }]
+      | [string, string, Record<string, unknown>]
       | undefined;
-    expect(call?.[2]?.completionRef).not.toContain('D-001');
+    expect(call?.[2]).not.toHaveProperty('completionRef');
+    expect(JSON.stringify(call?.[2])).not.toContain('D-002');
   });
 
-  it('cites off `knownDecisions` too — the periodic sweep never re-fetches the row', async () => {
+  it('periodic reconciliation also writes authority only, even when the row has decisions', async () => {
     await insertWorkItemRow({ id: 'F-swevidence', kind: 'feature', status: 'todo', planSlug: 'psevidence', itemId: 'P-1' });
     await edge({ plan: 'psevidence', item: 'P-1', srcRef: 'sheets#F-swevidence', srcKind: 'feature' });
     stub({ id: 'F-swevidence', harness: 'sheets', state: 'todo', family: 'feature', lastProgressAt: null });
@@ -590,11 +598,15 @@ describe('reconcileLinkedWorkItemsForPlanItem — cites plan decisions in comple
     expect(setWorkItemState).toHaveBeenCalledWith(
       'F-swevidence',
       'passed',
-      expect.objectContaining({ completionRef: expect.stringContaining('evidence recorded on plan decision(s) D-010') }),
+      expect.objectContaining({ completionAuthority: 'proposed' }),
     );
+    const call = setWorkItemState.mock.calls.find(([id]) => id === 'F-swevidence') as unknown as
+      | [string, string, Record<string, unknown>]
+      | undefined;
+    expect(call?.[2]).not.toHaveProperty('completionRef');
   });
 
-  it('leaves the completionRef as a bare flip when no decision names this item', async () => {
+  it('does not need a decision record to mark a mirror as proposed', async () => {
     stub({ id: 'WI-bare', state: 'open', lastProgressAt: null });
     await edge({ plan: 'p1', item: 'P-021', srcRef: 'WI-bare' });
     h3.getPlanRow.mockResolvedValue({
@@ -607,11 +619,15 @@ describe('reconcileLinkedWorkItemsForPlanItem — cites plan decisions in comple
     expect(setWorkItemState).toHaveBeenCalledWith(
       'WI-bare',
       'resolved',
-      expect.objectContaining({ completionRef: expect.not.stringContaining('evidence recorded') }),
+      expect.objectContaining({ completionAuthority: 'proposed' }),
     );
+    const call = setWorkItemState.mock.calls.find(([id]) => id === 'WI-bare') as unknown as
+      | [string, string, Record<string, unknown>]
+      | undefined;
+    expect(call?.[2]).not.toHaveProperty('completionRef');
   });
 
-  it('is a clean no-op when the plan has no decisions at all (undefined field, pre-existing rows)', async () => {
+  it('is a clean proposed close when the plan has no decisions at all (undefined field, pre-existing rows)', async () => {
     stub({ id: 'WI-nodecisions', state: 'open', lastProgressAt: null });
     await edge({ plan: 'p1', item: 'P-022', srcRef: 'WI-nodecisions' });
     h3.getPlanRow.mockResolvedValue({ items: [{ id: 'P-022', status: 'done' }] });
@@ -621,8 +637,12 @@ describe('reconcileLinkedWorkItemsForPlanItem — cites plan decisions in comple
     expect(setWorkItemState).toHaveBeenCalledWith(
       'WI-nodecisions',
       'resolved',
-      expect.objectContaining({ completionRef: expect.not.stringContaining('evidence recorded') }),
+      expect.objectContaining({ completionAuthority: 'proposed' }),
     );
+    const call = setWorkItemState.mock.calls.find(([id]) => id === 'WI-nodecisions') as unknown as
+      | [string, string, Record<string, unknown>]
+      | undefined;
+    expect(call?.[2]).not.toHaveProperty('completionRef');
   });
 });
 

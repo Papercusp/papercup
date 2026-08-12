@@ -18,11 +18,13 @@
  * actually works against a real database, not just in the type system.
  *
  * `plan-items/reconcile-linked-work-items.ts` terminal-closes a work-item by MIRRORING
- * its linked plan item's status: it calls `setWorkItemState` with a SYNTHETIC
- * completionRef and never stamps `authority`. So such a row is invisible to
- * `no-completion-record` (it HAS a ref) and untouched by P-004 (no authority stamp),
- * while being by construction never independently verified — the failure mode is a
- * mis-flipped plan item silently marking a live defect "fixed".
+ * its linked plan item's status: it calls `setWorkItemState` with
+ * `completionAuthority:'proposed'` and no completionRef. The proposed judgement is the
+ * write-time signal that this is not independent verification, while the actor-keyed
+ * `reconciler-sourced` audit remains visible. It must not be mistaken for a
+ * `no-completion-record` hit, because an authority judgement is itself a completion
+ * record — the failure mode is a mis-flipped plan item silently marking a live defect
+ * "fixed".
  *
  * Proves (testcontainer; Docker required):
  *   • a terminal row credited to the reconciler IS listed, in BOTH families;
@@ -69,6 +71,7 @@ async function seed(
     status?: string;
     terminalRef?: string | null;
     terminalOwner?: string | null;
+    authority?: string | null;
     createdTs?: number;
     hasEvidence?: boolean;
   } = {},
@@ -79,17 +82,18 @@ async function seed(
   await db.sql`
     INSERT INTO harness_shared.work_items
       (harness_slug, feature_id, item_kind, title, status, workspace_id, created_ts, updated_ts,
-       terminal_completion_ref, terminal_owner, payload)
+       terminal_completion_ref, terminal_owner, authority, payload)
     VALUES (${H}, ${id}, ${opts.kind ?? 'feature'}, ${`title ${id}`}, ${opts.status ?? 'open'},
        ${WS}, ${opts.createdTs ?? 0}, ${opts.createdTs ?? 0}, ${opts.terminalRef ?? null},
-       ${opts.terminalOwner ?? null}, ${JSON.stringify(payload)}::text::jsonb)`;
+       ${opts.terminalOwner ?? null}, ${opts.authority ?? null}, ${JSON.stringify(payload)}::text::jsonb)`;
 }
 
-/** The exact shape reconcile-linked-work-items.ts writes: a synthetic ref + the
- *  reconciler actor, and NO authority stamp. */
+/** The exact shape reconcile-linked-work-items.ts writes: proposed authority + the
+ * reconciler actor, and NO completion ref. */
 const reconciled = (over: { kind?: string; status?: string; hasEvidence?: boolean } = {}) => ({
-  terminalRef: 'Reconciled via plan-item status: some-plan#P-003',
+  terminalRef: null,
   terminalOwner: RECONCILER_SYSTEM_ACTOR,
+  authority: 'proposed',
   ...over,
 });
 
@@ -126,6 +130,11 @@ describe("listWorkItems { audit: 'reconciler-sourced' } (P-006/D-012, EI-1867779
 
     const audited = await wi.listWorkItems({ harness: H, audit: 'reconciler-sourced' });
     expect(ids(audited)).toEqual(['F-reconciled', 'WI-reconciled']);
+
+    // The proposed authority is a completion record, so these rows are intentionally
+    // absent from the separate bare-write audit bucket.
+    const bare = await wi.listWorkItems({ harness: H, audit: 'no-completion-record' });
+    expect(ids(bare)).toEqual([]);
   });
 
   it('a dropped/deprecated reconciler close is audit material too (the whole terminal set)', async () => {
