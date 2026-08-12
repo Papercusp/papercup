@@ -130,7 +130,6 @@ import {
   tauriHasExplicitTarget,
   tauriTargetDenial,
   stripShellQuotes,
-  pollInboxDelta,
   summarisePlanEvents,
   _resetHookOwnerIdForTests,
   _resetMidTurnCursorForTests,
@@ -4216,75 +4215,6 @@ describe('formatInboxDelta (mid-turn coord delivery — DUMB PIPE, P-009)', () =
     expect(out).toContain('[coord+9]');
     expect(out).not.toMatch(/coord:send/); // footer is in the prompt legend now
     expect(out).not.toContain('new coordination message'); // no hook-side header
-  });
-});
-
-describe('pollInboxDelta (mid-turn coord delivery)', () => {
-  const originalFetch = global.fetch;
-  const prevOp = process.env.PAPERCUSP_OPERATOR_URL;
-
-  // Local MCP-response mock (the onToolCall block's helper is private to it).
-  const mockMcp = (payload: unknown): typeof fetch =>
-    (async () => ({
-      ok: true,
-      text: async () =>
-        JSON.stringify({
-          jsonrpc: '2.0',
-          id: 1,
-          result: { content: [{ type: 'text', text: JSON.stringify(payload) }] },
-        }),
-    })) as unknown as typeof fetch;
-
-  beforeEach(() => {
-    _resetHookOwnerIdForTests();
-    process.env.PAPERCUSP_OPERATOR_URL = 'http://127.0.0.1:3070';
-  });
-  afterEach(() => {
-    _resetHookOwnerIdForTests();
-    _resetMidTurnCursorForTests(undefined);
-    global.fetch = originalFetch;
-    if (prevOp === undefined) delete process.env.PAPERCUSP_OPERATOR_URL;
-    else process.env.PAPERCUSP_OPERATOR_URL = prevOp;
-  });
-
-  it('no baseline cursor → no-op, never fetches (no history dump)', async () => {
-    _resetMidTurnCursorForTests(undefined);
-    let called = false;
-    global.fetch = (async () => {
-      called = true;
-      throw new Error('should not fetch');
-    }) as unknown as typeof fetch;
-    const { reminder } = await pollInboxDelta();
-    expect(reminder).toBe('');
-    expect(called).toBe(false);
-  });
-
-  it('injects messages newer than the cursor, then dedupes once the cursor advances', async () => {
-    _resetMidTurnCursorForTests('2026-06-01T00:00:00Z');
-    global.fetch = mockMcp({
-      entries: [
-        { ts: '2026-06-01T00:05:00Z', msg_id: 'm1', from: 'peer-X', kind: 'message', summary: 'pausing operator soon' },
-      ],
-      // The server pre-renders the injection (dumb-pipe contract, P-009).
-      injection: '[coord+1]\n- peerX pausing operator soon',
-      summary: { newest_ts: '2026-06-01T00:05:00Z' },
-    });
-    const first = await pollInboxDelta();
-    expect(first.reminder).toContain('pausing operator soon');
-
-    // Cursor now past m1 → a poll with nothing newer injects nothing.
-    global.fetch = mockMcp({ entries: [] });
-    const second = await pollInboxDelta();
-    expect(second.reminder).toBe('');
-  });
-
-  it('returns "" when the operator call fails (best-effort, never throws)', async () => {
-    _resetMidTurnCursorForTests('2026-06-01T00:00:00Z');
-    global.fetch = (async () => {
-      throw new Error('ECONNREFUSED');
-    }) as unknown as typeof fetch;
-    const { reminder } = await pollInboxDelta();
-    expect(reminder).toBe('');
   });
 });
 
