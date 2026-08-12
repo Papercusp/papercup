@@ -265,6 +265,7 @@ describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm tim
   });
 
   it('claims an EXPLICIT workItem for the loop owner (any carry) and names it in the wake prompt', async () => {
+    getWiM.mockResolvedValue({ id: 'WI-42', state: 'open', assignee: null } as never);
     claimM.mockResolvedValue(claimedRow as never);
     const b = body(await call({ workItem: 'WI-42' }));
     expect(claimM).toHaveBeenCalledWith('WI-42', 'su-caller-own-id', { harness: 'papercusp' });
@@ -275,6 +276,7 @@ describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm tim
   });
 
   it('normalizes an explicit lower-case id to the canonical upper-case before claiming', async () => {
+    getWiM.mockResolvedValue({ id: 'WI-42', state: 'open', assignee: null } as never);
     claimM.mockResolvedValue(claimedRow as never);
     await call({ workItem: 'wi-42' });
     expect(claimM).toHaveBeenCalledWith('WI-42', 'su-caller-own-id', { harness: 'papercusp' });
@@ -287,6 +289,18 @@ describe('loop:arm — WI-2429 fix A: auto-claim the driven work-item at arm tim
     expect(detectM).toHaveBeenCalledWith('root-cause WI-7');
     expect(claimM).toHaveBeenCalledWith('WI-7', 'su-caller-own-id', { harness: 'papercusp' });
     expect(b.loop.workItem).toBe('WI-7');
+  });
+
+  it('refuses a terminal workItem pin without claiming or binding it to the wake prompt', async () => {
+    getWiM.mockResolvedValue({ id: 'EI-DONE', state: 'done', assignee: null } as never);
+    const b = body(await call({ workItem: 'EI-DONE' }));
+    expect(claimM).not.toHaveBeenCalled();
+    expect(b).toMatchObject({
+      ok: true,
+      loop: { workItem: null },
+      workItemClaim: { id: 'EI-DONE', claimed: false, reason: 'terminal' },
+    });
+    expect(buildPromptM).toHaveBeenCalledWith(expect.objectContaining({ workItem: null }));
   });
 
   it('does NOT auto-detect from the goal on a WARM loop — warm behaviour stays byte-identical', async () => {
@@ -1008,3 +1022,4 @@ describe('loop:arm — EI-19395290807657827: the self-sealing backoff', () => {
     });
   });
 });
+    getWiM.mockResolvedValue({ id: 'WI-7', state: 'open', assignee: null } as never);
