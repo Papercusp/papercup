@@ -574,6 +574,86 @@ describe('RECYCLE — kill + respawn the child in the same host (su-cold-auto-mo
   );
 });
 
+describe('carry-respawn TERMINAL FALLBACK — a successor that emits NOTHING still gets its turn (WI-38257)', () => {
+  it(
+    'delivers the carry to a zero-output successor instead of dropping it with attempts:0',
+    async () => {
+      const ownerId = `su-zerooutput-itest-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const { captured, io } = fakeIo();
+
+      // The distinguishing detail, and the whole point of this test: this child
+      // writes NOTHING on boot. No banner, no marker, not one byte. It is
+      // otherwise perfectly healthy and echoes anything typed at it.
+      //
+      // That is the shape of the 2026-08-12 incident, whose ledger row read
+      // `respawn-carry-dropped reason=no-startup-ready-marker attempts=0
+      // outputSeen=false`. The startup-marker TIME fallback added in d351ee3084
+      // cannot rescue this case: it is gated on childStartupFirstOutputAt > 0,
+      // and a child that never emits leaves that at 0 forever. Before the
+      // terminal fallback, the host skipped its delivery loop entirely and never
+      // once tried to write — so a healthy successor sat at its prompt, silent,
+      // while every wake was deferred and the agent was dead until a human typed.
+      const childCode =
+        "process.stdin.setEncoding('utf8');let b='';" +
+        "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
+        "if(line==='QUIT'){process.exit(0);}process.stdout.write('ECHO:'+line+'\\n');}});" +
+        'setTimeout(()=>process.exit(0),15000);';
+
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode],
+        cwd: '/tmp',
+        env: {
+          ...process.env,
+          PAPERCUSP_SID: ownerId,
+          // A backend whose readiness marker this child will never emit, plus a
+          // short fallback window — so the ONLY thing that can deliver the carry
+          // is the terminal fallback itself.
+          PAPERCUSP_AGENT: 'codex',
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '300',
+          // A zero-output child spins the startup-marker wait for the WHOLE
+          // inject budget (there is no first-output timestamp for the 300ms
+          // fallback above to measure from), and only then does the terminal
+          // fallback get its one attempt. That is the intended shape — a
+          // slow-booting child should still get the full grace — so shorten the
+          // budget here rather than sleeping past the production default. This
+          // also pins the recovery as BOUNDED: without a short budget the test
+          // passes only by waiting longer, which would hide a regression that
+          // made the wait unbounded again.
+          PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BUDGET_MS: '800',
+          TERM: 'xterm-256color',
+          PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '200',
+          PAPERCUSP_PSU_PTY_SUBMIT_CR_MS: '50',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_POLL_MS: '100',
+          PAPERCUSP_PSU_PTY_SUBMIT_VERIFY_QUIET_MS: '100',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        onExit: () => {},
+      });
+
+      await sleep(600);
+      // Precondition, asserted rather than assumed: the child really is silent.
+      // If it ever starts emitting, this test would still pass while no longer
+      // testing the zero-output path at all — a vacuous guard.
+      expect(captured()).toBe('');
+
+      await controlInject(sock, 'recycle', 'CARRIED');
+      await sleep(2500);
+
+      // The continuation turn started with no human input. This is the item's
+      // acceptance criterion stated as an assertion.
+      expect(captured()).toContain('ECHO:CARRIED');
+
+      await rawInject(sock, 'QUIT\n');
+      await done;
+    },
+    25_000,
+  );
+});
+
 describe('P-020 carry-respawn drill correlation', () => {
   it(
     'records the fresh native id, carry path, and first-prompt delivery in the durable host event log',

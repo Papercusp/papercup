@@ -24,6 +24,7 @@ import {
   turnSubmitCrDelayForAgent,
   makeIdleGate,
   makeComposerWedgeDetector,
+  shouldBreakComposerWedge,
   makeOwnerComposerGate,
   makeOwnerInputDetector,
   makeActivityTracker,
@@ -1053,6 +1054,76 @@ describe('makeOwnerComposerGate (EI-20199370837439455 staged-input safety)', () 
         ownerBytesEverSeen: true,
         ownerQuietMs: 960_000,
       });
+    });
+  });
+
+  describe('shouldBreakComposerWedge: the actuator the detector never had (WI-38257)', () => {
+    // Thresholds match the shipped defaults so these cases describe real
+    // behaviour, not a tuning that only exists in the test.
+    const T = { minAgeMs: 90_000, minQuietMs: 90_000 };
+
+    it('CLEARS the 2026-08-12 incident, using its verbatim ledger numbers', () => {
+      // The row that ended the episode, from the host event log:
+      //   {"reason":"owner-input-cap","pendingLength":53,
+      //    "pendingAgeMs":112057,"ownerQuietMs":102321}
+      // Every wake deferred against this and the agent took no turn at all until
+      // a human typed. If this case ever returns false again, that strand is back.
+      expect(
+        shouldBreakComposerWedge({ pending: true, pendingAgeMs: 112_057, ownerQuietMs: 102_321 }, T),
+      ).toBe(true);
+    });
+
+    it('would have fired BEFORE the human had to intervene', () => {
+      // The owner broke the strand by typing at ~112s. Recovery is only worth
+      // anything if it beats the person it is meant to spare, so assert the
+      // earlier sample clears too — the one 31s before they gave up.
+      expect(
+        shouldBreakComposerWedge({ pending: true, pendingAgeMs: 95_000, ownerQuietMs: 91_000 }, T),
+      ).toBe(true);
+    });
+
+    it('does NOT fire on the sample where the detector was still correct to wait', () => {
+      // Same episode, 30s earlier: age 80.9s, quiet 71.2s. Still inside the
+      // grace, so the answer must be "keep waiting" — this is the falsifying
+      // control that proves the predicate is reading its inputs and not just
+      // returning true for anything with a staged line.
+      expect(
+        shouldBreakComposerWedge({ pending: true, pendingAgeMs: 80_900, ownerQuietMs: 71_164 }, T),
+      ).toBe(false);
+    });
+
+    it('never touches a line someone is actually typing into', () => {
+      // Old line, but a keystroke arrived two seconds ago: a person is there.
+      expect(
+        shouldBreakComposerWedge({ pending: true, pendingAgeMs: 600_000, ownerQuietMs: 2_000 }, T),
+      ).toBe(false);
+    });
+
+    it('never fires when nothing is staged', () => {
+      expect(
+        shouldBreakComposerWedge({ pending: false, pendingAgeMs: 999_999, ownerQuietMs: Infinity }, T),
+      ).toBe(false);
+    });
+
+    it('clears a pure phantom as soon as it is old enough', () => {
+      // ownerQuietMs is Infinity when no owner byte was EVER seen, which
+      // satisfies any quiet threshold — so a phantom waits only on age.
+      expect(
+        shouldBreakComposerWedge({ pending: true, pendingAgeMs: 90_000, ownerQuietMs: Infinity }, T),
+      ).toBe(true);
+      expect(
+        shouldBreakComposerWedge({ pending: true, pendingAgeMs: 89_999, ownerQuietMs: Infinity }, T),
+      ).toBe(false);
+    });
+
+    it('is NOT gated on "no owner byte was ever seen" — the guard that would have missed the incident', () => {
+      // Recorded because it was my first design and the ledger falsified it:
+      // the real incident had ownerQuietMs=102321, i.e. FINITE, so owner-
+      // classified bytes had arrived. A never-saw-a-byte guard would have sat
+      // out the very event it was written for.
+      const finiteQuiet = { pending: true, pendingAgeMs: 112_057, ownerQuietMs: 102_321 };
+      expect(finiteQuiet.ownerQuietMs).toBeLessThan(Infinity);
+      expect(shouldBreakComposerWedge(finiteQuiet, T)).toBe(true);
     });
   });
 

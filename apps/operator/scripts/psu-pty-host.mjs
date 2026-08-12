@@ -846,6 +846,44 @@ export function makeComposerWedgeDetector({ minDefers = 3, minQuietMs = 5 * 60_0
 }
 
 /**
+ * Decide whether a staged composer line has stopped tracking a person and may
+ * be CLEARED so wakes can flow again (WI-38257).
+ *
+ * makeComposerWedgeDetector above answers "should somebody be TOLD?". This
+ * answers "may the host ACT?", and they are deliberately separate questions
+ * because the detector's entire remedy is a stderr line reading "press Ctrl-U
+ * here to clear it" — which asks the very human whose absence IS the failure. A
+ * detector whose only actuator is an absent human is not a recovery path.
+ *
+ * Measured on the 2026-08-12 incident: a 53-char line sat staged while every
+ * wake deferred with `owner-input-cap` for 112s+, the agent took no turn at all,
+ * and the episode ended only because the owner typed. The detector never even
+ * fired — `owner-composer-wedge-suspected` count was 0 in that ledger, because
+ * its default quiet window is 5 min, longer than the strand a human was willing
+ * to sit through. A threshold above human patience reports nothing, ever.
+ *
+ * The predicate is deliberately NOT "no owner byte was ever seen". That reading
+ * is the tempting one and it is WRONG: the incident recorded ownerQuietMs=102321
+ * — finite, so owner-classified bytes HAD arrived — and a never-saw-a-byte guard
+ * would have sat out the very event it was written for. What actually separates
+ * a wedge from a person is the pair below: a line whose length has not moved AND
+ * which has received no owner byte for the whole window. A person who walked
+ * away mid-line trips it too, and that is the correct trade — they lose a line
+ * they had already abandoned, where the alternative is an agent dead until
+ * somebody notices. ownerQuietMs is Infinity when no owner byte was ever seen,
+ * which satisfies any threshold, so a pure phantom clears as soon as it is old
+ * enough.
+ *
+ * Pure (the caller supplies the measurements); exported for tests.
+ */
+export function shouldBreakComposerWedge(sample, { minAgeMs = 90_000, minQuietMs = 90_000 } = {}) {
+  const { pending, pendingAgeMs = 0, ownerQuietMs = Infinity } = sample ?? {};
+  if (!pending) return false;
+  if (!(pendingAgeMs >= minAgeMs)) return false;
+  return ownerQuietMs >= minQuietMs;
+}
+
+/**
  * Track a bridged owner's line-editor state separately from keystroke activity.
  * The idle gate only knows that typing stopped; it cannot tell whether the
  * owner pressed Enter. Injecting a wake into a quiet-but-unsubmitted line
@@ -2737,6 +2775,64 @@ export function hostThroughPty(o) {
       /* diagnostic only */
     }
   };
+  // WI-38257: the ACTUATOR the wedge detector never had. Thresholds are
+  // env-tunable because the right value is a property of the deployment, not of
+  // the code: an attended desktop wants a longer grace than a headless fleet
+  // member nobody is typing into.
+  const wedgeBreakAgeMs = positiveNumber(env.PAPERCUSP_PSU_PTY_WEDGE_BREAK_MS, 90_000);
+  const wedgeBreakQuietMs = positiveNumber(env.PAPERCUSP_PSU_PTY_WEDGE_BREAK_QUIET_MS, 90_000);
+  /**
+   * Clear a staged line that has stopped tracking a person, so a gated write can
+   * proceed instead of deferring forever. Returns true when it cleared one.
+   *
+   * Ctrl-U goes to the CHILD (the TUI owns the composer), and our own model is
+   * then resynced explicitly: the gate observes the OWNER's stdin, so it would
+   * never see a clear the host itself performed and would go on reporting the
+   * line as pending forever — re-wedging on the state we just fixed.
+   */
+  const breakComposerWedgeIfConfirmed = () => {
+    const pendingLength = ownerComposerGate.pendingLength();
+    const pendingAgeMs = ownerComposerGate.pendingAgeMs();
+    const ownerQuietMs = ownerComposerGate.ownerQuietMs();
+    if (
+      !shouldBreakComposerWedge(
+        { pending: ownerComposerGate.hasPending(), pendingAgeMs, ownerQuietMs },
+        { minAgeMs: wedgeBreakAgeMs, minQuietMs: wedgeBreakQuietMs },
+      )
+    ) {
+      return false;
+    }
+    try {
+      // \u0015 = Ctrl-U (kill line). Written as an ESCAPE on purpose: a literal
+      // control byte here is invisible in review and is exactly what a patch, an
+      // editor or a copy-paste silently drops. If it ever degraded to an empty
+      // write, markSubmitted() below would still clear our MODEL while the real
+      // composer kept its text — so the next injected turn would append to owner
+      // text, which is the precise corruption this gate exists to prevent,
+      // reintroduced by the code meant to fix it.
+      child?.write('\u0015');
+    } catch {
+      /* the child may have exited under us; the resync below still applies */
+    }
+    ownerComposerGate.markSubmitted();
+    appendHostEvent(ownerId, 'owner-composer-wedge-cleared', {
+      pendingLength,
+      pendingAgeMs,
+      ownerQuietMs: ownerQuietMs === Infinity ? null : ownerQuietMs,
+      ownerBytesEverSeen: ownerQuietMs !== Infinity,
+    });
+    try {
+      process.stderr.write(
+        `psu-pty-host: COMPOSER WEDGE CLEARED for ${ownerId} — discarded a ${pendingLength}-char staged ` +
+          `line unchanged for ${Math.round(pendingAgeMs / 1000)}s with no owner keystroke for ` +
+          `${ownerQuietMs === Infinity ? 'the whole session' : `${Math.round(ownerQuietMs / 1000)}s`}. ` +
+          `It was blocking EVERY wake. If that text was yours, retype it — this agent was dead until now.\n`,
+      );
+    } catch {
+      /* diagnostic only */
+    }
+    return true;
+  };
   let machineTurnActive = false;
   let queuedOwnerInput = [];
   // Mid-turn inject gate (coord-wake-mid-turn-2026-06-30): reads the SAME
@@ -2850,11 +2946,37 @@ export function hostThroughPty(o) {
       const startupFallbackReady =
         childStartupFirstOutputAt > 0 &&
         Date.now() - childStartupFirstOutputAt >= startupMarkerFallbackMs;
-      if (requireInitialOutput && !childStartupReady && !startupFallbackReady) {
-        dropReason = 'no-startup-ready-marker';
-      }
+      // EI-20270422678541544 — TERMINAL FALLBACK. A missing startup-ready marker
+      // used to return from here with `attempts: 0`, having never once tried to
+      // write. That is a GUARANTEED strand whenever marker detection has a false
+      // negative, and this detection is inherently best-effort: it is a pattern
+      // match over TUI boot output, and a child whose startup bytes landed before
+      // wireChildData() attached its listener leaves BOTH childStartupReady and
+      // childStartupFirstOutputAt unset while sitting perfectly healthy at its
+      // prompt. Observed live 2026-08-12T17:45:31Z — `respawn-carry-dropped
+      // reason=no-startup-ready-marker attempts=0 outputSeen=false`, after which
+      // that session never took another machine turn until a human typed.
+      //
+      // So the marker's ABSENCE no longer decides delivery; it only decides how
+      // many attempts we are willing to spend. Spend exactly ONE, bounded by the
+      // busy gate's own cap: if the child really is at its prompt the turn lands
+      // and the session recovers on its own; if it is genuinely dead the write is
+      // a no-op inside the existing try/catch and we still drop — but with
+      // attempts >= 1 and a reason recording that the fallback was exercised, so
+      // the two cases stop being indistinguishable in the ledger.
+      const startupMarkerMissing =
+        requireInitialOutput && !childStartupReady && !startupFallbackReady;
+      if (startupMarkerMissing) dropReason = 'no-startup-ready-marker';
+      let lastResortSpent = false;
       // eslint-disable-next-line no-constant-condition
-      while (dropReason !== 'no-startup-ready-marker') {
+      while (true) {
+        if (startupMarkerMissing) {
+          if (lastResortSpent) {
+            dropReason = 'no-startup-ready-marker-last-resort-failed';
+            break;
+          }
+          lastResortSpent = true;
+        }
         if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
         attempts++;
         const atPrompt = await agentBusyGate.waitAtPrompt();
@@ -2878,6 +3000,10 @@ export function hostThroughPty(o) {
         }
         // Deferred: the child is still mid-boot / mid-turn. Retry until the
         // budget is spent, then fall through to the loud drop.
+        // The last-resort pass gets exactly one attempt regardless of the budget
+        // (which the startup-marker wait has usually already spent), so re-enter
+        // and let the top of the loop record the terminal reason.
+        if (startupMarkerMissing) continue;
         if (Date.now() >= deadline) break;
         await new Promise((r) => setTimeout(r, backoffMs));
       }
@@ -2892,7 +3018,13 @@ export function hostThroughPty(o) {
     }
     try {
       process.stderr.write(
-        `psu-pty-host: ${label} DROPPED for ${ownerId} (${dropReason === 'no-startup-ready-marker' ? 'the child never emitted its startup-ready marker' : 'the child never settled to its prompt'} ` +
+        `psu-pty-host: ${label} DROPPED for ${ownerId} (${
+          dropReason === 'no-startup-ready-marker-last-resort-failed'
+            ? 'the child never emitted its startup-ready marker AND the last-resort attempt found no prompt'
+            : dropReason === 'no-startup-ready-marker'
+              ? 'the child never emitted its startup-ready marker'
+              : 'the child never settled to its prompt'
+        } ` +
           `within ${budgetMs}ms over ${attempts} attempt(s))\n`,
       );
     } catch {
@@ -3336,8 +3468,13 @@ export function hostThroughPty(o) {
             // Idle is not submission. If the owner paused with text still in
             // the composer, wait for Enter/Ctrl-C/Ctrl-U, bounded like idle.
             if (ownerComposerGate.hasPending()) {
-              const clear = await ownerComposerGate.waitClear();
-              if (clear.deferred) return deferForOwnerInput(clear.reason || 'owner-input-cap');
+              // WI-38257: a staged line that has stopped tracking a person must not be
+              // able to defer wakes forever. Checked BEFORE the wait, because the wait
+              // is what burns the cap — that is where the 112s of dead agent came from.
+              if (!breakComposerWedgeIfConfirmed()) {
+                const clear = await ownerComposerGate.waitClear();
+                if (clear.deferred) return deferForOwnerInput(clear.reason || 'owner-input-cap');
+              }
             }
           }
           // (2) Agent mid-turn gate (coord-wake-mid-turn-2026-06-30 /
@@ -3440,8 +3577,13 @@ export function hostThroughPty(o) {
           // The agent gate above yields to the event loop. Re-check immediately
           // before the write in case the owner began composing during that wait.
           if (ownerComposerGate.hasPending()) {
-            const clear = await ownerComposerGate.waitClear();
-            if (clear.deferred) return deferForOwnerInput(clear.reason || 'owner-input-cap');
+            // WI-38257: a staged line that has stopped tracking a person must not be
+            // able to defer wakes forever. Checked BEFORE the wait, because the wait
+            // is what burns the cap — that is where the 112s of dead agent came from.
+            if (!breakComposerWedgeIfConfirmed()) {
+              const clear = await ownerComposerGate.waitClear();
+              if (clear.deferred) return deferForOwnerInput(clear.reason || 'owner-input-cap');
+            }
           }
         }
         // WI-5510: STALE-FIRE GUARD. Once a message has passed every gate above
@@ -3641,8 +3783,13 @@ export function hostThroughPty(o) {
         const machineTurn = bridgeTty && (msg.mode === 'turn' || msg.mode === 'reset');
         if (machineTurn) {
           if (ownerComposerGate.hasPending()) {
-            const clear = await ownerComposerGate.waitClear();
-            if (clear.deferred) return deferForOwnerInput(clear.reason || 'owner-input-cap');
+            // WI-38257: a staged line that has stopped tracking a person must not be
+            // able to defer wakes forever. Checked BEFORE the wait, because the wait
+            // is what burns the cap — that is where the 112s of dead agent came from.
+            if (!breakComposerWedgeIfConfirmed()) {
+              const clear = await ownerComposerGate.waitClear();
+              if (clear.deferred) return deferForOwnerInput(clear.reason || 'owner-input-cap');
+            }
           }
           machineTurnActive = true;
           queuedOwnerInput = [];
