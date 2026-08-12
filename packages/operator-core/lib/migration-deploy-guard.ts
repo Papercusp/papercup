@@ -194,8 +194,20 @@ export function resolveDeployedReleaseRoot(sqlDir: string, env: NodeJS.ProcessEn
     if (path.resolve(canonicalRelease) !== currentRoot) return canonicalRelease;
   }
   const explicit = env.PAPERCUSP_RELEASE_ROOT?.trim();
-  if (explicit) return path.resolve(explicit);
-  return path.join(path.dirname(currentRoot), `${path.basename(currentRoot).replace(/-staging$/, '')}-release`);
+  if (explicit) {
+    const explicitRoot = path.resolve(explicit);
+    const explicitBase = path.basename(explicitRoot);
+    if (explicitBase.endsWith('-staging')) {
+      return path.join(path.dirname(explicitRoot), `${explicitBase.replace(/-staging$/, '')}-release`);
+    }
+    return explicitRoot;
+  }
+  const currentBase = path.basename(currentRoot);
+  // A release-host process may have no explicit env overlay. In that case its
+  // own tree is already the deployed checkout; do not invent a
+  // `*-release-release` sibling and block every guarded migration forever.
+  if (currentBase.endsWith('-release')) return currentRoot;
+  return path.join(path.dirname(currentRoot), `${currentBase.replace(/-staging$/, '')}-release`);
 }
 
 /** Read and verify all armed, marked pending-code-deploy migrations. */

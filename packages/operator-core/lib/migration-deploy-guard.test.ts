@@ -95,4 +95,15 @@ describe('PENDING-CODE-DEPLOY migration guard', () => {
       }),
     ).toBe('/ws/papercusp-release');
   });
+
+  it('does not derive a release-release path when the current process is already deployed', () => {
+    expect(resolveDeployedReleaseRoot('/ws/papercusp-release/libs/papercusp/libs/db/sql', {})).toBe(
+      '/ws/papercusp-release',
+    );
+    expect(
+      resolveDeployedReleaseRoot('/ws/papercusp-staging/libs/papercusp/libs/db/sql', {
+        PAPERCUSP_RELEASE_ROOT: '/ws/papercusp-staging',
+      }),
+    ).toBe('/ws/papercusp-release');
+  });
 });

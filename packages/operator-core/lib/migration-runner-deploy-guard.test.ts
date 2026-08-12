@@ -13,9 +13,11 @@ function fixtureDir() {
   return dir;
 }
 
-function fakeClient() {
+function fakeClient(applied: string[] = []) {
   return {
-    unsafe: vi.fn(async (sql: string) => (sql.includes('SELECT filename') ? [] : undefined)),
+    unsafe: vi.fn(async (sql: string) =>
+      sql.includes('SELECT filename') ? applied.map((filename) => ({ filename })) : undefined,
+    ),
   };
 }
 
@@ -53,5 +55,16 @@ describe('migration runner beforeApply guard', () => {
 
     expect(result).toMatchObject({ appliedCount: 1, totalKnown: 1, failed: [] });
     expect(client.unsafe.mock.calls.some(([sql]) => sql.includes('BEGIN;'))).toBe(true);
+  });
+
+  it('does not call the guard again for a file already recorded in schema_migrations', async () => {
+    const client = fakeClient(['001-guard.sql']);
+    const beforeApply = vi.fn(() => {
+      throw new Error('must not run for applied files');
+    });
+    const result = await applyPendingMigrations({ client, sqlDir: fixtureDir(), beforeApply });
+
+    expect(result).toMatchObject({ appliedCount: 0, totalKnown: 1, failed: [] });
+    expect(beforeApply).not.toHaveBeenCalled();
   });
 });
