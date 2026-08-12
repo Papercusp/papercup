@@ -5,7 +5,13 @@
  */
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { listFacts, factVersions, FACT_SCOPES, type AgentFact } from '../../agent-facts/store';
+import {
+  listFacts,
+  factVersions,
+  FACT_SCOPES,
+  isPermanentFactExpiry,
+  type AgentFact,
+} from '../../agent-facts/store';
 import { resolveScopeRefFromCtx, resolveScopeRefAlias } from './scope-ctx';
 import { markStaleSourceFacts, type FactSourceStaleness } from './stale-source';
 import type { FactDependencyStaleness } from './dependency-staleness';
@@ -108,6 +114,32 @@ export function projectFact(
   };
 }
 
+/**
+ * Whether a version returned by the key-scoped lookup is the CURRENT live row.
+ *
+ * `factVersions` deliberately returns history, including expired/retracted rows,
+ * because that is what the `versions:true` mode needs. The key-scoped mode must
+ * apply the live-fold predicates again so a historical row can never turn a
+ * missing current fact into a false positive.
+ */
+export function isLiveFact(
+  f: Pick<AgentFact, 'expiresAt' | 'retractedAt' | 'supersededAt'> | undefined,
+  nowMs = Date.now(),
+): boolean {
+  if (!f || f.supersededAt != null || f.retractedAt != null) return false;
+  if (isPermanentFactExpiry(f.expiresAt)) return true;
+  const expiresAtMs = Date.parse(f.expiresAt);
+  return Number.isFinite(expiresAtMs) && expiresAtMs > nowMs;
+}
+
+/** Pick the live row from the newest-first version result, if one exists. PURE. */
+export function findLiveFactVersion(
+  versions: readonly AgentFact[],
+  nowMs = Date.now(),
+): AgentFact | undefined {
+  return versions.find((version) => isLiveFact(version, nowMs));
+}
+
 export default defineTool({
   name: 'facts:list',
   capability: 'coord:read',
@@ -117,7 +149,8 @@ export default defineTool({
     when:
       'Before asserting (avoid duplicates — re-assert the same key to refresh instead), when auditing what a role/harness is being told every turn, or when hunting a stale fact to retract.',
     notWhen: 'Semantic search over background knowledge — that is memory:search.',
-    chaining: 'facts:list → facts:assert (refresh) / facts:retract (stale). Add versions:true + key to read what a fact said BEFORE it was corrected.',
+    chaining:
+      'facts:list → facts:assert (refresh) / facts:retract (stale). Pass key to verify ONE live fact directly when list projection could make absence ambiguous; add versions:true + key to read what that fact said BEFORE it was corrected.',
     seeAlso: ['facts:assert', 'facts:retract'],
   },
   requirePrincipal: false,
@@ -140,7 +173,9 @@ export default defineTool({
       .string()
       .max(200)
       .optional()
-      .describe('Required with versions:true — the single fact key whose history to read. Ignored otherwise.'),
+      .describe(
+        'With versions:true, the single fact key whose history to read; without versions, query ONE live fact directly (useful when a bounded list cannot establish absence).',
+      ),
     versions: z
       .boolean()
       .optional()
@@ -193,6 +228,32 @@ export default defineTool({
             supersededAt: v.supersededAt ?? null,
             current: (v.supersededAt ?? null) === null,
           })),
+        },
+      };
+    }
+    // EI-19437221871431967: a projected/bounded list cannot prove that one
+    // known short-TTL fact is absent. Read the newest version for the key and
+    // apply the live predicates explicitly, returning a single-row shape that
+    // keeps existence distinguishable from list truncation.
+    const key = args.key?.trim();
+    if (key) {
+      const versions = await factVersions({
+        scope: args.scope,
+        scopeRef: scopeRef ?? null,
+        key,
+        limit: 1,
+      });
+      const live = findLiveFactVersion(versions);
+      const rows = live ? [projectFact(live, args.full === true)] : [];
+      return {
+        data: {
+          ok: true,
+          mode: 'key',
+          key,
+          found: live !== undefined,
+          count: rows.length,
+          ...(args.full !== true ? { excerpted: true, note: FACTS_LIST_EXCERPT_NOTE } : {}),
+          facts: rows,
         },
       };
     }

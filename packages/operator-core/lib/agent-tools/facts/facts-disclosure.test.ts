@@ -8,7 +8,13 @@
  */
 import { describe, expect, it } from 'vitest';
 import assertTool, { truncationField } from './assert';
-import { projectFact, FACTS_LIST_EXCERPT_CHARS, FACTS_LIST_DEFAULT_LIMIT } from './list';
+import factsListTool, {
+  projectFact,
+  isLiveFact,
+  findLiveFactVersion,
+  FACTS_LIST_EXCERPT_CHARS,
+  FACTS_LIST_DEFAULT_LIMIT,
+} from './list';
 import { clampFactBody, FACT_BODY_MAX_CHARS, type AgentFact } from '../../agent-facts/store';
 
 const fact = (body: string, extra: Partial<AgentFact> = {}): AgentFact => ({
@@ -157,6 +163,58 @@ describe('projectFact — facts:list must stay inside the output budget (EI-1094
     );
     const chars = JSON.stringify(rows).length;
     expect(chars).toBeLessThan(12_000);
+  });
+});
+
+describe('facts:list key lookup — distinguish projection omission from live absence (EI-19437221871431967)', () => {
+  const nowMs = Date.parse('2026-08-12T00:00:00.000Z');
+
+  it('accepts a permanent or future-expiring current version', () => {
+    expect(
+      isLiveFact(
+        { expiresAt: 'infinity', retractedAt: null, supersededAt: null },
+        nowMs,
+      ),
+    ).toBe(true);
+    expect(
+      isLiveFact(
+        { expiresAt: '2026-08-12T00:00:01.000Z', retractedAt: null, supersededAt: null },
+        nowMs,
+      ),
+    ).toBe(true);
+  });
+
+  it('rejects expired, retracted, and superseded versions', () => {
+    expect(
+      isLiveFact(
+        { expiresAt: '2026-08-11T23:59:59.000Z', retractedAt: null, supersededAt: null },
+        nowMs,
+      ),
+    ).toBe(false);
+    expect(
+      isLiveFact(
+        { expiresAt: '2026-08-13T00:00:00.000Z', retractedAt: '2026-08-11T00:00:00.000Z', supersededAt: null },
+        nowMs,
+      ),
+    ).toBe(false);
+    expect(
+      isLiveFact(
+        { expiresAt: '2026-08-13T00:00:00.000Z', retractedAt: null, supersededAt: '2026-08-11T00:00:00.000Z' },
+        nowMs,
+      ),
+    ).toBe(false);
+  });
+
+  it('never falls back to an older historical version when the newest row is not live', () => {
+    const old = fact('old', { expiresAt: '2026-08-13T00:00:00.000Z', supersededAt: '2026-08-11T00:00:00.000Z' });
+    const expiredCurrent = fact('current', { expiresAt: '2026-08-11T23:59:59.000Z', supersededAt: null });
+    expect(findLiveFactVersion([expiredCurrent, old], nowMs)).toBeUndefined();
+  });
+
+  it('documents that key without versions performs a direct live read', () => {
+    const description = factsListTool.args.shape.key.description ?? '';
+    expect(description).toMatch(/without versions/i);
+    expect(description).toMatch(/ONE live fact/i);
   });
 });
 
