@@ -126,9 +126,17 @@ export function resultToText(result: any, { raw }?: {
  *  the MCP SDK validates their structured response field (EI-13245). Array-
  *  rooted tools deliberately omit `outputSchema` because MCP requires
  *  `structuredContent` to be an object; ask those tools for JSON text instead
- *  so ptool still emits a lossless scripting payload. */
-export function buildCallToolParams(toolName: any, callArgs: any, { outputSchema }?: {}): {
-    name: any;
+ *  so ptool still emits a lossless scripting payload.
+ *  @param {string} toolName
+ *  @param {any} callArgs
+ *  @param {{outputSchema?: {type?: string}}} [options]
+ */
+export function buildCallToolParams(toolName: string, callArgs: any, { outputSchema }?: {
+    outputSchema?: {
+        type?: string;
+    };
+}): {
+    name: string;
     arguments: any;
     _meta: {
         structured: boolean;

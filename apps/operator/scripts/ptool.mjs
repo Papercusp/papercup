@@ -427,7 +427,11 @@ function readToken() {
  *  the MCP SDK validates their structured response field (EI-13245). Array-
  *  rooted tools deliberately omit `outputSchema` because MCP requires
  *  `structuredContent` to be an object; ask those tools for JSON text instead
- *  so ptool still emits a lossless scripting payload. */
+ *  so ptool still emits a lossless scripting payload.
+ *  @param {string} toolName
+ *  @param {any} callArgs
+ *  @param {{outputSchema?: {type?: string}}} [options]
+ */
 export function buildCallToolParams(toolName, callArgs, { outputSchema } = {}) {
   const objectRooted = outputSchema?.type === 'object';
   return {
