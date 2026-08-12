@@ -154,7 +154,11 @@ export default defineTool({
           // (never a second lookup) so the caller-facing refusal's "route elsewhere"
           // advice is code-conditional too.
           const { liveRouteTarget } =
-            (await notifyFleetScopeRefusal(identity, admission, `plan_items:assign ${it.plan}#${it.item} → ${it.assignee}`)) ?? {};
+            (await notifyFleetScopeRefusal(identity, admission, `plan_items:assign ${it.plan}#${it.item} → ${it.assignee}`, {
+              // EI-18680302159738037: `<plan>#<item>` is a real addressable id, so this
+              // block can be listed in fleet:leader-brief like a work-item one.
+              subject: { itemId: `${it.plan}#${it.item}`, member: it.assignee },
+            })) ?? {};
           return {
             ok: false,
             plan: it.plan,

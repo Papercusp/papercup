@@ -87,6 +87,10 @@ import {
   type UnownedCriticalCandidate,
   type OrphanedInFlightCandidate,
 } from '../../harness/improvements/unowned-critical-escalation';
+import {
+  fetchFleetAdmissionBlocks,
+  type FleetAdmissionBlock,
+} from '../coordination/fleet-scope-admission-blocks';
 import type { InvariantEvaluation } from './invariants';
 import { listActiveComposedRoots, loadTreeLeaves } from '../../events/await/compose-store';
 import type { TimeoutBehavior } from '../../events/await/types';
@@ -2134,6 +2138,12 @@ export default defineTool({
     // separately rather than dropping it.
     const { actionable: unownedCriticals, federatedUnresolvable: unownedCriticalsFederated } =
       partitionUnownedCriticalsByOrigin(unownedCriticalsAll);
+    // EI-18680302159738037: members refused by THIS fleet's claim spec. The remedy is
+    // a spec write only the leader can make, so the block is leader-actionable by
+    // construction — yet it was delivered as ordinary inbox mail, where one
+    // action-required row does not survive a 5-figure inbox. Read failures already
+    // fail soft to `[]` inside fetchFleetAdmissionBlocks.
+    const admissionBlocked: FleetAdmissionBlock[] = await fetchFleetAdmissionBlocks(fleet);
     // EI-18693470222331709: items released mid-flight (progress recorded, now
     // unassigned) — read failures already fail soft to `[]`.
     const orphanedInFlight: OrphanedInFlightCandidate[] = await readOrphanedInFlightForFleet({
@@ -2333,6 +2343,13 @@ export default defineTool({
           // two of these and reported it to the owner, changing nothing. The only resolving
           // action is a member CLAIMING and finishing the item.
           abandoned_unclaimed: orphanedInFlight.length,
+      // EI-18680302159738037: DISTINCT (item, member) pairs this fleet's own claim
+      // spec refused in the last 24h. Unlike every other advisory here, the blocked
+      // party already told you — as inbox mail, which is where it got buried. >0
+      // means a member is structurally UNABLE to claim work it was pointed at, and
+      // the only remedy is a spec write YOU make (scheduler:set_claim_spec); no
+      // amount of member discipline clears it. See `admissionBlocked` for the rows.
+      admission_blocked: admissionBlocked.length,
       // EI-18703234178947959: this fleet's own control_state is winding-down (fleet:pause /
       // fleet:wind-down). Emitted EXPLICITLY rather than left implicit, because it is the
       // reason the idle-member alerts above read 0/false: idle members are COMPLYING with
@@ -2649,6 +2666,28 @@ export default defineTool({
                 `work_items:release does NOTHING here (it returns ok:true on the no-op — WI-6678). ` +
                 `Resolve by CLAIMING them, or promote them with work_items:set_priority { priority } so the ` +
                 `queue hands them to a member — the count falls only when one is claimed and finished.`,
+            }
+          : {}),
+        ...(admissionBlocked.length > 0
+          ? {
+              admissionBlocked,
+              // Same discipline as abandonedUnclaimedAction above: carry the RESOLVING
+              // ACTION with the finding. It matters more here than anywhere else on this
+              // brief, because the natural reading of "a member is not claiming its work"
+              // is a discipline problem — and acting on that reading produces a fleet-wide
+              // directive that cannot possibly help, which is exactly what happened in the
+              // incident that filed this (EI-18680302159738037).
+              // Front-loaded deliberately: the monitor projection CLIPS this to 220
+              // chars, so the anti-misreading ("not discipline") and the lever
+              // (set_claim_spec) must both land inside the first sentence or the
+              // clipped copy reads as a bare complaint.
+              admissionBlockedAction:
+                `NOT member discipline — ${admissionBlocked.length} (item, member) pair(s) were refused by THIS ` +
+                `fleet's claim spec; only YOUR spec write clears it: scheduler:set_claim_spec { fleet, … } to widen ` +
+                `the lane, or route the item to a member whose lane admits it. ` +
+                `Each row names the specId + revision that refused it; after a widen the member self-claims on its ` +
+                `next scheduler:get_next, with no re-dispatch. \`occurrences\` > 1 means that member is stuck in a ` +
+                `refusal LOOP, burning a wake each time.`,
             }
           : {}),
         // EI-19313376980892266 item C: every alert ships its FALSIFIER beside its reason

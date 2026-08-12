@@ -603,7 +603,14 @@ export async function notifyFleetScopeRefusal(
   // EI-19484346966003625 (R1): the harness the refused subject belongs to, so the class
   // reading can be taken. OPTIONAL and additive — a caller that does not pass it gets
   // exactly the previous behaviour (classRefusal: null ⇒ empty note), never an error.
-  opts?: { harness?: string | null },
+  //
+  // EI-18680302159738037: `subject` names the refused item + member STRUCTURALLY, so
+  // fleet:leader-brief can surface this block on the surface a leader actually reads
+  // every wake instead of leaving it to be buried as ordinary inbox mail. Also
+  // OPTIONAL and additive: a caller that omits it sends the byte-identical message
+  // minus the stamp, and the reader SKIPS an unstamped row rather than prose-parsing
+  // `action` — a guessed itemId on a leader's dashboard is worse than an absent one.
+  opts?: { harness?: string | null; subject?: { itemId?: string | null; member?: string | null } },
 ): Promise<{ liveRouteTarget: boolean | null; classRefusal: FleetScopeClassRefusal | null }> {
   // WI-6326: irrelevant while winding-down (that remedy branch never mentions
   // "route elsewhere" at all) — skip the extra lookup.
@@ -620,11 +627,36 @@ export async function notifyFleetScopeRefusal(
     windingDown ? Promise.resolve([]) : diagnoseFleetScopeRetiredPlans({ scope: admission.scope }),
   ]);
   const { sendMessage } = await import('../agent-tools/coordination/messages');
+  // Lazy, like every other agent-tools seam in this file: the constants live with
+  // the READER (agent-tools/coordination), and a static edge would drag the coord
+  // graph into every unit test that merely imports admission.
+  const { FLEET_ADMISSION_BLOCK_CATEGORY, FLEET_ADMISSION_BLOCK_STAMP } = await import(
+    '../agent-tools/coordination/fleet-scope-admission-blocks'
+  );
+  // EI-18680302159738037: stamp the block structurally alongside the prose. Only
+  // when the caller named BOTH item and member — the reader requires the pair, so a
+  // half stamp would be dead weight on the envelope.
+  const itemId = opts?.subject?.itemId?.trim() ?? '';
+  const member = opts?.subject?.member?.trim() ?? '';
+  const stamp = itemId && member
+    ? {
+        [FLEET_ADMISSION_BLOCK_STAMP]: {
+          itemId,
+          member,
+          specId: admission.scope.record.spec.specId,
+          specRevision: admission.scope.record.spec.revision,
+          code: admission.code,
+          action,
+          reason: admission.reason,
+        },
+      }
+    : undefined;
   await sendMessage(identity, {
     to: [`@fleet-leader:${admission.scope.fleetSlug}`],
     summary: `fleet-scope admission blocked ${action}`,
     body: `${admission.reason}. The assignment was not mutated. ${fleetScopeLeaderRemedy(admission, liveRouteTarget, classRefusal, retiredPlans)}`,
-    category: 'fleet-scope-admission',
+    category: FLEET_ADMISSION_BLOCK_CATEGORY,
+    ...(stamp ? { extra: stamp } : {}),
   }).catch(() => undefined);
   return { liveRouteTarget, classRefusal };
 }

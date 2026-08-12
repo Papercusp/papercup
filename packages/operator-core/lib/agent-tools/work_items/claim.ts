@@ -318,7 +318,12 @@ async function claimOne(
     // WI-7264 was refused here twice under one spec revision, and the advice both times was
     // to widen for that row.
     const { liveRouteTarget, classRefusal } =
-      (await notifyFleetScopeRefusal(identity, admission, `work_items:claim ${it.id} → ${claimer}`, { harness: it.harness })) ?? {};
+      (await notifyFleetScopeRefusal(identity, admission, `work_items:claim ${it.id} → ${claimer}`, {
+        harness: it.harness,
+        // EI-18680302159738037: name the pair structurally so fleet:leader-brief can
+        // list this block instead of leaving it to be buried as ordinary inbox mail.
+        subject: { itemId: it.id, member: claimer },
+      })) ?? {};
     return {
       ok: false,
       id: it.id,
