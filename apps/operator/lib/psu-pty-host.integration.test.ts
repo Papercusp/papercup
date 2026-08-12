@@ -516,6 +516,11 @@ describe('RECYCLE — kill + respawn the child in the same host (su-cold-auto-mo
         env: {
           ...process.env,
           PAPERCUSP_SID: ownerId,
+          // Reproduce the live failure deterministically: the fake successor
+          // emits BOOT output but never Codex's version-specific composer
+          // footer. The bounded fallback must admit it via output quiescence.
+          PAPERCUSP_AGENT: 'codex',
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '300',
           TERM: 'xterm-256color',
           // Speed the post-respawn carry inject: the fresh child's boot output goes
           // quiet fast, so a short output-quiet window lets the carry land promptly.
@@ -976,6 +981,8 @@ describe('RECYCLE carry-inject is retried across a budget, then dropped LOUDLY (
         env: {
           ...process.env,
           PAPERCUSP_SID: ownerId,
+          PAPERCUSP_AGENT: 'codex',
+          PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS: '300',
           TERM: 'xterm-256color',
           PAPERCUSP_PSU_PTY_OUTPUT_QUIET_MS: '150',
           PAPERCUSP_PSU_PTY_BUSY_CAP_MS: '300', // shorter than the ~700ms spin → attempts defer

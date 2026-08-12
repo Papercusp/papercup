@@ -881,6 +881,23 @@ describe('makeOwnerComposerGate (EI-20199370837439455 staged-input safety)', () 
     expect(g.pendingLength()).toBe(10);
   });
 
+  it('clears staged state when the old child is replaced', () => {
+    const g = makeOwnerComposerGate({ capMs: 100 });
+    g.observe('draft for the old child');
+    expect(g.hasPending()).toBe(true);
+
+    // recycleChild calls this only after the old child has exited. Its editor
+    // no longer exists, so retaining this bit would falsely block every wake
+    // sent to the fresh successor.
+    g.markSubmitted();
+    expect(g.hasPending()).toBe(false);
+    expect(g.pendingLength()).toBe(0);
+
+    // Normal protection remains armed for actual text in the new child.
+    g.observe('new draft');
+    expect(g.hasPending()).toBe(true);
+  });
+
   /**
    * WI-38156. The test above enumerated the families that had bitten us (CSI,
    * OSC, SS3) rather than the closed ECMA-48 set, so DCS stayed unhandled — and

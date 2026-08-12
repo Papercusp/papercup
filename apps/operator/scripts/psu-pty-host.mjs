@@ -346,6 +346,15 @@ const RECYCLE_CARRY_INJECT_BUDGET_MS =
  *  requeue when an attempt defers fast. */
 const RECYCLE_CARRY_RETRY_BACKOFF_MS =
   Number(process.env.PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS) || 3_000;
+/** A backend readiness marker is the strongest proof that its composer exists,
+ * but it is not a permanent liveness dependency. UI chrome changes across CLI
+ * releases, so a healthy successor can emit output forever without matching
+ * the marker. After this much time from the successor's FIRST output, fall back
+ * to the ordinary output-quiescence proof. The delay remains longer than the
+ * observed Codex onboarding/typewriter animation; the quiet gate still has to
+ * pass before any carry text is written. */
+const STARTUP_MARKER_FALLBACK_MS =
+  Number(process.env.PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS) || 15_000;
 
 /** EI-18109211232286833: max age a `carry-respawn` control message may reach
  *  before delivery, measured from the moment this host first received it
@@ -2198,6 +2207,22 @@ function codexTurnResubmitCrDelay(env = process.env) {
 export function controlWritesForAgent(decoded, agent, env = process.env) {
   if (decoded.mode === 'raw' || decoded.mode === 'osc') return controlWrites(decoded);
   if (decoded.mode === 'reset') return resetWritesForAgent(decoded, agent, env);
+  const normalized = String(agent || '').trim().toLowerCase();
+
+  if (normalized === 'omp') {
+    const crDelayMs = turnSubmitCrDelayForAgent(agent, env);
+    if (crDelayMs > 0) {
+      return [
+        { data: decoded.data, delayMs: 0 },
+        { data: '\n', delayMs: crDelayMs },
+      ];
+    }
+    return [{ data: decoded.data, delayMs: 0 }];
+  }
+
+  if (normalized !== 'codex') {
+    return controlWrites(decoded, turnSubmitCrDelayForAgent(agent, env));
+  }
   return [
     { data: decoded.data, delayMs: 0 },
     { data: '\r', delayMs: turnSubmitCrDelayForAgent(agent, env) },
@@ -2545,6 +2570,7 @@ export function hostThroughPty(o) {
   // Reset on recycle.
   let childStartupOutput = '';
   let childStartupReady = false;
+  let childStartupFirstOutputAt = 0;
   const baseMeta = {
     ownerId,
     advSessionId: advSessionId != null ? String(advSessionId) : null,
@@ -2736,6 +2762,10 @@ export function hostThroughPty(o) {
     env.PAPERCUSP_PSU_PTY_RECYCLE_CARRY_BACKOFF_MS,
     RECYCLE_CARRY_RETRY_BACKOFF_MS,
   );
+  const startupMarkerFallbackMs = positiveNumber(
+    env.PAPERCUSP_PSU_PTY_STARTUP_MARKER_FALLBACK_MS,
+    STARTUP_MARKER_FALLBACK_MS,
+  );
 
   // WI-2930: verify every injected submit actually started a turn — resubmit a
   // bare CR at each quiet observation in a bounded post-submit window (see
@@ -2806,10 +2836,23 @@ export function hostThroughPty(o) {
       // least one real startup byte; the subsequent quiet gate then proves the
       // startup repaint has settled at a prompt. Never infer readiness from the
       // sentinel lastOutputAt=0 value.
-      while (requireInitialOutput && !childStartupReady && Date.now() < deadline) {
+      while (
+        requireInitialOutput &&
+        !childStartupReady &&
+        !(
+          childStartupFirstOutputAt > 0 &&
+          Date.now() - childStartupFirstOutputAt >= startupMarkerFallbackMs
+        ) &&
+        Date.now() < deadline
+      ) {
         await new Promise((r) => setTimeout(r, Math.min(25, Math.max(1, deadline - Date.now()))));
       }
-      if (requireInitialOutput && !childStartupReady) dropReason = 'no-startup-ready-marker';
+      const startupFallbackReady =
+        childStartupFirstOutputAt > 0 &&
+        Date.now() - childStartupFirstOutputAt >= startupMarkerFallbackMs;
+      if (requireInitialOutput && !childStartupReady && !startupFallbackReady) {
+        dropReason = 'no-startup-ready-marker';
+      }
       // eslint-disable-next-line no-constant-condition
       while (dropReason !== 'no-startup-ready-marker') {
         if (child !== injectChild) return { delivered: false, reason: 'superseded', attempts };
@@ -3805,6 +3848,7 @@ export function hostThroughPty(o) {
   wireChildData = () => {
     child.onData((d) => {
       if (!childStartupReady) {
+        if (!childStartupFirstOutputAt) childStartupFirstOutputAt = Date.now();
         childStartupOutput += typeof d === 'string' ? d : String(d);
         if (childStartupOutput.length > 65_536) childStartupOutput = childStartupOutput.slice(-32_768);
         childStartupReady = startupOutputReady(env.PAPERCUSP_AGENT, childStartupOutput);
@@ -4161,6 +4205,13 @@ export function hostThroughPty(o) {
         // identity / locks / socket all survive; only the native claude id rotates.
         childStartupOutput = '';
         childStartupReady = false;
+        childStartupFirstOutputAt = 0;
+        // Composer state belongs to the child that was just killed. Carrying a
+        // staged-line bit across this hard process boundary can make every wake
+        // to the healthy successor defer forever, even though that successor's
+        // editor is empty. This does not discard live owner input: the old child
+        // (and therefore its composer) is already gone at this point.
+        ownerComposerGate.markSubmitted();
         // P-018: disable Claude Code's native AUTO compactor only on the fresh
         // child whose deterministic carry consumer is now installed. The old
         // child kept its native safety net right up to this successful cut.
@@ -4311,7 +4362,7 @@ export function hostThroughPty(o) {
           reason: carryResult.delivered ? undefined : carryResult.reason,
           attempts: carryResult.attempts,
           budgetMs: recycleCarryInjectBudgetMs,
-          outputSeen: childStartupReady,
+          outputSeen: childStartupOutput.length > 0,
         };
         appendHostEvent(ownerId, terminalKind, terminalExtra);
         appendSharedDrillLedgerEvent(ownerId, terminalKind, terminalExtra);
@@ -4324,7 +4375,7 @@ export function hostThroughPty(o) {
             nativeId: nativeId ?? null,
             reason: carryResult.delivered ? undefined : carryResult.reason,
             attempts: carryResult.attempts,
-            outputSeen: childStartupReady,
+            outputSeen: childStartupOutput.length > 0,
           },
         );
       }
