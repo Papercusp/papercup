@@ -552,6 +552,11 @@ export default defineTool({
         // stamping apply on the append/clear paths too.
         const isPlainReplace = !wantsAppend && !!checkpointToStore && checkpointToStore.length > 0;
         const newLength = checkpointToStore?.length ?? 0;
+        // EI-20232176364474286: keep the guard as the first no-loss tripwire. Only
+        // after it refuses a plain >50% shrink do we enable this flag for the one
+        // retry below, where the transform appends under the locked prior row.
+        let preservePriorOnShrink = false;
+        let autoAppendedRefresh = false;
         // EI-19298690705878336: `checks` rows are rendered INTO the stored note, so a
         // write must MERGE them against the prior note rather than replace it — and
         // that merge has to happen inside the store's locked transaction, or a
@@ -629,7 +634,19 @@ export default defineTool({
                 // EI-19447043119380534: on a checks-only patch the caller supplied no body
                 // at all, so the STORED one is the body — read authoritatively here, inside
                 // the store's locked transaction, so a concurrent writer cannot interleave.
-                const body = isBodyPreservingPatch ? priorSplit.body : incomingBody;
+                const shouldAppendRefresh =
+                  preservePriorOnShrink &&
+                  isPlainReplace &&
+                  priorNote !== null &&
+                  priorNote.length > 500 &&
+                  newLength < priorNote.length * 0.5 &&
+                  incomingBody.length > 0;
+                const body = isBodyPreservingPatch
+                  ? priorSplit.body
+                  : shouldAppendRefresh
+                    ? joinCheckpoint(priorSplit.body, incomingBody)
+                    : incomingBody;
+                if (shouldAppendRefresh) autoAppendedRefresh = true;
                 // EI-19944669306930709: under `append: true` the supplied rows are
                 // UNIONED onto the carried set instead of replacing it. `append` is an
                 // explicit declaration that this write is ADDITIVE, and it governed only
@@ -659,7 +676,11 @@ export default defineTool({
                 // way to RETIRE a stale check, and dropping that would trade one footgun
                 // for another. Retiring a row while appending is two calls, by design.
                 const effectiveChecks =
-                  suppliedChecks === undefined ? undefined : wantsAppend ? [...suppliedChecks, ...prior] : suppliedChecks;
+                  suppliedChecks === undefined
+                    ? undefined
+                    : wantsAppend || preservePriorOnShrink
+                      ? [...suppliedChecks, ...prior]
+                      : suppliedChecks;
                 const merged =
                   effectiveChecks !== undefined ? normalizeCheckEntries(effectiveChecks, prior) : prior;
                 // Recomputed on every transform invocation (the store may retry it under
@@ -679,7 +700,7 @@ export default defineTool({
                 return withCarryNoteChecks(trimmedBody, merged);
               }
             : undefined;
-        const res = await setWorkItemCheckpointWithPrior({ harness, workItemId: it.id, workspaceId }, checkpointToStore, {
+        let res = await setWorkItemCheckpointWithPrior({ harness, workItemId: it.id, workspaceId }, checkpointToStore, {
           ...(checksTransform ? { transform: checksTransform } : {}),
           guard:
             isPlainReplace && !wantsConfirmShrink
@@ -714,6 +735,21 @@ export default defineTool({
                 : undefined,
           ...depsOpt,
         });
+        // EI-20232176364474286: retain the existing guard's no-loss behavior, but do
+        // not strand a normal concise progress refresh on a manual retry. A blocked
+        // plain shrink is retried once with no guard and the transform above appends
+        // it under the current locked prior. Other blockers remain refusals.
+        if (res.blockedReason?.includes('plain replace would shrink') && isPlainReplace && !wantsConfirmShrink) {
+          preservePriorOnShrink = true;
+          res = await setWorkItemCheckpointWithPrior(
+            { harness, workItemId: it.id, workspaceId },
+            checkpointToStore,
+            {
+              ...(checksTransform ? { transform: checksTransform } : {}),
+              ...depsOpt,
+            },
+          );
+        }
         stored = res.stored;
         priorLength = res.priorLength;
         blockedReason = res.blockedReason;
@@ -859,6 +895,17 @@ export default defineTool({
            * The write SUCCEEDS either way — this reports a repair, never a refusal.
            */
           ...(repairs.length ? { repairs } : {}),
+          // EI-20232176364474286: the shrink guard refused the first plain write,
+          // then the safe locked retry preserved the prior as an append. Surface the
+          // mode so callers do not mistake the returned history for a replacement.
+          ...(autoAppendedRefresh
+            ? {
+                autoAppended: true as const,
+                autoAppendedNote:
+                  'the concise replacement would have shrunk a substantial checkpoint, so it was preserved as an additive refresh; ' +
+                  'pass confirmShrink:true only when discarding the prior history is intentional.',
+              }
+            : {}),
           by: ident.ownerId,
           // P-007/D-013: what the freshness axis recorded for this write. Absent
           // entirely when the caller declared nothing (the common case today), so

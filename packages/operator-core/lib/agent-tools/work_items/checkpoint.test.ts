@@ -712,6 +712,47 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(getWorkItemCheckpoint).not.toHaveBeenCalled();
     });
 
+    it('EI-20232176364474286: a concise plain refresh retries as an atomic append after the guard refuses it', async () => {
+      getWorkItem.mockResolvedValue({ id: 'WI-202309', harness: 'papercup' });
+      const prior = 'the detailed prior forensic checkpoint '.repeat(60);
+      let stored: string | null = prior;
+      let calls = 0;
+      setWorkItemCheckpointWithPrior.mockImplementation(
+        async (
+          _ref: unknown,
+          incoming: string | null | undefined,
+          opts?: {
+            guard?: (priorNote: string | null, priorLength: number) => string | null;
+            transform?: (priorNote: string | null, note: string | null | undefined) => string | null | undefined;
+          },
+        ) => {
+          calls += 1;
+          if (calls === 1) {
+            const blockedReason = opts?.guard?.(prior, prior.length) ?? undefined;
+            return Promise.resolve({ stored: prior, priorLength: prior.length, blockedReason });
+          }
+          const next = opts?.transform ? opts.transform(prior, incoming) : incoming;
+          stored = (next ?? '').trim() || null;
+          return Promise.resolve({ stored, priorLength: prior.length });
+        },
+      );
+      // The handler's verify-read must see the text the retry actually stored.
+      getWorkItemCheckpoint.mockImplementation(async () => stored);
+
+      const r = await one({ id: 'WI-202309', checkpoint: 'fresh concise status' });
+      expect(r).toMatchObject({ ok: true, autoAppended: true });
+      expect(stored).toContain(prior.trim());
+      expect(stored).toContain('\n\n---\nfresh concise status');
+      expect(calls).toBe(2);
+      const retry = setWorkItemCheckpointWithPrior.mock.calls[1] as [
+        unknown,
+        unknown,
+        { guard?: unknown; transform?: unknown },
+      ];
+      expect(retry[2].guard).toBeUndefined();
+      expect(retry[2].transform).toBeTypeOf('function');
+    });
+
     it('the guard callback passed to setWorkItemCheckpointWithPrior blocks only a >50% shrink off a substantial (>500 char) prior', async () => {
       getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
       setWorkItemCheckpointWithPrior.mockResolvedValue({ stored: 'short new note', priorLength: 20000 });
@@ -815,14 +856,27 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       expect(call[2].guard).toBeUndefined();
     });
 
-    it('a mixed batch: the blocked item fails on its own, siblings still write', async () => {
+    it('a mixed batch: a concise shrink recovers on its own, siblings still write', async () => {
       getWorkItem.mockImplementation(async (id: string) => ({ id, harness: 'papercup' }));
-      setWorkItemCheckpointWithPrior.mockImplementation(async (_ref: unknown, text: string, opts?: { guard?: (n: string | null, l: number) => string | null }) => {
-        const priorLength = text === 'clobber' ? 19348 : 0;
-        const blockedReason = opts?.guard ? opts.guard(null, priorLength) ?? undefined : undefined;
-        return { stored: blockedReason ? 'unchanged prior' : text, priorLength, blockedReason };
-      });
-      getWorkItemCheckpoint.mockImplementation(async () => 'fine, brand new note');
+      const storedById = new Map<string, string>();
+      setWorkItemCheckpointWithPrior.mockImplementation(
+        async (
+          ref: { workItemId: string },
+          text: string,
+          opts?: {
+            guard?: (n: string | null, l: number) => string | null;
+            transform?: (n: string | null, text: string) => string | null | undefined;
+          },
+        ) => {
+          const prior = text === 'clobber' ? 'P'.repeat(19348) : null;
+          const priorLength = prior?.length ?? 0;
+          const blockedReason = opts?.guard ? opts.guard(prior, priorLength) ?? undefined : undefined;
+          const stored = blockedReason ? prior : opts?.transform ? opts.transform(prior, text) : text;
+          storedById.set(ref.workItemId, stored ?? '');
+          return { stored, priorLength, blockedReason };
+        },
+      );
+      getWorkItemCheckpoint.mockImplementation(async (ref: { workItemId: string }) => storedById.get(ref.workItemId) ?? null);
       const out = await env({
         items: [
           { id: 'WI-BLOCKED', checkpoint: 'clobber' },
@@ -830,10 +884,10 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
         ],
       });
       expect(out.results.map((r: { id: string; ok: boolean }) => [r.id, r.ok])).toEqual([
-        ['WI-BLOCKED', false],
+        ['WI-BLOCKED', true],
         ['WI-FINE', true],
       ]);
-      expect(out.results[0].error).toContain('shrink_blocked');
+      expect(out.results[0].autoAppended).toBe(true);
     });
   });
 
