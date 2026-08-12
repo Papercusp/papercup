@@ -33,8 +33,61 @@ import { ALL_TERMINAL_STATUSES } from '../../work-item-blocking';
 
 // The prose column width contract — ONE source, not a restated `384` (D-005 §5).
 import { fitsProseColumns } from '../../search/prose-vector-dims';
+/**
+ * CALIBRATION — MEASURED 2026-08-12 (WI-38056, plan luna-audit-fixes-2026-08-12
+ * D-002). Re-tune only against a fresh measurement; the numbers below are not
+ * taste, and the previous defaults were wrong in BOTH directions.
+ *
+ * Population: 200 agent-filed (`filedByRole:'su'`), non-templated
+ * `engineer_issues` from a 6-day window — templated watchdog filings ("Test
+ * failing repeatedly: <path>", "Hive canary … breached") are excluded because
+ * they legitimately have near-identical siblings and, left in, they inflate the
+ * corpus baseline from 0.867 to 0.953 and make every threshold below look safe.
+ *
+ *   mean nearest-neighbour cosine in this corpus ....... 0.867
+ *   six KNOWN duplicate pairs (close evidence names the
+ *     survivor) score ................................. 0.861 – 0.892
+ *   four flagged-but-DISTINCT pairs score .............. 0.857 – 0.868
+ *
+ * Those ranges OVERLAP — a distinct pair at 0.8677 outscores a real duplicate at
+ * 0.8613 — so COSINE ALONE CANNOT SEPARATE DUPLICATES FROM DISTINCT FILINGS in
+ * this corpus, at any cut. Two consequences, both load-bearing:
+ *
+ *  - SOFT was 0.85, i.e. BELOW the corpus mean: it flagged a "possible duplicate"
+ *    on 126/200 = 63% of filings. An advisory that fires on two thirds of
+ *    everything is noise, and it trains agents to skip the block entirely. 0.90
+ *    fires on 42/200 = 21% and actually means "unusually similar for this corpus".
+ *  - HARD stays 0.93 because it is the only defensible PURE-cosine refusal, but
+ *    note what it cannot do: every one of the six known duplicates scores below
+ *    it, so this threshold has never refused a real duplicate. DO NOT "fix" that
+ *    by lowering HARD into the 0.86–0.89 overlap — that is where distinct
+ *    filings live too, and it would refuse legitimate work at scale.
+ *
+ * The duplicates that actually cost the fleet (~12% of one 154-close drain) are
+ * same-subsystem re-filings worded differently — semantically ordinary, but with
+ * visibly similar TITLES. That is what CO_SIGNAL below is for.
+ */
 const DEFAULT_HARD = 0.93;
-const DEFAULT_SOFT = 0.85;
+const DEFAULT_SOFT = 0.9;
+/**
+ * The co-signal refusal: cosine in the ordinary band is not evidence, but cosine
+ * AND a similar title together are. Measured on the same 200-item population,
+ * `cosine >= 0.86 AND pg_trgm title similarity >= 0.45` fires on 14/200 = 7% of
+ * filings, catches 4 of the 6 known duplicate pairs (their title similarities:
+ * 0.509, 0.514, 0.521, 0.551), and fires on NONE of the four flagged-but-distinct
+ * pairs (whose title similarities top out at 0.210).
+ *
+ * Recall is deliberately traded for precision. A false refusal blocks real work
+ * and teaches agents to pass `force: true` reflexively, which would destroy the
+ * gate for the cases it exists to catch.
+ *
+ * The title metric is pg_trgm `similarity()`, computed in SQL beside the cosine
+ * (see queryCandidatesReal) — NOT a hand-rolled word-overlap score. The 0.45 cut
+ * was calibrated against pg_trgm specifically and does not transfer to another
+ * metric.
+ */
+const CO_SIGNAL_MIN_COSINE = 0.86;
+const CO_SIGNAL_MIN_TITLE = 0.45;
 /** Whole-prescreen budget (embed + both queries). A warm sidecar answers in
  *  ~10ms; a cold in-process model load (~2.8s) simply forfeits THIS create's
  *  verdict while the model warms for the next one. */
@@ -57,6 +110,10 @@ export interface SemanticDupeCandidate {
    *  'lexical-fulltext' = EI-19298062354262754's reuse of improvements:capture's
    *  own full-text search-first dedup (fulltext-lexical-dupe-guard.ts). */
   source?: 'lexical-recent' | 'lexical-fulltext';
+  /** pg_trgm `similarity()` between the new title and this candidate's, 0..1.
+   *  Undefined when the caller's `queryCandidates` seam does not supply it —
+   *  the co-signal promotion then simply does not apply (fail-open). */
+  titleSimilarity?: number;
 }
 
 export interface SemanticDupeResult {
@@ -74,7 +131,10 @@ export interface SemanticDupeDeps {
     | { mode: 'disabled'; reason?: string }
     | null
   >;
-  queryCandidates: (vec: number[], mode: string, harness?: string) => Promise<SemanticDupeCandidate[]>;
+  /** `title` is the NEW item's title, passed so the query can score pg_trgm title
+   *  similarity in SQL alongside the cosine. Optional 4th arg: existing seams that
+   *  ignore it keep working, they just forfeit the co-signal promotion. */
+  queryCandidates: (vec: number[], mode: string, harness?: string, title?: string) => Promise<SemanticDupeCandidate[]>;
 }
 
 function threshold(raw: string | undefined, dflt: number): number {
@@ -101,7 +161,7 @@ function withBudget<T>(ms: number, p: Promise<T | null>): Promise<T | null> {
   });
 }
 
-async function queryCandidatesReal(vec: number[], mode: string, harness?: string): Promise<SemanticDupeCandidate[]> {
+async function queryCandidatesReal(vec: number[], mode: string, harness?: string, title?: string): Promise<SemanticDupeCandidate[]> {
   const { sql } = getOrgPg();
   const vecLit = `[${vec.join(',')}]`;
   // ONE query covers BOTH families: migration 374 unified issues + features
@@ -112,9 +172,13 @@ async function queryCandidatesReal(vec: number[], mode: string, harness?: string
   // admit both.
   const terminal = [...ALL_TERMINAL_STATUSES];
   const workspaces = [...new Set([issuesScopeWorkspace(), activeWorkspaceId()])];
-  const rows = await sql<Array<{ id: string; title: string; state: string; harness_slug: string; similarity: number }>>`
+  const rows = await sql<Array<{ id: string; title: string; state: string; harness_slug: string; similarity: number; title_similarity: number | null }>>`
     SELECT feature_id AS id, COALESCE(title, '') AS title, COALESCE(status, 'todo') AS state, harness_slug,
-           1 - (embedding <=> ${vecLit}::vector) AS similarity
+           1 - (embedding <=> ${vecLit}::vector) AS similarity,
+           -- Scored HERE, in pg_trgm, because the co-signal threshold was
+           -- calibrated against pg_trgm similarity() and does not transfer to a
+           -- hand-rolled word-overlap score.
+           ${title ? sql`similarity(COALESCE(title, ''), ${title})` : sql`NULL::real`} AS title_similarity
       FROM harness_shared.work_items
      WHERE workspace_id = ANY(${workspaces}::text[])
        AND embedding IS NOT NULL
@@ -129,6 +193,9 @@ async function queryCandidatesReal(vec: number[], mode: string, harness?: string
     state: r.state,
     harness: r.harness_slug || null,
     similarity: Number(r.similarity),
+    ...(r.title_similarity === null || r.title_similarity === undefined
+      ? {}
+      : { titleSimilarity: Number(r.title_similarity) }),
   }));
 }
 
@@ -146,12 +213,21 @@ async function classify(d: SemanticDupeDeps, input: { title: string; summary?: s
   // Mirror the stored shape exactly (TARGETS bodySql: title || '\n' || left(body, 2000)).
   const vec = await resolved.embed(`${input.title}\n${(input.summary ?? '').slice(0, 2000)}`);
   if (!fitsProseColumns(vec.length)) return null;
-  const candidates = await d.queryCandidates(vec, resolved.mode, input.harness);
+  const candidates = await d.queryCandidates(vec, resolved.mode, input.harness, input.title);
   const t = dupeThresholds();
   const sorted = [...candidates].sort((a, b) => b.similarity - a.similarity);
+  // The co-signal (see CO_SIGNAL_* above): an ordinary cosine plus a genuinely
+  // similar TITLE is the shape the fleet's real duplicates take. Cosine alone in
+  // this band is the corpus average and means nothing, so neither half refuses
+  // on its own. A candidate whose seam supplied no titleSimilarity is unaffected.
+  const isCoSignalDupe = (c: SemanticDupeCandidate): boolean =>
+    c.similarity >= CO_SIGNAL_MIN_COSINE &&
+    typeof c.titleSimilarity === 'number' &&
+    c.titleSimilarity >= CO_SIGNAL_MIN_TITLE;
+  const isHard = (c: SemanticDupeCandidate): boolean => c.similarity >= t.hard || isCoSignalDupe(c);
   return {
-    hard: sorted.filter((c) => c.similarity >= t.hard),
-    soft: sorted.filter((c) => c.similarity >= t.soft && c.similarity < t.hard),
+    hard: sorted.filter(isHard),
+    soft: sorted.filter((c) => !isHard(c) && c.similarity >= t.soft),
     thresholds: t,
   };
 }

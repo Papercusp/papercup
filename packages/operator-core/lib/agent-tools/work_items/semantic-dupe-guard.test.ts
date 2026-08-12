@@ -37,20 +37,79 @@ afterEach(() => {
 });
 
 describe('classification', () => {
-  it('splits candidates into hard (≥0.93) and soft (≥0.85, <hard), sorted by similarity desc', async () => {
+  it('splits candidates into hard (≥0.93) and soft (≥0.90, <hard), sorted by similarity desc', async () => {
     const r = await findSemanticDupes(
       { title: 't', summary: 's' },
       okDeps([cand('EI-1', 0.9), cand('EI-2', 0.95), cand('WI-3', 0.86), cand('WI-4', 0.5)]),
     );
     expect(r).not.toBeNull();
     expect(r!.hard.map((c) => c.id)).toEqual(['EI-2']);
-    expect(r!.soft.map((c) => c.id)).toEqual(['EI-1', 'WI-3']);
-    expect(r!.thresholds).toEqual({ hard: 0.93, soft: 0.85 });
+    // WI-3 at 0.86 is BELOW the recalibrated soft band: 0.86 is the corpus mean
+    // nearest-neighbour cosine here, so on its own it is not a signal at all.
+    expect(r!.soft.map((c) => c.id)).toEqual(['EI-1']);
+    expect(r!.thresholds).toEqual({ hard: 0.93, soft: 0.9 });
   });
 
   it('returns empty bands (not null) when nothing is close — "screened, no dupes"', async () => {
     const r = await findSemanticDupes({ title: 't' }, okDeps([cand('EI-1', 0.2)]));
-    expect(r).toEqual({ hard: [], soft: [], thresholds: { hard: 0.93, soft: 0.85 } });
+    expect(r).toEqual({ hard: [], soft: [], thresholds: { hard: 0.93, soft: 0.9 } });
+  });
+
+  /**
+   * The co-signal band (WI-38056 / D-002). These cases are the calibration
+   * itself, expressed as behaviour: the six known duplicate pairs all scored
+   * cosine 0.861–0.892 with title similarity 0.51–0.55, while the four
+   * flagged-but-DISTINCT pairs scored cosine 0.857–0.868 with title similarity
+   * ≤0.210. Cosine alone cannot tell those apart — so if either half of the
+   * co-signal ever starts refusing on its own, these fail.
+   */
+  describe('co-signal (ordinary cosine + similar title)', () => {
+    const withTitle = (id: string, similarity: number, titleSimilarity: number): SemanticDupeCandidate => ({
+      ...cand(id, similarity),
+      titleSimilarity,
+    });
+
+    it('REFUSES a real-duplicate-shaped pair: ordinary cosine but a similar title', async () => {
+      const r = await findSemanticDupes({ title: 't' }, okDeps([withTitle('EI-dup', 0.8798, 0.5135)]));
+      expect(r!.hard.map((c) => c.id)).toEqual(['EI-dup']);
+      expect(r!.soft).toEqual([]);
+    });
+
+    it('does NOT refuse a distinct filing at the same cosine with a dissimilar title', async () => {
+      // 0.8677 outscores the real duplicate above — which is exactly why cosine
+      // is not allowed to decide on its own.
+      const r = await findSemanticDupes({ title: 't' }, okDeps([withTitle('EI-distinct', 0.8677, 0.21)]));
+      expect(r!.hard).toEqual([]);
+      expect(r!.soft).toEqual([]);
+    });
+
+    it('does NOT refuse on a similar title alone when the cosine is unrelated', async () => {
+      const r = await findSemanticDupes({ title: 't' }, okDeps([withTitle('EI-other', 0.4, 0.9)]));
+      expect(r!.hard).toEqual([]);
+    });
+
+    it('fails open when the query seam supplies no titleSimilarity', async () => {
+      const r = await findSemanticDupes({ title: 't' }, okDeps([cand('EI-legacy', 0.8798)]));
+      expect(r!.hard).toEqual([]);
+      expect(r!.soft).toEqual([]);
+    });
+
+    it('passes the new title to the query seam so it can score pg_trgm in SQL', async () => {
+      const seen: Array<string | undefined> = [];
+      const deps: SemanticDupeDeps = {
+        resolveEmbedder: async () => ({
+          mode: 'gemma',
+          dims: PROSE_VECTOR_DIMS,
+          embed: async () => new Array(PROSE_VECTOR_DIMS).fill(0.1),
+        }),
+        queryCandidates: async (_vec, _mode, _harness, title) => {
+          seen.push(title);
+          return [];
+        },
+      };
+      await findSemanticDupes({ title: 'the new title' }, deps);
+      expect(seen).toEqual(['the new title']);
+    });
   });
 
   it('embeds title + truncated summary in the stored bodySql shape', async () => {
