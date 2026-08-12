@@ -32,6 +32,7 @@ import { ADMIN_COORD_UI_OWNER } from './identity';
 import { listPresence } from './presence';
 import { resolveBestEffortAgainstRoster, isSelectorOrWildcard, knownOwnerIdSet } from './recipient-resolve';
 import { getLoopStatuses, type LoopStatus } from '../../harness/routines/loop';
+import { withBoundedTimeout } from '../../bounded-timeout';
 
 /** Prefix for the per-agent inbox-wake key. A bee watches `inboxWakeKey(self)`;
  *  a `{wake:true}` send to that bee fires exactly this key. */
@@ -62,6 +63,19 @@ export const NON_WAKEABLE = new Set(['*', 'human', '']);
  *  thousands of billable turns. A legitimate directed set is far under this;
  *  env-tunable. */
 export const MAX_WAKE_FANOUT = Number(process.env.PAPERCUSP_MAX_WAKE_FANOUT) || 64;
+
+/**
+ * A direct wake is best-effort after the inbox row is durable, but its caller still needs a
+ * result before the MCP transport gives up. Keep the target fan's whole per-recipient chain
+ * below the observed ~30s coord:send transport budget. The cap prevents an accidental env
+ * override from reintroducing a transport-sized wait; a timeout means delivery is UNKNOWN,
+ * not that the recipient was absent, because the underlying emit may complete after we return.
+ */
+const configuredWakeTargetTimeoutMs = Number(process.env.PAPERCUSP_COORD_WAKE_TIMEOUT_MS);
+export const COORD_WAKE_TARGET_TIMEOUT_MS =
+  Number.isFinite(configuredWakeTargetTimeoutMs) && configuredWakeTargetTimeoutMs > 0
+    ? Math.min(25_000, Math.max(500, Math.trunc(configuredWakeTargetTimeoutMs)))
+    : 15_000;
 
 /** A LOOP wake's source convention (loop-fire.ts: `loop:<routineId>`). */
 export const LOOP_WAKE_SOURCE_PREFIX = 'loop:';
@@ -132,6 +146,9 @@ export interface WakeRecipientsResult {
   /** P-022: recipients BEYOND MAX_WAKE_FANOUT — injected (durable) but not woken.
    *  Non-empty only on an oversized audience fan (the cost-DoS shape). */
   fanoutCapped: string[];
+  /** Recipients whose wake chain exceeded the local deadline. Their durable inbox message
+   *  exists, but the wake may still complete late; never classify these as absent/missed. */
+  timedOutTargets: string[];
 }
 
 /**
@@ -202,72 +219,87 @@ export async function wakeRecipients(
     | { kind: 'staged'; ownerId: string }
     | { kind: 'fired'; key: string; woken: number }
     | { kind: 'fire-failed'; key: string }
+    | { kind: 'timed-out'; ownerId: string; key: string }
     | { kind: 'skipped' };
   const outcomes = await Promise.all(
     targets.map(async (ownerId): Promise<TargetOutcome> => {
-      // Manual mode → STAGE instead of fire; the agent is not re-invoked (EXCEPT a self-loop wake).
-      if (!bypassManualGate) {
-        let manual = false;
-        try {
-          manual = (await resolveWakeMode(ownerId)) === 'manual';
-        } catch {
-          manual = false; // mode store unreadable → default auto (fire)
-        }
-        if (manual) {
-          // EI-9971: a target that matches NO known agent (local, recorded-session, or
-          // federated) would stage a `pending_wakes` row nobody can ever review/release —
-          // pure debris until the hourly dead-owner sweep's grace window lapses. Skip
-          // staging (never fire it either — firing a key nobody watches is a harmless
-          // no-op, but the manual gate means we'd stage, not fire). `roster === null`
-          // (unavailable/empty) fails OPEN — stage as before rather than guess.
-          if (roster !== null && !roster.has(ownerId)) {
-            console.warn(
-              `[inbox-wake] skipping wake-stage for unresolvable recipient "${ownerId}" ` +
-                '(matches no known local/recorded/federated agent — would be undeletable debris).',
-            );
-            return { kind: 'skipped' };
+      const key = inboxWakeKey(ownerId);
+      type CompletedOutcome = Exclude<TargetOutcome, { kind: 'timed-out' }>;
+      const bounded = await withBoundedTimeout<CompletedOutcome | null>(
+        async (): Promise<CompletedOutcome> => {
+          // Manual mode → STAGE instead of fire; the agent is not re-invoked (EXCEPT a self-loop wake).
+          if (!bypassManualGate) {
+            let manual = false;
+            try {
+              manual = (await resolveWakeMode(ownerId)) === 'manual';
+            } catch {
+              manual = false; // mode store unreadable → default auto (fire)
+            }
+            if (manual) {
+              // EI-9971: a target that matches NO known agent (local, recorded-session, or
+              // federated) would stage a `pending_wakes` row nobody can ever review/release —
+              // pure debris until the hourly dead-owner sweep's grace window lapses. Skip
+              // staging (never fire it either — firing a key nobody watches is a harmless
+              // no-op, but the manual gate means we'd stage, not fire). `roster === null`
+              // (unavailable/empty) fails OPEN — stage as before rather than guess.
+              if (roster !== null && !roster.has(ownerId)) {
+                console.warn(
+                  `[inbox-wake] skipping wake-stage for unresolvable recipient "${ownerId}" ` +
+                    '(matches no known local/recorded/federated agent — would be undeletable debris).',
+                );
+                return { kind: 'skipped' };
+              }
+              try {
+                await stagePendingWake({
+                  ownerId,
+                  summary: opts.summary,
+                  payload: opts.payload,
+                  source: opts.source,
+                  workspaceId: opts.workspaceId,
+                });
+                return { kind: 'staged', ownerId };
+              } catch (e) {
+                console.warn(
+                  `[inbox-wake] stage for ${ownerId} failed: ${e instanceof Error ? e.message : e}`,
+                );
+                return { kind: 'skipped' };
+              }
+            }
           }
           try {
-            await stagePendingWake({
-              ownerId,
+            const res = await emitAwaitedEvent({
+              key,
               summary: opts.summary,
               payload: opts.payload,
               source: opts.source,
               workspaceId: opts.workspaceId,
             });
-            return { kind: 'staged', ownerId };
+            return { kind: 'fired', key, woken: res.woken };
           } catch (e) {
+            // Best-effort: the message already persisted to the inbox; a wake-fan
+            // hiccup degrades to "seen on the recipient's next natural turn".
             console.warn(
-              `[inbox-wake] stage for ${ownerId} failed: ${e instanceof Error ? e.message : e}`,
+              `[inbox-wake] wake fire for ${ownerId} failed: ${e instanceof Error ? e.message : e}`,
             );
-            return { kind: 'skipped' };
+            return { kind: 'fire-failed', key };
           }
-        }
-      }
-      const key = inboxWakeKey(ownerId);
-      try {
-        const res = await emitAwaitedEvent({
-          key,
-          summary: opts.summary,
-          payload: opts.payload,
-          source: opts.source,
-          workspaceId: opts.workspaceId,
-        });
-        return { kind: 'fired', key, woken: res.woken };
-      } catch (e) {
-        // Best-effort: the message already persisted to the inbox; a wake-fan
-        // hiccup degrades to "seen on the recipient's next natural turn".
-        console.warn(
-          `[inbox-wake] wake fire for ${ownerId} failed: ${e instanceof Error ? e.message : e}`,
-        );
-        return { kind: 'fire-failed', key };
-      }
+        },
+        {
+          fallback: null,
+          timeoutMs: COORD_WAKE_TARGET_TIMEOUT_MS,
+          label: `coord:inbox-wake:${ownerId}`,
+        },
+      );
+      if (bounded.reason === 'timeout') return { kind: 'timed-out', ownerId, key };
+      if (bounded.value === null) return { kind: 'fire-failed', key };
+      return bounded.value;
     }),
   );
   const keys: string[] = [];
   let woken = 0;
   let staged = 0;
   const stagedTargets: string[] = [];
+  const timedOutTargets: string[] = [];
   for (const o of outcomes) {
     switch (o.kind) {
       case 'staged':
@@ -281,11 +313,15 @@ export async function wakeRecipients(
       case 'fire-failed':
         keys.push(o.key);
         break;
+      case 'timed-out':
+        keys.push(o.key);
+        timedOutTargets.push(o.ownerId);
+        break;
       case 'skipped':
         break;
     }
   }
-  return { targets, keys, woken, staged, stagedTargets, fanoutCapped };
+  return { targets, keys, woken, staged, stagedTargets, fanoutCapped, timedOutTargets };
 }
 
 /**

@@ -1166,11 +1166,16 @@ async function sendOne(
          *  this as "target unreachable": release the staged wake or flip the target to auto,
          *  per `note`); 'missed' = staged===0 AND woken===0 — the pre-existing miss path
          *  (`recipient_absent`/`recipient_dead`/`recipient_remote`/`recipient_dormant_scheduled`
-         *  already disambiguate further within this case). */
-        wakeOutcome?: 'delivered' | 'partial-staged' | 'staged-manual-mode' | 'missed';
+         *  already disambiguate further within this case); 'unknown' means the local wake
+         *  deadline elapsed before the fire result arrived, so the underlying wake may still
+         *  complete and the sender MUST verify pickup rather than treating it as absent. */
+        wakeOutcome?: 'delivered' | 'partial-staged' | 'staged-manual-mode' | 'missed' | 'unknown';
         /** EI-5957: the ownerIds whose wake STAGED (manual wake-mode) — named so a
          *  leader-steering send surfaces WHO didn't get the directive, alongside `note`. */
         stagedTargets?: string[];
+        /** EI-202273: targets whose wake completion exceeded the local deadline. The durable
+         *  inbox row exists, but the wake result is unknown because the emit may finish late. */
+        timedOutTargets?: string[];
         recipient_absent?: boolean;
         /** WI-574: the subset of missed targets with NO live session watching their inbox-wake key —
          *  genuinely dead (not merely paused), so the inject has no "next turn" to be seen on and the
@@ -1227,6 +1232,7 @@ async function sendOne(
     });
     wake = { mode: wakeMode, targets: fan.targets, woken: fan.woken };
     if (fan.staged > 0) wake.staged = fan.staged;
+    if (fan.timedOutTargets?.length) wake.timedOutTargets = fan.timedOutTargets;
     // EI-19965318428068990: compute the explicit discriminant BEFORE the staged-note /
     // missed-classification branches below — it depends only on the woken/staged/targets
     // counts already known here, and every branch after this point only adds detail, never
@@ -1235,13 +1241,15 @@ async function sendOne(
     // which is not the "missed" case (a genuinely-addressed target that got no wake).
     if (fan.targets.length > 0) {
       wake.wakeOutcome =
-        fan.woken > 0 && fan.staged === 0
-          ? 'delivered'
-          : fan.woken > 0 && fan.staged > 0
-            ? 'partial-staged'
-            : fan.woken === 0 && fan.staged > 0
-              ? 'staged-manual-mode'
-              : 'missed';
+        fan.timedOutTargets?.length
+          ? 'unknown'
+          : fan.woken > 0 && fan.staged === 0
+            ? 'delivered'
+            : fan.woken > 0 && fan.staged > 0
+              ? 'partial-staged'
+              : fan.woken === 0 && fan.staged > 0
+                ? 'staged-manual-mode'
+                : 'missed';
     }
     // EI-5957: a wake that STAGED (target in manual wake-mode) is NOT delivered —
     // the leader-steering failure was a quiet `staged:1` read as success while the
@@ -1253,7 +1261,16 @@ async function sendOne(
       wake.stagedTargets = fan.stagedTargets;
       wake.note = buildStagedWakeNote(fan.stagedTargets);
     }
-    const missed = fan.targets.length > 0 && fan.woken === 0 && fan.staged === 0;
+    if (fan.timedOutTargets?.length) {
+      const targets = fan.timedOutTargets.join(', ');
+      const timeoutNote =
+        `Wake completion timed out for ${targets}; delivery is UNKNOWN because the underlying wake ` +
+        'may still finish after this response. Verify pickup via coord:inbox/coord:read or the ' +
+        'recipient work-item checkpoint before claiming the holder was nudged.';
+      wake.note = wake.note ? `${wake.note} ${timeoutNote}` : timeoutNote;
+    }
+    const missed =
+      fan.targets.length > 0 && fan.woken === 0 && fan.staged === 0 && !fan.timedOutTargets?.length;
     if (missed) {
       // FF#1 — the forcing function: a 'required' miss is ALWAYS loud; an 'optimistic'
       // miss is loud UNLESS the caller consciously declared a durable backstop
@@ -1573,9 +1590,9 @@ async function effectiveFederationScope(
 export default defineTool({
   name: 'coord:send',
   description:
-    'Send coordination messages. Single: {to, summary, expects, body?}; distinct messages: items:[…]. `to` accepts ownerIds, ["*"] for fleet scope, or ["human"]. `expects` is required: ack|answer|action|none. Directed action/answer messages require `forYouBecause` on a body section. `wake` re-invokes sleeping recipients (`required` reports misses; `optimistic` needs `backstop`). Returns per-message {ok, to, msg_id|error} counts.',
+    'Send coordination messages. Single: {to, summary, expects, body?}; `summary` is REQUIRED as the one-line inbox headline, while `body` is optional long-form detail. Distinct messages: items:[…]. `to` accepts ownerIds, ["*"] for fleet scope, or ["human"]. `expects` is required: ack|answer|action|none. Directed action/answer messages require `forYouBecause` on a body section. `wake` re-invokes sleeping recipients (`required` reports misses; `optimistic` needs `backstop`). Returns per-message {ok, to, msg_id|error} counts.',
   guidance: {
-    when: 'Share context or ask. Include `to`, `summary`, and `expects`; use `body` for detail. Directed action/answer messages need `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack, and none are exempt. Use items:[…] for distinct messages. `why` is `{ goalRef, note? }`, never prose. `youMayNotKnow` and `couldNotDetermine` take typed object arrays. wake:\'required\' reports misses; wake:\'optimistic\' needs `backstop`.',
+    when: 'Share context or ask. Include `to`, `summary` (REQUIRED one-line inbox headline), and `expects`; use `body` for optional detail. Directed action/answer messages need `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack, and none are exempt. Use items:[…] for distinct messages. `why` is `{ goalRef, note? }`, never prose. `youMayNotKnow` and `couldNotDetermine` take typed object arrays. wake:\'required\' reports misses; wake:\'optimistic\' needs `backstop`.',
     notWhen: 'Human reply: speak. File lock: locks:acquire. Ambient note: omit wake. One message to many: to:[…]; distinct messages: items:[…]. Work transfer: coord:handoff.',
     seeAlso: [
       'coord:handoff (transfer WORK, not just a message)',

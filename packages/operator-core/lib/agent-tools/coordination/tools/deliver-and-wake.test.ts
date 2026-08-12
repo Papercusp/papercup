@@ -14,6 +14,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { InMemoryCoordLog } from '@papercusp/coordination/event-log';
 import { configureCoordLog, resetCoordLog } from '../log';
+import { COORD_WAKE_TARGET_TIMEOUT_MS } from '../inbox-wake';
 
 // ── Mock the wake pump seam: capture every emit key, do not run the real pump. ──
 /**
@@ -372,6 +373,35 @@ describe('coord:send', () => {
     // P-004: durability is unchanged — recipient_absent alters only the signal,
     // never delivery; the message is still in the durable inbox.
     expect(await log.readLines('messages')).toHaveLength(1);
+  });
+
+  it('EI-202273: a stalled direct wake returns delivery UNKNOWN before the transport timeout', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    try {
+      emitAwaitedEvent.mockImplementationOnce(() => new Promise(() => {}));
+      const pending = coordSend.handler(
+        parse(coordSend, { to: ['su-bee-1'], summary: 'go', expects: 'action', ...ACTION_BODY, wake: 'required' }),
+        ctx,
+      );
+      await vi.advanceTimersByTimeAsync(COORD_WAKE_TARGET_TIMEOUT_MS + 1);
+      const res = await pending;
+      const { wake } = send1(res);
+      expect(wake).toMatchObject({
+        mode: 'required',
+        targets: ['su-bee-1'],
+        woken: 0,
+        wakeOutcome: 'unknown',
+        timedOutTargets: ['su-bee-1'],
+      });
+      expect(wake.recipient_absent).toBeUndefined();
+      expect(wake.note).toMatch(/delivery is UNKNOWN/i);
+      // The timeout only degrades the wake signal; the inbox message remains durable.
+      expect(await log.readLines('messages')).toHaveLength(1);
+    } finally {
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
   });
 
   it("legacy wake:true coerces to 'required' — a clean miss is still recipient_absent (P-003 transition)", async () => {
