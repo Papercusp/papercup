@@ -232,6 +232,130 @@ async function copyIfExists(src: string, dst: string): Promise<boolean> {
   }
 }
 
+const LOCAL_OMP_IMPORT_RE =
+  /\bfrom\s+['"](\.[^'"]+)['"]|\bimport\s+['"](\.[^'"]+)['"]|\bimport\s*\(\s*['"](\.[^'"]+)['"]\s*\)/g;
+
+async function isRegularFile(filePath: string): Promise<boolean> {
+  try {
+    return (await fs.stat(filePath)).isFile();
+  } catch {
+    return false;
+  }
+}
+
+function localOmpImportCandidates(importer: string, specifier: string): string[] {
+  // OMP's TypeScript loader accepts extensionless imports. Keep the check a little
+  // broader so a future hook extraction using an explicit .js/.mjs specifier is
+  // still diagnosed against the source .ts sibling instead of silently passing.
+  const cleanSpecifier = specifier.split(/[?#]/, 1)[0];
+  const raw = path.resolve(path.dirname(importer), cleanSpecifier);
+  const ext = path.extname(raw);
+  const stem = ext ? raw.slice(0, -ext.length) : raw;
+  return [...new Set([
+    raw,
+    `${raw}.ts`,
+    `${stem}.ts`,
+    `${stem}.mts`,
+    `${stem}.tsx`,
+    path.join(raw, 'index.ts'),
+    path.join(stem, 'index.ts'),
+  ])];
+}
+
+/**
+ * Check the files that will be loaded by OMP before the install is reported
+ * healthy. OMP appends a cache-busting query to the error it logs, but the
+ * source import is a normal relative specifier; resolving that specifier here
+ * catches the exact "copied importer, omitted sibling" failure at install time.
+ */
+async function findUnresolvedOmpImports(filePath: string): Promise<string[]> {
+  let source: string;
+  try {
+    source = await fs.readFile(filePath, 'utf8');
+  } catch {
+    return [`${path.basename(filePath)} (file unreadable)`];
+  }
+
+  const unresolved: string[] = [];
+  for (const match of source.matchAll(LOCAL_OMP_IMPORT_RE)) {
+    const specifier = match[1] ?? match[2] ?? match[3];
+    if (!specifier) continue;
+    const candidates = localOmpImportCandidates(filePath, specifier);
+    if (!(await Promise.all(candidates.map(isRegularFile))).some(Boolean)) {
+      unresolved.push(`${path.basename(filePath)} -> ${specifier}`);
+    }
+  }
+  return unresolved;
+}
+
+export interface OmpHookBundleInstallResult {
+  /** Destination-relative files written in this pass. */
+  installed: string[];
+  /** Destination-relative importer → missing relative module diagnostics. */
+  unresolved: string[];
+}
+
+/**
+ * Install an OMP TypeScript hook together with every sibling `.ts` artifact.
+ *
+ * The OMP runner loads these files independently from the esbuild bundle, so a
+ * new relative import must travel with the importer. Direct siblings are used
+ * deliberately (rather than naming today's `non-preempting-delivery.ts`) so a
+ * future extraction cannot recreate the same partial-install class. `entryFile`
+ * may be renamed at the destination (`coord-hook.ts` → `papercusp-coord.ts`).
+ * `__tests__` is a directory and is therefore never copied.
+ *
+ * The post-copy import check is an out-of-band detector: a broken OMP extension
+ * cannot report its own death through coord, so the installer emits a stable,
+ * grep-able error before the next session starts.
+ */
+export async function installOmpHookBundle(opts: {
+  sourceDir: string;
+  entryFile: string;
+  destinationDir: string;
+  destinationEntry?: string;
+}): Promise<OmpHookBundleInstallResult> {
+  const destinationEntry = opts.destinationEntry ?? opts.entryFile;
+  let entries: import('node:fs').Dirent[];
+  try {
+    entries = await fs.readdir(opts.sourceDir, { withFileTypes: true });
+  } catch (e) {
+    if ((e as NodeJS.ErrnoException).code === 'ENOENT') {
+      return { installed: [], unresolved: [] };
+    }
+    throw e;
+  }
+
+  const sourceFiles = entries
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.ts'))
+    .map((entry) => entry.name)
+    .sort();
+  if (!sourceFiles.includes(opts.entryFile)) {
+    return { installed: [], unresolved: [] };
+  }
+
+  await fs.mkdir(opts.destinationDir, { recursive: true, mode: 0o755 });
+  const installed: string[] = [];
+  for (const file of sourceFiles) {
+    const destinationName = file === opts.entryFile ? destinationEntry : file;
+    if (await copyIfExists(path.join(opts.sourceDir, file), path.join(opts.destinationDir, destinationName))) {
+      installed.push(destinationName);
+    }
+  }
+
+  const unresolved: string[] = [];
+  for (const file of installed) {
+    unresolved.push(...(await findUnresolvedOmpImports(path.join(opts.destinationDir, file))));
+  }
+  if (unresolved.length > 0) {
+    console.error(
+      `[desktop-install] OMP hook bundle load check FAILED in ${opts.destinationDir}: ` +
+        unresolved.join('; '),
+    );
+  }
+  return { installed, unresolved };
+}
+
 /** Read the per-agent tooling overlay (`papercusp-su.<agent>.md`) beside
  *  the base playbook; missing → '' (the marker is still removed, never
  *  shipped literally). One reader for every client (omp/claude/codex) so
@@ -958,17 +1082,19 @@ export async function installInjectionHooks(home: string, injectSrcDir: string):
   //      the kind of false negative the P-005 coverage detector must not be fed.
   try {
     const ompDest = path.join(home, '.papercusp', 'hooks', 'omp');
-    await fs.mkdir(ompDest, { recursive: true, mode: 0o755 });
-    const ompDst = path.join(ompDest, 'inject-hook.ts');
-    const ompTmp = `${ompDst}.psu-install.${process.pid}.tmp`;
-    await fs.writeFile(ompTmp, await fs.readFile(ompHookSrc), { mode: 0o644 });
-    await fs.rename(ompTmp, ompDst);
-    installed.push(path.join('omp', 'inject-hook.ts'));
-    await writeInstallStamp(ompDest, {
+    const ompBundle = await installOmpHookBundle({
       sourceDir: path.dirname(ompHookSrc),
-      ...stampBase,
-      files: ['inject-hook.ts'],
+      entryFile: path.basename(ompHookSrc),
+      destinationDir: ompDest,
     });
+    installed.push(...ompBundle.installed.map((file) => path.join('omp', file)));
+    if (ompBundle.installed.length > 0) {
+      await writeInstallStamp(ompDest, {
+        sourceDir: path.dirname(ompHookSrc),
+        ...stampBase,
+        files: ompBundle.installed,
+      });
+    }
   } catch {
     // omp hook absent/unreadable — claude + codex injection are unaffected.
   }
@@ -2423,10 +2549,19 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
   const agentId = await ensureSecret(paths.agentIdPath, mintAgentId);
 
   // Playbook: splice the OMP overlay at the marker (NOT a raw copy —
-  // the marker-model base is incomplete on its own). Extension: raw
-  // copy (coord-hook.ts has no overlay).
+  // the marker-model base is incomplete on its own). Install the coord
+  // extension as a complete OMP sibling bundle: its destination is renamed,
+  // but its relative modules must land beside that renamed entrypoint.
   const playbookWritten = playbookSource ? await writeSplicedPlaybook(playbookSource, paths.playbookPath) : false;
-  const extensionWritten = extensionSource ? await copyIfExists(extensionSource, paths.extensionPath) : false;
+  const extensionBundle = extensionSource
+    ? await installOmpHookBundle({
+        sourceDir: path.dirname(extensionSource),
+        entryFile: path.basename(extensionSource),
+        destinationDir: paths.papercuspDir,
+        destinationEntry: path.basename(paths.extensionPath),
+      })
+    : { installed: [] as string[], unresolved: [] as string[] };
+  const extensionWritten = extensionBundle.installed.includes(path.basename(paths.extensionPath));
 
   // Claude/Codex CC hooks + fleet statusline (EI-8191): install the hooks to
   // ~/.papercusp/hooks/cc/ and merge them into ~/.claude/settings.json — the packaged

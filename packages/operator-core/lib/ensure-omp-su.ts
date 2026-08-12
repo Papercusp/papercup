@@ -20,9 +20,9 @@
  * Idempotent. Safe to re-run. Logs to stderr; never throws.
  */
 
-import { existsSync, mkdirSync, copyFileSync, chmodSync, statSync, renameSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { join, dirname, delimiter } from 'node:path';
+import { join, dirname, basename, delimiter } from 'node:path';
 import { execFile } from 'node:child_process';
 
 function dlog(msg: string): void {
@@ -187,38 +187,6 @@ export function resolveSourceDir(): string | null {
   return null;
 }
 
-function ensureFileCopy(srcPath: string, destPath: string, mode = 0o644): boolean {
-  try {
-    if (existsSync(destPath)) {
-      // Skip if dest mtime >= src mtime — don't overwrite a user's
-      // post-install local edits.
-      try {
-        const srcStat = statSync(srcPath);
-        const destStat = statSync(destPath);
-        if (destStat.mtimeMs >= srcStat.mtimeMs) return false;
-      } catch { /* fall through to copy */ }
-    }
-    mkdirSync(dirname(destPath), { recursive: true });
-    // EI-18755593630003816: copy to a same-directory temp file then rename() into
-    // place, NOT a direct in-place copyFileSync. This is the OMP-side sibling of the
-    // Claude-hooks installer's install path (installClaudeHooks in
-    // desktop-install/papercusp-files.ts) — the same box, the same shared `home`, the
-    // same "this helper re-runs on every session bootstrap while a concurrent
-    // process may be reading the destination file right now" hazard. A plain
-    // copyFileSync truncates-then-writes destPath in place, so a concurrent reader
-    // (e.g. an OMP hook loading papercusp-coord.ts mid-write) can observe a torn/
-    // truncated file. rename(2) is atomic on the same filesystem.
-    const tmpPath = `${destPath}.ensure-omp-su.${process.pid}.tmp`;
-    copyFileSync(srcPath, tmpPath);
-    chmodSync(tmpPath, mode);
-    renameSync(tmpPath, destPath);
-    return true;
-  } catch (e) {
-    dlog(`copy ${srcPath} → ${destPath} failed: ${(e as Error).message}`);
-    return false;
-  }
-}
-
 // (ensureWrapperScript removed — omp-su wrapper retired, P-050.)
 
 async function ensurePapercuspBootstrap(): Promise<void> {
@@ -304,8 +272,19 @@ export async function ensureOmpSuInstalled(): Promise<void> {
     const coordSrc = join(sourceDir, 'scripts', 'hooks', 'omp', 'coord-hook.ts');
 
     if (existsSync(coordSrc)) {
-      if (ensureFileCopy(coordSrc, coordDest)) {
-        dlog(`installed coord extension → ${coordDest}`);
+      // coord-hook.ts is renamed at install time, so its relative OMP modules
+      // must be copied beside the renamed destination too. Reuse the same
+      // sibling-bundle installer as the desktop path; naming only today's
+      // non-preempting-delivery.ts would regress on the next extraction.
+      const { installOmpHookBundle } = await import('./desktop-install/papercusp-files');
+      const bundle = await installOmpHookBundle({
+        sourceDir: dirname(coordSrc),
+        entryFile: 'coord-hook.ts',
+        destinationDir: dirname(coordDest),
+        destinationEntry: basename(coordDest),
+      });
+      if (bundle.installed.length > 0) {
+        dlog(`installed coord extension bundle → ${coordDest} (${bundle.installed.join(', ')})`);
       }
     } else {
       dlog(`coord extension source missing at ${coordSrc}; skipping`);
