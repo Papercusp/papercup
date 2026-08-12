@@ -216,6 +216,11 @@ export default defineTool({
     ],
   },
   capability: 'coord:write',
+  // EI-20223628286146305: capture awaits dedup, persistence, tagging and optional
+  // provenance work of its own. Holding the dispatcher's ambient workspace
+  // transaction across those awaits pins an org-app pool slot and can starve the
+  // very friction-capture path meant to report pool pressure.
+  skipWorkspaceTx: true,
   requirePrincipal: false,
   // `scanner` (the scan launch blueprint's role, unify-agent-launches D-005):
   // capturing findings into the self-improvement backlog IS its output

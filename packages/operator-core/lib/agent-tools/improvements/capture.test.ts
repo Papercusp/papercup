@@ -61,6 +61,10 @@ describe('improvements:capture tool envelope', () => {
     >);
   });
 
+  it('opts out of the ambient workspace transaction while awaiting capture work (EI-20223628286146305)', () => {
+    expect((captureTool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+
   it('maps an omp-hook-session caller to source="su"', async () => {
     mockIdentity.mockReturnValue(identity('omp-hook-session', 'su-abc'));
     await callTool({ title: 'flaky lock hook', kind: 'bug' });
