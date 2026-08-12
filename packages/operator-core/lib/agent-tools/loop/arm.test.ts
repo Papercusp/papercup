@@ -621,6 +621,7 @@ describe('loop:arm headless carry default (B, through the handler)', () => {
 const priorLoop = (over: Partial<Parameters<typeof computeLoopOverwriteNote>[0] & object> = {}) => ({
   active: true,
   intervalSec: 1200,
+  harnessSlug: null,
   kickoff: 'You are continuing your OWN warm session toward: watch WI-5672 for the next live-fed-gate fire',
   fireCount: 48,
   carry: 'cold' as const,
