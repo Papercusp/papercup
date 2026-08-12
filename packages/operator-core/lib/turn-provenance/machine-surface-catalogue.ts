@@ -233,7 +233,12 @@ export const CLASSIFY_HEAD_CHARS = 240;
 // plan exists to prevent. The bump makes them findable
 // (`WHERE turn_origin_classifier_version < CURRENT`) so the scheduled
 // turn-provenance-backfill sweep re-derives them and the owner's words come back.
-export const MACHINE_SURFACE_CATALOGUE_VERSION = 4;
+// 4 → 5 (WI-38265): file-backed CLI rows whose text only reaches the
+// owner-typed residual are now persisted as explicit `unenrolled-origin`
+// uncertainty at ingest. Bump the shared stamp version so existing rows are
+// re-derived through the same ingest path rather than retaining the old false
+// owner assertion forever.
+export const MACHINE_SURFACE_CATALOGUE_VERSION = 5;
 
 /** Does this turn's head carry a CLI/subsystem synthetic-command wrapper? */
 export function hasSyntheticMarker(text: string): boolean {

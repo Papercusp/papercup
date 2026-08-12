@@ -863,6 +863,24 @@ interface TurnRow {
   turn_origin_classifier_version?: number | null;
 }
 
+/**
+ * A file-backed CLI row without an enrollment envelope has no trustworthy
+ * authorship signal.  Keep that uncertainty explicit in the persisted
+ * verdict instead of allowing `owner-typed` (the catalogue's residual) to
+ * assert that the owner wrote it.
+ *
+ * This is intentionally an ingest-only verdict.  `classifyRecordedTurn`
+ * remains the shared text classifier used by owner-facing surfaces, where
+ * known machine markers still have a useful, bounded display decision.
+ */
+export const UNENROLLED_ORIGIN_VERDICT = 'unenrolled-origin';
+
+const FILE_BACKED_SOURCE_KINDS = new Set<SourceKind>(['claude', 'omp', 'codex']);
+
+function isUnenrolledFileRow(row: Pick<TurnRow, 'source_kind' | 'speaker'>): boolean {
+  return row.speaker === 'user' && FILE_BACKED_SOURCE_KINDS.has(row.source_kind as SourceKind);
+}
+
 async function listCandidateFiles(
   adapter: FileAdapter,
   sinceMs: number,
@@ -1123,6 +1141,16 @@ export function stampTurnProvenance(row: TurnRow): void {
   // their own CLASSIFY_HEAD_CHARS bound, so passing the full text cannot widen
   // the match onto an owner's mid-body quote of an envelope.
   const { verdict, origin } = classifyRecordedTurn(row.text);
+  // Native CLI file surfaces cannot enroll their own user rows.  A clean row
+  // therefore proves neither owner authorship nor machine authorship: the
+  // classifier's owner-typed residual is an unsafe database assertion here.
+  // Preserve explicit envelope and catalogue verdicts, which have their own
+  // authored/curated evidence, and make only the residual honest uncertainty.
+  if (isUnenrolledFileRow(row) && verdict === 'owner-typed') {
+    row.turn_origin = null;
+    row.turn_origin_verdict = UNENROLLED_ORIGIN_VERDICT;
+    return;
+  }
   row.turn_origin = origin;
   row.turn_origin_verdict = verdict;
 }
@@ -1373,6 +1401,7 @@ export async function backfillTurnProvenanceOnce(
     // Reuse the ONE stamp path rather than re-deriving the rules here — a
     // second copy of this logic is how the four divergent classifiers arose.
     const staged = {
+      source_kind: r.source_kind,
       speaker: r.speaker,
       text: r.head ?? '',
     } as TurnRow;

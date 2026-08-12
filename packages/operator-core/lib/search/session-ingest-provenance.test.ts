@@ -10,7 +10,7 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { stampTurnProvenance } from './session-ingest';
+import { stampTurnProvenance, UNENROLLED_ORIGIN_VERDICT } from './session-ingest';
 import { MACHINE_SURFACE_CATALOGUE_VERSION } from '../turn-provenance/machine-surface-catalogue';
 import { classifyRecordedTurn } from '../turn-provenance/turn-ref';
 
@@ -74,11 +74,34 @@ describe('stampTurnProvenance', () => {
     expect(r.turn_origin).toBeNull();
   });
 
-  it('stamps a genuinely clean owner turn owner-typed', () => {
-    const r = row({ text: 'launch our windows vm please' });
+  it('stamps an agent_chat owner turn owner-typed', () => {
+    const r = row({ source_kind: 'agent_chat', text: 'launch our windows vm please' });
     stampTurnProvenance(r);
     expect(r.turn_origin_verdict).toBe('owner-typed');
     expect(r.turn_origin).toBeNull();
+  });
+
+  it.each(['claude', 'omp', 'codex'])('does not assert owner authorship for an unenrolled %s row', (source_kind) => {
+    const r = row({ text: 'launch our windows vm please' });
+    r.source_kind = source_kind;
+    stampTurnProvenance(r);
+    expect(r.turn_origin_verdict).toBe(UNENROLLED_ORIGIN_VERDICT);
+    expect(r.turn_origin).toBeNull();
+  });
+
+  it('keeps the bare native-CLI machine/owner ambiguity explicit instead of using the residual', () => {
+    const machine = row({ source_kind: 'claude', text: 'Continue from where you left off.' });
+    const owner = row({ source_kind: 'claude', text: 'continue from where you left off.' });
+    stampTurnProvenance(machine);
+    stampTurnProvenance(owner);
+    expect(machine.turn_origin_verdict).toBe(UNENROLLED_ORIGIN_VERDICT);
+    expect(owner.turn_origin_verdict).toBe(UNENROLLED_ORIGIN_VERDICT);
+  });
+
+  it('still classifies a known un-enrollable machine marker for display consumers', () => {
+    const r = row({ source_kind: 'claude', text: '[Request interrupted by user]' });
+    stampTurnProvenance(r);
+    expect(r.turn_origin_verdict).toBe('machine-surface');
   });
 
   /**
