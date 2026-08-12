@@ -40,11 +40,16 @@
  * ── These are HEURISTICS; the bound is what makes them safe ──────────────────
  *
  * Adopted from `memory/human-turn-tail.ts`, which learned it expensively:
- * *the filters are heuristics, the cap is arithmetic.* Every pattern here is
+ * *the filters are heuristics, the cap is arithmetic.* Most patterns here are
  * HEAD-ANCHORED and tested against a bounded head, so an owner QUOTING one of
- * these shapes mid-sentence keeps their turn. That asymmetry is deliberate and
- * is the only direction that is safe: showing one machine row too many is
- * recoverable, hiding something the human actually wrote is not.
+ * these shapes mid-sentence keeps their turn. Three deliberate exceptions are
+ * unanchored: the bracketed SYSTEM NOTIFICATION shape is self-identifying; the
+ * self-compaction marker follows the `/compact ` wrapper; and the compaction UI
+ * status line is captured after a leading quote/newline. The census-backed
+ * exception set is machine-checked in `machine-surface-catalogue.test.ts`.
+ * That asymmetry is deliberate and is the only direction that is safe: showing
+ * one machine row too many is recoverable, hiding something the human actually
+ * wrote is not.
  *
  * Add only heads a human demonstrably never types, and ENUMERATE the population
  * first (a `GROUP BY` on the head) rather than testing a guess — an earlier

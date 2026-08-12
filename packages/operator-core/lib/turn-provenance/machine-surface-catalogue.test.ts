@@ -28,6 +28,31 @@ import {
   isUnenrolledMachineSurface,
 } from './machine-surface-catalogue';
 
+const regexKey = (re: RegExp): string => `${re.source}/${re.flags}`;
+
+/**
+ * Census-backed exceptions to the catalogue's head-anchor invariant.
+ *
+ * Keep this set explicit and keyed by the actual regex source + flags. A new
+ * unanchored pattern must carry a written reason here, and a removed pattern
+ * must remove its exception, so the safety tradeoff cannot hide in a broad
+ * "self-identifying" heuristic.
+ */
+const UNANCHORED_PATTERN_EXCEPTIONS = new Map<string, string>([
+  [
+    '\\[\\s*SYSTEM NOTIFICATION\\b[^\\]]*\\bNOT USER INPUT\\b[^\\]]*\\]/i',
+    'The bracketed NOT USER INPUT delimiters self-identify the CLI banner; the frozen corpus census found zero matches, and the shape stays aligned with the live classifier.',
+  ],
+  [
+    '⟦\\s*machine-issued self-compaction/i',
+    'The CLI places this marker after the /compact wrapper; anchoring it would miss the real machine-issued continuation rows.',
+  ],
+  [
+    '✻\\s*Conversation compacted|●\\s*Compaction is queued/i',
+    'The compaction UI captures this status after a leading quote/newline; anchoring it would miss the observed machine row.',
+  ],
+]);
+
 describe('machine-surface catalogue — predicates', () => {
   it('HIDES the CLI compaction preamble (the largest single un-enrolled shape)', () => {
     expect(
@@ -44,6 +69,18 @@ describe('machine-surface catalogue — predicates', () => {
   it('HIDES a synthetic slash-command wrapper', () => {
     expect(isUnenrolledMachineSurface('<command-name>compact</command-name>')).toBe(true);
     expect(hasSyntheticMarker('<local-command-stdout>ok</local-command-stdout>')).toBe(true);
+  });
+
+  it('recognizes every synthetic marker, including tags after a command wrapper', () => {
+    const examples: ReadonlyArray<readonly [string, string]> = [
+      ['local-command-caveat', '<local-command-caveat>Do not echo this</local-command-caveat>'],
+      ['local-command-stdout', '<local-command-stdout>ok</local-command-stdout>'],
+      ['command-name', '<command-message>statusline</command-message>\n<command-name>/statusline</command-name>'],
+      ['command-message', '<command-message>compact</command-message>'],
+    ];
+    for (const [label, text] of examples) {
+      expect(hasSyntheticMarker(text), `${label} marker was not recognized`).toBe(true);
+    }
   });
 
   /* ── V-002 / D-015: the codex launch prompt. ─────────────────────────────
@@ -163,14 +200,29 @@ describe('machine-surface catalogue — predicates', () => {
     );
   });
 
-  it('every pattern is anchored or self-identifying — no bare substring rules', () => {
-    // A pattern with neither a head anchor nor a distinctive delimiter would match
-    // an owner's prose anywhere in the head. Each entry must carry one or the other.
+  it('every pattern is head-anchored or has an explicit census-backed exception', () => {
+    // Head anchoring is the safe default: an owner quoting a machine shape
+    // later in the bounded head keeps their turn. Intentional exceptions must
+    // be named with a written reason, not admitted by a broad self-identifying
+    // heuristic that silently blesses future unanchored additions.
     for (const re of MACHINE_SURFACE_PATTERNS) {
-      const src = re.source;
-      const anchored = src.startsWith('^');
-      const selfIdentifying = /[⟦✻●\[<]/.test(src);
-      expect(anchored || selfIdentifying, `unanchored pattern: ${src}`).toBe(true);
+      const anchored = re.source.startsWith('^');
+      const reason = UNANCHORED_PATTERN_EXCEPTIONS.get(regexKey(re));
+      expect(
+        anchored || reason,
+        `unanchored pattern lacks an explicit exception: ${regexKey(re)}`,
+      ).toBeTruthy();
+      if (!anchored) expect(reason?.trim()).not.toBe('');
+    }
+
+    // The exception set is shrink-only and cannot become stale or silently
+    // bless a different regex after a catalogue edit.
+    for (const [key, reason] of UNANCHORED_PATTERN_EXCEPTIONS) {
+      expect(
+        MACHINE_SURFACE_PATTERNS.some((re) => regexKey(re) === key),
+        `stale unanchored-pattern exception: ${key}`,
+      ).toBe(true);
+      expect(reason.trim(), `empty reason for unanchored pattern: ${key}`).not.toBe('');
     }
     // Synthetic markers are substring-matched, so each must be a tag, not a word.
     for (const m of SYNTHETIC_MARKERS) expect(m.startsWith('<')).toBe(true);
