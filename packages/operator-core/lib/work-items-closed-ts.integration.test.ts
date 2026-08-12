@@ -80,6 +80,13 @@ const WS = 'ws-closed-ts';
  */
 const BASE_DDL = `
   CREATE TABLE harness_shared.work_items (
+    -- WI-38326: FEATURE_COLS projects these five claim-spec filter columns; a fixture
+    -- missing them fails that projection with "column does not exist" (D-014 debt).
+    tags jsonb,
+    source_plan_slug text,
+    source_plan_item_ids text[],
+    redundancy integer,
+    expected_cost_cents bigint,
     workspace_id            text   NOT NULL,
     feature_id              text   NOT NULL,
     item_kind               text   NOT NULL,
