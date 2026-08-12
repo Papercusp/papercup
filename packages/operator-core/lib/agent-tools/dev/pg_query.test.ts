@@ -36,6 +36,10 @@ beforeEach(() => {
 });
 
 describe('dev:pg_query — P-005 guard wiring', () => {
+  it('does not retain an ambient workspace transaction while using the admin read pool', () => {
+    expect((pgQueryTool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+
   it('refuses an unscoped tenant read before executing it', async () => {
     advisoryMock.mockResolvedValue('⚠ tenant scope: …');
     const res = await pgQueryTool.handler(

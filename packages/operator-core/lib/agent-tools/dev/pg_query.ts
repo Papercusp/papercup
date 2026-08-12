@@ -90,6 +90,11 @@ export default defineTool({
     ],
   },
   requirePrincipal: false,
+  // EI-20234305706295524: pgReadQuery uses its own admin-pool transaction and
+  // does not read ctx.tx. Retaining the ambient workspace transaction here
+  // consumes an app-pool slot while the independent read waits on the pool,
+  // so concurrent dev:pg_query calls can deadlock behind withWorkspace.
+  skipWorkspaceTx: true,
   agentRoles: ['operator', 'architect', 'debugger', 'cup', 'mug', 'scoper', 'reviewer', 'validator', 'worker'],
   args: z.object({
     sql: z
