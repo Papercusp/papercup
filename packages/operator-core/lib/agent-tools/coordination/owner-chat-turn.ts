@@ -70,6 +70,10 @@
  * an import of anything that is NOT such a leaf breaks this module's contract.
  */
 
+import {
+  ENVELOPE_RE as ENVELOPE_GRAMMAR_RE,
+  ENVELOPE_STRIP_RE,
+} from '../../turn-provenance/envelope-grammar';
 import { isUnenrolledMachineSurface } from '../../turn-provenance/machine-surface-catalogue';
 
 /** Payload flag `wakeTurnText` reads to choose the owner-chat turn shape.
@@ -176,13 +180,16 @@ export function ownerChatTurnText(ownerText: string): string {
   return `${ownerText.trim()}\n\n${OWNER_CHAT_TURN_NOTE}`;
 }
 
-/** Matches the canonical turn-origin envelope prefix.
+/** Matches the canonical turn-origin envelope prefix, plus the trailing newline
+ *  so stripping it does not leave a blank first line.
  *
- *  A LOCKSTEP MIRROR of `ENVELOPE_RE` in `../../turn-provenance/turn-provenance.ts`
- *  (which also mirrors it into `userpromptsubmit-provenance.sh`) — kept here
- *  rather than imported because that module is not a leaf and this one must stay
- *  import-free to cross the client seam. Change them together. */
-const TURN_ORIGIN_ENVELOPE_RE = /^\s*⟦turn-origin:[A-Za-z0-9:._@-]+ nonce:[a-f0-9]{8,64}⟧[ \t]*\r?\n?/;
+ *  Was a hand-retyped LOCKSTEP MIRROR of `ENVELOPE_RE`, on the stated grounds
+ *  that `turn-provenance.ts` is not a leaf and this module must stay import-light
+ *  to cross the client seam. Both halves of that were true; the CONCLUSION was
+ *  not. The grammar now lives in `../../turn-provenance/envelope-grammar`, a
+ *  true zero-import leaf — the same shape as `machine-surface-catalogue`, which
+ *  this module already imports — so the seam is preserved AND the copy is gone. */
+const TURN_ORIGIN_ENVELOPE_RE = ENVELOPE_STRIP_RE;
 
 /**
  * Strip papercusp's machine annotations from a transcript user turn for DISPLAY.
@@ -223,8 +230,9 @@ export function stripMachineTurnAnnotations(text: string): string {
  */
 export const OWNER_CHAT_TURN_ORIGIN = 'coord-inject:owner';
 
-/** Same envelope as TURN_ORIGIN_ENVELOPE_RE, but CAPTURING the origin. */
-const TURN_ORIGIN_CAPTURE_RE = /^\s*⟦turn-origin:([A-Za-z0-9:._@-]+) nonce:[a-f0-9]{8,64}⟧/;
+/** Same envelope as TURN_ORIGIN_ENVELOPE_RE, but CAPTURING: `[1]` origin, `[2]` nonce.
+ *  (The canonical grammar always captures both; this site reads only the origin.) */
+const TURN_ORIGIN_CAPTURE_RE = ENVELOPE_GRAMMAR_RE;
 
 /** A Stop-hook coaching block: written BY the harness TO the agent, recorded as a
  *  `user`-role turn purely because that is the injection channel. */

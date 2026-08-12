@@ -47,6 +47,10 @@ import {
 } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import {
+  ENVELOPE_RE as ENVELOPE_GRAMMAR_RE,
+  formatEnvelope as formatEnvelopeGrammar,
+} from './envelope-grammar';
 
 /** Default on-disk ledger dir. Every fs helper takes an explicit `dir` for tests. */
 export const TURN_PROVENANCE_DIR = join(homedir(), '.papercusp', 'turn-provenance');
@@ -116,13 +120,17 @@ export function mintNonce(): string {
 }
 
 export function formatEnvelope(origin: TurnOrigin | string, nonce: string): string {
-  return `⟦turn-origin:${origin} nonce:${nonce}⟧`;
+  return formatEnvelopeGrammar(origin, nonce);
 }
 
 /** The envelope must sit at the very start of the turn (leading whitespace
  *  tolerated — TUIs pad). An envelope mid-text is NOT an envelope: it is
- *  quoted/relayed content and must not classify the turn. */
-const ENVELOPE_RE = /^\s*⟦turn-origin:([A-Za-z0-9:._@-]+) nonce:([a-f0-9]{8,64})⟧/;
+ *  quoted/relayed content and must not classify the turn.
+ *
+ *  The grammar itself lives in the zero-import leaf `./envelope-grammar`,
+ *  because two of its six sites are a `.mjs` launcher and a python-in-shell
+ *  hook that can never import it — see that module's header. */
+const ENVELOPE_RE = ENVELOPE_GRAMMAR_RE;
 
 export interface ParsedEnvelope {
   origin: string;

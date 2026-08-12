@@ -14,7 +14,11 @@
  */
 
 import { readAckedMsgIds, readInvolvingOwner } from './agent-tools/coordination/messages';
-import { ownerVisiblePromptText } from './agent-tools/coordination/owner-chat-turn';
+import {
+  ownerVisiblePromptText,
+  OWNER_CHAT_TURN_ORIGIN,
+} from './agent-tools/coordination/owner-chat-turn';
+import { envelopePatternSql } from './turn-provenance/envelope-grammar';
 import { readWatermark, pickUnreadCursor } from './agent-tools/coordination/watermarks';
 import { lastInboxReadAtBatch } from './agent-tools/coordination/inbox-read-freshness';
 import { listHandoffs, type HandoffWithAcceptance } from './agent-tools/coordination/handoffs';
@@ -1962,8 +1966,8 @@ export async function resolvePushedRefTitles(
            ORDER BY session_id,
              CASE
                WHEN text IS NULL OR btrim(text) = '' THEN 1
-               WHEN text ~ '^[[:space:]]*⟦turn-origin:coord-inject:owner nonce:[a-f0-9]{8,64}⟧' THEN 0
-               WHEN text ~ '^[[:space:]]*⟦turn-origin:[A-Za-z0-9:._@-]+ nonce:[a-f0-9]{8,64}⟧' THEN 1
+               WHEN text ~ ${envelopePatternSql(OWNER_CHAT_TURN_ORIGIN)} THEN 0
+               WHEN text ~ ${envelopePatternSql()} THEN 1
                WHEN btrim(text) LIKE 'Stop hook feedback:%' THEN 1
                ELSE 0
              END,
