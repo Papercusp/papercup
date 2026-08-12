@@ -18,15 +18,15 @@
  * whole time: `last_released_by`, `last_released_at`, `attempts`, `worked_by_history`.
  *
  * This module is deliberately READ-ONLY presentation of columns we already store — no new state,
- * no new writes. It is the read-side half of D-001: P-002/P-003 make a checkpoint more LIKELY to
- * exist, this makes prior work visible even when one does not (a hard kill, an OOM, a crash — the
- * causes the platform cannot control).
+ * no new writes. Migration 806 records local claim/release transitions in the shared base table,
+ * so the read-side half of D-001 can also report prior workers. P-002/P-003 make a checkpoint
+ * more LIKELY to exist, this makes prior work visible even when one does not (a hard kill, an OOM,
+ * a crash — the causes the platform cannot control).
  *
- * FAMILY NOTE: only FEATURE-family rows carry release/attempt history. `harness_shared.engineer_issues`
- * has no `attempts` / `claims` / `last_released_by` / `last_released_at` / `worked_by_history` columns
- * at all, so an issue-family item simply yields `null` here. That is correct, not a gap to paper over:
- * there is no history to report. Querying the `work_items` UNION view covers both families in one
- * round-trip, with issue rows returning NULLs that fall through the no-signal check below.
+ * FAMILY NOTE: both feature- and issue-family rows now live in the shared `work_items` base table
+ * with local release/history columns. The compatibility `engineer_issues` view omits those columns,
+ * so this helper intentionally queries the base table rather than that view. Legacy rows may still
+ * have an empty history; release provenance remains an independent fallback signal.
  */
 import { getOrgPg } from '@papercusp/db-org';
 import { resolveConcreteWorkspaceId } from './workspace-registry';
