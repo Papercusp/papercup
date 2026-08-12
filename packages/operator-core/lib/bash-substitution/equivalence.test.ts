@@ -145,7 +145,12 @@ describe.each(ALL_PAIRS)('pair $id', (pair) => {
     it('still carries real corpus commands, however few', () => {
       expect(fixture.sample.length).toBeGreaterThan(0);
       for (const entry of fixture.sample) {
-        expect(entry.sid).toMatch(/^su-|^[0-9a-f-]{8,}/);
+        // `s-<epoch>-<hex>` joins `su-…` and the bare uuid as a THIRD real shape:
+      // the SQL corpus reads its sid from `tool_invocations.coord_owner_id`,
+      // which carries that form for a non-psu principal. Widened rather than
+      // dropping the sample — the assertion is "a real corpus id, not a
+      // hand-written example", and this is a real corpus id.
+      expect(entry.sid).toMatch(/^su?-|^[0-9a-f-]{8,}/);
       }
     });
 
@@ -172,7 +177,12 @@ describe.each(ALL_PAIRS)('pair $id', (pair) => {
     // Every sampled command must be a real one drawn from the corpus, not a
     // hand-written example that happens to pass.
     for (const entry of fixture.sample) {
-      expect(entry.sid).toMatch(/^su-|^[0-9a-f-]{8,}/);
+      // `s-<epoch>-<hex>` joins `su-…` and the bare uuid as a THIRD real shape:
+      // the SQL corpus reads its sid from `tool_invocations.coord_owner_id`,
+      // which carries that form for a non-psu principal. Widened rather than
+      // dropping the sample — the assertion is "a real corpus id, not a
+      // hand-written example", and this is a real corpus id.
+      expect(entry.sid).toMatch(/^su?-|^[0-9a-f-]{8,}/);
     }
   });
 
