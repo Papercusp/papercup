@@ -1,0 +1,34 @@
+import { describe, it, expect } from 'vitest';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
+/**
+ * WIRING GUARD for the `hasArchive` enrichment key (WI-38236).
+ *
+ * The bug this pins was not a wrong ALGORITHM — it was one extra, plausible-looking
+ * ARGUMENT at a single call site. `/adv/sessions/resumable` read archive stamps with
+ * `readStamp(s.agent, s.sessionId, s.workspaceId)`, passing 'papercusp-workspace',
+ * while archive-at-death writes every row under WS_DEFAULT ('default' — measured
+ * 2026-08-12: 17,147 rows, 100% 'default'). The lookup therefore matched nothing and
+ * `hasArchive` came back false for EVERY archived session (live :3070: 29 claude/codex
+ * rows, 0 flagged), so the psu picker hid every off-disk session as an unresumable
+ * "ghost" — the exact 2026-07-13 owner bug the enrichment exists to prevent.
+ *
+ * That is the dangerous shape: an enrichment that is 100% inert still returns a
+ * well-formed response, so nothing fails and no one notices for a month. The
+ * behavioural key symmetry is pinned in session-archive.test.ts
+ * ("archive workspace key — the WRITER and every READER must agree"); this guard
+ * pins the CALL SITE, because a correct store is worthless if the caller re-adds
+ * the argument.
+ */
+describe('adv/sessions resumable — hasArchive must read the stamp with the writer\'s key', () => {
+  const src = readFileSync(join(__dirname, 'sessions.ts'), 'utf8');
+
+  it('reads the stamp WITHOUT a workspace argument (defaults to WS_DEFAULT, as the writer writes)', () => {
+    expect(src).toContain('await store.readStamp(s.agent, s.sessionId)');
+  });
+
+  it('never passes a workspace slug to readStamp — that matches nothing and silently voids hasArchive', () => {
+    expect(src).not.toMatch(/readStamp\([^)]*workspaceId/);
+  });
+});

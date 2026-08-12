@@ -66,6 +66,40 @@ class MemStore implements SessionArchiveStore {
   }
 }
 
+/**
+ * A store that keys stamps by (workspace, kind, id) EXACTLY as Postgres does
+ * (`WHERE workspace_id = $1 AND source_kind = $2 AND session_id = $3`).
+ *
+ * `MemStore` above deliberately IGNORES the workspace argument — which is
+ * precisely why the WI-38236 key mismatch survived every unit test: a double
+ * that ignores a key cannot detect a caller passing the wrong one. Any test
+ * about WHICH workspace key a caller uses must run against this store.
+ */
+class WorkspaceKeyedStore implements SessionArchiveStore {
+  files = new Map<string, ArchiveFileRow>();
+  stamps = new Map<string, ArchiveStampRow>();
+
+  async upsertArchive(files: ArchiveFileRow[], stamp: ArchiveStampRow): Promise<void> {
+    for (const f of files) {
+      this.files.set(`${f.workspace_id}:${f.source_kind}:${f.session_id}:${f.relpath}`, f);
+    }
+    this.stamps.set(`${stamp.workspace_id}:${stamp.source_kind}:${stamp.session_id}`, stamp);
+  }
+
+  // Mirrors pgSessionArchiveStore: `workspaceId = WS_DEFAULT` when omitted.
+  async readStamp(kind: string, id: string, workspaceId = 'default'): Promise<ArchiveStampRow | null> {
+    return this.stamps.get(`${workspaceId}:${kind}:${id}`) ?? null;
+  }
+
+  async readFiles(kind: string, id: string, workspaceId = 'default'): Promise<ArchiveFileRow[]> {
+    return [...this.files.values()].filter(
+      (f) => f.workspace_id === workspaceId && f.source_kind === kind && f.session_id === id,
+    );
+  }
+
+  async stampAdvSessionArchived(): Promise<void> {}
+}
+
 let roots: string[] = [];
 async function tmp(prefix: string): Promise<string> {
   const d = await mkdtemp(join(tmpdir(), prefix));
@@ -91,6 +125,35 @@ async function claudeFixture(): Promise<{ root: string; transcript: string }> {
   await symlink(join(shared, 'todos'), join(root, 'todos'));
   return { root, transcript };
 }
+
+describe('archive workspace key — the WRITER and every READER must agree (WI-38236)', () => {
+  // Found 2026-08-12 by "why isn't psu --resume working like it used to?": the
+  // /adv/sessions/resumable enrichment read stamps with `s.workspaceId`
+  // ('papercusp-workspace'), while archive-at-death writes every row under
+  // WS_DEFAULT. Measured: 17,147 archive rows, 100% 'default' — so the lookup
+  // matched NOTHING and `hasArchive` was false for every archived session (live
+  // :3070: 29 claude/codex rows, 0 flagged). The picker then hid every off-disk
+  // session as an unresumable "ghost" — the exact bug that enrichment was added
+  // to fix. These two cases pin the key from both sides.
+
+  it('a stamp written by archive-at-death IS found by the reader shape that omits the workspace', async () => {
+    const { root } = await claudeFixture();
+    const store = new WorkspaceKeyedStore();
+    // archive-at-death builds its ref from the adv row and sets no workspaceId.
+    await archiveSession({ sourceKind: 'claude', sessionId: SID, sessionRoot: root }, store);
+    expect(await store.readStamp('claude', SID)).not.toBeNull();
+  });
+
+  it('CONTROL: reading that same stamp with a workspace SLUG misses — the defect this pins', async () => {
+    // Permanent wrong-implementation control: if this ever starts finding the
+    // stamp, the store double has stopped honouring the key and the test above
+    // has quietly become unfalsifiable.
+    const { root } = await claudeFixture();
+    const store = new WorkspaceKeyedStore();
+    await archiveSession({ sourceKind: 'claude', sessionId: SID, sessionRoot: root }, store);
+    expect(await store.readStamp('claude', SID, 'papercusp-workspace')).toBeNull();
+  });
+});
 
 describe('collectors — symlink safety + per-CLI shapes', () => {
   it('claude: collects only this session transcript; never through symlinked todos; ignores other uuids', async () => {

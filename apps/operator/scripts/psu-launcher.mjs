@@ -7024,6 +7024,42 @@ export async function tryRematerializeFromArchive(
 }
 
 /**
+ * Re-verify — and if necessary RESTORE — a resume's transcript in the last
+ * moment before exec. This closes the owner-hit race of 2026-08-12: `psu
+ * --resume <id>` printed "resuming from its per-session CLAUDE_CONFIG_DIR" and
+ * then died on `No conversation found with session ID: …`.
+ *
+ * Both resume paths resolve the session — and check that its transcript is on
+ * disk — BEFORE prompting for backend/model and then account. Those prompts are
+ * HUMAN-paced, while archive-at-death deletes an ended session's transcript on a
+ * fixed 15s timer (SETTLE_DELAY_MS, session-archive-hook.ts). So resuming a
+ * JUST-ENDED session — precisely what claude's own exit message tells you to do
+ * ("Resume this session with: claude --resume <id>") — lands inside that window:
+ * the existence check passes, the timer fires while the user is answering the
+ * prompts, and psu execs an id that can no longer resolve. Measured on adv 15148:
+ * archived + deleted 13:03:42.406, launched 13:03:55.438, 13s apart.
+ *
+ * The bytes are never lost — archive-at-death PUTS them in the DB session archive
+ * before deleting — so the fix is to look again AFTER the prompts and
+ * rematerialize when the file has gone. Returns true when there is something to
+ * resume, false when there genuinely is not (the caller must then refuse to
+ * launch rather than hand the agent an id that cannot resolve).
+ *
+ * Only claude/codex have an id-addressable on-disk transcript; omp resumes by
+ * thread name and is passed through unchanged. Injectable `home`/`rematerialize`
+ * for tests; never throws.
+ */
+export async function ensureResumeTranscriptPresent(
+  source,
+  { home = homedir(), rematerialize = tryRematerializeFromArchive } = {},
+) {
+  if (!source || (source.agent !== 'claude' && source.agent !== 'codex')) return true;
+  if (sessionHasTranscript(source, { home })) return true;
+  const restored = await rematerialize(source.sessionId || source.ompThreadId, source.agent);
+  return Boolean(restored) && sessionHasTranscript(source, { home });
+}
+
+/**
  * Is a claude session's isolated `CLAUDE_CONFIG_DIR` LAUNCH-READY, or merely
  * transcript-bearing? The .mjs mirror of operator-core's
  * `isInteractiveClaudeConfigReady` — duplicated for the same reason
@@ -7190,6 +7226,21 @@ async function launchResolvedResume(source, args, { tracked }) {
   const account = await chooseResumeAccount({ ...source, agent: target.targetAgent }, args);
   if (target.operation === 'port') {
     await launchSessionPort(source, target, account, args);
+    return;
+  }
+  // LAST-MOMENT transcript re-verify. Everything below resumes IN PLACE against
+  // the session's own on-disk transcript, and that transcript was last checked
+  // BEFORE the two human-paced prompts above — long enough for the 15s
+  // archive-at-death timer to have deleted it out from under us. Look again, and
+  // restore from the archive if it has gone. (A cross-backend PORT returned
+  // above: it rebuilds context server-side and owns no on-disk transcript.)
+  if (!(await ensureResumeTranscriptPresent(source))) {
+    console.error(
+      `psu: session ${source.sessionId ?? source.ompThreadId ?? ''} has no transcript on disk and no copy in ` +
+        `the session archive to restore — there is nothing to resume. If it ended moments ago its transcript may ` +
+        `still be archiving; retry in a few seconds, or pick another session with \`psu --resume\`.`,
+    );
+    process.exitCode = 1;
     return;
   }
   if (args.fork && tracked) {

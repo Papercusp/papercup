@@ -1143,7 +1143,19 @@ const resumable = defineTool({
           // omp resumes by thread name and is never ghost-filtered by the picker.
           if (!s.sessionId || (s.agent !== 'claude' && s.agent !== 'codex')) return;
           try {
-            const stamp = await store.readStamp(s.agent, s.sessionId, s.workspaceId);
+            // Read the stamp with the SAME key the writer writes. The archive
+            // ref built at archive-at-death carries no workspaceId, so every row
+            // lands under WS_DEFAULT ('default') — measured 2026-08-12: 17,147
+            // archive rows, 100% 'default', none under any workspace slug. Passing
+            // `s.workspaceId` ('papercusp-workspace') here therefore matched
+            // NOTHING, so `hasArchive` was false for every session that had one
+            // (measured on live :3070: 29 claude/codex rows, 0 flagged). That made
+            // this whole enrichment inert and left the picker hiding every
+            // off-disk-but-archived session as an unresumable "ghost" — the exact
+            // 2026-07-13 owner bug it was added to fix. Omitting the argument
+            // defaults to WS_DEFAULT, which is also how /adv/sessions/rematerialize
+            // already reads (and why restoring worked while detection did not).
+            const stamp = await store.readStamp(s.agent, s.sessionId);
             if (stamp) archivedIds.add(s.sessionId);
           } catch {
             /* best-effort per session — a read failure just leaves hasArchive false */

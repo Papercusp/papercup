@@ -85,6 +85,7 @@ import {
   mintCarryRespawnArgs,
   stripKickoffPositional,
   claudeStoreHasSession,
+  ensureResumeTranscriptPresent,
   sessionHasTranscript,
   sessionIsResumable,
   sessionTranscriptFile,
@@ -4358,6 +4359,93 @@ describe('sessionIsResumable — picker keeps on-disk OR DB-archived sessions (W
     mkdirSync(projDir, { recursive: true });
     writeFileSync(join(projDir, `${UUID}.jsonl`), `{"sessionId":"${UUID}"}\n`);
     expect(sessionIsResumable({ agent: 'claude', sessionId: UUID, coordOwnerId: owner }, { home })).toBe(true);
+  });
+});
+
+describe('ensureResumeTranscriptPresent — the archive-at-death race (owner-hit 2026-08-12, WI-38236)', () => {
+  const UUID = '0123abcd-1234-5678-9abc-def012345678';
+  let home = '';
+  beforeEach(() => { home = mkdtempSync(join(tmpdir(), 'psu-resume-race-')); });
+  afterEach(() => { if (home) rmSync(home, { recursive: true, force: true }); });
+
+  const projDirFor = (owner: string) =>
+    join(home, '.papercusp', 'session-claude', owner, 'projects', '-d');
+
+  it('RESTORES a transcript deleted between the resolve and the exec — the exact owner repro', async () => {
+    // Repro of adv 15148: the session ended, psu resolved it while the transcript
+    // was still on disk, then the 15s archive-at-death timer deleted it WHILE the
+    // user answered the backend/model + account prompts. Before this guard, psu
+    // exec'd claude anyway and the owner got "No conversation found with session ID".
+    const owner = 'su-raced';
+    mkdirSync(projDirFor(owner), { recursive: true });
+    // ...the file is ALREADY gone by the time we re-check (the timer fired mid-prompt).
+    const source = { agent: 'claude', sessionId: UUID, coordOwnerId: owner };
+    expect(sessionHasTranscript(source, { home })).toBe(false);
+
+    // The bytes are safe in the DB archive; the restore puts them back on disk.
+    const rematerialize = vi.fn(async () => {
+      writeFileSync(join(projDirFor(owner), `${UUID}.jsonl`), `{"sessionId":"${UUID}"}\n`);
+      return { ok: true, written: 1 };
+    });
+    await expect(ensureResumeTranscriptPresent(source, { home, rematerialize })).resolves.toBe(true);
+    expect(rematerialize).toHaveBeenCalledWith(UUID, 'claude');
+  });
+
+  it('REFUSES the launch when the transcript is gone AND the archive cannot restore it', async () => {
+    // The failure psu used to hand to claude as "No conversation found" — reported
+    // by psu itself now, with the real reason, instead of exec'ing a doomed id.
+    const owner = 'su-nothing';
+    mkdirSync(projDirFor(owner), { recursive: true });
+    const rematerialize = vi.fn(async () => null);
+    await expect(
+      ensureResumeTranscriptPresent({ agent: 'claude', sessionId: UUID, coordOwnerId: owner }, { home, rematerialize }),
+    ).resolves.toBe(false);
+  });
+
+  it('does NOT restore when the transcript is still on disk — the healthy resume pays no round-trip', async () => {
+    const owner = 'su-ondisk';
+    mkdirSync(projDirFor(owner), { recursive: true });
+    writeFileSync(join(projDirFor(owner), `${UUID}.jsonl`), `{"sessionId":"${UUID}"}\n`);
+    const rematerialize = vi.fn(async () => null);
+    await expect(
+      ensureResumeTranscriptPresent({ agent: 'claude', sessionId: UUID, coordOwnerId: owner }, { home, rematerialize }),
+    ).resolves.toBe(true);
+    expect(rematerialize).not.toHaveBeenCalled();
+  });
+
+  it('passes omp through untouched — it resumes by thread name, not an id-addressed transcript', async () => {
+    const rematerialize = vi.fn(async () => null);
+    await expect(
+      ensureResumeTranscriptPresent({ agent: 'omp', ompThreadId: 'some-thread' }, { home, rematerialize }),
+    ).resolves.toBe(true);
+    expect(rematerialize).not.toHaveBeenCalled();
+  });
+});
+
+describe('launchResolvedResume WIRING — the transcript re-verify must run AFTER the prompts (WI-38236)', () => {
+  // ensureResumeTranscriptPresent is only worth anything if it is called at the
+  // right MOMENT. The whole bug is that the earlier check happens before two
+  // human-paced prompts; a re-verify placed above them would be just as useless,
+  // and a removed call would silently restore the original failure. Both are
+  // invisible to behavioural tests of the helper itself, so pin the call site.
+  const src = readFileSync(join(__dirname, '..', 'scripts', 'psu-launcher.mjs'), 'utf8');
+  const body = src.slice(src.indexOf('async function launchResolvedResume('));
+
+  it('calls ensureResumeTranscriptPresent before handing off to launchResume/launchTrackedFork', () => {
+    const guard = body.indexOf('await ensureResumeTranscriptPresent(source)');
+    const fork = body.indexOf('await launchTrackedFork(');
+    const resume = body.indexOf('await launchResume(source, {');
+    expect(guard).toBeGreaterThan(-1);
+    expect(fork).toBeGreaterThan(guard);
+    expect(resume).toBeGreaterThan(guard);
+  });
+
+  it('runs it AFTER both prompts — a check above them re-opens the race it exists to close', () => {
+    const target = body.indexOf('await chooseResumeTarget(');
+    const account = body.indexOf('await chooseResumeAccount(');
+    const guard = body.indexOf('await ensureResumeTranscriptPresent(source)');
+    expect(guard).toBeGreaterThan(target);
+    expect(guard).toBeGreaterThan(account);
   });
 });
 
