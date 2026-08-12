@@ -45,6 +45,10 @@ import { bumpSessionEpoch } from '../../memory/session-epoch-ledger';
 import { getOrgPg } from '@papercusp/db-org';
 import { getLoopStatus } from '../../harness/routines/loop';
 import { getLoopCarryNoteWithMeta } from '../../carry-note';
+import {
+  readLiveNativeBgTasks,
+  renderNativeBgTaskWarning,
+} from '../../native-bg-task-ledger';
 
 // Re-exported for back-compat: the flush-integrity detector + its shape now live
 // in enforcement-gate.ts (the single source shared with the P-016 enforcement
@@ -493,6 +497,25 @@ export default defineTool({
               : ''
           }`
         : '';
+    // WI-5936 / EI-16611: native `run_in_background` Bash jobs live in the CLI
+    // CHILD process's memory, so THIS cut SIGTERMs them — the logical session
+    // continues while the job dies silently, and a carry-note citing its task id
+    // is a dead reference to the successor. Warn (never refuse): the cut is
+    // idle-gated and fires after this turn ends, so the agent reading this still
+    // has time to wait for the job or re-launch it under capability:bash. The
+    // liveness claim is an OS-level fd scan, not an inference from the record's
+    // age. Fail-soft — bookkeeping must never block a cut.
+    let nativeBgTasks: ReturnType<typeof readLiveNativeBgTasks> = {
+      live: [],
+      unattributed: [],
+      degraded: false,
+    };
+    try {
+      nativeBgTasks = readLiveNativeBgTasks({ sid: identity.ownerId });
+    } catch {
+      /* never block the cut on bg bookkeeping */
+    }
+    const nativeBgNote = ok ? renderNativeBgTaskWarning(nativeBgTasks) : '';
     // P-010 informative note: when the owner's final message is open, the cut
     // does NOT lose it — it IS the successor's first prompt.
     const openQuestionNote =
@@ -529,6 +552,13 @@ export default defineTool({
             budgetChars: spec.budgetChars,
             firstPromptSource: spec.firstPrompt ? 'open-owner-message' : 'continuation-note',
             staleCheckpoints,
+            // WI-5936: present only when this cut would actually kill something,
+            // so a clean session pays no payload for it.
+            ...(nativeBgTasks.live.length > 0 ||
+            nativeBgTasks.unattributed.length > 0 ||
+            nativeBgTasks.degraded
+              ? { nativeBgTasks }
+              : {}),
             openOwnerQuestion,
             priorRespawn,
             ...(gate.verdict === 'mechanical-fallback' && gate.fallback
@@ -557,6 +587,7 @@ export default defineTool({
                   // still here) so the failure is self-diagnosing from the agent's side.
                   'Carry-respawn QUEUED — not performed yet. The host cuts this process only once your pty goes QUIET at a clean boundary, then respawns your successor on the deterministic carry document. It re-polls for a few minutes and can terminally DROP the carry — an interactive back-and-forth, or steady output, can supersede it indefinitely. So: wrap up and go quiet now, but FLUSH durable state first (work_items:checkpoint / loop:checkpoint / facts:assert) rather than relying on the cut. If you are still here on your next turn, it did not happen — re-request at the next clean stopping point instead of waiting.') +
               staleNote +
+              nativeBgNote +
               openQuestionNote +
               // EI-19480099650947832: only ever emitted on evidence from the
               // host's own event log — silent when the last respawn delivered.

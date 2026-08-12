@@ -1693,8 +1693,16 @@ try:
 
     # Record side: this call backgrounds a command that redirects to a file.
     if tool_name.lower() == 'bash' and tool_input.get('run_in_background'):
+        # WI-5936: stamp the OWNING SESSION on each record. The file is
+        # host-shared and keyed by output path, so without this a reader can
+        # tell that *a* background job is live but not WHOSE — and the
+        # compaction seam's whole question is "are MY jobs about to die with
+        # this process?". `_session_key()` resolves PAPERCUSP_SID first, which
+        # is the same `identity.ownerId` the operator-side reader filters on.
         for _t in _bg_redirect_targets(command, _bg_cwd):
-            _bg_state[_t] = {'started_at': _bg_now, 'cmd': command[:200]}
+            _bg_state[_t] = {
+                'started_at': _bg_now, 'cmd': command[:200], 'sid': _session_key(),
+            }
 
     # Bound growth regardless of whether anything below fires — age-based only;
     # liveness for a survivor is re-checked fresh on the next read-side pass.
@@ -1736,6 +1744,50 @@ try:
     _bg_track_save(_bg_state)
 except Exception:
     pass  # advisory (and its bookkeeping) must never wedge a command
+
+# ── Native bg task dies on carry-respawn (WI-5936 / EI-16611) ──────────────
+# Native `run_in_background` bookkeeping lives in the CLI CHILD PROCESS's own
+# memory — nowhere papercusp persists. A carry-respawn
+# (session:request-compaction), a cold-loop fire, or `claude --resume` starts a
+# NEW process, so the job is SIGTERMed: the LOGICAL session continues while the
+# job is silently dead, and a carry-note saying "read task <id>'s output" is a
+# dead reference to the successor.
+#
+# This knowledge already existed — in the compaction strategy and an insights
+# doc — and it recurred anyway (a leader backgrounded a 16-55min release-gate
+# run, self-compacted ~30s later, and killed it). The reason is a READ/WRITE
+# path mismatch: the doc sits on the read path, but the mistake is made on the
+# WRITE path, at the instant `run_in_background: true` is typed, and nobody
+# re-reads the compaction doc while launching a job. So the guard has to be
+# HERE, at launch.
+#
+# Say-once per session (the ~2h seen-set TTL re-arms it), and last in the
+# advisory chain: the command-shape-specific bg advisories above (masked pipe
+# exit code, exit-code-masking reporter, log-read race) describe a WRONG RESULT
+# from this specific command and outrank a general teaching block. The real
+# backstop is the compaction seam itself, which reads the session-stamped
+# ledger written above and names any still-live job at the moment of the cut.
+try:
+    if (tool_name.lower() == 'bash'
+            and tool_input.get('run_in_background')
+            and not ADVISORY
+            and _claim_advisory('native-bg-task-dies-on-respawn')):
+        ADVISORY = (
+            'native background task advisory (WI-5936 / EI-16611): this job runs in the '
+            "CLI child process's own memory, which is NOT persisted by papercusp. A "
+            'carry-respawn (session:request-compaction), a cold-loop fire, or `claude '
+            '--resume` starts a NEW process and SIGTERMs it — the logical session '
+            'continues while the job is silently dead, so a checkpoint/carry-note citing '
+            'this task id becomes a dead reference for your successor. Fine for work that '
+            'finishes inside THIS turn. If it must outlive the turn, use `capability:bash '
+            '{ run_in_background: true }` (operator-owned and reattachable — checkpoint its '
+            '`bash_id`, and re-verify it on the next wake: it is not restart-durable), or a '
+            'systemd unit / `release:checkpoint-run` for anything that must survive an '
+            'operator restart. Advisory only; this command is proceeding as issued.'
+        )
+        _record_delivery('native-bg-task-dies-on-respawn')
+except Exception:
+    pass  # a teaching advisory must never wedge a command
 
 # EI-10940: the refusal must answer the INTENT, not the token. `systemd-run` is
 # BOTH the scheduler (`--on-calendar=…`) and the only stock way to ask for cgroup

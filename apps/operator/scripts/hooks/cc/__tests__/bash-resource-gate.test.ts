@@ -2178,6 +2178,83 @@ describe('background-log-read-race advisory (EI-18764990059061608)', () => {
 });
 
 /**
+ * WI-5936 / EI-16611 — native background tasks die on carry-respawn.
+ *
+ * The knowledge existed on the READ path (compaction strategy, an insights doc)
+ * and the mistake kept happening on the WRITE path, at the instant
+ * `run_in_background: true` is typed. These cases pin the launch-time guard and
+ * — more importantly — the `sid` stamp, which is the load-bearing half: the
+ * ledger is host-shared and keyed by output PATH, so without an owner stamp the
+ * compaction seam can see that *a* job is live but not WHOSE, and its whole
+ * question is "is MY job about to be killed by this cut?".
+ */
+describe('native bg task dies on carry-respawn (WI-5936 / EI-16611)', () => {
+  let bgHome = '';
+  let bgDir = '';
+
+  beforeEach(() => {
+    bgHome = mkdtempSync(join(tmpdir(), 'gate-nativebg-home-'));
+    mkdirSync(join(bgHome, '.papercusp'), { recursive: true });
+    writeFileSync(join(bgHome, '.papercusp', 'superuser-token'), 'test-token\n');
+    writeFileSync(join(bgHome, '.papercusp', 'su-agent-id'), 'test-agent\n');
+    bgDir = mkdtempSync(join(tmpdir(), 'gate-nativebg-log-'));
+  });
+
+  afterEach(() => {
+    rmSync(bgHome, { recursive: true, force: true });
+    rmSync(bgDir, { recursive: true, force: true });
+  });
+
+  const runBg = (command: string, extra: Record<string, unknown> = {}, env: Record<string, string> = {}) =>
+    runGate(
+      { tool_name: 'Bash', tool_input: { command, ...extra }, session_id: 's-nativebg', cwd: bgDir },
+      { HOME: bgHome, PAPERCUSP_SID: 'su-nativebg-test', ...env },
+    );
+
+  it('fires a NON-BLOCKING teaching block on a run_in_background launch', () => {
+    const out = runBg(`sleep 60 > ${join(bgDir, 'a.log')} 2>&1`, { run_in_background: true });
+    expect(out.status).toBe(0);
+    const hso = JSON.parse(out.stdout).hookSpecificOutput;
+    // Non-blocking is the contract: this teaches, it never denies.
+    expect(hso.permissionDecision).toBe('allow');
+    expect(hso.additionalContext).toContain('native background task advisory');
+    expect(hso.additionalContext).toContain('capability:bash');
+  });
+
+  it('stamps the OWNING SESSION on the ledger record (the half that makes it readable)', () => {
+    const log = join(bgDir, 'stamped.log');
+    runBg(`sleep 60 > ${log} 2>&1`, { run_in_background: true });
+    const ledger = JSON.parse(
+      readFileSync(join(bgHome, '.papercusp', 'bg-output-tracking.json'), 'utf8'),
+    );
+    expect(ledger[log]).toBeTruthy();
+    expect(ledger[log].sid).toBe('su-nativebg-test');
+    // started_at stays SECONDS — the operator-side reader converts. If this ever
+    // becomes ms, native-bg-task-ledger.ts silently dates every record to 1970.
+    expect(ledger[log].started_at).toBeLessThan(1e12);
+  });
+
+  it('is say-once per session — a second launch does not re-teach', () => {
+    const first = runBg(`sleep 60 > ${join(bgDir, 'b.log')} 2>&1`, { run_in_background: true });
+    expect(JSON.parse(first.stdout).hookSpecificOutput.additionalContext).toContain(
+      'native background task advisory',
+    );
+    expectAllow(runBg(`sleep 60 > ${join(bgDir, 'c.log')} 2>&1`, { run_in_background: true }));
+  });
+
+  it('never fires for a FOREGROUND command — the job dies only because it is backgrounded', () => {
+    expectAllow(runBg(`sleep 1 > ${join(bgDir, 'd.log')} 2>&1`));
+  });
+
+  it('yields to a command-shape-specific bg advisory (a wrong RESULT outranks a general lesson)', () => {
+    const out = runBg(`npm run test:affected | tail -5`, { run_in_background: true });
+    const hso = JSON.parse(out.stdout).hookSpecificOutput;
+    expect(hso.additionalContext).toContain('background-pipe exit-code advisory');
+    expect(hso.additionalContext).not.toContain('native background task advisory');
+  });
+});
+
+/**
  * EI-15605 — tauri-agent-tools raw-JSON --token advisory.
  *
  * The dev-bridge token file (/tmp/tauri-dev-bridge-<pid>.token) is JSON
