@@ -69,6 +69,16 @@ async function seedWorkItem(planSlug: string, harness = 'demo', feature = 'F-1')
     VALUES (${WS}, ${harness}, ${feature}, 'todo', 'feature', ${planSlug}, 'local')`;
 }
 
+async function seedSpecTriadFiling(planSlug: string, status = 'open', harness = 'demo') {
+  await db.sql`
+    INSERT INTO harness_shared.work_items
+      (workspace_id, harness_slug, feature_id, title, status, item_kind, payload, origin)
+    VALUES (
+      ${WS}, ${harness}, ${`WI-triad-${planSlug}`}, ${`Write the spec triad for ${planSlug}`},
+      ${status}, 'task', ${db.sql.json({ specTriadPlan: `${WS}/${harness}/${planSlug}` })}, 'local'
+    )`;
+}
+
 describe('collectZeroPromotionSignals (P-009): recurrence guard over real PG', () => {
   it('fires for a STARTED plan with open items but ZERO work-items', async () => {
     await seedPlan('plan-broken', 'started', [{ id: 'P-001', status: 'todo' }, { id: 'P-002', status: 'wip' }]);
@@ -95,6 +105,20 @@ describe('collectZeroPromotionSignals (P-009): recurrence guard over real PG', (
     await seedPlan('plan-done', 'started', [{ id: 'P-001', status: 'done' }, { id: 'P-002', status: 'dropped' }]);
     const { signals } = await collectZeroPromotionSignals(WS);
     expect(signals).toHaveLength(0);
+  });
+
+  it('is healthy when zero conversion is an intentional SPEC TRIAD hold with an open filing', async () => {
+    await seedPlan('plan-triad-held', 'started', [{ id: 'P-001', status: 'todo' }]);
+    await seedSpecTriadFiling('plan-triad-held');
+    const { signals } = await collectZeroPromotionSignals(WS);
+    expect(signals).toHaveLength(0);
+  });
+
+  it('does not suppress a zero-conversion signal after the SPEC TRIAD filing is terminal', async () => {
+    await seedPlan('plan-triad-closed', 'started', [{ id: 'P-001', status: 'todo' }]);
+    await seedSpecTriadFiling('plan-triad-closed', 'done');
+    const { signals } = await collectZeroPromotionSignals(WS);
+    expect(signals.map((s) => s.key)).toEqual(['plan-triad-closed']);
   });
 
   it('ignores UNSTARTED plans (only started+eligible plans are guarded)', async () => {

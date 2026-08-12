@@ -32,6 +32,20 @@ describe('zero-promotion detector (unified-work-item-ledger P-009)', () => {
     ).toEqual([]);
   });
 
+  it('does NOT flag an intentional SPEC TRIAD hold with an open exit filing', () => {
+    expect(
+      detectZeroPromotion([
+        {
+          planSlug: 'triad-held',
+          harnessSlug: 'h',
+          openItemCount: 5,
+          workItemCount: 0,
+          specTriadBlocked: true,
+        },
+      ]),
+    ).toEqual([]);
+  });
+
   it('flags only the offending plans in a mixed set', () => {
     const findings = detectZeroPromotion([
       { planSlug: 'bad-1', harnessSlug: 'a', openItemCount: 2, workItemCount: 0 },

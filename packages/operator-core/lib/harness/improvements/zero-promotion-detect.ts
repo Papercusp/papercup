@@ -24,6 +24,8 @@ export interface PlanPromotionCount {
   openItemCount: number;
   /** Work-items whose source_plan_slug is this plan (any non-terminal state). */
   workItemCount: number;
+  /** An open SPEC TRIAD filing explains this intentional zero-conversion. */
+  specTriadBlocked?: boolean;
 }
 
 /** A zero-promotion finding, shaped to map directly onto a WatchdogSignal at the
@@ -48,7 +50,7 @@ export interface ZeroPromotionFinding {
  */
 export function detectZeroPromotion(plans: readonly PlanPromotionCount[]): ZeroPromotionFinding[] {
   return plans
-    .filter((p) => p.openItemCount > 0 && p.workItemCount === 0)
+    .filter((p) => p.openItemCount > 0 && p.workItemCount === 0 && !p.specTriadBlocked)
     .map((p) => ({
       source: 'zero-promotion' as const,
       key: p.planSlug,
@@ -69,8 +71,10 @@ export function detectZeroPromotion(plans: readonly PlanPromotionCount[]): ZeroP
  * `items` array, status NOT done/dropped) and its work-items (by `source_plan_slug`,
  * ANY state — a single ever-minted work-item, even since completed, proves promotion
  * ran, so this is the conservative "promotion never produced placeable work" signal
- * and not a per-item gap detector). The detector then keeps only plans with open
- * items + zero work-items.
+ * and not a per-item gap detector). An open SPEC TRIAD filing is also read as an
+ * intentional promotion hold, because the promotion runner refuses that plan and
+ * the filing is the claimable exit. The detector then keeps only plans with open
+ * items + zero work-items and no active triad hold.
  *
  * Gated by `papercusp-plan-workitem-promotion`: while promotion is dark it produces
  * nothing by design, so firing would be pure noise → return a 'dark' note and no
@@ -89,9 +93,18 @@ export async function collectZeroPromotionSignals(
   if (!enabled) return { signals: [], note: 'dark: papercusp-plan-workitem-promotion OFF' };
 
   const { getOrgPg } = await import('@papercusp/db-org');
+  const { SPEC_TRIAD_NON_TERMINAL_STATUSES } = await import(
+    '../../agent-tools/plans/spec-triad-filing'
+  );
   const { sql } = getOrgPg();
   const rows = await sql<
-    { harness_slug: string; plan_slug: string; open_items: number; work_items: number }[]
+    {
+      harness_slug: string;
+      plan_slug: string;
+      open_items: number;
+      work_items: number;
+      spec_triad_blocked: boolean;
+    }[]
   >`
     WITH started AS (
       SELECT harness_slug, plan_slug, items
@@ -117,7 +130,16 @@ export async function collectZeroPromotionSignals(
        GROUP BY source_plan_slug, harness_slug
     )
     SELECT o.harness_slug, o.plan_slug, o.open_items,
-           COALESCE(w.work_items, 0) AS work_items
+           COALESCE(w.work_items, 0) AS work_items,
+           EXISTS (
+             SELECT 1
+               FROM harness_shared.work_items triad
+              WHERE triad.workspace_id = ${workspaceId}
+                AND triad.harness_slug = o.harness_slug
+                AND triad.payload->>'specTriadPlan' =
+                    ${workspaceId} || '/' || o.harness_slug || '/' || o.plan_slug
+                AND triad.status = ANY(${SPEC_TRIAD_NON_TERMINAL_STATUSES})
+           ) AS spec_triad_blocked
       FROM open_counts o
       LEFT JOIN wi_counts w
         ON w.plan_slug = o.plan_slug AND w.harness_slug = o.harness_slug
@@ -130,6 +152,7 @@ export async function collectZeroPromotionSignals(
     harnessSlug: r.harness_slug,
     openItemCount: Number(r.open_items),
     workItemCount: Number(r.work_items),
+    specTriadBlocked: r.spec_triad_blocked,
   }));
   return { signals: detectZeroPromotion(counts) };
 }
