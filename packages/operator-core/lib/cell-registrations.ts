@@ -384,7 +384,7 @@ export const GATE_CANDIDATE_CELL: CellSpec = {
   pointers: [
     {
       cell: 'gate.greenCheckpoint.ownership',
-      when: '`judgingContainsPath` is true — the gate is judging YOUR change, so the red is yours to answer for',
+      when: 'IF `judgingContainsPath` is true — the gate is judging YOUR change, so the red is yours to answer for',
       answers:
         'WHO already owns this red, so you join the existing incident instead of opening a duplicate — including whether the recorded holder is still alive, which a claim row alone cannot tell you.',
     },

@@ -177,6 +177,12 @@ describe('P-007: the four verdict cells', () => {
     }
   });
 
+  it('the candidate ownership pointer states its advisory condition as a conditional, never a fact', () => {
+    const pointer = GATE_CANDIDATE_CELL.pointers?.[0];
+    expect(pointer?.when).toMatch(/^IF `judgingContainsPath` is true/);
+    expect(pointer?.when).not.toMatch(/^`judgingContainsPath` is true/);
+  });
+
   /**
    * D-014, asserted rather than trusted: ownership stays a CELL with its own falsifier,
    * and the pointer is only a route to it. If someone ever "simplifies" this by folding
