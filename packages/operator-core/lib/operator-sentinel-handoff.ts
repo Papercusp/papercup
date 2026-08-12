@@ -47,10 +47,28 @@ import type { CapabilityTier } from '@papercusp/plugin-sdk';
 export const USER_REQUESTED_LABEL = 'user-requested';
 
 /** The capability the Sentinel's handoff is recorded under for the standing-approval
- *  tier resolution / candidate. The Sentinel itself can't place — the handoff
- *  exercises the MUG's placement capability, so that's what the user approves a
- *  standing grant for. */
-export const HANDOFF_CAPABILITY = 'cup:spawn';
+ *  tier resolution / candidate — i.e. the label a user's "don't ask me every time"
+ *  grant is keyed on.
+ *
+ *  This was `'cup:spawn'` until 2026-08-12, on the reasoning that "the Sentinel
+ *  itself can't place, so the handoff exercises the MUG's placement capability."
+ *  The Mug tier is retired (retire-mug-kettle-su-only-2026-08-09) and `cup:spawn`
+ *  retired with it, so that premise is dead — and the name was never quite right
+ *  anyway. Read the deps interface below: this handoff calls `createWorkItem` +
+ *  `setPriority` + `nudge`. It FILES work. It does not place it, and post-Mug
+ *  nothing downstream places it either; the nudge routes through the surviving
+ *  recipient ladder (live Mug while the tier ran → live su → owner).
+ *
+ *  So the grant now names the tool the handoff actually exercises. What the user
+ *  is approving is "let the Sentinel file high-priority work for me without
+ *  asking each time" — which is what this string should have said all along.
+ *
+ *  ⚠ Re-keying was safe ONLY because it was verified free: `operator_preferences`
+ *  held ZERO rows, so no stored grant was keyed to the old string (D-086 carries
+ *  the measurement). This is a CONSENT label — if you ever change it again, query
+ *  the store first and migrate what is there. Do not repeat this edit on the
+ *  strength of this comment alone. */
+export const HANDOFF_CAPABILITY = 'work_items:create';
 
 export interface SentinelHandoffDeps {
   /** Create the work_item. Returns the minted id (WI-NNN) or null on failure. */
