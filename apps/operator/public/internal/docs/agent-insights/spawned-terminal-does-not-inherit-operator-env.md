@@ -10,7 +10,7 @@ Why an agent launch dies instantly with `command not found` while every probe yo
 from your agent session says the binary is fine:
 
 ```
-capability:bash  which omp    ->  /home/marsh-office/.bun/bin/omp
+capability:bash  which omp    ->  $HOME/.bun/bin/omp
 ```
 
 The binary IS fine. The window never had a PATH that could see it.

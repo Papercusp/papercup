@@ -85,7 +85,7 @@ stale row under any other phase, still re-fires and still needs the manual clear
    ```sql
    SELECT metadata->'gate_health', last_fired_at
      FROM harness_shared.routines
-    WHERE install_slug = '<live-slug>' AND target_role = 'system:green-checkpoint';
+    WHERE workspace_id = '<ws>' AND install_slug = '<live-slug>' AND target_role = 'system:green-checkpoint';
    ```
    `consecutiveReds = 0`, `stallAlerted = false`, a recent `lastGreenAt` + `last_fired_at`
    ⇒ the stall is **resolved**; the escalation is a phantom.
@@ -206,7 +206,7 @@ resolution — while the PG `harness_escalations` row the improvement-watchdog's
 `shared-pot-test`/`git-sync-watchdog` yet it immediately re-dispatched as EI-8788. **Always verify
 the fix on the PG row, not the disk view:** `SELECT COALESCE(escalation,'')<>'' AS has_esc,
 COALESCE(supervisor_notes,'')<>'' AS has_notes FROM harness_shared.harness_escalations WHERE
-harness_slug=... AND phase=...` — a resolved row must show `has_esc=false` (cleared) and/or
+workspace_id = '<ws>' AND harness_slug=... AND phase=...` — a resolved row must show `has_esc=false` (cleared) and/or
 `has_notes=true`; if `harness:escalation` shows notes but the PG row still has `has_esc=true,
 has_notes=false`, your resolve missed the phase.
 
@@ -233,7 +233,7 @@ git-sync-watchdog:
    ```sql
    SELECT COALESCE(escalation,'')<>'' AS has_esc, COALESCE(supervisor_notes,'')<>'' AS has_notes
      FROM harness_shared.harness_escalations
-    WHERE phase = 'mcp-dark-int:su-<uuid>';
+    WHERE workspace_id = '<ws>' AND phase = 'mcp-dark-int:su-<uuid>';
    ```
 2. **Confirm the session is genuinely gone** (not still dark): `su-<uuid>` has **no**
    `harness_shared.coord_presence` row and **no** `harness_shared.spawned_agents` row.
@@ -271,7 +271,7 @@ mcp-dark-int:
    ```sql
    SELECT COALESCE(escalation,'')<>'' AS has_esc, length(coalesce(escalation,'')) AS esc_len, mtime_ms
      FROM harness_shared.harness_escalations
-    WHERE harness_slug = '<hive>' AND phase = 'github-bridge';
+    WHERE workspace_id = '<ws>' AND harness_slug = '<hive>' AND phase = 'github-bridge';
    ```
    `has_esc = false` (esc\_len 0) with an `mtime_ms` **after** the EI's `createdAt` ⇒ a clean bridge tick
    cleared it. `collectEscalationSignals` gates on `COALESCE(e.escalation,'') <> ''`, so a NULL row is

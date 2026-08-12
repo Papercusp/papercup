@@ -65,18 +65,34 @@ describe('HotReloader', () => {
   it('debounces a burst of changes into a single reload', async () => {
     await fs.writeFile(join(dir, 'papercusp.json'), JSON.stringify({ name: 'demo', version: '0.1.0' }), 'utf8');
 
-    hr = new HotReloader(dir, { debounceMs: 100 });
+    // WI-38201: this test coalesces ONLY while every inter-event gap stays inside the
+    // debounce window (scheduleChange restarts a plain setTimeout per fs event). It used a
+    // 100ms window with `await setTimeout(10)` between writes, so ONE event-loop stall on a
+    // loaded green-checkpoint host pushed a gap past 100ms, fired the debounce mid-burst and
+    // landed 2 reloads ("expected 2 to be 1", gate candidate 1d0c4208). The artificial sleeps
+    // bought nothing — awaited writes are already sequential — and were the stall amplifier.
+    // Dropping them and widening the window takes the margin from ~2x to ~100x.
+    const debounceMs = 1000;
+    hr = new HotReloader(dir, { debounceMs });
     const reloaded: unknown[] = [];
     hr.on('reloaded', (e) => reloaded.push(e));
     await hr.start();
 
+    const burstStart = Date.now();
     for (let i = 0; i < 5; i++) {
       await fs.writeFile(join(dir, 'papercusp.json'), JSON.stringify({ name: 'demo', version: `0.${i}.0` }), 'utf8');
-      await new Promise((r) => setTimeout(r, 10));
     }
+    const burstMs = Date.now() - burstStart;
 
-    await waitFor(() => reloaded.length > 0);
-    await new Promise((r) => setTimeout(r, 200));
+    await waitFor(() => reloaded.length > 0, 5000);
+    // A straggler event would start a fresh window, so wait one full window for a 2nd reload.
+    await new Promise((r) => setTimeout(r, debounceMs));
+
+    // Assert the PRECONDITION separately: coalescing is only defined when the burst fit in one
+    // window. If the host stalled past it, this fails as "the host stalled" instead of
+    // masquerading as a broken debouncer — and it is an assertion, not a skip, so a stalled
+    // run can never pass vacuously.
+    expect(burstMs).toBeLessThan(debounceMs);
     expect(reloaded.length).toBe(1);
   });
 

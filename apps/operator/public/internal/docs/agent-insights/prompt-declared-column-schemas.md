@@ -1,19 +1,20 @@
 # Prompt-declared column schemas — token-efficient agent I/O (both directions)
 URL: /internal/docs/agent-insights/prompt-declared-column-schemas
 
-When both ends know a tool's columns, declare them once in the prompt and put only values on the wire. The pre-prompt registry drives a Tier-3 headerless-CSV read path and a positional-arg write shim, with a misalignment guard. Read these before touching the registry or adding a positional tool.
+When both ends know a tool's columns, declare them once in the prompt and put only values on the wire. The pre-prompt registry enables positional I/O only for fixed-shape tools; conditional schemas remain keyed JSON.
 
 ## The idea
 
 The operator and the model are both ours, so when both ends already know a tool's
 **column schema**, that schema does not belong on the wire — declare it **once in
-the prompt** and send only values. This works symmetrically:
+the prompt** and send only values. This works symmetrically for tools whose
+arguments have a fixed scalar shape:
 
 * **Read** (server → model): the server renders a flat list result as a
-  **headerless CSV** body with a `[N]` row-count guard. The columns live in the
+  **headerless CSV** body with a \[N] row-count guard. The columns live in the
   prompt's `## Wire schemas` legend, not on every payload.
-* **Write** (model → server): the model emits a **positional row** (one `row`
-  arg) instead of a keyed JSON args object; a server shim reconstructs the typed
+* **Write** (model → server): the model may emit a **positional row** (one
+  `row` arg) instead of keyed JSON args; a server shim reconstructs the typed
   object from the prompt-declared column order, then Zod-validates.
 
 Output tokens cost \~4–5× input tokens, so trimming what the model *emits* (the
@@ -29,7 +30,7 @@ write side) is the higher-value lever. Plan: `token-efficient-agent-io-2026-06-0
     column subset (`writeColumnNames` / `writeRequiredColumnNames`) and whether
     the full keyed shape should remain advertised (`writeKeyedFallback`).
   * `positional.ts` — `projectReadColumns` / `projectWriteColumns` (JSON-Schema →
-    `ColumnSpec[]`), `encodePositionalRows` (headerless CSV + `[N]`),
+    `ColumnSpec[]`), `encodePositionalRows` (headerless CSV + \[N]),
     `reconstructArgs` (row → typed args + the misalignment guard),
     `positionalRowSchema` (the `{ row }` schema a write tool advertises).
   * `legend.ts` — `renderWireSchemas` (the `## Wire schemas` markdown).
@@ -48,30 +49,32 @@ write side) is the higher-value lever. Plan: `token-efficient-agent-io-2026-06-0
   startup. This is the **only** place a tool is added to / removed from the
   pre-prompt set; the per-tool *schema* still lives on the tool
   (`defineTool({ args, result })`).
-* **Wiring**: the read Tier-3 branch is in `serialize-result.ts` (`tryTier3Read`);
-  the write shim is `applyPositionalWriteShim` in `define-tool.ts` (it runs in
-  both projection wrappers, the single validation site for MCP + HTTP); the
-  `{ row }` advertise swap is applied at every `tools/list` site
-  (`_mcp-handler.ts`, `server.ts`, `builtinInputSchema`); the legend is spliced
-  into the psu playbook at `<!-- PAPERCUSP-SU:WIRE-SCHEMAS -->` by
-  `renderSuPlaybook` (`renderWireSchemasSection`).
+* **Wiring**: the read Tier-3 branch is in `serialize-result.ts`
+  (`tryTier3Read`); the write shim is `applyPositionalWriteShim` in
+  `define-tool.ts` (it runs in both projection wrappers, the single validation
+  site for MCP + HTTP); the `{ row }` advertise swap is applied at every
+  `tools/list` site (`_mcp-handler.ts`, `server.ts`, `builtinInputSchema`);
+  the legend is spliced into the psu playbook at
+  `<!-- PAPERCUSP-SU:WIRE-SCHEMAS -->` by `renderSuPlaybook`
+  (`renderWireSchemasSection`).
 
 ## The single-projection (anti-desync) guarantee
 
 The legend the model reads, the read encoder's column order, and the write shim's
-column order **all come from the same `projectReadColumns` / `projectWriteColumns`
-projection**. For ordinary write tools, that projection is the whole args
-schema. For bulk-capable write tools, it is the explicitly declared single-row
-subset in the pre-prompt registry. A positional format can't self-correct a
-schema mismatch (there's no inline header), so this is load-bearing — it's
-asserted by the anti-desync test in `tooldef/src/positional-integration.test.ts`
-and the production-registry test for `work_items:set_state` / `work_items:claim`.
-If you fork the projection, those tests fail.
+column order **all come from the same `projectReadColumns` /
+`projectWriteColumns` projection**. For ordinary write tools, that projection
+is the whole args schema. For bulk-capable write tools, it is the explicitly
+declared single-row subset in the pre-prompt registry. A positional format can't
+self-correct a schema mismatch (there's no inline header), so this is load-bearing
+— it's asserted by the anti-desync test in
+`tooldef/src/positional-integration.test.ts`. The production registry tests
+cover the positional `work_items:claim` contract and the keyed-only
+`work_items:set_state` exception. If you fork the projection, those tests fail.
 
 ## Rules when you touch this
 
 * **Read Tier-3 only activates for a flat scalar array.** The tool needs a
-  `result` schema that is `array(object{…all scalar leaves…})`. A nested/`unknown`
+  `result` schema that is `array(object{…all scalar leaves…})`. A nested/unknown
   field (e.g. `payload: z.unknown()`) makes it ineligible, and the runtime
   flatness check downgrades a dual-mode tool's `detail:'full'` rows to TOON
   gracefully. The declared columns MUST cover every key the data can carry, or
@@ -86,28 +89,36 @@ If you fork the projection, those tests fail.
   optional and silently shift every later value into the wrong column, so such a
   row is rejected. `projectWriteColumns` returns `undefined` for anything that
   doesn't fit, and the tool stays typed-JSON. Tools like `coord:send` (`to[]`),
-  `coord:handoff` (arrays), and `plans:set-status` (a non-last free-text `note`)
-  are correctly rejected. A Zod `.default()` column counts as optional (the model
-  may omit it; Zod fills the default).
+  `coord:handoff` (arrays), and `plans:set-status` (a non-last free-text
+  `note`) are correctly rejected. A Zod `.default()` column counts as optional
+  (the model may omit it; Zod fills the default).
 * **Bulk-capable positional write tools need an explicit single-row subset**
   (WI-3260). Do not loosen `projectWriteColumns` to accept unrelated array/object
   fields from a bulk schema. Instead, declare the row columns in
-  `pre-prompt-registry-config.ts` and set `writeKeyedFallback:true`; `tools/list`
-  then advertises `oneOf(row, keyed args)`. The runtime shim already only
-  reconstructs when `row` is a string and otherwise leaves keyed args untouched,
-  so keyed `ids:[...]` / `items:[...]` calls keep working.
+  `pre-prompt-registry-config.ts` and set `writeKeyedFallback:true`;
+  `tools/list` then advertises `oneOf(row, keyed args)`. The runtime shim
+  already only reconstructs when `row` is a string and otherwise leaves keyed
+  args untouched, so keyed `ids:[...]` / `items:[...]` calls keep working.
+* **Conditional schemas stay keyed.** `work_items:set_state` is deliberately
+  not in the positional registry. Its lifecycle schema has terminal and
+  non-terminal branches, and terminal states require both `completionRef` and
+  `assumptions`; its bulk API also carries `ids[]` and `items[]). A row
+  containing only `id,state,harness?`cannot represent those requirements.
+  The old row advertisement caused live terminal calls to fail validation
+  against the real object schema. Use keyed JSON for non-terminal lifecycle
+  changes and`work\_items:complete\` for terminal completion evidence.
 * **Reconstruct normalizes edge whitespace + an empty result still self-presents.**
   Each positional field is `.trim()`'d so the natural `WI-42, passed` spacing
   isn't rejected by the enum/id guard (internal commas/newlines in a free-text
-  field are untouched). An empty Tier-3 read result renders as `[0]` (not a TOON
+  field are untouched). An empty Tier-3 read result renders as \[0] (not a TOON
   fallback), so the model always sees the declared format.
 * **The misalignment guard is real but only as strong as the columns** (D-007).
-  Zod checks shape, not alignment — a shifted row whose summary lands in a `tests`
-  column still type-checks. `reconstructArgs` rejects on bad arity + per-column
-  sanity (id `pattern`, enum membership, numeric/boolean coercion). A tool with
-  **no enum/regex columns has an arity-only guard**, so a same-arity swap can pass
-  — do not flip such a tool to `write:'positional'` on the live fleet until the
-  P-013 LLM-scenario emit-correctness gate passes for it.
+  Zod checks shape, not alignment — a shifted row whose summary lands in a
+  `tests` column still type-checks. `reconstructArgs` rejects on bad arity +
+  per-column sanity (id `pattern`, enum membership, numeric/boolean coercion).
+  A tool with **no enum/regex columns has an arity-only guard**, so a same-arity
+  swap can pass — do not flip such a tool to `write:'positional'` on the live
+  fleet until the P-013 LLM-scenario emit-correctness gate passes for it.
 * **Keyed args still work.** The shim only fires when the caller sends a `row`
   string; a programmatic/keyed call is untouched. For bulk-capable positional
   tools, the keyed shape is also explicitly advertised as the second `oneOf`
@@ -121,8 +132,7 @@ If you fork the projection, those tests fail.
 
 The write side hinges on an empirical question unit tests can't answer: does the
 model reliably emit a correct positional row? That's measured by the LLM-scenario
-gate (`llm-testing/scenarios/su/S07-positional-write.ts` +
-`S08-compact-read.ts`). **No tool is flipped to `write:'positional'` on the live
-fleet until it passes** — the registry config keeps such candidates at
-`write:'off'` with a `→positional after P-013` note. The read side (CSV) is safe
-to default (a misread is recoverable; TOON already ships fleet-wide).
+gate for each positional candidate. The current SU-S07 probe is a keyed lifecycle
+write after `work_items:set_state` was removed from the positional registry;
+SU-S08 continues to cover compact reads. Future tools must pass the scenario gate
+before being flipped to `write:'positional'` on the live fleet.
