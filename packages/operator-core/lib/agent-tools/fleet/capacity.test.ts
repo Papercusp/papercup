@@ -218,6 +218,42 @@ test('EI-19932168784507536: an account excluded by the owner session override is
   assert.equal(acct!.overrideExcludedCount, 1, 'the report must name how many accounts the override excluded');
 });
 
+test('EI-19932168784507536: an account OUTSIDE the session-override ALLOW-LIST (forcedAccounts) is ' +
+  'excluded too — the verbatim branch the measured incident actually hit', async () => {
+  const { readBeeProviderAvailability } = await import('./capacity');
+  // The two sibling tests here pin only the excludeAccounts (deny-list) leg. The MEASURED incident
+  // was the OTHER leg: admission refused with "account 'aviynw3' is outside the session override
+  // allow-list" — i.e. a non-empty `forcedAccounts` that simply did not list the account. Those are
+  // two separate filters in applyAccountOverride (allow-list first, then deny-list), so covering
+  // only the deny-list leaves a regression that drops the allow-list filter passing every test
+  // while reproducing this item's exact incident. Both rows are pool-HEALTHY on purpose: the whole
+  // defect is that raw pool-health says "usable" about a route admission will refuse outright.
+  // CALIBRATION FIRST: the exact same two rows, with BOTH allow-listed, must count as 2. Without
+  // this the assertions below are not falsifiable — a `1` could come from any unrelated filter (or
+  // from the fixture only ever having one healthy row), and the test would keep passing against an
+  // implementation that had stopped consulting the allow-list at all.
+  mockAccountStatus.mockResolvedValueOnce([acctRow('aviynw3', {}), acctRow('sanctioned-acct', {})]);
+  mockGetAccountOverride.mockResolvedValueOnce({
+    forcedAccounts: ['aviynw3', 'sanctioned-acct'],
+    excludeAccounts: [],
+  });
+  const calibration = await readBeeProviderAvailability();
+  assert.equal(calibration!.available, 2, 'calibration: both rows are healthy AND allow-listed, so both must count');
+  assert.equal(calibration!.overrideExcludedCount, 0, 'calibration: nothing is excluded when both are allow-listed');
+
+  mockAccountStatus.mockResolvedValueOnce([
+    acctRow('aviynw3', {}), // healthy, but NOT in the allow-list below
+    acctRow('sanctioned-acct', {}), // healthy, and the only allow-listed account
+  ]);
+  mockGetAccountOverride.mockResolvedValueOnce({ forcedAccounts: ['sanctioned-acct'], excludeAccounts: [] });
+
+  const acct = await readBeeProviderAvailability();
+  assert.ok(acct, 'expected an availability read');
+  assert.equal(acct!.available, 1, 'an account outside the allow-list must not count as available');
+  assert.equal(acct!.usable, 1, 'an account outside the allow-list must not count as usable');
+  assert.equal(acct!.overrideExcludedCount, 1, 'the allow-list exclusion must be reported, not silently dropped');
+});
+
 test('EI-19932168784507536: the full fleet:capacity report surfaces overrideExcludedAccounts ' +
   'end-to-end (capacity and admission must agree about the same pool)', async () => {
   const capacityMod = await import('./capacity');
