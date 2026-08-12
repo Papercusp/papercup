@@ -796,6 +796,17 @@ describe('decidePerFile — per-file attribution + --update-only ratchet + synta
     expect(r.regressions).toEqual([{ file: 'a.ts', baseline: 2, current: 4, delta: 2 }]);
   });
 
+  it('a bare regression carries the shared-tree dirty annotation without changing the failing verdict', () => {
+    const r = decidePerFile({
+      currentByFile: { 'peer.ts': 2 },
+      baselineByFile: { 'peer.ts': 0 },
+      brokenFiles: brokenFree,
+      dirtyFiles: new Set(['peer.ts']),
+    });
+    expect(r.verdict).toBe('fail-regressed');
+    expect(r.regressions).toEqual([{ file: 'peer.ts', baseline: 0, current: 2, delta: 2, dirty: true }]);
+  });
+
   it('a NEW file with errors (absent from baseline ⇒ implicit 0) is a regression', () => {
     const r = decidePerFile({ currentByFile: { 'a.ts': 2, 'new.ts': 1 }, baselineByFile: { 'a.ts': 2 }, brokenFiles: brokenFree });
     expect(r.verdict).toBe('fail-regressed');
@@ -1436,6 +1447,16 @@ describe('formatRegressedFileDiagnostics — quote the lines, never overclaim wh
     const out = formatRegressedFileDiagnostics({ file: 'lib/a.ts', baseline: 0, current: 2, delta: 2 }, LINES).join('\n');
     expect(out).toContain('baseline is 0');
     expect(out).toContain('every error above is new');
+  });
+
+  it('baseline 0 + dirty → warns about the live edit instead of claiming every error is new', () => {
+    const out = formatRegressedFileDiagnostics(
+      { file: 'lib/a.ts', baseline: 0, current: 2, delta: 2, dirty: true },
+      LINES,
+    ).join('\n');
+    expect(out).toMatch(/uncommitted.*peer is likely mid-edit/i);
+    expect(out).toContain('baseline is 0');
+    expect(out).not.toContain('every error above is new');
   });
 
   it('baseline > 0 → names how many PRE-DATE the change and how many are new', () => {

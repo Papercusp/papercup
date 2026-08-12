@@ -38,9 +38,10 @@ import { recordStandingReds, recordGateRun, DWELL_SEC } from './tsc-red-observat
  * @property {number} baseline
  * @property {number} current
  * @property {number} delta - `current - baseline`; positive is a regression.
- * @property {boolean} [dirty] - Set only on `newFiles`, and only when the dirty set could be read:
- *   the file is uncommitted in the shared working tree, i.e. a peer is very likely mid-edit
- *   (EI-19278299775574199). `undefined` means UNKNOWN, never "clean" — see
+ * @property {boolean} [dirty] - Set when the dirty set could be read: the file is uncommitted in
+ *   the shared working tree, i.e. a peer is very likely mid-edit (EI-19278299775574199). On a
+ *   regression this is populated only for an unscoped/bare run, where a dirty row is otherwise
+ *   reported as an unhedged failure. `undefined` means UNKNOWN, never "clean" — see
  *   `partitionNewFilesByLiveEdit`.
  */
 
@@ -477,8 +478,16 @@ export function decidePerFile({
   for (const file of allFiles) {
     const current = currentByFile[file] ?? 0;
     const baseline = baselineByFile[file] ?? 0;
-    if (current > baseline) regressions.push({ file, baseline, current, delta: current - baseline });
-    else if (current < baseline) improvements.push({ file, baseline, current, delta: current - baseline });
+    if (current > baseline) {
+      const entry = { file, baseline, current, delta: current - baseline };
+      // A bare run has no caller-owned file set to distinguish from the shared tree. Reuse the
+      // existing git-status signal to annotate the row, but never let it change the verdict. A
+      // dirty baseline-0 row is especially dangerous: the old wording said every quoted error
+      // was new even when the compiler may have read a peer's in-flight edit.
+      regressions.push(
+        dirtyFiles && changedFiles === null ? { ...entry, dirty: dirtyFiles.has(file) } : entry,
+      );
+    } else if (current < baseline) improvements.push({ file, baseline, current, delta: current - baseline });
   }
   regressions.sort((a, b) => b.delta - a.delta || a.file.localeCompare(b.file));
   improvements.sort((a, b) => a.delta - b.delta || a.file.localeCompare(b.file));
@@ -847,7 +856,7 @@ export const REGRESSION_DIAGNOSTIC_MAX_PER_FILE = 10;
  * Pure (no I/O) so the wording is unit-testable — the wording is the whole feature, mirroring
  * `formatAttributionHeadline` / `formatNewFileGuidance`.
  *
- * @param {{file: string, baseline: number, current: number, delta: number}} row - The gate entry.
+ * @param {{file: string, baseline: number, current: number, delta: number, dirty?: boolean}} row - The gate entry.
  * @param {string[]} lines - Already-capped diagnostic lines for this file (compiler order).
  * @returns {string[]} Indented lines to print beneath the row; empty when nothing was quoted.
  */
@@ -863,12 +872,21 @@ export function formatRegressedFileDiagnostics(row, lines) {
   if (hidden > 0) {
     out.push(`      … +${hidden} more error(s) in this file not shown (capped at ${shown.length}).`);
   }
+  if (row?.dirty === true) {
+    out.push(
+      `      ← uncommitted, a peer is likely mid-edit — this shared-tree result may describe live bytes; do not edit from it alone.`,
+    );
+  }
   if (baseline > 0) {
     // Never say "your errors are above" — see the header. State the mixture and refuse to guess.
     out.push(
       `      ⚠ ${baseline} of this file's ${current} error(s) PRE-DATE your change. The baseline records only a`,
       `        COUNT, so which of the lines above are the ${current - baseline} new one(s) is NOT mechanically`,
       `        determinable — read them against what you just edited, don't assume it is the first one.`,
+    );
+  } else if (row?.dirty === true) {
+    out.push(
+      `      (this file's baseline is 0, but the uncommitted result may describe a peer's in-flight edit — do not assume every quoted error is yours.)`,
     );
   } else {
     out.push(`      (this file's baseline is 0 — every error above is new.)`);
@@ -1981,11 +1999,14 @@ export async function runTscBaselineGate({
       )
     : null;
 
-  // EI-19278299775574199 — only meaningful under `--files`: there `changedFiles` is the caller's
-  // OWN enumeration, so the working-tree dirt is a separate, independent signal ("someone has this
-  // open"). Under `--mine` the two sets are the same query, so a dirty file is already `attributed`
-  // and can never reach `newFiles` — computing it there would cost a git call to learn nothing.
-  const dirtyFiles = explicitFiles !== null ? gitChangedFiles(root) : null;
+  // EI-19278299775574199 — under `--files`, `changedFiles` is the caller's OWN enumeration, so
+  // working-tree dirt is a separate, independent signal ("someone has this open"). A bare run has
+  // no caller-owned set at all, so it also reads git status to annotate ordinary regression rows;
+  // without that annotation a dirty baseline-0 row is printed as if every quoted error were a
+  // settled, actionable failure. Under `--mine` the two sets are the same query, so keep the
+  // existing null signal: anything outside `changedFiles` is already committed, and anything in
+  // it is attributed rather than a bare `fail-regressed` row.
+  const dirtyFiles = explicitFiles !== null || !mineFlag ? gitChangedFiles(root) : null;
 
   // EI-19305736771912430 — `--files` DECLARES the caller's own file set; `--mine` only INFERS it
   // from git status. Only the declared form may stop an unscoped new file setting the exit code.
