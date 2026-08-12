@@ -6,11 +6,11 @@
  */
 import { describe, expect, it } from 'vitest';
 
-// @ts-ignore -- runtime reporter module intentionally tested from TypeScript.
 import {
   classifyCargoRun,
   detectCargoTermination,
   formatCargoResultLine,
+// @ts-ignore -- runtime reporter module intentionally tested from TypeScript.
 } from '../../../../scripts/lib/cargo-result.mjs';
 
 const SIGTERM_CARGO_OUTPUT = `

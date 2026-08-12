@@ -72,7 +72,7 @@ import {
   headersFromExtra,
   dispatchProjectedToolToMcp,
 } from '@papercusp/tooldef-mcp';
-import { getOrgPg, withWorkspace } from '@papercusp/db-org';
+import { getOrgPg, retryOnRetryableDbDeadline, withWorkspace } from '@papercusp/db-org';
 import { applyResultDoor } from '../../../result-door';
 import { annotateStoreIdentitySuspectResult, mayAnnotateResultText } from './store-identity-suspect';
 import { PROJECTION_ARG, applyResultProjection, parseProjection } from '../../../result-projection';
@@ -1072,7 +1072,17 @@ async function dispatchWithSynthesizedTx<T>(
   // function doc comment for the full rationale.
   if (tool.skipWorkspaceTx === true && dispatchNeedsTx(spawnCtx)) {
     const ctxWs = spawnCtx.workspaceId;
-    const principal = await withWorkspace(ctxWs, (tx) => synthesizeDispatchPrincipal(tx, spawnCtx));
+    // The handler deliberately opted out of retaining an ambient transaction,
+    // but role/capability gating still needs a short principal-synthesis tx.
+    // Under fleet pressure that short acquisition can hit the 45s deadline even
+    // while sibling calls are succeeding. Retry ONLY this pre-handler seam when
+    // the acquire registry proves queue/saturation pressure; the expired()
+    // guard in withWorkspace prevents a late first connection from invoking the
+    // handler, so this cannot duplicate the tool's later write. Ambiguous or
+    // dead-endpoint deadlines remain non-retryable.
+    const principal = await retryOnRetryableDbDeadline(() =>
+      withWorkspace(ctxWs, (tx) => synthesizeDispatchPrincipal(tx, spawnCtx)),
+    );
     const ctx: UnifiedToolContext = { ...baseCtx, principal };
     return runWithWorkspaceIfConcrete(ctxWs, () => run(ctx));
   }
