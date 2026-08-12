@@ -582,6 +582,44 @@ export async function resolveAccountChoices(
  * pin): any error ⇒ no env + a human `notice` the launcher prints, never a throw.
  * Exported so the resolution unit-tests without the POST handler.
  */
+/**
+ * The COMPOSER-SIDE ROLE CHECK (EI-18278623507151337). Pure + exported for tests.
+ *
+ * A boot arg is not evidence about who leads a fleet, and on every re-entry into a
+ * launch it is actively WRONG: `--fleet=<slug>` hard-sets the role to `member`
+ * unconditionally (psu-launcher.mjs:416 and :578 — there is no `--fleet-role=` flag),
+ * and `psuLaunchArgvRecord` re-emits only `--fleet=<slug>`, so the role is not carried
+ * on `adv_sessions.launch_argv` at all. Any launch rebuilt that way for an agent that
+ * DURABLY leads the fleet silently demotes it, and the demotion is what composes a
+ * fleet-MEMBER kickoff addressed to an established LEADER: role stamped `member` in the
+ * envelope env, the member operating baseline composed for it, its membership stamped as
+ * a member. The filed incident is exactly that shape — a leader handed a member brief
+ * naming a stale leader and an already-done plan item.
+ *
+ * `agent_fleets.leader_owner_id` is the durable authority on who leads, and it is
+ * already in hand here (`getFleet`) — so a requested `member` that contradicts it is
+ * stale by construction and the record wins. The correction is reported so the launcher
+ * prints it rather than silently disagreeing with the caller.
+ *
+ * Deliberately NOT symmetric: a requested `leader` is always honored. Leadership is
+ * taken through `fleet:take-leadership` / `setFleetLeader`, and refusing a leader claim
+ * here would break the window between a leadership handover and the record catching up.
+ */
+export function resolveFleetJoinRole(opts: {
+  requestedRole?: string | null;
+  ownerId?: string | null;
+  leaderOwnerId?: string | null;
+}): { role: 'leader' | 'member'; demotionRefused: boolean } {
+  const requested = opts.requestedRole?.trim() === 'leader' ? 'leader' : 'member';
+  if (requested === 'leader') return { role: 'leader', demotionRefused: false };
+  const ownerId = opts.ownerId?.trim();
+  const leaderOwnerId = opts.leaderOwnerId?.trim();
+  const leadsThisFleet = Boolean(ownerId && leaderOwnerId && ownerId === leaderOwnerId);
+  return leadsThisFleet
+    ? { role: 'leader', demotionRefused: true }
+    : { role: 'member', demotionRefused: false };
+}
+
 export async function resolveFleet(
   workspaceId: string,
   opts: {
@@ -664,7 +702,11 @@ export async function resolveFleet(
         fleetRole: null,
       };
     }
-    const role = opts.fleetRole?.trim() === 'leader' ? 'leader' : 'member';
+    const { role, demotionRefused } = resolveFleetJoinRole({
+      requestedRole: opts.fleetRole,
+      ownerId: opts.ownerId,
+      leaderOwnerId: record.leaderOwnerId,
+    });
     const scheme = await getFleetScheme(workspaceId, fleetSlug);
     return {
       env: {
@@ -672,7 +714,9 @@ export async function resolveFleet(
         PAPERCUSP_FLEET_ROLE: role,
         ...(scheme ? schemeEnv(scheme) : {}),
       },
-      notice: `joined fleet ${fleetSlug} as ${role}.`,
+      notice: demotionRefused
+        ? `joined fleet ${fleetSlug} as leader — the launch asked for \`member\`, but agent_fleets.leader_owner_id records this agent as the fleet's LEADER, so the durable record wins (a member kickoff would have briefed the leader as one of its own workers; EI-18278623507151337).`
+        : `joined fleet ${fleetSlug} as ${role}.`,
       fleetSlug,
       fleetRole: role,
     };
