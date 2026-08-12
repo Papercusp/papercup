@@ -105,10 +105,14 @@ const defaultDeps: ActivityHookBundleDeps = {
   // server must not inherit the old client hook's `now` seed and skip mail.
   // Once a floor exists, keep the windowed read bounded by that server-owned
   // cursor.
+  // D-013 R2: `coord:inbox` no longer takes an agent-facing `since_ts`. This is
+  // the DELIVERY path — it owns the server-side cursor for surface 'inbox' — so
+  // it passes its committed floor through the internal seam instead. Agents get
+  // a VIEW; only a caller holding a real cursor gets a delta.
   inbox: async (sinceTs, ctx) => {
     return parseToolPayload(
       await inboxTool.handler(
-        (sinceTs ? { since_ts: sinceTs } : {}) as Parameters<typeof inboxTool.handler>[0],
+        (sinceTs ? { __deliveryFloorTs: sinceTs } : {}) as Parameters<typeof inboxTool.handler>[0],
         ctx,
       ),
     );
