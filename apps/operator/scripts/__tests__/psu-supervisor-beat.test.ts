@@ -115,7 +115,7 @@ describe('startSupervisorBeat', () => {
  */
 describe('startSupervisorBeat — terminal-session self-exit (EI-19412221266350408)', () => {
   const reply = (body: string) => vi.fn(async () => new Response(body));
-  const TERMINAL = '{"ok":true,"sessionTerminal":true,"sessionState":"recorded"}';
+  const TERMINAL = '{"ok":true,"sessionTerminal":true,"sessionState":"ended"}';
   const HEALTHY = '{"ok":true}';
 
   /** Arm the beat with an established session (uptime well past the floor). */

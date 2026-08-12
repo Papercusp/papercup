@@ -29,6 +29,7 @@ import { PrincipalCheckError, requirePrincipal } from '../../../auth/require-pri
 import {
   NATIVE_SESSION_ID_RE,
   adoptStartingTerminalLaunch,
+  endedRecordedOwnerIds,
   markAdvSessionEnded,
   parseKilledBySignalReport,
   reactivateAdvSession,
@@ -2473,29 +2474,24 @@ const post = defineTool({
  * symptom's source and an existing round-trip, meaning the launcher learns it is dead
  * with no new call and no new timer.
  *
- * ⛔ WHY 'recorded' ONLY, and why absence is never actionable.
- * `deriveSessionState` maps `!wakeable ⇒ 'ended'`, and a perfectly healthy session that
- * has not yet armed a wake reads exactly that way — a launcher exiting on 'ended' would
- * SUICIDE ON STARTUP, turning a leaked slot into a fleet that cannot boot. Worse, the
- * oracle signals UNKNOWN BY OMISSION (EI-18771777750306094): it returns no entry for a
- * degraded fetch AND for an unknown owner, so "absent" cannot be told apart from "dead".
- * EI-19412643206608611 measured that exact trap and states the rule this follows:
- * an explicit verdict is authoritative, a no-verdict is UNKNOWN, and unknown must never
- * collapse into the actionable branch.
+ * ⛔ WHY the ended-session query is required, and why absence is never actionable.
+ * The liveness oracle's `sessionState:'recorded'` means the opposite of a terminal
+ * session: `recordedLiveOwnerIds` is positive evidence of an `adv_sessions` row with
+ * `ended_at IS NULL`. A launcher exiting on that state would SUICIDE ON STARTUP,
+ * turning a leaked slot into a fleet that cannot boot. The oracle also signals UNKNOWN
+ * BY OMISSION (EI-18771777750306094), so no verdict cannot be treated as dead either.
  *
- * Hence: emit the field ONLY on an explicit 'recorded' (something authoritatively
- * recorded this session as finished — the state the real zombie showed). No entry, any
- * other state, or a throw ⇒ emit NOTHING, and the launcher keeps running. The failure
- * mode of this function is a zombie that lingers, never a live agent that is killed.
+ * Hence: emit the field ONLY when `endedRecordedOwnerIds` positively identifies the
+ * owner's most-recent recorded session as ended (`ended_at IS NOT NULL`). No row, a
+ * currently-live row, or a query failure ⇒ emit NOTHING, and the launcher keeps
+ * running. The failure mode of this function is a zombie that lingers, never a live
+ * agent that is killed.
  */
 async function terminalSessionVerdict(ownerId: string): Promise<{ sessionTerminal?: true; sessionState?: string }> {
   try {
-    const { resolveSessionStates } = await import('../../../agent-tools/coordination/liveness-oracle');
-    const verdicts = await resolveSessionStates([{ ownerId }], { hydratePerId: true });
-    // `.get` returning undefined is the UNKNOWN case — deliberately indistinguishable
-    // here from "healthy", because both mean "do not act".
-    return verdicts.get(ownerId)?.sessionState === 'recorded'
-      ? { sessionTerminal: true, sessionState: 'recorded' }
+    const ended = await endedRecordedOwnerIds([ownerId]);
+    return ended.has(ownerId)
+      ? { sessionTerminal: true, sessionState: 'ended' }
       : {};
   } catch {
     // Never let the verdict leg fail the beat: a missed beat is a presence-warmth

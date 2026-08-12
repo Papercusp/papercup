@@ -48,6 +48,7 @@ beforeAll(async () => {
 // Not itself the EI-9784 fix (that's the beforeAll above) but cheap and
 // correct to keep.
 const touchHeartbeatMock = vi.hoisted(() => vi.fn(async () => {}));
+const endedRecordedOwnerIdsMock = vi.hoisted(() => vi.fn(async () => new Set<string>()));
 
 vi.mock('../../../auth/require-principal', () => ({
   requirePrincipal: vi.fn(async () => {}),
@@ -56,7 +57,7 @@ vi.mock('../../../auth/require-principal', () => ({
     reason = 'denied';
   },
 }));
-vi.mock('../../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../../adv-sessions')>()), endedRecordedOwnerIds: vi.fn(async () => new Set<string>()),
+vi.mock('../../../adv-sessions', async (orig) => ({ ...(await orig<typeof import('../../../adv-sessions')>()), endedRecordedOwnerIds: endedRecordedOwnerIdsMock,
   recordAdvSession: vi.fn(async () => 1),
   markAdvSessionEnded: vi.fn(async () => {}),
   reactivateAdvSession: vi.fn(async () => false),
@@ -67,7 +68,10 @@ vi.mock('../../../agent-tools/coordination/presence', () => ({
   touchHeartbeat: touchHeartbeatMock,
 }));
 
-beforeEach(() => { vi.clearAllMocks(); });
+beforeEach(() => {
+  vi.clearAllMocks();
+  endedRecordedOwnerIdsMock.mockResolvedValue(new Set<string>());
+});
 afterEach(() => { vi.clearAllMocks(); });
 
 async function postHeartbeat(body: unknown): Promise<Response> {
@@ -120,5 +124,24 @@ describe('POST bootstrap-su/heartbeat — pid/host forwarding (WI-3898 P1)', () 
     const res = await postHeartbeat({ pid: 42, host: 'box-a' });
     expect(res.status).toBe(400);
     expect(touchHeartbeatMock).not.toHaveBeenCalled();
+  });
+
+  it('does not terminate a launcher for a live recorded session', async () => {
+    endedRecordedOwnerIdsMock.mockResolvedValue(new Set<string>());
+    const res = await postHeartbeat({ ownerId: 'su-live' });
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({ ok: true });
+    expect(endedRecordedOwnerIdsMock).toHaveBeenCalledWith(['su-live']);
+  });
+
+  it('returns a terminal verdict only for positive ended-session evidence', async () => {
+    endedRecordedOwnerIdsMock.mockResolvedValue(new Set<string>(['su-ended']));
+    const res = await postHeartbeat({ ownerId: 'su-ended' });
+    expect(res.status).toBe(200);
+    await expect(res.json()).resolves.toEqual({
+      ok: true,
+      sessionTerminal: true,
+      sessionState: 'ended',
+    });
   });
 });
