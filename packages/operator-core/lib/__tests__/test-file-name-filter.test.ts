@@ -225,16 +225,37 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
     spy.mock.calls.map((c: unknown[]) => String(c[0])).join('\n');
 
   /** first spawn = `vitest list` (drives the file match), second = `vitest run`. */
+  /**
+   * Dispatches on the COMMAND SHAPE, never on call ordinal.
+   *
+   * This used to queue two `mockReturnValueOnce`s positionally (1st = `vitest list`, 2nd = `vitest
+   * run`), which silently coupled every test here to the exact number of subprocesses `main()`
+   * happens to spawn. Adding ANY unrelated spawn ahead of them — EI-18681435059177620 added git
+   * calls for the provenance stamp — consumed both stubs, so the real vitest calls received
+   * `undefined` and all 11 tests died with a bare `Cannot read properties of undefined`, which
+   * reads as a defect in the runner rather than an exhausted fixture. Matching on argv keeps this
+   * suite's subject (the name-filter verdict) independent of what else main() shells out to.
+   */
   const stubVitest = (runStdout: string, runStatus = 0) => {
     spawnSyncMock.mockReset();
-    spawnSyncMock
-      .mockReturnValueOnce({
-        status: 0,
-        stdout: 'src/strict-args.test.ts > strict-args > rejects unknown keys\n',
-        stderr: '',
-      } as never)
-      .mockReturnValueOnce({ status: runStatus, stdout: runStdout, stderr: '' } as never);
+    spawnSyncMock.mockImplementation(((command: string, args: string[]) => {
+      if (command === 'git') return { status: 0, stdout: '', stderr: '' } as never;
+      if (args?.includes('list')) {
+        return {
+          status: 0,
+          stdout: 'src/strict-args.test.ts > strict-args > rejects unknown keys\n',
+          stderr: '',
+        } as never;
+      }
+      return { status: runStatus, stdout: runStdout, stderr: '' } as never;
+    }) as never);
   };
+
+  /** The `vitest run` invocation, located by shape rather than by index for the same reason. */
+  const vitestRunCall = () =>
+    spawnSyncMock.mock.calls.find(
+      (call) => call[0] !== 'git' && Array.isArray(call[1]) && (call[1] as string[]).includes('run'),
+    );
 
   beforeEach(() => {
     logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
@@ -278,7 +299,7 @@ describe('main() — a name filter that matches ZERO tests must not report a ver
   it('forwards Vitest flags placed directly after the file list', () => {
     stubVitest(REAL_ROWS.partial);
     expect(main([FILE, '-t', 'rejects'])).toBe(0);
-    expect(spawnSyncMock.mock.calls[1]?.[1]).toEqual(expect.arrayContaining(['-t', 'rejects']));
+    expect(vitestRunCall()?.[1]).toEqual(expect.arrayContaining(['-t', 'rejects']));
     expect(linesFrom(logSpy)).toMatch(/TEST_FILE_RESULT .*status=passed/);
   });
 
