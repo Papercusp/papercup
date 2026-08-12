@@ -987,6 +987,50 @@ describe('resyncPlanItemLaneNow — inline lane resync off plans:set-item-blocke
     );
   });
 
+  it('keeps the lane blocker active when lifecycle restore fails, so the next sweep can retry', async () => {
+    // EI-20268159828040355: clearing blocker history before the state write made a
+    // concurrent lifecycle rejection permanent — the row stayed `blocked`, but the
+    // actionable decision no longer saw an active lane blocker and skipped it.
+    await edge({ plan: 'pretry', item: 'P-011', srcRef: 'WI-retry' });
+    const ref = planLaneBlockerRef('pretry', 'P-011');
+    const { blockers } = updateExternalBlockerHistory(
+      {},
+      { kind: 'gate', capability: 'live-dependency', ref, summary: 'parked' },
+      'system:plan-item-lane-sync',
+    );
+    const row = stub({
+      id: 'WI-retry',
+      harness: 'sheets',
+      state: 'blocked',
+      family: 'issue',
+      lastProgressAt: null,
+      payload: { externalBlockers: blockers },
+    });
+    h3.getPlanRow.mockResolvedValue({
+      items: [{ id: 'P-011', status: 'todo', blockedBy: [] }],
+    });
+    setWorkItemStateWithAliasInfo.mockRejectedValueOnce(new Error('concurrent lifecycle guard'));
+
+    const failed = await resyncPlanItemLaneNow('pretry', 'P-011', null);
+
+    expect(failed).not.toBeNull();
+    expect(failed!.ungated).toEqual([]);
+    expect((row.payload?.externalBlockers as Array<{ status: string }>).some((b) => b.status === 'active')).toBe(true);
+    expect(h4.mergeWorkItemPayload).not.toHaveBeenCalled();
+
+    const retried = await resyncPlanItemLaneNow('pretry', 'P-011', null);
+
+    expect(retried).not.toBeNull();
+    expect(retried!.ungated).toEqual(['WI-retry']);
+    expect(row.state).toBe('open');
+    expect((row.payload?.externalBlockers as Array<{ status: string }>).some((b) => b.status === 'active')).toBe(false);
+    expect(h4.setWorkItemClaimHold).toHaveBeenCalledWith(
+      'WI-retry',
+      false,
+      expect.objectContaining({ by: 'system:plan-item-lane-sync' }),
+    );
+  });
+
   it('ADDING a blocked-by edge parks the linked work-item RIGHT NOW (the symmetric mirror case)', async () => {
     await edge({ plan: 'pblk2', item: 'P-021', srcKind: 'feature', srcRef: 'sheets#F-xyz' });
     stub({ id: 'F-xyz', harness: 'sheets', state: 'todo', family: 'feature', lastProgressAt: null });

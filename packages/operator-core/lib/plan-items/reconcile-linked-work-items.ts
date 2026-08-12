@@ -632,13 +632,19 @@ async function applyLaneGateToWorkItem(
     );
     // On the WI-37914 repair path the blocker is ALREADY cleared, so this is a no-op
     // clear (changed:false) and the only thing still owed is the state restore below.
-    if (changed) await mergeWorkItemPayload(wi.id, { externalBlockers: blockers }, { harness });
     const stillActive = blockers.filter((b) => b.status === 'active');
     if (stillActive.length === 0) {
-      // WI-37914: BOTH halves of the park have to come off, in this order. Clearing
-      // the claim hold alone left `state:'blocked'` behind, and every fleet claim spec
-      // filters `states:['open']` — so the item read as unblocked on the plan while
-      // staying structurally invisible to `scheduler:get_next`, stranding the lane.
+      // EI-20268159828040355: prepare BOTH lifecycle halves before clearing the
+      // blocker history. If state/hold restoration is rejected by a concurrent
+      // lifecycle guard, leaving the plan-lane blocker active makes the next sweep
+      // retry the whole operation. Clearing the blocker first creates a partial
+      // write (`blocked` + no active blocker) that the normal actionable decision
+      // cannot reliably rediscover.
+      //
+      // WI-37914: BOTH halves of the park have to come off. Clearing the claim hold
+      // alone left `state:'blocked'` behind, and every fleet claim spec filters
+      // `states:['open']` — so the item read as unblocked on the plan while staying
+      // structurally invisible to `scheduler:get_next`, stranding the lane.
       const restored = restoreStateAfterUngate(wi);
       await setWorkItemStateWithAliasInfo(wi.id, restored, { harness, by: PLAN_LANE_SYNC_ACTOR });
       if (wi.family !== 'feature') {
@@ -648,6 +654,9 @@ async function applyLaneGateToWorkItem(
           reason: `plan lane ${laneItem.planSlug}#${laneItem.itemId} cleared`,
         });
       }
+      // Clear the blocker only after the lifecycle restore succeeds. On the repair
+      // path `changed` is false because the history already records our clear.
+      if (changed) await mergeWorkItemPayload(wi.id, { externalBlockers: blockers }, { harness });
       // Drop the stash — it describes a park that no longer exists, and leaving it
       // would let a LATER un-park restore a state from the wrong era.
       await mergeWorkItemPayload(wi.id, { [PLAN_LANE_PARKED_FROM_KEY]: null }, { harness });
