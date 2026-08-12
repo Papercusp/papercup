@@ -45,12 +45,22 @@ import { readGateOwnership, type CellOwnership } from './coord/gate-ownership';
 
 const pexec = promisify(execFile);
 
+/**
+ * Bound each subprocess on this hot read independently. A wedged git or systemd
+ * probe must degrade its leg to UNKNOWN through the existing fail-soft paths rather
+ * than hold `dev:pipeline_position` past the MCP transport deadline.
+ */
+export const GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS = 5_000;
+
 /** Injectable git runner (returns trimmed stdout, or null on any failure). */
 export type GitRunner = (repo: string, args: string[]) => Promise<string | null>;
 
-const realGit: GitRunner = async (repo, args) => {
+export const realGit: GitRunner = async (repo, args) => {
   try {
-    const { stdout } = await pexec('git', ['-C', repo, ...args], { maxBuffer: 16 * 1024 * 1024 });
+    const { stdout } = await pexec('git', ['-C', repo, ...args], {
+      maxBuffer: 16 * 1024 * 1024,
+      timeout: GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS,
+    });
     return stdout.trim();
   } catch {
     return null;
@@ -3021,12 +3031,15 @@ export function mapCheckpointRunInFlight(
  * that a sha-only or submodule probe never needs, and this module is on the hot path
  * of `dev:pipeline_position`.
  */
-const realResolveGateCandidates = async (root: string): Promise<GateCandidates> => {
+export const realResolveGateCandidates = async (root: string): Promise<GateCandidates> => {
   try {
     const { checkActiveCheckpointRun, currentCheckpointCandidate } = await import('./release-checkpoint-launch');
     const { spawnSync } = await import('node:child_process');
     const execFn = (cmd: string, args: string[]) => {
-      const r = spawnSync(cmd, args, { encoding: 'utf8' });
+      const r = spawnSync(cmd, args, {
+        encoding: 'utf8',
+        timeout: GIT_PIPELINE_POSITION_SUBPROCESS_TIMEOUT_MS,
+      });
       return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
     };
     const active = checkActiveCheckpointRun(root, execFn);
