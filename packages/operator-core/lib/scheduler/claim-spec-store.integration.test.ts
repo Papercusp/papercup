@@ -83,6 +83,13 @@ beforeAll(async () => {
   // select against — production's harness_shared.work_items has no `id` column at all;
   // the unified id lives in `feature_id` and the family/kind in `item_kind`.
   await db.sql.unsafe(`CREATE TABLE harness_shared.work_items (
+    -- WI-38326: FEATURE_COLS projects these five claim-spec filter columns; a fixture
+    -- missing them fails that projection with "column does not exist" (D-014 debt).
+    tags jsonb,
+    source_plan_slug text,
+    source_plan_item_ids text[],
+    redundancy integer,
+    expected_cost_cents bigint,
     workspace_id text NOT NULL,
     feature_id text PRIMARY KEY,
     taken_by text,
