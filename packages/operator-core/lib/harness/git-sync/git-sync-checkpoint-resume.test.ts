@@ -338,6 +338,37 @@ describe('WI-1416 git subprocess hang guard', () => {
   });
 
   it('still kills an endlessly-chatty network child at the independent hard ceiling', async () => {
+    // WI-38338 — TIMING BUDGET, do not re-tighten. This is the SIBLING of the WI-38223 fix above
+    // and it survived that fix carrying the identical defect: the same 50ms emitter, but against a
+    // 120ms idle deadline — only 2.4x jitter tolerance. Measured 2026-08-12: 9/9 passing ALONE,
+    // but 1 failure inside a 5-file parallel run, which is what reds the shared green-checkpoint.
+    //
+    // THE MECHANISM (run-git-sync.ts): terminate() is FIRST-TIMER-WINS (:197 — `if (settled ||
+    // terminating) return`), racing the RE-ARMED idle deadline against the absolute hard ceiling.
+    // A stretched 50ms gap let the IDLE guard win and kill the child with the wrong reason
+    // ("made no output progress"), so the asserted ceiling message never appeared.
+    //
+    // ⚠ THE TRAP, measured the hard way 2026-08-12: you CANNOT fix that by lifting the idle
+    // deadline above the ceiling. `gitHardTimeoutMsFor` (:143-146) computes the ceiling as
+    // `Math.max(idleTimeoutMs, env)` — the ceiling can NEVER sit below the idle deadline. Raising
+    // idle to 2000ms silently dragged the ceiling to 2000ms with it, so the child died at 2s
+    // reporting "exceeded the 2000ms hard ceiling" and this regex missed all over again.
+    // The ordering `gap < idle < ceiling` is therefore FORCED, and the race is inherent: the only
+    // real lever is ABSOLUTE headroom between the gap and the idle deadline.
+    //
+    // BUDGET: 50ms gap · 1500ms idle (30x jitter tolerance) · 3000ms ceiling. WI-38223 set the
+    // sibling at :294 to 6x and that has ALREADY been beaten on this box (su-ead0a, 2026-08-12) —
+    // 6x is not enough here, so do not re-tighten toward it.
+    // STILL FALSIFIABLE: drop the hard timer and the endlessly-chatty child is never killed at all
+    // (idle re-arms on every write), so this test fails on its explicit timeout below rather than
+    // passing vacuously.
+    const IDLE_DEADLINE_MS = 1_500;
+    const HARD_CEILING_MS = 3_000;
+    // Recurrence guard for the exact trap above: if a future edit pushes the idle deadline to or
+    // past the ceiling, Math.max() rewrites the ceiling and the asserted reason drifts. Fail HERE,
+    // loudly and deterministically, instead of flaking on the shared gate hours later.
+    expect(IDLE_DEADLINE_MS).toBeLessThan(HARD_CEILING_MS);
+
     const cwd = mkdtempSync(join(tmpdir(), 'gitsync-hard-timeout-'));
     const oldPath = process.env.PATH;
     const oldSidecar = process.env.PAPERCUSP_SPAWNER_SIDECAR;
@@ -350,11 +381,14 @@ describe('WI-1416 git subprocess hang guard', () => {
       chmodSync(fakeGit, 0o755);
       process.env.PATH = `${bin}:${oldPath ?? ''}`;
       process.env.PAPERCUSP_SPAWNER_SIDECAR = '0';
-      process.env.PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS = '350';
+      process.env.PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS = String(HARD_CEILING_MS);
 
-      const r = await runGitBounded(['fetch', 'origin', 'main'], cwd, 120);
+      const r = await runGitBounded(['fetch', 'origin', 'main'], cwd, IDLE_DEADLINE_MS);
       expect(r.code).toBe(-1);
-      expect(r.stderr).toMatch(/exceeded the 350ms hard ceiling despite output progress/);
+      // Built from the constant so the asserted reason cannot drift from the ceiling it names.
+      expect(r.stderr).toMatch(
+        new RegExp(`exceeded the ${HARD_CEILING_MS}ms hard ceiling despite output progress`),
+      );
     } finally {
       if (oldPath === undefined) delete process.env.PATH;
       else process.env.PATH = oldPath;
@@ -364,7 +398,9 @@ describe('WI-1416 git subprocess hang guard', () => {
       else process.env.PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS = oldHardTimeout;
       rmSync(cwd, { recursive: true, force: true });
     }
-  });
+    // Explicit budget: the ceiling above is 3000ms, which leaves too little headroom under
+    // vitest's 5000ms default for a loaded box. Pinned so the DEADLINE never becomes the flake.
+  }, 20_000);
 
   it('routes git through the sidecar only on the bg-host opt-in, never inside the sidecar itself', () => {
     expect(gitSyncSidecarEnabled({ PAPERCUSP_SPAWNER_SIDECAR: '1' } as NodeJS.ProcessEnv)).toBe(true);
