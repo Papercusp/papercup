@@ -23,6 +23,7 @@ import {
   CHEAP_REPEATING_BEAT_RETRY_WINDOW_MS,
   shouldShedForInFlight,
   DEFAULT_MAX_IN_FLIGHT,
+  isReservedControlPlaneCall,
   shouldSkipDefaultFailureLog,
   type McpProxyTarget,
 } from './proxy';
@@ -865,6 +866,37 @@ describe('WI-35737: a departed client stops the retry loop', () => {
  *      32-89 minutes.
  */
 describe('EI-19305299022434394: admission control — shed with 429 before opening an upstream socket', () => {
+  it('EI-20220715105590670: recognizes only scheduler:get_next as reserved control-plane traffic', () => {
+    const call = (name: string) => Buffer.from(JSON.stringify({ method: 'tools/call', params: { name } }));
+    expect(isReservedControlPlaneCall(call('scheduler:get_next'))).toBe(true);
+    expect(isReservedControlPlaneCall(call('work_items:get'))).toBe(false);
+    expect(isReservedControlPlaneCall(Buffer.from('{bad json'))).toBe(false);
+  });
+
+  it('EI-20220715105590670: admits scheduler:get_next from the reserve while ordinary calls shed', async () => {
+    let releaseUpstream: () => void = () => {};
+    const gate = new Promise<void>((resolve) => { releaseUpstream = resolve; });
+    const upstream = track(http.createServer((_req, res) => void gate.then(() => res.end('{"result":"ok"}'))));
+    await listen(upstream);
+    const proxy = track(createMcpProxy({
+      listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream),
+      retryWindowMs: 5_000, maxInFlight: 2, controlPlaneReserve: 1, log: () => {},
+    }));
+    await listen(proxy);
+
+    const ordinaryBody = JSON.stringify({ method: 'tools/call', params: { name: 'work_items:get', arguments: {} } });
+    const heldOrdinary = request(port(proxy), ordinaryBody);
+    await new Promise((r) => setTimeout(r, 40));
+    expect((await request(port(proxy), ordinaryBody)).status).toBe(429);
+
+    const schedulerBody = JSON.stringify({ method: 'tools/call', params: { name: 'scheduler:get_next', arguments: {} } });
+    const heldScheduler = request(port(proxy), schedulerBody);
+    await new Promise((r) => setTimeout(r, 40));
+    releaseUpstream();
+    expect((await heldOrdinary).status).toBe(200);
+    expect((await heldScheduler).status).toBe(200);
+  });
+
   it('shouldShedForInFlight — sheds at the ceiling, never before it (pure)', () => {
     expect(shouldShedForInFlight(4, 5)).toBe(false);
     expect(shouldShedForInFlight(5, 5)).toBe(true);
@@ -898,7 +930,10 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     const proxy = track(
       createMcpProxy({
         listenPort: 0, targetHost: '127.0.0.1', targetPort: port(upstream),
-        retryWindowMs: 5_000, retryBackoffMs: 20, maxInFlight: 2, log: () => {},
+        // This case isolates the hard maxInFlight ceiling. The production default
+        // reserves control-plane slots, which would intentionally lower the ordinary
+        // admission ceiling below 2 and make the second filler request shed instead.
+        retryWindowMs: 5_000, retryBackoffMs: 20, maxInFlight: 2, controlPlaneReserve: 0, log: () => {},
       }),
     );
     await listen(proxy);
