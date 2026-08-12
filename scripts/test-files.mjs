@@ -709,27 +709,49 @@ function gitHeadSha(root) {
  * Rename records emit a second NUL-terminated field (the source path) which carries no `XY ` status
  * prefix — those are skipped rather than parsed as a path, so a rename can never be read as a
  * status line for some other file.
+ *
+ * TRACKED-NESS IS DECIDED BY `ls-files`, NOT BY THE ABSENCE OF A STATUS RECORD, and that is the
+ * whole reason this takes two calls. `git status` reports an IGNORED file by collapsing it to its
+ * ignored DIRECTORY (measured here: a file under the gitignored `.papercusp/scratch/` is reported
+ * as the record `!! .papercusp/scratch/`, even with `--ignored=matching -uall`), so no exact-path
+ * match ever fires for it. Inferring `clean` from "git named nothing for this path" therefore made
+ * the most confident possible statement — reproducible by anyone — about the least reproducible
+ * possible state: a file that is not in git AT ALL. `ls-files` answers tracked-ness directly and
+ * is immune to that collapse.
  */
 function gitPathStates(absolutePaths, root) {
   const states = new Map(absolutePaths.map((abs) => [abs, PROVENANCE_UNKNOWN]));
   if (absolutePaths.length === 0) return states;
-  let res;
+  let tracked;
+  let status;
   try {
-    res = run('git', ['status', '--porcelain', '-z', '--', ...absolutePaths], { cwd: root });
+    tracked = run('git', ['ls-files', '-z', '--', ...absolutePaths], { cwd: root });
+    status = run('git', ['status', '--porcelain', '-z', '--', ...absolutePaths], { cwd: root });
   } catch {
     return states;
   }
-  if (!res || res.error || res.status !== 0) return states; // unmeasured stays `unknown`, never `clean`
-  // git answered for every requested path, so anything it did not name is genuinely clean.
-  for (const abs of absolutePaths) states.set(abs, 'clean');
-  for (const record of (res.stdout ?? '').split('\0')) {
+  // Either call failing leaves every path `unknown` — never `clean`.
+  if (!tracked || tracked.error || tracked.status !== 0) return states;
+  if (!status || status.error || status.status !== 0) return states;
+
+  const trackedSet = new Set(
+    (tracked.stdout ?? '')
+      .split('\0')
+      .filter(Boolean)
+      .map((p) => resolve(root, p)),
+  );
+  // A path git does not track is not reproducible by a peer, whether it is merely untracked or
+  // ignored outright — both read `untracked` on the banner.
+  for (const abs of absolutePaths) states.set(abs, trackedSet.has(abs) ? 'clean' : 'untracked');
+
+  for (const record of (status.stdout ?? '').split('\0')) {
     if (record.length < 4) continue;
     const code = record.slice(0, 2);
     const reported = record.slice(3);
     if (!/^[ MADRCU?!]{2}$/.test(code)) continue; // a rename's source field — not a status record
     const abs = resolve(root, reported);
     if (!states.has(abs)) continue;
-    states.set(abs, code === '??' ? 'untracked' : 'dirty');
+    states.set(abs, code === '??' || code === '!!' ? 'untracked' : 'dirty');
   }
   return states;
 }

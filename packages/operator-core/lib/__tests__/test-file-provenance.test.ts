@@ -194,6 +194,32 @@ describe('fingerprint + snapshot against the real filesystem', () => {
     const p = resolve(REPO_ROOT, 'package.json');
     expect(snapshotProvenance([p, p]).entries).toHaveLength(1);
   });
+
+  /**
+   * REGRESSION: a GITIGNORED file must never read as `clean`.
+   *
+   * `git status` collapses an ignored file to its ignored DIRECTORY (`!! .papercusp/scratch/`) even
+   * under `--ignored=matching -uall`, so no exact-path record ever matches it. The first version of
+   * this snapshot inferred `clean` from "git named nothing for this path" and therefore reported a
+   * file that is not in git AT ALL as reproducible by anyone — which is why tracked-ness is now
+   * decided by `ls-files` instead. Verified live before the fix (reported `clean`) and after
+   * (reports `untracked`).
+   *
+   * `.papercusp/scratch/` is gitignored, so writing here cannot be picked up by a git-sync sweep —
+   * the in-tree mutation hazard CLAUDE.md warns about does not apply to an ignored path.
+   */
+  it('never reports a gitignored file as clean', () => {
+    const ignored = resolve(REPO_ROOT, '.papercusp/scratch/provenance-ignored-fixture.test.ts');
+    try {
+      writeFileSync(ignored, 'export const fixture = true;\n');
+      expect(snapshotProvenance([ignored]).entries[0].state).toBe('untracked');
+    } finally {
+      rmSync(ignored, { force: true });
+    }
+    // Calibration: the same probe must still say `clean` for a genuinely tracked, unmodified file,
+    // or the assertion above would pass for a snapshot that simply calls everything untracked.
+    expect(['clean', 'dirty']).toContain(snapshotProvenance([resolve(REPO_ROOT, 'package.json')]).entries[0].state);
+  });
 });
 
 describe('end-to-end through the real router', () => {
