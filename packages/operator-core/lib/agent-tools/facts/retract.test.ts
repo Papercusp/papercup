@@ -1,10 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { retractFactM } = vi.hoisted(() => ({ retractFactM: vi.fn() }));
+const { retractFactM, findFactKeyMatchesM, findFactKeyElsewhereM } = vi.hoisted(() => ({
+  retractFactM: vi.fn(),
+  findFactKeyMatchesM: vi.fn(),
+  findFactKeyElsewhereM: vi.fn(),
+}));
 vi.mock('../../agent-facts/store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../agent-facts/store')>()),
   retractFact: retractFactM,
-  findFactKeyElsewhere: vi.fn().mockResolvedValue([]),
+  findFactKeyMatches: findFactKeyMatchesM,
+  findFactKeyElsewhere: findFactKeyElsewhereM,
 }));
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'su-retractor' }),
@@ -13,7 +18,11 @@ vi.mock('../coordination/identity', () => ({
 import tool from './retract';
 
 describe('facts:retract audit metadata', () => {
-  beforeEach(() => retractFactM.mockReset().mockResolvedValue(true));
+  beforeEach(() => {
+    retractFactM.mockReset().mockResolvedValue(true);
+    findFactKeyMatchesM.mockReset().mockResolvedValue([]);
+    findFactKeyElsewhereM.mockReset().mockResolvedValue([]);
+  });
 
   it('requires and forwards the retraction reason with the caller identity', async () => {
     const out = await tool.handler(
@@ -28,5 +37,43 @@ describe('facts:retract audit metadata', () => {
       retractedBy: 'su-retractor',
       reason: 'new evidence disproved it',
     });
+  });
+
+  it('accepts a key-only identity when exactly one current fact matches', async () => {
+    findFactKeyMatchesM.mockResolvedValueOnce([
+      { id: 17, scope: 'owner', scopeRef: 'su-owner', expiresAt: '2026-09-01T00:00:00.000Z' },
+    ]);
+
+    const parsed = tool.args.parse({ key: 'release-trace-c89b17b1-20260812', reason: 'release trace is stale' });
+    const out = await tool.handler(parsed, {} as never);
+
+    expect(out).toMatchObject({ data: { ok: true, retracted: true } });
+    expect(retractFactM).toHaveBeenCalledWith({
+      scope: 'owner',
+      scopeRef: 'su-owner',
+      key: 'release-trace-c89b17b1-20260812',
+      retractedBy: 'su-retractor',
+      reason: 'release trace is stale',
+    });
+  });
+
+  it('refuses a key-only identity when the key is ambiguous, without retracting either fact', async () => {
+    findFactKeyMatchesM.mockResolvedValueOnce([
+      { id: 18, scope: 'owner', scopeRef: 'su-owner', expiresAt: '2026-09-01T00:00:00.000Z' },
+      { id: 19, scope: 'harness', scopeRef: 'papercusp', expiresAt: '2026-09-02T00:00:00.000Z' },
+    ]);
+
+    const out = await tool.handler(
+      { key: 'shared-key', reason: 'new evidence disproved it' },
+      {} as never,
+    );
+
+    expect(out).toMatchObject({ data: { ok: false, retracted: false, error: 'ambiguous_key' } });
+    expect(retractFactM).not.toHaveBeenCalled();
+  });
+
+  it('keeps the audit reason required even when scope is resolved from a unique key', () => {
+    expect(tool.args.safeParse({ key: 'stale' }).success).toBe(false);
+    expect(tool.args.safeParse({ key: 'stale', reason: 'it is no longer true' }).success).toBe(true);
   });
 });

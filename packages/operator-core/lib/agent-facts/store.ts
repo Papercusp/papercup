@@ -1600,6 +1600,38 @@ export interface FactElsewhereMatch {
   expiresAt: string;
 }
 
+/** One live local fact identity matching a key, regardless of its scope. */
+export type FactKeyMatch = FactElsewhereMatch;
+
+/**
+ * Find the current local fact identities for a key across every scope.
+ *
+ * A key is only unique inside `(scope, scopeRef)`, so callers that want to
+ * accept a key without an explicit scope must first prove that exactly one
+ * current identity matches. The result is deliberately bounded: two rows are
+ * enough to refuse an ambiguous key, while the small cap keeps this helper
+ * safe on a key shared by many scopes.
+ */
+export async function findFactKeyMatches(
+  args: { key: string; workspaceId?: string },
+  inject?: Sql,
+): Promise<FactKeyMatch[]> {
+  const key = args.key.trim();
+  if (!key) return [];
+  const sql = sqlOf(inject);
+  const ws = args.workspaceId ?? activeWorkspaceId();
+  const rows = await sql<{ id: string | number; scope: FactScope; scope_ref: string | null; expires_at: string }[]>`
+    SELECT id, scope, scope_ref, expires_at::text
+      FROM harness_shared.agent_facts
+     WHERE workspace_id = ${ws} AND key = ${key}
+       AND source_hive IS NULL
+       AND superseded_at IS NULL
+       AND retracted_at IS NULL
+     ORDER BY expires_at DESC, id DESC
+     LIMIT 2`;
+  return rows.map((r) => ({ id: Number(r.id), scope: r.scope, scopeRef: r.scope_ref, expiresAt: r.expires_at }));
+}
+
 /**
  * EI-19328780288425209: `retractFact` returning `false` is indistinguishable between
  * "this key never existed" and "this key exists, but at a DIFFERENT scope/scopeRef than

@@ -5,26 +5,30 @@
  */
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { retractFact, findFactKeyElsewhere, FACT_SCOPES } from '../../agent-facts/store';
+import { retractFact, findFactKeyElsewhere, findFactKeyMatches, FACT_SCOPES } from '../../agent-facts/store';
 import { resolveScopeRefFromCtx, resolveScopeRefAlias } from './scope-ctx';
 
 export default defineTool({
   name: 'facts:retract',
   capability: 'coord:write',
   description:
-    'Retract a standing fact by (scope, scopeRef, key) with a reason — it immediately stops folding into briefs/dossiers/orients. Soft-delete (actor and reason retained in the 30-day audit trail).',
+    'Retract a standing fact by (scope, scopeRef, key) with a reason — it immediately stops folding into briefs/dossiers/orients. If the key identifies exactly one current fact, scope and scopeRef may be omitted. Soft-delete (actor and reason retained in the 30-day audit trail).',
   guidance: {
     when:
       'A previously-asserted fact is no longer true (the residue cleared, the plan unstalled, the workaround shipped). Retract PROMPTLY — facts fold verbatim, so a stale one actively misleads every future turn.',
     notWhen: 'To update/replace the conclusion — facts:assert with the same key overwrites in place.',
-    chaining: 'facts:list { scope } → facts:retract { scope, scopeRef, key, reason }.',
+    chaining:
+      'facts:list { scope } → facts:retract { scope, scopeRef, key, reason }. When the key is unique across current facts, scope and scopeRef may be omitted; an ambiguous key must be scoped explicitly.',
     seeAlso: ['facts:assert (re-assert same key = update)', 'facts:list'],
   },
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   modality: ['text'],
   args: z.object({
-    scope: z.enum(FACT_SCOPES),
+    scope: z
+      .enum(FACT_SCOPES)
+      .optional()
+      .describe('Optional only when key matches exactly one current fact; required when the key is ambiguous.'),
     scopeRef: z.string().max(120).optional(),
     scope_ref: z.string().max(120).optional().describe('Alias for scopeRef (EI-7371) — prefer scopeRef.'),
     ref: z.string().max(120).optional().describe('Alias for scopeRef (EI-7371) — prefer scopeRef.'),
@@ -35,13 +39,47 @@ export default defineTool({
   async handler(args, ctx) {
     const { resolveAgentIdentity } = await import('../coordination/identity');
     const identity = resolveAgentIdentity(ctx);
+    let scope = args.scope;
+    let scopeRefInput: string | null | undefined;
+
+    if (!scope) {
+      const suppliedScopeRef = args.scopeRef ?? args.scope_ref ?? args.ref ?? args.harness;
+      if ((suppliedScopeRef ?? '').trim()) {
+        return {
+          data: {
+            ok: false,
+            retracted: false,
+            error: 'scope_required',
+            detail: 'Pass scope with scopeRef/ref/harness, or omit all scope fields for unique key-only resolution.',
+          },
+        };
+      }
+      const matches = await findFactKeyMatches({ key: args.key });
+      if (matches.length === 0) return { data: { ok: true, retracted: false } };
+      if (matches.length > 1) {
+        return {
+          data: {
+            ok: false,
+            retracted: false,
+            error: 'ambiguous_key',
+            matches,
+            hint: `key '${args.key}' exists at multiple current fact scopes — pass scope and scopeRef explicitly.`,
+          },
+        };
+      }
+      const match = matches[0]!;
+      scope = match.scope;
+      scopeRefInput = match.scopeRef;
+    } else {
+      // EI-7371: resolve common misnamed aliases (scope_ref/ref/harness) first.
+      scopeRefInput = resolveScopeRefAlias(scope, args);
+    }
     // EI-7517: default an omitted scopeRef from the caller's context (owner = me,
     // harness = this harness, role = my role) so a fact asserted self-scoped
     // without a ref can be retracted the same way — symmetry with facts:assert.
-    // EI-7371: resolve common misnamed aliases (scope_ref/ref/harness) first.
-    const scopeRef = await resolveScopeRefFromCtx(args.scope, resolveScopeRefAlias(args.scope, args), ctx);
+    const scopeRef = await resolveScopeRefFromCtx(scope, scopeRefInput, ctx);
     const retracted = await retractFact({
-      scope: args.scope,
+      scope,
       scopeRef: scopeRef ?? null,
       key: args.key,
       retractedBy: identity.ownerId,
@@ -53,7 +91,7 @@ export default defineTool({
     // DIFFERENT scope" — and the latter left a wrong fact live and believed-retracted for
     // 5h+ in the incident that reported this. Check before returning a bare false.
     const elsewhere = await findFactKeyElsewhere({
-      scope: args.scope,
+      scope,
       scopeRef: scopeRef ?? '',
       key: args.key,
     });
