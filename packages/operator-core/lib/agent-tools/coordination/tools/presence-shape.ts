@@ -41,6 +41,7 @@ export function shapeCoordPresence(data: unknown, tier: PresenceTier): unknown {
     | null
     | undefined;
   if (!d || !Array.isArray(d.active)) return data;
+  const active = d.active;
   const c = PRESENCE_TIER_CAPS[tier];
 
   const project = (row: unknown): Record<string, unknown> => {
@@ -117,7 +118,7 @@ export function shapeCoordPresence(data: unknown, tier: PresenceTier): unknown {
   const baseData = { ...d };
   delete baseData.active;
   delete baseData.activeTruncated;
-  const projectedRows = d.active.slice(0, c.rows).map(project);
+  const projectedRows = active.slice(0, c.rows).map(project);
   const serializeLength = (value: unknown): number => {
     try {
       return JSON.stringify(value)?.length ?? Number.POSITIVE_INFINITY;
@@ -129,7 +130,7 @@ export function shapeCoordPresence(data: unknown, tier: PresenceTier): unknown {
   const expandedRows = expanded ?? [];
   const build = (shown: number, shownExpanded: number): Record<string, unknown> => {
     const rows = projectedRows.slice(0, shown);
-    const truncated = shown < d.active.length;
+    const truncated = shown < active.length;
     const budgetTruncated = shown < maxRows;
     const expandedBudgetTruncated = expanded !== undefined && shownExpanded < expanded.length;
     if (truncated) {
@@ -137,14 +138,14 @@ export function shapeCoordPresence(data: unknown, tier: PresenceTier): unknown {
         ...project({}),
         ownerId: "(truncated)",
         intent: budgetTruncated
-          ? `showing ${shown} of ${d.active.length} — response budget; narrow with owner/hive/scope, or payloadTier:"full"`
-          : `showing ${c.rows} of ${d.active.length} — narrow with owner/hive/scope, or payloadTier:"full"`,
+          ? `showing ${shown} of ${active.length} — response budget; narrow with owner/hive/scope, or payloadTier:"full"`
+          : `showing ${c.rows} of ${active.length} — narrow with owner/hive/scope, or payloadTier:"full"`,
       });
     }
     const activeTruncated = truncated
       ? {
           shown,
-          censusCount: d.active.length,
+          censusCount: active.length,
           truncatedByLimit: true as const,
           limit: c.rows,
           ...(budgetTruncated ? { reason: "response_budget" as const } : {}),

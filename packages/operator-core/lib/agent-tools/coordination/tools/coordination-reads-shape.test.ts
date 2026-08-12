@@ -119,6 +119,7 @@ describe("shapeCoordPresence (P-022)", () => {
         censusCount: number;
         truncatedByLimit: boolean;
         limit: number;
+        reason?: string;
         more: string;
       };
     };
