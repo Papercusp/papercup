@@ -24,6 +24,7 @@ const H = vi.hoisted(() => ({
 }));
 
 vi.mock('@papercusp/sync', () => ({
+  onSyncBusEvent: () => () => {},
   useSyncQuery: (opts: { args?: unknown }) => {
     H.lastArgs = opts.args;
     return { data: H.payload == null ? undefined : [H.payload] };
