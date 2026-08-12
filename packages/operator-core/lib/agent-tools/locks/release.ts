@@ -26,6 +26,20 @@ import { recordLockEvent } from '../../authority/lock-event-stream';
 import { noteShaTokenRelease } from '../../authority/sha-token-registry';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 
+const lockIdSchema = z.string().uuid({
+  error: (issue) => {
+    const input = issue.input;
+    if (typeof input === 'string') {
+      const lengthHint =
+        input.length < 36
+          ? ` The value is ${input.length} characters long and may be truncated; complete UUIDs are 36 characters.`
+          : ` The value is ${input.length} characters long, but it is not a valid UUID.`;
+      return `Invalid UUID for lock id.${lengthHint} Use the complete id returned by locks:acquire or locks:queue.`;
+    }
+    return 'Invalid UUID for lock id. Use the complete id returned by locks:acquire or locks:queue.';
+  },
+});
+
 export default defineTool({
   name: 'locks:release',
   description:
@@ -44,8 +58,8 @@ export default defineTool({
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   args: z.object({
-    lock_id: z.string().uuid().optional(),
-    lock_ids: z.array(z.string().uuid()).min(1).max(200).optional(),
+    lock_id: lockIdSchema.optional(),
+    lock_ids: z.array(lockIdSchema).min(1).max(200).optional(),
     paths: z.array(z.string()).optional(),
     all_mine: z.boolean().optional(),
     // G-0 (P-033) publish-then-release: the head sha you published to your
