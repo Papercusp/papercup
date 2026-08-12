@@ -70,13 +70,22 @@ waiting on a decision; every open row has a named owner and a concrete flip cond
 > broadcast firing every ~8 minutes for two days with nobody acting. That durable-record gap, not a
 > concealed red, is the process defect.
 >
-> **Flip condition is now three-part**, and `WI-37464` is new: re-arming is gated on
-> `replication_soak` (WI-5481, 5/5 runs) and `restart_durability` (new) so the gate is readable —
-> **and on `WI-37464`, which is the cause of the churn the owner objected to.** Measured in the
-> script: `live-federation-gate.sh:400-402` makes hourly firing cheap ONLY via
-> `age_h(last-green) < GATE_SUCCESS_TTL_H`, and `:1309` writes `last-green` on the **green path
-> only** — so a RED gate has **no suppression at all** and runs the full heavy gate every hour
-> forever. Re-arming while red re-creates exactly the CPU churn that got it stopped.
+> **Flip condition was three-part; leg (iii) `WI-37464` CLEARED 2026-08-12 — TWO remain.**
+> Re-arming is still gated on `replication_soak` (WI-5481, 5/5 runs) and `restart_durability`
+> (new), so a re-armed gate is readable rather than permanently noisy.
+>
+> ✅ **(iii) `WI-37464` — the cause of the churn the owner objected to — is FIXED and CLOSED.**
+> The defect was real as stated: `live-federation-gate.sh` made hourly firing cheap ONLY via
+> `age_h(last-green) < GATE_SUCCESS_TTL_H` while `last-green` is written on the **green path
+> only**, so a RED gate had **no suppression at all** and re-ran the full heavy gate every hour
+> forever. A three-tier fresh-exit backoff (green / downgrade / red) shipped 2026-08-09T12:17Z.
+> LIVE-VERIFIED 2026-08-12T19:30Z by su-ba5ef executing the real script in an isolated
+> `GATE_STATE_DIR` with `GATE_NO_FILE=1`: a fresh red exits `GATE: FRESH-RED`, rc 0, sub-second;
+> **falsifiability control** — a red aged 7h (just past the 6h TTL) takes NO fresh exit and falls
+> through to a real run, which is what proves the backoff is age-conditional and the pass was not
+> vacuous. Three further controls pinned branch ordering green > downgrade > red.
+> ⚠ Clearing (iii) is NOT permission to re-arm: legs (i) and (ii) stand, and the owner wall below
+> is independent of all three.
 >
 > ⚠ **Therefore the 08-01 "CONDITIONAL-GO on three named rows" headline is SUPERSEDED, not merely
 > aged.** Any summary — including prose elsewhere in this file, and any agent checkpoint quoting it
@@ -261,14 +270,15 @@ logs are from the green run `m1785117063`.
    run's `last-run` stamp is coincidence. The real process defect is narrower and still open: the
    pause was never recorded on any work-item, Decision or coord message.
 
-   Flip condition — timer re-armed and producing verdicts, gated on THREE things:
+   Flip condition — timer re-armed and producing verdicts. Originally THREE things; **(iii) is
+   now CLEARED, so TWO remain:**
    (i) `replication_soak` (`WI-5481`, 5/5 runs, load hypothesis falsified by frame PSI
    `avg10=0.00` against host loadavg 42-51); (ii) `restart_durability` (new, untriaged) — both so a
-   re-armed gate is readable rather than permanently noisy; and (iii) **`WI-37464` (NEW,
-   unclaimed): a RED gate has no firing suppression at all.** `live-federation-gate.sh:400-402`
-   gates the cheap exit on `age_h(last-green) < GATE_SUCCESS_TTL_H` while `:1309` writes
-   `last-green` on the **green path only**, so once red it runs the full heavy gate every hour
-   indefinitely — the churn the owner stopped. Re-arming before (iii) reproduces the complaint.
+   re-armed gate is readable rather than permanently noisy; and ~~(iii) **`WI-37464`: a RED gate
+   has no firing suppression at all**~~ → **✅ CLEARED 2026-08-12.** The three-tier fresh-exit
+   backoff shipped 2026-08-09T12:17Z and was live-verified 2026-08-12T19:30Z (fresh red ⇒
+   `GATE: FRESH-RED` rc 0 sub-second; a 7h-old red correctly takes NO fresh exit — the control that
+   proves it is age-conditional). `WI-37464` is closed, `completionAuthority=committed`.
    ⚠ Re-arming also reverses an explicit owner instruction (wall
    `wall:live-federation-gate-timer-owner-stopped`) — it is owner-gated, not an agent call.
    Recorded as a plan Decision so it is addressable rather than prose:
