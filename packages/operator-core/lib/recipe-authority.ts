@@ -49,6 +49,8 @@ export type RecipeUnresolvedCause =
   | { kind: 'dynamic-scope-args'; tool: string }
   /** A coordination call embeds a sender/cursor that can be stale outside its original wake. */
   | { kind: 'volatile-coordination-args'; tool: string; keys: string[] }
+  /** A loop call writes caller-scoped session state whose values cannot be proved reusable. */
+  | { kind: 'volatile-session-state'; tool: string }
   /** A work-item claim names a fixed assignee that this authority model cannot validate. */
   | { kind: 'fixed-claim-assignee'; tool: string }
   /** Tools were referenced but NO call could be statically resolved (dynamic/unsupported access form). */
@@ -114,6 +116,12 @@ const asRecord = (value: unknown): Record<string, unknown> | null =>
 
 const SCOPE_NAMESPACES = new Set(['plans', 'workitems', 'fleet', 'harness', 'locks', 'resource', 'resources']);
 const OPAQUE_TOOLS = new Set(['dev:pgquery', 'capability:bash', 'capability:script', 'code:run']);
+// Session carry is owned by the CURRENT caller, not by the recipe. A saved
+// loop:checkpoint therefore carries a prior wake's did/left/next state and can
+// overwrite the reuser's live carry note with stale lane facts. There is no
+// entity proof dimension for the session's current carry state, so fail closed
+// instead of treating this as a generic recipe.
+const VOLATILE_SESSION_STATE_TOOLS = new Set(['loop:checkpoint']);
 // Coordination cursors and sender ids describe a momentary conversation, not a
 // reusable lane. A saved recipe carrying one must fail closed: neither the
 // recipe's stable entity refs nor a later authority proof can prove that the
@@ -239,6 +247,9 @@ function inspectCall(
 
   if (OPAQUE_TOOLS.has(normalizedTool)) {
     return { kind: 'opaque-tool', tool: call.tool };
+  }
+  if (VOLATILE_SESSION_STATE_TOOLS.has(normalizedTool)) {
+    return { kind: 'volatile-session-state', tool: call.tool };
   }
   if (ns === 'coord') {
     const args = asRecord(call.args);
@@ -496,6 +507,13 @@ function unresolvedReason(cause: RecipeUnresolvedCause | null | undefined): stri
         'when reused in a later wake — no authority proof can safely revalidate a momentary conversation cursor. ' +
         'Rewrite the recipe to derive the current sender/cursor from live context, or run the script directly via ' +
         'code:run; until then it is not safely reusable through recipes:run.'
+      );
+    case 'volatile-session-state':
+      return (
+        `the recipe script calls \`${cause.tool}\`, which writes caller-scoped session carry state whose values ` +
+        'cannot be proved current for a later wake — reusing it could overwrite the caller\'s live carry note with ' +
+        'stale lane facts. No authority proof can safely authorize this saved state mutation; do not reuse this ' +
+        'recipe. Re-author the checkpoint from the current state only after inspecting the values.'
       );
     case 'fixed-claim-assignee':
       return (

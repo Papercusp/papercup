@@ -78,6 +78,35 @@ describe('recipe recommendation authority (P-008)', () => {
     });
   });
 
+  it('fails closed for caller-scoped loop checkpoint state', async () => {
+    const checkpointScript = `return await tools.loop.checkpoint({
+      did: 'historical fleet work',
+      left: 'historical next step',
+      insight: 'historical conclusion',
+      next: 'historical wake action',
+    });`;
+    await expect(deriveRecipeAuthority(checkpointScript)).resolves.toMatchObject({
+      unresolved: true,
+      unresolvedCause: {
+        kind: 'volatile-session-state',
+        tool: 'loop.checkpoint',
+      },
+    });
+    await expect(buildRecipeAuthorityRecommendation({
+      script: checkpointScript,
+      updatedAt: '2026-08-12T00:00:00.000Z',
+      context: { fleet: 'current-fleet', harness: 'papercusp' },
+    })).resolves.toBeNull();
+    await expect(validateRecipeAuthorityProof({
+      script: checkpointScript,
+      updatedAt: '2026-08-12T00:00:00.000Z',
+    })).resolves.toMatchObject({
+      ok: false,
+      error: 'authority_unresolved',
+      reason: expect.stringContaining('caller-scoped session carry state'),
+    });
+  });
+
   it('revalidates the stored revision and live entity identity at run time', async () => {
     const updatedAt = '2026-07-13T12:00:00.000Z';
     const proof = {

@@ -285,4 +285,32 @@ describe('code_recipes hybrid search (real PG)', () => {
 
     expect(results.find((row) => row.id === 'stale-coordination-cursor')).toBeUndefined();
   });
+
+  it('does not recommend recipes that write caller-scoped loop carry state', async () => {
+    await upsertRecipe(db.adminSql, {
+      potSlug: null,
+      id: 'stale-loop-carry',
+      title: 'Persist historical fleet wake note',
+      description: 'save the previous leader tick as the current loop checkpoint',
+      script: `return await tools.loop.checkpoint({
+        did: 'historical fleet work',
+        left: 'historical next step',
+        insight: 'historical conclusion',
+        next: 'historical wake action',
+      });`,
+      toolsUsed: ['loop:checkpoint'],
+      embedding: seededEmbedding(51),
+    });
+
+    const results = await searchSimilarRecipes(db.adminSql, {
+      title: 'Persist historical fleet wake note',
+      description: 'save the previous leader tick as the current loop checkpoint',
+      toolsUsed: ['loop:checkpoint'],
+      embedding: seededEmbedding(51),
+      recommendationContext: { fleet: 'current-fleet', harness: 'papercusp' },
+      limit: 10,
+    });
+
+    expect(results.find((row) => row.id === 'stale-loop-carry')).toBeUndefined();
+  });
 });
