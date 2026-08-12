@@ -109,6 +109,12 @@ const parse = (res: any) => JSON.parse(res.content[0].text);
 const ME = 'su-me';
 const PEER = 'su-peer';
 
+describe('mode:set registration', () => {
+  it('opts out of the ambient workspace transaction for independent control-plane awaits', () => {
+    expect((setTool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+});
+
 beforeEach(() => {
   h.setMode.mockClear().mockResolvedValue({ ok: true, mode: { id: 'auto' }, switchedFrom: null, noop: false });
   h.sendMessage.mockClear().mockResolvedValue({ msg_id: 'm-1' });
