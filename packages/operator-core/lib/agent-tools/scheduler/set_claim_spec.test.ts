@@ -18,12 +18,18 @@ import setClaimSpecTool, {
 import type { ClaimSpec } from '../../scheduler/claim-spec';
 
 const wakeClaimableAwaitersForSubscribers = vi.hoisted(() => vi.fn());
+const listFleetMembers = vi.hoisted(() => vi.fn());
 
 // The helper is dynamically imported by the tool so its wake-plane dependency can
 // fail soft after the durable spec write. Keep this test focused on the target
 // resolution and forwarding contract without opening a real await/event store.
 vi.mock('../../events/await/engine', () => ({
   wakeClaimableAwaitersForSubscribers: (...args: unknown[]) => wakeClaimableAwaitersForSubscribers(...args),
+}));
+vi.mock('../coordination/audience-host', () => ({
+  hostAudienceResolvers: {
+    listFleetMembers: (...args: unknown[]) => listFleetMembers(...args),
+  },
 }));
 
 describe('wakeClaimableAwaitersAfterSpecChange — EI-20079462322478221', () => {
@@ -48,6 +54,26 @@ describe('wakeClaimableAwaitersAfterSpecChange — EI-20079462322478221', () => 
     ).resolves.toEqual({
       woken: 0,
       warning: 'claim-spec revision stored, but parked claimable awaiters could not be woken: await store unavailable',
+    });
+  });
+
+  it('resolves a fleet target to its current live members before waking', async () => {
+    listFleetMembers.mockResolvedValueOnce(['su-member-a', 'su-member-b']);
+    wakeClaimableAwaitersForSubscribers.mockResolvedValueOnce(2);
+
+    await expect(
+      wakeClaimableAwaitersAfterSpecChange({
+        cupId: 'fleet:nonp2p-bug-drain',
+        fleet: 'nonp2p-bug-drain',
+        specId: 'bugs-lane',
+        revision: 9,
+      }),
+    ).resolves.toEqual({ woken: 2 });
+    expect(listFleetMembers).toHaveBeenCalledWith('nonp2p-bug-drain');
+    expect(wakeClaimableAwaitersForSubscribers).toHaveBeenCalledWith({
+      subscriberIds: ['su-member-a', 'su-member-b'],
+      specId: 'bugs-lane',
+      revision: 9,
     });
   });
 });
