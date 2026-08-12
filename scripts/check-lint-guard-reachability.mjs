@@ -177,6 +177,30 @@ export const ACKNOWLEDGED_UNREACHABLE = new Map([
   ['lint:optional-seam-strands', 'logic-test only; deepen to a real-tree assertion'],
   ['lint:typeless-reexport', 'logic-test only; deepen to a real-tree assertion'],
   ['lint:vitest-mock-paths', 'logic-test only; deepen to a real-tree assertion'],
+
+  // ── Seeded 2026-08-12 when the census was WIDENED to the `gen:*:check` family. ──
+  // These 8 are not new debt. They are debt that was always there and structurally
+  // invisible, because `selectGuardScripts` scanned `lint:*` only (see GEN_CHECK_RE).
+  // Seeded at their MEASURED size for exactly the reason the 2026-08-03 block above
+  // was: wiring 8 rotted guards in one commit is the fleet-reddening move this
+  // script's own header warns against. The ratchet is what this buys immediately —
+  // a NEWLY orphaned gen:*:check now fails the build on the commit that orphans it.
+  [
+    'gen:authored-docs:check',
+    'drift gate for the 873-doc PG-canonical corpus (plan claude-md-projection-from-pg-2026-08-10). ' +
+      'MEASURED CONSEQUENCE 2026-08-12: 4 projected docs were hand-edited and sat drifted ~20h with ' +
+      'nothing reporting it. Needs PG, so GitHub CI cannot run it meaningfully (it exits 1 when the ' +
+      'DB is unreachable rather than degrading like gen:doc-plans-index:check) — the wire-or-retire ' +
+      'call is WHERE, not whether. Do not gate it on green-checkpoint without deciding whether doc ' +
+      'drift should block code deploys for the whole fleet.',
+  ],
+  ['gen:claude-md-manifest:check', 'logic-test only; deepen to a real-tree assertion'],
+  ['gen:compaction:check', 'pending wire-or-retire decision'],
+  ['gen:doc-projections:check', 'pending wire-or-retire decision; sibling per-page gen:doc-*:check are CI-wired'],
+  ['gen:fleet-lessons:check', 'pending wire-or-retire decision'],
+  ['gen:knowledge-packs:check', 'pending wire-or-retire decision'],
+  ['gen:openapi:check', 'pending wire-or-retire decision'],
+  ['gen:tool-catalog:check', 'heavy full-registry import, fleet-fragile (same reason its doc sibling is CI-informational); pending decision'],
 ]);
 
 /**
@@ -184,8 +208,21 @@ export const ACKNOWLEDGED_UNREACHABLE = new Map([
  * appending. Raising it needs owner sign-off and a stated reason, exactly like
  * `DARK_FLAGS_HIGH_WATERMARK` — and for the same reason, since an allowlist that
  * grows freely reproduces the invisible rot this script exists to detect.
+ *
+ * ── 14 → 22 on 2026-08-12. STATED REASON: the POPULATION grew, not the debt. ──
+ * [owner 2026-08-12] directed an audit of plan claude-md-projection-from-pg-2026-08-10
+ * ("compare every plan item to the code... fix any gaps"), which found that this census
+ * scanned `lint:*` only and had never seen the `gen:*:check` family at all. Widening it
+ * (GEN_CHECK_RE) made 8 already-orphaned guards VISIBLE in one step; not one of them was
+ * orphaned by this commit, and the `lint:*` portion of the set is UNCHANGED at 14.
+ *
+ * This is the one move that legitimately raises a shrink-only ceiling: measuring more of
+ * the world. It is NOT a licence to append — every rule above still holds, the set is
+ * still shrink-only from this new baseline, and a guard orphaned from here on fails the
+ * build rather than landing here. Raising it again to park a newly-rotted guard would be
+ * precisely the abuse the sibling `KNOWN_DARK_FLAGS` rule exists to stop.
  */
-export const UNREACHABLE_HIGH_WATERMARK = 14;
+export const UNREACHABLE_HIGH_WATERMARK = 22;
 
 /**
  * Guards that ARE enforced, but only over PART of what they scan (EI-19461064447747454).
@@ -272,6 +309,35 @@ export const ENFORCING_TEST_RE = /execFileSync|spawnSync|execSync|listTrackedFil
 const COMPANION_SUFFIX_RE = /:(fix|report|census|strict|all|fail|update|check|typecheck)$/;
 
 /**
+ * The OTHER guard family in this repo: `gen:<artifact>:check`, the drift check for a
+ * GENERATED artifact. It asserts the committed file still matches what its generator
+ * would produce — the same job a `lint:*` guard does, expressed in the generator's
+ * namespace rather than the linter's.
+ *
+ * ── WHY THIS HAD TO BE ADDED (measured 2026-08-12, plan claude-md-projection-from-pg) ──
+ * The census scanned `lint:*` ONLY, so this entire family was invisible to it — including
+ * `gen:authored-docs:check`, the drift gate protecting the 873-doc PG-canonical corpus,
+ * which `scripts/project-authored-docs.ts` calls "a GATE" in its own comments while
+ * nothing invoked it. The consequence was exactly what this script's header predicts an
+ * unwired guard produces: four projected docs were hand-edited and sat drifted for ~20h
+ * with nothing reporting it, and the drift surfaced only because an agent ran the command
+ * by hand. A meta-guard blind to half the guard namespace cannot detect that, and its
+ * green gets quoted as evidence that every guard is wired.
+ *
+ * ⚠ COMPANION COLLAPSE MUST NOT APPLY HERE, and the reason is not cosmetic.
+ * `COMPANION_SUFFIX_RE` includes `check`, so the ordinary rule would collapse
+ * `gen:foo:check` onto `gen:foo` whenever the base is declared — which it always is.
+ * But the two are NOT a guard and its variant: `gen:foo` WRITES the artifact (it is the
+ * generator, and mutates the tree), while `gen:foo:check` is the only half that ASSERTS
+ * anything. Collapsing would credit enforcement to a script that can never fail on drift
+ * because its job is to overwrite it — silently emptying this family from the census
+ * again, in the one direction the header calls the wasteful answer to get wrong. So the
+ * `:check` variant is selected as a guard in its own right and its writer base is never
+ * treated as covering it.
+ */
+const GEN_CHECK_RE = /^gen:.+:check$/;
+
+/**
  * Blank out COMMENTS before matching. A runner file that merely *discusses* a guard in
  * prose must not count as running it.
  *
@@ -317,14 +383,14 @@ export function stripComments(text, { yaml = false } = {}) {
  * such orphan exists today, so this is a safety property, not a behaviour change.)
  */
 export function selectGuardScripts(scripts) {
-  const names = Object.keys(scripts).filter((name) => name.startsWith('lint:'));
-  const declared = new Set(names);
-  return names
-    .filter((name) => {
-      const m = name.match(COMPANION_SUFFIX_RE);
-      return !m || !declared.has(name.slice(0, -m[0].length));
-    })
-    .sort();
+  const all = Object.keys(scripts);
+  const lintNames = all.filter((name) => name.startsWith('lint:'));
+  const declared = new Set(lintNames);
+  const lintGuards = lintNames.filter((name) => {
+    const m = name.match(COMPANION_SUFFIX_RE);
+    return !m || !declared.has(name.slice(0, -m[0].length));
+  });
+  return [...lintGuards, ...all.filter((name) => GEN_CHECK_RE.test(name))].sort();
 }
 
 /**
