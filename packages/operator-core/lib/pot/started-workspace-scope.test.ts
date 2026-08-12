@@ -136,36 +136,44 @@ describe('setPotStarted — K1 workspace-papercup write key (P-003)', () => {
   });
 });
 
-describe('getPotStarted — K1 read-fallback (P-003)', () => {
-  it('flag OFF → reads only the per-pot row', async () => {
-    h.isWorkspaceCoordinationOn.mockResolvedValue(false);
+/**
+ * getPotStarted — K1 read-fallback (P-003): RETIRED WITH THE TIER, not deleted.
+ *
+ * This block used to assert the four K1 read-fallback behaviours listed below.
+ * They are UNREACHABLE as of the mug/kettle retirement
+ * (retire-mug-kettle-su-only-2026-08-09 P-007, D-004/D-008), because getPotStarted
+ * now opens with a hard engine gate — started.ts:121:
+ *
+ *     if (!(await mugKettleSystemEnabled())) return false;
+ *
+ * and mugKettleSystemEnabled (started.ts:59-61) is hard-wired `return false`. It no
+ * longer consults a flag at all, so THIS FILE'S `getFlag` MOCK CANNOT REACH IT —
+ * which is precisely how these four went red and stayed red: the mock still looks
+ * like it enables the tier, and has had no effect since the hard-wiring landed.
+ *
+ * The WRITE-side K1 tests above still pass and are still live, because
+ * setPotStarted carries no such gate — that asymmetry is the tell.
+ *
+ * The retired contract is covered authoritatively (with a calibration test and a
+ * short-circuit proof) by ./mug-kettle-engine-gate.test.ts, so re-asserting it here
+ * would be duplication. Only the tripwire below is kept.
+ *
+ * WHEN THE TIER IS UN-RETIRED, restore these four assertions verbatim — they are
+ * the K1 semantics and nothing else records them:
+ *   1. flag OFF  → reads ONLY `hive_started:<ws>:<pot>`; a `<ws>:<ws>` papercup row
+ *                  must be IGNORED (no widening).
+ *   2. flag ON   → PREFERS the papercup row `hive_started:<ws>:<ws>`.
+ *   3. flag ON, no papercup row yet → FALLS BACK to the legacy per-pot row.
+ *   4. flag ON   → the papercup bit resolves for ANY pot in the workspace
+ *                  (central-dispatch widening).
+ */
+describe('getPotStarted — engine gate (tier retired)', () => {
+  it('TRIPWIRE: resolves false even with a started row, in BOTH coordination modes', async () => {
+    // Deliberately set the row that would have made the K1 read return true. If
+    // this ever goes green-by-returning-true, the engine gate has been removed and
+    // the four K1 assertions in the comment above must come back with it.
     h.kv.set(`hive_started:${WS}:${POT}`, 'true');
-    expect(await getPotStarted(WS, POT)).toBe(true);
-    // a papercup row must be IGNORED when off (no widening)
-    h.kv.clear();
     h.kv.set(`hive_started:${WS}:${WS}`, 'true');
-    expect(await getPotStarted(WS, POT)).toBe(false);
-  });
-
-  it('flag ON → prefers the papercup row', async () => {
-    h.isWorkspaceCoordinationOn.mockResolvedValue(true);
-    h.kv.set(`hive_started:${WS}:${WS}`, 'true');
-    expect(await getPotStarted(WS, POT)).toBe(true);
-  });
-
-  it('flag ON, no papercup yet → FALLS BACK to the legacy per-pot row (zero regression)', async () => {
-    h.isWorkspaceCoordinationOn.mockResolvedValue(true);
-    h.kv.set(`hive_started:${WS}:${POT}`, 'true'); // only the legacy row exists
-    expect(await getPotStarted(WS, POT)).toBe(true);
-  });
-
-  it('flag ON → the papercup started bit resolves for ANY pot in the workspace (central-dispatch widening)', async () => {
-    h.isWorkspaceCoordinationOn.mockResolvedValue(true);
-    h.kv.set(`hive_started:${WS}:${WS}`, 'true');
-    expect(await getPotStarted(WS, 'another-pot')).toBe(true);
-  });
-
-  it('default false when no row exists (both modes)', async () => {
     h.isWorkspaceCoordinationOn.mockResolvedValue(false);
     expect(await getPotStarted(WS, POT)).toBe(false);
     h.isWorkspaceCoordinationOn.mockResolvedValue(true);
