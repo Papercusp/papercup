@@ -315,7 +315,7 @@ export const testRunsHistory: SqlSubstitutionPair = {
  * filed issues by text or by state.
  *
  * ⚠ THIS PAIR CLAIMS A MINORITY OF ITS RELATION'S TRAFFIC, DELIBERATELY — see
- * D-009. `engineer_issues` is the corpus's single heaviest relation (349 atoms /
+ * D-006. `engineer_issues` is the corpus's single heaviest relation (349 atoms /
  * 60 agents), and the plan's own headline read that as "349 calls `issues:list`
  * would serve". Reading the actual population says otherwise: the dominant shape
  * is a BY-ID forensic read — `WHERE issue_id = 'WI-38048'` projecting
