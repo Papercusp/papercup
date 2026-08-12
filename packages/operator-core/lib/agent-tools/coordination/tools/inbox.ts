@@ -446,7 +446,7 @@ function internalDeliveryFloor(args: unknown): string | undefined {
 export default defineTool({
   name: "coord:inbox",
   description:
-    "Read your coordination inbox — messages, acks, handoffs etc. addressed to you (or broadcast). Returns a summary header (counts by kind) + the most-recent `limit` entries (default 50). This direct tool's bound is `limit`; the `coord:orient` wrapper names its corresponding option `inboxLimit` and translates it internally. Ambient system broadcasts (service-health, rate-limit pauses, doc-freshness RE-VERIFY digests) are excluded by default — include_ambient shows them. Repeated system broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a stale alarm whose condition later cleared carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected by its sender — follow that msg_id. `kinds` narrows to specific entry kinds. `unanswered_only` narrows to the directed messages fleet:assignments'/leader-brief's `unanswered_directed` counter flagged (same primitive — can't disagree). This is a VIEW of your recent inbox, not a delta: you carry no cursor, so re-reading in the same turn always re-shows the same window rather than emptying out.",
+    "Read your coordination inbox — messages, acks, handoffs etc. addressed to you (or broadcast). Returns a summary header (counts by kind) + the most-recent `limit` entries (default 50); `coord:orient` calls that option `inboxLimit`. Ambient system broadcasts are excluded by default; include_ambient (alias includeAmbient) shows them. Repeated system broadcasts collapse to one row (`repeat_count`, `first_seen_ts`); a stale alarm whose condition later cleared carries `resolved:true` — do not investigate it. An entry with `superseded_by` was corrected by its sender — follow that msg_id. `kinds` narrows to specific entry kinds. `unanswered_only` narrows to the directed messages fleet:assignments'/leader-brief's `unanswered_directed` counter flagged (same primitive — can't disagree). This is a VIEW of your recent inbox, not a delta: you carry no cursor, so re-reading in the same turn always re-shows the same window rather than emptying out.",
   guidance: {
     when: "At turn start (the OMP hook will do this for you once it ships); whenever you suspect another agent contacted you. For a direct inbox read, pass `limit`; `inboxLimit` belongs to the `coord:orient` wrapper, not this tool.",
     notWhen:
@@ -484,6 +484,12 @@ export default defineTool({
       .describe(
         "Include ambient system broadcasts (service-health, agent-governor, doc-drift) excluded by default.",
       ),
+    includeAmbient: z
+      .boolean()
+      .optional()
+      .describe(
+        "Compatibility alias for include_ambient; prefer the canonical snake_case key. If both are supplied, include_ambient wins.",
+      ),
     include_intents: z
       .boolean()
       .optional()
@@ -520,6 +526,11 @@ export default defineTool({
       (sessionTier && INBOX_TIER_DEFAULTS[sessionTier]) ??
       INBOX_TIER_DEFAULTS.full;
     const limit = args.limit ?? tierDefaults.limit;
+    // EI-20224620909324295: older model-facing surfaces emitted camelCase for
+    // this option. Keep the snake_case key canonical while accepting the
+    // explicitly-declared compatibility alias; an explicitly supplied
+    // include_ambient value wins when both are present.
+    const includeAmbient = args.include_ambient ?? args.includeAmbient ?? false;
     // EI-12930: resolve a SHORT ownerId/label `from` (`su-b0fbf`) to the FULL ownerId via
     // the SAME roster resolver coord:send uses — so a filter that SUCCESSFULLY sent can't
     // then silently FAIL to find the reply — and flag `from_unmatched` when it matches NO
@@ -577,7 +588,7 @@ export default defineTool({
             // would be served to a caller asking for 500.
             limit,
             bounded: !resolvedFrom && !args.unanswered_only,
-            ambient: !!args.include_ambient,
+            ambient: includeAmbient,
             intents: !!args.include_intents,
           },
           tags: ["coord_event_log"],
@@ -624,7 +635,7 @@ export default defineTool({
             !resolvedFrom && !args.unanswered_only
               ? {
                   enough: (entries) => {
-                    const afterAmbient = args.include_ambient
+                    const afterAmbient = includeAmbient
                       ? entries
                       : entries.filter(
                           (e) => !isAmbientBroadcast(e as unknown as Record<string, unknown>),
@@ -642,10 +653,10 @@ export default defineTool({
       readWatermark(identity.ownerId).catch(() => emptyWatermark()),
     ]);
 
-    const ambientExcluded = args.include_ambient
+    const ambientExcluded = includeAmbient
       ? 0
       : all.filter(isAmbientBroadcast).length;
-    const ambientFiltered = args.include_ambient
+    const ambientFiltered = includeAmbient
       ? all
       : all.filter((e) => !isAmbientBroadcast(e));
     // P-005 (fleet-member-dx): excluded by default like ambient, counted as
