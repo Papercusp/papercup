@@ -41,6 +41,17 @@ describe('EI-6479 — typecheck script exists and runs the real baseline gate', 
     expect(s.typecheck).toMatch(/lint-tsc\.mjs/);
   });
 
+  it('root exposes the canonical npm workspace name for focused operator-core typechecks', () => {
+    const root = scripts('package.json');
+    expect(root['typecheck:operator-core']).toBe(
+      'npm --workspace @papercusp/operator-core run typecheck --',
+    );
+    const operatorCore = JSON.parse(
+      readFileSync(resolve(REPO_ROOT, 'packages/operator-core/package.json'), 'utf-8'),
+    ) as { name?: string };
+    expect(operatorCore.name).toBe('@papercusp/operator-core');
+  });
+
   // EI-847: operator-vite's `typecheck` used to be a raw `tsc --noEmit`, which floods with
   // hundreds of pre-existing errors (native-module ambient-type gaps transitively reachable
   // through operator-core) and gives an agent editing one component no clean per-file signal.
