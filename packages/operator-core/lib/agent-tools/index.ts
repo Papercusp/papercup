@@ -578,6 +578,7 @@ import './db/next_migration';
 import './testing/prune_orphan_runs';
 import './testing/flakiness';
 import './testing/run';
+import './testing/runs';
 // build:typecheck — bash-to-tool-substitution-2026-07-26 P-024. The sibling of
 // testing:run for the typecheck family (622 tsc atoms / 59 sessions): structured
 // diagnostics instead of a compiler log piped through grep/tail, and a hard

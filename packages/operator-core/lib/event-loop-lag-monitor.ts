@@ -221,7 +221,11 @@ export function setLagPublishTarget(sab: SharedArrayBuffer | null): void {
 /** p95 loop-delay (ms) thresholds for the pressure bands. Env-tunable so a small
  *  host can be stricter. elevated ⇒ start widening cadences; critical ⇒ shed. */
 const ELEVATED_P95_MS = Math.max(1, Number(process.env.PAPERCUSP_LOOP_ELEVATED_MS) || 120);
-const CRITICAL_P95_MS = Math.max(
+// Exported so readers of a PERSISTED loop-lag sample (test_runs.loop_lag_p95_ms,
+// whose column comment defines a saturation-suspect row in terms of this exact
+// band) classify against the same tunable value the monitor sheds on, rather
+// than re-hardcoding 600 and drifting the moment the env var is set.
+export const CRITICAL_P95_MS = Math.max(
   ELEVATED_P95_MS + 1,
   Number(process.env.PAPERCUSP_LOOP_CRITICAL_MS) || 600,
 );
