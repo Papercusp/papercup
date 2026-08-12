@@ -66,6 +66,19 @@ describe('lintCarrySurfaceProvenance', () => {
     expect(r.matches[0].kind).toBe('bare-gate-imperative');
   });
 
+  it('EI-20246140574201628: does NOT flag an inline-code quoted factual pending-verdict gate', () => {
+    const r = lintCarrySurfaceProvenance(
+      'The evidence records the safety phrase `do not act on the 18-red names until a real verdict is rendered` as a factual pending-verdict constraint.',
+    );
+    expect(r).toEqual({ flagged: false, matches: [] });
+  });
+
+  it('EI-20246140574201628: still flags a real gate alongside unrelated inline code', () => {
+    const r = lintCarrySurfaceProvenance('Do not deploy until `release:checkpoint-run` returns green.');
+    expect(r.flagged).toBe(true);
+    expect(r.matches[0].kind).toBe('bare-gate-imperative');
+  });
+
   it('does NOT flag when the line carries a NON-OWNER source tag', () => {
     expect(lintCarrySurfaceProvenance('[self-imposed] do not resolve WI-3532 until the UI pass is done').flagged).toBe(false);
     expect(lintCarrySurfaceProvenance('[peer:su-4dc3b] the owner approved this').flagged).toBe(false);
