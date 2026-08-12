@@ -136,19 +136,28 @@ export function claimSpecSubjectFromWorkItem(item: WorkItem, topicTags: string[]
     tags: [...new Set([...staticTagsOfWorkItem(item), ...topicTags])],
     paths: [...new Set([...strings(payload.paths), ...filePathPaths])],
     plan,
-    // WI-38326: `plan_item` and `est_cost` below differ from `tags`/`plan` above in a way that
-    // decides the resolution rule. FIELD_MAP gives tags/plan a real `COALESCE(col, payload…)`,
-    // so falling through to payload on a NULL column IS the SQL behaviour. It gives plan_item
-    // (`source_plan_item_ids`) and est_cost (`expected_cost_cents`) a BARE column with no
-    // payload leg — so once the projection carries the column, consulting payload would invent
-    // a match SQL does not make, re-opening this same divergence in the opposite direction.
-    // Hence: projected (not `undefined`) ⇒ the column governs alone, empty included.
-    planItem:
-      item.sourcePlanItemIds !== undefined
-        ? (item.sourcePlanItemIds ?? [])
-        : itemId
-          ? [itemId]
-          : strings(payload.source_plan_item_ids),
+    // WI-38326 + the correction below: `est_cost` follows the bare-column rule (see its note),
+    // but `plan_item` DELIBERATELY DOES NOT, and reverting it is the point.
+    //
+    // The bare-column rule says: once FEATURE_COLS projects `source_plan_item_ids`, the column
+    // should govern alone, because FIELD_MAP compiles plan_item as a bare column with no payload
+    // leg. Applying that rule here PASSED the parity guard and was a live REGRESSION, because it
+    // achieved agreement by making the JS side as blind as the SQL side. Measured 2026-08-12 on
+    // papercusp-workspace (48,982 rows): `source_plan_item_ids` is populated on exactly ONE row,
+    // while `payload->'plan_item'` is populated on 3,390 — and on all 3,390 the column is empty.
+    // Plan-item provenance lives in the payload; the column is effectively dead. Five LIVE claim
+    // specs filter on plan_item, so column-only resolution silently stopped resolving their
+    // subject on the JS admission path (by-id claims, plan-item dispatch, get_next's own
+    // post-claim re-check) for every one of those rows.
+    //
+    // So this leg keeps the payload derivation and plan_item stays a KNOWN divergence, recorded
+    // in the parity guard's allowlist with that measurement. The real fix is to teach the SQL
+    // side the payload leg (FIELD_MAP.plan_item -> COALESCE, exactly as `plan` and `tags`
+    // already do) so BOTH evaluators resolve it correctly, which also repairs the SQL path for
+    // those five specs — tracked separately. Do not "restore consistency" by deleting this
+    // fallback: agreement on a value neither side can find is not parity, it is a shared blind
+    // spot, and the guard cannot tell those apart.
+    planItem: itemId ? [itemId] : strings(payload.source_plan_item_ids),
     age: Number.isFinite(createdMs) ? createdMs : null,
     riskTier: typeof payload.risk_tier === 'string' ? payload.risk_tier : null,
     // WI-38326: `COALESCE(redundancy, 1)`. The default is the whole fix for this field, not a

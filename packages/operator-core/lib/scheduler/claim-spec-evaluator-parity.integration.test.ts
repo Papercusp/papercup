@@ -308,12 +308,30 @@ const PROBES = buildProbes();
  * Adding a field here is therefore never the way to make a NEW divergence go away: a new one is a
  * regression in a seam that has already burned four fleets, and it must be FIXED.
  */
-// WI-38326 FIXED all five original entries — FEATURE_COLS now projects the columns, and
-// claim-spec-match.ts resolves each field from the same logical source FIELD_MAP filters on.
-// The list is deliberately left EMPTY rather than deleted: it is the seam a future divergence
-// gets parked in, and the test below asserts every entry STILL diverges, so an entry that gets
-// fixed fails the suite until it is removed. That is what keeps this from becoming a parking lot.
-const KNOWN_FIELD_SOURCE_DIVERGENCES: Array<{ field: FilterLeaf['field']; workItem: string; why: string }> = [];
+// WI-38326 fixed FOUR of the five original entries (tags, plan, redundancy, est_cost):
+// FEATURE_COLS now projects those columns and claim-spec-match.ts resolves each from the same
+// logical source FIELD_MAP filters on.
+//
+// `plan_item` is DELIBERATELY still listed, and the reason is the one this allowlist exists to
+// make visible. Resolving it column-first made the two evaluators AGREE and was a live
+// regression: measured 2026-08-12 on papercusp-workspace (48,982 rows), `source_plan_item_ids`
+// is populated on ONE row while `payload->'plan_item'` is populated on 3,390 — with the column
+// empty on all 3,390. So column-only resolution agrees with SQL by making both sides blind to
+// where plan-item provenance actually lives, and 5 LIVE claim specs filter on this field. An
+// entry here is therefore NOT always "the JS side is wrong": here the JS side is the CORRECT
+// one and the SQL side needs the payload leg (FIELD_MAP.plan_item -> COALESCE, as `plan` and
+// `tags` already do). Removing this entry by degrading the JS side would pass this suite and
+// quietly re-break admission for those specs.
+const KNOWN_FIELD_SOURCE_DIVERGENCES: Array<{ field: FilterLeaf['field']; workItem: string; why: string }> = [
+  {
+    field: 'plan_item',
+    workItem: 'WI-38326',
+    why:
+      'SQL reads the bare source_plan_item_ids COLUMN (populated on 1 of 48,982 rows); JS reads '
+      + "payload->'plan_item' (populated on 3,390, column empty on all of them). The JS side is "
+      + 'the correct one — fix by teaching FIELD_MAP the payload leg, NOT by making JS column-only.',
+  },
+];
 
 const EXCLUDED_FIELDS = new Set(KNOWN_FIELD_SOURCE_DIVERGENCES.map((d) => d.field));
 
