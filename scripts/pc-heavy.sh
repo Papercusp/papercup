@@ -60,6 +60,12 @@
 #                         (default 900). Running-anyway (never blocking forever)
 #                         keeps a wedged holder from deadlocking the fleet; the
 #                         kernel also frees a slot the instant its holder dies.
+#   PC_HEAVY_SCOPED_TIMEOUT_SEC  bounded wait for `test:file`'s
+#                         `scripts/test-files.mjs` command (default 30). Exact-file
+#                         verification is deliberately narrow and must not inherit
+#                         a broad sweep's 15-minute queue budget. An explicit
+#                         PC_HEAVY_TIMEOUT_SEC still wins for callers that need a
+#                         different bound.
 #   PC_HEAVY_DIR          slot-file dir (default ${XDG_RUNTIME_DIR:-/tmp}/pc-heavy-slots)
 #   PC_HEAVY_NICE         nice increment (default 10)
 #   PC_HEAVY_IONICE       ionice spec: "best-effort N" | "idle" | "" to skip
@@ -451,6 +457,14 @@ if [ "${PC_HEAVY_DEBUG:-}" = "1" ]; then
 fi
 _dir="${PC_HEAVY_DIR:-${XDG_RUNTIME_DIR:-/tmp}/pc-heavy-slots}"
 _timeout="${PC_HEAVY_TIMEOUT_SEC:-900}"
+if [ -z "${PC_HEAVY_TIMEOUT_SEC:-}" ]; then
+  for _arg in "$@"; do
+    if [ "$_arg" = "scripts/test-files.mjs" ]; then
+      _timeout="${PC_HEAVY_SCOPED_TIMEOUT_SEC:-30}"
+      break
+    fi
+  done
+fi
 
 # Can't create the slot dir or flock is missing → fail-open (run unthrottled).
 if ! mkdir -p "$_dir" 2>/dev/null || ! command -v flock >/dev/null 2>&1; then

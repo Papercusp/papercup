@@ -338,6 +338,32 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
     expect(waited).toBeLessThan(5000); // got the freed slot, not blocked to the timeout
   });
 
+  it('EI-20223367668302814: exact-file verification has a bounded wait instead of inheriting the 900s broad-work budget', async () => {
+    const holder = spawn('bash', [PC_HEAVY, 'sleep', '30'], {
+      env: baseEnv({ PC_HEAVY_SLOTS: '1' }),
+      cwd: dir,
+      detached: true,
+    });
+    await waitFor('holder grabs the only slot', () => heldSlotCount(dir, 1) === 1);
+    try {
+      const t0 = Date.now();
+      const r = runSync(['node', 'scripts/test-files.mjs', '--probe'], {
+        PC_HEAVY_SLOTS: '1',
+        PC_HEAVY_SCOPED_TIMEOUT_SEC: '1',
+      });
+      const waited = Date.now() - t0;
+
+      // The command itself need not exist in this isolated fixture; the contract
+      // under test is that it STARTS after the scoped bound instead of sitting in
+      // the semaphore for the broad default's 900 seconds.
+      expect(r.stderr).toContain('[pc-heavy] slot acquired — starting real work');
+      expect(waited).toBeGreaterThanOrEqual(900);
+      expect(waited).toBeLessThan(5000);
+    } finally {
+      killGroup(holder);
+    }
+  });
+
   it('a waiter grabs a DIFFERENT slot that frees, instead of convoying on slot 0 alone (regression: pc-heavy slot-0 convoy)', async () => {
     // 2 slots. Holder A takes slot 0 (the natural first pick with no
     // contention) and sleeps long (30s). The ORIGINAL fallback blocked an
