@@ -105,8 +105,10 @@ function assertLiveCatalogSane(tools: readonly ProjectedTool[]): void {
       `far below the ${MIN_PLAUSIBLE_CATALOG_SIZE}-tool floor for a genuinely-registered live catalog. ` +
       `This means the agent-tools barrel never registered (most likely: this ran standalone — e.g. a bare ` +
       `\`npx tsx -e "...listAllProjectedTools()..."\` script — outside the vitest bootstrap, which side-effect-` +
-      `imports '../agent-tools/index' first), NOT that the catalog is genuinely empty. Run the vitest suite ` +
-      `(tool-guidance-budget.test.ts / tools-md-sync.test.ts) instead of measuring standalone, or ` +
+      `imports '../agent-tools/index' first), NOT that the catalog is genuinely empty. Run the focused ` +
+      `suites with \`npm run test:file -- packages/operator-core/lib/__tests__/tool-guidance-budget.test.ts ` +
+      `packages/operator-core/lib/agent-tools/tool-guidance-budget-live-guard.test.ts\` instead of measuring ` +
+      `standalone, or ` +
       `side-effect-import '../agent-tools/index' before calling this. (EI-19377066316560032)`,
   );
 }
