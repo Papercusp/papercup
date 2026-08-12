@@ -17,7 +17,14 @@
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { basename } from 'node:path';
-import { releaseConfig } from './release-config';
+import { fileURLToPath } from 'node:url';
+import {
+  releaseConfig,
+  describeIntegrationRoot,
+  integrationRootEvidence,
+  assertGateableIntegrationRoot,
+  isNonGateableCheckout,
+} from './release-config';
 
 /** Every PAPERCUSP_* key releaseConfig() reads — cleared so the host's live overlay (the
  *  :3070 operator exports PAPERCUSP_INTEGRATION_ROOT etc.) can't make these assertions flap. */
@@ -197,18 +204,98 @@ describe('WI-38241: integration-root provenance + the gate-only refusal', () => 
     ).not.toThrow();
   });
 
-  it('CALIBRATION — the refusal can actually FIRE, or every not-throw above proves nothing', () => {
-    // scriptRepoRoot() reads this file's own location, so the derived branch cannot be steered
-    // from a test. Exercise the same decision the guard makes, against the same set, so a
-    // regression that empties NON_GATEABLE_CHECKOUTS or inverts the basename test is caught.
-    const wouldRefuse = (root: string, source: string) =>
-      source === 'script-repo' &&
-      ['papercup-release', 'papercusp-release', 'papercup-checkpoint', 'papercusp-checkpoint'].includes(
-        basename(root),
-      );
-    expect(wouldRefuse(`${WS}/papercup-release`, 'script-repo')).toBe(true);
-    expect(wouldRefuse(`${WS}/papercusp-checkpoint`, 'script-repo')).toBe(true);
-    expect(wouldRefuse(`${WS}/papercusp`, 'script-repo')).toBe(false);
-    expect(wouldRefuse(`${WS}/papercup-release`, 'override')).toBe(false);
+  it('SOURCE, not just path, decides the refusal — the same bad root passes when NAMED', () => {
+    const bad = `${WS}/papercup-release`;
+    // derived -> refused
+    expect(() => assertGateableIntegrationRoot({}, {}, () => bad)).toThrow(/refusing to gate/);
+    // same path, explicitly selected -> allowed. This pair is the whole design: the guard is
+    // about NOBODY HAVING CHOSEN the root, not about the path being spelled a certain way.
+    expect(() => assertGateableIntegrationRoot({ integrationRoot: bad }, {}, () => bad)).not.toThrow();
+    expect(() =>
+      assertGateableIntegrationRoot({}, { PAPERCUSP_INTEGRATION_ROOT: bad }, () => bad),
+    ).not.toThrow();
+  });
+
+  it('the evidence line reports the DERIVED branch honestly too', () => {
+    const line = integrationRootEvidence({}, {}, () => `${WS}/papercusp`);
+    expect(line).toContain(`${WS}/papercusp`);
+    expect(line).toContain('source=script-repo');
+  });
+
+  /* The gate wiring lives in green-checkpoint.ts's `if (require.main === module)` CLI block,
+   * which by construction NEVER runs under vitest — so all 320 of that file's tests can pass
+   * while the guard is not wired at all. Pin the call sites in source. */
+  /* Matches STATEMENTS, not bare substrings. The first draft of this pin used
+   * indexOf('releaseConfig()') and failed against the real file — because the COMMENT
+   * explaining the guard mentions releaseConfig(), and the comment sorts before the call.
+   * A prose mention silently defeated the check. Anything looking for code in source text
+   * has to be shaped like the code, or documentation becomes a source of false verdicts. */
+  const wiredIntoGateCli = (src: string): boolean => {
+    const cli = src.indexOf('if (require.main === module)');
+    if (cli === -1) return false;
+    const body = src.slice(cli);
+    const at = (re: RegExp) => body.search(re);
+    const evidence = at(/console\.log\([^\n]*integrationRootEvidence\(\)/);
+    const assertion = at(/^[ \t]*assertGateableIntegrationRoot\(\);/m);
+    const cfg = at(/^[ \t]*const cfg = releaseConfig\(\);/m);
+    if (evidence === -1 || assertion === -1 || cfg === -1) return false;
+    // both must precede the config the gate then runs on, or they report after the fact
+    return evidence < cfg && assertion < cfg;
+  };
+
+  it('is WIRED into the green-checkpoint CLI, before the config it gates on', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const src = await readFile(
+      fileURLToPath(new URL('./green-checkpoint.ts', import.meta.url)),
+      'utf8',
+    );
+    expect(wiredIntoGateCli(src), 'green-checkpoint CLI must log + assert the root').toBe(true);
+  });
+
+  it('...and that wiring pin is falsifiable', () => {
+    const wired = [
+      'if (require.main === module) {',
+      '  console.log(`x ${integrationRootEvidence()}`);',
+      '  assertGateableIntegrationRoot();',
+      '  const cfg = releaseConfig();',
+      '}',
+    ].join('\n');
+    // calibration first: the real shape must pass, or the refusals below prove nothing
+    expect(wiredIntoGateCli(wired)).toBe(true);
+
+    // guard absent entirely
+    expect(
+      wiredIntoGateCli('if (require.main === module) {\n  const cfg = releaseConfig();\n}'),
+    ).toBe(false);
+    // logged but not ENFORCED — evidence without a refusal still gates the wrong tree
+    expect(wiredIntoGateCli(wired.replace('  assertGateableIntegrationRoot();\n', ''))).toBe(false);
+    // enforced but never LOGGED — a silent pass leaves the judged tree unrecorded
+    expect(
+      wiredIntoGateCli(wired.replace(/ {2}console\.log\(`x \$\{integrationRootEvidence\(\)\}`\);\n/, '')),
+    ).toBe(false);
+    // ordered AFTER the config the gate runs on — too late to be a guard
+    expect(
+      wiredIntoGateCli(
+        [
+          'if (require.main === module) {',
+          '  const cfg = releaseConfig();',
+          '  console.log(`x ${integrationRootEvidence()}`);',
+          '  assertGateableIntegrationRoot();',
+          '}',
+        ].join('\n'),
+      ),
+    ).toBe(false);
+    // A COMMENT MENTIONING THE CALLS IS NOT WIRING. This is the case that actually bit:
+    // the first draft of the pin passed on prose and had to be rewritten.
+    expect(
+      wiredIntoGateCli(
+        [
+          'if (require.main === module) {',
+          '  // calls integrationRootEvidence() and assertGateableIntegrationRoot() someday',
+          '  const cfg = releaseConfig();',
+          '}',
+        ].join('\n'),
+      ),
+    ).toBe(false);
   });
 });
