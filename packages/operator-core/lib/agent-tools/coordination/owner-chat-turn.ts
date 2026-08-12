@@ -301,15 +301,63 @@ const UNENVELOPED_WAKE_RE = /^\[await-event\]\s+\S+\s+fired(?:\s|[.!?])/;
  * PURE → unit-tested.
  */
 export function ownerVisiblePromptText(text: string): string {
-  if (!text) return '';
+  const { verdict, visible } = classifyOwnerVisibility(text);
+  return verdict === 'show' ? visible : '';
+}
+
+/**
+ * Why a turn is not being shown — the distinction a BOUNDED HEAD needs.
+ *
+ * `hide` means a rule MATCHED and claimed the turn as machine-authored.
+ * `inconclusive` means no rule matched and there was simply no visible content
+ * in the text we were handed. For a whole turn those collapse (both render
+ * nothing). For a bounded head they must NOT: `inconclusive` on a head means
+ * *the deciding content may lie past the bound*, and a caller that reads it as
+ * `hide` drops a turn a human wrote — see
+ * {@link OWNER_VISIBILITY_DECIDING_PREFIX_CHARS}, divergence 2.
+ */
+export type OwnerVisibilityVerdict = 'show' | 'hide' | 'inconclusive';
+
+/**
+ * The single classifier both public forms derive from (WI-37910).
+ *
+ * Deliberately ONE function rather than a second copy of the branch order: a
+ * predicate and its tri-state twin drifting apart is the same failure mode
+ * `isOwnerVisiblePrompt` was derived from `ownerVisiblePromptText` to prevent.
+ */
+function classifyOwnerVisibility(text: string): { verdict: OwnerVisibilityVerdict; visible: string } {
+  if (!text) return { verdict: 'inconclusive', visible: '' };
   const origin = text.match(TURN_ORIGIN_CAPTURE_RE)?.[1];
-  if (origin !== undefined) return origin === OWNER_CHAT_TURN_ORIGIN ? stripMachineTurnAnnotations(text) : '';
-  const trimmed = text.trimStart();
-  if (trimmed.startsWith(HOOK_FEEDBACK_PREFIX) || UNENVELOPED_WAKE_RE.test(trimmed)) return '';
-  // The curated catalogue — head-bounded inside the predicate, so an owner
-  // QUOTING one of these shapes mid-sentence keeps their turn.
-  if (isUnenrolledMachineSurface(trimmed)) return '';
-  return stripMachineTurnAnnotations(text);
+  if (origin !== undefined) {
+    if (origin !== OWNER_CHAT_TURN_ORIGIN) return { verdict: 'hide', visible: '' };
+  } else {
+    const trimmed = text.trimStart();
+    if (trimmed.startsWith(HOOK_FEEDBACK_PREFIX) || UNENVELOPED_WAKE_RE.test(trimmed)) {
+      return { verdict: 'hide', visible: '' };
+    }
+    // The curated catalogue — head-bounded inside the predicate, so an owner
+    // QUOTING one of these shapes mid-sentence keeps their turn.
+    if (isUnenrolledMachineSurface(trimmed)) return { verdict: 'hide', visible: '' };
+  }
+  // No HIDE rule claimed it. `stripMachineTurnAnnotations` trims, so an empty
+  // result here means "nothing visible in THIS text" — not a provenance verdict.
+  const visible = stripMachineTurnAnnotations(text);
+  return visible === ''
+    ? { verdict: 'inconclusive', visible: '' }
+    : { verdict: 'show', visible };
+}
+
+/**
+ * The tri-state form, for callers holding a BOUNDED HEAD rather than a whole
+ * turn — today the transcript search's post-filter.
+ *
+ * A head is DECISIVE only when it carries a marker or visible content. With
+ * neither it returns `inconclusive`, and the caller must fail OPEN. Reading
+ * `inconclusive` as `hide` is exactly the bug this exists to prevent
+ * (WI-37910). PURE → unit-tested.
+ */
+export function ownerVisibilityVerdict(text: string): OwnerVisibilityVerdict {
+  return classifyOwnerVisibility(text).verdict;
 }
 
 /**

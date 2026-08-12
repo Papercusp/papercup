@@ -24,7 +24,7 @@ import type { AdvSessionRow } from './adv-sessions';
    HudView.tsx imports this module into the browser bundle; the leaf comes with
    it and costs nothing, since it has no dependencies of its own. */
 import {
-  isOwnerVisiblePrompt,
+  ownerVisibilityVerdict,
   ownerVisiblePromptText,
 } from './agent-tools/coordination/owner-chat-turn';
 
@@ -478,8 +478,10 @@ export function filterOwnerVisibleTurnHits<T extends TranscriptTurnHit>(
 ): T[] {
   return hits.filter((h) => {
     if (h.speaker !== 'user') return true;
-    if (typeof h.textHead !== 'string' || h.textHead.trim() === '') return true;
-    if (!isOwnerVisiblePrompt(h.textHead)) return false;
+    if (typeof h.textHead !== 'string' || h.textHead === '') return true;
+    // Drop ONLY on a matched HIDE rule. An `inconclusive` head — no marker and
+    // no visible content inside the bound — is not a verdict (WI-37910).
+    if (ownerVisibilityVerdict(h.textHead) === 'hide') return false;
 
     /* WI-37909 — an owner-chat turn is visible as a whole, but its trailing
        `⟦owner-chat⟧` note is stripped before rendering. The old whole-turn

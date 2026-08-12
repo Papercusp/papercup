@@ -20,6 +20,7 @@ import {
   ownerChatTurnText,
   ownerChatWakePayloadFields,
   ownerVisiblePromptText,
+  ownerVisibilityVerdict,
   OWNER_CHAT_TURN_ORIGIN,
   OWNER_VISIBILITY_DECIDING_PREFIX_CHARS,
   readOwnerChatTurnText,
@@ -456,12 +457,50 @@ describe('isOwnerVisiblePrompt', () => {
     const blankHead = ' '.repeat(OWNER_VISIBILITY_DECIDING_PREFIX_CHARS + 8);
     for (const whole of [
       `${blankHead}a genuinely typed message that starts past the bound`,
+      // The enveloped variant is divergent for a DIFFERENT reason and a
+      // `head.trim() === ''` test cannot see it: the head is not content-free —
+      // it carries the owner envelope — it just strips to nothing. That is
+      // precisely why the consumer guard is a tri-state and not a trim check.
       `${OWNER_ENVELOPE}${blankHead}a genuinely typed message that starts past the bound`,
     ]) {
       const head = whole.slice(0, OWNER_VISIBILITY_DECIDING_PREFIX_CHARS);
-      expect(head.trim(), 'the head must be content-free for this to be the divergent case').toBe('');
+      expect(
+        ownerVisibilityVerdict(head),
+        'the head must carry no VISIBLE content for this to be the divergent case',
+      ).toBe('inconclusive');
       expect(isOwnerVisiblePrompt(whole), 'the whole turn is the human\'s and must SHOW').toBe(true);
-      expect(isOwnerVisiblePrompt(head), 'the head alone reads HIDE — the divergence').toBe(false);
+      expect(isOwnerVisiblePrompt(head), 'the boolean form still reads HIDE off the head — the divergence').toBe(false);
+    }
+  });
+
+  it('the tri-state separates a MATCHED hide rule from an undecidable window (WI-37910)', () => {
+    /* The property the consumer's fail-open rests on. `isOwnerVisiblePrompt`
+       answers false for both of these; only the tri-state can tell them apart,
+       and the difference is whether dropping the row is safe. */
+    expect(ownerVisibilityVerdict(`${MACHINE_ENVELOPE}loop wake`)).toBe('hide');
+    expect(ownerVisibilityVerdict('Stop hook feedback:\nharness coaching')).toBe('hide');
+    expect(ownerVisibilityVerdict(`${OWNER_ENVELOPE}hi`)).toBe('show');
+    expect(ownerVisibilityVerdict('a genuinely typed message')).toBe('show');
+    expect(ownerVisibilityVerdict('   \n\t ')).toBe('inconclusive');
+    expect(ownerVisibilityVerdict(`${OWNER_ENVELOPE}   `)).toBe('inconclusive');
+    expect(ownerVisibilityVerdict('')).toBe('inconclusive');
+  });
+
+  it('DERIVATION RAIL: the text form shows exactly what the tri-state calls show (WI-37910)', () => {
+    /* Both public forms come off ONE classifier; this pins that they cannot
+       drift, the same way the boolean form is pinned against the text form. */
+    for (const text of [
+      '',
+      '   ',
+      'plain typed message',
+      `${OWNER_ENVELOPE}hi`,
+      `${OWNER_ENVELOPE}   `,
+      `${MACHINE_ENVELOPE}🔁 Loop wake (every ~300s)`,
+      'Stop hook feedback:\nthis turn ends by handing the next move back',
+      '⟦turn-origin:wake-pump nonce:0123456789ab⟧\n[await-event] coord:inbox-wake fired',
+    ]) {
+      expect(ownerVisiblePromptText(text) !== '').toBe(ownerVisibilityVerdict(text) === 'show');
+      expect(isOwnerVisiblePrompt(text)).toBe(ownerVisibilityVerdict(text) === 'show');
     }
   });
 
@@ -473,20 +512,31 @@ describe('isOwnerVisiblePrompt', () => {
     expect(OWNER_VISIBILITY_DECIDING_PREFIX_CHARS).toBeGreaterThan(MACHINE_ENVELOPE.length * 3);
   });
 
-  it('fails toward SHOWING when the head is unmarked but the whole strips to empty (divergence 1)', () => {
-    /* Divergence 1, CONSTRUCTED rather than gestured at. Keeping one machine row
-       is recoverable; hiding something the human wrote is the failure this whole
-       predicate exists to prevent.
+  it('an unmarked head reads SHOW — the safe direction', () => {
+    /* ⚠ WI-37910, and read this before "strengthening" the test. It used to be
+       named `fails toward SHOWING when the head is unmarked (the safe
+       direction)` and to assert only `isOwnerVisiblePrompt('a genuinely typed
+       message') === true` — true of any plain string, exercising no divergence
+       at all. The name promised a property the body never built.
 
-       ⚠ WI-37910: this test used to assert only `isOwnerVisiblePrompt('a
-       genuinely typed message') === true`, which is true of any plain string and
-       exercises no divergence at all — the name promised a property the body
-       never built. Build the case. */
-    const whole = `${'y'.repeat(OWNER_VISIBILITY_DECIDING_PREFIX_CHARS)}\n${COMPACTION_PREAMBLE}`;
-    const head = whole.slice(0, OWNER_VISIBILITY_DECIDING_PREFIX_CHARS);
-    expect(head.trim(), 'the head must carry visible content for this to be divergence 1').not.toBe('');
-    expect(isOwnerVisiblePrompt(head), 'an unmarked head reads SHOW').toBe(true);
-    // Baseline: a plain typed turn is shown, head or whole.
+       I tried to build it and could NOT. "Divergence 1" (head SHOWS, whole
+       HIDES) needs a turn whose head is unmarked but whose FULL text strips to
+       empty. Every HIDE rule keys on the TRIMMED START, so an unmarked head
+       implies an unmarked whole, which takes the fallthrough and returns
+       `stripMachineTurnAnnotations(text)` — non-empty whenever the head carried
+       visible content. I could not find a shape that satisfies both halves.
+
+       So divergence 1 may not be reachable at all, which would mean the
+       original comment documented an unconstructible divergence while missing
+       the reachable one (divergence 2, pinned above). I am NOT asserting that
+       — absence of a construction is not proof of impossibility, and I did not
+       run a property search. It is recorded on WI-37910 as an open question.
+
+       This test therefore asserts only what is demonstrated: an unmarked head
+       is SHOWN, which is the safe direction whether or not the whole agrees. */
     expect(isOwnerVisiblePrompt('a genuinely typed message')).toBe(true);
+    const head = 'y'.repeat(OWNER_VISIBILITY_DECIDING_PREFIX_CHARS);
+    expect(isOwnerVisiblePrompt(head), 'an unmarked head reads SHOW').toBe(true);
+    expect(ownerVisibilityVerdict(head)).toBe('show');
   });
 });
