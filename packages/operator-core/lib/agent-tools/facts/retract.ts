@@ -12,12 +12,12 @@ export default defineTool({
   name: 'facts:retract',
   capability: 'coord:write',
   description:
-    'Retract a standing fact by (scope, scopeRef, key) — it immediately stops folding into briefs/dossiers/orients. Soft-delete (audit trail kept 30d).',
+    'Retract a standing fact by (scope, scopeRef, key) with a reason — it immediately stops folding into briefs/dossiers/orients. Soft-delete (actor and reason retained in the 30-day audit trail).',
   guidance: {
     when:
       'A previously-asserted fact is no longer true (the residue cleared, the plan unstalled, the workaround shipped). Retract PROMPTLY — facts fold verbatim, so a stale one actively misleads every future turn.',
     notWhen: 'To update/replace the conclusion — facts:assert with the same key overwrites in place.',
-    chaining: 'facts:list { scope } → facts:retract { scope, scopeRef, key }.',
+    chaining: 'facts:list { scope } → facts:retract { scope, scopeRef, key, reason }.',
     seeAlso: ['facts:assert (re-assert same key = update)', 'facts:list'],
   },
   requirePrincipal: false,

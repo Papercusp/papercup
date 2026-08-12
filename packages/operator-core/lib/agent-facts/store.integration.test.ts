@@ -122,6 +122,8 @@ beforeAll(async () => {
     // EI-20191740437408337: durable moving-subject snapshot metadata. Keep
     // this fixture list aligned with the live agent_facts migration set.
     '795-agent-facts-volatile-measurements.sql',
+    // EI-20212953856919248: deliberate retractions retain their actor and reason.
+    '801-agent-facts-retraction-reason.sql',
   ];
   // EI-18808675015292160: applies the list (EI-6887 strip semantics unchanged)
   // but AUDITS it first against the real sql/ dir — so the "list DRIFTED from the

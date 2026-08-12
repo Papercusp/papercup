@@ -143,7 +143,7 @@ export async function markStaleSourceFacts<T extends AgentFact>(
         note:
           `⚠ MAY BE STALE — this fact's source item ${id} is ${state.toUpperCase()}. It is still being folded ` +
           `verbatim as binding context. If it was a carry-note ("next: do X"), the work is DONE and this is now ` +
-          `an instruction to redo it: facts:retract { key: "${f.key}" }. If it is a durable conclusion the closed ` +
+          `an instruction to redo it: facts:retract { key: "${f.key}", reason: "source item is terminal" }. If it is a durable conclusion the closed ` +
           `item PROVED, it stands — re-assert to refresh its TTL and silence this.`,
       },
     };
