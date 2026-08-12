@@ -85,7 +85,7 @@ export default defineTool({
   name: 'dev:pg_query',
   profile: 'engineer',
   description:
-    'Run a read-only SELECT / WITH…SELECT or EXPLAIN over a SELECT/WITH…SELECT against operator Postgres, or pass `describe` to inspect a relation. Tenant-scoped reads require a workspace_id/harness_slug predicate unless `allowUnscoped: true`. Read-only enforced; rows capped. `timeoutMs` bounds connect, acquire, and execution; bigint/int8 values return as exact strings.',
+    'Run a read-only SELECT / WITH…SELECT or EXPLAIN over a SELECT/WITH…SELECT against operator Postgres, or pass `describe` to inspect a relation. Tenant-scoped reads require a workspace_id/harness_slug predicate unless `allowUnscoped: true`. Read-only enforced; rows capped. `timeoutMs` bounds connect, acquire, and execution.',
   capability: 'intel:read',
   guidance: {
     when:
