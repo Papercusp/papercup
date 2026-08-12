@@ -82,6 +82,7 @@ import { readFileSync, existsSync, statSync, realpathSync } from 'node:fs';
 import { join, dirname, resolve, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { listTrackedFiles, describeUnscanned } from './lib/tracked-files.mjs';
+import { stripCommentsOnly } from './lib/strip-comments-and-strings.mjs';
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -242,9 +243,38 @@ export function scan({ root = ROOT, files, readFile } = {}) {
   const unscannedPresent = scan0.unscannedPresent ?? [];
 
   const cache = new Map();
+  const rawCache = new Map();
   const load = readFile ?? ((rel) => readOrNull(join(root, rel)));
+
+  /** The ORIGINAL source — comments intact. Only the suppression pragma reads this. */
+  const rawOf = (rel) => {
+    if (!rawCache.has(rel)) rawCache.set(rel, load(rel));
+    return rawCache.get(rel);
+  };
+
+  /**
+   * The source every DETECTION regex runs against, with COMMENTS MASKED OUT.
+   *
+   * ⚠ Do not "simplify" this back to the raw text. A guard that text-matches code tokens
+   * against unmasked source mints PHANTOM offenders out of prose: its own error strings and
+   * doc comments quote the very tokens it detects, so a commented-out `vi.mock(...)` — or a
+   * comment merely DISCUSSING the rule — reds the gate on a file that does nothing wrong
+   * (EI-20045405992394901, and `guard-string-literal-blindness.test.ts` fails any new guard
+   * that skips this).
+   *
+   * `stripCommentsOnly`, NOT `stripCommentsAndStrings`: the token this guard matches IS a
+   * string literal (the `vi.mock('<specifier>')` argument), so masking string CONTENTS would
+   * blind the detector entirely. That is the same per-guard call documented for the other
+   * partial-mask guards.
+   *
+   * The mask is LENGTH-PRESERVING (verified: comments become spaces), which is what lets
+   * `m.index` offsets taken here stay valid against the raw text in `isSuppressed`.
+   */
   const contentOf = (rel) => {
-    if (!cache.has(rel)) cache.set(rel, load(rel));
+    if (!cache.has(rel)) {
+      const raw = rawOf(rel);
+      cache.set(rel, raw === null ? null : stripCommentsOnly(raw, rel));
+    }
     return cache.get(rel);
   };
 
@@ -267,7 +297,11 @@ export function scan({ root = ROOT, files, readFile } = {}) {
     for (const m of src.matchAll(VI_MOCK_RE)) {
       const spec = m[1];
       if (!FLAG_MODULE_PREFIXES.some((p) => spec.startsWith(p))) continue;
-      if (isSuppressed(src, m.index)) continue;
+      // The RAW source, deliberately: the `vacuous-flag-ok:` pragma lives in a COMMENT,
+      // which `contentOf` has masked away. Reading the masked text here would silently
+      // disable every suppression in the repo. Safe because the mask is length-preserving,
+      // so `m.index` addresses the same byte in both.
+      if (isSuppressed(rawOf(rel), m.index)) continue;
 
       // Does ANY module this test pulls in read a flag? The test's own body is
       // excluded as a subject: a test that calls useFlag() itself is exercising
@@ -375,9 +409,15 @@ function main() {
     }
   }
 
+  // ⚠ `process.exitCode` + a natural end, NEVER `process.exit()`. Writes to a PIPE are
+  // asynchronous in Node and `process.exit()` does not drain them, so an unbounded payload
+  // (the findings list, `unscannedNote`) is TRUNCATED the moment this runs under `| tail`
+  // or into a CI log — the report reads as short-but-clean rather than cut off.
+  // `lint:no-undrained-stdout-exit` is a shrink-only ratchet that fails on the exit() form.
   if (r.gating.length === 0) {
     console.log(`✓ no vacuous flag guards${unscannedNote ? ` (${unscannedNote})` : ''}`);
-    process.exit(0);
+    process.exitCode = 0;
+    return;
   }
 
   console.error('\n✗ VACUOUS FLAG GUARD — a flag mock with a mutable knob that drives NOTHING:\n');
@@ -391,7 +431,7 @@ function main() {
   console.error('Fix the test so the assertion binds to something, or — if the mock is');
   console.error('deliberate — put `vacuous-flag-ok: <reason>` on the vi.mock line.\n');
   if (unscannedNote) console.error(unscannedNote);
-  process.exit(1);
+  process.exitCode = 1;
 }
 
 if (process.argv[1] && import.meta.url === pathToFileURL(realpathSync(process.argv[1])).href) main();
