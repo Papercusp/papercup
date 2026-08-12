@@ -300,43 +300,61 @@ describe('WI-1416 git subprocess hang guard', () => {
       const bin = join(cwd, 'bin');
       mkdirSync(bin);
       const fakeGit = join(bin, 'git');
-      // WI-38223 — TIMING BUDGET, do not re-tighten. This test asserts a REFRESH property, so
+      // WI-38329 — TIMING BUDGET, do not re-tighten. This test asserts a REFRESH property, so
       // it needs the child to outlive the idle deadline; that only works if the deadline sits
-      // comfortably ABOVE the inter-output gap and comfortably BELOW the child's total runtime.
-      // The original 80ms gap against a 120ms deadline left 40ms for scheduler jitter and went
-      // red on a box running six concurrent vitest workers (the guard killed a healthy child,
-      // so `r.code` was -1). Budget now: 50ms gap · 300ms idle deadline · ~500ms total.
-      //   gap 50ms  vs deadline 300ms -> 250ms of jitter tolerance (a 6x ratio)
-      //   total 500ms vs deadline 300ms -> STILL FALSIFIABLE: drop the refresh and the child is
-      //   killed at 300ms, 200ms short of finishing, so a real regression still fails here.
-      // Load only stretches the total, which strengthens falsifiability rather than eroding it.
-      //
-      // WI-38338 addendum: su-ead0a reports this 6x budget has ALREADY been beaten on this box.
-      // Before re-tuning it, note the constraint is THREE-WAY, not one deadline:
+      // ABOVE the inter-output gap and BELOW the child's total runtime. The constraint is
+      // FOUR-WAY, not one deadline (WI-38338 derived it, and it is asserted below):
       //     gap  <  idle deadline  <  total runtime  <  hard ceiling
-      // (idle > gap = jitter tolerance; idle < total = falsifiability; total < ceiling or the
-      // ceiling kills the healthy child and fails this test for the WRONG reason). Load stretches
-      // gap and total together while the deadlines stay fixed, so the lever that buys tolerance
-      // without breaking falsifiability is the ITERATION COUNT (which lifts total), not the idle
-      // deadline alone. Raising idle alone eventually crosses total and silently guts the test.
-      // Whoever re-tunes this: attach your reproduction — it passed 3/3 here (runIds 75fa3b0e,
-      // 56f8c179, ca54dfcb) in a 5-file parallel run, so the numbers should come from a run that
-      // actually reproduces the failure rather than from guesswork.
+      // idle > gap = jitter tolerance · idle < total = falsifiability · total < ceiling or the
+      // ceiling kills the HEALTHY child and fails this test for the WRONG reason.
+      //
+      // TWICE-BEATEN HISTORY, and why this fix is not a third re-tune of the same knob:
+      //   80ms gap / 120ms deadline (1.5x) -> red on six concurrent vitest workers.
+      //   50ms gap / 300ms deadline (6x)   -> red again at box load 129 AND at load 85
+      //                                       (runId 89c526a9, clean tree, tip).
+      // Both fixes widened the RATIO and both were beaten, because the ratio was never the
+      // governing quantity. The fake git forks a `sleep` per iteration, so the gap is
+      //     gap = sleep constant (load-INDEPENDENT) + fork/exec of /bin/sleep (load-DEPENDENT)
+      // and at 50ms the load-dependent term DOMINATES — under contention fork latency alone
+      // exceeded the whole 300ms deadline, which no multiple of a 50ms sleep can bound. The
+      // premise the 6x budget rested on ("load only stretches the total, which strengthens
+      // falsifiability") is false for the same reason: load stretches the GAP too.
+      //
+      // THE FIX IS TO INVERT THAT RATIO, not to widen it again: a 500ms sleep dominates fork
+      // cost instead of being dwarfed by it, so the load-dependent term is a small fraction of
+      // the gap rather than the whole of it — and 5 iterations instead of 10 halves the number
+      // of forks that can each go slow. Absolute headroom (1000ms), which is the real lever,
+      // is 4x the old budget's while the nominal runtime stays ~2.5s.
+      const GAP_MS = 500;
+      const ITERATIONS = 5;
+      const NOMINAL_TOTAL_MS = GAP_MS * ITERATIONS;
+      const IDLE_DEADLINE_MS = 1_500;
+      // Only has to be high enough never to fire on a HEALTHY child; the ceiling is
+      // `Math.max(idleTimeoutMs, env)` (run-git-sync.ts:143-146), so it can never sit below the
+      // idle deadline no matter what is set here.
+      const HARD_CEILING_MS = 15_000;
+      // Recurrence guard: makes the four-way chain EXECUTABLE, so a future re-tighten fails
+      // loudly and deterministically here instead of flaking on the shared gate hours later.
+      expect(GAP_MS).toBeLessThan(IDLE_DEADLINE_MS);
+      expect(IDLE_DEADLINE_MS).toBeLessThan(NOMINAL_TOTAL_MS);
+      expect(NOMINAL_TOTAL_MS).toBeLessThan(HARD_CEILING_MS);
       writeFileSync(
         fakeGit,
-        '#!/bin/sh\nprintf "%s\\n" "$@" > "$PWD/argv"\ni=0\nwhile test "$i" -lt 10; do echo "progress $i" >&2; sleep 0.05; i=$((i + 1)); done\n',
+        `#!/bin/sh\nprintf "%s\\n" "$@" > "$PWD/argv"\ni=0\nwhile test "$i" -lt ${ITERATIONS}; do echo "progress $i" >&2; sleep ${GAP_MS / 1000}; i=$((i + 1)); done\n`,
       );
       chmodSync(fakeGit, 0o755);
       process.env.PATH = `${bin}:${oldPath ?? ''}`;
       process.env.PAPERCUSP_SPAWNER_SIDECAR = '0';
-      // Above the ~500ms total with room for the whole run to stretch several-fold under load.
-      process.env.PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS = '5000';
+      process.env.PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS = String(HARD_CEILING_MS);
 
       const started = Date.now();
-      const r = await runGitBounded(['fetch', 'origin', 'main'], cwd, 300);
-      expect(Date.now() - started).toBeGreaterThanOrEqual(300);
+      const r = await runGitBounded(['fetch', 'origin', 'main'], cwd, IDLE_DEADLINE_MS);
+      // Outliving the deadline IS the property under test: without the refresh the child is
+      // killed at 1500ms, a full 1000ms short of finishing, so `code` is -1 and the last
+      // progress line never arrives. Both assertions below fail on a real regression.
+      expect(Date.now() - started).toBeGreaterThanOrEqual(IDLE_DEADLINE_MS);
       expect(r.code).toBe(0);
-      expect(r.stderr).toContain('progress 9');
+      expect(r.stderr).toContain(`progress ${ITERATIONS - 1}`);
       expect(readFileSync(join(cwd, 'argv'), 'utf8').split('\n')).toContain('--progress');
     } finally {
       if (oldPath === undefined) delete process.env.PATH;
@@ -347,10 +365,10 @@ describe('WI-1416 git subprocess hang guard', () => {
       else process.env.PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS = oldHardTimeout;
       rmSync(cwd, { recursive: true, force: true });
     }
-    // WI-38338: ~500ms nominal against vitest's 5000ms default is only 10x, and the budget above
-    // has already been beaten at 6x — so the DEADLINE was a live flake vector of its own here,
-    // independent of the timing budget. Pinned explicitly; this changes no timing semantics.
-  }, 20_000);
+    // WI-38338: vitest's 5000ms default was itself a live flake vector here, independent of the
+    // timing budget. WI-38329 raised the nominal runtime to ~2.5s, so the explicit deadline is
+    // raised with it to keep the same generous multiple; this changes no timing semantics.
+  }, 30_000);
 
   it('still kills an endlessly-chatty network child at the independent hard ceiling', async () => {
     // WI-38338 — TIMING BUDGET, do not re-tighten. This is the SIBLING of the WI-38223 fix above
