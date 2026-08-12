@@ -2029,8 +2029,13 @@ export async function setIssueState(
     if (isTerminal) {
       const updated = await tx<{ feature_id: string }[]>`
         UPDATE harness_shared.work_items
-           SET status = ${state}, origin = 'local', updated_ts = (extract(epoch FROM now()) * 1000)::bigint,
+         SET status = ${state}, origin = 'local', updated_ts = (extract(epoch FROM now()) * 1000)::bigint,
                taken_by = NULL, taken_at = NULL,
+               -- Keep the item-scoped progress signal tied to its claim. A terminal
+               -- transition releases the holder, so retaining the old timestamp makes
+               -- finished issue-family work look like a cold in-flight claim to readers.
+               -- This mirrors the feature-family terminal writer below.
+               last_progress_at = NULL,
                -- WI-6218: PRESERVE an existing completion record on a skipCompletionGate
                -- write. Those paths (watchdog auto-close, system sweep, restore) are
                -- documented as "not completions at all" and are deliberately exempt from the

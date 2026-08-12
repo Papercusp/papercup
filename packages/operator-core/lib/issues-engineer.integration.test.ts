@@ -329,6 +329,35 @@ describe('engineer issues surface (real PG)', () => {
     expect(stillOpen?.assignedAt).toBeTruthy();
   });
 
+  it('terminal issue transitions clear the progress anchor with the released claim', async () => {
+    const { id } = await issues.createIssue({ title: 'clear progress on close', createdBy: 'agA' });
+    await issues.claimIssue(id, 'agB');
+    expect(await issues.markIssueProgress(id)).toBe(true);
+    expect((await issues.getIssue(id))?.lastProgressAt).not.toBeNull();
+
+    const resolved = await issues.setIssueState(id, 'resolved', 'agB', 'integration-test completion');
+    expect(resolved?.state).toBe('resolved');
+    expect(resolved?.assignee).toBeNull();
+    expect(resolved?.assignedAt).toBeNull();
+    expect(resolved?.lastProgressAt).toBeNull();
+
+    const [row] = await db.sql<{
+      state: string;
+      taken_by: string | null;
+      taken_at: Date | null;
+      last_progress_at: Date | null;
+    }[]>`
+      SELECT status AS state, taken_by, taken_at, last_progress_at
+        FROM harness_shared.work_items
+       WHERE feature_id = ${id}`;
+    expect(row).toEqual({
+      state: 'resolved',
+      taken_by: null,
+      taken_at: null,
+      last_progress_at: null,
+    });
+  });
+
   it('EI-20202629116790410: stale compatibility-view terminal writes are actionable, while the base writer closes', async () => {
     const { id } = await issues.createIssue({ title: 'stale writer diagnostic', createdBy: 'agA' });
 
