@@ -10,13 +10,255 @@
 
 import { z } from 'zod';
 import { defineTool, readJsonResult, type SeeAlsoEntry } from '@papercusp/agent-mcp';
-import { gitPipelinePosition } from '../../git-pipeline-position';
+import { gitPipelinePosition, type PipelinePosition } from '../../git-pipeline-position';
 import { buildKey } from '../../events/await/catalog';
 import { listCells } from '../../cell-registry';
 import { stampStatePlane, type StatePlaneBlock } from '../../state-plane-stamp';
 import { resolveAgentIdentity } from '../coordination/identity';
 
 const TOOL_NAME = 'dev:pipeline_position';
+
+/**
+ * Keep the domain payload below the result door before the generic serializer gets
+ * a chance to clip it. The generic door can spill a large response, but the spill
+ * pointer is not useful to a caller that needs the pipeline verdict in this turn.
+ * Leave room below the ~6000-character result door for its envelope and guidance.
+ */
+export const PIPELINE_POSITION_RESPONSE_BUDGET_CHARS = 5_000;
+const PIPELINE_POSITION_TEXT_CHARS = 360;
+const PIPELINE_POSITION_TIGHT_TEXT_CHARS = 180;
+const PIPELINE_POSITION_ARRAY_LIMIT = 8;
+const PIPELINE_POSITION_TIGHT_ARRAY_LIMIT = 3;
+
+type JsonRecord = Record<string, unknown>;
+
+function serializedChars(value: unknown): number {
+  try {
+    const serialized = JSON.stringify(value);
+    return typeof serialized === 'string' ? serialized.length : Number.MAX_SAFE_INTEGER;
+  } catch {
+    return Number.MAX_SAFE_INTEGER;
+  }
+}
+
+function clipPipelineText(value: unknown, maxChars: number): unknown {
+  if (typeof value !== 'string' || value.length <= maxChars) return value;
+  const omitted = value.length - maxChars;
+  const suffix = `…[truncated +${omitted} chars]`;
+  return value.slice(0, Math.max(0, maxChars - suffix.length)) + suffix;
+}
+
+function compactPipelineValue(value: unknown, opts: { textChars: number; arrayLimit: number; depth?: number }): unknown {
+  const depth = opts.depth ?? 0;
+  if (typeof value === 'string') return clipPipelineText(value, opts.textChars);
+  if (value === null || typeof value !== 'object') return value;
+  if (depth >= 4) return '[nested detail omitted; use fullRead]';
+  if (Array.isArray(value)) {
+    return value
+      .slice(0, opts.arrayLimit)
+      .map((entry) => compactPipelineValue(entry, { ...opts, depth: depth + 1 }));
+  }
+  const record = value as JsonRecord;
+  const out: JsonRecord = {};
+  for (const [key, entry] of Object.entries(record).slice(0, 24)) {
+    out[key] = compactPipelineValue(entry, { ...opts, depth: depth + 1 });
+  }
+  return out;
+}
+
+function pickPipelineFields(value: unknown, fields: readonly string[], opts: { textChars: number; arrayLimit: number }): JsonRecord | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const source = value as JsonRecord;
+  const out: JsonRecord = {};
+  for (const field of fields) {
+    if (source[field] !== undefined) {
+      out[field] = compactPipelineValue(source[field], opts);
+    }
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function compactPipelineOwnership(value: unknown, opts: { textChars: number; arrayLimit: number }): JsonRecord | undefined {
+  // `thread` is intentionally excluded: it is the unbounded advisory payload that
+  // caused this door to overflow. The claim/liveness fields are the actual verdict.
+  return pickPipelineFields(
+    value,
+    ['eventKey', 'workItem', 'claimState', 'unknown', 'takenBy', 'takenAt', 'expiresAt', 'holderSessionState', 'duplicates'],
+    opts,
+  );
+}
+
+function compactPipelineGate(value: unknown, opts: { textChars: number; arrayLimit: number }): JsonRecord | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const source = value as JsonRecord;
+  const gate = pickPipelineFields(
+    source,
+    [
+      'stalled', 'consecutiveReds', 'lastGreenAtMs', 'fireStale', 'fireStaleReason',
+      'verdictStale', 'verdictStaleReason', 'verdictStaleReasonCode', 'candidateAgeMs',
+      'commitsBehindTip', 'observedCandidate', 'inconclusive',
+    ],
+    opts,
+  ) ?? {};
+  const ownership = compactPipelineOwnership(source.ownership, opts);
+  if (ownership) gate.ownership = ownership;
+  const inFlight = pickPipelineFields(
+    source.checkpointRunInFlight,
+    [
+      'active', 'activeSource', 'candidate', 'candidateSource', 'initialCandidate',
+      'refireObserved', 'inRetriageWindow', 'fromCandidate', 'refireAttempt',
+      'maxRefires', 'totalRefires', 'absoluteCeiling', 'startedAtMs', 'elapsedSec', 'asOfAgeMs',
+    ],
+    opts,
+  );
+  if (inFlight) gate.checkpointRunInFlight = inFlight;
+  return Object.keys(gate).length > 0 ? gate : undefined;
+}
+
+function compactPipelineRuntime(value: unknown, opts: { textChars: number; arrayLimit: number }): JsonRecord | undefined {
+  return pickPipelineFields(value, ['host', 'releasePipelineApplies', 'restartTarget', 'activation'], opts);
+}
+
+function compactPipelineResult(result: PipelinePosition, extras: JsonRecord, opts: { textChars: number; arrayLimit: number }): JsonRecord {
+  const out: JsonRecord = {};
+  const source = result as unknown as JsonRecord;
+
+  for (const field of [
+    'input', 'submodule', 'submodulePin', 'targetSha', 'targetShortSha', 'targetSubject',
+    'dirtyUncommitted', 'positions', 'positionsUnknown', 'positionsMarker', 'positionsNewerCommit',
+    'deployedSha', 'gitSyncLastStatus', 'blockedOn',
+  ]) {
+    if (source[field] !== undefined) out[field] = compactPipelineValue(source[field], opts);
+  }
+
+  const gate = compactPipelineGate(source.gate, opts);
+  if (gate) out.gate = gate;
+  for (const [field, fields] of [
+    ['verdictProvenance', ['lastGreenSha', 'lastGreenShortSha', 'lastGreenAgeMs', 'mainFastForwarded', 'mainBehindStaging', 'deployedBehindGreenPin', 'deployOrigin']],
+    ['serving', ['host', 'unit', 'pid', 'startedAtMs', 'codeAsOfMs', 'codeAsOfSource', 'startedSinceCodeChange', 'behindMin', 'restartLever', 'restartSupersededBy', 'unknownReason']],
+    ['changeInCandidate', ['judgingSha', 'judgingShaSource', 'judgingContainsPath', 'nextCandidateSha', 'nextContainsPath', 'missingReason', 'markerJudging', 'markerNext', 'detail']],
+    ['sweepExposure', ['exposed', 'dirtyPathCount', 'dirtyPathSample', 'nextSweepInMs', 'detail']],
+  ] as const) {
+    const picked = pickPipelineFields(source[field], fields, opts);
+    if (picked) out[field] = picked;
+  }
+
+  const gitSync = pickPipelineFields(
+    source.gitSync,
+    ['status', 'lastSyncedAtMs', 'syncAgeMs', 'consecutiveErrorTicks', 'pushedRepos', 'mergedRepos', 'conflicts', 'errors', 'pushMode', 'ownHeadPublish'],
+    opts,
+  );
+  if (gitSync) out.gitSync = gitSync;
+
+  const runtime = compactPipelineRuntime(source.runtime, opts);
+  if (runtime) out.runtime = runtime;
+  if (Array.isArray(source.runtimes)) {
+    out.runtimes = source.runtimes.slice(0, opts.arrayLimit).map((entry) => compactPipelineRuntime(entry, opts) ?? {});
+  }
+  if (Array.isArray(source.runtimeGenerations)) {
+    out.runtimeGenerations = source.runtimeGenerations
+      .slice(0, opts.arrayLimit)
+      .map((entry) => pickPipelineFields(entry, ['unit', 'label', 'pid', 'startedAtMs', 'codeAsOfMs', 'codeAsOfSource', 'runningYourCode', 'behindMin', 'activationLever', 'unknownReason'], opts) ?? {});
+  }
+  if (Array.isArray(source.stages)) {
+    out.stages = source.stages
+      .slice(0, opts.arrayLimit)
+      .map((entry) => pickPipelineFields(entry, ['name', 'position', 'health', 'detail', 'lever'], opts) ?? {});
+  }
+
+  for (const field of ['nextAction', 'summary', 'notes']) {
+    if (source[field] !== undefined) {
+      out[field] = compactPipelineValue(source[field], { ...opts, depth: 0 });
+    }
+  }
+  Object.assign(out, compactPipelineValue(extras, opts) as JsonRecord);
+  return out;
+}
+
+function minimalPipelineResult(result: PipelinePosition, extras: JsonRecord, opts: { textChars: number; arrayLimit: number }): JsonRecord {
+  const source = result as unknown as JsonRecord;
+  const out: JsonRecord = {};
+  for (const field of ['input', 'targetSha', 'targetShortSha', 'dirtyUncommitted', 'positions', 'deployedSha', 'blockedOn']) {
+    if (source[field] !== undefined) out[field] = compactPipelineValue(source[field], opts);
+  }
+  const gate = compactPipelineGate(source.gate, opts);
+  if (gate) out.gate = gate;
+  for (const field of ['verdictProvenance', 'changeInCandidate']) {
+    const picked = pickPipelineFields(source[field], field === 'verdictProvenance'
+      ? ['lastGreenShortSha', 'mainFastForwarded', 'mainBehindStaging', 'deployedBehindGreenPin', 'deployOrigin']
+      : ['judgingSha', 'judgingShaSource', 'judgingContainsPath', 'nextCandidateSha', 'nextContainsPath', 'missingReason'], opts);
+    if (picked) out[field] = picked;
+  }
+  for (const field of ['nextAction', 'summary']) {
+    if (source[field] !== undefined) out[field] = clipPipelineText(source[field], opts.textChars);
+  }
+  Object.assign(out, compactPipelineValue(extras, opts) as JsonRecord);
+  return out;
+}
+
+/**
+ * Shape the full pipeline read before it reaches the generic result door. The
+ * identity fast-path preserves the historical response byte-for-byte; only an
+ * oversized payload receives the explicit, recoverable projection marker.
+ */
+export function shapePipelinePosition(
+  result: PipelinePosition,
+  extras: JsonRecord = {},
+  rereadArgs: { path?: string; sha?: string; marker?: string } = {},
+): JsonRecord | PipelinePosition {
+  const original = { ...(result as unknown as JsonRecord), ...extras };
+  const originalChars = serializedChars(original);
+  if (originalChars <= PIPELINE_POSITION_RESPONSE_BUDGET_CHARS) return original;
+
+  const omittedFields = Object.keys(result as unknown as JsonRecord).filter((field) => !(field in compactPipelineResult(result, extras, {
+    textChars: PIPELINE_POSITION_TEXT_CHARS,
+    arrayLimit: PIPELINE_POSITION_ARRAY_LIMIT,
+  })));
+  if ('gate' in (result as unknown as JsonRecord) && !omittedFields.includes('gate.ownership.thread')) {
+    omittedFields.push('gate.ownership.thread');
+  }
+  if ('repoRoot' in (result as unknown as JsonRecord)) omittedFields.push('repoRoot');
+
+  const fullRead = {
+    tool: TOOL_NAME,
+    args: Object.fromEntries(Object.entries(rereadArgs).filter(([, value]) => value !== undefined)),
+  };
+  const projection = {
+    kind: 'bounded',
+    truncated: true,
+    originalChars,
+    returnedChars: 0,
+    omittedFields: [...new Set(omittedFields)],
+    fullRead,
+  };
+  const note = `Response was bounded from ${originalChars} to fit the ${PIPELINE_POSITION_RESPONSE_BUDGET_CHARS}-character pipeline read budget; omitted fields are listed in \`projection.omittedFields\`. Re-call \`${TOOL_NAME}\` with \`projection: { pick: [...] }\` or the args in \`projection.fullRead\` for the complete payload.`;
+
+  const withProjection = (candidate: JsonRecord): JsonRecord => {
+    const shaped = { ...candidate, projection: { ...projection }, projectionNote: note };
+    for (let i = 0; i < 4; i++) {
+      shaped.projection = { ...projection, returnedChars: serializedChars(shaped) };
+    }
+    return shaped;
+  };
+
+  let shaped = withProjection(compactPipelineResult(result, extras, {
+    textChars: PIPELINE_POSITION_TEXT_CHARS,
+    arrayLimit: PIPELINE_POSITION_ARRAY_LIMIT,
+  }));
+  if (serializedChars(shaped) > PIPELINE_POSITION_RESPONSE_BUDGET_CHARS) {
+    shaped = withProjection(compactPipelineResult(result, extras, {
+      textChars: PIPELINE_POSITION_TIGHT_TEXT_CHARS,
+      arrayLimit: PIPELINE_POSITION_TIGHT_ARRAY_LIMIT,
+    }));
+  }
+  if (serializedChars(shaped) > PIPELINE_POSITION_RESPONSE_BUDGET_CHARS) {
+    shaped = withProjection(minimalPipelineResult(result, extras, {
+      textChars: PIPELINE_POSITION_TIGHT_TEXT_CHARS,
+      arrayLimit: PIPELINE_POSITION_TIGHT_ARRAY_LIMIT,
+    }));
+  }
+  return shaped;
+}
 
 /**
  * state-plane-adoption-2026-08-02 P-010 — EMIT the plane instead of competing with it.
