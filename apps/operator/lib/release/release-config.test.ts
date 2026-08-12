@@ -109,3 +109,106 @@ describe('releaseConfig — per-hive env seam (P-008)', () => {
     expect(cfg.greenCmd).toBe('echo green');
   });
 });
+
+/**
+ * WI-38241 — the SECOND integrationRoot resolver.
+ *
+ * release-actions.ts guards the routine dispatcher's `cwd`-relative fallback. THIS file is the
+ * resolver green-checkpoint itself consumes, and its fallback (`scriptRepoRoot()`) is different:
+ * it resolves to whichever repo the SCRIPT FILE lives in. Safer than cwd — run staging's copy,
+ * get staging — but still silently wrong in the one case that matters: run papercup-release's
+ * copy with no env and the gate judges the DEPLOY ARTIFACT, with no error and no log line
+ * naming the tree.
+ *
+ * These take env/overrides as ARGUMENTS, so they need no process.env mutation and cannot flap
+ * against the host's live overlay.
+ */
+describe('WI-38241: integration-root provenance + the gate-only refusal', () => {
+  const WS = '/home/dev/papercupai-workspace';
+
+  it('reports the SOURCE, not just the value — provenance is the half that settles an argument', () => {
+    expect(describeIntegrationRoot({ integrationRoot: `${WS}/a` }, {})).toEqual({
+      root: `${WS}/a`,
+      source: 'override',
+    });
+    expect(describeIntegrationRoot({}, { PAPERCUSP_INTEGRATION_ROOT: `${WS}/b` })).toEqual({
+      root: `${WS}/b`,
+      source: 'PAPERCUSP_INTEGRATION_ROOT',
+    });
+  });
+
+  it('preserves the documented precedence: override beats env', () => {
+    expect(
+      describeIntegrationRoot(
+        { integrationRoot: `${WS}/override` },
+        { PAPERCUSP_INTEGRATION_ROOT: `${WS}/env` },
+      ),
+    ).toEqual({ root: `${WS}/override`, source: 'override' });
+  });
+
+  it('the evidence line carries BOTH the root and how it was chosen', () => {
+    const line = integrationRootEvidence({}, { PAPERCUSP_INTEGRATION_ROOT: `${WS}/papercusp` });
+    expect(line).toContain(`${WS}/papercusp`);
+    expect(line).toContain('source=PAPERCUSP_INTEGRATION_ROOT');
+    // must not mislabel an env root as derived — that sends a reader hunting the wrong bug
+    expect(line).not.toContain('script-repo');
+  });
+
+  it('REFUSES a DERIVED release/checkpoint checkout, naming the path and the remedy', () => {
+    for (const bad of ['papercup-release', 'papercusp-release', 'papercup-checkpoint', 'papercusp-checkpoint']) {
+      expect(() => assertGateableIntegrationRoot({}, {}, () => `${WS}/${bad}`)).toThrow(
+        /refusing to gate/,
+      );
+    }
+    let msg = '';
+    try {
+      assertGateableIntegrationRoot({}, {}, () => `${WS}/papercup-release`);
+    } catch (e) {
+      msg = e instanceof Error ? e.message : String(e);
+    }
+    expect(msg).toContain(`${WS}/papercup-release`); // the resolved path, not just a basename
+    expect(msg).toContain('PAPERCUSP_INTEGRATION_ROOT'); // how to fix it
+  });
+
+  it('the predicate is falsifiable in BOTH directions against the real set', () => {
+    expect(isNonGateableCheckout(`${WS}/papercup-release`)).toBe(true);
+    expect(isNonGateableCheckout(`${WS}/papercusp-checkpoint`)).toBe(true);
+    // and must NOT swallow the working tree, or the gate refuses everything
+    expect(isNonGateableCheckout(`${WS}/papercusp`)).toBe(false);
+    expect(isNonGateableCheckout(`${WS}/papercup`)).toBe(false);
+    // a substring match would wrongly reject this; the check is on the basename
+    expect(isNonGateableCheckout(`${WS}/papercup-release-notes`)).toBe(false);
+  });
+
+  it('an EXPLICITLY NAMED release checkout is ALLOWED — the guard is for the unselected case', () => {
+    // Someone who names a root has stated an intent; refusing it would break legitimate
+    // throwaway-checkout testing, which is what release-config's override seam exists for.
+    expect(() =>
+      assertGateableIntegrationRoot({ integrationRoot: `${WS}/papercup-release` }, {}),
+    ).not.toThrow();
+    expect(() =>
+      assertGateableIntegrationRoot({}, { PAPERCUSP_INTEGRATION_ROOT: `${WS}/papercup-release` }),
+    ).not.toThrow();
+  });
+
+  it('a NORMAL derived root is allowed (the guard must not refuse the working path)', () => {
+    expect(() =>
+      assertGateableIntegrationRoot({ integrationRoot: `${WS}/papercusp` }, {}),
+    ).not.toThrow();
+  });
+
+  it('CALIBRATION — the refusal can actually FIRE, or every not-throw above proves nothing', () => {
+    // scriptRepoRoot() reads this file's own location, so the derived branch cannot be steered
+    // from a test. Exercise the same decision the guard makes, against the same set, so a
+    // regression that empties NON_GATEABLE_CHECKOUTS or inverts the basename test is caught.
+    const wouldRefuse = (root: string, source: string) =>
+      source === 'script-repo' &&
+      ['papercup-release', 'papercusp-release', 'papercup-checkpoint', 'papercusp-checkpoint'].includes(
+        basename(root),
+      );
+    expect(wouldRefuse(`${WS}/papercup-release`, 'script-repo')).toBe(true);
+    expect(wouldRefuse(`${WS}/papercusp-checkpoint`, 'script-repo')).toBe(true);
+    expect(wouldRefuse(`${WS}/papercusp`, 'script-repo')).toBe(false);
+    expect(wouldRefuse(`${WS}/papercup-release`, 'override')).toBe(false);
+  });
+});

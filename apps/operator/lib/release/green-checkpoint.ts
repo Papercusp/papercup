@@ -7329,7 +7329,14 @@ export function runCmd(
 
 // CLI: `tsx green-checkpoint.ts [--candidate <ref>] [--no-push]`
 if (require.main === module) {
-  const { releaseConfig } = require('./release-config') as typeof import('./release-config');
+  const { releaseConfig, integrationRootEvidence, assertGateableIntegrationRoot } =
+    require('./release-config') as typeof import('./release-config');
+  // WI-38241 — state the judged tree BEFORE any verdict exists, then refuse to gate a
+  // release/checkpoint checkout that nothing selected. The refusal lives here, not in
+  // releaseConfig(), because ~37 callers (rollback, deploy-cli) share that constructor and
+  // must not be taken down to protect the gate.
+  console.log(`[green-checkpoint] ${integrationRootEvidence()}`);
+  assertGateableIntegrationRoot();
   const cfg = releaseConfig();
   const arg = (f: string) => {
     const i = process.argv.indexOf(f);

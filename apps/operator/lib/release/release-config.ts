@@ -92,6 +92,87 @@ export function toolingRoot(): string {
   return scriptRepoRoot();
 }
 
+/** Checkouts that must never be GATED. `papercup-release` / `papercusp-release` are the
+ *  deploy artifact (pinned to green `main`); `*-checkpoint` are the gate's own isolated test
+ *  trees. Mirrors NON_INTEGRATION_CHECKOUTS in release-actions.ts, which guards the OTHER
+ *  resolver (WI-38241 records why there are two). */
+const NON_GATEABLE_CHECKOUTS = new Set([
+  'papercup-release',
+  'papercusp-release',
+  'papercup-checkpoint',
+  'papercusp-checkpoint',
+]);
+
+export type IntegrationRootSource = 'override' | 'PAPERCUSP_INTEGRATION_ROOT' | 'script-repo';
+
+/** WHERE the integration root came from, alongside the value. The source is the half that
+ *  matters when something looks wrong: `script-repo` is the only branch that can silently
+ *  disagree with what the caller intended, because it is derived from where this FILE sits
+ *  rather than from anything anyone asked for. */
+export function describeIntegrationRoot(
+  overrides: Partial<ReleaseConfig> = {},
+  env: NodeJS.ProcessEnv = process.env,
+  /** Injectable ONLY so the derived branch is reachable from a test: `scriptRepoRoot()` reads
+   *  this file's own location, so without a seam the refusal below could never be shown to
+   *  fire — and a guard that has never fired is not a guard. */
+  deriveRoot: () => string = scriptRepoRoot,
+): { root: string; source: IntegrationRootSource } {
+  if (overrides.integrationRoot) return { root: overrides.integrationRoot, source: 'override' };
+  const fromEnv = env.PAPERCUSP_INTEGRATION_ROOT;
+  if (fromEnv) return { root: fromEnv, source: 'PAPERCUSP_INTEGRATION_ROOT' };
+  return { root: deriveRoot(), source: 'script-repo' };
+}
+
+/** True when `root` is a checkout a gate run must never judge. Exported so the decision is
+ *  testable in BOTH directions against the real set, rather than re-stated in a test. */
+export function isNonGateableCheckout(root: string): boolean {
+  return NON_GATEABLE_CHECKOUTS.has(path.basename(root));
+}
+
+/** One line of run-scoped evidence naming the tree a gate run is about to judge, and how it
+ *  was chosen. Absent this, "which tree is the gate executing?" is unanswerable from the run
+ *  log — during the 2026-08-12 freeze several agents asserted the gate was running the
+ *  release copy and none could cheaply refute it (EI-20263854732193595). */
+export function integrationRootEvidence(
+  overrides: Partial<ReleaseConfig> = {},
+  env: NodeJS.ProcessEnv = process.env,
+  deriveRoot: () => string = scriptRepoRoot,
+): string {
+  const { root, source } = describeIntegrationRoot(overrides, env, deriveRoot);
+  return `integration root: ${root} (source=${source})`;
+}
+
+/**
+ * Refuse to GATE a release/checkpoint checkout.
+ *
+ * Deliberately NOT enforced inside `releaseConfig()`, even though that is where the bad value
+ * is born. `releaseConfig()` has ~37 callers — rollback.ts and deploy-cli.ts among them — and
+ * most never read `integrationRoot` at all. Throwing at construction would take out the
+ * ROLLBACK path (a safety mechanism) to protect the gate, which trades a silent-wrong verdict
+ * for a broken recovery tool. So the refusal lives at the one CONSUMER that must never judge
+ * the wrong tree, and every other caller keeps working exactly as before.
+ *
+ * An explicit override / env root is honoured even if it points at such a checkout: someone
+ * who names a root has stated an intent, and this guard exists for the DERIVED case where
+ * nobody did.
+ */
+export function assertGateableIntegrationRoot(
+  overrides: Partial<ReleaseConfig> = {},
+  env: NodeJS.ProcessEnv = process.env,
+  deriveRoot: () => string = scriptRepoRoot,
+): void {
+  const { root, source } = describeIntegrationRoot(overrides, env, deriveRoot);
+  if (source !== 'script-repo') return;
+  if (!isNonGateableCheckout(root)) return;
+  throw new Error(
+    `green-checkpoint: refusing to gate ${root} — "${path.basename(root)}" is a release/checkpoint ` +
+      `checkout, not the integration tree, and nothing selected it (no override, no ` +
+      `PAPERCUSP_INTEGRATION_ROOT — it was derived from where this script file lives). Gating it ` +
+      `would judge code nobody commits to and publish a well-formed verdict about the wrong ` +
+      `commits. Set PAPERCUSP_INTEGRATION_ROOT explicitly. (WI-38241)`,
+  );
+}
+
 export function releaseConfig(overrides: Partial<ReleaseConfig> = {}): ReleaseConfig {
   // Precedence: explicit caller override > env > derived. Env must NOT beat an
   // explicit override — the operator host exports PAPERCUSP_INTEGRATION_ROOT
