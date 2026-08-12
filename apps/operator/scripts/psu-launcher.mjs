@@ -2334,7 +2334,14 @@ export function ompCoreToolNames(env = process.env) {
 export const CLAUDE_SEED_EXTRA_TOOL_NAMES = [
   'locks:acquire', 'locks:release', 'locks:list',
   'state:read', 'capability:bash', 'capability:bash_output',
-  'dev:pipeline_position', 'testing:run', 'dev:restart',
+  'dev:pipeline_position', 'testing:run',
+  // sql-escape-tool-routing-2026-08-12: the generated routing table promotes
+  // these read-side tools, so Claude's native ToolSearch must see them in its
+  // seed. Keep them Claude-only: the shared OMP spine is capped at 43, while
+  // these are high-value operator reads (db:migrations: 153 calls/64 agents;
+  // testing:runs: 288 calls/40 agents; issues:list: 686 calls/83 agents).
+  'db:migrations', 'issues:list', 'testing:runs',
+  'dev:restart',
   'sessions:search', 'build:typecheck', 'coord:presence',
   // Cross-role verbs whose measured demand is overwhelmingly su/psu traffic. P-003 first
   // rehomed all THREE here after overshooting the shared spine's ratchet; P-006 (D-006)
