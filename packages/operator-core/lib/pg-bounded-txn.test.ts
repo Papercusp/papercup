@@ -11,6 +11,7 @@
  * Run: cd packages/operator-core && npx vitest run lib/pg-bounded-txn.test.ts
  */
 import { describe, expect, it } from 'vitest';
+import { DbCallDeadlineError } from '@papercusp/db-org';
 import { boundedOrgTxn, OrgTxnTimeoutError } from './pg-bounded-txn';
 
 /** A fake postgres-js client: `.begin(cb)` invokes cb with a tagged-template `tx`
@@ -41,6 +42,25 @@ describe('boundedOrgTxn', () => {
     // The set_config calls carry the configured timeouts as 'Nms' bound params.
     expect(vals).toContain('6789ms'); // lock_timeout
     expect(vals).toContain('12345ms'); // statement_timeout
+  });
+
+  it('fails a stalled admin-pool acquisition before entering fn', async () => {
+    let fnRan = false;
+    const client = {
+      begin: async () => new Promise<never>(() => {}),
+    } as never;
+
+    const err = await boundedOrgTxn(
+      async () => {
+        fnRan = true;
+        return 'unreachable';
+      },
+      { client, acquireTimeoutMs: 20 },
+    ).catch((e) => e);
+
+    expect(err).toBeInstanceOf(DbCallDeadlineError);
+    expect((err as DbCallDeadlineError).label).toBe('boundedOrgTxn:acquire(admin)');
+    expect(fnRan).toBe(false);
   });
 
   it('maps a PG 57014 (statement_timeout) to OrgTxnTimeoutError with pgCode', async () => {

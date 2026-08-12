@@ -31,7 +31,13 @@
  * Migrations + long tooling keep calling getOrgPg() directly and stay unbounded.
  */
 
-import { getOrgPg } from '@papercusp/db-org';
+import {
+  DEFAULT_TX_ACQUIRE_DEADLINE_MS,
+  DbCallDeadlineError,
+  getOrgPg,
+  retryOnRetryableDbDeadline,
+  withAcquisitionDeadline,
+} from '@papercusp/db-org';
 
 /** The postgres-js client type the org handle exposes (same alias pg-read-query uses). */
 type OrgSql = ReturnType<typeof getOrgPg>['sql'];
@@ -132,6 +138,13 @@ export const ORG_TXN_DEFAULT_LOCK_TIMEOUT_MS = Math.max(
 );
 
 export interface BoundedOrgTxnOptions {
+  /**
+   * Acquisition-phase cap (connect + BEGIN + the SET LOCAL statements), ms.
+   * Defaults to the shared DB transaction acquisition deadline. The caller's
+   * `fn` is deliberately outside this cap and remains bounded only by the
+   * transaction's statement/lock timeouts.
+   */
+  acquireTimeoutMs?: number;
   /** Per-statement cap (PG statement_timeout), ms. Default ORG_TXN_DEFAULT_STATEMENT_TIMEOUT_MS. */
   statementTimeoutMs?: number;
   /** Per-lock-wait cap (PG lock_timeout), ms. Default ORG_TXN_DEFAULT_LOCK_TIMEOUT_MS. */
@@ -157,15 +170,44 @@ export async function boundedOrgTxn<T>(
   const sql = opts.client ?? getOrgPg().sql;
   const stmtMs = Math.max(100, Math.trunc(opts.statementTimeoutMs ?? ORG_TXN_DEFAULT_STATEMENT_TIMEOUT_MS));
   const lockMs = Math.max(100, Math.trunc(opts.lockTimeoutMs ?? ORG_TXN_DEFAULT_LOCK_TIMEOUT_MS));
+  const acquireLabel = 'boundedOrgTxn:acquire(admin)';
+  // Injected clients are test/non-pool backends, so they must not be counted
+  // against the process's org-admin acquisition registry. Production calls use
+  // getOrgPg() and therefore share the same measured queue-pressure signal as
+  // the other admin-pool callers.
+  const acquirePool = opts.client ? undefined : 'org-admin';
+  const acquireMs = opts.acquireTimeoutMs ?? DEFAULT_TX_ACQUIRE_DEADLINE_MS;
   let result: unknown;
   try {
-    result = await sql.begin(async (tx) => {
-      // set_config(name, value, is_local=true) == SET LOCAL, but binds the value
-      // as a parameter (a bare `SET` cannot). Mirrors locks/inWorkspaceTxn.
-      await tx`SELECT set_config('lock_timeout', ${`${lockMs}ms`}, true)`;
-      await tx`SELECT set_config('statement_timeout', ${`${stmtMs}ms`}, true)`;
-      return fn(tx as unknown as OrgSql);
-    });
+    // P-022 / D-020: bound the phase before the caller's handler starts. A
+    // postgres-js pool can queue forever before BEGIN when its client pool is
+    // saturated, so statement_timeout/lock_timeout alone cannot protect this
+    // path. The expired() guard is required because Promise.race cannot cancel
+    // a late sql.begin; it rolls that late transaction back without invoking fn.
+    result = await retryOnRetryableDbDeadline(() =>
+      withAcquisitionDeadline(
+        ({ disarm, expired }) =>
+          sql.begin(async (tx) => {
+            // set_config(name, value, is_local=true) == SET LOCAL, but binds the value
+            // as a parameter (a bare `SET` cannot). Mirrors locks/inWorkspaceTxn.
+            await tx`SELECT set_config('lock_timeout', ${`${lockMs}ms`}, true)`;
+            await tx`SELECT set_config('statement_timeout', ${`${stmtMs}ms`}, true)`;
+            if (expired()) {
+              throw new DbCallDeadlineError(
+                acquireLabel,
+                acquireMs,
+                acquireMs,
+                acquirePool,
+              );
+            }
+            // The caller's work may legitimately run longer than acquisition;
+            // stop the phase clock immediately before entering it.
+            disarm();
+            return fn(tx as unknown as OrgSql);
+          }),
+        { ms: acquireMs, label: acquireLabel, pool: acquirePool },
+      ),
+    );
   } catch (err) {
     const code = (err as { code?: string } | null)?.code;
     if (typeof code === 'string' && CONTENTION_CODES.has(code)) {
