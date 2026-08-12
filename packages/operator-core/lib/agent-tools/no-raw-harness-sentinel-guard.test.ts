@@ -72,7 +72,36 @@ describe('raw ctx.harnessSlug sentinel detector', () => {
 
   it('uses a source fingerprint in baseline keys', () => {
     expect(
-      findingKey('src/a.ts', { line: 4, kind: 'fallback', text: 'const x = 1;' }),
-    ).toBe('src/a.ts:4:fallback:const x = 1;');
+      findingKey('src/a.ts', { line: 4, kind: 'fallback', occurrence: 1, text: 'const x = 1;' }),
+    ).toBe('src/a.ts:fallback#1:const x = 1;');
+  });
+
+  it('keys are LINE-INSENSITIVE so an unrelated edit above a site cannot red the gate', () => {
+    // The same site, pushed down 300 lines by an edit somewhere above it.
+    const before = findingKey('src/a.ts', { line: 4, kind: 'fallback', occurrence: 1, text: 'const x = 1;' });
+    const after = findingKey('src/a.ts', { line: 304, kind: 'fallback', occurrence: 1, text: 'const x = 1;' });
+    expect(after).toBe(before);
+  });
+
+  it('still fails closed when the site itself changes', () => {
+    const original = findingKey('src/a.ts', { line: 4, kind: 'fallback', occurrence: 1, text: 'const x = 1;' });
+    const rewritten = findingKey('src/a.ts', { line: 4, kind: 'fallback', occurrence: 1, text: 'const x = 2;' });
+    expect(rewritten).not.toBe(original);
+  });
+
+  it('distinguishes two byte-identical sites in one file by occurrence', () => {
+    // BYTE-IDENTICAL lines: the text fingerprint alone cannot tell them apart,
+    // which is the only case the occurrence ordinal exists for.
+    const findings = findRawHarnessSentinelUses(
+      '  harnessSlug: ctx.harnessSlug ?? null,\nconst b = 1;\n  harnessSlug: ctx.harnessSlug ?? null,',
+      'src/dup.ts',
+    );
+    expect(findings).toHaveLength(2);
+    const keys = findings.map((f: { line: number; kind: string; occurrence: number; text: string }) =>
+      findingKey('src/dup.ts', f),
+    );
+    expect(new Set(keys).size).toBe(2);
+    expect(keys[0]).toContain('#1:');
+    expect(keys[1]).toContain('#2:');
   });
 });

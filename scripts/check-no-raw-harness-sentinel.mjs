@@ -50,72 +50,77 @@ export const ALLOWLIST = new Set(['scripts/check-no-raw-harness-sentinel.mjs']);
  * pending baseline to 67. The facts:assert site was then fixed through the same
  * resolver, shrinking the pending baseline to 66. The work-items:update plan
  * stamp sites were then fixed through the same resolver, shrinking it to 63.
- * A source fingerprint makes a moved or rewritten site fail closed.
+ * A source fingerprint makes a REWRITTEN or removed site fail closed.
+ *
+ * Keys are LINE-INSENSITIVE (`file:kind#occurrence:text`) — see `findingKey`.
+ * They carried a line number until 2026-08-12, which made a baselined site red
+ * the shared release gate whenever an unrelated edit shifted it downward; the
+ * 63 entries below are the same 63 sites, re-keyed, not a re-measurement.
  */
 export const BASELINE = new Set([
-  "libs/generic/tooldef/src/dispatch-stack.ts:360:predicate:const slug = ctx.harnessSlug?.trim();",
-  "libs/papercusp/packages/orchestrator/src/state-pg.ts:118:fallback:ON hfc.harness_slug = ${ctx.harnessSlug ?? ''}",
-  "libs/papercusp/packages/orchestrator/src/state-pg.ts:146:fallback:AND harness_slug  = ${ctx.harnessSlug ?? ''}",
-  "libs/papercusp/packages/orchestrator/src/state.ts:66:fallback:ctx.harnessSlug ??",
-  "packages/operator-core/lib/agent-tools/cell-reader-ctx.ts:50:identity-field:...(ctx.harnessSlug ? { harnessSlug: ctx.harnessSlug } : {}),",
-  "packages/operator-core/lib/agent-tools/cell-reader-ctx.ts:54:fallback:harnessSlug: ctx.harnessSlug ?? null,",
-  "packages/operator-core/lib/agent-tools/code/run.ts:992:fallback:harness: ctx.harnessSlug ?? null,",
-  "packages/operator-core/lib/agent-tools/conventions/governing.ts:92:fallback:const harness = (args.harness ?? ctx.harnessSlug ?? '').trim();",
-  "packages/operator-core/lib/agent-tools/coordination/coupled-topics-read.ts:72:identity-field:...(ctx.harnessSlug ? { harnessSlug: ctx.harnessSlug } : {}),",
-  "packages/operator-core/lib/agent-tools/coordination/identity.ts:367:fallback:? `${sysRole} · ${ctx.harnessSlug ?? 'system'}`",
-  "packages/operator-core/lib/agent-tools/datatypes/declare.ts:227:fallback:potSlug: ctx.harnessSlug ?? null,",
-  "packages/operator-core/lib/agent-tools/dev/pg_query.ts:170:identity-field:harnessSlug: ctx.harnessSlug,",
-  "packages/operator-core/lib/agent-tools/dev/why.ts:45:fallback:harnessSlug: args.harness ?? ctx.harnessSlug,",
-  "packages/operator-core/lib/agent-tools/events/watch.ts:241:fallback:const harnessSlug = ctx.harnessSlug ?? null;",
-  "packages/operator-core/lib/agent-tools/facts/scope-ctx.ts:56:identity-field:harnessSlug: ctx.harnessSlug,",
-  "packages/operator-core/lib/agent-tools/improvements/resolve.ts:86:fallback:harnessSlug: ctx.harnessSlug ?? null,",
-  "packages/operator-core/lib/agent-tools/recipes/run.ts:210:identity-field:...(ctx.harnessSlug ? { harness: ctx.harnessSlug } : {}),",
-  "packages/operator-core/lib/agent-tools/recipes/run.ts:322:fallback:harnessSlug: ctx.harnessSlug ?? null,",
-  "packages/operator-core/lib/agent-tools/recipes/search.ts:97:identity-field:...(ctx.harnessSlug ? { harness: ctx.harnessSlug } : {}),",
-  "packages/operator-core/lib/agent-tools/state/read.ts:116:fallback:harnessSlug: ctx.harnessSlug ?? undefined,",
-  "packages/operator-core/lib/agent-tools/state/read.ts:151:fallback:harnessSlug: ctx.harnessSlug ?? null,",
-  "packages/operator-core/lib/agent-tools/state/subscribe.ts:94:fallback:harnessSlug: ctx.harnessSlug ?? undefined,",
-  "packages/operator-core/lib/agent-tools/testing/flakiness.ts:40:fallback:const harnessSlug = args.harness ?? ctx.harnessSlug ?? undefined;",
-  "packages/operator-core/lib/agent-tools/testing/flakiness.ts:70:identity-field:{ ownerId: ident.ownerId, workspaceId: ctx.workspaceId, harnessSlug: ctx.harnessSlug },",
-  "packages/operator-core/lib/agent-tools/tools/define.ts:103:fallback:harnessSlug: ctx.harnessSlug ?? null,",
-  "packages/operator-core/lib/agent-tools/work_items/_create-core.ts:249:fallback:harness: args.harness ?? ctx.harnessSlug ?? undefined,",
-  "packages/operator-core/lib/agent-tools/work_items/_create-core.ts:274:fallback:harness: args.harness ?? ctx.harnessSlug ?? undefined,",
-  "packages/operator-core/lib/agent-tools/work_items/_create-core.ts:346:fallback:harnessSlug: args.harness ?? ctx.harnessSlug,",
-  "packages/operator-core/lib/agent-tools/work_items/_create-core.ts:405:fallback:const planItemStampHarness = harnessForItem ?? ctx.harnessSlug ?? undefined;",
-  "packages/operator-core/lib/agent-tools/work_items/arm-reversible-work-item.ts:151:fallback:harnessSlug: ctx.harnessSlug ?? prior.harness ?? null,",
-  "packages/operator-core/lib/agent-tools/work_items/create.ts:285:identity-field:const createCtx = { ownerId: ident.ownerId, workspaceId: ctx.workspaceId, harnessSlug: ctx.harnessSlug };",
-  "packages/operator-core/lib/agent-tools/work_items/create.ts:472:fallback:harness: s.harness ?? ctx.harnessSlug ?? null,",
-  "packages/operator-core/lib/blueprint-steps/ops/calibration-resolve.ts:55:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
-  "packages/operator-core/lib/blueprint-steps/ops/change-ledger-scan.ts:56:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
-  "packages/operator-core/lib/blueprint-steps/ops/deferral-interest-refit.ts:58:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
-  "packages/operator-core/lib/blueprint-steps/ops/fleet-ekg-scan.ts:78:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
-  "packages/operator-core/lib/blueprint-steps/ops/graduation-scan.ts:68:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
-  "packages/operator-core/lib/blueprint-steps/ops/hive-eval-gen.ts:60:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
-  "packages/operator-core/lib/blueprint-steps/ops/iq-battery-gen.ts:60:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
-  "packages/operator-core/lib/blueprint-steps/ops/memory-live-recall-canary.ts:52:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
-  "packages/operator-core/lib/blueprint-steps/ops/memory-precision-bench.ts:53:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
-  "packages/operator-core/lib/blueprint-steps/ops/negative-space-scan.ts:63:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
-  "packages/operator-core/lib/blueprint-steps/ops/neologism-mine.ts:69:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
-  "packages/operator-core/lib/blueprint-steps/ops/prompt-ablation.ts:61:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
-  "packages/operator-core/lib/blueprint-steps/ops/red-queen-drill.ts:50:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
-  "packages/operator-core/lib/blueprint-steps/ops/regret-mine.ts:68:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
-  "packages/operator-core/lib/blueprint-steps/ops/scout-cycle.ts:83:fallback:const perHiveInstall = ctx.harnessSlug ?? 'op';",
-  "packages/operator-core/lib/blueprint-steps/ops/transfer-distill.ts:72:fallback:const installSlug = ctx.harnessSlug ?? 'op';",
-  "packages/operator-core/lib/coord-ops/ops/compose.ts:130:identity-field:harness: ctx.harnessSlug,",
-  "packages/operator-core/lib/coord-ops/ops/thread-open.ts:35:fallback:harness: a.harness ?? ctx.harnessSlug,",
-  "packages/operator-core/lib/decision-ledger/emit.ts:141:fallback:harnessSlug: ctx.harnessSlug ?? null,",
-  "packages/operator-core/lib/deployment/frame-installer.ts:139:identity-field:harnessSlug: ctx.harnessSlug,",
-  "packages/operator-core/lib/deployment/headless-peer.ts:86:identity-field:harnessSlug: ctx.harnessSlug,",
-  "packages/operator-core/lib/endpoint-route/routes/plugins/catchall.ts:36:fallback:console.log(`[plugin-tool/http][${ctx.harnessSlug ?? '-'}/${ctx.role ?? '-'}/${ctx.spawnId ?? '-'}] ${line}`);",
-  "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts:1891:predicate:spawnRes.ctx.harnessSlug === '*' &&",
-  "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-slash-prompts.ts:135:identity-field:harness: ctx.harnessSlug,",
-  "packages/operator-core/lib/events/reaction-id.ts:33:identity-field:harnessSlug: ctx.harnessSlug,",
-  "packages/operator-core/lib/events/rules.ts:52:fallback:harness_slug: e.ctx.harnessSlug ?? undefined,",
-  "packages/operator-core/lib/fleet/bee-completion-reconcile.ts:162:identity-field:{ harnessSlug: ctx.harnessSlug, featureId: ctx.featureId, workspaceId: ctx.workspaceId },",
-  "packages/operator-core/lib/gym/control-plane.ts:706:identity-field:harnessSlug: ctx.harnessSlug,",
-  "packages/operator-core/lib/gym/control-plane.ts:721:identity-field:harnessSlug: ctx.harnessSlug,",
-  "packages/operator-core/lib/harness-ops/proxy.ts:58:identity-field:harnessSlug: ctx.harnessSlug,",
-  "packages/operator-core/lib/projected-tool-deps.ts:534:fallback:input.ctx.harnessSlug ?? \"\",",
+  "libs/generic/tooldef/src/dispatch-stack.ts:predicate#1:const slug = ctx.harnessSlug?.trim();",
+  "libs/papercusp/packages/orchestrator/src/state-pg.ts:fallback#1:AND harness_slug  = ${ctx.harnessSlug ?? ''}",
+  "libs/papercusp/packages/orchestrator/src/state-pg.ts:fallback#1:ON hfc.harness_slug = ${ctx.harnessSlug ?? ''}",
+  "libs/papercusp/packages/orchestrator/src/state.ts:fallback#1:ctx.harnessSlug ??",
+  "packages/operator-core/lib/agent-tools/cell-reader-ctx.ts:fallback#1:harnessSlug: ctx.harnessSlug ?? null,",
+  "packages/operator-core/lib/agent-tools/cell-reader-ctx.ts:identity-field#1:...(ctx.harnessSlug ? { harnessSlug: ctx.harnessSlug } : {}),",
+  "packages/operator-core/lib/agent-tools/code/run.ts:fallback#1:harness: ctx.harnessSlug ?? null,",
+  "packages/operator-core/lib/agent-tools/conventions/governing.ts:fallback#1:const harness = (args.harness ?? ctx.harnessSlug ?? '').trim();",
+  "packages/operator-core/lib/agent-tools/coordination/coupled-topics-read.ts:identity-field#1:...(ctx.harnessSlug ? { harnessSlug: ctx.harnessSlug } : {}),",
+  "packages/operator-core/lib/agent-tools/coordination/identity.ts:fallback#1:? `${sysRole} · ${ctx.harnessSlug ?? 'system'}`",
+  "packages/operator-core/lib/agent-tools/datatypes/declare.ts:fallback#1:potSlug: ctx.harnessSlug ?? null,",
+  "packages/operator-core/lib/agent-tools/dev/pg_query.ts:identity-field#1:harnessSlug: ctx.harnessSlug,",
+  "packages/operator-core/lib/agent-tools/dev/why.ts:fallback#1:harnessSlug: args.harness ?? ctx.harnessSlug,",
+  "packages/operator-core/lib/agent-tools/events/watch.ts:fallback#1:const harnessSlug = ctx.harnessSlug ?? null;",
+  "packages/operator-core/lib/agent-tools/facts/scope-ctx.ts:identity-field#1:harnessSlug: ctx.harnessSlug,",
+  "packages/operator-core/lib/agent-tools/improvements/resolve.ts:fallback#1:harnessSlug: ctx.harnessSlug ?? null,",
+  "packages/operator-core/lib/agent-tools/recipes/run.ts:fallback#1:harnessSlug: ctx.harnessSlug ?? null,",
+  "packages/operator-core/lib/agent-tools/recipes/run.ts:identity-field#1:...(ctx.harnessSlug ? { harness: ctx.harnessSlug } : {}),",
+  "packages/operator-core/lib/agent-tools/recipes/search.ts:identity-field#1:...(ctx.harnessSlug ? { harness: ctx.harnessSlug } : {}),",
+  "packages/operator-core/lib/agent-tools/state/read.ts:fallback#1:harnessSlug: ctx.harnessSlug ?? null,",
+  "packages/operator-core/lib/agent-tools/state/read.ts:fallback#1:harnessSlug: ctx.harnessSlug ?? undefined,",
+  "packages/operator-core/lib/agent-tools/state/subscribe.ts:fallback#1:harnessSlug: ctx.harnessSlug ?? undefined,",
+  "packages/operator-core/lib/agent-tools/testing/flakiness.ts:fallback#1:const harnessSlug = args.harness ?? ctx.harnessSlug ?? undefined;",
+  "packages/operator-core/lib/agent-tools/testing/flakiness.ts:identity-field#1:{ ownerId: ident.ownerId, workspaceId: ctx.workspaceId, harnessSlug: ctx.harnessSlug },",
+  "packages/operator-core/lib/agent-tools/tools/define.ts:fallback#1:harnessSlug: ctx.harnessSlug ?? null,",
+  "packages/operator-core/lib/agent-tools/work_items/_create-core.ts:fallback#1:const planItemStampHarness = harnessForItem ?? ctx.harnessSlug ?? undefined;",
+  "packages/operator-core/lib/agent-tools/work_items/_create-core.ts:fallback#1:harness: args.harness ?? ctx.harnessSlug ?? undefined,",
+  "packages/operator-core/lib/agent-tools/work_items/_create-core.ts:fallback#1:harnessSlug: args.harness ?? ctx.harnessSlug,",
+  "packages/operator-core/lib/agent-tools/work_items/_create-core.ts:fallback#2:harness: args.harness ?? ctx.harnessSlug ?? undefined,",
+  "packages/operator-core/lib/agent-tools/work_items/arm-reversible-work-item.ts:fallback#1:harnessSlug: ctx.harnessSlug ?? prior.harness ?? null,",
+  "packages/operator-core/lib/agent-tools/work_items/create.ts:fallback#1:harness: s.harness ?? ctx.harnessSlug ?? null,",
+  "packages/operator-core/lib/agent-tools/work_items/create.ts:identity-field#1:const createCtx = { ownerId: ident.ownerId, workspaceId: ctx.workspaceId, harnessSlug: ctx.harnessSlug };",
+  "packages/operator-core/lib/blueprint-steps/ops/calibration-resolve.ts:fallback#1:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/change-ledger-scan.ts:fallback#1:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/deferral-interest-refit.ts:fallback#1:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/fleet-ekg-scan.ts:fallback#1:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/graduation-scan.ts:fallback#1:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/hive-eval-gen.ts:fallback#1:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/iq-battery-gen.ts:fallback#1:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/memory-live-recall-canary.ts:fallback#1:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/memory-precision-bench.ts:fallback#1:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/negative-space-scan.ts:fallback#1:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/neologism-mine.ts:fallback#1:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/prompt-ablation.ts:fallback#1:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/red-queen-drill.ts:fallback#1:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/regret-mine.ts:fallback#1:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/scout-cycle.ts:fallback#1:const perHiveInstall = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/blueprint-steps/ops/transfer-distill.ts:fallback#1:const installSlug = ctx.harnessSlug ?? 'op';",
+  "packages/operator-core/lib/coord-ops/ops/compose.ts:identity-field#1:harness: ctx.harnessSlug,",
+  "packages/operator-core/lib/coord-ops/ops/thread-open.ts:fallback#1:harness: a.harness ?? ctx.harnessSlug,",
+  "packages/operator-core/lib/decision-ledger/emit.ts:fallback#1:harnessSlug: ctx.harnessSlug ?? null,",
+  "packages/operator-core/lib/deployment/frame-installer.ts:identity-field#1:harnessSlug: ctx.harnessSlug,",
+  "packages/operator-core/lib/deployment/headless-peer.ts:identity-field#1:harnessSlug: ctx.harnessSlug,",
+  "packages/operator-core/lib/endpoint-route/routes/plugins/catchall.ts:fallback#1:console.log(`[plugin-tool/http][${ctx.harnessSlug ?? '-'}/${ctx.role ?? '-'}/${ctx.spawnId ?? '-'}] ${line}`);",
+  "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-handler.ts:predicate#1:spawnRes.ctx.harnessSlug === '*' &&",
+  "packages/operator-core/lib/endpoint-route/routes/transport/_mcp-slash-prompts.ts:identity-field#1:harness: ctx.harnessSlug,",
+  "packages/operator-core/lib/events/reaction-id.ts:identity-field#1:harnessSlug: ctx.harnessSlug,",
+  "packages/operator-core/lib/events/rules.ts:fallback#1:harness_slug: e.ctx.harnessSlug ?? undefined,",
+  "packages/operator-core/lib/fleet/bee-completion-reconcile.ts:identity-field#1:{ harnessSlug: ctx.harnessSlug, featureId: ctx.featureId, workspaceId: ctx.workspaceId },",
+  "packages/operator-core/lib/gym/control-plane.ts:identity-field#1:harnessSlug: ctx.harnessSlug,",
+  "packages/operator-core/lib/gym/control-plane.ts:identity-field#2:harnessSlug: ctx.harnessSlug,",
+  "packages/operator-core/lib/harness-ops/proxy.ts:identity-field#1:harnessSlug: ctx.harnessSlug,",
+  "packages/operator-core/lib/projected-tool-deps.ts:fallback#1:input.ctx.harnessSlug ?? \"\",",
 ]);
 
 /** Vendored/generated/test files are not operator source and are not scanned. */
@@ -146,9 +151,29 @@ const SAFE_RESOLVER =
 const EXPLICIT_SENTINEL_GUARD =
   /\bctx(?:\?\.)?\.harnessSlug\s*!==?\s*['"]\s*(?:\*|all)\s*['"]|['"]\s*(?:\*|all)\s*['"]\s*!==?\s*ctx(?:\?\.)?\.harnessSlug\b/;
 
-/** Stable key for the shrink-only baseline; the source text prevents line reuse. */
+/**
+ * Stable key for the shrink-only baseline.
+ *
+ * The key is deliberately LINE-INSENSITIVE. The fingerprint that makes a moved
+ * or rewritten site fail closed is the source TEXT, not the line number — and a
+ * line number additionally makes every baselined site fail on an UNRELATED edit
+ * anywhere above it in the same file. On this tree (~120 commits/hour across the
+ * hot agent-tools / orchestrator / endpoint-route files this baseline lives in)
+ * that turned a shrink-only guard into a recurring red on the SHARED release
+ * gate: on 2026-08-12 two sites shifted by pure line drift
+ * (`recipes/run.ts` 303→322, `_mcp-handler.ts` 1890→1891), reddening the gate
+ * with no behavioural change at all, and the only available repair was to
+ * hand-re-measure the baseline — a mitigation that re-arms the same trap.
+ *
+ * `occurrence` (1-based, per file+kind+text) keeps two byte-identical sites in
+ * one file distinguishable, so deleting one of them still fails closed.
+ *
+ * Fail-closed behaviour is unchanged: a CHANGED or REMOVED site no longer
+ * produces its key and is reported as a stale baseline entry; a NEW site
+ * produces a key that is not in the baseline and is reported as an offender.
+ */
 export function findingKey(file, finding) {
-  return `${file}:${finding.line}:${finding.kind}:${finding.text.trim()}`;
+  return `${file}:${finding.kind}#${finding.occurrence ?? 1}:${finding.text.trim()}`;
 }
 
 /**
@@ -166,6 +191,8 @@ export function findRawHarnessSentinelUses(text, fileName = 'source.ts') {
   const codeLines = code.split('\n');
   const commentFreeLines = commentFree.split('\n');
   const findings = [];
+  /** kind+text -> how many times it has already been seen in THIS file. */
+  const seen = new Map();
 
   for (let i = 0; i < codeLines.length; i += 1) {
     const line = codeLines[i];
@@ -178,10 +205,16 @@ export function findRawHarnessSentinelUses(text, fileName = 'source.ts') {
     else if (NON_SENTINEL_PREDICATE.test(line) || TRUTHINESS_PREDICATE.test(line)) kind = 'predicate';
     if (!kind) continue;
 
+    const text = sourceLines[i] ?? '';
+    const dedupe = `${kind}:${text.trim()}`;
+    const occurrence = (seen.get(dedupe) ?? 0) + 1;
+    seen.set(dedupe, occurrence);
+
     findings.push({
       line: i + 1,
       kind,
-      text: sourceLines[i] ?? '',
+      occurrence,
+      text,
     });
   }
   return findings;
