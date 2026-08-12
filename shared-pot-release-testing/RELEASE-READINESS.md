@@ -53,6 +53,34 @@ waiting on a decision; every open row has a named owner and a concrete flip cond
 > 2026-08-07T04:35:31Z and disabled 04:36:29Z. Those five reds have since been shown to be **real**,
 > and a dark gate is precisely how C-001 survived unnoticed — the blocker stands.
 >
+> ⚠ **MEASURED 2026-08-12T19:5xZ (su-ba5ef) — SPLIT THIS CLAIM IN TWO. The STANDING gate is still
+> dark, but "therefore our newest verdict is the 8-day-old 08-01 green" is now FALSE.** The gate has
+> kept running by hand while the timer stayed off, and it produced a **GREEN today**:
+>
+> | when (UTC) | how | verdict |
+> |---|---|---|
+> | 2026-08-11T20:16→21:39 | manual `systemctl start` of the **service** (timer never fired) | 🔴 `GATE: RED (content-matrix from-repo)` — `content-matrix=FAIL from-repo=FAIL from-repo-witness=SKIPPED local-matrix=SKIPPED-CONTENT-RED`. Consumed **8h41m CPU, 26.1G peak RSS** |
+> | **2026-08-12T11:12:50** | manual run, outside systemd | 🟢 **GREEN** — `~/.papercusp/live-fed-gate/last-green` = `1786533170`, and `last-green` is written on the **green path only** |
+>
+> The green is **attributed**: `su-7f4eb492` closed **`WI-38192` — "Run admissible exact D-030 gate
+> on post-credential-hardening release candidate"** — `done` at 2026-08-12T11:14:41Z, 113s after that
+> marker, citing *"a clean terminal-green packaged D-030 run"*. The 08-11 red → 08-12 green ordering
+> is coherent: the credential hardening landed between them.
+>
+> Two things follow, and they are different:
+> 1. **The standing-coverage blocker STANDS.** `papercup-live-federation-gate.timer` is
+>    `loaded/inactive/dead`, `UnitFileState=disabled`, absent from `timers.target.wants/` (verified
+>    directly, not from a broadcast). Nothing re-arms it; re-arming is owner-gated (wall
+>    `wall:live-federation-gate-timer-owner-stopped`). Coverage is whoever remembers to run it.
+> 2. **The "no current verdict" implication does NOT stand.** There is a green from today.
+>
+> ⚠⚠ **And that green is itself an instance of this file's own §8 discrepancy #1 — *"a gate that
+> goes green silently is indistinguishable from one that never did."*** It survives ONLY as an epoch
+> integer in a marker file: the `/tmp` log dir is reaped, nothing was banked to `triage/` (newest
+> bank is 2026-08-12T01:53Z), and the systemd journal has no 08-12 entry because the run was not
+> under systemd. **Nobody can re-read what that green actually asserted.** Do not promote it to an
+> evidentiary spine — cite it as "a green was recorded, its content is unrecoverable."
+>
 > ⚠ **CORRECTED 2026-08-09 (su-c2f97, WI-37144): the "no recorded decision / 57 seconds after a 5th
 > consecutive RED" reading was WRONG and must not be repeated.** The stop was ordered by the
 > **owner**, explicitly, and NOT because of the red: session `d699c658` turn 20
