@@ -53,12 +53,13 @@ beforeEach(() => {
   vi.clearAllMocks();
   fetchPresenceFleet.mockResolvedValue(new Map()); // default: prior leader carries no fleet label
   sendMessage.mockResolvedValue({ msg_id: 'm1' });
+  setFleetLeader.mockResolvedValue(fleet({ leaderOwnerId: 'su-bob' }));
 });
 
 describe('takeFleetLeadership (D-002 single-leader + notify, EI-5705/EI-5704)', () => {
   it('installs the caller as leader + labels their presence; no prior leader → no demote/notify', async () => {
     const out = await takeFleetLeadership(WS, fleet({ leaderOwnerId: null }), identity, 'su-bob');
-    expect(setFleetLeader).toHaveBeenCalledWith(WS, SLUG, 'su-bob');
+    expect(setFleetLeader).toHaveBeenCalledWith(WS, SLUG, 'su-bob', undefined, null);
     expect(setPresenceFleet).toHaveBeenCalledWith(WS, 'su-bob', SLUG, 'leader');
     expect(sendMessage).not.toHaveBeenCalled();
     expect(out).toMatchObject({ leader: 'su-bob', previousLeader: null, demotedPriorLeader: null, notified: false });
@@ -102,8 +103,15 @@ describe('takeFleetLeadership (D-002 single-leader + notify, EI-5705/EI-5704)', 
     fetchPresenceFleet.mockResolvedValue(new Map([['su-alice', { fleetSlug: SLUG, fleetRole: 'leader' }]]));
     sendMessage.mockRejectedValue(new Error('coord down'));
     const out = await takeFleetLeadership(WS, fleet({ leaderOwnerId: 'su-alice' }), identity, 'su-bob');
-    expect(setFleetLeader).toHaveBeenCalledWith(WS, SLUG, 'su-bob');
+    expect(setFleetLeader).toHaveBeenCalledWith(WS, SLUG, 'su-bob', undefined, 'su-alice');
     expect(out.demotedPriorLeader).toBe('su-alice'); // demote happened before the notify
     expect(out.notified).toBe(false);
+  });
+
+  it('refuses a stale transfer when another leader won after authorization', async () => {
+    setFleetLeader.mockResolvedValue(null);
+    await expect(takeFleetLeadership(WS, fleet({ leaderOwnerId: 'su-alice' }), identity, 'su-bob'))
+      .rejects.toThrow('fleet_leadership_superseded');
+    expect(setPresenceFleet).not.toHaveBeenCalled();
   });
 });

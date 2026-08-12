@@ -127,7 +127,7 @@ describe('applyFleetControl', () => {
       state: 'winding-down',
       reason: 'release cut',
       by: callerRef.ownerId,
-    });
+    }, undefined, callerRef.ownerId);
     const sendOpts = sendM.mock.calls[0][1] as unknown as Record<string, unknown>;
     expect(sendOpts.to).toEqual(['m-1', 'm-2']);
     expect(sendOpts.extra).toEqual({
@@ -144,6 +144,14 @@ describe('applyFleetControl', () => {
     getFleetM.mockResolvedValue(fleet({ leaderOwnerId: 'su-someone-else' }));
     const r = await applyFleetControl({} as never, 'backend', 'wind-down');
     expect(r).toMatchObject({ ok: true, invokedAs: 'owner' });
+  });
+
+  it('refuses a stale leader control write when leadership changed after authorization', async () => {
+    getFleetM.mockResolvedValue(fleet({ leaderOwnerId: callerRef.ownerId }));
+    setControlM.mockResolvedValueOnce(null);
+    const r = await applyFleetControl({} as never, 'backend', 'wind-down');
+    expect(r).toMatchObject({ ok: false, error: 'fleet_leadership_superseded' });
+    expect(sendM).not.toHaveBeenCalled();
   });
 
   it('a mug (queen) invokes as QUEEN', async () => {
@@ -189,7 +197,7 @@ describe('applyFleetControl', () => {
       state: 'active',
       reason: 'incident cleared',
       by: callerRef.ownerId,
-    });
+    }, undefined, callerRef.ownerId);
     expect((sendM.mock.calls[0][1] as { summary: string }).summary).toContain('RESUMED');
   });
 

@@ -275,14 +275,16 @@ export async function setFleetLeader(
   fleetSlug: string,
   leaderOwnerId: string | null,
   sql?: Sql,
+  expectedLeaderOwnerId?: string | null,
 ): Promise<AgentFleetRecord | null> {
   const s = pg(sql);
   const rows = (await s.unsafe(
     `UPDATE harness_shared.agent_fleets
         SET leader_owner_id = $3, updated_at = $4
       WHERE workspace_id = $1 AND fleet_slug = $2
+        AND ($5::text IS NULL OR leader_owner_id IS NOT DISTINCT FROM $5::text)
       RETURNING ${COLS}`,
-    [workspaceId, fleetSlug, leaderOwnerId, Date.now()],
+    [workspaceId, fleetSlug, leaderOwnerId, Date.now(), expectedLeaderOwnerId ?? null],
   )) as unknown as FleetRow[];
   if (rows[0]) refreshDirectoryCard(workspaceId, fleetSlug, { sql });
   return rows[0] ? rowToRecord(rows[0]) : null;
@@ -299,6 +301,7 @@ export async function setFleetControlState(
   fleetSlug: string,
   control: { state: FleetControlState; reason?: string | null; by?: string | null },
   sql?: Sql,
+  expectedLeaderOwnerId?: string | null,
 ): Promise<AgentFleetRecord | null> {
   const s = pg(sql);
   const now = Date.now();
@@ -306,8 +309,9 @@ export async function setFleetControlState(
     `UPDATE harness_shared.agent_fleets
         SET control_state = $3, control_reason = $4, control_by = $5, control_at = $6, updated_at = $6
       WHERE workspace_id = $1 AND fleet_slug = $2
+        AND ($7::text IS NULL OR leader_owner_id IS NOT DISTINCT FROM $7::text)
       RETURNING ${COLS}`,
-    [workspaceId, fleetSlug, control.state, control.reason ?? null, control.by ?? null, now],
+    [workspaceId, fleetSlug, control.state, control.reason ?? null, control.by ?? null, now, expectedLeaderOwnerId ?? null],
   )) as unknown as FleetRow[];
   if (rows[0]) refreshDirectoryCard(workspaceId, fleetSlug, { sql });
   return rows[0] ? rowToRecord(rows[0]) : null;

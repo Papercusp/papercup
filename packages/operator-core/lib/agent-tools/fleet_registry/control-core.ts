@@ -191,7 +191,16 @@ export async function applyFleetControl(
     workspaceId,
     slug,
     { state: targetState, reason: effectiveReason, by: ownerId },
+    undefined,
+    invokedAs === 'leader' ? fleet.leaderOwnerId : undefined,
   );
+  if (!updated && invokedAs === 'leader') {
+    return {
+      ok: false,
+      error: 'fleet_leadership_superseded',
+      message: `Fleet '${slug}' changed leaders after this control action was authorized; re-orient before retrying.`,
+    };
+  }
   const record: AgentFleetRecord = updated ?? fleet;
 
   // 3. CUE the live member set — typed, fleet-scope-stamped, best-effort. A

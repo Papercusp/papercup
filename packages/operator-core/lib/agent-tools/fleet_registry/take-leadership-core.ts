@@ -116,7 +116,10 @@ export async function takeFleetLeadership(
   const previousLeader = fleet.leaderOwnerId; // may be null, or already === caller
 
   // 1. Registry: the caller becomes the sole leader (single-leader invariant, D-002).
-  await setFleetLeader(workspaceId, slug, ownerId);
+  const installed = await setFleetLeader(workspaceId, slug, ownerId, undefined, previousLeader);
+  if (!installed) {
+    throw new Error(`fleet_leadership_superseded: '${slug}' leader changed after authorization; re-orient before retrying`);
+  }
   // 2. The caller's presence → this fleet's leader.
   await heartbeatPresence(identity); // guarantee a presence row to label
   await setPresenceFleet(workspaceId, ownerId, slug, 'leader');
