@@ -30,6 +30,7 @@ import {
   NATIVE_SESSION_ID_RE,
   adoptStartingTerminalLaunch,
   markAdvSessionEnded,
+  parseKilledBySignalReport,
   reactivateAdvSession,
   reanchorAdvSessionNativeId,
   reanchorAdvSessionNativeIdByOwner,
@@ -2595,9 +2596,7 @@ const sessionEnded = defineTool({
       }
       // Shape-validated rather than trusted: this string is persisted and then read back
       // as the reason an agent died, so it must be a signal NAME and nothing else.
-      if (typeof body.killedBySignal === 'string' && /^SIG[A-Z0-9]{1,15}$/.test(body.killedBySignal)) {
-        killedBySignal = body.killedBySignal;
-      }
+      killedBySignal = parseKilledBySignalReport(body.killedBySignal);
     } catch {
       /* fall through to the 400 */
     }

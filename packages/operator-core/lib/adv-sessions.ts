@@ -759,6 +759,24 @@ export function isInvoluntaryEnd(row: Pick<AdvSessionRow, 'endedBy'>): boolean {
 }
 
 /**
+ * Validate a launcher-reported killing signal, returning the signal NAME or `null`.
+ *
+ * This string arrives over HTTP from the psu launcher and is then persisted as the
+ * stated reason an agent died, so it is SHAPE-CHECKED rather than trusted: only a real
+ * signal name is storable.
+ *
+ * ⚠ The failure mode to keep in mind is that rejecting is NOT free. A rejected value
+ * degrades to `'self'` — i.e. "it exited voluntarily" — so an over-strict rule here
+ * silently recreates the very bug this fixes, for whichever signal it fails to match.
+ * That is why the pattern accepts digits (`signalNameFromCode` emits `SIG<number>` for a
+ * signal this Node build cannot name) rather than only a closed list of known names.
+ */
+export function parseKilledBySignalReport(raw: unknown): string | null {
+  if (typeof raw !== 'string') return null;
+  return /^SIG[A-Z0-9]{1,15}$/.test(raw) ? raw : null;
+}
+
+/**
  * The caveat for a row's `exit_code`, or `null` when the number means what it says.
  *
  * MEASURED against the real node-pty in this tree: killing a child with SIGHUP yields

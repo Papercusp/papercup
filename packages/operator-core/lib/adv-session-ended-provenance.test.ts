@@ -6,6 +6,7 @@ import {
   describeSessionEndTime,
   isInvoluntaryEnd,
   isObserverEndedSession,
+  parseKilledBySignalReport,
   type AdvSessionRow,
 } from './adv-sessions';
 import { withFieldReliability } from './field-reliability';
@@ -185,6 +186,35 @@ describe('a KILLED session is not a voluntary exit (WI-38054)', () => {
         _fieldReliabilityWarning: string;
       };
       expect(out._fieldReliabilityWarning).toContain('INFERRED');
+    });
+  });
+
+  describe('parseKilledBySignalReport — the launcher-reported signal, shape-checked', () => {
+    it('accepts real signal names', () => {
+      expect(parseKilledBySignalReport('SIGHUP')).toBe('SIGHUP');
+      expect(parseKilledBySignalReport('SIGKILL')).toBe('SIGKILL');
+      expect(parseKilledBySignalReport('SIGTERM')).toBe('SIGTERM');
+    });
+
+    it('accepts the SIG<number> form, because REJECTING silently means "voluntary exit"', () => {
+      // This is the asymmetry that makes over-strictness dangerous rather than merely
+      // annoying: a rejected value degrades to ended_by='self'. So a rule too narrow to
+      // match a signal the host could not name would silently recreate the exact bug
+      // this fix exists to remove, for that signal. signalNameFromCode emits SIG<number>
+      // precisely so the evidence survives being unnameable — it must survive here too.
+      expect(parseKilledBySignalReport('SIG9999')).toBe('SIG9999');
+    });
+
+    it('rejects anything that is not a signal name', () => {
+      expect(parseKilledBySignalReport(null)).toBeNull();
+      expect(parseKilledBySignalReport(undefined)).toBeNull();
+      expect(parseKilledBySignalReport(42)).toBeNull();
+      expect(parseKilledBySignalReport('')).toBeNull();
+      expect(parseKilledBySignalReport('sighup')).toBeNull(); // case matters
+      expect(parseKilledBySignalReport('HUP')).toBeNull(); // missing the SIG prefix
+      expect(parseKilledBySignalReport('SIG')).toBeNull(); // prefix alone is not a signal
+      expect(parseKilledBySignalReport("SIGHUP'; DROP TABLE adv_sessions;--")).toBeNull();
+      expect(parseKilledBySignalReport(`SIG${'X'.repeat(64)}`)).toBeNull();
     });
   });
 
