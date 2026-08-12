@@ -3,6 +3,8 @@ import {
   callToolWithPressureRetry,
   buildMcpUrl,
   resolveContextTier,
+  formatToolCallFailure,
+  isLoopPressureShed,
   printResult,
   PTOOL_CALL_TOOL_TIMEOUT_MS,
   PTOOL_GIT_SYNC_RUN_TIMEOUT_MS,
@@ -60,6 +62,32 @@ describe('ptool call deadlines', () => {
         maxTotalTimeout: PTOOL_GIT_SYNC_RUN_TIMEOUT_MS,
       },
     );
+  });
+});
+
+describe('ptool tools/call failure diagnostics', () => {
+  it('preserves transport and cause details while requiring state verification before retry', () => {
+    const error = Object.assign(new TypeError('fetch failed'), {
+      cause: { code: 'UND_ERR_SOCKET', message: 'other side closed' },
+    });
+
+    const message = formatToolCallFailure('work_items:complete', error);
+
+    expect(message).toContain('tools/call work_items:complete');
+    expect(message).toContain('fetch failed');
+    expect(message).toContain('UND_ERR_SOCKET: other side closed');
+    expect(message).toContain('the tool call may have executed');
+    expect(message).toContain('verify its state before retrying');
+    expect(message).toContain('Do not blindly retry a mutation');
+  });
+
+  it('does not mislabel a known pre-dispatch pressure shed as ambiguous', () => {
+    const error = new Error('loop_pressure_critical');
+
+    expect(isLoopPressureShed(error)).toBe(true);
+    expect(formatToolCallFailure('coord:send', error)).toContain('rejected before dispatch');
+    expect(formatToolCallFailure('coord:send', error)).toContain('no tool execution occurred');
+    expect(formatToolCallFailure('coord:send', error)).not.toContain('may have executed');
   });
 });
 
