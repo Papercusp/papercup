@@ -6,12 +6,108 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
-import { searchWorkItems, type WorkItemKind } from '../../work-items';
+import { searchWorkItems, type WorkItem, type WorkItemKind } from '../../work-items';
+
+/**
+ * A search result is a deduplication hint, not a work-item detail read. Returning
+ * the complete WorkItem here used to put the unbounded `payload` and terminal
+ * evidence of every hit on one JSON line. A bounded query could therefore still
+ * overflow the result door before ptool saw complete JSON (EI-20242958830709441).
+ * Full state remains available through work_items:get { id }.
+ */
+const SEARCH_TITLE_CHARS = 180;
+const SEARCH_SUMMARY_CHARS = 240;
+
+export interface WorkItemSearchMatch {
+  id: string;
+  kind: string;
+  family: string;
+  harness: string | null;
+  title: string;
+  summary: string;
+  state: string;
+  severity: string | null;
+  title_truncated?: true;
+  title_full_chars?: number;
+  summary_truncated?: true;
+  summary_full_chars?: number;
+}
+
+function clipSearchText(value: string, maxChars: number): { value: string; truncated: boolean; fullChars: number } {
+  if (value.length <= maxChars) return { value, truncated: false, fullChars: value.length };
+  return { value: `${value.slice(0, maxChars - 1)}…`, truncated: true, fullChars: value.length };
+}
+
+/** Project one hydrated WorkItem to the compact, machine-readable search row. */
+export function projectWorkItemSearchMatch(item: WorkItem): WorkItemSearchMatch {
+  const title = clipSearchText(item.title, SEARCH_TITLE_CHARS);
+  const summary = clipSearchText(item.summary ?? '', SEARCH_SUMMARY_CHARS);
+  return {
+    id: item.id,
+    kind: item.kind,
+    family: item.family,
+    harness: item.harness,
+    title: title.value,
+    summary: summary.value,
+    state: item.state,
+    severity: item.severity,
+    ...(title.truncated ? { title_truncated: true, title_full_chars: title.fullChars } : {}),
+    ...(summary.truncated ? { summary_truncated: true, summary_full_chars: summary.fullChars } : {}),
+  };
+}
+
+const SEARCH_TIER_CAPS = {
+  standard: { rows: 40, title: 160, summary: 180 },
+  trimmed: { rows: 20, title: 120, summary: 120 },
+} as const;
+
+/**
+ * Keep the tiered/default search response bounded even when a caller asks for a
+ * large result page. The omitted count is explicit; callers can narrow the query
+ * or ask work_items:get for selected ids rather than mistaking a short page for
+ * an empty/degraded search.
+ */
+export function shapeWorkItemsSearch(data: unknown, tier: keyof typeof SEARCH_TIER_CAPS): unknown {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return data;
+  const envelope = data as Record<string, unknown>;
+  if (!Array.isArray(envelope.items)) return data;
+  const caps = SEARCH_TIER_CAPS[tier];
+  const items = envelope.items
+    .slice(0, caps.rows)
+    .map((row) => {
+      if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
+      const match = row as Record<string, unknown>;
+      const title = clipSearchText(typeof match.title === 'string' ? match.title : '', caps.title);
+      const summary = clipSearchText(typeof match.summary === 'string' ? match.summary : '', caps.summary);
+      const projected: Record<string, unknown> = { ...match, title: title.value, summary: summary.value };
+      if (title.truncated || match.title_truncated === true) {
+        projected.title_truncated = true;
+        projected.title_full_chars = match.title_full_chars ?? title.fullChars;
+      }
+      if (summary.truncated || match.summary_truncated === true) {
+        projected.summary_truncated = true;
+        projected.summary_full_chars = match.summary_full_chars ?? summary.fullChars;
+      }
+      return projected;
+    });
+  const truncated = envelope.items.length > caps.rows;
+  return {
+    ...envelope,
+    items,
+    ...(truncated
+      ? {
+          returnedCount: items.length,
+          truncated: true,
+          note: `showing ${items.length} of ${envelope.items.length} matches — narrow the query or use work_items:get { id } for detail`,
+        }
+      : {}),
+  };
+}
 
 export default defineTool({
   name: 'work_items:search',
   profile: 'engineer',
-  description: 'Search work-items across kinds (feature/chunk/bug/change/task): full-text over title + body/summary FUSED (RRF) with a semantic (embedding cosine) leg, so differently-worded matches surface too (semantic:false for lexical-only). Filter by harness or kind. Use to dedup before creating. Returns { ok, count, items, legs } — NOTE the matches array is `items`, not `results` (unlike work_items:get/list, which use `results`); a code:run helper expecting `.results` on this tool silently sees [] (EI-5920). READ `legs` before concluding "no duplicate exists": legs.degraded:true means a ranking leg did not contribute (legs.warning says why, e.g. the embedder is down), so a short list may be a degraded search rather than an absence.',
+  description: 'Search work-items across kinds (feature/chunk/bug/change/task): full-text over title + body/summary FUSED (RRF) with a semantic (embedding cosine) leg, so differently-worded matches surface too (semantic:false for lexical-only). Filter by harness or kind. Use to dedup before creating. Returns compact match rows in { ok, count, items, legs } — use work_items:get { id } for full state; NOTE the matches array is `items`, not `results` (unlike work_items:get/list, which use `results`). READ `legs` before concluding "no duplicate exists": legs.degraded:true means a ranking leg did not contribute (legs.warning says why, e.g. the embedder is down), so a short list may be a degraded search rather than an absence.',
   guidance: {
     when: 'You want to find existing work-items by free text (e.g. dedup before filing, or locate a known issue/feature).',
     chaining: 'work_items:search (dedup) → work_items:create, or → work_items:get { id } for detail.',
@@ -22,6 +118,13 @@ export default defineTool({
   // handler never reads ctx.tx. Do not hold the ambient workspace transaction
   // across hybrid-search awaits, or fleet load can starve the org-app pool.
   skipWorkspaceTx: true,
+  // The handler returns structured data so the framework can apply the
+  // context-tier projection. It previously returned a raw content[] JSON blob,
+  // which bypassed payload-tier shaping entirely.
+  shape: {
+    standard: (data) => shapeWorkItemsSearch(data, 'standard'),
+    trimmed: (data) => shapeWorkItemsSearch(data, 'trimmed'),
+  },
   agentRoles: [...COORD_ROLES],
   args: z.object({
     query: z.string().min(1).max(400),
@@ -64,9 +167,12 @@ export default defineTool({
     // "no duplicate exists" — the one reading that makes this tool actively
     // harmful. `degraded` says so; the per-leg counts say why.
     return {
-      content: [
-        { type: 'text' as const, text: JSON.stringify({ ok: true, count: items.length, items, legs }) },
-      ],
+      data: {
+        ok: true,
+        count: items.length,
+        items: items.map(projectWorkItemSearchMatch),
+        legs,
+      },
     };
   },
 });
