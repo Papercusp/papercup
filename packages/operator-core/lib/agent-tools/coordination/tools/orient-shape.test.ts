@@ -651,3 +651,128 @@ describe('EI-20113865649946366: shaper carries upstream disclosure, never re-der
     expect(out.memory.bodiesTruncated).toBeUndefined();
   });
 });
+
+describe('EI-20213176698128052: `recovery` is ladder-aware (the last uncapped passthrough)', () => {
+  /** Measured on a real post-compaction payload BEFORE this fix: the ladder walked all
+   *  the way to `floor` and still produced 23,786 chars against a 17,000 budget, with
+   *  `recovery` 7,320 of it (30.8%) — larger than the whole 6,786-char overflow. Because
+   *  `recovery` had no cap key, the ladder was mathematically unable to reach budget on
+   *  the ONE path where `recovery` exists, and fell through to the generic projector,
+   *  which drops WHOLE FIELDS. */
+  const held = (i: number, o: { checkpointChars: number; priorTotal?: number }) => ({
+    id: `WI-${3000 + i}`,
+    title: `Held ${i}`,
+    body: 'b'.repeat(600),
+    checkpoint: 'c'.repeat(o.checkpointChars),
+    ...(o.priorTotal
+      ? {
+          checkpointTruncated: {
+            keptChars: o.checkpointChars,
+            totalChars: o.priorTotal,
+            withheldChars: o.priorTotal - o.checkpointChars,
+            more: `work_items:get { id: 'WI-${3000 + i}' }`,
+          },
+        }
+      : {}),
+  });
+
+  const fatInbox = (n: number) =>
+    Array.from({ length: n }, (_, i) => ({
+      kind: 'message',
+      ts: '2026-08-12T00:00:00.000Z',
+      from: `su-${i}-aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee`,
+      summary: `msg ${i} — ${'m'.repeat(900)}`,
+    }));
+
+  /** Post-compaction payload heavy enough to force the ladder past the rungs where the
+   *  recovery caps are deliberate no-ops. `taskToolSchemaPack` is a real uncapped
+   *  passthrough (2,530 chars in the measured specimen) and stands in here for the
+   *  irreducible residue that makes the tighter rungs necessary at all. */
+  const heavy = (checkpoints: unknown[]) => ({
+    self: { ownerId: 'su-3a93abaa' },
+    control: { state: { modes: ['auto'] } },
+    taskToolSchemaPack: 'x'.repeat(6_000),
+    inbox: { summary: { total: 500, returned: 25 }, recent: fatInbox(40) },
+    recovery: { selfRecall: 'sessions:search { session: "self" }', loop: { active: true }, checkpoints },
+  });
+
+  it('TEETH: a tightened rung SHRINKS recovery.checkpoints instead of leaving them uncapped', () => {
+    const many = Array.from({ length: 9 }, (_, i) => held(i, { checkpointChars: 1_200 }));
+    const out = shapeOrient(heavy(many), 'trimmed') as Record<string, any>;
+
+    // Rungs 0 and 1 leave the recovery caps at the upstream fixed values ON PURPOSE, so
+    // name the rung: this test is only meaningful past the point where they tighten.
+    expect(out.shaperTightened).toBeDefined();
+    expect(['trimmed-half', 'floor']).toContain(out.shaperTightened.rung);
+    const ckpt = out.recovery.checkpoints[0];
+    // Before the fix this stayed at the full 1,200 no matter how tight the rung got.
+    expect(ckpt.checkpoint.length).toBeLessThan(1_200);
+    // ...but the field is still PRESENT and still carries content — never dropped.
+    expect(out.recovery.checkpoints.length).toBeGreaterThan(0);
+    expect(out.recovery.checkpoints.length).toBeLessThan(9);
+    expect(ckpt.checkpoint.length).toBeGreaterThan(0);
+    expect(out.recovery.selfRecall).toBeTruthy();
+    expect(out.recovery.loop.active).toBe(true);
+  });
+
+  it('HONESTY: re-capping an already-disclosed excerpt reports the ORIGINAL total, not the excerpt length', () => {
+    // Upstream (compaction-recovery.ts) already cut a 20,000-char checkpoint to 1,200 and
+    // said so. A tighter rung re-caps that 1,200-char excerpt — and must NOT recompute the
+    // total from the excerpt, which would report ~600 withheld for a checkpoint that is
+    // really missing ~19,400. That under-report is a silent-loss regression in the very
+    // code that exists to prevent one.
+    const out = shapeOrient(
+      heavy([held(2, { checkpointChars: 1_200, priorTotal: 20_000 })]),
+      'trimmed',
+    ) as Record<string, any>;
+
+    const t = out.recovery.checkpoints[0].checkpointTruncated;
+    const kept = out.recovery.checkpoints[0].checkpoint.length;
+    expect(t).toBeDefined();
+    expect(t.totalChars).toBe(20_000);
+    expect(t.keptChars).toBe(kept);
+    expect(t.withheldChars).toBe(20_000 - kept);
+    expect(t.more).toContain('work_items:get');
+
+    // FALSIFIABLE CONTROL — the naive re-derivation this test exists to forbid. If
+    // recapDisclosed ever recomputes the total from the excerpt it receives,
+    // withheldChars collapses to this much smaller number and the assertions above fail.
+    const naiveWithheld = 1_200 - kept;
+    expect(t.withheldChars).not.toBe(naiveWithheld);
+    expect(t.withheldChars).toBeGreaterThan(naiveWithheld);
+  });
+
+  it('D-004: dropping whole held items leaves a count + a fetch-pointer, never a silent short list', () => {
+    const many = Array.from({ length: 9 }, (_, i) => held(i, { checkpointChars: 1_200 }));
+    const out = shapeOrient(heavy(many), 'trimmed') as Record<string, any>;
+
+    expect(out.recovery.checkpoints.length).toBeLessThan(9);
+    expect(out.recovery.checkpointsTruncated.total).toBe(9);
+    expect(out.recovery.checkpointsTruncated.shown).toBe(out.recovery.checkpoints.length);
+    expect(out.recovery.checkpointsTruncated.more).toContain('work_items:list');
+  });
+
+  it('the happy path stays byte-identical — a payload that fits is not re-capped', () => {
+    // trimmed's recovery caps are set to exactly the upstream fixed caps (1,200 / 600), so
+    // rung 0 is a no-op. A fix that silently tightened the common case would fail here.
+    const fits = {
+      self: { ownerId: 'su-1' },
+      recovery: { selfRecall: 'x', checkpoints: [held(1, { checkpointChars: 1_200 })] },
+    };
+    const out = shapeOrient(fits, 'trimmed') as Record<string, any>;
+    expect(out.shaperTightened).toBeUndefined(); // it fit at rung 0
+    expect(out.recovery.checkpoints[0].checkpoint).toBe('c'.repeat(1_200));
+    expect(out.recovery.checkpoints[0].body).toBe('b'.repeat(600));
+    expect(out.recovery.checkpoints[0].checkpointTruncated).toBeUndefined();
+  });
+
+  it('recovery shapes that carry no `checkpoints` array are left exactly as they were', () => {
+    // The fix is deliberately narrow: only the checkpoints list is ladder-aware, so every
+    // other recovery key keeps the passthrough guarantee it always had.
+    const out = shapeOrient(
+      { self: { ownerId: 'su-1' }, recovery: { blob: 'z'.repeat(40_000) } },
+      'trimmed',
+    ) as Record<string, any>;
+    expect(out.recovery.blob.length).toBe(40_000);
+  });
+});
