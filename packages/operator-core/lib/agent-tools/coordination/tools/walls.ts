@@ -212,6 +212,9 @@ export default defineTool({
   },
   capability: 'coord:read',
   requirePrincipal: false,
+  // EI-20226779878046151: walls reads its own loop/work-item stores and never
+  // reads ctx.tx. The orient leader fold must not retain an ambient pool slot.
+  skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES],
   args: z.object({
     harness: z.string().max(120).optional().describe('Only walls under this harness (default: every harness).'),

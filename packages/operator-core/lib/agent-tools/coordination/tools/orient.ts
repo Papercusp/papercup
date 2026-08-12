@@ -2036,6 +2036,39 @@ export function assembleOrientOutput(legs: {
  */
 export const ORIENT_PAYLOAD_TIER_CEILING_CHARS = 18_000;
 
+/**
+ * EI-20226779878046151: the exact tool set re-dispatched by coord:orient's
+ * composition. Keep this list in lockstep with the literal `call(<tool>)`
+ * sites in composeOrient; the companion regression test fails if a new fold is
+ * added without being classified for ambient-transaction behavior.
+ *
+ * memory:search is the one intentional exception: it is crossWorkspace and is
+ * dispatched on the admin handle, so it cannot retain the concrete org-app
+ * transaction that this guard protects. Every other entry must declare
+ * skipWorkspaceTx:true.
+ */
+export const ORIENT_FOLD_TOOL_NAMES = [
+  'fleet:assignments',
+  'work_items:list',
+  'work_items:claimable',
+  'coord:inbox',
+  'work_items:observe',
+  'coord:whoami',
+  'fleet:leader-brief',
+  'scheduler:get_claim_spec',
+  'work_items:burn_down',
+  'coord:walls',
+  'memory:search',
+  'coord:plan-events',
+  'plans:get',
+  'coord:catch-up',
+  'coord:glance',
+  'recipes:search',
+  'coord:declare-intent',
+] as const;
+
+export const ORIENT_CROSS_WORKSPACE_FOLD_TOOL_NAMES = ['memory:search'] as const;
+
 export default defineTool({
   name: 'coord:orient',
   description:

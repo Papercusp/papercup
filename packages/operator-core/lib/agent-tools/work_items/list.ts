@@ -228,6 +228,10 @@ export default defineTool({
   },
   capability: "work_items:read",
   requirePrincipal: false,
+  // EI-20226779878046151: coord:orient re-dispatches this read inside a
+  // sequential compound. It resolves its own stores and never reads ctx.tx;
+  // do not hold an ambient org-app transaction across cache/enrichment awaits.
+  skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES],
   args: z.object({
     harness: z.string().max(80).optional(),

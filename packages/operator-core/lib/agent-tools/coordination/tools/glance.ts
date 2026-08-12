@@ -174,6 +174,10 @@ export default defineTool({
   },
   capability: 'coord:read',
   requirePrincipal: false,
+  // EI-20226779878046151: glance gathers independent coordination snapshots
+  // and never reads ctx.tx. Its orient fold must not retain an org-app pool
+  // slot while those bounded reads complete.
+  skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES],
   args: z.object({
     audience: z

@@ -117,6 +117,10 @@ export default defineTool({
   },
   capability: 'coord:write',
   requirePrincipal: false,
+  // EI-20226779878046151: declare-intent resolves its own presence/plan stores
+  // and never reads ctx.tx. The orient bootstrap should not keep an ambient
+  // org-app transaction open while this write's bounded side effects run.
+  skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES],
   args: z.object({
     intent: z

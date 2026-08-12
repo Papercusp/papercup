@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import {
   composeOrient,
   orientServedDelta,
@@ -7,9 +8,33 @@ import {
   summarizeLaneClaim,
   ORIENT_MEMORY_NOTE,
   ORIENT_DEEP_WORK_NOTE,
+  ORIENT_CROSS_WORKSPACE_FOLD_TOOL_NAMES,
+  ORIENT_FOLD_TOOL_NAMES,
 } from './orient';
 import orientTool from './orient';
 import type { InnerCall } from '../../_compound-dispatch';
+import { lookupByMcpName } from '@papercusp/agent-mcp';
+
+// Register every orient fold so the guard checks the projected metadata, not
+// merely a duplicated source-file regex. These imports intentionally mirror
+// ORIENT_FOLD_TOOL_NAMES; the source-parity assertion below catches drift.
+import '../../fleet/assignments';
+import '../../work_items/list';
+import '../../work_items/claimable';
+import '../../work_items/observe';
+import './inbox';
+import './plan-events';
+import './catch-up';
+import './glance';
+import './whoami';
+import './walls';
+import './declare-intent';
+import '../../scheduler/get_claim_spec';
+import '../../work_items/burn_down';
+import '../../recipes/search';
+import '../../fleet/leader-brief';
+import '../../plans/get';
+import '../../memory/search';
 
 const foldFactsMock = vi.hoisted(() => vi.fn(async (): Promise<unknown[]> => []));
 
@@ -67,6 +92,23 @@ describe('coord:orient args', () => {
 
   it('accepts claimableLimit=0 for a lean bootstrap', () => {
     expect(orientTool.args.safeParse({ claimableLimit: 0 }).success).toBe(true);
+  });
+
+  it('keeps every in-process fold classified and outside the ambient workspace transaction', () => {
+    const source = readFileSync(new URL('./orient.ts', import.meta.url), 'utf8');
+    const called = [...source.matchAll(/\bcall\('([^']+)'/g)].map((match) => match[1]);
+    expect(new Set(called)).toEqual(new Set(ORIENT_FOLD_TOOL_NAMES));
+
+    const crossWorkspace = new Set(ORIENT_CROSS_WORKSPACE_FOLD_TOOL_NAMES);
+    for (const name of ORIENT_FOLD_TOOL_NAMES) {
+      const tool = lookupByMcpName(name);
+      expect(tool, `${name} must be registered`).toBeDefined();
+      if (crossWorkspace.has(name)) {
+        expect((tool as { crossWorkspace?: boolean }).crossWorkspace, `${name} must stay crossWorkspace`).toBe(true);
+      } else {
+        expect((tool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx, `${name} must opt out of ambient workspace tx`).toBe(true);
+      }
+    }
   });
 });
 

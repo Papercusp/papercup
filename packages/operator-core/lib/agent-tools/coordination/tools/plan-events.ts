@@ -77,6 +77,10 @@ export default defineTool({
   },
   capability: "coord:read",
   requirePrincipal: false,
+  // EI-20226779878046151: plan-event reads use their own cached/store path and
+  // never read ctx.tx. coord:orient invokes this leg sequentially, so retaining
+  // the ambient org-app transaction would starve other coordination reads.
+  skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES],
   args: z.object({
     plan_slug: z.string().optional(),

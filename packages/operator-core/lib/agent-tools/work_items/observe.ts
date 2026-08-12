@@ -29,6 +29,10 @@ export default defineTool({
   },
   capability: 'work_items:read',
   requirePrincipal: false,
+  // EI-20226779878046151: this batch observation uses its own work-item
+  // accessors and never reads ctx.tx. The orient fold must not pin an org-app
+  // pool slot while availability floors are enriched.
+  skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES],
   args: z
     .object({

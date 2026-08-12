@@ -723,6 +723,10 @@ export default defineTool({
   },
   capability: 'work_items:read',
   requirePrincipal: false,
+  // EI-20226779878046151: this census uses explicit workspace/store access and
+  // never reads ctx.tx. Avoid holding the orient caller's ambient transaction
+  // across presence and queue diagnostics.
+  skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES],
   args: z.object({
     harness: z.string().min(1).max(80),

@@ -23,6 +23,9 @@ export default defineTool({
   },
   capability: 'coord:read',
   requirePrincipal: false,
+  // EI-20226779878046151: identity resolution is self-contained and does not
+  // read ctx.tx; avoid an ambient org-app transaction for this orient leg.
+  skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES],
   args: z.object({}),
   async handler(_args, ctx) {

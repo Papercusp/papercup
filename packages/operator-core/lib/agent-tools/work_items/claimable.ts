@@ -76,6 +76,10 @@ export default defineTool({
   },
   capability: 'work_items:read',
   requirePrincipal: false,
+  // EI-20226779878046151: the claimability oracle owns its store reads and
+  // never reads ctx.tx. Avoid retaining the ambient org-app transaction while
+  // the multi-floor census runs inside coord:orient.
+  skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES],
   args: z.object({
     harness: z.string().min(1).max(80).describe('the harness lane to read claimable issue-family work for'),

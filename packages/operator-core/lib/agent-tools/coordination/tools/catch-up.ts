@@ -57,6 +57,10 @@ export default defineTool({
   },
   capability: 'coord:read',
   requirePrincipal: false,
+  // EI-20226779878046151: catch-up resolves membership/feed storage itself and
+  // never reads ctx.tx. Do not hold the orient caller's ambient transaction
+  // across the audience-history read.
+  skipWorkspaceTx: true,
   agentRoles: [...COORD_ROLES],
   args: z.object({
     audience: z
