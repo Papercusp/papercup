@@ -148,38 +148,17 @@ export function makeGithubProvider(config: OAuthProviderConfig): OAuthProvider {
 /* ─── Claude (Anthropic subscription) provider ─── */
 
 /**
- * The well-known PUBLIC Claude Code OAuth client (PKCE; no client secret). This is the
- * same client id the `claude` CLI uses, and a refresh token minted under it can ONLY be
- * refreshed under it (Anthropic binds the refresh grant to the minting client_id). Used
- * by the hive inference gateway to mint + refresh per-account `.credentials.json` bundles
- * (hive-inference-gateway-2026-06-09 P-003/P-004). Endpoints are overridable via env for
- * the next time Anthropic moves them without a code change.
- *
- * EI-553 (2026-07-17): the previous defaults (`claude.ai/oauth/authorize` +
- * `console.anthropic.com/...`) were STALE — claude-code moved to `claude.com/cai` +
- * `platform.claude.com`. Re-verified directly against the live `claude` CLI (v2.1.212)
- * by extracting its own bundled OAuth config object (`Bol` in the minified CLI —
- * `strings` + a bounded-context scan of the binary, no live auth flow needed):
- *   `CLAUDE_AI_AUTHORIZE_URL: "https://claude.com/cai/oauth/authorize"`,
- *   `TOKEN_URL: "https://platform.claude.com/v1/oauth/token"`,
- *   `MANUAL_REDIRECT_URL: "https://platform.claude.com/oauth/code/callback"`,
- *   `CLIENT_ID: "9d1c250a-e61b-44d9-88ed-5944d1962f5e"` (unchanged — confirms this is
- *   still the same client_id/PKCE flow, just re-hosted).
- * (There's a SEPARATE `CONSOLE_AUTHORIZE_URL: "https://platform.claude.com/oauth/authorize"`
- * in the same CLI config — that's the API-console / API-key-creation flow, a different
- * client; CLAUDE_AI_AUTHORIZE_URL is the one behind `claude setup-token`'s Max/Pro
- * subscription login, which is what this provider mimics.)
+ * The well-known PUBLIC Claude Code OAuth client (PKCE; no client secret) + its endpoints,
+ * used here to mint + refresh per-account `.credentials.json` bundles for the hive inference
+ * gateway (hive-inference-gateway-2026-06-09 P-003/P-004). The values — and the EI-553 record
+ * of how they were verified against the live `claude` CLI — live at the LEAF
+ * (`@papercusp/papercusp-shared/agent` → `claude-oauth.ts`), because the stateless
+ * `anthropic-direct` transport there refreshes the same bundle on an upstream rejection and
+ * papercusp-shared cannot import operator-core. Re-exported here so this module stays the
+ * name every existing consumer imports — one definition, no second copy to go stale the way
+ * EI-553's did.
  */
-export const CLAUDE_CODE_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
-export const CLAUDE_OAUTH_DEFAULTS = {
-  clientId: CLAUDE_CODE_CLIENT_ID,
-  /** claude.com/cai issues the auth code for a Max/Pro subscription login (EI-553)… */
-  authorizeUrl: 'https://claude.com/cai/oauth/authorize',
-  /** …and platform.claude.com exchanges + refreshes it (form-encoded; JSON bodies can time out). */
-  tokenUrl: 'https://platform.claude.com/v1/oauth/token',
-  redirectUri: 'https://platform.claude.com/oauth/code/callback',
-  scopes: ['org:create_api_key', 'user:profile', 'user:inference'] as const,
-} as const;
+export { CLAUDE_CODE_CLIENT_ID, CLAUDE_OAUTH_DEFAULTS } from '@papercusp/papercusp-shared/agent';
 
 export interface ClaudeProviderConfig {
   clientId?: string;
