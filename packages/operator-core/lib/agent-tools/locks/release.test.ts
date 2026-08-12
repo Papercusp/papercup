@@ -56,6 +56,10 @@ beforeEach(() => {
 });
 
 describe('locks:release handler', () => {
+  it('opts out of the ambient workspace transaction because the handler owns its DB scopes', () => {
+    expect((tool as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+
   it('wraps a single lock_id release through the keyed bulk envelope (n=1)', async () => {
     const b = body(await call({ lock_id: '11111111-1111-1111-1111-111111111111' }));
     expect(b).toMatchObject({

@@ -57,6 +57,11 @@ export default defineTool({
   },
   capability: 'locks:write',
   requirePrincipal: false,
+  // The handler owns its own workspace transactions for file/resource release
+  // and only reads ctx for caller identity. Do not reserve an ambient org-app
+  // transaction before the handler runs; under pool contention that can make
+  // release fail before it can free a valid lock.
+  skipWorkspaceTx: true,
   agentRoles: [...AGENT_ROLES],
   args: z.object({
     lock_id: lockIdSchema.optional(),
