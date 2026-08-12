@@ -48,6 +48,7 @@ function advRow(over: Partial<AdvSessionRow> = {}): AdvSessionRow {
     endedAt: null,
     exitCode: null,
     endedBy: null,
+    endedSignal: null,
     ...over,
   };
 }

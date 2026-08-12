@@ -74,6 +74,7 @@ function adv(overrides: Partial<AdvSessionRow> = {}): AdvSessionRow {
     endedAt: null,
     exitCode: null,
     endedBy: null,
+    endedSignal: null,
     ...overrides,
   };
 }

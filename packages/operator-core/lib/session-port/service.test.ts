@@ -35,6 +35,7 @@ const row: AdvSessionRow = {
   endedAt: null,
   exitCode: null,
   endedBy: null,
+  endedSignal: null,
 };
 
 const source = (text: string): StableSource => {
