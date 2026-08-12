@@ -1,5 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import { gitSidecarEnabled } from './git-via-sidecar';
+import { execProcess } from './sidecar-exec-process';
 
 /**
  * These guard the ENABLE DECISION for routing `git` through the spawner sidecar
@@ -60,5 +61,33 @@ describe('gitSidecarEnabled', () => {
     };
     expect(gitSidecarEnabled('PAPERCUSP_POT_GIT_SPAWN_SIDECAR', env)).toBe(false);
     expect(gitSidecarEnabled('PAPERCUSP_GIT_SYNC_SPAWN_SIDECAR', env)).toBe(true);
+  });
+});
+
+describe('spawner-sidecar process progress guard', () => {
+  it('refreshes the idle deadline on child output while retaining the absolute hard ceiling', async () => {
+    const script =
+      "process.stderr.write('progress\\n'); let n=0; const t=setInterval(() => { process.stderr.write('progress\\n'); if (++n === 8) clearInterval(t); }, 100);";
+    const started = Date.now();
+    const res = await execProcess({
+      command: process.execPath,
+      args: ['-e', script],
+      idleTimeoutMs: 500,
+      timeoutMs: 2_000,
+    });
+    expect(Date.now() - started).toBeGreaterThanOrEqual(700);
+    expect(res.code).toBe(0);
+    expect(res.stderr).toContain('progress');
+  });
+
+  it('kills a silent child at the idle deadline instead of waiting for the hard ceiling', async () => {
+    const res = await execProcess({
+      command: process.execPath,
+      args: ['-e', 'setTimeout(() => {}, 60_000)'],
+      idleTimeoutMs: 120,
+      timeoutMs: 2_000,
+    });
+    expect(res.code).toBe(-1);
+    expect(res.stderr).toMatch(/made no output progress for 120ms/);
   });
 });

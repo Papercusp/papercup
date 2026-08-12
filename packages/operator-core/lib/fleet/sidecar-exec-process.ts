@@ -33,6 +33,9 @@ export interface ExecParams {
   args?: string[];
   cwd?: string;
   env?: Record<string, string>;
+  /** Optional no-output deadline. Unlike `timeoutMs` (the absolute hard
+   * ceiling), this timer refreshes whenever stdout/stderr advances. */
+  idleTimeoutMs?: number;
   timeoutMs?: number;
   /**
    * FD HANDOFF, input leg. When set, the child's stdin IS this file: the sidecar
@@ -92,26 +95,56 @@ export async function execProcess(params: ExecParams): Promise<ExecResult> {
     let stdout = '';
     let stderr = '';
     let settled = false;
+    let terminating = false;
+    let hardTimer: ReturnType<typeof setTimeout> | null = null;
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearTimers = (): void => {
+      if (hardTimer) clearTimeout(hardTimer);
+      if (idleTimer) clearTimeout(idleTimer);
+    };
     const finish = (code: number): void => {
       if (settled) return;
       settled = true;
-      if (timer) clearTimeout(timer);
+      clearTimers();
       resolve({ code, stdout: stdout + outDecoder.end(), stderr: stderr + errDecoder.end() });
     };
     const timeoutMs = params.timeoutMs && params.timeoutMs > 0 ? params.timeoutMs : 0;
-    const timer =
-      timeoutMs > 0
-        ? setTimeout(() => {
-            stderr += `${stderr ? '\n' : ''}${params.command} ${(params.args ?? []).join(' ')} timed out after ${timeoutMs}ms — killed by the spawner sidecar guard`;
-            child.kill('SIGTERM');
-            setTimeout(() => child.kill('SIGKILL'), 10_000).unref?.();
-            setTimeout(() => finish(-1), 20_000).unref?.();
-          }, timeoutMs)
-        : null;
-    timer?.unref?.();
+    const idleTimeoutMs = params.idleTimeoutMs && params.idleTimeoutMs > 0 ? params.idleTimeoutMs : 0;
+    const terminate = (reason: string): void => {
+      if (settled || terminating) return;
+      terminating = true;
+      clearTimers();
+      stderr += `${stderr ? '\n' : ''}${params.command} ${(params.args ?? []).join(' ')} ${reason} — killed by the spawner sidecar guard`;
+      child.kill('SIGTERM');
+      setTimeout(() => child.kill('SIGKILL'), 10_000).unref?.();
+      setTimeout(() => finish(-1), 20_000).unref?.();
+    };
+    const armIdleTimer = (): void => {
+      if (idleTimeoutMs <= 0 || settled || terminating) return;
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(
+        () => terminate(`made no output progress for ${idleTimeoutMs}ms`),
+        idleTimeoutMs,
+      );
+      idleTimer.unref?.();
+    };
+    if (timeoutMs > 0) {
+      hardTimer = setTimeout(
+        () => terminate(`timed out after ${timeoutMs}ms`),
+        timeoutMs,
+      );
+      hardTimer.unref?.();
+    }
+    armIdleTimer();
     // In fd-handoff mode `child.stdout` is null — git writes to the file itself.
-    child.stdout?.on('data', (d: Buffer) => (stdout += outDecoder.write(d)));
-    child.stderr?.on('data', (d: Buffer) => (stderr += errDecoder.write(d)));
+    child.stdout?.on('data', (d: Buffer) => {
+      stdout += outDecoder.write(d);
+      armIdleTimer();
+    });
+    child.stderr?.on('data', (d: Buffer) => {
+      stderr += errDecoder.write(d);
+      armIdleTimer();
+    });
     child.on('error', (e) => {
       stderr += String(e);
       finish(-1);

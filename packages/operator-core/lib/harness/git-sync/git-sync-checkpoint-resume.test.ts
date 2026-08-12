@@ -34,13 +34,14 @@ afterEach(() => {
   gitSyncWarnSpy = undefined;
 });
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import {
   runGitSync,
   runGitBounded,
   gitTimeoutMsFor,
+  gitHardTimeoutMsFor,
   gitSyncSidecarEnabled,
   type GitSyncStepRunner,
   type RunGit,
@@ -286,6 +287,72 @@ describe('WI-1416 git subprocess hang guard', () => {
     expect(local).toBe(6 * 60_000);
     expect(gitTimeoutMsFor(['-c', 'x=y', 'fetch', 'origin'])).toBe(network);
     expect(gitTimeoutMsFor(['submodule', 'status', '--recursive'])).toBe(local);
+    expect(gitHardTimeoutMsFor(['fetch', 'origin'], network)).toBe(60 * 60_000);
+    expect(gitHardTimeoutMsFor(['status'], local)).toBe(local);
+  });
+
+  it('refreshes the network idle deadline on forced git progress, allowing a healthy fetch to outlive the old wall clock', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'gitsync-progress-'));
+    const oldPath = process.env.PATH;
+    const oldSidecar = process.env.PAPERCUSP_SPAWNER_SIDECAR;
+    const oldHardTimeout = process.env.PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS;
+    try {
+      const bin = join(cwd, 'bin');
+      mkdirSync(bin);
+      const fakeGit = join(bin, 'git');
+      writeFileSync(
+        fakeGit,
+        '#!/bin/sh\nprintf "%s\\n" "$@" > "$PWD/argv"\ni=0\nwhile test "$i" -lt 5; do echo "progress $i" >&2; sleep 0.08; i=$((i + 1)); done\n',
+      );
+      chmodSync(fakeGit, 0o755);
+      process.env.PATH = `${bin}:${oldPath ?? ''}`;
+      process.env.PAPERCUSP_SPAWNER_SIDECAR = '0';
+      process.env.PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS = '2000';
+
+      const started = Date.now();
+      const r = await runGitBounded(['fetch', 'origin', 'main'], cwd, 120);
+      expect(Date.now() - started).toBeGreaterThanOrEqual(300);
+      expect(r.code).toBe(0);
+      expect(r.stderr).toContain('progress 4');
+      expect(readFileSync(join(cwd, 'argv'), 'utf8').split('\n')).toContain('--progress');
+    } finally {
+      if (oldPath === undefined) delete process.env.PATH;
+      else process.env.PATH = oldPath;
+      if (oldSidecar === undefined) delete process.env.PAPERCUSP_SPAWNER_SIDECAR;
+      else process.env.PAPERCUSP_SPAWNER_SIDECAR = oldSidecar;
+      if (oldHardTimeout === undefined) delete process.env.PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS;
+      else process.env.PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS = oldHardTimeout;
+      rmSync(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it('still kills an endlessly-chatty network child at the independent hard ceiling', async () => {
+    const cwd = mkdtempSync(join(tmpdir(), 'gitsync-hard-timeout-'));
+    const oldPath = process.env.PATH;
+    const oldSidecar = process.env.PAPERCUSP_SPAWNER_SIDECAR;
+    const oldHardTimeout = process.env.PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS;
+    try {
+      const bin = join(cwd, 'bin');
+      mkdirSync(bin);
+      const fakeGit = join(bin, 'git');
+      writeFileSync(fakeGit, '#!/bin/sh\nwhile :; do echo progress >&2; sleep 0.05; done\n');
+      chmodSync(fakeGit, 0o755);
+      process.env.PATH = `${bin}:${oldPath ?? ''}`;
+      process.env.PAPERCUSP_SPAWNER_SIDECAR = '0';
+      process.env.PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS = '350';
+
+      const r = await runGitBounded(['fetch', 'origin', 'main'], cwd, 120);
+      expect(r.code).toBe(-1);
+      expect(r.stderr).toMatch(/exceeded the 350ms hard ceiling despite output progress/);
+    } finally {
+      if (oldPath === undefined) delete process.env.PATH;
+      else process.env.PATH = oldPath;
+      if (oldSidecar === undefined) delete process.env.PAPERCUSP_SPAWNER_SIDECAR;
+      else process.env.PAPERCUSP_SPAWNER_SIDECAR = oldSidecar;
+      if (oldHardTimeout === undefined) delete process.env.PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS;
+      else process.env.PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS = oldHardTimeout;
+      rmSync(cwd, { recursive: true, force: true });
+    }
   });
 
   it('routes git through the sidecar only on the bg-host opt-in, never inside the sidecar itself', () => {

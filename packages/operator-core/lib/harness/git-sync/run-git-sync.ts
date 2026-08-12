@@ -94,7 +94,7 @@ const GIT_SYNC_IDENTITY_ARGS = ['-c', `user.name=${GIT_SYNC_BOT_NAME}`, '-c', `u
 
 /** The git SUBCOMMAND in an argv — skipping leading global flags AND the separate
  *  value a `-c`/`-C` option consumes (`['-c','x=y','fetch']` → 'fetch', not 'x=y'). */
-const gitSubcommand = (args: string[]): string => {
+const gitSubcommandIndex = (args: string[]): number => {
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a === '-c' || a === '-C') {
@@ -102,23 +102,48 @@ const gitSubcommand = (args: string[]): string => {
       continue;
     }
     if (a.startsWith('-')) continue;
-    return a;
+    return i;
   }
-  return '';
+  return -1;
+};
+
+const gitSubcommand = (args: string[]): string => {
+  const index = gitSubcommandIndex(args);
+  return index >= 0 ? args[index] : '';
+};
+
+/** Network commands whose native progress stream can drive the idle watchdog.
+ * Git suppresses progress when stderr is not a TTY unless `--progress` is explicit;
+ * git-sync always pipes stderr, so without this flag a healthy multi-GB fetch looks
+ * exactly like a wedged child until it finishes. */
+const GIT_PROGRESS_SUBCOMMANDS = new Set(['fetch', 'push', 'pull', 'clone']);
+
+const withGitProgress = (args: string[]): string[] => {
+  const index = gitSubcommandIndex(args);
+  if (index < 0 || !GIT_PROGRESS_SUBCOMMANDS.has(args[index])) return args;
+  if (args.includes('--progress') || args.includes('--no-progress')) return args;
+  return [...args.slice(0, index + 1), '--progress', ...args.slice(index + 1)];
 };
 
 /**
- * WI-1416 hang guard: the ceiling for one git subprocess. A wedged git (typically a
- * network push/fetch against a stuck remote) used to hang the whole fire until the
- * executor reaper cancelled it — an opaque reap instead of a recorded error. Bounded,
- * the call fails FAST with a "timed out" stderr that flows into the outcome's
- * errors[] → routine metadata.last_error (git-sync-stall-watchdog-visible).
- * Env-tunable: PAPERCUSP_GIT_SYNC_NETWORK_TIMEOUT_MS / PAPERCUSP_GIT_SYNC_LOCAL_TIMEOUT_MS.
+ * WI-1416 hang guard: the idle ceiling for one git subprocess. Local commands retain
+ * the original wall-clock behavior. Network commands refresh this deadline whenever
+ * their forced progress stream advances, so a healthy large transfer may outlive four
+ * minutes while a silent/wedged remote still fails fast. The independent hard ceiling
+ * below prevents an endlessly-chatty broken child from living forever.
+ *
+ * Env-tunable: PAPERCUSP_GIT_SYNC_NETWORK_TIMEOUT_MS (idle),
+ * PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS, PAPERCUSP_GIT_SYNC_LOCAL_TIMEOUT_MS.
  */
 export const gitTimeoutMsFor = (args: string[]): number =>
   GIT_NETWORK_SUBCOMMANDS.has(gitSubcommand(args))
     ? envMs('PAPERCUSP_GIT_SYNC_NETWORK_TIMEOUT_MS', 4 * 60_000)
     : envMs('PAPERCUSP_GIT_SYNC_LOCAL_TIMEOUT_MS', 6 * 60_000);
+
+export const gitHardTimeoutMsFor = (args: string[], idleTimeoutMs = gitTimeoutMsFor(args)): number =>
+  GIT_NETWORK_SUBCOMMANDS.has(gitSubcommand(args))
+    ? Math.max(idleTimeoutMs, envMs('PAPERCUSP_GIT_SYNC_NETWORK_HARD_TIMEOUT_MS', 60 * 60_000))
+    : idleTimeoutMs;
 
 /** Spawn `git <args>` in `cwd`, capturing exit code + output, bounded by `timeoutMs`
  *  (never throws, never hangs). Exported so the hang guard is directly testable.
@@ -133,7 +158,9 @@ export function gitSyncSidecarEnabled(env: NodeJS.ProcessEnv = process.env): boo
 const runGitLocalBounded = (
   args: string[],
   cwd: string,
-  timeoutMs: number,
+  idleTimeoutMs: number,
+  hardTimeoutMs: number,
+  progressAware: boolean,
 ): Promise<{ code: number; stdout: string; stderr: string }> =>
   new Promise((resolve) => {
     // P-011 (git-sync-dx-hardening): pin a C/English locale so git's human-readable
@@ -154,32 +181,65 @@ const runGitLocalBounded = (
     });
     const out = collectChildOutput(child);
     let settled = false;
+    let terminating = false;
+    let idleTimer: ReturnType<typeof setTimeout> | null = null;
+    let hardTimer: ReturnType<typeof setTimeout> | null = null;
+    const clearTimers = (): void => {
+      if (idleTimer) clearTimeout(idleTimer);
+      if (hardTimer) clearTimeout(hardTimer);
+    };
     const finish = (code: number): void => {
       if (settled) return;
       settled = true;
+      clearTimers();
       resolve({ code, stdout: out.stdout.text(), stderr: out.stderr.text() });
     };
-    // WI-1416 hang guard: SIGTERM first (git traps it and cleans its lock files),
-    // SIGKILL after a grace, and a last-resort resolve in case 'close' never fires.
-    // All timers unref'd so a pending guard never keeps the process alive.
-    const term = setTimeout(() => {
+    const terminate = (reason: string): void => {
+      if (settled || terminating) return;
+      terminating = true;
+      clearTimers();
       out.stderr.append(
-        `${out.stderr.text() ? '\n' : ''}git ${args.join(' ')} timed out after ${timeoutMs}ms — killed by the git-sync hang guard`,
+        `${out.stderr.peek() ? '\n' : ''}git ${args.join(' ')} ${reason} — killed by the git-sync hang guard`,
       );
+      // WI-1416: SIGTERM first (git traps it and cleans its lock files), SIGKILL
+      // after a grace, and a last-resort resolve if `close` never fires.
       child.kill('SIGTERM');
       setTimeout(() => child.kill('SIGKILL'), 10_000).unref?.();
       setTimeout(() => finish(-1), 20_000).unref?.();
-    }, timeoutMs);
-    term.unref?.();
+    };
+    const armIdleTimer = (): void => {
+      if (!progressAware || settled || terminating) return;
+      if (idleTimer) clearTimeout(idleTimer);
+      idleTimer = setTimeout(
+        () => terminate(`made no output progress for ${idleTimeoutMs}ms`),
+        idleTimeoutMs,
+      );
+      idleTimer.unref?.();
+    };
+
+    if (progressAware) {
+      // `collectChildOutput` owns decoding; these listeners only observe byte
+      // arrival and therefore cannot split/corrupt a multi-byte character.
+      child.stdout?.on('data', armIdleTimer);
+      child.stderr?.on('data', armIdleTimer);
+      armIdleTimer();
+      hardTimer = setTimeout(
+        () => terminate(`exceeded the ${hardTimeoutMs}ms hard ceiling despite output progress`),
+        hardTimeoutMs,
+      );
+      hardTimer.unref?.();
+    } else {
+      hardTimer = setTimeout(
+        () => terminate(`timed out after ${hardTimeoutMs}ms`),
+        hardTimeoutMs,
+      );
+      hardTimer.unref?.();
+    }
     child.on('error', (e) => {
-      clearTimeout(term);
       out.stderr.append(String(e));
       finish(-1);
     });
-    child.on('close', (code) => {
-      clearTimeout(term);
-      finish(code ?? -1);
-    });
+    child.on('close', (code) => finish(code ?? -1));
   });
 
 export const runGitBounded = async (
@@ -199,17 +259,22 @@ export const runGitBounded = async (
   // this marker the hook would run the affected suite on the scheduled push and wedge
   // git-sync. Mirrors green-checkpoint's PAPERCUSP_MAIN_PUSH_OK=1 push-marker pattern. The
   // hook only acts on `push`, so setting it on all git-sync git calls is harmless.
+  const network = GIT_NETWORK_SUBCOMMANDS.has(gitSubcommand(args));
+  const effectiveArgs = network ? withGitProgress(args) : args;
+  const hardTimeoutMs = gitHardTimeoutMsFor(args, timeoutMs);
   const env = { ...process.env, LC_ALL: 'C', LANG: 'C', PAPERCUSP_GIT_SYNC_PUSH: '1' };
   if (gitSyncSidecarEnabled()) {
     try {
-      return await runGitViaSpawnerSidecar(args, cwd, timeoutMs, env);
+      return await runGitViaSpawnerSidecar(effectiveArgs, cwd, hardTimeoutMs, env, {
+        idleTimeoutMs: network ? timeoutMs : undefined,
+      });
     } catch (e) {
       console.warn(
         `[git-sync] spawner-sidecar git fallback to local spawn: ${e instanceof Error ? e.message : String(e)}`,
       );
     }
   }
-  return runGitLocalBounded(args, cwd, timeoutMs);
+  return runGitLocalBounded(effectiveArgs, cwd, timeoutMs, hardTimeoutMs, network);
 };
 
 /** Spawn `git <args>` in `cwd` with the default per-subcommand ceiling (never throws). */

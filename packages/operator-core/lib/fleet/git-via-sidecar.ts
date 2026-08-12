@@ -136,12 +136,13 @@ export async function runGitViaSpawnerSidecar(
   cwd: string,
   timeoutMs: number,
   env: NodeJS.ProcessEnv,
+  opts: { idleTimeoutMs?: number } = {},
 ): Promise<GitRunResult> {
   const { spawnSpawnerSidecar, getSpawnerIpcClient } = await loadSidecarModules();
   await spawnSpawnerSidecar();
   return getSpawnerIpcClient().call<GitRunResult>(
     'process:exec',
-    { command: 'git', args, cwd, env, timeoutMs },
+    { command: 'git', args, cwd, env, timeoutMs, idleTimeoutMs: opts.idleTimeoutMs },
     { timeoutMs: timeoutMs + 35_000 },
   );
 }
