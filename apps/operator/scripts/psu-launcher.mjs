@@ -2340,7 +2340,7 @@ export const CLAUDE_SEED_EXTRA_TOOL_NAMES = [
   // seed. Keep them Claude-only: the shared OMP spine is capped at 43, while
   // these are high-value operator reads (db:migrations: 153 calls/64 agents;
   // testing:runs: 288 calls/40 agents; issues:list: 686 calls/83 agents).
-  'db:migrations', 'issues:list', 'testing:runs',
+  'db:migrations', 'issues:list', 'testing:runs', 'routines:list',
   'dev:restart',
   'sessions:search', 'build:typecheck', 'coord:presence',
   // Cross-role verbs whose measured demand is overwhelmingly su/psu traffic. P-003 first
