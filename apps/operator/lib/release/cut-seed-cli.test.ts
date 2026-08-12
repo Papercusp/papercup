@@ -31,18 +31,22 @@ import type { SeedManifest, SeedStoreEntry } from '@papercusp/seed-bundle';
 const EPOCH_KEY = Uint8Array.from(Array.from({ length: 32 }, (_, i) => (i * 7) % 256));
 const HEX32 = 'ab'.repeat(32); // 64 hex chars = 32 bytes
 
+// The identity strings below are deliberately SYNTHETIC. This is a pure string-merge
+// function, so the fixture only needs the SHAPE of a uname/identity table — using this
+// build box's real user and hostname taught the fixture nothing extra and tripped
+// lint:no-identity-literals, which red-pins the whole release gate.
+const FIXTURE_BUILD_HOST = 'papercusp-build';
+const FIXTURE_BUILD_USER = 'fixture-builduser';
+const FIXTURE_REAL_HOST = 'fixture-host-0000';
+
 describe('mergeReleaseSeedRedactionValues (WI-37894)', () => {
   it('keeps the real host when the audit runs inside the neutralized UTS child', () => {
     const values = mergeReleaseSeedRedactionValues(
-      'papercusp-build\tbuildhost\t0\nmarsh-office\tbuilduser\t0\n',
-      'main-server-Precision-7865-Tower',
+      `${FIXTURE_BUILD_HOST}\tbuildhost\t0\n${FIXTURE_BUILD_USER}\tbuilduser\t0\n`,
+      FIXTURE_REAL_HOST,
     );
 
-    expect(values).toEqual([
-      'main-server-Precision-7865-Tower',
-      'papercusp-build',
-      'marsh-office',
-    ]);
+    expect(values).toEqual([FIXTURE_REAL_HOST, FIXTURE_BUILD_HOST, FIXTURE_BUILD_USER]);
   });
 });
 

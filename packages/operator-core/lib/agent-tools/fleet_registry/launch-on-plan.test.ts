@@ -107,14 +107,15 @@ describe('memberLaunchCommand (WI-1408 — fleet:launch-on-plan threads --fleet 
 
 // P-004 carry (owner directive 2026-07-10, INDEPENDENT of headless): the warm/cold auto-mode
 // knob threads into the member operating baseline. renderMemberBaseline / composeMemberLaunchContext
-// rewrite the loop:arm rule + promote the checkpoint to load-bearing for a COLD member; warm
-// (default) is byte-identical to before so nothing silently goes cold.
+// always make the selected carry explicit on loop:arm, because a headless caller's omitted
+// carry default can otherwise silently override the fleet's warm default.
 describe('member baseline carry directive (P-004 — warm/cold auto-mode)', () => {
   const opts = { fleetSlug: 'atlas-fleet', plan: 'p-plan', count: 3 };
 
-  it('WARM (default): arms a plain loop:arm and never mentions cold carry', () => {
+  it('WARM (default): arms an explicit warm loop:arm and never mentions cold carry', () => {
     const warm = renderMemberBaseline(opts);
-    expect(warm).toContain('`loop:arm { intervalSec, goal }`');
+    expect(warm).toContain("`loop:arm { intervalSec, goal, carry: 'warm' }`");
+    expect(warm).not.toContain('`loop:arm { intervalSec, goal }`');
     expect(warm).not.toContain("carry: 'cold'");
     expect(warm).not.toContain('COLD');
     // explicit warm is identical to the default
@@ -133,6 +134,7 @@ describe('member baseline carry directive (P-004 — warm/cold auto-mode)', () =
   it('composeMemberLaunchContext threads carry through to the baseline (warm vs cold)', () => {
     const warm = composeMemberLaunchContext({ ...opts, carry: 'warm' });
     const cold = composeMemberLaunchContext({ ...opts, carry: 'cold' });
+    expect(warm).toContain("carry: 'warm'");
     expect(warm).not.toContain("carry: 'cold'");
     expect(cold).toContain("carry: 'cold'");
     // carry does not disturb the leader's per-fleet brief, which still layers below

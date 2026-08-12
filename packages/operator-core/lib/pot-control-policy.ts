@@ -72,8 +72,17 @@ const armPotControlPolicyRefresh = lazyFlagRefresh(refreshPotControlPolicy, {
 
 // Bounded cross-process freshness. The managed registry keeps this timer visible to schedule
 // inventory and owns its lifecycle; it never performs work during module evaluation.
+//
+// D-004 classification: 'must-sample'. The writers above (writePotControlPolicy /
+// setPotControlPolicy) update `cached` for the SAME process and emit NOTHING cross-process —
+// unlike the flag-override store, which publishes a deliberate `flag_override_changed` signal
+// (WI-37494). So for any OTHER process there is no change event to subscribe to and a timer is
+// the only freshness mechanism, which is exactly what 'must-sample' denotes. This is not a
+// standing endorsement: if the writers ever publish a cross-process change signal the way flag
+// overrides do, this becomes a 'violation' and should convert to invalidate-on-write.
 managedSetInterval('config-refresh:pot-control-policy', 60_000, () => refreshPotControlPolicy(), {
   category: 'cache',
+  classification: 'must-sample',
 });
 
 export async function readPotControlPolicy(): Promise<PotControlPolicy> {

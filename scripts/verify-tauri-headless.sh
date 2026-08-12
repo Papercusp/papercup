@@ -1518,7 +1518,8 @@ while :; do
 done
 log "origin health confirmed: apiHealth=200 rootHtml=200 (pid=$BRIDGE_PID)"
 
-# EI-20191224828837149: DB/home/workspace isolation is not enough for a Tauri
+# EI-20191224828837149: isolating the DB, the home dir and the workspace is not
+# enough for a Tauri
 # verifier. WebKit localStorage is backed by the WebView profile, so prove the
 # isolated profile starts without a stable sentinel, can write/read it, and can
 # clear it again. The private XDG/dataDirectory roots above make `before:null`

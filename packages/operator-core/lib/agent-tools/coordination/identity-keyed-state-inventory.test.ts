@@ -152,6 +152,11 @@ const ALLOWLIST: Record<string, Classification> = {
     reason:
       'a single-use, short-TTL marker that only ever SUPPRESSES a release — never grants or holds a resource. A rebind stranding the row cannot lose a claim: a consume that misses simply runs the ordinary session-end lease release (the pre-existing behavior), and the orphaned row is deleted by its own TTL on the next consume. Fail-safe by construction (WI-6756 leg 2, migration 716).',
   },
+  'flush_gate_refusals.owner_id': {
+    status: 'exempt',
+    reason:
+      'a short-TTL P-016 boundary-refusal marker (migration 805) that only suppresses a duplicate refusal for the same boundary/owner pair; it never grants or holds a resource. A rebind strands at most a ten-minute marker, while the new owner can record its own refusal, and expiry bounds residue. The marker also fails open on storage trouble, so no live claim or reaper depends on this owner_id.',
+  },
   'owner_directives.owner_id': {
     status: 'covered',
     surface: 'owner-directives',
