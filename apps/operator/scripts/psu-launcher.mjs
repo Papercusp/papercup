@@ -5720,10 +5720,48 @@ function ensureCcMidTurnContextHookEnrollment(env) {
   });
 }
 
+/** Terminate a plain-launch process group, retaining a direct-child fallback.
+ * `spawnInherit` uses `detached:true`, making the wrapper the leader of its own
+ * process group on POSIX. The wrapper can leave a native backend descendant
+ * behind after it exits, so cleanup must signal the group, not only the wrapper.
+ * Negative process-group pids are POSIX-only; the direct child call keeps this
+ * useful on Windows and when the group has already disappeared.
+ */
+export function killSpawnProcessTree(child, signal = 'SIGKILL', kill = process.kill) {
+  const pid = Number(child?.pid);
+  let killed = false;
+  if (process.platform !== 'win32' && Number.isInteger(pid) && pid > 1) {
+    try {
+      kill(-pid, signal);
+      killed = true;
+    } catch {
+      /* the group may already be gone; try the direct child below */
+    }
+  }
+  try {
+    child?.kill?.(signal);
+    killed = true;
+  } catch {
+    /* already gone */
+  }
+  return killed;
+}
+
 /** The original plain launch: inherit the user's stdio straight into the child.
  *  The fallback when the managed-pty host is disabled, has no TTY, or fails to
  *  start. */
-function spawnInherit({ wrapperBin, args = [], cwd, env }) {
+export function spawnInherit({
+  wrapperBin,
+  args = [],
+  cwd,
+  env,
+  spawnImpl = spawn,
+  processApi = process,
+  signalSource = processApi,
+  processKill = processApi.kill?.bind(processApi) ?? process.kill,
+  processExit = processApi.exit?.bind(processApi) ?? process.exit,
+  reportSessionEndedImpl = reportSessionEnded,
+}) {
   // Fleet color for the no-pty fallback (the managed-pty host writes its own at
   // startup — see hostThroughPty). Recolor THIS window before the child takes the
   // terminal over; no fleet ⇒ no write (the profile default stands).
@@ -5735,8 +5773,38 @@ function spawnInherit({ wrapperBin, args = [], cwd, env }) {
       /* best-effort — a recolor must never break the launch */
     }
   }
-  const child = spawn(wrapperBin, args, { cwd, env, stdio: 'inherit' });
+  const child = spawnImpl(wrapperBin, args, { cwd, env, stdio: 'inherit', detached: true });
+  const terminalSignals = ['SIGINT', 'SIGTERM', 'SIGHUP'];
+  let finished = false;
+  let forwardedSignal = null;
+  const signalHandlers = new Map();
+  const removeSignalHandlers = () => {
+    for (const [signal, handler] of signalHandlers) {
+      try {
+        signalSource.off?.(signal, handler);
+      } catch {
+        /* best-effort listener hygiene */
+      }
+    }
+    signalHandlers.clear();
+  };
+  const forwardSignal = (signal) => {
+    if (finished || forwardedSignal) return;
+    forwardedSignal = signal;
+    killSpawnProcessTree(child, signal, processKill);
+  };
+  if (typeof signalSource.on === 'function') {
+    for (const signal of terminalSignals) {
+      const handler = () => forwardSignal(signal);
+      signalHandlers.set(signal, handler);
+      signalSource.on(signal, handler);
+    }
+  }
   child.on('error', (e) => {
+    if (finished) return;
+    finished = true;
+    removeSignalHandlers();
+    killSpawnProcessTree(child, 'SIGKILL', processKill);
     console.error(`psu: failed to launch ${wrapperBin}: ${e.message}`);
     // WI-3884 follow-up: node's spawn reports ENOENT for a MISSING CWD with the
     // exact same error as a missing binary — a resume whose recorded working
@@ -5750,18 +5818,30 @@ function spawnInherit({ wrapperBin, args = [], cwd, env }) {
     } else {
       console.error(`psu: is ${wrapperBin} on PATH? run apps/operator/scripts/install-standalone-mcp.sh`);
     }
-    process.exit(127);
+    processExit(127);
   });
   child.on('exit', (code, signal) => {
+    if (finished) return;
+    finished = true;
+    const terminalSignal = signal ?? forwardedSignal;
+    // The wrapper may have exited while its native backend descendant is still
+    // alive. Reap the detached group before handing terminal control back.
+    killSpawnProcessTree(child, 'SIGKILL', processKill);
+    removeSignalHandlers();
     // WI-38054: this path always KNEW the signal — it used it to re-kill itself — but
     // forwarded only `code`, so a killed session still recorded as a voluntary 'self'
     // exit. Report it.
-    void reportSessionEnded(env.PAPERCUSP_ADV_SESSION_ID || null, code, {
-      killedBySignal: signal ?? null,
-    }).finally(() => {
-      if (signal) process.kill(process.pid, signal);
-      else process.exit(code ?? 0);
-    });
+    void Promise.resolve()
+      .then(() => reportSessionEndedImpl(env.PAPERCUSP_ADV_SESSION_ID || null, code, {
+        killedBySignal: terminalSignal,
+      }))
+      .catch(() => undefined)
+      .finally(() => {
+        // Remove handlers before re-signalling this supervisor, or the signal
+        // re-enters forwardSignal and can recurse indefinitely.
+        if (terminalSignal) processKill(processApi.pid, terminalSignal);
+        else processExit(code ?? 0);
+      });
   });
 }
 

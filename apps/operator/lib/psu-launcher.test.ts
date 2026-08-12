@@ -1,4 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { EventEmitter } from 'node:events';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, rmSync, statSync, existsSync, symlinkSync, lstatSync, realpathSync, readlinkSync } from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -176,6 +177,7 @@ import {
   whichBin,
   wellKnownBackendBin,
   startSupervisorBeat,
+  spawnInherit,
 } from '../scripts/psu-launcher.mjs';
 import { nativeSchedulerDenyFlag } from '@papercusp/orchestrator/native-scheduler-deny';
 import { noSubagentToolsDenyFlag } from '@papercusp/orchestrator/no-subagent-deny';
@@ -4250,6 +4252,81 @@ describe('usePtyHost — managed-pty rollout gate (turn-lifecycle-control Phase 
     it('is inert when unset — a plain non-TTY launch still keeps the plain spawn', () => {
       expect(usePtyHost({ env: {}, stdin: notTty, stdout: notTty })).toBe(false);
     });
+  });
+});
+
+describe('spawnInherit — plain fallback owns and cleans up the backend process group (EI-20234301056067173)', () => {
+  const flush = () => new Promise<void>((resolve) => setImmediate(resolve));
+
+  it('detaches the wrapper and kills its group plus direct child after exit', async () => {
+    const child = new EventEmitter() as EventEmitter & { pid: number; kill: ReturnType<typeof vi.fn> };
+    child.pid = 4242;
+    child.kill = vi.fn();
+    const spawnImpl = vi.fn(() => child);
+    const processKill = vi.fn();
+    const processExit = vi.fn();
+    const signalSource = new EventEmitter();
+    const report = vi.fn(async () => undefined);
+
+    spawnInherit({
+      wrapperBin: 'codex-su',
+      args: ['--resume', 'native-id'],
+      cwd: '/tmp',
+      env: {},
+      spawnImpl,
+      processApi: { pid: 9001, kill: processKill, exit: processExit },
+      signalSource,
+      reportSessionEndedImpl: report,
+    });
+
+    expect(spawnImpl).toHaveBeenCalledWith(
+      'codex-su',
+      ['--resume', 'native-id'],
+      { cwd: '/tmp', env: {}, stdio: 'inherit', detached: true },
+    );
+    child.emit('exit', 7, null);
+    await flush();
+
+    expect(processKill).toHaveBeenCalledWith(-4242, 'SIGKILL');
+    expect(child.kill).toHaveBeenCalledWith('SIGKILL');
+    expect(report).toHaveBeenCalledWith(null, 7, { killedBySignal: null });
+    expect(processExit).toHaveBeenCalledWith(7);
+    expect(signalSource.listenerCount('SIGINT')).toBe(0);
+    expect(signalSource.listenerCount('SIGTERM')).toBe(0);
+    expect(signalSource.listenerCount('SIGHUP')).toBe(0);
+  });
+
+  it('forwards a parent termination signal and removes handlers before re-signalling the parent', async () => {
+    const child = new EventEmitter() as EventEmitter & { pid: number; kill: ReturnType<typeof vi.fn> };
+    child.pid = 4343;
+    child.kill = vi.fn();
+    const processKill = vi.fn();
+    const processExit = vi.fn();
+    const signalSource = new EventEmitter();
+    const report = vi.fn(async () => undefined);
+
+    spawnInherit({
+      wrapperBin: 'codex-su',
+      cwd: '/tmp',
+      env: { PAPERCUSP_ADV_SESSION_ID: '17' },
+      spawnImpl: vi.fn(() => child),
+      processApi: { pid: 9002, kill: processKill, exit: processExit },
+      signalSource,
+      reportSessionEndedImpl: report,
+    });
+
+    signalSource.emit('SIGTERM');
+    expect(processKill).toHaveBeenCalledWith(-4343, 'SIGTERM');
+    expect(child.kill).toHaveBeenCalledWith('SIGTERM');
+    child.emit('exit', null, 'SIGTERM');
+    await flush();
+
+    expect(report).toHaveBeenCalledWith('17', null, { killedBySignal: 'SIGTERM' });
+    expect(processKill).toHaveBeenCalledWith(9002, 'SIGTERM');
+    expect(processExit).not.toHaveBeenCalled();
+    expect(signalSource.listenerCount('SIGINT')).toBe(0);
+    expect(signalSource.listenerCount('SIGTERM')).toBe(0);
+    expect(signalSource.listenerCount('SIGHUP')).toBe(0);
   });
 });
 
