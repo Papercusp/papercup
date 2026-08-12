@@ -83,14 +83,20 @@ def coordination_owner_id(input_raw='', env=None):
     env = os.environ if env is None else env
     fallback = (env.get('PAPERCUSP_SID') or '').strip()
     native_id = ''
+    raw_input = str(input_raw or '').strip()
     try:
-        payload = json.loads(input_raw or '')
+        payload = json.loads(raw_input)
         if isinstance(payload, dict):
             raw = payload.get('session_id')
             if isinstance(raw, str):
                 native_id = raw.strip()
     except Exception:
         pass
+    # The objective-title hook extracts the bounded session_id before invoking
+    # Python so a large PostToolUse payload cannot hit the OS argv limit. Keep
+    # accepting the id directly as well as the full JSON form used by statusline.
+    if not native_id and raw_input and not raw_input.startswith(('{', '[')):
+        native_id = raw_input
 
     keys = []
     if native_id:

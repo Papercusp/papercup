@@ -58,19 +58,24 @@ INPUT="$(cat 2>/dev/null || true)"
 # controlling terminal of the codex/omp process tree). Overridable for tests.
 TITLE_TTY="${PAPERCUSP_OBJECTIVE_TTY:-/dev/tty}"
 
+# PostToolUse payloads can include a large tool result. Extract the only field
+# the identity resolver needs through stdin and pass the bounded native id to
+# the renderer, rather than copying the full JSON into argv (ARG_MAX).
+NATIVE_SESSION_ID="$(printf '%s' "$INPUT" | python3 -c 'import json,sys; p=json.load(sys.stdin); v=p.get("session_id") if isinstance(p, dict) else ""; print(v if isinstance(v, str) else "")' 2>/dev/null)" || NATIVE_SESSION_ID=""
+
 # Read coord:glance self.objective and (when present + non-blank) write the OSC-0
 # title escape DIRECTLY to the tty from python — the title IO lives in python (the
 # activity-hook pattern), NOT in a fragile `$(...)`-around-heredoc command
 # substitution. Kept in a function so the SYNC + DETACHED paths share one body; the
 # `|| true` at the call sites keeps any crash fail-open.
 set_title() {
-  python3 - "$OPERATOR_URL" "$TOKEN" "${PAPERCUSP_SID:-fixture}" "${PAPERCUSP_OBJECTIVE_FIXTURE:-}" "$TITLE_TTY" "${PAPERCUSP_MODEL:-}" "$INPUT" "$(dirname "$0")" <<'PYEOF'
+  python3 - "$OPERATOR_URL" "$TOKEN" "${PAPERCUSP_SID:-fixture}" "${PAPERCUSP_OBJECTIVE_FIXTURE:-}" "$TITLE_TTY" "${PAPERCUSP_MODEL:-}" "$NATIVE_SESSION_ID" "$(dirname "$0")" <<'PYEOF'
 import json, os, re, sys, urllib.request, urllib.parse
 urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
 
 operator_url, token, me, fixture, title_tty = sys.argv[1:6]
 model_spec = sys.argv[6] if len(sys.argv) > 6 else ''  # PAPERCUSP_MODEL launch spec — codex/omp have no live model object
-stdin_raw = sys.argv[7] if len(sys.argv) > 7 else ''  # PostToolUse payload carries Claude's native session_id
+stdin_raw = sys.argv[7] if len(sys.argv) > 7 else ''  # bounded native session_id extracted from PostToolUse
 # Shared tty resolution (WI-3665) — see pc_tty.py. Sits beside this script in both the
 # repo and the installed runtime dir, so $0's dirname resolves it either way.
 sys.path.insert(0, sys.argv[8] if len(sys.argv) > 8 else os.path.dirname(os.path.abspath(__file__)))
