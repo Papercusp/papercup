@@ -43,8 +43,52 @@ AGENT_ID=$(cat "$AGENT_ID_PATH")
 INPUT=$(cat)
 
 python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$AGENT_ID" <<'PYEOF' || { echo '[resource-gate] hook error — allowing (fail-open)' >&2; exit 0; }
-import hashlib, json, os, re, sys, tempfile, time, urllib.request, urllib.parse
-urllib.request.install_opener(urllib.request.build_opener(urllib.request.ProxyHandler({})))  # localhost operator: never via egress http(s)_proxy (502s the local call -> false fail-open)
+import hashlib, json, os, re, sys, tempfile, time
+
+# ── urllib is imported LAZILY: it is ~34ms of a ~140ms invocation, on a path most
+# calls never reach (WI-38077).
+#
+# This hook is PreToolUse on Bash, so EVERY bash call by EVERY agent pays its
+# startup. Measured at load1=66: 140-150ms per invocation, of which `import
+# urllib.request` is ~34ms cumulative -- it drags in http.client (27ms) and
+# email.parser (13ms). But urllib is used at exactly three sites: the operator
+# call at the very END of this file, and a rare say-once advisory delivery ping.
+# allow() and deny() both sys.exit BEFORE either one, so on the common path that
+# 34ms bought nothing. Deferring it measured 140-150ms -> 100-108ms (~30%), with
+# byte-identical allow and deny verdicts across the 323-test suite.
+#
+# `install_opener` MUST still run before the first request (localhost operator:
+# never via an egress http(s)_proxy, which 502s the local call and turns it into
+# a false fail-open), so it is folded into the one-time import below rather than
+# left at module scope where it would force the eager import it is avoiding.
+#
+# Both names are attribute-accessed only (`urllib.request.Request`,
+# `urllib.parse.quote`, `urllib.request.urlopen`) -- there is no reflection over
+# the real module object -- which is what makes this substitution transparent.
+class _LazyModule:
+    __slots__ = ('_name', '_module')
+
+    def __init__(self, name):
+        self._name = name
+        self._module = None
+
+    def __getattr__(self, attr):
+        if self._module is None:
+            import importlib
+            self._module = importlib.import_module(self._name)
+            if self._name == 'urllib.request':
+                self._module.install_opener(
+                    self._module.build_opener(self._module.ProxyHandler({}))
+                )
+        return getattr(self._module, attr)
+
+
+class _UrllibNamespace:
+    request = _LazyModule('urllib.request')
+    parse = _LazyModule('urllib.parse')
+
+
+urllib = _UrllibNamespace()
 
 raw, operator_url, token, agent_id = sys.argv[1:5]
 
