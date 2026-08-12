@@ -2,7 +2,7 @@
  * locks:queue tool — metadata + the read-and-serialize handler contract.
  *
  * The store query (readQueue) is mocked; the tool's job is to call it with the
- * caller's coordination domain + filters and serialize the Date fields to ISO
+ * cross-domain diagnostic scope + filters and serialize the Date fields to ISO
  * strings inside the MCP text-content envelope.
  */
 
@@ -12,14 +12,12 @@ const H = vi.hoisted(() => {
   const state: { queue: unknown } = { queue: { active_locks: [], waiting: [] } };
   return {
     state,
-    readIdentity: vi.fn(() => ({ coordinationDomain: 'cd-1' })),
     ensureBootstrap: vi.fn(async () => {}),
     getTxPool: vi.fn(() => ({})),
     readQueue: vi.fn(async () => state.queue),
   };
 });
 
-vi.mock('../identity', () => ({ readIdentity: H.readIdentity }));
 vi.mock('../su-lock-store', () => ({
   ensureBootstrap: H.ensureBootstrap,
   getTxPool: H.getTxPool,
@@ -48,11 +46,13 @@ describe('locks:queue tool metadata', () => {
 });
 
 describe('locks:queue handler', () => {
-  it('passes the coordination domain + filters to readQueue', async () => {
+  it('uses the cross-domain diagnostic scope + passes filters to readQueue', async () => {
     await tool.handler({ paths: ['x.ts'], owner: 'su-9', include_completed: true }, ctx);
     expect(H.ensureBootstrap).toHaveBeenCalled();
     expect(H.readQueue).toHaveBeenCalledWith(expect.anything(), {
-      coordinationDomain: 'cd-1',
+      // A serving operator can run from a different checkout than the path's
+      // lock holder; diagnostics must not silently filter that holder out.
+      coordinationDomain: null,
       paths: ['x.ts'],
       owner: 'su-9',
       includeCompleted: true,

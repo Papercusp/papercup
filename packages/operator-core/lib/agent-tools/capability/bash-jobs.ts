@@ -419,6 +419,34 @@ export function detectBufferingLastStage(command: string): string | null {
   return BUFFERING_LAST_STAGE_COMMANDS.has(base) ? base : null;
 }
 
+/**
+ * Explain how to preserve output from a buffering pipeline when the background
+ * job's in-memory tracking is lost. Polling is a valid way to observe a healthy
+ * job, but it cannot recover a buffered pipeline once the registry and terminal
+ * marker are gone; a file redirect is the durable recovery path for a rerun.
+ */
+export function formatBufferingPipelineAdvice(
+  stage: string,
+  context: 'launch' | 'tracking-lost',
+): string {
+  const redirect =
+    `For a rerun, redirect output to a file you own (for example \`cmd > /tmp/job.log 2>&1; echo "EXIT=$?" >> /tmp/job.log\`)` +
+    ` instead of piping through \`${stage}\``;
+  if (context === 'tracking-lost') {
+    return (
+      `This job's last pipeline stage pipes through \`${stage}\`, which BUFFERS its output. ` +
+      'Because tracking is already lost, do not keep polling for growing output or a JOB END marker: ' +
+      'the buffered bytes and terminal marker may be unrecoverable. Read `log_path` directly for any retained output. ' +
+      redirect
+    );
+  }
+  return (
+    ` NOTE: this command's last pipeline stage pipes through \`${stage}\`, which BUFFERS its output — the log will most likely stay at 0 bytes for the whole run and fill all at once at exit. ` +
+    'An empty bash_output read here is NOT evidence the job has not started or produced nothing. If tracking is lost while this job runs, the buffered bytes may be unrecoverable and the JOB END marker may never be written. ' +
+    redirect
+  );
+}
+
 export interface RunOptions {
   command: string;
   cwd: string;

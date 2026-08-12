@@ -6,7 +6,6 @@
 
 import { z } from 'zod';
 import { defineTool, AGENT_ROLES } from '@papercusp/agent-mcp';
-import { readIdentity } from './identity';
 import { ensureBootstrap, getTxPool, readQueue } from './su-lock-store';
 import { acquireWithContentionRetry } from './contention-retry';
 import { holderContextReader, resolveHolderAdvisoryMap } from '../coordination/holder-advisory';
@@ -32,7 +31,6 @@ export default defineTool({
     include_completed: z.boolean().optional(),
   }),
   async handler(args, ctx) {
-    const { coordinationDomain } = readIdentity(ctx);
     await ensureBootstrap();
     const sql = getTxPool();
 
@@ -44,7 +42,13 @@ export default defineTool({
     // diagnostic-only read.
     const result = await acquireWithContentionRetry(() =>
       readQueue(sql, {
-        coordinationDomain,
+        // WI-5979: this is a diagnostic read, not an enforcement decision.
+        // The serving operator's repo root can differ from the checkout whose
+        // file lock is being inspected (:3070 vs :3170), so a caller-scoped
+        // domain silently turns a held path into an empty result. The store's
+        // null domain spans those namespaces and returns each row's domain for
+        // attribution; acquire/release paths remain domain-scoped.
+        coordinationDomain: null,
         paths: args.paths,
         owner: args.owner,
         includeCompleted: args.include_completed,
