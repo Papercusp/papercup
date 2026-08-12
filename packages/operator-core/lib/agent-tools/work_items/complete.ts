@@ -85,6 +85,10 @@ import { FEATURE_TERMINAL_STATES, normalizeFeatureStateInput } from '../../work-
 import { setWorkItemCheckpoint } from '../../work-item-checkpoint';
 import { unresolvedRefsInBody, unresolvedRefsWarning } from './unresolved-refs';
 import { fireReactionInProcess } from '../../events';
+import {
+  detectEphemeralDeliverableReferences,
+  renderEphemeralDeliverableWarning,
+} from '../../turn-end-tracking';
 import { discoverSiblingTypecheckGates, gateCoveringFile } from '../../../../../scripts/lib/tsc-baseline-gate.mjs';
 import {
   isPlaneGapItem,
@@ -1126,6 +1130,18 @@ async function completeOne(
   const completionEvidenceToPersist: CompletionVerificationEvidence | undefined = summaryText
     ? { ...(completionEvidenceForGate ?? {}), summary: summaryText }
     : completionEvidenceForGate;
+  // EI-20268156880922192: the completion record is durable, but a cited
+  // session-local scratch path or account-local artifact URL is not. Scan the
+  // exact persisted evidence shape, warn after recording, and fail open if the
+  // advisory detector encounters malformed input.
+  let ephemeralDeliverableWarning: string | undefined;
+  try {
+    const evidenceText = JSON.stringify({ completion: it.completion, evidence: completionEvidenceToPersist });
+    const references = detectEphemeralDeliverableReferences(evidenceText ?? '');
+    ephemeralDeliverableWarning = renderEphemeralDeliverableWarning(`completion for ${it.id}`, references);
+  } catch {
+    /* fail-open: the completion record must never be lost to an advisory check */
+  }
   // EI-20008560598714546: summary is also a natural place to cite the live
   // artifact. Scan the persisted evidence shape for that citation, while the
   // authority judgement above remains scoped to structured verification fields.
@@ -1669,6 +1685,7 @@ async function completeOne(
     ...(liveDriveEvidenceWarning ? { liveDriveEvidenceWarning } : {}),
     ...(unresolvedPathsWarning ? { unresolvedPathsWarning } : {}),
     ...(unresolvedRefsWarningText ? { unresolvedRefsWarning: unresolvedRefsWarningText } : {}),
+    ...(ephemeralDeliverableWarning ? { ephemeralDeliverableWarning } : {}),
     ...(assigneeMismatchWarning ? { assigneeMismatchWarning } : {}),
     ...(harnessMismatchWarning ? { harnessMismatchWarning } : {}),
     // Reported unconditionally on a real close (including `committed`) so the caller can

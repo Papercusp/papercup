@@ -1962,6 +1962,25 @@ describe('work_items:complete (keyed-array)', () => {
   });
 });
 
+describe('work_items:complete ephemeral terminal-deliverable warning (EI-20268156880922192)', () => {
+  it('warns while still recording completion prose that cites scratch/artifact references', async () => {
+    getWorkItem.mockResolvedValue({ ...item, id: 'WI-ephemeral', kind: 'task', family: 'issue', state: 'open' });
+
+    const r = await one({
+      id: 'WI-ephemeral',
+      completion: {
+        summary: 'The report is at .papercusp/scratch/readiness.md and https://claude.ai/artifacts/abc.',
+      },
+    });
+
+    expect(r.ok).toBe(true);
+    expect(r.ephemeralDeliverableWarning).toContain('.papercusp/scratch/readiness.md');
+    expect(r.ephemeralDeliverableWarning).toContain('https://claude.ai/artifacts/abc');
+    expect(r.ephemeralDeliverableWarning).toContain('write was recorded');
+    expect(r.completion.summary).toContain('.papercusp/scratch/readiness.md');
+  });
+});
+
 /**
  * EI-7031 — work_items:complete failed ~15% of calls, almost entirely on malformed
  * `completion` SHAPE from LLM callers (bare string, scalar↔array swaps, missing

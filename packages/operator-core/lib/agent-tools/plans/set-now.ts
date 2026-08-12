@@ -23,6 +23,10 @@ import { emitPlanEventForCaller } from '../coordination/plan-events';
 import { planRevisionCapture, type PlanRevisionCtx } from './revisions';
 import { bulkContent, mergeIds, runBulk } from '../_bulk';
 import { softText, clampText } from '../limits';
+import {
+  detectEphemeralDeliverableReferences,
+  renderEphemeralDeliverableWarning,
+} from '../../turn-end-tracking';
 
 const argsSchema = z.object({
   harness: harnessArg,
@@ -161,6 +165,22 @@ export default defineTool({
           return { ok: false as const, slug, error: result.value.code };
         }
 
+        // EI-20268156880922192: a Now block is durable, but it may still point
+        // successors at a session-local scratch path or account-local artifact
+        // URL that evaporates. Warn after the write succeeds; this guard is
+        // deliberately advisory/fail-open so a detector fault never loses the
+        // state update it is meant to protect.
+        let ephemeralDeliverableWarning: string | undefined;
+        try {
+          const references = detectEphemeralDeliverableReferences(`${args.state}\n${next}`);
+          ephemeralDeliverableWarning = renderEphemeralDeliverableWarning(
+            `plans:set-now for ${slug}`,
+            references,
+          );
+        } catch {
+          /* fail-open: the Now write already landed */
+        }
+
         await emitPlanEventForCaller(ctx, {
           planSlug: slug,
           event: 'now_updated',
@@ -173,6 +193,7 @@ export default defineTool({
           slug,
           filePath: result.filePath,
           revision: rev.recorded.current ? { seq: rev.recorded.current.seq } : null,
+          ...(ephemeralDeliverableWarning ? { ephemeralDeliverableWarning } : {}),
         };
       },
       { keyOf: (slug) => ({ slug }) },
