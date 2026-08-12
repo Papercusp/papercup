@@ -85,7 +85,10 @@ import { _resetCacheForTests, closeHarnessStore } from '../corestore';
 import { drainOutboxOnce } from '../outbox-drain';
 import { applyOpVia, type ProjectionLookup, type TableProjection } from '../projection';
 import { buildHarnessFeaturesProjection } from '../projections/harness-features';
-import { buildHiveMembersProjection } from '../projections/hive-members';
+import {
+  buildHiveMembersProjection,
+  __resetA003DropWarnThrottleForTest,
+} from '../projections/hive-members';
 import { _resetForTests as resetDbOrgPools } from '@papercusp/db-org';
 // eslint-disable-next-line import/no-relative-packages -- clears the env-URL cache the pool resolver memoizes
 import { _resetUrlCacheForTests } from '../../../../../../libs/papercusp/libs/db/src/connection';
@@ -114,6 +117,7 @@ afterEach(async () => {
   }
   _resetCacheForTests();
   _resetBootHistoryForTests();
+  __resetA003DropWarnThrottleForTest();
 });
 
 function makeWorkspaceRoot(prefix: string): string {
@@ -251,10 +255,17 @@ describe('A-003 OWNER→JOINER roster-rebind RACE (deterministic) — merge BEFO
         if (line.includes('[A-003]')) a003Lines.push(line);
         process.stdout.write(line + '\n');
       });
+      const originalWarn = console.warn;
+      const dropWarnSpy = vi.spyOn(console, 'warn').mockImplementation((...args) => {
+        if (!String(args[0] ?? '').includes('[hive-members] DROPPING federated roster rows')) {
+          originalWarn(...args);
+        }
+      });
       cleanups.push(() => {
         process.stdout.write(`\n===== [A-003] TRACE (${a003Lines.length} lines) =====\n`);
         for (const l of a003Lines) process.stdout.write(l + '\n');
         process.stdout.write('===== END [A-003] TRACE =====\n');
+        dropWarnSpy.mockRestore();
         errSpy.mockRestore();
       });
 
@@ -499,6 +510,18 @@ describe('A-003 OWNER→JOINER roster-rebind RACE (deterministic) — merge BEFO
       }
       _clearHiveMemberDeviceSetCacheForTest();
 
+      expect(
+        dropWarnSpy.mock.calls.some(([message]) => {
+          const line = String(message ?? '');
+          return (
+            line.includes('[hive-members] DROPPING federated roster rows') &&
+            line.includes(`'${JOINER_SLUG}'`) &&
+            line.includes(`'${HIVE_HOME}'`)
+          );
+        }),
+        'pre-rekey: the intentional cross-Hive roster drop must emit its throttled diagnostic',
+      ).toBe(true);
+
       // ── ASSERT THE BUG STATE (pre-rekey): B's roster is EMPTY and A's content count is 0. ──
       const rosterBefore = await rosterUserIds(orgDb.adminSql, HIVE_HOME);
       expect(
@@ -700,10 +723,17 @@ describe('A-003 OWNER→JOINER roster-rebind + SUBSTRATE_LOG_SNAPSHOT ON — the
         if (line.includes('[A-003]')) a003Lines.push(line);
         process.stdout.write(line + '\n');
       });
+      const originalWarn = console.warn;
+      const dropWarnSpy = vi.spyOn(console, 'warn').mockImplementation((...args) => {
+        if (!String(args[0] ?? '').includes('[hive-members] DROPPING federated roster rows')) {
+          originalWarn(...args);
+        }
+      });
       cleanups.push(() => {
         process.stdout.write(`\n===== [A-003] SNAPSHOT-ON TRACE (${a003Lines.length} lines) =====\n`);
         for (const l of a003Lines) process.stdout.write(l + '\n');
         process.stdout.write('===== END [A-003] TRACE =====\n');
+        dropWarnSpy.mockRestore();
         errSpy.mockRestore();
       });
 
@@ -926,6 +956,18 @@ describe('A-003 OWNER→JOINER roster-rebind + SUBSTRATE_LOG_SNAPSHOT ON — the
         await Promise.all([handleOwner.mergeNow(), handleJoiner.mergeNow()]);
       }
       _clearHiveMemberDeviceSetCacheForTest();
+
+      expect(
+        dropWarnSpy.mock.calls.some(([message]) => {
+          const line = String(message ?? '');
+          return (
+            line.includes('[hive-members] DROPPING federated roster rows') &&
+            line.includes(`'${JOINER_SLUG}'`) &&
+            line.includes(`'${HIVE_HOME}'`)
+          );
+        }),
+        'pre-rekey (snapshots ON): the intentional cross-Hive roster drop must emit its throttled diagnostic',
+      ).toBe(true);
 
       // ── ASSERT THE BUG STATE (pre-rekey): B's roster is EMPTY and A's content count is 0. ──
       const rosterBefore = await rosterUserIds(orgDb.adminSql, HIVE_HOME);
