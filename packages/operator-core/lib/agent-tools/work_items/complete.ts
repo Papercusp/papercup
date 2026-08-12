@@ -1065,8 +1065,18 @@ async function completeOne(
   const closeIntentRequested =
     Boolean(effectiveState) && CLOSE_INTENT_STATES.has(String(effectiveState).trim().toLowerCase());
   const completionEvidenceForGate = completionEvidenceFromRecord(it.completion);
+  // A structured duplicate close is an administrative disposition: its claim is that
+  // this item is superseded by the named survivor, not that the verifier covered every
+  // member of a population. Keep the universal-verification gate for ordinary closes,
+  // and for malformed self-duplicate claims, but do not make a valid non-self
+  // `completion.duplicateOf` carry an unrelated population partition.
+  const duplicateCloseCoverageException =
+    typeof it.completion.duplicateOf === 'string' &&
+    it.completion.duplicateOf.trim().length > 0 &&
+    it.completion.duplicateOf.trim() !== it.id;
   const verificationCoverageGap =
     closeIntentRequested &&
+    !duplicateCloseCoverageException &&
     isVerificationWorkItem(existing) &&
     claimsUniversalVerification(it.completion) &&
     !hasEnumeratedVerificationCoverage(completionEvidenceForGate?.coverage);

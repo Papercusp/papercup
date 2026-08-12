@@ -1500,6 +1500,53 @@ describe('work_items:complete (keyed-array)', () => {
       expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
     });
 
+    it('allows an evidence-backed non-self duplicate close without unrelated population coverage', async () => {
+      getWorkItem.mockResolvedValue(verificationItem);
+      setWorkItemStateWithAliasInfo.mockResolvedValue(okState({ ...verificationItem, state: 'resolved' }));
+      resolveWorkItemRef.mockResolvedValue({ kind: 'bug', ref: 'papercup#EI-20252354779271625' });
+
+      const r = await one({
+        id: 'WI-verify',
+        state: 'resolved',
+        completion: {
+          ...universalCompletion,
+          duplicateOf: 'EI-20252354779271625',
+          verifiedHow: 'integration',
+          testsRun: 'focused completion regression suite',
+          testResult: 'PASS: focused suite and live staging probe',
+        },
+      });
+
+      expect(r.ok).toBe(true);
+      expect(r.verificationCoverageError).toBeUndefined();
+      expect(setWorkItemStateWithAliasInfo).toHaveBeenCalledWith(
+        'WI-verify',
+        'resolved',
+        expect.objectContaining({
+          completionEvidence: expect.objectContaining({ summary: expect.any(String) }),
+        }),
+      );
+      expect(linkWorkItem).toHaveBeenCalledWith(
+        'WI-verify',
+        { kind: 'bug', ref: 'papercup#EI-20252354779271625' },
+        'duplicates',
+        expect.objectContaining({ by: 'su-tester' }),
+      );
+    });
+
+    it('keeps the coverage gate for a self-referential duplicate claim', async () => {
+      getWorkItem.mockResolvedValue(verificationItem);
+      const r = await one({
+        id: 'WI-verify',
+        state: 'resolved',
+        completion: { ...universalCompletion, duplicateOf: 'WI-verify' },
+      });
+
+      expect(r.ok).toBe(false);
+      expect(r.verificationCoverageError).toMatch(/enumerated coverage/);
+      expect(setWorkItemStateWithAliasInfo).not.toHaveBeenCalled();
+    });
+
     // EI-20223460482316333 + 4 sibling filings on 2026-08-12: the refusal named the
     // CONCEPT but not the field path or the shape, so an agent who fully agreed with the
     // gate still could not comply without opening complete.ts. A refusal a caller cannot
