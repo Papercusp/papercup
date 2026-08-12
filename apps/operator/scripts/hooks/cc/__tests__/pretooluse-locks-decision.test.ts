@@ -37,6 +37,11 @@ let nextInnerSeq: unknown[] | null = null;
 let rejectCoordinationDomain = false;
 /** Optionally frame the response as text/event-stream (the hook parses both). */
 let useSse = false;
+/** Simulate an acquire that committed but returned an empty MCP content array. */
+let emptyAcquireContent = false;
+/** Recovery responses keyed by tool name; null leaves the existing static reply path. */
+let recoveryQueueInner: unknown | null = null;
+let recoveryReleaseInner: unknown | null = null;
 let lastRequest: { url: string; body: Record<string, any> } | null = null;
 let requests: Array<{ url: string; body: Record<string, any> }> = [];
 
@@ -64,13 +69,44 @@ beforeAll(async () => {
       lastRequest = { url: req.url ?? '', body: parsed };
       requests.push(lastRequest);
       const args = parsed.params?.arguments as Record<string, any> | undefined;
-      const rpc = rejectCoordinationDomain && args?.coordination_domain
+      const toolName = parsed.params?.name as string | undefined;
+      const rejectsDomain = rejectCoordinationDomain && args?.coordination_domain;
+      let recoveryInner: unknown | null = null;
+      if (toolName === 'locks:queue' && recoveryQueueInner !== null) {
+        recoveryInner = JSON.parse(JSON.stringify(recoveryQueueInner));
+        const rows = (recoveryInner as any)?.active_locks;
+        if (Array.isArray(rows) && args?.owner) {
+          for (const row of rows) {
+            if (row?.owner === '$REQUEST_OWNER') row.owner = args.owner;
+          }
+        }
+      } else if (toolName === 'locks:release' && recoveryReleaseInner !== null) {
+        recoveryInner = recoveryReleaseInner;
+      }
+      const rpc = rejectsDomain
         ? {
             jsonrpc: '2.0',
             id: 1,
             error: {
               code: -32602,
               message: 'invalid_input: invalid_args: Unrecognized key: "coordination_domain"',
+            },
+          }
+        : toolName === 'locks:acquire' && emptyAcquireContent
+        ? {
+            jsonrpc: '2.0',
+            id: 1,
+            result: { content: [] },
+          }
+        : recoveryInner !== null
+        ? {
+            jsonrpc: '2.0',
+            id: 1,
+            result: {
+              content: [{
+                type: 'text',
+                text: JSON.stringify(recoveryInner),
+              }],
             },
           }
         : {
@@ -106,6 +142,9 @@ afterEach(() => {
   nextInnerSeq = null;
   rejectCoordinationDomain = false;
   useSse = false;
+  emptyAcquireContent = false;
+  recoveryQueueInner = null;
+  recoveryReleaseInner = null;
   lastRequest = null;
   requests = [];
 });
@@ -173,6 +212,65 @@ describe('cc PreToolUse hook — operator decision rendering (stub operator)', (
     expect(fs.existsSync(pathsCache)).toBe(true);
     expect(JSON.parse(fs.readFileSync(pathsCache, 'utf8'))).toEqual(['sub/grant.ts']);
     expect(fs.readFileSync(join(cache, 'tu-grant.domain'), 'utf8')).toBe(fs.realpathSync(repo));
+  });
+
+  it('ambiguous acquire response → releases only the fresh automatic lock it can identify', async () => {
+    emptyAcquireContent = true;
+    recoveryQueueInner = {
+      active_locks: [
+        {
+          lock_id: 'orphan-lock',
+          path: 'sub/ambiguous.ts',
+          owner: '$REQUEST_OWNER',
+          intent: 'PreToolUse:Edit',
+          coordination_domain: fs.realpathSync(repo),
+          acquired_ts: new Date().toISOString(),
+          expires_ts: new Date(Date.now() + 1_200_000).toISOString(),
+        },
+        {
+          lock_id: 'deliberate-lock',
+          path: 'sub/ambiguous.ts',
+          owner: '$REQUEST_OWNER',
+          intent: 'EI-20244912686267355: deliberate hold',
+          coordination_domain: fs.realpathSync(repo),
+          acquired_ts: new Date().toISOString(),
+          expires_ts: new Date(Date.now() + 1_200_000).toISOString(),
+        },
+        {
+          lock_id: 'old-automatic-lock',
+          path: 'sub/ambiguous.ts',
+          owner: '$REQUEST_OWNER',
+          intent: 'PreToolUse:Edit',
+          coordination_domain: fs.realpathSync(repo),
+          acquired_ts: new Date(Date.now() - 60_000).toISOString(),
+          expires_ts: new Date(Date.now() + 1_140_000).toISOString(),
+        },
+      ],
+      waiting: [],
+    };
+    recoveryReleaseInner = { ok: true, released: ['orphan-lock'] };
+    const r = await run(editOf('sub/ambiguous.ts', 'tu-ambiguous'), {
+      PAPERCUSP_LOCK_SID: 'test-owner',
+      PAPERCUSP_SID: 'test-owner',
+    });
+
+    expect(r.status).toBe(0);
+    expect(r.stdout).toBe('');
+    expect(requests.map((request) => request.body.params.name)).toEqual([
+      'locks:acquire',
+      'locks:queue',
+      'locks:release',
+    ]);
+    expect(requests[1].body.params.arguments).toMatchObject({
+      owner: 'test-owner',
+      paths: ['sub/ambiguous.ts'],
+    });
+    expect(requests[2].body.params.arguments).toMatchObject({
+      lock_id: 'orphan-lock',
+      paths: ['sub/ambiguous.ts'],
+      coordination_domain: fs.realpathSync(repo),
+    });
+    expect(fs.existsSync(join(cache, 'tu-ambiguous.lock'))).toBe(false);
   });
 
   it('stale operator rejects coordination_domain → retries without it and emits a non-blocking advisory', async () => {

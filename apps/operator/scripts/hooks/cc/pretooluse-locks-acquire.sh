@@ -61,6 +61,7 @@ INPUT=$(cat)
 # never on a legitimate refusal.
 python3 - "$INPUT" "$OPERATOR_URL" "$TOKEN" "$AGENT_ID" "$CACHE_DIR" <<'PYEOF' || { echo '[locks] hook error — allowing edit (fail-open)' >&2; exit 0; }
 import json, os, re, sys, time, urllib.request, urllib.parse
+from datetime import datetime
 
 raw, operator_url, token, agent_id, cache_dir = sys.argv[1:6]
 
@@ -787,13 +788,13 @@ if len(repo_domains) == 1:
     lock_arguments['coordination_domain'] = next(iter(repo_domains))
 
 
-def _make_request(arguments):
+def _make_tool_request(name, arguments):
     # format=json: the MCP result-format default flipped to compact (TOON-rendered
     # text); this hook json.loads the tool result, so it MUST request json or the
     # parse fails and lock protection silently drops (fail-open).
     body = json.dumps({
         'jsonrpc': '2.0', 'id': 1, 'method': 'tools/call',
-        'params': {'name': 'locks:acquire', 'arguments': arguments},
+        'params': {'name': name, 'arguments': arguments},
     }).encode()
     return urllib.request.Request(
         operator_url.rstrip('/') + '/api/mcp?superuser=1&format=json&client='
@@ -806,6 +807,10 @@ def _make_request(arguments):
         },
         method='POST',
     )
+
+
+def _make_request(arguments):
+    return _make_tool_request('locks:acquire', arguments)
 
 
 req = _make_request(lock_arguments)
@@ -861,31 +866,8 @@ RETRY_BACKOFFS = (0.4, 0.8, 1.2)
 _opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
 
-def _locks_acquire_once(request):
-    """One locks:acquire POST → the parsed inner tool result (a dict).
-    Fail-open (allow → exit 0) on any transport or parse failure — identical
-    posture to the previous inline flow; extracted so the EI-9478 transient
-    retry below can re-attempt without duplicating the fail-open plumbing."""
-    raw_resp = None
-    last_exc = None
-    for _attempt in range(len(RETRY_BACKOFFS) + 1):
-        try:
-            resp = _opener.open(request, timeout=10)
-            raw_resp = resp.read().decode('utf-8', errors='replace')
-            break
-        except Exception as e:
-            last_exc = e
-            if _is_conn_refused(e) and _attempt < len(RETRY_BACKOFFS):
-                time.sleep(RETRY_BACKOFFS[_attempt])
-                continue
-            break
-    if raw_resp is None:
-        mark_error('connect', last_exc)
-        print(f'[locks] operator unreachable ({last_exc}); allowing edit (fail-open)',
-              file=sys.stderr)
-        allow()
-
-    # Parse the first JSON-RPC result out of a JSON or text/event-stream body.
+def _parse_mcp_response(raw_resp):
+    """Return (inner, rpc_error, phase) for a JSON/SSE MCP response."""
     result = None
     rpc_error = None
     for line in raw_resp.splitlines():
@@ -907,28 +889,77 @@ def _locks_acquire_once(request):
             pass
 
     if rpc_error is not None:
+        return None, rpc_error, 'rpc-error'
+    if not isinstance(result, dict):
+        return None, None, 'no-result'
+
+    for item in (result.get('content') or []):
+        if not isinstance(item, dict) or item.get('type') != 'text':
+            continue
+        try:
+            inner = json.loads(item['text'])
+            if isinstance(inner, dict):
+                return inner, None, 'ok'
+        except Exception:
+            continue
+    return None, None, 'no-text'
+
+
+def _best_effort_tool(name, arguments, timeout=3):
+    """Call a recovery tool without retrying or changing the hook decision."""
+    try:
+        resp = _opener.open(_make_tool_request(name, arguments), timeout=timeout)
+        raw_resp = resp.read().decode('utf-8', errors='replace')
+    except Exception as exc:
+        return None, None, 'transport', exc
+    inner, rpc_error, phase = _parse_mcp_response(raw_resp)
+    return inner, rpc_error, phase, None
+
+
+def _locks_acquire_once(request):
+    """One locks:acquire POST → the parsed inner tool result (a dict).
+    Fail-open (allow → exit 0) on any transport or parse failure — identical
+    posture to the previous inline flow; extracted so the EI-9478 transient
+    retry below can re-attempt without duplicating the fail-open plumbing."""
+    operation_started_at = time.time()
+    raw_resp = None
+    last_exc = None
+    for _attempt in range(len(RETRY_BACKOFFS) + 1):
+        try:
+            resp = _opener.open(request, timeout=10)
+            raw_resp = resp.read().decode('utf-8', errors='replace')
+            break
+        except Exception as e:
+            last_exc = e
+            if _is_conn_refused(e) and _attempt < len(RETRY_BACKOFFS):
+                time.sleep(RETRY_BACKOFFS[_attempt])
+                continue
+            break
+    if raw_resp is None:
+        mark_error('connect', last_exc)
+        print(f'[locks] operator unreachable ({last_exc}); allowing edit (fail-open)',
+              file=sys.stderr)
+        _recover_ambiguous_acquire(operation_started_at)
+        allow()
+
+    inner, rpc_error, phase = _parse_mcp_response(raw_resp)
+    if rpc_error is not None:
         compatibility_error = _coordination_domain_rejection(rpc_error)
         if compatibility_error:
             return {
                 '_hook_compatibility_error': True,
                 '_detail': compatibility_error,
             }
-
-    if not result:
-        mark_error('parse', 'no JSON-RPC result in response')
+        mark_error('parse', 'JSON-RPC error in response')
+        _recover_ambiguous_acquire(operation_started_at)
         allow()
-
-    inner = None
-    for item in (result.get('content') or []):
-        if item.get('type') == 'text':
-            try:
-                inner = json.loads(item['text'])
-                break
-            except Exception:
-                continue
-
-    if not inner:
-        mark_error('parse', 'no text content in tool result')
+    if phase != 'ok':
+        detail = {
+            'no-result': 'no JSON-RPC result in response',
+            'no-text': 'no text content in tool result',
+        }.get(phase, 'unparseable operator response')
+        mark_error('parse', detail)
+        _recover_ambiguous_acquire(operation_started_at)
         allow()
     compatibility_error = _coordination_domain_rejection(inner)
     if compatibility_error:
@@ -937,6 +968,104 @@ def _locks_acquire_once(request):
             '_detail': compatibility_error,
         }
     return inner
+
+
+def _timestamp_epoch(value):
+    if not isinstance(value, str) or not value:
+        return None
+    try:
+        normalized = value.replace('Z', '+00:00')
+        return datetime.fromisoformat(normalized).timestamp()
+    except Exception:
+        return None
+
+
+def _recover_ambiguous_acquire(started_at):
+    """Release only a just-created automatic lock after a lost acquire reply.
+
+    The acquire is a write: the operator can commit the lock and lose the MCP
+    result before this hook caches the lock_id. A targeted queue read followed
+    by an owner/domain/intent/timestamp match closes that gap without using
+    ``all_mine`` (which could destroy a deliberate multi-file hold).
+    """
+    # Recovery is only unambiguous for one physical coordination domain. The
+    # normal Papercusp edit path has one; mixed external/repository edits are
+    # deliberately left fail-open rather than risking a cross-domain release.
+    if len(repo_domains) != 1:
+        return
+    expected_domain = next(iter(repo_domains))
+    queue_arguments = {
+        'paths': repo_relative[:50],
+        'owner': owner,
+    }
+    queued, rpc_error, phase, exc = _best_effort_tool('locks:queue', queue_arguments)
+    if exc is not None:
+        mark_error('recovery-queue', exc)
+        return
+    if rpc_error is not None or phase != 'ok' or not isinstance(queued, dict):
+        if rpc_error is not None:
+            mark_error('recovery-queue', rpc_error)
+        return
+
+    rows = queued.get('active_locks')
+    if not isinstance(rows, list):
+        rows = queued.get('activeLocks')
+    if not isinstance(rows, list):
+        rows = queued.get('locks')
+    if not isinstance(rows, list):
+        return
+
+    expected_intent = lock_arguments['intent']
+    newest_allowed = time.time() + 2
+    matched = {}
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        row_owner = row.get('owner') or row.get('owner_id') or row.get('ownerId')
+        row_intent = row.get('intent')
+        row_domain = (row.get('coordination_domain') or
+                      row.get('coordinationDomain'))
+        lock_id = row.get('lock_id') or row.get('lockId')
+        acquired_at = (row.get('acquired_ts') or row.get('acquiredAt') or
+                       row.get('acquired_at'))
+        acquired_epoch = _timestamp_epoch(acquired_at)
+        if row_owner != owner or row_intent != expected_intent:
+            continue
+        if row_domain != expected_domain or not lock_id:
+            continue
+        if acquired_epoch is None or acquired_epoch < started_at - 2:
+            continue
+        if acquired_epoch > newest_allowed:
+            continue
+        row_paths = row.get('paths')
+        if not isinstance(row_paths, list):
+            row_paths = [row.get('path')]
+        for path in row_paths:
+            if not isinstance(path, str) or path not in repo_relative:
+                continue
+            key = (lock_id, row_domain)
+            matched.setdefault(key, []).append(path)
+
+    for (lock_id, row_domain), paths in matched.items():
+        release_arguments = {
+            'lock_id': lock_id,
+            'paths': sorted(set(paths)),
+            'coordination_domain': row_domain,
+        }
+        released, release_error, release_phase, release_exc = _best_effort_tool(
+            'locks:release', release_arguments,
+        )
+        if release_error is not None and _coordination_domain_rejection(release_error):
+            del release_arguments['coordination_domain']
+            released, release_error, release_phase, release_exc = _best_effort_tool(
+                'locks:release', release_arguments,
+            )
+        if release_exc is not None:
+            mark_error('recovery-release', release_exc)
+        elif release_error is not None or release_phase != 'ok' or not isinstance(released, dict):
+            mark_error('recovery-release', release_error or release_phase)
+        elif released.get('ok') is False:
+            mark_error('recovery-release', released)
 
 
 def _grant(granted):
