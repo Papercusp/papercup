@@ -776,6 +776,16 @@ const CC_HOOK_FILES = [
   // enforcement already exists, and a lint entry no blocking path runs would (correctly)
   // red the lint-guard reachability census.
   'posttooluse-tool-prompt-weight-nudge.mjs',
+  // EI-20204186116417704: PreToolUse (matcher "Edit|Write|MultiEdit") hard DENY on an edit that
+  // pushes a tool OVER the P-011 budget — the BLOCKING half of the nudge directly above. That
+  // nudge closed the TIMING gap (it measures exactly, milliseconds after the write) but not the
+  // ENFORCEMENT gap, because PostToolUse cannot block: the edit lands, git-sync sweeps the tree
+  // minutes later, and the breach is committed anyway. Measured 2026-08-11: `rubrics:propose`
+  // grew to 1528 in commit 21337b7874 and an unrelated agent hit the red NINE MINUTES later, on
+  // a tool they had never touched. Refuses only a WORSENING edit — a tool that is over budget
+  // and getting SMALLER always passes, so the guard can never block its own remedy — and reuses
+  // the nudge's exported weigher rather than carrying a second copy of the formula.
+  'pretooluse-tool-prompt-weight-guard.mjs',
   // WI-37497: PostToolUse (matcher "Edit|Write|MultiEdit") ADVISORY nudge when an edit ADDS
   // an `as never`/`as any` cast closing a vitest `.mock*(...)` call — i.e. raises the
   // `lint:mock-cast-escape` ratchet. Same TIMING gap as the strand nudge, with a sharper
@@ -2004,6 +2014,14 @@ export function mergeClaudeHookSettings(
     hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-nul-byte-edit-guard.mjs'), {
       matcher: 'Edit|MultiEdit',
       hooks: cmd('pretooluse-nul-byte-edit-guard.mjs'),
+    });
+  // merge_tool_prompt_weight_guard_hook — PreToolUse, matcher 'Edit|Write|MultiEdit'
+  // (EI-20204186116417704). Write IS in the matcher: a full-file rewrite of a tool definition is
+  // just as capable of introducing the breach as a find/replace. Denies only a WORSENING edit.
+  if (has('pretooluse-tool-prompt-weight-guard.mjs'))
+    hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-tool-prompt-weight-guard.mjs'), {
+      matcher: 'Edit|Write|MultiEdit',
+      hooks: cmd('pretooluse-tool-prompt-weight-guard.mjs'),
     });
   // merge_schedule_wakeup_provenance_hook — PreToolUse, matcher 'ScheduleWakeup'
   // (EI-18680056073436345). Observational only (never denies) — see the script.

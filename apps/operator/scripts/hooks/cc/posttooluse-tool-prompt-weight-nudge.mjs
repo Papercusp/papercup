@@ -303,19 +303,48 @@ export function weighToolsInSource(ts, sourceText, fileName = 'edited.ts') {
   return out;
 }
 
-/** Tools that would RED the gate, mirroring budgetViolations()'s two tiers. */
+/**
+ * The ceiling a fixer must actually reach — mirrors bindingCeiling() in
+ * tool-guidance-budget.ts.
+ *
+ * ⚠ This is NOT `hardCap ? HARD_CAP : BUDGET`, which is what this file computed
+ * until 2026-08-12. For a NON-grandfathered tool the binding ceiling is the
+ * BUDGET even when the tool is also over the HARD CAP, because it must clear
+ * both. The old form told the author of a 1650-char tool to "cut >=50" — they
+ * cut 50, landed at 1600, and were still over the 1500 budget and still red.
+ * Under-stating the cut is harmless-looking in an advisory nudge and actively
+ * hostile in the blocking sibling, which would refuse the edit a second time
+ * after the author did exactly what it asked.
+ */
+function bindingCeiling(budgets, grandfathered) {
+  return grandfathered ? budgets.HARD_CAP : Math.min(budgets.BUDGET, budgets.HARD_CAP);
+}
+
+/**
+ * Tools that would RED the gate, mirroring budgetViolations()'s two tiers —
+ * INCLUDING the ALLOW_OVER_BUDGET exemption, which the gate honours and this
+ * file used to ignore. `budgets.allowOverBudget` may be omitted or null
+ * (unknown), in which case nothing is treated as grandfathered; that direction
+ * only ever OVER-reports, which is the safe way for an advisory nudge to be
+ * wrong. The blocking sibling refuses to run at all on an unknown list.
+ */
 export function violationsFor(tools, budgets) {
+  const allow = new Set(Array.isArray(budgets.allowOverBudget) ? budgets.allowOverBudget : []);
   const out = [];
   for (const t of tools) {
     const hardCap = t.weight > budgets.HARD_CAP;
-    const overBudget = t.weight > budgets.BUDGET;
+    const grandfathered = allow.has(t.name);
+    const overBudget = t.weight > budgets.BUDGET && !grandfathered;
     if (!hardCap && !overBudget) continue;
+    const ceiling = bindingCeiling(budgets, grandfathered);
     out.push({
       name: t.name,
       weight: t.weight,
       hardCap,
-      limit: hardCap ? budgets.HARD_CAP : budgets.BUDGET,
-      cutAtLeast: t.weight - (hardCap ? budgets.HARD_CAP : budgets.BUDGET),
+      grandfathered,
+      limit: ceiling,
+      hardCapBinding: ceiling === budgets.HARD_CAP,
+      cutAtLeast: t.weight - ceiling,
     });
   }
   return out;
@@ -323,7 +352,7 @@ export function violationsFor(tools, budgets) {
 
 export function formatNudge(violations) {
   const lines = violations.map((v) => {
-    const which = v.hardCap ? `${v.limit}-char HARD CAP` : `${v.limit}-char budget`;
+    const which = v.hardCapBinding ? `${v.limit}-char HARD CAP` : `${v.limit}-char budget`;
     return `  • ${v.name} — ${v.weight} chars, over the ${which} by ${v.cutAtLeast}. Cut >=${v.cutAtLeast}.`;
   });
   return [
@@ -430,6 +459,23 @@ function selfTest() {
     return b && b.BUDGET === 1500 && b.HARD_CAP === 1600;
   })());
   check('budgets absent → null (fail open, never a default)', readBudgets(ts, 'export const X = 1;') === null);
+  const withAllow = (allow) => `export const BUDGET = 1500;\nexport const HARD_CAP = 1600;\n${allow}`;
+  check('ALLOW_OVER_BUDGET absent → null (unknown, NOT empty)', (() => {
+    const b = readBudgets(ts, withAllow(''));
+    return b && b.allowOverBudget === null;
+  })());
+  check('ALLOW_OVER_BUDGET empty set → [] (known-empty)', (() => {
+    const b = readBudgets(ts, withAllow('export const ALLOW_OVER_BUDGET = new Set<string>([]);'));
+    return b && Array.isArray(b.allowOverBudget) && b.allowOverBudget.length === 0;
+  })());
+  check('ALLOW_OVER_BUDGET members parsed', (() => {
+    const b = readBudgets(ts, withAllow("export const ALLOW_OVER_BUDGET = new Set<string>(['a:b', 'c:d']);"));
+    return b && Array.isArray(b.allowOverBudget) && b.allowOverBudget.join(',') === 'a:b,c:d';
+  })());
+  check('ALLOW_OVER_BUDGET with an unmeasurable member → null, never a partial list', (() => {
+    const b = readBudgets(ts, withAllow('export const ALLOW_OVER_BUDGET = new Set<string>([`a${x}`]);'));
+    return b && b.allowOverBudget === null;
+  })());
 
   const src = (desc, guidance = '') =>
     `export default defineTool({ name: 't:x', description: ${desc},${guidance} });`;
@@ -465,19 +511,36 @@ function selfTest() {
     return tools.length === 0;
   })());
 
-  const budgets = { BUDGET: 1500, HARD_CAP: 1600 };
+  const budgets = { BUDGET: 1500, HARD_CAP: 1600, allowOverBudget: [] };
   check('under budget → no violation', violationsFor([{ name: 'a', weight: 1500 }], budgets).length === 0);
   check('over budget → violation with exact cut', (() => {
     const [v] = violationsFor([{ name: 'a', weight: 1568 }], budgets);
     return v && v.cutAtLeast === 68 && v.hardCap === false && v.limit === 1500;
   })());
-  check('over hard cap → hardCap tier', (() => {
+  // REGRESSION (2026-08-12): the old form computed `hardCap ? HARD_CAP : BUDGET`
+  // and told this author to cut 93 — which lands at 1600, still over the 1500
+  // budget and still red. A non-grandfathered tool must clear the BUDGET.
+  check('over hard cap but NOT grandfathered → cut to the BUDGET, not the cap', (() => {
     const [v] = violationsFor([{ name: 'a', weight: 1693 }], budgets);
-    return v && v.hardCap === true && v.limit === 1600 && v.cutAtLeast === 93;
+    return v && v.hardCap === true && v.grandfathered === false && v.limit === 1500 && v.cutAtLeast === 193;
+  })());
+  check('grandfathered over budget → NOT a violation (the gate exempts it)', () =>
+    violationsFor([{ name: 'a', weight: 1550 }], { ...budgets, allowOverBudget: ['a'] }).length === 0);
+  check('grandfathered over HARD CAP → still a violation, cut to the cap', (() => {
+    const [v] = violationsFor([{ name: 'a', weight: 1693 }], { ...budgets, allowOverBudget: ['a'] });
+    return v && v.grandfathered === true && v.hardCapBinding === true && v.limit === 1600 && v.cutAtLeast === 93;
+  })());
+  check('unknown allow-list → nothing grandfathered (over-reports, never under)', (() => {
+    const [v] = violationsFor([{ name: 'a', weight: 1550 }], { BUDGET: 1500, HARD_CAP: 1600, allowOverBudget: null });
+    return v && v.grandfathered === false;
   })());
   check('message names the tool and the cut', (() => {
     const msg = formatNudge(violationsFor([{ name: 'loop:status', weight: 1568 }], budgets));
     return msg.includes('loop:status') && msg.includes('1568') && msg.includes('Cut >=68') && msg.includes('guidance.returns');
+  })());
+  check('hard-cap wording follows the BINDING ceiling, not the tier flag', (() => {
+    const msg = formatNudge(violationsFor([{ name: 'a', weight: 1693 }], budgets));
+    return msg.includes('1500-char budget') && !msg.includes('HARD CAP');
   })());
 
   if (failures.length) {
