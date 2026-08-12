@@ -60,6 +60,20 @@ describe('blender:grade-idea by bare work-item id (EI-15389, real PG)', () => {
       title: 'routed gym idea',
       workspaceId: WS,
     });
+    // A fresh row for the identified-SU attribution regression. Keep it
+    // separate from SP-002, which the preceding human-grade test intentionally
+    // claims for the owner and therefore cannot be regraded by an agent.
+    await recordRoutedIdea({
+      ideaId: 'scout-1784334639774:scout-idea-constraint-removal-3-1',
+      lens: 'constraint-removal',
+      rail: 'improvement',
+      routedRef: 'wi:SU-003',
+      harnessSlug: HARNESS,
+      sourceHive: HARNESS,
+      cycleId: 'c1',
+      title: 'identified SU attribution idea',
+      workspaceId: WS,
+    });
     // A su re-route row keyed by the BARE work-item id DIRECTLY (route-idea.ts
     // re-route path) — the direct-idea_id branch must still resolve.
     await recordRoutedIdea({
@@ -102,16 +116,17 @@ describe('blender:grade-idea by bare work-item id (EI-15389, real PG)', () => {
     expect(out.ideaId).toBe('scout-1784334639774:scout-idea-analogical-2-1');
     const row = await humanGradeOf('scout-1784334639774:scout-idea-analogical-2-1');
     expect(Number(row!.human_grade)).toBe(2);
+    expect(row!.graded_by).toBe('owner');
   });
 
   it('an identified su caller writes its ownerId, leaving the literal owner for human grades', async () => {
     const out = await runGradeIdea(
-      { ideaId: 'SP-002', grade: 4, feedback: 'steward signal' },
+      { ideaId: 'SU-003', grade: 4, feedback: 'steward signal' },
       { role: 'operator', ownerId: 'su-steward-grade-1' },
     );
     expect(out.applied).toBe(true);
     expect(out.gradedBy).toBe('su-steward-grade-1');
-    const row = await humanGradeOf('scout-1784334639774:scout-idea-analogical-2-1');
+    const row = await humanGradeOf('scout-1784334639774:scout-idea-constraint-removal-3-1');
     expect(row!.graded_by).toBe('su-steward-grade-1');
   });
 
