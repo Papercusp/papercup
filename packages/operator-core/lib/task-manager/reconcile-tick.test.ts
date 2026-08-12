@@ -467,30 +467,58 @@ describe('reconcileTick — notification discipline', () => {
     expect(notify).toHaveBeenCalledOnce();
   });
 
-  it('re-notifies when the condition CHANGES', async () => {
+  it('re-notifies when the condition CHANGES — clears, then re-opens', async () => {
+    // A genuine condition change is the category OPENING or CLOSING, not its count
+    // moving. This used to assert 1 -> 2 residue cgroups re-notified; that is a
+    // MAGNITUDE change, and treating it as an event is exactly EI-20108913085212631.
     const sent: { summary: string; kind: 'message' | 'escalation' }[] = [];
     const notify = vi.fn(async (msg: { summary: string; kind: 'message' | 'escalation' }) => {
       sent.push(msg);
     });
-    await reconcileTick({
+    const withResidue = {
       listLive: async () => [],
-      scan: () =>
-        scanResult([
-          proc({ pid: 1, cgroupPath: `${OURS}/x`, processIdentity: null, cmdline: 'r' }),
-        ]),
+      scan: () => scanResult([proc({ pid: 1, cgroupPath: `${OURS}/x`, processIdentity: null, cmdline: 'r' })]),
       fs: memFs({}),
       notify,
-    });
-    await reconcileTick({
-      listLive: async () => [],
-      scan: () =>
-        scanResult([
-          proc({ pid: 1, cgroupPath: `${OURS}/x`, processIdentity: null, cmdline: 'r' }),
-          proc({ pid: 2, cgroupPath: `${OURS}/y`, processIdentity: null, cmdline: 'r2' }),
-        ]),
-      fs: memFs({}),
-      notify,
-    });
+    };
+    const clear = { listLive: async () => [], scan: () => scanResult([]), fs: memFs({}), notify };
+
+    await reconcileTick(withResidue); // opens  -> notify #1
+    await reconcileTick(clear); // closes -> resets the debounce key, no message
+    await reconcileTick(withResidue); // re-opens -> notify #2 (a real new event)
+
     expect(notify).toHaveBeenCalledTimes(2);
+  });
+
+  it('EI-20108913085212631: a churning COUNT does not defeat the debounce', async () => {
+    // The regression. Residue cgroups wobble as processes come and go (6 -> 5 -> 6 is
+    // the healthy steady state on a busy box, not an event). The debounce key used to
+    // interpolate the raw counts, so every wobble minted a new key and re-fired the
+    // alarm on the very next tick — measured at 5 messages in 7 minutes.
+    const sent: { summary: string; kind: 'message' | 'escalation' }[] = [];
+    const notify = vi.fn(async (msg: { summary: string; kind: 'message' | 'escalation' }) => {
+      sent.push(msg);
+    });
+    const residue = (n: number) => ({
+      listLive: async () => [],
+      scan: () =>
+        scanResult(
+          Array.from({ length: n }, (_, i) =>
+            proc({ pid: i + 1, cgroupPath: `${OURS}/r${i}`, processIdentity: null, cmdline: `r${i}` }),
+          ),
+        ),
+      fs: memFs({}),
+      notify,
+    });
+
+    await reconcileTick(residue(1));
+    await reconcileTick(residue(2));
+    await reconcileTick(residue(1));
+    await reconcileTick(residue(3));
+    await reconcileTick(residue(2));
+
+    // The condition never closed, so this is ONE alarm — not five.
+    expect(notify).toHaveBeenCalledOnce();
+    expect(sent[0]!.summary).toContain('unaccounted cgroup(s)');
   });
 });

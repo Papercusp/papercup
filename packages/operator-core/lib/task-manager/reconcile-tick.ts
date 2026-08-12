@@ -247,9 +247,20 @@ async function maybeNotify(
   if (!deps.notify) return;
   const now = (deps.now ?? Date.now)();
   const noteworthy = ctx.degraded || ctx.summary.unaccounted > 0 || ctx.summary.overdue > 0;
+  // EI-20108913085212631: the key must identify the CONDITION, never its MAGNITUDE.
+  // This used to interpolate the raw counts, so ordinary churn in residue cgroups
+  // (6 -> 5 -> 6 as processes come and go — the healthy case, not an event) minted a
+  // NEW key every tick, `key === lastNotified.key` never matched, and the 30-minute
+  // debounce above was defeated outright: measured at 5 messages in 7 minutes.
+  //
+  // Presence booleans change only when a category actually OPENS or CLOSES, which is
+  // what "state CHANGE" in this function's docblock always meant. A count that grows
+  // while the condition persists is still reported — at the next RENOTIFY_MS tick,
+  // carrying the current numbers, which is the designed cadence rather than a
+  // per-tick broadcast.
   const key = ctx.degraded
     ? `degraded:${ctx.degradedReason}`
-    : `unaccounted:${ctx.summary.unaccounted}/overdue:${ctx.summary.overdue}`;
+    : `unaccounted:${ctx.summary.unaccounted > 0}/overdue:${ctx.summary.overdue > 0}`;
 
   if (!noteworthy) {
     lastNotified.key = '';
