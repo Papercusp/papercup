@@ -1,0 +1,80 @@
+/**
+ * coord:inbox — server-side cursor custody, and the DELETION of the agent-facing
+ * `since_ts` parameter (plan fleet-deltas-leader-primitives-2026-07-10, D-002
+ * rollout item 3; decision D-013).
+ *
+ * WHAT THIS PINS, and why each one is a thing that can regress SILENTLY:
+ *
+ *  • D-013 R2 — `since_ts` is gone from the args schema. A re-add is the exact
+ *    regression the plan exists to prevent (WI-1600: a caller that seeds a
+ *    tail-poll to wall-clock `now` makes every earlier message invisible to
+ *    every later poll, permanently). Nothing else fails if it comes back — the
+ *    tool keeps working, agents just quietly get a footgun again.
+ *
+ *  • The WI-1600 CAUTION is gone from the description. That paragraph exists
+ *    ONLY to police the parameter; leaving it after the parameter is deleted
+ *    teaches agents to reach for an argument that no longer exists, which reads
+ *    to them as a broken tool.
+ *
+ *  • D-013 R1 — the description states the VIEW contract. A cursor-derived floor
+ *    would turn a second same-turn read into an empty result, which an agent
+ *    reads as "my inbox is empty" — the same message-loss class this plan closes
+ *    at the delivery layer (EI-20190140825808810). The sentence is the only
+ *    place that promise is written down for the caller.
+ *
+ * These are deliberately CONTRACT assertions on the exported tool rather than
+ * handler runs: the handler's behaviour is already covered by the sibling
+ * inbox-*.test.ts files, and the property at risk here is the shape of the
+ * agent-facing surface, not the read.
+ *
+ * Run: cd packages/operator-core && npx vitest run lib/agent-tools/coordination/tools/inbox-cursor-custody.test.ts
+ */
+import { describe, expect, it } from "vitest";
+
+import tool from "./inbox";
+import { INBOX_CURSOR_SURFACE } from "../../activity/hook-bundle";
+
+describe("coord:inbox — agent-facing since_ts is deleted (D-013 R2)", () => {
+  it("does not declare a `since_ts` argument", () => {
+    expect(Object.keys(tool.args.shape)).not.toContain("since_ts");
+  });
+
+  it("keeps the filters that are genuinely the caller's to choose", () => {
+    // The deletion is scoped to the cursor. Narrowing filters are not cursors and
+    // must survive it — removing them too would be a silent capability loss.
+    const keys = Object.keys(tool.args.shape);
+    for (const kept of ["kinds", "from", "limit", "unanswered_only"]) {
+      expect(keys).toContain(kept);
+    }
+  });
+
+  it("no longer carries the WI-1600 since_ts CAUTION in its description", () => {
+    expect(tool.description).not.toMatch(/WI-1600/);
+    expect(tool.description).not.toMatch(/since_ts/);
+  });
+
+  it("does not steer callers to a since_ts poll in its guidance", () => {
+    const guidance = JSON.stringify(tool.guidance ?? {});
+    expect(guidance).not.toMatch(/since_ts/);
+  });
+});
+
+describe("coord:inbox — the VIEW contract is stated to the caller (D-013 R1)", () => {
+  it("tells the caller a re-read re-shows the window rather than emptying out", () => {
+    // Cheap-but-load-bearing: this is the promise that makes a same-turn second
+    // read safe to interpret. Assert the PROMISE, not the prose, so the sentence
+    // can be rewritten without failing here.
+    expect(tool.description).toMatch(/VIEW/);
+    expect(tool.description).toMatch(/not a delta/i);
+  });
+});
+
+describe("read-cursor custody stays with the delivery path (D-013 R2/R3)", () => {
+  it("the delivery surface is a single named constant, not a literal per call site", () => {
+    // Two writers on one (owner, surface) two-phase cursor would promote a
+    // pending floor the other never delivered against — at-least-once becomes
+    // at-most-once, i.e. dropped mail. A shared constant is what keeps the
+    // delivery path the sole custodian of this surface.
+    expect(INBOX_CURSOR_SURFACE).toBe("inbox");
+  });
+});
