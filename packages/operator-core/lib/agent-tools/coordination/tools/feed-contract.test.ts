@@ -47,3 +47,23 @@ describe('coord:feed — since compatibility', () => {
     expect(readCoordFeed).toHaveBeenLastCalledWith(expect.objectContaining({ since_ts: '2026-08-12T00:00:00.000Z' }));
   });
 });
+
+describe('coord:feed — fleet compatibility alias', () => {
+  it('declares both canonical audience and legacy fleet filters', () => {
+    expect(Object.keys(tool.args.shape)).toContain('audience');
+    expect(Object.keys(tool.args.shape)).toContain('fleet');
+  });
+
+  it('normalizes a fleet slug or human name to the audience filter', async () => {
+    await tool.handler({ fleet: 'Backend Team' } as never, {} as never);
+    expect(readCoordFeed).toHaveBeenLastCalledWith(expect.objectContaining({ audience: '@fleet:backend-team' }));
+  });
+
+  it('prefers the canonical audience when both filters are supplied', async () => {
+    await tool.handler(
+      { fleet: 'ignored-fleet', audience: '@topic:coordination' } as never,
+      {} as never,
+    );
+    expect(readCoordFeed).toHaveBeenLastCalledWith(expect.objectContaining({ audience: '@topic:coordination' }));
+  });
+});

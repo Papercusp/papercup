@@ -22,6 +22,7 @@ import {
   ALL_COORD_KINDS,
   MAX_FEED_LIMIT,
 } from '../feed';
+import { fleetSlugFromName } from '../../../agent-fleets-store';
 import { boundRowField } from '../../_bound-output';
 import { authoredFieldsMarker } from '../message-fields';
 
@@ -40,7 +41,7 @@ const FEED_SUMMARY_BUDGET = 10_000;
 export default defineTool({
   name: 'coord:feed',
   description:
-    'Read the COMPLETE coordination stream across every agent and channel — messages, acks, notifies, broadcasts, handoffs, escalations, resolutions, plan events — newest-first with a next-page cursor. Filter by kinds, owner (matches sender OR recipient; broadcasts match any owner), plan_slug, free-text `q` (over summary/body/from/to), and a since/before time window. `since` is the preferred timestamp filter; legacy `since_ts` remains accepted. before_ts is the pagination cursor (pass back the returned `nextCursor`). Returns `{ count, total, by_kind, next_cursor, rows }`; each row is the raw envelope plus `surface` (messages|escalations|handoffs|plan-events) and a derived `broadcast` flag. A row carrying `superseded_by` was CORRECTED by its own sender — follow that msg_id to the current claim before acting on the row.',
+    'Read the COMPLETE coordination stream across every agent and channel — messages, acks, notifies, broadcasts, handoffs, escalations, resolutions, plan events — newest-first with a next-page cursor. Filter by kinds, owner (matches sender OR recipient; broadcasts match any owner), plan_slug, fleet (legacy alias for audience `@fleet:<slug>`), free-text `q` (over summary/body/from/to), and a since/before time window. `since` is the preferred timestamp filter; legacy `since_ts` remains accepted. before_ts is the pagination cursor (pass back the returned `nextCursor`). Returns `{ count, total, by_kind, next_cursor, rows }`; each row is the raw envelope plus `surface` (messages|escalations|handoffs|plan-events) and a derived `broadcast` flag. A row carrying `superseded_by` was CORRECTED by its own sender — follow that msg_id to the current claim before acting on the row.',
   guidance: {
     when:
       'You need the full fleet-wide coordination timeline — auditing what agents said to each other, tracing a broadcast/handoff/escalation chain, or backing an observer UI. The all-traffic counterpart to the per-owner coord:inbox.',
@@ -71,6 +72,11 @@ export default defineTool({
       .string()
       .optional()
       .describe('Restrict to envelopes addressed to this audience selector (@fleet:<slug> / @topic:<slug> / @plan:<slug> / @object:… / @file:… / *) — the audience-keyed HISTORY read. Catches up on everything sent to a fleet/topic even though your id was never in the resolved recipient list. (Members use coord:catch-up for the low-tier, membership-checked version.)'),
+    fleet: z
+      .string()
+      .min(1)
+      .optional()
+      .describe('Compatibility alias for audience: a fleet slug or human name, normalized to @fleet:<slug>. If both fleet and audience are supplied, audience wins.'),
     q: z.string().optional().describe('Case-insensitive substring over summary/body/from/to/plan_slug.'),
     since: z
       .string()
@@ -105,7 +111,7 @@ export default defineTool({
       owner: args.owner,
       from: args.from,
       plan_slug: args.plan_slug,
-      audience: args.audience,
+      audience: args.audience ?? (args.fleet ? `@fleet:${fleetSlugFromName(args.fleet)}` : undefined),
       q: args.q,
       // Keep the historical snake_case field wire-compatible while making the
       // surrounding coordination API's `since` convention available to callers.
