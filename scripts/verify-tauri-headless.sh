@@ -104,9 +104,11 @@
 #     (bounded by VERIFY_TAURI_DOM_TIMEOUT) instead of racing it with a fixed sleep.
 #
 #   scripts/verify-tauri-headless.sh --boot-only
-#     Boots the instance, prints its env (source-able) plus a stop-script
-#     path, and returns WITHOUT tearing down — for a multi-step interactive
-#     verification session. Run the printed stop script when done; NEVER
+#     Boots the instance, prints one source command for a private mode-600
+#     per-run env file plus a stop-script path, and returns WITHOUT tearing
+#     down — for a multi-step interactive verification session. The source
+#     file re-checks caller PAPERCUSP_SID and target-process provenance before
+#     exporting its variables. Run the printed stop script when done; NEVER
 #     leave it running unattended (mirrors the two-instance-*-smoke.sh
 #     leaked-Xvfb lesson, WI-2115 — a display left up starves the next run).
 #
@@ -631,11 +633,12 @@ verify_tauri_assert_owned() {
     return 1
   fi
 
-  TARGET_ENVIRON="$(tr '\0' '\n' < "/proc/$VERIFY_TAURI_PID/environ" 2>/dev/null || true)"
-  if ! grep -qxF "DISPLAY=$VERIFY_TAURI_DISPLAY" <<<"$TARGET_ENVIRON" \
-    || ! grep -qxF "OPERATOR_DEV_PORT=$VERIFY_TAURI_PORT" <<<"$TARGET_ENVIRON" \
-    || ! grep -qxF "PAPERCUSP_SID=$VERIFY_TAURI_OWNER_SID" <<<"$TARGET_ENVIRON" \
-    || ! grep -qxF "PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$VERIFY_TAURI_LAUNCH_PROVENANCE" <<<"$TARGET_ENVIRON"; then
+  local target_environ
+  target_environ="$(tr '\0' '\n' < "/proc/$VERIFY_TAURI_PID/environ" 2>/dev/null || true)"
+  if ! grep -qxF "DISPLAY=$VERIFY_TAURI_DISPLAY" <<<"$target_environ" \
+    || ! grep -qxF "OPERATOR_DEV_PORT=$VERIFY_TAURI_PORT" <<<"$target_environ" \
+    || ! grep -qxF "PAPERCUSP_SID=$VERIFY_TAURI_OWNER_SID" <<<"$target_environ" \
+    || ! grep -qxF "PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$VERIFY_TAURI_LAUNCH_PROVENANCE" <<<"$target_environ"; then
     echo "FATAL: VERIFY_TAURI_ENV_FILE points at a verifier owned by another session or a process with changed launch provenance." >&2
     return 1
   fi
