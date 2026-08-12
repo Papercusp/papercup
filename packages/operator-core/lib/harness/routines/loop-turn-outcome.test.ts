@@ -18,9 +18,19 @@ import type { DeliveryWork } from '../../events/await/types';
 import type { ResumeTurnExitRaw } from '../../events/await/resume-turn-outcome';
 import { claimWatchdogFire } from '../../pot/watchdog';
 import { captureImprovement } from '../improvements/capture-core';
+import type { CaptureImprovementResult } from '../improvements/capture-core';
 import { requestOverwatchWake } from '../../overwatch/wake-bridge';
+import { mockResolvedTyped } from '../../testing/typed-mock';
 
 const INTERVAL_MS = 120_000;
+
+/**
+ * These tests only care THAT `captureImprovement` resolved, never what it returned — but
+ * the fixture is still typed rather than cast `as never`, so a new REQUIRED field on
+ * CaptureImprovementResult becomes a compile error here instead of a runtime failure in
+ * someone else's green-checkpoint run (EI-19282401068515102 / lint:mock-cast-escape).
+ */
+const CAPTURE_OK: CaptureImprovementResult = { ok: true, created: true, possibleDuplicates: [] };
 
 const deathRaw = (over: Partial<ResumeTurnExitRaw> = {}): ResumeTurnExitRaw => ({
   exitCode: 1,
@@ -188,8 +198,8 @@ describe('handleLoopResumeTurnExit (P0b — feed the circuit on a dead loop turn
   it('a context-overflow death pauses the loop and never re-arms the same oversized warm transcript', async () => {
     vi.spyOn(console, 'warn').mockImplementation(() => {});
     vi.mocked(claimWatchdogFire).mockResolvedValue(true);
-    vi.mocked(captureImprovement).mockResolvedValue({} as never);
-    vi.mocked(requestOverwatchWake).mockResolvedValue({ wired: true, result: { fired: true } } as never);
+    mockResolvedTyped(vi.mocked(captureImprovement), CAPTURE_OK);
+    vi.mocked(requestOverwatchWake).mockResolvedValue({ wired: true, result: { fired: true } });
     const sql = fakeSql({ ref: refRow, rearmRows: [{ id: 'loop_su_owner' }] });
     const recordFire = vi.fn(async () => {});
     const autoPause = vi.fn(async () => {});
@@ -229,8 +239,8 @@ describe('handleLoopResumeTurnExit — EI-13818 wedge-death alert (item c)', () 
 
   beforeEach(() => {
     vi.mocked(claimWatchdogFire).mockReset().mockResolvedValue(true);
-    vi.mocked(captureImprovement).mockReset().mockResolvedValue({} as never);
-    vi.mocked(requestOverwatchWake).mockReset().mockResolvedValue({ wired: true, result: { fired: true } } as never);
+    mockResolvedTyped(vi.mocked(captureImprovement).mockReset(), CAPTURE_OK);
+    vi.mocked(requestOverwatchWake).mockReset().mockResolvedValue({ wired: true, result: { fired: true } });
   });
 
   it('a wedged (usage_limit) clean-exit death claims the watchdog debounce + files + wakes overwatch', async () => {
