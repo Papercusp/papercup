@@ -416,13 +416,16 @@ describe("threadLimit — bounded diagnostic thread stays consumable", () => {
     const out = shapeWorkItemsGet(
       envelope([
         row({
+          workItem: { id: "WI-1", state: "open", topics: [], posts: [], links: [] },
           threadWindow: { posts: [], total: 0, topics: [], createdAt: "2026-08-12T09:00:00.000Z" },
         }),
       ]),
       "trimmed",
     ) as Envelope;
     expect(out.results[0].threadWindow).toMatchObject({ shown: 0, total: 0, posts: [] });
-    expect(out._shapeNote).toBeUndefined();
+    expect(out._shapeNote?.dropped ?? []).not.toEqual(
+      expect.arrayContaining(["threadWindow.posts", "threadWindow.postBodies", "threadWindow.topics"]),
+    );
   });
 
   it("preserves an explicit failed bounded read instead of rendering silence", () => {
