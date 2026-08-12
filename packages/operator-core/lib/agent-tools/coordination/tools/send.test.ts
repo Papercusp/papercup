@@ -683,6 +683,20 @@ describe('coord:send wake-on-reply (coord-wake-on-reply)', () => {
     expect(opts.related_msg_id).toBe('orig');
   });
 
+  it('EI-20244789166273442: a resolver-supported short alias still closes a reply after the original sender ends', async () => {
+    const endedOwner = 'su-93a3872a-1f16-4af5-9e31-2c7b6d4e8f90';
+    getByIdM.mockResolvedValueOnce({ msg_id: 'orig', from: endedOwner, to: ['me'] } as never);
+    // The alias would resolve while the sender was live, but the ended owner
+    // has been reaped from the roster by the time this reply is sent.
+    resolveM.mockResolvedValueOnce({ resolved: [], unknown: ['93a3872a'], ambiguous: [] } as never);
+    const b = await body({ to: ['93a3872a'], summary: 'closing this out', related_msg_id: 'orig' });
+    expect(b.results[0]).toMatchObject({ ok: true, recipients_gone: [endedOwner] });
+    expect(sendM).toHaveBeenCalledTimes(1);
+    const opts = sendM.mock.calls[0][1] as { to: string[]; related_msg_id?: string };
+    expect(opts.to).toEqual([endedOwner]);
+    expect(opts.related_msg_id).toBe('orig');
+  });
+
   it('EI-18145: an unknown recipient UNRELATED to related_msg_id.from still hard-refuses (the exemption is scoped, not blanket)', async () => {
     getByIdM.mockResolvedValueOnce({ msg_id: 'orig', from: 'ghost-sender', to: ['me'] } as never);
     resolveM.mockResolvedValueOnce({ resolved: [], unknown: ['some-other-ghost'], ambiguous: [] } as never);

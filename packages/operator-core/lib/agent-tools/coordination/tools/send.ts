@@ -197,6 +197,24 @@ function isDirected(to: string[]): boolean {
   return to.length > 0 && to.every((id) => !isSelectorOrWildcard(id));
 }
 
+/**
+ * Whether `address` is the same owner-id alias that the live recipient
+ * resolver accepts for `ownerId`. This matters when a reply closes a thread
+ * after the original sender's session has ended: the dead owner is no longer
+ * in the roster, so the normal resolver cannot expand a copied short handle
+ * or prefix. The related message is the proof of which owner the alias names;
+ * keep this matcher exactly aligned with resolveRecipientsAgainst's
+ * exact/prefix/substring rules.
+ */
+function isOwnerIdAlias(address: string, ownerId: string): boolean {
+  return (
+    Boolean(address) &&
+    Boolean(ownerId) &&
+    !isSelectorOrWildcard(address) &&
+    (address === ownerId || ownerId.startsWith(address) || ownerId.includes(address))
+  );
+}
+
 // WI-6522 — this union carried NO custom `error`, so zod 4 emitted a bare
 // "Invalid input" for every malformed value, naming neither the booleans nor the
 // two string modes. That one message was 196 of 578 coord:send arg-shape refusals
@@ -613,8 +631,15 @@ async function sendOne(
     try {
       const r = await resolveRecipients(msg.to, identity.workspaceId);
       const closingGoneSender = relatedOriginal?.from ?? null;
-      goneRepliedTo = closingGoneSender ? r.unknown.filter((id) => id === closingGoneSender) : [];
-      const trulyUnknown = r.unknown.filter((id) => !goneRepliedTo.includes(id));
+      const goneReplyAliases = closingGoneSender
+        ? r.unknown.filter((id) => isOwnerIdAlias(id, closingGoneSender))
+        : [];
+      // Canonicalize a resolver-supported short handle/prefix to the full
+      // ownerId in the durable reply. Once the session is gone there is no
+      // roster left to perform that expansion, but the related message gives
+      // us the authenticated canonical sender id.
+      goneRepliedTo = goneReplyAliases.length ? [closingGoneSender] : [];
+      const trulyUnknown = r.unknown.filter((id) => !goneReplyAliases.includes(id));
       if (trulyUnknown.length || r.ambiguous.length) {
         // EI-19343900550313022: this is ALL-OR-NOTHING BY DESIGN (see toArg's
         // own description), but that is easy to miss in the moment — a sender
