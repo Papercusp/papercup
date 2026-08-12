@@ -457,7 +457,7 @@ function buildTestRunsAdvisory(stripped: string, tables: string[]): string | nul
 }
 
 /** The bare (unqualified) table name — `schema.table` → `table`. */
-function bareTableName(ref: string): string {
+export function bareTableName(ref: string): string {
   const i = ref.lastIndexOf('.');
   return i === -1 ? ref : ref.slice(i + 1);
 }
