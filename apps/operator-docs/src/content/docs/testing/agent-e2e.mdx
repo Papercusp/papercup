@@ -366,9 +366,15 @@ scripts/verify-tauri-headless.sh -- bash -c '
     --selector body --no-errors'
 ```
 
-`scripts/verify-tauri-headless.sh --boot-only` prints a source-able env
-(`VERIFY_TAURI_PID`/`PORT`/`DISPLAY`) plus a stop script for a multi-step
-interactive session — see the script's own header for the full interface.
+`scripts/verify-tauri-headless.sh --boot-only` prints one source command for a
+private, mode-600 per-run env file plus a stop script for a multi-step
+interactive session. Run that command in the same tracked agent shell that
+started the rig; sourcing the file re-checks the caller's `PAPERCUSP_SID` and
+the bridge's own `/proc/<pid>/environ` (`PAPERCUSP_SID`, display, port, and
+launch provenance) before exporting any drive variables. A copied or stale env
+file fails closed with `VERIFY_TAURI_ENV_FILE points at a verifier owned by
+another session`. Do not redirect raw export blocks from `--boot-only` into a
+shared log or source a log tail; the handoff is intentionally source-only.
 
 :::tip[Multi-step drives are now watcher-proof (EI-10364, closing EI-10360)]
 On a busy tree, a bare isolated instance used to reuse the SHARED

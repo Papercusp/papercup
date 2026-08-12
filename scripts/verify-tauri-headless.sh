@@ -591,6 +591,81 @@ LIVE_CHECK
   chmod +x "$WORK/check-live.sh"
 }
 
+# EI-20226754912676562: --boot-only used to print a raw export block to the
+# caller's stdout. Callers commonly redirected that stream to a shared log and
+# later sourced its tail; concurrent runs could therefore hand one caller a
+# peer's PID, port, display, and stop script. Keep the handoff in a private file
+# and verify ownership again when it is sourced, since the caller may source a
+# copied/stale path long after this boot completed.
+write_boot_only_env_script() {
+  (
+    umask 077
+    {
+      printf 'VERIFY_TAURI_PID=%q\n' "$VERIFY_TAURI_PID"
+      printf 'VERIFY_TAURI_PORT=%q\n' "$VERIFY_TAURI_PORT"
+      printf 'VERIFY_TAURI_DISPLAY=%q\n' "$VERIFY_TAURI_DISPLAY"
+      printf 'VERIFY_TAURI_OWNER_SID=%q\n' "$VERIFY_TAURI_OWNER_SID"
+      printf 'VERIFY_TAURI_LAUNCH_PROVENANCE=%q\n' "$VERIFY_TAURI_LAUNCH_PROVENANCE"
+      printf 'VERIFY_TAURI_LOG=%q\n' "$VERIFY_TAURI_LOG"
+      printf 'VERIFY_TAURI_POLL=%q\n' "$VERIFY_TAURI_POLL"
+      printf 'VERIFY_TAURI_STOP=%q\n' "$WORK/stop.sh"
+      printf 'VERIFY_TAURI_FRESHNESS_CHECK=%q\n' "$WORK/check-freshness.sh"
+      printf 'VERIFY_TAURI_SPA_DIST=%q\n' "$SPA_DIST"
+      printf 'VERIFY_TAURI_LIVENESS_CHECK=%q\n' "$WORK/check-live.sh"
+      printf 'VERIFY_TAURI_SCOPE_ENABLED=%q\n' "$VERIFY_SCOPE_ENABLED"
+      printf 'VERIFY_TAURI_SCOPE_UNIT=%q\n' "${TAURI_SCOPE_UNIT:+$TAURI_SCOPE_UNIT.scope}"
+      printf 'VERIFY_TAURI_HEARTBEAT=%q\n' "$HEARTBEAT_FILE"
+      printf 'VERIFY_TAURI_ENV_FILE=%q\n' "$BOOT_ONLY_ENV"
+      cat <<'BOOT_ONLY_ENV_SCRIPT'
+
+# This file is source-only. It deliberately does not use `set -e` so sourcing
+# it cannot change the caller's error-handling policy.
+verify_tauri_assert_owned() {
+  PAPERCUSP_SID=${PAPERCUSP_SID:-}
+  if [ -z "$PAPERCUSP_SID" ] || [ "$PAPERCUSP_SID" != "$VERIFY_TAURI_OWNER_SID" ]; then
+    echo "FATAL: VERIFY_TAURI_ENV_FILE points at a verifier owned by another session (PAPERCUSP_SID mismatch)." >&2
+    return 1
+  fi
+  if [ -z "${VERIFY_TAURI_PID:-}" ] || ! kill -0 "$VERIFY_TAURI_PID" 2>/dev/null; then
+    echo "FATAL: VERIFY_TAURI_ENV_FILE points at a verifier whose bridge PID is no longer alive; boot a fresh rig." >&2
+    return 1
+  fi
+
+  TARGET_ENVIRON="$(tr '\0' '\n' < "/proc/$VERIFY_TAURI_PID/environ" 2>/dev/null || true)"
+  if ! grep -qxF "DISPLAY=$VERIFY_TAURI_DISPLAY" <<<"$TARGET_ENVIRON" \
+    || ! grep -qxF "OPERATOR_DEV_PORT=$VERIFY_TAURI_PORT" <<<"$TARGET_ENVIRON" \
+    || ! grep -qxF "PAPERCUSP_SID=$VERIFY_TAURI_OWNER_SID" <<<"$TARGET_ENVIRON" \
+    || ! grep -qxF "PAPERCUSP_TAURI_LAUNCH_PROVENANCE=$VERIFY_TAURI_LAUNCH_PROVENANCE" <<<"$TARGET_ENVIRON"; then
+    echo "FATAL: VERIFY_TAURI_ENV_FILE points at a verifier owned by another session or a process with changed launch provenance." >&2
+    return 1
+  fi
+  return 0
+}
+
+if ! verify_tauri_assert_owned; then
+  # `return` is valid only when this file is sourced. Keep the source-only
+  # contract explicit while still failing safely if somebody executes it.
+  if (return 0 2>/dev/null); then
+    return 1
+  fi
+  exit 1
+fi
+
+export VERIFY_TAURI_PID VERIFY_TAURI_PORT VERIFY_TAURI_DISPLAY
+export VERIFY_TAURI_OWNER_SID VERIFY_TAURI_LAUNCH_PROVENANCE VERIFY_TAURI_LOG
+export VERIFY_TAURI_POLL VERIFY_TAURI_STOP VERIFY_TAURI_FRESHNESS_CHECK
+export VERIFY_TAURI_SPA_DIST VERIFY_TAURI_LIVENESS_CHECK
+export VERIFY_TAURI_SCOPE_ENABLED VERIFY_TAURI_SCOPE_UNIT VERIFY_TAURI_HEARTBEAT
+export VERIFY_TAURI_ENV_FILE
+BOOT_ONLY_ENV_SCRIPT
+    } > "$BOOT_ONLY_ENV"
+  ) || return 1
+  chmod 600 "$BOOT_ONLY_ENV" || {
+    echo "FATAL: could not secure private boot-only environment file $BOOT_ONLY_ENV" >&2
+    return 1
+  }
+}
+
 write_stop_script() {
   cat > "$WORK/stop.sh" <<STOP
 #!/usr/bin/env bash
@@ -1534,21 +1609,12 @@ if [ "${1:-}" = "--boot-only" ]; then
     WATCHDOG_PID=$!
   fi
 
-  cat <<EOF
-export VERIFY_TAURI_PID=$VERIFY_TAURI_PID
-export VERIFY_TAURI_PORT=$VERIFY_TAURI_PORT
-export VERIFY_TAURI_DISPLAY=$VERIFY_TAURI_DISPLAY
-export VERIFY_TAURI_OWNER_SID=$VERIFY_TAURI_OWNER_SID
-export VERIFY_TAURI_LAUNCH_PROVENANCE=$VERIFY_TAURI_LAUNCH_PROVENANCE
-export VERIFY_TAURI_LOG=$VERIFY_TAURI_LOG
-export VERIFY_TAURI_POLL=$VERIFY_TAURI_POLL
-export VERIFY_TAURI_STOP=$WORK/stop.sh
-export VERIFY_TAURI_FRESHNESS_CHECK=$WORK/check-freshness.sh
-export VERIFY_TAURI_SPA_DIST=$SPA_DIST
-export VERIFY_TAURI_LIVENESS_CHECK=$WORK/check-live.sh
-export VERIFY_TAURI_SCOPE_ENABLED=$VERIFY_SCOPE_ENABLED
-export VERIFY_TAURI_SCOPE_UNIT=${TAURI_SCOPE_UNIT:+$TAURI_SCOPE_UNIT.scope}
-export VERIFY_TAURI_HEARTBEAT=$HEARTBEAT_FILE
+  BOOT_ONLY_ENV="$WORK/env.sh"
+  write_boot_only_env_script || exit 1
+  # The only stdout contract is this one source command. The env file is
+  # private to this run and re-checks caller/target provenance when sourced;
+  # no raw export block can be reconstructed from a shared log.
+  printf 'source %q\n' "$BOOT_ONLY_ENV"
 # TTL watchdog (EI-18805100008031244): this instance self-terminates ${BOOT_ONLY_TTL_MIN} min
 # after the last heartbeat refresh (0 = disabled; set VERIFY_TAURI_BOOT_ONLY_TTL_MIN
 # before boot to change it). A legitimately long-running session must heartbeat:
@@ -1562,7 +1628,6 @@ export VERIFY_TAURI_HEARTBEAT=$HEARTBEAT_FILE
 # tear down when done — NEVER leave this running unattended (WI-2115: a
 # leaked isolated instance/display starves the next run):
 #   "$WORK/stop.sh"
-EOF
   exit 0
 fi
 
