@@ -819,6 +819,11 @@ export interface IssueClaimExclusionBreakdown {
     alreadyCompleted: number;
     crossMachineRig: number;
     blockedDep: number;
+    /** BOTH caller-relative cooldown reasons, deliberately in ONE bucket (WI-5939): the row was
+     *  released by THIS caller inside the release window (mig 499), OR it was FILED BY SOMEONE
+     *  ELSE inside the filing-grace window, which holds a fresh filing for its filer so
+     *  file-then-fix cannot be raced. Both clear on their own with no action; a row you filed
+     *  yourself is never in the second leg. Knob: PAPERCUSP_FILING_GRACE_SEC (0 disables). */
     cooldown: number;
     /** WI-6409: a true-remote-origin row (federated in from a peer node, not authored by
      *  this node — see {@link isIssueLocallyClaimableWhereSql}). The real claim path

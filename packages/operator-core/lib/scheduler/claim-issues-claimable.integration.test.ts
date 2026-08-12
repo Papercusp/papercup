@@ -658,3 +658,72 @@ describe('explainIssueClaimFloors reports the 3 previously-missing floors (WI-37
     expect(attr.refusedBy).toBeNull();
   });
 });
+
+// WI-5939 — FILING IS PUBLISHING. An agent who files a bug and then starts fixing it without
+// claiming it first races the entire drain fleet, and that race is decided in seconds. The fix
+// extends the EXISTING per-claim cooldown floor (issueCooldownExclusionSql — the one fragment
+// this claim door, the get-next preview, the miss diagnosis and the per-id explainer all share)
+// with a second caller-relative reason: a row filed inside the grace window is gated for
+// everyone EXCEPT its filer. These pin all four acceptance legs plus two fail-open controls —
+// a floor that excluded the row from EVERYONE, or from nobody, would satisfy a weaker set.
+describe('filing-grace floor — the filer gets first refusal on their own filing (WI-5939)', () => {
+  beforeEach(() => {
+    h.issuesClaimable = true;
+  });
+
+  const FILER = 'su-the-filer';
+  const PEER = 'su-a-peer';
+
+  /** An issue filed `ageSec` ago by `filer`. The filer's id lives at payload._ei.created_by:
+   *  harness_shared.work_items has NO created_by column at all — the engineer_issues VIEW
+   *  derives it from that same `_ei` fold (migration 374). */
+  async function seedFiledIssue(id: string, filer: string | null, ageSec: number) {
+    await seedIssue(id, { state: 'open', createdTs: Date.now() - ageSec * 1000 });
+    if (filer) {
+      await db.sql`
+        UPDATE harness_shared.work_items
+           SET payload = jsonb_build_object('_ei', jsonb_build_object('created_by', ${filer}::text))
+         WHERE feature_id = ${id}`;
+    }
+  }
+
+  it('a PEER cannot claim a row someone else filed seconds ago', async () => {
+    await seedFiledIssue('EI-GRACE-1', FILER, 5);
+    expect(await claimOne(PEER)).toBeNull();
+  });
+
+  it('the FILER claims their own fresh filing immediately (the point — no window for them)', async () => {
+    await seedFiledIssue('EI-GRACE-2', FILER, 5);
+    expect(await claimOne(FILER)).toBe('EI-GRACE-2');
+  });
+
+  it('once the window has passed, the peer claims it normally', async () => {
+    await seedFiledIssue('EI-GRACE-3', FILER, 24 * 3600);
+    expect(await claimOne(PEER)).toBe('EI-GRACE-3');
+  });
+
+  it('the refusal reports under the EXISTING cooldown floor, not a new parallel one (acceptance)', async () => {
+    await seedFiledIssue('EI-GRACE-4', FILER, 5);
+    const [attr] = await wi.explainIssueClaimFloors(H, ['EI-GRACE-4'], { assignee: PEER });
+    expect(attr.admissible).toBe(false);
+    expect(attr.refusedBy).toBe('cooldown');
+    // ...and the SAME id is admissible to its filer, from that same explainer door.
+    const [own] = await wi.explainIssueClaimFloors(H, ['EI-GRACE-4'], { assignee: FILER });
+    expect(own.admissible).toBe(true);
+  });
+
+  it('CONTROL: a fresh row with NO recorded filer stays claimable (fail-OPEN, not blanket-gated)', async () => {
+    await seedFiledIssue('EI-GRACE-5', null, 5);
+    expect(await claimOne(PEER)).toBe('EI-GRACE-5');
+  });
+
+  it('CONTROL: PAPERCUSP_FILING_GRACE_SEC=0 disables the leg entirely (the kill switch works)', async () => {
+    vi.stubEnv('PAPERCUSP_FILING_GRACE_SEC', '0');
+    try {
+      await seedFiledIssue('EI-GRACE-6', FILER, 5);
+      expect(await claimOne(PEER)).toBe('EI-GRACE-6');
+    } finally {
+      vi.unstubAllEnvs();
+    }
+  });
+});
