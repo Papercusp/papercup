@@ -8,6 +8,32 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { readThread, resolveMessageRef } from '../messages';
 import { projectAuthoredFields } from '../message-fields';
 import { COORD_ROLES } from '../roles';
+import { boundInboxEntries } from './inbox';
+
+// A thread is a forensic read, but it is still an agent-facing result. Keep the
+// normal response small enough to survive the ptool/MCP result door: retain the
+// root plus the newest entries, and excerpt each content-bearing field. A caller
+// that needs the complete message can use coord:read with the returned msg_id.
+const THREAD_DEFAULT_ENTRY_LIMIT = 20;
+const THREAD_CONTENT_BUDGET = 8_000;
+const THREAD_CONTENT_CAP = 600;
+
+function selectThreadWindow<T extends { msg_id?: string }>(
+  entries: readonly T[],
+  rootMsgId: string,
+): T[] {
+  if (entries.length <= THREAD_DEFAULT_ENTRY_LIMIT) return [...entries];
+
+  const root = entries.find((entry) => entry.msg_id === rootMsgId);
+  const tailCount = THREAD_DEFAULT_ENTRY_LIMIT - (root ? 1 : 0);
+  const tail = entries.slice(-tailCount);
+  const selected = new Set(tail);
+  if (root) selected.add(root);
+
+  // `entries` is already sorted by readThread. Filtering the selected objects
+  // preserves that order while keeping the root visible even when it is old.
+  return entries.filter((entry) => selected.has(entry));
+}
 
 export default defineTool({
   name: 'coord:thread',
@@ -54,6 +80,11 @@ export default defineTool({
       };
     }
     const entries = await readThread(resolution.msgId);
+    const window = selectThreadWindow(entries, resolution.msgId);
+    const contentCap = Math.min(
+      THREAD_CONTENT_CAP,
+      Math.floor(THREAD_CONTENT_BUDGET / Math.max(1, window.length)),
+    );
     // P-033 (e): same reason as coord:read — the authored structure rides the ENVELOPE
     // and the rendered `body` is a flattened text projection of it. A thread is where a
     // disagreement gets re-read, so it is the surface where "what did the sender say
@@ -61,7 +92,7 @@ export default defineTool({
     //
     // ⚠ Pass the entry, NOT `.extra` — see projectAuthoredFields. This read `.extra`
     // until 2026-08-02, so it attached `authored` to exactly zero entries.
-    const withAuthored = entries.map((entry) => {
+    const withAuthored = boundInboxEntries(window, contentCap).map((entry) => {
       const authored = projectAuthoredFields(entry);
       return authored ? { ...entry, authored } : entry;
     });
@@ -69,6 +100,16 @@ export default defineTool({
       data: {
         root: resolution.msgId,
         entries: withAuthored,
+        entries_shown: withAuthored.length,
+        entries_total: entries.length,
+        ...(withAuthored.length < entries.length
+          ? {
+              entries_truncated: true,
+              detail:
+                `Showing the root and newest ${THREAD_DEFAULT_ENTRY_LIMIT - 1} thread entries. ` +
+                'Use coord:read for a complete individual message.',
+            }
+          : {}),
         ...(resolution.resolvedFrom === 'prefix'
           ? {
               requested_root: args.root_msg_id,

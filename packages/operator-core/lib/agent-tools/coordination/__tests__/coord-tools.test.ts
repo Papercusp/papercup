@@ -149,6 +149,30 @@ describe('coord:thread', () => {
     expect(ids).toContain(m.msg_id);
     expect(body.entries.some((e: { kind: string }) => e.kind === 'ack')).toBe(true);
   });
+
+  it('bounds a large thread while retaining the root and newest entries', async () => {
+    const root = await sendMessage(id('alice'), {
+      to: ['*'],
+      summary: 'root ' + 'x'.repeat(2_000),
+      body: 'body ' + 'y'.repeat(2_000),
+    });
+    for (let i = 0; i < 24; i += 1) {
+      await sendMessage(id('bob'), {
+        to: ['alice'],
+        related_msg_id: root.msg_id,
+        summary: `reply-${i} ` + 'z'.repeat(2_000),
+      });
+    }
+
+    const body = parse(await run(threadTool, { root_msg_id: root.msg_id }));
+    expect(body.entries_total).toBe(25);
+    expect(body.entries_shown).toBe(20);
+    expect(body.entries_truncated).toBe(true);
+    expect(body.entries[0].msg_id).toBe(root.msg_id);
+    expect(body.entries.at(-1).summary).toContain('reply-23');
+    expect(body.entries.at(-1).summary_truncated).toBe(true);
+    expect(body.entries.at(-1).summary_full_chars).toBeGreaterThan(600);
+  });
 });
 
 describe('coord:ack', () => {
