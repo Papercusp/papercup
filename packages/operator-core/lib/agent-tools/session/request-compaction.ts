@@ -175,6 +175,11 @@ export default defineTool({
     seeAlso: ['config:set-compaction-limit (tune when this fires)'],
   },
   requirePrincipal: false,
+  // EI-20228659908672442: this boundary performs carry assembly, transcript
+  // ingest, and host I/O; it never reads ctx.tx. Do not hold the ambient
+  // org-app workspace transaction while waiting for those operations, or a
+  // saturated pool can reject the compaction request before it queues the cut.
+  skipWorkspaceTx: true,
   agentRoles: [...AGENT_ROLES],
   rolesQuota: { operator: { perRun: 10 } },
   args: z.object({

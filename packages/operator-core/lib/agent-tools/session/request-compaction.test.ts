@@ -146,6 +146,10 @@ vi.mock('../../compaction-usage', async () => {
 
 const tool = (await import('./request-compaction')).default;
 
+it('opts out of the ambient workspace transaction because the handler never reads ctx.tx', () => {
+  expect((tool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+});
+
 type Out = { content: { text: string }[]; isError?: boolean };
 // EI-19480099650947832: the tool reads the host's own event log to report what
 // happened to the PREVIOUS carry-respawn. The DERIVATION is unit-tested in
