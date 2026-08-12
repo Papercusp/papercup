@@ -13,7 +13,7 @@ import { describe, it, expect, afterEach } from 'vitest';
 import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { strandedJobAdvice, strandedJobLookup, STRANDED_LOG_TAIL_BYTES } from './bash_output';
+import { strandedJobAdvice, strandedJobLookup, strandedJobLookupAtPath, STRANDED_LOG_TAIL_BYTES } from './bash_output';
 
 describe('strandedJobAdvice (EI-20219872509843731)', () => {
   it('does not promise that a confined systemd scope survives an operator restart', () => {
@@ -45,6 +45,16 @@ describe('strandedJobLookup (EI-8855)', () => {
     expect(r!.logPath).toBe(join(dir, 'scratch', 'bash-abc123def456.log'));
     expect(r!.tail).toBe('line one\nline two\n');
     expect(r!.sizeBytes).toBe(Buffer.byteLength('line one\nline two\n', 'utf8'));
+  });
+
+  it('reads a durable ledger log_path when this worker has a different stateDir', () => {
+    dir = mkdtempSync(join(tmpdir(), 'bash-ledger-log-'));
+    const logPath = join(dir, 'bash-cross-worker.log');
+    writeFileSync(logPath, 'sibling worker output\n');
+    const r = strandedJobLookupAtPath(logPath);
+    expect(r).not.toBeNull();
+    expect(r!.logPath).toBe(logPath);
+    expect(r!.tail).toBe('sibling worker output\n');
   });
 
   it('truncates to the last STRANDED_LOG_TAIL_BYTES for a large surviving log', () => {
