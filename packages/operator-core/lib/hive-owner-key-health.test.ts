@@ -21,16 +21,24 @@ const sendMessageMock = vi.hoisted(() => vi.fn().mockResolvedValue(undefined));
 vi.mock('./agent-tools/coordination/messages', () => ({
   sendMessage: sendMessageMock,
 }));
-vi.mock('@papercusp/db-org', () => ({
-  getOrgPg: () => ({
-    db: {
-      insert: () => ({
-        values: insertValuesMock,
-      }),
-    },
-  }),
-  generated: { toastLogInHarnessShared: {} },
-}));
+vi.mock('@papercusp/db-org', async (importOriginal) => {
+  // agent-mcp bootstraps its tool catalog while this module graph loads. Keep
+  // the real generated schemas and schemaOf export available to that graph;
+  // a narrow replacement mock makes unrelated tool imports fail before these
+  // tests can reach the owner-key health seam.
+  const actual = await importOriginal<typeof import('@papercusp/db-org')>();
+  return {
+    ...actual,
+    getOrgPg: () => ({
+      db: {
+        insert: () => ({
+          values: insertValuesMock,
+        }),
+      },
+    }),
+    generated: { ...actual.generated, toastLogInHarnessShared: {} },
+  };
+});
 
 /**
  * Hermetic tests for the deduped owner-key-missing health signal
