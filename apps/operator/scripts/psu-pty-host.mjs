@@ -875,6 +875,15 @@ export function makeComposerWedgeDetector({ minDefers = 3, minQuietMs = 5 * 60_0
  * enough.
  *
  * Pure (the caller supplies the measurements); exported for tests.
+ *
+ * The param is typed EXPLICITLY, for the reason its sibling above records: a
+ * destructured field with no default (`pending`) is dropped from the inferred
+ * object type entirely, so the generated .d.mts would declare a shape without
+ * it and every caller passing it becomes a type error — while vitest stays
+ * green, because it never typechecks. Same trap, one function down.
+ *
+ * @param {{ pending: boolean, pendingAgeMs?: number, ownerQuietMs?: number }} sample
+ * @param {{ minAgeMs?: number, minQuietMs?: number }} [thresholds]
  */
 export function shouldBreakComposerWedge(sample, { minAgeMs = 90_000, minQuietMs = 90_000 } = {}) {
   const { pending, pendingAgeMs = 0, ownerQuietMs = Infinity } = sample ?? {};
