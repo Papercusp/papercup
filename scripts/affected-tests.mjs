@@ -1850,6 +1850,17 @@ const loadSuspectTasks = [];
 // break set (`coverage=complete`) whose every entry is a casualty. Measured 2026-08-09: 21 files,
 // zero unattributed, one broken module — a peer mid-write on this shared tree.
 const transformCulpritPaths = [];
+// D-021 (plan gate-suite-speedup-2026-08-12): the per-leg wall time of the SERIAL phase below.
+// `run()` already measures every spawn as `__elapsedMs`, but it was emitted ONLY on the
+// watchdog-kill path — so on a healthy run every leg duration was computed and thrown away, and
+// `logLine` writes the run log with no timestamps, leaving nothing to reconstruct them from.
+// That is why this phase had never been measured, and why the inherited "1.65 parallelism"
+// figure had nothing behind it. A retry is recorded as an ADDITIONAL leg for the same task
+// rather than folded into it, so flake-absorption cost stays separable from first-run cost.
+const serialLegs = [];
+const recordLeg = (task, ms) => {
+  serialLegs.push({ name: `${task.ws.name} :: ${task.script}`, ms });
+};
 for (const t of tasks) {
   const isQuarantined = quarantined.has(t.ws.name);
   outSync(`\n>>> ${t.ws.name} :: ${npmAvailable ? 'npm ' : ''}run ${t.script}${isQuarantined ? ' [QUARANTINED]' : ''}`);
@@ -1881,12 +1892,14 @@ for (const t of tasks) {
     if (!captureOutput()) {
       const r = spawnSync(cmd, argv, { cwd, env, stdio: 'inherit', ...spawnOpts });
       r.__elapsedMs = Date.now() - startedAt;
+      recordLeg(t, r.__elapsedMs);
       return r;
     }
     // A full vitest suite emits far beyond spawnSync's 1MB default maxBuffer —
     // an ENOBUFS-killed child would read as a failure. 256MB clears any suite.
     const r = spawnSync(cmd, argv, { cwd, env, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024, ...spawnOpts });
     r.__elapsedMs = Date.now() - startedAt;
+    recordLeg(t, r.__elapsedMs);
     if (r.error) errSync(`>>> ${t.ws.name} spawn error: ${r.error.message}`);
     writeAllSync(1, r.stdout ?? '');
     writeAllSync(2, r.stderr ?? '');
@@ -2085,6 +2098,46 @@ for (const t of tasks) {
         );
       }
     }
+  }
+}
+
+// ── D-021: what the SERIAL phase above actually costs ────────────────────────
+// The loop is strictly serial — `for (const t of tasks)` around a BLOCKING spawnSync — so
+// exactly one workspace suite runs at a time however idle the box is. This states the price,
+// because "is serialization worth attacking here" was previously answerable only by a figure
+// nobody could source.
+//
+// `ceilingX` is an UPPER BOUND, not a forecast: run concurrently, the phase still cannot finish
+// faster than its LONGEST leg, so serialMs/longestMs is the most perfect parallelism could ever
+// buy. It deliberately ignores the host contention that is the whole reason the fork cap exists
+// (WI-3792/WI-5621 — the box melted twice), so read it as "is this lever big enough to pull",
+// never as a promised speedup. Emitted every run, so the answer is measured per-run rather than
+// inherited: a number this cheap to re-measure should never be quoted from memory.
+//
+// Deliberately NOT a field on AFFECTED_TESTS_RESULT: that line's shape is pinned by
+// affected-tests-result-line.test.ts and parsed by green-checkpoint, and widening a VERDICT
+// contract to carry a MEASUREMENT is how measurements come to be read as verdicts — the same
+// reasoning that keeps the load-suspect marker separate.
+//
+// `--print-affected` runs zero tasks, so this emits nothing there and the two tests pinning that
+// path's marker-less output stay satisfied by construction rather than by an explicit exemption.
+if (serialLegs.length) {
+  const serialMs = serialLegs.reduce((n, leg) => n + leg.ms, 0);
+  const longest = serialLegs.reduce((a, b) => (b.ms > a.ms ? b : a));
+  const ceiling = longest.ms > 0 ? serialMs / longest.ms : 1;
+  const secs = (ms) => (ms / 1000).toFixed(1);
+  outSync(
+    `\nAFFECTED_TESTS_PHASE legs=${serialLegs.length} serialMs=${serialMs} ` +
+      `longestMs=${longest.ms} ceilingX=${ceiling.toFixed(2)}`,
+  );
+  outSync(`  serial phase: ${secs(serialMs)}s across ${serialLegs.length} leg(s), one at a time`);
+  outSync(`  longest leg:  ${secs(longest.ms)}s — ${longest.name}`);
+  outSync(
+    `  ceiling:      ${ceiling.toFixed(2)}x — the most perfect parallelism could buy here ` +
+      `(bounded by the longest leg; ignores host contention)`,
+  );
+  for (const leg of [...serialLegs].sort((a, b) => b.ms - a.ms).slice(0, 5)) {
+    outSync(`    ${secs(leg.ms).padStart(7)}s  ${leg.name}`);
   }
 }
 
