@@ -1,11 +1,11 @@
 {
-  "$comment": "BASELINE for lint:no-ungated-mug-kettle (plan retire-mug-kettle-su-only-2026-08-09, P-016).",
+  "$comment": "BASELINE for lint:no-ungated-mug-kettle (plan retire-mug-kettle-su-only-2026-08-09, P-016). --list is read-only; --reseed writes atomically and requires --reason when the measured unique entry set shrinks.",
   "generatedAt": "2026-08-10T08:23:08.381Z",
   "plan": "retire-mug-kettle-su-only-2026-08-09",
   "item": "P-016",
   "rule": "SHRINK-ONLY. This records the UNGATED mug/kettle/cup surface as it existed when the retirement landed, so the guard can fail on the NEXT ungated addition without demanding a retrofit of ~150 pre-existing sites. NEVER append to it to silence a new finding - gate the new site instead. An entry that disappears is GOOD (that surface was retired or gated); prune it.",
   "whyOnlyUngated": "GATED sites are deliberately absent. They can never be offenders while they stay gated, and leaving them out means a site that LOSES its gate becomes novel+ungated and FAILS - so this baseline catches de-gating for free, which a full-population baseline would have silently absorbed.",
-  "reseed": "node scripts/check-ungated-mug-kettle.mjs --list   (the measured population is the authority - never a hand-run grep, which is how three separate populations in this repo were undercounted)",
+  "reseed": "node scripts/check-ungated-mug-kettle.mjs --reseed --reason \"<reviewed reason>\"   (first inspect with --list; the measured population is the authority - never a hand-run grep)",
   "roleDoorExemptions": {
     "role-door|converse|packages/operator-core/lib/agent-tools/operator/converse.ts": "UPSTREAM OF A GATE, verified 2026-08-10 by reading the writer: takes role from input.role and calls spawnAgentInHarness, which carries the gate ON THE FUNCTION ITSELF (fleet/operator-spawn.ts:886-897, isRetiredTierRole + mugKettleSystemEnabled). Not a door in its own right.",
     "role-door|durable-spawn|packages/operator-core/lib/dbos/durable-spawn.ts": "UPSTREAM OF A GATE: dispatches to the /invoke route, which is the D-018 chokepoint (endpoint-route/routes/harness/spawn.ts).",

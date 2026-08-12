@@ -33,6 +33,10 @@ import { execFileSync } from 'node:child_process';
 import { readFileSync, existsSync } from 'node:fs';
 import { dirname, join, basename, extname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  buildBaselineDocument,
+  evaluateBaselineReseed,
+} from '../../../scripts/lib/mug-kettle-baseline.mjs';
 
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '../../..');
 const CENSUS = join(REPO_ROOT, 'scripts/mug-kettle-surface-census.mjs');
@@ -159,5 +163,70 @@ describe('mug/kettle census — dangling filename-keyed entries (EI-200593085946
         `permanent phantom the ratchet counts as covered. Re-key the row to the new path (and its ` +
         `SUBJECT), or drop it if the surface was deleted.`,
     ).toEqual([]);
+  });
+});
+
+describe('mug/kettle baseline re-seed policy (EI-20061934062977012)', () => {
+  const previousEntries = [
+    'flag|OLD_SURFACE|packages/old.ts',
+    'flag|KEEP_SURFACE|packages/keep.ts',
+    'flag|KEEP_SURFACE|packages/keep.ts',
+  ];
+
+  it('requires an explicit reason when the measured set shrinks', () => {
+    const decision = evaluateBaselineReseed({
+      previousEntries,
+      currentEntries: ['flag|KEEP_SURFACE|packages/keep.ts'],
+    });
+
+    expect(decision).toMatchObject({
+      previousEntryCount: 2,
+      nextEntryCount: 1,
+      shrunk: true,
+      reasonRequired: true,
+      accepted: false,
+    });
+    expect(decision.removedEntries).toEqual(['flag|OLD_SURFACE|packages/old.ts']);
+  });
+
+  it('accepts and records a reason for an intentional shrink', () => {
+    const document = buildBaselineDocument({
+      baseline: {
+        $comment: 'policy',
+        reseed: 'node scripts/check-ungated-mug-kettle.mjs --reseed --reason "..."',
+        entries: previousEntries,
+      },
+      currentEntries: ['flag|KEEP_SURFACE|packages/keep.ts'],
+      reason: 'Retired OLD_SURFACE; the measured census no longer reports it.',
+      generatedAt: '2026-08-12T05:00:00.000Z',
+    });
+
+    expect(document.entries).toEqual(['flag|KEEP_SURFACE|packages/keep.ts']);
+    expect(document.$comment).toBe('policy');
+    expect(document.lastReseed).toEqual({
+      at: '2026-08-12T05:00:00.000Z',
+      reason: 'Retired OLD_SURFACE; the measured census no longer reports it.',
+      previousEntryCount: 2,
+      nextEntryCount: 1,
+      removedEntries: ['flag|OLD_SURFACE|packages/old.ts'],
+      addedEntries: [],
+    });
+  });
+
+  it('keeps same-sized replacements valid while exposing removed and added keys', () => {
+    const decision = evaluateBaselineReseed({
+      previousEntries: ['flag|OLD|packages/old.ts'],
+      currentEntries: ['flag|NEW|packages/new.ts'],
+    });
+
+    expect(decision).toMatchObject({
+      previousEntryCount: 1,
+      nextEntryCount: 1,
+      shrunk: false,
+      reasonRequired: false,
+      accepted: true,
+    });
+    expect(decision.removedEntries).toEqual(['flag|OLD|packages/old.ts']);
+    expect(decision.addedEntries).toEqual(['flag|NEW|packages/new.ts']);
   });
 });
