@@ -78,6 +78,26 @@ export function isEngineeringDocsSentinel(v: string | null | undefined): boolean
   return (v?.trim().toLowerCase() ?? '') === 'engineering';
 }
 
+/**
+ * Drop a CALLER-SUPPLIED operator-scope harness sentinel from a context object, leaving a
+ * concrete harness untouched.
+ *
+ * EI-20186804943808838: where `'*'` is treated as SATISFYING a concrete harness binding
+ * (recipe authority does this — an operator-scope session is inside every harness's lane),
+ * the sentinel becomes an authority-widening value, so it must only ever be asserted by the
+ * SESSION ctx, never by caller-supplied args. Server-derived values normally win by being
+ * spread last, but that leaves a gap wherever the server value can be absent — this closes it
+ * at the source instead of relying on spread order.
+ */
+export function stripCallerOperatorScope<T extends { harness?: string | null }>(
+  context: T | undefined | null,
+): Partial<T> {
+  if (!context) return {};
+  if (!isAllHarnessSentinel(context.harness)) return context;
+  const { harness: _operatorScopeSentinel, ...rest } = context;
+  return rest as Partial<T>;
+}
+
 export type HarnessScope =
   | { kind: 'harness'; slug: string }
   | { kind: 'all' }

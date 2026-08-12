@@ -11,6 +11,7 @@ import {
   isEngineeringDocsSentinel,
   resolveConcreteHarnessSlug,
   resolveHarnessScope,
+  stripCallerOperatorScope,
 } from './_harness-scope';
 
 describe('isAllHarnessSentinel', () => {
@@ -19,6 +20,34 @@ describe('isAllHarnessSentinel', () => {
   });
   it('treats a real slug / empty / nullish as not-sentinel', () => {
     for (const v of ['papercup', 'restart', '', undefined, null]) expect(isAllHarnessSentinel(v)).toBe(false);
+  });
+});
+
+describe('stripCallerOperatorScope (EI-20186804943808838)', () => {
+  it('drops a caller-supplied operator-scope sentinel in any accepted spelling', () => {
+    for (const v of ['*', 'all', 'ALL', ' All ']) {
+      expect(stripCallerOperatorScope({ harness: v, plan: 'p' })).toEqual({ plan: 'p' });
+    }
+  });
+  it('leaves a concrete harness untouched — a caller may still scope itself', () => {
+    expect(stripCallerOperatorScope({ harness: 'papercusp', plan: 'p' }))
+      .toEqual({ harness: 'papercusp', plan: 'p' });
+  });
+  it('handles an absent context and an absent harness without inventing keys', () => {
+    expect(stripCallerOperatorScope(undefined)).toEqual({});
+    expect(stripCallerOperatorScope(null)).toEqual({});
+    // Bound to a variable deliberately: a fresh literal with no `harness` key gives the
+    // generic no inference candidate, so TS falls back to the constraint and reports `plan`
+    // as an excess property. The variable keeps the case honest — an ABSENT harness key,
+    // not `harness: undefined`, which is a different input.
+    const noHarness = { plan: 'p' };
+    expect(stripCallerOperatorScope(noHarness)).toEqual({ plan: 'p' });
+  });
+  it('removes the key entirely rather than setting it undefined (so a later spread can supply it)', () => {
+    // The call site spreads server-derived values AFTER this; a surviving `harness: undefined`
+    // key would still be overwritten, but an own-key with undefined would defeat any `??`
+    // consumer downstream. Assert the key is genuinely gone.
+    expect(Object.keys(stripCallerOperatorScope({ harness: '*', plan: 'p' }))).toEqual(['plan']);
   });
 });
 

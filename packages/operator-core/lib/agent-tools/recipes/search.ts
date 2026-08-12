@@ -17,6 +17,7 @@ import { searchSimilarRecipes } from '../../code-recipes-search';
 import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 import { resolveAgentIdentity, deriveFleetMembership } from '../coordination/identity';
 import { resolvePresenceFleet } from '../coordination/presence-fleet';
+import { stripCallerOperatorScope } from '../_harness-scope';
 
 export default defineTool({
   name: 'recipes:search',
@@ -84,7 +85,13 @@ export default defineTool({
         embedding: null,
         limit: args.limit ?? 5,
         recommendationContext: {
-          ...args.context,
+          // EI-20186804943808838: the operator-scope `'*'` sentinel now SATISFIES a
+          // concrete harness binding, so it must only ever be asserted by the SESSION,
+          // never by the caller. The three server-derived values below already win over
+          // `args.context`; this additionally drops a caller-supplied sentinel so it
+          // cannot survive in the gap where ctx carries no harness. A caller may still
+          // pass a CONCRETE harness, exactly as before.
+          ...stripCallerOperatorScope(args.context),
           ...(ctx.workspaceId ? { workspace: ctx.workspaceId } : {}),
           ...(liveFleet ? { fleet: liveFleet } : {}),
           ...(ctx.harnessSlug ? { harness: ctx.harnessSlug } : {}),
