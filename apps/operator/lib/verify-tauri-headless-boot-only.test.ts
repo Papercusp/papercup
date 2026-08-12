@@ -12,8 +12,24 @@ const src = readFileSync(SCRIPT, 'utf8');
 
 describe('WI-4975 — verify-tauri-headless --boot-only keeps the isolated app alive', () => {
   it('detaches the display and window manager from the launcher terminal', () => {
-    expect(src).toMatch(/setsid Xvfb ":\$DISPLAY_NUM"/);
-    expect(src).toMatch(/setsid env DISPLAY=":\$DISPLAY_NUM" openbox/);
+    expect(src).toMatch(/start_verify_process "\$\{VERIFY_SCOPE_BASE\}-xvfb"/);
+    expect(src).toMatch(/start_verify_process "\$\{VERIFY_SCOPE_BASE\}-openbox"/);
+  });
+
+  it('escapes every long-lived verifier process into a sibling user scope when available', () => {
+    expect(src).toContain('systemd-run --user --scope --quiet --collect');
+    expect(src).toContain('--slice="$VERIFY_SCOPE_SLICE"');
+    expect(src).toContain('VERIFY_SCOPE_SLICE="papercusp-agent-session.slice"');
+    expect(src).toMatch(/TAURI_SCOPE_UNIT="\$\{VERIFY_SCOPE_BASE\}-tauri-\$\{BOOT_ATTEMPTS\}"/);
+    expect(src).toContain('systemd-run --user --scope --quiet --collect --unit="${VERIFY_SCOPE_BASE}-probe"');
+  });
+
+  it('leaves a provenance-aware liveness check for boot-only callers', () => {
+    expect(src).toContain('VERIFY_TAURI_LIVENESS_CHECK');
+    expect(src).toContain('verifier bridge PID \\$PID is gone');
+    expect(src).toContain('PID may have been reused; refusing to drive another bridge');
+    expect(src).toContain('PAPERCUSP_TAURI_LAUNCH_PROVENANCE=\\$EXPECTED_PROVENANCE');
+    expect(src).toContain('before every tauri-agent-tools eval/check/click/type/capture');
   });
 
   it('clears teardown traps inside the background keeper before it can exit', () => {
