@@ -181,7 +181,7 @@ export default defineTool({
     'Find tools by INTENT across the full ~550-tool catalog (hybrid lexical + semantic). Returns the ' +
     'best-matching tool names with their description, ARG schema, and declared RESPONSE shape ' +
     '(`returns`) — so you can write a code:run batch over a tool without calling it once just to learn ' +
-    'its field names. e.g. tools:find("feature flag"), tools:find("spawn a worker"). ACTIVATION IS ' +
+    'its field names. ACTIVATION IS ' +
     'CONDITIONAL: on a seeded (small-surface) session the matches are added to your live tool list ' +
     '(activated:true) and are directly callable; on a full-catalog session there is nothing to expand ' +
     '(activated:false) — call them via tools:invoke. High-confidence runtime symptoms (slow/queued, ' +
