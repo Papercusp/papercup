@@ -41,7 +41,11 @@ import { integrationRoot } from '../../release-deploy-launch';
 import { attributeRetriageToRun, describeRefireBudget, readInFlightRetriage } from '../../release/in-flight-retriage';
 import { caveat, describeRefusal, isRefusedAnswer, refuseAnswer, withFieldReliability } from '../../field-reliability';
 import { applyPendingMigrationsNow } from '../../db-boot-migrate';
-import { readGateOwnership, shouldStandDownForLivePeer } from '../../coord/gate-ownership';
+import {
+  readGateOwnership,
+  shouldStandDownForLivePeer,
+  ownershipNeedsLivenessConfirmation,
+} from '../../coord/gate-ownership';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { clampText, LIMITS, softText } from '../limits';
 
@@ -225,6 +229,24 @@ export default defineTool({
     // singleton, which remains the actual safety mechanism — so the cost of a false refusal
     // (wedging the fleet's only verdict lever) is far higher than that of a false allow (one
     // redundant suite, which is merely the status quo ante).
+    // EI-20209536730887204. P-007 defines THREE liveness verdicts and only two were ever wired.
+    // The third — `ownershipNeedsLivenessConfirmation()` (`draining`/`suspect`) — had ZERO
+    // production callers, while `cell-registrations.ts` documented a routing to it as though it
+    // shipped. So an AMBIGUOUS holder silently lost stand-down protection: `POSITIVELY_LIVE` maps
+    // both states false, `shouldStandDownForLivePeer` returns false, and this handler fell
+    // straight through to launch with nothing recorded. Observed live 2026-08-12T01:35Z on
+    // WI-38026, whose holder went `suspect` while still making tool calls.
+    //
+    // What lands here is OBSERVABILITY, deliberately not the required-wake. Sending a wake and
+    // treating a miss as abandonment changes what the fleet's only manual verdict lever DOES, and
+    // it belongs in its own atomic change with its own test — not smuggled into a stamping fix.
+    // Until then the ambiguous case is at least VISIBLE instead of indistinguishable from
+    // "nobody holds this".
+    //
+    // Carried to the launch stamp below rather than stamped here, because that seam is
+    // OVERWRITE-not-merge (see the EI-20031402866608444 note): a second ctx.metadata() call on a
+    // path that continues would wipe every preLaunchExclusion key.
+    let ownershipLivenessAmbiguous = false;
     if (!args.force) {
       const ownership = await readGateOwnership();
       // Resolving the CALLER can throw (a power-user ctx missing its uiClientId). If we cannot
@@ -242,6 +264,28 @@ export default defineTool({
       // unidentified caller, own claim).
       if (shouldStandDownForLivePeer(ownership, callerOwnerId)) {
         const said = ownership.thread.recent.at(-1);
+        // EI-20208253097914491. WI-37618 added the launch stamp below expressly because "a refusal
+        // was indistinguishable in the ledger from a call that spent a ~55min suite" — but it was
+        // placed BELOW this branch, which RETURNS, so the newer P-007 rail inherited the exact bug
+        // that fix removed. A `condition_claimed` refusal landed in `tool_invocations` as
+        // status='ok', error_code=NULL, metadata_json holding only transport keys: unreadable.
+        //
+        // Measured cost of that blindness: answering "is the stand-down even firing?" on
+        // 2026-08-12 took eight queries and one falsified hypothesis, and was only recoverable
+        // from an `output_size` coincidence (5 non-holder callers all landing on 1620-1622 bytes)
+        // — an accident of payload shape, not a designed signal.
+        //
+        // Stamped HERE rather than by hoisting the later call: the seam is OVERWRITE-not-merge
+        // (dispatch-stack.ts:550, "last write wins"), so a hoisted stamp would be WIPED by the
+        // preLaunchExclusion stamp on every path that does not refuse. This branch is terminal, so
+        // one stamp inside it is both safe and the only stamp this path will ever emit.
+        ctx.metadata?.({
+          standDown: 'condition_claimed',
+          standDownWorkItem: ownership.workItem,
+          standDownTakenBy: ownership.takenBy,
+          standDownHolderSessionState: ownership.holderSessionState,
+          ...(args.reason != null ? { fireReason: clampText(args.reason, LIMITS.SHORT_TITLE) } : {}),
+        });
         return {
           content: [
             {
@@ -272,6 +316,11 @@ export default defineTool({
           ],
         };
       }
+      // Not a stand-down, but not a clean "nobody holds this" either. `true` ⇒ a holder exists
+      // whose liveness the oracle calls AMBIGUOUS (`draining`/`suspect`), so this launch is
+      // proceeding against work a peer may still be doing. Recorded, not blocked — see the note
+      // above this `if` for why the required-wake is deliberately a separate change.
+      ownershipLivenessAmbiguous = ownershipNeedsLivenessConfirmation(ownership) === true;
     }
     // EI-20025784115349280: the containment verdict below (L~479) is assembled ENTIRELY from
     // values `launchDetachedCheckpoint` computes ~29 lines BEFORE it spawns — so when the answer
@@ -335,6 +384,10 @@ export default defineTool({
       }
     }
     ctx.metadata?.({
+      // Rides THIS stamp rather than its own call, for the overwrite-not-merge reason above.
+      // Present only when true, so `metadata_json ? 'ownershipLivenessAmbiguous'` cleanly selects
+      // the launches that went ahead against an ambiguous holder.
+      ...(ownershipLivenessAmbiguous ? { ownershipLivenessAmbiguous: true } : {}),
       preLaunchExclusion: preflight.refuse
         ? waitReceipt
           ? 'scheduled'
