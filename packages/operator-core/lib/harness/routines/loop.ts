@@ -271,6 +271,12 @@ export interface MaterializeLoopInput {
   /** The wakeup prompt the fire delivers (payload_template.kickoff). */
   kickoff: string;
   /**
+   * Whether `kickoff` came from an explicit loop:arm `wakePrompt`. Only the true
+   * marker is persisted so rows created by older callers remain byte-identical.
+   * Missing/false is deliberately legacy-safe: an unknown kickoff is rebuilt.
+   */
+  customWakePrompt?: boolean;
+  /**
    * The loop's GOAL, stored structurally (payload_template.goal) rather than only
    * embedded in the rendered `kickoff`.
    *
@@ -340,6 +346,10 @@ export async function materializeLoop(
   const nextFireAt = new Date(now.getTime() + firstFireSec * 1000);
 
   const payloadTemplate: Record<string, unknown> = { kickoff: input.kickoff };
+  // EI-20256869903801099: preserve the distinction between an explicit custom
+  // kickoff and the default template across loop:arm re-arms. Stamp only true
+  // so legacy callers and default loops keep their historical payload shape.
+  if (input.customWakePrompt === true) payloadTemplate.customWakePrompt = true;
   if (input.costCapCents != null) payloadTemplate.costCapCents = input.costCapCents;
   if (input.maxFires != null) payloadTemplate.maxFires = input.maxFires;
   if (input.maxDurationSec != null) payloadTemplate.maxDurationSec = input.maxDurationSec;
@@ -1574,6 +1584,8 @@ export interface PriorLoopFacts {
   goal?: string | null;
   /** The current payload_template.kickoff — the arm-time goal comparison substrate. */
   kickoff: string;
+  /** True only when a newer loop:arm persisted an explicit custom wakePrompt. */
+  customWakePrompt?: boolean;
   fireCount: number;
   carry: 'warm' | 'cold';
   mode: 'work' | 'monitor';
@@ -1615,6 +1627,7 @@ export async function readActiveLoopFacts(
     harnessSlug: typeof r.install_slug === 'string' ? r.install_slug : null,
     goal: typeof pt.goal === 'string' && pt.goal.trim() ? pt.goal.trim() : null,
     kickoff: typeof pt.kickoff === 'string' ? pt.kickoff : '',
+    customWakePrompt: pt.customWakePrompt === true,
     fireCount: r.fire_count == null ? 0 : Number(r.fire_count),
     carry: pt.carry === 'cold' ? 'cold' : 'warm',
     mode: pt.mode === 'monitor' ? 'monitor' : 'work',

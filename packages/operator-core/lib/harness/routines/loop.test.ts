@@ -49,6 +49,7 @@ import {
   computeLifecycleBackoff,
   TURNS_STALLED_MIN_FIRE_COUNT,
   autoArmFleetMemberLoop,
+  readActiveLoopFacts,
   getLoopStatuses,
   computeLoopCadence,
   computeCadenceDrift,
@@ -660,6 +661,49 @@ describe('materializeLoop — the loop routine row (consumed by the B-LOOP-3 fir
     const input = upsertRoutineSpy.mock.calls[0][1];
     expect(input.payloadTemplate).toEqual({ kickoff: 'k' });
     expect('costCapCents' in input.payloadTemplate).toBe(false);
+  });
+
+  it('stamps customWakePrompt only for an explicitly custom kickoff', async () => {
+    await materializeLoop({
+      workspaceId: 'ws',
+      harnessSlug: 'h',
+      ownerId: 'o',
+      intervalSec: 60,
+      kickoff: 'custom wake instruction',
+      customWakePrompt: true,
+    });
+    expect(upsertRoutineSpy.mock.calls[0][1].payloadTemplate).toEqual({
+      kickoff: 'custom wake instruction',
+      customWakePrompt: true,
+    });
+  });
+
+  it('reads only the strict customWakePrompt marker; legacy rows remain non-custom', async () => {
+    const sql = vi.fn(async () => [
+      {
+        active: true,
+        reschedule_interval_sec: 60,
+        install_slug: 'h',
+        payload_template: { kickoff: 'custom wake instruction', customWakePrompt: true },
+        fire_count: 2,
+        armed_at: null,
+      },
+    ]);
+    const facts = await readActiveLoopFacts('o', { sql: sql as never });
+    expect(facts).toMatchObject({ kickoff: 'custom wake instruction', customWakePrompt: true });
+
+    sql.mockResolvedValueOnce([
+      {
+        active: true,
+        reschedule_interval_sec: 60,
+        install_slug: 'h',
+        payload_template: { kickoff: 'legacy kickoff' },
+        fire_count: 2,
+        armed_at: null,
+      },
+    ]);
+    const legacyFacts = await readActiveLoopFacts('o', { sql: sql as never });
+    expect(legacyFacts?.customWakePrompt).toBe(false);
   });
 
   it('stamps carry:"cold" onto payload_template only when armed cold (su-cold-auto P-003)', async () => {

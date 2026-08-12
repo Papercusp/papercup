@@ -693,6 +693,44 @@ describe('computeLoopOverwriteNote (pure EI-18221784742583615 decision)', () => 
 });
 
 describe('loop:arm — EI-18221784742583615 overwrite guard (through the handler)', () => {
+  it('preserves an active marked custom kickoff when wakePrompt is omitted', async () => {
+    const customKickoff = 'custom mission-specific wake instruction';
+    priorLoopM.mockResolvedValue(
+      priorLoop({ goal: 'g', kickoff: customKickoff, customWakePrompt: true }) as never,
+    );
+
+    const b = body(await call({}));
+
+    expect(b.ok).toBe(true);
+    expect(b.loop.customWakePrompt).toBe(true);
+    expect(materializeM).toHaveBeenCalledWith(
+      expect.objectContaining({ kickoff: customKickoff, customWakePrompt: true }),
+    );
+  });
+
+  it('rebuilds the default kickoff for a legacy row without the marker', async () => {
+    const legacyKickoff = 'legacy custom-looking kickoff';
+    priorLoopM.mockResolvedValue(priorLoop({ goal: 'g', kickoff: legacyKickoff }) as never);
+
+    const b = body(await call({}));
+
+    expect(b.ok).toBe(true);
+    expect(materializeM).toHaveBeenCalledWith(
+      expect.objectContaining({ kickoff: 'kickoff-prompt', customWakePrompt: false }),
+    );
+    expect(b.loop.customWakePrompt).toBe(false);
+  });
+
+  it('marks an explicit wakePrompt custom and passes the marker to materializeLoop', async () => {
+    const b = body(await call({ wakePrompt: 'new custom wake instruction' }));
+
+    expect(b.ok).toBe(true);
+    expect(b.loop.customWakePrompt).toBe(true);
+    expect(materializeM).toHaveBeenCalledWith(
+      expect.objectContaining({ kickoff: 'new custom wake instruction', customWakePrompt: true }),
+    );
+  });
+
   it('re-arming over an active loop with a DIFFERENT goal surfaces priorLoopOverwrite + a note; the loop still arms', async () => {
     priorLoopM.mockResolvedValue(priorLoop() as never);
     // buildLoopWakePrompt is mocked to 'kickoff-prompt', which the prior kickoff does not

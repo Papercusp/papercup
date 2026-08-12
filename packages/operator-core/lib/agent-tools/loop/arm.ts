@@ -800,20 +800,30 @@ export default defineTool({
       }
     }
 
+    // EI-20256869903801099: an omitted wakePrompt means "keep the loop's existing
+    // custom kickoff" when the row carries the explicit marker. Legacy rows have no
+    // marker, so their kickoff is rebuilt from the default template instead of
+    // guessing that arbitrary stored prose was custom. This distinction must be
+    // resolved before the backoff premise is applied and then persisted with the row.
+    const preservePriorCustomWakePrompt =
+      wakePrompt == null && prior?.active === true && prior.customWakePrompt === true;
+    const hasCustomWakePrompt = wakePrompt != null || preservePriorCustomWakePrompt;
     const baseKickoff =
       wakePrompt ??
-      buildLoopWakePrompt({
-        ownerId,
-        intervalSec,
-        harness,
-        goal,
-        carry,
-        continuation: args.continuation ?? 'settle',
-        mode: resolvedMode,
-        // Only name the item in the wake prompt if we ACTUALLY hold it — a conflicted /
-        // not-found candidate must not tell the agent "you hold X".
-        workItem: claimedWorkItem,
-      });
+      (preservePriorCustomWakePrompt
+        ? prior!.kickoff
+        : buildLoopWakePrompt({
+            ownerId,
+            intervalSec,
+            harness,
+            goal,
+            carry,
+            continuation: args.continuation ?? 'settle',
+            mode: resolvedMode,
+            // Only name the item in the wake prompt if we ACTUALLY hold it — a conflicted /
+            // not-found candidate must not tell the agent "you hold X".
+            workItem: claimedWorkItem,
+          }));
 
     // EI-19395290807657827 — PREPEND the backoff premise to the kickoff. This is what makes
     // the fix work rather than merely advise: the arming agent goes to sleep and can never
@@ -857,6 +867,7 @@ export default defineTool({
       carry,
       continuation: args.continuation ?? 'settle',
       mode: resolvedMode,
+      customWakePrompt: hasCustomWakePrompt,
     });
     const control = await refreshControlAnchorAfterMutation({
       ownerId,
@@ -996,7 +1007,7 @@ export default defineTool({
                 : isParkedNextFire(loop.nextFireAt)
                   ? 'after-turn-settle'
                   : loop.nextFireAt.toISOString(),
-              customWakePrompt: wakePrompt != null,
+              customWakePrompt: hasCustomWakePrompt,
               workItem: claimedWorkItem,
               controlGeneration: control?.generation ?? null,
             },
