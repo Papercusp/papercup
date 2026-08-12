@@ -1551,7 +1551,7 @@ type ReconcilePushResult =
 async function reconcileAndPushOneRepo(
   runGit: RunGit,
   repoPath: string,
-  o: { remote: string; defaultBranch: string; doPush: boolean; log: (m: string) => void },
+  o: CommitRepoOpts & { remote: string; defaultBranch: string; doPush: boolean },
   /** whether the commit half made a local commit this pass (drives the fetch-failure
    *  classification + the final nothing/synced verdict). */
   committedLocal: boolean,
