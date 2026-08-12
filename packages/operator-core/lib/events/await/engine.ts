@@ -733,15 +733,37 @@ export function isInboxWakeGroupRedundant(
 export function coalesceDeliveries(group: DeliveryWork[]): DeliveryWork {
   const headline = group[group.length - 1];
   if (group.length === 1) return headline;
-  const keys = group.map((d) => d.eventKey);
+  // Timeout wakes are synthesized by the sweeper (`payload.timeout === true`),
+  // not emitted by the event source. A checkpoint deadline can therefore put
+  // several mutually-exclusive verdict awaits into the same subscriber group;
+  // calling those rows "events fired" falsely claims that every verdict happened.
+  const timeoutDeliveries = group.filter((d) => {
+    const payload = d.payload;
+    return payload != null && typeof payload === 'object' && (payload as { timeout?: unknown }).timeout === true;
+  });
+  const eventDeliveries = group.filter((d) => !timeoutDeliveries.includes(d));
+  const eventKeys = eventDeliveries.map((d) => d.eventKey);
+  const timeoutKeys = timeoutDeliveries.map((d) => d.eventKey);
+  const plural = (count: number, singular: string): string => (count === 1 ? singular : `${singular}s`);
+  const summaryParts: string[] = [];
+  if (eventKeys.length > 0) {
+    summaryParts.push(`${eventKeys.length} ${plural(eventKeys.length, 'event')} fired while you slept: ${eventKeys.join(', ')}`);
+  }
+  if (timeoutKeys.length > 0) {
+    summaryParts.push(
+      `${timeoutKeys.length} ${plural(timeoutKeys.length, 'await deadline')} expired while you slept: ${timeoutKeys.join(', ')}`,
+    );
+  }
   return {
     ...headline,
     summary:
-      `${group.length} events fired while you slept: ${keys.join(', ')}` +
+      summaryParts.join('; ') +
       (headline.summary ? ` — latest: ${headline.summary}` : ''),
     payload: {
       coalesced: true,
       count: group.length,
+      eventCount: eventDeliveries.length,
+      timeoutCount: timeoutDeliveries.length,
       events: group.map((d) => ({ event: d.eventKey, summary: d.summary, payload: d.payload, delivery_id: d.id })),
       latest: { event: headline.eventKey, payload: headline.payload },
     },

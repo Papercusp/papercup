@@ -75,6 +75,7 @@ vi.mock('../../agent-tools/coordination/inbox-read-freshness', () => ({
 const {
   emitAwaitedEvent,
   pumpWakeDeliveries,
+  coalesceDeliveries,
   cancelSupersededCandidateAwaits,
   isInboxWakeGroupRedundant,
   setAutoPumpEnabledForTests,
@@ -604,6 +605,54 @@ describe('pumpWakeDeliveries — pacing (D-007)', () => {
     expect(stats.delivered).toBe(1);
     expect(stats.coalesced).toBe(1);
     expect(stats.deferred).toBe(0);
+  });
+
+  it('coalesced timeout-only wakes say awaits expired, not that every event fired', async () => {
+    h.store.claimDueDeliveries.mockResolvedValueOnce([
+      workRow({
+        id: 101,
+        eventKey: 'release:green:papercusp',
+        payload: { timeout: true },
+        createdAt: new Date(1000).toISOString(),
+      }),
+      workRow({
+        id: 102,
+        eventKey: 'green-checkpoint:red:papercusp',
+        payload: { timeout: true },
+        createdAt: new Date(1001).toISOString(),
+      }),
+      workRow({
+        id: 103,
+        eventKey: 'green-checkpoint:inconclusive:papercusp',
+        payload: { timeout: true },
+        createdAt: new Date(1002).toISOString(),
+      }),
+    ]);
+
+    await pumpWakeDeliveries('ws-test');
+
+    expect(h.executeWake).toHaveBeenCalledTimes(1);
+    const coalesced = (h.executeWake.mock.calls[0] as unknown as [{ summary: string; payload: unknown }])[0];
+    expect(coalesced.summary).toContain('3 await deadlines expired while you slept');
+    expect(coalesced.summary).not.toContain('events fired while you slept');
+    expect(coalesced.summary).toContain('release:green:papercusp');
+    expect(coalesced.summary).toContain('green-checkpoint:red:papercusp');
+    expect(coalesced.summary).toContain('green-checkpoint:inconclusive:papercusp');
+    expect(coalesced.payload).toMatchObject({ coalesced: true, count: 3, eventCount: 0, timeoutCount: 3 });
+    expect(h.store.markDeliveryDelivered).toHaveBeenCalledWith(103, 'resume', 3);
+    expect(h.store.markDeliveriesCoalesced).toHaveBeenCalledWith([101, 102], 103);
+  });
+
+  it('mixed event and timeout wakes label each outcome separately', () => {
+    const coalesced = coalesceDeliveries([
+      workRow({ id: 104, eventKey: 'release:green:papercusp', payload: { ok: true }, createdAt: new Date(1000).toISOString() }),
+      workRow({ id: 105, eventKey: 'green-checkpoint:red:papercusp', payload: { timeout: true }, createdAt: new Date(1001).toISOString() }),
+    ]);
+
+    expect(coalesced.summary).toContain('1 event fired while you slept: release:green:papercusp');
+    expect(coalesced.summary).toContain('1 await deadline expired while you slept: green-checkpoint:red:papercusp');
+    expect(coalesced.summary).not.toContain('2 events fired while you slept');
+    expect(coalesced.payload).toMatchObject({ coalesced: true, count: 2, eventCount: 1, timeoutCount: 1 });
   });
 
   it('per-subscriber min_sleep floor: a wake inside the window defers until the floor allows it', async () => {
