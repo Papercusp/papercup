@@ -1591,6 +1591,21 @@ describe('tools/call — role, profile, and workspace gating through the dispatc
     expect(h.withWorkspaceCalls).toEqual([]);
   });
 
+  it('EI-20228655954419996: privileged work_items:get does not queue on org-app', async () => {
+    const projected = lookupByMcpName('work_items:get');
+    expect(projected?.requirePrincipal).toBe(false);
+    expect(projected?.skipWorkspaceTx).toBe(true);
+
+    // The real handler is intentionally allowed to return its normal not-found
+    // result against this test's empty fake store. The load-bearing assertion is
+    // that a scoped superuser reaches it without the short principal-synthesis
+    // transaction, so a saturated org-app pool cannot strand this recovery read
+    // at withWorkspace:acquire(app).
+    const res = await callTool('work_items:get', { id: 'EI-gating-matrix' }, superuserExtra('&workspace=ws-test'));
+    expect(res.isError).toBeUndefined();
+    expect(h.withWorkspaceCalls).toEqual([]);
+  });
+
   it('power-profile callers cannot invoke engineer-profile tools by name (mirrors the list filter)', async () => {
     h.verifyAccessToken.mockResolvedValueOnce(POWER_CLAIMS);
     const res = await callTool(
