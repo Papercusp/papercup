@@ -871,6 +871,53 @@ describe('work_items:checkpoint (bulk keyed-array)', () => {
       getWorkItem.mockResolvedValue({ id: 'WI-7', harness: 'papercup' });
     });
 
+    it('accepts boolean compatibility rows without inventing verification evidence', async () => {
+      withPrior(null);
+      const r = await one({
+        id: 'WI-7',
+        checkpoint: 'boolean compatibility',
+        checks: [
+          { claim: 'true without evidence stays predicted', recheck: 'run probe A', verified: true },
+          { claim: 'false stays predicted', recheck: 'run probe B', verified: false },
+          {
+            claim: 'false stays predicted even with stray evidence',
+            recheck: 'run probe B2',
+            verified: false,
+            evidence: 'contradictory evidence must not override false',
+          },
+          {
+            claim: 'true with evidence becomes verified',
+            recheck: 'run probe C',
+            verified: true,
+            evidence: 'observed probe C pass',
+          },
+        ],
+      });
+      expect(r.ok).toBe(true);
+      const stored = await lastStored();
+      expect(stored).toContain('- ? true without evidence stays predicted');
+      expect(stored).toContain('- ? false stays predicted');
+      expect(stored).toContain('- ? false stays predicted even with stray evidence');
+      expect(stored).not.toContain('contradictory evidence must not override false');
+      expect(stored).toContain('- ✓ true with evidence becomes verified');
+      expect(stored).toContain('evidence: observed probe C pass');
+    });
+
+    it('applies the same boolean compatibility repair inside items[]', async () => {
+      withPrior(null);
+      const out = await env({
+        items: [
+          {
+            id: 'WI-7',
+            checkpoint: 'nested boolean compatibility',
+            checks: [{ claim: 'nested row', recheck: 'run nested probe', verified: false }],
+          },
+        ],
+      });
+      expect(out.results[0]).toMatchObject({ ok: true, id: 'WI-7' });
+      expect(await lastStored()).toContain('- ? nested row');
+    });
+
     it('renders ✓ for a claim WITH evidence and ? for one without — the whole point of the field', async () => {
       withPrior(null);
       const r = await one({

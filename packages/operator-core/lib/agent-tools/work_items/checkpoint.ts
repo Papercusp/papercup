@@ -139,6 +139,7 @@ import {
   CARRY_CAP_HARD_MULTIPLE,
   CARRY_NOTE_MAX_CHECKS,
   CARRY_ROW_SOFT_CAPS,
+  coerceCarryRowShape,
   type CarryArgRepair,
   normalizeCheckEntries,
   splitCarryNoteChecks,
@@ -231,38 +232,48 @@ function dependsOnSpec() {
  */
 function checksSpec() {
   return z
-    .array(
-      z.object({
-        // EI-19400299440742193: these are SANITY BACKSTOPS, not the real limits. The
-        // real caps (CARRY_ROW_SOFT_CAPS) are enforced by TRUNCATION in the handler.
-        // A zod `.max()` rejects the WHOLE CALL, so a `recheck` a few chars over 300
-        // used to discard the entire accompanying multi-KB checkpoint and the agent
-        // re-sent it — the bytes paid twice, and, worse, an item could be left with NO
-        // durable state at the moment its session ended. Measured over a 6-day window:
-        // 6 of the 9 schema rejections on this tool were exactly this, 32,967 chars.
-        // Same fix as WI-7264 landed for loop:checkpoint, reusing its helpers.
-        claim: z
-          .string()
-          .min(1)
-          .max(CARRY_ROW_SOFT_CAPS.claim * CARRY_CAP_HARD_MULTIPLE)
-          .describe('The claim about external state, stated concretely.'),
-        recheck: z
-          .string()
-          .max(CARRY_ROW_SOFT_CAPS.recheck * CARRY_CAP_HARD_MULTIPLE)
-          .optional()
-          .describe('The concrete probe that would falsify the claim.'),
-        verified: z
-          .string()
-          .max(CARRY_ROW_SOFT_CAPS.verified * CARRY_CAP_HARD_MULTIPLE)
-          .optional()
-          .describe(
-            'The EVIDENCE STRING (what you actually observed), NOT a boolean — `true`/`false` is rejected. ' +
-              'Presence renders the row ✓ VERIFIED; omitting it entirely renders ? PREDICTED, telling a ' +
-              'successor to run `recheck` before relying on the claim.',
-          ),
-      }),
+    .preprocess(
+      // EI-20225599906531988: callers commonly send the compatibility shape
+      // `{ claim, recheck, verified: true|false }`. Normalize it before Zod sees the
+      // row so the whole checkpoint is not rejected; `true` only becomes VERIFIED
+      // when an accompanying evidence string exists, while false/evidence-free true
+      // remain PREDICTED. This is the same lossless repair used by loop:checkpoint.
+      (v) => (Array.isArray(v) ? v.map((row, i) => coerceCarryRowShape(row, `checks[${i}]`, [])) : v),
+      z
+        .array(
+          z.object({
+            // EI-19400299440742193: these are SANITY BACKSTOPS, not the real limits. The
+            // real caps (CARRY_ROW_SOFT_CAPS) are enforced by TRUNCATION in the handler.
+            // A zod `.max()` rejects the WHOLE CALL, so a `recheck` a few chars over 300
+            // used to discard the entire accompanying multi-KB checkpoint and the agent
+            // re-sent it — the bytes paid twice, and, worse, an item could be left with NO
+            // durable state at the moment its session ended. Measured over a 6-day window:
+            // 6 of the 9 schema rejections on this tool were exactly this, 32,967 chars.
+            // Same fix as WI-7264 landed for loop:checkpoint, reusing its helpers.
+            claim: z
+              .string()
+              .min(1)
+              .max(CARRY_ROW_SOFT_CAPS.claim * CARRY_CAP_HARD_MULTIPLE)
+              .describe('The claim about external state, stated concretely.'),
+            recheck: z
+              .string()
+              .max(CARRY_ROW_SOFT_CAPS.recheck * CARRY_CAP_HARD_MULTIPLE)
+              .optional()
+              .describe('The concrete probe that would falsify the claim.'),
+            verified: z
+              .string()
+              .max(CARRY_ROW_SOFT_CAPS.verified * CARRY_CAP_HARD_MULTIPLE)
+              .optional()
+              .describe(
+                'The EVIDENCE STRING (what you actually observed). For compatibility, boolean `true`/`false` ' +
+                  'is normalized before validation: `true` without evidence and `false` both remain ? PREDICTED. ' +
+                  'Presence of an evidence string renders the row ✓ VERIFIED; omission renders ? PREDICTED, ' +
+                  'telling a successor to run `recheck` before relying on the claim.',
+              ),
+          }),
+        )
+        .max(CARRY_NOTE_MAX_CHECKS),
     )
-    .max(CARRY_NOTE_MAX_CHECKS)
     .optional()
     .describe(
       'Carried CHECKS — claims about EXTERNAL state paired with the probe that falsifies them, rendered as a ' +
