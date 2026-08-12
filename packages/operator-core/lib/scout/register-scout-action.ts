@@ -41,7 +41,7 @@
 
 import { registerScoutCycleAction, type ScoutCycleRunner } from './scout-cycle-action';
 import { admissionDenialFrom, isCapacityError, type CapacityFallbackEvent } from './capacity-errors';
-import { readScoutPoolSnapshot } from './capacity-probe';
+import { readScoutPoolSnapshot, scoutRoutableProviders } from './capacity-probe';
 import { runScoutCycle } from './cycle';
 import { buildScoutCycleDeps } from './cycle-deps';
 import { createScoutPlanDraft } from './scout-plan-draft';
@@ -114,11 +114,11 @@ export const SCOUT_CODEX_FALLBACK_MODEL = DEFAULT_SCOUT_CODEX_FALLBACK_MODEL;
 export async function readScoutProviderCapacity(fetchImpl: typeof fetch = fetch): Promise<ScoutProviderCapacity> {
   const snapshot = await readScoutPoolSnapshot(fetchImpl);
   if (!snapshot) return { claudeAvailable: true, codexAvailable: false };
-  return {
-    claudeAvailable: typeof snapshot.healthyAccounts === 'number' && snapshot.healthyAccounts > 0,
-    codexAvailable:
-      snapshot.codexConfigured && ((snapshot.codexCliAccountCount ?? 0) > 0 || (snapshot.codexHealthyAccounts ?? 0) > 0),
-  };
+  // The booleans themselves live in capacity-probe.ts so the P-016 cycle-top precheck
+  // derives them from the SAME rule; this function keeps only its own fail-open policy
+  // for a MISSING snapshot, which is deliberately NOT shared (the precheck's unknown is
+  // a tristate that must not gate, not a fail-open "claude is fine").
+  return scoutRoutableProviders(snapshot);
 }
 
 /** Cache the paired gateway probes so Scout's parallel ideators do not fan out diagnostics calls. */

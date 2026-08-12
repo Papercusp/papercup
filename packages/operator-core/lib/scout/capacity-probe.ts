@@ -29,6 +29,53 @@ export interface ScoutPoolSnapshot {
   codexCliAccountCount?: number;
 }
 
+/** Which provider routes Scout could actually reach, derived from one snapshot. */
+export interface ScoutRoutableProviders {
+  claudeAvailable: boolean;
+  codexAvailable: boolean;
+}
+
+/**
+ * The PURE derivation of "which routes are reachable" from an already-read snapshot.
+ *
+ * Extracted so the ROUTING path (`readScoutProviderCapacity`) and the P-016 cycle-top
+ * PRECHECK share ONE definition of available. They previously could not disagree only
+ * because just one of them existed; with two callers, a second inline copy of these
+ * booleans is exactly the drift that makes a precheck refuse a cycle the router would
+ * happily have run (or vice versa).
+ *
+ * Takes a snapshot rather than probing: the precheck must judge the SAME reading it
+ * stamps on the tick, not a second probe taken a moment later.
+ */
+export function scoutRoutableProviders(snapshot: ScoutPoolSnapshot): ScoutRoutableProviders {
+  return {
+    claudeAvailable: typeof snapshot.healthyAccounts === 'number' && snapshot.healthyAccounts > 0,
+    codexAvailable:
+      snapshot.codexConfigured && ((snapshot.codexCliAccountCount ?? 0) > 0 || (snapshot.codexHealthyAccounts ?? 0) > 0),
+  };
+}
+
+/**
+ * Is this snapshot AFFIRMATIVE evidence that Scout has no route at all? (P-016 gate.)
+ *
+ * Deliberately a STRICTER bar than `scoutRoutableProviders`, and the difference is the
+ * whole point — it is the same split capacity-probe already draws between its two
+ * consumers, one level down:
+ *
+ *   - ROUTING asks "should I send this call to claude?" and a missing `healthyAccounts`
+ *     is reason enough to prefer another route. Being wrong costs a re-route.
+ *   - THE GATE asks "should I refuse to run at all?" and being wrong SILENCES THE
+ *     PRODUCER. So it requires the gateway to have actually SAID zero
+ *     (`healthyAccounts === 0`), never merely to have omitted the field.
+ *
+ * Codex reuses the routing derivation unchanged: `codexConfigured:false` IS an affirmative
+ * statement from `/admin/config`, not an absence.
+ */
+export function scoutPoolAffirmativelyExhausted(snapshot: ScoutPoolSnapshot): boolean {
+  const claudeSaidZero = typeof snapshot.healthyAccounts === 'number' && snapshot.healthyAccounts === 0;
+  return claudeSaidZero && !scoutRoutableProviders(snapshot).codexAvailable;
+}
+
 /**
  * Probe the localhost pacing gateway's pool state without changing any routing state.
  * Returns `undefined` when either probe fails or times out (~1s) — the TRISTATE unknown,

@@ -42,6 +42,7 @@ import {
 // import is erased at compile time and keeps this module's core free of the
 // coord/PG runtime edge that readRevisionRequests lazy-imports (cf. operator-hindsight.ts).
 import type { CoordEnvelope } from '@papercusp/coordination/core';
+import { scoutPoolAffirmativelyExhausted } from './capacity-probe';
 import type { ScoutPoolSnapshot } from './capacity-probe';
 import type { CreativeLens } from './types';
 import type { RoutedRail } from './outcome-feedback';
@@ -384,6 +385,41 @@ export async function runScoutTick(deps: ScoutTickDeps, opts: ScoutTickOptions =
   } catch {
     /* best-effort — the discriminator is evidence, never a precondition for the cycle */
   }
+  // P-016 (blender-su-grade-integration-2026-08-11, D-020): the POOL PRECHECK.
+  //
+  // Cross-account failover already ships, so the residual gap was never "add failover" —
+  // it is that an EXHAUSTED pool was discovered only by ATTEMPTING and degrading. Those
+  // attempts clear admission, then stall downstream and time out at the full cycle budget
+  // (600s), landing as `error` ticks that read like a producer defect. Refuse early and
+  // loudly instead, so an exhausted pool reads as what it is: a capacity gate.
+  //
+  // THE TRISTATE IS LOAD-BEARING (capacity-probe.ts's whole point). Only an AFFIRMATIVE
+  // reading gates: no snapshot, or a snapshot missing the fields, leaves `routable`
+  // undefined and the cycle runs exactly as before. An unreadable gateway must never be
+  // able to silence Scout — that would convert a probe outage into a total production
+  // stop, which is strictly worse than the degradation this replaces.
+  //
+  // BOTH routes must be out. Scout falls back to codex when Claude is walled
+  // (`resolveScoutModel` → SCOUT_CODEX_FALLBACK_MODEL), so gating on Claude alone would
+  // refuse cycles that codex could have served — the live shape right now, with the
+  // claude pool walled and the codex bridge up.
+  //
+  // Placed AFTER the single-flight claim on purpose: the refusal then advances the fire
+  // slot like any other outcome, so a walled pool produces one gated tick per cadence
+  // interval rather than a hot probe loop.
+  if (poolSnapshotAtFire && scoutPoolAffirmativelyExhausted(poolSnapshotAtFire)) {
+    await note({
+      status: 'gated',
+      gate: 'no-capacity',
+      detail: {
+        reason: 'pool-exhausted-precheck',
+        precheck: true,
+        ...(poolSnapshotAtFire ? { poolSnapshotAtFire } : {}),
+      },
+    });
+    return { fired: false, reason: 'no-capacity' };
+  }
+
   await deps.recordFire?.('attempt');
   try {
     // WI-4475: resolve the cycle budget ONCE and hand the runner the absolute DEADLINE it will

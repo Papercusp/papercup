@@ -331,6 +331,98 @@ describe('runScoutTick — tick observability (P-034)', () => {
     expect(calls.ticks[0].status).toBe('error');
   });
 
+  /**
+   * P-016 (blender-su-grade-integration-2026-08-11, D-020) — the cycle-top POOL PRECHECK.
+   *
+   * The failure it replaces: with the pool exhausted, ideator calls CLEAR admission, stall
+   * downstream and time out at the full 600s cycle budget, landing as `error` ticks that
+   * read like a producer defect. The precheck must refuse early and loudly instead — but
+   * only on affirmative evidence, and only when NO route is left.
+   */
+  describe('cycle-top pool precheck (P-016)', () => {
+    const exhausted = { probedAtMs: 9, healthyAccounts: 0, codexConfigured: false };
+
+    it('refuses the cycle BEFORE running it when neither claude nor codex is routable', async () => {
+      const { deps, calls } = makeDeps({
+        runCycle: async () => {
+          throw new Error('the cycle must never run when the pool is known-exhausted');
+        },
+      });
+      deps.readPoolSnapshot = async () => exhausted;
+      const r = await runScoutTick(deps);
+      expect(r).toMatchObject({ fired: false, reason: 'no-capacity' });
+      expect(calls.ticks[0]).toMatchObject({
+        status: 'gated',
+        gate: 'no-capacity',
+        detail: { reason: 'pool-exhausted-precheck', precheck: true, poolSnapshotAtFire: exhausted },
+      });
+    });
+
+    /**
+     * THE LIVE SHAPE, measured 2026-08-11T23:12Z and pinned here so this stays honest:
+     * `codexHealthyAccounts: 2` with `codexConfigured: false`. The router's own derivation
+     * treats codex as unroutable on the `configured` flag, so the precheck must agree with
+     * it and gate — the two now share one derivation precisely so they cannot disagree.
+     * (That 2-healthy-but-unconfigured codex pool is a SEPARATE defect,
+     * EI-20200247707626194; gating loudly surfaces it instead of burying it in timeouts.)
+     */
+    it('gates on the live production snapshot shape (healthy codex accounts the router cannot use)', async () => {
+      const live = { probedAtMs: 9, healthyAccounts: 0, codexHealthyAccounts: 2, codexConfigured: false };
+      const { deps, calls } = makeDeps({
+        runCycle: async () => {
+          throw new Error('must not run');
+        },
+      });
+      deps.readPoolSnapshot = async () => live;
+      expect((await runScoutTick(deps)).reason).toBe('no-capacity');
+      expect(calls.ticks[0].gate).toBe('no-capacity');
+    });
+
+    /**
+     * CALIBRATION + the anti-regression that matters most: codex up ⇒ the cycle still runs.
+     * Scout falls back to the codex model when claude is walled, so a precheck keyed on
+     * claude alone would refuse cycles that codex could serve.
+     */
+    it('does NOT gate when claude is out but codex is routable — the cycle still runs', async () => {
+      const { deps, calls } = makeDeps();
+      deps.readPoolSnapshot = async () => ({
+        probedAtMs: 9,
+        healthyAccounts: 0,
+        codexConfigured: true,
+        codexCliAccountCount: 1,
+      });
+      const r = await runScoutTick(deps);
+      expect(r.fired).toBe(true);
+      expect(calls.ticks[0].status).toBe('ran');
+    });
+
+    /**
+     * THE TRISTATE. An unreadable gateway must never be able to silence Scout: that would
+     * turn a probe outage into a total production stop, strictly worse than the degradation
+     * this precheck replaces. Unknown ⇒ run, exactly as before.
+     */
+    it('does NOT gate on an UNKNOWN snapshot — a probe outage cannot silence the producer', async () => {
+      const { deps, calls } = makeDeps();
+      deps.readPoolSnapshot = async () => undefined;
+      expect((await runScoutTick(deps)).fired).toBe(true);
+      expect(calls.ticks[0].status).toBe('ran');
+
+      const { deps: throwing, calls: throwingCalls } = makeDeps();
+      throwing.readPoolSnapshot = async () => {
+        throw new Error('gateway probe down');
+      };
+      expect((await runScoutTick(throwing)).fired).toBe(true);
+      expect(throwingCalls.ticks[0].status).toBe('ran');
+    });
+
+    it('does NOT gate when the snapshot omits healthyAccounts — a missing field is not a zero', async () => {
+      const { deps, calls } = makeDeps();
+      deps.readPoolSnapshot = async () => ({ probedAtMs: 9, codexConfigured: false });
+      expect((await runScoutTick(deps)).fired).toBe(true);
+      expect(calls.ticks[0].status).toBe('ran');
+    });
+  });
+
   describe('record-time pool-snapshot discrimination (WI-5391 Part B)', () => {
     const http429 = () =>
       Object.assign(new Error('429 from gateway'), {
@@ -354,10 +446,29 @@ describe('runScoutTick — tick observability (P-034)', () => {
       });
     });
 
+    /**
+     * P-016 UPDATED THIS FIXTURE, deliberately — read this before "simplifying" it back.
+     *
+     * This test is about the RECORD-TIME discrimination (WI-5391 Part B): a cycle that
+     * ran and then hit a 429 which the gateway's own stats CORROBORATE. It used to return
+     * one constant zero-account snapshot for every read, which was fine while nothing
+     * consumed the fire-time reading. The P-016 precheck now gates on it, so a constant
+     * zero fixture never reaches the cycle at all and this test would silently stop
+     * exercising the path it names.
+     *
+     * The two reads are two INSTANTS the scheduler already documents ("Two instants, two
+     * questions, two keys"): healthy AT FIRE (the precheck correctly lets the cycle run),
+     * exhausted AT RECORD TIME (the denial is corroborated). That is also the only shape
+     * this branch has in production — a pool exhausted before the fire is now short-
+     * circuited by the precheck, by design.
+     */
     it('gates an http-429 denial CORROBORATED by zero healthy accounts, persisting the snapshot', async () => {
       const snapshot = { probedAtMs: 123, healthyAccounts: 0, codexConfigured: false };
       const { deps, calls } = makeDeps({ runCycle: async () => { throw http429(); } });
-      deps.readPoolSnapshot = async () => snapshot;
+      let read = 0;
+      deps.readPoolSnapshot = async () =>
+        // 1st = cycle-top precheck (healthy ⇒ the cycle runs); 2nd = record time (exhausted).
+        read++ === 0 ? { probedAtMs: 120, healthyAccounts: 2, codexConfigured: false } : snapshot;
       const r = await runScoutTick(deps);
       expect(r.reason).toBe('no-capacity');
       expect(calls.ticks[0]).toMatchObject({
