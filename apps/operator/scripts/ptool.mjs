@@ -604,6 +604,7 @@ function isInvalidTruncatedJson(text) {
  * per-home token remains a fallback when the isolated file is absent. A su
  * session can carry the workspace-scoped HOME even though the shared
  * superuser bearer still lives at `~/.papercusp/superuser-token` (EI-202457).
+ * @param {{tokenFile?: string|null, env?: NodeJS.ProcessEnv, home?: string}} [options]
  */
 export function resolveTokenPaths({ tokenFile = null, env = process.env, home = homedir() } = {}) {
   const explicit = typeof tokenFile === 'string' ? tokenFile.trim() : '';

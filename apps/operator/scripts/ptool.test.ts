@@ -47,7 +47,8 @@ describe('ptool MCP identity binding', () => {
 
 describe('ptool bearer-token resolution', () => {
   it('keeps explicit and environment token overrides authoritative', () => {
-    const env = {
+    const env: NodeJS.ProcessEnv = {
+      NODE_ENV: 'test',
       PAPERCUSP_MCP_TOKEN_FILE: '/run/papercusp/explicit-token',
       PAPERCUSP_HOME: '/home/tester/.papercusp-workspaces/demo/.papercusp',
     };
@@ -62,7 +63,8 @@ describe('ptool bearer-token resolution', () => {
   });
 
   it('falls back to the shared host token when an isolated workspace token is absent', () => {
-    const env = {
+    const env: NodeJS.ProcessEnv = {
+      NODE_ENV: 'test',
       PAPERCUSP_HOME: '/home/tester/.papercusp-workspaces/demo/.papercusp',
     };
     const paths = resolveTokenPaths({ env, home: '/home/tester' });

@@ -162,14 +162,15 @@ export function resultToText(result: any, { raw }?: {
  * per-home token remains a fallback when the isolated file is absent. A su
  * session can carry the workspace-scoped HOME even though the shared
  * superuser bearer still lives at `~/.papercusp/superuser-token` (EI-202457).
+ * @param {{tokenFile?: string|null, env?: NodeJS.ProcessEnv, home?: string}} [options]
  */
 export function resolveTokenPaths({ tokenFile, env, home }?: {
-    tokenFile?: null | undefined;
-    env?: NodeJS.ProcessEnv | undefined;
-    home?: string | undefined;
-}): any[];
+    tokenFile?: string | null;
+    env?: NodeJS.ProcessEnv;
+    home?: string;
+}): string[];
 /** Resolve the first bearer-token candidate for callers that need one path. */
-export function resolveTokenPath(options?: {}): any;
+export function resolveTokenPath(options?: {}): string;
 /** Build the `tools/call` params for a ptool invocation. Pure and exported so
  *  the MCP result negotiation is regression-tested without opening a
  *  transport. Object-rooted output schemas need `_meta.structured` because
@@ -179,12 +180,13 @@ export function resolveTokenPath(options?: {}): any;
  *  so ptool still emits a lossless scripting payload.
  *  @param {string} toolName
  *  @param {any} callArgs
- *  @param {{outputSchema?: {type?: string}}} [options]
+ *  @param {{outputSchema?: {type?: string}, idempotencyKey?: string}} [options]
  */
-export function buildCallToolParams(toolName: string, callArgs: any, { outputSchema }?: {
+export function buildCallToolParams(toolName: string, callArgs: any, { outputSchema, idempotencyKey }?: {
     outputSchema?: {
         type?: string;
     };
+    idempotencyKey?: string;
 }): {
     name: string;
     arguments: any;
@@ -220,6 +222,31 @@ export function callToolWithPressureRetry(client: any, params: any, { maxAttempt
     timeoutMs?: number | undefined;
     sleep?: ((ms: any) => Promise<any>) | undefined;
 }): Promise<any>;
+/**
+ * The MCP SDK uses these error codes for a request whose stream closed or whose
+ * client-side deadline expired. Network implementations wrap the same failure
+ * in ordinary fetch/socket errors, so keep the code and message checks together
+ * rather than treating every rejected tools/call as replayable.
+ */
+export function isTransportFailure(error: any): boolean;
+/**
+ * Recover one post-connect transport failure by opening a fresh MCP session and
+ * replaying the exact same tools/call params. `params._meta.idempotencyKey` is
+ * generated once by the caller, so the server returns the stored result when
+ * the first attempt committed before its response stream died. Recovery is
+ * deliberately bounded: an ambiguous write must never become an unbounded
+ * retry loop, even when the operator is repeatedly restarting.
+ *
+ * Returns the active client because the successful replay belongs to the new
+ * session. A failed replay client is closed before the error is surfaced.
+ */
+export function callToolWithReplayRecovery(client: any, params: any, { reconnect, maxAttempts, timeoutMs, }?: {
+    maxAttempts?: number | undefined;
+    timeoutMs?: number | undefined;
+}): Promise<{
+    client: any;
+    result: any;
+}>;
 /**
  * A local operator restart can make the initial MCP handshake race the brief
  * socket-down window. Retrying the connection is safe because no tool has been
@@ -262,3 +289,5 @@ export const PTOOL_TRUNCATED_RESULT_MESSAGE: string;
 export const PTOOL_LIST_TOOLS_TIMEOUT_MS: 10000;
 export const PTOOL_CALL_TOOL_TIMEOUT_MS: 30000;
 export const PTOOL_GIT_SYNC_RUN_TIMEOUT_MS: 60000;
+/** Number of reconnects allowed after a connected tools/call fails. */
+export const PTOOL_POST_CONNECT_RETRIES: 1;
