@@ -7,6 +7,7 @@ import {
   PTOOL_GIT_SYNC_RUN_TIMEOUT_MS,
   resultToText,
   sanitizeJsonText,
+  shouldPrintRawResult,
   timeoutForTool,
 // eslint-disable-next-line @typescript-eslint/ban-ts-comment
 // @ts-ignore -- plain .mjs launcher script, no type declarations.
@@ -147,5 +148,15 @@ describe('ptool result formatting', () => {
   it('repairs a truncated JSON prefix without requiring a valid whole document', () => {
     const truncated = '{"message":"first\nsecond';
     expect(sanitizeJsonText(truncated)).toBe('{"message":"first\\u000asecond');
+  });
+});
+
+describe('ptool scripted JSON output', () => {
+  it('uses the raw JSON extractor for every explicit JSON input, without requiring --raw', () => {
+    expect(shouldPrintRawResult('inline', false)).toBe(true);
+    expect(shouldPrintRawResult('file', false)).toBe(true);
+    expect(shouldPrintRawResult('stdin', false)).toBe(true);
+    expect(shouldPrintRawResult(null, false)).toBe(false);
+    expect(shouldPrintRawResult(null, true)).toBe(true);
   });
 });
