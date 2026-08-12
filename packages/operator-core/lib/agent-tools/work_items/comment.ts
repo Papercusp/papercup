@@ -137,8 +137,10 @@ const RETRACTION_STATE_HINT =
   'This reads like a retraction, but the item is still non-terminal — a retraction in a comment does ' +
   'NOT retract anything the queue can see, so scheduler:get_next keeps serving this item AT ITS ORIGINAL ' +
   'SEVERITY and the next claimer sees the badge, not your correction. If this retracts the item\'s premise, ' +
-  'call work_items:set_state { state:\'dropped\' } (terminal — removes it from work_items:claimable AND ' +
-  'scheduler:get_next); use terminal_reason to record that it was retracted rather than completed.';
+  'call work_items:set_state { state:\'dropped\', completionRef:\'retracted: premise disproven\', ' +
+  'assumptions:\'none\' } (terminal — removes it from work_items:claimable AND scheduler:get_next). ' +
+  'Use completionRef for the caller-facing evidence and assumptions:\'none\' when no recorded fact supports ' +
+  'the close.';
 
 export default defineTool({
   name: 'work_items:comment',

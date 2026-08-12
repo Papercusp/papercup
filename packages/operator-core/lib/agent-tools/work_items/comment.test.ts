@@ -185,6 +185,9 @@ describe('work_items:comment handler (bulk keyed-array)', () => {
         body: "## ⚠⚠ RETRACTION BY THE FILER — this item's central premise is WRONG. Do not act on it as written.",
       });
       expect(b.results[0].hint).toEqual(expect.stringContaining("state:'dropped'"));
+      expect(b.results[0].hint).toEqual(expect.stringContaining('completionRef'));
+      expect(b.results[0].hint).toEqual(expect.stringContaining("assumptions:'none'"));
+      expect(b.results[0].hint).not.toEqual(expect.stringContaining('terminal_reason'));
     });
 
     it('the nudge names the QUEUE consequence, not just the verb', async () => {
