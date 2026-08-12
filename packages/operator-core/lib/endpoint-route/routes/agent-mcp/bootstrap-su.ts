@@ -972,6 +972,8 @@ export function deriveKickoffPrompt(opts: {
  * delivery address: the launcher session can end or fleet leadership can
  * rotate. Named-fleet launches therefore teach the live role selector as the
  * reporting fallback while preserving the original launcher for attribution.
+ * Fleetless launches use the durable human owner surface instead, because they
+ * have no fleet role selector to resolve after the launcher session ends.
  */
 export function buildLaunchProvenanceFactBody(opts: {
   launchedBy: string;
@@ -985,7 +987,11 @@ export function buildLaunchProvenanceFactBody(opts: {
     (opts.launchContextPath ? ` with brief ${basename(opts.launchContextPath)}` : '');
 
   if (!opts.fleetSlug) {
-    return `${provenance}. They are your launcher/supervisor — report milestones + anomalies to them.`;
+    return (
+      `${provenance}. They are your launcher/supervisor; report milestones + anomalies to them while live. ` +
+      'If that session ends, use coord:send with to: ["human"] to reach the owner; ' +
+      'this owner surface survives session retirement.'
+    );
   }
 
   return (

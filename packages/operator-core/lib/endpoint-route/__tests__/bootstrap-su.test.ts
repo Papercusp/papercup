@@ -1472,13 +1472,15 @@ describe('buildLaunchProvenanceFactBody — fleet-safe reporting fallback', () =
     expect(body).toContain('survives session retirement and leadership rotation');
   });
 
-  it('keeps fleetless launches on the direct launcher guidance', async () => {
+  it('keeps fleetless launcher attribution and teaches the durable human fallback', async () => {
     const { buildLaunchProvenanceFactBody } = await import('../routes/agent-mcp/bootstrap-su');
     const body = buildLaunchProvenanceFactBody({ launchedBy: 'su-direct-launcher' });
 
-    expect(body).toBe(
-      'You were launched by su-direct-launcher. They are your launcher/supervisor — report milestones + anomalies to them.',
+    expect(body).toContain(
+      'You were launched by su-direct-launcher. They are your launcher/supervisor; report milestones + anomalies to them while live.',
     );
+    expect(body).toContain('to: ["human"]');
+    expect(body).toContain('owner surface survives session retirement');
     expect(body).not.toContain('@fleet-leader:');
   });
 });
