@@ -51,7 +51,7 @@ import { SESSION_END_MARKER } from '../../agent-tools/activity/lifecycle-markers
 // loop.ts whose db-org mock used a bare factory instead of spreading `importOriginal`
 // (measured: loop.test.ts, EI-19986796515232861). loop.ts is a core routines module reached
 // from many lightweight import graphs — keep this import light.
-import { AUTOMATIC_TOOL_NAMES } from '../../agent-tools/sessions/automatic-tool-names';
+import { agentToolInvocationPredicate } from '../../agent-tools/sessions/automatic-tool-names';
 
 /**
  * The `target_role` a loop routine carries. The DBOS fire (B-LOOP-3) recognises
@@ -1550,13 +1550,14 @@ export async function countAgentToolCallsInWindow(
 ): Promise<number | null> {
   try {
     const sql = opts.sql ?? getOrgPg().sql;
+    const agentToolPredicate = agentToolInvocationPredicate(sql);
     const [row] = await sql<{ n: number }[]>`
       SELECT count(*)::int AS n
         FROM harness_shared.tool_invocations
        WHERE coord_owner_id = ${ownerId}
          AND invoked_at > ${new Date(sinceMs).toISOString()}::timestamptz
          AND invoked_at <= ${new Date(untilMs).toISOString()}::timestamptz
-         AND tool_name <> ALL(${[...AUTOMATIC_TOOL_NAMES]}::text[])
+         AND ${agentToolPredicate}
     `;
     return row ? Number(row.n) : 0;
   } catch (e) {

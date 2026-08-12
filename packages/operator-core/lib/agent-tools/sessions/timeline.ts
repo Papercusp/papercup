@@ -490,6 +490,8 @@ export default defineTool({
     const offset = cursor.offset;
     const fetchLimit = offset + limit + 1;
     await refreshLiveSessionsBeforeRead(ctx.tx, [owner]);
+    const automaticToolPredicate = automaticToolInvocationPredicate(ctx.tx);
+    const agentToolPredicate = agentToolInvocationPredicate(ctx.tx);
 
     const rows = await ctx.tx<TimelineEntry[]>`
       (
@@ -497,6 +499,7 @@ export default defineTool({
                source_kind || ':' || session_id || ':' || turn_idx AS ref,
                '[' || speaker || '] ' || left(text, 300) AS text,
                NULL::text AS tool_name, NULL::text AS status, false AS auto,
+               NULL::text AS call_origin, NULL::text AS call_origin_source,
                NULL::text AS goal_ref, NULL::bigint AS assumption_set_id
           FROM harness_shared.session_turns
          WHERE (workspace_id = ${workspaceId} OR workspace_id = 'default')
@@ -514,7 +517,8 @@ export default defineTool({
         SELECT 'tool' AS kind, invoked_at::text AS ts, id::text AS ref,
                tool_name || ' (' || COALESCE(NULLIF(metadata_json->>'effectiveStatus', ''), status, '?') || COALESCE(', ' || duration_ms || 'ms', '') || ')' AS text,
                tool_name, COALESCE(NULLIF(metadata_json->>'effectiveStatus', ''), status) AS status,
-               tool_name = ANY(${[...AUTOMATIC_TOOL_NAMES]}::text[]) AS auto,
+               ${automaticToolPredicate} AS auto,
+               call_origin, call_origin_source,
                -- P-024 / D-046: two columns in an existing SELECT. goal_ref is
                -- already a RESOLVED ref (P-009 typed it text for exactly this),
                -- so there is no join and nothing to hydrate.
@@ -526,7 +530,7 @@ export default defineTool({
            AND (${args.tool ?? null}::text IS NULL OR tool_name = ${args.tool ?? null})
            AND (${args.status ?? null}::text IS NULL OR COALESCE(NULLIF(metadata_json->>'effectiveStatus', ''), status) = ${args.status ?? null})
            AND (${args.goalRef ?? null}::text IS NULL OR goal_ref = ${args.goalRef ?? null})
-           AND (${includeAuto} OR tool_name <> ALL(${[...AUTOMATIC_TOOL_NAMES]}::text[]))
+           AND (${includeAuto} OR ${agentToolPredicate})
          ORDER BY invoked_at DESC LIMIT ${fetchLimit}
       )
       UNION ALL
@@ -535,6 +539,7 @@ export default defineTool({
                left(COALESCE(body->>'summary', body->>'body', ''), 300) AS text,
                NULL::text AS tool_name, NULL::text AS status,
                COALESCE(body->>'auto', 'false') = 'true' AS auto,
+               NULL::text AS call_origin, NULL::text AS call_origin_source,
                NULL::text AS goal_ref, NULL::bigint AS assumption_set_id
           FROM harness_shared.coord_event_log
          WHERE surface = 'messages' AND body->>'from' = ${owner}
@@ -621,8 +626,8 @@ export default defineTool({
 
     const [auditRow = { total_tool_calls: 0, automatic_calls: 0, agent_calls: 0 }] = await ctx.tx<AutomaticCallAuditRow[]>`
       SELECT count(*)::int AS total_tool_calls,
-             count(*) FILTER (WHERE tool_name = ANY(${[...AUTOMATIC_TOOL_NAMES]}::text[]))::int AS automatic_calls,
-             count(*) FILTER (WHERE tool_name <> ALL(${[...AUTOMATIC_TOOL_NAMES]}::text[]))::int AS agent_calls
+             count(*) FILTER (WHERE ${automaticToolPredicate})::int AS automatic_calls,
+             count(*) FILTER (WHERE ${agentToolPredicate})::int AS agent_calls
         FROM harness_shared.tool_invocations
        WHERE coord_owner_id = ${owner}
          AND invoked_at >= ${since}::timestamptz AND invoked_at < ${until}::timestamptz

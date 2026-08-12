@@ -45,7 +45,9 @@ describe('sessions:timeline automatic-versus-agent audit summary', () => {
       automatic_share: 0.25,
       classification: {
         automatic_tools: ['activity:report', 'coord:glance', 'coord:inbox'],
-        rule: 'automatic_calls match the known hook/status tool set; every other tool invocation is agent-authored',
+        automatic_origins: ['hook', 'ui', 'system'],
+        agent_origins: ['agent', 'unknown'],
+        rule: 'explicit call_origin wins: hook/ui/system are automatic and agent/unknown are agent-authored; NULL rows use the legacy automatic tool-name set; include_auto=true shows all traffic',
       },
     });
   });

@@ -1037,7 +1037,9 @@ describe('computeCadenceDrift (EI-20247200923975596 — advisory sustained drift
 
 describe('countAgentToolCallsInWindow (EI-19984789589075138 — the cold-wake un-checkpointed-work evidence check)', () => {
   function countSql(n: number) {
-    return (_s: TemplateStringsArray, ..._v: unknown[]) => Promise.resolve([{ n }]);
+    const sql = ((_s: TemplateStringsArray, ..._v: unknown[]) => Promise.resolve([{ n }])) as any;
+    sql.unsafe = (identifier: string) => identifier;
+    return sql;
   }
   function throwingSql() {
     return (_s: TemplateStringsArray, ..._v: unknown[]) => Promise.reject(new Error('boom'));
@@ -1051,6 +1053,23 @@ describe('countAgentToolCallsInWindow (EI-19984789589075138 — the cold-wake un
   it('returns 0 (not null) for a genuinely empty window — a real, confirmed answer', async () => {
     const out = await countAgentToolCallsInWindow('su-x', 0, 1000, { sql: countSql(0) as any });
     expect(out).toBe(0);
+  });
+
+  it('filters explicit automatic origins while retaining legacy NULL rows', async () => {
+    const calls: { strings: readonly string[]; values: unknown[] }[] = [];
+    const sql = ((strings: TemplateStringsArray, ...values: unknown[]) => {
+      calls.push({ strings: [...strings], values });
+      return Promise.resolve([{ n: 1 }]);
+    }) as any;
+    sql.unsafe = (identifier: string) => identifier;
+
+    const out = await countAgentToolCallsInWindow('su-x', 0, 1000, { sql });
+
+    expect(out).toBe(1);
+    const rendered = calls.flatMap((call) => call.strings).join(' ');
+    const values = calls.flatMap((call) => call.values.flatMap((value: unknown) => Array.isArray(value) ? value : [value]));
+    expect(rendered).toContain('IS NULL');
+    expect(values).toEqual(expect.arrayContaining(['call_origin', 'tool_name', 'agent', 'unknown', 'activity:report', 'coord:glance', 'coord:inbox']));
   });
 
   it('returns null (never 0) when the query itself fails — "unavailable" must not read as "confirmed zero"', async () => {
