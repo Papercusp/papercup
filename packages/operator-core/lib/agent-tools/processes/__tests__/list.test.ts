@@ -8,6 +8,7 @@
 
 import { describe, expect, it, vi } from 'vitest';
 import { mockResolvedTyped } from '../../../testing/typed-mock';
+import type { TaskRow } from '../../../task-manager/types';
 
 vi.mock('../../../task-manager/enabled', () => ({
   isTaskManagerEnabled: vi.fn(async () => true),
@@ -30,7 +31,11 @@ describe('processes:list structured output', () => {
     const { listTasks } = await import('../../../task-manager/store');
     mockResolvedTyped(
       vi.mocked(listTasks),
-      Array.from({ length: 25 }, (_, i) => ({
+      // Annotated `: TaskRow` rather than cast `as never`: the annotation gives each object
+      // literal CONTEXTUAL typing (so `class` / `state` narrow to their real unions instead
+      // of widening to string) AND makes a new required field on TaskRow a compile error
+      // here — which the old cast silently swallowed.
+      Array.from({ length: 25 }, (_, i): TaskRow => ({
         taskId: `task-${i}`,
         workspaceId: 'default',
         rootTaskId: `root-${i}`,
