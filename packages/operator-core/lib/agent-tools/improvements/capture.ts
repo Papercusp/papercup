@@ -195,15 +195,16 @@ export default defineTool({
   name: 'improvements:capture',
   profile: 'engineer',
   description:
-    'Capture a papercusp improvement you discovered (a friction, a missing affordance, a tooling bug) as a durable, claimable, `papercusp-improvement`-tagged work-unit. kind=bug → auto-implement-eligible; change|feature → human-reviewed. Search-first: declines an obvious duplicate (link instead) unless force. An su kind=feature filing also gets a REPORT-ONLY novelty pre-check (`priorArt[]`, incl. already-tried-and-failed priors) — never blocks. Pass `paths` (files involved) to feed the protected-path gate. lane:"observation" files a turn-end PRE-IDEA into a separate lane that NEVER enters the work queue (Scout-digest + Observations pane only).',
+    'Capture a papercusp improvement you discovered (a friction, a missing affordance, a tooling bug) as a durable, claimable, `papercusp-improvement`-tagged work-unit. kind=bug → auto-implement-eligible; change|feature → human-reviewed. Search-first: declines an obvious duplicate (link instead) unless force. lane:"observation" files a turn-end PRE-IDEA into a separate lane that NEVER enters the work queue (Scout-digest + Observations pane only).',
   guidance: {
-    when: 'The MOMENT you suspect ANY papercusp bug — broken OR SUB-OPTIMAL (a monitor false alarm, a self-recovered flap, load-correlated degradation) — filing is mandatory, not a judgment call: file (kind:bug, evidence in body) even with no fix and even if it self-recovered; only fix-now-vs-leave-filed is the judgment call. Also DX/tooling/code friction out of scope. Include `paths` — the auto-implement risk gate reads them.',
+    when: 'The MOMENT you suspect ANY papercusp bug — broken OR SUB-OPTIMAL (a monitor false alarm, a self-recovered flap, load-correlated degradation): file it (kind:bug, evidence in body) even with no fix and even if it self-recovered. Only fix-now-vs-leave-filed is a judgment call; filing is not. DX/tooling/code friction counts too. Include `paths` — the auto-implement risk gate reads them.',
     notWhen:
       'A problem in a MANAGED harness/project (not papercusp itself) — that is work_items:create with that harness scope. Something needing real design — write a plan (plans:new) and capture with kind=feature linking it. A passing question — coord:ask. Do not pass internal provenance fields (createdBy, source, sourceRole, filedByRole): the server derives filer identity and role; use assign_to:"self" to claim and observation.refs for evidence attribution.',
     chaining:
       'improvements:capture { kind, title, paths? } → improvements:digest triages it → an agent claims + fixes it, or the auto-implement loop picks up bugs and improvements:resolve closes them.',
     returns:
       'CREATE: { ok, created, issue, topics, possibleDuplicates, dedupCoverage, alreadyDecided? }. CHECK (checkDuplicatesOnly): { ok, created:false, reason:"check-only", possibleDuplicates, dedupCoverage, alreadyDecided? }.\n\n' +
+      'An su kind=feature filing also returns `priorArt[]` — a REPORT-ONLY novelty pre-check (including already-tried-and-failed priors) that NEVER blocks the filing. Absent field = not checked; [] = checked and nothing similar found.\n\n' +
       'possibleDuplicates[] carries THREE kinds of hit, and they do NOT mean the same thing:\n' +
       '  • no flag        — token-overlap (Jaccard) above threshold. May DECLINE your capture.\n' +
       '  • semantic:hard  — embedding match. May DECLINE your capture.\n' +
