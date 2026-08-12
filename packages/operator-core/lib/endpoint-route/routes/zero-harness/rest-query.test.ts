@@ -2,15 +2,15 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const resolveNamedQueryMock = vi.fn();
 
-vi.mock('../../../../sync-resolver', () => ({
+vi.mock('../../../sync-resolver', () => ({
   resolveNamedQueryV2: (...args: unknown[]) => resolveNamedQueryMock(...args),
   NAME_NOT_FOUND: Symbol('NAME_NOT_FOUND'),
 }));
-vi.mock('../../../../sync-resolver/resolve-observability', () => ({ observeResolve: vi.fn() }));
-vi.mock('../../../../sync-resolver/resource-delta-config', () => ({ resourceDeltaConfig: () => undefined }));
+vi.mock('../../../sync-resolver/resolve-observability', () => ({ observeResolve: vi.fn() }));
+vi.mock('../../../sync-resolver/resource-delta-config', () => ({ resourceDeltaConfig: () => undefined }));
 vi.mock('@papercusp/tooldef', () => ({ negotiateRowsDelta: vi.fn() }));
 vi.mock('@papercusp/agent-mcp', () => ({ defineTool: (input: unknown) => input }));
-vi.mock('../../../../cpu-task-worker', () => ({
+vi.mock('../../../cpu-task-worker', () => ({
   serializeJsonResponse: async (value: unknown) => JSON.stringify(value),
 }));
 
@@ -19,7 +19,7 @@ type RestRoute = {
 };
 
 async function route(): Promise<RestRoute> {
-  return (await import('./rest-query')).default as RestRoute;
+  return (await import('./rest-query')).default as unknown as RestRoute;
 }
 
 beforeEach(() => {
