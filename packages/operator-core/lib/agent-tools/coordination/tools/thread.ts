@@ -18,6 +18,75 @@ const THREAD_DEFAULT_ENTRY_LIMIT = 20;
 const THREAD_CONTENT_BUDGET = 8_000;
 const THREAD_CONTENT_CAP = 600;
 
+/**
+ * `CoordEnvelope` is intentionally open-ended (`[key: string]: unknown`) so
+ * typed coordination verbs can attach kind-specific fields. That is the right
+ * storage shape, but it is unsafe to spread into this bounded read surface:
+ * one diagnostic/blob field can outweigh the content budget and leave the MCP
+ * result door with an incomplete JSON document. Keep the fields a thread reader
+ * can act on here; `coord:read` remains the escape hatch for the complete
+ * individual envelope.
+ */
+const THREAD_ENTRY_FIELDS = new Set([
+  // Core identity, routing, and content.
+  'ts',
+  'msg_id',
+  'from',
+  'to',
+  'audience',
+  'kind',
+  'summary',
+  'body',
+  'category',
+  'files',
+  'commit',
+  'plan_slug',
+  'harness_slug',
+  'related_msg_id',
+  'expectsReply',
+  // Envelope-authored fields surfaced by projectAuthoredFields.
+  'expects',
+  'blocking',
+  'why',
+  'basedOn',
+  'authored',
+  // Common lifecycle/status fields used by thread kinds.
+  'ack_for',
+  'acked',
+  'acked_from',
+  'ack_msg_id',
+  'condition_key',
+  'resolves_condition',
+  'resolved',
+  'resolved_at',
+  'severity',
+  'options',
+  'retracted',
+  'retracts_msg_id',
+  'auto',
+  'lifecycle',
+  'origin',
+  'remote_origin_note',
+]);
+
+/** Remove open-ended extension fields before a thread entry reaches JSON/MCP. */
+function compactThreadEntry(entry: Record<string, unknown>): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
+  let omitted = 0;
+  for (const [key, value] of Object.entries(entry)) {
+    if (!THREAD_ENTRY_FIELDS.has(key)) {
+      omitted += 1;
+      continue;
+    }
+    out[key] = value;
+  }
+  if (omitted > 0) {
+    out.thread_metadata_truncated = true;
+    out.thread_metadata_fields_omitted = omitted;
+  }
+  return out;
+}
+
 function selectThreadWindow<T extends { msg_id?: string }>(
   entries: readonly T[],
   rootMsgId: string,
@@ -94,7 +163,12 @@ export default defineTool({
     // until 2026-08-02, so it attached `authored` to exactly zero entries.
     const withAuthored = boundInboxEntries(window, contentCap).map((entry) => {
       const authored = projectAuthoredFields(entry);
-      return authored ? { ...entry, authored } : entry;
+      const out = { ...entry };
+      // Do not let a legacy/open-envelope `authored` extension survive when
+      // there is no valid projected authored structure to replace it.
+      if (authored) out.authored = authored;
+      else delete out.authored;
+      return compactThreadEntry(out);
     });
     return {
       data: {

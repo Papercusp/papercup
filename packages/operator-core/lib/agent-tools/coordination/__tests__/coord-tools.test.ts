@@ -173,6 +173,34 @@ describe('coord:thread', () => {
     expect(body.entries.at(-1).summary_truncated).toBe(true);
     expect(body.entries.at(-1).summary_full_chars).toBeGreaterThan(600);
   });
+
+  it('projects away oversized open-envelope metadata before serializing the thread', async () => {
+    const root = await sendMessage(id('alice'), {
+      to: ['*'],
+      summary: 'metadata overflow repro',
+      extra: {
+        diagnostic_blob: 'x'.repeat(100_000),
+        nested_diagnostic: { payload: 'y'.repeat(100_000) },
+      },
+    });
+
+    const body = parse(await run(threadTool, { root_msg_id: root.msg_id }));
+    const entry = body.entries[0] as Record<string, unknown>;
+    const serialized = JSON.stringify(body);
+
+    expect(entry).toMatchObject({
+      msg_id: root.msg_id,
+      kind: 'message',
+      summary: 'metadata overflow repro',
+      thread_metadata_truncated: true,
+    });
+    expect(entry.thread_metadata_fields_omitted).toBeGreaterThan(0);
+    expect(entry.diagnostic_blob).toBeUndefined();
+    expect(entry.nested_diagnostic).toBeUndefined();
+    expect(serialized).not.toContain('x'.repeat(1_000));
+    expect(serialized).not.toContain('y'.repeat(1_000));
+    expect(serialized.length).toBeLessThan(10_000);
+  });
 });
 
 describe('coord:ack', () => {
