@@ -32,8 +32,6 @@ import {
   recordCheckpointDisplacement,
   CHECKPOINT_UNIT,
   checkpointUnitForRoot,
-  checkpointCollisionUnitForRoot,
-  isCheckpointUnitCollision,
   CHECKPOINT_MAX_RUNTIME_SEC,
   CANDIDATE_RERESOLVE_WINDOW_SEC,
   REPLACE_STALE_MIN_AGE_SEC,
@@ -151,79 +149,15 @@ describe('launchDetachedCheckpoint', () => {
     );
   });
 
-  it('resolves launched:false with a reason on a non-collision systemd failure', async () => {
+  it('resolves launched:false with a reason when the unit already exists (non-zero exit)', async () => {
     const child = fakeChild();
     const spawnFn = vi.fn(() => child) as never;
-    const execFn = vi.fn((cmd: string) =>
-      cmd === 'systemctl'
-        ? { status: 0, stdout: 'ActiveState=inactive', stderr: '' }
-        : { status: 0, stdout: 'deadbeef00000000000000000000000000000000', stderr: '' },
-    );
-    const p = launchDetachedCheckpoint({ root: '/tree' }, spawnFn, execFn);
-    child.stderr.emit('data', 'systemd-run: permission denied.');
+    const p = launchDetachedCheckpoint({ root: '/tree' }, spawnFn);
+    child.stderr.emit('data', 'Unit papercup-green-checkpoint-manual.service already exists.');
     child.emit('close', 1);
     const r = await p;
     expect(r.launched).toBe(false);
-    expect(r.reason).toMatch(/permission denied/i);
-  });
-
-  it('retries a stale loaded unit with a collision-free unit name', async () => {
-    const first = fakeChild();
-    const second = fakeChild();
-    const children = [first, second];
-    const spawnFn = vi.fn(() => children.shift()!);
-    const execFn = vi.fn((cmd: string) =>
-      cmd === 'systemctl'
-        ? { status: 0, stdout: 'ActiveState=inactive\nLoadState=loaded', stderr: '' }
-        : { status: 0, stdout: 'deadbeef00000000000000000000000000000000', stderr: '' },
-    );
-
-    const p = launchDetachedCheckpoint({ root: '/tree', force: true }, spawnFn as never, execFn, () => null);
-    first.stderr.emit('data', 'Unit papercup-green-checkpoint-manual-1fxzuva.service is already loaded.');
-    first.emit('close', 1);
-    second.emit('close', 0);
-    const r = await p;
-
-    const calls = spawnFn.mock.calls as unknown as Array<[string, string[]]>;
-    const canonical = checkpointUnitForRoot('/tree');
-    expect(r.launched).toBe(true);
-    expect(calls).toHaveLength(2);
-    expect(calls[0][1]).toContain(`--unit=${canonical}`);
-    expect(calls[1][1].find((arg) => arg.startsWith('--unit='))).toMatch(
-      new RegExp(`^--unit=${canonical}-retry-`),
-    );
-    expect(r.unit).toMatch(new RegExp(`^${canonical}-retry-`));
-    expect(checkpointCollisionUnitForRoot('/tree', 'test nonce')).toBe(`${canonical}-retry-testnonce`);
-    expect(isCheckpointUnitCollision('Unit foo.service is already loaded.')).toBe(true);
-  });
-
-  it('returns the active equivalent run instead of retrying after a collision race', async () => {
-    const child = fakeChild();
-    const spawnFn = vi.fn(() => child);
-    let systemctlCalls = 0;
-    const execFn = vi.fn((cmd: string) => {
-      if (cmd === 'systemctl') {
-        systemctlCalls += 1;
-        return {
-          status: 0,
-          stdout: systemctlCalls === 1
-            ? 'ActiveState=inactive'
-            : 'ActiveState=active\nExecMainStartTimestamp=2026-08-12T10:00:00Z',
-          stderr: '',
-        };
-      }
-      return { status: 0, stdout: 'deadbeef00000000000000000000000000000000', stderr: '' };
-    });
-    const readLogHead = vi.fn(() => '[green-checkpoint] checkpointing candidate deadbeef (base abcdef12)\n');
-
-    const p = launchDetachedCheckpoint({ root: '/tree' }, spawnFn as never, execFn, readLogHead);
-    child.stderr.emit('data', 'Unit papercup-green-checkpoint-manual-1fxzuva.service already exists.');
-    child.emit('close', 1);
-    const r = await p;
-
-    expect(spawnFn).toHaveBeenCalledTimes(1);
-    expect(r).toMatchObject({ launched: false, reason: 'already_running' });
-    expect(r.alreadyRunning).toMatchObject({ active: true, unit: checkpointUnitForRoot('/tree') });
+    expect(r.reason).toMatch(/already/i);
   });
 
   it('resolves launched:false on a spawn error', async () => {
@@ -751,6 +685,42 @@ describe('launchDetachedCheckpoint refuse-when-active (WI-1562)', () => {
     expect(spawnFn).toHaveBeenCalled();
     expect(r.launched).toBe(true);
     expect(r.willJudge?.candidate).toBe('deadbeef00000000000000000000000000000000');
+  });
+
+  it('force collision re-probes the active unit and returns structured already_running', async () => {
+    const child = fakeChild();
+    const spawnFn = vi.fn(() => child) as never;
+    const startedAt = new Date(Date.now() - 5 * 60_000).toISOString();
+    const execFn = vi.fn((cmd: string) => {
+      if (cmd === 'systemctl') {
+        return {
+          status: 0,
+          stdout: `ActiveState=active\nExecMainStartTimestamp=${startedAt}\nMainPID=0`,
+          stderr: '',
+        };
+      }
+      return { status: 0, stdout: 'deadbeef00000000000000000000000000000000', stderr: '' };
+    });
+    const readLogHead = vi.fn(() => '[green-checkpoint] checkpointing candidate deadbeef (base abcdef12)\n');
+
+    const p = launchDetachedCheckpoint({ root: '/tree', force: true }, spawnFn, execFn, readLogHead);
+    child.stderr.emit(
+      'data',
+      'Failed to start transient service unit: Unit papercup-green-checkpoint-manual-1fxzuva.service was already loaded or has a fragment file.',
+    );
+    child.emit('close', 1);
+    const r = await p;
+
+    expect(spawnFn).toHaveBeenCalledTimes(1);
+    expect(r).toMatchObject({
+      launched: false,
+      reason: 'already_running',
+      alreadyRunning: {
+        active: true,
+        unit: checkpointUnitForRoot('/tree'),
+        started_at: startedAt,
+      },
+    });
   });
 
   it('proceeds to spawn when the active check reports inactive', async () => {

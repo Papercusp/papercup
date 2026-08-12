@@ -26,7 +26,7 @@
  */
 
 import { spawn, spawnSync } from 'node:child_process';
-import { createHash, randomBytes } from 'node:crypto';
+import { createHash } from 'node:crypto';
 import { appendFileSync, closeSync, openSync, readFileSync, readSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
 import * as path from 'node:path';
@@ -93,20 +93,6 @@ export function checkpointUnitForRoot(root: string): string {
   let h = 0;
   for (let i = 0; i < root.length; i++) h = (h * 31 + root.charCodeAt(i)) >>> 0;
   return `${CHECKPOINT_UNIT}-${h.toString(36)}`;
-}
-
-/**
- * A retry unit for the rare case where systemd still has the deterministic per-root unit
- * loaded but inactive (for example, a stale fragment left behind by an interrupted transient
- * launch). The shared run-lock still serializes the actual suite; the suffix only avoids asking
- * systemd to load a name it refuses to replace.
- */
-export function checkpointCollisionUnitForRoot(
-  root: string,
-  nonce: string = randomBytes(6).toString('hex'),
-): string {
-  const safeNonce = nonce.replace(/[^a-zA-Z0-9_-]/g, '').slice(0, 32) || 'retry';
-  return `${checkpointUnitForRoot(root)}-retry-${safeNonce}`;
 }
 
 /** Wall-clock ceiling for the detached suite's systemd backstop.
@@ -920,8 +906,6 @@ export function buildCheckpointSystemdArgv(
    *  pipeline event) instead of discarding it. Omitted ⇒ pre-WI-4494 behaviour (the caller records
    *  — which for a detached manual run meant nobody did). */
   verdictTarget?: GateVerdictTarget | null,
-  /** Override the deterministic unit when retrying around a stale systemd unit name. */
-  unit = checkpointUnitForRoot(root),
 ): string[] {
   // Mirror the PERIODIC gate: the routine spawns green-checkpoint.ts with { ...process.env } so it
   // inherits PAPERCUSP_PARTIAL_GREEN_GATE (the longest-green-prefix FF). A MANUAL checkpoint runs via
@@ -947,7 +931,7 @@ export function buildCheckpointSystemdArgv(
   return [
     '--user',
     '--collect',
-    `--unit=${unit}`,
+    `--unit=${checkpointUnitForRoot(root)}`,
     `--property=RuntimeMaxSec=${CHECKPOINT_MAX_RUNTIME_SEC}`,
     `--working-directory=${root}`,
     `--setenv=PATH=${pathEnv}`,
@@ -1506,16 +1490,21 @@ export function checkpointEligibilityCompletionEvents(root: string): string[] {
   ];
 }
 
-/** systemd-run uses these messages when a transient unit name is still loaded or has a stale
- * fragment. Treat this as a recoverable naming collision only after the active-run probe below
- * confirms there is no equivalent suite in flight. */
-export function isCheckpointUnitCollision(stderr: string): boolean {
+/**
+ * A failed systemd launch can still carry a useful liveness signal. In particular, a forced
+ * launch intentionally skips our proactive unit check, so systemd may be the first observer to
+ * report that the canonical unit is already loaded. Re-probe only this collision-shaped failure;
+ * unrelated launch errors must retain their original diagnostics, and an inactive collision must
+ * not be turned into a second unit name (the shared checkpoint run-lock is the actual suite
+ * singleton — see the retracted EI-20243481373440343 retry path).
+ */
+function isCheckpointUnitCollision(stderr: string): boolean {
   const text = stderr.toLowerCase();
   return (
     text.includes('already loaded') ||
     text.includes('already exists') ||
-    text.includes('file exists') ||
-    /\bunit\b[\s\S]*\b(?:loaded|exists)\b/.test(text)
+    text.includes('fragment file') ||
+    text.includes('file exists')
   );
 }
 
@@ -1589,12 +1578,11 @@ export function launchDetachedCheckpoint(
   recordDisplacement: (logPath: string, info: CheckpointDisplacementInfo) => void = recordCheckpointDisplacement,
 ): Promise<LaunchCheckpointResult> {
   const root = opts.root ?? integrationRoot();
-  const canonicalUnit = checkpointUnitForRoot(root);
-  let unit = canonicalUnit;
+  const unit = checkpointUnitForRoot(root);
   // `logPath` stays the stable, well-known path (readers + the alreadyRunning probe use
   // it); the run itself writes to its own timestamped file behind that symlink.
-  const logPath = checkpointLatestLogPath(canonicalUnit);
-  const runLogPath = checkpointRunLogPath(canonicalUnit);
+  const logPath = checkpointLatestLogPath(unit);
+  const runLogPath = checkpointRunLogPath(unit);
   let replacedStale: ActiveCheckpointCheck | undefined;
 
   if (!opts.force) {
@@ -1683,7 +1671,7 @@ export function launchDetachedCheckpoint(
     }
   }
 
-  let argv = buildCheckpointSystemdArgv(
+  const argv = buildCheckpointSystemdArgv(
     root,
     logPath,
     process.env.PATH ?? '',
@@ -1692,7 +1680,6 @@ export function launchDetachedCheckpoint(
     // WI-4494: this run records its own verdict. Explicit opt-out (`target: null`) is honoured;
     // omitted ⇒ the operator-home gate, which is this launcher's documented scope.
     opts.target === undefined ? resolveHomeGateTarget() : opts.target,
-    unit,
   );
 
   // WI-5124: resolve — right before launch, so it's as fresh as possible — which commit this
@@ -1726,82 +1713,51 @@ export function launchDetachedCheckpoint(
   };
 
   return new Promise<LaunchCheckpointResult>((resolve) => {
-    const maxCollisionRetries = 2;
-    let collisionRetries = 0;
-
-    const spawnAttempt = (): void => {
-      // Report the RUN's own path: it is the file that survives the next re-fire, and the
-      // one an agent should quote when triaging this verdict.
-      const base: LaunchCheckpointResult = {
-        launched: false,
-        unit,
-        argv,
-        logPath: runLogPath,
-        willJudge,
-        ...(replacedStale ? { replacedStale } : {}),
-      };
-      let stderr = '';
-      const child = spawnFn('systemd-run', argv);
-      child.stderr?.on('data', (d: unknown) => (stderr += String(d)));
-      child.on('error', (e: unknown) => {
-        resolve({ ...base, launched: false, reason: e instanceof Error ? e.message : String(e) });
-      });
-      child.on('close', (code: number | null) => {
-        if (code === 0) {
-          resolve({ ...base, launched: true });
-          return;
-        }
-
-        if (!isCheckpointUnitCollision(stderr)) {
-          resolve({
-            ...base,
-            launched: false,
-            reason: `systemd-run exited ${code} (a manual checkpoint may already be running): ${stderr.trim().slice(0, 200)}`,
-          });
-          return;
-        }
-
-        // A collision on the canonical unit may be a real equivalent run that the preflight
-        // missed between its systemctl read and spawn (or, with force:true, was deliberately
-        // skipped). Re-read the active state before choosing a second unit; never start a second
-        // suite merely because systemd refused the name.
-        if (unit === canonicalUnit) {
-          const active = checkActiveCheckpointRun(root, execFn, readLogHead);
-          if (active.probe_failed || active.active) {
-            resolve({
-              ...base,
-              launched: false,
-              reason: active.probe_failed ? 'probe_failed' : 'already_running',
-              alreadyRunning: active,
-            });
-            return;
-          }
-        }
-
-        if (collisionRetries >= maxCollisionRetries) {
-          resolve({
-            ...base,
-            launched: false,
-            reason: `systemd-run unit collision persisted after ${maxCollisionRetries} retries: ${stderr.trim().slice(0, 200)}`,
-          });
-          return;
-        }
-
-        collisionRetries += 1;
-        unit = checkpointCollisionUnitForRoot(root);
-        argv = buildCheckpointSystemdArgv(
-          root,
-          logPath,
-          process.env.PATH ?? '',
-          process.env.PAPERCUSP_PARTIAL_GREEN_GATE === '1',
-          runLogPath,
-          opts.target === undefined ? resolveHomeGateTarget() : opts.target,
-          unit,
-        );
-        spawnAttempt();
-      });
+    // Report the RUN's own path: it is the file that survives the next re-fire, and the
+    // one an agent should quote when triaging this verdict.
+    const base: LaunchCheckpointResult = {
+      launched: false,
+      unit,
+      argv,
+      logPath: runLogPath,
+      willJudge,
+      ...(replacedStale ? { replacedStale } : {}),
     };
+    let stderr = '';
+    const child = spawnFn('systemd-run', argv);
+    child.stderr?.on('data', (d: unknown) => (stderr += String(d)));
+    child.on('error', (e: unknown) => {
+      resolve({ ...base, launched: false, reason: e instanceof Error ? e.message : String(e) });
+    });
+    child.on('close', (code: number | null) => {
+      if (code === 0) {
+        resolve({ ...base, launched: true });
+        return;
+      }
 
-    spawnAttempt();
+      if (isCheckpointUnitCollision(stderr)) {
+        // force:true deliberately bypasses the pre-launch probe, but a systemd collision gives us
+        // a second chance to answer the important question: is the canonical unit actually live?
+        // Return the same structured refusal as the normal preflight path when it is. Do not
+        // retry under a new unit name: that would create a second process which immediately
+        // loses the shared run-lock, and would hide the real in-flight run from the caller.
+        const active = checkActiveCheckpointRun(root, execFn, readLogHead);
+        if (active.probe_failed || active.active) {
+          resolve({
+            ...base,
+            launched: false,
+            reason: active.probe_failed ? 'probe_failed' : 'already_running',
+            alreadyRunning: active,
+          });
+          return;
+        }
+      }
+
+      resolve({
+        ...base,
+        launched: false,
+        reason: `systemd-run exited ${code} (a manual checkpoint may already be running): ${stderr.trim().slice(0, 200)}`,
+      });
+    });
   });
 }
