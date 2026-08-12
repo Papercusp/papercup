@@ -67,8 +67,8 @@ interface HiveControlRow {
 export default function AdvNowRunning({ slug }: Props) {
   // Active brand-pack term resolver (the-hive-lexicon). Reactive to the flag.
   const t = useLexicon();
-  // OFF (the default) = tier retired. Gates START only — never Stop.
-  const tierLive = useFlag(FLAGS.MUG_KETTLE_SYSTEM);
+  // P-068/D-098: the tier flag is DELETED and the retirement is permanent, so
+  // there is no longer a read here — Start is gone unconditionally, Stop stays.
   const { confirm: askConfirm, element: confirmEl } = useConfirmDialog();
   const [starting, setStarting] = useState(false);
   // Optimistic post-launch state: the started bit arrives a beat after
@@ -140,22 +140,12 @@ export default function AdvNowRunning({ slug }: Props) {
     <>
     {confirmEl}
     <div className={`pc-advshell__harness-bar pc-advshell__harness-bar--${stateClass}`} aria-label={`${t('pot')} status`}>
-      {/* Start (when paused) / Stop (when started) — THE hive control.
-          Hidden when no hive is registered, and Start is additionally hidden
-          while the tier is retired (D-010); Stop below is NOT gated (D-017). */}
-      {hive && !effectivelyAlive && tierLive && (
-        <Tooltip label={`Start ${t('pot', { lower: true })} (${hive.slug}) — wake the ${t('brain')} and enable autonomous wakes`}>
-          <button
-            type="button"
-            className="pc-advshell__action pc-advshell__action--start"
-            onClick={startHive}
-            disabled={starting || isLoading}
-          >
-            <Play size={11} aria-hidden />
-            {starting ? 'Starting…' : `Start ${t('pot', { lower: true })}`}
-          </button>
-        </Tooltip>
-      )}
+      {/* Stop (when started) — THE hive control, hidden when no hive is
+          registered. START IS GONE: it was hidden while the tier was retired
+          (D-010) and P-068/D-098 deleted the flag that made that reversible, so
+          the button can never render again. Stop is NOT gated (D-017) — refusing
+          a stop is never the safe direction, and it stays reachable to wind down
+          any pot still started from before the retirement. */}
       {hive && effectivelyAlive && (
         <Tooltip label={`Pause ${t('pot', { lower: true })} (${hive.slug}) — stage autonomous wakes and drain live ${t('contributor', { plural: true, lower: true })}`}>
           <button

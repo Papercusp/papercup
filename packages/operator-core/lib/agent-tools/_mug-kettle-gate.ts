@@ -1,12 +1,17 @@
 /**
  * _mug-kettle-gate.ts — the ONE refusal every retired mug/kettle/cup ACTUATOR
- * tool returns while `FLAGS.MUG_KETTLE_SYSTEM` is OFF
- * (retire-mug-kettle-su-only-2026-08-09 P-010 / D-017).
+ * tool returns (retire-mug-kettle-su-only-2026-08-09 P-010 / D-017).
  *
- * ⚠ POLARITY IS INVERTED, like the flag itself (D-016): OFF is the DELIVERED
- * state — the tier is retired and su + GOAL mode are the only way to drive the
- * app. ON is the reversible testing escape hatch. So `retired` here is the
- * expected steady-state answer, not a degradation.
+ * ⚠ THE REFUSAL IS NOW UNCONDITIONAL (P-068 / D-098). It used to be conditional
+ * on `FLAGS.MUG_KETTLE_SYSTEM` being OFF — the delivered state, with ON as a
+ * reversible testing escape hatch. P-068 deleted that flag, which is exactly how
+ * its own DARK_FLAGS reason said it would graduate, so `retired` is no longer
+ * merely the steady-state answer: it is the only answer.
+ *
+ * ⚠ THIS FILE MUST NOT BE DELETED, despite P-068's own text naming it for
+ * deletion. It is not the flag — it is what ENFORCES the retirement. Deleting it
+ * (or its 5 call sites) un-gates `pot:start`, whose body IS the restart. D-098
+ * records the full inversion; the predicate it calls is now a permanent `false`.
  *
  * WHY A HELPER AND NOT FIVE HAND-ROLLED REFUSALS: the gate is a safety
  * invariant (its failure mode is "an autonomous loop the owner retired restarts
@@ -58,11 +63,11 @@ export function mugKettleRetiredRefusal(action: string, alternative: string) {
         text: JSON.stringify({
           ok: false,
           error: MUG_KETTLE_RETIRED_ERROR,
-          flag: 'papercusp-mug-kettle-system',
           message:
-            `Cannot ${action} — the Mug/Kettle/Cup tier is RETIRED (flag ` +
-            `papercusp-mug-kettle-system is OFF, which is the delivered state). ` +
-            `${alternative} To re-enable the tier for testing, flip the flag ON in /admin/features.`,
+            `Cannot ${action} — the Mug/Kettle/Cup tier is RETIRED, permanently. ` +
+            `${alternative} There is no longer a flag to flip: the reversible ` +
+            `escape hatch (papercusp-mug-kettle-system) was deleted in P-068, ` +
+            `which is how that flag was always specified to graduate.`,
         }),
       },
     ],

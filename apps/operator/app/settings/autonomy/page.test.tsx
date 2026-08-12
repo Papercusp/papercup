@@ -31,19 +31,15 @@ vi.mock('sonner', () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), succe
 // The armed banner reads the autonomy arming flag; mock the hook so the page
 // renders deterministically without the flag bootstrap / SSE stream.
 //
-// KEY-AWARE ON PURPOSE (retire-mug-kettle-su-only-2026-08-09 P-011 / D-021).
-// This was a blanket `useFlag: () => flagMock()`, which answers EVERY flag with
-// the armed value — so the "not armed" case ALSO read MUG_KETTLE_SYSTEM as false,
-// retired the tier, and made the page render its retirement notice. Every
-// assertion in this file would then have been measuring the refusal instead of
-// its subject: a pass-shaped failure that looks like coverage. This suite's
-// subject IS mug work, so the tier flag answers TRUE here by default; the OFF
-// case gets its own block below. `FLAGS` is dereferenced at render time, not in
-// the hoisted factory, so the key cannot drift from the registry.
+// This mock used to be KEY-AWARE (P-011 / D-021) so the tier flag could answer
+// TRUE while other flags answered the armed value — without that split, the "not
+// armed" case also read the tier as retired and every assertion measured the
+// refusal instead of its subject. P-068/D-098 DELETED the tier flag, so there is
+// no second key to separate and the blanket form is now correct rather than a
+// trap: the arming flag is the only flag this page reads.
 const flagMock = vi.fn(() => true);
-const mugKettleMock = vi.fn(() => true);
 vi.mock('@/lib/flag-hooks', () => ({
-  useFlag: (k: string) => (k === FLAGS.MUG_KETTLE_SYSTEM ? mugKettleMock() : flagMock()),
+  useFlag: () => flagMock(),
 }));
 
 // Self-contained nuqs stand-in (no NuqsAdapter needed): useState-backed.
@@ -110,154 +106,53 @@ const ROWS = [
 beforeEach(() => {
   mutateMock.mockClear();
   flagMock.mockReturnValue(true);
-  // The tier this page steers is ON for the whole existing suite — its subject IS
-  // mug work, so a retired tier would make every case below assert the refusal.
-  mugKettleMock.mockReturnValue(true);
   syncResult = { data: ROWS, loading: false, error: null };
 });
 afterEach(cleanup);
 
-describe('AutonomySettingsPage', () => {
-  it('renders a row per category with the Protected badge on protected ones', () => {
-    render(<AutonomySettingsPage />);
-    expect(screen.getByText('Inbox triage')).toBeTruthy();
-    expect(screen.getByText('Implementation')).toBeTruthy();
-    expect(screen.getByText('Release & deploy')).toBeTruthy();
-    expect(screen.getByText('Protected')).toBeTruthy();
-  });
 
-  it('reflects the autonomy arming flag in the status banner', () => {
-    flagMock.mockReturnValue(true);
-    const armed = render(<AutonomySettingsPage />);
-    expect(screen.getByText('Autonomy is armed.')).toBeTruthy();
-    armed.unmount();
-    flagMock.mockReturnValue(false);
-    render(<AutonomySettingsPage />);
-    expect(screen.getByText('Autonomy is not armed.')).toBeTruthy();
-  });
-
-  it('explains why effective is None even when a ceiling is set (the D-005 case)', () => {
-    render(<AutonomySettingsPage />);
-    // Expand the Implementation row (ceiling=low, graduated=never-auto).
-    fireEvent.click(screen.getByRole('button', { name: /Implementation/ }));
-    expect(
-      screen.getByText(/nothing auto-runs until this category earns a graduated level/i),
-    ).toBeTruthy();
-  });
-
-  it('writes a ceiling change through the mutate hook with a reason', async () => {
-    render(<AutonomySettingsPage />);
-    const slider = screen.getByRole('radiogroup', { name: /Inbox triage risk ceiling/i });
-    fireEvent.click(within(slider).getByRole('radio', { name: 'Low' }));
-    expect(mutateMock).toHaveBeenCalledTimes(1);
-    const arg = mutateMock.mock.calls[0]![0] as Record<string, unknown>;
-    expect(arg).toMatchObject({ category: 'inbox-triage', ceiling: 'low' });
-    expect(typeof arg.reason).toBe('string');
-    expect((arg.reason as string).length).toBeGreaterThanOrEqual(8);
-  });
-
-  it('moves the ceiling optimistically on click (before any server refetch)', () => {
-    render(<AutonomySettingsPage />);
-    const slider = screen.getByRole('radiogroup', { name: /Inbox triage risk ceiling/i });
-    expect(within(slider).getByRole('radio', { name: 'Never' }).getAttribute('aria-checked')).toBe('true');
-    fireEvent.click(within(slider).getByRole('radio', { name: 'Low' }));
-    // syncResult is unchanged (no server push), so a checked 'Low' here is the local
-    // optimistic overlay — the fix for "the dot doesn't move until the SSE round-trip".
-    expect(within(slider).getByRole('radio', { name: 'Low' }).getAttribute('aria-checked')).toBe('true');
-  });
-
-  it('rolls the ceiling back to server truth when the write fails', async () => {
-    mutateMock.mockRejectedValueOnce(new Error('write boom'));
-    render(<AutonomySettingsPage />);
-    const slider = screen.getByRole('radiogroup', { name: /Inbox triage risk ceiling/i });
-    fireEvent.click(within(slider).getByRole('radio', { name: 'Low' }));
-    // Optimistic move shows immediately…
-    expect(within(slider).getByRole('radio', { name: 'Low' }).getAttribute('aria-checked')).toBe('true');
-    // …then the rejected write rolls it back to never-auto + toasts the error.
-    await waitFor(() =>
-      expect(within(slider).getByRole('radio', { name: 'Never' }).getAttribute('aria-checked')).toBe('true'),
-    );
-    const { toast } = await import('sonner');
-    expect(toast.error).toHaveBeenCalled();
-  });
-
-  it('locks a configurable category directly via the toggle', () => {
-    render(<AutonomySettingsPage />);
-    fireEvent.click(screen.getByLabelText('Lock Inbox triage (never auto)'));
-    expect(mutateMock).toHaveBeenCalledWith(
-      expect.objectContaining({ category: 'inbox-triage', locked: true }),
-    );
-  });
-
-  it('does NOT immediately unlock a protected category (guards behind confirm)', () => {
-    render(<AutonomySettingsPage />);
-    fireEvent.click(screen.getByLabelText('Lock Release & deploy (never auto)'));
-    // The toggle is checked (locked) → unchecking routes through a confirm toast,
-    // so no mutate fires synchronously.
-    expect(mutateMock).not.toHaveBeenCalled();
-  });
-
-  it('filters to protected categories only', () => {
-    render(<AutonomySettingsPage />);
-    fireEvent.click(screen.getByRole('tab', { name: 'protected' }));
-    expect(screen.queryByText('Inbox triage')).toBeNull();
-    expect(screen.getByText('Release & deploy')).toBeTruthy();
-  });
-
-  it('renders the live recent-auto-decisions feed (P-031)', () => {
-    render(<AutonomySettingsPage />);
-    // P-031 feed (RecentAutoDecisions via decision.ledger) — empty mock → empty state.
-    expect(screen.getByRole('heading', { name: /Recent auto-decisions/i })).toBeTruthy();
-    expect(screen.getByText(/No decisions logged yet/i)).toBeTruthy();
-    expect(screen.queryByRole('heading', { name: 'Graduation' })).toBeNull();
-  });
-});
-
-/* ── Mug/Kettle retired (retire-mug-kettle-su-only-2026-08-09 P-011 / D-021) ──
+/* ── Mug/Kettle retired, PERMANENTLY (P-011 / D-021, terminal step P-068 / D-098)
  *
- * Every hide-assertion here is PAIRED with a show control on the same query. A
- * bare `queryBy… === null` cannot tell "the gate hid it" from "it never rendered
- * anyway" (a renamed aria-label, a broken fixture, a page that threw) — those are
- * the same null, and the second one is a test that passes while measuring
- * nothing. Asserting the ON case FIRST, with the throwing `getBy…`, is what makes
- * the null below evidence rather than an assumption.
+ * This block used to pair every hide-assertion with a SHOW control on the same
+ * query — rendering the tier ON first, so a `queryBy… === null` could be told
+ * apart from "it never rendered anyway". P-068 deleted the tier flag, so the ON
+ * case no longer exists and that pairing is no longer constructible.
+ *
+ * The vacuity risk it guarded against is REAL and does not go away with it, so it
+ * is replaced rather than dropped: a CALIBRATION assertion proves the page
+ * rendered its notice, and only then do the absence assertions mean anything. The
+ * 11 cases that used to exercise the live ceiling table were deleted with their
+ * subject (P-061's rule: behaviour tests follow the code they cover) — the page
+ * can no longer reach that surface under any flag state.
  */
 describe('AutonomySettingsPage — Mug/Kettle retired', () => {
-  it('hides the ceiling table + armed banner and explains why, but shows them when the tier is on', () => {
-    // SHOW CONTROL — `getBy…` throws if these are absent, so reaching the
-    // unmount() proves the queries below are capable of finding the surface.
-    mugKettleMock.mockReturnValue(true);
-    const on = render(<AutonomySettingsPage />);
-    expect(screen.getByRole('region', { name: 'Autonomy categories' })).toBeTruthy();
-    expect(screen.getByText('Autonomy is armed.')).toBeTruthy();
-    expect(screen.getAllByRole('button').length).toBeGreaterThan(0);
-    on.unmount();
-
-    // HIDE — same queries, tier retired.
-    mugKettleMock.mockReturnValue(false);
+  it('renders ONLY the retirement notice — no table, no banner, nothing clickable', () => {
     render(<AutonomySettingsPage />);
+
+    // CALIBRATION FIRST: the page really rendered. Without this, every absence
+    // below is equally satisfied by a component that threw on mount.
+    expect(screen.getByText(/is retired, so there is no autonomy policy to steer/)).toBeTruthy();
+    expect(screen.getByRole('heading', { name: 'Autonomy' })).toBeTruthy();
+
     expect(screen.queryByRole('region', { name: 'Autonomy categories' })).toBeNull();
     expect(screen.queryByText('Autonomy is armed.')).toBeNull();
     // No controls at all — the harm P-011 names is a DEAD CONTROL that reads as
     // live, so "no table" is not enough; nothing may be clickable.
     expect(screen.queryAllByRole('button')).toHaveLength(0);
-    expect(screen.getByText(/is retired, so there is no autonomy policy to steer/)).toBeTruthy();
   });
 
-  it('stays retired regardless of the arming flag — the two flags are independent', () => {
-    // The bug this pins: a key-blind `useFlag` mock made ARMED and
-    // MUG_KETTLE_SYSTEM the same value, so "not armed" and "retired" were
-    // indistinguishable. They are orthogonal; assert both combinations.
-    mugKettleMock.mockReturnValue(false);
-    flagMock.mockReturnValue(true); // armed…
-    const armedRetired = render(<AutonomySettingsPage />);
-    expect(screen.getByText(/is retired, so there is no autonomy policy to steer/)).toBeTruthy();
-    expect(screen.queryByText('Autonomy is armed.')).toBeNull();
-    armedRetired.unmount();
-
-    flagMock.mockReturnValue(false); // …and not armed
-    render(<AutonomySettingsPage />);
-    expect(screen.getByText(/is retired, so there is no autonomy policy to steer/)).toBeTruthy();
-    expect(screen.queryByText('Autonomy is not armed.')).toBeNull();
+  it('stays retired under EVERY arming-flag value — no flag can bring the page back', () => {
+    // The original bug this pins: a key-blind `useFlag` mock made ARMED and the
+    // tier flag the same value, so "not armed" and "retired" were
+    // indistinguishable. The tier flag is gone, so this now asserts the stronger
+    // property — the arming flag is the only one left, and neither value matters.
+    for (const armed of [true, false]) {
+      flagMock.mockReturnValue(armed);
+      const r = render(<AutonomySettingsPage />);
+      expect(screen.getByText(/is retired, so there is no autonomy policy to steer/)).toBeTruthy();
+      expect(screen.queryByText('Autonomy is armed.')).toBeNull();
+      expect(screen.queryByText('Autonomy is not armed.')).toBeNull();
+      r.unmount();
+    }
   });
 });

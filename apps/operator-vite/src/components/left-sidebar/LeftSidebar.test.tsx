@@ -608,12 +608,17 @@ describe('<LeftSidebar> shell', () => {
       expect(TAB_IDS).toContain('agents');
     });
 
-    // The tier FLAG still exists and is still read elsewhere (adv/AdvNowRunning
-    // until P-068), so this stays: without it the tripwires above could pass
-    // against a typo'd key that gates nothing.
-    it('resolves the tier flag key against the real flags module', async () => {
+    // P-068/D-098 DELETED the tier flag — the last read (adv/AdvNowRunning) went
+    // with it. This test used to resolve the key against the real flags module so
+    // the tripwire above could not pass against a typo'd key that gates nothing.
+    // That concern is now moot in the strongest possible way: there is no key at
+    // all, so the tripwire above forces a literal string that matches NO flag and
+    // the tab must stay gone regardless. Assert the deletion, which is the thing
+    // a later reader could actually undo.
+    it('no longer has a tier flag to flip — the retirement is permanent', async () => {
       const { FLAGS } = await import('@papercusp/flags');
-      expect(FLAGS.MUG_KETTLE_SYSTEM).toBe(MUG_KETTLE);
+      expect('MUG_KETTLE_SYSTEM' in FLAGS).toBe(false);
+      expect(Object.values(FLAGS as Record<string, string>)).not.toContain(MUG_KETTLE);
     });
   });
 

@@ -155,7 +155,8 @@ export default function PlanOtherList({
   // cannot run, landing on a page that now renders only a retirement notice.
   // The BUCKET itself stays: `queen-eligible` is a real authorizer partition and
   // re-partitioning the queue is out of scope here (no plan item owns it).
-  const mugKettleOn = useFlag(FLAGS.MUG_KETTLE_SYSTEM);
+  // P-068/D-098: the tier flag is DELETED, so the queen-eligible deep-link below
+  // can never render — the bucket itself stays (a real authorizer partition).
   // Inbox shares one preview pane across the Other + item lists; selecting an
   // Other item clears any plan-item selection (and vice-versa) so the shared
   // pane shows exactly one.
@@ -299,20 +300,11 @@ export default function PlanOtherList({
                 )
               }
             >
-              {/* The queen-eligible bucket carries a deep-link to the autonomy
-                  policy — rendered as a sibling of the trigger (can't nest an
-                  anchor inside the trigger button). Other sections render the
-                  bare trigger so the legacy markup is unchanged. */}
-              {s.queenLink && mugKettleOn ? (
-                <div className="pc-queue__section-head">
-                  <Collapsible.Trigger asChild>{head}</Collapsible.Trigger>
-                  <a className="pc-queue__queen-link" href="/settings/autonomy">
-                    {`Let the ${t('brain')} handle these →`}
-                  </a>
-                </div>
-              ) : (
-                <Collapsible.Trigger asChild>{head}</Collapsible.Trigger>
-              )}
+              {/* The queen-eligible bucket used to carry a deep-link to the
+                  autonomy policy. P-068/D-098 deleted the tier flag that gated
+                  it, so every section now renders the bare trigger — the page it
+                  linked to is a retirement notice. */}
+              <Collapsible.Trigger asChild>{head}</Collapsible.Trigger>
               <Collapsible.Content className="pc-items__group-content">
                 <ul className="pc-items__rows" role="list">
                   {s.items.map((it) => {
@@ -431,9 +423,8 @@ export function OtherDetail({ item: listItem, onResolved, onDiscuss }: {
   // all three call sites (InboxPane, PlansClient, PreviewPanel) unchanged, and
   // guarantees every action dispatched below acts on the full row.
   const { item, hydrated } = useHydratedAttentionItem(listItem);
-  // Same retired deep-link as the list head above (P-011 / D-021) — this is the
-  // per-item why-line copy, a separate component, so it needs its own read.
-  const mugKettleOn = useFlag(FLAGS.MUG_KETTLE_SYSTEM);
+  // The per-item why-line copy of the retired deep-link (P-011 / D-021) is gone
+  // with the tier flag (P-068/D-098), so this component no longer reads a flag.
   const [discussOpen, setDiscussOpen] = useState(false);
   // D-027 follow-on (1): the inline Answer InputCard (conversation kind). State
   // resets per selection — PlansClient remounts OtherDetail with key={item.id}.
@@ -564,19 +555,12 @@ export function OtherDetail({ item: listItem, onResolved, onDiscuss }: {
           </span>
         )}
       </div>
-      {/* A1 (P-005): the "why it's here" line — who must sign off + why, with the
-          autonomy-policy deep-link for queen-eligible items. */}
+      {/* A1 (P-005): the "why it's here" line — who must sign off + why. The
+          autonomy-policy deep-link for queen-eligible items is gone with the tier
+          flag it was gated on (P-068/D-098). */}
       {why ? (
         <div className="pc-items__why-line pc-queue__intro" style={{ margin: '4px 14px 0' }}>
           {why}
-          {item.authorizer === 'queen-eligible' && mugKettleOn ? (
-            <>
-              {' · '}
-              <a className="pc-queue__queen-link" href="/settings/autonomy">
-                {`Let the ${t('brain')} handle these →`}
-              </a>
-            </>
-          ) : null}
         </div>
       ) : null}
       {/* Operator-triage audit (D-006): a downgraded/handled item shows what the

@@ -138,10 +138,10 @@ export default function AutonomySettingsPage() {
   // the page must SHOW it — a stale "armed is pending" claim is what hid that
   // autonomy was already live. Owner flips it via /admin/features, not here.
   const armed = useFlag(FLAGS.MUG_AUTONOMY_ARMED);
-  // The tier this page steers (retire-mug-kettle-su-only-2026-08-09 P-011 / D-021).
-  // Read HERE, beside the other hooks, so hook order never depends on the flag —
-  // the early return lives below, after every hook has run.
-  const mugKettleOn = useFlag(FLAGS.MUG_KETTLE_SYSTEM);
+  // The tier this page steers is retired (retire-mug-kettle-su-only-2026-08-09
+  // P-011 / D-021), and P-068/D-098 DELETED the flag that used to make that
+  // reversible — so the retirement notice below is now unconditional. The early
+  // return still lives below every hook, so hook order is unchanged.
 
   const [filter, setFilter] = useQueryState(
     'filter',
@@ -261,19 +261,22 @@ export default function AutonomySettingsPage() {
   // owner still lands on live ceiling sliders and an armed-state banner for a
   // decider that cannot run, which is the exact "reads as a live control" harm the
   // item names. Read-only notice, no controls.
-  if (!mugKettleOn) {
-    return (
-      <div>
-        <h1>Autonomy</h1>
-        <p className="pc-settings-intro" role="status">
-          The {t('brain')} is retired, so there is no autonomy policy to steer. These
-          per-category ceilings governed her auto-decide gate; with the tier switched off
-          nothing consults them. Agent autonomy is now set per session (AUTO mode) rather
-          than centrally here.
-        </p>
-      </div>
-    );
-  }
+  // P-068/D-098: this is now UNCONDITIONAL. It used to be gated on the tier flag,
+  // which has been deleted — the retirement is permanent, so the page can never
+  // render its ceiling sliders again. The controls below are unreachable and are
+  // removed as mechanical follow-up (D-098), not here, so this change stays a
+  // pure flag deletion with no behavioural delta.
+  return (
+    <div>
+      <h1>Autonomy</h1>
+      <p className="pc-settings-intro" role="status">
+        The {t('brain')} is retired, so there is no autonomy policy to steer. These
+        per-category ceilings governed her auto-decide gate; with the tier switched off
+        nothing consults them. Agent autonomy is now set per session (AUTO mode) rather
+        than centrally here.
+      </p>
+    </div>
+  );
 
   return (
     <div>

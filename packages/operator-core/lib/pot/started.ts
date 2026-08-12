@@ -24,8 +24,6 @@
  * per-(ws,install) keying, byte-identical to today.
  */
 import { getOrgPg } from '@papercusp/db-org';
-import { getFlag } from '@papercusp/flags/server';
-import { FLAGS } from '@papercusp/flags';
 import {
   isWorkspaceCoordinationOn,
   workspaceBrainScopeKey,
@@ -35,27 +33,31 @@ import { backgroundWorkspaceIds } from '../workspace-registry';
 import { isEphemeralForeignProject, loadHarnessRegistry } from '../harness-registry';
 
 /**
- * Is the Mug/Kettle/Cup tier still RUNNABLE?
- * (retire-mug-kettle-su-only-2026-08-09 P-006/P-007.)
+ * Is the Mug/Kettle/Cup tier still RUNNABLE? **Permanently `false`.**
+ * (retire-mug-kettle-su-only-2026-08-09 P-006/P-007, terminal step P-068/D-098.)
  *
- * ⚠ Note the polarity, which is inverted from a normal flag: OFF (the default)
- * is the DELIVERED state — the tier is retired and su + GOAL mode are the only
- * way to drive the app. ON is the reversible testing escape hatch. So `false`
- * here is the expected steady-state answer, not a degraded one.
+ * This used to read `FLAGS.MUG_KETTLE_SYSTEM`, whose OFF was the delivered state
+ * and whose ON was a reversible testing escape hatch. That flag's own DARK_FLAGS
+ * reason set the terms of its own removal — "it does NOT graduate by being
+ * flipped ON: it graduates when Stage 2/3 lands and the flag is DELETED" — and
+ * P-068 is that deletion. The escape hatch is gone; the tier is retired for good.
  *
- * Fail-CLOSED: an unreadable flag resolves to retired. The asymmetry is
- * deliberate — a false `true` silently restarts an autonomous loop the owner
- * retired, while a false `false` leaves a deliberately-retired tier retired.
+ * ⚠ WHY THIS PREDICATE SURVIVES ITS FLAG — do not "simplify" it away.
+ * It is the ONE chokepoint ~20 gates across 14 files route through: the 5 retired
+ * actuator tools (via `_mug-kettle-gate.ts`), the 3 spawn doors, the engine gate
+ * in `getPotStarted` below, `pot/watchdog.ts` (×3), `pot/placement-watchdog.ts`'s
+ * `wakeMug` delivery chokepoint, and Scout's own `ready-plan-autostart.ts` +
+ * `nudge-recipient.ts`. D-093 established why several of those gates cannot be
+ * deleted along with the tier: they sit on **live shared substrate that Scout
+ * still runs on**, and the callers "do not share a gate to sit behind". Inlining
+ * `false` at each site would scatter that reasoning across 14 files and re-open
+ * the drift this predicate was extracted to prevent (D-098).
  *
- * Exported so the watchdog's own sweeps share ONE predicate with the started
- * bit; two hand-rolled flag reads would be free to drift apart.
+ * Retiring the remaining dead branches is mechanical follow-up, done per-file
+ * with tests — never by removing this function and letting a caller flip open.
  */
 export async function mugKettleSystemEnabled(): Promise<boolean> {
-  try {
-    return await getFlag(FLAGS.MUG_KETTLE_SYSTEM, 'system');
-  } catch {
-    return false;
-  }
+  return false;
 }
 
 const PREFIX = 'hive_started:';

@@ -21,15 +21,14 @@ import { withNuqsTestingAdapter, type UrlUpdateEvent } from 'nuqs/adapters/testi
 // authorizer/why-line copy from the THE_HIVE flag hook (restore-pot-lexicon-public-release P-007).
 vi.mock('@/lib/useLexicon', () => ({ useLexicon: () => (k: string) => k }));
 
-// Key-aware, and it answers only the ONE flag this file cares about
-// (retire-mug-kettle-su-only-2026-08-09 P-011 / D-021). `mugKettleOn` starts
-// FALSE to match the registry default for a cutover flag, so the pre-existing
-// cases below keep the behaviour they were written against; the gate test flips
-// it. A blanket `() => true` here would silently un-retire the tier for the whole
-// file — the mirror of the trap D-020 caught.
-let mugKettleOn = false;
+// This mock used to be key-aware, defaulting the tier flag to FALSE so a blanket
+// `() => true` could not silently un-retire the tier for the whole file (P-011 /
+// D-021, the trap D-020 caught). P-068/D-098 DELETED that flag and the component
+// no longer reads one, so the blanket form has the opposite meaning now: forcing
+// EVERY flag ON makes the absence assertions below a TRIPWIRE — the retired
+// deep-link must stay gone in the most permissive flag state reachable.
 vi.mock('@/lib/flag-hooks', () => ({
-  useFlag: (k: string) => (k === FLAGS.MUG_KETTLE_SYSTEM ? mugKettleOn : true),
+  useFlag: () => true,
 }));
 
 import { FLAGS } from '@papercusp/flags';
@@ -109,44 +108,29 @@ describe('PlanOtherList — retired Mug deep-links', () => {
   const queenItem = () => item({ id: 'coord-escalation:q1', authorizer: 'queen-eligible' });
   const LINK = /Let the brain handle these/;
 
-  afterEach(() => {
-    mugKettleOn = false;
-  });
+  // These two cases used to pair each hide-assertion with a SHOW control, flipping
+  // the tier flag ON to prove the query could find the link at all. P-068/D-098
+  // deleted that flag, so the ON case is no longer constructible. The vacuity risk
+  // it existed to kill is unchanged, so each case now carries a CALIBRATION on a
+  // sibling surface instead — the bucket must render for the absence to mean
+  // anything — and `useFlag` is stubbed TRUE for every key, so these are tripwires
+  // rather than assertions about a default.
 
-  it('hides the bucket-head link when the tier is retired, and shows it when it is on', () => {
-    // SHOW CONTROL — the same fixture + query DOES find the link with the tier on.
-    mugKettleOn = true;
-    const on = render(
-      <PlanOtherList {...BASE} groups={[group([queenItem()])]} groupByAuthorizer />,
-      { wrapper: withNuqsTestingAdapter({ searchParams: '' }) },
-    );
-    expect(screen.getByText(LINK)).toBeTruthy();
-    on.unmount();
-
-    mugKettleOn = false;
+  it('never renders the bucket-head deep-link, with every flag forced on', () => {
     render(<PlanOtherList {...BASE} groups={[group([queenItem()])]} groupByAuthorizer />, {
       wrapper: withNuqsTestingAdapter({ searchParams: '' }),
     });
-    expect(screen.queryByText(LINK)).toBeNull();
-    // CALIBRATION — the bucket itself must still render, or the null above would
+    // CALIBRATION FIRST — the bucket itself must render, or the null below would
     // just mean "the fixture produced nothing". The partition is not what we gate.
     expect(screen.getByText('Automatable — for now')).toBeTruthy();
+    expect(screen.queryByText(LINK)).toBeNull();
   });
 
-  it('leaves no anchor pointing at /settings/autonomy while retired', () => {
-    mugKettleOn = true;
-    const on = render(
-      <PlanOtherList {...BASE} groups={[group([queenItem()])]} groupByAuthorizer />,
-      { wrapper: withNuqsTestingAdapter({ searchParams: '' }) },
-    );
-    const shown = document.querySelectorAll('a[href="/settings/autonomy"]');
-    expect(shown.length).toBeGreaterThan(0); // show control
-    on.unmount();
-
-    mugKettleOn = false;
+  it('leaves no anchor pointing at /settings/autonomy anywhere in the queue', () => {
     render(<PlanOtherList {...BASE} groups={[group([queenItem()])]} groupByAuthorizer />, {
       wrapper: withNuqsTestingAdapter({ searchParams: '' }),
     });
+    expect(screen.getByText('Automatable — for now')).toBeTruthy(); // calibration
     expect(document.querySelectorAll('a[href="/settings/autonomy"]')).toHaveLength(0);
   });
 });

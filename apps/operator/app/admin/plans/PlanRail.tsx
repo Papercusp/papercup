@@ -452,8 +452,9 @@ function PlanRow({
   // switch. It is self-extinguishing — once a plan is paused or cleared the
   // button never returns, because Start cannot be reached while the tier is
   // retired. A 'paused' plan correctly shows nothing (isStarted is false).
-  const mugKettleOn = useFlag(FLAGS.MUG_KETTLE_SYSTEM);
-  const showStartToggle = (bucket === 'ready' || bucket === 'running') && (mugKettleOn || isStarted);
+  // P-068/D-098: the tier flag is DELETED, so Start can never be reached — the
+  // toggle survives only as PAUSE for an already-started (pre-P-047) plan.
+  const showStartToggle = (bucket === 'ready' || bucket === 'running') && isStarted;
 
   return (
     <li

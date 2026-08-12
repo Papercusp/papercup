@@ -31,18 +31,18 @@ import { FLAGS } from '@papercusp/flags';
 import PlanRail from './PlanRail';
 import type { AsyncResult, PlanListRow } from './plans-api';
 
-// The flag is read through useFlag, whose unmocked fallback is FLAG_DEFAULTS —
-// i.e. the retired default. Pinning it explicitly BOTH ways is what makes this a
-// test of the gate rather than of the default: a gate wired to the wrong flag
-// key still passes every OFF assertion.
-const F = vi.hoisted(() => ({ mugKettleOn: false }));
+// P-068/D-098: the tier flag is DELETED, so there is no longer a key to pin
+// either way — the component reads no flag at all now. EVERY flag is forced ON
+// instead, which turns the assertions below into a TRIPWIRE rather than a test
+// of a default: Start must stay absent even in the most permissive flag state
+// the app can reach. That is strictly stronger than the old both-ways pinning,
+// and it is what catches a later reader re-adding a flag to bring Start back.
 vi.mock('@/lib/flag-hooks', async (orig) => ({
   ...(await orig<typeof import('@/lib/flag-hooks')>()),
-  useFlag: (key: string) => (key === 'papercusp-mug-kettle-system' ? F.mugKettleOn : true),
+  useFlag: () => true,
 }));
 
 beforeEach(() => {
-  F.mugKettleOn = false;
   // The row nests the Start/Pause <button> inside the row <button> — a
   // pre-existing invalid-nesting warning, orthogonal to this gate.
   vi.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
@@ -120,15 +120,29 @@ describe('PlanRail Start/Pause under the retired op_status axis', () => {
     expect(toggleLabels(container)).toEqual(['Pause plan running-plan-2026-08-10']);
   });
 
-  it('restores Start when the tier is flipped back ON (the testing escape hatch)', () => {
-    F.mugKettleOn = true;
+  // This block used to assert the OPPOSITE — "restores Start when the tier is
+  // flipped back ON (the testing escape hatch)" — and pinned the gate to the flag
+  // key. P-068/D-098 deleted that flag, so the escape hatch no longer exists and
+  // a test of it would have no subject. What replaces it is the tripwire the
+  // deletion actually needs: there is no flag state that brings Start back.
+  it('CALIBRATION: the rail really rendered (so the empty-toggle assertions are not vacuous)', () => {
+    // Every load-bearing assertion above is an ABSENCE, which passes just as
+    // happily against a rail that failed to render at all.
     const { container } = renderRail([plan('ready-plan-2026-08-10')]);
-    expect(toggleLabels(container)).toEqual(['Start plan ready-plan-2026-08-10']);
+    expect(container.querySelectorAll('.pc-plan-row').length).toBeGreaterThan(0);
   });
 
-  it('is wired to MUG_KETTLE_SYSTEM specifically, not to some other flag', () => {
-    // Guards the whole file: with every other flag stubbed true, the ONLY way
-    // Start can be absent above is a read of this key.
-    expect(FLAGS.MUG_KETTLE_SYSTEM).toBe('papercusp-mug-kettle-system');
+  it('keeps Start gone with EVERY flag forced on — no flag can re-open the axis', () => {
+    // useFlag is stubbed true for every key above, so this is the most permissive
+    // state reachable. Start must still be absent.
+    const { container } = renderRail([plan('ready-plan-2026-08-10')]);
+    expect(toggleLabels(container)).toEqual([]);
+  });
+
+  it('no longer has a tier flag to flip — the retirement is permanent', () => {
+    expect('MUG_KETTLE_SYSTEM' in FLAGS).toBe(false);
+    expect(Object.values(FLAGS as Record<string, string>)).not.toContain(
+      'papercusp-mug-kettle-system',
+    );
   });
 });

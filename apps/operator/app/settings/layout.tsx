@@ -152,17 +152,16 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
   const storageSettingsEnabled = useFlag(FLAGS.STORAGE_SETTINGS);
   const blueprintAwareSettingsEnabled = useFlag(FLAGS.BLUEPRINT_AWARE_SETTINGS);
   const p2pEnabled = useFlag(FLAGS.P2P);
-  // /settings/autonomy takes BOTH gates (retire-mug-kettle-su-only-2026-08-09
-  // P-011 / D-021). MUG_AUTONOMY_SETTINGS is the pre-existing per-page kill-switch
-  // (ON by default); MUG_KETTLE_SYSTEM (DEFAULT OFF) retires the tier the page
-  // steers. They answer different questions, so they AND rather than replace: the
-  // page edits the 13-category Queen/Mug ceilings + shows the MUG_AUTONOMY_ARMED
-  // master switch, and with the tier retired there is no decider to govern.
+  // /settings/autonomy is PERMANENTLY hidden (retire-mug-kettle-su-only-2026-08-09
+  // P-011 / D-021, terminal step P-068 / D-098). It used to AND two gates:
+  // MUG_AUTONOMY_SETTINGS (the pre-existing per-page kill-switch, ON by default)
+  // and MUG_KETTLE_SYSTEM, which retired the tier the page steers. The latter is
+  // now DELETED and the retirement is permanent, so the entry is simply `false` —
+  // the page edits Queen/Mug ceilings that no decider consults any more.
   //
   // This hides the NAV ENTRY only — `linkAllowed` filters SETTINGS_GROUPS and
   // nothing else, so the route stays reachable by URL. The page itself carries the
-  // matching early-return; neither half is sufficient alone.
-  const mugKettleOn = useFlag(FLAGS.MUG_KETTLE_SYSTEM);
+  // matching (now unconditional) early return; neither half is sufficient alone.
 
   // Keys are FlagKey values; this is the subset of flags that gate a settings path
   // (SETTINGS_PATH_FLAGS), not an exhaustive map — so `Record<string, boolean>`, not
@@ -170,7 +169,7 @@ export default function SettingsLayout({ children }: { children: React.ReactNode
   const flagEnabled: Record<string, boolean> = {
     [FLAGS.CLOUDFLARE_PUBLISH]: publishingEnabled,
     [FLAGS.PROMPT_STUDIO]: promptStudioEnabled,
-    [FLAGS.MUG_AUTONOMY_SETTINGS]: autonomySettingsEnabled && mugKettleOn,
+    [FLAGS.MUG_AUTONOMY_SETTINGS]: false,
     [FLAGS.STORAGE_SETTINGS]: storageSettingsEnabled,
     [FLAGS.BLUEPRINT_AWARE_SETTINGS]: blueprintAwareSettingsEnabled,
     [FLAGS.P2P]: p2pEnabled,

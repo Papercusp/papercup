@@ -124,7 +124,8 @@ export default function PlanActions({
 
   const isStarted = startStatus === 'started';
   // P-047: op_status is the retired OPERATIONAL axis; see the Start/Pause button below.
-  const mugKettleOn = useFlag(FLAGS.MUG_KETTLE_SYSTEM);
+  // P-068/D-098: the tier flag is DELETED, so the old `mugKettleOn` read is gone and
+  // START never shows — only PAUSE, and only for an already-started plan.
   // The lifecycle bucket drives which primary action shows: draft →
   // Approve (no start), ready → Start + Demote, running → Pause,
   // shipped/rejected → none. Derived from the same bucketOf the rail uses.
@@ -275,7 +276,7 @@ export default function PlanActions({
           server: START goes, PAUSE survives for an already-started plan, because the
           DBOS frontier still reads op_status='started' and is not gated, so pause is
           the only remaining way to take a pre-P-047 plan out of its dispatch. */}
-      {(bucket === 'ready' || bucket === 'running') && (mugKettleOn || isStarted) ? (
+      {(bucket === 'ready' || bucket === 'running') && isStarted ? (
         <Tooltip label={isStarted ? 'Pause plan — orchestrator stops picking new features' : 'Start plan — orchestrator picks features from this plan'}><button
           type="button"
           className={`pc-plan-actions__btn pc-plan-actions__btn--start${isStarted ? ' pc-plan-actions__btn--started' : ''}`}
