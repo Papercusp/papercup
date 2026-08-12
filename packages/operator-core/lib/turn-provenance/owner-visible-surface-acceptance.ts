@@ -123,6 +123,70 @@ export function liveDriveAcceptanceGap(
   return { surfaceFiles, verifiedHow: how };
 }
 
+/**
+ * ── THE REFUSING TIER (D-019) ───────────────────────────────────────────────
+ * The acceptance is two-tiered on purpose, and the tiers are NOT redundant:
+ *
+ *   WARN at `work_items:complete` — that seam is contractually record-and-warn
+ *   (D-005 / EI-24: "a finished completion is normalised, never hard-rejected+
+ *   lost"). Rejecting the CALL there would discard the agent's only written
+ *   account of what it did. A gate that destroys evidence to enforce evidence
+ *   is self-defeating.
+ *
+ *   REFUSE at `setWorkItemState` — by then the completion is already recorded,
+ *   so refusing the TERMINAL FLIP preserves the evidence, leaves the item open,
+ *   and tells the agent why. That is what satisfies P-007's "a checklist nobody
+ *   runs is worth less than a gate that refuses" without violating EI-24.
+ *
+ * This function is the DECISION, kept pure and here rather than inline at the
+ * call site, for two reasons. It is exhaustively testable — its inputs (a
+ * boolean, a path, a `verifiedHow`) are the author's to invent, which is
+ * exactly the corollary D-019 draws about what remains legitimately unit-tier
+ * on this surface. And it keeps the refusal reading from the SAME registry and
+ * message as the warning, so the two tiers cannot drift into disagreeing about
+ * what the acceptance is.
+ */
+export interface LiveDriveTerminalRefusalInput {
+  id: string;
+  /** The terminal state being written, for the message's re-close instruction. */
+  state: string;
+  /** Is this actually a transition INTO a settled state? Non-terminal writes are not completions. */
+  isCompletingTransition: boolean;
+  /** Caller asserts the change cannot alter what is rendered (set_state { force: true }). */
+  force?: boolean;
+  /** Trusted system path — restore / watchdog / reconcile sweeps, "not completions at all". */
+  skipCompletionGate?: boolean;
+  evidence: { verifiedHow?: string; filesChanged?: readonly string[] } | undefined;
+}
+
+/**
+ * The refusal message for a terminal write that settles an owner-visibility
+ * change without having observed the surface — or `null` when the write should
+ * proceed, which is the overwhelmingly common case.
+ */
+export function liveDriveTerminalRefusal(input: LiveDriveTerminalRefusalInput): string | null {
+  if (!input.isCompletingTransition) return null;
+  // Both bypasses are deliberate. `skipCompletionGate` covers the trusted system
+  // writes that carry no agent evidence to judge; `force` is the caller asserting
+  // the change cannot alter what the owner sees. Neither is a loophole to close:
+  // a gate with no override is one that gets deleted the first time it is wrong.
+  if (input.force || input.skipCompletionGate) return null;
+  const gap = liveDriveAcceptanceGap(input.evidence);
+  if (!gap) return null;
+  return (
+    `live-drive-acceptance: work_item '${input.id}' → '${input.state}' rejected — ` +
+    `${liveDriveAcceptanceMessage(input.id, gap)} ` +
+    `YOUR COMPLETION IS NOT LOST: it was recorded before this refusal, and the item stays open — ` +
+    `drive the surface, then re-close with work_items:complete { id: '${input.id}', ` +
+    `state: '${input.state}', completion: { …, verifiedHow: 'live-drove-ui' } }. If the change ` +
+    `genuinely cannot alter what the owner sees (a comment, a rename, a type-only edit), override ` +
+    `with work_items:set_state { id: '${input.id}', state: '${input.state}', force: true } and say ` +
+    `why in the completion's \`deferred\`, so the next reader knows it was considered rather than ` +
+    `missed — NOTE work_items:complete does NOT accept a \`force\` arg (WI-4530). ` +
+    `Authority: plan owner-visibility-provenance-2026-08-11 D-019.`
+  );
+}
+
 /** The message the completion path attaches. Written once, here, so the
  *  reasoning travels with the finding instead of being re-derived. */
 export function liveDriveAcceptanceMessage(id: string, gap: LiveDriveAcceptanceGap): string {

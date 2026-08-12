@@ -85,10 +85,7 @@ import {
   isWorkItemCompletionAuthority,
   type WorkItemCompletionAuthority,
 } from './work-item-completion-authority';
-import {
-  liveDriveAcceptanceGap,
-  liveDriveAcceptanceMessage,
-} from './turn-provenance/owner-visible-surface-acceptance';
+import { liveDriveTerminalRefusal } from './turn-provenance/owner-visible-surface-acceptance';
 import { readExternalBlockers, type ExternalBlockerRecord } from './external-blockers';
 import { pgTimestampToIso, pgTimestampToIsoOrNull } from './pg-timestamp';
 import { noteGoalClaimed, readAgentStateStamp } from './agent-state-stamp';
@@ -2544,23 +2541,15 @@ export async function setWorkItemState(
   // Bypasses, both deliberate: `skipCompletionGate` (trusted system paths — restore,
   // watchdog sweeps, reconcile: "not completions at all", so they carry no evidence to
   // judge) and `force` (the caller asserts the change cannot alter what is rendered).
-  if (!opts.force && !opts.skipCompletionGate && isCompletingTransition) {
-    const liveDriveGap = liveDriveAcceptanceGap(opts.completionEvidence);
-    if (liveDriveGap) {
-      throw new Error(
-        `live-drive-acceptance: work_item '${id}' → '${state}' rejected — ` +
-          `${liveDriveAcceptanceMessage(id, liveDriveGap)} ` +
-          `YOUR COMPLETION IS NOT LOST: it was recorded before this refusal, and the item stays open — ` +
-          `drive the surface, then re-close with work_items:complete { id: '${id}', state: '${state}', ` +
-          `completion: { …, verifiedHow: 'live-drove-ui' } }. If the change genuinely cannot alter what ` +
-          `the owner sees (a comment, a rename, a type-only edit), override with ` +
-          `work_items:set_state { id: '${id}', state: '${state}', force: true } and say why in the ` +
-          `completion's \`deferred\`, so the next reader knows it was considered rather than missed ` +
-          `— NOTE work_items:complete does NOT accept a \`force\` arg (WI-4530). Authority: plan ` +
-          `owner-visibility-provenance-2026-08-11 D-019.`,
-      );
-    }
-  }
+  const liveDriveRefusal = liveDriveTerminalRefusal({
+    id,
+    state,
+    isCompletingTransition,
+    force: opts.force,
+    skipCompletionGate: opts.skipCompletionGate,
+    evidence: opts.completionEvidence,
+  });
+  if (liveDriveRefusal) throw new Error(liveDriveRefusal);
   let result: WorkItem | null;
   if (wi.family === 'issue') {
     // EI-19313515375179600 (WI-6822 follow-up): `origin` can flip local→remote well after
