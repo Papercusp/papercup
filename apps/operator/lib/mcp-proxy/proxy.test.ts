@@ -866,7 +866,7 @@ describe('WI-35737: a departed client stops the retry loop', () => {
  *      32-89 minutes.
  */
 describe('EI-19305299022434394: admission control — shed with 429 before opening an upstream socket', () => {
-  it('recognizes fleet bootstrap, direct coordination, continuation checkpoints, scheduler claims, deferred discovery, loop arming, incident capture, file-lock inspection, file-lock release, checkpoint writes, and work-item completion as reserved control-plane traffic', () => {
+  it('recognizes fleet bootstrap, direct coordination, continuation checkpoints, scheduler claims, deferred discovery, loop arming, incident capture, file-lock inspection, file-lock release, checkpoint writes, work-item release, and work-item completion as reserved control-plane traffic', () => {
     const call = (name: string) => Buffer.from(JSON.stringify({ method: 'tools/call', params: { name } }));
     expect(isReservedControlPlaneCall(call('scheduler:get_next'))).toBe(true);
     expect(isReservedControlPlaneCall(call('coord:orient'))).toBe(true);
@@ -878,6 +878,7 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     expect(isReservedControlPlaneCall(call('locks:queue'))).toBe(true);
     expect(isReservedControlPlaneCall(call('locks:release'))).toBe(true);
     expect(isReservedControlPlaneCall(call('work_items:checkpoint'))).toBe(true);
+    expect(isReservedControlPlaneCall(call('work_items:release'))).toBe(true);
     expect(isReservedControlPlaneCall(call('work_items:complete'))).toBe(true);
     expect(isReservedControlPlaneCall(call('work_items:get'))).toBe(false);
     expect(isReservedControlPlaneCall(Buffer.from('{bad json'))).toBe(false);
@@ -896,6 +897,10 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     ['underscore checkpoint form', 'work_items_checkpoint'],
     ['Claude MCP-advertised checkpoint form', 'mcp__papercusp-su__work_items_checkpoint'],
     ['MCP-advertised checkpoint form with underscore server slug', 'mcp__papercusp_su__work_items_checkpoint'],
+    ['canonical release form', 'work_items:release'],
+    ['underscore release form', 'work_items_release'],
+    ['Claude MCP-advertised release form', 'mcp__papercusp-su__work_items_release'],
+    ['MCP-advertised release form with underscore server slug', 'mcp__papercusp_su__work_items_release'],
     ['canonical completion form', 'work_items:complete'],
     ['underscore completion form', 'work_items_complete'],
     ['Claude MCP-advertised completion form', 'mcp__papercusp-su__work_items_complete'],
@@ -925,7 +930,7 @@ describe('EI-19305299022434394: admission control — shed with 429 before openi
     ])))).toBe(false);
   });
 
-  it.each(['scheduler:get_next', 'coord:orient', 'coord:send', 'loop:checkpoint', 'tools:find', 'loop:arm', 'improvements:capture', 'locks:queue', 'locks:release', 'work_items:checkpoint', 'work_items:complete'])('admits %s from the reserve while ordinary calls shed', async (controlPlaneTool) => {
+  it.each(['scheduler:get_next', 'coord:orient', 'coord:send', 'loop:checkpoint', 'tools:find', 'loop:arm', 'improvements:capture', 'locks:queue', 'locks:release', 'work_items:checkpoint', 'work_items:release', 'work_items:complete'])('admits %s from the reserve while ordinary calls shed', async (controlPlaneTool) => {
     let releaseUpstream: () => void = () => {};
     const gate = new Promise<void>((resolve) => { releaseUpstream = resolve; });
     const upstream = track(http.createServer((_req, res) => void gate.then(() => res.end('{"result":"ok"}'))));
