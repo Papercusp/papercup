@@ -22,13 +22,14 @@ import {
   buildStagedWakeNote,
   isDeliveryLadderWakeSource,
   isOwnerGuiWakeSource,
+  COORD_WAKE_TARGET_TIMEOUT_MS,
 } from './inbox-wake';
 import { ADMIN_COORD_UI_OWNER } from './identity';
 import { mockResolvedTyped } from '../../testing/typed-mock';
 import { resolveWakeMode } from './wake-mode';
 import { stagePendingWake } from './pending-wakes';
 import { emitAwaitedEvent } from '../../events/await/engine';
-import { knownOwnerIdSet } from './recipient-resolve';
+import { knownOwnerIdSet, resolveBestEffortAgainstRoster } from './recipient-resolve';
 
 beforeEach(() => {
   vi.mocked(resolveWakeMode).mockResolvedValue('auto' as never);
@@ -49,6 +50,26 @@ describe('wakeRecipients wake-mode gate (hive-agent-tabs D-005, graduated by sta
     expect(stagePendingWake).not.toHaveBeenCalled();
     expect(r.woken).toBe(2);
     expect(r.staged).toBe(0);
+  });
+
+  it('EI-20239029846984233: a stalled roster preflight degrades before the wake transport timeout', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    vi.useFakeTimers();
+    try {
+      vi.mocked(resolveBestEffortAgainstRoster).mockImplementationOnce(
+        () => new Promise<string[]>(() => {}),
+      );
+      const pending = wakeRecipients(['s-1'], { source: 'coord:send' });
+      await vi.advanceTimersByTimeAsync(COORD_WAKE_TARGET_TIMEOUT_MS + 1);
+      const r = await pending;
+      expect(r.targets).toEqual(['s-1']);
+      expect(r.woken).toBe(1);
+      expect(emitAwaitedEvent).toHaveBeenCalledTimes(1);
+      expect(warn).toHaveBeenCalledWith(expect.stringContaining('coord:inbox-wake:roster'));
+    } finally {
+      vi.useRealTimers();
+      warn.mockRestore();
+    }
   });
 
   it('manual → STAGES, does NOT fire (the Pause path — no flag involved)', async () => {

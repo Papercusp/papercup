@@ -168,7 +168,25 @@ export async function wakeRecipients(
   // owner-2026-06-17: resolve a short ownerId PREFIX to the full id before firing
   // the wake key — the key is exact (`coord:inbox-wake:<full-ownerId>`), so a short
   // prefix would fire a key nobody watches (woken:0). Best-effort + fail-soft.
-  const resolved = await resolveBestEffortAgainstRoster(recipients, opts.workspaceId);
+  // EI-20239029846984233: the resolver and the manual-mode membership check share
+  // a memoized roster promise, but a stalled presence/recorded-session/remote read
+  // can otherwise hold both before the per-target wake deadline below is reached.
+  // Bound the shared preflight once so a wake still returns a degraded, fail-open
+  // result before coord:send's transport timeout.
+  type WakeRosterSnapshot = readonly [string[], Set<string> | null];
+  const rosterBounded = await withBoundedTimeout<WakeRosterSnapshot>(
+    () =>
+      Promise.all([
+        resolveBestEffortAgainstRoster(recipients, opts.workspaceId),
+        knownOwnerIdSet(opts.workspaceId),
+      ]) as Promise<WakeRosterSnapshot>,
+    {
+      fallback: [[...recipients], null] as WakeRosterSnapshot,
+      timeoutMs: COORD_WAKE_TARGET_TIMEOUT_MS,
+      label: 'coord:inbox-wake:roster',
+    },
+  );
+  const [resolved, roster] = rosterBounded.value;
   const allTargets = [...new Set(resolved)].filter((r) => !NON_WAKEABLE.has(r));
   // P-022: cap the wake fan — beyond MAX_WAKE_FANOUT the overflow is injected but
   // NOT woken (the durable inbox row already landed at sendMessage), so an
@@ -210,11 +228,6 @@ export async function wakeRecipients(
     isLoopWakeSource(opts.source) ||
     isOwnerGuiWakeSource(opts.source) ||
     isDeliveryLadderWakeSource(opts.source);
-  // EI-9971: known-roster check for the STAGING branch only (see knownOwnerIdSet's
-  // doc) — reuses the same short-TTL roster cache resolveBestEffortAgainstRoster
-  // just read above, so this costs nothing extra. `null` = roster unavailable/empty
-  // → fail OPEN (never suppress staging just because we couldn't check).
-  const roster = await knownOwnerIdSet(opts.workspaceId);
   type TargetOutcome =
     | { kind: 'staged'; ownerId: string }
     | { kind: 'fired'; key: string; woken: number }
