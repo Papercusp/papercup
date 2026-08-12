@@ -45,6 +45,7 @@ vi.mock('../coordination/identity', () => ({
 vi.mock('../../workspace-registry', () => ({ activeWorkspaceId: vi.fn(() => 'ws-1') }));
 vi.mock('../../pot/wake', () => ({ resolvePotHomeSlug: vi.fn(() => 'papercusp') }));
 vi.mock('../pot/_resolve', () => ({ resolveHomePotSlug: vi.fn(async () => 'papercusp') }));
+vi.mock('../../session-brief', () => ({ getSessionBrief: vi.fn(async () => null) }));
 vi.mock('../../harness/routines/loop', () => ({
   LOOP_INTERVAL_FLOOR_SEC: 60,
   buildLoopWakePrompt: vi.fn(() => 'kickoff-prompt'),
@@ -126,6 +127,8 @@ const armWakeM = vi.mocked(armInboxWake);
 const probeM = vi.mocked(probeWakeReachability);
 const findHostM = vi.mocked(findLiveHost);
 const homePotM = vi.mocked(resolveHomePotSlug);
+const briefM = vi.mocked((await import('../../session-brief')).getSessionBrief);
+const potHomeM = vi.mocked((await import('../../pot/wake')).resolvePotHomeSlug);
 const wakeAwaitsM = vi.mocked((await import('../../events/await/store')).listWakeAwaitsForSubscriber);
 // EI-19966210024116714: hoisted to module scope — `await import` is illegal inside a
 // (non-async) describe callback, and this file's describes are synchronous.
@@ -152,6 +155,8 @@ beforeEach(() => {
   // EI-19447204017443244: default no live wake-awaits (the 'none' rendering).
   wakeAwaitsM.mockResolvedValue([] as never);
   homePotM.mockResolvedValue('papercusp');
+  briefM.mockResolvedValue(null);
+  potHomeM.mockReturnValue('papercusp');
 });
 
 describe('loop:arm — WI-1471 ownerId override', () => {
@@ -326,6 +331,20 @@ describe('loop:arm — flag gate + harness resolution (unaffected by the ownerId
     expect(homePotM).toHaveBeenCalledWith('ws-1');
     expect(b).toMatchObject({ ok: true, loop: { harness: 'workspace-home' } });
     expect(buildPromptM).toHaveBeenCalledWith(expect.objectContaining({ harness: 'workspace-home' }));
+  });
+
+  it('EI-20211399000978706: reuses the concrete harness persisted by coord:orient before workspace-home fallback', async () => {
+    briefM.mockResolvedValueOnce({ harnessSlug: 'oriented-harness' } as never);
+    potHomeM.mockReturnValueOnce('oriented-harness' as never);
+    const out = await tool.handler(
+      { intervalSec: 120, goal: 'g' } as never,
+      { harnessSlug: '*', workspaceId: 'ws-1' } as never,
+    ) as Out;
+    const b = body(out);
+    expect(briefM).toHaveBeenCalledWith({ ownerId: 'su-caller-own-id' });
+    expect(homePotM).not.toHaveBeenCalled();
+    expect(b).toMatchObject({ ok: true, loop: { harness: 'oriented-harness' } });
+    expect(buildPromptM).toHaveBeenCalledWith(expect.objectContaining({ harness: 'oriented-harness' }));
   });
 
   // EI-7734 regression: every superuser/operator-scope session sets ctx.harnessSlug='*'

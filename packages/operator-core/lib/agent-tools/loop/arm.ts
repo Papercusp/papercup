@@ -47,6 +47,7 @@ import {
 } from '../../events/await/wake-reachability';
 import { softText, clampText } from '../limits';
 import { refreshControlAnchorAfterMutation } from '../coordination/control-anchor';
+import { getSessionBrief } from '../../session-brief';
 
 const MAX_LOOP_INTERVAL_SEC = 60 * 60 * 24 * 7; // 7 days — beyond this, use a schedule (a fixed clock), not a loop
 
@@ -532,6 +533,19 @@ export default defineTool({
     const onlyWorkspaceScope = !isConcreteHarness(args.harness) && !isConcreteHarness(ctx.harnessSlug);
     let harness: string | null = null;
     if (onlyWorkspaceScope) {
+      // EI-20211399000978706: coord:orient/declare-intent already persists the
+      // caller's concrete harness on its durable session brief. Treat that as
+      // session scope before falling back to the workspace home pot; otherwise
+      // loop:arm forgets scope learned one call earlier and makes the caller
+      // redundantly repeat `harness` (or fails no_harness when no home exists).
+      // Explicit args and a concrete request ctx still win by construction:
+      // this branch runs only when both are absent/wildcard.
+      const brief = await getSessionBrief({ ownerId }).catch(() => null);
+      if (isConcreteHarness(brief?.harnessSlug)) {
+        harness = resolvePotHomeSlug(brief!.harnessSlug!, undefined);
+      }
+    }
+    if (onlyWorkspaceScope && !harness) {
       try {
         const home = await resolveHomePotSlug(workspaceId);
         if (home) harness = resolvePotHomeSlug(home, undefined);
