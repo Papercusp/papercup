@@ -63,7 +63,11 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
   fleetScopedMiss: vi.fn(() => ({ ok: false, error: 'scoped miss', windDown: true })),
 }));
 
-vi.mock('../../work-items', () => ({
+// `claim_next` reaches this pure predicate transitively through the claim-time
+// retraction advisory. Preserve the real implementation so the focused handler
+// test stays hermetic without making the production path fail at module link.
+vi.mock('../../work-items', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../../work-items')>()),
   CLAIM_STATES_ALLOWLIST: ['open', 'failing'],
   claimNextWorkItem: vi.fn(),
   releaseWorkItem: vi.fn(),
