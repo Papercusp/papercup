@@ -114,7 +114,43 @@ async function main(): Promise<void> {
   // property of a growing telemetry table, and an allocation computed from a
   // stale denominator mis-weights every stratum.
   const census = await sql.unsafe<QueryStratum[]>(queryCensusSql(workspaceId, tools));
-  const allocation = allocateProportional(census, wanted);
+  // `--tools a,b` RESTRICTS the census to named strata before allocation.
+  //
+  // Why this exists: allocation is PROPORTIONAL to each stratum's distinct-query
+  // count, which is correct for a headline number but makes a small stratum
+  // unstudiable. Measured 2026-08-12 at --queries 40 the census was
+  // sessions=16 fulltext=11 work_items=8 docs=4 plans=1 semantic=0 — so the two
+  // strata that carry NO rerank stage live (docs, plans), i.e. exactly the ones
+  // an adoption decision is about, drew n=4 and n=1. No amount of total N fixes
+  // that ratio; the small strata stay small.
+  //
+  // Restricting the census first makes `--queries` spend entirely WITHIN the
+  // named strata, so `--tools docs:search,plans:search --queries 30` is a real
+  // 15/15 study instead of 4/1 buried in a run dominated by other surfaces.
+  // Proportional allocation is unchanged for every existing invocation.
+  const onlyTools = (argValue('--tools') ?? '')
+    .split(',')
+    .map((t) => t.trim())
+    .filter(Boolean);
+  let censusForAlloc = census;
+  if (onlyTools.length) {
+    censusForAlloc = census.filter((c) => onlyTools.includes(c.tool));
+    const missing = onlyTools.filter((t) => !census.some((c) => c.tool === t));
+    if (censusForAlloc.length === 0) {
+      // Fail loudly. A silently-empty restriction would sample nothing and the
+      // pass would report a clean, confident zero — the failure shape this
+      // bench has already been bitten by twice.
+      console.error(
+        `[labelled] --tools matched NO stratum in the census. asked=${JSON.stringify(onlyTools)} ` +
+          `available=${JSON.stringify(census.map((c) => c.tool))}`,
+      );
+      process.exitCode = 1;
+      return;
+    }
+    if (missing.length) console.warn(`[labelled] --tools: no census rows for ${JSON.stringify(missing)} — ignoring those`);
+    console.log(`[labelled] --tools restriction ACTIVE: ${censusForAlloc.map((c) => c.tool).join(',')}`);
+  }
+  const allocation = allocateProportional(censusForAlloc, wanted);
   console.log(
     `[labelled] census: ` +
       allocation.map((a) => `${a.tool}=${a.want}/${a.distinct}`).join(' ') +
