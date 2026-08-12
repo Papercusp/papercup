@@ -47,8 +47,9 @@ export const ALLOWLIST = new Set(['scripts/check-no-raw-harness-sentinel.mjs']);
  * they are the population the detector makes visible so each relation/call-site
  * can be audited without silently growing the grandfather set. The capability:bash
  * site was subsequently fixed through the canonical resolver, shrinking the
- * pending baseline to 67. A source fingerprint makes a moved or rewritten site
- * fail closed.
+ * pending baseline to 67. The facts:assert site was then fixed through the same
+ * resolver, shrinking the pending baseline to 66. A source fingerprint makes a
+ * moved or rewritten site fail closed.
  */
 export const BASELINE = new Set([
   "libs/generic/tooldef/src/dispatch-stack.ts:360:predicate:const slug = ctx.harnessSlug?.trim();",
@@ -65,7 +66,6 @@ export const BASELINE = new Set([
   "packages/operator-core/lib/agent-tools/dev/pg_query.ts:170:identity-field:harnessSlug: ctx.harnessSlug,",
   "packages/operator-core/lib/agent-tools/dev/why.ts:45:fallback:harnessSlug: args.harness ?? ctx.harnessSlug,",
   "packages/operator-core/lib/agent-tools/events/watch.ts:241:fallback:const harnessSlug = ctx.harnessSlug ?? null;",
-  "packages/operator-core/lib/agent-tools/facts/assert.ts:271:identity-field:harnessSlug: ctx.harnessSlug,",
   "packages/operator-core/lib/agent-tools/facts/scope-ctx.ts:56:identity-field:harnessSlug: ctx.harnessSlug,",
   "packages/operator-core/lib/agent-tools/improvements/resolve.ts:86:fallback:harnessSlug: ctx.harnessSlug ?? null,",
   "packages/operator-core/lib/agent-tools/recipes/run.ts:210:identity-field:...(ctx.harnessSlug ? { harness: ctx.harnessSlug } : {}),",

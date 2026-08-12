@@ -36,6 +36,7 @@ import {
 import { isAssumptionFact, factVersions } from '../../agent-facts/store';
 import { assessKeyContest, type KeyContestAssessment } from '../../facts/contested-key';
 import { resolveScopeRefAlias } from './scope-ctx';
+import { resolveConcreteHarnessSlug } from '../_harness-scope';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
 import { noteAssumptionAsserted } from '../../agent-state-stamp';
 import { neutralizeToolCallTags } from '../../text-safety';
@@ -268,6 +269,7 @@ export default defineTool({
   async handler(args, ctx) {
     const { resolveAgentIdentity, deriveAgentRole } = await import('../coordination/identity');
     const identity = resolveAgentIdentity(ctx);
+    const concreteHarnessSlug = resolveConcreteHarnessSlug(undefined, ctx);
     // EI-7517: default an OMITTED scopeRef from the caller's context for the
     // self-scoped cases (owner = me, harness = this harness, role = my role), so
     // the common "assert a fact about just myself" doesn't error on a missing
@@ -275,7 +277,7 @@ export default defineTool({
     const aliasedScopeRef = resolveScopeRefAlias(args.scope, args);
     const scopeRef = resolveFactScopeRef(args.scope, aliasedScopeRef, {
       ownerId: identity.ownerId,
-      harnessSlug: ctx.harnessSlug,
+      harnessSlug: concreteHarnessSlug,
       role: deriveAgentRole(identity),
     });
     // F1-1 federation identity: a SHAREABLE fact must carry the hive-home slug
