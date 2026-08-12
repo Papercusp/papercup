@@ -569,7 +569,13 @@ export async function egressCanonicalRefs(input: EgressInput): Promise<EgressRes
     );
     if (push.code === 0) {
       res.pushed.push({ remoteRef: spec.remoteRef, from: remoteSha, to: pushSha });
-    } else if (/non-fast-forward|fetch first|failed to push some refs/i.test(push.stderr)) {
+    // `failed to push some refs` is Git's GENERIC trailer for every rejected
+    // push (permission/ruleset failures included), not proof of a non-FF. The
+    // pre-push ancestry check above already proved this update fast-forwardable;
+    // classify only stderr carrying an actual non-FF/fetch-first reason. A
+    // permission failure must stay a transport error so metadata preserves the
+    // actionable cause instead of falsely escalating divergence.
+    } else if (/non-fast-forward|fetch first/i.test(push.stderr)) {
       res.rejectedNonFF.push({
         remoteRef: spec.remoteRef,
         remoteSha: null,

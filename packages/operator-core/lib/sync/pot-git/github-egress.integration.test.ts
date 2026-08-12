@@ -264,21 +264,32 @@ describe('github-egress (P-001: canonical refs → GitHub, FF-only, secrets-gate
     expect(r.pushed).toEqual([]);
   });
 
-  it('a remote push failure is retained as a structured transport error', async () => {
+  it('a remote permission failure with Git\'s generic trailer stays a structured transport error', async () => {
     const r = await egressCanonicalRefs({
       repoPath: store,
       remoteUrl: origin,
       refs: [{ sha: sha2, remoteRef: 'refs/heads/transport-probe' }],
       runGit: async (args, cwd, options) => {
-        if (args[0] === 'push') return { code: 128, stdout: '', stderr: 'remote rejected: 403 email verification required' };
+        if (args[0] === 'push') {
+          return {
+            code: 128,
+            stdout: '',
+            stderr:
+              "remote: Permission to repository denied.\n" +
+              "error: failed to push some refs to 'https://example.invalid/repo.git'",
+          };
+        }
         return defaultRunGit(args, cwd, options);
       },
     });
     expect(r.ok).toBe(false);
     expect(r.pushed).toEqual([]);
+    expect(r.rejectedNonFF).toEqual([]);
     expect(r.remoteErrors).toEqual([
       {
-        message: 'push refs/heads/transport-probe: remote rejected: 403 email verification required',
+        message:
+          "push refs/heads/transport-probe: remote: Permission to repository denied.\n" +
+          "error: failed to push some refs to 'https://example.invalid/repo.git'",
         transient: false,
       },
     ]);
