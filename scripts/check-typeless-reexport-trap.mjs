@@ -79,7 +79,27 @@ const SOURCE_EXT = new Set(['.ts', '.tsx', '.mts', '.js', '.mjs']);
 /** Extensions node/tsx LINK (lexer path). `.tsx` is deliberately absent — it is bundled. */
 export const LINKED_EXT = new Set(['.ts', '.mts']);
 
-const SKIP_DIR = new Set(['node_modules', 'dist', 'build', '.next', 'coverage', '_retired', '.git']);
+/**
+ * Generated/static trees are not package module sources. Walking them is both semantically
+ * wrong (a vendored browser bundle cannot be a tsx-linked workspace consumer) and expensive:
+ * apps/operator/public alone is hundreds of MB of minified JavaScript, while Rust's target/
+ * and local .papercusp state can be many GB. Keep this exported so the gating test pins the
+ * boundary that makes the live-tree scan deterministic under fleet load.
+ */
+export const SOURCE_SKIP_DIR = new Set([
+  'node_modules',
+  'dist',
+  'build',
+  '.next',
+  'coverage',
+  '_retired',
+  '.git',
+  '.papercusp',
+  '.turbo',
+  'out',
+  'public',
+  'target',
+]);
 
 /** `export * from '…'` / `export { a, b } from '…'` — the shapes the lexer cannot follow. */
 const REEXPORT_RE = /^\s*export\s+(?:\*(?:\s+as\s+\w+)?|\{[^}]*\})\s*from\s*['"]([^'"]+)['"]/gm;
@@ -128,11 +148,19 @@ export function namedImportedPackages(text, candidateNames, fileName) {
   // code and string content — the package NAME it is searching for sits inside the specifier —
   // so masking strings would blank the very evidence and find nothing. Anchoring on the
   // `import` keyword instead keeps a real import while rejecting one quoted inside a template.
-  const masked = stripCommentsAndStrings(text, fileName);
+  const rawMatches = [];
   for (const name of candidateNames) {
     const re = new RegExp(
       `import\\s*\\{[^}]*\\}\\s*from\\s*['"]${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(?:/[^'"]*)?['"]`,
     );
+    // Most candidate-name substring hits are prose (especially the root package `papercusp`).
+    // Do not pay for a full TS-aware mask unless named-import syntax exists in the raw text.
+    if (!re.test(text)) continue;
+    rawMatches.push([name, re]);
+  }
+  if (rawMatches.length === 0) return found;
+  const masked = stripCommentsAndStrings(text, fileName);
+  for (const [name, re] of rawMatches) {
     if (firstLiveMatch(text, masked, re)) found.add(name);
   }
   return found;
@@ -182,7 +210,7 @@ function walk(dir, out = []) {
     return out;
   }
   for (const e of entries) {
-    if (SKIP_DIR.has(e)) continue;
+    if (SOURCE_SKIP_DIR.has(e)) continue;
     const p = join(dir, e);
     let st;
     try {
@@ -196,8 +224,14 @@ function walk(dir, out = []) {
   return out;
 }
 
-/** I/O shell: build the package model the pure analyzer consumes. */
-export function scanWorkspace(root = ROOT) {
+/**
+ * I/O shell: build the package model the pure analyzer consumes.
+ *
+ * The gate only needs to know whether a typeless package has any re-export chain. Exact
+ * counts are retained for the human-facing --list diagnostic, but making every gate run
+ * compute them parsed thousands of files after the answer was already known.
+ */
+export function scanWorkspace(root = ROOT, { exactChains = false } = {}) {
   const dirs = new Map();
   for (const parent of WORKSPACE_PARENTS) {
     let entries;
@@ -238,7 +272,10 @@ export function scanWorkspace(root = ROOT) {
         continue;
       }
       // A typeless package contributes its re-export count; an ESM one cannot be a target.
-      if (!isEsm && text.includes('export')) chains += countReexportChains(text, file);
+      if (!isEsm && text.includes('export')) {
+        chains += countReexportChains(text, file);
+        if (chains > 0 && !exactChains) break;
+      }
       // Only an ESM consumer links through the lexer, and only an `import` line can trap.
       if (!isEsm || !text.includes('import')) continue;
       // Cheap substring pre-filter before the per-name regex — most files name none of them.
@@ -314,7 +351,7 @@ function selfTest() {
 function main() {
   const argv = process.argv.slice(2);
   if (argv.includes('--self-test')) return selfTest();
-  const packages = scanWorkspace();
+  const packages = scanWorkspace(ROOT, { exactChains: argv.includes('--list') });
   const violations = analyzeTypelessReexportTrap(packages);
 
   if (argv.includes('--list')) {

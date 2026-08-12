@@ -57,8 +57,16 @@ export function analyzeTypelessReexportTrap(packages: Array<{
         file: string;
     }>;
 }>;
-/** I/O shell: build the package model the pure analyzer consumes. */
-export function scanWorkspace(root?: string): {
+/**
+ * I/O shell: build the package model the pure analyzer consumes.
+ *
+ * The gate only needs to know whether a typeless package has any re-export chain. Exact
+ * counts are retained for the human-facing --list diagnostic, but making every gate run
+ * compute them parsed thousands of files after the answer was already known.
+ */
+export function scanWorkspace(root?: string, { exactChains }?: {
+    exactChains?: boolean | undefined;
+}): {
     name: any;
     dir: any;
     isEsm: boolean;
@@ -79,3 +87,11 @@ export const WORKSPACE_PARENTS: string[];
 export const ALLOW: Set<never>;
 /** Extensions node/tsx LINK (lexer path). `.tsx` is deliberately absent — it is bundled. */
 export const LINKED_EXT: Set<string>;
+/**
+ * Generated/static trees are not package module sources. Walking them is both semantically
+ * wrong (a vendored browser bundle cannot be a tsx-linked workspace consumer) and expensive:
+ * apps/operator/public alone is hundreds of MB of minified JavaScript, while Rust's target/
+ * and local .papercusp state can be many GB. Keep this exported so the gating test pins the
+ * boundary that makes the live-tree scan deterministic under fleet load.
+ */
+export const SOURCE_SKIP_DIR: Set<string>;

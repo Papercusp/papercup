@@ -23,6 +23,7 @@ import {
   namedImportedPackages,
   scanWorkspace,
   LINKED_EXT,
+  SOURCE_SKIP_DIR,
   ALLOW,
 } from '../../../scripts/check-typeless-reexport-trap.mjs';
 
@@ -122,6 +123,14 @@ describe('typeless re-export trap: source-level helpers', () => {
     // If someone "fixes" a false negative by adding .tsx here, the three latent libs start
     // failing the gate and the allowlist grows. That is the wrong fix; this asserts it.
     expect(LINKED_EXT.has('.tsx')).toBe(false);
+  });
+
+  it('does not scan generated or static trees as workspace module source', () => {
+    // These trees can hold GBs of minified/generated JS and fluctuate independently of HEAD.
+    // Reading them made the live-tree guard take 40-60s and flip at the test timeout.
+    expect([...SOURCE_SKIP_DIR]).toEqual(
+      expect.arrayContaining(['node_modules', '.next', '.papercusp', 'public', 'target']),
+    );
   });
 });
 
