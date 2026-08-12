@@ -193,7 +193,8 @@ const TABS = [
   // (🎯 Goals sat HERE, between Kettle and Agents, from 2026-08-07 to 2026-08-09.
   // Removed on owner directive — see the note above the imports. The HUD's Goals
   // tab is the one goals surface now.)
-  // 🤖 Agents + ⚙ System sit immediately after the Kettle (overwatch) tab, in the
+  // 🤖 Agents + ⚙ System sit immediately after the Mug tab (they followed the
+  // Kettle until it retired on 2026-08-11 — P-059/D-083), in the
   // slots Blender + Docs held — owner placement 2026-07-25, split 2026-07-26.
   // Agents leads: it is the one that costs money. Literal labels in both lexicon
   // packs — they name concrete automation surfaces, not cup-cast brand nouns, so

@@ -218,8 +218,10 @@ P-059 slice; leaving that string is correct until then.)
    DIFFERENT module (`lib/overwatch/`, still live) — do not touch it.
 2. `agent-tools/mug-kettle-tool-gate.test.ts` — the `{ name: 'kettle:declare-wake', … }`
    GATED row removed per D-080 (the restore contract for its reversibility is THIS file).
-   `kettle:start` stays in `GATED` and `kettle:pause` stays in `EXCLUDED` — both tools are
-   still live as of this slice.
+   ~~`kettle:start` stays in `GATED` and `kettle:pause` stays in `EXCLUDED` — both tools are
+   still live as of this slice.~~ **No longer true as of the NEXT slice (below), which
+   retired both.** Struck rather than deleted because it dates a claim: a reader restoring
+   `declare_wake` needs to know those two rows were live *at that moment* and are not now.
 3. `agent-tools/loop/arm.ts` — TWO pointers swept: the header comment and the `notWhen`
    guidance string both named `pot:declare-wake / kettle:declare-wake` as the autonomous
    counterpart loop; the Kettle half was dropped so live guidance cannot instruct a verb
@@ -235,6 +237,60 @@ P-059 slice; leaving that string is correct until then.)
    the original **ALWAYS call `kettle:declare-wake`** line would have redded the shared gate
    from a file two directories outside the one being retired. Note this file lives in the
    `libs/papercusp` SUBMODULE, so its restore is a submodule commit, not a superproject one.
+
+## `kettle:start` / `kettle:pause` + the OverwatchTab UI (P-059, D-083)
+
+Retired together, as ONE unit, because they are one feature: `OverwatchTab.tsx` was the
+only non-test caller of either tool (`runOverwatchControl`, `:95`/`:201`), and the tools
+were the only thing the tab could DO. Splitting them would have left either a panel whose
+two buttons throw, or two tools no surface can reach.
+
+| module | original path | why it retired |
+|---|---|---|
+| `start.ts` / `pause.ts` (+ `start-pause.test.ts`) | `packages/operator-core/lib/agent-tools/overwatch/` | The Kettle's loop control (`overwatch_started` bit + cadence + wake). **Two non-test importers at retirement**: `agent-tools/index.ts` (registration) and the UI below. This emptied `agent-tools/overwatch/` entirely — the directory is gone, so there is no overwatch tool group left. |
+| `OverwatchTab.tsx` (+ test) | `apps/operator-vite/src/components/left-sidebar/` | The Kettle's sidebar panel. **Already-dead UI at retirement**: double-gated `OVERWATCH && MUG_KETTLE_SYSTEM`, both default OFF — the same feature-deletion shape as D-076's wake-efficiency panel. |
+
+**Live-tree edits a restore must undo — SEVEN, and #6 is the one that is easy to miss:**
+
+1. `agent-tools/index.ts` — both `import './overwatch/start';` / `'./overwatch/pause';`
+   replaced by one comment. ⚠ `import '../overwatch/loop';` below is a DIFFERENT module
+   (`lib/overwatch/`, still live, its own later slice) — do not touch it.
+2. `agent-tools/mug-kettle-tool-gate.test.ts` — the `kettle:start` GATED row AND the
+   `kettle:pause` EXCLUDED row removed per D-080. `pot:pause` stays (D-003).
+3. `agent-tools/fleet_registry/pause.ts` — `notWhen` dropped "To pause the Kettle —
+   `kettle:pause`". This is GUIDANCE shipped to agents, so a stale pointer is a live wrong
+   instruction. It also SHRANK the prompt-weight budget, which is the safe direction.
+4. `LeftSidebar.tsx` — the lazy import, the `TABS` entry, the `overwatchOn` flag read, the
+   `visibleTabs` gate leg, and the `Thermometer` icon import. **`FLAGS.OVERWATCH` itself is
+   NOT removed** — `lib/overwatch/cross-monitor.ts` and the system-action waker still gate
+   on it. Only this CONSUMER went.
+5. `LeftSidebar.test.tsx` — three flag-gating cases replaced by a retirement tripwire
+   (absent with every flag forced on), two order lists, the `TAB_IDS` assertion INVERTED
+   (`not.toContain('overwatch')`), and the Agents/System adjacency re-anchored to Mug.
+6. **`scripts/ungated-mug-kettle-baseline.json` — FIVE rows dropped.** That baseline is
+   keyed `tier|SUBJECT|path` where the subject is *also* derived from the filename, so
+   retiring a file desyncs BOTH halves and the row can never match again;
+   `mug-kettle-census-dangling-key.test.ts` then fails the shared gate with "every baseline
+   entry points at a file that still exists". Dropping SHRINKS the baseline, which its own
+   SHRINK-ONLY rule permits. A restore must re-add all five. Rows:
+   `tool|kettle:start|…/overwatch/start.ts` · `tool|kettle:pause|…/overwatch/pause.ts` ·
+   `wake|setOverwatchStarted|…/overwatch/start.ts` · `wake|setOverwatchStarted|…/overwatch/pause.ts` ·
+   `ui|OverwatchTab|apps/operator-vite/src/components/left-sidebar/OverwatchTab.tsx`.
+   ⚠ **This step is invisible from inside the slice** — nothing in the moved files points at
+   the baseline, so the name-grep D-083 mandates does not find it. Every remaining slice that
+   moves a file with a baseline row must drop that row IN THE SAME SLICE. Check with
+   `npm run test:file -- packages/operator-core/lib/mug-kettle-census-dangling-key.test.ts`
+   (sub-second). Credit: su-863287b8 diagnosed this after the `declare_wake` slice red-pinned
+   the gate, and fixed that row.
+7. Prose pointers swept in `LeftSidebar.tsx` (the nav-icon note) — cosmetic, listed for
+   completeness so a restore's diff is expected to touch them.
+
+**What deliberately did NOT change** (so a restore does not "fix" a non-problem): the many
+`kettle:start`/`kettle:pause` mentions in `scorecard-emission-pulse.ts`,
+`scorecard-freshness.ts`, `improvements/watchdog.ts`, `cue-authority.ts` and
+`lib/overwatch/*` are PROSE or runtime notes belonging to `lib/overwatch/`, a later slice —
+except that they are now pointers to verbs that no longer resolve, which is tracked as that
+slice's work, not silently accepted here.
 
 <!-- Later P-059 slices append rows here. Keep the "why it retired" column
      evidence-bearing (importer count at retirement), not just a restatement
