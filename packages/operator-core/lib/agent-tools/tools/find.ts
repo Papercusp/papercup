@@ -38,7 +38,7 @@
 import { z } from 'zod';
 import { defineTool, listAllProjectedTools, AGENT_ROLES } from '@papercusp/agent-mcp';
 import { categoryOf } from '../../cupboard/tools-search';
-import { schemaToText, type ToolDiscoveryEntry } from '../../cupboard/tools-discovery';
+import { arrayItemConstraintText, schemaToText, type ToolDiscoveryEntry } from '../../cupboard/tools-discovery';
 import { findTools, type Embedder } from '../../cupboard/tool-find';
 import { buildQueryEmbedder, interactiveEmbedAcquireBudgetMs } from '../search/embedder';
 
@@ -183,8 +183,11 @@ function nestedFieldNames(node: JsonSchemaNode, depth: number): string {
 function schemaShape(node: JsonSchemaNode, depth: number): string {
   const type = schemaType(node);
   const bound = schemaBound(node);
+  const itemConstraint = [node, ...schemaNodes(node)]
+    .map((candidate) => arrayItemConstraintText(candidate))
+    .find((text): text is string => text.length > 0) ?? '';
   const nested = nestedFieldNames(node, depth + 1);
-  return `${type}${bound}${nested}`;
+  return `${type}${bound}${itemConstraint}${nested}`;
 }
 
 /**

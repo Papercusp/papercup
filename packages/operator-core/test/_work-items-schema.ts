@@ -245,7 +245,14 @@ export const HARNESS_FEATURES_CONSOLIDATED_DDL = `
       -- when 11/11 of a BRAND-NEW test file failed for a reason unrelated to what it tested.
       goal_id,
       -- EI-20018021869343311 / migration 803: issue-family duplicate/child edge.
-      parent_id
+      parent_id,
+      -- EI-20288042426947475 / migration 815: claim-spec columns. Keep this
+      -- fixture projection in lockstep with the production view and ISSUE_COLS.
+      tags,
+      source_plan_slug,
+      source_plan_item_ids,
+      redundancy,
+      expected_cost_cents
     FROM harness_shared.work_items WHERE item_kind IN ('bug', 'change', 'task');
   CREATE OR REPLACE FUNCTION harness_shared.engineer_issues_view_dml() RETURNS trigger LANGUAGE plpgsql AS $ei_dml$
   DECLARE v_slug text; v_ei jsonb; v_payload jsonb; v_updated int;

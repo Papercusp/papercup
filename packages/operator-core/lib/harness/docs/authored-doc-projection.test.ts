@@ -12,9 +12,11 @@ import {
   stripProjectionBanner,
 } from './authored-doc-projection';
 import {
+  BACKFILL_RETIRE_REASON,
   GENERATOR_OWNED_DOCS,
   listCorpusDocs,
   listSectionDocs,
+  retireOrphansRefusal,
 } from '../../../../../scripts/project-authored-docs';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -302,6 +304,60 @@ describe('authored-doc projection (P-008)', () => {
 
     it('a root-level doc_id still names itself in the banner', () => {
       expect(applyProjectionBanner(SAMPLE, 'index.mdx')).toContain('index.mdx');
+    });
+  });
+
+  /**
+   * P-009 — the liveness backfill's safety rails (migration 814).
+   *
+   * `--retire-orphans` reads FILE ABSENCE as proof a doc is dead. That inference is sound
+   * only while the corpus is still committed AND the checkout is complete. The two inputs
+   * that break it are indistinguishable from a genuine mass deletion by counts alone, so
+   * the mode must REFUSE rather than guess — a wrong verdict here silently retires docs,
+   * and a retired doc stops being materialized onto the site.
+   *
+   * These assert the refusal DIRECTION in both senses: that it fires on the dangerous
+   * inputs, and that it does NOT fire on the ordinary one. A rail that always refuses
+   * protects nothing, so the negative case is the load-bearing half.
+   */
+  describe('retireOrphansRefusal — the liveness backfill cannot run on an untrustworthy tree', () => {
+    it('REFUSES an empty tree — the state P-009 itself creates by untracking the corpus', () => {
+      const refusal = retireOrphansRefusal({ fileCount: 0, orphanCount: 928, rowCount: 928 });
+      expect(refusal).not.toBeNull();
+      // It must name the blast radius, not just decline: the whole corpus is at stake.
+      expect(refusal).toContain('928');
+      expect(refusal).toContain('whole corpus');
+    });
+
+    it('REFUSES a partial checkout — more orphans than files means the tree is not the oracle', () => {
+      expect(retireOrphansRefusal({ fileCount: 10, orphanCount: 918, rowCount: 928 })).toContain(
+        'not a complete checkout',
+      );
+    });
+
+    it('ALLOWS the real measured shape — 874 files, 54 orphans of 928 rows', () => {
+      // The actual 2026-08-12 corpus. If this ever starts refusing, the rails have become
+      // over-tight and the backfill silently stops working rather than failing loudly.
+      expect(retireOrphansRefusal({ fileCount: 874, orphanCount: 54, rowCount: 928 })).toBeNull();
+    });
+
+    it('ALLOWS a corpus with no orphans at all', () => {
+      expect(retireOrphansRefusal({ fileCount: 874, orphanCount: 0, rowCount: 874 })).toBeNull();
+    });
+
+    it('sits exactly at the boundary: orphans == files is allowed, one more is not', () => {
+      // The rail is `orphanCount > fileCount`. Pinning both sides stops a later refactor
+      // from flipping it to >= (which would refuse a legitimate 50/50 corpus) unnoticed.
+      expect(retireOrphansRefusal({ fileCount: 50, orphanCount: 50, rowCount: 100 })).toBeNull();
+      expect(retireOrphansRefusal({ fileCount: 50, orphanCount: 51, rowCount: 101 })).not.toBeNull();
+    });
+
+    it('records a reason that identifies THIS backfill, so it can be reversed selectively', () => {
+      // retired_at alone cannot distinguish a backfilled retirement from a deliberate one
+      // made later. The reason string is what makes `UPDATE ... SET retired_at = NULL
+      // WHERE retired_reason = <this>` a safe, surgical undo.
+      expect(BACKFILL_RETIRE_REASON).toContain('814');
+      expect(BACKFILL_RETIRE_REASON).toContain('no file on disk');
     });
   });
 });

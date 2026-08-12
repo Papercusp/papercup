@@ -48,6 +48,11 @@ import {
   diagnoseFleetScopeTerminalExhaustion,
 } from '../../scheduler/fleet-scope-admission';
 import { getClaimTimeRetractionAdvisory } from '../work_items/retraction-advisory';
+import { fetchContextPressure } from '../coordination/context-pressure';
+import {
+  decideContextPressureGate,
+  contextCriticalRefusalResult,
+} from '../../scheduler/context-pressure-claim-gate';
 
 /**
  * EI-20099413453852234 — declare the caller's intent for the item it just claimed.
@@ -679,6 +684,12 @@ export default defineTool({
       .describe(
         'WI-2796: pass true ONLY when you actually have/coordinate a live ≥2-machine or Hetzner federation rig. Default (false/omitted): items tagged payload.needs_2_machine_rig are excluded — a single-box caller cannot execute them anyway.',
       ),
+    ignoreContextPressure: z
+      .boolean()
+      .optional()
+      .describe(
+        'WI-5940 escape hatch: proceed even though your CACHED context-pressure bucket reads critical. Pass true only when your OWN live context gauge contradicts it — the cached bucket is refreshed by a ~2-minute watchdog sweep, so it lags your per-turn reading and can read critical while you are fine. Not a way to skip a compaction you actually need.',
+      ),
   }),
   async handler(rawArgs, ctx) {
     // WI-38059 — default `harness` from the session instead of requiring it.
@@ -740,6 +751,40 @@ export default defineTool({
     // alternative (renaming ~15 call sites) would also have caught the unrelated
     // `args.harness` inside buildMissDiagnosis, which has its own `args` param.
     const args = { ...rawArgs, harness: resolvedHarness };
+    // WI-5940: refuse to SERVE a critical-context caller, with a compact-first verdict.
+    //
+    // Placed HERE — before the preflight reads and before any claim — because the acceptance is
+    // "no item is claimed": a check after the claim would already have taken the row. It is also
+    // the cheapest possible refusal (one indexed presence read, no oracle, no claim attempt).
+    //
+    // The decision itself lives in `decideContextPressureGate` so this surface and
+    // `work_items:claim_next` cannot drift apart — the failure mode `concurrencyBlockedRefusal`'s
+    // doc comment above records from WI-6409, where a refusal existed on one branch only.
+    //
+    // Fails SOFT and fails OPEN: a presence read error leaves the bucket unknown and the pull
+    // proceeds exactly as today. Withholding work on an unproven reading would manufacture the
+    // false drain this gate exists to avoid (see the module's hazard note).
+    {
+      const gateEnabled = await getFlag(FLAGS.SCHEDULER_CONTEXT_PRESSURE_GATE, true).catch(() => true);
+      const bucket = gateEnabled
+        ? await fetchContextPressure([ident.ownerId])
+            .then((m) => m.get(ident.ownerId) ?? null)
+            .catch(() => null)
+        : null;
+      const gate = decideContextPressureGate({
+        bucket,
+        override: rawArgs.ignoreContextPressure === true,
+        enabled: gateEnabled,
+        overrideArg: 'ignoreContextPressure',
+      });
+      if (gate.refuse) {
+        return {
+          content: [
+            { type: 'text' as const, text: JSON.stringify(contextCriticalRefusalResult(gate)) },
+          ],
+        };
+      }
+    }
     // P-016: reconcile ALL incompatible pre-existing claims before the next
     // pickup. The sweep is batch-shaped (one pass, one leader alert), so a dead
     // lane cannot drip one stale claim per wake. Only fleet MEMBERS are scoped;

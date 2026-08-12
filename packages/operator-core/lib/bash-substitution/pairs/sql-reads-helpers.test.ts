@@ -33,7 +33,12 @@
  */
 import { describe, expect, it } from 'vitest';
 
-import { gateHealthCallFromQuery } from './sql-reads-helpers';
+import {
+  gateHealthCallFromQuery,
+  workItemsGetCallFromQuery,
+  workItemsListCallFromQuery,
+} from './sql-reads-helpers';
+import { SQL_READ_PAIRS } from './sql-reads';
 
 const WS = "install_slug='papercusp' AND workspace_id='papercusp-workspace'";
 
@@ -92,5 +97,111 @@ describe('gateHealthCallFromQuery — row selection', () => {
       "SELECT metadata->'gate_health'->>'consecutiveReds' AS reds FROM harness_shared.routines",
     );
     expect(call).toContain('name: "green-checkpoint"');
+  });
+});
+
+/**
+ * ── The work_items pairs (EI-20285223214931386) ──────────────────────────────
+ *
+ * Same failure class as the gate-health bug above, found the same way — by
+ * printing every rendered call and reading it — but arriving through a DIFFERENT
+ * door, which is why these cases exist as well as those.
+ *
+ * The gate-health bug was one wrong DEFAULT. This one was structural: the
+ * translator extracted the predicates it recognised and silently ignored the
+ * rest. Ten of the first forty sampled atoms rendered a call answering a
+ * different question than the SQL — and both pairs scored a clean 20/20 while
+ * they did, because the audit only ever consults `cover()`'s boolean.
+ *
+ * Every case below is a REGRESSION of an atom that really appeared in the
+ * corpus, not an invented shape. A dropped predicate fails in whichever
+ * direction the predicate pointed — `status NOT IN (…)` dropped WIDENS the
+ * answer, an OR-branch dropped NARROWS it — so both directions are pinned here.
+ */
+describe('work_items pairs — a predicate the verb cannot express is not silently dropped', () => {
+  const byId = SQL_READ_PAIRS.find((p) => p.id === 'sql.work-items-by-id')!;
+  const search = SQL_READ_PAIRS.find((p) => p.id === 'sql.work-items-search')!;
+  const claims = (pair: typeof byId, atom: string): boolean => pair.sqlShape!.test(atom);
+
+  it('translates the dominant by-id read, terminal columns and all', () => {
+    const call = workItemsGetCallFromQuery(
+      "SELECT feature_id, status, taken_by, terminal_owner FROM harness_shared.work_items WHERE feature_id = 'EI-123' AND harness_slug = 'papercusp'",
+    );
+    expect(call).toBe('work_items:get { id: "EI-123", harness: "papercusp" }');
+  });
+
+  it('batches an IN-list into one ids call', () => {
+    expect(workItemsGetCallFromQuery("SELECT id FROM w WHERE feature_id IN ('WI-1','WI-2')")).toBe(
+      'work_items:get { ids: ["WI-1", "WI-2"] }',
+    );
+  });
+
+  it("declines an id batch beyond the verb's 100-per-call ceiling", () => {
+    const ids = Array.from({ length: 101 }, (_, i) => `'WI-${i}'`).join(',');
+    expect(workItemsGetCallFromQuery(`SELECT id FROM w WHERE feature_id IN (${ids})`)).toBeNull();
+  });
+
+  // The payload/summary trigger must not be anchored on `->`: this atom reads the
+  // payload through a function call with no arrow anywhere in it, and an
+  // arrow-anchored test rendered the DEFAULT tier — which drops `payload`
+  // entirely, i.e. exactly the field the query exists to read.
+  it('asks for the full tier when the payload is read WITHOUT an arrow', () => {
+    expect(
+      workItemsGetCallFromQuery("SELECT jsonb_object_keys(payload) AS k FROM w WHERE feature_id='WI-6512'"),
+    ).toContain('payloadTier: "full"');
+  });
+
+  // `workspace_id` ends in `id`. Without a word boundary the by-id selector
+  // matched its tail, so a scope-only query read as an id read — and the search
+  // pair's negative lookahead excluded every query mentioning `workspace_id`.
+  it('does not mistake workspace_id for an id selector', () => {
+    expect(claims(byId, "SELECT DISTINCT harness_slug FROM w WHERE workspace_id='papercusp-workspace'")).toBe(false);
+  });
+
+  // CALIBRATION for the refusals below. Every one of those asserts that a shape
+  // does NOT claim an atom — and all of them would pass just as happily if the
+  // shape matched NOTHING AT ALL. These two say the shapes still claim the
+  // ordinary reads they exist for, so a refusal means "this shape is discerning"
+  // rather than "this shape is broken".
+  it('CALIBRATION: the shapes do claim the ordinary reads they exist for', () => {
+    expect(
+      claims(byId, "SELECT feature_id, status FROM harness_shared.work_items WHERE feature_id = 'WI-1' AND harness_slug = 'papercusp'"),
+    ).toBe(true);
+    expect(
+      claims(search, "SELECT feature_id, status FROM harness_shared.work_items WHERE title ILIKE '%census%' AND status = 'open'"),
+    ).toBe(true);
+  });
+
+  it.each([
+    ['state NOT IN — dropping it WIDENS the answer', "SELECT id FROM w WHERE title ILIKE '%x%' AND state NOT IN ('done','dropped')"],
+    ['IS NULL — not expressible as a filter argument', "SELECT id FROM w WHERE status = 'open' AND taken_by IS NULL"],
+    ['a time window — the verb has no time argument at all', "SELECT id FROM w WHERE status='open' AND created_at > '2026-08-01'"],
+    ['an OR across two columns — the verb ANDs its filters', "SELECT id FROM w WHERE title ILIKE '%v%' OR payload::text ILIKE '%v%'"],
+    ['a lane filter — there is an include-observations boolean, not a lane arg', "SELECT id FROM w WHERE lane = 'observation' AND title LIKE '%x%'"],
+    ['an unprojected column — the rows would come back without it', "SELECT terminal_reason FROM w WHERE status = 'open'"],
+  ])('search pair does not claim: %s', (_why, atom) => {
+    expect(claims(search, atom)).toBe(false);
+  });
+
+  it('by-id pair does not claim an OR between an id and another column', () => {
+    expect(claims(byId, "SELECT feature_id FROM w WHERE taken_by='su-1' OR feature_id='WI-5481'")).toBe(false);
+  });
+
+  // The flag is unconditional by design. `work_items:list` drops observation-lane
+  // rows by default while the raw SELECT returns them, so omitting it renders a
+  // call answering with FEWER rows than were asked for.
+  it('always requests observation rows, which the verb otherwise omits', () => {
+    expect(workItemsListCallFromQuery("SELECT id FROM w WHERE state='wip'")).toContain('includeObservations: true');
+  });
+
+  it("maps the DB spellings onto the verb's argument names", () => {
+    const call = workItemsListCallFromQuery(
+      "SELECT id FROM w WHERE status='open' AND item_kind='feature' AND taken_by='su-9' AND harness_slug='papercusp'",
+    );
+    // status→state, item_kind→kind, taken_by→assignee, harness_slug→harness.
+    expect(call).toContain('state: "open"');
+    expect(call).toContain('kind: "feature"');
+    expect(call).toContain('assignee: "su-9"');
+    expect(call).toContain('harness: "papercusp"');
   });
 });

@@ -17,6 +17,12 @@ import {
   recordDivergenceVerdict,
   GITHUB_BRIDGE_ESCALATION_PHASE,
   GITHUB_BRIDGE_ESCALATION_KIND,
+  GITHUB_BRIDGE_NEEDS_OWNER_MIN_SWEEPS,
+  githubBridgeNeedsOwnerConditionKey,
+  needsOwnerCause,
+  decideNeedsOwnerAlarm,
+  EMPTY_NEEDS_OWNER_LATCH,
+  type NeedsOwnerLatch,
 } from './github-divergence';
 
 const egressNonFF = { remoteRef: 'refs/heads/staging', remoteSha: 'aaa', localSha: 'bbb', reason: 'diverged' };
@@ -180,13 +186,17 @@ describe('recordDivergenceVerdict — escalation writer (injected sql)', () => {
     return { calls, sql };
   };
 
+  /** The writer now READS the prior row first (WI-38327 alarm latch), so the
+   *  store call of interest is the last one, not the only one. */
+  const lastCall = (calls: Array<{ q: string; params: unknown[] }>) => calls[calls.length - 1];
+
   it('escalate → upserts one row on the github-bridge phase with the divergence kind', async () => {
     const { calls, sql } = capture();
     const verdict = classifyDivergence(collectDivergenceSignals({ ingress: { nonFF: [ingressNonFF] } }));
     await recordDivergenceVerdict('shop-hive', 'ws', verdict, sql);
-    expect(calls).toHaveLength(1);
-    expect(calls[0].q).toMatch(/INSERT INTO harness_shared.harness_escalations/);
-    const [slug, phase, body] = calls[0].params as [string, string, string];
+    const write = lastCall(calls);
+    expect(write.q).toMatch(/INSERT INTO harness_shared.harness_escalations/);
+    const [slug, phase, body] = write.params as [string, string, string];
     expect(slug).toBe('shop-hive');
     expect(phase).toBe(GITHUB_BRIDGE_ESCALATION_PHASE);
     const parsed = JSON.parse(body);
@@ -198,9 +208,123 @@ describe('recordDivergenceVerdict — escalation writer (injected sql)', () => {
   it('clear → clears ONLY its own kind (strict non-clobber, git-sync idiom)', async () => {
     const { calls, sql } = capture();
     await recordDivergenceVerdict('shop-hive', 'ws', classifyDivergence([]), sql);
-    expect(calls).toHaveLength(1);
-    expect(calls[0].q).toMatch(/SET escalation = NULL/);
-    expect(calls[0].params).toContain(GITHUB_BRIDGE_ESCALATION_KIND);
+    const write = lastCall(calls);
+    expect(write.q).toMatch(/SET escalation = NULL/);
+    expect(write.params).toContain(GITHUB_BRIDGE_ESCALATION_KIND);
+  });
+
+  it('WI-38327: persists the alarm latch on the row so the alarm can be one-shot across ticks', async () => {
+    const { calls, sql } = capture();
+    const verdict = classifyDivergence(collectDivergenceSignals({ ingress: { nonFF: [ingressNonFF] } }));
+    await recordDivergenceVerdict('shop-hive', 'ws', verdict, sql);
+    const parsed = JSON.parse((lastCall(calls).params as [string, string, string])[2]);
+    // First owner-actionable tick: counted, but BELOW the debounce threshold,
+    // so it must not have latched an alarm yet.
+    expect(parsed.needs_owner_sweeps).toBe(1);
+    expect(parsed.needs_owner_alerted).toBe(false);
+    expect(parsed.needs_owner_cause).toBeNull();
+  });
+
+  it('WI-38327: reads the prior latch before writing (otherwise every tick looks like the first)', async () => {
+    const { calls, sql } = capture();
+    await recordDivergenceVerdict('shop-hive', 'ws', classifyDivergence([]), sql);
+    expect(calls[0].q).toMatch(/SELECT escalation FROM harness_shared.harness_escalations/);
+    expect(calls[0].params).toContain(GITHUB_BRIDGE_ESCALATION_PHASE);
+  });
+});
+
+describe('WI-38327 — the needs-owner alarm latch (pure policy, no database)', () => {
+  const ownerActionable = () => classifyDivergence(collectDivergenceSignals({ ingress: { nonFF: [ingressNonFF] } }));
+  const differentCause = () => classifyDivergence(collectDivergenceSignals({ admissions: [blockedAdmission] }));
+  const selfHealing = () =>
+    classifyDivergence(collectDivergenceSignals({ egress: { rejectedNonFF: [egressNonFF], blockedSecrets: [] } }));
+  const latch = (o: Partial<NeedsOwnerLatch> = {}): NeedsOwnerLatch => ({ ...EMPTY_NEEDS_OWNER_LATCH, ...o });
+
+  it('needsOwnerCause names only the OWNER-actionable kinds, and is order-independent', () => {
+    expect(needsOwnerCause(ownerActionable().signals)).toBe('ingress-non-ff');
+    expect(needsOwnerCause(differentCause().signals)).toBe('admission-blocked');
+    // An egress non-FF self-heals via the integrator's next merge — not an owner lever.
+    expect(needsOwnerCause(selfHealing().signals)).toBeNull();
+    expect(needsOwnerCause([])).toBeNull();
+    const both = [...ownerActionable().signals, ...differentCause().signals];
+    expect(needsOwnerCause(both)).toBe(needsOwnerCause([...both].reverse()));
+    expect(needsOwnerCause(both)).toBe('admission-blocked+ingress-non-ff');
+  });
+
+  it('a TRANSIENT unreachable signal never pages an owner (it self-heals next tick)', () => {
+    const transient = collectDivergenceSignals({
+      remoteUnreachable: { remoteUrl: 'u', branches: ['main'], errors: ['spawn git ENOENT'], transient: true },
+    });
+    expect(needsOwnerCause(transient)).toBeNull();
+    const persistent = collectDivergenceSignals({
+      remoteUnreachable: { remoteUrl: 'u', branches: ['main'], errors: ['Repository not found'], transient: false },
+    });
+    expect(needsOwnerCause(persistent)).toBe('bridge-remote-unreachable');
+  });
+
+  it('debounces: the first owner-actionable tick counts but does NOT page', () => {
+    const d = decideNeedsOwnerAlarm(latch(), ownerActionable());
+    expect(GITHUB_BRIDGE_NEEDS_OWNER_MIN_SWEEPS).toBeGreaterThan(1);
+    expect(d.alarm).toBe(false);
+    expect(d.next.sweeps).toBe(1);
+    expect(d.next.alerted).toBe(false);
+  });
+
+  it('pages once the condition is SUSTAINED, then stays silent while the cause is unchanged', () => {
+    const first = decideNeedsOwnerAlarm(latch(), ownerActionable());
+    const second = decideNeedsOwnerAlarm(first.next, ownerActionable());
+    expect(second.alarm).toBe(true);
+    expect(second.next.alerted).toBe(true);
+    expect(second.next.cause).toBe('ingress-non-ff');
+
+    // One-shot: the same cause must not re-page on every subsequent tick.
+    const third = decideNeedsOwnerAlarm(second.next, ownerActionable());
+    expect(third.alarm).toBe(false);
+    expect(third.next.alerted).toBe(true);
+    expect(third.next.sweeps).toBe(3);
+  });
+
+  it('a CHANGE of cause re-pages once — the WI-6643 masking bug, guarded', () => {
+    // Regression control for the exact defect this latch is keyed by cause to
+    // avoid: with a bare boolean, whichever signal latched FIRST would silence
+    // every later, DIFFERENT failure for as long as it stayed unresolved.
+    const alerted = latch({ alerted: true, cause: 'ingress-non-ff', sweeps: 5 });
+    const changed = decideNeedsOwnerAlarm(alerted, differentCause());
+    expect(changed.alarm).toBe(true);
+    expect(changed.next.cause).toBe('admission-blocked');
+
+    // ...and then falls back to one-shot on the NEW cause.
+    expect(decideNeedsOwnerAlarm(changed.next, differentCause()).alarm).toBe(false);
+  });
+
+  it('recovers: a clean verdict after an alarm resets the latch and announces an all-clear', () => {
+    const alerted = latch({ alerted: true, cause: 'ingress-non-ff', sweeps: 4 });
+    const d = decideNeedsOwnerAlarm(alerted, classifyDivergence([]));
+    expect(d.recovered).toBe(true);
+    expect(d.alarm).toBe(false);
+    expect(d.next).toEqual(EMPTY_NEEDS_OWNER_LATCH);
+  });
+
+  it('an escalate verdict whose residues all SELF-HEAL is a recovery too — an owner has nothing to do', () => {
+    const alerted = latch({ alerted: true, cause: 'ingress-non-ff', sweeps: 4 });
+    const v = selfHealing();
+    expect(v.action).toBe('escalate'); // still an escalation row...
+    expect(v.needsOwner).toBe(false); // ...but not an owner lever
+    const d = decideNeedsOwnerAlarm(alerted, v);
+    expect(d.recovered).toBe(true);
+    expect(d.next.alerted).toBe(false);
+  });
+
+  it('never announces an all-clear for an alarm it never raised', () => {
+    expect(decideNeedsOwnerAlarm(latch(), classifyDivergence([])).recovered).toBe(false);
+    // Below the debounce threshold: counted, never paged, so nothing to resolve.
+    const belowThreshold = decideNeedsOwnerAlarm(latch(), ownerActionable());
+    expect(decideNeedsOwnerAlarm(belowThreshold.next, classifyDivergence([])).recovered).toBe(false);
+  });
+
+  it('the condition key is stable per hive, so repeat sweeps coalesce instead of storming', () => {
+    expect(githubBridgeNeedsOwnerConditionKey('papercusp')).toBe('github-bridge-needs-owner:papercusp');
+    expect(githubBridgeNeedsOwnerConditionKey('oddsmith-hive')).not.toBe(githubBridgeNeedsOwnerConditionKey('papercusp'));
   });
 
   it('never throws — a store failure is swallowed with a warn (best-effort, bridge tick must not die)', async () => {

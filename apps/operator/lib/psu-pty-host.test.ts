@@ -49,6 +49,7 @@ import {
   PSU_PTY_DIR,
   pidLooksLikePsuHost,
   findLiveHostFor,
+  hostIdleMs,
   eventLogPathForOwner,
   appendHostEvent,
   sharedDrillLedgerPath,
@@ -1127,6 +1128,89 @@ describe('makeOwnerComposerGate (EI-20199370837439455 staged-input safety)', () 
     });
   });
 
+  describe('shouldBreakComposerWedge: the wake-loss fallback (EI-20287339148365013)', () => {
+    const T = { minAgeMs: 90_000, minQuietMs: 90_000, maxDefers: 5 };
+
+    it('breaks the wedge that ran 259 minutes because its measurements were ABSENT', () => {
+      // The verbatim shape of every row those hosts emitted — measured across
+      // ten ledgers in ~/.papercusp/psu-pty on 2026-08-12:
+      //   {"kind":"turn-deferred-for-owner-input","reason":"owner-input-cap",
+      //    "pendingLength":11}
+      // No pendingAgeMs, no ownerQuietMs: the fields did not exist in the code
+      // those hosts were running. Destructuring then yields pendingAgeMs = 0,
+      // the age guard fails, and the old predicate returns false FOREVER. Worst
+      // observed strand: 259 minutes with no turn taken.
+      const absent = { pending: true, consecutiveDefers: 5 };
+      expect('pendingAgeMs' in absent).toBe(false);
+      expect('ownerQuietMs' in absent).toBe(false);
+      expect(shouldBreakComposerWedge(absent, T)).toBe(true);
+    });
+
+    it('still waits below the deferral budget — the control that proves it reads the count', () => {
+      // Same absent-measurement shape, one defer short. If this returned true
+      // the fallback would be "break any staged line", which is not a guard.
+      expect(shouldBreakComposerWedge({ pending: true, consecutiveDefers: 4 }, T)).toBe(false);
+      expect(shouldBreakComposerWedge({ pending: true, consecutiveDefers: 5 }, T)).toBe(true);
+    });
+
+    it('fires when a repeating machine emitter holds ownerQuietMs below threshold', () => {
+      // The proxy failure the timing rule cannot see: bytes classified as text
+      // reset the quiet window, so a terminal reply family the scanner does not
+      // recognise — the exact bug that staged these lines — makes the host look
+      // permanently attended. Timing rule alone says wait; wake-loss says break.
+      const emitterHeld = { pending: true, pendingAgeMs: 3_600_000, ownerQuietMs: 2_000 };
+      expect(shouldBreakComposerWedge(emitterHeld, T)).toBe(false);
+      expect(shouldBreakComposerWedge({ ...emitterHeld, consecutiveDefers: 5 }, T)).toBe(true);
+    });
+
+    it('never fires on an unstaged line, however many defers are claimed', () => {
+      expect(
+        shouldBreakComposerWedge({ pending: false, consecutiveDefers: 9_999 }, T),
+      ).toBe(false);
+    });
+
+    it('leaves the pre-existing timing behaviour intact when no count is supplied', () => {
+      // Callers that predate the fallback pass no consecutiveDefers. It must
+      // default to 0 (never break on the new path) so the only behaviour change
+      // is strictly additive — the incident sample still clears on timing alone.
+      expect(
+        shouldBreakComposerWedge({ pending: true, pendingAgeMs: 112_057, ownerQuietMs: 102_321 }, T),
+      ).toBe(true);
+      expect(
+        shouldBreakComposerWedge({ pending: true, pendingAgeMs: 80_900, ownerQuietMs: 71_164 }, T),
+      ).toBe(false);
+    });
+  });
+
+  describe('makeComposerWedgeDetector: the count the breaker depends on', () => {
+    it('keeps counting after note() has gone quiet for the episode', () => {
+      // note() reports once per staged line and returns null forever after, so
+      // the running count became invisible to the caller at exactly the point
+      // the episode got worse. The breaker reads the accessor, not the report.
+      const d = makeComposerWedgeDetector({ minDefers: 3, minQuietMs: 1_000 });
+      const sample = { pendingLength: 11, ownerQuietMs: 300_000, pendingAgeMs: 300_000 };
+      d.note(sample);
+      d.note(sample);
+      expect(d.note(sample)).not.toBeNull(); // the one-shot report
+      expect(d.note(sample)).toBeNull(); // reported already — silent from here
+      expect(d.consecutiveDefers()).toBe(4); // …but still counting
+      d.note(sample);
+      expect(d.consecutiveDefers()).toBe(5);
+    });
+
+    it('resets the count when the line moves, which is what keeps it off a person', () => {
+      // This is the whole reason the fallback is safe to fire without a clock:
+      // a human's staged line changes length as they type, so their count can
+      // never accumulate toward the break. Only a line nobody is editing does.
+      const d = makeComposerWedgeDetector({ minDefers: 3, minQuietMs: 300_000 });
+      d.note({ pendingLength: 11 });
+      d.note({ pendingLength: 11 });
+      expect(d.consecutiveDefers()).toBe(2);
+      d.note({ pendingLength: 12 }); // a keystroke landed
+      expect(d.consecutiveDefers()).toBe(1);
+    });
+  });
+
   describe('makeOwnerInputDetector: real keystrokes still count', () => {
     it('still accepts real keystrokes, including navigation keys', () => {
       // Deliberately conservative: CSI/SS3 are ambiguous (a human pressing Left
@@ -1700,6 +1784,56 @@ describe('WI-3455 — pidLooksLikePsuHost (host-side identity check, mirrors psu
   it('an unreadable cmdline rejects on Linux (pid vanished/zombie), fails open only without /proc', () => {
     const hasProc = nodeFs.existsSync('/proc');
     expect(pidLooksLikePsuHost(123, () => null)).toBe(!hasProc);
+  });
+});
+
+describe('hostIdleMs — the fact the resume guard never reported (EI-20289007209260909)', () => {
+  // The measured husk. A headless session whose kickoff said "acknowledge and
+  // stop" did exactly that, then held its socket and identity for 4h15m while
+  // the guard called it "STILL LIVE in another window" and coord:presence
+  // called the same session `ended`. Both were locally correct; neither
+  // reported the deciding fact, so the owner could not tell what was true.
+  const NOW = Date.parse('2026-08-12T22:43:00Z');
+
+  it('reports the 178-minute idle the owner had to dig for by hand', () => {
+    const meta = {
+      startedAt: Date.parse('2026-08-12T18:26:54Z'),
+      lastOutputAt: Date.parse('2026-08-12T19:45:15Z'),
+    };
+    const idle = hostIdleMs(meta, NOW);
+    expect(Math.round((idle as number) / 60_000)).toBe(178);
+  });
+
+  it('takes the MOST RECENT stamp, not the first one present', () => {
+    // startedAt is always set and is always the oldest; reading it in
+    // preference to a later stamp would report every busy host as ancient.
+    const meta = {
+      startedAt: Date.parse('2026-08-12T18:26:54Z'),
+      lastOutputAt: Date.parse('2026-08-12T22:42:30Z'),
+      lastInputAt: Date.parse('2026-08-12T22:00:00Z'),
+    };
+    expect(hostIdleMs(meta, NOW)).toBe(30_000);
+  });
+
+  it('returns null when NO stamp is readable — absent evidence is not idleness', () => {
+    // The safe direction here is the OPPOSITE of the composer breaker's, and
+    // that asymmetry is the whole point: breaking a phantom line costs a line
+    // nobody was typing, while waving a resume past a genuinely live host
+    // boots a second one onto its discovery key and strands it (WI-3455).
+    expect(hostIdleMs({}, NOW)).toBeNull();
+    expect(hostIdleMs(undefined as never, NOW)).toBeNull();
+    expect(hostIdleMs({ startedAt: 0 }, NOW)).toBeNull();
+    expect(hostIdleMs({ lastOutputAt: Number.NaN }, NOW)).toBeNull();
+  });
+
+  it('never returns a negative age when a stamp is ahead of the clock', () => {
+    // Clock skew between the writing host and the reading launcher would
+    // otherwise render as "idle -3m", which reads as a bug in the guard.
+    expect(hostIdleMs({ lastOutputAt: NOW + 180_000 }, NOW)).toBe(0);
+  });
+
+  it('reports a busy host as busy', () => {
+    expect(hostIdleMs({ lastActivityAt: NOW - 1_200 }, NOW)).toBe(1_200);
   });
 });
 

@@ -193,6 +193,17 @@ export interface EngineerIssue {
    *  drain fleet to ONE goal. Stamped by stampGoalProvenance at creation; null when the
    *  filing agent held no goal context (the overwhelming majority of historical rows). */
   goalId: string | null;
+  /**
+   * WI-20288042426947475 — the claim-spec fields projected from the shared
+   * work_items base row. Optional preserves the pre-migration distinction:
+   * undefined means an older view did not project the column, while null means
+   * the current view projected it and the stored value is NULL.
+   */
+  tags?: string[] | null;
+  sourcePlanSlug?: string | null;
+  sourcePlanItemIds?: string[] | null;
+  redundancy?: number | null;
+  expectedCostCents?: number | null;
 }
 
 export interface EngineerIssueDetail extends EngineerIssue {
@@ -441,7 +452,7 @@ function nowIso(): string {
   return new Date().toISOString();
 }
 
-interface IssueRowDb {
+export interface IssueRowDb {
   issue_id: string;
   kind: string;
   scope: string;
@@ -476,6 +487,12 @@ interface IssueRowDb {
   goal_id: string | null;
   /** Parent work-item id, appended to the engineer_issues view by migration 803. */
   parent_id: string | null;
+  /** WI-20288042426947475 — claim-spec columns appended by migration 815. */
+  tags: unknown;
+  source_plan_slug: string | null;
+  source_plan_item_ids: string[] | null;
+  redundancy: number | string | null;
+  expected_cost_cents: number | string | null;
 }
 // EI-18691099450966094: delegates to the shared pg-timestamp helper — a raw
 // Postgres-text timestamptz (e.g. "2026-07-26 03:34:43.647148-04") must be
@@ -484,7 +501,13 @@ interface IssueRowDb {
 // manufacture a false staleness verdict on a live claim).
 const tsIso = pgTimestampToIso;
 const tsIsoOrNull = pgTimestampToIsoOrNull;
-function toIssue(r: IssueRowDb): EngineerIssue {
+function coerceFiniteNumber(raw: number | string | null | undefined): number | null {
+  if (raw == null) return null;
+  const n = typeof raw === 'string' ? Number(raw) : raw;
+  return Number.isFinite(n) ? n : null;
+}
+
+export function toIssue(r: IssueRowDb): EngineerIssue {
   return {
     id: r.issue_id,
     kind: (r.kind as IssueStoreKind) ?? 'bug',
@@ -520,6 +543,15 @@ function toIssue(r: IssueRowDb): EngineerIssue {
     updatedAt: tsIso(r.updated_at),
     closedAt: tsIsoOrNull(r.closed_ts),
     goalId: r.goal_id,
+    ...(r.tags !== undefined ? {
+      tags: Array.isArray(r.tags) ? r.tags.filter((v): v is string => typeof v === 'string') : null,
+    } : {}),
+    ...(r.source_plan_slug !== undefined ? { sourcePlanSlug: r.source_plan_slug } : {}),
+    ...(r.source_plan_item_ids !== undefined ? {
+      sourcePlanItemIds: Array.isArray(r.source_plan_item_ids) ? r.source_plan_item_ids : null,
+    } : {}),
+    ...(r.redundancy !== undefined ? { redundancy: coerceFiniteNumber(r.redundancy) } : {}),
+    ...(r.expected_cost_cents !== undefined ? { expectedCostCents: coerceFiniteNumber(r.expected_cost_cents) } : {}),
   };
 }
 
@@ -529,7 +561,7 @@ export const ISSUE_COLS = `issue_id, kind, scope, title, body, severity, source,
   assigned_by, assigned_at, last_progress_at, payload, found_during, linked_feature_id, created_by,
   origin, signal_origin, assignee_rank, rank_writer, rank_updated_at, terminal_owner,
   terminal_completion_ref, authority, feature_order, created_at, updated_at, closed_ts, goal_id,
-  parent_id`;
+  parent_id, tags, source_plan_slug, source_plan_item_ids, redundancy, expected_cost_cents`;
 
 /**
  * ISSUE_COLS with `body` replaced by a NULL of the same type — for the readers that
@@ -570,6 +602,7 @@ export const ISSUE_ROW_DB_KEYS = [
   'linked_feature_id', 'created_by', 'signal_origin', 'assignee_rank', 'rank_writer',
   'rank_updated_at', 'terminal_owner', 'terminal_completion_ref', 'authority', 'feature_order',
   'created_at', 'updated_at', 'closed_ts', 'goal_id', 'parent_id',
+  'tags', 'source_plan_slug', 'source_plan_item_ids', 'redundancy', 'expected_cost_cents',
 ] as const;
 type IssueRowDbKeysUnion = (typeof ISSUE_ROW_DB_KEYS)[number];
 type MissingFromTuple = Exclude<keyof IssueRowDb, IssueRowDbKeysUnion>;

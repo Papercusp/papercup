@@ -544,6 +544,42 @@ export function findLiveHostFor(ownerId, { verifyIdentity = pidLooksLikePsuHost 
   return null;
 }
 
+/**
+ * How long a live host has been INERT, from the activity stamps its own
+ * discovery record already carries (EI-20289007209260909).
+ *
+ * `findLiveHostFor` answers "does a process exist?", which is the wrong
+ * question to hand a human on its own. Measured 2026-08-12: a headless session
+ * whose kickoff said "acknowledge and stop" did exactly that, then sat in the
+ * launcher's process tree for 4h15m holding its socket and identity while the
+ * CLI waited on a stdin nobody would ever write to. The resume guard read
+ * pid-alive, said "STILL LIVE in another window", and told the owner to go use
+ * a window where nothing was happening — while `coord:presence` called the same
+ * session `ended`. Both surfaces were locally correct and the owner still could
+ * not tell what was true, because neither reported the deciding fact: 178
+ * minutes with no output.
+ *
+ * Returns null when NO stamp is readable. That case must not be reported as
+ * idle: the guard's dangerous error is the opposite of the composer breaker's
+ * — there, absent evidence means break the line; here, absent evidence means
+ * keep refusing, because wrongly waving a resume past a genuinely live host
+ * boots a second one onto its discovery key and strands it (WI-3455). Same
+ * "missing measurement" shape, opposite safe direction, and the direction is a
+ * property of what the failure costs, not of the code.
+ *
+ * Pure (injectable clock, no I/O); exported for tests.
+ *
+ * @param {{ lastActivityAt?: number, lastOutputAt?: number, lastInputAt?: number, startedAt?: number }} meta
+ * @param {number} [now]
+ */
+export function hostIdleMs(meta, now = Date.now()) {
+  const stamps = [meta?.lastActivityAt, meta?.lastOutputAt, meta?.lastInputAt, meta?.startedAt].filter(
+    (t) => typeof t === 'number' && Number.isFinite(t) && t > 0,
+  );
+  if (!stamps.length) return null;
+  return Math.max(0, now - Math.max(...stamps));
+}
+
 function ensureDir() {
   mkdirSync(PSU_PTY_DIR, { recursive: true, mode: 0o700 });
   try {
@@ -2889,12 +2925,16 @@ export function hostThroughPty(o) {
       pendingAgeMs,
       ownerQuietMs: ownerQuietMs === Infinity ? null : ownerQuietMs,
       ownerBytesEverSeen: ownerQuietMs !== Infinity,
+      brokenBy,
+      consecutiveDefers,
     });
     try {
       process.stderr.write(
         `psu-pty-host: COMPOSER WEDGE CLEARED for ${ownerId} — discarded a ${pendingLength}-char staged ` +
-          `line unchanged for ${Math.round(pendingAgeMs / 1000)}s with no owner keystroke for ` +
-          `${ownerQuietMs === Infinity ? 'the whole session' : `${Math.round(ownerQuietMs / 1000)}s`}. ` +
+          (brokenBy === 'wake-loss'
+            ? `line after ${consecutiveDefers} consecutive wakes were thrown away against it. `
+            : `line unchanged for ${Math.round(pendingAgeMs / 1000)}s with no owner keystroke for ` +
+              `${ownerQuietMs === Infinity ? 'the whole session' : `${Math.round(ownerQuietMs / 1000)}s`}. `) +
           `It was blocking EVERY wake. If that text was yours, retype it — this agent was dead until now.\n`,
       );
     } catch {

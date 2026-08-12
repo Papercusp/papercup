@@ -414,11 +414,11 @@ const ID_PREDICATE = String.raw`${ALIAS}\b(?:feature_id|id)\s*(?:=\s*${STR}|in\s
  * Scope predicates BOTH verbs apply implicitly: the call is scoped to the
  * caller's workspace, and `harness` is a first-class argument. Free to consume.
  */
-const SCOPE_PREDICATE = String.raw`${ALIAS}(?:workspace_id|harness_slug|scope)\s*=\s*${STR}`;
+const SCOPE_PREDICATE = String.raw`${ALIAS}\b(?:workspace_id|harness_slug|scope)\s*=\s*${STR}`;
 
 /** The typed slices `work_items:list` can actually ask for. */
 const FILTER_PREDICATE =
-  String.raw`${ALIAS}(?:(?:title|summary)\s+i?like\s*${STR}` +
+  String.raw`${ALIAS}\b(?:(?:title|summary)\s+i?like\s*${STR}` +
   String.raw`|(?:status|state)\s*=\s*${STR}` +
   String.raw`|(?:item_kind|kind)\s*=\s*${STR}` +
   String.raw`|(?:taken_by|assignee)\s*=\s*${STR}` +
@@ -434,18 +434,35 @@ function whereBuiltOnlyFrom(allowed: string): string {
   return String.raw`\bwhere\s+\(?\s*(?:${allowed})\s*\)?(?:\s+and\s+\(?\s*(?:${allowed})\s*\)?)*\s*(?:\border\s+by\b|\blimit\b|\bgroup\s+by\b|$)`;
 }
 
+/**
+ * The residual rule again, on the PROJECTION side: a call that returns the right
+ * rows but not the COLUMN the query exists to read has not served it. Neither
+ * verb projects these, so a query selecting one is left to SQL. (`\b` keeps
+ * `completion_ref` from matching inside `terminal_completion_ref`, which both
+ * verbs DO return.)
+ *
+ * Established by reading a real full-tier `work_items:get` result: every field it
+ * projects appears as a KEY even when null, so a name that never appears — `notes`,
+ * `terminal_reason` — is genuinely absent rather than merely empty on that row.
+ * The gate-health pair sets the same standard for its own unprojected columns.
+ */
+const UNPROJECTED_BY_BOTH = String.raw`notes|terminal_reason|condition_key|feature_order|source_plan_item_ids|needs_human_review|completion_ref`;
+
+/** `work_items:list` returns a leaner row than `get` — these are its extra gaps. */
+const UNPROJECTED_BY_LIST = String.raw`${UNPROJECTED_BY_BOTH}|terminal_owner|taken_at|last_progress_at|closed_ts|closed_at|lane`;
+
 /** Shapes that disqualify either pair outright, whatever the WHERE looks like. */
 const NOT_A_PLAIN_ROW_READ = String.raw`^(?!.*\bjoin\b)(?!.*\b(?:count|sum|avg|min|max)\s*\()(?!.*\bgroup\s+by\b)`;
 
 /** `sql.work-items-by-id` — an id selector plus (optionally) scope, nothing else. */
 export const WORK_ITEMS_BY_ID_SHAPE = new RegExp(
-  `${NOT_A_PLAIN_ROW_READ}(?=[\\s\\S]*${ID_PREDICATE})[\\s\\S]*${whereBuiltOnlyFrom(`${ID_PREDICATE}|${SCOPE_PREDICATE}`)}`,
+  `${NOT_A_PLAIN_ROW_READ}(?!.*\\b(?:${UNPROJECTED_BY_BOTH})\\b)(?=[\\s\\S]*${ID_PREDICATE})[\\s\\S]*${whereBuiltOnlyFrom(`${ID_PREDICATE}|${SCOPE_PREDICATE}`)}`,
   'is',
 );
 
 /** `sql.work-items-search` — typed slices plus scope, and NO id selector. */
 export const WORK_ITEMS_SEARCH_SHAPE = new RegExp(
-  `${NOT_A_PLAIN_ROW_READ}(?![\\s\\S]*${ID_PREDICATE})(?=[\\s\\S]*${FILTER_PREDICATE})[\\s\\S]*${whereBuiltOnlyFrom(`${FILTER_PREDICATE}|${SCOPE_PREDICATE}`)}`,
+  `${NOT_A_PLAIN_ROW_READ}(?!.*\\b(?:${UNPROJECTED_BY_LIST})\\b)(?![\\s\\S]*${ID_PREDICATE})(?=[\\s\\S]*${FILTER_PREDICATE})[\\s\\S]*${whereBuiltOnlyFrom(`${FILTER_PREDICATE}|${SCOPE_PREDICATE}`)}`,
   'is',
 );
 

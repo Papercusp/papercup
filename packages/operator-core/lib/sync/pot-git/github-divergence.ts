@@ -265,10 +265,195 @@ export function classifyDivergence(signals: DivergenceSignal[]): DivergenceVerdi
 }
 
 /**
+ * WI-38327: how many CONSECUTIVE owner-actionable ticks before we page a human.
+ *
+ * A debounce only — `classifyDivergence` already excludes `transient` faults
+ * from `needsOwner`, so this is not the transient guard; it is insurance
+ * against a single non-transient blip (one bad credential read, one 500 from
+ * GitHub) becoming an urgent push.
+ */
+export const GITHUB_BRIDGE_NEEDS_OWNER_MIN_SWEEPS = 2;
+
+/** Stable condition key so repeat sweeps COALESCE onto one owner-facing card
+ *  instead of storming one per tick (the git-sync severe-event idiom). */
+export function githubBridgeNeedsOwnerConditionKey(potHomeSlug: string): string {
+  return `github-bridge-needs-owner:${potHomeSlug}`;
+}
+
+/** The alarm latch persisted INSIDE the escalation row body — no new table, no
+ *  new column, and it travels with the escalation it describes. */
+export interface NeedsOwnerLatch {
+  alerted: boolean;
+  cause: string | null;
+  sweeps: number;
+}
+
+export const EMPTY_NEEDS_OWNER_LATCH: NeedsOwnerLatch = { alerted: false, cause: null, sweeps: 0 };
+
+export interface NeedsOwnerAlarmDecision {
+  next: NeedsOwnerLatch;
+  /** Page the human on THIS tick. */
+  alarm: boolean;
+  /** We had alarmed and the owner-actionable condition is now gone → all-clear. */
+  recovered: boolean;
+  /** The cause string this decision is about (null when not owner-actionable). */
+  cause: string | null;
+}
+
+/**
+ * The owner-actionable signal kinds, folded into ONE stable cause string.
+ *
+ * Sorted + joined so the value is order-independent: the same set of signals
+ * always produces the same cause, and a DIFFERENT set produces a different one.
+ * That difference is load-bearing — see `decideNeedsOwnerAlarm`.
+ */
+export function needsOwnerCause(signals: DivergenceSignal[]): string | null {
+  const kinds = new Set<string>();
+  for (const s of signals) {
+    if (s.kind === 'ingress-non-ff' || s.kind === 'admission-blocked') kinds.add(s.kind);
+    else if ((s.kind === 'bridge-remote-unreachable' || s.kind === 'bridge-egress-unreachable') && !s.transient) kinds.add(s.kind);
+  }
+  return kinds.size === 0 ? null : [...kinds].sort().join('+');
+}
+
+/**
+ * Decide whether this tick pages a human. PURE — the whole latch policy is
+ * testable without a database.
+ *
+ * ⚠ The latch is keyed by CAUSE, never by a bare boolean, and that is
+ * deliberate. WI-6643: three distinguishable origin-freshness signals shared
+ * one `of_alerted` flag, so whichever latched FIRST silenced the others for as
+ * long as it stayed stale — a later, different failure could then be masked
+ * forever behind an alarm whose summary described the wrong subsystem. Here a
+ * CHANGE of cause re-alarms exactly once, then falls back to one-shot.
+ */
+export function decideNeedsOwnerAlarm(prev: NeedsOwnerLatch, verdict: DivergenceVerdict): NeedsOwnerAlarmDecision {
+  const cause = verdict.action === 'escalate' && verdict.needsOwner ? needsOwnerCause(verdict.signals) : null;
+
+  // Not owner-actionable this tick: reset the latch, and announce an all-clear
+  // if we had previously alarmed. A `clear` verdict and an `escalate` verdict
+  // whose residues are all self-healing are the SAME thing to an owner.
+  if (!cause) {
+    return { next: { ...EMPTY_NEEDS_OWNER_LATCH }, alarm: false, recovered: prev.alerted, cause: null };
+  }
+
+  const sweeps = prev.sweeps + 1;
+  const alarm = sweeps >= GITHUB_BRIDGE_NEEDS_OWNER_MIN_SWEEPS && (!prev.alerted || prev.cause !== cause);
+  return {
+    next: { alerted: alarm || prev.alerted, cause: alarm ? cause : (prev.alerted ? prev.cause : null), sweeps },
+    alarm,
+    recovered: false,
+    cause,
+  };
+}
+
+/** Read the latch off the stored row. A missing/!JSON/other-kind row reads as
+ *  "never alarmed" — the safe direction: we may alarm once more than needed,
+ *  never one fewer. */
+async function readNeedsOwnerLatch(s: Sql, potHomeSlug: string): Promise<NeedsOwnerLatch> {
+  try {
+    const rows = (await s.unsafe(
+      `SELECT escalation FROM harness_shared.harness_escalations
+        WHERE harness_slug = $1 AND phase = $2 AND escalation IS NOT NULL`,
+      [potHomeSlug, GITHUB_BRIDGE_ESCALATION_PHASE],
+    )) as unknown as Array<{ escalation: string | null }>;
+    const raw = rows?.[0]?.escalation;
+    if (!raw) return { ...EMPTY_NEEDS_OWNER_LATCH };
+    const parsed = JSON.parse(raw) as Record<string, unknown>;
+    if (parsed.kind !== GITHUB_BRIDGE_ESCALATION_KIND) return { ...EMPTY_NEEDS_OWNER_LATCH };
+    return {
+      alerted: parsed.needs_owner_alerted === true,
+      cause: typeof parsed.needs_owner_cause === 'string' ? parsed.needs_owner_cause : null,
+      sweeps: typeof parsed.needs_owner_sweeps === 'number' ? parsed.needs_owner_sweeps : 0,
+    };
+  } catch {
+    return { ...EMPTY_NEEDS_OWNER_LATCH };
+  }
+}
+
+/**
+ * WI-38327: raise the owner-facing alarm for an owner-gated bridge block.
+ *
+ * The escalation row this module has always written is DURABLE but not
+ * HUMAN-VISIBLE: nothing pages off `harness_escalations`. That gap cost ~26h
+ * of frozen egress on 2026-08-12 — `needs_owner:true`, `divergence:"escalate"`
+ * and a verbatim GitHub rejection string all sat correctly recorded in the row
+ * while every health surface read benign, and it was found only because an
+ * agent triaging an unrelated failure went spelunking in the metadata by hand.
+ *
+ * So this mirrors the three-part alarm `origin-freshness-watchdog` already
+ * uses: notifyAttention (the owner rail) + broadcastSevereEvent (the coord
+ * card, coalesced on a stable conditionKey) beside the row. Both are
+ * best-effort and independently swallowed — paging is never allowed to break a
+ * bridge tick.
+ */
+async function deliverNeedsOwnerAlarm(
+  potHomeSlug: string,
+  workspaceId: string,
+  verdict: DivergenceVerdict,
+  cause: string,
+  sweeps: number,
+): Promise<void> {
+  const title = `GitHub bridge BLOCKED on ${potHomeSlug} — owner action required`;
+  const body =
+    `${verdict.detail}\n\n` +
+    `This has been the verdict for ${sweeps} consecutive bridge tick(s). Nothing egresses to origin ` +
+    `until it is resolved, so work is accumulating on this box with no off-box copy. ` +
+    `Inspect: harness_shared.harness_escalations (harness_slug='${potHomeSlug}', phase='${GITHUB_BRIDGE_ESCALATION_PHASE}').`;
+  try {
+    const { notifyAttention } = await import('../../attention-notify');
+    await notifyAttention({
+      kind: 'intervention',
+      title,
+      body,
+      harnessSlug: potHomeSlug,
+      importance: 'urgent',
+      workspaceId,
+      data: { cause, sweeps, conditionKey: githubBridgeNeedsOwnerConditionKey(potHomeSlug) },
+    });
+  } catch (e) {
+    console.warn(`[github-bridge] needs-owner notify failed (${potHomeSlug}): ${e instanceof Error ? e.message : e}`);
+  }
+  try {
+    const { broadcastSevereEvent } = await import('../../severe-event-broadcast');
+    await broadcastSevereEvent({
+      summary: title,
+      body,
+      category: 'severe-event',
+      conditionKey: githubBridgeNeedsOwnerConditionKey(potHomeSlug),
+      // One-shot until recovery (the latch above): our silence afterwards is
+      // deliberate and must never be read as evidence the bridge caught up.
+      oneShot: true,
+    });
+  } catch (e) {
+    console.warn(`[github-bridge] needs-owner broadcast failed (${potHomeSlug}): ${e instanceof Error ? e.message : e}`);
+  }
+}
+
+/** The all-clear for a previously-alarmed owner-gated block. */
+async function deliverNeedsOwnerRecovery(potHomeSlug: string): Promise<void> {
+  try {
+    const { broadcastSevereEventResolved } = await import('../../severe-event-broadcast');
+    await broadcastSevereEventResolved({
+      conditionKey: githubBridgeNeedsOwnerConditionKey(potHomeSlug),
+      summary: `GitHub bridge RECOVERED on ${potHomeSlug} — the owner-gated block is gone.`,
+      body: 'The bridge divergence verdict no longer needs an owner lever; egress can progress again.',
+    });
+  } catch (e) {
+    console.warn(`[github-bridge] needs-owner recovery broadcast failed (${potHomeSlug}): ${e instanceof Error ? e.message : e}`);
+  }
+}
+
+/**
  * Write/refresh the bridge divergence escalation for a hive — or clear it on a
  * clean pass. One row per (potHomeSlug, 'github-bridge'), upserted like
  * git-sync's writers; the clear targets only our own kind (strict non-clobber).
  * Never throws (best-effort, mirrors the git-sync escalation writers).
+ *
+ * WI-38327: also PAGES the owner when the verdict is owner-actionable and stays
+ * that way (see `decideNeedsOwnerAlarm`). Delivery happens only AFTER the row
+ * write succeeds — the latch is what makes the alarm one-shot, so paging
+ * without persisting it would storm one urgent notification per tick.
  */
 export async function recordDivergenceVerdict(
   potHomeSlug: string,
@@ -276,8 +461,10 @@ export async function recordDivergenceVerdict(
   verdict: DivergenceVerdict,
   sql?: Sql,
 ): Promise<void> {
+  let decision: NeedsOwnerAlarmDecision | null = null;
   try {
     const s = sql ?? getOrgPg().sql;
+    decision = decideNeedsOwnerAlarm(await readNeedsOwnerLatch(s, potHomeSlug), verdict);
     if (verdict.action === 'clear') {
       await s.unsafe(
         `UPDATE harness_shared.harness_escalations
@@ -287,26 +474,40 @@ export async function recordDivergenceVerdict(
             AND (escalation::jsonb ->> 'kind') = $4`,
         [potHomeSlug, Date.now(), GITHUB_BRIDGE_ESCALATION_PHASE, GITHUB_BRIDGE_ESCALATION_KIND],
       );
-      return;
+    } else {
+      const body = JSON.stringify({
+        kind: GITHUB_BRIDGE_ESCALATION_KIND,
+        harness_slug: potHomeSlug,
+        needs_owner: verdict.needsOwner,
+        signals: verdict.signals,
+        emitted_at: Date.now(),
+        detail: verdict.detail,
+        // WI-38327 alarm latch — persisted here so it travels with the
+        // escalation it describes (no new table, no new column).
+        needs_owner_alerted: decision.next.alerted,
+        needs_owner_cause: decision.next.cause,
+        needs_owner_sweeps: decision.next.sweeps,
+      });
+      await s.unsafe(
+        `INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
+         VALUES ($1, $2, $3, $4, $5)
+         ON CONFLICT (harness_slug, phase)
+         DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms`,
+        [potHomeSlug, GITHUB_BRIDGE_ESCALATION_PHASE, body, Date.now(), workspaceId],
+      );
     }
-    const body = JSON.stringify({
-      kind: GITHUB_BRIDGE_ESCALATION_KIND,
-      harness_slug: potHomeSlug,
-      needs_owner: verdict.needsOwner,
-      signals: verdict.signals,
-      emitted_at: Date.now(),
-      detail: verdict.detail,
-    });
-    await s.unsafe(
-      `INSERT INTO harness_shared.harness_escalations (harness_slug, phase, escalation, mtime_ms, workspace_id)
-       VALUES ($1, $2, $3, $4, $5)
-       ON CONFLICT (harness_slug, phase)
-       DO UPDATE SET escalation = EXCLUDED.escalation, mtime_ms = EXCLUDED.mtime_ms`,
-      [potHomeSlug, GITHUB_BRIDGE_ESCALATION_PHASE, body, Date.now(), workspaceId],
-    );
   } catch (e) {
     console.warn(
       `[github-bridge] failed to record divergence verdict (${potHomeSlug}): ${e instanceof Error ? e.message : e}`,
     );
+    return; // the latch did not persist — paging now would storm one alarm per tick
+  }
+
+  // Deliver AFTER a successful write, and outside the store try/catch so a
+  // paging failure is never mistaken for a store failure.
+  if (decision?.alarm && decision.cause) {
+    await deliverNeedsOwnerAlarm(potHomeSlug, workspaceId, verdict, decision.cause, decision.next.sweeps);
+  } else if (decision?.recovered) {
+    await deliverNeedsOwnerRecovery(potHomeSlug);
   }
 }

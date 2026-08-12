@@ -364,6 +364,19 @@ describe('schemaToText — compact arg-schema text (tools:find searchable params
       });
       expect(txt).toBe('mode?:enum(a|b)');
     });
+
+    it('renders an array item pattern (plans:add-decision refs)', () => {
+      const txt = schemaToText({
+        properties: {
+          refs: {
+            type: 'array',
+            items: { type: 'string', pattern: '^P-\\d{3,}$' },
+            description: 'in-plan item refs only',
+          },
+        },
+      });
+      expect(txt).toBe('refs?:array<string~/^P-\\d{3,}$/> in-plan item refs only');
+    });
   });
 
   it('EI-13190: names a nested object property\'s own fields, marking its required ones', () => {

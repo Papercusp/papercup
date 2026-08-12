@@ -516,6 +516,71 @@ export async function diagnoseFleetScopeRetiredPlans(args: {
 }
 
 /**
+ * EI-20260781488788952: determine whether every positive plan predicate in a
+ * fleet member's spec points at a terminal plan. The row-level terminality
+ * read below is intentionally narrower: it can miss a completed plan when the
+ * plan's promoted rows belong to the other work-item family. This plan-level
+ * read closes that blind spot without treating an unreadable/missing plan as
+ * terminal.
+ *
+ * `allTerminal:false` is a useful, known negative: at least one bound plan is
+ * still live. `null` means the diagnostic could not establish the answer and
+ * must preserve the existing spec-miss wording (fail soft).
+ */
+export interface FleetScopePlanTerminality {
+  planSlugs: string[];
+  terminalPlanSlugs: string[];
+  allTerminal: boolean;
+}
+
+export async function diagnoseFleetScopePlanTerminality(args: {
+  scope: FleetScopeContext;
+}): Promise<FleetScopePlanTerminality | null> {
+  const planSlugs = planPredicateValues(args.scope.record?.spec);
+  if (planSlugs.length === 0) return null;
+  try {
+    const { planTerminalityInWorkspace } = await import('../agent-tools/plans/source');
+    const terminality = await Promise.all(
+      planSlugs.map((slug) => planTerminalityInWorkspace(args.scope.workspaceId, slug)),
+    );
+    // A missing plan row, an unresolved owner, or a failed read is UNKNOWN —
+    // never silently promote it to a completed mission.
+    if (terminality.some((reading) => reading == null)) return null;
+    const terminalPlanSlugs = planSlugs.filter((_, index) => {
+      const reading = terminality[index]!;
+      return reading.status === 'shipped' || reading.status === 'superseded' || !reading.hasOpenItems;
+    });
+    return { planSlugs, terminalPlanSlugs, allTerminal: terminalPlanSlugs.length === planSlugs.length };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * EI-20260781488788952: read the fleet's LEADER specifically, rather than
+ * answering the weaker question "is anyone else alive?". A successful roster
+ * with no `present && alive && fleetRole=leader` row is a known dead/absent
+ * leader (`false`); a roster/query failure is unknown (`null`) so the old
+ * escalation wording remains safe.
+ */
+export async function diagnoseFleetScopeLeaderLiveness(args: {
+  scope: FleetScopeContext;
+}): Promise<boolean | null> {
+  try {
+    const ws = resolveClaimSpecWorkspace(args.scope.workspaceId);
+    if (!ws) return null;
+    const { listFleetAssignments, groupByAgent } = await import('../fleet/assignments');
+    const rows = await listFleetAssignments({ workspaceId: ws });
+    const leaders = groupByAgent(rows).filter(
+      (agent) => agent.fleetSlug === args.scope.fleetSlug && agent.fleetRole === 'leader',
+    );
+    return leaders.some((leader) => leader.present && leader.alive);
+  } catch {
+    return null;
+  }
+}
+
+/**
  * The CLASS sentence prepended to the leader remedy, or '' when the reading does not
  * support one. Deliberately conservative — it reports the two measured counts and lets the
  * leader judge, rather than asserting the spec is wrong:

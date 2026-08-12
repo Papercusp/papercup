@@ -554,9 +554,19 @@ describe('bootstrap-role — P-013/D-022 retired-tier gate (the psu --role conso
     expect((await res.json()).code).toBe('mug_kettle_retired');
   });
 
-  it('flag ON + role=mug ⇒ NOT refused — the cutover escape hatch still works (SHOW control)', async () => {
-    // Fails if the gate refuses unconditionally. The flag is `case: 'cutover'`;
-    // reversibility is the point, so ON must still launch the tier.
+  it('gate mocked-open + role=mug ⇒ NOT refused — falsifiability control, NOT a reversibility claim', async () => {
+    // Fails if the gate refuses UNCONDITIONALLY. Without this control, an
+    // `isRetiredTierRole` that degenerated to `() => true` would pass the whole suite.
+    //
+    // WI-38263: this branch is UNREACHABLE in production, deliberately. P-068 DELETED
+    // `papercusp-mug-kettle-system` and collapsed `mugKettleSystemEnabled()` to
+    // `return false`, so the tier is retired PERMANENTLY. This rationale used to read
+    // "the flag is `case: 'cutover'`; reversibility is the point" — stale in the same
+    // direction as the refusal text this item fixed, because it told a future reader the
+    // retirement is revertible. It is not. We drive the impossible value ON only as the
+    // SHOW half of the falsifiable pair; it asserts nothing about restorability.
+    // (lint:no-unreachable-tier-mock scopes to the FILE-WIDE DEFAULT, which here is OFF,
+    // so deliberately driving the impossible branch in one case is legitimate and unflagged.)
     // consumes:none — the suite's beforeEach defaults to feature:'required',
     // which would 400 this launch for a reason unrelated to the gate and make
     // the control pass for the wrong reason.

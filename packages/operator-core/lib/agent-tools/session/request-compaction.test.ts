@@ -16,11 +16,15 @@
  *
  * Run: cd packages/operator-core && npx vitest run lib/agent-tools/session/request-compaction.test.ts
  */
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { z } from 'zod';
 import { truncateHint } from './request-compaction';
 import { __resetRefusalMarkers } from '../../enforcement-gate-io';
 import { __resetRespawnExpectedMarkers, consumeRespawnExpected } from '../../carry-respawn-marker';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { spawn } from 'node:child_process';
 const flushMarks = vi.hoisted(() => new Map<string, number>());
 vi.mock('../../flush-refusal-marker', () => ({
   REFUSAL_MARKER_TTL_MS: 10 * 60_000,
@@ -944,5 +948,101 @@ describe('session:request-compaction — P-010 open-owner-question first-prompt 
     expect(b.firstPromptSource).toBe('continuation-note');
     expect(b.note).not.toContain('open-owner-question');
     expect(injected().data).toMatch(ENVELOPE_LINE);
+  });
+});
+
+/**
+ * WI-5936 / EI-16611 — the cut SIGTERMs native background Bash jobs.
+ *
+ * The module's selection rules are unit-tested in native-bg-task-ledger.test.ts.
+ * What is proven HERE is the WIRE: that the tool actually reads the ledger and
+ * that the result reaches the agent-facing `note`. That deserves its own test
+ * because a broken wire fails SILENTLY — every unit test still passes, the tool
+ * still returns ok, and the warning simply never appears, which is
+ * indistinguishable from "you had no live jobs".
+ *
+ * Liveness here is a REAL open fd (the same signal the hook's own advisory
+ * uses), not a mocked predicate, so this also pins the seconds-vs-ms agreement
+ * with the python writer end to end.
+ */
+describe('session:request-compaction — native bg task warning (WI-5936)', () => {
+  let bgHome = '';
+  const origHome = process.env.HOME;
+
+  beforeEach(() => {
+    findLiveHost.mockReturnValue(carryHost);
+    injectIntoHost.mockResolvedValue(true);
+    buildCarryBrief.mockResolvedValue(emptyBrief);
+    bgHome = mkdtempSync(join(tmpdir(), 'reqcompact-bg-'));
+    mkdirSync(join(bgHome, '.papercusp'), { recursive: true });
+    process.env.HOME = bgHome; // os.homedir() reads $HOME on POSIX
+  });
+
+  afterEach(() => {
+    process.env.HOME = origHome;
+    rmSync(bgHome, { recursive: true, force: true });
+  });
+
+  /** Holds `path` open for writing until killed. `exec` REPLACES the shell so
+   *  the fd dies with kill() instead of leaking to an orphaned child. */
+  const holdOpen = (path: string) =>
+    spawn('bash', ['-c', `exec 3>'${path}'; exec sleep 30 >&3`], { stdio: 'ignore' });
+
+  const writeLedger = (logPath: string, sid: string | null) =>
+    writeFileSync(
+      join(bgHome, '.papercusp', 'bg-output-tracking.json'),
+      JSON.stringify({
+        [logPath]: {
+          // SECONDS — the shape the python hook writes.
+          started_at: Date.now() / 1000 - 90,
+          cmd: `npm run test:affected > ${logPath} 2>&1`,
+          ...(sid ? { sid } : {}),
+        },
+      }),
+    );
+
+  it('warns, naming the job, when one of THIS session’s bg jobs is still running', async () => {
+    const log = join(bgHome, 'running.log');
+    const holder = holdOpen(log);
+    try {
+      await new Promise((r) => setTimeout(r, 300));
+      writeLedger(log, 'su-caller');
+      const b = body(await call({ focus: 'x' }));
+      expect(b.ok).toBe(true); // WARNS — never refuses the cut
+      expect(b.note).toContain('native-bg-tasks');
+      expect(b.note).toContain('test:affected');
+      expect(b.nativeBgTasks.live).toHaveLength(1);
+    } finally {
+      holder.kill();
+    }
+  });
+
+  it('stays silent — and omits the field — when the job has already finished', async () => {
+    const log = join(bgHome, 'finished.log');
+    writeFileSync(log, 'done\n');
+    writeLedger(log, 'su-caller'); // recorded, but nothing holds it open
+    const b = body(await call({ focus: 'x' }));
+    expect(b.note).not.toContain('native-bg-tasks');
+    expect(b.nativeBgTasks).toBeUndefined();
+  });
+
+  it("ignores another session's live job — this cut cannot kill it", async () => {
+    const log = join(bgHome, 'peer.log');
+    const holder = holdOpen(log);
+    try {
+      await new Promise((r) => setTimeout(r, 300));
+      writeLedger(log, 'su-some-other-agent');
+      const b = body(await call({ focus: 'x' }));
+      expect(b.note).not.toContain('native-bg-tasks');
+      expect(b.nativeBgTasks).toBeUndefined();
+    } finally {
+      holder.kill();
+    }
+  });
+
+  it('no ledger at all → no warning, and the cut proceeds untouched', async () => {
+    const b = body(await call({ focus: 'x' }));
+    expect(b.ok).toBe(true);
+    expect(b.note).not.toContain('native-bg-tasks');
   });
 });

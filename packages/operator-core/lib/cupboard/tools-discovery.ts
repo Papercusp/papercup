@@ -121,6 +121,28 @@ function nestedObjectFieldsText(p: { type?: unknown; properties?: unknown; requi
 }
 
 /**
+ * Render a caller-facing constraint declared on an array's primitive item
+ * schema. JSON Schema nests these under `items`, so looking only at the array
+ * node loses the constraint (for example plans:add-decision's `refs` pattern).
+ */
+export function arrayItemConstraintText(input: unknown): string {
+  if (!input || typeof input !== 'object' || Array.isArray(input)) return '';
+  const node = input as { type?: unknown; items?: unknown };
+  if (node.type !== 'array' || !node.items || typeof node.items !== 'object' || Array.isArray(node.items)) return '';
+  const item = node.items as { type?: unknown; enum?: unknown; pattern?: unknown };
+  const enumValues = Array.isArray(item.enum)
+    ? item.enum.filter((v): v is string | number | boolean =>
+        typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean',
+      )
+    : [];
+  if (enumValues.length > 0) return `<enum(${enumValues.join('|')})>`;
+  const pattern = typeof item.pattern === 'string' && item.pattern.length > 0 ? item.pattern : '';
+  if (!pattern) return '';
+  const itemType = typeof item.type === 'string' ? item.type : 'string';
+  return `<${itemType}~/${pattern}/>`;
+}
+
+/**
  * Render a tool's JSON inputSchema into one compact searchable/embeddable line:
  * `key:type description; otherKey?:enum …` (a `?` marks an optional property).
  * Pulls only the model-facing surface — property names, their `type` (or `enum`),
@@ -256,17 +278,7 @@ export function schemaToText(inputSchema: unknown): string | null {
     // contract too. JSON Schema places it under `items`, so checking only the
     // property itself turns `states: z.array(z.enum(['open', 'failing']))`
     // into a misleading bare `array` and hides the only accepted values.
-    const itemSchema = p.items && typeof p.items === 'object' && !Array.isArray(p.items)
-      ? p.items as { enum?: unknown }
-      : null;
-    const itemEnumValues = Array.isArray(itemSchema?.enum)
-      ? itemSchema.enum.filter((v): v is string | number | boolean =>
-          typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean',
-        )
-      : [];
-    const itemText = p.type === 'array' && itemEnumValues.length > 0
-      ? `<enum(${itemEnumValues.join('|')})>`
-      : '';
+    const itemText = arrayItemConstraintText(p);
     const required = entry.presentIn === branches.length && entry.requiredInAll;
     const head = `${name}${required ? '' : '?'}${type ? `:${type}${boundText}${patternText}${nested}` : ''}`;
     const rendered = `${head}${itemText}`;

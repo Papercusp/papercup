@@ -177,6 +177,8 @@ import {
   AGENT_LABELS,
   whichBin,
   wellKnownBackendBin,
+  classifyLiveHostActivity,
+  LIVE_HOST_IDLE_THRESHOLD_MS,
   startSupervisorBeat,
   spawnInherit,
 } from '../scripts/psu-launcher.mjs';
@@ -285,6 +287,57 @@ describe('normalizeOperatorBaseUrl (WI-6821 DEFECT A — a suffixed pin killed p
     });
     expect(t.url).toBe('http://localhost:3070');
     expect(t.source).toBe('env');
+  });
+});
+
+describe('classifyLiveHostActivity (EI-20289007209260909 — process-alive husk diagnosis)', () => {
+  const now = Date.parse('2026-08-12T23:00:00.000Z');
+
+  it('treats recent headless activity as active', () => {
+    expect(
+      classifyLiveHostActivity(
+        { bridgeTty: false, lastActivityAt: now - 5 * 60_000 },
+        { now, idleThresholdMs: 30 * 60_000 },
+      ),
+    ).toEqual({ state: 'active', lastActivityAt: now - 5 * 60_000, idleMs: 5 * 60_000 });
+  });
+
+  it('calls a stale headless host abandoned, while retaining the measured age', () => {
+    const lastActivityAt = now - 31 * 60_000;
+    expect(
+      classifyLiveHostActivity(
+        { bridgeTty: false, lastActivityAt },
+        { now, idleThresholdMs: 30 * 60_000 },
+      ),
+    ).toEqual({ state: 'abandoned', lastActivityAt, idleMs: 31 * 60_000 });
+  });
+
+  it('only calls a stale bridged host idle, never abandoned', () => {
+    const lastActivityAt = now - 31 * 60_000;
+    expect(
+      classifyLiveHostActivity(
+        { bridgeTty: true, lastActivityAt },
+        { now, idleThresholdMs: 30 * 60_000 },
+      ),
+    ).toEqual({ state: 'idle', lastActivityAt, idleMs: 31 * 60_000 });
+  });
+
+  it('falls back to the newest input/output sample and stays unknown when unmeasured', () => {
+    expect(
+      classifyLiveHostActivity(
+        { bridgeTty: false, lastOutputAt: now - 40 * 60_000, lastInputAt: now - 2 * 60_000 },
+        { now, idleThresholdMs: 30 * 60_000 },
+      ),
+    ).toMatchObject({ state: 'active', lastActivityAt: now - 2 * 60_000, idleMs: 2 * 60_000 });
+    expect(classifyLiveHostActivity({ bridgeTty: false }, { now })).toEqual({
+      state: 'unknown',
+      lastActivityAt: null,
+      idleMs: null,
+    });
+  });
+
+  it('keeps a positive default threshold so the guard never treats every live host as stale', () => {
+    expect(LIVE_HOST_IDLE_THRESHOLD_MS).toBeGreaterThan(0);
   });
 });
 

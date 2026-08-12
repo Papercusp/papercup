@@ -250,9 +250,9 @@ export interface WorkItem {
    * `undefined` means "this family's projection does not carry the column", which must fall
    * back to the payload leg, whereas `null` means "the column is present and NULL".
    *
-   * Feature-family only today. The `engineer_issues` VIEW exposes none of these five, so
-   * `issueToWorkItem` leaves them undefined and the payload fallback still governs there —
-   * see WI-38326's issue-family follow-up (needs a view migration, as `goal_id` needed 790).
+   * Both family projections carry these fields after migration 815. Optional remains important
+   * for older callers and hand-built test literals, and preserves the undefined-vs-null source
+   * distinction while a rolling deployment is crossing the view migration.
    */
   tags?: string[] | null;
   sourcePlanSlug?: string | null;
@@ -507,6 +507,15 @@ export function issueToWorkItem(i: EngineerIssue): WorkItem {
     // selects it, so the issue family (the one a goal-scoped drain fleet actually claims)
     // now carries its goal into matchesWorkItemClaimSpec instead of resolving null forever.
     goalId: i.goalId,
+    // WI-20288042426947475 / migration 815: carry the issue view's claim-spec columns through
+    // without collapsing an unprojected legacy view (undefined) into a projected NULL (null).
+    ...(i.tags !== undefined ? {
+      tags: Array.isArray(i.tags) ? i.tags.filter((t): t is string => typeof t === 'string') : null,
+    } : {}),
+    ...(i.sourcePlanSlug !== undefined ? { sourcePlanSlug: i.sourcePlanSlug } : {}),
+    ...(i.sourcePlanItemIds !== undefined ? { sourcePlanItemIds: i.sourcePlanItemIds } : {}),
+    ...(i.redundancy !== undefined ? { redundancy: i.redundancy } : {}),
+    ...(i.expectedCostCents !== undefined ? { expectedCostCents: i.expectedCostCents } : {}),
     parent: i.parent,
     payload: i.payload ?? null,
     ...(externalBlockers.length ? { externalBlockers } : {}),

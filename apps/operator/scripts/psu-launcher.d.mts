@@ -1873,6 +1873,26 @@ export function spawnInherit({ wrapperBin, args, cwd, env, spawnImpl, processApi
     reportSessionEndedImpl?: typeof reportSessionEnded | undefined;
 }): void;
 /**
+ * Classify the activity evidence in a discovery record. This is deliberately a
+ * diagnostic helper, not an auto-release decision: a quiet interactive prompt
+ * and a loop-armed headless worker can both be quiet while still owning a live
+ * identity. The resume guard remains conservative and still requires
+ * `PSU_FORCE_RESUME=1` to take over.
+ * Pure — exported for tests.
+ */
+export function classifyLiveHostActivity(meta: any, { now, idleThresholdMs }?: {
+    now?: number | undefined;
+    idleThresholdMs?: number | undefined;
+}): {
+    state: string;
+    lastActivityAt: number | null;
+    idleMs: null;
+} | {
+    state: string;
+    lastActivityAt: number;
+    idleMs: number;
+};
+/**
  * The bootstrap-su POST body that mints the NEW tracked row + native id for a
  * fork. Pure — exported for tests. A fork carries over the original's workspace +
  * plan and lands in the ORIGINAL's cwd (harness_slug:null so the server doesn't
@@ -2478,6 +2498,7 @@ export const TERMINAL_BEATS_TO_EXIT: 2;
  * genuine zombie is hours old, so waiting costs nothing it can measure.
  */
 export const MIN_UPTIME_BEFORE_SELF_EXIT_MS: number;
+export const LIVE_HOST_IDLE_THRESHOLD_MS: number;
 /**
  * WI-4889 (owner directive 2026-07-14): the resume "choose a different model"
  * path is a MENU, not a free-text `<model>[:<effort>]` prompt. Two selects —

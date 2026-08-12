@@ -66,9 +66,11 @@ vi.mock('../workspace-registry', async () => {
 const { compileFilter } = await import('./get-next');
 const { validateClaimSpec } = await import('./claim-spec');
 const { matchesClaimSpecFilter, claimSpecSubjectFromWorkItem } = await import('./claim-spec-match');
-const { featureRowToWorkItem, FEATURE_COLS } = await import('../work-items');
+const { featureRowToWorkItem, FEATURE_COLS, issueToWorkItem, ISSUE_COLS } = await import('../work-items');
+const { toIssue } = await import('../issues-engineer');
 
 const H = 'papercup';
+const ISSUE_H = 'papercup-issue-parity';
 const WS = 'default';
 let db: FreshPgDb;
 
@@ -198,6 +200,22 @@ async function seed(r: SeedRow) {
     VALUES (${H}, ${r.id}, 'feature', 'open', ${WS}, ${r.title}, '',
        ${r.createdTs}, 0, ${r.featureOrder ?? null}, ${r.planSlugCol ?? null},
        ${r.planItemIdsCol ?? null}, ${r.tagsCol === undefined ? null : db.sql.json(r.tagsCol as never)},
+       ${r.goalId ?? null}, ${r.takenBy ?? null}, ${r.redundancy ?? null},
+       ${r.expectedCostCents ?? null},
+       ${r.payload === undefined || r.payload === null ? null : db.sql.json(r.payload as never)})`;
+}
+
+/** Seed the same corpus through the issue-family relation so the JS side is
+ * built from ISSUE_COLS + toIssue + issueToWorkItem, not a hand mirror. */
+async function seedIssue(r: SeedRow) {
+  await db.sql`
+    INSERT INTO harness_shared.work_items
+      (harness_slug, feature_id, item_kind, status, workspace_id, title, summary,
+       created_ts, updated_ts, source_plan_slug, source_plan_item_ids, tags,
+       goal_id, taken_by, redundancy, expected_cost_cents, payload)
+    VALUES (${ISSUE_H}, ${`I-${r.id}`}, 'bug', 'open', ${WS}, ${r.title}, '',
+       ${r.createdTs}, 0, ${r.planSlugCol ?? null}, ${r.planItemIdsCol ?? null},
+       ${r.tagsCol === undefined ? null : db.sql.json(r.tagsCol as never)},
        ${r.goalId ?? null}, ${r.takenBy ?? null}, ${r.redundancy ?? null},
        ${r.expectedCostCents ?? null},
        ${r.payload === undefined || r.payload === null ? null : db.sql.json(r.payload as never)})`;
@@ -350,6 +368,7 @@ beforeAll(async () => {
   await db.sql.unsafe(USER_TRUST_LIST_DDL);
   await db.sql.unsafe(WORK_ITEM_DEPS_DDL).simple();
   for (const r of ROWS) await seed(r);
+  for (const r of ROWS) await seedIssue(r);
 }, 120_000);
 
 afterAll(async () => {
@@ -373,12 +392,37 @@ async function subjects(): Promise<Map<string, ClaimSpecSubject>> {
   return out;
 }
 
+async function issueItems() {
+  const rows = await db.sql.unsafe(
+    `SELECT ${ISSUE_COLS} FROM harness_shared.engineer_issues WHERE scope = 'harness:${ISSUE_H}' ORDER BY issue_id`,
+  );
+  const out = new Map<string, ReturnType<typeof issueToWorkItem>>();
+  for (const r of rows) out.set(issueToWorkItem(toIssue(r as never)).id, issueToWorkItem(toIssue(r as never)));
+  return out;
+}
+
+async function issueSubjects(): Promise<Map<string, ClaimSpecSubject>> {
+  const out = new Map<string, ClaimSpecSubject>();
+  for (const [id, item] of await issueItems()) out.set(id, claimSpecSubjectFromWorkItem(item));
+  return out;
+}
+
 /** The ids the SQL compiler's fragment admits, for one filter. */
 async function sqlAdmits(filter: FilterNode): Promise<Set<string>> {
   const rows = await db.sql<{ feature_id: string }[]>`
     SELECT feature_id
       FROM harness_shared.work_items
      WHERE harness_slug = ${H}
+       AND ${compileFilter(db.sql as never, filter)}`;
+  return new Set(rows.map((r) => r.feature_id));
+}
+
+async function issueSqlAdmits(filter: FilterNode): Promise<Set<string>> {
+  const rows = await db.sql<{ feature_id: string }[]>`
+    SELECT feature_id
+      FROM harness_shared.work_items
+     WHERE harness_slug = ${ISSUE_H}
+       AND item_kind IN ('bug', 'change', 'task')
        AND ${compileFilter(db.sql as never, filter)}`;
   return new Set(rows.map((r) => r.feature_id));
 }
@@ -464,6 +508,40 @@ describe('WI-5995 — the SQL compiler and the JS evaluator agree on every (fiel
         + `One spec language must not mean two things. Each line below is a spec that admits an item on `
         + `one claim path and refuses it on the other:\n\n${disagreements.join('\n')}\n`,
     ).toEqual([]);
+  }, 120_000);
+});
+
+describe('EI-20288042426947475 — issue-family projection parity', () => {
+  it('carries all five FIELD_MAP columns through the real issue projection', async () => {
+    const item = (await issueItems()).get('I-F-column-only');
+    expect(item).toMatchObject({
+      tags: ['infra'],
+      sourcePlanSlug: PLAN,
+      sourcePlanItemIds: ['P-003'],
+      redundancy: 2,
+      expectedCostCents: 250,
+    });
+  });
+
+  it('keeps issue-family SQL and JS verdicts equal for every non-allowlisted probe', async () => {
+    const subj = await issueSubjects();
+    expect(subj.size, 'every issue row must map through ISSUE_COLS and the real mapper').toBe(ROWS.length);
+    const disagreements: string[] = [];
+    for (const p of PROBES) {
+      if (touchesExcludedField(p.filter)) continue;
+      const admitted = await issueSqlAdmits(p.filter);
+      for (const row of ROWS) {
+        const id = `I-${row.id}`;
+        const sqlVerdict = admitted.has(id);
+        const jsVerdict = matchesClaimSpecFilter(subj.get(id)!, p.filter);
+        if (sqlVerdict !== jsVerdict) {
+          disagreements.push(
+            `  ${p.name}\n    on ${id}: SQL=${sqlVerdict ? 'ADMIT' : 'refuse'} JS=${jsVerdict ? 'ADMIT' : 'refuse'}\n    (${row.why})`,
+          );
+        }
+      }
+    }
+    expect(disagreements, disagreements.join('\n')).toEqual([]);
   }, 120_000);
 });
 

@@ -116,6 +116,16 @@ describe('CONTROL CASES — the measured false positives (WI-38297)', () => {
    *
    * If you improve the classifier so one of these stops matching, that is a genuine win
    * — delete it from this list and say so. Do NOT delete the list.
+   *
+   * ✅ 2026-08-12 — SAYING SO, as instructed. `EI-19474857043229377` ("…the central open
+   * question is now CLOSED") was REMOVED from this list because it is FIXED, not because
+   * it became inconvenient. The bare adverb `now` was dropped from the assertive-
+   * transition marker for the five ambiguous tokens (passed/resolved/closed/blocked/done)
+   * after measuring the whole live population: 8 matches fired on `now` alone and ALL 8
+   * were false positives. The two survivors below are untouched by that fix and STILL
+   * MATCH — they fire on genuinely performative verbs ("flipped done", "DUPLICATE") whose
+   * subject merely happens not to be this item, which is a harder problem than word sense.
+   * So the surface stays READ-ONLY: precision improved, it did not become trustworthy.
    */
   /**
    * VERBATIM excerpts, including the substring that actually fired — established by
@@ -125,14 +135,6 @@ describe('CONTROL CASES — the measured false positives (WI-38297)', () => {
    * sat thousands of characters below the part a human would quote.
    */
   const knownFalsePositives: ReadonlyArray<readonly [string, string]> = [
-    [
-      'EI-19474857043229377 — "closed" describes a sub-QUESTION, not the item',
-      'READ THREAD POST 56018 FIRST — it FALSIFIES the leading hypotheses with measurements.\n\n' +
-        'STATE: open, claimed. ⛔ DO NOT CLOSE on the strength of the instrumentation shipped ' +
-        'below — the deciding leg is still UNIDENTIFIED.\n\n' +
-        'Everything above is a snapshot from 08-04 whose central open question is now CLOSED.\n\n' +
-        '**THE DECIDING LEG IS `cupPlaceableFrontier`.**',
-    ],
     [
       'EI-20034001963934568 — "flipped done" describes ANOTHER plan\'s item',
       'CLAIMED 03:27Z, no code written yet. Read the item body in full — it is unusually ' +
@@ -148,6 +150,22 @@ describe('CONTROL CASES — the measured false positives (WI-38297)', () => {
 
   it.each(knownFalsePositives)('still matches known false positive: %s', (_label, cp) => {
     expect(checkpointDeclaresTerminal(cp)).toBe(true);
+  });
+
+  /**
+   * FIXED CASE — graduated OUT of the list above on 2026-08-12. Pinned here in the
+   * opposite direction so the win cannot silently regress: this note must NOT match.
+   * It is the same VERBATIM head, kept in full because the deciding text ("now CLOSED")
+   * sits far below the part a human would quote.
+   */
+  it('no longer matches EI-19474857043229377 — "now CLOSED" describes a sub-QUESTION (fixed 2026-08-12)', () => {
+    const realHead =
+      'READ THREAD POST 56018 FIRST — it FALSIFIES the leading hypotheses with measurements.\n\n' +
+      'STATE: open, claimed. ⛔ DO NOT CLOSE on the strength of the instrumentation shipped ' +
+      'below — the deciding leg is still UNIDENTIFIED.\n\n' +
+      'Everything above is a snapshot from 08-04 whose central open question is now CLOSED.\n\n' +
+      '**THE DECIDING LEG IS `cupPlaceableFrontier`.**';
+    expect(checkpointDeclaresTerminal(realHead)).toBe(false);
   });
 
   /**
@@ -167,7 +185,12 @@ describe('CONTROL CASES — the measured false positives (WI-38297)', () => {
    * of a triage read.
    */
   it('the imprecision comes from the ONE unanchored marker, firing deep in the note', () => {
-    const aboutSomethingElse = `${'context. '.repeat(200)}the open question is now CLOSED.`;
+    // 2026-08-12: this used to read `…is now CLOSED.` — the NARRATIVE form, now fixed.
+    // The mechanism it documents is UNCHANGED and still live, so the case was re-pointed
+    // at a PERFORMATIVE verb rather than deleted: an unanchored marker still fires on a
+    // terminal statement made about something other than the item, arbitrarily deep in
+    // the note. Only the word-sense half of the problem was solved.
+    const aboutSomethingElse = `${'context. '.repeat(200)}that plan's item was flipped done.`;
     expect(checkpointDeclaresTerminal(aboutSomethingElse)).toBe(true);
     // …while the anchored markers cannot fire from mid-text at all.
     expect(checkpointDeclaresTerminal(`${'context. '.repeat(200)}TERMINAL — done here.`)).toBe(false);

@@ -242,6 +242,17 @@ describe('bounded discovery projection (EI-20235784774977954)', () => {
     expect(compact).toContain('value?:boolean|enum(yes|no)');
   });
 
+  it('renders an array item pattern in the compact result', () => {
+    const compact = compactSchemaForResult({
+      type: 'object',
+      properties: {
+        refs: { type: 'array', items: { type: 'string', pattern: '^P-\\d{3,}$' } },
+      },
+    });
+
+    expect(compact).toBe('refs?:array<string~/^P-\\d{3,}$/>');
+  });
+
   it('returns valid bounded JSON and marks omitted hits', () => {
     const base = {
       query: 'a verbose discovery query',

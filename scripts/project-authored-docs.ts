@@ -223,6 +223,40 @@ export async function retireRow(
 export const BACKFILL_RETIRE_REASON =
   'backfill (P-009, migration 814): no file on disk while the working tree was still the liveness oracle';
 
+/**
+ * Whether `--retire-orphans` may trust the working tree as the liveness oracle.
+ * Returns a refusal message, or null to proceed.
+ *
+ * This lives OUT here, as a pure function, because it is the only thing standing between a
+ * mistimed invocation and a mass retirement of the whole corpus. The mode reads FILE ABSENCE
+ * as proof a doc is dead, which is sound only while the corpus is still committed AND the
+ * checkout is complete — so the dangerous inputs are precisely the ones that look like
+ * "lots of dead docs": an empty tree (P-009 already untracked it), or a partial checkout.
+ * Both are indistinguishable from a real mass deletion by row/file counts alone, so this
+ * refuses instead of guessing.
+ */
+export function retireOrphansRefusal(counts: {
+  fileCount: number;
+  orphanCount: number;
+  rowCount: number;
+}): string | null {
+  const { fileCount, orphanCount, rowCount } = counts;
+  if (fileCount === 0) {
+    return (
+      `zero files on disk, so file-absence proves nothing here. This mode reads the WORKING ` +
+      `TREE as the oracle for which docs are live; an empty tree would retire all ${rowCount} ` +
+      `rows — the whole corpus.`
+    );
+  }
+  if (orphanCount > fileCount) {
+    return (
+      `${orphanCount} orphan rows exceed ${fileCount} files on disk. That ratio says the tree ` +
+      `is not a complete checkout of the corpus.`
+    );
+  }
+  return null;
+}
+
 const fmt = (n: number): string => n.toLocaleString('en-US');
 
 async function main(): Promise<number> {
@@ -311,18 +345,13 @@ async function main(): Promise<number> {
       const toRetire = orphans.filter((r) => r.retired_at === null);
 
       console.log(`\n  RETIRE ORPHANS (one-time liveness backfill)`);
-      if (files.length === 0) {
-        console.error(`    ✗ REFUSING: zero files on disk, so file-absence proves nothing here.`);
-        console.error(`      This mode reads the WORKING TREE as the oracle for which docs are live.`);
-        console.error(`      An empty tree would retire all ${fmt(rows.size)} rows — the whole corpus.`);
-        return 1;
-      }
-      // A corpus that is mostly orphans means the tree is not a trustworthy oracle either
-      // (a partial checkout, a wrong docs root, a half-finished untrack). Retiring is a
-      // bulk state change that is tedious to reverse, so it refuses rather than guesses.
-      if (orphans.length > files.length) {
-        console.error(`    ✗ REFUSING: ${fmt(orphans.length)} orphan rows exceed ${fmt(files.length)} files on disk.`);
-        console.error(`      That ratio says the tree is not a complete checkout of the corpus.`);
+      const refusal = retireOrphansRefusal({
+        fileCount: files.length,
+        orphanCount: orphans.length,
+        rowCount: rows.size,
+      });
+      if (refusal) {
+        console.error(`    ✗ REFUSING: ${refusal}`);
         return 1;
       }
       for (const row of toRetire) {
@@ -343,7 +372,7 @@ async function main(): Promise<number> {
       const outRoot = outArg ? resolve(ROOT, outArg) : docsRoot;
       const live = [...rows.values()].filter((r) => r.retired_at === null);
       const retired = rows.size - live.length;
-      const tally = { wrote: 0, empty: 0 };
+      const tally = { wrote: 0, empty: 0, current: 0 };
 
       console.log(`\n  MATERIALIZE (PG → ${relative(ROOT, outRoot) || '.'})`);
       if (retired === 0 && rows.size > 0) {
@@ -352,19 +381,46 @@ async function main(): Promise<number> {
         console.log(`    ⚠ no row is marked retired — if --retire-orphans has not run yet, this`);
         console.log(`      will write back docs that were deliberately deleted. Run it first.`);
       }
+      // Skipping the file INTERSECTION is the point of this mode; skipping the OVERWRITE
+      // GUARD would be a bug. While the corpus is still committed (P-009 not yet complete)
+      // this mode runs against a tree agents are actively editing, so it honours the same
+      // refusal --write does: never overwrite bytes that are neither the canonical content
+      // nor a projection we wrote, because those bytes are somebody's unsaved edit. Once
+      // the corpus is untracked the target starts empty and this can only report 'absent'.
+      const clobbered: string[] = [];
       for (const row of live) {
         if (!row.content) {
           tally.empty += 1; // an empty row would materialize an empty page
           continue;
         }
         const abs = join(outRoot, row.doc_id);
+        const nextText = applyProjectionBanner(row.content, row.doc_id);
+        const onDisk = existsSync(abs) ? readFileSync(abs, 'utf8') : null;
+        const verdict = projectionVerdict({ onDisk, contentHash: row.content_hash, nextText });
+        if (!verdict.ok) {
+          clobbered.push(row.doc_id);
+          continue;
+        }
+        if (verdict.reason === 'already-current') {
+          tally.current += 1;
+          continue;
+        }
         mkdirSync(dirname(abs), { recursive: true });
-        writeFileSync(abs, applyProjectionBanner(row.content, row.doc_id), 'utf8');
+        writeFileSync(abs, nextText, 'utf8');
         tally.wrote += 1;
       }
       console.log(`    wrote          ${fmt(tally.wrote)} file(s) from live rows`);
+      if (tally.current) console.log(`    identical      ${fmt(tally.current)} file(s) already matched`);
       console.log(`    retired        ${fmt(retired)} row(s) skipped (deliberately removed docs)`);
       if (tally.empty) console.log(`    empty row      ${fmt(tally.empty)} row(s) hold no content and were skipped`);
+      if (clobbered.length) {
+        console.error(`\n    ✗ REFUSED to overwrite ${clobbered.length} hand-edited file(s):`);
+        for (const id of clobbered.slice(0, 10)) console.error(`      - ${id}`);
+        if (clobbered.length > 10) console.error(`      … and ${clobbered.length - 10} more`);
+        console.error(`      Their bytes are neither canonical content nor a projection we wrote.`);
+        console.error(`      Preserve the edit into PG with: --ingest --reconcile   (NEVER --write)`);
+        return 1;
+      }
       return 0;
     }
 

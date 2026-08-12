@@ -708,6 +708,51 @@ describe('checkpointDeclaresTerminal (EI-15232)', () => {
     }
   });
 
+  // 2026-08-12 precision fix — the bare adverb `now` used to be an alternative in the
+  // assertive-transition marker for ALL SEVEN terminal tokens. Measured over the whole
+  // live population (497 open checkpointed rows), 8 matches fired on `now` alone and
+  // hand-reading every one found ZERO true positives: "now <word>" is NARRATIVE, and its
+  // subject is almost always something OTHER than this item (a sibling item, a check, a
+  // question, a risk) — or not a state at all ("now resolved per tick" = URL resolution).
+  //
+  // These are the VERBATIM phrasings from those 8 live checkpoints. They are the control
+  // set: if a future widening of the marker re-admits the narrative form, these fail.
+  it('does NOT match the narrative `now <word>` form — its subject is not this item (2026-08-12, 8/8 measured false positives)', () => {
+    for (const cp of [
+      // a DIFFERENT work-item reached the state
+      'ACTUAL cause (peer su-02434, WI-4427, now RESOLVED): a rogue `pnpm install` hijacked node_modules',
+      // a SIBLING item
+      'the 57-drop is MY reader fix (WI-3356, now done). No new cut needed',
+      // a CHECK, not the item
+      'Slice 9 (`cup:spawn`) confirmed DONE. Its one outstanding check is now CLOSED: /tmp/p059-affected.log had no verdict line',
+      // a different item — and this note says verbatim that THIS item stays open
+      'its bound workItem EI-19480850505352533 is now DONE — re-target the loop on next wake. This item (WI-37504) stays OPEN',
+      // a QUESTION
+      'Everything above is a snapshot from 08-04 whose central open question is now CLOSED.',
+      // a RISK
+      'RISK I FLAGGED AS UNVERIFIED IS NOW RESOLVED — ports are NOT a blocker for item 5.',
+      // a MISMATCH
+      'That mismatch is now resolved in the honest direction: it stays open, because it genuinely is available work.',
+      // WORD SENSE — URL resolution, not the `resolved` work-item state
+      'it bound the admin URL for the process lifetime. Now resolved per tick via `const db = () => getLongLivedAdminPool(...)`',
+    ]) {
+      expect(checkpointDeclaresTerminal(cp)).toBe(false);
+    }
+  });
+
+  it('still matches `now` for state-only vocabulary that is not ordinary English', () => {
+    // These two are item-state tokens, never common technical adjectives, so the
+    // narrative form is unambiguous and stays admitted.
+    expect(checkpointDeclaresTerminal('now needs-human')).toBe(true);
+    expect(checkpointDeclaresTerminal('now deprecated')).toBe(true);
+    // CALIBRATION — proves the cases above fail for the RIGHT reason (the narrative
+    // form), not because the predicate stopped recognising these tokens at all. Same
+    // sentences, performative verb instead of the adverb.
+    expect(checkpointDeclaresTerminal('flipped to resolved')).toBe(true);
+    expect(checkpointDeclaresTerminal('set state to closed')).toBe(true);
+    expect(checkpointDeclaresTerminal('marked done')).toBe(true);
+  });
+
   it('EI-18712524449804476: matches the ACTUAL real-world cursed checkpoints this item was filed on', () => {
     // WI-4446's real checkpoint (verbatim from the ticket) — none of the pre-existing
     // markers matched this ("state=passed" is not "state:terminal"; no parenthetical;

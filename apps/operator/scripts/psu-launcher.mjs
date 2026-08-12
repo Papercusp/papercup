@@ -25,7 +25,7 @@ import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { homedir, hostname } from 'node:os';
 import { join, dirname, delimiter, basename } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { hostThroughPty, fleetOscFromEnv, findLiveHostFor } from './psu-pty-host.mjs';
+import { hostThroughPty, fleetOscFromEnv, findLiveHostFor, hostIdleMs } from './psu-pty-host.mjs';
 // Shared with the proxy itself (WI-6738) — psu must not give up while the proxy is still
 // retrying on its behalf. Plain .mjs so this bare-node script and the tsx-run proxy can
 // import the SAME definition.
@@ -6154,6 +6154,54 @@ function runWrapper({
   spawnInherit({ wrapperBin, args, cwd, env });
 }
 
+/**
+ * A live discovery record can describe a process that has stopped doing useful
+ * work. Process existence is still the safety gate (a second host must not
+ * silently trample a running identity), but stale pty activity is valuable
+ * diagnosis — especially for headless launches, where there is no real window
+ * an owner can use. Two normal 15-minute wake gaps are allowed by default so a
+ * loop-armed worker waiting for its next wake is not immediately called a husk.
+ * Override for local recovery drills with
+ * `PAPERCUSP_PSU_LIVE_HOST_IDLE_THRESHOLD_MS`.
+ */
+const liveHostIdleThresholdRaw = Number(process.env.PAPERCUSP_PSU_LIVE_HOST_IDLE_THRESHOLD_MS);
+export const LIVE_HOST_IDLE_THRESHOLD_MS =
+  Number.isFinite(liveHostIdleThresholdRaw) && liveHostIdleThresholdRaw > 0
+    ? liveHostIdleThresholdRaw
+    : 30 * 60_000;
+
+/**
+ * Classify the activity evidence in a discovery record. This is deliberately a
+ * diagnostic helper, not an auto-release decision: a quiet interactive prompt
+ * and a loop-armed headless worker can both be quiet while still owning a live
+ * identity. The resume guard remains conservative and still requires
+ * `PSU_FORCE_RESUME=1` to take over.
+ * Pure — exported for tests.
+ */
+export function classifyLiveHostActivity(
+  meta,
+  { now = Date.now(), idleThresholdMs = LIVE_HOST_IDLE_THRESHOLD_MS } = {},
+) {
+  const activitySamples = [meta?.lastActivityAt, meta?.lastOutputAt, meta?.lastInputAt]
+    .map((value) => Number(value))
+    .filter((value) => Number.isFinite(value) && value > 0);
+  const lastActivityAt = activitySamples.length > 0 ? Math.max(...activitySamples) : null;
+  const idleMs = hostIdleMs(meta, now);
+  const threshold = Number(idleThresholdMs);
+  if (idleMs === null || !Number.isFinite(threshold) || threshold <= 0) {
+    return { state: 'unknown', lastActivityAt, idleMs };
+  }
+  if (idleMs < threshold) return { state: 'active', lastActivityAt, idleMs };
+  // Only a host that explicitly advertises no bridged human TTY can be called
+  // abandoned. An interactive host may simply be waiting at its prompt; the
+  // caller still gets an activity warning, but not a false abandonment verdict.
+  return {
+    state: meta?.bridgeTty === false ? 'abandoned' : 'idle',
+    lastActivityAt,
+    idleMs,
+  };
+}
+
 function fmtAge(iso) {
   const t = Date.parse(iso);
   if (!Number.isFinite(t)) return '';
@@ -6194,11 +6242,33 @@ async function launchResume(session, { brain = false, fork = false, passthrough 
   if (!fork && session.coordOwnerId && process.env.PSU_FORCE_RESUME !== '1') {
     const live = findLiveHostFor(session.coordOwnerId);
     if (live) {
-      console.error(
-        `psu: this session (${session.coordOwnerId}) is STILL LIVE in another window (host pid ${live.pid}).\n` +
-          `psu: resuming it here would boot a second host on the same identity and strand the live one.\n` +
-          `psu: use that window, run alongside it with --fork, or set PSU_FORCE_RESUME=1 to take over anyway.`,
-      );
+      const activity = classifyLiveHostActivity(live);
+      const lastActivityIso = activity.lastActivityAt
+        ? new Date(activity.lastActivityAt).toISOString()
+        : null;
+      const idleAge = lastActivityIso ? fmtAge(lastActivityIso) : 'an unknown time';
+      if (activity.state === 'abandoned') {
+        console.error(
+          `psu: this session (${session.coordOwnerId}) appears ABANDONED: its headless host is still alive ` +
+            `(host pid ${live.pid}) but has recorded no pty activity for ${idleAge}.\n` +
+            `psu: last recorded activity: ${lastActivityIso}; there may be no usable window to resume. ` +
+            `Verify its wake source, reap it if possible, or set PSU_FORCE_RESUME=1 to take over.\n` +
+            `psu: if the host is intentionally loop-armed, leave it in place; otherwise do not wait on that husk.`,
+        );
+      } else if (activity.state === 'idle') {
+        console.error(
+          `psu: this session (${session.coordOwnerId}) is STILL LIVE but IDLE in another window ` +
+            `(host pid ${live.pid}; no pty activity recorded for ${idleAge}, last activity ${lastActivityIso}).\n` +
+            `psu: resuming it here would boot a second host on the same identity and strand the live one. ` +
+            `Use that window if it is attended; if it is abandoned, reap it or set PSU_FORCE_RESUME=1 to take over.`,
+        );
+      } else {
+        console.error(
+          `psu: this session (${session.coordOwnerId}) is STILL LIVE in another window (host pid ${live.pid}).\n` +
+            `psu: resuming it here would boot a second host on the same identity and strand the live one.\n` +
+            `psu: use that window, run alongside it with --fork, or set PSU_FORCE_RESUME=1 to take over anyway.`,
+        );
+      }
       process.exit(2);
     }
   }

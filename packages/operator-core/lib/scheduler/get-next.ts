@@ -279,7 +279,39 @@ const FIELD_MAP: Record<string, FieldMap> = {
     )`,
     kind: 'scalar-text',
   },
-  plan_item: { col: (sql) => sql`source_plan_item_ids`, kind: 'text-array' },
+  // EI-20288961198837165: plan-item provenance is split across the indexed physical column and
+  // payload-only rows. Keep the physical column first (an empty text[] is an intentional answer),
+  // then mirror claimSpecSubjectFromWorkItem's payload.plan_item/planItem item-id derivation and
+  // finally the legacy payload source-plan-item array. Without these fallbacks, the five live
+  // plan_item-scoped specs cannot admit the 3,390 rows whose column is NULL but payload is set.
+  plan_item: {
+    col: (sql) => sql`COALESCE(
+      source_plan_item_ids,
+      CASE
+        WHEN COALESCE(
+          payload->'plan_item'->>'item_id',
+          payload->'plan_item'->>'itemId',
+          payload->'plan_item'->>'item',
+          payload->'planItem'->>'item_id',
+          payload->'planItem'->>'itemId',
+          payload->'planItem'->>'item'
+        ) IS NOT NULL
+        THEN ARRAY[COALESCE(
+          payload->'plan_item'->>'item_id',
+          payload->'plan_item'->>'itemId',
+          payload->'plan_item'->>'item',
+          payload->'planItem'->>'item_id',
+          payload->'planItem'->>'itemId',
+          payload->'planItem'->>'item'
+        )]
+      END,
+      CASE
+        WHEN jsonb_typeof(payload->'source_plan_item_ids') = 'array'
+        THEN ARRAY(SELECT jsonb_array_elements_text(payload->'source_plan_item_ids'))
+      END
+    )`,
+    kind: 'text-array',
+  },
   // Not first-class columns — projected out of payload jsonb (no schema change).
   // `risk_tier` is FILTER-ONLY (EI-19286311763526137): `payload->>'risk_tier'` is TEXT
   // however numeric the authored value looks, so a bare `risk_tier` rank sorts lexically

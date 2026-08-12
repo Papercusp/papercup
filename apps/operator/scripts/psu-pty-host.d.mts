@@ -100,6 +100,40 @@ export function readDiscoveryMeta(ownerId: any): any;
 export function findLiveHostFor(ownerId: any, { verifyIdentity }?: {
     verifyIdentity?: typeof pidLooksLikePsuHost | undefined;
 }): any;
+/**
+ * How long a live host has been INERT, from the activity stamps its own
+ * discovery record already carries (EI-20289007209260909).
+ *
+ * `findLiveHostFor` answers "does a process exist?", which is the wrong
+ * question to hand a human on its own. Measured 2026-08-12: a headless session
+ * whose kickoff said "acknowledge and stop" did exactly that, then sat in the
+ * launcher's process tree for 4h15m holding its socket and identity while the
+ * CLI waited on a stdin nobody would ever write to. The resume guard read
+ * pid-alive, said "STILL LIVE in another window", and told the owner to go use
+ * a window where nothing was happening — while `coord:presence` called the same
+ * session `ended`. Both surfaces were locally correct and the owner still could
+ * not tell what was true, because neither reported the deciding fact: 178
+ * minutes with no output.
+ *
+ * Returns null when NO stamp is readable. That case must not be reported as
+ * idle: the guard's dangerous error is the opposite of the composer breaker's
+ * — there, absent evidence means break the line; here, absent evidence means
+ * keep refusing, because wrongly waving a resume past a genuinely live host
+ * boots a second one onto its discovery key and strands it (WI-3455). Same
+ * "missing measurement" shape, opposite safe direction, and the direction is a
+ * property of what the failure costs, not of the code.
+ *
+ * Pure (injectable clock, no I/O); exported for tests.
+ *
+ * @param {{ lastActivityAt?: number, lastOutputAt?: number, lastInputAt?: number, startedAt?: number }} meta
+ * @param {number} [now]
+ */
+export function hostIdleMs(meta: {
+    lastActivityAt?: number;
+    lastOutputAt?: number;
+    lastInputAt?: number;
+    startedAt?: number;
+}, now?: number): number | null;
 /** Read every discovery file; annotate each with `alive`. Skips unreadable. */
 export function listHosts(): any[];
 /** Remove discovery files + sockets whose host process is gone. */
@@ -213,6 +247,16 @@ export function makeComposerWedgeDetector({ minDefers, minQuietMs }?: {
         ownerQuietMs: number | null;
         ownerBytesEverSeen: boolean;
     } | null;
+    /**
+     * How many consecutive wakes have been deferred against the CURRENT staged
+     * length. Exposed because `note()` deliberately reports once per episode —
+     * after the first report it returns null forever, so the count it is still
+     * maintaining becomes invisible to the caller at exactly the point the
+     * episode gets bad. The breaker needs the running value, not the one-shot
+     * report: this is the only wedge signal that requires no clock at all, and
+     * therefore the only one that survives a host whose measurements are absent.
+     */
+    consecutiveDefers(): number;
 };
 /**
  * Decide whether a staged composer line has stopped tracking a person and may
@@ -251,16 +295,45 @@ export function makeComposerWedgeDetector({ minDefers, minQuietMs }?: {
  * it and every caller passing it becomes a type error — while vitest stays
  * green, because it never typechecks. Same trap, one function down.
  *
- * @param {{ pending: boolean, pendingAgeMs?: number, ownerQuietMs?: number }} sample
- * @param {{ minAgeMs?: number, minQuietMs?: number }} [thresholds]
+ * ## The wake-loss fallback (EI-20287339148365013)
+ *
+ * Both measurements above are TIMING PROXIES for the harm. The harm itself is
+ * "wakes are being thrown away", and `consecutiveDefers` measures that directly
+ * — which matters because each proxy has a way to be silently defeated, and one
+ * of them already was:
+ *
+ *  - MEASUREMENTS ABSENT. Measured 2026-08-12: ten hosts deferred every wake for
+ *    up to 259 minutes with `pendingAgeMs`/`ownerQuietMs` missing from every
+ *    event they emitted (they predated the commit that added the fields). The
+ *    destructuring defaults then resolve to `pendingAgeMs = 0`, the age guard
+ *    fails, and the breaker CAN NEVER FIRE. A missing measurement must not read
+ *    as "nothing is wrong": for a liveness guard, absent evidence is the case
+ *    that most needs breaking, not the one that most needs caution.
+ *  - QUIET RESET BY A REPEATING EMITTER. `ownerQuietMs` is reset by any byte
+ *    classified as text, so a terminal reply family the scanner does not yet
+ *    recognise — the exact bug that staged these lines — holds the quiet window
+ *    below threshold indefinitely while the line sits there. The proxy reports
+ *    "a person is here" precisely when a machine is.
+ *
+ * The counter is only incremented against an UNCHANGED staged length (see
+ * makeComposerWedgeDetector), which is what keeps it off a person: a human's
+ * line moves as they type. A human whose line has not moved across N wakes has
+ * walked away from it, and the doc above already settles that trade — they lose
+ * a line they had abandoned, where the alternative is an agent dead until
+ * somebody notices.
+ *
+ * @param {{ pending: boolean, pendingAgeMs?: number, ownerQuietMs?: number, consecutiveDefers?: number }} sample
+ * @param {{ minAgeMs?: number, minQuietMs?: number, maxDefers?: number }} [thresholds]
  */
 export function shouldBreakComposerWedge(sample: {
     pending: boolean;
     pendingAgeMs?: number;
     ownerQuietMs?: number;
-}, { minAgeMs, minQuietMs }?: {
+    consecutiveDefers?: number;
+}, { minAgeMs, minQuietMs, maxDefers }?: {
     minAgeMs?: number;
     minQuietMs?: number;
+    maxDefers?: number;
 }): boolean;
 /**
  * Track a bridged owner's line-editor state separately from keystroke activity.

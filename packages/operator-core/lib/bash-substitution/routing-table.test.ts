@@ -203,7 +203,10 @@ describe('an equivalent SQL pair is not contradicted by the live routing advisor
 
   it('covers at least the audited relations (a silent map is the failure being guarded)', () => {
     // `routines` joined the tranche-2 three with the gate-health pair
-    // (EI-20285616516435031). Listing them EXACTLY, rather than asserting a
+    // (EI-20285616516435031); `work_items` joined TWICE with
+    // EI-20285223214931386, because one relation split into two intents — a
+    // by-id read served by `work_items:get` and a typed slice served by
+    // `work_items:list`. Listing them EXACTLY, rather than asserting a
     // minimum, is the point: a new equivalent SQL pair must not slip in without
     // someone confirming the live in-query advisory speaks about its relation
     // too. That confirmation is the per-pair check immediately below; this
@@ -213,6 +216,8 @@ describe('an equivalent SQL pair is not contradicted by the live routing advisor
       'routines',
       'schema_migrations',
       'test_runs',
+      'work_items',
+      'work_items',
     ]);
   });
 
