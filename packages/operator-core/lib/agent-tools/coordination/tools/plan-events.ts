@@ -111,7 +111,6 @@ export default defineTool({
       {
         tool: "coord:plan-events",
         key: {
-          since_ts: args.since_ts ?? null,
           plan_slug: args.plan_slug ?? null,
           files_back: args.files_back ?? null,
         },
@@ -120,7 +119,6 @@ export default defineTool({
       },
       () =>
         readPlanEvents({
-          since_ts: args.since_ts,
           planSlugs: args.plan_slug ? [args.plan_slug] : undefined,
           filesBack: args.files_back,
         }),
