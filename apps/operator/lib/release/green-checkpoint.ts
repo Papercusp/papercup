@@ -56,7 +56,7 @@ import { RUNNER_PROCESS_BOOTED_AT_MS } from '@papercusp/operator-core/lib/releas
 // it includes untracked files and deliberately avoids porcelain's whitespace-sensitive
 // column parse. See `failingFilesUncommitted` below.
 import { uncommittedPaths, type GitRead } from '@papercusp/operator-core/lib/candidate-contains';
-import { toolingRoot, type ReleaseConfig } from './release-config';
+import { describeIntegrationRoot, toolingRoot, type ReleaseConfig } from './release-config';
 import { runPerfGate, perfGatePolicyFromFlags } from './perf-gate';
 import { runDesktopPerfGate, desktopPerfGatePolicyFromFlags } from './desktop-perf-gate';
 import { runDeltaGate, deltaGatePolicyFromEnv } from './delta-gate';
@@ -4085,7 +4085,21 @@ export async function runGreenCheckpoint(
   // undefined exactly on the OUTERMOST pass — i.e. this is the once-per-RUN seam. Resetting the
   // transcript here (rather than per pass) is what makes it span every auto-refire instead of
   // being truncated to whichever candidate happened to be judged last.
-  if (opts.runStartedAtMs === undefined) resetOrchestratorLog();
+  if (opts.runStartedAtMs === undefined) {
+    resetOrchestratorLog();
+    // WI-38250: the CLI entrypoint's console line is visible on manual runs but is not
+    // captured by scheduler/routine invocations. Record the judged root through the
+    // orchestrator logger so it reaches the persisted checkpoint transcript as well.
+    const { root: derivedRoot, source } = describeIntegrationRoot();
+    deps.log(`integration root: ${cfg.integrationRoot} (source=${source}, emitter=gate-run)`);
+    const norm = (p: string) => p.replace(/\/+$/, '');
+    if (norm(derivedRoot) !== norm(cfg.integrationRoot)) {
+      deps.log(
+        `WARNING integration-root MISMATCH — this run judges ${cfg.integrationRoot} but the resolver derives ` +
+          `${derivedRoot} (source=${source}). The run's cfg governs. (WI-38250)`,
+      );
+    }
+  }
   let candidate = opts.candidate
     ? await revParse(cfg.integrationRoot, opts.candidate)
     : await revParse(cfg.integrationRoot, cfg.integrationBranch);

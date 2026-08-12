@@ -488,6 +488,22 @@ describe('armSelfWatchdog (WI-1319 root fix (c) — orphaned OS process past DBO
 });
 
 describe('runGreenCheckpoint', () => {
+  it('records gate-run integration-root evidence through the orchestrator logger', async () => {
+    const c1 = await commit('a', '1', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    await commit('a', '2', 'c2');
+    const logs: string[] = [];
+    const { deps } = stubDeps(true);
+    deps.log = (line) => logs.push(line);
+
+    await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    const evidence = logs.filter((line) => line.includes('integration root:'));
+    expect(evidence).toHaveLength(1);
+    expect(evidence[0]).toContain(`integration root: ${repo}`);
+    expect(evidence[0]).toContain('emitter=gate-run');
+  });
+
   it('advances ready when the candidate is green', async () => {
     const c1 = await commit('a', '1', 'c1');
     await git(repo, ['branch', 'ready', c1]);
