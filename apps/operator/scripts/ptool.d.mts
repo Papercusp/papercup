@@ -10,6 +10,8 @@ export function parseArgs(argv: any): {
     tool: null;
     json: null;
     jsonFile: null;
+    script: null;
+    scriptFile: null;
     list: boolean;
     listFilter: null;
     workspace: null;
@@ -43,6 +45,19 @@ export function resolveWorkspaceScope({ workspace, env, cwd }?: {
  *   null     — no JSON source given; caller should prompt interactively.
  */
 export function jsonSourceKind(args: any): "file" | "stdin" | "inline" | null;
+/**
+ * Decide where a direct `code:run` script comes from. The file/stdin forms
+ * carry JavaScript as data, so the caller's shell never has to quote nested
+ * commands or apostrophes (EI-20235746813390458). `--script-file` takes
+ * priority over `--script`, mirroring jsonSourceKind's file precedence.
+ * Pure — the actual file/stdin read is impure and lives in main().
+ *
+ *   'file'   — `--script-file <path>` was given.
+ *   'stdin'  — `--script -` was given.
+ *   'inline' — a normal `--script '<source>'` value.
+ *   null     — no direct script source was given.
+ */
+export function scriptSourceKind(args: any): "file" | "stdin" | "inline" | null;
 /**
  * Decide whether the human-readable invocation line belongs on stderr.
  * Scripted JSON mode must leave stdout/stderr suitable for machine capture;
@@ -192,6 +207,14 @@ export function listAllTools(client: any, { timeoutMs }?: {
 export function printResult(result: any, { raw }: {
     raw: any;
 }): 0 | 1;
+/**
+ * A result-door truncation only tells ptool that the operator's reply is not
+ * machine-readable. The tool call may already have executed, which is
+ * especially important for writes: retrying blindly can duplicate a
+ * non-idempotent mutation. Keep the recovery instruction about execution
+ * uncertainty rather than inventing a query/jq pipeline that may not exist.
+ */
+export const PTOOL_TRUNCATED_RESULT_MESSAGE: "ptool: operator reply was truncated before a complete JSON payload; the tool call may have executed \u2014 verify its state before retrying.";
 export const PTOOL_LIST_TOOLS_TIMEOUT_MS: 10000;
 export const PTOOL_CALL_TOOL_TIMEOUT_MS: 30000;
 export const PTOOL_GIT_SYNC_RUN_TIMEOUT_MS: 60000;

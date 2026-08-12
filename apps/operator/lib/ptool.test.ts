@@ -20,6 +20,7 @@ import {
   connectWithLocalRetry,
   resolveWorkspaceScope,
   jsonSourceKind,
+  scriptSourceKind,
   shouldPrintInvocationLine,
   shouldPrintRawResult,
 } from '../scripts/ptool.mjs';
@@ -30,6 +31,8 @@ describe('ptool parseArgs', () => {
       tool: null,
       json: null,
       jsonFile: null,
+      script: null,
+      scriptFile: null,
       list: false,
       listFilter: null,
       workspace: null,
@@ -94,6 +97,17 @@ describe('ptool parseArgs', () => {
     expect(a.json).toBe('-');
     expect(a.tool).toBe('x:y');
   });
+
+  it('parses the quoting-safe code:run script sources', () => {
+    expect(parseArgs(['code:run', '--script-file=batch.js'])).toMatchObject({
+      tool: 'code:run',
+      scriptFile: 'batch.js',
+    });
+    expect(parseArgs(['code:run', '--script', '-'])).toMatchObject({
+      tool: 'code:run',
+      script: '-',
+    });
+  });
 });
 
 describe('ptool workspace scope', () => {
@@ -156,6 +170,27 @@ describe('ptool jsonSourceKind (EI-14958)', () => {
 
   it('prefers --json-file over --json when (incorrectly) both are given', () => {
     expect(jsonSourceKind({ ...base, json: '{"a":1}', jsonFile: 'payload.json' })).toBe('file');
+  });
+});
+
+describe('ptool scriptSourceKind (EI-20235746813390458)', () => {
+  const base = { tool: 'code:run', script: null, scriptFile: null };
+
+  it('returns null when no direct script source was given', () => {
+    expect(scriptSourceKind(base)).toBeNull();
+  });
+
+  it('returns file for --script-file and prefers it over --script', () => {
+    expect(scriptSourceKind({ ...base, scriptFile: 'batch.js' })).toBe('file');
+    expect(scriptSourceKind({ ...base, script: 'inline', scriptFile: 'batch.js' })).toBe('file');
+  });
+
+  it('returns stdin for the --script - sentinel', () => {
+    expect(scriptSourceKind({ ...base, script: '-' })).toBe('stdin');
+  });
+
+  it('keeps an explicitly supplied inline script as a distinct source', () => {
+    expect(scriptSourceKind({ ...base, script: "return \'it\\'s safe\';" })).toBe('inline');
   });
 });
 
