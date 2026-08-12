@@ -3618,6 +3618,64 @@ export function releaseCooldownSec(): number {
   return Number.isFinite(v) && v >= 0 ? Math.floor(v) : 300;
 }
 
+/** WI-5939 — FILING-GRACE window (seconds): how long a newly-filed issue-family row is held
+ *  back from EVERY agent EXCEPT its filer. Env-overridable; 0 disables the leg entirely.
+ *
+ *  WHY: filing IS publishing. An agent that files a bug and then starts fixing it without
+ *  claiming it first races the whole drain fleet, and the race is decided in seconds — it has
+ *  been lost twice in one session by agents who knew the rule. `work_items:create` /
+ *  `improvements:capture` both take `assign_to:'self'` (the atomic, zero-window fix, and still
+ *  the right one), but nothing protected the filer who does not yet KNOW they will fix it. */
+export function filingGraceSec(): number {
+  const v = Number(process.env.PAPERCUSP_FILING_GRACE_SEC ?? 600);
+  return Number.isFinite(v) && v >= 0 ? Math.floor(v) : 600;
+}
+
+/**
+ * THE per-claim cooldown floor for the ISSUE family — one fragment, `wi.`-qualified, shared by
+ * every issue-family claim/preview/diagnosis site so they cannot drift apart. Two reasons, ONE
+ * floor (WI-5939 is explicit: "extend the EXISTING cooldown floor … do not add a parallel
+ * mechanism", and its acceptance names `excludedBreakdown.cooldown`):
+ *
+ *   (a) RELEASE cooldown (mig 499 / EI-6956) — THIS caller released the row moments ago, so it
+ *       is gated for THIS caller only, long enough to outlast one release→re-pull cycle.
+ *   (b) FILING grace (WI-5939) — someone ELSE filed the row moments ago; its filer gets a head
+ *       start to claim their own file-then-fix before the pool takes it.
+ *
+ * Both legs are caller-relative, which is why neither lives in the SQL SSOT
+ * (`harness_shared.work_item_claim_floors` takes no claimant and documents itself as the
+ * UNCONDITIONAL floors "modulo per-claim rig/swarm/redundancy/cooldown"). Do NOT add this to
+ * migration 759's function or the `work_items_claimable` view: that view answers "claimable by
+ * SOMEONE", and a claimant-relative floor there would be wrong for every reader.
+ *
+ * FAIL-OPEN in every unknown: no assignee, no filer recorded, or no `created_ts` all ADMIT the
+ * row. The failure mode being avoided is a permanently unclaimable item nobody can diagnose.
+ * The filer's id lives at `payload->'_ei'->>'created_by'` — the base table has no `created_by`
+ * column at all; the `engineer_issues` VIEW derives it from that same `_ei` fold (mig 374).
+ */
+export function issueCooldownExclusionSql(
+  sql: OrgSql,
+  assignee: string | undefined,
+  cooldownSec: number = releaseCooldownSec(),
+  graceSec: number = filingGraceSec(),
+) {
+  const releaseLeg =
+    assignee && cooldownSec > 0
+      ? sql`(wi.last_released_by IS NULL
+             OR wi.last_released_by <> ${assignee}
+             OR wi.last_released_at IS NULL
+             OR wi.last_released_at < now() - make_interval(secs => ${cooldownSec}))`
+      : sql`TRUE`;
+  const filingGraceLeg =
+    assignee && graceSec > 0
+      ? sql`(wi.payload -> '_ei' ->> 'created_by' IS NULL
+             OR wi.payload -> '_ei' ->> 'created_by' = ${assignee}
+             OR wi.created_ts IS NULL
+             OR to_timestamp(wi.created_ts / 1000.0) < now() - make_interval(secs => ${graceSec}))`
+      : sql`TRUE`;
+  return sql`(${releaseLeg} AND ${filingGraceLeg})`;
+}
+
 export function claimFloorsWhereSql(sql: OrgSql, opts: ClaimFloorsOpts) {
   // work-item-status-full-unify (2026-07-19) P-004/P-005: the claimable-floor DEFAULT is the
   // single unified token ['open'] — `open` is the claimable status for BOTH families now
@@ -5149,16 +5207,10 @@ export async function diagnoseClaimNextMiss(filter: ClaimNextFilter): Promise<Cl
          -- EI-8972: an already-genuinely-terminally-completed row is not work-queue material
          -- either — same floor the claim applies (below), so the miss diagnosis never disagrees.
          AND ${alreadyTerminallyCompletedExclusionSql(sql)}
-         -- Mig 499: a row still in ITS OWN release-cooldown (this caller released it recently)
-         -- is likewise pending-but-gated for THIS caller — same floor claimNextIssueWorkItem applies.
-         AND ${
-           issueCooldown > 0
-             ? sql`(wi.last_released_by IS NULL
-               OR wi.last_released_by <> ${filter.assignee}
-               OR wi.last_released_at IS NULL
-               OR wi.last_released_at < now() - make_interval(secs => ${issueCooldown}))`
-             : sql`TRUE`
-         }`;
+         -- Mig 499 + WI-5939: a row cooling down FOR THIS CALLER — either this caller released it
+         -- recently, or someone else filed it within the filing-grace window — is likewise
+         -- pending-but-gated here; same one fragment claimNextIssueWorkItem applies.
+         AND ${issueCooldownExclusionSql(sql, filter.assignee, issueCooldown)}`;
     readyUnclaimed += issueReadyRows[0]?.n ?? 0;
   }
 
