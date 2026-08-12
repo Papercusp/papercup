@@ -82,6 +82,13 @@ type HybridMock = (
 }>;
 
 describe('search:fulltext', () => {
+  it('documents the default and maximum limit in the public schema', async () => {
+    const { default: tool } = await import('../search/fulltext');
+    const limit = (tool.args as any).shape.limit;
+    expect(limit.description).toContain('default 5');
+    expect(limit.description).toContain('maximum 20');
+  });
+
   it('calls runFullTextSearch with query + workspaceId + the over-fetched (rerankCandidateCount) limit', async () => {
     const runFullTextSearch = vi.fn<FullTextMock>(async () => ({ results: [MOCK_HIT], totalHits: 1 }));
     vi.doMock('@papercusp/search', async (importOriginal) => ({

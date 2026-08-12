@@ -56,7 +56,7 @@ export default defineTool({
     query: z.string().min(1).max(500),
     scope: z.array(z.enum(SCOPE_CHOICES)).optional(),
     harness_slug: z.string().optional(),
-    limit: z.number().int().min(1).max(20).optional(),
+    limit: z.number().int().min(1).max(20).optional().describe('Max results (default 5; maximum 20).'),
     ...searchFilterArgs,
   }),
   async handler(args, ctx) {
