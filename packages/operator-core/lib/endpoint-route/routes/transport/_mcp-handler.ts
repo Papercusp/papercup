@@ -2000,17 +2000,20 @@ const handler = createMcpHandler(
               if (argHarness) {
                 // EI-20224778911207159: the engineering docs sentinel names
                 // Papercusp's static framework reference, not a tenant harness.
-                // docs:get/search/outline handlers already resolve it to the
+                // docs:get/search/outline/author handlers already resolve it to the
                 // engineering surface and gate it to superusers; do not let the
                 // hive clamp reject the documented workspace-scoped route before
                 // those handlers can run. Keep the exemption tool-specific so a
                 // caller cannot use the literal "engineering" as a general
                 // cross-hive escape.
-                const isEngineeringDocsRead =
+                const isEngineeringDocsSurface =
                   isEngineeringDocsSentinel(argHarness) &&
-                  (toolName === 'docs:get' || toolName === 'docs:search' || toolName === 'docs:outline');
+                  (toolName === 'docs:get' ||
+                    toolName === 'docs:search' ||
+                    toolName === 'docs:outline' ||
+                    toolName === 'docs:author');
                 const escapes =
-                  !isEngineeringDocsRead &&
+                  !isEngineeringDocsSurface &&
                   (argHarness === 'all' ||
                     argHarness === '*' ||
                     (await potHomeSlugForHarness(spawnRes.ctx.workspaceId, argHarness)) !== scopeHive);
