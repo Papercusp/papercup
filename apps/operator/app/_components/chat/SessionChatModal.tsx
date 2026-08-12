@@ -80,7 +80,7 @@ import type { RosterEntry } from '../../adv/sessions/SessionsRosterView';
 // its "N locks / M unread" summary-chip counts. Imported from the standalone
 // use-agent-detail module (not AgentDossier.tsx, which SessionChatModal.test.tsx
 // mocks wholesale) so this hook keeps working under that mock.
-import { LivenessDot } from '@/app/coord/presence-ui';
+import { LivenessDot, normalizeSessionState } from '@/app/coord/presence-ui';
 import { useAgentDetail } from '../../adv/sessions/use-agent-detail';
 import type { ChatActionContext } from '@/lib/chat-actions/types';
 import { Maximize, Maximize2, Minimize, Minimize2, Terminal, X } from 'lucide-react';
@@ -475,6 +475,11 @@ function SessionStateHeader({
     entry.openAwait && !isInfrastructureAwait(entry.openAwait)
       ? entry.openAwait.note?.trim() || `Waiting on ${entry.openAwait.eventKey}`
       : null;
+  const sessionState = normalizeSessionState(entry.sessionState);
+  const statusLabel = sessionState ?? entry.liveness;
+  const statusTitle = sessionState
+    ? `Session state: ${sessionState}`
+    : `Heartbeat liveness: ${entry.liveness}`;
 
   // P-004: the SAME agentDetail.byOwner cache AgentDossier's own Locks/Coord
   // sections read (useSyncQuery shares its cache by {queryName, args} — a
@@ -512,11 +517,16 @@ function SessionStateHeader({
           own row is where this lands. Nothing here is a verb — this zone is
           facts that change on their own, plus the window controls. */}
       <span className="pc-zone-cap">Status</span>
-      <span className="pc-ctl-state" title={`Liveness: ${entry.liveness}`}>
-        {/* The shared presence dot, not a local one — liveness colour stays
-            single-sourced with /coord and the HUD board. */}
-        <LivenessDot liveness={entry.liveness} size={6} />
-        {entry.liveness}
+      <span
+        className="pc-ctl-state"
+        title={statusTitle}
+        data-session-state={sessionState ?? undefined}
+      >
+        {/* The shared presence dot, not a local one — session-state colour stays
+            single-sourced with /coord and the HUD board when that oracle field
+            is available; heartbeat freshness is the older-payload fallback. */}
+        <LivenessDot liveness={entry.liveness} sessionState={sessionState} size={6} />
+        {statusLabel}
         {ageSec != null ? ` · ${formatAge(ageSec)}` : ''}
       </span>
       {pct != null ? (

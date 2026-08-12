@@ -573,6 +573,41 @@ describe('SessionChatModal', () => {
       expect(band.textContent).not.toContain('Building the session footer');
     });
 
+    it('renders the authoritative sessionState instead of heartbeat liveness', async () => {
+      seedRoster([
+        {
+          ownerId: 'su-live-1',
+          // A parked/ended session can keep a fresh heartbeat briefly. This is
+          // the exact disagreement that made the old chip say "live".
+          liveness: 'live',
+          sessionState: 'ended',
+          lastActiveAt: new Date(Date.now() - 2 * 24 * 60 * 60_000).toISOString(),
+          modes: [],
+          claims: [],
+          currentFiles: [],
+          openAwait: null,
+        },
+      ]);
+      mockFetchOnce(200, { sessions: [{ source_kind: 'claude', session_id: 'claude-abc', last_ts: null }] });
+      render(<SessionChatModal sessionOwnerId="su-live-1" onClose={vi.fn()} />);
+      await waitFor(() => expect(captured).not.toBeNull());
+      act(() => {
+        captured!.handlers.backfill!(JSON.stringify([{ kind: 'text', text: 'hi' }]));
+      });
+
+      const band = await waitFor(() => screen.getByTestId('session-chat-state-header'));
+      const status = band.querySelector('[data-session-state="ended"]');
+      expect(status).toBeTruthy();
+      expect(status!.textContent).toContain('ended');
+      expect(status!.textContent).not.toMatch(/\blive\b/);
+      expect(status!.getAttribute('title')).toBe('Session state: ended');
+
+      const dot = status!.querySelector('[role="img"]');
+      expect(dot?.getAttribute('data-session-state')).toBe('ended');
+      expect(dot?.getAttribute('data-liveness')).toBe('stale');
+      expect(dot?.getAttribute('aria-label')).toBe('ended agent');
+    });
+
     it('never renders the always-armed inbox-wake as a blocked-on gate (isInfrastructureAwait)', async () => {
       seedRoster([
         {
