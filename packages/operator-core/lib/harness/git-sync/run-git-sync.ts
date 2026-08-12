@@ -855,7 +855,6 @@ async function procSeesOpenFile(path: string): Promise<boolean | null> {
 async function lsofSeesOpenFile(path: string): Promise<boolean | null> {
   return await new Promise<boolean | null>((resolve) => {
     let settled = false;
-    let stdout = '';
     let timer: ReturnType<typeof setTimeout>;
     const finish = (value: boolean | null): void => {
       if (settled) return;
@@ -864,11 +863,9 @@ async function lsofSeesOpenFile(path: string): Promise<boolean | null> {
       resolve(value);
     };
     const child = spawn('lsof', ['-t', path], { stdio: ['ignore', 'pipe', 'ignore'] });
-    child.stdout?.on('data', (chunk: Buffer | string) => {
-      stdout += String(chunk);
-    });
+    const stdout = collectChildOutput(child).stdout;
     child.once('error', () => finish(null));
-    child.once('close', (code) => finish(code === 0 && stdout.trim().length > 0));
+    child.once('close', (code) => finish(code === 0 && stdout.text().trim().length > 0));
     timer = setTimeout(() => {
       child.kill('SIGTERM');
       finish(null);
