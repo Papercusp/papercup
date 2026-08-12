@@ -195,7 +195,21 @@ export const ACKNOWLEDGED_UNREACHABLE = new Map([
   // Left as a comment rather than silently deleted, exactly like the graduation above: entries
   // here are debts to pay, not a parking lot. Watermark 22 → 21 with it — the only direction
   // it may move once a population widening has been paid for.
-  ['gen:claude-md-manifest:check', 'logic-test only; deepen to a real-tree assertion'],
+  // `gen:claude-md-manifest:check` USED TO SIT HERE and is now RETIRED — the THIRD graduation,
+  // and the first by RETIREMENT rather than wiring. Measured before deciding, which is the whole
+  // point of the wire-or-retire discipline: run against the real tree it exits 1, and it always
+  // will. Its default source is the repo-root CLAUDE.md, which THIS plan
+  // (claude-md-projection-from-pg-2026-08-10) turned into projector output, and a peer then
+  // DELIBERATELY taught the generator to refuse a generated source (EI-20202197798077317) so it
+  // could not silently emit a 130-part manifest with every corpus-only prose part dropped. That
+  // refusal is correct and permanent, so wiring this onto a blocking path would red-pin the fleet
+  // on a peer's intended behaviour — exactly the failure this script's header warns about when
+  // an unwired guard is ported unchanged. Its job was also FINISHED: it is the P-014 bootstrap
+  // that fed the one-time P-003 load into harness_shared.harness_doc_parts, and that load has run.
+  // Retired = its npm declaration is gone (package.json), so it leaves the census population.
+  // The MODULE stays and is load-bearing — `extractParts` / `projectionSourceProblem` are imported
+  // by load-claude-md-doc-parts.mjs, split-claude-md-rule-evidence.mjs and three suites; only the
+  // `:check` CLI alias retires. Watermark 21 → 20 with it.
   ['gen:compaction:check', 'pending wire-or-retire decision'],
   ['gen:doc-projections:check', 'pending wire-or-retire decision; sibling per-page gen:doc-*:check are CI-wired'],
   ['gen:fleet-lessons:check', 'pending wire-or-retire decision'],
@@ -223,7 +237,7 @@ export const ACKNOWLEDGED_UNREACHABLE = new Map([
  * build rather than landing here. Raising it again to park a newly-rotted guard would be
  * precisely the abuse the sibling `KNOWN_DARK_FLAGS` rule exists to stop.
  */
-export const UNREACHABLE_HIGH_WATERMARK = 21;
+export const UNREACHABLE_HIGH_WATERMARK = 20;
 
 /**
  * Guards that ARE enforced, but only over PART of what they scan (EI-19461064447747454).

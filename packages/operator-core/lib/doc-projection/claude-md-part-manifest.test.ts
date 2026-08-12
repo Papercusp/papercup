@@ -46,10 +46,18 @@ const manifest: Manifest = JSON.parse(readFileSync(resolve(HERE, 'claude-md-part
  * agent's deploys over an entirely normal edit. A test that fails on routine activity does not
  * protect an invariant; it trains people to ignore the suite.
  *
- * Drift is checked where it actually matters — at LOAD time, by the generator:
- *   npm run gen:claude-md-manifest:check      (exit 1 + names the ranges to re-review)
- * P-003 must run that before loading, and the generator refuses to emit a manifest built on a
+ * Drift was checked where it actually mattered — at LOAD time, by the generator:
+ *   node scripts/gen-claude-md-manifest.mjs --check   (exit 1 + names the ranges to re-review)
+ * P-003 had to run that before loading, and the generator refuses to emit a manifest built on a
  * drifted classification.
+ *
+ * ⚠ THAT IS NOW A BOOTSTRAP-ONLY INVOCATION, and the `gen:claude-md-manifest:check` npm alias is
+ * RETIRED (see the graduation note in scripts/check-lint-guard-reachability.mjs). The P-003 load
+ * has run: harness_shared.harness_doc_parts is canonical and the repo-root CLAUDE.md is now its
+ * PROJECTION. Run against that projected file the generator deliberately refuses
+ * (EI-20202197798077317) rather than re-deriving a manifest from generated output, so the command
+ * above exits 1 by design at the repo root and can only be used on a pre-projection source (or via
+ * the PAPERCUSP_CLAUDE_MD override). It is not, and cannot become, a standing drift guard.
  *
  * So this suite pins the two things that ARE invariants: the shape of the committed manifest,
  * and the fact that the drift detector can still fire (proven against synthetic mutants, never
