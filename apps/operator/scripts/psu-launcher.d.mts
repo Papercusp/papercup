@@ -1837,6 +1837,29 @@ export function ccTurnStartMemoryHookEnrollment(settingsText: any, { scriptExist
     enrolled: boolean;
     misses: string[];
 };
+/** Terminate a plain-launch process group, retaining a direct-child fallback.
+ * `spawnInherit` uses `detached:true`, making the wrapper the leader of its own
+ * process group on POSIX. The wrapper can leave a native backend descendant
+ * behind after it exits, so cleanup must signal the group, not only the wrapper.
+ * Negative process-group pids are POSIX-only; the direct child call keeps this
+ * useful on Windows and when the group has already disappeared.
+ */
+export function killSpawnProcessTree(child: any, signal?: string, kill?: (pid: number, signal?: string | number) => true): boolean;
+/** The original plain launch: inherit the user's stdio straight into the child.
+ *  The fallback when the managed-pty host is disabled, has no TTY, or fails to
+ *  start. */
+export function spawnInherit({ wrapperBin, args, cwd, env, spawnImpl, processApi, signalSource, processKill, processExit, reportSessionEndedImpl, }: {
+    wrapperBin: any;
+    args?: never[] | undefined;
+    cwd: any;
+    env: any;
+    spawnImpl?: typeof spawn | undefined;
+    processApi?: NodeJS.Process | undefined;
+    signalSource?: any;
+    processKill?: any;
+    processExit?: any;
+    reportSessionEndedImpl?: typeof reportSessionEnded | undefined;
+}): void;
 /**
  * The bootstrap-su POST body that mints the NEW tracked row + native id for a
  * fork. Pure — exported for tests. A fork carries over the original's workspace +
@@ -2447,3 +2470,4 @@ export namespace AGENT_LABELS {
     let codex: string;
     let omp: string;
 }
+import { spawn } from 'node:child_process';
