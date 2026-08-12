@@ -43,10 +43,12 @@ export const ALLOWLIST = new Set(['scripts/check-no-raw-harness-sentinel.mjs']);
  * Existing, measured candidates pending an audit. This set may only shrink.
  *
  * Measured at HEAD f0338f50b55fb0710f082c7883ecb2a37d0e88fe with `--list` on
- * 2026-08-12. The issue deliberately did not claim these 68 sites were all
- * defects: they are the population the detector now makes visible so each
- * relation/call-site can be audited without silently growing the grandfather
- * set. A source fingerprint makes a moved or rewritten site fail closed.
+ * 2026-08-12. The issue deliberately did not claim these sites were all defects:
+ * they are the population the detector makes visible so each relation/call-site
+ * can be audited without silently growing the grandfather set. The capability:bash
+ * site was subsequently fixed through the canonical resolver, shrinking the
+ * pending baseline to 67. A source fingerprint makes a moved or rewritten site
+ * fail closed.
  */
 export const BASELINE = new Set([
   "libs/generic/tooldef/src/dispatch-stack.ts:360:predicate:const slug = ctx.harnessSlug?.trim();",
@@ -60,7 +62,7 @@ export const BASELINE = new Set([
   "packages/operator-core/lib/agent-tools/coordination/coupled-topics-read.ts:72:identity-field:...(ctx.harnessSlug ? { harnessSlug: ctx.harnessSlug } : {}),",
   "packages/operator-core/lib/agent-tools/coordination/identity.ts:367:fallback:? `${sysRole} · ${ctx.harnessSlug ?? 'system'}`",
   "packages/operator-core/lib/agent-tools/datatypes/declare.ts:227:fallback:potSlug: ctx.harnessSlug ?? null,",
-  "packages/operator-core/lib/agent-tools/dev/pg_query.ts:150:identity-field:harnessSlug: ctx.harnessSlug,",
+  "packages/operator-core/lib/agent-tools/dev/pg_query.ts:170:identity-field:harnessSlug: ctx.harnessSlug,",
   "packages/operator-core/lib/agent-tools/dev/why.ts:45:fallback:harnessSlug: args.harness ?? ctx.harnessSlug,",
   "packages/operator-core/lib/agent-tools/events/watch.ts:241:fallback:const harnessSlug = ctx.harnessSlug ?? null;",
   "packages/operator-core/lib/agent-tools/facts/assert.ts:271:identity-field:harnessSlug: ctx.harnessSlug,",
