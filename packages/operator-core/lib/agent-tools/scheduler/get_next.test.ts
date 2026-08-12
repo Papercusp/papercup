@@ -125,6 +125,7 @@ beforeEach(() => {
     reason: scopeState.pauseReason,
   }));
   getFlagM.mockResolvedValue(true);
+  liveLockedPathsM.mockImplementation(async () => []);
 });
 
 describe('scheduler:get_next ambient transaction reservation', () => {
