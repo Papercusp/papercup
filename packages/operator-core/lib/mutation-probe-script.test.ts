@@ -82,6 +82,38 @@ describe('mutation-probe.sh — copy-out mode (the default)', () => {
     expect(read()).toBe(ORIGINAL);
   });
 
+  it('reports a baseline harness failure as an error, never as a caught mutant', () => {
+    const { code, out } = runProbeIO([
+      '--file',
+      subject,
+      '--mutate',
+      's/beta/BETA/',
+      '--test',
+      "bash -c 'exit 2' {}",
+    ]);
+    expect(code).toBe(2);
+    expect(out).toMatch(/BASELINE FAILED/i);
+    expect(out).toMatch(/verdict=harness-error/);
+    expect(out).not.toMatch(/MUTANT CAUGHT/);
+    expect(read()).toBe(ORIGINAL);
+  });
+
+  it('reports a mutant harness crash as an error, not as falsifiability evidence', () => {
+    const { code, out } = runProbeIO([
+      '--file',
+      subject,
+      '--mutate',
+      's/beta/BETA/',
+      '--test',
+      "bash -c 'if [ \"$PAPERCUSP_MUTATION_PHASE\" = mutant ]; then exit 2; fi' _ {}",
+    ]);
+    expect(code).toBe(2);
+    expect(out).toMatch(/HARNESS ERROR/i);
+    expect(out).toMatch(/verdict=harness-error/);
+    expect(out).not.toMatch(/MUTANT CAUGHT/);
+    expect(read()).toBe(ORIGINAL);
+  });
+
   it('REFUSES a mutation that changed nothing (exit 2) instead of reporting a false weakness', () => {
     // A no-op mutation is the quiet killer of this technique: the "mutant" is
     // identical to the original, so any guard passes and the probe would
@@ -178,7 +210,16 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
   it('restores PROMPTLY on SIGTERM mid-probe — not merely eventually', async () => {
     const child = spawn(
       'bash',
-      [SCRIPT, '--in-tree', '--file', subject, '--mutate', 's/beta/BETA/', '--test', 'sleep 20; test -f {}'],
+      [
+        SCRIPT,
+        '--in-tree',
+        '--file',
+        subject,
+        '--mutate',
+        's/beta/BETA/',
+        '--test',
+        'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then sleep 20; fi; test -f {}',
+      ],
       { stdio: 'ignore' },
     );
     try {

@@ -68,8 +68,16 @@
 # EXIT CODES
 #   0  the probe reached its expected verdict (default: the mutant was CAUGHT)
 #   1  the probe reached the opposite verdict — your guard is weaker than you think
-#   2  misuse / the probe could not be run soundly (e.g. a no-op mutation)
+#   2  misuse / the probe could not be run soundly (e.g. a no-op mutation,
+#      a failing baseline, or a harness error while running the mutant)
 #   3  IN-TREE RESTORE FAILED — the tree may still be dirty; act immediately
+#
+# The guard command runs twice: once against the original file with
+# PAPERCUSP_MUTATION_PHASE=baseline, then against the mutant with
+# PAPERCUSP_MUTATION_PHASE=mutant. A baseline failure is a harness error, not a
+# caught mutant. During the mutant run, exit 1 is the guard-failed/caught
+# convention; every other nonzero exit is treated as a harness error because a
+# shell/test crash must never be reported as falsifiability evidence.
 #
 set -uo pipefail
 
@@ -191,6 +199,26 @@ finish() {
 }
 trap finish EXIT INT TERM
 
+# Run a guard in an interruptible child and preserve its output for the
+# machine-readable verdict below. The phase marker lets a guard's own test
+# fixture skip an intentionally slow baseline setup without weakening the
+# production command shape; it is also useful to test that the baseline and
+# mutant really went through the same invocation path.
+run_guard() {
+  local phase="$1" label="$2" cmd="$3" output="$4" rc
+  log "running $label: $cmd"
+  (
+    export PAPERCUSP_MUTATION_PHASE="$phase"
+    eval "$cmd"
+  ) >"$output" 2>&1 &
+  CHILD=$!
+  wait "$CHILD"
+  rc=$?
+  CHILD=""
+  cat "$output"
+  return "$rc"
+}
+
 if [ "$IN_TREE" = "1" ]; then
   log ""
   log "⚠️  --in-tree: the TRACKED file will be mutated in place."
@@ -205,6 +233,23 @@ if [ "$IN_TREE" = "1" ]; then
 else
   TARGET="$SCRATCH/$(basename "$FILE")"
   cp "$FILE" "$TARGET" || die "could not stage the probe copy"
+fi
+
+# A nonzero baseline means the command did not establish a runnable, healthy
+# guard before the mutation. Scoring the mutant's later nonzero exit as
+# "caught" would turn a broken harness into falsifiability evidence.
+BASE_CMD="${TEST_CMD//\{\}/$FILE}"
+BASELINE_LOG="$SCRATCH/baseline.log"
+MUTANT_LOG="$SCRATCH/mutant.log"
+BASELINE_RC=0
+if run_guard baseline "baseline guard" "$BASE_CMD" "$BASELINE_LOG"; then
+  :
+else
+  BASELINE_RC=$?
+  log "BASELINE FAILED (guard exited $BASELINE_RC) — refusing to score the mutant"
+  printf 'MUTATION_PROBE_RESULT verdict=harness-error expected=%s target=%s baseline_exit=%d guard_exit=-1\n' \
+    "$EXPECT" "$([ "$IN_TREE" = "1" ] && echo in-tree || echo copy-out)" "$BASELINE_RC"
+  exit 2
 fi
 
 # --- apply the mutation -----------------------------------------------------
@@ -234,36 +279,29 @@ log "mutant applied: $(git hash-object "$BASE" | cut -c1-8) -> $(git hash-object
 
 # --- run the guard against the mutant --------------------------------------
 CMD="${TEST_CMD//\{\}/$TARGET}"
-log "running: $CMD"
-# Run the guard in the BACKGROUND and `wait` on it, rather than calling it in
-# the foreground. This is load-bearing, not style: bash will NOT run a trap
-# handler while it is waiting on a FOREGROUND child — it defers the handler
-# until that child exits. Measured 2026-08-03 with the foreground form: a
-# SIGTERM to the probe during a 25s guard restored the file only after 23s,
-# i.e. when the child happened to finish. The harness sends SIGTERM then
-# SIGKILL, so a deferred handler is frequently never a handler at all — which
-# is exactly how the original mutant survived to be committed.
-# `wait` IS interruptible, so a signal runs `finish` at once.
-eval "$CMD" &
-CHILD=$!
-wait "$CHILD"
+run_guard mutant "mutant guard" "$CMD" "$MUTANT_LOG"
 TEST_RC=$?
-CHILD=""
 
 # A guard is falsifiable when it FAILS on the mutant. Report the verdict in
 # those terms rather than leaking the raw exit code, because "the probe
 # succeeded" and "the test passed" mean OPPOSITE things here and conflating
-# them is its own error class.
-if [ "$TEST_RC" -ne 0 ]; then
+# them is its own error class. Exit 1 is the test/guard failure convention;
+# exit 2 (for example, a shell syntax error) and every other nonzero status
+# mean the harness did not produce a trustworthy verdict.
+if [ "$TEST_RC" -eq 1 ]; then
   VERDICT="caught"
   log "VERDICT: MUTANT CAUGHT (guard exited $TEST_RC) — the guard is falsifiable ✓"
-else
+elif [ "$TEST_RC" -eq 0 ]; then
   VERDICT="survived"
   log "VERDICT: MUTANT SURVIVED (guard exited 0) — the guard does NOT constrain this mutation ✗"
+else
+  VERDICT="harness-error"
+  log "VERDICT: HARNESS ERROR (guard exited $TEST_RC) — no falsifiability verdict is sound"
 fi
 
-printf 'MUTATION_PROBE_RESULT verdict=%s expected=%s target=%s guard_exit=%d\n' \
-  "$VERDICT" "$EXPECT" "$([ "$IN_TREE" = "1" ] && echo in-tree || echo copy-out)" "$TEST_RC"
+printf 'MUTATION_PROBE_RESULT verdict=%s expected=%s target=%s baseline_exit=%d guard_exit=%d\n' \
+  "$VERDICT" "$EXPECT" "$([ "$IN_TREE" = "1" ] && echo in-tree || echo copy-out)" "$BASELINE_RC" "$TEST_RC"
 
+[ "$VERDICT" = "harness-error" ] && exit 2
 [ "$VERDICT" = "$EXPECT" ] || exit 1
 exit 0
