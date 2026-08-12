@@ -36,7 +36,7 @@ export function getOperationalArgv(argv: string[]): string[];
  */
 export function parsePpid(statLine: string): number | null;
 /**
- * Enumerate every live process as { pid, ppid, cmdline }, from a /proc root (real or a test fixture).
+ * Enumerate every live process as { pid, ppid, argv, cmdline }, from a /proc root (real or a test fixture).
  *
  * @param {string} [procRoot] - Defaults to `/proc`; a fixture directory in tests.
  * @returns {ProcRow[]}
@@ -60,7 +60,7 @@ export function getAncestryChain(pid: number, byPid: Map<number, number | null>,
  * prompt payloads. A genuinely unrelated external process with the same
  * pattern in a real argument still matches.
  *
- * @param {string} pattern - A RegExp source, matched against the full cmdline.
+ * @param {string} pattern - A RegExp source, matched against operational argv.
  * @param {{ procRoot?: string; selfPid?: number }} [opts]
  * @returns {ProcRow[]}
  */
