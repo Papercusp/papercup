@@ -305,6 +305,44 @@ async function readStdinJson() {
   }
 }
 
+// EI-20273348458054257: the recovery banner used to assert, unconditionally,
+// "coord/MCP identity is unaffected" — a claim about a thing it had not
+// checked. A self-relaunch CAN fork the coord identity (measured: recorded
+// su-9cf35961… → live su-c6e0a56f…, 12 ownerId-keyed surfaces stranded), and an
+// agent told its identity is intact has no reason to look. rebindIdentityIfChanged()
+// below detects the fork, but it is a separate async path this SYNC banner never
+// consulted, so the two could — and did — disagree.
+//
+// The rule this encodes: report what was VERIFIED (the recorded sid vs the live
+// env sid), never the reassuring conclusion. When they diverge, lead with the
+// divergence and the one call that repairs it; when they agree, say only that
+// they agree and name the read that would settle it authoritatively.
+function identityLine(intent) {
+  const recorded = ((intent && intent.sid) || '').trim();
+  const live = (process.env.PAPERCUSP_SID || '').trim();
+  if (recorded && live && recorded !== live) {
+    return (
+      '- ⚠ YOUR PAPERCUSP IDENTITY CHANGED ACROSS THIS RELAUNCH: recorded ' +
+      recorded +
+      ' → live ' +
+      live +
+      '. Every ownerId-keyed surface (armed loop, loop carry-note + walls, plan/work claims, claim-spec, standing awaits, fleet membership + leadership, owner facts, held file locks) is still keyed to the OLD id. Run coord:rebind-identity { from: "' +
+      recorded +
+      '" } NOW, then coord:orient { afterCompaction: true }.'
+    );
+  }
+  if (recorded) {
+    return (
+      '- Your papercusp identity is ' +
+      recorded +
+      ' (env PAPERCUSP_SID), which MATCHES the live env value — but that is the only thing checked here, not proof the coord/MCP session resolved to it. Confirm with coord:orient and compare self.ownerId; if it differs, coord:rebind-identity { from: "' +
+      recorded +
+      '" }.'
+    );
+  }
+  return '- No recorded PAPERCUSP_SID to compare against — verify your identity with coord:orient (self.ownerId) before trusting any ownerId-keyed state.';
+}
+
 // WI-3280: the argv-drop playbook recovery — returns the injection text, or
 // null when argv is intact / no playbook was parked (the silent no-op).
 function playbookRecovery(intent) {
@@ -317,7 +355,7 @@ function playbookRecovery(intent) {
     'update relaunch) and claude rebuilds argv on relaunch WITHOUT the original launch flags:',
     'the --system-prompt-file playbook, --permission-mode, --session-id and any --disallowedTools',
     'were dropped. Permissions were separately restored via this session settings.json. Notes:',
-    intent.sid ? '- Your papercusp identity is ' + intent.sid + ' (env PAPERCUSP_SID) — coord/MCP identity is unaffected.' : '- Your coord/MCP identity (env PAPERCUSP_SID) is unaffected.',
+    identityLine(intent),
     intent.nativeSessionId ? '- Your native claude session id may differ from the recorded one (' + intent.nativeSessionId + ') — psu resume/tracking of this conversation may be degraded; disclose this if coordination looks off.' : '- psu resume/tracking of this conversation may be degraded; disclose this if coordination looks off.',
     '- If the playbook below denies tools (subagents, native schedulers), honor it even though the CLI deny flags were lost.',
     '- The document below IS your operating playbook / system prompt. Follow it in full.',

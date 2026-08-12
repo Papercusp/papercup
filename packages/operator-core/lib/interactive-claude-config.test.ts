@@ -36,6 +36,7 @@ import {
   ensureProjectTrust,
   isInteractiveClaudeConfigReady,
   RECOVER_HOOK,
+  RECOVER_HOOK_SOURCE,
   RECOVER_INTENT,
   RECOVER_PLAYBOOK,
   writeInteractiveClaudeConfig,
@@ -1176,5 +1177,81 @@ describe('EI-12938: every INTERACTIVE rematerialize leg re-ensures the config di
     const remat = readFileSync(join(LIB, 'session-transcript-remat.ts'), 'utf8');
     expect(remat).toMatch(/export async function rematerializeTranscript/);
     expect(remat).not.toMatch(/\b(spawn|execFile|console-launcher|writeInteractiveClaudeConfig)\b/);
+  });
+});
+
+/**
+ * EI-20273348458054257 — the SessionStart recovery banner's identity claim.
+ *
+ * Two defects met here. (1) The banner asserted "coord/MCP identity is
+ * unaffected" UNCONDITIONALLY on every self-relaunch, while a self-relaunch can
+ * genuinely fork the coord identity — measured live: recorded su-9cf35961… →
+ * live su-c6e0a56f…, with 12 ownerId-keyed surfaces (armed loop, carry-note,
+ * fleet leadership, owner facts, read cursors) stranded under the dead id. An
+ * agent told its identity is intact has no reason to check, so it proceeds as
+ * its old self and is silently wrong about every ownerId-keyed read.
+ *
+ * (2) The whole hook ships as a TEMPLATE-LITERAL STRING (RECOVER_HOOK_SOURCE)
+ * written out to a .mjs file, so a backslash must be DOUBLED to survive. `tsc`
+ * cannot see inside a string — it type-checks the template, not the program the
+ * template encodes — so a mis-escaped quote produces a syntactically BROKEN hook
+ * that ships green. Nothing in this suite's prior tests parsed the emitted
+ * source. The first test below closes that class for every future editor.
+ */
+describe('EI-20273348458054257 recovery-banner identity claim', () => {
+  it('emits a hook whose source is valid JavaScript (guards the template-escaping class)', () => {
+    const dir = mkdtempSync(join(tmpdir(), 'pc-hooksrc-'));
+    const file = join(dir, 'session-recover-hook.mjs');
+    try {
+      writeFileSync(file, RECOVER_HOOK_SOURCE);
+      // node --check is the ground truth for "will node actually load this hook".
+      expect(() => execFileSync(process.execPath, ['--check', file], { stdio: 'pipe' })).not.toThrow();
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  /**
+   * identityLine() is self-contained (reads only `intent` and process.env), so
+   * it can be lifted out of the hook string and exercised directly. Testing the
+   * REAL emitted text — not a copy — is the point: a copy would drift.
+   */
+  const runIdentityLine = (recordedSid: string | undefined, liveSid: string | undefined): string => {
+    const m = RECOVER_HOOK_SOURCE.match(/function identityLine\(intent\) \{[\s\S]*?\n\}/);
+    if (!m) throw new Error('identityLine() not found in RECOVER_HOOK_SOURCE');
+    const fn = new Function('intent', 'process', `${m[0]}\nreturn identityLine(intent);`) as (
+      intent: unknown,
+      proc: unknown,
+    ) => string;
+    return fn({ sid: recordedSid }, { env: liveSid === undefined ? {} : { PAPERCUSP_SID: liveSid } });
+  };
+
+  it('REPORTS THE FORK, and names the repair call, when the live sid differs', () => {
+    const line = runIdentityLine('su-OLD', 'su-NEW');
+    expect(line).toMatch(/IDENTITY CHANGED/);
+    expect(line).toContain('su-OLD');
+    expect(line).toContain('su-NEW');
+    // The one call that repairs it must be handed over, pointed at the OLD id.
+    expect(line).toContain('coord:rebind-identity { from: "su-OLD" }');
+    // ...and it must NOT still be claiming continuity.
+    expect(line).not.toMatch(/is unaffected/);
+  });
+
+  it('does NOT assert coord/MCP continuity it never checked when the sids agree', () => {
+    const line = runIdentityLine('su-SAME', 'su-SAME');
+    expect(line).toContain('su-SAME');
+    // The regression itself: the old text asserted the coord/MCP identity was
+    // "unaffected" — a claim about a surface this hook never reads.
+    expect(line).not.toMatch(/coord\/MCP identity is unaffected/);
+    // It may only claim what it actually compared, and must point at the
+    // authoritative read that settles it.
+    expect(line).toMatch(/MATCHES the live env value/);
+    expect(line).toMatch(/coord:orient/);
+  });
+
+  it('stays honest when there is no recorded sid to compare', () => {
+    const line = runIdentityLine(undefined, 'su-NEW');
+    expect(line).not.toMatch(/is unaffected/);
+    expect(line).toMatch(/coord:orient/);
   });
 });
