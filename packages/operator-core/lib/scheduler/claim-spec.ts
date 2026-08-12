@@ -596,6 +596,44 @@ function detectBroadKindDisjunctFootgun(node: unknown, path: string, warnings: s
 }
 
 /**
+ * EI-18653031651840641: the third spec-authoring footgun — a `view.filter` that selects
+ * on `id` ALONE. Such a spec is a FROZEN SNAPSHOT, not a standing lane: it admits exactly
+ * the ids listed at authoring time and can never admit an item created afterwards, so it
+ * presents purely as an idle agent rather than as an error.
+ *
+ * The filer hit this as a two-step trap while leading a fleet. Their real lane was a union
+ * — "every work-item promoted from plan X" (a `plan` leaf) PLUS a handful of standalone
+ * bugs carrying no plan. Believing the grammar had no OR, they replaced the plan leaf with
+ * a hand-written `{op:'in', field:'id', value:[...]}`. It validated, looked right, and
+ * ~10 minutes later starved a member on a freshly promoted plan item the ORIGINAL spec
+ * would have admitted. The workaround for the first starvation caused the second.
+ *
+ * The union IS expressible — `{ any: [ <the plan leaf>, {field:'id', op:'in', value:[…]} ] }`
+ * — so the warning names that shape directly rather than only describing the hazard.
+ *
+ * ADVISORY ONLY, and deliberately so: an id-only spec is the correct way to pin a FIXED
+ * WAVE, which is a real and supported use (see {@link fixedCohortIds}, the read-side
+ * counterpart that audits exactly such a cohort). This warns the author that they have
+ * chosen a pin; it never refuses one. {@link isIdOnlySelector} — already denormalized onto
+ * `bee_claim_specs.id_only` so over-reliance is countable — is the shape oracle, so the
+ * warning and the stored tripwire can never disagree about what "id-only" means.
+ */
+function detectFrozenIdListFootgun(
+  spec: { view?: { filter?: unknown } },
+  warnings: string[],
+): void {
+  if (!isIdOnlySelector(spec)) return;
+  warnings.push(
+    'view.filter: this spec selects on `id` ALONE — a FROZEN SNAPSHOT, not a standing lane. ' +
+      'It admits only the ids listed here and can NEVER admit an item created afterwards, which ' +
+      'surfaces as a silently idle agent rather than an error. Deliberate for a fixed wave (see ' +
+      '`fixedCohortIds`); if you meant a standing lane, filter on a PROPERTY instead — and note a ' +
+      'lane spanning several shapes is expressible as a union, e.g. ' +
+      '{ any: [ { field:"plan", op:"=", value:"<slug>" }, { field:"id", op:"in", value:[…] } ] }.',
+  );
+}
+
+/**
  * WI-36743: a spec-authoring footgun sibling to the broad-kind-disjunct one above — a
  * spec that scopes to issue-family kinds (bug/change/task) but never adds a
  * `severity_rank` rank term. `severity_rank` (EI-19286355119013384) is what makes the
@@ -718,6 +756,7 @@ export function validateClaimSpec(input: unknown): ClaimSpecValidation {
     // an already-broken filter doesn't need a second, noisier complaint.
     if (errors.length === 0) {
       detectBroadKindDisjunctFootgun(spec.view.filter, 'view.filter', warnings);
+      detectFrozenIdListFootgun(spec, warnings);
     }
   }
 

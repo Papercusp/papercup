@@ -552,6 +552,70 @@ describe('isIdOnlySelector — the id-pin tripwire', () => {
     expect(() => claimSpecSchema.parse(DEFAULT_CLAIM_SPEC)).not.toThrow();
   });
 
+  /**
+   * EI-18653031651840641: the tripwire was only ever DENORMALIZED (bee_claim_specs.id_only)
+   * so over-reliance stayed countable — it never reached the author, who is the one person
+   * who can still fix the spec. The filed trap: a leader replaced a `plan` leaf with a
+   * hand-written id list, it validated silently, and ~10 minutes later starved a member on
+   * a freshly promoted plan item the original spec would have admitted.
+   *
+   * Advisory, never a rejection — an id-only spec is the supported way to pin a fixed wave.
+   */
+  describe('validateClaimSpec warns on a frozen id-list lane', () => {
+    const idOnlySpec = (filter: unknown) => ({
+      specVersion: '1.0',
+      specId: 'frozen-1',
+      revision: 0,
+      view: { filter },
+      rank: { mode: 'lexicographic', terms: [{ expr: 'priority', dir: 'desc' }] },
+    });
+
+    it('warns — but still ACCEPTS — a bare id-list filter', () => {
+      const r = validateClaimSpec(idOnlySpec({ field: 'id', op: 'in', value: ['WI-1', 'WI-2'] }));
+      expect(r.ok).toBe(true);
+      expect(r.errors).toEqual([]);
+      const warning = r.warnings.find((w) => w.includes('FROZEN SNAPSHOT'));
+      expect(warning).toBeDefined();
+      // It must name the union shape, not merely describe the hazard — the filer reached
+      // for the id list precisely because they believed no OR existed.
+      expect(warning).toContain('any');
+    });
+
+    it('warns for an id-only filter nested under a combinator, not just a bare leaf', () => {
+      const r = validateClaimSpec(idOnlySpec({ all: [{ field: 'id', op: '=', value: 'WI-1' }] }));
+      expect(r.warnings.some((w) => w.includes('FROZEN SNAPSHOT'))).toBe(true);
+    });
+
+    it('stays SILENT for a real standing lane — including the union that fixes the trap', () => {
+      const propertyLane = validateClaimSpec(idOnlySpec({ field: 'plan', op: '=', value: 'my-plan' }));
+      expect(propertyLane.warnings.some((w) => w.includes('FROZEN SNAPSHOT'))).toBe(false);
+
+      // The shape the warning recommends: a plan leaf UNIONED with the standalone ids.
+      // This is the whole point of the item — it must not itself trip the warning.
+      const union = validateClaimSpec(
+        idOnlySpec({
+          any: [
+            { field: 'plan', op: '=', value: 'my-plan' },
+            { field: 'id', op: 'in', value: ['WI-5672', 'WI-5481'] },
+          ],
+        }),
+      );
+      expect(union.ok).toBe(true);
+      expect(union.warnings.some((w) => w.includes('FROZEN SNAPSHOT'))).toBe(false);
+    });
+
+    it('stays silent when there is no filter at all (the whole frontier, not a pin)', () => {
+      const r = validateClaimSpec({
+        specVersion: '1.0',
+        specId: 'nofilter',
+        revision: 0,
+        view: {},
+        rank: { mode: 'lexicographic', terms: [{ expr: 'priority', dir: 'desc' }] },
+      });
+      expect(r.warnings.some((w) => w.includes('FROZEN SNAPSHOT'))).toBe(false);
+    });
+  });
+
   it('exposes a non-empty op + version vocabulary', () => {
     expect(FILTER_OPS.length).toBeGreaterThan(0);
     expect(SUPPORTED_SPEC_VERSIONS).toContain(CURRENT_SPEC_VERSION);
