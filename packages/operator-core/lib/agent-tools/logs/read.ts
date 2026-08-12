@@ -59,6 +59,11 @@ export default defineTool({
     ],
   },
   requirePrincipal: false,
+  // journal-read shells out to journalctl/systemctl and never reads ctx.tx. Do not
+  // retain the dispatcher's ambient org-app transaction while that host I/O runs;
+  // code:run's inner dispatch honors this flag too, avoiding a pool acquisition
+  // before log triage under fleet load (EI-20246577252417163).
+  skipWorkspaceTx: true,
   agentRoles: ['operator', 'architect', 'debugger', 'cup'],
   args: z.object({
     unit: z.union([z.string().min(1).max(200), z.array(z.string().min(1).max(200)).min(1).max(10)])

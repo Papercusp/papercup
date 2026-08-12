@@ -43,6 +43,12 @@ beforeEach(() => {
   readJournalMock.mockReset().mockResolvedValue(CLEAN);
 });
 
+describe('logs:read — dispatch transaction boundary', () => {
+  it('does not retain an ambient workspace transaction during journalctl host I/O', () => {
+    expect((logsReadTool as unknown as { skipWorkspaceTx?: boolean }).skipWorkspaceTx).toBe(true);
+  });
+});
+
 describe('logs:read — unit resolution', () => {
   it('suffixes a bare unit name with .service', async () => {
     await call({ unit: 'papercup-bg-host' });
