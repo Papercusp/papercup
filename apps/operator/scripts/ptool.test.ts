@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
+// @ts-ignore -- runtime CLI module intentionally tested from TypeScript.
 import { printResult, resultToText, sanitizeJsonText } from './ptool.mjs';
 
 describe('ptool result formatting', () => {
