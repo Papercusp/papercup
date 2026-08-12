@@ -79,6 +79,14 @@ describe('lintCarrySurfaceProvenance', () => {
     expect(r.matches[0].kind).toBe('bare-gate-imperative');
   });
 
+  it('EI-20246140574201628: does not let a later quoted gate hide an earlier real gate', () => {
+    const r = lintCarrySurfaceProvenance(
+      'Do not deploy until reviewed; the note quotes `do not act on the 18-red names until a real verdict is rendered`.',
+    );
+    expect(r.flagged).toBe(true);
+    expect(r.matches[0].kind).toBe('bare-gate-imperative');
+  });
+
   it('does NOT flag when the line carries a NON-OWNER source tag', () => {
     expect(lintCarrySurfaceProvenance('[self-imposed] do not resolve WI-3532 until the UI pass is done').flagged).toBe(false);
     expect(lintCarrySurfaceProvenance('[peer:su-4dc3b] the owner approved this').flagged).toBe(false);

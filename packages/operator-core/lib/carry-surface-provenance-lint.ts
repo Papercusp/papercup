@@ -258,9 +258,11 @@ const BARE_GATE_IMPERATIVE_RE = /(?<![A-Za-z0-9]\s*)\bdo not\b.{0,80}\buntil\b/i
 const INLINE_CODE_SEGMENT_RE = /`([^`\n]*)`/g;
 
 // EI-20246140574201628: a backtick-quoted gate is a cited phrase, not a new directive.
-function isBareGateInsideInlineCode(line: string): boolean {
-  for (const [, segment] of line.matchAll(INLINE_CODE_SEGMENT_RE)) {
-    if (BARE_GATE_IMPERATIVE_RE.test(segment)) return true;
+function isBareGateInsideInlineCode(line: string, match: RegExpExecArray): boolean {
+  for (const segmentMatch of line.matchAll(INLINE_CODE_SEGMENT_RE)) {
+    const segmentStart = (segmentMatch.index ?? 0) + 1;
+    const segmentEnd = segmentStart + segmentMatch[1].length;
+    if (match.index >= segmentStart && match.index + match[0].length <= segmentEnd) return true;
   }
   return false;
 }
@@ -450,11 +452,8 @@ export function lintCarrySurfaceProvenance(text: string | null | undefined): Pro
       matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: 'manual-owner-tag' });
       continue;
     }
-    if (
-      !hasTaggedProvenanceBlock &&
-      BARE_GATE_IMPERATIVE_RE.test(line) &&
-      !isBareGateInsideInlineCode(line)
-    ) {
+    const bareGateMatch = BARE_GATE_IMPERATIVE_RE.exec(line);
+    if (!hasTaggedProvenanceBlock && bareGateMatch && !isBareGateInsideInlineCode(line, bareGateMatch)) {
       matches.push({ line: line.slice(0, MATCH_LINE_CAP), kind: 'bare-gate-imperative' });
     }
   }
