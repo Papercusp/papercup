@@ -90,11 +90,12 @@ export const CALLER_MESSAGE_PATTERN =
 export const RATE_LIMIT_MESSAGE_PATTERN =
   'openai_embed_failed_429|rate[ _-]?limit[ _-]?(reached|exceeded)|tokens per min|requests per min|too many requests';
 
-/** Shared-infra exhaustion (PG `max_connections` / DB-unavailable) and a
- *  stale-pooled-connection reset against PgBouncer. Recurs identically in SHAPE
- *  across EVERY pg-backed tool during a wedge / idle-reap race, but is transient
- *  LOAD/infra, not a per-tool bug — defer to the volume bar so a brief wedge
- *  stops mis-filing structural tool-bug EIs.
+/** Shared-infra exhaustion (PG `max_connections` / DB-unavailable), an operator
+ *  shutdown-window response, and a stale-pooled-connection reset against
+ *  PgBouncer. These recur identically in SHAPE across tools during a wedge /
+ *  shutdown / idle-reap race, but are transient LOAD/infra, not per-tool bugs —
+ *  defer to the volume bar so a brief interruption stops mis-filing structural
+ *  tool-bug EIs.
  *
  *  `CONNECTION_CLOSED` / `CONNECT_TIMEOUT` are postgres-js-invented codes
  *  ("write CONNECTION_CLOSED 127.0.0.1:6432") for a pooled connection PgBouncer
@@ -105,7 +106,7 @@ export const RATE_LIMIT_MESSAGE_PATTERN =
  *  the retry helper so a transient reset that slips past the retry stops being
  *  mis-filed as a structural tool bug (EI-11010). */
 export const INFRA_TRANSIENT_MESSAGE_PATTERN =
-  'too many clients already|remaining connection slots are reserved|too many connections|the database system is (starting up|shutting down|in recovery|not yet accepting)|terminating connection due to|ECONNREFUSED|ECONNRESET|CONNECTION_CLOSED|CONNECT_TIMEOUT|connection terminated|could not connect to server';
+  'too many clients already|remaining connection slots are reserved|too many connections|the database system is (starting up|shutting down|in recovery|not yet accepting)|server( is)? shutting down|terminating connection due to|ECONNREFUSED|ECONNRESET|CONNECTION_CLOSED|CONNECT_TIMEOUT|connection terminated|could not connect to server';
 
 /**
  * The ordered classification table. ORDER IS SIGNIFICANT — earlier rules win.

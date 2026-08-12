@@ -81,6 +81,12 @@ export const TOOL_ERROR_CORPUS: readonly ToolErrorCorpusRow[] = [
     expectedClass: 'transient',
     note: "postgres-js's pool connect() timed out — the sibling connection-setup code connect-retry.ts treats identically; transient, not a tool bug",
   },
+  {
+    n: 6, errorCode: 'handler_error', status: 'error',
+    message: 'server shutting down',
+    expectedClass: 'transient',
+    note: 'operator shutdown-window response — transient lifecycle state, not a structural coord:glance bug (EI-20257122293248893)',
+  },
 
   // ── rate-limit: external provider 429 (capacity, not a code bug) ────────────
   {
