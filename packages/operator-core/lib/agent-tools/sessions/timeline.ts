@@ -10,7 +10,12 @@ import { z } from 'zod';
 import { defineTool, SU_ROLES } from '@papercusp/agent-mcp';
 import { resolveAgentIdentity } from '../coordination/identity';
 import { sessionSearchEnabled, disabledResult, refreshLiveSessionsBeforeRead } from './_shared';
-import { decodeSessionCursor, encodeSessionCursor, sessionCursorFingerprint } from './cursor';
+import {
+  decodeSessionCursor,
+  encodeSessionCursor,
+  sessionCursorBoundsMatch,
+  sessionCursorQueryFingerprint,
+} from './cursor';
 
 const ALL_ROLES = [...SU_ROLES, 'papercup', 'kettle'] as const;
 
@@ -442,13 +447,28 @@ export default defineTool({
     const limit = args.limit ?? 100;
     const kinds = args.kinds?.length ? args.kinds : null;
     const includeAuto = args.include_auto ?? false;
-    const fingerprint = sessionCursorFingerprint(
-      { ...args, cursor: undefined, limit: undefined },
+    const fingerprint = sessionCursorQueryFingerprint(
+      { ...args },
       { workspaceId, selfOwnerId: args.owner === 'self' ? owner : undefined },
     );
     const cursor = decodeSessionCursor(args.cursor, 'sessions:timeline', fingerprint);
     if (!cursor.ok) {
       return { content: [{ type: 'text' as const, text: JSON.stringify({ ...cursor, ok: false }) }] };
+    }
+    if (args.cursor && !sessionCursorBoundsMatch(
+      { since: args.since, until: args.until },
+      cursor.bounds,
+    )) {
+      return {
+        content: [{
+          type: 'text' as const,
+          text: JSON.stringify({
+            ok: false,
+            error: 'invalid_cursor',
+            message: 'Cursor bounds do not match the requested timeline bounds.',
+          }),
+        }],
+      };
     }
     const until = args.until ?? cursor.bounds.until ?? new Date().toISOString();
     const since = args.since ?? cursor.bounds.since ?? new Date(Date.parse(until) - 24 * 3600 * 1000).toISOString();

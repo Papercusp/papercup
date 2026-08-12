@@ -50,6 +50,32 @@ export function sessionCursorFingerprint(value: unknown, authority?: SessionCurs
   return createHash('sha256').update(JSON.stringify(stableValue(fingerprintValue))).digest('hex').slice(0, 24);
 }
 
+/**
+ * Build the stable query portion of a cursor fingerprint for paginated session
+ * reads. The page size and cursor are transport details; timeline bounds are
+ * carried in the cursor itself so a caller may omit them on replay.
+ */
+export function sessionCursorQueryFingerprint(
+  value: Record<string, unknown>,
+  authority?: SessionCursorAuthority,
+): string {
+  const { cursor: _cursor, limit: _limit, since: _since, until: _until, ...query } = value;
+  return sessionCursorFingerprint(query, authority);
+}
+
+/**
+ * Explicit bounds on a cursor replay must agree with the bounds that were
+ * frozen into the cursor. Omitted bounds are intentional: the replay should
+ * use the cursor's carried snapshot.
+ */
+export function sessionCursorBoundsMatch(
+  requested: SessionCursorBounds,
+  carried: SessionCursorBounds,
+): boolean {
+  return (requested.since === undefined || requested.since === carried.since)
+    && (requested.until === undefined || requested.until === carried.until);
+}
+
 export function encodeSessionCursor(
   tool: SessionCursorTool,
   offset: number,

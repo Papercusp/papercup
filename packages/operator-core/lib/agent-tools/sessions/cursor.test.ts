@@ -2,7 +2,9 @@ import { describe, expect, it } from 'vitest';
 import {
   decodeSessionCursor,
   encodeSessionCursor,
+  sessionCursorBoundsMatch,
   sessionCursorFingerprint,
+  sessionCursorQueryFingerprint,
 } from './cursor';
 
 describe('sessions cursor contract', () => {
@@ -66,5 +68,45 @@ describe('sessions cursor contract', () => {
       selfOwnerId: 'su-a',
       selfSessionId: 'session-a',
     }))).toMatchObject({ ok: false, error: 'invalid_cursor' });
+  });
+
+  it('replays a timeline cursor with its carried bounds when bounds are omitted', () => {
+    const authority = {
+      workspaceId: 'workspace-a',
+      selfOwnerId: 'su-a',
+      selfSessionId: 'session-a',
+    };
+    const initial = {
+      owner: 'self',
+      kinds: ['tool'],
+      include_auto: true,
+      since: '2026-07-13T03:00:00.000Z',
+      until: '2026-07-14T03:00:00.000Z',
+    };
+    const replay = {
+      owner: 'self',
+      kinds: ['tool'],
+      include_auto: true,
+    };
+    const fingerprint = sessionCursorQueryFingerprint(initial, authority);
+    const cursor = encodeSessionCursor('sessions:timeline', 1, fingerprint, {
+      since: initial.since,
+      until: initial.until,
+    });
+
+    expect(decodeSessionCursor(
+      cursor,
+      'sessions:timeline',
+      sessionCursorQueryFingerprint(replay, authority),
+    )).toEqual({
+      ok: true,
+      offset: 1,
+      bounds: { since: initial.since, until: initial.until },
+    });
+    expect(sessionCursorBoundsMatch({}, { since: initial.since, until: initial.until })).toBe(true);
+    expect(sessionCursorBoundsMatch(
+      { until: '2026-07-14T04:00:00.000Z' },
+      { since: initial.since, until: initial.until },
+    )).toBe(false);
   });
 });
