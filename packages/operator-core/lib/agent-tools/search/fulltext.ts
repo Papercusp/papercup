@@ -17,12 +17,8 @@ import { runFullTextSearch } from '@papercusp/search';
 import { SEARCH_SOURCES } from './sources';
 import { rerankCandidateCount, rerankPageHead } from './rerank';
 import { searchFilterArgs, resolveSearchFilters } from './filters';
+import { scopeArg, DEFAULT_SCOPE } from './scope';
 import { resolveAgentIdentity } from '../coordination/identity';
-
-const SCOPE_CHOICES = [
-  'escalations', 'brainstorm', 'turns', 'decisions', 'work_item',
-  'session_turn', 'coord_message', 'all',
-] as const;
 
 // + overwatch (overwatch-role-2026-06-15 B-01): the supervisor searches to ground nudges.
 const ALL_ROLES = [...SU_ROLES, 'papercup', 'papercup-deep', 'kettle'] as const;
@@ -54,7 +50,7 @@ export default defineTool({
   rolesQuota: { worker: { perChunk: 10 }, operator: { perRun: 100 } },
   args: z.object({
     query: z.string().min(1).max(500),
-    scope: z.array(z.enum(SCOPE_CHOICES)).optional(),
+    scope: scopeArg(),
     harness_slug: z.string().optional(),
     limit: z.number().int().min(1).max(50).optional().describe('Max results (default 5; maximum 50).'),
     ...searchFilterArgs,
@@ -69,7 +65,7 @@ export default defineTool({
       args.scope?.includes('all')
         ? SEARCH_SOURCES.map((s) => s.name)
         : !args.scope?.length
-          ? ['escalations', 'brainstorm', 'turns', 'decisions']
+          ? DEFAULT_SCOPE
           : args.scope;
     const sources = SEARCH_SOURCES.filter((s) => scope.includes(s.name));
 
