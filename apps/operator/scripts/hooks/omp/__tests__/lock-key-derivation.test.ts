@@ -43,6 +43,7 @@ import {
   asStructuredCallError,
   _resetRequestDefectCountForTests,
   _resetToolCallCacheForTests,
+  resetToolCallLoopState,
 } from '../coord-hook';
 
 /**
@@ -238,6 +239,11 @@ describe('a REFUSED lock request is reported as a hook defect, not an outage', (
     const origErr = console.error;
     console.error = () => {};
     try {
+      // Each helper invocation represents a fresh OMP turn. The production
+      // adapter resets its turn-scoped identical-call breaker at turn_start;
+      // without mirroring that lifecycle here, the third identical fixture
+      // call is blocked before it can exercise request-defect counting.
+      resetToolCallLoopState();
       return await onToolCall({
         type: 'tool_call',
         toolName: 'write',
