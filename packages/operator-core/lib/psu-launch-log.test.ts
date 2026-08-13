@@ -17,10 +17,13 @@ import { join } from 'node:path';
 import {
   PSU_LAUNCH_LOG_DIRNAME,
   PSU_LAUNCH_LOG_TTL_MS,
+  HEADLESS_LAUNCH_LOG_SCAN_BYTES,
   psuLaunchLogRoot,
   psuLaunchLogPath,
   prunePsuLaunchLogs,
   readPsuLaunchLogTail,
+  detectPsuHeadlessLaunchBlockHint,
+  readPsuHeadlessLaunchBlockHint,
   ensurePsuLaunchLogPath,
 } from './psu-launch-log.mjs';
 
@@ -111,6 +114,55 @@ describe('readPsuLaunchLogTail', () => {
 
   it('returns null for a rejected owner id rather than reaching outside the dir', () => {
     expect(readPsuLaunchLogTail('../../etc/passwd', { home })).toBeNull();
+  });
+});
+
+describe('headless pre-turn launch blockage', () => {
+  const receiptFor = (file: string) => `headless (log: ${file})`;
+  const headlessLog = (name = 'claude-headless-123-456.log') =>
+    join(home, '.papercusp', 'fleet-logs', name);
+
+  it('recognizes the live Claude weekly-limit dialog through ANSI/TUI paint', () => {
+    const raw =
+      '\x1b[?25l\x1b[12A\x1b[38;2;255;107;128m' +
+      "You've hit your weekly limit \u00b7 resets 7am (America/New_York)\r" +
+      '\x1b[1B\x1b[39m\x07';
+    expect(detectPsuHeadlessLaunchBlockHint(raw)).toBe(
+      "Claude's weekly usage limit was reached; it resets 7am (America/New_York). " +
+        'Launch with Codex or an available account, or retry after the reset.',
+    );
+  });
+
+  it('does not turn ordinary boot chatter or a generic reset word into a diagnosis', () => {
+    expect(detectPsuHeadlessLaunchBlockHint('Claude Code booting\nMCP connected')).toBeNull();
+    expect(detectPsuHeadlessLaunchBlockHint('settings reset at 7am')).toBeNull();
+  });
+
+  it('reads only the bounded tail of the persisted headless receipt', () => {
+    const file = headlessLog();
+    mkdirSync(dirname(file), { recursive: true });
+    writeFileSync(
+      file,
+      "You've hit your weekly limit \u00b7 resets 1am\n" + 'x'.repeat(HEADLESS_LAUNCH_LOG_SCAN_BYTES + 20),
+    );
+    expect(readPsuHeadlessLaunchBlockHint(receiptFor(file))).toBeNull();
+
+    writeFileSync(file, `${'x'.repeat(200)}\nYou've hit your weekly limit \u00b7 resets 7am\n`);
+    expect(readPsuHeadlessLaunchBlockHint(receiptFor(file), { scanBytes: 100 })).toContain(
+      'resets 7am',
+    );
+  });
+
+  it('rejects arbitrary paths and malformed receipts instead of becoming a file reader', () => {
+    const arbitrary = join(home, 'secret.log');
+    writeFileSync(arbitrary, "You've hit your weekly limit \u00b7 resets 7am");
+    expect(readPsuHeadlessLaunchBlockHint(receiptFor(arbitrary))).toBeNull();
+    expect(readPsuHeadlessLaunchBlockHint(arbitrary)).toBeNull();
+    expect(readPsuHeadlessLaunchBlockHint('headless (log: ../../secret.log)')).toBeNull();
+  });
+
+  it('degrades to null for a valid receipt whose file is absent', () => {
+    expect(readPsuHeadlessLaunchBlockHint(receiptFor(headlessLog()))).toBeNull();
   });
 });
 

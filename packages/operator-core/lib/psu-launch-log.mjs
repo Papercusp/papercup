@@ -42,9 +42,20 @@
  * unique per launch, so each launch owns its own file and no launch can ever
  * read another's diagnostic.
  */
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
+import {
+  closeSync,
+  existsSync,
+  fstatSync,
+  mkdirSync,
+  openSync,
+  readdirSync,
+  readFileSync,
+  readSync,
+  rmSync,
+  statSync,
+} from 'node:fs';
 import { homedir } from 'node:os';
-import { join } from 'node:path';
+import { basename, dirname, isAbsolute, join, normalize } from 'node:path';
 
 /** Directory under `~/.papercusp` holding per-launch boot logs. */
 export const PSU_LAUNCH_LOG_DIRNAME = 'psu-launch-logs';
@@ -61,6 +72,9 @@ export const PSU_LAUNCH_LOG_MAX_BYTES = 64 * 1024;
 /** Max chars handed to a UI surface from the tail of a log. */
 export const PSU_LAUNCH_LOG_TAIL_CHARS = 1200;
 
+/** Max bytes inspected from a live headless terminal log. Always read as a tail. */
+export const HEADLESS_LAUNCH_LOG_SCAN_BYTES = 64 * 1024;
+
 /** Logs older than this are pruned on the next launch (best-effort). */
 export const PSU_LAUNCH_LOG_TTL_MS = 7 * 24 * 60 * 60 * 1000;
 
@@ -74,6 +88,104 @@ export const PSU_LAUNCH_LOG_TTL_MS = 7 * 24 * 60 * 60 * 1000;
  * (no log, the pre-WI-37841 status quo).
  */
 const OWNER_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
+
+/** Exact receipt emitted by console-spawn's headless launcher. */
+const HEADLESS_LOG_RECEIPT_RE = /^headless \(log: ([^)\r\n]+)\)$/;
+
+/** The provider dialog observed live in WI-6821, after ANSI/control stripping. */
+const CLAUDE_WEEKLY_LIMIT_RE = /you(?:'|’)?ve hit your weekly limit(?:\s*[\u00b7•-]\s*resets\s+([^\r\n]+))?/i;
+
+/**
+ * Remove terminal paint instructions while preserving visible text. This is
+ * deliberately local rather than an app-layer import: this .mjs is shared by
+ * bare-node launchers and operator-core readers.
+ */
+function stripTerminalControls(value) {
+  return value
+    // OSC (window title / hyperlinks), terminated by BEL or ST.
+    .replace(/\u001B\][^\u0007]*(?:\u0007|\u001B\\)/g, '')
+    // CSI cursor/color/erase sequences, including private `?25l` forms.
+    .replace(/\u001B\[[0-?]*[ -/]*[@-~]/g, '')
+    // A TUI reuses one row with CR; treating it as a line boundary prevents a
+    // reset hint from swallowing the next painted row.
+    .replace(/\r/g, '\n')
+    .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, '');
+}
+
+/**
+ * Extract the one headless-log path shape the launcher persists.
+ *
+ * `terminal_bin` is stored state, not authority to read an arbitrary file. The
+ * parent-pair + basename guards keep a corrupted row from turning the roster
+ * read into a general local-file reader. The app creates exactly
+ * `<workspace>/.papercusp/fleet-logs/<safe-name>.log`.
+ */
+function headlessLaunchLogPath(terminalBin) {
+  if (typeof terminalBin !== 'string') return null;
+  const match = HEADLESS_LOG_RECEIPT_RE.exec(terminalBin.trim());
+  if (!match) return null;
+  const file = match[1];
+  if (!isAbsolute(file) || normalize(file) !== file) return null;
+  if (basename(dirname(file)) !== 'fleet-logs') return null;
+  if (basename(dirname(dirname(file))) !== '.papercusp') return null;
+  if (!/^[A-Za-z0-9._-]{1,240}\.log$/.test(basename(file))) return null;
+  return file;
+}
+
+/** Read at most `bytes` from the END of a file. Never throws. */
+function readFileTailBytes(file, bytes) {
+  let fd = null;
+  try {
+    fd = openSync(file, 'r');
+    const size = fstatSync(fd).size;
+    const length = Math.min(size, Math.max(1, bytes));
+    const buffer = Buffer.alloc(length);
+    const read = readSync(fd, buffer, 0, length, Math.max(0, size - length));
+    return buffer.subarray(0, read).toString('utf8');
+  } catch {
+    return null;
+  } finally {
+    if (fd != null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // best-effort display-path diagnostic
+      }
+    }
+  }
+}
+
+/**
+ * Recognize a PRE-TURN provider block from visible terminal text.
+ *
+ * Return constructed, owner-facing copy rather than arbitrary log bytes: the
+ * log contains terminal control state and may contain unrelated startup data.
+ * null means the evidence does not support this diagnosis.
+ */
+export function detectPsuHeadlessLaunchBlockHint(logText) {
+  if (typeof logText !== 'string' || logText.length === 0) return null;
+  const match = CLAUDE_WEEKLY_LIMIT_RE.exec(stripTerminalControls(logText));
+  if (!match) return null;
+  const reset = match[1]?.trim().replace(/\s+/g, ' ') ?? '';
+  return (
+    `Claude's weekly usage limit was reached${reset ? `; it resets ${reset}` : ''}. ` +
+    'Launch with Codex or an available account, or retry after the reset.'
+  );
+}
+
+/**
+ * Read the bounded headless-terminal tail named by `terminal_bin` and return an
+ * actionable PRE-TURN block hint, or null when the row/log proves no such state.
+ */
+export function readPsuHeadlessLaunchBlockHint(
+  terminalBin,
+  { scanBytes = HEADLESS_LAUNCH_LOG_SCAN_BYTES } = {},
+) {
+  const file = headlessLaunchLogPath(terminalBin);
+  if (!file) return null;
+  const tail = readFileTailBytes(file, scanBytes);
+  return tail == null ? null : detectPsuHeadlessLaunchBlockHint(tail);
+}
 
 /** The per-workspace-home directory holding launch boot logs. */
 export function psuLaunchLogRoot(home = homedir()) {

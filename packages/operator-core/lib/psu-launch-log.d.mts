@@ -16,6 +16,9 @@ export const PSU_LAUNCH_LOG_MAX_BYTES: number;
 /** Max chars handed to a UI surface from the tail of a log. */
 export const PSU_LAUNCH_LOG_TAIL_CHARS: number;
 
+/** Max bytes inspected from the tail of a live headless terminal log. */
+export const HEADLESS_LAUNCH_LOG_SCAN_BYTES: number;
+
 /** Logs older than this are pruned on the next launch. */
 export const PSU_LAUNCH_LOG_TTL_MS: number;
 
@@ -43,6 +46,15 @@ export function prunePsuLaunchLogs(opts?: {
 export function readPsuLaunchLogTail(
   ownerId: string | null | undefined,
   opts?: { home?: string; chars?: number },
+): string | null;
+
+/** Recognize the pre-turn Claude weekly-limit dialog in terminal output. */
+export function detectPsuHeadlessLaunchBlockHint(logText: string | null | undefined): string | null;
+
+/** Read a bounded headless log tail named by terminal_bin and recognize a block. */
+export function readPsuHeadlessLaunchBlockHint(
+  terminalBin: string | null | undefined,
+  opts?: { scanBytes?: number },
 ): string | null;
 
 /** {@link psuLaunchLogPath}, but creates the directory. Null when unusable. */
