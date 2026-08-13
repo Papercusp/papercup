@@ -134,6 +134,10 @@ function fakeGit(opts: {
    * `git ls-tree <superSha> <submodulePath>` in the ROOT reports the pin.
    */
   submodulePin?: { superSha: string; pinnedSha: string; path: string };
+  /** The nested commit pinned by the superproject's origin/staging candidate. */
+  submoduleStagingPin?: { pinnedSha: string; path: string };
+  /** Make the origin/staging gitlink read fail, rather than measure an absent one. */
+  failSubmoduleStagingPin?: boolean;
   /**
    * WI-6646: ref → the newest commit touching the path that REF ALREADY CONTAINS,
    * which is a different question from `pathCommit` (the newest touching it ANYWHERE).
@@ -184,6 +188,12 @@ function fakeGit(opts: {
       if (pin && _repo === root && args[1] === pin.superSha && args[2] === pin.path) {
         return `160000 commit ${pin.pinnedSha}\t${pin.path}`;
       }
+      const stagingPin = opts.submoduleStagingPin;
+      if (args[1] === 'origin/staging' && stagingPin && _repo === root && args[2] === stagingPin.path) {
+        return `160000 commit ${stagingPin.pinnedSha}\t${stagingPin.path}`;
+      }
+      if (args[1] === 'origin/staging' && opts.failSubmoduleStagingPin) return null;
+      if (args[1] === 'origin/staging' && _repo === root) return '';
       // WI-6646: a ref with a known blob genuinely HAS the path.
       if (opts.blobAtRef && args[1] in opts.blobAtRef) return `100644 blob deadbeef\t${args[3]}`;
       // EI-19325915429897280: the marker-baseline commit HAS the path too, when
@@ -233,6 +243,7 @@ function fakeGit(opts: {
     if (args[0] === 'rev-list' && args[1] === '--count') {
       const [ref, sha] = args[2].split('..');
       if (opts.failRefs?.includes(ref)) return null; // the READ failed — not "not contained"
+      if (ref === sha) return '0';
       const set = new Set(opts.contains?.[ref] ?? []);
       return set.has(sha) ? '0' : '3';
     }
@@ -1031,11 +1042,12 @@ describe('gitPipelinePosition (P-002)', () => {
     expect(res.summary).not.toContain('WEDGED');
   });
 
-  it('a submodule path is detected, annotated, and resolved against the submodule (not staging)', async () => {
+  it('a submodule path is detected, annotated, and resolved against the nested repo while staging uses the superproject gitlink', async () => {
     const git = fakeGit({
       submodules: ['libs/papercusp'],
-      pathCommit: 'sub1234567',
-      contains: { HEAD: ['sub1234567'], 'origin/HEAD': ['sub1234567'] },
+      pathCommit: 'a1234567890',
+      submoduleStagingPin: { pinnedSha: 'a1234567890', path: 'libs/papercusp' },
+      contains: { HEAD: ['a1234567890'] },
     });
     const res = await gitPipelinePosition(
       { path: 'libs/papercusp/packages/harness/x.ts' },
@@ -1043,10 +1055,46 @@ describe('gitPipelinePosition (P-002)', () => {
     );
     expect(res.submodule).toBe('libs/papercusp');
     expect(res.positions.committedLocal).toBe(true);
-    expect(res.positions.onStaging).toBe(true); // origin/HEAD
+    expect(res.positions.onStaging).toBe(true); // superproject origin/staging gitlink
     expect(res.positions.inMain).toBe(false); // not tracked for submodule paths
     expect(res.summary).toContain('submodule libs/papercusp');
     expect(res.notes.join(' ')).toMatch(/submodule/i);
+  });
+
+  it('does not treat nested origin/HEAD as staging evidence when the superproject gitlink is behind', async () => {
+    const git = fakeGit({
+      submodules: ['libs/papercusp'],
+      pathCommit: 'a1234567890',
+      submoduleStagingPin: { pinnedSha: 'b1234567890', path: 'libs/papercusp' },
+      contains: { HEAD: ['a1234567890'], 'origin/HEAD': ['a1234567890'] },
+    });
+    const res = await gitPipelinePosition(
+      { path: 'libs/papercusp/packages/harness/x.ts' },
+      { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+    );
+
+    expect(res.positions.onStaging).toBe(false);
+    expect(res.positionsUnknown).not.toContain('onStaging');
+    expect(res.positions.inMain).toBe(false); // non-release leg: not measured for submodules
+    expect(res.positions.deployed).toBe(false); // non-release leg: not measured for submodules
+    expect(res.notes.join(' ')).toMatch(/gitlink/);
+  });
+
+  it('keeps a failed superproject gitlink read unknown instead of reporting a staging miss', async () => {
+    const git = fakeGit({
+      submodules: ['libs/papercusp'],
+      pathCommit: 'a1234567890',
+      failSubmoduleStagingPin: true,
+      contains: { HEAD: ['a1234567890'], 'origin/HEAD': ['a1234567890'] },
+    });
+    const res = await gitPipelinePosition(
+      { path: 'libs/papercusp/packages/harness/x.ts' },
+      { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+    );
+
+    expect(res.positions.onStaging).toBe(false);
+    expect(res.positionsUnknown).toContain('onStaging');
+    expect(res.notes.join(' ')).toMatch(/unknown/);
   });
 
   /**
@@ -1069,7 +1117,8 @@ describe('gitPipelinePosition (P-002)', () => {
       fakeGit({
         submodules: ['papercusp-desktop'],
         submodulePin: { superSha: SUPER, pinnedSha: PINNED, path: 'papercusp-desktop' },
-        contains: { HEAD: [PINNED], 'origin/HEAD': [PINNED] },
+        submoduleStagingPin: { pinnedSha: PINNED, path: 'papercusp-desktop' },
+        contains: { HEAD: [PINNED] },
       });
 
     it('resolves the gitlink instead of reporting the sha as absent', async () => {

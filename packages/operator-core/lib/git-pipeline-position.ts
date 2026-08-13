@@ -15,9 +15,10 @@
  * READ-ONLY: no `git fetch`, no mutation — it reads the already-fetched origin
  * refs (git-sync fetches every tick) so it can never perturb the pipeline.
  *
- * A submodule path resolves inside that submodule (which tracks its OWN default
- * branch, not staging) — the exact pathspec confusion the audits flagged; the
- * result is annotated so the reader isn't misled.
+ * A submodule path resolves inside that submodule for its nested commit history,
+ * while its staging position is measured through the superproject's gitlink —
+ * the exact pathspec confusion the audits flagged; the result is annotated so
+ * the reader isn't misled.
  */
 
 import { execFile } from 'node:child_process';
@@ -3247,10 +3248,25 @@ async function resolveSubmodulePin(
   superSha: string,
   submodulePath: string,
 ): Promise<string | null> {
-  const out = await git(root, ['ls-tree', superSha, submodulePath]);
-  if (!out) return null;
+  const pin = await readSubmodulePin(git, root, superSha, submodulePath);
+  return pin?.sha ?? null;
+}
+
+/**
+ * Read a superproject ref's submodule gitlink without collapsing a failed read
+ * into a measured absence. `null` means git failed; `{ sha: null }` means the
+ * ref was read successfully but carries no gitlink at this path.
+ */
+async function readSubmodulePin(
+  git: GitRunner,
+  root: string,
+  superRef: string,
+  submodulePath: string,
+): Promise<{ sha: string | null } | null> {
+  const out = await git(root, ['ls-tree', superRef, submodulePath]);
+  if (out === null) return null;
   const m = /^160000\s+commit\s+([0-9a-f]{7,40})\b/.exec(out.trim());
-  return m ? m[1] : null;
+  return { sha: m?.[1] ?? null };
 }
 
 /**
@@ -3514,7 +3530,7 @@ export async function gitPipelinePosition(
       gitDir = path.join(root, hit);
       relPath = relPath.slice(hit.length).replace(/^\//, '');
       notes.push(
-        `Path is inside submodule '${hit}'; positions resolved in that submodule, which tracks its own default branch (not staging).`,
+        `Path is inside submodule '${hit}'; commit history is resolved in that nested repo, while staging inclusion is checked through the superproject's origin/staging gitlink.`,
       );
     }
   }
@@ -3643,8 +3659,27 @@ export async function gitPipelinePosition(
   if (targetSha) {
     positions.committedLocal = readLeg('committedLocal', await refContains(git, gitDir, 'HEAD', targetSha));
     if (submodule) {
-      // Submodules track their own default branch; "pushed" == on origin/HEAD.
-      positions.onStaging = readLeg('onStaging', await refContains(git, gitDir, 'origin/HEAD', targetSha));
+      // The release gate judges the SUPERPROJECT candidate. Its submodule
+      // version is the gitlink pinned by origin/staging, so nested origin/HEAD
+      // is not evidence that this commit is in the candidate. Compare the
+      // target nested commit against that pinned nested commit instead.
+      const stagingPin = await readSubmodulePin(git, root, 'origin/staging', submodule);
+      if (stagingPin === null) {
+        positions.onStaging = readLeg('onStaging', null);
+        notes.push(
+          `Could not read the superproject origin/staging gitlink for submodule '${submodule}', so onStaging is unknown (not a measured miss).`,
+        );
+      } else if (stagingPin.sha === null) {
+        positions.onStaging = readLeg('onStaging', false);
+        notes.push(
+          `Superproject origin/staging has no gitlink for submodule '${submodule}', so the nested commit is not in that candidate.`,
+        );
+      } else {
+        positions.onStaging = readLeg('onStaging', await refContains(git, gitDir, stagingPin.sha, targetSha));
+        notes.push(
+          `Submodule onStaging was measured against the superproject origin/staging gitlink (${stagingPin.sha.slice(0, 12)}), not nested origin/HEAD.`,
+        );
+      }
     } else {
       positions.onStaging = readLeg('onStaging', await refContains(git, root, 'origin/staging', targetSha));
       // EI-18694888339365359: the local ref said "not present" — before believing
