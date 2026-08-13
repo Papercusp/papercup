@@ -25,7 +25,7 @@ import { FLAGS } from '@papercusp/flags';
 import { advSessionsByCoordOwner, isFailedTerminalLaunch, type AdvSessionRow } from './adv-sessions';
 // WI-37841: the cause of a failed launch, from the boot log psu-launcher.mjs and
 // launch-su.ts both write. One shared path derivation — see psu-launch-log.mjs.
-import { readPsuLaunchLogTail } from './psu-launch-log.mjs';
+import { readPsuHeadlessLaunchBlockHint, readPsuLaunchLogTail } from './psu-launch-log.mjs';
 import { deriveLiveness, LIVE_MS, type Liveness } from './liveness';
 import { resolveSessionStates } from './agent-tools/coordination/liveness-oracle';
 import type { SessionState } from './agent-tools/coordination/presence-wakeability';
@@ -250,6 +250,14 @@ export interface RosterEntry {
    * generic line.
    */
   launchFailureHint?: string | null;
+  /**
+   * WI-6821: the process is alive, but its native client is parked at a
+   * recognized provider usage-limit dialog before its first turn. This is NOT
+   * `launchFailed`; the process did not die.
+   */
+  launchBlocked?: boolean;
+  /** Constructed, owner-facing remediation for `launchBlocked`. */
+  launchBlockedHint?: string | null;
   advSessionId: number | null;
   /** Live plan (presence) preferred; falls back to the launch-time plan. */
   currentPlanSlug: string | null;
@@ -874,6 +882,12 @@ export function startingLaunchesToRosterEntries(
     // PERSISTED state, so it is the same verdict after a reload and identical for
     // every surface — the board, the modal and the pui cannot disagree about it.
     const failed = isFailedTerminalLaunch(r);
+    // A headless host can stay alive forever while the native client is stopped
+    // at a provider usage-limit dialog. `terminalBin` already persists the exact
+    // log receipt; inspect only that bounded, generated path. Keep this distinct
+    // from death: the useful action is another account/backend or the reset.
+    const blockedHint = failed ? null : readPsuHeadlessLaunchBlockHint(r.terminalBin);
+    const blocked = blockedHint != null;
     return {
       // Fall back to a synthetic id only for a pre-WI-6363 row that carries no
       // pre-pinned owner; such a row can still be SEEN, it just cannot be opened.
@@ -882,7 +896,7 @@ export function startingLaunchesToRosterEntries(
       source: r.agent ?? '',
       // Present tense for a live boot; past tense once we have OBSERVED the
       // death. Saying "starting up" about a corpse is the lie WI-6821 filed.
-      intent: failed ? 'launch failed' : 'starting up',
+      intent: failed ? 'launch failed' : blocked ? 'launch blocked' : 'starting up',
       launchFailed: failed,
       // WI-37841: read the cause ONLY for a launch already known to have failed.
       // Gating on `failed` keeps this off the hot path entirely — a healthy boot
@@ -890,6 +904,8 @@ export function startingLaunchesToRosterEntries(
       // by STARTING_LAUNCH_WINDOW_SEC. Never throws (see readPsuLaunchLogTail):
       // a missing or unreadable log degrades to today's generic copy.
       launchFailureHint: failed ? readPsuLaunchLogTail(r.coordOwnerId) : null,
+      launchBlocked: blocked,
+      launchBlockedHint: blockedHint,
       currentFiles: [],
       host: localHost,
       pid: r.pid,

@@ -1,3 +1,6 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { dirname, join } from 'node:path';
 import { describe, it, expect } from 'vitest';
 import {
   deriveLiveness,
@@ -487,6 +490,56 @@ describe('startingLaunchesToRosterEntries (WI-6376 — terminal launch boot wind
     const [e] = startingLaunchesToRosterEntries([row], 'box-1');
     expect(e.launchFailed).toBe(false);
     expect(e.intent).toBe('starting up');
+  });
+
+  it('marks a live headless launch parked at the weekly-limit dialog as BLOCKED, not failed', () => {
+    const root = mkdtempSync(join(tmpdir(), 'adv-roster-headless-'));
+    try {
+      const log = join(root, '.papercusp', 'fleet-logs', 'claude-headless-123-456.log');
+      mkdirSync(dirname(log), { recursive: true });
+      writeFileSync(
+        log,
+        "\x1b[38;2;255;107;128mYou've hit your weekly limit \u00b7 resets 7am (America/New_York)\r\x1b[39m",
+      );
+      const [e] = startingLaunchesToRosterEntries(
+        [
+          adv({
+            id: 96,
+            display: 'terminal',
+            coordOwnerId: 'su-blocked',
+            terminalBin: `headless (log: ${log})`,
+            sessionId: '8cda4456-bc7d-4131-a764-f339a50680ac',
+            endedAt: null,
+          }),
+        ],
+        'box-1',
+      );
+      expect(e.launchBlocked).toBe(true);
+      expect(e.launchFailed).toBe(false);
+      expect(e.intent).toBe('launch blocked');
+      expect(e.launchBlockedHint).toContain('resets 7am (America/New_York)');
+      expect(e.launchBlockedHint).toContain('Launch with Codex or an available account');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  });
+
+  it('does not call an ordinary live headless boot blocked merely because it has a log', () => {
+    const root = mkdtempSync(join(tmpdir(), 'adv-roster-headless-'));
+    try {
+      const log = join(root, '.papercusp', 'fleet-logs', 'claude-headless-123-789.log');
+      mkdirSync(dirname(log), { recursive: true });
+      writeFileSync(log, 'Claude Code booting\nMCP connected\n');
+      const [e] = startingLaunchesToRosterEntries(
+        [adv({ id: 97, display: 'terminal', terminalBin: `headless (log: ${log})` })],
+        'box-1',
+      );
+      expect(e.launchBlocked).toBe(false);
+      expect(e.launchBlockedHint).toBeNull();
+      expect(e.intent).toBe('starting up');
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 
   // A session that booted and later ended is an ORDINARY end. Calling that a
