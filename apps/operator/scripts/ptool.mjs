@@ -100,6 +100,7 @@ export function parseArgs(argv) {
     '--script-file': 'scriptFile',
     '--workspace': 'workspace',
     '--harness': 'harness',
+    '--projection': 'projection',
     '--url': 'url',
     '--token-file': 'tokenFile',
   };
@@ -365,6 +366,22 @@ export function mergeConvenienceArgs(args, { workspace, harness }, inputSchema) 
   if (workspace != null && 'workspace' in props && !('workspace' in out)) out.workspace = workspace;
   if (harness != null && 'harness' in props && !('harness' in out)) out.harness = harness;
   return out;
+}
+
+/**
+ * Add a caller-owned result projection to a direct tool call. The MCP
+ * transport reserves `projection` at the dispatch layer, so it must travel
+ * alongside the target tool's ordinary arguments rather than being dropped
+ * by the CLI parser. An explicit projection already present in JSON wins,
+ * matching mergeConvenienceArgs' preserve-explicit-args behavior. Pure.
+ */
+export function mergeDispatchProjection(args, projection) {
+  if (projection === undefined) return args;
+  if (args && typeof args === 'object' && !Array.isArray(args) && Object.hasOwn(args, 'projection')) {
+    return args;
+  }
+  const base = args && typeof args === 'object' && !Array.isArray(args) ? args : {};
+  return { ...base, projection };
 }
 
 /* ─── result formatting (pure — exported for tests) ───────────────────── */
@@ -1070,6 +1087,7 @@ export const PTOOL_USAGE = `ptool — call any Papercusp defineTool endpoint fro
   EOF
   ptool <group:verb> --json-file payload.json   read JSON args from a file (safe)
   ptool <group:verb> --json '<args>'   inline, quote-free JSON only
+  ptool <group:verb> --projection '<spec>'  bound the result at dispatch time
   ptool code:run --script-file batch.js   read the script from a file
   ptool code:run --script - <<'EOF'      read the script from stdin
   return await tools.dev.build_status({});
@@ -1086,6 +1104,7 @@ Flags:
   --json <json> / --args <json>   args object for a direct (non-interactive) call;
                                    '-' reads the JSON from stdin instead
   --json-file <path>              read the args JSON from a file (quoting-free)
+  --projection <json>             dispatch-level result projection (quote-free JSON)
   --script <source>               direct code:run JavaScript source; '-' reads stdin
   --script-file <path>            direct code:run JavaScript source (quoting-free)
   --workspace <ws>                scope the session (needed for harness:*, features:*, …)
