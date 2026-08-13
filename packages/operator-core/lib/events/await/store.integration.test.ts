@@ -25,7 +25,7 @@ vi.mock('@papercusp/db-org', async () => {
   return { ...actual, getOrgPg: () => ({ sql: hb.sql }) };
 });
 
-const { registerAwait, upsertInboxWakeAwait, cancelInboxWakeAwaits, cancelClaimableAwaits, cancelAwait, cancelAwaitsForSubscribersOnKeys, cancelAwaitsByIds, listActiveAwaits, listActiveAwaitsForKey, fireAwaitsForKey, listParkedAwaitsForSubscribers, countActiveAwaitsByPrefixes, recordKeyFire, getKeyFireLatch, inspectEventKey, probeKeyFireEvidence, keyFireEvidencePrefix, probePatternMatchScope } =
+const { registerAwait, upsertInboxWakeAwait, cancelInboxWakeAwaits, cancelClaimableAwaits, cancelAwait, cancelAwaitsForSubscribersOnKeys, cancelAwaitsByIds, listActiveAwaits, listActiveAwaitsForKey, fireAwaitsForKey, listParkedAwaitsForSubscribers, listVerifiedWaitTakeoversForSubscribers, countActiveAwaitsByPrefixes, recordKeyFire, getKeyFireLatch, inspectEventKey, probeKeyFireEvidence, keyFireEvidencePrefix, probePatternMatchScope } =
   await import('./store');
 
 let rootSql: postgres.Sql;
@@ -62,7 +62,9 @@ beforeAll(async () => {
       -- await leaves them NULL, but store.ts SELECTs root_id unconditionally
       -- (listParkedAwaitsForSubscribers), so omitting them here failed that query with
       -- a missing-column error -- fixture drift from the migration, not a prod bug.
-      node_id bigint, root_id bigint, member_fired_at timestamptz, member_payload jsonb
+      node_id bigint, root_id bigint, member_fired_at timestamptz, member_payload jsonb,
+      -- migration 825: verified-wait certificate + authoritative timeout verdict.
+      producer_health jsonb, timeout_verification jsonb, verification_claimed_at timestamptz
     )`);
   await rootSql.unsafe(`
     CREATE UNIQUE INDEX event_awaits_inbox_wake_one_per_agent
@@ -321,6 +323,45 @@ describe('await-event store (PG)', () => {
     // empty / all-blank input short-circuits to []
     expect(await listParkedAwaitsForSubscribers([])).toEqual([]);
     expect(await listParkedAwaitsForSubscribers([''])).toEqual([]);
+  });
+
+  it('lists only recent stalled/absent verified waits with owner-aware takeover remedies', async () => {
+    const stalled = await registerAwait({ subscriberId: 'sub-a', eventKey: 'release:green:papercusp' });
+    const progressing = await registerAwait({ subscriberId: 'sub-a', eventKey: 'release:green:other' });
+    const result = {
+      classification: 'stalled',
+      nextAction: 'wake-owner-or-takeover',
+      producer: { kind: 'green-checkpoint', id: 'run-42' },
+      owner: { ownerId: 'su-producer', workItemId: 'WI-42' },
+      checkedAtMs: 42,
+      verificationDeadlineMs: 40,
+      lastProgressAtMs: 1,
+      lastFireAtMs: null,
+      evidence: { phase: 'suite' },
+    };
+    await rootSql`
+      UPDATE harness_shared.event_awaits
+         SET fired_at = now(), fired_reason = 'verified-timeout',
+             timeout_verification = ${JSON.stringify(result)}::jsonb
+       WHERE id = ${stalled.id}
+    `;
+    await rootSql`
+      UPDATE harness_shared.event_awaits
+         SET fired_at = now(), fired_reason = 'verified-timeout',
+             timeout_verification = ${JSON.stringify({ ...result, classification: 'progressing', nextAction: 're-await' })}::jsonb
+       WHERE id = ${progressing.id}
+    `;
+
+    const alerts = await listVerifiedWaitTakeoversForSubscribers(['sub-a']);
+    expect(alerts).toHaveLength(1);
+    expect(alerts[0]).toMatchObject({
+      subscriberId: 'sub-a',
+      eventKey: 'release:green:papercusp',
+      classification: 'stalled',
+      owner: { ownerId: 'su-producer', workItemId: 'WI-42' },
+      evidence: { phase: 'suite' },
+    });
+    expect(alerts[0]?.remedy).toContain('claim/take over WI-42');
   });
 
   // ── EI-9000 (fleet-reliability-verification-2026-07-10 P-005): live-awaiter counts ──

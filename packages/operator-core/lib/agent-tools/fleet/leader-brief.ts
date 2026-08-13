@@ -93,6 +93,10 @@ import {
 } from '../coordination/fleet-scope-admission-blocks';
 import type { InvariantEvaluation } from './invariants';
 import { listActiveComposedRoots, loadTreeLeaves } from '../../events/await/compose-store';
+import {
+  listVerifiedWaitTakeoversForSubscribers,
+  type VerifiedWaitTakeoverAlert,
+} from '../../events/await/store';
 import type { TimeoutBehavior } from '../../events/await/types';
 import { withBoundedTimeout } from '../../bounded-timeout';
 import { fetchGatewayHeadroom } from '../../inference-gateway/observability';
@@ -180,6 +184,8 @@ export interface LeaderBriefMember {
    *  `ComposedParkEntry` (its any/all/k-of-n mode + its OWN deadline), never as
    *  flat sibling strings alongside its own leaves — see resolveComposedParkedOn. */
   parkedOn?: Array<string | ComposedParkEntry>;
+  /** Authoritative verified-wait failures that require owner wake/takeover. */
+  verifiedWaitTakeovers?: VerifiedWaitTakeoverAlert[];
   /** EI-9943: this member is alive/speaking (burning real turns) but its work
    *  is NOT advancing and it is not already benched — the "live-loop-polling
    *  on a peer's critical path" pattern (fleet p2p-ship, 2026-07-11/12: 3 of 5
@@ -1530,6 +1536,7 @@ export type DecoratedAgent = AgentAssignment & {
    *  Absent (or equal to `parkedOn` verbatim) when the member holds no composed
    *  await, or the resolution read failed (fails open to the raw flat list). */
   parkedOnResolved?: Array<string | ComposedParkEntry>;
+  verifiedWaitTakeovers?: VerifiedWaitTakeoverAlert[];
   contextPressure?: ContextPressureBucket | null;
   coordHook?: CoordDeafState | null;
   coordLastReadAgoSec?: number | null;
@@ -1801,6 +1808,9 @@ export function projectMember(
       const parked = a.parkedOnResolved ?? a.parkedOn;
       return parked && parked.length > 0 ? { parkedOn: parked } : {};
     })(),
+    ...(a.verifiedWaitTakeovers && a.verifiedWaitTakeovers.length > 0
+      ? { verifiedWaitTakeovers: a.verifiedWaitTakeovers }
+      : {}),
     ...(() => {
       const suggestion = computeBenchSuggestion(
         a,
@@ -2037,6 +2047,21 @@ export default defineTool({
     // the caller's own directives — you are accountable for what you instructed.
     await decorateDirectiveActuation(grouped, ownerId).catch(() => {});
     await decorateCoordDeafness(grouped).catch(() => {});
+    // P-005: a fired one-shot wait disappears from parkedOn, but its
+    // authoritative stalled/absent verdict is durable. Surface that evidence
+    // beside the member that must own the wake/takeover remedy.
+    const verifiedWaitTakeovers = await listVerifiedWaitTakeoversForSubscribers(
+      grouped.map((a) => a.agentId),
+    ).catch(() => []);
+    const takeoversBySubscriber = new Map<string, VerifiedWaitTakeoverAlert[]>();
+    for (const alert of verifiedWaitTakeovers) {
+      const current = takeoversBySubscriber.get(alert.subscriberId) ?? [];
+      current.push(alert);
+      takeoversBySubscriber.set(alert.subscriberId, current);
+    }
+    for (const agent of grouped) {
+      agent.verifiedWaitTakeovers = takeoversBySubscriber.get(agent.agentId) ?? [];
+    }
     // WI-5213: unowned criticals THIS fleet's claim spec would admit — read
     // failures already fail soft to `[]` inside readUnownedCriticalsForFleet.
     const unownedCriticalsAll: UnownedCriticalCandidate[] = await readUnownedCriticalsForFleet({
@@ -2182,6 +2207,10 @@ export default defineTool({
       high_context: members.filter((m) => m.contextPressure === 'high').length,
       critical_context: members.filter((m) => m.contextPressure === 'critical').length,
       parked: members.filter((m) => (m.parkedOn?.length ?? 0) > 0).length,
+      verified_wait_takeovers: members.reduce(
+        (count, member) => count + (member.verifiedWaitTakeovers?.length ?? 0),
+        0,
+      ),
       // P-001 coord-deafness: live members NOT seeing their coord mail right
       // now — a coord:send to them silently queues until they settle/wake.
       coord_deaf: members.filter((m) => m.coordHook != null).length,

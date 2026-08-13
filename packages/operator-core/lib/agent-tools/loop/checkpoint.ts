@@ -57,6 +57,7 @@ import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
 import { detectAbsencePremises } from '../../premises-claim-port';
 import { detectScopeOverreach } from '../../carry-note-probe-scope';
 import { withBoundedTimeout } from '../../bounded-timeout';
+import { listVerifiedWaitTakeoversForSubscribers } from '../../events/await/store';
 
 /** The continuation hint is advisory; it must never consume the checkpoint
  * tool's 60s transport budget when coordination reads are degraded. */
@@ -778,6 +779,19 @@ export default defineTool({
       },
     );
     const continuation = continuationRead.value;
+    // P-005: the wake payload that carried a verified-timeout diagnosis is
+    // ephemeral, while timeout_verification on event_awaits is durable. Return
+    // the latest authoritative stalled/absent evidence on the checkpoint write
+    // the owner already performs, including the concrete wake/takeover remedy.
+    const verifiedWaitTakeovers = await withBoundedTimeout(
+      listVerifiedWaitTakeoversForSubscribers([ownerId]),
+      {
+        fallback: [],
+        timeoutMs: CONTINUATION_READ_BUDGET_MS,
+        label: 'loop:checkpoint verified-wait takeovers',
+      },
+    );
+    const verifiedWaitTakeoverRows = verifiedWaitTakeovers.value ?? [];
 
     // WI-3801 lint + P-014 turn-ref verification/origin stamp — both warn-only,
     // absent (no fields) on a clean/cleared write.
@@ -800,6 +814,9 @@ export default defineTool({
             contentHash,
             walls: walls.length,
             checks: checks.length,
+            ...(verifiedWaitTakeoverRows.length > 0
+              ? { verifiedWaitTakeovers: verifiedWaitTakeoverRows }
+              : {}),
             /** P-013: which row semantics this write actually ran under, so a caller
              *  never has to infer it from the counts. Present only when it was NOT the
              *  default, keeping the common reply shape unchanged. */

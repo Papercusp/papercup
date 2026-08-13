@@ -13,6 +13,7 @@ const setLoopCarryNote = vi.fn();
 const getLoopCarryNote = vi.fn();
 const getLoopStatus = vi.fn();
 const withBoundedTimeout = vi.fn(async (..._a: unknown[]) => ({ value: undefined, degraded: false, elapsedMs: 0 }));
+const listVerifiedWaitTakeoversForSubscribers = vi.fn(async (..._a: unknown[]) => []);
 // Mock the STORE fns; a sentinel renderCarryNote keeps the routing tests about ROUTING
 // (structured → render, raw → passthrough), not renderCarryNote's exact output. The pure
 // walls machinery (splitCarryNoteWalls / withCarryNoteWalls / normalizeWallEntries) stays
@@ -96,6 +97,11 @@ vi.mock('../../harness/routines/loop', () => ({ getLoopStatus: (...a: unknown[])
 vi.mock('../../bounded-timeout', () => ({
   withBoundedTimeout: (...a: unknown[]) => withBoundedTimeout(...a),
 }));
+vi.mock('../../events/await/store', async (importOriginal) => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  listVerifiedWaitTakeoversForSubscribers: (...a: unknown[]) =>
+    listVerifiedWaitTakeoversForSubscribers(...a),
+}));
 
 const tool = (await import('./checkpoint')).default;
 // REAL (the carry-note mock above spreads importOriginal) — used to build prior notes
@@ -122,6 +128,7 @@ beforeEach(() => {
   getLoopCarryNote.mockResolvedValue(null); // default: no prior note ⇒ no walls to carry
   getLoopStatus.mockResolvedValue(null); // default: no armed routine found
   withBoundedTimeout.mockResolvedValue({ value: undefined, degraded: false, elapsedMs: 0 });
+  listVerifiedWaitTakeoversForSubscribers.mockResolvedValue([]);
 });
 
 describe('loop:checkpoint — the loop carry-note producer', () => {
@@ -159,6 +166,33 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
       { harness: 'papercusp', ownerId: 'su-caller', workspaceId: 'ws-1' },
       'RENDERED:' + JSON.stringify({ did: 'wired producer', left: 'run tests', insight: 'inject wraps note', next: 'vitest' }),
     );
+  });
+
+  it('surfaces durable stalled-wait evidence and the takeover remedy in the checkpoint result', async () => {
+    const alert = {
+      subscriberId: 'su-caller',
+      eventKey: 'release:green:papercusp',
+      firedAt: '2026-08-13T12:00:00.000Z',
+      classification: 'stalled',
+      nextAction: 'wake-owner-or-takeover',
+      producer: { kind: 'green-checkpoint', id: 'run-42' },
+      owner: { ownerId: 'su-producer', workItemId: 'WI-42' },
+      checkedAtMs: 42,
+      verificationDeadlineMs: 40,
+      lastProgressAtMs: 1,
+      lastFireAtMs: null,
+      evidence: { phase: 'suite' },
+      remedy: 'Wake the owner of WI-42; if it does not resume promptly, claim/take over WI-42.',
+    } as const;
+    listVerifiedWaitTakeoversForSubscribers.mockResolvedValueOnce([alert]);
+    withBoundedTimeout
+      .mockResolvedValueOnce({ value: undefined, degraded: false, elapsedMs: 0 })
+      .mockResolvedValueOnce({ value: [alert], degraded: false, elapsedMs: 1 });
+
+    const b = body(await call({ did: 'checkpointing before takeover', next: 'wake owner' }));
+
+    expect(listVerifiedWaitTakeoversForSubscribers).toHaveBeenCalledWith(['su-caller']);
+    expect(b.verifiedWaitTakeovers).toEqual([alert]);
   });
 
   it('accepts goal as a compatibility alias for next, while explicit next wins', async () => {

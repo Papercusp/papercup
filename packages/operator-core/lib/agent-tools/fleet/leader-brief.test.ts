@@ -283,6 +283,25 @@ describe('compactLeaderBriefMemberVerdicts (EI-20226510994156306)', () => {
 });
 
 describe('projectMember (pure)', () => {
+  it('keeps authoritative verified-wait evidence and its owner/takeover remedy beside the member', () => {
+    const alert = {
+      subscriberId: 'su-worker',
+      eventKey: 'release:green:papercusp',
+      firedAt: '2026-08-13T12:00:00.000Z',
+      classification: 'absent' as const,
+      nextAction: 'wake-owner-or-takeover' as const,
+      producer: { kind: 'green-checkpoint', id: 'run-42' },
+      owner: { ownerId: 'su-producer', workItemId: 'WI-42' },
+      checkedAtMs: 42,
+      verificationDeadlineMs: 40,
+      lastProgressAtMs: null,
+      lastFireAtMs: null,
+      remedy: 'Wake the owner of WI-42; if it does not resume promptly, claim/take over WI-42.',
+    };
+    const m = projectMember(baseAgent({ verifiedWaitTakeovers: [alert] }), NOW);
+    expect(m.verifiedWaitTakeovers).toEqual([alert]);
+  });
+
   it('computes lastToolCallAgeMs from the ISO timestamp', () => {
     const agent = baseAgent({ lastToolCallAt: new Date(NOW - 5_000).toISOString() });
     const m = projectMember(agent, NOW);

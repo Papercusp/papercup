@@ -444,6 +444,83 @@ export async function listParkedAwaitsForSubscribers(
 }
 
 /**
+ * A verified wait that reached an authoritative stalled/absent verdict needs to
+ * remain leader-legible after the one-shot await has fired.  The wake payload is
+ * transient; this read projects the durable verdict stored on event_awaits.
+ *
+ * Keep the window bounded and return only the newest verdict per
+ * subscriber/event pair.  This is an operational handoff signal, not an event
+ * history API.
+ */
+export interface VerifiedWaitTakeoverAlert {
+  subscriberId: string;
+  eventKey: string;
+  firedAt: string;
+  classification: 'stalled' | 'absent';
+  nextAction: 'wake-owner-or-takeover';
+  producer: VerifiedWaitTimeoutResult['producer'];
+  owner: VerifiedWaitTimeoutResult['owner'];
+  checkedAtMs: number;
+  verificationDeadlineMs: number;
+  lastProgressAtMs: number | null;
+  lastFireAtMs: number | null;
+  evidence?: Record<string, unknown>;
+  remedy: string;
+}
+
+export async function listVerifiedWaitTakeoversForSubscribers(
+  subscriberIds: readonly string[],
+  sinceHours = 24,
+): Promise<VerifiedWaitTakeoverAlert[]> {
+  const ids = [...new Set(subscriberIds.filter((id) => !!id))];
+  if (ids.length === 0) return [];
+  const { sql } = getOrgPg();
+  const ws = eventsWs();
+  const boundedHours = Math.min(Math.max(sinceHours, 1), 168);
+  const rows = await sql`
+    SELECT DISTINCT ON (subscriber_id, event_key)
+           subscriber_id, event_key, fired_at, timeout_verification
+      FROM harness_shared.event_awaits
+     WHERE workspace_id = ${ws}
+       AND subscriber_id = ANY(${ids as string[]}::text[])
+       AND fired_reason = 'verified-timeout'
+       AND fired_at >= now() - make_interval(hours => ${boundedHours})
+       AND timeout_verification->>'classification' IN ('stalled', 'absent')
+       AND timeout_verification->>'nextAction' = 'wake-owner-or-takeover'
+     ORDER BY subscriber_id, event_key, fired_at DESC
+     LIMIT 500
+  `;
+  return rows.flatMap((row: any) => {
+    const result = parseJsonb<VerifiedWaitTimeoutResult>(row.timeout_verification);
+    if (
+      !result ||
+      (result.classification !== 'stalled' && result.classification !== 'absent') ||
+      result.nextAction !== 'wake-owner-or-takeover'
+    ) {
+      return [];
+    }
+    const ownerTarget = result.owner.workItemId ?? result.owner.ownerId;
+    return [{
+      subscriberId: row.subscriber_id,
+      eventKey: row.event_key,
+      firedAt: new Date(row.fired_at).toISOString(),
+      classification: result.classification,
+      nextAction: result.nextAction,
+      producer: result.producer,
+      owner: result.owner,
+      checkedAtMs: result.checkedAtMs,
+      verificationDeadlineMs: result.verificationDeadlineMs,
+      lastProgressAtMs: result.lastProgressAtMs,
+      lastFireAtMs: result.lastFireAtMs,
+      ...(result.evidence ? { evidence: result.evidence } : {}),
+      remedy: ownerTarget
+        ? `Wake the owner of ${ownerTarget}; if it does not resume promptly, claim/take over ${ownerTarget}.`
+        : 'No owning work-item or agent was recorded; claim the producer repair before retrying this wait.',
+    } satisfies VerifiedWaitTakeoverAlert];
+  });
+}
+
+/**
  * EI-19447204017443244: the caller's OWN live WAKE-capable awaits — the falsifier for
  * loop:arm's interval-cap sentence "nothing can push you a wake", which asserted that
  * as fact while consulting only `blockedOn.event`.
