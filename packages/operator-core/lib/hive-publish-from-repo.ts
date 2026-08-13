@@ -364,7 +364,9 @@ async function publishListingForMeta(
           // D-007: thread the verified owner binding so a direct-link joiner can
           // seed hive_directory_cache at join (re-verified channel-2 there). hivePubkey
           // is required (the joiner re-derives the topic from it; the link topic is a
-          // one-way hash). All-or-nothing — formatHarnessLink emits them only together.
+          // one-way hash). The three channel-1 fields are all-or-nothing in
+          // formatHarnessLink; `attestationGistId` is NOT (WI-38345) — an owner whose
+          // gist create 422'd passes '' here and still publishes a usable binding.
           ...(owner && hivePubkey
             ? {
                 hivePubkey,

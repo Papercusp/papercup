@@ -20,14 +20,37 @@
  * (`hivePubkey → ownerDevicePubkey`) at join — instead of depending on catching
  * the live announce beacon (the run-20 "0 announce activity" receive failure that
  * left the joiner's roster empty → `decideMemberContentOp` dropped all owner
- * content). The link is TRANSPORT, NOT the trust anchor: the joiner MUST channel-2
- * re-verify `owner_device_pubkey` against the `attestation_gist_id` (github-anchored,
- * Ed25519) before trusting/seeding it. All four are present together or not at all:
+ * content). The link is TRANSPORT, NOT the trust anchor: a joiner that wants
+ * channel-2 assurance re-verifies `owner_device_pubkey` against the
+ * `attestation_gist_id` (github-anchored, Ed25519) before trusting/seeding it.
+ *
+ * THE BINDING GROUP IS THE THREE CHANNEL-1 FIELDS — the gist id rides ALONE
+ * (WI-38345). These three are present together or not at all:
  *   - `hive_pubkey`: base64 raw-32 Ed25519 hive pubkey (the cache key; the boot
  *     path re-derives the swarm topic from it, so it cannot be inferred from `topic`).
  *   - `owner_device_pubkey`: base64 (optionally algorithm-tagged) owner device pubkey.
  *   - `owner_github_user_id`: the owner's numeric GitHub user id (channel-2 verify target).
+ * and SEPARATELY, when the owner has one:
  *   - `attestation_gist_id`: the owner's device-attestation gist id (channel-2 anchor).
+ *
+ * WHY THE GIST IS NOT IN THE CONJUNCTION (WI-38345, live A→B stall). It used to be,
+ * and an owner whose gist create 422s (no verified GitHub email) resolves an identity
+ * with `attestationGistId: ''` — so the falsy fourth conjunct silently deleted the
+ * whole binding and every member link it published carried NO `owner_device_pubkey`.
+ * That is the deterministic source `join-hive.ts` reads at every real join, so the
+ * joiner had nothing left: `resolveJoinedHiveOwnerDevice()` → null, the WI-787/WI-780
+ * owner-bootstrap admit could not fire, and the owner's announce was conclusively
+ * rejected `binding_invalid` — permanently, since announces are never re-delivered.
+ *
+ * Relaxing the conjunction costs no security, because it was never a verification:
+ * every one of the four fields is attacker-controlled to the SAME degree (anyone who
+ * can hand you a link can fabricate a well-formed gist id too), so requiring the
+ * fourth adds zero adversarial cost. What actually makes a forged binding inert is
+ * downstream and unchanged: the owner-bootstrap admit (`boot.ts`, WI-787) admits ONLY
+ * the one device whose announce already passed channel-1 `verifyAnnounceDetailed`, so
+ * a link naming a device that cannot produce a validly-signed announce for this hive
+ * admits nothing. Dropping the channel-1 binding to protect a channel-2 anchor that
+ * no parse-side consumer even reads back is a category error, not a defence.
  *
  * Returns `null` on any malformed REQUIRED input — callers display a human-readable
  * error by checking for null. A malformed/partial OPTIONAL owner binding is IGNORED
@@ -48,14 +71,16 @@ export interface HarnessLink {
   repoName: string;
   /** GitHub's stable numeric repository id (never recycled on renames). */
   repoId: number;
-  /** D-007 shared-hive owner binding (optional; the four are present together).
+  /** D-007 shared-hive owner binding (optional; these THREE are present together).
    *  base64 raw-32 Ed25519 hive pubkey — the `hive_directory_cache` key. */
   hivePubkey?: string;
   /** D-007 owner device pubkey (base64, optionally algorithm-tagged). */
   ownerDevicePubkey?: string;
   /** D-007 owner numeric GitHub user id (channel-2 verify target). */
   ownerGithubUserId?: number;
-  /** D-007 owner device-attestation gist id (channel-2 anchor). */
+  /** D-007 owner device-attestation gist id (channel-2 anchor). Rides ALONE
+   *  (WI-38345): an owner with no gist still publishes the channel-1 binding
+   *  above, so a gist-less hive stays joinable. See the file header. */
   attestationGistId?: string;
   /**
    * A3 (EI-18788176839043286): the pot-git repoKey the OWNER's store for this
@@ -74,7 +99,8 @@ const ALLOWED_PARAMS = new Set([
   'topic',
   'github',
   'repo_id',
-  // D-007 optional shared-hive owner-binding params (all-or-nothing):
+  // D-007 optional shared-hive owner-binding params (the first three are
+  // all-or-nothing; attestation_gist_id rides alone — WI-38345):
   'hive_pubkey',
   'owner_device_pubkey',
   'owner_github_user_id',
@@ -155,14 +181,14 @@ export function parseHarnessLink(url: string): HarnessLink | null {
 
   const link: HarnessLink = { topic, github, repoOwner, repoName, repoId };
 
-  // D-007 optional shared-hive owner binding — all-or-nothing. A missing or
-  // malformed field leaves the binding off the link (joiner falls back to the
-  // beacon) rather than rejecting the whole link.
+  // D-007 optional shared-hive owner binding — the CHANNEL-1 group is
+  // all-or-nothing, and the channel-2 gist anchor rides alone (WI-38345). A
+  // missing or malformed field leaves that part off the link (joiner falls back
+  // to the beacon) rather than rejecting the whole link.
   const hivePubkey = parsed.searchParams.get('hive_pubkey');
   const ownerDevicePubkey = parsed.searchParams.get('owner_device_pubkey');
   const ownerGithubUserIdStr = parsed.searchParams.get('owner_github_user_id');
-  const attestationGistId = parsed.searchParams.get('attestation_gist_id');
-  if (hivePubkey && ownerDevicePubkey && ownerGithubUserIdStr && attestationGistId) {
+  if (hivePubkey && ownerDevicePubkey && ownerGithubUserIdStr) {
     const ownerGithubUserId = parseInt(ownerGithubUserIdStr, 10);
     if (
       BASE64ISH_RE.test(hivePubkey) &&
@@ -170,14 +196,21 @@ export function parseHarnessLink(url: string): HarnessLink | null {
       /^\d+$/.test(ownerGithubUserIdStr) &&
       Number.isFinite(ownerGithubUserId) &&
       ownerGithubUserId > 0 &&
-      ownerGithubUserId <= Number.MAX_SAFE_INTEGER &&
-      BASE64ISH_RE.test(attestationGistId)
+      ownerGithubUserId <= Number.MAX_SAFE_INTEGER
     ) {
       link.hivePubkey = hivePubkey;
       link.ownerDevicePubkey = ownerDevicePubkey;
       link.ownerGithubUserId = ownerGithubUserId;
-      link.attestationGistId = attestationGistId;
     }
+  }
+
+  // WI-38345: the channel-2 anchor stands alone. It is only MEANINGFUL alongside
+  // the channel-1 binding (it attests that device to that GitHub id), so it is
+  // dropped when the binding above did not land — but its ABSENCE never costs us
+  // the binding, which is the whole point of the split.
+  const attestationGistId = parsed.searchParams.get('attestation_gist_id');
+  if (attestationGistId && BASE64ISH_RE.test(attestationGistId) && link.ownerDevicePubkey) {
+    link.attestationGistId = attestationGistId;
   }
 
   // A3: the owner's minted repoKey. Stands alone (NOT part of the D-007
@@ -201,17 +234,17 @@ export function formatHarnessLink(link: HarnessLink): string {
     github: link.github,
     repo_id: String(link.repoId),
   });
-  // D-007: emit the owner-binding params only when ALL four are present.
-  if (
-    link.hivePubkey &&
-    link.ownerDevicePubkey &&
-    typeof link.ownerGithubUserId === 'number' &&
-    link.attestationGistId
-  ) {
+  // D-007: emit the CHANNEL-1 owner binding when all three of it are present.
+  // WI-38345: `attestation_gist_id` is deliberately NOT a conjunct here — an
+  // owner whose gist create 422'd has `attestationGistId: ''`, and gating the
+  // binding on it published links no joiner could bootstrap from.
+  if (link.hivePubkey && link.ownerDevicePubkey && typeof link.ownerGithubUserId === 'number') {
     p.set('hive_pubkey', link.hivePubkey);
     p.set('owner_device_pubkey', link.ownerDevicePubkey);
     p.set('owner_github_user_id', String(link.ownerGithubUserId));
-    p.set('attestation_gist_id', link.attestationGistId);
+    // The channel-2 anchor rides alone, but only alongside the binding it
+    // attests — a gist id with no owner device names nothing (mirrors parse).
+    if (link.attestationGistId) p.set('attestation_gist_id', link.attestationGistId);
   }
   // A3: emit the minted repoKey when the caller supplies a well-formed one.
   if (link.repoKey && REPO_KEY_RE.test(link.repoKey) && link.repoKey !== '.' && link.repoKey !== '..') {

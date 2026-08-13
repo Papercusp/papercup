@@ -80,7 +80,7 @@ describe('url-scheme: D-007 owner binding', () => {
   });
 
   it('all-or-nothing: a partial owner binding is ignored (not partially threaded)', () => {
-    // Only hive_pubkey + owner_device_pubkey present, missing the other two.
+    // Only hive_pubkey + owner_device_pubkey present, missing owner_github_user_id.
     const url =
       `papercusp://harness?topic=${TOPIC}&github=octo/repo&repo_id=12345` +
       `&hive_pubkey=${encodeURIComponent(withBinding.hivePubkey!)}` +
@@ -106,11 +106,95 @@ describe('url-scheme: D-007 owner binding', () => {
     expect(parsed!.hivePubkey).toBeUndefined();
   });
 
-  it('formatHarnessLink omits the binding when any of the four is missing', () => {
+  it('formatHarnessLink omits the binding when any of the three channel-1 fields is missing', () => {
     const partial: HarnessLink = { ...base, hivePubkey: withBinding.hivePubkey };
     const url = formatHarnessLink(partial);
     expect(url).not.toContain('hive_pubkey');
     expect(parseHarnessLink(url)!.hivePubkey).toBeUndefined();
+  });
+});
+
+describe('url-scheme: WI-38345 — a gist-less owner still publishes a usable binding', () => {
+  // THE LIVE FAILURE THIS PINS. An owner with no verified GitHub email gets a 422
+  // from the gist create, so `resolveLocalAnnounceIdentity` yields
+  // `attestationGistId: ''`. That empty string used to be a falsy conjunct in
+  // formatHarnessLink's all-or-nothing gate, silently deleting `owner_device_pubkey`
+  // from EVERY member link the owner published. join-hive.ts reads exactly that field
+  // as its deterministic owner-binding source, so the joiner had none:
+  // resolveJoinedHiveOwnerDevice() → null → the WI-787 owner-bootstrap admit could not
+  // fire → the owner's announce was rejected `binding_invalid`. Announces are never
+  // re-delivered, so A→B federation stalled permanently (WI-5481 soak attempt 4:
+  // 0 membership rows on the joiner, never converged in 422s).
+  const channel1: HarnessLink = {
+    ...base,
+    hivePubkey: 'aGl2ZVB1YmtleS0zMmJ5dGVzLWJhc2U2NC1leGFtcGxlISE=',
+    ownerDevicePubkey: 'ed25519:b3duZXJEZXZpY2VQdWJrZXktYmFzZTY0LWV4YW1wbGU=',
+    ownerGithubUserId: 279242982,
+  };
+
+  it("emits the owner binding when attestationGistId is '' (the 422 case)", () => {
+    const url = formatHarnessLink({ ...channel1, attestationGistId: '' });
+    expect(url).toContain('owner_device_pubkey');
+    const parsed = parseHarnessLink(url)!;
+    expect(parsed.ownerDevicePubkey).toBe(channel1.ownerDevicePubkey);
+    expect(parsed.hivePubkey).toBe(channel1.hivePubkey);
+    expect(parsed.ownerGithubUserId).toBe(279242982);
+    // The anchor genuinely isn't there — the point is that its absence no longer
+    // costs us the binding, not that we fabricate one.
+    expect(parsed.attestationGistId).toBeUndefined();
+    expect(url).not.toContain('attestation_gist_id');
+  });
+
+  it('emits the owner binding when attestationGistId is omitted entirely', () => {
+    const parsed = parseHarnessLink(formatHarnessLink(channel1))!;
+    expect(parsed.ownerDevicePubkey).toBe(channel1.ownerDevicePubkey);
+    expect(parsed.attestationGistId).toBeUndefined();
+  });
+
+  it('parses a gist-less link produced by another peer', () => {
+    const url =
+      `papercusp://harness?topic=${TOPIC}&github=octo/repo&repo_id=12345` +
+      `&hive_pubkey=${encodeURIComponent(channel1.hivePubkey!)}` +
+      `&owner_device_pubkey=${encodeURIComponent(channel1.ownerDevicePubkey!)}` +
+      `&owner_github_user_id=279242982`;
+    const parsed = parseHarnessLink(url);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.ownerDevicePubkey).toBe(channel1.ownerDevicePubkey);
+    expect(parsed!.attestationGistId).toBeUndefined();
+  });
+
+  it('still carries the gist anchor when the owner HAS one (no regression)', () => {
+    const gist = 'abc123def456abc123def456abc12345';
+    const parsed = parseHarnessLink(formatHarnessLink({ ...channel1, attestationGistId: gist }))!;
+    expect(parsed.attestationGistId).toBe(gist);
+    expect(parsed.ownerDevicePubkey).toBe(channel1.ownerDevicePubkey);
+  });
+
+  it('drops a lone gist anchor that names no owner device (it attests nothing)', () => {
+    // Both directions: format refuses to emit it, and parse refuses to keep it.
+    const url = formatHarnessLink({ ...base, attestationGistId: 'abc123def456abc123def456abc12345' });
+    expect(url).not.toContain('attestation_gist_id');
+
+    const handRolled =
+      `papercusp://harness?topic=${TOPIC}&github=octo/repo&repo_id=12345` +
+      `&attestation_gist_id=abc123def456abc123def456abc12345`;
+    const parsed = parseHarnessLink(handRolled);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.attestationGistId).toBeUndefined();
+  });
+
+  it('drops a MALFORMED gist anchor without taking the binding down with it', () => {
+    // The regression shape in miniature: a bad channel-2 field must cost only itself.
+    const url =
+      `papercusp://harness?topic=${TOPIC}&github=octo/repo&repo_id=12345` +
+      `&hive_pubkey=${encodeURIComponent(channel1.hivePubkey!)}` +
+      `&owner_device_pubkey=${encodeURIComponent(channel1.ownerDevicePubkey!)}` +
+      `&owner_github_user_id=279242982` +
+      `&attestation_gist_id=${encodeURIComponent('not a gist id!!')}`;
+    const parsed = parseHarnessLink(url);
+    expect(parsed).not.toBeNull();
+    expect(parsed!.attestationGistId).toBeUndefined();
+    expect(parsed!.ownerDevicePubkey).toBe(channel1.ownerDevicePubkey);
   });
 });
 
