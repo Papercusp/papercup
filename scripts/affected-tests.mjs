@@ -2136,8 +2136,9 @@ for (const t of tasks) {
   // (libuv) level, immune to the child spinning its own event loop — see the constant's
   // header above. `__elapsedMs` is attached to the plain result object so isWatchdogTimeout
   // can positively attribute a kill to this bound rather than guess from the signal alone.
-  const run = (extraArgs = []) => {
-    const { cmd, argv, cwd, env } = spawnSpecFor(t, [...guardArgs, ...extraArgs]);
+  const run = (extraArgs = [], scriptOverride = null) => {
+    const spawnTask = scriptOverride ? { ...t, script: scriptOverride } : t;
+    const { cmd, argv, cwd, env } = spawnSpecFor(spawnTask, [...guardArgs, ...extraArgs]);
     const spawnOpts = { timeout: BATCH_TIMEOUT_MS, killSignal: BATCH_KILL_SIGNAL };
     const startedAt = Date.now();
     if (!captureOutput()) {
@@ -2158,6 +2159,28 @@ for (const t of tasks) {
     logLine(r.stderr ?? '');
     return r;
   };
+  /**
+   * The fresh-process retry, PC_TEST_LANE-aware (plan gate-suite-speedup-2026-08-12, P-003).
+   *
+   * MEASURED 2026-08-13: a `test:lane-pure` leg failed 14 files; 10 of them passed when
+   * re-run isolated, i.e. they were artifacts of the lane's own fork reuse, not defects.
+   * The retry below re-ran them by re-invoking THE SAME SCRIPT, so `PC_TEST_LANE=pure`
+   * was still set, the files ran non-isolated again, and the pollution reproduced — the
+   * retry could not absorb the one class it was best placed to absorb.
+   *
+   * That is not merely a wasted retry. A surviving lane artifact is counted as a failing
+   * FILE, and both this script's FRESH_RETRY_MAX_FILES and green-checkpoint's
+   * ISOLATION_MAX_FILES are 15 — past which a red is declared a real regression and the
+   * gate's isolation rescue is skipped entirely. So lane artifacts spend a budget that
+   * exists to absorb genuine load flakes, and 10 of 15 is most of it.
+   *
+   * Fix: for a lane leg, retry the failed files under the DEFAULT `test` script. It sets
+   * no lane env, so it resolves the default config and is ISOLATED BY CONSTRUCTION — the
+   * same property the gate's own isolation and confirming co-execution re-runs rely on
+   * (resolveWorkspaceTestInvocation). A genuine failure still fails this isolated re-run
+   * exactly as it would with no lane split at all, so nothing is absorbed that shouldn't be.
+   */
+  const runFreshRetry = (files) => (hasLaneSplit(t.ws) ? run(files, 'test') : run(files));
   let r = run();
   // WI-38300: absorption state, read by the reporting branch far below to decide whether a
   // surviving failure is a confident red or load-suspect residue. Declared out here because
@@ -2220,14 +2243,25 @@ for (const t of tasks) {
       errSync(
         `\n>>> ${t.ws.name} FAILED — fresh-process re-run of ${failedFiles.length} failed file(s) (HARDEN-GATE flake absorption): ${failedFiles.join(', ')}`,
       );
-      r = run(failedFiles);
+      r = runFreshRetry(failedFiles);
       absorptionRan = true;
-      residualFiles = failedFiles;
       // WI-38300: sampled AFTER the re-run, deliberately. loadavg()[0] is a TRAILING 1-minute
       // average, so a post-sample describes the load the RE-RUN itself experienced — the thing
       // in question. A pre-sample describes the first pass, which is already known to have been
       // high (it is what enabled absorption) and therefore discriminates nothing.
       load1AtRerun = loadavg()[0];
+      // ⚠ Keep the line above IMMEDIATELY after the re-run — affected-tests-load-suspect.test.ts
+      // pins the two within 500 chars, because a trailing average sampled late stops describing
+      // the run it is meant to describe. Add prose BELOW this point, never between them.
+      // The residue is what SURVIVED the re-run, not what entered it. This used to be
+      // assigned `failedFiles` — the PRE-retry set — while formatLoadSuspectNotice states
+      // the files "failed the first pass AND the fresh-process re-run". Measured
+      // 2026-08-13: a lane leg failed 14 files, the re-run left 4, and the notice named
+      // all 14 — pointing gate triage at 10 files that had just passed. Re-parse the
+      // RE-RUN's own output; fall back to the pre-retry set only when nothing parses, so
+      // an unparseable failure still names something rather than silently naming none.
+      const rerunFailedFiles = parseFailedFiles(`${r.stdout ?? ''}${r.stderr ?? ''}`);
+      residualFiles = rerunFailedFiles.length > 0 ? rerunFailedFiles : failedFiles;
       if (r.status === 0)
         errSync(`>>> ${t.ws.name} failed files passed in a fresh process — counted as a FLAKE, not a failure.`);
     } else {
