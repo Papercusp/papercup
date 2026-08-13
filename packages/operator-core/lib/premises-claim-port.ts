@@ -183,9 +183,7 @@ export async function invalidatedPremiseCitationChecks(
   if (!body) return [];
 
   const requestedMax = opts.max ?? MAX_PREMISE_CITATION_REFS;
-  const maxRefs = Number.isFinite(requestedMax)
-    ? Math.max(0, Math.floor(requestedMax))
-    : MAX_PREMISE_CITATION_REFS;
+  const maxRefs = Number.isFinite(requestedMax) ? Math.max(0, Math.floor(requestedMax)) : MAX_PREMISE_CITATION_REFS;
   if (maxRefs === 0) return [];
 
   let ids: string[];
@@ -209,7 +207,11 @@ export async function invalidatedPremiseCitationChecks(
       try {
         const cited = await probe(id);
         const evidence = cited?.terminalCompletionRef?.trim() ?? '';
-        if (!cited || !ANY_FAMILY_TERMINAL_STATES.includes(cited.state) || !INVALIDATED_PREMISE_COMPLETION_RE.test(evidence)) {
+        if (
+          !cited ||
+          !ANY_FAMILY_TERMINAL_STATES.includes(cited.state) ||
+          !INVALIDATED_PREMISE_COMPLETION_RE.test(evidence)
+        ) {
           return null;
         }
         return {
@@ -340,7 +342,16 @@ function isSentenceDot(text: string, i: number): boolean {
   // over-extends past a markdown bold-close and swallows the following sentence, which is
   // the same unreadable-claim defect in the other direction.
   let j = i + 1;
-  while (j < text.length && (text[j] === '*' || text[j] === ')' || text[j] === ']' || text[j] === '"' || text[j] === "'" || text[j] === '`' || text[j] === '_')) {
+  while (
+    j < text.length &&
+    (text[j] === '*' ||
+      text[j] === ')' ||
+      text[j] === ']' ||
+      text[j] === '"' ||
+      text[j] === "'" ||
+      text[j] === '`' ||
+      text[j] === '_')
+  ) {
     j++;
   }
   const next = text[j];
@@ -442,7 +453,8 @@ const SELF_RETRACTION =
   /\b(?:i (?:was|am) (?:wrong|mistaken)|retract(?:s|ed|ing|ion)?|falsified|premise (?:is|was) (?:false|wrong)|turned out to exist)\b/i;
 
 /** A first-person reporting frame just before the hit — "I claimed there is no X". */
-const REPORTING_FRAME = /\b(?:i|we) (?:claimed|said|filed|thought|assumed|asserted|believed|wrote|reported)\b[^.;\n]{0,40}$/i;
+const REPORTING_FRAME =
+  /\b(?:i|we) (?:claimed|said|filed|thought|assumed|asserted|believed|wrote|reported)\b[^.;\n]{0,40}$/i;
 
 /**
  * 3. HYPOTHETICAL MOOD — a falsification criterion is not an assertion.
@@ -496,12 +508,7 @@ export function detectAbsencePremises(text: string, source: PremiseSource): Deri
       const subjOffset = m.index != null ? m[0].lastIndexOf(redactedSubject) : -1;
       const subjForRecheck =
         subjOffset >= 0 && m.index != null
-          ? originalSpan(
-              text ?? '',
-              prose,
-              m.index + subjOffset,
-              m.index + subjOffset + redactedSubject.length,
-            )
+          ? originalSpan(text ?? '', prose, m.index + subjOffset, m.index + subjOffset + redactedSubject.length)
               .replace(/`/g, '')
               .replace(/\s+/g, ' ')
               .trim() || subj
@@ -629,7 +636,12 @@ function enforceAbsenceScope(rows: CheckEntry[]): CheckEntry[] {
  *  cheap: this only decides whether a declared row REPLACES a derived row, and
  *  the fail-open direction (keeping both) is merely redundant, not wrong. */
 function overlaps(a: string, b: string): boolean {
-  const norm = (s: string) => s.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').replace(/\s+/g, ' ').trim();
+  const norm = (s: string) =>
+    s
+      .toLowerCase()
+      .replace(/[^a-z0-9 ]+/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
   const x = norm(a);
   const y = norm(b);
   if (!x || !y) return false;
@@ -744,11 +756,7 @@ export async function getClaimTimePremises(opts: {
     }
 
     const invalidatedCitations = await invalidatedCitationsPromise;
-    return buildPremisesBrief(
-      readDeclaredPremises(wi.payload),
-      derived.slice(0, MAX_PREMISES),
-      invalidatedCitations,
-    );
+    return buildPremisesBrief(readDeclaredPremises(wi.payload), derived.slice(0, MAX_PREMISES), invalidatedCitations);
   } catch {
     return null;
   }

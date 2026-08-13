@@ -14,12 +14,7 @@ import { FLAGS } from '@papercusp/flags';
 import { getFlag } from '@papercusp/flags/server';
 import { resolveAgentIdentity, resolveSelfLiteral } from '../coordination/identity';
 import { COORD_ROLES } from '../coordination/roles';
-import {
-  CLAIM_STATES_ALLOWLIST,
-  claimNextWorkItem,
-  releaseWorkItem,
-  diagnoseClaimNextMiss,
-} from '../../work-items';
+import { CLAIM_STATES_ALLOWLIST, claimNextWorkItem, releaseWorkItem, diagnoseClaimNextMiss } from '../../work-items';
 import { workItemClaimLeaseEnabled, leaseClaimedWorkItem } from '../../work-item-claim-lease-wiring';
 import { workItemRedundancyEnabled } from '../../work-item-redundancy';
 import { localSwarmId } from '../../fleet/swarm-identity';
@@ -34,10 +29,7 @@ import {
 } from '../../scheduler/fleet-scope-admission';
 import { getClaimTimeRetractionAdvisory } from './retraction-advisory';
 import { fetchContextPressure } from '../coordination/context-pressure';
-import {
-  decideContextPressureGate,
-  contextCriticalRefusalResult,
-} from '../../scheduler/context-pressure-claim-gate';
+import { decideContextPressureGate, contextCriticalRefusalResult } from '../../scheduler/context-pressure-claim-gate';
 
 export default defineTool({
   name: 'work_items:claim_next',
@@ -46,8 +38,10 @@ export default defineTool({
     'Self-select the next work-item. This compatibility wrapper honors fleet scope through the same selector as scheduler:get_next. Outside a fleet, disabling scheduler claim-specs degrades to legacy oldest-first SKIP LOCKED; a fleet MEMBER never takes that fallback. Returns the claimed item or a self-describing miss; a scoped miss carries windDown:true.',
   guidance: {
     when: 'You are an idle agent picking up work. Fleet members should prefer scheduler:get_next; this older wrapper is still fleet-scope-safe even if the scheduler flag is off.',
-    notWhen: 'A SPECIFIC item must go to a SPECIFIC agent → work_items:claim with an explicit assignee. Named claim bypasses self-select readiness floors, but it never bypasses a fleet member\'s claim-spec boundary.',
-    chaining: 'work_items:claim_next → work_items:set_state → work_items:release. On a non-fleet miss, read drained/pendingUnclaimed. On a fleet scoped miss, windDown:true means checkpoint/release, loop:end, and report to the leader; do not scan generic backlog. windDown:false with excludedBreakdown.claimable>0 is a claim-path bug, NOT a drain — claim by id instead.',
+    notWhen:
+      "A SPECIFIC item must go to a SPECIFIC agent → work_items:claim with an explicit assignee. Named claim bypasses self-select readiness floors, but it never bypasses a fleet member's claim-spec boundary.",
+    chaining:
+      'work_items:claim_next → work_items:set_state → work_items:release. On a non-fleet miss, read drained/pendingUnclaimed. On a fleet scoped miss, windDown:true means checkpoint/release, loop:end, and report to the leader; do not scan generic backlog. windDown:false with excludedBreakdown.claimable>0 is a claim-path bug, NOT a drain — claim by id instead.',
     // EI-6981: when the scheduler-spec bridge is OFF, the legacy path self-selects the
     // OLDEST unclaimed item HARNESS-WIDE, not just your fleet/plan — a peer's "solo takeover"
     // of an item they haven't formally
@@ -120,9 +114,7 @@ export default defineTool({
     // the LEADER's context pressure would gate the wrong agent's state. Directed claims stay
     // ungated here (work_items:claim, the by-id surface, is likewise deliberately not gated).
     if (assignee === ident.ownerId) {
-      const gateEnabled = await getFlag(FLAGS.SCHEDULER_CONTEXT_PRESSURE_GATE, ident.ownerId).catch(
-        () => true,
-      );
+      const gateEnabled = await getFlag(FLAGS.SCHEDULER_CONTEXT_PRESSURE_GATE, ident.ownerId).catch(() => true);
       const bucket = gateEnabled
         ? await fetchContextPressure([ident.ownerId])
             .then((m) => m.get(ident.ownerId) ?? null)
@@ -136,9 +128,7 @@ export default defineTool({
       });
       if (gate.refuse) {
         return {
-          content: [
-            { type: 'text' as const, text: JSON.stringify(contextCriticalRefusalResult(gate)) },
-          ],
+          content: [{ type: 'text' as const, text: JSON.stringify(contextCriticalRefusalResult(gate)) }],
         };
       }
     }
@@ -171,7 +161,14 @@ export default defineTool({
           claimableAwaitsCancelled,
           harness: args.harness,
         });
-        return { content: [{ type: 'text' as const, text: JSON.stringify(args.count && args.count > 1 ? { ...miss, claimed: [] } : miss) }] };
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify(args.count && args.count > 1 ? { ...miss, claimed: [] } : miss),
+            },
+          ],
+        };
       }
     }
     const specOn = await getFlag(FLAGS.SCHEDULER_SPEC_CLAIM, ident.ownerId).catch(() => true);
@@ -306,9 +303,16 @@ export default defineTool({
         ? ` NOTE: the SCHEDULER_ISSUES_CLAIMABLE flag read FAILED this call (${diag.flagReadError}) — issue-family (bug/change/task) counts above are UNDERCOUNTED (fail-closed, excluded entirely), not necessarily empty.`
         : '';
       const error = diag.drained
-        ? 'no claimable work-item: queue DRAINED (no unclaimed work in a claimable state for this harness) — idling is correct' + flagReadErrorSuffix
+        ? 'no claimable work-item: queue DRAINED (no unclaimed work in a claimable state for this harness) — idling is correct' +
+          flagReadErrorSuffix
         : `no claimable work-item RIGHT NOW: ${diag.pendingUnclaimed} unclaimed item(s) exist but are gated out of self-select (blocked / affinity-elsewhere / redundant / just-claimed)${diag.readyUnclaimed > 0 ? ` — ${diag.readyUnclaimed} are ready but a peer likely raced you (retry)` : ''}. The queue is NOT drained — do NOT idle; re-check shortly or unblock the backlog.${flagReadErrorSuffix}`;
-      return { ok: false as const, error, drained: diag.drained, pendingUnclaimed: diag.pendingUnclaimed, readyUnclaimed: diag.readyUnclaimed };
+      return {
+        ok: false as const,
+        error,
+        drained: diag.drained,
+        pendingUnclaimed: diag.pendingUnclaimed,
+        readyUnclaimed: diag.readyUnclaimed,
+      };
     };
 
     // Claim-time recall port (memory-delivery-unification-2026-07-12 P-008 /
@@ -333,7 +337,14 @@ export default defineTool({
       c: unknown,
       // `payload` included (superset of the memory-port shape) so the same extraction
       // also feeds the plan-decisions port below without a second unwrap.
-    ): { id?: string; title?: string; summary?: string; harness?: string | null; state?: string | null; payload?: unknown } | null =>
+    ): {
+      id?: string;
+      title?: string;
+      summary?: string;
+      harness?: string | null;
+      state?: string | null;
+      payload?: unknown;
+    } | null =>
       c && typeof c === 'object'
         ? (('workItem' in c ? (c as { workItem: unknown }).workItem : c) as {
             id?: string;
@@ -373,8 +384,7 @@ export default defineTool({
     // this makes the fail-soft boundary coherent: either this response can decorate
     // every claimed row, or the one shared import fails and all rows omit the advisory.
     let premisesModulePromise: Promise<typeof import('../../premises-claim-port') | null> | null = null;
-    const loadPremisesModule = () =>
-      (premisesModulePromise ??= import('../../premises-claim-port').catch(() => null));
+    const loadPremisesModule = () => (premisesModulePromise ??= import('../../premises-claim-port').catch(() => null));
     const premisesFor = async (
       wi: {
         id?: string;
@@ -434,9 +444,7 @@ export default defineTool({
               ...(planDecisionsResult
                 ? { planDecisions: planDecisionsResult.decisions, planDecisionsNote: planDecisionsResult.note }
                 : {}),
-              ...(premisesResult
-                ? { premises: premisesResult.premises, premisesNote: premisesResult.note }
-                : {}),
+              ...(premisesResult ? { premises: premisesResult.premises, premisesNote: premisesResult.note } : {}),
               ...(retractionAdvisory ? { retractionWarning: retractionAdvisory.retractionWarning } : {}),
             }),
           },
@@ -479,9 +487,7 @@ export default defineTool({
           ...(planDecisionsResult
             ? { planDecisions: planDecisionsResult.decisions, planDecisionsNote: planDecisionsResult.note }
             : {}),
-          ...(premisesResult
-            ? { premises: premisesResult.premises, premisesNote: premisesResult.note }
-            : {}),
+          ...(premisesResult ? { premises: premisesResult.premises, premisesNote: premisesResult.note } : {}),
           ...(retractionAdvisory ? { retractionWarning: retractionAdvisory.retractionWarning } : {}),
         };
       }),

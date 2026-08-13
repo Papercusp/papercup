@@ -229,8 +229,7 @@ describe('evidenceNamesScope (P-002)', () => {
 });
 
 describe('terminal evidence invalidates a cited premise (EI-18733326519945478)', () => {
-  const invalidated =
-    'Resolved as a wrong-premise proposal: the supposedly missing promotion guard already exists.';
+  const invalidated = 'Resolved as a wrong-premise proposal: the supposedly missing promotion guard already exists.';
 
   const probeWith = (
     rows: Record<string, { state: string; terminalCompletionRef: string | null }>,
@@ -264,9 +263,7 @@ describe('terminal evidence invalidates a cited premise (EI-18733326519945478)',
       'WI-1002': { state: 'done', terminalCompletionRef: 'Implemented and verified with focused tests.' },
     });
 
-    await expect(
-      invalidatedPremiseCitationChecks('Depends on WI-1001 and WI-1002.', { probe }),
-    ).resolves.toEqual([]);
+    await expect(invalidatedPremiseCitationChecks('Depends on WI-1001 and WI-1002.', { probe })).resolves.toEqual([]);
   });
 
   it('fails soft on an unresolved/rejected citation and honors a zero probe budget', async () => {
@@ -276,9 +273,9 @@ describe('terminal evidence invalidates a cited premise (EI-18733326519945478)',
     await expect(invalidatedPremiseCitationChecks('Depends on WI-9999.', { probe: rejecting })).resolves.toEqual([]);
 
     const bounded = vi.fn(async () => ({ id: 'WI-9999', state: 'done', terminalCompletionRef: invalidated }));
-    await expect(
-      invalidatedPremiseCitationChecks('Depends on WI-9999.', { probe: bounded, max: 0 }),
-    ).resolves.toEqual([]);
+    await expect(invalidatedPremiseCitationChecks('Depends on WI-9999.', { probe: bounded, max: 0 })).resolves.toEqual(
+      [],
+    );
     expect(bounded).not.toHaveBeenCalled();
   });
 

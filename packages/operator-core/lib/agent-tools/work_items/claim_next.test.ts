@@ -10,7 +10,12 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const identity = vi.hoisted(() => ({ ownerId: 'su-me', workspaceId: 'ws-1' }));
 const flag = vi.hoisted(() => ({ schedulerSpecClaim: true }));
-const fleet = vi.hoisted(() => ({ scope: null as any, quarantinedIds: [] as string[], windingDown: false, pauseReason: null as string | null }));
+const fleet = vi.hoisted(() => ({
+  scope: null as any,
+  quarantinedIds: [] as string[],
+  windingDown: false,
+  pauseReason: null as string | null,
+}));
 // EI-15777: the paused-miss branch cancels the caller's own standing
 // `work-item:claimable` await(s) — mock the store call so these unit tests never
 // touch real PG, and so tests below can assert it was invoked (self-scoped, by assignee).
