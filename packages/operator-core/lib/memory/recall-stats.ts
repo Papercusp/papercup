@@ -334,6 +334,45 @@ export interface RecallAdmissionStats {
   dropped: Record<AdmissionStage, number>;
   /** See `AdmittedByLeg.lexicalOnly` — its zero on the push path is structural. */
   byLeg: AdmittedByLeg;
+  /**
+   * The independent transcript/work-item corpus leg on this SAME recall row.
+   * `null` means it did not run or faulted before returning a typed outcome;
+   * absence means an older caller that predates this measurement.
+   */
+  corpus?: CorpusAdmissionStats | null;
+}
+
+export type CorpusAdmissionDropReason =
+  | 'self-session'
+  | 'out-of-scope'
+  | 'no-term-overlap'
+  | 'duplicate-ref'
+  | 'not-novel'
+  | 'cap-exhausted'
+  | 'budget-exhausted';
+
+/** Admission funnel for the independently ranked corpus excerpt leg. */
+export interface CorpusAdmissionStats {
+  outcome: 'ok' | 'timed-out' | 'disabled' | 'no-query' | 'failed';
+  /** Search candidates before pure-core selection. */
+  returned: number;
+  /** Lines surviving pure-core selection, before gate and session dedup. */
+  selected: number;
+  /** Lines that actually reached the composed agent context. */
+  admitted: number;
+  /** Pure-core selection losses; every reason is present even at zero. */
+  dropped: Record<CorpusAdmissionDropReason, number>;
+  /** Coverage-gate verdict and how many selected lines it suppressed. */
+  gate: { verdict: string; reasons: string[]; dropped: number } | null;
+  /** Selected lines removed by the cross-moment surfaced-ref ledger. */
+  sessionDedup: number;
+  /** False means the search was BM25-only. */
+  embedderAvailable: boolean;
+  /** Raw search-leg execution report; null means fusion never ran. */
+  legs: Record<string, unknown> | null;
+  retrievalDepth: number;
+  /** Whether stage-1 reranking actually ran, rather than merely being enabled. */
+  rerank: string;
 }
 
 interface RecallStatsCommon {
@@ -458,9 +497,7 @@ let _suppressedSinceWarn = 0;
 
 /** Finite scores only — a non-numeric or NaN score is absent, not zero. */
 function finiteScores(entries: readonly MemoryEntry[]): number[] {
-  return entries
-    .map((e) => e.score)
-    .filter((s): s is number => typeof s === 'number' && Number.isFinite(s));
+  return entries.map((e) => e.score).filter((s): s is number => typeof s === 'number' && Number.isFinite(s));
 }
 
 /**
@@ -489,10 +526,7 @@ function finiteScores(entries: readonly MemoryEntry[]): number[] {
  * score is not a cosine, and inferring one from its VALUE is the same
  * classify-by-magnitude mistake `classifyLegacyScoreScale` is confined to.
  */
-export function cosineScoresOf(
-  entries: readonly MemoryEntry[],
-  scoreScale: ScoreScale | null | undefined,
-): number[] {
+export function cosineScoresOf(entries: readonly MemoryEntry[], scoreScale: ScoreScale | null | undefined): number[] {
   const out: number[] = [];
   for (const e of entries) {
     const stamped = (e.retrieval as { cosineScore?: unknown } | undefined)?.cosineScore;
@@ -559,11 +593,7 @@ export const QUERY_TEXT_MAX_CHARS = 4000;
  * 3. EMPTY TEXT. Nothing to measure, and a zero-length row would read as a real
  *    empty query in exactly the reads this exists to serve.
  */
-export async function recordRecallQueryText(
-  sql: Sql,
-  statsId: string | number,
-  query: string,
-): Promise<void> {
+export async function recordRecallQueryText(sql: Sql, statsId: string | number, query: string): Promise<void> {
   try {
     const text = query.trim();
     if (!text) return;

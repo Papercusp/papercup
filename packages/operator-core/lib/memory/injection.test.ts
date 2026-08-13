@@ -3,7 +3,7 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 // db-org is mocked so the dedup/bump paths (getOrgPg().sql) are deterministic and
 // never touch a real PG. `sqlRows` is the canned result the sql tag returns; the
 // dedup test sets it to mark a memory id as recently-surfaced.
-let sqlRows: Array<{ id: string }> = [];
+let sqlRows: Array<{ id?: string; ref?: string; epoch?: number }> = [];
 vi.mock('@papercusp/db-org', () => ({
   getOrgPg: () => ({ sql: async () => sqlRows }),
 }));
@@ -32,6 +32,8 @@ type CorpusIoStub = {
   dropped: unknown[];
   embedderAvailable: boolean;
   candidateCount: number;
+  outcome?: 'ok' | 'timed-out' | 'disabled' | 'no-query' | 'failed';
+  rerank?: string;
   /** P-003 inputs to the coverage gate. Defaulted per-stub below. */
   legs?: unknown;
   retrievalDepth?: number;
@@ -199,11 +201,7 @@ describe('push path requests a relevance-gated ceiling (P-032 / F-B)', () => {
     });
     expect(backend.search).toHaveBeenCalledTimes(1);
     expect(optsOf(backend, 0).fusionMode).toBe('cosine-gated');
-    expect(backend.search.mock.calls[0]![1]!.scope).toEqual([
-      'u1',
-      'harness:papercusp',
-      'hive:hivey',
-    ]);
+    expect(backend.search.mock.calls[0]![1]!.scope).toEqual(['u1', 'harness:papercusp', 'hive:hivey']);
   });
 
   /**
@@ -293,8 +291,11 @@ describe('push path requests a relevance-gated ceiling (P-032 / F-B)', () => {
     const backend = mockBackend([{ id: 'm1', text: 'alpha' }]);
     useBackend(backend);
     await buildMemoryContextBlock({
-      userId: 'u1', workspaceId: 'ws', queryContext: 'why is the recall empty',
-      harnessSlugs: ['papercusp'], hiveSlugs: [],
+      userId: 'u1',
+      workspaceId: 'ws',
+      queryContext: 'why is the recall empty',
+      harnessSlugs: ['papercusp'],
+      hiveSlugs: [],
     });
     expect(diversifyOf(backend, 0)).toEqual({ lambda: 0.7 });
   });
@@ -306,8 +307,11 @@ describe('push path requests a relevance-gated ceiling (P-032 / F-B)', () => {
       const backend = mockBackend([{ id: 'm1', text: 'alpha' }]);
       useBackend(backend);
       await buildMemoryContextBlock({
-        userId: 'u1', workspaceId: 'ws', queryContext: 'why is the recall empty',
-        harnessSlugs: ['papercusp'], hiveSlugs: [],
+        userId: 'u1',
+        workspaceId: 'ws',
+        queryContext: 'why is the recall empty',
+        harnessSlugs: ['papercusp'],
+        hiveSlugs: [],
       });
       expect(diversifyOf(backend, 0)).toBeUndefined();
     } finally {
@@ -395,9 +399,7 @@ describe('pool budgets are a single shared ceiling, not per-pool quotas (P-033 /
       available: vi.fn(async () => ({ ok: true })),
       search: vi.fn(async (_q: string, opts: { scope: string | readonly string[] }) => {
         const scopes = typeof opts.scope === 'string' ? [opts.scope] : [...opts.scope];
-        return scopes.flatMap((scope) =>
-          scope.startsWith('harness:') ? rows.map((r) => ({ ...r, scope })) : [],
-        );
+        return scopes.flatMap((scope) => (scope.startsWith('harness:') ? rows.map((r) => ({ ...r, scope })) : []));
       }),
     };
     useBackend(backend as unknown as ReturnType<typeof mockBackend>);
@@ -433,9 +435,7 @@ describe('pool budgets are a single shared ceiling, not per-pool quotas (P-033 /
       harnessSlugs: ['papercusp'],
       hiveSlugs: [],
     });
-    expect(block!.indexOf('the most relevant fact')).toBeLessThan(
-      block!.indexOf('a less relevant personal note'),
-    );
+    expect(block!.indexOf('the most relevant fact')).toBeLessThan(block!.indexOf('a less relevant personal note'));
   });
 
   it('still yields hive-PACK rows last, whatever their rank (preserved trust tier)', async () => {
@@ -463,9 +463,7 @@ describe('pool budgets are a single shared ceiling, not per-pool quotas (P-033 /
       harnessSlugs: ['papercusp'],
       hiveSlugs: ['hivey'],
     });
-    expect(block!.indexOf('an organic harness fact')).toBeLessThan(
-      block!.indexOf('a seeded pack learning'),
-    );
+    expect(block!.indexOf('an organic harness fact')).toBeLessThan(block!.indexOf('a seeded pack learning'));
   });
 
   it('treats input.limit as the TOTAL ceiling across pools, not the user pool alone', async () => {
@@ -479,9 +477,7 @@ describe('pool budgets are a single shared ceiling, not per-pool quotas (P-033 /
       hiveSlugs: ['hivey'],
       limit: 3,
     });
-    expect(
-      (backend.search.mock.calls[0]![1] as { scope: string[]; limit: number }).limit,
-    ).toBe(3);
+    expect((backend.search.mock.calls[0]![1] as { scope: string[]; limit: number }).limit).toBe(3);
   });
 });
 
@@ -712,13 +708,28 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
       // strings are removed as duplicates and the budget never binds — the test
       // would then pass for the wrong reason (or fail confusingly).
       const distinct = [
-        'alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot', 'golf', 'hotel',
-        'india', 'juliet', 'kilo', 'lima', 'mike', 'november', 'oscar', 'papa',
-        'quebec', 'romeo', 'sierra', 'tango',
+        'alpha',
+        'bravo',
+        'charlie',
+        'delta',
+        'echo',
+        'foxtrot',
+        'golf',
+        'hotel',
+        'india',
+        'juliet',
+        'kilo',
+        'lima',
+        'mike',
+        'november',
+        'oscar',
+        'papa',
+        'quebec',
+        'romeo',
+        'sierra',
+        'tango',
       ];
-      useBackend(
-        mockBackend(distinct.map((w, i) => ({ id: `a${i}`, text: `${w} ${w}` }))),
-      );
+      useBackend(mockBackend(distinct.map((w, i) => ({ id: `a${i}`, text: `${w} ${w}` }))));
       await buildMemoryContextBlock({
         userId: 'u1',
         workspaceId: 'ws',
@@ -794,14 +805,22 @@ describe('push-path recall telemetry is recorded PER POOL (P-026)', () => {
      */
     it('halving the per-entry clamp roughly doubles admitted entries at the same budget (D-090)', async () => {
       const words = [
-        'alpha', 'bravo', 'charlie', 'delta', 'echo', 'foxtrot',
-        'golf', 'hotel', 'india', 'juliet', 'kilo', 'lima',
+        'alpha',
+        'bravo',
+        'charlie',
+        'delta',
+        'echo',
+        'foxtrot',
+        'golf',
+        'hotel',
+        'india',
+        'juliet',
+        'kilo',
+        'lima',
       ];
       // Each entry is far larger than the clamp, so every admitted line costs
       // exactly clamp + prefix — the quotient's denominator, held constant.
-      useBackend(
-        mockBackend(words.map((w, i) => ({ id: `q${i}`, text: `${w} `.repeat(500) }))),
-      );
+      useBackend(mockBackend(words.map((w, i) => ({ id: `q${i}`, text: `${w} `.repeat(500) }))));
       await buildMemoryContextBlock({
         userId: 'u1',
         workspaceId: 'ws',
@@ -1037,13 +1056,17 @@ describe('the injection seam accepts a structured recall query (P-042 / F-J)', (
     const asString = mockBackend([{ id: 'm1', text: 'alpha' }]);
     useBackend(asString);
     await buildMemoryContextBlock({
-      userId: 'u1', workspaceId: 'ws', queryContext: 'why is the recall empty',
+      userId: 'u1',
+      workspaceId: 'ws',
+      queryContext: 'why is the recall empty',
     });
 
     const asObject = mockBackend([{ id: 'm1', text: 'alpha' }]);
     useBackend(asObject);
     await buildMemoryContextBlock({
-      userId: 'u1', workspaceId: 'ws', queryContext: { userText: 'why is the recall empty' },
+      userId: 'u1',
+      workspaceId: 'ws',
+      queryContext: { userText: 'why is the recall empty' },
     });
 
     expect(asObject.search.mock.calls[0]![0]).toBe('why is the recall empty');
@@ -1057,7 +1080,9 @@ describe('the injection seam accepts a structured recall query (P-042 / F-J)', (
     const backend = mockBackend([{ id: 'm1', text: 'alpha' }]);
     useBackend(backend);
     await buildMemoryContextBlock({
-      userId: 'u1', workspaceId: 'ws', queryContext: { userText: 'deploy pipeline' },
+      userId: 'u1',
+      workspaceId: 'ws',
+      queryContext: { userText: 'deploy pipeline' },
     });
     expect(backend.search.mock.calls[0]![0]).not.toContain('[object Object]');
   });
@@ -1107,9 +1132,7 @@ describe('the injection seam accepts a structured recall query (P-042 / F-J)', (
     const backend = mockBackend([{ id: 'm1', text: 'alpha' }]);
     useBackend(backend);
     for (const queryContext of ['', '   ', { userText: '' }, { userText: '   ' }]) {
-      expect(
-        await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext }),
-      ).toBeNull();
+      expect(await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext })).toBeNull();
     }
     // The gate short-circuits before the backend is ever consulted.
     expect(backend.search).not.toHaveBeenCalled();
@@ -1123,13 +1146,16 @@ describe('lastUserContext', () => {
   });
 
   it('joins last N user-turn contents', () => {
-    const out = lastUserContext([
-      { role: 'user', content: 'one' },
-      { role: 'assistant', content: 'ack' },
-      { role: 'user', content: 'two' },
-      { role: 'user', content: 'three' },
-      { role: 'user', content: 'four' },
-    ], 3);
+    const out = lastUserContext(
+      [
+        { role: 'user', content: 'one' },
+        { role: 'assistant', content: 'ack' },
+        { role: 'user', content: 'two' },
+        { role: 'user', content: 'three' },
+        { role: 'user', content: 'four' },
+      ],
+      3,
+    );
     expect(out).toBe('two\nthree\nfour');
   });
 });
@@ -1149,7 +1175,9 @@ describe('buildMemoryContextBlock', () => {
 
   it('returns null when the availability probe throws', async () => {
     const b = mockBackend([]);
-    b.available = vi.fn(async () => { throw new Error('boom'); });
+    b.available = vi.fn(async () => {
+      throw new Error('boom');
+    });
     useBackend(b);
     const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'auth?' });
     expect(block).toBeNull();
@@ -1157,7 +1185,9 @@ describe('buildMemoryContextBlock', () => {
 
   it('returns null when search throws', async () => {
     const b = mockBackend([]);
-    b.search = vi.fn(async () => { throw new Error('pg down'); });
+    b.search = vi.fn(async () => {
+      throw new Error('pg down');
+    });
     useBackend(b);
     const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'auth?' });
     expect(block).toBeNull();
@@ -1170,10 +1200,12 @@ describe('buildMemoryContextBlock', () => {
   });
 
   it('formats user hits with their kind', async () => {
-    useBackend(mockBackend([
-      { id: 'i1', text: 'User prefers terse replies', kind: 'preference' },
-      { id: 'i2', text: 'User name is Aviyn', kind: 'identity' },
-    ]));
+    useBackend(
+      mockBackend([
+        { id: 'i1', text: 'User prefers terse replies', kind: 'preference' },
+        { id: 'i2', text: 'User name is Aviyn', kind: 'identity' },
+      ]),
+    );
     const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'who am i' });
     expect(block).toContain('## Operator memory (relevant entries)');
     expect(block).toContain('- [preference] (id=i1) User prefers terse replies');
@@ -1181,11 +1213,12 @@ describe('buildMemoryContextBlock', () => {
   });
 
   it('labels a harness-scoped hit with its slug', async () => {
-    useBackend(mockBackend([
-      { id: 'i3', text: 'Project uses PG by default', kind: 'project' },
-    ]));
+    useBackend(mockBackend([{ id: 'i3', text: 'Project uses PG by default', kind: 'project' }]));
     const block = await buildMemoryContextBlock({
-      userId: null, workspaceId: 'ws', harnessSlugs: ['papercup'], queryContext: 'storage?',
+      userId: null,
+      workspaceId: 'ws',
+      harnessSlugs: ['papercup'],
+      queryContext: 'storage?',
     });
     expect(block).toContain('- [project @ papercup] (id=i3) Project uses PG by default');
   });
@@ -1199,7 +1232,10 @@ describe('buildMemoryContextBlock', () => {
   it('respects custom heading', async () => {
     useBackend(mockBackend([{ id: 'i5', text: 'X', kind: 'project' }]));
     const block = await buildMemoryContextBlock({
-      userId: 'u1', workspaceId: 'ws', queryContext: 'x', heading: 'Brainstorm memory',
+      userId: 'u1',
+      workspaceId: 'ws',
+      queryContext: 'x',
+      heading: 'Brainstorm memory',
     });
     expect(block).toMatch(/^## Brainstorm memory/);
   });
@@ -1208,7 +1244,10 @@ describe('buildMemoryContextBlock', () => {
     const b = mockBackend([{ id: 'i6', text: 'x', kind: 'preference' }]);
     useBackend(b);
     await buildMemoryContextBlock({
-      userId: 'u-123', workspaceId: 'ws-7', harnessSlugs: ['papercup'], queryContext: 'foo',
+      userId: 'u-123',
+      workspaceId: 'ws-7',
+      harnessSlugs: ['papercup'],
+      queryContext: 'foo',
     });
     // ONE search over the UNION of the pools (F-C / P-033, D-011) — never a
     // `workspace:*` scope. It carries the inject relevance floor
@@ -1244,7 +1283,8 @@ describe('buildMemoryContextBlock', () => {
     useBackend(b);
     // Mix of production and ephemeral slugs; only papercup should survive.
     await buildMemoryContextBlock({
-      userId: null, workspaceId: 'ws',
+      userId: null,
+      workspaceId: 'ws',
       harnessSlugs: ['papercup', 'hiveloop-hive', 'xbq72ugvazs', 'bench-memcap-probe-DELETEME'],
       queryContext: 'storage?',
     });
@@ -1255,10 +1295,12 @@ describe('buildMemoryContextBlock', () => {
   it('dedups a memory surfaced within the watermark window (D-006)', async () => {
     const stale = 'aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa';
     const fresh = 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb';
-    useBackend(mockBackend([
-      { id: stale, text: 'stale fact', kind: 'preference' },
-      { id: fresh, text: 'fresh fact', kind: 'preference' },
-    ]));
+    useBackend(
+      mockBackend([
+        { id: stale, text: 'stale fact', kind: 'preference' },
+        { id: fresh, text: 'fresh fact', kind: 'preference' },
+      ]),
+    );
     // `stale` was surfaced recently → the guard must drop it; `fresh` stays.
     sqlRows = [{ id: stale }];
     const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'q' });
@@ -1268,9 +1310,7 @@ describe('buildMemoryContextBlock', () => {
 
   it('returns null when every hit was recently surfaced', async () => {
     const id = 'cccccccc-cccc-cccc-cccc-cccccccccccc';
-    useBackend(mockBackend([
-      { id, text: 'only fact', kind: 'preference' },
-    ]));
+    useBackend(mockBackend([{ id, text: 'only fact', kind: 'preference' }]));
     sqlRows = [{ id }];
     const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'q' });
     expect(block).toBeNull();
@@ -1298,7 +1338,10 @@ describe('buildMemoryContextBlock', () => {
     };
     useBackend(b as unknown as ReturnType<typeof mockBackend>);
     const block = await buildMemoryContextBlock({
-      userId: null, workspaceId: 'ws', harnessSlugs: ['member-a'], queryContext: 'testing?',
+      userId: null,
+      workspaceId: 'ws',
+      harnessSlugs: ['member-a'],
+      queryContext: 'testing?',
     });
     // ONE pull over both pools — the hive scope is resolved from the registry
     // and joins the same multi-scope search (F-C / D-011).
@@ -1326,11 +1369,13 @@ describe('buildMemoryContextBlock', () => {
 
   it('P-008: collapses near-duplicate memories (same fact under different ids) before the budget', async () => {
     const dupText = 'owner directive: put yourself on auto mode and continue the full plan';
-    useBackend(mockBackend([
-      { id: 'd1', text: dupText, kind: 'preference' },
-      { id: 'd2', text: dupText, kind: 'preference' }, // same fact, DIFFERENT id — the WI-4538 case
-      { id: 'd3', text: 'a distinct fact about migration 557 renaming hive tables to pots', kind: 'reference' },
-    ]));
+    useBackend(
+      mockBackend([
+        { id: 'd1', text: dupText, kind: 'preference' },
+        { id: 'd2', text: dupText, kind: 'preference' }, // same fact, DIFFERENT id — the WI-4538 case
+        { id: 'd3', text: 'a distinct fact about migration 557 renaming hive tables to pots', kind: 'reference' },
+      ]),
+    );
     const block = await buildMemoryContextBlock({ userId: 'u1', workspaceId: 'ws', queryContext: 'directives?' });
     expect(block).not.toBeNull();
     // The highest-ranked copy survives; the duplicate id is dropped; the distinct fact is kept
@@ -1353,7 +1398,10 @@ describe('buildMemoryContextBlock', () => {
       };
       useBackend(mockBackend([organic, packed]));
       const block = await buildMemoryContextBlock({
-        userId: null, workspaceId: 'ws', hiveSlugs: ['h'], queryContext: 'testing?',
+        userId: null,
+        workspaceId: 'ws',
+        hiveSlugs: ['h'],
+        queryContext: 'testing?',
       });
       expect(block).toContain('make test'); // organic admitted first
       expect(block).not.toContain('Tests ship with the feature'); // pack row dropped by the cap
@@ -1369,14 +1417,21 @@ describe('buildMemoryContextBlock', () => {
     const suppressed = mockBackend([{ id: 'x', text: 'x', kind: 'project' }]);
     useBackend(suppressed);
     await buildMemoryContextBlock({
-      userId: null, workspaceId: 'ws', harnessSlugs: ['member-a'], hiveSlugs: [], queryContext: 'q',
+      userId: null,
+      workspaceId: 'ws',
+      harnessSlugs: ['member-a'],
+      hiveSlugs: [],
+      queryContext: 'q',
     });
     expect(suppressed.search.mock.calls.map((c) => c[1].scope)).toEqual([['harness:member-a']]);
 
     const pinned = mockBackend([{ id: 'y', text: 'y', kind: 'feedback' }]);
     useBackend(pinned);
     const block = await buildMemoryContextBlock({
-      userId: null, workspaceId: 'ws', hiveSlugs: ['other-hive'], queryContext: 'q',
+      userId: null,
+      workspaceId: 'ws',
+      hiveSlugs: ['other-hive'],
+      queryContext: 'q',
     });
     expect(pinned.search.mock.calls.map((c) => c[1].scope)).toEqual([['hive:other-hive']]);
     expect(block).toContain('@ hive:other-hive');
@@ -1570,6 +1625,109 @@ describe('corpus leg carries its own retrieval health (P-001)', () => {
     } finally {
       warn.mockRestore();
     }
+  });
+});
+
+/** P-009 — the corpus leg shares the existing one-row admission telemetry. */
+describe('records the corpus admission funnel on the same recall row (P-009)', () => {
+  const flush = async (): Promise<void> => {
+    for (let i = 0; i < 5; i++) await new Promise((resolve) => setTimeout(resolve, 0));
+  };
+
+  const oneLine = (over: Partial<CorpusIoStub> = {}): CorpusIoStub => ({
+    block: null,
+    lines: [{ line: '- [work-item WI-6512] a pointer', handle: { ref: 'work-item:WI-6512' } }],
+    dropped: [
+      { ref: 'work-item:WI-drop-1', reason: 'no-term-overlap' },
+      { ref: 'work-item:WI-drop-2', reason: 'budget-exhausted' },
+    ],
+    embedderAvailable: true,
+    candidateCount: 4,
+    outcome: 'ok',
+    rerank: 'reranked',
+    legs: legsWith(3),
+    retrievalDepth: 24,
+    ...over,
+  });
+
+  const run = async (session = false) => {
+    useBackend(mockBackend([{ id: 'm1', text: 'alpha' }]));
+    await buildMemoryContextBlock({
+      userId: 'u1',
+      workspaceId: 'ws',
+      queryContext: 'why did the corpus leg return that',
+      ...(session ? { session: { sessionId: 'su-corpus', epoch: 0, port: 'mid-turn' } } : {}),
+    });
+    await flush();
+    return (
+      recordRecallStatsMock.mock.calls.at(-1)![1] as {
+        admission: {
+          corpus: null | {
+            outcome: string;
+            returned: number;
+            selected: number;
+            admitted: number;
+            sessionDedup: number;
+            embedderAvailable: boolean;
+            retrievalDepth: number;
+            rerank: string;
+            dropped: Record<string, number>;
+            gate: { verdict: string; dropped: number } | null;
+          };
+        };
+      }
+    ).admission.corpus;
+  };
+
+  it('separates returned, selected, and admitted while accounting for selection losses', async () => {
+    corpusIoResult = oneLine();
+    const corpus = await run();
+    expect(corpus).toMatchObject({
+      outcome: 'ok',
+      returned: 4,
+      selected: 1,
+      admitted: 1,
+      sessionDedup: 0,
+      embedderAvailable: true,
+      retrievalDepth: 24,
+      rerank: 'reranked',
+      dropped: { 'no-term-overlap': 1, 'budget-exhausted': 1 },
+    });
+    expect(Object.keys(corpus!.dropped).sort()).toEqual([
+      'budget-exhausted',
+      'cap-exhausted',
+      'duplicate-ref',
+      'no-term-overlap',
+      'not-novel',
+      'out-of-scope',
+      'self-session',
+    ]);
+    expect(recordRecallStatsMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('attributes coverage-gate suppression instead of reporting an unexplained empty leg', async () => {
+    corpusIoResult = oneLine({ legs: legsWith(0) });
+    coverageReport = coverageOf('degraded', { coverage: 0.01, embeddedRows: 9 });
+    const corpus = await run();
+    expect(corpus).toMatchObject({
+      returned: 4,
+      selected: 1,
+      admitted: 0,
+      gate: { verdict: 'sit-out', dropped: 1 },
+    });
+  });
+
+  it('counts cross-moment corpus dedup separately from pure selection drops', async () => {
+    corpusIoResult = oneLine();
+    sqlRows = [{ ref: 'work-item:WI-6512', epoch: 0 }];
+    const corpus = await run(true);
+    expect(corpus).toMatchObject({ selected: 1, admitted: 0, sessionDedup: 1 });
+  });
+
+  it('records null when the corpus leg did not return a typed result', async () => {
+    corpusIoResult = null;
+    expect(await run()).toBeNull();
+    expect(recordRecallStatsMock).toHaveBeenCalledTimes(1);
   });
 });
 
