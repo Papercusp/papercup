@@ -873,13 +873,18 @@ async function maybeForceRespawn(
  * (a fleet bee's session settings.json rarely names the model). The child's
  * coord ownerId IS its spawnId (sessionOwner: spawnId in operator-spawn), so
  * the lookup keys on either column. Best-effort: null ⇒ resolver fallback.
+ *
+ * WI-38347: the result reports whether the number is an EXPLICIT configuration
+ * (a per-tier `compactionLimit` someone deliberately set) or merely DERIVED from
+ * a model spec. Only a derived number may be overridden by a measured window —
+ * see {@link derivedSeedLimitForOwner}.
  */
 async function resolveSpawnRecordLimit(
   sql: Sql,
   ownerId: string,
   tierMenu: () => Promise<readonly ModelTier[] | undefined>,
   fleetMember = false,
-): Promise<number | null> {
+): Promise<{ limit: number; explicit: boolean } | null> {
   try {
     const rows = await sql<{ model_spec: string | null; model_tier: string | null }[]>`
       SELECT model_spec, model_tier
@@ -894,14 +899,62 @@ async function resolveSpawnRecordLimit(
       const tiers = await tierMenu();
       const tier = tiers?.find((t) => t.name === row.model_tier);
       // parseTiers already clamped a stored explicit limit to the spec's window.
-      if (tier?.compactionLimit != null) return tier.compactionLimit;
-      if (tier?.spec) return defaultCompactionLimitForSpec(tier.spec, { fleetMember });
+      if (tier?.compactionLimit != null) return { limit: tier.compactionLimit, explicit: true };
+      if (tier?.spec) {
+        return { limit: defaultCompactionLimitForSpec(tier.spec, { fleetMember }), explicit: false };
+      }
     }
-    if (row.model_spec) return defaultCompactionLimitForSpec(row.model_spec, { fleetMember });
+    if (row.model_spec) {
+      return { limit: defaultCompactionLimitForSpec(row.model_spec, { fleetMember }), explicit: false };
+    }
     return null;
   } catch {
     return null;
   }
+}
+
+/**
+ * The limit the SPEC-DERIVED seed path produces for an owner, with an
+ * `explicit` flag saying whether that number was deliberately configured
+ * (a `psu --compaction-limit` launch flag or a per-tier `compactionLimit`)
+ * rather than guessed from a model spec. WI-38347.
+ *
+ * This is deliberately the PRE-measurement number — it is what the seed pass
+ * writes when no live window is available, and therefore also the value the
+ * raise gate compares a running session's stored limit against to decide
+ * "this is still the default nobody chose" vs "somebody set this on purpose".
+ * Do NOT fold the measured-window correction in here: the raise gate needs to
+ * recognise the OLD (wrong) seed in order to heal it.
+ */
+async function derivedSeedLimitForOwner(
+  sql: Sql,
+  ownerId: string,
+  tierMenu: () => Promise<readonly ModelTier[] | undefined>,
+  fleetMember: boolean,
+): Promise<{ limit: number; explicit: boolean }> {
+  // per-member-declarative-launch-specs P-005: an EXPLICIT `psu
+  // --compaction-limit` on the recorded launch argv outranks every DERIVED
+  // default below — the leader stated this member's limit outright
+  // (MemberSpec.compactionLimit), which is the whole point of the flag.
+  // Still clamped to the role ceiling and the model window: an explicit
+  // request may lower a limit freely but may never raise it past the cap
+  // its fleet role is governed by (a member cannot buy itself a leader's
+  // 400k). Before this, a per-member limit could only be REQUESTED in a
+  // brief the member had to obey by hand.
+  const fromLaunch = await resolveLaunchCompactionLimitForOwner(ownerId);
+  const fromSpawn = await resolveSpawnRecordLimit(sql, ownerId, tierMenu, fleetMember);
+  // The fs/argv resolver does real I/O — only pay for it when its result is
+  // actually needed: the explicit-launch-limit clamp always needs the spec's
+  // window, but a resolved spawn-record default needs no further lookup at
+  // all (D-006 honor leg — "the fs/argv resolver only ran for the
+  // record-less owner").
+  const needsSpec = fromLaunch != null || fromSpawn == null;
+  const spec = needsSpec ? await resolveModelSpecForOwner(ownerId) : null;
+  if (fromLaunch != null) {
+    return { limit: clampCompactionLimit(fromLaunch, spec, { fleetMember }), explicit: true };
+  }
+  if (fromSpawn != null) return fromSpawn;
+  return { limit: defaultCompactionLimitForSpec(spec, { fleetMember }), explicit: false };
 }
 
 /**
@@ -1059,28 +1112,24 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
     for (const r of unseeded) {
       try {
         const fleetMember = r.fleet_slug != null && r.fleet_role !== 'leader';
-        // per-member-declarative-launch-specs P-005: an EXPLICIT `psu
-        // --compaction-limit` on the recorded launch argv outranks every DERIVED
-        // default below — the leader stated this member's limit outright
-        // (MemberSpec.compactionLimit), which is the whole point of the flag.
-        // Still clamped to the role ceiling and the model window: an explicit
-        // request may lower a limit freely but may never raise it past the cap
-        // its fleet role is governed by (a member cannot buy itself a leader's
-        // 400k). Before this, a per-member limit could only be REQUESTED in a
-        // brief the member had to obey by hand.
-        const fromLaunch = await resolveLaunchCompactionLimitForOwner(r.owner_id);
-        const fromSpawn = await resolveSpawnRecordLimit(sql, r.owner_id, tierMenu, fleetMember);
-        // The fs/argv resolver does real I/O — only pay for it when its result is
-        // actually needed: the explicit-launch-limit clamp always needs the spec's
-        // window, but a resolved spawn-record default needs no further lookup at
-        // all (D-006 honor leg — "the fs/argv resolver only ran for the
-        // record-less owner").
-        const needsSpec = fromLaunch != null || fromSpawn == null;
-        const spec = needsSpec ? await resolveModelSpecForOwner(r.owner_id) : null;
-        const limit =
-          fromLaunch != null
-            ? clampCompactionLimit(fromLaunch, spec, { fleetMember })
-            : (fromSpawn ?? defaultCompactionLimitForSpec(spec, { fleetMember }));
+        const seed = await derivedSeedLimitForOwner(sql, r.owner_id, tierMenu, fleetMember);
+        let limit = seed.limit;
+        // WI-38347: a MEASURED effective window beats every spec-derived guess,
+        // and for a non-Claude backend the guess is not merely imprecise — it is
+        // a CATEGORY ERROR. `modelWindowForSpec` keys on the `[1m]` marker, which
+        // is a Claude/CC auto-compact signal with NO meaning on codex or omp (see
+        // its own docstring), so every non-Claude spec falls to the conservative
+        // 200k branch and seeds 158,000. Measured 2026-08-13: 56 live codex
+        // sessions on 158,000 against a true 258,400 window (correct: 207,000),
+        // plus 2 omp — while the 3 codex sessions that named NO model, and so
+        // resolved a null spec, landed on the right number. Specifying your model
+        // correctly produced the WRONG limit; specifying nothing produced the
+        // right one. Only the DERIVED branch is corrected: an explicit
+        // `--compaction-limit` or per-tier limit stays the number someone chose.
+        if (!seed.explicit) {
+          const measured = await estimateContextWindowForOwner(r.owner_id).catch(() => null);
+          if (measured != null) limit = defaultCompactionLimitForWindow(measured, { fleetMember });
+        }
         await setCompactionLimit(r.owner_id, limit);
         out.seeded.push(r.owner_id);
       } catch {
@@ -1137,9 +1186,10 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
       if (r.compaction_limit > COMPACTION_LIMIT_DEFAULT_1M_CAP) {
         try {
           const fleetMember = r.fleet_slug != null && r.fleet_role !== 'leader';
-          const fresh =
-            (await resolveSpawnRecordLimit(sql, r.owner_id, tierMenu, fleetMember)) ??
-            defaultCompactionLimitForSpec(await resolveModelSpecForOwner(r.owner_id), { fleetMember });
+          // WI-38347: re-derives through the SAME precedence the seed pass uses
+          // (explicit launch flag > spawn record > spec default) rather than a
+          // second hand-inlined copy of it. Still one-directional below.
+          const fresh = (await derivedSeedLimitForOwner(sql, r.owner_id, tierMenu, fleetMember)).limit;
           if (fresh < r.compaction_limit) {
             await setCompactionLimit(r.owner_id, fresh);
             out.relimited.push({ owner: r.owner_id, from: r.compaction_limit, to: fresh });
@@ -1199,22 +1249,54 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
       // D-011: Codex reports its EFFECTIVE window in every token_count event
       // (258400 for a 272k model at 95%). A stale/unknown-spec seed can be 400k,
       // which means the warning and carry cut would literally be scheduled after
-      // the hard wall. Lower only — a deliberate smaller override remains intact.
+      // the hard wall.
+      //
+      // WI-38347 — this re-limit USED to be lower-only, and that one-directional
+      // repair is what made the codex mis-seed PERMANENT: 158,000 sits BELOW the
+      // 207,000 the measured window derives, so the heal could never reach it.
+      // The perverse consequence is worth stating plainly, because it is the
+      // shape to look for in any self-healing limit: the sessions that named
+      // their model CORRECTLY were the broken ones (spec → the `[1m]`-marker
+      // binary → a fabricated 200k window → 158,000, unraisable forever), while
+      // the sessions that named NOTHING resolved a null spec, seeded 400,000,
+      // and were correctly LOWERED to 207,000 on their first sweep. A repair
+      // that only runs downhill does not just miss half its cases — it converts
+      // a GOOD input into the unfixable one.
+      //
+      // So the direction is now decided by PROVENANCE, not by sign:
+      //   • ABOVE the safe limit ⇒ always lower. Unchanged, and unconditional:
+      //     a limit above the true window means the session never preempts and
+      //     the host compacts it mid-task. Safety outranks intent here.
+      //   • BELOW the safe limit ⇒ raise ONLY a limit that is still exactly the
+      //     spec-derived default nobody chose. A deliberate smaller override
+      //     (agent-managed-compaction D-006 leanness) has a value that differs
+      //     from the derived seed, so it is left alone — as is any EXPLICIT
+      //     `--compaction-limit` / per-tier limit, whatever its value.
+      // The raise gate is cheap-gated on `<` so a healed session pays for the
+      // re-derive exactly once: afterwards the stored limit EQUALS safeLimit and
+      // neither branch is taken.
       let liveWindow: number | null = null;
       try {
         liveWindow = await estimateContextWindowForOwner(r.owner_id);
         if (liveWindow != null) {
           const fleetMember = r.fleet_slug != null && r.fleet_role !== 'leader';
           const safeLimit = defaultCompactionLimitForWindow(liveWindow, { fleetMember });
+          let apply: number | null = null;
           if (r.compaction_limit > safeLimit) {
-            await setCompactionLimit(r.owner_id, safeLimit);
-            out.relimited.push({ owner: r.owner_id, from: r.compaction_limit, to: safeLimit });
+            apply = safeLimit;
+          } else if (r.compaction_limit < safeLimit) {
+            const seed = await derivedSeedLimitForOwner(sql, r.owner_id, tierMenu, fleetMember);
+            if (!seed.explicit && seed.limit === r.compaction_limit) apply = safeLimit;
+          }
+          if (apply != null) {
+            await setCompactionLimit(r.owner_id, apply);
+            out.relimited.push({ owner: r.owner_id, from: r.compaction_limit, to: apply });
             console.warn(
               `[compaction-watchdog] re-limited ${r.owner_label} (${r.owner_id}): ` +
-                `${r.compaction_limit} → ${safeLimit} tokens from the live effective ` +
+                `${r.compaction_limit} → ${apply} tokens from the live effective ` +
                 `${liveWindow}-token model window (Codex D-011).`,
             );
-            r.compaction_limit = safeLimit;
+            r.compaction_limit = apply;
           }
         }
       } catch {

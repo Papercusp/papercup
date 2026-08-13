@@ -306,6 +306,136 @@ describe('checkCompactionCompliance seeding (context-trimming-tiers P-006)', () 
   });
 });
 
+/**
+ * WI-38347 — the measured window outranks the spec-derived guess, in BOTH
+ * directions, for a DERIVED limit only.
+ *
+ * `modelWindowForSpec` keys on the `[1m]` marker, a Claude/CC auto-compact
+ * signal with no meaning on codex or omp, so every non-Claude spec fell to the
+ * conservative 200k branch and seeded 158,000 against a true 258,400 window.
+ * The re-limit was lower-only, so 158,000 could never be corrected upward and
+ * the mis-seed was permanent — while a session that named NO model resolved a
+ * null spec, seeded 400,000, and was correctly lowered to 207,000.
+ *
+ * The two properties under test, kept deliberately separate:
+ *   • the seed must not fabricate a window it cannot derive; and
+ *   • a running session already carrying the bad seed must HEAL — but only
+ *     when its stored limit is still exactly the number nobody chose.
+ */
+describe('measured window outranks the spec-derived guess (WI-38347)', () => {
+  // A real live codex spec: names a model, carries no `[1m]` marker (no codex
+  // spec ever does), and therefore derives the fabricated 200k → 158,000.
+  const CODEX_SPEC = 'gpt-5.6-sol:xhigh';
+  const CODEX_WINDOW = 258_400; // 272k model × the CLI's 95% effective window
+  const CODEX_SAFE_LIMIT = 207_000; // (258_400 − 10_000) / 1.2, floored to 1k
+
+  describe('seed pass', () => {
+    it('seeds from the MEASURED window, not the spec guess — the 158k mis-seed never lands', async () => {
+      specMock.mockResolvedValue(CODEX_SPEC);
+      contextWindowMock.mockResolvedValue(CODEX_WINDOW);
+      const out = await checkCompactionCompliance(fakeSql({ unseeded: [{ owner_id: 'cx' }] }));
+      expect(out.seeded).toEqual(['cx']);
+      expect(setLimitMock).toHaveBeenCalledWith('cx', CODEX_SAFE_LIMIT);
+      expect(setLimitMock).not.toHaveBeenCalledWith('cx', 158_000);
+    });
+
+    it('falls back to the spec-derived default when NO window can be measured', async () => {
+      specMock.mockResolvedValue(CODEX_SPEC);
+      contextWindowMock.mockResolvedValue(null); // omp / a rollout that has not landed yet
+      await checkCompactionCompliance(fakeSql({ unseeded: [{ owner_id: 'cx' }] }));
+      expect(setLimitMock).toHaveBeenCalledWith('cx', 158_000);
+    });
+
+    it('never overrides an EXPLICIT launch --compaction-limit with the measured window', async () => {
+      specMock.mockResolvedValue(CODEX_SPEC);
+      contextWindowMock.mockResolvedValue(CODEX_WINDOW);
+      resolveLaunchLimitMock.mockResolvedValue(120_000);
+      await checkCompactionCompliance(fakeSql({ unseeded: [{ owner_id: 'cx' }] }));
+      expect(setLimitMock).toHaveBeenCalledWith('cx', 120_000);
+      expect(setLimitMock).not.toHaveBeenCalledWith('cx', CODEX_SAFE_LIMIT);
+    });
+
+    it('never overrides an EXPLICIT per-tier compactionLimit with the measured window', async () => {
+      specMock.mockResolvedValue(CODEX_SPEC);
+      contextWindowMock.mockResolvedValue(CODEX_WINDOW);
+      await checkCompactionCompliance(
+        fakeSql({
+          unseeded: [{ owner_id: 'cx' }],
+          // tier "deep" carries an explicit compactionLimit of 120_000
+          spawnRecords: { cx: { model_spec: 'opus:high', model_tier: 'deep' } },
+        }),
+      );
+      expect(setLimitMock).toHaveBeenCalledWith('cx', 120_000);
+      expect(setLimitMock).not.toHaveBeenCalledWith('cx', CODEX_SAFE_LIMIT);
+    });
+  });
+
+  describe('live re-limit', () => {
+    /** A live session well under its limit: reaches the D-011 block without
+     *  tripping the over-limit warn or the force rung. */
+    const sweep = (compaction_limit: number) =>
+      fakeSql({ seeded: [{ owner_id: 'cx', owner_label: 'su · cx', compaction_limit }] });
+
+    beforeEach(() => {
+      estimateMock.mockResolvedValue(50_000);
+      contextWindowMock.mockResolvedValue(CODEX_WINDOW);
+      specMock.mockResolvedValue(CODEX_SPEC);
+    });
+
+    it('RAISES a session still carrying the spec-derived seed (the heal the lower-only rule could not reach)', async () => {
+      const out = await checkCompactionCompliance(sweep(158_000));
+      expect(out.relimited).toContainEqual({ owner: 'cx', from: 158_000, to: CODEX_SAFE_LIMIT });
+      expect(setLimitMock).toHaveBeenCalledWith('cx', CODEX_SAFE_LIMIT);
+    });
+
+    it('leaves a DELIBERATE lower override alone — its value differs from the derived seed (D-006 leanness)', async () => {
+      const out = await checkCompactionCompliance(sweep(100_000));
+      expect(out.relimited).toEqual([]);
+      expect(setLimitMock).not.toHaveBeenCalledWith('cx', CODEX_SAFE_LIMIT);
+    });
+
+    /**
+     * The falsifier that separates the two readings of "may I raise this?".
+     * Here the stored limit is NUMERICALLY EQUAL to what the spec would derive,
+     * so an equality-only rule would raise it — but it was stated outright on
+     * the launch argv. Provenance, not the value, decides.
+     */
+    it('leaves an EXPLICIT launch limit alone even when it EQUALS the derived default', async () => {
+      resolveLaunchLimitMock.mockResolvedValue(158_000);
+      const out = await checkCompactionCompliance(sweep(158_000));
+      expect(out.relimited).toEqual([]);
+      expect(setLimitMock).not.toHaveBeenCalledWith('cx', CODEX_SAFE_LIMIT);
+    });
+
+    /**
+     * The lower branch deliberately reads NO provenance: a limit above the true
+     * window means the session never preempts and the host compacts it
+     * mid-task, so safety outranks intent. This pins that asymmetry — an
+     * explicit launch limit is present and the lower branch fires anyway — so
+     * that a later reader cannot "restore symmetry" by gating both directions
+     * on `!seed.explicit`.
+     */
+    it('still LOWERS unconditionally — a limit above the true window is a safety fault, not an intent', async () => {
+      resolveLaunchLimitMock.mockResolvedValue(250_000);
+      const out = await checkCompactionCompliance(sweep(250_000));
+      expect(out.relimited).toContainEqual({ owner: 'cx', from: 250_000, to: CODEX_SAFE_LIMIT });
+    });
+
+    it('is idempotent: a healed session is not re-written on the next sweep', async () => {
+      const out = await checkCompactionCompliance(sweep(CODEX_SAFE_LIMIT));
+      expect(out.relimited).toEqual([]);
+      expect(setLimitMock).not.toHaveBeenCalled();
+    });
+
+    it('never raises above the measured window safe limit', async () => {
+      const out = await checkCompactionCompliance(sweep(158_000));
+      const raised = out.relimited.find((r) => r.owner === 'cx')?.to ?? 0;
+      expect(raised).toBeLessThanOrEqual(CODEX_SAFE_LIMIT);
+      expect(raised * 1.2).toBeLessThanOrEqual(CODEX_WINDOW); // overshoot still fits under the wall
+    });
+  });
+});
+
 describe('checkCompactionCompliance sweep (agent-managed-compaction P-009)', () => {
   it('caches estimates and flags sessions over their own limit', async () => {
     estimateMock.mockImplementation(async (owner: string) => (owner === 'hot' ? 170_000 : 40_000));
