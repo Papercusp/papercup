@@ -9,13 +9,16 @@
  * wrote is validated against its own assumptions, which is the defect this whole
  * plan is about.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   stripNonProse,
   detectAbsencePremises,
   buildPremisesBrief,
   evidenceNamesScope,
+  getClaimTimePremises,
+  invalidatedPremiseCitationChecks,
   type DerivedPremise,
+  type PremiseCitationProbe,
 } from './premises-claim-port';
 
 /** WI-7042 — the root incident. A real search over the wrong scope, stated as an
@@ -222,6 +225,81 @@ describe('evidenceNamesScope (P-002)', () => {
     for (const s of ['I checked', 'grepped for it and found nothing', 'verified, none found', '']) {
       expect(evidenceNamesScope(s), s).toBe(false);
     }
+  });
+});
+
+describe('terminal evidence invalidates a cited premise (EI-18733326519945478)', () => {
+  const invalidated =
+    'Resolved as a wrong-premise proposal: the supposedly missing promotion guard already exists.';
+
+  const probeWith = (
+    rows: Record<string, { state: string; terminalCompletionRef: string | null }>,
+  ): PremiseCitationProbe =>
+    vi.fn(async (id: string) => {
+      const row = rows[id];
+      return row ? { id, ...row } : null;
+    });
+
+  it('reproduces the EI-10203 -> WI-4329 incident without using item age as a proxy', async () => {
+    const probe = probeWith({
+      'WI-4329': { state: 'done', terminalCompletionRef: invalidated },
+    });
+
+    const rows = await invalidatedPremiseCitationChecks(
+      'EI-10203 proposes a new promotion gate and cites WI-4329 as its foundation.',
+      { selfId: 'EI-10203', probe, max: 1 },
+    );
+
+    expect(probe).toHaveBeenCalledTimes(1);
+    expect(probe).toHaveBeenCalledWith('WI-4329');
+    expect(rows).toHaveLength(1);
+    expect(rows[0]!.claim).toContain('WI-4329 is done');
+    expect(rows[0]!.claim).toContain('wrong-premise');
+    expect(rows[0]!.recheck).toMatch(/before building/i);
+  });
+
+  it('stays silent for live refs and ordinary terminal completions', async () => {
+    const probe = probeWith({
+      'WI-1001': { state: 'open', terminalCompletionRef: invalidated },
+      'WI-1002': { state: 'done', terminalCompletionRef: 'Implemented and verified with focused tests.' },
+    });
+
+    await expect(
+      invalidatedPremiseCitationChecks('Depends on WI-1001 and WI-1002.', { probe }),
+    ).resolves.toEqual([]);
+  });
+
+  it('fails soft on an unresolved/rejected citation and honors a zero probe budget', async () => {
+    const rejecting: PremiseCitationProbe = vi.fn(async () => {
+      throw new Error('read failed');
+    });
+    await expect(invalidatedPremiseCitationChecks('Depends on WI-9999.', { probe: rejecting })).resolves.toEqual([]);
+
+    const bounded = vi.fn(async () => ({ id: 'WI-9999', state: 'done', terminalCompletionRef: invalidated }));
+    await expect(
+      invalidatedPremiseCitationChecks('Depends on WI-9999.', { probe: bounded, max: 0 }),
+    ).resolves.toEqual([]);
+    expect(bounded).not.toHaveBeenCalled();
+  });
+
+  it('flows the invalidation through the claim-time brief without adding an absence warning', async () => {
+    const probe = probeWith({
+      'WI-4329': { state: 'resolved', terminalCompletionRef: invalidated },
+    });
+
+    const brief = await getClaimTimePremises({
+      workItem: {
+        id: 'EI-10203',
+        payload: {},
+        title: 'Build a new promotion gate',
+        summary: 'This proposal depends on the findings in WI-4329.',
+      },
+      citedWorkItemProbe: probe,
+    });
+
+    expect(brief?.rendered.join('\n')).toContain('WI-4329 is resolved');
+    expect(brief?.note).toMatch(/terminal evidence explicitly INVALIDATED its premise/);
+    expect(brief?.note).not.toContain('Absence claims');
   });
 });
 

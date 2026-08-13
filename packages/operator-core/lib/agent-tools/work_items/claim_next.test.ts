@@ -15,6 +15,7 @@ const fleet = vi.hoisted(() => ({ scope: null as any, quarantinedIds: [] as stri
 // `work-item:claimable` await(s) — mock the store call so these unit tests never
 // touch real PG, and so tests below can assert it was invoked (self-scoped, by assignee).
 const cancelClaimableAwaitsM = vi.hoisted(() => vi.fn(async () => 0));
+const premisePort = vi.hoisted(() => ({ get: vi.fn() }));
 
 vi.mock('../../events/await/store', () => ({
   cancelClaimableAwaits: cancelClaimableAwaitsM,
@@ -106,6 +107,7 @@ vi.mock('../../work-items', async (importOriginal) => {
 // Claim-time recall port (P-008) — mock so this handler test stays a hermetic
 // unit (the recall itself is pinned in memory/claim-port.test.ts).
 vi.mock('../../memory/claim-port', () => ({ buildClaimRecallBlock: vi.fn(async () => null) }));
+vi.mock('../../premises-claim-port', () => ({ getClaimTimePremises: premisePort.get }));
 
 import { getNextForBee } from '../../scheduler/claim-spec-store';
 import { claimNextWorkItem, diagnoseClaimNextMiss } from '../../work-items';
@@ -132,9 +134,11 @@ beforeEach(() => {
   getNextForBeeM.mockResolvedValue({
     workItem: { id: 'WI-lane', assignee: 'su-me' } as never,
     claimedUnder: { specId: 'fleet-bugs', revision: 3 },
+    specSource: 'fleet',
   });
   claimNextM.mockResolvedValue({ id: 'WI-raw', assignee: 'su-me' } as never);
   diagnoseM.mockResolvedValue({ drained: true, pendingUnclaimed: 0, readyUnclaimed: 0, flagReadError: null });
+  premisePort.get.mockResolvedValue(null);
 });
 
 describe('work_items:claim_next claim-spec bridge (WI-2971)', () => {
@@ -205,6 +209,84 @@ describe('work_items:claim_next claim-spec bridge (WI-2971)', () => {
       rigAvailable: undefined,
     });
     expect(getNextForBeeM).not.toHaveBeenCalled();
+  });
+
+  it('surfaces premise revalidation on a single claim and passes the claimed id', async () => {
+    getNextForBeeM.mockResolvedValue({
+      workItem: {
+        id: 'EI-aged',
+        title: 'Build a replacement gate',
+        summary: 'Depends on WI-4329.',
+        payload: { source: 'ideation' },
+        harness: 'papercusp',
+        assignee: 'su-me',
+      } as never,
+      claimedUnder: { specId: 'fleet-bugs', revision: 3 },
+      specSource: 'fleet',
+    });
+    premisePort.get.mockResolvedValue({
+      rendered: ['- ? WI-4329 terminal evidence says the premise was invalid'],
+      note: 'Re-check the invalidated premise before building.',
+    });
+
+    const b = await body({ harness: 'papercusp' });
+
+    expect(b).toMatchObject({
+      workItem: { id: 'EI-aged' },
+      premises: ['- ? WI-4329 terminal evidence says the premise was invalid'],
+      premisesNote: 'Re-check the invalidated premise before building.',
+    });
+    expect(premisePort.get).toHaveBeenCalledWith({
+      workItem: {
+        id: 'EI-aged',
+        title: 'Build a replacement gate',
+        summary: 'Depends on WI-4329.',
+        payload: { source: 'ideation' },
+      },
+      harness: 'papercusp',
+      workspaceId: 'ws-1',
+    });
+  });
+
+  it('surfaces premise revalidation independently on every item in a batch claim', async () => {
+    getNextForBeeM
+      .mockResolvedValueOnce({
+        workItem: { id: 'EI-one', title: 'One', summary: 'Cites WI-1001.', payload: {} } as never,
+        claimedUnder: { specId: 'fleet-bugs', revision: 3 },
+        specSource: 'fleet',
+      })
+      .mockResolvedValueOnce({
+        workItem: { id: 'EI-two', title: 'Two', summary: 'Cites WI-1002.', payload: {} } as never,
+        claimedUnder: { specId: 'fleet-bugs', revision: 3 },
+        specSource: 'fleet',
+      });
+    premisePort.get.mockImplementation(async ({ workItem }: { workItem: { id?: string } }) => ({
+      rendered: [`- ? ${workItem.id} requires premise revalidation`],
+      note: `Re-check ${workItem.id}`,
+    }));
+
+    const b = await body({ harness: 'papercusp', count: 2 });
+
+    expect(premisePort.get).toHaveBeenCalledTimes(2);
+    expect(premisePort.get).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ workItem: expect.objectContaining({ id: 'EI-one' }) }),
+    );
+    expect(premisePort.get).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ workItem: expect.objectContaining({ id: 'EI-two' }) }),
+    );
+    expect(b.claimed).toHaveLength(2);
+    expect(b.claimed[0]).toMatchObject({
+      workItem: { id: 'EI-one' },
+      premises: ['- ? EI-one requires premise revalidation'],
+      premisesNote: 'Re-check EI-one',
+    });
+    expect(b.claimed[1]).toMatchObject({
+      workItem: { id: 'EI-two' },
+      premises: ['- ? EI-two requires premise revalidation'],
+      premisesNote: 'Re-check EI-two',
+    });
   });
 
   it('P-016 keeps a fleet member on its spec when the scheduler flag is off and winds down on a scoped miss', async () => {

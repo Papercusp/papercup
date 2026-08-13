@@ -364,6 +364,45 @@ export default defineTool({
         })
         .catch(() => null);
     };
+    // EI-18733326519945478: claim_next was the remaining claim surface that did
+    // not pass the claimed item through the shared premises port. In particular,
+    // it could serve an aged proposal citing terminal evidence that explicitly
+    // invalidated the proposal's premise with no recheck. Keep this fail-soft and
+    // dynamic like the sibling memory/decision ports above.
+    // Batch claims share one module load. Besides avoiding N identical loader trips,
+    // this makes the fail-soft boundary coherent: either this response can decorate
+    // every claimed row, or the one shared import fails and all rows omit the advisory.
+    let premisesModulePromise: Promise<typeof import('../../premises-claim-port') | null> | null = null;
+    const loadPremisesModule = () =>
+      (premisesModulePromise ??= import('../../premises-claim-port').catch(() => null));
+    const premisesFor = async (
+      wi: {
+        id?: string;
+        payload?: unknown;
+        title?: string;
+        summary?: string;
+        harness?: string | null;
+      } | null,
+    ): Promise<{ premises: string[]; note: string } | null> => {
+      if (!wi) return null;
+      const m = await loadPremisesModule();
+      if (!m) return null;
+      try {
+        const brief = await m.getClaimTimePremises({
+          workItem: {
+            id: wi.id,
+            payload: wi.payload,
+            title: wi.title,
+            summary: wi.summary,
+          },
+          harness: wi.harness ?? args.harness,
+          workspaceId: ident.workspaceId,
+        });
+        return brief ? { premises: brief.rendered, note: brief.note } : null;
+      } catch {
+        return null;
+      }
+    };
 
     const count = args.count ?? 1;
     // Backward-compatible single-item shape when count is omitted/1.
@@ -380,8 +419,11 @@ export default defineTool({
       // idle-park await(s) (best-effort, see cancelClaimableAwaits). Mutually exclusive with holding a claim.
       await cancelClaimableAwaits(assignee).catch(() => 0);
       const memory = await recallFor([wiOf(claimed)]);
-      const planDecisionsResult = await planDecisionsFor(wiOf(claimed));
-      const retractionAdvisory = await getClaimTimeRetractionAdvisory(wiOf(claimed), args.harness);
+      const [planDecisionsResult, premisesResult, retractionAdvisory] = await Promise.all([
+        planDecisionsFor(wiOf(claimed)),
+        premisesFor(wiOf(claimed)),
+        getClaimTimeRetractionAdvisory(wiOf(claimed), args.harness),
+      ]);
       return {
         content: [
           {
@@ -391,6 +433,9 @@ export default defineTool({
               ...(memory ? { memory } : {}),
               ...(planDecisionsResult
                 ? { planDecisions: planDecisionsResult.decisions, planDecisionsNote: planDecisionsResult.note }
+                : {}),
+              ...(premisesResult
+                ? { premises: premisesResult.premises, premisesNote: premisesResult.note }
                 : {}),
               ...(retractionAdvisory ? { retractionWarning: retractionAdvisory.retractionWarning } : {}),
             }),
@@ -424,12 +469,18 @@ export default defineTool({
     // return branch.
     const claimedWithDecisions = await Promise.all(
       claimed.map(async (c) => {
-        const planDecisionsResult = await planDecisionsFor(wiOf(c));
-        const retractionAdvisory = await getClaimTimeRetractionAdvisory(wiOf(c), args.harness);
+        const [planDecisionsResult, premisesResult, retractionAdvisory] = await Promise.all([
+          planDecisionsFor(wiOf(c)),
+          premisesFor(wiOf(c)),
+          getClaimTimeRetractionAdvisory(wiOf(c), args.harness),
+        ]);
         return {
           ...c,
           ...(planDecisionsResult
             ? { planDecisions: planDecisionsResult.decisions, planDecisionsNote: planDecisionsResult.note }
+            : {}),
+          ...(premisesResult
+            ? { premises: premisesResult.premises, premisesNote: premisesResult.note }
             : {}),
           ...(retractionAdvisory ? { retractionWarning: retractionAdvisory.retractionWarning } : {}),
         };

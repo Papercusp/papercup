@@ -182,12 +182,22 @@ export async function invalidatedPremiseCitationChecks(
   const body = (text ?? '').trim();
   if (!body) return [];
 
+  const requestedMax = opts.max ?? MAX_PREMISE_CITATION_REFS;
+  const maxRefs = Number.isFinite(requestedMax)
+    ? Math.max(0, Math.floor(requestedMax))
+    : MAX_PREMISE_CITATION_REFS;
+  if (maxRefs === 0) return [];
+
   let ids: string[];
   try {
-    ids = detectBodyRefs(body, Math.max(0, opts.max ?? MAX_PREMISE_CITATION_REFS))
+    // A body's own id is common provenance, not a dependency. Parse one spare ref
+    // when self-filtering so it cannot consume the bounded probe budget and hide the
+    // first real citation (the EI-10203 -> WI-4329 incident shape).
+    ids = detectBodyRefs(body, maxRefs + (opts.selfId ? 1 : 0))
       .filter((ref): ref is Extract<HydratableRef, { kind: 'work-item' }> => ref.kind === 'work-item')
       .map((ref) => ref.id)
-      .filter((id) => id.toUpperCase() !== (opts.selfId ?? '').toUpperCase());
+      .filter((id) => id.toUpperCase() !== (opts.selfId ?? '').toUpperCase())
+      .slice(0, maxRefs);
   } catch {
     return [];
   }
