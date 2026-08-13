@@ -49,7 +49,7 @@ beforeAll(async () => {
   );
   await applyMigrationForTest(
     db.sql,
-    join(__dirname, '../../../../../libs/papercusp/libs/db/sql/831-issue-occurrence-ledger.sql.DRAFT'),
+    join(__dirname, '../../../../../libs/papercusp/libs/db/sql/831-issue-occurrence-ledger.sql'),
   );
   // The handler's fleet attribution is intentionally read through the durable
   // membership ledger, not a mocked list or the ephemeral presence projection.

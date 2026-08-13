@@ -7,10 +7,8 @@
  * double encoding.
  */
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
-import { join } from 'node:path';
 import type { OrgTestDb } from '../test/_org-test-db';
 import { createOrgTestDb } from '../test/_org-test-db';
-import { applyMigrationForTest } from '../test/_pg-helpers';
 import {
   readIssueOccurrenceCounts,
   recordIssueOccurrence,
@@ -20,25 +18,19 @@ import {
 const WORKSPACE = 'ws-occurrence-ledger';
 const HARNESS = 'papercusp';
 const CANONICAL_ID = 'EI-OCCURRENCE-CANONICAL';
-const MIGRATION = join(
-  __dirname,
-  '../../../libs/papercusp/libs/db/sql/831-issue-occurrence-ledger.sql.DRAFT',
-);
 
 describe('issue occurrence ledger (real PG, migration 831)', () => {
   let db: OrgTestDb;
 
   beforeAll(async () => {
     db = await createOrgTestDb();
-    const before = await db.adminSql<{ exists: boolean }[]>`
+    // createOrgTestDb clones an empty-to-head migration-runner template keyed
+    // by the migration-set hash. Presence here proves migration 831 applied on
+    // the production boot path; reapplying it would only test idempotency.
+    const migrated = await db.adminSql<{ exists: boolean }[]>`
       SELECT to_regclass('harness_shared.work_item_occurrences') IS NOT NULL AS exists
     `;
-    expect(before[0]?.exists).toBe(false);
-    await applyMigrationForTest(db.adminSql, MIGRATION);
-    const after = await db.adminSql<{ exists: boolean }[]>`
-      SELECT to_regclass('harness_shared.work_item_occurrences') IS NOT NULL AS exists
-    `;
-    expect(after[0]?.exists).toBe(true);
+    expect(migrated[0]?.exists).toBe(true);
   }, 180_000);
 
   afterAll(async () => {
