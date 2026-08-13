@@ -32,6 +32,7 @@ import {
   RESCUE_TEST_TIMEOUT_MS,
   WORKSPACE_RERUN_TIMEOUT_MS,
   GREEN_CHECKPOINT_POST_SUITE_HEAP_MB,
+  GREEN_CHECKPOINT_RESERVED_MAX_FORKS,
   type CheckpointExec,
 } from './green-checkpoint';
 import { releaseConfig, type ReleaseConfig } from './release-config';
@@ -353,6 +354,24 @@ describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
   it('detects the optional lint:tsc script without requiring it from subject hives', () => {
     expect(hasNpmScript(cpTree, 'lint:tsc')).toBe(false);
     expect(hasNpmScript(typecheckTree, 'lint:tsc')).toBe(true);
+  });
+
+  it('wires an explicitly reserved ReleaseConfig into the real suite process environment', async () => {
+    const reservedCfg: ReleaseConfig = {
+      ...cfg,
+      greenCheckpointCapacityMode: 'reserved',
+    };
+    // suite green → marker grep has no match → SPA build green.
+    const { exec, calls } = makeExec([{ code: 0 }, { code: 1 }, { code: 0 }]);
+    const r = await realCheckpointDeps(reservedCfg, exec).runGreen(cpTree, 'base-sha');
+
+    expect(r.green).toBe(true);
+    expect(calls[0].opts?.env?.VITEST_MAX_FORKS).toBe(
+      String(GREEN_CHECKPOINT_RESERVED_MAX_FORKS),
+    );
+    expect(calls[0].opts?.env?.VITEST_MAX_THREADS).toBe(
+      String(GREEN_CHECKPOINT_RESERVED_MAX_FORKS),
+    );
   });
 
   it('runs the Papercusp lint:tsc leg before the SPA build when the candidate provides it', async () => {
