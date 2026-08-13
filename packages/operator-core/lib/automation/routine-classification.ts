@@ -372,6 +372,10 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
   'system:coord-invariant-monitor': { spend: 'none', why: 'Checks coord substrate invariants in SQL' },
   'system:coord-probe-canary': { spend: 'none', why: 'Runs a verb-cycle probe pair' },
   'system:plan-item-orphan-reconcile': { spend: 'none', why: 'Reconciles orphaned plan items' },
+  'system:plan-item-reflect-orphan-reconcile': {
+    spend: 'none',
+    why: 'SQL sweep + plans:set-status flips — the reflect-direction mirror of plan-item-orphan-reconcile; no spawn/dispatch/wake',
+  },
   'system:supervision-reconcile': { spend: 'none', why: 'Reconciles supervision rows' },
   'system:worker-breaker-watch': {
     spend: 'none',
