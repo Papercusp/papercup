@@ -2,6 +2,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { FilterNode } from './claim-spec';
 import type { ClaimSpecRecord } from './claim-spec-store';
+// Type-only: erased at compile time, so this does NOT defeat the vi.mock('../work-items')
+// factory below — it only makes the fixture genuinely checked against the real shape.
+import type { WorkItem } from '../work-items';
 import {
   claimSpecSubjectFromWorkItem,
   matchesClaimSpecFilter,
@@ -69,6 +72,7 @@ vi.mock('@papercusp/db-org', () => ({
 
 import {
   admitWorkItemForFleetTarget,
+  selfFiledFalloutAdmission,
   diagnoseFleetScopeCooldownMiss,
   diagnoseFleetScopeIssueFloorMiss,
   diagnoseFleetScopeRetiredPlans,
@@ -873,6 +877,58 @@ describe('fleet scope assignment admission (P-016)', () => {
         matchedByFilter: 2,
         terminalMatchedByFilter: 2,
       });
+    });
+
+    it('EI-20260781488788952: reports a completed bound plan as a successful plan wind-down', () => {
+      const completedPlanScope = {
+        ...issueScope,
+        fleetSlug: 'completed-plan-fleet',
+        record: {
+          ...issueScope.record,
+          spec: {
+            ...issueScope.record.spec,
+            specId: 'completed-plan-lane',
+            revision: 3,
+            view: { filter: { field: 'plan', op: '=' as const, value: 'finished-plan' } },
+          },
+        },
+      };
+      const planTerminality = {
+        planSlugs: ['finished-plan'],
+        terminalPlanSlugs: ['finished-plan'],
+        allTerminal: true,
+      };
+      const miss = fleetScopedMiss(completedPlanScope, [], {
+        issueBreakdown: zeroMatchBreakdown,
+        planTerminality,
+        leaderLiveness: true,
+      });
+
+      expect(miss.reason).toBe('plan_complete');
+      expect(miss.reason).not.toBe('spec_matches_nothing');
+      expect(miss.windDown).toBe(true);
+      expect(miss.error).toMatch(/PLAN COMPLETE/);
+      expect(miss.error).not.toMatch(/ESCALATE/);
+      expect(miss.advice).toMatch(/successful completed-plan wind-down/);
+      expect(miss.advice).toMatch(/Do NOT escalate, widen, or re-author/);
+      expect((miss as { planTerminality?: unknown }).planTerminality).toEqual(planTerminality);
+    });
+
+    it('EI-20260781488788952: a dead leader changes the zero-match handoff without changing the spec verdict', () => {
+      const miss = fleetScopedMiss(issueScope, [], {
+        issueBreakdown: zeroMatchBreakdown,
+        leaderLiveness: false,
+      });
+
+      expect(miss.reason).toBe('spec_matches_nothing');
+      expect(miss.windDown).toBe(true);
+      expect(miss.error).toMatch(/SPEC MATCHES NOTHING/);
+      expect(miss.error).not.toMatch(/ESCALATE to your fleet leader NOW/);
+      expect(miss.error).toMatch(/leader is not live/);
+      expect(miss.error).toMatch(/fleet launcher\/owner/);
+      expect(miss.advice).toMatch(/do not route this miss to a dead leader/);
+      expect(miss.advice).toMatch(/take leadership as the sole live member/);
+      expect((miss as { leaderLiveness?: unknown }).leaderLiveness).toBe(false);
     });
 
     it('keeps the spec-authoring verdict when the status-floor-free matches are mixed terminal and active', () => {
@@ -1745,5 +1801,247 @@ describe('itemMatchesRawClaimSpec (EI-18862608742257943 — pre-launch kickoff-v
       itemMatchesRawClaimSpec(item, { ...issueSpec, view: { filter: { field: 'kind', op: '=', value: 'feature' } } }, 'papercusp-workspace'),
     ).resolves.toBe(true);
     expect(admissionMocks.sql).toHaveBeenCalled();
+  });
+});
+
+/**
+ * EI-18732199386440540 — a fleet must be able to absorb the fallout bugs it files
+ * mid-run. The live repro: a member finished its lane, ran the affected suite, found the
+ * fleet's own plan had turned a test RED, filed the bug, and then could not claim the
+ * item it had just created (fleet_scope_violation), because a freshly-filed EI carries
+ * no plan/plan_item stamp and the fleet's spec is scoped to the plan's item set.
+ */
+describe('self-filed fallout admission (EI-18732199386440540)', () => {
+  /**
+   * This block is a SIBLING of the describe that owns the shared mock reset, so it does
+   * NOT inherit that beforeEach — it must reset for itself. Learned the hard way while
+   * writing these: the whole-file run was GREEN while the reconciliation test below only
+   * passed because a test in the earlier block had left `sendMessage` resolved. Run
+   * alone (-t 'self-filed fallout admission') it threw on `.catch` of undefined. A green
+   * file is not evidence a test is independent of the ones before it.
+   */
+  beforeEach(() => {
+    for (const mock of Object.values(admissionMocks)) mock.mockReset();
+    admissionMocks.sendMessage.mockResolvedValue(undefined);
+  });
+
+  const scope = {
+    ownerId: 'su-member',
+    fleetSlug: 'mail-retirement',
+    fleetRole: 'member' as const,
+    workspaceId: 'papercusp-workspace',
+    record: {
+      source: 'fleet',
+      spec: {
+        specVersion: '1.0',
+        specId: 'plan-scoped-rev2',
+        revision: 2,
+        // The shape that causes the bug: scoped to the PLAN's items, so nothing filed
+        // mid-run can ever match.
+        view: { filter: { field: 'plan', op: '=', value: 'mail-retirement' } as FilterNode },
+        rank: { mode: 'lexicographic', terms: [{ expr: 'age', dir: 'asc' }] },
+      },
+      revision: 2,
+      updatedBy: 'su-leader',
+      updatedAt: 'now',
+    } as unknown as ClaimSpecRecord,
+  };
+
+  /**
+   * A COMPLETE, genuinely typechecked WorkItem with a Partial override seam — not a cast.
+   * `as never` on a fixture would defeat the one check vi.mocked() exists to give: the
+   * value would stop being checked against the real signature, so the next required field
+   * added to WorkItem would strand this fixture INVISIBLY (vitest does not typecheck, and
+   * lint:tsc would pass BECAUSE of the cast) and surface as a red green-checkpoint for
+   * whoever is next waiting on a deploy. Same shape as the factories in
+   * agent-tools/work_items/*.test.ts.
+   */
+  const aWorkItem = (over: Partial<WorkItem> = {}): WorkItem => ({
+    id: 'EI-18731717643670832',
+    kind: 'bug',
+    family: 'issue',
+    harness: 'papercusp',
+    title: 'blueprint-deps-catalog.test.ts went RED',
+    summary: 'fallout from this fleet own plan',
+    state: 'open',
+    assignee: null,
+    takenAt: null,
+    lastProgressAt: null,
+    assignedBy: null,
+    createdBy: 'su-member',
+    severity: 'major',
+    parent: null,
+    payload: null,
+    origin: 'local',
+    auditVerdict: null,
+    verifiedAuthorGithubUserId: null,
+    rank: null,
+    rankWriter: null,
+    rankUpdatedAt: null,
+    priority: null,
+    terminalOwner: null,
+    terminalCompletionRef: null,
+    terminalCompletionEvidence: null,
+    completionAuthority: null,
+    createdAt: '2026-07-26T18:20:17.438Z',
+    updatedAt: '2026-07-26T18:20:17.438Z',
+    closedAt: null,
+    goalId: null,
+    ...over,
+  });
+
+  const falloutBug = aWorkItem();
+
+  /**
+   * The case table IS the specification. Every claim below is asserted against the real
+   * predicate AND replayed against two deliberately-wrong implementations in the
+   * falsifiability control at the end of this block — so the table cannot silently
+   * degrade into one that would pass for a broken predicate.
+   */
+  const cases: { name: string; item: Partial<WorkItem>; admit: boolean }[] = [
+    {
+      name: 'the reported repro: a bug this member filed itself, out of spec',
+      item: { kind: 'bug', createdBy: 'su-member' },
+      admit: true,
+    },
+    {
+      name: 'NEGATIVE CONTROL — a bug filed by a PEER is still refused (this is not a general widening)',
+      item: { kind: 'bug', createdBy: 'su-other-member' },
+      admit: false,
+    },
+    {
+      name: 'NEGATIVE CONTROL — a self-filed `change` is refused: you may absorb what you broke, not self-authorize new work',
+      item: { kind: 'change', createdBy: 'su-member' },
+      admit: false,
+    },
+    {
+      name: 'NEGATIVE CONTROL — a self-filed `task` is refused for the same reason',
+      item: { kind: 'task', createdBy: 'su-member' },
+      admit: false,
+    },
+    {
+      name: 'a row with no createdBy (feature-family, legacy) can never match — no null-equals-null admission',
+      item: { kind: 'bug', createdBy: null },
+      admit: false,
+    },
+  ];
+
+  for (const c of cases) {
+    it(c.name, () => {
+      expect(selfFiledFalloutAdmission(aWorkItem(c.item), scope)).toBe(c.admit);
+    });
+  }
+
+  it('admits the self-filed fallout bug through the real admission seam, not just the predicate', async () => {
+    admissionMocks.latestFleetMembership.mockResolvedValue({ fleetSlug: 'mail-retirement', fleetRole: 'member' });
+    admissionMocks.getClaimSpecRecord.mockResolvedValue(scope.record);
+    admissionMocks.getFleet.mockResolvedValue({ controlState: 'active', controlReason: null });
+    admissionMocks.getWorkItem.mockResolvedValue(falloutBug);
+    // The spec is plan-scoped, so the normal match path must genuinely FAIL here —
+    // otherwise this test would pass without exercising the carve-out at all.
+    admissionMocks.sql.mockResolvedValue([{ matched: false }]);
+
+    const admission = await admitWorkItemForFleetTarget({
+      target: 'su-member',
+      workItemId: 'EI-18731717643670832',
+      workspaceId: 'papercusp-workspace',
+    });
+    expect(admission).toMatchObject({ allowed: true, scoped: true });
+  });
+
+  it('ORDERING CONTROL — a winding-down fleet still refuses the self-filed bug (EI-12832 keeps precedence)', async () => {
+    admissionMocks.latestFleetMembership.mockResolvedValue({ fleetSlug: 'mail-retirement', fleetRole: 'member' });
+    admissionMocks.getClaimSpecRecord.mockResolvedValue(scope.record);
+    admissionMocks.getFleet.mockResolvedValue({ controlState: 'winding-down', controlReason: 'owner pause' });
+    admissionMocks.getWorkItem.mockResolvedValue(falloutBug);
+
+    const admission = await admitWorkItemForFleetTarget({
+      target: 'su-member',
+      workItemId: 'EI-18731717643670832',
+      workspaceId: 'papercusp-workspace',
+    });
+    expect(admission).toMatchObject({ allowed: false, code: 'fleet_winding_down' });
+  });
+
+  it('ORDERING CONTROL — a member with no explicit spec still gets fleet_scope_missing, not a self-filed pass', async () => {
+    admissionMocks.latestFleetMembership.mockResolvedValue({ fleetSlug: 'mail-retirement', fleetRole: 'member' });
+    admissionMocks.getClaimSpecRecord.mockResolvedValue({ ...scope.record, source: 'default' });
+    admissionMocks.getFleet.mockResolvedValue({ controlState: 'active', controlReason: null });
+    admissionMocks.getWorkItem.mockResolvedValue(falloutBug);
+
+    const admission = await admitWorkItemForFleetTarget({
+      target: 'su-member',
+      workItemId: 'EI-18731717643670832',
+      workspaceId: 'papercusp-workspace',
+    });
+    expect(admission).toMatchObject({ allowed: false, code: 'fleet_scope_missing' });
+  });
+
+  it('a refused self-filed non-bug is TOLD why the carve-out did not apply, instead of a bare spec mismatch', async () => {
+    admissionMocks.latestFleetMembership.mockResolvedValue({ fleetSlug: 'mail-retirement', fleetRole: 'member' });
+    admissionMocks.getClaimSpecRecord.mockResolvedValue(scope.record);
+    admissionMocks.getFleet.mockResolvedValue({ controlState: 'active', controlReason: null });
+    admissionMocks.getWorkItem.mockResolvedValue(aWorkItem({ kind: 'change' }));
+    admissionMocks.sql.mockResolvedValue([{ matched: false }]);
+
+    const admission = (await admitWorkItemForFleetTarget({
+      target: 'su-member',
+      workItemId: 'EI-18731717643670832',
+      workspaceId: 'papercusp-workspace',
+    })) as Extract<FleetScopeAdmission, { allowed: false }>;
+    expect(admission.allowed).toBe(false);
+    expect(admission.reason).toMatch(/you filed this item/i);
+    expect(admission.reason).toMatch(/kind:'bug' only/);
+  });
+
+  /**
+   * THE COHERENCE GUARD, and the reason this is not merely a predicate test.
+   * `reconcileFleetScopeClaims` re-evaluates every claim a member holds and RELEASES the
+   * ones that no longer match. If it does not honour the same carve-out, the fix is
+   * worse than useless: the member is allowed to claim the bug it filed, and then the
+   * next sweep quarantines that very claim and tells the leader it was out of scope.
+   */
+  it('the reconciliation sweep KEEPS a self-filed fallout claim instead of quarantining it back', async () => {
+    admissionMocks.latestFleetMembership.mockResolvedValue({ fleetSlug: 'mail-retirement', fleetRole: 'member' });
+    admissionMocks.getClaimSpecRecord.mockResolvedValue(scope.record);
+    admissionMocks.listFleetAssignments.mockResolvedValue([
+      { source: 'work_item_claim', workItemId: 'EI-18731717643670832' },
+      { source: 'work_item_claim', workItemId: 'EI-filed-by-someone-else' },
+    ]);
+    admissionMocks.getWorkItem.mockImplementation(async (id: string) =>
+      id === 'EI-18731717643670832' ? falloutBug : aWorkItem({ id, createdBy: 'su-other-member' }),
+    );
+    admissionMocks.sql.mockResolvedValue([{ matched: false }]);
+    admissionMocks.releaseWorkItem.mockImplementation(async (id: string) => ({ id }));
+
+    const result = await reconcileFleetScopeClaims({
+      ownerId: 'su-member',
+      workspaceId: 'papercusp-workspace',
+      identity: { ownerId: 'su-member' } as never,
+    });
+
+    // The self-filed one survives; the peer-filed out-of-scope one is still quarantined.
+    // Asserting BOTH is what makes this a test of narrowness rather than of the sweep
+    // having simply stopped working.
+    expect(result.quarantinedIds).toEqual(['EI-filed-by-someone-else']);
+  });
+
+  /**
+   * PERMANENT FALSIFIABILITY CONTROL. A guard that has never failed is a guard nobody
+   * has tested. Both deliberately-wrong implementations must FAIL the case table above;
+   * if either one passes it, the table has stopped discriminating and every assertion
+   * above is worthless.
+   */
+  it('CONTROL: the case table rejects both an always-admit and a never-admit implementation', () => {
+    const alwaysAdmit = () => true;
+    const neverAdmit = () => false;
+    const survives = (impl: () => boolean) => cases.every((c) => impl() === c.admit);
+
+    expect(survives(alwaysAdmit)).toBe(false);
+    expect(survives(neverAdmit)).toBe(false);
+    // ...and the real implementation passes every one. This calibration case proves the
+    // table is satisfiable at all, so the two failures above mean discrimination rather
+    // than a table nothing could satisfy.
+    expect(cases.every((c) => selfFiledFalloutAdmission(aWorkItem(c.item), scope) === c.admit)).toBe(true);
   });
 });

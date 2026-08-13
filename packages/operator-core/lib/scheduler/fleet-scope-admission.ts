@@ -185,6 +185,48 @@ async function itemMatchesScope(item: WorkItem, scope: FleetScopeContext): Promi
 }
 
 /**
+ * EI-18732199386440540: a fleet whose claim spec is scoped to its plan's item set
+ * cannot absorb the FALLOUT BUGS THE FLEET ITSELF FILES mid-run.
+ *
+ * The live repro (fleet mail-retirement, 2026-07-26): a member finished its lane, ran
+ * the affected suite, found the fleet's own plan had turned a test RED, filed the bug —
+ * and then could not claim the item it had just created, because a freshly-filed EI
+ * carries no plan/plan_item stamp and so matches neither branch of
+ * {@link itemMatchesScope}. A fleet doing removal/refactor work GENERATES fallout; that
+ * is the normal case, not an edge case, and today every instance costs a leader
+ * round-trip while the shared gate stays red.
+ *
+ * WHY THIS IS SAFER THAN THE REFUSAL IT REPLACES — the refusal never prevented the
+ * work, only its ATTRIBUTION. `fleet:launch-on-plan` says so in its own words when it
+ * refuses a kickoff/spec mismatch (launch-on-plan.ts): a member that cannot claim
+ * "would do the work anyway unclaimed: assignee stays NULL, fleet:assignments shows it
+ * holding nothing, and the death-resilience reclaim-on-death net never engages". So the
+ * status quo buys no containment; it just loses the ledger edge and the reclaim net.
+ *
+ * WHY `createdBy` AND NOT A NEW PROVENANCE STAMP: `createdBy` is written server-side
+ * from the calling identity at create time (engineer_issues.created_by) and is never
+ * caller-supplied, so it cannot be forged by a member composing its own payload — the
+ * property a `foundDuring`-style free-text match could not offer. It is issue-family
+ * only (feature rows are always null), which is exactly the population that can be
+ * filed mid-run anyway.
+ *
+ * DELIBERATELY NARROW — `kind === 'bug'` only. A member may absorb something it filed
+ * as BROKEN; it may not file itself a `change`/`feature` and thereby self-authorize
+ * out-of-lane work. Widening past `bug` is a real decision about lane containment and
+ * should be made on its own evidence, not inherited from this fix.
+ *
+ * ORDERING IS LOAD-BEARING: this is consulted only AFTER the winding-down gate
+ * (EI-12832 — a paused fleet takes no new work whatever its spec says) and AFTER the
+ * `source === 'default'` denyMissing branch. A self-filed bug must never become the
+ * hole in either.
+ */
+export function selfFiledFalloutAdmission(item: WorkItem, scope: FleetScopeContext): boolean {
+  if (item.kind !== 'bug') return false;
+  if (!item.createdBy) return false;
+  return item.createdBy === scope.ownerId;
+}
+
+/**
  * EI-18862608742257943: the same feature/issue-family branch as {@link itemMatchesScope},
  * but against a RAW `ClaimSpec` rather than a live {@link FleetScopeContext} — usable
  * BEFORE any bee has joined a fleet, when there is no membership row for
@@ -294,6 +336,11 @@ export async function admitWorkItemForFleetTarget(args: {
   const item = await getWorkItem(args.workItemId, args.harness);
   if (!item) return { allowed: true, scoped: true, scope }; // the claim seam returns not_found
   if (await itemMatchesScope(item, scope)) return { allowed: true, scoped: true, scope };
+  // EI-18732199386440540: a fleet absorbs the fallout bugs it filed itself. Consulted
+  // only here — AFTER the winding-down gate and the denyMissing branch above, both of
+  // which must keep precedence. See selfFiledFalloutAdmission for why `createdBy` (not
+  // a caller-supplied field) and why `bug` only.
+  if (selfFiledFalloutAdmission(item, scope)) return { allowed: true, scoped: true, scope };
   return {
     allowed: false,
     scoped: true,
@@ -301,7 +348,12 @@ export async function admitWorkItemForFleetTarget(args: {
     scope,
     reason:
       `work-item ${item.id} does not match ${formatSpecRef(scope.record.spec.specId, scope.record.spec.revision)} ` +
-      `for fleet '${scope.fleetSlug}'`,
+      `for fleet '${scope.fleetSlug}'` +
+      // Tell a refused member WHY the self-filed carve-out did not apply, so the next
+      // move is obvious instead of a leader round-trip to find out.
+      (item.createdBy === scope.ownerId && item.kind !== 'bug'
+        ? ` (you filed this item, but the self-filed carve-out admits kind:'bug' only — this is kind:'${item.kind}'. File genuine fallout as a bug, or ask the leader to widen the spec.)`
+        : ''),
   };
 }
 
@@ -750,7 +802,15 @@ export async function reconcileFleetScopeClaims(args: {
   const quarantinedIds: string[] = [];
   for (const id of ids) {
     const item = await getWorkItem(id);
-    const matches = item && scope.record.source !== 'default' ? await itemMatchesScope(item, scope) : false;
+    // EI-18732199386440540: the reconciliation sweep MUST honour the same self-filed
+    // fallout carve-out the admission seam applies. Without this the two disagree and
+    // the fix is worse than useless: the member is allowed to claim the bug it filed,
+    // then the next sweep quarantines that very claim and messages the leader about an
+    // "out-of-scope" item the system itself just admitted.
+    const matches =
+      item && scope.record.source !== 'default'
+        ? (await itemMatchesScope(item, scope)) || selfFiledFalloutAdmission(item, scope)
+        : false;
     if (matches) continue;
     const released = await releaseWorkItem(id, { expectedAssignee: scope.ownerId });
     if (released) quarantinedIds.push(id);
