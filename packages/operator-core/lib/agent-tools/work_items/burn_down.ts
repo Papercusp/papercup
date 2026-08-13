@@ -314,9 +314,16 @@ export function buildCohortAudit(requestedIds: readonly string[], items: readonl
       const hasVerification = Boolean(
         evidence?.verifiedHow && (evidence.testsRun || evidence.testResult),
       );
-      evidenceVerdict = !hasEvidence || !item.terminalCompletionRef
+      // P-004 deleted work_items:complete's synthetic terminalCompletionRef: the
+      // completion-authority judgement is now the canonical signal for a live close.
+      // Legacy (null-authority) rows still need their old completion ref, while a
+      // committed/validated close must not be reported as missing merely because it
+      // correctly used the new authority path.
+      const missingLegacyCompletionRef =
+        item.completionAuthority === null && !item.terminalCompletionRef;
+      evidenceVerdict = !hasEvidence || missingLegacyCompletionRef
         ? 'missing'
-        : hasVerification
+        : hasVerification && countsTowardBurnDown(item.completionAuthority, true)
           ? 'verified'
           : 'incomplete';
       reopenRecommended = evidenceVerdict !== 'verified';

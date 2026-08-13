@@ -333,6 +333,18 @@ describe('work_items:burn_down', () => {
         testResult: '4/4 green',
       },
     });
+    const committedWithoutRef = item({
+      id: 'WI-committed-without-ref',
+      state: 'done',
+      terminalOwner: 'su-1',
+      terminalCompletionRef: null,
+      completionAuthority: 'committed',
+      terminalCompletionEvidence: {
+        verifiedHow: 'integration',
+        testsRun: 'npm test',
+        testResult: '8/8 green',
+      },
+    });
     const bare = item({
       id: 'WI-bare',
       state: 'resolved',
@@ -342,14 +354,18 @@ describe('work_items:burn_down', () => {
     });
     const open = item({ id: 'WI-open', state: 'open', assignee: 'su-3' });
     const audit = buildCohortAudit(
-      ['WI-verified', 'WI-bare', 'WI-open', 'WI-missing'],
-      [verified, bare, open],
+      ['WI-verified', 'WI-committed-without-ref', 'WI-bare', 'WI-open', 'WI-missing'],
+      [verified, committedWithoutRef, bare, open],
     );
-    expect(audit).toMatchObject({ requested: 4, found: 3, missing: 1, reopenRecommended: 1 });
+    expect(audit).toMatchObject({ requested: 5, found: 4, missing: 1, reopenRecommended: 1 });
     expect(audit.rows).toEqual([
       expect.objectContaining({
         id: 'WI-verified', bucket: 'terminal', closureKind: 'done',
         evidenceVerdict: 'verified', completionRef: 'sha:abc', reopenRecommended: false,
+      }),
+      expect.objectContaining({
+        id: 'WI-committed-without-ref', bucket: 'terminal', closureKind: 'done',
+        evidenceVerdict: 'verified', completionRef: null, reopenRecommended: false,
       }),
       expect.objectContaining({
         id: 'WI-bare', bucket: 'terminal', closureKind: 'resolved',
