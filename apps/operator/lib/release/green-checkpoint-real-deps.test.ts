@@ -17,7 +17,7 @@
  * The actual FF-of-main (advance → advanceReady) is the orchestration test's
  * real-git temp-repo path; here we never touch a real branch.
  */
-import { describe, it, expect, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
@@ -77,6 +77,25 @@ vi.mock('@papercusp/operator-core/lib/agent-tools/coordination/escalations', () 
 vi.mock('@papercusp/operator-core/lib/attention-notify', () => ({
   notifyAttention: async () => {},
 }));
+
+// EI-20339710858167842: this file asserts the checkpoint's OWN concurrency profile. An outer
+// affected-tests scheduler legitimately constrains this Vitest process with VITEST_MAX_FORKS=1;
+// letting that ambient allocation leak into buildGreenCheckpointEnv makes the co-execution
+// contract tests fail only when this file shares a scheduler lane, then pass on the serial retry.
+// Clear the runner allocation for this fixture and restore it after the file so the assertions
+// measure committed gate defaults regardless of how the containing test process was scheduled.
+const inheritedVitestMaxForks = process.env.VITEST_MAX_FORKS;
+const inheritedVitestMaxThreads = process.env.VITEST_MAX_THREADS;
+beforeAll(() => {
+  delete process.env.VITEST_MAX_FORKS;
+  delete process.env.VITEST_MAX_THREADS;
+});
+afterAll(() => {
+  if (inheritedVitestMaxForks === undefined) delete process.env.VITEST_MAX_FORKS;
+  else process.env.VITEST_MAX_FORKS = inheritedVitestMaxForks;
+  if (inheritedVitestMaxThreads === undefined) delete process.env.VITEST_MAX_THREADS;
+  else process.env.VITEST_MAX_THREADS = inheritedVitestMaxThreads;
+});
 
 interface ExecResp { code: number; stdout?: string; stderr?: string }
 
