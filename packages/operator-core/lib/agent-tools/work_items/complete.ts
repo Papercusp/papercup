@@ -94,7 +94,11 @@ import {
   detectEphemeralDeliverableReferences,
   renderEphemeralDeliverableWarning,
 } from '../../turn-end-tracking';
-import { discoverSiblingTypecheckGates, gateCoveringFile } from '../../../../../scripts/lib/tsc-baseline-gate.mjs';
+import {
+  discoverSiblingTypecheckGates,
+  gateCoveringFile,
+  lastCommitTimes,
+} from '../../../../../scripts/lib/tsc-baseline-gate.mjs';
 import {
   isPlaneGapItem,
   preflightPlaneCloseLive,
@@ -554,6 +558,240 @@ export function unresolvedPathsInCompletion(
   }
 
   return missing.length > 0 ? { missing } : undefined;
+}
+
+/** Injectable commit-history seam for the path-vintage detector below. */
+export interface CompletionPathVintageProbe {
+  repoRoot?: string | null;
+  /** Epoch seconds, an ISO timestamp, or a Date; null/undefined means unobservable. */
+  lastCommitAt?: (path: string) => number | string | Date | null | undefined;
+}
+
+export interface CompletionPathVintageHit {
+  path: string;
+  lastCommitAt: string;
+}
+
+const PATH_VINTAGE_MAX_PATHS = 60;
+const PATH_CLAIM_ALL_RE =
+  /\b(?:all|every|each|both|named)\b[\s\S]{0,100}\b(?:path|paths|file|files|site|sites|target|targets)\b[\s\S]{0,100}\b(?:changed|fixed|updated|remediated|correct|verified|covered|replaced|removed)\b/i;
+
+function completionTextParts(completion: unknown): string[] {
+  if (!completion || typeof completion !== 'object' || Array.isArray(completion)) return [];
+  const rec = completion as Record<string, unknown>;
+  const nested =
+    rec.verification && typeof rec.verification === 'object' && !Array.isArray(rec.verification)
+      ? (rec.verification as Record<string, unknown>)
+      : {};
+  const strings = (value: unknown): string[] =>
+    typeof value === 'string'
+      ? [value]
+      : Array.isArray(value)
+        ? value.filter((entry): entry is string => typeof entry === 'string')
+        : [];
+  return [
+    ...strings(rec.summary),
+    ...strings(rec.tests),
+    ...strings(rec.testsRun),
+    ...strings(rec.testResult),
+    ...strings(rec.coordNotes),
+    ...strings(rec.whatLanded),
+    ...strings(rec.deferred),
+    ...strings(rec.migrations),
+    ...strings(nested.testsRun),
+    ...strings(nested.testResult),
+  ];
+}
+
+function completionFilesChanged(completion: unknown): string[] {
+  if (!completion || typeof completion !== 'object' || Array.isArray(completion)) return [];
+  const rec = completion as Record<string, unknown>;
+  const nested =
+    rec.verification && typeof rec.verification === 'object' && !Array.isArray(rec.verification)
+      ? (rec.verification as Record<string, unknown>)
+      : {};
+  const strings = (value: unknown): string[] =>
+    Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+  return [...strings(rec.filesChanged), ...strings(nested.filesChanged)];
+}
+
+function repoRelativePath(value: unknown): string | undefined {
+  if (typeof value !== 'string') return undefined;
+  const normalized = value.trim().replaceAll('\\', '/').replace(/^\.\//, '');
+  if (
+    !normalized ||
+    normalized.includes('*') ||
+    normalized.includes('?') ||
+    normalized.startsWith('/') ||
+    normalized === '..' ||
+    normalized.startsWith('../') ||
+    normalized.includes('/../')
+  ) {
+    return undefined;
+  }
+  return normalized;
+}
+
+function sameRepoPath(left: string, right: string): boolean {
+  return left === right || left.endsWith('/' + right) || right.endsWith('/' + left);
+}
+
+function completionClaimsTargetPaths(itemPaths: string[], completion: unknown): string[] {
+  if (itemPaths.length === 0) return [];
+  const filesChanged = completionFilesChanged(completion)
+    .map(repoRelativePath)
+    .filter((path): path is string => Boolean(path));
+  const prose = completionTextParts(completion).join('\n');
+  if (PATH_CLAIM_ALL_RE.test(prose)) return itemPaths;
+  return itemPaths.filter(
+    (target) => filesChanged.some((file) => sameRepoPath(file, target)) || prose.includes(target),
+  );
+}
+
+function epochSeconds(value: unknown): number | undefined {
+  if (value instanceof Date) {
+    const ms = value.getTime();
+    return Number.isFinite(ms) ? ms / 1000 : undefined;
+  }
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) return undefined;
+    return value > 1_000_000_000_000 ? value / 1000 : value;
+  }
+  if (typeof value !== 'string' || !value.trim()) return undefined;
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) return numeric > 1_000_000_000_000 ? numeric / 1000 : numeric;
+  const ms = Date.parse(value);
+  return Number.isFinite(ms) ? ms / 1000 : undefined;
+}
+
+/**
+ * EI-20288629053504794: detect a completion that positively claims work on a named
+ * target path whose last commit predates the work-item. This is deliberately a
+ * WARN-ONLY, fail-open advisory: unknown roots, malformed dates, unresolvable git
+ * history, and paths that cannot be tied to the completion all return no finding.
+ *
+ * The default history read reuses the existing argv-safe lastCommitTimes helper.
+ * Tests inject the per-path read so the predicate remains pure and never touches git.
+ */
+export function preExistingChangedPathsInCompletion(
+  item: { createdAt?: unknown; payload?: unknown },
+  completion: unknown,
+  probe: CompletionPathVintageProbe = {},
+): { createdAt: string; paths: CompletionPathVintageHit[] } | undefined {
+  const createdAtSec = epochSeconds(item.createdAt);
+  if (createdAtSec === undefined) return undefined;
+  const payload =
+    item.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
+      ? (item.payload as Record<string, unknown>)
+      : {};
+  const itemPaths = Array.isArray(payload.paths)
+    ? Array.from(
+        new Set(
+          payload.paths
+            .map(repoRelativePath)
+            .filter((path): path is string => Boolean(path))
+            .slice(0, PATH_VINTAGE_MAX_PATHS),
+        ),
+      )
+    : [];
+  const claimedPaths = completionClaimsTargetPaths(itemPaths, completion);
+  if (claimedPaths.length === 0) return undefined;
+
+  const repoRoot = 'repoRoot' in probe ? probe.repoRoot : detectPapercupRoot();
+  if (!repoRoot) return undefined;
+  let fallbackTimes: Map<string, number | null> | undefined;
+  if (!probe.lastCommitAt) {
+    try {
+      fallbackTimes = lastCommitTimes(repoRoot, claimedPaths);
+    } catch {
+      return undefined;
+    }
+  }
+
+  const hits: CompletionPathVintageHit[] = [];
+  for (const path of claimedPaths) {
+    let raw: number | string | Date | null | undefined;
+    try {
+      raw = probe.lastCommitAt ? probe.lastCommitAt(path) : fallbackTimes?.get(path);
+    } catch {
+      continue;
+    }
+    const commitSec = epochSeconds(raw);
+    if (commitSec === undefined || commitSec >= createdAtSec) continue;
+    hits.push({ path, lastCommitAt: new Date(commitSec * 1000).toISOString() });
+  }
+  return hits.length > 0
+    ? { createdAt: new Date(createdAtSec * 1000).toISOString(), paths: hits }
+    : undefined;
+}
+
+const PRESCRIBED_GUARD_RE =
+  /\b(?:recurrence\s+guard|regression\s+(?:guard|test)|falsifier|guard|assert(?:ion|ing|ed)?|sentinel)\b/i;
+const PRESCRIBED_TEST_RE =
+  /\b(?:add|added|create|created|write|written|include|included|provide|provided|require|required|must|should|prescrib(?:e|ed|es)|ensure|ensures|needed|needs|point(?:ed)?|cover(?:ed)?)\b[\s\S]{0,70}\b(?:test|coverage|assert(?:ion|ing)?)\b/i;
+const COMPLETION_GUARD_RE =
+  /\b(?:recurrence|regression|falsifier|guard|assert(?:ion|ing|ed)?|sentinel)\b/i;
+const COMPLETION_NEGATIVE_GUARD_RE =
+  /\b(?:no|not|without|missing|absent|defer(?:red)?|left\s+out|did\s+not|didn['’]?t)\b[\s\S]{0,45}\b(?:recurrence|regression|falsifier|guard|assert(?:ion|ing|ed)?|test|coverage)\b/i;
+const EXPLICIT_GUARD_WAIVER_RE =
+  /\b(?:waiv(?:e|ed|er)|not\s+applicable)\b[\s\S]{0,160}\b(?:because|since|as|reason|already|existing|covered|present|exists|implemented|by|:|—|-)\b/i;
+
+function prescribedItemText(item: { title?: unknown; summary?: unknown; payload?: unknown }): string {
+  const payload =
+    item.payload && typeof item.payload === 'object' && !Array.isArray(item.payload)
+      ? (item.payload as Record<string, unknown>)
+      : {};
+  return [
+    typeof item.title === 'string' ? item.title : '',
+    typeof item.summary === 'string' ? item.summary : '',
+    ...(['body', 'description', 'fix', 'proposedFix', 'acceptance'].flatMap((key) =>
+      typeof payload[key] === 'string' ? [payload[key] as string] : [],
+    )),
+  ]
+    .filter(Boolean)
+    .join('\n');
+}
+
+/**
+ * EI-20288629053504794: identify an item's explicitly prescribed recurrence guard /
+ * regression-test obligation that the completion never points to. This is a lexical,
+ * warn-only detector by design: it never asserts that a guard is correct, and it stays
+ * silent when the prescription or the completion's coverage cannot be understood.
+ */
+export function prescribedRecurrenceGuardCoverageGap(
+  item: { title?: unknown; summary?: unknown; payload?: unknown },
+  completion: unknown,
+): { prescriptions: string[] } | undefined {
+  const prescriptions = prescribedItemText(item)
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter((line) => {
+      if (!line || line.length > 500) return false;
+      const guardPrescription =
+        PRESCRIBED_GUARD_RE.test(line) &&
+        /\b(?:add|added|create|created|write|written|include|included|provide|provided|require|required|must|should|prescrib(?:e|ed|es)|ensure|ensures|needed|needs|assert(?:ing|ion)?|falsifier)\b/i.test(
+          line,
+        );
+      return guardPrescription || PRESCRIBED_TEST_RE.test(line);
+    })
+    .slice(0, 5);
+  if (prescriptions.length === 0) return undefined;
+
+  const record =
+    completion && typeof completion === 'object' && !Array.isArray(completion)
+      ? (completion as Record<string, unknown>)
+      : {};
+  const completionText = completionTextParts(record).join('\n');
+  const filesChanged = completionFilesChanged(record);
+  const testPath = filesChanged.some((path) =>
+    /(?:^|[/\\])(?:test|tests|__tests__)(?:[/\\]|$)|\.(?:test|spec)\.[^.]+$/i.test(path),
+  );
+  const negative = COMPLETION_NEGATIVE_GUARD_RE.test(completionText);
+  const pointsToGuard = COMPLETION_GUARD_RE.test(completionText) && !negative;
+  const pointsToAddedTest = record.addedTests === true && testPath && !negative;
+  const explicitWaiver = EXPLICIT_GUARD_WAIVER_RE.test(completionText);
+  if (pointsToGuard || pointsToAddedTest || explicitWaiver) return undefined;
+  return { prescriptions };
 }
 
 /** Injected reads for {@link completionTreeStamp}, so it is unit-testable with no real tree. */
