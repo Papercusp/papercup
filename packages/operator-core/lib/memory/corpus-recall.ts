@@ -27,11 +27,10 @@
  *      floor-passing memory. This leg carries its own small item cap and its
  *      own char budget, and takes nothing from the three pools.
  *
- *   3. NOT content. A teaser + a resolvable HANDLE, mirroring ambient-push's
- *      teaser-not-content discipline. Inlining raw transcript text from a
- *      ~400k-turn corpus would consume the block to say less — and the thing
- *      the motivating example actually needed was a POINTER (WI-6512 post
- *      54626), not the post.
+ *   3. NOT raw content. A bounded matched excerpt + source label, while the
+ *      structured result retains a resolvable handle for programmatic users.
+ *      Inlining whole transcript turns from a ~400k-turn corpus would consume
+ *      the block to say less; the evidence-bearing match is the useful unit.
  *
  * WHY THERE IS NO ABSOLUTE SCORE FLOOR HERE — read before adding one. The
  * score arriving from the search engine in hybrid mode is a fused RRF value
@@ -41,8 +40,8 @@
  * a RANK CUT plus a scale-free relevance guard (shared query terms), never a
  * magic constant. Note also that the precision asymmetry runs the other way
  * from the mem0 push path: an irrelevant FACT pollutes the turn's reasoning
- * (hence that path's 0.45 cosine floor), while an irrelevant POINTER costs
- * ~200 chars and is ignored.
+ * (hence that path's 0.45 cosine floor), while an irrelevant bounded excerpt
+ * costs ~200 chars and is ignored.
  *
  * PURE — no PG, no embedder, no clock. The live leg is ./corpus-recall-io.
  */
@@ -674,9 +673,9 @@ export function selectCorpusLines(input: SelectCorpusInput): SelectCorpusResult 
       ? `work-item ${ref}${context}`
       : `session ${ref}`;
     const teaser = oneLine(hitText(hit)).slice(0, CORPUS_TEASER_MAX_CHARS);
-    const line = `- [${label}${dateLabel(hit.ts, renderNow)}] ${teaser} → ${handle.resolve}`;
+    const line = `- [${label}${dateLabel(hit.ts, renderNow)}] ${teaser}`;
     // WI-6870: no first-entry exemption — the teaser already caps hitText, but the
-    // label/date/resolve wrapper around it can still push a single line over budget
+    // label/date wrapper around it can still push a single line over budget
     // (measured 945 chars against a 900 budget); the exemption let that first entry
     // through unconditionally instead of being size-checked like every other one.
     // This already `continue`s (not `break`s), so later, smaller entries still get a
@@ -692,9 +691,9 @@ export function selectCorpusLines(input: SelectCorpusInput): SelectCorpusResult 
   return { lines, dropped };
 }
 
-/** The section heading this leg renders under. Named so the agent can tell a
- *  POINTER from an injected FACT: the mem0 block states things, this one points. */
-export const CORPUS_BLOCK_HEADING = 'Related context (pointers — resolve to read)';
+/** The section heading this leg renders under. Each line is the bounded matched
+ *  excerpt itself; the structured handle remains available to programmatic consumers. */
+export const CORPUS_BLOCK_HEADING = 'Related context (matched excerpts)';
 
 /** Render the selected lines as a markdown section, or null when nothing was
  *  admitted. PURE. */

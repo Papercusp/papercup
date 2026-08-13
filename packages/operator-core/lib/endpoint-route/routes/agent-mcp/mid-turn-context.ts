@@ -749,14 +749,14 @@ export function clampToBudget(block: string, budget: number = MID_TURN_BUDGET_CH
   if (!block) return '';
   // WI-6857 CUT 2. The clamp is a REPAIR for an UNENFORCED budget, not a policy
   // — so it must apply to the leg whose budget is unenforced, and only that one.
-  // `composeWithCorpus` (injection.ts) appends the P-008 corpus pointer section
+  // `composeWithCorpus` (injection.ts) appends the P-008 corpus excerpt section
   // AFTER the mem0 block, so a whole-block clamp at 350 deleted that section on
   // EVERY call: measured 21/21 live calls returning 398-403 chars, which is this
-  // budget plus the suffix below, never the pointers. The corpus leg has no
+  // budget plus the suffix below, never the excerpts. The corpus leg has no
   // first-row exemption (WI-6870 removed it) and enforces CORPUS_BUDGET_CHARS
   // strictly, so it arrives already bounded and a second clamp here would only
   // re-truncate a section that is already the right size — and truncate it
-  // mid-line, leaving a `work_items:get { id: 'WI-65` that resolves to nothing.
+  // mid-line, leaving evidence that reads as a complete claim but is incomplete.
   const at = block.lastIndexOf(`\n\n### ${CORPUS_BLOCK_HEADING}`);
   if (at >= 0) return `${clampSection(block.slice(0, at), budget)}${block.slice(at)}`;
   // Corpus-only block (the mem0 leg had nothing — P-008's motivating case, so it

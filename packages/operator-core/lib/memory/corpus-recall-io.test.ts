@@ -178,11 +178,12 @@ describe('recallCorpusContext — the contract handed to the search engine', () 
 });
 
 describe('recallCorpusContext — output', () => {
-  it('renders a pointer block from a hit', async () => {
+  it('renders a self-contained matched-excerpt block from a hit', async () => {
     runHybridSearch.mockResolvedValue(ok());
     const res = await recallCorpusContext(base);
     expect(res.block).toContain('WI-6512');
-    expect(res.block).toContain("work_items:get { id: 'WI-6512' }");
+    expect(res.block).toContain('http2 transport regression');
+    expect(res.block).not.toContain("work_items:get { id: 'WI-6512' }");
     expect(res.candidateCount).toBe(1);
     expect(res.embedderAvailable).toBe(true);
   });

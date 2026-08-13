@@ -343,21 +343,21 @@ describe('mid-turn-context — the budget is enforced HERE, because injection.ts
 
   // WI-6857 CUT 2. The clamp is a repair for the mem0 leg's UNENFORCED budget
   // (see the OVERSIZED comment above), and it was being applied to the whole
-  // composed block — so the corpus pointer section composeWithCorpus appends
+  // composed block — so the corpus excerpt section composeWithCorpus appends
   // LAST was deleted on every call. Measured live: 21 of 21 calls returned
-  // 398-403 chars, i.e. this budget plus the clip suffix, never a pointer.
+  // 398-403 chars, i.e. this budget plus the clip suffix, never an excerpt.
   // The corpus leg enforces CORPUS_BUDGET_CHARS strictly (no first-row
   // exemption — WI-6870), so it arrives already bounded.
-  const POINTER =
-    "- [work-item WI-6512 · 2026-07-27] clicking an agent takes several seconds → work_items:get { id: 'WI-6512' }";
-  const CORPUS = `### ${CORPUS_BLOCK_HEADING}\n\n${POINTER}`;
+  const EXCERPT =
+    '- [work-item WI-6512 · 2026-07-27] clicking an agent takes several seconds';
+  const CORPUS = `### ${CORPUS_BLOCK_HEADING}\n\n${EXCERPT}`;
 
-  it('does NOT clamp the corpus pointer section away — it is bounded by its own leg', () => {
+  it('does NOT clamp the corpus excerpt section away — it is bounded by its own leg', () => {
     const block = `## Possibly relevant (mid-turn)\n\n- [project] (id=abc) ${'x'.repeat(4000)}\n\n${CORPUS}`;
     const out = clampToBudget(block);
     expect(out).toContain('WI-6512');
-    expect(out).toContain("work_items:get { id: 'WI-6512' }");
-    expect(out.endsWith(POINTER)).toBe(true);
+    expect(out).toContain('clicking an agent takes several seconds');
+    expect(out.endsWith(EXCERPT)).toBe(true);
   });
 
   it('still clamps the mem0 half when a corpus section follows it', () => {
@@ -369,15 +369,15 @@ describe('mid-turn-context — the budget is enforced HERE, because injection.ts
   });
 
   it('leaves a corpus-only block whole — the mem0 leg having nothing is P-008s motivating case', () => {
-    const block = `## ${CORPUS_BLOCK_HEADING}\n\n${POINTER.repeat(6)}`;
+    const block = `## ${CORPUS_BLOCK_HEADING}\n\n${EXCERPT.repeat(6)}`;
     expect(clampToBudget(block)).toBe(block);
   });
 
-  it('never truncates a pointer mid-line — a half-written resolve call resolves to nothing', () => {
+  it('never truncates a matched excerpt mid-line', () => {
     const block = `## Possibly relevant (mid-turn)\n\n- [project] (id=abc) ok\n\n${CORPUS}`;
     const out = clampToBudget(block, 20);
     for (const line of out.split('\n').filter((l) => l.startsWith('- [work-item'))) {
-      expect(line.endsWith("}")).toBe(true);
+      expect(line.endsWith('seconds')).toBe(true);
     }
   });
 });

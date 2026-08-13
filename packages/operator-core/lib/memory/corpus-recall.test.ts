@@ -215,12 +215,13 @@ describe('handle derivation', () => {
 });
 
 describe('selectCorpusLines', () => {
-  it('renders a teaser plus the tool call that resolves the handle — never content', () => {
+  it('renders the bounded matched excerpt as self-contained evidence without a resolve CTA', () => {
     const { lines } = selectCorpusLines({ hits: [wi()], queryText: QUERY });
     expect(lines).toHaveLength(1);
     expect(lines[0].line).toContain('work-item WI-6512');
     expect(lines[0].handle.resolve).toBe("work_items:get { id: 'WI-6512' }");
-    expect(lines[0].line).toContain("work_items:get { id: 'WI-6512' }");
+    expect(lines[0].line).toContain('http2 transport regression');
+    expect(lines[0].line).not.toContain("work_items:get { id: 'WI-6512' }");
   });
 
   it('uses relative age and marks a pointer from a different work-item', () => {
@@ -532,7 +533,7 @@ describe('selectCorpusLines', () => {
       queryText: QUERY,
       budgetChars: 100_000,
     });
-    // teaser <= 220 chars; the rest of the line is the label + resolve call.
+    // teaser <= 220 chars; the rest of the line is the source label.
     expect(lines[0].line.length).toBeLessThan(400);
     expect(lines[0].line).not.toContain('x'.repeat(500));
   });
@@ -574,7 +575,7 @@ describe('renderCorpusBlock', () => {
     expect(renderCorpusBlock([])).toBeNull();
   });
 
-  it('renders under the pointer heading, so a pointer never reads as a fact', () => {
+  it('renders under an excerpt heading, so the block describes its self-contained payload', () => {
     const { lines } = selectCorpusLines({ hits: [wi()], queryText: QUERY });
     const block = renderCorpusBlock(lines);
     expect(block).toContain(`### ${CORPUS_BLOCK_HEADING}`);

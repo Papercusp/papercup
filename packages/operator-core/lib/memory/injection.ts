@@ -832,12 +832,12 @@ function startCorpusLeg(input: MemoryInjectionInput): Promise<CorpusLegResult | 
 }
 
 /**
- * Compose the mem0 block with the corpus pointer section.
+ * Compose the mem0 block with the corpus matched-excerpt section.
  *
  * Three cases, and the third is the one that matters: the corpus leg can have
  * something to say when the mem0 leg has NOTHING — a turn about a work-item
  * nobody wrote a memory for is precisely P-008's motivating case — so a null
- * memory block must not swallow it. With the flag off (or no pointers) the
+ * memory block must not swallow it. With the flag off (or no excerpts) the
  * return value is byte-identical to the pre-P-008 block.
  */
 function composeWithCorpus(
