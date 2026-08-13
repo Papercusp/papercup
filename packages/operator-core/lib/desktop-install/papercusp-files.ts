@@ -1192,7 +1192,43 @@ interface ShimRuntimeOptions {
   explicitLauncherEnv: string;
   /** Stable fallback paths captured from the install environment. */
   fallbackLaunchers: string[];
+  /**
+   * WI-38292: emit a re-exec LOOP instead of a bare `exec`, and advertise it to
+   * the launcher as `PAPERCUSP_PSU_REEXEC=<code>`. The launcher exits with this
+   * code to mean "re-run me from disk"; every other code exits the shim.
+   *
+   * Why the PARENT has to do this: psu-launcher.mjs is the long-lived host
+   * process and it imports psu-pty-host.mjs exactly once, so a deployed host fix
+   * stays inert for the session's whole life. Node has no execve, and the host
+   * cannot self-replace either: with `exec`, node IS the interactive shell's
+   * child and holds the terminal's FOREGROUND process group, so a
+   * spawn-a-successor-then-exit hand-off leaves the shell reclaiming the
+   * terminal and the successor stranded in a background pgid (SIGTTIN on every
+   * stdin read). Keeping bash in the loop keeps the foreground pgid alive across
+   * the swap — the successor is bash's child, in bash's process group, exactly
+   * as the first iteration was.
+   *
+   * The advertisement is a CAPABILITY HANDSHAKE, not decoration: a launcher that
+   * does not see it must never take the exiting path, because nothing would
+   * re-run it. Old shims, operator-spawned headless members and packaged CLI
+   * wrappers therefore keep today's in-process child respawn.
+   */
+  reexecExitCode?: number;
 }
+
+/** WI-38292: the psu shim's "re-run me from disk" exit code. Outside the range
+ *  any agent backend or node itself produces (node uses 0-13 and 128+N for
+ *  signals; claude passes its own child's code through), so it cannot collide
+ *  with a real session exit and re-run a session the owner meant to end. */
+export const PSU_REEXEC_EXIT_CODE = 87;
+
+/** WI-38292: hard cap on re-execs per shim invocation. A re-exec only happens at
+ *  a carry-respawn that observed stale host code, and the successor loads the
+ *  fresh code, so the fixed point is reached in one hop. The cap exists for the
+ *  case that does NOT converge — a file rewritten under a running loop (git-sync
+ *  sweeps this tree continuously) — where an uncapped loop would respawn the
+ *  owner's session forever. */
+export const PSU_REEXEC_MAX = 16;
 
 function launcherNameVariants(launcherPath: string): string[] {
   const names = [path.basename(launcherPath)];
@@ -1292,7 +1328,32 @@ export async function writeShim(
     '}\n' +
     'launcher="$(resolve_launcher)" || exit $?\n' +
     `printf '%s\\n' ${shellLiteral(`papercusp ${label}: launcher`)} "$launcher" >&2\n` +
-    `exec ${shellLiteral(nodeCmd)} "$launcher" "$@"\n`;
+    (runtime.reexecExitCode == null
+      ? `exec ${shellLiteral(nodeCmd)} "$launcher" "$@"\n`
+      : // WI-38292 re-exec loop. NOT `exec`: bash must survive the swap so the
+        // terminal's foreground process group outlives it (see reexecExitCode).
+        // The launcher is RE-RESOLVED each pass — picking up new code is the
+        // whole point, and the active release/integration root may have moved.
+        `export PAPERCUSP_PSU_REEXEC=${runtime.reexecExitCode}\n` +
+        'psu_reexecs=0\n' +
+        'while :; do\n' +
+        `  ${shellLiteral(nodeCmd)} "$launcher" "$@"\n` +
+        '  psu_code=$?\n' +
+        `  [ "$psu_code" -eq ${runtime.reexecExitCode} ] || exit "$psu_code"\n` +
+        '  psu_reexecs=$((psu_reexecs + 1))\n' +
+        // -gt, not -ge: `psu_reexecs` counts re-execs ALREADY PERFORMED, so the
+        // Nth one must be allowed to happen before the N+1th is refused.
+        `  if [ "$psu_reexecs" -gt ${PSU_REEXEC_MAX} ]; then\n` +
+        `    printf '%s\\n' ${shellLiteral(
+          `papercusp ${label}: ${PSU_REEXEC_MAX} host re-execs in one session — refusing to loop again`,
+        )} >&2\n` +
+        '    exit "$psu_code"\n' +
+        '  fi\n' +
+        `  printf '%s\\n' ${shellLiteral(
+          `papercusp ${label}: adopting updated host code (re-exec`,
+        )}"$psu_reexecs)" >&2\n` +
+        '  launcher="$(resolve_launcher)" || exit $?\n' +
+        'done\n');
   await fs.writeFile(shimPath, body, { mode: 0o755 });
   // writeFile honors mode only on creation; chmod to guarantee on overwrite.
   await fs.chmod(shimPath, 0o755);
@@ -2010,14 +2071,24 @@ export function mergeClaudeHookSettings(
     cfg.hooks && typeof cfg.hooks === 'object' && !Array.isArray(cfg.hooks) ? cfg.hooks : (cfg.hooks = {});
   const ev = (name: string): HookEntry[] => (Array.isArray(hooks[name]) ? hooks[name] : []);
 
+  // WI-38363: Claude matches Pre/PostToolUse registrations against the external
+  // tool name before invoking the hook. capability:* file writers arrive as
+  // mcp__<server>__capability_edit/write/multi_edit, so a native-only matcher
+  // leaves every guard below unreachable even when its script accepts that shape.
+  // Keep the server segment deliberately unpinned: capability tools may be
+  // projected by any trusted MCP server.
+  const fileWriteMatcher = 'Edit|Write|MultiEdit|mcp__.*__capability_(edit|write|multi_?edit)';
+  const fileEditMatcher = 'Edit|MultiEdit|mcp__.*__capability_(edit|multi_?edit)';
+  const fileOverwriteMatcher = 'Write|mcp__.*__capability_write';
+
   // merge_lock_hooks — PreToolUse + PostToolUse, matcher Edit|Write|MultiEdit.
   if (has('pretooluse-locks-acquire.sh') && has('posttooluse-locks-release.sh')) {
     hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-locks-acquire.sh'), {
-      matcher: 'Edit|Write|MultiEdit',
+      matcher: fileWriteMatcher,
       hooks: cmd('pretooluse-locks-acquire.sh'),
     });
     hooks.PostToolUse = replaceOurHookEntries(ev('PostToolUse'), ours('posttooluse-locks-release.sh'), {
-      matcher: 'Edit|Write|MultiEdit',
+      matcher: fileWriteMatcher,
       hooks: cmd('posttooluse-locks-release.sh'),
     });
     // Claude-only: auto-approve project-scoped .mcp.json servers (operator-signed papercusp MCP).
@@ -2223,7 +2294,7 @@ export function mergeClaudeHookSettings(
   // this hook existed in-repo but was never wired (same shape as guard-operator-desktop above).
   if (has('pretooluse-content-lint.mjs'))
     hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-content-lint.mjs'), {
-      matcher: 'Edit|Write|MultiEdit',
+      matcher: fileWriteMatcher,
       hooks: cmd('pretooluse-content-lint.mjs'),
     });
   // merge_secrets_guard_hook — PreToolUse, matcher 'Edit|Write|MultiEdit' (su-papercusp-way-gate
@@ -2231,14 +2302,14 @@ export function mergeClaudeHookSettings(
   // dead-code shape as guard-operator-desktop / content-lint above).
   if (has('pretooluse-secrets-guard.mjs'))
     hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-secrets-guard.mjs'), {
-      matcher: 'Edit|Write|MultiEdit',
+      matcher: fileWriteMatcher,
       hooks: cmd('pretooluse-secrets-guard.mjs'),
     });
   // merge_nul_byte_edit_guard_hook — PreToolUse, matcher 'Edit|MultiEdit' (EI-18896033546676518).
   // Write is deliberately NOT in the matcher — see the script header for why.
   if (has('pretooluse-nul-byte-edit-guard.mjs'))
     hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-nul-byte-edit-guard.mjs'), {
-      matcher: 'Edit|MultiEdit',
+      matcher: fileEditMatcher,
       hooks: cmd('pretooluse-nul-byte-edit-guard.mjs'),
     });
   // merge_tool_prompt_weight_guard_hook — PreToolUse, matcher 'Edit|Write|MultiEdit'
@@ -2246,7 +2317,7 @@ export function mergeClaudeHookSettings(
   // just as capable of introducing the breach as a find/replace. Denies only a WORSENING edit.
   if (has('pretooluse-tool-prompt-weight-guard.mjs'))
     hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-tool-prompt-weight-guard.mjs'), {
-      matcher: 'Edit|Write|MultiEdit',
+      matcher: fileWriteMatcher,
       hooks: cmd('pretooluse-tool-prompt-weight-guard.mjs'),
     });
   // merge_schedule_wakeup_provenance_hook — PreToolUse, matcher 'ScheduleWakeup'
@@ -2260,7 +2331,7 @@ export function mergeClaudeHookSettings(
   // Advisory only (additionalContext, never a deny) — see the script header for why.
   if (has('pretooluse-write-overwrite-guard.mjs'))
     hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-write-overwrite-guard.mjs'), {
-      matcher: 'Write',
+      matcher: fileOverwriteMatcher,
       hooks: cmd('pretooluse-write-overwrite-guard.mjs'),
     });
   // merge_generated_file_edit_guard_hook — PreToolUse, matcher 'Edit|Write|MultiEdit'
@@ -2268,7 +2339,7 @@ export function mergeClaudeHookSettings(
   // target file's own GENERATED banner — see the script header.
   if (has('pretooluse-generated-file-edit-guard.mjs'))
     hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-generated-file-edit-guard.mjs'), {
-      matcher: 'Edit|Write|MultiEdit',
+      matcher: fileWriteMatcher,
       hooks: cmd('pretooluse-generated-file-edit-guard.mjs'),
     });
   // merge_unreserved_migration_guard_hook — PreToolUse, matcher 'Edit|Write|MultiEdit'
@@ -2277,7 +2348,7 @@ export function mergeClaudeHookSettings(
   // Write CREATING one. Fails open when PG is unreachable — see the script header.
   if (has('pretooluse-unreserved-migration-guard.mjs'))
     hooks.PreToolUse = replaceOurHookEntries(ev('PreToolUse'), ours('pretooluse-unreserved-migration-guard.mjs'), {
-      matcher: 'Edit|Write|MultiEdit',
+      matcher: fileWriteMatcher,
       hooks: cmd('pretooluse-unreserved-migration-guard.mjs'),
     });
 
@@ -2632,7 +2703,14 @@ export async function installPapercuspFiles(opts: InstallOpts = {}): Promise<Ins
         paths.psuPath,
         psuLauncherSource,
         'superuser launcher (psu)',
-        shimRuntimeOptions(psuLauncherSource, 'PAPERCUSP_PSU_LAUNCHER'),
+        {
+          ...shimRuntimeOptions(psuLauncherSource, 'PAPERCUSP_PSU_LAUNCHER'),
+          // WI-38292: psu ALONE gets the re-exec loop. It is the only shim whose
+          // target is a long-lived host process that outlives the code it loaded;
+          // ptool/onboard/tutorial-runner are short-lived and re-read disk on
+          // every invocation already.
+          reexecExitCode: PSU_REEXEC_EXIT_CODE,
+        },
       )
     : false;
   const ptoolShimWritten = ptoolLauncherSource
