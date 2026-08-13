@@ -97,6 +97,9 @@ afterAll(() => {
 let sidSeq = 0;
 const nextSid = () => `gate-suite-${process.pid}-${++sidSeq}`;
 
+// Adding an advisory? If it covers a common command shape, pin it OFF in this
+// shared `runGate` env and opt in from the describe that tests it; see the
+// `PC_HEAVY_LOAD1_OVERRIDE` precedent above.
 function runGate(
   payload: unknown,
   env: Record<string, string> = {},

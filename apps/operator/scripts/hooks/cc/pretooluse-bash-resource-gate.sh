@@ -98,6 +98,11 @@ raw, operator_url, token, agent_id = sys.argv[1:5]
 # advisory only decorates commands every gate already passed.
 ADVISORY = None
 
+# Adding an advisory? If it covers a common command shape, pin it OFF in the
+# test suite's shared `runGate` env and opt in from the describe that tests it;
+# see `PC_HEAVY_LOAD1_OVERRIDE` for the precedent. ADVISORY is a single slot,
+# so leaving a new advisory on can redact unrelated `expectAllow` assertions.
+
 # `_shell_write_guard` runs before the cd + restore-path advisory below, but a
 # variable-driven restore can match both. Keep its soft notice pending until
 # the more specific cwd-drift check has had a chance to choose the message (or
