@@ -46,6 +46,8 @@ import {
   diagnoseFleetScopeIssueFloorMiss,
   diagnoseFleetScopeFeatureFamilyMatch,
   diagnoseFleetScopeTerminalExhaustion,
+  diagnoseFleetScopePlanTerminality,
+  diagnoseFleetScopeLeaderLiveness,
 } from '../../scheduler/fleet-scope-admission';
 import { getClaimTimeRetractionAdvisory } from '../work_items/retraction-advisory';
 import { fetchContextPressure } from '../coordination/context-pressure';
@@ -1039,6 +1041,8 @@ export default defineTool({
     // shape (zero extra cost on the common paths).
     let featureFamilyMatched: number | null = null;
     let terminalExhaustion: import('../../scheduler/fleet-scope-admission').FleetScopeTerminalExhaustion | null = null;
+    let planTerminality: import('../../scheduler/fleet-scope-admission').FleetScopePlanTerminality | null = null;
+    let leaderLiveness: boolean | null = null;
     if (!res && reconciliation.scope) {
       issueBreakdown = await diagnoseFleetScopeIssueFloorMiss({
         scope: reconciliation.scope,
@@ -1085,7 +1089,7 @@ export default defineTool({
         // STRUCTURALLY blind to the feature family (bug/change/task only). Check tier-1
         // before letting this certify a false `spec_matches_nothing` (e.g. a plan-scoped
         // spec whose promoted items are feature-family, per D-009).
-        [featureFamilyMatched, terminalExhaustion] = await Promise.all([
+        [featureFamilyMatched, terminalExhaustion, planTerminality, leaderLiveness] = await Promise.all([
           diagnoseFleetScopeFeatureFamilyMatch({
             scope: reconciliation.scope,
             harness: args.harness,
@@ -1098,6 +1102,8 @@ export default defineTool({
             harness: args.harness,
             workspaceId: ident.workspaceId,
           }),
+          diagnoseFleetScopePlanTerminality({ scope: reconciliation.scope }),
+          diagnoseFleetScopeLeaderLiveness({ scope: reconciliation.scope }),
         ]);
         if (featureFamilyMatched && featureFamilyMatched > 0) {
           // A genuine tier-1 candidate exists even though the claim (which just queried
@@ -1377,6 +1383,13 @@ export default defineTool({
     // exhaustion only describes an actual fleet-scoped miss under a valid harness.
     const terminalExhaustionForMiss =
       !res && reconciliation.scope && !invalidHarnessKnownSlugs ? terminalExhaustion : null;
+    // EI-20260781488788952: enrich the zero-match branch with plan terminality and leader
+    // liveness. Both reads fail soft and are only useful when the issue-family breakdown would
+    // otherwise certify `spec_matches_nothing`; preserving null keeps the old diagnosis intact.
+    const planTerminalityForMiss =
+      !res && reconciliation.scope && !invalidHarnessKnownSlugs ? planTerminality : null;
+    const leaderLivenessForMiss =
+      !res && reconciliation.scope && !invalidHarnessKnownSlugs ? leaderLiveness : null;
     const payload = res
       ? assembleSchedulerClaimResult({
           workItem: res.workItem,
@@ -1422,6 +1435,8 @@ export default defineTool({
               issueBreakdown: issueBreakdownForMiss,
               featureFamilyMatched: featureFamilyMatchedForMiss,
               terminalExhaustion: terminalExhaustionForMiss,
+              planTerminality: planTerminalityForMiss,
+              leaderLiveness: leaderLivenessForMiss,
               divergenceRecheck,
               harness: args.harness,
             })
