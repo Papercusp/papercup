@@ -74,6 +74,20 @@ describe('P-505 retryable fed-event cursor policy', () => {
       }),
     ).toEqual({ cursor: 44, expiredRow: null });
   });
+
+  it.each([-1, rows.length, 1.5, Number.NaN])(
+    'fails closed instead of consuming an unprocessed row for invalid stop index %s',
+    (unprocessedFromIndex) => {
+      expect(() =>
+        decideWorktreeBridgeCursor({
+          maxRowId: 44,
+          pendingRows: rows,
+          unprocessedFromIndex,
+          nowMs,
+        }),
+      ).toThrow(RangeError);
+    },
+  );
 });
 
 async function git(args: string[], cwd: string): Promise<string> {

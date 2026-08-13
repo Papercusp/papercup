@@ -140,8 +140,18 @@ export function decideWorktreeBridgeCursor(input: {
 }): { cursor: number; expiredRow: WorktreeBridgeCursorRow | null } {
   const retryTtlMs = input.retryTtlMs ?? WORKTREE_BRIDGE_RETRY_TTL_MS;
   const k = input.unprocessedFromIndex;
-  if (k === null || k < 0 || k >= input.pendingRows.length) {
+  if (k === null) {
     return { cursor: input.maxRowId, expiredRow: null };
+  }
+  if (!Number.isInteger(k) || k < 0 || k >= input.pendingRows.length) {
+    // Fail closed. A non-null stop index means the tick explicitly left one
+    // row unprocessed. If it no longer maps to the index-aligned row census,
+    // advancing to maxRowId would silently consume that row and recreate the
+    // P-505 drop-forever failure this helper exists to prevent. The caller's
+    // outer tick guard logs the error and leaves the prior cursor untouched.
+    throw new RangeError(
+      `worktree-bridge stop index ${k} is outside pendingRows[0..${input.pendingRows.length - 1}]`,
+    );
   }
 
   const stuck = input.pendingRows[k]!;
