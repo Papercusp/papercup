@@ -127,7 +127,7 @@ export default defineTool({
     // accept every itemId, which is the opposite of this tool's job.
     const planItems = await getPlanItemStatuses(args.slug);
     if (planItems.length === 0) {
-      return {
+      return { data: {
         ok: false as const,
         slug: args.slug,
         error: 'plan_items_unreadable',
@@ -135,7 +135,7 @@ export default defineTool({
           `No items could be read for plan '${args.slug}'. Either the plan does not exist, or it has no ` +
           `parsed items (item lines must be \`- **P-001** \\\`todo\\\` text\`). An audit cannot be validated ` +
           `against an unknown item set, so this is refused rather than recorded.`,
-      };
+      } };
     }
     const known = new Set(planItems.map((i) => i.itemId));
 
@@ -222,7 +222,7 @@ export default defineTool({
     }
 
     if (problems.length > 0) {
-      return {
+      return { data: {
         ok: false as const,
         slug: args.slug,
         error: 'audit_invalid',
@@ -231,7 +231,7 @@ export default defineTool({
           `${problems.length} problem(s) — nothing was recorded. Every problem is listed above so one fix-up ` +
           `pass clears them all. A citation that will not resolve is usually a real finding about the work, ` +
           `not a typo: if the file you expected is not there, the item may not actually be implemented.`,
-      };
+      } };
     }
 
     const audit = await recordPlanAudit({
@@ -264,7 +264,7 @@ export default defineTool({
       after: `${coverage.auditedItems} item(s), ${citationsChecked} citation(s) resolved`,
     });
 
-    return {
+    return { data: {
       ok: true as const,
       slug: args.slug,
       auditSeq: audit.auditSeq,
@@ -279,6 +279,6 @@ export default defineTool({
               `gate requires full coverage, so audit them or drop them with a reason before shipping.`,
           }
         : {}),
-    };
+    } };
   },
 });
