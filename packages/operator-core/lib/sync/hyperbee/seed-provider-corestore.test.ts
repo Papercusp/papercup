@@ -71,7 +71,15 @@ function makeReadOnly(root: string): void {
 }
 
 function op(i: number): PeerLogOp {
-  return { type: 'put', table: 'harness_plans', hbKey: `P-${i}`, value: { id: `P-${i}` }, ts: 100 + i, schema_version: 1, author_pubkey: 'ownerdev' };
+  return {
+    type: 'put',
+    table: 'harness_plans',
+    hbKey: `P-${i}`,
+    value: { id: `P-${i}` },
+    ts: 100 + i,
+    schema_version: 1,
+    author_pubkey: 'ownerdev',
+  };
 }
 
 /** `store.get()` is typed loosely upstream (`unknown`); narrow at the boundary. */
@@ -365,7 +373,10 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
   interface TestCore {
     readonly length: number;
     ready(): Promise<void>;
-    get(i: number, opts: { wait: boolean }): Promise<{
+    get(
+      i: number,
+      opts: { wait: boolean },
+    ): Promise<{
       value?: { rows?: { table: string; hbKey: string }[] };
     } | null>;
     readonly writable: boolean;
@@ -396,7 +407,9 @@ describe('mintFilteredSeedContentCore — the seed carries content, not the owne
     // Identity derived at RUNTIME — never a literal in tracked source (WI-4776). Writing
     // the real hostname in here would put the exact string this fix removes back into
     // shipped source and red the identity-lint gate.
-    await own.append(op('presence', `${hostname()}`, { machine_label: hostname(), machine_user: userInfo().username }, 3));
+    await own.append(
+      op('presence', `${hostname()}`, { machine_label: hostname(), machine_user: userInfo().username }, 3),
+    );
     await own.append(op('usage', 'u1', { tokens: 5 }, 4));
     // Match production: the source contains raw history PLUS a later head snapshot.
     // Both SnapshotRowFolder branches must apply the drop or the snapshot re-admits it.

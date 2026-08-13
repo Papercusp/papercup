@@ -126,7 +126,9 @@ function seedBuildIdentityLiterals(): readonly string[] {
     home = undefined;
   }
   const values = [
-    realHostname && !IMPERSONAL_HOST_PREFIXES.some((prefix) => realHostname.startsWith(prefix)) ? realHostname : undefined,
+    realHostname && !IMPERSONAL_HOST_PREFIXES.some((prefix) => realHostname.startsWith(prefix))
+      ? realHostname
+      : undefined,
     username && !IMPERSONAL_USERS.has(username) ? username : undefined,
     home && !IMPERSONAL_HOMES.has(home) ? home : undefined,
     gitConfig('user.name'),
@@ -495,7 +497,7 @@ async function assertShippedRangeCarriesNoExcludedTables(inp: {
         `${inp.keyHex.slice(0, 12)}… still carries ${offenders.length} row(s) from an excluded ` +
         `table (${shown}${offenders.length > 5 ? '; …' : ''}). Excluded: ${[...excluded].join(', ')}. ` +
         'This is the EI-20108164746219771 identity leak. A RAW-op offender means an op was ' +
-        'appended between the filtered head snapshot and this cut\'s read-only open (presence ' +
+        "appended between the filtered head snapshot and this cut's read-only open (presence " +
         're-announces every 30s) — re-cut to pick up a fresher snapshot. A SNAPSHOT-ROW offender ' +
         'means the head snapshot was produced WITHOUT the exclusion: check that the operator ' +
         'servicing /api/internal/substrate/head-snapshot is running a build that filters it.',
@@ -581,7 +583,12 @@ function pipeReplicate(a: Corestore, b: Corestore): { streams: Pipeable[]; teard
   // Swallow post-teardown errors so a destroy() can't reject the run.
   for (const s of [sa, sb]) (s as unknown as { on(ev: string, cb: () => void): void }).on('error', () => {});
   sa.pipe(sb).pipe(sa);
-  return { streams: [sa, sb], teardown: () => { for (const s of [sa, sb]) s.destroy(); } };
+  return {
+    streams: [sa, sb],
+    teardown: () => {
+      for (const s of [sa, sb]) s.destroy();
+    },
+  };
 }
 
 /**
@@ -593,7 +600,8 @@ export function createCorestoreSeedProvider(): SeedProvider {
     kind: CORESTORE_SEED_KIND,
 
     async cut(ctx: SeedCutContext): Promise<SeedCutOutput> {
-      const { sourceStore, coreKeys, stagingDir, sparse, filtered, redactValues } = ctx as unknown as CorestoreCutContext;
+      const { sourceStore, coreKeys, stagingDir, sparse, filtered, redactValues } =
+        ctx as unknown as CorestoreCutContext;
       await mkdir(stagingDir, { recursive: true });
 
       if (filtered) {

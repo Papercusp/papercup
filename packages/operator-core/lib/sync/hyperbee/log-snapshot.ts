@@ -123,10 +123,13 @@ export const DROP_SNAPSHOT_ROW = Symbol('DROP_SNAPSHOT_ROW');
  * Seed-only value projection applied while folding a private log into a public snapshot.
  * Return {@link DROP_SNAPSHOT_ROW} to omit the addressed row without mutating the source.
  */
-export type SnapshotValueTransform = (value: unknown, context: {
-  table: string;
-  hbKey: string;
-}) => unknown;
+export type SnapshotValueTransform = (
+  value: unknown,
+  context: {
+    table: string;
+    hbKey: string;
+  },
+) => unknown;
 
 /** True iff `op` is a snapshot op (reserved table tag). */
 export function isSnapshotOp(op: { table?: string } | null | undefined): boolean {
@@ -218,10 +221,7 @@ export class SnapshotRowFolder {
   /** Optional seed-only projection; omitted callers remain byte-for-byte unchanged. */
   private readonly transformValue?: SnapshotValueTransform;
 
-  constructor(opts?: {
-    excludeTables?: Iterable<string>;
-    transformValue?: SnapshotValueTransform;
-  }) {
+  constructor(opts?: { excludeTables?: Iterable<string>; transformValue?: SnapshotValueTransform }) {
     this.excludeTables = new Set(opts?.excludeTables ?? []);
     this.transformValue = opts?.transformValue;
   }
@@ -250,10 +250,7 @@ export class SnapshotRowFolder {
             this.latest.delete(key);
             continue;
           }
-          this.latest.set(
-            key,
-            value === r.value ? r : { ...r, value },
-          );
+          this.latest.set(key, value === r.value ? r : { ...r, value });
         }
       }
       return;
@@ -321,9 +318,7 @@ export class SnapshotRowFolder {
       if (r.deleted && now != null && r.ts < now - horizon) continue; // GC'd tombstone
       rows.push(r);
     }
-    rows.sort((a, b) =>
-      a.table === b.table ? cmpStr(a.hbKey, b.hbKey) : cmpStr(a.table, b.table),
-    );
+    rows.sort((a, b) => (a.table === b.table ? cmpStr(a.hbKey, b.hbKey) : cmpStr(a.table, b.table)));
     return rows;
   }
 }
@@ -602,9 +597,7 @@ async function foldLogRangeInto(
 ): Promise<void> {
   for (let start = from; start < to; start += SNAPSHOT_READ_CONCURRENCY) {
     const end = Math.min(start + SNAPSHOT_READ_CONCURRENCY, to);
-    const window = await Promise.all(
-      Array.from({ length: end - start }, (_, k) => log.get(start + k)),
-    );
+    const window = await Promise.all(Array.from({ length: end - start }, (_, k) => log.get(start + k)));
     for (const op of window) if (op) folder.add(op);
     // `window` falls out of scope here — the decoded blocks it held are collectable.
     await new Promise<void>((resolve) => setImmediate(resolve));
@@ -659,8 +652,7 @@ export async function produceLogSnapshot(
    * Fold `[from, to)` into the folder. Factored out of the main loop so the ANCHOR
    * CONVERGENCE below can reuse it for the (tiny) delta that arrives mid-read.
    */
-  const foldRange = (from: number, to: number): Promise<void> =>
-    foldLogRangeInto(ownLog, folder, from, to);
+  const foldRange = (from: number, to: number): Promise<void> => foldLogRangeInto(ownLog, folder, from, to);
 
   await foldRange(0, coversUpTo);
   let foldedUpTo = coversUpTo;
@@ -723,9 +715,7 @@ export async function produceLogSnapshot(
   // that cannot be located is not a snapshot, so this FAILS LOUDLY instead.
   const anchorOp = await ownLog.get(coversUpTo);
   const anchorIsSnapshot = anchorOp != null && isSnapshotOp(anchorOp);
-  const anchorCovers = anchorIsSnapshot
-    ? (anchorOp.value as SnapshotPayload | undefined)?.coversUpTo
-    : undefined;
+  const anchorCovers = anchorIsSnapshot ? (anchorOp.value as SnapshotPayload | undefined)?.coversUpTo : undefined;
   if (anchorCovers !== coversUpTo) {
     throw new Error(
       `[snapshot] anchor race: appended a ${snapshotOps.length}-chunk set for coversUpTo=${coversUpTo}, ` +
@@ -737,10 +727,7 @@ export async function produceLogSnapshot(
     );
   }
 
-  const rowCount = snapshotOps.reduce(
-    (sum, op) => sum + (op.value as SnapshotPayload).rows.length,
-    0,
-  );
+  const rowCount = snapshotOps.reduce((sum, op) => sum + (op.value as SnapshotPayload).rows.length, 0);
   return { appended: true, coversUpTo, rowCount, chunkCount: snapshotOps.length };
 }
 
@@ -835,9 +822,7 @@ export async function produceFilteredSnapshotIntoLog(
   // function assumes, and shipping an unfindable seed would otherwise look like success.
   const anchorOp = await targetLog.get(coversUpTo);
   const anchorIsSnapshot = anchorOp != null && isSnapshotOp(anchorOp);
-  const anchorCovers = anchorIsSnapshot
-    ? (anchorOp.value as SnapshotPayload | undefined)?.coversUpTo
-    : undefined;
+  const anchorCovers = anchorIsSnapshot ? (anchorOp.value as SnapshotPayload | undefined)?.coversUpTo : undefined;
   if (anchorCovers !== coversUpTo) {
     throw new Error(
       `[snapshot] synthetic-core anchor race: appended a ${snapshotOps.length}-chunk set for ` +
@@ -846,9 +831,6 @@ export async function produceFilteredSnapshotIntoLog(
     );
   }
 
-  const rowCount = snapshotOps.reduce(
-    (sum, op) => sum + (op.value as SnapshotPayload).rows.length,
-    0,
-  );
+  const rowCount = snapshotOps.reduce((sum, op) => sum + (op.value as SnapshotPayload).rows.length, 0);
   return { appended: true, coversUpTo, rowCount, chunkCount: snapshotOps.length };
 }
