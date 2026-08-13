@@ -631,16 +631,19 @@ async function liveFleetAgentCounts(workspaceId: string): Promise<Map<string, Fl
   const { sql } = getOrgPg();
   const secs = Math.max(1, Math.floor(PRESENCE_STALE_MS / 1000));
   const rows = await sql<
-    { fleet_slug: string; owner_id: string; agent_role: string | null; heartbeat_at: string }[]
+    { fleet_slug: string; owner_id: string; agent_role: string | null; heartbeat_at: string; host: string | null; pid: number | null }[]
   >`
-    SELECT fleet_slug, owner_id, agent_role, heartbeat_at
+    SELECT fleet_slug, owner_id, agent_role, heartbeat_at, host, pid
       FROM harness_shared.coord_presence
      WHERE workspace_id = ${workspaceId}
        AND fleet_slug IS NOT NULL
        AND heartbeat_at > now() - ${`${secs} seconds`}::interval
   `;
   const dead = await oracleDeadOwnerIds(
-    rows.map((r) => ({ ownerId: r.owner_id, heartbeatAt: r.heartbeat_at, agentRole: r.agent_role })),
+    // EI-20361787885323735: host+pid MUST ride along — without them the oracle's
+    // authoritative kill(pid,0) leg never engages and a locally-killed member
+    // (fresh heartbeat, leftover registered await) reads 'parked' for minutes.
+    rows.map((r) => ({ ownerId: r.owner_id, heartbeatAt: r.heartbeat_at, agentRole: r.agent_role, host: r.host, pid: r.pid })),
     ['ended', 'suspect', 'draining'],
   );
   const counts = new Map<string, FleetLiveCounts>();
@@ -772,12 +775,16 @@ export async function liveFleetMemberIdsDiagnosed(
     agent_role: string | null;
     heartbeat_at: string;
     stale: boolean;
+    host: string | null;
+    pid: number | null;
   };
   const rows = await sql<PresenceRow[]>`
     SELECT owner_id,
            agent_role,
            heartbeat_at,
-           (heartbeat_at <= now() - ${`${secs} seconds`}::interval) AS stale
+           (heartbeat_at <= now() - ${`${secs} seconds`}::interval) AS stale,
+           host,
+           pid
       FROM harness_shared.coord_presence
      WHERE workspace_id = ${workspaceId}
        AND fleet_slug = ${fleetSlug}
@@ -801,10 +808,15 @@ export async function liveFleetMemberIdsDiagnosed(
   // agent may still be winding down and the send is durable — never drop a
   // message to a maybe-alive recipient.
   const states = await oracleSessionStates(
+    // EI-20361787885323735: host+pid ride along so the oracle's kill(pid,0) leg
+    // engages for locally-hosted rows — a warm-heartbeat corpse (killed window,
+    // leftover registered await) must read ended here, not parked.
     candidates.map((r) => ({
       ownerId: r.owner_id,
       heartbeatAt: r.heartbeat_at,
       agentRole: r.agent_role,
+      host: r.host,
+      pid: r.pid,
     })),
   );
   // WI-37162: do NOT additionally require a live psu-pty HOST process here
