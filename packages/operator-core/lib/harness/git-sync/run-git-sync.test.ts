@@ -1097,6 +1097,66 @@ describe('runGitSync — P-002 failure classification (injected git)', () => {
     if (out.status === 'error') expect(out.errors[0].message).toMatch(/merge failed \(no conflicted paths\)/);
   });
 
+  it('EI-20328688606935149: skips an authenticated no-op push when fetched origin already contains HEAD', async () => {
+    let pushCalls = 0;
+    let aheadChecks = 0;
+    const run = fakeGit((args) => {
+      const j = args.join(' ');
+      if (j.startsWith('symbolic-ref')) return { code: 0, stdout: 'main' };
+      if (j.startsWith('status --porcelain')) return { code: 0, stdout: '' };
+      if (j.startsWith('fetch')) return { code: 0 };
+      if (j.startsWith('merge')) return { code: 0, stdout: 'Already up to date.' };
+      if (j.startsWith('rev-list --count origin/main..HEAD')) {
+        aheadChecks++;
+        return { code: 0, stdout: '0' };
+      }
+      if (j.startsWith('push')) {
+        pushCalls++;
+        return { code: 1, stderr: 'remote: You must verify your email address.' };
+      }
+      return { code: 0, stdout: '' };
+    });
+
+    const out = await runGitSync('test', {
+      repoPath: '/fake',
+      runGit: run,
+      submodulePaths: [],
+      config: { pushSubmodules: false },
+    });
+
+    expect(out.status).toBe('nothing');
+    expect(aheadChecks).toBe(1);
+    expect(pushCalls).toBe(0);
+  });
+
+  it('EI-20328688606935149: still pushes and reports a failure when HEAD is genuinely ahead', async () => {
+    let pushCalls = 0;
+    const run = fakeGit((args) => {
+      const j = args.join(' ');
+      if (j.startsWith('symbolic-ref')) return { code: 0, stdout: 'main' };
+      if (j.startsWith('status --porcelain')) return { code: 0, stdout: '' };
+      if (j.startsWith('fetch')) return { code: 0 };
+      if (j.startsWith('merge')) return { code: 0, stdout: 'Already up to date.' };
+      if (j.startsWith('rev-list --count origin/main..HEAD')) return { code: 0, stdout: '2' };
+      if (j.startsWith('push')) {
+        pushCalls++;
+        return { code: 1, stderr: 'remote: You must verify your email address.' };
+      }
+      return { code: 0, stdout: '' };
+    });
+
+    const out = await runGitSync('test', {
+      repoPath: '/fake',
+      runGit: run,
+      submodulePaths: [],
+      config: { pushSubmodules: false },
+    });
+
+    expect(out.status).toBe('error');
+    if (out.status === 'error') expect(out.errors[0]?.message).toMatch(/verify your email address/i);
+    expect(pushCalls).toBe(1);
+  });
+
   it('EI-18094449017685490: a transient ENOENT on `git add -A` (concurrent atomic-write race) is retried, not surfaced as an error', async () => {
     let addAttempts = 0;
     const run = fakeGit((args) => {

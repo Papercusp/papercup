@@ -1555,7 +1555,7 @@ type ReconcilePushResult =
 /**
  * WI-1416: the RECONCILE+PUSH half of one repo's sync — resolve branch → fetch →
  * merge (handles diverged/behind) → push (one non-FF retry). Replay-safe: a re-run
- * re-fetches and an already-pushed HEAD is `Everything up-to-date`.
+ * re-fetches, proves an already-pushed HEAD is aligned, and skips the authenticated no-op push.
  */
 async function reconcileAndPushOneRepo(
   runGit: RunGit,
@@ -1656,28 +1656,37 @@ async function reconcileAndPushOneRepo(
 
   let pushed = false;
   if (doPush) {
-    let push = await runGit(['push', remote, `HEAD:${branch}`], repoPath);
-    if (push.code !== 0 && rejectedNonFastForward(push)) {
-      // A peer pushed between our fetch and push — re-fetch + re-merge once.
-      await runGit(['fetch', remote, branch], repoPath);
-      const m2 = await runGit([...GIT_SYNC_IDENTITY_ARGS, 'merge', '--no-edit', `${remote}/${branch}`], repoPath);
-      if (m2.code !== 0) {
-        const conflicted = await conflictedFiles(runGit, repoPath);
-        const m2Out = `${m2.stdout}\n${m2.stderr}`.trim();
-        await runGit(['merge', '--abort'], repoPath);
-        if (conflicted.length === 0) {
-          const diag = await describeFailedMerge(runGit, repoPath, remote, branch, 'non-ff-retry');
-          return { status: 'error', message: `merge failed (no conflicted paths) [${diag}]: ${m2Out.slice(0, 300)}` };
+    // The successful fetch + merge gives us a current remote-tracking ref. When
+    // HEAD has no commits beyond it, an authenticated push can move nothing and
+    // should not be allowed to fail the whole harness on an unrelated credential
+    // policy (EI-20328688606935149). If the comparison itself fails, retain the
+    // existing push behavior so uncertainty can never strand a real commit.
+    const ahead = await runGit(['rev-list', '--count', `${remoteRef}..HEAD`], repoPath);
+    const aheadCount = ahead.code === 0 ? Number.parseInt(ahead.stdout.trim(), 10) || 0 : null;
+    if (aheadCount !== 0) {
+      let push = await runGit(['push', remote, `HEAD:${branch}`], repoPath);
+      if (push.code !== 0 && rejectedNonFastForward(push)) {
+        // A peer pushed between our fetch and push — re-fetch + re-merge once.
+        await runGit(['fetch', remote, branch], repoPath);
+        const m2 = await runGit([...GIT_SYNC_IDENTITY_ARGS, 'merge', '--no-edit', `${remote}/${branch}`], repoPath);
+        if (m2.code !== 0) {
+          const conflicted = await conflictedFiles(runGit, repoPath);
+          const m2Out = `${m2.stdout}\n${m2.stderr}`.trim();
+          await runGit(['merge', '--abort'], repoPath);
+          if (conflicted.length === 0) {
+            const diag = await describeFailedMerge(runGit, repoPath, remote, branch, 'non-ff-retry');
+            return { status: 'error', message: `merge failed (no conflicted paths) [${diag}]: ${m2Out.slice(0, 300)}` };
+          }
+          return { status: 'conflict', conflictedFiles: conflicted };
         }
-        return { status: 'conflict', conflictedFiles: conflicted };
+        mergedNew = mergedNew || !/Already up to date/i.test(m2.stdout);
+        push = await runGit(['push', remote, `HEAD:${branch}`], repoPath);
       }
-      mergedNew = mergedNew || !/Already up to date/i.test(m2.stdout);
-      push = await runGit(['push', remote, `HEAD:${branch}`], repoPath);
+      if (push.code !== 0) {
+        return { status: 'error', message: `push failed: ${push.stderr.trim() || push.stdout.trim()}` };
+      }
+      pushed = !/Everything up-to-date/i.test(`${push.stdout}\n${push.stderr}`);
     }
-    if (push.code !== 0) {
-      return { status: 'error', message: `push failed: ${push.stderr.trim() || push.stdout.trim()}` };
-    }
-    pushed = !/Everything up-to-date/i.test(`${push.stdout}\n${push.stderr}`);
   }
 
   if (!committedLocal && !mergedNew && !pushed) return { status: 'nothing' };
