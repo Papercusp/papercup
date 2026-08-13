@@ -790,6 +790,7 @@ describe('clean sync outcome', () => {
     expect(runGitSyncMock).toHaveBeenCalledWith('papercup', {
       config: expect.objectContaining({ push: true, pushSubmodules: true }),
       deletionGuard: true,
+      diffSubjects: true, // WI-38594: flag-driven (mock getFlag defaults true)
       step: expect.any(Function),
     });
 
@@ -881,6 +882,7 @@ describe('clean sync outcome', () => {
         maxBlobBytes: 1024,
       },
       deletionGuard: true,
+      diffSubjects: true, // WI-38594: flag-driven (mock getFlag defaults true)
       step: expect.any(Function),
     });
   });
