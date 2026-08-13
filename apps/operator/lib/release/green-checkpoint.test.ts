@@ -861,6 +861,120 @@ describe('runGreenCheckpoint', () => {
     expect(calls).toContain('advance');
   });
 
+  it('WI-38422: a passing changed-file typecheck runs before the affected sweep and the full gate still runs', async () => {
+    const c1 = await commit('packages/operator-core/lib/a.ts', 'export const a = 1;\n', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    const c2 = await commit('packages/operator-core/lib/a.ts', 'export const a = 2;\n', 'c2');
+    const { deps, calls } = stubDeps(true);
+    deps.changedFilesForRange = async (from, to) => {
+      expect({ from, to }).toEqual({ from: c1, to: c2 });
+      calls.push('changedFilesForRange');
+      return ['docs/note.md', 'packages/operator-core/lib/a.ts'];
+    };
+    deps.runChangedFileTypecheckPreflight = async (files) => {
+      calls.push('runChangedFileTypecheckPreflight');
+      expect(files).toEqual(['docs/note.md', 'packages/operator-core/lib/a.ts']);
+      return { status: 'passed', summary: 'LINT_TSC_RESULT status=clean' };
+    };
+
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(r).toMatchObject({ advanced: true, candidate: c2, green: true, reason: 'advanced' });
+    expect(calls.indexOf('changedFilesForRange')).toBeGreaterThan(calls.indexOf(`setup:${c2.slice(0, 7)}`));
+    expect(calls.indexOf('runChangedFileTypecheckPreflight')).toBeGreaterThan(calls.indexOf('changedFilesForRange'));
+    // A scoped pass is only an early signal. The full suite — whose real path includes the
+    // unscoped post-suite lint:tsc — must still supply the promotion verdict.
+    expect(calls.indexOf('runGreen')).toBeGreaterThan(calls.indexOf('runChangedFileTypecheckPreflight'));
+  });
+
+  it('WI-38422: a failed changed-file typecheck returns the ordinary not-green verdict without entering the affected sweep', async () => {
+    const c1 = await commit('packages/operator-core/lib/a.ts', 'export const a = 1;\n', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    const c2 = await commit('packages/operator-core/lib/a.ts', 'export const a: number = "bad";\n', 'c2');
+    const { deps, calls } = stubDeps(true);
+    const logs: string[] = [];
+    deps.log = (line) => logs.push(line);
+    deps.changedFilesForRange = async () => ['packages/operator-core/lib/a.ts'];
+    deps.runChangedFileTypecheckPreflight = async () => ({
+      status: 'failed',
+      summary: 'packages/operator-core/lib/a.ts(1,14): error TS2322',
+      failingSignatures: ['lint:tsc'],
+    });
+
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(r).toMatchObject({
+      advanced: false,
+      candidate: c2,
+      from: c1,
+      green: false,
+      reason: 'not-green',
+      failingTests: ['lint:tsc'],
+    });
+    expect(r.summary).toContain('Early changed-file typecheck failed before the affected-test sweep');
+    expect(calls).not.toContain('runGreen');
+    expect(calls).not.toContain('advance');
+    expect(logs.some((line) => line.includes('rejecting before the affected-test sweep'))).toBe(true);
+  });
+
+  it('WI-38422: an unavailable changed-file diff falls back to the unchanged full gate', async () => {
+    const c1 = await commit('packages/operator-core/lib/a.ts', 'export const a = 1;\n', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    await commit('packages/operator-core/lib/a.ts', 'export const a = 2;\n', 'c2');
+    const { deps, calls } = stubDeps(true);
+    const logs: string[] = [];
+    deps.log = (line) => logs.push(line);
+    deps.changedFilesForRange = async () => null;
+    deps.runChangedFileTypecheckPreflight = async () => {
+      calls.push('runChangedFileTypecheckPreflight');
+      return { status: 'failed', summary: 'must not run' };
+    };
+
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(r).toMatchObject({ advanced: true, green: true, reason: 'advanced' });
+    expect(calls).not.toContain('runChangedFileTypecheckPreflight');
+    expect(calls).toContain('runGreen');
+    expect(logs.some((line) => line.includes('changed-file resolution unavailable') && line.includes('full gate retained'))).toBe(true);
+  });
+
+  it('WI-38422: a diff outside operator-core skips the scoped gate instead of manufacturing an out-of-scope red', async () => {
+    const c1 = await commit('apps/operator/lib/a.ts', 'export const a = 1;\n', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    await commit('apps/operator/lib/a.ts', 'export const a = 2;\n', 'c2');
+    const { deps, calls } = stubDeps(true);
+    deps.changedFilesForRange = async () => ['apps/operator/lib/a.ts'];
+    deps.runChangedFileTypecheckPreflight = async () => {
+      calls.push('runChangedFileTypecheckPreflight');
+      return { status: 'failed', summary: 'out-of-scope' };
+    };
+
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(r).toMatchObject({ advanced: true, green: true, reason: 'advanced' });
+    expect(calls).not.toContain('runChangedFileTypecheckPreflight');
+    expect(calls).toContain('runGreen');
+  });
+
+  it('WI-38422: a throwing scoped preflight is unmeasured and falls back to the full gate', async () => {
+    const c1 = await commit('packages/operator-core/lib/a.ts', 'export const a = 1;\n', 'c1');
+    await git(repo, ['branch', 'ready', c1]);
+    await commit('packages/operator-core/lib/a.ts', 'export const a = 2;\n', 'c2');
+    const { deps, calls } = stubDeps(true);
+    const logs: string[] = [];
+    deps.log = (line) => logs.push(line);
+    deps.changedFilesForRange = async () => ['packages/operator-core/lib/a.ts'];
+    deps.runChangedFileTypecheckPreflight = async () => {
+      throw new Error('preflight runner unavailable');
+    };
+
+    const r = await runGreenCheckpoint(cfg(), deps, { noPush: true });
+
+    expect(r).toMatchObject({ advanced: true, green: true, reason: 'advanced' });
+    expect(calls).toContain('runGreen');
+    expect(logs.some((line) => line.includes('preflight runner unavailable') && line.includes('unchanged full gate'))).toBe(true);
+  });
+
   it('EI-10800: AWAITS the release:green verdict emit on a green advance (global + pipeline-scoped)', async () => {
     // The bug: the green full-advance emit was a fire-and-forget `void import(...).then(emit)`
     // followed by an immediate return, so the short-lived checkpoint process tore down before

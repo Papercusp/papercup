@@ -31,6 +31,7 @@ import {
   ISOLATION_RUN_TIMEOUT_MS,
   RESCUE_TEST_TIMEOUT_MS,
   WORKSPACE_RERUN_TIMEOUT_MS,
+  GREEN_CHECKPOINT_POST_SUITE_HEAP_MB,
   type CheckpointExec,
 } from './green-checkpoint';
 import { releaseConfig, type ReleaseConfig } from './release-config';
@@ -262,6 +263,72 @@ const cfg: ReleaseConfig = releaseConfig({
   checkpointLogDir: tmpLogDir,
 });
 const [GREEN_CMD0, ...GREEN_ARGS] = cfg.greenCmd.split(' ');
+
+describe('realCheckpointDeps.runChangedFileTypecheckPreflight — WI-38422', () => {
+  const preflightCfg: ReleaseConfig = { ...cfg, checkpointRoot: typecheckTree };
+
+  it('runs the existing lint:tsc gate with the exact committed diff, release env, and sequential-leg heap', async () => {
+    const { exec, calls } = makeExec([
+      { code: 0, stdout: 'LINT_TSC_RESULT label=operator-core scope=files exit=0 status=clean\n' },
+    ]);
+    const deps = realCheckpointDeps(preflightCfg, exec, 'preflight-run-id');
+
+    const result = await deps.runChangedFileTypecheckPreflight?.([
+      'docs/note.md',
+      'packages/operator-core/lib/a.ts',
+    ]);
+
+    expect(result).toMatchObject({ status: 'passed', failingSignatures: [] });
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({
+      cmd: 'npm',
+      args: [
+        'run',
+        'lint:tsc',
+        '--',
+        '--files=docs/note.md,packages/operator-core/lib/a.ts',
+      ],
+      opts: {
+        cwd: typecheckTree,
+        allowNonZero: true,
+        heavy: true,
+      },
+    });
+    expect(calls[0].opts?.env?.GREEN_CHECKPOINT).toBe('1');
+    expect(calls[0].opts?.env?.PC_HEAVY_RELEASE_GATE).toBe('1');
+    expect(calls[0].opts?.env?.NODE_OPTIONS).toContain(
+      `--max-old-space-size=${GREEN_CHECKPOINT_POST_SUITE_HEAP_MB}`,
+    );
+  });
+
+  it('maps a completed non-zero scoped lint verdict to the stable lint:tsc failure signature', async () => {
+    const { exec } = makeExec([
+      {
+        code: 1,
+        stdout:
+          'packages/operator-core/lib/a.ts(1,14): error TS2322: Type string is not assignable to number\n' +
+          'LINT_TSC_RESULT label=operator-core scope=files exit=1 status=regressed\n',
+      },
+    ]);
+    const deps = realCheckpointDeps(preflightCfg, exec);
+
+    const result = await deps.runChangedFileTypecheckPreflight?.(['packages/operator-core/lib/a.ts']);
+
+    expect(result).toMatchObject({ status: 'failed', failingSignatures: ['lint:tsc'] });
+    expect(result?.summary).toContain('TS2322');
+    expect(result?.summary).toContain('status=regressed');
+  });
+
+  it('reports a subject hive without lint:tsc as skipped and shells nothing', async () => {
+    const { exec, calls } = makeExec([]);
+    const deps = realCheckpointDeps(cfg, exec);
+
+    const result = await deps.runChangedFileTypecheckPreflight?.(['packages/operator-core/lib/a.ts']);
+
+    expect(result).toEqual({ status: 'skipped', summary: 'candidate provides no lint:tsc script' });
+    expect(calls).toEqual([]);
+  });
+});
 
 describe('realCheckpointDeps.runGreen — real-path wiring (gap #10)', () => {
   it('detects the optional lint:tsc script without requiring it from subject hives', () => {
