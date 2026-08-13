@@ -93,6 +93,15 @@
 #                         a fleet-edited tree is the difference between
 #                         coalescing always and never. See the long note at the
 #                         barrier below. Opt-in; unset ⇒ unchanged behaviour.
+#   PC_HEAVY_KEY_ENV      comma/space-separated NAMES of environment variables
+#                         that change this command's RESULT, folded into the
+#                         coalescing key. Required for any caller whose inputs
+#                         arrive by env rather than argv (e.g. AFFECTED_BASE),
+#                         since cwd+argv+token cannot see them and two callers
+#                         would otherwise replay each other's verdict for a
+#                         DIFFERENT question (EI-78). Unset and empty are folded
+#                         distinctly. Declaring nothing leaves the key unchanged;
+#                         declaring more can only ever coalesce LESS, never more.
 #   PC_HEAVY_COALESCE_MAX_WAIT_SEC
 #                         hard cap on how long a follower waits for a LIVE
 #                         leader (default 1800). Leader liveness is OBSERVED
@@ -649,6 +658,49 @@ if [ "$_coalesce_enabled" = 1 ]; then
     fi
   fi
 
+  # ── Result-affecting ENVIRONMENT (EI-18699972365875475; blocker filed by EI-78) ──
+  # cwd+argv+token is a COLLIDING key for any command that takes result-changing
+  # input through the ENVIRONMENT rather than argv, and that is not hypothetical:
+  # it is why the entire `test:*` family is pinned to PC_HEAVY_COALESCE=0 today.
+  # EI-78 stated it exactly — "its key is cwd+argv+tree-state and does NOT include
+  # the ENVIRONMENT — while the gate varies AFFECTED_BASE via env alone. Two runs
+  # at the same HEAD with different bases would collide and hand one of them a
+  # verdict computed for a different delta". That is the same
+  # stale-verdict-is-byte-indistinguishable-from-a-fresh-one hazard the tree token
+  # above exists to kill, arriving through the one input the token cannot see.
+  #
+  # pc-heavy cannot know WHICH variables matter — that is caller knowledge, and
+  # guessing a list here would be wrong in both directions (missing a caller's real
+  # input, while fragmenting every key on an irrelevant one). So the caller
+  # DECLARES them:  PC_HEAVY_KEY_ENV="AFFECTED_BASE,AFFECTED_RETRY_FAILED".
+  #
+  # MONOTONIC SAFETY, which is what makes this cheap to reason about: folding more
+  # inputs into a hash can only make keys MORE distinct. This can therefore never
+  # CREATE a replay that would not already have happened — it can only remove one.
+  # A caller that declares nothing computes byte-identically the same key as before.
+  #
+  # UNSET and EMPTY are folded DISTINCTLY (`name=u` vs `name=s:`). For a variable
+  # like AFFECTED_BASE, "unset" (use the built-in default) and "set to empty" are
+  # different requests with different verdicts, so collapsing them would reintroduce
+  # the very collision this exists to remove, at exactly the boundary a caller is
+  # most likely to hit. Names are sorted, so two callers declaring the same set in a
+  # different order still share a key; a malformed name is skipped rather than
+  # aborting (fail-open, like every other signal in this block).
+  _key_env_pairs=()
+  if [ -n "${PC_HEAVY_KEY_ENV:-}" ]; then
+    for _n in $(printf '%s' "${PC_HEAVY_KEY_ENV}" | tr ',' ' ' | tr -s '[:space:]' '\n' | sort -u); do
+      case "$_n" in
+        [A-Za-z_][A-Za-z0-9_]*) ;;
+        *) continue ;;
+      esac
+      if [ -n "${!_n+x}" ]; then
+        _key_env_pairs+=("$_n=s:${!_n}")
+      else
+        _key_env_pairs+=("$_n=u")
+      fi
+    done
+  fi
+
   # Key on cwd + full argv + tree-state token, NUL-separated so args
   # containing spaces can't collide two different commands into the same key.
   #
@@ -661,7 +713,10 @@ if [ "$_coalesce_enabled" = 1 ]; then
   # "safe because the token happened to be empty" is not an invariant anyone can
   # rely on while editing this later. Separate them explicitly, so the rule is
   # simply: a barriered caller only ever replays a barriered run, past its watermark.
-  _key=$({ printf '%s\0' "$PWD"; printf '%s\0' "$@"; printf '%s\0' "$_tree_token"; printf '%s\0' "${_fresh_after:+barrier}"; } | sha1sum | cut -d' ' -f1)
+  # The declared-env pairs are appended LAST and emitted only when non-empty, so a
+  # caller that declares nothing hashes the byte-identical input it did before this
+  # block existed — no cache-population flag day, and nothing to migrate.
+  _key=$({ printf '%s\0' "$PWD"; printf '%s\0' "$@"; printf '%s\0' "$_tree_token"; printf '%s\0' "${_fresh_after:+barrier}"; if [ "${#_key_env_pairs[@]}" -gt 0 ]; then printf '%s\0' "${_key_env_pairs[@]}"; fi; } | sha1sum | cut -d' ' -f1)
   _c_out="$_coalesce_dir/$_key.out"
   _c_err="$_coalesce_dir/$_key.err"
   _c_exit="$_coalesce_dir/$_key.exit"

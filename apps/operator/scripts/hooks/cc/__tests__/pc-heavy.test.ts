@@ -27,7 +27,16 @@ import { createTextCollector } from '@papercusp/operator-core/lib/child-output';
 
 // __tests__ → cc → hooks → scripts → operator → apps → <repo root>
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../../../..');
-const PC_HEAVY = join(ROOT, 'scripts', 'pc-heavy.sh');
+// PROBE_SCRIPT points the WHOLE suite — the spawn paths AND the source-text greps below — at a
+// mutated COPY outside the tree, so scripts/mutation-probe.sh can prove these guards are
+// falsifiable without ever mutating the shared working tree (git-sync commits the whole tree on a
+// short cadence, so an in-tree mutation can be committed mid-probe even when nothing goes wrong).
+//
+// ⚠ Every reference to the subject MUST go through this constant. A suite that honours the
+// override on only some paths runs happily, reports "MUTANT SURVIVED", and was measuring the real
+// file the whole time — reading as evidence that a perfectly good guard is weak (caught that way
+// in bghost-watchdog.test.ts, 2026-08-10).
+const PC_HEAVY = process.env.PROBE_SCRIPT || join(ROOT, 'scripts', 'pc-heavy.sh');
 
 let dir = '';
 beforeEach(() => { dir = mkdtempSync(join(tmpdir(), 'pcheavy-')); });
@@ -1119,6 +1128,108 @@ describe('pc-heavy.sh — per-caller freshness barrier (EI-19340233074452707)', 
     // ...while a second unbarriered caller still replays as it always did.
     const second = runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30' });
     expect(second.stderr).toContain('coalesced:');
+  });
+});
+
+describe('pc-heavy.sh — declared result-affecting env in the coalescing key (EI-18699972365875475)', () => {
+  // The hazard, stated by EI-78 when it disabled coalescing for the whole `test:*`
+  // family: the key was cwd+argv+tree-state and could not see the ENVIRONMENT, while
+  // `affected-tests.mjs` selects its diff base from $AFFECTED_BASE. Two agents at the
+  // same HEAD with different bases produce byte-identical cwd+argv, so one would
+  // replay a verdict computed for a DIFFERENT delta — and a stale verdict is
+  // byte-indistinguishable from a fresh one.
+  //
+  // `baseEnv` builds the child env from scratch rather than spreading process.env, so
+  // "unset" here is genuinely unset and the unset-vs-empty case below is hermetic.
+  const cmd = ['bash', '-c', 'echo keyenv-out; echo keyenv-err >&2; exit 9'];
+  const run = (extra: Record<string, string>) =>
+    runSync(cmd, { PC_HEAVY_SLOTS: '2', PC_HEAVY_COALESCE_SEC: '30', ...extra });
+
+  it('does NOT coalesce two callers whose declared variable DIFFERS — the EI-78 collision', () => {
+    const first = run({ PC_HEAVY_KEY_ENV: 'AFFECTED_BASE', AFFECTED_BASE: 'origin/main' });
+    expect(first.status).toBe(9);
+    expect(first.stderr).not.toContain('coalesced:');
+
+    // Same cwd, same argv, same tree — different question. Must run for real.
+    const second = run({ PC_HEAVY_KEY_ENV: 'AFFECTED_BASE', AFFECTED_BASE: 'origin/staging' });
+    expect(second.status).toBe(9);
+    expect(second.stderr).not.toContain('coalesced:');
+  });
+
+  it('still coalesces two callers whose declared variable MATCHES (the fix does not disable coalescing)', () => {
+    const first = run({ PC_HEAVY_KEY_ENV: 'AFFECTED_BASE', AFFECTED_BASE: 'origin/main' });
+    expect(first.stderr).not.toContain('coalesced:');
+
+    const second = run({ PC_HEAVY_KEY_ENV: 'AFFECTED_BASE', AFFECTED_BASE: 'origin/main' });
+    expect(second.status).toBe(9);
+    expect(second.stdout).toContain('keyenv-out');
+    expect(second.stderr).toContain('coalesced:');
+  });
+
+  it('treats UNSET and EMPTY as different — "use the default" is not "use the empty base"', () => {
+    // The boundary a caller is most likely to hit: `AFFECTED_BASE=` in a wrapper
+    // script vs. omitting it entirely select different bases, so collapsing them
+    // would reintroduce exactly the collision this fold exists to remove.
+    const unset = run({ PC_HEAVY_KEY_ENV: 'AFFECTED_BASE' });
+    expect(unset.stderr).not.toContain('coalesced:');
+
+    const empty = run({ PC_HEAVY_KEY_ENV: 'AFFECTED_BASE', AFFECTED_BASE: '' });
+    expect(empty.status).toBe(9);
+    expect(empty.stderr).not.toContain('coalesced:');
+  });
+
+  it('is order-insensitive — the same declared SET shares a key however it is spelled', () => {
+    // Otherwise two callers that agree on what matters would fragment into separate
+    // cache populations purely on how they happened to order the list.
+    const first = run({ PC_HEAVY_KEY_ENV: 'A_ONE,B_TWO', A_ONE: '1', B_TWO: '2' });
+    expect(first.stderr).not.toContain('coalesced:');
+
+    const second = run({ PC_HEAVY_KEY_ENV: ' B_TWO , A_ONE ', A_ONE: '1', B_TWO: '2' });
+    expect(second.status).toBe(9);
+    expect(second.stderr).toContain('coalesced:');
+  });
+
+  it('leaves a caller that declares NOTHING on exactly its previous key (no flag day)', () => {
+    // Monotonic safety: folding more inputs in can only make keys MORE distinct, so an
+    // undeclared caller must be byte-identical to its pre-change self — no cache
+    // population to migrate, and no coalescing silently lost on unrelated callers.
+    const first = run({});
+    expect(first.stderr).not.toContain('coalesced:');
+
+    const second = run({});
+    expect(second.status).toBe(9);
+    expect(second.stderr).toContain('coalesced:');
+  });
+
+  it('separates a declaring caller from a non-declaring one rather than letting either inherit', () => {
+    // ⚠ Both assertions here are ABSENCES, which pass vacuously if the subject never
+    // ran at all (a missing script exits 127 and prints no 'coalesced:' either).
+    // Pin that the command actually executed, or this test cannot fail for the reason
+    // it exists. Found the hard way: a relative --file path in a mutation probe made
+    // exactly this test the only survivor of a wholly non-executing suite.
+    const undeclared = run({});
+    expect(undeclared.status).toBe(9);
+    expect(undeclared.stdout).toContain('keyenv-out');
+    expect(undeclared.stderr).not.toContain('coalesced:');
+
+    // A declaring caller must not pick up an entry written by a caller that never
+    // committed to what its inputs were — same reasoning as the barrier marker.
+    const declared = run({ PC_HEAVY_KEY_ENV: 'AFFECTED_BASE', AFFECTED_BASE: 'origin/main' });
+    expect(declared.status).toBe(9);
+    expect(declared.stdout).toContain('keyenv-out');
+    expect(declared.stderr).not.toContain('coalesced:');
+  });
+
+  it('skips a malformed name instead of aborting the run (fail-open, like every other signal here)', () => {
+    // Admission control must never be the reason a legitimate build cannot start.
+    const first = run({ PC_HEAVY_KEY_ENV: '9bad-name,,AFFECTED_BASE', AFFECTED_BASE: 'origin/main' });
+    expect(first.status).toBe(9);
+    expect(first.stdout).toContain('keyenv-out');
+
+    // ...and the well-formed name in the same list is still honoured.
+    const second = run({ PC_HEAVY_KEY_ENV: '9bad-name,,AFFECTED_BASE', AFFECTED_BASE: 'origin/other' });
+    expect(second.status).toBe(9);
+    expect(second.stderr).not.toContain('coalesced:');
   });
 });
 

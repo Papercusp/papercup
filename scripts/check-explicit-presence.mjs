@@ -170,6 +170,27 @@ const ALLOW = new Set([]);
 // a `sql` tagged-template result within a nearby lookback window (still in the same
 // function-ish vicinity, not merely "somewhere earlier in a 1000-line file).
 
+/**
+ * Test sources, which never ship. The `[.-]` before `test|spec` is load-bearing: this repo
+ * has TWO test naming conventions and the original `\.(test|spec)\.ts$` only knew one.
+ * `libs/papercusp/packages/cli` runs `node --test src/**\/*.node-test.ts` (11 files, declared
+ * in its own package.json `test` script), whose separator is a HYPHEN — so every one of them
+ * was scanned as production code, and two of its fixture-cleanup reads sat on the baseline.
+ */
+const TEST_FILE_RE = /[.-](test|integration\.test|spec)\.ts$/;
+
+/**
+ * RETIRED code is out of scope, matching what ~12 sibling guards already do
+ * (check-constant-conditional, check-no-raw-agent-spawn, check-js-syntax, affected-tests,
+ * check-declared-consumed's "retired code is not a consumer", …). This guard's SCAN_ROOTS
+ * names `libs/papercusp/` wholesale and so picked up `libs/papercusp/_retired/`, which is
+ * WORSE than noise here: repo convention is that retired surfaces are "not deleted, not
+ * deployed, not tested, NOT TO BE EXTENDED", so those rows were permanently unfixable —
+ * the only two dispositions a candidate has (fix it / allow it) were both closed, and 12
+ * of them were pinning the baseline where no burn-down could ever reach them.
+ */
+const RETIRED_RE = /(^|\/)_retired\//;
+
 const ZERO = "(false|0|''|\"\"|\\[\\]|\\{\\})";
 const OP = '(\\?\\?|\\|\\|)';
 /** How many preceding lines a tracked-variable assignment stays "in scope" for — generous
@@ -214,8 +235,9 @@ function lineIsExcluded(line) {
  * unit-tested inline via selfTest().
  */
 export function analyzeForExplicitPresence({ path, text }) {
-  if (/\.(test|integration\.test|spec)\.ts$/.test(path)) return [];
+  if (TEST_FILE_RE.test(path)) return [];
   if (path.endsWith('.d.ts')) return [];
+  if (RETIRED_RE.test(path)) return [];
 
   // COMMENTS ARE MASKED; STRINGS ARE DELIBERATELY NOT. Both halves are measured, and the
   // asymmetry is the whole point (2026-08-10, WI-37717):
