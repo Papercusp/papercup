@@ -51,21 +51,107 @@ export interface AttributedCommitGroup {
 /** The git-sync default subject (unchanged from today's single-commit message stem). */
 export const DEFAULT_GIT_SYNC_SUBJECT = 'chore(git-sync): auto-commit';
 
+/** Clamp a one-line subject to the 72-char budget at a word boundary (WI-38568):
+ *  a mid-word clip ("…and focused dom") reads as a typo in every hive's public
+ *  history. Cut at the last space past a floor so we keep most of the budget, and
+ *  append … so a truncated subject reads as truncated. 71 + '…' stays within 72. */
+export function clampSubject(full: string): string {
+  if (full.length <= 72) return full;
+  const clipped = full.slice(0, 71);
+  const lastSpace = clipped.lastIndexOf(' ');
+  const cut = lastSpace > 40 ? clipped.slice(0, lastSpace) : clipped;
+  return `${cut.replace(/[\s,;:.-]+$/, '')}…`;
+}
+
 /** Sanitize a free-text intent into a single-line commit subject (clamped). */
 export function intentToSubject(intent: string | undefined, agentLabel: string | undefined): string {
   const line = (intent ?? '').replace(/\s+/g, ' ').trim();
   if (!line) return DEFAULT_GIT_SYNC_SUBJECT;
   const who = agentLabel ? ` (${agentLabel.trim()})` : '';
-  const full = `${line}${who}`;
-  if (full.length <= 72) return full;
-  // Clamp at a word boundary (WI-38568): a mid-word clip ("…and focused dom")
-  // reads as a typo in every hive's public history. Cut at the last space past
-  // a floor so we keep most of the budget, and append … so a truncated subject
-  // reads as truncated. 71 + '…' keeps the total within the 72-char budget.
-  const clipped = full.slice(0, 71);
-  const lastSpace = clipped.lastIndexOf(' ');
-  const cut = lastSpace > 40 ? clipped.slice(0, lastSpace) : clipped;
-  return `${cut.replace(/[\s,;:.-]+$/, '')}…`;
+  return clampSubject(`${line}${who}`);
+}
+
+/** Per-file staged diff stats (one `git diff --numstat` row); null counts = binary. */
+export interface FileDiffStat {
+  file: string;
+  added: number | null;
+  deleted: number | null;
+}
+
+/** Parse `git diff --numstat` output (`added\tdeleted\tpath`, `-` = binary). Pure;
+ *  non-matching lines (blank, warnings) are skipped. A rename row keeps git's
+ *  `old => new` / `{old => new}/rest` label as-is — the subject only renders
+ *  basenames/areas, so the arrow form stays readable. */
+export function parseNumstat(stdout: string): FileDiffStat[] {
+  const out: FileDiffStat[] = [];
+  for (const line of stdout.split('\n')) {
+    const m = line.match(/^(\d+|-)\t(\d+|-)\t(.+)$/);
+    if (!m) continue;
+    out.push({
+      file: m[3],
+      added: m[1] === '-' ? null : Number(m[1]),
+      deleted: m[2] === '-' ? null : Number(m[2]),
+    });
+  }
+  return out;
+}
+
+/** Path roots whose SECOND segment is the meaningful area (apps/api → api). */
+const AREA_ROOTS = new Set(['apps', 'packages', 'libs']);
+
+/** Short area token for a repo-relative path: apps/api/… → 'api', db/… → 'db', README.md → 'root'. */
+function pathArea(f: string): string {
+  const segs = f.split('/');
+  if (segs.length === 1) return 'root';
+  if (AREA_ROOTS.has(segs[0]) && segs.length >= 2) return segs[1];
+  return segs[0];
+}
+
+/** Dir label for the subject middle: apps/api/… → 'apps/api', db/… → 'db', a root file → its name. */
+function pathDirLabel(f: string): string {
+  const segs = f.split('/');
+  if (segs.length === 1) return f;
+  if (AREA_ROOTS.has(segs[0]) && segs.length >= 2) return `${segs[0]}/${segs[1]}`;
+  return segs[0];
+}
+
+const basename = (f: string) => f.slice(f.lastIndexOf('/') + 1);
+
+/**
+ * WI-38594 [owner 2026-08-13]: compose a DIFF-derived commit subject —
+ * `sync(<areas>): <what> (<n> files, +A/-D)` — so the subject describes the commit's
+ * actual CONTENT; the agent's intent line (today's subject) is demoted to the commit
+ * BODY by the callers, so nothing is lost. Pure. `stats` optional (a failed numstat
+ * omits the ±counts rather than blocking the commit). The middle degrades
+ * (basenames → dir labels → bounded dir list → bare file count) until the subject
+ * fits the 72-char budget; the final form is word-boundary-clamped as a last resort.
+ */
+export function diffDerivedSubject(files: string[], stats?: FileDiffStat[]): string {
+  const fs = [...new Set(files)].sort();
+  if (fs.length === 0) return DEFAULT_GIT_SYNC_SUBJECT;
+  const areas = [...new Set(fs.map(pathArea))].sort();
+  const areaPart = areas.length <= 4 ? areas.join(',') : `${areas.slice(0, 3).join(',')} +${areas.length - 3}`;
+  let counts = '';
+  if (stats && stats.length > 0) {
+    let add = 0;
+    let del = 0;
+    for (const s of stats) {
+      add += s.added ?? 0;
+      del += s.deleted ?? 0;
+    }
+    counts = `, +${add}/-${del}`;
+  }
+  const tail = ` (${fs.length} file${fs.length === 1 ? '' : 's'}${counts})`;
+  const dirLabels = [...new Set(fs.map(pathDirLabel))];
+  const middles: string[] = [];
+  if (fs.length <= 2) middles.push(fs.map(basename).join(', '));
+  if (dirLabels.length <= 4) middles.push(dirLabels.join(' + '));
+  else middles.push(`${dirLabels.slice(0, 3).join(' + ')} +${dirLabels.length - 3} more`);
+  for (const middle of middles) {
+    const full = `sync(${areaPart}): ${middle}${tail}`;
+    if (full.length <= 72) return full;
+  }
+  return clampSubject(`sync(${areaPart}): ${fs.length} file${fs.length === 1 ? '' : 's'}${counts}`);
 }
 
 /** "Name <email>" for a Co-Authored-By trailer (best-effort), or null when no identity. */
