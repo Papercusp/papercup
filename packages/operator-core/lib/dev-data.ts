@@ -10,6 +10,7 @@
  */
 
 import { getOrgPg } from '@papercusp/db-org';
+import { agentToolInvocationPredicate } from './agent-tools/sessions/automatic-tool-names';
 
 /**
  * Build a transport WHERE-fragment for tool_invocations queries.
@@ -582,6 +583,7 @@ export async function listSessions(
   const wsFilter = input.workspaceIds && input.workspaceIds.length > 0;
   const workspaceIds = input.workspaceIds ?? [];
   const tFilter = buildTransportFilter(sql, input.transports);
+  const agentToolFilter = agentToolInvocationPredicate(sql);
 
   type Row = {
     spawn_id: string;
@@ -617,6 +619,7 @@ export async function listSessions(
           AND workspace_id = ANY(${sql.array(workspaceIds)})
           AND spawn_id IS NOT NULL
           ${tFilter}
+          AND ${agentToolFilter}
         GROUP BY spawn_id
         ORDER BY started_at DESC
         LIMIT ${limit}
@@ -639,6 +642,7 @@ export async function listSessions(
         WHERE invoked_at > ${sinceIso}::timestamptz
           AND spawn_id IS NOT NULL
           ${tFilter}
+          AND ${agentToolFilter}
         GROUP BY spawn_id
         ORDER BY started_at DESC
         LIMIT ${limit}
@@ -697,6 +701,7 @@ export interface OwnerResolution {
 
 export async function resolveOwnerSessions(ownerId: string): Promise<OwnerResolution> {
   const { sql } = getOrgPg();
+  const agentToolFilter = agentToolInvocationPredicate(sql);
 
   // 1. Interactive SU / console sessions — adv_sessions holds coord_owner_id ↔
   //    the native resume session_id (+ omp_thread_id for omp).
@@ -761,6 +766,7 @@ export async function resolveOwnerSessions(ownerId: string): Promise<OwnerResolu
       MAX(invoked_at) AS ended_at
     FROM harness_shared.tool_invocations
     WHERE coord_owner_id = ${ownerId}
+      AND ${agentToolFilter}
     GROUP BY spawn_id
     ORDER BY started_at DESC
     LIMIT 100
@@ -878,6 +884,7 @@ export async function toolCooccurrence(
   const gapSec = Math.max(1, Math.min(3600, input.gapSec ?? 120));
   const { sql } = getOrgPg();
   const sinceIso = new Date(Date.now() - hours * 3600 * 1000).toISOString();
+  const agentToolFilter = agentToolInvocationPredicate(sql);
 
   const wsFrag =
     input.workspaceIds && input.workspaceIds.length > 0
@@ -901,6 +908,7 @@ export async function toolCooccurrence(
         AND transport = 'mcp'
         AND coord_owner_id IS NOT NULL
         AND tool_name IS NOT NULL
+        AND ${agentToolFilter}
         ${wsFrag}
     ),
     marked AS (
