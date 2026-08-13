@@ -703,7 +703,7 @@
           "POST"
         ]
       },
-      "description": "Read recent worker-activity rows (native tool calls / lifecycle / todos) from the cross-CLI activity bridge. Filter by owner (one worker's pane), harness, agent (claude/codex/omp), kind (tool/lifecycle/todos); since_id returns only rows newer than a cursor. The curator + fleet view read this; the live push is /api/activity/stream.",
+      "description": "Read recent worker-activity rows (native tool calls / lifecycle / todos) from the cross-CLI activity bridge. Filter by owner (one worker's pane), session_id (one CLI run of it), harness, agent (claude/codex/omp), kind (tool/lifecycle/todos); since_id pages forward from a cursor. The curator + fleet view read this; the live push is /api/activity/stream.",
       "capabilities": [
         "activity:read"
       ],
@@ -722,7 +722,7 @@
         "kettle"
       ],
       "guidance": {
-        "when": "You want to inspect what a worker (or the whole fleet) has been doing — the recent native tool-call stream, todo snapshots, or lifecycle transitions. Pass owner to scope to one pane, harness to scope to one project, since_id to page forward.",
+        "when": "You want to inspect what a worker (or the whole fleet) has been doing — the recent native tool-call stream, todo snapshots, or lifecycle transitions. Pass owner for one pane, session_id for one CLI run of it, harness for one project, since_id to page forward.",
         "notWhen": "For a LIVE feed subscribe to the /api/activity/stream SSE (the pui does this). To report activity (you almost never need to) use `activity:report`. For coord messages use `coord:inbox`."
       }
     },
