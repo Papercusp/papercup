@@ -48,7 +48,7 @@ export default defineTool({
     notWhen:
       'To read/write/edit a single file, prefer capability:read / capability:write / capability:edit (they coordinate the file lock and mirror the native editors). For read-only queries against the operator PostgreSQL database, use dev:pg_query { sql | describe } instead of psql: capability:bash intentionally strips database credential environment variables. For git, prefer capability:git.',
     chaining:
-      'run_in_background:true → returns a bash_id plus durable task_id → capability:bash_output { bash_id } to read incremental output → capability:bash_kill { bash_id } to stop. Never push (git push is refused).',
+      'run_in_background:true → returns a bash_id plus durable task_id → preserve task_id across carry and read with capability:bash_output { task_id } (bash_id also works in the launching context) → processes:kill { taskId } to stop. Never push (git push is refused).',
     seeAlso: [
       'capability:bash_output (read a backgrounded run\'s output)',
       'capability:bash_kill (kill a backgrounded run)',
@@ -149,8 +149,10 @@ export default defineTool({
               timeout_ms: job.timeoutMs,
               deadline: job.deadlineAt ? new Date(job.deadlineAt).toISOString() : undefined,
               advice:
-                `Background shell started. Read output: capability:bash_output { bash_id: "${job.id}" }. ` +
-                `Stop: capability:bash_kill { bash_id: "${job.id}" }. ` +
+                `Background shell started. Preserve durable task_id "${job.taskId}" across carry. ` +
+                `Read output: capability:bash_output { task_id: "${job.taskId}" } ` +
+                `(or { bash_id: "${job.id}" } in this launching context). ` +
+                `Stop: processes:kill { taskId: "${job.taskId}" }. ` +
                 `It is terminated at ${job.deadlineAt ? new Date(job.deadlineAt).toISOString() : 'its deadline'} — ` +
                 `re-launch with a larger \`timeout\` (max ${MAX_BACKGROUND_TIMEOUT_MS}ms) if it needs longer.` +
                 bufferingNote +

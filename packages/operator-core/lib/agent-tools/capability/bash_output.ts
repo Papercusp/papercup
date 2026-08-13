@@ -22,7 +22,7 @@ import {
 } from './bash-jobs';
 import { backgroundTypecheckVerdict } from './background-typecheck-verdict';
 import { coresBetween, readCgroupCpuSample, MIN_SAMPLE_GAP_MS } from './cgroup-cpu';
-import { getTaskByBashJobId } from '../../task-manager/store';
+import { getTask, getTaskByBashJobId } from '../../task-manager/store';
 import { isTerminalState, type TaskRow } from '../../task-manager/types';
 import { readProcessIdentity } from '../../process-identity';
 
@@ -407,12 +407,12 @@ export function sampleJobCpu(
 export default defineTool({
   name: 'capability:bash_output',
   description:
-    'Read new output from a background shell job (started by capability:bash run_in_background:true). Returns output since the last read plus status (running/completed/failed/…) and exit code.',
+    'Read new output from a background shell job (started by capability:bash run_in_background:true). Accepts its process-local bash_id or durable task_id, so a successor can reattach after carry. Returns output since the last read plus status (running/completed/failed/…) and exit code.',
   guidance: {
-    when: 'Poll a background job started by capability:bash. Call repeatedly to drain output as it runs; the final call after status leaves "running" gives the tail + exit code.',
+    when: 'Poll a background job started by capability:bash. Use task_id after compaction/carry; it resolves through the durable task ledger and NEVER starts a replacement job. Call repeatedly to drain output as it runs; the final call after status leaves "running" gives the tail + exit code.',
     notWhen:
       'For a foreground command — its output is in the capability:bash result directly. A miss WITH a log tail means the job\'s in-memory tracking is gone while its log survived; three DISTINCT reason codes say what is known, never conflate them. `"tracking_lost_process_alive"` = CONFIRMED running (task-ledger pid re-probe) — do NOT re-run, keep polling. `"job_process_gone"` = CONFIRMED ended (the ledger observed a terminal state) — safe to re-run. `"job_liveness_unknown"` = only a whole-operator restart was ruled out; liveness is UNKNOWN and the job is most often alive but QUEUED behind pc-heavy\'s slot clamp — check `ps` for your command before re-running, or you add load to the very queue that is delaying it.',
-    chaining: 'capability:bash { run_in_background:true } → capability:bash_output { bash_id } (repeat) → capability:bash_kill to stop early.',
+    chaining: 'capability:bash { run_in_background:true } → capability:bash_output { task_id } after carry (or { bash_id } in the launching context) → processes:kill { taskId } to stop early.',
     seeAlso: [
       'capability:bash (start the command)',
       'capability:bash_kill (kill the backgrounded run)',
@@ -425,35 +425,153 @@ export default defineTool({
   // retain the ambient workspace transaction across that control-path I/O.
   skipWorkspaceTx: true,
   agentRoles: [...AGENT_ROLES],
-  args: z.object({
-    bash_id: z.string().min(1).describe('The id returned by capability:bash (run_in_background).'),
-    filter: z
-      .string()
-      .optional()
-      .describe(
-        'Regex; only output LINES matching it are returned (the read cursor still advances past ALL output, matching or not). Mirrors the native BashOutput filter.',
-      ),
-    peek: z.boolean().optional().describe('Read without advancing the read cursor (default false).'),
-  }),
+  args: z
+    .object({
+      bash_id: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('The process-local id returned by capability:bash (run_in_background). Use only in the launching context.'),
+      task_id: z
+        .string()
+        .min(1)
+        .optional()
+        .describe('The durable task id returned by capability:bash. Preferred after compaction/carry; attachment never restarts the job.'),
+      filter: z
+        .string()
+        .optional()
+        .describe(
+          'Regex; only output LINES matching it are returned (the read cursor still advances past ALL output, matching or not). Mirrors the native BashOutput filter.',
+        ),
+      peek: z.boolean().optional().describe('Read without advancing the read cursor (default false).'),
+    })
+    .superRefine((args, refinementCtx) => {
+      if (Boolean(args.bash_id) === Boolean(args.task_id)) {
+        refinementCtx.addIssue({
+          code: z.ZodIssueCode.custom,
+          message: 'Pass exactly one of bash_id or task_id.',
+          path: ['bash_id'],
+        });
+      }
+    }),
   async handler(args, ctx) {
-    const job = getJob(args.bash_id);
+    // `bash_id` indexes the process-local JOBS map. `task_id` is the durable
+    // carry-safe handle: resolve it once through the existing task ledger, then
+    // reuse the exact same live-map/log/identity/terminal-marker path below.
+    // This module deliberately does not import `startBackground`; attachment can
+    // never turn a lookup miss into a duplicate launch.
+    const workspaceId =
+      ctx.workspaceId && ctx.workspaceId !== '*'
+        ? ctx.workspaceId
+        : ctx.principal?.workspaceId && ctx.principal.workspaceId !== '*'
+          ? ctx.principal.workspaceId
+          : undefined;
+    let attachedLedgerRow: TaskRow | null = null;
+    let bashId = args.bash_id;
+    if (args.task_id) {
+      if (!workspaceId) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                reason: 'workspace_scope_required',
+                task_id: args.task_id,
+                advice: 'A concrete workspace scope is required to attach by durable task_id.',
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+      try {
+        attachedLedgerRow = await getTask(args.task_id);
+      } catch (err) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                reason: 'task_ledger_unavailable',
+                task_id: args.task_id,
+                advice: `Could not read the durable task ledger; the job was NOT restarted. Retry attachment (${err instanceof Error ? err.message : String(err)}).`,
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+      // Treat a cross-workspace id exactly like a miss: callers cannot attach to
+      // (or learn metadata about) another workspace's managed process.
+      if (!attachedLedgerRow || attachedLedgerRow.workspaceId !== workspaceId) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                reason: 'unknown_task_id',
+                task_id: args.task_id,
+                advice: 'No managed background shell job with this task_id exists in the current workspace. The job was NOT restarted.',
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+      const durableBashId = attachedLedgerRow.detail?.bashJobId;
+      if (
+        attachedLedgerRow.class !== 'bash-job' ||
+        typeof durableBashId !== 'string' ||
+        durableBashId.length === 0
+      ) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                reason: 'task_not_attachable',
+                task_id: args.task_id,
+                advice: 'This task is not a capability:bash background job with a durable bash handle. It was NOT restarted.',
+              }),
+            },
+          ],
+          isError: true,
+        };
+      }
+      bashId = durableBashId;
+    }
+
+    // The schema enforces exactly one handle. Keep the runtime guard because
+    // direct handler tests/callers can bypass schema parsing.
+    if (!bashId) {
+      return {
+        content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, reason: 'missing_job_handle' }) }],
+        isError: true,
+      };
+    }
+
+    const job = getJob(bashId);
     if (!job) {
       // The JOBS map is worker-local in the clustered operator. Pin the durable
       // lookup to this request's workspace before deciding that the id is gone;
       // otherwise a clean exit on a sibling worker is misread as an unknown job.
-      const workspaceId =
-        ctx.workspaceId && ctx.workspaceId !== '*'
-          ? ctx.workspaceId
-          : ctx.principal?.workspaceId && ctx.principal.workspaceId !== '*'
-            ? ctx.principal.workspaceId
-            : undefined;
-      const ledgerRow = await getTaskByBashJobId(
-        args.bash_id,
-        workspaceId ? { workspaceId } : {},
-      ).catch(() => null);
+      const ledgerRow =
+        attachedLedgerRow ??
+        (await getTaskByBashJobId(
+          bashId,
+          workspaceId ? { workspaceId } : {},
+        ).catch(() => null));
+      const jobIdentity = {
+        bash_id: bashId,
+        ...(ledgerRow?.taskId ? { task_id: ledgerRow.taskId } : {}),
+      };
       const ledgerVerdict = diagnoseFromLedger(ledgerRow);
       const stranded =
-        strandedJobLookup(args.bash_id, ctx.stateDir) ??
+        strandedJobLookup(bashId, ctx.stateDir) ??
         (ledgerRow?.logPath ? strandedJobLookupAtPath(ledgerRow.logPath) : null);
       if (stranded || ledgerRow) {
         const strandedLog: StrandedJobLogInspection = stranded
@@ -478,7 +596,7 @@ export default defineTool({
                 type: 'text' as const,
                 text: JSON.stringify({
                   ok: true,
-                  bash_id: args.bash_id,
+                  ...jobIdentity,
                   status: strandedLog.terminal.status,
                   exit_code: strandedLog.terminal.exitCode,
                   running: false,
@@ -514,6 +632,7 @@ export default defineTool({
                 type: 'text' as const,
                 text: JSON.stringify({
                   ok: false,
+                  ...jobIdentity,
                   reason: 'tracking_lost_process_alive',
                   advice:
                     `This job's in-memory tracking is gone, but its real OS process (pid ${ledgerVerdict.pid}` +
@@ -524,7 +643,6 @@ export default defineTool({
                     confirmedAliveStopAdvice(),
                   pid: ledgerVerdict.pid,
                   scope_unit: ledgerVerdict.scopeUnit,
-                  task_id: ledgerVerdict.taskId,
                   ...(recoveredLogPath ? { log_path: recoveredLogPath } : {}),
                   ...(stranded ? { total_bytes_written: stranded.sizeBytes } : {}),
                   ...strandedOutput,
@@ -548,7 +666,7 @@ export default defineTool({
                   type: 'text' as const,
                   text: JSON.stringify({
                     ok: true,
-                    bash_id: args.bash_id,
+                    ...jobIdentity,
                     status: terminal.status,
                     exit_code: terminal.exitCode,
                     running: false,
@@ -593,6 +711,7 @@ export default defineTool({
                 type: 'text' as const,
                 text: JSON.stringify({
                   ok: false,
+                  ...jobIdentity,
                   reason: 'job_process_gone',
                   advice:
                     "This job's in-memory tracking is gone, and the durable task ledger CONFIRMS it actually ended " +
@@ -619,6 +738,7 @@ export default defineTool({
                 type: 'text' as const,
                 text: JSON.stringify({
                   ok: false,
+                  ...jobIdentity,
                   reason: 'unknown_bash_id',
                   advice: 'No surviving output log is available for this background job. Re-run with capability:bash if you still need the result.',
                 }),
@@ -653,6 +773,7 @@ export default defineTool({
               type: 'text' as const,
               text: JSON.stringify({
                 ok: false,
+                ...jobIdentity,
                 reason: cause,
                 advice,
                 log_path: recoveredLogPath,
@@ -670,6 +791,7 @@ export default defineTool({
             type: 'text' as const,
             text: JSON.stringify({
               ok: false,
+              bash_id: bashId,
               reason: 'unknown_bash_id',
               advice: 'No such background job (it may have been pruned, or the id is wrong). Re-run with capability:bash.',
             }),
@@ -705,6 +827,7 @@ export default defineTool({
           text: JSON.stringify({
             ok: true,
             bash_id: job.id,
+            ...(job.taskId ? { task_id: job.taskId } : {}),
             status: job.status,
             exit_code: job.exitCode,
             running: job.status === 'running',
