@@ -257,7 +257,7 @@ export default defineTool({
       .filter((i) => !audited.has(i.itemId) && i.status !== 'dropped')
       .map((i) => i.itemId);
 
-    await emitPlanEventForCaller(ctx, {
+    await emitPlanEventForCaller(ctx as Parameters<typeof emitPlanEventForCaller>[0], {
       planSlug: args.slug,
       event: 'plan_audited',
       detail: `audit #${audit.auditSeq}`,
