@@ -1,0 +1,281 @@
+/**
+ * shadow-variants.test.ts — feature pins for the counterfactual critique lab's
+ * write/read seam (plan
+ * counterfactual-critique-lab-turn-blender-grader-feedback-int-2026-08-13, P-002).
+ *
+ * These test the three properties D-001 makes load-bearing, each of which is
+ * silently violable — a broken one produces a trial that still RUNS and still
+ * REPORTS a number, just a meaningless one:
+ *
+ *   1. the source row is never written to (immutability),
+ *   2. every variant gets a `revises` edge back to its source (source-linked),
+ *   3. shadow variants never reach an ordinary routed-idea reader (quota exclusion).
+ *
+ * (3) is asserted against the REAL query text of the three chokepoints rather
+ * than against a mock's return value: a stubbed reader returning [] proves
+ * nothing about whether the shipped SQL filters. Over a stubbed PG seam, like
+ * routed-ledger.test.ts.
+ */
+import { afterEach, describe, expect, it, vi } from 'vitest';
+
+const h = vi.hoisted(() => ({
+  /** Every query text this test's seam saw, in order. */
+  queries: [] as string[],
+  /** Every parameter list, positionally aligned with `queries`. */
+  params: [] as unknown[][],
+  /** The source row the SELECT yields (null ⇒ not found). */
+  sourceRow: null as Record<string, unknown> | null,
+  /** Rows the pair-read yields. */
+  pairRows: [] as Record<string, unknown>[],
+}));
+
+vi.mock('@papercusp/db-org', () => ({
+  getOrgPg: () => ({
+    sql: Object.assign(
+      (strings: TemplateStringsArray, ...vals: unknown[]) => {
+        const text = strings.join(' ');
+        h.queries.push(text);
+        h.params.push(vals);
+        if (text.includes('FROM harness_shared.scout_routed_ideas') && text.includes('SELECT idea_id, lens')) {
+          return Promise.resolve(h.sourceRow ? [h.sourceRow] : []);
+        }
+        if (text.includes('FROM harness_shared.coord_links l')) return Promise.resolve(h.pairRows);
+        return Promise.resolve([]);
+      },
+      // postgres-js exposes the tag itself as the fragment builder; nested
+      // sql`` fragments in the pair query call it with no args in the else-branch.
+      {},
+    ),
+  }),
+}));
+
+vi.mock('../workspace-registry', () => ({ activeWorkspaceId: () => 'papercusp-workspace' }));
+vi.mock('../sync-sse', () => ({ notifySyncInvalidate: vi.fn(async () => {}) }));
+
+const {
+  recordShadowVariant,
+  readShadowVariantPairs,
+  shadowVariantIdeaId,
+  ShadowVariantSourceError,
+} = await import('./shadow-variants');
+const { SHADOW_VARIANT_ORIGIN, SHADOW_VARIANT_REL, isShadowVariantOrigin, shadowVariantExclusionSql } =
+  await import('./shadow-variant-origin');
+
+/** A graded, feedback-carrying source — the D-002 eligibility shape. */
+const eligibleSource = () => ({
+  idea_id: 'EI-10869',
+  lens: 'cost-leverage',
+  rail: 'wi',
+  harness_slug: 'papercusp',
+  title: 'original idea',
+  human_grade: 3,
+  human_feedback: 'The mechanism is under-specified; name the failure it prevents.',
+  graded_by: 'owner',
+});
+
+/**
+ * Index of the first captured query matching `re`. The seam joins a tagged
+ * template's static parts with ' ', so the recorded text keeps the source's own
+ * newlines and indentation — match on a pattern, never an exact literal.
+ */
+const queryIndex = (re: RegExp): number => h.queries.findIndex((q) => re.test(q));
+const LEDGER_INSERT = /INSERT INTO\s+harness_shared\.scout_routed_ideas/i;
+const LINK_INSERT = /INSERT INTO\s+harness_shared\.coord_links/i;
+/**
+ * The shipped exclusion conjunct, as it appears in a tagged-template query.
+ * Matches the INTERPOLATED constant, not a bare string literal: a call site that
+ * hard-codes `origin <> 'shadow-variant'` is exactly the per-site drift
+ * `shadow-variant-origin.ts` exists to prevent, so it should NOT satisfy this.
+ */
+const EXCLUSION_CONJUNCT = /origin\s*<>\s*\$\{SHADOW_VARIANT_ORIGIN\}/;
+
+afterEach(() => {
+  h.queries = [];
+  h.params = [];
+  h.sourceRow = null;
+  h.pairRows = [];
+});
+
+describe('recordShadowVariant — source immutability (D-001)', () => {
+  it('writes a NEW ledger row and never UPDATEs the source', async () => {
+    h.sourceRow = eligibleSource();
+    await recordShadowVariant({
+      sourceIdeaId: 'EI-10869',
+      variantIdeaId: 'shadow-variant:trial:EI-10869',
+      title: 'revised idea',
+      createdBy: 'su-test',
+    });
+    const all = h.queries.join('\n');
+    // The precise invariant: no UPDATE against the ledger at all. A regression
+    // that "helpfully" stamped the source (a revised_at, a variant pointer)
+    // would still pass every functional test while destroying the baseline the
+    // trial measures against.
+    expect(all).not.toMatch(/UPDATE\s+harness_shared\.scout_routed_ideas/i);
+    expect(all).toMatch(/INSERT INTO\s+harness_shared\.scout_routed_ideas/i);
+  });
+
+  it('returns the source as it stood, so the caller records the pre-variant baseline', async () => {
+    h.sourceRow = eligibleSource();
+    const res = await recordShadowVariant({
+      sourceIdeaId: 'EI-10869',
+      variantIdeaId: 'v1',
+      title: 'revised idea',
+    });
+    expect(res.source.humanGrade).toBe(3);
+    expect(res.source.gradedBy).toBe('owner');
+    expect(res.source.humanFeedback).toContain('under-specified');
+  });
+});
+
+describe('recordShadowVariant — source linkage (D-001)', () => {
+  it('writes a revises edge from the variant to its source', async () => {
+    h.sourceRow = eligibleSource();
+    await recordShadowVariant({
+      sourceIdeaId: 'EI-10869',
+      variantIdeaId: 'v1',
+      title: 'revised idea',
+      createdBy: 'su-test',
+    });
+    const idx = queryIndex(LINK_INSERT);
+    expect(idx).toBeGreaterThanOrEqual(0);
+    const vals = h.params[idx];
+    // Direction matters: variant is the SRC, source is the DST. Reversed, the
+    // pair-reader still returns rows — with the two sides swapped, which turns
+    // a measured uplift into a measured regression.
+    expect(vals).toContain('v1');
+    expect(vals).toContain('EI-10869');
+    expect(vals).toContain(SHADOW_VARIANT_REL);
+    expect(vals.indexOf('v1')).toBeLessThan(vals.indexOf('EI-10869'));
+  });
+
+  it('reuses the existing revises rel rather than a lab-private vocabulary', () => {
+    expect(SHADOW_VARIANT_REL).toBe('revises');
+  });
+
+  it('inherits the source lens and rail so the pair stays comparable', async () => {
+    h.sourceRow = { ...eligibleSource(), lens: 'risk-first', rail: 'plan' };
+    await recordShadowVariant({ sourceIdeaId: 'EI-10869', variantIdeaId: 'v1', title: 'revised' });
+    const idx = queryIndex(LEDGER_INSERT);
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(h.params[idx]).toContain('risk-first');
+    expect(h.params[idx]).toContain('plan');
+  });
+
+  it('stamps the shadow-variant origin on the ledger row', async () => {
+    h.sourceRow = eligibleSource();
+    await recordShadowVariant({ sourceIdeaId: 'EI-10869', variantIdeaId: 'v1', title: 'revised' });
+    const idx = queryIndex(LEDGER_INSERT);
+    expect(idx).toBeGreaterThanOrEqual(0);
+    expect(h.params[idx]).toContain(SHADOW_VARIANT_ORIGIN);
+  });
+});
+
+describe('recordShadowVariant — refuses an ineligible source, loudly', () => {
+  it('refuses a source that does not exist', async () => {
+    h.sourceRow = null;
+    await expect(
+      recordShadowVariant({ sourceIdeaId: 'nope', variantIdeaId: 'v1', title: 't' }),
+    ).rejects.toThrow(ShadowVariantSourceError);
+    expect(h.queries.join('\n')).not.toMatch(/INSERT INTO/i);
+  });
+
+  it('refuses an ungraded source', async () => {
+    h.sourceRow = { ...eligibleSource(), human_grade: null };
+    await expect(
+      recordShadowVariant({ sourceIdeaId: 'EI-1', variantIdeaId: 'v1', title: 't' }),
+    ).rejects.toMatchObject({ reason: 'source-ungraded' });
+    expect(h.queries.join('\n')).not.toMatch(/INSERT INTO/i);
+  });
+
+  it('refuses a source with blank feedback — a variant of it is not feedback-conditioned', async () => {
+    h.sourceRow = { ...eligibleSource(), human_feedback: '   ' };
+    await expect(
+      recordShadowVariant({ sourceIdeaId: 'EI-1', variantIdeaId: 'v1', title: 't' }),
+    ).rejects.toMatchObject({ reason: 'source-has-no-feedback' });
+    expect(h.queries.join('\n')).not.toMatch(/INSERT INTO/i);
+  });
+});
+
+describe('shadowVariantIdeaId — a re-run must not inflate the cohort', () => {
+  it('is deterministic per (source, trial)', () => {
+    expect(shadowVariantIdeaId('EI-1', 'trial-a')).toBe(shadowVariantIdeaId('EI-1', 'trial-a'));
+    expect(shadowVariantIdeaId('EI-1', 'trial-a')).not.toBe(shadowVariantIdeaId('EI-2', 'trial-a'));
+    expect(shadowVariantIdeaId('EI-1', 'trial-a')).not.toBe(shadowVariantIdeaId('EI-1', 'trial-b'));
+  });
+});
+
+describe('readShadowVariantPairs', () => {
+  it('reports an ungraded variant as a null grade rather than dropping the pair', async () => {
+    h.pairRows = [
+      {
+        source_idea_id: 'EI-1',
+        variant_idea_id: 'v1',
+        lens: 'cost-leverage',
+        source_title: 'a',
+        variant_title: 'b',
+        source_grade: 3,
+        variant_grade: null,
+        source_feedback: 'crit',
+        variant_feedback: null,
+        source_graded_by: 'owner',
+        variant_graded_by: null,
+      },
+    ];
+    const pairs = await readShadowVariantPairs();
+    expect(pairs).toHaveLength(1);
+    // "graded, no uplift" and "never graded" must stay distinguishable — P-004
+    // reports uncertainty explicitly, which it cannot do if the reader collapses
+    // an incomplete trial into a complete-looking one.
+    expect(pairs[0].sourceGrade).toBe(3);
+    expect(pairs[0].variantGrade).toBeNull();
+  });
+
+  it('only walks revises edges between routed-idea endpoints, and only to shadow variants', async () => {
+    await readShadowVariantPairs();
+    const q = h.queries.find((t) => t.includes('FROM harness_shared.coord_links l'));
+    expect(q).toBeDefined();
+    expect(q).toMatch(/l\.rel\s*=/);
+    expect(q).toMatch(/var\.origin\s*=/);
+  });
+});
+
+describe('ordinary-quota exclusion is enforced in the shipped SQL (D-001)', () => {
+  it('exposes the vocabulary as one shared constant', () => {
+    expect(SHADOW_VARIANT_ORIGIN).toBe('shadow-variant');
+    expect(isShadowVariantOrigin('shadow-variant')).toBe(true);
+    expect(isShadowVariantOrigin('scout')).toBe(false);
+    expect(isShadowVariantOrigin(null)).toBe(false);
+    expect(shadowVariantExclusionSql()).toContain("origin <> 'shadow-variant'");
+    expect(shadowVariantExclusionSql('r')).toContain("r.origin <> 'shadow-variant'");
+  });
+
+  // Read the shipped source rather than calling the readers: these three are the
+  // chokepoints where a shadow variant would otherwise enter a PRODUCTION signal
+  // (the Mug's meta-pattern digest, Scout's novelty corpus, the ungraded-filings
+  // census). A future edit that drops one of these conjuncts is the regression
+  // this file exists to catch, and it would not fail any behavioral test.
+  it.each([
+    ['routed-ledger.ts', 'readRoutedIdeas origin:all → the Mug meta-pattern digest'],
+    ['cycle-deps.ts', 'readNoveltyCorpus → Scout idea generation'],
+    ['ungraded-scope.ts', 'readUngradedBreakdown → the ungraded-filings census'],
+  ])('%s excludes the shadow-variant origin (%s)', async (file) => {
+    const { readFile } = await import('node:fs/promises');
+    const src = await readFile(new URL(`./${file}`, import.meta.url), 'utf8');
+    expect(src).toMatch(EXCLUSION_CONJUNCT);
+  });
+
+  // CALIBRATION CONTROL. The three assertions above are source greps, and a
+  // source grep that cannot fail certifies nothing — the standing risk is a
+  // pattern loosened until it matches anything (or a path that silently reads
+  // the wrong file, which also "passes"). Pin the negative case against a
+  // sibling that legitimately carries no exclusion, so the day the pattern stops
+  // discriminating, THIS test fails rather than the three above quietly passing
+  // forever. Done as a control instead of a mutation probe deliberately: the
+  // tree is shared and swept by git-sync every few minutes, so mutating a real
+  // source file to prove falsifiability can commit the mutant.
+  it('the exclusion pattern is falsifiable — it does NOT match a file without the conjunct', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const src = await readFile(new URL('./routed-ledger.test.ts', import.meta.url), 'utf8');
+    expect(src).not.toMatch(EXCLUSION_CONJUNCT);
+  });
+});

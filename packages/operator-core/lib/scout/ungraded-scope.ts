@@ -44,7 +44,20 @@
 
 import type { Sql } from 'postgres';
 
-/** The producers that file into `harness_shared.scout_routed_ideas`. */
+import { SHADOW_VARIANT_ORIGIN } from './shadow-variant-origin';
+
+/**
+ * The producers that file into `harness_shared.scout_routed_ideas`.
+ *
+ * `'shadow-variant'` is deliberately ABSENT and excluded from the census SQL
+ * below (counterfactual-critique-lab D-001). It is not a producer whose filings
+ * anyone should be nudged to grade: the shadow trial grades its own variants
+ * under blinded conditions as part of the trial, and the ungraded-filings
+ * watchdog nudging them would be exactly the automatic recurrence D-001
+ * forbids. Note the policy's `fallbackMs` rule — a new origin is INCLUDED by
+ * default, over-counting rather than silently vanishing — is what makes this
+ * explicit exclusion necessary rather than redundant.
+ */
 export type UngradedOrigin = 'su-ideate' | 'scout' | 'drill';
 
 /**
@@ -240,6 +253,7 @@ export async function readUngradedBreakdown(
                  coalesce((${floors}::jsonb ->> origin)::bigint, ${fallback}::bigint) AS epoch_ms
             FROM harness_shared.scout_routed_ideas
            WHERE workspace_id = ${workspaceId} AND harness_slug = ${harnessSlug}
+             AND origin <> ${SHADOW_VARIANT_ORIGIN}
         )
         SELECT origin,
                count(*) FILTER (WHERE human_grade IS NULL AND routed_at >= epoch_ms
@@ -256,6 +270,7 @@ export async function readUngradedBreakdown(
                  coalesce((${floors}::jsonb ->> origin)::bigint, ${fallback}::bigint) AS epoch_ms
             FROM harness_shared.scout_routed_ideas
            WHERE workspace_id = ${workspaceId}
+             AND origin <> ${SHADOW_VARIANT_ORIGIN}
         )
         SELECT origin,
                count(*) FILTER (WHERE human_grade IS NULL AND routed_at >= epoch_ms

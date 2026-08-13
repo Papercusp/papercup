@@ -27,6 +27,7 @@ import {
   type FederatedMapEliteRow,
 } from './corpus-digest';
 import { buildStateOfHiveReaders } from './corpus-digest-deps';
+import { SHADOW_VARIANT_ORIGIN } from './shadow-variant-origin';
 import { runIdeators, ScoutIdeatorsTransportError } from './ideators';
 import { critiqueIdeas } from './critics';
 import { recombineProposals } from './recombine';
@@ -282,6 +283,15 @@ export async function readNoveltyCorpus(): Promise<CorpusEntry[]> {
           SELECT DISTINCT ON (routed_ref) routed_ref, title, outcome, routed_at
             FROM harness_shared.scout_routed_ideas
            WHERE title IS NOT NULL
+             -- counterfactual-critique-lab D-001: shadow trial variants are
+             -- synthetic re-writes of ideas ALREADY in this corpus, so admitting
+             -- them would both double-count each source and let a trial artifact
+             -- steer future generation — the "no prompt or routing behavior
+             -- changes from trial results automatically" line. This is the leak
+             -- that does NOT close itself: the two watchdog readers pin
+             -- origin='su-ideate' and the lens-weight readers pin origin='scout',
+             -- but this one filters on the title column alone.
+             AND origin <> ${SHADOW_VARIANT_ORIGIN}
            ORDER BY routed_ref, routed_at DESC
         ) d
        ORDER BY (outcome IS NOT NULL) DESC, routed_at DESC
