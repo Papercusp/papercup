@@ -31,6 +31,7 @@ import {
   parsePorcelainPaths,
   deriveBlocker,
   mainBufferIsStale,
+  mainBufferStallReason,
   mapCheckpointRunInFlight,
   reconcileGateCandidates,
   MAIN_BUFFER_STALL_MS,
@@ -1970,6 +1971,38 @@ describe('computeStages: position x health', () => {
       expect(stage(redGate, 'main').detail).toMatch(/see the gate stage above/);
     });
 
+    it('WI-38367: a recent green that did NOT consume the backlog reads stalled — and says so in the gate-is-running language, not the wedged-gate one', () => {
+      const s = computeStages(
+        input({
+          gate: {
+            stalled: false,
+            consecutiveReds: 0,
+            lastGreenAtMs: Date.now() - 60_000, // greened one minute ago
+            fireStale: false,
+            fireStaleReason: null, verdictStale: false, verdictStaleReason: null, verdictStaleReasonCode: null, candidateAgeMs: null, commitsBehindTip: null, observedCandidate: null, inconclusive: null,
+          },
+          verdictProvenance: {
+            lastGreenSha: 'g',
+            lastGreenShortSha: 'g',
+            lastGreenAgeMs: 1,
+            mainFastForwarded: false,
+            // ...while the oldest un-promoted commit is 9h old: the advance moved the
+            // tip end of the buffer, not this backlog.
+            stagingBufferAgeMs: 9 * 60 * 60 * 1000,
+            deployedBehindGreenPin: 0,
+            deployOrigin: 'gate-green',
+          },
+        }),
+      );
+      expect(stage(s, 'main').health).toBe('stalled');
+      expect(stage(s, 'main').detail).toMatch(/9\.0h old/);
+      expect(stage(s, 'main').detail).toMatch(/Do NOT read this as a wedged gate/);
+      // It must NOT reach for the no-green sentence — that one sends the reader to go
+      // un-wedge a gate that is running fine.
+      expect(stage(s, 'main').detail).not.toMatch(/no NEW green verdict/);
+      expect(stage(s, 'main').detail).not.toMatch(/normal, not a stall/);
+    });
+
     it('no buffer at all (mainFastForwarded: true) is unconditionally advancing with no detail, however old lastGreenAtMs is', () => {
       const s = computeStages(
         input({
@@ -1991,22 +2024,111 @@ describe('computeStages: position x health', () => {
 
 describe('mainBufferIsStale — pure helper (WI-6357 / EI-18790908999972569)', () => {
   it('is false whenever there is no buffer (mainFastForwarded true or null), regardless of age', () => {
-    expect(mainBufferIsStale({ lastGreenAtMs: 1 }, true)).toBe(false);
-    expect(mainBufferIsStale({ lastGreenAtMs: 1 }, null)).toBe(false);
+    expect(mainBufferIsStale({ gate: { lastGreenAtMs: 1 }, mainFastForwarded: true })).toBe(false);
+    expect(mainBufferIsStale({ gate: { lastGreenAtMs: 1 }, mainFastForwarded: null })).toBe(false);
   });
 
   it('is false when the last green verdict has never been measured (axis 2: no confident negative from missing data)', () => {
-    expect(mainBufferIsStale({ lastGreenAtMs: null }, false)).toBe(false);
+    expect(mainBufferIsStale({ gate: { lastGreenAtMs: null }, mainFastForwarded: false })).toBe(false);
   });
 
   it('is false for a buffer younger than the threshold — the normal, expected lag', () => {
     const now = 10_000_000;
-    expect(mainBufferIsStale({ lastGreenAtMs: now - (MAIN_BUFFER_STALL_MS - 1) }, false, now)).toBe(false);
+    expect(
+      mainBufferIsStale({ gate: { lastGreenAtMs: now - (MAIN_BUFFER_STALL_MS - 1) }, mainFastForwarded: false }, now),
+    ).toBe(false);
   });
 
   it('is true once the last green verdict is older than the threshold', () => {
     const now = 10_000_000;
-    expect(mainBufferIsStale({ lastGreenAtMs: now - (MAIN_BUFFER_STALL_MS + 1) }, false, now)).toBe(true);
+    expect(
+      mainBufferIsStale({ gate: { lastGreenAtMs: now - (MAIN_BUFFER_STALL_MS + 1) }, mainFastForwarded: false }, now),
+    ).toBe(true);
+  });
+});
+
+/**
+ * WI-38367 (the audit WI-38340's D-005 asks for) — the partial-green-salvage hole in
+ * THIS surface's copy of the "an advance means main is catching up" premise.
+ *
+ * WI-38218 promotes the longest green PREFIX, so the gate can reset `lastGreenAt` on
+ * every pass while the OLD end of the staging buffer never moves. Judged on green
+ * recency alone, `stages[main]` then reads `advancing` / "normal, not a stall" about a
+ * main that is hundreds of commits behind — the same false all-clear WI-38340 fixed in
+ * `evaluateMainBehindStaging`. These pin the fix to the MEASUREMENT (the buffer's own
+ * age), not to the `advanced-prefix` status string.
+ */
+describe('mainBufferStallReason — an advance only suppresses when it CONSUMED the backlog (WI-38367)', () => {
+  const now = 100 * 60 * 60 * 1000;
+  const green = (agoMs: number) => ({ lastGreenAtMs: now - agoMs });
+
+  it('names WHICH trigger fired — a dead gate and an unproductive one need opposite responses', () => {
+    expect(
+      mainBufferStallReason(
+        { gate: green(MAIN_BUFFER_STALL_MS + 1), mainFastForwarded: false, stagingBufferAgeMs: 60_000 },
+        now,
+      ),
+    ).toBe('no-green');
+    expect(
+      mainBufferStallReason(
+        { gate: green(60_000), mainFastForwarded: false, stagingBufferAgeMs: 9 * 60 * 60 * 1000 },
+        now,
+      ),
+    ).toBe('unproductive-advance');
+  });
+
+  it('THE BUG: a fresh green against a hours-old backlog is no longer read as healthy', () => {
+    // The WI-38340 shape, one surface over: a 1-minute-old prefix advance while the
+    // oldest un-promoted commit is 9h old. Green recency ALONE says "not stale".
+    const input = { gate: green(60_000), mainFastForwarded: false as const, stagingBufferAgeMs: 9 * 60 * 60 * 1000 };
+    expect(mainBufferIsStale(input, now)).toBe(true);
+    // ...and the control that proves the assertion above is not just "any recent green
+    // alarms": the SAME green, against a backlog the advance could have produced.
+    expect(mainBufferIsStale({ ...input, stagingBufferAgeMs: 60_000 }, now)).toBe(false);
+  });
+
+  it('does NOT alarm on the quiet-fleet shape that makes the pin age a bad proxy', () => {
+    // main sits at a 5h-old commit (nothing was committed for hours) and ONE new commit
+    // landed a minute ago. The buffer is a minute old; the pin's age says 5h. Anything
+    // keying on pin age instead of buffer age cries wolf here.
+    expect(
+      mainBufferStallReason({ gate: green(20 * 60_000), mainFastForwarded: false, stagingBufferAgeMs: 60_000 }, now),
+    ).toBeNull();
+  });
+
+  it('an unmeasured buffer age leaves the pre-existing suppression untouched — never a manufactured verdict', () => {
+    expect(
+      mainBufferStallReason({ gate: green(60_000), mainFastForwarded: false, stagingBufferAgeMs: null }, now),
+    ).toBeNull();
+    expect(mainBufferStallReason({ gate: green(60_000), mainFastForwarded: false }, now)).toBeNull();
+    // ...but an unmeasured buffer must NOT rescue a gate that has stopped greening.
+    expect(
+      mainBufferStallReason({ gate: green(MAIN_BUFFER_STALL_MS + 1), mainFastForwarded: false }, now),
+    ).toBe('no-green');
+  });
+
+  it('tolerates one suite cut: a backlog older than the advance by less than the horizon is still progress', () => {
+    const advanceAgo = 30 * 60_000;
+    expect(
+      mainBufferStallReason(
+        {
+          gate: green(advanceAgo),
+          mainFastForwarded: false,
+          stagingBufferAgeMs: advanceAgo + MAIN_BUFFER_STALL_MS - 1,
+        },
+        now,
+      ),
+    ).toBeNull();
+    expect(
+      mainBufferStallReason(
+        {
+          gate: green(advanceAgo),
+          mainFastForwarded: false,
+          stagingBufferAgeMs: advanceAgo + MAIN_BUFFER_STALL_MS + 1,
+        },
+        now,
+      ),
+    ).toBe('unproductive-advance');
   });
 });
 

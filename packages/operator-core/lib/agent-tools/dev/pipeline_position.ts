@@ -135,7 +135,7 @@ function compactPipelineResult(result: PipelinePosition, extras: JsonRecord, opt
   const gate = compactPipelineGate(source.gate, opts);
   if (gate) out.gate = gate;
   for (const [field, fields] of [
-    ['verdictProvenance', ['lastGreenSha', 'lastGreenShortSha', 'lastGreenAgeMs', 'mainFastForwarded', 'mainBehindStaging', 'deployedBehindGreenPin', 'deployOrigin']],
+    ['verdictProvenance', ['lastGreenSha', 'lastGreenShortSha', 'lastGreenAgeMs', 'mainFastForwarded', 'mainBehindStaging', 'stagingBufferAgeMs', 'deployedBehindGreenPin', 'deployOrigin']],
     ['serving', ['host', 'unit', 'pid', 'startedAtMs', 'codeAsOfMs', 'codeAsOfSource', 'startedSinceCodeChange', 'behindMin', 'restartLever', 'restartSupersededBy', 'unknownReason']],
     ['changeInCandidate', ['judgingSha', 'judgingShaSource', 'judgingContainsPath', 'nextCandidateSha', 'nextContainsPath', 'missingReason', 'markerJudging', 'markerNext', 'detail']],
     ['sweepExposure', ['exposed', 'dirtyPathCount', 'dirtyPathSample', 'nextSweepInMs', 'detail']],

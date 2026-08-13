@@ -85,6 +85,38 @@ async function refContains(git: GitRunner, repo: string, ref: string, sha: strin
 }
 
 /**
+ * WI-38367: the age (ms) of the OLDEST commit reachable from `to` but not `from` —
+ * the OLD END of the buffer between two refs.
+ *
+ * This is the measurement that tells an advance which MOVED the buffer apart from one
+ * which CONSUMED it. A partial-green salvage (WI-38218) promotes the longest green
+ * PREFIX, so the tip end of the buffer moves while its old end does not; only this
+ * value distinguishes the two, and it does so without knowing the mechanism's name
+ * (see `mainBufferStallReason`). Deliberately the same signal
+ * `green-stall-watchdog.computeMainBehindStaging` derives for
+ * `evaluateMainBehindStaging` — one property, measured the same way in both places.
+ *
+ * Tri-state per this module's standing rule: `null` = the git read FAILED or the range
+ * is empty (unknown — never a verdict), a number = a measured age.
+ */
+async function oldestCommitAgeMs(
+  git: GitRunner,
+  repo: string,
+  from: string,
+  to: string,
+  now: number = Date.now(),
+): Promise<number | null> {
+  // `--reverse` puts the OLDEST commit of the range first; `%ct` is the committer
+  // timestamp in epoch seconds. (`--max-count=1 --reverse` would NOT work: git limits
+  // first and reverses after, so it returns the NEWEST commit.)
+  const out = await git(repo, ['log', '--format=%ct', '--reverse', `${from}..${to}`]);
+  if (out === null || out === '') return null;
+  const oldest = Number(out.split('\n')[0]);
+  if (!Number.isFinite(oldest)) return null;
+  return Math.max(0, now - oldest * 1000);
+}
+
+/**
  * WI-6646: the newest commit touching `relPath` that `ref` ALREADY contains.
  *
  * Used to tell the two ways a leg's `false` can arise apart. `targetSha` is "the newest
@@ -953,6 +985,19 @@ export interface PipelinePosition {
      * the buffer to have outlived the pipeline's own cadence.
      */
     mainBehindStaging?: boolean | null;
+    /**
+     * WI-38367: the age (ms) of the OLDEST commit on `staging` that `main` does not have —
+     * the OLD END of the staging buffer. `null` = unmeasured (no buffer, or the git read
+     * failed); never read a `null` as "the buffer is fresh".
+     *
+     * ⚠ This is NOT `lastGreenAgeMs`, and the two are not interchangeable.
+     * `lastGreenAgeMs` is the age of the commit the pin SITS AT, which on a quiet fleet is
+     * legitimately hours old with a one-minute-old buffer ahead of it. Only THIS field says
+     * how long the pipeline has been failing to consume the backlog — which is why
+     * `mainBufferStallReason` needs it to tell a gate that advanced the tip end apart from
+     * one that is actually catching main up.
+     */
+    stagingBufferAgeMs?: number | null;
     /** Commits `ready` has that the deployed ref doesn't (0 once the live host has
      *  caught up to the latest green verdict). */
     deployedBehindGreenPin: number | null;
@@ -2168,7 +2213,20 @@ export interface StageState {
 export const MAIN_BUFFER_STALL_MS = 2 * 60 * 60 * 1000;
 
 /**
- * Is the staging→main buffer's AGE — not merely its existence — suspicious?
+ * WI-38367: WHY the staging→main buffer looks stuck — the two triggers need OPPOSITE
+ * responses from the reader, so they must not collapse into one boolean.
+ *   · 'no-green'              the gate has produced no green verdict in the window; it
+ *                             is not running / not passing. Go look at the gate.
+ *   · 'unproductive-advance'  the gate IS greening, and main IS moving — but the old end
+ *                             of the backlog has not moved with it. Nothing is wedged;
+ *                             the promotions are not consuming this buffer. Telling this
+ *                             reader "the gate has recorded no NEW green verdict" would
+ *                             send them hunting a gate that is running fine.
+ */
+export type MainBufferStallReason = 'no-green' | 'unproductive-advance';
+
+/**
+ * Is the staging→main buffer's AGE — not merely its existence — suspicious, and why?
  *
  * `mainFastForwarded !== false` (no buffer, or unmeasured) is never stale — a
  * buffer that doesn't exist can't be stuck, and a `null` (unmeasured) must not be
@@ -2180,16 +2238,53 @@ export const MAIN_BUFFER_STALL_MS = 2 * 60 * 60 * 1000;
  * — `gate.lastGreenAtMs === null` (no green verdict measured yet) is likewise left
  * unstale rather than asserted stuck.
  *
+ * ⚠ WI-38367 / D-005 on `main-gate-recovery-2026-08-12` — the recency test above is a
+ * PROXY, and WI-38218's partial-green salvage broke it: promoting the longest green
+ * PREFIX resets `lastGreenAt` on every pass while the old end of the backlog never
+ * moves, so "greened within the window" stopped implying "main is catching up". Left
+ * alone, this helper reports `advancing` / "normal, not a stall" about a main that is
+ * hundreds of commits behind and falling further — the same false all-clear WI-38340
+ * fixed one surface over, in `evaluateMainBehindStaging`.
+ *
+ * So a recent green only suppresses when it is CORROBORATED by the buffer's own age:
+ * a real advance `t` ago leaves the oldest un-promoted commit no older than `t` plus
+ * one suite cut. `stagingBufferAgeMs` measures that directly, exactly as the watchdog's
+ * `behindMs` does — deliberately NOT by testing for the `advanced-prefix` status,
+ * which is a taxonomy that the next mechanism to move `main` without consuming the
+ * backlog would not appear in (a manual prefix promotion already doesn't).
+ *
+ * An unmeasured `stagingBufferAgeMs` cannot corroborate OR refute, and this surface's
+ * standing rule is that a missing measurement never manufactures a verdict — so it
+ * leaves the pre-existing recency suppression exactly as it was rather than alarming.
+ *
  * Pure + directly unit-testable, mirroring `computeStages`'s own contract.
  */
+export function mainBufferStallReason(
+  input: {
+    gate: Pick<PipelinePosition['gate'], 'lastGreenAtMs'>;
+    mainFastForwarded: boolean | null;
+    /** Age of the OLDEST un-promoted commit — `verdictProvenance.stagingBufferAgeMs`. */
+    stagingBufferAgeMs?: number | null;
+  },
+  now: number = Date.now(),
+): MainBufferStallReason | null {
+  if (input.mainFastForwarded !== false) return null;
+  if (input.gate.lastGreenAtMs === null) return null;
+  const greenAgeMs = now - input.gate.lastGreenAtMs;
+  if (greenAgeMs > MAIN_BUFFER_STALL_MS) return 'no-green';
+  const bufferAgeMs = input.stagingBufferAgeMs;
+  if (bufferAgeMs == null) return null;
+  // Motion without progress: the gate advanced within the window, yet the buffer's old
+  // end is further back than that advance could possibly have left it.
+  return bufferAgeMs > greenAgeMs + MAIN_BUFFER_STALL_MS ? 'unproductive-advance' : null;
+}
+
+/** Boolean projection of `mainBufferStallReason` — never a second derivation. */
 export function mainBufferIsStale(
-  gate: Pick<PipelinePosition['gate'], 'lastGreenAtMs'>,
-  mainFastForwarded: boolean | null,
+  input: Parameters<typeof mainBufferStallReason>[0],
   now: number = Date.now(),
 ): boolean {
-  if (mainFastForwarded !== false) return false;
-  if (gate.lastGreenAtMs === null) return false;
-  return now - gate.lastGreenAtMs > MAIN_BUFFER_STALL_MS;
+  return mainBufferStallReason(input, now) !== null;
 }
 
 /**
@@ -2580,18 +2675,32 @@ export function computeStages(
     // or — when the gate itself reads clean — a buffer that has genuinely outlived the
     // pipeline's normal cadence (mainBufferIsStale). `gateBlocked` is hoisted above the
     // gate stage (EI-19311755730915969) — the gate's own liveness note needs it too.
-    const mainBufferStale = mainBufferIsStale(g, p.verdictProvenance.mainFastForwarded);
+    const mainStallReason = mainBufferStallReason({
+      gate: g,
+      mainFastForwarded: p.verdictProvenance.mainFastForwarded,
+      stagingBufferAgeMs: p.verdictProvenance.stagingBufferAgeMs,
+    });
+    const bufferAgeHours =
+      p.verdictProvenance.stagingBufferAgeMs != null
+        ? (p.verdictProvenance.stagingBufferAgeMs / 3_600_000).toFixed(1)
+        : '?';
     stages.push({
       name: 'main',
       position: p.positions.inMain ? 'past' : 'pending',
-      health: gateBlocked || mainBufferStale ? 'stalled' : 'advancing',
+      health: gateBlocked || mainStallReason !== null ? 'stalled' : 'advancing',
       detail: gateBlocked
         ? 'main cannot advance past the last green pin while the gate is blocked — see the gate stage above, which is what is actually holding it back.'
-        : mainBufferStale
+        : mainStallReason === 'no-green'
           ? `the gate has recorded no NEW green verdict in over ${Math.round(MAIN_BUFFER_STALL_MS / 3_600_000)}h while a staging buffer waits — so main still sits at the LAST green pin and cannot advance until the gate greens again. NOTE this measures the buffer's AGE, not that main is behind the current pin: main is normally exactly AT it, so do not go diffing main against the pin to confirm this (it will look fine and read as a false alarm). May be a silent retriage (EI-18719549079738452) rather than genuine health; worth a closer look, not necessarily broken.`
-          : p.verdictProvenance.mainFastForwarded === false
-            ? 'a staging buffer awaits the next green-checkpoint run before main catches up — normal, not a stall.'
-            : null,
+          : // WI-38367: the OPPOSITE remedy from the branch above, so it gets its own
+            // sentence — the gate here is running and greening, and sending this reader
+            // to go un-wedge it wastes the trip. What is wrong is that the promotions
+            // are not consuming THIS backlog (the partial-green-salvage signature).
+            mainStallReason === 'unproductive-advance'
+            ? `the gate IS greening and main IS advancing — but the oldest un-promoted commit is still ~${bufferAgeHours}h old, so those advances are moving the TIP end of the staging buffer, not consuming it (the WI-38218 partial-green-salvage signature: the longest green PREFIX is promoted while the tip stays red). Do NOT read this as a wedged gate — it is running. The question to ask is what keeps failing at the tip; \`release:checkpoint-run\`'s own reds name it.`
+            : p.verdictProvenance.mainFastForwarded === false
+              ? 'a staging buffer awaits the next green-checkpoint run before main catches up — normal, not a stall.'
+              : null,
       // main advances only as a CONSEQUENCE of a green verdict — there is no lever that
       // acts on it directly, so anything offered here would send the caller at the wrong
       // stage. The gate above owns this move.
@@ -3336,7 +3445,13 @@ export function summarizePosition(p: Omit<PipelinePosition, 'summary'>): string 
           // nonzero buffer is the fleet's normal steady state (see MAIN_BUFFER_STALL_MS),
           // so the un-aged version of this check fired on virtually every healthy call
           // and taught readers to scroll past the exact combination it exists to catch.
-          !p.positions.inMain && p.gate.consecutiveReds === 0 && mainBufferIsStale(p.gate, p.verdictProvenance.mainFastForwarded)
+          !p.positions.inMain &&
+            p.gate.consecutiveReds === 0 &&
+            mainBufferIsStale({
+              gate: p.gate,
+              mainFastForwarded: p.verdictProvenance.mainFastForwarded,
+              stagingBufferAgeMs: p.verdictProvenance.stagingBufferAgeMs,
+            })
           ? ` (gate reports 0 reds, but main has NOT fast-forwarded to the last green pin ${
               p.verdictProvenance.lastGreenShortSha ?? '?'
             } for over ${Math.round(MAIN_BUFFER_STALL_MS / 3_600_000)}h — may be an in-flight retriage/refire or another hold consecutiveReds doesn't capture; not necessarily broken, but don't read this as fully healthy)`
@@ -3858,6 +3973,16 @@ export async function gitPipelinePosition(
   // ONE reading, two polarities. Both fields below are this same local, so they cannot
   // drift apart the way two independent `snap.deploy?...` reads could.
   const greenPinAtStagingHead = snap.deploy?.greenPinAtStagingHead ?? null;
+  // WI-38367: the old END of the staging buffer, measured ONLY when a buffer actually
+  // exists — the healthy `greenPinAtStagingHead === true` case pays no subprocess at
+  // all, and the range this walks is by definition the buffer itself. It lives here
+  // rather than in devDeployState() because that one is behind the UI's poll storm
+  // (see its cache note); this path is dev:pipeline_position's alone.
+  const stagingHeadSha = snap.deploy?.stagingHead?.sha ?? null;
+  const stagingBufferAgeMs =
+    greenPinAtStagingHead === false && ready && stagingHeadSha
+      ? await oldestCommitAgeMs(git, root, ready.sha, stagingHeadSha)
+      : null;
   const verdictProvenance: PipelinePosition['verdictProvenance'] = {
     lastGreenSha: ready?.sha ?? null,
     lastGreenShortSha: ready?.shortSha ?? null,
@@ -3866,6 +3991,7 @@ export async function gitPipelinePosition(
     // The polarity the `git.mainBehindStaging` cell is NAMED after (EI-20046248345042252).
     // An unmeasured `null` stays `null` — negating it would manufacture a confident `true`.
     mainBehindStaging: greenPinAtStagingHead === null ? null : !greenPinAtStagingHead,
+    stagingBufferAgeMs,
     deployedBehindGreenPin: snap.deploy?.deployedBehindGreenPin ?? null,
     deployOrigin,
   };
