@@ -14,6 +14,10 @@ const fleetAdmission = vi.hoisted(() => ({
   notify: vi.fn(),
 }));
 const modeState = vi.hoisted(() => ({ rows: [] as Array<{ mode: string }> }));
+const drainAdmission = vi.hoisted(() => ({
+  blocked: false,
+  gate: vi.fn(),
+}));
 
 vi.mock('../coordination/identity', () => ({
   resolveAgentIdentity: () => ({ ownerId: 'me' }),
@@ -21,6 +25,7 @@ vi.mock('../coordination/identity', () => ({
 }));
 vi.mock('./_create-core', () => ({ createOneWorkItem: vi.fn() }));
 vi.mock('../../modes/store', () => ({ getModes: vi.fn(async () => modeState.rows) }));
+vi.mock('./drain-flow', () => ({ withDrainBugAdmission: drainAdmission.gate }));
 vi.mock('../../scheduler/fleet-scope-admission', () => ({
   admitSubjectForFleetTarget: fleetAdmission.admit,
   notifyFleetScopeRefusal: fleetAdmission.notify,
@@ -94,13 +99,24 @@ const body = async (args: unknown) => (((await tool.handler(parse(args) as never
 beforeEach(() => {
   vi.clearAllMocks();
   modeState.rows = [];
+  drainAdmission.blocked = false;
+  drainAdmission.gate.mockImplementation(async (_args, persist) => {
+    const flow = {
+      exact: true,
+      totals: { opened: drainAdmission.blocked ? 1 : 0, terminaled: 0, net: drainAdmission.blocked ? 1 : 0 },
+      breaker: { tripped: drainAdmission.blocked, blocksNewBugs: drainAdmission.blocked },
+    };
+    return drainAdmission.blocked
+      ? { ok: true, allowed: false, code: 'drain_flow_circuit_open', message: 'terminal one first', flow }
+      : { ok: true, allowed: true, flow, value: await persist(flow) };
+  });
   fleetAdmission.decision = { allowed: true, scoped: false };
   createM.mockImplementation(async (spec) => okCore(spec.title));
 });
 
 describe('DRAIN admission mode derivation (WI-38403)', () => {
   it('marks only bug specs fail-closed from the live mode registry', async () => {
-    modeState.rows = [{ mode: 'drain' }];
+    modeState.rows = [{ mode: 'drain', setAt: '2026-08-13T08:00:00.000Z' }];
     await body({ items: [{ kind: 'bug', title: 'direct blocker' }, { kind: 'change', title: 'bookkeeping' }] });
     expect(createM).toHaveBeenNthCalledWith(
       1,
@@ -112,6 +128,37 @@ describe('DRAIN admission mode derivation (WI-38403)', () => {
       expect.objectContaining({ kind: 'change', requireCompleteDedupCoverage: false }),
       expect.anything(),
     );
+    expect(drainAdmission.gate).toHaveBeenCalledOnce();
+    expect(drainAdmission.gate.mock.calls[0]?.[0]).toMatchObject({
+      workspaceId: 'default',
+      harness: 'papercup',
+      ownerId: 'me',
+      drainStartedAt: '2026-08-13T08:00:00.000Z',
+    });
+  });
+
+  it('fails a DRAIN bug before persistence when the exact-flow circuit is open', async () => {
+    modeState.rows = [{ mode: 'drain', setAt: '2026-08-13T08:00:00.000Z' }];
+    drainAdmission.blocked = true;
+    const b = await body({ kind: 'bug', title: 'would grow the queue' });
+
+    expect(createM).not.toHaveBeenCalled();
+    expect(b.results[0]).toMatchObject({
+      ok: false,
+      error: 'drain_flow_circuit_open',
+      message: 'terminal one first',
+      drainFlow: { exact: true, totals: { opened: 1, terminaled: 0, net: 1 } },
+    });
+  });
+
+  it('does not apply the bug circuit to non-bug work during DRAIN', async () => {
+    modeState.rows = [{ mode: 'drain', setAt: '2026-08-13T08:00:00.000Z' }];
+    drainAdmission.blocked = true;
+    const b = await body({ kind: 'change', title: 'repair existing code' });
+
+    expect(b.results[0]).toMatchObject({ ok: true });
+    expect(drainAdmission.gate).not.toHaveBeenCalled();
+    expect(createM).toHaveBeenCalledOnce();
   });
 });
 

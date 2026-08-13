@@ -9,6 +9,12 @@ import { recordRoutedIdea } from '../../scout/routed-ledger';
 import { computeObservationsImpact } from '../../scout/observation-impact-leg';
 import { getModes } from '../../modes/store';
 
+const drainAdmission = vi.hoisted(() => ({
+  blocked: false,
+  unavailable: false,
+  gate: vi.fn(),
+}));
+
 // PG-free unit: capture-core has its own 31-test suite; this pins the tool
 // wrapper's two jobs — (1) deriving the `source` label from the caller's
 // identity tier, and (2) passing every arg + the resolved identity through to
@@ -16,6 +22,7 @@ import { getModes } from '../../modes/store';
 vi.mock('../../harness/improvements/capture-core');
 vi.mock('../coordination/identity');
 vi.mock('../../modes/store', () => ({ getModes: vi.fn(async () => []) }));
+vi.mock('../work_items/drain-flow', () => ({ withDrainBugAdmission: drainAdmission.gate }));
 // P-008: the novelty pre-check is PG-backed (readNoveltyCorpus) — mock it so this
 // suite stays PG-free. Default = resolved undefined ("check unavailable"), which the
 // handler renders as an ABSENT priorArt field, leaving every pre-P-008 assertion
@@ -36,6 +43,20 @@ const mockIdentity = vi.mocked(resolveAgentIdentity);
 const mockPriorArt = vi.mocked(noveltyPriorArt);
 const mockRecordRoutedIdea = vi.mocked(recordRoutedIdea);
 const mockGetModes = vi.mocked(getModes);
+
+drainAdmission.gate.mockImplementation(async (_args, persist) => {
+  if (drainAdmission.unavailable) {
+    return { ok: false, allowed: false, code: 'drain_flow_unavailable', message: 'oracle unavailable' };
+  }
+  const flow = {
+    exact: true,
+    totals: { opened: drainAdmission.blocked ? 1 : 0, terminaled: 0, net: drainAdmission.blocked ? 1 : 0 },
+    breaker: { tripped: drainAdmission.blocked, blocksNewBugs: drainAdmission.blocked },
+  };
+  return drainAdmission.blocked
+    ? { ok: true, allowed: false, code: 'drain_flow_circuit_open', message: 'terminal one first', flow }
+    : { ok: true, allowed: true, flow, value: await persist(flow) };
+});
 
 function identity(source: ReturnType<typeof resolveAgentIdentity>['source'], ownerId = 'su-test') {
   return {
@@ -58,6 +79,8 @@ function callTool(args: Record<string, unknown>, ctx: unknown = {}) {
 describe('improvements:capture tool envelope', () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    drainAdmission.blocked = false;
+    drainAdmission.unavailable = false;
     mockIdentity.mockReturnValue(identity('omp-hook-session'));
     mockCapture.mockResolvedValue({ ok: true, id: 'EI-1', created: true } as unknown as Awaited<
       ReturnType<typeof captureImprovement>
@@ -172,18 +195,54 @@ describe('improvements:capture tool envelope', () => {
   });
 
   it('derives fail-closed dedup admission from live DRAIN mode for bugs only', async () => {
-    mockGetModes.mockResolvedValueOnce([{ mode: 'drain' }] as Awaited<ReturnType<typeof getModes>>);
-    await callTool({ title: 'direct drain blocker', kind: 'bug' });
+    mockGetModes.mockResolvedValueOnce([
+      { mode: 'drain', setAt: '2026-08-13T08:00:00.000Z' },
+    ] as Awaited<ReturnType<typeof getModes>>);
+    await callTool({ title: 'direct drain blocker', kind: 'bug' }, { harnessSlug: 'papercusp', workspaceId: 'ws-1' });
     expect(mockCapture).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'bug', requireCompleteDedupCoverage: true }),
     );
+    expect(drainAdmission.gate).toHaveBeenCalledOnce();
 
     mockCapture.mockClear();
-    mockGetModes.mockResolvedValueOnce([{ mode: 'drain' }] as Awaited<ReturnType<typeof getModes>>);
+    mockGetModes.mockResolvedValueOnce([
+      { mode: 'drain', setAt: '2026-08-13T08:00:00.000Z' },
+    ] as Awaited<ReturnType<typeof getModes>>);
     await callTool({ title: 'drain bookkeeping change', kind: 'change' });
     expect(mockCapture).toHaveBeenCalledWith(
       expect.objectContaining({ kind: 'change', requireCompleteDedupCoverage: false }),
     );
+  });
+
+  it('returns the exact flow and does not call capture-core when the DRAIN circuit is open', async () => {
+    mockGetModes.mockResolvedValueOnce([
+      { mode: 'drain', setAt: '2026-08-13T08:00:00.000Z' },
+    ] as Awaited<ReturnType<typeof getModes>>);
+    drainAdmission.blocked = true;
+    const res = await callTool(
+      { title: 'would grow the drain queue', kind: 'bug' },
+      { harnessSlug: 'papercusp', workspaceId: 'ws-1' },
+    );
+    expect(mockCapture).not.toHaveBeenCalled();
+    expect(JSON.parse(res.content[0].text)).toMatchObject({
+      ok: false,
+      created: false,
+      error: 'drain_flow_circuit_open',
+      drainFlow: { exact: true, totals: { opened: 1, terminaled: 0, net: 1 } },
+    });
+  });
+
+  it('keeps checkDuplicatesOnly available without persistence while the DRAIN circuit is open', async () => {
+    mockGetModes.mockResolvedValueOnce([
+      { mode: 'drain', setAt: '2026-08-13T08:00:00.000Z' },
+    ] as Awaited<ReturnType<typeof getModes>>);
+    drainAdmission.blocked = true;
+    await callTool(
+      { title: 'probe duplicate coverage', kind: 'bug', checkDuplicatesOnly: true },
+      { harnessSlug: 'papercusp', workspaceId: 'ws-1' },
+    );
+    expect(drainAdmission.gate).not.toHaveBeenCalled();
+    expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({ checkDuplicatesOnly: true }));
   });
 
   it("normalizes the common top-level harness spelling to the canonical capture scope", async () => {

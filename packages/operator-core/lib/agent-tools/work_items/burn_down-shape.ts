@@ -258,6 +258,41 @@ function projectFence(value: unknown, noteCap: number): JsonObject | undefined {
   };
 }
 
+function projectDrainFlow(value: unknown, noteCap: number): JsonObject | undefined {
+  const source = object(value);
+  if (!source || source.exact !== true) return undefined;
+  const projectCount = (value: unknown): JsonObject => {
+    const count = object(value) ?? {};
+    return {
+      opened: numberOrZero(count.opened),
+      terminaled: numberOrZero(count.terminaled),
+      net: typeof count.net === 'number' && Number.isFinite(count.net) ? count.net : 0,
+    };
+  };
+  const bySeverity = object(source.bySeverity) ?? {};
+  const breaker = object(source.breaker) ?? {};
+  return {
+    exact: true,
+    windowStart: requiredString(source.windowStart),
+    workspaceId: requiredString(source.workspaceId),
+    harness: requiredString(source.harness),
+    ownerId: requiredString(source.ownerId),
+    totals: projectCount(source.totals),
+    bySeverity: {
+      critical: projectCount(bySeverity.critical),
+      major: projectCount(bySeverity.major),
+      minor: projectCount(bySeverity.minor),
+      nit: projectCount(bySeverity.nit),
+    },
+    breaker: {
+      tripped: breaker.tripped === true,
+      blocksNewBugs: breaker.blocksNewBugs === true,
+      rule: clip(breaker.rule, noteCap),
+      reason: clip(breaker.reason, noteCap),
+    },
+  };
+}
+
 export function shapeBurnDown(
   data: unknown,
   tier: BurnDownPayloadTier,
@@ -309,6 +344,8 @@ export function shapeBurnDown(
   if (openedSince) out.openedSince = openedSince;
   const fence = projectFence(source.fence, caps.note);
   if (fence) out.fence = fence;
+  const drainFlow = projectDrainFlow(source.drainFlow, caps.note);
+  if (drainFlow) out.drainFlow = drainFlow;
   const cohortAudit = projectCohortAudit(source.cohortAudit, caps.cohortRows, caps.title, caps.reason);
   if (cohortAudit) out.cohortAudit = cohortAudit;
   return out;
