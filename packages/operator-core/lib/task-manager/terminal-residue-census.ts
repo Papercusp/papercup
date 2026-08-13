@@ -43,6 +43,13 @@
  * without re-deciding D-016. A dead window is NOT proof of abandonment — it is
  * "a window closed but these kept running". Consumers must render it that way.
  *
+ * EI-20369673282334981 added `live-service-unclaimed` and `owningSessionIds`
+ * under exactly that constraint. Both are strictly REPORTING: the set of scopes
+ * this module protects from the `stale` label is byte-for-byte what it was, and
+ * the two additions only make an already-protected population countable and
+ * attributable. Attribution is not authorization — an agent that started shared
+ * infra and then ended leaves that infra attributed to a dead session.
+ *
  * Also binding, from D-015: never key success on a scope's unit `ActiveState` or
  * on a `systemctl stop` exit code. A vte-spawn scope sets `KillMode=process`, so
  * a stop returns rc=0, flips the unit to inactive(dead), and leaves every task
@@ -90,12 +97,34 @@ export type ResidueDisposition =
   /** Holds a listening socket or a pid the caller knows is live — NOT residue. */
   | 'live-service-held'
   /**
+   * EI-20369673282334981 — holds a LISTENING socket, is past the staleness
+   * threshold, and NO caller-supplied `knownLivePids` entry claims it.
+   *
+   * This bucket exists because `live-service-held` was previously the terminal
+   * answer for any listener at any age, which made the census structurally unable
+   * to report a leaked SERVER — the highest-cost orphan shape on this box. On
+   * 2026-08-13 an abandoned heap-retention probe (a Hono host on :4015, launched
+   * from a terminal whose agent session had ended) held ~70 GiB for 12 hours and
+   * this guard could not have reported it at any age.
+   *
+   * ⚠ REPORTED, NEVER REAPABLE. It is deliberately NOT a sub-kind of `stale`, and
+   * it carries no more authority to kill than `live-service-held` did. D-016
+   * measured the counter-example that makes that non-negotiable: the `:3170`
+   * staging operator lives in a dead terminal window, listens, and is claimed by
+   * nobody the task ledger knows about — i.e. it is INDISTINGUISHABLE from the
+   * :4015 orphan by every property observable here. Attribution is not
+   * authorization. The point of the split is to make the population VISIBLE and
+   * countable so it can be measured before anyone proposes acting on it.
+   */
+  | 'live-service-unclaimed'
+  /**
    * Old enough, and nothing suggests a live tenant. The only reclaim candidate.
    *
    * A FLOOR on what is abandoned, never the whole of it: the probe protects
    * anything holding a TCP port, so an abandoned daemon that still listens (a
-   * forgotten emulator, a stray `http.server`) lands in `live-service-held`
-   * instead. Under-reporting here is the intended error direction.
+   * forgotten emulator, a stray `http.server`) lands in `live-service-held` or
+   * `live-service-unclaimed` instead. Under-reporting here is the intended error
+   * direction.
    */
   | 'stale'
   /** Too young to judge, unprobeable, or no probe was supplied. Never counted as stale. */
@@ -111,6 +140,25 @@ export interface DeadWindowScope {
   disposition: ResidueDisposition;
   /** Age of its longest-running process, the input to the staleness threshold. */
   oldestPidAgeMs: number | null;
+  /**
+   * EI-20369673282334981 — the agent session ids (`PAPERCUSP_SID`) inherited by
+   * this scope's processes, when the probe can read them.
+   *
+   * REPORTING ONLY, and two properties of it must survive into any consumer:
+   *
+   *  • An EMPTY list is not evidence of orphanhood. Measured on this box
+   *    2026-08-13: 148 of 200 readable `/proc/<pid>/environ` carried no
+   *    `PAPERCUSP_SID` at all — a systemd service, a pre-operator bootstrap, or
+   *    anything the owner launched by hand. The majority case, not an edge.
+   *  • A session id here says who LAUNCHED the process, not who owns it now. An
+   *    ended session does not make the process abandoned: an agent that started
+   *    the `:3170` staging operator and has since ended leaves critical shared
+   *    infra attributed to a dead session.
+   *
+   * Absent probe support (or an unreadable environ) yields an empty list, which
+   * must stay indistinguishable from "no opinion" — never promoted to a verdict.
+   */
+  owningSessionIds: string[];
 }
 
 /**
@@ -129,6 +177,17 @@ export interface ResidueLivenessProbe {
    * database to answer; a caller that has the set cheaply should pass it.
    */
   knownLivePids?(): ReadonlySet<number>;
+  /**
+   * The agent session id (`PAPERCUSP_SID`) a pid inherited from the shell that
+   * launched it, or null when there is none / it is unreadable.
+   *
+   * Optional for the same reason `knownLivePids` is: the census must stay pure
+   * with respect to its injected `CgroupFs`, and this needs `/proc/<pid>/environ`.
+   * A probe that omits it leaves `owningSessionIds` empty, which reads as "no
+   * opinion" — see `DeadWindowScope.owningSessionIds` for why that must never be
+   * read as "unowned".
+   */
+  owningSessionId?(pid: number): string | null;
   /** Wall-clock ms since a pid started, or null when unreadable. */
   pidAgeMs(pid: number): number | null;
 }
@@ -167,6 +226,12 @@ export interface ResidueCensus {
    */
   deadStale: number;
   deadLiveServiceHeld: number;
+  /**
+   * EI-20369673282334981 — dead-window scopes holding a listener that no known
+   * live tenant claims, past the staleness threshold. Report-only; see the
+   * `live-service-unclaimed` disposition for why this must not drive a reap.
+   */
+  deadLiveServiceUnclaimed: number;
   deadIndeterminate: number;
 }
 
@@ -207,7 +272,12 @@ export function censusTerminalResidue(
     if (alive) continue;
 
     const pids = parseCgroupProcs(fs.readFile(`${abs}/cgroup.procs`) ?? '');
-    dead.push({ scope: name, pidCount: pids.length, ...classify(pids) });
+    dead.push({
+      scope: name,
+      pidCount: pids.length,
+      ...classify(pids),
+      owningSessionIds: owningSessions(pids),
+    });
   }
 
   /**
@@ -218,8 +288,28 @@ export function censusTerminalResidue(
   function classify(pids: readonly number[]): Pick<DeadWindowScope, 'disposition' | 'oldestPidAgeMs'> {
     if (!probe) return { disposition: 'indeterminate', oldestPidAgeMs: null };
 
-    if (pids.some((p) => listening?.has(p) || knownLive?.has(p))) {
+    // A pid the caller independently knows is live settles it outright, at any
+    // age. This is checked FIRST and separately from the listener test: it is the
+    // strongest evidence available here, and it is the leg that makes "unclaimed"
+    // below mean anything at all.
+    if (pids.some((p) => knownLive?.has(p))) {
       return { disposition: 'live-service-held', oldestPidAgeMs: oldest(pids) };
+    }
+
+    if (pids.some((p) => listening?.has(p))) {
+      const listenerAge = oldest(pids);
+      // EI-20369673282334981. A listener still short-circuits every staleness
+      // test — the protection is UNCHANGED, and nothing below can now relabel it
+      // `stale`. What changes is only the NAME the report gives it once it is old
+      // and unclaimed, because "a 12-hour-old listening server nobody claims" and
+      // "the staging operator" were previously the same integer.
+      //
+      // An unreadable age keeps the original label: `live-service-unclaimed` is a
+      // claim about age, and a failed read is not evidence for it.
+      if (listenerAge !== null && listenerAge >= staleAfterMs) {
+        return { disposition: 'live-service-unclaimed', oldestPidAgeMs: listenerAge };
+      }
+      return { disposition: 'live-service-held', oldestPidAgeMs: listenerAge };
     }
 
     const age = oldest(pids);
@@ -233,6 +323,22 @@ export function censusTerminalResidue(
     if (pids.length === 0) return { disposition: 'indeterminate', oldestPidAgeMs: age };
 
     return { disposition: 'stale', oldestPidAgeMs: age };
+  }
+
+  /**
+   * The distinct `PAPERCUSP_SID` values this scope's processes carry, in first-seen
+   * order. Deduplicated because the common shape is one agent shell plus its
+   * children, which all inherit the SAME id — reporting it N times would read as N
+   * sessions.
+   */
+  function owningSessions(pids: readonly number[]): string[] {
+    if (!probe?.owningSessionId) return [];
+    const seen = new Set<string>();
+    for (const p of pids) {
+      const sid = probe.owningSessionId(p);
+      if (sid) seen.add(sid);
+    }
+    return [...seen];
   }
 
   function oldest(pids: readonly number[]): number | null {
@@ -253,6 +359,7 @@ export function censusTerminalResidue(
     dead,
     deadStale: by('stale'),
     deadLiveServiceHeld: by('live-service-held'),
+    deadLiveServiceUnclaimed: by('live-service-unclaimed'),
     deadIndeterminate: by('indeterminate'),
   };
 }

@@ -105,6 +105,38 @@ function uptimeSec(): number | null {
 
 const CLOCK_TICKS_PER_SEC = 100;
 
+/**
+ * EI-20369673282334981 — which agent session's shell LAUNCHED this process.
+ *
+ * `PAPERCUSP_SID` is exported into every agent session's shell environment and is
+ * therefore INHERITED by anything that session starts, at any depth. That makes a
+ * dead-window process attributable to a session id, which can then be resolved
+ * against the presence oracle — the exact reasoning a human applied by hand on the
+ * :4015 incident (the launching session `su-f0c6fa5e…` had ended and no longer
+ * existed in coordination) before reaping it.
+ *
+ * Measured on this box 2026-08-13: 52 of 200 readable `/proc/<pid>/environ`
+ * carried it. The other 148 carried nothing — a systemd unit, a pre-operator
+ * bootstrap, anything the owner started by hand. So `null` is the MAJORITY answer
+ * and means only "no opinion"; it is never evidence that a process is unowned.
+ *
+ * `/proc/<pid>/environ` is NUL-separated and readable only for our own uid; an
+ * unreadable one fails soft to `null` for the same reason the socket scan does.
+ */
+export function owningSessionId(pid: number): string | null {
+  let raw: string;
+  try { raw = readFileSync(`/proc/${pid}/environ`, 'utf8'); } catch { return null; }
+  for (const entry of raw.split('\0')) {
+    // Prefix-match rather than split('=') — an env VALUE may contain '=' , and a
+    // name-only match keeps this immune to that.
+    if (entry.startsWith('PAPERCUSP_SID=')) {
+      const v = entry.slice('PAPERCUSP_SID='.length).trim();
+      return v || null;
+    }
+  }
+  return null;
+}
+
 export function pidAgeMs(pid: number, uptime: number | null): number | null {
   if (uptime === null) return null;
   let stat: string;
@@ -133,9 +165,17 @@ export function nodeResidueLivenessProbe(knownLivePids?: ReadonlySet<number>): R
   // of one instant rather than a value that shifts underneath a single census.
   let listeners: Set<number> | null = null;
   const uptime = uptimeSec();
+  // Attribution is asked ONLY about pids in dead-window scopes (a handful), never
+  // about every process on the box, so it is a per-pid read rather than a scan —
+  // and memoised because one census pass asks about the same pid more than once.
+  const sids = new Map<number, string | null>();
   return {
     listeningPids: () => (listeners ??= pidsOwningListeners()),
     knownLivePids: knownLivePids ? () => knownLivePids : undefined,
+    owningSessionId: (pid) => {
+      if (!sids.has(pid)) sids.set(pid, owningSessionId(pid));
+      return sids.get(pid) ?? null;
+    },
     pidAgeMs: (pid) => pidAgeMs(pid, uptime),
   };
 }
