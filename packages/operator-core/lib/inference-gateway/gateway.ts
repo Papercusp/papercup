@@ -4359,8 +4359,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
     // Non-streaming (scout/judge) → exec bridge, byte-identical to flag-OFF. Only stream:true
     // (the fleet CLI agents) takes the OAuth proxy path below.
     let wantStream = false;
+    let bodyModel = '';
     if (bodyBuf.length) {
-      try { wantStream = (JSON.parse(bodyBuf.toString('utf8')) as { stream?: boolean }).stream === true; } catch { /* non-JSON — treat as non-stream */ }
+      try {
+        const parsed = JSON.parse(bodyBuf.toString('utf8')) as { stream?: boolean; model?: string };
+        wantStream = parsed.stream === true;
+        if (typeof parsed.model === 'string') bodyModel = parsed.model;
+      } catch { /* non-JSON — treat as non-stream */ }
     }
     if (!wantStream) {
       await serveCodexCliBridge(req, res, cli, bodyBuf, routing);
@@ -4468,6 +4473,13 @@ export function createInferenceGateway(deps: GatewayDeps) {
           else res.destroy();
           return;
         }
+
+        // WI-38582: feed the ChatGPT backend's x-codex-* rate-limit headers to the SAME
+        // observer the Anthropic path uses (deps.onResponse → makeWindowProjector →
+        // recordAccountWindow), so codex accounts get live capacity readings instead of
+        // reading `never-observed` forever. Every attempt's response counts — a 429
+        // carries the authoritative window too.
+        deps.onResponse?.(headersToObject(up.headers), up.status, bodyModel, cli.accountId);
 
         // 401 → refresh the token ONCE and retry (before any bytes are written).
         if (up.status === 401 && refreshedAccount !== cli.accountId) {

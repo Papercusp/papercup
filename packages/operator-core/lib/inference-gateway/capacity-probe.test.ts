@@ -18,6 +18,7 @@ import {
   probeEgressFor,
   probeAccountCapacity,
   probeCapacityForAccounts,
+  probeCodexAccountCapacity,
   UNWALL_EPSILON,
 } from './capacity-probe';
 import type { ClaudeAccount } from '../deployment/account-pool';
@@ -377,5 +378,140 @@ describe('probeCapacityForAccounts', () => {
     const accounts = ['a', 'b', 'c', 'd', 'e'].map((id) => acct(id));
     const out = await probeCapacityForAccounts(accounts, {}, okDeps({ 'anthropic-ratelimit-unified-7d-utilization': '0.1' }));
     expect(out.map((r) => r.accountId)).toEqual(['a', 'b', 'c', 'd', 'e']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// WI-38582 — the codex (ChatGPT-subscription) capacity dialect
+// ---------------------------------------------------------------------------
+
+/** A codex-cli account row (ChatGPT subscription served via OAuth home). */
+const codexAcct = (id: string, rate: Partial<ClaudeAccount['rate']> = {}): ClaudeAccount =>
+  acct(id, rate, { provider: 'codex', credentialRef: `codex-cli:/tmp/${id}-home` } as Partial<ClaudeAccount>);
+
+const codexDeps = (headers: Record<string, string>, status = 200) => ({
+  fetchImpl: fakeFetch(headers, status),
+  resolveCodexAuth: async () => ({ accessToken: 'codex-tok', accountId: 'acc-123' }),
+  buildDispatcher: async () => undefined,
+});
+
+describe('parseCapacityHeaders — codex dialect (WI-38582)', () => {
+  it('maps a PRO plan (primary IS the weekly window, no secondary) into the 7d slot by window length', () => {
+    expect(
+      parseCapacityHeaders({
+        'x-codex-primary-used-percent': '13',
+        'x-codex-primary-window-minutes': '10080',
+        'x-codex-primary-reset-at': '1787201493',
+        'x-codex-secondary-used-percent': '0',
+        'x-codex-secondary-window-minutes': '0',
+        'x-codex-secondary-reset-at': '',
+      }),
+    ).toEqual({ utilization7d: 0.13, windowResetAt7d: 1787201493_000 });
+  });
+
+  it('maps a PLUS-shaped plan (primary 5h, secondary weekly) into both slots', () => {
+    expect(
+      parseCapacityHeaders({
+        'x-codex-primary-used-percent': '42',
+        'x-codex-primary-window-minutes': '300',
+        'x-codex-primary-reset-at': '1787201493',
+        'x-codex-secondary-used-percent': '7',
+        'x-codex-secondary-window-minutes': '10080',
+        'x-codex-secondary-reset-at': '1787249088',
+      }),
+    ).toEqual({
+      utilization: 0.42,
+      windowResetAt: 1787201493_000,
+      utilization7d: 0.07,
+      windowResetAt7d: 1787249088_000,
+    });
+  });
+
+  it('falls back to reset-after-seconds when reset-at is absent', () => {
+    const out = parseCapacityHeaders({
+      'x-codex-primary-used-percent': '50',
+      'x-codex-primary-window-minutes': '10080',
+      'x-codex-primary-reset-after-seconds': '3600',
+    });
+    expect(out.utilization7d).toBe(0.5);
+    expect(out.windowResetAt7d).toBeGreaterThan(Date.now());
+    expect(out.windowResetAt7d).toBeLessThanOrEqual(Date.now() + 3_600_000 + 1_000);
+  });
+
+  it('prefers the Anthropic dialect when both are present (never mixes interpretations)', () => {
+    expect(
+      parseCapacityHeaders({
+        'anthropic-ratelimit-unified-7d-utilization': '0.19',
+        'x-codex-primary-used-percent': '99',
+        'x-codex-primary-window-minutes': '10080',
+      }),
+    ).toEqual({ utilization7d: 0.19 });
+  });
+});
+
+describe('probeCodexAccountCapacity (WI-38582)', () => {
+  it('records the x-codex-* reading off a 200 and reports ok', async () => {
+    const out = await probeCodexAccountCapacity(
+      codexAcct('cx'),
+      codexDeps({
+        'x-codex-primary-used-percent': '13',
+        'x-codex-primary-window-minutes': '10080',
+        'x-codex-primary-reset-at': '1787201493',
+      }),
+      FULL,
+    );
+    expect(out.ok).toBe(true);
+    expect(out.status).toBe(200);
+    expect(out.windows).toEqual({ utilization7d: 0.13, windowResetAt7d: 1787201493_000 });
+  });
+
+  it('treats a headerless response as no-reading (never invents a window)', async () => {
+    const out = await probeCodexAccountCapacity(codexAcct('cx'), codexDeps({}), FULL);
+    expect(out.ok).toBe(false);
+    expect(out.error).toMatch(/no x-codex-\* rate-limit header/);
+  });
+
+  it('refuses a bearer codex account (no codex-cli home) with a legible error', async () => {
+    const bearer = acct('cx-bearer', {}, { provider: 'codex', credentialRef: 'bearer:sk-abc' } as Partial<ClaudeAccount>);
+    const out = await probeCodexAccountCapacity(bearer, codexDeps({}), FULL);
+    expect(out.ok).toBe(false);
+    expect(out.error).toMatch(/no codex-cli:<home> credentialRef/);
+  });
+
+  it('proves an unwall when upstream reads materially below a stored full window', async () => {
+    const out = await probeCodexAccountCapacity(
+      codexAcct('cx', { utilization7d: 1, utilizationAt: 1 }),
+      codexDeps({
+        'x-codex-primary-used-percent': '20',
+        'x-codex-primary-window-minutes': '10080',
+        'x-codex-primary-reset-at': '1787201493',
+      }),
+      FULL,
+    );
+    expect(out.ok).toBe(true);
+    expect(out.unwalls).toBe(true);
+  });
+});
+
+describe('probeCapacityForAccounts — codex routing (WI-38582)', () => {
+  it('probes codex-cli accounts through the codex path instead of skipping them', async () => {
+    const out = await probeCapacityForAccounts(
+      [codexAcct('cx')],
+      {},
+      codexDeps({
+        'x-codex-primary-used-percent': '13',
+        'x-codex-primary-window-minutes': '10080',
+        'x-codex-primary-reset-at': '1787201493',
+      }),
+    );
+    expect(out).toHaveLength(1);
+    expect(out[0].ok).toBe(true);
+    expect(out[0].windows.utilization7d).toBe(0.13);
+  });
+
+  it('still skips bearer-only codex accounts (no subscription window to probe)', async () => {
+    const bearer = acct('cx-bearer', {}, { provider: 'codex', credentialRef: 'bearer:sk-abc' } as Partial<ClaudeAccount>);
+    const out = await probeCapacityForAccounts([bearer], {}, codexDeps({}));
+    expect(out).toHaveLength(0);
   });
 });

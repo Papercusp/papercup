@@ -12,6 +12,7 @@
  */
 import { resolveAccountPool, type ResolvedAccount } from './account-resolver';
 import { CODEX_CLI_REF_PREFIX, parseCodexCliRef, type CodexCliAccount } from './codex-cli-bridge';
+import { parseCodexRateLimitHeaders } from './codex-oauth-proxy';
 import { makeBearerCredentialResolver, makeCredentialResolver, type CredentialResolver } from './credential-store';
 import { createFailoverPool, type FailoverPoolOptions } from './account-failover';
 import { recordDbOutcome, setDbHealthTransitionHandler, type DbHealthSnapshot } from './db-health';
@@ -148,8 +149,21 @@ function makeWindowProjector(
   const WRITE_MIN_MS = 30_000;
   const last = new Map<string, { util: number; resetAt: number; util7d: number; resetAt7d: number; at: number }>();
   return (headers, _status, _model, accountId) => {
-    const w = parseUnifiedWindow(headers);
-    const w7 = parseUnified7dWindow(headers);
+    let w = parseUnifiedWindow(headers);
+    let w7 = parseUnified7dWindow(headers);
+    if (
+      w.utilization === undefined &&
+      w.windowResetAt === undefined &&
+      w7.utilization7d === undefined &&
+      w7.windowResetAt7d === undefined
+    ) {
+      // WI-38582: not the Anthropic dialect — try the ChatGPT codex backend's
+      // x-codex-* headers (the codex OAuth proxy feeds this same hook), so codex
+      // accounts stop reading `never-observed` forever.
+      const cw = parseCodexRateLimitHeaders(headers);
+      w = { utilization: cw.utilization, windowResetAt: cw.windowResetAt };
+      w7 = { utilization7d: cw.utilization7d, windowResetAt7d: cw.windowResetAt7d };
+    }
     if (
       w.utilization === undefined &&
       w.windowResetAt === undefined &&

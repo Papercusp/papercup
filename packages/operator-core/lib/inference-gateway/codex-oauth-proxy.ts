@@ -295,3 +295,77 @@ export async function resolveCodexAccessToken(
 export function __resetCodexRefreshState(): void {
   refreshInFlight.clear();
 }
+
+// ---------------------------------------------------------------------------
+// Codex rate-limit header dialect (WI-38582)
+// ---------------------------------------------------------------------------
+
+/** The account-pool window projection shape (structurally = capacity-probe's `CapacityWindows`;
+ *  declared here to keep this module dependency-free of gateway/probe). */
+export interface CodexCapacityWindows {
+  utilization?: number;
+  windowResetAt?: number;
+  utilization7d?: number;
+  windowResetAt7d?: number;
+}
+
+/** Windows at/under this many minutes land in the SHORT (5h) projection slot; longer ones in the
+ *  7d slot. The boundary only has to separate ~300min (5h) from ~10080min (weekly) cleanly. */
+const CODEX_SHORT_WINDOW_MAX_MINUTES = 720;
+
+function codexWindowSlot(
+  h: Record<string, string | undefined>,
+  prefix: 'x-codex-primary' | 'x-codex-secondary',
+  nowMs: number,
+): { short: boolean; utilization: number; resetAt?: number } | null {
+  const usedRaw = h[`${prefix}-used-percent`];
+  const minutesRaw = h[`${prefix}-window-minutes`];
+  if (usedRaw === undefined || usedRaw === '') return null;
+  const used = Number(usedRaw);
+  const minutes = Number(minutesRaw ?? '');
+  // A zero/absent window length marks an inactive slot (observed live: pro plans report
+  // `x-codex-secondary-window-minutes: 0` with an empty reset — that is "no such window",
+  // not a 0-minute window).
+  if (!Number.isFinite(used) || !Number.isFinite(minutes) || minutes <= 0) return null;
+  let resetAt: number | undefined;
+  const resetAtSec = Number(h[`${prefix}-reset-at`] ?? '');
+  const resetAfterSec = Number(h[`${prefix}-reset-after-seconds`] ?? '');
+  if (Number.isFinite(resetAtSec) && resetAtSec > 0) resetAt = resetAtSec * 1000;
+  else if (Number.isFinite(resetAfterSec) && resetAfterSec > 0) resetAt = nowMs + resetAfterSec * 1000;
+  return { short: minutes <= CODEX_SHORT_WINDOW_MAX_MINUTES, utilization: Math.max(0, used) / 100, resetAt };
+}
+
+/**
+ * PURE: the ChatGPT codex backend's rate-limit response headers → the SAME account-pool window
+ * projection the Anthropic unified-window parsers feed (WI-38582 — codex accounts read
+ * `never-observed` forever because nothing ever parsed this dialect).
+ *
+ * Dialect (verified live against `chatgpt.com/backend-api/codex/responses`, 2026-08-13):
+ *   x-codex-primary-used-percent: 0..100        x-codex-secondary-used-percent
+ *   x-codex-primary-window-minutes: e.g. 300|10080 (0 ⇒ slot inactive)
+ *   x-codex-primary-reset-at: epoch SECONDS      x-codex-primary-reset-after-seconds
+ * Slots are classified by WINDOW LENGTH, not by primary/secondary position: a pro plan reports
+ * its weekly window as PRIMARY (10080 min) with no secondary, while plus plans use primary=5h,
+ * secondary=weekly. `used-percent` is 0..100 → recorded as a 0..1 fraction; `reset-at` seconds →
+ * epoch ms. Returns {} when no codex rate-limit header is present.
+ */
+export function parseCodexRateLimitHeaders(
+  h: Record<string, string | undefined>,
+  nowMs: number = Date.now(),
+): CodexCapacityWindows {
+  const out: CodexCapacityWindows = {};
+  for (const prefix of ['x-codex-primary', 'x-codex-secondary'] as const) {
+    const slot = codexWindowSlot(h, prefix, nowMs);
+    if (!slot) continue;
+    if (slot.short) {
+      if (out.utilization === undefined) {
+        out.utilization = slot.utilization;
+        if (slot.resetAt !== undefined) out.windowResetAt = slot.resetAt;
+      }
+    } else if (out.utilization7d === undefined) {
+      out.utilization7d = slot.utilization;
+      if (slot.resetAt !== undefined) out.windowResetAt7d = slot.resetAt;
+    }
+  }
+  return out;
+}

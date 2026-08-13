@@ -38,6 +38,14 @@ import { egressEntries, type AccountEgress, type ClaudeAccount } from '../deploy
 import { parseUnifiedWindow, parseUnified7dWindow } from './gateway';
 import { withOAuthBeta } from './credential-store';
 import { resolveAccountEgress } from './egress-dispatcher';
+import { parseCodexCliRef } from './codex-cli-bridge';
+import {
+  CODEX_CHATGPT_BACKEND_BASE,
+  CODEX_OPENAI_BETA,
+  CODEX_ORIGINATOR,
+  parseCodexRateLimitHeaders,
+  resolveCodexAccessToken,
+} from './codex-oauth-proxy';
 import { describeFetchError } from '../loopback-fetch';
 
 /** Upstream root. Mirrors gateway.ts DEFAULT_UPSTREAM; env-tunable for a staging/mock upstream. */
@@ -85,6 +93,8 @@ export interface CapacityProbeDeps {
   fetchImpl?: typeof fetch;
   /** Resolve a bearer token for the account's credentialRef. Injected in tests. */
   resolveToken?: (account: ClaudeAccount) => Promise<string>;
+  /** Resolve a ChatGPT-subscription codex OAuth token for a `codex-cli:<home>` account (WI-38582). Injected in tests. */
+  resolveCodexAuth?: (home: string) => Promise<{ accessToken: string; accountId: string | null }>;
   /** Build the per-account egress dispatcher (per-account IP). Injected in tests. */
   buildDispatcher?: (egress: AccountEgress | undefined) => Promise<unknown>;
   now?: () => number;
@@ -98,7 +108,11 @@ export interface CapacityProbeDeps {
  * live-traffic reading can never diverge in interpretation.
  */
 export function parseCapacityHeaders(h: Record<string, string | undefined>): CapacityWindows {
-  return { ...parseUnifiedWindow(h), ...parseUnified7dWindow(h) };
+  const anthropic = { ...parseUnifiedWindow(h), ...parseUnified7dWindow(h) };
+  if (Object.keys(anthropic).length > 0) return anthropic;
+  // WI-38582: not the Anthropic dialect — try the ChatGPT codex backend's x-codex-* headers,
+  // so a codex-account probe reading and a live-traffic reading share ONE interpretation too.
+  return parseCodexRateLimitHeaders(h);
 }
 
 /** The stored projection, as `CapacityWindows`. */
@@ -340,6 +354,150 @@ export async function probeAccountCapacity(
   };
 }
 
+/** The cheapest codex model that still returns the x-codex-* budget headers. Env-tunable because the
+ *  ChatGPT backend REFUSES unknown ids per plan ("The '<id>' model is not supported when using Codex
+ *  with a ChatGPT account") — verified working on subscription plans 2026-08-13. */
+export const CODEX_CAPACITY_PROBE_MODEL = process.env.PAPERCUSP_CODEX_CAPACITY_PROBE_MODEL || 'gpt-5.6-sol';
+
+/**
+ * Probe ONE ChatGPT-subscription codex account (credentialRef `codex-cli:<home>`) — WI-38582.
+ * Same contract as `probeAccountCapacity`: never throws, any HTTP response with a usable header is
+ * signal, only transport/credential failures are `ok:false`. The request is a minimal streaming
+ * Responses call; we read HEADERS and cancel the stream immediately (the body is irrelevant).
+ */
+export async function probeCodexAccountCapacity(
+  account: ClaudeAccount,
+  deps: CapacityProbeDeps = {},
+  fullUtil = 0.97,
+): Promise<CapacityProbeResult> {
+  const before = storedWindows(account);
+  const now = deps.now ?? Date.now;
+  const deadlineAt = deps.deadlineAt ?? now() + CAPACITY_PROBE_ACCOUNT_TIMEOUT_MS;
+  const base: Omit<CapacityProbeResult, 'ok' | 'windows' | 'unwalls'> = { accountId: account.id, attempted: true, before };
+  const fetchImpl = deps.fetchImpl ?? fetch;
+  const buildDispatcher =
+    deps.buildDispatcher ??
+    (async (eg: AccountEgress | undefined) => {
+      const { buildEgressDispatcher } = await import('./egress-dispatcher');
+      return (await buildEgressDispatcher(eg)).dispatcher;
+    });
+
+  const home = parseCodexCliRef(account.credentialRef ?? '');
+  if (!home) {
+    return {
+      ...base,
+      ok: false,
+      windows: {},
+      unwalls: false,
+      error: `codex account '${account.id}' has no codex-cli:<home> credentialRef — bearer codex accounts are not capacity-probed`,
+    };
+  }
+
+  let accessToken: string;
+  let chatgptAccountId: string | null;
+  try {
+    const auth = await withDeadline(
+      () => (deps.resolveCodexAuth ?? resolveCodexAccessToken)(home),
+      remainingMs(deadlineAt, now),
+      'credential resolution',
+    );
+    accessToken = auth.accessToken;
+    chatgptAccountId = auth.accountId ?? null;
+  } catch (e) {
+    return {
+      ...base,
+      ok: false,
+      windows: {},
+      unwalls: false,
+      error: describeProbeError(e, 'credential resolution', deadlineAt, now),
+    };
+  }
+
+  const failures: string[] = [];
+  for (const egress of probeEgressCandidates(account)) {
+    const route = describeEgress(egress);
+    const routeTimeoutMs = remainingMs(deadlineAt, now);
+    if (routeTimeoutMs <= 0) {
+      failures.push(`${route}: ${CAPACITY_PROBE_TIMEOUT_ERROR} during egress dispatcher`);
+      break;
+    }
+    let phase = 'egress dispatcher';
+    try {
+      const dispatcher = await withDeadline(() => buildDispatcher(egress), routeTimeoutMs, 'egress dispatcher');
+      phase = 'fetch';
+      const fetchTimeoutMs = remainingMs(deadlineAt, now);
+      if (fetchTimeoutMs <= 0) throw timeoutError('fetch');
+      const ac = new AbortController();
+      const res = await withDeadline(
+        () =>
+          fetchImpl(`${CODEX_CHATGPT_BACKEND_BASE}/responses`, {
+            method: 'POST',
+            signal: ac.signal,
+            headers: {
+              'content-type': 'application/json',
+              accept: 'text/event-stream',
+              authorization: `Bearer ${accessToken}`,
+              ...(chatgptAccountId ? { 'chatgpt-account-id': chatgptAccountId } : {}),
+              'openai-beta': CODEX_OPENAI_BETA,
+              originator: CODEX_ORIGINATOR,
+            },
+            body: JSON.stringify({
+              model: CODEX_CAPACITY_PROBE_MODEL,
+              stream: true,
+              store: false,
+              instructions: 'You are a capacity probe.',
+              input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: '.' }] }],
+              tools: [],
+              tool_choice: 'auto',
+              parallel_tool_calls: false,
+              reasoning: { effort: 'low' },
+              include: [],
+            }),
+            ...(dispatcher ? ({ dispatcher } as Record<string, unknown>) : {}),
+          } as RequestInit),
+        fetchTimeoutMs,
+        'fetch',
+        () => ac.abort(),
+      );
+      // Headers are the whole signal — cancel the SSE stream instead of draining a model turn.
+      try {
+        ac.abort();
+      } catch {
+        /* already settled */
+      }
+      void res.body?.cancel().catch(() => undefined);
+
+      const h: Record<string, string | undefined> = {};
+      res.headers.forEach((v, k) => {
+        h[k.toLowerCase()] = v;
+      });
+      const windows = parseCapacityHeaders(h);
+      const sawHeader = Object.keys(windows).length > 0;
+      if (sawHeader) {
+        return {
+          ...base,
+          ok: true,
+          status: res.status,
+          windows,
+          unwalls: provesUnwall(before, windows, fullUtil),
+        };
+      }
+      failures.push(`${route}: HTTP ${res.status} carried no x-codex-* rate-limit header`);
+    } catch (e) {
+      failures.push(`${route}: ${describeProbeError(e, phase, deadlineAt, now)}`);
+      if (isTimeoutError(e) || now() >= deadlineAt) break;
+    }
+  }
+
+  return {
+    ...base,
+    ok: false,
+    windows: {},
+    unwalls: false,
+    error: failures.join('; '),
+  };
+}
+
 /** Should this account be probed under `walledOnly`? Pure, so the selection rule is unit-testable. */
 export function isWalledCandidate(a: ClaudeAccount, fullUtil: number): boolean {
   const r = a.rate;
@@ -347,8 +505,9 @@ export function isWalledCandidate(a: ClaudeAccount, fullUtil: number): boolean {
 }
 
 /**
- * Probe MANY accounts with bounded concurrency. `claude` provider only — the unified-window dialect is a
- * Claude Max subscription thing; a `codex` account has no such headers and is skipped, never errored.
+ * Probe MANY accounts with bounded concurrency. `claude` accounts read the Anthropic unified-window
+ * dialect; ChatGPT-subscription `codex` accounts (credentialRef `codex-cli:<home>`) read the x-codex-*
+ * dialect (WI-38582). A bearer-only codex account has no probeable subscription window and is skipped.
  */
 export async function probeCapacityForAccounts(
   accounts: ClaudeAccount[],
@@ -361,7 +520,12 @@ export async function probeCapacityForAccounts(
   const sweepTimeoutMs = Number.isFinite(requestedSweepMs) ? Math.max(0, Math.min(requestedSweepMs, CAPACITY_PROBE_SWEEP_TIMEOUT_MS)) : CAPACITY_PROBE_SWEEP_TIMEOUT_MS;
   const sweepDeadlineAt = now() + sweepTimeoutMs;
   const targets = accounts
-    .filter((a) => (a.provider ?? 'claude') === 'claude')
+    .filter((a) => {
+      const provider = a.provider ?? 'claude';
+      if (provider === 'claude') return true;
+      // WI-38582: ChatGPT-subscription codex accounts are probeable via their OAuth home.
+      return provider === 'codex' && parseCodexCliRef(a.credentialRef ?? '') !== null;
+    })
     .filter((a) => !opts.walledOnly || isWalledCandidate(a, fullUtil));
 
   const out: CapacityProbeResult[] = [];
@@ -376,7 +540,8 @@ export async function probeCapacityForAccounts(
         continue;
       }
       const accountDeadlineAt = Math.min(sweepDeadlineAt, startedAt + CAPACITY_PROBE_ACCOUNT_TIMEOUT_MS);
-      out.push(await probeAccountCapacity(a, { ...deps, now, deadlineAt: accountDeadlineAt }, fullUtil));
+      const probe = (a.provider ?? 'claude') === 'codex' ? probeCodexAccountCapacity : probeAccountCapacity;
+      out.push(await probe(a, { ...deps, now, deadlineAt: accountDeadlineAt }, fullUtil));
     }
   });
   await Promise.all(workers);
