@@ -69,8 +69,18 @@ async function report(args: Record<string, unknown>, ctx: never = WORKER_CTX) {
   return { parsed: JSON.parse(res.content[0]!.text), isError: res.isError };
 }
 async function recent(args: Record<string, unknown>) {
-  const res = (await recentTool.handler(args as never, WORKER_CTX)) as { content: { text: string }[] };
-  return JSON.parse(res.content[0]!.text) as { activity: Array<Record<string, unknown>>; count: number };
+  // activity:recent declares a `delta` surface, so its handler returns { data } — the
+  // render into { content: [{ text }] } happens in the dispatch wrapper this suite
+  // deliberately bypasses by calling `handler` directly. This helper still read the
+  // RENDERED shape, so `res.content` was undefined and all NINE activity:recent cases
+  // below failed with "Cannot read properties of undefined (reading '0')" — a stale
+  // helper reading as nine broken assertions. Read the shape the handler actually
+  // returns, and do NOT fall back to the other one: a tolerant `??` here would hide
+  // the next shape change exactly the way this one hid.
+  const res = (await recentTool.handler(args as never, WORKER_CTX)) as {
+    data: { activity: Array<Record<string, unknown>>; count: number };
+  };
+  return res.data;
 }
 
 let db: FreshPgDb;
@@ -175,6 +185,29 @@ describe('activity:recent — read + filters', () => {
 
   it('respects limit', async () => {
     expect((await recent({ limit: 2 })).count).toBe(2);
+  });
+
+  // EI-20309400427356782: session_id came back on every row but could not be filtered
+  // BY. It is a different grain from owner — one owner spans many CLI sessions across
+  // respawns — so `owner` cannot stand in for it.
+  it('filters by session_id, at a finer grain than owner', async () => {
+    await report({ owner: 'su-a', agent: 'claude', tool_name: 'Read', tool_input: { file_path: '/s1.ts' }, session_id: 'sess-1' });
+    await report({ owner: 'su-a', agent: 'claude', tool_name: 'Read', tool_input: { file_path: '/s2.ts' }, session_id: 'sess-2' });
+    const r = await recent({ session_id: 'sess-1' });
+    expect(r.count).toBe(1);
+    expect(r.activity[0]!.session_id).toBe('sess-1');
+    // The same owner covers both sessions — which is the whole reason the filter exists.
+    expect((await recent({ owner: 'su-a' })).count).toBe(5);
+  });
+
+  // The handler has TWO SQL branches; the since_id one is easy to leave un-filtered.
+  it('ANDs session_id into the since_id catch-up branch too', async () => {
+    const cursor = Number((await recent({ limit: 1 })).activity[0]!.id);
+    await report({ owner: 'su-a', tool_name: 'Read', tool_input: { file_path: '/s1.ts' }, session_id: 'sess-1' });
+    await report({ owner: 'su-a', tool_name: 'Read', tool_input: { file_path: '/s2.ts' }, session_id: 'sess-2' });
+    const r = await recent({ since_id: cursor, session_id: 'sess-2' });
+    expect(r.count).toBe(1);
+    expect(r.activity[0]!.session_id).toBe('sess-2');
   });
 });
 

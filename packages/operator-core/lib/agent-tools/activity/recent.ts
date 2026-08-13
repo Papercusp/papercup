@@ -7,9 +7,15 @@
  * decide what matters; the fleet view seeds from it before subscribing to the
  * stream; tests assert against it.
  *
- * Filters are ANDed: `owner` (one worker's pane), `harness`, `agent` (claude/codex/
- * omp), `kind`. `since_id` returns only rows newer than a cursor (the stream-catch-up
- * shape); default returns the most-recent `limit` rows newest-first.
+ * Filters are ANDed: `owner` (one worker's pane), `session_id` (one CLI session of
+ * that worker), `harness`, `agent` (claude/codex/omp), `kind`. `since_id` returns only
+ * rows newer than a cursor (the stream-catch-up shape); default returns the most-recent
+ * `limit` rows newest-first.
+ *
+ * EI-20309400427356782: `session_id` is the row's own column and always came back on
+ * every row, but there was no way to filter BY it — so recovering one session's tool
+ * stream meant over-fetching `owner` and filtering client-side, and an owner spans many
+ * sessions across respawns. Owner is the worker; session is one CLI run of it.
  */
 
 import { z } from 'zod';
@@ -43,10 +49,10 @@ interface ActivityRow {
 export default defineTool({
   name: 'activity:recent',
   description:
-    "Read recent worker-activity rows (native tool calls / lifecycle / todos) from the cross-CLI activity bridge. Filter by owner (one worker's pane), harness, agent (claude/codex/omp), kind (tool/lifecycle/todos); since_id returns only rows newer than a cursor. The curator + fleet view read this; the live push is /api/activity/stream.",
+    "Read recent worker-activity rows (native tool calls / lifecycle / todos) from the cross-CLI activity bridge. Filter by owner (one worker's pane), session_id (one CLI run of it), harness, agent (claude/codex/omp), kind (tool/lifecycle/todos); since_id pages forward from a cursor. The curator + fleet view read this; the live push is /api/activity/stream.",
   capability: 'activity:read',
   guidance: {
-    when: 'You want to inspect what a worker (or the whole fleet) has been doing — the recent native tool-call stream, todo snapshots, or lifecycle transitions. Pass owner to scope to one pane, harness to scope to one project, since_id to page forward.',
+    when: 'You want to inspect what a worker (or the whole fleet) has been doing — the recent native tool-call stream, todo snapshots, or lifecycle transitions. Pass owner for one pane, session_id for one CLI run of it, harness for one project, since_id to page forward.',
     notWhen: 'For a LIVE feed subscribe to the /api/activity/stream SSE (the pui does this). To report activity (you almost never need to) use `activity:report`. For coord messages use `coord:inbox`.',
     seeAlso: [
       'activity:report (inject a synthetic activity marker)',
@@ -59,6 +65,13 @@ export default defineTool({
   args: z.object({
     /** Scope to one worker's coordination id (PAPERCUSP_SID). */
     owner: z.string().max(256).optional(),
+    /**
+     * Scope to one CLI session of that worker (the row's own session_id). Same
+     * spelling + bounds as activity:tool-log's session_id, deliberately: `.min(1)`
+     * because an empty string is not a filter — it would match `session_id = ''`
+     * and return an empty result that reads like "this session did nothing".
+     */
+    session_id: z.string().min(1).max(256).optional(),
     /** Scope to one harness. */
     harness: z.string().max(256).optional(),
     /** Scope to one CLI: 'claude' | 'codex' | 'omp'. */
@@ -75,8 +88,9 @@ export default defineTool({
   // since_id) is a stable, high-churn view: the diffable unit is the `activity` row set,
   // keyed by the BIGINT `id`. Rows are append-only/immutable (a content-hash revision means
   // a row is never `updated`; the window churns as new rows are `added` and old ones fall
-  // out → `removed`). The framework folds the filter args (owner/harness/agent/kind/limit/
-  // since_id) into the view fingerprint, so a since_id catch-up call gets its own cursor and
+  // out → `removed`). The framework hashes the CANONICAL ARGS into the view fingerprint
+  // (owner/session_id/harness/agent/kind/limit/since_id — a new filter self-folds, it is
+  // not a maintained list), so a since_id catch-up call gets its own cursor and
   // a changed window → full; `scope` adds the workspace dimension (the handler scopes the
   // feed to the active workspace). Dormant until the papercusp-tool-delta-protocol flag flips.
   delta: {
@@ -112,6 +126,7 @@ export default defineTool({
           WHERE id > ${sinceId}
             AND workspace_id = ${ws}
             AND (${args.owner ?? null}::text IS NULL OR owner_id = ${args.owner ?? null})
+            AND (${args.session_id ?? null}::text IS NULL OR session_id = ${args.session_id ?? null})
             AND (${args.harness ?? null}::text IS NULL OR harness_slug = ${args.harness ?? null})
             AND (${args.agent ?? null}::text IS NULL OR agent = ${args.agent ?? null})
             AND (${args.kind ?? null}::text IS NULL OR kind = ${args.kind ?? null})
@@ -128,6 +143,7 @@ export default defineTool({
           FROM harness_shared.agent_activity
           WHERE workspace_id = ${ws}
             AND (${args.owner ?? null}::text IS NULL OR owner_id = ${args.owner ?? null})
+            AND (${args.session_id ?? null}::text IS NULL OR session_id = ${args.session_id ?? null})
             AND (${args.harness ?? null}::text IS NULL OR harness_slug = ${args.harness ?? null})
             AND (${args.agent ?? null}::text IS NULL OR agent = ${args.agent ?? null})
             AND (${args.kind ?? null}::text IS NULL OR kind = ${args.kind ?? null})
