@@ -1774,10 +1774,42 @@ const affected = affectedWorkspaces();
 // no `test` task present the `hostSuiteRatchet` deferral cannot fire, so guards attach
 // unconditionally — the fail-safe direction.
 
+// ── PURE/STATEFUL LANE SPLIT (plan gate-suite-speedup-2026-08-12, P-003) ────────────────
+// A workspace declaring BOTH lane scripts runs them INSTEAD of its single `test` task. The
+// PURE lane (files that never touch the module registry — no vi.mock/doMock/resetModules)
+// runs with vitest's top-level `isolate` OFF, so files SHARE a fork's module registry
+// instead of cold-transpiling the package graph once per file; the STATEFUL lane keeps
+// today's isolated behaviour. Together the two lanes run EXACTLY the file set `test` ran.
+//
+// `npm run test` itself is deliberately UNCHANGED and still runs the whole suite isolated.
+// That is load-bearing, not incidental: the green-checkpoint's isolation and confirming
+// co-execution re-runs reach a workspace through resolveWorkspaceTestInvocation
+// (`npm run test --workspace <ws> -- <files>`), which sets no lane env — so those re-runs
+// stay isolated BY CONSTRUCTION, and WI-6956 keeps its ability to classify "passes alone,
+// fails co-executed" as a real concurrency defect rather than absorbing it.
+const LANE_SCRIPTS = ['test:lane-pure', 'test:lane-stateful'];
+const hasLaneSplit = (ws) => LANE_SCRIPTS.every((s) => ws.scripts?.[s]);
+/**
+ * Do this workspace's already-queued tasks cover its FULL unit suite?
+ *
+ * The `hostSuiteRatchet` deferral below asks "is the host suite running?", and before the
+ * lane split that was spelled `t.script === 'test'`. Under the split the full suite is the
+ * UNION of the two lane tasks, so a literal 'test' check would silently answer NO and
+ * re-attach EVERY ratchet-declaring guard as a separate npm invocation — each paying the
+ * ~6.5s per-leg spawn the split exists to save. Fail-safe in direction, but it would eat a
+ * large share of the gain, and nothing would report that it had.
+ */
+const coversHostSuite = (queued, wsName) =>
+  queued.some((t) => t.ws.name === wsName && t.script === 'test') ||
+  LANE_SCRIPTS.every((s) => queued.some((t) => t.ws.name === wsName && t.script === s));
+
 const tasks = [];
 for (const ws of affected) {
   if (excludes.has(ws.name)) { outSync(`(excluded ${ws.name})`); continue; }
-  if (ws.scripts.test) tasks.push({ ws, script: 'test' });
+  if (ws.scripts.test) {
+    if (hasLaneSplit(ws)) for (const script of LANE_SCRIPTS) tasks.push({ ws, script });
+    else tasks.push({ ws, script: 'test' });
+  }
   // Static drift check between el-agent-sync TOOLS list and the
   // commands registry. Cheap (no network), catches the runtime crash
   // class that hit us yesterday ("Client tool not defined on client").
@@ -1824,7 +1856,7 @@ for (const guard of REPO_WIDE_INVARIANT_GUARDS) {
   if (tasks.some((t) => t.ws.name === ws.name && t.script === guard.script)) continue;
   // Defer to the host workspace's full suite ONLY where a named ratchet re-runs this
   // invariant inside it.
-  if (guard.hostSuiteRatchet && tasks.some((t) => t.ws.name === ws.name && t.script === 'test')) continue;
+  if (guard.hostSuiteRatchet && coversHostSuite(tasks, ws.name)) continue;
   if (!invariantGuardChangedPaths().some((f) => guard.appliesTo(f))) continue;
   selectedInvariantGuards.push({ workspace: ws.name, script: guard.script });
   if (!printAffected) outSync(`(repo-wide invariant guard: ${ws.name} :: ${guard.script})`);

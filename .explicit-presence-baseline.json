@@ -1,4 +1,4 @@
 {
-  "count": 55,
+  "count": 18,
   "_comment": "RATCHET-ONLY-DOWN (see scripts/check-explicit-presence.mjs). This is the count of zero-value-defaulted parse/deserialize-boundary reads WI-5977 has not yet burned down. Lowering it happens with --ratchet --update on a quiet tree; RAISING it is a deliberate hand-edit that needs a stated justification, never a silent bump."
 }
