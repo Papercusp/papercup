@@ -37,6 +37,24 @@
 #   PC_HEAVY_LOAD1_OVERRIDE  inject load1 for the adaptive default (tests — same
 #                         convention as pretooluse-bash-resource-gate.sh); non-numeric
 #                         or unreadable load fails conservative, to the floor.
+#   PC_HEAVY_MEM_CLAMP    "1"(default)/"0" — clamp the effective slot count to
+#                         what MemAvailable can physically hold
+#                         (EI-20336929607862174). The load-adaptive count above
+#                         is anti-correlated with memory: reclaim stalls lower
+#                         load1, which WIDENS admission exactly when memory is
+#                         scarce. Applies to a FIXED PC_HEAVY_SLOTS too, never
+#                         clamps below 1, and fails open on any unreadable
+#                         input. off/false/no also disable.
+#   PC_HEAVY_MEM_PER_SLOT_GIB  GiB budgeted per admitted heavy run (default 6 —
+#                         a `tsc -p packages/operator-core` peaks 4.7-6.9 GiB,
+#                         and it is the most-run heavy command here).
+#   PC_HEAVY_MEM_PSI_BACKOFF  memory PSI full avg10 at or above which the
+#                         budget is HALVED (default 5, the threshold
+#                         infra-liveness already alerts on). A box in reclaim
+#                         must not admit at its ceiling.
+#   PC_HEAVY_MEMAVAIL_GIB_OVERRIDE / PC_HEAVY_MEM_PSI_OVERRIDE  inject
+#                         MemAvailable-GiB / PSI for the clamp (tests — same
+#                         convention as PC_HEAVY_LOAD1_OVERRIDE).
 #   PC_HEAVY_GATE_RESERVE "1"(default)/"0" — while a green-checkpoint run is in
 #                         flight, clamp the effective slot count to a quarter of
 #                         the steady-state target (min 1) so the gate's isolation
@@ -432,6 +450,72 @@ _gate_recheck_refusal() {
   _gate_refuse_broad_sweep "$@"
 }
 
+# ── Memory clamp (EI-20336929607862174) ────────────────────────────────────
+# `_calc_slots` above admits on load1 alone. That is not merely BLIND to
+# memory, it is ANTI-CORRELATED with it: memory pressure stalls processes in
+# reclaim, which LOWERS load1, which WIDENS admission. The worse memory gets,
+# the more heavy runs pc-heavy lets in — a positive feedback loop, which is why
+# the recurring symptom is a memory-full PSI spike with the CPU looking idle.
+#
+# Measured 2026-08-13T19:30Z on this 128-core/251 GiB box: memory PSI full
+# avg60 = 4.56 while cpu PSI some = 0.79 and load1 = 79 → 7 slots admitted,
+# ceil 16. Cost per slot is not small — `lint:tsc` is one
+# `tsc -p packages/operator-core` node process peaking 4.7–6.9 GiB RSS (two
+# concurrent measured at 4741 + 6946 MiB, driving app.slice +5.1 GiB/20s), and
+# every agent runs it after editing. 16 × ~6 GiB ≈ 96 GiB transient against
+# 54 GiB MemAvailable, on a box already ~118 GiB resident (QEMU VMs, PG,
+# dev-api). Slots stagger CONCURRENCY; nothing was staggering FOOTPRINT.
+#
+# Two signals, both fail-open:
+#   1. BUDGET  — MemAvailable / PC_HEAVY_MEM_PER_SLOT_GIB is the most slots
+#      that physically fit. This is the load-bearing one.
+#   2. BACKOFF — memory PSI full avg10 >= PC_HEAVY_MEM_PSI_BACKOFF halves that
+#      budget: a box already IN reclaim must not admit at its ceiling.
+# Never clamps below 1 — pc-heavy must always make forward progress, and one
+# heavy run is what a busy box does, not a deadlock. This is a safety reserve
+# like the gate clamp, so (unlike load adaptation) it applies to an explicit
+# PC_HEAVY_SLOTS too. Escape hatch: PC_HEAVY_MEM_CLAMP=0.
+_mem_clamp_slots() {
+  local _n="$1"
+  case "${PC_HEAVY_MEM_CLAMP:-1}" in
+    0|off|OFF|false|FALSE|no|NO) echo "$_n"; return ;;
+  esac
+
+  local _avail_gib
+  if [ -n "${PC_HEAVY_MEMAVAIL_GIB_OVERRIDE:-}" ]; then
+    _avail_gib="${PC_HEAVY_MEMAVAIL_GIB_OVERRIDE%%.*}"
+  else
+    _avail_gib="$(awk '/^MemAvailable:/ { print int($2 / 1048576); exit }' /proc/meminfo 2>/dev/null)"
+  fi
+  # Unreadable/garbage MemAvailable ⇒ fail open, exactly as if no clamp existed.
+  case "$_avail_gib" in ''|*[!0-9]*) echo "$_n"; return ;; esac
+
+  local _per="${PC_HEAVY_MEM_PER_SLOT_GIB:-6}"
+  case "$_per" in ''|*[!0-9]*) _per=6 ;; esac
+  [ "$_per" -lt 1 ] && _per=1
+
+  local _budget=$(( _avail_gib / _per ))
+
+  # PSI backoff. Reading avg10 (not avg60) so the clamp reacts within one
+  # admission decision rather than a minute after the damage.
+  local _psi
+  if [ -n "${PC_HEAVY_MEM_PSI_OVERRIDE:-}" ]; then
+    _psi="${PC_HEAVY_MEM_PSI_OVERRIDE%%.*}"
+  else
+    _psi="$(awk '/^full/ { for (i = 2; i <= NF; i++) if (substr($i, 1, 6) == "avg10=") { print int(substr($i, 7)); exit } }' /proc/pressure/memory 2>/dev/null)"
+  fi
+  local _backoff="${PC_HEAVY_MEM_PSI_BACKOFF:-5}"
+  case "$_backoff" in ''|*[!0-9]*) _backoff=5 ;; esac
+  case "$_psi" in
+    ''|*[!0-9]*) : ;;                                    # no PSI ⇒ budget only
+    *) [ "$_psi" -ge "$_backoff" ] && _budget=$(( _budget / 2 )) ;;
+  esac
+
+  [ "$_budget" -lt 1 ] && _budget=1
+  [ "$_n" -gt "$_budget" ] && _n="$_budget"
+  echo "$_n"
+}
+
 # Effective slot count: the steady-state target (fixed or load-adaptive), then
 # the gate clamp. The clamp applies to an explicit PC_HEAVY_SLOTS too — it is a
 # safety reserve, not load adaptation, and it has its own dedicated override.
@@ -450,6 +534,11 @@ _effective_slots() {
     [ "$_clamped" -lt 1 ] && _clamped=1
     [ "$_clamped" -lt "$_n" ] && _n="$_clamped"
   fi
+  # Memory clamp LAST: it is a physical ceiling, so it must be able to cut a
+  # count the gate clamp already lowered — and must apply to a fixed
+  # PC_HEAVY_SLOTS, which the load-adaptive path never sees.
+  _n="$(_mem_clamp_slots "$_n")"
+  case "$_n" in ''|*[!0-9]*) _n=1 ;; esac
   echo "$_n"
 }
 
