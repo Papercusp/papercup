@@ -55,6 +55,7 @@ import { continuationGateFromReads, countPendingInterrupts } from '../coordinati
 import { COORD_READ_TOOL_NAMES } from '../coordination/inbox-read-freshness';
 import { carryProvenanceFields } from '../../carry-surface-provenance-stamp';
 import { detectAbsencePremises } from '../../premises-claim-port';
+import { detectScopeOverreach } from '../../carry-note-probe-scope';
 import { withBoundedTimeout } from '../../bounded-timeout';
 
 /** The continuation hint is advisory; it must never consume the checkpoint
@@ -592,6 +593,25 @@ export default defineTool({
       }
     })();
 
+    // EI-18741016606334594: the SCOPE leg. Both lints above ask whether a claim has a
+    // probe at all. This one asks whether the probe it has can actually see what the
+    // claim asserts — a `✓` row whose claim is quantified ("no X", "never", "every")
+    // while its own recheck declares a narrow bound (`--since '60 min ago'`, `tail -3`).
+    // The badge is a licence to skip re-checking, so an over-broad one does not decay
+    // across cold wakes; it hardens, and the successor inherits it as settled fact.
+    //
+    // Measured against the real corpus before wiring in (D-001, agent-epistemics):
+    // 4,074 rows across 618 notes with a `## Checks` section (2026-08-13) — it flags
+    // 31 (0.8% of rows, 1.1% of ✓ rows), and the prescriptive-row exclusion is what
+    // keeps it there. Advisory + fail-open, like its siblings.
+    const scopeOverreach = (() => {
+      try {
+        return detectScopeOverreach(checks);
+      } catch {
+        return [];
+      }
+    })();
+
     // P-020 (su-ideate-learning-substrate): checkpoint-HARVEST. The carry-note `insight`
     // is exactly the "non-obvious thing a future agent would re-derive" the observation
     // lane wants — auto-file it as a lane:observation with ZERO new workflow (D-016/D-017).
@@ -903,6 +923,20 @@ export default defineTool({
                       'say ignores it — an absence proved by one grep in one file is not proved. Advisory only; ' +
                       'the write was kept.',
                     claims: absenceClaims,
+                  },
+                }
+              : {}),
+            ...(scopeOverreach.length > 0
+              ? {
+                  scopeLint: {
+                    flagged: true,
+                    note:
+                      'scope_lint: a ✓VERIFIED row claims MORE than its own re-check can observe — the claim is ' +
+                      'quantified (no / never / every / all / today) while the probe declares a narrow bound. The ' +
+                      '✓ badge is what a cold successor reads INSTEAD of re-checking, and a re-rendered row does ' +
+                      'not decay — it hardens into settled fact. Either NARROW the claim to what the probe saw, ' +
+                      'or WIDEN the probe and re-run it. Advisory only; the write was kept.',
+                    rows: scopeOverreach,
                   },
                 }
               : {}),

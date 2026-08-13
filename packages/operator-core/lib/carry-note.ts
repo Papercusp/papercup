@@ -33,6 +33,12 @@ import { createHash } from 'node:crypto';
 import { getOrgPg } from '@papercusp/db-org';
 import { DEFAULT_COORD_WORKSPACE } from '@papercusp/coordination/event-log';
 import { resolveConcreteWorkspaceId } from './workspace-registry';
+import {
+  PROBE_SCOPE_MARKER_RE,
+  describeProbeScope,
+  renderProbeScopeMarker,
+  stripProbeScopeMarker,
+} from './carry-note-probe-scope';
 import { notifyAgentOrdersChanged } from './agent-orders-notify';
 
 /**
@@ -390,7 +396,8 @@ export function coerceCarryRowShape(row: unknown, path: string, repairs: CarryAr
 /** Fixed legend rendered under the `## Checks` heading so a cold successor reads the
  *  rows correctly with zero prior knowledge. Starts with `_` so line-parsers skip it. */
 export const CARRY_NOTE_CHECKS_LEGEND =
-  '_✓ = VERIFIED (evidence attached) · ? = PREDICTED — run the re-check before relying on it_';
+  '_✓ = VERIFIED (evidence attached) · ? = PREDICTED — run the re-check before relying on it · ' +
+  '[scope: …] = ALL the probe observed; a claim quantified beyond it is NOT verified by it_';
 
 /** Max length of a row `id`. Long enough to be descriptive (`gate-green-at-tip`),
  *  short enough that the rendered `[#…]` prefix never dominates the row. */
@@ -461,19 +468,47 @@ export function parseWallLine(line: string): WallEntry | null {
   return out;
 }
 
-/** One check as a parseable single line: `- ✓|? <claim> — re-check: <cmd> — evidence: <ptr> (since <ISO>)`.
+/** One check as a parseable single line: `- ✓|? [scope: …] <claim> — re-check: <cmd> — evidence: <ptr> (since <ISO>)`.
  *  `✓` = verified (evidence follows), `?` = predicted. The marker, " — re-check: ",
- *  " — evidence: " and trailing " (since …)" are the round-trip anchors. */
+ *  " — evidence: " and trailing " (since …)" are the round-trip anchors.
+ *
+ *  EI-18741016606334594: when the recheck declares a bound about ITSELF
+ *  (`--since '60 min ago'`, `tail -3`, `limit 20`), that bound renders inline
+ *  next to the badge. A `✓` is a licence to skip re-checking, so the one place a
+ *  reader ever reconsiders it is where the badge is read — and a claim
+ *  quantified over more than its probe saw is invisible until the two sit side
+ *  by side. The marker is DERIVED from `recheck`, never stored: nothing is added
+ *  to {@link CheckEntry}, a re-render always reflects the CURRENT recheck, and
+ *  {@link parseCheckLine} strips it so the round-trip stays byte-stable instead
+ *  of growing the claim by one marker per wake. */
 export function renderCheckLine(c: CheckEntry): string {
   const recheck = (c.recheck ?? '').trim();
   const verified = (c.verified ?? '').trim();
   const id = sanitizeCarryRowId(c.id);
+  const scope = describeProbeScope(recheck);
   const since =
     c.sinceMs != null && Number.isFinite(c.sinceMs) ? ` (since ${new Date(c.sinceMs).toISOString()})` : '';
-  return `- ${verified ? '✓' : '?'} ${id ? `[#${id}] ` : ''}${c.claim.trim()}${
-    recheck ? ` — re-check: ${recheck}` : ''
-  }${verified ? ` — evidence: ${verified}` : ''}${since}`;
+  return `- ${verified ? '✓' : '?'} ${scope ? `${renderProbeScopeMarker(scope)} ` : ''}${
+    id ? `[#${id}] ` : ''
+  }${stripProbeScopeMarker(c.claim.trim())}${recheck ? ` — re-check: ${recheck}` : ''}${
+    verified ? ` — evidence: ${verified}` : ''
+  }${since}`;
 }
+
+/**
+ * The checks-row grammar, assembled from {@link PROBE_SCOPE_MARKER_RE} so the
+ * strip pattern is LITERALLY the render pattern rather than a hand-copied twin.
+ *
+ * Order matters and mirrors {@link renderCheckLine} exactly: badge, scope marker,
+ * `[#id]`, claim. The scope group is non-capturing — the marker is derived from
+ * `recheck`, so parsing discards it and the next render re-derives it. Writing
+ * this grammar out a second time by hand is the drift shape this file already
+ * pays for elsewhere; there is one source, and both directions read it.
+ */
+const CHECK_LINE_RE = new RegExp(
+  `^-\\s+(?:([✓?])\\s+)?(?:${PROBE_SCOPE_MARKER_RE.source}\\s+)?(?:\\[#([A-Za-z0-9._:-]{1,40})\\]\\s+)?(.+?)` +
+    `(?:\\s+—\\s+re-check:\\s+(.+?))?(?:\\s+—\\s+evidence:\\s+(.+?))?(?:\\s+\\(since\\s+([^)]+)\\))?\\s*$`,
+);
 
 /** Parse one checks-section line back into a {@link CheckEntry}; null for a
  *  non-row line (blank, the legend, prose, malformed). Review fold #6: the ✓|?
@@ -481,12 +516,13 @@ export function renderCheckLine(c: CheckEntry): string {
  *  (`- claim — re-check: cmd`) parses as PREDICTED instead of being silently
  *  dropped on round-trip. */
 export function parseCheckLine(line: string): CheckEntry | null {
-  const m =
-    /^-\s+(?:([✓?])\s+)?(?:\[#([A-Za-z0-9._:-]{1,40})\]\s+)?(.+?)(?:\s+—\s+re-check:\s+(.+?))?(?:\s+—\s+evidence:\s+(.+?))?(?:\s+\(since\s+([^)]+)\))?\s*$/.exec(
-      line,
-    );
+  const m = CHECK_LINE_RE.exec(line);
   if (!m) return null;
-  const claim = (m[3] ?? '').trim();
+  // EI-18741016606334594: the `[scope: …]` marker is DERIVED at render time from
+  // `recheck`, so it is discarded here rather than captured. Stripping it is what
+  // keeps render→parse→render byte-stable; a marker absorbed into the claim would
+  // grow the claim by one marker on every wake.
+  const claim = stripProbeScopeMarker((m[3] ?? '').trim());
   if (!claim) return null;
   const out: CheckEntry = { claim };
   const id = sanitizeCarryRowId(m[2]);

@@ -157,6 +157,7 @@ import {
   truncateCarryField,
   withCarryNoteChecks,
 } from '../../carry-note';
+import { detectScopeOverreach } from '../../carry-note-probe-scope';
 
 /** First 12 hex chars of sha256(text) — short enough to eyeball, long enough that an
  *  accidental collision between two DIFFERENT checkpoint bodies is not a real concern. */
@@ -946,6 +947,35 @@ export default defineTool({
            * you which of the two happened; read `checksDroppedNote`, which now says.
            */
           checks: stored !== null ? splitCarryNoteChecks(stored).checks.length : 0,
+          /**
+           * EI-18741016606334594: `✓VERIFIED` rows whose claim is quantified beyond what
+           * their own recheck can observe. Read off the STORED note (like `checks` above)
+           * rather than the caller's input, so it reports what a successor will actually
+           * be re-injected with. Advisory + fail-open; absent when nothing was flagged,
+           * so the common result shape is unchanged. Same rationale as the loop:checkpoint
+           * leg: a work-item checkpoint is re-injected into whoever picks the item up
+           * next, and an over-broad ✓ is read there as settled fact.
+           */
+          ...(() => {
+            try {
+              if (stored === null) return {};
+              const rows = detectScopeOverreach(splitCarryNoteChecks(stored).checks);
+              return rows.length > 0
+                ? {
+                    scopeLint: {
+                      flagged: true as const,
+                      note:
+                        'scope_lint: a ✓VERIFIED row claims MORE than its own re-check can observe. The badge ' +
+                        'is what the next holder reads INSTEAD of re-checking. Narrow the claim to what the ' +
+                        'probe saw, or widen the probe and re-run it. Advisory only; the write was kept.',
+                      rows,
+                    },
+                  }
+                : {};
+            } catch {
+              return {};
+            }
+          })(),
           /**
            * EI-19460631385508515: stored check claims this write DROPPED — present only
            * when a supplied `checks` list omitted rows that were already stored, so an
