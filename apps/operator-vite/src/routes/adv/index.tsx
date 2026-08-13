@@ -32,6 +32,20 @@ function AdvIndexPage() {
     // overview-dashboard-2026-06-05 D-001). Keep in sync with AdvShell.
     parseAsStringEnum<AdvTabId>(ADV_TAB_IDS).withDefault('overview'),
   );
+  return (
+    <AdvShell>
+      <AdvScopedTabBody activeTab={activeTab} />
+    </AdvShell>
+  );
+}
+
+/**
+ * This component MUST stay below AdvShell in the rendered tree. AdvShell owns
+ * AdvScopeContext.Provider; reading useAdvScope in AdvIndexPage (before its
+ * returned shell exists) can only see the context default, silently turning
+ * every HUD query into All Pots regardless of the selector URL.
+ */
+function AdvScopedTabBody({ activeTab }: { activeTab: AdvTabId }) {
   // The pot cluster is a per-tab row now, not shell chrome (owner ask
   // 2026-07-27) — see AdvPotBar. `withStatus` (the running pills + start/stop) is
   // HUD only. It is rendered HERE rather than inside each tab component for two
@@ -43,7 +57,7 @@ function AdvIndexPage() {
   const potBar = potBarModeForTab(activeTab);
   const potScope = useAdvScope();
   return (
-    <AdvShell>
+    <>
       {potBar.show ? <AdvPotBar withStatus={potBar.withStatus} /> : null}
       {/* The tab body is wrapped in an error boundary so a render crash in ONE tab
           (e.g. a hook useMemo over a shape-changed query) can't white-screen the
@@ -55,7 +69,7 @@ function AdvIndexPage() {
           {renderAdvTab(activeTab, potScope)}
         </AdvTabErrorBoundary>
       </div>
-    </AdvShell>
+    </>
   );
 }
 

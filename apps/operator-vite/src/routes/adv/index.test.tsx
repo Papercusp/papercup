@@ -22,14 +22,20 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { cleanup, render, screen } from '@testing-library/react';
 import { NuqsTestingAdapter } from 'nuqs/adapters/testing';
 
+// Provider-order sentinel: the shell mock enters the scope boundary while its
+// child component renders. A hook call in AdvIndexPage itself therefore sees
+// the All-Pots default, reproducing production; its child sees selected scope.
+const advScopeBoundary = vi.hoisted(() => ({ entered: false }));
+
 vi.mock('@tanstack/react-router', () => ({
   createFileRoute: () => (opts: Record<string, unknown>) => ({ ...opts }),
 }));
 
 vi.mock('../../components/adv/AdvShell', () => ({
-  default: ({ children }: { children: React.ReactNode }) => (
-    <div data-testid="adv-shell">{children}</div>
-  ),
+  default: ({ children }: { children: React.ReactNode }) => {
+    advScopeBoundary.entered = true;
+    return <div data-testid="adv-shell">{children}</div>;
+  },
   // Inlined (not a top-level const) — vi.mock factories are hoisted above
   // module-scope declarations, so referencing an outer `const` throws.
   ADV_TABS: [
@@ -37,14 +43,23 @@ vi.mock('../../components/adv/AdvShell', () => ({
     'evals', 'calendar', 'plans', 'prs', 'insights', 'settings',
     'docs', 'git', 'testing',
   ].map((id) => ({ id })),
-  useAdvScope: () => ({
-    allMode: false,
-    scopeMode: 'expanded',
-    slug: 'pot-a',
-    hive: 'pot-a',
-    harnessSlugs: ['pot-a', 'pot-a-child'],
-    ready: true,
-  }),
+  useAdvScope: () => advScopeBoundary.entered
+    ? {
+        allMode: false,
+        scopeMode: 'expanded',
+        slug: 'pot-a',
+        hive: 'pot-a',
+        harnessSlugs: ['pot-a', 'pot-a-child'],
+        ready: true,
+      }
+    : {
+        allMode: true,
+        scopeMode: 'all',
+        slug: null,
+        hive: '',
+        harnessSlugs: null,
+        ready: false,
+      },
 }));
 // The pot bar itself is mocked (it mounts a selector + four live status pills);
 // the DECISION of which tabs get it is the real adv-pot-bar-tabs module, so these
@@ -77,6 +92,7 @@ import { Route } from './index';
 
 const Comp = (Route as unknown as { component: () => JSX.Element }).component;
 function renderAdv(searchParams = '') {
+  advScopeBoundary.entered = false;
   return render(<NuqsTestingAdapter searchParams={searchParams}><Comp /></NuqsTestingAdapter>);
 }
 /** The pot bar marker, or null when this tab does not carry one. */
