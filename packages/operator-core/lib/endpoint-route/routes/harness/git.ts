@@ -14,6 +14,7 @@ import { promisify } from 'node:util';
 import { join } from 'node:path';
 import { resolvePhasedProject } from '../../../harness-core';
 import { phasePhaseLabel } from '../../../harness-phases';
+import { NotGitRepositoryError, readGitStats } from '../../../harness/git-stats';
 import { defineTool } from '@papercusp/agent-mcp';
 
 const execFileP = promisify(execFile);
@@ -338,4 +339,27 @@ const gitLog = defineTool({
   },
 });
 
-export default [gitShow, gitWorktrees, gitLog];
+const gitStats = defineTool({
+  method: 'GET',
+  path: '/harness/:slug/git/stats',
+  auth: 'public',
+  async handler(req, ctx) {
+    const project = await resolvePhasedProject(ctx.params.slug as string, phaseFromReq(req));
+    if (!project) return Response.json({ error: 'unknown project' }, { status: 404 });
+    const refresh = new URL(req.url).searchParams.get('refresh') === '1';
+    try {
+      const stats = await readGitStats(project.path, { refresh });
+      return Response.json({ stats });
+    } catch (error) {
+      if (error instanceof NotGitRepositoryError) {
+        return Response.json({ stats: null, notAGitRepo: true });
+      }
+      return Response.json(
+        { error: error instanceof Error ? error.message : String(error) },
+        { status: 500 },
+      );
+    }
+  },
+});
+
+export default [gitShow, gitWorktrees, gitLog, gitStats];
