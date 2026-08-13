@@ -20,8 +20,8 @@
  * without running the (heavy) suite; realCheckpointDeps wires the real ones.
  */
 
-import { spawn, spawnSync } from 'node:child_process';
-import { randomUUID } from 'node:crypto';
+import { spawn, spawnSync } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import {
   mkdirSync,
   writeFileSync,
@@ -32,9 +32,9 @@ import {
   readFileSync,
   rmSync,
   existsSync,
-} from 'node:fs';
-import * as os from 'node:os';
-import * as path from 'node:path';
+} from "node:fs";
+import * as os from "node:os";
+import * as path from "node:path";
 import {
   git,
   revParse,
@@ -47,21 +47,31 @@ import {
   commitsBetween,
   type AdvanceResult,
   type RangeChangeSet,
-} from './git-ops';
-import { quietCutSecFromEnv } from '@papercusp/operator-core/lib/release/quiet-cut';
+} from "./git-ops";
+import { quietCutSecFromEnv } from "@papercusp/operator-core/lib/release/quiet-cut";
 // WI-38224: a plain constant, so a STATIC import is correct here even though this file otherwise
 // prefers dynamic ones — it must be evaluated in THIS process to describe THIS process.
-import { RUNNER_PROCESS_BOOTED_AT_MS } from '@papercusp/operator-core/lib/release/in-flight-retriage';
+import { RUNNER_PROCESS_BOOTED_AT_MS } from "@papercusp/operator-core/lib/release/in-flight-retriage";
 // EI-20063423357086565 — the uncommitted-working-tree reader, reused rather than re-derived:
 // it includes untracked files and deliberately avoids porcelain's whitespace-sensitive
 // column parse. See `failingFilesUncommitted` below.
-import { uncommittedPaths, type GitRead } from '@papercusp/operator-core/lib/candidate-contains';
-import { describeIntegrationRoot, toolingRoot, type ReleaseConfig } from './release-config';
-import { runPerfGate, perfGatePolicyFromFlags } from './perf-gate';
-import { runDesktopPerfGate, desktopPerfGatePolicyFromFlags } from './desktop-perf-gate';
-import { runDeltaGate, deltaGatePolicyFromEnv } from './delta-gate';
-import { heldGateAlert } from './held-gate-alarm';
-import { typecheckFailureBanner } from '../gate-artifact-verdict-tail';
+import {
+  uncommittedPaths,
+  type GitRead,
+} from "@papercusp/operator-core/lib/candidate-contains";
+import {
+  describeIntegrationRoot,
+  toolingRoot,
+  type ReleaseConfig,
+} from "./release-config";
+import { runPerfGate, perfGatePolicyFromFlags } from "./perf-gate";
+import {
+  runDesktopPerfGate,
+  desktopPerfGatePolicyFromFlags,
+} from "./desktop-perf-gate";
+import { runDeltaGate, deltaGatePolicyFromEnv } from "./delta-gate";
+import { heldGateAlert } from "./held-gate-alarm";
+import { typecheckFailureBanner } from "../gate-artifact-verdict-tail";
 // WI-6441 — the ONE seam that parses vitest's output. Reaching across into `scripts/`
 // (rather than the reverse) mirrors `operator-core/lib/content-lint/conflict-markers.ts`
 // and for the same reason: those scripts are invoked by bare `node`, with no TS/tsx, so
@@ -73,11 +83,11 @@ import {
   vitestSuiteFailRow,
   VITEST_TEST_FILE_SOURCE,
   parseFailingFilesLine,
-} from '../../../../scripts/lib/vitest-summary.mjs';
+} from "../../../../scripts/lib/vitest-summary.mjs";
 // Keep rescue command resolution aligned with the affected-test runner. These packages are
 // deliberately outside the root npm workspaces (the lockfile carries them as standalone links),
 // so `npm --workspace <name>` cannot address them from the superproject root.
-import { STANDALONE_PACKAGE_DIRS } from '../../../../scripts/lib/test-runner-classes.mjs';
+import { STANDALONE_PACKAGE_DIRS } from "../../../../scripts/lib/test-runner-classes.mjs";
 // EI-19395755190419540 — the orchestrator's stdout tags, DEFINED one layer down so the log
 // PARSER (operator-core) and this EMITTER can share one literal across the package boundary.
 // Imported (not merely re-exported) because `log()` below calls orchestratorStdoutTag() on
@@ -87,7 +97,7 @@ import {
   ORCHESTRATOR_STDOUT_TAG,
   ORCHESTRATOR_STDOUT_TAG_UNDER_TEST,
   orchestratorStdoutTag,
-} from '../../../../packages/operator-core/lib/release/checkpoint-log-tags';
+} from "../../../../packages/operator-core/lib/release/checkpoint-log-tags";
 
 export interface CheckpointDeps {
   /** (Re)build the isolated checkpoint checkout at `ref` (setup-release-checkout.sh). */
@@ -97,7 +107,10 @@ export interface CheckpointDeps {
    *  decide load-flake-vs-real-break. Optional + injected so the realCheckpointDeps
    *  wiring is unit-testable without running real vitest; realCheckpointDeps shells it
    *  through the CheckpointExec seam. */
-  isolationRun?(input: { workspace: string; file: string }): Promise<IsolationResult>;
+  isolationRun?(input: {
+    workspace: string;
+    file: string;
+  }): Promise<IsolationResult>;
   /** WI-6956: the CONFIRMING co-execution re-run — the originally-failing files of ONE
    *  workspace re-run TOGETHER with file parallelism ON, so a shared-state concurrency
    *  defect REPRODUCES instead of vanishing the way it does under `--no-file-parallelism`.
@@ -105,7 +118,10 @@ export interface CheckpointDeps {
    *  a concurrency-dependent bug, not evidence against one. Optional + injected on the
    *  same seam as isolationRun so the wiring stays unit-testable; when absent the absorber
    *  declines to absorb (fail-safe). */
-  concurrentRun?(input: { workspace: string; files: string[] }): Promise<ConcurrentRerunResult>;
+  concurrentRun?(input: {
+    workspace: string;
+    files: string[];
+  }): Promise<ConcurrentRerunResult>;
   /** worker-pool-crash-absorption-2026-06-25 (WI-806): re-run ONE whole workspace's
    *  suite at REDUCED concurrency (a single fork) after the gate run crashed a vitest
    *  worker fork (OOM/ENOMEM under fleet load) and emitted NO per-file `FAIL` lines —
@@ -191,7 +207,10 @@ export interface CheckpointDeps {
    *  rescue — so a lint fixed seconds after the quiet-cut still held the gate red
    *  forever. Optional: absent ⇒ a gate-only red is never re-verified at tip (today's
    *  behaviour preserved for stubs/hives that don't provide it). */
-  runGateAtRef?(ref: string, gateIds: string[]): Promise<{ pass: boolean; summary: string }>;
+  runGateAtRef?(
+    ref: string,
+    gateIds: string[],
+  ): Promise<{ pass: boolean; summary: string }>;
   /** EI-18669342433807110: called right before a stale-candidate auto-refire RECURSES (which can
    *  run a full suite again, minutes, before this process returns) — merges a marker into
    *  `gate_health` so a concurrent reader (coord:orient, dev:why) can tell the cached red for
@@ -292,7 +311,10 @@ export interface CheckpointDeps {
   recordVerdict?(r: CheckpointResult): Promise<boolean>;
   /** Age of the deployed release pin + how far it trails tip, for the staleness alarm.
    *  Optional: absent ⇒ alarm never fires. */
-  deployStaleness?(): Promise<{ pinAgeMs: number; commitsBehind: number } | null>;
+  deployStaleness?(): Promise<{
+    pinAgeMs: number;
+    commitsBehind: number;
+  } | null>;
   /** release-pipeline-resilience-2026-06-09 P-002: open a durable, human-facing
    *  `release-not-green` escalation on red. Transition-only (no-op if one is
    *  already open) so the hourly tick doesn't re-open it while the gate stays
@@ -309,7 +331,9 @@ export interface CheckpointDeps {
    *  WARN (default — still advance) or BLOCK (only when the owner armed block-mode). Optional
    *  + flag-gated (a no-op `pass` unless PAPERCUSP_PERF_GATE=1) so existing stubs need not
    *  provide it and the default deploy behaviour is unchanged. */
-  perfGate?(candidate: string): Promise<{ action: 'pass' | 'warn' | 'block'; summary: string }>;
+  perfGate?(
+    candidate: string,
+  ): Promise<{ action: "pass" | "warn" | "block"; summary: string }>;
   /** desktop-performance-suite-2026-07-20 P-011: the desktop-UI perf gate. Runs
    *  post-runGreen / pre-advance on a GREEN candidate: if the latest persisted
    *  desktop-perf run (desktop_perf_runs, P-010) shows a budgeted interaction /
@@ -317,14 +341,18 @@ export interface CheckpointDeps {
    *  block-mode is armed, which V1 never does — warn-not-block until trusted).
    *  Optional + FLAG-gated (FLAGS.DESKTOP_PERF_GATE, default ON; a no-op `pass`
    *  when off or when no run is recorded) so existing stubs need not provide it. */
-  desktopPerfGate?(candidate: string): Promise<{ action: 'pass' | 'warn' | 'block'; summary: string }>;
+  desktopPerfGate?(
+    candidate: string,
+  ): Promise<{ action: "pass" | "warn" | "block"; summary: string }>;
   /** P-016 (agent-tool-delta-protocol D-008): the delta-protocol SAFETY gate.
    *  Runs post-runGreen / pre-advance on a GREEN candidate: if the production
    *  semantic-delta flag is ON but the Lane-C scenarios (S23/S24/S25) are not
    *  recorded-green-and-fresh, WARN (default) or BLOCK (owner-armed). Optional +
    *  flag-gated (a no-op `pass` unless PAPERCUSP_DELTA_GATE=1) so existing stubs
    *  need not provide it and the default deploy behaviour is unchanged. */
-  deltaGate?(candidate: string): Promise<{ action: 'pass' | 'warn' | 'block'; summary: string }>;
+  deltaGate?(
+    candidate: string,
+  ): Promise<{ action: "pass" | "warn" | "block"; summary: string }>;
   /** EI-11118 (cupboard-public-release P-009 durable fix): the Cupboard prod-
    *  hygiene gate. Runs post-runGreen / pre-advance on a GREEN candidate: scans
    *  the LIVE prod Cupboard storefront for E2E/smoke test-junk rows (the
@@ -334,7 +362,9 @@ export interface CheckpointDeps {
    *  PAPERCUSP_CUPBOARD_HYGIENE_GATE=0 (see cupboard-hygiene-gate.ts for why this
    *  one gate defaults on, unlike perf/delta-gate) — existing stubs that omit it
    *  behave exactly as before (no call site fires without the dep). */
-  cupboardHygieneGate?(candidate: string): Promise<{ action: 'pass' | 'warn' | 'block'; summary: string }>;
+  cupboardHygieneGate?(
+    candidate: string,
+  ): Promise<{ action: "pass" | "warn" | "block"; summary: string }>;
   /** P-016 (release-pipeline-resilience-2026-06-09 D-010): the commit shas between
    *  `from` (exclusive) and `to` (inclusive), OLDEST-FIRST, full shas — the batch the
    *  green-checkpoint is gating. Used by the longest-green-PREFIX salvage to know which
@@ -344,7 +374,10 @@ export interface CheckpointDeps {
    *  → workspaces → reverse-dep expansion — `affected-tests.mjs --print-affected`), or
    *  null when it can't be computed (caller then declines the salvage, never guesses).
    *  Pure git+graph, NO test run, so the prefix scan is cheap. Optional + injected. */
-  affectedWorkspacesForRange?(from: string, to: string): Promise<string[] | null>;
+  affectedWorkspacesForRange?(
+    from: string,
+    to: string,
+  ): Promise<string[] | null>;
   /** WI-38218 (root cause WI-38216): the changed FILE paths for the diff `from..to`,
    *  submodule gitlinks EXPANDED (`changedFilesRecursive`), or null when it can't be
    *  computed (caller then falls back to workspace granularity, never guesses).
@@ -363,7 +396,7 @@ export interface CheckpointDeps {
    *  hive has no such script, not green. Optional so older/test deps keep their current
    *  behaviour; runGreen's unscoped post-suite typecheck remains the final assurance. */
   runChangedFileTypecheckPreflight?(files: string[]): Promise<{
-    status: 'passed' | 'failed' | 'skipped';
+    status: "passed" | "failed" | "skipped";
     summary: string;
     failingSignatures?: string[];
   }>;
@@ -379,7 +412,17 @@ export interface CheckpointDeps {
    *  error there just skips the annotation, never blocks the red path). */
   flakeLookup?(
     files: string[],
-  ): Promise<Record<string, { fails: number; passes: number; bothStatusShas: number; isSuspect: boolean }>>;
+  ): Promise<
+    Record<
+      string,
+      {
+        fails: number;
+        passes: number;
+        bothStatusShas: number;
+        isSuspect: boolean;
+      }
+    >
+  >;
   /** EI-10800: emit an awaitable gate-verdict event (release:green / green-checkpoint:red,
    *  each global + pipeline-scoped). AWAITED at every call site so the fire completes before
    *  runGreenCheckpoint returns. Historically each verdict was a fire-and-forget
@@ -397,7 +440,12 @@ export interface CheckpointDeps {
    *  emitAwaitedEvent's cancelSiblingKeysFor so a subscriber's now-dead wait on the
    *  opposite outcome is retired the instant this candidate resolves, instead of
    *  living until its own timeout. */
-  emitEvent?(input: { key: string; summary: string; payload: unknown; cancelSiblingKeysFor?: string[] }): Promise<void>;
+  emitEvent?(input: {
+    key: string;
+    summary: string;
+    payload: unknown;
+    cancelSiblingKeysFor?: string[];
+  }): Promise<void>;
   /** EI-13992: apply any pending `libs/papercusp/libs/db/sql/*.sql` migrations to the
    *  live dev PG the suite is about to run against, BEFORE runGreen — breaks the
    *  self-sustaining deadlock "gate red → main frozen → boot-only migration apply
@@ -409,7 +457,10 @@ export interface CheckpointDeps {
    *  logged and left pending, same as the boot-time apply). Optional so existing
    *  test stubs need not provide it; realCheckpointDeps wires it to the real
    *  applyPendingMigrationsNow(). */
-  ensureMigrationsCurrent?(): Promise<{ applied: number; failed: { file: string; error: string }[] } | null>;
+  ensureMigrationsCurrent?(): Promise<{
+    applied: number;
+    failed: { file: string; error: string }[];
+  } | null>;
   /** EI-18666996942859193: both-directions package-lock.json ⇄ node_modules diff on the
    *  checkpoint tree, run right after `setupTree` / before `runGreen` — so a drifted tree
    *  ("N required package(s) missing from node_modules") surfaces as its own DISTINCT,
@@ -421,7 +472,13 @@ export interface CheckpointDeps {
    *  alongside them. Optional so existing test stubs need not provide it; realCheckpointDeps
    *  wires it to `checkLockTreeDrift()` (packages/operator-core/lib/boot-integrity-preflight),
    *  scoped to `cfg.checkpointRoot` (the tree this run actually judges). */
-  checkTreeDrift?(): Promise<{ ok: boolean; missing: string[]; extraneous: string[]; skipped: boolean; error?: string } | null>;
+  checkTreeDrift?(): Promise<{
+    ok: boolean;
+    missing: string[];
+    extraneous: string[];
+    skipped: boolean;
+    error?: string;
+  } | null>;
   log(s: string): void;
   /** WI-4957: THIS run's own identity — independent of `candidate` (the sha it judges).
    *  Two runs can judge the exact same candidate (a re-fire after an infra hiccup, or the
@@ -438,7 +495,19 @@ export interface CheckpointResult {
   candidate: string;
   from: string | null;
   green: boolean | null;
-  reason: 'up-to-date' | 'not-fast-forward' | 'not-green' | 'advanced' | 'advanced-prefix' | 'create-failed' | 'perf-held' | 'desktop-perf-held' | 'delta-held' | 'cupboard-hygiene-held' | 'skipped-locked' | 'migrations-pending';
+  reason:
+    | "up-to-date"
+    | "not-fast-forward"
+    | "not-green"
+    | "advanced"
+    | "advanced-prefix"
+    | "create-failed"
+    | "perf-held"
+    | "desktop-perf-held"
+    | "delta-held"
+    | "cupboard-hygiene-held"
+    | "skipped-locked"
+    | "migrations-pending";
   /** WI-4494: THIS RUN recorded its own verdict (gate_health + the pipeline event), because its
    *  launcher stamped the record target into the env. Read by the routine, which then does NOT
    *  record it a second time (that would double-count the red streak). Absent ⇒ the caller records,
@@ -533,7 +602,7 @@ export interface CheckpointRunLock {
  */
 export function pipelineName(integrationRoot: string): string {
   const base = path.basename(path.resolve(integrationRoot));
-  return (base.replace(/[^a-zA-Z0-9_-]/g, '-') || 'default').slice(0, 64);
+  return (base.replace(/[^a-zA-Z0-9_-]/g, "-") || "default").slice(0, 64);
 }
 
 /**
@@ -545,15 +614,20 @@ export function pipelineName(integrationRoot: string): string {
  * crash verdict is unit-testable without exercising the `require.main === module` CLI block.
  * See CheckpointResult.crashed's doc comment for why this exists.
  */
-export function buildCrashCheckpointResult(opts: { candidate: string; error: unknown; runId: string }): CheckpointResult {
+export function buildCrashCheckpointResult(opts: {
+  candidate: string;
+  error: unknown;
+  runId: string;
+}): CheckpointResult {
   const { candidate, error, runId } = opts;
-  const message = error instanceof Error ? (error.stack ?? error.message) : String(error);
+  const message =
+    error instanceof Error ? (error.stack ?? error.message) : String(error);
   return {
     advanced: false,
     candidate,
     from: null,
     green: false,
-    reason: 'not-green',
+    reason: "not-green",
     crashed: true,
     runId,
     summary: `green-checkpoint crashed before producing a normal verdict: ${message}`,
@@ -668,11 +742,16 @@ export const SELF_WATCHDOG_MS = 3 * 60 * 60_000;
 export function snapshotCheckpointProcessGroup(pid: number): string | null {
   try {
     const r = spawnSync(
-      'ps',
-      ['-o', 'pid=,ppid=,pgid=,stat=,etime=,pcpu=,pmem=,command=', '-g', String(pid)],
-      { encoding: 'utf8', maxBuffer: 64 * 1024 },
+      "ps",
+      [
+        "-o",
+        "pid=,ppid=,pgid=,stat=,etime=,pcpu=,pmem=,command=",
+        "-g",
+        String(pid),
+      ],
+      { encoding: "utf8", maxBuffer: 64 * 1024 },
     );
-    const out = `${r.stdout ?? ''}${r.stderr ?? ''}`.trim();
+    const out = `${r.stdout ?? ""}${r.stderr ?? ""}`.trim();
     if (r.error || !out) return null;
     return out;
   } catch {
@@ -689,7 +768,11 @@ export const SELF_WATCHDOG_ONFIRE_GRACE_MS = 8_000;
 /** Await `p`, but never longer than `graceMs` — resolves when `p` settles OR the grace elapses,
  *  whichever comes first, and swallows a rejection (the caller proceeds either way). This is what
  *  lets armSelfWatchdog land an async last-gasp emit without ever letting it wedge the kill. */
-async function awaitBounded(p: Promise<unknown>, graceMs: number, log: (msg: string) => void): Promise<void> {
+async function awaitBounded(
+  p: Promise<unknown>,
+  graceMs: number,
+  log: (msg: string) => void,
+): Promise<void> {
   let graceTimer: ReturnType<typeof setTimeout> | undefined;
   try {
     await Promise.race([
@@ -746,9 +829,11 @@ export function armSelfWatchdog(
 ): { cancel: () => void } {
   const ms = opts.ms ?? SELF_WATCHDOG_MS;
   const pid = opts.pid ?? process.pid;
-  const kill = opts.kill ?? ((p: number, sig: NodeJS.Signals) => process.kill(p, sig));
+  const kill =
+    opts.kill ?? ((p: number, sig: NodeJS.Signals) => process.kill(p, sig));
   const log = opts.log ?? ((m: string) => console.error(m));
-  const snapshotProcessGroup = opts.snapshotProcessGroup ?? snapshotCheckpointProcessGroup;
+  const snapshotProcessGroup =
+    opts.snapshotProcessGroup ?? snapshotCheckpointProcessGroup;
   const onFireGraceMs = opts.onFireGraceMs ?? SELF_WATCHDOG_ONFIRE_GRACE_MS;
   const timer = setTimeout(() => {
     log(
@@ -759,7 +844,9 @@ export function armSelfWatchdog(
     try {
       const snapshot = snapshotProcessGroup(pid);
       if (snapshot) {
-        log(`self-watchdog process-group snapshot before SIGKILL:\n${snapshot}`);
+        log(
+          `self-watchdog process-group snapshot before SIGKILL:\n${snapshot}`,
+        );
       }
     } catch {
       /* diagnostic-only */
@@ -771,7 +858,7 @@ export function armSelfWatchdog(
     }
     const doKill = () => {
       try {
-        kill(-pid, 'SIGKILL'); // negative pid → the whole group (this process + every runCmd-spawned vitest/tsx worker)
+        kill(-pid, "SIGKILL"); // negative pid → the whole group (this process + every runCmd-spawned vitest/tsx worker)
       } catch {
         /* group already gone */
       }
@@ -787,8 +874,11 @@ export function armSelfWatchdog(
     // kill below SIGKILLs our OWN process group, so the event loop would never turn again and the
     // emit would be lost with CERTAINTY (not merely raced) — every agent parked on the red verdict
     // would silently hang to its own timeout. Let it LAND first, bounded, then kill regardless.
-    if (fired && typeof (fired as PromiseLike<void>).then === 'function') {
-      void awaitBounded(fired as Promise<void>, onFireGraceMs, log).then(doKill, doKill);
+    if (fired && typeof (fired as PromiseLike<void>).then === "function") {
+      void awaitBounded(fired as Promise<void>, onFireGraceMs, log).then(
+        doKill,
+        doKill,
+      );
     } else {
       doKill();
     }
@@ -806,9 +896,13 @@ export function armSelfWatchdog(
  *  root still single-flights (cron-vs-manual, the OOM guard the lock exists for), while
  *  DIFFERENT roots stop contending — they already isolate via their own checkouts +
  *  MemoryMax'd runs. The old unsuffixed name is left to old-lineage code; no interference. */
-export function checkpointRunLockDir(logDir: string, integrationRoot: string): string {
+export function checkpointRunLockDir(
+  logDir: string,
+  integrationRoot: string,
+): string {
   let h = 0;
-  for (let i = 0; i < integrationRoot.length; i++) h = (h * 31 + integrationRoot.charCodeAt(i)) >>> 0;
+  for (let i = 0; i < integrationRoot.length; i++)
+    h = (h * 31 + integrationRoot.charCodeAt(i)) >>> 0;
   return path.join(logDir, `.green-checkpoint-run-${h.toString(36)}.lock`);
 }
 
@@ -854,12 +948,16 @@ export const PHASE_PROTOCOL = 2;
 
 export function writeCheckpointRunPhase(
   lockDir: string,
-  phase: 'suite' | 'isolating' | 'delivering',
+  phase: "suite" | "isolating" | "delivering",
 ): void {
   try {
     writeFileSync(
-      path.join(lockDir, 'phase.json'),
-      JSON.stringify({ phase, at: new Date().toISOString(), phaseProtocol: PHASE_PROTOCOL }),
+      path.join(lockDir, "phase.json"),
+      JSON.stringify({
+        phase,
+        at: new Date().toISOString(),
+        phaseProtocol: PHASE_PROTOCOL,
+      }),
     );
   } catch {
     /* best-effort: the phase marker is an optimization for the launch side, never load-bearing here */
@@ -878,10 +976,13 @@ export function writeCheckpointRunPhase(
  *  reset the clock" apart from each other — none of which could be told apart before this.
  *  Best-effort in every direction; a missing/garbled marker degrades to today's total blindness on
  *  this question, never to a crash. */
-export function writeSelfWatchdogArmMarker(lockDir: string, info: { armedAtMs: number; ms: number; pid: number }): void {
+export function writeSelfWatchdogArmMarker(
+  lockDir: string,
+  info: { armedAtMs: number; ms: number; pid: number },
+): void {
   try {
     writeFileSync(
-      path.join(lockDir, 'watchdog.json'),
+      path.join(lockDir, "watchdog.json"),
       JSON.stringify({
         armedAt: new Date(info.armedAtMs).toISOString(),
         deadlineAt: new Date(info.armedAtMs + info.ms).toISOString(),
@@ -917,15 +1018,23 @@ export function acquireCheckpointRunLock(
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
       mkdirSync(lockDir);
-      writeFileSync(path.join(lockDir, 'owner.json'), JSON.stringify({ pid, startedAt: new Date(now()).toISOString(), token }));
+      writeFileSync(
+        path.join(lockDir, "owner.json"),
+        JSON.stringify({
+          pid,
+          startedAt: new Date(now()).toISOString(),
+          token,
+        }),
+      );
       return {
         acquired: true,
         lockDir,
         release: () => {
           try {
-            const raw = readFileSync(path.join(lockDir, 'owner.json'), 'utf8');
+            const raw = readFileSync(path.join(lockDir, "owner.json"), "utf8");
             const owner = JSON.parse(raw) as { token?: string };
-            if (owner.token === token) rmSync(lockDir, { recursive: true, force: true });
+            if (owner.token === token)
+              rmSync(lockDir, { recursive: true, force: true });
           } catch {
             // If the owner file vanished, the lock was already gone.
           }
@@ -933,26 +1042,33 @@ export function acquireCheckpointRunLock(
       };
     } catch (e) {
       const code = (e as NodeJS.ErrnoException).code;
-      if (code !== 'EEXIST') throw e;
+      if (code !== "EEXIST") throw e;
       let owner: { pid?: number; startedAt?: string; detail?: string } = {};
       try {
-        owner = JSON.parse(readFileSync(path.join(lockDir, 'owner.json'), 'utf8')) as typeof owner;
+        owner = JSON.parse(
+          readFileSync(path.join(lockDir, "owner.json"), "utf8"),
+        ) as typeof owner;
       } catch {
-        owner = { detail: 'owner metadata unreadable' };
+        owner = { detail: "owner metadata unreadable" };
       }
       // Hold the lock for a LIVE owner — unless it has outlived the max run age, in
       // which case it is reclaimed regardless of apparent pid liveness (hung-past-timeout,
       // crashed-without-release, or recycled-pid — see CHECKPOINT_LOCK_STALE_MS).
       const ageMs = owner.startedAt ? now() - Date.parse(owner.startedAt) : NaN;
       const overAge = Number.isFinite(ageMs) && ageMs > staleAfterMs;
-      if (typeof owner.pid === 'number' && isPidAlive(owner.pid) && !overAge) {
+      if (typeof owner.pid === "number" && isPidAlive(owner.pid) && !overAge) {
         return { acquired: false, lockDir, owner, release: () => {} };
       }
       rmSync(lockDir, { recursive: true, force: true });
     }
   }
 
-  return { acquired: false, lockDir, owner: { detail: 'could not acquire after stale lock cleanup' }, release: () => {} };
+  return {
+    acquired: false,
+    lockDir,
+    owner: { detail: "could not acquire after stale lock cleanup" },
+    release: () => {},
+  };
 }
 
 /**
@@ -976,7 +1092,9 @@ export function createTerminationSignalHandler(
   log: (msg: string) => void = (m) => console.error(m),
 ): (signal: NodeJS.Signals) => void {
   return (signal: NodeJS.Signals): void => {
-    log(`received ${signal} — releasing run-lock and exiting (pid ${process.pid})`);
+    log(
+      `received ${signal} — releasing run-lock and exiting (pid ${process.pid})`,
+    );
     releaseAndExit(143);
   };
 }
@@ -984,10 +1102,11 @@ export function createTerminationSignalHandler(
 /** The marker the green-checkpoint CLI prints its CheckpointResult JSON behind, so the
  *  release-actions routine parses one delimited line instead of brace-slicing the whole
  *  stdout (P-008). MUST stay in sync with the literal in release-actions.ts. */
-export const GREEN_CHECKPOINT_RESULT_MARKER = '__GREEN_CHECKPOINT_RESULT__';
+export const GREEN_CHECKPOINT_RESULT_MARKER = "__GREEN_CHECKPOINT_RESULT__";
 
 /** What a captured fixture marker is rewritten to before the suite log is persisted. */
-export const CAPTURED_RESULT_MARKER_PLACEHOLDER = '__CAPTURED_TEST_FIXTURE_RESULT__';
+export const CAPTURED_RESULT_MARKER_PLACEHOLDER =
+  "__CAPTURED_TEST_FIXTURE_RESULT__";
 
 /** WI-7274: the orchestrator's stdout tags — the production one, the under-test one that marks
  *  a line as a FIXTURE, and the selector between them. DEFINED in operator-core, re-exported
@@ -1031,7 +1150,11 @@ export const CAPTURED_RESULT_MARKER_PLACEHOLDER = '__CAPTURED_TEST_FIXTURE_RESUL
  *   - The fixture tag deliberately does NOT contain `ORCHESTRATOR_STDOUT_TAG` as a substring
  *     (`:` where `]` would be), so the habit every reader already has — grepping
  *     `[green-checkpoint]` — silently STOPS matching fixtures, with no change on their side. */
-export { ORCHESTRATOR_STDOUT_TAG, ORCHESTRATOR_STDOUT_TAG_UNDER_TEST, orchestratorStdoutTag };
+export {
+  ORCHESTRATOR_STDOUT_TAG,
+  ORCHESTRATOR_STDOUT_TAG_UNDER_TEST,
+  orchestratorStdoutTag,
+};
 
 /** EI-18832272104497819: the persisted suite log is NOT the verdict channel. This run's
  *  verdict goes to the CLI's own stdout (behind GREEN_CHECKPOINT_RESULT_MARKER) only
@@ -1050,7 +1173,9 @@ export { ORCHESTRATOR_STDOUT_TAG, ORCHESTRATOR_STDOUT_TAG_UNDER_TEST, orchestrat
  *  Neutralise the token, keep the payload: the lines stay legible as fixtures instead of
  *  vanishing, which would read as corruption to the next person diagnosing a red. */
 export function defangCapturedResultMarkers(output: string): string {
-  return output.split(GREEN_CHECKPOINT_RESULT_MARKER).join(CAPTURED_RESULT_MARKER_PLACEHOLDER);
+  return output
+    .split(GREEN_CHECKPOINT_RESULT_MARKER)
+    .join(CAPTURED_RESULT_MARKER_PLACEHOLDER);
 }
 
 /** EI-19346606967082413 — the orchestrator's OWN log lines, teed into a buffer so the
@@ -1107,11 +1232,13 @@ export function readOrchestratorLog(): string[] {
 /** The transcript block written into the persisted log, fenced so it is greppable and cannot be
  *  confused with suite output. Empty string when nothing was recorded, so a run that logged
  *  nothing does not gain an empty header. */
-export function renderOrchestratorTranscript(lines: string[] = readOrchestratorLog()): string {
-  if (lines.length === 0) return '';
+export function renderOrchestratorTranscript(
+  lines: string[] = readOrchestratorLog(),
+): string {
+  if (lines.length === 0) return "";
   return (
     `--- orchestrator transcript (${lines.length} line(s)) ---\n` +
-    `${lines.join('\n')}\n` +
+    `${lines.join("\n")}\n` +
     `--- end orchestrator transcript ---\n`
   );
 }
@@ -1143,7 +1270,10 @@ export function extractFailingTests(out: string): string[] {
   const clean = stripAnsi(out);
   const set = new Set<string>();
   for (const m of clean.matchAll(/^\s*FAIL\s+(\S+)/gm)) set.add(m[1]);
-  for (const m of clean.matchAll(/^\s*❯\s+(\S+)\s+\(\d+\s+tests?[^)]*\|\s*\d+\s+failed\)/gm)) set.add(m[1]);
+  for (const m of clean.matchAll(
+    /^\s*❯\s+(\S+)\s+\(\d+\s+tests?[^)]*\|\s*\d+\s+failed\)/gm,
+  ))
+    set.add(m[1]);
   for (const m of clean.matchAll(/>>>\s+(\S+)\s+FAILED\b/g)) set.add(m[1]);
   // EI-20092765275570648: the affected runner's OWN authoritative failing-task list
   // (`N non-quarantined task(s) failed:` followed by `  - <workspace> :: <script>` per
@@ -1176,9 +1306,10 @@ export function extractFailingTests(out: string): string[] {
   // That is not merely noisy — most planned tasks are `test` scripts, so the extra
   // entries would defeat nonTestGateIdsFrom's every()-check and leave the rescue exactly
   // as dead as it was before, while looking fixed.
-  const lines = clean.split('\n');
+  const lines = clean.split("\n");
   for (let i = 0; i < lines.length; i++) {
-    if (!/^\s*\d+\s+non-quarantined task\(s\) failed:\s*$/.test(lines[i])) continue;
+    if (!/^\s*\d+\s+non-quarantined task\(s\) failed:\s*$/.test(lines[i]))
+      continue;
     // Consume the contiguous bullet run that follows the header, and stop at the first
     // line that is not one (a blank line, or the `0 failing test file(s)` section).
     for (let j = i + 1; j < lines.length; j++) {
@@ -1191,13 +1322,15 @@ export function extractFailingTests(out: string): string[] {
 }
 
 /** The separator in the affected runner's task id (`<workspace> :: <script>`). */
-const TASK_ID_SEP = ' :: ';
+const TASK_ID_SEP = " :: ";
 
 /** The affected runner's stable task id — `<workspace> :: <script>` (e.g.
  *  `@papercusp/operator-core :: lint:no-ungated-mug-kettle`). Parsed back out of a
  *  `failingTests` entry by the rescue path, so the shape has ONE definition shared by
  *  the extractor, the eligibility check, and the runner (EI-20092765275570648). */
-export function parseFailingTaskId(entry: string): { workspace: string; script: string } | null {
+export function parseFailingTaskId(
+  entry: string,
+): { workspace: string; script: string } | null {
   const m = /^(\S+)\s+::\s+(\S+)$/.exec(entry.trim());
   return m ? { workspace: m[1], script: m[2] } : null;
 }
@@ -1238,7 +1371,10 @@ export function validateFailingTestPaths(
   const kept: string[] = [];
   const dropped: string[] = [];
   for (const entry of failingTests) {
-    if (!FAILING_TEST_FILE_SHAPE.test(entry) || exists(path.join(treeDir, entry))) {
+    if (
+      !FAILING_TEST_FILE_SHAPE.test(entry) ||
+      exists(path.join(treeDir, entry))
+    ) {
       kept.push(entry);
     } else {
       dropped.push(entry);
@@ -1254,8 +1390,10 @@ export function validateFailingTestPaths(
 export function extractFailingTestNames(out: string): string[] {
   const clean = stripAnsi(out);
   const set = new Set<string>();
-  for (const m of clean.matchAll(/^\s*×\s+(.+?)(?:\s+\d+ms)?\s*$/gm)) set.add(m[1].trim());
-  for (const m of clean.matchAll(/^\s*FAIL\s+\S+\s+>\s+(.+?)\s*$/gm)) set.add(m[1].trim());
+  for (const m of clean.matchAll(/^\s*×\s+(.+?)(?:\s+\d+ms)?\s*$/gm))
+    set.add(m[1].trim());
+  for (const m of clean.matchAll(/^\s*FAIL\s+\S+\s+>\s+(.+?)\s*$/gm))
+    set.add(m[1].trim());
   return [...set].sort().slice(0, 50);
 }
 
@@ -1279,8 +1417,9 @@ export const ISOLATION_MAX_NAMED_CASES = 3;
 export function extractFailingCasesByFile(out: string): Map<string, string[]> {
   const byFile = new Map<string, string[]>();
   let current: string | null = null;
-  for (const rawLine of stripAnsi(out).split('\n')) {
-    const fileHeader = /^\s*❯\s+(\S+)\s+\(\d+\s+tests?[^)]*\|\s*\d+\s+failed\)/.exec(rawLine);
+  for (const rawLine of stripAnsi(out).split("\n")) {
+    const fileHeader =
+      /^\s*❯\s+(\S+)\s+\(\d+\s+tests?[^)]*\|\s*\d+\s+failed\)/.exec(rawLine);
     if (fileHeader) {
       current = fileHeader[1];
       if (!byFile.has(current)) byFile.set(current, []);
@@ -1301,10 +1440,10 @@ export function extractFailingCasesByFile(out: string): Map<string, string[]> {
  *  (a build break, a non-vitest red, or output shapes this parser doesn't cover — the
  *  caller's line must still read correctly with nothing appended). */
 export function describeFailingCases(cases: string[] | undefined): string {
-  if (!cases || cases.length === 0) return '';
+  if (!cases || cases.length === 0) return "";
   const shown = cases.slice(0, ISOLATION_MAX_NAMED_CASES);
   const more = cases.length - shown.length;
-  return ` — failed case(s): ${shown.map((c) => `"${c}"`).join(', ')}${more > 0 ? ` (+${more} more)` : ''}`;
+  return ` — failed case(s): ${shown.map((c) => `"${c}"`).join(", ")}${more > 0 ? ` (+${more} more)` : ""}`;
 }
 
 /* ── gate verdict lineage (EI-18685041726970077) ──────────────────────────────
@@ -1442,7 +1581,10 @@ export interface GateLineage {
  * It still never feeds `classifyRedAgainstTip`, which decides real-red/stale from a real
  * re-run at tip.
  */
-export function matchFailingFilesToChanged(failing: string[], changed: string[]): string[] {
+export function matchFailingFilesToChanged(
+  failing: string[],
+  changed: string[],
+): string[] {
   const out = new Set<string>();
   for (const f of pathShapedFailing(failing)) {
     for (const c of changed) {
@@ -1464,7 +1606,7 @@ export function matchFailingFilesToChanged(failing: string[], changed: string[])
  */
 export function pathShapedFailing(failing: string[]): string[] {
   // `@papercusp/web` is a workspace name, not a path — never a changed FILE.
-  return failing.filter((f) => !!f && !f.startsWith('@'));
+  return failing.filter((f) => !!f && !f.startsWith("@"));
 }
 
 /**
@@ -1491,14 +1633,24 @@ export function pathShapedFailing(failing: string[]): string[] {
  * REPORTED in (vitest's workspace-relative), because an unmatched entry has no changed path
  * to source a repo-relative spelling from — unlike the matched set, which returns git's.
  */
-export function unmatchedFailingFiles(failing: string[], changed: string[]): string[] {
-  return pathShapedFailing(failing).filter((f) => !changed.some((c) => c === f || c.endsWith(`/${f}`)));
+export function unmatchedFailingFiles(
+  failing: string[],
+  changed: string[],
+): string[] {
+  return pathShapedFailing(failing).filter(
+    (f) => !changed.some((c) => c === f || c.endsWith(`/${f}`)),
+  );
 }
 
 /** Pure formatter — the ONE line the verdict leads with. Kept separate from the
  *  git reads so the exact wording is unit-testable without a repo. */
 export function formatGateLineageLine(lineage: GateLineage): string {
-  const { candidate, tip, commitsBehind, failingFilesChangedInRange: changed } = lineage;
+  const {
+    candidate,
+    tip,
+    commitsBehind,
+    failingFilesChangedInRange: changed,
+  } = lineage;
   const unchanged = lineage.failingFilesUnchangedInRange ?? [];
   // EI-20063423357086565: an UNCOMMITTED on-disk fix is invisible to every commit-based
   // discriminator below, so it is appended to whichever verdict we reach rather than being
@@ -1507,15 +1659,15 @@ export function formatGateLineageLine(lineage: GateLineage): string {
   const dirty = lineage.failingFilesDirtyUncommitted ?? [];
   const dirtyNote =
     dirty.length > 0
-      ? ` ⚠ ALREADY-ON-DISK, NOT COMMITTED: ${dirty.length} of the failing file(s) have uncommitted working-tree changes — ${dirty.join(', ')}. No commit-based check above can see them (the candidate is cut from committed history, so it PROVABLY cannot contain them). The fix may already be written and merely un-swept: confirm with dev:pipeline_position { path } before re-diagnosing, and if git-sync is lagging fire git-sync:run rather than re-fixing code that is already correct.`
-      : '';
+      ? ` ⚠ ALREADY-ON-DISK, NOT COMMITTED: ${dirty.length} of the failing file(s) have uncommitted working-tree changes — ${dirty.join(", ")}. No commit-based check above can see them (the candidate is cut from committed history, so it PROVABLY cannot contain them). The fix may already be written and merely un-swept: confirm with dev:pipeline_position { path } before re-diagnosing, and if git-sync is lagging fire git-sync:run rather than re-fixing code that is already correct.`
+      : "";
   if (commitsBehind === 0) {
     // With a dirty failing file, "nothing newer to blame" is true of COMMITS and false of the
     // tree — so the real-red presumption is withheld rather than stated and then contradicted.
     const verdict =
       dirty.length > 0
-        ? 'nothing newer to blame IN COMMITTED HISTORY — but this is NOT a confirmed real red'
-        : 'nothing newer to blame, this is a real red';
+        ? "nothing newer to blame IN COMMITTED HISTORY — but this is NOT a confirmed real red"
+        : "nothing newer to blame, this is a real red";
     return `📍 lineage: candidate ${candidate.slice(0, 8)} IS the current tip ${tip.slice(0, 8)} — ${verdict}${dirtyNote}`;
   }
   const unexpanded = lineage.submodulesUnexpanded ?? [];
@@ -1533,15 +1685,20 @@ export function formatGateLineageLine(lineage: GateLineage): string {
   // only have the path count, so retain a conservative count in that case instead
   // of silently restoring the old whole-line confidence.
   const unchangedCount =
-    unchanged.length > 0 ? unchanged.length : considered == null ? 0 : Math.max(considered - changed.length, 0);
-  const unchangedDetail = unchanged.length > 0 ? `: ${unchanged.join(', ')}` : '';
+    unchanged.length > 0
+      ? unchanged.length
+      : considered == null
+        ? 0
+        : Math.max(considered - changed.length, 0);
+  const unchangedDetail =
+    unchanged.length > 0 ? `: ${unchanged.join(", ")}` : "";
   const discriminator =
     changed.length > 0
       ? unchangedCount > 0
-        ? `${changed.length} of the failing file(s) were MODIFIED in that range (presumptively STALE — re-verify at tip before re-diagnosing from scratch): ${changed.join(', ')}; ${unchangedCount} other failing file(s) were NOT MODIFIED in that range — their skew is UNDETERMINED because a fix may have landed in the subject they police: re-run each at tip before diagnosing${unchangedDetail}`
-        : `${changed.length} of the failing file(s) were MODIFIED in that range (presumptively STALE — re-verify at tip before re-diagnosing from scratch): ${changed.join(', ')}`
+        ? `${changed.length} of the failing file(s) were MODIFIED in that range (presumptively STALE — re-verify at tip before re-diagnosing from scratch): ${changed.join(", ")}; ${unchangedCount} other failing file(s) were NOT MODIFIED in that range — their skew is UNDETERMINED because a fix may have landed in the subject they police: re-run each at tip before diagnosing${unchangedDetail}`
+        : `${changed.length} of the failing file(s) were MODIFIED in that range (presumptively STALE — re-verify at tip before re-diagnosing from scratch): ${changed.join(", ")}`
       : unexpanded.length > 0
-        ? `no superproject file matched, but ${unexpanded.length} submodule(s) moved in that range and could not be diffed (skew UNDETERMINED — re-verify at tip before treating this as a real red): ${unexpanded.join(', ')}`
+        ? `no superproject file matched, but ${unexpanded.length} submodule(s) moved in that range and could not be diffed (skew UNDETERMINED — re-verify at tip before treating this as a real red): ${unexpanded.join(", ")}`
         : considered === 0
           ? // EI-19393306381214544: the failing entries were all bare workspace NAMES, so
             // there was never a path to intersect. An empty match here compared nothing.
@@ -1551,12 +1708,12 @@ export function formatGateLineageLine(lineage: GateLineage): string {
               // just not the failing TEST files. For any test that polices other files the
               // fix lands in the policed source, so this is the expected shape of an
               // ALREADY-FIXED red — not evidence of a real one.
-              `none of the failing TEST files changed, but ${rangeChanged ?? 'an unmeasured number of'} other file(s) did — a test that polices OTHER files (a budget/lint/census ratchet) is fixed in the file it polices, not in itself, so this is skew UNDETERMINED: re-run each failing file at tip before diagnosing${unchangedDetail}`
+              `none of the failing TEST files changed, but ${rangeChanged ?? "an unmeasured number of"} other file(s) did — a test that polices OTHER files (a budget/lint/census ratchet) is fixed in the file it polices, not in itself, so this is skew UNDETERMINED: re-run each failing file at tip before diagnosing${unchangedDetail}`
             : `nothing at all changed in that range (a real red — the range is empty, so there is nothing downstream that could have fixed it)`;
   const caveat =
     changed.length > 0 && unexpanded.length > 0
-      ? ` [also unreadable: ${unexpanded.join(', ')}]`
-      : '';
+      ? ` [also unreadable: ${unexpanded.join(", ")}]`
+      : "";
   return `📍 lineage: candidate ${candidate.slice(0, 8)} is ${commitsBehind} commit(s) behind tip ${tip.slice(0, 8)} — ${discriminator}${caveat}${dirtyNote}`;
 }
 
@@ -1576,13 +1733,23 @@ export function formatGateLineageLine(lineage: GateLineage): string {
  * Fail-soft: any git error resolves to `[]`, matching the rest of the lineage path — a
  * diagnostic read must never block or alter the red path.
  */
-export async function failingFilesUncommitted(repo: string, failingTests: string[]): Promise<string[]> {
+export async function failingFilesUncommitted(
+  repo: string,
+  failingTests: string[],
+): Promise<string[]> {
   // Nothing path-shaped ⇒ nothing to intersect. Skips the git reads entirely, and keeps the
   // empty result honestly vacuous rather than looking like a measured "no dirty files".
   if (pathShapedFailing(failingTests).length === 0) return [];
   try {
-    const read: GitRead = (args) => git(repo, args).then((o) => o, () => null);
-    return matchFailingFilesToChanged(failingTests, await uncommittedPaths(read));
+    const read: GitRead = (args) =>
+      git(repo, args).then(
+        (o) => o,
+        () => null,
+      );
+    return matchFailingFilesToChanged(
+      failingTests,
+      await uncommittedPaths(read),
+    );
   } catch {
     return [];
   }
@@ -1606,9 +1773,18 @@ export async function computeGateLineage(
     // uncommitted on-disk fix is the one thing that can falsify it while leaving every
     // commit-based check below untouched.
     const dirtyFailing = await failingFilesUncommitted(repo, failingTests);
-    const dirtyField = dirtyFailing.length > 0 ? { failingFilesDirtyUncommitted: dirtyFailing } : {};
+    const dirtyField =
+      dirtyFailing.length > 0
+        ? { failingFilesDirtyUncommitted: dirtyFailing }
+        : {};
     if (tip === candidate) {
-      return { candidate, tip, commitsBehind: 0, failingFilesChangedInRange: [], ...dirtyField };
+      return {
+        candidate,
+        tip,
+        commitsBehind: 0,
+        failingFilesChangedInRange: [],
+        ...dirtyField,
+      };
     }
     // Only PATH-shaped failures can be intersected with a diff; a run whose failures
     // are all bare workspace names has nothing to compare, so skip the (expensive)
@@ -1618,10 +1794,19 @@ export async function computeGateLineage(
       commitsBetween(repo, candidate, tip),
       considered.length > 0
         ? changedFilesRecursive(repo, candidate, tip)
-        : Promise.resolve<RangeChangeSet>({ files: [], unexpandedSubmodules: [] }),
+        : Promise.resolve<RangeChangeSet>({
+            files: [],
+            unexpandedSubmodules: [],
+          }),
     ]);
-    const changedFailingFiles = matchFailingFilesToChanged(failingTests, changed.files);
-    const unchangedFailingFiles = unmatchedFailingFiles(failingTests, changed.files);
+    const changedFailingFiles = matchFailingFilesToChanged(
+      failingTests,
+      changed.files,
+    );
+    const unchangedFailingFiles = unmatchedFailingFiles(
+      failingTests,
+      changed.files,
+    );
     return {
       candidate,
       tip,
@@ -1635,13 +1820,16 @@ export async function computeGateLineage(
       // and every submodule red read as "presumptively a real red". Expanding the gitlinks
       // upstream lets the (already correct) suffix matcher work unchanged.
       failingFilesChangedInRange: changedFailingFiles,
-      ...(unchangedFailingFiles.length ? { failingFilesUnchangedInRange: unchangedFailingFiles } : {}),
+      ...(unchangedFailingFiles.length
+        ? { failingFilesUnchangedInRange: unchangedFailingFiles }
+        : {}),
       submodulesUnexpanded: changed.unexpandedSubmodules,
       failingPathsConsidered: considered.length,
       ...dirtyField,
       // Left UNDEFINED when the diff was skipped, so the formatter reports UNDETERMINED
       // rather than inferring "the range was empty" from a measurement never taken.
-      rangeFilesChanged: considered.length > 0 ? changed.files.length : undefined,
+      rangeFilesChanged:
+        considered.length > 0 ? changed.files.length : undefined,
     };
   } catch {
     return null;
@@ -1668,7 +1856,7 @@ export interface RedTriage {
   /** `stale-candidate` = failed at the judged commit, passes at tip ⇒ not a real red.
    *  `real-red` = reproduces at tip (or there is no newer tip to blame).
    *  `unknown` = could not localize (no named failures / no re-run) ⇒ treat as real. */
-  classification: 'real-red' | 'stale-candidate' | 'unknown';
+  classification: "real-red" | "stale-candidate" | "unknown";
   /** Re-fire the gate on the newer tip? Only ever true for `stale-candidate`, and
    *  only while under the attempt cap — a re-fire storm is worse than a held gate. */
   autoRefire: boolean;
@@ -1683,14 +1871,21 @@ export interface RedTriage {
    *  genuinely broken and a human is needed; `absolute-ceiling`/`deadline` = every individual red
    *  was rescued but the tree was never simultaneously green inside one run window, so the answer
    *  is to slow the tree or widen the window, NOT to debug the last-named files. */
-  refireBlockedBy: 'cap-disabled' | 'charged-budget' | 'absolute-ceiling' | 'deadline' | null;
+  refireBlockedBy:
+    | "cap-disabled"
+    | "charged-budget"
+    | "absolute-ceiling"
+    | "deadline"
+    | null;
   detail: string;
 }
 
 /** Bounded auto-refire cap; 0 disables auto-refire entirely. Default 2 — enough to
  *  ride out the common "peer fixed it 20 minutes ago" case, few enough that a
  *  genuinely broken tip still reaches a human quickly. */
-export function autoRefireCapFromEnv(env: NodeJS.ProcessEnv = process.env): number {
+export function autoRefireCapFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
   const raw = env.PAPERCUSP_GATE_AUTO_REFIRE_CAP;
   if (raw === undefined) return 2;
   const v = Number(raw);
@@ -1719,11 +1914,15 @@ export function refireAbsoluteCeiling(maxRefires: number): number {
  *  enforces the ordering. */
 export const DEFAULT_REFIRE_RUN_BUDGET_MS = 110 * 60_000;
 
-export function refireRunBudgetMsFromEnv(env: NodeJS.ProcessEnv = process.env): number {
+export function refireRunBudgetMsFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): number {
   const raw = env.PAPERCUSP_GATE_REFIRE_RUN_BUDGET_MS;
   if (raw === undefined) return DEFAULT_REFIRE_RUN_BUDGET_MS;
   const v = Number(raw);
-  return Number.isFinite(v) && v > 0 ? Math.floor(v) : DEFAULT_REFIRE_RUN_BUDGET_MS;
+  return Number.isFinite(v) && v > 0
+    ? Math.floor(v)
+    : DEFAULT_REFIRE_RUN_BUDGET_MS;
 }
 
 /**
@@ -1735,9 +1934,14 @@ export function refireRunBudgetMsFromEnv(env: NodeJS.ProcessEnv = process.env): 
  * here ONLY because `refireAbsoluteCeiling` independently bounds the recursion; never let both
  * bounds become optional at the same time.
  */
-export function refireDeadlineExceeded(input: { elapsedMs: number; lastPassMs: number; budgetMs: number }): boolean {
+export function refireDeadlineExceeded(input: {
+  elapsedMs: number;
+  lastPassMs: number;
+  budgetMs: number;
+}): boolean {
   const { elapsedMs, lastPassMs, budgetMs } = input;
-  if (![elapsedMs, lastPassMs, budgetMs].every((n) => Number.isFinite(n))) return false;
+  if (![elapsedMs, lastPassMs, budgetMs].every((n) => Number.isFinite(n)))
+    return false;
   return elapsedMs + lastPassMs > budgetMs;
 }
 
@@ -1762,13 +1966,13 @@ export function refireDeadlineExceeded(input: { elapsedMs: number; lastPassMs: n
  * Non-test gate ids (`lint:tsc`, …) pass through unchanged and cannot collide with a path.
  */
 export function normaliseFailingKey(entry: string | FailingFile): string {
-  const raw = typeof entry === 'string' ? entry : entry.file;
-  return String(raw ?? '')
+  const raw = typeof entry === "string" ? entry : entry.file;
+  return String(raw ?? "")
     .trim()
-    .replace(/\\/g, '/')
-    .replace(/\/{2,}/g, '/')
-    .replace(/^\.\//, '')
-    .replace(/^\//, '');
+    .replace(/\\/g, "/")
+    .replace(/\/{2,}/g, "/")
+    .replace(/^\.\//, "")
+    .replace(/^\//, "");
 }
 
 /** The normalised intersection of the set a run is RESCUING and the set that just failed.
@@ -1815,14 +2019,21 @@ export function mergeFailingKeys(
  *  BOTH refire sites (the test-file rescue and its lint/typecheck sibling) so the two can never
  *  drift into charging differently for the same event. */
 export function refireBudgetInputs(
-  opts: Pick<CheckpointOpts, 'refireAttempts' | 'totalRefires' | 'priorFailing'>,
+  opts: Pick<
+    CheckpointOpts,
+    "refireAttempts" | "totalRefires" | "priorFailing"
+  >,
   currentFailing: readonly (string | FailingFile)[],
   runStartedAtMs: number,
   passStartedAtMs: number,
   now: () => number = Date.now,
 ): Pick<
   Parameters<typeof classifyRedAgainstTip>[0],
-  'priorFailing' | 'currentFailing' | 'totalRefires' | 'absoluteCeiling' | 'deadlineExceeded'
+  | "priorFailing"
+  | "currentFailing"
+  | "totalRefires"
+  | "absoluteCeiling"
+  | "deadlineExceeded"
 > {
   const at = now();
   return {
@@ -1841,11 +2052,19 @@ export function refireBudgetInputs(
 
 /** The recursion's carried state for one refire — the single place the charged budget advances. */
 export function nextRefireOpts(
-  opts: Pick<CheckpointOpts, 'refireAttempts' | 'totalRefires' | 'priorFailing'>,
-  verdict: Pick<RedTriage, 'chargeRefire'>,
+  opts: Pick<
+    CheckpointOpts,
+    "refireAttempts" | "totalRefires" | "priorFailing"
+  >,
+  verdict: Pick<RedTriage, "chargeRefire">,
   currentFailing: readonly (string | FailingFile)[],
   runStartedAtMs: number,
-): Required<Pick<CheckpointOpts, 'refireAttempts' | 'totalRefires' | 'priorFailing' | 'runStartedAtMs'>> {
+): Required<
+  Pick<
+    CheckpointOpts,
+    "refireAttempts" | "totalRefires" | "priorFailing" | "runStartedAtMs"
+  >
+> {
   return {
     // CHARGED only when the rescue failed. An uncharged refire deliberately leaves this counter
     // untouched, which is the entire point of EI-19343532231631821 — see classifyRedAgainstTip.
@@ -1886,26 +2105,38 @@ export function classifyRedAgainstTip(input: {
   /** Would one more pass overrun the run's wall-clock budget (see `refireDeadlineExceeded`)? */
   deadlineExceeded?: boolean;
 }): RedTriage {
-  const { candidate, tip, failingTests, tipRetest, refireAttempts, maxRefires } = input;
+  const {
+    candidate,
+    tip,
+    failingTests,
+    tipRetest,
+    refireAttempts,
+    maxRefires,
+  } = input;
   const unrefirable = { chargeRefire: false, refireBlockedBy: null } as const;
   if (!tip || tip === candidate) {
     return {
-      classification: 'real-red',
+      classification: "real-red",
       autoRefire: false,
       ...unrefirable,
-      detail: 'candidate is the tip — nothing newer to blame',
+      detail: "candidate is the tip — nothing newer to blame",
     };
   }
   if (failingTests.length === 0) {
     return {
-      classification: 'unknown',
+      classification: "unknown",
       autoRefire: false,
       ...unrefirable,
-      detail: 'no named failing tests — cannot re-run at tip',
+      detail: "no named failing tests — cannot re-run at tip",
     };
   }
   if (!tipRetest?.ran) {
-    return { classification: 'unknown', autoRefire: false, ...unrefirable, detail: 'tip re-run unavailable' };
+    return {
+      classification: "unknown",
+      autoRefire: false,
+      ...unrefirable,
+      detail: "tip re-run unavailable",
+    };
   }
   if (tipRetest.pass) {
     // EI-19343532231631821 — CHARGE THE FAILED RESCUE, NOT THE REFIRE.
@@ -1929,35 +2160,39 @@ export function classifyRedAgainstTip(input: {
     const overlap = refireOverlap(input.priorFailing, input.currentFailing);
     const chargeRefire = overlap.length > 0;
     const totalRefires = input.totalRefires ?? refireAttempts;
-    const absoluteCeiling = input.absoluteCeiling ?? refireAbsoluteCeiling(maxRefires);
+    const absoluteCeiling =
+      input.absoluteCeiling ?? refireAbsoluteCeiling(maxRefires);
     // Ordered so the reported reason is the one the operator must act on FIRST.
-    const refireBlockedBy: RedTriage['refireBlockedBy'] =
+    const refireBlockedBy: RedTriage["refireBlockedBy"] =
       maxRefires <= 0
-        ? 'cap-disabled'
+        ? "cap-disabled"
         : refireAttempts >= maxRefires
-          ? 'charged-budget'
+          ? "charged-budget"
           : totalRefires >= absoluteCeiling
-            ? 'absolute-ceiling'
+            ? "absolute-ceiling"
             : input.deadlineExceeded === true
-              ? 'deadline'
+              ? "deadline"
               : null;
     const autoRefire = refireBlockedBy === null;
-    const blockDetail: Record<NonNullable<RedTriage['refireBlockedBy']>, string> = {
-      'cap-disabled': 'refire cap reached (auto-refire disabled: maxRefires=0)',
-      'charged-budget':
+    const blockDetail: Record<
+      NonNullable<RedTriage["refireBlockedBy"]>,
+      string
+    > = {
+      "cap-disabled": "refire cap reached (auto-refire disabled: maxRefires=0)",
+      "charged-budget":
         `refire cap reached (charged budget ${refireAttempts}/${maxRefires} spent — the SAME breakage ` +
-        'survived every rescue, so the tip is genuinely broken: a human is needed)',
-      'absolute-ceiling':
+        "survived every rescue, so the tip is genuinely broken: a human is needed)",
+      "absolute-ceiling":
         `refire ABSOLUTE CEILING reached (${totalRefires}/${absoluteCeiling} refires, charged budget only ` +
         `${refireAttempts}/${maxRefires}) — every individual red WAS rescued, but the tree was never ` +
-        'simultaneously green within one run; the fix is to slow the tree or widen the window, NOT to ' +
-        'debug the files named above',
+        "simultaneously green within one run; the fix is to slow the tree or widen the window, NOT to " +
+        "debug the files named above",
       deadline:
-        'refire DEADLINE reached — another pass would outlast the run budget and be killed mid-suite ' +
-        'with no verdict recorded at all; holding the red this run already has instead',
+        "refire DEADLINE reached — another pass would outlast the run budget and be killed mid-suite " +
+        "with no verdict recorded at all; holding the red this run already has instead",
     };
     return {
-      classification: 'stale-candidate',
+      classification: "stale-candidate",
       autoRefire,
       chargeRefire,
       refireBlockedBy,
@@ -1967,8 +2202,8 @@ export function classifyRedAgainstTip(input: {
         (autoRefire
           ? chargeRefire
             ? `; auto-refiring (CHARGED attempt ${refireAttempts + 1}/${maxRefires} — ${overlap.length} file(s) ` +
-              `from the set this run was already rescuing are STILL failing: ${overlap.slice(0, 3).join(', ')}` +
-              `${overlap.length > 3 ? `, +${overlap.length - 3} more` : ''})`
+              `from the set this run was already rescuing are STILL failing: ${overlap.slice(0, 3).join(", ")}` +
+              `${overlap.length > 3 ? `, +${overlap.length - 3} more` : ""})`
             : `; auto-refiring (UNCHARGED — the previous rescue SUCCEEDED: this candidate's failures are ` +
               `DISJOINT from the set being rescued, so this is fresh tree churn, not a failed rescue. ` +
               `Charged budget still ${refireAttempts}/${maxRefires}; refire ${totalRefires + 1}/${absoluteCeiling} ` +
@@ -1977,7 +2212,7 @@ export function classifyRedAgainstTip(input: {
     };
   }
   return {
-    classification: 'real-red',
+    classification: "real-red",
     autoRefire: false,
     chargeRefire: false,
     refireBlockedBy: null,
@@ -2021,7 +2256,7 @@ export function describeSkippedRetriage(input: {
 }): string {
   const { candidate, tip, failingFiles, gateIds, failingTests } = input;
   if (!tip) {
-    return 'tip re-run SKIPPED: the integration tip could not be resolved, so there is no newer commit to re-test against — this red was never checked for staleness.';
+    return "tip re-run SKIPPED: the integration tip could not be resolved, so there is no newer commit to re-test against — this red was never checked for staleness.";
   }
   if (tip === candidate) {
     return `tip re-run SKIPPED: the judged candidate ${candidate.slice(0, 8)} IS the tip — there is nothing newer that could have fixed it, so the red is current by construction.`;
@@ -2030,7 +2265,7 @@ export function describeSkippedRetriage(input: {
     return `tip re-run SKIPPED: ${failingFiles.length} failing file(s) were located, but no tip test-runner is wired on this run — staleness was NOT measured.`;
   }
   if (gateIds.length > 0 && !input.hasGateRunner) {
-    return `tip re-run SKIPPED: ${gateIds.length} non-test gate(s) failed (${gateIds.slice(0, 5).join(', ')}), but no tip gate-runner is wired on this run — staleness was NOT measured.`;
+    return `tip re-run SKIPPED: ${gateIds.length} non-test gate(s) failed (${gateIds.slice(0, 5).join(", ")}), but no tip gate-runner is wired on this run — staleness was NOT measured.`;
   }
   // The residual case, and the one worth naming precisely: we had failures but could turn none of
   // them into something re-runnable. A cargo/desktop task and a worker-pool crash both land here.
@@ -2047,20 +2282,22 @@ export function describeSkippedRetriage(input: {
   if (rerunnable.length > 0 && unclassifiable.length > 0) {
     return (
       `tip re-run SKIPPED (rescue VETOED): ${rerunnable.length} of ${failingTests.length} failing ` +
-      `entries ARE re-runnable at tip ${tip.slice(0, 8)} (${rerunnable.slice(0, 5).join(', ')}), but ` +
+      `entries ARE re-runnable at tip ${tip.slice(0, 8)} (${rerunnable.slice(0, 5).join(", ")}), but ` +
       `${unclassifiable.length} could not be turned into anything re-runnable ` +
-      `(${unclassifiable.slice(0, 5).join(', ')}). The rescue is all-or-nothing, so NONE were ` +
-      're-verified. To re-arm it, register the unrecognised id(s) in NON_TEST_GATE_SCRIPTS (a root ' +
-      'lint script qualifies when it is fast, deterministic and repo-wide). Staleness was NOT ' +
-      'measured: this red may or may not still reproduce.'
+      `(${unclassifiable.slice(0, 5).join(", ")}). The rescue is all-or-nothing, so NONE were ` +
+      "re-verified. To re-arm it, register the unrecognised id(s) in NON_TEST_GATE_SCRIPTS (a root " +
+      "lint script qualifies when it is fast, deterministic and repo-wide). Staleness was NOT " +
+      "measured: this red may or may not still reproduce."
     );
   }
   return (
-    `tip re-run SKIPPED: none of the ${failingTests.length} failing entr${failingTests.length === 1 ? 'y' : 'ies'} ` +
+    `tip re-run SKIPPED: none of the ${failingTests.length} failing entr${failingTests.length === 1 ? "y" : "ies"} ` +
     `could be turned into something re-runnable at tip ${tip.slice(0, 8)} — no failing entry resolved to a ` +
     `{workspace,file} pair, and none is a known non-test gate id` +
-    (unclassifiable.length ? ` (${unclassifiable.slice(0, 5).join(', ')})` : '') +
-    '. Staleness was NOT measured: this red may or may not still reproduce.'
+    (unclassifiable.length
+      ? ` (${unclassifiable.slice(0, 5).join(", ")})`
+      : "") +
+    ". Staleness was NOT measured: this red may or may not still reproduce."
   );
 }
 
@@ -2070,11 +2307,14 @@ export function describeSkippedRetriage(input: {
  * a verdict about the newer tree. The caller holds the gate and makes the next checkpoint run
  * re-verify the current head instead.
  */
-function describeRetriageTipMoved(testedTip: string, currentTip: string): string {
+function describeRetriageTipMoved(
+  testedTip: string,
+  currentTip: string,
+): string {
   return (
     `tip ${testedTip.slice(0, 8)} was cut at re-triage start, but integration HEAD is now ` +
     `${currentTip.slice(0, 8)} after the tip re-run — staleness is UNKNOWN; re-verify at current HEAD ` +
-    'before diagnosing. The gate remains held and this result will not auto-refire.'
+    "before diagnosing. The gate remains held and this result will not auto-refire."
   );
 }
 
@@ -2082,8 +2322,8 @@ function describeRetriageTipMoved(testedTip: string, currentTip: string): string
 function describeRetriageCurrentTipUnavailable(testedTip: string): string {
   return (
     `tip re-run was tested at ${testedTip.slice(0, 8)}, but integration HEAD could not be resolved after ` +
-    'the re-triage — staleness is UNKNOWN; re-verify at current HEAD before diagnosing. The gate remains ' +
-    'held and this result will not auto-refire.'
+    "the re-triage — staleness is UNKNOWN; re-verify at current HEAD before diagnosing. The gate remains " +
+    "held and this result will not auto-refire."
   );
 }
 
@@ -2153,7 +2393,8 @@ export function describeRealRedAtTip(
   }
   const stillFailing = perFile.filter((p) => !p.pass);
   const alreadyGreen = perFile.filter((p) => p.pass);
-  const names = (rows: readonly TipPerFileResult[]) => rows.map((p) => p.file).join(', ');
+  const names = (rows: readonly TipPerFileResult[]) =>
+    rows.map((p) => p.file).join(", ");
   // Every file passes ALONE but the group failed ⇒ the breakage is in the INTERACTION, not in any
   // one file. Naming that explicitly matters: the per-file evidence otherwise reads as "nothing is
   // broken", and the next reader's instinct — re-run them individually — reproduces nothing and
@@ -2171,7 +2412,7 @@ export function describeRealRedAtTip(
     `STILL FAILING (fix these): ${names(stillFailing)}.` +
     (alreadyGreen.length
       ? ` ALREADY GREEN AT TIP — do NOT re-diagnose (${alreadyGreen.length}): ${names(alreadyGreen)}.`
-      : '')
+      : "")
   );
 }
 
@@ -2195,41 +2436,45 @@ export function describeRealRedAtTip(
  */
 
 export const NON_TEST_GATE_SCRIPTS: Record<string, string[]> = {
-  'lint:tsc': ['lint:tsc'],
+  "lint:tsc": ["lint:tsc"],
   // WI-38284: root scripts are a dedicated deterministic typecheck project, so a stale
   // scripts red can be re-verified at tip without paying for the full suite.
-  'lint:tsc:scripts': ['lint:tsc:scripts'],
+  "lint:tsc:scripts": ["lint:tsc:scripts"],
   // WI-7140: registered so a stale orchestrator red is re-verifiable at tip by the
   // auto-refire, exactly like lint:tsc. It qualifies on the header's own terms —
   // deterministic, repo-wide, and cheap (~2s against a ~55min suite).
-  'lint:tsc:orchestrator': ['lint:tsc:orchestrator'],
-  'lint:migrations': ['lint:migrations'],
+  "lint:tsc:orchestrator": ["lint:tsc:orchestrator"],
+  "lint:migrations": ["lint:migrations"],
   // EI-19992136440423793: the sibling of lint:migrations, and unregistered until a red on
   // 2026-08-12 proved the cost. One fast, deterministic, repo-wide node script with no PG or
   // network dependency — the header's own bar, already met by the entry above it.
-  'lint:migration-forward-compat': ['lint:migration-forward-compat'],
+  "lint:migration-forward-compat": ["lint:migration-forward-compat"],
   // EI-19992136440423793: the two remaining tsc legs. `lint:tsc` and `lint:tsc:orchestrator`
   // were registered; these two run the SAME kind of check over the other two tree scopes and
   // were left out by omission, not by judgement. Omitting them is not merely a missed rescue:
   // `nonTestGateIdsFrom` is all-or-nothing (`ids.every`), so ONE unregistered leg in the
   // failing set vetoes the rescue for every registered leg beside it.
-  'lint:tsc:papercusp-libs': ['lint:tsc:papercusp-libs'],
-  'lint:tsc:workspaces': ['lint:tsc:workspaces'],
-  'lint:identity-leak': ['lint:no-owner-name-tags', 'lint:no-box-identity', 'lint:no-identity-literals'],
-  'lint:design-primitives': ['lint:design-primitives'],
-  'lint:no-control-bytes': ['lint:no-control-bytes'],
+  "lint:tsc:papercusp-libs": ["lint:tsc:papercusp-libs"],
+  "lint:tsc:workspaces": ["lint:tsc:workspaces"],
+  "lint:identity-leak": [
+    "lint:no-owner-name-tags",
+    "lint:no-box-identity",
+    "lint:no-identity-literals",
+  ],
+  "lint:design-primitives": ["lint:design-primitives"],
+  "lint:no-control-bytes": ["lint:no-control-bytes"],
   // EI-19452618085391226: qualifies on this header's own terms — one fast (~3.5s),
   // deterministic, repo-wide script, so a red that a peer has since fixed by wiring or
   // retiring the guard is cheap to re-verify at tip instead of red-pinning the fleet.
-  'lint:guard-reachability': ['lint:guard-reachability'],
+  "lint:guard-reachability": ["lint:guard-reachability"],
   // EI-19452618085391226: same qualification as its sibling above — one fast, deterministic,
   // repo-wide script with no PG or network dependency, so a red a peer has since fixed by
   // typing the offending fixture is cheap to re-verify at tip rather than red-pinning.
-  'lint:mock-cast-escape': ['lint:mock-cast-escape'],
+  "lint:mock-cast-escape": ["lint:mock-cast-escape"],
   // P-026: qualifies on this header's own terms — one fast (~1s), deterministic, repo-wide
   // script with no PG or network dependency, so a red a peer has since fixed by classifying
   // the timer is cheap to re-verify at tip instead of red-pinning the fleet.
-  'lint:timer-classification': ['lint:timer-classification'],
+  "lint:timer-classification": ["lint:timer-classification"],
   // EI-19992136440423793: the leg whose omission PROVABLY froze the gate on 2026-08-12.
   // Candidate 13a91a1b redded on ['lint:mock-cast-escape', 'lint:no-raw-setinterval']. The
   // first IS registered; this one was not, so `ids.every(isRerunnableGateEntry)` returned []
@@ -2237,18 +2482,18 @@ export const NON_TEST_GATE_SCRIPTS: Record<string, string[]> = {
   // packages/operator-core/lib/harness/git-sync/git-sync-action.ts was already removed at tip
   // — but nothing measured that, and the streak reached 19 consecutive reds. Same bar as its
   // siblings: one fast, deterministic, repo-wide node script, no PG or network.
-  'lint:no-raw-setinterval': ['lint:no-raw-setinterval'],
+  "lint:no-raw-setinterval": ["lint:no-raw-setinterval"],
   // P-020: the agent-state plane's standing probes. Deterministic and repo-wide like the
   // rest, so the same auto-refire applies. NOTE the census + ratchet legs are PG-backed, so
   // a re-verify at tip re-reads live state — which is correct here: if the producer resumed
   // writing, the red genuinely is stale and should clear. `lint:cell-matrix` is absent on
   // purpose (it needs running operators — see the leg comment).
-  'lint:plane-integrity': [
-    'lint:plane-producers',
-    'lint:declared-consumed',
-    'lint:no-bespoke-state-read',
-    'lint:plane-ratchet',
-    'lint:plane-guards',
+  "lint:plane-integrity": [
+    "lint:plane-producers",
+    "lint:declared-consumed",
+    "lint:no-bespoke-state-read",
+    "lint:plane-ratchet",
+    "lint:plane-guards",
   ],
 };
 
@@ -2257,7 +2502,9 @@ export const NON_TEST_GATE_SCRIPTS: Record<string, string[]> = {
  *  never an unmapped signature (see above). Returns the gate ids to re-verify, or
  *  `[]` when the red is not gate-only (nothing for this path to do; the caller's
  *  existing file-based or default handling applies unchanged). */
-export function nonTestGateIdsFrom(failingTests: string[] | undefined): string[] {
+export function nonTestGateIdsFrom(
+  failingTests: string[] | undefined,
+): string[] {
   const all = failingTests ?? [];
   // EI-20092765275570648: a workspace-scoped task id (`<ws> :: <script>`) names the same
   // failure as the bare `<ws>` entry the retry marker contributes, only precisely. The
@@ -2266,7 +2513,9 @@ export function nonTestGateIdsFrom(failingTests: string[] | undefined): string[]
   // workspace name that is not a gate id and declines a rescue that is in fact fully
   // specified. This is the whole reason a lint-held red could never self-heal.
   const subsumed = new Set(
-    all.map((e) => parseFailingTaskId(e)?.workspace).filter((w): w is string => w !== undefined),
+    all
+      .map((e) => parseFailingTaskId(e)?.workspace)
+      .filter((w): w is string => w !== undefined),
   );
   const ids = all.filter((e) => !subsumed.has(e));
   return ids.length > 0 && ids.every(isRerunnableGateEntry) ? ids : [];
@@ -2283,11 +2532,19 @@ export function nonTestGateIdsFrom(failingTests: string[] | undefined): string[]
  *  `nonTestGateIdsFrom`'s all-or-nothing check and still vetoes the gate rescue exactly as before.
  *  Subtracting only what is genuinely re-run elsewhere is what lets the two rescues COMPOSE
  *  without either one declaring a red stale on evidence nobody collected. */
-export function fileRescueCovers(entry: string, failingFiles: readonly FailingFile[]): boolean {
+export function fileRescueCovers(
+  entry: string,
+  failingFiles: readonly FailingFile[],
+): boolean {
   if (failingFiles.length === 0) return false;
-  if (failingFiles.some((f) => f.file === entry || f.workspace === entry)) return true;
+  if (failingFiles.some((f) => f.file === entry || f.workspace === entry))
+    return true;
   const task = parseFailingTaskId(entry);
-  return task !== null && task.script.startsWith('test') && failingFiles.some((f) => f.workspace === task.workspace);
+  return (
+    task !== null &&
+    task.script.startsWith("test") &&
+    failingFiles.some((f) => f.workspace === task.workspace)
+  );
 }
 
 /** The non-test gate ids to re-verify at tip BESIDE whatever the file rescue re-runs.
@@ -2309,7 +2566,9 @@ export function rescueGateIdsFrom(
   failingTests: string[] | undefined,
   failingFiles: readonly FailingFile[] = [],
 ): string[] {
-  return nonTestGateIdsFrom((failingTests ?? []).filter((e) => !fileRescueCovers(e, failingFiles)));
+  return nonTestGateIdsFrom(
+    (failingTests ?? []).filter((e) => !fileRescueCovers(e, failingFiles)),
+  );
 }
 
 /** Is this `failingTests` entry something the tip rescue can re-run on its own?
@@ -2328,7 +2587,7 @@ export function rescueGateIdsFrom(
 export function isRerunnableGateEntry(entry: string): boolean {
   if (entry in NON_TEST_GATE_SCRIPTS) return true;
   const task = parseFailingTaskId(entry);
-  return task !== null && task.script.startsWith('lint:');
+  return task !== null && task.script.startsWith("lint:");
 }
 
 /** Resolve rescue-eligible entries to the npm invocations that re-verify them at tip.
@@ -2341,12 +2600,17 @@ export function isRerunnableGateEntry(entry: string): boolean {
  *  De-duplicated on the resolved (workspace, script) pair, so two entries that expand to
  *  the same invocation run it once. Pure + exported so the invocation SHAPE is asserted
  *  by tests rather than only by a live gate run. */
-export function resolveGateRuns(gateIds: readonly string[]): { script: string; workspace: string | null }[] {
+export function resolveGateRuns(
+  gateIds: readonly string[],
+): { script: string; workspace: string | null }[] {
   const runs = new Map<string, { script: string; workspace: string | null }>();
   for (const id of gateIds) {
     const task = parseFailingTaskId(id);
     if (task) {
-      runs.set(JSON.stringify([task.workspace, task.script]), { script: task.script, workspace: task.workspace });
+      runs.set(JSON.stringify([task.workspace, task.script]), {
+        script: task.script,
+        workspace: task.workspace,
+      });
       continue;
     }
     for (const script of NON_TEST_GATE_SCRIPTS[id] ?? []) {
@@ -2369,7 +2633,9 @@ export interface DeployStalenessThresholds {
   maxCommitsBehind: number;
 }
 
-export function deployStalenessThresholdsFromEnv(env: NodeJS.ProcessEnv = process.env): DeployStalenessThresholds {
+export function deployStalenessThresholdsFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): DeployStalenessThresholds {
   const hours = Number(env.PAPERCUSP_DEPLOY_STALE_HOURS);
   const commits = Number(env.PAPERCUSP_DEPLOY_STALE_COMMITS);
   return {
@@ -2380,29 +2646,40 @@ export function deployStalenessThresholdsFromEnv(env: NodeJS.ProcessEnv = proces
 
 export interface DeployStalenessVerdict {
   alarm: boolean;
-  urgency: 'none' | 'warn' | 'urgent';
+  urgency: "none" | "warn" | "urgent";
   message: string;
 }
 
 export function evaluateDeployStaleness(
-  input: { pinAgeMs: number; commitsBehind: number; blockingFailures?: string[] },
+  input: {
+    pinAgeMs: number;
+    commitsBehind: number;
+    blockingFailures?: string[];
+  },
   thresholds: DeployStalenessThresholds,
 ): DeployStalenessVerdict {
   const { pinAgeMs, commitsBehind, blockingFailures = [] } = input;
   const ageHours = pinAgeMs / 3_600_000;
-  if (pinAgeMs < thresholds.maxPinAgeMs || commitsBehind < thresholds.maxCommitsBehind) {
-    return { alarm: false, urgency: 'none', message: '' };
+  if (
+    pinAgeMs < thresholds.maxPinAgeMs ||
+    commitsBehind < thresholds.maxCommitsBehind
+  ) {
+    return { alarm: false, urgency: "none", message: "" };
   }
   // Double the age threshold ⇒ this is no longer "the gate is chewing", it is a drought.
-  const urgency: 'warn' | 'urgent' = pinAgeMs >= thresholds.maxPinAgeMs * 2 ? 'urgent' : 'warn';
+  const urgency: "warn" | "urgent" =
+    pinAgeMs >= thresholds.maxPinAgeMs * 2 ? "urgent" : "warn";
   const blocking = blockingFailures.length
-    ? `\n\nBlocking red:\n${blockingFailures.slice(0, 10).map((f) => `  - ${f}`).join('\n')}`
-    : '\n\nNo failing tests recorded — the gate may be wedged rather than red.';
+    ? `\n\nBlocking red:\n${blockingFailures
+        .slice(0, 10)
+        .map((f) => `  - ${f}`)
+        .join("\n")}`
+    : "\n\nNo failing tests recorded — the gate may be wedged rather than red.";
   return {
     alarm: true,
     urgency,
     message:
-      `${urgency === 'urgent' ? '🚨' : '⚠️'} deploy stale: the release pin is ${ageHours.toFixed(1)}h old and ` +
+      `${urgency === "urgent" ? "🚨" : "⚠️"} deploy stale: the release pin is ${ageHours.toFixed(1)}h old and ` +
       `${commitsBehind} commits behind tip. Shipped work is not reaching the running app.${blocking}`,
   };
 }
@@ -2420,10 +2697,10 @@ export interface QuarantineVerdict {
 
 export function parseTestQuarantine(text: string): TestQuarantineEntry[] {
   const out: TestQuarantineEntry[] = [];
-  for (const raw of text.split('\n')) {
-    const line = raw.replace(/#.*$/, '').trim();
+  for (const raw of text.split("\n")) {
+    const line = raw.replace(/#.*$/, "").trim();
     if (!line) continue;
-    const [workspace, pattern] = line.split('::');
+    const [workspace, pattern] = line.split("::");
     if (!workspace) continue;
     out.push({ workspace, pattern: pattern?.trim() || null });
   }
@@ -2431,27 +2708,30 @@ export function parseTestQuarantine(text: string): TestQuarantineEntry[] {
 }
 
 function globToRegExp(glob: string): RegExp {
-  let source = '^';
+  let source = "^";
   for (let i = 0; i < glob.length; i++) {
     const c = glob[i];
-    if (c === '*') {
-      if (glob[i + 1] === '*') {
-        source += '.*';
+    if (c === "*") {
+      if (glob[i + 1] === "*") {
+        source += ".*";
         i++;
       } else {
-        source += '[^/]*';
+        source += "[^/]*";
       }
-    } else if (c === '?') {
-      source += '[^/]';
+    } else if (c === "?") {
+      source += "[^/]";
     } else {
-      source += c.replace(/[|\\{}()[\]^$+?.]/g, '\\$&');
+      source += c.replace(/[|\\{}()[\]^$+?.]/g, "\\$&");
     }
   }
-  source += '$';
+  source += "$";
   return new RegExp(source);
 }
 
-export function isQuarantinedTestFile(file: FailingFile, entries: TestQuarantineEntry[]): boolean {
+export function isQuarantinedTestFile(
+  file: FailingFile,
+  entries: TestQuarantineEntry[],
+): boolean {
   for (const entry of entries) {
     if (entry.workspace !== file.workspace) continue;
     if (!entry.pattern) return true;
@@ -2460,7 +2740,11 @@ export function isQuarantinedTestFile(file: FailingFile, entries: TestQuarantine
   return false;
 }
 
-export function applyTestQuarantine(fullOutput: string, failingTests: string[], entries: TestQuarantineEntry[]): QuarantineVerdict {
+export function applyTestQuarantine(
+  fullOutput: string,
+  failingTests: string[],
+  entries: TestQuarantineEntry[],
+): QuarantineVerdict {
   const failingFiles = parseFailingFilesByWorkspace(fullOutput);
   if (!failingFiles.length || !entries.length) {
     return { allFailuresQuarantined: false, failingTests, quarantined: [] };
@@ -2470,7 +2754,10 @@ export function applyTestQuarantine(fullOutput: string, failingTests: string[], 
   const quarantinedFiles = new Set<string>();
   const quarantinedLabels: string[] = [];
   for (const file of failingFiles) {
-    const current = byWorkspace.get(file.workspace) ?? { total: 0, quarantined: 0 };
+    const current = byWorkspace.get(file.workspace) ?? {
+      total: 0,
+      quarantined: 0,
+    };
     current.total += 1;
     if (isQuarantinedTestFile(file, entries)) {
       current.quarantined += 1;
@@ -2492,7 +2779,8 @@ export function applyTestQuarantine(fullOutput: string, failingTests: string[], 
     return true;
   });
   return {
-    allFailuresQuarantined: filtered.length === 0 && quarantinedLabels.length === failingFiles.length,
+    allFailuresQuarantined:
+      filtered.length === 0 && quarantinedLabels.length === failingFiles.length,
     failingTests: filtered,
     quarantined: quarantinedLabels.sort(),
   };
@@ -2510,7 +2798,7 @@ export interface FailingFile {
 
 /** The npm invocation used to run a workspace-scoped test or rescue script. */
 export interface WorkspaceTestInvocation {
-  cmd: 'npm';
+  cmd: "npm";
   args: string[];
   cwd: string;
 }
@@ -2531,9 +2819,11 @@ export function resolveWorkspaceTestInvocation(
   forwardedArgs: readonly string[],
 ): WorkspaceTestInvocation {
   const standaloneDir = STANDALONE_PACKAGE_DIRS.find((dir) => {
-    if (!existsSync(path.join(rootDir, dir, 'package.json'))) return false;
+    if (!existsSync(path.join(rootDir, dir, "package.json"))) return false;
     try {
-      const pkg = JSON.parse(readFileSync(path.join(rootDir, dir, 'package.json'), 'utf8')) as { name?: unknown };
+      const pkg = JSON.parse(
+        readFileSync(path.join(rootDir, dir, "package.json"), "utf8"),
+      ) as { name?: unknown };
       return pkg.name === workspace || dir === workspace;
     } catch {
       // A malformed package.json cannot be a valid standalone target. Fall through to the
@@ -2543,25 +2833,29 @@ export function resolveWorkspaceTestInvocation(
   });
   if (standaloneDir) {
     return {
-      cmd: 'npm',
-      args: ['run', 'test', '--', ...forwardedArgs],
+      cmd: "npm",
+      args: ["run", "test", "--", ...forwardedArgs],
       cwd: path.join(rootDir, standaloneDir),
     };
   }
   return {
-    cmd: 'npm',
-    args: ['run', 'test', '--workspace', workspace, '--', ...forwardedArgs],
+    cmd: "npm",
+    args: ["run", "test", "--workspace", workspace, "--", ...forwardedArgs],
     cwd: rootDir,
   };
 }
 
 /** Resolve a workspace-scoped non-test script using the same standalone-package mapping. */
-function resolveWorkspaceScriptInvocation(rootDir: string, workspace: string, script: string): WorkspaceTestInvocation {
+function resolveWorkspaceScriptInvocation(
+  rootDir: string,
+  workspace: string,
+  script: string,
+): WorkspaceTestInvocation {
   const testInvocation = resolveWorkspaceTestInvocation(rootDir, workspace, []);
   if (testInvocation.cwd !== rootDir) {
-    return { cmd: 'npm', args: ['run', script], cwd: testInvocation.cwd };
+    return { cmd: "npm", args: ["run", script], cwd: testInvocation.cwd };
   }
-  return { cmd: 'npm', args: ['run', script, '-w', workspace], cwd: rootDir };
+  return { cmd: "npm", args: ["run", script, "-w", workspace], cwd: rootDir };
 }
 
 /** One file's verdict from the DIAGNOSTIC per-file split of a failed tip re-run.
@@ -2604,7 +2898,9 @@ export const TIP_SPLIT_BUDGET_MS = 4 * 60_000;
  *
  * Pure + total: empty output ⇒ `[]`, never throws.
  */
-export function parseFailingFilesByWorkspace(fullOutput: string): FailingFile[] {
+export function parseFailingFilesByWorkspace(
+  fullOutput: string,
+): FailingFile[] {
   // `>>> <ws> :: npm run <script>` — the affected runner's per-workspace section header.
   // Local by design: this shape belongs to scripts/affected-tests.mjs's own sectioning,
   // not to vitest's output, so it is not part of the shared vitest seam.
@@ -2655,7 +2951,7 @@ export function parseFailingFilesByWorkspace(fullOutput: string): FailingFile[] 
   // gate output — which quietly disabled load-flake AND worker-crash absorption (they
   // re-run "the originally failing files", of which there were apparently none). Same
   // root cause as the empty `failingTests` in the 2026-07-10 verdict.
-  const lines = stripAnsi(fullOutput).split('\n');
+  const lines = stripAnsi(fullOutput).split("\n");
 
   // Pre-scan: files named by a rollup summary row (SUMMARY_FAIL) inside SOME workspace
   // section. Rollups are child stdout printed inside the child's own section, so their
@@ -2703,7 +2999,8 @@ export function parseFailingFilesByWorkspace(fullOutput: string): FailingFile[] 
       }
       if (inAbsorptionSection) {
         const suite = SUITE_FAIL.exec(line);
-        if (suite && !authoritativeWs.has(suite[1])) authoritativeWs.set(suite[1], ws);
+        if (suite && !authoritativeWs.has(suite[1]))
+          authoritativeWs.set(suite[1], ws);
       }
     }
   }
@@ -2893,11 +3190,11 @@ export const ISOLATION_LOAD_STARVATION_MIN_LOAD_PER_CORE = 1.0;
 
 export type FlakeVerdict =
   /** every originally-failing file PASSED in isolation ⇒ the red was pure load-flake. */
-  | 'all-flakes'
+  | "all-flakes"
   /** at least one file STILL FAILED in isolation ⇒ a real deterministic break. */
-  | 'real-break'
+  | "real-break"
   /** the isolation run couldn't decide (no files parsed, an isolation error) ⇒ trust the original verdict. */
-  | 'inconclusive';
+  | "inconclusive";
 
 export interface FlakeDecision {
   verdict: FlakeVerdict;
@@ -2927,9 +3224,10 @@ export function decideFlakeAbsorption(input: {
 }): FlakeDecision {
   const { originalFailing, isolationResults } = input;
   if (originalFailing.length === 0) {
-    return { verdict: 'inconclusive', flakeAbsorbed: [], stillFailing: [] };
+    return { verdict: "inconclusive", flakeAbsorbed: [], stillFailing: [] };
   }
-  const label = (r: { workspace: string; file: string }) => `${r.workspace}::${r.file}`;
+  const label = (r: { workspace: string; file: string }) =>
+    `${r.workspace}::${r.file}`;
   const byKey = new Map(isolationResults.map((r) => [label(r), r]));
 
   const flakeAbsorbed: string[] = [];
@@ -2944,7 +3242,8 @@ export function decideFlakeAbsorption(input: {
       flakeAbsorbed.push(label(f));
     }
   }
-  const verdict: FlakeVerdict = stillFailing.length > 0 ? 'real-break' : 'all-flakes';
+  const verdict: FlakeVerdict =
+    stillFailing.length > 0 ? "real-break" : "all-flakes";
   return { verdict, flakeAbsorbed, stillFailing };
 }
 
@@ -2998,11 +3297,11 @@ export interface ConcurrentRerunResult {
 
 export type ConcurrencyConfirmation =
   /** every workspace's batch passed CO-EXECUTED ⇒ the red really was box-weather. */
-  | 'weather'
+  | "weather"
   /** at least one workspace REPRODUCED the failure co-executed ⇒ concurrency-dependent defect. */
-  | 'reproduced'
+  | "reproduced"
   /** a confirming run errored / never ran ⇒ undetermined ⇒ caller keeps the red. */
-  | 'undetermined';
+  | "undetermined";
 
 /**
  * WI-6956: the PURE confirming decision (mirrors {@link decideFlakeAbsorption}'s shape
@@ -3017,11 +3316,15 @@ export type ConcurrencyConfirmation =
 export function decideConcurrencyConfirmation(input: {
   originalFailing: FailingFile[];
   concurrentResults: ConcurrentRerunResult[];
-}): { verdict: ConcurrencyConfirmation; reproducedIn: string[]; undeterminedIn: string[] } {
+}): {
+  verdict: ConcurrencyConfirmation;
+  reproducedIn: string[];
+  undeterminedIn: string[];
+} {
   const { originalFailing, concurrentResults } = input;
   const workspaces = [...new Set(originalFailing.map((f) => f.workspace))];
   if (workspaces.length === 0) {
-    return { verdict: 'undetermined', reproducedIn: [], undeterminedIn: [] };
+    return { verdict: "undetermined", reproducedIn: [], undeterminedIn: [] };
   }
   const byWorkspace = new Map(concurrentResults.map((r) => [r.workspace, r]));
   const reproducedIn: string[] = [];
@@ -3034,7 +3337,11 @@ export function decideConcurrencyConfirmation(input: {
     else if (!r.passed) reproducedIn.push(ws);
   }
   const verdict: ConcurrencyConfirmation =
-    reproducedIn.length > 0 ? 'reproduced' : undeterminedIn.length > 0 ? 'undetermined' : 'weather';
+    reproducedIn.length > 0
+      ? "reproduced"
+      : undeterminedIn.length > 0
+        ? "undetermined"
+        : "weather";
   return { verdict, reproducedIn, undeterminedIn };
 }
 
@@ -3105,9 +3412,9 @@ export interface RetriedTest {
   /** How many times THIS gate ran it (>= 2 whenever it appears here: the original red + re-run(s)). */
   attempts: number;
   /** How the re-running ended. */
-  outcome: 'passed-on-rerun' | 'still-failing';
+  outcome: "passed-on-rerun" | "still-failing";
   /** Which absorber ran it — the two paths have different remedies. */
-  via: 'load-flake-isolation' | 'worker-crash-rerun';
+  via: "load-flake-isolation" | "worker-crash-rerun";
 }
 
 /** The outcome of the whole flake-absorption attempt — what {@link runGreenCheckpoint}
@@ -3158,7 +3465,10 @@ export interface FlakeAbsorptionOutcome {
  */
 export async function attemptFlakeAbsorption(
   fullOutput: string,
-  isolationRun: (input: { workspace: string; file: string }) => Promise<IsolationResult>,
+  isolationRun: (input: {
+    workspace: string;
+    file: string;
+  }) => Promise<IsolationResult>,
   log: (s: string) => void = () => {},
   opts: {
     /** Extra attempts per file beyond the first. Default {@link ISOLATION_RETRY_MAX}. */
@@ -3177,7 +3487,10 @@ export async function attemptFlakeAbsorption(
      *  ambient box-weather from a concurrency-dependent defect, so it declines to
      *  absorb rather than guess. Absence is fail-safe (the gate stays red), never a
      *  silent bypass. */
-    concurrentRun?: (input: { workspace: string; files: string[] }) => Promise<ConcurrentRerunResult>;
+    concurrentRun?: (input: {
+      workspace: string;
+      files: string[];
+    }) => Promise<ConcurrentRerunResult>;
     /** Host-load seam — the 1-minute loadavg PER CORE, sampled at the moment an isolation
      *  attempt failed. Injected for tests (a real reading would make the assertions on the
      *  attribution wording depend on whatever else is running on the box). Default: real
@@ -3201,7 +3514,9 @@ export async function attemptFlakeAbsorption(
   const retryDelayMs = opts.retryDelayMs ?? ISOLATION_RETRY_DELAY_MS;
   const retryBudgetMs = opts.retryBudgetMs ?? ISOLATION_RETRY_BUDGET_MS;
   const now = opts.now ?? (() => Date.now());
-  const sleep = opts.sleep ?? ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
+  const sleep =
+    opts.sleep ??
+    ((ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms)));
   // WI-6956: no default — an absent confirming runner must FAIL SAFE (decline to absorb),
   // never fall back to the isolated-pass-only criterion this exists to replace.
   const concurrentRun = opts.concurrentRun;
@@ -3209,7 +3524,9 @@ export async function attemptFlakeAbsorption(
     opts.loadPerCore ??
     (() => {
       const cores =
-        typeof os.availableParallelism === 'function' ? os.availableParallelism() : os.cpus().length;
+        typeof os.availableParallelism === "function"
+          ? os.availableParallelism()
+          : os.cpus().length;
       return os.loadavg()[0] / Math.max(1, cores);
     });
   try {
@@ -3218,7 +3535,9 @@ export async function attemptFlakeAbsorption(
     const casesByFile = extractFailingCasesByFile(fullOutput);
     const originalFailing = parseFailingFilesByWorkspace(fullOutput);
     if (originalFailing.length === 0) {
-      return keep('isolation: no parseable failing test files (build break / non-vitest red) — gate stays red');
+      return keep(
+        "isolation: no parseable failing test files (build break / non-vitest red) — gate stays red",
+      );
     }
     if (originalFailing.length > ISOLATION_MAX_FILES) {
       return keep(
@@ -3228,7 +3547,7 @@ export async function attemptFlakeAbsorption(
     log(
       `isolation: re-running ${originalFailing.length} originally-failing file(s) at single concurrency: ${originalFailing
         .map((f) => f.file)
-        .join(', ')}`,
+        .join(", ")}`,
     );
     // isolation-retry-resilience-2026-07-19: ONE shared deadline for the whole phase (not
     // per-file), computed once up front, so N failing files can never multiply the retry
@@ -3241,8 +3560,15 @@ export async function attemptFlakeAbsorption(
         // An isolation re-run that ITSELF errored cannot prove the file is a flake →
         // record errored:true so decideFlakeAbsorption counts it as still-failing
         // (unless a retry below still has budget to try again).
-        log(`isolation: re-run of ${f.workspace}::${f.file} errored (${e instanceof Error ? e.message : e}) — treated as still-failing`);
-        return { workspace: f.workspace, file: f.file, passed: false, errored: true };
+        log(
+          `isolation: re-run of ${f.workspace}::${f.file} errored (${e instanceof Error ? e.message : e}) — treated as still-failing`,
+        );
+        return {
+          workspace: f.workspace,
+          file: f.file,
+          passed: false,
+          errored: true,
+        };
       }
     };
     const isolationResults: IsolationResult[] = [];
@@ -3262,7 +3588,12 @@ export async function attemptFlakeAbsorption(
         // failure that is structurally incapable of being load-caused. Checked EACH
         // iteration (not just the first) so raising ISOLATION_RETRY_MAX later still gets
         // the short-circuit on every subsequent attempt, not only the first.
-        if (isDeterministicFailureShape({ originalCases: casesByFile.get(f.file), attempt: result })) {
+        if (
+          isDeterministicFailureShape({
+            originalCases: casesByFile.get(f.file),
+            attempt: result,
+          })
+        ) {
           log(
             `isolation: ${f.workspace}::${f.file} failed with the IDENTICAL case list as the original gate run and no timing signature — deterministic break, not ambient load; abandoning remaining retry budget for this file${describeFailingCases(casesByFile.get(f.file))}`,
           );
@@ -3292,9 +3623,9 @@ export async function attemptFlakeAbsorption(
         // saturated (>= 1.0 loadavg/core) would still read "consistent with ambient host
         // load" — technically true about the box, false about the CAUSE of THIS failure.
         const attribution = result.hasAssertionSignature
-          ? `(took ${result.durationMs ?? '?'}ms at ${loadNote} — this attempt's own output shows a deterministic AssertionError, not a timeout; NOT load-shaped however busy the host is)`
+          ? `(took ${result.durationMs ?? "?"}ms at ${loadNote} — this attempt's own output shows a deterministic AssertionError, not a timeout; NOT load-shaped however busy the host is)`
           : result.durationMs === undefined
-            ? '(ambient host load, not just the checkpoint\'s own concurrency, can starve even an isolated re-run — duration not measured)'
+            ? "(ambient host load, not just the checkpoint's own concurrency, can starve even an isolated re-run — duration not measured)"
             : result.durationMs < ISOLATION_LOAD_STARVATION_MIN_MS
               ? `(finished in ${result.durationMs}ms — too fast to be load-starved; likely a real break or a stale candidate, NOT ambient load)`
               : load >= ISOLATION_LOAD_STARVATION_MIN_LOAD_PER_CORE
@@ -3321,11 +3652,16 @@ export async function attemptFlakeAbsorption(
     retriedSoFar = isolationResults.map((r) => ({
       name: `${r.workspace}::${r.file}`,
       attempts: isolationAttempts.get(`${r.workspace}::${r.file}`) ?? 2,
-      outcome: r.passed ? ('passed-on-rerun' as const) : ('still-failing' as const),
-      via: 'load-flake-isolation' as const,
+      outcome: r.passed
+        ? ("passed-on-rerun" as const)
+        : ("still-failing" as const),
+      via: "load-flake-isolation" as const,
     }));
-    const decision = decideFlakeAbsorption({ originalFailing, isolationResults });
-    if (decision.verdict === 'all-flakes') {
+    const decision = decideFlakeAbsorption({
+      originalFailing,
+      isolationResults,
+    });
+    if (decision.verdict === "all-flakes") {
       // WI-6956: an isolated PASS is NOT yet proof of weather — for a concurrency-dependent
       // class it is the bug's own signature. Run the confirming co-execution pass (the same
       // files together, file parallelism ON) before ever flipping red→green.
@@ -3355,32 +3691,43 @@ export async function attemptFlakeAbsorption(
           concurrentResults.push({ workspace, passed: false, errored: true });
         }
       }
-      const confirmation = decideConcurrencyConfirmation({ originalFailing, concurrentResults });
-      if (confirmation.verdict !== 'weather') {
+      const confirmation = decideConcurrencyConfirmation({
+        originalFailing,
+        concurrentResults,
+      });
+      if (confirmation.verdict !== "weather") {
         const why =
-          confirmation.verdict === 'reproduced'
-            ? `the SAME files REPRODUCED their failure when re-run TOGETHER in ${confirmation.reproducedIn.join(', ')} — that is a CONCURRENCY-DEPENDENT DEFECT, not box-weather`
-            : `the confirming co-execution re-run was UNDETERMINED in ${confirmation.undeterminedIn.join(', ')} — uncertainty never flips red→green`;
-        const note = `${passedAlone}, but ${why} (WI-6956); gate stays red. Files: ${decision.flakeAbsorbed.join(', ')}`;
+          confirmation.verdict === "reproduced"
+            ? `the SAME files REPRODUCED their failure when re-run TOGETHER in ${confirmation.reproducedIn.join(", ")} — that is a CONCURRENCY-DEPENDENT DEFECT, not box-weather`
+            : `the confirming co-execution re-run was UNDETERMINED in ${confirmation.undeterminedIn.join(", ")} — uncertainty never flips red→green`;
+        const note = `${passedAlone}, but ${why} (WI-6956); gate stays red. Files: ${decision.flakeAbsorbed.join(", ")}`;
         log(note);
         return keep(note);
       }
-      const note = `isolation: ALL ${decision.flakeAbsorbed.length} originally-failing file(s) PASSED in isolation AND again when re-run CO-EXECUTED — absorbed as load-flake(s): ${decision.flakeAbsorbed.join(', ')}`;
+      const note = `isolation: ALL ${decision.flakeAbsorbed.length} originally-failing file(s) PASSED in isolation AND again when re-run CO-EXECUTED — absorbed as load-flake(s): ${decision.flakeAbsorbed.join(", ")}`;
       log(note);
-      return { absorbedToGreen: true, flakeSuspects: decision.flakeAbsorbed, note, retriedTests: retriedSoFar };
+      return {
+        absorbedToGreen: true,
+        flakeSuspects: decision.flakeAbsorbed,
+        note,
+        retriedTests: retriedSoFar,
+      };
     }
     // EI-18673560248447615: this note is the gate's VERDICT line — the one an agent reads
     // to decide whether a red is theirs. Naming the failing cases here is what turns
     // "some file broke, go read a 5000-line log" into an actionable verdict.
     const namedStillFailing = decision.stillFailing.map(
-      (label) => `${label}${describeFailingCases(casesByFile.get(label.split('::')[1] ?? label))}`,
+      (label) =>
+        `${label}${describeFailingCases(casesByFile.get(label.split("::")[1] ?? label))}`,
     );
     return keep(
-      `isolation: ${decision.stillFailing.length} file(s) STILL FAILED in isolation — real break, gate stays red: ${namedStillFailing.join('; ')}`,
+      `isolation: ${decision.stillFailing.length} file(s) STILL FAILED in isolation — real break, gate stays red: ${namedStillFailing.join("; ")}`,
     );
   } catch (e) {
     // Any unexpected fault in the absorption attempt defaults to the ORIGINAL verdict.
-    return keep(`isolation: absorption attempt errored (${e instanceof Error ? e.message : e}) — defaulting to the original (red) verdict`);
+    return keep(
+      `isolation: absorption attempt errored (${e instanceof Error ? e.message : e}) — defaulting to the original (red) verdict`,
+    );
   }
 }
 
@@ -3394,10 +3741,10 @@ export async function attemptFlakeAbsorption(
  * instead of silently wedging the release pipeline (the 5×-consecutive-red incident).
  */
 export const WORKER_POOL_CRASH_MARKERS = [
-  '[vitest-pool]',
-  'Worker forks emitted error',
-  'Worker exited unexpectedly',
-  'Worker terminated',
+  "[vitest-pool]",
+  "Worker forks emitted error",
+  "Worker exited unexpectedly",
+  "Worker terminated",
 ] as const;
 
 /** worker-pool-crash-absorption-2026-06-25 (WI-806): does the suite output look like a
@@ -3421,11 +3768,12 @@ export function parseCrashedWorkspaces(output: string): string[] {
   const seen = new Set<string>();
   // `npm error workspace @papercusp/operator-core@0.1.0` → strip the trailing @version.
   for (const m of output.matchAll(/^\s*npm error workspace\s+(\S+)/gm)) {
-    seen.add(m[1].replace(/@[^@/]*$/, ''));
+    seen.add(m[1].replace(/@[^@/]*$/, ""));
   }
   if (seen.size === 0) {
     // Fall back to the affected-runner section headers (`>>> <ws> :: npm run <script>`).
-    for (const m of output.matchAll(/^\s*>>>\s+(\S+)\s+::\s+npm run\b/gm)) seen.add(m[1]);
+    for (const m of output.matchAll(/^\s*>>>\s+(\S+)\s+::\s+npm run\b/gm))
+      seen.add(m[1]);
   }
   return [...seen].sort();
 }
@@ -3478,7 +3826,9 @@ export interface WorkerCrashAbsorptionOutcome {
  */
 export async function attemptWorkerCrashAbsorption(
   fullOutput: string,
-  workspaceRerun: (input: { workspace: string }) => Promise<WorkspaceRerunResult>,
+  workspaceRerun: (input: {
+    workspace: string;
+  }) => Promise<WorkspaceRerunResult>,
   log: (s: string) => void = () => {},
 ): Promise<WorkerCrashAbsorptionOutcome> {
   // EI-18685042025868279: same read-a-mutable-binding shape as the isolation absorber, and
@@ -3493,16 +3843,22 @@ export async function attemptWorkerCrashAbsorption(
   });
   try {
     if (!isWorkerPoolCrash(fullOutput)) {
-      return keep('worker-crash: output is not a vitest worker-pool crash — not a load-crash flake');
+      return keep(
+        "worker-crash: output is not a vitest worker-pool crash — not a load-crash flake",
+      );
     }
     // The per-file isolation absorber already handles a crash that STILL named failing
     // files; this path is ONLY for the no-signature crash (zero parseable per-file fails).
     if (parseFailingFilesByWorkspace(fullOutput).length > 0) {
-      return keep('worker-crash: per-file failures were parseable — handled by the isolation absorber, not the workspace re-run');
+      return keep(
+        "worker-crash: per-file failures were parseable — handled by the isolation absorber, not the workspace re-run",
+      );
     }
     const workspaces = parseCrashedWorkspaces(fullOutput);
     if (workspaces.length === 0) {
-      return keep('worker-crash: pool crash but no crashed workspace localizable — gate stays red');
+      return keep(
+        "worker-crash: pool crash but no crashed workspace localizable — gate stays red",
+      );
     }
     if (workspaces.length > WORKER_CRASH_MAX_WORKSPACES) {
       return keep(
@@ -3510,7 +3866,7 @@ export async function attemptWorkerCrashAbsorption(
       );
     }
     log(
-      `worker-crash: vitest pool crash with NO per-file failures — re-running ${workspaces.length} crashed workspace(s) at reduced concurrency: ${workspaces.join(', ')}`,
+      `worker-crash: vitest pool crash with NO per-file failures — re-running ${workspaces.length} crashed workspace(s) at reduced concurrency: ${workspaces.join(", ")}`,
     );
     const flakeSuspects: string[] = [];
     for (const workspace of workspaces) {
@@ -3524,18 +3880,41 @@ export async function attemptWorkerCrashAbsorption(
         );
       }
       if (!r.passed) {
-        const why = r.crashedAgain ? 'crashed AGAIN' : r.realFailure ? 'real failure' : 'did not pass';
-        retriedSoFar.push({ name: workspace, attempts: 2, outcome: 'still-failing', via: 'worker-crash-rerun' });
-        return keep(`worker-crash: re-run of ${workspace} ${why} — real break (or persistent infra fault), gate stays red`);
+        const why = r.crashedAgain
+          ? "crashed AGAIN"
+          : r.realFailure
+            ? "real failure"
+            : "did not pass";
+        retriedSoFar.push({
+          name: workspace,
+          attempts: 2,
+          outcome: "still-failing",
+          via: "worker-crash-rerun",
+        });
+        return keep(
+          `worker-crash: re-run of ${workspace} ${why} — real break (or persistent infra fault), gate stays red`,
+        );
       }
-      retriedSoFar.push({ name: workspace, attempts: 2, outcome: 'passed-on-rerun', via: 'worker-crash-rerun' });
+      retriedSoFar.push({
+        name: workspace,
+        attempts: 2,
+        outcome: "passed-on-rerun",
+        via: "worker-crash-rerun",
+      });
       flakeSuspects.push(`${workspace} (worker-pool crash)`);
     }
-    const note = `worker-crash: ALL ${workspaces.length} crashed workspace(s) PASSED on a reduced-concurrency re-run — absorbed as load/infra flake(s): ${workspaces.join(', ')}`;
+    const note = `worker-crash: ALL ${workspaces.length} crashed workspace(s) PASSED on a reduced-concurrency re-run — absorbed as load/infra flake(s): ${workspaces.join(", ")}`;
     log(note);
-    return { absorbedToGreen: true, flakeSuspects, note, retriedTests: retriedSoFar };
+    return {
+      absorbedToGreen: true,
+      flakeSuspects,
+      note,
+      retriedTests: retriedSoFar,
+    };
   } catch (e) {
-    return keep(`worker-crash: absorption attempt errored (${e instanceof Error ? e.message : e}) — defaulting to the original (red) verdict`);
+    return keep(
+      `worker-crash: absorption attempt errored (${e instanceof Error ? e.message : e}) — defaulting to the original (red) verdict`,
+    );
   }
 }
 
@@ -3558,7 +3937,7 @@ export const WORKER_CRASH_MAX_WORKSPACES = 2;
  *  "gate rows (`source='ci'`) stay unattributed" design this file documents just below
  *  (buildGateChildEnv's own comment on why `PAPERCUSP_TEST_RUN_HARNESS` /
  *  `PAPERCUSP_WORKSPACE_ID` are deliberately never stamped here). */
-export const HOST_ENV_STRIP = ['AGENT_MODELS', 'HARNESS_SLUG'];
+export const HOST_ENV_STRIP = ["AGENT_MODELS", "HARNESS_SLUG"];
 
 /**
  * Per-fork V8 old-space cap (MiB) the gate FORCES onto the spawned vitest forks.
@@ -3650,7 +4029,7 @@ export function sanitizeForkNodeOptions(
   nodeOptions: string | undefined,
   heapMb: number = GREEN_CHECKPOINT_FORK_HEAP_MB,
 ): string {
-  const toks = (nodeOptions ?? '').split(/\s+/).filter(Boolean);
+  const toks = (nodeOptions ?? "").split(/\s+/).filter(Boolean);
   const kept: string[] = [];
   for (let i = 0; i < toks.length; i++) {
     const t = toks[i];
@@ -3662,7 +4041,7 @@ export function sanitizeForkNodeOptions(
     kept.push(t);
   }
   kept.push(`--max-old-space-size=${heapMb}`);
-  return kept.join(' ');
+  return kept.join(" ");
 }
 
 /**
@@ -3704,7 +4083,7 @@ export function buildGreenCheckpointEnv(
 ): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...source };
   for (const k of Object.keys(env)) {
-    if (k.startsWith('PAPERCUSP_') || HOST_ENV_STRIP.includes(k)) delete env[k];
+    if (k.startsWith("PAPERCUSP_") || HOST_ENV_STRIP.includes(k)) delete env[k];
   }
   // EI-19307211919650123 — MUST be set AFTER the strip above (these are the gate
   // declaring its OWN identity, which is exactly what the strip is protecting; cf.
@@ -3725,12 +4104,12 @@ export function buildGreenCheckpointEnv(
   // keeps gate rows out of the per-harness tab (they are about the checkpoint tree,
   // not a hive's own suite) while `test_runs_source_idx (source, finished_at DESC)`
   // still indexes exactly the "recent gate runs" read this exists to serve.
-  env.PAPERCUSP_TEST_RUN_SOURCE = 'ci';
+  env.PAPERCUSP_TEST_RUN_SOURCE = "ci";
   if (runId) env.PAPERCUSP_TEST_RUN_GROUP = runId;
   // The bg-host's 128 GiB `--max-old-space-size` must NOT ride into the test forks
   // (8 × 128 GiB → no GC → ENOMEM under fleet load). Pin a sane per-fork heap.
   env.NODE_OPTIONS = sanitizeForkNodeOptions(env.NODE_OPTIONS);
-  env.GREEN_CHECKPOINT = '1';
+  env.GREEN_CHECKPOINT = "1";
   // WI-6140: the release gate's exemption from the pc-heavy admission semaphore.
   // DELIBERATELY NOT keyed off GREEN_CHECKPOINT — that marker is DOUBLE-DUTY (it also
   // makes load-/network-sensitive tests self-exclude via describe.skipIf, see above),
@@ -3743,7 +4122,7 @@ export function buildGreenCheckpointEnv(
   // independently, and nothing but the gate has a reason to set this one.
   // (Caught in review by su-055aef7f — the hole is behavioural, so no test can catch a
   // caller choosing to export the marker; the fix is to not overload it.)
-  env.PC_HEAVY_RELEASE_GATE = '1';
+  env.PC_HEAVY_RELEASE_GATE = "1";
   // AFFECTED_BASE comes ONLY from the `base` argument — never a host-leaked value.
   // The gate runs the suite with AFFECTED_BASE set, so a child runGreen(tree, null)
   // would otherwise inherit that base and silently NARROW a "full" affected run —
@@ -3754,9 +4133,11 @@ export function buildGreenCheckpointEnv(
   // WI-806: cap fork concurrency to a MEMORY-SAFE default (4, not the old 8) so the
   // forks can't collectively bloat past the box's free memory and OOM-kill a worker
   // under live-fleet load — the worker-pool crash that wedged the gate 5× in a row.
-  env.VITEST_MAX_FORKS = env.VITEST_MAX_FORKS ?? String(GREEN_CHECKPOINT_MAX_FORKS);
-  env.VITEST_MAX_THREADS = env.VITEST_MAX_THREADS ?? String(GREEN_CHECKPOINT_MAX_FORKS);
-  env.AFFECTED_RETRY_FAILED = env.AFFECTED_RETRY_FAILED ?? '1';
+  env.VITEST_MAX_FORKS =
+    env.VITEST_MAX_FORKS ?? String(GREEN_CHECKPOINT_MAX_FORKS);
+  env.VITEST_MAX_THREADS =
+    env.VITEST_MAX_THREADS ?? String(GREEN_CHECKPOINT_MAX_FORKS);
+  env.AFFECTED_RETRY_FAILED = env.AFFECTED_RETRY_FAILED ?? "1";
   // VITEST_UNIT_TIMEOUT_MS=180000 (respecting a pre-set value): the gate runs
   // operator-core's heaviest `await import()` unit tests (create-*, hive/guard,
   // coord-program-workflow.smoke, endpoint routes) under 8 concurrent forks that
@@ -3764,7 +4145,7 @@ export function buildGreenCheckpointEnv(
   // even on an idle box (2026-06-22). The 60s dev default flaked the gate red on
   // ~9 such files (all passing in isolation); 180s gives headroom. Dev/CI keep 60s
   // (libs/test-config reads this env; unset ⇒ 60s).
-  env.VITEST_UNIT_TIMEOUT_MS = env.VITEST_UNIT_TIMEOUT_MS ?? '180000';
+  env.VITEST_UNIT_TIMEOUT_MS = env.VITEST_UNIT_TIMEOUT_MS ?? "180000";
   return env;
 }
 
@@ -3778,7 +4159,8 @@ export function checkpointFailureSignature(
   buildOk: boolean,
 ): string[] {
   const failingTests = green ? [] : extractFailingTests(fullOutput);
-  if (!buildOk && !failingTests.includes('@papercusp/operator-vite')) failingTests.push('@papercusp/operator-vite');
+  if (!buildOk && !failingTests.includes("@papercusp/operator-vite"))
+    failingTests.push("@papercusp/operator-vite");
   return failingTests;
 }
 
@@ -3796,7 +4178,7 @@ export function checkpointFailureSignature(
  *  breaks surface there and nowhere else. */
 export function summarizeSuiteOutput(fullOutput: string): string {
   const lines = stripAnsi(fullOutput)
-    .split('\n')
+    .split("\n")
     .filter((l) => !/^npm error/.test(l));
 
   const isSignal = (l: string): boolean =>
@@ -3809,9 +4191,12 @@ export function summarizeSuiteOutput(fullOutput: string): string {
   const digest = lines.filter(isSignal).slice(0, 40);
   // No failure markers (a build break, a wedge, a runner crash): the tail is the ONLY
   // evidence there is, so it keeps the full budget.
-  if (digest.length === 0) return lines.join('\n').slice(-2000);
+  if (digest.length === 0) return lines.join("\n").slice(-2000);
   // Otherwise the digest leads and the tail follows within the same budget.
-  return `${digest.join('\n')}\n\n--- tail ---\n${lines.join('\n').slice(-1200)}`.slice(0, 2000);
+  return `${digest.join("\n")}\n\n--- tail ---\n${lines.join("\n").slice(-1200)}`.slice(
+    0,
+    2000,
+  );
 }
 
 export interface CheckpointOpts {
@@ -3852,12 +4237,14 @@ export interface CheckpointOpts {
  *  reintroduce a local definition. */
 export { quietCutSecFromEnv };
 
-export function partialGreenGateEnabledFromEnv(env: NodeJS.ProcessEnv = process.env): boolean {
+export function partialGreenGateEnabledFromEnv(
+  env: NodeJS.ProcessEnv = process.env,
+): boolean {
   // Default ON (2026-07-01, owner directive): the salvage is confirm-gated — a wrong
   // prefix guess just fails the confirm run and holds — so there is no unproven-code
   // risk in arming it everywhere. `PAPERCUSP_PARTIAL_GREEN_GATE=0` is the opt-out
   // (launch-time config, e.g. to force strict tip-only gating while debugging).
-  return env.PAPERCUSP_PARTIAL_GREEN_GATE !== '0';
+  return env.PAPERCUSP_PARTIAL_GREEN_GATE !== "0";
 }
 
 /**
@@ -3893,7 +4280,10 @@ async function tryLongestGreenPrefix(
   const commits = await deps.commitsInRange(lastReady, candidate); // oldest→newest, full shas
   if (commits.length <= 1) return null; // only the red tip itself — nothing to salvage behind it
 
-  const fullAffected = await deps.affectedWorkspacesForRange(lastReady, candidate);
+  const fullAffected = await deps.affectedWorkspacesForRange(
+    lastReady,
+    candidate,
+  );
   if (!fullAffected) return null; // resolver couldn't compute → hold (safe)
   const failingSig = new Set(failingTests);
   // The failing WORKSPACES = those in the batch's affected set whose name is in the
@@ -3937,17 +4327,20 @@ async function tryLongestGreenPrefix(
   // possible answer arrived at by vacuous truth. Requiring a path separator keeps the
   // locate honest: a red we cannot express as files falls back to workspace granularity
   // rather than quietly skipping every commit in the range.
-  const failingPaths = pathShapedFailing(failingTests).filter((f) => f.includes('/'));
+  const failingPaths = pathShapedFailing(failingTests).filter((f) =>
+    f.includes("/"),
+  );
   const locateByFile = failingPaths.length > 0 && !!deps.changedFilesForRange;
   if (failingWs.size === 0 && !locateByFile) return null; // localizable by neither → hold
   logPartialGreenGate(
-    `partial-green-gate: locating at ${locateByFile ? 'FILE' : 'workspace'} granularity ` +
-      `(${locateByFile ? `${failingPaths.length} failing path(s)` : `failing ws: ${[...failingWs].join(', ')}`})`,
+    `partial-green-gate: locating at ${locateByFile ? "FILE" : "workspace"} granularity ` +
+      `(${locateByFile ? `${failingPaths.length} failing path(s)` : `failing ws: ${[...failingWs].join(", ")}`})`,
   );
 
   // Longest prefix (oldest-first) whose cumulative diff avoids implicating the failure.
   let prefixTip: string | null = null;
-  for (const sha of commits.slice(0, -1)) { // exclude the red tip itself
+  for (const sha of commits.slice(0, -1)) {
+    // exclude the red tip itself
     if (locateByFile) {
       const files = await deps.changedFilesForRange!(lastReady, sha);
       if (!files) break; // can't compute this prefix → stop at the last clean one
@@ -3967,14 +4360,14 @@ async function tryLongestGreenPrefix(
     // which is exactly the ambiguity WI-38207 had to fix by reading the source.
     logPartialGreenGate(
       `partial-green-gate: no salvageable prefix — the first commit after ${lastReady.slice(0, 8)} already ` +
-        `implicates the failure at ${locateByFile ? 'FILE' : 'workspace'} granularity`,
+        `implicates the failure at ${locateByFile ? "FILE" : "workspace"} granularity`,
     );
     return null;
   }
 
   // CONFIRM the prefix is itself green before FF-ing `main` to it (the invariant guard).
   logPartialGreenGate(
-    `partial-green-gate: candidate ${candidate.slice(0, 8)} red (failing ws: ${[...failingWs].join(', ')}); ` +
+    `partial-green-gate: candidate ${candidate.slice(0, 8)} red (failing ws: ${[...failingWs].join(", ")}); ` +
       `confirming longest clean prefix ${prefixTip.slice(0, 8)}`,
   );
   const initialPrefixIndex = commits.indexOf(prefixTip);
@@ -3997,7 +4390,10 @@ async function tryLongestGreenPrefix(
         `attempting bounded forward/bisect recovery`,
     );
 
-    const confirmLaterPrefix = async (index: number, strategy: 'forward' | 'bisect'): Promise<boolean> => {
+    const confirmLaterPrefix = async (
+      index: number,
+      strategy: "forward" | "bisect",
+    ): Promise<boolean> => {
       const sha = commits[index];
       logPartialGreenGate(
         `partial-green-gate: ${strategy} recovery confirming later prefix ${sha.slice(0, 8)} ` +
@@ -4011,24 +4407,33 @@ async function tryLongestGreenPrefix(
         confirm = laterConfirm;
         return true;
       }
-      logPartialGreenGate(`partial-green-gate: later prefix ${sha.slice(0, 8)} did NOT confirm green — continuing recovery`);
+      logPartialGreenGate(
+        `partial-green-gate: later prefix ${sha.slice(0, 8)} did NOT confirm green — continuing recovery`,
+      );
       return false;
     };
 
     // The immediate successor is the highest-value probe: it catches a repair that landed
     // directly after the locator's conservative cut without paying for a binary search.
-    if (recoveryLeft <= lastPrefixIndex && recoveryAttempts < maxRecoveryConfirms) {
+    if (
+      recoveryLeft <= lastPrefixIndex &&
+      recoveryAttempts < maxRecoveryConfirms
+    ) {
       const forwardIndex = recoveryLeft;
-      await confirmLaterPrefix(forwardIndex, 'forward');
+      await confirmLaterPrefix(forwardIndex, "forward");
       recoveryLeft = forwardIndex + 1;
     }
 
     // If the forward probe found green, bisect only the later range to opportunistically
     // find a newer confirmed prefix. If it was red, the same search looks only farther
     // forward, where a later repair can still make the prefix green.
-    while (recoveryLeft <= lastPrefixIndex && recoveryAttempts < maxRecoveryConfirms) {
-      const middle = recoveryLeft + Math.floor((lastPrefixIndex - recoveryLeft) / 2);
-      const green = await confirmLaterPrefix(middle, 'bisect');
+    while (
+      recoveryLeft <= lastPrefixIndex &&
+      recoveryAttempts < maxRecoveryConfirms
+    ) {
+      const middle =
+        recoveryLeft + Math.floor((lastPrefixIndex - recoveryLeft) / 2);
+      const green = await confirmLaterPrefix(middle, "bisect");
       recoveryLeft = middle + 1;
       if (!green) continue;
     }
@@ -4038,27 +4443,32 @@ async function tryLongestGreenPrefix(
     // runtime contract locally: only a non-null confirmed prefix reaches the advance.
     const recoveredPrefix = recoveryPrefix as string | null;
     if (recoveredPrefix === null) {
-      logPartialGreenGate(`partial-green-gate: prefix ${prefixTip.slice(0, 8)} did NOT confirm green — holding (no partial advance)`);
+      logPartialGreenGate(
+        `partial-green-gate: prefix ${prefixTip.slice(0, 8)} did NOT confirm green — holding (no partial advance)`,
+      );
       return null; // affected reasoning was incomplete; stay safe
     }
 
     prefixTip = recoveredPrefix;
     logPartialGreenGate(
       `partial-green-gate: recovered later green prefix ${prefixTip.slice(0, 8)} ` +
-        `(after ${recoveryAttempts} additional confirm${recoveryAttempts === 1 ? '' : 's'})`,
+        `(after ${recoveryAttempts} additional confirm${recoveryAttempts === 1 ? "" : "s"})`,
     );
   }
   const adv = await deps.advance(prefixTip);
   if (!adv.advanced) return null;
-  if (!noPush) await deps.push(cfg.releaseRef, adv.from).catch((e) => deps.log(`warn: push ${cfg.releaseRef} failed: ${e}`));
+  if (!noPush)
+    await deps
+      .push(cfg.releaseRef, adv.from)
+      .catch((e) => deps.log(`warn: push ${cfg.releaseRef} failed: ${e}`));
   logPartialGreenGate(
-    `✅ partial-green-gate: ${cfg.releaseRef} advanced ${adv.from?.slice(0, 8) ?? 'none'} → ${prefixTip.slice(0, 8)} ` +
+    `✅ partial-green-gate: ${cfg.releaseRef} advanced ${adv.from?.slice(0, 8) ?? "none"} → ${prefixTip.slice(0, 8)} ` +
       `(longest green prefix; tip ${candidate.slice(0, 8)} still red)`,
   );
   await deps
     .broadcast(
       `🟧 green-checkpoint: PARTIAL advance — \`${cfg.releaseRef}\` → ${prefixTip.slice(0, 8)} (longest GREEN prefix), tip ${candidate.slice(0, 8)} still red`,
-      `Was ${adv.from?.slice(0, 8) ?? 'unset'}. One unrelated red no longer hostages the clean prefix — it is now deployable. The red tip's failing tests still need a fix (release-fixer dispatched).`,
+      `Was ${adv.from?.slice(0, 8) ?? "unset"}. One unrelated red no longer hostages the clean prefix — it is now deployable. The red tip's failing tests still need a fix (release-fixer dispatched).`,
     )
     .catch(() => {});
   // The prefix is a real green advance — wake any agent awaiting "the next green".
@@ -4071,8 +4481,18 @@ async function tryLongestGreenPrefix(
     // a checkpoint:await bound to `pipeline` still lineage-checks via the pipeline-SCOPED
     // key, but the payload field lets a global-key waiter self-check it without re-deriving
     // it from the emitter).
-    const payload = { sha: prefixTip, from: adv.from, partial: true, redTip: candidate, pipeline, runId: deps.runId ?? null };
-    const cancelSiblingKeysFor = ['green-checkpoint:red', `green-checkpoint:red:${pipeline}`];
+    const payload = {
+      sha: prefixTip,
+      from: adv.from,
+      partial: true,
+      redTip: candidate,
+      pipeline,
+      runId: deps.runId ?? null,
+    };
+    const cancelSiblingKeysFor = [
+      "green-checkpoint:red",
+      `green-checkpoint:red:${pipeline}`,
+    ];
     try {
       // EI-7646/WI-4957: fire BOTH the global key and the pipeline-scoped one, mirroring the
       // full-advance path below — a partial advance is still a real green outcome for
@@ -4081,7 +4501,7 @@ async function tryLongestGreenPrefix(
       // only the global key fired, so a candidate-bound waiter on a partial advance could
       // hang to its own timeout despite the gate having genuinely resolved for its candidate.
       await deps.emitEvent?.({
-        key: 'release:green',
+        key: "release:green",
         summary: prefixSummary,
         payload,
         // EI-12457: this candidate resolved green (partial) — a subscriber's still-
@@ -4095,7 +4515,9 @@ async function tryLongestGreenPrefix(
         cancelSiblingKeysFor,
       });
     } catch (e) {
-      deps.log(`warn: release:green (partial) emit failed: ${e instanceof Error ? e.message : e}`);
+      deps.log(
+        `warn: release:green (partial) emit failed: ${e instanceof Error ? e.message : e}`,
+      );
     }
   }
   return {
@@ -4104,7 +4526,7 @@ async function tryLongestGreenPrefix(
     advancedTo: prefixTip,
     from: adv.from,
     green: false, // the candidate (tip) is NOT green; `main` advanced to a green PREFIX
-    reason: 'advanced-prefix',
+    reason: "advanced-prefix",
     summary: confirm.summary,
     failingTests,
     ...(deps.runId ? { runId: deps.runId } : {}),
@@ -4123,7 +4545,15 @@ async function tryLongestGreenPrefix(
  * Returns '' when none of `files` has any historical record (nothing to add).
  */
 export function historicalFlakeAnnotations(
-  stats: Record<string, { fails: number; passes: number; bothStatusShas: number; isSuspect: boolean }>,
+  stats: Record<
+    string,
+    {
+      fails: number;
+      passes: number;
+      bothStatusShas: number;
+      isSuspect: boolean;
+    }
+  >,
   files: string[],
 ): string {
   const lines = files
@@ -4131,12 +4561,14 @@ export function historicalFlakeAnnotations(
     .map((f) => {
       const s = stats[f];
       return `  - ${f}: ${s.fails} fail(s) / ${s.passes} pass(es) over 7d${
-        s.isSuspect ? ' — ⚠️ known flake-suspect (mixed pass/fail across commits)' : ''
+        s.isSuspect
+          ? " — ⚠️ known flake-suspect (mixed pass/fail across commits)"
+          : ""
       }`;
     });
   return lines.length
-    ? `\n\n📊 7d historical flake stats for failing file(s) (EI-7443):\n${lines.join('\n')}`
-    : '';
+    ? `\n\n📊 7d historical flake stats for failing file(s) (EI-7443):\n${lines.join("\n")}`
+    : "";
 }
 
 /** EI-20014356905761236: why a run's persisted verdict log needs a PROMOTION line at all.
@@ -4155,7 +4587,9 @@ export function historicalFlakeAnnotations(
  *  older red — and reconciling them took six tool calls. `main` had not moved. The missing
  *  datum was never the VERDICT; it was whether the verdict COUNTED.
  */
-export type GatePromotionReason = CheckpointResult['reason'] | 'superseded-by-refire';
+export type GatePromotionReason =
+  | CheckpointResult["reason"]
+  | "superseded-by-refire";
 
 /** Render the trailer. Uppercase-token line, the same shape as GATE_HELD_BY /
  *  AFFECTED_TESTS_RESULT so it greps identically:
@@ -4183,7 +4617,7 @@ export function formatGatePromotionTrailer(v: {
   reason: GatePromotionReason;
   advancedTo?: string | null;
 }): string {
-  const to = v.advancedTo ? ` advancedTo=${v.advancedTo.slice(0, 12)}` : '';
+  const to = v.advancedTo ? ` advancedTo=${v.advancedTo.slice(0, 12)}` : "";
   return `\nGATE_PROMOTION candidate=${v.candidate.slice(0, 12)} green=${v.green} promoted=${v.promoted} reason=${v.reason}${to}\n`;
 }
 
@@ -4194,12 +4628,14 @@ export function formatGatePromotionTrailer(v: {
  * can append its verdict block (EI-19995300915348764).  Keep the zero-entry form explicit:
  * silence makes an unattributed red look like a green or a flake.
  */
-export function formatGateHeldByNote(failingTests: readonly string[] | undefined): string {
+export function formatGateHeldByNote(
+  failingTests: readonly string[] | undefined,
+): string {
   const maxEntries = 40;
   const entries = failingTests ?? [];
   return (
     `\n\nGATE_HELD_BY count=${entries.length} ` +
-    `attribution=${entries.length ? 'attributed' : 'unattributed'} ` +
+    `attribution=${entries.length ? "attributed" : "unattributed"} ` +
     `truncated=${entries.length > maxEntries} ` +
     `entries=${JSON.stringify(entries.slice(0, maxEntries))}` +
     (entries.length
@@ -4211,7 +4647,7 @@ export function formatGateHeldByNote(failingTests: readonly string[] | undefined
 /** Return true only for the canonical line, not an incidental GATE_HELD_BY mention in suite output. */
 function hasGateHeldByLine(logPath: string): boolean {
   try {
-    return /^GATE_HELD_BY count=\d+ /m.test(readFileSync(logPath, 'utf8'));
+    return /^GATE_HELD_BY count=\d+ /m.test(readFileSync(logPath, "utf8"));
   } catch {
     return false;
   }
@@ -4227,7 +4663,9 @@ function appendGateHeldByIfMissing(
   try {
     appendFileSync(logPath, formatGateHeldByNote(failingTests));
   } catch (e) {
-    log?.(`warn: GATE_HELD_BY line not published to ${logPath}: ${e instanceof Error ? e.message : e}`);
+    log?.(
+      `warn: GATE_HELD_BY line not published to ${logPath}: ${e instanceof Error ? e.message : e}`,
+    );
   }
 }
 
@@ -4249,7 +4687,9 @@ function appendPartialGreenGateLine(
   try {
     appendFileSync(logPath, `\n${defangCapturedResultMarkers(line)}\n`);
   } catch (e) {
-    log(`warn: partial-green-gate line not published to ${logPath}: ${e instanceof Error ? e.message : e}`);
+    log(
+      `warn: partial-green-gate line not published to ${logPath}: ${e instanceof Error ? e.message : e}`,
+    );
   }
 }
 
@@ -4268,7 +4708,9 @@ export function stampGatePromotion(
   try {
     appendFileSync(logPath, formatGatePromotionTrailer(v));
   } catch (e) {
-    log?.(`warn: GATE_PROMOTION trailer not stamped on ${logPath}: ${e instanceof Error ? e.message : e}`);
+    log?.(
+      `warn: GATE_PROMOTION trailer not stamped on ${logPath}: ${e instanceof Error ? e.message : e}`,
+    );
   }
 }
 
@@ -4294,8 +4736,10 @@ export async function runGreenCheckpoint(
     // captured by scheduler/routine invocations. Record the judged root through the
     // orchestrator logger so it reaches the persisted checkpoint transcript as well.
     const { root: derivedRoot, source } = describeIntegrationRoot();
-    deps.log(`integration root: ${cfg.integrationRoot} (source=${source}, emitter=gate-run)`);
-    const norm = (p: string) => p.replace(/\/+$/, '');
+    deps.log(
+      `integration root: ${cfg.integrationRoot} (source=${source}, emitter=gate-run)`,
+    );
+    const norm = (p: string) => p.replace(/\/+$/, "");
     if (norm(derivedRoot) !== norm(cfg.integrationRoot)) {
       deps.log(
         `WARNING integration-root MISMATCH — this run judges ${cfg.integrationRoot} but the resolver derives ` +
@@ -4331,10 +4775,19 @@ export async function runGreenCheckpoint(
       const tipTime = await commitUnixTime(cfg.integrationRoot, candidate);
       const nowSec = Math.floor(Date.now() / 1000);
       if (nowSec - tipTime < quietSec) {
-        const aged = await revListBefore(cfg.integrationRoot, cfg.integrationBranch, nowSec - quietSec);
+        const aged = await revListBefore(
+          cfg.integrationRoot,
+          cfg.integrationBranch,
+          nowSec - quietSec,
+        );
         // Guards: the aged pick must exist, differ, and still fast-forward from the pin
         // (equal-to-lastReady is fine — the up-to-date path below reports it).
-        if (aged && aged !== candidate && (!lastReady || (await isAncestor(cfg.integrationRoot, lastReady, aged)))) {
+        if (
+          aged &&
+          aged !== candidate &&
+          (!lastReady ||
+            (await isAncestor(cfg.integrationRoot, lastReady, aged)))
+        ) {
           deps.log(
             `quiet-cut: tip ${candidate.slice(0, 8)} is ${nowSec - tipTime}s old (<${quietSec}s quiet window) — ` +
               `judging ${aged.slice(0, 8)} instead (the newest ≥${quietSec}s-old state); the tip gets the next run`,
@@ -4344,22 +4797,45 @@ export async function runGreenCheckpoint(
         }
       }
     } catch (e) {
-      deps.log(`quiet-cut: skipped (${e instanceof Error ? e.message : e}) — judging the tip as before`);
+      deps.log(
+        `quiet-cut: skipped (${e instanceof Error ? e.message : e}) — judging the tip as before`,
+      );
     }
   }
 
   if (candidate === lastReady) {
-    deps.log(`${cfg.releaseRef} already at integration HEAD ${candidate.slice(0, 8)} — nothing to checkpoint`);
-    return { advanced: false, candidate, from: lastReady, green: null, reason: 'up-to-date' };
+    deps.log(
+      `${cfg.releaseRef} already at integration HEAD ${candidate.slice(0, 8)} — nothing to checkpoint`,
+    );
+    return {
+      advanced: false,
+      candidate,
+      from: lastReady,
+      green: null,
+      reason: "up-to-date",
+    };
   }
 
   // The green pin only ever fast-forwards — refuse a candidate that isn't a descendant.
-  if (lastReady && !(await isAncestor(cfg.integrationRoot, lastReady, candidate))) {
-    deps.log(`candidate ${candidate.slice(0, 8)} is NOT a descendant of ${cfg.releaseRef} ${lastReady.slice(0, 8)} — refusing`);
-    return { advanced: false, candidate, from: lastReady, green: null, reason: 'not-fast-forward' };
+  if (
+    lastReady &&
+    !(await isAncestor(cfg.integrationRoot, lastReady, candidate))
+  ) {
+    deps.log(
+      `candidate ${candidate.slice(0, 8)} is NOT a descendant of ${cfg.releaseRef} ${lastReady.slice(0, 8)} — refusing`,
+    );
+    return {
+      advanced: false,
+      candidate,
+      from: lastReady,
+      green: null,
+      reason: "not-fast-forward",
+    };
   }
 
-  deps.log(`checkpointing candidate ${candidate.slice(0, 8)} (base ${lastReady?.slice(0, 8) ?? 'none'})`);
+  deps.log(
+    `checkpointing candidate ${candidate.slice(0, 8)} (base ${lastReady?.slice(0, 8) ?? "none"})`,
+  );
   /**
    * WI-7069: the instant the candidate became FINAL.
    *
@@ -4418,7 +4894,10 @@ export async function runGreenCheckpoint(
   // including when it genuinely wedges mid-suite. Age cannot substitute here: `elapsed_sec`
   // comes from the systemd unit's start and therefore keeps climbing across refires, so a
   // legitimately-refiring run looks progressively MORE "wedged" the harder it is working.
-  writeCheckpointRunPhase(checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot), 'suite');
+  writeCheckpointRunPhase(
+    checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot),
+    "suite",
+  );
   await deps.setupTree(candidate);
   // EI-13992: preflight — apply any pending migrations to the live dev PG BEFORE
   // judging, so a run of this gate can never red-pin itself on schema drift caused
@@ -4455,16 +4934,22 @@ export async function runGreenCheckpoint(
     try {
       const migrated = await deps.ensureMigrationsCurrent();
       if (migrated && migrated.applied > 0) {
-        deps.log(`migration preflight: applied ${migrated.applied} pending migration(s) to the dev PG before judging`);
+        deps.log(
+          `migration preflight: applied ${migrated.applied} pending migration(s) to the dev PG before judging`,
+        );
       }
       if (migrated && migrated.failed.length > 0) {
         pendingAfterPreflight = migrated.failed;
       }
     } catch (e) {
-      deps.log(`migration preflight skipped (${e instanceof Error ? e.message : e})`);
+      deps.log(
+        `migration preflight skipped (${e instanceof Error ? e.message : e})`,
+      );
     }
     if (pendingAfterPreflight.length > 0) {
-      const detail = pendingAfterPreflight.map((f) => `${f.file}: ${f.error}`).join('; ');
+      const detail = pendingAfterPreflight
+        .map((f) => `${f.file}: ${f.error}`)
+        .join("; ");
       deps.log(
         `migration preflight: ${pendingAfterPreflight.length} migration(s) failed to apply (left pending) — ` +
           `ABORTING this run as INCONCLUSIVE rather than judging ${candidate.slice(0, 8)} against a schema known to be ` +
@@ -4485,7 +4970,7 @@ export async function runGreenCheckpoint(
         candidate,
         from: lastReady,
         green: null,
-        reason: 'migrations-pending',
+        reason: "migrations-pending",
         summary:
           `migration preflight ABORTED this run — ${pendingAfterPreflight.length} migration(s) are pending and ` +
           `could not apply, so no verdict was rendered about the code. NO run is coming until they apply. Pending: ${detail}`,
@@ -4505,21 +4990,25 @@ export async function runGreenCheckpoint(
         if (drift.missing.length > 0) {
           deps.log(
             `tree-drift preflight: ${drift.missing.length} package(s) required by package-lock.json are MISSING from ` +
-              `node_modules in the checkpoint tree: ${drift.missing.join(', ')} — this run will likely fail on an ` +
+              `node_modules in the checkpoint tree: ${drift.missing.join(", ")} — this run will likely fail on an ` +
               `unrelated-looking MODULE_NOT_FOUND; fix with \`npm install\` in the tree this was copied from`,
           );
         }
         if (drift.extraneous.length > 0) {
           deps.log(
-            `tree-drift preflight: ${drift.extraneous.length} node_modules director${drift.extraneous.length === 1 ? 'y is' : 'ies are'} ` +
-              `extraneous (not in package-lock.json, will be pruned on next install): ${drift.extraneous.join(', ')}`,
+            `tree-drift preflight: ${drift.extraneous.length} node_modules director${drift.extraneous.length === 1 ? "y is" : "ies are"} ` +
+              `extraneous (not in package-lock.json, will be pruned on next install): ${drift.extraneous.join(", ")}`,
           );
         }
       } else if (drift?.skipped) {
-        deps.log(`tree-drift preflight skipped (${drift.error ?? 'unknown reason'})`);
+        deps.log(
+          `tree-drift preflight skipped (${drift.error ?? "unknown reason"})`,
+        );
       }
     } catch (e) {
-      deps.log(`tree-drift preflight failed (${e instanceof Error ? e.message : e})`);
+      deps.log(
+        `tree-drift preflight failed (${e instanceof Error ? e.message : e})`,
+      );
     }
   }
   // WI-38422: reject a candidate-scoped operator-core type regression BEFORE paying for
@@ -4534,12 +5023,17 @@ export async function runGreenCheckpoint(
   // or an execution error, we log the reason and retain the unchanged full suite + unscoped
   // post-suite typecheck. Only a completed non-zero scoped verdict rejects early. A passing
   // preflight ALSO retains that post-suite check: the early run buys latency, not assurance.
-  let earlyPreflightFailure: Awaited<ReturnType<CheckpointDeps['runGreen']>> | null = null;
+  let earlyPreflightFailure: Awaited<
+    ReturnType<CheckpointDeps["runGreen"]>
+  > | null = null;
   if (deps.runChangedFileTypecheckPreflight && deps.changedFilesForRange) {
     const preflightStartedAtMs = Date.now();
-    const elapsed = () => `${((Date.now() - preflightStartedAtMs) / 1000).toFixed(1)}s`;
+    const elapsed = () =>
+      `${((Date.now() - preflightStartedAtMs) / 1000).toFixed(1)}s`;
     if (!lastReady) {
-      deps.log('early changed-file typecheck preflight: skipped (no prior green pin to diff from) — full gate retained');
+      deps.log(
+        "early changed-file typecheck preflight: skipped (no prior green pin to diff from) — full gate retained",
+      );
     } else {
       try {
         const resolved = await deps.changedFilesForRange(lastReady, candidate);
@@ -4548,9 +5042,17 @@ export async function runGreenCheckpoint(
             `early changed-file typecheck preflight: skipped after ${elapsed()} (changed-file resolution unavailable) — full gate retained`,
           );
         } else {
-          const files = [...new Set(resolved.map((file) => file.replaceAll('\\', '/')).filter(Boolean))].sort();
-          const operatorCoreChanged = files.some((file) => file.startsWith('packages/operator-core/'));
-          const commaPath = files.find((file) => file.includes(','));
+          const files = [
+            ...new Set(
+              resolved
+                .map((file) => file.replaceAll("\\", "/"))
+                .filter(Boolean),
+            ),
+          ].sort();
+          const operatorCoreChanged = files.some((file) =>
+            file.startsWith("packages/operator-core/"),
+          );
+          const commaPath = files.find((file) => file.includes(","));
           if (!operatorCoreChanged) {
             deps.log(
               `early changed-file typecheck preflight: skipped after ${elapsed()} ` +
@@ -4564,16 +5066,20 @@ export async function runGreenCheckpoint(
                 `(path cannot be represented by --files: ${commaPath}) — full gate retained`,
             );
           } else {
-            const preflight = await deps.runChangedFileTypecheckPreflight(files);
-            if (preflight.status === 'failed') {
+            const preflight =
+              await deps.runChangedFileTypecheckPreflight(files);
+            if (preflight.status === "failed") {
               const failingSignatures = preflight.failingSignatures?.length
                 ? [...new Set(preflight.failingSignatures)]
-                : ['lint:tsc'];
+                : ["lint:tsc"];
               deps.log(
                 `early changed-file typecheck preflight: FAILED in ${elapsed()} across ${files.length} changed file(s) — ` +
                   `rejecting before the affected-test sweep; the full post-suite checks remain required for every later passing candidate`,
               );
-              if (preflight.summary.trim()) deps.log(`early changed-file typecheck output:\n${preflight.summary}`);
+              if (preflight.summary.trim())
+                deps.log(
+                  `early changed-file typecheck output:\n${preflight.summary}`,
+                );
               earlyPreflightFailure = {
                 green: false,
                 summary:
@@ -4603,9 +5109,12 @@ export async function runGreenCheckpoint(
   // the result. See `candidateSelectedAtMs` for why this exists.
   if (!earlyPreflightFailure) {
     const selectionToSuiteMs = Date.now() - candidateSelectedAtMs;
-    let committedNote = '';
+    let committedNote = "";
     try {
-      const committedAtSec = await commitUnixTime(cfg.integrationRoot, candidate);
+      const committedAtSec = await commitUnixTime(
+        cfg.integrationRoot,
+        candidate,
+      );
       // commitUnixTime is `Number(await git(...))`, which yields NaN — it does NOT throw — if
       // git prints anything non-numeric. Without this guard the catch below never runs and the
       // line reads "candidate committed NaNm ago", which is worse than omitting it.
@@ -4644,14 +5153,24 @@ export async function runGreenCheckpoint(
     isolationNote,
     retriedTests,
     cleanGreen,
-  } = earlyPreflightFailure ?? await deps.runGreen(cfg.checkpointRoot, lastReady);
+  } = earlyPreflightFailure ??
+  (await deps.runGreen(cfg.checkpointRoot, lastReady));
   // EI-20014356905761236: this pass's own verdict log is now known — its PROMOTION outcome is
   // not, because every decision that settles it is taken below this line. Stamp it at each
   // disposition site, so the log records not just the verdict but whether it counted. See
   // formatGatePromotionTrailer for why this is a trailer and not a header field.
-  const stampPromotion = (promoted: boolean, reason: GatePromotionReason, advancedTo?: string | null) =>
-    stampGatePromotion(logPath, { candidate, green, promoted, reason, advancedTo }, (s) => deps.log(s));
-  const logPartialGreenGate = (line: string) => appendPartialGreenGateLine(logPath, line, (s) => deps.log(s));
+  const stampPromotion = (
+    promoted: boolean,
+    reason: GatePromotionReason,
+    advancedTo?: string | null,
+  ) =>
+    stampGatePromotion(
+      logPath,
+      { candidate, green, promoted, reason, advancedTo },
+      (s) => deps.log(s),
+    );
+  const logPartialGreenGate = (line: string) =>
+    appendPartialGreenGateLine(logPath, line, (s) => deps.log(s));
   // load-flake-isolation-2026-06-23: runGreen may have ABSORBED a load-flake — the
   // affected suite went red under the gate's 8-fork load, but every originally-failing
   // FILE then PASSED on an isolated single-concurrency re-run, so it reported green=true
@@ -4660,7 +5179,7 @@ export async function runGreenCheckpoint(
   // P-009 chronic-flake ledger / quarantine nudge), without holding the whole fleet's gate.
   if (green && flakeSuspects?.length) {
     deps.log(
-      `candidate ${candidate.slice(0, 8)} is green (load-flake absorbed: ${flakeSuspects.join(', ')} — failed under load, passed in isolation)`,
+      `candidate ${candidate.slice(0, 8)} is green (load-flake absorbed: ${flakeSuspects.join(", ")} — failed under load, passed in isolation)`,
     );
   }
   // EI-18685042025868279: a green that needed re-runs is NOT the same state as a clean
@@ -4668,15 +5187,19 @@ export async function runGreenCheckpoint(
   // populate flakeSuspects. Say it plainly and quantify it, so "green" in this log can
   // never be read as "everything passed first time" when it did not.
   if (green && cleanGreen === false) {
-    const passedOnRerun = (retriedTests ?? []).filter((t) => t.outcome === 'passed-on-rerun');
+    const passedOnRerun = (retriedTests ?? []).filter(
+      (t) => t.outcome === "passed-on-rerun",
+    );
     deps.log(
       `candidate ${candidate.slice(0, 8)} is green (${passedOnRerun.length} test(s) passed on RE-RUN, not first pass) — ` +
         `a flake or a real intermittent bug is live and would otherwise be invisible: ` +
-        `${passedOnRerun.map((t) => `${t.name} (${t.attempts} attempts)`).join(', ')}`,
+        `${passedOnRerun.map((t) => `${t.name} (${t.attempts} attempts)`).join(", ")}`,
     );
   }
   if (!green) {
-    deps.log(`candidate ${candidate.slice(0, 8)} is NOT green — ${cfg.releaseRef} stays at ${lastReady?.slice(0, 8) ?? 'unset'}`);
+    deps.log(
+      `candidate ${candidate.slice(0, 8)} is NOT green — ${cfg.releaseRef} stays at ${lastReady?.slice(0, 8) ?? "unset"}`,
+    );
     // EI-6542 / EI-18685041726970077: surface "this exact failing test file already
     // changed since the candidate" AND the one-line LINEAGE the owner flagged as the
     // single highest-leverage fix from the nine-detector audit — the manual git-log
@@ -4688,25 +5211,27 @@ export async function runGreenCheckpoint(
     // quiet-cut candidate can be stale by the time the ~40min suite finishes, and a
     // newer commit may already have fixed the exact failing file(s). Best-effort — any
     // git error here just skips the note, never blocks the red path.
-    let alreadyFixedNote = '';
-    let lineageNote = '';
-    const lineage = await computeGateLineage(cfg.integrationRoot, cfg.integrationBranch, candidate, failingTests ?? []).catch(
-      (e: unknown) => {
-        deps.log(`lineage check skipped (${e instanceof Error ? e.message : e})`);
-        return null;
-      },
-    );
+    let alreadyFixedNote = "";
+    let lineageNote = "";
+    const lineage = await computeGateLineage(
+      cfg.integrationRoot,
+      cfg.integrationBranch,
+      candidate,
+      failingTests ?? [],
+    ).catch((e: unknown) => {
+      deps.log(`lineage check skipped (${e instanceof Error ? e.message : e})`);
+      return null;
+    });
     if (lineage) {
       lineageNote = `\n\n${formatGateLineageLine(lineage)}`;
       deps.log(
         `lineage: candidate ${lineage.candidate.slice(0, 8)} is ${lineage.commitsBehind} commit(s) behind tip ${lineage.tip.slice(0, 8)}` +
           (lineage.failingFilesChangedInRange.length
-            ? `; changed-in-range: ${lineage.failingFilesChangedInRange.join(', ')}`
-            : ''),
+            ? `; changed-in-range: ${lineage.failingFilesChangedInRange.join(", ")}`
+            : ""),
       );
       if (lineage.failingFilesChangedInRange.length) {
-        alreadyFixedNote =
-          `\n\n⚠ already changed since candidate ${candidate.slice(0, 8)} (may be fixed-since downstream — verify before re-diagnosing from scratch): ${lineage.failingFilesChangedInRange.join(', ')}`;
+        alreadyFixedNote = `\n\n⚠ already changed since candidate ${candidate.slice(0, 8)} (may be fixed-since downstream — verify before re-diagnosing from scratch): ${lineage.failingFilesChangedInRange.join(", ")}`;
       }
     }
     // WI-37490: build THIS pass's own not-green CheckpointResult — shared by (a) the
@@ -4714,12 +5239,14 @@ export async function runGreenCheckpoint(
     // recursion site, which now records it via deps.recordVerdict BEFORE recursing (see the
     // two `return runGreenCheckpoint(...)` call sites below). One builder means the recorded
     // "superseded" verdict and the terminal one can never drift in shape.
-    const buildNotGreenResult = (forRetriage?: RedTriage & { tip: string | null }): CheckpointResult => ({
+    const buildNotGreenResult = (
+      forRetriage?: RedTriage & { tip: string | null },
+    ): CheckpointResult => ({
       advanced: false,
       candidate,
       from: lastReady,
       green: false,
-      reason: 'not-green',
+      reason: "not-green",
       summary,
       failingTests,
       failingTestNames: extractFailingTestNames(summary),
@@ -4732,13 +5259,15 @@ export async function runGreenCheckpoint(
     // WI-2997 (EI-7443 follow-up): best-effort 7d historical flake annotation for
     // the failing file(s) — purely informational, same fail-soft shape as the
     // already-fixed-since check above; any error here just skips the note.
-    let historicalFlakeNote = '';
+    let historicalFlakeNote = "";
     if (failingTests?.length && deps.flakeLookup) {
       try {
         const stats = await deps.flakeLookup(failingTests);
         historicalFlakeNote = historicalFlakeAnnotations(stats, failingTests);
       } catch (e) {
-        deps.log(`historical-flake-lookup skipped (${e instanceof Error ? e.message : e})`);
+        deps.log(
+          `historical-flake-lookup skipped (${e instanceof Error ? e.message : e})`,
+        );
       }
     }
     // WI-9613: state the gate's OWN red cause in its OWN log.
@@ -4820,12 +5349,12 @@ export async function runGreenCheckpoint(
         // realCheckpointDeps publishes GATE_HELD_BY before returning. Keep this fallback for
         // injected/legacy deps and for a log whose early publication failed, but never append a
         // duplicate canonical line when the durable writer already got there.
-        const heldByNoteForLog = hasGateHeldByLine(logPath) ? '' : heldByNote;
+        const heldByNoteForLog = hasGateHeldByLine(logPath) ? "" : heldByNote;
         appendFileSync(
           logPath,
           defangCapturedResultMarkers(
             `\n\n[green-checkpoint verdict for candidate ${candidate.slice(0, 8)}]\n` +
-              `candidate ${candidate.slice(0, 8)} is NOT green — ${cfg.releaseRef} stays at ${lastReady?.slice(0, 8) ?? 'unset'}` +
+              `candidate ${candidate.slice(0, 8)} is NOT green — ${cfg.releaseRef} stays at ${lastReady?.slice(0, 8) ?? "unset"}` +
               // WI-9613: the cause goes BEFORE the staleness/lineage notes — a triager
               // reading top-down should learn WHAT held the gate before being told
               // whether it might already be fixed.
@@ -4833,7 +5362,7 @@ export async function runGreenCheckpoint(
               lineageNote +
               alreadyFixedNote +
               historicalFlakeNote +
-              '\n',
+              "\n",
           ),
         );
       } catch {
@@ -4842,11 +5371,15 @@ export async function runGreenCheckpoint(
     }
     await deps
       .broadcast(
-        `🟥 green-checkpoint: ${candidate.slice(0, 8)} not green — \`${cfg.releaseRef}\` held at ${lastReady?.slice(0, 8) ?? 'unset'}`,
+        `🟥 green-checkpoint: ${candidate.slice(0, 8)} not green — \`${cfg.releaseRef}\` held at ${lastReady?.slice(0, 8) ?? "unset"}`,
         // WI-9613: the held-gate broadcast/escalation carries the same canonical cause
         // line as the log, so an agent woken by the red does not have to open the log
         // to learn which leg held it.
-        summary + heldByNote + lineageNote + alreadyFixedNote + historicalFlakeNote,
+        summary +
+          heldByNote +
+          lineageNote +
+          alreadyFixedNote +
+          historicalFlakeNote,
       )
       .catch(() => {});
     // release-pipeline-resilience-2026-06-09 P-005: emit a reaction event on the RED path,
@@ -4885,19 +5418,36 @@ export async function runGreenCheckpoint(
       };
       // EI-12457: this candidate resolved red — a subscriber's still-pending green
       // await for this pipeline can now never legitimately fire.
-      const cancelSiblingKeysFor = ['release:green', `release:green:${pipeline}`];
+      const cancelSiblingKeysFor = [
+        "release:green",
+        `release:green:${pipeline}`,
+      ];
       try {
-        await deps.emitEvent?.({ key: 'green-checkpoint:red', summary: redSummary, payload, cancelSiblingKeysFor });
-        await deps.emitEvent?.({ key: `green-checkpoint:red:${pipeline}`, summary: redSummary, payload, cancelSiblingKeysFor });
+        await deps.emitEvent?.({
+          key: "green-checkpoint:red",
+          summary: redSummary,
+          payload,
+          cancelSiblingKeysFor,
+        });
+        await deps.emitEvent?.({
+          key: `green-checkpoint:red:${pipeline}`,
+          summary: redSummary,
+          payload,
+          cancelSiblingKeysFor,
+        });
       } catch (e) {
-        deps.log(`warn: green-checkpoint:red emit failed: ${e instanceof Error ? e.message : e}`);
+        deps.log(
+          `warn: green-checkpoint:red emit failed: ${e instanceof Error ? e.message : e}`,
+        );
       }
     }
     // P-002: durable human-facing escalation (transition-only, cleared on green).
-    await deps.escalate?.(
-      `green-checkpoint held: ${candidate.slice(0, 8)} not green`,
-      `\`${cfg.releaseRef}\` stays at ${lastReady?.slice(0, 8) ?? 'unset'}.\n\nFailing tail:\n${summary}${lineageNote}${alreadyFixedNote}${historicalFlakeNote}`,
-    ).catch(() => {});
+    await deps
+      .escalate?.(
+        `green-checkpoint held: ${candidate.slice(0, 8)} not green`,
+        `\`${cfg.releaseRef}\` stays at ${lastReady?.slice(0, 8) ?? "unset"}.\n\nFailing tail:\n${summary}${lineageNote}${alreadyFixedNote}${historicalFlakeNote}`,
+      )
+      .catch(() => {});
     // docs-audit #2: a held gate must get LOUDER, not go silent. Past 2h/4h/8h
     // re-broadcast a rising-urgency alert (the gate blocks EVERY fleet deploy), so a
     // long-held gate keeps surfacing top-of-inbox instead of one stale escalation.
@@ -4907,7 +5457,7 @@ export async function runGreenCheckpoint(
       if (alert) {
         await deps
           .broadcast(
-            `${alert.emoji} ${alert.urgency}: green gate held ${alert.ageLabel} — \`${cfg.releaseRef}\` stuck at ${lastReady?.slice(0, 8) ?? 'unset'}, ${candidate.slice(0, 8)} still not green (blocking every fleet deploy)`,
+            `${alert.emoji} ${alert.urgency}: green gate held ${alert.ageLabel} — \`${cfg.releaseRef}\` stuck at ${lastReady?.slice(0, 8) ?? "unset"}, ${candidate.slice(0, 8)} still not green (blocking every fleet deploy)`,
             summary,
           )
           .catch(() => {});
@@ -4941,8 +5491,11 @@ export async function runGreenCheckpoint(
     // `release:checkpoint-run { replaceStale: true }` refuses to stop us here: this window
     // is where a stale red gets VOIDED and the gate re-fired onto a newer tip, and killing
     // it discards the rescue and costs a full suite. Best-effort; never throws.
-    writeCheckpointRunPhase(checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot), 'delivering');
-    const tip = await deps.resolveTip?.().catch(() => null) ?? null;
+    writeCheckpointRunPhase(
+      checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot),
+      "delivering",
+    );
+    const tip = (await deps.resolveTip?.().catch(() => null)) ?? null;
     let retriage: (RedTriage & { tip: string | null }) | undefined;
     // WI-7290: hoisted out of the rescue block below so the skip-reason synthesis after it
     // can name WHICH non-test gates (if any) were in play.
@@ -4968,133 +5521,175 @@ export async function runGreenCheckpoint(
       const rescueGates = deps.runGateAtRef ? gateIds : [];
       const needGates = rescueGates.length > 0;
       if ((needFiles || needGates) && (!needFiles || deps.runTestsAtRef)) {
-      const scope = [
-        needFiles ? `${failingFiles.length} failing file(s)` : null,
-        needGates ? `${rescueGates.length} non-test gate(s) (${rescueGates.join(', ')})` : null,
-      ]
-        .filter((part): part is string => part !== null)
-        .join(' + ');
-      deps.log(`red at ${candidate.slice(0, 8)}; re-running ${scope} at tip ${tip.slice(0, 8)}`);
-      // Both halves always run — no short-circuit. Each is cheap by construction (the file rescue
-      // re-runs only the N named files; the 7th stale red was disproved in 559ms, and every
-      // registry entry is one fast deterministic repo-wide script), so stopping at the first
-      // failure would trade the other half's diagnostic for nothing the verdict consumes.
-      const fileRun =
-        needFiles && deps.runTestsAtRef
-          ? await deps.runTestsAtRef(tip, failingFiles).catch((e: unknown) => {
-              deps.log(`tip re-run failed to execute (${e instanceof Error ? e.message : e}) — treating red as real`);
-              return null;
-            })
-          : undefined;
-      const gateRun =
-        needGates && deps.runGateAtRef
-          ? await deps.runGateAtRef(tip, rescueGates).catch((e: unknown) => {
-              deps.log(`tip gate re-run failed to execute (${e instanceof Error ? e.message : e}) — treating red as real`);
-              return null;
-            })
-          : undefined;
-      // EI-20273810951781385: the re-run above is a snapshot of `tip`, not a lock on the
-      // integration branch. On a busy fleet another commit can land before this verdict is
-      // classified, making even a successful tip re-run stale again. Re-resolve HEAD only after
-      // BOTH rescue arms finish; if it moved (or the read failed), the evidence is inconclusive:
-      // hold the gate and make the next run re-verify instead of auto-refiring on an older SHA.
-      const currentTipAfterRetriage = await deps.resolveTip?.().catch(() => null) ?? null;
-      // A half that could not EXECUTE (null) leaves the red unmeasured — the same fail-soft
-      // "treating red as real" both arms already had, now applied to the composed pair. A half that
-      // was not NEEDED (undefined) contributes no failure.
-      const tipRetest =
-        fileRun === null || gateRun === null
-          ? null
-          : {
-              ran: true,
-              pass: (fileRun?.pass ?? true) && (gateRun?.pass ?? true),
-              // DIAGNOSTIC only (see classifyRedAgainstTip) — the file half is the only one with a
-              // per-file split to offer.
-              ...(fileRun?.perFile ? { perFile: fileRun.perFile } : {}),
-            };
-      // The budget's view of "what this pass tried to rescue" is the UNION of both halves, so a
-      // refire re-trying the same mixed set is charged exactly like a single-arm repeat.
-      const currentFailing: readonly (string | FailingFile)[] = [...failingFiles, ...rescueGates];
-      const verdict: RedTriage =
-        currentTipAfterRetriage === null
-          ? {
-              classification: 'unknown',
-              autoRefire: false,
-              chargeRefire: false,
-              refireBlockedBy: null,
-              detail: describeRetriageCurrentTipUnavailable(tip),
-            }
-          : currentTipAfterRetriage !== tip
+        const scope = [
+          needFiles ? `${failingFiles.length} failing file(s)` : null,
+          needGates
+            ? `${rescueGates.length} non-test gate(s) (${rescueGates.join(", ")})`
+            : null,
+        ]
+          .filter((part): part is string => part !== null)
+          .join(" + ");
+        deps.log(
+          `red at ${candidate.slice(0, 8)}; re-running ${scope} at tip ${tip.slice(0, 8)}`,
+        );
+        // Both halves always run — no short-circuit. Each is cheap by construction (the file rescue
+        // re-runs only the N named files; the 7th stale red was disproved in 559ms, and every
+        // registry entry is one fast deterministic repo-wide script), so stopping at the first
+        // failure would trade the other half's diagnostic for nothing the verdict consumes.
+        const fileRun =
+          needFiles && deps.runTestsAtRef
+            ? await deps
+                .runTestsAtRef(tip, failingFiles)
+                .catch((e: unknown) => {
+                  deps.log(
+                    `tip re-run failed to execute (${e instanceof Error ? e.message : e}) — treating red as real`,
+                  );
+                  return null;
+                })
+            : undefined;
+        const gateRun =
+          needGates && deps.runGateAtRef
+            ? await deps.runGateAtRef(tip, rescueGates).catch((e: unknown) => {
+                deps.log(
+                  `tip gate re-run failed to execute (${e instanceof Error ? e.message : e}) — treating red as real`,
+                );
+                return null;
+              })
+            : undefined;
+        // EI-20273810951781385: the re-run above is a snapshot of `tip`, not a lock on the
+        // integration branch. On a busy fleet another commit can land before this verdict is
+        // classified, making even a successful tip re-run stale again. Re-resolve HEAD only after
+        // BOTH rescue arms finish; if it moved (or the read failed), the evidence is inconclusive:
+        // hold the gate and make the next run re-verify instead of auto-refiring on an older SHA.
+        const currentTipAfterRetriage =
+          (await deps.resolveTip?.().catch(() => null)) ?? null;
+        // A half that could not EXECUTE (null) leaves the red unmeasured — the same fail-soft
+        // "treating red as real" both arms already had, now applied to the composed pair. A half that
+        // was not NEEDED (undefined) contributes no failure.
+        const tipRetest =
+          fileRun === null || gateRun === null
+            ? null
+            : {
+                ran: true,
+                pass: (fileRun?.pass ?? true) && (gateRun?.pass ?? true),
+                // DIAGNOSTIC only (see classifyRedAgainstTip) — the file half is the only one with a
+                // per-file split to offer.
+                ...(fileRun?.perFile ? { perFile: fileRun.perFile } : {}),
+              };
+        // The budget's view of "what this pass tried to rescue" is the UNION of both halves, so a
+        // refire re-trying the same mixed set is charged exactly like a single-arm repeat.
+        const currentFailing: readonly (string | FailingFile)[] = [
+          ...failingFiles,
+          ...rescueGates,
+        ];
+        const verdict: RedTriage =
+          currentTipAfterRetriage === null
             ? {
-                classification: 'unknown',
+                classification: "unknown",
                 autoRefire: false,
                 chargeRefire: false,
                 refireBlockedBy: null,
-                detail: describeRetriageTipMoved(tip, currentTipAfterRetriage),
+                detail: describeRetriageCurrentTipUnavailable(tip),
               }
-            : classifyRedAgainstTip({
-                candidate,
-                tip,
-                failingTests: failingTests ?? [],
-                tipRetest,
-                refireAttempts: opts.refireAttempts ?? 0,
-                maxRefires: autoRefireCapFromEnv(),
-                ...refireBudgetInputs(opts, currentFailing, runStartedAtMs, passStartedAtMs),
-              });
-      retriage = { ...verdict, tip };
-      // WI-5366: each runner's summary carries the verified-head note (+ per-workspace
-      // pass/FAIL) but was previously computed and discarded — log it alongside the
-      // classification so a future "REPRODUCE at tip <sha>" verdict always shows the sha
-      // the tree was ACTUALLY verified at, not just the sha that was requested. Both
-      // halves' summaries appear, so a composed rescue names what each one measured.
-      const ranSummary = [fileRun?.summary, gateRun?.summary].filter(Boolean).join('; ');
-      deps.log(`re-triage: ${verdict.classification} — ${verdict.detail}${ranSummary ? ` (${ranSummary})` : ''}`);
+            : currentTipAfterRetriage !== tip
+              ? {
+                  classification: "unknown",
+                  autoRefire: false,
+                  chargeRefire: false,
+                  refireBlockedBy: null,
+                  detail: describeRetriageTipMoved(
+                    tip,
+                    currentTipAfterRetriage,
+                  ),
+                }
+              : classifyRedAgainstTip({
+                  candidate,
+                  tip,
+                  failingTests: failingTests ?? [],
+                  tipRetest,
+                  refireAttempts: opts.refireAttempts ?? 0,
+                  maxRefires: autoRefireCapFromEnv(),
+                  ...refireBudgetInputs(
+                    opts,
+                    currentFailing,
+                    runStartedAtMs,
+                    passStartedAtMs,
+                  ),
+                });
+        retriage = { ...verdict, tip };
+        // WI-5366: each runner's summary carries the verified-head note (+ per-workspace
+        // pass/FAIL) but was previously computed and discarded — log it alongside the
+        // classification so a future "REPRODUCE at tip <sha>" verdict always shows the sha
+        // the tree was ACTUALLY verified at, not just the sha that was requested. Both
+        // halves' summaries appear, so a composed rescue names what each one measured.
+        const ranSummary = [fileRun?.summary, gateRun?.summary]
+          .filter(Boolean)
+          .join("; ");
+        deps.log(
+          `re-triage: ${verdict.classification} — ${verdict.detail}${ranSummary ? ` (${ranSummary})` : ""}`,
+        );
 
-      // A stale red is not a red. Re-fire the whole gate on the newer tip rather than
-      // holding the pin on a failure that no longer exists — bounded by the refire cap
-      // so a genuinely-broken tip still converges to a held gate and a human.
-      if (verdict.autoRefire) {
-        await deps.broadcast(
-          `🔁 green-checkpoint re-firing on tip ${tip.slice(0, 8)}: red at ${candidate.slice(0, 8)} was STALE (${scope} pass at tip)`,
-        ).catch(() => {});
-        // EI-18669342433807110: the recursive re-fire below can run a full suite again (minutes)
-        // before this process returns anything — mark the refire IN FLIGHT now so a concurrent
-        // reader doesn't spend that whole window seeing a plain cached red with no hint a fresh
-        // verdict is imminent.
-        const next = nextRefireOpts(opts, verdict, currentFailing, runStartedAtMs);
-        await deps
-          .recordInFlightRetriage?.({
-            fromCandidate: candidate,
-            refiringCandidate: tip,
-            refireAttempt: next.refireAttempts,
-            maxRefires: autoRefireCapFromEnv(),
-            failingFiles: [...failingFiles.map((f) => f.file), ...rescueGates],
-            charged: verdict.chargeRefire,
-            totalRefires: next.totalRefires,
-            absoluteCeiling: refireAbsoluteCeiling(autoRefireCapFromEnv()),
-            // WI-38224: stamped on EVERY refire publish, not just the first — the value is constant
-            // by construction (the refire recurses in-process), and that constancy beside advancing
-            // candidate fields is exactly the signal a reader needs. EI-19992136440423793 path (a)
-            // collapsed the two rescue arms into this ONE publish site, so the failure that comment
-            // guarded against — one arm stamping it and the other silently not — is now structurally
-            // impossible rather than merely tested for.
-            runnerBootedAtMs: RUNNER_PROCESS_BOOTED_AT_MS,
-          })
-          .catch(() => {});
-        // EI-19326481022404981: this run is about to ABANDON `candidate` for `tip` — retire
-        // any checkpoint:await sha-bound to `candidate` now, or it sleeps to its own timeout
-        // never learning this run moved on.
-        await deps.cancelStaleAwaits?.(candidate).catch(() => {});
-        // WI-37490: record THIS pass's own (about-to-be-superseded) verdict before recursing
-        // — if the refire below dies partway through, this completed pass's verdict survives
-        // instead of gate_health freezing on whatever it held before this run even started.
-        await deps.recordVerdict?.(buildNotGreenResult(retriage)).catch(() => {});
-        // EI-20014356905761236: this pass is ABANDONING `candidate` for `tip`. Say so in this
-        // pass's own log — it is the one artifact naming the discarded candidate, and "which
-        // sha was this run judging" is the question the marker had to be invented to answer.
-        stampPromotion(false, 'superseded-by-refire');
-        return runGreenCheckpoint(cfg, deps, { ...opts, candidate: tip, ...next });
-      }
+        // A stale red is not a red. Re-fire the whole gate on the newer tip rather than
+        // holding the pin on a failure that no longer exists — bounded by the refire cap
+        // so a genuinely-broken tip still converges to a held gate and a human.
+        if (verdict.autoRefire) {
+          await deps
+            .broadcast(
+              `🔁 green-checkpoint re-firing on tip ${tip.slice(0, 8)}: red at ${candidate.slice(0, 8)} was STALE (${scope} pass at tip)`,
+            )
+            .catch(() => {});
+          // EI-18669342433807110: the recursive re-fire below can run a full suite again (minutes)
+          // before this process returns anything — mark the refire IN FLIGHT now so a concurrent
+          // reader doesn't spend that whole window seeing a plain cached red with no hint a fresh
+          // verdict is imminent.
+          const next = nextRefireOpts(
+            opts,
+            verdict,
+            currentFailing,
+            runStartedAtMs,
+          );
+          await deps
+            .recordInFlightRetriage?.({
+              fromCandidate: candidate,
+              refiringCandidate: tip,
+              refireAttempt: next.refireAttempts,
+              maxRefires: autoRefireCapFromEnv(),
+              failingFiles: [
+                ...failingFiles.map((f) => f.file),
+                ...rescueGates,
+              ],
+              charged: verdict.chargeRefire,
+              totalRefires: next.totalRefires,
+              absoluteCeiling: refireAbsoluteCeiling(autoRefireCapFromEnv()),
+              // WI-38224: stamped on EVERY refire publish, not just the first — the value is constant
+              // by construction (the refire recurses in-process), and that constancy beside advancing
+              // candidate fields is exactly the signal a reader needs. EI-19992136440423793 path (a)
+              // collapsed the two rescue arms into this ONE publish site, so the failure that comment
+              // guarded against — one arm stamping it and the other silently not — is now structurally
+              // impossible rather than merely tested for.
+              runnerBootedAtMs: RUNNER_PROCESS_BOOTED_AT_MS,
+            })
+            .catch(() => {});
+          // EI-19326481022404981: this run is about to ABANDON `candidate` for `tip` — retire
+          // any checkpoint:await sha-bound to `candidate` now, or it sleeps to its own timeout
+          // never learning this run moved on.
+          await deps.cancelStaleAwaits?.(candidate).catch(() => {});
+          // WI-37490: record THIS pass's own (about-to-be-superseded) verdict before recursing
+          // — if the refire below dies partway through, this completed pass's verdict survives
+          // instead of gate_health freezing on whatever it held before this run even started.
+          await deps
+            .recordVerdict?.(buildNotGreenResult(retriage))
+            .catch(() => {});
+          // EI-20014356905761236: this pass is ABANDONING `candidate` for `tip`. Say so in this
+          // pass's own log — it is the one artifact naming the discarded candidate, and "which
+          // sha was this run judging" is the question the marker had to be invented to answer.
+          stampPromotion(false, "superseded-by-refire");
+          return runGreenCheckpoint(cfg, deps, {
+            ...opts,
+            candidate: tip,
+            ...next,
+          });
+        }
       }
     }
 
@@ -5108,7 +5703,7 @@ export async function runGreenCheckpoint(
     // stops the record from being silent about what was never measured.
     if (!retriage) {
       retriage = {
-        classification: 'unknown',
+        classification: "unknown",
         autoRefire: false,
         chargeRefire: false,
         refireBlockedBy: null,
@@ -5160,9 +5755,11 @@ export async function runGreenCheckpoint(
           defangCapturedResultMarkers(
             `\n[green-checkpoint re-triage for candidate ${candidate.slice(0, 8)}]\n` +
               `classification=${retriage.classification} ` +
-              `tip=${retriage.tip ? retriage.tip.slice(0, 12) : 'unresolved'} ` +
+              `tip=${retriage.tip ? retriage.tip.slice(0, 12) : "unresolved"} ` +
               `autoRefire=${retriage.autoRefire}` +
-              (retriage.refireBlockedBy ? ` refireBlockedBy=${retriage.refireBlockedBy}` : '') +
+              (retriage.refireBlockedBy
+                ? ` refireBlockedBy=${retriage.refireBlockedBy}`
+                : "") +
               `\n${retriage.detail}\n`,
           ),
         );
@@ -5192,27 +5789,41 @@ export async function runGreenCheckpoint(
     // whether the one mechanism designed to prevent that (longest-green-prefix FF) had even
     // run. Diagnosing an inert safety net must not require reading its source to discover it
     // cannot report itself. Logging only — no branch condition changes.
-    const staleRed = retriage?.classification === 'stale-candidate';
+    const staleRed = retriage?.classification === "stale-candidate";
     const partialGreenEnabled = partialGreenGateEnabledFromEnv();
     if (staleRed) {
-      logPartialGreenGate('partial-green-gate: skipped — red is a STALE candidate (passes at tip); its failure signature is a phantom');
+      logPartialGreenGate(
+        "partial-green-gate: skipped — red is a STALE candidate (passes at tip); its failure signature is a phantom",
+      );
     } else if (!lastReady) {
-      logPartialGreenGate(`partial-green-gate: skipped — no ${cfg.releaseRef} base to salvage a prefix from (lastReady unset)`);
+      logPartialGreenGate(
+        `partial-green-gate: skipped — no ${cfg.releaseRef} base to salvage a prefix from (lastReady unset)`,
+      );
     } else if (!partialGreenEnabled) {
-      logPartialGreenGate('partial-green-gate: skipped — disabled by PAPERCUSP_PARTIAL_GREEN_GATE=0');
+      logPartialGreenGate(
+        "partial-green-gate: skipped — disabled by PAPERCUSP_PARTIAL_GREEN_GATE=0",
+      );
     }
     if (lastReady && !staleRed && partialGreenEnabled) {
       logPartialGreenGate(
         `partial-green-gate: attempting longest-green-prefix salvage between ${lastReady.slice(0, 8)} and candidate ${candidate.slice(0, 8)}`,
       );
       let salvageErrored = false;
-      const partial = await tryLongestGreenPrefix(cfg, deps, lastReady, candidate, failingTests, !!opts.noPush, logPartialGreenGate).catch(
-        (e) => {
-          salvageErrored = true;
-          logPartialGreenGate(`partial-green-gate: errored, holding (${e instanceof Error ? e.message : e})`);
-          return null;
-        },
-      );
+      const partial = await tryLongestGreenPrefix(
+        cfg,
+        deps,
+        lastReady,
+        candidate,
+        failingTests,
+        !!opts.noPush,
+        logPartialGreenGate,
+      ).catch((e) => {
+        salvageErrored = true;
+        logPartialGreenGate(
+          `partial-green-gate: errored, holding (${e instanceof Error ? e.message : e})`,
+        );
+        return null;
+      });
       // EI-19329608646178878: tryLongestGreenPrefix's CONFIRM step resets the checkpoint
       // checkout to `prefixTip` — an commit OLDER than `candidate` — via setupTree, whether
       // the confirm succeeds or fails. Left unrestored, `candidateSource:'run-probe'` (the
@@ -5226,7 +5837,11 @@ export async function runGreenCheckpoint(
       // state (the fallthrough hold-result below, or a caller re-probing this tree).
       await deps
         .setupTree(candidate)
-        .catch((e) => deps.log(`warn: restore checkpoint tree to ${candidate.slice(0, 8)} after prefix-salvage: ${e}`));
+        .catch((e) =>
+          deps.log(
+            `warn: restore checkpoint tree to ${candidate.slice(0, 8)} after prefix-salvage: ${e}`,
+          ),
+        );
       if (partial) {
         // EI-20014356905761236: a prefix salvage DID promote — `main` moved, just not to this
         // (red) tip. Without this the log's `green=false` reads as "nothing shipped".
@@ -5252,20 +5867,27 @@ export async function runGreenCheckpoint(
         deployStalenessThresholdsFromEnv(),
       );
       if (verdict.alarm) {
-        await deps.broadcast(verdict.message.split('\n')[0], verdict.message).catch(() => {});
-        if (verdict.urgency === 'urgent') {
-          await deps.escalate?.('deploy stale: shipped work is not reaching the running app', verdict.message).catch(() => {});
+        await deps
+          .broadcast(verdict.message.split("\n")[0], verdict.message)
+          .catch(() => {});
+        if (verdict.urgency === "urgent") {
+          await deps
+            .escalate?.(
+              "deploy stale: shipped work is not reaching the running app",
+              verdict.message,
+            )
+            .catch(() => {});
         }
       }
     }
 
-    stampPromotion(false, 'not-green');
+    stampPromotion(false, "not-green");
     return {
       advanced: false,
       candidate,
       from: lastReady,
       green: false,
-      reason: 'not-green',
+      reason: "not-green",
       summary,
       failingTests,
       failingTestNames: extractFailingTestNames(summary),
@@ -5283,15 +5905,26 @@ export async function runGreenCheckpoint(
   // block-mode. Flag-gated + fail-soft (a no-op `pass` unless enabled), so the default
   // deploy path is unchanged until the owner opts in.
   const perf = await deps.perfGate?.(candidate).catch(() => undefined);
-  if (perf && perf.action !== 'pass') {
+  if (perf && perf.action !== "pass") {
     deps.log(perf.summary);
     await deps.broadcast(perf.summary).catch(() => {});
-    if (perf.action === 'block') {
+    if (perf.action === "block") {
       await deps
-        .escalate?.(`green-checkpoint held: ${candidate.slice(0, 8)} perf-degraded`, perf.summary)
+        .escalate?.(
+          `green-checkpoint held: ${candidate.slice(0, 8)} perf-degraded`,
+          perf.summary,
+        )
         .catch(() => {});
-      stampPromotion(false, 'perf-held');
-      return { advanced: false, candidate, from: lastReady, green: true, reason: 'perf-held', summary: perf.summary, ...(logPath ? { logPath } : {}) };
+      stampPromotion(false, "perf-held");
+      return {
+        advanced: false,
+        candidate,
+        from: lastReady,
+        green: true,
+        reason: "perf-held",
+        summary: perf.summary,
+        ...(logPath ? { logPath } : {}),
+      };
     }
   }
 
@@ -5309,22 +5942,35 @@ export async function runGreenCheckpoint(
   //
   // Flag-gated + fail-soft either way (a no-op `pass` unless FLAGS.DESKTOP_PERF_GATE
   // is on AND a FRESH run is recorded), so the default deploy path is unchanged.
-  const desktopPerf = await deps.desktopPerfGate?.(candidate).catch(() => undefined);
-  if (desktopPerf && desktopPerf.action !== 'pass') {
+  const desktopPerf = await deps
+    .desktopPerfGate?.(candidate)
+    .catch(() => undefined);
+  if (desktopPerf && desktopPerf.action !== "pass") {
     deps.log(desktopPerf.summary);
     await deps.broadcast(desktopPerf.summary).catch(() => {});
-    if (desktopPerf.action === 'block') {
+    if (desktopPerf.action === "block") {
       // The summary distinguishes an invariant breach from a timing regression;
       // don't hard-code "regressed" into the escalation title, because paging a
       // human at 3am with the wrong failure class costs them the first ten minutes.
-      const held = desktopPerf.summary.includes('INVARIANT BREACHED')
-        ? 'desktop-invariant-breached'
-        : 'desktop-perf-regressed';
+      const held = desktopPerf.summary.includes("INVARIANT BREACHED")
+        ? "desktop-invariant-breached"
+        : "desktop-perf-regressed";
       await deps
-        .escalate?.(`green-checkpoint held: ${candidate.slice(0, 8)} ${held}`, desktopPerf.summary)
+        .escalate?.(
+          `green-checkpoint held: ${candidate.slice(0, 8)} ${held}`,
+          desktopPerf.summary,
+        )
         .catch(() => {});
-      stampPromotion(false, 'desktop-perf-held');
-      return { advanced: false, candidate, from: lastReady, green: true, reason: 'desktop-perf-held', summary: desktopPerf.summary, ...(logPath ? { logPath } : {}) };
+      stampPromotion(false, "desktop-perf-held");
+      return {
+        advanced: false,
+        candidate,
+        from: lastReady,
+        green: true,
+        reason: "desktop-perf-held",
+        summary: desktopPerf.summary,
+        ...(logPath ? { logPath } : {}),
+      };
     }
   }
 
@@ -5336,15 +5982,26 @@ export async function runGreenCheckpoint(
   // fail-closed-when-armed (a no-op `pass` unless enabled), so the default deploy
   // path is unchanged until the owner opts in.
   const delta = await deps.deltaGate?.(candidate).catch(() => undefined);
-  if (delta && delta.action !== 'pass') {
+  if (delta && delta.action !== "pass") {
     deps.log(delta.summary);
     await deps.broadcast(delta.summary).catch(() => {});
-    if (delta.action === 'block') {
+    if (delta.action === "block") {
       await deps
-        .escalate?.(`green-checkpoint held: ${candidate.slice(0, 8)} delta-unproven`, delta.summary)
+        .escalate?.(
+          `green-checkpoint held: ${candidate.slice(0, 8)} delta-unproven`,
+          delta.summary,
+        )
         .catch(() => {});
-      stampPromotion(false, 'delta-held');
-      return { advanced: false, candidate, from: lastReady, green: true, reason: 'delta-held', summary: delta.summary, ...(logPath ? { logPath } : {}) };
+      stampPromotion(false, "delta-held");
+      return {
+        advanced: false,
+        candidate,
+        from: lastReady,
+        green: true,
+        reason: "delta-held",
+        summary: delta.summary,
+        ...(logPath ? { logPath } : {}),
+      };
     }
   }
 
@@ -5353,21 +6010,26 @@ export async function runGreenCheckpoint(
   // advance; BLOCK only when the owner armed block-mode), so a re-accumulation
   // of the P-009 junk pattern is visible at every green deploy instead of
   // silently piling up until the next manual sweep.
-  const cupboardHygiene = await deps.cupboardHygieneGate?.(candidate).catch(() => undefined);
-  if (cupboardHygiene && cupboardHygiene.action !== 'pass') {
+  const cupboardHygiene = await deps
+    .cupboardHygieneGate?.(candidate)
+    .catch(() => undefined);
+  if (cupboardHygiene && cupboardHygiene.action !== "pass") {
     deps.log(cupboardHygiene.summary);
     await deps.broadcast(cupboardHygiene.summary).catch(() => {});
-    if (cupboardHygiene.action === 'block') {
+    if (cupboardHygiene.action === "block") {
       await deps
-        .escalate?.(`green-checkpoint held: ${candidate.slice(0, 8)} cupboard prod storefront polluted`, cupboardHygiene.summary)
+        .escalate?.(
+          `green-checkpoint held: ${candidate.slice(0, 8)} cupboard prod storefront polluted`,
+          cupboardHygiene.summary,
+        )
         .catch(() => {});
-      stampPromotion(false, 'cupboard-hygiene-held');
+      stampPromotion(false, "cupboard-hygiene-held");
       return {
         advanced: false,
         candidate,
         from: lastReady,
         green: true,
-        reason: 'cupboard-hygiene-held',
+        reason: "cupboard-hygiene-held",
         summary: cupboardHygiene.summary,
         ...(logPath ? { logPath } : {}),
       };
@@ -5376,33 +6038,39 @@ export async function runGreenCheckpoint(
 
   const adv = await deps.advance(candidate);
   if (adv.advanced && !opts.noPush) {
-    await deps.push(cfg.releaseRef, adv.from).catch((e) => deps.log(`warn: push ${cfg.releaseRef} failed: ${e}`));
+    await deps
+      .push(cfg.releaseRef, adv.from)
+      .catch((e) => deps.log(`warn: push ${cfg.releaseRef} failed: ${e}`));
   }
-  deps.log(`✅ ${cfg.releaseRef} advanced ${adv.from?.slice(0, 8) ?? 'none'} → ${candidate.slice(0, 8)} (green)`);
+  deps.log(
+    `✅ ${cfg.releaseRef} advanced ${adv.from?.slice(0, 8) ?? "none"} → ${candidate.slice(0, 8)} (green)`,
+  );
   // EI-18685042025868279: quantify the re-runs in the broadcast too. `flakeNote` only fires
   // when absorption SUCCEEDED and named suspects; this fires whenever the gate re-ran
   // anything to reach green, which is the strictly wider — and more honest — condition.
   const retryNote =
     cleanGreen === false && retriedTests?.length
-      ? `\n\n⚠️ NOT a clean green: ${retriedTests.filter((t) => t.outcome === 'passed-on-rerun').length} test(s) passed only on RE-RUN — ${retriedTests
+      ? `\n\n⚠️ NOT a clean green: ${retriedTests.filter((t) => t.outcome === "passed-on-rerun").length} test(s) passed only on RE-RUN — ${retriedTests
           .map((t) => `${t.name} (${t.attempts} attempts, ${t.outcome})`)
-          .join(', ')}. A green that hides its retries trains everyone to trust green; treat this as a live flake or a live intermittent bug until proven otherwise.`
-      : '';
+          .join(
+            ", ",
+          )}. A green that hides its retries trains everyone to trust green; treat this as a live flake or a live intermittent bug until proven otherwise.`
+      : "";
   const flakeNote = flakeSuspects?.length
-    ? `\n\n⚠️ Load-flake absorbed: ${flakeSuspects.join(', ')} failed under the gate's concurrent load (a per-file flake, or a worker-pool OOM crash) but PASSED on a reduced-concurrency re-run. Consider quarantining / investigating memory if it recurs.`
-    : '';
+    ? `\n\n⚠️ Load-flake absorbed: ${flakeSuspects.join(", ")} failed under the gate's concurrent load (a per-file flake, or a worker-pool OOM crash) but PASSED on a reduced-concurrency re-run. Consider quarantining / investigating memory if it recurs.`
+    : "";
   await deps
     .broadcast(
       // EI-18685042025868279: the HEADLINE must carry the qualification, not just the body.
       // "green (N passed on retry)" — never an unqualified pass — because the headline is
       // what most readers act on, and a retry-absorbed green read as clean is precisely how
       // a flaky-but-real failure ships.
-      `🟩 green-checkpoint: \`${cfg.releaseRef}\` advanced to ${candidate.slice(0, 8)} (green, deployable)${flakeSuspects?.length ? ' [load-flake absorbed]' : ''}${
+      `🟩 green-checkpoint: \`${cfg.releaseRef}\` advanced to ${candidate.slice(0, 8)} (green, deployable)${flakeSuspects?.length ? " [load-flake absorbed]" : ""}${
         cleanGreen === false
-          ? ` [${(retriedTests ?? []).filter((t) => t.outcome === 'passed-on-rerun').length} passed on retry — NOT a clean green]`
-          : ''
+          ? ` [${(retriedTests ?? []).filter((t) => t.outcome === "passed-on-rerun").length} passed on retry — NOT a clean green]`
+          : ""
       }`,
-      `Was ${adv.from?.slice(0, 8) ?? 'unset'}. The next deploy will pick this up.${retryNote}${flakeNote}`,
+      `Was ${adv.from?.slice(0, 8) ?? "unset"}. The next deploy will pick this up.${retryNote}${flakeNote}`,
     )
     .catch(() => {});
   // P-002: the gate recovered — resolve any open `release-not-green` escalation.
@@ -5428,28 +6096,48 @@ export async function runGreenCheckpoint(
     // convention as broadcast, deliberately.
     const greenSummary = `[${pipeline}] ${cfg.releaseRef} advanced to ${candidate.slice(0, 8)} (green, deployable)`;
     // WI-4957: runId (this run's identity) rides the payload alongside sha/from/pipeline.
-    const payload = { sha: candidate, from: adv.from, pipeline, runId: deps.runId ?? null };
+    const payload = {
+      sha: candidate,
+      from: adv.from,
+      pipeline,
+      runId: deps.runId ?? null,
+    };
     // EI-12457: this candidate resolved green — a subscriber's still-pending red
     // await for this pipeline can now never legitimately fire.
-    const cancelSiblingKeysFor = ['green-checkpoint:red', `green-checkpoint:red:${pipeline}`];
+    const cancelSiblingKeysFor = [
+      "green-checkpoint:red",
+      `green-checkpoint:red:${pipeline}`,
+    ];
     try {
-      await deps.emitEvent?.({ key: 'release:green', summary: greenSummary, payload, cancelSiblingKeysFor });
-      await deps.emitEvent?.({ key: `release:green:${pipeline}`, summary: greenSummary, payload, cancelSiblingKeysFor });
+      await deps.emitEvent?.({
+        key: "release:green",
+        summary: greenSummary,
+        payload,
+        cancelSiblingKeysFor,
+      });
+      await deps.emitEvent?.({
+        key: `release:green:${pipeline}`,
+        summary: greenSummary,
+        payload,
+        cancelSiblingKeysFor,
+      });
     } catch (e) {
-      deps.log(`warn: release:green emit failed: ${e instanceof Error ? e.message : e}`);
+      deps.log(
+        `warn: release:green emit failed: ${e instanceof Error ? e.message : e}`,
+      );
     }
   }
   // EI-20014356905761236: the POSITIVE case, and the one that makes the trailer's absence
   // readable. `promoted` is `adv.advanced`, not a restatement of reason='advanced' — a run
   // that reached here with the fast-forward declined is exactly the silent state this log
   // could not express.
-  stampPromotion(adv.advanced, 'advanced', adv.advanced ? candidate : null);
+  stampPromotion(adv.advanced, "advanced", adv.advanced ? candidate : null);
   return {
     advanced: adv.advanced,
     candidate,
     from: adv.from,
     green: true,
-    reason: 'advanced',
+    reason: "advanced",
     summary,
     ...(flakeSuspects?.length ? { flakeSuspects } : {}),
     // EI-18685042025868279: THE point of the item — this is the advance verdict, the one a
@@ -5565,7 +6253,10 @@ export const WORKSPACE_RERUN_TIMEOUT_MS = 15 * 60_000;
  *     is a STRICT no-op for the fleet-critical pipeline: it can only ever flip the
  *     degenerate codeless case (where there is genuinely nothing testable) green.
  */
-export function isNothingToGate(greenCmd: string, treeHasPackageJson: boolean): boolean {
+export function isNothingToGate(
+  greenCmd: string,
+  treeHasPackageJson: boolean,
+): boolean {
   const npmGreenCmd = /^npm(\s|$)/.test(greenCmd.trim());
   return npmGreenCmd && !treeHasPackageJson;
 }
@@ -5585,7 +6276,7 @@ export function isNothingToGate(greenCmd: string, treeHasPackageJson: boolean): 
  *                    fail loudly rather than silently degrading every optional
  *                    leg to a skip while still reporting green.
  */
-export type NpmScriptCheck = 'present' | 'absent' | 'unreadable';
+export type NpmScriptCheck = "present" | "absent" | "unreadable";
 
 /** Probe the candidate checkout for one npm script, distinguishing a legitimate
  *  per-hive opt-out (`absent`) from a package.json that exists but could not be
@@ -5593,15 +6284,20 @@ export type NpmScriptCheck = 'present' | 'absent' | 'unreadable';
  *  release-gate leg on `absent` MUST treat `unreadable` as a failed leg, never a
  *  silent skip (WI-6056).
  */
-export function checkNpmScript(treeDir: string, scriptName: string): NpmScriptCheck {
+export function checkNpmScript(
+  treeDir: string,
+  scriptName: string,
+): NpmScriptCheck {
   let raw: string;
   try {
-    raw = readFileSync(path.join(treeDir, 'package.json'), 'utf8');
+    raw = readFileSync(path.join(treeDir, "package.json"), "utf8");
   } catch (e) {
     // ENOENT (no package.json at all) is the legitimate codeless-tree case; any OTHER
     // read failure (EACCES, EISDIR, an OS refusing a mid-write partial file, ...) is a
     // corrupt/inaccessible tree, not "nothing to gate" — surface it as unreadable.
-    return (e as NodeJS.ErrnoException)?.code === 'ENOENT' ? 'absent' : 'unreadable';
+    return (e as NodeJS.ErrnoException)?.code === "ENOENT"
+      ? "absent"
+      : "unreadable";
   }
   let pkg: { scripts?: Record<string, unknown> };
   try {
@@ -5609,10 +6305,12 @@ export function checkNpmScript(treeDir: string, scriptName: string): NpmScriptCh
   } catch {
     // Exists but failed to parse — truncated / mid-write / syntax error. Must not read
     // the same as "this hive has no such script".
-    return 'unreadable';
+    return "unreadable";
   }
   const script = pkg.scripts?.[scriptName];
-  return typeof script === 'string' && script.trim().length > 0 ? 'present' : 'absent';
+  return typeof script === "string" && script.trim().length > 0
+    ? "present"
+    : "absent";
 }
 
 /** Whether the isolated candidate checkout exposes the platform typecheck leg.
@@ -5628,7 +6326,7 @@ export function checkNpmScript(treeDir: string, scriptName: string): NpmScriptCh
  * apart). Kept for simple presence checks + existing test coverage.
  */
 export function hasNpmScript(treeDir: string, scriptName: string): boolean {
-  return checkNpmScript(treeDir, scriptName) === 'present';
+  return checkNpmScript(treeDir, scriptName) === "present";
 }
 
 /**
@@ -5666,34 +6364,40 @@ async function dispatchCiWorkflow(
   baseSha?: string | null,
 ): Promise<void> {
   try {
-    const { gitOriginUrl, parseGithubRemote } = await import(
-      '@papercusp/operator-core/lib/cupboard/resolve-repo-coords'
-    );
+    const { gitOriginUrl, parseGithubRemote } =
+      await import("@papercusp/operator-core/lib/cupboard/resolve-repo-coords");
     const origin = await gitOriginUrl(integrationRoot);
     const coords = origin ? parseGithubRemote(origin) : null;
     if (!coords) {
-      log(`ci-dispatch: skipped — no GitHub origin resolved for ${integrationRoot}`);
+      log(
+        `ci-dispatch: skipped — no GitHub origin resolved for ${integrationRoot}`,
+      );
       return;
     }
-    const { getOctokit } = await import('@papercusp/operator-core/lib/identity/octokit-client');
+    const { getOctokit } =
+      await import("@papercusp/operator-core/lib/identity/octokit-client");
     const oc = await getOctokit();
     if (!oc) {
-      log('ci-dispatch: skipped — gh not authenticated');
+      log("ci-dispatch: skipped — gh not authenticated");
       return;
     }
     await oc.rest.actions.createWorkflowDispatch({
       owner: coords.owner,
       repo: coords.repo,
-      workflow_id: 'test.yml',
+      workflow_id: "test.yml",
       ref,
       ...(baseSha ? { inputs: { base: baseSha } } : {}),
     });
     log(
       `ci-dispatch: triggered test.yml on ${coords.owner}/${coords.repo}@${ref}` +
-        (baseSha ? ` (base=${baseSha.slice(0, 8)})` : ' (no base — first advance, test.yml defaults to origin/main)'),
+        (baseSha
+          ? ` (base=${baseSha.slice(0, 8)})`
+          : " (no base — first advance, test.yml defaults to origin/main)"),
     );
   } catch (e) {
-    log(`warn: ci-dispatch failed (non-fatal, test.yml stays un-re-verified this tick): ${e}`);
+    log(
+      `warn: ci-dispatch failed (non-fatal, test.yml stays un-re-verified this tick): ${e}`,
+    );
   }
 }
 
@@ -5703,7 +6407,7 @@ async function dispatchCiWorkflow(
  *  actually ran — so "never ran" and "ran and passed" were the SAME value, and nothing
  *  downstream could tell them apart. Three states make the difference representable, which
  *  is the whole point: a skipped leg can never again be counted as a pass. */
-type LegStatus = 'passed' | 'failed' | 'skipped';
+type LegStatus = "passed" | "failed" | "skipped";
 
 interface LegOutcome {
   status: LegStatus;
@@ -5774,7 +6478,7 @@ interface PostSuiteLegs {
  *  with the reason recorded. `ok` is true because nothing failed — but every individual
  *  status is `skipped`, so no consumer can mistake this for five passes. */
 function legsNotRun(skipReason: string): PostSuiteLegs {
-  const skipped: LegOutcome = { status: 'skipped', skipReason };
+  const skipped: LegOutcome = { status: "skipped", skipReason };
   return {
     ok: true,
     typecheck: skipped,
@@ -5793,7 +6497,7 @@ function legsNotRun(skipReason: string): PostSuiteLegs {
     lintNoRawSetinterval: skipped,
     lintPlane: skipped,
     build: skipped,
-    output: '',
+    output: "",
     failingSignatures: [],
     records: [],
   };
@@ -5815,18 +6519,23 @@ async function mapPostSuiteBounded<T, R>(
     }
   };
   await Promise.all(
-    Array.from({ length: Math.min(Math.max(1, Math.floor(maxConcurrency)), items.length) }, () => worker()),
+    Array.from(
+      {
+        length: Math.min(Math.max(1, Math.floor(maxConcurrency)), items.length),
+      },
+      () => worker(),
+    ),
   );
   return results;
 }
 
 function postSuiteCommandId(cmd: string, args: readonly string[]): string {
-  if (cmd === 'npm') {
-    const runIndex = args.indexOf('run');
+  if (cmd === "npm") {
+    const runIndex = args.indexOf("run");
     if (runIndex >= 0 && args[runIndex + 1]) return args[runIndex + 1]!;
   }
-  if (cmd === 'git' && args[0] === 'grep') return 'spa:conflict-markers';
-  return `${cmd}:${args.join(' ')}`;
+  if (cmd === "git" && args[0] === "grep") return "spa:conflict-markers";
+  return `${cmd}:${args.join(" ")}`;
 }
 
 interface PostSuiteRunOptions {
@@ -5866,7 +6575,26 @@ export async function runPostSuiteLegs(
 ): Promise<PostSuiteLegs> {
   const now = options.now ?? Date.now;
   const startedAt = now();
-  const executionSpans = new Map<string, Array<{ startedAt: number; endedAt: number }>>();
+  const resourceDerivedLowMemoryConcurrency = Math.min(
+    GREEN_CHECKPOINT_LOW_MEMORY_LINT_MAX_CONCURRENCY,
+    Math.floor(
+      GREEN_CHECKPOINT_LOW_MEMORY_LINT_BUDGET_MB /
+        GREEN_CHECKPOINT_LOW_MEMORY_LINT_HEAP_MB,
+    ),
+  );
+  const lowMemoryConcurrency = Math.min(
+    resourceDerivedLowMemoryConcurrency,
+    Math.max(
+      1,
+      Math.floor(
+        options.lowMemoryConcurrency ?? resourceDerivedLowMemoryConcurrency,
+      ),
+    ),
+  );
+  const executionSpans = new Map<
+    string,
+    Array<{ startedAt: number; endedAt: number }>
+  >();
   const exec: CheckpointExec = async (cmd, args, opts) => {
     const id = postSuiteCommandId(cmd, args);
     const commandStartedAt = now();
@@ -5891,9 +6619,12 @@ export async function runPostSuiteLegs(
   // win. Making it override a smaller pin would fix this red and ENOMEM that box.
   const env: NodeJS.ProcessEnv = {
     ...envIn,
-    NODE_OPTIONS: sanitizeForkNodeOptions(envIn.NODE_OPTIONS, GREEN_CHECKPOINT_POST_SUITE_HEAP_MB),
+    NODE_OPTIONS: sanitizeForkNodeOptions(
+      envIn.NODE_OPTIONS,
+      GREEN_CHECKPOINT_POST_SUITE_HEAP_MB,
+    ),
   };
-  const legs = legsNotRun('not reached');
+  const legs = legsNotRun("not reached");
   const outputs: string[] = [];
   const failingSignatures: string[] = [];
   /**
@@ -5930,31 +6661,42 @@ export async function runPostSuiteLegs(
   // regressions, so run it in the same isolated candidate tree before allowing the
   // candidate through the release gate. Subject hives without that script retain their
   // existing gate semantics.
-  const lintTscCheck = checkNpmScript(treeDir, 'lint:tsc');
-  if (lintTscCheck === 'unreadable') {
+  const lintTscCheck = checkNpmScript(treeDir, "lint:tsc");
+  if (lintTscCheck === "unreadable") {
     // WI-6056: package.json exists but couldn't be read/parsed — this is NOT the same as
     // "hive opts out" and must not silently skip. Fail the leg loudly and halt the chain.
-    legs.typecheck = { status: 'failed' };
-    haltedBy = 'package.json unreadable (checking for lint:tsc)';
-    failingSignatures.push('package.json-unreadable');
+    legs.typecheck = { status: "failed" };
+    haltedBy = "package.json unreadable (checking for lint:tsc)";
+    failingSignatures.push("package.json-unreadable");
     outputs.push(
       `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for lint:tsc; a corrupt/partial candidate tree must fail loudly, not silently skip every remaining leg ===\n`,
     );
-  } else if (lintTscCheck === 'absent') {
-    legs.typecheck = { status: 'skipped', skipReason: 'candidate provides no lint:tsc script' };
+  } else if (lintTscCheck === "absent") {
+    legs.typecheck = {
+      status: "skipped",
+      skipReason: "candidate provides no lint:tsc script",
+    };
   } else {
-    const typecheck = await exec('npm', ['run', 'lint:tsc'], { cwd: treeDir, env, allowNonZero: true, heavy: true });
-    legs.typecheck = { status: typecheck.code === 0 ? 'passed' : 'failed' };
+    const typecheck = await exec("npm", ["run", "lint:tsc"], {
+      cwd: treeDir,
+      env,
+      allowNonZero: true,
+      heavy: true,
+    });
+    legs.typecheck = { status: typecheck.code === 0 ? "passed" : "failed" };
     if (typecheck.code !== 0) {
-      softFailures.push('lint:tsc');
-      failingSignatures.push('lint:tsc');
+      softFailures.push("lint:tsc");
+      failingSignatures.push("lint:tsc");
       // WI-37527: the banner must not out-claim its evidence. `lint:tsc` exits non-zero for
       // causes that produce NO `error TS\d+` at all — a V8 heap OOM (WI-37503), a config
       // fault, a run that checked zero files — and the old hardcoded wording announced
       // "type regressions" for every one of them, sending readers hunting for type errors
       // that did not exist while the real cause sat in the output beneath it.
       outputs.push(
-        typecheckFailureBanner(typecheck.code, typecheck.stdout + typecheck.stderr) +
+        typecheckFailureBanner(
+          typecheck.code,
+          typecheck.stdout + typecheck.stderr,
+        ) +
           typecheck.stdout +
           typecheck.stderr,
       );
@@ -5981,31 +6723,42 @@ export async function runPostSuiteLegs(
   // verdict, and one leg keeps the failure block readable + pays pc-heavy's admission toll once.
   // ⚠ The script alone would NOT have fixed this — a fan-out nothing calls has the identical
   // defect one level up. This leg is what gives it teeth; keep them wired together.
-  const libsTypecheckCheck = haltedBy ? null : checkNpmScript(treeDir, 'lint:tsc:papercusp-libs');
+  const libsTypecheckCheck = haltedBy
+    ? null
+    : checkNpmScript(treeDir, "lint:tsc:papercusp-libs");
   if (haltedBy) {
-    legs.typecheckPapercuspLibs = { status: 'skipped', skipReason: haltedBy };
-  } else if (libsTypecheckCheck === 'unreadable') {
-    legs.typecheckPapercuspLibs = { status: 'failed' };
-    haltedBy = 'package.json unreadable (checking for lint:tsc:papercusp-libs)';
-    failingSignatures.push('package.json-unreadable');
+    legs.typecheckPapercuspLibs = { status: "skipped", skipReason: haltedBy };
+  } else if (libsTypecheckCheck === "unreadable") {
+    legs.typecheckPapercuspLibs = { status: "failed" };
+    haltedBy = "package.json unreadable (checking for lint:tsc:papercusp-libs)";
+    failingSignatures.push("package.json-unreadable");
     outputs.push(
       `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for lint:tsc:papercusp-libs ===\n`,
     );
-  } else if (libsTypecheckCheck === 'absent') {
-    legs.typecheckPapercuspLibs = { status: 'skipped', skipReason: 'candidate provides no lint:tsc:papercusp-libs script' };
+  } else if (libsTypecheckCheck === "absent") {
+    legs.typecheckPapercuspLibs = {
+      status: "skipped",
+      skipReason: "candidate provides no lint:tsc:papercusp-libs script",
+    };
   } else {
-    const libsTypecheck = await exec('npm', ['run', 'lint:tsc:papercusp-libs'], {
-      cwd: treeDir,
-      env,
-      allowNonZero: true,
-      heavy: true,
-    });
-    legs.typecheckPapercuspLibs = { status: libsTypecheck.code === 0 ? 'passed' : 'failed' };
+    const libsTypecheck = await exec(
+      "npm",
+      ["run", "lint:tsc:papercusp-libs"],
+      {
+        cwd: treeDir,
+        env,
+        allowNonZero: true,
+        heavy: true,
+      },
+    );
+    legs.typecheckPapercuspLibs = {
+      status: libsTypecheck.code === 0 ? "passed" : "failed",
+    };
     if (libsTypecheck.code !== 0) {
-      softFailures.push('lint:tsc:papercusp-libs');
-      failingSignatures.push('lint:tsc:papercusp-libs');
+      softFailures.push("lint:tsc:papercusp-libs");
+      failingSignatures.push("lint:tsc:papercusp-libs");
       outputs.push(
-        '\n\n=== LIBS/PAPERCUSP TYPECHECK FAILED (npm run lint:tsc:papercusp-libs) — a type regression in a libs/papercusp package blocks the release ===\n' +
+        "\n\n=== LIBS/PAPERCUSP TYPECHECK FAILED (npm run lint:tsc:papercusp-libs) — a type regression in a libs/papercusp package blocks the release ===\n" +
           libsTypecheck.stdout +
           libsTypecheck.stderr,
       );
@@ -6037,31 +6790,42 @@ export async function runPostSuiteLegs(
   //
   // Cost: ≈13s for 8 packages, against a ~55min suite. Placed with the other typecheck legs so
   // a shared-type change that breaks several packages reports as ONE coherent failure block.
-  const workspacesTypecheckCheck = haltedBy ? null : checkNpmScript(treeDir, 'lint:tsc:workspaces');
+  const workspacesTypecheckCheck = haltedBy
+    ? null
+    : checkNpmScript(treeDir, "lint:tsc:workspaces");
   if (haltedBy) {
-    legs.typecheckWorkspaces = { status: 'skipped', skipReason: haltedBy };
-  } else if (workspacesTypecheckCheck === 'unreadable') {
-    legs.typecheckWorkspaces = { status: 'failed' };
-    haltedBy = 'package.json unreadable (checking for lint:tsc:workspaces)';
-    failingSignatures.push('package.json-unreadable');
+    legs.typecheckWorkspaces = { status: "skipped", skipReason: haltedBy };
+  } else if (workspacesTypecheckCheck === "unreadable") {
+    legs.typecheckWorkspaces = { status: "failed" };
+    haltedBy = "package.json unreadable (checking for lint:tsc:workspaces)";
+    failingSignatures.push("package.json-unreadable");
     outputs.push(
       `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for lint:tsc:workspaces ===\n`,
     );
-  } else if (workspacesTypecheckCheck === 'absent') {
-    legs.typecheckWorkspaces = { status: 'skipped', skipReason: 'candidate provides no lint:tsc:workspaces script' };
+  } else if (workspacesTypecheckCheck === "absent") {
+    legs.typecheckWorkspaces = {
+      status: "skipped",
+      skipReason: "candidate provides no lint:tsc:workspaces script",
+    };
   } else {
-    const workspacesTypecheck = await exec('npm', ['run', 'lint:tsc:workspaces'], {
-      cwd: treeDir,
-      env,
-      allowNonZero: true,
-      heavy: true,
-    });
-    legs.typecheckWorkspaces = { status: workspacesTypecheck.code === 0 ? 'passed' : 'failed' };
+    const workspacesTypecheck = await exec(
+      "npm",
+      ["run", "lint:tsc:workspaces"],
+      {
+        cwd: treeDir,
+        env,
+        allowNonZero: true,
+        heavy: true,
+      },
+    );
+    legs.typecheckWorkspaces = {
+      status: workspacesTypecheck.code === 0 ? "passed" : "failed",
+    };
     if (workspacesTypecheck.code !== 0) {
-      softFailures.push('lint:tsc:workspaces');
-      failingSignatures.push('lint:tsc:workspaces');
+      softFailures.push("lint:tsc:workspaces");
+      failingSignatures.push("lint:tsc:workspaces");
       outputs.push(
-        '\n\n=== WORKSPACE TYPECHECK FAILED (npm run lint:tsc:workspaces) — a type regression in an apps/*, packages/* or libs/generic/* package blocks the release ===\n' +
+        "\n\n=== WORKSPACE TYPECHECK FAILED (npm run lint:tsc:workspaces) — a type regression in an apps/*, packages/* or libs/generic/* package blocks the release ===\n" +
           workspacesTypecheck.stdout +
           workspacesTypecheck.stderr,
       );
@@ -6097,31 +6861,42 @@ export async function runPostSuiteLegs(
   // Its sibling `lint:tsc:operator-vite` is deliberately NOT a leg: ~151 baseline entries
   // plus cross-package inheritance make it capable of red-pinning promotion on drift that
   // is not a regression. It stays CI-only until that is settled.
-  const orchestratorTypecheckCheck = haltedBy ? null : checkNpmScript(treeDir, 'lint:tsc:orchestrator');
+  const orchestratorTypecheckCheck = haltedBy
+    ? null
+    : checkNpmScript(treeDir, "lint:tsc:orchestrator");
   if (haltedBy) {
-    legs.typecheckOrchestrator = { status: 'skipped', skipReason: haltedBy };
-  } else if (orchestratorTypecheckCheck === 'unreadable') {
-    legs.typecheckOrchestrator = { status: 'failed' };
-    haltedBy = 'package.json unreadable (checking for lint:tsc:orchestrator)';
-    failingSignatures.push('package.json-unreadable');
+    legs.typecheckOrchestrator = { status: "skipped", skipReason: haltedBy };
+  } else if (orchestratorTypecheckCheck === "unreadable") {
+    legs.typecheckOrchestrator = { status: "failed" };
+    haltedBy = "package.json unreadable (checking for lint:tsc:orchestrator)";
+    failingSignatures.push("package.json-unreadable");
     outputs.push(
       `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for lint:tsc:orchestrator ===\n`,
     );
-  } else if (orchestratorTypecheckCheck === 'absent') {
-    legs.typecheckOrchestrator = { status: 'skipped', skipReason: 'candidate provides no lint:tsc:orchestrator script' };
+  } else if (orchestratorTypecheckCheck === "absent") {
+    legs.typecheckOrchestrator = {
+      status: "skipped",
+      skipReason: "candidate provides no lint:tsc:orchestrator script",
+    };
   } else {
-    const orchestratorTypecheck = await exec('npm', ['run', 'lint:tsc:orchestrator'], {
-      cwd: treeDir,
-      env,
-      allowNonZero: true,
-      heavy: true,
-    });
-    legs.typecheckOrchestrator = { status: orchestratorTypecheck.code === 0 ? 'passed' : 'failed' };
+    const orchestratorTypecheck = await exec(
+      "npm",
+      ["run", "lint:tsc:orchestrator"],
+      {
+        cwd: treeDir,
+        env,
+        allowNonZero: true,
+        heavy: true,
+      },
+    );
+    legs.typecheckOrchestrator = {
+      status: orchestratorTypecheck.code === 0 ? "passed" : "failed",
+    };
     if (orchestratorTypecheck.code !== 0) {
-      softFailures.push('lint:tsc:orchestrator');
-      failingSignatures.push('lint:tsc:orchestrator');
+      softFailures.push("lint:tsc:orchestrator");
+      failingSignatures.push("lint:tsc:orchestrator");
       outputs.push(
-        '\n\n=== ORCHESTRATOR TYPECHECK FAILED (npm run lint:tsc:orchestrator) — this package is gated at a STRICT ZERO, so any named file here is a NEW type error, never pre-existing baseline noise ===\n' +
+        "\n\n=== ORCHESTRATOR TYPECHECK FAILED (npm run lint:tsc:orchestrator) — this package is gated at a STRICT ZERO, so any named file here is a NEW type error, never pre-existing baseline noise ===\n" +
           orchestratorTypecheck.stdout +
           orchestratorTypecheck.stderr,
       );
@@ -6133,31 +6908,38 @@ export async function runPostSuiteLegs(
   // hand-maintained declaration-emitter allowlist, not a project for every future TypeScript
   // script; the dedicated no-emit project and baseline CLI are wired here so a new regression
   // blocks promotion instead of waiting for somebody to run a scoped tsc by hand.
-  const scriptsTypecheckCheck = haltedBy ? null : checkNpmScript(treeDir, 'lint:tsc:scripts');
+  const scriptsTypecheckCheck = haltedBy
+    ? null
+    : checkNpmScript(treeDir, "lint:tsc:scripts");
   if (haltedBy) {
-    legs.typecheckScripts = { status: 'skipped', skipReason: haltedBy };
-  } else if (scriptsTypecheckCheck === 'unreadable') {
-    legs.typecheckScripts = { status: 'failed' };
-    haltedBy = 'package.json unreadable (checking for lint:tsc:scripts)';
-    failingSignatures.push('package.json-unreadable');
+    legs.typecheckScripts = { status: "skipped", skipReason: haltedBy };
+  } else if (scriptsTypecheckCheck === "unreadable") {
+    legs.typecheckScripts = { status: "failed" };
+    haltedBy = "package.json unreadable (checking for lint:tsc:scripts)";
+    failingSignatures.push("package.json-unreadable");
     outputs.push(
       `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for lint:tsc:scripts ===\n`,
     );
-  } else if (scriptsTypecheckCheck === 'absent') {
-    legs.typecheckScripts = { status: 'skipped', skipReason: 'candidate provides no lint:tsc:scripts script' };
+  } else if (scriptsTypecheckCheck === "absent") {
+    legs.typecheckScripts = {
+      status: "skipped",
+      skipReason: "candidate provides no lint:tsc:scripts script",
+    };
   } else {
-    const scriptsTypecheck = await exec('npm', ['run', 'lint:tsc:scripts'], {
+    const scriptsTypecheck = await exec("npm", ["run", "lint:tsc:scripts"], {
       cwd: treeDir,
       env,
       allowNonZero: true,
       heavy: true,
     });
-    legs.typecheckScripts = { status: scriptsTypecheck.code === 0 ? 'passed' : 'failed' };
+    legs.typecheckScripts = {
+      status: scriptsTypecheck.code === 0 ? "passed" : "failed",
+    };
     if (scriptsTypecheck.code !== 0) {
-      softFailures.push('lint:tsc:scripts');
-      failingSignatures.push('lint:tsc:scripts');
+      softFailures.push("lint:tsc:scripts");
+      failingSignatures.push("lint:tsc:scripts");
       outputs.push(
-        '\n\n=== SCRIPTS TYPECHECK FAILED (npm run lint:tsc:scripts) — a type regression in a root scripts/*.ts CLI blocks the release ===\n' +
+        "\n\n=== SCRIPTS TYPECHECK FAILED (npm run lint:tsc:scripts) — a type regression in a root scripts/*.ts CLI blocks the release ===\n" +
           scriptsTypecheck.stdout +
           scriptsTypecheck.stderr,
       );
@@ -6174,26 +6956,37 @@ export async function runPostSuiteLegs(
   // 620-backfill-migration-reservations-ei485.sql) reached green `main` undetected. Cheap
   // (one fs scan + one PG query; gracefully skips the PG leg when unreachable, never a
   // false red) and the checkpoint tree has a reachable PG, so gate it here like lint:tsc.
-  const lintMigrationsCheck = haltedBy ? null : checkNpmScript(treeDir, 'lint:migrations');
+  const lintMigrationsCheck = haltedBy
+    ? null
+    : checkNpmScript(treeDir, "lint:migrations");
   if (haltedBy) {
-    legs.lintMigrations = { status: 'skipped', skipReason: haltedBy };
-  } else if (lintMigrationsCheck === 'unreadable') {
-    legs.lintMigrations = { status: 'failed' };
-    haltedBy = 'package.json unreadable (checking for lint:migrations)';
-    failingSignatures.push('package.json-unreadable');
+    legs.lintMigrations = { status: "skipped", skipReason: haltedBy };
+  } else if (lintMigrationsCheck === "unreadable") {
+    legs.lintMigrations = { status: "failed" };
+    haltedBy = "package.json unreadable (checking for lint:migrations)";
+    failingSignatures.push("package.json-unreadable");
     outputs.push(
       `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for lint:migrations ===\n`,
     );
-  } else if (lintMigrationsCheck === 'absent') {
-    legs.lintMigrations = { status: 'skipped', skipReason: 'candidate provides no lint:migrations script' };
+  } else if (lintMigrationsCheck === "absent") {
+    legs.lintMigrations = {
+      status: "skipped",
+      skipReason: "candidate provides no lint:migrations script",
+    };
   } else {
-    const migrations = await exec('npm', ['run', 'lint:migrations'], { cwd: treeDir, env, allowNonZero: true });
-    legs.lintMigrations = { status: migrations.code === 0 ? 'passed' : 'failed' };
+    const migrations = await exec("npm", ["run", "lint:migrations"], {
+      cwd: treeDir,
+      env,
+      allowNonZero: true,
+    });
+    legs.lintMigrations = {
+      status: migrations.code === 0 ? "passed" : "failed",
+    };
     if (migrations.code !== 0) {
-      softFailures.push('lint:migrations');
-      failingSignatures.push('lint:migrations');
+      softFailures.push("lint:migrations");
+      failingSignatures.push("lint:migrations");
       outputs.push(
-        '\n\n=== MIGRATION LINT FAILED (npm run lint:migrations) — committed migration-file discipline / unreserved migration number ===\n' +
+        "\n\n=== MIGRATION LINT FAILED (npm run lint:migrations) — committed migration-file discipline / unreserved migration number ===\n" +
           migrations.stdout +
           migrations.stderr,
       );
@@ -6204,330 +6997,236 @@ export async function runPostSuiteLegs(
   // FORWARD-COMPAT acknowledgments and the checker reports green locally — wiring this in
   // while red would have red-pinned the fleet gate for everyone (the exact ordering the
   // filing bug called out). Same skip/fail shape as lint:migrations immediately above.
-  const lintMigrationForwardCompatCheck = haltedBy ? null : checkNpmScript(treeDir, 'lint:migration-forward-compat');
+  const lintMigrationForwardCompatCheck = haltedBy
+    ? null
+    : checkNpmScript(treeDir, "lint:migration-forward-compat");
   if (haltedBy) {
-    legs.lintMigrationForwardCompat = { status: 'skipped', skipReason: haltedBy };
-  } else if (lintMigrationForwardCompatCheck === 'unreadable') {
-    legs.lintMigrationForwardCompat = { status: 'failed' };
-    haltedBy = 'package.json unreadable (checking for lint:migration-forward-compat)';
-    failingSignatures.push('package.json-unreadable');
+    legs.lintMigrationForwardCompat = {
+      status: "skipped",
+      skipReason: haltedBy,
+    };
+  } else if (lintMigrationForwardCompatCheck === "unreadable") {
+    legs.lintMigrationForwardCompat = { status: "failed" };
+    haltedBy =
+      "package.json unreadable (checking for lint:migration-forward-compat)";
+    failingSignatures.push("package.json-unreadable");
     outputs.push(
       `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for lint:migration-forward-compat ===\n`,
     );
-  } else if (lintMigrationForwardCompatCheck === 'absent') {
-    legs.lintMigrationForwardCompat = { status: 'skipped', skipReason: 'candidate provides no lint:migration-forward-compat script' };
+  } else if (lintMigrationForwardCompatCheck === "absent") {
+    legs.lintMigrationForwardCompat = {
+      status: "skipped",
+      skipReason: "candidate provides no lint:migration-forward-compat script",
+    };
   } else {
-    const forwardCompat = await exec('npm', ['run', 'lint:migration-forward-compat'], { cwd: treeDir, env, allowNonZero: true });
-    legs.lintMigrationForwardCompat = { status: forwardCompat.code === 0 ? 'passed' : 'failed' };
+    const forwardCompat = await exec(
+      "npm",
+      ["run", "lint:migration-forward-compat"],
+      { cwd: treeDir, env, allowNonZero: true },
+    );
+    legs.lintMigrationForwardCompat = {
+      status: forwardCompat.code === 0 ? "passed" : "failed",
+    };
     if (forwardCompat.code !== 0) {
-      softFailures.push('lint:migration-forward-compat');
-      failingSignatures.push('lint:migration-forward-compat');
+      softFailures.push("lint:migration-forward-compat");
+      failingSignatures.push("lint:migration-forward-compat");
       outputs.push(
-        '\n\n=== MIGRATION FORWARD-COMPAT LINT FAILED (npm run lint:migration-forward-compat) — destructive DDL with no FORWARD-COMPAT acknowledgment (EI-18797473716313783 class) ===\n' +
+        "\n\n=== MIGRATION FORWARD-COMPAT LINT FAILED (npm run lint:migration-forward-compat) — destructive DDL with no FORWARD-COMPAT acknowledgment (EI-18797473716313783 class) ===\n" +
           forwardCompat.stdout +
           forwardCompat.stderr,
       );
     }
   }
 
-  // EI-18147177863084708: the 3 identity-leak lints (check-no-owner-name-tags.mjs =
-  // `[owner:<name>]` provenance tags; check-no-box-identity.mjs = hardcoded `/home/<user>/`
-  // paths; check-no-identity-literals.mjs = bare box git-name/email/hostname/OS-user)
-  // previously ran ONLY inside release-local.sh's WI-4776 gate, at release-CUT time — so a
-  // leak an agent authors on `staging` (a `[owner:Jane …]` tag or a stray box-identity
-  // literal is CORRECT on a carry surface but a leak in shipped source) sat undetected
-  // through every green-checkpoint tick until a release attempt finally tripped over it,
-  // sometimes dozens of commits later: the 0.0.12 Windows Server cut (2026-07-20) hit 24
-  // accumulated leaks across 13 files, killing 2 cut attempts ~30min each. These are GLOBAL
-  // source scans, independent of the candidate diff — same rationale as
-  // lint:design-primitives below. Unlike release-local.sh's `&&`-chain (which only ever
-  // shows the FIRST failing lint's leaks, forcing whack-a-mole across multiple builds),
-  // every one of the three runs and every failure is reported together in one verdict.
+  // P-005: ONLY checks with measured low memory and no ordering dependency overlap here.
+  // Independent measurements on the shared host (2026-08-13) put every command below at
+  // <=383 MiB peak RSS and 1.3–16.1s wall. The sequential typechecks, DB-sensitive migration
+  // checks, state-plane probes, and SPA build remain outside this group. Each child is pinned
+  // to 768 MiB and two children share a 1.5-GiB fixed budget, so this cannot multiply the
+  // 16-GiB typecheck ceiling or the Vitest fork budget.
+  type LowMemoryOutcomeKey =
+    | "lintIdentity"
+    | "lintDesignPrimitives"
+    | "lintNoControlBytes"
+    | "lintGuardReachability"
+    | "lintMockCastEscape"
+    | "lintTimerClassification"
+    | "lintNoRawSetinterval";
+  interface LowMemoryLintSpec {
+    script: string;
+    outcomeKey: LowMemoryOutcomeKey;
+    signature: string;
+    label: string;
+    failureBanner: string;
+  }
+  const lowMemoryLintSpecs: readonly LowMemoryLintSpec[] = [
+    {
+      script: "lint:no-owner-name-tags",
+      outcomeKey: "lintIdentity",
+      signature: "lint:identity-leak",
+      label: "OWNER-NAME TAG",
+      failureBanner: "WI-4776 class",
+    },
+    {
+      script: "lint:no-box-identity",
+      outcomeKey: "lintIdentity",
+      signature: "lint:identity-leak",
+      label: "BOX-IDENTITY PATH",
+      failureBanner: "WI-4776 class",
+    },
+    {
+      script: "lint:no-identity-literals",
+      outcomeKey: "lintIdentity",
+      signature: "lint:identity-leak",
+      label: "BOX IDENTITY LITERAL",
+      failureBanner: "WI-4776 class",
+    },
+    {
+      script: "lint:design-primitives",
+      outcomeKey: "lintDesignPrimitives",
+      signature: "lint:design-primitives",
+      label: "DESIGN PRIMITIVES",
+      failureBanner:
+        "global token/primitive scan, independent of the affected set",
+    },
+    {
+      script: "lint:no-control-bytes",
+      outcomeKey: "lintNoControlBytes",
+      signature: "lint:no-control-bytes",
+      label: "RAW CONTROL BYTES",
+      failureBanner:
+        "a byte that makes git diff and ugrep skip the file silently",
+    },
+    {
+      script: "lint:guard-reachability",
+      outcomeKey: "lintGuardReachability",
+      signature: "lint:guard-reachability",
+      label: "GUARD REACHABILITY",
+      failureBanner:
+        "an unwired guard rots silently and its green gets quoted as evidence",
+    },
+    {
+      script: "lint:mock-cast-escape",
+      outcomeKey: "lintMockCastEscape",
+      signature: "lint:mock-cast-escape",
+      label: "MOCK FIXTURE CAST ESCAPE RATCHET",
+      failureBanner:
+        "`as never`/`as any` on a mock setter defeats fixture type checking",
+    },
+    {
+      script: "lint:timer-classification",
+      outcomeKey: "lintTimerClassification",
+      signature: "lint:timer-classification",
+      label: "TIMER CLASSIFICATION",
+      failureBanner:
+        "a recurring timer lacks a D-004 push-don't-poll classification",
+    },
+    {
+      script: "lint:no-raw-setinterval",
+      outcomeKey: "lintNoRawSetinterval",
+      signature: "lint:no-raw-setinterval",
+      label: "NO-RAW-SETINTERVAL",
+      // NB: avoid a call-shaped managed-timer token here; the timer classifier parses strings.
+      failureBanner:
+        "a recurring timer bypassed the managed interval surface — see P-008",
+    },
+  ];
+  const lowMemoryOutcomeKeys: readonly LowMemoryOutcomeKey[] = [
+    "lintIdentity",
+    "lintDesignPrimitives",
+    "lintNoControlBytes",
+    "lintGuardReachability",
+    "lintMockCastEscape",
+    "lintTimerClassification",
+    "lintNoRawSetinterval",
+  ];
   if (haltedBy) {
-    legs.lintIdentity = { status: 'skipped', skipReason: haltedBy };
+    for (const key of lowMemoryOutcomeKeys)
+      legs[key] = { status: "skipped", skipReason: haltedBy };
   } else {
-    const identityLints: Array<{ script: string; label: string }> = [
-      { script: 'lint:no-owner-name-tags', label: 'OWNER-NAME TAG' },
-      { script: 'lint:no-box-identity', label: 'BOX-IDENTITY PATH' },
-      { script: 'lint:no-identity-literals', label: 'BOX IDENTITY LITERAL' },
-    ];
-    const identityFailures: string[] = [];
-    let identityRan = 0;
-    for (const { script, label } of identityLints) {
-      const check = checkNpmScript(treeDir, script);
-      if (check === 'unreadable') {
-        // WI-6056: an unreadable package.json must not silently `continue` past this
-        // script as if the hive simply opted out — record it as a failure instead.
-        identityFailures.push(
-          `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for ${script} (${label}) ===\n`,
+    const lowMemoryEnv: NodeJS.ProcessEnv = {
+      ...env,
+      NODE_OPTIONS: sanitizeForkNodeOptions(
+        env.NODE_OPTIONS,
+        GREEN_CHECKPOINT_LOW_MEMORY_LINT_HEAP_MB,
+      ),
+    };
+    const lowMemoryResults = await mapPostSuiteBounded(
+      lowMemoryLintSpecs.map((spec) => ({
+        spec,
+        availability: checkNpmScript(treeDir, spec.script),
+      })),
+      lowMemoryConcurrency,
+      async ({ spec, availability }) => {
+        if (availability === "unreadable") {
+          return {
+            spec,
+            outcome: { status: "failed" } satisfies LegOutcome,
+            detail: `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for ${spec.script} (${spec.label}) ===\n`,
+          };
+        }
+        if (availability === "absent") {
+          return {
+            spec,
+            outcome: {
+              status: "skipped",
+              skipReason: `candidate provides no ${spec.script} script`,
+            } satisfies LegOutcome,
+            detail: "",
+          };
+        }
+        const out = await exec("npm", ["run", spec.script], {
+          cwd: treeDir,
+          env: lowMemoryEnv,
+          allowNonZero: true,
+        });
+        return {
+          spec,
+          outcome: {
+            status: out.code === 0 ? "passed" : "failed",
+          } satisfies LegOutcome,
+          detail:
+            out.code === 0
+              ? ""
+              : `\n\n=== ${spec.label} LINT FAILED (npm run ${spec.script}) — ${spec.failureBanner} ===\n${out.stdout}${out.stderr}`,
+        };
+      },
+    );
+
+    for (const key of lowMemoryOutcomeKeys) {
+      const matching = lowMemoryResults.filter(
+        ({ spec }) => spec.outcomeKey === key,
+      );
+      const failed = matching.filter(
+        ({ outcome }) => outcome.status === "failed",
+      );
+      const ran = matching.filter(
+        ({ outcome }) => outcome.status !== "skipped",
+      );
+      legs[key] = failed.length
+        ? { status: "failed" }
+        : ran.length
+          ? { status: "passed" }
+          : {
+              status: "skipped",
+              skipReason:
+                key === "lintIdentity"
+                  ? "candidate provides none of the 3 identity-leak lint scripts"
+                  : (matching[0]?.outcome.skipReason ??
+                    "candidate provides no matching lint script"),
+            };
+      if (!failed.length) continue;
+      const signature = matching[0]!.spec.signature;
+      softFailures.push(signature);
+      failingSignatures.push(signature);
+      if (key === "lintIdentity") {
+        outputs.push(
+          "\n\n=== IDENTITY-LEAK LINTS FAILED (WI-4776 class — owner-name tag / box path / box identity literal committed to tracked source) ===" +
+            failed.map(({ detail }) => detail).join(""),
         );
-        continue;
+      } else {
+        outputs.push(failed.map(({ detail }) => detail).join(""));
       }
-      if (check === 'absent') continue;
-      identityRan++;
-      const out = await exec('npm', ['run', script], { cwd: treeDir, env, allowNonZero: true });
-      if (out.code !== 0) {
-        identityFailures.push(`\n\n=== ${label} LINT FAILED (npm run ${script}, WI-4776 class) ===\n` + out.stdout + out.stderr);
-      }
-    }
-    // WI-6056: previously `identityRan === 0 ? skipped : (failed/passed by identityFailures)`
-    // — if EVERY script came back unreadable, identityRan stayed 0 and this would have
-    // reported 'skipped' despite real failures sitting in identityFailures. Check failures
-    // FIRST so an all-unreadable run reports failed, never a silent skip.
-    legs.lintIdentity = identityFailures.length > 0
-      ? { status: 'failed' }
-      : identityRan === 0
-        ? { status: 'skipped', skipReason: 'candidate provides none of the 3 identity-leak lint scripts' }
-        : { status: 'passed' };
-    if (identityFailures.length) {
-      softFailures.push('lint:identity-leak');
-      failingSignatures.push('lint:identity-leak');
-      outputs.push(
-        '\n\n=== IDENTITY-LEAK LINTS FAILED (WI-4776 class — owner-name tag / box path / box identity literal committed to tracked source) ===' +
-          identityFailures.join(''),
-      );
-    }
-  }
-
-  // EI-18218408212070282: `test:affected` (the suite leg) only runs a workspace's suite when
-  // that workspace is in the CANDIDATE DIFF's affected set (scripts/affected-tests.mjs).
-  // design-primitives.test.ts and its siblings (css-tokens.test.ts, contrast.test.ts) are
-  // GLOBAL source-scanning lints — they scan the WHOLE apps/operator + operator-vite tree
-  // for token/primitive compliance, independent of what this candidate's diff touched. So a
-  // candidate whose diff doesn't happen to touch @papercusp/web (or anything
-  // reverse-depending on it) skipped them entirely, and a real, pre-existing violation
-  // elsewhere in the tree rode straight into the green pin: the gate flapped red<->green on
-  // the SAME uncorrected violation purely depending on each candidate's diff shape, not on
-  // whether the tree was actually clean. Run it here — never gated by the affected set — so
-  // "green" means the whole tree's design-primitive invariants hold, not just the diffed
-  // slice. `npm run test:file` (scripts/test-files.mjs) resolves each file to its owning
-  // Vitest config and hard-fails on a zero/partial match, so a future rename of any of the
-  // three files fails LOUDLY here instead of silently stopping being gated.
-  const lintDesignPrimitivesCheck = haltedBy ? null : checkNpmScript(treeDir, 'lint:design-primitives');
-  if (haltedBy) {
-    legs.lintDesignPrimitives = { status: 'skipped', skipReason: haltedBy };
-  } else if (lintDesignPrimitivesCheck === 'unreadable') {
-    legs.lintDesignPrimitives = { status: 'failed' };
-    haltedBy = 'package.json unreadable (checking for lint:design-primitives)';
-    failingSignatures.push('package.json-unreadable');
-    outputs.push(
-      `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for lint:design-primitives ===\n`,
-    );
-  } else if (lintDesignPrimitivesCheck === 'absent') {
-    legs.lintDesignPrimitives = { status: 'skipped', skipReason: 'candidate provides no lint:design-primitives script' };
-  } else {
-    const designPrimitives = await exec('npm', ['run', 'lint:design-primitives'], { cwd: treeDir, env, allowNonZero: true });
-    legs.lintDesignPrimitives = { status: designPrimitives.code === 0 ? 'passed' : 'failed' };
-    if (designPrimitives.code !== 0) {
-      softFailures.push('lint:design-primitives');
-      failingSignatures.push('lint:design-primitives');
-      outputs.push(
-        '\n\n=== DESIGN PRIMITIVES LINT FAILED (npm run lint:design-primitives) — global token/primitive scan, independent of the affected set ===\n' +
-          designPrimitives.stdout +
-          designPrimitives.stderr,
-      );
-    }
-  }
-
-  // EI-18896048946123172: raw control bytes in tracked source. One NUL turns a file binary to
-  // `git diff` AND to ugrep, so review and repo-wide search both return a confident, wrong
-  // "nothing here" — a whole class of false-absence conclusions from instruments nobody
-  // proved were pointed at the file. `lint:no-control-bytes` already existed and was already
-  // wired into .github/workflows/test.yml, but that workflow does not gate this box's
-  // main-advance, and it had been failing for other reasons, so the guard's own three-day red
-  // went unread while a NUL sat in libs/generic/sync/src/persisted-cache.ts. Gate it HERE,
-  // where a red actually stops the release. Deterministic, whole-tree, ~1s.
-  const lintNoControlBytesCheck = haltedBy ? null : checkNpmScript(treeDir, 'lint:no-control-bytes');
-  if (haltedBy) {
-    legs.lintNoControlBytes = { status: 'skipped', skipReason: haltedBy };
-  } else if (lintNoControlBytesCheck === 'unreadable') {
-    legs.lintNoControlBytes = { status: 'failed' };
-    haltedBy = 'package.json unreadable (checking for lint:no-control-bytes)';
-    failingSignatures.push('package.json-unreadable');
-    outputs.push(
-      `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for lint:no-control-bytes ===\n`,
-    );
-  } else if (lintNoControlBytesCheck === 'absent') {
-    legs.lintNoControlBytes = { status: 'skipped', skipReason: 'candidate provides no lint:no-control-bytes script' };
-  } else {
-    const controlBytes = await exec('npm', ['run', 'lint:no-control-bytes'], { cwd: treeDir, env, allowNonZero: true });
-    legs.lintNoControlBytes = { status: controlBytes.code === 0 ? 'passed' : 'failed' };
-    if (controlBytes.code !== 0) {
-      softFailures.push('lint:no-control-bytes');
-      failingSignatures.push('lint:no-control-bytes');
-      outputs.push(
-        '\n\n=== RAW CONTROL BYTES LINT FAILED (npm run lint:no-control-bytes) — a byte that makes git diff and ugrep skip the file silently ===\n' +
-          controlBytes.stdout +
-          controlBytes.stderr,
-      );
-    }
-  }
-
-  // EI-19452618085391226: the META-guard — fails when a declared `lint:*` script is run by no
-  // blocking path. WI-6683 ruled that "a guard on no blocking path is not a guard"; the measured
-  // and more urgent form is that an unwired guard ROTS — accruing false positives and baseline
-  // drift invisibly — so it fails CLOSED on innocent files the moment someone finally wires it,
-  // which makes the obvious remediation ("just wire it up") the fleet-reddening one. Two
-  // instances were silently red on 2026-08-03: `lint:no-sql-comment-backtick` at 7 hits / 7
-  // FALSE positives, and `lint:mock-cast-escape` drifted +45 past its baseline in ~27h.
-  //
-  // Gated HERE specifically because `test:affected` cannot cover it: editing package.json —
-  // the very act that orphans a guard — selects ZERO test files (measured 2026-08-03 via
-  // `affected-tests.mjs --changed-paths package.json`, empty against a control that correctly
-  // returned operator-core). A test-tier guard would therefore have been exactly the illusory
-  // coverage this script exists to detect. Deterministic, whole-tree, ~3.5s.
-  const lintGuardReachabilityCheck = haltedBy ? null : checkNpmScript(treeDir, 'lint:guard-reachability');
-  if (haltedBy) {
-    legs.lintGuardReachability = { status: 'skipped', skipReason: haltedBy };
-  } else if (lintGuardReachabilityCheck === 'unreadable') {
-    legs.lintGuardReachability = { status: 'failed' };
-    haltedBy = 'package.json unreadable (checking for lint:guard-reachability)';
-    failingSignatures.push('package.json-unreadable');
-    outputs.push(
-      `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for lint:guard-reachability ===\n`,
-    );
-  } else if (lintGuardReachabilityCheck === 'absent') {
-    legs.lintGuardReachability = { status: 'skipped', skipReason: 'candidate provides no lint:guard-reachability script' };
-  } else {
-    const guardReach = await exec('npm', ['run', 'lint:guard-reachability'], { cwd: treeDir, env, allowNonZero: true });
-    legs.lintGuardReachability = { status: guardReach.code === 0 ? 'passed' : 'failed' };
-    if (guardReach.code !== 0) {
-      softFailures.push('lint:guard-reachability');
-      failingSignatures.push('lint:guard-reachability');
-      outputs.push(
-        '\n\n=== GUARD REACHABILITY LINT FAILED (npm run lint:guard-reachability) — a guard that is neither wired nor retired rots silently and its green gets quoted as evidence ===\n' +
-          guardReach.stdout +
-          guardReach.stderr,
-      );
-    }
-  }
-
-  // EI-19452618085391226: the guard whose rot MOTIVATED the reachability census above, now
-  // wired to a blocking path itself. It had drifted +45 over its baseline while its own unit
-  // test stayed green the whole time — because that test exercised the detector against
-  // fixtures and ran it over NO repository files. Wiring was deliberately BLOCKED on the
-  // burn-down first: turning it on while +45 over would have red-pinned the fleet on debt
-  // nobody in that moment introduced, which is the exact trap the filing names.
-  //
-  // Baseline is deliberately left at 1076 with ~15 of headroom rather than re-ratcheted down
-  // to the achieved 1061. `--update` is documented as a QUIET-TREE operation, and this tree is
-  // continuously edited by the fleet — locking in a number that includes peers' in-flight
-  // edits is how a ratchet reds on someone else's revert. Tighten it deliberately, later.
-  const lintMockCastCheck = haltedBy ? null : checkNpmScript(treeDir, 'lint:mock-cast-escape');
-  if (haltedBy) {
-    legs.lintMockCastEscape = { status: 'skipped', skipReason: haltedBy };
-  } else if (lintMockCastCheck === 'unreadable') {
-    legs.lintMockCastEscape = { status: 'failed' };
-    haltedBy = 'package.json unreadable (checking for lint:mock-cast-escape)';
-    failingSignatures.push('package.json-unreadable');
-    outputs.push(
-      `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for lint:mock-cast-escape ===\n`,
-    );
-  } else if (lintMockCastCheck === 'absent') {
-    legs.lintMockCastEscape = { status: 'skipped', skipReason: 'candidate provides no lint:mock-cast-escape script' };
-  } else {
-    const mockCast = await exec('npm', ['run', 'lint:mock-cast-escape'], { cwd: treeDir, env, allowNonZero: true });
-    legs.lintMockCastEscape = { status: mockCast.code === 0 ? 'passed' : 'failed' };
-    if (mockCast.code !== 0) {
-      softFailures.push('lint:mock-cast-escape');
-      failingSignatures.push('lint:mock-cast-escape');
-      outputs.push(
-        '\n\n=== MOCK FIXTURE CAST ESCAPE RATCHET LINT FAILED (npm run lint:mock-cast-escape) — `as never`/`as any` on a mock setter defeats the fixture type check, so a fixture stales silently and fails at RUNTIME in a file your change never touched ===\n' +
-          mockCast.stdout +
-          mockCast.stderr,
-      );
-    }
-  }
-
-  // P-026 (stop-discarded-dedup-and-audit-server-polling-2026-07-26 / D-004): every NEW
-  // recurring timer must declare a push-don't-poll classification ('must-sample' |
-  // 'timeout-reaper' | 'violation'). The guard existed and was genuinely wired — but ONLY
-  // into .github/workflows/test.yml, which fires on push/PR to `main` plus this gate's own
-  // POST-fast-forward workflow_dispatch. Both are downstream of promotion, so an offender
-  // committed to `staging` was invisible for its entire life on staging and only red AFTER
-  // it had already been promoted to the green branch. Reachability is not TIMELINESS — the
-  // meta-guard (`lint:guard-reachability`) correctly scored it ENFORCED the whole time, and
-  // its census footer says exactly that: enforced means a blocking path RUNS it, never that
-  // it runs BEFORE the damage. Gate it HERE, where a red actually stops the promotion.
-  // Deterministic, whole-tree, ~1s. Wired only once its own tree was green (4 unclassified
-  // sites fixed first) — wiring a rotten guard reds the fleet for drift it accrued while
-  // unwatched, which is the trap check-lint-guard-reachability.mjs's header documents.
-  const lintTimerClassCheck = haltedBy ? null : checkNpmScript(treeDir, 'lint:timer-classification');
-  if (haltedBy) {
-    legs.lintTimerClassification = { status: 'skipped', skipReason: haltedBy };
-  } else if (lintTimerClassCheck === 'unreadable') {
-    legs.lintTimerClassification = { status: 'failed' };
-    haltedBy = 'package.json unreadable (checking for lint:timer-classification)';
-    failingSignatures.push('package.json-unreadable');
-    outputs.push(
-      `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for lint:timer-classification ===\n`,
-    );
-  } else if (lintTimerClassCheck === 'absent') {
-    legs.lintTimerClassification = {
-      status: 'skipped',
-      skipReason: 'candidate provides no lint:timer-classification script',
-    };
-  } else {
-    const timerClass = await exec('npm', ['run', 'lint:timer-classification'], {
-      cwd: treeDir,
-      env,
-      allowNonZero: true,
-    });
-    legs.lintTimerClassification = { status: timerClass.code === 0 ? 'passed' : 'failed' };
-    if (timerClass.code !== 0) {
-      softFailures.push('lint:timer-classification');
-      failingSignatures.push('lint:timer-classification');
-      outputs.push(
-        '\n\n=== TIMER CLASSIFICATION LINT FAILED (npm run lint:timer-classification) — a new recurring timer landed without a D-004 push-don\'t-poll classification ===\n' +
-          timerClass.stdout +
-          timerClass.stderr,
-      );
-    }
-  }
-
-  // EI-19962933556828227: `lint:no-raw-setinterval` (P-008's ratchet — every operator-host
-  // timer goes through managedSetInterval) had the identical enforcement-timeliness gap as
-  // lintTimerClassification just above: wired only into .github/workflows/test.yml's inert
-  // push/PR-to-`main` triggers, so an offender on `staging` was invisible for its whole life
-  // there and only reds AFTER promotion. Gate it HERE, where a red actually stops the
-  // promotion. Deterministic, whole-tree, fast. Wired only once its own tree was proven
-  // green (verified via `npm run lint:no-raw-setinterval` exiting 0 on staging after fixing
-  // the two false positives it carried).
-  const lintNoRawSetintervalCheck = haltedBy ? null : checkNpmScript(treeDir, 'lint:no-raw-setinterval');
-  if (haltedBy) {
-    legs.lintNoRawSetinterval = { status: 'skipped', skipReason: haltedBy };
-  } else if (lintNoRawSetintervalCheck === 'unreadable') {
-    legs.lintNoRawSetinterval = { status: 'failed' };
-    haltedBy = 'package.json unreadable (checking for lint:no-raw-setinterval)';
-    failingSignatures.push('package.json-unreadable');
-    outputs.push(
-      `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for lint:no-raw-setinterval ===\n`,
-    );
-  } else if (lintNoRawSetintervalCheck === 'absent') {
-    legs.lintNoRawSetinterval = {
-      status: 'skipped',
-      skipReason: 'candidate provides no lint:no-raw-setinterval script',
-    };
-  } else {
-    const noRawSetinterval = await exec('npm', ['run', 'lint:no-raw-setinterval'], {
-      cwd: treeDir,
-      env,
-      allowNonZero: true,
-    });
-    legs.lintNoRawSetinterval = { status: noRawSetinterval.code === 0 ? 'passed' : 'failed' };
-    if (noRawSetinterval.code !== 0) {
-      softFailures.push('lint:no-raw-setinterval');
-      failingSignatures.push('lint:no-raw-setinterval');
-      outputs.push(
-        // NB: do NOT write `managedSetInterval` immediately followed by `(` in this
-        // string. check-timer-classification.mjs strips comments but NOT string
-        // literals, so a call-shaped token in prose is parsed as a real call site —
-        // this exact line red-pinned lint:timer-classification with a phantom offender
-        // whose parsed "arguments" were `P-008` (WI-37518). Root fix: EI-19989853369726696.
-        '\n\n=== NO-RAW-SETINTERVAL LINT FAILED (npm run lint:no-raw-setinterval) — a new recurring timer bypassed managedSetInterval — see P-008 ===\n' +
-          noRawSetinterval.stdout +
-          noRawSetinterval.stderr,
-      );
     }
   }
 
@@ -6566,20 +7265,20 @@ export async function runPostSuiteLegs(
   // treats `no-data` as neither pass nor fail (it is `unknown`), so an empty table reports
   // uninterpretable rather than a green tick meaning "we looked and found nothing".
   if (haltedBy) {
-    legs.lintPlane = { status: 'skipped', skipReason: haltedBy };
+    legs.lintPlane = { status: "skipped", skipReason: haltedBy };
   } else {
     const planeLints: Array<{ script: string; label: string }> = [
-      { script: 'lint:plane-producers', label: 'PRODUCER CENSUS' },
-      { script: 'lint:declared-consumed', label: 'DECLARED-VS-CONSUMED SWEEP' },
-      { script: 'lint:no-bespoke-state-read', label: 'BESPOKE STATE-READ' },
-      { script: 'lint:plane-ratchet', label: 'PLANE RATCHET' },
+      { script: "lint:plane-producers", label: "PRODUCER CENSUS" },
+      { script: "lint:declared-consumed", label: "DECLARED-VS-CONSUMED SWEEP" },
+      { script: "lint:no-bespoke-state-read", label: "BESPOKE STATE-READ" },
+      { script: "lint:plane-ratchet", label: "PLANE RATCHET" },
       // WI-6768: the ADOPTION probe — the third PG-backed member. Same premise as the
       // two above (the checkpoint tree has a reachable PG), and the same
       // vacuous-pass discipline: it establishes tool_invocations had traffic in the
       // window before letting a zero mean "unused". It is report-only until a
       // surface's D-047 review date arrives, precisely so landing it cannot red-pin
       // main for a condition no commit caused.
-      { script: 'lint:plane-adoption', label: 'ADOPTION PROBE' },
+      { script: "lint:plane-adoption", label: "ADOPTION PROBE" },
       // P-007 (auto-coupling-delivery-and-correctness-2026-08-09, D-088): the FOURTH
       // reachability probe. The three above ask whether a field is written, read in
       // source, or called by an agent; a DERIVED signal — computed at read time and
@@ -6589,39 +7288,55 @@ export async function runPostSuiteLegs(
       // signal it exists to find (WI-6476, the same defect one level up). Report-only
       // until a relation's review date, and it exits 0 even when it cannot reach PG,
       // so landing it cannot red-pin main.
-      { script: 'lint:derived-signal-firings', label: 'DERIVED-SIGNAL FIRING PROBE' },
-      { script: 'lint:plane-guards', label: 'PLANE GUARD MUTATION TESTS' },
+      {
+        script: "lint:derived-signal-firings",
+        label: "DERIVED-SIGNAL FIRING PROBE",
+      },
+      { script: "lint:plane-guards", label: "PLANE GUARD MUTATION TESTS" },
     ];
     const planeFailures: string[] = [];
     let planeRan = 0;
     for (const { script, label } of planeLints) {
       const check = checkNpmScript(treeDir, script);
-      if (check === 'unreadable') {
+      if (check === "unreadable") {
         // WI-6056: an unreadable package.json is a failure, never a silent opt-out.
         planeFailures.push(
           `\n\n=== PACKAGE.JSON UNREADABLE (WI-6056) — could not read/parse package.json in ${treeDir} while checking for ${script} (${label}) ===\n`,
         );
         continue;
       }
-      if (check === 'absent') continue;
+      if (check === "absent") continue;
       planeRan++;
-      const out = await exec('npm', ['run', script], { cwd: treeDir, env, allowNonZero: true });
+      const out = await exec("npm", ["run", script], {
+        cwd: treeDir,
+        env,
+        allowNonZero: true,
+      });
       if (out.code !== 0) {
-        planeFailures.push(`\n\n=== ${label} FAILED (npm run ${script}, P-020 class) ===\n` + out.stdout + out.stderr);
+        planeFailures.push(
+          `\n\n=== ${label} FAILED (npm run ${script}, P-020 class) ===\n` +
+            out.stdout +
+            out.stderr,
+        );
       }
     }
     // Failures FIRST (WI-6056): an all-unreadable run must report failed, not a silent skip.
-    legs.lintPlane = planeFailures.length > 0
-      ? { status: 'failed' }
-      : planeRan === 0
-        ? { status: 'skipped', skipReason: 'candidate provides none of the 6 agent-state-plane lint scripts' }
-        : { status: 'passed' };
+    legs.lintPlane =
+      planeFailures.length > 0
+        ? { status: "failed" }
+        : planeRan === 0
+          ? {
+              status: "skipped",
+              skipReason:
+                "candidate provides none of the 6 agent-state-plane lint scripts",
+            }
+          : { status: "passed" };
     if (planeFailures.length) {
-      softFailures.push('lint:plane-integrity');
-      failingSignatures.push('lint:plane-integrity');
+      softFailures.push("lint:plane-integrity");
+      failingSignatures.push("lint:plane-integrity");
       outputs.push(
-        '\n\n=== AGENT-STATE-PLANE LINTS FAILED (P-020 — a producer stopped writing, a declared field lost its consumer, or a plane guard regressed) ===' +
-          planeFailures.join(''),
+        "\n\n=== AGENT-STATE-PLANE LINTS FAILED (P-020 — a producer stopped writing, a declared field lost its consumer, or a plane guard regressed) ===" +
+          planeFailures.join(""),
       );
     }
   }
@@ -6644,11 +7359,15 @@ export async function runPostSuiteLegs(
   // paying for a full SPA bundle on a candidate that already cannot ship would be waste.
   if (haltedBy || softFailures.length) {
     legs.build = {
-      status: 'skipped',
-      skipReason: haltedBy ?? `not run because ${softFailures.join(', ')} failed`,
+      status: "skipped",
+      skipReason:
+        haltedBy ?? `not run because ${softFailures.join(", ")} failed`,
     };
   } else if (!spaWorkspace) {
-    legs.build = { status: 'skipped', skipReason: 'hive declares no SPA build workspace' };
+    legs.build = {
+      status: "skipped",
+      skipReason: "hive declares no SPA build workspace",
+    };
   } else {
     // EI-1836: a COMMITTED git conflict marker makes the SPA build die with a cryptic
     // CssSyntaxError ("Unknown word Stashed"). On 2026-06-20 three such markers in
@@ -6660,18 +7379,23 @@ export async function runPostSuiteLegs(
     // tree predating that script. The ERE mirrors its CONFLICT_MARKER_ERE: 7 of `<`/`>`/`|`
     // at line start — brackets every git conflict, zero false positives (the bare `=======`
     // separator is excluded as FP-prone). git grep exit 0 = match found, 1 = clean.
-    const markers = await exec('git', ['grep', '-n', '-I', '-E', '^(<{7}|>{7}|\\|{7})([ \\t]|$)', '--', '.'], {
-      cwd: treeDir,
-      env,
-      allowNonZero: true,
-    });
+    const markers = await exec(
+      "git",
+      ["grep", "-n", "-I", "-E", "^(<{7}|>{7}|\\|{7})([ \\t]|$)", "--", "."],
+      {
+        cwd: treeDir,
+        env,
+        allowNonZero: true,
+      },
+    );
     if (markers.code === 0 && markers.stdout.trim()) {
       // Treat exactly like a failed build (folds @papercusp/operator-vite into
       // checkpointFailureSignature) and SKIP the build entirely — it would only die
       // cryptically on the same markers.
-      legs.build = { status: 'failed' };
+      legs.build = { status: "failed" };
       outputs.push(
-        '\n\n=== COMMITTED CONFLICT MARKERS (@papercusp/operator-vite, EI-1836) — would break the SPA build ===\n' + markers.stdout,
+        "\n\n=== COMMITTED CONFLICT MARKERS (@papercusp/operator-vite, EI-1836) — would break the SPA build ===\n" +
+          markers.stdout,
       );
     } else {
       // PAPERCUSP_RETAIN_DIST_CHUNKS=1 — this build targets the LIVE WORKING TREE, which is
@@ -6688,15 +7412,23 @@ export async function runPostSuiteLegs(
       // is verified/deployed is unchanged — retained chunks are extra files, and on a fresh
       // checkout (the release build) there are none to retain, which is why the release path
       // is deliberately left alone.
-      const b = await exec('npm', ['--workspace', '@papercusp/operator-vite', 'run', 'build'], {
-        cwd: treeDir,
-        env: { ...env, PAPERCUSP_RETAIN_DIST_CHUNKS: '1' },
-        allowNonZero: true,
-        heavy: true, // EI-78: a full SPA bundle build — CPU-heavy enough to starve the operator.
-      });
-      legs.build = { status: b.code === 0 ? 'passed' : 'failed' };
+      const b = await exec(
+        "npm",
+        ["--workspace", "@papercusp/operator-vite", "run", "build"],
+        {
+          cwd: treeDir,
+          env: { ...env, PAPERCUSP_RETAIN_DIST_CHUNKS: "1" },
+          allowNonZero: true,
+          heavy: true, // EI-78: a full SPA bundle build — CPU-heavy enough to starve the operator.
+        },
+      );
+      legs.build = { status: b.code === 0 ? "passed" : "failed" };
       if (b.code !== 0) {
-        outputs.push('\n\n=== SPA BUILD FAILED (@papercusp/operator-vite) — would fail the deploy swap ===\n' + b.stdout + b.stderr);
+        outputs.push(
+          "\n\n=== SPA BUILD FAILED (@papercusp/operator-vite) — would fail the deploy swap ===\n" +
+            b.stdout +
+            b.stderr,
+        );
       }
     }
   }
@@ -6723,8 +7455,94 @@ export async function runPostSuiteLegs(
     legs.lintNoRawSetinterval,
     legs.lintPlane,
     legs.build,
-  ].some((l) => l.status === 'failed');
-  legs.output = outputs.join('');
+  ].some((l) => l.status === "failed");
+  const record = (
+    id: string,
+    outcome: LegOutcome,
+    commandIds: readonly string[],
+  ): PostSuiteLegRecord => {
+    const spans = commandIds.flatMap(
+      (commandId) => executionSpans.get(commandId) ?? [],
+    );
+    const durationMs = spans.length
+      ? Math.max(
+          0,
+          Math.max(...spans.map((span) => span.endedAt)) -
+            Math.min(...spans.map((span) => span.startedAt)),
+        )
+      : 0;
+    return {
+      id,
+      status: outcome.status,
+      durationMs,
+      ...(outcome.skipReason ? { skipReason: outcome.skipReason } : {}),
+    };
+  };
+  legs.records = [
+    record("lint:tsc", legs.typecheck, ["lint:tsc"]),
+    record("lint:tsc:papercusp-libs", legs.typecheckPapercuspLibs, [
+      "lint:tsc:papercusp-libs",
+    ]),
+    record("lint:tsc:workspaces", legs.typecheckWorkspaces, [
+      "lint:tsc:workspaces",
+    ]),
+    record("lint:tsc:orchestrator", legs.typecheckOrchestrator, [
+      "lint:tsc:orchestrator",
+    ]),
+    record("lint:tsc:scripts", legs.typecheckScripts, ["lint:tsc:scripts"]),
+    record("lint:migrations", legs.lintMigrations, ["lint:migrations"]),
+    record("lint:migration-forward-compat", legs.lintMigrationForwardCompat, [
+      "lint:migration-forward-compat",
+    ]),
+    record("lint:identity-leak", legs.lintIdentity, [
+      "lint:no-owner-name-tags",
+      "lint:no-box-identity",
+      "lint:no-identity-literals",
+    ]),
+    record("lint:design-primitives", legs.lintDesignPrimitives, [
+      "lint:design-primitives",
+    ]),
+    record("lint:no-control-bytes", legs.lintNoControlBytes, [
+      "lint:no-control-bytes",
+    ]),
+    record("lint:guard-reachability", legs.lintGuardReachability, [
+      "lint:guard-reachability",
+    ]),
+    record("lint:mock-cast-escape", legs.lintMockCastEscape, [
+      "lint:mock-cast-escape",
+    ]),
+    record("lint:timer-classification", legs.lintTimerClassification, [
+      "lint:timer-classification",
+    ]),
+    record("lint:no-raw-setinterval", legs.lintNoRawSetinterval, [
+      "lint:no-raw-setinterval",
+    ]),
+    record("lint:plane-integrity", legs.lintPlane, [
+      "lint:plane-producers",
+      "lint:declared-consumed",
+      "lint:no-bespoke-state-read",
+      "lint:plane-ratchet",
+      "lint:plane-adoption",
+      "lint:derived-signal-firings",
+      "lint:plane-guards",
+    ]),
+    record("spa-build", legs.build, ["spa:conflict-markers", "build"]),
+  ];
+  outputs.push(
+    `\nPOST_SUITE_SCHEDULER lowMemoryMode=parallel maxConcurrency=${lowMemoryConcurrency} ` +
+      `memoryBudgetMb=${GREEN_CHECKPOINT_LOW_MEMORY_LINT_BUDGET_MB} ` +
+      `workerHeapMb=${GREEN_CHECKPOINT_LOW_MEMORY_LINT_HEAP_MB}`,
+  );
+  for (const leg of legs.records) {
+    outputs.push(
+      `\nPOST_SUITE_LEG id=${leg.id} status=${leg.status} durationMs=${leg.durationMs}` +
+        (leg.skipReason ? ` skipReason=${JSON.stringify(leg.skipReason)}` : ""),
+    );
+  }
+  outputs.push(
+    `\nPOST_SUITE_RESULT status=${legs.ok ? "passed" : "failed"} durationMs=${Math.max(0, now() - startedAt)}`,
+  );
+  legs.output = outputs.join("") + "\n";
   legs.failingSignatures = failingSignatures;
   return legs;
 }
@@ -6769,24 +7587,34 @@ export function realCheckpointDeps(
   // file as still-failing (never a false-green). `--no-file-parallelism` + the fork cap
   // give a clean, deterministic single-file run. Defined as a const (not `this`) so
   // runGreen can call it directly without depending on call-site binding.
-  const isolationRun = async ({ workspace, file }: { workspace: string; file: string }): Promise<IsolationResult> => {
+  const isolationRun = async ({
+    workspace,
+    file,
+  }: {
+    workspace: string;
+    file: string;
+  }): Promise<IsolationResult> => {
     const env = buildGreenCheckpointEnv(null);
-    env.VITEST_MAX_FORKS = '1';
-    env.VITEST_MAX_THREADS = '1';
+    env.VITEST_MAX_FORKS = "1";
+    env.VITEST_MAX_THREADS = "1";
     // EI-18669336904251384: measure wall-clock duration so the retry-loop log can tell a
     // real ambient-load starvation (slow) apart from a fast deterministic failure (real
     // break / stale candidate) instead of blaming load unconditionally.
     const startedAt = Date.now();
     try {
-      const invocation = resolveWorkspaceTestInvocation(cfg.checkpointRoot, workspace, [
-        '--no-file-parallelism',
-        // EI-19332206710686203: single concurrency removes the SUITE's contention but not
-        // the box's ambient load, so an isolated re-run can still be slow. Without this the
-        // re-run inherits vitest's 5s default and re-fails a merely-slow test — the absorber
-        // would then never rescue a timeout-shaped flake, which is the commonest kind here.
-        `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`,
-        file,
-      ]);
+      const invocation = resolveWorkspaceTestInvocation(
+        cfg.checkpointRoot,
+        workspace,
+        [
+          "--no-file-parallelism",
+          // EI-19332206710686203: single concurrency removes the SUITE's contention but not
+          // the box's ambient load, so an isolated re-run can still be slow. Without this the
+          // re-run inherits vitest's 5s default and re-fails a merely-slow test — the absorber
+          // would then never rescue a timeout-shaped flake, which is the commonest kind here.
+          `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`,
+          file,
+        ],
+      );
       const r = await exec(invocation.cmd, invocation.args, {
         cwd: invocation.cwd,
         env,
@@ -6797,7 +7625,7 @@ export function realCheckpointDeps(
       // retry loop can tell "matches the original failure exactly, structurally can't be
       // load" from "looks like a real timing-sensitive flake" without spending another
       // vitest re-run — see isDeterministicFailureShape.
-      const out = `${r.stdout ?? ''}${r.stderr ?? ''}`;
+      const out = `${r.stdout ?? ""}${r.stderr ?? ""}`;
       return {
         workspace,
         file,
@@ -6808,8 +7636,16 @@ export function realCheckpointDeps(
         hasAssertionSignature: outputHasAssertionSignature(out),
       };
     } catch (e) {
-      log(`isolation: vitest re-run of ${workspace}::${file} threw (${e instanceof Error ? e.message : e})`);
-      return { workspace, file, passed: false, errored: true, durationMs: Date.now() - startedAt };
+      log(
+        `isolation: vitest re-run of ${workspace}::${file} threw (${e instanceof Error ? e.message : e})`,
+      );
+      return {
+        workspace,
+        file,
+        passed: false,
+        errored: true,
+        durationMs: Date.now() - startedAt,
+      };
     }
   };
   // WI-6956: the CONFIRMING co-execution re-run. Same checkpoint tree and the same
@@ -6843,10 +7679,11 @@ export function realCheckpointDeps(
       // it is what contention is, and scoring it as one was the category error. A genuine
       // co-execution DEADLOCK is unaffected: it blows 60s exactly as it blew 5s, and
       // CONCURRENT_CONFIRM_TIMEOUT_MS still bounds the whole run.
-      const invocation = resolveWorkspaceTestInvocation(cfg.checkpointRoot, workspace, [
-        `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`,
-        ...files,
-      ]);
+      const invocation = resolveWorkspaceTestInvocation(
+        cfg.checkpointRoot,
+        workspace,
+        [`--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`, ...files],
+      );
       const r = await exec(invocation.cmd, invocation.args, {
         cwd: invocation.cwd,
         env,
@@ -6855,7 +7692,9 @@ export function realCheckpointDeps(
       });
       return { workspace, passed: r.code === 0 };
     } catch (e) {
-      log(`isolation: confirming co-execution re-run of ${workspace} threw (${e instanceof Error ? e.message : e})`);
+      log(
+        `isolation: confirming co-execution re-run of ${workspace} threw (${e instanceof Error ? e.message : e})`,
+      );
       return { workspace, passed: false, errored: true };
     }
   };
@@ -6868,16 +7707,24 @@ export function realCheckpointDeps(
   // realFailure. A bounded timeout caps a genuine hang; on timeout/spawn-error this throws,
   // and attemptWorkerCrashAbsorption treats a throwing re-run as still-failing (never a
   // false green).
-  const workspaceRerun = async ({ workspace }: { workspace: string }): Promise<WorkspaceRerunResult> => {
+  const workspaceRerun = async ({
+    workspace,
+  }: {
+    workspace: string;
+  }): Promise<WorkspaceRerunResult> => {
     const env = buildGreenCheckpointEnv(null);
-    env.VITEST_MAX_FORKS = '1';
-    env.VITEST_MAX_THREADS = '1';
+    env.VITEST_MAX_FORKS = "1";
+    env.VITEST_MAX_THREADS = "1";
     // EI-19332206710686203: same rescue-discrimination problem as isolationRun — this re-runs
     // a whole workspace at single concurrency after a worker-pool crash, on a box still under
     // the load that crashed it. On vitest's 5s default a merely-slow test is scored
     // `realFailure` and the crash is never absorbed. Note this argv had no `--` separator
     // before: everything after it is forwarded to vitest, not consumed by npm.
-    const invocation = resolveWorkspaceTestInvocation(cfg.checkpointRoot, workspace, [`--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`]);
+    const invocation = resolveWorkspaceTestInvocation(
+      cfg.checkpointRoot,
+      workspace,
+      [`--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`],
+    );
     const r = await exec(invocation.cmd, invocation.args, {
       cwd: invocation.cwd,
       env,
@@ -6886,7 +7733,8 @@ export function realCheckpointDeps(
     });
     if (r.code === 0) return { workspace, passed: true };
     const out = r.stdout + r.stderr;
-    if (isWorkerPoolCrash(out)) return { workspace, passed: false, crashedAgain: true };
+    if (isWorkerPoolCrash(out))
+      return { workspace, passed: false, crashedAgain: true };
     return { workspace, passed: false, realFailure: true };
   };
   return {
@@ -6900,35 +7748,44 @@ export function realCheckpointDeps(
     // `--files` attributes the verdict to the committed last-green..candidate diff.
     // A pass is provisional; runGreen still runs the unscoped post-suite leg later.
     async runChangedFileTypecheckPreflight(files) {
-      const scriptCheck = checkNpmScript(cfg.checkpointRoot, 'lint:tsc');
-      if (scriptCheck === 'absent') {
+      const scriptCheck = checkNpmScript(cfg.checkpointRoot, "lint:tsc");
+      if (scriptCheck === "absent") {
         return {
-          status: 'skipped',
-          summary: 'candidate provides no lint:tsc script',
+          status: "skipped",
+          summary: "candidate provides no lint:tsc script",
         };
       }
-      if (scriptCheck === 'unreadable') {
+      if (scriptCheck === "unreadable") {
         return {
-          status: 'failed',
+          status: "failed",
           summary:
             `package.json in ${cfg.checkpointRoot} is unreadable while checking for lint:tsc; ` +
-            'the isolated candidate tree cannot be judged',
-          failingSignatures: ['package.json-unreadable'],
+            "the isolated candidate tree cannot be judged",
+          failingSignatures: ["package.json-unreadable"],
         };
       }
       const env = buildGreenCheckpointEnv(null, process.env, runId);
-      env.NODE_OPTIONS = sanitizeForkNodeOptions(env.NODE_OPTIONS, GREEN_CHECKPOINT_POST_SUITE_HEAP_MB);
-      const result = await exec('npm', ['run', 'lint:tsc', '--', `--files=${files.join(',')}`], {
-        cwd: cfg.checkpointRoot,
-        env,
-        allowNonZero: true,
-        heavy: true,
-      });
+      env.NODE_OPTIONS = sanitizeForkNodeOptions(
+        env.NODE_OPTIONS,
+        GREEN_CHECKPOINT_POST_SUITE_HEAP_MB,
+      );
+      const result = await exec(
+        "npm",
+        ["run", "lint:tsc", "--", `--files=${files.join(",")}`],
+        {
+          cwd: cfg.checkpointRoot,
+          env,
+          allowNonZero: true,
+          heavy: true,
+        },
+      );
       const output = result.stdout + result.stderr;
-      const summary = summarizeSuiteOutput(output).trim() || `npm run lint:tsc exited ${result.code}`;
+      const summary =
+        summarizeSuiteOutput(output).trim() ||
+        `npm run lint:tsc exited ${result.code}`;
       return result.code === 0
-        ? { status: 'passed', summary, failingSignatures: [] }
-        : { status: 'failed', summary, failingSignatures: ['lint:tsc'] };
+        ? { status: "passed", summary, failingSignatures: [] }
+        : { status: "failed", summary, failingSignatures: ["lint:tsc"] };
     },
     // EI-10800: the single AWAITED emit seam every gate-verdict now flows through. Was a
     // fire-and-forget `void import(...).then(emit)` inlined at each call site — the green
@@ -6936,15 +7793,23 @@ export function realCheckpointDeps(
     // awaiter. Awaiting couples the emit's fireAwaitsForKey/insertDeliveries to the caller's
     // lifetime (the caller stays alive to record the pipeline_event, so the fire is durable).
     async emitEvent({ key, summary, payload, cancelSiblingKeysFor }) {
-      const { emitAwaitedEvent } = await import('@papercusp/operator-core/lib/events/await/engine');
-      await emitAwaitedEvent({ key, summary, payload, source: 'green-checkpoint', cancelSiblingKeysFor });
+      const { emitAwaitedEvent } =
+        await import("@papercusp/operator-core/lib/events/await/engine");
+      await emitAwaitedEvent({
+        key,
+        summary,
+        payload,
+        source: "green-checkpoint",
+        cancelSiblingKeysFor,
+      });
     },
     // EI-13992: real wiring for the migration-currency preflight (see
     // CheckpointDeps.ensureMigrationsCurrent doc) — applies to the SAME dev PG
     // db-boot-migrate targets at operator boot, just without its once-per-process
     // `_ran` guard (a gate run is its own per-invocation caller).
     async ensureMigrationsCurrent() {
-      const { applyPendingMigrationsNow } = await import('@papercusp/operator-core/lib/db-boot-migrate');
+      const { applyPendingMigrationsNow } =
+        await import("@papercusp/operator-core/lib/db-boot-migrate");
       return applyPendingMigrationsNow();
     },
     // EI-18666996942859193: real wiring for the tree-drift preflight (see
@@ -6952,7 +7817,8 @@ export function realCheckpointDeps(
     // tree this run actually judges (a hardlink copy of the integration tree taken by
     // setupTree, which has already run by the time this is called).
     async checkTreeDrift() {
-      const { checkLockTreeDrift } = await import('@papercusp/operator-core/lib/boot-integrity-preflight');
+      const { checkLockTreeDrift } =
+        await import("@papercusp/operator-core/lib/boot-integrity-preflight");
       return checkLockTreeDrift({ rootDir: cfg.checkpointRoot });
     },
     // EI-18669342433807110: real wiring for the in-flight-refire marker. Mirrors
@@ -6962,10 +7828,12 @@ export function realCheckpointDeps(
     // verdict write does.
     async recordInFlightRetriage(info) {
       try {
-        const { gateVerdictTargetFromEnv } = await import('@papercusp/operator-core/lib/release/gate-verdict-target');
+        const { gateVerdictTargetFromEnv } =
+          await import("@papercusp/operator-core/lib/release/gate-verdict-target");
         const target = gateVerdictTargetFromEnv();
         if (!target) return; // not the record-target-designated run — nothing to mark.
-        const { recordInFlightRetriage: write } = await import('@papercusp/operator-core/lib/release/in-flight-retriage');
+        const { recordInFlightRetriage: write } =
+          await import("@papercusp/operator-core/lib/release/in-flight-retriage");
         await write(target, info);
       } catch {
         /* best-effort diagnostic — never let this break the checkpoint run */
@@ -6977,10 +7845,12 @@ export function realCheckpointDeps(
     // "unknown", never as "no run in flight".
     async recordInFlightCandidate(info) {
       try {
-        const { gateVerdictTargetFromEnv } = await import('@papercusp/operator-core/lib/release/gate-verdict-target');
+        const { gateVerdictTargetFromEnv } =
+          await import("@papercusp/operator-core/lib/release/gate-verdict-target");
         const target = gateVerdictTargetFromEnv();
         if (!target) return;
-        const { recordInFlightCandidate: write } = await import('@papercusp/operator-core/lib/release/in-flight-candidate');
+        const { recordInFlightCandidate: write } =
+          await import("@papercusp/operator-core/lib/release/in-flight-candidate");
         await write(target, info);
       } catch {
         /* best-effort diagnostic — never let this break the checkpoint run */
@@ -6988,10 +7858,12 @@ export function realCheckpointDeps(
     },
     async clearInFlightCandidate() {
       try {
-        const { gateVerdictTargetFromEnv } = await import('@papercusp/operator-core/lib/release/gate-verdict-target');
+        const { gateVerdictTargetFromEnv } =
+          await import("@papercusp/operator-core/lib/release/gate-verdict-target");
         const target = gateVerdictTargetFromEnv();
         if (!target) return;
-        const { clearInFlightCandidate: clear } = await import('@papercusp/operator-core/lib/release/in-flight-candidate');
+        const { clearInFlightCandidate: clear } =
+          await import("@papercusp/operator-core/lib/release/in-flight-candidate");
         await clear(target);
       } catch {
         /* best-effort diagnostic — never let this break the checkpoint run */
@@ -7003,7 +7875,8 @@ export function realCheckpointDeps(
     // or via this run's own in-process re-candidation onto a newer tip.
     async cancelStaleAwaits(fromCandidate) {
       try {
-        const { cancelStaleCheckpointAwaits } = await import('@papercusp/operator-core/lib/release-checkpoint-launch');
+        const { cancelStaleCheckpointAwaits } =
+          await import("@papercusp/operator-core/lib/release-checkpoint-launch");
         await cancelStaleCheckpointAwaits(cfg.integrationRoot, fromCandidate);
       } catch {
         /* best-effort — never let this break the auto-refire it runs ahead of */
@@ -7019,20 +7892,27 @@ export function realCheckpointDeps(
     // recorded" rather than breaking the refire it runs ahead of.
     async recordVerdict(r) {
       try {
-        const { gateVerdictTargetFromEnv } = await import('@papercusp/operator-core/lib/release/gate-verdict-target');
+        const { gateVerdictTargetFromEnv } =
+          await import("@papercusp/operator-core/lib/release/gate-verdict-target");
         const target = gateVerdictTargetFromEnv();
         if (!target) return false; // not the record-target-designated run — nothing to record.
-        const { recordCheckpointVerdict } = await import('@papercusp/operator-core/lib/harness/routines/release-actions');
+        const { recordCheckpointVerdict } =
+          await import("@papercusp/operator-core/lib/harness/routines/release-actions");
         return await recordCheckpointVerdict(target, r);
       } catch (e) {
-        console.error(`${orchestratorStdoutTag()} superseded-pass verdict record failed (non-fatal): ${e instanceof Error ? e.message : e}`);
+        console.error(
+          `${orchestratorStdoutTag()} superseded-pass verdict record failed (non-fatal): ${e instanceof Error ? e.message : e}`,
+        );
         return false;
       }
     },
     async setupTree(ref) {
       // P-019: the SCRIPT lives in the TOOLING tree (papercusp), not cfg.integrationRoot
       // (the SUBJECT — a per-hive repo has no release scripts). --integration stays the subject.
-      const script = path.join(toolingRoot(), 'apps/operator/bin/release/setup-release-checkout.sh');
+      const script = path.join(
+        toolingRoot(),
+        "apps/operator/bin/release/setup-release-checkout.sh",
+      );
       // `force` (not `auto`) for the CHECKPOINT tree: the `auto` lockfile/entry-set
       // heuristic is structurally blind to NESTED dependency drift (e.g. astro's nested
       // get-tsconfig@5.0.0-beta.4 vs the hoisted root 4.14.0), so it intermittently left
@@ -7047,10 +7927,24 @@ export function realCheckpointDeps(
       // suite path (see SETUP_TREE_TIMEOUT_MS). `killProcessGroupOnTimeout` ensures a timeout
       // reaches the script's whole subtree (git/cp/npm), not just the `bash` wrapper, so it
       // can't orphan a half-finished node_modules copy.
-      await exec('bash', [script, '--ref', ref, '--integration', cfg.integrationRoot, '--release', cfg.checkpointRoot, '--node-modules', 'force'], {
-        timeoutMs: SETUP_TREE_TIMEOUT_MS,
-        killProcessGroupOnTimeout: true,
-      });
+      await exec(
+        "bash",
+        [
+          script,
+          "--ref",
+          ref,
+          "--integration",
+          cfg.integrationRoot,
+          "--release",
+          cfg.checkpointRoot,
+          "--node-modules",
+          "force",
+        ],
+        {
+          timeoutMs: SETUP_TREE_TIMEOUT_MS,
+          killProcessGroupOnTimeout: true,
+        },
+      );
     },
     async runGreen(treeDir, base) {
       // EI-8744: nothing-to-gate short-circuit. A codeless pot (no root package.json)
@@ -7058,12 +7952,17 @@ export function realCheckpointDeps(
       // test, and the gate went hard-RED with an empty failing-test signature, churning the
       // hourly release-fixer with nothing to fix. Nothing to gate ⇒ GREEN (see
       // isNothingToGate). Strict no-op for the real pipeline (always has a root package.json).
-      if (isNothingToGate(cfg.greenCmd, existsSync(path.join(treeDir, 'package.json')))) {
+      if (
+        isNothingToGate(
+          cfg.greenCmd,
+          existsSync(path.join(treeDir, "package.json")),
+        )
+      ) {
         const note = `no package.json in ${treeDir} — nothing to gate (green command \`${cfg.greenCmd}\` has no script to run); treating as green (EI-8744)`;
         log(note);
         return { green: true, summary: note, failingTests: [] };
       }
-      const [cmd, ...args] = cfg.greenCmd.split(' ');
+      const [cmd, ...args] = cfg.greenCmd.split(" ");
       // The gate measures the COMMITTED DEFAULTS: buildGreenCheckpointEnv strips the
       // host's identity (all PAPERCUSP_* + HOST_ENV_STRIP), pins AFFECTED_BASE to the
       // last green, caps vitest parallelism + retries once to absorb load-flakes, and
@@ -7072,7 +7971,12 @@ export function realCheckpointDeps(
       const env = buildGreenCheckpointEnv(base, process.env, runId);
       // EI-78 `heavy`: the single biggest CPU consumer on this box outside the fleet itself
       // (measured 274s-2773s per run over 19 runs on 2026-07-26).
-      const r = await exec(cmd, args, { cwd: treeDir, env, allowNonZero: true, heavy: true });
+      const r = await exec(cmd, args, {
+        cwd: treeDir,
+        env,
+        allowNonZero: true,
+        heavy: true,
+      });
 
       // WI-6053: the post-suite legs (typecheck · migrations lint · identity lints ·
       // design-primitives lint · agent-state-plane lints · SPA build) live in ONE function
@@ -7082,13 +7986,14 @@ export function realCheckpointDeps(
       // `*Ok` flag defaulting to `true`, so a red suite skipped every one and they all still
       // read as "passed"; absorption then set green without ever running them. See
       // runPostSuiteLegs' doc for the incident this cost us.
-      let legs = r.code === 0
-        ? await runPostSuiteLegs(treeDir, env, exec, cfg.spaBuildWorkspace)
-        : legsNotRun('suite red — post-suite legs deferred until the suite is considered passing');
+      let legs =
+        r.code === 0
+          ? await runPostSuiteLegs(treeDir, env, exec, cfg.spaBuildWorkspace)
+          : legsNotRun(
+              "suite red — post-suite legs deferred until the suite is considered passing",
+            );
       let green = r.code === 0 && legs.ok;
       let fullOutput = r.stdout + r.stderr + legs.output;
-
-
 
       // load-flake-isolation-2026-06-23: the SAFE flake-absorption pass. ONLY when the
       // SUITE is what failed (r.code !== 0) — a build break is deterministic, never a
@@ -7123,15 +8028,23 @@ export function realCheckpointDeps(
         // defect this item exists to remove. Best-effort in both directions (the writer
         // already swallows its own errors), and a marker stranded by a crash is harmless:
         // pc-heavy gates on the lock owner's LIVE pid first, so a dead run clamps nobody.
-        const _phaseLockDir = checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot);
-        writeCheckpointRunPhase(_phaseLockDir, 'isolating');
+        const _phaseLockDir = checkpointRunLockDir(
+          cfg.checkpointLogDir,
+          cfg.integrationRoot,
+        );
+        writeCheckpointRunPhase(_phaseLockDir, "isolating");
         // WI-6956: `concurrentRun` first so an explicitly-configured flakeAbsorptionOpts
         // (the real-deps tests' injection seam) still wins; absent it, the real confirming
         // runner above is what gates absorption.
-        const outcome = await attemptFlakeAbsorption(fullOutput, isolationRun, log, {
-          concurrentRun,
-          ...flakeAbsorptionOpts,
-        });
+        const outcome = await attemptFlakeAbsorption(
+          fullOutput,
+          isolationRun,
+          log,
+          {
+            concurrentRun,
+            ...flakeAbsorptionOpts,
+          },
+        );
         isolationNote = outcome.note;
         // EI-18685042025868279: record what was re-run REGARDLESS of the absorb verdict —
         // the same reasoning as isolationNote above. A red that cost N re-runs per file is
@@ -7140,7 +8053,10 @@ export function realCheckpointDeps(
         if (outcome.absorbedToGreen) {
           suiteAbsorbed = true;
           flakeSuspects = outcome.flakeSuspects;
-        } else if (isWorkerPoolCrash(fullOutput) && parseFailingFilesByWorkspace(fullOutput).length === 0) {
+        } else if (
+          isWorkerPoolCrash(fullOutput) &&
+          parseFailingFilesByWorkspace(fullOutput).length === 0
+        ) {
           // WI-806: a vitest WORKER-POOL crash (a fork OOM/terminate under fleet load) emits
           // NO per-file `FAIL` lines, so the per-file isolation absorber above found zero
           // files and couldn't decide — it falls straight through to a hard RED that wedges
@@ -7148,7 +8064,11 @@ export function realCheckpointDeps(
           // re-run the crashed WORKSPACE(S) once at reduced concurrency. Only a genuine
           // PASSING re-run flips to green (surfaced as a flake suspect); a re-crash or any
           // real failure stays red. Fail-safe — proof required, never a blanket green.
-          const crash = await attemptWorkerCrashAbsorption(fullOutput, workspaceRerun, log);
+          const crash = await attemptWorkerCrashAbsorption(
+            fullOutput,
+            workspaceRerun,
+            log,
+          );
           isolationNote = crash.note;
           // Concat, never overwrite: the isolation absorber ran FIRST and its re-runs are
           // just as real for having failed to absorb. Overwriting here would erase them.
@@ -7163,7 +8083,7 @@ export function realCheckpointDeps(
         // `isolating` would over-throttle the fleet for the rest of the run. No
         // try/finally: if absorption throws, the run dies and its pid with it, and
         // pc-heavy gates on the lock owner's LIVE pid before it ever reads the phase.
-        writeCheckpointRunPhase(_phaseLockDir, 'suite');
+        writeCheckpointRunPhase(_phaseLockDir, "suite");
 
         if (suiteAbsorbed) {
           // WI-6053 — THE FIX. Absorption is not a bypass. The suite is now considered
@@ -7172,12 +8092,21 @@ export function realCheckpointDeps(
           // `true` defaults. Note `green` is ASSIGNED FROM the legs' verdict — the old code
           // set it to a bare `true` right here, which is precisely how five checks that
           // never ran became five assumed passes and rode a fast-forward into `main`.
-          legs = await runPostSuiteLegs(treeDir, env, exec, cfg.spaBuildWorkspace);
+          legs = await runPostSuiteLegs(
+            treeDir,
+            env,
+            exec,
+            cfg.spaBuildWorkspace,
+          );
           fullOutput += legs.output;
           green = legs.ok;
           if (!legs.ok) {
-            const failed = legs.failingSignatures.join(', ') || '@papercusp/operator-vite (SPA build)';
-            log(`suite red was absorbed as a load-flake, but a post-suite leg FAILED — holding the gate: ${failed}`);
+            const failed =
+              legs.failingSignatures.join(", ") ||
+              "@papercusp/operator-vite (SPA build)";
+            log(
+              `suite red was absorbed as a load-flake, but a post-suite leg FAILED — holding the gate: ${failed}`,
+            );
           }
         }
       }
@@ -7192,13 +8121,18 @@ export function realCheckpointDeps(
       try {
         const logDir = cfg.checkpointLogDir;
         mkdirSync(logDir, { recursive: true });
-        const stamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const stamp = new Date().toISOString().replace(/[:.]/g, "-");
         // WI-6068: name the CANDIDATE, not just the base. `base` is `main`, which is
         // constant between fast-forwards, so it cannot distinguish two runs — let alone a
         // stale red from a fresh verdict. See resolveCandidateSha for the incident.
         const candidateSha = resolveCandidateSha(treeDir);
-        const candidatePart = candidateSha ? `-cand-${candidateSha.slice(0, 12)}` : '';
-        logPath = path.join(logDir, `${stamp}-base-${(base ?? 'none').slice(0, 12)}${candidatePart}.log`);
+        const candidatePart = candidateSha
+          ? `-cand-${candidateSha.slice(0, 12)}`
+          : "";
+        logPath = path.join(
+          logDir,
+          `${stamp}-base-${(base ?? "none").slice(0, 12)}${candidatePart}.log`,
+        );
         // ...and restate the identity in the BODY too, so a log that gets copied, pasted,
         // or tailed out of its filename is still self-identifying.
         // EI-18832272104497819: state this run's OWN verdict in the header. The body
@@ -7216,8 +8150,8 @@ export function realCheckpointDeps(
           // its own first line instead of opening exactly like a genuine one. Nothing parses
           // this header (verified: the only other `candidate=` writer is the GATE_PROMOTION
           // trailer), so tagging it costs no reader.
-          `${orchestratorStdoutTag()} candidate=${candidateSha ?? 'unresolved'} ` +
-          `base=${base ?? 'none'} written=${new Date().toISOString()} green=${green} ` +
+          `${orchestratorStdoutTag()} candidate=${candidateSha ?? "unresolved"} ` +
+          `base=${base ?? "none"} written=${new Date().toISOString()} green=${green} ` +
           `promoted=see-GATE_PROMOTION (trailer at EOF; absent ⇒ this run never reached a promotion decision)\n`;
         // EI-19346606967082413: the ORCHESTRATOR transcript rides AHEAD of the suite stdout.
         // Without this call the file records only what the SUITE printed, never what the gate
@@ -7238,12 +8172,17 @@ export function realCheckpointDeps(
         // invariant true for both instead of only the suite half.
         writeFileSync(
           logPath,
-          header + defangCapturedResultMarkers(renderOrchestratorTranscript() + fullOutput),
+          header +
+            defangCapturedResultMarkers(
+              renderOrchestratorTranscript() + fullOutput,
+            ),
         );
         log(`full suite output → ${logPath}`);
         // P-014: prune logs older than 14 days so this dir doesn't grow unbounded.
         pruneOldLogs(logDir, 14);
-      } catch { /* best-effort — the gate verdict must not depend on logging */ }
+      } catch {
+        /* best-effort — the gate verdict must not depend on logging */
+      }
 
       // P-012: a stable failure signature from the FULL output (before truncation), folding
       // the SPA build break in, so the release-fixer dedups by WHAT failed, not the candidate
@@ -7258,9 +8197,14 @@ export function realCheckpointDeps(
       // real typecheck/lint/build failure a second false-green path into `main`, defeating
       // the fix above. A non-absorbed run is unchanged: the suite output IS the evidence.
       const signatureOutput = suiteAbsorbed ? legs.output : fullOutput;
-      const buildOk = legs.build.status !== 'failed';
-      let failingTests = checkpointFailureSignature(signatureOutput, green, buildOk);
-      for (const sig of legs.failingSignatures) if (!failingTests.includes(sig)) failingTests.push(sig);
+      const buildOk = legs.build.status !== "failed";
+      let failingTests = checkpointFailureSignature(
+        signatureOutput,
+        green,
+        buildOk,
+      );
+      for (const sig of legs.failingSignatures)
+        if (!failingTests.includes(sig)) failingTests.push(sig);
       let summary = summarizeSuiteOutput(fullOutput);
       // EI-19340004308033958 wanted to stop a MANGLED failingTests path (a truncated
       // suffix of a real file) misleading a triager, and DROPPED any FILE-shaped entry
@@ -7294,31 +8238,41 @@ export function realCheckpointDeps(
       if (!green && failingTests.length) {
         const validated = validateFailingTestPaths(failingTests, treeDir);
         if (validated.dropped.length) {
-          const note = `\n\nNOTE: ${validated.dropped.length} failingTests entr${validated.dropped.length === 1 ? 'y' : 'ies'} did not resolve under the candidate tree root (expected for a workspace-relative path — see WI-7239; retained, not dropped): ${validated.dropped.join(', ')}`;
+          const note = `\n\nNOTE: ${validated.dropped.length} failingTests entr${validated.dropped.length === 1 ? "y" : "ies"} did not resolve under the candidate tree root (expected for a workspace-relative path — see WI-7239; retained, not dropped): ${validated.dropped.join(", ")}`;
           summary = `${summary}${note}`.slice(-2000);
-          log(`${validated.dropped.length} failingTests entr${validated.dropped.length === 1 ? 'y' : 'ies'} did not resolve under the tree root (retained — workspace-relative paths never resolve there; WI-7239): ${validated.dropped.join(', ')}`);
+          log(
+            `${validated.dropped.length} failingTests entr${validated.dropped.length === 1 ? "y" : "ies"} did not resolve under the tree root (retained — workspace-relative paths never resolve there; WI-7239): ${validated.dropped.join(", ")}`,
+          );
         }
       }
       if (!green && buildOk && failingTests.length) {
         try {
-          const quarantinePath = path.join(treeDir, 'quarantine.txt');
-          const quarantine = existsSync(quarantinePath) ? parseTestQuarantine(readFileSync(quarantinePath, 'utf8')) : [];
+          const quarantinePath = path.join(treeDir, "quarantine.txt");
+          const quarantine = existsSync(quarantinePath)
+            ? parseTestQuarantine(readFileSync(quarantinePath, "utf8"))
+            : [];
           const q = applyTestQuarantine(fullOutput, failingTests, quarantine);
           if (q.quarantined.length) {
             failingTests = q.failingTests;
-            const note = `\n\nQuarantined out of v1 gate verdict: ${q.quarantined.join(', ')}`;
+            const note = `\n\nQuarantined out of v1 gate verdict: ${q.quarantined.join(", ")}`;
             summary = `${summary}${note}`.slice(-2000);
-            log(`${q.quarantined.length} quarantined test failure(s) excluded from v1 verdict: ${q.quarantined.join(', ')}`);
+            log(
+              `${q.quarantined.length} quarantined test failure(s) excluded from v1 verdict: ${q.quarantined.join(", ")}`,
+            );
           }
           if (q.allFailuresQuarantined) green = true;
         } catch (e) {
-          log(`quarantine read failed; preserving red verdict: ${e instanceof Error ? e.message : String(e)}`);
+          log(
+            `quarantine read failed; preserving red verdict: ${e instanceof Error ? e.message : String(e)}`,
+          );
         }
       }
       // Workspace-mapped failures for the stale-candidate re-triage (which file, and the
       // cwd to re-run it in). Recomputed from the raw output, not `failingTests`, because
       // the re-triage needs the {workspace,file} pair, not the flat signature.
-      const failingFiles = green ? [] : parseFailingFilesByWorkspace(signatureOutput);
+      const failingFiles = green
+        ? []
+        : parseFailingFilesByWorkspace(signatureOutput);
       // Publish the gate's canonical red attribution while we are still inside the real-deps
       // runner. The orchestration caller appends richer notes later, but a self-watchdog,
       // supervisor loss, or other interruption between this return and that append must not
@@ -7342,11 +8296,16 @@ export function realCheckpointDeps(
         ...(green ? { cleanGreen: !retriedTests?.length } : {}),
       };
     },
-    advance: (candidate) => advanceReady(cfg.integrationRoot, candidate, cfg.releaseRef),
+    advance: (candidate) =>
+      advanceReady(cfg.integrationRoot, candidate, cfg.releaseRef),
     // Stale-candidate re-triage seams (P-004). The quiet-cut judges a commit that is
     // minutes-to-hours old; these let the gate ask "is this red still real at tip?".
     async resolveTip() {
-      const r = await exec('git', ['-C', cfg.integrationRoot, 'rev-parse', cfg.integrationBranch], { allowNonZero: true });
+      const r = await exec(
+        "git",
+        ["-C", cfg.integrationRoot, "rev-parse", cfg.integrationBranch],
+        { allowNonZero: true },
+      );
       return r.code === 0 ? r.stdout.trim() || null : null;
     },
     async runTestsAtRef(ref, files) {
@@ -7379,31 +8338,41 @@ export function realCheckpointDeps(
       // self-announcing instead of silently trusted the way the bare "REPRODUCE at
       // tip <sha>" verdict was before. Best-effort: a failure to resolve HEAD must
       // never block the real test run below.
-      const verifiedHead = await revParse(cfg.checkpointRoot, 'HEAD').catch(() => 'unresolved');
+      const verifiedHead = await revParse(cfg.checkpointRoot, "HEAD").catch(
+        () => "unresolved",
+      );
       const headNote = `verified-head=${verifiedHead.slice(0, 12)} (requested ${ref.slice(0, 12)})`;
       const byWorkspace = new Map<string, string[]>();
-      for (const f of files) byWorkspace.set(f.workspace, [...(byWorkspace.get(f.workspace) ?? []), f.file]);
+      for (const f of files)
+        byWorkspace.set(f.workspace, [
+          ...(byWorkspace.get(f.workspace) ?? []),
+          f.file,
+        ]);
       const env = buildGreenCheckpointEnv(null);
-      env.VITEST_MAX_FORKS = '1';
-      env.VITEST_MAX_THREADS = '1';
+      env.VITEST_MAX_FORKS = "1";
+      env.VITEST_MAX_THREADS = "1";
       const summaries: string[] = [headNote];
       for (const [workspace, wsFiles] of byWorkspace) {
-        const invocation = resolveWorkspaceTestInvocation(cfg.checkpointRoot, workspace, [
-          '--no-file-parallelism',
-          // EI-19332206710686203: the stale-candidate rescue asks "is this red already fixed
-          // at tip?" — a question it cannot answer if a slow test re-times-out at vitest's
-          // 5s default. A false `pass:false` here reports a genuinely-fixed tip as still
-          // broken and keeps `main` frozen on a red that no longer exists.
-          `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`,
-          ...wsFiles,
-        ]);
+        const invocation = resolveWorkspaceTestInvocation(
+          cfg.checkpointRoot,
+          workspace,
+          [
+            "--no-file-parallelism",
+            // EI-19332206710686203: the stale-candidate rescue asks "is this red already fixed
+            // at tip?" — a question it cannot answer if a slow test re-times-out at vitest's
+            // 5s default. A false `pass:false` here reports a genuinely-fixed tip as still
+            // broken and keeps `main` frozen on a red that no longer exists.
+            `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`,
+            ...wsFiles,
+          ],
+        );
         const r = await exec(invocation.cmd, invocation.args, {
           cwd: invocation.cwd,
           env,
           allowNonZero: true,
           timeoutMs: ISOLATION_RUN_TIMEOUT_MS,
-        }).catch((e: unknown) => ({ code: 1, stdout: '', stderr: String(e) }));
-        summaries.push(`${workspace}: ${r.code === 0 ? 'pass' : 'FAIL'}`);
+        }).catch((e: unknown) => ({ code: 1, stdout: "", stderr: String(e) }));
+        summaries.push(`${workspace}: ${r.code === 0 ? "pass" : "FAIL"}`);
         if (r.code !== 0) {
           // The group verdict is FINAL here (`pass:false`, unchanged). Everything below is
           // DIAGNOSTIC — re-run each named file ALONE so the held-gate verdict can name which
@@ -7413,30 +8382,39 @@ export function realCheckpointDeps(
           // Timing is safe by construction: a FAILED group run always classifies `real-red`, so
           // no auto-refire is pending and these extra minutes cannot starve a rescue. The only
           // cost is delaying a verdict that is not going to change.
-          const perFile = await splitTipFailuresPerFile(files, async (wsName, file) => {
-            const invocation = resolveWorkspaceTestInvocation(cfg.checkpointRoot, wsName, [
-              '--no-file-parallelism',
-              `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`,
-              file,
-            ]);
-            const one = await exec(invocation.cmd, invocation.args, {
-              cwd: invocation.cwd,
-              env,
-              allowNonZero: true,
-              timeoutMs: ISOLATION_RUN_TIMEOUT_MS,
-            }).catch(() => null);
-            // A throw is INDETERMINATE, not a failure — returning false here would name a
-            // healthy file under "STILL FAILING (fix these)". null abandons the whole split.
-            return one === null ? null : one.code === 0;
-          }).catch(() => undefined);
+          const perFile = await splitTipFailuresPerFile(
+            files,
+            async (wsName, file) => {
+              const invocation = resolveWorkspaceTestInvocation(
+                cfg.checkpointRoot,
+                wsName,
+                [
+                  "--no-file-parallelism",
+                  `--testTimeout=${RESCUE_TEST_TIMEOUT_MS}`,
+                  file,
+                ],
+              );
+              const one = await exec(invocation.cmd, invocation.args, {
+                cwd: invocation.cwd,
+                env,
+                allowNonZero: true,
+                timeoutMs: ISOLATION_RUN_TIMEOUT_MS,
+              }).catch(() => null);
+              // A throw is INDETERMINATE, not a failure — returning false here would name a
+              // healthy file under "STILL FAILING (fix these)". null abandons the whole split.
+              return one === null ? null : one.code === 0;
+            },
+          ).catch(() => undefined);
           if (perFile) {
             const still = perFile.filter((p) => !p.pass).length;
-            summaries.push(`per-file split: ${still}/${perFile.length} still fail alone at tip`);
+            summaries.push(
+              `per-file split: ${still}/${perFile.length} still fail alone at tip`,
+            );
           }
-          return { pass: false, summary: summaries.join('; '), perFile };
+          return { pass: false, summary: summaries.join("; "), perFile };
         }
       }
-      return { pass: true, summary: summaries.join('; ') };
+      return { pass: true, summary: summaries.join("; ") };
     },
     // EI-18759362119598634: the LINT/TYPECHECK sibling of runTestsAtRef above — re-run
     // EXACTLY the named non-test GATE script(s) (see NON_TEST_GATE_SCRIPTS) at `ref`, in
@@ -7448,7 +8426,9 @@ export function realCheckpointDeps(
       // to the caller's .catch(() => null), which reads as tipRetest=null → 'tip re-run
       // unavailable' — never a fabricated REPRODUCE for a tip we never actually checked out.
       await this.setupTree(ref);
-      const verifiedHead = await revParse(cfg.checkpointRoot, 'HEAD').catch(() => 'unresolved');
+      const verifiedHead = await revParse(cfg.checkpointRoot, "HEAD").catch(
+        () => "unresolved",
+      );
       const headNote = `verified-head=${verifiedHead.slice(0, 12)} (requested ${ref.slice(0, 12)})`;
       // EI-20092765275570648: two admissible entry shapes (see isRerunnableGateEntry) —
       // a registry id expands to its root script(s); a `<ws> :: <script>` task id runs
@@ -7462,29 +8442,58 @@ export function realCheckpointDeps(
       for (const { script, workspace } of runs) {
         const label = workspace ? `${workspace} :: ${script}` : script;
         const invocation = workspace
-          ? resolveWorkspaceScriptInvocation(cfg.checkpointRoot, workspace, script)
-          : { cmd: 'npm' as const, args: ['run', script], cwd: cfg.checkpointRoot };
-        const r = await exec(invocation.cmd, invocation.args, { cwd: invocation.cwd, env, allowNonZero: true }).catch(
-          (e: unknown) => ({ code: 1, stdout: '', stderr: String(e) }),
-        );
-        summaries.push(`${label}: ${r.code === 0 ? 'pass' : 'FAIL'}`);
-        if (r.code !== 0) return { pass: false, summary: summaries.join('; ') };
+          ? resolveWorkspaceScriptInvocation(
+              cfg.checkpointRoot,
+              workspace,
+              script,
+            )
+          : {
+              cmd: "npm" as const,
+              args: ["run", script],
+              cwd: cfg.checkpointRoot,
+            };
+        const r = await exec(invocation.cmd, invocation.args, {
+          cwd: invocation.cwd,
+          env,
+          allowNonZero: true,
+        }).catch((e: unknown) => ({ code: 1, stdout: "", stderr: String(e) }));
+        summaries.push(`${label}: ${r.code === 0 ? "pass" : "FAIL"}`);
+        if (r.code !== 0) return { pass: false, summary: summaries.join("; ") };
       }
-      return { pass: true, summary: summaries.join('; ') };
+      return { pass: true, summary: summaries.join("; ") };
     },
     // Deploy-staleness alarm seam (P-005): how old is the deployed pin, and how far does
     // it trail tip? `null` on any git failure ⇒ the alarm simply doesn't fire.
     async deployStaleness() {
       try {
-        const pin = await exec('git', ['-C', cfg.integrationRoot, 'rev-parse', cfg.releaseRef], { allowNonZero: true });
+        const pin = await exec(
+          "git",
+          ["-C", cfg.integrationRoot, "rev-parse", cfg.releaseRef],
+          { allowNonZero: true },
+        );
         if (pin.code !== 0) return null;
         const pinSha = pin.stdout.trim();
-        const ts = await exec('git', ['-C', cfg.integrationRoot, 'show', '-s', '--format=%ct', pinSha], { allowNonZero: true });
-        const behind = await exec('git', ['-C', cfg.integrationRoot, 'rev-list', '--count', `${pinSha}..${cfg.integrationBranch}`], { allowNonZero: true });
+        const ts = await exec(
+          "git",
+          ["-C", cfg.integrationRoot, "show", "-s", "--format=%ct", pinSha],
+          { allowNonZero: true },
+        );
+        const behind = await exec(
+          "git",
+          [
+            "-C",
+            cfg.integrationRoot,
+            "rev-list",
+            "--count",
+            `${pinSha}..${cfg.integrationBranch}`,
+          ],
+          { allowNonZero: true },
+        );
         if (ts.code !== 0 || behind.code !== 0) return null;
         const pinUnix = Number(ts.stdout.trim());
         const commitsBehind = Number(behind.stdout.trim());
-        if (!Number.isFinite(pinUnix) || !Number.isFinite(commitsBehind)) return null;
+        if (!Number.isFinite(pinUnix) || !Number.isFinite(commitsBehind))
+          return null;
         return { pinAgeMs: Date.now() - pinUnix * 1000, commitsBehind };
       } catch {
         return null;
@@ -7493,25 +8502,46 @@ export function realCheckpointDeps(
     // P-016 (D-010): the batch commits oldest-first (full shas), from the integration
     // repo's own history — `from..to` excludes `from`, includes `to`.
     async commitsInRange(from, to) {
-      const r = await exec('git', ['-C', cfg.integrationRoot, 'log', '--reverse', '--format=%H', `${from}..${to}`], {
-        allowNonZero: true,
-      });
+      const r = await exec(
+        "git",
+        [
+          "-C",
+          cfg.integrationRoot,
+          "log",
+          "--reverse",
+          "--format=%H",
+          `${from}..${to}`,
+        ],
+        {
+          allowNonZero: true,
+        },
+      );
       if (r.code !== 0) return [];
-      return r.stdout.split('\n').map((s) => s.trim()).filter(Boolean);
+      return r.stdout
+        .split("\n")
+        .map((s) => s.trim())
+        .filter(Boolean);
     },
     // P-016 (D-010): affected workspace NAMES for the diff `from..to`, via the shared
     // resolver's range+print mode (changed files → workspaces → reverse-deps). Pure
     // git+graph, no test run. Returns null on any resolver failure so the caller holds.
     async affectedWorkspacesForRange(from, to) {
-      const script = path.join(cfg.integrationRoot, 'scripts/affected-tests.mjs');
-      const r = await exec('node', [script, '--range-from', from, '--range-to', to, '--print-affected'], {
-        cwd: cfg.integrationRoot,
-        allowNonZero: true,
-      });
+      const script = path.join(
+        cfg.integrationRoot,
+        "scripts/affected-tests.mjs",
+      );
+      const r = await exec(
+        "node",
+        [script, "--range-from", from, "--range-to", to, "--print-affected"],
+        {
+          cwd: cfg.integrationRoot,
+          allowNonZero: true,
+        },
+      );
       if (r.code !== 0) return null;
-      const prefix = 'AFFECTED_WS\t';
+      const prefix = "AFFECTED_WS\t";
       return r.stdout
-        .split('\n')
+        .split("\n")
         .filter((l) => l.startsWith(prefix))
         .map((l) => l.slice(prefix.length).trim())
         .filter(Boolean);
@@ -7525,7 +8555,11 @@ export function realCheckpointDeps(
     // read as "nothing changed", which would over-extend the prefix.
     async changedFilesForRange(from, to) {
       try {
-        const changed = await changedFilesRecursive(cfg.integrationRoot, from, to);
+        const changed = await changedFilesRecursive(
+          cfg.integrationRoot,
+          from,
+          to,
+        );
         return changed.files;
       } catch {
         return null;
@@ -7535,16 +8569,21 @@ export function realCheckpointDeps(
     // the pre-push guard on `main` (bin/git-hooks/pre-push). Everyone else's
     // pushes to main are blocked by that hook.
     push: async (ref, baseSha) => {
-      await exec('git', ['-C', cfg.integrationRoot, 'push', 'origin', `${ref}:${ref}`], {
-        env: { ...process.env, PAPERCUSP_MAIN_PUSH_OK: '1' },
-      });
+      await exec(
+        "git",
+        ["-C", cfg.integrationRoot, "push", "origin", `${ref}:${ref}`],
+        {
+          env: { ...process.env, PAPERCUSP_MAIN_PUSH_OK: "1" },
+        },
+      );
       // See dispatchCiWorkflow's doc comment (EI-18661485259809120): the pushed commit's
       // `[skip ci]` message means the push above never actually triggers test.yml on
       // GitHub's side — re-fire it explicitly so the remote gate still runs.
       await dispatchCiWorkflow(cfg.integrationRoot, ref, log, baseSha);
     },
     async broadcast(summary, body) {
-      const { sendMessage } = await import('@papercusp/operator-core/lib/agent-tools/coordination/messages');
+      const { sendMessage } =
+        await import("@papercusp/operator-core/lib/agent-tools/coordination/messages");
       // EI-15925: EVERY co-hosted pot runs its own green-checkpoint against its own
       // integrationRoot, and they all broadcast to the SAME audience `*` in the shared
       // workspace. Unlabelled, "`main` advanced to <sha>" from the oddsmith pipeline is
@@ -7557,36 +8596,50 @@ export function realCheckpointDeps(
       const pipeline = pipelineName(cfg.integrationRoot);
       await sendMessage(
         {
-          ownerId: 'green-checkpoint',
+          ownerId: "green-checkpoint",
           ownerLabel: `green-checkpoint[${pipeline}]`,
-          source: 'static-client',
+          source: "static-client",
           workspaceId: null,
           userId: null,
         },
-        { to: ['*'], summary: `[${pipeline}] ${summary}`, body, category: 'service-health' },
+        {
+          to: ["*"],
+          summary: `[${pipeline}] ${summary}`,
+          body,
+          category: "service-health",
+        },
       );
     },
     // P-002: durable human-facing escalation surface for a held gate. Tagged
     // `source: 'green-checkpoint'` so the open/clear pair is idempotent across
     // the hourly tick. Fail-safe — the gate verdict never depends on this.
     async escalate(summary, body) {
-      const { openEscalation, listEscalations } = await import(
-        '@papercusp/operator-core/lib/agent-tools/coordination/escalations'
-      );
+      const { openEscalation, listEscalations } =
+        await import("@papercusp/operator-core/lib/agent-tools/coordination/escalations");
       // WI-36238: opt this row OUT of the attention TTL sweep. Imported here
       // rather than statically because reconcile-escalations pulls in the
       // escalations/presence/liveness-oracle DB modules, and this CLI's static
       // module graph deliberately does not carry them (same reason as the
       // dynamic import above).
-      const { SELF_RECONCILING_META_KEY } = await import(
-        '@papercusp/operator-core/lib/attention/reconcile-escalations'
-      );
-      const open = await listEscalations({ status: 'open' });
-      if (open.some((e) => (e as Record<string, unknown>).source === 'green-checkpoint')) return;
+      const { SELF_RECONCILING_META_KEY } =
+        await import("@papercusp/operator-core/lib/attention/reconcile-escalations");
+      const open = await listEscalations({ status: "open" });
+      if (
+        open.some(
+          (e) => (e as Record<string, unknown>).source === "green-checkpoint",
+        )
+      )
+        return;
       await openEscalation(
-        { ownerId: 'green-checkpoint', ownerLabel: 'green-checkpoint', source: 'static-client', workspaceId: null, userId: null },
         {
-          severity: 'blocker',
+          ownerId: "green-checkpoint",
+          ownerLabel: "green-checkpoint",
+          source: "static-client",
+          workspaceId: null,
+          userId: null,
+        },
+        {
+          severity: "blocker",
           summary,
           body,
           // WI-36238: BOTH legs of the self-reconciling class hold here, so the
@@ -7600,7 +8653,10 @@ export function realCheckpointDeps(
           // ("held: 65e99488 not green") was followed 46s later by a fresh
           // human-facing escalation for the same still-red gate on a newer
           // candidate ("held: 2aaed43d not green").
-          meta: { source: 'green-checkpoint', [SELF_RECONCILING_META_KEY]: true },
+          meta: {
+            source: "green-checkpoint",
+            [SELF_RECONCILING_META_KEY]: true,
+          },
         },
       );
       // platform-ops-batch-2026-07-09 P-002: a LIVE push (desktop-native + mobile) the
@@ -7611,29 +8667,29 @@ export function realCheckpointDeps(
       // while still red — the rising-urgency `broadcast` tiers cover the "still red"
       // drumbeat instead of re-pushing every tick).
       try {
-        const { notifyAttention } = await import('@papercusp/operator-core/lib/attention-notify');
+        const { notifyAttention } =
+          await import("@papercusp/operator-core/lib/attention-notify");
         await notifyAttention({
-          kind: 'intervention',
-          title: 'Release gate RED',
+          kind: "intervention",
+          title: "Release gate RED",
           body: summary,
-          importance: 'urgent',
-          data: { source: 'green-checkpoint' },
+          importance: "urgent",
+          data: { source: "green-checkpoint" },
         });
       } catch {
         // best-effort — the gate verdict never depends on the push landing.
       }
     },
     async clearEscalation() {
-      const { listEscalations, resolveEscalation } = await import(
-        '@papercusp/operator-core/lib/agent-tools/coordination/escalations'
-      );
-      const open = await listEscalations({ status: 'open' });
+      const { listEscalations, resolveEscalation } =
+        await import("@papercusp/operator-core/lib/agent-tools/coordination/escalations");
+      const open = await listEscalations({ status: "open" });
       for (const e of open) {
-        if ((e as Record<string, unknown>).source === 'green-checkpoint') {
+        if ((e as Record<string, unknown>).source === "green-checkpoint") {
           await resolveEscalation({
             msg_id: e.msg_id,
-            choice: 'gate green',
-            resolver: 'green-checkpoint',
+            choice: "gate green",
+            resolver: "green-checkpoint",
           }).catch(() => {});
         }
       }
@@ -7644,16 +8700,17 @@ export function realCheckpointDeps(
     // hold (no loud alert yet) and grows across the hourly ticks while held.
     async heldGateMs() {
       try {
-        const { listEscalations } = await import(
-          '@papercusp/operator-core/lib/agent-tools/coordination/escalations'
-        );
-        const open = await listEscalations({ status: 'open' });
-        const e = open.find((x) => (x as Record<string, unknown>).source === 'green-checkpoint') as
-          | { ts?: string }
-          | undefined;
+        const { listEscalations } =
+          await import("@papercusp/operator-core/lib/agent-tools/coordination/escalations");
+        const open = await listEscalations({ status: "open" });
+        const e = open.find(
+          (x) => (x as Record<string, unknown>).source === "green-checkpoint",
+        ) as { ts?: string } | undefined;
         if (!e?.ts) return null;
         const opened = Date.parse(e.ts);
-        return Number.isFinite(opened) ? Math.max(0, Date.now() - opened) : null;
+        return Number.isFinite(opened)
+          ? Math.max(0, Date.now() - opened)
+          : null;
       } catch {
         return null; // never let the alarm read break the gate verdict
       }
@@ -7665,15 +8722,31 @@ export function realCheckpointDeps(
     // fail-soft wrapping then just skips the annotation.
     async flakeLookup(files) {
       try {
-        const { testFlakeRollup, flagFlakeSuspects } = await import('@papercusp/operator-core/lib/dev-data');
+        const { testFlakeRollup, flagFlakeSuspects } =
+          await import("@papercusp/operator-core/lib/dev-data");
         const { entries } = await testFlakeRollup(7);
-        const suspectPaths = new Set(flagFlakeSuspects(entries, 7).map((s) => s.file_path));
+        const suspectPaths = new Set(
+          flagFlakeSuspects(entries, 7).map((s) => s.file_path),
+        );
         const byFile = new Map(entries.map((e) => [e.file_path, e]));
-        const out: Record<string, { fails: number; passes: number; bothStatusShas: number; isSuspect: boolean }> = {};
+        const out: Record<
+          string,
+          {
+            fails: number;
+            passes: number;
+            bothStatusShas: number;
+            isSuspect: boolean;
+          }
+        > = {};
         for (const f of files) {
           const e = byFile.get(f);
           if (e) {
-            out[f] = { fails: e.fails, passes: e.passes, bothStatusShas: e.both_status_shas, isSuspect: suspectPaths.has(f) };
+            out[f] = {
+              fails: e.fails,
+              passes: e.passes,
+              bothStatusShas: e.both_status_shas,
+              isSuspect: suspectPaths.has(f),
+            };
           }
         }
         return out;
@@ -7688,14 +8761,17 @@ export function realCheckpointDeps(
     // detached systemd-run unit and as a periodic routine spawn, neither of which reliably
     // inherits the launcher's env. Warn-only: block-mode is hardwired false, so a crit
     // flags the deploy but never holds it. Mirrors its desktopPerfGate sibling below.
-    perfGate: async (candidate) => runPerfGate(await perfGatePolicyFromFlags(), candidate),
+    perfGate: async (candidate) =>
+      runPerfGate(await perfGatePolicyFromFlags(), candidate),
     // desktop-performance-suite-2026-07-20 P-011: the real desktop-perf gate reads
     // the latest persisted desktop-perf run (desktop_perf_runs) and evaluates its
     // budgeted measures. Policy from the FLAGS system (FLAGS.DESKTOP_PERF_GATE,
     // default ON — a FLAGS entry, not env; block-mode never armed in V1). A no-op
     // `pass` (reads nothing) when the flag is off or no run is recorded.
     desktopPerfGate: async (candidate) =>
-      runDesktopPerfGate(await desktopPerfGatePolicyFromFlags(), { candidateSha: candidate }),
+      runDesktopPerfGate(await desktopPerfGatePolicyFromFlags(), {
+        candidateSha: candidate,
+      }),
     // P-016 (agent-tool-delta-protocol D-008): the real delta gate reads the
     // baked production delta-flag default + the latest recorded Lane-C scenario
     // verdicts (llm_test_runs) — NOT a synchronous live-model eval. Policy from
@@ -7704,15 +8780,14 @@ export function realCheckpointDeps(
     deltaGate: (candidate) =>
       runDeltaGate(deltaGatePolicyFromEnv(), candidate, {
         readFlagEnabled: async () => {
-          const { FLAG_DEFAULTS, FLAGS } = await import('@papercusp/flags');
+          const { FLAG_DEFAULTS, FLAGS } = await import("@papercusp/flags");
           // The deploy-gate signal is the BAKED default that ships, not a
           // per-user PostHog eval — "is the delta opt-in flipped on in this build".
           return FLAG_DEFAULTS[FLAGS.TOOL_DELTA_PROTOCOL] === true;
         },
         readVerdicts: async (ids) => {
-          const { latestScenarioVerdicts } = await import(
-            '@papercusp/operator-core/lib/llm-testing/storage'
-          );
+          const { latestScenarioVerdicts } =
+            await import("@papercusp/operator-core/lib/llm-testing/storage");
           return latestScenarioVerdicts(ids);
         },
         now: () => Date.now(),
@@ -7722,7 +8797,8 @@ export function realCheckpointDeps(
     // env flags (PAPERCUSP_CUPBOARD_HYGIENE_GATE / _BLOCK). Default-ON warn-only
     // — see cupboard-hygiene-gate.ts for why this one gate ships enabled.
     cupboardHygieneGate: async (candidate) => {
-      const { runCupboardHygieneGate, cupboardHygienePolicyFromEnv } = await import('./cupboard-hygiene-gate');
+      const { runCupboardHygieneGate, cupboardHygienePolicyFromEnv } =
+        await import("./cupboard-hygiene-gate");
       return runCupboardHygieneGate(cupboardHygienePolicyFromEnv(), candidate);
     },
     log,
@@ -7748,8 +8824,11 @@ export function realCheckpointDeps(
  */
 function resolveCandidateSha(treeDir: string): string | undefined {
   try {
-    const r = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: treeDir, encoding: 'utf8' });
-    const sha = r.status === 0 ? String(r.stdout ?? '').trim() : '';
+    const r = spawnSync("git", ["rev-parse", "HEAD"], {
+      cwd: treeDir,
+      encoding: "utf8",
+    });
+    const sha = r.status === 0 ? String(r.stdout ?? "").trim() : "";
     return /^[0-9a-f]{7,40}$/.test(sha) ? sha : undefined;
   } catch {
     return undefined;
@@ -7765,9 +8844,13 @@ function pruneOldLogs(dir: string, days: number): void {
       const p = path.join(dir, f);
       try {
         if (statSync(p).mtimeMs < cutoff) unlinkSync(p);
-      } catch { /* skip a vanished/locked file */ }
+      } catch {
+        /* skip a vanished/locked file */
+      }
     }
-  } catch { /* dir gone — nothing to prune */ }
+  } catch {
+    /* dir gone — nothing to prune */
+  }
 }
 
 /** EI-78: how long a heavy gate leg waits for a pc-heavy slot before running ANYWAY.
@@ -7794,7 +8877,15 @@ function resolveHeavyWrapper(): string | null {
   let resolved: string | null = null;
   try {
     // apps/operator/lib/release/green-checkpoint.ts -> repo root
-    const p = path.resolve(__dirname, '..', '..', '..', '..', 'scripts', 'pc-heavy.sh');
+    const p = path.resolve(
+      __dirname,
+      "..",
+      "..",
+      "..",
+      "..",
+      "scripts",
+      "pc-heavy.sh",
+    );
     if (existsSync(p)) resolved = p;
   } catch {
     resolved = null;
@@ -7856,7 +8947,8 @@ export function runCmd(
     // descendant still inherits this process's pgid and `kill(-pid)` reaches all of them.)
     // The two timeoutMs callers are the isolation + workspace re-runs, which are single-file /
     // single-fork by construction — light enough that leaving them unthrottled costs nothing.
-    const wrapper = opts.heavy && !opts.timeoutMs ? resolveHeavyWrapper() : null;
+    const wrapper =
+      opts.heavy && !opts.timeoutMs ? resolveHeavyWrapper() : null;
     if (wrapper) {
       argsToRun = [cmdToRun, ...argsToRun];
       cmdToRun = wrapper;
@@ -7869,7 +8961,7 @@ export function runCmd(
         // of them a verdict computed for a different delta — precisely the "stale red is
         // byte-indistinguishable from a fresh verdict" failure this file's logging already
         // fights. Cheap to disable; catastrophic to get wrong.
-        PC_HEAVY_COALESCE: '0',
+        PC_HEAVY_COALESCE: "0",
         PC_HEAVY_TIMEOUT_SEC: String(HEAVY_SLOT_WAIT_SEC),
       };
     }
@@ -7880,9 +8972,13 @@ export function runCmd(
     // (see armSelfWatchdog's doc comment) — detaching unconditionally would silently remove
     // every runCmd child from that safety net.
     const detach = opts.killProcessGroupOnTimeout === true;
-    const child = spawn(cmdToRun, argsToRun, { cwd: opts.cwd, env, detached: detach });
-    let stdout = '';
-    let stderr = '';
+    const child = spawn(cmdToRun, argsToRun, {
+      cwd: opts.cwd,
+      env,
+      detached: detach,
+    });
+    let stdout = "";
+    let stderr = "";
     let settled = false;
     // A bounded timeout (used by the isolation re-run, and — WI-7069 — setupTree): SIGKILL the
     // child and REJECT, so a genuine hang can't stall the gate. The isolation re-run's caller
@@ -7897,44 +8993,57 @@ export function runCmd(
           // direct-child kill if the group is already gone (e.g. it exited between the timer
           // firing and this line) or the pid is unexpectedly missing, so a timeout can never
           // itself throw past the reject() below.
-          if (detach && typeof child.pid === 'number') {
+          if (detach && typeof child.pid === "number") {
             try {
-              process.kill(-child.pid, 'SIGKILL');
+              process.kill(-child.pid, "SIGKILL");
             } catch {
               try {
-                child.kill('SIGKILL');
+                child.kill("SIGKILL");
               } catch {
                 /* child already gone */
               }
             }
           } else {
-            child.kill('SIGKILL');
+            child.kill("SIGKILL");
           }
-          reject(new Error(`${cmd} ${args.join(' ')} timed out after ${opts.timeoutMs}ms`));
+          reject(
+            new Error(
+              `${cmd} ${args.join(" ")} timed out after ${opts.timeoutMs}ms`,
+            ),
+          );
         }, opts.timeoutMs)
       : null;
-    child.stdout.on('data', (d) => (stdout += d.toString()));
-    child.stderr.on('data', (d) => (stderr += d.toString()));
-    child.on('error', (e) => {
+    child.stdout.on("data", (d) => (stdout += d.toString()));
+    child.stderr.on("data", (d) => (stderr += d.toString()));
+    child.on("error", (e) => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
       reject(e);
     });
-    child.on('close', (code) => {
+    child.on("close", (code) => {
       if (settled) return;
       settled = true;
       if (timer) clearTimeout(timer);
-      if (code === 0 || opts.allowNonZero) resolve({ code: code ?? 0, stdout, stderr });
-      else reject(new Error(`${cmd} ${args.join(' ')} exited ${code}: ${stderr || stdout}`));
+      if (code === 0 || opts.allowNonZero)
+        resolve({ code: code ?? 0, stdout, stderr });
+      else
+        reject(
+          new Error(
+            `${cmd} ${args.join(" ")} exited ${code}: ${stderr || stdout}`,
+          ),
+        );
     });
   });
 }
 
 // CLI: `tsx green-checkpoint.ts [--candidate <ref>] [--no-push]`
 if (require.main === module) {
-  const { releaseConfig, integrationRootEvidence, assertGateableIntegrationRoot } =
-    require('./release-config') as typeof import('./release-config');
+  const {
+    releaseConfig,
+    integrationRootEvidence,
+    assertGateableIntegrationRoot,
+  } = require("./release-config") as typeof import("./release-config");
   // WI-38241 — state the judged tree BEFORE any verdict exists, then refuse to gate a
   // release/checkpoint checkout that nothing selected. The refusal lives here, not in
   // releaseConfig(), because ~37 callers (rollback, deploy-cli) share that constructor and
@@ -7960,14 +9069,34 @@ if (require.main === module) {
    * inconclusive tick says nothing about whether THIS candidate will eventually resolve
    * green or red, so any still-pending green/red await for it must stay armed.
    */
-  const emitInconclusiveVerdict = async (r: CheckpointResult): Promise<void> => {
+  const emitInconclusiveVerdict = async (
+    r: CheckpointResult,
+  ): Promise<void> => {
     try {
       const pipeline = pipelineName(cfg.integrationRoot);
-      const summary = `[${pipeline}] green-checkpoint: ${r.candidate.slice(0, 8)} INCONCLUSIVE (${r.reason}) — no verdict rendered${r.summary ? `: ${r.summary}` : ''}`;
-      const payload = { sha: r.candidate, from: r.from, pipeline, reason: r.reason, summary: r.summary ?? null, runId: r.runId ?? null };
-      const { emitAwaitedEvent } = await import('@papercusp/operator-core/lib/events/await/engine');
-      await emitAwaitedEvent({ key: 'green-checkpoint:inconclusive', summary, payload, source: 'green-checkpoint' });
-      await emitAwaitedEvent({ key: `green-checkpoint:inconclusive:${pipeline}`, summary, payload, source: 'green-checkpoint' });
+      const summary = `[${pipeline}] green-checkpoint: ${r.candidate.slice(0, 8)} INCONCLUSIVE (${r.reason}) — no verdict rendered${r.summary ? `: ${r.summary}` : ""}`;
+      const payload = {
+        sha: r.candidate,
+        from: r.from,
+        pipeline,
+        reason: r.reason,
+        summary: r.summary ?? null,
+        runId: r.runId ?? null,
+      };
+      const { emitAwaitedEvent } =
+        await import("@papercusp/operator-core/lib/events/await/engine");
+      await emitAwaitedEvent({
+        key: "green-checkpoint:inconclusive",
+        summary,
+        payload,
+        source: "green-checkpoint",
+      });
+      await emitAwaitedEvent({
+        key: `green-checkpoint:inconclusive:${pipeline}`,
+        summary,
+        payload,
+        source: "green-checkpoint",
+      });
     } catch (e) {
       console.error(
         `${orchestratorStdoutTag()} green-checkpoint:inconclusive emit FAILED (awaiters will fall back to their timeout): ${e instanceof Error ? e.message : e}`,
@@ -7999,10 +9128,12 @@ if (require.main === module) {
     // constructs a whole deps object just to drop one row. AWAITED for the EI-10800 reason
     // above: the process exits immediately after this returns.
     try {
-      const { gateVerdictTargetFromEnv } = await import('@papercusp/operator-core/lib/release/gate-verdict-target');
+      const { gateVerdictTargetFromEnv } =
+        await import("@papercusp/operator-core/lib/release/gate-verdict-target");
       const target = gateVerdictTargetFromEnv();
       if (target) {
-        const { clearInFlightCandidate } = await import('@papercusp/operator-core/lib/release/in-flight-candidate');
+        const { clearInFlightCandidate } =
+          await import("@papercusp/operator-core/lib/release/in-flight-candidate");
         await clearInFlightCandidate(target);
       }
     } catch {
@@ -8031,18 +9162,22 @@ if (require.main === module) {
    */
   const recordOwnVerdict = async (r: CheckpointResult): Promise<boolean> => {
     try {
-      const { gateVerdictTargetFromEnv } = await import('@papercusp/operator-core/lib/release/gate-verdict-target');
+      const { gateVerdictTargetFromEnv } =
+        await import("@papercusp/operator-core/lib/release/gate-verdict-target");
       const target = gateVerdictTargetFromEnv();
       if (!target) return false; // not launched with a record target — the caller records.
-      const { recordCheckpointVerdict } = await import('@papercusp/operator-core/lib/harness/routines/release-actions');
+      const { recordCheckpointVerdict } =
+        await import("@papercusp/operator-core/lib/harness/routines/release-actions");
       return await recordCheckpointVerdict(target, r);
     } catch (e) {
-      console.error(`${orchestratorStdoutTag()} verdict self-record failed (the caller will record): ${e instanceof Error ? e.message : e}`);
+      console.error(
+        `${orchestratorStdoutTag()} verdict self-record failed (the caller will record): ${e instanceof Error ? e.message : e}`,
+      );
       return false;
     }
   };
 
-  const candidateArg = arg('--candidate');
+  const candidateArg = arg("--candidate");
   // WI-4957: ONE runId for this whole process, shared by the normal verdict path
   // (realCheckpointDeps below) AND the self-watchdog emergency-red path (which builds its
   // own event payload independently) — so every event this process could possibly emit
@@ -8065,19 +9200,31 @@ if (require.main === module) {
   const emitCrashResult = async (e: unknown): Promise<void> => {
     let candidate = candidateArg ?? cfg.integrationBranch;
     try {
-      candidate = await revParse(cfg.integrationRoot, candidateArg ?? cfg.integrationBranch);
+      candidate = await revParse(
+        cfg.integrationRoot,
+        candidateArg ?? cfg.integrationBranch,
+      );
     } catch {
       /* best-effort — keep the fallback candidate above */
     }
-    await emitResult(buildCrashCheckpointResult({ candidate, error: e, runId }));
+    await emitResult(
+      buildCrashCheckpointResult({ candidate, error: e, runId }),
+    );
   };
 
-  const lock = acquireCheckpointRunLock(checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot));
+  const lock = acquireCheckpointRunLock(
+    checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot),
+  );
   if (!lock.acquired) {
     Promise.all([
-      revParse(cfg.integrationRoot, candidateArg ?? cfg.integrationBranch).catch(() => candidateArg ?? cfg.integrationBranch),
+      revParse(
+        cfg.integrationRoot,
+        candidateArg ?? cfg.integrationBranch,
+      ).catch(() => candidateArg ?? cfg.integrationBranch),
       refExists(cfg.integrationRoot, cfg.releaseRef)
-        .then((ok) => (ok ? revParse(cfg.integrationRoot, cfg.releaseRef) : null))
+        .then((ok) =>
+          ok ? revParse(cfg.integrationRoot, cfg.releaseRef) : null,
+        )
         .catch(() => null),
     ])
       .then(async ([candidate, from]) => {
@@ -8091,13 +9238,16 @@ if (require.main === module) {
           // lock that never reclaims) is exactly the silent multi-hour deploy freeze. Its
           // own reason keeps it OUT of the green set so trackGateStall counts it and the
           // held-gate alarm fires. (green-checkpoint-stale-lock-2026-06-26.)
-          reason: 'skipped-locked',
-          summary: `green-checkpoint skipped: another checkpoint process is already running${lock.owner?.pid ? ` (pid ${lock.owner.pid})` : ''}`,
+          reason: "skipped-locked",
+          summary: `green-checkpoint skipped: another checkpoint process is already running${lock.owner?.pid ? ` (pid ${lock.owner.pid})` : ""}`,
         });
         process.exit(0);
       })
       .catch(async (e) => {
-        console.error(`${orchestratorStdoutTag()} FAILED:`, e instanceof Error ? e.message : e);
+        console.error(
+          `${orchestratorStdoutTag()} FAILED:`,
+          e instanceof Error ? e.message : e,
+        );
         await emitCrashResult(e);
         process.exit(1);
       });
@@ -8119,7 +9269,7 @@ if (require.main === module) {
           candidate: candidateArg ?? cfg.integrationBranch,
           from: null,
           green: false,
-          reason: 'not-green',
+          reason: "not-green",
           summary:
             `self-watchdog fired after ${Math.round(SELF_WATCHDOG_MS / 60_000)}m with no normal exit — ` +
             `checkpoint run likely lost its supervising parent; run-lock released and process group is being terminated.`,
@@ -8131,24 +9281,37 @@ if (require.main === module) {
         // finished) — carry an explicit empty array rather than omitting the field, so a
         // consumer can tell "ran and found nothing failing" (impossible here) apart from
         // "never got far enough to know" by checking `reason` rather than a missing key.
-        const payload = { sha: red.candidate, from: red.from, pipeline, summary: red.summary, failingTests: [] as string[], runId };
+        const payload = {
+          sha: red.candidate,
+          from: red.from,
+          pipeline,
+          summary: red.summary,
+          failingTests: [] as string[],
+          runId,
+        };
         // EI-12457: symmetric with the normal red path — cancel any still-pending
         // green await for this pipeline now that this candidate resolved red.
-        const cancelSiblingKeysFor = ['release:green', `release:green:${pipeline}`];
+        const cancelSiblingKeysFor = [
+          "release:green",
+          `release:green:${pipeline}`,
+        ];
         try {
-          const { emitAwaitedEvent } = await import('@papercusp/operator-core/lib/events/await/engine');
+          const { emitAwaitedEvent } =
+            await import("@papercusp/operator-core/lib/events/await/engine");
           await emitAwaitedEvent({
-            key: 'green-checkpoint:red',
-            summary: 'green-checkpoint self-watchdog fired — red verdict emitted',
+            key: "green-checkpoint:red",
+            summary:
+              "green-checkpoint self-watchdog fired — red verdict emitted",
             payload,
-            source: 'green-checkpoint',
+            source: "green-checkpoint",
             cancelSiblingKeysFor,
           });
           await emitAwaitedEvent({
             key: `green-checkpoint:red:${pipeline}`,
-            summary: 'green-checkpoint self-watchdog fired — red verdict emitted',
+            summary:
+              "green-checkpoint self-watchdog fired — red verdict emitted",
             payload,
-            source: 'green-checkpoint',
+            source: "green-checkpoint",
             cancelSiblingKeysFor,
           });
         } catch (e) {
@@ -8157,12 +9320,14 @@ if (require.main === module) {
           );
         }
         try {
-          const { notifyAttention } = await import('@papercusp/operator-core/lib/attention-notify');
+          const { notifyAttention } =
+            await import("@papercusp/operator-core/lib/attention-notify");
           await notifyAttention({
-            kind: 'intervention',
-            title: 'Release pipeline RED — green-checkpoint self-watchdog fired',
-            body: red.summary ?? 'self-watchdog fired with no summary',
-            importance: 'urgent',
+            kind: "intervention",
+            title:
+              "Release pipeline RED — green-checkpoint self-watchdog fired",
+            body: red.summary ?? "self-watchdog fired with no summary",
+            importance: "urgent",
             data: { candidate: red.candidate, reason: red.reason },
           });
         } catch {
@@ -8173,11 +9338,14 @@ if (require.main === module) {
     // WI-7069: durable arm-event marker — see writeSelfWatchdogArmMarker's doc comment. Written
     // right after the timer is actually armed (not before), so a marker on disk is proof the
     // real `setTimeout(SELF_WATCHDOG_MS)` above it exists, not just that this code path ran.
-    writeSelfWatchdogArmMarker(checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot), {
-      armedAtMs: Date.now(),
-      ms: SELF_WATCHDOG_MS,
-      pid: process.pid,
-    });
+    writeSelfWatchdogArmMarker(
+      checkpointRunLockDir(cfg.checkpointLogDir, cfg.integrationRoot),
+      {
+        armedAtMs: Date.now(),
+        ms: SELF_WATCHDOG_MS,
+        pid: process.pid,
+      },
+    );
     const releaseAndExit = (code: number): never => {
       watchdog.cancel();
       lock.release();
@@ -8198,11 +9366,11 @@ if (require.main === module) {
     // whatever else may or may not be listening, THIS run always drops its lock and exits the
     // moment it is asked to stop.
     const handleTermSignal = createTerminationSignalHandler(releaseAndExit);
-    process.once('SIGTERM', handleTermSignal);
-    process.once('SIGINT', handleTermSignal);
+    process.once("SIGTERM", handleTermSignal);
+    process.once("SIGINT", handleTermSignal);
     runGreenCheckpoint(cfg, realCheckpointDeps(cfg, undefined, runId), {
       candidate: candidateArg,
-      noPush: process.argv.includes('--no-push'),
+      noPush: process.argv.includes("--no-push"),
     })
       .then(async (r) => {
         // WI-4494: record BEFORE emitResult/exit — `releaseAndExit` calls process.exit(), which
@@ -8214,7 +9382,10 @@ if (require.main === module) {
       })
       .catch(async (e) => {
         watchdog.cancel();
-        console.error(`${orchestratorStdoutTag()} FAILED:`, e instanceof Error ? e.message : e);
+        console.error(
+          `${orchestratorStdoutTag()} FAILED:`,
+          e instanceof Error ? e.message : e,
+        );
         // EI-18850448565330905: emit a crash verdict BEFORE releasing the lock / exiting —
         // this is exactly the path that used to leave NO __GREEN_CHECKPOINT_RESULT__ marker
         // at all when a non-test leg threw instead of reporting through allowNonZero/haltedBy.
