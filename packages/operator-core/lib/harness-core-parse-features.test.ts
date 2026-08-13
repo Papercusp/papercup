@@ -13,7 +13,7 @@ import { parseFeatures, STREAM_FEATURE_SELECT_COLUMNS } from './harness-core';
 
 describe('parseFeatures projections', () => {
   const all = vi.fn();
-  const prepare = vi.fn(() => ({ all }));
+  const prepare = vi.fn((_sql: string) => ({ all }));
 
   beforeEach(() => {
     vi.clearAllMocks();
