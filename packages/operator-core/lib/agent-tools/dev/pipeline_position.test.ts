@@ -87,6 +87,17 @@ describe('dev:pipeline_position bounded response wiring (EI-20245527109472763)',
       deployOrigin: 'gate-green',
     },
     gitSyncLastStatus: 'synced',
+    runtimeGenerations: [{
+      unit: 'papercup-bg-host.service', label: 'bg-host', pid: 42,
+      startedAtMs: 1, codeAsOfMs: 1, codeAsOfSource: 'file-mtime',
+      runningYourCode: true, behindMin: null,
+      loadedIdentity: {
+        source: 'runtime-vintage', unit: 'bg-host', host: 'tower',
+        treeSha: 'abc123', bundleVersion: '0.0.15-alpha', buildTime: null,
+        reportedAt: '2026-08-13T10:00:01.000Z',
+      },
+      loadedIdentityUnknown: null, activationLever: 'restart', unknownReason: null,
+    }],
     summary: 'stub summary',
     notes: [],
   } as unknown as PipelinePosition;
@@ -103,6 +114,11 @@ describe('dev:pipeline_position bounded response wiring (EI-20245527109472763)',
     expect(out.data.verdictUnknown).toEqual([
       { leg: 'gate.consecutiveReds', unknown: { code: 'resolver-failed', detail: 'fixture' } },
     ]);
+    expect(out.data.runtimeGenerations).toMatchObject([{
+      unit: 'papercup-bg-host.service',
+      loadedIdentity: { source: 'runtime-vintage', treeSha: 'abc123', host: 'tower' },
+      loadedIdentityUnknown: null,
+    }]);
     expect(JSON.stringify(out.data).length).toBeLessThanOrEqual(PIPELINE_POSITION_RESPONSE_BUDGET_CHARS);
   };
 
