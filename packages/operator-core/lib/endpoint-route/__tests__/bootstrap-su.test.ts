@@ -11,6 +11,7 @@ import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { AgentFleetRecord } from '../../agent-fleets-store';
 import type { RouteContext } from '../define-route';
 
 // Redirect the launch-context file writes to a throwaway temp dir so the
@@ -119,7 +120,7 @@ vi.mock('../../session-port/artifact', () => ({
 // recordAdvSession) so the session is parked/wakeable before its first turn. Mock it
 // to keep the unit test hermetic (the real one pulls the await engine + PG) and to
 // assert it's armed for the minted sid.
-const armInboxWakeMock = vi.fn(async () => ({ awaitId: 1, eventKey: 'coord:inbox-wake:x', handleNote: 'n' }));
+const armInboxWakeMock = vi.fn(async (_opts: unknown) => ({ awaitId: 1, eventKey: 'coord:inbox-wake:x', handleNote: 'n' }));
 vi.mock('../../events/await/inbox-wake-arm', () => ({
   armInboxWake: (...a: unknown[]) => armInboxWakeMock(...(a as [any])),
 }));
@@ -223,7 +224,7 @@ const getAccountOverrideMock = vi.fn(async (_ws: string) => ({
   excludeAccounts: [] as string[],
 }));
 
-const readOmpModelCatalogMock = vi.fn(async () => ({
+const readOmpModelCatalogMock = vi.fn(async (_opts?: unknown) => ({
   models: [{
     provider: 'openai-codex',
     id: 'gpt-5.6-terra',
@@ -238,7 +239,7 @@ const readOmpModelCatalogMock = vi.fn(async () => ({
   }],
 }));
 vi.mock('../../omp-config', () => ({
-  readOmpModelCatalog: (...args: unknown[]) => readOmpModelCatalogMock(...args),
+  readOmpModelCatalog: (opts?: unknown) => readOmpModelCatalogMock(opts),
 }));
 vi.mock('../../deployment/account-session-override', () => ({
   getAccountOverride: (...a: unknown[]) => getAccountOverrideMock(...(a as [string])),
@@ -257,7 +258,7 @@ const listFleetsMock = vi.fn(async () => [] as unknown[]);
 // truthy record so every PRE-EXISTING "join an existing fleet" test (which never set
 // this up) keeps its current, already-asserted behavior; the new existence-check
 // tests below override it to null per-case.
-const getFleetMock = vi.fn(async (_ws: string, slug: string) => ({
+const getFleetMock = vi.fn(async (_ws: string, slug: string): Promise<AgentFleetRecord | null> => ({
   workspaceId: 'default',
   fleetSlug: slug,
   title: slug,
@@ -265,6 +266,11 @@ const getFleetMock = vi.fn(async (_ws: string, slug: string) => ({
   owner: 'su-1',
   leaderOwnerId: 'su-1',
   colorScheme: null,
+  controlState: 'active',
+  controlReason: null,
+  controlBy: null,
+  controlAt: null,
+  lastLaunchTransaction: null,
   createdAt: 0,
   updatedAt: 0,
 }));
