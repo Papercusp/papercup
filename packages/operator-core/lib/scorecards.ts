@@ -496,6 +496,10 @@ export interface ListScorecardsFilter {
    * Set true only for an explicit "did the monitor speak at all (incl. the floor)" read.
    */
   includeSynthesized?: boolean;
+  /** Include scorecards that a later payload `supersedes` filing replaced. */
+  includeSuperseded?: boolean;
+  /** Include scorecards carrying a deliberate `retracted` disposition. */
+  includeRetracted?: boolean;
   /**
    * Resolve each row's outbound coord_links edges into {@link ScorecardRow.linkedItems}.
    * Default FALSE — links are OPT-IN. Pass true only on a read that actually SURFACES
@@ -538,6 +542,7 @@ interface ScorecardRowDb {
   created_by: string | null;
   created_at: string | Date;
   payload: unknown | null;
+  superseded_by: string | null;
 }
 
 // EI-18691099450966094: was `typeof v === 'string' ? v : ...` — a raw
@@ -562,17 +567,36 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
   const limit = Math.min(Math.max(filter.limit ?? 100, 1), 500);
 
   const rows = await sql<ScorecardRowDb[]>`
-    SELECT issue_id, created_by, created_at, payload
-      FROM harness_shared.engineer_issues
-     WHERE workspace_id = ${issuesScopeWorkspace()}
-       AND COALESCE(signal_origin, 'organic') = 'organic'
-       AND payload -> 'observation' ->> 'rubricRef' IS NOT NULL
-       AND ${filter.rubricRef ? sql`payload -> 'observation' ->> 'rubricRef' = ${filter.rubricRef}` : sql`TRUE`}
-       AND ${filter.sourceHive ? sql`payload -> 'observation' ->> 'sourceHive' = ${filter.sourceHive}` : sql`TRUE`}
-       AND ${filter.subjectRef ? sql`payload -> 'observation' -> 'subject' ->> 'ref' = ${filter.subjectRef}` : sql`TRUE`}
-       AND ${filter.since ? sql`created_at >= ${filter.since}` : sql`TRUE`}
-       AND ${filter.includeSynthesized ? sql`TRUE` : sql`payload -> 'observation' ->> 'synthesized' IS DISTINCT FROM 'true'`}
-     ORDER BY created_at DESC
+    SELECT scorecard.issue_id, scorecard.created_by, scorecard.created_at, scorecard.payload,
+           (
+             SELECT superseder.issue_id
+               FROM harness_shared.engineer_issues AS superseder
+              WHERE superseder.workspace_id = scorecard.workspace_id
+                AND superseder.payload -> 'observation' ->> 'supersedes' = scorecard.issue_id
+                AND superseder.payload -> 'observation' ->> 'rubricRef' = scorecard.payload -> 'observation' ->> 'rubricRef'
+                AND superseder.payload -> 'observation' ->> 'sourceHive' IS NOT DISTINCT FROM scorecard.payload -> 'observation' ->> 'sourceHive'
+              ORDER BY superseder.created_at DESC
+              LIMIT 1
+           ) AS superseded_by
+      FROM harness_shared.engineer_issues AS scorecard
+     WHERE scorecard.workspace_id = ${issuesScopeWorkspace()}
+       AND COALESCE(scorecard.signal_origin, 'organic') = 'organic'
+       AND scorecard.payload -> 'observation' ->> 'rubricRef' IS NOT NULL
+       AND ${filter.rubricRef ? sql`scorecard.payload -> 'observation' ->> 'rubricRef' = ${filter.rubricRef}` : sql`TRUE`}
+       AND ${filter.sourceHive ? sql`scorecard.payload -> 'observation' ->> 'sourceHive' = ${filter.sourceHive}` : sql`TRUE`}
+       AND ${filter.subjectRef ? sql`scorecard.payload -> 'observation' -> 'subject' ->> 'ref' = ${filter.subjectRef}` : sql`TRUE`}
+       AND ${filter.since ? sql`scorecard.created_at >= ${filter.since}` : sql`TRUE`}
+       AND ${filter.includeSynthesized ? sql`TRUE` : sql`scorecard.payload -> 'observation' ->> 'synthesized' IS DISTINCT FROM 'true'`}
+       AND ${filter.includeSuperseded ? sql`TRUE` : sql`NOT EXISTS (
+         SELECT 1
+           FROM harness_shared.engineer_issues AS superseder
+          WHERE superseder.workspace_id = scorecard.workspace_id
+            AND superseder.payload -> 'observation' ->> 'supersedes' = scorecard.issue_id
+            AND superseder.payload -> 'observation' ->> 'rubricRef' = scorecard.payload -> 'observation' ->> 'rubricRef'
+            AND superseder.payload -> 'observation' ->> 'sourceHive' IS NOT DISTINCT FROM scorecard.payload -> 'observation' ->> 'sourceHive'
+       )`}
+       AND ${filter.includeRetracted ? sql`TRUE` : sql`scorecard.payload -> 'observation' -> 'retracted' IS NULL`}
+     ORDER BY scorecard.created_at DESC
      LIMIT ${limit}`;
 
   // Resolve each distinct rubric ONCE (a scorecard read touches a handful of rubrics):
@@ -670,6 +694,9 @@ export async function listScorecards(filter: ListScorecardsFilter = {}): Promise
       extraKeys,
       rubricResolved,
       ...(observation.evidenceFingerprint ? { evidenceFingerprint: observation.evidenceFingerprint } : {}),
+      ...(observation.supersedes ? { supersedes: observation.supersedes } : {}),
+      ...(observation.retracted ? { retracted: observation.retracted } : {}),
+      ...(row.superseded_by ? { supersededBy: row.superseded_by } : {}),
       synthesized,
       score10: scorecardScore10(projectionRatings, meta.overrides),
       linkedItems: linksByIssue.get(row.issue_id) ?? [],
