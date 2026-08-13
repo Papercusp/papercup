@@ -4007,9 +4007,11 @@ describe('realCheckpointDeps.runGreen — SPA build retains dist chunks (EI-1869
 describe('realCheckpointDeps.runGreen — the orchestrator transcript reaches the persisted log (EI-19346606967082413)', () => {
   let tree: string;
   let logDir: string;
+  let suiteEnv: NodeJS.ProcessEnv | undefined;
   beforeEach(() => {
     tree = mkdtempSync(join(tmpdir(), 'gc-transcript-'));
     logDir = mkdtempSync(join(tmpdir(), 'gc-logs-'));
+    suiteEnv = undefined;
     // The buffer is module-global, so a neighbouring test's lines would otherwise leak in
     // and make this pass for the wrong reason.
     resetOrchestratorLog();
@@ -4026,9 +4028,12 @@ describe('realCheckpointDeps.runGreen — the orchestrator transcript reaches th
   ): Promise<string> => {
     const { readdirSync, readFileSync } = await import('node:fs');
     writeFileSync(join(tree, 'package.json'), JSON.stringify({ name: 'x', scripts: { 'test:affected': 'true' } }));
-    const exec: CheckpointExec = async (cmd, args) => {
+    const exec: CheckpointExec = async (cmd, args, opts) => {
       // git grep's "no match" exit code — no committed conflict markers on this fake tree.
       if (cmd === 'git' && args[0] === 'grep') return { code: 1, stdout: '', stderr: '' };
+      if (cmd === 'npm' && args[0] === 'run' && args[1] === 'test:affected') {
+        suiteEnv = opts?.env ? { ...opts.env } : undefined;
+      }
       return { code: 0, stdout: suiteStdout, stderr: '' };
     };
     const cfg = releaseConfig({
@@ -4078,10 +4083,14 @@ describe('realCheckpointDeps.runGreen — the orchestrator transcript reaches th
 
   it('persists the effective reserved-capacity settings in the operator transcript', async () => {
     const body = await runAndReadLog('Test Files  3 passed (3)\n', 'reserved');
-    expect(body).toContain(
-      `GREEN_CHECKPOINT_CAPACITY mode=reserved maxForks=8 maxThreads=8 ` +
-        `forkHeapMb=${GREEN_CHECKPOINT_FORK_HEAP_MB} profileMaxForks=8`,
-    );
+    // This is the end-to-end WIRING assertion: the transcript must persist the exact
+    // effective settings handed to the suite. Capture that invocation environment rather
+    // than reconstructing it from process.env after the async run — test runners may
+    // restore or mutate their worker env between those two moments. The pure
+    // buildGreenCheckpointEnv/greenCheckpointCapacityEvidence tests above separately pin
+    // the default `8` profile and explicit-override precedence.
+    expect(suiteEnv).toBeDefined();
+    expect(body).toContain(greenCheckpointCapacityEvidence('reserved', suiteEnv!));
   });
 
   it('does not displace the suite output the log already existed to preserve', async () => {
