@@ -1000,7 +1000,7 @@ def drop_ours(entry):
 
 hooks = cfg.setdefault('hooks', {})
 arr = [e for e in (drop_ours(x) for x in hooks.get('PreToolUse', [])) if e]
-arr.append({'matcher': 'Edit|Write|MultiEdit', 'hooks': [{'type': 'command', 'command': hook}]})
+arr.append({'matcher': 'Edit|Write|MultiEdit|mcp__.*__capability_(edit|write|multi_?edit)', 'hooks': [{'type': 'command', 'command': hook}]})
 hooks['PreToolUse'] = arr
 
 os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -1035,7 +1035,7 @@ def drop_ours(entry):
 
 hooks = cfg.setdefault('hooks', {})
 arr = [e for e in (drop_ours(x) for x in hooks.get('PreToolUse', [])) if e]
-arr.append({'matcher': 'Edit|Write|MultiEdit', 'hooks': [{'type': 'command', 'command': hook}]})
+arr.append({'matcher': 'Edit|Write|MultiEdit|mcp__.*__capability_(edit|write|multi_?edit)', 'hooks': [{'type': 'command', 'command': hook}]})
 hooks['PreToolUse'] = arr
 
 os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -1105,7 +1105,7 @@ def drop_ours(entry):
 
 hooks = cfg.setdefault('hooks', {})
 arr = [e for e in (drop_ours(x) for x in hooks.get('PreToolUse', [])) if e]
-arr.append({'matcher': 'Edit|MultiEdit', 'hooks': [{'type': 'command', 'command': hook}]})
+arr.append({'matcher': 'Edit|MultiEdit|mcp__.*__capability_(edit|multi_?edit)', 'hooks': [{'type': 'command', 'command': hook}]})
 hooks['PreToolUse'] = arr
 
 os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -1141,7 +1141,7 @@ def drop_ours(entry):
 
 hooks = cfg.setdefault('hooks', {})
 arr = [e for e in (drop_ours(x) for x in hooks.get('PreToolUse', [])) if e]
-arr.append({'matcher': 'Write', 'hooks': [{'type': 'command', 'command': hook}]})
+arr.append({'matcher': 'Write|mcp__.*__capability_write', 'hooks': [{'type': 'command', 'command': hook}]})
 hooks['PreToolUse'] = arr
 
 os.makedirs(os.path.dirname(path), exist_ok=True)
@@ -1665,7 +1665,7 @@ fi
 # Papercusp isn't installed.
 if [ -x "$CC_PRE_HOOK" ]; then
   CLAUDE_SETTINGS="${HOME}/.claude/settings.json"
-  merge_lock_hooks "$CLAUDE_SETTINGS" "Edit|Write|MultiEdit"
+  merge_lock_hooks "$CLAUDE_SETTINGS" "Edit|Write|MultiEdit|mcp__.*__capability_(edit|write|multi_?edit)"
   [ -x "$CC_ACTIVITY_HOOK" ] && merge_activity_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_PRE_ACTIVITY_HOOK" ] && merge_activity_pre_hook "$CLAUDE_SETTINGS"
   [ -x "$CC_LIFECYCLE_HOOK" ] && merge_lifecycle_hooks "$CLAUDE_SETTINGS"

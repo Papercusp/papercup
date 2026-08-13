@@ -9,6 +9,9 @@ const DEST = '/home/u/.papercusp/hooks/cc';
 const cmd = (entry: any) => entry.hooks[0].command as string;
 const commandsFor = (cfg: any, event: string): string[] =>
   (cfg.hooks?.[event] ?? []).map((e: any) => cmd(e));
+const FILE_WRITE_MATCHER = 'Edit|Write|MultiEdit|mcp__.*__capability_(edit|write|multi_?edit)';
+const FILE_EDIT_MATCHER = 'Edit|MultiEdit|mcp__.*__capability_(edit|multi_?edit)';
+const FILE_OVERWRITE_MATCHER = 'Write|mcp__.*__capability_write';
 
 describe('mergeClaudeHookSettings — full install into empty settings', () => {
   it('registers every CC hook on its correct event(s) + the statusline', () => {
@@ -41,7 +44,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/pretooluse-generated-file-edit-guard.mjs`,
       `${DEST}/pretooluse-unreserved-migration-guard.mjs`,
     ]);
-    expect(cfg.hooks.PreToolUse[0].matcher).toBe('Edit|Write|MultiEdit');
+    expect(cfg.hooks.PreToolUse[0].matcher).toBe(FILE_WRITE_MATCHER);
     expect(cfg.hooks.PreToolUse[1].matcher).toBe('*'); // activity-pre
     expect(cfg.hooks.PreToolUse[2].matcher).toBe('Bash');
     expect(cfg.hooks.PreToolUse[3].matcher).toBe('Read|Grep');
@@ -49,14 +52,14 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
     expect(cfg.hooks.PreToolUse[5].matcher).toBe(
       'mcp__playwright__browser_navigate|mcp__claude-in-chrome__navigate|mcp__claude-in-chrome__tabs_create_mcp|Skill',
     );
-    expect(cfg.hooks.PreToolUse[6].matcher).toBe('Edit|Write|MultiEdit'); // content-lint
-    expect(cfg.hooks.PreToolUse[7].matcher).toBe('Edit|Write|MultiEdit'); // secrets-guard
-    expect(cfg.hooks.PreToolUse[8].matcher).toBe('Edit|MultiEdit'); // nul-byte-edit-guard
-    expect(cfg.hooks.PreToolUse[9].matcher).toBe('Edit|Write|MultiEdit'); // tool-prompt-weight-guard
+    expect(cfg.hooks.PreToolUse[6].matcher).toBe(FILE_WRITE_MATCHER); // content-lint
+    expect(cfg.hooks.PreToolUse[7].matcher).toBe(FILE_WRITE_MATCHER); // secrets-guard
+    expect(cfg.hooks.PreToolUse[8].matcher).toBe(FILE_EDIT_MATCHER); // nul-byte-edit-guard
+    expect(cfg.hooks.PreToolUse[9].matcher).toBe(FILE_WRITE_MATCHER); // tool-prompt-weight-guard
     expect(cfg.hooks.PreToolUse[10].matcher).toBe('ScheduleWakeup'); // schedule-wakeup-provenance
-    expect(cfg.hooks.PreToolUse[11].matcher).toBe('Write'); // write-overwrite-guard
-    expect(cfg.hooks.PreToolUse[12].matcher).toBe('Edit|Write|MultiEdit'); // generated-file-edit-guard
-    expect(cfg.hooks.PreToolUse[13].matcher).toBe('Edit|Write|MultiEdit'); // unreserved-migration-guard
+    expect(cfg.hooks.PreToolUse[11].matcher).toBe(FILE_OVERWRITE_MATCHER); // write-overwrite-guard
+    expect(cfg.hooks.PreToolUse[12].matcher).toBe(FILE_WRITE_MATCHER); // generated-file-edit-guard
+    expect(cfg.hooks.PreToolUse[13].matcher).toBe(FILE_WRITE_MATCHER); // unreserved-migration-guard
 
     // PostToolBatch: mid-turn context push (context-injection-audit-2026-07-28 P-015).
     // ⚠ It lives HERE and not on PreToolUse deliberately (D-027) — PreToolUse only
@@ -89,6 +92,7 @@ describe('mergeClaudeHookSettings — full install into empty settings', () => {
       `${DEST}/ask-gate-mirror.sh`,
     ]);
     expect(cfg.hooks.PostToolUse[1].matcher).toBe('*'); // activity (+ coord fold)
+    expect(cfg.hooks.PostToolUse[0].matcher).toBe(FILE_WRITE_MATCHER); // lock release mirrors acquire
     expect(cfg.hooks.PostToolUse[3].matcher).toBe('Edit|Write|MultiEdit'); // strand nudge
     expect(cfg.hooks.PostToolUse[4].matcher).toBe('Edit|Write|MultiEdit'); // ts-parse nudge
     expect(cfg.hooks.PostToolUse[5].matcher).toBe('Edit|Write|MultiEdit'); // no-proc-path-fixture nudge
