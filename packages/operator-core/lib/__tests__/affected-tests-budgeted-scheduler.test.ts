@@ -69,11 +69,7 @@ describe('runBudgetedTasks', () => {
     gates.get('long')!.resolve('long-result');
 
     const result = await running;
-    expect(result.results.map((entry: { task: { id: string } }) => entry.task.id)).toEqual([
-      'long',
-      'medium',
-      'short',
-    ]);
+    expect(result.results.map((entry: { task: { id: string } }) => entry.task.id)).toEqual(['long', 'medium', 'short']);
     expect(result.results.map((entry: { value: string }) => entry.value)).toEqual([
       'long-result',
       'medium-result',
@@ -274,22 +270,16 @@ describe('operator-visible budget markers', () => {
 
 describe('affected-tests scheduler wiring', () => {
   it('awaits the initial budgeted pool and preserves allocation-specific Vitest ceilings', () => {
-    expect(AFFECTED_TESTS_SRC).toContain(
-      'const initialPool = await runBudgetedTasks(taskContexts',
-    );
+    expect(AFFECTED_TESTS_SRC).toContain('const initialPool = await runBudgetedTasks(taskContexts');
     for (const variable of ['VITEST_MAX_WORKERS', 'VITEST_MAX_FORKS', 'VITEST_MAX_THREADS']) {
       expect(AFFECTED_TESTS_SRC).toContain(`${variable}: String(allocation.workers)`);
     }
   });
 
   it('drains the initial pool before reporting and reuses the same scheduler for retries', () => {
-    const pool = AFFECTED_TESTS_SRC.indexOf(
-      'const initialPool = await runBudgetedTasks(taskContexts',
-    );
+    const pool = AFFECTED_TESTS_SRC.indexOf('const initialPool = await runBudgetedTasks(taskContexts');
     const reporting = AFFECTED_TESTS_SRC.indexOf('for (const scheduled of initialPool.results) {');
-    const retry = AFFECTED_TESTS_SRC.indexOf(
-      'const retryPool = await runBudgetedTasks([scheduled.task]',
-    );
+    const retry = AFFECTED_TESTS_SRC.indexOf('const retryPool = await runBudgetedTasks([scheduled.task]');
     expect(pool).toBeGreaterThan(-1);
     expect(reporting).toBeGreaterThan(pool);
     expect(retry).toBeGreaterThan(reporting);

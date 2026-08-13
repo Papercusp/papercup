@@ -14,13 +14,13 @@ export interface ResolvedTaskBudget {
   effectiveWorkerBudget: number;
   maxConcurrentTasks: number;
   reserveWorkers: number;
-  mode: 'parallel' | 'serial';
+  mode: "parallel" | "serial";
   primaryWorkers: number;
   reserveLaneWorkers: number;
 }
 
 export interface TaskAllocation {
-  lane: 'primary' | 'reserved' | 'serial';
+  lane: "primary" | "reserved" | "serial";
   workers: number;
   memoryMb: number;
 }
@@ -76,7 +76,11 @@ export function runBudgetedTasks<Task, Value>(
   tasks: Task[],
   options: TaskBudgetInput & {
     estimateMs?: (task: Task, index: number) => number | null | undefined;
-    runTask: (task: Task, allocation: TaskAllocation, index: number) => Value | Promise<Value>;
+    runTask: (
+      task: Task,
+      allocation: TaskAllocation,
+      index: number,
+    ) => Value | Promise<Value>;
   },
 ): Promise<BudgetedTaskRun<Task, Value>>;
 
@@ -84,7 +88,10 @@ export function emptyDurationHistory(): DurationHistory;
 
 export function readDurationHistory(path: string): DurationHistory;
 
-export function durationEstimate(history: DurationHistory, key: string): number | null;
+export function durationEstimate(
+  history: DurationHistory,
+  key: string,
+): number | null;
 
 export function mergeDurationHistory(
   history: DurationHistory,
@@ -103,4 +110,6 @@ export function formatTaskBudgetMarker(
   prefix?: string,
 ): string;
 
-export function formatTaskBudgetObservedMarker(stats: TaskSchedulerStats): string;
+export function formatTaskBudgetObservedMarker(
+  stats: TaskSchedulerStats,
+): string;
