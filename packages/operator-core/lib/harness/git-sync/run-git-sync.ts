@@ -777,15 +777,99 @@ export async function clearStaleIndexLock(
   return clearStaleGitLock(runGit, repoPath, 'index.lock', log, deps);
 }
 
+interface ConfigLockSnapshot {
+  mtimeMs: number;
+  size: number;
+  dev?: number;
+  ino?: number;
+}
+
+interface ClearStaleConfigLockDeps {
+  inspectLock?: (p: string) => Promise<ConfigLockSnapshot | null>;
+  isOpen?: (p: string) => Promise<boolean | null>;
+  unlinkFile?: (p: string) => Promise<void>;
+  now?: () => number;
+  staleMs?: number;
+}
+
 /** Clear an orphaned `.git/config.lock` left by a dead config writer (including
- * a sandbox mount-point artifact), under the same age guard as index.lock. */
+ * a sandbox mount-point artifact). Config is more sensitive than the replaceable
+ * index: age alone is insufficient evidence. Delete only a zero-byte lock that
+ * is old, has no open descriptor, and has not changed during inspection. */
 export async function clearStaleConfigLock(
   runGit: RunGit,
   repoPath: string,
   log: (m: string) => void,
-  deps: Parameters<typeof clearStaleGitLock>[4] = {},
+  deps: ClearStaleConfigLockDeps = {},
 ): Promise<boolean> {
-  return clearStaleGitLock(runGit, repoPath, 'config.lock', log, deps);
+  const inspectLock =
+    deps.inspectLock ??
+    (async (p: string): Promise<ConfigLockSnapshot | null> => {
+      try {
+        const st = await lstat(p);
+        return { mtimeMs: st.mtimeMs, size: st.size, dev: st.dev, ino: st.ino };
+      } catch {
+        return null;
+      }
+    });
+  const isOpen = deps.isOpen ?? defaultOpenFileCheck;
+  const unlinkFile = deps.unlinkFile ?? unlink;
+  const now = deps.now ?? Date.now;
+  const staleMs = deps.staleMs ?? STALE_INDEX_LOCK_MS;
+
+  const gd = await runGit(['rev-parse', '--absolute-git-dir'], repoPath);
+  if (gd.code !== 0) return false;
+  const lockPath = join(gd.stdout.trim(), 'config.lock');
+  const before = await inspectLock(lockPath);
+  if (before === null) return true;
+
+  const ageMs = now() - before.mtimeMs;
+  if (ageMs < staleMs) {
+    log(
+      `[git-sync] ${repoPath}: config.lock is FRESH (${Math.round(ageMs / 1000)}s old) — live contention, not touching it`,
+    );
+    return false;
+  }
+  if (before.size !== 0) {
+    log(
+      `[git-sync] ${repoPath}: config.lock is old but NONEMPTY (${before.size} bytes) — cannot prove it is an orphan, not touching it`,
+    );
+    return false;
+  }
+
+  const open = await isOpen(lockPath);
+  if (open !== false) {
+    log(
+      `[git-sync] ${repoPath}: config.lock is old and empty but ${open ? 'still OPEN' : 'holder state is UNKNOWN'} — not touching it`,
+    );
+    return false;
+  }
+
+  // Close the inspection-to-unlink race enough to catch replacement or a writer
+  // touching the sentinel while the descriptor scan ran. A changed file is no
+  // longer the empty orphan we proved above, so leave it for the next tick.
+  const after = await inspectLock(lockPath);
+  if (after === null) return true;
+  if (
+    after.mtimeMs !== before.mtimeMs ||
+    after.size !== before.size ||
+    after.dev !== before.dev ||
+    after.ino !== before.ino
+  ) {
+    log(`[git-sync] ${repoPath}: config.lock changed during orphan inspection — not touching it`);
+    return false;
+  }
+
+  try {
+    await unlinkFile(lockPath);
+  } catch (e) {
+    log(`[git-sync] ${repoPath}: could not unlink stale config.lock: ${e instanceof Error ? e.message : String(e)}`);
+    return false;
+  }
+  log(
+    `[git-sync] ${repoPath}: cleared STALE empty holderless config.lock (${Math.round(ageMs / 1000)}s old) and retrying canonical submodule URL sync`,
+  );
+  return true;
 }
 
 /** A crash-left `index-pack` file is safe to consider only after this age floor. */
@@ -914,7 +998,7 @@ async function lsofSeesOpenFile(path: string): Promise<boolean | null> {
   });
 }
 
-async function defaultTempPackOpenCheck(path: string): Promise<boolean | null> {
+async function defaultOpenFileCheck(path: string): Promise<boolean | null> {
   if (process.platform === 'linux') return procSeesOpenFile(path);
   if (process.platform === 'darwin') return lsofSeesOpenFile(path);
   return null;
@@ -943,7 +1027,7 @@ export async function scavengeStaleTempPacks(
 ): Promise<{ removed: string[]; bytesReclaimed: number }> {
   const now = deps.now ?? Date.now;
   const staleMs = deps.staleMs ?? STALE_TEMP_PACK_MS;
-  const isOpen = deps.isOpen ?? defaultTempPackOpenCheck;
+  const isOpen = deps.isOpen ?? defaultOpenFileCheck;
   const unlinkFile = deps.unlinkFile ?? unlink;
   const { gitDir, entries } = await listTempPackEntries(runGit, repoPath);
   if (!gitDir) return { removed: [], bytesReclaimed: 0 };

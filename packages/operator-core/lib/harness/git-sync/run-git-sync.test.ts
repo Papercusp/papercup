@@ -217,16 +217,70 @@ describe('runGitSync (real git, no submodule)', () => {
     ).toBe(false);
   });
 
-  it('clearStaleConfigLock uses config.lock with the same stale-only safety guard', async () => {
+  it('clearStaleConfigLock removes only an old empty holderless lock', async () => {
     const fakeRunGit: RunGit = async () => ({ code: 0, stdout: '/fake/.git\n', stderr: '' });
     const unlinked: string[] = [];
     expect(
       await clearStaleConfigLock(fakeRunGit, '/fake', () => {}, {
-        statMtimeMs: async (p) => (p.endsWith('/config.lock') ? Date.now() - 10 * 60_000 : null),
+        inspectLock: async (p) =>
+          p.endsWith('/config.lock')
+            ? { mtimeMs: Date.now() - 10 * 60_000, size: 0, dev: 1, ino: 2 }
+            : null,
+        isOpen: async () => false,
         unlinkFile: async (p) => { unlinked.push(p); },
       }),
     ).toBe(true);
     expect(unlinked).toEqual(['/fake/.git/config.lock']);
+  });
+
+  it.each([
+    {
+      name: 'nonempty',
+      snapshot: { mtimeMs: Date.now() - 10 * 60_000, size: 12, dev: 1, ino: 2 },
+      open: false,
+    },
+    {
+      name: 'held open',
+      snapshot: { mtimeMs: Date.now() - 10 * 60_000, size: 0, dev: 1, ino: 2 },
+      open: true,
+    },
+    {
+      name: 'holder state unknown',
+      snapshot: { mtimeMs: Date.now() - 10 * 60_000, size: 0, dev: 1, ino: 2 },
+      open: null,
+    },
+  ])('clearStaleConfigLock leaves an old $name lock untouched', async ({ snapshot, open }) => {
+    const fakeRunGit: RunGit = async () => ({ code: 0, stdout: '/fake/.git\n', stderr: '' });
+    const unlinkFile = vi.fn(async () => {});
+
+    expect(
+      await clearStaleConfigLock(fakeRunGit, '/fake', () => {}, {
+        inspectLock: async () => snapshot,
+        isOpen: async () => open,
+        unlinkFile,
+      }),
+    ).toBe(false);
+    expect(unlinkFile).not.toHaveBeenCalled();
+  });
+
+  it('clearStaleConfigLock leaves a replaced lock untouched after holder inspection', async () => {
+    const fakeRunGit: RunGit = async () => ({ code: 0, stdout: '/fake/.git\n', stderr: '' });
+    const unlinkFile = vi.fn(async () => {});
+    let inspection = 0;
+
+    expect(
+      await clearStaleConfigLock(fakeRunGit, '/fake', () => {}, {
+        inspectLock: async () => ({
+          mtimeMs: Date.now() - 10 * 60_000,
+          size: 0,
+          dev: 1,
+          ino: ++inspection,
+        }),
+        isOpen: async () => false,
+        unlinkFile,
+      }),
+    ).toBe(false);
+    expect(unlinkFile).not.toHaveBeenCalled();
   });
 
   it('addFailureStrayPaths parses the embedded-repo fatal path(s) + strips trailing slash', () => {
