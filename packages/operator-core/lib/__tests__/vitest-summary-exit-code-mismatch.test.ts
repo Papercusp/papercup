@@ -174,7 +174,7 @@ describe('green-checkpoint.ts reads vitest output through the shared seam (WI-64
 
   it('imports the shared ANSI strip + row matchers rather than redefining them', () => {
     expect(source).toMatch(
-      /import \{[^}]*\bstripVitestAnsi\b[^}]*\} from '\.\.\/\.\.\/\.\.\/\.\.\/scripts\/lib\/vitest-summary\.mjs'/s,
+      /import \{[^}]*\bstripVitestAnsi\b[^}]*\} from ["']\.\.\/\.\.\/\.\.\/\.\.\/scripts\/lib\/vitest-summary\.mjs["']/s,
     );
     expect(source).toMatch(/\bvitestSummaryFailRow\b/);
     expect(source).toMatch(/\bvitestSuiteFailRow\b/);
