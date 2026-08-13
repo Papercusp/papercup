@@ -371,6 +371,20 @@ export async function rerankRows<T>(
      * caller needing certainty should compare `scored` against `rows.length`.
      */
     onOutcome?: (outcome: RerankStageOutcome) => void;
+    /**
+     * Observe the PER-ROW cross-encoder scores — the one true relevance
+     * magnitude in the stack, which is otherwise computed and discarded (see
+     * `onRerankScores` in `@papercusp/search-core`). Interactive surfaces ignore
+     * this; a caller studying a relevance FLOOR needs it, because the fused
+     * retrieval score is an RRF value and a threshold on it is a rank cutoff.
+     *
+     * ⚠ `score` is `null`, never `0`, for a row the cross-encoder did not score.
+     * Not called at all on the paths that never reach the engine (a single row,
+     * no engine, a throw) — those return retrieval order, so there are no scores
+     * to report and an empty array would read as "all unscored" rather than
+     * "never ran".
+     */
+    onScores?: (rows: Array<{ row: T; score: number | null }>) => void;
   },
 ): Promise<T[]> {
   // Nothing to reorder → no engine resolution, no rerank import.
@@ -413,6 +427,7 @@ export async function rerankRows<T>(
         onRerankStage: (info) => {
           stage.info = info;
         },
+        ...(opts.onScores ? { onRerankScores: opts.onScores } : {}),
       },
     );
     // A call that scored NOTHING returned retrieval order — report it as a
@@ -488,7 +503,10 @@ export async function rerankProseHits(
     onOutcome?: (outcome: RerankStageOutcome) => void;
   },
 ): Promise<SearchHit[]> {
-  return await rerankRows<SearchHit>(query, hits, {
+  // Keyed by object identity: `rerankRows` carries the caller's row through
+  // untouched, so the hits handed to `onScores` ARE these hits.
+  const scores = new Map<SearchHit, number | null>();
+  const ordered = await rerankRows<SearchHit>(query, hits, {
     limit,
     id: (hit) => `${hit.source}:${hit.source_id}`,
     text: rerankText, // match-centred text, NOT the head-of-doc excerpt
@@ -496,6 +514,18 @@ export async function rerankProseHits(
     qualityScore: (hit) => hit.score,
     rerankTimeoutMs: opts?.rerankTimeoutMs ?? PROSE_RERANK_TIMEOUT_MS,
     ...(opts?.onOutcome ? { onOutcome: opts.onOutcome } : {}),
+    onScores: (rows) => {
+      for (const r of rows) scores.set(r.row, r.score);
+    },
+  });
+  // Empty ⇒ the stage never reached the engine (single row / no engine / threw)
+  // and these are retrieval-order hits, so there is nothing to annotate.
+  if (scores.size === 0) return ordered;
+  // Copy rather than mutate — `hits` belongs to the caller. A hit the stage did
+  // not score keeps `rerankScore` ABSENT, never 0; see `onScores`.
+  return ordered.map((hit) => {
+    const score = scores.get(hit);
+    return typeof score === 'number' ? { ...hit, rerankScore: score } : hit;
   });
 }
 
