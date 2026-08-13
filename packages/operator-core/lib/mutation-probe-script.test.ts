@@ -24,7 +24,7 @@
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawn, spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync, readFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 
@@ -249,6 +249,30 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
   });
 
   it('restores PROMPTLY on SIGTERM mid-probe — not merely eventually', async () => {
+    // Make the historical race deterministic. `finish()` reaps descendants by
+    // walking `ps --ppid`; on the shared host (~10k processes) one scan can be
+    // slow enough that cleanup-before-restore consumes the whole 5s integrity
+    // budget. Delay the FIRST scan past that budget. A correct trap restores
+    // before invoking ps, so the delay affects only child cleanup, never the
+    // tracked-file invariant.
+    const slowBin = join(dir, 'slow-bin');
+    const slowPs = join(slowBin, 'ps');
+    const slowPsMarker = join(dir, 'slow-ps-ran');
+    const realPs = spawnSync('sh', ['-c', 'command -v ps'], { encoding: 'utf8' }).stdout.trim();
+    expect(realPs).not.toBe('');
+    mkdirSync(slowBin);
+    writeFileSync(
+      slowPs,
+      `#!/usr/bin/env bash
+if [ ! -e "$MUTATION_PROBE_SLOW_PS_MARKER" ]; then
+  : > "$MUTATION_PROBE_SLOW_PS_MARKER"
+  sleep 6
+fi
+exec "$MUTATION_PROBE_REAL_PS" "$@"
+`,
+      { mode: 0o755 },
+    );
+
     const child = spawn(
       'bash',
       [
@@ -262,8 +286,25 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
         '--test',
         'if [ "$PAPERCUSP_MUTATION_PHASE" = mutant ]; then sleep 20; fi; test -f {}',
       ],
-      { stdio: 'ignore' },
+      {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env: {
+          ...process.env,
+          PATH: `${slowBin}:${process.env.PATH ?? ''}`,
+          MUTATION_PROBE_SLOW_PS_MARKER: slowPsMarker,
+          MUTATION_PROBE_REAL_PS: realPs,
+        },
+      },
     );
+    let output = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk: string) => { output += chunk; });
+    child.stderr.on('data', (chunk: string) => { output += chunk; });
+    const exited = new Promise<{ code: number | null; signal: string | null }>((resolveExit, rejectExit) => {
+      child.once('error', rejectExit);
+      child.once('exit', (code, signal) => resolveExit({ code, signal }));
+    });
     try {
       // Wait until the probe has actually applied the mutant, so we are
       // measuring the restore path and not a race against startup. Without
@@ -272,16 +313,24 @@ describe('mutation-probe.sh — in-tree mode restores the tracked file', () => {
       while (read() === ORIGINAL && Date.now() < deadline) await sleep(100);
       expect(read()).not.toBe(ORIGINAL); // the tree really is dirty right now
 
-      child.kill('SIGTERM');
+      expect(child.kill('SIGTERM')).toBe(true);
 
       // 5s is deliberately far below the child's 20s runtime: the pre-fix
       // foreground form restored only when the child exited (~20s), so this
       // bound FAILS on a revert while passing comfortably on the fix.
       const restoreBy = Date.now() + 5_000;
       while (read() !== ORIGINAL && Date.now() < restoreBy) await sleep(50);
-      expect(read()).toBe(ORIGINAL);
+      expect(read(), `probe output before restore deadline:\n${output}`).toBe(ORIGINAL);
+
+      // Signal delivery is part of the evidence: wait through the injected ps
+      // delay and prove the trap completed normally rather than passing only
+      // because an unrelated actor happened to rewrite the subject.
+      const outcome = await Promise.race([exited, sleep(15_000).then(() => null)]);
+      expect(outcome, `probe did not exit after SIGTERM:\n${output}`).not.toBeNull();
+      expect(outcome?.code === 143 || outcome?.signal === 'SIGTERM').toBe(true);
+      expect(output).toMatch(/tree integrity: VERIFIED/);
     } finally {
-      child.kill('SIGKILL');
+      if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
     }
   }, 40_000);
 });

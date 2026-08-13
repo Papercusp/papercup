@@ -247,14 +247,20 @@ finish() {
   # Disarm FIRST: without this the handler runs twice (once for TERM, once for
   # the EXIT that TERM causes) and prints its verdict twice.
   trap - EXIT INT TERM
-  # Kill the probe's own child before restoring. A signal arriving during
-  # `wait` runs this handler immediately, but the child is still holding the
-  # mutated file open — restoring underneath a live test would race it.
-  if [ -n "$CHILD" ]; then
-    kill_tree "$CHILD"
-  fi
+  # Restore FIRST. `kill_tree` walks the host process table once per descendant;
+  # on the shared box that can take seconds before it signals even a tiny
+  # shell->sleep tree. Putting cleanup first left the tracked mutant in place
+  # for that entire walk and intermittently exceeded the harness's 5s
+  # SIGTERM->restore integrity deadline. The guard child is read-only with
+  # respect to FILE, and the old ordering did not wait for it to exit before
+  # copying anyway, so deferring the copy bought no race protection.
   if [ "$IN_TREE" = "1" ]; then
     cp "$BASE" "$FILE" 2>/dev/null || true
+  fi
+  # Once the shared-tree invariant is restored, reap the probe's own child and
+  # every descendant so a cancelled npm/node/vitest guard cannot run orphaned.
+  if [ -n "$CHILD" ]; then
+    kill_tree "$CHILD"
   fi
   local now
   now="$(git hash-object "$FILE" 2>/dev/null || echo MISSING)"
