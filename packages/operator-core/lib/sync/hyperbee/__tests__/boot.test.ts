@@ -343,6 +343,84 @@ describe('bootHarnessSubstrate — onAnnounce admit/reject (Stage 4b/4c, Fix 6)'
     expect(second).toBe(first); // same handle, not re-opened
     expect(handle.admitted.size).toBe(2); // own + the one peer
   });
+
+  it('WI-38376: a verified advertised writer high-water exposes a frozen replica without reading beyond local length', async () => {
+    const workspaceId = 'ws-announce-high-water';
+    const harnessSlug = 'ann-high-water';
+    const keyHex = 'a7'.repeat(32);
+    const episodes: Array<{ kind: string; stalledStage?: string; detail: string }> = [];
+    setReplicationStallEpisodeReporterForTests((episode) => {
+      episodes.push(episode);
+    });
+    setReplicationStallRecoveryReporterForTests(() => {});
+    cleanups.push(() => {
+      setReplicationStallEpisodeReporterForTests(null);
+      setReplicationStallRecoveryReporterForTests(null);
+    });
+
+    const reads = vi.fn(async () => null);
+    const sessions: Array<RemoteLog & { close: ReturnType<typeof vi.fn> }> = [];
+    const openRemoteLogOverride = vi.fn(async (_store: unknown, k: string) => {
+      const remote: RemoteLog & { close: ReturnType<typeof vi.fn> } = {
+        keyHex: k,
+        // The receiver has delivered NOTHING. The advertised high-water must
+        // inform liveness without ever being copied into this local length.
+        length: 0,
+        contiguousLength: 0,
+        get: reads,
+        update: async () => {},
+        prefetch: () => {},
+        has: () => false,
+        close: vi.fn(async () => {}),
+        peersCount: () => 1,
+      };
+      sessions.push(remote);
+      return remote;
+    });
+
+    const handle = await bootHarnessSubstrate({
+      workspaceRoot: tmpWorkspaceRoot(),
+      workspaceId,
+      harnessSlug,
+      mergePollMs: 0,
+      pendingRetryMs: 0,
+      loadRevokedOverride: async () => new Set(),
+      verifyBindingOverride: async () => 'verified',
+      openRemoteLogOverride,
+      // Detection is immediate, while confirmation keeps its normal separate
+      // window so this regression owns only the initial repair decision.
+      replicationStallGraceMs: 60_000,
+      frozenGraceMs: 0,
+    });
+    cleanups.push(() => handle.close());
+
+    const decision = await handle.onAnnounce(
+      await validAnnounce({ log_core_key: keyHex, log_length: 12 }),
+    );
+    expect(decision).toEqual({ admit: true });
+    expect(episodes).toEqual([
+      expect.objectContaining({
+        kind: 'frozen',
+        stalledStage: 'transport',
+        detail: expect.stringContaining('writer at 12, merged to 0'),
+      }),
+    ]);
+    expect(reads).not.toHaveBeenCalled();
+
+    // The episode queued the normal repair-on-detect path. The next serialized
+    // pass re-attaches the session even though local length still reads zero.
+    await handle.mergeNow();
+    expect(openRemoteLogOverride).toHaveBeenCalledTimes(2);
+    expect(sessions[0]!.close).toHaveBeenCalledTimes(1);
+    expect(reads).not.toHaveBeenCalled();
+    expect(
+      listBootHistory({
+        workspaceId,
+        harnessSlug,
+        kinds: ['replication_repair' as BootHistoryKind],
+      }),
+    ).toHaveLength(1);
+  });
 });
 
 describe('bootHarnessSubstrate — WI-789 owner bootstrap admission', () => {
