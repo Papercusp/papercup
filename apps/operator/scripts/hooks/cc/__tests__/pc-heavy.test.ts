@@ -402,11 +402,15 @@ describe('pc-heavy.sh — flock counting semaphore (WI-3821)', () => {
       // The command itself need not exist in this isolated fixture; the contract
       // under test is that it STARTS after the scoped bound instead of sitting in
       // the semaphore for the broad default's 900 seconds.
+      expect(r.stderr).toContain('waiting up to 1s');
       expect(r.stderr).toContain('[pc-heavy] slot acquired — starting real work');
-      // pc-heavy derives the deadline from integer-second `date` output and
-      // polls every 500ms, so a one-second bound can expire in ~500-1000ms
-      // depending on where the process lands within the current second.
-      expect(waited).toBeGreaterThanOrEqual(500);
+      // The queue landmark above is the deterministic proof that the scoped
+      // 1-second value was selected. A lower wall-clock bound is invalid here:
+      // pc-heavy derives its deadline from integer-second `date` output, so a
+      // process landing just before the next second can legitimately fall
+      // through on its first 500ms poll (observed at 264ms in gate candidate
+      // 52676bb91277). Keep only the upper bound that distinguishes this path
+      // from the broad 900-second default.
       expect(waited).toBeLessThan(5000);
     } finally {
       killGroup(holder);
