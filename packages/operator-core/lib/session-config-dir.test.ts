@@ -158,8 +158,70 @@ describe('resolveSessionConfigDir', () => {
     expect(r.tried).toEqual([
       'live-process: skipped (no pid hint)',
       'transcript-scan: skipped (no session id)',
-      `conventional: ${join(sessionRoot(), OWNER)} does not exist`,
+      `conventional(${OWNER}): ${join(sessionRoot(), OWNER)} does not exist`,
     ]);
+  });
+
+  // WI-38369: a spawned agent's coord owner id and its SPAWN id differ, and only the
+  // spawn id names the directory. `ownerId` must stay the coord owner (the live-process
+  // guard compares it to PAPERCUSP_SID), so the extra key rides alongside it.
+  describe('altOwnerIds — additional CONVENTIONAL keys', () => {
+    it('resolves a dir named by the alternate key when the owner-keyed one never existed', () => {
+      const real = layConfigDir(REAL_KEY);
+
+      const r = resolveSessionConfigDir({ ownerId: OWNER, home, procRoot, altOwnerIds: [REAL_KEY] });
+
+      expect(r).toMatchObject({ dir: real, source: 'conventional' });
+      expect(r.tried).toContain(`conventional(${OWNER}): ${join(sessionRoot(), OWNER)} does not exist`);
+    });
+
+    it('still prefers ownerId when BOTH exist — the alternate is a fallback, not an override', () => {
+      const owned = layConfigDir(OWNER);
+      layConfigDir(REAL_KEY);
+
+      const r = resolveSessionConfigDir({ ownerId: OWNER, home, procRoot, altOwnerIds: [REAL_KEY] });
+
+      expect(r.dir).toBe(owned);
+    });
+
+    it('is an OBSERVATION, not a second formula: a non-existent alternate resolves to null', () => {
+      const r = resolveSessionConfigDir({ ownerId: OWNER, home, procRoot, altOwnerIds: [REAL_KEY] });
+
+      expect(r.dir).toBeNull();
+      expect(r.source).toBeNull();
+      // Both keys are named in the reason, so the null says WHAT was looked for.
+      expect(r.unresolvedReason).toContain(`'${OWNER}'`);
+      expect(r.unresolvedReason).toContain(`'${REAL_KEY}'`);
+    });
+
+    it('an observation still beats the alternate key — ordering is unchanged', () => {
+      const scanned = layTranscript(REAL_KEY, 'sess-x');
+      layConfigDir('some-third-key');
+
+      const r = resolveSessionConfigDir({
+        ownerId: OWNER,
+        home,
+        procRoot,
+        sessionId: 'sess-x',
+        altOwnerIds: ['some-third-key'],
+      });
+
+      expect(r).toMatchObject({ dir: scanned, source: 'transcript-scan' });
+    });
+
+    it('tolerates null/undefined/duplicate keys without probing them twice', () => {
+      const r = resolveSessionConfigDir({
+        ownerId: OWNER,
+        home,
+        procRoot,
+        altOwnerIds: [null, undefined, OWNER, ''],
+      });
+
+      expect(r.dir).toBeNull();
+      expect(r.tried.filter((t) => t.startsWith('conventional('))).toEqual([
+        `conventional(${OWNER}): ${join(sessionRoot(), OWNER)} does not exist`,
+      ]);
+    });
   });
 
   it('never throws on an unreadable or vanished pid', () => {

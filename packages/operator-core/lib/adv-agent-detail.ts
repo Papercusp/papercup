@@ -1113,7 +1113,10 @@ async function getAgentNativeSession(owner: string): Promise<NativeSessionHandle
         findCodexRolloutId: () => diagnostics.latestRolloutId,
       });
     } else {
-      handle = nativeSessionHandleForAdvSession(session);
+      // WI-38369: the row's own pid is the authoritative config-dir source for a LIVE
+      // session — without it the handle falls back to the transcript scan, which is
+      // right but slower and only works while a transcript exists.
+      handle = nativeSessionHandleForAdvSession(session, { pidHint: session.pid });
     }
     // WI-5226 (EI-308 gap 2): an ENDED claude session's transcript is almost
     // always already deleted (archive-at-death hook, ~15s after turn end) by

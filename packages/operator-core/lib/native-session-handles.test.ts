@@ -1,4 +1,3 @@
-import { sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
 import { describe, expect, it } from 'vitest';
 import type { AdvSessionRow } from './adv-sessions';
 import {
@@ -6,7 +5,44 @@ import {
   nativeSessionHandleForSpawnedAgent,
   claudeHandleAfterRematerializeAttempt,
   type ClaudeNativeSessionHandle,
+  type NativeSessionDeps,
 } from './native-session-handles';
+import type {
+  ResolveSessionConfigDirOptions,
+  SessionConfigDirResolution,
+} from './session-config-dir';
+
+/**
+ * WI-38369: the handle no longer COMPUTES a config dir, it asks the resolver to OBSERVE
+ * one — so these tests inject the resolver and assert on what the handle asks it for and
+ * what it does with the answer. The resolver's own fs behaviour is covered against a real
+ * temp tree in session-config-dir.test.ts; duplicating it here would test the wrong seam.
+ */
+const RESOLVED = '/home/x/.papercusp/session-claude/su-real';
+const resolvedTo = (dir: string): SessionConfigDirResolution => ({
+  dir,
+  source: 'live-process',
+  tried: [],
+  unresolvedReason: null,
+});
+const unresolved: SessionConfigDirResolution = {
+  dir: null,
+  source: null,
+  tried: [],
+  unresolvedReason: 'no observable config dir — WI-38349',
+};
+
+/** Records the options the handle passed, so the wiring itself is asserted. */
+function spyResolver(result: SessionConfigDirResolution) {
+  const calls: ResolveSessionConfigDirOptions[] = [];
+  const deps: NativeSessionDeps = {
+    resolveConfigDir: (opts) => {
+      calls.push(opts);
+      return result;
+    },
+  };
+  return { calls, deps };
+}
 
 const adv = (overrides: Partial<AdvSessionRow> = {}): AdvSessionRow => ({
   id: 42,
@@ -37,15 +73,52 @@ const adv = (overrides: Partial<AdvSessionRow> = {}): AdvSessionRow => ({
 
 describe('nativeSessionHandleForAdvSession', () => {
   it('normalizes a Claude adv_session forced native session id', () => {
-    expect(nativeSessionHandleForAdvSession(adv({ sessionId: 'claude-session' }))).toEqual({
+    const { deps } = spyResolver(resolvedTo(RESOLVED));
+    expect(nativeSessionHandleForAdvSession(adv({ sessionId: 'claude-session' }), deps)).toEqual({
       backend: 'claude',
       source: 'adv_sessions',
       ownerId: 'su-1',
       sessionId: 'claude-session',
-      configDir: sessionClaudeConfigDir('su-1'),
+      configDir: RESOLVED,
+      configDirSource: 'live-process',
+      configDirUnresolvedReason: null,
       exactResumeSupported: true,
       missingReason: null,
     });
+  });
+
+  // The bug: `configDir: sessionClaudeConfigDir(ownerId)` named a directory that had
+  // never existed for 82 of 100 live sessions measured 2026-08-13, and a consumer that
+  // trusts it resumes into an empty dir ("No conversation found") — or worse, writes a
+  // rematerialized transcript there.
+  it('WI-38369: reports UNKNOWN rather than the formula when nothing observes a dir', () => {
+    const { deps } = spyResolver(unresolved);
+    const handle = nativeSessionHandleForAdvSession(adv({ sessionId: 'claude-session' }), deps);
+
+    expect(handle).toMatchObject({
+      configDir: null,
+      configDirSource: null,
+      configDirUnresolvedReason: 'no observable config dir — WI-38349',
+    });
+    // The formula's path must not appear anywhere in the handle.
+    expect(JSON.stringify(handle)).not.toContain('session-claude/su-1');
+  });
+
+  it('WI-38369: asks the resolver by coord owner id + session id, and forwards the pid hint', () => {
+    const { calls, deps } = spyResolver(resolvedTo(RESOLVED));
+    nativeSessionHandleForAdvSession(adv({ sessionId: 'claude-session' }), { ...deps, pidHint: 4242 });
+
+    expect(calls).toHaveLength(1);
+    expect(calls[0]).toMatchObject({ ownerId: 'su-1', sessionId: 'claude-session', pidHint: 4242 });
+  });
+
+  it('WI-38369: a missing owner id is UNKNOWN with a reason, not a silent null', () => {
+    const { calls, deps } = spyResolver(resolvedTo(RESOLVED));
+    const handle = nativeSessionHandleForAdvSession(adv({ coordOwnerId: null, sessionId: 's' }), deps);
+
+    expect(handle).toMatchObject({ configDir: null, configDirSource: null });
+    expect((handle as ClaudeNativeSessionHandle).configDirUnresolvedReason).toMatch(/owner id is not recorded/);
+    expect(calls, 'no owner id ⇒ nothing to resolve against').toHaveLength(0);
   });
 
   it('normalizes a Codex adv_session to CODEX_HOME plus latest rollout id', () => {
@@ -88,22 +161,54 @@ describe('nativeSessionHandleForAdvSession', () => {
 
 describe('nativeSessionHandleForSpawnedAgent', () => {
   it('normalizes a spawned Claude session id', () => {
+    const { deps } = spyResolver(resolvedTo(RESOLVED));
     expect(
-      nativeSessionHandleForSpawnedAgent({
-        spawnId: 's-1',
-        sessionOwner: 'owner-1',
-        backend: 'claude-code',
-        sessionId: 'claude-spawn-session',
-      }),
+      nativeSessionHandleForSpawnedAgent(
+        {
+          spawnId: 's-1',
+          sessionOwner: 'owner-1',
+          backend: 'claude-code',
+          sessionId: 'claude-spawn-session',
+        },
+        deps,
+      ),
     ).toEqual({
       backend: 'claude',
       source: 'spawned_agents',
       ownerId: 'owner-1',
       sessionId: 'claude-spawn-session',
-      configDir: sessionClaudeConfigDir('owner-1'),
+      configDir: RESOLVED,
+      configDirSource: 'live-process',
+      configDirUnresolvedReason: null,
       exactResumeSupported: true,
       missingReason: null,
     });
+  });
+
+  // A spawned agent has TWO identities and only one of them names the dir: the
+  // orchestrator keys it by the minted spawn id (invoke.ts → sessionClaudeConfigDir(
+  // trackedSessionSpawnId)) while `ownerId` is the coord owner. `ownerId` must stay the
+  // coord owner so the live-process strategy's PAPERCUSP_SID guard still rejects a
+  // recycled pid — so the spawn id rides as an alternate CONVENTIONAL key.
+  it('WI-38369: passes the SPAWN id as an alternate conventional key, keeping ownerId the coord owner', () => {
+    const { calls, deps } = spyResolver(resolvedTo(RESOLVED));
+    nativeSessionHandleForSpawnedAgent(
+      { spawnId: 's-1', sessionOwner: 'owner-1', backend: 'claude-code', sessionId: 'sess' },
+      deps,
+    );
+
+    expect(calls[0]).toMatchObject({ ownerId: 'owner-1', altOwnerIds: ['s-1'], sessionId: 'sess' });
+  });
+
+  it('WI-38369: an unresolvable spawned dir is UNKNOWN, not the formula', () => {
+    const { deps } = spyResolver(unresolved);
+    const handle = nativeSessionHandleForSpawnedAgent(
+      { spawnId: 's-1', sessionOwner: 'owner-1', backend: 'claude-code', sessionId: 'sess' },
+      deps,
+    );
+
+    expect(handle).toMatchObject({ configDir: null, configDirSource: null });
+    expect(JSON.stringify(handle)).not.toContain('session-claude/owner-1');
   });
 
   it('makes missing spawned Codex durable handles explicit', () => {
@@ -150,6 +255,8 @@ describe('claudeHandleAfterRematerializeAttempt (WI-5226 / EI-308 gap 2)', () =>
     ownerId: 'su-1',
     sessionId: 'sess-1',
     configDir: '/home/x/.papercusp/session-claude/su-1',
+    configDirSource: 'conventional',
+    configDirUnresolvedReason: null,
     exactResumeSupported: true,
     missingReason: null,
   };

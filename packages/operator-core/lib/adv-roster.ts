@@ -630,12 +630,18 @@ export function mergeRosterEntries(
     const spawnedHandleOrSessionId = sessionsByOwner.get(p.ownerId) ?? null;
     const spawnedNativeSession =
       typeof spawnedHandleOrSessionId === 'string'
-        ? nativeSessionHandleForSpawnedAgent({
-          spawnId: nursery?.spawnId ?? p.ownerId,
-          sessionOwner: p.ownerId,
-          backend: 'claude-code',
-          sessionId: spawnedHandleOrSessionId,
-        })
+        ? nativeSessionHandleForSpawnedAgent(
+          {
+            spawnId: nursery?.spawnId ?? p.ownerId,
+            sessionOwner: p.ownerId,
+            backend: 'claude-code',
+            sessionId: spawnedHandleOrSessionId,
+          },
+          // WI-38369: coord_presence's pid is the launcher, whose child is the claude
+          // CLI — the cheapest and most authoritative way to learn the config dir this
+          // session ACTUALLY reads, instead of assuming the owner-keyed formula.
+          { pidHint: p.pid },
+        )
         : spawnedHandleOrSessionId;
     const sessionId =
       spawnedNativeSession?.backend === 'claude'
