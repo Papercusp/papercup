@@ -410,6 +410,7 @@ import './dev/sessions';
 import './dev/activity';
 import './dev/pg_health';
 import './dev/pg_active_queries';
+import './dev/pg_hot_queries';
 import './dev/pg_table_sizes';
 import './dev/pg_query';
 // no-http-anywhere-2026-07-28 D-074 — publish the read-cache hit/miss counters,
