@@ -14,6 +14,8 @@
  */
 import { describe, it, expect } from 'vitest';
 import launchOnPlan, {
+  DEAD_WAVE_OVERRIDE_MIN_AGE_MS,
+  deadWaveSlotOverride,
   cloudModelBackendHint,
   memberLaunchCommand,
   isOmpLocalModel,
@@ -1085,5 +1087,22 @@ describe('count arg description (P-006 recurrence guard — the doc must not re-
     const d = String(countDescription);
     expect(d).toMatch(/fleetSize/);
     expect(d).toMatch(/shortfall/);
+  });
+});
+
+describe('deadWaveSlotOverride (EI-20361787885323735 — owner-killed wave holds the launch slot)', () => {
+  const MIN = DEAD_WAVE_OVERRIDE_MIN_AGE_MS;
+  it('overrides when the prior wave is past the boot gap and ZERO members are live', () => {
+    expect(deadWaveSlotOverride({ priorAtMs: 1_000_000, nowMs: 1_000_000 + MIN, liveMembers: 0 })).toBe(true);
+  });
+  it('keeps the suppression while the prior wave is still inside the boot gap (members may not have registered)', () => {
+    expect(deadWaveSlotOverride({ priorAtMs: 1_000_000, nowMs: 1_000_000 + MIN - 1, liveMembers: 0 })).toBe(false);
+  });
+  it('keeps the suppression when ANY member is live — the guard is protecting a real wave', () => {
+    expect(deadWaveSlotOverride({ priorAtMs: 1_000_000, nowMs: 1_000_000 + MIN * 10, liveMembers: 1 })).toBe(false);
+  });
+  it('honors an explicit minAgeMs', () => {
+    expect(deadWaveSlotOverride({ priorAtMs: 0, nowMs: 5_000, liveMembers: 0, minAgeMs: 4_000 })).toBe(true);
+    expect(deadWaveSlotOverride({ priorAtMs: 0, nowMs: 3_000, liveMembers: 0, minAgeMs: 4_000 })).toBe(false);
   });
 });

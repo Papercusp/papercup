@@ -256,6 +256,61 @@ export function resolveFleetAgent(opts: {
  *  every worker, so exactly ONE call per fleet can win the window. */
 const RELAUNCH_SUPPRESS_MS = 300_000;
 
+/** EI-20361787885323735: how old a slot-holding launch must be before ZERO live members is
+ *  read as "the wave it protects is DEAD" rather than "still booting". Presence registration
+ *  lands within seconds of psu boot (measured +24s on a 5-member codex wave), so 2 minutes is
+ *  comfortably past the boot gap while still rescuing the owner-killed-wave case (kills land
+ *  at +2..+8 min and the relaunch was refused for the rest of the 300s window). */
+export const DEAD_WAVE_OVERRIDE_MIN_AGE_MS = 120_000;
+
+/**
+ * EI-20362893066852316: resolve the CODEX_HOME to preflight a codex launch against, from the
+ * launch's account routing. A named pool account resolves through its `codex-cli:<home>`
+ * credentialRef; omitted/'default' routing uses the CLI's own ~/.codex (only when an auth.json
+ * actually exists there); 'auto' (gateway pick) and bearer accounts resolve to null = skip
+ * the preflight. Never throws.
+ */
+async function resolveCodexPreflightHome(account: string | undefined, ws: string): Promise<string | null> {
+  try {
+    const trimmed = account?.trim();
+    if (!trimmed || trimmed === 'default') {
+      const os = await import('node:os');
+      const { access } = await import('node:fs/promises');
+      const home = join(os.homedir(), '.codex');
+      await access(join(home, 'auth.json'));
+      return home;
+    }
+    if (trimmed === 'auto') return null;
+    const [{ loadAccountPool }, { parseCodexCliRef }] = await Promise.all([
+      import('../../deployment/account-pool-store'),
+      import('../../inference-gateway/codex-cli-bridge'),
+    ]);
+    const pool = await loadAccountPool(ws);
+    const row = pool.accounts.find((a) => a.id === trimmed);
+    if (!row) return null;
+    return parseCodexCliRef(row.credentialRef ?? '');
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * PURE (EI-20361787885323735): should a LOST launch slot be overridden because the wave it
+ * protects is provably dead? True only when (a) the prior launch is past the boot gap, so its
+ * members would have registered presence by now, AND (b) ZERO non-leader members are live per
+ * the pid-probed roster read. Conservative on both axes: a young wave (members may not have
+ * registered) and any live member both keep the suppression.
+ */
+export function deadWaveSlotOverride(opts: {
+  priorAtMs: number;
+  nowMs: number;
+  liveMembers: number;
+  minAgeMs?: number;
+}): boolean {
+  const minAge = opts.minAgeMs ?? DEAD_WAVE_OVERRIDE_MIN_AGE_MS;
+  return opts.liveMembers === 0 && opts.nowMs - opts.priorAtMs >= minAge;
+}
+
 export interface FleetLaunchCapacityClamp {
   requestedOpenCount: number;
   openCount: number;
@@ -2031,6 +2086,39 @@ export default defineTool({
     // or a named pool account. Existing account/seat choices always win.
     effAccount = defaultMemberAccountRouting(effAccount);
 
+    // EI-20362893066852316: a codex wave launched with a model the ChatGPT backend refuses
+    // boots EVERY member into a hard per-turn refusal that only the member terminals see
+    // (burned a 4-member wave on bare 'gpt-5.6', 2026-08-13). ONE tiny streaming request
+    // answers "will this subscription serve this model?" BEFORE any terminal opens.
+    // FAIL-OPEN: only a definitive model-refusal blocks; auth/capacity/transport trouble
+    // proceeds with a warning (the preflight must never become a new way to fail a launch).
+    let codexPreflightWarning: string | null = null;
+    if (effAgent === 'codex' && effModel) {
+      try {
+        const home = await resolveCodexPreflightHome(effAccount, workspaceId);
+        if (home) {
+          const [{ parseBridgeModel }, { preflightCodexModel }] = await Promise.all([
+            import('../../inference-gateway/codex-cli-bridge'),
+            import('../../inference-gateway/codex-oauth-proxy'),
+          ]);
+          const bareModel = parseBridgeModel(effModel).id;
+          const pf = await preflightCodexModel(home, bareModel);
+          if (pf.verdict === 'refused') {
+            return err(
+              `Codex model preflight REFUSED '${bareModel}' on account '${effAccount ?? 'default'}' — the ChatGPT backend answered: ${pf.detail} ` +
+                `NO terminals were opened (a wave on this model would fail every turn). Working ids on this subscription are family-suffixed ` +
+                `(e.g. gpt-5.6-sol, gpt-5.6-terra); verify one with a 1-turn probe: codex exec -m <id> 'Reply OK'.`,
+            );
+          }
+          if (pf.verdict === 'unknown') {
+            codexPreflightWarning = `codex model preflight inconclusive (${pf.detail}) — proceeding fail-open`;
+          }
+        }
+      } catch (e) {
+        codexPreflightWarning = `codex model preflight errored (${(e as Error).message}) — proceeding fail-open`;
+      }
+    }
+
     let slot;
     try {
       slot = await claimFleetLaunchSlot({
@@ -2041,6 +2129,24 @@ export default defineTool({
       });
     } catch (e: any) {
       return err(`Failed to check the fleet's launch guard: ${e?.message ?? e}`);
+    }
+    if (!slot.won && deadWaveSlotOverride({ priorAtMs: slot.priorAt, nowMs: Date.now(), liveMembers })) {
+      // EI-20361787885323735: the slot is held by a wave with ZERO live members past the boot
+      // gap — an owner-killed (or otherwise dead-on-arrival) wave. The guard exists to stop
+      // DOUBLE-waves onto a LIVE fleet; protecting a corpse wave for the rest of the window
+      // is the bug (refused legitimate corrective relaunches twice on 2026-08-13). Release
+      // the corpse's claim and re-claim; any failure falls through to the normal suppression.
+      try {
+        await releaseFleetLaunchSlot({ workspaceId, fleetSlug, at: slot.priorAt });
+        slot = await claimFleetLaunchSlot({
+          workspaceId,
+          fleetSlug,
+          count: openCount,
+          windowMs: RELAUNCH_SUPPRESS_MS,
+        });
+      } catch {
+        /* keep the lost slot — the window self-heals */
+      }
     }
     if (!slot.won) {
       const agoS = Math.max(1, Math.round((Date.now() - slot.priorAt) / 1000));
@@ -2955,6 +3061,9 @@ export default defineTool({
         fleetComplete: fill.complete,
         capacityClamp,
         sizingAdvisory,
+        // EI-20362893066852316: non-null when the codex model preflight could not get a
+        // definitive answer (auth/transport/etc.) and the launch proceeded fail-open.
+        codexPreflightWarning,
         memberBaselineApplied: baselineApplied,
         claimSpecApplied,
         promotionFailsafe,
