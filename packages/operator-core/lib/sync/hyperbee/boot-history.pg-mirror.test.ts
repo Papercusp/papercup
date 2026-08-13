@@ -65,6 +65,25 @@ describe('boot-history PG mirror (EI-18655247267756605)', () => {
     expect(entries).toHaveLength(9);
   });
 
+  it('persists the epoch boot device identity so restart cannot erase split-identity evidence', () => {
+    const entries = capturePgWrites();
+
+    recordBootEvent(
+      'ws1',
+      'h',
+      'epoch_boot_device',
+      'pubkey=device-a keychainId=github:1 tiers=secretTool:false,securityCli:true,file:primary',
+    );
+
+    expect(entries).toEqual([
+      expect.objectContaining({
+        workspaceId: 'ws1',
+        harnessSlug: 'h',
+        kind: 'epoch_boot_device',
+      }),
+    ]);
+  });
+
   it('does NOT hand the high-frequency epoch trace or peer_connected to the PG-write seam', () => {
     const entries = capturePgWrites();
 

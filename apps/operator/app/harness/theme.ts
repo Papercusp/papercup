@@ -387,6 +387,7 @@ export const BOOT_HISTORY_KIND_COLOR: Record<string, string> = {
   rekey_boundary_skipped: 'var(--warn)',
   rekey_boundary_applied: 'var(--good)',
   epoch_gate_built: 'var(--accent)',
+  epoch_boot_device: 'var(--accent)',
   epoch_gate_skipped: 'var(--warn)',
   epoch_gate_seen: 'var(--accent)',
   epoch_defer: 'var(--warn)',

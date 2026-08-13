@@ -177,6 +177,11 @@ export type BootHistoryKind =
   //                             potId is the LOCAL home slug, not a federated field) → DROP.
   //   - 'epoch_applied'       — an encrypted op decrypted + applied (the success path).
   | 'epoch_gate_built'
+  // WI-5333 / P-505: the exact local device identity + keychain tiers resolved by
+  // the epoch boot composition. Sparse (once per gate build), and durable so a
+  // restart cannot erase the evidence needed to distinguish a boot-time identity
+  // split from a downstream decrypt/apply failure.
+  | 'epoch_boot_device'
   // WI-6043 (2026-07-26): `buildHiveRekeyBootDeps`'s fail-open catch casts this kind but it
   // was never declared in this union — a silent gate-build failure (a PG hiccup, a missing
   // local device identity, an unexpected throw) recorded an event whose `kind` didn't even
@@ -375,6 +380,7 @@ const STDOUT_MIRROR_KINDS: ReadonlySet<BootHistoryKind> = new Set([
   'rekey_boundary_applied',
   'rekey_grant_skipped',
   'epoch_gate_built',
+  'epoch_boot_device',
   'epoch_gate_skipped',
 ]);
 

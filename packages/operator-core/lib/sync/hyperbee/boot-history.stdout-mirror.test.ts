@@ -65,6 +65,21 @@ describe('boot-history stdout mirror (WI-5781)', () => {
     expect(lines.every((l) => l.startsWith('[boot-history] '))).toBe(true);
   });
 
+  it('mirrors the epoch boot device identity so restart cannot erase split-identity evidence', () => {
+    const lines = captureMirror();
+
+    recordBootEvent(
+      'ws1',
+      'h',
+      'epoch_boot_device',
+      'pubkey=device-a keychainId=github:1 tiers=secretTool:false,securityCli:true,file:primary',
+    );
+
+    expect(lines).toEqual([
+      '[boot-history] epoch_boot_device harness=h pubkey=device-a keychainId=github:1 tiers=secretTool:false,securityCli:true,file:primary',
+    ]);
+  });
+
   it('does NOT mirror the high-frequency epoch trace or peer_connected', () => {
     const lines = captureMirror();
 

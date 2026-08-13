@@ -156,7 +156,7 @@ export async function buildHiveRekeyBootDeps(opts: {
         recordBootEvent(
           opts.workspaceId,
           opts.harnessSlug,
-          'epoch_boot_device' as BootHistoryKind,
+          'epoch_boot_device',
           `pubkey=${localDevice.pubkeyBase64} keychainId=${localDevice.keychainId} tiers=secretTool:${tiers.secretTool},securityCli:${tiers.securityCli},file:${tiers.file}`,
         );
       } catch {

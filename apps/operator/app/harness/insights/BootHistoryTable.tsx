@@ -69,6 +69,7 @@ export type BootHistoryKind =
   // on success, indistinguishable-from-never-reached in a banked serve.log).
   | 'rekey_boundary_applied'
   | 'epoch_gate_built'
+  | 'epoch_boot_device'
   // WI-6043 drive-by fix: this kind existed in the canonical union (boot-history.ts,
   // added for the same WI-6043 investigation) but was missing here — the same
   // exhaustiveness-drift class noted for peer_cap_near/replication_frozen above, caught
@@ -153,6 +154,7 @@ const KIND_MARK: Record<BootHistoryKind, string> = {
   rekey_boundary_skipped: '⤳',
   rekey_boundary_applied: '🔑',
   epoch_gate_built: '🔐',
+  epoch_boot_device: '📱',
   epoch_gate_skipped: '🔐✗',
   epoch_gate_seen: '👁',
   epoch_defer: '⏸',
