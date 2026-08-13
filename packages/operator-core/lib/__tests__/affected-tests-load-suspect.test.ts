@@ -196,7 +196,7 @@ describe('wiring into scripts/affected-tests.mjs', () => {
   const AFFECTED_TESTS = process.env.PAPERCUSP_AFFECTED_TESTS_SCRIPT
     ? resolve(REPO_ROOT, process.env.PAPERCUSP_AFFECTED_TESTS_SCRIPT)
     : resolve(REPO_ROOT, 'scripts/affected-tests.mjs');
-  const src = readFileSync(AFFECTED_TESTS, 'utf8');
+  const src = readFileSync(AFFECTED_TESTS, 'utf8').replaceAll('"', "'");
 
   it('imports the classifier from the shared module rather than re-deriving it inline', () => {
     expect(src).toContain("from './lib/load-suspect.mjs'");

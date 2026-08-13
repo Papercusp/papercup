@@ -129,7 +129,7 @@ describe('parseFailedTestFiles (EI-18819483316574031)', () => {
 });
 
 describe('affected-tests.mjs cross-checks the summary against the exit code (EI-18653696921091778)', () => {
-  const source = readFileSync(AFFECTED_TESTS, 'utf8');
+  const source = readFileSync(AFFECTED_TESTS, 'utf8').replaceAll('"', "'");
 
   it('imports parseSummaryFailedCounts from the shared parser module', () => {
     expect(source).toMatch(/import \{[^}]*\bparseSummaryFailedCounts\b[^}]*\} from '\.\/lib\/vitest-summary\.mjs'/);

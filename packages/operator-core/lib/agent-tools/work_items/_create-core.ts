@@ -292,7 +292,7 @@ export async function createOneWorkItem(
             identity,
             'duplicate',
             mirror.id,
-            args.harness ?? ctx.harnessSlug,
+            args.harness,
           );
         }
         return {
@@ -580,7 +580,7 @@ export async function createOneWorkItem(
         identity,
         'canonical-created',
         workItem.id,
-        workItem.harness ?? harnessForItem ?? ctx.harnessSlug,
+        workItem.harness ?? harnessForItem,
         similarOpen,
         dedupCoverage,
       );

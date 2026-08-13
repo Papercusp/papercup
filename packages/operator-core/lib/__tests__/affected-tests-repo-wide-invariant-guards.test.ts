@@ -990,7 +990,7 @@ describe('affected-tests: the host-suite skip is DECLARED and verified, never as
   const REGISTRY_FILE = process.env.PROBE_AFFECTED_TESTS ?? AFFECTED_TESTS;
 
   const registrySource = (() => {
-    const src = readFileSync(REGISTRY_FILE, 'utf8');
+    const src = readFileSync(REGISTRY_FILE, 'utf8').replaceAll('"', "'");
     const start = src.indexOf('const REPO_WIDE_INVARIANT_GUARDS');
     return src.slice(start, src.indexOf('\n];', start));
   })();

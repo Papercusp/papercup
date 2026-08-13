@@ -42,7 +42,7 @@ const AFFECTED_TESTS_PATH = resolve(
   REPO_ROOT,
   process.env.PROBE_AFFECTED_TESTS ?? 'scripts/affected-tests.mjs',
 );
-const AFFECTED_TESTS_SRC = readFileSync(AFFECTED_TESTS_PATH, 'utf8');
+const AFFECTED_TESTS_SRC = readFileSync(AFFECTED_TESTS_PATH, 'utf8').replaceAll('"', "'");
 
 describe('summarizeSerialPhase', () => {
   it('sums the legs and names the longest', () => {

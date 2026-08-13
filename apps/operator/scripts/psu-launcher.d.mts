@@ -1400,6 +1400,10 @@ export function runLaunchPreflight({ promptFile, contextSize, model, agent, budg
         estimator: string;
     };
 };
+/** Build the account picker rows from already-fetched choices. Pure so the
+ * provider-specific routing contract is regression-testable without driving
+ * Inquirer. */
+export function accountPickerChoices(accounts: any): any[];
 /**
  * Derive a stable fleet slug from a user-entered name. MIRRORS
  * `fleetSlugFromName` in packages/operator-core/lib/agent-fleets-store.ts (kept in

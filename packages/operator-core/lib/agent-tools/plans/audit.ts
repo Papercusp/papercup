@@ -114,6 +114,7 @@ export default defineTool({
     ],
   },
   capability: 'plans:write',
+  skipWorkspaceTx: true,
   requirePrincipal: false,
   agentRoles: [...AGENT_ROLES],
   modality: ['text'],

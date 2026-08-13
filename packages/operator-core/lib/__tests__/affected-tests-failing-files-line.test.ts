@@ -470,7 +470,7 @@ describe('renderFailingFilesSummary — the block the red path actually prints',
 });
 
 describe('scripts/affected-tests.mjs wires the block in (a helper nothing calls is not a fix)', () => {
-  const source = readFileSync(AFFECTED_TESTS, 'utf8');
+  const source = readFileSync(AFFECTED_TESTS, 'utf8').replaceAll('"', "'");
 
   it('emits the summary on the failure path', () => {
     const failureBlock = source.slice(source.indexOf('if (failed) {'));

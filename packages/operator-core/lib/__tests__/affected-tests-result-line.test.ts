@@ -56,7 +56,7 @@ const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '../../../..'
 const AFFECTED_TESTS = process.env.PAPERCUSP_AFFECTED_TESTS_SCRIPT
   ? resolve(process.env.PAPERCUSP_AFFECTED_TESTS_SCRIPT)
   : resolve(REPO_ROOT, 'scripts/affected-tests.mjs');
-const source = readFileSync(AFFECTED_TESTS, 'utf8');
+const source = readFileSync(AFFECTED_TESTS, 'utf8').replaceAll('"', "'");
 
 /** Every field a caller is entitled to find on the marker line, on every path. */
 const REQUIRED_MARKER_FIELDS = ['status', 'tasks', 'failed', 'quarantinedFailed', 'timedOutTasks'] as const;

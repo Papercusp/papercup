@@ -214,7 +214,7 @@ console.log('FOOTER-MARK');
 });
 
 describe('affected-tests.mjs uses the synchronous writer for its own output (EI-10542)', () => {
-  const source = readFileSync(AFFECTED_TESTS, 'utf8');
+  const source = readFileSync(AFFECTED_TESTS, 'utf8').replaceAll('"', "'");
 
   it('imports the sync-write helper', () => {
     expect(source).toMatch(/from '\.\/lib\/sync-write\.mjs'/);

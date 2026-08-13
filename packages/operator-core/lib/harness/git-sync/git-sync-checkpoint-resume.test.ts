@@ -135,7 +135,7 @@ describe('WI-1416 checkpointed pipeline (real git, submodule)', () => {
     ).rejects.toThrow(/simulated reap/);
     expect(names1).toEqual(['git-sync:submodules']);
     // The checkpointed phase's work is DURABLE: the submodule commit reached its origin…
-    expect(git(subOrigin, 'log', '--format=%s', 'main')).toMatch(/auto-commit ckpt/);
+    expect(git(subOrigin, 'log', '--format=%s', 'main')).toMatch(/sync\(root\): sub-work\.txt/);
     const subCountAfterFire1 = revCount(subOrigin);
     // …while the superproject (killed before its phases) has NOT moved.
     expect(git(superOrigin, 'log', '--format=%s', 'main')).not.toMatch(/auto-commit ckpt/);
@@ -248,7 +248,7 @@ describe('WI-1416 checkpointed pipeline (real git, submodule)', () => {
     expect(names).not.toContain('git-sync:push');
     expect(git(superOrigin, 'log', '--format=%s', 'main')).not.toMatch(/auto-commit ckpt/);
     // ...and the superproject's own work is safely committed locally rather than stranded.
-    expect(git(repo, 'log', '--format=%s', 'HEAD')).toMatch(/auto-commit ckpt/);
+    expect(git(repo, 'log', '--format=%s', 'HEAD')).toMatch(/sync\(root,sub\):/);
   });
 });
 

@@ -296,7 +296,7 @@ describe('the mirrors of scripts/affected-tests.mjs have not drifted', () => {
    * execute a test run. A hand-kept mirror silently under-covering is precisely the shape of bug
    * this file exists to prevent, so the mirror is asserted against the real source.
    */
-  const src = readFileSync(AFFECTED_TESTS_SRC, 'utf8');
+  const src = readFileSync(AFFECTED_TESTS_SRC, 'utf8').replaceAll('"', "'");
 
   it('covers every script affected-tests.mjs turns into a task', () => {
     // The task loop pushes `{ ws, script: '<name>' }` for scripts it finds on a workspace.

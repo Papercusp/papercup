@@ -11,6 +11,7 @@ import { evaluatePlanAcceptanceGate } from './plan-acceptance-gate';
 import { getAcceptanceRubricForPlan, type Rubric } from './rubrics';
 import { listScorecards, type ScorecardRow } from './scorecards';
 import { getFlag } from '@papercusp/flags/server';
+import { FLAGS } from '@papercusp/flags';
 import { getOrgPg } from '@papercusp/db-org';
 
 vi.mock('./rubrics', () => ({
@@ -80,7 +81,10 @@ const scorecard = (over: Partial<ScorecardRow> = {}): ScorecardRow => ({
 
 beforeEach(() => {
   vi.resetAllMocks();
-  mockFlag.mockResolvedValue(true);
+  // This suite exercises the acceptance-rubric family in isolation. The newer
+  // code-truth gates have their own focused suite and deliberately run first in
+  // production, so leave them disabled here unless a test opts in explicitly.
+  mockFlag.mockImplementation(async (flag) => flag === FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE);
   // Default: the subject plan row exists and is a plain work plan (no exemption).
   mockPg.mockReturnValue(sqlReturning([{ plan_slug: 'some-plan-2026-08-11', template: null, template_slug: null }]));
 });
@@ -156,7 +160,10 @@ describe('evaluatePlanAcceptanceGate', () => {
   });
 
   it('flag read failure degrades toward ON (the gate still applies)', async () => {
-    mockFlag.mockRejectedValue(new Error('flags backend down'));
+    mockFlag.mockImplementation(async (flag) => {
+      if (flag === FLAGS.ACCEPTANCE_RUBRIC_COMPLETION_GATE) throw new Error('flags backend down');
+      return false;
+    });
     mockRubric.mockResolvedValue(null);
     const v = await evaluatePlanAcceptanceGate('some-plan-2026-08-11');
     expect(v).toMatchObject({ satisfied: false, code: 'acceptance_rubric_missing' });
