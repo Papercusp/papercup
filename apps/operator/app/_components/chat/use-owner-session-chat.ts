@@ -26,18 +26,30 @@
  * to reuse from a second surface without a cycle.
  */
 import { useCallback, useEffect, useMemo, useState } from 'react';
+import type { NativeSessionHandle } from '@papercusp/operator-core/lib/native-session-handles';
 import { recordSentEcho, settleSentEcho } from './sent-message-echo';
+
+export type SessionStreamKey = 'sessionId' | 'codexSessionKey' | 'codexRolloutId' | 'ompThreadId';
 
 export interface SessionListRow {
   source_kind: string;
   session_id: string;
   active?: boolean;
   last_ts: string | null;
+  /** The exact query key `/api/adv/session/thinking` expects for this row. */
+  stream_key?: SessionStreamKey;
 }
 
-/** Resolve the most relevant CLAUDE session for this owner via the existing
- *  sessions:list admin proxy. Exported for tests. */
-export async function resolveOwnerClaudeSession(ownerId: string): Promise<SessionListRow | null> {
+/** The runtime handles already present on an advRoster.list row. */
+export interface SessionRosterHint {
+  agent?: string | null;
+  advSessionId?: number | null;
+  sessionId?: string | null;
+  ompThreadId?: string | null;
+  nativeSession?: NativeSessionHandle | null;
+}
+
+async function listOwnerSessions(ownerId: string): Promise<SessionListRow[]> {
   const r = await fetch('/api/admin/coordination/sessions/list', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -51,7 +63,13 @@ export async function resolveOwnerClaudeSession(ownerId: string): Promise<Sessio
   } catch {
     throw new Error('sessions:list returned a non-JSON response');
   }
-  const sessions = body.sessions ?? [];
+  return body.sessions ?? [];
+}
+
+/** Resolve the most relevant CLAUDE session for this owner via the existing
+ *  sessions:list admin proxy. Kept as the no-roster compatibility path. */
+export async function resolveOwnerClaudeSession(ownerId: string): Promise<SessionListRow | null> {
+  const sessions = await listOwnerSessions(ownerId);
   // Prefer the live/active fallback row (EI-11403), else the newest indexed
   // claude session — sessions:list is already newest-first.
   return (
@@ -59,6 +77,106 @@ export async function resolveOwnerClaudeSession(ownerId: string): Promise<Sessio
     sessions.find((s) => s.source_kind === 'claude') ??
     null
   );
+}
+
+/**
+ * Turn the roster's canonical native handle into the stream route's exact key.
+ * Pure and exported because mixing up a Codex rollout UUID with an adv-row id
+ * produces a healthy SSE connection with an empty transcript — a silent miss.
+ */
+export function sessionTargetFromRoster(hint: SessionRosterHint): SessionListRow | null {
+  const native = hint.nativeSession;
+  if (native?.backend === 'claude' && native.sessionId) {
+    return {
+      source_kind: 'claude',
+      session_id: native.sessionId,
+      stream_key: 'sessionId',
+      active: true,
+      last_ts: null,
+    };
+  }
+  if (native?.backend === 'codex') {
+    if (native.rolloutId) {
+      return {
+        source_kind: 'codex',
+        session_id: native.rolloutId,
+        stream_key: 'codexRolloutId',
+        active: true,
+        last_ts: null,
+      };
+    }
+    if (hint.advSessionId != null) {
+      return {
+        source_kind: 'codex',
+        session_id: String(hint.advSessionId),
+        stream_key: 'codexSessionKey',
+        active: true,
+        last_ts: null,
+      };
+    }
+  }
+  if (native?.backend === 'omp' && native.ompThreadId) {
+    return {
+      source_kind: 'omp',
+      session_id: native.ompThreadId,
+      stream_key: 'ompThreadId',
+      active: true,
+      last_ts: null,
+    };
+  }
+
+  // Compatibility with a roster payload from before `nativeSession` shipped.
+  const agent = hint.agent?.trim().toLowerCase();
+  if ((agent === 'claude' || agent === 'papercup') && hint.sessionId) {
+    return {
+      source_kind: 'claude',
+      session_id: hint.sessionId,
+      stream_key: 'sessionId',
+      active: true,
+      last_ts: null,
+    };
+  }
+  if (agent === 'codex' && hint.advSessionId != null) {
+    return {
+      source_kind: 'codex',
+      session_id: String(hint.advSessionId),
+      stream_key: 'codexSessionKey',
+      active: true,
+      last_ts: null,
+    };
+  }
+  if (agent === 'omp' && hint.ompThreadId) {
+    return {
+      source_kind: 'omp',
+      session_id: hint.ompThreadId,
+      stream_key: 'ompThreadId',
+      active: true,
+      last_ts: null,
+    };
+  }
+  return null;
+}
+
+function streamKeyForSource(sourceKind: string): SessionStreamKey {
+  if (sourceKind === 'codex') return 'codexRolloutId';
+  if (sourceKind === 'omp') return 'ompThreadId';
+  return 'sessionId';
+}
+
+/** Resolve the owner against the roster handle first, then the indexed history. */
+export async function resolveOwnerSession(
+  ownerId: string,
+  hint: SessionRosterHint = {},
+): Promise<SessionListRow | null> {
+  const rosterTarget = sessionTargetFromRoster(hint);
+  if (rosterTarget) return rosterTarget;
+
+  const sessions = await listOwnerSessions(ownerId);
+  const preferred = hint.agent?.trim().toLowerCase();
+  const sourceKind = preferred === 'codex' || preferred === 'omp' ? preferred : 'claude';
+  const matching = sessions.filter((s) => s.source_kind === sourceKind);
+  const row = matching.find((s) => s.active) ?? matching[0] ?? null;
+  return row ? { ...row, stream_key: streamKeyForSource(row.source_kind) } : null;
 }
 
 /**
@@ -155,7 +273,13 @@ export function buildSessionStreamUrl(
      `resolved.active` describes the LATEST session and would say otherwise. */
   const streamSessionId = focus.focusSessionId || resolved.session_id;
   const isEarlierSession = streamSessionId !== resolved.session_id;
-  const p = new URLSearchParams({ sessionId: streamSessionId, owner: ownerId });
+  // A search result's session id is the native corpus id. For Codex that is a
+  // rollout UUID even when the current live row is addressed by adv-row key.
+  const streamKey = isEarlierSession
+    ? streamKeyForSource(resolved.source_kind)
+    : (resolved.stream_key ?? streamKeyForSource(resolved.source_kind));
+  const p = new URLSearchParams({ [streamKey]: streamSessionId });
+  if (streamKey === 'sessionId') p.set('owner', ownerId);
   // EI-16982: an ended session's on-disk transcript is routinely GC'd within
   // ~2h of archiving (session-dir-gc.ts); the backend already has a
   // rematerialize-from-archive fallback (WI-3990) gated on `ended=1`, but it
@@ -198,6 +322,7 @@ export interface OwnerSessionChat {
 export function useOwnerSessionChat(
   ownerId: string | null,
   focus: SessionStreamFocus = {},
+  rosterHint: SessionRosterHint = {},
 ): OwnerSessionChat {
   const [resolved, setResolved] = useState<SessionListRow | null>(null);
   const [resolveError, setResolveError] = useState<string | null>(null);
@@ -214,7 +339,7 @@ export function useOwnerSessionChat(
     if (!ownerId) return;
     let cancelled = false;
     setResolving(true);
-    resolveOwnerClaudeSession(ownerId)
+    resolveOwnerSession(ownerId, rosterHint)
       .then((s) => {
         if (!cancelled) setResolved(s);
       })
@@ -227,7 +352,14 @@ export function useOwnerSessionChat(
     return () => {
       cancelled = true;
     };
-  }, [ownerId]);
+  }, [
+    ownerId,
+    rosterHint.agent,
+    rosterHint.advSessionId,
+    rosterHint.sessionId,
+    rosterHint.ompThreadId,
+    rosterHint.nativeSession,
+  ]);
 
   const { focusSessionId, focusTerm, focusAnchorTs } = focus;
   const streamUrl = useMemo(

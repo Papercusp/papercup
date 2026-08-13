@@ -10,7 +10,11 @@
  * function, a silent regression here would take out both.
  */
 import { describe, expect, it } from 'vitest';
-import { buildSessionStreamUrl, deliveryFromSendResponse } from './use-owner-session-chat';
+import {
+  buildSessionStreamUrl,
+  deliveryFromSendResponse,
+  sessionTargetFromRoster,
+} from './use-owner-session-chat';
 
 const LIVE = { source_kind: 'claude', session_id: 's-live', active: true, last_ts: null };
 const ENDED = { source_kind: 'claude', session_id: 's-ended', active: false, last_ts: null };
@@ -31,6 +35,52 @@ describe('buildSessionStreamUrl', () => {
     const p = q(buildSessionStreamUrl('su-a', LIVE));
     expect(p.get('sessionId')).toBe('s-live');
     expect(p.get('owner')).toBe('su-a');
+  });
+
+  it('uses the native Codex and OMP stream keys instead of the Claude key', () => {
+    const codex = { ...LIVE, source_kind: 'codex', session_id: 'rollout-1', stream_key: 'codexRolloutId' as const };
+    const omp = { ...LIVE, source_kind: 'omp', session_id: 'thread-1', stream_key: 'ompThreadId' as const };
+    expect(buildSessionStreamUrl('su-codex', codex)).toBe(
+      '/api/adv/session/thinking?codexRolloutId=rollout-1',
+    );
+    expect(buildSessionStreamUrl('su-omp', omp)).toBe(
+      '/api/adv/session/thinking?ompThreadId=thread-1',
+    );
+  });
+
+  it('uses a Codex adv-row key when rollout discovery has not completed yet', () => {
+    const target = sessionTargetFromRoster({
+      agent: 'codex',
+      advSessionId: 9444,
+      nativeSession: {
+        backend: 'codex',
+        source: 'adv_sessions',
+        ownerId: 'su-codex',
+        codexHome: '/tmp/codex-home',
+        rolloutId: null,
+        exactResumeSupported: false,
+        missingReason: 'not recorded yet',
+      },
+    });
+    expect(buildSessionStreamUrl('su-codex', target)).toBe(
+      '/api/adv/session/thinking?codexSessionKey=9444',
+    );
+  });
+
+  it('derives exact native targets for all three supported runtimes', () => {
+    expect(sessionTargetFromRoster({
+      nativeSession: {
+        backend: 'claude', source: 'adv_sessions', ownerId: 'su-c', sessionId: 'claude-1',
+        configDir: '/tmp/c', configDirSource: 'live-process', configDirUnresolvedReason: null,
+        exactResumeSupported: true, missingReason: null,
+      },
+    })?.stream_key).toBe('sessionId');
+    expect(sessionTargetFromRoster({
+      nativeSession: {
+        backend: 'omp', source: 'adv_sessions', ownerId: 'su-o', ompThreadId: 'omp-1',
+        agentHome: '/tmp/o', exactResumeSupported: true, missingReason: null,
+      },
+    })?.stream_key).toBe('ompThreadId');
   });
 
   it('does NOT set ended=1 for a live session', () => {
