@@ -207,7 +207,7 @@ export default defineTool({
       .boolean()
       .optional()
       .describe(
-        'EI-9672: when the active run is CONFIRMED stale (candidate_stale:true in a prior already_running reply) AND ≥20 min old (EI-11667: a YOUNG stale run is normal on a busy tree and is refused, not stopped — serial replacement starves the gate of every verdict), stop that run and launch a fresh one. Unlike force, this actually frees the singleton; a run judging the current candidate is never stopped.',
+        `EI-9672: when the active run is CONFIRMED stale (candidate_stale:true in a prior already_running reply) AND ≥${Math.round(REPLACE_STALE_MIN_AGE_SEC / 60)} min old (EI-11667: a YOUNG stale run is normal on a busy tree and is refused, not stopped — serial replacement starves the gate of every verdict), stop that run and launch a fresh one. Unlike force, this actually frees the singleton; a run judging the current candidate is never stopped.`,
       ),
     paths: z
       .array(z.string())

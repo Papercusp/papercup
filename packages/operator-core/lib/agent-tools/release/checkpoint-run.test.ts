@@ -895,6 +895,50 @@ describe('release-fixer.md prompt banners stay in sync with this file', () => {
   });
 });
 
+// WI-38356 follow-on, measured live 2026-08-13T02:17Z: `replaceStale`'s own ARG DESCRIPTION
+// hardcoded "≥20 min old" while the enforced floor (REPLACE_STALE_MIN_AGE_SEC) had moved to
+// 120 min — off by 6×. The refusal note already derived the number from the constant, so only
+// the half an agent reads BEFORE calling was wrong; I fired replaceStale on a 21-minute run on
+// the strength of it and got refused as `young`. Same class as the prompt-banner guard above,
+// one layer in: a hand-typed number in guidance that no test pinned to the value it describes.
+describe('replaceStale guidance stays in sync with the enforced age floor', () => {
+  const HERE = dirname(fileURLToPath(import.meta.url));
+  const SOURCE_PATH = resolve(HERE, './checkpoint-run.ts');
+  const LAUNCH_PATH = resolve(HERE, '../../release-checkpoint-launch.ts');
+
+  /** Read the floor from SOURCE TEXT, not an import: this file vi.doMocks
+   *  `release-checkpoint-launch` in most of its tests, and a textual read also pins the two
+   *  files' wording together, which is the actual claim under test. */
+  const enforcedFloorMin = (): number => {
+    const m = /REPLACE_STALE_MIN_AGE_SEC\s*=\s*(\d+)\s*\*\s*60\b/.exec(readFileSync(LAUNCH_PATH, 'utf8'));
+    if (!m) throw new Error('REPLACE_STALE_MIN_AGE_SEC = <N> * 60 not found — update this guard with it');
+    return Number(m[1]);
+  };
+
+  it('states the ENFORCED floor, derived from the constant rather than hand-typed', () => {
+    const source = readFileSync(SOURCE_PATH, 'utf8');
+    const enforcedMin = enforcedFloorMin();
+    // The description must DERIVE the figure. Asserting on the rendered schema instead would
+    // pass just as happily against a hardcoded literal that currently agrees by luck, which is
+    // exactly the state this guard exists to reject.
+    expect(source).toMatch(/≥\$\{Math\.round\(REPLACE_STALE_MIN_AGE_SEC \/ 60\)\} min old/);
+    // And no stale hand-typed minute-figure may sit in a `≥N min` position anywhere in this
+    // file: every such claim about the floor has to come from the constant.
+    for (const m of source.matchAll(/≥(\d+) min/g)) {
+      expect(Number(m[1])).toBe(enforcedMin);
+    }
+  });
+
+  it('CONTROL: the pre-fix literal would be caught — the guard is not vacuous', () => {
+    // The exact string this file carried until 02:17Z. Held here permanently rather than
+    // mutated into the shared tree (module-level subject, per the falsifiability discipline).
+    const preFix = 'reply) AND ≥20 min old (EI-11667: a YOUNG stale run is normal';
+    expect([...preFix.matchAll(/≥(\d+) min/g)].map((m) => Number(m[1]))).toEqual([20]);
+    // 20 is not the enforced floor, so the loop above genuinely fails on the old text.
+    expect(20).not.toBe(enforcedFloorMin());
+  });
+});
+
 /**
  * state-plane-adoption-2026-08-02 P-002 / D-001. This verb's `candidate` is the most
  * drift-prone value in the repo — a run re-candidates onto tip mid-flight — so a reply
