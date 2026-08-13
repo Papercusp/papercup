@@ -11,6 +11,13 @@ import { existsSync, readFileSync, statSync } from 'node:fs';
 import { isAbsolute, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { verifyEd25519 } from '../../identity/ed25519';
+import {
+  physicalDrillSigningBytes,
+  validatePhysicalDrillHostReceipt,
+  type PhysicalDrillHostReceipt,
+} from './physical-drill-host-receipt';
+
+export { physicalDrillSigningBytes } from './physical-drill-host-receipt';
 
 const SCHEMA = 'hive-git-physical-evidence/v1';
 const TRUST_SCHEMA = 'hive-git-physical-trust/v1';
@@ -48,23 +55,6 @@ function integer(value: unknown): number | null {
 function validDeviceKey(value: string | null): value is string {
   if (!value || !/^[A-Za-z0-9+/]{43}=$/.test(value)) return false;
   return Buffer.from(value, 'base64').length === 32;
-}
-
-function canonical(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(canonical);
-  const object = record(value);
-  if (!object) return value;
-  return Object.fromEntries(
-    Object.keys(object)
-      .filter((key) => key !== 'attestations')
-      .sort()
-      .map((key) => [key, canonical(object[key])]),
-  );
-}
-
-/** The exact domain-separated bytes both physical device identities attest. */
-export function physicalDrillSigningBytes(raw: unknown): Buffer {
-  return Buffer.from(`${SCHEMA}\n${JSON.stringify(canonical(raw))}`, 'utf8');
 }
 
 function expectRecord(parent: JsonRecord | null, key: string, errors: string[]): JsonRecord | null {
@@ -184,6 +174,7 @@ function validateAttestations(raw: JsonRecord, hostKeys: Set<string>, errors: st
 
 function validateTrustAnchor(
   raw: unknown,
+  evidence: JsonRecord,
   runId: string | null,
   startedAt: number,
   finishedAt: number,
@@ -213,6 +204,44 @@ function validateTrustAnchor(
   const hostIds = new Set<string>();
   const hostKeys = new Set<string>();
   const machineFingerprints = new Set<string>();
+  const receipts = Array.isArray(trust.receipts) ? trust.receipts : [];
+  if (receipts.length !== 2) {
+    errors.push('trusted anchor must contain exactly two keychain-bound host receipts');
+  }
+  const receiptByHost = new Map<string, PhysicalDrillHostReceipt>();
+  const receiptKeys = new Set<string>();
+  const receiptFingerprints = new Set<string>();
+  const evidenceAttestations = Array.isArray(evidence.attestations) ? evidence.attestations : [];
+  for (const [index, candidate] of receipts.entries()) {
+    const verdict = validatePhysicalDrillHostReceipt(candidate, evidence);
+    if (!verdict.ok || !verdict.receipt) {
+      for (const error of verdict.errors) errors.push(`trusted anchor receipts[${index}]: ${error}`);
+      continue;
+    }
+    const receipt = verdict.receipt;
+    if (receiptByHost.has(receipt.hostId)) {
+      errors.push(`trusted anchor receipts[${index}].hostId is duplicate`);
+    } else {
+      receiptByHost.set(receipt.hostId, receipt);
+    }
+    if (receiptKeys.has(receipt.deviceKey)) {
+      errors.push(`trusted anchor receipts[${index}].deviceKey is duplicate`);
+    }
+    receiptKeys.add(receipt.deviceKey);
+    if (receiptFingerprints.has(receipt.machineFingerprint)) {
+      errors.push(`trusted anchor receipts[${index}].machineFingerprint is duplicate`);
+    }
+    receiptFingerprints.add(receipt.machineFingerprint);
+    const matchingAttestation = evidenceAttestations
+      .map(record)
+      .some((attestation) =>
+        attestation?.deviceKey === receipt.deviceKey &&
+        attestation?.signature === receipt.evidenceAttestation
+      );
+    if (!matchingAttestation) {
+      errors.push(`trusted anchor receipts[${index}] has no exact evidence attestation`);
+    }
+  }
   for (const [index, candidate] of hosts.entries()) {
     const host = record(candidate);
     const id = string(host?.id);
@@ -233,9 +262,24 @@ function validateTrustAnchor(
     } else {
       machineFingerprints.add(machineFingerprint.toLowerCase());
     }
+    const receipt = id ? receiptByHost.get(id) : undefined;
+    if (
+      !receipt ||
+      receipt.deviceKey !== deviceKey ||
+      receipt.machineFingerprint !== machineFingerprint
+    ) {
+      errors.push(`trusted anchor hosts[${index}] must match its signed host receipt exactly`);
+    }
   }
   if (hostIds.size !== evidenceHostIds.size || hostKeys.size !== evidenceHostKeys.size) {
     errors.push('trusted anchor host ids and device keys must match the evidence topology exactly');
+  }
+  if (
+    receiptByHost.size !== evidenceHostIds.size ||
+    receiptKeys.size !== evidenceHostKeys.size ||
+    receiptFingerprints.size !== evidenceHostIds.size
+  ) {
+    errors.push('signed host receipts must prove two distinct evidence hosts, devices, and machines');
   }
 }
 
@@ -470,6 +514,7 @@ export function validatePhysicalDrillEvidence(
 
   validateTrustAnchor(
     trustedAnchor,
+    evidence,
     runId,
     startedAt,
     finishedAt,
