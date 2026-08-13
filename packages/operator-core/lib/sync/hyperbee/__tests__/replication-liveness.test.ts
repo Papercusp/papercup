@@ -314,19 +314,20 @@ describe('frozen axis (attached-but-dead: replicator present, ingest not flowing
     sample(); // seeds the progress clock
     expect(episodes).toHaveLength(0);
     now += FROZEN_GRACE;
+
+    // Prove the READ path honors the shorter frozen grace before the sampler
+    // has had a chance to latch alarmedFrozen. If getReplicationLiveness still
+    // used graceMs here, this would incorrectly report live.
+    expect(
+      getReplicationLiveness({ nowMs: now, graceMs: GRACE, frozenGraceMs: FROZEN_GRACE })[0]!
+        .logs[0]!.verdict,
+    ).toBe('frozen');
+
     sample();
     // Fired at the SHORTER window: had the axis still read `graceMs`, nothing
     // would have fired here — this is the SLA-miss case that went unreported.
     expect(episodes).toHaveLength(1);
     expect(episodes[0]!.kind).toBe('frozen');
-    // …and the read-time verdict must AGREE with the sampler at the same grace.
-    // A read-time gate stricter than the alarm makes the liveness RPC report
-    // 'live' for a log the sampler has already alarmed on (the trap WI-5639
-    // fixed for the zombie axis).
-    expect(
-      getReplicationLiveness({ nowMs: now, graceMs: GRACE, frozenGraceMs: FROZEN_GRACE })[0]!
-        .logs[0]!.verdict,
-    ).toBe('frozen');
   });
 
   it('leaves the frozen axis on graceMs when frozenGraceMs is omitted', () => {

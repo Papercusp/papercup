@@ -138,4 +138,28 @@ describe('WI-3297 merge-cursor-store injection (in-process boot path)', () => {
     expect(r.state).toBe('booted');
     expect(bootSpy.mock.calls[0][0].mergeCursorStore).toBeUndefined();
   });
+
+  it('WI-38376 threads the frozen grace env independently from the zombie grace', async () => {
+    const savedZombie = process.env.PAPERCUSP_REPLICATION_STALL_GRACE_MS;
+    const savedFrozen = process.env.PAPERCUSP_REPLICATION_FROZEN_GRACE_MS;
+    try {
+      process.env.PAPERCUSP_REPLICATION_STALL_GRACE_MS = '15000';
+      process.env.PAPERCUSP_REPLICATION_FROZEN_GRACE_MS = '45000';
+
+      const r = await bootSingleHarness('ws-frozen-grace', 'harness-frozen-grace', bootOpts);
+      expect(r.state).toBe('booted');
+      expect(bootSpy).toHaveBeenCalledTimes(1);
+      const forwarded = bootSpy.mock.calls[0]![0];
+      expect(forwarded.connectedNeverReplicatedGraceMs).toBe(15_000);
+      expect(forwarded.frozenGraceMs).toBe(45_000);
+      // The legacy/general axis remains on its production default. Reusing
+      // either short rig value here would recreate WI-5686's false positives.
+      expect(forwarded.replicationStallGraceMs).toBeUndefined();
+    } finally {
+      if (savedZombie === undefined) delete process.env.PAPERCUSP_REPLICATION_STALL_GRACE_MS;
+      else process.env.PAPERCUSP_REPLICATION_STALL_GRACE_MS = savedZombie;
+      if (savedFrozen === undefined) delete process.env.PAPERCUSP_REPLICATION_FROZEN_GRACE_MS;
+      else process.env.PAPERCUSP_REPLICATION_FROZEN_GRACE_MS = savedFrozen;
+    }
+  });
 });
