@@ -190,7 +190,6 @@ describe('capture_work_items_outbox canonicalizes harness_slug (migration 452, W
       source: 'operator',
       _completionEvidence: { testResult: 'green' },
     });
-    const sourceCompletionRef = JSON.stringify({ summary: 'source completion' });
 
     // Reconstruct the production incident from migration 826's durable backup:
     // two content-identical physical rows were preserved, then a legacy bare-key
@@ -217,13 +216,12 @@ describe('capture_work_items_outbox canonicalizes harness_slug (migration 452, W
     await sql.unsafe(
       `UPDATE harness_shared.bak_20260813_work_item_physical_twins
           SET status = 'done',
-              completion_ref = $1::jsonb,
+              completion_ref = jsonb_build_object('summary', 'source completion'),
               terminal_completion_ref = 'source completion',
               terminal_owner = 'source-agent',
-              authority = 'committed',
-              payload = $2::jsonb
-        WHERE harness_slug = 'operator:papercusp-workspace' AND feature_id = $3`,
-      [sourceCompletionRef, sourcePayload, id],
+              authority = 'committed'
+        WHERE harness_slug = 'operator:papercusp-workspace' AND feature_id = $1`,
+      [id],
     );
     for (const restoreId of restoreIds) {
       await sql`
