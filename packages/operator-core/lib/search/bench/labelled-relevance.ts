@@ -90,6 +90,33 @@ export interface RankedHit {
   rank: number;
   /** Which registered SearchSource produced it, when the engine says. */
   source?: string;
+  /**
+   * The fused RRF score (`SearchHit.score`). Captured for completeness, NOT as a
+   * floor candidate: D-084 established it is rank-derived and "in nobody's
+   * units", so a threshold on it is a rank cutoff `limit` already performs for
+   * free. Useful only to show a floor curve plotted against it restates rank.
+   */
+  score?: number;
+  /**
+   * PRE-FUSION per-ranker native scores (`{ lexical: 0.07, embeddings: 0.61 }`).
+   * Real magnitudes, but per-ranker and ABSENT for rankers that did not return
+   * this hit — never assume a key is present.
+   */
+  rankerScores?: Record<string, number>;
+  /**
+   * The Stage B cross-encoder score — the one true query↔document relevance
+   * magnitude in the stack, and therefore the only quantity a relevance floor
+   * can be expressed in (D-084/D-085).
+   *
+   * ⚠ ABSENT, never 0, for a candidate the cross-encoder did not score —
+   * including EVERY candidate of a call that degraded to retrieval order, and
+   * every candidate of a `--no-rerank` arm where the stage never ran. Absence
+   * means UNKNOWN: a `>= x` floor must DROP such a row, not keep it as a scored
+   * zero. Collapsing absence into 0 makes a dead engine read as a corpus full of
+   * garbage and calibrates the floor HIGH — the failure this invariant exists to
+   * prevent.
+   */
+  rerankScore?: number;
 }
 
 /** A hit plus the judge's label for it. */
@@ -103,6 +130,25 @@ export interface LabelledHit extends RankedHit {
 /** What retrieval returned for one query, plus its own honesty report. */
 export interface RetrievalResult {
   hits: RankedHit[];
+  /**
+   * The WHOLE fused candidate pool in final order — every over-fetched
+   * candidate, not just the `k` that make the page. Present only under
+   * `--pool-all`; absent means "top-k only, as every prior run measured".
+   *
+   * ⚠ INVARIANT, enforced in `runLabelledPass` before a single judge call is
+   * paid for: `hits` must be the PREFIX of this list. The pool arm exists to be
+   * compared against runs that judged only the page, so if widening the rerank
+   * slice perturbed the top-k the two are not measuring the same ranking and
+   * every number is uncomparable. That is a code defect, not a data condition,
+   * so it aborts the run rather than excluding the query.
+   *
+   * Carries the top-k rows too (not just the tail) ON PURPOSE: a tail-only field
+   * is a biased sample of exactly the low-ranked candidates, and a floor curve
+   * computed from it alone would look catastrophic for reasons that are an
+   * artefact of the slice. This way `poolHits` is self-contained and correct
+   * read on its own — which is how an analyst will read it.
+   */
+  poolHits?: RankedHit[];
   /**
    * TRUE when a ranker leg did not run — the engine silently falls back to
    * lexical-only when the query embedder is unavailable. A degraded run
@@ -122,7 +168,21 @@ export interface QueryOutcome {
   tool: string;
   query: string;
   terms: number;
+  /**
+   * The TOP-K page, labelled. EVERY aggregate in this pass is computed over this
+   * field and only this field — see the denominator warning on `rollUp`.
+   */
   hits: LabelledHit[];
+  /**
+   * The whole fused candidate pool, labelled — present only under `--pool-all`.
+   *
+   * ⚠ NOT AN AGGREGATE INPUT, and never concatenate it with `hits`: its first
+   * `k` entries ARE `hits` (the same judged objects, one judge call each), so
+   * appending would double-count the page. It exists for the D-084 floor study,
+   * which needs labels for the candidates a floor would CUT — the ones that
+   * never reach the page and are therefore invisible to every top-k metric.
+   */
+  poolHits?: LabelledHit[];
   /** `null` for an EXCLUDED query — see `excludedReason`. */
   ndcgAtK: number | null;
   precisionAtK: number | null;
@@ -208,6 +268,23 @@ function meanOf(xs: readonly number[]): number {
   return xs.length === 0 ? 0 : xs.reduce((a, b) => a + b, 0) / xs.length;
 }
 
+/**
+ * ⚠⚠ THE DENOMINATOR TRAP (D-084, and the reason `poolHits` is a SEPARATE field).
+ *
+ * `pollutionRate` and `ndcgUninformative` below are computed over ALL of
+ * `o.hits` — not over a top-k slice of it. So widening `QueryOutcome.hits` from
+ * the page to the whole fused candidate pool (24 at k=10) would silently change
+ * the denominator of every number in this pass while the before/after tables
+ * still looked directly comparable: pollution would jump because the pool's tail
+ * is exactly where the irrelevant candidates live, and it would read as a
+ * quality regression rather than as a different measurement.
+ *
+ * That is why pool-wide labels land in `o.poolHits` and NOTHING here reads them.
+ * Every figure already recorded in D-083 was computed over the page; keep it
+ * that way. If you ever want a pool-wide aggregate, add a NEW named field
+ * (`poolPollutionRate`, …) so the two can never be mistaken for one another —
+ * never widen these.
+ */
 function rollUp(tool: string, outcomes: readonly QueryOutcome[]): ToolAggregate {
   const counted = outcomes.filter((o) => o.excludedReason === null);
   const grades = counted.flatMap((o) => o.hits.map((h) => h.grade));
@@ -321,6 +398,10 @@ export async function runLabelledPass(opts: RunLabelledPassOptions): Promise<Lab
         degraded: true,
         rerankApplied: retrieval.rerankApplied,
         judgeCostUsd: 0,
+        // Pool mode was ON for this query — say so with an empty list rather
+        // than by omitting the field, so a consumer scanning the rows can tell
+        // "pooled, nothing to judge" from "this run never pooled at all".
+        ...(retrieval.poolHits ? { poolHits: [] } : {}),
         ...(retrieval.latencyMs !== undefined ? { latencyMs: retrieval.latencyMs } : {}),
         excludedReason: `engine DEGRADED (${retrieval.degradeWarning ?? 'a ranker leg did not run'})`,
       };
