@@ -22,8 +22,10 @@ import {
   addFailureStrayPaths,
   discoverSubmodulesRecursive,
   isIndexLockFailure,
+  isConfigLockFailure,
   isTransientStatFailure,
   clearStaleIndexLock,
+  clearStaleConfigLock,
   scavengeStaleTempPacks,
   STALE_TEMP_PACK_MS,
   GIT_SYNC_BOT_EMAIL,
@@ -146,12 +148,48 @@ describe('runGitSync (real git, no submodule)', () => {
     expect(existsSync(lockPath)).toBe(true); // the live writer keeps its lock
   });
 
+  it('EI-20345390379109755: an orphaned config.lock is cleared before canonical submodule URL sync retries', async () => {
+    writeFileSync(join(repo, 'real-work.txt'), 'agents work here\n');
+    const lockPath = join(repo, '.git', 'config.lock');
+    writeFileSync(lockPath, '');
+    const tenMinAgo = (Date.now() - 10 * 60_000) / 1000;
+    utimesSync(lockPath, tenMinAgo, tenMinAgo);
+
+    let urlSyncAttempts = 0;
+    const runGit: RunGit = async (args, cwd) => {
+      if (args.join(' ') === 'submodule sync --recursive' && urlSyncAttempts++ === 0) {
+        return {
+          code: 1,
+          stdout: '',
+          stderr: `error: could not lock config file ${join(repo, '.git', 'config')}: File exists`,
+        };
+      }
+      const r = spawnSync('git', args, { cwd, encoding: 'utf8' });
+      return { code: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+    };
+
+    const out = await runGitSync('test', { repoPath: repo, runGit, submodulePaths: [], config: cfg });
+
+    expect(out.status).toBe('synced');
+    expect(urlSyncAttempts).toBe(2);
+    expect(existsSync(lockPath)).toBe(false);
+    expect(git(originDir, 'ls-tree', '-r', '--name-only', 'main')).toContain('real-work.txt');
+  });
+
   it('isIndexLockFailure matches the git fatal (and only it)', () => {
     expect(
       isIndexLockFailure("fatal: Unable to create '/x/repo/.git/index.lock': File exists.\n\nAnother git process seems to be running"),
     ).toBe(true);
     expect(isIndexLockFailure("error: 'x/' does not have a commit checked out")).toBe(false);
     expect(isIndexLockFailure('')).toBe(false);
+  });
+
+  it('isConfigLockFailure matches the git fatal (and only it)', () => {
+    expect(
+      isConfigLockFailure('error: could not lock config file /x/repo/.git/config: File exists'),
+    ).toBe(true);
+    expect(isConfigLockFailure("fatal: Unable to create '/x/repo/.git/index.lock': File exists")).toBe(false);
+    expect(isConfigLockFailure('')).toBe(false);
   });
 
   it('clearStaleIndexLock unit edges: already-gone lock ⇒ retry ok; unlink failure ⇒ no retry', async () => {
@@ -172,6 +210,18 @@ describe('runGitSync (real git, no submodule)', () => {
         },
       }),
     ).toBe(false);
+  });
+
+  it('clearStaleConfigLock uses config.lock with the same stale-only safety guard', async () => {
+    const fakeRunGit: RunGit = async () => ({ code: 0, stdout: '/fake/.git\n', stderr: '' });
+    const unlinked: string[] = [];
+    expect(
+      await clearStaleConfigLock(fakeRunGit, '/fake', () => {}, {
+        statMtimeMs: async (p) => (p.endsWith('/config.lock') ? Date.now() - 10 * 60_000 : null),
+        unlinkFile: async (p) => { unlinked.push(p); },
+      }),
+    ).toBe(true);
+    expect(unlinked).toEqual(['/fake/.git/config.lock']);
   });
 
   it('addFailureStrayPaths parses the embedded-repo fatal path(s) + strips trailing slash', () => {

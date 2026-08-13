@@ -668,6 +668,13 @@ export function isIndexLockFailure(output: string): boolean {
   return /Unable to create '[^']*index\.lock': File exists/i.test(output);
 }
 
+/** The `git submodule sync` fatal for a held repository config lock. Git names
+ * the destination config file in the error even though the sentinel on disk is
+ * its `.lock` sibling. Exported so wording drift fails a focused test. */
+export function isConfigLockFailure(output: string): boolean {
+  return /could not lock config file [^\r\n]*[/\\]config: File exists/i.test(output);
+}
+
 /** The `git add -A` fatal for a path that vanished between git's tree-walk
  *  enumeration and its stat call ("fatal: unable to stat '<path>': No such file or
  *  directory") — a benign race with ANY process in this heavily-concurrent fleet
@@ -713,9 +720,10 @@ export const STALE_INDEX_LOCK_MS = 90_000;
  * the git dir via `rev-parse --absolute-git-dir` so submodules (whose `.git` is
  * a file, not a dir) work too. Returns true when the caller should retry.
  */
-export async function clearStaleIndexLock(
+async function clearStaleGitLock(
   runGit: RunGit,
   repoPath: string,
+  lockName: 'index.lock' | 'config.lock',
   log: (m: string) => void,
   deps: {
     statMtimeMs?: (p: string) => Promise<number | null>;
@@ -738,26 +746,46 @@ export async function clearStaleIndexLock(
   const staleMs = deps.staleMs ?? STALE_INDEX_LOCK_MS;
   const gd = await runGit(['rev-parse', '--absolute-git-dir'], repoPath);
   if (gd.code !== 0) return false;
-  const lockPath = join(gd.stdout.trim(), 'index.lock');
+  const lockPath = join(gd.stdout.trim(), lockName);
   const mtime = await statMtimeMs(lockPath);
   if (mtime === null) return true; // already gone (holder finished/cleaned up) — just retry
   const ageMs = now() - mtime;
   if (ageMs < staleMs) {
     log(
-      `[git-sync] ${repoPath}: index.lock is FRESH (${Math.round(ageMs / 1000)}s old) — live contention, not touching it; this tick fails and the next one self-heals if the writer died`,
+      `[git-sync] ${repoPath}: ${lockName} is FRESH (${Math.round(ageMs / 1000)}s old) — live contention, not touching it; this tick fails and the next one self-heals if the writer died`,
     );
     return false;
   }
   try {
     await unlinkFile(lockPath);
   } catch (e) {
-    log(`[git-sync] ${repoPath}: could not unlink stale index.lock: ${e instanceof Error ? e.message : String(e)}`);
+    log(`[git-sync] ${repoPath}: could not unlink stale ${lockName}: ${e instanceof Error ? e.message : String(e)}`);
     return false;
   }
   log(
-    `[git-sync] ${repoPath}: cleared STALE index.lock (${Math.round(ageMs / 1000)}s old — its writer is dead) and retrying (previously: every tick failed until a human removed it)`,
+    `[git-sync] ${repoPath}: cleared STALE ${lockName} (${Math.round(ageMs / 1000)}s old — its writer is dead) and retrying (previously: every tick failed until a human removed it)`,
   );
   return true;
+}
+
+export async function clearStaleIndexLock(
+  runGit: RunGit,
+  repoPath: string,
+  log: (m: string) => void,
+  deps: Parameters<typeof clearStaleGitLock>[4] = {},
+): Promise<boolean> {
+  return clearStaleGitLock(runGit, repoPath, 'index.lock', log, deps);
+}
+
+/** Clear an orphaned `.git/config.lock` left by a dead config writer (including
+ * a sandbox mount-point artifact), under the same age guard as index.lock. */
+export async function clearStaleConfigLock(
+  runGit: RunGit,
+  repoPath: string,
+  log: (m: string) => void,
+  deps: Parameters<typeof clearStaleGitLock>[4] = {},
+): Promise<boolean> {
+  return clearStaleGitLock(runGit, repoPath, 'config.lock', log, deps);
 }
 
 /** A crash-left `index-pack` file is safe to consider only after this age floor. */
@@ -1867,7 +1895,15 @@ export async function runGitSync(slug: string, opts: RunGitSyncOpts = {}): Promi
       // Reconcile the copies before discovery or any submodule fetch/push. A failure is
       // correctness-relevant: continuing would knowingly use an unverified transport,
       // so report it and defer the superproject push like every other submodule error.
-      const urlSync = await runGit(['submodule', 'sync', '--recursive'], repo);
+      let urlSync = await runGit(['submodule', 'sync', '--recursive'], repo);
+      // EI-20345390379109755: an interrupted config writer (or a fleet-sandbox
+      // mask artifact) can strand a zero-byte `.git/config.lock`. The index
+      // phase already self-heals its equivalent lock; apply the same age guard
+      // here, then retry once. A fresh lock is never touched.
+      if (urlSync.code !== 0 && isConfigLockFailure(`${urlSync.stdout}\n${urlSync.stderr}`)) {
+        const cleared = await clearStaleConfigLock(runGit, repo, log);
+        if (cleared) urlSync = await runGit(['submodule', 'sync', '--recursive'], repo);
+      }
       if (urlSync.code !== 0) {
         const detail = (urlSync.stderr || urlSync.stdout || 'no output').trim().slice(0, 300);
         const message = `canonical submodule URL sync failed: ${detail}`;
