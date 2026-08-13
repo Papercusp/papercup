@@ -2941,8 +2941,10 @@ describe('host-code ADOPTION handshake (WI-38292 increment 2)', () => {
   // Detection alone leaves the session running old code. Adoption exits so the
   // psu shim's loop re-runs the launcher — which is only safe when something
   // will actually re-run it, so the handshake is the load-bearing part.
-  it('reads the shim\'s advertised re-exec code', () => {
-    expect(reexecExitCodeFrom({ PAPERCUSP_PSU_REEXEC: '87' })).toBe(87);
+  const ADVERTISED = { PAPERCUSP_PSU_REEXEC: '87', PAPERCUSP_PSU_REEXEC_PPID: '4242' };
+
+  it('reads the shim\'s advertised re-exec code when the advertiser is our own parent', () => {
+    expect(reexecExitCodeFrom(ADVERTISED, 4242)).toBe(87);
   });
 
   it('refuses every environment that did NOT advertise the loop — exiting under one of these kills the session', () => {
@@ -2951,19 +2953,30 @@ describe('host-code ADOPTION handshake (WI-38292 increment 2)', () => {
     // psu-launcher.mjs` run by hand. None of them would re-run us.
     for (const env of [
       {},
-      { PAPERCUSP_PSU_REEXEC: '' },
-      { PAPERCUSP_PSU_REEXEC: 'yes' },
-      { PAPERCUSP_PSU_REEXEC: '0' },
-      { PAPERCUSP_PSU_REEXEC: '-1' },
-      { PAPERCUSP_PSU_REEXEC: '256' },
-      { PAPERCUSP_PSU_REEXEC: '87.5' },
+      { ...ADVERTISED, PAPERCUSP_PSU_REEXEC: '' },
+      { ...ADVERTISED, PAPERCUSP_PSU_REEXEC: 'yes' },
+      { ...ADVERTISED, PAPERCUSP_PSU_REEXEC: '0' },
+      { ...ADVERTISED, PAPERCUSP_PSU_REEXEC: '-1' },
+      { ...ADVERTISED, PAPERCUSP_PSU_REEXEC: '256' },
+      { ...ADVERTISED, PAPERCUSP_PSU_REEXEC: '87.5' },
     ]) {
-      expect(reexecExitCodeFrom(env)).toBeNull();
+      expect(reexecExitCodeFrom(env, 4242)).toBeNull();
     }
   });
 
+  it('refuses an INHERITED advertisement — that loop was promised to somebody else', () => {
+    // Environment variables reach every descendant, so an agent running `psu`
+    // from inside a psu terminal — or anything the CLI child spawns — sees a real
+    // shim's promise addressed to a DIFFERENT process. Acting on it exits into
+    // nobody: the loop that would re-run us belongs to another process entirely.
+    expect(reexecExitCodeFrom(ADVERTISED, 9999)).toBeNull();
+    // An advertisement that cannot be ATTRIBUTED is not an advertisement.
+    expect(reexecExitCodeFrom({ PAPERCUSP_PSU_REEXEC: '87' }, 4242)).toBeNull();
+    expect(reexecExitCodeFrom({ ...ADVERTISED, PAPERCUSP_PSU_REEXEC_PPID: 'bash' }, 4242)).toBeNull();
+  });
+
   it('honours the kill switch even when the shim advertises the loop', () => {
-    expect(reexecExitCodeFrom({ PAPERCUSP_PSU_REEXEC: '87', PAPERCUSP_PSU_HOST_ADOPT: '0' })).toBeNull();
+    expect(reexecExitCodeFrom({ ...ADVERTISED, PAPERCUSP_PSU_HOST_ADOPT: '0' }, 4242)).toBeNull();
   });
 
   it('pins the exit code to the shim generator\'s copy', () => {

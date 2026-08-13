@@ -940,8 +940,10 @@ describe('ADOPTION — a stale host hands the session to a fresh launcher instea
           PAPERCUSP_SID: ownerId,
           TERM: 'xterm-256color',
           // The shim's advertisement. Without it the host must NOT exit — see the
-          // control below, which is the safety-critical half of this pair.
+          // control below, which is the safety-critical half of this pair. The
+          // PPID is part of it: the promise is only ours if OUR parent made it.
           PAPERCUSP_PSU_REEXEC: '87',
+          PAPERCUSP_PSU_REEXEC_PPID: String(process.ppid),
         },
         ownerId,
         io,
@@ -1024,6 +1026,7 @@ describe('ADOPTION — a stale host hands the session to a fresh launcher instea
       const { captured, io } = fakeIo();
       const env = { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' };
       delete env.PAPERCUSP_PSU_REEXEC;
+      delete env.PAPERCUSP_PSU_REEXEC_PPID;
 
       const reexecs: number[] = [];
       const done = hostThroughPty({

@@ -172,6 +172,31 @@ describe('psu shim re-exec loop (WI-38292)', () => {
     );
   });
 
+  it('advertises the LOOP\'S OWN pid as the launcher\'s parent, so an inherited promise is distinguishable', async () => {
+    // The launcher only honours an advertisement whose PPID is its actual parent.
+    // That check is worth nothing unless the shim really does publish the pid of
+    // the process that will re-run it — which requires bash to still be there,
+    // i.e. the loop must not have `exec`ed itself away. Asserting node's real
+    // ppid against the advertised value proves both halves at once.
+    await writePsuShim();
+    await fs.writeFile(
+      launcherPath,
+      [
+        "import { appendFileSync } from 'node:fs';",
+        "appendFileSync(process.env.RUN_LOG, 'advertised=' + (process.env.PAPERCUSP_PSU_REEXEC_PPID ?? 'unset') + ' actual=' + process.ppid + '\\n');",
+        'process.exit(0);',
+        '',
+      ].join('\n'),
+    );
+
+    const { code } = await runShim();
+    expect(code).toBe(0);
+    const line = (await fs.readFile(path.join(tmp, 'runs.log'), 'utf8')).trim();
+    const [, advertised, actual] = /advertised=(\d+) actual=(\d+)/.exec(line) ?? [];
+    expect(advertised, `expected a numeric advertised ppid in: ${line}`).toBeDefined();
+    expect(advertised).toBe(actual);
+  });
+
   it('CONTROL: a shim without the opt-in neither advertises nor loops — so a launcher under it must never take the exiting path', async () => {
     await writePlainShim();
     // Same launcher as the loop test: it asks to be re-run. Under a shim with no

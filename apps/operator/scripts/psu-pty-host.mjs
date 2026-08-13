@@ -119,12 +119,23 @@ export const PSU_REEXEC_EXIT_CODE = 87;
  *  the adopting path must never be taken. Returns the code to exit with, or
  *  null. `PAPERCUSP_PSU_HOST_ADOPT=0` is the kill switch — same boot-mode-select
  *  role as PAPERCUSP_CACHE_PROXY_ROUTE, not a product feature gate. */
-export function reexecExitCodeFrom(env = process.env) {
+export function reexecExitCodeFrom(env = process.env, ppid = process.ppid) {
   if (String(env.PAPERCUSP_PSU_HOST_ADOPT ?? '').trim() === '0') return null;
   // Number(), NOT parseInt(): parseInt('87.5') is 87 and parseInt('87abc') is 87,
   // so a malformed advertisement would read as a valid promise to re-run us.
   const advertised = Number(String(env.PAPERCUSP_PSU_REEXEC ?? '').trim() || NaN);
-  return Number.isInteger(advertised) && advertised > 0 && advertised < 256 ? advertised : null;
+  if (!(Number.isInteger(advertised) && advertised > 0 && advertised < 256)) return null;
+  // The advertisement must come from OUR OWN PARENT. Environment variables are
+  // inherited by every descendant, so without this a nested launch — an agent
+  // running `psu` from inside a psu terminal, a direct `node psu-launcher.mjs`,
+  // anything spawned by the CLI child — would read a psu shim's promise as if it
+  // had been made to IT. Exiting on that inherited promise kills the session
+  // outright: the loop that would have re-run it belongs to a different process
+  // entirely. The shim publishes its own pid, and bash is still alive as our
+  // parent precisely because the loop does not `exec`.
+  const advertiser = Number(String(env.PAPERCUSP_PSU_REEXEC_PPID ?? '').trim() || NaN);
+  if (!Number.isInteger(advertiser) || advertiser !== ppid) return null;
+  return advertised;
 }
 
 /** The discovery dir. Owner-only (0700). Shared contract with the read side
@@ -4688,6 +4699,17 @@ export function hostThroughPty(o) {
               handoffPath,
               nativeId: nativeId ?? null,
             });
+            // P-022: a carry-respawn IS this member's context cut, whichever path
+            // performs it. Peers wait on `session:compacted:<owner>`, and the
+            // in-process path fires it AFTER respawning — a point this path never
+            // reaches — so fire it here or every adopting cut goes unannounced.
+            if (respawnMode === 'carry-respawn') {
+              try {
+                fireSessionCompactedEvent(ownerId, 'carry-respawn');
+              } catch {
+                /* announcing the cut must not be able to prevent it */
+              }
+            }
             // `cleanup` IS the release sequence — reap the child, un-bridge the
             // tty, drop the timers, then release the discovery key and socket.
             // Reused rather than re-implemented so the adopting path cannot drift

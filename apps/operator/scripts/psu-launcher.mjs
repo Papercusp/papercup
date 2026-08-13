@@ -6072,8 +6072,17 @@ function runWrapper({
     kickoffFile = null;
     sessionPort = null;
     if (hostHandoff.nativeId) {
+      // The in-process respawn re-anchors identity through `onRespawn` AFTER
+      // spawning the child; the adopting predecessor exits before it ever gets
+      // there, so the successor owes both halves of that hook. Skipping the
+      // second one is the P-018 successor-kill loop: adv_sessions keeps naming
+      // the predecessor's native id, and the compaction watchdog then reaps a
+      // session that is very much alive.
       recordSessionOwner(hostHandoff.nativeId, ownerId, {
         advSessionId: env.PAPERCUSP_ADV_SESSION_ID || null,
+      });
+      void reportSessionRespawned(env.PAPERCUSP_ADV_SESSION_ID || null, hostHandoff.nativeId, {
+        coordOwnerId: ownerId,
       });
     }
     process.stderr.write(

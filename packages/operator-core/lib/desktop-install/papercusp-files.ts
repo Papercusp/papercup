@@ -1335,6 +1335,11 @@ export async function writeShim(
         // The launcher is RE-RESOLVED each pass — picking up new code is the
         // whole point, and the active release/integration root may have moved.
         `export PAPERCUSP_PSU_REEXEC=${runtime.reexecExitCode}\n` +
+        // Our OWN pid, so the launcher can tell an advertisement made to IT from
+        // one it merely inherited. Env vars flow to every descendant; a nested
+        // `psu` (or anything the CLI child spawns) would otherwise read this as a
+        // promise that someone will re-run it, and exit into nobody.
+        'export PAPERCUSP_PSU_REEXEC_PPID=$$\n' +
         'psu_reexecs=0\n' +
         'while :; do\n' +
         `  ${shellLiteral(nodeCmd)} "$launcher" "$@"\n` +
