@@ -114,11 +114,11 @@ function fakeGit(opts: {
   subject?: string;
   /** ref → set of shas that ref's history contains (ancestor-or-equal). */
   contains?: Record<string, string[]>;
-  /** EI-18694888339365359: the AUTHORITATIVE remote tip `git ls-remote origin
-   *  refs/heads/staging` would report — deliberately independent of `contains`
-   *  so a test can simulate a stale LOCAL origin/staging ref (contains says
-   *  not-present) disagreeing with the true remote tip. */
+  /** EI-18694888339365359 / WI-38372: the AUTHORITATIVE remote tips returned by
+   *  `git ls-remote`, deliberately independent of `contains` so tests can model
+   *  stale local origin/* refs disagreeing with the true remote history. */
   remoteStagingTip?: string;
+  remoteMainTip?: string;
   /**
    * D-038 axis 2: refs whose `rev-list --count` FAILS (GitRunner yields null).
    * Deliberately distinct from `contains` merely omitting the ref — that is an
@@ -247,8 +247,14 @@ function fakeGit(opts: {
       const set = new Set(opts.contains?.[ref] ?? []);
       return set.has(sha) ? '0' : '3';
     }
-    if (args[0] === 'ls-remote' && args[1] === 'origin' && args[2] === 'refs/heads/staging') {
-      return opts.remoteStagingTip ? `${opts.remoteStagingTip}\trefs/heads/staging` : null;
+    if (args[0] === 'ls-remote' && args[1] === 'origin') {
+      const tip =
+        args[2] === 'refs/heads/staging'
+          ? opts.remoteStagingTip
+          : args[2] === 'refs/heads/main'
+            ? opts.remoteMainTip
+            : undefined;
+      return tip ? `${tip}\t${args[2]}` : null;
     }
     return null;
   };
@@ -911,6 +917,73 @@ describe('gitPipelinePosition (P-002)', () => {
       { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
     );
     expect(res.positions.onStaging).toBe(false);
+  });
+
+  it('WI-38372: corrects a stale origin/staging ref when the target is behind the current remote tip', async () => {
+    const target = 'behindstage';
+    const remoteTip = 'stage-tip';
+    const git = fakeGit({
+      pathCommit: target,
+      contains: {
+        HEAD: [target],
+        'origin/staging': [], // stale local ref: does NOT contain the target
+        'origin/main': [],
+        deployedsha0: [],
+        [remoteTip]: [target], // target is an older commit in the advertised tip's history
+      },
+      remoteStagingTip: remoteTip,
+    });
+    const res = await gitPipelinePosition(
+      { path: 'apps/operator/app/behind-stage.ts' },
+      { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+    );
+    expect(res.positions.onStaging).toBe(true);
+    expect(res.notes.join('\n')).toMatch(/ls-remote.*contained in the current remote tip/);
+  });
+
+  it('WI-38372: applies the same stale-ref containment rescue to origin/main', async () => {
+    const target = 'behindmain';
+    const remoteTip = 'main-tip';
+    const git = fakeGit({
+      pathCommit: target,
+      contains: {
+        HEAD: [target],
+        'origin/staging': [target],
+        'origin/main': [], // stale local ref: does NOT contain the target
+        deployedsha0: [],
+        [remoteTip]: [target],
+      },
+      remoteMainTip: remoteTip,
+    });
+    const res = await gitPipelinePosition(
+      { path: 'apps/operator/app/behind-main.ts' },
+      { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+    );
+    expect(res.positions.onStaging).toBe(true);
+    expect(res.positions.inMain).toBe(true);
+    expect(res.notes.join('\n')).toMatch(/origin\/main.*ls-remote.*contained in the current remote tip/);
+  });
+
+  it('WI-38372: does not claim containment when the advertised remote tip is not a local object', async () => {
+    const target = 'not-local-tip-target';
+    const remoteTip = 'remote-tip-not-fetched';
+    const git = fakeGit({
+      pathCommit: target,
+      contains: {
+        HEAD: [target],
+        'origin/staging': [],
+        'origin/main': [],
+        deployedsha0: [],
+      },
+      remoteStagingTip: remoteTip,
+      failRefs: [remoteTip],
+    });
+    const res = await gitPipelinePosition(
+      { path: 'apps/operator/app/unavailable-tip.ts' },
+      { git, loadDeploy: async () => deploy(), loadSnapshot: async () => snap() },
+    );
+    expect(res.positions.onStaging).toBe(false);
+    expect(res.notes.some((n) => n.includes('corrected to true'))).toBe(false);
   });
 
   it('a change stuck at staging behind a STALLED gate reads main ✗ + surfaces the stall', async () => {

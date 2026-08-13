@@ -157,18 +157,26 @@ async function newestTouchingInRef(
  * `git ls-remote` queries the remote's ref advertisement over the network
  * WITHOUT fetching any objects or touching a single local ref — it stays
  * exactly as read-only/non-perturbing as the rest of this module while giving
- * an authoritative, always-current answer for the one case it CAN answer
- * without local objects: "is the target commit exactly the remote tip right
- * now?" (It cannot establish ancestry for a target that is an OLDER,
- * non-tip commit on a remote that has since moved past the local ref's
- * knowledge — that needs the actual commit graph, i.e. a fetch, which this
- * module intentionally does not perform.)
+ * an authoritative, always-current tip. Exact-tip equality is the degenerate
+ * containment case. For an older target, the tip's object must also be present
+ * locally so `refContains` can inspect ancestry; if it is not, return UNKNOWN
+ * rather than turning an unreadable graph into a false measurement.
  */
-async function isExactRemoteTip(git: GitRunner, repo: string, remoteRef: string, sha: string): Promise<boolean> {
+async function isRemoteTipContaining(
+  git: GitRunner,
+  repo: string,
+  remoteRef: string,
+  sha: string,
+): Promise<boolean | null> {
   const out = await git(repo, ['ls-remote', 'origin', remoteRef]);
-  if (!out) return false;
+  if (!out) return null;
   const tip = out.split(/\s+/)[0]?.toLowerCase();
-  return !!tip && tip === sha.toLowerCase();
+  if (!tip) return null;
+  if (tip === sha.toLowerCase()) return true;
+  // This is the containment rescue for a stale local remote-tracking ref. The
+  // remote tip may be unavailable locally; refContains then returns null and
+  // the caller preserves the local false/unknown result instead of guessing.
+  return refContains(git, repo, tip, sha);
 }
 
 export interface PipelinePositionInput {
@@ -3682,13 +3690,15 @@ export async function gitPipelinePosition(
       }
     } else {
       positions.onStaging = readLeg('onStaging', await refContains(git, root, 'origin/staging', targetSha));
-      // EI-18694888339365359: the local ref said "not present" — before believing
-      // that (and letting a caller block/park on it), check the actual remote tip
-      // via ls-remote (no fetch, no local mutation). If the target IS the current
-      // remote tip, the local ref was simply stale; correct the verdict rather
-      // than emitting a false block that sends an agent to await a push event
-      // that already fired.
-      if (!positions.onStaging && (await isExactRemoteTip(git, root, 'refs/heads/staging', targetSha))) {
+      // EI-18694888339365359 / WI-38372: the local ref said "not present" — before
+      // believing that (and letting a caller block/park on it), check the actual
+      // remote tip via ls-remote (no fetch, no local mutation). Exact-tip equality
+      // is the degenerate case; when the target is behind the current tip, a local
+      // ancestry read corrects the stale remote-tracking ref for the common case.
+      const remoteStagingContains = !positions.onStaging
+        ? await isRemoteTipContaining(git, root, 'refs/heads/staging', targetSha)
+        : null;
+      if (!positions.onStaging && remoteStagingContains === true) {
         positions.onStaging = true;
         // ls-remote is a DIRECT measurement of the remote tip, so it supersedes an
         // unreadable local ref — the leg is answered, not degraded, and must drop
@@ -3697,11 +3707,28 @@ export async function gitPipelinePosition(
         if (staleIdx >= 0) positionsUnknown.splice(staleIdx, 1);
         notes.push(
           'The local origin/staging ref was stale (git-sync had not yet fetched this push); ' +
-            'confirmed via `git ls-remote` (no local mutation) that the target commit IS the ' +
-            'current remote tip, so onStaging was corrected to true.',
+            'confirmed via `git ls-remote` (no local mutation) and local ancestry that the target ' +
+            'commit IS contained in the current remote tip, so onStaging was corrected to true.',
         );
       }
       positions.inMain = readLeg('inMain', await refContains(git, root, 'origin/main', targetSha));
+      // WI-38372: origin/main is subject to the same stale remote-tracking-ref
+      // failure as origin/staging. Apply the same read-only tip-containment rescue
+      // so an older commit already in the remote main history is not reported as
+      // waiting at the gate merely because the local ref has not been fetched.
+      const remoteMainContains = !positions.inMain
+        ? await isRemoteTipContaining(git, root, 'refs/heads/main', targetSha)
+        : null;
+      if (!positions.inMain && remoteMainContains === true) {
+        positions.inMain = true;
+        const staleIdx = positionsUnknown.indexOf('inMain');
+        if (staleIdx >= 0) positionsUnknown.splice(staleIdx, 1);
+        notes.push(
+          'The local origin/main ref was stale (git-sync had not yet fetched this promotion); ' +
+            'confirmed via `git ls-remote` (no local mutation) and local ancestry that the target ' +
+            'commit IS contained in the current remote tip, so inMain was corrected to true.',
+        );
+      }
       // P-007 CORRECTION. This previously read: "No deployedSha is NOT an unreadable leg
       // — there is simply nothing deployed to compare against, which is a genuine
       // `false`, not a degraded one." That premise does not survive checking the source.
