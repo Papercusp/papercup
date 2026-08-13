@@ -137,7 +137,7 @@ export const detachPot = defineTool({
 export const listGoalPots = defineTool({
   name: 'goals:pots',
   description:
-    'The pots a goal is pursued through, main owner first, with measured child-fleet spend rolled up (not interactive-session attribution): { goalId, sinceMs?, spend? }.',
+    'The pots a goal is pursued through, main owner first, with measured child-fleet spend rolled up from no earlier than the goal\'s creation (not interactive-session attribution): { goalId, sinceMs?, spend? }.',
   capability: 'goals:read',
   guidance: {
     when:
@@ -154,7 +154,9 @@ export const listGoalPots = defineTool({
       .int()
       .nonnegative()
       .optional()
-      .describe('only count usage at or after this epoch-ms; omit for all time'),
+      .describe(
+        'only count usage at or after this epoch-ms; the goal creation time remains the hard lower bound when omitted or earlier',
+      ),
   }),
   async handler(args, ctx) {
     const workspaceId = await resolveWorkspace(ctx as never);
