@@ -147,6 +147,8 @@ import {
   SUBST_SPLIT_RE,
   SUBST_RUNNER_RE,
   SUBST_ENV_RE,
+  substitutionAtoms,
+  substitutionAtomHead,
   substitutionPrefilterHit,
   resourcePrefilterHit,
   checkCommandVerdict,
@@ -5358,6 +5360,88 @@ describe('substitutionPrefilterHit (OMP pre-filter — decides who pays the roun
       missed,
       `pre-filter dropped atoms a registry rule claims:\n${missed.join('\n')}`,
     ).toEqual([]);
+  });
+
+  // ── THE OTHER DRIFT DIRECTION, which the replay above structurally CANNOT see ──
+  //
+  // That guard asserts each corpus atom is claimed by SOME head. That is a
+  // DISJUNCTION — any one of an atom's part-heads satisfies it — so a head that
+  // carries no corpus atom of its own is invisible to it. Measured 2026-08-13: of
+  // the 19 heads in the live set, 18 are corpus-evidenced and exactly one
+  // (`vitest`) is not, because every `tests.raw-vitest` fixture atom is spelled
+  // `npx vitest …` and is therefore claimed via `npx`.
+  //
+  // So today, deleting `vitest` from BOTH sets goes GREEN everywhere: the replay
+  // still passes (no atom needed it) and the byte-parity test still passes (both
+  // sets changed together). Enforcement silently narrows with nothing red — the
+  // exact silent-drift failure this describe block exists to prevent.
+  //
+  // The rule below is therefore "evidenced, or DECLARED defensive with a reason",
+  // which also closes the accumulate direction: a head whose pair was deleted
+  // stops being evidenced and must then be justified or dropped.
+  const DEFENSIVE_HEADS: Record<string, string> = {
+    vitest:
+      'tests.raw-vitest fixtures are all `npx vitest …` (head `npx`), but an npm ' +
+      'script invokes the bare binary off node_modules/.bin, so a bare `vitest` ' +
+      'atom is reachable in practice with no corpus atom to evidence it.',
+  };
+
+  /** Heads the frozen corpus exercises, atomized through the hook's OWN code. */
+  const corpusHeads = (): Set<string> => {
+    const enforceable = new Set(
+      BASH_GATE_PAIRS.filter((p) => p.expectedVerdict !== 'not-a-substitute').map(
+        (p) => `${p.id}.sample.json`,
+      ),
+    );
+    const heads = new Set<string>();
+    for (const file of readdirSync(SUBSTITUTION_FIXTURE_DIR).filter(
+      (f) => f.endsWith('.sample.json') && enforceable.has(f),
+    )) {
+      const fixture = JSON.parse(
+        readFileSync(join(SUBSTITUTION_FIXTURE_DIR, file), 'utf8'),
+      ) as { sample: { atom: string }[] };
+      for (const { atom } of fixture.sample) {
+        for (const a of substitutionAtoms(atom)) {
+          const head = substitutionAtomHead(a);
+          if (head) heads.add(head);
+        }
+      }
+    }
+    return heads;
+  };
+
+  it('every prefilter head is corpus-evidenced or a DECLARED defensive head', () => {
+    const evidenced = corpusHeads();
+    // POSITIVE CONTROL. Without it a broken derivation returns an empty set, every
+    // head reads as unevidenced, and the failure message blames the head set for
+    // an instrument fault. `git` is the densest evidenced head in the corpus.
+    expect(
+      evidenced.has('git'),
+      'the corpus derivation found no `git` atom — the instrument is broken, not the head set',
+    ).toBe(true);
+
+    const unjustified = [...SUBSTITUTION_PREFILTER_HEADS].filter(
+      (h) => !evidenced.has(h) && !(h in DEFENSIVE_HEADS),
+    );
+    expect(
+      unjustified,
+      'head(s) claimed by neither a corpus atom nor a DEFENSIVE_HEADS entry. Add a ' +
+        'fixture atom that exercises the head, drop the head, or declare WHY it is ' +
+        `claimed defensively:\n${unjustified.join('\n')}`,
+    ).toEqual([]);
+  });
+
+  it('every DECLARED defensive head is still in the set (deleting one must go red)', () => {
+    // This is the half that closes the hole. Without it a defensive head can be
+    // deleted and nothing anywhere fails.
+    for (const [head, why] of Object.entries(DEFENSIVE_HEADS)) {
+      expect(
+        SUBSTITUTION_PREFILTER_HEADS.has(head),
+        `\`${head}\` is declared defensive but is no longer in SUBSTITUTION_PREFILTER_HEADS. ` +
+          `Removing it silently narrows enforcement — which is what the declaration exists ` +
+          `to prevent. Reason on record: ${why}`,
+      ).toBe(true);
+    }
   });
 });
 

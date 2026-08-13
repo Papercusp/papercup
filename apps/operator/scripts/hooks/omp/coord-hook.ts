@@ -1426,8 +1426,17 @@ export const SUBSTITUTION_PHRASE_RE = /^npm\s+run\s+test:file\b|^npm\s+(?:instal
 export const RESOURCE_PREFILTER_RE =
   /systemctl|overmind|psql|astro|build-desktop-sidecar|release-local|npm\s+run\s+(?:dev|build)/;
 
-/** True when any atom of `command` has a head a substitution row could claim. */
-export function substitutionPrefilterHit(command: string): boolean {
+/**
+ * The normalized atoms of `command` — split on the separators, with runner and
+ * env prefixes stripped and blanks dropped.
+ *
+ * Exported (with `substitutionAtomHead` below) so the head-set guards can derive
+ * heads through the SAME code the hot path runs. A test that re-implements this
+ * atomization would drift from it silently, which is the precise failure mode the
+ * head-set guards exist to catch — so the guard must not contain a second copy.
+ */
+export function substitutionAtoms(command: string): string[] {
+  const atoms: string[] = [];
   for (const part of command.split(SUBST_SPLIT_RE)) {
     let atom = part.trim();
     for (;;) {
@@ -1435,10 +1444,22 @@ export function substitutionPrefilterHit(command: string): boolean {
       if (stripped === atom) break;
       atom = stripped;
     }
-    if (!atom) continue;
+    if (atom) atoms.push(atom);
+  }
+  return atoms;
+}
+
+/** The claimable head of one normalized atom — `''` when it has none. */
+export function substitutionAtomHead(atom: string): string {
+  const first = atom.split(/\s+/).filter(Boolean)[0] ?? '';
+  return (first.split('/').pop() ?? '').replace(/^[({`$'"]+|[)}`$'"]+$/g, '');
+}
+
+/** True when any atom of `command` has a head a substitution row could claim. */
+export function substitutionPrefilterHit(command: string): boolean {
+  for (const atom of substitutionAtoms(command)) {
     if (SUBSTITUTION_PHRASE_RE.test(atom)) return true;
-    const first = atom.split(/\s+/).filter(Boolean)[0] ?? '';
-    const head = (first.split('/').pop() ?? '').replace(/^[({`$'"]+|[)}`$'"]+$/g, '');
+    const head = substitutionAtomHead(atom);
     if (head && SUBSTITUTION_PREFILTER_HEADS.has(head)) return true;
   }
   return false;
