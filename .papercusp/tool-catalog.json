@@ -1,6 +1,6 @@
 {
   "_comment": "GENERATED from the defineTool registry by scripts/gen-tool-catalog.ts — do not hand-edit. Run `npm run gen:tool-catalog` after adding/changing a tool. The compact, CI-gated projection of the tool + route surface (docs-and-memory-as-projections D-002).",
-  "count": 725,
+  "count": 729,
   "tools": [
     {
       "name": "ablation:report",
@@ -825,7 +825,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "You want the cheap chronological picture of what a session DID (yours pre-compaction, or a peer's) — not the full row stream. Pass owner:'self' for your own trail; since to window it.",
+        "when": "You want the cheap chronological picture of what a session DID (yours pre-compaction, or a peer's) — not the full row stream. Pass owner:'self' for your own trail; use absolute ISO 8601 timestamps for since/until to window it (relative durations such as '-15 min' are not supported).",
         "notWhen": "For raw rows with detail payloads use `activity:recent`; for the agent-authored turn notes use `journal:recent`."
       }
     },
@@ -2281,9 +2281,9 @@
         "foreign-session"
       ],
       "guidance": {
-        "when": "Run any shell command — build, test, git status, file inspection, scripts. For a command that runs longer than ~1–2 min (build, test suite, dev server), pass run_in_background:true and poll capability:bash_output. A background job still has a wall-clock deadline (4h default, 12h max) and is SIGTERMed then SIGKILLed at it — the launch result names the deadline; raise `timeout` for a longer job.",
-        "notWhen": "To read/write/edit a single file, prefer capability:read / capability:write / capability:edit (they coordinate the file lock and mirror the native editors). For git, prefer capability:git.",
-        "chaining": "run_in_background:true → returns a bash_id → capability:bash_output { bash_id } to read incremental output → capability:bash_kill { bash_id } to stop. Never push (git push is refused)."
+        "when": "Run any shell command — build, test, git status, file inspection, scripts. For literal backticks, dollar signs, or other shell metacharacters in search patterns, prefer fixed-string `rg -F` with a shell-safe single-quoted argument; an unmatched backtick inside a double-quoted pattern fails before `rg` runs. For a command that runs longer than ~1–2 min (build, test suite, dev server), pass run_in_background:true and poll capability:bash_output. A background job still has a wall-clock deadline (4h default, 12h max) and is SIGTERMed then SIGKILLed at it — the launch result names the deadline; raise `timeout` for a longer job.",
+        "notWhen": "To read/write/edit a single file, prefer capability:read / capability:write / capability:edit (they coordinate the file lock and mirror the native editors). For read-only queries against the operator PostgreSQL database, use dev:pg_query { sql | describe } instead of psql: capability:bash intentionally strips database credential environment variables. For git, prefer capability:git.",
+        "chaining": "run_in_background:true → returns a bash_id plus durable task_id → capability:bash_output { bash_id } to read incremental output → capability:bash_kill { bash_id } to stop. Never push (git push is refused)."
       }
     },
     {
@@ -2832,7 +2832,7 @@
       "guidance": {
         "when": "VERIFY a code claim before you report or diagnose: typecheck a package after a suspected type error, or run a package / test-file suite to confirm a failure actually reproduces. This is the sanctioned read-only exec for confined fleet agents (capability:bash is gated for them).",
         "notWhen": "To READ a file use capability:read; to SEARCH use the Grep tool. To run an arbitrary or mutating command you need capability:bash (gated — escalate if you truly need it). This tool runs ONLY tsc --noEmit / tests, never a free-form command.",
-        "chaining": "capability:read / Grep (inspect) → capability:inspect (typecheck/test to CONFIRM) → report a VERIFIED diagnosis. For a long suite pass run_in_background:true and poll capability:bash_output."
+        "chaining": "capability:read / Grep (inspect) → capability:inspect (typecheck/test to CONFIRM) → report a VERIFIED diagnosis. For a long suite pass run_in_background:true and poll capability:bash_output; the launch response includes bash_id plus durable task_id."
       }
     },
     {
@@ -4635,7 +4635,7 @@
           "POST"
         ]
       },
-      "description": "Declare current work: one-line intent, optional plan slug, P-NNN lane (auto-claimed), and files. `items` accepts plan ids in P-NNN form only; scheduler:get_next claims WI-/EI- work-items and declares their intent automatically, so do not pass those ids here. Peers see this via coord:presence / fleet:assignments. Omitted fields reset state except `items` and `current_files` (omission preserves; [] clears). A broad \"all remaining items\" intent without structured `items` returns advisory `overCoverageHint` (EI-5873).",
+      "description": "Declare current work: one-line intent, optional plan slug, P-NNN lane (auto-claimed), and files. `items` accepts plan ids in P-NNN form only; scheduler:get_next claims WI-/EI- work-items and declares their intent automatically, so do not pass those ids here. A non-empty `items` lane requires a plan slug; an explicit empty `items: []` may be used without one for a replacement-member presence re-declaration and does not touch plan claims. Peers see this via coord:presence / fleet:assignments. Omitted fields reset state except `items` and `current_files` (omission preserves; [] clears). A broad \"all remaining items\" intent without structured `items` returns advisory `overCoverageHint` (EI-5873).",
       "capabilities": [
         "coord:write"
       ],
@@ -4880,7 +4880,7 @@
           "POST"
         ]
       },
-      "description": "Read the COMPLETE coordination stream across every agent and channel — messages, acks, notifies, broadcasts, handoffs, escalations, resolutions, plan events — newest-first with a next-page cursor. Filter by kinds, owner (matches sender OR recipient; broadcasts match any owner), plan_slug, free-text `q` (over summary/body/from/to), and a since/before time window. `since` is the preferred timestamp filter; legacy `since_ts` remains accepted. before_ts is the pagination cursor (pass back the returned `nextCursor`). Returns `{ count, total, by_kind, next_cursor, rows }`; each row is the raw envelope plus `surface` (messages|escalations|handoffs|plan-events) and a derived `broadcast` flag. A row carrying `superseded_by` was CORRECTED by its own sender — follow that msg_id to the current claim before acting on the row.",
+      "description": "Read the COMPLETE coordination stream across every agent and channel — messages, acks, notifies, broadcasts, handoffs, escalations, resolutions, plan events — newest-first with a next-page cursor. Filter by kinds, owner (matches sender OR recipient; broadcasts match any owner), plan_slug, fleet (legacy alias for audience `@fleet:<slug>`), free-text `q` (over summary/body/from/to), and a since/before time window. `since` is the preferred timestamp filter; legacy `since_ts` remains accepted. before_ts is the pagination cursor (pass back the returned `nextCursor`). Returns `{ count, total, by_kind, next_cursor, rows }`; each row is the raw envelope plus `surface` (messages|escalations|handoffs|plan-events) and a derived `broadcast` flag. A row carrying `superseded_by` was CORRECTED by its own sender — follow that msg_id to the current claim before acting on the row.",
       "capabilities": [
         "audit:read"
       ],
@@ -5318,7 +5318,7 @@
           "POST"
         ]
       },
-      "description": "Migrate every ownerId-keyed surface from a DEAD predecessor sid to a live one after a relaunch/recovery changed your PAPERCUSP_SID: armed loop routine, loop carry-note (+walls), plan/work-item claims, scheduler claim-spec, standing awaits, fleet membership/leadership, open held work-items, owner-scoped facts, held FILE LOCKS + lock waiters (EI-8999/P-002 — a separate side-database, rekeyed too). Idempotent — re-run to finish a partial pass. Refuses while the old sid still shows a fresh presence heartbeat (a live peer) unless force:true. Returns { ok, from, to, surfaces:[{surface,moved,…}], totalMoved }.",
+      "description": "Migrate every ownerId-keyed surface from a DEAD predecessor sid to a live one after a relaunch/recovery changed your PAPERCUSP_SID: armed loop routine, loop carry-note (+walls), plan/work-item claims, scheduler claim-spec, standing awaits, fleet membership/leadership, open held work-items, owner-scoped facts, held FILE LOCKS + lock waiters (EI-8999/P-002 — a separate side-database, rekeyed too). Idempotent — re-run to finish a partial pass. Refuses while the old sid still resolves LIVE through the shared liveness oracle (sessionState live/parked/draining/recorded) unless force:true — a warm heartbeat on an ENDED session does NOT refuse, so the ordinary relaunch needs no force. Returns { ok, from, to, fromSessionState, surfaces:[{surface,moved,…}], totalMoved }.",
       "capabilities": [
         "coord:write"
       ],
@@ -5457,7 +5457,7 @@
           "POST"
         ]
       },
-      "description": "Send coordination messages. Single: {to, summary, expects, body?}; `summary` is REQUIRED as the one-line inbox headline, while `body` is optional long-form detail. Distinct messages: items:[…]. `to` accepts ownerIds, [\"*\"] for fleet scope, or [\"human\"]. `expects` is required: ack|answer|action|none. `why` is a structured envelope field: { goalRef, note? }, not prose. Directed action/answer messages require `forYouBecause` on a body section. `wake` re-invokes sleeping recipients (`required` reports misses; `optimistic` needs `backstop`). Returns per-message {ok, to, msg_id|error} counts.",
+      "description": "Send coordination messages. Single: {to, summary, expects, body?}; `summary` is REQUIRED as the one-line inbox headline, while `body` is optional long-form detail. Distinct messages: items:[…]. `to` accepts ownerIds, [\"*\"] for fleet scope, or [\"human\"]. `expects` is required: ack|answer|action|none. `why` is a structured envelope field: { goalRef, note? }, not prose. Directed action/answer messages require `forYouBecause` on a body section. `wake` re-invokes sleeping recipients (`required` reports misses; `optimistic` needs `backstop`).",
       "capabilities": [
         "coord:write"
       ],
@@ -5479,7 +5479,7 @@
         "doc-steward"
       ],
       "guidance": {
-        "when": "Share context or ask. Include `to`, `summary` (REQUIRED one-line inbox headline), and `expects`; use `body` for optional detail. Directed action/answer messages need `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack, and none are exempt. Use items:[…] for distinct messages. `why` is `{ goalRef, note? }` — goal REF, never prose. `youMayNotKnow` and `couldNotDetermine` are typed object arrays: `youMayNotKnow: [{ ref, provenance }]` (for example, `[{ ref: \"...\" }]`) and `couldNotDetermine: [{ what, note? }]` (for example, `[{ what: \"...\" }]`), not a string or array of strings. wake:'required' reports misses; wake:'optimistic' needs `backstop`.",
+        "when": "Share context or ask. Include `to`, `summary` (REQUIRED one-line inbox headline), and `expects`; use `body` for optional detail. Directed action/answer messages need `forYouBecause: { relation, ref?, note? }` on a body section; broadcasts, human, ack, and none are exempt. Use items:[…] for distinct messages. `why` is `{ goalRef, note? }` — goal REF, never prose. SHAPES often got wrong: `premises` is an array of ref strings, not objects — `premises: [\"WI-1234#completion\"]`; `youMayNotKnow` takes `{ ref, provenance }` and `couldNotDetermine` takes `{ what, note? }` — `youMayNotKnow: [{ ref: \"WI-1\", provenance: \"authored\" }]`, `couldNotDetermine: [{ what: \"the gap\" }]`, not a string or array of strings. wake:'required' reports misses; wake:'optimistic' needs `backstop`.",
         "notWhen": "Human reply: speak. File lock: locks:acquire. Ambient note: omit wake. One message to many: to:[…]; distinct messages: items:[…]. Work transfer: coord:handoff."
       }
     },
@@ -6895,6 +6895,80 @@
       }
     },
     {
+      "name": "db:migrations",
+      "http": {
+        "path": "/api/agent-tools/db/migrations",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read the APPLIED migration ledger (harness_shared.schema_migrations): which migrations ran, when, and their sha. `like` takes a migration number (\"795\", \"72\", or an explicit LIKE pattern) — a bare number is a PREFIX match. When `like` matches no applied row the result carries a VERDICT explaining why (pending / draft-not-armed / no-such-migration / unknown), because an empty SQL result cannot tell those apart. Read-only.",
+      "capabilities": [
+        "operator:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "Check whether migration NNN applied, list the most recent migrations, or read what applied in a time window — instead of hand-writing SELECT over harness_shared.schema_migrations.",
+        "notWhen": "To find files on disk that have NOT applied (drift, content-drift, extras) use db:check_drift — that is the pending side and this tool does not recompute it. To APPLY a migration use db:migrate (or restart the operator; boot auto-applies). To allocate a NEW migration number use db:next-migration.",
+        "chaining": "A `pending` verdict → db:check_drift for the full drift picture, then db:migrate or an operator restart. A `no-such-migration` verdict → db:next-migration if you meant to create one."
+      }
+    },
+    {
       "name": "db:next-migration",
       "http": {
         "path": "/api/agent-tools/db/next-migration",
@@ -7855,7 +7929,7 @@
           "POST"
         ]
       },
-      "description": "Run a read-only SELECT / WITH…SELECT against operator Postgres, or pass `describe` to inspect a relation. Tenant-scoped reads require a workspace_id/harness_slug predicate unless `allowUnscoped: true`. Read-only enforced; rows capped. `timeoutMs` bounds connect, acquire, and execution; bigint/int8 values return as exact strings.",
+      "description": "Run a read-only SELECT / WITH…SELECT or EXPLAIN over a SELECT/WITH…SELECT against operator Postgres, or pass `describe` to inspect a relation. Tenant-scoped reads require a workspace_id/harness_slug predicate unless `allowUnscoped: true`. Read-only enforced; rows capped. `timeoutMs` bounds connect, acquire, and execution.",
       "capabilities": [
         "intel:read"
       ],
@@ -7872,9 +7946,9 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "A genuinely ad-hoc / analytic read of PG-canonical state — a one-off group-by/join/slice you won't run again. NOT the default way to read canonical state: most hot reads already have a stable-shape tool (work_items:claimable, work_items:list, plans:list/plans:items, search:*, gitnexus:query). Reach here only when no tool covers the shape.",
-        "notWhen": "A read a documented tool above already covers (hand-written claimability/plan queries are the classic footgun, and a predicate missing workspace_id/harness_slug can match another tenant), or to CHANGE state — writes are rejected here.",
-        "chaining": "Check a table's shape first with `describe: \"schema.table\"` (or a glob) instead of `psql -c \"\\d …\"`. Alias duplicate output columns (the row cap wraps the query in a subquery). Pass `maxRows` to widen the cap; if `truncated`, tighten WHERE/LIMIT instead of raising it blindly."
+        "when": "A genuinely ad-hoc / analytic read or planner diagnostic of PG-canonical state — a one-off group-by/join/slice or EXPLAIN over a SELECT/WITH query you won't run again. NOT the default way to read canonical state: most hot reads already have a stable-shape tool (work_items:claimable, work_items:list, plans:list/plans:items, search:*, gitnexus:query).",
+        "notWhen": "A read a documented tool above already covers (hand-written claimability/plan queries are the classic footgun, and a predicate missing workspace_id/harness_slug can match another tenant), or to CHANGE state — writes and EXPLAIN of writes are rejected here. Also: schema_migrations→db:migrations; test_runs→testing:runs (status='failed' matches NOTHING); engineer_issues→issues:list.",
+        "chaining": "Check a table's shape first with `describe: \"schema.table\"` (or a glob) instead of `psql -c \"\\d …\"`. Use `EXPLAIN (FORMAT TEXT) SELECT …` for a bounded planner diagnostic; its explained statement must be SELECT/WITH…SELECT. Alias duplicate output columns (the row cap wraps ordinary queries in a subquery). Pass `maxRows` to widen the cap; if `truncated`, tighten WHERE/LIMIT instead of raising it blindly."
       }
     },
     {
@@ -12114,7 +12188,7 @@
           "POST"
         ]
       },
-      "description": "Capture a papercusp improvement you discovered (a friction, a missing affordance, a tooling bug) as a durable, claimable, `papercusp-improvement`-tagged work-unit. kind=bug → auto-implement-eligible; change|feature → human-reviewed. Search-first: declines an obvious duplicate (link instead) unless force. An su kind=feature filing also gets a REPORT-ONLY novelty pre-check (`priorArt[]`, incl. already-tried-and-failed priors) — never blocks. Pass `paths` (files involved) to feed the protected-path gate. lane:\"observation\" files a turn-end PRE-IDEA into a separate lane that NEVER enters the work queue (Scout-digest + Observations pane only).",
+      "description": "Capture a papercusp improvement you discovered (a friction, a missing affordance, a tooling bug) as a durable, claimable, `papercusp-improvement`-tagged work-unit. kind=bug → auto-implement-eligible; change|feature → human-reviewed. Search-first: declines an obvious duplicate (link instead) unless force. lane:\"observation\" files a turn-end PRE-IDEA into a separate lane that NEVER enters the work queue (Scout-digest + Observations pane only).",
       "capabilities": [
         "coord:write"
       ],
@@ -12138,8 +12212,8 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "The MOMENT you suspect ANY papercusp bug — broken OR SUB-OPTIMAL (a monitor false alarm, a self-recovered flap, load-correlated degradation) — filing is mandatory, not a judgment call: file (kind:bug, evidence in body) even with no fix and even if it self-recovered; only fix-now-vs-leave-filed is the judgment call. Also DX/tooling/code friction out of scope. Include `paths` — the auto-implement risk gate reads them.",
-        "notWhen": "A problem in a MANAGED harness/project (not papercusp itself) — that is work_items:create with that harness scope. Something needing real design — write a plan (plans:new) and capture with kind=feature linking it. A passing question — coord:ask.",
+        "when": "The MOMENT you suspect ANY papercusp bug — broken OR SUB-OPTIMAL (a monitor false alarm, a self-recovered flap, load-correlated degradation): file it (kind:bug, evidence in body) even with no fix and even if it self-recovered. Only fix-now-vs-leave-filed is a judgment call; filing is not. DX/tooling/code friction counts too. Include `paths` — the auto-implement risk gate reads them.",
+        "notWhen": "A problem in a MANAGED harness/project (not papercusp itself) — that is work_items:create with that harness scope. Something needing real design — write a plan (plans:new) and capture with kind=feature linking it. A passing question — coord:ask. Do not pass internal provenance fields (createdBy, source, sourceRole, filedByRole): the server derives filer identity and role; use assign_to:\"self\" to claim and observation.refs for evidence attribution.",
         "chaining": "improvements:capture { kind, title, paths? } → improvements:digest triages it → an agent claims + fixes it, or the auto-implement loop picks up bugs and improvements:resolve closes them."
       }
     },
@@ -12597,6 +12671,80 @@
       "guidance": {
         "when": "User asks \"what triggered this?\", \"show me the lineage of agent X\", or you need the parent-child spawn graph for an Intel-panel-style view.",
         "notWhen": "For LIVE running spawns only, use `orchestrator.list_active`. spawn_tree is historical + structural; list_active is the now-snapshot."
+      }
+    },
+    {
+      "name": "issues:list",
+      "http": {
+        "path": "/api/agent-tools/issues/list",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "List issue-family work items (bug/change) from harness_shared.engineer_issues: filter by state, scope, kind, severity, assignee, lane, or free text. `rollup:\"state\"|\"observationKind\"` returns counts instead of rows. `scope` accepts a bare harness slug and is normalised to the view's \"harness:<slug>\" form. Excludes `task` items unless you ask for them. Read-only.",
+      "capabilities": [
+        "operator:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "Read filed issues/observations — what is open in a scope, how many by state, or find one by text — instead of hand-writing SELECT over harness_shared.engineer_issues.",
+        "notWhen": "To FILE one use improvements:capture. For what is CLAIMABLE right now use work_items:claimable (a status=open query is not claimability). For the deduped ideation digest use improvements:digest; for the triage queue use improvements:triage. For observations specifically, pass lane:\"observation\" here.",
+        "chaining": "rollup:\"state\" to size the backlog → rows with the interesting state → work_items:get for the full record, or improvements:resolve to close one."
       }
     },
     {
@@ -13092,7 +13240,7 @@
       "guidance": {
         "when": "For a DELIBERATE multi-file claim held across several edits AND the commit — acquire once, release after committing. Before individual Codex writes only when that session lacks lock hooks; managed Codex/Claude/OMP homes hook apply_patch/Edit/Write automatically.",
         "notWhen": "Read-only inspection needs no claim. A single incidental edit in a hooked session needs no manual call — do NOT wrap every hooked edit in acquire/release. Explicit locks are the fallback for unhooked Codex.",
-        "chaining": "On ok: edit → commit → locks:release { lock_id }. On busy: wake_on_grant:true → end your turn; the wake carries your lock_id + running TTL — edit, then release. Only block (wait) when you need the lock THIS turn and the holder is about to finish; events:cancel + locks:cancel_wait retracts a queued wake."
+        "chaining": "On ok: edit → commit → locks:release { lock_id }. If the edit is still uncommitted, omit published_sha; pass published_sha only when you have actually published a lowercase 40–64-character hexadecimal commit SHA. On busy: wake_on_grant:true → end your turn; the wake carries your lock_id + running TTL — edit, then release. Only block (wait) when you need the lock THIS turn and the holder is about to finish; events:cancel + locks:cancel_wait retracts a queued wake."
       }
     },
     {
@@ -13977,7 +14125,7 @@
           "POST"
         ]
       },
-      "description": "Write or clear the su AUTO loop carry-note read by a COLD wake after reset/recycle; the live transcript does not survive. Pass { did, left, insight, next } or raw { note }; blank/null clears. The note is keyed by ownerId. Supplying { walls } or { checks } uses rowsMode:'replace' by default (the supplied list is the complete new set); use rowsMode:'merge' to add/update rows without dropping unmentioned carried rows, and use an empty list with replace to clear that row set. Returns { ok, harness, ownerId, cleared, length, verified, contentHash, walls, checks }; writes verify-read.",
+      "description": "Write or clear the su AUTO loop carry-note read by a COLD wake after reset/recycle; the live transcript does not survive. Pass { did, left, insight, next } or raw { note }; blank/null clears. The note is keyed by ownerId. Supplying { walls } or { checks } uses rowsMode:'merge' by default (supplied rows add/update without dropping unmentioned carried rows); use rowsMode:'replace' to retire omitted rows, and use an empty list with replace to clear that row set. Returns { ok, harness, ownerId, cleared, length, verified, contentHash, walls, checks }; writes verify-read.",
       "capabilities": [
         "routines:write"
       ],
@@ -14000,7 +14148,7 @@
       ],
       "profile": "engineer",
       "guidance": {
-        "when": "At the end of a COLD loop turn, store compressed facts (did, left, insight, next), not a transcript. Add a same-line [turn:<session>@<iso-ts>] ref for owner directives or completed coordination actions; never invent a ref. Mark non-owner sources [self-imposed], [peer:<sid>], or [inferred]. When updating one wall/check, pass rowsMode:'merge' or resend the full current set: the default replace mode drops omitted rows. Pair with work_items:checkpoint because a loop note can be lost if the session dies.",
+        "when": "At the end of a COLD loop turn, store compressed facts (did, left, insight, next), not a transcript. Add a same-line [turn:<session>@<iso-ts>] ref for owner directives or completed coordination actions; never invent a ref. Mark non-owner sources [self-imposed], [peer:<sid>], or [inferred]. When updating one wall/check, pass rowsMode:'replace' only when retiring omitted rows; the default merge mode preserves them. Pair with work_items:checkpoint because a loop note can be lost if the session dies.",
         "notWhen": "WARM loops (carry:'warm', the default) carry the live transcript and need no note. Use work_items:checkpoint for work-item state.",
         "chaining": "Use as the last step before a cold-loop turn ends; also refresh work_items:checkpoint for successor recovery and facts:assert for durable conclusions."
       }
@@ -18713,7 +18861,7 @@
           "POST"
         ]
       },
-      "description": "Approve a plan and start its item-promotion path. Starting IS the approval signal — a draft plan is auto-advanced to 'ready'. Re-starting is a no-op. While papercusp-mug-kettle-system is OFF the retired op_status axis is not written.",
+      "description": "Approve a plan and start its item-promotion path. Starting IS the approval signal — a draft plan is auto-advanced to 'ready'. Re-starting is a no-op. The retired op_status axis is never written (P-068 deleted the flag).",
       "capabilities": [
         "plans:write"
       ],
@@ -22067,7 +22215,7 @@
           "POST"
         ]
       },
-      "description": "Read the CURRENT claim spec for a cup or fleet: { source, spec, revision, updatedBy, updatedAt, harnessSlug, fleetSlug? }. `source` tells you which row actually answered — \"bee\" (a per-bee spec, always wins), \"fleet\" (inherited via membership, no per-bee override), or \"default\" (neither exists — DEFAULT_CLAIM_SPEC/oldest-first applies). The read counterpart to scheduler:set_claim_spec — confirm a re-steer landed before relying on it, instead of grepping source or guessing.",
+      "description": "Read the CURRENT claim spec for a cup or fleet: { source, spec, revision, updatedBy, updatedAt, harnessSlug, fleetSlug? }. `source` tells you which row actually answered — \"bee\" (a per-bee spec, always wins), \"fleet\" (inherited via membership, no per-bee override), or \"default\" (neither exists — DEFAULT_CLAIM_SPEC/oldest-first applies). The read counterpart to scheduler:set_claim_spec — confirm a re-steer landed before relying on it, instead of grepping source or guessing. Pass `history: N` to also get the PRIOR versions a destructive write superseded (spec bytes + revision + cause), which is how you UNDO a spec that was overwritten or cleared.",
       "capabilities": [
         "work_items:read"
       ],
@@ -22650,7 +22798,7 @@
           "POST"
         ]
       },
-      "description": "Compact THIS session now, at a clean stopping point (near your soft compaction limit). After this turn ends the harness cuts the process and respawns it on fresh context with the deterministic carry document as launch context (P-018 — native /compact is retired); the successor resumes automatically. Pass focus to name what to resume.",
+      "description": "Compact THIS session now, at a clean stopping point (near your soft compaction limit). After this turn ends the harness cuts the process and respawns it on fresh context with the deterministic carry document as launch context (P-018 — native /compact is retired); the successor resumes automatically. Pass focus to name what to resume. Supported wire fields are focus, autoContinue, respawn, continueNote, and legacy reason (ignored).",
       "capabilities": [
         "coord:write"
       ],
@@ -23708,6 +23856,80 @@
         "when": "You edited code and want to know whether specific test files pass, and which tests failed and why. The default way to run named test files.",
         "notWhen": "Running everything your edits affected (use `npm run test:affected` — not covered here), a non-Vitest suite (cargo/playwright), or when you genuinely need raw reporter output.",
         "chaining": "testing:run → a red here is real (the router refuses false-greens); testing:flakiness { } on a failing file tells you whether it is a known flake before you treat it as your regression."
+      }
+    },
+    {
+      "name": "testing:runs",
+      "http": {
+        "path": "/api/agent-tools/testing/runs",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Read the test-run ledger (harness_shared.test_runs): what actually failed, at which commit, in which run. `rollup:\"commit\"|\"runGroup\"` aggregates (\"is this sha green\" — total/failed/failing-file counts); otherwise returns rows, latest-run-per-file by default. Filter by filePath (substring), commitSha (prefix), runGroup, status, source, since. Read-only.",
+      "capabilities": [
+        "operator:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "documenter",
+        "curator",
+        "operator",
+        "oracle",
+        "cup",
+        "mug",
+        "planner",
+        "orchestrator",
+        "promote",
+        "security-reviewer",
+        "infra-reviewer",
+        "crosscheck",
+        "ui-qa",
+        "auditor",
+        "merge-resolver",
+        "content-fixer",
+        "release-manager",
+        "release-fixer",
+        "doc-steward",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "researcher",
+        "research-director",
+        "searcher",
+        "discoverer",
+        "finding-verifier",
+        "findings-synthesizer",
+        "synthesizer",
+        "review-director",
+        "dimension-reviewer",
+        "verifier",
+        "migration-director",
+        "migration-verifier",
+        "transformer",
+        "gym-director",
+        "judge",
+        "task-generator",
+        "variant-runner",
+        "proposer",
+        "scanner",
+        "director",
+        "committer",
+        "tester",
+        "test-writer",
+        "monitor",
+        "blender",
+        "foreign-session"
+      ],
+      "guidance": {
+        "when": "Greening a red gate or triaging CI: find the ACTUAL failing test files at a commit/run instead of guessing or re-running blind. rollup:\"commit\" answers \"is this sha green\" in one call.",
+        "notWhen": "To decide whether a red is a known FLAKE rather than your change, use testing:flakiness (cross-run flip rate — same table, different question). To RUN tests use testing:run. For \"is my change live/what is blocking it\" use dev:pipeline_position.",
+        "chaining": "rollup:\"commit\" to find the red sha → rows with that commitSha + status:[\"fail\",\"error\"] for the failing files and their output tails → testing:flakiness on a file before assuming the red is yours."
       }
     },
     {
@@ -24775,7 +24997,7 @@
           "POST"
         ]
       },
-      "description": "Write (or clear) one OR many work-items' checkpoints — a compressed snapshot of your in-flight state. Single: { id, checkpoint? }. Many: items:[{ id, checkpoint?, harness? }]. Your transcript does NOT carry across a task boundary / re-spawn; the checkpoint is your continuity, re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; `append:true` joins instead. Writes are verify-read. A plain replace shrinking a substantial checkpoint >50% is retried as a safe append, while an append with a disagreeing pre-read is BLOCKED; refusals carry `errorCode` + recovery args. Refuses a peer-held item (`not_holder`).",
+      "description": "Write (or clear) one OR many work-items' checkpoints — a compressed snapshot of your in-flight state. Single: { id, checkpoint? }. Many: items:[{ id, checkpoint?, harness? }]. Your transcript does NOT carry across a task boundary / re-spawn; the checkpoint is your continuity, re-injected on the next invocation of that item (yours or a successor's). Replace-on-write; `append:true` joins instead. Writes are verify-read — a suspicious shrink can be BLOCKED; see `returns`. Refuses a peer-held item (`not_holder`). `rowsMode:\"merge\"` is the default additive check-row form when the body should still replace; use `rowsMode:\"replace\"` to retire rows.",
       "capabilities": [
         "work_items:write"
       ],
@@ -24800,7 +25022,7 @@
       "guidance": {
         "when": "At a task boundary or on graceful eviction, before you finish/yield: persist what a successor (or your next wake) needs — what is done, left, current approach, gotchas. A digest, not a transcript. Declare `dependsOn` for a real freshness verdict.",
         "notWhen": "Mid-task scratch the live transcript already holds; never dump file contents or tool output. Not an edit channel: use work_items:update for the body, work_items:comment for a note. Not for a peer's item — claim it, or comment instead.",
-        "chaining": "Call before work_items:complete / on yield; blank clears a stale note. For a concise successor addendum to a detailed prior note, pass append:true. For an intentional full replacement, include confirmShrink:true. Doubles as a liveness pulse — a claim held through long local-only tool use can go presence-stale and be reclaimed."
+        "chaining": "Call before work_items:complete / on yield; blank clears a stale note. Doubles as a liveness pulse — a claim held through long local-only tool use can go presence-stale and be reclaimed."
       }
     },
     {
@@ -25942,6 +26164,42 @@
       "guidance": {
         "when": "Use for lifecycle changes. Prefer work_items:complete for terminal evidence. Batch with { ids:[…], state } or items[]. Plan-linked feature blocks use plans:set-status; needs-human/blocked exclude from self-select. Before `force:true`, read terminalOwner/ref. If work_items:complete times out, first re-read work_items:get; if the item is still open, retry the exact same completion payload (including assumptions). If you use work_items:set_state as the fallback, carry the same assumptions declaration and pass completionRef too. Shape: an ARRAY of facts:assert keys — assumptions: [\"my-fact-key\"] (note the brackets, even for a single key) — or the bare literal assumptions: \"none\".",
         "chaining": "work_items:claim → … → work_items:set_state { state, completionRef, assumptions }."
+      }
+    },
+    {
+      "name": "work_items:stranded",
+      "http": {
+        "path": "/api/agent-tools/work_items/stranded",
+        "methods": [
+          "POST"
+        ]
+      },
+      "description": "Open issue-family items whose OWN checkpoint declares the work finished — the stranded-finished backlog (code committed, item never closed because the holder's verification job died with their session). Returns candidates + the checkpoint HEAD that matched, oldest/strongest first. READ-ONLY and deliberately not a sweep: the classifier measured ~43% precise, and its false positives include notes reading '⛔ DO NOT CLOSE' and 'CLAIMED, no code written yet'. SOURCE-VERIFY every candidate before closing it. `citesBgJob` marks the stronger subset (the checkpoint's promised evidence was a background job that cannot outlive its author). `matched` counts the WHOLE population; the row list is a page (`truncatedByLimit`). `closableLocally:false` marks a remote-authored item this node CANNOT complete — verify it, then hand its authoring peer the evidence.",
+      "capabilities": [
+        "work_items:read"
+      ],
+      "agentRoles": [
+        "scoper",
+        "architect",
+        "worker",
+        "validator",
+        "reviewer",
+        "debugger",
+        "operator",
+        "documenter",
+        "curator",
+        "cup",
+        "mug",
+        "papercup",
+        "papercup-deep",
+        "kettle",
+        "doc-steward"
+      ],
+      "profile": "engineer",
+      "guidance": {
+        "when": "Draining/triaging a backlog, or auditing why it is not shrinking — to find work that is already committed and needs only verify-and-close.",
+        "notWhen": "What you can CLAIM → work_items:claimable. ONE item's prior work → work_items:get (its own checkpoint + priorWork warnings). Never wire this to an auto-closer: at ~43% precision that re-labels genuinely-open work as done.",
+        "chaining": "→ work_items:get { id } (read the full checkpoint) → verify the fix in source/tests → work_items:claim → work_items:complete."
       }
     },
     {
