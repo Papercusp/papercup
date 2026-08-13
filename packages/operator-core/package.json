@@ -14,6 +14,8 @@
   },
   "scripts": {
     "test": "vitest run --passWithNoTests",
+    "test:lane-pure": "PC_TEST_LANE=pure vitest run --passWithNoTests",
+    "test:lane-stateful": "PC_TEST_LANE=stateful vitest run --passWithNoTests",
     "test:integration": "vitest run --config vitest.integration.config.ts --passWithNoTests",
     "lint:chunk-safe": "vitest run lib/child-output-guard.test.ts",
     "lint:attributor-runner-coverage": "vitest run lib/__tests__/attributor-runner-coverage.test.ts",
@@ -41,6 +43,7 @@
     "gen:compaction:check": "tsx ../../scripts/gen-compaction.ts --check",
     "gen:knowledge-packs:check": "node ../../scripts/gen-knowledge-packs.mjs --check",
     "gen:tool-catalog:check": "tsx ../../scripts/gen-tool-catalog.ts --check",
+    "gen:fleet-lessons:check": "tsx ../../scripts/gen-fleet-lessons.ts --check",
     "lint:declarations-fresh": "tsx ../../scripts/gen-declarations.ts --check",
     "typecheck": "bash ../../scripts/pc-heavy.sh node ../../scripts/lint-tsc.mjs"
   },

@@ -903,6 +903,45 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       f === '.papercusp/tool-catalog.json',
   },
   {
+    // WI-38239 — `gen:fleet-lessons:check`, the LAST of the eight orphaned `gen:*:check` guards.
+    // It mirrors the machine-local curated fleet-lessons pack into the committed copy that ships.
+    //
+    // ⚠ READ THIS BEFORE TRUSTING A RED FROM IT. Wiring was blocked until 2026-08-13 by a real
+    // defect, not by cost: the exporter copied the curated pack VERBATIM while the committed copy
+    // had been backfilled to OKF v0.2 (okf_version / type:) by scripts/okf-backfill-packs.mjs. So
+    // `--check` reported 4 files "differ" and told the reader to run the writer — and running it
+    // would have STRIPPED those fields and turned `lint:okf-conformance` (which scans this exact
+    // directory) RED. Two guards over the same files, each prescribing a state the other rejects,
+    // with the red one prescribing the break. gen-fleet-lessons.ts now applies the OKF addition ON
+    // EXPORT (okfExportBody), so what ships is conformant whatever the curated side holds and the
+    // remedy this guard names is safe to run. Do NOT revert that without re-opening this question.
+    //
+    // The message's stated direction was also wrong and is worth distrusting on sight: it says the
+    // committed copy is BEHIND, and the measured diff was the committed copy AHEAD by one metadata
+    // line per file.
+    //
+    // HONEST LIMIT — what this canNOT catch: the drift that matters most is the fleet ADOPTING
+    // knowledge into the curated pack, which changes NO repo file, so no path-triggered guard ever
+    // fires for it. That case wants a scheduled sweep. What this DOES catch is a hand-edit to the
+    // committed pack and a change to the exporter itself — worth having, and not to be quoted as
+    // "the shipped pack is verified current".
+    //
+    // Cheap and off-fleet-safe by construction: ~1.5s (2 runs: 1.50 / 1.45), and with no shared
+    // knowledge-packs root it prints "nothing to export (ok)" and exits 0 — so a CI runner or a
+    // fresh clone, which has no curated pack, passes rather than red-pinning.
+    workspace: '@papercusp/operator-core',
+    script: 'gen:fleet-lessons:check',
+    // No hostSuiteRatchet: no test execs gen-fleet-lessons.ts, so no suite run implies this has
+    // executed over the real pack.
+    appliesTo: (f) =>
+      f.startsWith('libs/papercusp/packages/harness/knowledge-packs/fleet-lessons/') ||
+      f === 'scripts/gen-fleet-lessons.ts' ||
+      // The OKF normalizers the exporter now depends on — a change to what they add changes what
+      // this guard considers conformant output.
+      f === 'scripts/okf-backfill-packs.mjs' ||
+      f === 'scripts/okf-backfill-insights.mjs',
+  },
+  {
     // WI-38312 — `lint:sidecar-fallback-reported` (EI-20281745253229841) shipped enforcing
     // NOTHING: its only coverage was a logic-test of its predicate over fixtures, so
     // lint:guard-reachability went red for every agent whose change mapped into

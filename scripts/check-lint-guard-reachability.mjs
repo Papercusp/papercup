@@ -232,7 +232,6 @@ export const ACKNOWLEDGED_UNREACHABLE = new Map([
   // The SCRIPT stays: `gen:doc-projections` (the writer) is the local one-shot regenerate, and
   // its `--check` code path is still reachable as `npx tsx scripts/gen-doc-projections.ts --check`
   // for a local pre-push sweep — it is simply no longer a DECLARED guard nothing runs.
-  ['gen:fleet-lessons:check', 'pending wire-or-retire decision'],
   // RETIRED 2026-08-12 (WI-38239), watermark 17 → 16: `gen:openapi:check` asserted a drift
   // invariant over an artifact that IS NOT IN THE REPO. `.papercusp/openapi.json` is GITIGNORED
   // (.gitignore:101) and untracked, and the generator's own header states the stance deliberately
@@ -280,7 +279,16 @@ export const ACKNOWLEDGED_UNREACHABLE = new Map([
  * source), 20→18 gen:compaction:check + gen:knowledge-packs:check (wired), 18→16
  * gen:doc-projections:check + gen:openapi:check (retired — an umbrella whose five children are
  * each already CI-enforced, and a guard over a gitignored artifact), 16→15
- * gen:tool-catalog:check (wired).
+ * gen:tool-catalog:check (wired), 15 → 14 gen:fleet-lessons:check (wired) — which CLOSES the
+ * whole eight-guard cohort the widening exposed.
+ *
+ * The last one is the case worth remembering: it was not blocked by cost but by a DEFECT the
+ * probe surfaced. Its remedy command would have stripped OKF v0.2 frontmatter from the committed
+ * pack and turned `lint:okf-conformance` red — a red guard prescribing a fix that breaks a green
+ * one. Wiring it required fixing the exporter first (gen-fleet-lessons.ts now applies the OKF
+ * addition on export). So "wire or retire" has a THIRD outcome: REPAIR, then wire. A guard whose
+ * prescribed remedy damages the tree must never be wired as-is — that arms a trap for whoever
+ * hits the red and does what it says.
  *
  * ONE PROBE decided wire-vs-retire in every one of those cases and it is the first thing to
  * run on the next candidate: `git ls-files <artifact>` + `git check-ignore -v <artifact>`.
@@ -290,7 +298,7 @@ export const ACKNOWLEDGED_UNREACHABLE = new Map([
  * and is never by itself a reason to retire. Do not substitute a generator's header comment
  * for that probe: three of them were measured wrong here, mutually citing each other.
  */
-export const UNREACHABLE_HIGH_WATERMARK = 15;
+export const UNREACHABLE_HIGH_WATERMARK = 14;
 
 /**
  * Guards that ARE enforced, but only over PART of what they scan (EI-19461064447747454).
