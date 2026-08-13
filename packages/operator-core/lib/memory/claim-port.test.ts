@@ -89,6 +89,21 @@ describe('buildClaimRecallBlock', () => {
     });
   });
 
+  it('keeps a merged recall block within the transport-safe claim budget', async () => {
+    vi.mocked(buildLaunchMemoryBlock).mockResolvedValue(
+      `## Claim recall\n\n- ${'x'.repeat(CLAIM_RECALL_BUDGET_CHARS)}\n- ${'y'.repeat(CLAIM_RECALL_BUDGET_CHARS)}`,
+    );
+
+    const out = await buildClaimRecallBlock({
+      items: [{ title: 'A claim with a large recall', harness: 'papercusp' }],
+    });
+
+    expect(out).toBeTruthy();
+    expect(out!.length).toBeLessThanOrEqual(CLAIM_RECALL_BUDGET_CHARS);
+    expect(out).toContain('## Claim recall');
+    expect(out).toContain('…');
+  });
+
   // EI-18893248175645463: the 'user' pool was recorded on EVERY claim recall
   // with an unconditionally empty scope list (buildLaunchMemoryBlock never
   // received a userId), a guaranteed 100% zero-hit rather than "nothing

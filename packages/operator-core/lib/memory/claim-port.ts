@@ -78,8 +78,14 @@ export interface ClaimRecallInput {
 export const CLAIM_RECALL_HEADING =
   'Claim recall (fuzzy memory — may be stale; verify before relying on it)';
 
-/** ~3–4k char budget per P-008 — bounded so recall never dominates the response. */
-export const CLAIM_RECALL_BUDGET_CHARS = 3500;
+/**
+ * Transport-safe total budget for a claim-time recall block.  The result door
+ * caps tool replies at roughly 1,500 tokens, and a claim may also carry its
+ * compact work-item echo plus concurrency/prior-work warnings.  Keeping the
+ * entire recall block to 1,200 characters preserves useful context without
+ * allowing the advisory to make a one-item write reply unparsable.
+ */
+export const CLAIM_RECALL_BUDGET_CHARS = 1200;
 
 /** Max summary-head chars folded into each per-item query (the query is a
  *  STATEMENT, not a document — launch-profile clamps to 300 total anyway). */
@@ -96,6 +102,37 @@ export function claimRecallQueryOf(it: ClaimRecallItem): string {
   if (!title) return '';
   const head = (it.summary ?? '').replace(/\s+/g, ' ').trim().slice(0, SUMMARY_HEAD_CHARS);
   return head ? `${title} — ${head}` : title;
+}
+
+/** Keep the merged recall block within the claim response budget.  The
+ * underlying launch-profile builder applies its budget per query, so a
+ * multi-item claim could otherwise merge several full query budgets into one
+ * reply.  Prefer complete memory lines; clip only the first oversized line so
+ * a useful hint survives even when the provider returns one long entry. */
+function boundClaimRecallBlock(block: string | null): string | null {
+  if (!block || block.length <= CLAIM_RECALL_BUDGET_CHARS) return block;
+
+  const lines = block.split('\n');
+  const heading = lines.find((line) => line.startsWith('## ')) ?? '## Claim recall';
+  let remaining = CLAIM_RECALL_BUDGET_CHARS - heading.length - 2;
+  if (remaining <= 1) return heading.slice(0, CLAIM_RECALL_BUDGET_CHARS);
+
+  const kept: string[] = [];
+  for (const line of lines) {
+    if (!line.startsWith('- ')) continue;
+    const separator = kept.length > 0 ? 1 : 0;
+    if (line.length + separator <= remaining) {
+      kept.push(line);
+      remaining -= line.length + separator;
+      continue;
+    }
+    if (kept.length === 0) {
+      kept.push(`${line.slice(0, Math.max(1, remaining - 1))}…`);
+    }
+    break;
+  }
+
+  return kept.length > 0 ? `${heading}\n\n${kept.join('\n')}` : null;
 }
 
 /** Local deadline race (same posture as _mcp-handler's raceDeadline — kept
@@ -150,7 +187,7 @@ export async function buildClaimRecallBlock(input: ClaimRecallInput): Promise<st
       claimedItemTitles: queries,
       planNow: input.planNow ?? null,
     });
-    return await withDeadline(
+    const block = await withDeadline(
       input.deadlineMs ?? DEFAULT_DEADLINE_MS,
       async () =>
         buildLaunchMemoryBlock({
@@ -166,6 +203,7 @@ export async function buildClaimRecallBlock(input: ClaimRecallInput): Promise<st
         }),
       () => null,
     );
+    return boundClaimRecallBlock(block);
   } catch {
     return null; // never-throws: recall must never fail a claim
   }
