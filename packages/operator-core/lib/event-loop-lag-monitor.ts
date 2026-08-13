@@ -134,6 +134,12 @@ export interface LagMonitorOpts {
    */
   heapSamplingOnHighRss?: boolean;
   /**
+   * RSS threshold in MB for the non-blocking sampling-profile dump. Defaults to
+   * `heapSnapshotRssMb`, preserving the existing shared trigger while allowing
+   * sampling-only deployments to tune it without enabling full snapshots.
+   */
+  heapSamplingRssMb?: number;
+  /**
    * When the loop is already saturated enough to trigger a CPU profile, also dump
    * the live heap-sampling profile even if RSS has not yet crossed the full
    * heap-snapshot threshold. This closes the "CPU-bound stall below 8 GB leaves no
@@ -247,6 +253,24 @@ export function shouldTriggerFullHeapSnapshot(
   if (state.snapshotting) return false; // single-flight
   if (opts.heapSnapshotSingleShot && state.fullSnapshotTaken) return false; // self-disarmed
   return now - state.lastSnapshotAt >= opts.minHeapSnapshotGapMs; // rate-limit
+}
+
+/**
+ * PURE gate: should THIS tick dump the already-running heap-sampling profile due
+ * to high RSS? This gate is deliberately independent of the full-snapshot gate:
+ * production normally keeps blocking V8 snapshots off while leaving sampling on,
+ * and that safe posture must still produce an allocation-site artifact.
+ */
+export function shouldTriggerHeapSamplingDump(
+  state: { samplingArmed: boolean; samplingDumping: boolean; lastSamplingDumpAt: number },
+  now: number,
+  rssMb: number,
+  opts: { heapSamplingOnHighRss: boolean; heapSamplingRssMb: number; minHeapSamplingDumpGapMs: number },
+): boolean {
+  if (!opts.heapSamplingOnHighRss) return false;
+  if (!state.samplingArmed || state.samplingDumping) return false;
+  if (!Number.isFinite(rssMb) || rssMb < opts.heapSamplingRssMb) return false;
+  return now - state.lastSamplingDumpAt >= opts.minHeapSamplingDumpGapMs;
 }
 
 /** The live loop-delay sample (current partial window), or null if no monitor. */
@@ -400,9 +424,11 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
     (heapSnapshotOnHighRss ||
       process.env.PAPERCUSP_HEAP_SNAPSHOT === '1' ||
       process.env.PAPERCUSP_HEAP_SNAPSHOT === 'true');
+  const heapSamplingRssMb = opts.heapSamplingRssMb ?? heapSnapshotRssMb;
   const minHeapSamplingDumpGapMs = opts.minHeapSamplingDumpGapMs ?? minProfileGapMs;
   const maxSamplingProfiles = opts.maxSamplingProfiles ?? 50;
   let samplingArmed = false;
+  let samplingArming = false;
   let samplingDumping = false;
   let lastSamplingDumpAt = 0;
 
@@ -474,9 +500,15 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
     }
     // WI-1088 round 2: arm the sampling heap profiler on the first tick (O(1)
     // overhead from here on; allocation stacks accumulate from ~boot).
-    if (heapSamplingOnHighRss && !samplingArmed) {
-      samplingArmed = true;
-      void ensureHeapSampling((line, detail) => log(line, detail ?? {}));
+    if (heapSamplingOnHighRss && !samplingArmed && !samplingArming) {
+      samplingArming = true;
+      void ensureHeapSampling((line, detail) => log(line, detail ?? {}))
+        .then((armed) => {
+          if (!stopped) samplingArmed = armed;
+        })
+        .finally(() => {
+          if (!stopped) samplingArming = false;
+        });
     }
     // WI-1088 follow-up: a host can be deeply CPU-bound while RSS stays below the
     // full heap-snapshot threshold, which leaves only a CPU profile and no live
@@ -503,6 +535,33 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
           if (!stopped) samplingDumping = false;
         });
     }
+    // Sampling-only deployments are the production default: full snapshots are
+    // intentionally disabled because they pause a multi-GB process, while the
+    // O(1) sampler stays armed. Evaluate RSS independently so this safe posture
+    // still emits the allocation-site evidence needed to diagnose a live leak.
+    const rssMb = process.memoryUsage().rss / 1_048_576;
+    const samplingNow = Date.now();
+    if (
+      shouldTriggerHeapSamplingDump(
+        { samplingArmed, samplingDumping, lastSamplingDumpAt },
+        samplingNow,
+        rssMb,
+        { heapSamplingOnHighRss, heapSamplingRssMb, minHeapSamplingDumpGapMs },
+      )
+    ) {
+      samplingDumping = true;
+      lastSamplingDumpAt = samplingNow;
+      void dumpHeapSamplingProfile({
+        dir: heapSnapshotDir,
+        rssMb,
+        maxProfiles: maxSamplingProfiles,
+        log: (line, detail) => log(line, detail ?? {}),
+      })
+        .catch(() => {})
+        .finally(() => {
+          if (!stopped) samplingDumping = false;
+        });
+    }
     // P-002: when RSS is high, capture a heap snapshot so the leak is identifiable.
     // Checked on each tick (cheap: one memoryUsage() call). Single-flight + rate-limited,
     // and (SPOF 1h, default) single-SHOT — at most once per process lifetime, so a
@@ -514,7 +573,6 @@ export function startEventLoopLagMonitor(opts: LagMonitorOpts = {}): LagMonitorH
         { heapSnapshotOnHighRss, heapSnapshotSingleShot, minHeapSnapshotGapMs },
       )
     ) {
-      const rssMb = process.memoryUsage().rss / 1_048_576;
       if (rssMb >= heapSnapshotRssMb) {
         snapshotting = true;
         fullSnapshotTaken = true;

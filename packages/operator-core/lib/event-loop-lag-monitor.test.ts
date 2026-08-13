@@ -23,6 +23,7 @@ import {
   loopPressure,
   setLagPublishTarget,
   shouldTriggerFullHeapSnapshot,
+  shouldTriggerHeapSamplingDump,
   startEventLoopLagMonitor,
   yieldToEventLoop,
   type LagMonitorHandle,
@@ -531,6 +532,32 @@ describe('P-002 heap-snapshot-on-high-RSS (bg-host-freeze-eventloop-stall-2026-0
     expect(snaps).toHaveLength(0);
   });
 
+  it('sampling-only mode dumps at high RSS while full snapshots remain off', async () => {
+    const dir = tmp('sampling-only-high-rss');
+    const log = vi.fn();
+    handle = startEventLoopLagMonitor({
+      intervalMs: 40,
+      warnP95Ms: 999_999,
+      heapSnapshotOnHighRss: false,
+      heapSamplingOnHighRss: true,
+      heapSamplingRssMb: 1,
+      minHeapSamplingDumpGapMs: 10_000,
+      heapSnapshotDir: dir,
+      log,
+    });
+
+    await vi.waitFor(
+      () => {
+        expect(log.mock.calls.some(([line]) => String(line).includes('profile dumped on high RSS'))).toBe(true);
+      },
+      { timeout: 5_000, interval: 20 },
+    );
+
+    const files = await fs.readdir(dir);
+    expect(files.filter((file) => file.endsWith('.heapprofile'))).toHaveLength(1);
+    expect(files.filter((file) => file.endsWith('.heapsnapshot'))).toHaveLength(0);
+  });
+
   it('heapSnapshotOnHighRss ON: captures when RSS crosses threshold, rate-limited', async () => {
     const dir = tmp('on');
     const log = vi.fn();
@@ -623,6 +650,26 @@ describe('shouldTriggerFullHeapSnapshot — SPOF 1h self-disarm gate (autonomous
         { ...opts, heapSnapshotSingleShot: false },
       ),
     ).toBe(true);
+  });
+});
+
+describe('shouldTriggerHeapSamplingDump — sampling-only high-RSS gate', () => {
+  const NOW = 1_000_000;
+  const state = { samplingArmed: true, samplingDumping: false, lastSamplingDumpAt: NOW - 20_000 };
+  const opts = { heapSamplingOnHighRss: true, heapSamplingRssMb: 1024, minHeapSamplingDumpGapMs: 10_000 };
+
+  it('triggers once sampling is armed, RSS is high, and the sampling cadence elapsed', () => {
+    expect(shouldTriggerHeapSamplingDump(state, NOW, 2048, opts)).toBe(true);
+  });
+
+  it('stays inert when sampling is disabled, not armed, already dumping, RSS is low, or the gap is live', () => {
+    expect(shouldTriggerHeapSamplingDump(state, NOW, 2048, { ...opts, heapSamplingOnHighRss: false })).toBe(false);
+    expect(shouldTriggerHeapSamplingDump({ ...state, samplingArmed: false }, NOW, 2048, opts)).toBe(false);
+    expect(shouldTriggerHeapSamplingDump({ ...state, samplingDumping: true }, NOW, 2048, opts)).toBe(false);
+    expect(shouldTriggerHeapSamplingDump(state, NOW, 1023, opts)).toBe(false);
+    expect(
+      shouldTriggerHeapSamplingDump({ ...state, lastSamplingDumpAt: NOW - 5_000 }, NOW, 2048, opts),
+    ).toBe(false);
   });
 });
 
