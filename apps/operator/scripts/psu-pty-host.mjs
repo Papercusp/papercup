@@ -2000,6 +2000,162 @@ export function killPtyProcessTree(child, signal = 'SIGKILL', kill = process.kil
   return killed;
 }
 
+/**
+ * A forkpty process-group kill is not a lifetime boundary for a descendant that
+ * called `setsid(2)`: it leaves the pgid but remains in the terminal's cgroup.
+ * That exact shape left a 70 GiB diagnostic Hono host running for 12 hours after
+ * its agent session ended (EI-20349478936631977).
+ *
+ * Reap only scopes that are structurally one-session containers. In particular,
+ * never sweep a `.service` cgroup: operator/checkpoint services host unrelated
+ * work and killing their other members would cross the session boundary. VTE
+ * allocates one `vte-spawn-*.scope` per terminal; console-spawn's headless and
+ * console scopes carry the same one-session invariant.
+ */
+const DEDICATED_PSU_SCOPE_RE = /^(?:vte-spawn-[^/]+|papercup-(?:headless|console)-[^/]+)\.scope$/;
+const CGROUP_ROOT = '/sys/fs/cgroup';
+
+function procParentPid(pid, readText) {
+  let stat;
+  try {
+    stat = String(readText(`/proc/${pid}/stat`));
+  } catch {
+    return null;
+  }
+  // comm is parenthesised and may itself contain spaces or `)`, so split after
+  // the LAST close-paren. The remaining fields begin with state, then ppid.
+  const commEnd = stat.lastIndexOf(')');
+  if (commEnd < 0) return null;
+  const fields = stat.slice(commEnd + 1).trim().split(/\s+/);
+  const ppid = Number(fields[1]);
+  return Number.isSafeInteger(ppid) && ppid > 0 ? ppid : null;
+}
+
+function protectedAncestorChain(selfPid, readText) {
+  const protectedPids = new Set();
+  let pid = selfPid;
+  for (let depth = 0; depth < 128; depth++) {
+    if (!(Number.isSafeInteger(pid) && pid > 0) || protectedPids.has(pid)) {
+      return { complete: false, protectedPids };
+    }
+    protectedPids.add(pid);
+    if (pid === 1) return { complete: true, protectedPids };
+    const parent = procParentPid(pid, readText);
+    if (!parent) return { complete: false, protectedPids };
+    pid = parent;
+  }
+  return { complete: false, protectedPids };
+}
+
+function dedicatedScopeDirForPid(pid, readText) {
+  let raw;
+  try {
+    raw = String(readText(`/proc/${pid}/cgroup`));
+  } catch {
+    return null;
+  }
+  const unified = raw.split('\n').find((line) => line.includes('::'));
+  const rel = unified?.slice(unified.indexOf('::') + 2).trim();
+  if (!rel || rel.includes('..')) return null;
+  const parts = rel.split('/').filter(Boolean);
+  const scopeIndex = parts.findLastIndex((part) => part.endsWith('.scope'));
+  if (scopeIndex < 0) return null;
+  const scopeLeaf = parts[scopeIndex];
+  if (!DEDICATED_PSU_SCOPE_RE.test(scopeLeaf)) return null;
+  return `${CGROUP_ROOT}/${parts.slice(0, scopeIndex + 1).join('/')}`;
+}
+
+function collectScopePids(scopeDir, readText, readDir) {
+  const pids = new Set();
+  const visit = (dir) => {
+    let raw;
+    try {
+      raw = String(readText(`${dir}/cgroup.procs`));
+    } catch {
+      return false;
+    }
+    for (const token of raw.split(/\s+/)) {
+      const pid = Number(token);
+      if (Number.isSafeInteger(pid) && pid > 1) pids.add(pid);
+    }
+    try {
+      for (const entry of readDir(dir)) {
+        if (entry?.isDirectory?.()) visit(`${dir}/${entry.name}`);
+      }
+    } catch {
+      // The root membership read is authoritative for the incident class. A
+      // disappearing or unreadable child cgroup is best-effort and retried by
+      // the next pass if it remains visible.
+    }
+    return true;
+  };
+  return visit(scopeDir) ? pids : null;
+}
+
+/**
+ * Kill residual members of THIS host's exact dedicated session scope while
+ * protecting the host and its full ancestor chain. The cgroup filesystem is the
+ * authority even when systemd reports the transient unit `inactive/dead`: unlike
+ * `systemctl stop`, membership remains readable until the last child exits.
+ *
+ * All IO is injectable so the inactive/dead-with-live-child regression is
+ * reproducible without putting a real process in the test runner's cgroup.
+ */
+export function reapDetachedPtyScopeResidue({
+  selfPid = process.pid,
+  platform = process.platform,
+  readText = (path) => readFileSync(path, 'utf8'),
+  readDir = (path) => readdirSync(path, { withFileTypes: true }),
+  kill = process.kill,
+  maxPasses = 3,
+} = {}) {
+  const empty = (skippedReason, scopeDir = null, protectedPids = []) => ({
+    scopeDir,
+    protectedPids,
+    killedPids: [],
+    failedPids: [],
+    skippedReason,
+  });
+  if (platform !== 'linux') return empty('non-linux');
+
+  const scopeDir = dedicatedScopeDirForPid(selfPid, readText);
+  if (!scopeDir) return empty('not-in-dedicated-session-scope');
+
+  const ancestors = protectedAncestorChain(selfPid, readText);
+  const protectedPids = [...ancestors.protectedPids].sort((a, b) => a - b);
+  // Fail toward preserving processes if we cannot identify every ancestor. The
+  // alternative could kill the terminal/shim that is still serialising exit.
+  if (!ancestors.complete) return empty('ancestor-chain-unreadable', scopeDir, protectedPids);
+
+  const attempted = new Set();
+  const killedPids = [];
+  const failedPids = [];
+  const passes = Math.max(1, Math.min(10, Number(maxPasses) || 1));
+  for (let pass = 0; pass < passes; pass++) {
+    const members = collectScopePids(scopeDir, readText, readDir);
+    if (!members) return empty('scope-membership-unreadable', scopeDir, protectedPids);
+    const targets = [...members]
+      .filter((pid) => !ancestors.protectedPids.has(pid) && !attempted.has(pid))
+      .sort((a, b) => a - b);
+    if (targets.length === 0) break;
+    for (const pid of targets) {
+      attempted.add(pid);
+      try {
+        kill(pid, 'SIGKILL');
+        killedPids.push(pid);
+      } catch {
+        failedPids.push(pid);
+      }
+    }
+  }
+  return { scopeDir, protectedPids, killedPids, failedPids, skippedReason: null };
+}
+
+/** Only a genuine end of an agent-launched interactive session owns the scope. */
+export function shouldReapDetachedPtyScopeResidue({ bridgeTty, launchedBy, reexecRequested } = {}) {
+  return Boolean(bridgeTty && String(launchedBy ?? '').trim() && !reexecRequested);
+}
+
 /** Status of the /mcp dialog row naming `name`: 'connected' | 'not-connected' |
  *  'unknown' | null (row doesn't name it). Negative markers are checked FIRST;
  *  note \bconnected\b does NOT match inside "disconnected" (no word boundary
@@ -2659,6 +2815,7 @@ export function injectTurn(sock, text) {
  * @param {object} [o.sessionPort]      { renderedHash } for the managed seed
  * @param {(proof:object)=>Promise<void>} [o.onKickoffPersisted] lifecycle acknowledgement
  * @param {object} [o.signalSource]      process-like on/off signal source (tests)
+ * @param {()=>object} [o.reapScopeResidue] exact-session-cgroup cleanup (tests)
  */
 export function hostThroughPty(o) {
   const {
@@ -2713,6 +2870,7 @@ export function hostThroughPty(o) {
     onKickoffPersisted = async () => {},
     nativePersistenceTimeoutMs = Number(env.PAPERCUSP_SESSION_PORT_PERSIST_TIMEOUT_MS) || 30_000,
     signalSource = process,
+    reapScopeResidue = reapDetachedPtyScopeResidue,
   } = o;
   if (kickoff && kickoffFile) throw new Error('plain kickoff and managed kickoff file are mutually exclusive');
   const managedKickoff = kickoffFile
@@ -4384,6 +4542,38 @@ export function hostThroughPty(o) {
       // A PTY leader can exit before its descendants. Reap the group while its
       // forkpty pgid is still unambiguous, then remove our signal listeners.
       killPtyProcessTree(child, 'SIGKILL');
+      // A descendant can call setsid() and escape that pgid while remaining in
+      // the VTE scope. On a GENUINE end of an agent-launched interactive session,
+      // reap the rest of that exact scope too. Reexec/recycle is continuation,
+      // and a human-started or headless/shared scope is never ours to sweep.
+      if (
+        shouldReapDetachedPtyScopeResidue({
+          bridgeTty,
+          launchedBy: env.PAPERCUSP_LAUNCHED_BY,
+          reexecRequested,
+        })
+      ) {
+        try {
+          const residue = reapScopeResidue();
+          if (residue?.killedPids?.length || residue?.failedPids?.length) {
+            process.stderr.write(
+              `psu-pty-host: session scope cleanup for ${ownerId} killed ` +
+                `${residue.killedPids?.length ?? 0} detached descendant(s)` +
+                `${residue.failedPids?.length ? `; ${residue.failedPids.length} kill(s) failed` : ''}\n`,
+            );
+          }
+        } catch (error) {
+          // Group cleanup already ran and the host must still finish its durable
+          // session-end record. Surface the residue failure without stranding exit.
+          try {
+            process.stderr.write(
+              `psu-pty-host: session scope cleanup failed for ${ownerId}: ${error?.message ?? error}\n`,
+            );
+          } catch {
+            /* terminal may already be closing */
+          }
+        }
+      }
       try {
         signalSource.off?.('SIGINT', killChild);
         signalSource.off?.('SIGTERM', killChild);

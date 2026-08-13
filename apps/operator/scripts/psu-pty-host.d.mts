@@ -808,6 +808,27 @@ export function startupOutputReady(agent: any, output: any): boolean;
  */
 export function signalNameFromCode(signal: any): string | null;
 export function killPtyProcessTree(child: any, signal?: string, kill?: (pid: number, signal?: string | number) => true): boolean;
+/** Kill non-ancestor members left in this host's dedicated session scope. */
+export function reapDetachedPtyScopeResidue(options?: {
+    selfPid?: number;
+    platform?: string;
+    readText?: (path: string) => string | Buffer;
+    readDir?: (path: string) => Array<{ name: string; isDirectory?: () => boolean }>;
+    kill?: (pid: number, signal: string) => unknown;
+    maxPasses?: number;
+}): {
+    scopeDir: string | null;
+    protectedPids: number[];
+    killedPids: number[];
+    failedPids: number[];
+    skippedReason: string | null;
+};
+/** Only a genuine end of an agent-launched interactive session owns the scope. */
+export function shouldReapDetachedPtyScopeResidue(options?: {
+    bridgeTty?: boolean;
+    launchedBy?: string | null;
+    reexecRequested?: unknown;
+}): boolean;
 /** Status of the /mcp dialog row naming `name`: 'connected' | 'not-connected' |
  *  'unknown' | null (row doesn't name it). Negative markers are checked FIRST;
  *  note \bconnected\b does NOT match inside "disconnected" (no word boundary
@@ -1126,6 +1147,7 @@ export function hostThroughPty(o: {
     sessionPort?: object | undefined;
     onKickoffPersisted?: ((proof: object) => Promise<void>) | undefined;
     signalSource?: object | undefined;
+    reapScopeResidue?: (() => object) | undefined;
 }): Promise<any>;
 /** WI-38292: the psu-pty-host version THIS PROCESS IS ACTUALLY RUNNING, frozen at
  *  module load. psu-launcher.mjs imports this module ONCE into a long-lived process

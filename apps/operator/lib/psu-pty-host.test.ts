@@ -32,6 +32,8 @@ import {
   makeCarryRearmController,
   makeSubmitVerifier,
   signalNameFromCode,
+  reapDetachedPtyScopeResidue,
+  shouldReapDetachedPtyScopeResidue,
   turnCoalesceKey,
   renderCoalescedTurn,
   makeTurnCoalescer,
@@ -2875,6 +2877,84 @@ describe('signalNameFromCode — the evidence a session was KILLED (WI-38054)', 
     // Returning null here would silently restore "looks like a clean exit" for any
     // platform signal this Node build cannot name. Keep the evidence, unnamed.
     expect(signalNameFromCode(9999)).toBe('SIG9999');
+  });
+});
+
+describe('detached session-scope cleanup (EI-20349478936631977)', () => {
+  const SCOPE =
+    '/sys/fs/cgroup/user.slice/user-1000.slice/user@1000.service/app.slice/' +
+    'app-org.gnome.Terminal.slice/vte-spawn-dead.scope';
+
+  it('reaps a setsid child retained by an inactive/dead VTE scope while preserving the host ancestry', () => {
+    // The systemd unit state is intentionally absent: the production defect was
+    // ActiveState=inactive/SubState=dead while cgroup.procs still held PID 200.
+    // Reading kernel membership rather than `systemctl stop` is the fix.
+    const files = new Map<string, string>([
+      ['/proc/100/cgroup', '0::/user.slice/user-1000.slice/user@1000.service/app.slice/app-org.gnome.Terminal.slice/vte-spawn-dead.scope\n'],
+      ['/proc/100/stat', '100 (psu-launcher) S 50 0 0 0'],
+      ['/proc/50/stat', '50 (psu-shim) S 1 0 0 0'],
+      ['/proc/1/stat', '1 (systemd) S 0 0 0 0'],
+      [`${SCOPE}/cgroup.procs`, '50\n100\n200\n'],
+    ]);
+    const killed: Array<[number, string]> = [];
+    const result = reapDetachedPtyScopeResidue({
+      selfPid: 100,
+      platform: 'linux',
+      readText: (path: string) => {
+        const value = files.get(path);
+        if (value === undefined) throw new Error(`missing fixture ${path}`);
+        return value;
+      },
+      readDir: () => [],
+      kill: (pid: number, signal: string) => {
+        killed.push([pid, signal]);
+        return true;
+      },
+    });
+
+    expect(killed).toEqual([[200, 'SIGKILL']]);
+    expect(result).toMatchObject({
+      scopeDir: SCOPE,
+      protectedPids: [1, 50, 100],
+      killedPids: [200],
+      failedPids: [],
+      skippedReason: null,
+    });
+  });
+
+  it('refuses to sweep a shared service cgroup', () => {
+    const killed: number[] = [];
+    const result = reapDetachedPtyScopeResidue({
+      selfPid: 100,
+      platform: 'linux',
+      readText: (path: string) => {
+        if (path === '/proc/100/cgroup') return '0::/user.slice/papercup-dev-api.service\n';
+        throw new Error(`unexpected read ${path}`);
+      },
+      readDir: () => [],
+      kill: (pid: number) => killed.push(pid),
+    });
+    expect(killed).toEqual([]);
+    expect(result.skippedReason).toBe('not-in-dedicated-session-scope');
+  });
+
+  it('runs only for a genuine end of an agent-launched interactive session', () => {
+    expect(
+      shouldReapDetachedPtyScopeResidue({
+        bridgeTty: true,
+        launchedBy: 'su-parent',
+        reexecRequested: null,
+      }),
+    ).toBe(true);
+    expect(shouldReapDetachedPtyScopeResidue({ bridgeTty: false, launchedBy: 'su-parent' })).toBe(false);
+    expect(shouldReapDetachedPtyScopeResidue({ bridgeTty: true, launchedBy: '' })).toBe(false);
+    expect(
+      shouldReapDetachedPtyScopeResidue({
+        bridgeTty: true,
+        launchedBy: 'su-parent',
+        reexecRequested: { code: 87 },
+      }),
+    ).toBe(false);
   });
 });
 
