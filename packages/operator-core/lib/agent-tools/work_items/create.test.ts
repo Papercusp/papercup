@@ -13,7 +13,9 @@ const fleetAdmission = vi.hoisted(() => ({
   admit: vi.fn(async () => fleetAdmission.decision),
   notify: vi.fn(),
 }));
-const modeState = vi.hoisted(() => ({ rows: [] as Array<{ mode: string }> }));
+const modeState = vi.hoisted(() => ({
+  rows: [] as Array<{ mode: string; setAt: string }>,
+}));
 const drainAdmission = vi.hoisted(() => ({
   blocked: false,
   gate: vi.fn(),
