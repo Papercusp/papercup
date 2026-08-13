@@ -353,15 +353,42 @@ export function isLegacyClose(authority: CompletionAuthorityFrom, isTerminal: bo
  * and is deliberately NOT applied here; that is a policy call with real burn-down blast
  * radius, not a coherence check.)
  */
-export function isSufficientEvidence(evidence: CompletionVerificationEvidence | null | undefined): boolean {
-  if (!evidence) return false;
-  if (!evidence.verifiedHow) return false;
-  if (!evidence.testsRun?.trim() && !evidence.testResult?.trim()) return false;
+export type InsufficientEvidenceReason =
+  | 'no-evidence'
+  | 'no-verified-how'
+  | 'no-test-run-or-result'
+  | 'added-tests-without-path';
+
+/**
+ * WHY the evidence falls short, or `undefined` when it does not.
+ *
+ * This exists because the remedy differs per reason, and a caller told the WRONG remedy is
+ * worse off than one told nothing: an agent refused for `added-tests-without-path` already
+ * HAS `verifiedHow` and `testsRun`, so the generic "supply verifiedHow plus testsRun"
+ * advice sends them to re-submit the exact fields they already sent — a refusal loop whose
+ * instructions can never resolve it.
+ *
+ * {@link isSufficientEvidence} delegates here so the verdict and its explanation are
+ * computed once. A separate "why" function that re-derived the conditions could disagree
+ * with the gate it explains, which is the failure this shape rules out structurally.
+ */
+export function insufficientEvidenceReason(
+  evidence: CompletionVerificationEvidence | null | undefined,
+): InsufficientEvidenceReason | undefined {
+  if (!evidence) return 'no-evidence';
+  if (!evidence.verifiedHow) return 'no-verified-how';
+  if (!evidence.testsRun?.trim() && !evidence.testResult?.trim()) return 'no-test-run-or-result';
   // A close that claims it added/changed tests must say WHERE. Note this reads the
   // declared paths only — whether they EXIST is a separate detector (complete.ts,
   // EI-20093150500083378); this one refuses the record that names none at all.
-  if (evidence.addedTests === true && !evidence.filesChanged?.some((f) => f.trim())) return false;
-  return true;
+  if (evidence.addedTests === true && !evidence.filesChanged?.some((f) => f.trim())) {
+    return 'added-tests-without-path';
+  }
+  return undefined;
+}
+
+export function isSufficientEvidence(evidence: CompletionVerificationEvidence | null | undefined): boolean {
+  return insufficientEvidenceReason(evidence) === undefined;
 }
 
 /**

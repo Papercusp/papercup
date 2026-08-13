@@ -176,6 +176,113 @@ describe('the evidence minimum for `committed`', () => {
   });
 });
 
+describe('`addedTests: true` makes a path necessary (EI-18685043434033870)', () => {
+  // The owner's complaint was a close that was "entirely true, but unverifiable until I
+  // asked for a path". A path is not required unconditionally — see the calibration note
+  // on isSufficientEvidence — but "I added tests" plus "no file" is refutable on the face
+  // of the record, so THAT pair is refused.
+
+  it('refuses a close claiming added tests while naming no file', () => {
+    expect(
+      isSufficientEvidence({ verifiedHow: 'unit', testResult: '9/9 green', addedTests: true }),
+    ).toBe(false);
+    expect(
+      authorityForCompletion({ verifiedHow: 'unit', testResult: '9/9 green', addedTests: true }),
+    ).toBe('proposed');
+  });
+
+  it('accepts the same close once it names one', () => {
+    expect(
+      isSufficientEvidence({
+        verifiedHow: 'unit',
+        testResult: '9/9 green',
+        addedTests: true,
+        filesChanged: ['packages/operator-core/lib/x.test.ts'],
+      }),
+    ).toBe(true);
+  });
+
+  it('treats an empty or whitespace-only path list as naming no file', () => {
+    // The refusal must key off a USABLE path, not the presence of an array — otherwise
+    // `filesChanged: []` satisfies it while carrying exactly as much information as
+    // omitting the field.
+    for (const filesChanged of [[], ['   '], ['', '  ']]) {
+      expect(
+        isSufficientEvidence({ verifiedHow: 'unit', testResult: '9/9 green', addedTests: true, filesChanged }),
+      ).toBe(false);
+    }
+  });
+
+  // CALIBRATION — these must stay TRUE, or the rule above is passing by over-refusing
+  // rather than by discriminating. Measured 2026-08-13 over 24h of papercusp closes:
+  // 1,437 of 2,236 `committed` closes carried no path, and 555 of those were
+  // `already-passing` — legitimately pathless. A rule that fails these would reclassify
+  // honest closes and drive fabricated paths (EI-20093150500083378: 8 of 12 declared
+  // paths did not exist).
+  it('leaves pathless closes alone when they do NOT claim to have added tests', () => {
+    expect(isSufficientEvidence({ verifiedHow: 'already-passing', testResult: '30/30 passed' })).toBe(true);
+    expect(isSufficientEvidence({ verifiedHow: 'integration', testsRun: 'npm run test:all' })).toBe(true);
+    // addedTests explicitly false, and addedTests absent, are both untouched by the rule.
+    expect(
+      isSufficientEvidence({ verifiedHow: 'unit', testResult: '9/9 green', addedTests: false }),
+    ).toBe(true);
+  });
+
+  it('names WHY it refused, so the caller can be given the right remedy', () => {
+    // The reason exists because the remedy differs. Telling an added-tests-without-path
+    // close to "supply verifiedHow plus testsRun" sends it to re-send what it already
+    // sent — a refusal loop its own instructions cannot clear.
+    expect(insufficientEvidenceReason(undefined)).toBe('no-evidence');
+    expect(insufficientEvidenceReason({ testsRun: 'ran it' })).toBe('no-verified-how');
+    expect(insufficientEvidenceReason({ verifiedHow: 'unit' })).toBe('no-test-run-or-result');
+    expect(
+      insufficientEvidenceReason({ verifiedHow: 'unit', testResult: '9/9 green', addedTests: true }),
+    ).toBe('added-tests-without-path');
+    expect(
+      insufficientEvidenceReason({ verifiedHow: 'unit', testResult: '9/9 green' }),
+    ).toBeUndefined();
+  });
+
+  it('reports the reason and the verdict from ONE computation, so they cannot disagree', () => {
+    // A "why" function that re-derived the conditions could drift from the gate it
+    // explains. This asserts the equivalence directly over a spread of shapes.
+    const shapes: Parameters<typeof isSufficientEvidence>[0][] = [
+      undefined,
+      null,
+      {},
+      { verifiedHow: 'unit' },
+      { testsRun: 'ran it' },
+      { verifiedHow: 'unit', testsRun: '   ' },
+      { verifiedHow: 'unit', testResult: '9/9 green' },
+      { verifiedHow: 'unit', testResult: '9/9 green', addedTests: true },
+      { verifiedHow: 'unit', testResult: '9/9 green', addedTests: true, filesChanged: [] },
+      { verifiedHow: 'unit', testResult: '9/9 green', addedTests: true, filesChanged: ['a.test.ts'] },
+      { verifiedHow: 'already-passing', testResult: '30/30 passed' },
+    ];
+    for (const s of shapes) {
+      expect(isSufficientEvidence(s)).toBe(insufficientEvidenceReason(s) === undefined);
+    }
+  });
+
+  // CONTROL — a deliberately-wrong implementation kept permanently in the test file, so
+  // the falsifiability of the rule is proven WITHOUT ever mutating the shared tree (a
+  // copy-out/in-tree mutation probe is racy here: git-sync sweeps the whole tree on a
+  // schedule and can commit the mutant).
+  it('a predicate ignoring addedTests would pass the accept cases and MISS the refusal', () => {
+    const withoutTheRule = (e: {
+      verifiedHow?: string;
+      testsRun?: string;
+      testResult?: string;
+      addedTests?: boolean;
+      filesChanged?: string[];
+    }): boolean => Boolean(e.verifiedHow && (e.testsRun?.trim() || e.testResult?.trim()));
+
+    const selfContradictory = { verifiedHow: 'unit', testResult: '9/9 green', addedTests: true };
+    expect(withoutTheRule(selfContradictory)).toBe(true); // the bug this rule removes
+    expect(isSufficientEvidence(selfContradictory)).toBe(false); // the real subject refuses it
+  });
+});
+
 describe('schema/type drift guard', () => {
   it('keeps the TS union and the migration CHECK constraint in agreement', () => {
     // The whole point of D-004 is that a rule kept in one place and restated in another
