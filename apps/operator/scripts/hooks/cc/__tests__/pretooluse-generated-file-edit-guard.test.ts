@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, writeFileSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, writeFileSync, rmSync, readFileSync, existsSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -213,5 +213,53 @@ describe('the real artifacts this protects in THIS repo', () => {
       (l) => l.length <= 300 && /\b(?:auto[-\s]?)?generated\b/i.test(l) && /\bdo\s*n(?:o|')?t\s+edit\b/i.test(l),
     );
     expect(runHook(edit(p)).denied).toBe(declares);
+  });
+});
+
+describe('the canonical internal-docs build mirror', () => {
+  const unmarkedMirrorArtifact = resolve(
+    REPO,
+    'apps/operator/public/internal/docs/agent-insights/.papercusp/memory/raw.md',
+  );
+
+  it.each(['Edit', 'mcp__papercusp-su__capability_edit'])(
+    'DENIES %s to a real mirror artifact even when the legacy artifact has no marker',
+    (tool) => {
+      expect(
+        existsSync(unmarkedMirrorArtifact),
+        'the stable read-only mirror fixture should exist — fix the path, do not weaken the test',
+      ).toBe(true);
+      const firstTenLines = readFileSync(unmarkedMirrorArtifact, 'utf8').split('\n').slice(0, 10);
+      expect(
+        firstTenLines.some(
+          (line) =>
+            line.length <= 300 &&
+            /\b(?:auto[-\s]?)?generated\b/i.test(line) &&
+            /\bdo\s*n(?:o|')?t\s+edit\b/i.test(line),
+        ),
+        'this fixture must stay unmarked so the test exercises path containment, not the marker rule',
+      ).toBe(false);
+
+      const { denied, reason } = runHook(edit(unmarkedMirrorArtifact, tool));
+      expect(denied).toBe(true);
+      expect(reason).toContain('apps/operator-docs/src/content/docs');
+      expect(reason).toContain('docs:author');
+    },
+  );
+
+  it('ALLOWS an outside file whose path merely contains the same directory words', () => {
+    const lookalike = join(dir, 'apps/operator/public/internal/docs/LOOKALIKE.md');
+    mkdirSync(dirname(lookalike), { recursive: true });
+    writeFileSync(lookalike, HAND_AUTHORED_HEAD, 'utf8');
+
+    expect(runHook(edit(lookalike)).denied).toBe(false);
+    expect(runHook(edit(lookalike, 'mcp__papercusp-su__capability_edit')).denied).toBe(false);
+  });
+
+  it('preserves the documented bypass and generator-tool exclusion for the mirror rule', () => {
+    expect(
+      runHook(edit(unmarkedMirrorArtifact), { PAPERCUSP_ALLOW_GENERATED_EDIT: '1' }).denied,
+    ).toBe(false);
+    expect(runHook(edit(unmarkedMirrorArtifact, 'Bash')).denied).toBe(false);
   });
 });

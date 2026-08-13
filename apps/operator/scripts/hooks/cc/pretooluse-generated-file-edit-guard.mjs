@@ -2,7 +2,8 @@
 // apps/operator/scripts/hooks/cc/pretooluse-generated-file-edit-guard.mjs
 //
 // PreToolUse (Edit|Write|MultiEdit) BLOCKING guard: refuse a hand-edit to a file
-// that DECLARES ITSELF GENERATED in its own header. Plan
+// that DECLARES ITSELF GENERATED in its own header, or to the canonical tracked
+// internal-docs build mirror whose older artifacts lack that declaration. Plan
 // claude-md-projection-from-pg-2026-08-10 P-006, extending the repo rule that
 // already governs prompts — "edit the source, never the rendered output".
 //
@@ -15,8 +16,8 @@
 //   CSS, the doc-site reference projections). Every one of them says so in its
 //   own first lines, and agents edit them anyway, because a banner is passive.
 //
-// THE KEY DESIGN CHOICE: the trigger is the ARTIFACT, not a path list.
-//   A hardcoded list of protected paths would be wrong in both directions here.
+// THE KEY DESIGN CHOICE: the general trigger is the ARTIFACT, not a path list.
+//   A broad hardcoded list of protected paths would be wrong in both directions.
 //   Before the cutover CLAUDE.md is still HAND-AUTHORED and edited several times
 //   an hour by this fleet — a path-keyed guard would have to be armed on a flag
 //   day, in the right order, and would block legitimate edits if it landed early
@@ -26,6 +27,13 @@
 //   it stops the instant a file legitimately goes back to being hand-authored.
 //   There is no flag day and no ordering hazard, and a NEW generated file is
 //   protected for free the moment it carries a banner. Files opt IN.
+//
+//   There is one deliberately narrower exception: every existing file beneath
+//   `apps/operator/public/internal/docs` is a git-tracked BUILD MIRROR, but most
+//   predate the marker convention. The canonical source lives under
+//   `apps/operator-docs/src/content/docs` or in the docs datastore (`docs:author`).
+//   That tree is protected by realpath containment, not a lexical substring, so
+//   an unrelated temp path containing the same words is never denied.
 //
 // WHAT COUNTS AS THE MARKER (measured, not assumed)
 //   A line within the first 10 lines / 4096 bytes that contains BOTH a
@@ -90,8 +98,9 @@
 //   - Scope: Edit / Write / MultiEdit. Write IS included (unlike the nul-byte
 //     guard, whose bug is specific to find/replace): a full-file overwrite of a
 //     generated artifact by hand is precisely the thing being prevented.
-//   - Trigger: the file ALREADY ON DISK carries the marker. A Write CREATING a
-//     new file is always allowed — there is nothing generated to protect yet.
+//   - Trigger: the file ALREADY ON DISK carries the marker, or resolves beneath
+//     the canonical internal-docs build mirror. A Write CREATING a new file is
+//     always allowed — realpath resolution fails open until a target exists.
 //   - On a hit: permissionDecision "deny" (JSON, exit 0) — the same contract as
 //     the secrets-guard / content-lint / nul-byte-edit-guard siblings.
 //   - FAIL-OPEN on any internal error (missing file, read error, bad JSON, stdin
@@ -100,6 +109,7 @@
 //     on failure; mirrors pretooluse-secrets-guard.mjs's own flag.
 //
 import { readFileSync, realpathSync } from 'node:fs';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import process from 'node:process';
 
@@ -114,6 +124,7 @@ const GENERATED = /\b(?:auto[-\s]?)?generated\b/i;
 const DO_NOT_EDIT = /\bdo\s*n(?:o|')?t\s+edit\b/i;
 
 const BYPASS_ENV = 'PAPERCUSP_ALLOW_GENERATED_EDIT';
+const INTERNAL_DOCS_MIRROR_REL = join('apps', 'operator', 'public', 'internal', 'docs');
 
 /**
  * Run only when executed as the hook, never when imported (a test importing the
@@ -146,9 +157,11 @@ async function main() {
     if (!isFileWritingTool(tool)) return done();
     const filePath = (hook.tool_input || {}).file_path || '';
     if (!filePath) return done();
+    if (bypassed()) return done();
 
+    if (isInternalDocsMirror(filePath)) return denyInternalDocsMirror(filePath, tool);
     const marker = findGeneratedMarker(readHead(filePath));
-    if (marker && !bypassed()) return deny(filePath, marker, tool);
+    if (marker) return denyGenerated(filePath, marker, tool);
   } catch {
     // fail-open: never wedge edits on a hook bug
   }
@@ -219,7 +232,26 @@ export function findGeneratedMarker(headLines) {
   return null;
 }
 
-function deny(filePath, marker, tool) {
+/**
+ * True only when an existing target resolves inside this checkout's canonical
+ * internal-docs build mirror. Both roots and the target are realpath'd so a
+ * symlink or a lookalike path cannot turn lexical path words into authority.
+ * Any resolution failure is an allow: this hook must remain fail-open.
+ */
+export function isInternalDocsMirror(filePath) {
+  try {
+    const hookFile = realpathSync(fileURLToPath(import.meta.url));
+    const repoRoot = realpathSync(resolve(dirname(hookFile), '..', '..', '..', '..', '..'));
+    const target = realpathSync(filePath);
+    const rel = relative(repoRoot, target);
+    if (!rel || isAbsolute(rel) || rel === '..' || rel.startsWith(`..${sep}`)) return false;
+    return rel === INTERNAL_DOCS_MIRROR_REL || rel.startsWith(`${INTERNAL_DOCS_MIRROR_REL}${sep}`);
+  } catch {
+    return false;
+  }
+}
+
+function denyGenerated(filePath, marker, tool) {
   const base = filePath.split(/[/\\]/).pop();
   const reason =
     `🛑 generated-file-edit-guard (P-006): ${base} declares itself GENERATED, so this ${tool} ` +
@@ -232,6 +264,26 @@ function deny(filePath, marker, tool) {
     `documented escape hatches are: write it via \`capability:bash\` (\`node -e\`, a heredoc, ` +
     `\`sed -i\`) — PreToolUse does not see those — or relaunch with ${BYPASS_ENV}=1 to downgrade ` +
     `this guard to a warning for the session. Prefer fixing the generator.`;
+  deny(reason);
+}
+
+function denyInternalDocsMirror(filePath, tool) {
+  const base = filePath.split(/[/\\]/).pop();
+  const reason =
+    `🛑 generated-file-edit-guard (EI-18745869078408184): ${base} is inside ` +
+    `\`apps/operator/public/internal/docs\`, the git-tracked internal-docs BUILD MIRROR. ` +
+    `This ${tool} would change rendered output rather than its canonical source, and the next ` +
+    `docs build can erase it.\n\n` +
+    `For agent-insights and other datastore-authored internal docs, use \`docs:author\`. For ` +
+    `filesystem-authored docs, edit \`apps/operator-docs/src/content/docs\` and rebuild the ` +
+    `internal docs site. Never hand-edit the mirror.\n\n` +
+    `If a broken generator is blocking the fleet and you genuinely must repair an artifact, ` +
+    `the documented escape hatches remain \`capability:bash\` or a session launched with ` +
+    `${BYPASS_ENV}=1. Prefer fixing the generator.`;
+  deny(reason);
+}
+
+function deny(reason) {
   try {
     process.stdout.write(
       JSON.stringify({
