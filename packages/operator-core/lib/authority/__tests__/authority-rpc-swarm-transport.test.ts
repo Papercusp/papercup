@@ -355,13 +355,30 @@ describe('makeAuthorityRpcSwarmTransport — EI-322 signing', () => {
         devicePubkey: pubkeyBase64,
         sign: async (bytes: Buffer) => signAuthorityRpcWithPrivateKeyDer(privateKeyDer, bytes),
       },
+      // This case never delivers a `res`, so the rpc below is GUARANTEED to reject on timeout.
+      // Keep that timeout short and settle it before the case ends (see the rejection binding
+      // below) — the default is 5000ms, and the previous `void t.rpc(...)` left both a live
+      // 5s timer and an unhandled rejection behind. Under `isolate: true` the worker died long
+      // before the timer fired, so it was invisible; under the P-003 pure lane's
+      // `isolate: false` the fork survives, the timer fires ~5s later, and the rejection lands
+      // as an UNHANDLED ERROR attributed to whatever unrelated file happens to be running then.
+      // That was the single unhandled error in 4 of 5 pure-lane runs, and it is the failure mode
+      // the gate cannot absorb: it fails the RUN while naming ZERO failing files, leaving the
+      // isolation/confirm rescue nothing to re-run (plan gate-suite-speedup-2026-08-12, D-037).
+      timeoutMs: 25,
     });
     f.connect();
     const ch = p.created[0];
     ch.pair();
     ch.deliver({ t: 'hello', device_pubkey: REMOTE });
     const payload = { path: 'apps/x.ts', holderPubkey: pubkeyBase64 };
-    void t.rpc(peer(REMOTE), { harnessSlug: 'papercup', kind: 'lock.acquire', payload });
+    const rpc = t.rpc(peer(REMOTE), { harnessSlug: 'papercup', kind: 'lock.acquire', payload });
+    // Bind the handler AT CREATION, not after the awaits below — an unhandled rejection is
+    // reported the moment it happens, so attaching later is a race, not a fix.
+    const rejection = rpc.then(
+      () => null,
+      (e: unknown) => e,
+    );
     // Let the async signer resolve + the req flush.
     await new Promise((r) => setTimeout(r, 0));
     const req = ch.sent.find((s) => s.t === 'req');
@@ -371,5 +388,8 @@ describe('makeAuthorityRpcSwarmTransport — EI-322 signing', () => {
     expect(
       verifyAuthorityRpc({ harnessSlug: 'papercup', kind: 'lock.acquire', payload }, req.auth),
     ).toBe(true);
+    // Settle the rpc inside the case that created it, so nothing outlives this file. Asserting
+    // the shape as well keeps this a real check rather than a swallow.
+    expect(await rejection).toBeInstanceOf(PeerUnreachableError);
   });
 });

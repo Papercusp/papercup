@@ -437,6 +437,29 @@ function selfTest() {
       text: "const relayed = JSON.parse(raw).udxRelayed ?? false;\n",
     },
     {
+      // The HYPHEN convention (`node --test src/**/*.node-test.ts` in packages/cli). The
+      // original `\.(test|spec)\.ts$` matched only the dot form, so these read as production.
+      name: 'node --test file (hyphen separator) → never flagged, same as a .test.ts',
+      expect: 0,
+      path: 'libs/papercusp/packages/cli/src/x.node-test.ts',
+      text: "const parsed = JSON.parse(raw);\nconst grants = parsed.grants ?? {};\n",
+    },
+    {
+      name: 'RETIRED source → never flagged (unfixable by convention, so it can never burn down)',
+      expect: 0,
+      path: 'libs/papercusp/_retired/apps-web/app/api/x.ts',
+      text: "const obj = JSON.parse(raw);\nconst cost = obj.total_cost_usd ?? 0;\n",
+    },
+    {
+      // Calibration for the two exclusions above: the SAME text at a LIVE path must still
+      // fire. Without this, deleting either predicate's subject and leaving it always-true
+      // would pass the suite while blinding the guard on the whole tree.
+      name: 'CALIBRATION: the exclusions above are path-only — identical text at a live path IS flagged',
+      expect: 1,
+      path: 'libs/papercusp/packages/cli/src/x.ts',
+      text: "const obj = JSON.parse(raw);\nconst cost = obj.total_cost_usd ?? 0;\n",
+    },
+    {
       name: 'a comment line matching the shape → not flagged',
       expect: 0,
       path: 'packages/operator-core/lib/x/j.ts',
