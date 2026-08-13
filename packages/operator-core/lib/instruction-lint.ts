@@ -30,6 +30,8 @@ export interface InstructionLintReport {
 
 export const INSTRUCTION_PRECEDENCE_SCHEMA = 'instruction-precedence-v1' as const;
 
+export type InstructionModeResolution = 'launch' | 'registry' | 'unavailable';
+
 export interface InstructionRuntimeContext {
   source: 'bootstrap-su' | 'coord:orient' | 'control-anchor';
   ownerId?: string | null;
@@ -37,7 +39,7 @@ export interface InstructionRuntimeContext {
   /** Where the active mode list came from. A failed live read is explicit so
    * the trace cannot silently turn an unknown authority state into the generic
    * confirm-first posture. */
-  modeResolution?: 'launch' | 'registry' | 'unavailable';
+  modeResolution?: InstructionModeResolution;
   route?: { kind: 'self' } | { kind: 'mug' } | { kind: 'fleet'; fleet: string; role?: string | null };
   scope?: {
     workspace?: string | null;
