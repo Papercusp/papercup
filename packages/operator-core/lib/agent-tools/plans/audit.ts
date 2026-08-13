@@ -119,7 +119,7 @@ export default defineTool({
   modality: ['text'],
   args: argsSchema,
   async handler(args, ctx) {
-    const sctx = harnessScopedCtx(args.harness, ctx as { harnessSlug?: string | null });
+    const sctx = harnessScopedCtx(args.harness, ctx);
     const harnessSlug = resolveCtxHarnessSlug(sctx);
 
     // The plan's real items. An empty read is ambiguous between "no such plan" and "the
@@ -237,7 +237,11 @@ export default defineTool({
     const audit = await recordPlanAudit({
       planSlug: args.slug,
       harnessSlug: harnessSlug ?? '',
-      createdBy: resolveAgentIdentity(ctx).ownerId,
+      // Cast at the call, exactly as the sibling set-plan-status.ts does. Passing `ctx`
+      // raw makes TS infer the handler's ctx parameter as ResolveIdentityCtx, which no
+      // defineTool overload supplies — the whole call then fails overload resolution with
+      // a TS2769 that points at `handler` and says nothing about identity.
+      createdBy: resolveAgentIdentity(ctx as Parameters<typeof resolveAgentIdentity>[0]).ownerId,
       auditedSha: args.auditedSha ?? resolveHeadSha(),
       items: entries,
       findings: args.findings ?? [],
