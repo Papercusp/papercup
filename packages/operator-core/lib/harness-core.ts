@@ -545,11 +545,37 @@ export function rowToFeature(r: any): any {
   };
 }
 
-export async function parseFeatures(project: ProjectEntry): Promise<any[]> {
+export type ParseFeaturesProjection = 'full' | 'stream';
+
+export type ParseFeaturesOptions = {
+  /**
+   * `stream` keeps the legacy Run-view contract while skipping heavyweight
+   * detail columns (notably notes and metadata) that the stream drops before
+   * serialization. The default remains `full` for existing callers.
+   */
+  projection?: ParseFeaturesProjection;
+};
+
+export const STREAM_FEATURE_SELECT_COLUMNS = [
+  'feature_id',
+  'title',
+  'summary',
+  'status',
+  'attempts',
+  'claims',
+  'project_id',
+  'tags',
+].join(', ');
+
+export async function parseFeatures(
+  project: ProjectEntry,
+  opts: ParseFeaturesOptions = {},
+): Promise<any[]> {
   try {
     const c = getLegacyClient(project.slug);
+    const columns = opts.projection === 'stream' ? STREAM_FEATURE_SELECT_COLUMNS : '*';
     const rows = await c.prepare(`
-      SELECT * FROM harness_features WHERE harness_slug = ? ORDER BY feature_id
+      SELECT ${columns} FROM harness_features WHERE harness_slug = ? ORDER BY feature_id
     `).all(project.slug) as any[];
     return rows.map(rowToFeature);
   } catch {
@@ -689,4 +715,3 @@ export async function getHarnessStatusFull(
     discord_channel_url,
   };
 }
-

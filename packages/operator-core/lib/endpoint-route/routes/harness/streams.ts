@@ -700,7 +700,9 @@ const slugStream = defineTool({
 
         const pushFeatures = async () => {
           if (sink.closed) return;
-          const feats = await parseFeatures(project);
+          // This legacy stream only publishes the Run-view projection below;
+          // do not materialize notes/metadata/provenance for every 3s poll.
+          const feats = await parseFeatures(project, { projection: 'stream' });
           const streamFeatures = featuresForStreamEvent(feats);
           const state = JSON.stringify(featureStateForStream(feats));
           if (state !== lastFeatureState) {
