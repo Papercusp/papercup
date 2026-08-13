@@ -22,6 +22,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 vi.mock('../../sync/hyperbee/in-process-status', () => ({ getInProcessSubstrateStatus: vi.fn() }));
+vi.mock('../../sync/hyperbee/boot-all', () => ({ getBootedHarness: vi.fn() }));
 vi.mock('../../orchestrator/load-claim-attempts', () => ({ loadClaimAttemptStats: vi.fn() }));
 vi.mock('../../sync/hyperbee/substrate-booted-handles-pg', () => ({ getPgBootedHandlesSnapshotFallback: vi.fn() }));
 vi.mock('@papercusp/db-org', async (orig) => ({
@@ -30,19 +31,22 @@ vi.mock('@papercusp/db-org', async (orig) => ({
 }));
 
 import { getInProcessSubstrateStatus } from '../../sync/hyperbee/in-process-status';
+import { getBootedHarness } from '../../sync/hyperbee/boot-all';
 import { loadClaimAttemptStats } from '../../orchestrator/load-claim-attempts';
 import { getPgBootedHandlesSnapshotFallback } from '../../sync/hyperbee/substrate-booted-handles-pg';
 const statusM = vi.mocked(getInProcessSubstrateStatus);
+const bootedM = vi.mocked(getBootedHarness);
 const statsM = vi.mocked(loadClaimAttemptStats);
 const pgM = vi.mocked(getPgBootedHandlesSnapshotFallback);
 const tool = (await import('./dogfood_substrate_status')).default;
 
 type Out = { content: { text: string }[] };
 const body = (o: Out) => JSON.parse(o.content[0]!.text);
-const run = () => tool.handler({} as never, {} as never) as Promise<Out>;
+const run = (args: Record<string, unknown> = {}) => tool.handler(args as never, {} as never) as Promise<Out>;
 
 beforeEach(() => {
   vi.clearAllMocks();
+  bootedM.mockReturnValue(null);
   pgM.mockResolvedValue(null); // default: no cross-service row (the common case)
 });
 
@@ -78,6 +82,34 @@ describe('dev:dogfood_substrate_status handler', () => {
     statsM.mockRejectedValue(new Error('pg down'));
     const b = body(await run());
     expect(b.probe).toMatchObject({ total: 0, won: 0, lost: 0, error: 0 });
+  });
+
+  it('reads one exact own-log index through the already-booted handle', async () => {
+    statusM.mockReturnValue({ harnesses: [], summary: {}, reachedSubstrateOwner: true } as never);
+    bootedM.mockReturnValue({
+      ownLog: {
+        keyHex: 'e'.repeat(64),
+        length: 63212,
+        get: vi.fn(async () => ({
+          type: 'put',
+          table: 'coord_event_log',
+          hbKey: '1007851',
+          epoch: 84,
+        })),
+      },
+    } as never);
+
+    const b = body(await run({
+      ownLogProbe: { workspaceId: 'papercusp-workspace', harnessSlug: 'papercusp', index: 62714 },
+    }));
+
+    expect(bootedM).toHaveBeenCalledWith('papercusp-workspace', 'papercusp');
+    expect(b.ownLogProbe).toMatchObject({
+      available: true,
+      index: 62714,
+      length: 63212,
+      op: { table: 'coord_event_log', hbKey: '1007851', epoch: 84 },
+    });
   });
 });
 

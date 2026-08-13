@@ -14,6 +14,7 @@
 import { z } from 'zod';
 import { defineTool } from '@papercusp/agent-mcp';
 import { getInProcessSubstrateStatus } from '../../sync/hyperbee/in-process-status';
+import { getBootedHarness } from '../../sync/hyperbee/boot-all';
 import { getCachedRemoteBootedHandles } from '../../sync/hyperbee/cluster-booted-handles-sync';
 import { getPgBootedHandlesSnapshotFallback } from '../../sync/hyperbee/substrate-booted-handles-pg';
 import { loadClaimAttemptStats } from '../../orchestrator/load-claim-attempts';
@@ -43,6 +44,57 @@ import { getOrgPg } from '@papercusp/db-org';
  * and `default`), so a slug-only lookup would silently mix tenants.
  */
 const ZERO_DRAIN: SubstrateDrainStat = { undrainedCount: 0, oldestUndrainedAgeMs: null };
+
+const ownLogProbeSchema = z.object({
+  workspaceId: z.string().min(1),
+  harnessSlug: z.string().min(1),
+  index: z.number().int().nonnegative(),
+});
+
+type OwnLogProbe = z.infer<typeof ownLogProbeSchema>;
+
+/**
+ * Attach one exact indexed own-log read to the existing status diagnostic.
+ * The in-process handle reads its already-open Corestore; a relocated handle's
+ * `OwnLog.get` routes over the bounded `substrate:getOwnLogOp` RPC. Either way,
+ * this never opens a second Corestore or joins transport just to inspect a row.
+ */
+async function attachOwnLogProbe<T extends object>(status: T, probe?: OwnLogProbe): Promise<T | (T & { ownLogProbe: unknown })> {
+  if (!probe) return status;
+  const handle = getBootedHarness(probe.workspaceId, probe.harnessSlug);
+  if (!handle) {
+    return {
+      ...status,
+      ownLogProbe: {
+        ...probe,
+        available: false,
+        reason: 'booted harness handle is not available in this process',
+      },
+    };
+  }
+  try {
+    const op = await handle.ownLog.get(probe.index);
+    return {
+      ...status,
+      ownLogProbe: {
+        ...probe,
+        available: true,
+        keyHex: handle.ownLog.keyHex,
+        length: handle.ownLog.length,
+        op,
+      },
+    };
+  } catch (error) {
+    return {
+      ...status,
+      ownLogProbe: {
+        ...probe,
+        available: false,
+        reason: error instanceof Error ? error.message : String(error),
+      },
+    };
+  }
+}
 
 /**
  * EI-19327550671915579: when the cheap sync path (this process's own boot map,
@@ -76,8 +128,8 @@ export default defineTool({
   },
   requirePrincipal: false,
   agentRoles: ['operator', 'architect', 'debugger', 'cup'],
-  args: z.object({}),
-  async handler() {
+  args: z.object({ ownLogProbe: ownLogProbeSchema.optional() }),
+  async handler(args) {
     const { sql } = getOrgPg();
     const runQuery = async <T,>(
       query: string,
@@ -150,12 +202,14 @@ export default defineTool({
           resolveRemoteBootedHandles,
         }),
       );
+      const output = await attachOwnLogProbe(refreshed, args.ownLogProbe);
       return {
-        content: [{ type: 'text', text: JSON.stringify(refreshed) }],
+        content: [{ type: 'text', text: JSON.stringify(output) }],
       };
     }
+    const output = await attachOwnLogProbe(status, args.ownLogProbe);
     return {
-      content: [{ type: 'text', text: JSON.stringify(status) }],
+      content: [{ type: 'text', text: JSON.stringify(output) }],
     };
   },
 });

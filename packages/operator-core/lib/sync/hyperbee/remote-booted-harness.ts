@@ -63,14 +63,21 @@ interface AppendOpResponse {
   hlc: string | null;
 }
 
+interface GetOwnLogOpResponse {
+  index: number;
+  length: number;
+  keyHex: string;
+  op: PeerLogOp | null;
+}
+
 /** A mutable own-log length, shared by the handle's `append` (LWW seam) and the
  *  own-log shim's `append` (raw claim path) so both report one length. */
 interface LengthHolder {
   length: number;
 }
 
-/** Own-log shim backed by IPC. Exposes the relocated own-log's key + length and
- *  routes raw appends; reads are sidecar-internal. */
+/** Own-log shim backed by IPC. Exposes the relocated own-log's key + length,
+ *  routes raw appends, and forwards bounded indexed reads to the sidecar. */
 class RemoteOwnLog implements OwnLog {
   constructor(
     private readonly storeId: string,
@@ -92,11 +99,13 @@ class RemoteOwnLog implements OwnLog {
     for (const op of ops) await this.append(op);
   }
 
-  async get(_i: number): Promise<PeerLogOp | null> {
-    throw new Error(
-      'RemoteOwnLog.get is not available on the main process — own-log reads are ' +
-        'sidecar-internal (the store lives in the sidecar after relocation).',
-    );
+  async get(i: number): Promise<PeerLogOp | null> {
+    const r = await this.client.call<GetOwnLogOpResponse>('substrate:getOwnLogOp', {
+      storeId: this.storeId,
+      index: i,
+    });
+    if (typeof r?.length === 'number') this.lengthHolder.length = r.length;
+    return r?.op ?? null;
   }
 
   get length(): number {

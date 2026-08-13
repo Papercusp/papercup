@@ -6,6 +6,7 @@
  * IPC methods, using an injected fake RPC client (no sidecar / no socket):
  *   - append(op)        → substrate:appendOp (HLC-stamped in the sidecar)
  *   - ownLog.append(op) → substrate:appendOp { raw:true }
+ *   - ownLog.get(index) → substrate:getOwnLogOp (bounded diagnostic read)
  *   - ownLog.keyHex     → the boot-provided key (data, no IPC)
  *   - mergeNow/revoke/rekey/close → their IPC methods
  *   - store/onAnnounce  → throw (sidecar-internal); swarm null; admitted empty
@@ -91,6 +92,31 @@ describe('RemoteBootedHarnessHandle (P-001)', () => {
     expect(calls[0].method).toBe('substrate:appendOp');
     expect(calls[0].params).toMatchObject({ storeId: 'store-1', op: peerOp, raw: true });
     expect(h.ownLog.length).toBe(1);
+  });
+
+  it('ownLog.get(index) routes to substrate:getOwnLogOp + refreshes tracked length', async () => {
+    const peerOp: PeerLogOp = {
+      type: 'put',
+      table: 'coord_event_log',
+      hbKey: '1007851',
+      value: { id: '1007851' },
+      ts: 5,
+      schema_version: 1,
+      author_pubkey: 'dev',
+      epoch: 84,
+    };
+    const { client, calls } = makeClient((m) =>
+      m === 'substrate:getOwnLogOp'
+        ? { index: 62714, length: 63212, keyHex: KEY, op: peerOp }
+        : undefined,
+    );
+    const h = makeHandle(client, 7);
+    await expect(h.ownLog.get(62714)).resolves.toEqual(peerOp);
+    expect(calls[0]).toEqual({
+      method: 'substrate:getOwnLogOp',
+      params: { storeId: 'store-1', index: 62714 },
+    });
+    expect(h.ownLog.length).toBe(63212);
   });
 
   it('mergeNow routes to substrate:triggerMergeNow and returns mergedOps', async () => {
