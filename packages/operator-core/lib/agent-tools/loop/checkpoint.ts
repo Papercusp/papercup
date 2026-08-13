@@ -13,7 +13,7 @@
  * (P-002 delivered the substrate; this writes it).
  *
  * SHAPE (the shared D-004 contract): pass the structured fields { did, left, insight,
- * next } (rendered to renderCarryNote's canonical `## Heading` template a cold successor
+ * next } (with `goal` accepted as an alias for `next`; rendered to renderCarryNote's canonical `## Heading` template a cold successor
  * knows how to read) OR a raw { note } string. Replace-on-write; a blank/null note (or
  * all-blank fields) CLEARS. Journaling ON (the loop trajectory ring, like the Queen) —
  * recent wakes' notes survive a clear so a cold successor still sees the trajectory.
@@ -140,7 +140,7 @@ export default defineTool({
   profile: 'engineer',
   description:
     "Write or clear the su AUTO loop carry-note read by a COLD wake after reset/recycle; " +
-    'the live transcript does not survive. Pass { did, left, insight, next } or raw { note }; ' +
+    'the live transcript does not survive. Pass { did, left, insight, next } (or goal as an alias for next) or raw { note }; ' +
     'blank/null clears. The note is keyed by ownerId. Supplying { walls } or { checks } uses ' +
     "rowsMode:'merge' by default (supplied rows add/update without dropping unmentioned carried rows); use " +
     "rowsMode:'replace' to retire omitted rows, and use an empty list with replace to clear that row set. Returns { ok, harness, ownerId, cleared, length, verified, " +
@@ -204,6 +204,13 @@ export default defineTool({
         .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
         .optional()
         .describe('The single concrete next action for the next wake.'),
+      goal: z
+        .string()
+        .max(CARRY_TEXT_SOFT_CAP * CARRY_CAP_HARD_MULTIPLE)
+        .optional()
+        .describe(
+          'Compatibility alias for `next`, for callers mirroring loop:arm { goal }. Explicit `next` wins when both are supplied.',
+        ),
       // WI-7264: walls deliberately get the cap RELAXATION but NOT the `{status,
       // evidence}` shape coercion that `checks` gets. A wall has no `verified` field,
       // so there is no lossless place to put an `evidence` string — coercing it would
@@ -328,9 +335,13 @@ export default defineTool({
         a.left !== undefined ||
         a.insight !== undefined ||
         a.next !== undefined ||
+        a.goal !== undefined ||
         a.walls !== undefined ||
         a.checks !== undefined,
-      { message: 'pass { did, left, insight, next } (any), { note }, { walls }, or { checks } — nothing to write' },
+      {
+        message:
+          'pass { did, left, insight, next } (any; goal aliases next), { note }, { walls }, or { checks } — nothing to write',
+      },
     ),
   async handler(args, ctx) {
     const identity = resolveAgentIdentity(ctx);
@@ -389,7 +400,7 @@ export default defineTool({
         : null;
     const fields = rescued
       ? { did: rescued.did, left: rescued.left, insight: rescued.insight, next: rescued.next }
-      : { did: args.did, left: args.left, insight: args.insight, next: args.next };
+      : { did: args.did, left: args.left, insight: args.insight, next: args.next ?? args.goal };
 
     // WI-7264: enforce the SOFT caps by truncation, here, after the schema's backstop
     // let the call through. The cap's job is to bound what re-injects into every future

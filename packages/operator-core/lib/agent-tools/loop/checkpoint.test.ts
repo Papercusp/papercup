@@ -161,6 +161,21 @@ describe('loop:checkpoint — the loop carry-note producer', () => {
     );
   });
 
+  it('accepts goal as a compatibility alias for next, while explicit next wins', async () => {
+    await call({ did: 'made progress', goal: 'run the focused suite' });
+    expect(setLoopCarryNote.mock.calls[0]?.[1]).toBe(
+      'RENDERED:' +
+        JSON.stringify({ did: 'made progress', left: undefined, insight: undefined, next: 'run the focused suite' }),
+    );
+
+    setLoopCarryNote.mockClear();
+    await call({ goal: 'stale alias', next: 'authoritative next action' });
+    expect(setLoopCarryNote.mock.calls[0]?.[1]).toBe(
+      'RENDERED:' +
+        JSON.stringify({ did: undefined, left: undefined, insight: undefined, next: 'authoritative next action' }),
+    );
+  });
+
   // outage-must-not-be-silent-2026-08-02 P-009 — the absence-claim leg.
   //
   // The pre-existing checksLint keys on a distinctive token (hash / WI-EI id / ISO instant)
