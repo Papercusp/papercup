@@ -359,6 +359,14 @@ beforeEach(() => {
     const score = relevance(queryText, CORPUS_POINTER_TEXT);
     return score >= FAKE_FLOOR
       ? {
+          heading: 'Related context',
+          outcome: 'ok',
+          dropped: [],
+          embedderAvailable: true,
+          candidateCount: 1,
+          retrievalDepth: 8,
+          rerank: 'nothing-to-reorder',
+          legs: null,
           lines: [
             {
               line: '- WI-6512 (bug, open) — agents-running dropdown session history: DB ruled out, measurements attached',
@@ -366,7 +374,17 @@ beforeEach(() => {
             },
           ],
         }
-      : { lines: [] };
+      : {
+          heading: 'Related context',
+          outcome: 'ok',
+          dropped: [],
+          embedderAvailable: true,
+          candidateCount: 0,
+          retrievalDepth: 8,
+          rerank: 'nothing-to-reorder',
+          legs: null,
+          lines: [],
+        };
   });
 });
 

@@ -222,8 +222,8 @@ describe('affected-tests.mjs uses the synchronous writer for its own output (EI-
 
   it('labels each workspace with outSync, not async console.log', () => {
     // The per-task header — the line the misattribution scrambled.
-    expect(source).toMatch(/outSync\(`\\n>>> \$\{t\.ws\.name\} ::/);
-    expect(source).not.toMatch(/console\.log\(`\\n>>> \$\{t\.ws\.name\} ::/);
+    expect(source).toMatch(/outSync\(\s*`\\n>>> \$\{t\.ws\.name\} ::/);
+    expect(source).not.toMatch(/console\.log\(\s*`\\n>>> \$\{t\.ws\.name\} ::/);
   });
 
   it('emits NO runner output through async console.* / process.*.write', () => {

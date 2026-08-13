@@ -244,7 +244,7 @@ describe('wiring into scripts/affected-tests.mjs', () => {
     // `test` sets no lane env, so it resolves the default config and is isolated BY
     // CONSTRUCTION — the same property resolveWorkspaceTestInvocation relies on for the gate's
     // own isolation and confirming co-execution re-runs.
-    expect(src).toMatch(/const runFreshRetry = async \(files\) =>\s*\(hasLaneSplit\(t\.ws\) \? run\(files, 'test'\) : run\(files\)\)/);
+    expect(src).toMatch(/const runFreshRetry = async \(files\) =>\s*hasLaneSplit\(t\.ws\) \? run\(files, 'test'\) : run\(files\);/);
     // …and it is the function the scoped arm actually calls. Pinned separately because the
     // helper could be defined correctly and simply not wired in — a passing definition beside
     // a bare `run(failedFiles)` call site would look right and behave exactly as before.
@@ -257,7 +257,7 @@ describe('wiring into scripts/affected-tests.mjs', () => {
     // the first pass AND the fresh-process re-run"; assigning the PRE-retry set made that
     // sentence false for every file the re-run absorbed. Measured 2026-08-13: 14 in, 4 out,
     // and the notice named all 14 — sending gate triage at 10 files that had just passed.
-    expect(src).toMatch(/residualFiles = rerunFailedFiles\.length > 0 \? rerunFailedFiles : failedFiles;/);
+    expect(src).toMatch(/residualFiles =\s*rerunFailedFiles\.length > 0 \? rerunFailedFiles : failedFiles;/);
     // The fallback direction is deliberate: when the re-run's output does not parse we name
     // the pre-retry set rather than nothing, because a notice naming NO file is unactionable.
     expect(src).toMatch(/const rerunFailedFiles = parseFailedFiles\(/);
