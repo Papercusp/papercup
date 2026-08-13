@@ -4470,9 +4470,10 @@ async function fetchAccountChoices(workspace, agent = 'claude') {
   }
 }
 
-/** Render the account picker from already-fetched choices. Returns the chosen id, or null for
- *  "default credential — no pin" / an empty pool (gateway off). */
-async function promptAccount(accounts) {
+/** Build the account picker rows from already-fetched choices. Pure so the
+ * provider-specific routing contract is regression-testable without driving
+ * Inquirer. */
+export function accountPickerChoices(accounts) {
   const pool = Array.isArray(accounts?.pool) ? accounts.pool : [];
   // psu-account-chooser: ALWAYS show the picker (at least the default option) so
   // the choice is consistent across machines — a fresh install with no gateway
@@ -4480,13 +4481,13 @@ async function promptAccount(accounts) {
   // skipping the screen the dev box shows. (Was: hidden when pool empty.)
   const exclude = new Set(accounts?.excludeAccounts ?? []);
   const forced = new Set(accounts?.forcedAccounts ?? []);
-  // account-routing-3-options: the 'auto' (gateway auto-route + failover) row is offered only when
-  // the gateway pool is usable AND the provider supports it (claude — gatewayAutoEnv / resolveAccountPin
-  // don't wire auto for codex/omp yet). Its value `'auto'` flows through accountRoutingMode → 'auto'.
+  // account-routing-3-options: offer auto only when the provider has a usable
+  // pool. Claude carries the unpinned route in env; Codex carries it in the
+  // per-session CODEX_HOME provider block (WI-3645). OMP requests are resolved
+  // against their model's underlying Claude/Codex provider before reaching here.
   const provider = accounts?.provider ?? 'claude';
-  const showAuto = pool.length > 0 && provider === 'claude';
-  const { select } = await import('@inquirer/prompts');
-  const choices = [
+  const showAuto = pool.length > 0 && (provider === 'claude' || provider === 'codex');
+  return [
     { name: '· default — use the system / CLI login (skip the inference gateway)', value: null },
     ...(showAuto
       ? [{ name: '· auto — route via the inference gateway (it picks a pool account + fails over)', value: 'auto' }]
@@ -4497,6 +4498,13 @@ async function promptAccount(accounts) {
       return { name: `${id}${tag}  (pin via the gateway)`, value: id, disabled: blocked ? '(blocked by session-override)' : false };
     }),
   ];
+}
+
+/** Render the account picker from already-fetched choices. Returns the chosen id, or null for
+ *  "default credential — no pin" / an empty pool (gateway off). */
+async function promptAccount(accounts) {
+  const { select } = await import('@inquirer/prompts');
+  const choices = accountPickerChoices(accounts);
   return select({ message: 'Account routing', default: null, choices });
 }
 

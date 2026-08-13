@@ -47,6 +47,7 @@ import {
   accountRoutingMode,
   codexGatewayConfigPatch,
   accountPinnable,
+  accountPickerChoices,
   accountProviderFromChoices,
   GATEWAY_ACCOUNT_HEADER,
   GATEWAY_OWNER_HEADER,
@@ -2552,6 +2553,25 @@ describe('psu-launcher arg parsing', () => {
     expect(accountPinnable({ ...base, forcedAccounts: ['aviynw'] }, 'aviynw')).toBe(true);
     expect(accountPinnable(base, null)).toBe(false);
     expect(accountPinnable(null, 'aviynw')).toBe(false);
+  });
+
+  it('accountPickerChoices offers gateway auto for both Claude and Codex pools', () => {
+    for (const provider of ['claude', 'codex']) {
+      const choices = accountPickerChoices({
+        gatewayOn: true,
+        pool: [`${provider}-main`],
+        excludeAccounts: [],
+        forcedAccounts: [],
+        provider,
+      });
+      expect(choices.map((choice) => choice.value)).toEqual([null, 'auto', `${provider}-main`]);
+    }
+  });
+
+  it('accountPickerChoices omits auto without a usable supported-provider pool', () => {
+    expect(accountPickerChoices({ pool: [], provider: 'codex' }).map((choice) => choice.value)).toEqual([null]);
+    expect(accountPickerChoices({ pool: ['omp-main'], provider: 'omp' }).map((choice) => choice.value))
+      .toEqual([null, 'omp-main']);
   });
 
   it('accountProviderFromChoices: explicit null provider fails closed instead of falling back from the agent', () => {
