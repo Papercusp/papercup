@@ -13,6 +13,8 @@ import { fileURLToPath } from 'node:url';
 import { verifyEd25519 } from '../../identity/ed25519';
 
 const SCHEMA = 'hive-git-physical-evidence/v1';
+const TRUST_SCHEMA = 'hive-git-physical-trust/v1';
+const TRUST_SOURCE = 'papercusp-vm-rig/v1';
 const PLAN = 'p2p-git-live-activation-2026-07-09';
 const ALL_LEGS = ['A', 'B', 'C', 'D', 'E', 'F', 'G'] as const;
 const PRIOR_LEGS = ['A', 'B', 'C', 'D', 'E', 'F'] as const;
@@ -177,6 +179,63 @@ function validateAttestations(raw: JsonRecord, hostKeys: Set<string>, errors: st
   }
   for (const deviceKey of hostKeys) {
     if (!witnessed.has(deviceKey)) errors.push(`no attestation from physical device ${deviceKey}`);
+  }
+}
+
+function validateTrustAnchor(
+  raw: unknown,
+  runId: string | null,
+  startedAt: number,
+  finishedAt: number,
+  evidenceHostIds: Set<string>,
+  evidenceHostKeys: Set<string>,
+  errors: string[],
+): void {
+  const trust = record(raw);
+  if (!trust) {
+    errors.push('trusted physical-rig anchor is required outside the evidence manifest');
+    return;
+  }
+  if (trust.schemaVersion !== TRUST_SCHEMA) {
+    errors.push(`trusted anchor schemaVersion must be ${TRUST_SCHEMA}`);
+  }
+  if (trust.source !== TRUST_SOURCE) {
+    errors.push(`trusted anchor source must be ${TRUST_SOURCE}`);
+  }
+  if (trust.runId !== runId) errors.push('trusted anchor runId must match evidence runId');
+  const observedAt = Date.parse(String(trust.observedAt ?? ''));
+  if (!Number.isFinite(observedAt) || observedAt < startedAt || observedAt > finishedAt) {
+    errors.push('trusted anchor observedAt must fall inside the physical-run window');
+  }
+
+  const hosts = Array.isArray(trust.hosts) ? trust.hosts : [];
+  if (hosts.length !== 2) errors.push('trusted anchor must contain exactly two VM-rig hosts');
+  const hostIds = new Set<string>();
+  const hostKeys = new Set<string>();
+  const machineFingerprints = new Set<string>();
+  for (const [index, candidate] of hosts.entries()) {
+    const host = record(candidate);
+    const id = string(host?.id);
+    const deviceKey = string(host?.deviceKey);
+    const machineFingerprint = string(host?.machineFingerprint);
+    if (!id || !evidenceHostIds.has(id) || hostIds.has(id)) {
+      errors.push(`trusted anchor hosts[${index}].id is not an exact evidence host or is duplicate`);
+    } else {
+      hostIds.add(id);
+    }
+    if (!validDeviceKey(deviceKey) || !evidenceHostKeys.has(deviceKey) || hostKeys.has(deviceKey)) {
+      errors.push(`trusted anchor hosts[${index}].deviceKey is not an exact evidence device or is duplicate`);
+    } else {
+      hostKeys.add(deviceKey);
+    }
+    if (!machineFingerprint || !SHA256.test(machineFingerprint) || machineFingerprints.has(machineFingerprint)) {
+      errors.push(`trusted anchor hosts[${index}].machineFingerprint must be a unique 64-hex physical-host fingerprint`);
+    } else {
+      machineFingerprints.add(machineFingerprint.toLowerCase());
+    }
+  }
+  if (hostIds.size !== evidenceHostIds.size || hostKeys.size !== evidenceHostKeys.size) {
+    errors.push('trusted anchor host ids and device keys must match the evidence topology exactly');
   }
 }
 
@@ -357,7 +416,10 @@ function validateLegG(raw: JsonRecord, hostKeys: Set<string>, errors: string[]):
   expectEqual(restartCanonical, restartWorktree, 'legG post-restart canonical/worktree', errors);
 }
 
-export function validatePhysicalDrillEvidence(raw: unknown): PhysicalDrillEvidenceVerdict {
+export function validatePhysicalDrillEvidence(
+  raw: unknown,
+  trustedAnchor?: unknown,
+): PhysicalDrillEvidenceVerdict {
   const errors: string[] = [];
   const evidence = record(raw);
   if (!evidence) {
@@ -406,6 +468,15 @@ export function validatePhysicalDrillEvidence(raw: unknown): PhysicalDrillEviden
     }
   }
 
+  validateTrustAnchor(
+    trustedAnchor,
+    runId,
+    startedAt,
+    finishedAt,
+    hostIds,
+    hostKeys,
+    errors,
+  );
   validateArtifacts(evidence, hostIds, errors);
   validateAttestations(evidence, hostKeys, errors);
   validateLegVerdicts(evidence, startedAt, finishedAt, errors);
@@ -425,10 +496,14 @@ export function validatePhysicalDrillEvidence(raw: unknown): PhysicalDrillEviden
   };
 }
 
-export function validatePhysicalDrillEvidenceFile(path: string): PhysicalDrillEvidenceVerdict {
+export function validatePhysicalDrillEvidenceFile(
+  path: string,
+  trustedAnchorPath: string,
+): PhysicalDrillEvidenceVerdict {
   try {
     const parsed = JSON.parse(readFileSync(path, 'utf8')) as unknown;
-    return validatePhysicalDrillEvidence(parsed);
+    const trustedAnchor = JSON.parse(readFileSync(trustedAnchorPath, 'utf8')) as unknown;
+    return validatePhysicalDrillEvidence(parsed, trustedAnchor);
   } catch (error) {
     return {
       ok: false,
@@ -443,14 +518,17 @@ export function validatePhysicalDrillEvidenceFile(path: string): PhysicalDrillEv
 const invokedPath = process.argv[1] ? resolve(process.argv[1]) : null;
 if (invokedPath === fileURLToPath(import.meta.url)) {
   const path = process.argv[2];
-  const verdict = path
-    ? validatePhysicalDrillEvidenceFile(path)
+  const trustedAnchorPath = process.argv[3];
+  const verdict = path && trustedAnchorPath
+    ? validatePhysicalDrillEvidenceFile(path, trustedAnchorPath)
     : {
         ok: false,
         schemaVersion: SCHEMA,
         runId: null,
-        errors: ['usage: physical-drill-evidence.ts /absolute/path/to/evidence.json'],
-        summary: 'physical hive-git evidence path missing',
+        errors: [
+          'usage: physical-drill-evidence.ts /absolute/path/to/evidence.json /absolute/path/to/trusted-anchor.json',
+        ],
+        summary: 'physical hive-git evidence or trusted-anchor path missing',
       };
   process.stdout.write(`${JSON.stringify(verdict)}\n`);
   if (!verdict.ok) process.exitCode = 1;

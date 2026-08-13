@@ -167,6 +167,20 @@ function physicalFixture(): Record<string, any> {
   return fixture;
 }
 
+function trustedPhysicalAnchor(fixture: Record<string, any>): Record<string, any> {
+  return {
+    schemaVersion: 'hive-git-physical-trust/v1',
+    source: 'papercusp-vm-rig/v1',
+    runId: fixture.runId,
+    observedAt: fixture.window.startedAt,
+    hosts: fixture.topology.hosts.map((host: Record<string, any>, index: number) => ({
+      id: host.id,
+      deviceKey: host.deviceKey,
+      machineFingerprint: String(index + 8).repeat(64),
+    })),
+  };
+}
+
 function runGate(input: {
   fail: number;
   skipped: number;
@@ -193,17 +207,31 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(inventory).toEqual(['E/P-306', 'G/P-308']);
     expect(drill).toContain('HIVE_GIT_PHYSICAL_PROBE_CMD');
     expect(drill).toContain('physical-drill-evidence.ts');
+    expect(drill).toContain('bin/vm-rig/hive-git-physical-probe.sh');
+    expect(drill).not.toContain('HIVE_GIT_PHYSICAL_EVIDENCE_FILE');
   });
 
   it('accepts a same-run A-G physical artifact only with hash-matching witnesses from both hosts', () => {
-    const verdict = validatePhysicalDrillEvidence(physicalFixture());
+    const fixture = physicalFixture();
+    const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
     expect(verdict).toMatchObject({ ok: true, runId: 'physical-run-2026-08-13T120000Z', errors: [] });
+  });
+
+  it('rejects a self-declared locally signed fixture without an out-of-manifest VM-rig trust anchor', () => {
+    const verdict = validatePhysicalDrillEvidence(physicalFixture());
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors).toContain(
+      'trusted physical-rig anchor is required outside the evidence manifest',
+    );
   });
 
   it('executes the real validator CLI against an attested evidence file', () => {
     const evidencePath = join(evidenceDir, 'accepted-evidence.json');
-    writeFileSync(evidencePath, `${JSON.stringify(physicalFixture())}\n`);
-    const result = spawnSync(join(repoRoot(), 'node_modules', '.bin', 'tsx'), [validatorPath, evidencePath], {
+    const trustPath = join(evidenceDir, 'accepted-trust.json');
+    const fixture = physicalFixture();
+    writeFileSync(evidencePath, `${JSON.stringify(fixture)}\n`);
+    writeFileSync(trustPath, `${JSON.stringify(trustedPhysicalAnchor(fixture))}\n`);
+    const result = spawnSync(join(repoRoot(), 'node_modules', '.bin', 'tsx'), [validatorPath, evidencePath, trustPath], {
       encoding: 'utf8',
     });
     expect(result.status, result.stderr).toBe(0);
@@ -216,7 +244,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
   it('rejects a manifest changed after either physical device attested it', () => {
     const fixture = physicalFixture();
     fixture.legE.assertions.watchdogIntervalsObserved = 3;
-    const verdict = validatePhysicalDrillEvidence(fixture);
+    const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
     expect(verdict.ok).toBe(false);
     expect(verdict.errors.join('\n')).toContain(
       'not a valid signature over the canonical evidence payload',
@@ -226,7 +254,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
   it('rejects a structure-only pass claim with no raw physical-host artifacts', () => {
     const fixture = physicalFixture();
     fixture.artifacts = [];
-    const verdict = validatePhysicalDrillEvidence(fixture);
+    const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
     expect(verdict.ok).toBe(false);
     expect(verdict.errors.join('\n')).toContain('raw witness from each physical host');
   });
@@ -234,7 +262,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
   it('rejects a leg verdict banked outside the single physical-run window', () => {
     const fixture = physicalFixture();
     fixture.legVerdicts[3].observedAt = '2026-08-13T13:00:00Z';
-    const verdict = validatePhysicalDrillEvidence(fixture);
+    const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
     expect(verdict.ok).toBe(false);
     expect(verdict.errors).toContain(
       'legVerdicts.D.observedAt must fall inside the one physical-run window',
@@ -244,7 +272,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
   it('rejects a Leg E OID chain that did not reach the remote staging ref', () => {
     const fixture = physicalFixture();
     fixture.legE.oids.remoteStaging = '9'.repeat(40);
-    const verdict = validatePhysicalDrillEvidence(fixture);
+    const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
     expect(verdict.ok).toBe(false);
     expect(verdict.errors).toContain('legE canonicalStaging/remoteStaging must match exactly');
   });
@@ -252,7 +280,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
   it('rejects a Leg G retry that advanced the cursor before missing evidence arrived', () => {
     const fixture = physicalFixture();
     fixture.legG.cursor.duringUnknownSha = 42;
-    const verdict = validatePhysicalDrillEvidence(fixture);
+    const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
     expect(verdict.ok).toBe(false);
     expect(verdict.errors).toContain(
       'legG retryable unknown-sha/ungranted-epoch must hold the fed-event cursor',
@@ -262,7 +290,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
   it('rejects a Leg G takeover without a strictly higher authority epoch', () => {
     const fixture = physicalFixture();
     fixture.legG.epochs.successorGranted = 7;
-    const verdict = validatePhysicalDrillEvidence(fixture);
+    const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
     expect(verdict.ok).toBe(false);
     expect(verdict.errors).toContain(
       'legG.epochs.successorGranted must be strictly greater than priorAccepted',
