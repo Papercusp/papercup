@@ -36,8 +36,13 @@ vi.mock('../../../context-doors-config', () => ({ getDoorConstantsSync: doorCons
 
 import { BAKED_DOOR_CONSTANTS } from '../../../context-doors';
 import { applyResultDoor, RESULT_DOOR_TOKENS } from '../../../result-door';
-import orientTool, { assembleOrientOutput, ORIENT_PAYLOAD_TIER_CEILING_CHARS } from './orient';
+import orientTool, {
+  assembleOrientOutput,
+  ORIENT_PAYLOAD_TIER_CEILING_CHARS,
+  ORIENT_RESULT_PRIORITY_IS_EXHAUSTIVE,
+} from './orient';
 import { SHAPER_BUDGET_CHARS, shapeOrient } from './orient-shape';
+import { ORIENT_CORE_RESULT_KEYS, ORIENT_OPTIONAL_PRIORITY } from './orient-priority';
 
 const BUDGET_CHARS = RESULT_DOOR_TOKENS * CHARS_PER_TOKEN_ESTIMATE;
 
@@ -184,6 +189,52 @@ describe('coord:orient declares ALL THREE uncapping legs (WI-37843)', () => {
     expect(applied.payloadProjection).toMatchObject({ forced: true, tier: 'trimmed' });
     expect(JSON.stringify(applied.data).length).toBeLessThanOrEqual(SHAPER_BUDGET_CHARS);
     expect(ceilingLog).toHaveBeenCalledWith(expect.stringContaining('force-applied the trimmed shaper'));
+  });
+});
+
+describe('EI-20213176698128052: assembler and shaper share one priority ledger', () => {
+  it('emits the real assembled keys in the declared tier order', () => {
+    const tier3 = Object.fromEntries(
+      ORIENT_OPTIONAL_PRIORITY.tier3.flatMap((leg) => leg.fields.map((field) => [field, `${field}-value`])),
+    );
+    const tier4 = Object.fromEntries(
+      ORIENT_OPTIONAL_PRIORITY.tier4.flatMap((leg) =>
+        leg.fields
+          // These two are shaper-generated disclosure companions, not producer fields.
+          .filter((field) => field !== 'factsTruncated' && field !== 'factsBodiesTruncated')
+          .map((field) => [field, `${field}-value`]),
+      ),
+    );
+    const result = {
+      ok: true,
+      me: 'me-value',
+      claimable: [],
+      claimableTruncated: { shown: 0, total: 1, more: 'work_items:list' },
+      inbox: { summary: {}, recent: [] },
+      presenceDrift: { fleet: 'f', note: 'drift' },
+      laneClaim: { requested: ['P-001'], claimed: ['P-001'] },
+      leaderBrief: null,
+      ...tier4,
+    };
+    const out = assembleOrientOutput({
+      self: 'self-value',
+      recovery: 'recovery-value',
+      presenceDrift: result.presenceDrift,
+      result,
+      ...tier3,
+    });
+    const expected = [
+      'self',
+      'recovery',
+      ...ORIENT_CORE_RESULT_KEYS,
+      ...ORIENT_OPTIONAL_PRIORITY.tier3.flatMap((leg) => [...leg.fields]),
+      ...ORIENT_OPTIONAL_PRIORITY.tier4.flatMap((leg) =>
+        leg.fields.filter((field) => field !== 'factsTruncated' && field !== 'factsBodiesTruncated'),
+      ),
+    ];
+
+    expect(ORIENT_RESULT_PRIORITY_IS_EXHAUSTIVE).toBe(true);
+    expect(Object.keys(out)).toEqual(expected);
   });
 });
 

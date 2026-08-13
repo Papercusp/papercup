@@ -43,6 +43,7 @@ import { hardText, LIMITS } from '../../limits';
 import { withBoundedTimeout } from '../../../bounded-timeout';
 import { getHostSnapshot, type HostSnapshot } from '../../../host-snapshot';
 import { shapeOrient } from './orient-shape';
+import { ORIENT_CORE_RESULT_KEYS, ORIENT_OPTIONAL_PRIORITY } from './orient-priority';
 import type { OrientPipeline } from '../pipeline-health';
 import { classifyOwnerDriveMode } from '../agent-drive-mode';
 import { withholdQueenLoopControl, QUEEN_LOOP_WITHHELD_REASON } from '../queen-loop-facts';
@@ -544,6 +545,23 @@ export interface OrientResult {
     activation: { requested: true; surfaceChanged: boolean | null };
   };
 }
+
+type OrientClassifiedResultKey =
+  | (typeof ORIENT_CORE_RESULT_KEYS)[number]
+  | Extract<
+      (typeof ORIENT_OPTIONAL_PRIORITY.tier4)[number]['fields'][number],
+      keyof OrientResult
+    >
+  | 'taskToolSchemaPack';
+
+/** Compile-time drift guard: adding an OrientResult field requires assigning it
+ *  to the shared core/tier data before this module can typecheck. */
+export const ORIENT_RESULT_PRIORITY_IS_EXHAUSTIVE: Exclude<
+  keyof OrientResult,
+  OrientClassifiedResultKey
+> extends never
+  ? true
+  : false = true;
 
 /** P-016: the role-specific fold closures the HANDLER injects (dynamic-import IO
  *  lives in the closures) so composeOrient stays IO-free + unit-testable — the
@@ -2088,50 +2106,46 @@ export function assembleOrientOutput(legs: {
   // would reproduce the exact silent no-op this field was added to kill — the
   // same way EI-19282566865609166 fixed the leaderBrief FOLD but left the key
   // last, so fold-enabled and never-delivered stayed indistinguishable.
-  const {
-    ok,
-    me,
-    claimable,
-    inbox,
-    presenceDrift: _presenceDriftFromResult,
-    leaderBrief: leaderBriefFromResult,
-    laneClaim: laneClaimFromResult,
-    ...resultRest
-  } = legs.result as Record<string, unknown>;
-  return {
-    ...(legs.self ? { self: legs.self } : {}),
-    ...(legs.recovery ? { recovery: legs.recovery } : {}),
-    // CORE mandate (EI-18689334534773965) — prioritized ahead of the
-    // discretionary preamble legs below; see the doc comment above.
-    ...(ok !== undefined ? { ok } : {}),
-    ...(me !== undefined ? { me } : {}),
-    ...(claimable !== undefined ? { claimable } : {}),
-    ...(inbox !== undefined ? { inbox } : {}),
-    // EI-18731216945970087: a presence/registry leadership DRIFT diagnostic — kept
-    // LOUD and high-priority (never silently spilled) precisely because its whole
-    // point is to replace a silent leaderBrief omission with something a leader
-    // cannot miss.
-    ...(legs.presenceDrift ? { presenceDrift: legs.presenceDrift } : {}),
-    // EI-20013545515660920: tier (2a) alongside presenceDrift — a lane-claim
-    // outcome the caller is about to act on. `!== undefined` (not truthiness) so
-    // the key's absence keeps meaning "no planItems were requested", never "the
-    // claim reported nothing".
-    ...(laneClaimFromResult !== undefined ? { laneClaim: laneClaimFromResult } : {}),
-    // Tier (2b). `!== undefined` rather than a truthiness spread: a FAILED fold is
-    // recorded as an explicit `leaderBrief: null` ("I tried and could not tell you"),
-    // which must stay distinguishable from the key being absent ("not applicable —
-    // you are not a leader"). A truthy check would collapse both to absent.
-    ...(leaderBriefFromResult !== undefined ? { leaderBrief: leaderBriefFromResult } : {}),
-    ...(legs.ownerDirectives ? { ownerDirectives: legs.ownerDirectives } : {}),
-    ...(legs.modes ? { modes: legs.modes } : {}),
-    ...(legs.instructionPrecedence ? { instructionPrecedence: legs.instructionPrecedence } : {}),
-    ...(legs.ideate ? { ideate: legs.ideate } : {}),
-    ...(legs.captureMiss ? { captureMiss: legs.captureMiss } : {}),
-    ...(legs.configIntegrity ? { configIntegrity: legs.configIntegrity } : {}),
-    ...(legs.codexLocks ? { codexLocks: legs.codexLocks } : {}),
-    ...(legs.taskToolSchemaPack ? { taskToolSchemaPack: legs.taskToolSchemaPack } : {}),
-    ...resultRest,
-  };
+  const result = legs.result as Record<string, unknown>;
+  const out: Record<string, unknown> = {};
+  if (legs.self) out.self = legs.self;
+  if (legs.recovery) out.recovery = legs.recovery;
+
+  // CORE mandate (EI-18689334534773965) and the safety-critical leader/lane
+  // outcomes. `!== undefined` keeps explicit null ("fold attempted but unknown")
+  // distinct from absence ("not applicable"). presenceDrift retains its historical
+  // truthy contract because it is sourced from the separately verified handler leg.
+  for (const key of ORIENT_CORE_RESULT_KEYS) {
+    const value = key === 'presenceDrift' ? legs.presenceDrift : result[key];
+    if (key === 'presenceDrift' ? Boolean(value) : value !== undefined) out[key] = value;
+  }
+
+  // The authoritative ordering is DATA shared with the floor shaper. Tier 3 is
+  // transition-re-delivered; tier 4 is independently re-fetchable. Unknown future
+  // keys are appended last as a fail-soft runtime fallback, while the exhaustive
+  // type guard above makes adding one without classifying it a build failure.
+  const preamble = legs as Record<string, unknown>;
+  for (const leg of ORIENT_OPTIONAL_PRIORITY.tier3) {
+    for (const key of leg.fields) {
+      const value = preamble[key] ?? result[key];
+      if (value) out[key] = value;
+    }
+  }
+  for (const leg of ORIENT_OPTIONAL_PRIORITY.tier4) {
+    for (const key of leg.fields) {
+      if (Object.prototype.hasOwnProperty.call(result, key)) out[key] = result[key];
+    }
+  }
+
+  const classified = new Set<string>([
+    ...ORIENT_CORE_RESULT_KEYS,
+    ...ORIENT_OPTIONAL_PRIORITY.tier3.flatMap((leg) => [...leg.fields]),
+    ...ORIENT_OPTIONAL_PRIORITY.tier4.flatMap((leg) => [...leg.fields]),
+  ]);
+  for (const [key, value] of Object.entries(result)) {
+    if (!classified.has(key)) out[key] = value;
+  }
+  return out;
 }
 
 /**

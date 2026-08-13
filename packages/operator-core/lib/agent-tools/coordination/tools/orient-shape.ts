@@ -15,6 +15,7 @@
 
 import { shapeFleetAssignments } from '../../fleet/assignments-shape';
 import { capPreservingOperativeDetailed } from '../../../operative-clause';
+import { ORIENT_OPTIONAL_EVICTION_PRIORITY } from './orient-priority';
 
 /** Per-tier caps. `standard` is a looser projection, not a different shape. */
 const CAPS = {
@@ -394,6 +395,56 @@ const jsonLen = (v: unknown): number => {
     return Number.POSITIVE_INFINITY;
   }
 };
+
+interface OrientOmittedLeg {
+  leg: string;
+  tier: 3 | 4;
+  fields: string[];
+  recoverVia: string;
+}
+
+const tightenedMarker = (rung: string, omitted?: readonly OrientOmittedLeg[]) => ({
+  rung,
+  budgetChars: SHAPER_BUDGET_CHARS,
+  reason:
+    omitted && omitted.length > 0
+      ? 'orientation still exceeded the shaper budget at floor caps; omitted only declared recoverable optional legs in shared tier-4-then-tier-3 priority order (EI-20213176698128052)'
+      : `orientation exceeded the shaper budget at the initial caps; tightened in-shaper rather than falling through to the generic bounded projection (EI-19408488769901676)`,
+  more: "payloadTier:'full' for the unshaped result",
+});
+
+/**
+ * Last-resort floor eviction. Semantic list/body caps have already reached their
+ * minimum here, so the only safe remaining lever is the assembler's declared set
+ * of recoverable optional legs. Every omission is explicit and names its recovery
+ * path; core, recovery, leaderBrief, and laneClaim are not in the candidate data.
+ */
+function evictOptionalFloorLegs(projected: Record<string, unknown>): Record<string, unknown> {
+  const omitted: OrientOmittedLeg[] = [];
+
+  for (const leg of ORIENT_OPTIONAL_EVICTION_PRIORITY) {
+    const fields = leg.fields.filter((field) => Object.prototype.hasOwnProperty.call(projected, field));
+    if (fields.length === 0) continue;
+    for (const field of fields) delete projected[field];
+    omitted.push({ leg: leg.name, tier: leg.tier, fields, recoverVia: leg.recoverVia });
+    projected.optionalLegsOmitted = {
+      reason: 'floor-budget recovery; omissions follow shared orient priority',
+      omitted: [...omitted],
+      more: "payloadTier:'full' for the complete result",
+    };
+    projected.shaperTightened = tightenedMarker('floor-optional-eviction', omitted);
+    if (jsonLen(projected) <= SHAPER_BUDGET_CHARS) return projected;
+  }
+
+  if (omitted.length > 0) {
+    projected.optionalLegsOmitted = {
+      reason: 'floor-budget recovery; omissions follow shared orient priority',
+      omitted,
+      more: "payloadTier:'full' for the complete result",
+    };
+  }
+  return projected;
+}
 
 /** Re-cap an ALREADY-disclosed excerpt WITHOUT lying about how much is missing.
  *
@@ -781,28 +832,29 @@ export function shapeOrient(data: unknown, tier: TierName): unknown {
     if (size <= SHAPER_BUDGET_CHARS) {
       // Only annotate when we actually stepped down, so the common case stays clean.
       if (i > 0) {
-        projected.shaperTightened = {
-          rung,
-          budgetChars: SHAPER_BUDGET_CHARS,
-          reason: `orientation exceeded the shaper budget at '${ladder[0].rung}' caps; tightened in-shaper rather than falling through to the generic bounded projection (EI-19408488769901676)`,
-          more: "payloadTier:'full' for the unshaped result",
-        };
+        projected.shaperTightened = tightenedMarker(rung);
+        // The disclosure is part of the payload too. If adding it crosses the
+        // boundary, continue down the ladder instead of returning an over-budget
+        // object that merely *claimed* to fit.
+        if (jsonLen(projected) > SHAPER_BUDGET_CHARS) continue;
       }
       return projected;
     }
   }
 
-  // Even FLOOR_CAPS overflowed — the residue is in the passthrough fields, not the capped
-  // lists, so no further tightening HERE can help. Return the floor anyway: it is strictly
-  // smaller than any other rung, which gives the framework's generic projection the least
-  // possible left to drop. Say so loudly rather than letting it look like a normal result.
+  // Even FLOOR_CAPS overflowed. Enforce the assembler's shared optional-leg
+  // priority before conceding: tier 4 is independently re-fetchable and tier 3 is
+  // re-delivered by the transition substrate, so disclosed eviction is safer than
+  // letting the generic projector drop arbitrary whole fields.
   if (projected) {
+    projected = evictOptionalFloorLegs(projected);
+    if (jsonLen(projected) <= SHAPER_BUDGET_CHARS) return projected;
     projected.shaperTightened = {
       rung: 'floor',
       budgetChars: SHAPER_BUDGET_CHARS,
       overBudget: true,
       reason:
-        'orientation exceeds the shaper budget even at floor caps — the excess is in uncapped passthrough fields, so the generic bounded projection may still drop whole fields',
+        'orientation exceeds the shaper budget even after floor caps and every declared recoverable optional leg were removed; protected core/recovery fields remain too large, so the generic bounded projection may still drop whole fields',
       more: "payloadTier:'full' for the unshaped result",
     };
   }

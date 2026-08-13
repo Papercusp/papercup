@@ -11,6 +11,7 @@
  */
 import { describe, expect, it } from 'vitest';
 import { SHAPER_BUDGET_CHARS, shapeOrient } from './orient-shape';
+import { ORIENT_OPTIONAL_EVICTION_PRIORITY } from './orient-priority';
 
 const row = (i: number) => ({
   id: `WI-${1000 + i}`,
@@ -831,5 +832,61 @@ describe('EI-20213176698128052: `recovery` is ladder-aware (the last uncapped pa
       'trimmed',
     ) as Record<string, any>;
     expect(out.recovery.blob.length).toBe(40_000);
+  });
+});
+
+describe('EI-20213176698128052: floor-only disclosed optional-leg eviction', () => {
+  const payload = () => ({
+    self: { ownerId: 'su-e3259c03' },
+    recovery: {
+      selfRecall: "sessions:search { session:'self' }",
+      checkpoints: [{ id: 'EI-20213176698128052', checkpoint: 'resume the fix' }],
+    },
+    ok: true,
+    me: { agents: [{ agentId: 'su-e3259c03', isSelf: true }] },
+    claimable: [],
+    inbox: { summary: { total: 0 }, recent: [] },
+    leaderBrief: { summary: { members: 1, dead: 0 } },
+    laneClaim: { requested: ['P-001'], claimed: ['P-001'] },
+    // Tier 3: expensive but transition-re-delivered. It must survive while a
+    // lower-priority tier-4 candidate can recover enough space.
+    taskToolSchemaPack: { blob: 's'.repeat(10_000) },
+    // Lowest present tier-4 leg. One atomic eviction is sufficient.
+    ownerPresent: { present: true, blob: 'o'.repeat(8_000) },
+  });
+
+  it('fits under budget by evicting a prefix of shared tier-4-then-tier-3 priority', () => {
+    const source = payload();
+    const out = shapeOrient(source, 'trimmed') as Record<string, any>;
+    const omitted = out.optionalLegsOmitted.omitted as Array<{
+      leg: string;
+      tier: number;
+      fields: string[];
+      recoverVia: string;
+    }>;
+    const presentOrder = ORIENT_OPTIONAL_EVICTION_PRIORITY.filter((leg) =>
+      leg.fields.some((field) => Object.prototype.hasOwnProperty.call(source, field)),
+    ).map((leg) => leg.name);
+
+    expect(JSON.stringify(out).length).toBeLessThanOrEqual(SHAPER_BUDGET_CHARS);
+    expect(omitted.map((entry) => entry.leg)).toEqual(presentOrder.slice(0, omitted.length));
+    expect(omitted[0]).toMatchObject({ leg: 'ownerPresent', tier: 4, fields: ['ownerPresent'] });
+    expect(omitted[0].recoverVia).toContain('coord:orient');
+    expect(out.ownerPresent).toBeUndefined();
+    expect(out.taskToolSchemaPack).toBeDefined();
+    expect(out.shaperTightened).toMatchObject({ rung: 'floor-optional-eviction' });
+    expect(out.shaperTightened.overBudget).toBeUndefined();
+  });
+
+  it('never evicts core, recovery, leaderBrief, or laneClaim', () => {
+    const out = shapeOrient(payload(), 'trimmed') as Record<string, any>;
+    expect(out.self.ownerId).toBe('su-e3259c03');
+    expect(out.recovery.selfRecall).toContain('sessions:search');
+    expect(out.ok).toBe(true);
+    expect(out.me).toBeDefined();
+    expect(out.claimable).toEqual([]);
+    expect(out.inbox).toBeDefined();
+    expect(out.leaderBrief.summary.members).toBe(1);
+    expect(out.laneClaim.claimed).toEqual(['P-001']);
   });
 });
