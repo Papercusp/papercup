@@ -535,7 +535,9 @@ const MANGLED_TO_COLON: ReadonlyMap<string, string> = (() => {
     const mangled = colon.replace(/:/g, '_');
     const prior = map.get(mangled);
     if (prior && prior !== colon) {
-      throw new Error(`mid-turn vocabulary: '${prior}' and '${colon}' mangle to the same '${mangled}'`);
+      throw new Error(
+        `mid-turn vocabulary: '${prior}' and '${colon}' mangle to the same '${mangled}'`,
+      );
     }
     map.set(mangled, colon);
   }
@@ -617,7 +619,9 @@ function normalizeOmpXdCall(tool: string, input: unknown): NormalizedXdCall | nu
   if (!path.startsWith(OMP_XD_MCP_PREFIX)) return null;
 
   const deviceName = path.slice('xd://'.length);
-  const mangled = path.startsWith(OMP_XD_PAPERCUSP_PREFIX) ? path.slice(OMP_XD_PAPERCUSP_PREFIX.length) : '';
+  const mangled = path.startsWith(OMP_XD_PAPERCUSP_PREFIX)
+    ? path.slice(OMP_XD_PAPERCUSP_PREFIX.length)
+    : '';
   return {
     tool: (mangled && MANGLED_TO_COLON.get(mangled)) || deviceName,
     input: asRecord(outer.content) ?? {},
@@ -643,7 +647,9 @@ function deriveQueryAtDepth(tool: string, input: unknown, depth: number): Derive
   if (xdCall) {
     if (depth >= MAX_QUERY_DERIVE_DEPTH) return { query: '', miss: 'no-signal' };
     const inner = deriveQueryAtDepth(xdCall.tool, xdCall.input, depth + 1);
-    return inner.miss === 'unknown-tool' && !inner.missTool ? { ...inner, missTool: xdCall.tool } : inner;
+    return inner.miss === 'unknown-tool' && !inner.missTool
+      ? { ...inner, missTool: xdCall.tool }
+      : inner;
   }
 
   const spec = specFor(tool);
@@ -652,7 +658,8 @@ function deriveQueryAtDepth(tool: string, input: unknown, depth: number): Derive
   // one that silently zeroed codex and omp for the life of this endpoint.
   if (!spec) return { query: '', miss: 'unknown-tool' };
 
-  const done = (text: string): DerivedQuery => (text ? { query: text, miss: null } : { query: '', miss: 'no-signal' });
+  const done = (text: string): DerivedQuery =>
+    text ? { query: text, miss: null } : { query: '', miss: 'no-signal' };
 
   // ── `tools:invoke` DISPATCHES: the signal is the INNER call, never its own args ──
   // Measured 2026-08-09 it is the single biggest miss in the whole vocabulary
@@ -919,12 +926,7 @@ export function splitLegQueries(derived: string): { cosine: string; lexical: str
   // the generic tokens "no"/"result" are pull without meaning.
   const cosine = stripped
     .split('·')
-    .map((seg) =>
-      seg
-        .replace(/\(no result\)/g, ' ')
-        .replace(/\s+/g, ' ')
-        .trim(),
-    )
+    .map((seg) => seg.replace(/\(no result\)/g, ' ').replace(/\s+/g, ' ').trim())
     .filter((seg) => /[A-Za-z0-9]/.test(seg))
     .join(' · ');
   return { cosine: cosine || lexical, lexical };
@@ -1031,12 +1033,15 @@ const midTurnContext = defineTool({
         }
       }
 
-      const [{ buildMemoryContextBlock }, { getSessionUserOrDefault }, { resolveClaimedWorkItemIdForOwner }] =
-        await Promise.all([
-          import('../../../memory/injection'),
-          import('../../../auth'),
-          import('../../../memory/agent-signals'),
-        ]);
+      const [
+        { buildMemoryContextBlock },
+        { getSessionUserOrDefault },
+        { resolveClaimedWorkItemIdForOwner },
+      ] = await Promise.all([
+        import('../../../memory/injection'),
+        import('../../../auth'),
+        import('../../../memory/agent-signals'),
+      ]);
       const [user, currentWorkItemId] = await Promise.all([
         getSessionUserOrDefault().catch(() => null),
         resolveClaimedWorkItemIdForOwner({ ownerId: owner, workspaceId }).catch(() => undefined),
