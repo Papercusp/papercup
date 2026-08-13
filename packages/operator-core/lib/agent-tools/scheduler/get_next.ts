@@ -51,10 +51,7 @@ import {
 } from '../../scheduler/fleet-scope-admission';
 import { getClaimTimeRetractionAdvisory } from '../work_items/retraction-advisory';
 import { fetchContextPressure } from '../coordination/context-pressure';
-import {
-  decideContextPressureGate,
-  contextCriticalRefusalResult,
-} from '../../scheduler/context-pressure-claim-gate';
+import { decideContextPressureGate, contextCriticalRefusalResult } from '../../scheduler/context-pressure-claim-gate';
 
 /**
  * EI-20099413453852234 — declare the caller's intent for the item it just claimed.
@@ -460,7 +457,9 @@ async function buildMissDiagnosis(args: {
     const aggregate = diag.drained
       ? 'the backlog is genuinely DRAINED (0 unclaimed items in the pool) — idling is correct'
       : `the backlog is NOT drained: ${diag.pendingUnclaimed} unclaimed item(s) in the pool, but ${diag.readyUnclaimed} pass the floors` +
-        (diag.readyUnclaimed === 0 ? ' — every one of them is GATED (blocked / held / needs-human / not-work), so idling is correct but the backlog is not empty' : '');
+        (diag.readyUnclaimed === 0
+          ? ' — every one of them is GATED (blocked / held / needs-human / not-work), so idling is correct but the backlog is not empty'
+          : '');
     // EI-14108: a flag-READ failure (fail-closed) reads identically to "the issue-claimable
     // flag is off" otherwise — say so explicitly so this never presents as a drained/out-of-
     // scope pool when it's actually an unreadable flag store.
@@ -477,12 +476,15 @@ async function buildMissDiagnosis(args: {
     if (ids.length === 0 && !diag.drained && diag.readyUnclaimed === 0) {
       const { aggregateIssueClaimExclusions } = await import('../../scheduler/get-next');
       const agg = await withBoundedTimeout(
-        aggregateIssueClaimExclusions((rec?.spec as { view?: { filter?: unknown } } | undefined)?.view?.filter as never, {
-          harness: args.harness,
-          states: effectiveStates,
-          assignee: args.ownerId,
-          rigAvailable: args.rigAvailable,
-        }),
+        aggregateIssueClaimExclusions(
+          (rec?.spec as { view?: { filter?: unknown } } | undefined)?.view?.filter as never,
+          {
+            harness: args.harness,
+            states: effectiveStates,
+            assignee: args.ownerId,
+            rigAvailable: args.rigAvailable,
+          },
+        ),
         { fallback: null, timeoutMs: 1_500, label: 'get_next:missBreakdown' },
       );
       if (agg.value) {
@@ -495,7 +497,7 @@ async function buildMissDiagnosis(args: {
             ? ` Your spec's filter matches ${agg.value.matchedByFilter} issue-family row(s); stranded by: ` +
               top.map(([k, n]) => `${k}=${n}`).join(', ') +
               ' (buckets are independent, a row can count under more than one). Not covered here: the ' +
-              'plan-item-lane-guard\'s per-item blocked/cycle check (post-claim, JS-side) — zero above does ' +
+              "plan-item-lane-guard's per-item blocked/cycle check (post-claim, JS-side) — zero above does " +
               'not rule that out.'
             : agg.value.matchedByFilter === 0
               ? " Your spec's filter matches 0 issue-family rows at all — the SPEC itself is the problem, not a floor."
@@ -568,9 +570,7 @@ export function assembleSchedulerClaimResult(legs: {
   premisesNote?: string | null;
 }): Record<string, unknown> {
   const workItemRecord =
-    legs.workItem && typeof legs.workItem === 'object'
-      ? (legs.workItem as { id?: unknown })
-      : null;
+    legs.workItem && typeof legs.workItem === 'object' ? (legs.workItem as { id?: unknown }) : null;
   const claimSpecRecord =
     legs.claimedUnder && typeof legs.claimedUnder === 'object'
       ? (legs.claimedUnder as { specId?: unknown; revision?: unknown })
@@ -631,7 +631,7 @@ export default defineTool({
   name: 'scheduler:get_next',
   profile: 'engineer',
   description:
-    'Atomically claim the next eligible item under global floors plus the stored claim-spec filter/rank (SKIP LOCKED). A fleet member without an inherited spec fails closed (windDown:true); a non-fleet caller without a spec uses warned default ordering. Returns the claimed item or a diagnosed miss. A successful claim also declares the caller\'s WI-/EI- intent; specId and revision are result provenance, not request arguments.',
+    "Atomically claim the next eligible item under global floors plus the stored claim-spec filter/rank (SKIP LOCKED). A fleet member without an inherited spec fails closed (windDown:true); a non-fleet caller without a spec uses warned default ordering. Returns the claimed item or a diagnosed miss. A successful claim also declares the caller's WI-/EI- intent; specId and revision are result provenance, not request arguments.",
   guidance: {
     when: 'A self-pulling cup or su fleet member pulls from the Mug/leader spec instead of scanning. Pass { harness, heldPaths?, states?, rigAvailable? }; do NOT pass specId, revision, fleet, workspace, or claimSpec; claimedUnder reports it. This call returns at most one claim and has no `limit` argument.',
     notWhen:
@@ -661,7 +661,7 @@ export default defineTool({
       .min(1)
       .optional()
       .describe(
-        'Harness to pull from. OPTIONAL — defaults to the session\'s own harness when it has exactly one. ' +
+        "Harness to pull from. OPTIONAL — defaults to the session's own harness when it has exactly one. " +
           'Pass it explicitly only to pull from a DIFFERENT harness than the session is scoped to.',
       ),
     heldPaths: z
@@ -722,10 +722,7 @@ export default defineTool({
       const brief = await getSessionBrief({ ownerId: ident.ownerId }).catch(() => null);
       const briefWorkspace = brief?.workspaceId?.trim();
       const identityWorkspace = ident.workspaceId?.trim();
-      if (
-        brief &&
-        (!identityWorkspace || !briefWorkspace || identityWorkspace === briefWorkspace)
-      ) {
+      if (brief && (!identityWorkspace || !briefWorkspace || identityWorkspace === briefWorkspace)) {
         resolvedHarness = resolveConcreteHarnessSlug(brief.harnessSlug, undefined);
       }
     }
@@ -806,9 +803,7 @@ export default defineTool({
         // Fails OPEN: an unreadable flag or presence row leaves the bucket unknown and the pull
         // proceeds exactly as today. Withholding work on an unproven reading would manufacture the
         // false drain this gate exists to prevent (see the gate module's hazard note).
-        const gateEnabled = await getFlag(FLAGS.SCHEDULER_CONTEXT_PRESSURE_GATE, ident.ownerId).catch(
-          () => true,
-        );
+        const gateEnabled = await getFlag(FLAGS.SCHEDULER_CONTEXT_PRESSURE_GATE, ident.ownerId).catch(() => true);
         const contextBucket = gateEnabled
           ? await fetchContextPressure([ident.ownerId])
               .then((m) => m.get(ident.ownerId) ?? null)
@@ -1185,7 +1180,13 @@ export default defineTool({
     if (res?.workItem) {
       const wi = res.workItem as { id: string; harness?: string | null };
       checkpointHint = await import('../../work-item-checkpoint')
-        .then((m) => m.getClaimTimeCheckpointHint({ harness: wi.harness ?? null, workItemId: wi.id, workspaceId: ident.workspaceId ?? undefined }))
+        .then((m) =>
+          m.getClaimTimeCheckpointHint({
+            harness: wi.harness ?? null,
+            workItemId: wi.id,
+            workspaceId: ident.workspaceId ?? undefined,
+          }),
+        )
         .catch(() => {
           checkpointReadFailed = true;
           return null;
@@ -1250,6 +1251,7 @@ export default defineTool({
     let retractionWarning: string | null = null;
     if (res?.workItem) {
       const wi = res.workItem as {
+        id?: string | null;
         payload?: unknown;
         harness?: string | null;
         title?: string | null;
@@ -1269,7 +1271,7 @@ export default defineTool({
         import('../../premises-claim-port')
           .then((m) =>
             m.getClaimTimePremises({
-              workItem: { payload: wi.payload, title: wi.title, summary: wi.summary },
+              workItem: { id: wi.id, payload: wi.payload, title: wi.title, summary: wi.summary },
               harness: wi.harness ?? args.harness,
               workspaceId: ident.workspaceId,
             }),
@@ -1306,9 +1308,7 @@ export default defineTool({
     // extra read. Cached (loadHarnessRegistry); a read hiccup fails OPEN — "can't
     // verify" must never block/mis-report a claim path it's only annotating.
     const invalidHarnessKnownSlugs = !res
-      ? await loadHarnessRegistry(
-          ident.workspaceId && ident.workspaceId !== '*' ? ident.workspaceId : undefined,
-        )
+      ? await loadHarnessRegistry(ident.workspaceId && ident.workspaceId !== '*' ? ident.workspaceId : undefined)
           .then((registry) =>
             registry.projects.some((p) => p.slug === args.harness)
               ? null
@@ -1323,32 +1323,33 @@ export default defineTool({
     // DIFFERENT floors, and each took a manual payload dig to find while members idled.
     // FAILS SOFT: any error here degrades to exactly the old static message — a diagnosis must
     // never be able to break the claim path it is only annotating.
-    const missDiagnosis = res || reconciliation.scope || invalidHarnessKnownSlugs
-      ? { error: '' as string, diagnosis: undefined, floors: undefined }
-      : (
-          // EI-18167154191955470: the miss diagnosis fans out to several unbounded PG reads
+    const missDiagnosis =
+      res || reconciliation.scope || invalidHarnessKnownSlugs
+        ? { error: '' as string, diagnosis: undefined, floors: undefined }
+        : // EI-18167154191955470: the miss diagnosis fans out to several unbounded PG reads
           // (getClaimSpecRecord / readClaimConcurrency / diagnoseClaimNextMiss / …) — bound it
           // too so a pool stall HERE can't reproduce the 300s hang. buildMissDiagnosis already
           // fails soft to the STATIC message, so the timeout fallback is exactly that static miss.
-          await withBoundedTimeout(
-            buildMissDiagnosis({
-              ownerId: ident.ownerId,
-              workspaceId: ident.workspaceId,
-              harness: args.harness,
-              states: args.states,
-              rigAvailable: args.rigAvailable,
-            }),
-            {
-              fallback: {
-                error: 'no claimable work-item matched your spec within the floors',
-                diagnosis: undefined,
-                floors: undefined,
+          (
+            await withBoundedTimeout(
+              buildMissDiagnosis({
+                ownerId: ident.ownerId,
+                workspaceId: ident.workspaceId,
+                harness: args.harness,
+                states: args.states,
+                rigAvailable: args.rigAvailable,
+              }),
+              {
+                fallback: {
+                  error: 'no claimable work-item matched your spec within the floors',
+                  diagnosis: undefined,
+                  floors: undefined,
+                },
+                timeoutMs: 15_000,
+                label: 'scheduler:get_next:missDiagnosis',
               },
-              timeoutMs: 15_000,
-              label: 'scheduler:get_next:missDiagnosis',
-            },
-          )
-        ).value;
+            )
+          ).value;
     // EI-13520: a genuine (non-paused) scoped miss may be a release-cooldown artifact,
     // not a real scope/spec problem — check before reporting a bare fleetScopedMiss so
     // the caller (and the leader they'd otherwise flag a false spec bug to) gets the
@@ -1373,8 +1374,7 @@ export default defineTool({
     // observation of the same churning pool, i.e. the very defect this fix removes.
     // `invalidHarnessKnownSlugs` still suppresses it: an unresolvable harness matches zero rows
     // for reasons that have nothing to do with the floors.
-    const issueBreakdownForMiss =
-      !res && reconciliation.scope && !invalidHarnessKnownSlugs ? issueBreakdown : null;
+    const issueBreakdownForMiss = !res && reconciliation.scope && !invalidHarnessKnownSlugs ? issueBreakdown : null;
     // WI-7151: same suppression as issueBreakdownForMiss — irrelevant once res is set (claimed
     // on a retry) or when the miss isn't fleet-scoped/is an invalid-harness miss.
     const featureFamilyMatchedForMiss =
@@ -1386,10 +1386,8 @@ export default defineTool({
     // EI-20260781488788952: enrich the zero-match branch with plan terminality and leader
     // liveness. Both reads fail soft and are only useful when the issue-family breakdown would
     // otherwise certify `spec_matches_nothing`; preserving null keeps the old diagnosis intact.
-    const planTerminalityForMiss =
-      !res && reconciliation.scope && !invalidHarnessKnownSlugs ? planTerminality : null;
-    const leaderLivenessForMiss =
-      !res && reconciliation.scope && !invalidHarnessKnownSlugs ? leaderLiveness : null;
+    const planTerminalityForMiss = !res && reconciliation.scope && !invalidHarnessKnownSlugs ? planTerminality : null;
+    const leaderLivenessForMiss = !res && reconciliation.scope && !invalidHarnessKnownSlugs ? leaderLiveness : null;
     const payload = res
       ? assembleSchedulerClaimResult({
           workItem: res.workItem,
@@ -1441,16 +1439,16 @@ export default defineTool({
               harness: args.harness,
             })
           : {
-            ok: false,
-            error: missDiagnosis.error,
-            // WI-4413: the miss now EXPLAINS itself — aggregate POOL/READY split, plus
-            // (when the spec names ids) the exact floor refusing each one.
-            ...(missDiagnosis.diagnosis ? { diagnosis: missDiagnosis.diagnosis } : {}),
-            ...(missDiagnosis.floors ? { floors: missDiagnosis.floors } : {}),
-            // P-006: teach the composed-await idle recipe exactly where the idle
-            // moment happens, instead of leaving the caller to a 60s re-poll.
-            advice: IDLE_PULL_MISS_ADVICE,
-          };
+              ok: false,
+              error: missDiagnosis.error,
+              // WI-4413: the miss now EXPLAINS itself — aggregate POOL/READY split, plus
+              // (when the spec names ids) the exact floor refusing each one.
+              ...(missDiagnosis.diagnosis ? { diagnosis: missDiagnosis.diagnosis } : {}),
+              ...(missDiagnosis.floors ? { floors: missDiagnosis.floors } : {}),
+              // P-006: teach the composed-await idle recipe exactly where the idle
+              // moment happens, instead of leaving the caller to a 60s re-poll.
+              advice: IDLE_PULL_MISS_ADVICE,
+            };
     // The claim committed before this response was rendered. Keep the existing
     // bounded text projection for ordinary model callers, but give programmatic
     // callers the complete object so they can reconcile without blind retry.

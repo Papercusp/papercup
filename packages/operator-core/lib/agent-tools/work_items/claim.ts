@@ -47,11 +47,7 @@ import { getClaimTimeRetractionAdvisory } from './retraction-advisory';
 // cycle with the scheduler (the VALUE side is dynamically imported at its use site below,
 // the same way fleet:leader-brief reaches this store).
 import type { ClaimConcurrencyVerdict } from '../../scheduler/claim-spec-store';
-import {
-  assessClaimHoldGuard,
-  recordClaimHoldBypassAudit,
-  notifyClaimHoldBypass,
-} from './claim-hold-guard';
+import { assessClaimHoldGuard, recordClaimHoldBypassAudit, notifyClaimHoldBypass } from './claim-hold-guard';
 
 interface ClaimItem {
   id: string;
@@ -139,9 +135,7 @@ export function terminalClaimWarning(
  * `readUnresolvedDepBlockers` is the read, shared with the floor's own predicate so this can
  * never name a blocker the queue does not gate on.
  */
-export function blockedClaimWarning(
-  blockers: readonly UnresolvedDepBlocker[] | null | undefined,
-): string | null {
+export function blockedClaimWarning(blockers: readonly UnresolvedDepBlocker[] | null | undefined): string | null {
   if (!blockers || blockers.length === 0) return null;
   const named = blockers.map((b) => b.ref).filter((r) => r.trim() !== '');
   if (named.length === 0) return null;
@@ -229,11 +223,7 @@ export function concurrencyClaimWarning(
  * error (claim_conflict + holder, not_found, or not_claimable) rather than a
  * phantom "not found".
  */
-async function claimOne(
-  itRaw: ClaimItem,
-  identity: AgentIdentity,
-  reader: CellReader | null,
-): Promise<BulkItemResult> {
+async function claimOne(itRaw: ClaimItem, identity: AgentIdentity, reader: CellReader | null): Promise<BulkItemResult> {
   const claimerDefault = identity.ownerId;
   // EI-9274: a literal `'self'` assignee is treated identically to an OMITTED one
   // (resolved to the caller) — including for the implicit-identity guards below, so
@@ -247,8 +237,7 @@ async function claimOne(
       ok: false,
       id: it.id,
       error: 'missing_client_identity',
-      hint:
-        'Implicit work-item claims require a real per-session or spawn owner. This request arrived as the shared su-loopback fallback, so it was refused before mutating the claim. Reconnect with a client identity or pass an explicit assignee.',
+      hint: 'Implicit work-item claims require a real per-session or spawn owner. This request arrived as the shared su-loopback fallback, so it was refused before mutating the claim. Reconnect with a client identity or pass an explicit assignee.',
     };
   }
   // EI-8509: refuse an IMPLICIT claim under scripts/mcp-call.mjs's auto-generated
@@ -262,8 +251,7 @@ async function claimOne(
       ok: false,
       id: it.id,
       error: 'ephemeral_mcp_call_identity',
-      hint:
-        'Refused: this call arrived under scripts/mcp-call.mjs\'s auto-generated fallback identity (mcp-call-<pid>), a one-shot process with no liveness/heartbeat and no fleet cup behind it — claiming here would silently "place" work that nothing executes (EI-8509). Spawn a real cup (fleet:spawn / bee:spawn) and let IT claim, or pass an explicit `assignee` naming the real agent that will do the work.',
+      hint: 'Refused: this call arrived under scripts/mcp-call.mjs\'s auto-generated fallback identity (mcp-call-<pid>), a one-shot process with no liveness/heartbeat and no fleet cup behind it — claiming here would silently "place" work that nothing executes (EI-8509). Spawn a real cup (fleet:spawn / bee:spawn) and let IT claim, or pass an explicit `assignee` naming the real agent that will do the work.',
     };
   }
   const claimer = it.assignee ?? claimerDefault;
@@ -287,9 +275,7 @@ async function claimOne(
   // degraded spec/claims read must cost the warning and never the claim.
   const concurrencyBefore = (async (): Promise<ClaimConcurrencyVerdict | null> => {
     try {
-      const { readClaimConcurrency, getClaimSpecRecord } = await import(
-        '../../scheduler/claim-spec-store'
-      );
+      const { readClaimConcurrency, getClaimSpecRecord } = await import('../../scheduler/claim-spec-store');
       const rec = await getClaimSpecRecord({
         cupId: claimer,
         workspaceId: identity.workspaceId ?? undefined,
@@ -452,52 +438,58 @@ async function claimOne(
     // independent read; no reason to pay a serial round-trip) and is fail-soft for the reason
     // given on readUnresolvedDepBlockers: saying nothing here asserts nothing.
     let checkpointReadFailed = false;
-    const [hint, priorRaw, laneCollision, unresolvedBlockers, premises, planDecisionsResult, retractionAdvisory] = await Promise.all([
-      getClaimTimeCheckpointHint({
-        harness: workItem.harness ?? it.harness ?? null,
-        workItemId: it.id,
-        workspaceId: identity.workspaceId ?? undefined,
-      }).catch(() => {
-        checkpointReadFailed = true;
-        return null;
-      }),
-      getClaimTimePriorWorkHint({
-        harness: workItem.harness ?? it.harness ?? null,
-        workItemId: it.id,
-        workspaceId: identity.workspaceId ?? undefined,
-      }).catch(() => null),
-      planItemClaimCollision(workItem).catch(() => null),
-      readUnresolvedDepBlockers(it.id, workItem.harness ?? it.harness ?? undefined).catch(() => null),
-      // false-premise-in-prescriptive-artifacts-2026-08-02 P-001: the item's own
-      // load-bearing premises, surfaced at the moment before the cost is paid.
-      // Joins this same parallel batch (an independent read) and is fail-soft for
-      // the reason every sibling hint here is: saying nothing asserts nothing.
-      import('../../premises-claim-port')
-        .then((m) =>
-          m.getClaimTimePremises({
-            workItem: { payload: workItem.payload, title: workItem.title, summary: workItem.summary },
-            harness: workItem.harness ?? it.harness ?? null,
-            workspaceId: identity.workspaceId ?? undefined,
-          }),
-        )
-        .catch(() => null),
-      // EI-19387745408924340: agent-trap-guards-2026-07-26 P-003b's plan-Decisions
-      // brief was wired at scheduler:get_next ONLY — a by-id claim (this surface)
-      // of a plan-bound item saw no governing decisions at all. Same fail-soft
-      // seam as every other hint above; rendered via the shared helper so the
-      // note text cannot drift from scheduler:get_next's copy.
-      import('../../plan-decisions-claim-port')
-        .then(async (m) => {
-          const brief = await m.getClaimTimePlanDecisions({
-            workItem: { payload: workItem.payload },
-            harness: workItem.harness ?? it.harness ?? null,
-            workspaceId: identity.workspaceId ?? undefined,
-          });
-          return brief ? { decisions: brief.decisions, note: m.renderPlanDecisionsNote(brief) } : null;
-        })
-        .catch(() => null),
-      getClaimTimeRetractionAdvisory(workItem, workItem.harness ?? it.harness ?? undefined),
-    ]);
+    const [hint, priorRaw, laneCollision, unresolvedBlockers, premises, planDecisionsResult, retractionAdvisory] =
+      await Promise.all([
+        getClaimTimeCheckpointHint({
+          harness: workItem.harness ?? it.harness ?? null,
+          workItemId: it.id,
+          workspaceId: identity.workspaceId ?? undefined,
+        }).catch(() => {
+          checkpointReadFailed = true;
+          return null;
+        }),
+        getClaimTimePriorWorkHint({
+          harness: workItem.harness ?? it.harness ?? null,
+          workItemId: it.id,
+          workspaceId: identity.workspaceId ?? undefined,
+        }).catch(() => null),
+        planItemClaimCollision(workItem).catch(() => null),
+        readUnresolvedDepBlockers(it.id, workItem.harness ?? it.harness ?? undefined).catch(() => null),
+        // false-premise-in-prescriptive-artifacts-2026-08-02 P-001: the item's own
+        // load-bearing premises, surfaced at the moment before the cost is paid.
+        // Joins this same parallel batch (an independent read) and is fail-soft for
+        // the reason every sibling hint here is: saying nothing asserts nothing.
+        import('../../premises-claim-port')
+          .then((m) =>
+            m.getClaimTimePremises({
+              workItem: {
+                id: workItem.id ?? it.id,
+                payload: workItem.payload,
+                title: workItem.title,
+                summary: workItem.summary,
+              },
+              harness: workItem.harness ?? it.harness ?? null,
+              workspaceId: identity.workspaceId ?? undefined,
+            }),
+          )
+          .catch(() => null),
+        // EI-19387745408924340: agent-trap-guards-2026-07-26 P-003b's plan-Decisions
+        // brief was wired at scheduler:get_next ONLY — a by-id claim (this surface)
+        // of a plan-bound item saw no governing decisions at all. Same fail-soft
+        // seam as every other hint above; rendered via the shared helper so the
+        // note text cannot drift from scheduler:get_next's copy.
+        import('../../plan-decisions-claim-port')
+          .then(async (m) => {
+            const brief = await m.getClaimTimePlanDecisions({
+              workItem: { payload: workItem.payload },
+              harness: workItem.harness ?? it.harness ?? null,
+              workspaceId: identity.workspaceId ?? undefined,
+            });
+            return brief ? { decisions: brief.decisions, note: m.renderPlanDecisionsNote(brief) } : null;
+          })
+          .catch(() => null),
+        getClaimTimeRetractionAdvisory(workItem, workItem.harness ?? it.harness ?? undefined),
+      ]);
     const blockedWarning = blockedClaimWarning(unresolvedBlockers);
     const concurrencyWarning = concurrencyClaimWarning(concurrency, it.id);
     // WI-6737: `hint` is null for BOTH "no checkpoint exists" and "the checkpoint read threw"
@@ -630,7 +622,8 @@ export default defineTool({
     'Claim one OR many work-items (to yourself, or to `assignee`). Single: { id, assignee? }. Many: ids:[…] or items:[{ id, assignee?, harness? }]. Per-item outcomes — one refusal never fails the rest. A fleet MEMBER may only receive items matching its claim spec. A `_claimHold` item refuses with `claim_hold_blocked` (or `policy_gate_requires_owner_override`) unless `force`/`ownerOverride`; the hold stays either way.',
   guidance: {
     when: 'Starting work on work-item(s) — claim so peers do not duplicate. Claim a swath via { ids:[…] }. By-id claims may override self-select readiness floors, never fleet scope.',
-    notWhen: '`claim_conflict` = a LIVE peer holds it: coordinate, do not blind-retry. `claim_hold_blocked`/`policy_gate_requires_owner_override` = deliberately parked: coordinate before `force`/`ownerOverride`.',
+    notWhen:
+      '`claim_conflict` = a LIVE peer holds it: coordinate, do not blind-retry. `claim_hold_blocked`/`policy_gate_requires_owner_override` = deliberately parked: coordinate before `force`/`ownerOverride`.',
     chaining:
       'work_items:list → claim → set_state → release/close. No heartbeat verb exists — any platform call refreshes liveness; during a long LOCAL-ONLY stretch call work_items:checkpoint as a liveness pulse (EI-6772).',
     seeAlso: [
@@ -645,8 +638,19 @@ export default defineTool({
   args: z
     .object({
       id: z.string().min(1).optional().describe('single-claim shorthand: the work-item id'),
-      assignee: z.string().max(120).optional().describe('default: you (also resolves the literal "self" to you). Applies to the inline id / every id in `ids`.'),
-      ids: z.array(z.string().min(1)).min(1).max(200).optional().describe('claim MANY items for the same `assignee` (homogeneous)'),
+      assignee: z
+        .string()
+        .max(120)
+        .optional()
+        .describe(
+          'default: you (also resolves the literal "self" to you). Applies to the inline id / every id in `ids`.',
+        ),
+      ids: z
+        .array(z.string().min(1))
+        .min(1)
+        .max(200)
+        .optional()
+        .describe('claim MANY items for the same `assignee` (homogeneous)'),
       items: z
         .array(
           z.object({
@@ -701,8 +705,22 @@ export default defineTool({
           ownerOverride: it.ownerOverride ?? args.ownerOverride,
         }))
       : args.ids?.length
-        ? args.ids.map((id) => ({ id, assignee: args.assignee, harness: args.harness, force: args.force, ownerOverride: args.ownerOverride }))
-        : [{ id: args.id as string, assignee: args.assignee, harness: args.harness, force: args.force, ownerOverride: args.ownerOverride }];
+        ? args.ids.map((id) => ({
+            id,
+            assignee: args.assignee,
+            harness: args.harness,
+            force: args.force,
+            ownerOverride: args.ownerOverride,
+          }))
+        : [
+            {
+              id: args.id as string,
+              assignee: args.assignee,
+              harness: args.harness,
+              force: args.force,
+              ownerOverride: args.ownerOverride,
+            },
+          ];
     const env = await runBulk(list, (it) => claimOne(it, ident, reader), {
       keyOf: (it) => ({ id: it.id }),
     });

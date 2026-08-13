@@ -31,6 +31,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   getFlag: vi.fn(),
   getNextForBee: vi.fn(),
+  getClaimTimePremises: vi.fn(),
   resolveAgentIdentity: vi.fn(),
   resolveClaimSpecWorkspace: vi.fn(),
 }));
@@ -93,7 +94,7 @@ vi.mock('../../plan-decisions-claim-port', () => ({
   renderPlanDecisionsNote: vi.fn(() => null),
 }));
 vi.mock('../../premises-claim-port', () => ({
-  getClaimTimePremises: vi.fn(async () => null),
+  getClaimTimePremises: mocks.getClaimTimePremises,
 }));
 vi.mock('../work_items/retraction-advisory', () => ({
   getClaimTimeRetractionAdvisory: vi.fn(async () => null),
@@ -108,8 +109,7 @@ type ToolDef = {
   ) => Promise<{ content?: Array<{ text: string }>; data?: Record<string, unknown> }>;
 };
 
-const callGetNext = () =>
-  (getNextTool as unknown as ToolDef).handler({ harness: 'papercusp' }, {});
+const callGetNext = () => (getNextTool as unknown as ToolDef).handler({ harness: 'papercusp' }, {});
 
 /**
  * The predicate under test, factored out so the CONTROL below can prove it is
@@ -130,6 +130,7 @@ describe('scheduler:get_next result envelope (WI-38199)', () => {
     mocks.resolveAgentIdentity.mockReturnValue({ ownerId: 'su-envelope', workspaceId: 'ws-test' });
     mocks.resolveClaimSpecWorkspace.mockReturnValue('ws-test');
     mocks.getNextForBee.mockReset();
+    mocks.getClaimTimePremises.mockReset().mockResolvedValue(null);
   });
 
   it('returns a COMMITTED claim as structured `data`, not as a door-truncatable text block', async () => {
@@ -148,13 +149,48 @@ describe('scheduler:get_next result envelope (WI-38199)', () => {
     expect(out.data).toMatchObject({ ok: true });
   });
 
+  it('passes the claimed id to premise citation hydration and surfaces its advisory', async () => {
+    mocks.getNextForBee.mockResolvedValue({
+      workItem: {
+        id: 'EI-aged',
+        state: 'open',
+        title: 'Build a replacement gate',
+        summary: 'EI-aged depends on WI-4329.',
+        payload: { source: 'ideation' },
+        harness: 'papercusp',
+      },
+      claimedUnder: { specId: 'envelope-spec', revision: 3 },
+      specSource: 'fleet',
+    });
+    mocks.getClaimTimePremises.mockResolvedValue({
+      rendered: ['- ? WI-4329 terminal evidence says the premise was invalid'],
+      note: 'Re-check the invalidated premise before building.',
+    });
+
+    const out = await callGetNext();
+
+    expect(out.data).toMatchObject({
+      workItem: { id: 'EI-aged' },
+      premises: ['- ? WI-4329 terminal evidence says the premise was invalid'],
+      premisesNote: 'Re-check the invalidated premise before building.',
+    });
+    expect(mocks.getClaimTimePremises).toHaveBeenCalledWith({
+      workItem: {
+        id: 'EI-aged',
+        title: 'Build a replacement gate',
+        summary: 'EI-aged depends on WI-4329.',
+        payload: { source: 'ideation' },
+      },
+      harness: 'papercusp',
+      workspaceId: 'ws-test',
+    });
+  });
+
   it('CONTROL: the predicate rejects the LEGACY text envelope this guard exists to catch', () => {
     // The exact shape the handler returned before 722551ecc2. If this ever stops
     // throwing, the assertion above has gone vacuous and would pass on a
     // regression — the guard would be decorative.
-    expect(() =>
-      expectCommittedClaimEnvelope({ content: [{ text: JSON.stringify({ ok: true }) }] }),
-    ).toThrow();
+    expect(() => expectCommittedClaimEnvelope({ content: [{ text: JSON.stringify({ ok: true }) }] })).toThrow();
   });
 
   it('carries the claimed work-item in the `data` payload so a caller can reconcile without retrying', async () => {

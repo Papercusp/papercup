@@ -11,6 +11,7 @@ const fleetAdmission = vi.hoisted(() => ({
   decision: { allowed: true, scoped: false } as any,
   notify: vi.fn(),
 }));
+const premisePort = vi.hoisted(() => ({ get: vi.fn() }));
 vi.mock('../coordination/identity', () => ({
   SUPERUSER_FALLBACK_CLIENT_ID: 'su-loopback',
   isEphemeralMcpCallIdentity: (id: string) => /^mcp-call-\d+$/.test(id),
@@ -58,6 +59,7 @@ vi.mock('../../scheduler/fleet-scope-admission', () => ({
 // Claim-time recall port (P-008) is exercised in its own memory/claim-port.test.ts;
 // mock it here so the handler test stays a hermetic unit (no real memory backend).
 vi.mock('../../memory/claim-port', () => ({ buildClaimRecallBlock: vi.fn(async () => null) }));
+vi.mock('../../premises-claim-port', () => ({ getClaimTimePremises: premisePort.get }));
 
 import { claimWorkItem, classifyClaimFailure, getWorkItem, readWorkItemClaimHoldProvenance } from '../../work-items';
 import { recordClaimHoldBypassAudit, notifyClaimHoldBypass } from './claim-hold-guard';
@@ -70,7 +72,7 @@ const notifyM = vi.mocked(notifyClaimHoldBypass);
 const tool = (await import('./claim')).default;
 
 type Out = { data: any };
-const body = async (args: unknown) => (((await tool.handler(args as never, {} as never)) as Out).data);
+const body = async (args: unknown) => ((await tool.handler(args as never, {} as never)) as Out).data;
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -84,6 +86,7 @@ beforeEach(() => {
   // pre-existing test below — none of which cares about claim-hold — is unaffected.
   getM.mockResolvedValue(null as never);
   provenanceM.mockReturnValue({ heldOpen: null, parked: null, attributed: false });
+  premisePort.get.mockReset().mockResolvedValue(null);
 });
 
 describe('work_items:claim handler (keyed-array)', () => {
@@ -92,6 +95,39 @@ describe('work_items:claim handler (keyed-array)', () => {
     expect(b).toMatchObject({ ok: true, counts: { ok: 1, failed: 0 } });
     expect(b.results[0]).toMatchObject({ ok: true, id: 'WI-1', workItem: { id: 'WI-1', assignee: 'me' } });
     expect(claimM).toHaveBeenCalledWith('WI-1', 'me', { harness: undefined });
+  });
+
+  it('passes the claimed id to premise citation hydration and surfaces its advisory', async () => {
+    claimM.mockResolvedValue({
+      id: 'EI-aged',
+      title: 'Build a replacement gate',
+      summary: 'EI-aged depends on WI-4329.',
+      payload: { source: 'ideation' },
+      harness: 'papercusp',
+      assignee: 'me',
+    } as never);
+    premisePort.get.mockResolvedValue({
+      rendered: ['- ? WI-4329 terminal evidence says the premise was invalid'],
+      note: 'Re-check the invalidated premise before building.',
+    });
+
+    const b = await body({ id: 'EI-aged', harness: 'papercusp' });
+
+    expect(b.results[0]).toMatchObject({
+      workItem: { id: 'EI-aged' },
+      premises: ['- ? WI-4329 terminal evidence says the premise was invalid'],
+      premisesNote: 'Re-check the invalidated premise before building.',
+    });
+    expect(premisePort.get).toHaveBeenCalledWith({
+      workItem: {
+        id: 'EI-aged',
+        title: 'Build a replacement gate',
+        summary: 'EI-aged depends on WI-4329.',
+        payload: { source: 'ideation' },
+      },
+      harness: 'papercusp',
+      workspaceId: undefined,
+    });
   });
 
   it('claims MANY via ids:[…] for an explicit assignee', async () => {
@@ -106,7 +142,12 @@ describe('work_items:claim handler (keyed-array)', () => {
       scoped: true,
       code: 'fleet_scope_violation',
       reason: 'WI-out is outside fleet-bugs@4',
-      scope: { fleetSlug: 'bugs', ownerId: 'bee-7', fleetRole: 'member', record: { spec: { specId: 'fleet-bugs', revision: 4 } } },
+      scope: {
+        fleetSlug: 'bugs',
+        ownerId: 'bee-7',
+        fleetRole: 'member',
+        record: { spec: { specId: 'fleet-bugs', revision: 4 } },
+      },
     };
     const b = await body({ id: 'WI-out', assignee: 'bee-7' });
     expect(b.results[0]).toMatchObject({ ok: false, id: 'WI-out', error: 'fleet_scope_violation' });
@@ -290,13 +331,21 @@ describe('work_items:claim handler (keyed-array)', () => {
       getM.mockResolvedValue({ id: 'WI-SEC', payload: { _claimHold: true } } as never);
       provenanceM.mockReturnValue({
         heldOpen: null,
-        parked: { by: 'su-leader', reason: 'D-003 explicit policy-tier human gate — owner sign-off required', at: '2026-07-26T00:00:00Z' },
+        parked: {
+          by: 'su-leader',
+          reason: 'D-003 explicit policy-tier human gate — owner sign-off required',
+          at: '2026-07-26T00:00:00Z',
+        },
         attributed: true,
       });
       const looksLikePolicyGateM = vi.mocked((await import('../../work-items')).looksLikePolicyGate);
       looksLikePolicyGateM.mockReturnValue(true);
       const forced = await body({ id: 'WI-SEC', force: true });
-      expect(forced.results[0]).toMatchObject({ ok: false, id: 'WI-SEC', error: 'policy_gate_requires_owner_override' });
+      expect(forced.results[0]).toMatchObject({
+        ok: false,
+        id: 'WI-SEC',
+        error: 'policy_gate_requires_owner_override',
+      });
       expect(claimM).not.toHaveBeenCalled();
 
       const overridden = await body({ id: 'WI-SEC', force: true, ownerOverride: true });
