@@ -57,6 +57,7 @@ const TRIGGER_DEFAULT_STYLE: CSSProperties = {
 };
 
 const CONTENT_STYLE: CSSProperties = {
+  boxSizing: 'border-box',
   background: 'color-mix(in srgb, var(--bg-deeper), transparent 2%)',
   color: 'var(--fg)',
   border: '1px solid color-mix(in oklab, var(--accent), transparent 62%)',
@@ -83,18 +84,24 @@ const CONTENT_STYLE: CSSProperties = {
   fontSize: 12,
   minWidth: 'var(--radix-select-trigger-width)',
   backdropFilter: 'blur(14px) saturate(150%)',
+  /* Bound the WHOLE popper, not only its scrolling viewport. The content shell
+     adds 6px padding + a 1px border on every side; constraining only Viewport
+     lets that 14px of chrome escape Radix's collision boundary at short window
+     heights. 434px preserves the 420px desktop viewport cap plus that chrome. */
+  maxHeight: 'min(434px, var(--radix-select-content-available-height))',
+  overflow: 'hidden',
 };
 
 /**
- * Keep long menus inside Radix's measured collision boundary. The viewport —
- * not the popper content shell — owns scrolling so keyboard navigation and the
- * optional Radix scroll buttons keep observing the same scroll container.
- * `--radix-select-content-available-height` already accounts for the trigger,
- * viewport edge and collision padding; the fixed cap keeps a menu from taking
- * over a tall desktop window.
+ * Keep long menus inside Radix's measured collision boundary. CONTENT_STYLE
+ * bounds the whole shell (including border + padding); the viewport still owns
+ * scrolling so keyboard navigation and the optional Radix scroll buttons keep
+ * observing the same scroll container. The fixed cap keeps a menu from taking
+ * over a tall desktop window, while the parent's flex layout shrinks it below
+ * 420px when the total-content collision bound is tighter.
  */
 const VIEWPORT_STYLE: CSSProperties = {
-  maxHeight: 'min(420px, var(--radix-select-content-available-height))',
+  maxHeight: 420,
   overflowY: 'auto',
   overscrollBehavior: 'contain',
 };
