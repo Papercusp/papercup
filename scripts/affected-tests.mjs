@@ -47,7 +47,11 @@ import {
   formatBatchProgress,
 } from './lib/batch-watchdog.mjs';
 import { classifyTaskExit, isGatingFailure } from './lib/task-exit-class.mjs';
-import { classifyResidualFailure, formatLoadSuspectNotice, formatLoadSuspectMarker } from './lib/load-suspect.mjs';
+import {
+  classifyResidualFailure,
+  formatLoadSuspectNotice,
+  formatLoadSuspectMarker,
+} from './lib/load-suspect.mjs';
 import { detectCargoTermination } from './lib/cargo-result.mjs';
 import { listTrackedFiles } from './lib/tracked-files.mjs';
 // D-021/P-002: summed task work, measured per-run. The helper/marker retain their legacy
@@ -236,10 +240,7 @@ const captureOutput = () => true;
 // instead of unconditionally grabbing up to 32 more workers. See
 // scripts/lib/worker-cap.mjs for the full rationale + the (unit-tested) pure
 // function this wraps.
-const WORKER_CAP = applyWorkerCapEnv({
-  cores: availableParallelism(),
-  load1: loadavg()[0],
-});
+const WORKER_CAP = applyWorkerCapEnv({ cores: availableParallelism(), load1: loadavg()[0] });
 const SCHEDULER_WORKER_MEMORY_MB = resolveWorkerMemoryMb({
   affectedWorkerMemoryMb: process.env.AFFECTED_WORKER_MEMORY_MB,
   nodeOptions: process.env.NODE_OPTIONS,
@@ -258,7 +259,9 @@ const SCHEDULER_WORKER_BUDGET = resolveGlobalWorkerBudget({
 });
 const SCHEDULER_CONFIG = resolveTaskBudget({
   workerBudget: SCHEDULER_WORKER_BUDGET,
-  memoryBudgetMb: process.env.AFFECTED_GLOBAL_MEMORY_MB ?? SCHEDULER_WORKER_BUDGET * SCHEDULER_WORKER_MEMORY_MB,
+  memoryBudgetMb:
+    process.env.AFFECTED_GLOBAL_MEMORY_MB ??
+    SCHEDULER_WORKER_BUDGET * SCHEDULER_WORKER_MEMORY_MB,
   workerMemoryMb: SCHEDULER_WORKER_MEMORY_MB,
   maxConcurrentTasks: process.env.AFFECTED_MAX_CONCURRENT_TASKS ?? 2,
   reserveWorkers: 1,
@@ -297,10 +300,7 @@ const rangeTo = arg('--range-to', null);
 const changedPathsOverride = (() => {
   const raw = arg('--changed-paths', null);
   if (raw == null) return null;
-  return raw
-    .split(',')
-    .map((p) => p.trim())
-    .filter(Boolean);
+  return raw.split(',').map((p) => p.trim()).filter(Boolean);
 })();
 const printAffected = has('--print-affected');
 const runElSuite = has('--el-suite');
@@ -339,7 +339,10 @@ function editDistance(a, b) {
   for (let j = 0; j <= b.length; j++) dp[0][j] = j;
   for (let i = 1; i <= a.length; i++) {
     for (let j = 1; j <= b.length; j++) {
-      dp[i][j] = a[i - 1] === b[j - 1] ? dp[i - 1][j - 1] : 1 + Math.min(dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1]);
+      dp[i][j] =
+        a[i - 1] === b[j - 1]
+          ? dp[i - 1][j - 1]
+          : 1 + Math.min(dp[i - 1][j - 1], dp[i - 1][j], dp[i][j - 1]);
     }
   }
   return dp[a.length][b.length];
@@ -406,11 +409,7 @@ const quarantined = existsSync(quarantineFile)
 // ample headroom — even a full-repo `--name-only` diff is only a few MB — so the
 // fast, correct affected-set path succeeds instead of falling back.
 function sh(cmd) {
-  return execSync(cmd, {
-    cwd: ROOT,
-    encoding: 'utf8',
-    maxBuffer: 256 * 1024 * 1024,
-  }).trim();
+  return execSync(cmd, { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 }).trim();
 }
 
 // Collect every file changed vs `base` — committed (base...HEAD), uncommitted
@@ -725,7 +724,12 @@ const PARTIAL_INDEX_SCHEMA_FILE = 'libs/papercusp/libs/db/src/schema/generated.t
 // and source consumers, so if either domain moves, this must follow or the guard silently
 // stops firing (the same "green because it stopped checking" shape).
 const MIGRATION_SQL_DIR = 'libs/papercusp/libs/db/sql';
-const MIGRATION_SOURCE_ROOTS = ['apps', 'packages', 'libs/papercusp/packages', 'libs/papercusp/libs/db/src'];
+const MIGRATION_SOURCE_ROOTS = [
+  'apps',
+  'packages',
+  'libs/papercusp/packages',
+  'libs/papercusp/libs/db/src',
+];
 
 // EI-7667. Mirrors ROOTS in scripts/check-no-unthreaded-apply.mjs — that guard walks
 // exactly these roots, so if its scan widens, this must follow or the guard silently
@@ -924,7 +928,8 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     workspace: '@papercusp/operator-core',
     script: 'gen:knowledge-packs:check',
     appliesTo: (f) =>
-      f.startsWith('libs/papercusp/packages/harness/knowledge-packs/') || f === 'scripts/gen-knowledge-packs.mjs',
+      f.startsWith('libs/papercusp/packages/harness/knowledge-packs/') ||
+      f === 'scripts/gen-knowledge-packs.mjs',
   },
   {
     // WI-38239 — `gen:tool-catalog:check`, the last WIRE-able member of the orphaned `gen:*:check`
@@ -1242,7 +1247,9 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // Mirrors ROOTS in scripts/check-no-unthreaded-apply.mjs — if that scan ever widens,
     // this must follow or the guard silently stops firing on the new root (the same
     // "green because it stopped checking" shape MIGRATION_SQL_DIR is annotated for).
-    appliesTo: (f) => /\.[cm]?tsx?$/.test(f) && UNTHREADED_APPLY_SOURCE_ROOTS.some((r) => f.startsWith(`${r}/`)),
+    appliesTo: (f) =>
+      /\.[cm]?tsx?$/.test(f) &&
+      UNTHREADED_APPLY_SOURCE_ROOTS.some((r) => f.startsWith(`${r}/`)),
   },
   {
     // okf-frontmatter-adoption-2026-08-08 P-006 — the D-034 shape, this time for a
@@ -1523,7 +1530,8 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // run inside operator-core's own suite (green-checkpoint-tag-guard.test.ts).
     script: 'lint:green-checkpoint-tag',
     hostSuiteRatchet: 'packages/operator-core/lib/green-checkpoint-tag-guard.test.ts',
-    appliesTo: (f) => /\.[cm]?tsx?$/.test(f) && GC_TAG_SOURCE_ROOTS.some((r) => f.startsWith(`${r}/`)),
+    appliesTo: (f) =>
+      /\.[cm]?tsx?$/.test(f) && GC_TAG_SOURCE_ROOTS.some((r) => f.startsWith(`${r}/`)),
   },
   {
     // EI-20035436440627349 — the D-034 shape at its most literal: an unparseable module
@@ -1679,9 +1687,7 @@ function expandWorkspaces(patterns) {
       const base = p.replace(/\/\*$/, '');
       const baseDir = join(ROOT, base);
       if (!existsSync(baseDir)) continue;
-      for (const entry of execSync(`ls -1 ${JSON.stringify(baseDir)}`, {
-        encoding: 'utf8',
-      })
+      for (const entry of execSync(`ls -1 ${JSON.stringify(baseDir)}`, { encoding: 'utf8' })
         .trim()
         .split('\n')
         .filter(Boolean)) {
@@ -1712,11 +1718,7 @@ for (const dir of workspaces) {
 
 function depsOf(pkg) {
   return new Set(
-    Object.keys({
-      ...(pkg.dependencies || {}),
-      ...(pkg.devDependencies || {}),
-      ...(pkg.peerDependencies || {}),
-    }),
+    Object.keys({ ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}), ...(pkg.peerDependencies || {}) }),
   );
 }
 
@@ -1774,11 +1776,7 @@ function affectedWorkspaces() {
       errSync(`!!!!!! affected-tests: \`git diff\` against ${base} found no merge base — shallow clone horizon gap.`);
       errSync('!!!!!! Attempting a one-shot self-heal: git fetch --deepen=2000 origin main staging ...');
       try {
-        execSync('git fetch --deepen=2000 origin main staging', {
-          cwd: ROOT,
-          encoding: 'utf8',
-          stdio: 'pipe',
-        });
+        execSync('git fetch --deepen=2000 origin main staging', { cwd: ROOT, encoding: 'utf8', stdio: 'pipe' });
         changed = changedFiles();
         healed = true;
         errSync('!!!!!! Self-heal succeeded — merge base restored, proceeding with the real affected set.');
@@ -1843,10 +1841,7 @@ function resolveAffected(changed) {
     const dependents = reverseDeps.get(name);
     if (!dependents) continue;
     for (const d of dependents) {
-      if (!affected.has(d)) {
-        affected.add(d);
-        queue.push(d);
-      }
+      if (!affected.has(d)) { affected.add(d); queue.push(d); }
     }
   }
 
@@ -1864,15 +1859,12 @@ function elSuiteAutoTrigger() {
   let changed;
   try {
     changed = changedFiles();
-  } catch {
-    return false;
-  }
-  return changed.some(
-    (f) =>
-      f === 'apps/operator/prompts/operator.persona.md' ||
-      f === 'apps/operator/scripts/el-agent-sync.mjs' ||
-      f === 'apps/operator/scripts/el-suite-test.mjs' ||
-      f.startsWith('apps/operator/lib/commands/defs/'),
+  } catch { return false; }
+  return changed.some((f) =>
+    f === 'apps/operator/prompts/operator.persona.md' ||
+    f === 'apps/operator/scripts/el-agent-sync.mjs' ||
+    f === 'apps/operator/scripts/el-suite-test.mjs' ||
+    f.startsWith('apps/operator/lib/commands/defs/')
   );
 }
 if (runIntegration && !runElSuite && elSuiteAutoTrigger()) {
@@ -1935,10 +1927,7 @@ const coversHostSuite = (queued, wsName) =>
 
 const tasks = [];
 for (const ws of affected) {
-  if (excludes.has(ws.name)) {
-    outSync(`(excluded ${ws.name})`);
-    continue;
-  }
+  if (excludes.has(ws.name)) { outSync(`(excluded ${ws.name})`); continue; }
   if (ws.scripts.test) {
     if (hasLaneSplit(ws)) for (const script of LANE_SCRIPTS) tasks.push({ ws, script });
     else tasks.push({ ws, script: 'test' });
@@ -1956,8 +1945,7 @@ for (const ws of affected) {
   // sync.mjs, lib/commands/defs/**, or want to verify before a release.
   // Skips with exit 0 when EL credentials aren't available so CI
   // without an XI_API_KEY doesn't fail the gate.
-  if (runIntegration && (runElSuite || globalThis.__autoElSuite) && ws.scripts['test:el-suite'])
-    tasks.push({ ws, script: 'test:el-suite' });
+  if (runIntegration && (runElSuite || globalThis.__autoElSuite) && ws.scripts['test:el-suite']) tasks.push({ ws, script: 'test:el-suite' });
 }
 
 // Repo-wide invariant guards (see REPO_WIDE_INVARIANT_GUARDS). Appended AFTER the
@@ -1994,11 +1982,7 @@ for (const guard of REPO_WIDE_INVARIANT_GUARDS) {
   if (!invariantGuardChangedPaths().some((f) => guard.appliesTo(f))) continue;
   selectedInvariantGuards.push({ workspace: ws.name, script: guard.script });
   if (!printAffected) outSync(`(repo-wide invariant guard: ${ws.name} :: ${guard.script})`);
-  tasks.push({
-    ws,
-    script: guard.script,
-    notCheckedIsNonGating: Boolean(guard.notCheckedIsNonGating),
-  });
+  tasks.push({ ws, script: guard.script, notCheckedIsNonGating: Boolean(guard.notCheckedIsNonGating) });
 }
 
 if (printAffected) {
@@ -2019,14 +2003,10 @@ if (!tasks.length) {
   // nowhere at all" is the case that used to skip the repo-wide guards entirely.
   if (!affected.length) {
     outSync('No affected workspaces (and no repo-wide invariant guard matched the changed paths).');
-    outSync(
-      'AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 reason=no-affected-workspaces',
-    );
+    outSync('AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 reason=no-affected-workspaces');
   } else {
     outSync(`Affected: ${affected.map((w) => w.name).join(', ')} — but none declare a 'test' script.`);
-    outSync(
-      'AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 reason=no-test-script',
-    );
+    outSync('AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 reason=no-test-script');
   }
   terminalEmitted = true;
   process.exit(0);
@@ -2050,9 +2030,7 @@ outSync(formatTaskBudgetMarker(SCHEDULER_CONFIG));
 // summary — a truncated background-task tail is more likely to still show
 // this line than a full multi-suite run's early output, so it survives even
 // when the rest of the header has already scrolled out of the retained tail.
-outSync(
-  `Full run log: ${RUN_LOG_PATH} (grep this — not just the exit code or a truncated tail — for the real per-suite verdict)`,
-);
+outSync(`Full run log: ${RUN_LOG_PATH} (grep this — not just the exit code or a truncated tail — for the real per-suite verdict)`);
 
 if (dry) {
   outSync(`AFFECTED_TESTS_RESULT status=dry-run tasks=${tasks.length} failed=0 quarantinedFailed=0 timedOutTasks=0`);
@@ -2196,13 +2174,7 @@ function spawnSpecFor(t, extraArgs) {
     PATH: [dirname(process.execPath), ...binDirs, process.env.PATH].filter(Boolean).join(':'),
   };
   // `node foo.mjs` → run it with the node we are already running under.
-  if (tool === 'node')
-    return {
-      cmd: process.execPath,
-      argv: [...rest, ...extraArgs],
-      cwd: wsDir,
-      env,
-    };
+  if (tool === 'node') return { cmd: process.execPath, argv: [...rest, ...extraArgs], cwd: wsDir, env };
   // Anything else must be a node_modules/.bin entry (vitest, astro, tsx, …).
   // Spawn the bin itself so its shebang picks the right interpreter; PATH above
   // makes that resolve. Fail LOUDLY on a missing bin — a release check that
@@ -2228,7 +2200,9 @@ const TASK_VERDICT_CACHE_ROOT_SCOPE = createHash('sha256').update(ROOT).digest('
 const TASK_VERDICT_CACHE_PATH =
   process.env.AFFECTED_TASK_VERDICT_CACHE_PATH ||
   join(tmpdir(), `papercusp-affected-passing-verdicts-v1-${TASK_VERDICT_CACHE_ROOT_SCOPE}.json`);
-const taskVerdictCacheRead = TASK_VERDICT_CACHE_ENABLED ? readPassingTaskVerdictCache(TASK_VERDICT_CACHE_PATH) : null;
+const taskVerdictCacheRead = TASK_VERDICT_CACHE_ENABLED
+  ? readPassingTaskVerdictCache(TASK_VERDICT_CACHE_PATH)
+  : null;
 const taskVerdictCacheUpdates = {};
 const taskVerdictDigestCache = new Map();
 const taskVerdictTrackedScan = TASK_VERDICT_CACHE_ENABLED ? listTrackedFiles(ROOT) : null;
@@ -2259,17 +2233,11 @@ function dependencyProvenanceForTask(t) {
   // These tasks consume live/external state by definition. A content hash cannot establish
   // complete provenance, so D-003 says miss rather than pretending the closure is sufficient.
   if (t.script === 'test:integration' || t.script === 'test:el-suite') {
-    return {
-      ok: false,
-      reason: 'provenance-incomplete:external-integration-task',
-    };
+    return { ok: false, reason: 'provenance-incomplete:external-integration-task' };
   }
   const scan = taskVerdictTrackedScan;
   if (!scan || scan.files.length === 0) {
-    return {
-      ok: false,
-      reason: 'provenance-incomplete:tracked-file-enumeration-empty',
-    };
+    return { ok: false, reason: 'provenance-incomplete:tracked-file-enumeration-empty' };
   }
   const key = taskKey(t);
   const wholeTree = taskVerdictGuardKeys.has(key);
@@ -2296,7 +2264,10 @@ function dependencyProvenanceForTask(t) {
       );
   const unavailable = scan.unscannedPresent.filter(
     (submodule) =>
-      wholeTree || closureDirs.some((dir) => pathInsideDir(dir, submodule) || pathInsideDir(submodule, dir)),
+      wholeTree ||
+      closureDirs.some(
+        (dir) => pathInsideDir(dir, submodule) || pathInsideDir(submodule, dir),
+      ),
   );
   return hashDependencyFileSet({
     root: ROOT,
@@ -2335,12 +2306,7 @@ let timedOutTasks = 0;
 // window this whole mechanism is about — reports what had actually happened when
 // the signal landed, not the pre-run zeros. Declared here rather than at the top
 // because a closure over these `let`s is a TDZ throw until this point.
-readTerminalCounters = () => ({
-  tasks: tasks.length,
-  failed,
-  quarantinedFailed,
-  timedOutTasks,
-});
+readTerminalCounters = () => ({ tasks: tasks.length, failed, quarantinedFailed, timedOutTasks });
 // EI-2341 item 2: the final summary used to report only a COUNT of failed tasks,
 // so finding WHICH task failed meant scrolling back through the whole run's
 // interleaved output. Track names as we go and name them in the final summary.
@@ -2395,7 +2361,10 @@ const MAX_CAPTURE_BYTES = 256 * 1024 * 1024;
  */
 function runCapturedTask(context, allocation, extraArgs = [], scriptOverride = null) {
   const spawnTask = scriptOverride ? { ...context.t, script: scriptOverride } : context.t;
-  const { cmd, argv, cwd, env: specEnv } = spawnSpecFor(spawnTask, [...context.guardArgs, ...extraArgs]);
+  const { cmd, argv, cwd, env: specEnv } = spawnSpecFor(spawnTask, [
+    ...context.guardArgs,
+    ...extraArgs,
+  ]);
   const childEnv = {
     ...process.env,
     ...(specEnv ?? {}),
@@ -2566,7 +2535,8 @@ for (const scheduled of initialPool.results) {
   const run = async (extraArgs = [], scriptOverride = null) => {
     const retryPool = await runBudgetedTasks([scheduled.task], {
       ...SCHEDULER_CONFIG,
-      runTask: (context, allocation) => runCapturedTask(context, allocation, extraArgs, scriptOverride),
+      runTask: (context, allocation) =>
+        runCapturedTask(context, allocation, extraArgs, scriptOverride),
     });
     const retry = retryPool.results[0];
     recordLeg(t, retry.value.__elapsedMs);
@@ -2623,7 +2593,9 @@ for (const scheduled of initialPool.results) {
     // it into an empty string would falsely report "no progress" and invite a
     // spin diagnosis from evidence this process never captured.
     const capturedOut =
-      typeof r.stdout === 'string' || typeof r.stderr === 'string' ? `${r.stdout ?? ''}${r.stderr ?? ''}` : null;
+      typeof r.stdout === 'string' || typeof r.stderr === 'string'
+        ? `${r.stdout ?? ''}${r.stderr ?? ''}`
+        : null;
     const progressEvidence = parseBatchProgress(capturedOut);
     const progress = formatBatchProgress(progressEvidence, classifyBatchProgress(progressEvidence));
     errSync(
@@ -2741,10 +2713,7 @@ for (const scheduled of initialPool.results) {
         // would just fall through to the generic 'no-file-rows' reason, which reads
         // identically to an unrelated worker crash. Name the real cause explicitly so a
         // triager doesn't have to rediscover it from the log above.
-        unattributedTasks.push({
-          task: `${t.ws.name} :: ${t.script}`,
-          reason: 'batch-timeout',
-        });
+        unattributedTasks.push({ task: `${t.ws.name} :: ${t.script}`, reason: 'batch-timeout' });
       } else {
         const a = attributeFailedTask({
           workspace: t.ws.name,
@@ -2787,11 +2756,7 @@ for (const scheduled of initialPool.results) {
         threshold: AUTO_RETRY_LOAD1_THRESHOLD,
       });
       if (residualClass === 'load-suspect') {
-        loadSuspectTasks.push({
-          task: `${t.ws.name} :: ${t.script}`,
-          load1AtRerun,
-          files: residualFiles,
-        });
+        loadSuspectTasks.push({ task: `${t.ws.name} :: ${t.script}`, load1AtRerun, files: residualFiles });
         errSync(
           formatLoadSuspectNotice({
             workspace: t.ws.name,
@@ -2814,7 +2779,9 @@ for (const scheduled of initialPool.results) {
     !absorptionRan &&
     scheduled.value.__cacheIdentity
   ) {
-    taskVerdictCacheUpdates[taskKey(t)] = passingTaskVerdictEntry(scheduled.value.__cacheIdentity);
+    taskVerdictCacheUpdates[taskKey(t)] = passingTaskVerdictEntry(
+      scheduled.value.__cacheIdentity,
+    );
   }
 }
 
@@ -2898,10 +2865,7 @@ try {
   errSync(`>>> cargo test runner error: ${err.message}`);
   failed++;
   failedTaskNames.push('papercusp-desktop :: cargo test (runner error)');
-  unattributedTasks.push({
-    task: 'papercusp-desktop :: cargo test (runner error)',
-    reason: 'non-vitest',
-  });
+  unattributedTasks.push({ task: 'papercusp-desktop :: cargo test (runner error)', reason: 'non-vitest' });
 }
 
 if (quarantinedFailed) {
