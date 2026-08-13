@@ -146,7 +146,7 @@ describe('installPapercuspFiles', () => {
     expect(psu).toContain('PAPERCUSP_PSU_LAUNCHER');
     expect(psu).toContain('PAPERCUSP_INTEGRATION_ROOT');
     expect(psu).toContain('PAPERCUSP_RELEASE_ROOT');
-    expect(psu).toContain(`exec ${JSON.stringify(process.execPath)} "$launcher" "$@"`);
+    expectLauncherInterpreter(psu, process.execPath);
     expect(psu).toContain(JSON.stringify(result.psuLauncherSource));
     // WI-2149: the shim prepends ~/.local/bin so the launcher's pty.spawn('claude')
     // resolves the agent installed by claude.ai/install.sh — the WSL2 distro's login
