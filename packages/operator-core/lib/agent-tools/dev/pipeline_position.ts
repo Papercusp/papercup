@@ -159,7 +159,7 @@ function compactPipelineResult(result: PipelinePosition, extras: JsonRecord, opt
   if (Array.isArray(source.runtimeGenerations)) {
     out.runtimeGenerations = source.runtimeGenerations
       .slice(0, opts.arrayLimit)
-      .map((entry) => pickPipelineFields(entry, ['unit', 'label', 'pid', 'startedAtMs', 'codeAsOfMs', 'codeAsOfSource', 'runningYourCode', 'behindMin', 'activationLever', 'unknownReason'], opts) ?? {});
+      .map((entry) => pickPipelineFields(entry, ['unit', 'label', 'pid', 'startedAtMs', 'codeAsOfMs', 'codeAsOfSource', 'runningYourCode', 'behindMin', 'loadedIdentity', 'loadedIdentityUnknown', 'activationLever', 'unknownReason'], opts) ?? {});
   }
   if (Array.isArray(source.stages)) {
     out.stages = source.stages

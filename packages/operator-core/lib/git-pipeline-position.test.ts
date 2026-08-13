@@ -24,6 +24,7 @@ import {
   computeStages,
   evaluateServing,
   evaluateRuntimeGenerations,
+  attachRuntimeLoadedIdentities,
   runtimeGenerationDivergenceNote,
   evaluateChangeInCandidate,
   evaluateReleaseContentDrift,
@@ -37,6 +38,7 @@ import {
   MAIN_BUFFER_STALL_MS,
   type GitRunner,
   type PipelinePosition,
+  type RuntimeGeneration,
   type ChangeInCandidate,
   type ServingTruth,
   type StageName,
@@ -46,6 +48,7 @@ import {
 import type { DevDeployState } from './dev-deploy-state';
 import type { DeployInFlight } from './release-deploy-launch';
 import type { GitPipelineSnapshot } from './git-pipeline-stats';
+import type { RuntimeVintageRow } from './runtime-vintage';
 
 /** A git-sync leg-state with nothing wrong with it — the baseline for fixtures. */
 const HEALTHY_GIT_SYNC = {
@@ -4938,6 +4941,68 @@ describe('runtime generations (WI-9974) — every host, both directions', () => 
       ]);
       expect(runtimeGenerationDivergenceNote(gens, 'x.ts')).toBeNull();
     });
+  });
+});
+
+describe('WI-38455: runtime generations expose the exact process loaded identity', () => {
+  const generation = (over: Partial<RuntimeGeneration> = {}): RuntimeGeneration => ({
+    unit: 'papercup-bg-host.service',
+    label: 'bg-host',
+    pid: 42,
+    startedAtMs: Date.parse('2026-08-13T10:00:00.000Z'),
+    codeAsOfMs: 1,
+    codeAsOfSource: 'file-mtime',
+    runningYourCode: true,
+    behindMin: null,
+    loadedIdentity: null,
+    loadedIdentityUnknown: null,
+    activationLever: 'restart',
+    unknownReason: null,
+    ...over,
+  });
+  const vintage = (over: Partial<RuntimeVintageRow> = {}): RuntimeVintageRow => ({
+    workspaceId: 'ws',
+    unit: 'bg-host',
+    host: 'tower',
+    treeSha: 'abc123',
+    buildTime: '2026-08-13T09:59:00.000Z',
+    bundleVersion: '0.0.15-alpha',
+    pid: 42,
+    extra: {},
+    reportedAt: '2026-08-13T10:00:01.000Z',
+    ...over,
+  });
+
+  it('joins a boot-reported identity by local host + current pid + report-after-start', () => {
+    const [result] = attachRuntimeLoadedIdentities([generation()], [vintage()], 'tower');
+    expect(result.loadedIdentity).toMatchObject({
+      source: 'runtime-vintage',
+      unit: 'bg-host',
+      host: 'tower',
+      treeSha: 'abc123',
+      bundleVersion: '0.0.15-alpha',
+    });
+    expect(result.loadedIdentityUnknown).toBeNull();
+  });
+
+  it.each([
+    ['a row from another host', vintage({ host: 'desktop' })],
+    ['a row for another pid', vintage({ pid: 41 })],
+    ['a stale row from an earlier process that reused the pid', vintage({ reportedAt: '2026-08-13T09:59:59.000Z' })],
+  ])('does not misattribute %s', (_label, row) => {
+    const [result] = attachRuntimeLoadedIdentities([generation()], [row], 'tower');
+    expect(result.loadedIdentity).toBeNull();
+    expect(result.loadedIdentityUnknown?.code).toBe('insufficient-data');
+  });
+
+  it('does not call a metadata-free vintage row a concrete identity', () => {
+    const [result] = attachRuntimeLoadedIdentities(
+      [generation()],
+      [vintage({ treeSha: null, bundleVersion: null })],
+      'tower',
+    );
+    expect(result.loadedIdentity).toBeNull();
+    expect(result.loadedIdentityUnknown?.detail).toMatch(/neither treeSha nor bundleVersion/);
   });
 });
 

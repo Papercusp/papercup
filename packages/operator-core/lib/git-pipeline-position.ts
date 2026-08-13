@@ -24,6 +24,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import * as path from 'node:path';
+import { hostname } from 'node:os';
 import { devDeployState, type DevDeployState } from './dev-deploy-state';
 import { gitPipelineSnapshot, type GitPipelineSnapshot } from './git-pipeline-stats';
 // EI-19447523039740352. Safe direction: release-deploy-launch imports git-pipeline-STATS,
@@ -43,6 +44,7 @@ import { cellUnknown, formatCellUnknown, type CellUnknown } from './cell-contrac
 import { describeRefireBudget } from './release/in-flight-retriage';
 import { dispatchedSweepMatcher } from './routines-dispatch-derivation';
 import { readGateOwnership, type CellOwnership } from './coord/gate-ownership';
+import { listRuntimeVintage, type RuntimeVintageRow } from './runtime-vintage';
 
 const pexec = promisify(execFile);
 
@@ -1487,9 +1489,28 @@ export interface RuntimeGeneration {
   runningYourCode: boolean | null;
   /** Minutes the process start precedes the code change, when it is behind. */
   behindMin: number | null;
+  /**
+   * The identity THIS exact process reported after boot. This is joined by
+   * local host + pid + report-after-process-start, never inferred from the
+   * checkout or from a systemd unit name (both can describe code the process
+   * has not loaded yet).
+   */
+  loadedIdentity: RuntimeLoadedIdentity | null;
+  /** Why `loadedIdentity` is absent. Null iff an identity is present. */
+  loadedIdentityUnknown: CellUnknown | null;
   /** How this host's code becomes current. */
   activationLever: string;
   unknownReason: CellUnknown | null;
+}
+
+export interface RuntimeLoadedIdentity {
+  source: 'runtime-vintage';
+  unit: string;
+  host: string;
+  treeSha: string | null;
+  bundleVersion: string | null;
+  buildTime: string | null;
+  reportedAt: string;
 }
 
 /**
@@ -1567,6 +1588,11 @@ export function evaluateRuntimeGenerations(
       codeAsOfSource,
       runningYourCode: null,
       behindMin: null,
+      loadedIdentity: null,
+      loadedIdentityUnknown: cellUnknown(
+        'insufficient-data',
+        `No boot-reported build/content identity was joined for ${p.unit}.`,
+      ),
       activationLever: withRestartAuthorization(p.activationLever),
       unknownReason: null,
     };
@@ -1614,6 +1640,72 @@ export function evaluateRuntimeGenerations(
       ...base,
       runningYourCode,
       behindMin: runningYourCode ? null : Math.max(1, Math.round((base.codeAsOfMs - base.startedAtMs) / 60_000)),
+    };
+  });
+}
+
+/**
+ * Join the process-time verdict to the existing boot-time runtime-vintage
+ * ledger. A pid alone is insufficient because remote hosts can reuse it, and a
+ * stale row can survive until a later process reuses the same pid. Requiring the
+ * local host AND a report at/after this process start makes the receipt about
+ * the currently loaded process rather than a similarly named runtime.
+ */
+export function attachRuntimeLoadedIdentities(
+  generations: ReadonlyArray<RuntimeGeneration>,
+  rows: ReadonlyArray<RuntimeVintageRow>,
+  localHost: string,
+): RuntimeGeneration[] {
+  return generations.map((generation) => {
+    if (generation.pid === null || generation.startedAtMs === null) {
+      return {
+        ...generation,
+        loadedIdentity: null,
+        loadedIdentityUnknown: cellUnknown(
+          'insufficient-data',
+          `Cannot join ${generation.unit}'s boot identity without its current pid and process start time.`,
+        ),
+      };
+    }
+    const row = rows.find((candidate) => {
+      const reportedAtMs = Date.parse(candidate.reportedAt);
+      return candidate.host === localHost &&
+        candidate.pid === generation.pid &&
+        Number.isFinite(reportedAtMs) &&
+        reportedAtMs >= generation.startedAtMs!;
+    });
+    if (!row) {
+      return {
+        ...generation,
+        loadedIdentity: null,
+        loadedIdentityUnknown: cellUnknown(
+          'insufficient-data',
+          `No current runtime-vintage row matches ${generation.unit} pid ${generation.pid} on ${localHost}; the process has not reported a verifiable loaded identity.`,
+        ),
+      };
+    }
+    if (!row.treeSha && !row.bundleVersion) {
+      return {
+        ...generation,
+        loadedIdentity: null,
+        loadedIdentityUnknown: cellUnknown(
+          'insufficient-data',
+          `Runtime-vintage matched ${generation.unit} pid ${generation.pid}, but reported neither treeSha nor bundleVersion.`,
+        ),
+      };
+    }
+    return {
+      ...generation,
+      loadedIdentity: {
+        source: 'runtime-vintage',
+        unit: row.unit,
+        host: row.host,
+        treeSha: row.treeSha,
+        bundleVersion: row.bundleVersion,
+        buildTime: row.buildTime,
+        reportedAt: row.reportedAt,
+      },
+      loadedIdentityUnknown: null,
     };
   });
 }
@@ -2863,6 +2955,10 @@ export interface PipelinePositionDeps {
    * the ship-it-dark failure this plan exists to avoid.
    */
   probeUnitStart?: (unit: string) => Promise<{ pid: number | null; startedAtMs: number | null } | null>;
+  /** WI-38455: boot-reported identity rows joined to the exact current process. */
+  loadRuntimeVintage?: () => Promise<RuntimeVintageRow[]>;
+  /** Injectable local hostname for the host+pid identity join. */
+  localRuntimeHost?: string;
   /** EI-19447523039740352: is a deploy running right now (so the serving restart lever is moot). */
   readDeployInFlight?: () => Promise<DeployInFlight>;
   /** P-003: mtime (ms) of a repo-relative file — what a working-tree tsx host would load. */
@@ -4216,7 +4312,12 @@ export async function gitPipelinePosition(
         contentDiffers: h.releasePipelineApplies ? releaseContentDiffers : null,
       })),
     );
-    runtimeGenerations = evaluateRuntimeGenerations(probed);
+    const vintageRows = await (deps.loadRuntimeVintage ?? (() => listRuntimeVintage().catch(() => [])))();
+    runtimeGenerations = attachRuntimeLoadedIdentities(
+      evaluateRuntimeGenerations(probed),
+      vintageRows,
+      deps.localRuntimeHost ?? hostname(),
+    );
     const divergence = runtimeGenerationDivergenceNote(runtimeGenerations, inp.path);
     if (divergence) notes.push(divergence);
   }
