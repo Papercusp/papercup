@@ -222,7 +222,10 @@ async function itemMatchesScope(item: WorkItem, scope: FleetScopeContext): Promi
  * hole in either.
  */
 export function selfFiledFalloutAdmission(
-  item: Pick<WorkItem, 'kind' | 'createdBy'>,
+  item: {
+    kind: ClaimSpecSubject['kind'];
+    createdBy: WorkItem['createdBy'];
+  },
   scope: FleetScopeContext,
 ): boolean {
   if (item.kind !== 'bug') return false;
