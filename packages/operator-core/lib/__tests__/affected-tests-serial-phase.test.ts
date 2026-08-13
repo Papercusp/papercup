@@ -160,15 +160,11 @@ describe('the emitted block', () => {
 });
 
 describe('wiring in affected-tests.mjs', () => {
-  /**
-   * `run()` has TWO spawn return paths — `stdio:'inherit'` for an interactive TTY and a captured
-   * one for every non-TTY caller (gate, CI, background task). A leg recorded in only one of them
-   * would make the measurement silently depend on HOW the run was invoked: correct when a human
-   * watches it, under-counted in exactly the automated runs the number is for.
-   */
-  it('records a leg on BOTH spawn return paths', () => {
-    const occurrences = AFFECTED_TESTS_SRC.match(/recordLeg\(t, r\.__elapsedMs\)/g) ?? [];
-    expect(occurrences).toHaveLength(2);
+  it('records every initial scheduler result and every post-pool retry as separate work', () => {
+    expect(AFFECTED_TESTS_SRC).toContain(
+      'recordLeg(scheduled.task.t, scheduled.value.__elapsedMs)',
+    );
+    expect(AFFECTED_TESTS_SRC).toContain('recordLeg(t, retry.value.__elapsedMs)');
   });
 
   it('emits the phase block from the shared helper', () => {

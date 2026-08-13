@@ -222,7 +222,7 @@ describe('wiring into scripts/affected-tests.mjs', () => {
     // otherwise it delegates to `run`. It is still THE re-run this sample must follow, so the
     // alternation keeps this guard pointed at both arms rather than silently dropping to one.
     const sites = [
-      ...src.matchAll(/r = (?:run|runFreshRetry)\((?:failedFiles)?\);[\s\S]{0,500}?load1AtRerun = loadavg\(\)\[0\];/g),
+      ...src.matchAll(/r = await (?:run|runFreshRetry)\((?:failedFiles)?\);[\s\S]{0,500}?load1AtRerun = loadavg\(\)\[0\];/g),
     ];
     expect(sites).toHaveLength(2); // both arms: scoped fresh-process re-run, and whole-workspace retry
   });
@@ -244,12 +244,12 @@ describe('wiring into scripts/affected-tests.mjs', () => {
     // `test` sets no lane env, so it resolves the default config and is isolated BY
     // CONSTRUCTION — the same property resolveWorkspaceTestInvocation relies on for the gate's
     // own isolation and confirming co-execution re-runs.
-    expect(src).toMatch(/const runFreshRetry = \(files\) =>\s*\(hasLaneSplit\(t\.ws\) \? run\(files, 'test'\) : run\(files\)\)/);
+    expect(src).toMatch(/const runFreshRetry = async \(files\) =>\s*\(hasLaneSplit\(t\.ws\) \? run\(files, 'test'\) : run\(files\)\)/);
     // …and it is the function the scoped arm actually calls. Pinned separately because the
     // helper could be defined correctly and simply not wired in — a passing definition beside
     // a bare `run(failedFiles)` call site would look right and behave exactly as before.
-    expect(src).toMatch(/r = runFreshRetry\(failedFiles\);/);
-    expect(src).not.toMatch(/\n\s*r = run\(failedFiles\);/);
+    expect(src).toMatch(/r = await runFreshRetry\(failedFiles\);/);
+    expect(src).not.toMatch(/\n\s*r = await run\(failedFiles\);/);
   });
 
   it('reports as residue what SURVIVED the re-run, not what entered it', () => {
