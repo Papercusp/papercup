@@ -330,11 +330,38 @@ export function isLegacyClose(authority: CompletionAuthorityFrom, isTerminal: bo
  * NO `verifiedHow` at all. An "is the object present?" test passes every one of them.
  * `filesChanged` and `addedTests` are deliberately NOT sufficient — both describe what
  * changed, neither asserts that anything was checked.
+ *
+ * EI-18685043434033870 adds ONE necessary condition on top, and it is the converse of
+ * that last sentence rather than a contradiction of it: `addedTests` still cannot SUPPLY
+ * sufficiency, but when it is `true` it makes `filesChanged` REQUIRED. "I added or changed
+ * tests" and "I will not say which file" cannot both be true, so the pair is refutable on
+ * the face of the record — no prose heuristic, no guess about what the summary meant.
+ *
+ * Why only this one condition, when the owner's ask was a path in general ([owner 2026-07-26]
+ * "entirely true, but unverifiable until I asked for a path"): a path is NOT required
+ * unconditionally, because many honest closes change no files — `already-passing`
+ * verifications, investigations, duplicates. Measured over 24h of papercusp closes
+ * (2026-08-13, 2,236 `committed`): 1,437 carried no path, but 555 of those were
+ * `verifiedHow: 'already-passing'`, i.e. correctly pathless. Requiring a path from them
+ * would not produce evidence, it would produce FABRICATED evidence — the failure
+ * EI-20093150500083378 already measured, where 8 of 12 declared paths did not exist.
+ *
+ * The `addedTests` condition is calibrated instead of blunt: of 593 `addedTests: true`
+ * closes in that window, 577 ALREADY cited a path. So this codifies what good closes
+ * already do and refuses only the ~16/day self-contradictory ones. (The blunter rule —
+ * requiring a path from every `unit`/`integration` close — would have reclassified 530/day
+ * and is deliberately NOT applied here; that is a policy call with real burn-down blast
+ * radius, not a coherence check.)
  */
 export function isSufficientEvidence(evidence: CompletionVerificationEvidence | null | undefined): boolean {
   if (!evidence) return false;
   if (!evidence.verifiedHow) return false;
-  return Boolean(evidence.testsRun?.trim() || evidence.testResult?.trim());
+  if (!evidence.testsRun?.trim() && !evidence.testResult?.trim()) return false;
+  // A close that claims it added/changed tests must say WHERE. Note this reads the
+  // declared paths only — whether they EXIST is a separate detector (complete.ts,
+  // EI-20093150500083378); this one refuses the record that names none at all.
+  if (evidence.addedTests === true && !evidence.filesChanged?.some((f) => f.trim())) return false;
+  return true;
 }
 
 /**
