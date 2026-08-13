@@ -4,7 +4,11 @@
  * Given an EXISTING git repo, deterministically infer an `extends: coding-factory`
  * blueprint override (cheap; no LLM — the gym optimizes the seed later, D-022),
  * validate it through the frozen engine, then COMPOSE `harness:create` to
- * scaffold the harness. The detection (`detectFromRepo`) covers the four D-023
+ * scaffold the harness. A successfully created coding checkout is also wired
+ * into the existing `system:git-sync` spine: local origin/default-branch
+ * coordinates are persisted on the registry entry, then the standard seeder
+ * creates its active, deterministically staggered routine. The detection
+ * (`detectFromRepo`) covers the four D-023
  * signals — test command (VERIFIED by running it once), the tool set, the
  * monorepo/frontend structural flags, and a harvest of AGENTS.md/CLAUDE.md/
  * TESTING.md into the override.
@@ -25,6 +29,7 @@ import { defineTool } from '@papercusp/agent-mcp';
 import { COORD_ROLES } from '../coordination/roles';
 import { resolveAndValidate } from '../blueprint/_resolve';
 import { detectFromRepo, detectionToOverride, DEFAULT_TEST_TIMEOUT_MS, type DetectionResult } from '../../blueprint/detect-from-repo';
+import { resolveConcreteWorkspaceId } from '../../workspace-registry';
 import createTool from './create';
 
 const text = (payload: Record<string, unknown>) => ({
@@ -57,7 +62,7 @@ function summarizeDetection(det: DetectionResult) {
 export default defineTool({
   name: 'harness:generate-from-repo',
   description:
-    'Generate a coding harness from an EXISTING git repo (kind #1 creation). Deterministically detects the test command (and VERIFIES it by running it once), the toolchain, monorepo/frontend flags, and harvests AGENTS.md/CLAUDE.md/TESTING.md into an `extends: coding-factory` blueprint override; validates it; then creates the harness via harness:create. Skips if the repo already has .papercusp/blueprint.yaml. Use `dryRun` to preview the generated override without creating. Returns {ok, slug?, skipped?, override?, detection, validation}.',
+    'Generate a coding harness from an EXISTING git repo (kind #1 creation). Deterministically detects the test command (and VERIFIES it by running it once), the toolchain, monorepo/frontend flags, and harvests AGENTS.md/CLAUDE.md/TESTING.md into an `extends: coding-factory` blueprint override; validates it; then creates the harness via harness:create, persists its discovered origin/default branch, and seeds its active recurring git-sync routine. Skips if the repo already has .papercusp/blueprint.yaml. Use `dryRun` to preview the generated override without creating. Returns {ok, slug?, skipped?, override?, detection, validation, upstream?, gitSync?}.',
   guidance: {
     when: 'Onboarding an existing code repository as a managed coding harness — you want the blueprint inferred from the repo (test command, stack, monorepo/frontend) rather than authored by hand.',
     notWhen: 'The repo already has a .papercusp/blueprint.yaml (it is skipped — edit the file instead). Creating a repo-less / research harness, or one whose blueprint you author explicitly — harness:create with blueprintId/blueprint. Generate-from-plan (kinds #2/#3) is out of scope.',
@@ -141,6 +146,68 @@ export default defineTool({
       return text({ ok: false, error: 'harness:create failed', create: created, override, detection: summarizeDetection(det) });
     }
 
+    // 4. A generated coding harness is a managed checkout even when it is not
+    //    a Pot member. `harness:create` intentionally seeds git-sync only for
+    //    explicit Pot members, so this existing-repo composition must close the
+    //    standalone gap itself. Resolve the already-configured local origin,
+    //    persist those coords atomically, then compose the SAME seeding spine
+    //    used by Pot members. This keeps push/permission policy, active defaults,
+    //    cron jitter, and idempotency in one place.
+    let upstream: Awaited<ReturnType<typeof import('../../harness/upstream-repo-context').resolveUpstreamRepoSource>> = null;
+    let gitSync: import('../../harness/git-sync/git-sync-routine').SeedGitSyncRoutineOutcome | undefined;
+    try {
+      const workspaceId = resolveConcreteWorkspaceId(
+        undefined,
+        ctx?.workspaceId,
+        ctx?.principal?.workspaceId,
+      );
+      const [{ resolveUpstreamRepoSource }, { mutateHarnessRegistry }, { seedGitSyncRoutineForMember }] =
+        await Promise.all([
+          import('../../harness/upstream-repo-context'),
+          import('../../harness-registry'),
+          import('../../harness/git-sync/git-sync-routine'),
+        ]);
+      upstream = await resolveUpstreamRepoSource({ path });
+
+      const entry = {
+        slug: args.slug,
+        path,
+        ...(upstream?.github_remote ? { github_remote: upstream.github_remote } : {}),
+        ...(upstream?.github_repository_id !== undefined
+          ? { github_repository_id: upstream.github_repository_id }
+          : {}),
+        ...(upstream?.default_branch ? { github_default_branch: upstream.default_branch } : {}),
+      };
+
+      if (upstream) {
+        await mutateHarnessRegistry(
+          (reg) => ({
+            ...reg,
+            projects: reg.projects.map((project) =>
+              project.slug === args.slug ? { ...project, ...entry } : project,
+            ),
+          }),
+          workspaceId,
+        );
+      }
+
+      gitSync = await seedGitSyncRoutineForMember({
+        workspaceId,
+        installSlug: args.slug,
+        entry,
+        joinerSide: false,
+      });
+    } catch (e) {
+      // Same best-effort posture as harness:create's trigger/member seeds: a
+      // control-plane hiccup must not erase a successfully created harness, but
+      // the shaped result makes the missing durability explicit to the caller.
+      gitSync = {
+        seeded: false,
+        reason: 'error',
+        message: (e instanceof Error ? e.message : String(e)).slice(0, 300),
+      };
+    }
+
     return text({
       ok: true,
       slug: created.slug,
@@ -148,6 +215,14 @@ export default defineTool({
       blueprintFile: created.blueprintFile,
       requiresRepo: created.requiresRepo,
       provisioning: created.provisioning,
+      upstream: upstream
+        ? {
+            remote: upstream.github_remote,
+            defaultBranch: upstream.default_branch,
+            source: upstream.source,
+          }
+        : null,
+      gitSync,
       validation: validationSummary,
       detection: summarizeDetection(det),
     });

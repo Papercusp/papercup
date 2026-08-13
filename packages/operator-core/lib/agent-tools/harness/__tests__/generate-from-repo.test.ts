@@ -4,12 +4,30 @@
  * a minimal stub. The create branch is covered indirectly by the create tool's
  * own path; here we prove detection → override → validate → preview composes.
  */
-import { afterEach, describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { mkdtempSync, mkdirSync, writeFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { parse as parseYaml } from 'yaml';
 import tool from '../generate_from_repo';
+
+const mocks = vi.hoisted(() => ({
+  createHandler: vi.fn(),
+  resolveUpstreamRepoSource: vi.fn(),
+  mutateHarnessRegistry: vi.fn(),
+  seedGitSyncRoutineForMember: vi.fn(),
+}));
+
+vi.mock('../create', () => ({ default: { handler: mocks.createHandler } }));
+vi.mock('../../../harness/upstream-repo-context', () => ({
+  resolveUpstreamRepoSource: mocks.resolveUpstreamRepoSource,
+}));
+vi.mock('../../../harness-registry', () => ({
+  mutateHarnessRegistry: mocks.mutateHarnessRegistry,
+}));
+vi.mock('../../../harness/git-sync/git-sync-routine', () => ({
+  seedGitSyncRoutineForMember: mocks.seedGitSyncRoutineForMember,
+}));
 
 const CTX = { log() {}, workspaceId: 'ws', role: 'operator' } as never;
 const run = async (args: Record<string, unknown>) => {
@@ -31,6 +49,7 @@ function fixture(files: Record<string, string>): string {
 }
 afterEach(() => {
   for (const d of created.splice(0)) rmSync(d, { recursive: true, force: true });
+  vi.resetAllMocks();
 });
 
 describe('harness:generate-from-repo', () => {
@@ -66,5 +85,68 @@ describe('harness:generate-from-repo', () => {
     const r = await run({ slug: 'nope', path: '/no/such/path/xyz', dryRun: true });
     expect(r.ok).toBe(false);
     expect(r.error).toContain('does not exist');
+  });
+
+  it('persists discovered upstream coordinates and seeds recurring git-sync after create', async () => {
+    const root = fixture({
+      'package.json': JSON.stringify({ name: 'mobile', scripts: { test: 'true' } }),
+      'package-lock.json': '',
+    });
+    mocks.createHandler.mockResolvedValue({
+      content: [{ type: 'text', text: JSON.stringify({ ok: true, slug: 'mobile', path: root, provisioning: { ok: true } }) }],
+    });
+    mocks.resolveUpstreamRepoSource.mockResolvedValue({
+      github_remote: 'https://github.com/Papercusp/mobile.git',
+      default_branch: 'master',
+      owner: 'Papercusp',
+      repo: 'mobile',
+      source: 'git-remote',
+    });
+
+    let persisted: Record<string, unknown> | undefined;
+    mocks.mutateHarnessRegistry.mockImplementation(async (mutator: (reg: Record<string, unknown>) => Record<string, unknown>, workspaceId: string) => {
+      persisted = mutator({ projects: [{ slug: 'mobile', path: root }] });
+      return persisted;
+    });
+    mocks.seedGitSyncRoutineForMember.mockResolvedValue({
+      seeded: true,
+      active: true,
+      push: true,
+      pushReason: 'creator_can_push',
+      cron: '0 5,15,25,35,45,55 * * * *',
+      branch: 'master',
+    });
+
+    const r = await run({ slug: 'mobile', path: root, dryRun: false, runTests: false });
+
+    expect(r.ok).toBe(true);
+    expect(r.upstream).toEqual({
+      remote: 'https://github.com/Papercusp/mobile.git',
+      defaultBranch: 'master',
+      source: 'git-remote',
+    });
+    expect(r.gitSync).toMatchObject({ seeded: true, active: true, push: true, branch: 'master' });
+    expect(mocks.mutateHarnessRegistry).toHaveBeenCalledWith(expect.any(Function), 'ws');
+    expect(persisted).toMatchObject({
+      projects: [
+        {
+          slug: 'mobile',
+          path: root,
+          github_remote: 'https://github.com/Papercusp/mobile.git',
+          github_default_branch: 'master',
+        },
+      ],
+    });
+    expect(mocks.seedGitSyncRoutineForMember).toHaveBeenCalledWith({
+      workspaceId: 'ws',
+      installSlug: 'mobile',
+      entry: {
+        slug: 'mobile',
+        path: root,
+        github_remote: 'https://github.com/Papercusp/mobile.git',
+        github_default_branch: 'master',
+      },
+      joinerSide: false,
+    });
   });
 });
