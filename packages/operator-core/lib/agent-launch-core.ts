@@ -927,12 +927,31 @@ export const FRESH_VERIFY_SILENCE_MS = 12_000;
 export interface FreshLaunchSessionProbe {
   advSessionId: number;
   ownerId: string | null;
-  /** Tool calls NOT in {@link LAUNCH_STATUSLINE_TOOLS} — proof of a real turn. */
-  realCalls: number;
+  /** Successful, agent-chosen calls other than launch statuslines. */
+  successfulCalls: number;
   /** ms since this session's most recent signal of ANY kind (null = never any). */
   msSinceLastSignal: number | null;
   /** A live coord_presence row exists for its owner. */
   hasPresence: boolean;
+  /** Requested-vs-actual differences measured from the persisted launch spec. */
+  attestationDiffs: FreshLaunchAttestationDiff[];
+}
+
+export interface FreshLaunchAttestationDiff {
+  field: string;
+  requested: string | null;
+  actual: string | null;
+}
+
+export interface FreshLaunchExpectedAttestation {
+  ownerId: string;
+  agent: string;
+  workspaceId: string;
+  harnessSlug: string | null;
+  planSlug: string | null;
+  model: string | null;
+  fleetSlug: string | null;
+  fleetRole: string | null;
 }
 
 export interface FreshLaunchVerdict {
@@ -976,7 +995,16 @@ export async function verifyFreshLaunchStarted(
     launcherOwnerId,
     since,
     expected,
-  }: { workspaceId: string; launcherOwnerId: string; since: number; expected: number },
+    expectedOwnerIds,
+    expectedAttestations,
+  }: {
+    workspaceId: string;
+    launcherOwnerId: string;
+    since: number;
+    expected: number;
+    expectedOwnerIds?: string[];
+    expectedAttestations?: FreshLaunchExpectedAttestation[];
+  },
   {
     timeoutMs = FRESH_VERIFY_TIMEOUT_MS,
     pollMs = 2_000,
@@ -994,10 +1022,30 @@ export async function verifyFreshLaunchStarted(
   const begun = Date.now();
   let sessions: FreshLaunchSessionProbe[] = [];
   for (;;) {
-    sessions = await probe({ workspaceId, launcherOwnerId, since });
+    sessions = await probe({ workspaceId, launcherOwnerId, since, expectedOwnerIds, expectedAttestations });
+    if (expectedOwnerIds?.length) {
+      const wanted = new Set(expectedOwnerIds);
+      sessions = sessions.filter((session) => session.ownerId != null && wanted.has(session.ownerId));
+    }
+    const mismatched = sessions.filter(
+      (session) => session.successfulCalls > 0 && session.attestationDiffs.length > 0,
+    );
+    if (mismatched.length > 0) {
+      const differences = mismatched.flatMap((session) =>
+        session.attestationDiffs.map(
+          (diff) => `${session.ownerId ?? session.advSessionId}.${diff.field}: requested=${JSON.stringify(diff.requested)} actual=${JSON.stringify(diff.actual)}`,
+        ),
+      );
+      return {
+        agentStarted: false,
+        waitedMs: Date.now() - begun,
+        sessions,
+        note: `✗ ATTESTATION MISMATCH — ${differences.join('; ')}. Stop this launch transaction; do not open a later wave.`,
+      };
+    }
     // POSITIVE signal — return as soon as it lands, so a healthy launch pays
     // almost nothing and only a suspect one waits out the window.
-    if (sessions.length >= expected && sessions.every((s) => s.realCalls > 0 || s.hasPresence)) {
+    if (sessions.length >= expected && sessions.every((s) => s.successfulCalls > 0)) {
       return {
         agentStarted: true,
         waitedMs: Date.now() - begun,
@@ -1027,7 +1075,7 @@ export async function verifyFreshLaunchStarted(
 
   // NEGATIVE signal: booted, beat, then went silent. This is the 14842 shape.
   const silent = sessions.filter(
-    (s) => s.realCalls === 0 && !s.hasPresence && s.msSinceLastSignal != null && s.msSinceLastSignal >= silenceMs,
+    (s) => s.successfulCalls === 0 && !s.hasPresence && s.msSinceLastSignal != null && s.msSinceLastSignal >= silenceMs,
   );
   if (silent.length > 0 && silent.length === sessions.length) {
     return {
@@ -1070,10 +1118,14 @@ export async function probeFreshLaunchSessions({
   workspaceId,
   launcherOwnerId,
   since,
+  expectedOwnerIds,
+  expectedAttestations,
 }: {
   workspaceId: string;
   launcherOwnerId: string;
   since: number;
+  expectedOwnerIds?: string[];
+  expectedAttestations?: FreshLaunchExpectedAttestation[];
 }): Promise<FreshLaunchSessionProbe[]> {
   try {
     const { sql } = getOrgPg();
@@ -1081,9 +1133,10 @@ export async function probeFreshLaunchSessions({
       Array<{
         id: string | number;
         coord_owner_id: string | null;
-        real_calls: string | number;
+        successful_calls: string | number;
         ms_since_last_signal: string | number | null;
         has_presence: boolean;
+        launch_spec: unknown;
       }>
     >`
       SELECT s.id,
@@ -1091,6 +1144,8 @@ export async function probeFreshLaunchSessions({
              COALESCE((SELECT count(*) FROM harness_shared.tool_invocations t
                         WHERE t.workspace_id = ${workspaceId}
                           AND t.coord_owner_id = s.coord_owner_id
+                          AND t.status = 'ok'
+                          AND t.call_origin = 'agent'
                           AND NOT (t.tool_name = ANY (${LAUNCH_STATUSLINE_TOOLS as string[]}))), 0) AS real_calls,
              (SELECT EXTRACT(EPOCH FROM (now() - max(t.invoked_at))) * 1000
                 FROM harness_shared.tool_invocations t
@@ -1098,20 +1153,46 @@ export async function probeFreshLaunchSessions({
                  AND t.coord_owner_id = s.coord_owner_id) AS ms_since_last_signal,
              EXISTS (SELECT 1 FROM harness_shared.coord_presence p
                       WHERE p.workspace_id = ${workspaceId}
-                        AND p.owner_id = s.coord_owner_id) AS has_presence
+                        AND p.owner_id = s.coord_owner_id) AS has_presence,
+             s.launch_spec
         FROM harness_shared.adv_sessions s
        WHERE s.workspace_id = ${workspaceId}
          AND s.first_seen_at >= to_timestamp(${Math.floor(since / 1000)})
          AND s.launch_argv::text LIKE ${`%--launched-by=${launcherOwnerId}%`}
        ORDER BY s.first_seen_at ASC
        LIMIT 50`;
-    return rows.map((r) => ({
+    const wanted = expectedOwnerIds?.length ? new Set(expectedOwnerIds) : null;
+    const expectedByOwner = new Map((expectedAttestations ?? []).map((item) => [item.ownerId, item]));
+    return rows.filter((r) => !wanted || (r.coord_owner_id != null && wanted.has(r.coord_owner_id))).map((r) => {
+      const expected = r.coord_owner_id ? expectedByOwner.get(r.coord_owner_id) : undefined;
+      const spec = r.launch_spec && typeof r.launch_spec === 'object' ? r.launch_spec as Record<string, unknown> : {};
+      const fleet = spec.fleet && typeof spec.fleet === 'object' ? spec.fleet as Record<string, unknown> : {};
+      const actual: Record<string, string | null> = {
+        agent: typeof spec.agent === 'string' ? spec.agent : null,
+        workspaceId: typeof spec.workspaceId === 'string' ? spec.workspaceId : null,
+        harnessSlug: typeof spec.harnessSlug === 'string' ? spec.harnessSlug : null,
+        planSlug: typeof spec.planSlug === 'string' ? spec.planSlug : null,
+        model: typeof spec.model === 'string' ? spec.model : null,
+        fleetSlug: typeof fleet.slug === 'string' ? fleet.slug : null,
+        fleetRole: typeof fleet.role === 'string' ? fleet.role : null,
+      };
+      const attestationDiffs: FreshLaunchAttestationDiff[] = [];
+      if (expected) {
+        for (const field of ['agent', 'workspaceId', 'harnessSlug', 'planSlug', 'model', 'fleetSlug', 'fleetRole'] as const) {
+          if (expected[field] !== actual[field]) {
+            attestationDiffs.push({ field, requested: expected[field], actual: actual[field] });
+          }
+        }
+      }
+      return {
       advSessionId: Number(r.id),
       ownerId: r.coord_owner_id,
-      realCalls: Number(r.real_calls ?? 0),
+      successfulCalls: Number(r.successful_calls ?? 0),
       msSinceLastSignal: r.ms_since_last_signal == null ? null : Number(r.ms_since_last_signal),
       hasPresence: Boolean(r.has_presence),
-    }));
+      attestationDiffs,
+      };
+    });
   } catch (e) {
     // ⚠ THROW, never `return []`. An empty list means "nothing registered", which
     // this verifier reads as agentStarted:FALSE — so swallowing a DB fault here

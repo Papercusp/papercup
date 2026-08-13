@@ -24,6 +24,45 @@ import {
 /** Typed fleet control state (coord-authority-hardening-2026-07-11 P-009 / H4). */
 export type FleetControlState = 'active' | 'winding-down';
 
+export type FleetLaunchTransactionState = 'launching' | 'partial' | 'verified';
+export type FleetLaunchFailurePhase = 'spawn' | 'verification' | 'attestation' | 'persistence';
+
+export interface FleetLaunchTransaction {
+  version: 1;
+  transactionId: string;
+  state: FleetLaunchTransactionState;
+  requestedAt: number;
+  updatedAt: number;
+  requestedMemberIds: string[];
+  openedMemberIds: string[];
+  verifiedMemberIds: string[];
+  failed: Array<{
+    ownerId: string;
+    phase: FleetLaunchFailurePhase;
+    reason: string;
+  }>;
+  waves: Array<{
+    index: number;
+    ownerIds: string[];
+    state: 'opening' | 'partial' | 'verified';
+    openedOwnerIds?: string[];
+    verifiedOwnerIds?: string[];
+  }>;
+  recovery: {
+    retryOwnerIds: string[];
+    nextAction: string;
+  };
+  requestedMembers?: Array<{
+    index: number;
+    ownerId: string;
+    agent: string;
+    model: string | null;
+    account: string;
+    carry: 'warm' | 'cold';
+    headless: boolean;
+  }>;
+}
+
 /** A named-fleet registry row. */
 export interface AgentFleetRecord {
   workspaceId: string;
@@ -49,6 +88,9 @@ export interface AgentFleetRecord {
   controlBy: string | null;
   /** Epoch ms when the current control state was set. */
   controlAt: number | null;
+  /** P-003 / migration 830: the latest canary-first launch transaction, including
+   * exact partial-cohort recovery identities. */
+  lastLaunchTransaction: FleetLaunchTransaction | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -107,11 +149,16 @@ interface FleetRow {
   control_reason: string | null;
   control_by: string | null;
   control_at: string | number | null;
+  last_launch_transaction?: FleetLaunchTransaction | string | null;
   created_at: string | number;
   updated_at: string | number;
 }
 
 function rowToRecord(r: FleetRow): AgentFleetRecord {
+  const lastLaunchTransaction =
+    typeof r.last_launch_transaction === 'string'
+      ? (JSON.parse(r.last_launch_transaction) as FleetLaunchTransaction)
+      : r.last_launch_transaction ?? null;
   return {
     workspaceId: r.workspace_id,
     fleetSlug: r.fleet_slug,
@@ -126,6 +173,7 @@ function rowToRecord(r: FleetRow): AgentFleetRecord {
     controlReason: r.control_reason ?? null,
     controlBy: r.control_by ?? null,
     controlAt: r.control_at == null ? null : Number(r.control_at),
+    lastLaunchTransaction,
     createdAt: Number(r.created_at),
     updatedAt: Number(r.updated_at),
   };
@@ -179,7 +227,9 @@ export async function getFleet(
 ): Promise<AgentFleetRecord | null> {
   const s = pg(sql);
   const rows = (await s.unsafe(
-    `SELECT ${COLS} FROM harness_shared.agent_fleets WHERE workspace_id = $1 AND fleet_slug = $2 LIMIT 1`,
+    `SELECT ${COLS}, to_jsonb(f)->'last_launch_transaction' AS last_launch_transaction
+       FROM harness_shared.agent_fleets f
+      WHERE workspace_id = $1 AND fleet_slug = $2 LIMIT 1`,
     [workspaceId, fleetSlug],
   )) as unknown as FleetRow[];
   return rows[0] ? rowToRecord(rows[0]) : null;
@@ -190,7 +240,8 @@ export async function getFleet(
 export async function listFleets(workspaceId: string, sql?: Sql): Promise<AgentFleetRecord[]> {
   const s = pg(sql);
   const rows = (await s.unsafe(
-    `SELECT ${COLS} FROM harness_shared.agent_fleets WHERE workspace_id = $1 ORDER BY created_at DESC`,
+    `SELECT ${COLS}, to_jsonb(f)->'last_launch_transaction' AS last_launch_transaction
+       FROM harness_shared.agent_fleets f WHERE workspace_id = $1 ORDER BY created_at DESC`,
     [workspaceId],
   )) as unknown as FleetRow[];
   return rows.map(rowToRecord);
@@ -211,7 +262,8 @@ export async function listFleetsLedBy(
 ): Promise<AgentFleetRecord[]> {
   const s = pg(sql);
   const rows = (await s.unsafe(
-    `SELECT ${COLS} FROM harness_shared.agent_fleets
+    `SELECT ${COLS}, to_jsonb(f)->'last_launch_transaction' AS last_launch_transaction
+       FROM harness_shared.agent_fleets f
       WHERE workspace_id = $1 AND leader_owner_id = $2
       ORDER BY created_at DESC`,
     [workspaceId, leaderOwnerId],
@@ -493,6 +545,29 @@ export async function releaseFleetLaunchSlot(opts: {
         SET last_launch_at = NULL, last_launch_count = NULL
       WHERE workspace_id = $1 AND fleet_slug = $2 AND last_launch_at = $3`,
     [opts.workspaceId, opts.fleetSlug, opts.at],
+  );
+}
+
+/** Persist the exact canary-first launch/recovery transaction on the existing
+ * fleet registry row. This is intentionally one versioned JSONB column rather
+ * than a parallel launch store (P-003 / D-003). */
+export async function setFleetLaunchTransaction(opts: {
+  workspaceId: string;
+  fleetSlug: string;
+  transaction: FleetLaunchTransaction | null;
+  sql?: Sql;
+}): Promise<void> {
+  const s = pg(opts.sql);
+  await s.unsafe(
+    `UPDATE harness_shared.agent_fleets
+        SET last_launch_transaction = $3::jsonb, updated_at = $4
+      WHERE workspace_id = $1 AND fleet_slug = $2`,
+    [
+      opts.workspaceId,
+      opts.fleetSlug,
+      opts.transaction == null ? null : JSON.stringify(opts.transaction),
+      Date.now(),
+    ],
   );
 }
 
