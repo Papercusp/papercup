@@ -148,8 +148,6 @@ export interface ReplicationLogLiveness {
   keyHex: string;
   verdict: ReplicationLogVerdict;
   knownLength: number;
-  /** Last actual locally replicated core length observed. */
-  localLength: number;
   mergedPosition: number | null;
   peersCount: number | null;
   /** ms since the log last showed a live replicator peer; null = never. */
@@ -207,6 +205,8 @@ interface LogState {
   keyHex: string;
   lastSampleMs: number;
   knownLength: number;
+  /** Last actual locally replicated core length observed. */
+  localLength: number;
   mergedPosition: number | null;
   peersCount: number | null;
   /** Last time peersCount was observed > 0; null = never (never alarms). */
