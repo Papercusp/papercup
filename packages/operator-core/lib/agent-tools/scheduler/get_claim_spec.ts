@@ -17,6 +17,7 @@ import {
   claimSpecHistoryElsewhereHint,
   CLAIM_SPEC_HISTORY_MAX,
 } from '../../scheduler/claim-spec-revisions';
+import { fleetSentinelCallerView } from './fleet-sentinel-caller-view';
 
 export default defineTool({
   name: 'scheduler:get_claim_spec',
@@ -64,9 +65,32 @@ export default defineTool({
   async handler(args, ctx) {
     const ident = resolveAgentIdentity(ctx);
     const workspaceId = resolveClaimSpecWorkspace(args.workspace ?? ident.workspaceId);
-    const targetBeeId = args.fleet ? fleetSpecBeeKey(args.fleet.trim()) : (args.cupId as string);
+    const fleetSlug = args.fleet ? args.fleet.trim() : null;
+    const targetBeeId = fleetSlug ? fleetSpecBeeKey(fleetSlug) : (args.cupId as string);
     const record = await getClaimSpecRecord({ cupId: targetBeeId, workspaceId });
-    if (!args.history) return { data: { ok: true, ...record } };
+
+    // EI-20304090779240149: a fleet read answers about the FLEET, and its envelope is
+    // shaped exactly like the caller-scoped cupId read — so "source: fleet, rev 7" was
+    // being taken as "I am running under rev 7" by callers who were in no fleet at all,
+    // which then took out-of-lane work on the next self-pull. Resolve the CALLER too and
+    // say plainly whether this sentinel is their effective spec. Best-effort: the caller
+    // view never fails the read (an unreadable comparison reports UNKNOWN, never
+    // agreement). Only for the fleet selector — a cupId read is already unambiguous
+    // about whose spec it returned.
+    const callerView = fleetSlug
+      ? fleetSentinelCallerView({
+          fleetSlug,
+          callerId: ident.ownerId,
+          callerRecord: await getClaimSpecRecord({ cupId: ident.ownerId, workspaceId }).catch(
+            () => null,
+          ),
+        })
+      : null;
+    const subject = fleetSlug
+      ? { subject: { kind: 'fleet-sentinel' as const, fleetSlug }, ...callerView }
+      : {};
+
+    if (!args.history) return { data: { ok: true, ...record, ...subject } };
     // History is read for the target the CALLER ADDRESSED, not for whichever row answered
     // the current-spec read. Those differ in exactly the case this history exists for: a
     // CLEARED lane has no row of its own, so its current spec resolves to the fleet's or to
@@ -88,6 +112,7 @@ export default defineTool({
       data: {
         ok: true,
         ...record,
+        ...subject,
         history: { ...history, ...(elsewhere ? { historyElsewhere: elsewhere } : {}) },
       },
     };

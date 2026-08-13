@@ -73,6 +73,19 @@ export interface ResolveSessionConfigDirOptions {
   pidHint?: number | null;
   /** The claude native session id — the `transcript-scan` key. */
   sessionId?: string | null;
+  /**
+   * WI-38369: ADDITIONAL keys the `conventional` strategy may try, after `ownerId`.
+   * `ownerId` is load-bearing for the live-process guard (it must equal the process's
+   * `PAPERCUSP_SID`), but it is NOT always the key the dir is named by: the
+   * orchestrator/hive path names it after the minted SPAWN id
+   * (`invoke.ts` → `sessionClaudeConfigDir(trackedSessionSpawnId)`), so a spawned
+   * agent's two identities differ and only one of them is a directory name.
+   *
+   * This stays an OBSERVATION, not a second formula: a key is accepted only when the
+   * directory it names actually EXISTS, so adding keys can turn an unresolved answer
+   * into a resolved one but can never invent a path that was never there.
+   */
+  altOwnerIds?: (string | null | undefined)[];
   /** Injectable `/proc` root (tests). */
   procRoot?: string;
 }
@@ -201,12 +214,21 @@ export function resolveSessionConfigDir(opts: ResolveSessionConfigDirOptions): S
     tried.push('transcript-scan: skipped (no session id)');
   }
 
-  const conventional = join(root, ownerId);
-  if (existsSync(conventional)) {
-    tried.push(`conventional: ${conventional}`);
-    return { dir: conventional, source: 'conventional', tried, unresolvedReason: null };
+  // WI-38369: `ownerId` first (the common case), then any alternate key the caller
+  // knows the dir may be named by — e.g. a spawned agent's spawn id. Each is accepted
+  // only if it EXISTS, so this widens what can be OBSERVED without widening what can
+  // be ASSUMED.
+  const conventionalKeys = [ownerId, ...(opts.altOwnerIds ?? [])].filter(
+    (k): k is string => typeof k === 'string' && k.length > 0,
+  );
+  for (const key of new Set(conventionalKeys)) {
+    const conventional = join(root, key);
+    if (existsSync(conventional)) {
+      tried.push(`conventional(${key}): ${conventional}`);
+      return { dir: conventional, source: 'conventional', tried, unresolvedReason: null };
+    }
+    tried.push(`conventional(${key}): ${conventional} does not exist`);
   }
-  tried.push(`conventional: ${conventional} does not exist`);
 
   return {
     dir: null,
@@ -214,7 +236,8 @@ export function resolveSessionConfigDir(opts: ResolveSessionConfigDirOptions): S
     tried,
     unresolvedReason:
       `no observable config dir for ${ownerId} — the live process was not found, no transcript names it, ` +
-      `and the conventional path does not exist. This is NOT evidence of de-enrollment: on several launch ` +
-      `paths the dir is keyed by the spawn id rather than the coord owner id (WI-38349).`,
+      `and no conventional path exists for ${conventionalKeys.map((k) => `'${k}'`).join(' / ')}. This is NOT ` +
+      `evidence of de-enrollment: on several launch paths the dir is keyed by the spawn id rather than the ` +
+      `coord owner id (WI-38349).`,
   };
 }

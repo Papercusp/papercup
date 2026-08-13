@@ -1,9 +1,15 @@
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import { codexHomeForSessionKey, sessionClaudeConfigDir } from '@papercusp/orchestrator/session-launch-dirs';
+import { codexHomeForSessionKey } from '@papercusp/orchestrator/session-launch-dirs';
 import type { TurnBackend } from '@papercusp/papercusp-shared/agent';
 import type { AdvSessionRow } from './adv-sessions';
 import { interactiveBackendFromSpawnBackend, type InteractiveBackend, type SpawnBackendLike } from './backend-feature-capabilities';
+import {
+  resolveSessionConfigDir,
+  type ResolveSessionConfigDirOptions,
+  type SessionConfigDirResolution,
+  type SessionConfigDirSource,
+} from './session-config-dir';
 
 export type NativeSessionSource = 'adv_sessions' | 'spawned_agents';
 
@@ -12,13 +18,25 @@ export interface ClaudeNativeSessionHandle {
   source: NativeSessionSource;
   ownerId: string | null;
   sessionId: string | null;
-  /** The per-session CLAUDE_CONFIG_DIR the transcript lives under
-   *  (`~/.papercusp/session-claude/<ownerId>`). A bare `claude --resume
-   *  <sessionId>` looks in the DEFAULT config dir and finds nothing — every
-   *  attach (dock bee pane, hive tab) must run with CLAUDE_CONFIG_DIR set to
-   *  THIS dir, mirroring what the codex handle's `codexHome` already carries.
-   *  Null when the owner id (the dir key) is unknown. */
+  /** The per-session CLAUDE_CONFIG_DIR the transcript ACTUALLY lives under, as
+   *  OBSERVED by {@link resolveSessionConfigDir} (live process → transcript scan →
+   *  a conventional path that exists). A bare `claude --resume <sessionId>` looks
+   *  in the DEFAULT config dir and finds nothing — every attach (dock bee pane,
+   *  hive tab) must run with CLAUDE_CONFIG_DIR set to THIS dir, mirroring what the
+   *  codex handle's `codexHome` already carries.
+   *
+   *  ⚠ WI-38369: `null` means UNKNOWN — NOT "de-enrolled", and NOT an invitation to
+   *  fall back to `sessionClaudeConfigDir(ownerId)`. That formula holds only on the
+   *  console launch path; the orchestrator/hive path keys the dir by the minted
+   *  SPAWN id and a carry-respawn keeps the original dir, so it was wrong for 82 of
+   *  100 live sessions measured 2026-08-13. A consumer that cannot proceed without a
+   *  dir must degrade (see `configDirUnresolvedReason`), never guess: writing to a
+   *  guessed dir materializes a transcript the live process will never read. */
   configDir: string | null;
+  /** Which strategy observed `configDir`; null exactly when `configDir` is null. */
+  configDirSource: SessionConfigDirSource | null;
+  /** Why `configDir` is unknown; non-null exactly when `configDir` is null. */
+  configDirUnresolvedReason: string | null;
   exactResumeSupported: boolean;
   missingReason: string | null;
 }
@@ -52,10 +70,56 @@ export interface NativeSessionDeps {
   codexHomeForSessionKey?: (sessionKey: string | number) => string;
   findCodexRolloutId?: (codexHome: string) => string | null;
   ompAgentHome?: () => string | null;
+  /** WI-38369: injectable config-dir resolution (tests / a caller with a cached answer). */
+  resolveConfigDir?: (opts: ResolveSessionConfigDirOptions) => SessionConfigDirResolution;
+  /**
+   * WI-38369: `coord_presence.pid` for this session, when the caller has it. Enables the
+   * cheapest and most authoritative strategy (read `CLAUDE_CONFIG_DIR` off the live
+   * process). Omitted is fine — the transcript scan resolves an ended session too.
+   */
+  pidHint?: number | null;
 }
 
 function defaultOmpAgentHome(): string | null {
   return process.env.PI_CODING_AGENT_DIR || join(homedir(), '.omp', 'agent');
+}
+
+/**
+ * WI-38369: the three `configDir*` fields of a claude handle, resolved by OBSERVATION.
+ *
+ * Replaces `configDir: sessionClaudeConfigDir(ownerId)` — a FORMULA that only the console
+ * launch path follows. The orchestrator/hive path names the dir after the minted spawn id
+ * and a carry-respawn keeps the original, so the formula named a never-existent directory
+ * for 82 of 100 live sessions measured 2026-08-13. It did not merely mislead: the dossier's
+ * rematerialize step passes this value as `targetRoot`, so a wrong dir got a transcript
+ * WRITTEN into it that the live process never reads.
+ *
+ * `altOwnerIds` carries the spawn id because a spawned agent's two identities differ and
+ * only one of them is a directory name — `ownerId` must stay the coord owner id so the
+ * live-process strategy's `PAPERCUSP_SID` guard can still reject a recycled pid.
+ */
+function claudeConfigDirFields(
+  args: { ownerId: string | null; sessionId: string | null; altOwnerIds?: (string | null | undefined)[] },
+  deps: NativeSessionDeps,
+): Pick<ClaudeNativeSessionHandle, 'configDir' | 'configDirSource' | 'configDirUnresolvedReason'> {
+  if (!args.ownerId) {
+    return {
+      configDir: null,
+      configDirSource: null,
+      configDirUnresolvedReason: 'owner id is not recorded, so no config dir can be resolved',
+    };
+  }
+  const resolution = (deps.resolveConfigDir ?? resolveSessionConfigDir)({
+    ownerId: args.ownerId,
+    sessionId: args.sessionId,
+    pidHint: deps.pidHint,
+    altOwnerIds: args.altOwnerIds,
+  });
+  return {
+    configDir: resolution.dir,
+    configDirSource: resolution.source,
+    configDirUnresolvedReason: resolution.unresolvedReason,
+  };
 }
 
 export function nativeSessionHandleForAdvSession(
@@ -69,7 +133,7 @@ export function nativeSessionHandleForAdvSession(
       source: 'adv_sessions',
       ownerId,
       sessionId: row.sessionId,
-      configDir: ownerId ? sessionClaudeConfigDir(ownerId) : null,
+      ...claudeConfigDirFields({ ownerId, sessionId: row.sessionId }, deps),
       exactResumeSupported: Boolean(row.sessionId),
       missingReason: row.sessionId ? null : 'claude session_id is not recorded',
     };
@@ -118,6 +182,7 @@ function normalizeSpawnBackend(backend: TurnBackend | SpawnBackendLike): Interac
 
 export function nativeSessionHandleForSpawnedAgent(
   row: SpawnedAgentNativeSessionInput,
+  deps: NativeSessionDeps = {},
 ): NativeSessionHandle {
   const ownerId = row.sessionOwner ?? row.spawnId;
   const backend = normalizeSpawnBackend(row.backend);
@@ -127,7 +192,13 @@ export function nativeSessionHandleForSpawnedAgent(
       source: 'spawned_agents',
       ownerId,
       sessionId: row.sessionId ?? null,
-      configDir: sessionClaudeConfigDir(ownerId),
+      // The spawn id is the key the orchestrator actually names this dir by, and it
+      // differs from `ownerId` exactly when `sessionOwner` is set — so pass it as an
+      // alternate CONVENTIONAL key while `ownerId` stays the live-process sid guard.
+      ...claudeConfigDirFields(
+        { ownerId, sessionId: row.sessionId ?? null, altOwnerIds: [row.spawnId] },
+        deps,
+      ),
       exactResumeSupported: Boolean(row.sessionId),
       missingReason: row.sessionId ? null : 'spawned Claude agent has no session_id',
     };
