@@ -404,15 +404,20 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     );
   });
 
-  it('installs the offline scenario plus fixed Phase A-C executors and emits nothing before fixed A-G executors land', () => {
+  it('installs the offline scenario plus fixed Phase A-D executors and emits nothing before fixed A-G executors land', () => {
     const contract = spawnSync(physicalScenarioPath, ['--contract-check'], { encoding: 'utf8' });
     expect(contract.status).toBe(0);
     expect(JSON.parse(contract.stdout)).toEqual({
       schemaVersion: 'hive-git-physical-scenario-contract/v1',
-      implementationState: 'offline-phase-a-b-c-executors-v1',
+      implementationState: 'offline-phase-a-b-c-d-executors-v1',
       ready: false,
       phases: [...'ABCDEFG'],
-      phaseContracts: { A: 'executor-installed', B: 'executor-installed', C: 'executor-installed' },
+      phaseContracts: {
+        A: 'executor-installed',
+        B: 'executor-installed',
+        C: 'executor-installed',
+        D: 'executor-installed',
+      },
     });
 
     const runDir = mkdtempSync(join(evidenceDir, 'scenario-contract-'));
@@ -436,7 +441,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       },
     });
     expect(attempted.status).toBe(1);
-    expect(attempted.stderr).toContain('scenario is not execution-ready (offline-phase-a-b-c-executors-v1)');
+    expect(attempted.stderr).toContain('scenario is not execution-ready (offline-phase-a-b-c-d-executors-v1)');
     expect(existsSync(output)).toBe(false);
     expect(physicalScenario).toContain('run_all_phases');
     expect(physicalScenario).not.toContain('HIVE_GIT_PHYSICAL_SCENARIO_CMD');
@@ -498,11 +503,6 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     });
     expect(physicalScenario).not.toContain('HIVE_GIT_PHYSICAL_PHASE_A_CMD');
 
-    const unsupported = spawnSync(physicalScenarioPath, ['--phase-contract', 'D'], {
-      encoding: 'utf8',
-    });
-    expect(unsupported.status).toBe(1);
-    expect(unsupported.stderr).toContain('phase D has no installed offline contract');
   });
 
   it('pins a bidirectional Phase B ref-announcement adapter with no direct-fetch or command override seam', () => {
@@ -622,6 +622,81 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(physicalScenario).toContain('phase-c-verify');
   });
 
+  it('pins Phase D to the production request, ratification, staging-event, and worktree-bridge spine', () => {
+    const contract = spawnSync(physicalScenarioPath, ['--phase-contract', 'D'], {
+      encoding: 'utf8',
+      env: {
+        ...process.env,
+        HIVE_GIT_PHYSICAL_PHASE_D_CMD: 'git fetch synthetic && git update-ref synthetic',
+      },
+    });
+    expect(contract.status).toBe(0);
+    expect(JSON.parse(contract.stdout)).toEqual({
+      schemaVersion: 'hive-git-physical-phase-contract/v1',
+      phase: 'D',
+      planItem: 'P-305',
+      state: 'executor-installed',
+      ready: true,
+      missingAssertions: [],
+      target: {
+        potHomeSlug: 'hello-world-3-pot',
+        repoKey: 'gh-1296269',
+        topology: 'vm-below-steer-to-tower-integrator-to-vm-worktree',
+      },
+      causalOrder: [
+        'freshVmBelowSteerCommitCreated',
+        'vmGitSyncPublishTriggered',
+        'towerGitSyncQueueReceiveTriggered',
+        'exactPendingRequestObserved',
+        'productionRatificationApplied',
+        'towerGitSyncIntegrationTriggered',
+        'towerSignedStagingAdvanceObserved',
+        'vmReceivedIdenticalSignedAdvance',
+        'vmCanonicalAndWorktreeFastForwarded',
+        'vmOverlapFileMadeDirty',
+        'freshTowerOverlapCommitCreated',
+        'towerSecondSignedAdvanceObserved',
+        'vmMirrorAndCursorAdvanced',
+        'vmWorktreeHeadAndDirtyFileObservedUntouched',
+      ],
+      requiredObservations: [
+        'freshRunBoundBelowSteerHead',
+        'exactVisibleIntegrationRequest',
+        'ratifyIntegrationRequestResult',
+        'productionGitSyncTriggers',
+        'signedStagingAdvanceOnBothPhysicalHosts',
+        'integratorNamespaceAndCanonicalStagingOids',
+        'worktreeBridgeCursorEpochSeqAndEventRow',
+        'secondFreshOverlappingAdvance',
+        'unchangedDirtyWorktreeHead',
+        'unchangedProtectedFileHash',
+      ],
+      forbiddenEvidence: [
+        'localSecondWorktreeAsPhysicalProof',
+        'directGitFetch',
+        'directRefMutation',
+        'preAuthoredManifest',
+        'environmentSuppliedCommand',
+        'callerSelectedRepoOrWorktree',
+      ],
+      productionSurfaces: [
+        'git-sync:run',
+        'listIntegrationRequests',
+        'ratifyIntegrationRequest',
+        'pot-git:staging-advance',
+        'worktree-bridge',
+      ],
+      externalCommandOverrides: false,
+    });
+    expect(physicalScenario).not.toContain('HIVE_GIT_PHYSICAL_PHASE_D_CMD');
+    expect(physicalScenario).toContain('phase-d-request pending');
+    expect(physicalScenario).toContain('phase-d-ratify');
+    expect(physicalScenario).toContain('phase-d-event tower');
+    expect(physicalScenario).toContain('phase-d-event vm');
+    expect(physicalScenario).toContain('phase-d-verify');
+    expect(physicalScenario).not.toMatch(/['"]git (?:fetch|update-ref)/);
+  });
+
   it('refuses the canonical wrapper before its first VM ssh while the scenario is incomplete', () => {
     const runDir = mkdtempSync(join(evidenceDir, 'scenario-wrapper-'));
     const fakeBin = join(runDir, 'bin');
@@ -644,7 +719,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
       },
     );
     expect(probe.status).toBe(1);
-    expect(probe.stderr).toContain('scenario is not execution-ready (offline-phase-a-b-c-executors-v1)');
+    expect(probe.stderr).toContain('scenario is not execution-ready (offline-phase-a-b-c-d-executors-v1)');
     expect(existsSync(sshMarker)).toBe(false);
   });
 
