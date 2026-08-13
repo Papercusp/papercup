@@ -25,6 +25,9 @@ import {
   findFactKeyMatches,
   findFactKeyElsewhere,
   foldFacts,
+  foldDeadEndFacts,
+  foldNeverDropFacts,
+  NEVER_DROP_KEY_PREFIXES,
   renderFactsFold,
   factVersions,
   FACTS_PER_SCOPE_CAP,
@@ -1290,6 +1293,65 @@ describe('listLapsedWallFacts', () => {
     expect((await listLapsedWallFacts({}, db.sql)).map((f) => f.key)).toContain('wall:renewed');
     await assertFact({ ...base, key: 'wall:renewed', body: 'fresh body', ttlSec: 3600 }, db.sql);
     expect((await listLapsedWallFacts({}, db.sql)).map((f) => f.key)).not.toContain('wall:renewed');
+  });
+});
+
+/**
+ * EI-18725816532600240 — the key-prefix narrowing, against real PG.
+ *
+ * `foldNeverDropFacts` is what lets coord:orient's monitor tick keep delivering the
+ * override slots (dead-ends + walls) on a context budget, and it rides a multi-prefix
+ * `key LIKE ANY(...)` binding that NO test covered before this one. The property that
+ * actually matters is the last case: the filter is applied IN SQL, BEFORE the
+ * per-selector LIMIT, so a small never-drop set can never be crowded out by newer
+ * ordinary facts — which is the whole reason the narrowed fold is safe to bound.
+ */
+describe('key-prefix narrowing (foldNeverDropFacts / foldDeadEndFacts)', () => {
+  const base = { scope: 'harness' as const, scopeRef: 'papercusp', createdBy: 'su-int', workspaceId: WS };
+  const SEL = [{ scope: 'harness' as const, scopeRef: 'papercusp' }];
+  const fold = (o = {}) => foldFacts(SEL, { workspaceId: WS, ...o }, db.sql);
+
+  async function seed() {
+    await assertFact({ ...base, key: 'dead-end:tried-that', body: 'falsified', ttlSec: 3600 }, db.sql);
+    await assertFact({ ...base, key: 'wall:needs-owner', body: 'still gated', ttlSec: 3600 }, db.sql);
+    await assertFact({ ...base, key: 'ordinary-conclusion', body: 'plain', ttlSec: 3600 }, db.sql);
+  }
+
+  it('folds BOTH never-drop slots in one query and excludes ordinary facts', async () => {
+    await seed();
+    const keys = (await foldNeverDropFacts(SEL, { workspaceId: WS }, db.sql)).map((f) => f.key).sort();
+    expect(keys).toEqual(['dead-end:tried-that', 'wall:needs-owner']);
+  });
+
+  it('the never-drop prefix set is exactly the two override slots', () => {
+    expect([...NEVER_DROP_KEY_PREFIXES]).toEqual(['dead-end:', 'wall:']);
+  });
+
+  it('the single-prefix fold still narrows to dead-ends only', async () => {
+    await seed();
+    const keys = (await foldDeadEndFacts(SEL, { workspaceId: WS }, db.sql)).map((f) => f.key);
+    expect(keys).toEqual(['dead-end:tried-that']);
+  });
+
+  it('no prefixes ⇒ no key filter (the unfiltered branch still selects everything)', async () => {
+    await seed();
+    expect((await fold()).length).toBe(3);
+    expect((await fold({ keyPrefixes: [] })).length).toBe(3);
+  });
+
+  it('narrows BEFORE the per-selector LIMIT — newer ordinary facts cannot crowd out a dead-end', async () => {
+    await assertFact({ ...base, key: 'dead-end:oldest', body: 'falsified', ttlSec: 3600 }, db.sql);
+    // five ORDINARY facts, all newer than the dead-end (the fold is updated_at DESC)
+    for (const n of [1, 2, 3, 4, 5]) {
+      await assertFact({ ...base, key: `ordinary-${n}`, body: 'plain', ttlSec: 3600 }, db.sql);
+    }
+    // CONTROL: unfiltered, a limit of 2 sees only the newest ordinary rows — so this
+    // fixture really does bury the dead-end, and the assertion below can fail.
+    const unfiltered = (await fold({ limitPerSelector: 2 })).map((f) => f.key);
+    expect(unfiltered).not.toContain('dead-end:oldest');
+    // the narrowed fold spends its limit on the never-drop set alone
+    const narrowed = (await foldNeverDropFacts(SEL, { workspaceId: WS, limitPerSelector: 2 }, db.sql)).map((f) => f.key);
+    expect(narrowed).toEqual(['dead-end:oldest']);
   });
 });
 

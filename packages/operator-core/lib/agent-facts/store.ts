@@ -1696,10 +1696,13 @@ export async function foldFacts(
     workspaceId?: string;
     limitPerSelector?: number;
     audiences?: readonly string[] | 'all';
-    /** Narrow the fold to keys starting with this prefix (applied IN SQL, before
-     *  the per-selector LIMIT, so a slot's facts are never crowded out by
-     *  unrelated ones). Used by {@link foldDeadEndFacts}. */
-    keyPrefix?: string;
+    /** Narrow the fold to keys starting with ANY of these prefixes (applied IN
+     *  SQL, before the per-selector LIMIT, so a slot's facts are never crowded
+     *  out by unrelated ones). One query however many prefixes are passed —
+     *  which is the point: {@link foldNeverDropFacts} needs two slots on a
+     *  monitor tick and must not pay a round-trip per slot. Empty/omitted ⇒ no
+     *  key filter. Used by {@link foldDeadEndFacts} + {@link foldNeverDropFacts}. */
+    keyPrefixes?: readonly string[];
   } = {},
   inject?: Sql,
 ): Promise<AgentFact[]> {
@@ -1707,7 +1710,7 @@ export async function foldFacts(
   const sql = sqlOf(inject);
   const ws = opts.workspaceId ?? activeWorkspaceId();
   const limit = opts.limitPerSelector ?? FACTS_FOLD_LIMIT;
-  const keyPrefix = (opts.keyPrefix ?? '').trim();
+  const keyPrefixes = (opts.keyPrefixes ?? []).map((p) => p.trim()).filter(Boolean);
   const audiences =
     opts.audiences === 'all'
       ? 'all'
@@ -1734,7 +1737,11 @@ export async function foldFacts(
          -- corrected, as peers.
          AND superseded_at IS NULL
          AND retracted_at IS NULL AND expires_at > now()
-         AND ${keyPrefix ? sql`key LIKE ${keyPrefix + '%'}` : sql`TRUE`}
+         AND ${
+           keyPrefixes.length > 0
+             ? sql`key LIKE ANY(${keyPrefixes.map((p) => p + '%')})`
+             : sql`TRUE`
+         }
          AND ${
            audiences === 'all'
              ? sql`TRUE`
@@ -1762,7 +1769,39 @@ export async function foldDeadEndFacts(
   opts: { workspaceId?: string; limitPerSelector?: number; audiences?: readonly string[] | 'all' } = {},
   inject?: Sql,
 ): Promise<AgentFact[]> {
-  return foldFacts(selectors, { ...opts, keyPrefix: DEAD_END_KEY_PREFIX }, inject);
+  return foldFacts(selectors, { ...opts, keyPrefixes: [DEAD_END_KEY_PREFIX] }, inject);
+}
+
+/**
+ * The NEVER-DROP fact slots: dead-ends ({@link DEAD_END_KEY_PREFIX}) and walls
+ * ({@link WALL_KEY_PREFIX}). Both exist to OVERRIDE a stale plan — a dead-end
+ * says "that approach is already falsified", a wall says "this is still gated" —
+ * so they are the two slots whose absence actively misleads a reader.
+ *
+ * Defined HERE, beside the prefixes themselves, for the same single-source-of-
+ * truth reason {@link DEAD_END_KEY_PREFIX} spells out: a caller that hand-listed
+ * the prefixes would silently drift from them.
+ */
+export const NEVER_DROP_KEY_PREFIXES: readonly string[] = [DEAD_END_KEY_PREFIX, WALL_KEY_PREFIX];
+
+/**
+ * Fold ONLY the never-drop facts ({@link NEVER_DROP_KEY_PREFIXES}) — the bounded
+ * subset a context-budgeted caller folds when it cannot afford the full standing
+ * fold. Same scoping + audience semantics as {@link foldFacts}, narrowed in SQL
+ * to ONE query per selector regardless of prefix count.
+ *
+ * EI-18725816532600240: coord:orient's monitor tick used to skip the facts fold
+ * ENTIRELY for context budget, which deleted exactly the override signal a stale
+ * carry-note needs (a cold wake was told to go implement an approach a dead-end
+ * fact had already falsified). Ordinary 7d conclusions can wait for a full
+ * orient; these two slots cannot.
+ */
+export async function foldNeverDropFacts(
+  selectors: readonly FactSelector[],
+  opts: { workspaceId?: string; limitPerSelector?: number; audiences?: readonly string[] | 'all' } = {},
+  inject?: Sql,
+): Promise<AgentFact[]> {
+  return foldFacts(selectors, { ...opts, keyPrefixes: NEVER_DROP_KEY_PREFIXES }, inject);
 }
 
 /** A wall fact whose TTL has LAPSED (expired) but was never retracted — the

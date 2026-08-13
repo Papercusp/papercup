@@ -277,7 +277,7 @@ async function readFleetMission(sql: Sql, ws: string, owner: string): Promise<He
 async function readGoalOverride(owner: string): Promise<GoalCandidates['override']> {
   const facts = await foldFacts([{ scope: 'owner', scopeRef: owner }], {
     limitPerSelector: 1,
-    keyPrefix: GOAL_OVERRIDE_FACT_KEY,
+    keyPrefixes: [GOAL_OVERRIDE_FACT_KEY],
     audiences: 'all',
   });
   const f = facts.find((x) => x.key === GOAL_OVERRIDE_FACT_KEY);

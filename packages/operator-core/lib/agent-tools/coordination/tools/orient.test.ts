@@ -37,12 +37,33 @@ import '../../plans/get';
 import '../../memory/search';
 
 const foldFactsMock = vi.hoisted(() => vi.fn(async (): Promise<unknown[]> => []));
+// EI-18725816532600240: the narrowed (never-drop) fold is a SEPARATE IO read, so it
+// needs its own mock — the real one calls the real foldFacts internally (a
+// module-scope call the foldFacts mock above cannot intercept) and would attempt a
+// live PG connect from a unit test.
+const foldNeverDropFactsMock = vi.hoisted(() => vi.fn(async (): Promise<unknown[]> => []));
 
 // P-007: keep the PURE exports real (renderFactSrc renders the provenance-
-// hydrated src the fold projection is asserted on) — only the IO read is mocked.
+// hydrated src the fold projection is asserted on) — only the IO reads are mocked.
 vi.mock('../../../agent-facts/store', async (importOriginal) => ({
   ...(await importOriginal<typeof import('../../../agent-facts/store')>()),
   foldFacts: foldFactsMock,
+  foldNeverDropFacts: foldNeverDropFactsMock,
+}));
+
+// EI-18725816532600240: the facts fold is the ONLY consumer of '../watermarks' in
+// orient.ts (every other cursor is injected as a parameter), so mocking it here is
+// scoped to the facts `changed` marker — and it is what lets the narrowed fold's
+// "must not advance the cursor" rule be asserted rather than argued.
+const readWatermarkMock = vi.hoisted(() =>
+  vi.fn(async (): Promise<{ cursors: Record<string, string> }> => ({ cursors: {} })),
+);
+const writeWatermarkMock = vi.hoisted(() => vi.fn(async (): Promise<void> => {}));
+
+vi.mock('../watermarks', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('../watermarks')>()),
+  readWatermark: readWatermarkMock,
+  writeWatermark: writeWatermarkMock,
 }));
 
 // EI-9270: the announced-gates fold reads the await store directly — mock it so
@@ -69,7 +90,15 @@ vi.mock('../../../workspace-registry', async (importOriginal) => ({
 }));
 
 beforeEach(() => {
+  // mockResolvedValue does NOT reset the call log, and these mocks are module-scoped
+  // across ~200 tests — so any assertion about WHETHER a fold ran (not just with what)
+  // needs the log cleared per test, or it reads a predecessor's calls.
+  foldFactsMock.mockClear();
+  foldNeverDropFactsMock.mockClear();
   foldFactsMock.mockResolvedValue([]);
+  foldNeverDropFactsMock.mockResolvedValue([]);
+  readWatermarkMock.mockResolvedValue({ cursors: {} });
+  writeWatermarkMock.mockClear();
   listActiveAnnouncementsMock.mockResolvedValue([]);
   getFleetMock.mockResolvedValue(null);
 });
@@ -785,7 +814,7 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
 
   // ── EI-8300: mode:'monitor' skips the heavy legs entirely (not just capped output) ──
   describe("mode: 'monitor' (EI-8300 lean leader/monitor-loop tick)", () => {
-    it('skips claimable/facts/plan-events/fleet-catch-up/recipes entirely, even with intent set', async () => {
+    it('skips claimable/plan-events/fleet-catch-up/recipes entirely, even with intent set', async () => {
       const { call, calls } = fakeCall({
         ...CORE,
         'coord:whoami': () => ({ fleetSlug: 'backend' }), // would trigger catch-up in full mode
@@ -794,7 +823,10 @@ describe('composeOrient (B-CX-1B compound + P-005 bootstrap folds)', () => {
       const r = await composeOrient({ intent: 'watch the fleet', mode: 'monitor' }, call, 'leader');
       expect(r.ok).toBe(true);
       expect(r.claimable).toEqual([]);
-      expect(r.facts).toBeUndefined();
+      // EI-18725816532600240: facts are NARROWED, not skipped — the never-drop fold
+      // runs (returning nothing here), the FULL fold does not.
+      expect(foldNeverDropFactsMock).toHaveBeenCalledTimes(1);
+      expect(foldFactsMock).not.toHaveBeenCalled();
       expect(r.planEvents).toBeUndefined();
       expect(r.fleetCatchUp).toBeUndefined();
       expect(r.fleetHealth).toBeUndefined(); // fold #1 skipped on a monitor tick too
@@ -2602,6 +2634,164 @@ describe('EI-20113865649946366: orient discloses its own trims (two-directional)
       const r = await composeOrient({ harness: 'h' }, call, 'me');
       expect(r.announcedGates).toHaveLength(3);
       expect(r.announcedGatesTruncated).toBeUndefined();
+    });
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────────
+// EI-18725816532600240 — a monitor tick must still deliver the OVERRIDE slots.
+//
+// The incident: a cold wake reconciled with mode:'monitor', which skipped the facts
+// fold ENTIRELY, so a `dead-end:` fact that had already falsified the carry-note's
+// "Next action" never reached the agent — which then went and implemented the
+// falsified approach. Dead-ends and walls exist precisely to override a stale plan,
+// so they are the one thing a context-budget elision must not drop.
+// ───────────────────────────────────────────────────────────────────────────────
+describe('EI-18725816532600240: never-drop facts survive a monitor tick', () => {
+  const factAt = (over: Record<string, unknown>) => ({
+    key: 'k',
+    createdBy: 'x',
+    updatedAt: '2026-07-11T00:00:00Z',
+    expiresAt: '2026-07-18T00:00:00Z',
+    scope: 'workspace',
+    scopeRef: null,
+    body: 'b',
+    sourceRef: null,
+    audienceScope: null,
+    sourceProvenance: null,
+    ...over,
+  });
+
+  const DEAD_END = factAt({
+    key: 'dead-end:attach-race-hypothesis',
+    body: '⛔ DEAD END — the attach-race fix is a no-op; falsified by a fresh probe.',
+  });
+
+  it('DELIVERS a dead-end fact on a monitor tick (the incident, inverted)', async () => {
+    foldNeverDropFactsMock.mockResolvedValue([DEAD_END]);
+    const { call } = fakeCall({ ...CORE });
+    const r = await composeOrient({ mode: 'monitor' }, call, 'me');
+
+    // the override signal actually ARRIVES — this is the whole item
+    expect(r.facts).toEqual([
+      {
+        scope: 'workspace',
+        ref: null,
+        body: '⛔ DEAD END — the attach-race fix is a no-op; falsified by a fresh probe.',
+        src: null,
+      },
+    ]);
+    // narrowed, not full: one bounded read, and the full fold never runs
+    expect(foldNeverDropFactsMock).toHaveBeenCalledTimes(1);
+    expect(foldFactsMock).not.toHaveBeenCalled();
+  });
+
+  it('folds the never-drop slots with the SAME scoping + audience semantics as the full fold', async () => {
+    foldNeverDropFactsMock.mockResolvedValue([]);
+    const { call } = fakeCall({ ...CORE, 'coord:whoami': () => ({ fleetSlug: 'backend' }) });
+    await composeOrient({ mode: 'monitor', harness: 'h' }, call, 'me');
+    // NOTE: a monitor tick skips the fleet block wholesale, so there is no fleetSlug
+    // to filter on — the audience list is empty exactly as it is for a non-fleet caller.
+    expect(foldNeverDropFactsMock).toHaveBeenCalledWith(
+      [{ scope: 'workspace' }, { scope: 'owner', scopeRef: 'me' }, { scope: 'harness', scopeRef: 'h' }],
+      { audiences: [] },
+    );
+  });
+
+  describe('the narrowing is DISCLOSED (a bounded read is never rendered as a census)', () => {
+    it('marks factsNarrowed on a monitor tick, naming the prefixes from the store constant', async () => {
+      const { NEVER_DROP_KEY_PREFIXES, DEAD_END_KEY_PREFIX, WALL_KEY_PREFIX } = await import(
+        '../../../agent-facts/store'
+      );
+      foldNeverDropFactsMock.mockResolvedValue([DEAD_END]);
+      const { call } = fakeCall({ ...CORE });
+      const r = await composeOrient({ mode: 'monitor' }, call, 'me');
+
+      expect(r.factsNarrowed?.fold).toBe('never-drop');
+      // sourced from the store's own constant — a hand-listed copy here would drift
+      // silently, which is the failure DEAD_END_KEY_PREFIX's own doc warns about
+      expect(r.factsNarrowed?.prefixes).toEqual([...NEVER_DROP_KEY_PREFIXES]);
+      expect(r.factsNarrowed?.prefixes).toEqual([DEAD_END_KEY_PREFIX, WALL_KEY_PREFIX]);
+      expect(r.factsNarrowed?.reason).toMatch(/not evidence they do not exist/);
+    });
+
+    it('marks it even when the narrowed fold found NOTHING — absence is the least safe reading to transcribe', async () => {
+      foldNeverDropFactsMock.mockResolvedValue([]);
+      const { call } = fakeCall({ ...CORE });
+      const r = await composeOrient({ mode: 'monitor' }, call, 'me');
+      expect(r.facts).toBeUndefined();
+      expect(r.factsNarrowed?.fold).toBe('never-drop');
+    });
+
+    it('does NOT mark a full fold', async () => {
+      foldFactsMock.mockResolvedValue([DEAD_END]);
+      const { call } = fakeCall({ ...CORE });
+      const r = await composeOrient({}, call, 'me');
+      expect(r.factsNarrowed).toBeUndefined();
+      expect(r.facts).toHaveLength(1);
+    });
+  });
+
+  describe('afterCompaction takes the FULL fold whatever the mode', () => {
+    it("monitor + afterCompaction ⇒ full fold, no narrowing marker", async () => {
+      foldFactsMock.mockResolvedValue([DEAD_END]);
+      const { call } = fakeCall({ ...CORE });
+      const r = await composeOrient({ mode: 'monitor', afterCompaction: true }, call, 'me');
+      expect(foldFactsMock).toHaveBeenCalledTimes(1);
+      expect(foldNeverDropFactsMock).not.toHaveBeenCalled();
+      expect(r.factsNarrowed).toBeUndefined();
+      expect(r.facts).toHaveLength(1);
+    });
+
+    it('plain monitor (no afterCompaction) stays narrowed — the control for the case above', async () => {
+      const { call } = fakeCall({ ...CORE });
+      await composeOrient({ mode: 'monitor' }, call, 'me');
+      expect(foldFactsMock).not.toHaveBeenCalled();
+      expect(foldNeverDropFactsMock).toHaveBeenCalledTimes(1);
+    });
+  });
+
+  // The subtle one. nextCursor is the MAX cell version across the folded rows, so a
+  // narrowed fold that advanced it would push the cursor PAST ordinary facts the
+  // caller was never shown — permanently suppressing their `changed` mark on the
+  // next FULL orient. Silent, and it degrades the exact "what moved since I looked"
+  // signal the watermark exists to provide.
+  describe('watermark: a narrowed fold must not claim the caller saw the rest', () => {
+    const VERSIONED = factAt({ key: 'dead-end:x', body: 'd', cellVersion: 'hlc-9' });
+
+    it('does NOT advance the facts cursor on a narrowed (monitor) fold', async () => {
+      foldNeverDropFactsMock.mockResolvedValue([VERSIONED]);
+      const { call } = fakeCall({ ...CORE });
+      await composeOrient({ mode: 'monitor' }, call, 'me');
+      expect(writeWatermarkMock).not.toHaveBeenCalled();
+    });
+
+    it('DOES advance it on a full fold (the control — proves the assertion above can fail)', async () => {
+      foldFactsMock.mockResolvedValue([VERSIONED]);
+      const { call } = fakeCall({ ...CORE });
+      await composeOrient({}, call, 'me');
+      expect(writeWatermarkMock).toHaveBeenCalledWith('me', { cursors: { facts: 'hlc-9' } });
+    });
+
+    // Found by writing the assertion above: the SET was keyed with `\x00`
+    // separators and the LOOKUP with spaces, so `changed` was dead for EVERY fact
+    // on every path, full folds included. Nothing asserted the marker, so nothing
+    // caught it. Both keys now come from one function.
+    it('marks `changed` on a FULL fold — the marker was dead for every fact before this', async () => {
+      readWatermarkMock.mockResolvedValue({ cursors: { facts: 'hlc-1' } });
+      foldFactsMock.mockResolvedValue([VERSIONED]);
+      const { call } = fakeCall({ ...CORE });
+      const r = await composeOrient({}, call, 'me');
+      expect(r.facts?.[0]?.changed).toBe(true);
+    });
+
+    it('still MARKS changed on the narrowed rows it did fold (the cursor is read, just not written)', async () => {
+      readWatermarkMock.mockResolvedValue({ cursors: { facts: 'hlc-1' } });
+      foldNeverDropFactsMock.mockResolvedValue([VERSIONED]);
+      const { call } = fakeCall({ ...CORE });
+      const r = await composeOrient({ mode: 'monitor' }, call, 'me');
+      expect(r.facts?.[0]?.changed).toBe(true);
+      expect(writeWatermarkMock).not.toHaveBeenCalled();
     });
   });
 });

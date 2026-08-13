@@ -149,9 +149,17 @@ export interface OrientArgs {
    * "what changed in the fleet" — a major driver of that loop's compaction
    * frequency (measured: ~4 compactions in one lean-monitoring session).
    * `'monitor'` skips those heavy legs ENTIRELY (no sub-call, not just a capped
-   * output): no `work_items:list` claimable read, no facts fold, no
-   * `coord:plan-events` fold, no fleet catch-up, no recipes search, no memory
-   * recall (even when `intent`/`memoryQuery` is set). It KEEPS `fleet:assignments`
+   * output): no `work_items:list` claimable read, no `coord:plan-events` fold, no
+   * fleet catch-up, no recipes search, no memory recall (even when
+   * `intent`/`memoryQuery` is set).
+   *
+   * ONE deliberate exception, EI-18725816532600240: the facts fold is NARROWED,
+   * not skipped. The never-drop slots (`dead-end:` + `wall:`) fold on every tick —
+   * they are small, bounded, and exist to OVERRIDE a stale plan, so eliding them
+   * defeated exactly the cold-wake reconcile a monitor tick is often doing. The
+   * payload marks the narrowing via `factsNarrowed`; ordinary standing facts still
+   * wait for a full orient. Passing `afterCompaction:true` takes the FULL fold
+   * whatever the mode. It KEEPS `fleet:assignments`
    * (the live/parked/stalled/orphaned counts a monitor loop actually watches),
    * the inbox read (still your directed-message signal), and — if `intent` is
    * passed — the `coord:declare-intent` write (cheap, and peers still see your
@@ -321,6 +329,13 @@ export interface OrientResult {
   /** Present iff queen-loop steering facts were withheld from a responsive caller
    *  (P-002) — transparent, never a silent drop. Pull live state via pot:get-steering. */
   factsWithheld?: { count: number; reason: string };
+  /** Present iff the facts fold above was NARROWED to the never-drop slots
+   *  (`dead-end:` + `wall:`) rather than run in full — i.e. a plain mode:'monitor'
+   *  tick (EI-18725816532600240). `facts` then carries ONLY those slots, so its
+   *  contents are NOT a census of standing facts and their absence is NOT evidence
+   *  none stand. Absent ⇒ the fold was full. A monitor tick passing
+   *  afterCompaction:true gets the full fold and no marker. */
+  factsNarrowed?: { fold: 'never-drop'; prefixes: string[]; reason: string };
   /** The four scalars agents otherwise shell out for — current UTC instant, core
    *  count, load average, free memory (bash-to-tool-substitution-2026-07-26,
    *  P-026 + P-027). Measured over the 7d corpus: 852 `date` atoms across 50 of
@@ -1286,12 +1301,27 @@ export async function composeOrient(
   // ── standing-facts fold (queen-memory-hybrid L1c) — the deterministic sibling of
   // the fuzzy memory recall above: scoped conclusions delivered VERBATIM every
   // orient (workspace + this owner + the named harness). BEST-EFFORT like every
-  // other leg — a facts outage must never break orientation. EI-8300: skipped
-  // entirely on a monitor tick (a leader loop re-reads its own steering facts on
-  // every wake for no reason — it already has them from an earlier full orient).
-  if (!monitor)
+  // other leg — a facts outage must never break orientation. EI-8300: the full
+  // fold is elided on a monitor tick (a leader loop re-reads its own steering
+  // facts on every wake for no reason — it already has them from an earlier full
+  // orient).
+  //
+  // EI-18725816532600240: that elision used to be TOTAL, and it deleted exactly
+  // the signal a stale carry-note needs. A cold wake reconciled with mode:'monitor'
+  // and was told to go implement an approach a `dead-end:` fact had ALREADY
+  // falsified — the antidote was absent precisely where the poison was strongest,
+  // and monitor is the DEFAULT shape for a long-running loop, not an edge case.
+  // So the never-drop slots (dead-ends + walls) now fold on EVERY tick: both are
+  // small and bounded, and both exist to OVERRIDE a stale plan. An
+  // `afterCompaction` reconcile takes the FULL fold whatever the mode — that call
+  // is the one that most needs everything.
+  const factsFold: 'full' | 'never-drop' =
+    !monitor || args.afterCompaction === true ? 'full' : 'never-drop';
+  {
     try {
-      const { foldFacts } = await import('../../../agent-facts/store');
+      const { foldFacts, foldNeverDropFacts, NEVER_DROP_KEY_PREFIXES } = await import(
+        '../../../agent-facts/store'
+      );
       const selectors = [
         { scope: 'workspace' as const },
         ...(ownerId ? [{ scope: 'owner' as const, scopeRef: ownerId }] : []),
@@ -1300,9 +1330,25 @@ export async function composeOrient(
       // P-007: filter by the RECIPIENT's audience — an audience-scoped fact
       // (audienceScope 'fleet:<slug>') folds only for that fleet's members;
       // a non-fleet caller receives only unrestricted facts.
-      const facts = await foldFacts(selectors, {
-        audiences: fleetSlug ? [`fleet:${fleetSlug}`] : [],
-      });
+      const foldOpts = { audiences: fleetSlug ? [`fleet:${fleetSlug}`] : [] };
+      const facts =
+        factsFold === 'full'
+          ? await foldFacts(selectors, foldOpts)
+          : await foldNeverDropFacts(selectors, foldOpts);
+      // A NARROWED fold must SAY it was narrowed. Otherwise "no ordinary facts in
+      // this payload" is indistinguishable from "no ordinary facts exist" — a
+      // bounded read rendered as a total, which is the same class of silent
+      // miscount the aggregate-boundedness rule exists to stop. Emitted even when
+      // the narrowed fold returned nothing, since that is the reading a caller is
+      // least entitled to treat as a census.
+      if (factsFold === 'never-drop') {
+        result.factsNarrowed = {
+          fold: 'never-drop',
+          prefixes: [...NEVER_DROP_KEY_PREFIXES],
+          reason:
+            "mode:'monitor' folds ONLY the never-drop slots (dead-ends + walls) for context budget — ordinary standing facts were NOT read, so their absence here is not evidence they do not exist. Re-call coord:orient without mode:'monitor' (or with afterCompaction:true) for the full fold.",
+        };
+      }
       // P-002 / D-001: withhold queen-loop steering facts (pauseNewWork/maxBees) from
       // an OWNER-DIRECTED (responsive) caller — filter the RAW facts (key + body both
       // inspected) BEFORE projecting, so the structural `queen-loop:` key convention
@@ -1354,6 +1400,14 @@ export async function composeOrient(
         //
         // Best-effort and non-fatal by construction: a watermark outage must degrade
         // to today's unmarked full fold, never break orientation.
+        // ONE key function for both the SET and the LOOKUP. They were written as two
+        // separate inline templates with DIFFERENT separators (`\x00` when building,
+        // spaces when reading), so `has()` could never match and the `changed` mark
+        // NEVER fired for any fact — silent, and invisible to the suite because
+        // nothing asserted the marker. Deriving both from one function is what makes
+        // that class of drift unrepresentable rather than merely fixed.
+        const factCellKey = (f: { scope: string; scopeRef?: string | null; key: string }) =>
+          `${f.scope}\x00${f.scopeRef ?? ''}\x00${f.key}`;
         let changedCells: ReadonlySet<string> = new Set();
         if (ownerId) {
           try {
@@ -1363,11 +1417,22 @@ export async function composeOrient(
             ]);
             const wm = await readWatermark(ownerId);
             const delta = factsCellDelta(withDeps, wm.cursors?.[FACTS_CELL_SURFACE]);
-            changedCells = new Set(delta.changed.map((f) => `${f.scope}\x00${f.scopeRef ?? ''}\x00${f.key}`));
+            changedCells = new Set(delta.changed.map(factCellKey));
             // Advance deterministically at fold time, like messages_shown_ts (EI-2042)
             // rather than at turn end: the agent HAS been shown these. Only write when
             // the position actually moved, so a quiet fold costs no row write.
-            if (delta.nextCursor && delta.nextCursor !== wm.cursors?.[FACTS_CELL_SURFACE]) {
+            //
+            // ⚠ NEVER advance on a NARROWED fold. nextCursor is the MAX cell version
+            // across the folded rows, so a dead-end/wall-only fold would push the
+            // cursor PAST ordinary facts the caller was never shown — permanently
+            // suppressing their `changed` mark on the next FULL orient. A narrowed
+            // fold still READS the cursor (so the never-drop rows it did fold are
+            // marked correctly); it just must not claim the caller saw the rest.
+            if (
+              factsFold === 'full' &&
+              delta.nextCursor &&
+              delta.nextCursor !== wm.cursors?.[FACTS_CELL_SURFACE]
+            ) {
               await writeWatermark(ownerId, { cursors: { [FACTS_CELL_SURFACE]: delta.nextCursor } });
             }
           } catch {
@@ -1382,7 +1447,7 @@ export async function composeOrient(
         // the next omission fails loudly instead of costing an agent the field.
         const { projectFactRow } = await import('../../facts/project-fact-row');
         result.facts = withDeps.map((f) =>
-          projectFactRow(f, { changed: changedCells.has(`${f.scope} ${f.scopeRef ?? ''} ${f.key}`) }),
+          projectFactRow(f, { changed: changedCells.has(factCellKey(f)) }),
         );
       }
       if (withheld.length > 0) {
@@ -1391,6 +1456,7 @@ export async function composeOrient(
     } catch {
       result.facts = null;
     }
+  }
 
   // ── coord:plan-events — the "what plans changed" delta (default on; the bootstrap's
   // third leg). Already result-bounded server-side; we keep the newest few.
@@ -2170,7 +2236,7 @@ export default defineTool({
       .enum(['full', 'monitor'])
       .optional()
       .describe(
-        "Default 'full'. Pass 'monitor' for a repeating leader/monitor loop tick: skips the claimable backlog, facts fold, plan-events delta, fleet catch-up, recipes search, and memory recall ENTIRELY (no sub-call, not just capped output) — keeps fleet:assignments (the live/parked/stalled/orphaned counts a monitor loop watches), the inbox read, and coord:declare-intent (when `intent` is passed). A resolvable FLEET LEADER also gets `leaderBrief` (fleet:leader-brief) folded in — the whole fleet's per-member sessionState/verdict/claims/unanswered/contextPressure in this same round-trip. Sharply cuts per-wake context/token cost for a long-running monitor loop (EI-8300).",
+        "Default 'full'. Pass 'monitor' for a repeating leader/monitor loop tick: skips the claimable backlog, plan-events delta, fleet catch-up, recipes search, and memory recall ENTIRELY (no sub-call, not just capped output) — keeps fleet:assignments (the live/parked/stalled/orphaned counts a monitor loop watches), the inbox read, and coord:declare-intent (when `intent` is passed). The facts fold is NARROWED, not skipped: `dead-end:`/`wall:` still fold every tick (marked `factsNarrowed`); afterCompaction:true forces the full fold. A resolvable FLEET LEADER also gets `leaderBrief` (fleet:leader-brief) folded in — the whole fleet's per-member sessionState/verdict/claims/unanswered/contextPressure in this same round-trip. Sharply cuts per-wake context/token cost for a long-running monitor loop (EI-8300).",
       ),
     intent: hardText(LIMITS.ANNOTATION)
       .optional()
