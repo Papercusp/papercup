@@ -1298,7 +1298,7 @@ export default defineTool({
               const authorshipRevalidation = await m.getClaimTimeAuthorshipRevalidationHint({
                 harness: wi.harness ?? args.harness,
                 workItemId: wi.id ?? '',
-                workspaceId: ident.workspaceId,
+                workspaceId: ident.workspaceId ?? undefined,
               });
               const authorshipRevalidationWarning = m.authorshipRevalidationWarning(authorshipRevalidation);
               return authorshipRevalidation && authorshipRevalidationWarning
