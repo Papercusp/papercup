@@ -67,6 +67,12 @@ const state = (over: Partial<SessionConfigState> = {}): SessionConfigState => ({
   claudeJson: { mcpServers: {} },
   globalSettings: GLOBAL_SETTINGS,
   globalClaudeJson: GLOBAL_CLAUDE_JSON,
+  // WI-38349: the documents above were read from an OBSERVED dir. A state whose
+  // configDir is null means "we never found the session's dir" and is a different
+  // claim entirely — see the UNKNOWN describe block below.
+  configDir: '/observed/session-claude/su-x',
+  configDirSource: 'live-process',
+  configDirUnresolvedReason: null,
   ...over,
 });
 
@@ -282,7 +288,14 @@ describe('repairSessionConfigOnDisk', () => {
 
     const res = repairSessionConfigOnDisk(SID, home);
 
-    expect(res).toEqual({ repaired: false, fixed: [], wrote: [], stillBroken: [], residualCaveats: [] });
+    expect(res).toEqual({
+      repaired: false,
+      fixed: [],
+      wrote: [],
+      stillBroken: [],
+      residualCaveats: [],
+      skipped: 'nothing broken',
+    });
     expect(existsSync(join(dir, 'settings.json.pre-wi4562.bak'))).toBe(false);
   });
 
@@ -304,12 +317,101 @@ describe('repairSessionConfigOnDisk', () => {
     expect(s.claudeJson).toBeNull();
     expect(s.globalSettings).not.toBeNull();
     expect(s.globalClaudeJson).not.toBeNull();
+    // WI-38349: and it says WHY they are null — no dir was observed, so the nulls are
+    // about our lookup, not about the session.
+    expect(s.configDir).toBeNull();
+    expect(s.configDirUnresolvedReason).toMatch(/WI-38349/);
   });
 
   it('repair is a no-op for an explicitly recorded Codex session', () => {
     layGlobals();
     laySession(CLOBBERED_SETTINGS, { mcpServers: {} }); // stale unrelated Claude docs
     const res = repairSessionConfigOnDisk(SID, home, 'codex');
-    expect(res).toEqual({ repaired: false, fixed: [], wrote: [], stillBroken: [], residualCaveats: [] });
+    expect(res).toMatchObject({ repaired: false, fixed: [], wrote: [], stillBroken: [] });
+    expect(res.skipped).toMatch(/non-Claude/);
+  });
+});
+
+/**
+ * WI-38349 — the detector used to resolve a session's config dir by FORMULA
+ * (`session-claude/<coordOwnerId>`), read two nulls out of a directory that never
+ * existed on the dominant launch path, and report a healthy session as
+ * "RUNNING DE-ENROLLED … treat every edit as unprotected". 78 of 98 owner ids
+ * active in a 6h window matched that shape.
+ *
+ * The guard is: an UNOBSERVED dir is UNKNOWN, never damage — and a repair may not
+ * write into a directory it never found.
+ */
+describe('WI-38349 — an unresolvable config dir is UNKNOWN, not de-enrollment', () => {
+  const unresolved = (over: Partial<SessionConfigState> = {}): SessionConfigState =>
+    state({
+      settings: null,
+      claudeJson: null,
+      configDir: null,
+      configDirSource: null,
+      configDirUnresolvedReason: 'no observable config dir for su-x (WI-38349)',
+      ...over,
+    });
+
+  it('reports unknown — and emits NO consequences, so nothing can render it as an alarm', () => {
+    const v = checkSessionConfigIntegrity(unresolved());
+    expect(v.unknown).toBe(true);
+    expect(v.unknownReason).toMatch(/WI-38349/);
+    expect(v.consequences).toEqual([]);
+    expect(v.missingHookEvents).toEqual([]);
+    expect(v.mcpServerMissing).toBe(false);
+  });
+
+  it('CONTROL: the same two null documents from an OBSERVED dir are still real damage', () => {
+    // The calibration case — without it, the guard above would also "pass" if the
+    // checker had simply stopped detecting anything (WI-4617's deliberate case:
+    // a recorded Claude session whose whole directory really was deleted).
+    const v = checkSessionConfigIntegrity(state({ settings: null, claudeJson: null }));
+    expect(v.unknown).toBe(false);
+    expect(v.ok).toBe(false);
+    expect(v.mcpServerMissing).toBe(true);
+    expect(v.consequences.length).toBeGreaterThan(0);
+  });
+
+  it('the client-aware entry point propagates unknown for a recorded claude session', () => {
+    const v = checkSessionConfigIntegrityForClient(unresolved(), 'claude');
+    expect(v).toMatchObject({ unknown: true, consequences: [] });
+  });
+
+  it('a repair REFUSES an unobserved dir rather than materializing a phantom one', () => {
+    const home = mkdtempSync(join(tmpdir(), 'wi38349-'));
+    try {
+      mkdirSync(join(home, '.claude'), { recursive: true });
+      writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify(GLOBAL_SETTINGS, null, 2));
+      writeFileSync(join(home, '.claude.json'), JSON.stringify(GLOBAL_CLAUDE_JSON, null, 2));
+
+      const SID = 'su-never-materialized-0000';
+      const res = repairSessionConfigOnDisk(SID, home, 'claude');
+
+      expect(res.repaired).toBe(false);
+      expect(res.skipped).toMatch(/config dir not observable/);
+      // The phantom path is the whole point: a "repair" must not create it.
+      expect(existsSync(join(home, '.papercusp', 'session-claude', SID))).toBe(false);
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('never reports repaired:false with an EMPTY stillBroken and no reason — the contradiction orient rendered', () => {
+    const home = mkdtempSync(join(tmpdir(), 'wi38349-'));
+    try {
+      mkdirSync(join(home, '.claude'), { recursive: true });
+      writeFileSync(join(home, '.claude', 'settings.json'), JSON.stringify(GLOBAL_SETTINGS, null, 2));
+      writeFileSync(join(home, '.claude.json'), JSON.stringify(GLOBAL_CLAUDE_JSON, null, 2));
+
+      const res = repairSessionConfigOnDisk('su-never-materialized-0001', home, 'claude');
+
+      // orient selected "auto-repair did NOT fully succeed — see stillBroken" from
+      // exactly this shape, pointing the reader at an empty list.
+      expect(res.stillBroken).toEqual([]);
+      expect(res.skipped).not.toBeNull();
+    } finally {
+      rmSync(home, { recursive: true, force: true });
+    }
   });
 });

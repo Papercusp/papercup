@@ -59,11 +59,27 @@
  * authoritative `adv_sessions.agent` value. A recorded Codex/OMP session skips the
  * Claude-shaped check even if stale Claude files remain; a recorded Claude session
  * is still diagnosed if its whole config directory was deleted.
+ *
+ * WI-38349 — WHERE THE DOCUMENTS ARE IS AN OBSERVATION, NOT A FORMULA. This module
+ * used to resolve the session's dir as `session-claude/<coordOwnerId>/` and read
+ * two nulls out of a directory that had never existed on the dominant launch path
+ * (which keys the dir by SPAWN id). Two nulls are also exactly what a wipe looks
+ * like, so a healthy session — hooks firing, inbox delivering, edit-locks taking —
+ * was told it was "RUNNING DE-ENROLLED … treat every edit as unprotected". Measured
+ * blast radius: 78 of 98 owner ids active in a 6h window. The dir is now RESOLVED
+ * (session-config-dir.ts) and an unresolvable dir yields an explicit UNKNOWN
+ * verdict with no consequences — because an alarm that fires on the healthy
+ * majority is how a real de-enrollment stops being believed.
  */
 
 import { readFileSync, writeFileSync, copyFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
+import {
+  resolveSessionConfigDir,
+  type SessionConfigDirResolution,
+  type SessionConfigDirSource,
+} from './session-config-dir';
 
 /** The psu-owned MCP server. `playwright` is deliberately NOT restored (P-020 prunes it). */
 export const PSU_MCP_SERVER = 'papercusp-su';
@@ -80,11 +96,32 @@ export interface SessionConfigState {
   globalSettings: Record<string, unknown> | null;
   /** The user's global ~/.claude.json — the canonical MCP server definitions. */
   globalClaudeJson: Record<string, unknown> | null;
+  /**
+   * WI-38349 — the directory `settings`/`claudeJson` were read FROM, and how it was
+   * found. `null` means the session's real config dir could not be OBSERVED, so the
+   * two null session documents above say nothing about the session: they are the
+   * signature of reading a path that was never the session's, not of a wipe.
+   */
+  configDir: string | null;
+  configDirSource: SessionConfigDirSource | null;
+  /** Why the dir could not be observed. Non-null exactly when `configDir` is null. */
+  configDirUnresolvedReason: string | null;
 }
 
 export interface ConfigIntegrityVerdict {
-  /** True when nothing psu-owned is missing. */
+  /**
+   * True when the check RAN and found nothing psu-owned missing.
+   *
+   * ⚠ `ok:false` is not the same claim in both directions: read it together with
+   * `unknown`. `unknown:true` means the check could not run at all (the config dir
+   * was not observable), and its `consequences` are deliberately EMPTY — an
+   * un-run check must never be rendered as a de-enrollment (WI-38349).
+   */
   ok: boolean;
+  /** The check did not run: the session's real config dir could not be observed. */
+  unknown: boolean;
+  /** Why the check could not run. Non-null exactly when `unknown` is true. */
+  unknownReason: string | null;
   /** Hook events present in the global block but MISSING from the session (e.g. ['PreToolUse']). */
   missingHookEvents: string[];
   /** The papercusp-su MCP server is absent from the session's .claude.json. */
@@ -115,10 +152,29 @@ function hasHookEvent(hooks: HookMap, event: string): boolean {
  * A session whose GLOBAL settings carry no hooks at all is reported ok: there is no
  * canonical block to be missing, and we must never invent one.
  *
+ * WI-38349 — a state whose `configDir` could not be observed short-circuits to an
+ * UNKNOWN verdict with no consequences. Without that guard the two null session
+ * documents are indistinguishable from a wipe, and the checker confidently reports
+ * a healthy session as de-enrolled: "no directory at the path I assumed" is not
+ * evidence about the session, only about the assumption.
+ *
  * This is deliberately the Claude-shaped checker. Call
  * `checkSessionConfigIntegrityForClient` at client-neutral boundaries.
  */
 export function checkSessionConfigIntegrity(state: SessionConfigState): ConfigIntegrityVerdict {
+  if (state.configDir === null) {
+    return {
+      ok: false,
+      unknown: true,
+      unknownReason:
+        state.configDirUnresolvedReason ??
+        'the session config dir could not be observed, so nothing was checked',
+      missingHookEvents: [],
+      mcpServerMissing: false,
+      permissionsDowngraded: false,
+      consequences: [],
+    };
+  }
   const globalHooks = hooksOf(state.globalSettings);
   const sessionHooks = hooksOf(state.settings);
 
@@ -179,6 +235,8 @@ export function checkSessionConfigIntegrity(state: SessionConfigState): ConfigIn
 
   return {
     ok: missingHookEvents.length === 0 && !mcpServerMissing && !permissionsDowngraded,
+    unknown: false,
+    unknownReason: null,
     missingHookEvents,
     mcpServerMissing,
     permissionsDowngraded,
@@ -210,25 +268,59 @@ function readJson(path: string): Record<string, unknown> | null {
   }
 }
 
+/** What `loadSessionConfigState` needs to LOCATE the session's config dir (WI-38349). */
+export interface SessionConfigLocator {
+  /** A pid that is, or parents, the session's `claude` process (`coord_presence.pid`). */
+  pidHint?: number | null;
+  /** The claude native session id (`adv_sessions.session_id`) — the transcript-scan key. */
+  sessionId?: string | null;
+  /** Injectable `/proc` root (tests). */
+  procRoot?: string;
+  /** Pre-resolved dir, when the caller already resolved it (skips re-resolution). */
+  resolution?: SessionConfigDirResolution;
+}
+
 /**
  * Load the four documents for a psu session id from disk. Fail-soft: an unreadable
  * document reads as null. The client-aware caller decides whether null session
  * documents mean a damaged Claude session or an expected non-Claude layout.
  *
- * The session's CLAUDE_CONFIG_DIR is ~/.papercusp/session-claude/<ownerId>/ (see
- * interactive-claude-config.ts).
+ * WI-38349 — the session's config dir is RESOLVED (see session-config-dir.ts), not
+ * assumed to be `~/.papercusp/session-claude/<ownerId>/`. That formula is right on
+ * the console launch path and wrong on the ones that key the dir by spawn id, and
+ * assuming it turned "I looked in the wrong place" into a confident de-enrollment
+ * verdict for ~80% of active sessions. When no dir can be observed the session
+ * documents are left null AND `configDir` is null, which the checker renders as
+ * UNKNOWN rather than as damage.
  *
  * Client identity is intentionally NOT inferred here from directory existence:
  * a deleted Claude directory is itself damage, while a stale directory can
  * survive a later Codex launch. The caller supplies the recorded session client.
  */
-export function loadSessionConfigState(ownerId: string, home = homedir()): SessionConfigState {
-  const dir = join(home, '.papercusp', 'session-claude', ownerId);
+export function loadSessionConfigState(
+  ownerId: string,
+  home?: string,
+  locator: SessionConfigLocator = {},
+): SessionConfigState {
+  const realHome = home ?? homedir();
+  const resolution =
+    locator.resolution ??
+    resolveSessionConfigDir({
+      ownerId,
+      home,
+      pidHint: locator.pidHint,
+      sessionId: locator.sessionId,
+      procRoot: locator.procRoot,
+    });
+  const dir = resolution.dir;
   return {
-    settings: readJson(join(dir, 'settings.json')),
-    claudeJson: readJson(join(dir, '.claude.json')),
-    globalSettings: readJson(join(home, '.claude', 'settings.json')),
-    globalClaudeJson: readJson(join(home, '.claude.json')),
+    settings: dir ? readJson(join(dir, 'settings.json')) : null,
+    claudeJson: dir ? readJson(join(dir, '.claude.json')) : null,
+    globalSettings: readJson(join(realHome, '.claude', 'settings.json')),
+    globalClaudeJson: readJson(join(realHome, '.claude.json')),
+    configDir: dir,
+    configDirSource: resolution.source,
+    configDirUnresolvedReason: resolution.unresolvedReason,
   };
 }
 
@@ -315,6 +407,12 @@ export interface SessionConfigRepairResult {
   /** Anything the RE-READ still reports broken — should be empty on a clean repair; non-empty means the write did not take. */
   stillBroken: string[];
   /**
+   * WI-38349 — why the repair did not RUN, when it did not. `repaired:false` with an
+   * empty `stillBroken` is otherwise ambiguous, and the caller's warning said "see
+   * stillBroken" while pointing at an empty list. Null means the repair ran.
+   */
+  skipped: string | null;
+  /**
    * The two things a disk write genuinely cannot undo, surfaced so the caller never
    * over-claims a full heal: a SessionStart that already passed never re-fires (so
    * compactions that already happened never got their epoch bump), and the MCP entry
@@ -336,19 +434,39 @@ export interface SessionConfigRepairResult {
  */
 export function repairSessionConfigOnDisk(
   ownerId: string,
-  home = homedir(),
+  home?: string,
   client?: SessionConfigClient,
+  locator: SessionConfigLocator = {},
 ): SessionConfigRepairResult {
-  const dir = join(home, '.papercusp', 'session-claude', ownerId);
-  const state = loadSessionConfigState(ownerId, home);
+  const state = loadSessionConfigState(ownerId, home, locator);
+  const noop = (skipped: string): SessionConfigRepairResult => ({
+    repaired: false,
+    fixed: [],
+    wrote: [],
+    stillBroken: [],
+    residualCaveats: [],
+    skipped,
+  });
+
   const verdict = checkSessionConfigIntegrityForClient(state, client);
-  if (verdict === null || verdict.ok) {
-    return { repaired: false, fixed: [], wrote: [], stillBroken: [], residualCaveats: [] };
+  if (verdict === null) {
+    return noop('not diagnosable for this client (recorded non-Claude, or a legacy session with no Claude-shaped documents)');
   }
+  // WI-38349: a repair may only ever write into an OBSERVED directory. Writing to the
+  // conventional path when nothing was found there does not heal anything — it
+  // materializes a `su-<coordOwnerId>/` directory no process reads, while the session's
+  // real dir stays untouched. Refuse, and say so.
+  const dir = state.configDir;
+  if (dir === null) {
+    return noop(`config dir not observable — ${state.configDirUnresolvedReason ?? 'unresolved'}`);
+  }
+  if (verdict.ok) return noop('nothing broken');
   const repair = computeSessionConfigRepair(state);
 
   if (repair.fixed.length === 0) {
-    return { repaired: false, fixed: [], wrote: [], stillBroken: [], residualCaveats: [] };
+    return noop(
+      'nothing repairable on disk: the session documents themselves are missing, so there is no file to re-merge psu keys into',
+    );
   }
 
   const wrote: string[] = [];
@@ -369,8 +487,12 @@ export function repairSessionConfigOnDisk(
     }
   }
 
-  // Disk truth, not intent: re-read and re-check.
-  const after = checkSessionConfigIntegrityForClient(loadSessionConfigState(ownerId, home), client);
+  // Disk truth, not intent: re-read and re-check — from the SAME resolved dir, so the
+  // re-read cannot silently answer about a different directory than the write touched.
+  const after = checkSessionConfigIntegrityForClient(
+    loadSessionConfigState(ownerId, home, { ...locator, resolution: { dir, source: state.configDirSource, tried: [], unresolvedReason: null } }),
+    client,
+  );
   if (after && !after.ok) {
     for (const ev of after.missingHookEvents) stillBroken.push(`hooks.${ev}`);
     if (after.mcpServerMissing) stillBroken.push(`mcpServers.${PSU_MCP_SERVER}`);
@@ -389,5 +511,5 @@ export function repairSessionConfigOnDisk(
     );
   }
 
-  return { repaired: wrote.length > 0, fixed: repair.fixed, wrote, stillBroken, residualCaveats };
+  return { repaired: wrote.length > 0, fixed: repair.fixed, wrote, stillBroken, residualCaveats, skipped: null };
 }

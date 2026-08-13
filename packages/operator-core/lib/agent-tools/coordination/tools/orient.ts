@@ -66,6 +66,28 @@ import {
 } from './fleet-monitor-delta';
 import { fingerprintIdList, idListUnchanged, rowKey } from './orient-list-delta';
 
+/**
+ * WI-38349 — the pid anchor for locating a session's REAL `CLAUDE_CONFIG_DIR`.
+ *
+ * `coord_presence.pid` is the psu-launcher process; the claude CLI is its child, and
+ * only the child carries `CLAUDE_CONFIG_DIR`. Handing this pid to the resolver turns
+ * the lookup into ~3 file reads instead of a scan of every pid on the box. Fail-soft:
+ * a missing pid degrades resolution to the transcript scan, never to a guess.
+ */
+async function readSessionPidHint(ownerId: string): Promise<number | null> {
+  try {
+    const { getOrgPg } = await import('@papercusp/db-org');
+    const { sql } = getOrgPg();
+    const rows = await sql<Array<{ pid: number | null }>>`
+      SELECT pid FROM harness_shared.coord_presence WHERE owner_id = ${ownerId} LIMIT 1
+    `;
+    const pid = rows[0]?.pid ?? null;
+    return typeof pid === 'number' && Number.isInteger(pid) && pid > 0 ? pid : null;
+  } catch {
+    return null;
+  }
+}
+
 /** D-008 COMPACT bounds — keep the folded payload small so it doesn't re-enter
  *  context as bulk input on every later turn. (MEMORY_TEXT_CAP lives with the admission
  *  gates in lib/memory/recall-admission.ts — the char budget is charged against the
@@ -2649,22 +2671,50 @@ export default defineTool({
       try {
         const { loadSessionConfigState, checkSessionConfigIntegrityForClient, repairSessionConfigOnDisk } =
           await import('../../../session-config-integrity');
-        const state = loadSessionConfigState(ownerId);
-        const recordedClient = (await (await import('../../../adv-sessions')).latestAdvSessionByCoordOwner(ownerId))
-          ?.agent;
+        const advRow = await (await import('../../../adv-sessions')).latestAdvSessionByCoordOwner(ownerId);
+        const recordedClient = advRow?.agent;
+        // WI-38349: WHERE this session's config dir is is an OBSERVATION, not the
+        // `session-claude/<ownerId>` formula — several launch paths key it by spawn
+        // id instead, and reading the formula's path found nothing for ~80% of
+        // active sessions, which the checker then reported as de-enrollment. The
+        // live process is the ground truth; coord_presence.pid is the anchor that
+        // finds it (it records the psu-launcher, whose child is the claude CLI).
+        const pidHint = await readSessionPidHint(ownerId);
+        const locator = { pidHint, sessionId: advRow?.sessionId ?? null };
+        const state = loadSessionConfigState(ownerId, undefined, locator);
         const verdict = checkSessionConfigIntegrityForClient(state, recordedClient);
-        if (verdict && !verdict.ok) {
-          const repair = repairSessionConfigOnDisk(ownerId, undefined, recordedClient);
+        if (verdict?.unknown) {
+          // Deliberately NOT a de-enrollment claim: nothing was checked. Reported so
+          // the gap is visible rather than silently swallowed — and worded so it can
+          // never be mistaken for the alarm below.
+          configIntegrity = {
+            status: 'unknown',
+            checked: false,
+            reason: verdict.unknownReason,
+            resolutionTried: state.configDirUnresolvedReason,
+            warning:
+              'CONFIG INTEGRITY NOT CHECKED (WI-38349): this session\'s real CLAUDE_CONFIG_DIR could not be located, so the WI-4562 de-enrollment check did not run. This says NOTHING about your hooks, edit-locks, inbox or MCP — do not read it as damage. If you want certainty, check that your live process\'s CLAUDE_CONFIG_DIR holds a settings.json carrying the global hook block.',
+          };
+        } else if (verdict && !verdict.ok) {
+          const repair = repairSessionConfigOnDisk(ownerId, undefined, recordedClient, locator);
+          const repairedCleanly = repair.repaired && repair.stillBroken.length === 0;
           configIntegrity = {
             ...verdict,
+            configDir: state.configDir,
+            configDirSource: state.configDirSource,
             repaired: repair.repaired,
             fixed: repair.fixed,
             wrote: repair.wrote,
             stillBroken: repair.stillBroken,
+            skipped: repair.skipped,
             residualCaveats: repair.residualCaveats,
-            warning:
-              repair.repaired && repair.stillBroken.length === 0
-                ? 'YOUR SESSION WAS DE-ENROLLED (WI-4562) and has just been AUTO-REPAIRED. Claude Code had rewritten this session config and dropped psu-owned keys; orient restored them on disk. Hook registrations are re-read from the file, so delivery (edit-locks, coord inbox, turn-start recall) resumes WITHOUT a relaunch — verified live on su-5d6764f9, where the coord inbox delivered a 40+ message backlog immediately after repair. See residualCaveats for the two things a disk write cannot undo.'
+            warning: repairedCleanly
+              ? 'YOUR SESSION WAS DE-ENROLLED (WI-4562) and has just been AUTO-REPAIRED. Claude Code had rewritten this session config and dropped psu-owned keys; orient restored them on disk. Hook registrations are re-read from the file, so delivery (edit-locks, coord inbox, turn-start recall) resumes WITHOUT a relaunch — verified live on su-5d6764f9, where the coord inbox delivered a 40+ message backlog immediately after repair. See residualCaveats for the two things a disk write cannot undo.'
+              : // WI-38349: never point at `stillBroken` when it is EMPTY — the old
+                // wording told the reader to "see stillBroken" and handed them an
+                // empty list. When the repair did not RUN, `skipped` says why.
+                repair.skipped
+                ? `YOUR SESSION IS RUNNING DE-ENROLLED (WI-4562) and auto-repair did NOT run: ${repair.skipped}. The capabilities listed in consequences remain OFF. Relaunch the session, or repair its real config dir (${state.configDir ?? 'unresolved'}) by hand.`
                 : 'YOUR SESSION IS RUNNING DE-ENROLLED (WI-4562) and auto-repair did NOT fully succeed — see stillBroken. Claude Code rewrote this session config and dropped psu-owned keys, so some capabilities above remain OFF. Repair manually via session-config-integrity.repairSessionConfigOnDisk, or relaunch.',
           };
         }
