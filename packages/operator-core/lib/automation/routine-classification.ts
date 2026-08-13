@@ -336,6 +336,14 @@ export const TARGET_ROLE_SPEND: Readonly<Record<string, SpendEntry>> = {
     // owner it disarmed. No spawn, no dispatch, no wake: a fire cannot bill turns.
     why: 'Disarms turns-stalled loop routines and broadcasts an inject-only fleet notice — no spawn/dispatch/wake',
   },
+  'system:sweep-wedged-pty-hosts': {
+    spend: 'none',
+    // Reads local discovery files + bounded ledger tails and, at most, writes ONE
+    // inject-only ('*' broadcast, no wake) coord message plus one attention page per
+    // sweep. No spawn, no dispatch, no wake, and deliberately no actuator — it cannot
+    // bill a turn, and it cannot touch the hosts it observes.
+    why: 'Detects wake-deaf psu-pty hosts from their on-disk ledgers and broadcasts an inject-only notice — no spawn/dispatch/wake',
+  },
   'system:gc-verify-instances': {
     spend: 'none',
     why: 'Reaps abandoned verify-tauri-headless work dirs, displays and sidecars — filesystem only',

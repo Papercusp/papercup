@@ -330,6 +330,16 @@ import './gc-dead-loops-action';
 // read-only loop:status tool). Auto-pause + a single fleet-wide broadcast naming
 // every disarmed owner (a cluster is usually one systemic event, not N failures).
 import './stalled-loops-action';
+// `system:sweep-wedged-pty-hosts` — the LIVENESS sibling of sweep-stalled-loops above
+// (EI-20287339148365013). That one keys on ARMED LOOPS, so it cannot see a session that
+// never armed one — and a psu-pty host whose owner-composer wedges defers every wake
+// while its process stays healthy, its socket stays live, and its wake receipts keep
+// reporting `delivered`. The host CANNOT report this about itself: it acks `accepted`
+// before its delivery gate runs, so the on-disk lifecycle ledger is the only channel
+// carrying the outcome. Reads those ledgers from outside — which is also what lets it
+// observe hosts too old to run the in-host breaker, since a code fix cannot reach a
+// process that started before it.
+import './pty-host-wedge-action';
 import './gc-verify-instances-action';
 // `system:precompute-derived-reads` — the cadence behind the derived-read substrate
 // (precompute-derived-sync-reads-2026-07-19, WI-5460). Computes the three expensive

@@ -94,23 +94,28 @@ export const DEFAULT_RECOVERY_IDLE_MS = 15 * 60_000;
 const WEDGE_SCAN_TAIL_BYTES = 256 * 1024;
 
 /**
- * Event kinds that PROVE the composer accepted input, and therefore end a streak.
+ * Event kinds that PROVE the staged line went away, and therefore end a streak.
  *
- * Each entry is a delivery that had to pass the SAME gate a wake passes, or direct
- * evidence of a human at the keyboard. Note what is deliberately ABSENT: `respawned`.
- * A respawn replaces the agent while the host — and its composer model — persist, which
- * is exactly why the wedge survives one (measured above). Treating a respawn as a clear
- * would have exonerated the very host that proved the class.
+ * Kept DELIBERATELY MINIMAL, because the cost of the two errors is asymmetric: a kind
+ * wrongly listed here truncates a real wedge and the guard goes blind, while a kind
+ * wrongly omitted at worst lengthens a run whose verdict is already governed by the
+ * same-length rule below. Two kinds were removed from an earlier draft of this set after
+ * measurement contradicted them, and the measurement is worth keeping:
+ *
+ *   `respawn-carry-delivered` / `compact-carry-delivered` LOOK like proof — carry text
+ *   reached the composer, so surely the gate let it through. It is not. On su-91ef0643
+ *   the sequence runs: defer(len=11) … `respawned` … `respawn-carry-delivered` …
+ *   defer(len=11) four minutes later, twice over, across four hours. The phantom SURVIVES
+ *   a carry delivery. Trusting those kinds cut recall from 3 known-wedged hosts to 1.
+ *
+ * Also deliberately absent: `respawned`. A respawn replaces the AGENT while the host —
+ * and its composer model — persist, which is why the wedge survives one.
  */
 const STREAK_CLEARING_KINDS = new Set<string>([
   // The in-host breaker fired and cleared the line itself.
   'owner-composer-wedge-cleared',
   // A respawn cleared a staged line (the current host's respawn-time clear).
   'owner-composer-cleared-on-respawn',
-  // Carry text was written into the composer AND submitted — the gate let it through.
-  'respawn-carry-delivered',
-  'compact-carry-delivered',
-  'compact-submitted',
   // A human typed. Whatever else is true, this composer is not an abandoned phantom.
   'owner-input-during-compact-wait',
 ]);
@@ -127,10 +132,8 @@ export interface ComposerWedgeVerdict {
   wedged: boolean;
   /** Length of the trailing consecutive-defer run, scoped to this host's own lifetime. */
   consecutiveDefers: number;
-  /** The staged length shared by every defer in the run; null when none, or when it varied. */
+  /** The one staged length shared by every defer in the run (the run ends at any change). */
   pendingLength: number | null;
-  /** True when the run's pendingLength values were NOT all equal — a moving line. */
-  pendingLengthVaried: boolean;
   /** Wall-clock span from the run's first defer to its last. */
   streakSpanMs: number;
   /** Age of the most recent defer, or null when there were none. */
@@ -181,7 +184,6 @@ export function classifyComposerWedge(input: ClassifyComposerWedgeInput): Compos
     wedged: false,
     consecutiveDefers: 0,
     pendingLength: null,
-    pendingLengthVaried: false,
     streakSpanMs: 0,
     lastDeferAgeMs: null,
     emitsForensics: false,
@@ -189,10 +191,21 @@ export function classifyComposerWedge(input: ClassifyComposerWedgeInput): Compos
     ...over,
   });
 
-  // Walk BACKWARDS from the tail, collecting the trailing run of defers. Anything in
-  // STREAK_CLEARING_KINDS ends the run; every other kind is neutral and is stepped over
-  // (a wedged host still respawns, reconnects MCP and drops stale fires throughout).
+  // Walk BACKWARDS from the tail, collecting the trailing run of defers that all share ONE
+  // staged length. Anything in STREAK_CLEARING_KINDS ends the run; every other kind is
+  // neutral and is stepped over (a wedged host still respawns, reconnects MCP and drops
+  // stale fires throughout, and none of those touch the composer).
+  //
+  // A DIFFERENT pendingLength also ends the run, rather than marking it "varied". The
+  // distinction matters and was learned from data: on su-efa8b152 a long len=11 phantom
+  // episode is followed by a single len=31 defer. Poisoning the whole run as "varied"
+  // reports that host as healthy AND loses the episode; treating the change as a BOUNDARY
+  // says the true thing — one staged line blocked wakes for hours, then a different line
+  // replaced it. It is also the stricter rule for the case that must never be wrong: a
+  // person types, so their line's length moves, so each of their defers starts a fresh run
+  // of length 1 and a human can never accumulate a streak.
   const run: PtyHostEvent[] = [];
+  let runLength: number | null = null;
   for (let i = events.length - 1; i >= 0; i--) {
     const ev = events[i];
     const kind = typeof ev.kind === 'string' ? ev.kind : '';
@@ -208,7 +221,12 @@ export function classifyComposerWedge(input: ClassifyComposerWedgeInput): Compos
     if (ts <= startedAtMs) break;
 
     if (STREAK_CLEARING_KINDS.has(kind)) break;
-    if (kind === DEFER_KIND) run.push(ev);
+    if (kind !== DEFER_KIND) continue;
+
+    const len = typeof ev.pendingLength === 'number' ? ev.pendingLength : null;
+    if (runLength == null) runLength = len;
+    else if (len !== runLength) break; // a different staged line — a new episode
+    run.push(ev);
   }
 
   if (run.length === 0) return notWedged('no deferrals in this host’s own lifetime');
@@ -221,10 +239,9 @@ export function classifyComposerWedge(input: ClassifyComposerWedgeInput): Compos
   const streakSpanMs = Math.max(0, newestTs - oldestTs);
   const lastDeferAgeMs = Math.max(0, now - newestTs);
 
-  const lengths = run.map((e) => (typeof e.pendingLength === 'number' ? e.pendingLength : null));
-  const firstLen = lengths[0];
-  const pendingLengthVaried = lengths.some((l) => l !== firstLen);
-  const pendingLength = pendingLengthVaried ? null : firstLen;
+  // Uniform BY CONSTRUCTION — the walk above ends the run at any length change — so this
+  // reads the run's one length rather than re-deriving whether it varied.
+  const pendingLength = runLength;
   const emitsForensics = run.some(
     (e) => typeof e.pendingAgeMs === 'number' || typeof e.ownerQuietMs === 'number',
   );
@@ -232,19 +249,11 @@ export function classifyComposerWedge(input: ClassifyComposerWedgeInput): Compos
   const base = {
     consecutiveDefers: run.length,
     pendingLength,
-    pendingLengthVaried,
     streakSpanMs,
     lastDeferAgeMs,
     emitsForensics,
   };
 
-  if (pendingLengthVaried) {
-    return notWedged(
-      `${run.length} consecutive deferral(s) but the staged length CHANGED across them — a moving ` +
-        'line is a person typing, never a phantom',
-      base,
-    );
-  }
   if (pendingLength == null || pendingLength <= 0) {
     return notWedged(
       `${run.length} consecutive deferral(s) with no usable pendingLength — cannot distinguish a ` +
@@ -300,6 +309,17 @@ export interface WedgedHostReport {
    *   dangerous error is destroying live work, so absent evidence must not authorise action.
    */
   recoverySafety: 'idle' | 'busy' | 'unknown';
+  /**
+   * The psu-pty-host build this host actually LOADED (WI-38292), or null on a host too
+   * old to advertise one.
+   *
+   * Carried because it is the AUTHORITATIVE answer to the question this guard otherwise
+   * has to infer from the absence of forensics fields: is this host running code that
+   * could have healed itself? A null here is not missing data — on this population it is
+   * itself the finding, since only a host predating the field can produce one, and those
+   * are exactly the hosts no code fix can ever reach.
+   */
+  hostCodeVersion: string | null;
   verdict: ComposerWedgeVerdict;
 }
 
@@ -408,6 +428,7 @@ export async function sweepWedgedPtyHosts(
       hostAgeMs: Math.max(0, now - startedAtMs),
       idleMs,
       recoverySafety,
+      hostCodeVersion: host.hostCodeVersion ?? null,
       verdict,
     });
   }
@@ -448,15 +469,22 @@ export async function sweepWedgedPtyHosts(
     }
 
     try {
-      const notify =
-        deps.notify ??
-        (await import('../../attention-notify').then((m) => m.notifyAttention as typeof notify));
-      await notify?.({
-        kind: 'pty-host-wedge',
+      const notify = deps.notify ?? (await import('../../attention-notify')).notifyAttention;
+      // `needs-human` rather than `intervention`: a BUSY wedged host must not be trampled
+      // by an automated actuator, and even an idle one is being replaced only because a
+      // human decided to — this page exists to put the decision in front of someone.
+      await notify({
+        kind: 'needs-human',
         title: `${wedged.length} agent session(s) cannot receive wakes`,
         body: summary,
-        severity: 'warning',
-      } as AttentionNotifyInput);
+        importance: 'high',
+        data: {
+          wedged: wedged.length,
+          checked: hosts.length,
+          owners: wedged.map((w) => w.ownerId),
+          idleOwners: wedged.filter((w) => w.recoverySafety === 'idle').map((w) => w.ownerId),
+        },
+      });
     } catch {
       /* best-effort — paging is not the sweep's contract */
     }
