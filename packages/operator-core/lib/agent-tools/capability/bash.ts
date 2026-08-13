@@ -50,7 +50,7 @@ export default defineTool({
     chaining:
       'run_in_background:true → returns a bash_id plus durable task_id → preserve task_id across carry and read with capability:bash_output { task_id } (bash_id also works in the launching context) → processes:kill { taskId } to stop. Never push (git push is refused).',
     seeAlso: [
-      'capability:bash_output (read a backgrounded run\'s output)',
+      "capability:bash_output (read a backgrounded run's output)",
       'capability:bash_kill (kill a backgrounded run)',
       'capability:git (git actions, gated as git not shell)',
     ],
@@ -101,8 +101,7 @@ export default defineTool({
     // WI-6677: the default depends on the MODE. A background job is contractually
     // meant to outlive this call, so it must not inherit the short foreground
     // default — that made the tool SIGKILL exactly the long jobs it exists for.
-    const timeoutMs =
-      args.timeout ?? (args.run_in_background ? DEFAULT_BACKGROUND_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
+    const timeoutMs = args.timeout ?? (args.run_in_background ? DEFAULT_BACKGROUND_TIMEOUT_MS : DEFAULT_TIMEOUT_MS);
     // P-022/D-008: re-apply the OS sandbox to this operator-side shell when the
     // papercusp-capability-exec-sandbox flag is armed (default-OFF, fail-open).
     const sandboxEnabled = await capabilityExecSandboxEnabled();
@@ -117,7 +116,16 @@ export default defineTool({
     const desktopEnv = leasedDisplay ? { DISPLAY: leasedDisplay } : undefined;
 
     if (args.run_in_background) {
-      const job = startBackground({ command: args.command, cwd, stateDir: ctx.stateDir, sandboxEnabled, ...(desktopEnv ? { env: desktopEnv } : {}) }, timeoutMs);
+      const job = startBackground(
+        {
+          command: args.command,
+          cwd,
+          stateDir: ctx.stateDir,
+          sandboxEnabled,
+          ...(desktopEnv ? { env: desktopEnv } : {}),
+        },
+        timeoutMs,
+      );
       // EI-19915289191989412: a command whose LAST pipeline stage is a buffering
       // filter (`| tail -45`, `| head`, `| sort`, …) does not flush anything to
       // the job's log until the WHOLE pipeline exits — the log stays at exactly

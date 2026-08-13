@@ -266,13 +266,24 @@ export function filterOutputLines(chunk: string, filter: string | undefined): { 
     return { output: chunk, error: `filter regex too long (>${MAX_FILTER_LEN} chars) — returning unfiltered output` };
   }
   if (isLikelyCatastrophicRegex(filter)) {
-    return { output: chunk, error: 'filter regex rejected (ReDoS-prone nested quantifier) — returning unfiltered output' };
+    return {
+      output: chunk,
+      error: 'filter regex rejected (ReDoS-prone nested quantifier) — returning unfiltered output',
+    };
   }
   try {
     const re = new RegExp(filter);
-    return { output: chunk.split('\n').filter((line) => re.test(line)).join('\n') };
+    return {
+      output: chunk
+        .split('\n')
+        .filter((line) => re.test(line))
+        .join('\n'),
+    };
   } catch (err) {
-    return { output: chunk, error: `invalid filter regex (${err instanceof Error ? err.message : String(err)}) — returning unfiltered output` };
+    return {
+      output: chunk,
+      error: `invalid filter regex (${err instanceof Error ? err.message : String(err)}) — returning unfiltered output`,
+    };
   }
 }
 
@@ -319,9 +330,7 @@ const JOB_LOG_END_MARKER_RE = new RegExp(
 );
 
 /** Parse the durable terminal marker from a stranded job log tail. */
-export function parseJobLogEndMarker(
-  log: string,
-): { status: RecoveredJobStatus; exitCode: number | null } | null {
+export function parseJobLogEndMarker(log: string): { status: RecoveredJobStatus; exitCode: number | null } | null {
   const match = JOB_LOG_END_MARKER_RE.exec(log);
   if (!match) return null;
   return {
@@ -412,11 +421,9 @@ export default defineTool({
     when: 'Poll a background job started by capability:bash. Use task_id after compaction/carry; it resolves through the durable task ledger and NEVER starts a replacement job. Call repeatedly to drain output as it runs; the final call after status leaves "running" gives the tail + exit code.',
     notWhen:
       'For a foreground command — its output is in the capability:bash result directly. A miss WITH a log tail means the job\'s in-memory tracking is gone while its log survived; three DISTINCT reason codes say what is known, never conflate them. `"tracking_lost_process_alive"` = CONFIRMED running (task-ledger pid re-probe) — do NOT re-run, keep polling. `"job_process_gone"` = CONFIRMED ended (the ledger observed a terminal state) — safe to re-run. `"job_liveness_unknown"` = only a whole-operator restart was ruled out; liveness is UNKNOWN and the job is most often alive but QUEUED behind pc-heavy\'s slot clamp — check `ps` for your command before re-running, or you add load to the very queue that is delaying it.',
-    chaining: 'capability:bash { run_in_background:true } → capability:bash_output { task_id } after carry (or { bash_id } in the launching context) → processes:kill { taskId } to stop early.',
-    seeAlso: [
-      'capability:bash (start the command)',
-      'capability:bash_kill (kill the backgrounded run)',
-    ],
+    chaining:
+      'capability:bash { run_in_background:true } → capability:bash_output { task_id } after carry (or { bash_id } in the launching context) → processes:kill { taskId } to stop early.',
+    seeAlso: ['capability:bash (start the command)', 'capability:bash_kill (kill the backgrounded run)'],
   },
   capability: 'capability:bash',
   requirePrincipal: false,
@@ -431,12 +438,16 @@ export default defineTool({
         .string()
         .min(1)
         .optional()
-        .describe('The process-local id returned by capability:bash (run_in_background). Use only in the launching context.'),
+        .describe(
+          'The process-local id returned by capability:bash (run_in_background). Use only in the launching context.',
+        ),
       task_id: z
         .string()
         .min(1)
         .optional()
-        .describe('The durable task id returned by capability:bash. Preferred after compaction/carry; attachment never restarts the job.'),
+        .describe(
+          'The durable task id returned by capability:bash. Preferred after compaction/carry; attachment never restarts the job.',
+        ),
       filter: z
         .string()
         .optional()
@@ -514,7 +525,8 @@ export default defineTool({
                 ok: false,
                 reason: 'unknown_task_id',
                 task_id: args.task_id,
-                advice: 'No managed background shell job with this task_id exists in the current workspace. The job was NOT restarted.',
+                advice:
+                  'No managed background shell job with this task_id exists in the current workspace. The job was NOT restarted.',
               }),
             },
           ],
@@ -522,11 +534,7 @@ export default defineTool({
         };
       }
       const durableBashId = attachedLedgerRow.detail?.bashJobId;
-      if (
-        attachedLedgerRow.class !== 'bash-job' ||
-        typeof durableBashId !== 'string' ||
-        durableBashId.length === 0
-      ) {
+      if (attachedLedgerRow.class !== 'bash-job' || typeof durableBashId !== 'string' || durableBashId.length === 0) {
         return {
           content: [
             {
@@ -535,7 +543,8 @@ export default defineTool({
                 ok: false,
                 reason: 'task_not_attachable',
                 task_id: args.task_id,
-                advice: 'This task is not a capability:bash background job with a durable bash handle. It was NOT restarted.',
+                advice:
+                  'This task is not a capability:bash background job with a durable bash handle. It was NOT restarted.',
               }),
             },
           ],
@@ -560,11 +569,7 @@ export default defineTool({
       // lookup to this request's workspace before deciding that the id is gone;
       // otherwise a clean exit on a sibling worker is misread as an unknown job.
       const ledgerRow =
-        attachedLedgerRow ??
-        (await getTaskByBashJobId(
-          bashId,
-          workspaceId ? { workspaceId } : {},
-        ).catch(() => null));
+        attachedLedgerRow ?? (await getTaskByBashJobId(bashId, workspaceId ? { workspaceId } : {}).catch(() => null));
       const jobIdentity = {
         bash_id: bashId,
         ...(ledgerRow?.taskId ? { task_id: ledgerRow.taskId } : {}),
@@ -740,7 +745,8 @@ export default defineTool({
                   ok: false,
                   ...jobIdentity,
                   reason: 'unknown_bash_id',
-                  advice: 'No surviving output log is available for this background job. Re-run with capability:bash if you still need the result.',
+                  advice:
+                    'No surviving output log is available for this background job. Re-run with capability:bash if you still need the result.',
                 }),
               },
             ],
@@ -765,7 +771,7 @@ export default defineTool({
             : ' (the task ledger still shows it non-terminal but could not confirm liveness — the process may have exited without the ledger observing it yet)';
         const advice =
           cause === 'stranded_by_operator_restart'
-            ? 'This job STARTED (its log file exists on disk) but its in-memory tracking is gone, and this operator process\'s own uptime is SHORTER than the job\'s age — CONFIRMED: the operator process that ran it restarted or was killed mid-job. A routine, common event on a shared dev box: any agent restarting :3070/:3170 kills every OTHER agent\'s in-flight background jobs too (repo-conventions § two-port model). It is NOT a wrong bash_id and not a bug in your command. Re-run capability:bash if you still need the result; check output_tail below for how far it got before dying.'
+            ? "This job STARTED (its log file exists on disk) but its in-memory tracking is gone, and this operator process's own uptime is SHORTER than the job's age — CONFIRMED: the operator process that ran it restarted or was killed mid-job. A routine, common event on a shared dev box: any agent restarting :3070/:3170 kills every OTHER agent's in-flight background jobs too (repo-conventions § two-port model). It is NOT a wrong bash_id and not a bug in your command. Re-run capability:bash if you still need the result; check output_tail below for how far it got before dying."
             : `This job STARTED (its log file exists on disk) but its in-memory tracking is gone, and this operator process has been running continuously since BEFORE the job started — so a WHOLE-OPERATOR restart is ruled out${ledgerCaveat}. That does NOT confirm the job's own process died: before re-running, check yourself (e.g. \`ps\` for your command) — re-running while the original may still be alive doubles the load. If you can confirm it is really gone, re-run capability:bash; check output_tail below for how far it got.`;
         return {
           content: [
@@ -793,7 +799,8 @@ export default defineTool({
               ok: false,
               bash_id: bashId,
               reason: 'unknown_bash_id',
-              advice: 'No such background job (it may have been pruned, or the id is wrong). Re-run with capability:bash.',
+              advice:
+                'No such background job (it may have been pruned, or the id is wrong). Re-run with capability:bash.',
             }),
           },
         ],
