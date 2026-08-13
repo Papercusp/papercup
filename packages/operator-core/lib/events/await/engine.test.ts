@@ -4,6 +4,13 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { AwaitRow, DeliveryWork, WakeOutcome } from './types';
+import type { ProducerHealthCertificate, VerifiedWaitTimeoutResult } from './verified-wait';
+
+type SettleVerifiedAwaitTimeoutInput = {
+  id: number;
+  result: VerifiedWaitTimeoutResult;
+  nextCertificate?: ProducerHealthCertificate;
+};
 
 const h = vi.hoisted(() => ({
   store: {
@@ -20,7 +27,7 @@ const h = vi.hoisted(() => ({
     markDeliveryDeferred: vi.fn(async () => {}),
     recoverStuckDeliveries: vi.fn(async () => 0),
     claimDueVerifiedAwaits: vi.fn(async (): Promise<AwaitRow[]> => []),
-    settleVerifiedAwaitTimeout: vi.fn(async (): Promise<AwaitRow | null> => null),
+    settleVerifiedAwaitTimeout: vi.fn(async (_input: SettleVerifiedAwaitTimeoutInput): Promise<AwaitRow | null> => null),
     fireTimedOutAwaits: vi.fn(async (): Promise<unknown[]> => []),
     expireLapsedAwaits: vi.fn(async () => 0),
     stampAnnouncementsFired: vi.fn(async () => {}),
