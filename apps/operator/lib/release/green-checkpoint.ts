@@ -411,9 +411,7 @@ export interface CheckpointDeps {
    *  rollup. Optional + injected (like the other DB-backed deps here) so
    *  existing stubs need not provide it; best-effort at the call site (any
    *  error there just skips the annotation, never blocks the red path). */
-  flakeLookup?(
-    files: string[],
-  ): Promise<
+  flakeLookup?(files: string[]): Promise<
     Record<
       string,
       {
@@ -1269,6 +1267,13 @@ export const stripAnsi: (s: string) => string = stripVitestAnsi;
  *  stale-candidate re-triage, which can only re-run tests it can name. */
 export function extractFailingTests(out: string): string[] {
   const clean = stripAnsi(out);
+  // WI-38533: the affected runner closes with one AUTHORITATIVE break-set line after all
+  // retries and watchdog classification. Prefer that line over historical FAIL/rollup rows
+  // from an initial attempt that may subsequently have passed. In particular, a 1572/1573
+  // workspace watchdog can have zero failing file rows: its honest attribution is the TASK,
+  // which is still enough to re-run that exact workspace/script at tip.
+  const canonical = authoritativeAffectedFailureSignature(clean);
+  if (canonical !== null) return canonical;
   const set = new Set<string>();
   for (const m of clean.matchAll(/^\s*FAIL\s+(\S+)/gm)) set.add(m[1]);
   for (const m of clean.matchAll(
@@ -1320,6 +1325,54 @@ export function extractFailingTests(out: string): string[] {
     }
   }
   return [...set].sort().slice(0, 50);
+}
+
+/** Parse the last canonical AFFECTED_TESTS_FAILING_FILES line into the flat signature used by
+ * the gate. `null` means no canonical contract was present (legacy output); `[]` is a valid
+ * canonical statement that no failed file/task was named. */
+export function authoritativeAffectedFailureSignature(
+  cleanOutput: string,
+): string[] | null {
+  let result: string[] | null = null;
+  for (const line of cleanOutput.split(/\r?\n/)) {
+    if (!/^\s*AFFECTED_TESTS_FAILING_FILES\s+run=\S+\s+/.test(line)) continue;
+    const filesAt = line.indexOf("files=");
+    const unattributedAt = line.indexOf(" unattributed=", filesAt);
+    const culpritsAt = line.indexOf(" transformCulprits=", unattributedAt);
+    if (filesAt < 0 || unattributedAt < 0 || culpritsAt < 0) continue;
+    try {
+      const files = JSON.parse(
+        line.slice(filesAt + "files=".length, unattributedAt),
+      ) as unknown;
+      const unattributed = JSON.parse(
+        line.slice(unattributedAt + " unattributed=".length, culpritsAt),
+      ) as unknown;
+      if (!Array.isArray(files) || !Array.isArray(unattributed)) continue;
+      const set = new Set<string>();
+      for (const row of files) {
+        if (!row || typeof row !== "object") continue;
+        const workspace = (row as { workspace?: unknown }).workspace;
+        const file = (row as { file?: unknown }).file;
+        if (typeof workspace === "string" && workspace.trim())
+          set.add(workspace.trim());
+        if (typeof file === "string" && file.trim()) set.add(file.trim());
+      }
+      for (const row of unattributed) {
+        if (!row || typeof row !== "object") continue;
+        const task = (row as { task?: unknown }).task;
+        if (typeof task !== "string" || !task.trim()) continue;
+        const normalized = task.trim();
+        set.add(normalized);
+        const parsed = parseFailingTaskId(normalized);
+        if (parsed) set.add(parsed.workspace);
+      }
+      result = [...set].sort().slice(0, 50);
+    } catch {
+      // A malformed canonical line is not authority. Preserve the preceding valid line or
+      // fall back to the legacy parsers rather than erasing a red signature.
+    }
+  }
+  return result;
 }
 
 /** The separator in the affected runner's task id (`<workspace> :: <script>`). */
@@ -2588,7 +2641,16 @@ export function rescueGateIdsFrom(
 export function isRerunnableGateEntry(entry: string): boolean {
   if (entry in NON_TEST_GATE_SCRIPTS) return true;
   const task = parseFailingTaskId(entry);
-  return task !== null && task.script.startsWith("lint:");
+  // WI-38533: an authoritative unattributed batch timeout names the workspace TASK rather
+  // than inventing a culprit file. Re-running that exact task at tip is the only complete
+  // staleness measurement; it is conservative (a pass is required) and already bounded by
+  // the task's own watchdog.
+  return (
+    task !== null &&
+    (task.script === "test" ||
+      task.script.startsWith("test:") ||
+      task.script.startsWith("lint:"))
+  );
 }
 
 /** Resolve rescue-eligible entries to the npm invocations that re-verify them at tip.
@@ -6218,6 +6280,10 @@ export type CheckpointExec = (
      *  any command whose child itself forks further children (e.g. a bash script running git/
      *  cp/npm). Optional so every injected test fake keeps compiling untouched. */
     killProcessGroupOnTimeout?: boolean;
+    /** Relay only the affected runner's bounded progress markers while still capturing the
+     * complete child output for the verdict. Without this seam a multi-hour child is healthy
+     * and busy while the checkpoint transcript remains byte-for-byte silent. */
+    relayAffectedProgress?: boolean;
   },
 ) => Promise<{ code: number; stdout: string; stderr: string }>;
 
@@ -8041,7 +8107,9 @@ export function realCheckpointDeps(
         runId,
         cfg.greenCheckpointCapacityMode,
       );
-      log(greenCheckpointCapacityEvidence(cfg.greenCheckpointCapacityMode, env));
+      log(
+        greenCheckpointCapacityEvidence(cfg.greenCheckpointCapacityMode, env),
+      );
       // EI-78 `heavy`: the single biggest CPU consumer on this box outside the fleet itself
       // (measured 274s-2773s per run over 19 runs on 2026-07-26).
       const r = await exec(cmd, args, {
@@ -8049,6 +8117,7 @@ export function realCheckpointDeps(
         env,
         allowNonZero: true,
         heavy: true,
+        relayAffectedProgress: true,
       });
 
       // WI-6053: the post-suite legs (typecheck · migrations lint · identity lints ·
@@ -9010,6 +9079,7 @@ export function runCmd(
      *  self-watchdog's blanket `kill(-pid)`, which relies on every runCmd child staying in
      *  THIS process's group). */
     killProcessGroupOnTimeout?: boolean;
+    relayAffectedProgress?: boolean;
   } = {},
 ): Promise<{ code: number; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
@@ -9062,6 +9132,21 @@ export function runCmd(
     });
     let stdout = "";
     let stderr = "";
+    const progressRemainders = new Map<"stdout" | "stderr", string>();
+    const capture = (stream: "stdout" | "stderr", chunk: Buffer | string) => {
+      const text = chunk.toString();
+      if (stream === "stdout") stdout += text;
+      else stderr += text;
+      if (!opts.relayAffectedProgress) return;
+      const combined = (progressRemainders.get(stream) ?? "") + text;
+      const lines = combined.split(/\r?\n/);
+      progressRemainders.set(stream, lines.pop() ?? "");
+      for (const line of lines) {
+        if (line.startsWith("AFFECTED_TASK_PROGRESS ")) {
+          console.log(`${orchestratorStdoutTag()} ${line}`);
+        }
+      }
+    };
     let settled = false;
     // A bounded timeout (used by the isolation re-run, and — WI-7069 — setupTree): SIGKILL the
     // child and REJECT, so a genuine hang can't stall the gate. The isolation re-run's caller
@@ -9096,8 +9181,8 @@ export function runCmd(
           );
         }, opts.timeoutMs)
       : null;
-    child.stdout.on("data", (d) => (stdout += d.toString()));
-    child.stderr.on("data", (d) => (stderr += d.toString()));
+    child.stdout.on("data", (d) => capture("stdout", d));
+    child.stderr.on("data", (d) => capture("stderr", d));
     child.on("error", (e) => {
       if (settled) return;
       settled = true;

@@ -23,41 +23,41 @@
 //   which a git-based probe cannot answer here: git-sync sweeps the whole tree, so no
 //   real commit is ever scoped to just your paths.
 
-import { execSync, execFileSync, spawn, spawnSync } from 'node:child_process';
-import { readFileSync, existsSync, appendFileSync } from 'node:fs';
-import { dirname, join, relative, resolve } from 'node:path';
-import { fileURLToPath } from 'node:url';
-import { loadavg, availableParallelism, tmpdir } from 'node:os';
-import { createHash, randomBytes } from 'node:crypto';
-import { parseQuarantineWorkspaces } from './lib/quarantine.mjs';
+import { execSync, execFileSync, spawn, spawnSync } from "node:child_process";
+import { readFileSync, existsSync, appendFileSync } from "node:fs";
+import { dirname, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { loadavg, availableParallelism, tmpdir } from "node:os";
+import { createHash, randomBytes } from "node:crypto";
+import { parseQuarantineWorkspaces } from "./lib/quarantine.mjs";
 import {
   parseSummaryFailedCounts,
   parseFailedTestFiles,
   countTimeoutSignatures,
   attributeFailedTask,
   renderFailingFilesSummary,
-} from './lib/vitest-summary.mjs';
-import { emptySuiteGuardArgs } from './lib/empty-suite-guard.mjs';
-import { applyWorkerCapEnv } from './lib/worker-cap.mjs';
+} from "./lib/vitest-summary.mjs";
+import { emptySuiteGuardArgs } from "./lib/empty-suite-guard.mjs";
+import { applyWorkerCapEnv } from "./lib/worker-cap.mjs";
 import {
   resolveBatchTimeoutMs,
   isWatchdogTimeout,
   parseBatchProgress,
   classifyBatchProgress,
   formatBatchProgress,
-} from './lib/batch-watchdog.mjs';
-import { classifyTaskExit, isGatingFailure } from './lib/task-exit-class.mjs';
+} from "./lib/batch-watchdog.mjs";
+import { classifyTaskExit, isGatingFailure } from "./lib/task-exit-class.mjs";
 import {
   classifyResidualFailure,
   formatLoadSuspectNotice,
   formatLoadSuspectMarker,
-} from './lib/load-suspect.mjs';
-import { detectCargoTermination } from './lib/cargo-result.mjs';
-import { listTrackedFiles } from './lib/tracked-files.mjs';
+} from "./lib/load-suspect.mjs";
+import { detectCargoTermination } from "./lib/cargo-result.mjs";
+import { listTrackedFiles } from "./lib/tracked-files.mjs";
 // D-021/P-002: summed task work, measured per-run. The helper/marker retain their legacy
 // "serial" names, but after budgeted scheduling the sum is serial-equivalent work rather than
 // elapsed wall time. See scripts/lib/serial-phase.mjs.
-import { formatSerialPhaseSummary } from './lib/serial-phase.mjs';
+import { formatSerialPhaseSummary } from "./lib/serial-phase.mjs";
 import {
   durationEstimate,
   formatTaskBudgetMarker,
@@ -69,7 +69,7 @@ import {
   resolveWorkerMemoryMb,
   runBudgetedTasks,
   writeDurationHistoryAtomic,
-} from './lib/budgeted-task-scheduler.mjs';
+} from "./lib/budgeted-task-scheduler.mjs";
 import {
   buildPassingTaskVerdictIdentity,
   decidePassingTaskVerdict,
@@ -78,14 +78,18 @@ import {
   passingTaskVerdictEntry,
   readPassingTaskVerdictCache,
   writePassingTaskVerdictCacheAtomic,
-} from './lib/passing-task-verdict-cache.mjs';
+} from "./lib/passing-task-verdict-cache.mjs";
 // EI-10542: this runner interleaves its own header/status lines (fd 1/2) with
 // child suite output written synchronously via `stdio: 'inherit'`. On a non-TTY
 // fd (the gate captures to a pipe/file) `console.*` is async-buffered and flushes
 // AFTER the blocking spawnSync child has already written, so a workspace's output
 // prints under another workspace's header. Emit our own lines synchronously so
 // they stay glued to the child output they label. See scripts/lib/sync-write.mjs.
-import { writeAllSync, outSync as rawOutSync, errSync as rawErrSync } from './lib/sync-write.mjs';
+import {
+  writeAllSync,
+  outSync as rawOutSync,
+  errSync as rawErrSync,
+} from "./lib/sync-write.mjs";
 
 // EI-15802: an agent running this as a BACKGROUND task only sees the harness's
 // own truncated tail (~150 lines) plus an exit-code notification — on a long
@@ -114,21 +118,21 @@ import { writeAllSync, outSync as rawOutSync, errSync as rawErrSync } from './li
 // run's output with the gate's own self-test fixtures, which emit identically-shaped
 // lines; a token that is also in the `Full run log:` path is what lets a reader tie a
 // break set to THIS run instead of to a fixture that hard-codes a different one.
-const RUN_TOKEN = `${process.pid}-${randomBytes(4).toString('hex')}`;
+const RUN_TOKEN = `${process.pid}-${randomBytes(4).toString("hex")}`;
 const RUN_LOG_PATH = `/tmp/papercusp-affected-tests-${RUN_TOKEN}.log`;
 function logLine(text) {
-  if (text == null || text === '') return;
+  if (text == null || text === "") return;
   try {
     appendFileSync(RUN_LOG_PATH, String(text));
   } catch {
     // Logging must never fail the actual test run.
   }
 }
-function outSync(msg = '') {
+function outSync(msg = "") {
   rawOutSync(msg);
   logLine(`${msg}\n`);
 }
-function errSync(msg = '') {
+function errSync(msg = "") {
   rawErrSync(msg);
   logLine(`${msg}\n`);
 }
@@ -207,7 +211,7 @@ logLine(
 // (green-checkpoint, deploy-cli): a signal trap is only a real option for a runner
 // whose main loop is genuinely async, and it must still be paired with a SIGKILL
 // escalation upstream. Check the loop before reaching for the trap.
-process.on('exit', (code) => {
+process.on("exit", (code) => {
   // Catches every remaining way out with no verdict: an uncaught exception, an
   // unhandled rejection, or an early process.exit() on a path that emits nothing
   // (e.g. the unrecognized-flag refusal). A clean path has already set the flag.
@@ -240,7 +244,10 @@ const captureOutput = () => true;
 // instead of unconditionally grabbing up to 32 more workers. See
 // scripts/lib/worker-cap.mjs for the full rationale + the (unit-tested) pure
 // function this wraps.
-const WORKER_CAP = applyWorkerCapEnv({ cores: availableParallelism(), load1: loadavg()[0] });
+const WORKER_CAP = applyWorkerCapEnv({
+  cores: availableParallelism(),
+  load1: loadavg()[0],
+});
 const SCHEDULER_WORKER_MEMORY_MB = resolveWorkerMemoryMb({
   affectedWorkerMemoryMb: process.env.AFFECTED_WORKER_MEMORY_MB,
   nodeOptions: process.env.NODE_OPTIONS,
@@ -267,45 +274,51 @@ const SCHEDULER_CONFIG = resolveTaskBudget({
   reserveWorkers: 1,
 });
 const TASK_DURATION_HISTORY_PATH =
-  process.env.AFFECTED_TASK_HISTORY_PATH ?? join(tmpdir(), 'papercusp-affected-task-durations-v1.json');
+  process.env.AFFECTED_TASK_HISTORY_PATH ??
+  join(tmpdir(), "papercusp-affected-task-durations-v1.json");
 
-const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const args = process.argv.slice(2);
 const arg = (k, d) => {
   const i = args.indexOf(k);
-  return i >= 0 && args[i + 1] && !args[i + 1].startsWith('--') ? args[i + 1] : d;
+  return i >= 0 && args[i + 1] && !args[i + 1].startsWith("--")
+    ? args[i + 1]
+    : d;
 };
 const has = (k) => args.includes(k);
 
-const base = arg('--base', process.env.AFFECTED_BASE || 'origin/main');
-const runIntegration = has('--integration');
-const runAll = has('--all');
+const base = arg("--base", process.env.AFFECTED_BASE || "origin/main");
+const runIntegration = has("--integration");
+const runAll = has("--all");
 // EI-19463337855465369: `--dry-run` is the more common CLI convention (npm,
 // git, rsync, kubectl all use it) and this repo's own agent guidance points
 // people at previewing before a heavy run — so it's the spelling an agent
 // reaches for. Accept it as an alias rather than relying solely on the
 // unknown-flag refusal below to catch it.
-const dry = has('--dry') || has('--dry-run');
+const dry = has("--dry") || has("--dry-run");
 // P-016 (release-pipeline-resilience-2026-06-09 D-010): range + print-only mode for the
 // green-checkpoint's longest-green-PREFIX salvage. With --range-from/--range-to, the
 // changed-file set is the two-dot diff of that commit range (NOT the working tree), and
 // --print-affected emits one `AFFECTED_WS\t<name>` line per affected workspace plus one
 // `AFFECTED_GUARD\t<workspace>\t<script>` line per attached repo-wide guard, then exits
 // WITHOUT running any tests — a cheap git+graph affected-set probe per candidate prefix.
-const rangeFrom = arg('--range-from', null);
-const rangeTo = arg('--range-to', null);
+const rangeFrom = arg("--range-from", null);
+const rangeTo = arg("--range-to", null);
 // --changed-paths a,b,c — compute the affected set from these paths instead of a
 // git diff. See affectedWorkspaces() for why a git-based probe cannot answer
 // "what would touching X select?" on this tree.
 const changedPathsOverride = (() => {
-  const raw = arg('--changed-paths', null);
+  const raw = arg("--changed-paths", null);
   if (raw == null) return null;
-  return raw.split(',').map((p) => p.trim()).filter(Boolean);
+  return raw
+    .split(",")
+    .map((p) => p.trim())
+    .filter(Boolean);
 })();
-const printAffected = has('--print-affected');
-const runElSuite = has('--el-suite');
-const excludeArg = arg('--exclude', '');
-const excludes = new Set(excludeArg.split(',').filter(Boolean));
+const printAffected = has("--print-affected");
+const runElSuite = has("--el-suite");
+const excludeArg = arg("--exclude", "");
+const excludes = new Set(excludeArg.split(",").filter(Boolean));
 
 // EI-19463337855465369: an argv token starting with `--` that none of the
 // arg()/has() calls above consumed used to be silently DISCARDED — has()/
@@ -322,20 +335,23 @@ const excludes = new Set(excludeArg.split(',').filter(Boolean));
 // line to notice before the multi-minute run was already underway. Refuse
 // instead of guessing.
 const KNOWN_FLAGS = [
-  '--base',
-  '--integration',
-  '--all',
-  '--dry',
-  '--dry-run',
-  '--range-from',
-  '--range-to',
-  '--changed-paths',
-  '--print-affected',
-  '--el-suite',
-  '--exclude',
+  "--base",
+  "--integration",
+  "--all",
+  "--dry",
+  "--dry-run",
+  "--range-from",
+  "--range-to",
+  "--changed-paths",
+  "--print-affected",
+  "--el-suite",
+  "--exclude",
 ];
 function editDistance(a, b) {
-  const dp = Array.from({ length: a.length + 1 }, (_, i) => [i, ...Array(b.length).fill(0)]);
+  const dp = Array.from({ length: a.length + 1 }, (_, i) => [
+    i,
+    ...Array(b.length).fill(0),
+  ]);
   for (let j = 0; j <= b.length; j++) dp[0][j] = j;
   for (let i = 1; i <= a.length; i++) {
     for (let j = 1; j <= b.length; j++) {
@@ -360,17 +376,25 @@ function closestKnownFlag(flag) {
   // Only suggest something plausibly a typo of — a wild guess is worse than none.
   return bestDist <= 4 ? best : null;
 }
-const unknownFlags = args.filter((a) => a.startsWith('--') && !KNOWN_FLAGS.includes(a));
+const unknownFlags = args.filter(
+  (a) => a.startsWith("--") && !KNOWN_FLAGS.includes(a),
+);
 if (unknownFlags.length > 0) {
-  errSync(`affected-tests.mjs: unrecognized flag(s): ${unknownFlags.join(', ')}`);
+  errSync(
+    `affected-tests.mjs: unrecognized flag(s): ${unknownFlags.join(", ")}`,
+  );
   for (const flag of unknownFlags) {
     const suggestion = closestKnownFlag(flag);
     if (suggestion) errSync(`  did you mean ${suggestion}?`);
   }
-  errSync('');
-  errSync(`Known flags: ${KNOWN_FLAGS.join(' ')}`);
-  errSync('(see the usage comment at the top of scripts/affected-tests.mjs for what each does)');
-  errSync('Refusing to run rather than silently ignoring the flag and running the full default job.');
+  errSync("");
+  errSync(`Known flags: ${KNOWN_FLAGS.join(" ")}`);
+  errSync(
+    "(see the usage comment at the top of scripts/affected-tests.mjs for what each does)",
+  );
+  errSync(
+    "Refusing to run rather than silently ignoring the flag and running the full default job.",
+  );
   process.exit(1);
 }
 
@@ -391,9 +415,9 @@ if (unknownFlags.length > 0) {
 // hyperbee/p2p/substrate/federation suites; route fallout per area (hyperbee
 // + federation → su-4d7a4628, hive-git → su-63834d42, coord-parity →
 // su-4dc3b...), not "revert this fix".
-const quarantineFile = join(ROOT, 'quarantine.txt');
+const quarantineFile = join(ROOT, "quarantine.txt");
 const quarantined = existsSync(quarantineFile)
-  ? parseQuarantineWorkspaces(readFileSync(quarantineFile, 'utf8'))
+  ? parseQuarantineWorkspaces(readFileSync(quarantineFile, "utf8"))
   : new Set();
 
 // WI-3094: Node's execSync defaults maxBuffer to 1MB — comfortably exceeded by
@@ -409,7 +433,11 @@ const quarantined = existsSync(quarantineFile)
 // ample headroom — even a full-repo `--name-only` diff is only a few MB — so the
 // fast, correct affected-set path succeeds instead of falling back.
 function sh(cmd) {
-  return execSync(cmd, { cwd: ROOT, encoding: 'utf8', maxBuffer: 256 * 1024 * 1024 }).trim();
+  return execSync(cmd, {
+    cwd: ROOT,
+    encoding: "utf8",
+    maxBuffer: 256 * 1024 * 1024,
+  }).trim();
 }
 
 // Collect every file changed vs `base` — committed (base...HEAD), uncommitted
@@ -445,12 +473,31 @@ function changedFiles() {
     // P-016: two-dot range — files changed BY the commits in (rangeFrom, rangeTo]. No
     // working-tree / untracked component: we're probing a historical commit prefix for
     // the green-checkpoint salvage, not diffing the live tree.
-    return sh(`git diff --name-only --ignore-submodules=dirty ${rangeFrom}..${rangeTo}`).split('\n').filter(Boolean);
+    return sh(
+      `git diff --name-only --ignore-submodules=dirty ${rangeFrom}..${rangeTo}`,
+    )
+      .split("\n")
+      .filter(Boolean);
   }
-  const committed = sh(`git diff --name-only --ignore-submodules=dirty ${base}...HEAD`).split('\n').filter(Boolean);
-  const uncommitted = sh('git diff --name-only --ignore-submodules=dirty HEAD').split('\n').filter(Boolean);
-  const untracked = sh('git ls-files --others --exclude-standard').split('\n').filter(Boolean);
-  return [...new Set([...committed, ...uncommitted, ...untracked, ...submoduleDirtyPaths()])];
+  const committed = sh(
+    `git diff --name-only --ignore-submodules=dirty ${base}...HEAD`,
+  )
+    .split("\n")
+    .filter(Boolean);
+  const uncommitted = sh("git diff --name-only --ignore-submodules=dirty HEAD")
+    .split("\n")
+    .filter(Boolean);
+  const untracked = sh("git ls-files --others --exclude-standard")
+    .split("\n")
+    .filter(Boolean);
+  return [
+    ...new Set([
+      ...committed,
+      ...uncommitted,
+      ...untracked,
+      ...submoduleDirtyPaths(),
+    ]),
+  ];
 }
 
 // The changed-path list REPO_WIDE_INVARIANT_GUARDS matches against, memoized so
@@ -464,7 +511,8 @@ function changedFiles() {
 let invariantGuardChangedPathsCache = null;
 function invariantGuardChangedPaths() {
   if (invariantGuardChangedPathsCache) return invariantGuardChangedPathsCache;
-  if (changedPathsOverride) return (invariantGuardChangedPathsCache = changedPathsOverride);
+  if (changedPathsOverride)
+    return (invariantGuardChangedPathsCache = changedPathsOverride);
   if (runAll) return (invariantGuardChangedPathsCache = []); // --all already runs every suite
   try {
     invariantGuardChangedPathsCache = changedFiles();
@@ -493,12 +541,12 @@ function gitmodulePaths() {
   if (gitmodulePathsCache) return gitmodulePathsCache;
   try {
     gitmodulePathsCache = new Set(
-      sh('git config --file .gitmodules --get-regexp path')
-        .split('\n')
+      sh("git config --file .gitmodules --get-regexp path")
+        .split("\n")
         .filter(Boolean)
         // The value is everything past the first space, so a path containing spaces
         // survives (splitting on whitespace would truncate it).
-        .map((l) => l.slice(l.indexOf(' ') + 1).trim())
+        .map((l) => l.slice(l.indexOf(" ") + 1).trim())
         .filter(Boolean),
     );
   } catch {
@@ -522,10 +570,10 @@ function submoduleDirtyPaths() {
       // EXPECTED, handled condition here. execSync forwards stderr to the parent by
       // default, so without this a swallowed error still prints a scary `fatal:` line
       // and reads like a broken run (the EI-1989 failure mode, in reverse).
-      const out = execFileSync('git', ['-C', p, 'status', '--porcelain'], {
+      const out = execFileSync("git", ["-C", p, "status", "--porcelain"], {
         cwd: ROOT,
-        encoding: 'utf8',
-        stdio: ['ignore', 'pipe', 'pipe'],
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "pipe"],
       }).trim();
       if (out) dirty.push(p);
     } catch {
@@ -535,7 +583,7 @@ function submoduleDirtyPaths() {
   return dirty;
 }
 
-const root = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
+const root = JSON.parse(readFileSync(join(ROOT, "package.json"), "utf8"));
 
 // STANDALONE packages: real, tested packages in this tree that are deliberately NOT
 // npm workspaces, so `root.workspaces` cannot see them and this script used to run
@@ -613,7 +661,11 @@ const root = JSON.parse(readFileSync(join(ROOT, 'package.json'), 'utf8'));
 // for sse above — package-lock.json carries its own 84-entry workspaces array and CI runs
 // `npm ci` strict; the lock already records file-claim as a link entry, so normalizing it is a
 // small change whose cost is TIMING, not shape.
-const STANDALONE_PACKAGE_DIRS = ['papercusp-desktop', 'libs/generic/sse', 'libs/papercusp/packages/file-claim'];
+const STANDALONE_PACKAGE_DIRS = [
+  "papercusp-desktop",
+  "libs/generic/sse",
+  "libs/papercusp/packages/file-claim",
+];
 
 // EI-19346163916263067 — NON-WORKSPACE SOURCE DIRECTORIES.
 //
@@ -643,7 +695,7 @@ const STANDALONE_PACKAGE_DIRS = ['papercusp-desktop', 'libs/generic/sse', 'libs/
 // included. Splitting the semantics would add a second selection rule whose
 // divergence from the first nobody would notice.
 const NON_WORKSPACE_PATH_ROUTES = [
-  { prefix: 'scripts/', workspace: '@papercusp/operator-core' },
+  { prefix: "scripts/", workspace: "@papercusp/operator-core" },
   // CLAUDE.md is a PRESCRIPTIVE artifact spliced into every agent's prompt, and
   // its executable claims are asserted by operator-core's doc-claims suite
   // (false-premise-in-prescriptive-artifacts-2026-08-02 P-004). MEASURED before
@@ -651,7 +703,7 @@ const NON_WORKSPACE_PATH_ROUTES = [
   // guard that checks this file did not run when this file changed — the guard
   // would have fired only via the full suite, hours later at the fleet gate,
   // which is the exact latency the check exists to remove.
-  { prefix: 'CLAUDE.md', workspace: '@papercusp/operator-core' },
+  { prefix: "CLAUDE.md", workspace: "@papercusp/operator-core" },
   // WI-37840. `templates/` is SHIPPED CONTENT with no package.json of its own, and
   // the three guards that govern it are vitest files in operator-core
   // (template-bundle-integrity, template-docs-slugs, template-store-shadowing).
@@ -662,7 +714,7 @@ const NON_WORKSPACE_PATH_ROUTES = [
   // plan built guards for (a dangling docs: slug, an unvendored @papercusp/* import
   // in a template check, user-layer shadowing residue) is introduced by exactly that
   // shape of commit, so the guards were unreachable from the change they guard.
-  { prefix: 'templates/', workspace: '@papercusp/operator-core' },
+  { prefix: "templates/", workspace: "@papercusp/operator-core" },
 ];
 
 // EI-19388389386110890 — REPO-WIDE INVARIANTS ENFORCED FROM ONE WORKSPACE.
@@ -712,29 +764,30 @@ const NON_WORKSPACE_PATH_ROUTES = [
 // silently stops firing for that root — the same "green because it stopped checking"
 // shape the registry exists to prevent.
 const PARTIAL_INDEX_SOURCE_ROOTS = [
-  'packages/operator-core/lib',
-  'packages/agent-mcp/src',
-  'apps/operator/lib',
-  'libs/papercusp/packages',
+  "packages/operator-core/lib",
+  "packages/agent-mcp/src",
+  "apps/operator/lib",
+  "libs/papercusp/packages",
 ];
-const PARTIAL_INDEX_SCHEMA_FILE = 'libs/papercusp/libs/db/src/schema/generated.ts';
+const PARTIAL_INDEX_SCHEMA_FILE =
+  "libs/papercusp/libs/db/src/schema/generated.ts";
 
 // WI-9573 / EI-20208711931756460. Mirrors SQL_DIR + SOURCE_ROOTS in
 // scripts/check-migration-forward-compat.mjs — that lint scans parked migration artifacts
 // and source consumers, so if either domain moves, this must follow or the guard silently
 // stops firing (the same "green because it stopped checking" shape).
-const MIGRATION_SQL_DIR = 'libs/papercusp/libs/db/sql';
+const MIGRATION_SQL_DIR = "libs/papercusp/libs/db/sql";
 const MIGRATION_SOURCE_ROOTS = [
-  'apps',
-  'packages',
-  'libs/papercusp/packages',
-  'libs/papercusp/libs/db/src',
+  "apps",
+  "packages",
+  "libs/papercusp/packages",
+  "libs/papercusp/libs/db/src",
 ];
 
 // EI-7667. Mirrors ROOTS in scripts/check-no-unthreaded-apply.mjs — that guard walks
 // exactly these roots, so if its scan widens, this must follow or the guard silently
 // stops firing on the new root.
-const UNTHREADED_APPLY_SOURCE_ROOTS = ['packages', 'libs', 'apps'];
+const UNTHREADED_APPLY_SOURCE_ROOTS = ["packages", "libs", "apps"];
 
 // okf-frontmatter-adoption-2026-08-08 P-006. MIRRORS OKF_SCAN_ROOTS in
 // scripts/check-okf-conformance.mjs — mirrored, not imported, because this file is
@@ -743,8 +796,8 @@ const UNTHREADED_APPLY_SOURCE_ROOTS = ['packages', 'libs', 'apps'];
 // real exports by affected-tests-repo-wide-invariant-guards.test.ts; if the lint's
 // scan widens, this must follow or the guard silently stops firing on the new root.
 const OKF_SCAN_ROOTS = [
-  'apps/operator-docs/src/content/docs/agent-insights/',
-  'libs/papercusp/packages/harness/knowledge-packs/',
+  "apps/operator-docs/src/content/docs/agent-insights/",
+  "libs/papercusp/packages/harness/knowledge-packs/",
 ];
 
 // WI-37605. MIRRORS `GC_TAG_SOURCE_ROOTS` in scripts/check-green-checkpoint-tag.mjs — that guard
@@ -753,7 +806,7 @@ const OKF_SCAN_ROOTS = [
 // every agent's test-loop entry point, and a static import would let a load error in a lint script
 // hard-fail everyone's test:affected. The mirror is asserted equal to the real export by
 // affected-tests-repo-wide-invariant-guards.test.ts.
-const GC_TAG_SOURCE_ROOTS = ['packages/operator-core/lib', 'apps/operator/lib'];
+const GC_TAG_SOURCE_ROOTS = ["packages/operator-core/lib", "apps/operator/lib"];
 
 // MIRRORS `EXIT_NOT_CHECKED` in scripts/lib/not-checked.mjs — mirrored, not imported, for the
 // same reason as the roots above: this file is every agent's test-loop entry point, and a load
@@ -800,12 +853,12 @@ const EXIT_NOT_CHECKED = 2;
 // outright (verified). An over-match — a quoted `.mjs` inside a comment — only widens attachment,
 // which is the fail-safe direction; every real entry is quoted, so under-matching a declared input
 // cannot happen.
-const DECLARATIONS_CONFIG = 'tsconfig.declarations.json';
+const DECLARATIONS_CONFIG = "tsconfig.declarations.json";
 let declarationInputsCache;
 function declarationMjsInputs() {
   if (declarationInputsCache !== undefined) return declarationInputsCache;
   try {
-    const raw = readFileSync(join(ROOT, DECLARATIONS_CONFIG), 'utf8');
+    const raw = readFileSync(join(ROOT, DECLARATIONS_CONFIG), "utf8");
     const found = [...raw.matchAll(/"([^"\n]+\.mjs)"/g)].map((m) => m[1]);
     // An empty set would silently disable the guard, which is the failure mode this whole
     // registry exists to prevent — treat it as "could not read" and widen instead.
@@ -824,14 +877,15 @@ const REPO_WIDE_INVARIANT_GUARDS = [
   {
     // WI-38089. See declarationMjsInputs() above for the measurement and the derive-vs-mirror
     // rationale.
-    workspace: '@papercusp/operator-core',
+    workspace: "@papercusp/operator-core",
     // ~6.1s measured (3 runs, warm): a `tsc --emitDeclarationOnly` into a temp dir, then a
     // byte-compare of 42 files. The most expensive entry in this list, which is why `appliesTo` is
     // the narrowest possible set — the declared inputs themselves — rather than every `.mjs`.
-    script: 'lint:declarations-fresh',
+    script: "lint:declarations-fresh",
     // The ratchet is real: generated-declarations.test.ts execs the SAME `--check` invocation, so
     // when operator-core's own suite runs, this has genuinely already executed.
-    hostSuiteRatchet: 'packages/operator-core/lib/generated-declarations.test.ts',
+    hostSuiteRatchet:
+      "packages/operator-core/lib/generated-declarations.test.ts",
     appliesTo: (f) => {
       // Adding an input without generating its `.d.mts` is a config edit, not a source edit, and
       // `--check` reports it as `missing` rather than `stale` — so the config itself must attach.
@@ -841,7 +895,9 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       if (declared.has(f)) return true;
       // Hand-editing a generated `.d.mts` is drift in the opposite direction: the committed
       // declaration no longer matches what the generator would emit.
-      return f.endsWith('.d.mts') && declared.has(f.replace(/\.d\.mts$/, '.mjs'));
+      return (
+        f.endsWith(".d.mts") && declared.has(f.replace(/\.d\.mts$/, ".mjs"))
+      );
     },
   },
   {
@@ -866,14 +922,14 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // nothing) when Postgres is unreachable, so attaching it here does not fail every GitHub CI
     // run — see the no-DB degrade note in project-authored-docs.ts. That degrade is what makes
     // registration honest rather than a permanently-red leg the fleet learns to ignore.
-    workspace: '@papercusp/operator-core',
-    script: 'gen:authored-docs:check',
+    workspace: "@papercusp/operator-core",
+    script: "gen:authored-docs:check",
     // No hostSuiteRatchet: authored-doc-projection.test.ts unit-tests the projection HELPERS,
     // it never execs `--check` over the real corpus, so no suite run implies this has executed.
     appliesTo: (f) =>
-      f.startsWith('apps/operator-docs/src/content/docs/') ||
-      f === 'scripts/project-authored-docs.ts' ||
-      f === '.papercusp/docs.json',
+      f.startsWith("apps/operator-docs/src/content/docs/") ||
+      f === "scripts/project-authored-docs.ts" ||
+      f === ".papercusp/docs.json",
   },
   {
     // WI-38239 — `gen:compaction:check` was one of the 8 orphaned `gen:*:check` guards the
@@ -896,19 +952,20 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     //
     // Cheap by construction: a two-file read + a string splice, no DB and no network, so it is
     // runnable in GitHub CI exactly as it is here.
-    workspace: '@papercusp/operator-core',
-    script: 'gen:compaction:check',
+    workspace: "@papercusp/operator-core",
+    script: "gen:compaction:check",
     // No hostSuiteRatchet: compaction-strategy.test.ts is fixture-only (mkdtemp) and never
     // references gen-compaction.ts, so no suite run implies this has executed over the real
     // prompts dir. Declaring one would be the phantom ratchet the registry test forbids.
     appliesTo: (f) =>
-      f === 'apps/operator/prompts/papercusp-compaction.base.md' ||
-      f === 'apps/operator/prompts/papercusp-compaction.claude.md' ||
-      f === 'scripts/gen-compaction.ts' ||
+      f === "apps/operator/prompts/papercusp-compaction.base.md" ||
+      f === "apps/operator/prompts/papercusp-compaction.claude.md" ||
+      f === "scripts/gen-compaction.ts" ||
       // The renderer and the splice/marker it depends on — the "overlay marker survived" half
       // of the check is a property of these two files, not of the prompts.
-      f === 'packages/operator-core/lib/desktop-install/papercusp-files.ts' ||
-      f === 'packages/operator-core/lib/desktop-install/splice-tooling-overlay.ts',
+      f === "packages/operator-core/lib/desktop-install/papercusp-files.ts" ||
+      f ===
+        "packages/operator-core/lib/desktop-install/splice-tooling-overlay.ts",
   },
   {
     // WI-38239 — `gen:knowledge-packs:check`, same orphan cohort. The builtin packs' shared
@@ -925,11 +982,11 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // rather than exercising gen-knowledge-packs.mjs, so the ratchet assertion would reject it.
     // Attaching unconditionally is the fail-safe direction that test's own message prescribes,
     // and the duplicate cost is a handful of file reads.
-    workspace: '@papercusp/operator-core',
-    script: 'gen:knowledge-packs:check',
+    workspace: "@papercusp/operator-core",
+    script: "gen:knowledge-packs:check",
     appliesTo: (f) =>
-      f.startsWith('libs/papercusp/packages/harness/knowledge-packs/') ||
-      f === 'scripts/gen-knowledge-packs.mjs',
+      f.startsWith("libs/papercusp/packages/harness/knowledge-packs/") ||
+      f === "scripts/gen-knowledge-packs.mjs",
   },
   {
     // WI-38239 — `gen:tool-catalog:check`, the last WIRE-able member of the orphaned `gen:*:check`
@@ -957,8 +1014,8 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // network — against a dead PG port with an empty PAPERCUSP_HOME it still exits 0 in 10.6s — so
     // it is runnable in GitHub CI exactly as it is here (the import registers definitions; pools
     // open lazily and nothing queries).
-    workspace: '@papercusp/operator-core',
-    script: 'gen:tool-catalog:check',
+    workspace: "@papercusp/operator-core",
+    script: "gen:tool-catalog:check",
     // No hostSuiteRatchet: nothing execs gen-tool-catalog.ts, and the only repo references to it
     // are the scaffold tool's instructional text. Declaring one would be the phantom ratchet the
     // registry test forbids.
@@ -966,15 +1023,16 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       // All 12 randomly sampled catalog entries define under agent-tools/; endpoint-route
       // contributes none (every one of the 729 entries carries BOTH an MCP name and an http path).
       // `.test.ts` is excluded deliberately — a test beside a tool registers nothing.
-      (f.startsWith('packages/operator-core/lib/agent-tools/') && !f.endsWith('.test.ts')) ||
+      (f.startsWith("packages/operator-core/lib/agent-tools/") &&
+        !f.endsWith(".test.ts")) ||
       // The projection surface itself: `listAllProjectedTools` and `defineTool` decide WHAT is
       // projected and WHICH fields land, so a change here can move all 729 entries at once with no
       // tool file edited.
-      (f.startsWith('packages/agent-mcp/src/') && !f.endsWith('.test.ts')) ||
-      (f.startsWith('libs/generic/tooldef/src/') && !f.endsWith('.test.ts')) ||
-      f === 'scripts/gen-tool-catalog.ts' ||
+      (f.startsWith("packages/agent-mcp/src/") && !f.endsWith(".test.ts")) ||
+      (f.startsWith("libs/generic/tooldef/src/") && !f.endsWith(".test.ts")) ||
+      f === "scripts/gen-tool-catalog.ts" ||
       // Drift in the other direction: a hand-edit to the generated artifact.
-      f === '.papercusp/tool-catalog.json',
+      f === ".papercusp/tool-catalog.json",
   },
   {
     // WI-38239 — `gen:fleet-lessons:check`, the LAST of the eight orphaned `gen:*:check` guards.
@@ -1003,17 +1061,19 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // Cheap and off-fleet-safe by construction: ~1.5s (2 runs: 1.50 / 1.45), and with no shared
     // knowledge-packs root it prints "nothing to export (ok)" and exits 0 — so a CI runner or a
     // fresh clone, which has no curated pack, passes rather than red-pinning.
-    workspace: '@papercusp/operator-core',
-    script: 'gen:fleet-lessons:check',
+    workspace: "@papercusp/operator-core",
+    script: "gen:fleet-lessons:check",
     // No hostSuiteRatchet: no test execs gen-fleet-lessons.ts, so no suite run implies this has
     // executed over the real pack.
     appliesTo: (f) =>
-      f.startsWith('libs/papercusp/packages/harness/knowledge-packs/fleet-lessons/') ||
-      f === 'scripts/gen-fleet-lessons.ts' ||
+      f.startsWith(
+        "libs/papercusp/packages/harness/knowledge-packs/fleet-lessons/",
+      ) ||
+      f === "scripts/gen-fleet-lessons.ts" ||
       // The OKF normalizers the exporter now depends on — a change to what they add changes what
       // this guard considers conformant output.
-      f === 'scripts/okf-backfill-packs.mjs' ||
-      f === 'scripts/okf-backfill-insights.mjs',
+      f === "scripts/okf-backfill-packs.mjs" ||
+      f === "scripts/okf-backfill-insights.mjs",
   },
   {
     // WI-38312 — `lint:sidecar-fallback-reported` (EI-20281745253229841) shipped enforcing
@@ -1032,20 +1092,21 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // is unchanged BY MEASUREMENT, not by argument: git grep missed 0 of the 6 files an
     // exhaustive read found, and masking can only ever REMOVE matches, so the grep is a
     // strict superset of what the masked check can accept.
-    workspace: '@papercusp/operator-core',
-    script: 'lint:sidecar-fallback-reported',
+    workspace: "@papercusp/operator-core",
+    script: "lint:sidecar-fallback-reported",
     // The ratchet is real: the guard's own test execs this SAME script over the real
     // tree, so when operator-core's suite runs it has genuinely already executed.
-    hostSuiteRatchet: 'packages/operator-core/lib/fleet/sidecar-fallback-reported-guard.test.ts',
+    hostSuiteRatchet:
+      "packages/operator-core/lib/fleet/sidecar-fallback-reported-guard.test.ts",
     // Mirrors the guard's own eligibility filter — an unreported fallback can only be
     // introduced by a non-test .ts source, or by editing the guard/allowlist itself.
     appliesTo: (f) =>
-      f === 'scripts/check-sidecar-fallback-reported.mjs' ||
-      (f.endsWith('.ts') &&
-        !f.endsWith('.test.ts') &&
-        !f.endsWith('.integration.test.ts') &&
-        !f.includes('/dist/') &&
-        !f.includes('node_modules')),
+      f === "scripts/check-sidecar-fallback-reported.mjs" ||
+      (f.endsWith(".ts") &&
+        !f.endsWith(".test.ts") &&
+        !f.endsWith(".integration.test.ts") &&
+        !f.includes("/dist/") &&
+        !f.includes("node_modules")),
   },
   {
     // EI-19454727576364875 — a `lint:*` script is declared in a package.json, so editing a
@@ -1059,11 +1120,11 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // very file this entry is keyed on. Registration would have looked correct and done nothing —
     // which is why the item it closes had concluded the only remedy was to route package.json to
     // a workspace and pay a whole suite for every root edit.
-    workspace: '@papercusp/operator-core',
-    script: 'lint:guard-reachability',
+    workspace: "@papercusp/operator-core",
+    script: "lint:guard-reachability",
     // No hostSuiteRatchet: no test file execs this detector, so it attaches unconditionally —
     // the fail-safe direction, and cheap because appliesTo is package.json-only.
-    appliesTo: (f) => f === 'package.json' || f.endsWith('/package.json'),
+    appliesTo: (f) => f === "package.json" || f.endsWith("/package.json"),
   },
   {
     // EI-20098997113620795 — `attributeFailedTask` must be able to name a failing FILE for every
@@ -1078,17 +1139,18 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // never have selected the guard that exists to catch exactly that. Keying on package.json is
     // therefore the whole point; narrowing to "files that look test-related" would rebuild the
     // blind spot one level down, the same argument no-undrained-stdout-exit makes above.
-    workspace: '@papercusp/operator-core',
-    script: 'lint:attributor-runner-coverage',
+    workspace: "@papercusp/operator-core",
+    script: "lint:attributor-runner-coverage",
     // The ratchet IS the guard: this file is a plain vitest test inside operator-core's own
     // suite, so when that suite runs it has genuinely already executed — not assumed.
-    hostSuiteRatchet: 'packages/operator-core/lib/__tests__/attributor-runner-coverage.test.ts',
+    hostSuiteRatchet:
+      "packages/operator-core/lib/__tests__/attributor-runner-coverage.test.ts",
     appliesTo: (f) =>
-      f === 'package.json' ||
-      f.endsWith('/package.json') ||
-      f === 'scripts/affected-tests.mjs' ||
-      f === 'scripts/lib/vitest-summary.mjs' ||
-      f === 'scripts/lib/test-runner-classes.mjs',
+      f === "package.json" ||
+      f.endsWith("/package.json") ||
+      f === "scripts/affected-tests.mjs" ||
+      f === "scripts/lib/vitest-summary.mjs" ||
+      f === "scripts/lib/test-runner-classes.mjs",
   },
   {
     // EI-20055889379250637 — `console.log(<unbounded>); process.exit()` truncates
@@ -1098,12 +1160,13 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // or an accumulating write to ANY CLI, and nobody knows in advance which file that
     // will be. Narrowing to "files that already print JSON" would rebuild the blind
     // spot one level down.
-    workspace: '@papercusp/operator-core',
-    script: 'lint:no-undrained-stdout-exit',
+    workspace: "@papercusp/operator-core",
+    script: "lint:no-undrained-stdout-exit",
     // The ratchet inside operator-core's suite EXECS the guard over REPO_ROOT (the
     // `describe('the tree is currently clean (ratchet)')` case), so deferring to the
     // host suite is genuinely safe here rather than assumed.
-    hostSuiteRatchet: 'packages/operator-core/lib/undrained-stdout-exit-guard.test.ts',
+    hostSuiteRatchet:
+      "packages/operator-core/lib/undrained-stdout-exit-guard.test.ts",
     appliesTo: (f) => /\.[cm]?[jt]sx?$/.test(f),
   },
   {
@@ -1117,12 +1180,12 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // promoted this guard from "logic-test only" to enforced-but-partially-covered. A true
     // new finding — so the remedy is registration, NOT an append to
     // ACKNOWLEDGED_PARTIAL_COVERAGE (that set is shrink-only and says so).
-    workspace: '@papercusp/operator-core',
+    workspace: "@papercusp/operator-core",
     // The standalone SCRIPT. ⚠ operator-core did not DECLARE this script until this change —
     // a registration naming a workspace that lacks the script is INERT (silently skipped at
     // :815 while scoring as fully enforced), which is the exact trap WI-37454 found and now
     // fails on. The package.json declaration is half of this fix, not incidental to it.
-    script: 'lint:no-raw-spawn',
+    script: "lint:no-raw-spawn",
     // COST, measured before registering (this registry's own standing instruction). The guard
     // was ~11.8-12.1s — 50x what the entries here normally cost — because the AST stripper
     // above parses every scanned file. A provably-sound raw-text pre-filter in the guard
@@ -1131,25 +1194,26 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // Registering it at 12s would have taxed every fleet-wide test:affected run touching a
     // .ts file, so the pre-filter is what makes this entry affordable rather than a
     // regression traded for coverage.
-    hostSuiteRatchet: 'packages/operator-core/lib/dbos/no-raw-spawn-guard.test.ts',
+    hostSuiteRatchet:
+      "packages/operator-core/lib/dbos/no-raw-spawn-guard.test.ts",
     // MIRRORS `isExcluded` in scripts/check-no-raw-agent-spawn.mjs — deliberately copied
     // rather than narrowed: the predicate must match what the guard actually scans, and the
     // asymmetry (predicate wider or narrower than the scan) is the defect this registry
     // exists to prevent.
     appliesTo: (f) =>
       /\.ts$/.test(f) &&
-      !f.endsWith('.test.ts') &&
-      !f.startsWith('_retired/') &&
-      !f.includes('/_retired/') &&
-      !f.includes('/node_modules/') &&
-      !f.includes('/dist/'),
+      !f.endsWith(".test.ts") &&
+      !f.startsWith("_retired/") &&
+      !f.includes("/_retired/") &&
+      !f.includes("/node_modules/") &&
+      !f.includes("/dist/"),
   },
   {
-    workspace: '@papercusp/operator-core',
-    script: 'lint:chunk-safe',
+    workspace: "@papercusp/operator-core",
+    script: "lint:chunk-safe",
     // The guard script IS a vitest file in operator-core, so the host suite re-runs it
     // by construction — the one case where the skip needs no separate ratchet.
-    hostSuiteRatchet: 'packages/operator-core/lib/child-output-guard.test.ts',
+    hostSuiteRatchet: "packages/operator-core/lib/child-output-guard.test.ts",
     // Every TS-family source file: the guard's own enumeration is repo-wide, so
     // narrowing this to "files that spawn children" would re-create the blind
     // spot one level down — the point is that nobody knows in advance which file
@@ -1165,18 +1229,20 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     //       -> AFFECTED_WS @papercusp/web        (3 of the 4 scanned roots escape)
     // A misaligned `->>` landing in apps/operator/lib therefore produced no local
     // signal and would first surface as a red FLEET gate.
-    workspace: '@papercusp/operator-core',
+    workspace: "@papercusp/operator-core",
     // The standalone SCRIPT (0.57-0.60s measured), NOT the 20-test vitest file
     // (7.66s — vitest startup dominates). The narrow task only needs the RATCHET
     // "does the tree violate the invariant"; the discrimination tests that prove the
     // detector works already run inside operator-core's own suite.
-    script: 'lint:partial-index-alignment',
+    script: "lint:partial-index-alignment",
     // `describe('the tree is currently aligned (ratchet)')` execs the SAME script over
     // REPO_ROOT inside operator-core's suite, so deferring to it is genuinely safe.
-    hostSuiteRatchet: 'packages/operator-core/lib/partial-index-alignment-guard.test.ts',
+    hostSuiteRatchet:
+      "packages/operator-core/lib/partial-index-alignment-guard.test.ts",
     appliesTo: (f) =>
       f === PARTIAL_INDEX_SCHEMA_FILE ||
-      (/\.[cm]?tsx?$/.test(f) && PARTIAL_INDEX_SOURCE_ROOTS.some((r) => f.startsWith(`${r}/`))),
+      (/\.[cm]?tsx?$/.test(f) &&
+        PARTIAL_INDEX_SOURCE_ROOTS.some((r) => f.startsWith(`${r}/`))),
   },
   {
     // WI-9573 / EI-20208711931756460 — the D-034 shape a THIRD time, and the most expensive instance yet.
@@ -1190,13 +1256,15 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     //
     // A .sql migration also maps to NO workspace test suite, so unlike the two guards
     // above there was no partial coverage to widen — the local signal was entirely absent.
-    workspace: '@papercusp/operator-core',
+    workspace: "@papercusp/operator-core",
     // The standalone script (~0.1s: it readdirs one directory and regex-scans 65 files).
-    script: 'lint:migration-forward-compat',
+    script: "lint:migration-forward-compat",
     appliesTo: (f) => {
       const isMigrationArtifact =
         f.startsWith(`${MIGRATION_SQL_DIR}/`) &&
-        (f.endsWith('.sql') || f.endsWith('.sql.DRAFT') || f.endsWith('.sql.PENDING-CODE-DEPLOY'));
+        (f.endsWith(".sql") ||
+          f.endsWith(".sql.DRAFT") ||
+          f.endsWith(".sql.PENDING-CODE-DEPLOY"));
       const isSourceConsumer = MIGRATION_SOURCE_ROOTS.some(
         (root) => f.startsWith(`${root}/`) && /\.[cm]?[jt]sx?$/.test(f),
       );
@@ -1213,11 +1281,12 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // container, which surfaces as OTHER agents' CONNECT_TIMEOUTs. A violation whose
     // cost lands entirely on somebody else's test run is the exact profile this
     // registry exists for.
-    workspace: '@papercusp/operator-core',
+    workspace: "@papercusp/operator-core",
     // The standalone script (~1.0s measured, 3 runs — the same order as lint:chunk-safe
     // above, which this list already accepts at that price).
-    script: 'lint:drop-database-force',
-    hostSuiteRatchet: 'packages/operator-core/lib/drop-database-force-guard.test.ts',
+    script: "lint:drop-database-force",
+    hostSuiteRatchet:
+      "packages/operator-core/lib/drop-database-force-guard.test.ts",
     // Every TS-family file, for chunk-safe's stated reason: narrowing to "files that
     // currently talk to postgres" would re-create the blind spot one level down, and
     // the bug being guarded IS a NEW file hand-rolling its own teardown.
@@ -1238,12 +1307,12 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // compare and the record stays permanently shadowed). It survived four gate runs and
     // three wrong diagnoses on the p2p rig for that reason — this is a defect class the
     // fleet gate would NOT reliably surface, so local enforcement is the real backstop.
-    workspace: '@papercusp/operator-core',
+    workspace: "@papercusp/operator-core",
     // The standalone script (0.62-0.65s measured, 3 runs — between lint:partial-index-
     // alignment's 0.57-0.60s and lint:drop-database-force's ~1.0s, both accepted here).
     // Not the vitest file: the narrow task only needs the tree ratchet, and the controls
     // proving the detector can still fail already run inside operator-core's own suite.
-    script: 'lint:no-unthreaded-apply',
+    script: "lint:no-unthreaded-apply",
     // Mirrors ROOTS in scripts/check-no-unthreaded-apply.mjs — if that scan ever widens,
     // this must follow or the guard silently stops firing on the new root (the same
     // "green because it stopped checking" shape MIGRATION_SQL_DIR is annotated for).
@@ -1261,21 +1330,24 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // whatsoever. The pack half is worse in kind: those files are written by CODE
     // (plan D-003), so the corpus can regress with no author involved at all and the
     // first notice would be a red on files nobody edited.
-    workspace: '@papercusp/operator-core',
+    workspace: "@papercusp/operator-core",
     // The standalone script (~1.0s measured — the same order as lint:chunk-safe and
     // lint:drop-database-force, both already accepted at that price). The narrow task
     // only needs the tree RATCHET; the discrimination tests proving the detector can
     // still fail live in docs-engine's own suite (okf-conformance.test.ts).
-    script: 'lint:okf-conformance',
-    hostSuiteRatchet: 'packages/operator-core/lib/okf-conformance-guard.test.ts',
+    script: "lint:okf-conformance",
+    hostSuiteRatchet:
+      "packages/operator-core/lib/okf-conformance-guard.test.ts",
     // Mirrors isOkfScannedFile() in check-okf-conformance.mjs: the two corpus roots,
     // the three extensions it opens, and the dot-path exclusion (Astro's loader never
     // sees those, so the lint does not judge them and routing on them would spend the
     // fleet's edit budget on a finding impossible by construction).
     appliesTo: (f) =>
       OKF_SCAN_ROOTS.some((r) => f.startsWith(r)) &&
-      !f.split('/').some((seg) => seg.startsWith('.')) &&
-      (f.endsWith('.md') || f.endsWith('.mdx') || /(^|\/)manifest\.ya?ml$/.test(f)),
+      !f.split("/").some((seg) => seg.startsWith(".")) &&
+      (f.endsWith(".md") ||
+        f.endsWith(".mdx") ||
+        /(^|\/)manifest\.ya?ml$/.test(f)),
   },
   {
     // WI-37454 — the D-034 shape again, caught as a LATENT gate red rather than a live one.
@@ -1290,12 +1362,12 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // 10:01:04Z verdict was held by 6 test files, so the lint legs never ran. Those files
     // were already passing at HEAD, so the next clean run would have reached this leg and
     // red-pinned on it — the same surprise as WI-10589's "imminent gate red".
-    workspace: '@papercusp/operator-core',
+    workspace: "@papercusp/operator-core",
     // The standalone script (212/248/221ms measured over 3 runs) — the same order as
     // lint:chunk-safe and lint:drop-database-force, both already accepted at that price.
     // The narrow task only needs the tree RATCHET; the discrimination tests that prove the
     // detector can still fail live in operator-core's own suite.
-    script: 'lint:no-retired-resurrection',
+    script: "lint:no-retired-resurrection",
     // EVERY tracked path, deliberately unnarrowed. The guard reads `git ls-files -s` with
     // no extension filter and matches on BLOB SHA (findResurrections in
     // check-retired-resurrection.mjs), so a resurrection is a content-identity fact about
@@ -1318,11 +1390,11 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // Verified clean at wiring time (`npm run lint:no-retired` → exit 0, "no live
     // imports of _retired/ modules and no retired orchestrator-spawn fetch"), so
     // registering it cannot red anyone's loop on pre-existing debt.
-    workspace: '@papercusp/operator-core',
+    workspace: "@papercusp/operator-core",
     // ~1.39s over 3 runs — the same order as lint:chunk-safe (~1.0s), already
     // accepted here. It walks tracked sources via listTrackedFiles, which recurses
     // into all submodules (WI-6730).
-    script: 'lint:no-retired',
+    script: "lint:no-retired",
     // The TS/JS family the guard itself filters to (`/\.(ts|tsx|mjs|cjs|js)$/` in
     // check-no-retired-imports.mjs). Matched to the scan rather than to a workspace:
     // the guard reads the WHOLE tree including submodules, so enforcing it only when
@@ -1338,11 +1410,11 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // cannot select those tests even in principle — the diff touches the source module while
     // the file that breaks names it only inside a string literal. So the guard that reports
     // the gap must not be selected by the same mechanism that has the gap.
-    workspace: '@papercusp/operator-core',
+    workspace: "@papercusp/operator-core",
     // ~440ms typical, ~605ms worst case (3 runs measured; the worst case is the one that
     // actually walks the test corpus, which only happens when an export was added).
     // Cheaper than lint:chunk-safe and lint:okf-conformance, both accepted here at ~1.0s.
-    script: 'lint:vimock-export-strands',
+    script: "lint:vimock-export-strands",
     // ADVISORY — being registered here is what makes it SPEAK, printing the trigger into the
     // run of whoever added the export.
     //
@@ -1385,8 +1457,8 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // ~1.72-1.77s (3 runs measured through the workspace script, 9 files examined) — a
     // `git show` + TS parse per changed file, so cost tracks the working diff, which
     // git-sync keeps small by sweeping every few minutes.
-    workspace: '@papercusp/operator-core',
-    script: 'lint:required-field-strands',
+    workspace: "@papercusp/operator-core",
+    script: "lint:required-field-strands",
     // Its subject is the WORKING DIFF, so a gate checkout — clean by construction — makes
     // it examine zero files and exit EXIT_NOT_CHECKED on every candidate. Non-gating is
     // therefore mandatory, not defensive; the strand-family declaration test in
@@ -1427,17 +1499,18 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // therefore classifies it `[ci]` = enforced, which is true and still leaves exactly
     // the gap this registry exists to close. Do NOT read its absence from that census's
     // NOT-ENFORCED list as evidence the local path is covered.
-    workspace: '@papercusp/operator-core',
+    workspace: "@papercusp/operator-core",
     // 1.10-1.16s (3 runs measured) — between lint:chunk-safe and lint:drop-database-force
     // (~1.0s), both already accepted here at that price.
-    script: 'lint:workspace-deps-complete',
+    script: "lint:workspace-deps-complete",
     // Mirrors the guard's OWN scan surface: `--include=*.ts` / `*.tsx`
     // (check-workspace-deps-complete.mjs:150-151). Deliberately NOT the wider
     // /\.[cm]?tsx?$/ the guards above use — matching more than it scans only wastes the
     // 1.1s, but the annotation would then lie about what it covers. `package.json` is the
     // OTHER direction and is why this is not a source-only predicate: DELETING a
     // declaration reintroduces the edge without touching a single import.
-    appliesTo: (f) => /\.tsx?$/.test(f) || f === 'package.json' || f.endsWith('/package.json'),
+    appliesTo: (f) =>
+      /\.tsx?$/.test(f) || f === "package.json" || f.endsWith("/package.json"),
   },
   {
     // retire-mug-kettle-su-only-2026-08-09 P-016 — the recurrence guard for the
@@ -1445,16 +1518,16 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // entry point, and nobody knows in advance which file is about to grow one: the
     // console door (D-022) appeared in endpoint-route/routes/agent-mcp/, which no
     // narrower predicate would have thought to watch.
-    workspace: '@papercusp/operator-core',
+    workspace: "@papercusp/operator-core",
     // ~3.4s: it shells out to scripts/mug-kettle-surface-census.mjs --json rather than
     // re-implementing its 8 detectors, so there is exactly ONE implementation of them.
-    script: 'lint:no-ungated-mug-kettle',
+    script: "lint:no-ungated-mug-kettle",
     // Mirrors the union of both scan surfaces: the census walks packages/libs/apps/scripts
     // for the TS-family + .mjs, and the guard's own role-door pass adds .mjs launchers
     // (apps/operator/scripts/psu-launcher.mjs is a real door). Blueprint PROMPTS are a
     // census category too (`prompt|coding/mug|…md`), so .md counts — a new mug role prompt
     // is exactly the kind of quiet re-introduction this is for.
-    appliesTo: (f) => /\.[cm]?[jt]sx?$/.test(f) || f.endsWith('.md'),
+    appliesTo: (f) => /\.[cm]?[jt]sx?$/.test(f) || f.endsWith(".md"),
   },
   {
     // WI-38269 — the VACUOUS FLAG GUARD class, routed from the acceptance scorecard for
@@ -1471,9 +1544,9 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     //
     // ~2.4s measured (6,658 test files + 8,963 source files; two regex passes plus a
     // bounded, memoized import walk). Comparable to the mug-kettle entry above.
-    workspace: '@papercusp/operator-core',
-    script: 'lint:vacuous-flag-guard',
-    hostSuiteRatchet: 'packages/operator-core/lib/vacuous-flag-guard.test.ts',
+    workspace: "@papercusp/operator-core",
+    script: "lint:vacuous-flag-guard",
+    hostSuiteRatchet: "packages/operator-core/lib/vacuous-flag-guard.test.ts",
     // BOTH directions matter, which is why this is not a test-file-only predicate. The
     // defect appears when a TEST adds a flag mock — and, the actual motivating case, when
     // a SOURCE file DROPS its last flag read while the test that toggles it stays behind.
@@ -1499,9 +1572,10 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // ~14s measured over 1,915 mocking test files plus the source sweep for constant
     // predicates — the heaviest entry here, but it runs only when a .ts/.tsx path changes
     // in an operator-core-affected run.
-    workspace: '@papercusp/operator-core',
-    script: 'lint:no-unreachable-tier-mock',
-    hostSuiteRatchet: 'packages/operator-core/lib/unreachable-tier-mock-guard.test.ts',
+    workspace: "@papercusp/operator-core",
+    script: "lint:no-unreachable-tier-mock",
+    hostSuiteRatchet:
+      "packages/operator-core/lib/unreachable-tier-mock-guard.test.ts",
     appliesTo: (f) => /\.[cm]?[jt]sx?$/.test(f),
   },
   {
@@ -1523,15 +1597,17 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     //
     // Verified clean at wiring time (`node scripts/check-green-checkpoint-tag.mjs` -> exit 0),
     // so registering it cannot red anyone's loop on pre-existing debt.
-    workspace: '@papercusp/operator-core',
+    workspace: "@papercusp/operator-core",
     // ~0.3s: a plain fs walk of two lib roots with a cheap `includes` pre-filter before the
     // quote-aware scanner ever runs. The SCRIPT, not the vitest file — the narrow task only
     // needs the ratchet; the discrimination controls that prove the detector works already
     // run inside operator-core's own suite (green-checkpoint-tag-guard.test.ts).
-    script: 'lint:green-checkpoint-tag',
-    hostSuiteRatchet: 'packages/operator-core/lib/green-checkpoint-tag-guard.test.ts',
+    script: "lint:green-checkpoint-tag",
+    hostSuiteRatchet:
+      "packages/operator-core/lib/green-checkpoint-tag-guard.test.ts",
     appliesTo: (f) =>
-      /\.[cm]?tsx?$/.test(f) && GC_TAG_SOURCE_ROOTS.some((r) => f.startsWith(`${r}/`)),
+      /\.[cm]?tsx?$/.test(f) &&
+      GC_TAG_SOURCE_ROOTS.some((r) => f.startsWith(`${r}/`)),
   },
   {
     // EI-20035436440627349 — the D-034 shape at its most literal: an unparseable module
@@ -1551,10 +1627,10 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // scripts/lib/strip-comments-and-strings.mjs unparseable tree-wide. Caught by a
     // peer before git-sync swept it, so no broken commit landed — the window, not the
     // commit, is what this closes.
-    workspace: '@papercusp/operator-core',
+    workspace: "@papercusp/operator-core",
     // ~1.7-2.1s over 3 warm runs: 277 tracked .mjs through a parallel `node --check`
     // pool. Same order as lint:no-retired (~1.39s), which is accepted here.
-    script: 'lint:js-syntax',
+    script: "lint:js-syntax",
     // NO hostSuiteRatchet ON PURPOSE. Declaring one would skip this guard exactly when
     // operator-core's full suite runs — i.e. on the biggest changesets — and the whole
     // point is that a parse break is tree-wide and instant. Unconditional attach is the
@@ -1564,7 +1640,7 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // sidecar's monaco) whose baseline is unmeasured; the .mjs baseline was measured
     // clean FIRST (277/277 parse, exit 0 at wiring time), which is what lets this ship
     // ENFORCING instead of as a ratchet carrying debt.
-    appliesTo: (f) => f.endsWith('.mjs'),
+    appliesTo: (f) => f.endsWith(".mjs"),
   },
   {
     // WI-5371 / WI-5673 — a Protomux carries AT MOST ONE hypercore/alpha channel per
@@ -1576,12 +1652,13 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // healthy co-tenant harnesses too. `remote-core-host.ts` fixed it by keeping ONE core per
     // (machine, key) behind the `openRemoteLog` seam — but nothing stopped the next
     // `store.get({ key })` from re-arming it, and the failure is silent at the call site.
-    workspace: '@papercusp/operator-core',
-    script: 'lint:no-unhosted-remote-core',
+    workspace: "@papercusp/operator-core",
+    script: "lint:no-unhosted-remote-core",
     // The ratchet IS the guard: no-unhosted-remote-core-guard.test.ts EXECS the real script
     // three times (violation -> exit 1, clean -> exit 0, own-log -> exit 0), so when
     // operator-core's suite runs the detector has genuinely executed, not been assumed.
-    hostSuiteRatchet: 'packages/operator-core/lib/no-unhosted-remote-core-guard.test.ts',
+    hostSuiteRatchet:
+      "packages/operator-core/lib/no-unhosted-remote-core-guard.test.ts",
     // NARROW TRIGGER, BROAD SCAN — deliberate, and the asymmetry is the point. The script
     // always scans libs/packages/apps in full (~7.6s), so a violation planted anywhere is
     // caught by any in-scope edit; `appliesTo` only decides WHEN to pay that cost. Keyed on
@@ -1592,8 +1669,8 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     appliesTo: (f) =>
       /^packages\/operator-core\/lib\/sync\//.test(f) ||
       /(^|\/)(corestore|peer-log|remote-core-host|scope-cores)\.ts$/.test(f) ||
-      f.includes('/hyperbee/') ||
-      f === 'scripts/check-no-unhosted-remote-core.mjs',
+      f.includes("/hyperbee/") ||
+      f === "scripts/check-no-unhosted-remote-core.mjs",
   },
   {
     // WI-38351 — `lint:migrations` is a GATE lint that nothing ran locally, so the author of a
@@ -1605,8 +1682,8 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // Its checks are all whole-corpus by construction — duplicate NNN, raw BEGIN/COMMIT, RENAME
     // CONSTRAINT, tenant DEFAULT, index-shape swap, and the reservation-row check that produced
     // all three reds — so a per-workspace suite can never stand in for it.
-    workspace: '@papercusp/operator-core',
-    script: 'lint:migrations',
+    workspace: "@papercusp/operator-core",
+    script: "lint:migrations",
     // NO hostSuiteRatchet ON PURPOSE, and here that is load-bearing rather than conventional:
     // operator-core is pulled into the affected set for EVERY `libs/papercusp/**` path (see the
     // EI-20026978310669562 note on the runner loop below), so declaring a ratchet would skip this
@@ -1626,8 +1703,8 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       // …and the three files that DECIDE what "clean" means. A change to the linter or to the
       // allocator that hands out the numbers can invalidate the whole corpus at once without any
       // .sql file moving, which is the same shape as the projector case above.
-      f === 'scripts/lint-migrations.mjs' ||
-      f === 'scripts/next-migration.mjs',
+      f === "scripts/lint-migrations.mjs" ||
+      f === "scripts/next-migration.mjs",
   },
   {
     // WI-5977 (explicit-presence as an ENFORCED convention). The item's own thesis is that
@@ -1647,11 +1724,11 @@ const REPO_WIDE_INVARIANT_GUARDS = [
     // prints "nothing new to check" and exits 0 having scanned NOTHING. A verifier that
     // reports success without measuring is the exact defect class WI-5977 is about, so the
     // wired invocation is the whole-tree one and its output states the count it measured.
-    workspace: '@papercusp/operator-core',
+    workspace: "@papercusp/operator-core",
     // ~13.5s (measured, 2 runs: 13.46 / 13.55) — the most expensive entry in this list, and
     // the reason `appliesTo` is pinned to the analyzer's own SCAN_ROOTS rather than every
     // .ts in the repo: a change outside those roots cannot move the count at all.
-    script: 'lint:explicit-presence',
+    script: "lint:explicit-presence",
     // No hostSuiteRatchet: check-explicit-presence.test.ts execs the analyzer's `--self-test`
     // (a positive control on the DETECTOR) but never the whole-tree `--ratchet`, so an
     // operator-core suite run does NOT imply this has executed. Declaring one anyway would
@@ -1664,37 +1741,41 @@ const REPO_WIDE_INVARIANT_GUARDS = [
       // them: attaching too often costs seconds, attaching too rarely is a silent coverage
       // hole, and only one of those two errors is recoverable.
       (/\.ts$/.test(f) &&
-        (f.startsWith('packages/operator-core/lib/') ||
-          f.startsWith('apps/operator/lib/') ||
-          f.startsWith('libs/papercusp/'))) ||
+        (f.startsWith("packages/operator-core/lib/") ||
+          f.startsWith("apps/operator/lib/") ||
+          f.startsWith("libs/papercusp/"))) ||
       // The detector and its baseline decide what "clean" means, so a change to either can
       // move the verdict without any scanned file changing.
-      f === 'scripts/check-explicit-presence.mjs' ||
-      f === '.explicit-presence-baseline.json',
+      f === "scripts/check-explicit-presence.mjs" ||
+      f === ".explicit-presence-baseline.json",
   },
 ];
 
 const workspaces = [
   ...expandWorkspaces(root.workspaces),
-  ...STANDALONE_PACKAGE_DIRS.filter((d) => existsSync(join(ROOT, d, 'package.json'))),
+  ...STANDALONE_PACKAGE_DIRS.filter((d) =>
+    existsSync(join(ROOT, d, "package.json")),
+  ),
 ];
 const standaloneDirs = new Set(STANDALONE_PACKAGE_DIRS);
 
 function expandWorkspaces(patterns) {
   const out = [];
   for (const p of patterns) {
-    if (p.includes('*')) {
-      const base = p.replace(/\/\*$/, '');
+    if (p.includes("*")) {
+      const base = p.replace(/\/\*$/, "");
       const baseDir = join(ROOT, base);
       if (!existsSync(baseDir)) continue;
-      for (const entry of execSync(`ls -1 ${JSON.stringify(baseDir)}`, { encoding: 'utf8' })
+      for (const entry of execSync(`ls -1 ${JSON.stringify(baseDir)}`, {
+        encoding: "utf8",
+      })
         .trim()
-        .split('\n')
+        .split("\n")
         .filter(Boolean)) {
         const dir = join(base, entry);
-        if (existsSync(join(ROOT, dir, 'package.json'))) out.push(dir);
+        if (existsSync(join(ROOT, dir, "package.json"))) out.push(dir);
       }
-    } else if (existsSync(join(ROOT, p, 'package.json'))) {
+    } else if (existsSync(join(ROOT, p, "package.json"))) {
       out.push(p);
     }
   }
@@ -1704,7 +1785,7 @@ function expandWorkspaces(patterns) {
 const wsByName = new Map();
 const wsByDir = new Map();
 for (const dir of workspaces) {
-  const pkg = JSON.parse(readFileSync(join(ROOT, dir, 'package.json'), 'utf8'));
+  const pkg = JSON.parse(readFileSync(join(ROOT, dir, "package.json"), "utf8"));
   const meta = {
     dir,
     name: pkg.name,
@@ -1718,7 +1799,11 @@ for (const dir of workspaces) {
 
 function depsOf(pkg) {
   return new Set(
-    Object.keys({ ...(pkg.dependencies || {}), ...(pkg.devDependencies || {}), ...(pkg.peerDependencies || {}) }),
+    Object.keys({
+      ...(pkg.dependencies || {}),
+      ...(pkg.devDependencies || {}),
+      ...(pkg.peerDependencies || {}),
+    }),
   );
 }
 
@@ -1769,21 +1854,32 @@ function affectedWorkspaces() {
     // that ONCE before giving up to --all, so a stale-but-fixable shallow
     // clone doesn't silently pay a full-tree run (and the unrelated flakes
     // that come with it) every single time.
-    const looksLikeMergeBaseGap = /no merge base|no common ancestor|unrelated histories/i.test(e.message);
+    const looksLikeMergeBaseGap =
+      /no merge base|no common ancestor|unrelated histories/i.test(e.message);
     let healed = false;
     if (looksLikeMergeBaseGap) {
-      errSync('');
-      errSync(`!!!!!! affected-tests: \`git diff\` against ${base} found no merge base — shallow clone horizon gap.`);
-      errSync('!!!!!! Attempting a one-shot self-heal: git fetch --deepen=2000 origin main staging ...');
+      errSync("");
+      errSync(
+        `!!!!!! affected-tests: \`git diff\` against ${base} found no merge base — shallow clone horizon gap.`,
+      );
+      errSync(
+        "!!!!!! Attempting a one-shot self-heal: git fetch --deepen=2000 origin main staging ...",
+      );
       try {
-        execSync('git fetch --deepen=2000 origin main staging', { cwd: ROOT, encoding: 'utf8', stdio: 'pipe' });
+        execSync("git fetch --deepen=2000 origin main staging", {
+          cwd: ROOT,
+          encoding: "utf8",
+          stdio: "pipe",
+        });
         changed = changedFiles();
         healed = true;
-        errSync('!!!!!! Self-heal succeeded — merge base restored, proceeding with the real affected set.');
-        errSync('');
+        errSync(
+          "!!!!!! Self-heal succeeded — merge base restored, proceeding with the real affected set.",
+        );
+        errSync("");
       } catch (e2) {
         errSync(`!!!!!! Self-heal fetch/retry failed: ${e2.message}`);
-        errSync('');
+        errSync("");
       }
     }
     if (!healed) {
@@ -1794,12 +1890,16 @@ function affectedWorkspaces() {
       // ran all ~80 workspaces, which read as a normal (if slow) run and hid the
       // real cause (EI-1989). A banner on stderr ensures it can't masquerade as
       // the intended fast path.
-      errSync('');
-      errSync('!!!!!! affected-tests: COULD NOT COMPUTE THE AFFECTED SET !!!!!!');
+      errSync("");
+      errSync(
+        "!!!!!! affected-tests: COULD NOT COMPUTE THE AFFECTED SET !!!!!!",
+      );
       errSync(`!!!!!! \`git diff\` against ${base} failed: ${e.message}`);
-      errSync('!!!!!! FALLING BACK TO --all (running EVERY workspace) — SLOW, and a BUG, not the intended path.');
-      errSync('!!!!!! Fix the git error above; do not rely on this fallback.');
-      errSync('');
+      errSync(
+        "!!!!!! FALLING BACK TO --all (running EVERY workspace) — SLOW, and a BUG, not the intended path.",
+      );
+      errSync("!!!!!! Fix the git error above; do not rely on this fallback.");
+      errSync("");
       return [...wsByDir.values()];
     }
   }
@@ -1818,7 +1918,11 @@ function resolveAffected(changed) {
       // `file === ws.dir` (no trailing slash) is the SUBMODULE case: a gitlink
       // change is reported as the bare directory, not as a path beneath it. Without
       // this arm, a submodule workspace can never be marked affected.
-      if (file === ws.dir || file === `${ws.dir}/package.json` || file.startsWith(`${ws.dir}/`)) {
+      if (
+        file === ws.dir ||
+        file === `${ws.dir}/package.json` ||
+        file.startsWith(`${ws.dir}/`)
+      ) {
         directlyChanged.add(ws.name);
         matchedAWorkspace = true;
       }
@@ -1841,7 +1945,10 @@ function resolveAffected(changed) {
     const dependents = reverseDeps.get(name);
     if (!dependents) continue;
     for (const d of dependents) {
-      if (!affected.has(d)) { affected.add(d); queue.push(d); }
+      if (!affected.has(d)) {
+        affected.add(d);
+        queue.push(d);
+      }
     }
   }
 
@@ -1859,16 +1966,19 @@ function elSuiteAutoTrigger() {
   let changed;
   try {
     changed = changedFiles();
-  } catch { return false; }
-  return changed.some((f) =>
-    f === 'apps/operator/prompts/operator.persona.md' ||
-    f === 'apps/operator/scripts/el-agent-sync.mjs' ||
-    f === 'apps/operator/scripts/el-suite-test.mjs' ||
-    f.startsWith('apps/operator/lib/commands/defs/')
+  } catch {
+    return false;
+  }
+  return changed.some(
+    (f) =>
+      f === "apps/operator/prompts/operator.persona.md" ||
+      f === "apps/operator/scripts/el-agent-sync.mjs" ||
+      f === "apps/operator/scripts/el-suite-test.mjs" ||
+      f.startsWith("apps/operator/lib/commands/defs/"),
   );
 }
 if (runIntegration && !runElSuite && elSuiteAutoTrigger()) {
-  outSync('(EL-relevant files changed — auto-enabling --el-suite)');
+  outSync("(EL-relevant files changed — auto-enabling --el-suite)");
   // mutate the flag so the task collector below picks it up
   // eslint-disable-next-line no-global-assign
   globalThis.__autoElSuite = true;
@@ -1909,7 +2019,7 @@ const affected = affectedWorkspaces();
 // (`npm run test --workspace <ws> -- <files>`), which sets no lane env — so those re-runs
 // stay isolated BY CONSTRUCTION, and WI-6956 keeps its ability to classify "passes alone,
 // fails co-executed" as a real concurrency defect rather than absorbing it.
-const LANE_SCRIPTS = ['test:lane-pure', 'test:lane-stateful'];
+const LANE_SCRIPTS = ["test:lane-pure", "test:lane-stateful"];
 const hasLaneSplit = (ws) => LANE_SCRIPTS.every((s) => ws.scripts?.[s]);
 /**
  * Do this workspace's already-queued tasks cover its FULL unit suite?
@@ -1922,22 +2032,29 @@ const hasLaneSplit = (ws) => LANE_SCRIPTS.every((s) => ws.scripts?.[s]);
  * large share of the gain, and nothing would report that it had.
  */
 const coversHostSuite = (queued, wsName) =>
-  queued.some((t) => t.ws.name === wsName && t.script === 'test') ||
-  LANE_SCRIPTS.every((s) => queued.some((t) => t.ws.name === wsName && t.script === s));
+  queued.some((t) => t.ws.name === wsName && t.script === "test") ||
+  LANE_SCRIPTS.every((s) =>
+    queued.some((t) => t.ws.name === wsName && t.script === s),
+  );
 
 const tasks = [];
 for (const ws of affected) {
-  if (excludes.has(ws.name)) { outSync(`(excluded ${ws.name})`); continue; }
+  if (excludes.has(ws.name)) {
+    outSync(`(excluded ${ws.name})`);
+    continue;
+  }
   if (ws.scripts.test) {
-    if (hasLaneSplit(ws)) for (const script of LANE_SCRIPTS) tasks.push({ ws, script });
-    else tasks.push({ ws, script: 'test' });
+    if (hasLaneSplit(ws))
+      for (const script of LANE_SCRIPTS) tasks.push({ ws, script });
+    else tasks.push({ ws, script: "test" });
   }
   // Static drift check between el-agent-sync TOOLS list and the
   // commands registry. Cheap (no network), catches the runtime crash
   // class that hit us yesterday ("Client tool not defined on client").
   // Always runs when present — no integration flag gate.
-  if (ws.scripts['lint:el-tools']) tasks.push({ ws, script: 'lint:el-tools' });
-  if (runIntegration && ws.scripts['test:integration']) tasks.push({ ws, script: 'test:integration' });
+  if (ws.scripts["lint:el-tools"]) tasks.push({ ws, script: "lint:el-tools" });
+  if (runIntegration && ws.scripts["test:integration"])
+    tasks.push({ ws, script: "test:integration" });
   // EL Conv AI behavior suite. Hits the live agent; expensive (a few
   // EL minutes per run). Gated behind --integration AND --el-suite
   // because most operator changes don't affect persona/tools — opt-in
@@ -1945,7 +2062,12 @@ for (const ws of affected) {
   // sync.mjs, lib/commands/defs/**, or want to verify before a release.
   // Skips with exit 0 when EL credentials aren't available so CI
   // without an XI_API_KEY doesn't fail the gate.
-  if (runIntegration && (runElSuite || globalThis.__autoElSuite) && ws.scripts['test:el-suite']) tasks.push({ ws, script: 'test:el-suite' });
+  if (
+    runIntegration &&
+    (runElSuite || globalThis.__autoElSuite) &&
+    ws.scripts["test:el-suite"]
+  )
+    tasks.push({ ws, script: "test:el-suite" });
 }
 
 // Repo-wide invariant guards (see REPO_WIDE_INVARIANT_GUARDS). Appended AFTER the
@@ -1975,14 +2097,20 @@ for (const guard of REPO_WIDE_INVARIANT_GUARDS) {
   if (excludes.has(ws.name)) continue;
   // Dedupe the guard against ITSELF unconditionally: queueing the identical narrow task
   // twice is pure waste and buys no coverage.
-  if (tasks.some((t) => t.ws.name === ws.name && t.script === guard.script)) continue;
+  if (tasks.some((t) => t.ws.name === ws.name && t.script === guard.script))
+    continue;
   // Defer to the host workspace's full suite ONLY where a named ratchet re-runs this
   // invariant inside it.
   if (guard.hostSuiteRatchet && coversHostSuite(tasks, ws.name)) continue;
   if (!invariantGuardChangedPaths().some((f) => guard.appliesTo(f))) continue;
   selectedInvariantGuards.push({ workspace: ws.name, script: guard.script });
-  if (!printAffected) outSync(`(repo-wide invariant guard: ${ws.name} :: ${guard.script})`);
-  tasks.push({ ws, script: guard.script, notCheckedIsNonGating: Boolean(guard.notCheckedIsNonGating) });
+  if (!printAffected)
+    outSync(`(repo-wide invariant guard: ${ws.name} :: ${guard.script})`);
+  tasks.push({
+    ws,
+    script: guard.script,
+    notCheckedIsNonGating: Boolean(guard.notCheckedIsNonGating),
+  });
 }
 
 if (printAffected) {
@@ -2002,11 +2130,19 @@ if (!tasks.length) {
   // them declares a test script" is a coverage smell worth noticing, whereas "this change routes
   // nowhere at all" is the case that used to skip the repo-wide guards entirely.
   if (!affected.length) {
-    outSync('No affected workspaces (and no repo-wide invariant guard matched the changed paths).');
-    outSync('AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 reason=no-affected-workspaces');
+    outSync(
+      "No affected workspaces (and no repo-wide invariant guard matched the changed paths).",
+    );
+    outSync(
+      "AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 reason=no-affected-workspaces",
+    );
   } else {
-    outSync(`Affected: ${affected.map((w) => w.name).join(', ')} — but none declare a 'test' script.`);
-    outSync('AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 reason=no-test-script');
+    outSync(
+      `Affected: ${affected.map((w) => w.name).join(", ")} — but none declare a 'test' script.`,
+    );
+    outSync(
+      "AFFECTED_TESTS_RESULT status=passed tasks=0 failed=0 quarantinedFailed=0 timedOutTasks=0 reason=no-test-script",
+    );
   }
   terminalEmitted = true;
   process.exit(0);
@@ -2014,11 +2150,11 @@ if (!tasks.length) {
 
 outSync(
   affected.length
-    ? `Affected workspaces (${affected.length}): ${affected.map((w) => w.name).join(', ')}`
+    ? `Affected workspaces (${affected.length}): ${affected.map((w) => w.name).join(", ")}`
     : // Reachable since EI-19454727576364875: a change can route to NO workspace and still have
       // repo-wide invariant guards to run. Spelled out rather than printing an empty list, so a
       // triager reading the log is not left wondering whether the selection silently failed.
-      'Affected workspaces (0) — repo-wide invariant guards only.',
+      "Affected workspaces (0) — repo-wide invariant guards only.",
 );
 // The task list is final here, so an abort from this point on can report the real
 // planned count instead of the pre-selection zero.
@@ -2030,10 +2166,14 @@ outSync(formatTaskBudgetMarker(SCHEDULER_CONFIG));
 // summary — a truncated background-task tail is more likely to still show
 // this line than a full multi-suite run's early output, so it survives even
 // when the rest of the header has already scrolled out of the retained tail.
-outSync(`Full run log: ${RUN_LOG_PATH} (grep this — not just the exit code or a truncated tail — for the real per-suite verdict)`);
+outSync(
+  `Full run log: ${RUN_LOG_PATH} (grep this — not just the exit code or a truncated tail — for the real per-suite verdict)`,
+);
 
 if (dry) {
-  outSync(`AFFECTED_TESTS_RESULT status=dry-run tasks=${tasks.length} failed=0 quarantinedFailed=0 timedOutTasks=0`);
+  outSync(
+    `AFFECTED_TESTS_RESULT status=dry-run tasks=${tasks.length} failed=0 quarantinedFailed=0 timedOutTasks=0`,
+  );
   terminalEmitted = true;
   process.exit(0);
 }
@@ -2063,7 +2203,9 @@ const AUTO_RETRY_LOAD1_THRESHOLD = 40;
 const explicitRetryFailed = process.env.AFFECTED_RETRY_FAILED;
 const currentLoad1 = loadavg()[0];
 const retryFailed =
-  explicitRetryFailed != null ? explicitRetryFailed === '1' : currentLoad1 > AUTO_RETRY_LOAD1_THRESHOLD;
+  explicitRetryFailed != null
+    ? explicitRetryFailed === "1"
+    : currentLoad1 > AUTO_RETRY_LOAD1_THRESHOLD;
 if (explicitRetryFailed == null && retryFailed) {
   outSync(
     `>>> load1=${currentLoad1.toFixed(0)} > ${AUTO_RETRY_LOAD1_THRESHOLD} — auto-enabling flake-absorbing retry ` +
@@ -2115,8 +2257,11 @@ const FRESH_RETRY_MAX_FILES = 15; // a broader red is a real regression, not a f
 // a wedge. green-checkpoint runs this same script and nothing overrides this env var,
 // so that was a latent red-pin for every deploy. Still far below the ~120m gate
 // ceiling this exists to protect, which is the bound that actually matters.
-const BATCH_TIMEOUT_MS = resolveBatchTimeoutMs(process.env.AFFECTED_BATCH_TIMEOUT_MS, 45 * 60 * 1000);
-const BATCH_KILL_SIGNAL = 'SIGKILL';
+const BATCH_TIMEOUT_MS = resolveBatchTimeoutMs(
+  process.env.AFFECTED_BATCH_TIMEOUT_MS,
+  45 * 60 * 1000,
+);
+const BATCH_KILL_SIGNAL = "SIGKILL";
 
 // A PACKAGED install ships the whole suite (vitest, the test files, quarantine.txt,
 // its own node at sidecar/bin/node) but has NO npm — by design. This script is
@@ -2128,9 +2273,12 @@ const BATCH_KILL_SIGNAL = 'SIGKILL';
 // the workspace dir, and node_modules/.bin on PATH. Anything else fails LOUDLY
 // rather than silently skipping — a suite that quietly runs nothing is the worst
 // outcome for a release check.
-const npmAvailable = spawnSync('npm', ['--version'], { stdio: 'ignore' }).status === 0;
+const npmAvailable =
+  spawnSync("npm", ["--version"], { stdio: "ignore" }).status === 0;
 if (!npmAvailable) {
-  outSync("note: npm not found (packaged install?) — running each workspace's script directly.");
+  outSync(
+    "note: npm not found (packaged install?) — running each workspace's script directly.",
+  );
 }
 
 /**
@@ -2147,11 +2295,21 @@ function spawnSpecFor(t, extraArgs) {
     // found". Run it the way a human would: `npm run <script>` with cwd = its own dir,
     // which resolves against ITS package.json and its own node_modules/.bin.
     if (t.ws.standalone) {
-      const argv = ['run', t.script, ...(extraArgs.length ? ['--', ...extraArgs] : [])];
-      return { cmd: 'npm', argv, cwd: join(ROOT, t.ws.dir) };
+      const argv = [
+        "run",
+        t.script,
+        ...(extraArgs.length ? ["--", ...extraArgs] : []),
+      ];
+      return { cmd: "npm", argv, cwd: join(ROOT, t.ws.dir) };
     }
-    const argv = ['run', t.script, '--workspace', t.ws.dir, ...(extraArgs.length ? ['--', ...extraArgs] : [])];
-    return { cmd: 'npm', argv, cwd: ROOT };
+    const argv = [
+      "run",
+      t.script,
+      "--workspace",
+      t.ws.dir,
+      ...(extraArgs.length ? ["--", ...extraArgs] : []),
+    ];
+    return { cmd: "npm", argv, cwd: ROOT };
   }
   // No npm (a PACKAGED install — see the note above). The direct-exec fallback below
   // reproduces `npm run` for a script that is a single binary invocation; a standalone
@@ -2165,16 +2323,27 @@ function spawnSpecFor(t, extraArgs) {
         `standalone packages in this environment — do not treat this as a pass.`,
     );
   }
-  const script = (t.ws.scripts[t.script] ?? '').trim();
+  const script = (t.ws.scripts[t.script] ?? "").trim();
   const [tool, ...rest] = script.split(/\s+/);
   const wsDir = join(ROOT, t.ws.dir);
-  const binDirs = [join(wsDir, 'node_modules', '.bin'), join(ROOT, 'node_modules', '.bin')];
+  const binDirs = [
+    join(wsDir, "node_modules", ".bin"),
+    join(ROOT, "node_modules", ".bin"),
+  ];
   const env = {
     ...process.env,
-    PATH: [dirname(process.execPath), ...binDirs, process.env.PATH].filter(Boolean).join(':'),
+    PATH: [dirname(process.execPath), ...binDirs, process.env.PATH]
+      .filter(Boolean)
+      .join(":"),
   };
   // `node foo.mjs` → run it with the node we are already running under.
-  if (tool === 'node') return { cmd: process.execPath, argv: [...rest, ...extraArgs], cwd: wsDir, env };
+  if (tool === "node")
+    return {
+      cmd: process.execPath,
+      argv: [...rest, ...extraArgs],
+      cwd: wsDir,
+      env,
+    };
   // Anything else must be a node_modules/.bin entry (vitest, astro, tsx, …).
   // Spawn the bin itself so its shebang picks the right interpreter; PATH above
   // makes that resolve. Fail LOUDLY on a missing bin — a release check that
@@ -2182,7 +2351,7 @@ function spawnSpecFor(t, extraArgs) {
   const bin = binDirs.map((d) => join(d, tool)).find((p) => existsSync(p));
   if (!bin) {
     throw new Error(
-      `${t.ws.name} :: "${t.script}" is \`${script}\` — no \`${tool}\` in ${binDirs.join(' or ')}. ` +
+      `${t.ws.name} :: "${t.script}" is \`${script}\` — no \`${tool}\` in ${binDirs.join(" or ")}. ` +
         `Install npm, or add the missing dependency.`,
     );
   }
@@ -2195,19 +2364,29 @@ function spawnSpecFor(t, extraArgs) {
 // can never consume it accidentally. It is enabled only for the real green checkpoint; local
 // affected runs remain fresh feedback. PAPERCUSP_TEST_RUN_GROUP is part of the complete child-env
 // hash below, which deliberately confines reuse to one gate run's auto-refire chain.
-const TASK_VERDICT_CACHE_ENABLED = process.env.GREEN_CHECKPOINT === '1';
-const TASK_VERDICT_CACHE_ROOT_SCOPE = createHash('sha256').update(ROOT).digest('hex').slice(0, 16);
+const TASK_VERDICT_CACHE_ENABLED = process.env.GREEN_CHECKPOINT === "1";
+const TASK_VERDICT_CACHE_ROOT_SCOPE = createHash("sha256")
+  .update(ROOT)
+  .digest("hex")
+  .slice(0, 16);
 const TASK_VERDICT_CACHE_PATH =
   process.env.AFFECTED_TASK_VERDICT_CACHE_PATH ||
-  join(tmpdir(), `papercusp-affected-passing-verdicts-v1-${TASK_VERDICT_CACHE_ROOT_SCOPE}.json`);
+  join(
+    tmpdir(),
+    `papercusp-affected-passing-verdicts-v1-${TASK_VERDICT_CACHE_ROOT_SCOPE}.json`,
+  );
 const taskVerdictCacheRead = TASK_VERDICT_CACHE_ENABLED
   ? readPassingTaskVerdictCache(TASK_VERDICT_CACHE_PATH)
   : null;
 const taskVerdictCacheUpdates = {};
 const taskVerdictDigestCache = new Map();
-const taskVerdictTrackedScan = TASK_VERDICT_CACHE_ENABLED ? listTrackedFiles(ROOT) : null;
+const taskVerdictTrackedScan = TASK_VERDICT_CACHE_ENABLED
+  ? listTrackedFiles(ROOT)
+  : null;
 const taskVerdictGuardKeys = new Set(
-  selectedInvariantGuards.map(({ workspace, script }) => `${workspace} :: ${script}`),
+  selectedInvariantGuards.map(
+    ({ workspace, script }) => `${workspace} :: ${script}`,
+  ),
 );
 
 const pathInsideDir = (file, dir) => file === dir || file.startsWith(`${dir}/`);
@@ -2232,12 +2411,18 @@ function dependencyProvenanceForTask(t) {
   if (!TASK_VERDICT_CACHE_ENABLED) return null;
   // These tasks consume live/external state by definition. A content hash cannot establish
   // complete provenance, so D-003 says miss rather than pretending the closure is sufficient.
-  if (t.script === 'test:integration' || t.script === 'test:el-suite') {
-    return { ok: false, reason: 'provenance-incomplete:external-integration-task' };
+  if (t.script === "test:integration" || t.script === "test:el-suite") {
+    return {
+      ok: false,
+      reason: "provenance-incomplete:external-integration-task",
+    };
   }
   const scan = taskVerdictTrackedScan;
   if (!scan || scan.files.length === 0) {
-    return { ok: false, reason: 'provenance-incomplete:tracked-file-enumeration-empty' };
+    return {
+      ok: false,
+      reason: "provenance-incomplete:tracked-file-enumeration-empty",
+    };
   }
   const key = taskKey(t);
   const wholeTree = taskVerdictGuardKeys.has(key);
@@ -2257,9 +2442,9 @@ function dependencyProvenanceForTask(t) {
     ? scan.files
     : scan.files.filter(
         (file) =>
-          !file.includes('/') ||
-          file.startsWith('scripts/') ||
-          file.startsWith('libs/test-config/') ||
+          !file.includes("/") ||
+          file.startsWith("scripts/") ||
+          file.startsWith("libs/test-config/") ||
           closureDirs.some((dir) => pathInsideDir(file, dir)),
       );
   const unavailable = scan.unscannedPresent.filter(
@@ -2306,7 +2491,12 @@ let timedOutTasks = 0;
 // window this whole mechanism is about — reports what had actually happened when
 // the signal landed, not the pre-run zeros. Declared here rather than at the top
 // because a closure over these `let`s is a TDZ throw until this point.
-readTerminalCounters = () => ({ tasks: tasks.length, failed, quarantinedFailed, timedOutTasks });
+readTerminalCounters = () => ({
+  tasks: tasks.length,
+  failed,
+  quarantinedFailed,
+  timedOutTasks,
+});
 // EI-2341 item 2: the final summary used to report only a COUNT of failed tasks,
 // so finding WHICH task failed meant scrolling back through the whole run's
 // interleaved output. Track names as we go and name them in the final summary.
@@ -2344,7 +2534,7 @@ const taskContexts = tasks.map((t) => ({
   // EI-11132: when this script declares --passWithNoTests AND the workspace genuinely
   // has matching test files on disk, disable passWithNoTests for THIS task.
   guardArgs: emptySuiteGuardArgs({
-    scriptText: t.ws.scripts[t.script] ?? '',
+    scriptText: t.ws.scripts[t.script] ?? "",
     wsAbsDir: join(ROOT, t.ws.dir),
     script: t.script,
   }),
@@ -2359,12 +2549,21 @@ const MAX_CAPTURE_BYTES = 256 * 1024 * 1024;
  * declaration order. Each child gets ITS allocation as the Vitest cap; the sum is bounded by
  * SCHEDULER_CONFIG, so this cannot multiply the former per-workspace WORKER_CAP.
  */
-function runCapturedTask(context, allocation, extraArgs = [], scriptOverride = null) {
-  const spawnTask = scriptOverride ? { ...context.t, script: scriptOverride } : context.t;
-  const { cmd, argv, cwd, env: specEnv } = spawnSpecFor(spawnTask, [
-    ...context.guardArgs,
-    ...extraArgs,
-  ]);
+function runCapturedTask(
+  context,
+  allocation,
+  extraArgs = [],
+  scriptOverride = null,
+) {
+  const spawnTask = scriptOverride
+    ? { ...context.t, script: scriptOverride }
+    : context.t;
+  const {
+    cmd,
+    argv,
+    cwd,
+    env: specEnv,
+  } = spawnSpecFor(spawnTask, [...context.guardArgs, ...extraArgs]);
   const childEnv = {
     ...process.env,
     ...(specEnv ?? {}),
@@ -2377,7 +2576,11 @@ function runCapturedTask(context, allocation, extraArgs = [], scriptOverride = n
   // Only the initial, complete task invocation is reusable. A targeted/fresh retry is evidence
   // used to classify a failure from THIS candidate, never a new passing verdict for the whole
   // task. That distinction prevents a one-file retry from being replayed as a full-suite pass.
-  if (TASK_VERDICT_CACHE_ENABLED && extraArgs.length === 0 && scriptOverride == null) {
+  if (
+    TASK_VERDICT_CACHE_ENABLED &&
+    extraArgs.length === 0 &&
+    scriptOverride == null
+  ) {
     if (context.cacheProvenance?.ok) {
       cacheIdentity = buildPassingTaskVerdictIdentity({
         taskKey: taskKey(context.t),
@@ -2403,18 +2606,18 @@ function runCapturedTask(context, allocation, extraArgs = [], scriptOverride = n
     } else {
       cacheDecision = {
         hit: false,
-        reason: context.cacheProvenance?.reason ?? 'provenance-incomplete',
+        reason: context.cacheProvenance?.reason ?? "provenance-incomplete",
       };
     }
     if (cacheDecision.hit) {
       return Promise.resolve({
         status: 0,
         signal: null,
-        stdout: '',
-        stderr: '',
+        stdout: "",
+        stderr: "",
         error: null,
         __elapsedMs: 0,
-        __cacheStatus: 'hit',
+        __cacheStatus: "hit",
         __cacheReason: cacheDecision.reason,
         __cacheIdentity: cacheIdentity,
       });
@@ -2431,40 +2634,65 @@ function runCapturedTask(context, allocation, extraArgs = [], scriptOverride = n
     const child = spawn(cmd, argv, {
       cwd,
       env: childEnv,
-      stdio: ['ignore', 'pipe', 'pipe'],
+      stdio: ["ignore", "pipe", "pipe"],
       timeout: BATCH_TIMEOUT_MS,
       killSignal: BATCH_KILL_SIGNAL,
     });
+    const progressTask = JSON.stringify(taskKey(spawnTask));
+    const emitProgress = (state) => {
+      // Deliberately bypass the ordered replay buffer: this tiny, self-identifying marker is
+      // the live pulse consumed by green-checkpoint while the child output remains captured.
+      // It contains no child bytes, so concurrent tasks cannot misattribute test output.
+      rawErrSync(
+        `AFFECTED_TASK_PROGRESS state=${state} task=${progressTask} ` +
+          `elapsedSec=${Math.floor((Date.now() - startedAt) / 1000)} capturedBytes=${capturedBytes}`,
+      );
+    };
+    let progressTimer = null;
+    const scheduleProgress = () => {
+      progressTimer = setTimeout(() => {
+        if (settled) return;
+        emitProgress("running");
+        scheduleProgress();
+      }, 60_000);
+      progressTimer.unref?.();
+    };
+    emitProgress("started");
+    scheduleProgress();
     const capture = (chunks) => (chunk) => {
       capturedBytes += chunk.length;
       if (capturedBytes <= MAX_CAPTURE_BYTES) {
         chunks.push(chunk);
       } else if (!captureError) {
         captureError = Object.assign(
-          new Error(`${taskKey(context.t)} exceeded the ${MAX_CAPTURE_BYTES}-byte capture ceiling`),
-          { code: 'ENOBUFS' },
+          new Error(
+            `${taskKey(context.t)} exceeded the ${MAX_CAPTURE_BYTES}-byte capture ceiling`,
+          ),
+          { code: "ENOBUFS" },
         );
         child.kill(BATCH_KILL_SIGNAL);
       }
     };
-    child.stdout.on('data', capture(stdout));
-    child.stderr.on('data', capture(stderr));
-    child.once('error', (error) => {
+    child.stdout.on("data", capture(stdout));
+    child.stderr.on("data", capture(stderr));
+    child.once("error", (error) => {
       spawnError = error;
     });
-    child.once('close', (status, signal) => {
+    child.once("close", (status, signal) => {
       if (settled) return;
       settled = true;
+      if (progressTimer) clearTimeout(progressTimer);
+      emitProgress("finished");
       resolveRun({
         status,
         signal,
-        stdout: Buffer.concat(stdout).toString('utf8'),
-        stderr: Buffer.concat(stderr).toString('utf8'),
+        stdout: Buffer.concat(stdout).toString("utf8"),
+        stderr: Buffer.concat(stderr).toString("utf8"),
         error: captureError ?? spawnError,
         __elapsedMs: Date.now() - startedAt,
         ...(cacheDecision
           ? {
-              __cacheStatus: 'miss',
+              __cacheStatus: "miss",
               __cacheReason: cacheDecision.reason,
               __cacheIdentity: cacheIdentity,
             }
@@ -2474,7 +2702,7 @@ function runCapturedTask(context, allocation, extraArgs = [], scriptOverride = n
   });
 }
 
-function emitCapturedTaskOutput(t, r, allocation, label = 'initial') {
+function emitCapturedTaskOutput(t, r, allocation, label = "initial") {
   outSync(
     `    scheduler ${label}: lane=${allocation.lane} workers=${allocation.workers} ` +
       `memoryMb=${allocation.memoryMb}`,
@@ -2486,19 +2714,20 @@ function emitCapturedTaskOutput(t, r, allocation, label = 'initial') {
     );
   }
   if (r.error) errSync(`>>> ${t.ws.name} spawn error: ${r.error.message}`);
-  writeAllSync(1, r.stdout ?? '');
-  writeAllSync(2, r.stderr ?? '');
-  logLine(r.stdout ?? '');
-  logLine(r.stderr ?? '');
+  writeAllSync(1, r.stdout ?? "");
+  writeAllSync(2, r.stderr ?? "");
+  logLine(r.stdout ?? "");
+  logLine(r.stderr ?? "");
 }
 
 const initialPool = await runBudgetedTasks(taskContexts, {
   ...SCHEDULER_CONFIG,
-  estimateMs: (context) => durationEstimate(durationHistory, taskKey(context.t)),
+  estimateMs: (context) =>
+    durationEstimate(durationHistory, taskKey(context.t)),
   runTask: (context, allocation) => runCapturedTask(context, allocation),
 });
 for (const scheduled of initialPool.results) {
-  if (scheduled.value.__cacheStatus !== 'hit') {
+  if (scheduled.value.__cacheStatus !== "hit") {
     recordLeg(scheduled.task.t, scheduled.value.__elapsedMs);
   }
 }
@@ -2511,22 +2740,32 @@ try {
   const nextHistory = mergeDurationHistory(
     latestHistory,
     initialPool.results
-      .filter(({ value }) => value.__cacheStatus !== 'hit')
+      .filter(({ value }) => value.__cacheStatus !== "hit")
       .map(({ task, value }) => ({
         key: taskKey(task.t),
         durationMs: value.__elapsedMs,
       })),
   );
-  writeDurationHistoryAtomic(TASK_DURATION_HISTORY_PATH, nextHistory, RUN_TOKEN);
+  writeDurationHistoryAtomic(
+    TASK_DURATION_HISTORY_PATH,
+    nextHistory,
+    RUN_TOKEN,
+  );
 } catch (error) {
-  errSync(`>>> duration history unavailable (continuing without it): ${error.message}`);
+  errSync(
+    `>>> duration history unavailable (continuing without it): ${error.message}`,
+  );
 }
 
 for (const scheduled of initialPool.results) {
   const { t, isQuarantined, guardArgs } = scheduled.task;
-  outSync(`\n>>> ${t.ws.name} :: ${npmAvailable ? 'npm ' : ''}run ${t.script}${isQuarantined ? ' [QUARANTINED]' : ''}`);
+  outSync(
+    `\n>>> ${t.ws.name} :: ${npmAvailable ? "npm " : ""}run ${t.script}${isQuarantined ? " [QUARANTINED]" : ""}`,
+  );
   if (guardArgs.length) {
-    outSync(`    (EI-11132 empty-suite guard: on-disk test files found — this run's --passWithNoTests is disabled)`);
+    outSync(
+      `    (EI-11132 empty-suite guard: on-disk test files found — this run's --passWithNoTests is disabled)`,
+    );
   }
   emitCapturedTaskOutput(t, scheduled.value, scheduled.allocation);
   // Retries intentionally begin only here, after `initialPool` has drained. A retry gets the
@@ -2540,7 +2779,7 @@ for (const scheduled of initialPool.results) {
     });
     const retry = retryPool.results[0];
     recordLeg(t, retry.value.__elapsedMs);
-    emitCapturedTaskOutput(t, retry.value, retry.allocation, 'retry');
+    emitCapturedTaskOutput(t, retry.value, retry.allocation, "retry");
     return retry.value;
   };
   /**
@@ -2564,7 +2803,8 @@ for (const scheduled of initialPool.results) {
    * (resolveWorkspaceTestInvocation). A genuine failure still fails this isolated re-run
    * exactly as it would with no lane split at all, so nothing is absorbed that shouldn't be.
    */
-  const runFreshRetry = async (files) => (hasLaneSplit(t.ws) ? run(files, 'test') : run(files));
+  const runFreshRetry = async (files) =>
+    hasLaneSplit(t.ws) ? run(files, "test") : run(files);
   let r = scheduled.value;
   // WI-38300: absorption state, read by the reporting branch far below to decide whether a
   // surviving failure is a confident red or load-suspect residue. Declared out here because
@@ -2593,11 +2833,14 @@ for (const scheduled of initialPool.results) {
     // it into an empty string would falsely report "no progress" and invite a
     // spin diagnosis from evidence this process never captured.
     const capturedOut =
-      typeof r.stdout === 'string' || typeof r.stderr === 'string'
-        ? `${r.stdout ?? ''}${r.stderr ?? ''}`
+      typeof r.stdout === "string" || typeof r.stderr === "string"
+        ? `${r.stdout ?? ""}${r.stderr ?? ""}`
         : null;
     const progressEvidence = parseBatchProgress(capturedOut);
-    const progress = formatBatchProgress(progressEvidence, classifyBatchProgress(progressEvidence));
+    const progress = formatBatchProgress(
+      progressEvidence,
+      classifyBatchProgress(progressEvidence),
+    );
     errSync(
       `\n>>> ${t.ws.name} :: ${t.script} WATCHDOG-KILLED after ${(r.__elapsedMs / 60000).toFixed(1)}m with no exit ` +
         `(AFFECTED_BATCH_TIMEOUT_MS=${BATCH_TIMEOUT_MS}ms fired). NOT retrying. ${progress}. ` +
@@ -2622,10 +2865,10 @@ for (const scheduled of initialPool.results) {
       }),
     )
   ) {
-    const failedFiles = parseFailedFiles(`${r.stdout ?? ''}${r.stderr ?? ''}`);
+    const failedFiles = parseFailedFiles(`${r.stdout ?? ""}${r.stderr ?? ""}`);
     if (failedFiles.length > 0 && failedFiles.length <= FRESH_RETRY_MAX_FILES) {
       errSync(
-        `\n>>> ${t.ws.name} FAILED — fresh-process re-run of ${failedFiles.length} failed file(s) (HARDEN-GATE flake absorption): ${failedFiles.join(', ')}`,
+        `\n>>> ${t.ws.name} FAILED — fresh-process re-run of ${failedFiles.length} failed file(s) (HARDEN-GATE flake absorption): ${failedFiles.join(", ")}`,
       );
       r = await runFreshRetry(failedFiles);
       absorptionRan = true;
@@ -2644,17 +2887,27 @@ for (const scheduled of initialPool.results) {
       // all 14 — pointing gate triage at 10 files that had just passed. Re-parse the
       // RE-RUN's own output; fall back to the pre-retry set only when nothing parses, so
       // an unparseable failure still names something rather than silently naming none.
-      const rerunFailedFiles = parseFailedFiles(`${r.stdout ?? ''}${r.stderr ?? ''}`);
-      residualFiles = rerunFailedFiles.length > 0 ? rerunFailedFiles : failedFiles;
+      const rerunFailedFiles = parseFailedFiles(
+        `${r.stdout ?? ""}${r.stderr ?? ""}`,
+      );
+      residualFiles =
+        rerunFailedFiles.length > 0 ? rerunFailedFiles : failedFiles;
       if (r.status === 0)
-        errSync(`>>> ${t.ws.name} failed files passed in a fresh process — counted as a FLAKE, not a failure.`);
+        errSync(
+          `>>> ${t.ws.name} failed files passed in a fresh process — counted as a FLAKE, not a failure.`,
+        );
     } else {
-      errSync(`\n>>> ${t.ws.name} FAILED — retrying once (AFFECTED_RETRY_FAILED, flake absorption)`);
+      errSync(
+        `\n>>> ${t.ws.name} FAILED — retrying once (AFFECTED_RETRY_FAILED, flake absorption)`,
+      );
       r = await run();
       absorptionRan = true;
       // Post-sample for the same reason as the scoped arm above.
       load1AtRerun = loadavg()[0];
-      if (r.status === 0) errSync(`>>> ${t.ws.name} passed on retry — counted as a FLAKE, not a failure.`);
+      if (r.status === 0)
+        errSync(
+          `>>> ${t.ws.name} passed on retry — counted as a FLAKE, not a failure.`,
+        );
     }
   }
   // EI-18653696921091778: an exit code of 0 does NOT imply "no reds" — vitest can
@@ -2666,7 +2919,9 @@ for (const scheduled of initialPool.results) {
   // open for a genuinely red suite (the opposite mistake — an occasional false
   // failure on a truly-clean run — just costs a rerun, and is loudly explained).
   if (r.status === 0 && captureOutput()) {
-    const summary = parseSummaryFailedCounts(`${r.stdout ?? ''}${r.stderr ?? ''}`);
+    const summary = parseSummaryFailedCounts(
+      `${r.stdout ?? ""}${r.stderr ?? ""}`,
+    );
     if (summary && (summary.testFiles > 0 || summary.tests > 0)) {
       errSync(
         `\n⚠⚠ ${t.ws.name} exited 0 but its own vitest summary reports ${summary.testFiles} failed test file(s) / ` +
@@ -2687,7 +2942,7 @@ for (const scheduled of initialPool.results) {
       notCheckedIsNonGating: t.notCheckedIsNonGating,
       quarantined: isQuarantined,
     });
-    if (exitClass === 'not-checked') {
+    if (exitClass === "not-checked") {
       // "I could not look" is not "I found a violation" — see EXIT_NOT_CHECKED above. Reported
       // LOUDLY rather than swallowed: the guard really did verify nothing, and a reader who
       // takes this run as coverage of the strand class would be wrong. It just is not the
@@ -2698,7 +2953,7 @@ for (const scheduled of initialPool.results) {
           `    checkout, so it has no opinion here. It speaks in a LOCAL run, where the edit\n` +
           `    that triggers it is still uncommitted.`,
       );
-    } else if (exitClass === 'quarantined') {
+    } else if (exitClass === "quarantined") {
       quarantinedFailed++;
       errSync(`  (quarantined failure — not gating)`);
     } else {
@@ -2715,8 +2970,8 @@ for (const scheduled of initialPool.results) {
         workspace: t.ws.name,
         task: `${t.ws.name} :: ${t.script}`,
         captured: captureOutput(),
-        output: `${r.stdout ?? ''}${r.stderr ?? ''}`,
-        fallbackReason: watchdogTimedOut ? 'batch-timeout' : undefined,
+        output: `${r.stdout ?? ""}${r.stderr ?? ""}`,
+        fallbackReason: watchdogTimedOut ? "batch-timeout" : undefined,
       });
       failedFileEntries.push(...a.entries);
       unattributedTasks.push(...a.unattributed);
@@ -2727,7 +2982,9 @@ for (const scheduled of initialPool.results) {
       // caller — see captureOutput() above); an interactive TTY run streamed straight
       // to the terminal via stdio:'inherit' and r.stdout/r.stderr are unset here.
       if (captureOutput()) {
-        const timedOutCount = countTimeoutSignatures(`${r.stdout ?? ''}${r.stderr ?? ''}`);
+        const timedOutCount = countTimeoutSignatures(
+          `${r.stdout ?? ""}${r.stderr ?? ""}`,
+        );
         if (timedOutCount > 0) {
           timedOutTasks++;
           errSync(
@@ -2751,8 +3008,12 @@ for (const scheduled of initialPool.results) {
         load1AtRerun,
         threshold: AUTO_RETRY_LOAD1_THRESHOLD,
       });
-      if (residualClass === 'load-suspect') {
-        loadSuspectTasks.push({ task: `${t.ws.name} :: ${t.script}`, load1AtRerun, files: residualFiles });
+      if (residualClass === "load-suspect") {
+        loadSuspectTasks.push({
+          task: `${t.ws.name} :: ${t.script}`,
+          load1AtRerun,
+          files: residualFiles,
+        });
         errSync(
           formatLoadSuspectNotice({
             workspace: t.ws.name,
@@ -2769,7 +3030,7 @@ for (const scheduled of initialPool.results) {
   // enough to suppress the next candidate's full task. Hits retain their existing entry.
   if (
     TASK_VERDICT_CACHE_ENABLED &&
-    scheduled.value.__cacheStatus === 'miss' &&
+    scheduled.value.__cacheStatus === "miss" &&
     scheduled.value.status === 0 &&
     r.status === 0 &&
     !absorptionRan &&
@@ -2781,20 +3042,32 @@ for (const scheduled of initialPool.results) {
   }
 }
 
-if (TASK_VERDICT_CACHE_ENABLED && Object.keys(taskVerdictCacheUpdates).length > 0) {
+if (
+  TASK_VERDICT_CACHE_ENABLED &&
+  Object.keys(taskVerdictCacheUpdates).length > 0
+) {
   try {
     // Re-read immediately before replace so another serialized pipeline observation is retained.
     // The root-scoped filename prevents unrelated checkout roots from contending in the first
     // place; merge-before-rename protects same-root followers without weakening atomicity.
     const latest = readPassingTaskVerdictCache(TASK_VERDICT_CACHE_PATH);
-    const merged = mergePassingTaskVerdictUpdates(latest.cache, taskVerdictCacheUpdates);
-    writePassingTaskVerdictCacheAtomic(TASK_VERDICT_CACHE_PATH, merged, RUN_TOKEN);
+    const merged = mergePassingTaskVerdictUpdates(
+      latest.cache,
+      taskVerdictCacheUpdates,
+    );
+    writePassingTaskVerdictCacheAtomic(
+      TASK_VERDICT_CACHE_PATH,
+      merged,
+      RUN_TOKEN,
+    );
     outSync(
       `AFFECTED_TASK_CACHE_WRITE status=stored entries=${Object.keys(taskVerdictCacheUpdates).length} ` +
         `path=${TASK_VERDICT_CACHE_PATH}`,
     );
   } catch (error) {
-    errSync(`AFFECTED_TASK_CACHE_WRITE status=failed reason=${error.message} (continuing without reuse)`);
+    errSync(
+      `AFFECTED_TASK_CACHE_WRITE status=failed reason=${error.message} (continuing without reuse)`,
+    );
   }
 }
 
@@ -2810,58 +3083,77 @@ for (const line of formatSerialPhaseSummary(taskLegs)) outSync(line);
 // The reporter records test results in harness_shared.test_runs (framework='cargo')
 // so the Tests tab covers the desktop shell. Fail-soft per D-007: never affects
 // the overall exit code, only the ledger write.
-outSync(`\n>>> Running cargo tests (P-009: papercusp-desktop/src-tauri Rust suite)...`);
+outSync(
+  `\n>>> Running cargo tests (P-009: papercusp-desktop/src-tauri Rust suite)...`,
+);
 try {
-  const cargoReporter = resolve(ROOT, 'scripts', 'report-cargo-tests.mjs');
-  const cargoManifest = resolve(ROOT, 'papercusp-desktop', 'src-tauri', 'Cargo.toml');
+  const cargoReporter = resolve(ROOT, "scripts", "report-cargo-tests.mjs");
+  const cargoManifest = resolve(
+    ROOT,
+    "papercusp-desktop",
+    "src-tauri",
+    "Cargo.toml",
+  );
   // EI-15802: this suite runs LAST, so on a non-TTY (background-task) caller its
   // own summary is exactly what a fixed-size tail buffer retains — capture +
   // log it the same way as the vitest tasks above, instead of 'inherit'-only,
   // so an earlier JS/TS failure isn't hidden behind a trailing cargo pass/fail.
   const cargoRun = captureOutput()
-    ? spawnSync(process.execPath, [cargoReporter, '--manifest-path', relative(ROOT, cargoManifest)], {
-        cwd: ROOT,
-        encoding: 'utf8',
-        maxBuffer: 256 * 1024 * 1024,
-      })
-    : spawnSync(process.execPath, [cargoReporter, '--manifest-path', relative(ROOT, cargoManifest)], {
-        cwd: ROOT,
-        stdio: 'inherit',
-      });
+    ? spawnSync(
+        process.execPath,
+        [cargoReporter, "--manifest-path", relative(ROOT, cargoManifest)],
+        {
+          cwd: ROOT,
+          encoding: "utf8",
+          maxBuffer: 256 * 1024 * 1024,
+        },
+      )
+    : spawnSync(
+        process.execPath,
+        [cargoReporter, "--manifest-path", relative(ROOT, cargoManifest)],
+        {
+          cwd: ROOT,
+          stdio: "inherit",
+        },
+      );
   if (captureOutput()) {
-    writeAllSync(1, cargoRun.stdout ?? '');
-    writeAllSync(2, cargoRun.stderr ?? '');
-    logLine(cargoRun.stdout ?? '');
-    logLine(cargoRun.stderr ?? '');
+    writeAllSync(1, cargoRun.stdout ?? "");
+    writeAllSync(2, cargoRun.stderr ?? "");
+    logLine(cargoRun.stdout ?? "");
+    logLine(cargoRun.stderr ?? "");
   }
   if (cargoRun.status !== 0) {
-    const cargoOutput = `${cargoRun.stdout ?? ''}${cargoRun.stderr ?? ''}`;
+    const cargoOutput = `${cargoRun.stdout ?? ""}${cargoRun.stderr ?? ""}`;
     const termination = detectCargoTermination(cargoOutput);
     if (termination) {
       errSync(
         `>>> cargo test suite was killed by ${termination.signalName} (signal ${termination.signal}); ` +
-          'this is an external process termination, not a compiler diagnostic — re-run before source triage.',
+          "this is an external process termination, not a compiler diagnostic — re-run before source triage.",
       );
     } else {
       errSync(`>>> cargo test suite exited with code ${cargoRun.status}`);
     }
-    if (!quarantined.has('papercusp-desktop')) {
+    if (!quarantined.has("papercusp-desktop")) {
       failed++;
-      failedTaskNames.push('papercusp-desktop :: cargo test');
+      failedTaskNames.push("papercusp-desktop :: cargo test");
       // Not a vitest task — the vitest FAIL-row parser can never attribute it to files.
       const cargoFailure = {
-        task: 'papercusp-desktop :: cargo test',
-        reason: 'non-vitest',
+        task: "papercusp-desktop :: cargo test",
+        reason: "non-vitest",
       };
-      if (termination) cargoFailure.reason = `killed-by-signal:${termination.signalName}`;
+      if (termination)
+        cargoFailure.reason = `killed-by-signal:${termination.signalName}`;
       unattributedTasks.push(cargoFailure);
     }
   }
 } catch (err) {
   errSync(`>>> cargo test runner error: ${err.message}`);
   failed++;
-  failedTaskNames.push('papercusp-desktop :: cargo test (runner error)');
-  unattributedTasks.push({ task: 'papercusp-desktop :: cargo test (runner error)', reason: 'non-vitest' });
+  failedTaskNames.push("papercusp-desktop :: cargo test (runner error)");
+  unattributedTasks.push({
+    task: "papercusp-desktop :: cargo test (runner error)",
+    reason: "non-vitest",
+  });
 }
 
 if (quarantinedFailed) {
@@ -2928,12 +3220,12 @@ if (failed) {
       }),
     );
   }
-  errSync(resultLine('failed'));
+  errSync(resultLine("failed"));
   terminalEmitted = true;
   errSync(`Full run log: ${RUN_LOG_PATH}`);
   process.exit(1);
 }
-outSync('\nAll affected tests passed.');
-outSync(resultLine('passed'));
+outSync("\nAll affected tests passed.");
+outSync(resultLine("passed"));
 terminalEmitted = true;
 outSync(`Full run log: ${RUN_LOG_PATH}`);
