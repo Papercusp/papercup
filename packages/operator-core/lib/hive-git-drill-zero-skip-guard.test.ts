@@ -204,6 +204,205 @@ function physicalLegD(
   };
 }
 
+function physicalLegE(
+  tower: ReturnType<typeof generateEd25519KeypairDer>,
+  vm: ReturnType<typeof generateEd25519KeypairDer>,
+): Record<string, any> {
+  const runId = 'physical-run-2026-08-13T120000Z';
+  const upstreamBefore = '1'.repeat(40);
+  const ingress = '2'.repeat(40);
+  const canonicalBefore = '3'.repeat(40);
+  const canonicalAfter = '4'.repeat(40);
+  const divergence = '5'.repeat(40);
+  const clearBridge = {
+    at: Date.parse('2026-08-13T12:21:40Z'),
+    ran: true,
+    skipped: null,
+    egressTarget: 'fork',
+    lastAdmitted: ingress,
+    egressHead: canonicalAfter,
+    divergence: 'clear',
+    needsOwner: false,
+    errors: [],
+  };
+  const trigger = (
+    host: 'tower' | 'vm',
+    role: string,
+    startedAt: string,
+    finishedAt: string,
+  ) => ({
+    tool: 'git-sync:run',
+    installSlug: 'hello-world-3-pot',
+    host,
+    role,
+    fired: true,
+    startedAt,
+    finishedAt,
+  });
+  const observation = (input: {
+    hostId: 'tower' | 'vm';
+    deviceKey: string;
+    stage: string;
+    observedAt: string;
+    mode: 'legacy' | 'bridged';
+    canonical?: string;
+    upstream?: string;
+    remote?: string;
+    bridge?: Record<string, any> | null;
+    bridgeEscalation?: Record<string, any> | null;
+  }) => ({
+    schemaVersion: 'hive-git-physical-phase-e-observation/v1',
+    runId,
+    hostId: input.hostId,
+    deviceKey: input.deviceKey,
+    stage: input.stage,
+    observedAt: input.observedAt,
+    mode: { value: input.mode, source: 'set' },
+    routine: {
+      active: true,
+      lastFiredAt: input.observedAt,
+      pushMode: input.mode === 'bridged' ? 'commit-only:bridged' : 'legacy',
+      lastStatus: 'ok',
+      lastPushed: [],
+      headSha: input.canonical ?? canonicalAfter,
+      watchdogAlerted: false,
+      watchdogErrorSweeps: 0,
+      watchdogStallSweeps: 0,
+      githubBridge: input.bridge ?? null,
+    },
+    refs: {
+      canonicalStaging: input.canonical ?? canonicalAfter,
+      upstreamDefault: input.upstream ?? ingress,
+      remoteStaging: input.remote ?? canonicalAfter,
+    },
+    bridgeEscalation: input.bridgeEscalation ?? null,
+    watchdogEscalation: null,
+  });
+  const watchdog = (ordinal: 1 | 2, startedAt: string, finishedAt: string) => ({
+    schemaVersion: 'hive-git-physical-phase-e-watchdog/v1',
+    runId,
+    hostId: 'tower',
+    ordinal,
+    tool: 'checkGitSyncStall',
+    startedAt,
+    finishedAt,
+    fixedRoutineActive: true,
+    fixedPushMode: 'commit-only:bridged',
+    fixedWatchdogAlerted: false,
+    fixedWatchdogErrorSweeps: 0,
+    fixedWatchdogStallSweeps: 0,
+    alarmed: [],
+    recovered: [],
+  });
+  return {
+    schemaVersion: 'hive-git-physical-phase-e-input/v1',
+    runId,
+    window: { startedAt: '2026-08-13T12:19:00Z', finishedAt: '2026-08-13T12:28:00Z' },
+    identities: { towerDeviceKey: tower.pubkeyBase64, vmDeviceKey: vm.pubkeyBase64 },
+    before: {
+      tower: observation({ hostId: 'tower', deviceKey: tower.pubkeyBase64, stage: 'legacy-before', observedAt: '2026-08-13T12:19:10Z', mode: 'legacy', canonical: canonicalBefore, upstream: upstreamBefore, remote: canonicalBefore }),
+      vm: observation({ hostId: 'vm', deviceKey: vm.pubkeyBase64, stage: 'legacy-before', observedAt: '2026-08-13T12:19:20Z', mode: 'legacy', canonical: canonicalBefore, upstream: upstreamBefore, remote: canonicalBefore }),
+    },
+    activation: {
+      modeChange: {
+        schemaVersion: 'hive-git-physical-phase-e-mode-change/v1',
+        runId,
+        hostId: 'tower',
+        tool: 'setPotGitMode',
+        from: 'legacy',
+        to: 'bridged',
+        workspaceId: 'papercusp-workspace',
+        potHomeSlug: 'hello-world-3-pot',
+        observedAt: '2026-08-13T12:19:30Z',
+      },
+      towerTrigger: trigger('tower', 'tower-member', '2026-08-13T12:19:40Z', '2026-08-13T12:19:50Z'),
+      vmTrigger: trigger('vm', 'vm-member', '2026-08-13T12:20:00Z', '2026-08-13T12:20:10Z'),
+      tower: observation({ hostId: 'tower', deviceKey: tower.pubkeyBase64, stage: 'bridged-member', observedAt: '2026-08-13T12:20:20Z', mode: 'bridged', canonical: canonicalBefore, upstream: upstreamBefore, remote: canonicalBefore }),
+      vm: observation({ hostId: 'vm', deviceKey: vm.pubkeyBase64, stage: 'bridged-member', observedAt: '2026-08-13T12:20:30Z', mode: 'bridged', canonical: canonicalBefore, upstream: upstreamBefore, remote: canonicalBefore }),
+    },
+    healthy: {
+      ingressMutation: {
+        schemaVersion: 'hive-git-physical-phase-e-mutation/v1',
+        runId,
+        kind: 'ingress',
+        hostId: 'tower',
+        method: 'fixed-empty-commit-ff-push',
+        remoteRole: 'upstream',
+        remoteRef: 'refs/heads/main',
+        baseOid: upstreamBefore,
+        canonicalOid: canonicalBefore,
+        headOid: ingress,
+        createdAt: '2026-08-13T12:21:00Z',
+      },
+      ingressTrigger: trigger('tower', 'healthy-ingress', '2026-08-13T12:21:10Z', '2026-08-13T12:21:15Z'),
+      integrateTrigger: trigger('tower', 'healthy-integrate', '2026-08-13T12:21:20Z', '2026-08-13T12:21:25Z'),
+      egressTrigger: trigger('tower', 'healthy-egress', '2026-08-13T12:21:30Z', '2026-08-13T12:21:35Z'),
+      observation: observation({ hostId: 'tower', deviceKey: tower.pubkeyBase64, stage: 'healthy-egress', observedAt: '2026-08-13T12:21:40Z', mode: 'bridged', canonical: canonicalAfter, upstream: ingress, remote: canonicalAfter, bridge: clearBridge }),
+    },
+    watchdogSweeps: [
+      watchdog(1, '2026-08-13T12:22:00Z', '2026-08-13T12:22:01Z'),
+      watchdog(2, '2026-08-13T12:24:00Z', '2026-08-13T12:24:01Z'),
+    ],
+    divergence: {
+      before: observation({ hostId: 'tower', deviceKey: tower.pubkeyBase64, stage: 'divergence-before', observedAt: '2026-08-13T12:25:00Z', mode: 'bridged', canonical: canonicalAfter, upstream: ingress, remote: canonicalAfter, bridge: clearBridge }),
+      mutation: {
+        schemaVersion: 'hive-git-physical-phase-e-mutation/v1',
+        runId,
+        kind: 'fork-ahead',
+        hostId: 'tower',
+        method: 'fixed-empty-commit-ff-push',
+        remoteRole: 'fork',
+        remoteRef: 'refs/heads/staging',
+        baseOid: canonicalAfter,
+        canonicalOid: canonicalAfter,
+        headOid: divergence,
+        createdAt: '2026-08-13T12:25:10Z',
+      },
+      trigger: trigger('tower', 'divergence-egress', '2026-08-13T12:25:20Z', '2026-08-13T12:25:30Z'),
+      after: observation({
+        hostId: 'tower',
+        deviceKey: tower.pubkeyBase64,
+        stage: 'divergence-after',
+        observedAt: '2026-08-13T12:25:40Z',
+        mode: 'bridged',
+        canonical: canonicalAfter,
+        upstream: ingress,
+        remote: divergence,
+        bridge: { ...clearBridge, divergence: 'escalate' },
+        bridgeEscalation: { signals: [{ kind: 'egress-non-ff', localSha: canonicalAfter, remoteSha: divergence }] },
+      }),
+      recovery: {
+        schemaVersion: 'hive-git-physical-phase-e-recovery/v1',
+        runId,
+        hostId: 'tower',
+        method: 'fixed-force-with-lease-restore',
+        remoteRef: 'refs/heads/staging',
+        expectedDivergenceOid: divergence,
+        restoredOid: canonicalAfter,
+        observedRemoteOid: canonicalAfter,
+        observedAt: '2026-08-13T12:26:00Z',
+      },
+    },
+    rollback: {
+      modeChange: {
+        schemaVersion: 'hive-git-physical-phase-e-mode-change/v1',
+        runId,
+        hostId: 'tower',
+        tool: 'setPotGitMode',
+        from: 'bridged',
+        to: 'legacy',
+        workspaceId: 'papercusp-workspace',
+        potHomeSlug: 'hello-world-3-pot',
+        observedAt: '2026-08-13T12:27:00Z',
+      },
+      towerTrigger: trigger('tower', 'rollback-observe', '2026-08-13T12:27:10Z', '2026-08-13T12:27:15Z'),
+      vmTrigger: trigger('vm', 'rollback-observe', '2026-08-13T12:27:20Z', '2026-08-13T12:27:25Z'),
+      tower: observation({ hostId: 'tower', deviceKey: tower.pubkeyBase64, stage: 'legacy-after', observedAt: '2026-08-13T12:27:30Z', mode: 'legacy', canonical: canonicalAfter, upstream: ingress, remote: canonicalAfter }),
+      vm: observation({ hostId: 'vm', deviceKey: vm.pubkeyBase64, stage: 'legacy-after', observedAt: '2026-08-13T12:27:40Z', mode: 'legacy', canonical: canonicalAfter, upstream: ingress, remote: canonicalAfter }),
+    },
+  };
+}
+
 function physicalFixture(): Record<string, any> {
   const towerLog = join(evidenceDir, 'tower.log');
   const vmLog = join(evidenceDir, 'vm.log');
@@ -238,34 +437,7 @@ function physicalFixture(): Record<string, any> {
       observedAt: `2026-08-13T12:${String(index).padStart(2, '0')}:00Z`,
     })),
     legD: physicalLegD(tower, vm),
-    legE: {
-      planItem: 'P-306',
-      status: 'pass',
-      writerDeviceKey: tower.pubkeyBase64,
-      assertions: {
-        bothConsumedBridgedMode: true,
-        bothCommitOnly: true,
-        membersDidNotDirectPush: true,
-        soleBridgeWriter: true,
-        upstreamUnchanged: true,
-        canonicalDescendsFromAdmitted: true,
-        watchdogIntervalsObserved: 2,
-        watchdogFalseAlarms: 0,
-        divergenceRefused: true,
-        rollbackLegacyObserved: true,
-      },
-      oids: {
-        ingressHead: oid('1'),
-        lastAdmitted: oid('1'),
-        canonicalStaging: oid('2'),
-        egressHead: oid('2'),
-        remoteStaging: oid('2'),
-        upstreamBefore: oid('3'),
-        upstreamAfter: oid('3'),
-        divergenceCanonicalBefore: oid('2'),
-        divergenceCanonicalAfter: oid('2'),
-      },
-    },
+    legE: physicalLegE(tower, vm),
     legG: {
       planItem: 'P-308',
       status: 'pass',
@@ -766,7 +938,7 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
 
   it('rejects a manifest changed after either physical device attested it', () => {
     const fixture = physicalFixture();
-    fixture.legE.assertions.watchdogIntervalsObserved = 3;
+    fixture.legE.watchdogSweeps[1].recovered.push('unrelated-control');
     const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
     expect(verdict.ok).toBe(false);
     expect(verdict.errors.join('\n')).toContain('not a valid signature over the canonical evidence payload');
@@ -816,12 +988,29 @@ describe('D-002 hive-git zero-skip release acceptance', () => {
     expect(verdict.errors).toContain('legD identities must match the two attesting physical devices exactly');
   });
 
-  it('rejects a Leg E OID chain that did not reach the remote staging ref', () => {
+  it('rejects a generic Leg E pass with no embedded production-spine causal evidence', () => {
     const fixture = physicalFixture();
-    fixture.legE.oids.remoteStaging = '9'.repeat(40);
+    fixture.legE = { planItem: 'P-306', status: 'pass' };
     const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
     expect(verdict.ok).toBe(false);
-    expect(verdict.errors).toContain('legE canonicalStaging/remoteStaging must match exactly');
+    expect(verdict.errors).toContain('legE must contain the complete validated P-306 causal evidence object');
+  });
+
+  it('revalidates the embedded Leg E object and rejects a remote staging miss', () => {
+    const fixture = physicalFixture();
+    fixture.legE.healthy.observation.refs.remoteStaging = '9'.repeat(40);
+    const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors).toContain('legE: Phase E healthy bridge must clear divergence and FF exact canonical staging to the fork');
+  });
+
+  it('rejects Leg E evidence bound to devices other than the two physical attestations', () => {
+    const fixture = physicalFixture();
+    const other = generateEd25519KeypairDer();
+    fixture.legE.identities.vmDeviceKey = other.pubkeyBase64;
+    const verdict = validatePhysicalDrillEvidence(fixture, trustedPhysicalAnchor(fixture));
+    expect(verdict.ok).toBe(false);
+    expect(verdict.errors).toContain('legE identities must match the two attesting physical devices exactly');
   });
 
   it('rejects a Leg G retry that advanced the cursor before missing evidence arrived', () => {
