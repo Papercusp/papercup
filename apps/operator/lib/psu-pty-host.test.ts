@@ -49,6 +49,11 @@ import {
   hashHostScript,
   hostCodeStaleness,
   LOADED_HOST_CODE_VERSION,
+  PSU_REEXEC_EXIT_CODE,
+  reexecExitCodeFrom,
+  handoffPathFor,
+  writeHostHandoff,
+  readHostHandoff,
   PSU_PTY_DIR,
   pidLooksLikePsuHost,
   findLiveHostFor,
@@ -2929,5 +2934,108 @@ describe('host-code staleness (WI-38292 — a respawn replaces the child, never 
   it('never claims staleness when the loaded version is unknown', () => {
     const p = write('unknown.mjs', 'export const x = 3;\n');
     expect(hostCodeStaleness({ loaded: null, path: p }).stale).toBe(false);
+  });
+});
+
+describe('host-code ADOPTION handshake (WI-38292 increment 2)', () => {
+  // Detection alone leaves the session running old code. Adoption exits so the
+  // psu shim's loop re-runs the launcher — which is only safe when something
+  // will actually re-run it, so the handshake is the load-bearing part.
+  it('reads the shim\'s advertised re-exec code', () => {
+    expect(reexecExitCodeFrom({ PAPERCUSP_PSU_REEXEC: '87' })).toBe(87);
+  });
+
+  it('refuses every environment that did NOT advertise the loop — exiting under one of these kills the session', () => {
+    // Each of these is a real launch shape: an old shim still on `exec node`, an
+    // operator-spawned headless member, a packaged CLI wrapper, `node
+    // psu-launcher.mjs` run by hand. None of them would re-run us.
+    for (const env of [
+      {},
+      { PAPERCUSP_PSU_REEXEC: '' },
+      { PAPERCUSP_PSU_REEXEC: 'yes' },
+      { PAPERCUSP_PSU_REEXEC: '0' },
+      { PAPERCUSP_PSU_REEXEC: '-1' },
+      { PAPERCUSP_PSU_REEXEC: '256' },
+      { PAPERCUSP_PSU_REEXEC: '87.5' },
+    ]) {
+      expect(reexecExitCodeFrom(env)).toBeNull();
+    }
+  });
+
+  it('honours the kill switch even when the shim advertises the loop', () => {
+    expect(reexecExitCodeFrom({ PAPERCUSP_PSU_REEXEC: '87', PAPERCUSP_PSU_HOST_ADOPT: '0' })).toBeNull();
+  });
+
+  it('pins the exit code to the shim generator\'s copy', () => {
+    // The two cannot import each other: this file is bare ESM run by `node`, the
+    // generator is TypeScript. A drift here means the host exits with a code the
+    // shim treats as an ordinary failure — the session would simply end.
+    const generator = nodeFs.readFileSync(
+      new URL('../../../packages/operator-core/lib/desktop-install/papercusp-files.ts', import.meta.url),
+      'utf8',
+    );
+    const declared = /PSU_REEXEC_EXIT_CODE\s*=\s*(\d+)/.exec(generator);
+    expect(declared, 'papercusp-files.ts must declare PSU_REEXEC_EXIT_CODE').toBeTruthy();
+    expect(Number(declared![1])).toBe(PSU_REEXEC_EXIT_CODE);
+  });
+});
+
+describe('host handoff record (WI-38292 increment 2)', () => {
+  // The successor is spawned by the shim's bash loop, not by the dying host, so
+  // the orders cannot ride the environment — they go through a file, and that
+  // file is the only thing standing between a carry and a bare prompt.
+  const owner = `wi38292-handoff-${process.pid}`;
+  const orders = { mode: 'carry-respawn', args: ['--session-id', 'fresh', '--append-system-prompt-file', '/tmp/carry.md'] };
+  afterAll(() => {
+    try { nodeFs.unlinkSync(handoffPathFor(owner)); } catch { /* already consumed */ }
+  });
+
+  /** Read as the real successor does: the writer has already exited. Stated
+   *  explicitly because the record is written by THIS live process, and a
+   *  still-alive writer is (correctly) refused. */
+  const readAsSuccessor = (id: string, opts: Record<string, unknown> = {}) =>
+    readHostHandoff(id, { isAlive: () => false, ...opts });
+
+  it('round-trips the successor\'s marching orders', () => {
+    expect(writeHostHandoff(owner, orders)).toBe(handoffPathFor(owner));
+    expect(readAsSuccessor(owner)).toMatchObject({ ...orders, ownerId: owner, fromPid: process.pid });
+  });
+
+  it('is SINGLE-SHOT — a crashed successor must not have the same carry replayed into every later launch', () => {
+    writeHostHandoff(owner, orders);
+    expect(readAsSuccessor(owner)).toBeTruthy();
+    expect(readAsSuccessor(owner)).toBeNull();
+  });
+
+  it('returns null when there is no handoff at all — the ordinary cold launch', () => {
+    expect(readAsSuccessor(`${owner}-never-written`)).toBeNull();
+  });
+
+  it('refuses (but still consumes) orders from a host that is STILL ALIVE', () => {
+    // We are not that host's successor: it is running and owns the session. Acting
+    // on its argv would boot a second child against a live discovery key. The
+    // default liveness probe is the real one, so this also covers the case that
+    // matters most — the writer being this very process.
+    writeHostHandoff(owner, orders);
+    expect(readHostHandoff(owner)).toBeNull();
+    expect(nodeFs.existsSync(handoffPathFor(owner))).toBe(false);
+  });
+
+  it('refuses orders that went stale — their rotated session id is no longer accepted', () => {
+    writeHostHandoff(owner, orders);
+    expect(readAsSuccessor(owner, { now: () => Date.now() + 10 * 60_000 })).toBeNull();
+  });
+
+  it('refuses a record naming a different owner, or carrying no argv at all', () => {
+    writeHostHandoff(owner, { ...orders, ownerId: 'someone-else' });
+    expect(readAsSuccessor(owner)).toBeNull();
+    writeHostHandoff(owner, { mode: 'recycle', args: [] });
+    expect(readAsSuccessor(owner)).toBeNull();
+  });
+
+  it('writes owner-only (0600) — the carry is this session\'s prompt material', () => {
+    writeHostHandoff(owner, orders);
+    expect(nodeFs.statSync(handoffPathFor(owner)).mode & 0o777).toBe(0o600);
+    readAsSuccessor(owner);
   });
 });

@@ -27,6 +27,7 @@ import {
   tagSessionPortTurn,
   startupOutputReady,
   killPtyProcessTree,
+  handoffPathFor,
   MAX_CONTROL_PAYLOAD_BYTES,
 } from '../scripts/psu-pty-host.mjs';
 // The REAL operator-side force-interrupt leg (turn-lifecycle-control Phase 4
@@ -897,6 +898,164 @@ describe('RECYCLE respawns with FRESH session args + re-anchors identity (WI-198
       expect(exitCode).toBe(0);
       expect(existsSync(sock)).toBe(false);
       expect(existsSync(meta)).toBe(false);
+    },
+    25_000,
+  );
+});
+
+describe('ADOPTION — a stale host hands the session to a fresh launcher instead of respawning inside itself (WI-38292)', () => {
+  // The bug: psu-launcher imports psu-pty-host ONCE and `recycleChild` only ever
+  // replaces the CLI child, so a host fix committed after this process booted is
+  // inert for the session's whole life. Increment 1 made that visible; this is
+  // the leg that makes the session actually RUN the new code. The reporter's
+  // stated acceptance is exactly this: "a host-version change is adopted before
+  // the successor carry is delivered".
+  const childCode =
+    "process.stdout.write('BOOT:'+process.pid+'\\n');" +
+    "process.stdin.setEncoding('utf8');let b='';" +
+    "process.stdin.on('data',d=>{b+=d;let i;while((i=b.indexOf('\\n'))>=0){const line=b.slice(0,i);b=b.slice(i+1);" +
+    "if(line==='QUIT'){process.exit(0);}}});" +
+    'setTimeout(()=>process.exit(0),15000);';
+
+  it(
+    'writes the successor\'s orders, releases the discovery key, and leaves by the re-exec door WITHOUT respawning a child',
+    async () => {
+      const ownerId = `su-adopt-itest-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const meta = metaPathFor(ownerId);
+      const handoff = handoffPathFor(ownerId);
+      const { captured, io } = fakeIo();
+      const carryFile = join(mkdtempSync(join(tmpdir(), 'wi38292-carry-')), 'carry.md');
+      writeFileSync(carryFile, 'the carry document\n');
+
+      const reexecs: Array<{ code: number; mode: string }> = [];
+      const ended: number[] = [];
+
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode, 'ORIGINAL'],
+        cwd: '/tmp',
+        env: {
+          ...process.env,
+          PAPERCUSP_SID: ownerId,
+          TERM: 'xterm-256color',
+          // The shim's advertisement. Without it the host must NOT exit — see the
+          // control below, which is the safety-critical half of this pair.
+          PAPERCUSP_PSU_REEXEC: '87',
+        },
+        ownerId,
+        io,
+        bridgeTty: false,
+        // The file on disk moved on after this process loaded it — the live
+        // reproduction, injected rather than performed, because performing it
+        // would mean rewriting the checkout mid-test.
+        hostCodeStalenessFn: () => ({ stale: true, loaded: 'a'.repeat(64), onDisk: 'b'.repeat(64) }),
+        mintCarryRespawnArgs: (a: string[]) => ({
+          args: a.slice(0, -1).concat('--append-system-prompt-file', carryFile),
+          nativeId: 'aaaabbbb-1111-2222-3333-444455556666',
+          launchContextPath: carryFile,
+        }),
+        onReexec: ({ code, mode }: { code: number; mode: string }) => { reexecs.push({ code, mode }); },
+        onExit: (c: number) => { ended.push(c); },
+      });
+
+      await sleep(600);
+      expect(captured()).toContain('BOOT:');
+      const firstBoots = [...captured().matchAll(/BOOT:/g)].length;
+      expect(firstBoots).toBe(1);
+
+      await envelopeInject(sock, {
+        mode: 'carry-respawn',
+        data: 'CARRIED',
+        systemPromptAddendum: 'deterministic carry',
+      });
+
+      const code = await done;
+
+      // Left by the re-exec door, with the shim's advertised code…
+      expect(reexecs).toEqual([{ code: 87, mode: 'carry-respawn' }]);
+      expect(code).toBe(87);
+      // …and NOT by the ordinary exit door: this session is continuing in a new
+      // process, so reporting it ended would bury it in adv_sessions and leave the
+      // successor climbing out of a grave.
+      expect(ended).toEqual([]);
+      // No second child was spawned inside this stale host — that is the whole
+      // point. A respawn here would have run the OLD code again.
+      expect([...captured().matchAll(/BOOT:/g)].length).toBe(1);
+
+      // The successor's orders reached disk, carrying the argv this host had
+      // already minted — the carry rides the file, not the dead process's memory.
+      expect(existsSync(handoff)).toBe(true);
+      const orders = JSON.parse(readFileSync(handoff, 'utf8'));
+      expect(orders).toMatchObject({
+        ownerId,
+        mode: 'carry-respawn',
+        fromPid: process.pid,
+        launchContextPath: carryFile,
+        nativeId: 'aaaabbbb-1111-2222-3333-444455556666',
+        // P-022: a carry successor must not keep Claude's native compactors.
+        childEnv: { DISABLE_AUTO_COMPACT: '1', DISABLE_COMPACT: '1' },
+      });
+      expect(orders.args).toContain('--append-system-prompt-file');
+      expect(orders.args).toContain(carryFile);
+
+      // Released BEFORE the successor can assert them (host:2739 — a second host
+      // on a live discovery key strands the first).
+      expect(existsSync(sock)).toBe(false);
+      expect(existsSync(meta)).toBe(false);
+
+      const events = readFileSync(eventLogPathForOwner(ownerId), 'utf8');
+      expect(events).toContain('"kind":"host-code-adopting"');
+
+      unlinkSync(handoff);
+    },
+    25_000,
+  );
+
+  it(
+    'CONTROL: with no shim advertisement it respawns in place — a launcher nobody will re-run must never exit',
+    async () => {
+      // Same staleness, same wiring, one thing removed: the promise that something
+      // will re-run us. Under an old shim / an operator-spawned headless member,
+      // exiting would simply END the owner's session. This is the pair that makes
+      // the test above evidence about the HANDSHAKE rather than about staleness.
+      const ownerId = `su-adopt-noshim-itest-${process.pid}-${Math.floor(performance.now())}`;
+      const sock = socketPathFor(ownerId);
+      const { captured, io } = fakeIo();
+      const env = { ...process.env, PAPERCUSP_SID: ownerId, TERM: 'xterm-256color' };
+      delete env.PAPERCUSP_PSU_REEXEC;
+
+      const reexecs: number[] = [];
+      const done = hostThroughPty({
+        command: execPath,
+        args: ['-e', childCode, 'ORIGINAL'],
+        cwd: '/tmp',
+        env,
+        ownerId,
+        io,
+        bridgeTty: false,
+        hostCodeStalenessFn: () => ({ stale: true, loaded: 'a'.repeat(64), onDisk: 'b'.repeat(64) }),
+        mintRecycleArgs: (a: string[]) => ({ args: a, nativeId: null }),
+        onReexec: ({ code }: { code: number }) => { reexecs.push(code); },
+        onExit: () => {},
+      });
+
+      await sleep(600);
+      expect([...captured().matchAll(/BOOT:/g)].length).toBe(1);
+
+      await controlInject(sock, 'recycle', '');
+      await sleep(2500);
+
+      // Respawned in place, exactly as before WI-38292 — a stale host, but a live
+      // session — and the re-exec door was never opened.
+      expect([...captured().matchAll(/BOOT:/g)].length).toBe(2);
+      expect(reexecs).toEqual([]);
+      // The staleness is still REPORTED, so the condition stays visible.
+      expect(readFileSync(eventLogPathForOwner(ownerId), 'utf8')).toContain('"kind":"host-code-stale"');
+      expect(existsSync(handoffPathFor(ownerId))).toBe(false);
+
+      await rawInject(sock, 'QUIT\n');
+      await done;
     },
     25_000,
   );

@@ -105,6 +105,28 @@ export function hostCodeStaleness({
   return { stale: Boolean(loaded && onDisk && loaded !== onDisk), loaded, onDisk };
 }
 
+/** WI-38292: the exit code that asks the psu shim's re-exec loop to re-run the
+ *  launcher from disk. MIRRORS `PSU_REEXEC_EXIT_CODE` in
+ *  packages/operator-core/lib/desktop-install/papercusp-files.ts — this file is
+ *  bare ESM run by `node` and cannot import TS, so the two copies are pinned
+ *  together by a test rather than by the module system. */
+export const PSU_REEXEC_EXIT_CODE = 87;
+
+/** WI-38292: does the process that launched us promise to re-run us if we exit
+ *  with the sentinel? The shim exports `PAPERCUSP_PSU_REEXEC=<code>`; anything
+ *  else (an old shim, an operator-spawned headless member, a packaged CLI
+ *  wrapper, a direct `node psu-launcher.mjs`) means NOBODY would re-run us, so
+ *  the adopting path must never be taken. Returns the code to exit with, or
+ *  null. `PAPERCUSP_PSU_HOST_ADOPT=0` is the kill switch — same boot-mode-select
+ *  role as PAPERCUSP_CACHE_PROXY_ROUTE, not a product feature gate. */
+export function reexecExitCodeFrom(env = process.env) {
+  if (String(env.PAPERCUSP_PSU_HOST_ADOPT ?? '').trim() === '0') return null;
+  // Number(), NOT parseInt(): parseInt('87.5') is 87 and parseInt('87abc') is 87,
+  // so a malformed advertisement would read as a valid promise to re-run us.
+  const advertised = Number(String(env.PAPERCUSP_PSU_REEXEC ?? '').trim() || NaN);
+  return Number.isInteger(advertised) && advertised > 0 && advertised < 256 ? advertised : null;
+}
+
 /** The discovery dir. Owner-only (0700). Shared contract with the read side
  *  (operator-core psu-pty-discovery.ts). */
 export const PSU_PTY_DIR = join(homedir(), '.papercusp', 'psu-pty');
@@ -517,6 +539,82 @@ export function socketPathFor(ownerId) {
 /** Discovery-metadata path for an ownerId. Pure. */
 export function metaPathFor(ownerId) {
   return join(PSU_PTY_DIR, `${sanitizeKey(ownerId)}.json`);
+}
+
+/** WI-38292: where a host about to re-exec leaves the successor's marching
+ *  orders. A FILE, not an env var: the successor is spawned by the shim's bash
+ *  loop, not by us, so we cannot put anything in its environment. Pure. */
+export function handoffPathFor(ownerId) {
+  return join(PSU_PTY_DIR, `${sanitizeKey(ownerId)}.handoff.json`);
+}
+
+/**
+ * WI-38292: persist the successor's marching orders — the child argv this host
+ * had already minted (rotated native session id + the carry's
+ * --append-system-prompt-file), so the carry survives the process swap without
+ * riding memory. Returns the path, or null when it could not be written (the
+ * caller must then NOT exit: a successor with no orders would boot a bare
+ * session and drop the carry).
+ */
+export function writeHostHandoff(ownerId, record) {
+  try {
+    ensureDir();
+    const p = handoffPathFor(ownerId);
+    writeFileSync(
+      p,
+      JSON.stringify({ ownerId, fromPid: process.pid, createdAt: new Date().toISOString(), ...record }),
+      { mode: 0o600 },
+    );
+    return p;
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * WI-38292: read AND consume (unlink) this owner's handoff. Single-shot by
+ * construction — the file is removed before its contents are returned, so a
+ * successor that crashes mid-boot cannot have the same carry replayed into it on
+ * every subsequent launch.
+ *
+ * Rejects a record that is not ours to act on: a different ownerId (a copied
+ * file), one written by a STILL-LIVE host (we are not its successor — that host
+ * is running and owns the session), or one older than `maxAgeMs` (a re-exec that
+ * never completed, whose argv now names a rotated session id nothing will
+ * accept). A rejected record is still consumed: leaving it behind means the next
+ * launch re-litigates the same stale orders.
+ */
+export function readHostHandoff(ownerId, { maxAgeMs = 120_000, now = Date.now, isAlive = pidAlive } = {}) {
+  const p = handoffPathFor(ownerId);
+  let raw;
+  try {
+    raw = readFileSync(p, 'utf8');
+  } catch {
+    return null;
+  }
+  try {
+    unlinkSync(p);
+  } catch {
+    /* consumed either way — a re-readable handoff is worse than a lost one */
+  }
+  let rec;
+  try {
+    rec = JSON.parse(raw);
+  } catch {
+    return null;
+  }
+  if (!rec || typeof rec !== 'object') return null;
+  if (rec.ownerId && rec.ownerId !== ownerId) return null;
+  // A LIVE writer means we are not its successor — that host is running and owns
+  // the session, and acting on its argv would put a second child behind a live
+  // discovery key. No self-exemption: a process is never its own successor, so
+  // `fromPid === process.pid` is refused by the same rule rather than waved past
+  // it (the exemption also made this guard untestable, which is how it was found).
+  if (rec.fromPid && isAlive(rec.fromPid)) return null;
+  const age = now() - Date.parse(rec.createdAt ?? '');
+  if (!Number.isFinite(age) || age < 0 || age > maxAgeMs) return null;
+  if (!Array.isArray(rec.args) || rec.args.length === 0) return null;
+  return rec;
 }
 
 /** Is a pid alive? (signal 0 probe.) */
@@ -2574,6 +2672,20 @@ export function hostThroughPty(o) {
     // successor inherits the predecessor's rendered prompt.
     refreshPersonaFile = async () => ({ promptFile: null, reason: 'not-wired' }),
     onRespawn = () => {},
+    // WI-38292: hand the session to a FRESH launcher process instead of respawning
+    // the CLI child inside this stale one. Injected like the mints, and for a
+    // second reason beyond launcher-agnosticism: only the launcher knows whether
+    // anything will re-run it (the psu shim's re-exec loop advertises itself in
+    // env) and only the launcher owns the supervisor beat it must stop first.
+    // null ⇒ adoption is unavailable and every respawn takes the in-process path,
+    // which is the pre-WI-38292 behaviour exactly.
+    onReexec = null,
+    // WI-38292: injectable staleness probe, same role as parentPidFn above. The
+    // real one compares this module's load-time hash against the file on disk, so
+    // a test running the module it is testing can NEVER observe staleness without
+    // rewriting the shared checkout mid-run — which git-sync would sweep into a
+    // commit. Injecting it is what makes the adopting path testable at all.
+    hostCodeStalenessFn = hostCodeStaleness,
     // WI-3141: injectable parent-pid probe for the orphan watchdog, so a test can
     // drive a fake reparent-to-init without a real fork. Defaults to the live ppid.
     parentPidFn = () => process.ppid,
@@ -2609,6 +2721,10 @@ export function hostThroughPty(o) {
     }
     return managedKickoffDisposition;
   };
+  // WI-38292: the exit code that hands this session to a fresh launcher, or null
+  // when nothing would re-run us. Read from `env` (the launch environment the
+  // shim exported into), never assumed — see reexecExitCodeFrom.
+  const reexecCode = reexecExitCodeFrom(env);
   const stdin = o.io?.stdin ?? process.stdin;
   const stdout = o.io?.stdout ?? process.stdout;
   const onExit = o.onExit ?? ((code) => process.exit(code ?? 0));
@@ -4245,6 +4361,11 @@ export function hostThroughPty(o) {
      * row asserts a clean voluntary exit.
      */
     let teardownSignal = null;
+    /** WI-38292: set by the adopting path just before it runs `cleanup`, so the
+     *  ordinary teardown does the whole release and only the FINAL step differs.
+     *  `{ code, go }` — never a bare boolean: the successor's marching orders are
+     *  already on disk by the time this is set, and `go` is what actually leaves. */
+    let reexecRequested = null;
     const cleanup = (code, signal = null) => {
       if (cleaned) return;
       cleaned = true;
@@ -4324,6 +4445,20 @@ export function hostThroughPty(o) {
         }
       }
       const finishExit = () => {
+        // WI-38292: an ADOPTING exit is not the session ending — it is the same
+        // session continuing in a fresh process that loaded current host code. It
+        // must therefore leave by a different door: `onExit` records an ended
+        // session (adv_sessions, killedBySignal), which would report this live
+        // session as dead and hand the successor a grave to climb out of.
+        // Everything ABOVE this point still ran: the child is reaped, the tty is
+        // un-bridged and the discovery key + socket are released, in that order,
+        // BEFORE the successor asserts them (host:2739 — a second host on a live
+        // discovery key strands the first).
+        if (reexecRequested) {
+          resolve(reexecRequested.code);
+          reexecRequested.go();
+          return;
+        }
         // `resolve` keeps its numeric contract for embedding callers; the signal rides
         // the onExit channel, which is the one that reaches the adv_sessions record.
         resolve(code ?? 0);
@@ -4393,7 +4528,7 @@ export function hostThroughPty(o) {
       // Detection only: adoption is a separate, riskier change (a launcher re-exec),
       // and a silent-but-detectable staleness is strictly better than an undetected one.
       try {
-        const hostCode = hostCodeStaleness();
+        const hostCode = hostCodeStalenessFn();
         if (hostCode.stale) {
           appendHostEvent(ownerId, 'host-code-stale', {
             mode: respawnMode,
@@ -4505,6 +4640,72 @@ export function hostThroughPty(o) {
         }
         recycling = false;
         return;
+      }
+      // WI-38292 ADOPTION. A respawn is the ONLY safe moment to swap host code:
+      // the session is being cut anyway, the successor's argv is already minted
+      // and its carry is already on disk, so nothing in flight is lost. Take it
+      // only when ALL of these hold — each is a way the swap could strand the
+      // session rather than continue it:
+      //   * the loaded host code really is behind the file on disk (increment 1);
+      //   * something will actually RE-RUN us (`onReexec` is wired AND the shim
+      //     advertised its loop) — without that, exiting just kills the session;
+      //   * the successor's orders reached disk, so it boots into THIS session's
+      //     carry instead of a bare prompt.
+      // Any of them missing ⇒ fall through to the in-process respawn, which is
+      // the pre-WI-38292 behaviour: a stale host, but a live one.
+      if (onReexec && reexecCode) {
+        let hostCode = { stale: false };
+        try {
+          hostCode = hostCodeStalenessFn();
+        } catch {
+          /* a probe failure must never cost a respawn — stay on the old path */
+        }
+        if (hostCode.stale) {
+          const handoffPath = writeHostHandoff(ownerId, {
+            mode: respawnMode,
+            command,
+            args: recycleArgs,
+            cwd,
+            nativeId: nativeId ?? null,
+            launchContextPath,
+            // The successor builds its env from the shim's, not from ours, so the
+            // deltas this respawn would have applied to the child have to travel
+            // with the orders. P-018/P-022: a carry successor must not keep
+            // Claude's native compactors, which would race the deterministic one.
+            childEnv: systemPromptAddendum
+              ? { DISABLE_AUTO_COMPACT: '1', DISABLE_COMPACT: '1' }
+              : {},
+            loaded: hostCode.loaded,
+            onDisk: hostCode.onDisk,
+            drillId: drillId || null,
+            sessionClass: sessionClass || null,
+          });
+          if (handoffPath) {
+            appendHostEvent(ownerId, 'host-code-adopting', {
+              mode: respawnMode,
+              loaded: hostCode.loaded,
+              onDisk: hostCode.onDisk,
+              handoffPath,
+              nativeId: nativeId ?? null,
+            });
+            // `cleanup` IS the release sequence — reap the child, un-bridge the
+            // tty, drop the timers, then release the discovery key and socket.
+            // Reused rather than re-implemented so the adopting path cannot drift
+            // away from the ordering the ordinary exit already gets right.
+            reexecRequested = {
+              code: reexecCode,
+              go: () => onReexec({ code: reexecCode, handoffPath, mode: respawnMode }),
+            };
+            cleanup(0);
+            return;
+          }
+          // Orders did not reach disk. Respawning in place loses nothing (the
+          // carry is still in the inbox) whereas exiting would drop it.
+          appendHostEvent(ownerId, 'host-code-adopt-failed', {
+            mode: respawnMode,
+            reason: 'handoff-write-failed',
+          });
+        }
       }
       const priorDisableAutoCompact = env.DISABLE_AUTO_COMPACT;
       const priorDisableCompact = env.DISABLE_COMPACT;

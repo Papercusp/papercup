@@ -25,7 +25,14 @@ import { randomUUID, randomBytes, createHash } from 'node:crypto';
 import { homedir, hostname } from 'node:os';
 import { join, dirname, delimiter, basename } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { hostThroughPty, fleetOscFromEnv, findLiveHostFor, hostIdleMs } from './psu-pty-host.mjs';
+import {
+  hostThroughPty,
+  fleetOscFromEnv,
+  findLiveHostFor,
+  hostIdleMs,
+  readHostHandoff,
+  reexecExitCodeFrom,
+} from './psu-pty-host.mjs';
 // Shared with the proxy itself (WI-6738) — psu must not give up while the proxy is still
 // retrying on its behalf. Plain .mjs so this bare-node script and the tsx-run proxy can
 // import the SAME definition.
@@ -6043,7 +6050,37 @@ function runWrapper({
   // EI-19948333346987654: thread the already-resolved owned-tty path (line
   // ~5395 above) into the beat so coord_presence.tty answers "which terminal
   // does this session own" without a /proc ancestry walk.
-  startSupervisorBeat(ownerId, { tty: ownedTty });
+  const supervisorBeat = startSupervisorBeat(ownerId, { tty: ownedTty });
+  // WI-38292: are we the SUCCESSOR of a host that exited to adopt fresh code? The
+  // predecessor left this session's already-minted child argv on disk (its carry
+  // included) because it could not put anything in our environment — the psu
+  // shim's re-exec loop spawned us, not it. Consuming is single-shot and
+  // self-validating; a null here is the ordinary cold-launch case.
+  const hostHandoff = ownerId ? readHostHandoff(ownerId) : null;
+  if (hostHandoff) {
+    // Use the predecessor's argv VERBATIM. It was minted from an argv that had
+    // already been through this launcher's whole normalization pass, so
+    // re-deriving it here would re-apply flags that are already present and, far
+    // worse, drop the rotated --session-id and the --append-system-prompt-file
+    // that IS the carry.
+    args = hostHandoff.args;
+    for (const [k, v] of Object.entries(hostHandoff.childEnv ?? {})) env[k] = v;
+    // The successor's first turn is the carry, delivered through the argv above.
+    // A kickoff from THIS process's own command line would be the ORIGINAL
+    // launch's first prompt replayed into a session that is many turns past it.
+    kickoff = null;
+    kickoffFile = null;
+    sessionPort = null;
+    if (hostHandoff.nativeId) {
+      recordSessionOwner(hostHandoff.nativeId, ownerId, {
+        advSessionId: env.PAPERCUSP_ADV_SESSION_ID || null,
+      });
+    }
+    process.stderr.write(
+      `psu: adopted updated host code for ${ownerId} (predecessor pid ${hostHandoff.fromPid ?? '?'}, ` +
+        `mode ${hostHandoff.mode ?? 'unknown'})\n`,
+    );
+  }
   if (ownerId && usePtyHost({ env })) {
     try {
       hostThroughPty({
@@ -6095,6 +6132,25 @@ function runWrapper({
             coordOwnerId: ownerId,
           });
         },
+        // WI-38292: leave so the psu shim's loop can re-run us on CURRENT host
+        // code. Only wired when the shim actually advertised that loop — a
+        // launcher nobody will re-run must never take this path, and this is the
+        // handshake's enforcement point (the host separately re-checks the env).
+        //
+        // NOT reportSessionEnded: this session is continuing, in a new process. It
+        // is also why the beat is stopped by hand — a heartbeat that outlives this
+        // process by even one tick reports a pid that is gone, and the successor
+        // is already beating for the same ownerId.
+        onReexec: reexecExitCodeFrom(env)
+          ? ({ code }) => {
+              try {
+                if (supervisorBeat) clearInterval(supervisorBeat);
+              } catch {
+                /* the exit below reclaims it regardless */
+              }
+              process.exit(code);
+            }
+          : null,
         // WI-38054: the managed-PTY path had no `signal` parameter at all, which is
         // where the owner's reaped agents lost the only evidence they were killed.
         onExit: (code, killedBySignal = null) => {
