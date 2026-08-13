@@ -18,7 +18,10 @@ import { getPresence } from '../coordination/presence';
 import { COORD_ROLES } from '../coordination/roles';
 import { notifyAgents } from '../coordination/notify-agents';
 import { issueRef, linkIssue, type IssueSeverity } from '../../issues-engineer';
-import { captureImprovement } from '../../harness/improvements/capture-core';
+import {
+  captureImprovement,
+  DedupCoverageUnavailableError,
+} from '../../harness/improvements/capture-core';
 import { ObservationEvidenceError } from '../../harness/improvements/observation-types';
 import { setWorkItemCheckpoint } from '../../work-item-checkpoint';
 import { resolveConcreteWorkspaceId } from '../../workspace-registry';
@@ -34,6 +37,7 @@ import {
   normalizeSuspectedToolFailure,
   type SuspectedToolFailure,
 } from '../../harness/improvements/tool-error-classifier';
+import { getModes } from '../../modes/store';
 
 const observationRatingsSchema = z.record(
   z.string().min(1),
@@ -680,6 +684,13 @@ export default defineTool({
       : undefined;
     const effectiveKind = toolFailureKind ?? args.kind ?? 'change';
     const effectiveLane = normalizedToolFailure && !normalizedToolFailure.direct ? 'observation' : args.lane;
+    // D-001 / WI-38403: mode is server-side standing state, never caller prose or
+    // a public bypass flag. Read it only for a claimable bug admission; observations
+    // and non-bugs retain their existing availability-first behavior.
+    const requireCompleteDedupCoverage =
+      effectiveKind === 'bug' &&
+      effectiveLane !== 'observation' &&
+      (await getModes(id.workspaceId ?? 'default', id.ownerId)).some((m) => m.mode === 'drain');
     const resolvedAssignee = resolveSelfLiteral(args.assign_to, id.ownerId);
     const toolFailureProbation = normalizedToolFailure
       ? {
@@ -708,6 +719,7 @@ export default defineTool({
         paths: args.paths,
         force: args.force,
         checkDuplicatesOnly: args.checkDuplicatesOnly,
+        requireCompleteDedupCoverage,
         origin: args.origin,
         lane: effectiveLane,
         watchdogKey:
@@ -880,6 +892,22 @@ export default defineTool({
       // as a clean tool error instead of an opaque throw (D-002 evidence gate).
       if (err instanceof ObservationEvidenceError) {
         return { content: [{ type: 'text' as const, text: JSON.stringify({ ok: false, error: err.message }) }] };
+      }
+      if (err instanceof DedupCoverageUnavailableError) {
+        return {
+          content: [
+            {
+              type: 'text' as const,
+              text: JSON.stringify({
+                ok: false,
+                created: false,
+                error: err.code,
+                message: err.message,
+                dedupCoverage: err.coverage,
+              }),
+            },
+          ],
+        };
       }
       throw err;
     }
