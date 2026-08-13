@@ -835,8 +835,13 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     getAccountOverrideMock.mockResolvedValue({ forcedAccounts: [], excludeAccounts: [] });
     readDefaultAccountIdMock.mockResolvedValue(undefined);
   });
-  const pin = async (requested: string | null, agent: 'claude' | 'omp' | 'codex' = 'claude') =>
-    (await import('../routes/agent-mcp/bootstrap-su')).resolveAccountPin('default', requested, agent);
+  const pin = async (
+    requested: string | null,
+    agent: 'claude' | 'omp' | 'codex' = 'claude',
+    model?: string,
+  ) => (await import('../routes/agent-mcp/bootstrap-su')).resolveAccountPin(
+    'default', requested, agent, undefined, false, model,
+  );
 
   it('no account → explicit Claude default-route marker, no notice', async () => {
     const expected = { PAPERCUSP_ACCOUNT_ROUTING_MODE: 'default' };
@@ -1008,9 +1013,11 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
       expect(readDefaultAccountIdMock).not.toHaveBeenCalled();
     });
 
-    it('OMP DOES consult it — it egresses anthropic, so it resolves a claude account', async () => {
-      const r = await pin(null, 'omp');
-      expect(readDefaultAccountIdMock).toHaveBeenCalledWith('default');
+    it('OMP does not consult it — default preserves the selected OMP provider directly', async () => {
+      const r = await pin(null, 'omp', 'ollama-cc/ornith:fast');
+      expect(readDefaultAccountIdMock).not.toHaveBeenCalled();
+      expect(r.env).toEqual({});
+      expect(r.provider).toBeNull();
       expect(r.error).toBeUndefined();
     });
 
@@ -1083,6 +1090,41 @@ describe('resolveAccountPin (psu-account-chooser P-002)', () => {
     expect(r.env.PAPERCUSP_OMP_MODELS_YML).not.toContain('x-papercusp-account');
     expect(r.gatewayAuto).toBe(true);
     expect(r.error).toBeUndefined();
+  });
+
+  it("'auto' + OMP preserves a compatible Claude selector exactly", async () => {
+    getFlagMock.mockResolvedValue(true);
+    const r = await pin('auto', 'omp', 'claude-bridge/claude-opus-4-8:high');
+    expect(r.env.PAPERCUSP_OMP_MODEL_SELECTOR).toBe('papercusp-gateway/claude-opus-4-8');
+    expect(r.env.PAPERCUSP_OMP_MODELS_YML).toContain('- id: "claude-opus-4-8"');
+    expect(r.provider).toBe('claude');
+  });
+
+  it("'auto' + OMP rejects an incompatible provider without substituting a Claude default", async () => {
+    getFlagMock.mockResolvedValue(true);
+    const r = await pin('auto', 'omp', 'amazon-bedrock/anthropic.claude-opus-4-8');
+    expect(r.env).toEqual({});
+    expect(r.error).toMatch(/not compatible.*refusing model substitution/i);
+  });
+
+  it("'auto' + OMP OpenAI Codex selector resolves against the Codex pool + wire", async () => {
+    getFlagMock.mockResolvedValue(true);
+    loadAccountPoolMock.mockResolvedValue({
+      accounts: [{ id: 'aviynw6', provider: 'claude' }, { id: 'codex-main', provider: 'codex' }],
+    });
+    const r = await pin('auto', 'omp', 'openai-codex/gpt-5.6-terra:xhigh');
+    expect(r.provider).toBe('codex');
+    expect(r.env.PAPERCUSP_OMP_MODEL_SELECTOR).toBe('papercusp-gateway/gpt-5.6-terra');
+    expect(r.env.PAPERCUSP_OMP_MODELS_YML).toContain('baseUrl: "http://127.0.0.1:8788/v1"');
+    expect(r.env.PAPERCUSP_OMP_MODELS_YML).toContain('api: openai-responses');
+  });
+
+  it('OMP pin rejects a Claude account for an OpenAI Codex selector', async () => {
+    getFlagMock.mockResolvedValue(true);
+    loadAccountPoolMock.mockResolvedValue({ accounts: [{ id: 'aviynw6', provider: 'claude' }] });
+    const r = await pin('aviynw6', 'omp', 'openai-codex/gpt-5.6-terra');
+    expect(r.env).toEqual({});
+    expect(r.error).toMatch(/claude account.*omp sessions require codex/i);
   });
 
   it('Codex account + codex agent → no Anthropic env, but carries account id for CODEX_HOME config', async () => {

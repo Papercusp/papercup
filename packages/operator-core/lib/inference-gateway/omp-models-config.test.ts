@@ -1,6 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   ompGatewayModelsConfig,
+  ompGatewayModelFromSpec,
   ompProviderForAccountProvider,
   ompModelIdFromSpec,
   OMP_MODELS_REL_PATH,
@@ -14,12 +15,41 @@ describe('ompModelIdFromSpec (P-005 per-role fidelity)', () => {
     expect(ompModelIdFromSpec('claude-sonnet-4-6')).toBe('claude-sonnet-4-6');
     expect(ompModelIdFromSpec('claude-sonnet-4-6:medium')).toBe('claude-sonnet-4-6');
   });
-  it('returns null for non-claude / local / empty specs (caller falls back to the wire default)', () => {
+  it('returns null for incompatible provider/model combinations and empty specs', () => {
     expect(ompModelIdFromSpec('ollama/ornith:fast')).toBe(null);
-    expect(ompModelIdFromSpec('gpt-5-codex')).toBe(null);
+    expect(ompModelIdFromSpec('amazon-bedrock/anthropic.claude-opus-4-8')).toBe(null);
     expect(ompModelIdFromSpec('')).toBe(null);
     expect(ompModelIdFromSpec(null)).toBe(null);
     expect(ompModelIdFromSpec(undefined)).toBe(null);
+  });
+});
+
+describe('ompGatewayModelFromSpec (P-005 fail-closed compatibility)', () => {
+  it('maps only known Anthropic-wire OMP providers while preserving the model id', () => {
+    expect(ompGatewayModelFromSpec('claude-bridge/claude-opus-4-8:high')).toEqual({
+      modelId: 'claude-opus-4-8',
+      gatewayProvider: 'anthropic',
+      accountProvider: 'claude',
+    });
+    expect(ompGatewayModelFromSpec('anthropic/claude-sonnet-4-6')).toEqual({
+      modelId: 'claude-sonnet-4-6',
+      gatewayProvider: 'anthropic',
+      accountProvider: 'claude',
+    });
+  });
+
+  it('maps OpenAI Codex selectors to the OpenAI wire + Codex account pool', () => {
+    expect(ompGatewayModelFromSpec('openai-codex/gpt-5.6-terra:xhigh')).toEqual({
+      modelId: 'gpt-5.6-terra',
+      gatewayProvider: 'openai',
+      accountProvider: 'codex',
+    });
+  });
+
+  it('does not infer compatibility from a Claude-looking id owned by another provider', () => {
+    expect(ompGatewayModelFromSpec('amazon-bedrock/anthropic.claude-opus-4-8')).toBeNull();
+    expect(ompGatewayModelFromSpec('google-vertex/claude-opus-4-8')).toBeNull();
+    expect(ompGatewayModelFromSpec('ollama-cc/ornith:fast')).toBeNull();
   });
 });
 

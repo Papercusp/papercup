@@ -129,19 +129,47 @@ describe('resolveSpawnGatewayEnv — the shared spawn-chokepoint routing decisio
     expect(h.selectSpawnAccount).toHaveBeenCalledWith('ws', 'papercusp', undefined, 'claude');
   });
 
-  test('OMP backend + role Claude model spec → exposes + selects the ROLE model (P-005/WI-951 fidelity)', async () => {
+  test('OMP backend + compatible Claude model selector → preserves the id through the Anthropic gateway wire', async () => {
     h.getFlag.mockResolvedValue(true);
     h.selectSpawnAccount.mockResolvedValue('claude-main');
-    const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', ownerId: 's-1', backend: 'omp', model: 'anthropic/claude-opus-4-8:high' });
+    const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', ownerId: 's-1', backend: 'omp', model: 'claude-bridge/claude-opus-4-8:high' });
     expect(env.PAPERCUSP_OMP_MODEL_SELECTOR).toBe('papercusp-gateway/claude-opus-4-8');
     expect(env.PAPERCUSP_OMP_MODELS_YML).toContain('claude-opus-4-8');
   });
 
-  test('OMP backend + local (non-claude) model spec → falls back to the wire default (no fidelity override)', async () => {
+  test('OMP backend + incompatible model + implicit routing → stays on the exact direct OMP provider', async () => {
     h.getFlag.mockResolvedValue(true);
     h.selectSpawnAccount.mockResolvedValue('claude-main');
     const env = await resolveSpawnGatewayEnv({ workspaceId: 'ws', slug: 'h', ownerId: 's-1', backend: 'omp', model: 'ollama/ornith:fast' });
-    expect(env.PAPERCUSP_OMP_MODEL_SELECTOR).toBe('papercusp-gateway/claude-sonnet-4-6');
+    expect(env).toEqual({});
+    expect(h.selectSpawnAccount).not.toHaveBeenCalled();
+  });
+
+  test('OMP backend + incompatible model + explicit auto → rejects instead of substituting the wire default', async () => {
+    h.getFlag.mockResolvedValue(true);
+    await expect(resolveSpawnGatewayEnv({
+      workspaceId: 'ws',
+      slug: 'h',
+      backend: 'omp',
+      model: 'amazon-bedrock/anthropic.claude-opus-4-8',
+      account: 'auto',
+    })).rejects.toThrow(/not compatible.*refusing model substitution/i);
+  });
+
+  test('OMP OpenAI Codex selector + auto → uses the OpenAI wire and Codex account pool', async () => {
+    h.getFlag.mockResolvedValue(true);
+    const env = await resolveSpawnGatewayEnv({
+      workspaceId: 'ws',
+      slug: 'h',
+      ownerId: 's-1',
+      backend: 'omp',
+      model: 'openai-codex/gpt-5.6-terra:xhigh',
+      account: 'auto',
+    });
+    expect(env.PAPERCUSP_OMP_MODEL_SELECTOR).toBe('papercusp-gateway/gpt-5.6-terra');
+    expect(env.PAPERCUSP_OMP_MODELS_YML).toContain('baseUrl: "http://127.0.0.1:8788/v1"');
+    expect(env.PAPERCUSP_OMP_MODELS_YML).toContain('api: openai-responses');
+    expect(env.PAPERCUSP_OMP_MODELS_YML).not.toContain('x-papercusp-account');
   });
 
   test('OMP backend + tier flag ON + role → bakes the x-papercusp-priority pin into the models.yml (P-006)', async () => {
@@ -261,6 +289,17 @@ describe('resolveSpawnGatewayEnv — the shared spawn-chokepoint routing decisio
     expect(env.PAPERCUSP_OMP_MODELS_YML).toContain('"x-papercusp-owner": "s-1"');
     expect(env.PAPERCUSP_OMP_MODELS_YML).not.toContain('x-papercusp-account');
     expect(env).not.toHaveProperty('ANTHROPIC_BASE_URL');
+  });
+
+  test("OMP account pin must match the selected model's account provider", async () => {
+    h.getFlag.mockResolvedValue(true);
+    await expect(resolveSpawnGatewayEnv({
+      workspaceId: 'ws',
+      slug: 'h',
+      backend: 'omp',
+      model: 'openai-codex/gpt-5.6-terra',
+      account: 'aviynw9',
+    })).rejects.toThrow(/aviynw9.*claude account.*omp requires codex/i);
   });
 
   test('an explicit pin not present in the provider pool fails closed', async () => {

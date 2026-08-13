@@ -309,9 +309,10 @@ export async function resolveAccountPin(
   //     ONLY while no default account is set; otherwise it is that account.
   const literalSystem = lower === 'none' || lower === 'system';
   const impliedDefault = !raw || lower === 'default';
-  // A Codex agent can never use the default (it stands in for the CLAUDE login), so don't even
-  // read it there. omp IS included: it egresses anthropic, so it resolves a claude account.
-  const defaultEligible = impliedDefault && accountProviderForInteractiveBackend(agent) === 'claude';
+  // OMP default means the selected OMP provider, not a Papercusp account. Do not
+  // let a configured Claude default account silently replace an OMP catalog model.
+  // Codex also never reads the Claude default-account preference.
+  const defaultEligible = impliedDefault && agent === 'claude';
   let defaultAccountId: string | undefined;
   if (defaultEligible) {
     try {
@@ -329,7 +330,7 @@ export async function resolveAccountPin(
       return { env: {}, notice: error, accountId: null, provider: null, error };
     }
   }
-  if (literalSystem || (impliedDefault && !defaultAccountId)) {
+  if (literalSystem || (impliedDefault && (!defaultAccountId || agent === 'omp'))) {
     return {
       // Marker parity with the raw-node launcher. The default route is not the
       // absence of routing state: it actively forces Claude back to the machine's
@@ -375,6 +376,16 @@ export async function resolveAccountPin(
     if (!(await getFlag(FLAGS.INFERENCE_GATEWAY, 'system'))) {
       return fail('the inference gateway is off (INFERENCE_GATEWAY)');
     }
+    let ompModelRoute: import('@papercusp/orchestrator/omp-gateway-config').OmpGatewayModelRoute | null = null;
+    if (agent === 'omp' && model?.trim()) {
+      const { ompGatewayModelFromSpec } = await import('../../../inference-gateway/omp-models-config');
+      ompModelRoute = ompGatewayModelFromSpec(model);
+      if (!ompModelRoute) {
+        return fail(`OMP model '${model}' is not compatible with gateway account routing; refusing model substitution`);
+      }
+    }
+    const expected = ompModelRoute?.accountProvider ?? accountProviderForInteractiveBackend(agent);
+    if (!expected) return fail(`account routing is unsupported for ${agent}`);
     // Priority label for the admission tier (gateway-priority-tiers): a PSU session is role `su` (tier 2).
     // Without this, pinned/auto psu sessions fell to the default band — tier 5, cap 1 — and their first
     // turns serialized behind each other (the 2026-07-01 "15-minute first turn" starvation). Gated on the
@@ -382,8 +393,6 @@ export async function resolveAccountPin(
     const priority = (await getFlag(FLAGS.GATEWAY_PRIORITY_TIERS, 'system')) ? 'su' : undefined;
     // AUTO: route through the gateway with NO account pin — it selects an available account + fails over.
     if (wantAuto) {
-      const expected = accountProviderForInteractiveBackend(agent);
-      if (!expected) return fail(`account routing is unsupported for ${agent}`);
       const [{ loadAccountPool }, { accountProvider }, { getAccountOverride }] = await Promise.all([
         import('../../../deployment/account-pool-store'),
         import('../../../deployment/account-pool'),
@@ -412,7 +421,7 @@ export async function resolveAccountPin(
           provider: expected,
         };
       }
-      if (expected === 'codex') {
+      if (expected === 'codex' && agent !== 'omp') {
         // WI-3645: interactive codex auto. The routing is carried by the per-session CODEX_HOME
         // config.toml, not env — the writer call sites translate `gatewayAuto` into
         // codexGatewayAuto, and the SHARED builder (@papercusp/orchestrator/codex-gateway-config)
@@ -428,16 +437,15 @@ export async function resolveAccountPin(
           gatewayAuto: true,
         };
       }
-      const { ompGatewayModelsConfig, ompModelIdFromSpec } = await import(
+      const { ompGatewayModelsConfig } = await import(
         '../../../inference-gateway/omp-models-config'
       );
-      const roleModel = ompModelIdFromSpec(model);
       const config = ompGatewayModelsConfig({
         gatewayOn: true,
-        provider: 'anthropic',
+        provider: ompModelRoute?.gatewayProvider ?? 'anthropic',
         ownerId,
         priority,
-        models: roleModel ? [roleModel] : undefined,
+        models: ompModelRoute ? [ompModelRoute.modelId] : undefined,
       });
       if (!config) return fail('OMP auto gateway configuration could not be generated');
       return {
@@ -459,8 +467,6 @@ export async function resolveAccountPin(
     const acct = (pool.accounts ?? []).find((a: { id: string }) => a.id === id);
     if (!acct) return fail(`'${id}' is not in the account pool (see accounts:list)`);
     const provider = accountProvider(acct as never);
-    const expected = accountProviderForInteractiveBackend(agent);
-    if (!expected) return fail(`account routing is unsupported for ${agent}`);
     if (provider !== expected)
       return fail(`'${id}' is a ${provider} account, but ${agent} sessions require ${expected} accounts`);
     const { getAccountOverride } = await import('../../../deployment/account-session-override');
@@ -490,16 +496,15 @@ export async function resolveAccountPin(
     // account (provider==='claude') but is delivered the codex-shaped signal, not the
     // claude-CLI env. (omp-account-pinning-gateway-2026-06-29 D-001/D-003)
     if (agent === 'omp') {
-      const { ompGatewayModelsConfig, ompModelIdFromSpec } = await import(
+      const { ompGatewayModelsConfig } = await import(
         '../../../inference-gateway/omp-models-config'
       );
-      const roleModel = ompModelIdFromSpec(model);
       const config = ompGatewayModelsConfig({
         accountId: id,
-        provider: 'anthropic',
+        provider: ompModelRoute?.gatewayProvider ?? 'anthropic',
         ownerId,
         priority,
-        models: roleModel ? [roleModel] : undefined,
+        models: ompModelRoute ? [ompModelRoute.modelId] : undefined,
       });
       if (!config) return fail('OMP pinned gateway configuration could not be generated');
       return {

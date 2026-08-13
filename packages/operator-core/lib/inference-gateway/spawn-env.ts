@@ -107,7 +107,7 @@ export function gatewayLlmEnv(enabled: boolean): Record<string, string> {
  * `gatewaySpawnEnv` (ANTHROPIC_BASE_URL + account/owner routing headers) plus
  * `PAPERCUSP_ACCOUNT_ID` (the per-account governor key). Codex emits only `PAPERCUSP_ACCOUNT_ID`;
  * the per-spawn CODEX_HOME writer consumes it to add a model_provider gateway config. Unsupported
- * backends (currently OMP) get `{}`. Fail-soft: a selection miss → no pin (the gateway routes
+ * backends get `{}`. Fail-soft: a selection miss → no pin (the gateway routes
  * Claude to its `active()` account); flag OFF → `{}` (unchanged direct egress).
  * Lazy-imports the flag + account-pool deps so this module stays import-light for the pure helpers
  * above (and so a route module importing it picks up no extra registration side-effects).
@@ -120,9 +120,8 @@ export async function resolveSpawnGatewayEnv(opts: {
   /** The spawn ROLE (queen/scout/overwatch/su/bee/worker/…) → mapped to an admission TIER by the gateway
    *  when `GATEWAY_PRIORITY_TIERS` is ON. Omit for an untiered caller. */
   role?: string;
-  /** The role's resolved model SPEC (e.g. `anthropic/claude-opus-4-8:high`). For an omp spawn that
-   *  gateway-routes to a Claude account, the bare Claude id is exposed + selected via the per-session
-   *  models.yml (P-005/WI-951 per-role fidelity); a non-claude/local spec falls back to the wire default. */
+  /** The role's resolved model SPEC (e.g. `claude-bridge/claude-opus-4-8:high`). For an omp spawn,
+   *  the exact provider determines whether and how the model can be gateway-routed. */
   model?: string;
   /** Explicit per-spawn account-routing override (account-routing-3-options, 2026-06-30) — the
    *  cup:spawn `account` arg. Mirrors the interactive psu path (resolveAccountPin):
@@ -156,7 +155,22 @@ export async function resolveSpawnGatewayEnv(opts: {
   // escape hatch) — return before any pool work.
   if (useDefault) return {};
   const backend = interactiveBackendFromSpawnBackend(opts.backend ?? 'claude');
-  const provider = accountProviderForInteractiveBackend(backend);
+  let ompModelRoute: import('@papercusp/orchestrator/omp-gateway-config').OmpGatewayModelRoute | null = null;
+  if (backend === 'omp' && opts.model?.trim()) {
+    const { ompGatewayModelFromSpec } = await import('./omp-models-config');
+    ompModelRoute = ompGatewayModelFromSpec(opts.model);
+    if (!ompModelRoute) {
+      if (explicitGatewayRoute) {
+        throw new Error(
+          `OMP model '${opts.model}' is not compatible with gateway account routing; refusing model substitution`,
+        );
+      }
+      // No owner-selected gateway route: preserve the selected OMP provider and
+      // let it egress directly instead of replacing it with a gateway default.
+      return {};
+    }
+  }
+  const provider = ompModelRoute?.accountProvider ?? accountProviderForInteractiveBackend(backend);
   if (!provider) {
     if (explicitGatewayRoute) {
       throw new Error(`account routing is unsupported for backend '${backend}'; refusing default-system fallback`);
@@ -250,17 +264,14 @@ export async function resolveSpawnGatewayEnv(opts: {
         : undefined;
     // Lazy import: omp-models-config imports gatewayPort from THIS module, so a top-level import
     // would be a mutual cycle — defer it to the call site (the helpers above stay import-light).
-    const { ompGatewayModelsConfig, ompProviderForAccountProvider, ompModelIdFromSpec } = await import('./omp-models-config');
-    // P-005/WI-951 per-role fidelity: expose + select the ROLE's actual Claude model (from its
-    // resolved spec) instead of the wire default, when the spawn gateway-routes to a Claude account.
-    const roleModelId = ompModelIdFromSpec(opts.model);
+    const { ompGatewayModelsConfig, ompProviderForAccountProvider } = await import('./omp-models-config');
     const cfg = ompGatewayModelsConfig({
       accountId,
       gatewayOn: wantAuto,
-      provider: ompProviderForAccountProvider(provider),
+      provider: ompModelRoute?.gatewayProvider ?? ompProviderForAccountProvider(provider),
       ownerId: opts.ownerId,
       priority: ompPriority,
-      models: roleModelId ? [roleModelId] : undefined,
+      models: ompModelRoute ? [ompModelRoute.modelId] : undefined,
     });
     if (cfg) {
       env.PAPERCUSP_OMP_MODELS_YML = cfg.content;
