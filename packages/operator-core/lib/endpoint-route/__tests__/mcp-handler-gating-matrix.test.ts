@@ -276,6 +276,17 @@ vi.mock('../../harness-core', async (importOriginal) => {
   const actual = await importOriginal<Record<string, unknown>>();
   return { ...actual, resolveWorkspaceForHarnessSlugIn: h.resolveWorkspaceForHarnessSlugIn };
 });
+// This matrix verifies transport authorization, not embedding-provider latency.
+// Keep the recall tools on their documented lexical fallback so the scoped-safe
+// allowlist assertion cannot spend its 5s test budget on a live query embed.
+vi.mock('../../agent-tools/search/embedder', async (importOriginal) => {
+  const actual = await importOriginal<Record<string, unknown>>();
+  return {
+    ...actual,
+    buildQueryEmbedder: async () => null,
+    buildQueryEmbedderResolved: async () => null,
+  };
+});
 
 // _mcp-handler's transport setup calls a bare `require(...)` for the MCP SDK
 // schemas; under vite-node's ESM transform there is no module-scope require,
