@@ -1433,6 +1433,17 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
   const admitted = new Map<string, AdmittedLog>();
   admitted.set(ownLog.keyHex, ownLog);
 
+  // WI-38376: maximum VERIFIED writer-side length advertised for each admitted
+  // remote log. A remote replica's local `length` advances only after blocks
+  // arrive, so by itself it cannot distinguish "caught up" from "the writer is
+  // ahead but this replica is frozen." Signed announce re-flushes carry that
+  // missing high-water. This map is deliberately separate from `AdmittedLog`:
+  // merge reads/cursors continue to use the actual local `log.length`, while
+  // only replication liveness + repair confirmation use the maximum below.
+  const advertisedLogHighWater = new Map<string, number>();
+  const livenessKnownLength = (log: AdmittedLog): number =>
+    Math.max(log.length, advertisedLogHighWater.get(log.keyHex) ?? 0);
+
   // ── WI-3288 (offline pot): admit the SEED's author logs ── The admitted-set
   // otherwise grows ONLY via swarm announce frames (4b below), so a packaged
   // install that cannot join the swarm (offline / gh-unauthenticated fresh box)
@@ -1624,6 +1635,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           void dropReplicationLogState(opts.workspaceId, opts.harnessSlug, logKey); // P-004: liveness registry too
           pubkeyToLogKey.delete(pk);
           admittedIdentities.delete(logKey);
+          advertisedLogHighWater.delete(logKey);
           recordBootEvent(
             opts.workspaceId,
             opts.harnessSlug,
@@ -1834,6 +1846,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       replicationStallState.delete(logKey); // WI-183: drop stale stall-tracking state
       void dropReplicationLogState(opts.workspaceId, opts.harnessSlug, logKey); // P-004: liveness registry too
       admittedIdentities.delete(logKey);
+      advertisedLogHighWater.delete(logKey);
       // Clean up the pubkey→logKey reverse mapping.
       if (identity?.devicePubkey) {
         pubkeyToLogKey.delete(identity.devicePubkey);
@@ -2611,6 +2624,16 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           );
           emitAdmitted(frame.log_core_key);
         }
+        // The frame reached this point only after real signature verification,
+        // identity/scope admission, the revoke-before-drain recheck, and a
+        // successful remote-log open. Re-announces may arrive out of order, so
+        // retain the maximum signed high-water rather than the newest value.
+        if (frame.log_length !== undefined) {
+          const prior = advertisedLogHighWater.get(frame.log_core_key) ?? 0;
+          if (frame.log_length > prior) {
+            advertisedLogHighWater.set(frame.log_core_key, frame.log_length);
+          }
+        }
         // WI-639 + WI-280 + WI-1585: the OWNER's trust-admit of an announced peer, gated on
         // the owner-signed membership policy. Runs for EVERY drained announce — NOT only the
         // first core-admission (WI-1585): announces arrive on (re)connect, and a peer whose
@@ -3097,12 +3120,17 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             const livenessPeersCount =
               typeof maybePeers.peersCount === 'function' ? maybePeers.peersCount() : undefined;
             const livenessMergedPosition = mergeCursor.positions.get(log.keyHex) ?? 0;
+            // WI-38376: only the detector/confirmation plane sees the signed
+            // writer high-water. `logs.push(versionGatedLog(...))` below still
+            // hands read-merge the real log, whose `.length` is local data only.
+            const knownWriterLength = livenessKnownLength(log);
             sampleReplicationLiveness(
               opts.workspaceId,
               opts.harnessSlug,
               {
                 keyHex: log.keyHex,
-                knownLength: log.length,
+                knownLength: knownWriterLength,
+                localLength: log.length,
                 mergedPosition: livenessMergedPosition,
                 peersCount: livenessPeersCount,
                 // WI-183 zombie axis: live swarm connections for the harness
@@ -3119,7 +3147,12 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
             );
             // WI-5340: judge any OUTSTANDING post-repair confirmation off the
             // SAME sample (cheap no-op Map lookup when none is outstanding).
-            checkRepairConfirmation(log.keyHex, livenessMergedPosition, log.length, livenessPeersCount);
+            checkRepairConfirmation(
+              log.keyHex,
+              livenessMergedPosition,
+              knownWriterLength,
+              livenessPeersCount,
+            );
           } catch {
             // diagnostic-only — swallow
           }
@@ -4062,6 +4095,7 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
       void dropReplicationLogState(opts.workspaceId, opts.harnessSlug, logKey); // P-004: liveness registry too
       pubkeyToLogKey.delete(devicePubkey);
       admittedIdentities.delete(logKey);
+      advertisedLogHighWater.delete(logKey);
       // WI-1856 (G9): the Hypercore SESSION `openRemoteLog` opened for this peer
       // is never used again once dropped from `admitted` — without an explicit
       // close it leaks (each `store.get({key})` call is a distinct session, not
@@ -4426,7 +4460,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
         harness_slug: opts.harnessSlug,
       };
       const signOurAnnounce = (bytes: Buffer) => signAnnounce(identity.keychainId, bytes);
-      const buildOurAnnounce = () => buildAnnounce(announceBody, signOurAnnounce);
+      // WI-38376: compute log_length at EACH fresh/re-flush build, not once at
+      // boot. The periodic announce sweep is the writer-progress heartbeat.
+      const buildOurAnnounce = () =>
+        buildAnnounce({ ...announceBody, log_length: ownLog.length }, signOurAnnounce);
       const ourAnnounce = await buildOurAnnounce();
       // ── P-006 scoped-log federation coordinator (P-108). Best-effort: a
       // failure here leaves the scoped layer off (null) without failing the
@@ -4474,7 +4511,10 @@ async function bootHarnessSubstrateInner(opts: BootHarnessOpts): Promise<BootedH
           }),
           selfGithubUserId: identity.githubUserId,
           buildScopedAnnounce: (scopedLogs) =>
-            buildAnnounce({ ...announceBody, scoped_logs: scopedLogs }, signOurAnnounce),
+            buildAnnounce(
+              { ...announceBody, log_length: ownLog.length, scoped_logs: scopedLogs },
+              signOurAnnounce,
+            ),
           // M15/D-004: every refused scoped entry is a visible counter + boot
           // event, never a silent drop. Best-effort (PG may be unavailable in
           // rigs); the boot event is the always-on local witness.

@@ -4,7 +4,7 @@
  * Per-peer Hypercore logs replicate over the swarm. On connect, peers exchange
  * a signed announce that binds a peer's log core to its device identity:
  *
- *   { device_pubkey, github_user_id, github_login, log_core_key, ts, nonce?, sig }
+ *   { device_pubkey, github_user_id, github_login, log_core_key, log_length?, ts, nonce?, sig }
  *
  *   - device_pubkey — the RAW 32-byte Ed25519 device public key, base64. This
  *     is the SAME string as the binding's `device_pubkey`
@@ -58,6 +58,14 @@ export interface AnnounceBody {
   attestation_gist_id: string;
   /** 64-hex Hypercore key of the peer's writable log. */
   log_core_key: string;
+  /**
+   * Optional writer-side Hypercore length at announce-build time. This is a
+   * signed, monotonic high-water hint for replication LIVENESS only: receivers
+   * may use it to know that a locally caught-up-looking replica is actually
+   * behind, but must never read or advance a merge cursor beyond the remote
+   * core's locally available `length`. Absent on legacy peers.
+   */
+  log_length?: number;
   /** A-003 (a′): the ORIGIN harness slug this log belongs to. An instance may
    *  run several local harnesses on ONE hive topic (a hive's member harness +
    *  its hive-home harness, so hive_members/hive_settings federate), all sharing
@@ -107,9 +115,9 @@ const SPKI_PREFIX = Buffer.from('302a300506032b6570032100', 'hex');
  * Canonical signing bytes for an announce: field-ordered JSON of the body
  * EXCLUDING `sig`. All values are primitives so this equals JCS for the schema.
  * Field order: device_pubkey, github_user_id, github_login, attestation_gist_id,
- * log_core_key, ts[, harness_slug][, nonce]. The trailing optionals (harness_slug,
- * nonce) are included only when present (defined + string), so an absent optional
- * yields byte-identical bytes to a frame that never had it.
+ * log_core_key[, log_length], ts[, harness_slug][, nonce]. Optional fields are
+ * included only when present, so an absent optional yields byte-identical bytes
+ * to a frame that never had it.
  */
 export function announceSigningBytes(body: AnnounceBody): Buffer {
   // Build ordered object — nonce only when present (undefined → omit key).
@@ -119,8 +127,13 @@ export function announceSigningBytes(body: AnnounceBody): Buffer {
     github_login: body.github_login,
     attestation_gist_id: body.attestation_gist_id,
     log_core_key: body.log_core_key,
-    ts: body.ts,
   };
+  // WI-38376: the writer's signed log high-water. Conditional so legacy
+  // announces retain their exact pre-field signing bytes.
+  if (typeof body.log_length === 'number') {
+    ordered.log_length = body.log_length;
+  }
+  ordered.ts = body.ts;
   // A-003 (a′): the origin harness slug, when present, is signed-over so it
   // cannot be spoofed to mis-route a log on the receive-side admission filter.
   // Conditional (like nonce) → absent yields byte-identical canonical bytes to a
@@ -213,6 +226,16 @@ export function verifyAnnounceDetailed(
     if (
       frame.scoped_logs !== undefined &&
       (!Array.isArray(frame.scoped_logs) || frame.scoped_logs.some((e) => typeof e !== 'string'))
+    ) {
+      return { ok: false, reason: 'malformed' };
+    }
+    // WI-38376: a present writer high-water must be a representable,
+    // non-negative integer. Reject malformed values before signature work so
+    // NaN/Infinity cannot be canonicalized by JSON.stringify into `null`, and
+    // fractional/negative hints can never poison the monotonic receiver map.
+    if (
+      frame.log_length !== undefined &&
+      (!Number.isSafeInteger(frame.log_length) || frame.log_length < 0)
     ) {
       return { ok: false, reason: 'malformed' };
     }

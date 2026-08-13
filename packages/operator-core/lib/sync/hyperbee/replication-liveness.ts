@@ -58,8 +58,19 @@ import { recordBootEvent } from './boot-history';
 export interface ReplicationLogSample {
   /** 64-char hex hypercore key of the admitted remote log. */
   keyHex: string;
-  /** Writer's advertised length as known to our replica (`core.length` after update()). */
+  /**
+   * Writer high-water known to this receiver: max of the locally replicated
+   * `core.length` and any verified signed announce `log_length`. This is a
+   * liveness comparison value only; merge reads remain bounded by local length.
+   */
   knownLength: number;
+  /**
+   * Actual locally replicated `core.length`, when `knownLength` may also
+   * include an announce-advertised high-water. Frozen-stage attribution uses
+   * this value to decide whether replication delivered during the stall;
+   * omitted callers retain the legacy `knownLength` behavior.
+   */
+  localLength?: number;
   /**
    * Merge-cursor position for this log — the next index the read-merge will
    * ingest (seeded from the snapshot index on a sparse joiner). `undefined`
@@ -137,6 +148,8 @@ export interface ReplicationLogLiveness {
   keyHex: string;
   verdict: ReplicationLogVerdict;
   knownLength: number;
+  /** Last actual locally replicated core length observed. */
+  localLength: number;
   mergedPosition: number | null;
   peersCount: number | null;
   /** ms since the log last showed a live replicator peer; null = never. */
@@ -201,12 +214,13 @@ interface LogState {
   /** Last time mergedPosition advanced (seeded at first sample with a position). */
   lastIngestProgressMs: number | null;
   /**
-   * EI-18778631943888326: last time `knownLength` advanced — i.e. the last time
-   * replication actually DELIVERED writer updates to this replica. null = never
-   * observed advancing this process lifetime. Used ONLY to attribute a frozen
-   * episode to the right stage; it never gates whether the episode fires.
+   * EI-18778631943888326 + WI-38376: last time the ACTUAL local core length
+   * advanced — i.e. replication delivered writer updates to this replica.
+   * `knownLength` can now advance from a signed announce without local block
+   * delivery, so it is not a valid stage-attribution signal by itself. null =
+   * never observed advancing this process lifetime. Used only for attribution.
    */
-  lastKnownLengthProgressMs: number | null;
+  lastLocalLengthProgressMs: number | null;
   /**
    * Start of the current swarm-connected-while-NOT-replicating window; null
    * when the condition doesn't hold (sustained-offline, or a replicator is
@@ -722,6 +736,7 @@ export function sampleReplicationLiveness(
   const frozenGraceMs = opts.frozenGraceMs ?? graceMs;
   const onEpisode = opts.onStallEpisode ?? reportEpisode;
   const onRecovery = opts.onRecovery ?? reportRecovery;
+  const localLength = sample.localLength ?? sample.knownLength;
 
   let logs = registry.get(hKey(workspaceId, harnessSlug));
   if (!logs) {
@@ -734,6 +749,7 @@ export function sampleReplicationLiveness(
       keyHex: sample.keyHex,
       lastSampleMs: now,
       knownLength: sample.knownLength,
+      localLength,
       mergedPosition: sample.mergedPosition ?? null,
       peersCount: sample.peersCount ?? null,
       lastNonZeroPeersMs: null,
@@ -743,7 +759,7 @@ export function sampleReplicationLiveness(
       // EI-18778631943888326: null (never observed advancing) rather than `now` —
       // seeding it to `now` would let the very first sample masquerade as "delivery
       // observed" and mis-attribute a genuine transport freeze to apply.
-      lastKnownLengthProgressMs: null,
+      lastLocalLengthProgressMs: null,
       connectedNeverReplSinceMs: null,
       lastSwarmSeenMs: null,
       lastSwarmConnections: null,
@@ -766,12 +782,11 @@ export function sampleReplicationLiveness(
   const wasBehind =
     st.mergedPosition !== null && st.knownLength > st.mergedPosition;
   st.lastSampleMs = now;
-  // EI-18778631943888326: `knownLength` is the writer's length AS KNOWN TO OUR
-  // REPLICA, so it can only advance when replication is actually DELIVERING the
-  // writer's updates to us. That makes "did knownLength move while merging stood
-  // still?" a free, already-sampled discriminator between the two very different
-  // causes the frozen axis used to conflate — see the axis body below.
-  if (sample.knownLength > st.knownLength) st.lastKnownLengthProgressMs = now;
+  // WI-38376: `knownLength` may advance from the signed announce heartbeat even
+  // when this receiver has delivered zero blocks. Preserve EI-18778631943888326's
+  // transport-vs-apply attribution using the actual local core length instead.
+  if (localLength > st.localLength) st.lastLocalLengthProgressMs = now;
+  st.localLength = localLength;
   st.knownLength = sample.knownLength;
   st.lastSwarmConnections = sample.swarmConnections ?? null;
 
@@ -1127,12 +1142,10 @@ export function sampleReplicationLiveness(
       // mergedPosition never moved. The alarm sent the reader toward the
       // replicator/swarm layer while the actual defect sat in apply.
       //
-      // Discriminate with data we already sample: `knownLength` is the writer
-      // length AS KNOWN TO OUR REPLICA, so it advances ONLY when replication is
-      // delivering. If it moved during this stall, the transport is demonstrably
-      // alive and the stuck stage is APPLY/MERGE; if it never moved, the classic
-      // attached-but-dead reading stands. Attribution only — the episode still
-      // fires identically either way, so no alarm is lost.
+      // Discriminate with actual local core progress. `knownLength` may include
+      // WI-38376's signed announce high-water and can therefore move without a
+      // single block arriving; only `localLength` proves delivery. Attribution
+      // only — the episode still fires identically either way.
       st.alarmedFrozen = true;
       // STRICTLY greater, not >=: the sample where a log first becomes behind sets BOTH
       // clocks to the same instant, so `>=` would count the window-STARTING observation
@@ -1141,8 +1154,8 @@ export function sampleReplicationLiveness(
       // freeze window opened — the discriminator is scoped to THIS stall, not "ever
       // delivered". (Caught by the third attribution test, which failed on `>=`.)
       const deliveringDuringStall =
-        st.lastKnownLengthProgressMs !== null &&
-        st.lastKnownLengthProgressMs > st.lastIngestProgressMs;
+        st.lastLocalLengthProgressMs !== null &&
+        st.lastLocalLengthProgressMs > st.lastIngestProgressMs;
       const stalledSecs = Math.round((now - st.lastIngestProgressMs) / 1000);
       const positions =
         `writer at ${st.knownLength}, merged to ${sample.mergedPosition}, ` +
