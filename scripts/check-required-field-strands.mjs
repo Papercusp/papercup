@@ -56,13 +56,73 @@ const WORKSPACE_TYPECHECKS = [
   { prefix: 'packages/', cmd: 'build:typecheck { project: "<the packages/* workspace>" }' },
 ];
 
-function git(args, { allowFail = false } = {}) {
+function git(args, { allowFail = false, cwd = ROOT } = {}) {
   try {
-    return execFileSync('git', args, { cwd: ROOT, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
+    return execFileSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 64 * 1024 * 1024 });
   } catch (err) {
     if (allowFail) return null;
     throw err;
   }
+}
+
+/**
+ * EI-20020054576584970: the guard was structurally blind to every file inside a submodule,
+ * and that blindness is what let the 2026-08-12 incident through — `ActiveLockRow.lock_id`
+ * in libs/papercusp/packages/locks/src/su-lock-store.ts stranded a mock fixture and froze
+ * `main` for ~14h.
+ *
+ * The mechanism, which is worth stating because it produces no error you would notice: to
+ * the SUPERPROJECT a submodule is a GITLINK, not a tree. So `git show HEAD:libs/papercusp/
+ * .../su-lock-store.ts` does not return an old version of that file — it fails outright
+ * ("exists on disk, but not in 'HEAD'"), and `git diff --name-only HEAD -- libs/papercusp`
+ * can only ever name the gitlink, never a file within it. Both of this guard's entry points
+ * — the DECLARED --files= set and the INFERRED diff set — therefore saw nothing to examine,
+ * and the run degraded to NOT CHECKED while blaming the (real, familiar, benign) git-sync
+ * race. A message that should have stopped the author instead reassured them.
+ *
+ * The fix is to ask the right repository. Each path is resolved to its owning submodule and
+ * the show/diff is re-run with that submodule as cwd, against its OWN history — which is
+ * what `HEAD` should have meant for that file all along.
+ */
+let submodulePrefixesCache = null;
+function submodulePrefixes() {
+  if (submodulePrefixesCache) return submodulePrefixesCache;
+  const out = git(['config', '--file', '.gitmodules', '--get-regexp', '^submodule\\..*\\.path$'], {
+    allowFail: true,
+  });
+  const prefixes = (out ?? '')
+    .split('\n')
+    .filter(Boolean)
+    // `submodule.<name>.path <value>` — the value is everything past the first space, so a
+    // path containing spaces survives (splitting on whitespace would truncate it).
+    .map((line) => line.slice(line.indexOf(' ') + 1).trim())
+    .filter(Boolean);
+  // Longest-first so a nested submodule wins over its parent; otherwise the outer prefix
+  // matches first and we re-run the query against the wrong repository.
+  submodulePrefixesCache = prefixes.sort((a, b) => b.length - a.length);
+  return submodulePrefixesCache;
+}
+
+/** The submodule prefix owning `file`, or null when it lives in the superproject. */
+export function submoduleFor(file, prefixes) {
+  for (const prefix of prefixes) {
+    if (file === prefix || file.startsWith(`${prefix}/`)) return prefix;
+  }
+  return null;
+}
+
+/**
+ * `file`'s contents at `base`, asked of whichever repository actually tracks it.
+ * Returns null when the file has no version there (new file, or a base that repo lacks) —
+ * the same contract the caller already handles by skipping the candidate.
+ */
+function showAtBase(file, base) {
+  const prefix = submoduleFor(file, submodulePrefixes());
+  if (!prefix) return git(['show', `${base}:${file}`], { allowFail: true });
+  return git(['show', `${base}:${file.slice(prefix.length + 1)}`], {
+    allowFail: true,
+    cwd: resolve(ROOT, prefix),
+  });
 }
 
 const isExported = (node) =>
@@ -274,6 +334,39 @@ export function formatTypecheckNotRun({ requested = false, reason = null } = {})
   ].join('\n');
 }
 
+/**
+ * EI-18717671811306780: the confirm step is slow, and the fast substitute is BLIND.
+ *
+ * The commands above are project-wide on purpose. Under fleet load the operator-core
+ * one queues behind pc-heavy — measured 2026-08-13 at load 93: still queued at 90s,
+ * never started. An author who reads that as a hang reaches for the fastest green
+ * thing available, and the fastest green thing available is a SCOPED typecheck
+ * (`build:typecheck { scopeToFiles: true }`, or any scoped tsc).
+ *
+ * That substitution is not merely weaker — it is blind to this exact class, by
+ * construction. A scoped run compiles the named file plus its import graph: what the
+ * file imports. The sites a required-field addition strands are its DEPENDENTS — they
+ * import the changed file, so they are never in that graph. The scoped run therefore
+ * reports GREEN precisely when this guard has just told you something is stale, which
+ * is worse than not running it: it manufactures evidence for the wrong conclusion.
+ * (build:typecheck states the same limitation in its own `scopeToFiles` contract.)
+ *
+ * So the warning is attached to the remediation, not to a doc a hurried author will
+ * not open — and it names the queue as expected behaviour so a wait is not misread
+ * as a failure that justifies the shortcut.
+ */
+export function formatScopedTypecheckWarning() {
+  return [
+    '\n  ⚠ Do NOT substitute a SCOPED typecheck to dodge the queue.',
+    '    A scoped run — build:typecheck { scopeToFiles: true }, or any scoped tsc —',
+    '    compiles your file plus what IT imports. The stranded sites are DEPENDENTS:',
+    '    they import you, so they are never in that graph. A scoped run goes GREEN on',
+    '    exactly the class this guard exists to catch. Under fleet load the command',
+    '    above can sit in the pc-heavy queue for minutes — that is the queue working,',
+    '    not a hang. Wait it out or run it detached; never swap in a narrower check.',
+  ].join('\n');
+}
+
 function main() {
   const argv = process.argv.slice(2);
   const json = argv.includes('--json');
@@ -306,13 +399,30 @@ function main() {
       // this must never report as a clean bill (EI-20095543794921181).
       process.exit(EXIT_NOT_CHECKED);
     }
-    candidates = nameStatus
-      .split('\n')
-      .filter(Boolean)
-      .map((line) => {
-        const [status, ...rest] = line.split('\t');
-        return { status, file: rest[rest.length - 1] };
+    const parseNameStatus = (text, prefix = '') =>
+      text
+        .split('\n')
+        .filter(Boolean)
+        .map((line) => {
+          const [status, ...rest] = line.split('\t');
+          const file = rest[rest.length - 1];
+          return { status, file: prefix ? `${prefix}/${file}` : file };
+        });
+
+    candidates = parseNameStatus(nameStatus);
+
+    // The superproject diff above lists a changed submodule as a single GITLINK entry, never
+    // the .ts files inside it — so without this the inferred mode silently skips every
+    // submodule edit (EI-20020054576584970). Ask each submodule about its own working tree.
+    // allowFail per submodule: an uninitialised checkout, or a `base` that repo does not
+    // have, must degrade to "examined nothing here" rather than abort the whole run.
+    for (const prefix of submodulePrefixes()) {
+      const subStatus = git(['diff', '--name-status', base, '--', '*.ts', '*.tsx'], {
+        allowFail: true,
+        cwd: resolve(ROOT, prefix),
       });
+      if (subStatus) candidates.push(...parseNameStatus(subStatus, prefix));
+    }
   }
 
   const findings = [];
@@ -329,7 +439,7 @@ function main() {
     if (!file || status.startsWith('A') || status.startsWith('D')) continue;
     if (file.endsWith('.d.ts')) continue;
 
-    const beforeText = git(['show', `${base}:${file}`], { allowFail: true });
+    const beforeText = showAtBase(file, base);
     if (beforeText === null) continue;
     const abs = resolve(ROOT, file);
     if (!existsSync(abs)) continue;
@@ -397,6 +507,7 @@ function main() {
     const cmds = [...new Set(findings.map((f) => workspaceFor(f.file)?.cmd).filter(Boolean))];
     console.log('\n  Confirm nothing was stranded:');
     for (const c of cmds) console.log(`    ${c}`);
+    console.log(formatScopedTypecheckWarning());
     console.log('\n  (Adding a required field is often correct — this is a prompt to verify,');
     console.log('   not a verdict. Do NOT make the field optional just to silence errors.)');
   }

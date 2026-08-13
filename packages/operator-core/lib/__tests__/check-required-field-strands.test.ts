@@ -9,7 +9,7 @@
  */
 import { describe, expect, it } from 'vitest';
 // @ts-expect-error — .mjs guard script, no type declarations by design
-import { collectExportedRequiredProps, collectExportedTypeNames, diffRequiredAdditions, exitForNoFindings, formatNoFindings } from '../../../../scripts/check-required-field-strands.mjs';
+import { collectExportedRequiredProps, collectExportedTypeNames, diffRequiredAdditions, exitForNoFindings, formatNoFindings, formatScopedTypecheckWarning, submoduleFor } from '../../../../scripts/check-required-field-strands.mjs';
 
 const BEFORE = `
 export interface IssueClaimExclusionBreakdown {
@@ -219,6 +219,84 @@ describe('collectExportedTypeNames', () => {
  * correctly. Same "checked nothing, rendered as clean" class as the `tsc -p .`
  * zero-file trap.
  */
+/**
+ * EI-20020054576584970 — the blindness that let the 2026-08-12 incident through.
+ *
+ * To the superproject a submodule is a GITLINK, so `git show HEAD:<submodule path>` fails
+ * and `git diff` names only the gitlink. Both of this guard's entry points therefore saw
+ * NOTHING for any file inside libs/*, and the run degraded to NOT CHECKED while blaming the
+ * git-sync race. That is how `ActiveLockRow.lock_id` (libs/papercusp/packages/locks/src/
+ * su-lock-store.ts) stranded a mock fixture and froze `main` for ~14h.
+ *
+ * Verified end-to-end after the fix: the same command that used to print
+ * "fatal ... → ZERO files examined" now reports `ActiveLockRow.lock_id (new required field)`.
+ * These cases pin the path-ownership rule that makes that possible.
+ */
+describe('submoduleFor — ask the repository that actually tracks the file', () => {
+  // Real prefixes from this repo's .gitmodules, longest-first as submodulePrefixes() sorts them.
+  const prefixes = ['libs/generic/papergrid', 'libs/papercusp-db', 'libs/papercusp', 'libs/agent-chat'];
+
+  it('resolves a file inside a submodule to that submodule', () => {
+    expect(submoduleFor('libs/papercusp/packages/locks/src/su-lock-store.ts', prefixes)).toBe('libs/papercusp');
+  });
+
+  it('returns null for a superproject file, so the normal path is untouched', () => {
+    expect(submoduleFor('packages/operator-core/lib/git-pipeline-position.ts', prefixes)).toBeNull();
+  });
+
+  it('does NOT let a submodule swallow a SIBLING whose name it prefixes', () => {
+    // libs/papercusp and libs/papercusp-db both exist here. A bare startsWith(prefix) would
+    // route every libs/papercusp-db file into the wrong repository, where its path does not
+    // exist — reproducing the exact "cannot see your file" failure this fix removes.
+    expect(submoduleFor('libs/papercusp-db/src/index.ts', prefixes)).toBe('libs/papercusp-db');
+  });
+
+  it('prefers the NESTED submodule over its parent (prefixes are longest-first)', () => {
+    expect(submoduleFor('libs/generic/papergrid/src/grid.ts', ['libs/generic/papergrid', 'libs/generic'])).toBe(
+      'libs/generic/papergrid',
+    );
+  });
+
+  it('matches the submodule root path itself, not only paths beneath it', () => {
+    expect(submoduleFor('libs/papercusp', prefixes)).toBe('libs/papercusp');
+  });
+});
+
+/**
+ * EI-18717671811306780. The guard's detection was already sound; what was missing sat one
+ * step later, at the moment the author decides HOW to confirm. The prescribed command is
+ * project-wide and under fleet load it queues behind pc-heavy for minutes, so the tempting
+ * move is the fastest green thing available — a SCOPED typecheck. That substitution reports
+ * GREEN on exactly this class, because the stranded sites are DEPENDENTS of the changed file
+ * and a scoped run only compiles the file plus what it imports. These cases pin the warning
+ * to the remediation text so it cannot be quietly dropped from the one place it is read.
+ */
+describe('formatScopedTypecheckWarning — the fast substitute is blind to this class', () => {
+  it('names the scoped typecheck explicitly, so the reader recognises the shortcut they were about to take', () => {
+    const msg = formatScopedTypecheckWarning();
+    expect(msg).toContain('scopeToFiles');
+    expect(msg).toMatch(/scoped tsc/i);
+  });
+
+  it('gives the MECHANISM (dependents are not in the import graph), not just a prohibition', () => {
+    const msg = formatScopedTypecheckWarning();
+    // Without the reason, a hurried reader treats it as ceremony and overrides it.
+    expect(msg).toContain('DEPENDENTS');
+    expect(msg).toMatch(/import/i);
+  });
+
+  it('warns that a scoped run goes GREEN — an absent error, not a visible failure', () => {
+    const msg = formatScopedTypecheckWarning();
+    expect(msg).toContain('GREEN');
+  });
+
+  it('names the pc-heavy queue as expected behaviour, so a wait is not misread as a hang', () => {
+    const msg = formatScopedTypecheckWarning();
+    expect(msg).toContain('pc-heavy');
+    expect(msg).toMatch(/not a hang/i);
+  });
+});
+
 describe('formatNoFindings — "examined nothing" must never read as "clean"', () => {
   it('does NOT claim a clean bill when zero files were examined', () => {
     const msg = formatNoFindings([], 'HEAD');
