@@ -119,6 +119,16 @@ describe('coord:orient args', () => {
     ).toBe(true);
   });
 
+  it('teaches that fleet membership is session-inferred instead of accepting fleet scope', () => {
+    const description = String((orientTool as { description?: unknown }).description ?? '');
+    const when = String((orientTool as { guidance?: { when?: unknown } }).guidance?.when ?? '');
+
+    expect(description).toContain('Fleet membership is inferred from the caller\'s live session');
+    expect(description).toContain('do not pass `fleet` or `workspace`');
+    expect(when).toContain('do not add a `fleet` or `workspace` argument to coord:orient');
+    expect(orientTool.args.safeParse({ fleet: 'nonp2p-bug-drain-headless-0812' }).success).toBe(false);
+  });
+
   it('accepts claimableLimit=0 for a lean bootstrap', () => {
     expect(orientTool.args.safeParse({ claimableLimit: 0 }).success).toBe(true);
   });

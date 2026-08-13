@@ -2176,14 +2176,18 @@ export default defineTool({
     'the claimable backlog, your inbox summary, and the recent plan-events delta — plus, with ' +
     '`intent`, a memory recall AND a coord:declare-intent so peers see you. The mandated bootstrap ' +
     '(memory:search + coord:inbox + coord:plan-events + declare + assignments + claimable) in ONE ' +
-    'round-trip; a fleet member also gets a compact fleet-health glance.',
+    'round-trip; a fleet member also gets a compact fleet-health glance. Fleet membership is ' +
+    'inferred from the caller\'s live session — do not pass `fleet` or `workspace`; use `harness` ' +
+    'when an explicit harness scope is needed.',
   guidance: {
     when:
       'At the START of a turn / on waking. Pass `intent` (your one-line task) for the whole ' +
       'bootstrap in ONE round-trip: assignments + claimable + inbox + plan-events + a memory recall ' +
       '+ your intent DECLARED to peers. Omit `intent` for a lighter re-orientation. On a repeating ' +
       "LEADER/MONITOR tick pass `mode:'monitor'` — skips the claimable/facts/plan-events/fleet/" +
-      'recipes/recall legs, keeping fleet:assignments + inbox + declare.',
+      'recipes/recall legs, keeping fleet:assignments + inbox + declare. Fleet membership is ' +
+      'inferred from your live session; do not add a `fleet` or `workspace` argument to ' +
+      'coord:orient. Use `harness` only when you need to name the harness scope.',
     notWhen:
       'A human status-surface render (coord:glance display block — orient folds only the health ' +
       'counts) or the full presence roster (coord:presence). After a successful orient do NOT ' +
