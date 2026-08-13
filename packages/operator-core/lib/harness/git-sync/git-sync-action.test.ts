@@ -492,7 +492,7 @@ describe('P-009/P-006 lock discipline (per-slug resources)', () => {
       tryAcquireResourceMock.mockRejectedValue(contention);
       const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
 
-      const running = action(ctx);
+      const running = fireGitSyncNow('papercup', 'ws-42');
       await vi.advanceTimersByTimeAsync(6_000);
       const outcome = await running;
 
