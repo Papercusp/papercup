@@ -48,7 +48,14 @@ import {
   type StructuredObservation,
 } from './observation-types';
 import { getRubric, autoRatifyRubricOnFirstScorecard, type Rubric } from '../../rubrics';
-import { titleSimilarity, titleContainment, recallAlreadyDecided, type AlreadyDecidedRecall } from './digest';
+import {
+  admissionIdentity,
+  titleSimilarity,
+  titleContainment,
+  recallAlreadyDecided,
+  type AdmissionIdentity,
+  type AlreadyDecidedRecall,
+} from './digest';
 import { initializeIdeaLifecycle } from './lifecycle';
 import { extractCitedIds } from './triage';
 import { DEFAULT_SIGNAL_ORIGIN, effectiveOrigin, type SignalOrigin } from './provenance';
@@ -83,6 +90,13 @@ export interface CaptureImprovementInput {
   paths?: string[];
   /** File even if a likely duplicate exists (default false → search-first declines). */
   force?: boolean;
+  /**
+   * DRAIN admission rail. A bug may be created only after every dedup leg returned
+   * a real verdict; skipped/unavailable coverage rejects before persistence. The
+   * agent-facing wrapper derives this from the caller's live mode registry — it is
+   * deliberately not a public caller override.
+   */
+  requireCompleteDedupCoverage?: boolean;
   /** Only run the dedup search, do not create. */
   checkDuplicatesOnly?: boolean;
   /**
@@ -245,8 +259,8 @@ export interface PossibleDuplicate {
  * later against an open major item filed ~12h earlier.
  */
 export interface DedupCoverage {
-  /** Token-based title match. Always runs; 'skipped' only for the observation lane. */
-  lexical: 'ok' | 'skipped';
+  /** Token-based title match. 'unavailable' means the backing search failed. */
+  lexical: 'ok' | 'unavailable' | 'skipped';
   /** Embedding leg. 'unavailable' = it returned no verdict (embedder down / over budget /
    *  disabled), so a differently-worded duplicate would NOT have been found. */
   semantic: 'ok' | 'unavailable' | 'skipped';
@@ -268,6 +282,8 @@ export interface CaptureImprovementResult {
   /** P-007: what the dedup search could actually check. Read this BEFORE reading an empty
    *  `possibleDuplicates` as "nothing similar exists". */
   dedupCoverage?: DedupCoverage;
+  /** Server-authored normalized title identity (+ stronger signal key when present). */
+  admissionIdentity?: AdmissionIdentity;
   /**
    * "Already decided" recall (self-learning-central P-003): prior RESOLVED/closed
    * items whose STABLE signature matches this capture — so the loop recognises a
@@ -279,6 +295,18 @@ export interface CaptureImprovementResult {
    */
   alreadyDecided?: AlreadyDecidedRecall[];
   hint?: string;
+}
+
+/** Raised only by the DRAIN bug-admission rail; tool wrappers render it cleanly. */
+export class DedupCoverageUnavailableError extends Error {
+  readonly code = 'dedup_unavailable';
+  constructor(readonly coverage: DedupCoverage) {
+    super(
+      `DRAIN bug admission requires complete dedup coverage; lexical=${coverage.lexical}, ` +
+        `semantic=${coverage.semantic}. No bug was created — retry when every leg is available.`,
+    );
+    this.name = 'DedupCoverageUnavailableError';
+  }
 }
 
 /** Injectable dependency seam (unit tests run without PG). */
@@ -471,6 +499,7 @@ export async function captureImprovement(
   // organic capture (or vice versa) would let synthetic signals suppress real ones.
   const isObservation = input.lane === 'observation';
   const sourceRole = input.sourceRole ?? 'human';
+  const identity = admissionIdentity(input.title, input.watchdogKey);
   // Rubric-grading evidence gate (rubric-driven-observations-2026-06-20 D-002):
   // FAIL FAST — a structured observation whose ratings lack evidence (or whose
   // ratings block names no rubric) is a contract violation, rejected before any
@@ -541,9 +570,17 @@ export async function captureImprovement(
   // Observations skip search-first dedup entirely (D-005): recurrence IS the signal
   // Scout clusters downstream, and the reflecting agent is told not to dedup — so a
   // recurring observation re-files rather than being declined as a duplicate.
-  const searched = isObservation
-    ? ([] as EngineerIssue[])
-    : await deps.searchIssues(input.title, 20).catch(() => [] as EngineerIssue[]);
+  let lexicalLeg: DedupCoverage['lexical'] = isObservation ? 'skipped' : 'unavailable';
+  let searched: EngineerIssue[] = [];
+  if (!isObservation) {
+    try {
+      searched = await deps.searchIssues(input.title, 20);
+      lexicalLeg = 'ok';
+    } catch {
+      // Preserve the empty candidate set, but never mislabel an unavailable search
+      // as a clean lexical verdict. DRAIN consumes this bit as a fail-closed gate.
+    }
+  }
   const candidates = searched.filter((i) => effectiveOrigin(i.signalOrigin) === origin);
 
   // P-011 (shared-embedding-sidecar-and-enrichment-2026-07-10): semantic
@@ -612,9 +649,9 @@ export async function captureImprovement(
     .slice(0, 5);
 
   const dedupCoverage: DedupCoverage = {
-    lexical: isObservation ? 'skipped' : 'ok',
+    lexical: lexicalLeg,
     semantic: semanticLeg,
-    degraded: semanticLeg === 'unavailable',
+    degraded: lexicalLeg === 'unavailable' || semanticLeg === 'unavailable',
   };
 
   // "Already decided" recall (P-003): signature-match this capture against the
@@ -632,6 +669,7 @@ export async function captureImprovement(
       reason: 'check-only',
       possibleDuplicates,
       dedupCoverage,
+      admissionIdentity: identity,
       ...(alreadyDecided.length ? { alreadyDecided } : {}),
     };
   }
@@ -702,9 +740,18 @@ export async function captureImprovement(
       reason: declineReason,
       possibleDuplicates,
       dedupCoverage,
+      admissionIdentity: identity,
       ...(alreadyDecided.length ? { alreadyDecided } : {}),
       hint: declineHint,
     };
+  }
+
+  // D-001 / WI-38403: DRAIN is the deliberate exception to the global
+  // availability-first filing rule. It suppresses incidental bug creation, and
+  // the remaining direct blocker may not enter the queue on an unmeasured dedup
+  // path. `force` cannot override missing evidence; it only overrides a known hit.
+  if (input.kind === 'bug' && input.requireCompleteDedupCoverage && dedupCoverage.degraded) {
+    throw new DedupCoverageUnavailableError(dedupCoverage);
   }
 
   // Per-Hive topic lens (P-010): add sourceRole to topics when it differs from default.
@@ -821,6 +868,7 @@ export async function captureImprovement(
     // Idea lifecycle starts at capture (self-learning P-031): open → triaged → applied
     // → verified/recurred. triage-core / resolve-core / the decay sweep advance it.
     payload.ideaLifecycle = initializeIdeaLifecycle();
+    payload.admissionIdentity = identity;
     // EI-20275452450016416: persist the coverage the dedup ACTUALLY achieved. The
     // semantic leg fails OPEN, so a row filed while the embedder was load-shedding was
     // admitted without a differently-worded-duplicate check — and that was previously
@@ -947,6 +995,7 @@ export async function captureImprovement(
     topics,
     possibleDuplicates,
     dedupCoverage,
+    admissionIdentity: identity,
     ...(alreadyDecided.length ? { alreadyDecided } : {}),
   };
 }
