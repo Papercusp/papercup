@@ -28,6 +28,7 @@ import { recordRoutedIdea } from '../../scout/routed-ledger';
 import { SU_IDEATION_LENSES, type SuIdeationLens } from '../../scout/types';
 import { resolveWorkItemRef } from '../../work-items';
 import { clampText, hardText, softText, LIMITS } from '../limits';
+import { resolveCaptureScope } from './capture-scope';
 import { coerceCaptureArgs } from './capture-coerce';
 import {
   normalizeSuspectedToolFailure,
@@ -576,17 +577,13 @@ export default defineTool({
       typeof ctxHarnessRaw === 'string' && ctxHarnessRaw && ctxHarnessRaw !== '*' ? ctxHarnessRaw : undefined;
     const ctxWorkspaceRaw = (ctx as { workspaceId?: unknown }).workspaceId;
     const ctxWorkspace = typeof ctxWorkspaceRaw === 'string' ? ctxWorkspaceRaw : undefined;
-    const harnessScope = args.harness?.trim()
-      ? args.harness.trim().startsWith('harness:')
-        ? args.harness.trim()
-        : `harness:${args.harness.trim()}`
-      : undefined;
-    if (args.scope && harnessScope && args.scope !== harnessScope) {
-      throw new Error(
-        `conflicting capture scopes: scope '${args.scope}' does not match compatibility harness '${args.harness}' (${harnessScope})`,
-      );
-    }
-    const captureScope = args.scope ?? harnessScope;
+    // EI-20309391070582534: only a 'harness:<slug>' value names a Pot, so only two
+    // DIFFERENT pot names are a real conflict. A scope that merely repeats the harness
+    // (or that is a subject-area label) resolves and warns instead of bouncing the
+    // whole capture — see capture-scope.ts for the four filings behind this.
+    const scopeResolution = resolveCaptureScope({ scope: args.scope, harness: args.harness });
+    if (scopeResolution.conflict) throw new Error(scopeResolution.conflict);
+    const captureScope = scopeResolution.scope;
     if (args.observation?.rubricRef && args.rubricRef && args.observation.rubricRef !== args.rubricRef) {
       throw new ObservationEvidenceError(
         'conflicting rubricRef values: pass the scorecard once under observation.rubricRef (preferred) or top-level rubricRef (compatibility alias)',
@@ -853,6 +850,15 @@ export default defineTool({
       // WI-38065: report-only lens-attribution advisory (see describeLensAttribution above).
       // Same caller-args basis as experimentGap, so a dedup-decline carries it too.
       const lensAttribution = describeLensAttribution(args, source);
+      const warnings = [
+        ...(foundDuringTruncated
+          ? [
+              `foundDuring was ${args.foundDuring!.length} chars — truncated to ${LIMITS.LABEL}. ` +
+                'It is a short provenance label, not a body; put the detail in `body`.',
+            ]
+          : []),
+        ...(scopeResolution.warning ? [scopeResolution.warning] : []),
+      ];
       return {
         content: [
           {
@@ -864,14 +870,7 @@ export default defineTool({
               ...(lensAttribution ? { lensAttribution } : {}),
               ...(notified ? { notified: notified.notified } : {}),
               ...(linked ? { linked } : {}),
-              ...(foundDuringTruncated
-                ? {
-                    warnings: [
-                      `foundDuring was ${args.foundDuring!.length} chars — truncated to ${LIMITS.LABEL}. ` +
-                        'It is a short provenance label, not a body; put the detail in `body`.',
-                    ],
-                  }
-                : {}),
+              ...(warnings.length > 0 ? { warnings } : {}),
             }),
           },
         ],

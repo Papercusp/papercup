@@ -179,6 +179,23 @@ describe('improvements:capture tool envelope', () => {
     expect(mockCapture).not.toHaveBeenCalled();
   });
 
+  // EI-20309391070582534 (+3 sibling filings the same day): the same Pot named twice
+  // used to bounce the WHOLE capture, so the finding was lost over a spelling.
+  it('files a capture whose scope merely repeats the harness alias', async () => {
+    const res = await callTool({ title: 'same pot twice', kind: 'bug', scope: 'papercusp', harness: 'papercusp' });
+    expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({ scope: 'harness:papercusp' }));
+    expect(JSON.parse(res.content[0].text).warnings).toBeUndefined();
+  });
+
+  it('files a capture with a subject-area scope, and warns where it landed', async () => {
+    const res = await callTool({ title: 'area scope', kind: 'bug', scope: 'coordination', harness: 'papercusp' });
+    expect(mockCapture).toHaveBeenCalledWith(expect.objectContaining({ scope: 'harness:papercusp' }));
+    const warnings = JSON.parse(res.content[0].text).warnings as string[];
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain('coordination');
+    expect(warnings[0]).toContain('harness:papercusp');
+  });
+
   it('returns the core result verbatim in the tool envelope', async () => {
     mockCapture.mockResolvedValue({ ok: true, id: 'EI-42', created: true, duplicateOf: null } as unknown as Awaited<
       ReturnType<typeof captureImprovement>
