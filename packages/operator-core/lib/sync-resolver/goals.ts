@@ -290,6 +290,8 @@ export async function resolveGoalsList(args: {
   workspaceId: string;
   status?: string | null;
   limit?: number;
+  /** Exact pot set inherited from /adv; omitted means workspace-wide. */
+  harnessSlugs?: readonly string[];
 }): Promise<{
   goals: GoalSummaryRow[];
   /**
@@ -310,7 +312,7 @@ export async function resolveGoalsList(args: {
 }> {
   const { getOrgPg } = await import('@papercusp/db-org');
   const { sql } = getOrgPg();
-  const { workspaceId, status = null, limit = 100 } = args;
+  const { workspaceId, status = null, limit = 100, harnessSlugs } = args;
   // Cut ONCE for the whole page, so two rows in the same render can never be
   // measured over windows that differ by the query's own duration.
   const recentSinceMs = Date.now() - SPEND_RECENT_WINDOW_MS;
@@ -418,6 +420,17 @@ export async function resolveGoalsList(args: {
         FROM harness_shared.goals g
        WHERE g.workspace_id = ${workspaceId}
          AND (${status}::text IS NULL OR g.status = ${status}::text)
+         AND ${
+           harnessSlugs
+             ? sql`EXISTS (
+                 SELECT 1 FROM harness_shared.goal_pots scoped_gp
+                  WHERE scoped_gp.workspace_id = g.workspace_id
+                    AND scoped_gp.goal_id = g.id
+                    AND scoped_gp.removed_at IS NULL
+                    AND scoped_gp.harness_slug = ANY(${harnessSlugs as string[]}::text[])
+               )`
+             : sql`TRUE`
+         }
        ORDER BY ${sql.unsafe(STATUS_RANK)}, g.updated_at DESC NULLS LAST
        LIMIT ${limit}
     `) as unknown as RawGoal[];
@@ -434,6 +447,17 @@ export async function resolveGoalsList(args: {
         FROM harness_shared.goals g
        WHERE g.workspace_id = ${workspaceId}
          AND (${status}::text IS NULL OR g.status = ${status}::text)
+         AND ${
+           harnessSlugs
+             ? sql`EXISTS (
+                 SELECT 1 FROM harness_shared.goal_pots scoped_gp
+                  WHERE scoped_gp.workspace_id = g.workspace_id
+                    AND scoped_gp.goal_id = g.id
+                    AND scoped_gp.removed_at IS NULL
+                    AND scoped_gp.harness_slug = ANY(${harnessSlugs as string[]}::text[])
+               )`
+             : sql`TRUE`
+         }
     `) as unknown as Array<{ total: number | string | null }>;
 
     totalGoals = totalRow?.total == null ? goalRows.length : Number(totalRow.total);

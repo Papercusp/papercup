@@ -690,6 +690,12 @@ export const FEATURE_COLS = `feature_id, item_kind, harness_slug, title, summary
 // ── Reads ─────────────────────────────────────────────────────────────────────────
 export interface ListWorkItemsFilter {
   harness?: string;
+  /**
+   * Restrict to any of these exact harness slugs. `harness` wins when both are
+   * present; an explicitly empty array matches nothing. This is the set-valued
+   * sibling used by the /adv inherited pot scope (selected pot + descendants).
+   */
+  harnesses?: readonly string[];
   /** Case-insensitive literal substring matched against title + body/summary. */
   q?: string;
   kind?: WorkItemKind;
@@ -962,7 +968,13 @@ export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<W
         FROM harness_shared.harness_features_consolidated
          WHERE ${featureFamilyKindClause(sql, ws)}
          AND workspace_id = ${ws}
-         AND ${filter.harness ? sql`harness_slug = ${filter.harness}` : sql`TRUE`}
+         AND ${
+           filter.harness
+             ? sql`harness_slug = ${filter.harness}`
+             : filter.harnesses
+               ? sql`harness_slug = ANY(${filter.harnesses as string[]}::text[])`
+               : sql`TRUE`
+         }
          AND ${q ? sql`(COALESCE(title, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\' OR COALESCE(summary, '') ILIKE ${likeContainsPattern(q)} ESCAPE '\\')` : sql`TRUE`}
          AND ${filter.kind && familyOf(filter.kind) === 'feature' ? sql`item_kind = ${filter.kind}` : sql`TRUE`}
          AND ${filter.state ? sql`status = ${filter.state}` : sql`TRUE`}
@@ -1018,6 +1030,9 @@ export async function listWorkItems(filter: ListWorkItemsFilter = {}): Promise<W
       kind: filter.kind && familyOf(filter.kind) === 'issue' ? (filter.kind as IssueStoreKind) : undefined,
       kinds: filter.kind && familyOf(filter.kind) === 'issue' ? undefined : ISSUE_FAMILY_KINDS,
       scope: filter.harness ? `harness:${filter.harness}` : undefined,
+      scopes: filter.harness
+        ? undefined
+        : filter.harnesses?.map((harness) => `harness:${harness}`),
       state: (filter.state as IssueState) || undefined,
       ...issueShapeFilterArgs(filter),
       q,
@@ -1062,7 +1077,13 @@ export async function countWorkItems(filter: ListWorkItemsFilter = {}): Promise<
         FROM harness_shared.harness_features_consolidated
        WHERE ${featureFamilyKindClause(sql, ws)}
          AND workspace_id = ${ws}
-         AND ${filter.harness ? sql`harness_slug = ${filter.harness}` : sql`TRUE`}
+         AND ${
+           filter.harness
+             ? sql`harness_slug = ${filter.harness}`
+             : filter.harnesses
+               ? sql`harness_slug = ANY(${filter.harnesses as string[]}::text[])`
+               : sql`TRUE`
+         }
          AND ${filter.kind && familyOf(filter.kind) === 'feature' ? sql`item_kind = ${filter.kind}` : sql`TRUE`}
          AND ${filter.state ? sql`status = ${filter.state}` : sql`TRUE`}
          AND ${featureShapeWhereSql(sql, filter)}
@@ -1113,6 +1134,9 @@ export async function countWorkItems(filter: ListWorkItemsFilter = {}): Promise<
       kind: filter.kind && familyOf(filter.kind) === 'issue' ? (filter.kind as IssueStoreKind) : undefined,
       kinds: filter.kind && familyOf(filter.kind) === 'issue' ? undefined : ISSUE_FAMILY_KINDS,
       scope: filter.harness ? `harness:${filter.harness}` : undefined,
+      scopes: filter.harness
+        ? undefined
+        : filter.harnesses?.map((harness) => `harness:${harness}`),
       state: (filter.state as IssueState) || undefined,
       ...issueShapeFilterArgs(filter),
       assignee: filter.assignee,
@@ -1176,7 +1200,13 @@ export async function countWorkItemsByState(filter: ListWorkItemsFilter = {}): P
         FROM harness_shared.harness_features_consolidated
        WHERE ${featureFamilyKindClause(sql, ws)}
          AND workspace_id = ${ws}
-         AND ${filter.harness ? sql`harness_slug = ${filter.harness}` : sql`TRUE`}
+         AND ${
+           filter.harness
+             ? sql`harness_slug = ${filter.harness}`
+             : filter.harnesses
+               ? sql`harness_slug = ANY(${filter.harnesses as string[]}::text[])`
+               : sql`TRUE`
+         }
          AND ${filter.kind && familyOf(filter.kind) === 'feature' ? sql`item_kind = ${filter.kind}` : sql`TRUE`}
          AND ${filter.state ? sql`status = ${filter.state}` : sql`TRUE`}
          AND ${featureShapeWhereSql(sql, filter)}
@@ -1207,6 +1237,9 @@ export async function countWorkItemsByState(filter: ListWorkItemsFilter = {}): P
       kind: filter.kind && familyOf(filter.kind) === 'issue' ? (filter.kind as IssueStoreKind) : undefined,
       kinds: filter.kind && familyOf(filter.kind) === 'issue' ? undefined : ISSUE_FAMILY_KINDS,
       scope: filter.harness ? `harness:${filter.harness}` : undefined,
+      scopes: filter.harness
+        ? undefined
+        : filter.harnesses?.map((harness) => `harness:${harness}`),
       state: (filter.state as IssueState) || undefined,
       ...issueShapeFilterArgs(filter),
       assignee: filter.assignee,

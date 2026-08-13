@@ -1010,9 +1010,15 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       workspaceId: z.string().default('default'),
       status: z.string().nullish(),
       limit: clampedLimit(500, 100),
+      harnessSlugs: z.array(z.string().min(1)).max(500).optional(),
     }),
     resolve: async (args) => [
-      await resolveGoalsList(args as { workspaceId: string; status?: string | null; limit?: number }),
+      await resolveGoalsList(args as {
+        workspaceId: string;
+        status?: string | null;
+        limit?: number;
+        harnessSlugs?: string[];
+      }),
     ],
   },
   'goals.detail': {
@@ -2341,7 +2347,8 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // 215) + spawned_agents (outcome flips re-fire the spine-position column).
   'workItems.byHarness': {
     argsSchema: z.object({
-      harnessSlug: z.string(),
+      harnessSlug: z.string().optional(),
+      harnessSlugs: z.array(z.string().min(1)).max(500).optional(),
       kind: z.string().optional(),
       state: z.string().optional(),
       // CLAMP, don't REJECT. A hard `.max()` makes the schema error on a client
@@ -2370,8 +2377,9 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
       perState: z.number().int().positive().max(200).optional(),
     }),
     resolve: async (args) => {
-      const { harnessSlug, kind, state, limit, states, perState } = args as {
-        harnessSlug: string;
+      const { harnessSlug, harnessSlugs, kind, state, limit, states, perState } = args as {
+        harnessSlug?: string;
+        harnessSlugs?: string[];
         kind?: string;
         state?: string;
         limit: number;
@@ -2389,6 +2397,7 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
               states.map((s) =>
                 listEnrichedWorkItems({
                   harness: harnessSlug,
+                  harnesses: harnessSlug ? undefined : harnessSlugs,
                   kind: k,
                   state: s,
                   limit: perState ?? 60,
@@ -2398,11 +2407,11 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
             // The TRUE corpus total, deliberately NOT scoped to `states` — it is
             // what row[0]._meta.total is for (see below), and a total that only
             // counted the sampled states would restate the sample, not the store.
-            countWorkItems({ harness: harnessSlug, kind: k }),
+            countWorkItems({ harness: harnessSlug, harnesses: harnessSlug ? undefined : harnessSlugs, kind: k }),
           ])
         : await Promise.all([
-            listEnrichedWorkItems({ harness: harnessSlug, kind: k, state, limit }),
-            countWorkItems({ harness: harnessSlug, kind: k, state }),
+            listEnrichedWorkItems({ harness: harnessSlug, harnesses: harnessSlug ? undefined : harnessSlugs, kind: k, state, limit }),
+            countWorkItems({ harness: harnessSlug, harnesses: harnessSlug ? undefined : harnessSlugs, kind: k, state }),
           ]);
       // Carry the TRUE total on row[0]._meta (the flat-row sync contract has no
       // envelope) so the UI shows "N of TOTAL" instead of the capped length.
@@ -2483,9 +2492,12 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // (work-item-status-full-unify) and this read needs no other part of it.
   // Invalidated via the work_items table bridge (same rows as byHarness).
   'workItems.stats': {
-    argsSchema: z.object({ harnessSlug: z.string().optional() }),
+    argsSchema: z.object({
+      harnessSlug: z.string().optional(),
+      harnessSlugs: z.array(z.string().min(1)).max(500).optional(),
+    }),
     resolve: async (args) => {
-      const { harnessSlug } = args as { harnessSlug?: string };
+      const { harnessSlug, harnessSlugs } = args as { harnessSlug?: string; harnessSlugs?: string[] };
       const [{ getOrgPg }, { observationLaneExclusionSql }, { ALL_TERMINAL_STATUSES }, { activeWorkspaceId }] =
         await Promise.all([
           import('@papercusp/db-org'),
@@ -2498,7 +2510,13 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
         SELECT wi.item_kind AS kind, wi.status AS state, count(*)::int AS n
           FROM harness_shared.work_items wi
          WHERE wi.workspace_id = ${activeWorkspaceId()}
-           AND ${harnessSlug ? sql`wi.harness_slug = ${harnessSlug}` : sql`TRUE`}
+           AND ${
+             harnessSlug
+               ? sql`wi.harness_slug = ${harnessSlug}`
+               : harnessSlugs
+                 ? sql`wi.harness_slug = ANY(${harnessSlugs}::text[])`
+                 : sql`TRUE`
+           }
            AND ${observationLaneExclusionSql(sql)}
          GROUP BY 1, 2
          ORDER BY 3 DESC`;
@@ -2520,9 +2538,12 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
   // observation-lane exclusion as the stats cells; same work_items-bridge
   // invalidation. Kinds with a zero delta are dropped server-side.
   'workItems.delta24h': {
-    argsSchema: z.object({ harnessSlug: z.string().optional() }),
+    argsSchema: z.object({
+      harnessSlug: z.string().optional(),
+      harnessSlugs: z.array(z.string().min(1)).max(500).optional(),
+    }),
     resolve: async (args) => {
-      const { harnessSlug } = args as { harnessSlug?: string };
+      const { harnessSlug, harnessSlugs } = args as { harnessSlug?: string; harnessSlugs?: string[] };
       const [{ getOrgPg }, { observationLaneExclusionSql }, { ALL_TERMINAL_STATUSES }, { activeWorkspaceId }] =
         await Promise.all([
           import('@papercusp/db-org'),
@@ -2541,7 +2562,13 @@ const REGISTRY: Record<string, QueryEntry<unknown>> = {
                )::int AS closed
           FROM harness_shared.work_items wi
          WHERE wi.workspace_id = ${activeWorkspaceId()}
-           AND ${harnessSlug ? sql`wi.harness_slug = ${harnessSlug}` : sql`TRUE`}
+           AND ${
+             harnessSlug
+               ? sql`wi.harness_slug = ${harnessSlug}`
+               : harnessSlugs
+                 ? sql`wi.harness_slug = ANY(${harnessSlugs}::text[])`
+                 : sql`TRUE`
+           }
            AND ${observationLaneExclusionSql(sql)}
            AND (wi.created_ts >= ${cutoffMs} OR wi.updated_ts >= ${cutoffMs})
          GROUP BY 1`;

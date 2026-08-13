@@ -69,7 +69,7 @@ export function mergeWorkItemDimensions(
  * the FEATURE_COLS facade. Empty `featureIds` ⇒ empty maps (no query).
  */
 async function fetchDimensionMaps(
-  harness: string,
+  harnesses: readonly string[],
   featureIds: string[],
 ): Promise<{
   planMap: Map<string, { planSlug: string | null; planItemIds: string[] }>;
@@ -77,14 +77,15 @@ async function fetchDimensionMaps(
 }> {
   const planMap = new Map<string, { planSlug: string | null; planItemIds: string[] }>();
   const spineMap = new Map<string, { role: string; status: string }>();
-  if (featureIds.length === 0) return { planMap, spineMap };
+  if (featureIds.length === 0 || harnesses.length === 0) return { planMap, spineMap };
   const { sql } = getOrgPg();
   const planRows = await sql<
     { feature_id: string; source_plan_slug: string | null; source_plan_item_ids: string[] | null }[]
   >`
     SELECT feature_id, source_plan_slug, source_plan_item_ids
       FROM harness_shared.harness_features_consolidated
-     WHERE harness_slug = ${harness} AND feature_id IN ${sql(featureIds)}`;
+     WHERE harness_slug = ANY(${harnesses as string[]}::text[])
+       AND feature_id IN ${sql(featureIds)}`;
   for (const r of planRows) {
     planMap.set(r.feature_id, { planSlug: r.source_plan_slug ?? null, planItemIds: r.source_plan_item_ids ?? [] });
   }
@@ -92,7 +93,8 @@ async function fetchDimensionMaps(
   const spineRows = await sql<{ feature_id: string; child_role: string; status: string }[]>`
     SELECT DISTINCT ON (feature_id) feature_id, child_role, status
       FROM harness_shared.spawned_agents
-     WHERE harness_slug = ${harness} AND feature_id IN ${sql(featureIds)}
+     WHERE harness_slug = ANY(${harnesses as string[]}::text[])
+       AND feature_id IN ${sql(featureIds)}
      ORDER BY feature_id, started_at DESC`;
   for (const r of spineRows) spineMap.set(r.feature_id, { role: r.child_role, status: r.status });
   return { planMap, spineMap };
@@ -124,15 +126,27 @@ function slimListRow(row: EnrichedWorkItem): EnrichedWorkItem {
 }
 
 export async function listEnrichedWorkItems(opts: {
-  harness: string;
+  harness?: string;
+  harnesses?: readonly string[];
   kind?: WorkItemKind;
   state?: string;
   limit?: number;
 }): Promise<EnrichedWorkItem[]> {
   const limit = Math.min(opts.limit ?? 200, WORK_ITEMS_MAX_LIMIT);
-  const workItems = await listWorkItems({ harness: opts.harness, kind: opts.kind, state: opts.state, limit });
+  const workItems = await listWorkItems({
+    harness: opts.harness,
+    harnesses: opts.harness ? undefined : opts.harnesses,
+    kind: opts.kind,
+    state: opts.state,
+    limit,
+  });
   const featureIds = workItems.filter((w) => w.family === 'feature').map((w) => w.id);
-  const { planMap, spineMap } = await fetchDimensionMaps(opts.harness, featureIds);
+  const harnesses = opts.harness
+    ? [opts.harness]
+    : opts.harnesses
+      ? [...opts.harnesses]
+      : [...new Set(workItems.map((item) => item.harness).filter((h): h is string => !!h))];
+  const { planMap, spineMap } = await fetchDimensionMaps(harnesses, featureIds);
   return mergeWorkItemDimensions(workItems, planMap, spineMap).map(slimListRow);
 }
 
@@ -149,7 +163,7 @@ export async function getEnrichedWorkItem(harness: string, id: string): Promise<
   const wi = await getWorkItem(id, harness);
   if (!wi) return null;
   const featureIds = wi.family === 'feature' ? [wi.id] : [];
-  const { planMap, spineMap } = await fetchDimensionMaps(harness, featureIds);
+  const { planMap, spineMap } = await fetchDimensionMaps([harness], featureIds);
   // NO slimListRow: the detail view is exactly the on-demand consumer of the full
   // summary + payload + completion refs the list strips.
   return mergeWorkItemDimensions([wi], planMap, spineMap)[0] ?? null;
