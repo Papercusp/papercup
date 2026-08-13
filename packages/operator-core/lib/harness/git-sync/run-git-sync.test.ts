@@ -87,7 +87,10 @@ describe('runGitSync (real git, no submodule)', () => {
   afterEach(() => rmSync(root, { recursive: true, force: true }));
 
   const cfg = { pushSubmodules: false } as const;
-  const originLog = () => git(originDir, 'log', '--format=%s', 'main');
+  // WI-38594: read FULL messages (%B), not subjects — diff-derived subjects demote the
+  // sweep message stem ('auto-commit test') and per-agent intent lines to the commit BODY,
+  // so marker assertions must scan the whole message to keep their meaning.
+  const originLog = () => git(originDir, 'log', '--format=%B', 'main');
 
   it('commits a dirty tree and pushes it to origin (happy path)', async () => {
     writeFileSync(join(repo, 'new.txt'), 'hello\n');
@@ -565,7 +568,7 @@ describe('runGitSync (real git, no submodule)', () => {
     // a NEW local commit exists (HEAD advanced) and carries the auto-commit subject
     const localTipAfter = git(repo, 'rev-parse', 'HEAD');
     expect(localTipAfter).not.toBe(localTipBefore);
-    expect(git(repo, 'log', '--format=%s', '-1')).toMatch(/auto-commit test/);
+    expect(git(repo, 'log', '--format=%B', '-1')).toMatch(/auto-commit test/);
 
     // origin/main is UNCHANGED — same tip SHA, and the commit-subject log is identical
     expect(git(originDir, 'rev-parse', 'main')).toBe(originTipBefore);
@@ -839,9 +842,9 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
       }
 
       // submodule origin received the sub commit (pushed to main from detached HEAD)
-      expect(git(subOrigin, 'log', '--format=%s', 'main')).toMatch(/auto-commit test/);
+      expect(git(subOrigin, 'log', '--format=%B', 'main')).toMatch(/auto-commit test/);
       // superproject origin received the super commit
-      expect(git(superOrigin, 'log', '--format=%s', 'main')).toMatch(/auto-commit test/);
+      expect(git(superOrigin, 'log', '--format=%B', 'main')).toMatch(/auto-commit test/);
 
       // the committed superproject pointer == the submodule's pushed HEAD (fresh clone resolves the pin)
       const subHead = git(join(repo, 'libs/sub'), 'rev-parse', 'HEAD');
@@ -865,7 +868,7 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
     expect(out.status).toBe('synced');
     if (out.status === 'synced') expect(out.pushed).toContain('libs/sub');
     expect(git(subRepo, 'remote', 'get-url', 'origin')).toBe(subOrigin);
-    expect(git(subOrigin, 'log', '--format=%s', 'main')).toMatch(/auto-commit test/);
+    expect(git(subOrigin, 'log', '--format=%B', 'main')).toMatch(/auto-commit test/);
   });
 
   it('EI-18689553108460319: superproject push:false (bridged-hive commit-only) does NOT strand the submodule — it still pushes to its own origin', () => {
@@ -894,11 +897,11 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
         expect(out.pushed).not.toContain('superproject');
       }
       // submodule origin received the sub commit
-      expect(git(subOrigin, 'log', '--format=%s', 'main')).toMatch(/auto-commit test/);
+      expect(git(subOrigin, 'log', '--format=%B', 'main')).toMatch(/auto-commit test/);
       // superproject origin did NOT receive the super commit — still local-only
-      expect(git(superOrigin, 'log', '--format=%s', 'main')).not.toMatch(/auto-commit test/);
+      expect(git(superOrigin, 'log', '--format=%B', 'main')).not.toMatch(/auto-commit test/);
       // the local superproject DOES have the pointer bump + local commit (commit-only, not skipped)
-      expect(git(repo, 'log', '--format=%s', 'HEAD')).toMatch(/auto-commit test/);
+      expect(git(repo, 'log', '--format=%B', 'HEAD')).toMatch(/auto-commit test/);
     });
   });
 
@@ -913,7 +916,7 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
         expect(out.pushed).toContain('superproject');
       }
       // submodule origin did NOT receive the sub commit — still local-only
-      expect(git(subOrigin, 'log', '--format=%s', 'main')).not.toMatch(/auto-commit test/);
+      expect(git(subOrigin, 'log', '--format=%B', 'main')).not.toMatch(/auto-commit test/);
     });
   });
 
@@ -960,7 +963,7 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
         // submodule commit a fresh clone can't resolve.
         expect(out.pushed).not.toContain('superproject');
       }
-      expect(git(superOrigin, 'log', '--format=%s', 'main')).not.toMatch(/auto-commit test/);
+      expect(git(superOrigin, 'log', '--format=%B', 'main')).not.toMatch(/auto-commit test/);
 
       // EI-20182436053613562: the deferral is PUSH-ONLY. The superproject's own dirty
       // file has no relationship to any submodule pointer, and a local commit publishes
@@ -968,7 +971,7 @@ describe('runGitSync (real git, with a submodule) — P-007 submodule-push-first
       // let ONE permanently-failing submodule push (a GitHub 403 no retry can clear)
       // freeze every agent's work in the shared tree for 12h — including untracked files
       // that existed on no other disk.
-      expect(git(repo, 'log', '--format=%s', 'HEAD')).toMatch(/auto-commit test/);
+      expect(git(repo, 'log', '--format=%B', 'HEAD')).toMatch(/auto-commit test/);
       expect(git(repo, 'status', '--porcelain', 'super-new.txt')).toBe('');
     });
   });
@@ -1052,16 +1055,16 @@ describe('runGitSync (real git, two submodules) — GAP-1 continue-past-conflict
         expect(out.pushed).not.toContain('superproject');
       }
       // subB origin actually received the push
-      expect(git(subBOrigin, 'log', '--format=%s', 'main')).toMatch(/auto-commit test/);
+      expect(git(subBOrigin, 'log', '--format=%B', 'main')).toMatch(/auto-commit test/);
       // superproject origin was NOT advanced (would publish an unresolvable subA pointer)
-      expect(git(superOrigin, 'log', '--format=%s', 'main')).not.toMatch(/auto-commit test/);
+      expect(git(superOrigin, 'log', '--format=%B', 'main')).not.toMatch(/auto-commit test/);
       // subA tree is clean (merge aborted) — local edit preserved
       expect(git(join(repo, 'libs/subA'), 'status', '--porcelain', '--untracked-files=no')).toBe('');
       expect(readFileSync(join(repo, 'libs/subA', 'subA.txt'), 'utf8')).toBe('LOCAL-EDIT\n');
       // EI-20182436053613562: the DEFERRAL IS PUSH-ONLY — the superproject's own dirty
       // file was still committed LOCALLY. Deferring the local commit too is what stranded
       // every agent's work for 12h behind one unreconcilable submodule.
-      expect(git(repo, 'log', '--format=%s', 'HEAD')).toMatch(/auto-commit test/);
+      expect(git(repo, 'log', '--format=%B', 'HEAD')).toMatch(/auto-commit test/);
       expect(git(repo, 'status', '--porcelain', 'super-new.txt')).toBe('');
     });
   });
@@ -1115,13 +1118,13 @@ describe('runGitSync — EI-18 oversized-blob guard', () => {
 
   it('an oversized-ONLY dirty tree commits nothing ("nothing") but still reports the file', async () => {
     writeFileSync(join(repo, 'big.bin'), Buffer.alloc(4096, 1));
-    const before = git(originDir, 'log', '--format=%s', 'main');
+    const before = git(originDir, 'log', '--format=%B', 'main');
 
     const out = await runGitSync('test', { repoPath: repo, config: cfg });
 
     expect(out.status).toBe('nothing');
     expect(out.oversized).toEqual([{ scope: 'superproject', path: 'big.bin', sizeBytes: 4096 }]);
-    expect(git(originDir, 'log', '--format=%s', 'main')).toBe(before); // origin untouched
+    expect(git(originDir, 'log', '--format=%B', 'main')).toBe(before); // origin untouched
   });
 
   it('a clean tree under the limit reports no oversized files', async () => {
