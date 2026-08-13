@@ -1035,27 +1035,19 @@ describe('P-010/P-012 merge-conflict path', () => {
     warn.mockRestore();
   });
 
-  it('P-006: RE-dispatches a marker ORPHANED by an operator restart (different process instance) — within the 20-min window, not waiting it out', async () => {
+  it('EI-20336929607862174: a fresh foreign-instance resolver marker suppresses cross-process overlap', async () => {
     runGitSyncMock.mockResolvedValue(conflictOutcome);
-    // A 'dispatched' marker recorded 1 min ago by a PRIOR operator incarnation:
-    // its fire-and-forget settle promise died with that process and can never land
-    // here, so it is NOT really in flight even though it is well inside the TTL.
-    resolverRows = [{ lr: { status: 'dispatched', at: Date.now() - 60_000, instance: 'a-prior-process-incarnation' } }];
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    // A different instance may be another healthy operator process sharing this
+    // routine row. Freshness + status, not instance equality, owns liveness.
+    resolverRows = [{ lr: { status: 'dispatched', at: Date.now() - 60_000, instance: 'other-live-operator' } }];
 
     await action(ctx);
 
-    expect(loopbackFetchMock).toHaveBeenCalledTimes(1);
-    // the fresh dispatch is stamped with the LIVE instance (not the orphan's).
-    const dispatched = routinePatches().find(
-      (p) => (p.last_resolver as Record<string, unknown> | undefined)?.status === 'dispatched',
+    expect(loopbackFetchMock).not.toHaveBeenCalled();
+    expect(routinePatches().some((p) => 'last_resolver' in p)).toBe(false);
+    expect(appendPipelineEventMock).not.toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'merge_resolver' }),
     );
-    expect((dispatched!.last_resolver as Record<string, unknown>).instance).toBeTypeOf('string');
-    expect((dispatched!.last_resolver as Record<string, unknown>).instance).not.toBe('a-prior-process-incarnation');
-    await vi.waitFor(() => {
-      expect(appendPipelineEventMock).toHaveBeenCalledWith(expect.objectContaining({ kind: 'merge_resolver' }));
-    });
-    warn.mockRestore();
   });
 
   it('skips the dispatch (warning) when no launch blueprint declares git-sync:conflict — escalation still written', async () => {
