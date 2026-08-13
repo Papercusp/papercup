@@ -168,7 +168,12 @@ describe('runGitSync (real git, no submodule)', () => {
       return { code: r.status ?? 1, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
     };
 
-    const out = await runGitSync('test', { repoPath: repo, runGit, submodulePaths: [], config: cfg });
+    const out = await runGitSync('test', {
+      repoPath: repo,
+      runGit,
+      submodulePaths: [],
+      config: { ...cfg, pushSubmodules: true, pushSubmoduleOrigins: false },
+    });
 
     expect(out.status).toBe('synced');
     expect(urlSyncAttempts).toBe(2);
