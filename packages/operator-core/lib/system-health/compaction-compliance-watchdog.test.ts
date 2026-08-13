@@ -134,6 +134,7 @@ import {
   startCompactionComplianceWatchdog,
   discoverPresencelessLoopOwners,
   carryRespawnLoopEscalationBody,
+  carryRespawnStreakVerdict,
 } from './compaction-compliance-watchdog';
 import {
   getContextUsage,
@@ -1564,5 +1565,104 @@ describe('WI-38347 carry-respawn-loop escalation body is backend-specific', () =
       expect(body).toContain('7 consecutive cuts');
       expect(body).toContain('STOPPED respawning');
     }
+  });
+
+// WI-38347 leg 4. The streak breaker names a defect it never measured: it increments
+// on "a respawn fired and this owner is over limit again later" and then escalates
+// asserting "the context estimate never dropping". Those are different claims, and
+// when the limit sits well below the model window the second one is simply false —
+// a successor whose cut landed perfectly is back over the limit within minutes
+// (measured 2026-08-13: codex su sessions open ~50k, burn ~10k/min, re-crossed a
+// 158,000 limit in 5–18 min). These pin the discriminator itself.
+describe('WI-38347 leg 4 — a streak verdict must be MEASURED, not inferred', () => {
+  const base = { limit: 158_000, window: 258_400 } as const;
+
+  it('reports CHURN when the estimate demonstrably moved between cuts', () => {
+    expect(
+      carryRespawnStreakVerdict({ ...base, estAtFirstCut: 200_000, minEstSince: 165_000 }),
+    ).toBe('churn');
+  });
+
+  it('reports PINNED when the estimate came back EXACTLY equal — the frozen-tail signature', () => {
+    expect(
+      carryRespawnStreakVerdict({ ...base, estAtFirstCut: 170_000, minEstSince: 170_000 }),
+    ).toBe('pinned');
+  });
+
+  it('reports PINNED for a drift too small to be a landed cut', () => {
+    expect(
+      carryRespawnStreakVerdict({ ...base, estAtFirstCut: 170_000, minEstSince: 169_100 }),
+    ).toBe('pinned');
+  });
+
+  it('defaults to PINNED with no evidence — an un-instrumented caller keeps the old diagnosis', () => {
+    expect(carryRespawnStreakVerdict(null)).toBe('pinned');
+    expect(carryRespawnStreakVerdict(undefined)).toBe('pinned');
+  });
+
+  // CALIBRATION. An earlier draft compared minEstSince against a FRACTION (≤85%) of
+  // the first-cut estimate. Every assertion above still passed under it, because they
+  // are all far from that boundary — but the churn branch was DEAD CODE: only
+  // over-limit sweeps are ever sampled, so every admissible reading is ≥ the limit,
+  // and from a first-cut estimate near the limit nothing can reach 85% of it. This
+  // case sits in exactly that band (170,000 first cut, 160,000 low, 158,000 limit:
+  // a real 10k drop, but 94% — above the old fraction) and so FAILS under the
+  // fractional rule and passes under the absolute one. It is what makes the four
+  // assertions above non-vacuous.
+  it('a real drop that stays just above the limit is CHURN — reachable, not dead code', () => {
+    expect(
+      carryRespawnStreakVerdict({ ...base, estAtFirstCut: 170_000, minEstSince: 160_000 }),
+    ).toBe('churn');
+  });
+
+  it('a CHURN body drops the transcript diagnosis entirely and sends the reader at headroom', () => {
+    const body = carryRespawnLoopEscalationBody('claude', 3, {
+      ...base,
+      estAtFirstCut: 200_000,
+      minEstSince: 165_000,
+    });
+    // the claude branch is otherwise CORRECT for a claude owner — it must still be
+    // suppressed here, because the defect it describes is not the one that occurred
+    expect(body).not.toContain(CLAUDE_ONLY_DIAGNOSIS);
+    expect(body).not.toContain(CLAUDE_ONLY_REMEDY);
+    expect(body).toContain('CHURN');
+    expect(body).toContain('cuts ARE LANDING');
+    expect(body).toContain('DO NOT relaunch');
+    // and it must name the actual lever: the limit against the real window
+    expect(body).toContain('158000');
+    expect(body).toContain('258400');
+    expect(body).toContain('61%');
+  });
+
+  it('the CHURN body is backend-NEUTRAL — churn is not a property of the backend', () => {
+    const bodies = (['claude', 'codex', 'omp', null] as const).map((agent) =>
+      carryRespawnLoopEscalationBody(agent, 3, {
+        ...base,
+        estAtFirstCut: 200_000,
+        minEstSince: 165_000,
+      }),
+    );
+    expect(new Set(bodies).size).toBe(1);
+  });
+
+  it('a PINNED verdict still routes to the per-backend leg-2 bodies', () => {
+    const pinned = { ...base, estAtFirstCut: 170_000, minEstSince: 170_000 };
+    expect(carryRespawnLoopEscalationBody('claude', 3, pinned)).toContain(CLAUDE_ONLY_DIAGNOSIS);
+    const codex = carryRespawnLoopEscalationBody('codex', 3, pinned);
+    expect(codex).not.toContain(CLAUDE_ONLY_DIAGNOSIS);
+    expect(codex).toContain('resolveSelfSession');
+  });
+
+  it('names an unresolved window honestly instead of printing a ratio it cannot compute', () => {
+    const body = carryRespawnLoopEscalationBody('codex', 3, {
+      limit: 158_000,
+      window: null,
+      estAtFirstCut: 200_000,
+      minEstSince: 165_000,
+    });
+    expect(body).toContain('could not be resolved');
+    expect(body).not.toContain('NaN');
+    expect(body).not.toContain('Infinity');
+  });
   });
 });

@@ -149,23 +149,29 @@ const carryRespawnStreak = new Map<
 >();
 /** One loop-detected escalation per owner per process; un-deduped on failure. */
 const carryRespawnLoopEscalated = new Set<string>();
-/** Streak trips at this many respawns with no recovery in between. Three cuts
- *  (~12–18 min under FORCE_RETRY_GRACE_MS pacing) with the estimate never
- *  dropping is impossible for a genuinely-refilling session (maxTurn caps a
- *  single hop; a fresh successor sits far below any soft limit). */
+/** Streak trips at this many respawns with no recovery below the limit in between.
+ *  ⚠ WI-38347: this threshold detects "not recovering", which is NOT by itself
+ *  evidence of a broken estimate — the claim this comment used to make ("impossible
+ *  for a genuinely-refilling session") is false whenever the limit sits well below
+ *  the window, because a fresh successor is then back over the limit in minutes.
+ *  Trip on this, then let {@link carryRespawnStreakVerdict} say WHICH failure it is. */
 const CARRY_RESPAWN_MAX_STREAK = 3;
 /** A streak entry older than this is stale history, not an active loop. */
 const CARRY_RESPAWN_STREAK_WINDOW_MS = 30 * 60_000;
-/** WI-38347 leg 4: a later observation at or below this fraction of the streak's
- *  first-cut estimate proves a cut LANDED (the successor really did boot smaller),
- *  so the streak is churn — not the pinned-estimate defect. Deliberately loose:
- *  the discriminating question is "did this number ever move at all", and a real
- *  landed cut drops it by far more than 15% (measured: 281,426 → 54,218), while a
- *  genuinely pinned estimate does not move at all. Only over-limit sweeps are ever
- *  sampled — a drop below the limit clears the streak outright — so this compares
- *  two ABOVE-LIMIT readings, which is exactly the case the old guard could not
- *  tell apart from a frozen one. */
-const CARRY_RESPAWN_LANDED_DROP_FACTOR = 0.85;
+/** WI-38347 leg 4: how far the estimate must FALL, in tokens, for a cut to count as
+ *  demonstrably landed.
+ *
+ *  ⚠ An earlier draft of this used a FRACTION of the first-cut estimate (≤85%). That
+ *  is unreachable by construction and would have made the churn branch dead code:
+ *  only OVER-LIMIT sweeps are ever sampled (a reading below the limit clears the
+ *  streak outright), so every sample is bounded below by the limit — and when the
+ *  first-cut estimate is near the limit, as it usually is, no admissible reading can
+ *  be 15% under it. The discriminating question is not "how far did it fall" but
+ *  "did this number MOVE AT ALL": a pinned estimate is re-read from the same
+ *  transcript tail and comes back EXACTLY equal, sweep after sweep, whereas any real
+ *  cut moves it. So this is a small absolute floor — above read-to-read noise, and
+ *  reachable from any first-cut estimate. */
+const CARRY_RESPAWN_MOVED_MIN_TOKENS = 5_000;
 
 /** The evidence a streak carries about whether its cuts were landing. */
 export interface CarryRespawnStreakEvidence {
@@ -191,7 +197,7 @@ export function carryRespawnStreakVerdict(
   evidence: CarryRespawnStreakEvidence | null | undefined,
 ): 'churn' | 'pinned' {
   if (evidence == null || !(evidence.estAtFirstCut > 0)) return 'pinned';
-  return evidence.minEstSince <= evidence.estAtFirstCut * CARRY_RESPAWN_LANDED_DROP_FACTOR
+  return evidence.minEstSince <= evidence.estAtFirstCut - CARRY_RESPAWN_MOVED_MIN_TOKENS
     ? 'churn'
     : 'pinned';
 }
@@ -623,10 +629,12 @@ export function carryRespawnLoopEscalationBody(
 
 /**
  * WI-5075: the kill-loop breaker. A carry-respawn streak with no recovery in
- * between means the context estimate is NOT tracking the live session. Killing
- * again is the bug, not the remedy: raise ONE loud escalation and stop cutting
- * until the owner recovers. The DIAGNOSIS in that escalation is per-backend —
- * see {@link carryRespawnLoopEscalationBody} (WI-38347).
+ * between means further cutting is not helping this owner — so raise ONE loud
+ * escalation and stop cutting until it recovers, whichever failure it turns out
+ * to be. WI-38347: the streak does NOT by itself mean the estimate is failing to
+ * track the live session; {@link carryRespawnStreakVerdict} separates a pinned
+ * estimate from churn, and {@link carryRespawnLoopEscalationBody} then picks the
+ * diagnosis (per-backend for pinned, backend-neutral headroom for churn).
  */
 async function escalateCarryRespawnLoop(
   ownerId: string,
@@ -1506,7 +1514,16 @@ export async function checkCompactionCompliance(sql: Sql): Promise<CompactionCom
           )
         ) {
           carryRespawnRequestedAt.set(r.owner_id, Date.now());
-          carryRespawnStreak.set(r.owner_id, { count: streakCount + 1, lastAt: Date.now() });
+          // WI-38347 leg 4: the BASELINE is pinned to the FIRST cut of the streak and
+          // carried forward — re-baselining on each cut would compare a successor to
+          // itself and report every landed cut as frozen.
+          carryRespawnStreak.set(r.owner_id, {
+            count: streakCount + 1,
+            lastAt: Date.now(),
+            estAtFirstCut: streakLive && streakEntry != null ? streakEntry.estAtFirstCut : est,
+            minEstSince:
+              streakLive && streakEntry != null ? Math.min(streakEntry.minEstSince, est) : est,
+          });
           out.carryRespawned.push(r.owner_id);
           continue;
         }
