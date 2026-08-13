@@ -67,7 +67,14 @@ const EXTS = new Set(['.ts', '.tsx', '.mjs', '.js']);
 const RULES = [
   {
     id: 'hono-compress',
-    re: /\bfrom\s+['"]hono\/compress['"]|require\(['"]hono\/compress['"]\)/,
+    // ANCHORED ON THE IMPORT, NOT THE CALL — `compress()` is too generic a name to match on its
+    // own (the self-test pins that bare-call case as a deliberate non-match), and the middleware
+    // cannot be used without first being imported. That makes the import the chokepoint, so this
+    // rule must cover EVERY way the specifier can be reached: static `from`, `require()`, and
+    // dynamic `import()`. The dynamic form was blind until 2026-08-13 (WI-5988) — an
+    // import-anchored rule that misses an import shape is a hole the whole guard drains through,
+    // because that one line is all a reintroduction needs to go green.
+    re: /\bfrom\s+['"]hono\/compress['"]|(?:require|import)\(\s*['"]hono\/compress['"]\s*\)/,
     hint: "hono's compress() middleware gzips every response — remove it.",
   },
   {
@@ -173,7 +180,15 @@ function targets() {
 function selfTest() {
   const cases = [
     ["import { compress } from 'hono/compress';", true],
+    ["import compress from 'hono/compress';", true],
+    ["const { compress } = require('hono/compress');", true],
+    // DYNAMIC import — the shape that evaded this rule until WI-5988 (2026-08-13). Since the rule
+    // is anchored on the import rather than the call, every import shape has to be covered or the
+    // chokepoint leaks; keep all three above green together.
+    ["const { compress } = await import('hono/compress');", true],
+    ['const m = await import("hono/compress");', true],
     ['host.use("*", compress());', false], // bare call is not distinctive enough; the import is
+    ['host.use("*", compress({ threshold: 1024 }));', false], // ditto — the import is the anchor
     ['const buf = gzipSync(json);', true],
     ['const out = gunzipSync(buf);', false],
     ['const out = await zstdDecompress(blob);', false],

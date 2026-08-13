@@ -9,14 +9,15 @@
  * cp/mkdir/cat writes into $SIDECAR_DIR below it, and before release-local.sh's
  * stage-env-sidecars.sh / stage-source-tree.sh had written anything at all. So the
  * "early" scan covered 10,635 file(s) / 0 archive(s) while the per-leg gate covered
- * 17,560 / 3 — two gates of unequal scope in a fixed order, with the cheap one first.
+ * 17,560 / 3 (both figures from the 0.0.16-alpha attempt-5 cut log, via
+ * EI-20304355477263736) — two gates of unequal scope in a fixed order, cheap one first.
  *
  * 0.0.16-alpha attempt 5 (2026-08-13) paid for that: an owner handle in a RETIRED
  * blueprint's YAML comment landed in sidecar/harness/** and
  * sidecar/env-sidecars/staging/harness/**, both written AFTER the early scan, and
  * was caught by the per-leg gate ~40 minutes in — after four parallel Rust builds.
- * A scan of the same directory run at the fixed position covers 17,554 file(s) /
- * 2 archive(s) (measured 2026-08-13) in 87 seconds.
+ * Running the repositioned gate's exact command against that same tree (measured
+ * 2026-08-13) covers 17,559 file(s) / 3 archive(s) in 136s — one file off the leg.
  *
  * WHAT THIS TEST ENFORCES — the ORDERING invariant, not the scanner:
  *   1. release-local.sh's assembled-bundle gate runs AFTER every bin/stage-*.sh
