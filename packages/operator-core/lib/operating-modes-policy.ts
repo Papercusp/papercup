@@ -348,6 +348,15 @@ stops it. REGISTER it like AUTO: \`mode:set { mode:'drain', reason, ownerDirecte
 (drain implies + stacks with auto), \`enabled:false\` at wind-down — an unregistered mode dies
 at the next compaction.
 
+**Defect-filing exception — DRAIN overrides the general file-every-suspected-bug rule.** While
+DRAIN is active, do **not** mint an \`improvements:capture\`, issue, work-item, or observation for
+an incidental suspected defect discovered along the way; that would add work to the queue this
+mode exists to shrink. Record useful incidental evidence on the current drain item's checkpoint or
+completion instead. The only exception is a defect that **directly blocks the scoped drain**: file
+exactly one blocker linked to the active drain item/plan, with the evidence needed to clear it, then
+resume the drain. A tool failure, workaround, false alarm, or degradation that does not directly
+block the drain stays inside the current item's record and does not become a new queue row.
+
 **The operating loop:**
 1. **TRIAGE + RANK first, launch second.** Sweep the scoped items once: dedupe, close the
    stale, deprecate the dead (with reasons), park the owner-gated as needs_human — then encode

@@ -106,3 +106,19 @@ describe('renderModesPolicy — SU zero-pauses AUTO clause (P-014)', () => {
     }
   });
 });
+
+describe('renderModesPolicy — DRAIN defect-filing exception (WI-38401)', () => {
+  const full = renderModesPolicy();
+
+  it('overrides unconditional suspected-defect filing without discarding useful evidence', () => {
+    expect(full).toContain('DRAIN overrides the general file-every-suspected-bug rule');
+    expect(full).toMatch(/do \*\*not\*\* mint an .*improvements:capture.*issue, work-item, or observation/s);
+    expect(full).toMatch(/current drain item's checkpoint or\s+completion/);
+  });
+
+  it('permits exactly one linked record only for a direct drain blocker', () => {
+    expect(full).toMatch(/directly blocks the scoped drain/);
+    expect(full).toMatch(/file\s+exactly one blocker linked to the active drain item\/plan/);
+    expect(full).toMatch(/does not directly\s+block the drain.*does not become a new queue row/s);
+  });
+});

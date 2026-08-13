@@ -109,6 +109,19 @@ describe('mode implications', () => {
   });
 });
 
+describe('DRAIN mode defect-filing contract (WI-38401)', () => {
+  const drain = modeById('drain');
+
+  it('suppresses incidental suspected-defect rows and preserves only direct blockers', () => {
+    expect(drain).not.toBeNull();
+    expect(drain!.contract).toContain('DEFECT-FILING EXCEPTION');
+    expect(drain!.contract).toMatch(/DRAIN overrides the general file-every-suspected-bug\s+rule/);
+    expect(drain!.contract).toMatch(/Do not mint improvements:capture rows, issues, work-items, or observations/);
+    expect(drain!.contract).toMatch(/DIRECTLY BLOCKS the scoped drain/);
+    expect(drain!.contract).toMatch(/exactly one blocker linked to the active drain item\/plan/);
+  });
+});
+
 describe('modeChipLabel', () => {
   it('renders a mode id as a chip label, hyphens as spaces', () => {
     expect(modeChipLabel('auto')).toBe('AUTO');

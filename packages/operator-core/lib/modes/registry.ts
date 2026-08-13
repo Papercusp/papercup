@@ -183,7 +183,14 @@ implies AUTO and you ALREADY hold it: entering this mode wrote the auto row for
 you (an autonomy axis you had already set — cold-auto, say — is left exactly as
 you set it). A drain runs autonomously; that is a statement about your current
 posture, not a follow-up call to remember. (Overlay: stacks with anything,
-including IDEATE.)`,
+including IDEATE.)
+
+DEFECT-FILING EXCEPTION: DRAIN overrides the general file-every-suspected-bug
+rule. Do not mint improvements:capture rows, issues, work-items, or observations
+for incidental suspected defects; keep useful evidence on the current drain
+item instead. Only a defect that DIRECTLY BLOCKS the scoped drain may create a
+new queue row: file exactly one blocker linked to the active drain item/plan,
+clear it, and resume the drain.`,
   },
   {
     id: 'grade',
