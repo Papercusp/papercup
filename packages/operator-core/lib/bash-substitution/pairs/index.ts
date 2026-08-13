@@ -18,7 +18,7 @@ import { LOGS_PAIRS } from './logs';
 import { POSTGRES_PAIRS } from './postgres';
 import { PROCESS_PAIRS } from './process';
 import { SERVICE_PAIRS } from './service';
-import { SQL_READ_PAIRS } from './sql-reads';
+import { SQL_READ_NO_PAIR_DECISIONS, SQL_READ_PAIRS } from './sql-reads';
 import { TESTS_PAIRS } from './tests';
 import { TYPECHECK_PAIRS } from './typecheck';
 
