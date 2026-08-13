@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { ANNOUNCE_PROTOCOL, openAnnounceChannel } from './swarm';
 import type { SignedAnnounce } from './announce';
 
@@ -154,6 +154,41 @@ describe('announce channel — A-002 (multi-hive) + A-003 (a′) multi-harness-p
     expect(h1).toEqual(['inbound-for-hive1']);
     expect(h2).toEqual(['inbound-for-hive2']);
     expect(mux._pairs.has(mux._key(ANNOUNCE_PROTOCOL, null))).toBe(true);
+  });
+
+  it('announce debug reports the signed log_length on fresh sends and receives', async () => {
+    const prior = process.env.PAPERCUSP_ANNOUNCE_DEBUG;
+    process.env.PAPERCUSP_ANNOUNCE_DEBUG = '1';
+    const info = vi.spyOn(console, 'info').mockImplementation(() => {});
+    try {
+      const mux = makeFakeMux();
+      const socket = { userData: mux };
+      const outbound = { ...announce('writer-log'), harness_slug: 'member-a', log_length: 41 };
+      openAnnounceChannel(socket, t1, {
+        ourAnnounce: outbound,
+        buildOurAnnounce: async () => outbound,
+        onAnnounce: () => ({ admit: true as const }),
+      });
+      await Promise.resolve();
+
+      const ch = mux._channels.get(mux._key(ANNOUNCE_PROTOCOL, t1));
+      ch?.onmessage?.({ ...announce('remote-log'), harness_slug: 'member-b', log_length: 73 });
+
+      expect(info).toHaveBeenCalledWith(
+        expect.stringContaining(
+          '[announce-debug] sent fresh harness=member-a log=writer-log... log_length=41',
+        ),
+      );
+      expect(info).toHaveBeenCalledWith(
+        expect.stringContaining(
+          '[announce-debug] recv topic=0101010101010101 harness=member-b log=remote-log... log_length=73',
+        ),
+      );
+    } finally {
+      info.mockRestore();
+      if (prior === undefined) delete process.env.PAPERCUSP_ANNOUNCE_DEBUG;
+      else process.env.PAPERCUSP_ANNOUNCE_DEBUG = prior;
+    }
   });
 
   it('the SAME harness re-registered on one topic reuses the channel but RE-SENDS its announce (WI-1544)', () => {

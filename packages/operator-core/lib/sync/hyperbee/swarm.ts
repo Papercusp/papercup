@@ -882,6 +882,19 @@ function announceDebug(message: string): void {
   console.info(`[announce-debug] ${message}`);
 }
 
+/** Render the signed writer-progress fields on every sent/received announce.
+ * Kept behind PAPERCUSP_ANNOUNCE_DEBUG with the rest of this channel trace: the
+ * rig needs to distinguish "the writer never advanced its own log" from "the
+ * receiver saw an ahead high-water but transport/apply still stalled" without
+ * making these per-frame details noisy in production. Legacy frames omit both
+ * optional fields, so make that absence explicit instead of printing an
+ * ambiguous `undefined`. */
+function announceDebugFrame(frame: SignedAnnounce): string {
+  const harness = frame.harness_slug ?? '<absent>';
+  const logLength = frame.log_length === undefined ? '<absent>' : String(frame.log_length);
+  return `harness=${harness} log=${frame.log_core_key.slice(0, 12)}... log_length=${logLength}`;
+}
+
 const announceMuxDebugIds = new WeakMap<object, number>();
 let nextAnnounceMuxDebugId = 1;
 
@@ -936,7 +949,7 @@ function flushTopicAnnounces(state: TopicAnnounceState): void {
         .then((fresh) => {
           try {
             msg.send(fresh);
-            announceDebug(`sent fresh log=${fresh.log_core_key.slice(0, 12)}...`);
+            announceDebug(`sent fresh ${announceDebugFrame(fresh)}`);
           } catch (e) {
             // best-effort — replication still proceeds. WI-1544: this drop is
             // one-shot per connection (sentKeys already marked) — make it loud.
@@ -960,7 +973,7 @@ function flushTopicAnnounces(state: TopicAnnounceState): void {
     state.sentKeys.add(ann.log_core_key);
     try {
       msg.send(ann);
-      announceDebug(`sent static log=${ann.log_core_key.slice(0, 12)}...`);
+      announceDebug(`sent static ${announceDebugFrame(ann)}`);
     } catch (e) {
       // best-effort — replication still proceeds (loud: one-shot per connection)
       announceDebug(
@@ -1021,7 +1034,7 @@ function createAnnounceChannel(
     encoding: c.json,
     onmessage: (frame: SignedAnnounce) => {
       announceDebug(
-        `recv topic=${channelId.toString('hex').slice(0, 16)} log=${frame.log_core_key.slice(0, 12)}...`,
+        `recv topic=${channelId.toString('hex').slice(0, 16)} ${announceDebugFrame(frame)}`,
       );
       // EI-1599: a frame arrived on this topic — record it as the most recent
       // live content-sync activity, regardless of what admission decides.
