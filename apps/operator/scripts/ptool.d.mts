@@ -183,8 +183,12 @@ export function resolveTokenPath(options?: {}): string;
 /** Build the `tools/call` params for a ptool invocation. Pure and exported so
  *  the MCP result negotiation is regression-tested without opening a
  *  transport. Object-rooted output schemas need `_meta.structured` because
- *  the MCP SDK validates their structured response field (EI-13245). Array-
- *  rooted tools deliberately omit `outputSchema` because MCP requires
+ *  the MCP SDK validates their structured response field (EI-13245), EXCEPT
+ *  when the caller supplied a dispatch-level `projection`: the projection
+ *  deliberately drops the unprojected structured twin so it cannot defeat the
+ *  requested reduction. Projected calls therefore negotiate JSON text and use
+ *  the schema-neutral request path in callToolWithPressureRetry below.
+ *  Array-rooted tools deliberately omit `outputSchema` because MCP requires
  *  `structuredContent` to be an object; ask those tools for JSON text instead
  *  so ptool still emits a lossless scripting payload.
  *  @param {string} toolName
